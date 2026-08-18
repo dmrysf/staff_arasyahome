@@ -1,5 +1,3 @@
-"use client";
-
 import { useEffect, useMemo, useState } from "react";
 import type { Session } from "../services/contracts";
 import { createServices } from "../services/createServices";
@@ -50,7 +48,7 @@ export function StaffApp({ initialRoute, demoMode, apiBaseUrl }: { initialRoute:
 
   const orderId = guardedRoute.startsWith("/orders/") ? decodeURIComponent(guardedRoute.slice("/orders/".length)) : "";
   const immersive = guardedRoute === "/scan";
-  let screen = <HomeScreen employee={session.employee} navigate={navigate} />;
+  let screen = <HomeScreen employee={session.employee} activityService={services.activity} navigate={navigate} />;
   if (guardedRoute === "/scan") screen = <ScannerScreen service={services.orders} demoMode={demoMode} navigate={navigate} onSessionExpired={logout} />;
   else if (guardedRoute === "/orders") screen = <OrdersScreen service={services.orders} navigate={navigate} />;
   else if (orderId) screen = <OrderDetailScreen orderId={orderId} service={services.orders} navigate={navigate} />;

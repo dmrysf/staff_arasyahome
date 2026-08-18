@@ -1,5 +1,3 @@
-"use client";
-
 import { useEffect, useState } from "react";
 import type { StaffOrder, StaffServiceError } from "../../domain/models";
 import type { OrderService } from "../../services/contracts";
@@ -7,11 +5,12 @@ import { SourceBadge } from "../../components/SourceBadge";
 import { StageLabel } from "../../components/StageLabel";
 import { ErrorState } from "../../components/ErrorState";
 import { toServiceError } from "../../services/errors";
+import { requireProductionProducts } from "../../domain/orderValidation";
 
 export function OrderDetailScreen({ orderId, service, navigate }: { orderId: string; service: OrderService; navigate: (path: string) => void }) {
   const [order, setOrder] = useState<StaffOrder | null>(null);
   const [error, setError] = useState<StaffServiceError | null>(null);
-  useEffect(() => { const controller = new AbortController(); service.getById(orderId, { signal: controller.signal }).then(setOrder).catch((caught) => setError(toServiceError(caught))); return () => controller.abort(); }, [orderId, service]);
+  useEffect(() => { const controller = new AbortController(); service.getById(orderId, { signal: controller.signal }).then(requireProductionProducts).then(setOrder).catch((caught) => { if (!controller.signal.aborted) setError(toServiceError(caught)); }); return () => controller.abort(); }, [orderId, service]);
   if (error) return <ErrorState error={error} onAction={() => navigate("/orders")} />;
   if (!order) return <div className="inline-loading"><span /> Se încarcă detaliile…</div>;
   return (

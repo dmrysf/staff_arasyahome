@@ -82,6 +82,7 @@
 .work-summary dl { display: flex; gap: 25px; margin: 0; }
 .work-summary dl div { display: flex; flex-direction: column; }
 .work-summary dd { order: -1; margin: 0; font-size: 1.45rem; font-weight: 830; }
+.work-summary dd.metric-unavailable { color: var(--muted); }
 .work-summary dt { color: var(--muted); font-size: .7rem; }
 
 .screen-stack { display: grid; gap: 20px; }

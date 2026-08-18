@@ -1,6 +1,32 @@
-import type { Employee } from "../../domain/models";
+import { useEffect, useState } from "react";
+import type { ActivityPage, Employee } from "../../domain/models";
+import type { ActivityService } from "../../services/contracts";
 
-export function HomeScreen({ employee, navigate }: { employee: Employee; navigate: (path: string) => void }) {
+type TodaySummary = ActivityPage["summary"];
+type MetricsState = { status: "loading" } | { status: "loaded"; summary: TodaySummary } | { status: "unavailable" };
+
+export function loadTodaySummary(service: ActivityService, signal?: AbortSignal): Promise<TodaySummary> {
+  return service.listMine({ range: "today" }, { signal }).then((page) => page.summary);
+}
+
+export function formatHomeMetric(value: number | undefined): string {
+  return typeof value === "number" && Number.isFinite(value) ? String(value) : "—";
+}
+
+export function HomeScreen({ employee, activityService, navigate }: { employee: Employee; activityService: ActivityService; navigate: (path: string) => void }) {
+  const [metrics, setMetrics] = useState<MetricsState>({ status: "loading" });
+
+  useEffect(() => {
+    const controller = new AbortController();
+    loadTodaySummary(activityService, controller.signal)
+      .then((summary) => setMetrics({ status: "loaded", summary }))
+      .catch(() => { if (!controller.signal.aborted) setMetrics({ status: "unavailable" }); });
+    return () => controller.abort();
+  }, [activityService]);
+
+  const inProgress = metrics.status === "loaded" ? metrics.summary.inProgress : undefined;
+  const handedOver = metrics.status === "loaded" ? metrics.summary.handedOver : undefined;
+
   return (
     <div className="home-layout">
       <section className="greeting"><p className="eyebrow">{employee.department}</p><h1>Bună, {employee.name.split(" ")[0]}</h1><p>Ești gata pentru următoarea comandă.</p></section>
@@ -9,7 +35,7 @@ export function HomeScreen({ employee, navigate }: { employee: Employee; navigat
         <span className="home-scan-copy"><small>Acțiune principală</small><strong>Scanează<br />comanda</strong><span>Scanează codul QR pentru a prelua sau actualiza comanda.</span></span>
         <span className="home-scan-cta">Deschide camera <b aria-hidden="true">→</b></span>
       </button>
-      <section className="work-summary" aria-labelledby="today-summary"><div><p className="eyebrow" id="today-summary">Astăzi</p><p>Rezumatul tău de lucru</p></div><dl><div><dd>6</dd><dt>În lucru</dt></div><div><dd>12</dd><dt>Predate</dt></div></dl></section>
+      <section className="work-summary" aria-labelledby="today-summary" aria-live="polite"><div><p className="eyebrow" id="today-summary">Astăzi</p><p>{metrics.status === "unavailable" ? "Date indisponibile" : "Rezumatul tău de lucru"}</p></div><dl><div><dd className={metrics.status === "loaded" ? undefined : "metric-unavailable"}>{metrics.status === "loading" ? "…" : formatHomeMetric(inProgress)}</dd><dt>În lucru</dt></div><div><dd className={metrics.status === "loaded" ? undefined : "metric-unavailable"}>{metrics.status === "loading" ? "…" : formatHomeMetric(handedOver)}</dd><dt>Predate</dt></div></dl></section>
     </div>
   );
 }

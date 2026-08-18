@@ -1,8 +1,6 @@
-"use client";
-
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { OrderService } from "../../services/contracts";
-import type { StaffOrder, StaffServiceError } from "../../domain/models";
+import type { ProductionItem, StaffOrder, StaffServiceError } from "../../domain/models";
 import { StaffServiceError as ServiceError } from "../../domain/models";
 import { SourceBadge } from "../../components/SourceBadge";
 import { StageLabel } from "../../components/StageLabel";
@@ -10,6 +8,8 @@ import { ErrorState } from "../../components/ErrorState";
 import { createDuplicateGuard } from "./duplicateGuard";
 import { initialScannerState, scannerReducer } from "./machine";
 import { mapCameraError, toServiceError } from "../../services/errors";
+import { getUsableProductionProducts, requireProductionProducts } from "../../domain/orderValidation";
+import { selectQrDecoder, type QrDecoder } from "./qrDecoder";
 
 type TorchCapabilities = MediaTrackCapabilities & { torch?: boolean };
 type TorchConstraintSet = MediaTrackConstraintSet & { torch?: boolean };
@@ -18,8 +18,7 @@ function requestId() {
   return globalThis.crypto?.randomUUID?.() ?? `staff-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-function ReviewContent({ order }: { order: StaffOrder }) {
-  const item = order.products[0];
+function ReviewContent({ order, item }: { order: StaffOrder; item: ProductionItem }) {
   return (
     <>
       <div className="sheet-handle" />
@@ -37,16 +36,22 @@ export function ScannerScreen({ service, demoMode, navigate, onSessionExpired }:
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const animationRef = useRef<number | null>(null);
-  const detectorRef = useRef<BarcodeDetector | null>(null);
+  const decoderRef = useRef<QrDecoder | null>(null);
+  const cameraAttemptRef = useRef(0);
+  const cameraStartingRef = useRef(false);
   const duplicateGuard = useMemo(() => createDuplicateGuard(), []);
   const submittingRef = useRef(false);
 
   const stopCamera = useCallback(() => {
+    cameraAttemptRef.current += 1;
+    cameraStartingRef.current = false;
     if (animationRef.current != null) cancelAnimationFrame(animationRef.current);
     animationRef.current = null;
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
     if (videoRef.current) videoRef.current.srcObject = null;
+    decoderRef.current?.dispose?.();
+    decoderRef.current = null;
   }, []);
 
   useEffect(() => stopCamera, [stopCamera]);
@@ -58,7 +63,8 @@ export function ScannerScreen({ service, demoMode, navigate, onSessionExpired }:
     dispatch({ type: "CODE_DETECTED", token: normalized });
     dispatch({ type: "RESOLVE_STARTED" });
     try {
-      const order = manual ? await service.lookup(normalized) : await service.resolveQr(normalized);
+      const resolved = manual ? await service.lookup(normalized) : await service.resolveQr(normalized);
+      const order = requireProductionProducts(resolved);
       navigator.vibrate?.(35);
       dispatch({ type: "ORDER_RESOLVED", order });
     } catch (caught) {
@@ -69,8 +75,7 @@ export function ScannerScreen({ service, demoMode, navigate, onSessionExpired }:
   }, [duplicateGuard, onSessionExpired, service, stopCamera]);
 
   useEffect(() => {
-    if (state.status !== "scanning" || typeof BarcodeDetector === "undefined") return;
-    detectorRef.current ??= new BarcodeDetector({ formats: ["qr_code"] });
+    if (state.status !== "scanning" || !decoderRef.current) return;
     let active = true;
     let lastCheck = 0;
     const scanFrame = async (timestamp: number) => {
@@ -78,8 +83,7 @@ export function ScannerScreen({ service, demoMode, navigate, onSessionExpired }:
       if (timestamp - lastCheck > 180 && videoRef.current?.readyState === HTMLMediaElement.HAVE_ENOUGH_DATA) {
         lastCheck = timestamp;
         try {
-          const results = await detectorRef.current?.detect(videoRef.current);
-          const value = results?.[0]?.rawValue;
+          const value = await decoderRef.current?.detect(videoRef.current);
           if (value) { active = false; void resolveCode(value); return; }
         } catch { /* a transient frame decode failure is safe to ignore */ }
       }
@@ -90,18 +94,27 @@ export function ScannerScreen({ service, demoMode, navigate, onSessionExpired }:
   }, [resolveCode, state.status]);
 
   async function startCamera() {
-    if (state.status === "requesting_permission" || state.status === "scanning" || streamRef.current) return;
+    if (cameraStartingRef.current || state.status === "requesting_permission" || state.status === "scanning" || streamRef.current) return;
+    cameraStartingRef.current = true;
+    const attempt = cameraAttemptRef.current + 1;
+    cameraAttemptRef.current = attempt;
     setManualOpen(false);
     duplicateGuard.reset();
     dispatch({ type: "REQUEST_CAMERA" });
     try {
       if (!navigator.mediaDevices?.getUserMedia) throw new ServiceError("CAMERA_UNAVAILABLE");
+      const decoder = await selectQrDecoder();
+      if (!decoder) throw new ServiceError("AUTOMATIC_SCAN_UNAVAILABLE");
+      if (attempt !== cameraAttemptRef.current) { decoder.dispose?.(); return; }
+      decoderRef.current = decoder;
       const stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: "environment" } } });
+      if (attempt !== cameraAttemptRef.current) { stream.getTracks().forEach((track) => track.stop()); return; }
       streamRef.current = stream;
       if (videoRef.current) { videoRef.current.srcObject = stream; await videoRef.current.play(); }
       const track = stream.getVideoTracks()[0];
       const torchSupported = Boolean((track?.getCapabilities?.() as TorchCapabilities | undefined)?.torch);
       dispatch({ type: "CAMERA_READY", torchSupported });
+      cameraStartingRef.current = false;
     } catch (caught) {
       stopCamera();
       const error = caught instanceof ServiceError ? caught : mapCameraError(caught as { name?: string });
@@ -144,6 +157,7 @@ export function ScannerScreen({ service, demoMode, navigate, onSessionExpired }:
   }
 
   const busy = state.status === "submitting";
+  const reviewItem = state.status === "review" ? getUsableProductionProducts(state.order).at(0) : undefined;
 
   return (
     <main className="scanner-screen">
@@ -152,13 +166,14 @@ export function ScannerScreen({ service, demoMode, navigate, onSessionExpired }:
         <div className="camera-fallback" aria-hidden="true" />
         <header className="scanner-toolbar"><button type="button" disabled={busy} onClick={() => { stopCamera(); navigate("/"); }} aria-label="Înapoi la pagina principală">←</button><span>Scanare QR</span>{state.status === "scanning" && state.torchSupported ? <button type="button" className={state.torchOn ? "active" : ""} onClick={toggleTorch} aria-label={state.torchOn ? "Oprește lanterna" : "Pornește lanterna"}>☼</button> : <span />}</header>
         <div className="scanner-target" aria-hidden="true"><i /><i /><i /><i /><span /></div>
-        <div className="scanner-instruction"><strong>{state.status === "requesting_permission" ? "Se deschide camera…" : state.status === "scanning" ? "Aliniază codul QR în cadru" : "Scanează rapid și sigur"}</strong><span>{state.status === "scanning" && typeof BarcodeDetector === "undefined" ? "Introdu codul manual pe acest dispozitiv." : "Camera pornește numai când alegi tu."}</span></div>
+        <div className="scanner-instruction"><strong>{state.status === "requesting_permission" ? "Se deschide camera…" : state.status === "scanning" ? "Aliniază codul QR în cadru" : "Scanează rapid și sigur"}</strong><span>Camera pornește numai când alegi tu.</span></div>
         {state.status === "idle" && !manualOpen && <div className="camera-start"><button className="button button-primary button-large" type="button" onClick={startCamera}>Deschide camera</button>{demoMode && <button className="button button-demo" type="button" onClick={() => resolveCode("arasya:61833")}>Previzualizează scanare demo</button>}<button className="manual-link" type="button" onClick={() => setManualOpen(true)}>Introdu manual numărul / codul comenzii</button></div>}
         {manualOpen && state.status === "idle" && <form className="manual-panel" onSubmit={(event) => { event.preventDefault(); void resolveCode(manualCode, true); }}><div className="sheet-handle" /><label className="field"><span>Număr / cod comandă</span><input inputMode="text" value={manualCode} onChange={(event) => setManualCode(event.target.value)} placeholder="Ex: 61833" /></label><button className="button button-primary" type="submit" disabled={!manualCode.trim()}>Caută comanda</button><button className="button button-link" type="button" onClick={() => setManualOpen(false)}>Anulează</button></form>}
         {state.status === "resolving" && <div className="resolving-card" role="status"><span className="inline-spinner" /><strong>Se verifică comanda…</strong><small>Nu închide această fereastră.</small></div>}
       </div>
 
-      {state.status === "review" && <section className="bottom-sheet review-sheet"><ReviewContent order={state.order} /><button className="button button-primary button-large" type="button" onClick={() => dispatch({ type: "OPEN_CONFIRMATION" })}>{state.order.employeeAllowedAction?.label ?? "Continuă"}<span aria-hidden="true">→</span></button><button className="button button-secondary" type="button" onClick={() => navigate(`/orders/${state.order.id}`)}>Vezi detalii</button><button className="button button-link" type="button" onClick={reset}>Scanează alt cod</button></section>}
+      {state.status === "review" && reviewItem && <section className="bottom-sheet review-sheet"><ReviewContent order={state.order} item={reviewItem} /><button className="button button-primary button-large" type="button" onClick={() => dispatch({ type: "OPEN_CONFIRMATION" })}>{state.order.employeeAllowedAction?.label ?? "Continuă"}<span aria-hidden="true">→</span></button><button className="button button-secondary" type="button" onClick={() => navigate(`/orders/${state.order.id}`)}>Vezi detalii</button><button className="button button-link" type="button" onClick={reset}>Scanează alt cod</button></section>}
+      {state.status === "review" && !reviewItem && <section className="bottom-sheet error-sheet"><ErrorState error={new ServiceError("ORDER_PRODUCTS_UNAVAILABLE")} compact onAction={reset} /></section>}
 
       {(state.status === "confirming" || state.status === "submitting") && <section className="confirmation-layer" role="dialog" aria-modal="true" aria-labelledby="confirmation-title"><div className="confirmation-card"><span className="state-icon confirm-icon" aria-hidden="true">?</span><p className="eyebrow">Confirmare necesară</p><h2 id="confirmation-title">Confirmați preluarea?</h2><p>Comanda #{state.order.orderNumber}</p><div className="confirm-transition"><StageLabel stage={state.order.currentStage} muted /><span aria-hidden="true">↓</span>{state.order.nextStage && <StageLabel stage={state.order.nextStage} />}</div><div className="confirmation-actions"><button className="button button-secondary" type="button" disabled={busy} onClick={() => dispatch({ type: "CANCEL_CONFIRMATION" })}>Anulează</button><button className="button button-primary" type="button" disabled={busy} onClick={submit}>{busy ? "Se procesează…" : "Confirmă"}</button></div>{busy && <small className="server-note">Așteptăm confirmarea serverului.</small>}</div></section>}
 

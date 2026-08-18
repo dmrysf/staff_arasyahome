@@ -1,5 +1,3 @@
-"use client";
-
 import { useState, type FormEvent } from "react";
 import type { Session } from "../../services/contracts";
 import { StaffServiceError } from "../../domain/models";
@@ -33,7 +31,6 @@ export function LoginScreen({ demoMode, onLogin }: { demoMode: boolean; onLogin:
         <label className="field"><span>Parolă</span><input autoComplete="current-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="••••••••" /></label>
         {error && <p className="form-error" role="alert">{error}</p>}
         <button className="button button-primary button-large" type="submit" disabled={submitting}>{submitting ? "Se autentifică…" : "Autentificare"}<span aria-hidden="true">→</span></button>
-        <button className="button button-link" type="button">Am uitat parola</button>
       </form>
       <p className="login-footnote">Aplicație internă · Arasya Home</p>
     </main>

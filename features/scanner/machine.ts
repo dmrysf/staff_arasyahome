@@ -32,7 +32,7 @@ export type ScannerEvent =
 function recoveryFor(error: StaffServiceError): "scan" | "manual" | "reload" | "login" {
   if (error.code === "SESSION_EXPIRED") return "login";
   if (error.code === "ORDER_CHANGED") return "reload";
-  if (["CAMERA_PERMISSION_DENIED", "CAMERA_UNAVAILABLE", "NO_CAMERA_DEVICE"].includes(error.code)) return "manual";
+  if (["CAMERA_PERMISSION_DENIED", "CAMERA_UNAVAILABLE", "NO_CAMERA_DEVICE", "AUTOMATIC_SCAN_UNAVAILABLE"].includes(error.code)) return "manual";
   return "scan";
 }
 

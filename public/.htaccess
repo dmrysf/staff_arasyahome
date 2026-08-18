@@ -1,0 +1,19 @@
+Options -MultiViews
+RewriteEngine On
+
+# Hosting and future same-origin API paths must never resolve to the SPA shell.
+RewriteRule ^(?:\.well-known|api)(?:/|$) - [L]
+
+# Preserve real files and directories, including Vite assets and PWA files.
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^ - [L]
+
+# Client routes are interpreted by StaffApp after index.html loads.
+RewriteRule ^ index.html [L]
+
+<IfModule mod_headers.c>
+  <Files "index.html">
+    Header set Cache-Control "no-cache, no-store, must-revalidate"
+  </Files>
+</IfModule>
