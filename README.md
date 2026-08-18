@@ -29,7 +29,7 @@ The authoritative pre-deployment gate is:
 pnpm verify
 ```
 
-It runs typecheck, lint, tests, production build, and static artifact verification in fail-fast order. See [`docs/cpanel-deployment.md`](docs/cpanel-deployment.md) for cPanel deployment and rollback, and [`docs/staff-foundation-v1.md`](docs/staff-foundation-v1.md) for architecture decisions.
+It runs typecheck, lint, tests, production build, and static artifact verification in fail-fast order. See [`docs/cpanel-deployment.md`](docs/cpanel-deployment.md) for cPanel deployment and rollback, [`docs/staff-foundation-v1.md`](docs/staff-foundation-v1.md) for architecture decisions, and [`docs/staff-ui-system.md`](docs/staff-ui-system.md) for the operational UI and employee-scoped order rules.
 
 ## Production delivery
 

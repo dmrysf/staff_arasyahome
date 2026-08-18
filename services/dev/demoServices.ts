@@ -1,4 +1,5 @@
 import { StaffServiceError } from "../../domain/models";
+import { isEmployeeRelevantOrder } from "../../domain/orderRelation";
 import { demoActivities, demoEmployee, demoOrders } from "../../mocks/fixtures";
 import type { ActivityService, AuthService, EmployeeService, OrderService, ServiceBundle, Session } from "../contracts";
 
@@ -38,7 +39,7 @@ function resolveDemoCode(rawCode: string) {
 const orderService: OrderService = {
   async resolveQr(token) { return resolveDemoCode(token); },
   async lookup(code) { return resolveDemoCode(code); },
-  async listMine() { return clone(orders); },
+  async listMine() { return clone(orders.filter((order) => isEmployeeRelevantOrder(order, demoEmployee.employeeUuid))); },
   async getById(id) {
     const order = orders.find((item) => item.id === id);
     if (!order) throw new StaffServiceError("ORDER_NOT_FOUND");
@@ -55,6 +56,11 @@ const orderService: OrderService = {
       currentStage: current.nextStage,
       nextStage: undefined,
       employeeAllowedAction: undefined,
+      employeeRelation: {
+        employeeUuid: demoEmployee.employeeUuid,
+        type: current.employeeAllowedAction.id === "handover" ? "handover_out" as const : "claimed" as const,
+        lastActionAt: new Date().toISOString(),
+      },
       acceptedAt: current.acceptedAt ?? new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       version: current.version + 1,

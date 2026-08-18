@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { ActivityPage, Employee } from "../../domain/models";
 import type { ActivityService } from "../../services/contracts";
+import { AppIcon } from "../../components/icons/AppIcon";
 
 type TodaySummary = ActivityPage["summary"];
 type MetricsState = { status: "loading" } | { status: "loaded"; summary: TodaySummary } | { status: "unavailable" };
@@ -29,13 +30,13 @@ export function HomeScreen({ employee, activityService, navigate }: { employee: 
 
   return (
     <div className="home-layout">
-      <section className="greeting"><p className="eyebrow">{employee.department}</p><h1>Bună, {employee.name.split(" ")[0]}</h1><p>Ești gata pentru următoarea comandă.</p></section>
-      <button className="home-scan" type="button" onClick={() => navigate("/scan")}>
-        <span className="scan-corners" aria-hidden="true"><i /><i /><i /><i /></span>
-        <span className="home-scan-copy"><small>Acțiune principală</small><strong>Scanează<br />comanda</strong><span>Scanează codul QR pentru a prelua sau actualiza comanda.</span></span>
-        <span className="home-scan-cta">Deschide camera <b aria-hidden="true">→</b></span>
+      <section className="greeting"><p>{employee.department}</p><h1>Bună, {employee.name.split(" ")[0]}.</h1></section>
+      <button className="home-scan" type="button" onClick={() => navigate("/scan")} aria-label="Scanează o comandă">
+        <span className="home-scan-icon" aria-hidden="true"><AppIcon name="scan" size={34} /></span>
+        <span className="home-scan-copy"><strong>Scanează comanda</strong><span>Apropie codul QR pentru a începe.</span></span>
+        <AppIcon name="arrow" size={24} />
       </button>
-      <section className="work-summary" aria-labelledby="today-summary" aria-live="polite"><div><p className="eyebrow" id="today-summary">Astăzi</p><p>{metrics.status === "unavailable" ? "Date indisponibile" : "Rezumatul tău de lucru"}</p></div><dl><div><dd className={metrics.status === "loaded" ? undefined : "metric-unavailable"}>{metrics.status === "loading" ? "…" : formatHomeMetric(inProgress)}</dd><dt>În lucru</dt></div><div><dd className={metrics.status === "loaded" ? undefined : "metric-unavailable"}>{metrics.status === "loading" ? "…" : formatHomeMetric(handedOver)}</dd><dt>Predate</dt></div></dl></section>
+      <section className="work-summary" aria-labelledby="today-summary" aria-live="polite"><p id="today-summary">{metrics.status === "unavailable" ? "Activitate indisponibilă" : "Astăzi"}</p><dl><div><dd className={metrics.status === "loaded" ? undefined : "metric-unavailable"}>{metrics.status === "loading" ? "…" : formatHomeMetric(inProgress)}</dd><dt>În lucru</dt></div><div><dd className={metrics.status === "loaded" ? undefined : "metric-unavailable"}>{metrics.status === "loading" ? "…" : formatHomeMetric(handedOver)}</dd><dt>Predate</dt></div></dl></section>
     </div>
   );
 }

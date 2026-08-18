@@ -27,6 +27,20 @@ export type ProductionItem = {
   quantity: number;
 };
 
+export type EmployeeOrderRelationType =
+  | "claimed"
+  | "assigned"
+  | "updated"
+  | "handover_in"
+  | "handover_out"
+  | "completed";
+
+export type EmployeeOrderRelation = {
+  employeeUuid: string;
+  type: EmployeeOrderRelationType;
+  lastActionAt: string;
+};
+
 export type StaffOrder = {
   id: string;
   source: OrderSource;
@@ -36,6 +50,7 @@ export type StaffOrder = {
   employeeAllowedAction?: { id: string; label: string };
   products: ProductionItem[];
   productionNotes?: string;
+  employeeRelation?: EmployeeOrderRelation;
   acceptedAt?: string;
   updatedAt: string;
   status: "in_progress" | "handed_over" | "unavailable";

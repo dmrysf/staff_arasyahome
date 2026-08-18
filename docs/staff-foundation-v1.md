@@ -24,6 +24,8 @@ The scanner remains a discriminated-union reducer with controlled states from `i
 
 `AuthService`, `EmployeeService`, `OrderService`, and `ActivityService` remain the frontend boundary. The production adapter preserves credentialed requests, explicit configuration failure, offline detection, a 12-second timeout, and typed session, authorization, and version-conflict errors. Home independently requests the employee's `today` activity summary; unavailable metrics render a neutral state and never block Scan.
 
+`OrderService.listMine()` means orders with a direct operational relationship to the authenticated employee, not a department or production-stage queue. Preview fixtures carry a compact relation summary and are filtered by the Preview employee UUID. Production continues to call `GET /orders/mine`; the future backend must derive identity from the authenticated session and enforce the scope server-side. The browser must never choose an employee UUID to broaden this result.
+
 Order products are checked through a small typed guard. Scanner resolution and order detail turn empty or unusable products into `ORDER_PRODUCTS_UNAVAILABLE`; order cards use a neutral fallback rather than unsafe array access.
 
 ## Scanner strategy

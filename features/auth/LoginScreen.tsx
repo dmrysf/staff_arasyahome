@@ -24,9 +24,9 @@ export function LoginScreen({ mode, onLogin }: { mode: StaffRuntimeMode; onLogin
 
   return (
     <main className="login-page">
-      <div className="login-brand"><span className="brand-mark">A</span><span>Arasya <b>Staff</b></span></div>
+      <div className="login-brand" aria-label="Arasya"><span className="brand-mark">A</span><strong>ARASYA</strong></div>
       <form className="login-card" onSubmit={handleSubmit} noValidate>
-        <div className="login-heading"><p className="eyebrow">Bine ai revenit</p><h1>Intră în spațiul tău de lucru.</h1><p>Operațiuni rapide, clare și sigure.</p></div>
+        <div className="login-heading"><h1>Bine ai revenit.</h1><p>Autentifică-te pentru a continua.</p></div>
         {mode === "demo" && <div className="demo-notice" role="note"><span>Demo</span> Pentru previzualizare locală, folosește orice valori completate.</div>}
         {mode === "preview" && <div className="preview-notice" role="note"><span>Mod previzualizare</span> Datele afișate sunt pentru testare.</div>}
         <label className="field"><span>Nume utilizator</span><input autoComplete="username" inputMode="text" value={username} onChange={(event) => setUsername(event.target.value)} placeholder="nume.utilizator" /></label>

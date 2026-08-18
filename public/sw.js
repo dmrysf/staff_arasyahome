@@ -1,4 +1,4 @@
-const CACHE_NAME = "arasya-staff-static-v2";
+const CACHE_NAME = "arasya-staff-static-v3";
 const SAFE_STATIC_ASSETS = ["/manifest.webmanifest", "/favicon.svg"];
 
 self.addEventListener("install", (event) => {

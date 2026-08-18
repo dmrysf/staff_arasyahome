@@ -17,6 +17,7 @@ export interface EmployeeService {
 export interface OrderService {
   resolveQr(token: string, options?: { signal?: AbortSignal }): Promise<StaffOrder>;
   lookup(code: string, options?: { signal?: AbortSignal }): Promise<StaffOrder>;
+  /** Returns only orders with a direct relationship to the authenticated employee. Production enforcement belongs to the server. */
   listMine(options?: { signal?: AbortSignal }): Promise<StaffOrder[]>;
   getById(id: string, options?: { signal?: AbortSignal }): Promise<StaffOrder>;
   confirmStageTransition(

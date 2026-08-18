@@ -1,6 +1,7 @@
 import { StaffServiceError } from "../../domain/models";
 import type { ActivityEntry, ActivityPage, StaffOrder } from "../../domain/models";
-import { previewActivityPages, previewEmployee, previewOrders } from "../../mocks/previewFixtures";
+import { isEmployeeRelevantOrder } from "../../domain/orderRelation";
+import { previewActivityPages, previewEmployee, previewOrderDatabase } from "../../mocks/previewFixtures";
 import type { AuthService, EmployeeService, OrderService, ServiceBundle, Session } from "../contracts";
 
 export const PREVIEW_SESSION_KEY = "arasya_staff_preview_session";
@@ -23,7 +24,7 @@ export function createPreviewServices(options: PreviewServicesOptions = {}): Ser
   const storage = options.storage ?? browserSessionStorage();
   const now = options.now ?? Date.now;
   let memorySession: Session | null = null;
-  let orders = clone(previewOrders);
+  let orders = clone(previewOrderDatabase);
   let activityPages = clone(previewActivityPages);
   const idempotentTransitions = new Map<string, { orderId: string; result: StaffOrder }>();
 
@@ -38,7 +39,7 @@ export function createPreviewServices(options: PreviewServicesOptions = {}): Ser
   }
 
   function resetOperationalState() {
-    orders = clone(previewOrders);
+    orders = clone(previewOrderDatabase);
     activityPages = clone(previewActivityPages);
     idempotentTransitions.clear();
   }
@@ -139,7 +140,7 @@ export function createPreviewServices(options: PreviewServicesOptions = {}): Ser
   const orderService: OrderService = {
     async resolveQr(token) { return resolvePreviewCode(token); },
     async lookup(code) { return resolvePreviewCode(code); },
-    async listMine() { return clone(orders); },
+    async listMine() { return clone(orders.filter((order) => isEmployeeRelevantOrder(order, previewEmployee.employeeUuid))); },
     async getById(id) {
       const order = orders.find((item) => item.id === id);
       if (!order) throw new StaffServiceError("ORDER_NOT_FOUND");
@@ -161,6 +162,11 @@ export function createPreviewServices(options: PreviewServicesOptions = {}): Ser
         currentStage: current.nextStage,
         nextStage: undefined,
         employeeAllowedAction: undefined,
+        employeeRelation: {
+          employeeUuid: previewEmployee.employeeUuid,
+          type: current.employeeAllowedAction.id === "handover" ? "handover_out" : "claimed",
+          lastActionAt: new Date(now()).toISOString(),
+        },
         acceptedAt: current.acceptedAt ?? new Date(now()).toISOString(),
         updatedAt: new Date(now()).toISOString(),
         status: current.employeeAllowedAction.id === "handover" ? "handed_over" : current.status,
