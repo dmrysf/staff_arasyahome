@@ -16,7 +16,7 @@ require_command() {
 
 repository_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 dist_path="$repository_root/dist"
-deploy_input="${STAFF_DEPLOY_PATH:-$HOME/public_html/staff.arasyahome.ro}"
+deploy_input="${STAFF_DEPLOY_PATH:-$HOME/staff.arasyahome.ro}"
 
 require_command rsync
 
