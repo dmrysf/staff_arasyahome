@@ -1,0 +1,15 @@
+{
+  "name": "Arasya Staff",
+  "short_name": "Staff",
+  "description": "Operațiuni rapide și sigure pentru echipa Arasya.",
+  "start_url": "/login",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0b0d0f",
+  "theme_color": "#0b0d0f",
+  "lang": "ro",
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
