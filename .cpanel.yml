@@ -1,4 +1,4 @@
 ---
 deployment:
   tasks:
-    - /bin/bash ./scripts/cpanel-deploy.sh
+    - STAFF_DEPLOY_PATH="$HOME/staff.arasyahome.ro" /bin/bash ./scripts/cpanel-deploy.sh
