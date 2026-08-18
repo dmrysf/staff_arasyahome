@@ -133,6 +133,6 @@ test("manual lookup remains available when no automatic QR decoder exists", asyn
 });
 
 test("production can never enable the demo adapter from the environment flag", () => {
-  assert.equal(resolveRuntimeConfig({ isDevelopment: false, demoFlag: "true", apiBaseUrl: "" }).demoMode, false);
-  assert.equal(resolveRuntimeConfig({ isDevelopment: true, demoFlag: "true", apiBaseUrl: "" }).demoMode, true);
+  assert.equal(resolveRuntimeConfig({ isDevelopment: false, isProduction: true, demoFlag: "true", apiBaseUrl: "" }).mode, "production");
+  assert.equal(resolveRuntimeConfig({ isDevelopment: true, isProduction: false, demoFlag: "true", apiBaseUrl: "" }).mode, "demo");
 });

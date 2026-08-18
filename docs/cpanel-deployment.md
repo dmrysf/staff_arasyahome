@@ -23,9 +23,9 @@ cPanel checks out `deploy`, validates the static release, and synchronizes only 
 
 ## Build-time configuration
 
-The production workflow always sets `VITE_STAFF_DEMO_MODE=false`. When the real Staff API exists, configure its public base URL as the GitHub repository variable `VITE_STAFF_API_BASE_URL` before running the workflow. The value is embedded at build time; a cPanel `.env` cannot change an already-built Vite release.
+The production workflow always sets `VITE_STAFF_DEMO_MODE=false` and forwards the GitHub repository variable `VITE_STAFF_PREVIEW_MODE`. Only the exact value `true` enables the temporary PreviewServices build; a missing or different value selects strict production. When the real Staff API exists, configure its public base URL as the repository variable `VITE_STAFF_API_BASE_URL` before running the workflow. These values are embedded at build time; a cPanel `.env` cannot change an already-built Vite release.
 
-An API base URL is public frontend configuration, not a secret. Never place credentials, tokens, private keys, or other secrets in a `VITE_*` value because Vite includes those values in browser JavaScript. Until the API exists, the current explicit configuration-error behavior remains intentional.
+An API base URL is public frontend configuration, not a secret. Never place credentials, tokens, private keys, or other secrets in a `VITE_*` value because Vite includes those values in browser JavaScript. In strict production, a missing API URL retains the intentional configuration error and never activates Preview Mode. See [`preview-mode.md`](preview-mode.md) for the temporary preview boundary and required server-level access recommendation.
 
 ## One-time cPanel branch change
 
@@ -45,7 +45,7 @@ If the existing cPanel Git registration cannot safely switch branches, remove on
 
 `.cpanel.yml` invokes only `scripts/cpanel-deploy.sh`. The script requires Bash, standard Unix utilities, and `rsync`. Before any write, it confirms the complete static release structure, JavaScript and CSS bundles, and a safe destination. A missing or malformed release exits non-zero before `rsync --delete` can touch production.
 
-The default destination is `$HOME/public_html/staff.arasyahome.ro`. If the real Staff document root differs, set `STAFF_DEPLOY_PATH` in the cPanel deployment environment to its absolute path. The script rejects `/`, `$HOME`, `$HOME/public_html`, the repository, and `dist/`. It preserves `.well-known/` and `cgi-bin/`.
+The confirmed Staff document root is `$HOME/staff.arasyahome.ro`. `.cpanel.yml` passes that exact `STAFF_DEPLOY_PATH` to the deployment script, whose safe fallback is the same path. The script rejects `/`, `$HOME`, `$HOME/public_html`, the repository, and `dist/`. It preserves `.well-known/` and `cgi-bin/`.
 
 The deployment can be validated without modifying the document root:
 
@@ -62,8 +62,8 @@ pwd
 git branch --show-current
 git log -1 --oneline
 ls -lah dist
-ls -lah "$HOME/public_html/staff.arasyahome.ro"
-realpath "$HOME/public_html/staff.arasyahome.ro"
+ls -lah "$HOME/staff.arasyahome.ro"
+realpath "$HOME/staff.arasyahome.ro"
 ```
 
 Use the `realpath` check only when that command is available. The active Git branch must be `deploy`; `dist/release.json` identifies the source commit and build time currently checked out.

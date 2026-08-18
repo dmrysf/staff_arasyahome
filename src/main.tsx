@@ -12,7 +12,9 @@ if (!root) throw new Error("Elementul rădăcină al aplicației lipsește.");
 
 const config = resolveRuntimeConfig({
   isDevelopment: import.meta.env.DEV,
+  isProduction: import.meta.env.PROD,
   demoFlag: import.meta.env.VITE_STAFF_DEMO_MODE,
+  previewFlag: import.meta.env.VITE_STAFF_PREVIEW_MODE,
   apiBaseUrl: import.meta.env.VITE_STAFF_API_BASE_URL,
 });
 

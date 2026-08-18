@@ -18,6 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       VITE_STAFF_DEMO_MODE: "false"
+      VITE_STAFF_PREVIEW_MODE: ${{ vars.VITE_STAFF_PREVIEW_MODE }}
       VITE_STAFF_API_BASE_URL: ${{ vars.VITE_STAFF_API_BASE_URL }}
     steps:
       - name: Check out main
@@ -40,10 +41,13 @@ jobs:
       - name: Add release metadata
         shell: bash
         run: |
-          printf '{\n  "commit": "%s",\n  "builtAt": "%s",\n  "version": "%s"\n}\n' \
+          preview=false
+          if [[ "${VITE_STAFF_PREVIEW_MODE:-}" == "true" ]]; then preview=true; fi
+          printf '{\n  "commit": "%s",\n  "builtAt": "%s",\n  "version": "%s",\n  "preview": %s\n}\n' \
             "$GITHUB_SHA" \
             "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             "$(node -p "require('./package.json').version")" \
+            "$preview" \
             > dist/release.json
           test -s dist/release.json
 

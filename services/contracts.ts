@@ -1,4 +1,5 @@
 import type { ActivityPage, Employee, StaffOrder } from "../domain/models";
+import type { StaffRuntimeMode } from "../src/runtimeConfig";
 
 export type Session = { employee: Employee; expiresAt: string };
 
@@ -34,5 +35,5 @@ export type ServiceBundle = {
   employee: EmployeeService;
   orders: OrderService;
   activity: ActivityService;
-  mode: "demo" | "production";
+  mode: StaffRuntimeMode;
 };

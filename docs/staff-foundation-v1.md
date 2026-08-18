@@ -1,4 +1,4 @@
-# Arasya Staff — Foundation V1.2
+# Arasya Staff — Foundation V1.3
 
 ## Architecture and stack
 
@@ -32,11 +32,11 @@ Camera permission is requested only after an employee tap. The environment-facin
 
 The scanner consumes a `QrDecoder` contract. `NativeBarcodeDetectorDecoder` is the preferred QR-only fast path and is reused throughout a scan session. `loadFallbackQrDecoder()` is the single lazy integration point for a future package; it currently returns unavailable, so unsupported devices receive a Romanian explanation and continue through manual lookup. No fallback QR dependency is bundled.
 
-## Environment and demo mode
+## Runtime modes
 
-`VITE_STAFF_DEMO_MODE=true` enables the demo adapter only when `import.meta.env.DEV` is also true. `VITE_STAFF_API_BASE_URL` configures the production adapter. Fixtures stay under `mocks` and `services/dev`. A production build cannot activate demo mode from the flag alone and never falls back to fixtures when the API URL is missing.
+Runtime configuration resolves one explicit mode: `demo`, `preview`, or `production`. `VITE_STAFF_DEMO_MODE=true` enables the demo adapter only when `import.meta.env.DEV` is also true. `VITE_STAFF_PREVIEW_MODE=true` enables the separate PreviewServices adapter only in a production build. All other production builds select the HTTP production adapter; a missing API URL remains a `CONFIGURATION_ERROR` and never activates fixtures.
 
-No passwords, order payloads, sessions, or mutation state are persisted in browser storage. Demo QR/order codes include `61833`, `61829`, `B2B-1048`, and `arasya:61833`.
+Preview Mode exists only for temporary UI/UX validation. It persists a non-sensitive eight-hour expiry marker in `sessionStorage` so a preview session can survive a normal refresh. It never persists passwords, credentials, tokens, order payloads, or mutation state. Preview orders and activity are fictional and remain in memory; production services never read the preview marker. Demo and preview QR/order codes include `61833`, `61829`, `B2B-1048`, and `arasya:61833`.
 
 ## PWA, performance, and safety
 
@@ -46,4 +46,4 @@ The service worker caches only the manifest and icon with network-first refresh.
 
 Production builds run exclusively in GitHub Actions from committed `main` source and the frozen pnpm lockfile. A successful verification publishes the static release to the generated `deploy` branch. cPanel consumes that branch and performs static validation plus `rsync` only; the hosting shell requires no Node toolchain.
 
-No Trendhome, OutletPerdele, WooCommerce, B2B, Manager Control, HR, attendance, transfer backend, or real Staff API was added in V1.2. The existing HTTP contracts remain ready for the backend sprint.
+No Trendhome, OutletPerdele, WooCommerce, B2B, Manager Control, HR, attendance, transfer backend, or real Staff API was added in V1.3. Preview transitions affect only the adapter's current in-memory fixture state. The existing HTTP contracts remain ready for the backend sprint.

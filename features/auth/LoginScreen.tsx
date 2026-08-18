@@ -1,8 +1,9 @@
 import { useState, type FormEvent } from "react";
 import type { Session } from "../../services/contracts";
 import { StaffServiceError } from "../../domain/models";
+import type { StaffRuntimeMode } from "../../src/runtimeConfig";
 
-export function LoginScreen({ demoMode, onLogin }: { demoMode: boolean; onLogin: (input: { username: string; password: string }) => Promise<Session> }) {
+export function LoginScreen({ mode, onLogin }: { mode: StaffRuntimeMode; onLogin: (input: { username: string; password: string }) => Promise<Session> }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -26,7 +27,8 @@ export function LoginScreen({ demoMode, onLogin }: { demoMode: boolean; onLogin:
       <div className="login-brand"><span className="brand-mark">A</span><span>Arasya <b>Staff</b></span></div>
       <form className="login-card" onSubmit={handleSubmit} noValidate>
         <div className="login-heading"><p className="eyebrow">Bine ai revenit</p><h1>Intră în spațiul tău de lucru.</h1><p>Operațiuni rapide, clare și sigure.</p></div>
-        {demoMode && <div className="demo-notice" role="note"><span>Demo</span> Pentru previzualizare, folosește orice valori necompletate anterior.</div>}
+        {mode === "demo" && <div className="demo-notice" role="note"><span>Demo</span> Pentru previzualizare locală, folosește orice valori completate.</div>}
+        {mode === "preview" && <div className="preview-notice" role="note"><span>Mod previzualizare</span> Datele afișate sunt pentru testare.</div>}
         <label className="field"><span>Nume utilizator</span><input autoComplete="username" inputMode="text" value={username} onChange={(event) => setUsername(event.target.value)} placeholder="nume.utilizator" /></label>
         <label className="field"><span>Parolă</span><input autoComplete="current-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="••••••••" /></label>
         {error && <p className="form-error" role="alert">{error}</p>}

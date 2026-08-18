@@ -10,6 +10,7 @@ import { initialScannerState, scannerReducer } from "./machine";
 import { mapCameraError, toServiceError } from "../../services/errors";
 import { getUsableProductionProducts, requireProductionProducts } from "../../domain/orderValidation";
 import { selectQrDecoder, type QrDecoder } from "./qrDecoder";
+import type { StaffRuntimeMode } from "../../src/runtimeConfig";
 
 type TorchCapabilities = MediaTrackCapabilities & { torch?: boolean };
 type TorchConstraintSet = MediaTrackConstraintSet & { torch?: boolean };
@@ -29,7 +30,7 @@ function ReviewContent({ order, item }: { order: StaffOrder; item: ProductionIte
   );
 }
 
-export function ScannerScreen({ service, demoMode, navigate, onSessionExpired }: { service: OrderService; demoMode: boolean; navigate: (path: string) => void; onSessionExpired: () => void }) {
+export function ScannerScreen({ service, mode, navigate, onSessionExpired }: { service: OrderService; mode: StaffRuntimeMode; navigate: (path: string) => void; onSessionExpired: () => void }) {
   const [state, dispatch] = useReducer(scannerReducer, initialScannerState);
   const [manualOpen, setManualOpen] = useState(false);
   const [manualCode, setManualCode] = useState("");
@@ -167,7 +168,7 @@ export function ScannerScreen({ service, demoMode, navigate, onSessionExpired }:
         <header className="scanner-toolbar"><button type="button" disabled={busy} onClick={() => { stopCamera(); navigate("/"); }} aria-label="Înapoi la pagina principală">←</button><span>Scanare QR</span>{state.status === "scanning" && state.torchSupported ? <button type="button" className={state.torchOn ? "active" : ""} onClick={toggleTorch} aria-label={state.torchOn ? "Oprește lanterna" : "Pornește lanterna"}>☼</button> : <span />}</header>
         <div className="scanner-target" aria-hidden="true"><i /><i /><i /><i /><span /></div>
         <div className="scanner-instruction"><strong>{state.status === "requesting_permission" ? "Se deschide camera…" : state.status === "scanning" ? "Aliniază codul QR în cadru" : "Scanează rapid și sigur"}</strong><span>Camera pornește numai când alegi tu.</span></div>
-        {state.status === "idle" && !manualOpen && <div className="camera-start"><button className="button button-primary button-large" type="button" onClick={startCamera}>Deschide camera</button>{demoMode && <button className="button button-demo" type="button" onClick={() => resolveCode("arasya:61833")}>Previzualizează scanare demo</button>}<button className="manual-link" type="button" onClick={() => setManualOpen(true)}>Introdu manual numărul / codul comenzii</button></div>}
+        {state.status === "idle" && !manualOpen && <div className="camera-start"><button className="button button-primary button-large" type="button" onClick={startCamera}>Deschide camera</button>{mode === "demo" && <button className="button button-demo" type="button" onClick={() => resolveCode("arasya:61833")}>Previzualizează scanare demo</button>}{mode === "preview" && <button className="button button-preview" type="button" onClick={() => resolveCode("arasya:61833")}>Simulează scanarea</button>}<button className="manual-link" type="button" onClick={() => setManualOpen(true)}>Introdu manual numărul / codul comenzii</button></div>}
         {manualOpen && state.status === "idle" && <form className="manual-panel" onSubmit={(event) => { event.preventDefault(); void resolveCode(manualCode, true); }}><div className="sheet-handle" /><label className="field"><span>Număr / cod comandă</span><input inputMode="text" value={manualCode} onChange={(event) => setManualCode(event.target.value)} placeholder="Ex: 61833" /></label><button className="button button-primary" type="submit" disabled={!manualCode.trim()}>Caută comanda</button><button className="button button-link" type="button" onClick={() => setManualOpen(false)}>Anulează</button></form>}
         {state.status === "resolving" && <div className="resolving-card" role="status"><span className="inline-spinner" /><strong>Se verifică comanda…</strong><small>Nu închide această fereastră.</small></div>}
       </div>
