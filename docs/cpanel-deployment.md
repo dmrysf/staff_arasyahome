@@ -1,45 +1,75 @@
-# Arasya Staff — cPanel deployment
+# Arasya Staff — GitHub build and cPanel deployment
 
-## Runtime model
+## Delivery model
 
-The repository is built with Node and pnpm, but production is static. Apache serves only the verified contents of `dist/`; no Node daemon, Passenger, PM2, worker runtime, PHP frontend, or background process is required after deployment.
+`main` is the source branch. On every push to `main`, **Staff Build & Publish** runs on GitHub Actions with Node 24 and the repository's pinned pnpm version. It installs from `pnpm-lock.yaml`, runs the complete verification gate, builds `dist/`, adds public `release.json` metadata, and publishes a generated `deploy` branch.
 
-## Server requirements
+The `deploy` branch contains only:
 
-- Node 22.13.0 or newer
-- Corepack available on `PATH`
-- `rsync` available on `PATH`
-- Apache `mod_rewrite`; `mod_headers` is optional
-- the repository checked out outside every public document root
-
-The pinned package manager is `pnpm@11.19.0`. Deployment aborts if a prerequisite, frozen-lockfile install, quality gate, build, or artifact check fails.
-
-## Configuration
-
-The default destination is `$HOME/public_html/staff.arasyahome.ro`. Override it only when cPanel uses a different Staff subdomain root:
-
-```sh
-export STAFF_DEPLOY_PATH="$HOME/public_html/staff.arasyahome.ro"
+```text
+.cpanel.yml
+scripts/cpanel-deploy.sh
+dist/index.html
+dist/.htaccess
+dist/assets/...
+dist/manifest.webmanifest
+dist/sw.js
+dist/favicon.svg
+dist/og.png
+dist/release.json
 ```
 
-Set `VITE_STAFF_API_BASE_URL` in the cPanel deployment environment when the external Staff API becomes available. Never configure demo mode for production; production builds ignore the demo flag regardless.
+cPanel checks out `deploy`, validates the static release, and synchronizes only `dist/` into the Staff document root. cPanel never installs dependencies, runs tests, or builds the application. Apache needs no Node, Corepack, pnpm, Passenger, PM2, or application server.
 
-## Deployment
+## Build-time configuration
 
-`.cpanel.yml` calls `scripts/cpanel-deploy.sh`. The script validates the destination, installs from the frozen lockfile, runs `pnpm verify`, and only then synchronizes `dist/`. It removes stale application assets while preserving `.well-known/` and `cgi-bin/`.
+The production workflow always sets `VITE_STAFF_DEMO_MODE=false`. When the real Staff API exists, configure its public base URL as the GitHub repository variable `VITE_STAFF_API_BASE_URL` before running the workflow. The value is embedded at build time; a cPanel `.env` cannot change an already-built Vite release.
 
-Validate the complete build without touching the web root:
+An API base URL is public frontend configuration, not a secret. Never place credentials, tokens, private keys, or other secrets in a `VITE_*` value because Vite includes those values in browser JavaScript. Until the API exists, the current explicit configuration-error behavior remains intentional.
+
+## One-time cPanel branch change
+
+1. Push the V1.2 source commit to `main`.
+2. Wait for **GitHub Actions → Staff Build & Publish** to finish successfully.
+3. Confirm the `deploy` branch exists on GitHub.
+4. Before the first release under this model, back up the current Staff document root if it contains anything valuable.
+5. In **cPanel → Git Version Control**, update remote references and make the deployment checkout use the `deploy` branch.
+6. Select **Update from Remote**.
+7. Select **Deploy HEAD Commit**.
+8. Confirm the Staff document root contains `index.html`, `.htaccess`, `assets/`, `manifest.webmanifest`, and `sw.js`.
+9. Visit [https://staff.arasyahome.ro](https://staff.arasyahome.ro).
+
+If the existing cPanel Git registration cannot safely switch branches, remove only that cPanel Git registration/repository checkout after preserving anything valuable, then create a fresh cPanel Git clone of this same GitHub repository on the `deploy` branch. Do not delete the GitHub repository or automatically delete production files.
+
+## Static deployment behavior
+
+`.cpanel.yml` invokes only `scripts/cpanel-deploy.sh`. The script requires Bash, standard Unix utilities, and `rsync`. Before any write, it confirms the complete static release structure, JavaScript and CSS bundles, and a safe destination. A missing or malformed release exits non-zero before `rsync --delete` can touch production.
+
+The default destination is `$HOME/public_html/staff.arasyahome.ro`. If the real Staff document root differs, set `STAFF_DEPLOY_PATH` in the cPanel deployment environment to its absolute path. The script rejects `/`, `$HOME`, `$HOME/public_html`, the repository, and `dist/`. It preserves `.well-known/` and `cgi-bin/`.
+
+The deployment can be validated without modifying the document root:
 
 ```sh
 DRY_RUN=1 ./scripts/cpanel-deploy.sh
 ```
 
-For a live release, pull the reviewed commit in cPanel Git Version Control and run **Deploy HEAD Commit**. The deployed `.htaccess` preserves real files and directories, reserves `.well-known` and `/api`, and sends `/scan`, `/history`, `/profile`, and `/orders/123` to `index.html`.
+## cPanel terminal verification
 
-## PWA and caching
+These checks require no Node runtime:
 
-The service worker caches only the manifest and icon. It uses network-first refresh for those safe assets and never intercepts or queues mutation requests. `index.html` is marked no-cache so a new deployment does not reference deleted hashed bundles.
+```sh
+pwd
+git branch --show-current
+git log -1 --oneline
+ls -lah dist
+ls -lah "$HOME/public_html/staff.arasyahome.ro"
+realpath "$HOME/public_html/staff.arasyahome.ro"
+```
 
-## Rollback
+Use the `realpath` check only when that command is available. The active Git branch must be `deploy`; `dist/release.json` identifies the source commit and build time currently checked out.
 
-Before the first live deployment, create a recoverable cPanel backup of the Staff document root or retain the previous verified `dist/` archive outside `public_html`. To roll back, check out the previous known-good commit and deploy it through the same script. Never install dependencies or build inside the public document root.
+## SPA, PWA, and rollback
+
+The deployed `.htaccess` keeps `index.html` uncached, serves real files normally, preserves `.well-known`, reserves `/api`, and falls back to `index.html` for routes such as `/scan`, `/history`, and `/orders/123`. The service worker caches only safe manifest/icon requests and never queues or replays mutations.
+
+For rollback, choose the previous generated commit on `deploy` and redeploy it through cPanel. Opening the Login UI verifies frontend delivery only; real employee authentication and the Staff Operations API are intentionally not implemented yet.

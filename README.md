@@ -30,3 +30,9 @@ pnpm verify
 ```
 
 It runs typecheck, lint, tests, production build, and static artifact verification in fail-fast order. See [`docs/cpanel-deployment.md`](docs/cpanel-deployment.md) for cPanel deployment and rollback, and [`docs/staff-foundation-v1.md`](docs/staff-foundation-v1.md) for architecture decisions.
+
+## Production delivery
+
+Pushes to `main` trigger **Staff Build & Publish** in GitHub Actions. Only a fully verified static `dist/` release is published to the generated `deploy` branch. cPanel must check out `deploy`; its deployment hook validates and `rsync`s static files only, with no Node or package manager on the server.
+
+`VITE_STAFF_API_BASE_URL` is a GitHub build-time repository variable for the future public API URL. Never place credentials or tokens in Vite variables.

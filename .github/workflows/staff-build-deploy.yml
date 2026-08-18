@@ -1,0 +1,89 @@
+name: Staff Build & Publish
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: arasya-staff-production-build
+  cancel-in-progress: true
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    env:
+      VITE_STAFF_DEMO_MODE: "false"
+      VITE_STAFF_API_BASE_URL: ${{ vars.VITE_STAFF_API_BASE_URL }}
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Enable pinned pnpm
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify source and production build
+        run: pnpm verify
+
+      - name: Add release metadata
+        shell: bash
+        run: |
+          printf '{\n  "commit": "%s",\n  "builtAt": "%s",\n  "version": "%s"\n}\n' \
+            "$GITHUB_SHA" \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            "$(node -p "require('./package.json').version")" \
+            > dist/release.json
+          test -s dist/release.json
+
+      - name: Prepare deploy branch contents
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          release_dir="$RUNNER_TEMP/staff-release"
+          mkdir -p "$release_dir/scripts"
+          cp -R dist "$release_dir/dist"
+          cp .cpanel.yml "$release_dir/.cpanel.yml"
+          cp scripts/cpanel-deploy.sh "$release_dir/scripts/cpanel-deploy.sh"
+
+      - name: Publish verified release to deploy
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          release_dir="$RUNNER_TEMP/staff-release"
+          publish_dir="$RUNNER_TEMP/staff-deploy-branch"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git ls-remote --exit-code --heads origin deploy >/dev/null 2>&1; then
+            git fetch --depth=1 origin deploy
+            git worktree add --detach "$publish_dir" FETCH_HEAD
+          else
+            git worktree add --detach "$publish_dir" HEAD
+            git -C "$publish_dir" checkout --orphan deploy
+            git -C "$publish_dir" rm -rf .
+          fi
+
+          rsync --archive --delete --exclude='.git' "$release_dir/" "$publish_dir/"
+          git -C "$publish_dir" add --all
+
+          if git -C "$publish_dir" diff --cached --quiet; then
+            echo "Deploy branch already matches this verified release."
+            exit 0
+          fi
+
+          short_sha="${GITHUB_SHA:0:7}"
+          git -C "$publish_dir" commit -m "build: publish Staff release from $short_sha"
+          git -C "$publish_dir" push origin HEAD:deploy

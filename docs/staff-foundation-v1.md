@@ -1,4 +1,4 @@
-# Arasya Staff — Foundation V1.1
+# Arasya Staff — Foundation V1.2
 
 ## Architecture and stack
 
@@ -44,4 +44,6 @@ The current visual identity, mobile layout, tablet breakpoint, safe areas, and i
 
 The service worker caches only the manifest and icon with network-first refresh. It never intercepts non-GET requests, replays stage transitions, or reports offline mutation success. `index.html` is not stored in the worker cache and is marked no-cache by Apache so new hashed bundles activate predictably.
 
-No Trendhome, OutletPerdele, WooCommerce, B2B, Manager Control, HR, attendance, transfer backend, or real Staff API was added in V1.1. The existing HTTP contracts remain ready for the backend sprint.
+Production builds run exclusively in GitHub Actions from committed `main` source and the frozen pnpm lockfile. A successful verification publishes the static release to the generated `deploy` branch. cPanel consumes that branch and performs static validation plus `rsync` only; the hosting shell requires no Node toolchain.
+
+No Trendhome, OutletPerdele, WooCommerce, B2B, Manager Control, HR, attendance, transfer backend, or real Staff API was added in V1.2. The existing HTTP contracts remain ready for the backend sprint.
