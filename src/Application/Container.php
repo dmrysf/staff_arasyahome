@@ -20,6 +20,9 @@ use Arasya\Operations\Http\HealthController;
 use Arasya\Operations\Http\RequestFactory;
 use Arasya\Operations\Http\RequestContext;
 use Arasya\Operations\Http\ProductionWorkflowController;
+use Arasya\Operations\Order\OperationalOrderController;
+use Arasya\Operations\Order\OrderSerializer;
+use Arasya\Operations\Order\PdoOperationalOrderRepository;
 use Arasya\Operations\Production\PdoProductionWorkflowRepository;
 use Arasya\Operations\Production\ProductionWorkflowService;
 use Arasya\Operations\Security\CookiePolicy;
@@ -82,6 +85,14 @@ final class Container
             new ProductionWorkflowController(
                 new ProductionWorkflowService(new PdoProductionWorkflowRepository($this->pdo)),
                 $this->authentication,
+                $this->config,
+                $context,
+            ),
+            new OperationalOrderController(
+                new PdoOperationalOrderRepository($this->pdo),
+                new OrderSerializer(),
+                $this->authentication,
+                new AuthorizationService(),
                 $this->config,
                 $context,
             ),

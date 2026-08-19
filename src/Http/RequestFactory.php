@@ -53,6 +53,7 @@ final readonly class RequestFactory
             ipAddress: $this->resolveIp($headers),
             userAgent: substr($headers['user-agent'] ?? 'unknown', 0, 512),
             requestId: $requestId,
+            query: $_GET,
         );
     }
 
