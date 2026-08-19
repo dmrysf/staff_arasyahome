@@ -7,7 +7,8 @@ CREATE TABLE IF NOT EXISTS order_sources (
     created_at DATETIME(6) NOT NULL,
     updated_at DATETIME(6) NOT NULL,
     PRIMARY KEY (source_key),
-    CONSTRAINT chk_order_sources_status CHECK (status IN ('active', 'inactive'))
+    CONSTRAINT chk_order_sources_status CHECK (status IN ('active', 'inactive')),
+    CONSTRAINT chk_order_sources_schema CHECK (schema_version > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS operational_orders (
@@ -42,7 +43,9 @@ CREATE TABLE IF NOT EXISTS operational_orders (
     CONSTRAINT fk_operational_orders_source FOREIGN KEY (source_key) REFERENCES order_sources (source_key) ON UPDATE RESTRICT ON DELETE RESTRICT,
     CONSTRAINT fk_operational_orders_stage FOREIGN KEY (production_stage_id) REFERENCES production_stages (stage_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
     CONSTRAINT chk_operational_orders_op_status CHECK (operational_status IN ('in_progress', 'handed_over', 'unavailable')),
-    CONSTRAINT chk_operational_orders_freshness CHECK (freshness_status IN ('fresh', 'stale', 'source_unavailable'))
+    CONSTRAINT chk_operational_orders_freshness CHECK (freshness_status IN ('fresh', 'stale', 'source_unavailable')),
+    CONSTRAINT chk_operational_orders_schema CHECK (source_schema_version > 0),
+    CONSTRAINT chk_operational_orders_version CHECK (version > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS operational_order_items (
@@ -64,7 +67,12 @@ CREATE TABLE IF NOT EXISTS operational_order_items (
     PRIMARY KEY (item_uuid),
     UNIQUE KEY uq_operational_order_items_source (order_uuid, source_item_id),
     UNIQUE KEY uq_operational_order_items_line (order_uuid, line_number),
-    CONSTRAINT fk_operational_order_items_order FOREIGN KEY (order_uuid) REFERENCES operational_orders (order_uuid) ON UPDATE CASCADE ON DELETE CASCADE
+    CONSTRAINT fk_operational_order_items_order FOREIGN KEY (order_uuid) REFERENCES operational_orders (order_uuid) ON UPDATE CASCADE ON DELETE CASCADE,
+    CONSTRAINT chk_operational_order_items_qty CHECK (quantity > 0),
+    CONSTRAINT chk_operational_order_items_line CHECK (line_number > 0),
+    CONSTRAINT chk_operational_order_items_width CHECK (width_value IS NULL OR width_value >= 0),
+    CONSTRAINT chk_operational_order_items_height CHECK (height_value IS NULL OR height_value >= 0),
+    CONSTRAINT chk_operational_order_items_meters CHECK (meters IS NULL OR meters >= 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS employee_order_relations (

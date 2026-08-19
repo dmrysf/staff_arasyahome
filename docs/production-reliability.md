@@ -1,6 +1,6 @@
-# V2.0.7 production reliability
+# V2.1.0 production reliability
 
-V2.0.7 closes the platform foundation without adding order, QR, stage-mutation, commerce-source, or Dashboard features. API version is `2.0.7`; Staff remains `0.1.0`, with the source commit as release identity.
+V2.1.0 closes the platform foundation without adding order, QR, stage-mutation, commerce-source, or Dashboard features. API version is `2.1.0`; Staff remains `0.1.0`, with the source commit as release identity.
 
 ## Release model
 
@@ -49,7 +49,7 @@ The route parser bounds and catches order-ID decoding, so malformed percent esca
 
 1. On GitHub, record final `main`, `deploy`, and `api-deploy` SHAs. Confirm both release metadata files name the final main SHA and both workflows are green.
 2. In the API cPanel Git checkout tracking `api-deploy`, select **Update from Remote**, then **Deploy HEAD Commit**. Confirm output prints the activated source commit.
-3. Run the no-credential checks: `/health` is 200 and version `2.0.7`; allowed conditional CORS preflight is 204; an unknown preflight header is denied; `RuntimeLocator.php`, `/src/`, `/database/`, `/config/`, and `/release.json` are not public.
+3. Run the no-credential checks: `/health` is 200 and version `2.1.0`; allowed conditional CORS preflight is 204; an unknown preflight header is denied; `RuntimeLocator.php`, `/src/`, `/database/`, `/config/`, and `/release.json` are not public.
 4. From the active API release, run `php bin/migration-status.php`. Only if `002_canonical_production_workflow.sql` is pending, review/back up and run `php bin/migrate.php`. Run `php bin/seed-reference-data.php` only if the canonical catalog is not seeded. Then run `php bin/readiness.php`. Nothing here is automatic.
 5. In the Staff cPanel checkout tracking `deploy`, select **Update from Remote**, then **Deploy HEAD Commit**. Confirm output names the same main source SHA.
 6. From a trusted operator machine run:
@@ -57,7 +57,7 @@ The route parser bounds and catches order-ID decoding, so malformed percent esca
    ```bash
    API_BASE_URL=https://api.arasyahome.ro \
    STAFF_BASE_URL=https://staff.arasyahome.ro \
-   EXPECTED_API_VERSION=2.0.7 \
+   EXPECTED_API_VERSION=2.1.0 \
    EXPECTED_SOURCE_COMMIT=<final-main-sha> \
    /bin/bash scripts/post-deploy-smoke.sh
    ```

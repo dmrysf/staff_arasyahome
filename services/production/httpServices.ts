@@ -65,10 +65,12 @@ export function mapProductionEmployee(value: unknown): Employee {
 
 export function mapProductionOrderItem(value: unknown): import("../../domain/models").ProductionItem {
   const raw = objectValue(value);
+  const quantity = typeof raw.quantity === "number" ? raw.quantity : 0;
+  if (quantity < 1) throw new StaffServiceError("SERVER_ERROR");
   const item: import("../../domain/models").ProductionItem = {
     id: stringValue(raw.id),
     name: stringValue(raw.name),
-    quantity: typeof raw.quantity === "number" ? raw.quantity : 0,
+    quantity,
   };
   if (raw.code != null) item.code = stringValue(raw.code);
   if (raw.color != null) item.color = stringValue(raw.color);
@@ -95,19 +97,24 @@ export function mapProductionOrder(value: unknown): import("../../domain/models"
     ? (source as import("../../domain/models").OrderSource)
     : "unknown";
     
-  const mappedStatus = ["in_progress", "handed_over", "unavailable"].includes(status)
-    ? (status as "in_progress" | "handed_over" | "unavailable")
-    : "unavailable";
+  if (!["in_progress", "handed_over", "unavailable"].includes(status)) {
+    throw new StaffServiceError("SERVER_ERROR");
+  }
+  const mappedStatus = status as "in_progress" | "handed_over" | "unavailable";
+
+  if (!Array.isArray(raw.products)) throw new StaffServiceError("SERVER_ERROR");
+  const version = typeof raw.version === "number" ? raw.version : 0;
+  if (version < 1) throw new StaffServiceError("SERVER_ERROR");
 
   const order: import("../../domain/models").StaffOrder = {
     id: stringValue(raw.id),
     source: mappedSource,
     orderNumber: stringValue(raw.orderNumber),
     productionStageId: stringValue(raw.productionStageId),
-    products: Array.isArray(raw.products) ? raw.products.map(mapProductionOrderItem) : [],
+    products: raw.products.map(mapProductionOrderItem),
     status: mappedStatus,
     updatedAt: stringValue(raw.updatedAt),
-    version: typeof raw.version === "number" ? raw.version : 1,
+    version,
   };
 
   if (raw.sourceCommerceStatus != null) {

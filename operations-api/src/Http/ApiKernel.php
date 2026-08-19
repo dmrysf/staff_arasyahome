@@ -61,7 +61,7 @@ final readonly class ApiKernel
     private function matchDynamicRoutes(Request $request): Response
     {
         if ($request->method === 'GET' && preg_match('#^/orders/([^/]+)$#', $request->path, $matches)) {
-            $globalIdString = urldecode($matches[1]);
+            $globalIdString = rawurldecode($matches[1]);
             return $this->orders?->show($request, $globalIdString) ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Orders API is not ready.');
         }
 

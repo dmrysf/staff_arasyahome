@@ -151,9 +151,17 @@ export function createPreviewServices(options: PreviewServicesOptions = {}): Ser
     async listMine(options) { 
       const filtered = orders.filter((order) => isEmployeeRelevantOrder(order, previewEmployee.employeeUuid));
       const limit = options?.limit ?? 50;
-      const start = options?.cursor ? parseInt(options.cursor, 10) : 0;
+      let start = 0;
+      if (options?.cursor) {
+        try {
+          start = parseInt(atob(options.cursor), 10);
+          if (isNaN(start)) throw new Error();
+        } catch {
+          throw new StaffServiceError("SERVER_ERROR");
+        }
+      }
       const items = clone(filtered.slice(start, start + limit));
-      const nextCursor = start + limit < filtered.length ? String(start + limit) : undefined;
+      const nextCursor = start + limit < filtered.length ? btoa(String(start + limit)) : undefined;
       return { items, nextCursor };
     },
     async getById(id) {

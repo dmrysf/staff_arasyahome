@@ -194,10 +194,17 @@ final readonly class PdoOperationalOrderRepository implements OperationalOrderRe
 
     private function decodeCursor(string $cursor): ?array
     {
-        $json = base64_decode(strtr($cursor, '-_', '+/'), true);
+        $padded = $cursor . str_repeat('=', (4 - strlen($cursor) % 4) % 4);
+        $json = base64_decode(strtr($padded, '-_', '+/'), true);
         if ($json === false) return null;
-        $data = json_decode($json, true);
+        try {
+            $data = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+        } catch (\JsonException) {
+            return null;
+        }
         if (!is_array($data) || !isset($data['u'], $data['id'])) return null;
+        if (!is_string($data['u']) || !is_string($data['id'])) return null;
+        if (preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i', $data['id']) !== 1) return null;
         return ['updatedAt' => $data['u'], 'orderUuid' => $data['id']];
     }
 }

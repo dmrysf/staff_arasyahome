@@ -35,10 +35,10 @@ final readonly class OrderProjectionWriter
                 'code' => $i->productCode,
                 'variant' => $i->variant,
                 'color' => $i->color,
-                'w' => $i->widthValue,
-                'h' => $i->heightValue,
+                'w' => $i->widthValue !== null ? number_format((float)$i->widthValue, 3, '.', '') : null,
+                'h' => $i->heightValue !== null ? number_format((float)$i->heightValue, 3, '.', '') : null,
                 'u' => $i->measurementUnit,
-                'm' => $i->meters,
+                'm' => $i->meters !== null ? number_format((float)$i->meters, 3, '.', '') : null,
                 'qty' => $i->quantity
             ], $snapshot->items),
         ];
@@ -157,11 +157,37 @@ final readonly class OrderProjectionWriter
                 ]);
 
                 if ($currentOrder['projection_hash'] !== $payloadHash) {
+                    $stmt = $this->pdo->prepare('SELECT item_uuid, source_item_id FROM operational_order_items WHERE order_uuid = ?');
+                    $stmt->execute([$orderUuid]);
+                    $existingItems = [];
+                    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                        $existingItems[$row['source_item_id']] = $row['item_uuid'];
+                    }
+
                     // Update items: delete all and insert new ones
                     $stmt = $this->pdo->prepare('DELETE FROM operational_order_items WHERE order_uuid = ?');
                     $stmt->execute([$orderUuid]);
 
-                    $this->insertItems($snapshot->items, $orderUuid, $nowSql);
+                    $newItems = [];
+                    foreach ($snapshot->items as $item) {
+                        $uuid = $existingItems[$item->sourceItemId] ?? $item->itemUuid;
+                        $newItems[] = new OperationalOrderItem(
+                            $uuid,
+                            $item->sourceItemId,
+                            $item->lineNumber,
+                            $item->name,
+                            $item->productCode,
+                            $item->variant,
+                            $item->color,
+                            $item->widthValue,
+                            $item->heightValue,
+                            $item->measurementUnit,
+                            $item->meters,
+                            $item->quantity
+                        );
+                    }
+
+                    $this->insertItems($newItems, $orderUuid, $nowSql);
                 }
 
             } else {

@@ -1,4 +1,4 @@
-# Arasya production workflow V2.0.7
+# Arasya production workflow V2.1.0
 
 ## Canonical identity and order
 
@@ -53,7 +53,7 @@ Orders store only `productionStageId`. UI labels, current/next stage, progress, 
 
 ## Preview and external status boundaries
 
-Preview owns one exact copy of the version-1 catalog. Its fictional examples place Trendhome at stage 2, OutletPerdele at stage 7, and Trendyol at stage 12. Trendyol is only a display/source identity in V2.0.7; no Trendyol authentication, API client, webhook, order import, or status synchronization exists.
+Preview owns one exact copy of the version-1 catalog. Its fictional examples place Trendhome at stage 2, OutletPerdele at stage 7, and Trendyol at stage 12. Trendyol is only a display/source identity in V2.1.0; no Trendyol authentication, API client, webhook, order import, or status synchronization exists.
 
 `sourceCommerceStatus` is external commerce data and is independent of `productionStageId`. For example, a fictional Trendyol order can display commerce status `Picking` while its Arasya production stage is `quality-control`. The two must never be inferred from or overwrite one another.
 
@@ -76,6 +76,6 @@ Operations trusts `stageId`, not `stageLabel`; the label is diagnostic only. The
 
 `dashboard.arasyahome.ro` is intentionally not implemented here. It will later manage employees, roles, departments, permissions, production labels, controlled workflow configuration/version increments, exceptions, and analytics. Any label, add/remove/deactivate, or reorder mutation must increment workflow version transactionally while stable IDs remain permanent.
 
-Future normal employee mutation is immediately next active stage only (N → N+1), validated server-side against the current workflow with operation version and idempotency. Employees cannot jump stages; exceptions require future manager authority. Operations commits centrally first, then future source synchronization can run asynchronously so a temporary website failure does not block factory work. No mutation endpoint or outbox is implemented in V2.0.7.
+Future normal employee mutation is immediately next active stage only (N → N+1), validated server-side against the current workflow with operation version and idempotency. Employees cannot jump stages; exceptions require future manager authority. Operations commits centrally first, then future source synchronization can run asynchronously so a temporary website failure does not block factory work. No mutation endpoint or outbox is implemented in V2.1.0.
 
 V2.1 remains responsible for normalized real orders, Trendhome/Outlet source nodes, Trendyol adapter architecture, resilient read-only projections, employee-order relationships, `/orders/mine`, source drift protection, and later QR references using `productionStageId`.

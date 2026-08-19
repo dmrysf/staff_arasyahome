@@ -41,7 +41,7 @@ final readonly class GlobalOrderId
         if ($this->sourceOrderId === '' || strlen($this->sourceOrderId) > 128) {
             throw new InvalidArgumentException("Invalid source order ID length.");
         }
-        if (!preg_match('/^[a-zA-Z0-9.\_-]+$/', $this->sourceOrderId)) {
+        if (str_contains($this->sourceOrderId, '/')) {
             throw new InvalidArgumentException("Invalid source order ID format.");
         }
     }

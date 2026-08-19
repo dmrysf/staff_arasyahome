@@ -91,6 +91,9 @@ final class Container
             new OperationalOrderController(
                 new PdoOperationalOrderRepository($this->pdo),
                 new OrderSerializer(),
+                $this->authentication,
+                new AuthorizationService(),
+                $this->config,
                 $context,
             ),
         );

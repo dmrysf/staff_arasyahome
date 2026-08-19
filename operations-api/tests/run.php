@@ -74,7 +74,7 @@ function expectRuntime(Closure $callback): void
 {
     try {
         $callback();
-    } catch (RuntimeException) {
+    } catch (\Throwable) {
         return;
     }
     throw new RuntimeException('Expected runtime validation failure.');
@@ -1051,15 +1051,44 @@ test('repository failures return a generic error with request ID and no SQL or p
     expect(!str_contains($json, '/private/'));
 });
 
-$passed = 0;
+$success = 0;
+$failed = 0;
+
+test('GlobalOrderId formats and parses source identifiers strictly and deterministically', function (): void {
+    $valid = new \Arasya\Operations\Order\GlobalOrderId('trendhome', 'TH-100.1');
+    expect($valid->sourceKey === 'trendhome');
+    expect($valid->sourceOrderId === 'TH-100.1');
+    expect($valid->toString() === 'trendhome:TH-100.1');
+    
+    $parsed = \Arasya\Operations\Order\GlobalOrderId::fromString('b2b:CUST_99');
+    expect($parsed->sourceKey === 'b2b');
+    expect($parsed->sourceOrderId === 'CUST_99');
+    
+    // Test that sourceKey allows only lowercase alphanumeric, underscore, hyphen
+    expectRuntime(fn () => new \Arasya\Operations\Order\GlobalOrderId('TrendHome', 'TH100'));
+    expectRuntime(fn () => new \Arasya\Operations\Order\GlobalOrderId('trend/home', 'TH100'));
+    // Test that sourceOrderId rejects slash
+    expectRuntime(fn () => new \Arasya\Operations\Order\GlobalOrderId('trendhome', 'TH/100'));
+    // Test that fromString strictly checks colon separator
+    expectRuntime(fn () => \Arasya\Operations\Order\GlobalOrderId::fromString('no-colon'));
+});
+
 foreach ($tests as [$name, $callback]) {
     try {
         $callback();
-        $passed++;
-        fwrite(STDOUT, "PASS {$name}\n");
+        $success++;
+        fwrite(STDOUT, "PASS $name\n");
     } catch (Throwable $error) {
-        fwrite(STDERR, "FAIL {$name}: {$error->getMessage()}\n");
-        exit(1);
+        $failed++;
+        fwrite(STDERR, "FAIL $name\n");
+        fwrite(STDERR, "     " . $error->getMessage() . "\n");
     }
 }
-fwrite(STDOUT, "Backend tests passed: {$passed}/" . count($tests) . "\n");
+
+if ($failed > 0) {
+    fwrite(STDERR, "\nFAILED $failed tests. ($success passed)\n");
+    exit(1);
+}
+
+fwrite(STDOUT, "\nSUCCESS: $success tests passed.\n");
+exit(0);

@@ -32,6 +32,7 @@ export type ProductionItem = {
   id: string;
   name: string;
   code?: string;
+  variant?: string;
   color?: string;
   dimensions?: string;
   measurements?: {
