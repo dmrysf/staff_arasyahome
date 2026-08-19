@@ -65,8 +65,10 @@ export function mapProductionEmployee(value: unknown): Employee {
 
 export function mapProductionOrderItem(value: unknown): import("../../domain/models").ProductionItem {
   const raw = objectValue(value);
-  const quantity = typeof raw.quantity === "number" ? raw.quantity : 0;
-  if (quantity < 1) throw new StaffServiceError("SERVER_ERROR");
+  const quantity = raw.quantity;
+  if (typeof quantity !== "number" || !Number.isFinite(quantity) || !Number.isInteger(quantity) || quantity < 1) {
+    throw new StaffServiceError("SERVER_ERROR");
+  }
   const item: import("../../domain/models").ProductionItem = {
     id: stringValue(raw.id),
     name: stringValue(raw.name),
@@ -75,13 +77,25 @@ export function mapProductionOrderItem(value: unknown): import("../../domain/mod
   if (raw.code != null) item.code = stringValue(raw.code);
   if (raw.color != null) item.color = stringValue(raw.color);
   if (raw.variant != null) item.variant = stringValue(raw.variant);
-  if (raw.meters != null && typeof raw.meters === "number") item.meters = raw.meters;
-  if (raw.measurements != null) {
+  if (raw.meters !== undefined && raw.meters !== null) {
+    if (typeof raw.meters !== "number" || !Number.isFinite(raw.meters) || raw.meters < 0) {
+      throw new StaffServiceError("SERVER_ERROR");
+    }
+    item.meters = raw.meters;
+  }
+  if (raw.measurements !== undefined && raw.measurements !== null) {
     const rawMeas = objectValue(raw.measurements);
     item.measurements = {};
-    if (typeof rawMeas.width === "number") item.measurements.width = rawMeas.width;
-    if (typeof rawMeas.height === "number") item.measurements.height = rawMeas.height;
-    if (typeof rawMeas.unit === "string" && ["mm", "cm", "m"].includes(rawMeas.unit)) {
+    if (rawMeas.width !== undefined && rawMeas.width !== null) {
+      if (typeof rawMeas.width !== "number" || !Number.isFinite(rawMeas.width) || rawMeas.width < 0) throw new StaffServiceError("SERVER_ERROR");
+      item.measurements.width = rawMeas.width;
+    }
+    if (rawMeas.height !== undefined && rawMeas.height !== null) {
+      if (typeof rawMeas.height !== "number" || !Number.isFinite(rawMeas.height) || rawMeas.height < 0) throw new StaffServiceError("SERVER_ERROR");
+      item.measurements.height = rawMeas.height;
+    }
+    if (rawMeas.unit !== undefined && rawMeas.unit !== null) {
+      if (typeof rawMeas.unit !== "string" || !["mm", "cm", "m"].includes(rawMeas.unit)) throw new StaffServiceError("SERVER_ERROR");
       item.measurements.unit = rawMeas.unit as "mm" | "cm" | "m";
     }
   }
@@ -103,8 +117,10 @@ export function mapProductionOrder(value: unknown): import("../../domain/models"
   const mappedStatus = status as "in_progress" | "handed_over" | "unavailable";
 
   if (!Array.isArray(raw.products)) throw new StaffServiceError("SERVER_ERROR");
-  const version = typeof raw.version === "number" ? raw.version : 0;
-  if (version < 1) throw new StaffServiceError("SERVER_ERROR");
+  const version = raw.version;
+  if (typeof version !== "number" || !Number.isFinite(version) || !Number.isInteger(version) || version < 1) {
+    throw new StaffServiceError("SERVER_ERROR");
+  }
 
   const order: import("../../domain/models").StaffOrder = {
     id: stringValue(raw.id),
@@ -127,11 +143,12 @@ export function mapProductionOrder(value: unknown): import("../../domain/models"
   if (raw.employeeRelation != null) {
     const rel = objectValue(raw.employeeRelation);
     const relType = stringValue(rel.type);
+    if (!["claimed", "assigned", "updated", "handover_in", "handover_out", "completed"].includes(relType)) {
+      throw new StaffServiceError("SERVER_ERROR");
+    }
     order.employeeRelation = {
       employeeUuid: stringValue(rel.employeeUuid),
-      type: ["claimed", "assigned", "updated", "handover_in", "handover_out", "completed"].includes(relType) 
-        ? (relType as import("../../domain/models").EmployeeOrderRelationType) 
-        : "updated",
+      type: relType as import("../../domain/models").EmployeeOrderRelationType,
       lastActionAt: stringValue(rel.lastActionAt),
     };
   }
@@ -139,10 +156,11 @@ export function mapProductionOrder(value: unknown): import("../../domain/models"
   if (raw.freshness != null) {
     const fresh = objectValue(raw.freshness);
     const freshStatus = stringValue(fresh.status);
+    if (!["fresh", "stale", "source_unavailable"].includes(freshStatus)) {
+      throw new StaffServiceError("SERVER_ERROR");
+    }
     order.freshness = {
-      status: ["fresh", "stale", "source_unavailable"].includes(freshStatus) 
-        ? (freshStatus as "fresh" | "stale" | "source_unavailable") 
-        : "source_unavailable",
+      status: freshStatus as "fresh" | "stale" | "source_unavailable",
       sourceChangedAt: stringValue(fresh.sourceChangedAt),
       lastSourceSeenAt: stringValue(fresh.lastSourceSeenAt),
     };
@@ -153,8 +171,9 @@ export function mapProductionOrder(value: unknown): import("../../domain/models"
 
 export function mapOrderPage(value: unknown): import("../../domain/models").OrderPage {
   const raw = objectValue(value);
+  if (!Array.isArray(raw.items)) throw new StaffServiceError("SERVER_ERROR");
   return {
-    items: Array.isArray(raw.items) ? raw.items.map(mapProductionOrder) : [],
+    items: raw.items.map(mapProductionOrder),
     nextCursor: raw.nextCursor != null ? stringValue(raw.nextCursor) : undefined,
   };
 }

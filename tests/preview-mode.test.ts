@@ -94,7 +94,7 @@ test("preview orders support QR, manual lookup, in-memory transitions, idempoten
 
 test("preview activity and my orders stay behind service contracts", async () => {
   const services = createPreviewServices({ storage: new MemorySessionStorage() });
-  const orders = await services.orders.listMine();
+  const { items: orders } = await services.orders.listMine();
   assert.deepEqual(new Set(orders.map((order) => order.source)), new Set(["trendhome", "outletperdele", "trendyol"]));
   assert.ok(orders.some((order) => order.status === "in_progress"));
   assert.ok(orders.some((order) => order.status === "handed_over"));
@@ -105,7 +105,7 @@ test("preview activity and my orders stay behind service contracts", async () =>
 
 test("Preview listMine returns only orders with a direct employee relationship", async () => {
   const services = createPreviewServices({ storage: new MemorySessionStorage() });
-  const mine = await services.orders.listMine();
+  const { items: mine } = await services.orders.listMine();
   const mineIds = new Set(mine.map((order) => order.id));
 
   assert.deepEqual(mineIds, new Set(["order-61833", "order-61829", "order-trendyol-1048"]));
@@ -131,19 +131,33 @@ test("a scanned Preview order becomes visible after the employee claims it", asy
   const now = Date.parse("2026-08-19T09:00:00Z");
   const services = createPreviewServices({ storage: new MemorySessionStorage(), now: () => now });
   const unclaimed = await services.orders.resolveQr("62001");
-  assert.equal((await services.orders.listMine()).some((order) => order.id === unclaimed.id), false);
+  assert.equal((await services.orders.listMine()).items.some((order) => order.id === unclaimed.id), false);
 
   const claimed = await services.orders.confirmStageTransition(unclaimed.id, { expectedVersion: unclaimed.version, idempotencyKey: "claim-62001" });
   assert.equal(claimed.employeeRelation?.employeeUuid, previewEmployee.employeeUuid);
   assert.equal(claimed.employeeRelation?.type, "claimed");
-  assert.equal((await services.orders.listMine()).some((order) => order.id === unclaimed.id), true);
+  assert.equal((await services.orders.listMine()).items.some((order) => order.id === unclaimed.id), true);
 });
 
 test("My Orders views distinguish active, recent, and handed-over involvement", async () => {
-  const orders = await createPreviewServices({ storage: new MemorySessionStorage() }).orders.listMine();
+  const { items: orders } = await createPreviewServices({ storage: new MemorySessionStorage() }).orders.listMine();
   assert.deepEqual(orders.filter((order) => matchesMyOrdersView(order, "in_progress")).map((order) => order.id), ["order-61833"]);
   assert.equal(orders.filter((order) => matchesMyOrdersView(order, "recent")).length, 3);
   assert.deepEqual(orders.filter((order) => matchesMyOrdersView(order, "handed_over")).map((order) => order.id), ["order-61829", "order-trendyol-1048"]);
+});
+
+test("Preview listMine paginates correctly via cursor", async () => {
+  const services = createPreviewServices({ storage: new MemorySessionStorage() });
+  const first = await services.orders.listMine({ limit: 1 });
+  assert.equal(first.items.length, 1);
+  assert.ok(first.nextCursor);
+
+  const second = await services.orders.listMine({
+    limit: 1,
+    cursor: first.nextCursor
+  });
+  assert.equal(second.items.length, 1);
+  assert.notEqual(first.items[0].id, second.items[0].id);
 });
 
 test("connection labels and primary navigation routes remain explicit", () => {

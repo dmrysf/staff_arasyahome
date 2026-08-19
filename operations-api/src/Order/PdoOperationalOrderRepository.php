@@ -194,6 +194,8 @@ final readonly class PdoOperationalOrderRepository implements OperationalOrderRe
 
     private function decodeCursor(string $cursor): ?array
     {
+        if (strlen($cursor) > 512) return null;
+        if (preg_match('/^[a-zA-Z0-9_-]+={0,2}$/', $cursor) !== 1) return null;
         $padded = $cursor . str_repeat('=', (4 - strlen($cursor) % 4) % 4);
         $json = base64_decode(strtr($padded, '-_', '+/'), true);
         if ($json === false) return null;
@@ -205,6 +207,7 @@ final readonly class PdoOperationalOrderRepository implements OperationalOrderRe
         if (!is_array($data) || !isset($data['u'], $data['id'])) return null;
         if (!is_string($data['u']) || !is_string($data['id'])) return null;
         if (preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i', $data['id']) !== 1) return null;
+        if (preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{6}$/', $data['u']) !== 1) return null;
         return ['updatedAt' => $data['u'], 'orderUuid' => $data['id']];
     }
 }

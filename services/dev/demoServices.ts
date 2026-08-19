@@ -42,7 +42,10 @@ function resolveDemoCode(rawCode: string) {
 const orderService: OrderService = {
   async resolveQr(token) { return resolveDemoCode(token); },
   async lookup(code) { return resolveDemoCode(code); },
-  async listMine() { return clone(orders.filter((order) => isEmployeeRelevantOrder(order, demoEmployee.employeeUuid))); },
+  async listMine(options) { 
+    const items = orders.filter((order) => isEmployeeRelevantOrder(order, demoEmployee.employeeUuid));
+    return { items: clone(items.slice(0, options?.limit ?? 50)), nextCursor: undefined }; 
+  },
   async getById(id) {
     const order = orders.find((item) => item.id === id);
     if (!order) throw new StaffServiceError("ORDER_NOT_FOUND");

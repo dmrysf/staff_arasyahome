@@ -21,6 +21,7 @@ final readonly class OrderProjectionWriter
         $globalId = $snapshot->globalId()->toString();
         $hashData = [
             'source' => $snapshot->sourceKey,
+            'source_order_id' => $snapshot->sourceOrderId,
             'order_number' => $snapshot->orderNumber,
             'stage' => $snapshot->productionStageId,
             'status_code' => $snapshot->sourceCommerceStatusCode,
@@ -43,7 +44,7 @@ final readonly class OrderProjectionWriter
             ], $snapshot->items),
         ];
         // Ensure deterministic JSON
-        $payloadHash = hash('sha256', json_encode($hashData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), true);
+        $payloadHash = hash('sha256', json_encode($hashData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR), true);
 
         try {
             $this->pdo->beginTransaction();
@@ -63,19 +64,27 @@ final readonly class OrderProjectionWriter
             }
 
             // Validate stage is canonical
-            $stmt = $this->pdo->prepare('SELECT 1 FROM production_stages WHERE stage_id = ?');
+            $stmt = $this->pdo->prepare('
+                SELECT 1 
+                FROM production_stages ps
+                JOIN production_workflows pw ON pw.workflow_id = ps.workflow_id
+                WHERE ps.stage_id = ? AND pw.workflow_key = \'curtain-production\' AND pw.status = \'active\'
+            ');
             $stmt->execute([$snapshot->productionStageId]);
             if (!$stmt->fetchColumn()) {
-                throw new ApiException(500, 'SOURCE_STAGE_UNKNOWN', 'The production stage is not canonical.');
+                throw new ApiException(400, 'INVALID_STAGE', 'The production stage does not belong to the active canonical workflow.');
             }
 
             // Check if receipt already exists
-            $stmt = $this->pdo->prepare('SELECT payload_hash FROM order_projection_receipts WHERE source_key = ? AND source_event_id = ?');
+            $stmt = $this->pdo->prepare('SELECT payload_hash, global_order_id FROM order_projection_receipts WHERE source_key = ? AND source_event_id = ?');
             $stmt->execute([$snapshot->sourceKey, $snapshot->sourceEventId]);
-            $existingReceiptHash = $stmt->fetchColumn();
+            $existingReceipt = $stmt->fetch(PDO::FETCH_ASSOC);
 
-            if ($existingReceiptHash !== false) {
-                if ($existingReceiptHash === $payloadHash) {
+            if ($existingReceipt !== false) {
+                if ($existingReceipt['global_order_id'] !== $globalId) {
+                    throw new ApiException(500, 'SOURCE_EVENT_CONFLICT', 'Event ID conflict with different global order ID.');
+                }
+                if ($existingReceipt['payload_hash'] === $payloadHash) {
                     $this->pdo->rollBack();
                     return 'duplicate';
                 }
@@ -83,7 +92,7 @@ final readonly class OrderProjectionWriter
             }
 
             // Lock order row
-            $stmt = $this->pdo->prepare('SELECT order_uuid, source_changed_at, projection_hash, version, freshness_status FROM operational_orders WHERE global_order_id = ? FOR UPDATE');
+            $stmt = $this->pdo->prepare('SELECT order_uuid, source_changed_at, projection_hash, version, freshness_status, production_stage_id FROM operational_orders WHERE global_order_id = ? FOR UPDATE');
             $stmt->execute([$globalId]);
             $currentOrder = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -138,7 +147,7 @@ final readonly class OrderProjectionWriter
                 ');
                 $stmt->execute([
                     $snapshot->orderNumber,
-                    $snapshot->productionStageId,
+                    $currentOrder['production_stage_id'],
                     $snapshot->sourceCommerceStatusCode,
                     $snapshot->sourceCommerceStatusLabel,
                     $snapshot->productionNotes,

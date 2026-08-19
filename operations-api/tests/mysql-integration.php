@@ -272,28 +272,43 @@ try {
 
 fwrite(STDOUT, "PASS MySQL ordered migrations, idempotent workflow seed, canonical stage access, authentication and operational-status lifecycles.\n");
 
+function makeOrderSnapshot(
+    string $sourceKey = 'trendhome',
+    string $sourceOrderId = 'TH100',
+    string $sourceEventId = 'ev-101',
+    ?DateTimeImmutable $sourceChangedAt = null,
+    string $orderNumber = '#100',
+    string $productionStageId = 'material-preparation',
+    ?string $commerceCode = 'processing',
+    ?string $commerceLabel = 'Processing',
+    ?string $productionNotes = 'Notes',
+    string $operationalStatus = 'in_progress',
+    ?DateTimeImmutable $acceptedAt = null,
+    ?array $items = null,
+): \Arasya\Operations\Order\SourceOrderSnapshot {
+    return new \Arasya\Operations\Order\SourceOrderSnapshot(
+        $sourceKey,
+        $sourceOrderId,
+        $sourceEventId,
+        1,
+        $sourceChangedAt ?? new DateTimeImmutable('2026-08-19T10:00:00.000Z'),
+        $orderNumber,
+        $productionStageId,
+        $commerceCode,
+        $commerceLabel,
+        $productionNotes,
+        $operationalStatus,
+        $acceptedAt ?? new DateTimeImmutable('2026-08-19T10:00:00.000Z'),
+        $items ?? [
+            new \Arasya\Operations\Order\OperationalOrderItem(\Arasya\Operations\Support\Uuid::v4(), 'item-1', 1, 'Item 1', 'P1', null, null, 1.5, 2.5, 'm', 3.0, 2)
+        ]
+    );
+}
+
 $writer = new \Arasya\Operations\Order\OrderProjectionWriter($pdo, $clock);
-$sourceKey = 'trendhome';
-$globalIdStr = "$sourceKey:TH100";
 
 // 1. First projection (Applied)
-$snapshot1 = new \Arasya\Operations\Order\SourceOrderSnapshot(
-    $sourceKey,
-    'TH100',
-    'ev-101',
-    1,
-    new DateTimeImmutable('2026-08-19T10:00:00.000Z'),
-    '#100',
-    'material-preparation',
-    'processing',
-    'Processing',
-    'Notes',
-    'in_progress',
-    new DateTimeImmutable('2026-08-19T10:00:00.000Z'),
-    [
-        new \Arasya\Operations\Order\OperationalOrderItem(\Arasya\Operations\Support\Uuid::v4(), 'item-1', 1, 'Item 1', 'P1', null, null, 1.5, 2.5, 'm', 3.0, 2)
-    ]
-);
+$snapshot1 = makeOrderSnapshot();
 
 if ($writer->apply($snapshot1) !== 'applied') {
     throw new RuntimeException('First projection should be applied.');
@@ -305,15 +320,13 @@ if ($writer->apply($snapshot1) !== 'duplicate') {
 }
 
 // 3. Different Event ID, Same Payload (Duplicate)
-$snapshot3 = clone $snapshot1;
-$snapshot3->sourceEventId = 'ev-102';
+$snapshot3 = makeOrderSnapshot(sourceEventId: 'ev-102');
 if ($writer->apply($snapshot3) !== 'duplicate') {
     throw new RuntimeException('Different event same payload should return duplicate.');
 }
 
 // 4. Same Event ID, Different Payload (Conflict)
-$snapshot4 = clone $snapshot1;
-$snapshot4->orderNumber = '#100-changed';
+$snapshot4 = makeOrderSnapshot(orderNumber: '#100-changed');
 try {
     $writer->apply($snapshot4);
     throw new RuntimeException('Same event different payload should throw SOURCE_EVENT_CONFLICT.');
@@ -322,9 +335,7 @@ try {
 }
 
 // 5. Revision Conflict (Same timestamp, different payload)
-$snapshot5 = clone $snapshot1;
-$snapshot5->sourceEventId = 'ev-103';
-$snapshot5->orderNumber = '#100-changed';
+$snapshot5 = makeOrderSnapshot(sourceEventId: 'ev-103', orderNumber: '#100-changed');
 try {
     $writer->apply($snapshot5);
     throw new RuntimeException('Revision conflict should throw SOURCE_REVISION_CONFLICT.');
@@ -333,23 +344,21 @@ try {
 }
 
 // 6. Out of Order Update (Older timestamp)
-$snapshot6 = clone $snapshot1;
-$snapshot6->sourceEventId = 'ev-104';
-$snapshot6->sourceChangedAt = new DateTimeImmutable('2026-08-19T09:00:00.000Z');
+$snapshot6 = makeOrderSnapshot(sourceEventId: 'ev-104', sourceChangedAt: new DateTimeImmutable('2026-08-19T09:00:00.000Z'));
 if ($writer->apply($snapshot6) !== 'out_of_order') {
     throw new RuntimeException('Out of order projection should return out_of_order.');
 }
 
 // 7. Successful Update preserving Item UUIDs
-$snapshot7 = clone $snapshot1;
-$snapshot7->sourceEventId = 'ev-105';
-$snapshot7->sourceChangedAt = new DateTimeImmutable('2026-08-19T11:00:00.000Z');
-$snapshot7->orderNumber = '#100-updated';
-// Create items with completely different UUIDs but same source_item_id
-$snapshot7->items = [
-    new \Arasya\Operations\Order\OperationalOrderItem(\Arasya\Operations\Support\Uuid::v4(), 'item-1', 1, 'Item 1 Updated', 'P1', null, null, 1.5, 2.5, 'm', 3.0, 2),
-    new \Arasya\Operations\Order\OperationalOrderItem(\Arasya\Operations\Support\Uuid::v4(), 'item-2', 2, 'Item 2', 'P2', null, null, null, null, null, null, 1)
-];
+$snapshot7 = makeOrderSnapshot(
+    sourceEventId: 'ev-105',
+    sourceChangedAt: new DateTimeImmutable('2026-08-19T11:00:00.000Z'),
+    orderNumber: '#100-updated',
+    items: [
+        new \Arasya\Operations\Order\OperationalOrderItem(\Arasya\Operations\Support\Uuid::v4(), 'item-1', 1, 'Item 1 Updated', 'P1', null, null, 1.5, 2.5, 'm', 3.0, 2),
+        new \Arasya\Operations\Order\OperationalOrderItem(\Arasya\Operations\Support\Uuid::v4(), 'item-2', 2, 'Item 2', 'P2', null, null, null, null, null, null, 1)
+    ]
+);
 
 if ($writer->apply($snapshot7) !== 'applied') {
     throw new RuntimeException('Valid update should be applied.');
@@ -359,6 +368,37 @@ $stmt = $pdo->prepare('SELECT item_uuid FROM operational_order_items WHERE sourc
 $stmt->execute(['item-1']);
 if ($stmt->fetchColumn() !== $snapshot1->items[0]->itemUuid) {
     throw new RuntimeException('Item UUID was not preserved across update.');
+}
+
+// 8. Projection Receipt Identity Bug (Different Global Order ID with Same Event ID)
+$snapshot8 = makeOrderSnapshot(sourceOrderId: 'TH101'); // same sourceEventId: 'ev-101'
+try {
+    $writer->apply($snapshot8);
+    throw new RuntimeException('Different global order id with same event id should throw SOURCE_EVENT_CONFLICT.');
+} catch (\Arasya\Operations\Http\ApiException $e) {
+    if ($e->errorCode !== 'SOURCE_EVENT_CONFLICT') throw $e;
+}
+
+// 9. Active Canonical Stage Validation
+$snapshot9 = makeOrderSnapshot(sourceEventId: 'ev-109', sourceOrderId: 'TH109', productionStageId: 'cutting'); // cutting is not in curtain-production
+try {
+    $writer->apply($snapshot9);
+    throw new RuntimeException('Stage not belonging to active canonical workflow should throw INVALID_STAGE.');
+} catch (\Arasya\Operations\Http\ApiException $e) {
+    if ($e->errorCode !== 'INVALID_STAGE') throw $e;
+}
+
+// 10. Commercial Status Must Still Not Move Stage
+$snapshot10a = makeOrderSnapshot(sourceOrderId: 'TH110', sourceEventId: 'ev-110a', productionStageId: 'labeling', commerceCode: 'processing');
+$writer->apply($snapshot10a);
+
+$snapshot10b = makeOrderSnapshot(sourceOrderId: 'TH110', sourceEventId: 'ev-110b', sourceChangedAt: new DateTimeImmutable('2026-08-19T11:00:00.000Z'), productionStageId: 'material-preparation', commerceCode: 'completed');
+$writer->apply($snapshot10b);
+
+$stmt = $pdo->prepare('SELECT production_stage_id FROM operational_orders WHERE source_key = ? AND source_order_id = ?');
+$stmt->execute(['trendhome', 'TH110']);
+if ($stmt->fetchColumn() !== 'labeling') {
+    throw new RuntimeException('Commercial status change must not move production stage.');
 }
 
 fwrite(STDOUT, "PASS OrderProjectionWriter semantics and item UUID preservation.\n");
