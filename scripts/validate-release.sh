@@ -8,7 +8,9 @@ fail() {
 
 release_root="${1:-}"
 [[ -n "$release_root" && -d "$release_root" ]] || fail "Release directory is missing."
+for command in find sha256sum grep php; do command -v "$command" >/dev/null 2>&1 || fail "$command is required."; done
 release_root="$(cd -- "$release_root" && pwd -P)"
+[[ -z "$(find "$release_root" -type l -print -quit)" ]] || fail "Symlinks are forbidden in API releases."
 
 for file in \
   .cpanel.yml \
@@ -18,11 +20,23 @@ for file in \
   public/.htaccess \
   public/RuntimeLocator.php \
   config/secrets.example.json \
+  bin/maintenance.php \
+  bin/migration-status.php \
+  bin/readiness.php \
+  scripts/api-release-common.sh \
   scripts/cpanel-deploy-api.sh \
+  scripts/cpanel-rollback-api.sh \
+  scripts/generate-sha256s.sh \
+  scripts/maintenance-active.sh \
   scripts/validate-release.sh \
-  release.json; do
+  release.json \
+  SHA256SUMS; do
   [[ -f "$release_root/$file" ]] || fail "Required file is missing: $file"
 done
+
+(cd -- "$release_root" && sha256sum -c SHA256SUMS >/dev/null) || fail "SHA256SUMS verification failed."
+php -r '$r=json_decode(file_get_contents($argv[1]), true, flags: JSON_THROW_ON_ERROR); if (!is_array($r) || preg_match("/^[0-9a-f]{40}$/", $r["sourceCommit"] ?? "") !== 1 || ($r["version"] ?? null) !== "2.0.7") exit(2);' "$release_root/release.json" \
+  || fail "release.json provenance/version is invalid."
 
 for directory in src database/migrations bin config; do
   [[ -d "$release_root/$directory" ]] || fail "Required directory is missing: $directory"

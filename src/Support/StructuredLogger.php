@@ -12,14 +12,10 @@ final class StructuredLogger
     {
     }
 
-    /** @param array<string, scalar|null> $context */
+    /** @param array<string, mixed> $context */
     public function log(string $level, string $event, string $requestId, array $context = []): void
     {
-        foreach (array_keys($context) as $key) {
-            if (preg_match('/password|token|csrf|authorization|cookie|secret/i', $key) === 1) {
-                unset($context[$key]);
-            }
-        }
+        $context = SensitiveDataRedactor::sanitize($context);
 
         try {
             $line = json_encode([

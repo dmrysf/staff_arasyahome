@@ -20,6 +20,11 @@ return [
     'ARASYA_LOGIN_USERNAME_LIMIT' => '5',
     'ARASYA_LOGIN_IP_LIMIT' => '30',
     'ARASYA_LOGIN_WINDOW' => '900',
+    'ARASYA_SESSION_RECORD_RETENTION_DAYS' => '30',
+    'ARASYA_LOGIN_ATTEMPT_RETENTION_DAYS' => '30',
+    'ARASYA_RATE_LIMIT_RETENTION_DAYS' => '7',
+    // Audit-event deletion is disabled unless this is explicitly configured.
+    // 'ARASYA_AUTH_AUDIT_RETENTION_DAYS' => '365',
     'ARASYA_TRUST_PROXY' => 'false',
     'ARASYA_TRUSTED_PROXIES' => '',
 ];

@@ -1,103 +1,105 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-log() {
-  printf '[Arasya Operations API] %s\n' "$1"
-}
-
-fail() {
-  printf '[Arasya Operations API] ERROR: %s\n' "$1" >&2
-  exit 1
-}
-
-require_command() {
-  command -v "$1" >/dev/null 2>&1 || fail "Required command is missing: $1"
-}
-
-resolve_path() {
-  local target="$1"
-  local suffix=""
-  local resolved
-
-  [[ "$target" == /* ]] || fail "Deployment destination must be an absolute path."
-  case "/$target/" in
-    *"/../"*|*"/./"*) fail "Deployment destination contains unsafe path segments." ;;
-  esac
-
-  while [[ ! -e "$target" ]]; do
-    suffix="/${target##*/}$suffix"
-    target="${target%/*}"
-    [[ -n "$target" ]] || target="/"
-  done
-
-  [[ -d "$target" ]] || fail "Deployment destination base is not a directory."
-  resolved="$(cd -- "$target" && pwd -P)"
-  if [[ "$resolved" == "/" ]]; then
-    printf '/%s\n' "${suffix#/}"
-  else
-    printf '%s%s\n' "$resolved" "$suffix"
-  fi
-}
-
-require_command rsync
-
 release_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
-runtime_input="${ARASYA_API_RUNTIME_PATH:-$HOME/arasya-operations-api/current}"
+source "$release_root/scripts/api-release-common.sh"
+for command in rsync sha256sum php mv cp mkdir find sort stat chmod tr wc grep rm xargs; do api_require_command "$command"; done
+gc_dry_run="${ARASYA_RELEASE_GC_DRY_RUN:-0}"
+[[ "$gc_dry_run" == "0" || "$gc_dry_run" == "1" ]] || api_fail "ARASYA_RELEASE_GC_DRY_RUN must be 0 or 1."
+release_retention="${ARASYA_API_RELEASE_RETENTION:-5}"
+[[ "$release_retention" =~ ^[0-9]+$ && "$release_retention" -ge 1 ]] || api_fail "ARASYA_API_RELEASE_RETENTION must be positive."
+
+api_root_input="${ARASYA_API_ROOT_PATH:-}"
+if [[ -z "$api_root_input" && -n "${ARASYA_API_RUNTIME_PATH:-}" ]]; then
+  [[ "${ARASYA_API_RUNTIME_PATH##*/}" == "current" ]] || api_fail "Legacy runtime override must end in /current."
+  api_root_input="${ARASYA_API_RUNTIME_PATH%/current}"
+fi
+api_root_input="${api_root_input:-$HOME/arasya-operations-api}"
 public_input="${ARASYA_API_PUBLIC_PATH:-$HOME/api.arasyahome.ro}"
-runtime_path="$(resolve_path "$runtime_input")"
-public_path="$(resolve_path "$public_input")"
-home_path="$(resolve_path "$HOME")"
-staff_path="$(resolve_path "$HOME/staff.arasyahome.ro")"
-config_path="$(resolve_path "$HOME/arasya-config")"
+api_root="$(api_resolve_path "$api_root_input")"
+public_path="$(api_resolve_path "$public_input")"
+home_path="$(api_resolve_path "$HOME")"
+staff_path="$(api_resolve_path "$HOME/staff.arasyahome.ro")"
+config_path="$(api_resolve_path "$HOME/arasya-config")"
 
-/bin/bash "$release_root/scripts/validate-release.sh" "$release_root"
+api_validate_packaged_release "$release_root"
+source_commit="$(api_release_sha "$release_root")"
+api_validate_sha "$source_commit"
 
-for target in "$runtime_path" "$public_path"; do
-  [[ "$target" != "/" ]] || fail "Deployment destinations cannot be /."
-  [[ "$target" != "$home_path" ]] || fail "Deployment destinations cannot be HOME."
-  [[ "$target" != "$staff_path" ]] || fail "API files cannot target the Staff document root."
-  [[ "$target" != "$config_path" ]] || fail "Deployment destinations cannot be the private configuration directory."
-  [[ "$target" != "$release_root" ]] || fail "Deployment destinations cannot be the release repository."
-  case "$target" in
-    "$staff_path"/*) fail "API files cannot target a directory inside the Staff document root." ;;
-    "$config_path"/*) fail "Deployment destinations cannot be inside the private configuration directory." ;;
-    "$release_root"/*) fail "Deployment destinations cannot be inside the release repository." ;;
-  esac
+for target in "$api_root" "$public_path"; do
+  [[ "$target" != "/" && "$target" != "$home_path" && "$target" != "$staff_path" && "$target" != "$config_path" && "$target" != "$release_root" ]] \
+    || api_fail "Deployment target is forbidden."
+  case "$target" in "$staff_path"/*|"$config_path"/*|"$release_root"/*) api_fail "Deployment target is inside a forbidden root." ;; esac
+done
+[[ "$api_root" != "$public_path" ]] || api_fail "Private runtime and public root must differ."
+case "$api_root/" in "$public_path/"*) api_fail "Private runtime cannot be inside public root." ;; esac
+case "$public_path/" in "$api_root/"*) api_fail "Public root cannot be inside private runtime." ;; esac
+
+if [[ "${DRY_RUN:-0}" == "1" ]]; then api_log "Dry-run passed for source commit $source_commit."; exit 0; fi
+
+releases_root="$api_root/releases"
+target_release="$releases_root/$source_commit"
+staging_release="$releases_root/.staging-$source_commit-$$"
+active_pointer="$api_root/active-release"
+previous_pointer="$api_root/previous-release"
+stable_bin="$api_root/bin"
+cleanup() { [[ -d "$staging_release" ]] && rm -rf -- "$staging_release"; }
+trap cleanup EXIT
+
+mkdir -p -- "$releases_root" "$public_path" "$stable_bin"
+resolved_releases="$(cd -- "$releases_root" && pwd -P)"
+[[ "${target_release%/*}" == "$resolved_releases" ]] || api_fail "Release target escaped releases root."
+for forbidden in src database config bootstrap.php release.json; do
+  [[ ! -e "$public_path/$forbidden" ]] || api_fail "Private artifact exists in API public root: $forbidden"
 done
 
-[[ "$runtime_path" != "$public_path" ]] || fail "Private runtime and public document root must be different."
-case "$runtime_path/" in "$public_path/"*) fail "Private runtime cannot be inside the public document root." ;; esac
-case "$public_path/" in "$runtime_path/"*) fail "Public document root cannot be inside the private runtime." ;; esac
-
-if [[ "${DRY_RUN:-0}" == "1" ]]; then
-  log "Dry-run passed. Runtime: $runtime_path; public: $public_path"
-  exit 0
+if [[ -d "$target_release" ]]; then
+  api_validate_packaged_release "$target_release"
+else
+  mkdir -- "$staging_release"
+  rsync --archive --delete --exclude='.git' "$release_root/" "$staging_release/"
+  api_validate_packaged_release "$staging_release"
+  [[ "$(api_release_sha "$staging_release")" == "$source_commit" ]] || api_fail "Staged release provenance changed."
+  mv -- "$staging_release" "$target_release"
 fi
 
-log "Synchronizing verified private runtime first (migrations remain manual)..."
-mkdir -p -- "$runtime_path"
-rsync --archive --delete --exclude='.git' "$release_root/" "$runtime_path/"
-[[ -f "$runtime_path/bootstrap.php" ]] || fail "Private runtime verification failed: bootstrap.php is missing."
-for directory in src database/migrations bin config; do
-  [[ -d "$runtime_path/$directory" ]] || fail "Private runtime verification failed: $directory is missing."
-done
-[[ -f "$runtime_path/release.json" ]] || fail "Private runtime verification failed: release.json is missing."
-
-log "Synchronizing public-only API files second..."
-mkdir -p -- "$public_path"
-rsync --archive --delete \
-  --exclude='.well-known/' \
-  --exclude='cgi-bin/' \
-  "$release_root/public/" "$public_path/"
-
-[[ -f "$public_path/index.php" ]] || fail "Public deployment verification failed: index.php is missing."
-[[ -f "$public_path/.htaccess" ]] || fail "Public deployment verification failed: .htaccess is missing."
-[[ -f "$public_path/RuntimeLocator.php" ]] || fail "Public deployment verification failed: RuntimeLocator.php is missing."
-for forbidden in src database bin config bootstrap.php; do
-  [[ ! -e "$public_path/$forbidden" ]] || fail "Private artifact appeared in the public document root: $forbidden"
-done
-if find "$public_path" -name 'secrets.json' -print -quit | grep -q .; then
-  fail "A private secrets.json file appeared in the public document root."
+old_active=""
+if [[ -e "$active_pointer" || -L "$active_pointer" ]]; then
+  old_active="$(api_read_pointer "$active_pointer")"
+  [[ -d "$releases_root/$old_active" ]] || api_fail "Existing active pointer target is unavailable."
 fi
 
-log "Two-target code deployment completed successfully."
+legacy_current="$api_root/current"
+if [[ -z "$old_active" && -d "$legacy_current" && -f "$legacy_current/release.json" && -x "$legacy_current/scripts/validate-release.sh" ]]; then
+  legacy_commit="$(api_release_sha "$legacy_current" 2>/dev/null || true)"
+  if [[ "$legacy_commit" =~ ^[0-9a-f]{40}$ && ! -d "$releases_root/$legacy_commit" ]] \
+    && /bin/bash "$legacy_current/scripts/validate-release.sh" "$legacy_current" >/dev/null 2>&1; then
+    legacy_staging="$releases_root/.staging-legacy-$legacy_commit-$$"
+    mkdir -- "$legacy_staging"
+    rsync --archive --delete --exclude='.git' "$legacy_current/" "$legacy_staging/"
+    /bin/bash "$release_root/scripts/generate-sha256s.sh" "$legacy_staging"
+    api_verify_checksum_manifest "$legacy_staging"
+    mv -- "$legacy_staging" "$releases_root/$legacy_commit"
+    api_log "Retained verified legacy current release: $legacy_commit"
+  else
+    api_log "Legacy current release was not snapshot; live legacy directory remains untouched."
+  fi
+fi
+
+[[ "${ARASYA_TEST_FAIL_BEFORE_ACTIVATION:-0}" != "1" ]] || api_fail "Simulated failure before activation."
+
+api_atomic_copy_file "$target_release/public/RuntimeLocator.php" "$public_path/RuntimeLocator.php"
+api_atomic_copy_file "$target_release/public/index.php" "$public_path/index.php"
+api_atomic_copy_file "$target_release/public/.htaccess" "$public_path/.htaccess"
+api_atomic_copy_file "$target_release/scripts/maintenance-active.sh" "$stable_bin/maintenance-active.sh"
+chmod 0755 "$stable_bin/maintenance-active.sh"
+
+if [[ -n "$old_active" ]]; then api_write_pointer "$previous_pointer" "$old_active"; fi
+api_write_pointer "$active_pointer" "$source_commit"
+[[ "$(api_read_pointer "$active_pointer")" == "$source_commit" ]] || api_fail "Active release verification failed."
+api_validate_packaged_release "$target_release"
+
+previous=""; if [[ -f "$previous_pointer" ]]; then previous="$(api_read_pointer "$previous_pointer")"; fi
+api_gc_releases "$releases_root" "$source_commit" "$previous" "$release_retention" "$gc_dry_run"
+trap - EXIT
+api_log "Activated source commit: $source_commit"
