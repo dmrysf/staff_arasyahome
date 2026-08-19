@@ -404,7 +404,9 @@ test('JSON private config maps aliases, arrays and deterministic precedence', fu
 test('explicit config override wins and legacy PHP private config remains supported', function (): void {
     $home = sys_get_temp_dir() . '/arasya-legacy-config-' . bin2hex(random_bytes(6));
     $configDirectory = $home . '/arasya-config';
+    $unrelatedRelease = $home . '/unrelated-release';
     mkdir($configDirectory, 0700, true);
+    mkdir($unrelatedRelease, 0700, true);
     $jsonPath = $configDirectory . '/secrets.json';
     $phpPath = $configDirectory . '/operations-api.php';
     $base = [
@@ -424,13 +426,66 @@ test('explicit config override wins and legacy PHP private config remains suppor
         ], JSON_THROW_ON_ERROR));
         expect(Config::fromEnvironment(new ConfigLoader(['HOME' => $home]))->dbName === 'json-db');
         expect(Config::fromEnvironment(new ConfigLoader(['HOME' => $home, 'ARASYA_CONFIG_FILE' => $phpPath]))->dbName === 'legacy-db');
+        expect(Config::fromEnvironment(new ConfigLoader(['ARASYA_CONFIG_FILE' => $phpPath], $unrelatedRelease))->dbName === 'legacy-db');
     } finally {
         if (is_file($jsonPath)) {
             unlink($jsonPath);
         }
         unlink($phpPath);
+        rmdir($unrelatedRelease);
         rmdir($configDirectory);
         rmdir($home);
+    }
+});
+
+test('private config derives cPanel home only from the validated runtime layout', function (): void {
+    $account = sys_get_temp_dir() . '/arasya-litespeed-config-' . bin2hex(random_bytes(6));
+    $runtime = $account . '/arasya-operations-api/current';
+    $configDirectory = $account . '/arasya-config';
+    mkdir($runtime, 0700, true);
+    mkdir($configDirectory, 0700, true);
+    $path = $configDirectory . '/secrets.json';
+    file_put_contents($path, json_encode([
+        'ARASYA_APP_SECRET' => str_repeat('w', 32),
+        'DB_USER_NAME' => 'web-user',
+        'DB_USER_PASSWORD' => 'web-password',
+        'DB_NAME' => 'web-database',
+        'ARASYA_ALLOWED_ORIGINS' => ['https://staff.arasyahome.ro'],
+    ], JSON_THROW_ON_ERROR));
+    try {
+        $config = Config::fromEnvironment(new ConfigLoader([], $runtime));
+        expect($config->dbUser === 'web-user');
+        expect($config->dbName === 'web-database');
+    } finally {
+        unlink($path);
+        rmdir($configDirectory);
+        rmdir($runtime);
+        rmdir($account . '/arasya-operations-api');
+        rmdir($account);
+    }
+});
+
+test('private config never derives home from an arbitrary release path', function (): void {
+    $workspace = sys_get_temp_dir() . '/arasya-untrusted-release-' . bin2hex(random_bytes(6));
+    $release = $workspace . '/different-application/current';
+    $configDirectory = $workspace . '/arasya-config';
+    mkdir($release, 0700, true);
+    mkdir($configDirectory, 0700, true);
+    file_put_contents($configDirectory . '/secrets.json', '{}');
+    try {
+        $denied = false;
+        try {
+            (new ConfigLoader([], $release))->load();
+        } catch (RuntimeException $error) {
+            $denied = str_contains($error->getMessage(), 'home');
+        }
+        expect($denied, 'An arbitrary release path unexpectedly derived a private configuration home.');
+    } finally {
+        unlink($configDirectory . '/secrets.json');
+        rmdir($configDirectory);
+        rmdir($release);
+        rmdir($workspace . '/different-application');
+        rmdir($workspace);
     }
 });
 
@@ -479,9 +534,9 @@ test('private config path rejects runtime, API public and Staff public roots', f
     }
 });
 
-test('runtime locator supports nested source, cPanel split root and safe override', function (): void {
+test('runtime locator supports nested, HOME, HOME-less LiteSpeed and safe override layouts', function (): void {
     $sourceRoot = dirname(__DIR__);
-    expect(RuntimeLocator::locate(null, $sourceRoot, null) === realpath($sourceRoot));
+    expect(RuntimeLocator::locate(null, $sourceRoot, null, $sourceRoot . '/public') === realpath($sourceRoot));
 
     $home = sys_get_temp_dir() . '/arasya-runtime-locator-' . bin2hex(random_bytes(6));
     $runtime = $home . '/arasya-operations-api/current';
@@ -489,18 +544,34 @@ test('runtime locator supports nested source, cPanel split root and safe overrid
     mkdir($runtime, 0700, true);
     mkdir($public, 0700, true);
     file_put_contents($runtime . '/bootstrap.php', "<?php\ndeclare(strict_types=1);\n");
+    file_put_contents($public . '/index.php', "<?php\ndeclare(strict_types=1);\n");
+    file_put_contents($public . '/RuntimeLocator.php', "<?php\ndeclare(strict_types=1);\n");
     try {
-        expect(RuntimeLocator::locate(null, $home, $home) === realpath($runtime));
-        expect(RuntimeLocator::locate($runtime, '/unused', null) === realpath($runtime));
+        expect(RuntimeLocator::locate(null, $home, $home, $public) === realpath($runtime));
+        expect(RuntimeLocator::locate(null, $home, null, $public) === realpath($runtime));
+        expect(RuntimeLocator::locate($runtime, '/unused', null, '/unused') === realpath($runtime));
         $unsafeDenied = false;
         try {
-            RuntimeLocator::locate('../unsafe', $home, $home);
+            RuntimeLocator::locate('../unsafe', $home, $home, $public);
         } catch (RuntimeException) {
             $unsafeDenied = true;
         }
         expect($unsafeDenied, 'Unsafe runtime override unexpectedly succeeded.');
-    } finally {
+
         unlink($runtime . '/bootstrap.php');
+        $missingDenied = false;
+        try {
+            RuntimeLocator::locate(null, $home, null, $public);
+        } catch (RuntimeException) {
+            $missingDenied = true;
+        }
+        expect($missingDenied, 'A public parent without a valid private runtime unexpectedly succeeded.');
+    } finally {
+        if (is_file($runtime . '/bootstrap.php')) {
+            unlink($runtime . '/bootstrap.php');
+        }
+        unlink($public . '/index.php');
+        unlink($public . '/RuntimeLocator.php');
         rmdir($runtime);
         rmdir($home . '/arasya-operations-api');
         rmdir($public);

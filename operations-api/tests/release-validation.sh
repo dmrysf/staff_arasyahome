@@ -12,7 +12,7 @@ mkdir -p "$workspace/public" "$workspace/src" "$workspace/database/migrations" "
 touch "$workspace/.cpanel.yml" "$workspace/.htaccess" "$workspace/bootstrap.php" "$workspace/public/index.php" "$workspace/public/.htaccess" "$workspace/public/RuntimeLocator.php"
 cp operations-api/scripts/cpanel-deploy-api.sh operations-api/scripts/validate-release.sh "$workspace/scripts/"
 cp operations-api/config/secrets.example.json "$workspace/config/secrets.example.json"
-printf '{"sourceCommit":"test","builtAt":"2026-08-19T00:00:00Z","version":"2.0.2"}\n' > "$workspace/release.json"
+printf '{"sourceCommit":"test","builtAt":"2026-08-19T00:00:00Z","version":"2.0.3"}\n' > "$workspace/release.json"
 
 /bin/bash operations-api/scripts/validate-release.sh "$workspace" >/dev/null
 

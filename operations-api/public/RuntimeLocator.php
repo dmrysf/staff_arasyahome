@@ -8,7 +8,7 @@ use RuntimeException;
 
 final class RuntimeLocator
 {
-    public static function locate(?string $override, string $nestedRoot, ?string $home): string
+    public static function locate(?string $override, string $nestedRoot, ?string $home, string $publicRoot): string
     {
         $override = trim($override ?? '');
         if ($override !== '') {
@@ -28,7 +28,27 @@ final class RuntimeLocator
             }
         }
 
+        $publicRoot = self::resolvedDirectory($publicRoot);
+        if ($publicRoot !== null) {
+            $derivedHome = dirname($publicRoot);
+            if ($derivedHome !== DIRECTORY_SEPARATOR) {
+                $cpanel = self::tryRoot($derivedHome . '/arasya-operations-api/current');
+                if ($cpanel !== null) {
+                    return $cpanel;
+                }
+            }
+        }
+
         throw new RuntimeException('Operations API runtime is unavailable.');
+    }
+
+    private static function resolvedDirectory(string $candidate): ?string
+    {
+        if (!str_starts_with($candidate, DIRECTORY_SEPARATOR) || preg_match('#(?:^|/)\.{1,2}(?:/|$)#', $candidate) === 1) {
+            return null;
+        }
+        $resolved = realpath($candidate);
+        return $resolved !== false && is_dir($resolved) ? $resolved : null;
     }
 
     private static function tryRoot(string $candidate): ?string

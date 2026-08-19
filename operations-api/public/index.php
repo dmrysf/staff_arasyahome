@@ -16,6 +16,7 @@ try {
         $override === false ? null : (string) $override,
         dirname(__DIR__),
         $home === false ? null : (string) $home,
+        __DIR__,
     );
     require $releaseRoot . '/bootstrap.php';
     $container = new Container();

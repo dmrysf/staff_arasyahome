@@ -59,11 +59,22 @@ Deployment never copies, changes, deletes, chmods, or prints this file. Its reco
 }
 ```
 
-Do not copy actual values into Git, CI, documentation, or chat. Before health verification, manually add a strong random `ARASYA_APP_SECRET` of at least 32 bytes. Until it exists, startup intentionally fails closed with a safe `CONFIGURATION_ERROR`.
+Do not copy actual values into Git, CI, documentation, or chat. `ARASYA_APP_SECRET` must contain at least 32 bytes and has no fallback; if it is absent, startup intentionally fails closed with a safe `CONFIGURATION_ERROR`.
 
 Supported aliases are `DB_USER_NAME`, `DB_USER_PASSWORD`, `DB_NAME`, `DB_HOST`, and `DB_PORT`. Canonical `ARASYA_DB_*` keys win over aliases in the same file. Real environment variables win over private-file values. `ARASYA_ALLOWED_ORIGINS` accepts either an array of exact origins or a CSV string. Unknown JSON keys are ignored; supported keys with nested or invalid values fail validation. If `DB_HOST` is absent, the cPanel-local default is `localhost`.
 
 `ARASYA_CONFIG_FILE` may explicitly select a `.json` or legacy `.php` private file. Without an override the loader prefers `$HOME/arasya-config/secrets.json`, then the legacy `$HOME/arasya-config/operations-api.php`. Private config paths inside the runtime, API public root, or Staff public root are rejected.
+
+## LiteSpeed path resolution
+
+The production web SAPI is LiteSpeed on PHP 8.2.32, and it may legitimately omit the `HOME` environment variable. The application does not require hosting or `.htaccess` changes to compensate:
+
+1. The public entrypoint first honors a server-side `ARASYA_API_RELEASE_ROOT`, then a normal nested source release.
+2. If available, `HOME` resolves `$HOME/arasya-operations-api/current`.
+3. Without `HOME`, the entrypoint takes the parent of its trusted, real public directory and tests only `arasya-operations-api/current` beneath it.
+4. Inside that validated runtime, `ConfigLoader` derives the account home only when its real release path exactly matches `*/arasya-operations-api/current`.
+
+Every runtime candidate must be absolute, traversal-free, and contain a directly nested `bootstrap.php`. Arbitrary request data never participates. Config home is never derived from an unrelated release layout. Do not add `SetEnv HOME`, config paths, database credentials, or secrets to public `.htaccess`.
 
 ## Two-target cPanel deployment
 
@@ -90,36 +101,34 @@ It rejects `/`, `$HOME`, Staff, private config, Git/release, equal/nested runtim
 DRY_RUN=1 /bin/bash ./scripts/cpanel-deploy-api.sh
 ```
 
-The public `index.php` resolves runtime in this order: `ARASYA_API_RELEASE_ROOT` server environment override, normal nested source layout, then `$HOME/arasya-operations-api/current`. Invalid paths return only the safe JSON configuration failure and never expose filesystem locations.
+Invalid runtime or configuration paths return only the safe JSON configuration failure and never expose filesystem locations.
 
 ## Exact production rollout
 
-After V2.0.2 is pushed and `api-deploy` is regenerated:
+After V2.0.3 is pushed and `api-deploy` is regenerated:
 
-1. Confirm `$HOME/arasya-config/secrets.json` exists.
-2. Manually add the missing `ARASYA_APP_SECRET`; never disclose its value.
-3. Validate the JSON syntax using a local/private editor or a server-side JSON checker that does not print the file.
-4. Confirm the existing `api.arasyahome.ro` document root is `$HOME/api.arasyahome.ro`; do not change it.
-5. Confirm the cPanel Git repository tracks `api-deploy`.
-6. Select **Update from Remote**.
-7. Select **Deploy HEAD Commit**.
-8. Verify public files:
+1. Confirm the existing `api.arasyahome.ro` document root remains `$HOME/api.arasyahome.ro`; do not change it.
+2. Confirm the cPanel Git repository tracks `api-deploy`.
+3. Select **Update from Remote**.
+4. Select **Deploy HEAD Commit**.
+5. Verify public files:
    - `$HOME/api.arasyahome.ro/index.php`
    - `$HOME/api.arasyahome.ro/.htaccess`
    - `$HOME/api.arasyahome.ro/RuntimeLocator.php`
-9. Verify private runtime:
+6. Verify private runtime:
    - `$HOME/arasya-operations-api/current/bootstrap.php`
    - `$HOME/arasya-operations-api/current/src`
    - `$HOME/arasya-operations-api/current/bin`
    - `$HOME/arasya-operations-api/current/database`
-10. Confirm PHP 8.2+ and extensions:
+7. Verify `https://api.arasyahome.ro/health` first. Expected status is HTTP 200 with service `arasya-operations-api` and version `2.0.3`.
+8. Only after health succeeds, confirm PHP 8.2+ and extensions if needed:
 
     ```bash
     php -v
     php -m | grep -E 'pdo_mysql|mbstring|openssl'
     ```
 
-11. Review migrations and back up any existing operational database, then run explicitly:
+9. Production migration remains pending. Review the migration and back up any existing operational database, then run it explicitly only after health returns 200:
 
     ```bash
     cd "$HOME/arasya-operations-api/current"
@@ -127,17 +136,16 @@ After V2.0.2 is pushed and `api-deploy` is regenerated:
     php bin/seed-reference-data.php
     ```
 
-12. Create the first employee interactively:
+10. Create the first employee interactively only after migration succeeds:
 
     ```bash
     php bin/create-employee.php
     ```
 
-13. Verify `https://api.arasyahome.ro/health`.
-14. Test login, session, `/employees/me`, refresh rotation, and logout with the exact Staff Origin and a cookie jar.
-15. Only after the API lifecycle succeeds, set `VITE_STAFF_API_BASE_URL=https://api.arasyahome.ro`.
-16. Keep `VITE_STAFF_PREVIEW_MODE=true` until real employee login is independently proven.
-17. Later set `VITE_STAFF_PREVIEW_MODE=false`, rebuild Staff, and test production login.
+11. Test login, session, `/employees/me`, refresh rotation, and logout with the exact Staff Origin and a cookie jar.
+12. Only after the API lifecycle succeeds, set `VITE_STAFF_API_BASE_URL=https://api.arasyahome.ro`.
+13. Keep `VITE_STAFF_PREVIEW_MODE=true` until real employee login is independently proven.
+14. Later set `VITE_STAFF_PREVIEW_MODE=false`, rebuild Staff, and test production login.
 
 ## Database privileges and rollback
 

@@ -24,7 +24,7 @@ final readonly class HealthController
         return Response::json([
             'status' => 'ok',
             'service' => 'arasya-operations-api',
-            'version' => '2.0.2',
+            'version' => '2.0.3',
             'time' => $this->clock->now()->format(DATE_ATOM),
         ]);
     }
