@@ -50,9 +50,9 @@ final readonly class AuthenticationService
         if (!$this->passwords->verify($password, $employee->passwordHash)) {
             $this->denyCredentials($normalized, $employee->employeeUuid, 'password_mismatch', $ipAddress, $userAgent, $requestId, $nowSql);
         }
-        if (!$employee->isActive()) {
+        if (!$employee->isOperationallyActive()) {
             $this->rateLimiter->recordFailure($normalized, $ipAddress, $nowSql);
-            $this->audit->record('AUTH_ACCOUNT_INACTIVE', $employee->employeeUuid, $normalized, $ipAddress, $userAgent, $requestId, $nowSql, ['status' => $employee->status]);
+            $this->audit->record('AUTH_ACCOUNT_INACTIVE', $employee->employeeUuid, $normalized, $ipAddress, $userAgent, $requestId, $nowSql, ['reason' => $employee->inactiveReason()]);
             throw new ApiException(401, 'ACCOUNT_INACTIVE', 'Account is not active.');
         }
 
@@ -101,9 +101,9 @@ final readonly class AuthenticationService
         }
 
         $employee = $this->employees->findByUuid($session->employeeUuid);
-        if ($employee === null || !$employee->isActive()) {
+        if ($employee === null || !$employee->isOperationallyActive()) {
             $this->sessions->revokeAllForEmployee($session->employeeUuid, $nowSql);
-            $this->audit->record('AUTH_ACCOUNT_INACTIVE', $session->employeeUuid, null, $ipAddress, $userAgent, $requestId, $nowSql);
+            $this->audit->record('AUTH_ACCOUNT_INACTIVE', $session->employeeUuid, null, $ipAddress, $userAgent, $requestId, $nowSql, ['reason' => $employee?->inactiveReason() ?? 'employee_missing']);
             throw new ApiException(401, 'ACCOUNT_INACTIVE', 'Account is not active.');
         }
 
@@ -141,12 +141,12 @@ final readonly class AuthenticationService
         return new AuthResult($current->employee, $newSession, $newRawToken, $this->tokens->csrfToken($newRawToken), $expiresAt);
     }
 
-    public function logout(string $rawToken, string $ipAddress, string $userAgent, string $requestId): void
+    public function logout(AuthenticatedSession $current, string $ipAddress, string $userAgent, string $requestId): void
     {
-        $current = $this->authenticate($rawToken, $ipAddress, $userAgent, $requestId);
         $nowSql = $this->sqlTime($this->clock->now());
-        $this->sessions->revokeByTokenHash($this->tokens->hash($rawToken), $nowSql);
-        $this->audit->record('AUTH_LOGOUT', $current->employee->employeeUuid, null, $ipAddress, $userAgent, $requestId, $nowSql);
+        if ($this->sessions->revokeByTokenHash($this->tokens->hash($current->rawToken), $nowSql)) {
+            $this->audit->record('AUTH_LOGOUT', $current->employee->employeeUuid, null, $ipAddress, $userAgent, $requestId, $nowSql);
+        }
     }
 
     private function denyCredentials(string $normalized, ?string $employeeUuid, string $reason, string $ipAddress, string $userAgent, string $requestId, string $nowSql): never

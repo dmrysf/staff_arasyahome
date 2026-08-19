@@ -16,7 +16,9 @@ final readonly class EmployeeIdentity
         public string $displayName,
         public string $departmentKey,
         public string $departmentName,
+        public string $departmentStatus,
         public string $roleKey,
+        public string $roleStatus,
         public string $status,
         public array $permissions,
         public array $allowedStageIds,
@@ -27,5 +29,25 @@ final readonly class EmployeeIdentity
     {
         return $this->status === 'active';
     }
-}
 
+    public function isOperationallyActive(): bool
+    {
+        return $this->status === 'active'
+            && $this->roleStatus === 'active'
+            && $this->departmentStatus === 'active';
+    }
+
+    public function inactiveReason(): ?string
+    {
+        if ($this->status !== 'active') {
+            return 'employee_inactive';
+        }
+        if ($this->roleStatus !== 'active') {
+            return 'role_inactive';
+        }
+        if ($this->departmentStatus !== 'active') {
+            return 'department_inactive';
+        }
+        return null;
+    }
+}

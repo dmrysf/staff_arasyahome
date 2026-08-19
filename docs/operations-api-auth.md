@@ -4,7 +4,7 @@
 
 `operations-api/` is a standalone PHP 8.2+ JSON API. It is independent from WordPress, WooCommerce, YD Soft authentication, and the React build. Only `operations-api/public/` is web-accessible; source, configuration examples, migrations, seeds, CLI commands, and tests remain outside the document root.
 
-The browser is never an identity or authorization authority. Every protected request resolves the opaque cookie to a server-side session, reloads the employee and current role permissions, verifies `status = active`, and only then authorizes the operation. Frontend permission checks are presentation hints.
+The browser is never an identity or authorization authority. Every protected request resolves the opaque cookie to a server-side session, reloads the employee, role, department, and current role permissions, verifies all three statuses are `active`, and only then authorizes the operation. Frontend permission checks are presentation hints.
 
 ## Endpoint contract
 
@@ -14,10 +14,12 @@ The browser is never an identity or authorization authority. Every protected req
 | `POST` | `/auth/login` | Validate username/password and create a fresh session |
 | `GET` | `/auth/session` | Restore the authenticated Staff session |
 | `POST` | `/auth/refresh` | Atomically revoke and rotate the opaque session token |
-| `POST` | `/auth/logout` | Revoke the server session and clear the cookie |
+| `POST` | `/auth/logout` | Revoke a valid server session and clear the cookie; already-invalid sessions are idempotent success |
 | `GET` | `/employees/me` | Return the employee derived from the current session |
 
 Success responses for login/session/refresh contain an allowlisted employee representation, absolute `expiresAt`, and a session-bound `csrfToken`. They never contain password hashes or a raw session token. Errors use `{ "error": { "code", "message", "requestId" } }` and authentication responses use `Cache-Control: no-store`.
+
+`GET /auth/session` returns `NO_SESSION` when no cookie exists and `SESSION_EXPIRED` when a presented cookie is expired or revoked. This lets Staff distinguish a normal first visit from an expired prior login. Logout first resolves the cookie: no/expired/revoked sessions return idempotent `{ "ok": true }` and clear the cookie; a valid session still requires the exact CSRF token. `CSRF_INVALID` never revokes the session and never clears its cookie.
 
 The initial API remains unversioned to match the established Staff adapter. Route construction is centralized, so a future `/api/v1` prefix can be introduced deliberately without spreading path logic through React components.
 
@@ -27,7 +29,7 @@ The initial API remains unversioned to match the established Staff adapter. Rout
 
 Reference tables normalize departments, roles, permissions, role-permission links, and employee stage access. Stage identifiers are opaque stable values; Romanian labels never become authorization keys. The initial employee role receives the current Staff vocabulary: `orders.scan`, `orders.view_mine`, `orders.claim`, `orders.advance_stage`, `orders.handover`, `history.view_mine`, and `profile.view_self`. Order endpoints are intentionally not implemented in V2.0.
 
-Permissions are resolved from current database state on each authenticated request. The centralized authorization service denies inactive employees, absent permissions, and unknown permission keys by default.
+Permissions are resolved from current database state on each authenticated request. Inactive roles return no permissions at repository level. The centralized authorization service independently denies inactive employees, roles, departments, absent permissions, and unknown permission keys by default. A role or department status change therefore invalidates operational access on the next request without waiting for session touch.
 
 ## Password and session design
 
@@ -58,13 +60,15 @@ Failed login limits are configurable and initially use five failures per normali
 
 Authentication audit is separate from order activity and records typed events, request ID, optional employee UUID, keyed-hash username/IP/user-agent identifiers, and sanitized metadata. It never stores passwords, session tokens, CSRF values, headers, or secrets. Detailed auth events and login-attempt rows should initially be retained for 90 days, with cleanup introduced only through an explicitly provisioned scheduler.
 
-Client-provided `X-Request-ID` values are length/character validated; otherwise the API generates one. Structured logs contain allowlisted operational context and never dump request headers. Forwarded IP headers are ignored unless the immediate proxy is explicitly trusted.
+Client-provided `X-Request-ID` values are length/character validated; otherwise the API generates one. Structured HTTP logs contain request ID, route, method, status, and the authenticated `employee_uuid` when safely resolved. They never dump request headers or credentials. Durable auth audit remains separate. Forwarded IP headers are ignored unless the immediate proxy is explicitly trusted.
 
 ## Database schema and configuration
 
 The ordered migration creates `departments`, `roles`, `permissions`, `role_permissions`, `employees`, `employee_stage_access`, `auth_sessions`, `auth_login_attempts`, atomic `auth_rate_limit_buckets`, and `auth_audit_events`, plus required unique and lookup indexes. PDO uses native prepared statements, exceptions, `utf8mb4`, UTC database sessions, short connection timeout, and transactions for token rotation.
 
-Runtime secrets use `ARASYA_DB_*`, `ARASYA_APP_SECRET`, exact `ARASYA_ALLOWED_ORIGINS`, session/rate-limit settings, and explicit proxy settings. Runtime DB users need only CRUD rights on API tables; schema migration can use a separately controlled account. Migrations are explicit CLI operations and production backups are required before future migrations affecting real data.
+Runtime secrets use `ARASYA_DB_*`, `ARASYA_APP_SECRET`, exact `ARASYA_ALLOWED_ORIGINS`, session/rate-limit settings, and explicit proxy settings. Configuration precedence is environment variable, private config file, then safe default where one exists. `ARASYA_CONFIG_FILE` can select a private file; cPanel defaults to `$HOME/arasya-config/operations-api.php`. The loader rejects a private file inside the API release so immutable code deployment cannot expose or delete it. Web and CLI use the same loader.
+
+Runtime DB users need only CRUD rights on API tables; schema migration can use a separately controlled account. Migrations are explicit CLI operations and production backups are required before future migrations affecting real data. The independent release deploys to `$HOME/arasya-operations-api/current`, while `api.arasyahome.ro` points only to `$HOME/arasya-operations-api/current/public`.
 
 ## Future V2.1 boundary
 

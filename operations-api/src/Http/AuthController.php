@@ -21,6 +21,7 @@ final readonly class AuthController
         private CookiePolicy $cookies,
         private Config $config,
         private AuthorizationService $authorization,
+        private RequestContext $context,
     ) {
     }
 
@@ -32,18 +33,23 @@ final readonly class AuthController
             throw new ApiException(400, 'INVALID_REQUEST', 'Username and password must be strings.');
         }
         $result = $this->auth->login($input['username'], $input['password'], $request->ipAddress, $request->userAgent, $request->requestId);
+        $this->context->authenticatedAs($result->employee->employeeUuid);
         return Response::json($this->payload($result), 200, ['Set-Cookie' => $this->cookies->session($result->rawToken, $result->expiresAt)]);
     }
 
     public function session(Request $request): Response
     {
+        if ($this->rawToken($request) === '') {
+            throw new ApiException(401, 'NO_SESSION', 'Authentication required.');
+        }
         $session = $this->current($request);
         return Response::json($this->sessionPayload($session));
     }
 
     public function refresh(Request $request): Response
     {
-        $rawToken = $this->rawToken($request);
+        $current = $this->current($request);
+        $rawToken = $current->rawToken;
         $this->csrf->requireValid($rawToken, $request->header('x-csrf-token'));
         $result = $this->auth->refresh($rawToken, $request->ipAddress, $request->userAgent, $request->requestId);
         return Response::json($this->payload($result), 200, ['Set-Cookie' => $this->cookies->session($result->rawToken, $result->expiresAt)]);
@@ -51,9 +57,16 @@ final readonly class AuthController
 
     public function logout(Request $request): Response
     {
-        $rawToken = $this->rawToken($request);
-        $this->csrf->requireValid($rawToken, $request->header('x-csrf-token'));
-        $this->auth->logout($rawToken, $request->ipAddress, $request->userAgent, $request->requestId);
+        try {
+            $current = $this->current($request);
+        } catch (ApiException $error) {
+            if (in_array($error->errorCode, ['SESSION_EXPIRED', 'ACCOUNT_INACTIVE'], true)) {
+                return Response::json(['ok' => true], 200, ['Set-Cookie' => $this->cookies->clear()]);
+            }
+            throw $error;
+        }
+        $this->csrf->requireValid($current->rawToken, $request->header('x-csrf-token'));
+        $this->auth->logout($current, $request->ipAddress, $request->userAgent, $request->requestId);
         return Response::json(['ok' => true], 200, ['Set-Cookie' => $this->cookies->clear()]);
     }
 
@@ -66,7 +79,9 @@ final readonly class AuthController
 
     private function current(Request $request): AuthenticatedSession
     {
-        return $this->auth->authenticate($this->rawToken($request), $request->ipAddress, $request->userAgent, $request->requestId);
+        $session = $this->auth->authenticate($this->rawToken($request), $request->ipAddress, $request->userAgent, $request->requestId);
+        $this->context->authenticatedAs($session->employee->employeeUuid);
+        return $session;
     }
 
     private function rawToken(Request $request): string

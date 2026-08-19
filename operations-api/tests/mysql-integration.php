@@ -99,5 +99,82 @@ try {
         throw $error;
     }
 }
-$auth->logout($refresh->rawToken, '127.0.0.1', 'mysql-integration', 'mysql-logout');
-fwrite(STDOUT, "PASS MySQL migration and authentication lifecycle integration.\n");
+$current = $auth->authenticate($refresh->rawToken, '127.0.0.1', 'mysql-integration', 'mysql-current');
+$auth->logout($current, '127.0.0.1', 'mysql-integration', 'mysql-logout');
+
+$createDepartment = $pdo->prepare(
+    "INSERT INTO departments (department_key, name, status, created_at, updated_at)
+     VALUES (:department_key, :department_name, 'active', UTC_TIMESTAMP(6), UTC_TIMESTAMP(6))",
+);
+$createRole = $pdo->prepare(
+    "INSERT INTO roles (role_key, name, status, created_at, updated_at)
+     VALUES (:role_key, :role_name, 'active', UTC_TIMESTAMP(6), UTC_TIMESTAMP(6))",
+);
+
+$roleSuffix = 'role-' . $suffix;
+$roleDepartment = 'department-' . $suffix;
+$createDepartment->execute([
+    'department_key' => $roleDepartment,
+    'department_name' => 'Integration Role Department',
+]);
+$createRole->execute([
+    'role_key' => $roleSuffix,
+    'role_name' => 'Integration Role',
+]);
+$roleEmployee = $employees->create(
+    Uuid::v4(),
+    'ROLE-' . strtoupper($suffix),
+    'role.' . $suffix,
+    'role.' . $suffix,
+    $passwords->hash('integration role passphrase'),
+    'Role Status Employee',
+    $roleDepartment,
+    $roleSuffix,
+    [],
+    $clock->now()->format('Y-m-d H:i:s.u'),
+);
+$roleLogin = $auth->login($roleEmployee->username, 'integration role passphrase', '127.0.0.1', 'mysql-integration', 'role-login');
+$pdo->prepare("UPDATE roles SET status = 'inactive' WHERE role_key = :key")->execute(['key' => $roleSuffix]);
+try {
+    $auth->authenticate($roleLogin->rawToken, '127.0.0.1', 'mysql-integration', 'role-inactive');
+    throw new RuntimeException('Inactive role retained an authenticated session.');
+} catch (\Arasya\Operations\Http\ApiException $error) {
+    if ($error->errorCode !== 'ACCOUNT_INACTIVE') {
+        throw $error;
+    }
+}
+
+$departmentSuffix = 'department-status-' . $suffix;
+$departmentRole = 'department-role-' . $suffix;
+$createDepartment->execute([
+    'department_key' => $departmentSuffix,
+    'department_name' => 'Integration Department Status',
+]);
+$createRole->execute([
+    'role_key' => $departmentRole,
+    'role_name' => 'Integration Department Role',
+]);
+$departmentEmployee = $employees->create(
+    Uuid::v4(),
+    'DEPT-' . strtoupper($suffix),
+    'department.' . $suffix,
+    'department.' . $suffix,
+    $passwords->hash('integration department passphrase'),
+    'Department Status Employee',
+    $departmentSuffix,
+    $departmentRole,
+    [],
+    $clock->now()->format('Y-m-d H:i:s.u'),
+);
+$departmentLogin = $auth->login($departmentEmployee->username, 'integration department passphrase', '127.0.0.1', 'mysql-integration', 'department-login');
+$pdo->prepare("UPDATE departments SET status = 'inactive' WHERE department_key = :key")->execute(['key' => $departmentSuffix]);
+try {
+    $auth->authenticate($departmentLogin->rawToken, '127.0.0.1', 'mysql-integration', 'department-inactive');
+    throw new RuntimeException('Inactive department retained an authenticated session.');
+} catch (\Arasya\Operations\Http\ApiException $error) {
+    if ($error->errorCode !== 'ACCOUNT_INACTIVE') {
+        throw $error;
+    }
+}
+
+fwrite(STDOUT, "PASS MySQL migration, authentication and operational-status lifecycles.\n");

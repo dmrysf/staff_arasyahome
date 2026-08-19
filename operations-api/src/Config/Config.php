@@ -43,25 +43,26 @@ final readonly class Config
         }
     }
 
-    public static function fromEnvironment(): self
+    public static function fromEnvironment(?ConfigLoader $loader = null): self
     {
-        $environment = self::env('ARASYA_APP_ENV', 'production');
+        $values = ($loader ?? new ConfigLoader())->load();
+        $environment = self::value($values, 'ARASYA_APP_ENV', 'production');
         return new self(
             environment: $environment,
-            appSecret: self::required('ARASYA_APP_SECRET'),
-            dbHost: self::env('ARASYA_DB_HOST', '127.0.0.1'),
-            dbPort: self::positiveInt('ARASYA_DB_PORT', 3306),
-            dbName: self::required('ARASYA_DB_NAME'),
-            dbUser: self::required('ARASYA_DB_USER'),
-            dbPassword: self::required('ARASYA_DB_PASSWORD'),
-            allowedOrigins: self::csv(self::required('ARASYA_ALLOWED_ORIGINS')),
-            sessionTtlSeconds: self::positiveInt('ARASYA_SESSION_TTL', 36_000),
-            sessionTouchIntervalSeconds: self::positiveInt('ARASYA_SESSION_TOUCH_INTERVAL', 300),
-            loginUsernameLimit: self::positiveInt('ARASYA_LOGIN_USERNAME_LIMIT', 5),
-            loginIpLimit: self::positiveInt('ARASYA_LOGIN_IP_LIMIT', 30),
-            loginWindowSeconds: self::positiveInt('ARASYA_LOGIN_WINDOW', 900),
-            trustProxy: filter_var(self::env('ARASYA_TRUST_PROXY', 'false'), FILTER_VALIDATE_BOOL),
-            trustedProxies: self::csv(self::env('ARASYA_TRUSTED_PROXIES', '')),
+            appSecret: self::required($values, 'ARASYA_APP_SECRET'),
+            dbHost: self::value($values, 'ARASYA_DB_HOST', '127.0.0.1'),
+            dbPort: self::positiveInt($values, 'ARASYA_DB_PORT', 3306),
+            dbName: self::required($values, 'ARASYA_DB_NAME'),
+            dbUser: self::required($values, 'ARASYA_DB_USER'),
+            dbPassword: self::required($values, 'ARASYA_DB_PASSWORD'),
+            allowedOrigins: self::csv(self::required($values, 'ARASYA_ALLOWED_ORIGINS')),
+            sessionTtlSeconds: self::positiveInt($values, 'ARASYA_SESSION_TTL', 36_000),
+            sessionTouchIntervalSeconds: self::positiveInt($values, 'ARASYA_SESSION_TOUCH_INTERVAL', 300),
+            loginUsernameLimit: self::positiveInt($values, 'ARASYA_LOGIN_USERNAME_LIMIT', 5),
+            loginIpLimit: self::positiveInt($values, 'ARASYA_LOGIN_IP_LIMIT', 30),
+            loginWindowSeconds: self::positiveInt($values, 'ARASYA_LOGIN_WINDOW', 900),
+            trustProxy: filter_var(self::value($values, 'ARASYA_TRUST_PROXY', 'false'), FILTER_VALIDATE_BOOL),
+            trustedProxies: self::csv(self::value($values, 'ARASYA_TRUSTED_PROXIES', '')),
         );
     }
 
@@ -75,24 +76,26 @@ final readonly class Config
         return $this->isProduction() ? '__Host-arasya_session' : 'arasya_session';
     }
 
-    private static function required(string $name): string
+    /** @param array<string, string> $values */
+    private static function required(array $values, string $name): string
     {
-        $value = trim((string) getenv($name));
+        $value = trim($values[$name] ?? '');
         if ($value === '') {
-            throw new RuntimeException("Missing required environment variable: {$name}");
+            throw new RuntimeException("Missing required configuration value: {$name}");
         }
         return $value;
     }
 
-    private static function env(string $name, string $default): string
+    /** @param array<string, string> $values */
+    private static function value(array $values, string $name, string $default): string
     {
-        $value = getenv($name);
-        return $value === false ? $default : trim($value);
+        return array_key_exists($name, $values) ? trim($values[$name]) : $default;
     }
 
-    private static function positiveInt(string $name, int $default): int
+    /** @param array<string, string> $values */
+    private static function positiveInt(array $values, string $name, int $default): int
     {
-        $value = self::env($name, (string) $default);
+        $value = self::value($values, $name, (string) $default);
         if (!ctype_digit($value) || (int) $value < 1) {
             throw new RuntimeException("{$name} must be a positive integer.");
         }
@@ -105,4 +108,3 @@ final readonly class Config
         return array_values(array_filter(array_map('trim', explode(',', $value)), static fn (string $item): bool => $item !== ''));
     }
 }
-

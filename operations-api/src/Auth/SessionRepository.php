@@ -20,10 +20,9 @@ interface SessionRepository
 
     public function touch(string $sessionId, string $lastSeenAt): void;
 
-    public function revokeByTokenHash(string $tokenHash, string $revokedAt): void;
+    public function revokeByTokenHash(string $tokenHash, string $revokedAt): bool;
 
     public function revokeAllForEmployee(string $employeeUuid, string $revokedAt): int;
 
     public function rotate(string $sessionId, string $oldTokenHash, string $newSessionId, string $newTokenHash, string $now, string $expiresAt, string $ipHash, string $userAgentHash): bool;
 }
-

@@ -62,6 +62,9 @@ jobs:
       - name: Run backend unit and security tests
         run: php operations-api/tests/run.php
 
+      - name: Test API release validator
+        run: /bin/bash operations-api/tests/release-validation.sh
+
       - name: Run MySQL integration lifecycle
         env:
           ARASYA_TEST_DB_HOST: 127.0.0.1
@@ -86,13 +89,18 @@ jobs:
         run: |
           set -Eeuo pipefail
           release_dir="$RUNNER_TEMP/operations-api-release"
-          mkdir -p "$release_dir/config"
+          mkdir -p "$release_dir/config" "$release_dir/scripts"
           cp operations-api/bootstrap.php "$release_dir/bootstrap.php"
           cp operations-api/.htaccess "$release_dir/.htaccess"
+          cp operations-api/.cpanel.yml "$release_dir/.cpanel.yml"
           cp operations-api/README.md "$release_dir/README.md"
           cp -R operations-api/public operations-api/src operations-api/database operations-api/bin "$release_dir/"
           cp operations-api/config/config.example.php "$release_dir/config/config.example.php"
-          printf '{\n  "sourceCommit": "%s",\n  "builtAt": "%s",\n  "version": "2.0.0"\n}\n' "$GITHUB_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$release_dir/release.json"
+          cp operations-api/config/config.production.example.php "$release_dir/config/config.production.example.php"
+          cp operations-api/scripts/cpanel-deploy-api.sh operations-api/scripts/validate-release.sh "$release_dir/scripts/"
+          chmod +x "$release_dir/scripts/cpanel-deploy-api.sh" "$release_dir/scripts/validate-release.sh"
+          printf '{\n  "sourceCommit": "%s",\n  "builtAt": "%s",\n  "version": "2.0.1"\n}\n' "$GITHUB_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$release_dir/release.json"
+          ARASYA_RELEASE_STRICT=1 /bin/bash "$release_dir/scripts/validate-release.sh" "$release_dir"
 
       - name: Publish isolated api-deploy branch
         shell: bash

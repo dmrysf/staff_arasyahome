@@ -6,6 +6,7 @@ use Arasya\Operations\Auth\AuthenticationService;
 use Arasya\Operations\Audit\AuditLogger;
 use Arasya\Operations\Authorization\AuthorizationService;
 use Arasya\Operations\Config\Config;
+use Arasya\Operations\Config\ConfigLoader;
 use Arasya\Operations\Employee\EmployeeAdminService;
 use Arasya\Operations\Employee\EmployeeIdentity;
 use Arasya\Operations\Employee\EmployeeSerializer;
@@ -15,6 +16,7 @@ use Arasya\Operations\Http\AuthController;
 use Arasya\Operations\Http\CorsPolicy;
 use Arasya\Operations\Http\HealthController;
 use Arasya\Operations\Http\Request;
+use Arasya\Operations\Http\RequestContext;
 use Arasya\Operations\Security\CookiePolicy;
 use Arasya\Operations\Security\CsrfGuard;
 use Arasya\Operations\Security\PasswordHasher;
@@ -74,7 +76,9 @@ function authFixture(int $usernameLimit = 5, int $ipLimit = 30): array
         'Mehmet Yılmaz',
         'pregatire-material',
         'Pregătire Material',
+        'active',
         'employee',
+        'active',
         'active',
         ['history.view_mine', 'orders.scan', 'orders.view_mine', 'profile.view_self'],
         ['stage-preparation'],
@@ -109,8 +113,9 @@ test('realistic login, session, refresh and logout lifecycle rotates opaque toke
     expect($refresh->rawToken !== $login->rawToken);
     expect($refresh->csrfToken !== $login->csrfToken);
     expectApi('SESSION_EXPIRED', fn () => $auth->authenticate($login->rawToken, '192.0.2.10', 'test-agent', 'req-old'));
-    expect($auth->authenticate($refresh->rawToken, '192.0.2.10', 'test-agent', 'req-new')->employee->username === 'Mehmet.Yilmaz');
-    $auth->logout($refresh->rawToken, '192.0.2.10', 'test-agent', 'req-logout');
+    $current = $auth->authenticate($refresh->rawToken, '192.0.2.10', 'test-agent', 'req-new');
+    expect($current->employee->username === 'Mehmet.Yilmaz');
+    $auth->logout($current, '192.0.2.10', 'test-agent', 'req-logout');
     expectApi('SESSION_EXPIRED', fn () => $auth->authenticate($refresh->rawToken, '192.0.2.10', 'test-agent', 'req-after-logout'));
     expect(in_array('AUTH_LOGIN_SUCCESS', array_column($audit->events, 'eventType'), true));
     expect(in_array('AUTH_SESSION_REFRESH', array_column($audit->events, 'eventType'), true));
@@ -129,6 +134,24 @@ test('inactive and suspended employees cannot login or retain sessions', functio
     $employees->updateStatus($login->employee->employeeUuid, 'suspended', '2026-08-19 08:01:00.000000');
     expectApi('ACCOUNT_INACTIVE', fn () => $auth->authenticate($login->rawToken, '192.0.2.10', 'test', 'disabled-session'));
     expectApi('ACCOUNT_INACTIVE', fn () => $auth->login('mehmet.yilmaz', 'correct horse battery staple', '192.0.2.10', 'test', 'disabled-login'));
+});
+
+test('inactive roles and departments invalidate login, sessions and authorization', function (): void {
+    [$auth, $employees] = authFixture();
+    $roleSession = $auth->login('mehmet.yilmaz', 'correct horse battery staple', '192.0.2.10', 'test', 'role-login');
+    $employees->updateRoleStatus($roleSession->employee->employeeUuid, 'inactive');
+    expectApi('ACCOUNT_INACTIVE', fn () => $auth->authenticate($roleSession->rawToken, '192.0.2.10', 'test', 'role-session'));
+    expectApi('ACCOUNT_INACTIVE', fn () => $auth->login('mehmet.yilmaz', 'correct horse battery staple', '192.0.2.10', 'test', 'role-login-denied'));
+    $roleInactive = $employees->findByUuid($roleSession->employee->employeeUuid);
+    expect($roleInactive !== null && !(new AuthorizationService())->can($roleInactive, 'orders.scan'));
+
+    [$departmentAuth, $departmentEmployees] = authFixture();
+    $departmentSession = $departmentAuth->login('mehmet.yilmaz', 'correct horse battery staple', '192.0.2.11', 'test', 'department-login');
+    $departmentEmployees->updateDepartmentStatus($departmentSession->employee->employeeUuid, 'inactive');
+    expectApi('ACCOUNT_INACTIVE', fn () => $departmentAuth->authenticate($departmentSession->rawToken, '192.0.2.11', 'test', 'department-session'));
+    expectApi('ACCOUNT_INACTIVE', fn () => $departmentAuth->login('mehmet.yilmaz', 'correct horse battery staple', '192.0.2.11', 'test', 'department-login-denied'));
+    $departmentInactive = $departmentEmployees->findByUuid($departmentSession->employee->employeeUuid);
+    expect($departmentInactive !== null && !(new AuthorizationService())->can($departmentInactive, 'orders.scan'));
 });
 
 test('expired and revoked sessions fail closed', function (): void {
@@ -154,7 +177,7 @@ test('authorization resolves permissions centrally and denies unknown permission
     expect($authorization->can($employee, 'orders.scan'));
     expect(!$authorization->can($employee, 'employees.manage'));
     expectApi('UNAUTHORIZED_ACTION', fn () => $authorization->require($employee, 'unknown.permission'));
-    $permissionRemoved = new EmployeeIdentity($employee->employeeUuid, $employee->employeeCode, $employee->username, $employee->usernameNormalized, $employee->passwordHash, $employee->displayName, $employee->departmentKey, $employee->departmentName, $employee->roleKey, $employee->status, [], $employee->allowedStageIds);
+    $permissionRemoved = new EmployeeIdentity($employee->employeeUuid, $employee->employeeCode, $employee->username, $employee->usernameNormalized, $employee->passwordHash, $employee->displayName, $employee->departmentKey, $employee->departmentName, $employee->departmentStatus, $employee->roleKey, $employee->roleStatus, $employee->status, [], $employee->allowedStageIds);
     expect(!$authorization->can($permissionRemoved, 'orders.scan'));
 });
 
@@ -232,7 +255,7 @@ test('cookie policy uses the __Host contract in production and clears identicall
 test('HTTP auth contract matches the Staff session shape without exposing credentials', function (): void {
     [$auth, , , , , , $tokens] = authFixture();
     $config = new Config('test', str_repeat('s', 32), 'db', 3306, 'db', 'user', 'password', ['http://localhost:5173'], 36_000, 300, 5, 30, 900, false, []);
-    $controller = new AuthController($auth, new CsrfGuard($tokens), new CookiePolicy($config), $config, new AuthorizationService());
+    $controller = new AuthController($auth, new CsrfGuard($tokens), new CookiePolicy($config), $config, new AuthorizationService(), new RequestContext());
     $loginRequest = new Request(
         'POST',
         '/auth/login',
@@ -261,7 +284,7 @@ test('HTTP auth contract matches the Staff session shape without exposing creden
 test('JSON auth input rejects malformed, oversized and unexpected payloads', function (): void {
     [$auth, , , , , , $tokens] = authFixture();
     $config = new Config('test', str_repeat('s', 32), 'db', 3306, 'db', 'user', 'password', ['http://localhost:5173'], 36_000, 300, 5, 30, 900, false, []);
-    $controller = new AuthController($auth, new CsrfGuard($tokens), new CookiePolicy($config), $config, new AuthorizationService());
+    $controller = new AuthController($auth, new CsrfGuard($tokens), new CookiePolicy($config), $config, new AuthorizationService(), new RequestContext());
     expectApi('MALFORMED_JSON', fn () => $controller->login(new Request('POST', '/auth/login', ['content-type' => 'application/json'], [], '{', '127.0.0.1', 'test', 'malformed')));
     expectApi('REQUEST_TOO_LARGE', fn () => $controller->login(new Request('POST', '/auth/login', ['content-type' => 'application/json'], [], str_repeat('x', 8193), '127.0.0.1', 'test', 'large')));
     expectApi('INVALID_REQUEST', fn () => $controller->login(new Request('POST', '/auth/login', ['content-type' => 'application/json'], [], json_encode(['username' => 'employee', 'password' => 'password', 'employee_uuid' => 'forged'], JSON_THROW_ON_ERROR), '127.0.0.1', 'test', 'extra')));
@@ -271,17 +294,98 @@ test('expired HTTP sessions clear the exact cookie contract', function (): void 
     [$auth, , , , , , $tokens, $clock] = authFixture();
     $config = new Config('test', str_repeat('s', 32), 'db', 3306, 'db', 'user', 'password', ['http://localhost:5173'], 36_000, 300, 5, 30, 900, false, []);
     $cookies = new CookiePolicy($config);
-    $controller = new AuthController($auth, new CsrfGuard($tokens), $cookies, $config, new AuthorizationService());
-    $kernel = new ApiKernel($controller, new HealthController(new PDO('sqlite::memory:'), $clock), new CorsPolicy(['http://localhost:5173']), new StructuredLogger(), $cookies);
+    $context = new RequestContext();
+    $controller = new AuthController($auth, new CsrfGuard($tokens), $cookies, $config, new AuthorizationService(), $context);
+    $kernel = new ApiKernel($controller, new HealthController(new PDO('sqlite::memory:'), $clock), new CorsPolicy(['http://localhost:5173']), new StructuredLogger(), $cookies, $context);
+    $login = $auth->login('mehmet.yilmaz', 'correct horse battery staple', '127.0.0.1', 'test', 'expired-login');
+    $clock->advance('+11 hours');
     $previousLog = ini_get('error_log');
     ini_set('error_log', '/dev/null');
     try {
-        $response = $kernel->handle(new Request('GET', '/auth/session', ['origin' => 'http://localhost:5173'], [], '', '127.0.0.1', 'test', 'expired-cookie'));
+        $response = $kernel->handle(new Request('GET', '/auth/session', ['origin' => 'http://localhost:5173'], ['arasya_session' => rawurlencode($login->rawToken)], '', '127.0.0.1', 'test', 'expired-cookie'));
     } finally {
         ini_set('error_log', is_string($previousLog) ? $previousLog : '');
     }
     expect($response->status === 401);
     expect(($response->headers['Set-Cookie'] ?? null) === $cookies->clear());
+});
+
+test('HTTP logout is CSRF-protected, idempotent, traceable and never fakes revocation', function (): void {
+    [$auth, , , , $audit, , $tokens, $clock] = authFixture();
+    $config = new Config('test', str_repeat('s', 32), 'db', 3306, 'db', 'user', 'password', ['http://localhost:5173'], 36_000, 300, 5, 30, 900, false, []);
+    $cookies = new CookiePolicy($config);
+    $context = new RequestContext();
+    $lines = [];
+    $logger = new StructuredLogger(static function (string $line) use (&$lines): void { $lines[] = $line; });
+    $controller = new AuthController($auth, new CsrfGuard($tokens), $cookies, $config, new AuthorizationService(), $context);
+    $kernel = new ApiKernel($controller, new HealthController(new PDO('sqlite::memory:'), $clock), new CorsPolicy(['http://localhost:5173']), $logger, $cookies, $context);
+    $login = $auth->login('mehmet.yilmaz', 'correct horse battery staple', '127.0.0.1', 'test', 'logout-login');
+    $cookie = ['arasya_session' => rawurlencode($login->rawToken)];
+
+    $invalid = $kernel->handle(new Request('POST', '/auth/logout', ['origin' => 'http://localhost:5173', 'x-csrf-token' => 'invalid'], $cookie, '', '127.0.0.1', 'test', 'logout-invalid-csrf'));
+    expect($invalid->status === 403);
+    expect(!isset($invalid->headers['Set-Cookie']), 'Invalid CSRF must not clear the session cookie.');
+    expect($auth->authenticate($login->rawToken, '127.0.0.1', 'test', 'logout-still-valid')->employee->employeeUuid === $login->employee->employeeUuid);
+
+    $valid = $kernel->handle(new Request('POST', '/auth/logout', ['origin' => 'http://localhost:5173', 'x-csrf-token' => $login->csrfToken], $cookie, '', '127.0.0.1', 'test', 'logout-valid'));
+    expect($valid->status === 200 && ($valid->payload['ok'] ?? false) === true);
+    expect(($valid->headers['Set-Cookie'] ?? null) === $cookies->clear());
+    expectApi('SESSION_EXPIRED', fn () => $auth->authenticate($login->rawToken, '127.0.0.1', 'test', 'logout-revoked'));
+
+    $repeat = $kernel->handle(new Request('POST', '/auth/logout', ['origin' => 'http://localhost:5173'], $cookie, '', '127.0.0.1', 'test', 'logout-repeat'));
+    expect($repeat->status === 200 && ($repeat->headers['Set-Cookie'] ?? null) === $cookies->clear());
+    expect(count(array_filter($audit->events, static fn (array $event): bool => $event['eventType'] === 'AUTH_LOGOUT')) === 1);
+    $logOutput = implode("\n", $lines);
+    expect(str_contains($logOutput, '"employee_uuid":"' . $login->employee->employeeUuid . '"'));
+    expect(!str_contains($logOutput, $login->rawToken));
+    expect(!str_contains($logOutput, $login->csrfToken));
+});
+
+test('private config file loads safely, environment wins, and required values fail closed', function (): void {
+    $directory = sys_get_temp_dir() . '/arasya-config-' . bin2hex(random_bytes(6));
+    mkdir($directory, 0700, true);
+    $path = $directory . '/operations-api.php';
+    $private = [
+        'ARASYA_APP_ENV' => 'production',
+        'ARASYA_APP_SECRET' => str_repeat('p', 32),
+        'ARASYA_DB_HOST' => 'private-host',
+        'ARASYA_DB_NAME' => 'private-db',
+        'ARASYA_DB_USER' => 'private-user',
+        'ARASYA_DB_PASSWORD' => 'private-password',
+        'ARASYA_ALLOWED_ORIGINS' => 'https://staff.arasyahome.ro',
+    ];
+    file_put_contents($path, "<?php\ndeclare(strict_types=1);\nreturn " . var_export($private, true) . ";\n");
+    try {
+        $config = Config::fromEnvironment(new ConfigLoader(['ARASYA_CONFIG_FILE' => $path, 'ARASYA_DB_HOST' => 'environment-host']));
+        expect($config->dbHost === 'environment-host');
+        expect($config->dbName === 'private-db');
+        try {
+            Config::fromEnvironment(new ConfigLoader(['HOME' => $directory]));
+            throw new RuntimeException('Missing required configuration unexpectedly succeeded.');
+        } catch (RuntimeException $error) {
+            expect(str_contains($error->getMessage(), 'ARASYA_APP_SECRET'));
+        }
+    } finally {
+        unlink($path);
+        rmdir($directory);
+    }
+});
+
+test('structured logger includes safe employee context and removes sensitive fields', function (): void {
+    $lines = [];
+    $logger = new StructuredLogger(static function (string $line) use (&$lines): void { $lines[] = $line; });
+    $logger->log('info', 'http_request', 'request-1', [
+        'employee_uuid' => '68ff2a20-a164-4ed8-8659-1872a37d2ced',
+        'route' => '/employees/me',
+        'status' => 200,
+        'password' => 'must-not-log',
+        'csrf_token' => 'must-not-log-either',
+    ]);
+    $line = $lines[0] ?? '';
+    expect(str_contains($line, '68ff2a20-a164-4ed8-8659-1872a37d2ced'));
+    expect(!str_contains($line, 'must-not-log'));
+    expect(!str_contains($line, 'password'));
+    expect(!str_contains($line, 'csrf'));
 });
 
 test('repository failures return a generic error with request ID and no SQL or path leakage', function (): void {
@@ -295,8 +399,9 @@ test('repository failures return a generic error with request ID and no SQL or p
     $auth = new AuthenticationService($employees, $sessions, $limiter, $failingAudit, $passwords, $tokens, new UsernameNormalizer(), $clock, 36_000, 300);
     $config = new Config('test', str_repeat('s', 32), 'db', 3306, 'db', 'user', 'password', ['http://localhost:5173'], 36_000, 300, 5, 30, 900, false, []);
     $cookies = new CookiePolicy($config);
-    $controller = new AuthController($auth, new CsrfGuard($tokens), $cookies, $config, new AuthorizationService());
-    $kernel = new ApiKernel($controller, new HealthController(new PDO('sqlite::memory:'), $clock), new CorsPolicy(['http://localhost:5173']), new StructuredLogger(), $cookies);
+    $context = new RequestContext();
+    $controller = new AuthController($auth, new CsrfGuard($tokens), $cookies, $config, new AuthorizationService(), $context);
+    $kernel = new ApiKernel($controller, new HealthController(new PDO('sqlite::memory:'), $clock), new CorsPolicy(['http://localhost:5173']), new StructuredLogger(), $cookies, $context);
     $request = new Request('POST', '/auth/login', ['origin' => 'http://localhost:5173', 'content-type' => 'application/json'], [], json_encode(['username' => 'unknown', 'password' => 'wrong password'], JSON_THROW_ON_ERROR), '127.0.0.1', 'test', 'failure-request-id');
     $previousLog = ini_get('error_log');
     ini_set('error_log', '/dev/null');

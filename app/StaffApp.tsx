@@ -14,6 +14,7 @@ import type { StaffRuntimeMode } from "../src/runtimeConfig";
 import { StaffServiceError } from "../domain/models";
 import { toServiceError } from "../services/errors";
 import { canAccessRoute } from "../domain/permissions";
+import { shouldEndLocalSessionAfterLogout } from "../features/auth/logoutPolicy";
 
 export function StaffApp({ initialRoute, mode, apiBaseUrl }: { initialRoute: string; mode: StaffRuntimeMode; apiBaseUrl: string }) {
   const services = useMemo(() => createServices({ mode, apiBaseUrl }), [apiBaseUrl, mode]);
@@ -62,7 +63,7 @@ export function StaffApp({ initialRoute, mode, apiBaseUrl }: { initialRoute: str
     try { await services.auth.logout(); }
     catch (caught) {
       const error = toServiceError(caught);
-      if (error.code !== "SESSION_EXPIRED" && error.code !== "ACCOUNT_INACTIVE" && error.code !== "CSRF_INVALID") throw error;
+      if (!shouldEndLocalSessionAfterLogout(error)) throw error;
     }
     setSession(null);
     setSessionNotice("");

@@ -13,7 +13,7 @@ export function ProfileScreen({ employee, mode, onLogout }: { employee: Employee
     setLogoutError("");
     try { await onLogout(); }
     catch (error) {
-      setLogoutError(error instanceof StaffServiceError && error.code === "SERVICE_UNAVAILABLE" ? "Serviciul nu este disponibil momentan." : "Nu am putut închide sesiunea. Încearcă din nou.");
+      setLogoutError(error instanceof StaffServiceError && error.code === "SERVICE_UNAVAILABLE" ? "Serviciul nu este disponibil momentan." : "Nu am putut încheia sesiunea. Încearcă din nou.");
       setLoggingOut(false);
     }
   }

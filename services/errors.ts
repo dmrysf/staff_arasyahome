@@ -17,13 +17,14 @@ const presentations: Record<ServiceErrorCode, ErrorPresentation> = {
   NETWORK_UNAVAILABLE: { title: "Nu există conexiune", message: "Acțiunea nu poate fi finalizată offline. Verifică rețeaua și încearcă din nou.", action: "Încearcă din nou" },
   REQUEST_TIMEOUT: { title: "Răspunsul întârzie", message: "Nu am primit confirmarea serverului. Starea comenzii nu a fost schimbată.", action: "Încearcă din nou" },
   SERVER_ERROR: { title: "Ceva nu a funcționat", message: "Starea comenzii nu a fost schimbată. Încearcă din nou peste câteva momente.", action: "Încearcă din nou" },
+  NO_SESSION: { title: "Autentificare necesară", message: "Autentifică-te pentru a continua.", action: "Autentificare" },
   SESSION_EXPIRED: { title: "Sesiunea a expirat", message: "Autentifică-te din nou pentru a continua în siguranță.", action: "Autentificare" },
   UNAUTHORIZED_ACTION: { title: "Acțiune indisponibilă", message: "Nu ai permisiunea necesară pentru această etapă.", action: "Înapoi" },
   INVALID_CREDENTIALS: { title: "Autentificare nereușită", message: "Nu am putut autentifica acest cont.", action: "Încearcă din nou" },
   ACCOUNT_INACTIVE: { title: "Cont inactiv", message: "Contul nu este activ. Contactează managerul.", action: "Înapoi" },
   RATE_LIMITED: { title: "Prea multe încercări", message: "Încearcă din nou puțin mai târziu.", action: "Încearcă mai târziu" },
   SERVICE_UNAVAILABLE: { title: "Serviciu indisponibil", message: "Serviciul nu este disponibil momentan.", action: "Reîncearcă" },
-  CSRF_INVALID: { title: "Sesiune invalidă", message: "Reîncarcă aplicația și autentifică-te din nou.", action: "Autentificare" },
+  CSRF_INVALID: { title: "Acțiune neconfirmată", message: "Nu am putut confirma acțiunea în siguranță. Încearcă din nou.", action: "Încearcă din nou" },
   CONFIGURATION_ERROR: { title: "Serviciul nu este configurat", message: "Conexiunea cu serviciul Staff lipsește. Contactează administratorul.", action: "Reîncearcă" },
 };
 

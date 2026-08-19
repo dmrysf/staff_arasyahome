@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { StaffServiceError } from "../domain/models";
 import { canAccessRoute, hasPermission } from "../domain/permissions";
+import { shouldEndLocalSessionAfterLogout } from "../features/auth/logoutPolicy";
 import { createProductionServices, mapProductionEmployee, mapProductionSession } from "../services/production/httpServices";
 
 const employeePayload = {
@@ -66,9 +67,13 @@ test("production session bootstrap restores identity and unauthenticated bootstr
   const validServices = createProductionServices("https://api.arasyahome.ro", { fetchImpl: valid.fetchImpl, isOnline: () => true });
   assert.equal((await validServices.auth.getSession())?.employee.username, "Mehmet.Yilmaz");
 
-  const anonymous = queuedFetch([jsonResponse({ error: { code: "SESSION_EXPIRED", message: "Authentication required.", requestId: "r" } }, 401)]);
+  const anonymous = queuedFetch([jsonResponse({ error: { code: "NO_SESSION", message: "Authentication required.", requestId: "r" } }, 401)]);
   const anonymousServices = createProductionServices("https://api.arasyahome.ro", { fetchImpl: anonymous.fetchImpl, isOnline: () => true });
   assert.equal(await anonymousServices.auth.getSession(), null);
+
+  const expired = queuedFetch([jsonResponse({ error: { code: "SESSION_EXPIRED", message: "Expired.", requestId: "r" } }, 401)]);
+  const expiredServices = createProductionServices("https://api.arasyahome.ro", { fetchImpl: expired.fetchImpl, isOnline: () => true });
+  await assert.rejects(expiredServices.auth.getSession(), (error: unknown) => error instanceof StaffServiceError && error.code === "SESSION_EXPIRED");
 });
 
 test("refresh rotates the in-memory CSRF token and logout uses the replacement", async () => {
@@ -118,6 +123,29 @@ test("a failed network logout preserves in-memory CSRF for a safe retry", async 
   await assert.rejects(services.auth.logout(), (error: unknown) => error instanceof StaffServiceError && error.code === "SERVICE_UNAVAILABLE");
   await services.auth.logout();
   assert.equal(new Headers(calls[2]?.init?.headers).get("X-CSRF-Token"), "csrf-runtime-token");
+});
+
+test("CSRF_INVALID logout preserves authentication context and can be retried safely", async () => {
+  const { fetchImpl, calls } = queuedFetch([
+    jsonResponse(sessionPayload),
+    jsonResponse({ error: { code: "CSRF_INVALID", message: "denied", requestId: "r" } }, 403),
+    jsonResponse({ ok: true }),
+  ]);
+  const services = createProductionServices("https://api.arasyahome.ro", { fetchImpl, isOnline: () => true });
+  await services.auth.login({ username: "employee", password: "test-only-password" });
+  let terminalNotifications = 0;
+  services.auth.onSessionExpired(() => { terminalNotifications += 1; });
+  await assert.rejects(services.auth.logout(), (error: unknown) => error instanceof StaffServiceError && error.code === "CSRF_INVALID");
+  assert.equal(terminalNotifications, 0);
+  await services.auth.logout();
+  assert.equal(new Headers(calls[2]?.init?.headers).get("X-CSRF-Token"), "csrf-runtime-token");
+});
+
+test("logout state policy clears only terminal server session states", () => {
+  assert.equal(shouldEndLocalSessionAfterLogout(new StaffServiceError("SESSION_EXPIRED")), true);
+  assert.equal(shouldEndLocalSessionAfterLogout(new StaffServiceError("ACCOUNT_INACTIVE")), true);
+  assert.equal(shouldEndLocalSessionAfterLogout(new StaffServiceError("CSRF_INVALID")), false);
+  assert.equal(shouldEndLocalSessionAfterLogout(new StaffServiceError("SERVICE_UNAVAILABLE")), false);
 });
 
 test("session expiry from an authenticated request notifies the application exactly once", async () => {

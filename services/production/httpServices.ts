@@ -13,6 +13,7 @@ const backendErrorCodes: Partial<Record<string, ServiceErrorCode>> = {
   ACCOUNT_INACTIVE: "ACCOUNT_INACTIVE",
   RATE_LIMITED: "RATE_LIMITED",
   SERVICE_UNAVAILABLE: "SERVICE_UNAVAILABLE",
+  NO_SESSION: "NO_SESSION",
   SESSION_EXPIRED: "SESSION_EXPIRED",
   UNAUTHORIZED_ACTION: "UNAUTHORIZED_ACTION",
   CSRF_INVALID: "CSRF_INVALID",
@@ -118,7 +119,7 @@ function createRequest(apiBaseUrl: string, options: ProductionServicesOptions, o
     }
     if (!response.ok) {
       const error = await errorFromResponse(response);
-      if ((error.code === "SESSION_EXPIRED" || error.code === "ACCOUNT_INACTIVE" || error.code === "CSRF_INVALID") && path !== "/auth/login" && path !== "/auth/session") {
+      if ((error.code === "SESSION_EXPIRED" || error.code === "ACCOUNT_INACTIVE") && path !== "/auth/login" && path !== "/auth/session") {
         csrfToken = "";
         onSessionExpired(error);
       }
@@ -151,7 +152,7 @@ export function createProductionServices(apiBaseUrl: string, options: Production
         await http.request<{ ok: boolean }>("/auth/logout", { method: "POST" });
         http.clearCsrf();
       } catch (error) {
-        if (error instanceof StaffServiceError && ["SESSION_EXPIRED", "ACCOUNT_INACTIVE", "CSRF_INVALID"].includes(error.code)) http.clearCsrf();
+        if (error instanceof StaffServiceError && ["SESSION_EXPIRED", "ACCOUNT_INACTIVE"].includes(error.code)) http.clearCsrf();
         throw error;
       }
     },
@@ -161,7 +162,7 @@ export function createProductionServices(apiBaseUrl: string, options: Production
         http.setCsrf(payload.csrfToken);
         return { employee: payload.employee, expiresAt: payload.expiresAt };
       } catch (error) {
-        if (error instanceof StaffServiceError && error.code === "SESSION_EXPIRED") {
+        if (error instanceof StaffServiceError && error.code === "NO_SESSION") {
           http.clearCsrf();
           return null;
         }

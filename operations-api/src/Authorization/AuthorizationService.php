@@ -11,7 +11,7 @@ final class AuthorizationService
 {
     public function can(EmployeeIdentity $employee, string $permission): bool
     {
-        return $employee->isActive() && in_array($permission, $employee->permissions, true);
+        return $employee->isOperationallyActive() && in_array($permission, $employee->permissions, true);
     }
 
     public function require(EmployeeIdentity $employee, string $permission): void
@@ -21,4 +21,3 @@ final class AuthorizationService
         }
     }
 }
-

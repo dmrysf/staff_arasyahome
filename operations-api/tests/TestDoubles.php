@@ -66,7 +66,9 @@ final class MemoryEmployeeRepository implements EmployeeRepository
             $displayName,
             $departmentKey,
             'Pregătire Material',
+            'active',
             $roleKey,
+            'active',
             'active',
             ['history.view_mine', 'orders.scan', 'orders.view_mine', 'profile.view_self'],
             $allowedStageIds,
@@ -104,7 +106,25 @@ final class MemoryEmployeeRepository implements EmployeeRepository
         $this->employees[$employee->employeeUuid] = $employee;
     }
 
-    private function copy(EmployeeIdentity $employee, ?string $status = null, ?string $passwordHash = null): EmployeeIdentity
+    public function updateRoleStatus(string $employeeUuid, string $status): void
+    {
+        $employee = $this->employees[$employeeUuid] ?? throw new RuntimeException('Employee was not found.');
+        $this->employees[$employeeUuid] = $this->copy($employee, roleStatus: $status);
+    }
+
+    public function updateDepartmentStatus(string $employeeUuid, string $status): void
+    {
+        $employee = $this->employees[$employeeUuid] ?? throw new RuntimeException('Employee was not found.');
+        $this->employees[$employeeUuid] = $this->copy($employee, departmentStatus: $status);
+    }
+
+    private function copy(
+        EmployeeIdentity $employee,
+        ?string $status = null,
+        ?string $passwordHash = null,
+        ?string $roleStatus = null,
+        ?string $departmentStatus = null,
+    ): EmployeeIdentity
     {
         return new EmployeeIdentity(
             $employee->employeeUuid,
@@ -115,7 +135,9 @@ final class MemoryEmployeeRepository implements EmployeeRepository
             $employee->displayName,
             $employee->departmentKey,
             $employee->departmentName,
+            $departmentStatus ?? $employee->departmentStatus,
             $employee->roleKey,
+            $roleStatus ?? $employee->roleStatus,
             $status ?? $employee->status,
             $employee->permissions,
             $employee->allowedStageIds,
@@ -157,13 +179,15 @@ final class MemorySessionRepository implements SessionRepository
         $this->sessions[$sessionId]['record'] = new SessionRecord($record->sessionId, $record->employeeUuid, $record->createdAt, $record->expiresAt, new DateTimeImmutable($lastSeenAt, new DateTimeZone('UTC')), $record->revokedAt);
     }
 
-    public function revokeByTokenHash(string $tokenHash, string $revokedAt): void
+    public function revokeByTokenHash(string $tokenHash, string $revokedAt): bool
     {
         foreach ($this->sessions as $id => $entry) {
-            if (hash_equals($entry['tokenHash'], $tokenHash)) {
+            if (hash_equals($entry['tokenHash'], $tokenHash) && $entry['record']->revokedAt === null) {
                 $this->revoke($id, $revokedAt);
+                return true;
             }
         }
+        return false;
     }
 
     public function revokeAllForEmployee(string $employeeUuid, string $revokedAt): int
