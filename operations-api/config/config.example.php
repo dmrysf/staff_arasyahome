@@ -2,8 +2,9 @@
 
 declare(strict_types=1);
 
-// Environment-variable reference only. For cPanel private-file configuration,
-// copy config.production.example.php to $HOME/arasya-config/operations-api.php.
+// Environment-variable reference only. cPanel primarily loads the existing
+// $HOME/arasya-config/secrets.json; config.production.example.php remains a
+// supported legacy PHP alternative.
 // Never place production credentials in this directory or anywhere under public/.
 return [
     'ARASYA_APP_ENV' => 'production',

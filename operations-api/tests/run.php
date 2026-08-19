@@ -5,6 +5,7 @@ declare(strict_types=1);
 use Arasya\Operations\Auth\AuthenticationService;
 use Arasya\Operations\Audit\AuditLogger;
 use Arasya\Operations\Authorization\AuthorizationService;
+use Arasya\Operations\Bootstrap\RuntimeLocator;
 use Arasya\Operations\Config\Config;
 use Arasya\Operations\Config\ConfigLoader;
 use Arasya\Operations\Employee\EmployeeAdminService;
@@ -29,6 +30,7 @@ use Arasya\Operations\Tests\MemorySessionRepository;
 use Arasya\Operations\Tests\MutableClock;
 use Arasya\Operations\Support\StructuredLogger;
 require dirname(__DIR__) . '/bootstrap.php';
+require dirname(__DIR__) . '/public/RuntimeLocator.php';
 require __DIR__ . '/TestDoubles.php';
 
 $tests = [];
@@ -55,6 +57,17 @@ function expectApi(string $code, Closure $callback): void
         return;
     }
     throw new RuntimeException("Expected API error {$code}.");
+}
+
+function expectApiConfigurationFailure(string $home, string $messageFragment): void
+{
+    try {
+        Config::fromEnvironment(new ConfigLoader(['HOME' => $home]));
+    } catch (RuntimeException $error) {
+        expect(str_contains(strtolower($error->getMessage()), strtolower($messageFragment)), "Configuration failure did not mention {$messageFragment}.");
+        return;
+    }
+    throw new RuntimeException('Invalid private configuration unexpectedly succeeded.');
 }
 
 /** @return array{AuthenticationService, MemoryEmployeeRepository, MemorySessionRepository, MemoryRateLimiter, MemoryAuditLogger, PasswordHasher, SessionTokenManager, MutableClock} */
@@ -341,33 +354,157 @@ test('HTTP logout is CSRF-protected, idempotent, traceable and never fakes revoc
     expect(!str_contains($logOutput, $login->csrfToken));
 });
 
-test('private config file loads safely, environment wins, and required values fail closed', function (): void {
-    $directory = sys_get_temp_dir() . '/arasya-config-' . bin2hex(random_bytes(6));
-    mkdir($directory, 0700, true);
-    $path = $directory . '/operations-api.php';
+test('JSON private config maps aliases, arrays and deterministic precedence', function (): void {
+    $home = sys_get_temp_dir() . '/arasya-json-config-' . bin2hex(random_bytes(6));
+    $configDirectory = $home . '/arasya-config';
+    mkdir($configDirectory, 0700, true);
+    $path = $configDirectory . '/secrets.json';
     $private = [
-        'ARASYA_APP_ENV' => 'production',
-        'ARASYA_APP_SECRET' => str_repeat('p', 32),
-        'ARASYA_DB_HOST' => 'private-host',
-        'ARASYA_DB_NAME' => 'private-db',
-        'ARASYA_DB_USER' => 'private-user',
-        'ARASYA_DB_PASSWORD' => 'private-password',
-        'ARASYA_ALLOWED_ORIGINS' => 'https://staff.arasyahome.ro',
+        'DB_USER_NAME' => 'alias-user',
+        'ARASYA_DB_USER' => 'canonical-user',
+        'DB_USER_PASSWORD' => 'private-password',
+        'DB_NAME' => 'private-db',
+        'DB_HOST' => 'json-host',
+        'ARASYA_APP_SECRET' => str_repeat('j', 32),
+        'ARASYA_ALLOWED_ORIGINS' => ['https://staff.arasyahome.ro'],
+        'IGNORED_UNKNOWN_KEY' => ['does' => 'nothing'],
     ];
-    file_put_contents($path, "<?php\ndeclare(strict_types=1);\nreturn " . var_export($private, true) . ";\n");
+    file_put_contents($path, json_encode($private, JSON_THROW_ON_ERROR));
     try {
-        $config = Config::fromEnvironment(new ConfigLoader(['ARASYA_CONFIG_FILE' => $path, 'ARASYA_DB_HOST' => 'environment-host']));
+        $config = Config::fromEnvironment(new ConfigLoader(['HOME' => $home, 'ARASYA_DB_HOST' => 'environment-host']));
         expect($config->dbHost === 'environment-host');
         expect($config->dbName === 'private-db');
-        try {
-            Config::fromEnvironment(new ConfigLoader(['HOME' => $directory]));
-            throw new RuntimeException('Missing required configuration unexpectedly succeeded.');
-        } catch (RuntimeException $error) {
-            expect(str_contains($error->getMessage(), 'ARASYA_APP_SECRET'));
-        }
+        expect($config->dbUser === 'canonical-user');
+        expect($config->dbPassword === 'private-password');
+        expect($config->allowedOrigins === ['https://staff.arasyahome.ro']);
+
+        $privateWithoutSecret = $private;
+        unset($privateWithoutSecret['ARASYA_APP_SECRET']);
+        file_put_contents($path, json_encode($privateWithoutSecret, JSON_THROW_ON_ERROR));
+        expectApiConfigurationFailure($home, 'ARASYA_APP_SECRET');
+
+        file_put_contents($path, '{');
+        expectApiConfigurationFailure($home, 'malformed');
+
+        $private['ARASYA_ALLOWED_ORIGINS'] = ['*'];
+        file_put_contents($path, json_encode($private, JSON_THROW_ON_ERROR));
+        expectApiConfigurationFailure($home, 'origin');
+
+        $private['ARASYA_ALLOWED_ORIGINS'] = ['https://staff.arasyahome.ro'];
+        $private['ARASYA_DB_PORT'] = ['nested'];
+        file_put_contents($path, json_encode($private, JSON_THROW_ON_ERROR));
+        expectApiConfigurationFailure($home, 'scalar');
     } finally {
         unlink($path);
-        rmdir($directory);
+        rmdir($configDirectory);
+        rmdir($home);
+    }
+});
+
+test('explicit config override wins and legacy PHP private config remains supported', function (): void {
+    $home = sys_get_temp_dir() . '/arasya-legacy-config-' . bin2hex(random_bytes(6));
+    $configDirectory = $home . '/arasya-config';
+    mkdir($configDirectory, 0700, true);
+    $jsonPath = $configDirectory . '/secrets.json';
+    $phpPath = $configDirectory . '/operations-api.php';
+    $base = [
+        'ARASYA_APP_SECRET' => str_repeat('l', 32),
+        'ARASYA_DB_USER' => 'legacy-user',
+        'ARASYA_DB_PASSWORD' => 'legacy-password',
+        'ARASYA_DB_NAME' => 'legacy-db',
+        'ARASYA_ALLOWED_ORIGINS' => 'https://staff.arasyahome.ro',
+    ];
+    file_put_contents($phpPath, "<?php\ndeclare(strict_types=1);\nreturn " . var_export($base, true) . ";\n");
+    try {
+        expect(Config::fromEnvironment(new ConfigLoader(['HOME' => $home]))->dbName === 'legacy-db');
+        file_put_contents($jsonPath, json_encode([
+            ...$base,
+            'ARASYA_DB_NAME' => 'json-db',
+            'ARASYA_ALLOWED_ORIGINS' => ['https://staff.arasyahome.ro'],
+        ], JSON_THROW_ON_ERROR));
+        expect(Config::fromEnvironment(new ConfigLoader(['HOME' => $home]))->dbName === 'json-db');
+        expect(Config::fromEnvironment(new ConfigLoader(['HOME' => $home, 'ARASYA_CONFIG_FILE' => $phpPath]))->dbName === 'legacy-db');
+    } finally {
+        if (is_file($jsonPath)) {
+            unlink($jsonPath);
+        }
+        unlink($phpPath);
+        rmdir($configDirectory);
+        rmdir($home);
+    }
+});
+
+test('private config path rejects runtime, API public and Staff public roots', function (): void {
+    $home = sys_get_temp_dir() . '/arasya-config-path-' . bin2hex(random_bytes(6));
+    $allowedDirectory = $home . '/arasya-config';
+    $forbiddenDirectories = [
+        $home . '/arasya-operations-api/current',
+        $home . '/api.arasyahome.ro',
+        $home . '/staff.arasyahome.ro',
+    ];
+    mkdir($allowedDirectory, 0700, true);
+    foreach ($forbiddenDirectories as $directory) {
+        mkdir($directory, 0700, true);
+    }
+    $values = [
+        'ARASYA_APP_SECRET' => str_repeat('s', 32),
+        'DB_USER_NAME' => 'user',
+        'DB_USER_PASSWORD' => 'password',
+        'DB_NAME' => 'database',
+        'ARASYA_ALLOWED_ORIGINS' => ['https://staff.arasyahome.ro'],
+    ];
+    $allowedPath = $allowedDirectory . '/secrets.json';
+    file_put_contents($allowedPath, json_encode($values, JSON_THROW_ON_ERROR));
+    try {
+        expect(Config::fromEnvironment(new ConfigLoader(['HOME' => $home]))->dbHost === 'localhost');
+        foreach ($forbiddenDirectories as $directory) {
+            $forbiddenPath = $directory . '/secrets.json';
+            file_put_contents($forbiddenPath, json_encode($values, JSON_THROW_ON_ERROR));
+            try {
+                Config::fromEnvironment(new ConfigLoader(['HOME' => $home, 'ARASYA_CONFIG_FILE' => $forbiddenPath]));
+                throw new RuntimeException('Forbidden private config path unexpectedly succeeded.');
+            } catch (RuntimeException $error) {
+                expect(str_contains($error->getMessage(), 'forbidden'));
+            }
+            unlink($forbiddenPath);
+        }
+    } finally {
+        unlink($allowedPath);
+        rmdir($allowedDirectory);
+        foreach (array_reverse($forbiddenDirectories) as $directory) {
+            @rmdir($directory);
+        }
+        @rmdir($home . '/arasya-operations-api');
+        rmdir($home);
+    }
+});
+
+test('runtime locator supports nested source, cPanel split root and safe override', function (): void {
+    $sourceRoot = dirname(__DIR__);
+    expect(RuntimeLocator::locate(null, $sourceRoot, null) === realpath($sourceRoot));
+
+    $home = sys_get_temp_dir() . '/arasya-runtime-locator-' . bin2hex(random_bytes(6));
+    $runtime = $home . '/arasya-operations-api/current';
+    $public = $home . '/api.arasyahome.ro';
+    mkdir($runtime, 0700, true);
+    mkdir($public, 0700, true);
+    file_put_contents($runtime . '/bootstrap.php', "<?php\ndeclare(strict_types=1);\n");
+    try {
+        expect(RuntimeLocator::locate(null, $home, $home) === realpath($runtime));
+        expect(RuntimeLocator::locate($runtime, '/unused', null) === realpath($runtime));
+        $unsafeDenied = false;
+        try {
+            RuntimeLocator::locate('../unsafe', $home, $home);
+        } catch (RuntimeException) {
+            $unsafeDenied = true;
+        }
+        expect($unsafeDenied, 'Unsafe runtime override unexpectedly succeeded.');
+    } finally {
+        unlink($runtime . '/bootstrap.php');
+        rmdir($runtime);
+        rmdir($home . '/arasya-operations-api');
+        rmdir($public);
+        rmdir($home);
     }
 });
 

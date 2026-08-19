@@ -42,30 +42,62 @@ resolve_path() {
 require_command rsync
 
 release_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
-deploy_input="${ARASYA_API_DEPLOY_PATH:-$HOME/arasya-operations-api/current}"
-deploy_path="$(resolve_path "$deploy_input")"
+runtime_input="${ARASYA_API_RUNTIME_PATH:-$HOME/arasya-operations-api/current}"
+public_input="${ARASYA_API_PUBLIC_PATH:-$HOME/api.arasyahome.ro}"
+runtime_path="$(resolve_path "$runtime_input")"
+public_path="$(resolve_path "$public_input")"
 home_path="$(resolve_path "$HOME")"
 staff_path="$(resolve_path "$HOME/staff.arasyahome.ro")"
 config_path="$(resolve_path "$HOME/arasya-config")"
 
 /bin/bash "$release_root/scripts/validate-release.sh" "$release_root"
 
-[[ "$deploy_path" != "/" ]] || fail "Deployment destination cannot be /."
-[[ "$deploy_path" != "$home_path" ]] || fail "Deployment destination cannot be HOME."
-[[ "$deploy_path" != "$staff_path" ]] || fail "API files cannot target the Staff document root."
-[[ "$deploy_path" != "$release_root" ]] || fail "Deployment destination cannot be the release repository."
-[[ "$deploy_path" != "$config_path" ]] || fail "Deployment destination cannot be the private configuration directory."
-case "$deploy_path" in
-  "$release_root"/*) fail "Deployment destination cannot be inside the release repository." ;;
-  "$config_path"/*) fail "Deployment destination cannot be inside the private configuration directory." ;;
-esac
+for target in "$runtime_path" "$public_path"; do
+  [[ "$target" != "/" ]] || fail "Deployment destinations cannot be /."
+  [[ "$target" != "$home_path" ]] || fail "Deployment destinations cannot be HOME."
+  [[ "$target" != "$staff_path" ]] || fail "API files cannot target the Staff document root."
+  [[ "$target" != "$config_path" ]] || fail "Deployment destinations cannot be the private configuration directory."
+  [[ "$target" != "$release_root" ]] || fail "Deployment destinations cannot be the release repository."
+  case "$target" in
+    "$staff_path"/*) fail "API files cannot target a directory inside the Staff document root." ;;
+    "$config_path"/*) fail "Deployment destinations cannot be inside the private configuration directory." ;;
+    "$release_root"/*) fail "Deployment destinations cannot be inside the release repository." ;;
+  esac
+done
+
+[[ "$runtime_path" != "$public_path" ]] || fail "Private runtime and public document root must be different."
+case "$runtime_path/" in "$public_path/"*) fail "Private runtime cannot be inside the public document root." ;; esac
+case "$public_path/" in "$runtime_path/"*) fail "Public document root cannot be inside the private runtime." ;; esac
 
 if [[ "${DRY_RUN:-0}" == "1" ]]; then
-  log "Dry-run passed. Verified release destination: $deploy_path"
+  log "Dry-run passed. Runtime: $runtime_path; public: $public_path"
   exit 0
 fi
 
-log "Synchronizing verified PHP release without running migrations..."
-mkdir -p -- "$deploy_path"
-rsync --archive --delete --exclude='.git' "$release_root/" "$deploy_path/"
-log "Code deployment completed: $deploy_path"
+log "Synchronizing verified private runtime first (migrations remain manual)..."
+mkdir -p -- "$runtime_path"
+rsync --archive --delete --exclude='.git' "$release_root/" "$runtime_path/"
+[[ -f "$runtime_path/bootstrap.php" ]] || fail "Private runtime verification failed: bootstrap.php is missing."
+for directory in src database/migrations bin config; do
+  [[ -d "$runtime_path/$directory" ]] || fail "Private runtime verification failed: $directory is missing."
+done
+[[ -f "$runtime_path/release.json" ]] || fail "Private runtime verification failed: release.json is missing."
+
+log "Synchronizing public-only API files second..."
+mkdir -p -- "$public_path"
+rsync --archive --delete \
+  --exclude='.well-known/' \
+  --exclude='cgi-bin/' \
+  "$release_root/public/" "$public_path/"
+
+[[ -f "$public_path/index.php" ]] || fail "Public deployment verification failed: index.php is missing."
+[[ -f "$public_path/.htaccess" ]] || fail "Public deployment verification failed: .htaccess is missing."
+[[ -f "$public_path/RuntimeLocator.php" ]] || fail "Public deployment verification failed: RuntimeLocator.php is missing."
+for forbidden in src database bin config bootstrap.php; do
+  [[ ! -e "$public_path/$forbidden" ]] || fail "Private artifact appeared in the public document root: $forbidden"
+done
+if find "$public_path" -name 'secrets.json' -print -quit | grep -q .; then
+  fail "A private secrets.json file appeared in the public document root."
+fi
+
+log "Two-target code deployment completed successfully."

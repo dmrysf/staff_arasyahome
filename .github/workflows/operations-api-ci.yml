@@ -65,6 +65,9 @@ jobs:
       - name: Test API release validator
         run: /bin/bash operations-api/tests/release-validation.sh
 
+      - name: Test two-target cPanel deployment
+        run: /bin/bash operations-api/tests/deploy-api.sh
+
       - name: Run MySQL integration lifecycle
         env:
           ARASYA_TEST_DB_HOST: 127.0.0.1
@@ -97,9 +100,10 @@ jobs:
           cp -R operations-api/public operations-api/src operations-api/database operations-api/bin "$release_dir/"
           cp operations-api/config/config.example.php "$release_dir/config/config.example.php"
           cp operations-api/config/config.production.example.php "$release_dir/config/config.production.example.php"
+          cp operations-api/config/secrets.example.json "$release_dir/config/secrets.example.json"
           cp operations-api/scripts/cpanel-deploy-api.sh operations-api/scripts/validate-release.sh "$release_dir/scripts/"
           chmod +x "$release_dir/scripts/cpanel-deploy-api.sh" "$release_dir/scripts/validate-release.sh"
-          printf '{\n  "sourceCommit": "%s",\n  "builtAt": "%s",\n  "version": "2.0.1"\n}\n' "$GITHUB_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$release_dir/release.json"
+          printf '{\n  "sourceCommit": "%s",\n  "builtAt": "%s",\n  "version": "2.0.2"\n}\n' "$GITHUB_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$release_dir/release.json"
           ARASYA_RELEASE_STRICT=1 /bin/bash "$release_dir/scripts/validate-release.sh" "$release_dir"
 
       - name: Publish isolated api-deploy branch

@@ -3,13 +3,21 @@
 declare(strict_types=1);
 
 use Arasya\Operations\Application\Container;
+use Arasya\Operations\Bootstrap\RuntimeLocator;
 
 ini_set('display_errors', '0');
 error_reporting(E_ALL);
 
-require dirname(__DIR__) . '/bootstrap.php';
-
 try {
+    require __DIR__ . '/RuntimeLocator.php';
+    $override = getenv('ARASYA_API_RELEASE_ROOT');
+    $home = getenv('HOME');
+    $releaseRoot = RuntimeLocator::locate(
+        $override === false ? null : (string) $override,
+        dirname(__DIR__),
+        $home === false ? null : (string) $home,
+    );
+    require $releaseRoot . '/bootstrap.php';
     $container = new Container();
     $container->kernel()->handle($container->requestFactory()->fromGlobals())->send();
 } catch (Throwable) {
@@ -21,4 +29,3 @@ try {
     header("X-Request-ID: {$requestId}");
     echo json_encode(['error' => ['code' => 'CONFIGURATION_ERROR', 'message' => 'The service is not configured.', 'requestId' => $requestId]], JSON_UNESCAPED_SLASHES);
 }
-

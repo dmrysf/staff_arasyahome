@@ -2,6 +2,7 @@ Options -Indexes
 
 <IfModule mod_rewrite.c>
   RewriteEngine On
+  RewriteRule ^RuntimeLocator\.php$ - [F,L]
   RewriteCond %{REQUEST_FILENAME} !-f
   RewriteCond %{REQUEST_FILENAME} !-d
   RewriteRule ^ index.php [QSA,L]
@@ -10,4 +11,3 @@ Options -Indexes
 <IfModule mod_headers.c>
   Header always set X-Content-Type-Options "nosniff"
 </IfModule>
-

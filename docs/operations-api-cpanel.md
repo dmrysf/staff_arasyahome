@@ -1,132 +1,146 @@
-# Operations API cPanel production rollout
+# Operations API: real cPanel deployment
 
-The verified `api-deploy` branch is independent from the Staff `deploy` branch and `$HOME/staff.arasyahome.ro`. Its `.cpanel.yml` runs only the API code sync. It never builds with Node, changes Staff files, writes secrets, or runs database migrations.
+This document uses the verified production topology. Do not change the existing cPanel document root.
 
-## Required filesystem layout
+```text
+API domain:       https://api.arasyahome.ro
+Public root:      $HOME/api.arasyahome.ro
+Private runtime:  $HOME/arasya-operations-api/current
+Private secrets:  $HOME/arasya-config/secrets.json
+Staff root:       $HOME/staff.arasyahome.ro (independent and unchanged)
+```
+
+The generated `api-deploy` branch contains a verified PHP release. cPanel checks out that branch and deploys it; it never runs Node, pnpm, Composer, migrations, seeds, or employee creation.
+
+## Filesystem boundary
 
 ```text
 $HOME/
-  arasya-operations-api/
-    current/
-      bootstrap.php
-      src/
-      database/
-      bin/
-      public/
-      release.json
-  arasya-config/
-    operations-api.php
+├── api.arasyahome.ro/
+│   ├── index.php
+│   ├── RuntimeLocator.php
+│   └── .htaccess
+├── arasya-operations-api/
+│   └── current/
+│       ├── bootstrap.php
+│       ├── src/
+│       ├── database/
+│       ├── bin/
+│       ├── config/          # placeholder examples only
+│       ├── public/
+│       └── release.json
+└── arasya-config/
+    └── secrets.json
 ```
 
-Configure the `api.arasyahome.ro` document root exactly as:
+`$HOME/api.arasyahome.ro` is public-only. It must never contain `bootstrap.php`, `src/`, `database/`, `bin/`, `config/`, `secrets.json`, tests, Git metadata, or logs. `RuntimeLocator.php` is an explicitly public bootstrap-location helper and direct requests to it are denied by `.htaccess`.
 
-```text
-$HOME/arasya-operations-api/current/public
-```
+## Private JSON configuration
 
-Never expose `$HOME/arasya-operations-api/current` itself. The release-root `.htaccess` is defense in depth, not a substitute for the correct document root.
-
-## 1. Private configuration
-
-Create the private location before deploying code:
+The existing private file remains externally managed:
 
 ```bash
-mkdir -p "$HOME/arasya-config"
 chmod 700 "$HOME/arasya-config"
+chmod 600 "$HOME/arasya-config/secrets.json"
 ```
 
-After checking out `api-deploy` in cPanel, copy the placeholder example and edit only the private copy:
+Deployment never copies, changes, deletes, chmods, or prints this file. Its recommended placeholder structure is:
+
+```json
+{
+  "DB_USER_NAME": "cpanel_database_user",
+  "DB_USER_PASSWORD": "replace-with-real-password",
+  "DB_NAME": "cpanel_database_name",
+  "DB_HOST": "localhost",
+  "ARASYA_APP_SECRET": "replace-with-a-strong-random-secret",
+  "ARASYA_ALLOWED_ORIGINS": [
+    "https://staff.arasyahome.ro"
+  ]
+}
+```
+
+Do not copy actual values into Git, CI, documentation, or chat. Before health verification, manually add a strong random `ARASYA_APP_SECRET` of at least 32 bytes. Until it exists, startup intentionally fails closed with a safe `CONFIGURATION_ERROR`.
+
+Supported aliases are `DB_USER_NAME`, `DB_USER_PASSWORD`, `DB_NAME`, `DB_HOST`, and `DB_PORT`. Canonical `ARASYA_DB_*` keys win over aliases in the same file. Real environment variables win over private-file values. `ARASYA_ALLOWED_ORIGINS` accepts either an array of exact origins or a CSV string. Unknown JSON keys are ignored; supported keys with nested or invalid values fail validation. If `DB_HOST` is absent, the cPanel-local default is `localhost`.
+
+`ARASYA_CONFIG_FILE` may explicitly select a `.json` or legacy `.php` private file. Without an override the loader prefers `$HOME/arasya-config/secrets.json`, then the legacy `$HOME/arasya-config/operations-api.php`. Private config paths inside the runtime, API public root, or Staff public root are rejected.
+
+## Two-target cPanel deployment
+
+The API-specific `.cpanel.yml` executes:
 
 ```bash
-cp config/config.production.example.php "$HOME/arasya-config/operations-api.php"
-chmod 600 "$HOME/arasya-config/operations-api.php"
+ARASYA_API_RUNTIME_PATH="$HOME/arasya-operations-api/current" \
+ARASYA_API_PUBLIC_PATH="$HOME/api.arasyahome.ro" \
+/bin/bash ./scripts/cpanel-deploy-api.sh
 ```
 
-Replace every placeholder. Do not put the resulting file in Git, the API release, Staff document root, or `public/`. When no `ARASYA_CONFIG_FILE` environment override is configured, web and CLI automatically use `$HOME/arasya-config/operations-api.php`. If the hosting PHP process does not expose `HOME`, configure `ARASYA_CONFIG_FILE` through cPanel/PHP environment settings with the absolute private path. Explicit environment variables take precedence over private-file values. Restrictive modes `700`/`600` are recommended where supported by the hosting account.
+The script performs this order:
 
-Generate `ARASYA_APP_SECRET` with at least 32 random bytes using a locally available trusted password/secret generator; never paste the value into logs or documentation. Production `ARASYA_ALLOWED_ORIGINS` initially remains exactly `https://staff.arasyahome.ro`.
+1. Validate release contents and both destinations.
+2. Sync the complete private runtime first.
+3. Verify private bootstrap, source, migrations, CLI, config examples, and release metadata.
+4. Sync only `public/` into `$HOME/api.arasyahome.ro`.
+5. Preserve `.well-known/` and `cgi-bin/`.
+6. Verify the public entrypoint and absence of private artifacts.
 
-## 2. PHP and subdomain
-
-Create `api.arasyahome.ro`, enable HTTPS, select maintained PHP 8.2 or newer, and confirm required modules:
+It rejects `/`, `$HOME`, Staff, private config, Git/release, equal/nested runtime-public targets, and other unsafe destinations. It never runs migrations. Validate without mutation using:
 
 ```bash
-php -v
-php -m | grep -E 'pdo_mysql|mbstring|openssl'
+DRY_RUN=1 /bin/bash ./scripts/cpanel-deploy-api.sh
 ```
 
-JSON and secure random support must also be present. Composer, Node, Corepack, pnpm, Passenger, Docker, systemd, and root access are not required.
+The public `index.php` resolves runtime in this order: `ARASYA_API_RELEASE_ROOT` server environment override, normal nested source layout, then `$HOME/arasya-operations-api/current`. Invalid paths return only the safe JSON configuration failure and never expose filesystem locations.
 
-## 3. MySQL/MariaDB
+## Exact production rollout
 
-In cPanel create a dedicated Operations database and user. Grant the runtime user only the application privileges it needs after schema creation:
+After V2.0.2 is pushed and `api-deploy` is regenerated:
 
-```sql
-GRANT SELECT, INSERT, UPDATE, DELETE
-ON cpanel_operations.*
-TO 'cpanel_operations_runtime'@'localhost';
-```
+1. Confirm `$HOME/arasya-config/secrets.json` exists.
+2. Manually add the missing `ARASYA_APP_SECRET`; never disclose its value.
+3. Validate the JSON syntax using a local/private editor or a server-side JSON checker that does not print the file.
+4. Confirm the existing `api.arasyahome.ro` document root is `$HOME/api.arasyahome.ro`; do not change it.
+5. Confirm the cPanel Git repository tracks `api-deploy`.
+6. Select **Update from Remote**.
+7. Select **Deploy HEAD Commit**.
+8. Verify public files:
+   - `$HOME/api.arasyahome.ro/index.php`
+   - `$HOME/api.arasyahome.ro/.htaccess`
+   - `$HOME/api.arasyahome.ro/RuntimeLocator.php`
+9. Verify private runtime:
+   - `$HOME/arasya-operations-api/current/bootstrap.php`
+   - `$HOME/arasya-operations-api/current/src`
+   - `$HOME/arasya-operations-api/current/bin`
+   - `$HOME/arasya-operations-api/current/database`
+10. Confirm PHP 8.2+ and extensions:
 
-Migrations additionally require `CREATE`, `ALTER`, `INDEX`, and `REFERENCES`. Prefer a separate controlled migration user when cPanel supports it:
+    ```bash
+    php -v
+    php -m | grep -E 'pdo_mysql|mbstring|openssl'
+    ```
 
-```sql
-GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, REFERENCES
-ON cpanel_operations.*
-TO 'cpanel_operations_migrator'@'localhost';
-```
+11. Review migrations and back up any existing operational database, then run explicitly:
 
-cPanel commonly prefixes database and usernames; use the exact generated names in the private config. Do not use a master/root database account. MariaDB/MySQL grant syntax and host names can vary in shared hosting, so use cPanel's privilege UI when direct `GRANT` is unavailable.
+    ```bash
+    cd "$HOME/arasya-operations-api/current"
+    php bin/migrate.php
+    php bin/seed-reference-data.php
+    ```
 
-## 4. Repeatable code deployment
+12. Create the first employee interactively:
 
-Configure cPanel Git deployment against `api-deploy`. The branch-root `.cpanel.yml` executes:
+    ```bash
+    php bin/create-employee.php
+    ```
 
-```bash
-ARASYA_API_DEPLOY_PATH="$HOME/arasya-operations-api/current" /bin/bash ./scripts/cpanel-deploy-api.sh
-```
+13. Verify `https://api.arasyahome.ro/health`.
+14. Test login, session, `/employees/me`, refresh rotation, and logout with the exact Staff Origin and a cookie jar.
+15. Only after the API lifecycle succeeds, set `VITE_STAFF_API_BASE_URL=https://api.arasyahome.ro`.
+16. Keep `VITE_STAFF_PREVIEW_MODE=true` until real employee login is independently proven.
+17. Later set `VITE_STAFF_PREVIEW_MODE=false`, rebuild Staff, and test production login.
 
-The script validates the release before mutation, rejects `/`, `$HOME`, the Staff document root, repository paths, and the private config directory, then uses `rsync --archive --delete` for code only. The private config remains outside the destination and cannot be deleted. A static validation can be run without mutation:
+## Database privileges and rollback
 
-```bash
-DRY_RUN=1 ARASYA_API_DEPLOY_PATH="$HOME/arasya-operations-api/current" /bin/bash ./scripts/cpanel-deploy-api.sh
-```
+The runtime user needs `SELECT`, `INSERT`, `UPDATE`, and `DELETE`. Migration execution additionally needs `CREATE`, `ALTER`, `INDEX`, and `REFERENCES`; use a separate migration account when cPanel permits it. Never use or disclose a root/master credential.
 
-## 5. Deliberate migrations and bootstrap
-
-Deployment updates code only. Review new migrations, take a database backup once operational data exists, and then run them explicitly from the deployed release:
-
-```bash
-cd "$HOME/arasya-operations-api/current"
-php bin/migrate.php
-php bin/seed-reference-data.php
-php bin/create-employee.php
-```
-
-The password prompt is interactive and no production account is seeded. Additional CLI tools use the same private configuration loader as the web API.
-
-## 6. Verification and Staff activation
-
-Verify in this order:
-
-```text
-GET  https://api.arasyahome.ro/health
-POST https://api.arasyahome.ro/auth/login
-GET  https://api.arasyahome.ro/auth/session
-GET  https://api.arasyahome.ro/employees/me
-POST https://api.arasyahome.ro/auth/refresh
-POST https://api.arasyahome.ro/auth/logout
-```
-
-Use the exact Staff Origin, a cookie jar, and CSRF header for authenticated mutations. Confirm refresh invalidates the old cookie and logout invalidates the server session.
-
-Then set the GitHub repository variable:
-
-```text
-VITE_STAFF_API_BASE_URL=https://api.arasyahome.ro
-```
-
-Keep `VITE_STAFF_PREVIEW_MODE=true` until the entire real API lifecycle succeeds. Build and verify Staff once, then set `VITE_STAFF_PREVIEW_MODE=false`, rebuild, publish, and test a real employee login on `staff.arasyahome.ro`.
-
-## Rollback
-
-Staff and API releases remain independent. If API activation fails, keep the accepted Staff Preview build. Restore a previously verified API code release only after reviewing schema compatibility; do not copy secrets into Git or automatically roll migrations backward.
+Staff and API deployments remain independent. If API activation fails, keep the accepted Staff Preview release. Restore a prior verified API code release only after reviewing schema compatibility; secrets stay in the external JSON file throughout rollback.

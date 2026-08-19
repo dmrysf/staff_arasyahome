@@ -15,8 +15,8 @@
 - Production startup restores identity with `/auth/session`; API failure never falls back to Preview or Demo.
 - Logout is idempotent only for absent/invalid sessions. A valid session with invalid CSRF remains authenticated; Staff preserves local state and shows a controlled retry error.
 - Structured HTTP logs add authenticated `employee_uuid` to request ID, route, method, and status when safely available. Auth audit remains a separate durable record.
-- cPanel secrets live in `$HOME/arasya-config/operations-api.php`, outside both the release and public root. Environment values override private-file values.
-- API code deploys independently to `$HOME/arasya-operations-api/current`; only its `public/` child is exposed and deployment never runs migrations.
+- cPanel secrets live in `$HOME/arasya-config/secrets.json`, outside runtime and both public roots. Environment and canonical keys have deterministic precedence; `ARASYA_APP_SECRET` has no fallback.
+- API runtime deploys independently to `$HOME/arasya-operations-api/current`, then only public files sync to `$HOME/api.arasyahome.ro`. Deployment never touches secrets or runs migrations.
 - Preview and Demo remain isolated adapters. `demo/demo` has no special meaning to the production API.
 - Future `/orders/mine` and every order mutation must derive identity from the session and authorize server-side.
 

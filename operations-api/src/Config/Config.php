@@ -50,7 +50,7 @@ final readonly class Config
         return new self(
             environment: $environment,
             appSecret: self::required($values, 'ARASYA_APP_SECRET'),
-            dbHost: self::value($values, 'ARASYA_DB_HOST', '127.0.0.1'),
+            dbHost: self::value($values, 'ARASYA_DB_HOST', 'localhost'),
             dbPort: self::positiveInt($values, 'ARASYA_DB_PORT', 3306),
             dbName: self::required($values, 'ARASYA_DB_NAME'),
             dbUser: self::required($values, 'ARASYA_DB_USER'),

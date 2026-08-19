@@ -9,9 +9,10 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$workspace/public" "$workspace/src" "$workspace/database/migrations" "$workspace/bin" "$workspace/config" "$workspace/scripts"
-touch "$workspace/.cpanel.yml" "$workspace/.htaccess" "$workspace/bootstrap.php" "$workspace/public/index.php" "$workspace/public/.htaccess"
+touch "$workspace/.cpanel.yml" "$workspace/.htaccess" "$workspace/bootstrap.php" "$workspace/public/index.php" "$workspace/public/.htaccess" "$workspace/public/RuntimeLocator.php"
 cp operations-api/scripts/cpanel-deploy-api.sh operations-api/scripts/validate-release.sh "$workspace/scripts/"
-printf '{"sourceCommit":"test","builtAt":"2026-08-19T00:00:00Z","version":"2.0.1"}\n' > "$workspace/release.json"
+cp operations-api/config/secrets.example.json "$workspace/config/secrets.example.json"
+printf '{"sourceCommit":"test","builtAt":"2026-08-19T00:00:00Z","version":"2.0.2"}\n' > "$workspace/release.json"
 
 /bin/bash operations-api/scripts/validate-release.sh "$workspace" >/dev/null
 
@@ -31,10 +32,19 @@ if /bin/bash operations-api/scripts/validate-release.sh "$workspace" >/dev/null 
 fi
 rm -- "$workspace/config.php"
 
+for forbidden in secrets.json operations-api.php .env application.log; do
+  touch "$workspace/$forbidden"
+  if /bin/bash operations-api/scripts/validate-release.sh "$workspace" >/dev/null 2>&1; then
+    printf 'Release validator accepted forbidden file: %s.\n' "$forbidden" >&2
+    exit 1
+  fi
+  rm -- "$workspace/$forbidden"
+done
+
 mkdir "$workspace/tests"
 if /bin/bash operations-api/scripts/validate-release.sh "$workspace" >/dev/null 2>&1; then
   printf 'Release validator accepted tests/.\n' >&2
   exit 1
 fi
 
-printf 'PASS API release validator accepts checkout metadata only outside strict packaging and rejects forbidden artifacts.\n'
+printf 'PASS API release validator accepts placeholder examples and rejects secrets/config/env/log/test artifacts.\n'
