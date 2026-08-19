@@ -44,6 +44,8 @@ Passwords are always read interactively without an argument. Disable and passwor
 find operations-api -type f -name '*.php' -print0 | xargs -0 -n1 php -l
 php operations-api/bin/check-migrations.php
 php operations-api/tests/run.php
+/bin/bash operations-api/tests/release-validation.sh
+/bin/bash operations-api/tests/deploy-api.sh
 php operations-api/tests/mysql-integration.php
 ```
 
