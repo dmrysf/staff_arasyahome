@@ -10,9 +10,9 @@ Standalone PHP 8.2+ identity and authentication API for Staff and future Operati
 - MySQL 8+ or a compatible current MariaDB release using InnoDB and `utf8mb4`
 - HTTPS in production
 
-Configuration uses explicit environment variables first, then the private PHP file selected by `ARASYA_CONFIG_FILE`, then `$HOME/arasya-config/operations-api.php`. Required values still fail closed. The web API and every CLI command use this same loader. Production values must never be committed or placed inside the release or `public/`; `config/config.production.example.php` contains placeholders only.
+Configuration uses explicit environment variables first, then `$HOME/arasya-config/secrets.json`, then the legacy `$HOME/arasya-config/operations-api.php`. `ARASYA_CONFIG_FILE` can explicitly select JSON or PHP. The real JSON aliases cPanel's existing `DB_USER_NAME`, `DB_USER_PASSWORD`, `DB_NAME`, `DB_HOST`, and `DB_PORT` keys; canonical `ARASYA_*` values win. Required values, including `ARASYA_APP_SECRET`, fail closed. Web and CLI use the same loader.
 
-The verified `api-deploy` release includes a dedicated `.cpanel.yml` and `scripts/cpanel-deploy-api.sh`. It deploys code only to `$HOME/arasya-operations-api/current`; migrations remain explicit. The API subdomain document root must be `$HOME/arasya-operations-api/current/public`.
+The verified `api-deploy` release deploys private runtime to `$HOME/arasya-operations-api/current` first, then only `public/` to the existing cPanel document root `$HOME/api.arasyahome.ro`. Migrations remain explicit.
 
 ## Administrative sequence
 

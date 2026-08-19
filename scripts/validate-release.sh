@@ -16,6 +16,8 @@ for file in \
   bootstrap.php \
   public/index.php \
   public/.htaccess \
+  public/RuntimeLocator.php \
+  config/secrets.example.json \
   scripts/cpanel-deploy-api.sh \
   scripts/validate-release.sh \
   release.json; do
@@ -33,10 +35,17 @@ if [[ "${ARASYA_RELEASE_STRICT:-0}" == "1" && -e "$release_root/.git" ]]; then
   fail "Git metadata is forbidden in the packaged release."
 fi
 
-forbidden_file="$(find "$release_root" -path "$release_root/.git" -prune -o -type f \( -name 'config.php' -o -name '.env' -o -name '.env.*' -o -name '*.log' \) -print -quit)"
+forbidden_file="$(find "$release_root" -path "$release_root/.git" -prune -o -type f \( -name 'secrets.json' -o -name 'operations-api.php' -o -name 'config.php' -o -name '.env' -o -name '.env.*' -o -name '*.log' \) -print -quit)"
 [[ -z "$forbidden_file" ]] || fail "Forbidden configuration/log artifact is present."
 
-if grep -RIEq --exclude-dir='.git' --exclude='*.example.php' --exclude='README.md' \
+if [[ -f "$release_root/config/secrets.example.json" ]]; then
+  grep -Eq '"DB_USER_PASSWORD"[[:space:]]*:[[:space:]]*"replace-with-' "$release_root/config/secrets.example.json" \
+    || fail "The JSON config example does not contain a password placeholder."
+  grep -Eq '"ARASYA_APP_SECRET"[[:space:]]*:[[:space:]]*"replace-with-' "$release_root/config/secrets.example.json" \
+    || fail "The JSON config example does not contain an app-secret placeholder."
+fi
+
+if grep -RIEq --exclude-dir='.git' --exclude='*.example.php' --exclude='*.example.json' --exclude='README.md' \
   'BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|AKIA[0-9A-Z]{16}' "$release_root"; then
   fail "A likely credential marker was found in the release."
 fi

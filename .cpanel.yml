@@ -1,4 +1,4 @@
 ---
 deployment:
   tasks:
-    - ARASYA_API_DEPLOY_PATH="$HOME/arasya-operations-api/current" /bin/bash ./scripts/cpanel-deploy-api.sh
+    - ARASYA_API_RUNTIME_PATH="$HOME/arasya-operations-api/current" ARASYA_API_PUBLIC_PATH="$HOME/api.arasyahome.ro" /bin/bash ./scripts/cpanel-deploy-api.sh
