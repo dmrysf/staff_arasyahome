@@ -16,7 +16,7 @@
 - Logout is idempotent only for absent/invalid sessions. A valid session with invalid CSRF remains authenticated; Staff preserves local state and shows a controlled retry error.
 - Structured HTTP logs add authenticated `employee_uuid` to request ID, route, method, and status when safely available. Auth audit remains a separate durable record.
 - cPanel secrets live in `$HOME/arasya-config/secrets.json`, outside runtime and both public roots. Environment and canonical keys have deterministic precedence; `ARASYA_APP_SECRET` has no fallback.
-- API runtime deploys independently to `$HOME/arasya-operations-api/current`, then only public files sync to `$HOME/api.arasyahome.ro`. Deployment never touches secrets or runs migrations.
+- API runtime deploys independently to checksummed `$HOME/arasya-operations-api/releases/<source-sha>` directories and activates through the validated `active-release` pointer; only atomic public bootstrap files enter `$HOME/api.arasyahome.ro`. Deployment never touches secrets or runs migrations.
 - Preview and Demo remain isolated adapters. `demo/demo` has no special meaning to the production API.
 - Future `/orders/mine` and every order mutation must derive identity from the session and authorize server-side.
 

@@ -11,6 +11,8 @@ use Arasya\Operations\Config\ConfigLoader;
 use Arasya\Operations\Employee\EmployeeAdminService;
 use Arasya\Operations\Employee\EmployeeIdentity;
 use Arasya\Operations\Employee\EmployeeSerializer;
+use Arasya\Operations\Database\AuthMaintenance;
+use Arasya\Operations\Database\MigrationStatus;
 use Arasya\Operations\Http\ApiException;
 use Arasya\Operations\Http\ApiKernel;
 use Arasya\Operations\Http\AuthController;
@@ -23,6 +25,7 @@ use Arasya\Operations\Production\ProductionStage;
 use Arasya\Operations\Production\ProductionWorkflow;
 use Arasya\Operations\Production\ProductionWorkflowRepository;
 use Arasya\Operations\Production\ProductionWorkflowService;
+use Arasya\Operations\Production\PdoProductionWorkflowRepository;
 use Arasya\Operations\Security\CookiePolicy;
 use Arasya\Operations\Security\CsrfGuard;
 use Arasya\Operations\Security\PasswordHasher;
@@ -34,6 +37,7 @@ use Arasya\Operations\Tests\MemoryRateLimiter;
 use Arasya\Operations\Tests\MemorySessionRepository;
 use Arasya\Operations\Tests\MutableClock;
 use Arasya\Operations\Support\StructuredLogger;
+use Arasya\Operations\Support\SensitiveDataRedactor;
 require dirname(__DIR__) . '/bootstrap.php';
 require dirname(__DIR__) . '/public/RuntimeLocator.php';
 require __DIR__ . '/TestDoubles.php';
@@ -508,6 +512,12 @@ test('authenticated production workflow route returns the exact canonical catalo
     expect(count($response->payload['stages'] ?? []) === 14);
     expect(($response->headers['Cache-Control'] ?? null) === 'private, no-cache');
     expect(str_contains($response->headers['Access-Control-Expose-Headers'] ?? '', 'ETag'));
+    expect(($response->headers['Strict-Transport-Security'] ?? null) === 'max-age=31536000; includeSubDomains');
+    expect(($response->headers['Content-Security-Policy'] ?? null) === "default-src 'none'; frame-ancestors 'none'; base-uri 'none'");
+    expect(($response->headers['X-Frame-Options'] ?? null) === 'DENY');
+    expect(($response->headers['Referrer-Policy'] ?? null) === 'no-referrer');
+    expect(str_contains($response->headers['Permissions-Policy'] ?? '', 'camera=()'));
+    expect(($response->headers['Cross-Origin-Resource-Policy'] ?? null) === 'cross-origin');
     $etag = $response->headers['ETag'] ?? '';
     expect($etag !== '');
 
@@ -533,7 +543,7 @@ test('authenticated production workflow route returns the exact canonical catalo
     expect(($unauthenticated->payload['error']['code'] ?? null) === 'SESSION_EXPIRED');
 
     $health = $kernel->handle(new Request('GET', '/health', [], [], '', '127.0.0.1', 'workflow-test', 'health-stable'));
-    expect($health->status === 200 && ($health->payload['version'] ?? null) === '2.0.6');
+    expect($health->status === 200 && ($health->payload['version'] ?? null) === '2.0.7');
 });
 
 test('JSON auth input rejects malformed, oversized and unexpected payloads', function (): void {
@@ -619,6 +629,8 @@ test('JSON private config maps aliases, arrays and deterministic precedence', fu
         expect($config->dbUser === 'canonical-user');
         expect($config->dbPassword === 'private-password');
         expect($config->allowedOrigins === ['https://staff.arasyahome.ro']);
+        expect($config->sessionRecordRetentionDays === 30 && $config->loginAttemptRetentionDays === 30 && $config->rateLimitRetentionDays === 7);
+        expect($config->authAuditRetentionDays === null);
 
         $privateWithoutSecret = $private;
         unset($privateWithoutSecret['ARASYA_APP_SECRET']);
@@ -683,9 +695,14 @@ test('explicit config override wins and legacy PHP private config remains suppor
 test('private config derives cPanel home only from the validated runtime layout', function (): void {
     $account = sys_get_temp_dir() . '/arasya-litespeed-config-' . bin2hex(random_bytes(6));
     $runtime = $account . '/arasya-operations-api/current';
+    $versionedRuntime = $account . '/arasya-operations-api/releases/' . str_repeat('a', 40);
     $configDirectory = $account . '/arasya-config';
+    $environmentHome = $account . '-environment-home';
+    $environmentConfigDirectory = $environmentHome . '/arasya-config';
     mkdir($runtime, 0700, true);
+    mkdir($versionedRuntime, 0700, true);
     mkdir($configDirectory, 0700, true);
+    mkdir($environmentConfigDirectory, 0700, true);
     $path = $configDirectory . '/secrets.json';
     file_put_contents($path, json_encode([
         'ARASYA_APP_SECRET' => str_repeat('w', 32),
@@ -694,14 +711,30 @@ test('private config derives cPanel home only from the validated runtime layout'
         'DB_NAME' => 'web-database',
         'ARASYA_ALLOWED_ORIGINS' => ['https://staff.arasyahome.ro'],
     ], JSON_THROW_ON_ERROR));
+    file_put_contents($environmentConfigDirectory . '/secrets.json', json_encode([
+        'ARASYA_APP_SECRET' => str_repeat('e', 32),
+        'DB_USER_NAME' => 'environment-home-user',
+        'DB_USER_PASSWORD' => 'environment-home-password',
+        'DB_NAME' => 'environment-home-database',
+        'ARASYA_ALLOWED_ORIGINS' => ['https://staff.arasyahome.ro'],
+    ], JSON_THROW_ON_ERROR));
     try {
         $config = Config::fromEnvironment(new ConfigLoader([], $runtime));
         expect($config->dbUser === 'web-user');
         expect($config->dbName === 'web-database');
+        $versioned = Config::fromEnvironment(new ConfigLoader([], $versionedRuntime));
+        expect($versioned->dbUser === 'web-user' && $versioned->dbName === 'web-database');
+        $environmentSelected = Config::fromEnvironment(new ConfigLoader(['HOME' => $environmentHome], $versionedRuntime));
+        expect($environmentSelected->dbUser === 'environment-home-user', 'HOME did not win over release-root derivation.');
     } finally {
         unlink($path);
+        unlink($environmentConfigDirectory . '/secrets.json');
+        rmdir($environmentConfigDirectory);
+        rmdir($environmentHome);
         rmdir($configDirectory);
         rmdir($runtime);
+        rmdir($versionedRuntime);
+        rmdir($account . '/arasya-operations-api/releases');
         rmdir($account . '/arasya-operations-api');
         rmdir($account);
     }
@@ -736,6 +769,7 @@ test('private config path rejects runtime, API public and Staff public roots', f
     $allowedDirectory = $home . '/arasya-config';
     $forbiddenDirectories = [
         $home . '/arasya-operations-api/current',
+        $home . '/arasya-operations-api/releases/' . str_repeat('b', 40),
         $home . '/api.arasyahome.ro',
         $home . '/staff.arasyahome.ro',
     ];
@@ -771,6 +805,7 @@ test('private config path rejects runtime, API public and Staff public roots', f
         foreach (array_reverse($forbiddenDirectories) as $directory) {
             @rmdir($directory);
         }
+        @rmdir($home . '/arasya-operations-api/releases');
         @rmdir($home . '/arasya-operations-api');
         rmdir($home);
     }
@@ -782,16 +817,44 @@ test('runtime locator supports nested, HOME, HOME-less LiteSpeed and safe overri
 
     $home = sys_get_temp_dir() . '/arasya-runtime-locator-' . bin2hex(random_bytes(6));
     $runtime = $home . '/arasya-operations-api/current';
+    $releases = $home . '/arasya-operations-api/releases';
+    $releaseCommit = str_repeat('c', 40);
+    $versionedRuntime = $releases . '/' . $releaseCommit;
     $public = $home . '/api.arasyahome.ro';
     mkdir($runtime, 0700, true);
+    mkdir($versionedRuntime, 0700, true);
     mkdir($public, 0700, true);
     file_put_contents($runtime . '/bootstrap.php', "<?php\ndeclare(strict_types=1);\n");
+    file_put_contents($versionedRuntime . '/bootstrap.php', "<?php\ndeclare(strict_types=1);\n");
     file_put_contents($public . '/index.php', "<?php\ndeclare(strict_types=1);\n");
     file_put_contents($public . '/RuntimeLocator.php', "<?php\ndeclare(strict_types=1);\n");
     try {
         expect(RuntimeLocator::locate(null, $home, $home, $public) === realpath($runtime));
         expect(RuntimeLocator::locate(null, $home, null, $public) === realpath($runtime));
         expect(RuntimeLocator::locate($runtime, '/unused', null, '/unused') === realpath($runtime));
+
+        file_put_contents($home . '/arasya-operations-api/active-release', $releaseCommit . "\n");
+        expect(RuntimeLocator::locate(null, $home, $home, $public) === realpath($versionedRuntime));
+        expect(RuntimeLocator::locate(null, $home, null, $public) === realpath($versionedRuntime));
+
+        file_put_contents($home . '/arasya-operations-api/active-release', '../current');
+        expectRuntime(fn () => RuntimeLocator::locate(null, $home, $home, $public));
+        file_put_contents($home . '/arasya-operations-api/active-release', str_repeat('d', 40));
+        expectRuntime(fn () => RuntimeLocator::locate(null, $home, $home, $public));
+        file_put_contents($home . '/arasya-operations-api/active-release', $releaseCommit);
+        unlink($versionedRuntime . '/bootstrap.php');
+        expectRuntime(fn () => RuntimeLocator::locate(null, $home, null, $public));
+        $escapeCommit = str_repeat('e', 40);
+        $escapeTarget = $home . '/outside-release';
+        mkdir($escapeTarget, 0700);
+        file_put_contents($escapeTarget . '/bootstrap.php', "<?php\ndeclare(strict_types=1);\n");
+        symlink($escapeTarget, $releases . '/' . $escapeCommit);
+        file_put_contents($home . '/arasya-operations-api/active-release', $escapeCommit);
+        expectRuntime(fn () => RuntimeLocator::locate(null, $home, $home, $public));
+        unlink($releases . '/' . $escapeCommit);
+        unlink($escapeTarget . '/bootstrap.php');
+        rmdir($escapeTarget);
+        unlink($home . '/arasya-operations-api/active-release');
         $unsafeDenied = false;
         try {
             RuntimeLocator::locate('../unsafe', $home, $home, $public);
@@ -812,9 +875,17 @@ test('runtime locator supports nested, HOME, HOME-less LiteSpeed and safe overri
         if (is_file($runtime . '/bootstrap.php')) {
             unlink($runtime . '/bootstrap.php');
         }
+        if (is_file($versionedRuntime . '/bootstrap.php')) {
+            unlink($versionedRuntime . '/bootstrap.php');
+        }
+        if (is_file($home . '/arasya-operations-api/active-release')) {
+            unlink($home . '/arasya-operations-api/active-release');
+        }
         unlink($public . '/index.php');
         unlink($public . '/RuntimeLocator.php');
         rmdir($runtime);
+        rmdir($versionedRuntime);
+        rmdir($releases);
         rmdir($home . '/arasya-operations-api');
         rmdir($public);
         rmdir($home);
@@ -830,12 +901,120 @@ test('structured logger includes safe employee context and removes sensitive fie
         'status' => 200,
         'password' => 'must-not-log',
         'csrf_token' => 'must-not-log-either',
+        'nested' => [
+            'access_token' => 'nested-sensitive-value',
+            'items' => [['client_secret' => 'list-sensitive-value', 'stage_key' => 'quality-control']],
+        ],
+        'workflow_key' => 'curtain-production',
+        'source_key' => 'trendhome',
     ]);
     $line = $lines[0] ?? '';
     expect(str_contains($line, '68ff2a20-a164-4ed8-8659-1872a37d2ced'));
     expect(!str_contains($line, 'must-not-log'));
     expect(!str_contains($line, 'password'));
     expect(!str_contains($line, 'csrf'));
+    expect(!str_contains($line, 'nested-sensitive-value'));
+    expect(!str_contains($line, 'list-sensitive-value'));
+    expect(str_contains($line, 'stage_key') && str_contains($line, 'workflow_key') && str_contains($line, 'source_key'));
+});
+
+test('recursive sensitive-data redaction keeps operational key diagnostics', function (): void {
+    $sanitized = SensitiveDataRedactor::sanitize([
+        'password_hash' => 'top-secret-value',
+        'context' => [
+            'authorization' => 'nested-secret-value',
+            'items' => [(object) ['api-key' => 'object-secret-value', 'stage_key' => 'bottom-hem']],
+        ],
+        'workflow_key' => 'curtain-production',
+        'source_key' => 'outletperdele',
+        'diagnostic' => 'catalog-read',
+    ]);
+    $encoded = json_encode($sanitized, JSON_THROW_ON_ERROR);
+    expect(!str_contains($encoded, 'top-secret-value') && !str_contains($encoded, 'nested-secret-value') && !str_contains($encoded, 'object-secret-value'));
+    expect(str_contains($encoded, 'stage_key') && str_contains($encoded, 'workflow_key') && str_contains($encoded, 'source_key') && str_contains($encoded, 'catalog-read'));
+});
+
+test('workflow repository builds one active metadata and stage result set and fails closed on malformed V1', function (): void {
+    $pdo = new PDO('sqlite::memory:');
+    $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+    $pdo->exec('CREATE TABLE production_workflows (workflow_id INTEGER PRIMARY KEY, workflow_key TEXT, name TEXT, version INTEGER, status TEXT)');
+    $pdo->exec('CREATE TABLE production_stages (workflow_id INTEGER, stage_id TEXT, display_name TEXT, ordinal INTEGER, status TEXT)');
+    $pdo->exec("INSERT INTO production_workflows VALUES (1, 'sample-production', 'Sample', 1, 'active')");
+    $pdo->exec("INSERT INTO production_stages VALUES (1, 'first', 'First', 1, 'active'), (1, 'ignored', 'Ignored', 2, 'inactive'), (1, 'last', 'Last', 3, 'active')");
+    $workflow = (new PdoProductionWorkflowRepository($pdo, 'sample-production'))->current();
+    expect($workflow !== null && $workflow->name === 'Sample');
+    expect(array_map(static fn (ProductionStage $stage): string => $stage->id, $workflow->stages) === ['first', 'last']);
+    expect((new PdoProductionWorkflowRepository($pdo, 'missing'))->current() === null);
+
+    $pdo->exec("DELETE FROM production_stages; DELETE FROM production_workflows;");
+    $pdo->exec("INSERT INTO production_workflows VALUES (2, 'curtain-production', 'Broken', 1, 'active')");
+    $pdo->exec("INSERT INTO production_stages VALUES (2, 'cutting', 'Wrong', 1, 'active')");
+    expectRuntime(fn () => (new PdoProductionWorkflowRepository($pdo))->current());
+});
+
+test('migration status verifies checksums without mutating the database', function (): void {
+    $pdo = new PDO('sqlite::memory:');
+    $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+    $pdo->exec('CREATE TABLE schema_migrations (migration_name TEXT PRIMARY KEY, checksum TEXT, applied_at TEXT)');
+    $directory = sys_get_temp_dir() . '/arasya-migration-status-' . bin2hex(random_bytes(6));
+    mkdir($directory, 0700, true);
+    $first = $directory . '/001_first.sql';
+    $second = $directory . '/002_second.sql';
+    file_put_contents($first, 'SELECT 1;');
+    file_put_contents($second, 'SELECT 2;');
+    $checksum = hash_file('sha256', $first);
+    expect(is_string($checksum));
+    $pdo->prepare('INSERT INTO schema_migrations VALUES (:name, :checksum, :applied_at)')->execute([
+        'name' => '001_first.sql',
+        'checksum' => $checksum,
+        'applied_at' => '2026-08-19 00:00:00',
+    ]);
+    try {
+        $before = (int) $pdo->query('SELECT COUNT(*) FROM schema_migrations')->fetchColumn();
+        $status = (new MigrationStatus($pdo))->inspect($directory);
+        expect(array_column($status, 'status') === ['APPLIED', 'PENDING']);
+        expect((int) $pdo->query('SELECT COUNT(*) FROM schema_migrations')->fetchColumn() === $before);
+    } finally {
+        unlink($first);
+        unlink($second);
+        rmdir($directory);
+    }
+});
+
+test('auth maintenance dry-run is inert and bounded cleanup preserves current records', function (): void {
+    $pdo = new PDO('sqlite::memory:');
+    $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+    $pdo->exec('CREATE TABLE auth_sessions (session_id TEXT PRIMARY KEY, expires_at TEXT, revoked_at TEXT NULL)');
+    $pdo->exec('CREATE TABLE auth_login_attempts (attempt_id INTEGER PRIMARY KEY, attempted_at TEXT)');
+    $pdo->exec('CREATE TABLE auth_rate_limit_buckets (dimension_type TEXT, dimension_hash BLOB, updated_at TEXT, PRIMARY KEY (dimension_type, dimension_hash))');
+    $pdo->exec('CREATE TABLE auth_audit_events (event_id TEXT PRIMARY KEY, created_at TEXT)');
+    $pdo->exec("INSERT INTO auth_sessions VALUES ('old-expired', '2026-01-01 00:00:00', NULL), ('old-revoked', '2027-01-01 00:00:00', '2026-01-01 00:00:00'), ('current', '2027-01-01 00:00:00', NULL)");
+    $pdo->exec("INSERT INTO auth_login_attempts VALUES (1, '2026-01-01 00:00:00'), (2, '2026-08-18 00:00:00')");
+    $oldHash = random_bytes(32);
+    $currentHash = random_bytes(32);
+    $insertBucket = $pdo->prepare('INSERT INTO auth_rate_limit_buckets VALUES (:type, :hash, :updated_at)');
+    $insertBucket->bindValue(':type', 'ip');
+    $insertBucket->bindValue(':hash', $oldHash, PDO::PARAM_LOB);
+    $insertBucket->bindValue(':updated_at', '2026-01-01 00:00:00');
+    $insertBucket->execute();
+    $insertBucket->bindValue(':type', 'username');
+    $insertBucket->bindValue(':hash', $currentHash, PDO::PARAM_LOB);
+    $insertBucket->bindValue(':updated_at', '2026-08-18 00:00:00');
+    $insertBucket->execute();
+    $pdo->exec("INSERT INTO auth_audit_events VALUES ('old-audit', '2025-01-01 00:00:00')");
+    $now = new DateTimeImmutable('2026-08-19T12:00:00Z');
+    $maintenance = new AuthMaintenance($pdo, 30, 30, 7, null, 1);
+    $dryRun = $maintenance->run(true, $now);
+    expect($dryRun === ['sessions' => 2, 'login_attempts' => 1, 'rate_limit_buckets' => 1, 'audit_events' => null]);
+    expect((int) $pdo->query('SELECT COUNT(*) FROM auth_sessions')->fetchColumn() === 3);
+    $deleted = $maintenance->run(false, $now);
+    expect($deleted === $dryRun);
+    expect($pdo->query("SELECT session_id FROM auth_sessions")->fetchColumn() === 'current');
+    expect((int) $pdo->query('SELECT COUNT(*) FROM auth_login_attempts')->fetchColumn() === 1);
+    expect((int) $pdo->query('SELECT COUNT(*) FROM auth_rate_limit_buckets')->fetchColumn() === 1);
+    expect((int) $pdo->query('SELECT COUNT(*) FROM auth_audit_events')->fetchColumn() === 1);
+    $auditMaintenance = new AuthMaintenance($pdo, 30, 30, 7, 90, 1);
+    expect($auditMaintenance->run(false, $now)['audit_events'] === 1);
 });
 
 test('repository failures return a generic error with request ID and no SQL or path leakage', function (): void {

@@ -20,6 +20,7 @@
     "components/**/*.ts",
     "components/**/*.tsx",
     "domain/**/*.ts",
+    "e2e/**/*.ts",
     "features/**/*.ts",
     "features/**/*.tsx",
     "mocks/**/*.ts",
@@ -27,6 +28,7 @@
     "src/**/*.ts",
     "src/**/*.tsx",
     "tests/**/*.ts",
+    "playwright.config.ts",
     "vite.config.ts",
     "vite-env.d.ts"
   ],

@@ -12,12 +12,26 @@ import { createDemoServices } from "../services/dev/demoServices";
 import { getErrorPresentation, mapCameraError } from "../services/errors";
 import { resolveRuntimeConfig } from "../src/runtimeConfig";
 import { getStageById } from "../domain/productionWorkflow";
+import { parseStaffRoute } from "../domain/staffRoute";
 
 test("protected routes send anonymous employees to login", () => {
   assert.equal(routeForSession("/orders", false), "/login");
   assert.equal(routeForSession("/history", true), "/history");
   assert.equal(routeForSession("/orders/123", true), "/orders/123");
   assert.equal(routeForSession("/login", true), "/");
+});
+
+test("route parser safely decodes order IDs and rejects malformed or excessive paths", () => {
+  assert.deepEqual(parseStaffRoute("/orders/example"), { kind: "order-detail", pathname: "/orders/example", orderId: "example" });
+  const sourceQualified = parseStaffRoute("/orders/trendhome%3A61833");
+  assert.equal(sourceQualified.kind, "order-detail");
+  assert.equal(sourceQualified.kind === "order-detail" && sourceQualified.orderId, "trendhome:61833");
+  assert.doesNotThrow(() => parseStaffRoute("/orders/%E0%A4%A"));
+  assert.equal(parseStaffRoute("/orders/%E0%A4%A").kind, "invalid");
+  assert.doesNotThrow(() => parseStaffRoute("/orders/%"));
+  assert.equal(parseStaffRoute("/orders/%").kind, "invalid");
+  assert.equal(parseStaffRoute(`/orders/${"a".repeat(1000)}`).kind, "invalid");
+  assert.deepEqual(parseStaffRoute("/unknown"), { kind: "invalid", pathname: "/" });
 });
 
 test("scanner state machine accepts only valid transitions", () => {

@@ -9,7 +9,7 @@ import { StaffServiceError, type ProductionWorkflow } from "../domain/models";
 import { getNextStage, getPreviousStage, getStageById } from "../domain/productionWorkflow";
 import { previewOrders } from "../mocks/previewFixtures";
 import { previewProductionWorkflow } from "../mocks/productionWorkflow";
-import type { WorkflowCache } from "../services/production/workflowCache";
+import { createBrowserWorkflowCache, LEGACY_WORKFLOW_CACHE_KEY, normalizeProductionApiBaseUrl, type WorkflowCache, type WorkflowStorage } from "../services/production/workflowCache";
 import { createProductionWorkflowService, mapProductionWorkflow } from "../services/production/workflowService";
 
 const expectedStages = [
@@ -34,10 +34,20 @@ function payload(workflow: ProductionWorkflow = previewProductionWorkflow) {
 }
 
 class MemoryWorkflowCache implements WorkflowCache {
+  readonly namespace = "https://api.arasyahome.ro";
   value: string | null = null;
   writes = 0;
+  removals = 0;
   read() { return this.value; }
   write(value: string) { this.writes += 1; this.value = value; }
+  remove() { this.removals += 1; this.value = null; }
+}
+
+class MemoryStorage implements WorkflowStorage {
+  readonly values = new Map<string, string>();
+  getItem(key: string) { return this.values.get(key) ?? null; }
+  setItem(key: string, value: string) { this.values.set(key, value); }
+  removeItem(key: string) { this.values.delete(key); }
 }
 
 test("Preview exposes the exact canonical 14-stage workflow from one catalog", () => {
@@ -163,7 +173,7 @@ test("validated workflow responses become last-known-good and support ETag 304",
 
 test("in-memory last-known-good survives persistent-cache failure and avoids render churn", async () => {
   let attempt = 0;
-  const cache: WorkflowCache = { read: () => null, write: () => { throw new DOMException("blocked", "SecurityError"); } };
+  const cache: WorkflowCache = { namespace: "https://api.arasyahome.ro", read: () => null, write: () => { throw new DOMException("blocked", "SecurityError"); }, remove: () => undefined };
   const service = createProductionWorkflowService({
     get: async () => {
       attempt += 1;
@@ -209,7 +219,7 @@ test("wrong-ID refresh never poisons cache or replaces last-known-good and a val
 
 test("production keeps valid last-known-good on transient or malformed responses but fails closed on first load", async () => {
   const cached = new MemoryWorkflowCache();
-  cached.write(JSON.stringify({ etag: '"workflow-v1"', payload: payload() }));
+  cached.write(JSON.stringify({ namespace: cached.namespace, etag: '"workflow-v1"', payload: payload() }));
   const malformed = createProductionWorkflowService({
     get: async () => new Response(JSON.stringify({ workflow: {}, stages: [] }), { status: 200 }),
     failure: async () => new StaffServiceError("SERVICE_UNAVAILABLE"),
@@ -234,13 +244,14 @@ test("invalid canonical V1 persistent cache is rejected and cannot become known-
   const cache = new MemoryWorkflowCache();
   const wrongId = structuredClone(payload());
   wrongId.stages = wrongId.stages.map((stage, index) => index === 2 ? { ...stage, id: "cutting" } : stage);
-  cache.value = JSON.stringify({ etag: '"invalid-cache"', payload: wrongId });
+  cache.value = JSON.stringify({ namespace: cache.namespace, etag: '"invalid-cache"', payload: wrongId });
   const service = createProductionWorkflowService({
     get: async () => { throw new TypeError("offline"); },
     failure: async () => new StaffServiceError("SERVICE_UNAVAILABLE"),
   }, cache);
   await assert.rejects(service.getCurrent(), (error: unknown) => error instanceof StaffServiceError && error.code === "WORKFLOW_UNAVAILABLE");
   assert.equal(cache.writes, 0);
+  assert.equal(cache.removals, 1);
 });
 
 test("first-load canonical V1 with correct count but wrong ID fails closed", async () => {
@@ -253,4 +264,62 @@ test("first-load canonical V1 with correct count but wrong ID fails closed", asy
   }, cache);
   await assert.rejects(service.getCurrent(), (error: unknown) => error instanceof StaffServiceError && error.code === "WORKFLOW_UNAVAILABLE");
   assert.equal(cache.writes, 0);
+});
+
+test("workflow browser cache is isolated by normalized API origin and never trusts the legacy key", () => {
+  const storage = new MemoryStorage();
+  storage.setItem(LEGACY_WORKFLOW_CACHE_KEY, "legacy-unscoped-data");
+  const cacheA = createBrowserWorkflowCache("https://api-a.example.test/", storage);
+  cacheA.write("environment-a");
+  const cacheB = createBrowserWorkflowCache("https://api-b.example.test", storage);
+  assert.equal(cacheA.namespace, "https://api-a.example.test");
+  assert.equal(cacheB.namespace, "https://api-b.example.test");
+  assert.equal(cacheA.read(), "environment-a");
+  assert.equal(cacheB.read(), null);
+  assert.equal(storage.getItem(LEGACY_WORKFLOW_CACHE_KEY), null);
+  assert.equal(normalizeProductionApiBaseUrl("https://api.example.test/"), "https://api.example.test");
+  assert.equal(normalizeProductionApiBaseUrl("http://api.example.test"), null);
+  assert.equal(normalizeProductionApiBaseUrl("https://api.example.test/path"), null);
+});
+
+test("wrong cache namespace is purged instead of becoming last-known-good", async () => {
+  const cache = new MemoryWorkflowCache();
+  cache.value = JSON.stringify({ namespace: "https://different-api.example.test", etag: '"wrong-source"', payload: payload() });
+  const service = createProductionWorkflowService({
+    get: async () => { throw new TypeError("offline"); },
+    failure: async () => new StaffServiceError("SERVICE_UNAVAILABLE"),
+  }, cache);
+  await assert.rejects(service.getCurrent(), (error: unknown) => error instanceof StaffServiceError && error.code === "WORKFLOW_UNAVAILABLE");
+  assert.equal(cache.value, null);
+  assert.equal(cache.removals, 1);
+});
+
+test("malformed JSON cache is purged and unavailable browser storage never breaks memory continuity", async () => {
+  const malformed = new MemoryWorkflowCache();
+  malformed.value = "{not-json";
+  const unavailable = createProductionWorkflowService({
+    get: async () => { throw new TypeError("offline"); },
+    failure: async () => new StaffServiceError("SERVICE_UNAVAILABLE"),
+  }, malformed);
+  await assert.rejects(unavailable.getCurrent(), (error: unknown) => error instanceof StaffServiceError && error.code === "WORKFLOW_UNAVAILABLE");
+  assert.equal(malformed.value, null);
+  assert.equal(malformed.removals, 1);
+
+  const blockedStorage: WorkflowStorage = {
+    getItem: () => { throw new DOMException("blocked", "SecurityError"); },
+    setItem: () => { throw new DOMException("blocked", "SecurityError"); },
+    removeItem: () => { throw new DOMException("blocked", "SecurityError"); },
+  };
+  const cache = createBrowserWorkflowCache("https://api.arasyahome.ro", blockedStorage);
+  let attempts = 0;
+  const service = createProductionWorkflowService({
+    get: async () => {
+      attempts += 1;
+      if (attempts === 1) return new Response(JSON.stringify(payload()), { status: 200, headers: { ETag: '"memory"' } });
+      throw new TypeError("offline");
+    },
+    failure: async () => new StaffServiceError("SERVICE_UNAVAILABLE"),
+  }, cache);
+  const first = await service.getCurrent();
+  assert.strictEqual(await service.getCurrent(), first);
 });

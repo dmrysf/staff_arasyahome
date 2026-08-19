@@ -1,0 +1,113 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Arasya\Operations\Database;
+
+use DateTimeImmutable;
+use DateTimeZone;
+use PDO;
+
+final readonly class AuthMaintenance
+{
+    public const DEFAULT_BATCH_SIZE = 500;
+
+    public function __construct(
+        private PDO $pdo,
+        private int $sessionRetentionDays,
+        private int $loginAttemptRetentionDays,
+        private int $rateLimitRetentionDays,
+        private ?int $auditRetentionDays,
+        private int $batchSize = self::DEFAULT_BATCH_SIZE,
+    ) {
+    }
+
+    /** @return array{sessions: int, login_attempts: int, rate_limit_buckets: int, audit_events: int|null} */
+    public function run(bool $dryRun, ?DateTimeImmutable $now = null): array
+    {
+        $lock = new DatabaseAdvisoryLock($this->pdo, 'arasya_operations_maintenance');
+        $lock->acquire(0);
+        try {
+            $now ??= new DateTimeImmutable('now', new DateTimeZone('UTC'));
+            $sessionCutoff = $this->cutoff($now, $this->sessionRetentionDays);
+            $attemptCutoff = $this->cutoff($now, $this->loginAttemptRetentionDays);
+            $rateCutoff = $this->cutoff($now, $this->rateLimitRetentionDays);
+            return [
+                'sessions' => $this->pruneSessions($sessionCutoff, $dryRun),
+                'login_attempts' => $this->pruneSimple('auth_login_attempts', 'attempt_id', 'attempted_at', $attemptCutoff, $dryRun),
+                'rate_limit_buckets' => $this->pruneRateLimits($rateCutoff, $dryRun),
+                'audit_events' => $this->auditRetentionDays === null
+                    ? null
+                    : $this->pruneSimple('auth_audit_events', 'event_id', 'created_at', $this->cutoff($now, $this->auditRetentionDays), $dryRun),
+            ];
+        } finally {
+            $lock->release();
+        }
+    }
+
+    private function cutoff(DateTimeImmutable $now, int $days): string
+    {
+        return $now->modify("-{$days} days")->format('Y-m-d H:i:s.u');
+    }
+
+    private function pruneSessions(string $cutoff, bool $dryRun): int
+    {
+        $where = '(expires_at < :cutoff OR (revoked_at IS NOT NULL AND revoked_at < :cutoff))';
+        return $this->pruneByQuery('auth_sessions', 'session_id', $where, ['cutoff' => $cutoff], $dryRun);
+    }
+
+    private function pruneSimple(string $table, string $key, string $timestamp, string $cutoff, bool $dryRun): int
+    {
+        return $this->pruneByQuery($table, $key, "{$timestamp} < :cutoff", ['cutoff' => $cutoff], $dryRun);
+    }
+
+    /** @param array<string, string> $parameters */
+    private function pruneByQuery(string $table, string $key, string $where, array $parameters, bool $dryRun): int
+    {
+        $count = $this->pdo->prepare("SELECT COUNT(*) FROM {$table} WHERE {$where}");
+        $count->execute($parameters);
+        $candidates = (int) $count->fetchColumn();
+        if ($dryRun) {
+            return $candidates;
+        }
+        $deleted = 0;
+        do {
+            $select = $this->pdo->prepare("SELECT {$key} FROM {$table} WHERE {$where} ORDER BY {$key} ASC LIMIT {$this->batchSize}");
+            $select->execute($parameters);
+            $ids = array_values(array_filter($select->fetchAll(PDO::FETCH_COLUMN), static fn (mixed $id): bool => is_string($id) || is_int($id)));
+            foreach ($ids as $id) {
+                $delete = $this->pdo->prepare("DELETE FROM {$table} WHERE {$key} = :id");
+                $delete->execute(['id' => $id]);
+                $deleted += $delete->rowCount();
+            }
+        } while (count($ids) === $this->batchSize);
+        return $deleted;
+    }
+
+    private function pruneRateLimits(string $cutoff, bool $dryRun): int
+    {
+        $count = $this->pdo->prepare('SELECT COUNT(*) FROM auth_rate_limit_buckets WHERE updated_at < :cutoff');
+        $count->execute(['cutoff' => $cutoff]);
+        $candidates = (int) $count->fetchColumn();
+        if ($dryRun) {
+            return $candidates;
+        }
+        $deleted = 0;
+        do {
+            $select = $this->pdo->prepare("SELECT dimension_type, dimension_hash FROM auth_rate_limit_buckets WHERE updated_at < :cutoff ORDER BY updated_at ASC LIMIT {$this->batchSize}");
+            $select->execute(['cutoff' => $cutoff]);
+            $rows = $select->fetchAll();
+            foreach ($rows as $row) {
+                if (!is_array($row)) {
+                    continue;
+                }
+                $delete = $this->pdo->prepare('DELETE FROM auth_rate_limit_buckets WHERE dimension_type = :dimension_type AND dimension_hash = :dimension_hash');
+                $delete->bindValue(':dimension_type', (string) $row['dimension_type']);
+                $delete->bindValue(':dimension_hash', $row['dimension_hash'], PDO::PARAM_LOB);
+                $delete->execute();
+                $deleted += $delete->rowCount();
+            }
+        } while (count($rows) === $this->batchSize);
+        return $deleted;
+    }
+}

@@ -10,6 +10,7 @@ on:
       - "docs/staff-auth-security.md"
       - "docs/operations-api-cpanel.md"
       - "docs/production-workflow.md"
+      - "docs/production-reliability.md"
       - ".github/workflows/operations-api-ci.yml"
   pull_request:
     paths:
@@ -18,6 +19,7 @@ on:
       - "docs/staff-auth-security.md"
       - "docs/operations-api-cpanel.md"
       - "docs/production-workflow.md"
+      - "docs/production-reliability.md"
       - ".github/workflows/operations-api-ci.yml"
   workflow_dispatch:
 
@@ -46,10 +48,10 @@ jobs:
           --health-retries=10
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up PHP
-        uses: shivammathur/setup-php@v2
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
         with:
           php-version: "8.2"
           extensions: mbstring, pdo_mysql
@@ -87,7 +89,7 @@ jobs:
       contents: write
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Prepare dependency-free API release
         shell: bash
@@ -103,11 +105,12 @@ jobs:
           cp operations-api/config/config.example.php "$release_dir/config/config.example.php"
           cp operations-api/config/config.production.example.php "$release_dir/config/config.production.example.php"
           cp operations-api/config/secrets.example.json "$release_dir/config/secrets.example.json"
-          cp operations-api/scripts/cpanel-deploy-api.sh operations-api/scripts/validate-release.sh "$release_dir/scripts/"
-          chmod +x "$release_dir/scripts/cpanel-deploy-api.sh" "$release_dir/scripts/validate-release.sh"
-          printf '{\n  "sourceCommit": "%s",\n  "builtAt": "%s",\n  "version": "2.0.6"\n}\n' "$GITHUB_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$release_dir/release.json"
-          php -r '$r=json_decode(file_get_contents($argv[1]), true, flags: JSON_THROW_ON_ERROR); if (($r["sourceCommit"] ?? null) !== getenv("GITHUB_SHA") || ($r["version"] ?? null) !== "2.0.6") { throw new RuntimeException("API release metadata does not match source."); }' "$release_dir/release.json"
-          grep -Fq "'version' => '2.0.6'" "$release_dir/src/Http/HealthController.php"
+          cp operations-api/scripts/*.sh "$release_dir/scripts/"
+          chmod +x "$release_dir/scripts/"*.sh
+          printf '{\n  "sourceCommit": "%s",\n  "builtAt": "%s",\n  "version": "2.0.7"\n}\n' "$GITHUB_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$release_dir/release.json"
+          php -r '$r=json_decode(file_get_contents($argv[1]), true, flags: JSON_THROW_ON_ERROR); if (($r["sourceCommit"] ?? null) !== getenv("GITHUB_SHA") || ($r["version"] ?? null) !== "2.0.7") { throw new RuntimeException("API release metadata does not match source."); }' "$release_dir/release.json"
+          grep -Fq "'version' => '2.0.7'" "$release_dir/src/Http/HealthController.php"
+          /bin/bash "$release_dir/scripts/generate-sha256s.sh" "$release_dir"
           ARASYA_RELEASE_STRICT=1 /bin/bash "$release_dir/scripts/validate-release.sh" "$release_dir"
 
       - name: Publish isolated api-deploy branch
@@ -128,6 +131,7 @@ jobs:
           fi
           rsync --archive --delete --exclude='.git' "$release_dir/" "$publish_dir/"
           cmp "$release_dir/release.json" "$publish_dir/release.json"
+          cmp "$release_dir/SHA256SUMS" "$publish_dir/SHA256SUMS"
           cmp "$release_dir/src/Http/HealthController.php" "$publish_dir/src/Http/HealthController.php"
           git -C "$publish_dir" add --all
           if git -C "$publish_dir" diff --cached --quiet; then

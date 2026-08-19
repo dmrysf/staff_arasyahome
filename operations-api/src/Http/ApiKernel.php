@@ -64,6 +64,10 @@ final readonly class ApiKernel
             'X-Content-Type-Options' => 'nosniff',
             'X-Frame-Options' => 'DENY',
             'Referrer-Policy' => 'no-referrer',
+            'Strict-Transport-Security' => 'max-age=31536000; includeSubDomains',
+            'Content-Security-Policy' => "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+            'Permissions-Policy' => 'camera=(), microphone=(), geolocation=(), payment=(), usb=()',
+            'Cross-Origin-Resource-Policy' => 'cross-origin',
             'X-Request-ID' => $request->requestId,
         ]);
     }

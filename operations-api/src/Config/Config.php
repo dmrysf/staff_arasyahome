@@ -25,6 +25,10 @@ final readonly class Config
         public int $loginWindowSeconds,
         public bool $trustProxy,
         public array $trustedProxies,
+        public int $sessionRecordRetentionDays = 30,
+        public int $loginAttemptRetentionDays = 30,
+        public int $rateLimitRetentionDays = 7,
+        public ?int $authAuditRetentionDays = null,
     ) {
         if (strlen($this->appSecret) < 32) {
             throw new RuntimeException('ARASYA_APP_SECRET must contain at least 32 bytes.');
@@ -63,6 +67,10 @@ final readonly class Config
             loginWindowSeconds: self::positiveInt($values, 'ARASYA_LOGIN_WINDOW', 900),
             trustProxy: filter_var(self::value($values, 'ARASYA_TRUST_PROXY', 'false'), FILTER_VALIDATE_BOOL),
             trustedProxies: self::csv(self::value($values, 'ARASYA_TRUSTED_PROXIES', '')),
+            sessionRecordRetentionDays: self::positiveInt($values, 'ARASYA_SESSION_RECORD_RETENTION_DAYS', 30),
+            loginAttemptRetentionDays: self::positiveInt($values, 'ARASYA_LOGIN_ATTEMPT_RETENTION_DAYS', 30),
+            rateLimitRetentionDays: self::positiveInt($values, 'ARASYA_RATE_LIMIT_RETENTION_DAYS', 7),
+            authAuditRetentionDays: self::optionalPositiveInt($values, 'ARASYA_AUTH_AUDIT_RETENTION_DAYS'),
         );
     }
 
@@ -100,6 +108,15 @@ final readonly class Config
             throw new RuntimeException("{$name} must be a positive integer.");
         }
         return (int) $value;
+    }
+
+    /** @param array<string, string> $values */
+    private static function optionalPositiveInt(array $values, string $name): ?int
+    {
+        if (!array_key_exists($name, $values) || trim($values[$name]) === '') {
+            return null;
+        }
+        return self::positiveInt($values, $name, 1);
     }
 
     /** @return list<string> */

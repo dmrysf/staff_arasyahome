@@ -16,6 +16,7 @@ import { toServiceError } from "../services/errors";
 import { canAccessRoute } from "../domain/permissions";
 import { shouldEndLocalSessionAfterLogout } from "../features/auth/logoutPolicy";
 import { useProductionWorkflow } from "./useProductionWorkflow";
+import { parseStaffRoute } from "../domain/staffRoute";
 
 export function StaffApp({ initialRoute, mode, apiBaseUrl }: { initialRoute: string; mode: StaffRuntimeMode; apiBaseUrl: string }) {
   const services = useMemo(() => createServices({ mode, apiBaseUrl }), [apiBaseUrl, mode]);
@@ -60,7 +61,8 @@ export function StaffApp({ initialRoute, mode, apiBaseUrl }: { initialRoute: str
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
 
-  const sessionRoute = routeForSession(route, Boolean(session));
+  const parsedRoute = parseStaffRoute(route);
+  const sessionRoute = routeForSession(parsedRoute.pathname, Boolean(session));
   const guardedRoute = session && !canAccessRoute(session.employee, sessionRoute) ? "/" : sessionRoute;
   const workflowLifecycle = useProductionWorkflow({ authenticated: Boolean(session), route: guardedRoute, service: services.workflow });
 
@@ -85,7 +87,7 @@ export function StaffApp({ initialRoute, mode, apiBaseUrl }: { initialRoute: str
   if (workflowLifecycle.initialError) return <main className="session-check" role="alert"><span className="brand-mark">A</span><p>Fluxul de producție nu este disponibil momentan.</p><button className="button button-secondary" type="button" onClick={workflowLifecycle.retry}>Reîncearcă</button></main>;
   if (!workflow) return <main className="session-check" aria-live="polite"><span className="brand-mark">A</span><p>Se încarcă fluxul de producție…</p></main>;
 
-  const orderId = guardedRoute.startsWith("/orders/") ? decodeURIComponent(guardedRoute.slice("/orders/".length)) : "";
+  const orderId = parsedRoute.kind === "order-detail" && guardedRoute === parsedRoute.pathname ? parsedRoute.orderId : "";
   const immersive = guardedRoute === "/scan";
   let screen = <HomeScreen employee={session.employee} activityService={services.activity} navigate={navigate} />;
   if (guardedRoute === "/scan") screen = <ScannerScreen service={services.orders} workflow={workflow} mode={mode} navigate={navigate} onSessionExpired={() => expireSession(new StaffServiceError("SESSION_EXPIRED"))} />;

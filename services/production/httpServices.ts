@@ -1,6 +1,6 @@
 import { StaffServiceError, type Employee, type ServiceErrorCode } from "../../domain/models";
 import type { ActivityService, AuthService, EmployeeService, OrderService, ServiceBundle, Session } from "../contracts";
-import { createBrowserWorkflowCache, type WorkflowCache } from "./workflowCache";
+import { createBrowserWorkflowCache, createUnavailableWorkflowCache, normalizeProductionApiBaseUrl, type WorkflowCache } from "./workflowCache";
 import { createProductionWorkflowService } from "./workflowService";
 
 type FetchLike = typeof fetch;
@@ -149,8 +149,9 @@ function createRequest(apiBaseUrl: string, options: ProductionServicesOptions, o
 }
 
 export function createProductionServices(apiBaseUrl: string, options: ProductionServicesOptions = {}): ServiceBundle {
+  const normalizedApiBaseUrl = normalizeProductionApiBaseUrl(apiBaseUrl) ?? "";
   const sessionExpiredHandlers = new Set<(error: StaffServiceError) => void>();
-  const http = createRequest(apiBaseUrl, options, (error) => sessionExpiredHandlers.forEach((handler) => handler(error)));
+  const http = createRequest(normalizedApiBaseUrl, options, (error) => sessionExpiredHandlers.forEach((handler) => handler(error)));
   const auth: AuthService = {
     async login(input) {
       const payload = await http.request("/auth/login", { method: "POST", body: JSON.stringify(input) }, mapProductionSession);
@@ -203,6 +204,6 @@ export function createProductionServices(apiBaseUrl: string, options: Production
   const workflow = createProductionWorkflowService({
     get: (etag, signal) => http.send("/production/workflow", { signal, headers: etag ? { "If-None-Match": etag } : undefined }),
     failure: (response) => http.errorFromResponse(response, "/production/workflow"),
-  }, options.workflowCache ?? createBrowserWorkflowCache());
+  }, options.workflowCache ?? (normalizedApiBaseUrl ? createBrowserWorkflowCache(normalizedApiBaseUrl) : createUnavailableWorkflowCache()));
   return { auth, employee, orders, activity, workflow, mode: "production" };
 }

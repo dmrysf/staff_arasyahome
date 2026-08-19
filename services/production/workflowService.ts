@@ -60,11 +60,14 @@ function readCache(cache: WorkflowCache): { etag?: string; workflow: ProductionW
     const raw = cache.read();
     if (!raw) return null;
     const stored = objectValue(JSON.parse(raw));
+    if (stored.namespace !== cache.namespace) throw new StaffServiceError("WORKFLOW_UNAVAILABLE");
     return {
       etag: typeof stored.etag === "string" && stored.etag ? stored.etag : undefined,
       workflow: mapProductionWorkflow(stored.payload),
     };
   } catch {
+    try { cache.remove(); }
+    catch { /* Browser storage failures never block in-memory or network recovery. */ }
     return null;
   }
 }
@@ -95,7 +98,7 @@ export function createProductionWorkflowService(transport: WorkflowTransport, ca
         const etag = response.headers.get("ETag") ?? undefined;
         const canonicalPayload = { workflow: { id: workflow.id, name: workflow.name, version: workflow.version }, stages: workflow.stages };
         memoryKnownGood = { etag, workflow };
-        try { cache.write(JSON.stringify({ etag, payload: canonicalPayload })); }
+        try { cache.write(JSON.stringify({ namespace: cache.namespace, etag, payload: canonicalPayload })); }
         catch { /* Valid in-memory continuity must survive unavailable browser storage. */ }
         return workflow;
       } catch (caught) {

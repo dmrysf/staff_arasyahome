@@ -26,6 +26,10 @@ final readonly class ConfigLoader
         'ARASYA_LOGIN_WINDOW',
         'ARASYA_TRUST_PROXY',
         'ARASYA_TRUSTED_PROXIES',
+        'ARASYA_SESSION_RECORD_RETENTION_DAYS',
+        'ARASYA_LOGIN_ATTEMPT_RETENTION_DAYS',
+        'ARASYA_RATE_LIMIT_RETENTION_DAYS',
+        'ARASYA_AUTH_AUDIT_RETENTION_DAYS',
     ];
 
     /** @var array<string, string> */
@@ -67,6 +71,17 @@ final readonly class ConfigLoader
         return $values;
     }
 
+    public function privateFilePath(): ?string
+    {
+        $overridePath = trim($this->environmentValue('ARASYA_CONFIG_FILE') ?? '');
+        $home = $this->resolveHome($overridePath === '');
+        $path = $this->selectPrivateFile($overridePath, $home);
+        if ($path !== null) {
+            $this->assertPrivatePath($path, $home);
+        }
+        return $path;
+    }
+
     private function resolveHome(bool $required): string
     {
         $environmentHome = trim($this->environmentValue('HOME') ?? '');
@@ -82,6 +97,14 @@ final readonly class ConfigLoader
         $runtimeParent = dirname($releaseRoot);
         if (basename($releaseRoot) === 'current' && basename($runtimeParent) === 'arasya-operations-api') {
             $derivedHome = $this->resolvedDirectory(dirname($runtimeParent));
+            if ($derivedHome !== null && $derivedHome !== DIRECTORY_SEPARATOR) {
+                return $derivedHome;
+            }
+        }
+        if (preg_match('/^[0-9a-f]{40}$/', basename($releaseRoot)) === 1
+            && basename($runtimeParent) === 'releases'
+            && basename(dirname($runtimeParent)) === 'arasya-operations-api') {
+            $derivedHome = $this->resolvedDirectory(dirname($runtimeParent, 2));
             if ($derivedHome !== null && $derivedHome !== DIRECTORY_SEPARATOR) {
                 return $derivedHome;
             }
@@ -229,7 +252,7 @@ final readonly class ConfigLoader
         $forbiddenRoots = [$this->actualReleaseRoot()];
         if ($home !== '') {
             $home = rtrim($home, DIRECTORY_SEPARATOR);
-            $forbiddenRoots[] = $home . '/arasya-operations-api/current';
+            $forbiddenRoots[] = $home . '/arasya-operations-api';
             $forbiddenRoots[] = $home . '/api.arasyahome.ro';
             $forbiddenRoots[] = $home . '/staff.arasyahome.ro';
         }

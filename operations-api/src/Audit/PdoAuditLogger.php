@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Arasya\Operations\Audit;
 
 use Arasya\Operations\Support\Uuid;
+use Arasya\Operations\Support\SensitiveDataRedactor;
 use JsonException;
 use PDO;
 
@@ -16,11 +17,7 @@ final readonly class PdoAuditLogger implements AuditLogger
 
     public function record(string $eventType, ?string $employeeUuid, ?string $usernameNormalized, string $ipAddress, string $userAgent, string $requestId, string $createdAt, array $metadata = []): void
     {
-        foreach (array_keys($metadata) as $key) {
-            if (preg_match('/password|token|csrf|secret/i', $key) === 1) {
-                unset($metadata[$key]);
-            }
-        }
+        $metadata = SensitiveDataRedactor::sanitize($metadata);
         try {
             $metadataJson = $metadata === [] ? null : json_encode($metadata, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
         } catch (JsonException) {

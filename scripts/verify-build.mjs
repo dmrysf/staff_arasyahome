@@ -30,4 +30,13 @@ if (!assets.some((file) => file.endsWith(".css"))) throw new Error("Lipsește bu
 const indexHtml = await readFile(path.join(dist, "index.html"), "utf8");
 if (!indexHtml.includes("/assets/")) throw new Error("dist/index.html nu referă asset-urile Vite");
 
+const htaccess = await readFile(path.join(dist, ".htaccess"), "utf8");
+if (!htaccess.includes("Content-Security-Policy")) throw new Error("Politica CSP Staff lipsește");
+if (!htaccess.includes("frame-ancestors 'none'")) throw new Error("CSP nu blochează încadrarea Staff");
+if (!htaccess.includes("camera=(self)")) throw new Error("Permissions-Policy nu permite camera first-party");
+if (htaccess.includes("unsafe-eval") || htaccess.includes("script-src 'unsafe-inline'")) throw new Error("CSP permite script nesigur");
+if (htaccess.includes("__ARASYA_CONNECT_SRC__")) throw new Error("Placeholder-ul CSP nu a fost rezolvat");
+if (!htaccess.includes("max-age=31536000, immutable")) throw new Error("Regula cache immutable pentru assets lipsește");
+if (!htaccess.includes('Cache-Control "no-store, max-age=0"')) throw new Error("Regula non-immutable pentru entrypoint lipsește");
+
 console.log("Artefactele statice Staff sunt complete.");

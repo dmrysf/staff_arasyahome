@@ -49,6 +49,24 @@ $config = new Config(
 );
 $pdo = Connection::create($config);
 $migrationRunner = new MigrationRunner($pdo);
+$lockOwner = Connection::create($config);
+$lockHeld = (int) $lockOwner->query("SELECT GET_LOCK('arasya_operations_migration', 0)")->fetchColumn() === 1;
+if (!$lockHeld) {
+    throw new RuntimeException('Could not establish the migration lock test fixture.');
+}
+try {
+    try {
+        $migrationRunner->migrate(dirname(__DIR__) . '/database/migrations');
+        throw new RuntimeException('A second migration owner unexpectedly acquired the advisory lock.');
+    } catch (RuntimeException $error) {
+        if (!str_contains($error->getMessage(), 'lock')) {
+            throw $error;
+        }
+    }
+} finally {
+    $lockOwner->query("SELECT RELEASE_LOCK('arasya_operations_migration')")->fetchColumn();
+    $lockOwner = null;
+}
 $migrationFixture = sys_get_temp_dir() . '/arasya-migration-001-' . bin2hex(random_bytes(6));
 mkdir($migrationFixture, 0700, true);
 copy(dirname(__DIR__) . '/database/migrations/001_auth_foundation.sql', $migrationFixture . '/001_auth_foundation.sql');

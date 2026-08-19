@@ -7,70 +7,89 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: arasya-staff-production-build
   cancel-in-progress: true
 
 jobs:
-  build-and-publish:
+  browser-smoke:
     runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - name: Enable pinned pnpm
+        run: corepack enable
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build isolated Preview smoke artifact
+        env:
+          VITE_STAFF_DEMO_MODE: "false"
+          VITE_STAFF_PREVIEW_MODE: "true"
+          VITE_STAFF_API_BASE_URL: ""
+        run: pnpm build
+      - name: Install Playwright Chromium
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Run real-browser smoke
+        run: pnpm test:e2e
+
+  verified-production-build:
+    needs: browser-smoke
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
     env:
       VITE_STAFF_DEMO_MODE: "false"
       VITE_STAFF_PREVIEW_MODE: ${{ vars.VITE_STAFF_PREVIEW_MODE }}
       VITE_STAFF_API_BASE_URL: ${{ vars.VITE_STAFF_API_BASE_URL }}
     steps:
       - name: Check out main
-        uses: actions/checkout@v4
-
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
-
       - name: Enable pinned pnpm
         run: corepack enable
-
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
-      - name: Verify source and production build
+      - name: Verify source and rollout build
         run: pnpm verify
-
-      - name: Add release metadata
-        shell: bash
-        run: |
-          preview=false
-          if [[ "${VITE_STAFF_PREVIEW_MODE:-}" == "true" ]]; then preview=true; fi
-          printf '{\n  "commit": "%s",\n  "builtAt": "%s",\n  "version": "%s",\n  "preview": %s\n}\n' \
-            "$GITHUB_SHA" \
-            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            "$(node -p "require('./package.json').version")" \
-            "$preview" \
-            > dist/release.json
-          test -s dist/release.json
-
-      - name: Prepare deploy branch contents
+      - name: Add release metadata and static checksum manifest
         shell: bash
         run: |
           set -Eeuo pipefail
-          release_dir="$RUNNER_TEMP/staff-release"
+          preview=false
+          if [[ "${VITE_STAFF_PREVIEW_MODE:-}" == "true" ]]; then preview=true; fi
+          printf '{\n  "commit": "%s",\n  "builtAt": "%s",\n  "version": "%s",\n  "preview": %s\n}\n' \
+            "$GITHUB_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(node -p "require('./package.json').version")" "$preview" > dist/release.json
+          /bin/bash scripts/generate-sha256s.sh dist
+          /bin/bash scripts/validate-staff-release.sh dist
+      - name: Prepare checksummed deploy branch contents
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          release_dir="$RUNNER_TEMP/staff-release-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           mkdir -p "$release_dir/scripts"
           cp -R dist "$release_dir/dist"
           cp .cpanel.yml "$release_dir/.cpanel.yml"
-          cp scripts/cpanel-deploy.sh "$release_dir/scripts/cpanel-deploy.sh"
-
+          cp scripts/cpanel-deploy.sh scripts/cpanel-rollback-staff.sh scripts/staff-release-common.sh scripts/validate-staff-release.sh scripts/generate-sha256s.sh "$release_dir/scripts/"
+          chmod +x "$release_dir/scripts/"*.sh
+          /bin/bash "$release_dir/scripts/generate-sha256s.sh" "$release_dir"
+          (cd "$release_dir" && sha256sum -c SHA256SUMS)
       - name: Publish verified release to deploy
         shell: bash
         run: |
           set -Eeuo pipefail
-          release_dir="$RUNNER_TEMP/staff-release"
-          publish_dir="$RUNNER_TEMP/staff-deploy-branch"
-
+          release_dir="$RUNNER_TEMP/staff-release-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          publish_dir="$RUNNER_TEMP/staff-deploy-branch-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
           if git ls-remote --exit-code --heads origin deploy >/dev/null 2>&1; then
             git fetch --depth=1 origin deploy
             git worktree add --detach "$publish_dir" FETCH_HEAD
@@ -79,15 +98,14 @@ jobs:
             git -C "$publish_dir" checkout --orphan deploy
             git -C "$publish_dir" rm -rf .
           fi
-
           rsync --archive --delete --exclude='.git' "$release_dir/" "$publish_dir/"
+          cmp "$release_dir/SHA256SUMS" "$publish_dir/SHA256SUMS"
+          cmp "$release_dir/dist/SHA256SUMS" "$publish_dir/dist/SHA256SUMS"
+          cmp "$release_dir/dist/release.json" "$publish_dir/dist/release.json"
           git -C "$publish_dir" add --all
-
           if git -C "$publish_dir" diff --cached --quiet; then
             echo "Deploy branch already matches this verified release."
             exit 0
           fi
-
-          short_sha="${GITHUB_SHA:0:7}"
-          git -C "$publish_dir" commit -m "build: publish Staff release from $short_sha"
+          git -C "$publish_dir" commit -m "build: publish Staff release from ${GITHUB_SHA:0:7}"
           git -C "$publish_dir" push origin HEAD:deploy

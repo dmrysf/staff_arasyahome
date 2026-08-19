@@ -27,6 +27,12 @@ try {
     header('Content-Type: application/json; charset=utf-8');
     header('Cache-Control: no-store, private');
     header('X-Content-Type-Options: nosniff');
+    header('X-Frame-Options: DENY');
+    header('Referrer-Policy: no-referrer');
+    header("Content-Security-Policy: default-src 'none'; frame-ancestors 'none'; base-uri 'none'");
+    header('Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()');
+    header('Cross-Origin-Resource-Policy: cross-origin');
+    header('Strict-Transport-Security: max-age=31536000; includeSubDomains');
     header("X-Request-ID: {$requestId}");
     echo json_encode(['error' => ['code' => 'CONFIGURATION_ERROR', 'message' => 'The service is not configured.', 'requestId' => $requestId]], JSON_UNESCAPED_SLASHES);
 }

@@ -16,33 +16,28 @@ final readonly class PdoProductionWorkflowRepository implements ProductionWorkfl
 
     public function current(): ?ProductionWorkflow
     {
-        $workflowQuery = $this->pdo->prepare(
-            "SELECT workflow_id, workflow_key, name, version
-             FROM production_workflows
-             WHERE workflow_key = :workflow_key AND status = 'active'
-             LIMIT 1",
+        $query = $this->pdo->prepare(
+            "SELECT workflow.workflow_key, workflow.name, workflow.version,
+                    stage.stage_id, stage.display_name, stage.ordinal
+             FROM production_workflows AS workflow
+             INNER JOIN production_stages AS stage
+                ON stage.workflow_id = workflow.workflow_id
+               AND stage.status = 'active'
+             WHERE workflow.workflow_key = :workflow_key
+               AND workflow.status = 'active'
+             ORDER BY stage.ordinal ASC",
         );
-        $workflowQuery->execute(['workflow_key' => $this->workflowKey]);
-        $workflow = $workflowQuery->fetch();
-        if (!is_array($workflow)) {
+        $query->execute(['workflow_key' => $this->workflowKey]);
+        $rows = $query->fetchAll();
+        if ($rows === [] || !is_array($rows[0])) {
             return null;
         }
-
-        $stageQuery = $this->pdo->prepare(
-            "SELECT stage_id, display_name, ordinal
-             FROM production_stages
-             WHERE workflow_id = :workflow_id AND status = 'active'
-             ORDER BY ordinal ASC",
-        );
-        $stageQuery->execute(['workflow_id' => $workflow['workflow_id']]);
+        $workflow = $rows[0];
         $stages = [];
-        foreach ($stageQuery->fetchAll() as $row) {
+        foreach ($rows as $row) {
             if (is_array($row)) {
                 $stages[] = new ProductionStage((string) $row['stage_id'], (int) $row['ordinal'], (string) $row['display_name']);
             }
-        }
-        if ($stages === []) {
-            return null;
         }
         return new ProductionWorkflow((string) $workflow['workflow_key'], (string) $workflow['name'], (int) $workflow['version'], $stages);
     }
