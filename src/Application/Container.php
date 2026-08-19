@@ -18,6 +18,7 @@ use Arasya\Operations\Http\AuthController;
 use Arasya\Operations\Http\CorsPolicy;
 use Arasya\Operations\Http\HealthController;
 use Arasya\Operations\Http\RequestFactory;
+use Arasya\Operations\Http\RequestContext;
 use Arasya\Operations\Security\CookiePolicy;
 use Arasya\Operations\Security\CsrfGuard;
 use Arasya\Operations\Security\PasswordHasher;
@@ -67,12 +68,14 @@ final class Container
 
     public function kernel(): ApiKernel
     {
+        $context = new RequestContext();
         return new ApiKernel(
-            new AuthController($this->authentication, new CsrfGuard($this->tokens), new CookiePolicy($this->config), $this->config, new AuthorizationService()),
+            new AuthController($this->authentication, new CsrfGuard($this->tokens), new CookiePolicy($this->config), $this->config, new AuthorizationService(), $context),
             new HealthController($this->pdo, $this->clock),
             new CorsPolicy($this->config->allowedOrigins),
             new StructuredLogger(),
             new CookiePolicy($this->config),
+            $context,
         );
     }
 

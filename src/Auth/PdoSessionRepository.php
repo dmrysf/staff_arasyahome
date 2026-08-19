@@ -62,12 +62,13 @@ final class PdoSessionRepository implements SessionRepository
         $statement->execute(['last_seen_at' => $lastSeenAt, 'session_id' => $sessionId]);
     }
 
-    public function revokeByTokenHash(string $tokenHash, string $revokedAt): void
+    public function revokeByTokenHash(string $tokenHash, string $revokedAt): bool
     {
         $statement = $this->pdo->prepare('UPDATE auth_sessions SET revoked_at = :revoked_at WHERE token_hash = :token_hash AND revoked_at IS NULL');
         $statement->bindValue(':revoked_at', $revokedAt);
         $statement->bindValue(':token_hash', $tokenHash, PDO::PARAM_LOB);
         $statement->execute();
+        return $statement->rowCount() === 1;
     }
 
     public function revokeAllForEmployee(string $employeeUuid, string $revokedAt): int
@@ -104,4 +105,3 @@ final class PdoSessionRepository implements SessionRepository
         }
     }
 }
-

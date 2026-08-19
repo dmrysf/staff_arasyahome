@@ -8,6 +8,10 @@ use JsonException;
 
 final class StructuredLogger
 {
+    public function __construct(private readonly ?\Closure $sink = null)
+    {
+    }
+
     /** @param array<string, scalar|null> $context */
     public function log(string $level, string $event, string $requestId, array $context = []): void
     {
@@ -18,16 +22,25 @@ final class StructuredLogger
         }
 
         try {
-            error_log(json_encode([
+            $line = json_encode([
                 'timestamp' => gmdate(DATE_ATOM),
                 'level' => $level,
                 'request_id' => $requestId,
                 'event' => $event,
                 ...$context,
-            ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+            ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+            $this->write($line);
         } catch (JsonException) {
-            error_log('{"level":"error","event":"structured_log_encoding_failed"}');
+            $this->write('{"level":"error","event":"structured_log_encoding_failed"}');
         }
     }
-}
 
+    private function write(string $line): void
+    {
+        if ($this->sink !== null) {
+            ($this->sink)($line);
+            return;
+        }
+        error_log($line);
+    }
+}

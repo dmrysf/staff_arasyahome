@@ -107,7 +107,8 @@ final class PdoEmployeeRepository implements EmployeeRepository
     {
         $statement = $this->pdo->prepare(
             "SELECT e.employee_uuid, e.employee_code, e.username, e.username_normalized, e.password_hash, e.display_name, e.status,
-                    d.department_key, d.name AS department_name, r.role_key
+                    d.department_key, d.name AS department_name, d.status AS department_status,
+                    r.role_key, r.status AS role_status
              FROM employees e
              INNER JOIN departments d ON d.department_id = e.department_id
              INNER JOIN roles r ON r.role_id = e.role_id
@@ -121,7 +122,13 @@ final class PdoEmployeeRepository implements EmployeeRepository
         }
 
         $permissionStatement = $this->pdo->prepare(
-            'SELECT p.permission_key FROM permissions p INNER JOIN role_permissions rp ON rp.permission_id = p.permission_id INNER JOIN employees e ON e.role_id = rp.role_id WHERE e.employee_uuid = :employee_uuid ORDER BY p.permission_key',
+            "SELECT p.permission_key
+             FROM permissions p
+             INNER JOIN role_permissions rp ON rp.permission_id = p.permission_id
+             INNER JOIN roles r ON r.role_id = rp.role_id AND r.status = 'active'
+             INNER JOIN employees e ON e.role_id = r.role_id
+             WHERE e.employee_uuid = :employee_uuid
+             ORDER BY p.permission_key",
         );
         $permissionStatement->execute(['employee_uuid' => $row['employee_uuid']]);
         $permissions = array_map('strval', $permissionStatement->fetchAll(PDO::FETCH_COLUMN));
@@ -139,7 +146,9 @@ final class PdoEmployeeRepository implements EmployeeRepository
             displayName: (string) $row['display_name'],
             departmentKey: (string) $row['department_key'],
             departmentName: (string) $row['department_name'],
+            departmentStatus: (string) $row['department_status'],
             roleKey: (string) $row['role_key'],
+            roleStatus: (string) $row['role_status'],
             status: (string) $row['status'],
             permissions: $permissions,
             allowedStageIds: $stages,
@@ -164,4 +173,3 @@ final class PdoEmployeeRepository implements EmployeeRepository
         return (int) $id;
     }
 }
-

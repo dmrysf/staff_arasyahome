@@ -1,0 +1,4 @@
+---
+deployment:
+  tasks:
+    - ARASYA_API_DEPLOY_PATH="$HOME/arasya-operations-api/current" /bin/bash ./scripts/cpanel-deploy-api.sh

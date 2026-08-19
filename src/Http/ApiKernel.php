@@ -16,11 +16,13 @@ final readonly class ApiKernel
         private CorsPolicy $cors,
         private StructuredLogger $logger,
         private CookiePolicy $cookies,
+        private RequestContext $context,
     ) {
     }
 
     public function handle(Request $request): Response
     {
+        $this->context->reset();
         try {
             $preflight = $this->cors->preflight($request);
             if ($preflight !== null) {
@@ -36,17 +38,17 @@ final readonly class ApiKernel
                 'GET /employees/me' => $this->auth->employee($request),
                 default => throw new ApiException(404, 'NOT_FOUND', 'API route was not found.'),
             };
-            $this->logger->log('info', 'http_request', $request->requestId, ['route' => $request->path, 'method' => $request->method, 'status' => $response->status]);
+            $this->logger->log('info', 'http_request', $request->requestId, ['route' => $request->path, 'method' => $request->method, 'status' => $response->status, ...$this->context->logContext()]);
             return $this->secure($response, $request);
         } catch (ApiException $error) {
-            $this->logger->log('warning', 'api_error', $request->requestId, ['route' => $request->path, 'method' => $request->method, 'status' => $error->status, 'code' => $error->errorCode]);
+            $this->logger->log('warning', 'api_error', $request->requestId, ['route' => $request->path, 'method' => $request->method, 'status' => $error->status, 'code' => $error->errorCode, ...$this->context->logContext()]);
             $response = Response::json(['error' => ['code' => $error->errorCode, 'message' => $error->getMessage(), 'requestId' => $request->requestId]], $error->status);
             if (in_array($error->errorCode, ['SESSION_EXPIRED', 'ACCOUNT_INACTIVE'], true)) {
                 $response = $response->withHeaders(['Set-Cookie' => $this->cookies->clear()]);
             }
             return $this->secure($response, $request);
         } catch (Throwable $error) {
-            $this->logger->log('error', 'internal_error', $request->requestId, ['route' => $request->path, 'method' => $request->method, 'status' => 500, 'exception' => $error::class]);
+            $this->logger->log('error', 'internal_error', $request->requestId, ['route' => $request->path, 'method' => $request->method, 'status' => 500, 'exception' => $error::class, ...$this->context->logContext()]);
             return $this->secure(Response::json(['error' => ['code' => 'INTERNAL_ERROR', 'message' => 'The service could not complete the request.', 'requestId' => $request->requestId]], 500), $request);
         }
     }
