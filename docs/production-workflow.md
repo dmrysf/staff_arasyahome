@@ -1,4 +1,4 @@
-# Arasya production workflow V2.0.5
+# Arasya production workflow V2.0.6
 
 ## Canonical identity and order
 
@@ -23,6 +23,12 @@
 
 Legacy values such as `cutting` are not silently mapped to this catalog. Existing unknown employee-stage rows can remain for audit/cleanup, but repository reads ignore them and new employee access can reference only active canonical stages.
 
+### Canonical workflow version contract
+
+`curtain-production@1` is an immutable structural contract: it contains exactly the 14 stage IDs above at their exact ordinals. The Operations API is the primary authority and rejects a malformed V1 catalog before it can be returned. Staff independently checks the same structure as defense in depth; it never substitutes a local production catalog for rejected server data. A malformed refresh retains only an already validated last-known-good catalog, while a malformed first load fails closed with `WORKFLOW_UNAVAILABLE`.
+
+Stage labels are display metadata, not identity. A label-only change remains structurally valid and changes the content-aware ETag. The future Dashboard should normally treat a label change as a semantic revision and increment the workflow version, but runtime identity still depends only on the exact stage ID and ordinal. Any future structural addition, removal, replacement, or reorder requires a new workflow version rather than mutation of V1 in place.
+
 ## API and Staff behavior
 
 Migration `002_canonical_production_workflow.sql` creates normalized workflow and stage tables. Seed `002_production_workflow.sql` inserts missing version-1 reference rows idempotently and deliberately does not overwrite existing names or labels. Neither deployment nor a web request runs migrations or seeds.
@@ -45,7 +51,7 @@ Orders store only `productionStageId`. UI labels, current/next stage, progress, 
 
 ## Preview and external status boundaries
 
-Preview owns one exact copy of the version-1 catalog. Its fictional examples place Trendhome at stage 2, OutletPerdele at stage 7, and Trendyol at stage 12. Trendyol is only a display/source identity in V2.0.5; no Trendyol authentication, API client, webhook, order import, or status synchronization exists.
+Preview owns one exact copy of the version-1 catalog. Its fictional examples place Trendhome at stage 2, OutletPerdele at stage 7, and Trendyol at stage 12. Trendyol is only a display/source identity in V2.0.6; no Trendyol authentication, API client, webhook, order import, or status synchronization exists.
 
 `sourceCommerceStatus` is external commerce data and is independent of `productionStageId`. For example, a fictional Trendyol order can display commerce status `Picking` while its Arasya production stage is `quality-control`. The two must never be inferred from or overwrite one another.
 
@@ -68,6 +74,6 @@ Operations trusts `stageId`, not `stageLabel`; the label is diagnostic only. The
 
 `dashboard.arasyahome.ro` is intentionally not implemented here. It will later manage employees, roles, departments, permissions, production labels, controlled workflow configuration/version increments, exceptions, and analytics. Any label, add/remove/deactivate, or reorder mutation must increment workflow version transactionally while stable IDs remain permanent.
 
-Future normal employee mutation is immediately next active stage only (N → N+1), validated server-side against the current workflow with operation version and idempotency. Employees cannot jump stages; exceptions require future manager authority. Operations commits centrally first, then future source synchronization can run asynchronously so a temporary website failure does not block factory work. No mutation endpoint or outbox is implemented in V2.0.5.
+Future normal employee mutation is immediately next active stage only (N → N+1), validated server-side against the current workflow with operation version and idempotency. Employees cannot jump stages; exceptions require future manager authority. Operations commits centrally first, then future source synchronization can run asynchronously so a temporary website failure does not block factory work. No mutation endpoint or outbox is implemented in V2.0.6.
 
 V2.1 remains responsible for normalized real orders, Trendhome/Outlet source nodes, Trendyol adapter architecture, resilient read-only projections, employee-order relationships, `/orders/mine`, source drift protection, and later QR references using `productionStageId`.

@@ -33,7 +33,7 @@ It runs typecheck, lint, tests, production build, and static artifact verificati
 
 The independent PHP identity foundation lives in [`operations-api/`](operations-api/) with architecture, security, and cPanel provisioning documented in [`docs/operations-api-auth.md`](docs/operations-api-auth.md), [`docs/staff-auth-security.md`](docs/staff-auth-security.md), and [`docs/operations-api-cpanel.md`](docs/operations-api-cpanel.md).
 
-V2.0.4 established the normalized, API-owned 14-stage curtain-production catalog. V2.0.5 hardens its content-aware ETag, CORS revalidation, visible-app refresh lifecycle, and memory/browser continuity. Stable stage identity, propagation, history snapshots, Preview examples, and the external-commerce boundary are documented in [`docs/production-workflow.md`](docs/production-workflow.md).
+V2.0.4 established the normalized, API-owned 14-stage curtain-production catalog. V2.0.5 hardened its content-aware ETag, CORS revalidation, visible-app refresh lifecycle, and memory/browser continuity. V2.0.6 makes the `curtain-production@1` stage ID-to-ordinal structure an exact fail-closed server contract with matching Staff defense-in-depth. Stable stage identity, propagation, history snapshots, Preview examples, and the external-commerce boundary are documented in [`docs/production-workflow.md`](docs/production-workflow.md).
 
 ## Production delivery
 

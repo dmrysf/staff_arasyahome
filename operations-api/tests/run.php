@@ -64,6 +64,16 @@ function expectApi(string $code, Closure $callback): void
     throw new RuntimeException("Expected API error {$code}.");
 }
 
+function expectRuntime(Closure $callback): void
+{
+    try {
+        $callback();
+    } catch (RuntimeException) {
+        return;
+    }
+    throw new RuntimeException('Expected runtime validation failure.');
+}
+
 function expectApiConfigurationFailure(string $home, string $messageFragment): void
 {
     try {
@@ -309,10 +319,72 @@ test('workflow ETag is deterministic and changes with every API-visible semantic
     expect($canonical->etag() !== workflowVariant(null, null, static fn (ProductionStage $stage): ProductionStage => $stage->id === 'quality-control'
         ? new ProductionStage($stage->id, $stage->ordinal, 'Verificare calitate')
         : $stage)->etag(), 'Stage label must affect ETag.');
-    expect($canonical->etag() !== workflowVariant(null, null, static fn (ProductionStage $stage): ProductionStage => $stage->id === 'delivery'
+    expect($canonical->etag() !== workflowVariant(null, 2, static fn (ProductionStage $stage): ProductionStage => $stage->id === 'delivery'
         ? new ProductionStage($stage->id, 15, $stage->label)
         : $stage)->etag(), 'Stage ordinal must affect ETag.');
     expect(str_starts_with($canonical->etag(), '"sha256-') && str_ends_with($canonical->etag(), '"'));
+});
+
+test('canonical curtain-production version 1 enforces exact stage identity and ordinal structure', function (): void {
+    $canonical = canonicalWorkflowFixture();
+    expect(count($canonical->toArray()['stages']) === 14);
+    expect($canonical->etag() !== '');
+
+    expectRuntime(fn () => workflowVariant(null, null, static fn (ProductionStage $stage): ProductionStage => $stage->ordinal === 3
+        ? new ProductionStage('cutting', $stage->ordinal, $stage->label)
+        : $stage));
+
+    expectRuntime(fn () => new ProductionWorkflow(
+        $canonical->id,
+        $canonical->name,
+        $canonical->version,
+        array_values(array_filter($canonical->stages, static fn (ProductionStage $stage): bool => $stage->id !== 'height')),
+    ));
+
+    expectRuntime(fn () => new ProductionWorkflow(
+        $canonical->id,
+        $canonical->name,
+        $canonical->version,
+        [...$canonical->stages, new ProductionStage('extra-stage', 15, 'Etapă suplimentară')],
+    ));
+
+    expectRuntime(fn () => workflowVariant(null, null, static fn (ProductionStage $stage): ProductionStage => match ($stage->id) {
+        'bottom-hem' => new ProductionStage('side-hem', $stage->ordinal, $stage->label),
+        'side-hem' => new ProductionStage('bottom-hem', $stage->ordinal, $stage->label),
+        default => $stage,
+    }));
+});
+
+test('canonical structure ignores labels while content-aware ETag detects their change', function (): void {
+    $canonical = canonicalWorkflowFixture();
+    $renamed = workflowVariant(null, null, static fn (ProductionStage $stage): ProductionStage => $stage->id === 'quality-control'
+        ? new ProductionStage($stage->id, $stage->ordinal, 'Verificare calitate')
+        : $stage);
+    expect(($renamed->toArray()['stages'][11]['id'] ?? null) === 'quality-control');
+    expect(($renamed->toArray()['stages'][11]['label'] ?? null) === 'Verificare calitate');
+    expect($renamed->etag() !== $canonical->etag());
+});
+
+test('future versions and other workflow identities retain generic validation flexibility', function (): void {
+    $canonical = canonicalWorkflowFixture();
+    $future = new ProductionWorkflow(
+        'curtain-production',
+        'Flux producție Arasya',
+        2,
+        [...$canonical->stages, new ProductionStage('future-stage', 15, 'Etapă viitoare')],
+    );
+    expect(count($future->stages) === 15);
+
+    $other = new ProductionWorkflow('sample-production', 'Flux exemplu', 1, [
+        new ProductionStage('sample-start', 1, 'Start'),
+        new ProductionStage('sample-finish', 2, 'Final'),
+    ]);
+    expect(count($other->stages) === 2);
+
+    expectRuntime(fn () => new ProductionWorkflow('sample-production', 'Flux exemplu', 1, [
+        new ProductionStage('sample-start', 1, 'Start'),
+        new ProductionStage('sample-start', 2, 'Duplicat'),
+    ]));
 });
 
 test('employee serialization allowlists safe fields and never exposes password hashes', function (): void {
@@ -443,12 +515,25 @@ test('authenticated production workflow route returns the exact canonical catalo
     expect($notModified->status === 304 && $notModified->payload === null);
     expect(($notModified->headers['ETag'] ?? null) === $etag);
 
+    $invalidRepository = new class implements ProductionWorkflowRepository {
+        public function current(): ?ProductionWorkflow
+        {
+            throw new RuntimeException('Canonical production workflow structure is invalid: cutting at ordinal 3.');
+        }
+    };
+    $invalidController = new ProductionWorkflowController(new ProductionWorkflowService($invalidRepository), $auth, $config, $context);
+    $invalidKernel = new ApiKernel($authController, new HealthController(new PDO('sqlite::memory:'), $clock), new CorsPolicy(['http://localhost:5173']), new StructuredLogger(static function (string $line): void {}), $cookies, $context, $invalidController);
+    $unavailable = $invalidKernel->handle(new Request('GET', '/production/workflow', ['origin' => 'http://localhost:5173'], $cookie, '', '127.0.0.1', 'workflow-test', 'workflow-invalid-catalog'));
+    expect($unavailable->status === 503);
+    expect(($unavailable->payload['error']['code'] ?? null) === 'WORKFLOW_UNAVAILABLE');
+    expect(!str_contains(json_encode($unavailable->payload, JSON_THROW_ON_ERROR), 'cutting'));
+
     $unauthenticated = $kernel->handle(new Request('GET', '/production/workflow', ['origin' => 'http://localhost:5173'], [], '', '127.0.0.1', 'workflow-test', 'workflow-no-session'));
     expect($unauthenticated->status === 401);
     expect(($unauthenticated->payload['error']['code'] ?? null) === 'SESSION_EXPIRED');
 
     $health = $kernel->handle(new Request('GET', '/health', [], [], '', '127.0.0.1', 'workflow-test', 'health-stable'));
-    expect($health->status === 200 && ($health->payload['version'] ?? null) === '2.0.5');
+    expect($health->status === 200 && ($health->payload['version'] ?? null) === '2.0.6');
 });
 
 test('JSON auth input rejects malformed, oversized and unexpected payloads', function (): void {

@@ -29,6 +29,7 @@ final readonly class ProductionWorkflow
             $ordinals[$stage->ordinal] = true;
             $previousOrdinal = $stage->ordinal;
         }
+        CanonicalProductionWorkflowContract::validate($this->id, $this->version, $this->stages);
     }
 
     public function etag(): string

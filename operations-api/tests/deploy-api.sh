@@ -20,7 +20,7 @@ cp operations-api/bootstrap.php operations-api/.htaccess operations-api/.cpanel.
 cp -R operations-api/public operations-api/src operations-api/database operations-api/bin "$release/"
 cp operations-api/config/config.example.php operations-api/config/config.production.example.php operations-api/config/secrets.example.json "$release/config/"
 cp operations-api/scripts/cpanel-deploy-api.sh operations-api/scripts/validate-release.sh "$release/scripts/"
-printf '{"sourceCommit":"test","builtAt":"2026-08-19T00:00:00Z","version":"2.0.5"}\n' > "$release/release.json"
+printf '{"sourceCommit":"test","builtAt":"2026-08-19T00:00:00Z","version":"2.0.6"}\n' > "$release/release.json"
 
 printf 'private-secret-sentinel\n' > "$test_home/arasya-config/secrets.json"
 printf 'staff-sentinel\n' > "$test_home/staff.arasyahome.ro/staff.txt"

@@ -105,7 +105,7 @@ Invalid runtime or configuration paths return only the safe JSON configuration f
 
 ## Exact production rollout
 
-After V2.0.5 is pushed and `api-deploy` is regenerated:
+After V2.0.6 is pushed and `api-deploy` is regenerated:
 
 1. Confirm the existing `api.arasyahome.ro` document root remains `$HOME/api.arasyahome.ro`; do not change it.
 2. Confirm the cPanel Git repository tracks `api-deploy`.
@@ -120,7 +120,7 @@ After V2.0.5 is pushed and `api-deploy` is regenerated:
    - `$HOME/arasya-operations-api/current/src`
    - `$HOME/arasya-operations-api/current/bin`
    - `$HOME/arasya-operations-api/current/database`
-7. Verify `https://api.arasyahome.ro/health` first. Expected status is HTTP 200 with service `arasya-operations-api` and version `2.0.5`. This proves runtime/database reachability only; it intentionally does not prove workflow seed readiness.
+7. Verify `https://api.arasyahome.ro/health` first. Expected status is HTTP 200 with service `arasya-operations-api` and version `2.0.6`. This proves runtime/database reachability only; it intentionally does not prove workflow seed readiness.
 8. Only after health succeeds, confirm PHP 8.2+ and extensions if needed:
 
     ```bash

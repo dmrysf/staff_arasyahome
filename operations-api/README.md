@@ -1,6 +1,6 @@
 # Arasya Operations API
 
-Standalone PHP 8.2+ identity, authentication, and production-reference API for Staff and future Operations clients. It has no WordPress, Node, framework, Composer, or persistent-process dependency. Only `public/` may be configured as a web document root. The current release version is `2.0.5`.
+Standalone PHP 8.2+ identity, authentication, and production-reference API for Staff and future Operations clients. It has no WordPress, Node, framework, Composer, or persistent-process dependency. Only `public/` may be configured as a web document root. The current release version is `2.0.6`.
 
 ## Runtime requirements
 
@@ -14,7 +14,7 @@ Configuration uses explicit environment variables first, then `$HOME/arasya-conf
 
 The verified `api-deploy` release deploys private runtime to `$HOME/arasya-operations-api/current` first, then only `public/` to the existing cPanel document root `$HOME/api.arasyahome.ro`. Migrations remain explicit.
 
-Authenticated `GET /production/workflow` returns the active canonical workflow and ordinal stages, with content-aware ETag/`304` support. Exact-origin CORS allows `If-None-Match` and exposes `ETag`. It never accepts an employee identifier from the browser. Reference readiness is separate from `/health`: deploy code, verify health, then explicitly run migrations and reference seeds. See [production workflow](../docs/production-workflow.md).
+Authenticated `GET /production/workflow` returns the active canonical workflow and ordinal stages, with content-aware ETag/`304` support. The API enforces the immutable stage ID-to-ordinal contract for `curtain-production@1`; labels remain presentation metadata. Exact-origin CORS allows `If-None-Match` and exposes `ETag`. It never accepts an employee identifier from the browser. Reference readiness is separate from `/health`: deploy code, verify health, then explicitly run migrations and reference seeds. See [production workflow](../docs/production-workflow.md).
 
 ## Administrative sequence
 

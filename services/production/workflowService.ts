@@ -1,4 +1,5 @@
 import { StaffServiceError, type ProductionStage, type ProductionWorkflow } from "../../domain/models";
+import { hasValidCanonicalProductionWorkflowStructure } from "../../domain/canonicalProductionWorkflow";
 import type { ProductionWorkflowService } from "../contracts";
 import type { WorkflowCache } from "./workflowCache";
 
@@ -47,7 +48,7 @@ export function mapProductionWorkflow(value: unknown): ProductionWorkflow {
     ordinals.add(stage.ordinal);
     previousOrdinal = stage.ordinal;
   }
-  if (workflow.version === 1 && workflow.stages.length !== 14) throw new StaffServiceError("WORKFLOW_UNAVAILABLE");
+  if (!hasValidCanonicalProductionWorkflowStructure(workflow)) throw new StaffServiceError("WORKFLOW_UNAVAILABLE");
   return Object.freeze({
     ...workflow,
     stages: Object.freeze(workflow.stages.map((stage) => Object.freeze(stage))),

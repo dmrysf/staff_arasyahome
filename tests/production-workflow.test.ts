@@ -96,8 +96,21 @@ test("commercial status changes never move the canonical production stage", () =
   assert.match(roadmap, /aria-current="step"[^>]*>[\s\S]*Etichetare/);
 });
 
-test("production workflow mapping rejects malformed order, duplicate identity, and incomplete v1", () => {
+test("production workflow mapping enforces the exact canonical V1 identity and ordinal contract", () => {
   assert.deepEqual(mapProductionWorkflow(payload()).stages.map((stage) => stage.id), expectedStages.map(([id]) => id));
+
+  const wrongId = structuredClone(payload());
+  wrongId.stages = wrongId.stages.map((stage, index) => index === 2 ? { ...stage, id: "cutting" } : stage);
+  assert.throws(() => mapProductionWorkflow(wrongId), (error: unknown) => error instanceof StaffServiceError && error.code === "WORKFLOW_UNAVAILABLE");
+
+  const wrongOrdinalMapping = structuredClone(payload());
+  wrongOrdinalMapping.stages = wrongOrdinalMapping.stages.map((stage) => {
+    if (stage.id === "bottom-hem") return { ...stage, id: "side-hem" };
+    if (stage.id === "side-hem") return { ...stage, id: "bottom-hem" };
+    return stage;
+  });
+  assert.throws(() => mapProductionWorkflow(wrongOrdinalMapping), (error: unknown) => error instanceof StaffServiceError && error.code === "WORKFLOW_UNAVAILABLE");
+
   const duplicate = structuredClone(payload());
   duplicate.stages = duplicate.stages.map((stage, index) => index === 1 ? { ...stage, id: duplicate.stages[0].id } : stage);
   assert.throws(() => mapProductionWorkflow(duplicate), (error: unknown) => error instanceof StaffServiceError && error.code === "WORKFLOW_UNAVAILABLE");
@@ -106,6 +119,27 @@ test("production workflow mapping rejects malformed order, duplicate identity, a
   assert.throws(() => mapProductionWorkflow(unordered), (error: unknown) => error instanceof StaffServiceError && error.code === "WORKFLOW_UNAVAILABLE");
   const incomplete = payload({ ...previewProductionWorkflow, stages: previewProductionWorkflow.stages.slice(0, 13) });
   assert.throws(() => mapProductionWorkflow(incomplete), (error: unknown) => error instanceof StaffServiceError && error.code === "WORKFLOW_UNAVAILABLE");
+
+  const extra = payload({
+    ...previewProductionWorkflow,
+    stages: [...previewProductionWorkflow.stages, { id: "extra-stage", ordinal: 15, label: "Etapă suplimentară" }],
+  });
+  assert.throws(() => mapProductionWorkflow(extra), (error: unknown) => error instanceof StaffServiceError && error.code === "WORKFLOW_UNAVAILABLE");
+});
+
+test("labels remain presentation metadata and future versions retain generic flexibility", () => {
+  const renamed = payload({
+    ...previewProductionWorkflow,
+    stages: previewProductionWorkflow.stages.map((stage) => stage.id === "quality-control" ? { ...stage, label: "Verificare calitate" } : stage),
+  });
+  assert.equal(mapProductionWorkflow(renamed).stages[11]?.label, "Verificare calitate");
+
+  const future = payload({
+    ...previewProductionWorkflow,
+    version: 2,
+    stages: [...previewProductionWorkflow.stages, { id: "future-stage", ordinal: 15, label: "Etapă viitoare" }],
+  });
+  assert.equal(mapProductionWorkflow(future).stages.length, 15);
 });
 
 test("validated workflow responses become last-known-good and support ETag 304", async () => {
@@ -145,15 +179,17 @@ test("in-memory last-known-good survives persistent-cache failure and avoids ren
   assert.equal(Object.isFrozen(initial.stages), true);
 });
 
-test("malformed refresh never poisons cache and a new ETag updates only presentation data", async () => {
+test("wrong-ID refresh never poisons cache or replaces last-known-good and a valid label update succeeds", async () => {
   const cache = new MemoryWorkflowCache();
   const renamed: ProductionWorkflow = {
     ...previewProductionWorkflow,
     stages: previewProductionWorkflow.stages.map((stage) => stage.id === "quality-control" ? { ...stage, label: "Verificare calitate" } : stage),
   };
+  const wrongId = structuredClone(payload());
+  wrongId.stages = wrongId.stages.map((stage, index) => index === 2 ? { ...stage, id: "cutting" } : stage);
   const responses = [
     new Response(JSON.stringify(payload()), { status: 200, headers: { ETag: '"A"' } }),
-    new Response(JSON.stringify({ workflow: {}, stages: [] }), { status: 200, headers: { ETag: '"invalid"' } }),
+    new Response(JSON.stringify(wrongId), { status: 200, headers: { ETag: '"invalid"' } }),
     new Response(JSON.stringify(payload(renamed)), { status: 200, headers: { ETag: '"B"' } }),
   ];
   const service = createProductionWorkflowService({
@@ -192,4 +228,29 @@ test("production keeps valid last-known-good on transient or malformed responses
     failure: async () => new StaffServiceError("SERVICE_UNAVAILABLE"),
   }, emptyCache);
   await assert.rejects(unavailable.getCurrent(), (error: unknown) => error instanceof StaffServiceError && error.code === "WORKFLOW_UNAVAILABLE");
+});
+
+test("invalid canonical V1 persistent cache is rejected and cannot become known-good", async () => {
+  const cache = new MemoryWorkflowCache();
+  const wrongId = structuredClone(payload());
+  wrongId.stages = wrongId.stages.map((stage, index) => index === 2 ? { ...stage, id: "cutting" } : stage);
+  cache.value = JSON.stringify({ etag: '"invalid-cache"', payload: wrongId });
+  const service = createProductionWorkflowService({
+    get: async () => { throw new TypeError("offline"); },
+    failure: async () => new StaffServiceError("SERVICE_UNAVAILABLE"),
+  }, cache);
+  await assert.rejects(service.getCurrent(), (error: unknown) => error instanceof StaffServiceError && error.code === "WORKFLOW_UNAVAILABLE");
+  assert.equal(cache.writes, 0);
+});
+
+test("first-load canonical V1 with correct count but wrong ID fails closed", async () => {
+  const cache = new MemoryWorkflowCache();
+  const wrongId = structuredClone(payload());
+  wrongId.stages = wrongId.stages.map((stage, index) => index === 2 ? { ...stage, id: "cutting" } : stage);
+  const service = createProductionWorkflowService({
+    get: async () => new Response(JSON.stringify(wrongId), { status: 200, headers: { ETag: '"invalid"' } }),
+    failure: async () => new StaffServiceError("SERVICE_UNAVAILABLE"),
+  }, cache);
+  await assert.rejects(service.getCurrent(), (error: unknown) => error instanceof StaffServiceError && error.code === "WORKFLOW_UNAVAILABLE");
+  assert.equal(cache.writes, 0);
 });
