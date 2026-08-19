@@ -2,11 +2,15 @@ export type OrderSource = "trendhome" | "outletperdele" | "b2b" | "marketplace" 
 
 export type Employee = {
   employeeUuid: string;
-  name: string;
+  employeeCode?: string;
+  displayName: string;
   username: string;
   department: string;
-  productionStagePermissions: string[];
-  role: "employee" | "lead" | "manager";
+  departmentKey?: string;
+  role: string;
+  status: "active" | "inactive" | "suspended";
+  permissions: string[];
+  allowedStageIds: string[];
   avatar?: string;
   locale: "ro";
 };
@@ -108,6 +112,11 @@ export type ServiceErrorCode =
   | "SERVER_ERROR"
   | "SESSION_EXPIRED"
   | "UNAUTHORIZED_ACTION"
+  | "INVALID_CREDENTIALS"
+  | "ACCOUNT_INACTIVE"
+  | "RATE_LIMITED"
+  | "SERVICE_UNAVAILABLE"
+  | "CSRF_INVALID"
   | "CONFIGURATION_ERROR";
 
 export class StaffServiceError extends Error {

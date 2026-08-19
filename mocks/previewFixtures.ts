@@ -2,11 +2,15 @@ import type { ActivityEntry, ActivityPage, Employee, StaffOrder } from "../domai
 
 export const previewEmployee: Employee = {
   employeeUuid: "EMP-PREVIEW-001",
-  name: "Ali Demo",
+  employeeCode: "EMP-DEMO",
+  displayName: "Ali Demo",
   username: "demo",
   department: "Pregătire Material",
-  productionStagePermissions: ["material-preparation"],
+  departmentKey: "pregatire-material",
+  permissions: ["orders.scan", "orders.view_mine", "orders.claim", "orders.advance_stage", "orders.handover", "history.view_mine", "profile.view_self"],
+  allowedStageIds: ["material-preparation"],
   role: "employee",
+  status: "active",
   locale: "ro",
 };
 

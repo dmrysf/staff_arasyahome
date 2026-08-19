@@ -14,13 +14,13 @@ export function AppShell({ employee, route, mode, navigate, children, immersive 
         <YDSoftConnectionStatus />
         <div className="header-actions">
           {mode === "preview" && <span className="preview-indicator">Preview</span>}
-          <button className="profile-control" type="button" onClick={() => navigate("/profile")} aria-label={`Profilul lui ${employee.name}`}>
-            <span>{employee.name.split(" ").map((part) => part[0]).join("").slice(0, 2)}</span>
+          <button className="profile-control" type="button" onClick={() => navigate("/profile")} aria-label={`Profilul lui ${employee.displayName}`}>
+            <span>{employee.displayName.split(" ").map((part) => part[0]).join("").slice(0, 2)}</span>
           </button>
         </div>
       </header>
       <main className="app-content">{children}</main>
-      <BottomNavigation route={route} navigate={navigate} />
+      <BottomNavigation employee={employee} route={route} navigate={navigate} />
     </div>
   );
 }

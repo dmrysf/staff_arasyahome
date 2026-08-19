@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/*.test.ts",
     "lint": "eslint . --ignore-pattern dist",
+    "verify:api": "find operations-api -type f -name '*.php' -print0 | xargs -0 -n1 php -l && php operations-api/bin/check-migrations.php && php operations-api/tests/run.php && php operations-api/tests/mysql-integration.php",
     "verify:artifacts": "node scripts/verify-build.mjs",
     "verify": "tsc --noEmit && eslint . --ignore-pattern dist && tsx --test tests/*.test.ts && vite build && node scripts/verify-build.mjs"
   },

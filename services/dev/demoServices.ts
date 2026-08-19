@@ -21,6 +21,7 @@ const auth: AuthService = {
     memorySession.expiresAt = new Date(Date.now() + 3_600_000).toISOString();
     return clone(memorySession);
   },
+  onSessionExpired() { return () => undefined; },
 };
 
 function resolveDemoCode(rawCode: string) {

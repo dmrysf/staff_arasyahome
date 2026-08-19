@@ -8,6 +8,7 @@ export interface AuthService {
   logout(): Promise<void>;
   getSession(): Promise<Session | null>;
   refreshSession(): Promise<Session>;
+  onSessionExpired(handler: (error: import("../domain/models").StaffServiceError) => void): () => void;
 }
 
 export interface EmployeeService {

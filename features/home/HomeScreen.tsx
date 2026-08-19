@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { ActivityPage, Employee } from "../../domain/models";
 import type { ActivityService } from "../../services/contracts";
 import { AppIcon } from "../../components/icons/AppIcon";
+import { hasPermission } from "../../domain/permissions";
 
 type TodaySummary = ActivityPage["summary"];
 type MetricsState = { status: "loading" } | { status: "loaded"; summary: TodaySummary } | { status: "unavailable" };
@@ -30,8 +31,8 @@ export function HomeScreen({ employee, activityService, navigate }: { employee: 
 
   return (
     <div className="home-layout">
-      <section className="greeting"><p>{employee.department}</p><h1>Bună, {employee.name.split(" ")[0]}.</h1></section>
-      <button className="home-scan" type="button" onClick={() => navigate("/scan")} aria-label="Scanează o comandă">
+      <section className="greeting"><p>{employee.department}</p><h1>Bună, {employee.displayName.split(" ")[0]}.</h1></section>
+      <button className="home-scan" type="button" disabled={!hasPermission(employee, "orders.scan")} onClick={() => navigate("/scan")} aria-label="Scanează o comandă">
         <span className="home-scan-icon" aria-hidden="true"><AppIcon name="scan" size={34} /></span>
         <span className="home-scan-copy"><strong>Scanează comanda</strong><span>Apropie codul QR pentru a începe.</span></span>
         <AppIcon name="arrow" size={24} />

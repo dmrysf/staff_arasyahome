@@ -41,7 +41,7 @@ test("preview auth accepts only demo credentials and persists only an expiry mar
 
   const session = await services.auth.login({ username: "demo", password: "demo" });
   assert.equal(session.employee.employeeUuid, "EMP-PREVIEW-001");
-  assert.equal(session.employee.name, "Ali Demo");
+  assert.equal(session.employee.displayName, "Ali Demo");
   assert.match(storage.getItem(PREVIEW_SESSION_KEY) ?? "", /^\d+$/);
   assert.equal([...Object.keys(session.employee)].includes("password"), false);
 
@@ -118,9 +118,9 @@ test("stage and department eligibility alone never make a Preview order visible"
   assert.ok(unassignedSameStage);
   assert.ok(otherEmployeeSameStage);
   assert.equal(unassignedSameStage.currentStage.id, "waiting");
-  assert.equal(unassignedSameStage.nextStage?.id, previewEmployee.productionStagePermissions[0]);
+  assert.equal(unassignedSameStage.nextStage?.id, previewEmployee.allowedStageIds[0]);
   assert.equal(isEmployeeRelevantOrder(unassignedSameStage, previewEmployee.employeeUuid), false);
-  assert.equal(otherEmployeeSameStage.currentStage.id, previewEmployee.productionStagePermissions[0]);
+  assert.equal(otherEmployeeSameStage.currentStage.id, previewEmployee.allowedStageIds[0]);
   assert.equal(isEmployeeRelevantOrder(otherEmployeeSameStage, previewEmployee.employeeUuid), false);
 });
 

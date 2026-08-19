@@ -2,11 +2,15 @@ import type { ActivityEntry, Employee, StaffOrder } from "../domain/models";
 
 export const demoEmployee: Employee = {
   employeeUuid: "7ec92458-6986-4aa9-8d21-cbad99d2121e",
-  name: "Ali Demir",
+  employeeCode: "EMP-0001",
+  displayName: "Ali Demir",
   username: "ali.demo",
   department: "Pregătire Material",
-  productionStagePermissions: ["material-preparation"],
+  departmentKey: "pregatire-material",
+  permissions: ["orders.scan", "orders.view_mine", "orders.claim", "orders.advance_stage", "orders.handover", "history.view_mine", "profile.view_self"],
+  allowedStageIds: ["material-preparation"],
   role: "employee",
+  status: "active",
   locale: "ro",
 };
 

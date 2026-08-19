@@ -95,6 +95,7 @@ export function createPreviewServices(options: PreviewServicesOptions = {}): Ser
       persistExpiry(expiry);
       return clone(memorySession);
     },
+    onSessionExpired() { return () => undefined; },
   };
 
   function resolvePreviewCode(rawCode: string) {

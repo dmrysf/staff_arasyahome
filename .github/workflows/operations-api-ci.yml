@@ -1,0 +1,120 @@
+name: Operations API Quality & Package
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "operations-api/**"
+      - "docs/operations-api-auth.md"
+      - "docs/staff-auth-security.md"
+      - "docs/operations-api-cpanel.md"
+      - ".github/workflows/operations-api-ci.yml"
+  pull_request:
+    paths:
+      - "operations-api/**"
+      - "docs/operations-api-auth.md"
+      - "docs/staff-auth-security.md"
+      - "docs/operations-api-cpanel.md"
+      - ".github/workflows/operations-api-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: arasya-operations-api-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root-test-password
+          MYSQL_DATABASE: arasya_operations_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -proot-test-password"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+          extensions: mbstring, pdo_mysql
+          coverage: none
+
+      - name: Validate PHP syntax
+        run: find operations-api -type f -name '*.php' -print0 | xargs -0 -n1 php -l
+
+      - name: Validate migration structure
+        run: php operations-api/bin/check-migrations.php
+
+      - name: Run backend unit and security tests
+        run: php operations-api/tests/run.php
+
+      - name: Run MySQL integration lifecycle
+        env:
+          ARASYA_TEST_DB_HOST: 127.0.0.1
+          ARASYA_TEST_DB_PORT: "3306"
+          ARASYA_TEST_DB_NAME: arasya_operations_test
+          ARASYA_TEST_DB_USER: root
+          ARASYA_TEST_DB_PASSWORD: root-test-password
+        run: php operations-api/tests/mysql-integration.php
+
+  publish-api-release:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: quality
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Prepare dependency-free API release
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          release_dir="$RUNNER_TEMP/operations-api-release"
+          mkdir -p "$release_dir/config"
+          cp operations-api/bootstrap.php "$release_dir/bootstrap.php"
+          cp operations-api/.htaccess "$release_dir/.htaccess"
+          cp operations-api/README.md "$release_dir/README.md"
+          cp -R operations-api/public operations-api/src operations-api/database operations-api/bin "$release_dir/"
+          cp operations-api/config/config.example.php "$release_dir/config/config.example.php"
+          printf '{\n  "sourceCommit": "%s",\n  "builtAt": "%s",\n  "version": "2.0.0"\n}\n' "$GITHUB_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$release_dir/release.json"
+
+      - name: Publish isolated api-deploy branch
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          release_dir="$RUNNER_TEMP/operations-api-release"
+          publish_dir="$RUNNER_TEMP/operations-api-deploy"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin api-deploy >/dev/null 2>&1; then
+            git fetch --depth=1 origin api-deploy
+            git worktree add --detach "$publish_dir" FETCH_HEAD
+          else
+            git worktree add --detach "$publish_dir" HEAD
+            git -C "$publish_dir" checkout --orphan api-deploy
+            git -C "$publish_dir" rm -rf .
+          fi
+          rsync --archive --delete --exclude='.git' "$release_dir/" "$publish_dir/"
+          git -C "$publish_dir" add --all
+          if git -C "$publish_dir" diff --cached --quiet; then
+            echo "api-deploy already matches the verified release."
+            exit 0
+          fi
+          git -C "$publish_dir" commit -m "build: publish Operations API from ${GITHUB_SHA:0:7}"
+          git -C "$publish_dir" push origin HEAD:api-deploy

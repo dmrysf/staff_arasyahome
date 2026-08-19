@@ -1,4 +1,4 @@
-# Arasya Staff — Foundation V1.3
+# Arasya Staff — Foundation V2.0
 
 ## Architecture and stack
 
@@ -22,7 +22,7 @@ Apache sends unknown client routes to `index.html`, after which `StaffApp` rende
 
 The scanner remains a discriminated-union reducer with controlled states from `idle` through `success` or `error`. A duplicate guard locks decoded input until reset. Critical transitions require confirmation, an idempotency key, an expected order version, and a real service response before success. There is no optimistic mutation or offline mutation queue.
 
-`AuthService`, `EmployeeService`, `OrderService`, and `ActivityService` remain the frontend boundary. The production adapter preserves credentialed requests, explicit configuration failure, offline detection, a 12-second timeout, and typed session, authorization, and version-conflict errors. Home independently requests the employee's `today` activity summary; unavailable metrics render a neutral state and never block Scan.
+`AuthService`, `EmployeeService`, `OrderService`, and `ActivityService` remain the frontend boundary. The production adapter now integrates the standalone Operations API for real login, server session restoration, refresh, CSRF-protected logout, and `/employees/me`. It preserves credentialed requests, explicit configuration failure, offline detection, a 12-second timeout, typed errors, and fail-closed mode selection. Home independently requests the employee's `today` activity summary; unavailable metrics render a neutral state and never block Scan.
 
 `OrderService.listMine()` means orders with a direct operational relationship to the authenticated employee, not a department or production-stage queue. Preview fixtures carry a compact relation summary and are filtered by the Preview employee UUID. Production continues to call `GET /orders/mine`; the future backend must derive identity from the authenticated session and enforce the scope server-side. The browser must never choose an employee UUID to broaden this result.
 
@@ -48,4 +48,4 @@ The service worker caches only the manifest and icon with network-first refresh.
 
 Production builds run exclusively in GitHub Actions from committed `main` source and the frozen pnpm lockfile. A successful verification publishes the static release to the generated `deploy` branch. cPanel consumes that branch and performs static validation plus `rsync` only; the hosting shell requires no Node toolchain.
 
-No Trendhome, OutletPerdele, WooCommerce, B2B, Manager Control, HR, attendance, transfer backend, or real Staff API was added in V1.3. Preview transitions affect only the adapter's current in-memory fixture state. The existing HTTP contracts remain ready for the backend sprint.
+The V2.0 Operations API implements identity and authentication only. No Trendhome, OutletPerdele, WooCommerce, B2B, Manager Control, HR, attendance, order read, QR resolution, or transition backend was added. Preview transitions still affect only the adapter's current in-memory fixture state; real order integration remains the V2.1 boundary.

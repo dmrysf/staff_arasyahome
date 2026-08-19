@@ -31,6 +31,8 @@ pnpm verify
 
 It runs typecheck, lint, tests, production build, and static artifact verification in fail-fast order. See [`docs/cpanel-deployment.md`](docs/cpanel-deployment.md) for cPanel deployment and rollback, [`docs/staff-foundation-v1.md`](docs/staff-foundation-v1.md) for architecture decisions, and [`docs/staff-ui-system.md`](docs/staff-ui-system.md) for the operational UI and employee-scoped order rules.
 
+The independent PHP identity foundation lives in [`operations-api/`](operations-api/) with architecture, security, and cPanel provisioning documented in [`docs/operations-api-auth.md`](docs/operations-api-auth.md), [`docs/staff-auth-security.md`](docs/staff-auth-security.md), and [`docs/operations-api-cpanel.md`](docs/operations-api-cpanel.md).
+
 ## Production delivery
 
 Pushes to `main` trigger **Staff Build & Publish** in GitHub Actions. Only a fully verified static `dist/` release is published to the generated `deploy` branch. cPanel must check out `deploy`; its deployment hook validates and `rsync`s static files only, with no Node or package manager on the server.

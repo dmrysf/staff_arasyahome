@@ -2,7 +2,7 @@
 
 ## Purpose and boundary
 
-Preview Mode is a temporary static UI/UX test environment for the owner/developer. It allows the deployed Staff screens, camera, manual lookup, protected routes, session transition, logout, orders, history, and stage-confirmation flow to be exercised on real devices before the real Staff Authentication and Operations API exists.
+Preview Mode is a temporary static UI/UX test environment for the owner/developer. It allows the deployed Staff screens, camera, manual lookup, protected routes, session transition, logout, orders, history, and stage-confirmation flow to be exercised while the Operations API production infrastructure is not yet provisioned.
 
 Preview Mode is **not authentication**, employee access control, or a production backend. The fixed `demo` / `demo` login exists only to exercise the login UX and is visible to anyone who can inspect the frontend bundle. Do not put real employee passwords, API tokens, database credentials, company secrets, customer data, or any other secret in a `VITE_*` variable.
 
@@ -49,4 +49,4 @@ or delete it, then rebuild through **Staff Build & Publish**. Any value other th
 - when the real API URL is missing, login shows the intentional service-configuration error;
 - `dist/release.json` reports `"preview": false` for the generated release.
 
-The real Staff Authentication/API layer is intentionally not implemented. It will replace Preview Mode in a later backend sprint.
+The Operations authentication API is implemented in source but must be provisioned and verified independently before Preview Mode is disabled. Preview never becomes an automatic fallback for production API failure.

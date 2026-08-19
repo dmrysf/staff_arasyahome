@@ -38,3 +38,7 @@ yarn-error.log*
 /dist/
 /outputs/
 /work/
+
+# Operations API local/runtime secrets and logs
+/operations-api/config/config.php
+/operations-api/var/
