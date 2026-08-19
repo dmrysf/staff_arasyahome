@@ -383,22 +383,114 @@ try {
 $snapshot9 = makeOrderSnapshot(sourceEventId: 'ev-109', sourceOrderId: 'TH109', productionStageId: 'cutting'); // cutting is not in curtain-production
 try {
     $writer->apply($snapshot9);
-    throw new RuntimeException('Stage not belonging to active canonical workflow should throw INVALID_STAGE.');
+    throw new RuntimeException('Stage not belonging to active canonical workflow should throw SOURCE_STAGE_UNKNOWN.');
 } catch (\Arasya\Operations\Http\ApiException $e) {
-    if ($e->errorCode !== 'INVALID_STAGE') throw $e;
+    if ($e->errorCode !== 'SOURCE_STAGE_UNKNOWN') throw $e;
 }
 
 // 10. Commercial Status Must Still Not Move Stage
 $snapshot10a = makeOrderSnapshot(sourceOrderId: 'TH110', sourceEventId: 'ev-110a', productionStageId: 'labeling', commerceCode: 'processing');
 $writer->apply($snapshot10a);
 
-$snapshot10b = makeOrderSnapshot(sourceOrderId: 'TH110', sourceEventId: 'ev-110b', sourceChangedAt: new DateTimeImmutable('2026-08-19T11:00:00.000Z'), productionStageId: 'material-preparation', commerceCode: 'completed');
+$snapshot10b = makeOrderSnapshot(sourceOrderId: 'TH110', sourceEventId: 'ev-110b', sourceChangedAt: new DateTimeImmutable('2026-08-19T11:00:00.000Z'), productionStageId: 'labeling', commerceCode: 'completed');
 $writer->apply($snapshot10b);
 
-$stmt = $pdo->prepare('SELECT production_stage_id FROM operational_orders WHERE source_key = ? AND source_order_id = ?');
+$stmt = $pdo->prepare('SELECT production_stage_id, source_commerce_status_code, version FROM operational_orders WHERE source_key = ? AND source_order_id = ?');
 $stmt->execute(['trendhome', 'TH110']);
-if ($stmt->fetchColumn() !== 'labeling') {
+$row10 = $stmt->fetch(PDO::FETCH_ASSOC);
+if ($row10['production_stage_id'] !== 'labeling') {
     throw new RuntimeException('Commercial status change must not move production stage.');
+}
+if ($row10['source_commerce_status_code'] !== 'completed') {
+    throw new RuntimeException('Commercial status was not updated.');
+}
+if ((int)$row10['version'] !== 2) {
+    throw new RuntimeException('Version should increment on commerce status change.');
+}
+
+// 11. Explicit Stage Update & 12. Hash Consistency Test
+$snapshot11a = makeOrderSnapshot(sourceOrderId: 'TH111', sourceEventId: 'ev-111a', productionStageId: 'labeling', commerceCode: 'processing');
+$writer->apply($snapshot11a);
+
+$snapshot11b = makeOrderSnapshot(sourceOrderId: 'TH111', sourceEventId: 'ev-111b', sourceChangedAt: new DateTimeImmutable('2026-08-19T11:00:00.000Z'), productionStageId: 'material-straightening', commerceCode: 'processing');
+if ($writer->apply($snapshot11b) !== 'applied') {
+    throw new RuntimeException('Valid explicit stage update should be applied.');
+}
+
+$stmt = $pdo->prepare('SELECT production_stage_id, version, projection_hash FROM operational_orders WHERE source_key = ? AND source_order_id = ?');
+$stmt->execute(['trendhome', 'TH111']);
+$row11 = $stmt->fetch(PDO::FETCH_ASSOC);
+if ($row11['production_stage_id'] !== 'material-straightening') {
+    throw new RuntimeException('Explicit canonical stage projection was not persisted.');
+}
+if ((int)$row11['version'] !== 2) {
+    throw new RuntimeException('Version should increment on semantic stage update.');
+}
+
+// Hash Consistency Check
+$snapshot11c = makeOrderSnapshot(sourceOrderId: 'TH111', sourceEventId: 'ev-111c', sourceChangedAt: new DateTimeImmutable('2026-08-19T12:00:00.000Z'), productionStageId: 'material-straightening', commerceCode: 'processing');
+if ($writer->apply($snapshot11c) !== 'duplicate') { // Same semantic fields should return duplicate
+    throw new RuntimeException('Newer identical semantic snapshot should return duplicate.');
+}
+$stmt->execute(['trendhome', 'TH111']);
+$row11c = $stmt->fetch(PDO::FETCH_ASSOC);
+if ((int)$row11c['version'] !== 2) {
+    throw new RuntimeException('Version must not increment merely because observation time/event ID changed.');
+}
+
+// 13. Inactive Stage Test
+$pdo->exec("UPDATE production_stages SET status = 'inactive' WHERE stage_id = 'material-straightening'");
+try {
+    $snapshot13 = makeOrderSnapshot(sourceOrderId: 'TH113', sourceEventId: 'ev-113', productionStageId: 'material-straightening');
+    try {
+        $writer->apply($snapshot13);
+        throw new RuntimeException('Inactive stage must throw SOURCE_STAGE_UNKNOWN.');
+    } catch (\Arasya\Operations\Http\ApiException $e) {
+        if ($e->errorCode !== 'SOURCE_STAGE_UNKNOWN') throw $e;
+    }
+
+    $stmt = $pdo->prepare('SELECT 1 FROM operational_orders WHERE source_key = ? AND source_order_id = ?');
+    $stmt->execute(['trendhome', 'TH113']);
+    if ($stmt->fetchColumn()) {
+        throw new RuntimeException('Order should not be created for inactive stage.');
+    }
+} finally {
+    $pdo->exec("UPDATE production_stages SET status = 'active' WHERE stage_id = 'material-straightening'");
+}
+
+// 14. Existing Projection Safety Test
+$snapshot14a = makeOrderSnapshot(sourceOrderId: 'TH114', sourceEventId: 'ev-114a', productionStageId: 'labeling');
+$writer->apply($snapshot14a);
+$stmt = $pdo->prepare('SELECT version, projection_hash FROM operational_orders WHERE source_key = ? AND source_order_id = ?');
+$stmt->execute(['trendhome', 'TH114']);
+$row14a = $stmt->fetch(PDO::FETCH_ASSOC);
+
+$snapshot14b = makeOrderSnapshot(sourceOrderId: 'TH114', sourceEventId: 'ev-114b', sourceChangedAt: new DateTimeImmutable('2026-08-19T11:00:00.000Z'), productionStageId: 'cutting'); // invalid stage
+try {
+    $writer->apply($snapshot14b);
+    throw new RuntimeException('Existing projection updated with invalid stage should throw SOURCE_STAGE_UNKNOWN.');
+} catch (\Arasya\Operations\Http\ApiException $e) {
+    if ($e->errorCode !== 'SOURCE_STAGE_UNKNOWN') throw $e;
+}
+
+$stmt->execute(['trendhome', 'TH114']);
+$row14b = $stmt->fetch(PDO::FETCH_ASSOC);
+if ($row14a['version'] !== $row14b['version'] || $row14a['projection_hash'] !== $row14b['projection_hash']) {
+    throw new RuntimeException('Existing projection should remain unchanged when rejecting invalid stage.');
+}
+
+// 15. Item Persistence Order Hash Test
+$item1 = new \Arasya\Operations\Order\OperationalOrderItem(\Arasya\Operations\Support\Uuid::v4(), 'item-1', 1, 'Item 1', 'P1', null, null, 1.5, 2.5, 'm', 3.0, 2);
+$item2 = new \Arasya\Operations\Order\OperationalOrderItem(\Arasya\Operations\Support\Uuid::v4(), 'item-2', 2, 'Item 2', 'P2', null, null, null, null, null, null, 1);
+$item3 = new \Arasya\Operations\Order\OperationalOrderItem(\Arasya\Operations\Support\Uuid::v4(), 'item-3', 3, 'Item 3', 'P3', null, null, null, null, null, null, 3);
+
+$snapshot15a = makeOrderSnapshot(sourceOrderId: 'TH115', sourceEventId: 'ev-115a', items: [$item1, $item2, $item3]);
+$writer->apply($snapshot15a);
+
+// Same semantics, different array order, newer timestamp
+$snapshot15b = makeOrderSnapshot(sourceOrderId: 'TH115', sourceEventId: 'ev-115b', sourceChangedAt: new DateTimeImmutable('2026-08-19T11:00:00.000Z'), items: [$item3, $item1, $item2]);
+if ($writer->apply($snapshot15b) !== 'duplicate') {
+    throw new RuntimeException('Semantically identical items in different array order should have identical hash and return duplicate.');
 }
 
 fwrite(STDOUT, "PASS OrderProjectionWriter semantics and item UUID preservation.\n");

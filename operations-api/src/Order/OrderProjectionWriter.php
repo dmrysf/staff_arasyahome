@@ -19,6 +19,9 @@ final readonly class OrderProjectionWriter
     public function apply(SourceOrderSnapshot $snapshot): string
     {
         $globalId = $snapshot->globalId()->toString();
+        $itemsForHash = $snapshot->items;
+        usort($itemsForHash, fn($a, $b) => $a->lineNumber <=> $b->lineNumber);
+
         $hashData = [
             'source' => $snapshot->sourceKey,
             'source_order_id' => $snapshot->sourceOrderId,
@@ -41,7 +44,7 @@ final readonly class OrderProjectionWriter
                 'u' => $i->measurementUnit,
                 'm' => $i->meters !== null ? number_format((float)$i->meters, 3, '.', '') : null,
                 'qty' => $i->quantity
-            ], $snapshot->items),
+            ], $itemsForHash),
         ];
         // Ensure deterministic JSON
         $payloadHash = hash('sha256', json_encode($hashData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR), true);
@@ -68,11 +71,11 @@ final readonly class OrderProjectionWriter
                 SELECT 1 
                 FROM production_stages ps
                 JOIN production_workflows pw ON pw.workflow_id = ps.workflow_id
-                WHERE ps.stage_id = ? AND pw.workflow_key = \'curtain-production\' AND pw.status = \'active\'
+                WHERE ps.stage_id = ? AND pw.workflow_key = \'curtain-production\' AND pw.status = \'active\' AND ps.status = \'active\'
             ');
             $stmt->execute([$snapshot->productionStageId]);
             if (!$stmt->fetchColumn()) {
-                throw new ApiException(400, 'INVALID_STAGE', 'The production stage does not belong to the active canonical workflow.');
+                throw new ApiException(400, 'SOURCE_STAGE_UNKNOWN', 'The production stage does not belong to the active canonical workflow or is inactive.');
             }
 
             // Check if receipt already exists
@@ -84,7 +87,7 @@ final readonly class OrderProjectionWriter
                 if ($existingReceipt['global_order_id'] !== $globalId) {
                     throw new ApiException(500, 'SOURCE_EVENT_CONFLICT', 'Event ID conflict with different global order ID.');
                 }
-                if ($existingReceipt['payload_hash'] === $payloadHash) {
+                if (hash_equals((string)$existingReceipt['payload_hash'], $payloadHash)) {
                     $this->pdo->rollBack();
                     return 'duplicate';
                 }
@@ -109,18 +112,18 @@ final readonly class OrderProjectionWriter
                     return 'out_of_order';
                 }
                 
-                if ($sourceChangedSql === $currentChangedAt && $currentOrder['projection_hash'] !== $payloadHash) {
+                if ($sourceChangedSql === $currentChangedAt && !hash_equals((string)$currentOrder['projection_hash'], $payloadHash)) {
                     throw new ApiException(500, 'SOURCE_REVISION_CONFLICT', 'Conflicting changes at the same timestamp.');
                 }
                 
-                if ($sourceChangedSql === $currentChangedAt && $currentOrder['projection_hash'] === $payloadHash) {
+                if ($sourceChangedSql === $currentChangedAt && hash_equals((string)$currentOrder['projection_hash'], $payloadHash)) {
                     $this->insertReceipt($snapshot, $globalId, $payloadHash, 'duplicate', $nowSql);
                     $this->pdo->commit();
                     return 'duplicate';
                 }
 
                 $version = (int)$currentOrder['version'];
-                if ($currentOrder['projection_hash'] !== $payloadHash) {
+                if (!hash_equals((string)$currentOrder['projection_hash'], $payloadHash)) {
                     $version++;
                 }
 
@@ -147,7 +150,7 @@ final readonly class OrderProjectionWriter
                 ');
                 $stmt->execute([
                     $snapshot->orderNumber,
-                    $currentOrder['production_stage_id'],
+                    $snapshot->productionStageId,
                     $snapshot->sourceCommerceStatusCode,
                     $snapshot->sourceCommerceStatusLabel,
                     $snapshot->productionNotes,
@@ -165,7 +168,7 @@ final readonly class OrderProjectionWriter
                     $orderUuid,
                 ]);
 
-                if ($currentOrder['projection_hash'] !== $payloadHash) {
+                if (!hash_equals((string)$currentOrder['projection_hash'], $payloadHash)) {
                     $stmt = $this->pdo->prepare('SELECT item_uuid, source_item_id FROM operational_order_items WHERE order_uuid = ?');
                     $stmt->execute([$orderUuid]);
                     $existingItems = [];

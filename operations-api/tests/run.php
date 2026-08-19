@@ -1067,8 +1067,27 @@ test('GlobalOrderId formats and parses source identifiers strictly and determini
     // Test that sourceKey allows only lowercase alphanumeric, underscore, hyphen
     expectRuntime(fn () => new \Arasya\Operations\Order\GlobalOrderId('TrendHome', 'TH100'));
     expectRuntime(fn () => new \Arasya\Operations\Order\GlobalOrderId('trend/home', 'TH100'));
-    // Test that sourceOrderId rejects slash
-    expectRuntime(fn () => new \Arasya\Operations\Order\GlobalOrderId('trendhome', 'TH/100'));
+    expectRuntime(fn () => new \Arasya\Operations\Order\GlobalOrderId('unknown source key with spaces', 'TH100'));
+    
+    // Valid sourceOrderId formats
+    expect((new \Arasya\Operations\Order\GlobalOrderId('trendhome', '61833'))->toString() === 'trendhome:61833');
+    expect((new \Arasya\Operations\Order\GlobalOrderId('trendhome', 'TH100'))->toString() === 'trendhome:TH100');
+    expect((new \Arasya\Operations\Order\GlobalOrderId('outletperdele', 'ORD-100'))->toString() === 'outletperdele:ORD-100');
+    expect((new \Arasya\Operations\Order\GlobalOrderId('trendyol', '100.2'))->toString() === 'trendyol:100.2');
+    expect((new \Arasya\Operations\Order\GlobalOrderId('trendhome', 'ABC_123-XY.5'))->toString() === 'trendhome:ABC_123-XY.5');
+
+    // Invalid sourceOrderId formats
+    expectRuntime(fn () => new \Arasya\Operations\Order\GlobalOrderId('trendhome', ''));
+    expectRuntime(fn () => \Arasya\Operations\Order\GlobalOrderId::fromString(':61833'));
+    expectRuntime(fn () => new \Arasya\Operations\Order\GlobalOrderId('trendhome', '61 833'));
+    expectRuntime(fn () => new \Arasya\Operations\Order\GlobalOrderId('trendhome', '61/833'));
+    expectRuntime(fn () => new \Arasya\Operations\Order\GlobalOrderId('trendhome', '61\\\\833'));
+    expectRuntime(fn () => new \Arasya\Operations\Order\GlobalOrderId('trendhome', '61:833'));
+    expectRuntime(fn () => new \Arasya\Operations\Order\GlobalOrderId('trendhome', '../61833'));
+    expectRuntime(fn () => new \Arasya\Operations\Order\GlobalOrderId('trendhome', '%2F61833'));
+    expectRuntime(fn () => new \Arasya\Operations\Order\GlobalOrderId('trendhome', "61833\n"));
+    expectRuntime(fn () => new \Arasya\Operations\Order\GlobalOrderId('trendhome', '订单123'));
+    
     // Test that fromString strictly checks colon separator
     expectRuntime(fn () => \Arasya\Operations\Order\GlobalOrderId::fromString('no-colon'));
 });

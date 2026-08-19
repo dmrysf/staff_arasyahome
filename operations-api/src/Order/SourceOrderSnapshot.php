@@ -24,12 +24,8 @@ final readonly class SourceOrderSnapshot
         public ?DateTimeImmutable $acceptedAt,
         public array $items,
     ) {
-        if ($this->sourceKey === '' || preg_match('/^[a-z0-9_-]+$/', $this->sourceKey) !== 1) {
-            throw new \InvalidArgumentException('Invalid source key.');
-        }
-        if ($this->sourceOrderId === '') {
-            throw new \InvalidArgumentException('Invalid source order ID.');
-        }
+        // Centralize identity validation
+        new GlobalOrderId($this->sourceKey, $this->sourceOrderId);
         if ($this->sourceEventId === '' || strlen($this->sourceEventId) > 191 || preg_match('/[[:cntrl:]]/', $this->sourceEventId) === 1) {
             throw new \InvalidArgumentException('Invalid source event ID.');
         }
