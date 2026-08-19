@@ -60,10 +60,17 @@ final class PdoEmployeeRepository implements EmployeeRepository
             ]);
 
             $stageStatement = $this->pdo->prepare(
-                'INSERT INTO employee_stage_access (employee_uuid, stage_id, created_at) VALUES (:employee_uuid, :stage_id, :created_at)',
+                'INSERT INTO employee_stage_access (employee_uuid, stage_id, created_at)
+                 SELECT :employee_uuid, ps.stage_id, :created_at
+                 FROM production_stages ps
+                 INNER JOIN production_workflows pw ON pw.workflow_id = ps.workflow_id
+                 WHERE ps.stage_id = :stage_id AND ps.status = \'active\' AND pw.status = \'active\'',
             );
             foreach (array_values(array_unique($allowedStageIds)) as $stageId) {
                 $stageStatement->execute(['employee_uuid' => $employeeUuid, 'stage_id' => $stageId, 'created_at' => $now]);
+                if ($stageStatement->rowCount() !== 1) {
+                    throw new RuntimeException("Unknown or inactive canonical stage ID: {$stageId}");
+                }
             }
             $this->pdo->commit();
         } catch (Throwable $error) {
@@ -133,7 +140,14 @@ final class PdoEmployeeRepository implements EmployeeRepository
         $permissionStatement->execute(['employee_uuid' => $row['employee_uuid']]);
         $permissions = array_map('strval', $permissionStatement->fetchAll(PDO::FETCH_COLUMN));
 
-        $stageStatement = $this->pdo->prepare('SELECT stage_id FROM employee_stage_access WHERE employee_uuid = :employee_uuid ORDER BY stage_id');
+        $stageStatement = $this->pdo->prepare(
+            "SELECT esa.stage_id
+             FROM employee_stage_access esa
+             INNER JOIN production_stages ps ON ps.stage_id = esa.stage_id AND ps.status = 'active'
+             INNER JOIN production_workflows pw ON pw.workflow_id = ps.workflow_id AND pw.status = 'active'
+             WHERE esa.employee_uuid = :employee_uuid
+             ORDER BY ps.ordinal",
+        );
         $stageStatement->execute(['employee_uuid' => $row['employee_uuid']]);
         $stages = array_map('strval', $stageStatement->fetchAll(PDO::FETCH_COLUMN));
 

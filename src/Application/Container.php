@@ -19,6 +19,9 @@ use Arasya\Operations\Http\CorsPolicy;
 use Arasya\Operations\Http\HealthController;
 use Arasya\Operations\Http\RequestFactory;
 use Arasya\Operations\Http\RequestContext;
+use Arasya\Operations\Http\ProductionWorkflowController;
+use Arasya\Operations\Production\PdoProductionWorkflowRepository;
+use Arasya\Operations\Production\ProductionWorkflowService;
 use Arasya\Operations\Security\CookiePolicy;
 use Arasya\Operations\Security\CsrfGuard;
 use Arasya\Operations\Security\PasswordHasher;
@@ -76,6 +79,12 @@ final class Container
             new StructuredLogger(),
             new CookiePolicy($this->config),
             $context,
+            new ProductionWorkflowController(
+                new ProductionWorkflowService(new PdoProductionWorkflowRepository($this->pdo)),
+                $this->authentication,
+                $this->config,
+                $context,
+            ),
         );
     }
 
