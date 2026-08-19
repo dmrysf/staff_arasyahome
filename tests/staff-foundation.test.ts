@@ -11,6 +11,7 @@ import { selectQrDecoder, type QrDecoder } from "../features/scanner/qrDecoder";
 import { createDemoServices } from "../services/dev/demoServices";
 import { getErrorPresentation, mapCameraError } from "../services/errors";
 import { resolveRuntimeConfig } from "../src/runtimeConfig";
+import { getStageById } from "../domain/productionWorkflow";
 
 test("protected routes send anonymous employees to login", () => {
   assert.equal(routeForSession("/orders", false), "/login");
@@ -55,7 +56,8 @@ test("successful demo QR flow waits for confirmed mutation", async () => {
   await services.auth.login({ username: "test", password: "test" });
   const order = await services.orders.resolveQr("arasya:61833");
   const updated = await services.orders.confirmStageTransition(order.id, { expectedVersion: order.version, idempotencyKey: "request-success" });
-  assert.equal(updated.currentStage.label, "Pregătire Material");
+  const workflow = await services.workflow.getCurrent();
+  assert.equal(getStageById(workflow, updated.productionStageId)?.label, "Pregătire material");
   assert.equal(updated.version, order.version + 1);
 });
 

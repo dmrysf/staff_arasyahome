@@ -1,11 +1,14 @@
 import { StaffServiceError, type Employee, type ServiceErrorCode } from "../../domain/models";
 import type { ActivityService, AuthService, EmployeeService, OrderService, ServiceBundle, Session } from "../contracts";
+import { createBrowserWorkflowCache, type WorkflowCache } from "./workflowCache";
+import { createProductionWorkflowService } from "./workflowService";
 
 type FetchLike = typeof fetch;
 export type ProductionServicesOptions = {
   fetchImpl?: FetchLike;
   isOnline?: () => boolean;
   requestId?: () => string;
+  workflowCache?: WorkflowCache;
 };
 
 const backendErrorCodes: Partial<Record<string, ServiceErrorCode>> = {
@@ -18,6 +21,7 @@ const backendErrorCodes: Partial<Record<string, ServiceErrorCode>> = {
   UNAUTHORIZED_ACTION: "UNAUTHORIZED_ACTION",
   CSRF_INVALID: "CSRF_INVALID",
   CONFIGURATION_ERROR: "CONFIGURATION_ERROR",
+  WORKFLOW_UNAVAILABLE: "WORKFLOW_UNAVAILABLE",
   ORDER_CHANGED: "ORDER_CHANGED",
   ORDER_NOT_FOUND: "ORDER_NOT_FOUND",
 };
@@ -76,7 +80,7 @@ function createRequest(apiBaseUrl: string, options: ProductionServicesOptions, o
   const nextRequestId = options.requestId ?? (() => globalThis.crypto?.randomUUID?.() ?? `staff-${Date.now()}`);
   let csrfToken = "";
 
-  async function errorFromResponse(response: Response) {
+  async function errorFromResponse(response: Response, path: string) {
     let backendCode = "";
     try {
       const payload = objectValue(await response.json());
@@ -94,10 +98,15 @@ function createRequest(apiBaseUrl: string, options: ProductionServicesOptions, o
             : response.status === 503
               ? "SERVICE_UNAVAILABLE"
               : "SERVER_ERROR";
-    return new StaffServiceError(backendErrorCodes[backendCode] ?? fallback);
+    const error = new StaffServiceError(backendErrorCodes[backendCode] ?? fallback);
+    if ((error.code === "SESSION_EXPIRED" || error.code === "ACCOUNT_INACTIVE") && path !== "/auth/login" && path !== "/auth/session") {
+      csrfToken = "";
+      onSessionExpired(error);
+    }
+    return error;
   }
 
-  async function request<T>(path: string, init: RequestInit = {}, map?: (value: unknown) => T): Promise<T> {
+  async function send(path: string, init: RequestInit = {}): Promise<Response> {
     if (!apiBaseUrl) throw new StaffServiceError("CONFIGURATION_ERROR");
     if (!isOnline()) throw new StaffServiceError("NETWORK_UNAVAILABLE");
     const timeoutSignal = AbortSignal.timeout(12_000);
@@ -109,21 +118,19 @@ function createRequest(apiBaseUrl: string, options: ProductionServicesOptions, o
     headers.set("X-Request-ID", nextRequestId());
     if (init.body != null) headers.set("Content-Type", "application/json");
     if (mutating && path !== "/auth/login" && csrfToken) headers.set("X-CSRF-Token", csrfToken);
-    let response: Response;
     try {
-      response = await fetchImpl(`${apiBaseUrl}${path}`, { ...init, credentials: "include", headers, signal });
+      return await fetchImpl(`${apiBaseUrl}${path}`, { ...init, credentials: "include", headers, signal });
     } catch (error) {
       if (timeoutSignal.aborted || (error instanceof DOMException && error.name === "AbortError")) throw new StaffServiceError("REQUEST_TIMEOUT");
       if (!isOnline()) throw new StaffServiceError("NETWORK_UNAVAILABLE");
       throw new StaffServiceError("SERVICE_UNAVAILABLE");
     }
+  }
+
+  async function request<T>(path: string, init: RequestInit = {}, map?: (value: unknown) => T): Promise<T> {
+    const response = await send(path, init);
     if (!response.ok) {
-      const error = await errorFromResponse(response);
-      if ((error.code === "SESSION_EXPIRED" || error.code === "ACCOUNT_INACTIVE") && path !== "/auth/login" && path !== "/auth/session") {
-        csrfToken = "";
-        onSessionExpired(error);
-      }
-      throw error;
+      throw await errorFromResponse(response, path);
     }
     let payload: unknown;
     try { payload = await response.json(); }
@@ -133,6 +140,8 @@ function createRequest(apiBaseUrl: string, options: ProductionServicesOptions, o
 
   return {
     request,
+    send,
+    errorFromResponse,
     setCsrf(token: string) { csrfToken = token; },
     clearCsrf() { csrfToken = ""; },
   };
@@ -190,5 +199,9 @@ export function createProductionServices(apiBaseUrl: string, options: Production
   const activity: ActivityService = {
     listMine: (input, requestOptions) => http.request(`/activity/mine?${new URLSearchParams(Object.entries(input).filter(([, value]) => value !== undefined) as string[][])}`, { signal: requestOptions?.signal }),
   };
-  return { auth, employee, orders, activity, mode: "production" };
+  const workflow = createProductionWorkflowService({
+    get: (etag, signal) => http.send("/production/workflow", { signal, headers: etag ? { "If-None-Match": etag } : undefined }),
+    failure: (response) => http.errorFromResponse(response, "/production/workflow"),
+  }, options.workflowCache ?? createBrowserWorkflowCache());
+  return { auth, employee, orders, activity, workflow, mode: "production" };
 }

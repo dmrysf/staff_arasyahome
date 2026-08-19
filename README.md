@@ -11,7 +11,7 @@ corepack pnpm install --frozen-lockfile
 corepack pnpm dev
 ```
 
-`VITE_STAFF_API_BASE_URL` configures the future external Staff HTTP API. Demo mode is enabled only by the Vite development runtime and can never activate in a production build. Production Preview Mode is a separate, explicit build mode documented in [`docs/preview-mode.md`](docs/preview-mode.md).
+`VITE_STAFF_API_BASE_URL` configures the Operations API. Demo mode is enabled only by the Vite development runtime and can never activate in a production build. Production Preview Mode is a separate, explicit build mode documented in [`docs/preview-mode.md`](docs/preview-mode.md).
 
 Individual commands:
 
@@ -32,6 +32,8 @@ pnpm verify
 It runs typecheck, lint, tests, production build, and static artifact verification in fail-fast order. See [`docs/cpanel-deployment.md`](docs/cpanel-deployment.md) for cPanel deployment and rollback, [`docs/staff-foundation-v1.md`](docs/staff-foundation-v1.md) for architecture decisions, and [`docs/staff-ui-system.md`](docs/staff-ui-system.md) for the operational UI and employee-scoped order rules.
 
 The independent PHP identity foundation lives in [`operations-api/`](operations-api/) with architecture, security, and cPanel provisioning documented in [`docs/operations-api-auth.md`](docs/operations-api-auth.md), [`docs/staff-auth-security.md`](docs/staff-auth-security.md), and [`docs/operations-api-cpanel.md`](docs/operations-api-cpanel.md).
+
+V2.0.4 adds the normalized, API-owned 14-stage curtain-production catalog. Stable stage identity, ETag/last-known-good behavior, history snapshots, Preview examples, and the explicit external-commerce boundary are documented in [`docs/production-workflow.md`](docs/production-workflow.md).
 
 ## Production delivery
 

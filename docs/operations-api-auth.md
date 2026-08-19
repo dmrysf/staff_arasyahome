@@ -16,6 +16,7 @@ The browser is never an identity or authorization authority. Every protected req
 | `POST` | `/auth/refresh` | Atomically revoke and rotate the opaque session token |
 | `POST` | `/auth/logout` | Revoke a valid server session and clear the cookie; already-invalid sessions are idempotent success |
 | `GET` | `/employees/me` | Return the employee derived from the current session |
+| `GET` | `/production/workflow` | Return the active canonical workflow and ordered stages with ETag support |
 
 Success responses for login/session/refresh contain an allowlisted employee representation, absolute `expiresAt`, and a session-bound `csrfToken`. They never contain password hashes or a raw session token. Errors use `{ "error": { "code", "message", "requestId" } }` and authentication responses use `Cache-Control: no-store`.
 
@@ -27,7 +28,7 @@ The initial API remains unversioned to match the established Staff adapter. Rout
 
 `employee_uuid` is the permanent canonical identity. Username, employee code, display name, department, and role may change. Employees are deactivated (`inactive` or `suspended`) rather than deleted so security and future operations audit remains attributable.
 
-Reference tables normalize departments, roles, permissions, role-permission links, and employee stage access. Stage identifiers are opaque stable values; Romanian labels never become authorization keys. The initial employee role receives the current Staff vocabulary: `orders.scan`, `orders.view_mine`, `orders.claim`, `orders.advance_stage`, `orders.handover`, `history.view_mine`, and `profile.view_self`. Order endpoints are intentionally not implemented in V2.0.
+Reference tables normalize departments, roles, permissions, role-permission links, employee stage access, workflows, and workflow stages. Stage identifiers are opaque stable values; Romanian labels never become authorization keys. Employee-stage reads join the active canonical catalog so legacy unknown values do not grant access, while employee creation rejects unknown stage IDs. The initial employee role receives the current Staff vocabulary: `orders.scan`, `orders.view_mine`, `orders.claim`, `orders.advance_stage`, `orders.handover`, `history.view_mine`, and `profile.view_self`. Order endpoints remain deferred.
 
 Permissions are resolved from current database state on each authenticated request. Inactive roles return no permissions at repository level. The centralized authorization service independently denies inactive employees, roles, departments, absent permissions, and unknown permission keys by default. A role or department status change therefore invalidates operational access on the next request without waiting for session touch.
 
@@ -64,7 +65,7 @@ Client-provided `X-Request-ID` values are length/character validated; otherwise 
 
 ## Database schema and configuration
 
-The ordered migration creates `departments`, `roles`, `permissions`, `role_permissions`, `employees`, `employee_stage_access`, `auth_sessions`, `auth_login_attempts`, atomic `auth_rate_limit_buckets`, and `auth_audit_events`, plus required unique and lookup indexes. PDO uses native prepared statements, exceptions, `utf8mb4`, UTC database sessions, short connection timeout, and transactions for token rotation.
+The ordered migrations create authentication/employee tables plus normalized `production_workflows` and `production_stages`, with required constraints and indexes. The ordered reference seeds populate authentication vocabulary and the canonical workflow without overwriting mutable existing labels on rerun. PDO uses native prepared statements, exceptions, `utf8mb4`, UTC database sessions, short connection timeout, and transactions for token rotation.
 
 Runtime secrets use `ARASYA_DB_*`, mandatory `ARASYA_APP_SECRET`, exact `ARASYA_ALLOWED_ORIGINS`, session/rate-limit settings, and explicit proxy settings. Configuration precedence is environment variable, private canonical key, private alias, then safe default where one exists. `ARASYA_CONFIG_FILE` can select JSON or legacy PHP; otherwise cPanel prefers `$HOME/arasya-config/secrets.json`. JSON supports the verified cPanel DB aliases and an origin array. Unknown keys are ignored, while malformed/supported invalid values fail closed. Private files inside the runtime, API public root, or Staff public root are rejected. Web and CLI use the same loader. When LiteSpeed omits `HOME`, the loader derives it only from a real release path matching `*/arasya-operations-api/current`; unrelated layouts fail closed.
 

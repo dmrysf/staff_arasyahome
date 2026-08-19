@@ -28,7 +28,9 @@ These are UX-test inputs, not a secret or security credential. Do not create a G
 
 ## Preview behavior
 
-PreviewServices is separate from both local demo services and production HTTP services. It supplies the fictional employee Ali Demo, fictional Romanian activity, and fictional Trendhome, OutletPerdele, and B2B orders through the existing service contracts. QR/manual codes include `61833`, `61829`, `B2B-1048`, and `arasya:61833`.
+PreviewServices is separate from both local demo services and production HTTP services. It supplies the fictional employee Ali Demo, fictional Romanian activity, and fictional Trendhome, OutletPerdele, and Trendyol orders through the existing service contracts. QR/manual codes include `61833`, `61829`, `TY-1048`, and `arasya:61833`.
+
+Preview uses one exact version-1 14-stage catalog: Trendhome order `61833` is at `material-preparation` (2), OutletPerdele `61829` at `side-hem` (7), and fictional Trendyol `TY-1048` at `quality-control` (12). The Trendyol badge and fictional commerce status are UI fixtures only; no Trendyol integration exists.
 
 Stage transitions preserve order version and idempotency checks but modify only the adapter's in-memory fixture state. Preview Mode sends no authentication, order, activity, or mutation request to Staff APIs, WooCommerce, Trendhome, or OutletPerdele. It creates no offline production mutation queue.
 

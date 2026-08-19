@@ -1,4 +1,4 @@
-import type { ActivityPage, Employee, StaffOrder } from "../domain/models";
+import type { ActivityPage, Employee, ProductionWorkflow, StaffOrder } from "../domain/models";
 import type { StaffRuntimeMode } from "../src/runtimeConfig";
 
 export type Session = { employee: Employee; expiresAt: string };
@@ -13,6 +13,10 @@ export interface AuthService {
 
 export interface EmployeeService {
   getCurrentEmployee(): Promise<Employee>;
+}
+
+export interface ProductionWorkflowService {
+  getCurrent(options?: { signal?: AbortSignal }): Promise<ProductionWorkflow>;
 }
 
 export interface OrderService {
@@ -37,5 +41,6 @@ export type ServiceBundle = {
   employee: EmployeeService;
   orders: OrderService;
   activity: ActivityService;
+  workflow: ProductionWorkflowService;
   mode: StaffRuntimeMode;
 };

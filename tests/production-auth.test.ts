@@ -16,7 +16,7 @@ const employeePayload = {
   role: "employee",
   status: "active",
   permissions: ["orders.scan", "orders.view_mine", "history.view_mine", "profile.view_self"],
-  allowedStageIds: ["stage-preparation"],
+  allowedStageIds: ["material-preparation"],
 };
 
 const sessionPayload = { employee: employeePayload, expiresAt: "2026-08-19T18:00:00Z", csrfToken: "csrf-runtime-token" };
@@ -40,7 +40,7 @@ test("production employee and session mapping is explicit and allowlisted", () =
   const employee = mapProductionEmployee({ ...employeePayload, password_hash: "must-not-map", rawToken: "must-not-map" });
   const session = mapProductionSession(sessionPayload);
   assert.equal(employee.displayName, "Mehmet Yılmaz");
-  assert.deepEqual(employee.allowedStageIds, ["stage-preparation"]);
+  assert.deepEqual(employee.allowedStageIds, ["material-preparation"]);
   assert.equal("password_hash" in employee, false);
   assert.equal("rawToken" in session, false);
   assert.equal(session.csrfToken, "csrf-runtime-token");

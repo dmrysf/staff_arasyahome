@@ -17,6 +17,7 @@ final readonly class ApiKernel
         private StructuredLogger $logger,
         private CookiePolicy $cookies,
         private RequestContext $context,
+        private ?ProductionWorkflowController $workflow = null,
     ) {
     }
 
@@ -36,6 +37,7 @@ final readonly class ApiKernel
                 'GET /auth/session' => $this->auth->session($request),
                 'POST /auth/refresh' => $this->auth->refresh($request),
                 'GET /employees/me' => $this->auth->employee($request),
+                'GET /production/workflow' => $this->workflow?->show($request) ?? throw new ApiException(503, 'WORKFLOW_UNAVAILABLE', 'Production workflow is not ready.'),
                 default => throw new ApiException(404, 'NOT_FOUND', 'API route was not found.'),
             };
             $this->logger->log('info', 'http_request', $request->requestId, ['route' => $request->path, 'method' => $request->method, 'status' => $response->status, ...$this->context->logContext()]);
@@ -57,7 +59,7 @@ final readonly class ApiKernel
     {
         return $response->withHeaders([
             ...$this->cors->headers($request->header('origin')),
-            'Cache-Control' => 'no-store, private',
+            'Cache-Control' => $response->headers['Cache-Control'] ?? 'no-store, private',
             'Pragma' => 'no-cache',
             'X-Content-Type-Options' => 'nosniff',
             'X-Frame-Options' => 'DENY',

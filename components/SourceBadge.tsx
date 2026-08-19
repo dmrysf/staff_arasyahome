@@ -3,6 +3,7 @@ import type { OrderSource } from "../domain/models";
 export const sourceLabels: Record<OrderSource, string> = {
   trendhome: "Trendhome",
   outletperdele: "OutletPerdele",
+  trendyol: "Trendyol",
   b2b: "B2B",
   marketplace: "Marketplace",
   unknown: "Sursă necunoscută",

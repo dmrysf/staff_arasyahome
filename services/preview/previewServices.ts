@@ -1,7 +1,9 @@
 import { StaffServiceError } from "../../domain/models";
 import type { ActivityEntry, ActivityPage, StaffOrder } from "../../domain/models";
 import { isEmployeeRelevantOrder } from "../../domain/orderRelation";
+import { getNextStage, getStageById } from "../../domain/productionWorkflow";
 import { previewActivityPages, previewEmployee, previewOrderDatabase } from "../../mocks/previewFixtures";
+import { previewProductionWorkflow } from "../../mocks/productionWorkflow";
 import type { AuthService, EmployeeService, OrderService, ServiceBundle, Session } from "../contracts";
 
 export const PREVIEW_SESSION_KEY = "arasya_staff_preview_session";
@@ -115,14 +117,19 @@ export function createPreviewServices(options: PreviewServicesOptions = {}): Ser
   }
 
   function recordTransition(previous: StaffOrder, updated: StaffOrder) {
+    const fromStage = getStageById(previewProductionWorkflow, previous.productionStageId);
+    const toStage = getStageById(previewProductionWorkflow, updated.productionStageId);
+    if (!fromStage || !toStage) throw new StaffServiceError("WORKFLOW_UNAVAILABLE");
     const entry: ActivityEntry = {
       id: `preview-transition-${updated.id}-${updated.version}`,
       occurredAt: updated.updatedAt,
       orderId: updated.id,
       orderNumber: updated.orderNumber,
       source: updated.source,
-      fromStage: previous.currentStage.label,
-      toStage: updated.currentStage.label,
+      fromStageId: fromStage.id,
+      fromStageLabelSnapshot: fromStage.label,
+      toStageId: toStage.id,
+      toStageLabelSnapshot: toStage.label,
       meters: updated.products.reduce((total, item) => total + (item.meters ?? 0), 0),
     };
     for (const range of ["today", "7days", "month", "custom"] as const) {
@@ -157,11 +164,11 @@ export function createPreviewServices(options: PreviewServicesOptions = {}): Ser
       if (index < 0) throw new StaffServiceError("ORDER_NOT_FOUND");
       const current = orders[index];
       if (current.version !== input.expectedVersion) throw new StaffServiceError("ORDER_CHANGED");
-      if (!current.nextStage || !current.employeeAllowedAction) throw new StaffServiceError("UNAUTHORIZED_ACTION");
+      const nextStage = getNextStage(previewProductionWorkflow, current.productionStageId);
+      if (!nextStage || !current.employeeAllowedAction) throw new StaffServiceError("UNAUTHORIZED_ACTION");
       const updated: StaffOrder = {
         ...current,
-        currentStage: current.nextStage,
-        nextStage: undefined,
+        productionStageId: nextStage.id,
         employeeAllowedAction: undefined,
         employeeRelation: {
           employeeUuid: previewEmployee.employeeUuid,
@@ -193,6 +200,7 @@ export function createPreviewServices(options: PreviewServicesOptions = {}): Ser
     employee,
     orders: orderService,
     activity: { async listMine(input): Promise<ActivityPage> { return clone(activityPages[input.range]); } },
+    workflow: { async getCurrent() { return clone(previewProductionWorkflow); } },
     mode: "preview",
   };
 }

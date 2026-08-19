@@ -11,6 +11,7 @@ use Arasya\Operations\Database\Connection;
 use Arasya\Operations\Database\MigrationRunner;
 use Arasya\Operations\Database\SqlFileRunner;
 use Arasya\Operations\Employee\PdoEmployeeRepository;
+use Arasya\Operations\Production\PdoProductionWorkflowRepository;
 use Arasya\Operations\Security\PasswordHasher;
 use Arasya\Operations\Security\SessionTokenManager;
 use Arasya\Operations\Security\UsernameNormalizer;
@@ -47,8 +48,67 @@ $config = new Config(
     [],
 );
 $pdo = Connection::create($config);
-(new MigrationRunner($pdo))->migrate(dirname(__DIR__) . '/database/migrations');
-(new SqlFileRunner($pdo))->run(dirname(__DIR__) . '/database/seeds/001_reference_data.sql');
+$migrationRunner = new MigrationRunner($pdo);
+$migrationFixture = sys_get_temp_dir() . '/arasya-migration-001-' . bin2hex(random_bytes(6));
+mkdir($migrationFixture, 0700, true);
+copy(dirname(__DIR__) . '/database/migrations/001_auth_foundation.sql', $migrationFixture . '/001_auth_foundation.sql');
+try {
+    $migrationRunner->migrate($migrationFixture);
+    $pdo->exec('DROP TABLE IF EXISTS production_stages');
+    $pdo->exec('DROP TABLE IF EXISTS production_workflows');
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name = '002_canonical_production_workflow.sql'");
+    $applied = $migrationRunner->migrate(dirname(__DIR__) . '/database/migrations');
+    if ($applied !== ['002_canonical_production_workflow.sql']) {
+        throw new RuntimeException('An existing 001 schema did not apply only migration 002.');
+    }
+    if ($migrationRunner->migrate(dirname(__DIR__) . '/database/migrations') !== []) {
+        throw new RuntimeException('A second migration run was not idempotent.');
+    }
+} finally {
+    unlink($migrationFixture . '/001_auth_foundation.sql');
+    rmdir($migrationFixture);
+}
+
+$seedRunner = new SqlFileRunner($pdo);
+$seedFiles = glob(dirname(__DIR__) . '/database/seeds/*.sql') ?: [];
+sort($seedFiles, SORT_STRING);
+foreach ($seedFiles as $seedFile) {
+    $seedRunner->run($seedFile);
+}
+
+$expectedStages = [
+    [1, 'waiting', 'În așteptare'],
+    [2, 'material-preparation', 'Pregătire material'],
+    [3, 'workshop-receiving', 'Primire atelier'],
+    [4, 'labeling', 'Etichetare'],
+    [5, 'material-straightening', 'Îndreptare material'],
+    [6, 'bottom-hem', 'Tivul de jos'],
+    [7, 'side-hem', 'Tivul lateral'],
+    [8, 'ironing', 'Călcare'],
+    [9, 'height', 'Înălțime'],
+    [10, 'header-tape', 'Rejansă'],
+    [11, 'sewing-finishing', 'Finisare coasere'],
+    [12, 'quality-control', 'Control calitate'],
+    [13, 'packing', 'Împachetare'],
+    [14, 'delivery', 'Livrare'],
+];
+$workflow = (new PdoProductionWorkflowRepository($pdo))->current();
+if ($workflow === null || $workflow->id !== 'curtain-production' || $workflow->version !== 1) {
+    throw new RuntimeException('Canonical production workflow was not seeded.');
+}
+if (array_map(static fn ($stage): array => [$stage->ordinal, $stage->id, $stage->label], $workflow->stages) !== $expectedStages) {
+    throw new RuntimeException('Canonical production stages do not match the required 14-stage catalog.');
+}
+
+$pdo->exec("UPDATE production_stages SET display_name = 'Verificare calitate' WHERE stage_id = 'quality-control'");
+$pdo->exec("UPDATE production_workflows SET name = 'Flux administrat' WHERE workflow_key = 'curtain-production'");
+$seedRunner->run(dirname(__DIR__) . '/database/seeds/002_production_workflow.sql');
+if ($pdo->query("SELECT display_name FROM production_stages WHERE stage_id = 'quality-control'")->fetchColumn() !== 'Verificare calitate'
+    || $pdo->query("SELECT name FROM production_workflows WHERE workflow_key = 'curtain-production'")->fetchColumn() !== 'Flux administrat') {
+    throw new RuntimeException('Repeated workflow seed execution overwrote mutable catalog data.');
+}
+$pdo->exec("UPDATE production_stages SET display_name = 'Control calitate' WHERE stage_id = 'quality-control'");
+$pdo->exec("UPDATE production_workflows SET name = 'Flux producție Arasya' WHERE workflow_key = 'curtain-production'");
 
 $employees = new PdoEmployeeRepository($pdo);
 $sessions = new PdoSessionRepository($pdo);
@@ -65,7 +125,7 @@ $employee = $employees->create(
     'Integration Employee',
     'pregatire-material',
     'employee',
-    ['stage-preparation'],
+    ['material-preparation'],
     $clock->now()->format('Y-m-d H:i:s.u'),
 );
 $auth = new AuthenticationService(
@@ -101,6 +161,15 @@ try {
 }
 $current = $auth->authenticate($refresh->rawToken, '127.0.0.1', 'mysql-integration', 'mysql-current');
 $auth->logout($current, '127.0.0.1', 'mysql-integration', 'mysql-logout');
+
+$pdo->prepare('INSERT IGNORE INTO employee_stage_access (employee_uuid, stage_id, created_at) VALUES (:employee_uuid, :stage_id, UTC_TIMESTAMP(6))')->execute([
+    'employee_uuid' => $employee->employeeUuid,
+    'stage_id' => 'cutting',
+]);
+$reloadedEmployee = $employees->findByUuid($employee->employeeUuid);
+if ($reloadedEmployee === null || $reloadedEmployee->allowedStageIds !== ['material-preparation']) {
+    throw new RuntimeException('Legacy employee stage access was not filtered against the active canonical workflow.');
+}
 
 $createDepartment = $pdo->prepare(
     "INSERT INTO departments (department_key, name, status, created_at, updated_at)
@@ -177,4 +246,4 @@ try {
     }
 }
 
-fwrite(STDOUT, "PASS MySQL migration, authentication and operational-status lifecycles.\n");
+fwrite(STDOUT, "PASS MySQL ordered migrations, idempotent workflow seed, canonical stage access, authentication and operational-status lifecycles.\n");

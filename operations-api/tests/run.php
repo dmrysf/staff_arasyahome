@@ -16,8 +16,13 @@ use Arasya\Operations\Http\ApiKernel;
 use Arasya\Operations\Http\AuthController;
 use Arasya\Operations\Http\CorsPolicy;
 use Arasya\Operations\Http\HealthController;
+use Arasya\Operations\Http\ProductionWorkflowController;
 use Arasya\Operations\Http\Request;
 use Arasya\Operations\Http\RequestContext;
+use Arasya\Operations\Production\ProductionStage;
+use Arasya\Operations\Production\ProductionWorkflow;
+use Arasya\Operations\Production\ProductionWorkflowRepository;
+use Arasya\Operations\Production\ProductionWorkflowService;
 use Arasya\Operations\Security\CookiePolicy;
 use Arasya\Operations\Security\CsrfGuard;
 use Arasya\Operations\Security\PasswordHasher;
@@ -70,6 +75,32 @@ function expectApiConfigurationFailure(string $home, string $messageFragment): v
     throw new RuntimeException('Invalid private configuration unexpectedly succeeded.');
 }
 
+function canonicalWorkflowFixture(): ProductionWorkflow
+{
+    $definitions = [
+        ['waiting', 1, 'În așteptare'],
+        ['material-preparation', 2, 'Pregătire material'],
+        ['workshop-receiving', 3, 'Primire atelier'],
+        ['labeling', 4, 'Etichetare'],
+        ['material-straightening', 5, 'Îndreptare material'],
+        ['bottom-hem', 6, 'Tivul de jos'],
+        ['side-hem', 7, 'Tivul lateral'],
+        ['ironing', 8, 'Călcare'],
+        ['height', 9, 'Înălțime'],
+        ['header-tape', 10, 'Rejansă'],
+        ['sewing-finishing', 11, 'Finisare coasere'],
+        ['quality-control', 12, 'Control calitate'],
+        ['packing', 13, 'Împachetare'],
+        ['delivery', 14, 'Livrare'],
+    ];
+    return new ProductionWorkflow(
+        'curtain-production',
+        'Flux producție Arasya',
+        1,
+        array_map(static fn (array $stage): ProductionStage => new ProductionStage($stage[0], $stage[1], $stage[2]), $definitions),
+    );
+}
+
 /** @return array{AuthenticationService, MemoryEmployeeRepository, MemorySessionRepository, MemoryRateLimiter, MemoryAuditLogger, PasswordHasher, SessionTokenManager, MutableClock} */
 function authFixture(int $usernameLimit = 5, int $ipLimit = 30): array
 {
@@ -94,7 +125,7 @@ function authFixture(int $usernameLimit = 5, int $ipLimit = 30): array
         'active',
         'active',
         ['history.view_mine', 'orders.scan', 'orders.view_mine', 'profile.view_self'],
-        ['stage-preparation'],
+        ['material-preparation'],
     ));
     $auth = new AuthenticationService($employees, $sessions, $limiter, $audit, $passwords, $tokens, new UsernameNormalizer(), $clock, 36_000, 300);
     return [$auth, $employees, $sessions, $limiter, $audit, $passwords, $tokens, $clock];
@@ -246,10 +277,10 @@ test('disable and password-change administration revoke all sessions', function 
 test('CLI administration foundation creates normalized employees without seeded credentials', function (): void {
     [$auth, $employees, $sessions, , $audit, $passwords, , $clock] = authFixture();
     $admin = new EmployeeAdminService($employees, $sessions, $passwords, new UsernameNormalizer(), $audit, $clock);
-    $created = $admin->create('Ana Popescu', '  Ana.Popescu ', 'EMP-0043', 'pregatire-material', 'employee', 'ana production passphrase', ['stage-preparation'], 'cli-create');
+    $created = $admin->create('Ana Popescu', '  Ana.Popescu ', 'EMP-0043', 'pregatire-material', 'employee', 'ana production passphrase', ['material-preparation'], 'cli-create');
     expect($created->usernameNormalized === 'ana.popescu');
     expect($created->employeeUuid !== 'EMP-0043');
-    expect($created->allowedStageIds === ['stage-preparation']);
+    expect($created->allowedStageIds === ['material-preparation']);
     expect($auth->login('ANA.POPESCU', 'ana production passphrase', '192.0.2.11', 'test', 'ana-login')->employee->employeeUuid === $created->employeeUuid);
 });
 
@@ -292,6 +323,67 @@ test('HTTP auth contract matches the Staff session shape without exposing creden
     $session = $controller->session(new Request('GET', '/auth/session', [], ['arasya_session' => rawurlencode($rawToken)], '', '127.0.0.1', 'contract-test', 'contract-session'));
     expect(($session->payload['employee']['employeeUuid'] ?? null) === '68ff2a20-a164-4ed8-8659-1872a37d2ced');
     expect(($session->payload['csrfToken'] ?? null) === $tokens->csrfToken($rawToken));
+});
+
+test('authenticated production workflow route returns the exact canonical catalog and supports ETag revalidation', function (): void {
+    $workflow = canonicalWorkflowFixture();
+    expect(count($workflow->stages) === 14);
+    expect(array_map(static fn (ProductionStage $stage): array => [$stage->ordinal, $stage->id, $stage->label], $workflow->stages) === [
+        [1, 'waiting', 'În așteptare'],
+        [2, 'material-preparation', 'Pregătire material'],
+        [3, 'workshop-receiving', 'Primire atelier'],
+        [4, 'labeling', 'Etichetare'],
+        [5, 'material-straightening', 'Îndreptare material'],
+        [6, 'bottom-hem', 'Tivul de jos'],
+        [7, 'side-hem', 'Tivul lateral'],
+        [8, 'ironing', 'Călcare'],
+        [9, 'height', 'Înălțime'],
+        [10, 'header-tape', 'Rejansă'],
+        [11, 'sewing-finishing', 'Finisare coasere'],
+        [12, 'quality-control', 'Control calitate'],
+        [13, 'packing', 'Împachetare'],
+        [14, 'delivery', 'Livrare'],
+    ]);
+
+    $repository = new class($workflow) implements ProductionWorkflowRepository {
+        public function __construct(private readonly ProductionWorkflow $workflow)
+        {
+        }
+
+        public function current(): ?ProductionWorkflow
+        {
+            return $this->workflow;
+        }
+    };
+    [$auth, , , , , , $tokens, $clock] = authFixture();
+    $config = new Config('test', str_repeat('s', 32), 'db', 3306, 'db', 'user', 'password', ['http://localhost:5173'], 36_000, 300, 5, 30, 900, false, []);
+    $cookies = new CookiePolicy($config);
+    $context = new RequestContext();
+    $authController = new AuthController($auth, new CsrfGuard($tokens), $cookies, $config, new AuthorizationService(), $context);
+    $workflowController = new ProductionWorkflowController(new ProductionWorkflowService($repository), $auth, $config, $context);
+    $kernel = new ApiKernel($authController, new HealthController(new PDO('sqlite::memory:'), $clock), new CorsPolicy(['http://localhost:5173']), new StructuredLogger(), $cookies, $context, $workflowController);
+    $login = $auth->login('mehmet.yilmaz', 'correct horse battery staple', '127.0.0.1', 'workflow-test', 'workflow-login');
+    $cookie = ['arasya_session' => rawurlencode($login->rawToken)];
+    $response = $kernel->handle(new Request('GET', '/production/workflow', ['origin' => 'http://localhost:5173'], $cookie, '', '127.0.0.1', 'workflow-test', 'workflow-get'));
+    expect($response->status === 200);
+    expect(($response->payload['workflow']['id'] ?? null) === 'curtain-production');
+    expect(($response->payload['workflow']['version'] ?? null) === 1);
+    expect(count($response->payload['stages'] ?? []) === 14);
+    expect(($response->headers['Cache-Control'] ?? null) === 'private, no-cache');
+    expect(str_contains($response->headers['Access-Control-Expose-Headers'] ?? '', 'ETag'));
+    $etag = $response->headers['ETag'] ?? '';
+    expect($etag !== '');
+
+    $notModified = $kernel->handle(new Request('GET', '/production/workflow', ['origin' => 'http://localhost:5173', 'if-none-match' => $etag], $cookie, '', '127.0.0.1', 'workflow-test', 'workflow-etag'));
+    expect($notModified->status === 304 && $notModified->payload === null);
+    expect(($notModified->headers['ETag'] ?? null) === $etag);
+
+    $unauthenticated = $kernel->handle(new Request('GET', '/production/workflow', ['origin' => 'http://localhost:5173'], [], '', '127.0.0.1', 'workflow-test', 'workflow-no-session'));
+    expect($unauthenticated->status === 401);
+    expect(($unauthenticated->payload['error']['code'] ?? null) === 'SESSION_EXPIRED');
+
+    $health = $kernel->handle(new Request('GET', '/health', [], [], '', '127.0.0.1', 'workflow-test', 'health-stable'));
+    expect($health->status === 200 && ($health->payload['version'] ?? null) === '2.0.4');
 });
 
 test('JSON auth input rejects malformed, oversized and unexpected payloads', function (): void {

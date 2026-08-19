@@ -8,6 +8,8 @@ import { isEmployeeRelevantOrder, matchesMyOrdersView } from "../domain/orderRel
 import { previewEmployee, previewOrderDatabase } from "../mocks/previewFixtures";
 import { systemConnectionLabels } from "../components/status/YDSoftConnectionStatus";
 import { bottomNavigationItems } from "../components/navigation/BottomNavigation";
+import { getNextStage, getStageById } from "../domain/productionWorkflow";
+import { previewProductionWorkflow } from "../mocks/productionWorkflow";
 
 class MemorySessionStorage implements PreviewSessionStorage {
   private readonly values = new Map<string, string>();
@@ -70,10 +72,11 @@ test("preview orders support QR, manual lookup, in-memory transitions, idempoten
   const order = await services.orders.resolveQr("arasya:61833");
   assert.equal(order.orderNumber, "61833");
   assert.equal((await services.orders.lookup("61829")).source, "outletperdele");
-  assert.equal((await services.orders.lookup("B2B-1048")).source, "b2b");
+  assert.equal((await services.orders.lookup("TY-1048")).source, "trendyol");
 
   const updated = await services.orders.confirmStageTransition(order.id, { expectedVersion: order.version, idempotencyKey: "preview-transition-1" });
-  assert.equal(updated.currentStage.label, "Croire");
+  assert.equal(updated.productionStageId, "workshop-receiving");
+  assert.equal(getStageById(await services.workflow.getCurrent(), updated.productionStageId)?.label, "Primire atelier");
   assert.equal(updated.version, order.version + 1);
   assert.deepEqual(
     await services.orders.confirmStageTransition(order.id, { expectedVersion: order.version, idempotencyKey: "preview-transition-1" }),
@@ -92,7 +95,7 @@ test("preview orders support QR, manual lookup, in-memory transitions, idempoten
 test("preview activity and my orders stay behind service contracts", async () => {
   const services = createPreviewServices({ storage: new MemorySessionStorage() });
   const orders = await services.orders.listMine();
-  assert.deepEqual(new Set(orders.map((order) => order.source)), new Set(["trendhome", "outletperdele", "b2b"]));
+  assert.deepEqual(new Set(orders.map((order) => order.source)), new Set(["trendhome", "outletperdele", "trendyol"]));
   assert.ok(orders.some((order) => order.status === "in_progress"));
   assert.ok(orders.some((order) => order.status === "handed_over"));
   assert.equal((await services.activity.listMine({ range: "today" })).summary.inProgress, 3);
@@ -105,7 +108,7 @@ test("Preview listMine returns only orders with a direct employee relationship",
   const mine = await services.orders.listMine();
   const mineIds = new Set(mine.map((order) => order.id));
 
-  assert.deepEqual(mineIds, new Set(["order-61833", "order-61829", "order-b2b-1048"]));
+  assert.deepEqual(mineIds, new Set(["order-61833", "order-61829", "order-trendyol-1048"]));
   assert.equal(mine.every((order) => isEmployeeRelevantOrder(order, previewEmployee.employeeUuid)), true);
   assert.equal(mineIds.has("order-62001"), false);
   assert.equal(mineIds.has("order-62002"), false);
@@ -117,10 +120,10 @@ test("stage and department eligibility alone never make a Preview order visible"
   const otherEmployeeSameStage = previewOrderDatabase.find((order) => order.id === "order-62002");
   assert.ok(unassignedSameStage);
   assert.ok(otherEmployeeSameStage);
-  assert.equal(unassignedSameStage.currentStage.id, "waiting");
-  assert.equal(unassignedSameStage.nextStage?.id, previewEmployee.allowedStageIds[0]);
+  assert.equal(unassignedSameStage.productionStageId, "waiting");
+  assert.equal(getNextStage(previewProductionWorkflow, unassignedSameStage.productionStageId)?.id, previewEmployee.allowedStageIds[0]);
   assert.equal(isEmployeeRelevantOrder(unassignedSameStage, previewEmployee.employeeUuid), false);
-  assert.equal(otherEmployeeSameStage.currentStage.id, previewEmployee.allowedStageIds[0]);
+  assert.equal(otherEmployeeSameStage.productionStageId, previewEmployee.allowedStageIds[0]);
   assert.equal(isEmployeeRelevantOrder(otherEmployeeSameStage, previewEmployee.employeeUuid), false);
 });
 
@@ -140,7 +143,7 @@ test("My Orders views distinguish active, recent, and handed-over involvement", 
   const orders = await createPreviewServices({ storage: new MemorySessionStorage() }).orders.listMine();
   assert.deepEqual(orders.filter((order) => matchesMyOrdersView(order, "in_progress")).map((order) => order.id), ["order-61833"]);
   assert.equal(orders.filter((order) => matchesMyOrdersView(order, "recent")).length, 3);
-  assert.deepEqual(orders.filter((order) => matchesMyOrdersView(order, "handed_over")).map((order) => order.id), ["order-61829", "order-b2b-1048"]);
+  assert.deepEqual(orders.filter((order) => matchesMyOrdersView(order, "handed_over")).map((order) => order.id), ["order-61829", "order-trendyol-1048"]);
 });
 
 test("connection labels and primary navigation routes remain explicit", () => {

@@ -1,6 +1,8 @@
 import { StaffServiceError } from "../../domain/models";
 import { isEmployeeRelevantOrder } from "../../domain/orderRelation";
+import { getNextStage } from "../../domain/productionWorkflow";
 import { demoActivities, demoEmployee, demoOrders } from "../../mocks/fixtures";
+import { previewProductionWorkflow } from "../../mocks/productionWorkflow";
 import type { ActivityService, AuthService, EmployeeService, OrderService, ServiceBundle, Session } from "../contracts";
 
 const clone = <T,>(value: T): T => structuredClone(value);
@@ -51,11 +53,11 @@ const orderService: OrderService = {
     if (index < 0) throw new StaffServiceError("ORDER_NOT_FOUND");
     const current = orders[index];
     if (current.version !== input.expectedVersion) throw new StaffServiceError("ORDER_CHANGED");
-    if (!current.nextStage || !current.employeeAllowedAction) throw new StaffServiceError("UNAUTHORIZED_ACTION");
+    const nextStage = getNextStage(previewProductionWorkflow, current.productionStageId);
+    if (!nextStage || !current.employeeAllowedAction) throw new StaffServiceError("UNAUTHORIZED_ACTION");
     const updated = {
       ...current,
-      currentStage: current.nextStage,
-      nextStage: undefined,
+      productionStageId: nextStage.id,
       employeeAllowedAction: undefined,
       employeeRelation: {
         employeeUuid: demoEmployee.employeeUuid,
@@ -89,5 +91,5 @@ const activity: ActivityService = {
 
 export function createDemoServices(): ServiceBundle {
   orders = clone(demoOrders);
-  return { auth, employee, orders: orderService, activity, mode: "demo" };
+  return { auth, employee, orders: orderService, activity, workflow: { async getCurrent() { return clone(previewProductionWorkflow); } }, mode: "demo" };
 }

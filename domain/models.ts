@@ -1,4 +1,4 @@
-export type OrderSource = "trendhome" | "outletperdele" | "b2b" | "marketplace" | "unknown";
+export type OrderSource = "trendhome" | "outletperdele" | "trendyol" | "b2b" | "marketplace" | "unknown";
 
 export type Employee = {
   employeeUuid: string;
@@ -19,6 +19,13 @@ export type ProductionStage = {
   id: string;
   ordinal: number;
   label: string;
+};
+
+export type ProductionWorkflow = {
+  id: string;
+  name: string;
+  version: number;
+  stages: ProductionStage[];
 };
 
 export type ProductionItem = {
@@ -49,8 +56,8 @@ export type StaffOrder = {
   id: string;
   source: OrderSource;
   orderNumber: string;
-  currentStage: ProductionStage;
-  nextStage?: ProductionStage;
+  productionStageId: string;
+  sourceCommerceStatus?: { code: string; label: string };
   employeeAllowedAction?: { id: string; label: string };
   products: ProductionItem[];
   productionNotes?: string;
@@ -67,8 +74,10 @@ export type ActivityEntry = {
   orderId: string;
   orderNumber: string;
   source: OrderSource;
-  fromStage: string;
-  toStage: string;
+  fromStageId: string;
+  fromStageLabelSnapshot: string;
+  toStageId: string;
+  toStageLabelSnapshot: string;
   meters?: number;
 };
 
@@ -118,7 +127,8 @@ export type ServiceErrorCode =
   | "RATE_LIMITED"
   | "SERVICE_UNAVAILABLE"
   | "CSRF_INVALID"
-  | "CONFIGURATION_ERROR";
+  | "CONFIGURATION_ERROR"
+  | "WORKFLOW_UNAVAILABLE";
 
 export class StaffServiceError extends Error {
   constructor(public readonly code: ServiceErrorCode, message?: string) {

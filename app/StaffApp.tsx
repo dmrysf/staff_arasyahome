@@ -11,7 +11,7 @@ import { OrderDetailScreen } from "../features/orders/OrderDetailScreen";
 import { HistoryScreen } from "../features/history/HistoryScreen";
 import { ProfileScreen } from "../features/profile/ProfileScreen";
 import type { StaffRuntimeMode } from "../src/runtimeConfig";
-import { StaffServiceError } from "../domain/models";
+import { StaffServiceError, type ProductionWorkflow } from "../domain/models";
 import { toServiceError } from "../services/errors";
 import { canAccessRoute } from "../domain/permissions";
 import { shouldEndLocalSessionAfterLogout } from "../features/auth/logoutPolicy";
@@ -24,6 +24,9 @@ export function StaffApp({ initialRoute, mode, apiBaseUrl }: { initialRoute: str
   const [sessionCheckError, setSessionCheckError] = useState<StaffServiceError | null>(null);
   const [sessionNotice, setSessionNotice] = useState("");
   const [bootstrapKey, setBootstrapKey] = useState(0);
+  const [workflow, setWorkflow] = useState<ProductionWorkflow | null>(null);
+  const [workflowError, setWorkflowError] = useState<StaffServiceError | null>(null);
+  const [workflowKey, setWorkflowKey] = useState(0);
 
   const navigate = useCallback((path: string) => {
     if (window.location.pathname !== path) window.history.pushState({}, "", path);
@@ -33,6 +36,8 @@ export function StaffApp({ initialRoute, mode, apiBaseUrl }: { initialRoute: str
 
   const expireSession = useCallback((error?: StaffServiceError) => {
     setSession(null);
+    setWorkflow(null);
+    setWorkflowError(null);
     setSessionNotice(error?.code === "ACCOUNT_INACTIVE" ? "Contul nu este activ. Contactează managerul." : "Sesiunea a expirat. Autentifică-te din nou.");
     navigate("/login");
   }, [navigate]);
@@ -54,6 +59,20 @@ export function StaffApp({ initialRoute, mode, apiBaseUrl }: { initialRoute: str
   useEffect(() => services.auth.onSessionExpired(expireSession), [expireSession, services]);
 
   useEffect(() => {
+    if (!session) return;
+    const controller = new AbortController();
+    services.workflow.getCurrent({ signal: controller.signal })
+      .then(setWorkflow)
+      .catch((caught) => {
+        if (controller.signal.aborted) return;
+        const error = toServiceError(caught);
+        if (error.code === "ACCOUNT_INACTIVE" || error.code === "SESSION_EXPIRED" || error.code === "NO_SESSION") expireSession(error);
+        else setWorkflowError(error.code === "WORKFLOW_UNAVAILABLE" ? error : new StaffServiceError("WORKFLOW_UNAVAILABLE"));
+      });
+    return () => controller.abort();
+  }, [expireSession, services, session, workflowKey]);
+
+  useEffect(() => {
     const onPopState = () => setRoute(window.location.pathname);
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
@@ -66,6 +85,8 @@ export function StaffApp({ initialRoute, mode, apiBaseUrl }: { initialRoute: str
       if (!shouldEndLocalSessionAfterLogout(error)) throw error;
     }
     setSession(null);
+    setWorkflow(null);
+    setWorkflowError(null);
     setSessionNotice("");
     navigate("/login");
   }
@@ -76,15 +97,17 @@ export function StaffApp({ initialRoute, mode, apiBaseUrl }: { initialRoute: str
   if (checkingSession) return <main className="session-check" aria-live="polite"><span className="brand-mark">A</span><p>Se pregătește spațiul tău…</p></main>;
   if (sessionCheckError) return <main className="session-check" role="alert"><span className="brand-mark">A</span><p>{sessionCheckError.code === "CONFIGURATION_ERROR" ? "Serviciul de autentificare nu este configurat." : "Serviciul nu este disponibil momentan."}</p><button className="button button-secondary" type="button" onClick={() => { setCheckingSession(true); setSessionCheckError(null); setBootstrapKey((value) => value + 1); }}>Reîncearcă</button></main>;
   if (!session || guardedRoute === "/login") {
-    return <LoginScreen mode={mode} notice={sessionNotice} onLogin={async (input) => { const next = await services.auth.login(input); setSession(next); setSessionNotice(""); navigate("/"); return next; }} />;
+    return <LoginScreen mode={mode} notice={sessionNotice} onLogin={async (input) => { const next = await services.auth.login(input); setWorkflow(null); setWorkflowError(null); setSession(next); setSessionNotice(""); navigate("/"); return next; }} />;
   }
+  if (workflowError) return <main className="session-check" role="alert"><span className="brand-mark">A</span><p>Fluxul de producție nu este disponibil momentan.</p><button className="button button-secondary" type="button" onClick={() => { setWorkflowError(null); setWorkflowKey((value) => value + 1); }}>Reîncearcă</button></main>;
+  if (!workflow) return <main className="session-check" aria-live="polite"><span className="brand-mark">A</span><p>Se încarcă fluxul de producție…</p></main>;
 
   const orderId = guardedRoute.startsWith("/orders/") ? decodeURIComponent(guardedRoute.slice("/orders/".length)) : "";
   const immersive = guardedRoute === "/scan";
   let screen = <HomeScreen employee={session.employee} activityService={services.activity} navigate={navigate} />;
-  if (guardedRoute === "/scan") screen = <ScannerScreen service={services.orders} mode={mode} navigate={navigate} onSessionExpired={() => expireSession(new StaffServiceError("SESSION_EXPIRED"))} />;
-  else if (guardedRoute === "/orders") screen = <OrdersScreen service={services.orders} navigate={navigate} />;
-  else if (orderId) screen = <OrderDetailScreen orderId={orderId} service={services.orders} navigate={navigate} />;
+  if (guardedRoute === "/scan") screen = <ScannerScreen service={services.orders} workflow={workflow} mode={mode} navigate={navigate} onSessionExpired={() => expireSession(new StaffServiceError("SESSION_EXPIRED"))} />;
+  else if (guardedRoute === "/orders") screen = <OrdersScreen service={services.orders} workflow={workflow} navigate={navigate} />;
+  else if (orderId) screen = <OrderDetailScreen orderId={orderId} service={services.orders} workflow={workflow} navigate={navigate} />;
   else if (guardedRoute === "/history") screen = <HistoryScreen service={services.activity} navigate={navigate} />;
   else if (guardedRoute === "/profile") screen = <ProfileScreen employee={session.employee} mode={services.mode} onLogout={logout} />;
 

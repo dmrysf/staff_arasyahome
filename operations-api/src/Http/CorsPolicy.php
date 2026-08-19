@@ -57,7 +57,7 @@ final readonly class CorsPolicy
             'Access-Control-Allow-Credentials' => 'true',
             'Access-Control-Allow-Methods' => 'GET, POST, OPTIONS',
             'Access-Control-Allow-Headers' => 'Content-Type, Idempotency-Key, X-CSRF-Token, X-Request-ID',
-            'Access-Control-Expose-Headers' => 'X-Request-ID',
+            'Access-Control-Expose-Headers' => 'ETag, X-Request-ID',
             'Access-Control-Max-Age' => '600',
             'Vary' => 'Origin',
         ];

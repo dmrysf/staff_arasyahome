@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { OrderService } from "../../services/contracts";
-import type { ProductionItem, StaffOrder, StaffServiceError } from "../../domain/models";
+import type { ProductionItem, ProductionWorkflow, StaffOrder, StaffServiceError } from "../../domain/models";
 import { StaffServiceError as ServiceError } from "../../domain/models";
 import { SourceBadge } from "../../components/SourceBadge";
 import { StageLabel } from "../../components/StageLabel";
@@ -12,6 +12,7 @@ import { getUsableProductionProducts, requireProductionProducts } from "../../do
 import { selectQrDecoder, type QrDecoder } from "./qrDecoder";
 import type { StaffRuntimeMode } from "../../src/runtimeConfig";
 import { AppIcon } from "../../components/icons/AppIcon";
+import { getNextStage, getStageById } from "../../domain/productionWorkflow";
 
 type TorchCapabilities = MediaTrackCapabilities & { torch?: boolean };
 type TorchConstraintSet = MediaTrackConstraintSet & { torch?: boolean };
@@ -20,18 +21,20 @@ function requestId() {
   return globalThis.crypto?.randomUUID?.() ?? `staff-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-function ReviewContent({ order, item }: { order: StaffOrder; item: ProductionItem }) {
+function ReviewContent({ order, item, workflow }: { order: StaffOrder; item: ProductionItem; workflow: ProductionWorkflow }) {
+  const currentStage = getStageById(workflow, order.productionStageId);
+  const nextStage = getNextStage(workflow, order.productionStageId);
   return (
     <>
       <div className="sheet-handle" />
       <div className="review-heading"><div><SourceBadge source={order.source} /><h2>Comanda #{order.orderNumber}</h2></div><span className="verified-mark" aria-label="Comandă verificată">✓</span></div>
       <div className="review-product"><p className="eyebrow">Produs</p><strong>{item.name}</strong><span>{item.code}</span><dl>{item.color && <div><dt>Culoare</dt><dd>{item.color}</dd></div>}{item.dimensions && <div><dt>Dimensiune</dt><dd>{item.dimensions}</dd></div>}{item.meters != null && <div><dt>Cantitate</dt><dd>{item.meters} m</dd></div>}</dl></div>
-      <div className="stage-transition"><div><small>Etapa actuală</small><StageLabel stage={order.currentStage} muted /></div>{order.nextStage && <><span aria-hidden="true">↓</span><div><small>Următoarea etapă</small><StageLabel stage={order.nextStage} /></div></>}</div>
+      <div className="stage-transition"><div><small>Etapa actuală</small><StageLabel stage={currentStage} muted /></div>{nextStage && <><span aria-hidden="true">↓</span><div><small>Următoarea etapă</small><StageLabel stage={nextStage} /></div></>}</div>
     </>
   );
 }
 
-export function ScannerScreen({ service, mode, navigate, onSessionExpired }: { service: OrderService; mode: StaffRuntimeMode; navigate: (path: string) => void; onSessionExpired: () => void }) {
+export function ScannerScreen({ service, workflow, mode, navigate, onSessionExpired }: { service: OrderService; workflow: ProductionWorkflow; mode: StaffRuntimeMode; navigate: (path: string) => void; onSessionExpired: () => void }) {
   const [state, dispatch] = useReducer(scannerReducer, initialScannerState);
   const [manualOpen, setManualOpen] = useState(false);
   const [manualCode, setManualCode] = useState("");
@@ -167,6 +170,9 @@ export function ScannerScreen({ service, mode, navigate, onSessionExpired }: { s
         ? "Confirmi preluarea?"
         : "Confirmi actualizarea?"
     : "";
+  const transitionOrder = state.status === "confirming" || state.status === "submitting" ? state.order : null;
+  const transitionCurrentStage = transitionOrder ? getStageById(workflow, transitionOrder.productionStageId) : undefined;
+  const transitionNextStage = transitionOrder ? getNextStage(workflow, transitionOrder.productionStageId) : undefined;
 
   return (
     <main className="scanner-screen">
@@ -181,12 +187,12 @@ export function ScannerScreen({ service, mode, navigate, onSessionExpired }: { s
         {state.status === "resolving" && <div className="resolving-card" role="status"><span className="inline-spinner" /><strong>Se verifică comanda…</strong><small>Nu închide această fereastră.</small></div>}
       </div>
 
-      {state.status === "review" && reviewItem && <section className="bottom-sheet review-sheet"><ReviewContent order={state.order} item={reviewItem} /><button className="button button-primary button-large" type="button" onClick={() => dispatch({ type: "OPEN_CONFIRMATION" })}>{state.order.employeeAllowedAction?.label ?? "Continuă"}<span aria-hidden="true">→</span></button><button className="button button-secondary" type="button" onClick={() => navigate(`/orders/${state.order.id}`)}>Vezi detalii</button><button className="button button-link" type="button" onClick={reset}>Scanează alt cod</button></section>}
+      {state.status === "review" && reviewItem && <section className="bottom-sheet review-sheet"><ReviewContent order={state.order} item={reviewItem} workflow={workflow} /><button className="button button-primary button-large" type="button" onClick={() => dispatch({ type: "OPEN_CONFIRMATION" })}>{state.order.employeeAllowedAction?.label ?? "Continuă"}<span aria-hidden="true">→</span></button><button className="button button-secondary" type="button" onClick={() => navigate(`/orders/${state.order.id}`)}>Vezi detalii</button><button className="button button-link" type="button" onClick={reset}>Scanează alt cod</button></section>}
       {state.status === "review" && !reviewItem && <section className="bottom-sheet error-sheet"><ErrorState error={new ServiceError("ORDER_PRODUCTS_UNAVAILABLE")} compact onAction={reset} /></section>}
 
-      {(state.status === "confirming" || state.status === "submitting") && <section className="confirmation-layer" role="dialog" aria-modal="true" aria-labelledby="confirmation-title"><div className="confirmation-card"><span className="state-icon confirm-icon" aria-hidden="true">?</span><p className="eyebrow">Confirmare necesară</p><h2 id="confirmation-title">{confirmationTitle}</h2><p>Comanda #{state.order.orderNumber}</p><div className="confirm-transition"><StageLabel stage={state.order.currentStage} muted /><span aria-hidden="true">↓</span>{state.order.nextStage && <StageLabel stage={state.order.nextStage} />}</div><div className="confirmation-actions"><button className="button button-secondary" type="button" disabled={busy} onClick={() => dispatch({ type: "CANCEL_CONFIRMATION" })}>Anulează</button><button className="button button-primary" type="button" disabled={busy} onClick={submit}>{busy ? "Se procesează…" : "Confirmă"}</button></div>{busy && <small className="server-note">Așteptăm confirmarea serverului.</small>}</div></section>}
+      {(state.status === "confirming" || state.status === "submitting") && <section className="confirmation-layer" role="dialog" aria-modal="true" aria-labelledby="confirmation-title"><div className="confirmation-card"><span className="state-icon confirm-icon" aria-hidden="true">?</span><p className="eyebrow">Confirmare necesară</p><h2 id="confirmation-title">{confirmationTitle}</h2><p>Comanda #{state.order.orderNumber}</p><div className="confirm-transition"><StageLabel stage={transitionCurrentStage} muted /><span aria-hidden="true">↓</span>{transitionNextStage && <StageLabel stage={transitionNextStage} />}</div><div className="confirmation-actions"><button className="button button-secondary" type="button" disabled={busy} onClick={() => dispatch({ type: "CANCEL_CONFIRMATION" })}>Anulează</button><button className="button button-primary" type="button" disabled={busy} onClick={submit}>{busy ? "Se procesează…" : "Confirmă"}</button></div>{busy && <small className="server-note">Așteptăm confirmarea serverului.</small>}</div></section>}
 
-      {state.status === "success" && <section className="success-state"><span className="success-check"><AppIcon name="check" size={34} /></span><p className="eyebrow">Actualizare confirmată</p><h2>Comanda a fost actualizată</h2><StageLabel stage={state.order.currentStage} /><div><button className="button button-primary button-large" type="button" onClick={reset}>Scanează altă comandă</button><button className="button button-secondary" type="button" onClick={() => navigate(`/orders/${state.order.id}`)}>Vezi comanda</button></div></section>}
+      {state.status === "success" && <section className="success-state"><span className="success-check"><AppIcon name="check" size={34} /></span><p className="eyebrow">Actualizare confirmată</p><h2>Comanda a fost actualizată</h2><StageLabel stage={getStageById(workflow, state.order.productionStageId)} /><div><button className="button button-primary button-large" type="button" onClick={reset}>Scanează altă comandă</button><button className="button button-secondary" type="button" onClick={() => navigate(`/orders/${state.order.id}`)}>Vezi comanda</button></div></section>}
 
       {state.status === "error" && <section className="bottom-sheet error-sheet"><ErrorState error={state.error as StaffServiceError} compact onAction={() => { if (state.recovery === "login") onSessionExpired(); else { reset(); if (state.recovery === "manual") setManualOpen(true); } }} /><button className="button button-link" type="button" onClick={() => navigate("/")}>Înapoi acasă</button></section>}
     </main>

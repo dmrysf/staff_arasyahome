@@ -105,7 +105,7 @@ Invalid runtime or configuration paths return only the safe JSON configuration f
 
 ## Exact production rollout
 
-After V2.0.3 is pushed and `api-deploy` is regenerated:
+After V2.0.4 is pushed and `api-deploy` is regenerated:
 
 1. Confirm the existing `api.arasyahome.ro` document root remains `$HOME/api.arasyahome.ro`; do not change it.
 2. Confirm the cPanel Git repository tracks `api-deploy`.
@@ -120,7 +120,7 @@ After V2.0.3 is pushed and `api-deploy` is regenerated:
    - `$HOME/arasya-operations-api/current/src`
    - `$HOME/arasya-operations-api/current/bin`
    - `$HOME/arasya-operations-api/current/database`
-7. Verify `https://api.arasyahome.ro/health` first. Expected status is HTTP 200 with service `arasya-operations-api` and version `2.0.3`.
+7. Verify `https://api.arasyahome.ro/health` first. Expected status is HTTP 200 with service `arasya-operations-api` and version `2.0.4`. This proves runtime/database reachability only; it intentionally does not prove workflow seed readiness.
 8. Only after health succeeds, confirm PHP 8.2+ and extensions if needed:
 
     ```bash
@@ -128,7 +128,7 @@ After V2.0.3 is pushed and `api-deploy` is regenerated:
     php -m | grep -E 'pdo_mysql|mbstring|openssl'
     ```
 
-9. Production migration remains pending. Review the migration and back up any existing operational database, then run it explicitly only after health returns 200:
+9. Production migration and the canonical workflow seed remain explicit and pending after deployment. Review both ordered migrations, back up any existing operational database, then run them only after health returns 200:
 
     ```bash
     cd "$HOME/arasya-operations-api/current"
@@ -142,7 +142,7 @@ After V2.0.3 is pushed and `api-deploy` is regenerated:
     php bin/create-employee.php
     ```
 
-11. Test login, session, `/employees/me`, refresh rotation, and logout with the exact Staff Origin and a cookie jar.
+11. Test login, session, `/employees/me`, authenticated `/production/workflow` (including its ETag), refresh rotation, and logout with the exact Staff Origin and a cookie jar.
 12. Only after the API lifecycle succeeds, set `VITE_STAFF_API_BASE_URL=https://api.arasyahome.ro`.
 13. Keep `VITE_STAFF_PREVIEW_MODE=true` until real employee login is independently proven.
 14. Later set `VITE_STAFF_PREVIEW_MODE=false`, rebuild Staff, and test production login.
