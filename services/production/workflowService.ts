@@ -26,7 +26,7 @@ export function mapProductionWorkflow(value: unknown): ProductionWorkflow {
   const payload = objectValue(value);
   const metadata = objectValue(payload.workflow);
   if (!Array.isArray(payload.stages) || payload.stages.length === 0) throw new StaffServiceError("WORKFLOW_UNAVAILABLE");
-  const workflow: ProductionWorkflow = {
+  const workflow = {
     id: nonEmptyString(metadata.id),
     name: nonEmptyString(metadata.name),
     version: positiveInteger(metadata.version),
@@ -48,7 +48,10 @@ export function mapProductionWorkflow(value: unknown): ProductionWorkflow {
     previousOrdinal = stage.ordinal;
   }
   if (workflow.version === 1 && workflow.stages.length !== 14) throw new StaffServiceError("WORKFLOW_UNAVAILABLE");
-  return workflow;
+  return Object.freeze({
+    ...workflow,
+    stages: Object.freeze(workflow.stages.map((stage) => Object.freeze(stage))),
+  });
 }
 
 function readCache(cache: WorkflowCache): { etag?: string; workflow: ProductionWorkflow } | null {
@@ -65,17 +68,23 @@ function readCache(cache: WorkflowCache): { etag?: string; workflow: ProductionW
   }
 }
 
-const clone = <T,>(value: T): T => structuredClone(value);
-
 export function createProductionWorkflowService(transport: WorkflowTransport, cache: WorkflowCache): ProductionWorkflowService {
+  let memoryKnownGood: { etag?: string; workflow: ProductionWorkflow } | null = null;
+
+  function bestKnownGood() {
+    if (memoryKnownGood) return memoryKnownGood;
+    memoryKnownGood = readCache(cache);
+    return memoryKnownGood;
+  }
+
   return {
     async getCurrent(options) {
-      const knownGood = readCache(cache);
+      const knownGood = bestKnownGood();
       try {
         const response = await transport.get(knownGood?.etag, options?.signal);
         if (response.status === 304) {
           if (!knownGood) throw new StaffServiceError("WORKFLOW_UNAVAILABLE");
-          return clone(knownGood.workflow);
+          return knownGood.workflow;
         }
         if (!response.ok) throw await transport.failure(response);
         let payload: unknown;
@@ -83,12 +92,16 @@ export function createProductionWorkflowService(transport: WorkflowTransport, ca
         catch { throw new StaffServiceError("WORKFLOW_UNAVAILABLE"); }
         const workflow = mapProductionWorkflow(payload);
         const etag = response.headers.get("ETag") ?? undefined;
-        cache.write(JSON.stringify({ etag, payload }));
-        return clone(workflow);
+        const canonicalPayload = { workflow: { id: workflow.id, name: workflow.name, version: workflow.version }, stages: workflow.stages };
+        memoryKnownGood = { etag, workflow };
+        try { cache.write(JSON.stringify({ etag, payload: canonicalPayload })); }
+        catch { /* Valid in-memory continuity must survive unavailable browser storage. */ }
+        return workflow;
       } catch (caught) {
+        if (options?.signal?.aborted) throw caught;
         const error = caught instanceof StaffServiceError ? caught : new StaffServiceError("WORKFLOW_UNAVAILABLE");
         if (["SESSION_EXPIRED", "ACCOUNT_INACTIVE", "NO_SESSION"].includes(error.code)) throw error;
-        if (knownGood) return clone(knownGood.workflow);
+        if (knownGood) return knownGood.workflow;
         throw error;
       }
     },

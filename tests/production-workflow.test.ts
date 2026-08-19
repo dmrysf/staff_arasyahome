@@ -35,8 +35,9 @@ function payload(workflow: ProductionWorkflow = previewProductionWorkflow) {
 
 class MemoryWorkflowCache implements WorkflowCache {
   value: string | null = null;
+  writes = 0;
   read() { return this.value; }
-  write(value: string) { this.value = value; }
+  write(value: string) { this.writes += 1; this.value = value; }
 }
 
 test("Preview exposes the exact canonical 14-stage workflow from one catalog", () => {
@@ -98,10 +99,10 @@ test("commercial status changes never move the canonical production stage", () =
 test("production workflow mapping rejects malformed order, duplicate identity, and incomplete v1", () => {
   assert.deepEqual(mapProductionWorkflow(payload()).stages.map((stage) => stage.id), expectedStages.map(([id]) => id));
   const duplicate = structuredClone(payload());
-  duplicate.stages[1] = { ...duplicate.stages[1], id: duplicate.stages[0].id };
+  duplicate.stages = duplicate.stages.map((stage, index) => index === 1 ? { ...stage, id: duplicate.stages[0].id } : stage);
   assert.throws(() => mapProductionWorkflow(duplicate), (error: unknown) => error instanceof StaffServiceError && error.code === "WORKFLOW_UNAVAILABLE");
   const unordered = structuredClone(payload());
-  unordered.stages[2] = { ...unordered.stages[2], ordinal: 1 };
+  unordered.stages = unordered.stages.map((stage, index) => index === 2 ? { ...stage, ordinal: 1 } : stage);
   assert.throws(() => mapProductionWorkflow(unordered), (error: unknown) => error instanceof StaffServiceError && error.code === "WORKFLOW_UNAVAILABLE");
   const incomplete = payload({ ...previewProductionWorkflow, stages: previewProductionWorkflow.stages.slice(0, 13) });
   assert.throws(() => mapProductionWorkflow(incomplete), (error: unknown) => error instanceof StaffServiceError && error.code === "WORKFLOW_UNAVAILABLE");
@@ -118,9 +119,56 @@ test("validated workflow responses become last-known-good and support ETag 304",
     get: async (etag) => { seenEtags.push(etag); return responses.shift() as Response; },
     failure: async () => new StaffServiceError("SERVICE_UNAVAILABLE"),
   }, cache);
-  assert.equal((await service.getCurrent()).stages.length, 14);
-  assert.equal((await service.getCurrent()).stages[11]?.id, "quality-control");
+  const initial = await service.getCurrent();
+  const revalidated = await service.getCurrent();
+  assert.equal(initial.stages.length, 14);
+  assert.equal(revalidated.stages[11]?.id, "quality-control");
+  assert.strictEqual(revalidated, initial);
   assert.deepEqual(seenEtags, [undefined, '"workflow-v1"']);
+});
+
+test("in-memory last-known-good survives persistent-cache failure and avoids render churn", async () => {
+  let attempt = 0;
+  const cache: WorkflowCache = { read: () => null, write: () => { throw new DOMException("blocked", "SecurityError"); } };
+  const service = createProductionWorkflowService({
+    get: async () => {
+      attempt += 1;
+      if (attempt === 1) return new Response(JSON.stringify(payload()), { status: 200, headers: { ETag: '"A"' } });
+      throw new TypeError("offline");
+    },
+    failure: async () => new StaffServiceError("SERVICE_UNAVAILABLE"),
+  }, cache);
+  const initial = await service.getCurrent();
+  const fallback = await service.getCurrent();
+  assert.strictEqual(fallback, initial);
+  assert.equal(Object.isFrozen(initial), true);
+  assert.equal(Object.isFrozen(initial.stages), true);
+});
+
+test("malformed refresh never poisons cache and a new ETag updates only presentation data", async () => {
+  const cache = new MemoryWorkflowCache();
+  const renamed: ProductionWorkflow = {
+    ...previewProductionWorkflow,
+    stages: previewProductionWorkflow.stages.map((stage) => stage.id === "quality-control" ? { ...stage, label: "Verificare calitate" } : stage),
+  };
+  const responses = [
+    new Response(JSON.stringify(payload()), { status: 200, headers: { ETag: '"A"' } }),
+    new Response(JSON.stringify({ workflow: {}, stages: [] }), { status: 200, headers: { ETag: '"invalid"' } }),
+    new Response(JSON.stringify(payload(renamed)), { status: 200, headers: { ETag: '"B"' } }),
+  ];
+  const service = createProductionWorkflowService({
+    get: async () => responses.shift() as Response,
+    failure: async () => new StaffServiceError("SERVICE_UNAVAILABLE"),
+  }, cache);
+  const initial = await service.getCurrent();
+  const afterMalformed = await service.getCurrent();
+  assert.strictEqual(afterMalformed, initial);
+  assert.equal(cache.writes, 1);
+  const updated = await service.getCurrent();
+  assert.notStrictEqual(updated, initial);
+  assert.equal(getStageById(updated, "quality-control")?.label, "Verificare calitate");
+  assert.equal(getStageById(updated, "quality-control")?.id, "quality-control");
+  assert.equal(cache.writes, 2);
 });
 
 test("production keeps valid last-known-good on transient or malformed responses but fails closed on first load", async () => {

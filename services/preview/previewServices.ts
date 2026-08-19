@@ -200,7 +200,7 @@ export function createPreviewServices(options: PreviewServicesOptions = {}): Ser
     employee,
     orders: orderService,
     activity: { async listMine(input): Promise<ActivityPage> { return clone(activityPages[input.range]); } },
-    workflow: { async getCurrent() { return clone(previewProductionWorkflow); } },
+    workflow: { async getCurrent() { return previewProductionWorkflow; } },
     mode: "preview",
   };
 }

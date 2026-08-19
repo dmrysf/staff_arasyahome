@@ -161,6 +161,32 @@ test("session expiry from an authenticated request notifies the application exac
   assert.equal(notifications, 1);
 });
 
+test("session expiry during workflow revalidation remains terminal despite last-known-good support", async () => {
+  const { fetchImpl } = queuedFetch([
+    jsonResponse(sessionPayload),
+    jsonResponse({ error: { code: "SESSION_EXPIRED", message: "expired", requestId: "r" } }, 401),
+  ]);
+  const services = createProductionServices("https://api.arasyahome.ro", { fetchImpl, isOnline: () => true });
+  await services.auth.login({ username: "employee", password: "test-only-password" });
+  let notifications = 0;
+  services.auth.onSessionExpired(() => { notifications += 1; });
+  await assert.rejects(services.workflow.getCurrent(), (error: unknown) => error instanceof StaffServiceError && error.code === "SESSION_EXPIRED");
+  assert.equal(notifications, 1);
+});
+
+test("missing server session during workflow revalidation also ends local operational access", async () => {
+  const { fetchImpl } = queuedFetch([
+    jsonResponse(sessionPayload),
+    jsonResponse({ error: { code: "NO_SESSION", message: "missing", requestId: "r" } }, 401),
+  ]);
+  const services = createProductionServices("https://api.arasyahome.ro", { fetchImpl, isOnline: () => true });
+  await services.auth.login({ username: "employee", password: "test-only-password" });
+  let notifications = 0;
+  services.auth.onSessionExpired(() => { notifications += 1; });
+  await assert.rejects(services.workflow.getCurrent(), (error: unknown) => error instanceof StaffServiceError && error.code === "NO_SESSION");
+  assert.equal(notifications, 1);
+});
+
 test("frontend permission helpers are presentation hints with fail-closed route checks", () => {
   const employee = mapProductionEmployee(employeePayload);
   assert.equal(hasPermission(employee, "orders.scan"), true);

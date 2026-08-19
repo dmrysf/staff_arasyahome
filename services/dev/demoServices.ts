@@ -91,5 +91,5 @@ const activity: ActivityService = {
 
 export function createDemoServices(): ServiceBundle {
   orders = clone(demoOrders);
-  return { auth, employee, orders: orderService, activity, workflow: { async getCurrent() { return clone(previewProductionWorkflow); } }, mode: "demo" };
+  return { auth, employee, orders: orderService, activity, workflow: { async getCurrent() { return previewProductionWorkflow; } }, mode: "demo" };
 }

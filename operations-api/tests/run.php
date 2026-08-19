@@ -101,6 +101,18 @@ function canonicalWorkflowFixture(): ProductionWorkflow
     );
 }
 
+/** @param callable(ProductionStage): ProductionStage|null $stageMapper */
+function workflowVariant(?string $name = null, ?int $version = null, ?callable $stageMapper = null): ProductionWorkflow
+{
+    $canonical = canonicalWorkflowFixture();
+    return new ProductionWorkflow(
+        $canonical->id,
+        $name ?? $canonical->name,
+        $version ?? $canonical->version,
+        $stageMapper === null ? $canonical->stages : array_map($stageMapper, $canonical->stages),
+    );
+}
+
 /** @return array{AuthenticationService, MemoryEmployeeRepository, MemorySessionRepository, MemoryRateLimiter, MemoryAuditLogger, PasswordHasher, SessionTokenManager, MutableClock} */
 function authFixture(int $usernameLimit = 5, int $ipLimit = 30): array
 {
@@ -250,6 +262,59 @@ test('CSRF tokens are session-bound and exact-origin CORS never uses wildcard', 
     expectApi('ORIGIN_DENIED', fn () => $cors->requireUnsafeOrigin($missing));
 });
 
+test('production workflow preflight allows conditional ETag headers and denies arbitrary headers', function (): void {
+    $cors = new CorsPolicy(['https://staff.arasyahome.ro']);
+    $allowed = $cors->preflight(new Request(
+        'OPTIONS',
+        '/production/workflow',
+        [
+            'origin' => 'https://staff.arasyahome.ro',
+            'access-control-request-method' => 'GET',
+            'access-control-request-headers' => 'if-none-match,x-request-id',
+        ],
+        [],
+        '',
+        '127.0.0.1',
+        'cors-contract',
+        'workflow-preflight',
+    ));
+    expect($allowed !== null && $allowed->status === 204 && $allowed->payload === null);
+    expect(($allowed->headers['Access-Control-Allow-Origin'] ?? null) === 'https://staff.arasyahome.ro');
+    expect(($allowed->headers['Access-Control-Allow-Credentials'] ?? null) === 'true');
+    expect(str_contains($allowed->headers['Access-Control-Allow-Headers'] ?? '', 'If-None-Match'));
+    expect(str_contains($allowed->headers['Access-Control-Allow-Methods'] ?? '', 'GET'));
+    expect(str_contains($allowed->headers['Access-Control-Expose-Headers'] ?? '', 'ETag'));
+
+    expectApi('CORS_HEADER_DENIED', fn () => $cors->preflight(new Request(
+        'OPTIONS',
+        '/production/workflow',
+        [
+            'origin' => 'https://staff.arasyahome.ro',
+            'access-control-request-method' => 'GET',
+            'access-control-request-headers' => 'if-none-match,x-arbitrary-secret-header',
+        ],
+        [],
+        '',
+        '127.0.0.1',
+        'cors-contract',
+        'workflow-preflight-denied',
+    )));
+});
+
+test('workflow ETag is deterministic and changes with every API-visible semantic field', function (): void {
+    $canonical = canonicalWorkflowFixture();
+    expect($canonical->etag() === canonicalWorkflowFixture()->etag(), 'Equivalent workflows must have the same ETag.');
+    expect($canonical->etag() !== workflowVariant('Flux producție administrat')->etag(), 'Workflow name must affect ETag.');
+    expect($canonical->etag() !== workflowVariant(null, 2)->etag(), 'Workflow version must affect ETag.');
+    expect($canonical->etag() !== workflowVariant(null, null, static fn (ProductionStage $stage): ProductionStage => $stage->id === 'quality-control'
+        ? new ProductionStage($stage->id, $stage->ordinal, 'Verificare calitate')
+        : $stage)->etag(), 'Stage label must affect ETag.');
+    expect($canonical->etag() !== workflowVariant(null, null, static fn (ProductionStage $stage): ProductionStage => $stage->id === 'delivery'
+        ? new ProductionStage($stage->id, 15, $stage->label)
+        : $stage)->etag(), 'Stage ordinal must affect ETag.');
+    expect(str_starts_with($canonical->etag(), '"sha256-') && str_ends_with($canonical->etag(), '"'));
+});
+
 test('employee serialization allowlists safe fields and never exposes password hashes', function (): void {
     [, $employees] = authFixture();
     $employee = $employees->findByUuid('68ff2a20-a164-4ed8-8659-1872a37d2ced');
@@ -383,7 +448,7 @@ test('authenticated production workflow route returns the exact canonical catalo
     expect(($unauthenticated->payload['error']['code'] ?? null) === 'SESSION_EXPIRED');
 
     $health = $kernel->handle(new Request('GET', '/health', [], [], '', '127.0.0.1', 'workflow-test', 'health-stable'));
-    expect($health->status === 200 && ($health->payload['version'] ?? null) === '2.0.4');
+    expect($health->status === 200 && ($health->payload['version'] ?? null) === '2.0.5');
 });
 
 test('JSON auth input rejects malformed, oversized and unexpected payloads', function (): void {

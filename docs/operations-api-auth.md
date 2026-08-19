@@ -51,7 +51,7 @@ Production cookie policy:
 
 ## CSRF, CORS, and origins
 
-Unsafe requests require an exact configured `Origin`. Production initially allows only `https://staff.arasyahome.ro`. Development origins must be listed explicitly in non-production configuration. Credentialed wildcard CORS is never emitted, and preflight allows only `GET`, `POST`, and the Staff headers `Content-Type`, `Idempotency-Key`, `X-CSRF-Token`, and `X-Request-ID`.
+Unsafe requests require an exact configured `Origin`. Production initially allows only `https://staff.arasyahome.ro`. Development origins must be listed explicitly in non-production configuration. Credentialed wildcard CORS is never emitted, and preflight allows only `GET`, `POST`, and the Staff headers `Content-Type`, `Idempotency-Key`, `If-None-Match`, `X-CSRF-Token`, and `X-Request-ID`. `ETag` and `X-Request-ID` are exposed to the allowed browser origin.
 
 The API derives a CSRF token from the current opaque token using keyed HMAC. Staff receives that CSRF value during session bootstrap and keeps it only in adapter memory. Logout, refresh, and future authenticated mutations require `X-CSRF-Token`. Rotation changes both the session and CSRF value.
 

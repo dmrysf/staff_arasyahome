@@ -99,7 +99,7 @@ function createRequest(apiBaseUrl: string, options: ProductionServicesOptions, o
               ? "SERVICE_UNAVAILABLE"
               : "SERVER_ERROR";
     const error = new StaffServiceError(backendErrorCodes[backendCode] ?? fallback);
-    if ((error.code === "SESSION_EXPIRED" || error.code === "ACCOUNT_INACTIVE") && path !== "/auth/login" && path !== "/auth/session") {
+    if (["SESSION_EXPIRED", "NO_SESSION", "ACCOUNT_INACTIVE"].includes(error.code) && path !== "/auth/login" && path !== "/auth/session") {
       csrfToken = "";
       onSessionExpired(error);
     }
@@ -121,6 +121,7 @@ function createRequest(apiBaseUrl: string, options: ProductionServicesOptions, o
     try {
       return await fetchImpl(`${apiBaseUrl}${path}`, { ...init, credentials: "include", headers, signal });
     } catch (error) {
+      if (init.signal?.aborted) throw error;
       if (timeoutSignal.aborted || (error instanceof DOMException && error.name === "AbortError")) throw new StaffServiceError("REQUEST_TIMEOUT");
       if (!isOnline()) throw new StaffServiceError("NETWORK_UNAVAILABLE");
       throw new StaffServiceError("SERVICE_UNAVAILABLE");

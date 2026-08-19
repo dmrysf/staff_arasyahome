@@ -105,7 +105,7 @@ Invalid runtime or configuration paths return only the safe JSON configuration f
 
 ## Exact production rollout
 
-After V2.0.4 is pushed and `api-deploy` is regenerated:
+After V2.0.5 is pushed and `api-deploy` is regenerated:
 
 1. Confirm the existing `api.arasyahome.ro` document root remains `$HOME/api.arasyahome.ro`; do not change it.
 2. Confirm the cPanel Git repository tracks `api-deploy`.
@@ -120,7 +120,7 @@ After V2.0.4 is pushed and `api-deploy` is regenerated:
    - `$HOME/arasya-operations-api/current/src`
    - `$HOME/arasya-operations-api/current/bin`
    - `$HOME/arasya-operations-api/current/database`
-7. Verify `https://api.arasyahome.ro/health` first. Expected status is HTTP 200 with service `arasya-operations-api` and version `2.0.4`. This proves runtime/database reachability only; it intentionally does not prove workflow seed readiness.
+7. Verify `https://api.arasyahome.ro/health` first. Expected status is HTTP 200 with service `arasya-operations-api` and version `2.0.5`. This proves runtime/database reachability only; it intentionally does not prove workflow seed readiness.
 8. Only after health succeeds, confirm PHP 8.2+ and extensions if needed:
 
     ```bash
@@ -146,6 +146,18 @@ After V2.0.4 is pushed and `api-deploy` is regenerated:
 12. Only after the API lifecycle succeeds, set `VITE_STAFF_API_BASE_URL=https://api.arasyahome.ro`.
 13. Keep `VITE_STAFF_PREVIEW_MODE=true` until real employee login is independently proven.
 14. Later set `VITE_STAFF_PREVIEW_MODE=false`, rebuild Staff, and test production login.
+
+After API deployment, verify the real conditional-request preflight without an employee account:
+
+```bash
+curl -i -X OPTIONS \
+  "https://api.arasyahome.ro/production/workflow" \
+  -H "Origin: https://staff.arasyahome.ro" \
+  -H "Access-Control-Request-Method: GET" \
+  -H "Access-Control-Request-Headers: if-none-match,x-request-id"
+```
+
+Expect HTTP 204, the exact Staff origin, credential allowance, and `If-None-Match` in `Access-Control-Allow-Headers`. Authenticated ETag verification still requires a deliberately provisioned production employee; do not create one solely for this transport check.
 
 ## Database privileges and rollback
 

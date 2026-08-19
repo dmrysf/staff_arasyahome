@@ -16,16 +16,16 @@ export type Employee = {
 };
 
 export type ProductionStage = {
-  id: string;
-  ordinal: number;
-  label: string;
+  readonly id: string;
+  readonly ordinal: number;
+  readonly label: string;
 };
 
 export type ProductionWorkflow = {
-  id: string;
-  name: string;
-  version: number;
-  stages: ProductionStage[];
+  readonly id: string;
+  readonly name: string;
+  readonly version: number;
+  readonly stages: readonly ProductionStage[];
 };
 
 export type ProductionItem = {

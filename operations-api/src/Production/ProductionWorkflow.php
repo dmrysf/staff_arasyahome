@@ -33,7 +33,8 @@ final readonly class ProductionWorkflow
 
     public function etag(): string
     {
-        return '"' . hash('sha256', $this->id . ':' . $this->version) . '"';
+        $payload = json_encode($this->toArray(), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+        return '"sha256-' . hash('sha256', $payload) . '"';
     }
 
     /** @return array{workflow: array{id: string, name: string, version: int}, stages: list<array{id: string, ordinal: int, label: string}>} */
