@@ -38,15 +38,18 @@ final readonly class ConfigLoader
     ];
 
     /** @param array<string, scalar|null>|null $environment */
-    public function __construct(private ?array $environment = null)
+    public function __construct(
+        private ?array $environment = null,
+        private ?string $releaseRoot = null,
+    )
     {
     }
 
     /** @return array<string, string> */
     public function load(): array
     {
-        $home = trim($this->environmentValue('HOME') ?? '');
         $overridePath = trim($this->environmentValue('ARASYA_CONFIG_FILE') ?? '');
+        $home = $this->resolveHome($overridePath === '');
         $path = $this->selectPrivateFile($overridePath, $home);
         $privateValues = $path === null ? [] : $this->loadPrivateFile($path, $home);
 
@@ -62,6 +65,51 @@ final readonly class ConfigLoader
             }
         }
         return $values;
+    }
+
+    private function resolveHome(bool $required): string
+    {
+        $environmentHome = trim($this->environmentValue('HOME') ?? '');
+        if ($environmentHome !== '') {
+            $resolved = $this->resolvedDirectory($environmentHome);
+            if ($resolved === null) {
+                throw new RuntimeException('HOME could not be resolved safely.');
+            }
+            return $resolved;
+        }
+
+        $releaseRoot = $this->actualReleaseRoot();
+        $runtimeParent = dirname($releaseRoot);
+        if (basename($releaseRoot) === 'current' && basename($runtimeParent) === 'arasya-operations-api') {
+            $derivedHome = $this->resolvedDirectory(dirname($runtimeParent));
+            if ($derivedHome !== null && $derivedHome !== DIRECTORY_SEPARATOR) {
+                return $derivedHome;
+            }
+        }
+
+        if ($required) {
+            throw new RuntimeException('The private configuration home could not be resolved safely.');
+        }
+        return '';
+    }
+
+    private function actualReleaseRoot(): string
+    {
+        $candidate = $this->releaseRoot ?? dirname(__DIR__, 2);
+        $resolved = $this->resolvedDirectory($candidate);
+        if ($resolved === null) {
+            throw new RuntimeException('The API release root could not be resolved safely.');
+        }
+        return $resolved;
+    }
+
+    private function resolvedDirectory(string $candidate): ?string
+    {
+        if (!str_starts_with($candidate, DIRECTORY_SEPARATOR) || preg_match('#(?:^|/)\.{1,2}(?:/|$)#', $candidate) === 1) {
+            return null;
+        }
+        $resolved = realpath($candidate);
+        return $resolved !== false && is_dir($resolved) ? $resolved : null;
     }
 
     private function selectPrivateFile(string $overridePath, string $home): ?string
@@ -178,7 +226,7 @@ final readonly class ConfigLoader
             throw new RuntimeException('The private configuration path could not be resolved safely.');
         }
 
-        $forbiddenRoots = [dirname(__DIR__, 2)];
+        $forbiddenRoots = [$this->actualReleaseRoot()];
         if ($home !== '') {
             $home = rtrim($home, DIRECTORY_SEPARATOR);
             $forbiddenRoots[] = $home . '/arasya-operations-api/current';
