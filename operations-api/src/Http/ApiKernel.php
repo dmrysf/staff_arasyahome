@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Arasya\Operations\Http;
 
+use Arasya\Operations\Order\OperationalOrderController;
 use Arasya\Operations\Security\CookiePolicy;
 use Arasya\Operations\Support\StructuredLogger;
 use Throwable;
@@ -18,6 +19,7 @@ final readonly class ApiKernel
         private CookiePolicy $cookies,
         private RequestContext $context,
         private ?ProductionWorkflowController $workflow = null,
+        private ?OperationalOrderController $orders = null,
     ) {
     }
 
@@ -38,7 +40,8 @@ final readonly class ApiKernel
                 'POST /auth/refresh' => $this->auth->refresh($request),
                 'GET /employees/me' => $this->auth->employee($request),
                 'GET /production/workflow' => $this->workflow?->show($request) ?? throw new ApiException(503, 'WORKFLOW_UNAVAILABLE', 'Production workflow is not ready.'),
-                default => throw new ApiException(404, 'NOT_FOUND', 'API route was not found.'),
+                'GET /orders/mine' => $this->orders?->listMine($request) ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Orders API is not ready.'),
+                default => $this->matchDynamicRoutes($request),
             };
             $this->logger->log('info', 'http_request', $request->requestId, ['route' => $request->path, 'method' => $request->method, 'status' => $response->status, ...$this->context->logContext()]);
             return $this->secure($response, $request);
@@ -55,11 +58,21 @@ final readonly class ApiKernel
         }
     }
 
+    private function matchDynamicRoutes(Request $request): Response
+    {
+        if ($request->method === 'GET' && preg_match('#^/orders/([^/]+)$#', $request->path, $matches)) {
+            $globalIdString = urldecode($matches[1]);
+            return $this->orders?->show($request, $globalIdString) ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Orders API is not ready.');
+        }
+
+        throw new ApiException(404, 'NOT_FOUND', 'API route was not found.');
+    }
+
     private function secure(Response $response, Request $request): Response
     {
         return $response->withHeaders([
             ...$this->cors->headers($request->header('origin')),
-            'Cache-Control' => $response->headers['Cache-Control'] ?? 'no-store, private',
+            'Cache-Control' => $response->headers['Cache-Control'] ?? 'private, no-cache',
             'Pragma' => 'no-cache',
             'X-Content-Type-Options' => 'nosniff',
             'X-Frame-Options' => 'DENY',

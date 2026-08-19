@@ -63,6 +63,95 @@ export function mapProductionEmployee(value: unknown): Employee {
   };
 }
 
+export function mapProductionOrderItem(value: unknown): import("../../domain/models").ProductionItem {
+  const raw = objectValue(value);
+  const item: import("../../domain/models").ProductionItem = {
+    id: stringValue(raw.id),
+    name: stringValue(raw.name),
+    quantity: typeof raw.quantity === "number" ? raw.quantity : 0,
+  };
+  if (raw.code != null) item.code = stringValue(raw.code);
+  if (raw.color != null) item.color = stringValue(raw.color);
+  if (raw.variant != null) item.variant = stringValue(raw.variant);
+  if (raw.meters != null && typeof raw.meters === "number") item.meters = raw.meters;
+  if (raw.measurements != null) {
+    const rawMeas = objectValue(raw.measurements);
+    item.measurements = {};
+    if (typeof rawMeas.width === "number") item.measurements.width = rawMeas.width;
+    if (typeof rawMeas.height === "number") item.measurements.height = rawMeas.height;
+    if (typeof rawMeas.unit === "string" && ["mm", "cm", "m"].includes(rawMeas.unit)) {
+      item.measurements.unit = rawMeas.unit as "mm" | "cm" | "m";
+    }
+  }
+  return item;
+}
+
+export function mapProductionOrder(value: unknown): import("../../domain/models").StaffOrder {
+  const raw = objectValue(value);
+  const source = stringValue(raw.source);
+  const status = stringValue(raw.status);
+  
+  const mappedSource = ["trendhome", "outletperdele", "trendyol", "b2b", "marketplace"].includes(source)
+    ? (source as import("../../domain/models").OrderSource)
+    : "unknown";
+    
+  const mappedStatus = ["in_progress", "handed_over", "unavailable"].includes(status)
+    ? (status as "in_progress" | "handed_over" | "unavailable")
+    : "unavailable";
+
+  const order: import("../../domain/models").StaffOrder = {
+    id: stringValue(raw.id),
+    source: mappedSource,
+    orderNumber: stringValue(raw.orderNumber),
+    productionStageId: stringValue(raw.productionStageId),
+    products: Array.isArray(raw.products) ? raw.products.map(mapProductionOrderItem) : [],
+    status: mappedStatus,
+    updatedAt: stringValue(raw.updatedAt),
+    version: typeof raw.version === "number" ? raw.version : 1,
+  };
+
+  if (raw.sourceCommerceStatus != null) {
+    const scs = objectValue(raw.sourceCommerceStatus);
+    order.sourceCommerceStatus = { code: stringValue(scs.code), label: stringValue(scs.label) };
+  }
+  if (raw.productionNotes != null) order.productionNotes = stringValue(raw.productionNotes);
+  if (raw.acceptedAt != null) order.acceptedAt = stringValue(raw.acceptedAt);
+
+  if (raw.employeeRelation != null) {
+    const rel = objectValue(raw.employeeRelation);
+    const relType = stringValue(rel.type);
+    order.employeeRelation = {
+      employeeUuid: stringValue(rel.employeeUuid),
+      type: ["claimed", "assigned", "updated", "handover_in", "handover_out", "completed"].includes(relType) 
+        ? (relType as import("../../domain/models").EmployeeOrderRelationType) 
+        : "updated",
+      lastActionAt: stringValue(rel.lastActionAt),
+    };
+  }
+
+  if (raw.freshness != null) {
+    const fresh = objectValue(raw.freshness);
+    const freshStatus = stringValue(fresh.status);
+    order.freshness = {
+      status: ["fresh", "stale", "source_unavailable"].includes(freshStatus) 
+        ? (freshStatus as "fresh" | "stale" | "source_unavailable") 
+        : "source_unavailable",
+      sourceChangedAt: stringValue(fresh.sourceChangedAt),
+      lastSourceSeenAt: stringValue(fresh.lastSourceSeenAt),
+    };
+  }
+
+  return order;
+}
+
+export function mapOrderPage(value: unknown): import("../../domain/models").OrderPage {
+  const raw = objectValue(value);
+  return {
+    items: Array.isArray(raw.items) ? raw.items.map(mapProductionOrder) : [],
+    nextCursor: raw.nextCursor != null ? stringValue(raw.nextCursor) : undefined,
+  };
+}
+
 type ProductionAuthPayload = Session & { csrfToken: string };
 
 export function mapProductionSession(value: unknown): ProductionAuthPayload {
@@ -194,8 +283,13 @@ export function createProductionServices(apiBaseUrl: string, options: Production
   const orders: OrderService = {
     resolveQr: (token, requestOptions) => http.request("/orders/resolve-qr", { method: "POST", body: JSON.stringify({ token }), signal: requestOptions?.signal }),
     lookup: (code, requestOptions) => http.request(`/orders/lookup?code=${encodeURIComponent(code)}`, { signal: requestOptions?.signal }),
-    listMine: (requestOptions) => http.request("/orders/mine", { signal: requestOptions?.signal }),
-    getById: (id, requestOptions) => http.request(`/orders/${encodeURIComponent(id)}`, { signal: requestOptions?.signal }),
+    listMine: (requestOptions) => {
+      let q = "";
+      if (requestOptions?.cursor) q += `?cursor=${encodeURIComponent(requestOptions.cursor)}`;
+      if (requestOptions?.limit) q += (q ? "&" : "?") + `limit=${requestOptions.limit}`;
+      return http.request(`/orders/mine${q}`, { signal: requestOptions?.signal }, mapOrderPage);
+    },
+    getById: (id, requestOptions) => http.request(`/orders/${encodeURIComponent(id)}`, { signal: requestOptions?.signal }, mapProductionOrder),
     confirmStageTransition: (id, input, requestOptions) => http.request(`/orders/${encodeURIComponent(id)}/transition`, { method: "POST", body: JSON.stringify({ expectedVersion: input.expectedVersion }), headers: { "Idempotency-Key": input.idempotencyKey }, signal: requestOptions?.signal }),
   };
   const activity: ActivityService = {

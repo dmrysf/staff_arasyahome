@@ -18,6 +18,7 @@ final readonly class Request
         public string $ipAddress,
         public string $userAgent,
         public string $requestId,
+        public array $query = [],
     ) {
     }
 
@@ -29,6 +30,11 @@ final readonly class Request
     public function cookie(string $name): ?string
     {
         return isset($this->cookies[$name]) ? rawurldecode($this->cookies[$name]) : null;
+    }
+
+    public function query(string $name, ?string $default = null): ?string
+    {
+        return isset($this->query[$name]) && is_scalar($this->query[$name]) ? (string) $this->query[$name] : $default;
     }
 
     /** @return array<string, mixed> */

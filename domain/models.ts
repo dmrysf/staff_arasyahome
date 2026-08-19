@@ -31,9 +31,14 @@ export type ProductionWorkflow = {
 export type ProductionItem = {
   id: string;
   name: string;
-  code: string;
+  code?: string;
   color?: string;
   dimensions?: string;
+  measurements?: {
+    width?: number;
+    height?: number;
+    unit?: "mm" | "cm" | "m";
+  };
   meters?: number;
   quantity: number;
 };
@@ -65,7 +70,17 @@ export type StaffOrder = {
   acceptedAt?: string;
   updatedAt: string;
   status: "in_progress" | "handed_over" | "unavailable";
+  freshness?: {
+    status: "fresh" | "stale" | "source_unavailable";
+    sourceChangedAt: string;
+    lastSourceSeenAt: string;
+  };
   version: number;
+};
+
+export type OrderPage = {
+  items: StaffOrder[];
+  nextCursor?: string;
 };
 
 export type ActivityEntry = {

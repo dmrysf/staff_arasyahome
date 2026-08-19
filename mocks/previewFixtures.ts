@@ -27,6 +27,7 @@ export const previewOrders: StaffOrder[] = [
     employeeRelation: { employeeUuid: "EMP-PREVIEW-001", type: "claimed", lastActionAt: "2026-08-19T10:42:00+03:00" },
     updatedAt: "2026-08-19T10:42:00+03:00",
     status: "in_progress",
+    freshness: { status: "fresh", sourceChangedAt: "2026-08-19T10:41:00+03:00", lastSourceSeenAt: "2026-08-19T10:42:00+03:00" },
     version: 4,
   },
   {
@@ -40,6 +41,7 @@ export const previewOrders: StaffOrder[] = [
     employeeRelation: { employeeUuid: "EMP-PREVIEW-001", type: "updated", lastActionAt: "2026-08-19T10:17:00+03:00" },
     updatedAt: "2026-08-19T10:17:00+03:00",
     status: "handed_over",
+    freshness: { status: "stale", sourceChangedAt: "2026-08-19T09:48:00+03:00", lastSourceSeenAt: "2026-08-19T09:50:00+03:00" },
     version: 2,
   },
   {
@@ -54,6 +56,7 @@ export const previewOrders: StaffOrder[] = [
     employeeRelation: { employeeUuid: "EMP-PREVIEW-001", type: "handover_out", lastActionAt: "2026-08-19T09:52:00+03:00" },
     updatedAt: "2026-08-19T09:52:00+03:00",
     status: "handed_over",
+    freshness: { status: "source_unavailable", sourceChangedAt: "2026-08-18T14:12:00+03:00", lastSourceSeenAt: "2026-08-18T14:12:00+03:00" },
     version: 8,
   },
 ];
@@ -70,6 +73,7 @@ export const previewUnrelatedOrders: StaffOrder[] = [
     productionNotes: "Comandă fictivă disponibilă numai prin fluxul de scanare.",
     updatedAt: "2026-08-19T11:08:00+03:00",
     status: "in_progress",
+    freshness: { status: "fresh", sourceChangedAt: "2026-08-19T11:07:00+03:00", lastSourceSeenAt: "2026-08-19T11:08:00+03:00" },
     version: 1,
   },
   {
@@ -84,6 +88,7 @@ export const previewUnrelatedOrders: StaffOrder[] = [
     acceptedAt: "2026-08-19T10:58:00+03:00",
     updatedAt: "2026-08-19T10:58:00+03:00",
     status: "in_progress",
+    freshness: { status: "fresh", sourceChangedAt: "2026-08-19T10:57:00+03:00", lastSourceSeenAt: "2026-08-19T10:58:00+03:00" },
     version: 3,
   },
 ];

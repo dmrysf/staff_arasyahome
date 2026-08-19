@@ -148,7 +148,14 @@ export function createPreviewServices(options: PreviewServicesOptions = {}): Ser
   const orderService: OrderService = {
     async resolveQr(token) { return resolvePreviewCode(token); },
     async lookup(code) { return resolvePreviewCode(code); },
-    async listMine() { return clone(orders.filter((order) => isEmployeeRelevantOrder(order, previewEmployee.employeeUuid))); },
+    async listMine(options) { 
+      const filtered = orders.filter((order) => isEmployeeRelevantOrder(order, previewEmployee.employeeUuid));
+      const limit = options?.limit ?? 50;
+      const start = options?.cursor ? parseInt(options.cursor, 10) : 0;
+      const items = clone(filtered.slice(start, start + limit));
+      const nextCursor = start + limit < filtered.length ? String(start + limit) : undefined;
+      return { items, nextCursor };
+    },
     async getById(id) {
       const order = orders.find((item) => item.id === id);
       if (!order) throw new StaffServiceError("ORDER_NOT_FOUND");

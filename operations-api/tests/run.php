@@ -53,7 +53,9 @@ function test(string $name, Closure $callback): void
 function expect(bool $condition, string $message = 'Expectation failed.'): void
 {
     if (!$condition) {
-        throw new RuntimeException($message);
+        $trace = debug_backtrace();
+        $line = $trace[0]['line'];
+        throw new RuntimeException("$message at line $line");
     }
 }
 
@@ -506,6 +508,9 @@ test('authenticated production workflow route returns the exact canonical catalo
     $login = $auth->login('mehmet.yilmaz', 'correct horse battery staple', '127.0.0.1', 'workflow-test', 'workflow-login');
     $cookie = ['arasya_session' => rawurlencode($login->rawToken)];
     $response = $kernel->handle(new Request('GET', '/production/workflow', ['origin' => 'http://localhost:5173'], $cookie, '', '127.0.0.1', 'workflow-test', 'workflow-get'));
+    if ($response->status !== 200) {
+        var_dump($response);
+    }
     expect($response->status === 200);
     expect(($response->payload['workflow']['id'] ?? null) === 'curtain-production');
     expect(($response->payload['workflow']['version'] ?? null) === 1);
@@ -532,7 +537,7 @@ test('authenticated production workflow route returns the exact canonical catalo
         }
     };
     $invalidController = new ProductionWorkflowController(new ProductionWorkflowService($invalidRepository), $auth, $config, $context);
-    $invalidKernel = new ApiKernel($authController, new HealthController(new PDO('sqlite::memory:'), $clock), new CorsPolicy(['http://localhost:5173']), new StructuredLogger(static function (string $line): void {}), $cookies, $context, $invalidController);
+    $invalidKernel = new ApiKernel($authController, new HealthController(new PDO('sqlite::memory:'), $clock), new CorsPolicy(['http://localhost:5173']), new StructuredLogger(static function (string $line): void {}), $cookies, $context, $invalidController, null);
     $unavailable = $invalidKernel->handle(new Request('GET', '/production/workflow', ['origin' => 'http://localhost:5173'], $cookie, '', '127.0.0.1', 'workflow-test', 'workflow-invalid-catalog'));
     expect($unavailable->status === 503);
     expect(($unavailable->payload['error']['code'] ?? null) === 'WORKFLOW_UNAVAILABLE');
@@ -543,7 +548,7 @@ test('authenticated production workflow route returns the exact canonical catalo
     expect(($unauthenticated->payload['error']['code'] ?? null) === 'SESSION_EXPIRED');
 
     $health = $kernel->handle(new Request('GET', '/health', [], [], '', '127.0.0.1', 'workflow-test', 'health-stable'));
-    expect($health->status === 200 && ($health->payload['version'] ?? null) === '2.0.7');
+    expect($health->status === 200 && ($health->payload['version'] ?? null) === '2.1.0');
 });
 
 test('JSON auth input rejects malformed, oversized and unexpected payloads', function (): void {

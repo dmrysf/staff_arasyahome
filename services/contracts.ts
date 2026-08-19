@@ -1,4 +1,4 @@
-import type { ActivityPage, Employee, ProductionWorkflow, StaffOrder } from "../domain/models";
+import type { ActivityPage, Employee, OrderPage, ProductionWorkflow, StaffOrder } from "../domain/models";
 import type { StaffRuntimeMode } from "../src/runtimeConfig";
 
 export type Session = { employee: Employee; expiresAt: string };
@@ -23,7 +23,7 @@ export interface OrderService {
   resolveQr(token: string, options?: { signal?: AbortSignal }): Promise<StaffOrder>;
   lookup(code: string, options?: { signal?: AbortSignal }): Promise<StaffOrder>;
   /** Returns only orders with a direct relationship to the authenticated employee. Production enforcement belongs to the server. */
-  listMine(options?: { signal?: AbortSignal }): Promise<StaffOrder[]>;
+  listMine(options?: { cursor?: string; limit?: number; signal?: AbortSignal }): Promise<OrderPage>;
   getById(id: string, options?: { signal?: AbortSignal }): Promise<StaffOrder>;
   confirmStageTransition(
     orderId: string,
