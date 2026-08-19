@@ -93,7 +93,7 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          release_dir="$RUNNER_TEMP/operations-api-release"
+          release_dir="$RUNNER_TEMP/operations-api-release-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           mkdir -p "$release_dir/config" "$release_dir/scripts"
           cp operations-api/bootstrap.php "$release_dir/bootstrap.php"
           cp operations-api/.htaccess "$release_dir/.htaccess"
@@ -106,14 +106,16 @@ jobs:
           cp operations-api/scripts/cpanel-deploy-api.sh operations-api/scripts/validate-release.sh "$release_dir/scripts/"
           chmod +x "$release_dir/scripts/cpanel-deploy-api.sh" "$release_dir/scripts/validate-release.sh"
           printf '{\n  "sourceCommit": "%s",\n  "builtAt": "%s",\n  "version": "2.0.5"\n}\n' "$GITHUB_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$release_dir/release.json"
+          php -r '$r=json_decode(file_get_contents($argv[1]), true, flags: JSON_THROW_ON_ERROR); if (($r["sourceCommit"] ?? null) !== getenv("GITHUB_SHA") || ($r["version"] ?? null) !== "2.0.5") { throw new RuntimeException("API release metadata does not match source."); }' "$release_dir/release.json"
+          grep -Fq "'version' => '2.0.5'" "$release_dir/src/Http/HealthController.php"
           ARASYA_RELEASE_STRICT=1 /bin/bash "$release_dir/scripts/validate-release.sh" "$release_dir"
 
       - name: Publish isolated api-deploy branch
         shell: bash
         run: |
           set -Eeuo pipefail
-          release_dir="$RUNNER_TEMP/operations-api-release"
-          publish_dir="$RUNNER_TEMP/operations-api-deploy"
+          release_dir="$RUNNER_TEMP/operations-api-release-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          publish_dir="$RUNNER_TEMP/operations-api-deploy-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if git ls-remote --exit-code --heads origin api-deploy >/dev/null 2>&1; then
@@ -125,6 +127,8 @@ jobs:
             git -C "$publish_dir" rm -rf .
           fi
           rsync --archive --delete --exclude='.git' "$release_dir/" "$publish_dir/"
+          cmp "$release_dir/release.json" "$publish_dir/release.json"
+          cmp "$release_dir/src/Http/HealthController.php" "$publish_dir/src/Http/HealthController.php"
           git -C "$publish_dir" add --all
           if git -C "$publish_dir" diff --cached --quiet; then
             echo "api-deploy already matches the verified release."
