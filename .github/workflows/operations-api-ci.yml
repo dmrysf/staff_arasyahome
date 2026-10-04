@@ -92,9 +92,48 @@ jobs:
           ARASYA_TEST_DB_PASSWORD: root-test-password
         run: php operations-api/tests/mysql-operations-integration.php
 
+  mariadb-compatibility:
+    # Production cPanel runs MariaDB 10.11; the MySQL lifecycles must also pass there.
+    runs-on: ubuntu-latest
+    services:
+      mariadb:
+        image: mariadb:10.11
+        env:
+          MARIADB_ROOT_PASSWORD: root-test-password
+          MARIADB_DATABASE: arasya_operations_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      ARASYA_TEST_DB_HOST: 127.0.0.1
+      ARASYA_TEST_DB_PORT: "3306"
+      ARASYA_TEST_DB_NAME: arasya_operations_test
+      ARASYA_TEST_DB_USER: root
+      ARASYA_TEST_DB_PASSWORD: root-test-password
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+        with:
+          php-version: "8.2"
+          extensions: mbstring, pdo_mysql
+          coverage: none
+
+      - name: Run MariaDB integration lifecycle
+        run: php operations-api/tests/mysql-integration.php
+
+      - name: Run MariaDB Staff operations lifecycle
+        run: php operations-api/tests/mysql-operations-integration.php
+
   publish-api-release:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    needs: quality
+    needs: [quality, mariadb-compatibility]
     runs-on: ubuntu-latest
     permissions:
       contents: write
