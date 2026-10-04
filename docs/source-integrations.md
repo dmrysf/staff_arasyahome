@@ -2,6 +2,10 @@
 
 All external commerce data enters Arasya Operations first. Staff never contacts Trendhome, OutletPerdele, Trendyol or any marketplace; it only reads the normalized projection. Every source path ends in the same `SourceOrderSnapshot` → `OrderProjectionWriter` pipeline.
 
+## Inbound-only rule
+
+Operations source connectors are inbound-only unless an explicit, separately reviewed outbound integration is implemented. Arasya production transitions do not mutate WooCommerce order statuses, and `operations-api/tests/inbound-only-guard.php` enforces this in CI. See [production-control.md](production-control.md).
+
 ## Projection rules
 
 - Each event is identified by `(source, eventId)` and a deterministic SHA-256 hash of its normalized content (items sorted by line, numbers normalized). A replayed event returns `duplicate`; the same event ID with different content returns `SOURCE_EVENT_CONFLICT`.
