@@ -159,7 +159,7 @@
 .product-detail dd { margin: 0; font-size: .82rem; font-weight: 680; overflow-wrap: anywhere; }
 .production-note { padding: 19px; border-radius: var(--radius-lg); background: rgba(214,164,87,.065); }
 .production-note .eyebrow { color: var(--color-warning); }
-.production-note > p:last-child { margin: 0; color: #d8d1c5; font-size: .84rem; line-height: 1.5; }
+.production-note > p:last-child { margin: 0; color: #d8d1c5; font-size: .84rem; line-height: 1.5; white-space: pre-line; }
 .mini-timeline { display: flex; gap: 13px; }
 .mini-timeline > span { width: 9px; height: 9px; margin-top: 4px; border-radius: 50%; background: var(--color-accent); }
 .mini-timeline div { display: grid; gap: 5px; }

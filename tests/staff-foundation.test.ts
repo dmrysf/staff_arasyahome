@@ -171,3 +171,9 @@ test("production can never enable the demo adapter from the environment flag", (
   assert.equal(resolveRuntimeConfig({ isDevelopment: false, isProduction: true, demoFlag: "true", apiBaseUrl: "" }).mode, "production");
   assert.equal(resolveRuntimeConfig({ isDevelopment: true, isProduction: false, demoFlag: "true", apiBaseUrl: "" }).mode, "demo");
 });
+
+test("production notes keep one line per instruction", async () => {
+  const { readFileSync } = await import("node:fs");
+  const css = readFileSync(new URL("../styles/app.css", import.meta.url), "utf8");
+  assert.match(css, /\.production-note > p:last-child \{[^}]*white-space: pre-line;/);
+});
