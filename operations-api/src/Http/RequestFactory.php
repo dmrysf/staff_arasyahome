@@ -47,9 +47,10 @@ final readonly class RequestFactory
             path: rtrim($path, '/') ?: '/',
             headers: $headers,
             cookies: array_filter($_COOKIE, 'is_string'),
-            // Reading one byte beyond the accepted auth body cap prevents large
-            // chunked requests from being buffered in application memory.
-            body: (string) file_get_contents('php://input', false, null, 0, 8193),
+            // Reading one byte beyond the largest accepted body cap (signed source
+            // ingestion) prevents large chunked requests from being buffered in
+            // application memory. Each route enforces its own smaller limit.
+            body: (string) file_get_contents('php://input', false, null, 0, 262_145),
             ipAddress: $this->resolveIp($headers),
             userAgent: substr($headers['user-agent'] ?? 'unknown', 0, 512),
             requestId: $requestId,

@@ -19,10 +19,11 @@ final readonly class AuthMaintenance
         private int $rateLimitRetentionDays,
         private ?int $auditRetentionDays,
         private int $batchSize = self::DEFAULT_BATCH_SIZE,
+        private int $idempotencyRetentionDays = 30,
     ) {
     }
 
-    /** @return array{sessions: int, login_attempts: int, rate_limit_buckets: int, audit_events: int|null} */
+    /** @return array{sessions: int, login_attempts: int, rate_limit_buckets: int, audit_events: int|null, idempotency_keys: int, api_rate_limit_buckets: int} */
     public function run(bool $dryRun, ?DateTimeImmutable $now = null): array
     {
         $lock = new DatabaseAdvisoryLock($this->pdo, 'arasya_operations_maintenance');
@@ -39,6 +40,8 @@ final readonly class AuthMaintenance
                 'audit_events' => $this->auditRetentionDays === null
                     ? null
                     : $this->pruneSimple('auth_audit_events', 'event_id', 'created_at', $this->cutoff($now, $this->auditRetentionDays), $dryRun),
+                'idempotency_keys' => $this->pruneIdempotency($this->cutoff($now, $this->idempotencyRetentionDays), $dryRun),
+                'api_rate_limit_buckets' => $this->pruneApiRateLimits($rateCutoff, $dryRun),
             ];
         } finally {
             $lock->release();
@@ -104,6 +107,45 @@ final readonly class AuthMaintenance
                 $delete = $this->pdo->prepare('DELETE FROM auth_rate_limit_buckets WHERE dimension_type = :dimension_type AND dimension_hash = :dimension_hash');
                 $delete->bindValue(':dimension_type', (string) $row['dimension_type']);
                 $delete->bindValue(':dimension_hash', $row['dimension_hash'], PDO::PARAM_LOB);
+                $delete->execute();
+                $deleted += $delete->rowCount();
+            }
+        } while (count($rows) === $this->batchSize);
+        return $deleted;
+    }
+
+    private function pruneIdempotency(string $cutoff, bool $dryRun): int
+    {
+        return $this->pruneComposite('order_operation_idempotency', ['employee_uuid', 'idempotency_key'], 'created_at', $cutoff, $dryRun, false);
+    }
+
+    private function pruneApiRateLimits(string $cutoff, bool $dryRun): int
+    {
+        return $this->pruneComposite('api_rate_limit_buckets', ['bucket_scope', 'subject_hash'], 'updated_at', $cutoff, $dryRun, true);
+    }
+
+    /** @param list<string> $keys */
+    private function pruneComposite(string $table, array $keys, string $timestamp, string $cutoff, bool $dryRun, bool $binarySecondKey): int
+    {
+        $count = $this->pdo->prepare("SELECT COUNT(*) FROM {$table} WHERE {$timestamp} < :cutoff");
+        $count->execute(['cutoff' => $cutoff]);
+        $candidates = (int) $count->fetchColumn();
+        if ($dryRun) {
+            return $candidates;
+        }
+        $deleted = 0;
+        $keyList = implode(', ', $keys);
+        do {
+            $select = $this->pdo->prepare("SELECT {$keyList} FROM {$table} WHERE {$timestamp} < :cutoff ORDER BY {$timestamp} ASC LIMIT {$this->batchSize}");
+            $select->execute(['cutoff' => $cutoff]);
+            $rows = $select->fetchAll();
+            foreach ($rows as $row) {
+                if (!is_array($row)) {
+                    continue;
+                }
+                $delete = $this->pdo->prepare("DELETE FROM {$table} WHERE {$keys[0]} = :first AND {$keys[1]} = :second");
+                $delete->bindValue(':first', (string) $row[$keys[0]]);
+                $delete->bindValue(':second', $row[$keys[1]], $binarySecondKey ? PDO::PARAM_LOB : PDO::PARAM_STR);
                 $delete->execute();
                 $deleted += $delete->rowCount();
             }

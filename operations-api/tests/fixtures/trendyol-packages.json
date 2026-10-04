@@ -1,0 +1,50 @@
+{
+  "page": 0,
+  "size": 200,
+  "totalPages": 1,
+  "totalElements": 2,
+  "content": [
+    {
+      "id": 3318470214,
+      "orderNumber": "10847291463",
+      "orderDate": 1759564800000,
+      "lastModifiedDate": 1759568400123,
+      "status": "Picking",
+      "shipmentPackageStatus": "Picking",
+      "cargoProviderName": "Trendyol Express Marketplace",
+      "customerFirstName": "Fictiv",
+      "customerLastName": "Client",
+      "lines": [
+        {
+          "id": 4401183920,
+          "quantity": 2,
+          "productName": "Perdea tul alb 300x260",
+          "merchantSku": "PT-300-260",
+          "sku": "8681234567890",
+          "barcode": "8681234567890",
+          "productColor": "Alb",
+          "productSize": "300x260",
+          "price": 249.9,
+          "currencyCode": "RON"
+        }
+      ]
+    },
+    {
+      "id": 3318470215,
+      "orderNumber": "10847291464",
+      "orderDate": 1759564800000,
+      "lastModifiedDate": 1759568500000,
+      "status": "Cancelled",
+      "shipmentPackageStatus": "Cancelled",
+      "lines": [
+        {
+          "id": 4401183921,
+          "quantity": 1,
+          "productName": "Draperie blackout gri",
+          "merchantSku": "DB-GRI",
+          "productColor": "Gri"
+        }
+      ]
+    }
+  ]
+}

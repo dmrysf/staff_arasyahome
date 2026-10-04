@@ -29,12 +29,26 @@ final readonly class Config
         public int $loginAttemptRetentionDays = 30,
         public int $rateLimitRetentionDays = 7,
         public ?int $authAuditRetentionDays = null,
+        /** @var array<string, string> source key => webhook HMAC secret */
+        public array $sourceSecrets = [],
+        public int $sourceFreshSeconds = 900,
+        public int $sourceUnavailableSeconds = 3600,
+        public ?TrendyolCredentials $trendyol = null,
+        public int $idempotencyRetentionDays = 30,
     ) {
         if (strlen($this->appSecret) < 32) {
             throw new RuntimeException('ARASYA_APP_SECRET must contain at least 32 bytes.');
         }
         if ($this->allowedOrigins === []) {
             throw new RuntimeException('ARASYA_ALLOWED_ORIGINS must contain at least one exact origin.');
+        }
+        foreach ($this->sourceSecrets as $sourceKey => $secret) {
+            if (preg_match('/^[a-z0-9_-]{1,40}$/D', (string) $sourceKey) !== 1 || strlen($secret) < 32 || str_starts_with($secret, 'replace-with') || str_starts_with($secret, '<')) {
+                throw new RuntimeException('Source webhook secrets must contain at least 32 bytes.');
+            }
+        }
+        if ($this->sourceUnavailableSeconds < $this->sourceFreshSeconds) {
+            throw new RuntimeException('ARASYA_SOURCE_UNAVAILABLE_SECONDS must not be lower than ARASYA_SOURCE_FRESH_SECONDS.');
         }
         foreach ($this->allowedOrigins as $origin) {
             $parts = parse_url($origin);
@@ -71,6 +85,19 @@ final readonly class Config
             loginAttemptRetentionDays: self::positiveInt($values, 'ARASYA_LOGIN_ATTEMPT_RETENTION_DAYS', 30),
             rateLimitRetentionDays: self::positiveInt($values, 'ARASYA_RATE_LIMIT_RETENTION_DAYS', 7),
             authAuditRetentionDays: self::optionalPositiveInt($values, 'ARASYA_AUTH_AUDIT_RETENTION_DAYS'),
+            sourceSecrets: array_filter([
+                'trendhome' => self::value($values, 'ARASYA_SOURCE_SECRET_TRENDHOME', ''),
+                'outletperdele' => self::value($values, 'ARASYA_SOURCE_SECRET_OUTLETPERDELE', ''),
+            ], static fn (string $secret): bool => $secret !== ''),
+            sourceFreshSeconds: self::positiveInt($values, 'ARASYA_SOURCE_FRESH_SECONDS', 900),
+            sourceUnavailableSeconds: self::positiveInt($values, 'ARASYA_SOURCE_UNAVAILABLE_SECONDS', 3600),
+            trendyol: TrendyolCredentials::fromValues(
+                self::value($values, 'ARASYA_TRENDYOL_SELLER_ID', ''),
+                self::value($values, 'ARASYA_TRENDYOL_API_KEY', ''),
+                self::value($values, 'ARASYA_TRENDYOL_API_SECRET', ''),
+                self::value($values, 'ARASYA_TRENDYOL_API_BASE_URL', ''),
+            ),
+            idempotencyRetentionDays: self::positiveInt($values, 'ARASYA_IDEMPOTENCY_RETENTION_DAYS', 30),
         );
     }
 

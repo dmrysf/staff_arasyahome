@@ -72,6 +72,10 @@ mkdir($migrationFixture, 0700, true);
 copy(dirname(__DIR__) . '/database/migrations/001_auth_foundation.sql', $migrationFixture . '/001_auth_foundation.sql');
 try {
     $migrationRunner->migrate($migrationFixture);
+    $pdo->exec('DROP TABLE IF EXISTS api_rate_limit_buckets');
+    $pdo->exec('DROP TABLE IF EXISTS order_operation_idempotency');
+    $pdo->exec('DROP TABLE IF EXISTS order_activity_events');
+    $pdo->exec('DROP TABLE IF EXISTS order_qr_references');
     $pdo->exec('DROP TABLE IF EXISTS order_projection_receipts');
     $pdo->exec('DROP TABLE IF EXISTS employee_order_relations');
     $pdo->exec('DROP TABLE IF EXISTS operational_order_items');
@@ -81,9 +85,10 @@ try {
     $pdo->exec('DROP TABLE IF EXISTS production_workflows');
     $pdo->exec("DELETE FROM schema_migrations WHERE migration_name = '002_canonical_production_workflow.sql'");
     $pdo->exec("DELETE FROM schema_migrations WHERE migration_name = '003_operational_orders.sql'");
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name = '004_staff_operations.sql'");
     $applied = $migrationRunner->migrate(dirname(__DIR__) . '/database/migrations');
-    if ($applied !== ['002_canonical_production_workflow.sql', '003_operational_orders.sql']) {
-        throw new RuntimeException('An existing 001 schema did not apply only migrations 002 and 003.');
+    if ($applied !== ['002_canonical_production_workflow.sql', '003_operational_orders.sql', '004_staff_operations.sql']) {
+        throw new RuntimeException('An existing 001 schema did not apply only migrations 002, 003 and 004.');
     }
     if ($migrationRunner->migrate(dirname(__DIR__) . '/database/migrations') !== []) {
         throw new RuntimeException('A second migration run was not idempotent.');

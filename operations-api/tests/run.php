@@ -548,7 +548,7 @@ test('authenticated production workflow route returns the exact canonical catalo
     expect(($unauthenticated->payload['error']['code'] ?? null) === 'SESSION_EXPIRED');
 
     $health = $kernel->handle(new Request('GET', '/health', [], [], '', '127.0.0.1', 'workflow-test', 'health-stable'));
-    expect($health->status === 200 && ($health->payload['version'] ?? null) === '2.1.0');
+    expect($health->status === 200 && ($health->payload['version'] ?? null) === '2.2.0');
 });
 
 test('JSON auth input rejects malformed, oversized and unexpected payloads', function (): void {
@@ -993,6 +993,14 @@ test('auth maintenance dry-run is inert and bounded cleanup preserves current re
     $pdo->exec('CREATE TABLE auth_login_attempts (attempt_id INTEGER PRIMARY KEY, attempted_at TEXT)');
     $pdo->exec('CREATE TABLE auth_rate_limit_buckets (dimension_type TEXT, dimension_hash BLOB, updated_at TEXT, PRIMARY KEY (dimension_type, dimension_hash))');
     $pdo->exec('CREATE TABLE auth_audit_events (event_id TEXT PRIMARY KEY, created_at TEXT)');
+    $pdo->exec('CREATE TABLE order_operation_idempotency (employee_uuid TEXT, idempotency_key TEXT, created_at TEXT, PRIMARY KEY (employee_uuid, idempotency_key))');
+    $pdo->exec('CREATE TABLE api_rate_limit_buckets (bucket_scope TEXT, subject_hash BLOB, updated_at TEXT, PRIMARY KEY (bucket_scope, subject_hash))');
+    $pdo->exec("INSERT INTO order_operation_idempotency VALUES ('employee-a', 'old-key-0000000001', '2026-01-01 00:00:00'), ('employee-a', 'current-key-0000001', '2026-08-18 00:00:00')");
+    $insertApiBucket = $pdo->prepare('INSERT INTO api_rate_limit_buckets VALUES (:scope, :hash, :updated_at)');
+    $insertApiBucket->bindValue(':scope', 'order-lookup');
+    $insertApiBucket->bindValue(':hash', random_bytes(32), PDO::PARAM_LOB);
+    $insertApiBucket->bindValue(':updated_at', '2026-01-01 00:00:00');
+    $insertApiBucket->execute();
     $pdo->exec("INSERT INTO auth_sessions VALUES ('old-expired', '2026-01-01 00:00:00', NULL), ('old-revoked', '2027-01-01 00:00:00', '2026-01-01 00:00:00'), ('current', '2027-01-01 00:00:00', NULL)");
     $pdo->exec("INSERT INTO auth_login_attempts VALUES (1, '2026-01-01 00:00:00'), (2, '2026-08-18 00:00:00')");
     $oldHash = random_bytes(32);
@@ -1010,7 +1018,7 @@ test('auth maintenance dry-run is inert and bounded cleanup preserves current re
     $now = new DateTimeImmutable('2026-08-19T12:00:00Z');
     $maintenance = new AuthMaintenance($pdo, 30, 30, 7, null, 1);
     $dryRun = $maintenance->run(true, $now);
-    expect($dryRun === ['sessions' => 2, 'login_attempts' => 1, 'rate_limit_buckets' => 1, 'audit_events' => null]);
+    expect($dryRun === ['sessions' => 2, 'login_attempts' => 1, 'rate_limit_buckets' => 1, 'audit_events' => null, 'idempotency_keys' => 1, 'api_rate_limit_buckets' => 1]);
     expect((int) $pdo->query('SELECT COUNT(*) FROM auth_sessions')->fetchColumn() === 3);
     $deleted = $maintenance->run(false, $now);
     expect($deleted === $dryRun);
@@ -1018,6 +1026,8 @@ test('auth maintenance dry-run is inert and bounded cleanup preserves current re
     expect((int) $pdo->query('SELECT COUNT(*) FROM auth_login_attempts')->fetchColumn() === 1);
     expect((int) $pdo->query('SELECT COUNT(*) FROM auth_rate_limit_buckets')->fetchColumn() === 1);
     expect((int) $pdo->query('SELECT COUNT(*) FROM auth_audit_events')->fetchColumn() === 1);
+    expect($pdo->query('SELECT idempotency_key FROM order_operation_idempotency')->fetchAll(PDO::FETCH_COLUMN) === ['current-key-0000001']);
+    expect((int) $pdo->query('SELECT COUNT(*) FROM api_rate_limit_buckets')->fetchColumn() === 0);
     $auditMaintenance = new AuthMaintenance($pdo, 30, 30, 7, 90, 1);
     expect($auditMaintenance->run(false, $now)['audit_events'] === 1);
 });
@@ -1091,6 +1101,8 @@ test('GlobalOrderId formats and parses source identifiers strictly and determini
     // Test that fromString strictly checks colon separator
     expectRuntime(fn () => \Arasya\Operations\Order\GlobalOrderId::fromString('no-colon'));
 });
+
+require __DIR__ . '/OperationsUnitTests.php';
 
 foreach ($tests as [$name, $callback]) {
     try {

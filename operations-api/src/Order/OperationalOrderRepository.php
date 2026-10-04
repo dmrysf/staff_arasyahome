@@ -7,13 +7,18 @@ namespace Arasya\Operations\Order;
 interface OperationalOrderRepository
 {
     /**
-     * @param string $employeeUuid
-     * @param list<string> $allowedStageIds
-     * @param int $limit
-     * @param string|null $cursor
+     * Orders with an active direct relation to the employee, newest relation first.
+     *
      * @return array{items: list<OperationalOrder>, nextCursor: string|null}
      */
-    public function listMine(string $employeeUuid, array $allowedStageIds, int $limit, ?string $cursor): array;
+    public function listMine(string $employeeUuid, int $limit, ?string $cursor): array;
 
-    public function findMineByGlobalId(string $employeeUuid, array $allowedStageIds, string $globalOrderId): ?OperationalOrder;
+    /** Loads an order with only the given employee's relation attached. Visibility is decided by OrderAccessPolicy. */
+    public function findByGlobalId(string $employeeUuid, string $globalOrderId): ?OperationalOrder;
+
+    /** @return array{status: 'missing'|'revoked'|'expired'|'active', order: OperationalOrder|null} */
+    public function findByQrReference(string $employeeUuid, QrReference $reference): array;
+
+    /** @return list<OperationalOrder> exact lookup-code matches, bounded by $max */
+    public function findByLookupCode(string $employeeUuid, string $lookupCode, int $max): array;
 }

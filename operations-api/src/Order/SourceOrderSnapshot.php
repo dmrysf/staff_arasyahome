@@ -16,7 +16,7 @@ final readonly class SourceOrderSnapshot
         public int $sourceSchemaVersion,
         public DateTimeImmutable $sourceChangedAt,
         public string $orderNumber,
-        public string $productionStageId,
+        public ?string $productionStageId,
         public ?string $sourceCommerceStatusCode,
         public ?string $sourceCommerceStatusLabel,
         public ?string $productionNotes,
@@ -35,7 +35,7 @@ final readonly class SourceOrderSnapshot
         if ($this->orderNumber === '' || mb_strlen($this->orderNumber) > 120) {
             throw new \InvalidArgumentException('Invalid order number.');
         }
-        if ($this->productionStageId === '' || strlen($this->productionStageId) > 100 || preg_match('/^[a-z0-9_-]+$/', $this->productionStageId) !== 1) {
+        if ($this->productionStageId !== null && ($this->productionStageId === '' || strlen($this->productionStageId) > 100 || preg_match('/^[a-z0-9_-]+$/D', $this->productionStageId) !== 1)) {
             throw new \InvalidArgumentException('Invalid production stage ID.');
         }
         if ($this->sourceCommerceStatusCode !== null && mb_strlen($this->sourceCommerceStatusCode) > 100) {
