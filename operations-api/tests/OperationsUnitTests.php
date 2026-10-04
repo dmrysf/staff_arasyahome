@@ -303,3 +303,42 @@ test('WooCommerce connector payloads satisfy the Operations source contract and 
     $signed = arasya_ops_sign(str_repeat('k', 64), $body, 1790000000);
     (new SourceSignatureVerifier(['trendhome' => str_repeat('k', 64)]))->verify('trendhome', $signed['timestamp'], $signed['signature'], $body, new DateTimeImmutable('@1790000100'));
 });
+
+test('WC Kalkulator mapping turns real Trendhome L/H/manopera meta into Operations measurements and notes', function (): void {
+    if (!defined('ABSPATH')) {
+        define('ABSPATH', sys_get_temp_dir() . '/');
+    }
+    require_once dirname(__DIR__, 2) . '/integrations/woocommerce/arasya-operations-connector.php';
+    require_once dirname(__DIR__, 2) . '/integrations/woocommerce/arasya-operations-wc-kalkulator.php';
+    // Meta shape observed on live Trendhome orders (WC Kalkulator 1.6.1).
+    $item = static fn (array $meta, int $quantity, string $sku): object => new class ($meta, $quantity, $sku) {
+        public function __construct(private array $meta, private int $quantity, private string $sku) {}
+        public function get_product(): object { return new class ($this->sku) { public function __construct(private string $sku) {} public function get_sku(): string { return $this->sku; } }; }
+        public function get_meta(string $key, bool $single): mixed { return $this->meta[$key] ?? ''; }
+        public function get_quantity(): int { return $this->quantity; }
+    };
+    $voal = $item(['_wck_fields' => ['lungimea' => '4.0', 'inaltime' => '2.2', 'manopera' => '18:Manopera Rejansa Bara (Țeavă)', 'buc' => '0:1 buc.', '_files' => []], '_wck_stock_reduction_multiplier' => '4'], 2, 'SIENA-V3');
+    $plain = $item([], 1, 'ACC-1');
+    $explicit = $item(['_wck_fields' => '{"lungimea":"3","inaltime":"2.3","manopera":"13:Manopera Rejansa Normal 6cm","buc":"1:2 buc."}', '_wck_stock_reduction_multiplier' => '3'], 1, '3707-Visiniu');
+
+    $empty = ['width' => null, 'height' => null, 'unit' => null, 'meters' => null];
+    expect(arasya_wck_item_measurements($empty, $voal) === ['width' => 4.0, 'height' => 2.2, 'unit' => 'm', 'meters' => 8.0]);
+    expect(arasya_wck_item_measurements($empty, $plain) === $empty);
+    expect(arasya_wck_item_measurements($empty, $explicit) === ['width' => 3.0, 'height' => 2.3, 'unit' => 'm', 'meters' => 3.0]);
+    $kept = ['width' => 300.0, 'height' => 260.0, 'unit' => 'cm', 'meters' => 8.4];
+    expect(arasya_wck_item_measurements($kept, $voal) === $kept);
+
+    $order = new class ([$voal, $plain, $explicit]) {
+        public function __construct(private array $items) {}
+        public function get_items(): array { return $this->items; }
+    };
+    expect(arasya_wck_production_notes('Tiv dublu', $order) === "Tiv dublu\nLinia 1 (SIENA-V3): Manopera Rejansa Bara (Țeavă), 1 buc.\nLinia 3 (3707-Visiniu): Manopera Rejansa Normal 6cm, 2 buc.");
+    expect(arasya_wck_production_notes('', new class { public function get_items(): array { return []; } }) === '');
+
+    $snapshot = SourceOrderPayloadMapper::map('trendhome', ['schemaVersion' => 1, 'eventId' => 'wc-1-1', 'changedAt' => '2026-10-04T10:00:00.000000Z', 'order' => [
+        'id' => 1, 'number' => '1', 'status' => ['code' => 'processing', 'label' => 'Procesare'], 'availability' => 'active',
+        'notes' => arasya_wck_production_notes('', $order),
+        'items' => [['id' => 9, 'line' => 1, 'name' => 'Perdea Voal', 'sku' => 'SIENA-V3', 'quantity' => 2] + arasya_wck_item_measurements($empty, $voal)],
+    ]]);
+    expect($snapshot->items[0]->widthValue === 4.0 && $snapshot->items[0]->heightValue === 2.2 && $snapshot->items[0]->measurementUnit === 'm' && $snapshot->items[0]->meters === 8.0);
+});
