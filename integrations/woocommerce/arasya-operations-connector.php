@@ -59,6 +59,12 @@ function arasya_ops_now(): string
 function arasya_ops_build_payload(object $order, string $changedAt): array
 {
     $status = (string) $order->get_status();
+    // The status label is shown to the factory; use the site language, not the language of whoever saved the order.
+    $switched = function_exists('switch_to_locale') && function_exists('get_locale') && switch_to_locale(get_locale());
+    $statusLabel = function_exists('wc_get_order_status_name') ? (string) wc_get_order_status_name($status) : $status;
+    if ($switched && function_exists('restore_previous_locale')) {
+        restore_previous_locale();
+    }
     $items = [];
     $line = 0;
     foreach ($order->get_items() as $itemId => $item) {
@@ -104,7 +110,7 @@ function arasya_ops_build_payload(object $order, string $changedAt): array
         'order' => array_filter([
             'id' => (int) $order->get_id(),
             'number' => (string) $order->get_order_number(),
-            'status' => ['code' => $status, 'label' => function_exists('wc_get_order_status_name') ? (string) wc_get_order_status_name($status) : $status],
+            'status' => ['code' => $status, 'label' => $statusLabel],
             'availability' => in_array($status, ['cancelled', 'refunded', 'failed', 'trash'], true) ? 'cancelled' : 'active',
             'notes' => $notes === '' ? null : mb_substr($notes, 0, 4000),
             'acceptedAt' => $created === null ? null : $created->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d\TH:i:s\Z'),
