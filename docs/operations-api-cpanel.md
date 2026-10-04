@@ -29,4 +29,13 @@ Rollback verifies checksums/structure and atomically switches only the pointer. 
 
 Keep `$HOME/arasya-config/secrets.json` mode `600` and its directory `700`. Environment values override private-file values. No secret is copied into a release. Technical retention settings are optional and documented in [production-reliability.md](production-reliability.md).
 
-For the exact rollout, migration/status policy, readiness, post-deploy smoke, and rollback sequence, use [production-reliability.md](production-reliability.md). Production migration `002` and canonical seed status must be treated as unverified until checked on cPanel.
+Source delivery secrets (`ARASYA_SOURCE_SECRET_TRENDHOME`, `ARASYA_SOURCE_SECRET_OUTLETPERDELE`) and optional Trendyol credentials (`ARASYA_TRENDYOL_SELLER_ID`, `ARASYA_TRENDYOL_API_KEY`, `ARASYA_TRENDYOL_API_SECRET`) belong in the same private file. Generate each source secret with `openssl rand -hex 32`; values beginning with `replace-with` or `<` are rejected. Suggested cron entries:
+
+```cron
+17 3 * * * /bin/bash "$HOME/arasya-operations-api/bin/maintenance-active.sh" >> "$HOME/arasya-maintenance.log" 2>&1
+*/5 * * * * cd "$HOME/arasya-operations-api/releases/$(cat "$HOME/arasya-operations-api/active-release")" && php bin/sync-trendyol.php >> "$HOME/arasya-trendyol-sync.log" 2>&1
+```
+
+`php bin/order-qr.php --order=<source:id>` prints (or issues) an order's QR payload; `--rotate` revokes the old label.
+
+For the exact rollout, migration/status policy, readiness, post-deploy smoke, and rollback sequence, use [production-reliability.md](production-reliability.md). Production migrations `002`–`004` and canonical seed status must be treated as unverified until checked on cPanel.

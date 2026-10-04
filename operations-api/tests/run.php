@@ -508,9 +508,6 @@ test('authenticated production workflow route returns the exact canonical catalo
     $login = $auth->login('mehmet.yilmaz', 'correct horse battery staple', '127.0.0.1', 'workflow-test', 'workflow-login');
     $cookie = ['arasya_session' => rawurlencode($login->rawToken)];
     $response = $kernel->handle(new Request('GET', '/production/workflow', ['origin' => 'http://localhost:5173'], $cookie, '', '127.0.0.1', 'workflow-test', 'workflow-get'));
-    if ($response->status !== 200) {
-        var_dump($response);
-    }
     expect($response->status === 200);
     expect(($response->payload['workflow']['id'] ?? null) === 'curtain-production');
     expect(($response->payload['workflow']['version'] ?? null) === 1);

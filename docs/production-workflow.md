@@ -1,4 +1,4 @@
-# Arasya production workflow V2.1.0
+# Arasya production workflow V2.2.0
 
 ## Canonical identity and order
 
@@ -51,15 +51,22 @@ Workflow version remains the explicit domain revision. Future Dashboard mutation
 
 Orders store only `productionStageId`. UI labels, current/next stage, progress, and the mobile horizontal roadmap are derived from the loaded catalog. Activity entries retain both stable from/to IDs and label snapshots so historical text remains meaningful after a label rename.
 
-## Preview and external status boundaries
+## Employee production operations (V2.2.0)
 
-Preview owns one exact copy of the version-1 catalog. Its fictional examples place Trendhome at stage 2, OutletPerdele at stage 7, and Trendyol at stage 12. Trendyol is only a display/source identity in V2.1.0; no Trendyol authentication, API client, webhook, order import, or status synchronization exists.
+Production mutation is implemented and server-authoritative. A normal employee can only:
 
-`sourceCommerceStatus` is external commerce data and is independent of `productionStageId`. For example, a fictional Trendyol order can display commerce status `Picking` while its Arasya production stage is `quality-control`. The two must never be inferred from or overwrite one another.
+1. **claim** an unowned order at one of their allowed stages, then
+2. **complete the current stage**, which moves the order to the immediately next active canonical stage (N → N+1) and hands it over to that stage, or, at `delivery`, completes production.
 
-## Future source contract and management authority
+The browser sends only `expectedVersion` (the order's `productionVersion`) and an `Idempotency-Key`; it never sends a destination stage or employee identity. The server validates the active `curtain-production@1` catalog, the employee's permissions and allowed stages, ownership and version inside one locked transaction, writes an immutable activity event with stage label snapshots, and only then reports success. Stage skipping, backwards moves and offline mutation are impossible. If the active workflow fails structural validation, mutations return `WORKFLOW_UNAVAILABLE` and nothing changes. Completed production keeps stage `delivery`, sets `productionCompletedAt`, and is shown with the existing `handed_over` status. Route, error and concurrency details are in [staff-operations-api.md](staff-operations-api.md).
 
-Trendhome, OutletPerdele, Trendyol, and every future connected source enter this one workflow. Staff never contacts those systems directly and never owns a source-specific roadmap. A future first-party source payload is expected to identify production explicitly:
+Exceptions (moving an order back, reassigning a stuck order, skipping a stage) are manager decisions and are intentionally not available in Staff; they belong to the future Dashboard and must use the same audited transaction model.
+
+## Commerce status and source boundaries
+
+`sourceCommerceStatus` is external commerce data and is independent of `productionStageId`. For example, a Trendyol package can show commerce status `Picking` while its Arasya production stage is `quality-control`. Commerce status never moves production, and commerce-only updates never change `productionVersion`, so they cannot invalidate an employee's confirmation.
+
+Trendhome, OutletPerdele, Trendyol and future sources all enter this one workflow through the Operations projection; Staff never contacts them and never owns a source-specific roadmap. A source may identify production explicitly:
 
 ```json
 {
@@ -72,10 +79,10 @@ Trendhome, OutletPerdele, Trendyol, and every future connected source enter this
 }
 ```
 
-Operations trusts `stageId`, not `stageLabel`; the label is diagnostic only. There is no fuzzy, translated, case-insensitive, similarity, or AI stage matching. A future unknown source stage must produce a typed `SOURCE_STAGE_UNKNOWN`, retain the last valid production state, and never guess or auto-create a stage. A commerce-status change does not advance production unless an explicit future server-side business rule says so.
+Operations trusts `stageId`, not `stageLabel`; the label is diagnostic only. There is no fuzzy, translated, case-insensitive, similarity, or AI stage matching. An unknown or inactive source stage returns `SOURCE_STAGE_UNKNOWN`, keeps the last valid production state and never auto-creates a stage. An explicit source stage can only move an order forward and only until the first Operations action; afterwards Operations alone owns production. Orders without an explicit stage start at `waiting`. Full rules, signing, freshness and adapters are in [source-integrations.md](source-integrations.md).
 
-`dashboard.arasyahome.ro` is intentionally not implemented here. It will later manage employees, roles, departments, permissions, production labels, controlled workflow configuration/version increments, exceptions, and analytics. Any label, add/remove/deactivate, or reorder mutation must increment workflow version transactionally while stable IDs remain permanent.
+Preview owns one exact copy of the version-1 catalog and the same claim/complete rules in memory. Its fictional examples place Trendhome at stage 2, OutletPerdele at stage 7, and Trendyol at stage 12.
 
-Future normal employee mutation is immediately next active stage only (N → N+1), validated server-side against the current workflow with operation version and idempotency. Employees cannot jump stages; exceptions require future manager authority. Operations commits centrally first, then future source synchronization can run asynchronously so a temporary website failure does not block factory work. No mutation endpoint or outbox is implemented in V2.1.0.
+## Management authority
 
-V2.1 remains responsible for normalized real orders, Trendhome/Outlet source nodes, Trendyol adapter architecture, resilient read-only projections, employee-order relationships, `/orders/mine`, source drift protection, and later QR references using `productionStageId`.
+`dashboard.arasyahome.ro` is intentionally not implemented here. It will later manage employees, roles, departments, permissions, production labels, controlled workflow configuration/version increments, exceptions, and analytics. Any label, add/remove/deactivate, or reorder mutation must increment workflow version transactionally while stable IDs remain permanent. Operations commits production centrally first; source synchronization never blocks factory work.

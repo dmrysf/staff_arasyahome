@@ -17,6 +17,10 @@ The browser is never an identity or authorization authority. Every protected req
 | `POST` | `/auth/logout` | Revoke a valid server session and clear the cookie; already-invalid sessions are idempotent success |
 | `GET` | `/employees/me` | Return the employee derived from the current session |
 | `GET` | `/production/workflow` | Return the active canonical workflow and ordered stages with ETag support |
+| `GET` | `/orders/mine`, `/orders/{id}`, `/orders/lookup` | Visible orders for the session employee |
+| `POST` | `/orders/resolve-qr`, `/orders/{id}/claim`, `/orders/{id}/transition` | QR resolution and production mutations (CSRF, idempotency) |
+| `GET` | `/activity/mine` | Persisted activity of the session employee |
+| `POST` | `/integrations/sources/{source}/orders`, `…/heartbeat` | Signed server-to-server source delivery (no cookies) |
 
 Success responses for login/session/refresh contain an allowlisted employee representation, absolute `expiresAt`, and a session-bound `csrfToken`. They never contain password hashes or a raw session token. Errors use `{ "error": { "code", "message", "requestId" } }` and authentication responses use `Cache-Control: no-store`.
 
@@ -28,7 +32,7 @@ The initial API remains unversioned to match the established Staff adapter. Rout
 
 `employee_uuid` is the permanent canonical identity. Username, employee code, display name, department, and role may change. Employees are deactivated (`inactive` or `suspended`) rather than deleted so security and future operations audit remains attributable.
 
-Reference tables normalize departments, roles, permissions, role-permission links, employee stage access, workflows, and workflow stages. Stage identifiers are opaque stable values; Romanian labels never become authorization keys. Employee-stage reads join the active canonical catalog so legacy unknown values do not grant access, while employee creation rejects unknown stage IDs. The initial employee role receives the current Staff vocabulary: `orders.scan`, `orders.view_mine`, `orders.claim`, `orders.advance_stage`, `orders.handover`, `history.view_mine`, and `profile.view_self`. Order endpoints remain deferred.
+Reference tables normalize departments, roles, permissions, role-permission links, employee stage access, workflows, and workflow stages. Stage identifiers are opaque stable values; Romanian labels never become authorization keys. Employee-stage reads join the active canonical catalog so legacy unknown values do not grant access, while employee creation rejects unknown stage IDs. The initial employee role receives the current Staff vocabulary: `orders.scan`, `orders.view_mine`, `orders.claim`, `orders.advance_stage`, `orders.handover`, `history.view_mine`, and `profile.view_self`. Order endpoints enforce these permissions server-side (see [staff-operations-api.md](staff-operations-api.md)).
 
 Permissions are resolved from current database state on each authenticated request. Inactive roles return no permissions at repository level. The centralized authorization service independently denies inactive employees, roles, departments, absent permissions, and unknown permission keys by default. A role or department status change therefore invalidates operational access on the next request without waiting for session touch.
 
@@ -53,7 +57,7 @@ Production cookie policy:
 
 Unsafe requests require an exact configured `Origin`. Production initially allows only `https://staff.arasyahome.ro`. Development origins must be listed explicitly in non-production configuration. Credentialed wildcard CORS is never emitted, and preflight allows only `GET`, `POST`, and the Staff headers `Content-Type`, `Idempotency-Key`, `If-None-Match`, `X-CSRF-Token`, and `X-Request-ID`. `ETag` and `X-Request-ID` are exposed to the allowed browser origin.
 
-The API derives a CSRF token from the current opaque token using keyed HMAC. Staff receives that CSRF value during session bootstrap and keeps it only in adapter memory. Logout, refresh, and future authenticated mutations require `X-CSRF-Token`. Rotation changes both the session and CSRF value.
+The API derives a CSRF token from the current opaque token using keyed HMAC. Staff receives that CSRF value during session bootstrap and keeps it only in adapter memory. Logout, refresh, QR resolution, claim and transition require `X-CSRF-Token`. Rotation changes both the session and CSRF value.
 
 ## Rate limits, audit, and request tracing
 
@@ -71,6 +75,6 @@ Runtime secrets use `ARASYA_DB_*`, mandatory `ARASYA_APP_SECRET`, exact `ARASYA_
 
 Runtime DB users need only CRUD rights on API tables; schema migration can use a separately controlled account. Migrations are explicit CLI operations and production backups are required before future migrations affecting real data. Checksummed releases are staged privately under `$HOME/arasya-operations-api/releases/`; compatible public bootstrap files are atomically installed before the `active-release` pointer switches.
 
-## Future V2.1 boundary
+## Order authorization
 
-`GET /orders/mine` will derive `employee_uuid` exclusively from the authenticated session and execute a server-side relevance query. The browser will never choose an employee UUID. WooCommerce adapters, QR resolution, order reads, transitions, handovers, and order audit remain deferred to V2.1 or later.
+Every order and activity route derives `employee_uuid` exclusively from the session and executes server-side visibility and authorization: relation-based `/orders/mine`, relation-or-allowed-stage visibility for reads and QR/lookup, and ownership plus allowed stage plus permission for claim and transition. Objects outside that scope are reported as `ORDER_NOT_FOUND`. Source delivery routes are authenticated by per-source HMAC signatures instead of cookies and are exempt from browser Origin checks because they carry no browser credentials. Rejected order mutations are written to this audit as `ORDER_CLAIM_DENIED` / `ORDER_TRANSITION_DENIED`; committed production work is recorded in the separate immutable `order_activity_events`.

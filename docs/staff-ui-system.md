@@ -30,7 +30,9 @@ List payloads may include a compact `employeeRelation` summary with the relation
 
 Preview Mode deliberately contains unassigned and other-employee fixtures at relevant stages. `PreviewServices.listMine()` excludes them. Scanning and successfully claiming an unassigned Preview order adds a relation in memory and makes it appear in My Orders. This proves product behavior only; it is not authorization.
 
-The future production contract is server-authoritative:
+Order screens show exactly one primary action supplied by the server (`Preia comanda`, `Finalizează etapa` or `Finalizează producția`) behind an explicit confirmation dialog with the current and next stage. When no action is allowed, a short Romanian notice explains why (colleague owns it, stage not allocated, production finished, cancelled at source). Stale or unavailable source data shows a notice without blocking production. Buttons disable while a request is in flight; success appears only after the server confirms.
+
+The production contract is server-authoritative:
 
 ```text
 authenticated employee session

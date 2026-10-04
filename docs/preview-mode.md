@@ -30,9 +30,9 @@ These are UX-test inputs, not a secret or security credential. Do not create a G
 
 PreviewServices is separate from both local demo services and production HTTP services. It supplies the fictional employee Ali Demo, fictional Romanian activity, and fictional Trendhome, OutletPerdele, and Trendyol orders through the existing service contracts. QR/manual codes include `61833`, `61829`, `TY-1048`, and `arasya:61833`.
 
-Preview uses one exact version-1 14-stage catalog: Trendhome order `61833` is at `material-preparation` (2), OutletPerdele `61829` at `side-hem` (7), and fictional Trendyol `TY-1048` at `quality-control` (12). The Trendyol badge and fictional commerce status are UI fixtures only; no Trendyol integration exists.
+Preview uses one exact version-1 14-stage catalog: Trendhome order `61833` is at `material-preparation` (2), OutletPerdele `61829` at `side-hem` (7), and fictional Trendyol `TY-1048` at `quality-control` (12). The Trendyol badge and fictional commerce status are UI fixtures only; Preview never contacts the real Trendyol adapter.
 
-Stage transitions preserve order version and idempotency checks but modify only the adapter's in-memory fixture state. Preview Mode sends no authentication, order, activity, or mutation request to Staff APIs, WooCommerce, Trendhome, or OutletPerdele. It creates no offline production mutation queue.
+Preview uses the same rules as the Operations API through `services/simulatedOperations.ts`: orders are visible by relation or allowed stage, an order must be claimed before its stage is completed, completion moves exactly one stage forward, and `productionVersion` and idempotency keys are checked. Order `62001` can be claimed and `62002` shows a colleague's claim. Changes affect only the adapter's in-memory fixture state. Preview Mode sends no authentication, order, activity, or mutation request to Staff APIs, WooCommerce, Trendhome, or OutletPerdele. It creates no offline production mutation queue.
 
 An authenticated preview session stores only an expiry timestamp under `arasya_staff_preview_session` in `sessionStorage`. The marker expires after eight hours and is removed immediately on logout. Passwords, raw credentials, full sessions, order data, and tokens are never persisted. Production mode does not read or use this marker.
 

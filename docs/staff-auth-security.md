@@ -18,7 +18,9 @@
 - cPanel secrets live in `$HOME/arasya-config/secrets.json`, outside runtime and both public roots. Environment and canonical keys have deterministic precedence; `ARASYA_APP_SECRET` has no fallback.
 - API runtime deploys independently to checksummed `$HOME/arasya-operations-api/releases/<source-sha>` directories and activates through the validated `active-release` pointer; only atomic public bootstrap files enter `$HOME/api.arasyahome.ro`. Deployment never touches secrets or runs migrations.
 - Preview and Demo remain isolated adapters. `demo/demo` has no special meaning to the production API.
-- Future `/orders/mine` and every order mutation must derive identity from the session and authorize server-side.
+- `/orders/mine`, order reads, QR/lookup, claim, transition and `/activity/mine` derive identity from the session and authorize server-side; other employees' orders are reported as not found.
+- Production mutations require CSRF, an exact Origin, an `Idempotency-Key` and `expectedVersion`; the server chooses the next stage and reports success only after commit. Staff has no offline mutation queue and the service worker never handles API requests.
+- Source websites authenticate with per-source HMAC secrets that exist only in Operations private configuration and the site's `wp-config.php`; nothing source-related is present in Vite variables or the browser bundle (checked by `scripts/verify-build.mjs`).
 
 ## Threat review
 

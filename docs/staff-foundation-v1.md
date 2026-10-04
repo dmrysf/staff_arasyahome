@@ -1,4 +1,4 @@
-# Arasya Staff — Foundation V2.0
+# Arasya Staff — Foundation (current: V2.2.0)
 
 ## Architecture and stack
 
@@ -20,11 +20,11 @@ Apache sends unknown client routes to `index.html`, after which `StaffApp` rende
 
 ## State and service architecture
 
-The scanner remains a discriminated-union reducer with controlled states from `idle` through `success` or `error`. A duplicate guard locks decoded input until reset. Critical transitions require confirmation, an idempotency key, an expected order version, and a real service response before success. There is no optimistic mutation or offline mutation queue.
+The scanner remains a discriminated-union reducer with controlled states from `idle` through `success` or `error`. A duplicate guard locks decoded input until reset. Claim and stage completion require confirmation, an idempotency key, the order's `productionVersion` as expected version, and a committed server response before success. A transient failure (offline, timeout, service error) can be retried with the same idempotency key, so a request that actually committed is returned rather than repeated; conflicts (`ORDER_CHANGED`, `ORDER_ALREADY_CLAIMED`) reload the order instead. There is no optimistic mutation or offline mutation queue.
 
-`AuthService`, `EmployeeService`, `OrderService`, `ActivityService`, and `ProductionWorkflowService` form the frontend boundary. The production adapter integrates the standalone Operations API for real login, server session restoration, refresh, CSRF-protected logout, `/employees/me`, and the authenticated production workflow catalog. It preserves credentialed requests, explicit configuration failure, offline detection, a 12-second timeout, typed errors, and fail-closed mode selection. A focused lifecycle revalidates the immutable workflow every 15 seconds while visible and immediately on foreground/PWA restoration or operational route entry. Single-flight coordination, in-memory plus browser last-known-good, and content-aware ETag continuity never activate Preview fixtures. Home independently requests the employee's `today` activity summary; unavailable metrics render a neutral state and never block Scan.
+`AuthService`, `EmployeeService`, `OrderService`, `ActivityService`, and `ProductionWorkflowService` form the frontend boundary. The production adapter integrates the standalone Operations API for real login, server session restoration, refresh, CSRF-protected logout, `/employees/me`, the authenticated production workflow catalog, QR resolution, manual lookup, `/orders/mine`, order detail, claim, stage completion, and `/activity/mine`. Every response is validated by a strict mapper; malformed payloads become `SERVER_ERROR` instead of partial data. It preserves credentialed requests, explicit configuration failure, offline detection, a 12-second timeout, typed errors, and fail-closed mode selection. A focused lifecycle revalidates the immutable workflow every 15 seconds while visible and immediately on foreground/PWA restoration or operational route entry. Single-flight coordination, in-memory plus browser last-known-good, and content-aware ETag continuity never activate Preview fixtures. Home independently requests the employee's `today` activity summary; unavailable metrics render a neutral state and never block Scan.
 
-`OrderService.listMine()` means orders with a direct operational relationship to the authenticated employee, not a department or production-stage queue. Preview fixtures carry a compact relation summary and are filtered by the Preview employee UUID. Production continues to call `GET /orders/mine`; the future backend must derive identity from the authenticated session and enforce the scope server-side. The browser must never choose an employee UUID to broaden this result.
+`OrderService.listMine()` means orders with a direct operational relationship to the authenticated employee, not a department or production-stage queue. Preview fixtures carry a compact relation summary and are filtered by the Preview employee UUID. Production calls `GET /orders/mine`; the backend derives identity from the authenticated session and enforces the scope server-side. The browser must never choose an employee UUID to broaden this result.
 
 Order products are checked through a small typed guard. Scanner resolution and order detail turn empty or unusable products into `ORDER_PRODUCTS_UNAVAILABLE`; order cards use a neutral fallback rather than unsafe array access.
 
@@ -32,7 +32,7 @@ Order products are checked through a small typed guard. Scanner resolution and o
 
 Camera permission is requested only after an employee tap. The environment-facing camera, single stream, `playsInline`, torch capability check, throttled scan loop, duplicate lock, and cleanup on decode, error, reset, navigation, or unmount are preserved.
 
-The scanner consumes a `QrDecoder` contract. `NativeBarcodeDetectorDecoder` is the preferred QR-only fast path and is reused throughout a scan session. `loadFallbackQrDecoder()` is the single lazy integration point for a future package; it currently returns unavailable, so unsupported devices receive a Romanian explanation and continue through manual lookup. No fallback QR dependency is bundled.
+The scanner consumes a `QrDecoder` contract. `NativeBarcodeDetectorDecoder` is the preferred QR-only fast path and is reused throughout a scan session. On devices without it (Safari/iOS, desktop Linux) `loadFallbackQrDecoder()` lazily imports the QR-only jsQR decoder in its own chunk after the camera tap. Frames are downscaled to at most 640px and decoded at most every 260ms with no overlapping decode; the canvas is released on cleanup. Manual lookup stays available in every scanner state, including camera denial or absence.
 
 ## Runtime modes
 
@@ -48,4 +48,4 @@ The service worker caches only the manifest and icon with network-first refresh.
 
 Production builds run exclusively in GitHub Actions from committed `main` source and the frozen pnpm lockfile. A successful verification publishes the static release to the generated `deploy` branch. cPanel consumes that branch and performs static validation plus `rsync` only; the hosting shell requires no Node toolchain.
 
-The V2.0.6 Operations API implements identity, authentication, and fail-closed exact structural validation for the canonical V1 workflow. No Trendhome, OutletPerdele, Trendyol, WooCommerce, B2B, Manager Control, HR, attendance, order read, QR resolution, or transition backend was added. Preview transitions still affect only the adapter's current in-memory fixture state; real order integration remains the V2.1 boundary.
+The V2.2.0 Operations API provides identity, the canonical workflow, real order reads, QR/lookup, claim, N → N+1 transitions, activity, signed Trendhome/OutletPerdele ingestion and the credential-gated Trendyol adapter (see [staff-operations-api.md](staff-operations-api.md) and [source-integrations.md](source-integrations.md)). Manager Control, HR, attendance and workflow editing remain outside Staff by design.
