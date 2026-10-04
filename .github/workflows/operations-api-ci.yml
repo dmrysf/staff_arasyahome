@@ -12,6 +12,7 @@ on:
       - "docs/operations-api-cpanel.md"
       - "docs/production-workflow.md"
       - "docs/production-reliability.md"
+      - "docs/central-iam.md"
       - ".github/workflows/operations-api-ci.yml"
   pull_request:
     paths:
@@ -22,6 +23,7 @@ on:
       - "docs/operations-api-cpanel.md"
       - "docs/production-workflow.md"
       - "docs/production-reliability.md"
+      - "docs/central-iam.md"
       - ".github/workflows/operations-api-ci.yml"
   workflow_dispatch:
 
@@ -92,6 +94,15 @@ jobs:
           ARASYA_TEST_DB_PASSWORD: root-test-password
         run: php operations-api/tests/mysql-operations-integration.php
 
+      - name: Run MySQL central IAM lifecycle
+        env:
+          ARASYA_TEST_DB_HOST: 127.0.0.1
+          ARASYA_TEST_DB_PORT: "3306"
+          ARASYA_TEST_DB_NAME: arasya_operations_test
+          ARASYA_TEST_DB_USER: root
+          ARASYA_TEST_DB_PASSWORD: root-test-password
+        run: php operations-api/tests/mysql-iam-integration.php
+
   mariadb-compatibility:
     # Production cPanel runs MariaDB 10.11; the MySQL lifecycles must also pass there.
     runs-on: ubuntu-latest
@@ -131,6 +142,9 @@ jobs:
       - name: Run MariaDB Staff operations lifecycle
         run: php operations-api/tests/mysql-operations-integration.php
 
+      - name: Run MariaDB central IAM lifecycle
+        run: php operations-api/tests/mysql-iam-integration.php
+
   publish-api-release:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: [quality, mariadb-compatibility]
@@ -157,9 +171,9 @@ jobs:
           cp operations-api/config/secrets.example.json "$release_dir/config/secrets.example.json"
           cp operations-api/scripts/*.sh "$release_dir/scripts/"
           chmod +x "$release_dir/scripts/"*.sh
-          printf '{\n  "sourceCommit": "%s",\n  "builtAt": "%s",\n  "version": "2.2.0"\n}\n' "$GITHUB_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$release_dir/release.json"
-          php -r '$r=json_decode(file_get_contents($argv[1]), true, flags: JSON_THROW_ON_ERROR); if (($r["sourceCommit"] ?? null) !== getenv("GITHUB_SHA") || ($r["version"] ?? null) !== "2.2.0") { throw new RuntimeException("API release metadata does not match source."); }' "$release_dir/release.json"
-          grep -Fq "'version' => '2.2.0'" "$release_dir/src/Http/HealthController.php"
+          printf '{\n  "sourceCommit": "%s",\n  "builtAt": "%s",\n  "version": "2.3.0"\n}\n' "$GITHUB_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$release_dir/release.json"
+          php -r '$r=json_decode(file_get_contents($argv[1]), true, flags: JSON_THROW_ON_ERROR); if (($r["sourceCommit"] ?? null) !== getenv("GITHUB_SHA") || ($r["version"] ?? null) !== "2.3.0") { throw new RuntimeException("API release metadata does not match source."); }' "$release_dir/release.json"
+          grep -Fq "public const VERSION = '2.3.0';" "$release_dir/src/Http/HealthController.php"
           /bin/bash "$release_dir/scripts/generate-sha256s.sh" "$release_dir"
           ARASYA_RELEASE_STRICT=1 /bin/bash "$release_dir/scripts/validate-release.sh" "$release_dir"
 

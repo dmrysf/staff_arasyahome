@@ -86,9 +86,15 @@ try {
     $pdo->exec("DELETE FROM schema_migrations WHERE migration_name = '002_canonical_production_workflow.sql'");
     $pdo->exec("DELETE FROM schema_migrations WHERE migration_name = '003_operational_orders.sql'");
     $pdo->exec("DELETE FROM schema_migrations WHERE migration_name = '004_staff_operations.sql'");
+    // Migration 005 only extends 001 tables, so a reused database may already have it recorded.
+    $iamApplied = (int) $pdo->query("SELECT COUNT(*) FROM schema_migrations WHERE migration_name = '005_central_iam.sql'")->fetchColumn() === 1;
     $applied = $migrationRunner->migrate(dirname(__DIR__) . '/database/migrations');
-    if ($applied !== ['002_canonical_production_workflow.sql', '003_operational_orders.sql', '004_staff_operations.sql']) {
-        throw new RuntimeException('An existing 001 schema did not apply only migrations 002, 003 and 004.');
+    $expected = ['002_canonical_production_workflow.sql', '003_operational_orders.sql', '004_staff_operations.sql'];
+    if (!$iamApplied) {
+        $expected[] = '005_central_iam.sql';
+    }
+    if ($applied !== $expected) {
+        throw new RuntimeException('An existing 001 schema did not apply exactly the pending migrations in order: ' . implode(', ', $applied));
     }
     if ($migrationRunner->migrate(dirname(__DIR__) . '/database/migrations') !== []) {
         throw new RuntimeException('A second migration run was not idempotent.');
@@ -232,14 +238,17 @@ $roleEmployee = $employees->create(
     $clock->now()->format('Y-m-d H:i:s.u'),
 );
 $roleLogin = $auth->login($roleEmployee->username, 'integration role passphrase', '127.0.0.1', 'mysql-integration', 'role-login');
+$pdo->prepare('INSERT INTO role_permissions (role_id, permission_id, created_at) SELECT r.role_id, p.permission_id, UTC_TIMESTAMP(6) FROM roles r INNER JOIN permissions p ON p.permission_key = :permission WHERE r.role_key = :key')
+    ->execute(['permission' => 'employees.view', 'key' => $roleSuffix]);
+$withRole = $auth->authenticate($roleLogin->rawToken, '127.0.0.1', 'mysql-integration', 'role-active');
+if (!in_array('employees.view', $withRole->employee->permissions, true)) {
+    throw new RuntimeException('An active role did not contribute its permissions.');
+}
+// Central IAM: an inactive role stops contributing permissions on the next request but does not lock the identity out.
 $pdo->prepare("UPDATE roles SET status = 'inactive' WHERE role_key = :key")->execute(['key' => $roleSuffix]);
-try {
-    $auth->authenticate($roleLogin->rawToken, '127.0.0.1', 'mysql-integration', 'role-inactive');
-    throw new RuntimeException('Inactive role retained an authenticated session.');
-} catch (\Arasya\Operations\Http\ApiException $error) {
-    if ($error->errorCode !== 'ACCOUNT_INACTIVE') {
-        throw $error;
-    }
+$withoutRole = $auth->authenticate($roleLogin->rawToken, '127.0.0.1', 'mysql-integration', 'role-inactive');
+if (in_array('employees.view', $withoutRole->employee->permissions, true) || !in_array('orders.scan', $withoutRole->employee->permissions, true)) {
+    throw new RuntimeException('An inactive role still contributed permissions, or Staff baseline permissions were lost.');
 }
 
 $departmentSuffix = 'department-status-' . $suffix;
