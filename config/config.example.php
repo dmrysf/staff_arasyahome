@@ -14,7 +14,7 @@ return [
     'ARASYA_DB_NAME' => 'arasya_operations',
     'ARASYA_DB_USER' => 'arasya_runtime',
     'ARASYA_DB_PASSWORD' => 'configure-outside-git',
-    'ARASYA_ALLOWED_ORIGINS' => 'https://staff.arasyahome.ro',
+    'ARASYA_ALLOWED_ORIGINS' => 'https://staff.arasyahome.ro,https://dashboard.arasyahome.ro,https://b2b.arasyahome.ro',
     'ARASYA_SESSION_TTL' => '36000',
     'ARASYA_SESSION_TOUCH_INTERVAL' => '300',
     'ARASYA_LOGIN_USERNAME_LIMIT' => '5',

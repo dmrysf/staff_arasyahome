@@ -10,6 +10,7 @@ use Arasya\Operations\Auth\AuthenticationService;
 use Arasya\Operations\Config\Config;
 use Arasya\Operations\Authorization\AuthorizationService;
 use Arasya\Operations\Employee\EmployeeSerializer;
+use Arasya\Operations\Iam\ApplicationAccess;
 use Arasya\Operations\Security\CookiePolicy;
 use Arasya\Operations\Security\CsrfGuard;
 
@@ -88,6 +89,26 @@ final readonly class AuthController
         $employee = $this->current($request)->employee;
         $this->authorization->require($employee, 'profile.view_self');
         return Response::json(EmployeeSerializer::safe($employee));
+    }
+
+    /**
+     * The B2B application gate. It reads the same central session as Staff and Dashboard and answers only while
+     * the identity is usable and holds B2B application access, so a removed grant applies on the next call.
+     */
+    public function b2bAccess(Request $request): Response
+    {
+        $employee = $this->current($request)->employee;
+        $this->authorization->requireApplication($employee, ApplicationAccess::B2B);
+        $this->authorization->require($employee, 'b2b.access');
+        return Response::json([
+            'application' => ApplicationAccess::B2B,
+            'employee' => [
+                'displayName' => $employee->displayName,
+                'username' => $employee->username,
+                'isRoot' => $employee->isRoot,
+            ],
+            'authorizationVersion' => $employee->authorizationVersion,
+        ]);
     }
 
     private function current(Request $request): AuthenticatedSession
