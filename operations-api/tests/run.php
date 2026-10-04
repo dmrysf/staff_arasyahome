@@ -208,14 +208,13 @@ test('inactive and suspended employees cannot login or retain sessions', functio
     expectApi('ACCOUNT_INACTIVE', fn () => $auth->login('mehmet.yilmaz', 'correct horse battery staple', '192.0.2.10', 'test', 'disabled-login'));
 });
 
-test('inactive roles and departments invalidate login, sessions and authorization', function (): void {
+test('inactive departments invalidate login, sessions and authorization; inactive roles do not lock accounts', function (): void {
     [$auth, $employees] = authFixture();
     $roleSession = $auth->login('mehmet.yilmaz', 'correct horse battery staple', '192.0.2.10', 'test', 'role-login');
+    // With multiple roles an inactive role only stops contributing permissions (covered on MySQL);
+    // it no longer locks the identity out of every application.
     $employees->updateRoleStatus($roleSession->employee->employeeUuid, 'inactive');
-    expectApi('ACCOUNT_INACTIVE', fn () => $auth->authenticate($roleSession->rawToken, '192.0.2.10', 'test', 'role-session'));
-    expectApi('ACCOUNT_INACTIVE', fn () => $auth->login('mehmet.yilmaz', 'correct horse battery staple', '192.0.2.10', 'test', 'role-login-denied'));
-    $roleInactive = $employees->findByUuid($roleSession->employee->employeeUuid);
-    expect($roleInactive !== null && !(new AuthorizationService())->can($roleInactive, 'orders.scan'));
+    expect($auth->authenticate($roleSession->rawToken, '192.0.2.10', 'test', 'role-session')->employee->employeeUuid === $roleSession->employee->employeeUuid);
 
     [$departmentAuth, $departmentEmployees] = authFixture();
     $departmentSession = $departmentAuth->login('mehmet.yilmaz', 'correct horse battery staple', '192.0.2.11', 'test', 'department-login');
@@ -545,7 +544,7 @@ test('authenticated production workflow route returns the exact canonical catalo
     expect(($unauthenticated->payload['error']['code'] ?? null) === 'SESSION_EXPIRED');
 
     $health = $kernel->handle(new Request('GET', '/health', [], [], '', '127.0.0.1', 'workflow-test', 'health-stable'));
-    expect($health->status === 200 && ($health->payload['version'] ?? null) === '2.2.0');
+    expect($health->status === 200 && ($health->payload['version'] ?? null) === '2.3.0');
 });
 
 test('JSON auth input rejects malformed, oversized and unexpected payloads', function (): void {

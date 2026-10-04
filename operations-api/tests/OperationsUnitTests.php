@@ -345,3 +345,49 @@ test('WC Kalkulator mapping turns real Trendhome L/H/manopera meta into Operatio
     ]]);
     expect($snapshot->items[0]->widthValue === 4.0 && $snapshot->items[0]->heightValue === 2.2 && $snapshot->items[0]->measurementUnit === 'm' && $snapshot->items[0]->meters === 8.0);
 });
+
+test('central authorization gates temporary passwords, application scope and inactive identities', function (): void {
+    $base = static fn (array $applications, bool $mustChange = false, string $status = 'active', bool $root = false, string $departmentStatus = 'active'): EmployeeIdentity => new EmployeeIdentity(
+        'f2c7a9a0-2f1b-4c55-9a7e-111111111111', null, 'ana', 'ana', 'hash', 'Ana', 'productie', 'Producție', $departmentStatus, 'employee', 'active', $status,
+        ['orders.scan', 'employees.view', 'dashboard.access'], [], $applications, $mustChange, 1, $root,
+    );
+    $authorization = new AuthorizationService();
+    expect($authorization->can($base(['staff']), 'orders.scan'));
+    expect(!$authorization->can($base(['dashboard']), 'orders.scan'), 'Staff permissions from a role are unusable without Staff access');
+    expectApi('APPLICATION_ACCESS_DENIED', fn () => $authorization->require($base(['dashboard']), 'orders.scan'));
+    expectApi('APPLICATION_ACCESS_DENIED', fn () => $authorization->requireApplication($base(['staff']), 'dashboard'));
+    expectApi('PASSWORD_CHANGE_REQUIRED', fn () => $authorization->require($base(['staff'], true), 'orders.scan'));
+    expectApi('PASSWORD_CHANGE_REQUIRED', fn () => $authorization->requireApplication($base(['dashboard'], true), 'dashboard'));
+    expect(!$authorization->can($base(['staff'], false, 'inactive'), 'orders.scan'));
+    expect(!$base(['staff'], false, 'active', false, 'inactive')->isOperationallyActive() && $base(['staff'], false, 'active', true, 'inactive')->isOperationallyActive(), 'root cannot be locked out through its department');
+    expect(!$authorization->can($base(['staff']), 'system.manage'));
+});
+
+test('temporary passwords are long, mixed and unique; the chosen-password policy rejects weak values', function (): void {
+    $seen = [];
+    for ($i = 0; $i < 200; $i++) {
+        $password = \Arasya\Operations\Iam\TemporaryPasswordGenerator::generate(24);
+        expect(strlen($password) === 24 && preg_match('/[A-Z]/', $password) === 1 && preg_match('/[a-z]/', $password) === 1 && preg_match('/[2-9]/', $password) === 1 && preg_match('/[-_.!@#%+=]/', $password) === 1);
+        expect(preg_match('/[O0Il1]/', $password) === 0, 'no ambiguous characters');
+        $seen[$password] = true;
+    }
+    expect(count($seen) === 200);
+    expectRuntime(fn () => \Arasya\Operations\Iam\TemporaryPasswordGenerator::generate(12));
+    $policy = new \Arasya\Operations\Security\PasswordHasher();
+    expect(!$policy->meetsPolicy('short pass') && !$policy->meetsPolicy('maria.ionescu-2026', 'maria.ionescu') && $policy->meetsPolicy('o frază lungă de 2026'));
+});
+
+test('CORS allows management methods only for exact origins and never with a wildcard', function (): void {
+    $cors = new CorsPolicy(['https://staff.arasyahome.ro', 'https://dashboard.arasyahome.ro']);
+    $preflight = static fn (string $origin, string $method, string $headers = 'content-type,x-csrf-token'): Request => new Request('OPTIONS', '/management/roles/1', ['origin' => $origin, 'access-control-request-method' => $method, 'access-control-request-headers' => $headers], [], '', '127.0.0.1', 'test', 'cors');
+    foreach (['https://staff.arasyahome.ro', 'https://dashboard.arasyahome.ro'] as $origin) {
+        foreach (['PATCH', 'PUT', 'DELETE'] as $method) {
+            $response = $cors->preflight($preflight($origin, $method));
+            expect($response !== null && $response->headers['Access-Control-Allow-Origin'] === $origin && $response->headers['Access-Control-Allow-Credentials'] === 'true');
+        }
+    }
+    expectApi('ORIGIN_DENIED', fn () => $cors->preflight($preflight('https://dashboard.arasyahome.ro.evil.example', 'PATCH')));
+    expectApi('ORIGIN_DENIED', fn () => $cors->preflight($preflight('https://dashboard.arasyahome.ro', 'TRACE')));
+    expectApi('CORS_HEADER_DENIED', fn () => $cors->preflight($preflight('https://dashboard.arasyahome.ro', 'PATCH', 'x-employee-uuid')));
+    expect($cors->headers('*') === [] && $cors->headers(null) === []);
+});

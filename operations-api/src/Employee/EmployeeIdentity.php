@@ -6,7 +6,12 @@ namespace Arasya\Operations\Employee;
 
 final readonly class EmployeeIdentity
 {
-    /** @param list<string> $permissions @param list<string> $allowedStageIds */
+    /**
+     * @param list<string> $permissions Effective permissions: application baselines, active roles, or the full catalog for root.
+     * @param list<string> $allowedStageIds
+     * @param list<string> $applications Active applications the identity may enter.
+     * @param list<string> $roleKeys
+     */
     public function __construct(
         public string $employeeUuid,
         public ?string $employeeCode,
@@ -22,6 +27,15 @@ final readonly class EmployeeIdentity
         public string $status,
         public array $permissions,
         public array $allowedStageIds,
+        public array $applications = ['staff'],
+        public bool $mustChangePassword = false,
+        public int $authorizationVersion = 1,
+        public bool $isRoot = false,
+        public ?string $positionTitle = null,
+        public ?string $managerUuid = null,
+        public array $roleKeys = [],
+        public int $authorityRank = 0,
+        public int $departmentId = 0,
     ) {
     }
 
@@ -30,11 +44,14 @@ final readonly class EmployeeIdentity
         return $this->status === 'active';
     }
 
+    /**
+     * An identity may work when it is active and its department is active. Roles do not gate the
+     * account: an inactive role only stops contributing permissions. The root identity cannot be
+     * locked out through its department.
+     */
     public function isOperationallyActive(): bool
     {
-        return $this->status === 'active'
-            && $this->roleStatus === 'active'
-            && $this->departmentStatus === 'active';
+        return $this->status === 'active' && ($this->isRoot || $this->departmentStatus === 'active');
     }
 
     public function inactiveReason(): ?string
@@ -42,12 +59,14 @@ final readonly class EmployeeIdentity
         if ($this->status !== 'active') {
             return 'employee_inactive';
         }
-        if ($this->roleStatus !== 'active') {
-            return 'role_inactive';
-        }
-        if ($this->departmentStatus !== 'active') {
+        if (!$this->isRoot && $this->departmentStatus !== 'active') {
             return 'department_inactive';
         }
         return null;
+    }
+
+    public function hasApplication(string $applicationKey): bool
+    {
+        return in_array($applicationKey, $this->applications, true);
     }
 }

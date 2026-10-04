@@ -6,6 +6,7 @@ namespace Arasya\Operations\Http;
 
 use Arasya\Operations\Activity\ActivityController;
 use Arasya\Operations\Integration\SourceIngestionController;
+use Arasya\Operations\Management\ManagementController;
 use Arasya\Operations\Order\OperationalOrderController;
 use Arasya\Operations\Security\CookiePolicy;
 use Arasya\Operations\Support\StructuredLogger;
@@ -24,6 +25,7 @@ final readonly class ApiKernel
         private ?OperationalOrderController $orders = null,
         private ?ActivityController $activity = null,
         private ?SourceIngestionController $sources = null,
+        private ?ManagementController $management = null,
     ) {
     }
 
@@ -45,6 +47,7 @@ final readonly class ApiKernel
                 'POST /auth/logout' => $this->auth->logout($request),
                 'GET /auth/session' => $this->auth->session($request),
                 'POST /auth/refresh' => $this->auth->refresh($request),
+                'POST /auth/password' => $this->auth->changePassword($request),
                 'GET /employees/me' => $this->auth->employee($request),
                 'GET /production/workflow' => $this->workflow?->show($request) ?? throw new ApiException(503, 'WORKFLOW_UNAVAILABLE', 'Production workflow is not ready.'),
                 'GET /orders/mine' => $this->ordersController()->listMine($request),
@@ -70,6 +73,9 @@ final readonly class ApiKernel
 
     private function matchDynamicRoutes(Request $request): Response
     {
+        if (str_starts_with($request->path, '/management/')) {
+            return ($this->management ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Management API is not ready.'))->handle($request);
+        }
         if (preg_match('#^/orders/([^/]{1,600})(?:/(claim|transition))?$#D', $request->path, $matches) === 1) {
             $globalIdString = rawurldecode($matches[1]);
             $action = $matches[2] ?? '';

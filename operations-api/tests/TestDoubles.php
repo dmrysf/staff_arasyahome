@@ -101,6 +101,11 @@ final class MemoryEmployeeRepository implements EmployeeRepository
     {
     }
 
+    public function completePasswordChange(string $employeeUuid, string $passwordHash, string $now): bool
+    {
+        return $this->updatePasswordHash($employeeUuid, $passwordHash, $now);
+    }
+
     public function add(EmployeeIdentity $employee): void
     {
         $this->employees[$employee->employeeUuid] = $employee;

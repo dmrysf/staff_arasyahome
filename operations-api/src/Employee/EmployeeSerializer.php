@@ -20,6 +20,12 @@ final class EmployeeSerializer
             'status' => $employee->status,
             'permissions' => $employee->permissions,
             'allowedStageIds' => $employee->allowedStageIds,
+            'applications' => $employee->applications,
+            'roles' => $employee->roleKeys,
+            'positionTitle' => $employee->positionTitle,
+            'isRoot' => $employee->isRoot,
+            'mustChangePassword' => $employee->mustChangePassword,
+            'authorizationVersion' => $employee->authorizationVersion,
             'locale' => 'ro',
         ];
     }

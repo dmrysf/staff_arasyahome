@@ -10,6 +10,8 @@ use Throwable;
 
 final readonly class HealthController
 {
+    public const VERSION = '2.3.0';
+
     public function __construct(private PDO $pdo, private Clock $clock)
     {
     }
@@ -24,7 +26,7 @@ final readonly class HealthController
         return Response::json([
             'status' => 'ok',
             'service' => 'arasya-operations-api',
-            'version' => '2.2.0',
+            'version' => self::VERSION,
             'time' => $this->clock->now()->format(DATE_ATOM),
         ]);
     }

@@ -22,11 +22,14 @@ use Arasya\Operations\Http\HealthController;
 use Arasya\Operations\Http\RequestFactory;
 use Arasya\Operations\Http\RequestContext;
 use Arasya\Operations\Http\ProductionWorkflowController;
+use Arasya\Operations\Iam\IamAuditLogger;
 use Arasya\Operations\Integration\SourceIngestionController;
 use Arasya\Operations\Integration\SourceSignatureVerifier;
 use Arasya\Operations\Integration\Trendyol\StreamTrendyolTransport;
 use Arasya\Operations\Integration\Trendyol\TrendyolClient;
 use Arasya\Operations\Integration\Trendyol\TrendyolSynchronizer;
+use Arasya\Operations\Management\ManagementController;
+use Arasya\Operations\Management\ManagementService;
 use Arasya\Operations\Order\OperationalOrderController;
 use Arasya\Operations\Order\OrderAccessPolicy;
 use Arasya\Operations\Order\OrderOperationsService;
@@ -116,7 +119,24 @@ final class Container
             ),
             new ActivityController(new PdoActivityRepository($this->pdo), $this->authentication, $authorization, $this->config, $context, $this->clock),
             new SourceIngestionController(new SourceSignatureVerifier($this->config->sourceSecrets), $this->projectionWriter(), $rateLimiter, $this->clock),
+            new ManagementController(
+                new ManagementService($this->pdo, $authorization, new IamAuditLogger($this->pdo), $this->passwords, $this->usernames, $this->clock, HealthController::VERSION),
+                $this->authentication,
+                $csrf,
+                $this->config,
+                $context,
+            ),
         );
+    }
+
+    public function passwordHasher(): PasswordHasher
+    {
+        return $this->passwords;
+    }
+
+    public function clock(): SystemClock
+    {
+        return $this->clock;
     }
 
     public function orderRepository(): PdoOperationalOrderRepository
