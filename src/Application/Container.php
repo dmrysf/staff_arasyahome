@@ -31,6 +31,7 @@ use Arasya\Operations\Integration\Trendyol\TrendyolSynchronizer;
 use Arasya\Operations\Management\ManagementController;
 use Arasya\Operations\Management\ManagementService;
 use Arasya\Operations\Management\OrderControlService;
+use Arasya\Operations\Management\OrderOwnershipService;
 use Arasya\Operations\Management\ProductionOverviewService;
 use Arasya\Operations\Order\OperationalOrderController;
 use Arasya\Operations\Order\OrderAccessPolicy;
@@ -129,6 +130,7 @@ final class Container
                 $context,
                 new ProductionOverviewService($this->pdo, $authorization, $this->clock, $this->config),
                 new OrderControlService($this->pdo, $authorization),
+                new OrderOwnershipService($this->pdo, $authorization, $this->employees, $workflows, new IamAuditLogger($this->pdo), $this->clock),
             ),
         );
     }

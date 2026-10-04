@@ -35,6 +35,7 @@ final readonly class ManagementController
         private RequestContext $context,
         private ?ProductionOverviewService $production = null,
         private ?OrderControlService $orders = null,
+        private ?OrderOwnershipService $ownership = null,
     ) {
     }
 
@@ -58,6 +59,7 @@ final readonly class ManagementController
                 $path === '/employees' => $this->management->listEmployees($actor, $this->filters($request, ['search', 'status', 'departmentId', 'application', 'roleId', 'cursor', 'limit'])),
                 $path === '/orders' => $this->orderControl()->list($actor, $this->filters($request, ['search', 'source', 'stage', 'commerceStatus', 'ownerId', 'assignment', 'state', 'cursor', 'limit'])),
                 preg_match('#^/orders/([^/]{1,600})$#D', $path, $m) === 1 => $this->orderControl()->detail($actor, rawurldecode($m[1])),
+                preg_match('#^/orders/([^/]{1,600})/eligible-owners$#D', $path, $m) === 1 => $this->ownership()->eligibleOwners($actor, rawurldecode($m[1])),
                 $path === '/applications' => $this->management->applications($actor),
                 $path === '/permissions' => $this->management->permissions($actor),
                 $path === '/roles' => $this->management->listRoles($actor),
@@ -69,6 +71,19 @@ final readonly class ManagementController
             });
         }
 
+        // Supervisor owner interventions: exactly two operations, never a stage or any other field.
+        if (preg_match('#^/orders/([^/]{1,600})/(release-owner|owner)$#D', $path, $m) === 1) {
+            $orderId = rawurldecode($m[1]);
+            $key = $request->header('idempotency-key') ?? '';
+            return Response::json(match (true) {
+                $method === 'POST' && $m[2] === 'release-owner' => $this->ownership()->release($actor, $orderId, $this->body($request, ['expectedVersion'], ['expectedVersion'])['expectedVersion'], $key, $id),
+                $method === 'PUT' && $m[2] === 'owner' => (function () use ($request, $actor, $orderId, $key, $id): array {
+                    $input = $this->body($request, ['employeeId', 'expectedVersion'], ['employeeId', 'expectedVersion']);
+                    return $this->ownership()->reassign($actor, $orderId, $input['employeeId'], $input['expectedVersion'], $key, $id);
+                })(),
+                default => throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.'),
+            });
+        }
         if ($method === 'POST' && $path === '/employees') {
             return Response::json($this->management->createEmployee($actor, $this->body($request, self::EMPLOYEE_CREATE_FIELDS, ['displayName', 'username', 'departmentId']), $id), 201);
         }
@@ -117,6 +132,11 @@ final readonly class ManagementController
     private function orderControl(): OrderControlService
     {
         return $this->orders ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Order control is not ready.');
+    }
+
+    private function ownership(): OrderOwnershipService
+    {
+        return $this->ownership ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Order ownership control is not ready.');
     }
 
     private function session(Request $request): AuthenticatedSession
