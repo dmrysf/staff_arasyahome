@@ -71,6 +71,9 @@ final readonly class EmployeeAdminService
         if (!in_array($status, ['active', 'inactive', 'suspended'], true)) {
             throw new RuntimeException('Unsupported employee status.');
         }
+        if ($this->employees->findByUuid($employeeUuid)?->isRoot === true) {
+            throw new RuntimeException('The root identity is protected; use bin/recover-root-password.php for recovery.');
+        }
         $now = $this->clock->now()->format('Y-m-d H:i:s.u');
         if (!$this->employees->updateStatus($employeeUuid, $status, $now)) {
             throw new RuntimeException('Employee was not found.');
@@ -83,6 +86,9 @@ final readonly class EmployeeAdminService
 
     public function changePassword(string $employeeUuid, string $password, string $requestId): void
     {
+        if ($this->employees->findByUuid($employeeUuid)?->isRoot === true) {
+            throw new RuntimeException('The root identity is protected; use bin/recover-root-password.php for recovery.');
+        }
         $this->passwords->assertPolicy($password);
         $now = $this->clock->now()->format('Y-m-d H:i:s.u');
         if (!$this->employees->updatePasswordHash($employeeUuid, $this->passwords->hash($password), $now)) {
