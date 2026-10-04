@@ -83,6 +83,58 @@ foreach ($phpFiles($root . '/integrations/woocommerce') as $file) {
     }
 }
 
+// ---- Production mutations never write commerce or source state ---------------------------------
+// Staff transitions and supervisor owner interventions may change production columns only. The
+// commerce status, the source event identity and the projection belong to inbound ingestion.
+$commerceColumns = '/\b(source_commerce_status_code|source_commerce_status_label|source_event_id|source_changed_at|last_source_seen_at|projection_hash|operational_status|accepted_at)\s*=|\b(INSERT\s+INTO|UPDATE)\s+(order_sources|order_projection_receipts|operational_order_items)\b/i';
+foreach (['operations-api/src/Order/OrderOperationsService.php', 'operations-api/src/Management/OrderOwnershipService.php'] as $relative) {
+    $source = (string) file_get_contents($root . '/' . $relative);
+    $checks++;
+    if (preg_match_all('/(UPDATE\s+\w+\s+SET.*?WHERE|INSERT\s+INTO\s+\w+)/is', $source, $writes) < 1) {
+        $fail("{$relative} was expected to contain production writes.");
+    }
+    foreach ($writes[0] as $write) {
+        $checks++;
+        if (preg_match($commerceColumns, $write) === 1) {
+            $fail("{$relative} writes commerce or source state: " . preg_replace('/\s+/', ' ', mb_substr($write, 0, 120)));
+        }
+    }
+}
+
+// ---- The patterns themselves still catch writeback (and spare the legitimate inbound event post) --
+$selfTest = [
+    ['$order->update_status(\'completed\');', $forbiddenConnector, true],
+    ['wc_update_order(array(\'status\' => \'shipped\'));', $forbiddenConnector, true],
+    ['$order->set_status(\'processing\'); $order->save();', $forbiddenConnector, true],
+    ['curl_init(\'https://trendhome.ro/wp-json/wc/v3/orders/1\');', $forbiddenApi, true],
+    ['wp_remote_request(\'https://trendhome.ro/wp-json/wc/v3/orders/1\', [\'method\' => \'PUT\']);', $forbiddenApi, true],
+    ['$client = new GuzzleHttp\\Client();', $forbiddenApi, true],
+    ['$order->get_status(); $order->get_items();', $forbiddenConnector, false],
+];
+foreach ($selfTest as [$snippet, $patterns, $mustMatch]) {
+    $checks++;
+    $matched = false;
+    foreach (array_keys($patterns) as $pattern) {
+        $matched = $matched || preg_match($pattern, $snippet) === 1;
+    }
+    if ($matched !== $mustMatch) {
+        $fail('Guard self-test: pattern set ' . ($mustMatch ? 'missed' : 'falsely flagged') . " {$snippet}");
+    }
+}
+$checks++;
+if (preg_match($commerceColumns, "UPDATE operational_orders SET source_commerce_status_code = 'completed' WHERE") !== 1
+    || preg_match($commerceColumns, 'UPDATE operational_orders SET production_owner_employee_uuid = :owner WHERE') === 1) {
+    $fail('Guard self-test: the commerce column pattern is broken.');
+}
+foreach (['wp_remote_post( $this->endpoint . \'/integrations/sources/trendhome/orders\'' => false, 'wp_remote_post( \'https://trendhome.ro/wp-json/wc/v3/orders/1\'' => true] as $call => $mustFail) {
+    $checks++;
+    preg_match('/wp_remote_(\w+)\s*\(([^,]+)/', $call, $parts);
+    $flagged = $parts[1] !== 'post' || !str_contains($parts[2], '/integrations/sources/');
+    if ($flagged !== $mustFail) {
+        $fail("Guard self-test: connector HTTP rule misjudged {$call}");
+    }
+}
+
 if ($failures !== []) {
     fwrite(STDERR, "FAIL inbound-only source integration guard:\n  - " . implode("\n  - ", $failures) . "\n");
     exit(1);

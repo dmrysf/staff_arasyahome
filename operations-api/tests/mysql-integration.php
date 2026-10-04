@@ -88,6 +88,8 @@ try {
     $pdo->exec("DELETE FROM schema_migrations WHERE migration_name = '004_staff_operations.sql'");
     // Migration 006 indexes operational_orders, which was dropped above, so it must apply again.
     $pdo->exec("DELETE FROM schema_migrations WHERE migration_name = '006_production_control_indexes.sql'");
+    // Migration 007 extends order_activity_events and order_operation_idempotency, also dropped above.
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name = '007_production_owner_interventions.sql'");
     // Migration 005 only extends 001 tables, so a reused database may already have it recorded.
     $iamApplied = (int) $pdo->query("SELECT COUNT(*) FROM schema_migrations WHERE migration_name = '005_central_iam.sql'")->fetchColumn() === 1;
     $applied = $migrationRunner->migrate(dirname(__DIR__) . '/database/migrations');
@@ -96,6 +98,7 @@ try {
         $expected[] = '005_central_iam.sql';
     }
     $expected[] = '006_production_control_indexes.sql';
+    $expected[] = '007_production_owner_interventions.sql';
     if ($applied !== $expected) {
         throw new RuntimeException('An existing 001 schema did not apply exactly the pending migrations in order: ' . implode(', ', $applied));
     }
