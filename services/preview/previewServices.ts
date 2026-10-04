@@ -1,10 +1,8 @@
 import { StaffServiceError } from "../../domain/models";
-import type { ActivityEntry, ActivityPage, StaffOrder } from "../../domain/models";
-import { isEmployeeRelevantOrder } from "../../domain/orderRelation";
-import { getNextStage, getStageById } from "../../domain/productionWorkflow";
 import { previewActivityPages, previewEmployee, previewOrderDatabase } from "../../mocks/previewFixtures";
 import { previewProductionWorkflow } from "../../mocks/productionWorkflow";
-import type { AuthService, EmployeeService, OrderService, ServiceBundle, Session } from "../contracts";
+import type { AuthService, EmployeeService, ServiceBundle, Session } from "../contracts";
+import { createSimulatedOperations } from "../simulatedOperations";
 
 export const PREVIEW_SESSION_KEY = "arasya_staff_preview_session";
 const PREVIEW_SESSION_DURATION_MS = 8 * 60 * 60 * 1000;
@@ -26,9 +24,6 @@ export function createPreviewServices(options: PreviewServicesOptions = {}): Ser
   const storage = options.storage ?? browserSessionStorage();
   const now = options.now ?? Date.now;
   let memorySession: Session | null = null;
-  let orders = clone(previewOrderDatabase);
-  let activityPages = clone(previewActivityPages);
-  const idempotentTransitions = new Map<string, { orderId: string; result: StaffOrder }>();
 
   function removeSessionMarker() {
     try { storage?.removeItem(PREVIEW_SESSION_KEY); }
@@ -38,12 +33,6 @@ export function createPreviewServices(options: PreviewServicesOptions = {}): Ser
   function persistExpiry(expiresAt: number) {
     try { storage?.setItem(PREVIEW_SESSION_KEY, String(expiresAt)); }
     catch { /* Preview continues in memory if browser storage is unavailable. */ }
-  }
-
-  function resetOperationalState() {
-    orders = clone(previewOrderDatabase);
-    activityPages = clone(previewActivityPages);
-    idempotentTransitions.clear();
   }
 
   function createSession(expiresAt: number): Session {
@@ -69,6 +58,15 @@ export function createPreviewServices(options: PreviewServicesOptions = {}): Ser
     return clone(memorySession);
   }
 
+  const operations = createSimulatedOperations({
+    // Preview data stays readable for the fictional employee; the session gate lives in the UI.
+    employee: () => memorySession?.employee ?? clone(previewEmployee),
+    workflow: previewProductionWorkflow,
+    seeds: previewOrderDatabase,
+    activity: previewActivityPages,
+    now,
+  });
+
   const auth: AuthService = {
     async login(input) {
       if (input.username !== "demo" || input.password !== "demo") throw new StaffServiceError("UNAUTHORIZED_ACTION");
@@ -79,7 +77,7 @@ export function createPreviewServices(options: PreviewServicesOptions = {}): Ser
     },
     async logout() {
       clearPreviewSession();
-      resetOperationalState();
+      operations.reset();
     },
     async getSession() {
       if (!memorySession) return readPersistedSession();
@@ -100,107 +98,10 @@ export function createPreviewServices(options: PreviewServicesOptions = {}): Ser
     onSessionExpired() { return () => undefined; },
   };
 
-  function resolvePreviewCode(rawCode: string) {
-    const code = rawCode.trim().toLowerCase();
-    if (!code || code === "invalid") throw new StaffServiceError("INVALID_QR");
-    if (code === "expired") throw new StaffServiceError("EXPIRED_QR");
-    if (code === "cancelled") throw new StaffServiceError("ORDER_UNAVAILABLE");
-    if (code === "session-expired") {
-      clearPreviewSession();
-      throw new StaffServiceError("SESSION_EXPIRED");
-    }
-    const matched = orders.find((order) =>
-      [order.id, order.orderNumber.toLowerCase(), `arasya:${order.orderNumber.toLowerCase()}`].includes(code),
-    );
-    if (!matched) throw new StaffServiceError("ORDER_NOT_FOUND");
-    return clone(matched);
+  function endSessionOnExpiry(error: unknown): never {
+    if (error instanceof StaffServiceError && error.code === "SESSION_EXPIRED") clearPreviewSession();
+    throw error;
   }
-
-  function recordTransition(previous: StaffOrder, updated: StaffOrder) {
-    const fromStage = getStageById(previewProductionWorkflow, previous.productionStageId);
-    const toStage = getStageById(previewProductionWorkflow, updated.productionStageId);
-    if (!fromStage || !toStage) throw new StaffServiceError("WORKFLOW_UNAVAILABLE");
-    const entry: ActivityEntry = {
-      id: `preview-transition-${updated.id}-${updated.version}`,
-      occurredAt: updated.updatedAt,
-      orderId: updated.id,
-      orderNumber: updated.orderNumber,
-      source: updated.source,
-      fromStageId: fromStage.id,
-      fromStageLabelSnapshot: fromStage.label,
-      toStageId: toStage.id,
-      toStageLabelSnapshot: toStage.label,
-      meters: updated.products.reduce((total, item) => total + (item.meters ?? 0), 0),
-    };
-    for (const range of ["today", "7days", "month", "custom"] as const) {
-      const page = activityPages[range];
-      const handedOver = updated.status === "handed_over" && previous.status !== "handed_over";
-      page.items.unshift(entry);
-      page.summary.processed += 1;
-      page.summary.meters += entry.meters ?? 0;
-      if (handedOver) {
-        page.summary.handedOver += 1;
-        page.summary.inProgress = Math.max(0, page.summary.inProgress - 1);
-      }
-    }
-  }
-
-  const orderService: OrderService = {
-    async resolveQr(token) { return resolvePreviewCode(token); },
-    async lookup(code) { return resolvePreviewCode(code); },
-    async listMine(options) { 
-      const filtered = orders.filter((order) => isEmployeeRelevantOrder(order, previewEmployee.employeeUuid));
-      const limit = options?.limit ?? 50;
-      let start = 0;
-      if (options?.cursor) {
-        try {
-          start = parseInt(atob(options.cursor), 10);
-          if (isNaN(start)) throw new Error();
-        } catch {
-          throw new StaffServiceError("SERVER_ERROR");
-        }
-      }
-      const items = clone(filtered.slice(start, start + limit));
-      const nextCursor = start + limit < filtered.length ? btoa(String(start + limit)) : undefined;
-      return { items, nextCursor };
-    },
-    async getById(id) {
-      const order = orders.find((item) => item.id === id);
-      if (!order) throw new StaffServiceError("ORDER_NOT_FOUND");
-      return clone(order);
-    },
-    async confirmStageTransition(orderId, input) {
-      const priorResult = idempotentTransitions.get(input.idempotencyKey);
-      if (priorResult) {
-        if (priorResult.orderId !== orderId) throw new StaffServiceError("UNAUTHORIZED_ACTION");
-        return clone(priorResult.result);
-      }
-      const index = orders.findIndex((item) => item.id === orderId);
-      if (index < 0) throw new StaffServiceError("ORDER_NOT_FOUND");
-      const current = orders[index];
-      if (current.version !== input.expectedVersion) throw new StaffServiceError("ORDER_CHANGED");
-      const nextStage = getNextStage(previewProductionWorkflow, current.productionStageId);
-      if (!nextStage || !current.employeeAllowedAction) throw new StaffServiceError("UNAUTHORIZED_ACTION");
-      const updated: StaffOrder = {
-        ...current,
-        productionStageId: nextStage.id,
-        employeeAllowedAction: undefined,
-        employeeRelation: {
-          employeeUuid: previewEmployee.employeeUuid,
-          type: current.employeeAllowedAction.id === "handover" ? "handover_out" : "claimed",
-          lastActionAt: new Date(now()).toISOString(),
-        },
-        acceptedAt: current.acceptedAt ?? new Date(now()).toISOString(),
-        updatedAt: new Date(now()).toISOString(),
-        status: current.employeeAllowedAction.id === "handover" ? "handed_over" : current.status,
-        version: current.version + 1,
-      };
-      orders[index] = updated;
-      idempotentTransitions.set(input.idempotencyKey, { orderId, result: clone(updated) });
-      recordTransition(current, updated);
-      return clone(updated);
-    },
-  };
 
   const employee: EmployeeService = {
     async getCurrentEmployee() {
@@ -213,8 +114,13 @@ export function createPreviewServices(options: PreviewServicesOptions = {}): Ser
   return {
     auth,
     employee,
-    orders: orderService,
-    activity: { async listMine(input): Promise<ActivityPage> { return clone(activityPages[input.range]); } },
+    orders: {
+      ...operations.orders,
+      // The fictional "session-expired" code also ends the persisted Preview session.
+      resolveQr: (token, requestOptions) => operations.orders.resolveQr(token, requestOptions).catch(endSessionOnExpiry),
+      lookup: (code, requestOptions) => operations.orders.lookup(code, requestOptions).catch(endSessionOnExpiry),
+    },
+    activity: operations.activity,
     workflow: { async getCurrent() { return previewProductionWorkflow; } },
     mode: "preview",
   };

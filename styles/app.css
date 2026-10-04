@@ -143,7 +143,6 @@
 .handover-note { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 4px 2px; }
 .handover-note strong { font-size: .78rem; }
 .handover-note p { margin: 4px 0 0; color: var(--color-text-muted); font-size: .7rem; line-height: 1.4; }
-.coming-soon { flex: 0 0 auto; color: var(--color-text-subtle); font-size: .58rem; letter-spacing: .04em; text-transform: uppercase; }
 
 .back-link { width: fit-content; min-height: 44px; display: flex; align-items: center; gap: 8px; padding: 0; border: 0; background: transparent; color: var(--color-text-muted); }
 .detail-hero { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; padding-bottom: 8px; }
@@ -165,9 +164,14 @@
 .mini-timeline > span { width: 9px; height: 9px; margin-top: 4px; border-radius: 50%; background: var(--color-accent); }
 .mini-timeline div { display: grid; gap: 5px; }
 .mini-timeline time { color: var(--color-text-muted); font-size: .7rem; }
-.exception-action { min-height: 61px; display: grid; grid-template-columns: 32px 1fr; grid-template-rows: 1fr 1fr; column-gap: 10px; align-items: center; padding: 11px 15px; border: 1px dashed var(--color-border); border-radius: var(--radius-md); background: transparent; color: var(--color-text-subtle); text-align: left; }
-.exception-action > span { grid-row: 1 / 3; }
-.exception-action small { font-size: .66rem; }
+.order-notice { margin: 0; padding: 11px 13px; border: 1px solid rgba(214,164,87,.22); border-radius: var(--radius-sm); background: rgba(214,164,87,.065); color: #dccbad; font-size: .74rem; line-height: 1.45; }
+.order-notice-muted { border-color: var(--color-border); background: var(--color-surface-soft); color: var(--color-text-muted); }
+.review-sheet .order-notice { margin-bottom: 12px; }
+.order-action-panel { display: grid; gap: 12px; padding: 16px; }
+.order-action-done { margin: 0; color: #9fd3a8; font-size: .8rem; font-weight: 700; }
+.commerce-status { margin: 0; padding: 0 4px; color: var(--color-text-muted); font-size: .72rem; }
+.commerce-status b { color: var(--color-text); font-weight: 680; }
+.commerce-status small { color: var(--color-text-subtle); }
 
 .range-scroll { display: flex; gap: 7px; overflow-x: auto; padding: 2px; scrollbar-width: none; }
 .range-scroll::-webkit-scrollbar { display: none; }
@@ -188,6 +192,8 @@
 .history-row { width: 100%; min-height: 82px; display: grid; grid-template-columns: 42px 10px 1fr auto; align-items: center; gap: 10px; padding: 0 3px; border: 0; border-bottom: 1px solid var(--color-border); background: transparent; color: var(--color-text); text-align: left; }
 .history-row > time { color: var(--color-text-muted); font-size: .71rem; }
 .history-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--color-accent); }
+.history-dot-claimed { background: var(--color-text-muted); }
+.history-dot-production_completed { background: #9fd3a8; }
 .history-copy { min-width: 0; display: grid; gap: 7px; }
 .history-copy > span { display: flex; align-items: center; gap: 8px; }
 .history-copy small { overflow: hidden; color: var(--color-text-muted); text-overflow: ellipsis; white-space: nowrap; }
@@ -229,6 +235,7 @@
 .scanner-instruction strong { font-size: .95rem; }
 .scanner-instruction span { color: rgba(255,255,255,.58); font-size: .73rem; }
 .camera-start { position: absolute; z-index: 4; left: 18px; right: 18px; bottom: calc(22px + env(safe-area-inset-bottom)); display: grid; gap: 9px; }
+.scanner-manual-switch { position: absolute; z-index: 4; left: 18px; right: 18px; bottom: calc(18px + env(safe-area-inset-bottom)); display: grid; }
 .manual-link { min-height: 46px; border: 0; background: transparent; color: rgba(255,255,255,.66); font-size: .75rem; text-decoration: underline; text-underline-offset: 4px; }
 .manual-panel { position: absolute; z-index: 8; left: 12px; right: 12px; bottom: var(--safe-bottom); display: grid; gap: 13px; padding: 10px 20px 15px; border: 1px solid var(--color-border); border-radius: var(--radius-xl); background: rgba(24,25,27,.97); box-shadow: var(--shadow-sheet); }
 .sheet-handle { width: 36px; height: 4px; margin: 0 auto 5px; border-radius: 99px; background: rgba(255,255,255,.16); }

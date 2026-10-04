@@ -70,7 +70,7 @@ export function OrdersScreen({ service, workflow, navigate }: { service: OrderSe
           </div>
         )}
       </div>}
-      <aside className="handover-note"><div><strong>Transfer cu acceptare</strong><p>Responsabilitatea rămâne la tine până când colegul acceptă.</p></div><span className="coming-soon">În curând</span></aside>
+      <aside className="handover-note"><div><strong>Predare automată</strong><p>Când finalizezi etapa, comanda trece la etapa următoare și apare la „Predate”.</p></div></aside>
     </div>
   );
 }

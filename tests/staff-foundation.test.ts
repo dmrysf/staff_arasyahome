@@ -69,10 +69,10 @@ test("successful demo QR flow waits for confirmed mutation", async () => {
   const services = createDemoServices();
   await services.auth.login({ username: "test", password: "test" });
   const order = await services.orders.resolveQr("arasya:61833");
-  const updated = await services.orders.confirmStageTransition(order.id, { expectedVersion: order.version, idempotencyKey: "request-success" });
+  const updated = await services.orders.confirmStageTransition(order.id, { expectedVersion: order.productionVersion, idempotencyKey: "request-success" });
   const workflow = await services.workflow.getCurrent();
-  assert.equal(getStageById(workflow, updated.productionStageId)?.label, "Pregătire material");
-  assert.equal(updated.version, order.version + 1);
+  assert.equal(getStageById(workflow, updated.productionStageId)?.label, "Primire atelier");
+  assert.equal(updated.productionVersion, order.productionVersion + 1);
 });
 
 test("invalid QR and expired session remain explicit failures", async () => {
@@ -91,19 +91,38 @@ test("camera denial maps to a Romanian recovery state", () => {
 
 test("concurrent versions reject stale confirmations", async () => {
   const services = createDemoServices();
-  const order = await services.orders.resolveQr("61833");
-  await services.orders.confirmStageTransition(order.id, { expectedVersion: order.version, idempotencyKey: "first" });
+  const order = await services.orders.resolveQr("62001");
+  await services.orders.claim(order.id, { expectedVersion: order.productionVersion, idempotencyKey: "first" });
   await assert.rejects(
-    services.orders.confirmStageTransition(order.id, { expectedVersion: order.version, idempotencyKey: "stale" }),
+    services.orders.claim(order.id, { expectedVersion: order.productionVersion, idempotencyKey: "stale" }),
     (error: unknown) => error instanceof StaffServiceError && error.code === "ORDER_CHANGED",
   );
+});
+
+test("scanner retries a transient submit failure with the same idempotency key and maps conflicts to reload", async () => {
+  const services = createDemoServices();
+  const order = await services.orders.resolveQr("61833");
+  const confirming = scannerReducer({ status: "review", order }, { type: "OPEN_CONFIRMATION" });
+  const submitting = scannerReducer(confirming, { type: "SUBMIT", idempotencyKey: "key-1" });
+  assert.equal(submitting.status === "submitting" && submitting.action, "complete_stage");
+  const failed = scannerReducer(submitting, { type: "SUBMIT_FAILED", error: new StaffServiceError("REQUEST_TIMEOUT") });
+  const retried = scannerReducer(failed, { type: "RETRY_SUBMIT" });
+  assert.equal(retried.status, "submitting");
+  assert.equal(retried.status === "submitting" && retried.idempotencyKey, "key-1");
+  const conflict = scannerReducer(submitting, { type: "SUBMIT_FAILED", error: new StaffServiceError("ORDER_ALREADY_CLAIMED") });
+  assert.equal(conflict.status === "error" && conflict.recovery, "reload");
+  assert.equal(scannerReducer(conflict, { type: "RETRY_SUBMIT" }).status, "error");
+  const succeeded = scannerReducer(retried, { type: "SUBMIT_SUCCEEDED", order });
+  assert.equal(succeeded.status === "success" && succeeded.action, "complete_stage");
+  const blocked = { ...order, employeeAllowedAction: undefined, employeeActionBlockedReason: "claimed_by_other" as const };
+  assert.equal(scannerReducer({ status: "review", order: blocked }, { type: "OPEN_CONFIRMATION" }).status, "review");
 });
 
 test("home summary comes from ActivityService and unavailable values remain neutral", async () => {
   const services = createDemoServices();
   const summary = await loadTodaySummary(services.activity);
-  assert.equal(summary.inProgress, 6);
-  assert.equal(summary.handedOver, 7);
+  assert.equal(summary.inProgress, 1);
+  assert.equal(summary.handedOver, 8);
   assert.equal(formatHomeMetric(undefined), "—");
   assert.equal(formatHomeMetric(Number.NaN), "—");
 });

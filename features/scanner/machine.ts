@@ -1,4 +1,4 @@
-import type { StaffOrder, StaffServiceError } from "../../domain/models";
+import type { OrderActionId, StaffOrder, StaffServiceError } from "../../domain/models";
 
 export type ScannerState =
   | { status: "idle" }
@@ -8,9 +8,9 @@ export type ScannerState =
   | { status: "resolving"; token: string }
   | { status: "review"; order: StaffOrder }
   | { status: "confirming"; order: StaffOrder }
-  | { status: "submitting"; order: StaffOrder; idempotencyKey: string }
-  | { status: "success"; order: StaffOrder }
-  | { status: "error"; error: StaffServiceError; recovery: "scan" | "manual" | "reload" | "login" };
+  | { status: "submitting"; order: StaffOrder; idempotencyKey: string; action: OrderActionId }
+  | { status: "success"; order: StaffOrder; action: OrderActionId }
+  | { status: "error"; error: StaffServiceError; recovery: "scan" | "manual" | "reload" | "login"; failedSubmission?: { order: StaffOrder; idempotencyKey: string; action: OrderActionId } };
 
 export type ScannerEvent =
   | { type: "REQUEST_CAMERA" }
@@ -25,15 +25,20 @@ export type ScannerEvent =
   | { type: "CANCEL_CONFIRMATION" }
   | { type: "SUBMIT"; idempotencyKey: string }
   | { type: "SUBMIT_SUCCEEDED"; order: StaffOrder }
+  | { type: "RETRY_SUBMIT" }
   | { type: "SUBMIT_FAILED"; error: StaffServiceError }
   | { type: "RESET" }
   | { type: "OPEN_MANUAL" };
 
 function recoveryFor(error: StaffServiceError): "scan" | "manual" | "reload" | "login" {
-  if (error.code === "SESSION_EXPIRED") return "login";
-  if (error.code === "ORDER_CHANGED") return "reload";
+  if (error.code === "SESSION_EXPIRED" || error.code === "NO_SESSION" || error.code === "ACCOUNT_INACTIVE") return "login";
+  if (["ORDER_CHANGED", "ORDER_ALREADY_CLAIMED", "INVALID_STAGE_TRANSITION", "IDEMPOTENCY_CONFLICT"].includes(error.code)) return "reload";
   if (["CAMERA_PERMISSION_DENIED", "CAMERA_UNAVAILABLE", "NO_CAMERA_DEVICE", "AUTOMATIC_SCAN_UNAVAILABLE"].includes(error.code)) return "manual";
   return "scan";
+}
+
+export function isTransient(error: StaffServiceError) {
+  return ["NETWORK_UNAVAILABLE", "REQUEST_TIMEOUT", "SERVICE_UNAVAILABLE", "SERVER_ERROR"].includes(error.code);
 }
 
 export const initialScannerState: ScannerState = { status: "idle" };
@@ -61,11 +66,21 @@ export function scannerReducer(state: ScannerState, event: ScannerEvent): Scanne
     case "CANCEL_CONFIRMATION":
       return state.status === "confirming" ? { status: "review", order: state.order } : state;
     case "SUBMIT":
-      return state.status === "confirming" ? { status: "submitting", order: state.order, idempotencyKey: event.idempotencyKey } : state;
+      return state.status === "confirming" && state.order.employeeAllowedAction
+        ? { status: "submitting", order: state.order, idempotencyKey: event.idempotencyKey, action: state.order.employeeAllowedAction.id }
+        : state;
     case "SUBMIT_SUCCEEDED":
-      return state.status === "submitting" ? { status: "success", order: event.order } : state;
+      return state.status === "submitting" ? { status: "success", order: event.order, action: state.action } : state;
     case "SUBMIT_FAILED":
-      return state.status === "submitting" ? { status: "error", error: event.error, recovery: recoveryFor(event.error) } : state;
+      return state.status === "submitting"
+        ? { status: "error", error: event.error, recovery: recoveryFor(event.error), failedSubmission: { order: state.order, idempotencyKey: state.idempotencyKey, action: state.action } }
+        : state;
+    case "RETRY_SUBMIT":
+      // A transient failure is retried with the same idempotency key: the server returns the
+      // original committed result if the first attempt actually succeeded.
+      return state.status === "error" && state.failedSubmission && isTransient(state.error)
+        ? { status: "submitting", ...state.failedSubmission }
+        : state;
     case "OPEN_MANUAL":
       return state.status === "scanning" || state.status === "idle" || state.status === "error" ? { status: "idle" } : state;
     case "RESET":

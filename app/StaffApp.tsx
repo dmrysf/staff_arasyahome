@@ -92,7 +92,7 @@ export function StaffApp({ initialRoute, mode, apiBaseUrl }: { initialRoute: str
   let screen = <HomeScreen employee={session.employee} activityService={services.activity} navigate={navigate} />;
   if (guardedRoute === "/scan") screen = <ScannerScreen service={services.orders} workflow={workflow} mode={mode} navigate={navigate} onSessionExpired={() => expireSession(new StaffServiceError("SESSION_EXPIRED"))} />;
   else if (guardedRoute === "/orders") screen = <OrdersScreen service={services.orders} workflow={workflow} navigate={navigate} />;
-  else if (orderId) screen = <OrderDetailScreen orderId={orderId} service={services.orders} workflow={workflow} navigate={navigate} />;
+  else if (orderId) screen = <OrderDetailScreen key={orderId} orderId={orderId} service={services.orders} workflow={workflow} navigate={navigate} onSessionExpired={() => expireSession(new StaffServiceError("SESSION_EXPIRED"))} />;
   else if (guardedRoute === "/history") screen = <HistoryScreen service={services.activity} navigate={navigate} />;
   else if (guardedRoute === "/profile") screen = <ProfileScreen employee={session.employee} mode={services.mode} onLogout={logout} />;
 

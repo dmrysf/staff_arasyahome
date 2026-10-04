@@ -35,8 +35,14 @@ function createNativeDecoder(): QrDecoder | null {
 }
 
 export async function loadFallbackQrDecoder(): Promise<QrDecoder | null> {
-  // Future QR packages are lazy-imported only here; no fallback library ships in V1.1.
-  return null;
+  // The only lazy import of the fallback library: it is fetched after the camera tap,
+  // and only on devices without a native QR BarcodeDetector.
+  try {
+    const { JsQrFallbackDecoder } = await import("./jsqrDecoder");
+    return new JsQrFallbackDecoder();
+  } catch {
+    return null;
+  }
 }
 
 type DecoderSelectionOptions = {

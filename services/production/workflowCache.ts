@@ -10,12 +10,24 @@ export type WorkflowStorage = Pick<Storage, "getItem" | "setItem" | "removeItem"
 export const LEGACY_WORKFLOW_CACHE_KEY = "arasya_staff_workflow_catalog_v1";
 const CACHE_PREFIX = `${LEGACY_WORKFLOW_CACHE_KEY}::`;
 
+declare const __STAFF_E2E_LOOPBACK_API__: boolean | undefined;
+
+/**
+ * Only the dedicated `vite build --mode e2e` artifact may target a loopback HTTP API
+ * (local PHP test server). Production, Preview and unit-test builds define it false,
+ * so the branch is removed from deployable bundles.
+ */
+function allowsLoopbackHttp(url: URL): boolean {
+  if (typeof __STAFF_E2E_LOOPBACK_API__ === "undefined" || !__STAFF_E2E_LOOPBACK_API__) return false;
+  return url.protocol === "http:" && (url.hostname === "127.0.0.1" || url.hostname === "localhost");
+}
+
 export function normalizeProductionApiBaseUrl(rawValue: string): string | null {
   const raw = rawValue.trim();
   if (!raw) return null;
   try {
     const url = new URL(raw);
-    if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || (url.pathname !== "/" && url.pathname !== "")) return null;
+    if ((url.protocol !== "https:" && !allowsLoopbackHttp(url)) || url.username || url.password || url.search || url.hash || (url.pathname !== "/" && url.pathname !== "")) return null;
     return url.origin;
   } catch {
     return null;

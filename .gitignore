@@ -44,3 +44,8 @@ yarn-error.log*
 # Operations API local/runtime secrets and logs
 /operations-api/config/config.php
 /operations-api/var/
+
+# isolated real-API browser test artifact and fixture
+/dist-e2e/
+/e2e/.real-api-fixture.json
+/e2e/.runtime/

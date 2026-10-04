@@ -9,7 +9,12 @@ const presentations: Record<ServiceErrorCode, ErrorPresentation> = {
   INVALID_QR: { title: "Cod QR invalid", message: "Codul scanat nu este un cod de comandă recunoscut.", action: "Scanează din nou" },
   UNKNOWN_QR: { title: "Cod QR necunoscut", message: "Nu am putut asocia acest cod cu o comandă.", action: "Scanează din nou" },
   EXPIRED_QR: { title: "Cod QR expirat", message: "Folosește codul actual al comenzii sau caută manual.", action: "Caută manual" },
-  ORDER_NOT_FOUND: { title: "Comanda nu a fost găsită", message: "Verifică numărul introdus și încearcă din nou.", action: "Încearcă din nou" },
+  ORDER_NOT_FOUND: { title: "Comanda nu a fost găsită", message: "Comanda nu există sau nu este la etapele tale. Verifică numărul și încearcă din nou.", action: "Încearcă din nou" },
+  ORDER_ALREADY_CLAIMED: { title: "Comanda este preluată", message: "Un coleg lucrează deja la această comandă.", action: "Scanează altă comandă" },
+  ORDER_AMBIGUOUS: { title: "Mai multe comenzi", message: "Mai multe comenzi au acest număr. Scanează codul QR sau scrie și sursa, de exemplu trendhome:61833.", action: "Încearcă din nou" },
+  INVALID_ORDER_CODE: { title: "Cod invalid", message: "Folosește doar numărul comenzii, fără spații sau simboluri speciale.", action: "Încearcă din nou" },
+  INVALID_STAGE_TRANSITION: { title: "Etapa nu poate fi finalizată", message: "Comanda trebuie preluată la etapa curentă sau este deja finalizată.", action: "Reîncarcă" },
+  IDEMPOTENCY_CONFLICT: { title: "Acțiune neconfirmată", message: "Cererea nu a putut fi confirmată în siguranță. Reîncarcă și încearcă din nou.", action: "Reîncarcă" },
   ORDER_UNAVAILABLE: { title: "Comanda nu este disponibilă", message: "Comanda a fost anulată sau nu mai poate fi procesată.", action: "Scanează altă comandă" },
   ORDER_PRODUCTS_UNAVAILABLE: { title: "Produse indisponibile", message: "Comanda nu conține produse disponibile pentru producție.", action: "Scanează din nou" },
   ORDER_CHANGED: { title: "Comanda s-a modificat", message: "Alt coleg a actualizat comanda între timp. Reîncarcă înainte de a continua.", action: "Reîncarcă" },
@@ -26,7 +31,7 @@ const presentations: Record<ServiceErrorCode, ErrorPresentation> = {
   SERVICE_UNAVAILABLE: { title: "Serviciu indisponibil", message: "Serviciul nu este disponibil momentan.", action: "Reîncearcă" },
   CSRF_INVALID: { title: "Acțiune neconfirmată", message: "Nu am putut confirma acțiunea în siguranță. Încearcă din nou.", action: "Încearcă din nou" },
   CONFIGURATION_ERROR: { title: "Serviciul nu este configurat", message: "Conexiunea cu serviciul Staff lipsește. Contactează administratorul.", action: "Reîncearcă" },
-  WORKFLOW_UNAVAILABLE: { title: "Flux indisponibil", message: "Catalogul etapelor de producție nu poate fi încărcat momentan.", action: "Reîncearcă" },
+  WORKFLOW_UNAVAILABLE: { title: "Flux indisponibil", message: "Catalogul etapelor de producție nu poate fi încărcat momentan. Starea comenzii nu a fost schimbată.", action: "Reîncearcă" },
 };
 
 export function getErrorPresentation(error: unknown): ErrorPresentation {

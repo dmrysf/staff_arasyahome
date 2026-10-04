@@ -1,4 +1,5 @@
-import { StaffServiceError, type Employee, type ServiceErrorCode } from "../../domain/models";
+import { StaffServiceError, type ActivityAction, type ActivityEntry, type ActivityPage, type Employee, type ServiceErrorCode } from "../../domain/models";
+import { isOrderActionBlockedReason, isOrderActionId, orderActionLabels } from "../../domain/orderActions";
 import type { ActivityService, AuthService, EmployeeService, OrderService, ServiceBundle, Session } from "../contracts";
 import { createBrowserWorkflowCache, createUnavailableWorkflowCache, normalizeProductionApiBaseUrl, type WorkflowCache } from "./workflowCache";
 import { createProductionWorkflowService } from "./workflowService";
@@ -24,6 +25,16 @@ const backendErrorCodes: Partial<Record<string, ServiceErrorCode>> = {
   WORKFLOW_UNAVAILABLE: "WORKFLOW_UNAVAILABLE",
   ORDER_CHANGED: "ORDER_CHANGED",
   ORDER_NOT_FOUND: "ORDER_NOT_FOUND",
+  ORDER_UNAVAILABLE: "ORDER_UNAVAILABLE",
+  ORDER_ALREADY_CLAIMED: "ORDER_ALREADY_CLAIMED",
+  ORDER_AMBIGUOUS: "ORDER_AMBIGUOUS",
+  INVALID_LOOKUP_CODE: "INVALID_ORDER_CODE",
+  INVALID_STAGE_TRANSITION: "INVALID_STAGE_TRANSITION",
+  IDEMPOTENCY_CONFLICT: "IDEMPOTENCY_CONFLICT",
+  SOURCE_STAGE_UNKNOWN: "WORKFLOW_UNAVAILABLE",
+  INVALID_QR: "INVALID_QR",
+  UNKNOWN_QR: "UNKNOWN_QR",
+  EXPIRED_QR: "EXPIRED_QR",
 };
 
 function objectValue(value: unknown): Record<string, unknown> {
@@ -33,6 +44,22 @@ function objectValue(value: unknown): Record<string, unknown> {
 
 function stringValue(value: unknown) {
   if (typeof value !== "string" || !value) throw new StaffServiceError("SERVER_ERROR");
+  return value;
+}
+
+function timestampValue(value: unknown) {
+  const text = stringValue(value);
+  if (!Number.isFinite(Date.parse(text))) throw new StaffServiceError("SERVER_ERROR");
+  return text;
+}
+
+function positiveInteger(value: unknown) {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) throw new StaffServiceError("SERVER_ERROR");
+  return value;
+}
+
+function nonNegativeNumber(value: unknown) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) throw new StaffServiceError("SERVER_ERROR");
   return value;
 }
 
@@ -129,16 +156,28 @@ export function mapProductionOrder(value: unknown): import("../../domain/models"
     productionStageId: stringValue(raw.productionStageId),
     products: raw.products.map(mapProductionOrderItem),
     status: mappedStatus,
-    updatedAt: stringValue(raw.updatedAt),
+    updatedAt: timestampValue(raw.updatedAt),
     version,
+    productionVersion: positiveInteger(raw.productionVersion),
   };
+
+  if (raw.employeeAllowedAction != null) {
+    const action = objectValue(raw.employeeAllowedAction);
+    if (!isOrderActionId(action.id)) throw new StaffServiceError("SERVER_ERROR");
+    order.employeeAllowedAction = { id: action.id, label: orderActionLabels[action.id] };
+  }
+  if (raw.employeeActionBlockedReason != null) {
+    if (!isOrderActionBlockedReason(raw.employeeActionBlockedReason) || order.employeeAllowedAction) throw new StaffServiceError("SERVER_ERROR");
+    order.employeeActionBlockedReason = raw.employeeActionBlockedReason;
+  }
+  if (raw.productionCompletedAt != null) order.productionCompletedAt = timestampValue(raw.productionCompletedAt);
 
   if (raw.sourceCommerceStatus != null) {
     const scs = objectValue(raw.sourceCommerceStatus);
     order.sourceCommerceStatus = { code: stringValue(scs.code), label: stringValue(scs.label) };
   }
   if (raw.productionNotes != null) order.productionNotes = stringValue(raw.productionNotes);
-  if (raw.acceptedAt != null) order.acceptedAt = stringValue(raw.acceptedAt);
+  if (raw.acceptedAt != null) order.acceptedAt = timestampValue(raw.acceptedAt);
 
   if (raw.employeeRelation != null) {
     const rel = objectValue(raw.employeeRelation);
@@ -149,7 +188,7 @@ export function mapProductionOrder(value: unknown): import("../../domain/models"
     order.employeeRelation = {
       employeeUuid: stringValue(rel.employeeUuid),
       type: relType as import("../../domain/models").EmployeeOrderRelationType,
-      lastActionAt: stringValue(rel.lastActionAt),
+      lastActionAt: timestampValue(rel.lastActionAt),
     };
   }
 
@@ -161,8 +200,8 @@ export function mapProductionOrder(value: unknown): import("../../domain/models"
     }
     order.freshness = {
       status: freshStatus as "fresh" | "stale" | "source_unavailable",
-      sourceChangedAt: stringValue(fresh.sourceChangedAt),
-      lastSourceSeenAt: stringValue(fresh.lastSourceSeenAt),
+      sourceChangedAt: timestampValue(fresh.sourceChangedAt),
+      lastSourceSeenAt: timestampValue(fresh.lastSourceSeenAt),
     };
   }
 
@@ -175,6 +214,47 @@ export function mapOrderPage(value: unknown): import("../../domain/models").Orde
   return {
     items: raw.items.map(mapProductionOrder),
     nextCursor: raw.nextCursor != null ? stringValue(raw.nextCursor) : undefined,
+  };
+}
+
+const activityActions = new Set<ActivityAction>(["claimed", "stage_completed", "production_completed"]);
+
+export function mapActivityEntry(value: unknown): ActivityEntry {
+  const raw = objectValue(value);
+  const action = raw.action;
+  if (typeof action !== "string" || !activityActions.has(action as ActivityAction)) throw new StaffServiceError("SERVER_ERROR");
+  const source = stringValue(raw.source);
+  const entry: ActivityEntry = {
+    id: stringValue(raw.id),
+    occurredAt: timestampValue(raw.occurredAt),
+    action: action as ActivityAction,
+    orderId: stringValue(raw.orderId),
+    orderNumber: stringValue(raw.orderNumber),
+    source: ["trendhome", "outletperdele", "trendyol", "b2b", "marketplace"].includes(source) ? source as ActivityEntry["source"] : "unknown",
+    fromStageId: stringValue(raw.fromStageId),
+    fromStageLabelSnapshot: stringValue(raw.fromStageLabelSnapshot),
+  };
+  if (raw.toStageId != null || raw.toStageLabelSnapshot != null) {
+    entry.toStageId = stringValue(raw.toStageId);
+    entry.toStageLabelSnapshot = stringValue(raw.toStageLabelSnapshot);
+  }
+  if (action === "stage_completed" && !entry.toStageId) throw new StaffServiceError("SERVER_ERROR");
+  if (raw.meters != null) entry.meters = nonNegativeNumber(raw.meters);
+  return entry;
+}
+
+export function mapActivityPage(value: unknown): ActivityPage {
+  const raw = objectValue(value);
+  if (!Array.isArray(raw.items)) throw new StaffServiceError("SERVER_ERROR");
+  const summary = objectValue(raw.summary);
+  const count = (item: unknown) => {
+    if (typeof item !== "number" || !Number.isInteger(item) || item < 0) throw new StaffServiceError("SERVER_ERROR");
+    return item;
+  };
+  return {
+    items: raw.items.map(mapActivityEntry),
+    nextCursor: raw.nextCursor != null ? stringValue(raw.nextCursor) : undefined,
+    summary: { processed: count(summary.processed), meters: nonNegativeNumber(summary.meters), handedOver: count(summary.handedOver), inProgress: count(summary.inProgress) },
   };
 }
 
@@ -307,8 +387,8 @@ export function createProductionServices(apiBaseUrl: string, options: Production
   };
   const employee: EmployeeService = { getCurrentEmployee: () => http.request("/employees/me", {}, mapProductionEmployee) };
   const orders: OrderService = {
-    resolveQr: (token, requestOptions) => http.request("/orders/resolve-qr", { method: "POST", body: JSON.stringify({ token }), signal: requestOptions?.signal }),
-    lookup: (code, requestOptions) => http.request(`/orders/lookup?code=${encodeURIComponent(code)}`, { signal: requestOptions?.signal }),
+    resolveQr: (token, requestOptions) => http.request("/orders/resolve-qr", { method: "POST", body: JSON.stringify({ token }), signal: requestOptions?.signal }, mapProductionOrder),
+    lookup: (code, requestOptions) => http.request(`/orders/lookup?code=${encodeURIComponent(code)}`, { signal: requestOptions?.signal }, mapProductionOrder),
     listMine: (requestOptions) => {
       let q = "";
       if (requestOptions?.cursor) q += `?cursor=${encodeURIComponent(requestOptions.cursor)}`;
@@ -316,10 +396,20 @@ export function createProductionServices(apiBaseUrl: string, options: Production
       return http.request(`/orders/mine${q}`, { signal: requestOptions?.signal }, mapOrderPage);
     },
     getById: (id, requestOptions) => http.request(`/orders/${encodeURIComponent(id)}`, { signal: requestOptions?.signal }, mapProductionOrder),
-    confirmStageTransition: (id, input, requestOptions) => http.request(`/orders/${encodeURIComponent(id)}/transition`, { method: "POST", body: JSON.stringify({ expectedVersion: input.expectedVersion }), headers: { "Idempotency-Key": input.idempotencyKey }, signal: requestOptions?.signal }),
+    claim: (id, input, requestOptions) => http.request(`/orders/${encodeURIComponent(id)}/claim`, { method: "POST", body: JSON.stringify({ expectedVersion: input.expectedVersion }), headers: { "Idempotency-Key": input.idempotencyKey }, signal: requestOptions?.signal }, mapProductionOrder),
+    confirmStageTransition: (id, input, requestOptions) => http.request(`/orders/${encodeURIComponent(id)}/transition`, { method: "POST", body: JSON.stringify({ expectedVersion: input.expectedVersion }), headers: { "Idempotency-Key": input.idempotencyKey }, signal: requestOptions?.signal }, mapProductionOrder),
   };
   const activity: ActivityService = {
-    listMine: (input, requestOptions) => http.request(`/activity/mine?${new URLSearchParams(Object.entries(input).filter(([, value]) => value !== undefined) as string[][])}`, { signal: requestOptions?.signal }),
+    listMine: (input, requestOptions) => {
+      const query = new URLSearchParams({ range: input.range });
+      if (input.range === "custom") {
+        if (!input.from || !input.to) return Promise.reject(new StaffServiceError("SERVER_ERROR"));
+        query.set("from", input.from);
+        query.set("to", input.to);
+      }
+      if (input.cursor) query.set("cursor", input.cursor);
+      return http.request(`/activity/mine?${query}`, { signal: requestOptions?.signal }, mapActivityPage);
+    },
   };
   const workflow = createProductionWorkflowService({
     get: (etag, signal) => http.send("/production/workflow", { signal, headers: etag ? { "If-None-Match": etag } : undefined }),

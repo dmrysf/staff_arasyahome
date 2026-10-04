@@ -34,7 +34,6 @@ export type ProductionItem = {
   code?: string;
   variant?: string;
   color?: string;
-  dimensions?: string;
   measurements?: {
     width?: number;
     height?: number;
@@ -58,18 +57,31 @@ export type EmployeeOrderRelation = {
   lastActionAt: string;
 };
 
+/** The single operation the server currently allows this employee to perform. */
+export type OrderActionId = "claim" | "complete_stage" | "complete_production";
+
+export type OrderActionBlockedReason =
+  | "claimed_by_other"
+  | "stage_not_allowed"
+  | "production_completed"
+  | "order_unavailable"
+  | "permission_missing"
+  | "workflow_unavailable";
+
 export type StaffOrder = {
   id: string;
   source: OrderSource;
   orderNumber: string;
   productionStageId: string;
   sourceCommerceStatus?: { code: string; label: string };
-  employeeAllowedAction?: { id: string; label: string };
+  employeeAllowedAction?: { id: OrderActionId; label: string };
+  employeeActionBlockedReason?: OrderActionBlockedReason;
   products: ProductionItem[];
   productionNotes?: string;
   employeeRelation?: EmployeeOrderRelation;
   acceptedAt?: string;
   updatedAt: string;
+  productionCompletedAt?: string;
   status: "in_progress" | "handed_over" | "unavailable";
   freshness?: {
     status: "fresh" | "stale" | "source_unavailable";
@@ -77,6 +89,8 @@ export type StaffOrder = {
     lastSourceSeenAt: string;
   };
   version: number;
+  /** Production revision used as expectedVersion; commerce-only updates never change it. */
+  productionVersion: number;
 };
 
 export type OrderPage = {
@@ -84,16 +98,19 @@ export type OrderPage = {
   nextCursor?: string;
 };
 
+export type ActivityAction = "claimed" | "stage_completed" | "production_completed";
+
 export type ActivityEntry = {
   id: string;
   occurredAt: string;
+  action: ActivityAction;
   orderId: string;
   orderNumber: string;
   source: OrderSource;
   fromStageId: string;
   fromStageLabelSnapshot: string;
-  toStageId: string;
-  toStageLabelSnapshot: string;
+  toStageId?: string;
+  toStageLabelSnapshot?: string;
   meters?: number;
 };
 
@@ -101,23 +118,6 @@ export type ActivityPage = {
   items: ActivityEntry[];
   nextCursor?: string;
   summary: { processed: number; meters: number; handedOver: number; inProgress: number };
-};
-
-export type HandoverStatus =
-  | "owned"
-  | "transfer_requested"
-  | "transfer_accepted"
-  | "transfer_rejected"
-  | "transfer_cancelled";
-
-export type HandoverRequest = {
-  id: string;
-  orderId: string;
-  fromEmployeeUuid: string;
-  toEmployeeUuid: string;
-  status: HandoverStatus;
-  requestedAt: string;
-  resolvedAt?: string;
 };
 
 export type ServiceErrorCode =
@@ -131,6 +131,11 @@ export type ServiceErrorCode =
   | "ORDER_UNAVAILABLE"
   | "ORDER_PRODUCTS_UNAVAILABLE"
   | "ORDER_CHANGED"
+  | "ORDER_ALREADY_CLAIMED"
+  | "ORDER_AMBIGUOUS"
+  | "INVALID_ORDER_CODE"
+  | "INVALID_STAGE_TRANSITION"
+  | "IDEMPOTENCY_CONFLICT"
   | "AUTOMATIC_SCAN_UNAVAILABLE"
   | "NETWORK_UNAVAILABLE"
   | "REQUEST_TIMEOUT"

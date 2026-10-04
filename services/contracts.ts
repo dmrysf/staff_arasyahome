@@ -25,6 +25,13 @@ export interface OrderService {
   /** Returns only orders with a direct relationship to the authenticated employee. Production enforcement belongs to the server. */
   listMine(options?: { cursor?: string; limit?: number; signal?: AbortSignal }): Promise<OrderPage>;
   getById(id: string, options?: { signal?: AbortSignal }): Promise<StaffOrder>;
+  /** Claims the order at its current stage. The server decides eligibility. */
+  claim(
+    orderId: string,
+    input: { expectedVersion: number; idempotencyKey: string },
+    options?: { signal?: AbortSignal },
+  ): Promise<StaffOrder>;
+  /** Completes the current stage; the server alone chooses the next canonical stage. */
   confirmStageTransition(
     orderId: string,
     input: { expectedVersion: number; idempotencyKey: string },

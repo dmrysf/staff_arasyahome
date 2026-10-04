@@ -10,7 +10,7 @@ export function isUsableProductionItem(value: unknown): value is ProductionItem 
   return (
     isNonEmptyString(item.id) &&
     isNonEmptyString(item.name) &&
-    isNonEmptyString(item.code) &&
+    (item.code === undefined || isNonEmptyString(item.code)) &&
     typeof item.quantity === "number" &&
     Number.isFinite(item.quantity) &&
     item.quantity > 0

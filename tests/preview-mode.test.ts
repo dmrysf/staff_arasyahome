@@ -66,41 +66,53 @@ test("expired preview markers are removed and do not reconstruct sessions", asyn
   assert.equal(storage.getItem(PREVIEW_SESSION_KEY), null);
 });
 
-test("preview orders support QR, manual lookup, in-memory transitions, idempotency, and conflicts", async () => {
+test("preview orders support QR, manual lookup, server-equivalent transitions, idempotency, and conflicts", async () => {
   const services = createPreviewServices({ storage: new MemorySessionStorage(), now: () => Date.parse("2026-08-19T08:00:00Z") });
   await services.auth.login({ username: "demo", password: "demo" });
   const order = await services.orders.resolveQr("arasya:61833");
   assert.equal(order.orderNumber, "61833");
+  assert.equal(order.employeeAllowedAction?.id, "complete_stage");
   assert.equal((await services.orders.lookup("61829")).source, "outletperdele");
   assert.equal((await services.orders.lookup("TY-1048")).source, "trendyol");
 
-  const updated = await services.orders.confirmStageTransition(order.id, { expectedVersion: order.version, idempotencyKey: "preview-transition-1" });
+  const updated = await services.orders.confirmStageTransition(order.id, { expectedVersion: order.productionVersion, idempotencyKey: "preview-transition-1" });
   assert.equal(updated.productionStageId, "workshop-receiving");
   assert.equal(getStageById(await services.workflow.getCurrent(), updated.productionStageId)?.label, "Primire atelier");
-  assert.equal(updated.version, order.version + 1);
+  assert.equal(updated.productionVersion, order.productionVersion + 1);
+  assert.equal(updated.employeeRelation?.type, "handover_out");
+  assert.equal(updated.employeeAllowedAction, undefined);
+  assert.equal(updated.employeeActionBlockedReason, "stage_not_allowed");
   assert.deepEqual(
-    await services.orders.confirmStageTransition(order.id, { expectedVersion: order.version, idempotencyKey: "preview-transition-1" }),
+    await services.orders.confirmStageTransition(order.id, { expectedVersion: order.productionVersion, idempotencyKey: "preview-transition-1" }),
     updated,
   );
   await assert.rejects(
-    services.orders.confirmStageTransition(order.id, { expectedVersion: order.version, idempotencyKey: "preview-stale" }),
+    services.orders.confirmStageTransition(order.id, { expectedVersion: order.productionVersion + 1, idempotencyKey: "preview-transition-1" }),
+    (error: unknown) => error instanceof StaffServiceError && error.code === "IDEMPOTENCY_CONFLICT",
+  );
+  await assert.rejects(
+    services.orders.confirmStageTransition(order.id, { expectedVersion: order.productionVersion, idempotencyKey: "preview-stale" }),
     (error: unknown) => error instanceof StaffServiceError && error.code === "ORDER_CHANGED",
   );
   await assert.rejects(
     services.orders.resolveQr("invalid"),
     (error: unknown) => error instanceof StaffServiceError && error.code === "INVALID_QR",
   );
+  const today = await services.activity.listMine({ range: "today" });
+  assert.equal(today.items[0].action, "stage_completed");
+  assert.equal(today.items[0].fromStageLabelSnapshot, "Pregătire material");
 });
 
 test("preview activity and my orders stay behind service contracts", async () => {
   const services = createPreviewServices({ storage: new MemorySessionStorage() });
   const { items: orders } = await services.orders.listMine();
   assert.deepEqual(new Set(orders.map((order) => order.source)), new Set(["trendhome", "outletperdele", "trendyol"]));
-  assert.ok(orders.some((order) => order.status === "in_progress"));
-  assert.ok(orders.some((order) => order.status === "handed_over"));
-  assert.equal((await services.activity.listMine({ range: "today" })).summary.inProgress, 3);
+  assert.ok(orders.some((order) => matchesMyOrdersView(order, "in_progress")));
+  assert.ok(orders.some((order) => matchesMyOrdersView(order, "handed_over")));
+  assert.equal((await services.activity.listMine({ range: "today" })).summary.inProgress, 1);
   assert.ok((await services.activity.listMine({ range: "7days" })).items.length > 3);
   assert.ok((await services.activity.listMine({ range: "month" })).items.length > 5);
+  assert.equal((await services.activity.listMine({ range: "custom", from: "2026-08-18", to: "2026-08-18" })).items.length, 1);
 });
 
 test("Preview listMine returns only orders with a direct employee relationship", async () => {
@@ -112,38 +124,46 @@ test("Preview listMine returns only orders with a direct employee relationship",
   assert.equal(mine.every((order) => isEmployeeRelevantOrder(order, previewEmployee.employeeUuid)), true);
   assert.equal(mineIds.has("order-62001"), false);
   assert.equal(mineIds.has("order-62002"), false);
-  assert.equal(mine.find((order) => order.id === "order-61829")?.employeeRelation?.type, "updated");
+  assert.equal(mine.find((order) => order.id === "order-61829")?.employeeRelation?.type, "handover_out");
 });
 
-test("stage and department eligibility alone never make a Preview order visible", () => {
-  const unassignedSameStage = previewOrderDatabase.find((order) => order.id === "order-62001");
+test("stage eligibility allows scanning but never adds an order to My Orders", async () => {
+  const services = createPreviewServices({ storage: new MemorySessionStorage() });
+  const unclaimed = previewOrderDatabase.find((order) => order.id === "order-62001");
   const otherEmployeeSameStage = previewOrderDatabase.find((order) => order.id === "order-62002");
-  assert.ok(unassignedSameStage);
-  assert.ok(otherEmployeeSameStage);
-  assert.equal(unassignedSameStage.productionStageId, "waiting");
-  assert.equal(getNextStage(previewProductionWorkflow, unassignedSameStage.productionStageId)?.id, previewEmployee.allowedStageIds[0]);
-  assert.equal(isEmployeeRelevantOrder(unassignedSameStage, previewEmployee.employeeUuid), false);
+  assert.ok(unclaimed && otherEmployeeSameStage);
+  assert.equal(unclaimed.productionStageId, previewEmployee.allowedStageIds[0]);
   assert.equal(otherEmployeeSameStage.productionStageId, previewEmployee.allowedStageIds[0]);
-  assert.equal(isEmployeeRelevantOrder(otherEmployeeSameStage, previewEmployee.employeeUuid), false);
+  const other = await services.orders.lookup("62002");
+  assert.equal(other.employeeRelation, undefined);
+  assert.equal(other.employeeActionBlockedReason, "claimed_by_other");
+  await assert.rejects(services.orders.claim(other.id, { expectedVersion: other.productionVersion, idempotencyKey: "claim-other" }), (error: unknown) => error instanceof StaffServiceError && error.code === "ORDER_ALREADY_CLAIMED");
+  assert.equal(getNextStage(previewProductionWorkflow, "waiting")?.id, previewEmployee.allowedStageIds[0]);
 });
 
-test("a scanned Preview order becomes visible after the employee claims it", async () => {
+test("a scanned Preview order becomes visible after the employee claims it, then completes N -> N+1", async () => {
   const now = Date.parse("2026-08-19T09:00:00Z");
   const services = createPreviewServices({ storage: new MemorySessionStorage(), now: () => now });
   const unclaimed = await services.orders.resolveQr("62001");
+  assert.equal(unclaimed.employeeAllowedAction?.id, "claim");
   assert.equal((await services.orders.listMine()).items.some((order) => order.id === unclaimed.id), false);
+  await assert.rejects(services.orders.confirmStageTransition(unclaimed.id, { expectedVersion: unclaimed.productionVersion, idempotencyKey: "too-early" }), (error: unknown) => error instanceof StaffServiceError && error.code === "INVALID_STAGE_TRANSITION");
 
-  const claimed = await services.orders.confirmStageTransition(unclaimed.id, { expectedVersion: unclaimed.version, idempotencyKey: "claim-62001" });
+  const claimed = await services.orders.claim(unclaimed.id, { expectedVersion: unclaimed.productionVersion, idempotencyKey: "claim-62001" });
   assert.equal(claimed.employeeRelation?.employeeUuid, previewEmployee.employeeUuid);
   assert.equal(claimed.employeeRelation?.type, "claimed");
+  assert.equal(claimed.productionStageId, unclaimed.productionStageId);
+  assert.equal(claimed.employeeAllowedAction?.id, "complete_stage");
   assert.equal((await services.orders.listMine()).items.some((order) => order.id === unclaimed.id), true);
+  const completed = await services.orders.confirmStageTransition(claimed.id, { expectedVersion: claimed.productionVersion, idempotencyKey: "complete-62001" });
+  assert.equal(completed.productionStageId, getNextStage(previewProductionWorkflow, claimed.productionStageId)?.id);
 });
 
 test("My Orders views distinguish active, recent, and handed-over involvement", async () => {
   const { items: orders } = await createPreviewServices({ storage: new MemorySessionStorage() }).orders.listMine();
   assert.deepEqual(orders.filter((order) => matchesMyOrdersView(order, "in_progress")).map((order) => order.id), ["order-61833"]);
   assert.equal(orders.filter((order) => matchesMyOrdersView(order, "recent")).length, 3);
-  assert.deepEqual(orders.filter((order) => matchesMyOrdersView(order, "handed_over")).map((order) => order.id), ["order-61829", "order-trendyol-1048"]);
+  assert.deepEqual(orders.filter((order) => matchesMyOrdersView(order, "handed_over")).map((order) => order.id).sort(), ["order-61829", "order-trendyol-1048"]);
 });
 
 test("Preview listMine paginates correctly via cursor", async () => {
