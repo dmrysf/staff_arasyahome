@@ -33,6 +33,7 @@ final readonly class ManagementController
         private CsrfGuard $csrf,
         private Config $config,
         private RequestContext $context,
+        private ?ProductionOverviewService $production = null,
     ) {
     }
 
@@ -52,6 +53,7 @@ final readonly class ManagementController
                 $path === '/me' => $this->management->me($actor),
                 $path === '/dashboard' => $this->management->overview($actor),
                 $path === '/system' => $this->management->system($actor),
+                $path === '/production-overview' => ($this->production ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Production overview is not ready.'))->overview($actor, $this->filters($request, ['source'])),
                 $path === '/employees' => $this->management->listEmployees($actor, $this->filters($request, ['search', 'status', 'departmentId', 'application', 'roleId', 'cursor', 'limit'])),
                 $path === '/applications' => $this->management->applications($actor),
                 $path === '/permissions' => $this->management->permissions($actor),
