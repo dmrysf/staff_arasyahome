@@ -30,6 +30,7 @@ use Arasya\Operations\Integration\Trendyol\TrendyolClient;
 use Arasya\Operations\Integration\Trendyol\TrendyolSynchronizer;
 use Arasya\Operations\Management\ManagementController;
 use Arasya\Operations\Management\ManagementService;
+use Arasya\Operations\Management\ProductionOverviewService;
 use Arasya\Operations\Order\OperationalOrderController;
 use Arasya\Operations\Order\OrderAccessPolicy;
 use Arasya\Operations\Order\OrderOperationsService;
@@ -125,6 +126,7 @@ final class Container
                 $csrf,
                 $this->config,
                 $context,
+                new ProductionOverviewService($this->pdo, $authorization, $this->clock, $this->config),
             ),
         );
     }
