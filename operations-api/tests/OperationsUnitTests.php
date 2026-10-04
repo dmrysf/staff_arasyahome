@@ -411,7 +411,98 @@ test('B2B application access carries only its own baseline and no production per
     sort($baseline);
     expect($baseline === ['b2b.access', 'profile.view_self']);
     foreach (\Arasya\Operations\Iam\ApplicationAccess::PERMISSION_APPLICATION as $permission => $application) {
-        expect($application !== 'b2b' && !in_array($permission, $baseline, true));
+        expect(!in_array($permission, $baseline, true));
+        expect($application === 'b2b' ? str_starts_with($permission, 'b2b.companies.') : !str_starts_with($permission, 'b2b.'));
     }
     expect(!in_array('b2b.access', \Arasya\Operations\Iam\ApplicationAccess::baselineFor(['staff', 'dashboard']), true));
+});
+
+test('B2B company permissions need both B2B application access and the specific permission', function (): void {
+    $authorization = new AuthorizationService();
+    $identity = static fn (array $applications, array $permissions, bool $root = false): EmployeeIdentity => new EmployeeIdentity(
+        employeeUuid: '00000000-0000-4000-8000-0000000000b2', employeeCode: null, username: 'seller', usernameNormalized: 'seller', passwordHash: 'x',
+        displayName: 'Seller', departmentKey: 'vanzari', departmentName: 'Vânzări', departmentStatus: 'active', roleKey: 'employee', roleStatus: 'active',
+        status: 'active', permissions: $permissions, allowedStageIds: [], applications: $applications, isRoot: $root,
+    );
+    foreach (\Arasya\Operations\B2B\CompanyAccess::ALL as $permission) {
+        expect(\Arasya\Operations\Iam\ApplicationAccess::PERMISSION_APPLICATION[$permission] === 'b2b');
+        expect(!in_array($permission, \Arasya\Operations\Iam\ApplicationAccess::baselineFor(['staff', 'dashboard', 'b2b']), true));
+    }
+    $roleOnly = $identity(['dashboard'], ['dashboard.access', 'b2b.companies.view']);
+    expect(!$authorization->can($roleOnly, 'b2b.companies.view'));
+    expectApi('APPLICATION_ACCESS_DENIED', fn () => \Arasya\Operations\B2B\CompanyAccess::require($authorization, $roleOnly, 'b2b.companies.view'));
+    $gateOnly = $identity(['b2b'], ['b2b.access', 'profile.view_self']);
+    expectApi('UNAUTHORIZED_ACTION', fn () => \Arasya\Operations\B2B\CompanyAccess::require($authorization, $gateOnly, 'b2b.companies.view'));
+    $viewer = $identity(['b2b'], ['b2b.access', 'b2b.companies.view']);
+    \Arasya\Operations\B2B\CompanyAccess::require($authorization, $viewer, 'b2b.companies.view');
+    expectApi('UNAUTHORIZED_ACTION', fn () => \Arasya\Operations\B2B\CompanyAccess::require($authorization, $viewer, 'b2b.companies.create'));
+    expect(\Arasya\Operations\B2B\CompanyAccess::granted($authorization, $viewer) === ['b2b.companies.view']);
+    $root = $identity(['staff', 'dashboard', 'b2b'], ['b2b.access', ...\Arasya\Operations\B2B\CompanyAccess::ALL], true);
+    expect(\Arasya\Operations\B2B\CompanyAccess::granted($authorization, $root) === \Arasya\Operations\B2B\CompanyAccess::ALL);
+});
+
+test('B2B company input is normalized on the server and failures name fields, never values', function (): void {
+    $input = \Arasya\Operations\B2B\CompanyInput::class;
+    expect($input::normalizeTaxIdentifier(' ro 12.345-678 ', 'RO') === '12345678');
+    expect($input::normalizeTaxIdentifier('RO12345678', 'RO') === '12345678');
+    expect($input::normalizeTaxIdentifier('12345678', 'RO') === '12345678');
+    expect($input::normalizeTaxIdentifier('EL094014201', 'GR') === '094014201');
+    expect($input::normalizeTaxIdentifier('ROMANIA', 'RO') === 'ROMANIA');
+    expect($input::normalizeTaxIdentifier('1234567890', 'TR') === '1234567890');
+    expect($input::normalizeTaxIdentifier('de 123/456', 'DE') === '123456');
+    expect($input::normalizeTaxIdentifier('ș', 'RO') === null);
+    expect(\Arasya\Operations\B2B\CountryCodes::normalize(' ro ') === 'RO' && \Arasya\Operations\B2B\CountryCodes::normalize('XX') === null && \Arasya\Operations\B2B\CountryCodes::normalize('ROU') === null);
+    expect(count(\Arasya\Operations\B2B\CountryCodes::ALL) === 249);
+    expect(\Arasya\Operations\B2B\CompanyCommands::code(1) === 'B2B-000001' && \Arasya\Operations\B2B\CompanyCommands::code(1234567) === 'B2B-1234567');
+
+    $company = $input::company(['legalName' => '  S.C. Mobilă   Lux S.R.L. ', 'countryCode' => 'ro', 'taxIdentifier' => 'RO 123 456', 'website' => 'mobila.ro', 'internalNotes' => "Rând 1\r\nRând 2", 'displayName' => '  ']);
+    expect($company['legalName'] === 'S.C. Mobilă   Lux S.R.L.', 'legal text is preserved apart from outer whitespace');
+    expect($company['countryCode'] === 'RO' && $company['taxIdentifier'] === 'RO 123 456' && $company['taxIdentifierNormalized'] === '123456');
+    expect($company['website'] === 'https://mobila.ro' && $company['displayName'] === null && $company['internalNotes'] === "Rând 1\nRând 2");
+
+    $fields = static function (Closure $callback): array {
+        try {
+            $callback();
+        } catch (\Arasya\Operations\Http\ApiException $error) {
+            expect($error->errorCode === 'VALIDATION_FAILED' && $error->status === 422);
+            expect(!str_contains(json_encode($error->details), 'secret-value'));
+            return $error->details['fields'] ?? [];
+        }
+        throw new RuntimeException('Expected VALIDATION_FAILED.');
+    };
+    expect($fields(fn () => $input::company([])) === ['countryCode' => 'required', 'legalName' => 'required', 'taxIdentifier' => 'required']);
+    expect($fields(fn () => $input::company(['legalName' => str_repeat('a', 256), 'countryCode' => 'XX', 'taxIdentifier' => 'secret-value<>', 'website' => 'javascript:alert(1)']))
+        === ['countryCode' => 'invalid', 'legalName' => 'too_long', 'taxIdentifier' => 'invalid', 'website' => 'invalid']);
+    expect($fields(fn () => $input::company(['legalName' => "Line\nbreak", 'countryCode' => 'RO', 'taxIdentifier' => '1', 'internalNotes' => str_repeat('n', 5001)])) === ['internalNotes' => 'too_long', 'legalName' => 'invalid']);
+    expect($fields(fn () => $input::contact(['name' => 'Ana', 'email' => 'secret-value', 'phone' => '12', 'isPrimary' => 'yes'])) === ['email' => 'invalid', 'isPrimary' => 'invalid', 'phone' => 'invalid']);
+    $contact = $input::contact(['name' => ' Ana Pop ', 'email' => ' Ana.Pop@Example.RO ', 'phone' => '+40 721 000 111']);
+    expect($contact['email'] === 'ana.pop@example.ro' && $contact['phone'] === '+40 721 000 111' && $contact['isPrimary'] === false && $contact['jobTitle'] === null);
+    expect($fields(fn () => $input::address(['type' => 'warehouse', 'countryCode' => 'RO'])) === ['addressLine1' => 'required', 'city' => 'required', 'type' => 'invalid']);
+    expect($fields(fn () => $input::creation(['legalName' => 'X', 'countryCode' => 'RO', 'taxIdentifier' => '1', 'contact' => ['name' => ''], 'address' => ['unknown' => 1]])) === ['address' => 'invalid', 'contact.name' => 'required']);
+    $creation = $input::creation(['legalName' => 'X', 'countryCode' => 'TR', 'taxIdentifier' => '1234567890', 'contact' => null]);
+    expect($creation['contact'] === null && $creation['address'] === null);
+});
+
+test('B2B company data stays inside the B2B module and its activity is insert-only', function (): void {
+    $root = dirname(__DIR__) . '/src';
+    $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS));
+    $readers = [];
+    foreach ($files as $file) {
+        if (!$file->isFile() || $file->getExtension() !== 'php') {
+            continue;
+        }
+        $source = (string) file_get_contents($file->getPathname());
+        $relative = substr($file->getPathname(), strlen($root) + 1);
+        if (preg_match('/\bb2b_compan/', $source) === 1) {
+            $readers[] = $relative;
+        }
+        expect(preg_match('/\b(UPDATE|DELETE\s+FROM)\s+b2b_company_activity_events\b/i', $source) !== 1, "{$relative} must not change B2B activity");
+        if (!str_starts_with($relative, 'B2B/') && $relative !== 'Database/AuthMaintenance.php') {
+            expect(preg_match('/\bb2b_compan/', $source) !== 1, "{$relative} must not read B2B company data");
+        }
+    }
+    sort($readers);
+    expect($readers === ['B2B/CompanyCommands.php', 'B2B/CompanyQueries.php', 'Database/AuthMaintenance.php']);
+    $maintenance = (string) file_get_contents($root . '/Database/AuthMaintenance.php');
+    expect(preg_match_all('/b2b_compan\w+/', $maintenance, $tables) >= 1 && array_unique($tables[0]) === ['b2b_company_idempotency']);
 });

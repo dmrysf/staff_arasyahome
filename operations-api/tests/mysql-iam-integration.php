@@ -84,7 +84,8 @@ check(count($b2bPermission) === 1 && $b2bPermission[0]['category'] === 'applicat
 check($pdo->query("SELECT application_key, name, status, access_permission_key, sort_order FROM applications WHERE application_key <> 'b2b' ORDER BY application_key")->fetchAll() == $applicationsBefore, 'migration 008 leaves the existing applications unchanged');
 check($pdo->query("SELECT permission_key, role_grantable FROM permissions WHERE permission_key <> 'b2b.access' ORDER BY permission_key")->fetchAll() == $permissionsBefore, 'migration 008 leaves the existing permissions unchanged');
 check((int) $pdo->query("SELECT COUNT(*) FROM employee_application_access WHERE application_key = 'b2b'")->fetchColumn() === 0, 'migration 008 grants B2B access to nobody');
-check((int) $pdo->query("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name LIKE 'b2b%'")->fetchColumn() === 0, 'migration 008 creates no B2B business tables');
+// Business tables arrive only with migration 009 (B2B Companies V1); 008 itself creates no table.
+check(preg_match('/\b(CREATE|ALTER|DROP)\s+TABLE\b/i', (string) file_get_contents(dirname(__DIR__) . '/database/migrations/008_b2b_application.sql')) !== 1, 'migration 008 creates no B2B business tables');
 
 $container = new Container($config, $pdo);
 $kernel = $container->kernel();

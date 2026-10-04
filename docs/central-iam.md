@@ -143,4 +143,8 @@ Migration 008 is data only. It inserts the `b2b` application (`b2b.access`, sort
 
 Rollout order: back up the database, deploy `api-deploy` (2.7.0), run `php bin/migrate.php` and `php bin/seed-reference-data.php`, back up the private configuration and add `https://b2b.arasyahome.ro` to `ARASYA_ALLOWED_ORIGINS`, run `php bin/readiness.php` (expects three applications and the three origins), then deploy B2B. A code rollback to 2.6.0 keeps working on the 008 catalog: the extra application row is simply unused.
 
+## Migration 009: B2B company permissions
+
+Migration 009 (API 2.8.0) adds the B2B Companies V1 tables and four role-grantable permissions in category `b2b`: `b2b.companies.view`, `b2b.companies.create`, `b2b.companies.update` and `b2b.companies.manage_status`. No role receives them, and `b2b.access` keeps its meaning as the application grant. `ApplicationAccess::PERMISSION_APPLICATION` binds the four to the `b2b` application, exactly as the Staff production permissions are bound to `staff`, so a role carrying them is inert without B2B access. Because a non-root administrator can only grant permissions they hold, root composes the first B2B roles in the Dashboard. The company domain itself is documented in [b2b-companies.md](b2b-companies.md).
+
 Tests: `operations-api/tests/mysql-iam-integration.php` runs in CI on MySQL 8.4 and MariaDB 10.11 (151 checks). It covers the migration 008 upgrade path, the root invariant, privilege escalation, application access, shared sessions, CSRF/CORS, immediate authorization changes, password flows, the B2B application gate and audit hygiene.

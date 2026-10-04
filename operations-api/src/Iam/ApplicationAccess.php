@@ -40,6 +40,7 @@ final class ApplicationAccess
     /**
      * Staff production permissions are only usable inside the Staff application, even when a role
      * also carries them, so a Dashboard-only identity can never drive production through the API.
+     * Likewise the B2B company permissions are only usable with B2B application access.
      *
      * @var array<string, string>
      */
@@ -50,6 +51,10 @@ final class ApplicationAccess
         'orders.advance_stage' => self::STAFF,
         'orders.handover' => self::STAFF,
         'history.view_mine' => self::STAFF,
+        'b2b.companies.view' => self::B2B,
+        'b2b.companies.create' => self::B2B,
+        'b2b.companies.update' => self::B2B,
+        'b2b.companies.manage_status' => self::B2B,
     ];
 
     /** @param list<string> $applications @return list<string> */

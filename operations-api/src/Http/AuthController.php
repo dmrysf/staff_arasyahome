@@ -7,6 +7,7 @@ namespace Arasya\Operations\Http;
 use Arasya\Operations\Auth\AuthResult;
 use Arasya\Operations\Auth\AuthenticatedSession;
 use Arasya\Operations\Auth\AuthenticationService;
+use Arasya\Operations\B2B\CompanyAccess;
 use Arasya\Operations\Config\Config;
 use Arasya\Operations\Authorization\AuthorizationService;
 use Arasya\Operations\Employee\EmployeeSerializer;
@@ -108,6 +109,8 @@ final readonly class AuthController
                 'isRoot' => $employee->isRoot,
             ],
             'authorizationVersion' => $employee->authorizationVersion,
+            // B2B module permissions the identity can use right now; the server still checks every request.
+            'permissions' => CompanyAccess::granted($this->authorization, $employee),
         ]);
     }
 

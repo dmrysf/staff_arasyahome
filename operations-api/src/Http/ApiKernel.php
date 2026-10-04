@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Arasya\Operations\Http;
 
 use Arasya\Operations\Activity\ActivityController;
+use Arasya\Operations\B2B\CompanyController;
 use Arasya\Operations\Integration\SourceIngestionController;
 use Arasya\Operations\Management\ManagementController;
 use Arasya\Operations\Order\OperationalOrderController;
@@ -26,6 +27,7 @@ final readonly class ApiKernel
         private ?ActivityController $activity = null,
         private ?SourceIngestionController $sources = null,
         private ?ManagementController $management = null,
+        private ?CompanyController $b2bCompanies = null,
     ) {
     }
 
@@ -61,7 +63,11 @@ final readonly class ApiKernel
             return $this->secure($response, $request);
         } catch (ApiException $error) {
             $this->logger->log('warning', 'api_error', $request->requestId, ['route' => $request->path, 'method' => $request->method, 'status' => $error->status, 'code' => $error->errorCode, ...$this->context->logContext()]);
-            $response = Response::json(['error' => ['code' => $error->errorCode, 'message' => $error->getMessage(), 'requestId' => $request->requestId]], $error->status);
+            $body = ['code' => $error->errorCode, 'message' => $error->getMessage(), 'requestId' => $request->requestId];
+            if ($error->details !== []) {
+                $body['details'] = $error->details;
+            }
+            $response = Response::json(['error' => $body], $error->status);
             if (in_array($error->errorCode, ['SESSION_EXPIRED', 'ACCOUNT_INACTIVE'], true)) {
                 $response = $response->withHeaders(['Set-Cookie' => $this->cookies->clear()]);
             }
@@ -74,6 +80,9 @@ final readonly class ApiKernel
 
     private function matchDynamicRoutes(Request $request): Response
     {
+        if ($request->path === '/b2b/companies' || str_starts_with($request->path, '/b2b/companies/')) {
+            return ($this->b2bCompanies ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'B2B companies API is not ready.'))->handle($request);
+        }
         if (str_starts_with($request->path, '/management/')) {
             return ($this->management ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Management API is not ready.'))->handle($request);
         }

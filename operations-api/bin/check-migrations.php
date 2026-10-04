@@ -8,7 +8,7 @@ sort($files, SORT_STRING);
 if ($files === []) {
     throw new RuntimeException('No database migrations were found.');
 }
-$expected = ['departments', 'roles', 'permissions', 'role_permissions', 'employees', 'employee_stage_access', 'auth_sessions', 'auth_login_attempts', 'auth_rate_limit_buckets', 'auth_audit_events', 'production_workflows', 'production_stages', 'order_sources', 'operational_orders', 'operational_order_items', 'employee_order_relations', 'order_projection_receipts', 'order_qr_references', 'order_activity_events', 'order_operation_idempotency', 'api_rate_limit_buckets', 'applications', 'employee_application_access', 'employee_role_assignments', 'system_root_identity', 'iam_audit_events'];
+$expected = ['departments', 'roles', 'permissions', 'role_permissions', 'employees', 'employee_stage_access', 'auth_sessions', 'auth_login_attempts', 'auth_rate_limit_buckets', 'auth_audit_events', 'production_workflows', 'production_stages', 'order_sources', 'operational_orders', 'operational_order_items', 'employee_order_relations', 'order_projection_receipts', 'order_qr_references', 'order_activity_events', 'order_operation_idempotency', 'api_rate_limit_buckets', 'applications', 'employee_application_access', 'employee_role_assignments', 'system_root_identity', 'iam_audit_events', 'b2b_company_number_sequence', 'b2b_companies', 'b2b_company_contacts', 'b2b_company_addresses', 'b2b_company_activity_events', 'b2b_company_idempotency'];
 $schema = implode("\n", array_map(static fn (string $path): string => (string) file_get_contents($path), $files));
 foreach ($expected as $table) {
     if (preg_match('/CREATE TABLE IF NOT EXISTS\s+' . preg_quote($table, '/') . '\b/i', $schema) !== 1) {
@@ -30,5 +30,15 @@ foreach (['PRIMARY KEY (singleton_id)', 'CHECK (singleton_id = 1)', 'UNIQUE KEY 
     if (!str_contains($schema, $required)) {
         throw new RuntimeException("Root identity invariant is missing: {$required}");
     }
+}
+foreach (['UNIQUE KEY uq_b2b_companies_code', 'UNIQUE KEY uq_b2b_companies_tax_identifier (country_code, tax_identifier_normalized)', 'UNIQUE KEY uq_b2b_company_contacts_primary', 'UNIQUE KEY uq_b2b_company_addresses_primary (primary_company_uuid, primary_address_type)', 'company_number BIGINT UNSIGNED NOT NULL AUTO_INCREMENT'] as $required) {
+    if (!str_contains($schema, $required)) {
+        throw new RuntimeException("B2B company integrity constraint is missing: {$required}");
+    }
+}
+// B2B company records are never deleted through foreign keys: future orders and accounts must keep referencing them.
+$b2bSchema = (string) file_get_contents($root . '/database/migrations/009_b2b_companies.sql');
+if (preg_match('/ON DELETE (CASCADE|SET NULL)/i', $b2bSchema) === 1) {
+    throw new RuntimeException('B2B company tables must not cascade or null out on delete.');
 }
 fwrite(STDOUT, 'Migration sanity checks passed for ' . count($files) . " file(s).\n");

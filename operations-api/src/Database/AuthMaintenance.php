@@ -23,7 +23,7 @@ final readonly class AuthMaintenance
     ) {
     }
 
-    /** @return array{sessions: int, login_attempts: int, rate_limit_buckets: int, audit_events: int|null, idempotency_keys: int, api_rate_limit_buckets: int} */
+    /** @return array{sessions: int, login_attempts: int, rate_limit_buckets: int, audit_events: int|null, idempotency_keys: int, api_rate_limit_buckets: int, b2b_idempotency_keys: int} */
     public function run(bool $dryRun, ?DateTimeImmutable $now = null): array
     {
         $lock = new DatabaseAdvisoryLock($this->pdo, 'arasya_operations_maintenance');
@@ -42,6 +42,8 @@ final readonly class AuthMaintenance
                     : $this->pruneSimple('auth_audit_events', 'event_id', 'created_at', $this->cutoff($now, $this->auditRetentionDays), $dryRun),
                 'idempotency_keys' => $this->pruneIdempotency($this->cutoff($now, $this->idempotencyRetentionDays), $dryRun),
                 'api_rate_limit_buckets' => $this->pruneApiRateLimits($rateCutoff, $dryRun),
+                // Replay references for B2B company mutations; the companies and their activity are never pruned.
+                'b2b_idempotency_keys' => $this->pruneComposite('b2b_company_idempotency', ['employee_uuid', 'idempotency_key'], 'created_at', $this->cutoff($now, $this->idempotencyRetentionDays), $dryRun, false),
             ];
         } finally {
             $lock->release();

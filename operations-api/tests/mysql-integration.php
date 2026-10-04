@@ -94,6 +94,8 @@ try {
     $iamApplied = (int) $pdo->query("SELECT COUNT(*) FROM schema_migrations WHERE migration_name = '005_central_iam.sql'")->fetchColumn() === 1;
     // Migration 008 only inserts catalog rows into 005 tables, so it too may already be recorded.
     $b2bApplied = (int) $pdo->query("SELECT COUNT(*) FROM schema_migrations WHERE migration_name = '008_b2b_application.sql'")->fetchColumn() === 1;
+    // Migration 009 only adds B2B company tables that reference 001 employees, so it may already be recorded.
+    $companiesApplied = (int) $pdo->query("SELECT COUNT(*) FROM schema_migrations WHERE migration_name = '009_b2b_companies.sql'")->fetchColumn() === 1;
     $applied = $migrationRunner->migrate(dirname(__DIR__) . '/database/migrations');
     $expected = ['002_canonical_production_workflow.sql', '003_operational_orders.sql', '004_staff_operations.sql'];
     if (!$iamApplied) {
@@ -103,6 +105,9 @@ try {
     $expected[] = '007_production_owner_interventions.sql';
     if (!$b2bApplied) {
         $expected[] = '008_b2b_application.sql';
+    }
+    if (!$companiesApplied) {
+        $expected[] = '009_b2b_companies.sql';
     }
     if ($applied !== $expected) {
         throw new RuntimeException('An existing 001 schema did not apply exactly the pending migrations in order: ' . implode(', ', $applied));

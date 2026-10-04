@@ -11,6 +11,9 @@ use Arasya\Operations\Authorization\AuthorizationService;
 use Arasya\Operations\Auth\AuthenticationService;
 use Arasya\Operations\Auth\PdoLoginRateLimiter;
 use Arasya\Operations\Auth\PdoSessionRepository;
+use Arasya\Operations\B2B\CompanyCommands;
+use Arasya\Operations\B2B\CompanyController;
+use Arasya\Operations\B2B\CompanyQueries;
 use Arasya\Operations\Config\Config;
 use Arasya\Operations\Database\Connection;
 use Arasya\Operations\Employee\EmployeeAdminService;
@@ -131,6 +134,15 @@ final class Container
                 new ProductionOverviewService($this->pdo, $authorization, $this->clock, $this->config),
                 new OrderControlService($this->pdo, $authorization),
                 new OrderOwnershipService($this->pdo, $authorization, $this->employees, $workflows, new IamAuditLogger($this->pdo), $this->clock),
+            ),
+            new CompanyController(
+                new CompanyQueries($this->pdo, $authorization),
+                new CompanyCommands($this->pdo, $authorization, $this->clock),
+                $this->authentication,
+                $authorization,
+                $csrf,
+                $this->config,
+                $context,
             ),
         );
     }
