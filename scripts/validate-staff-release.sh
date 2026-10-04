@@ -13,8 +13,10 @@ commit="$(php -r '$r=json_decode(file_get_contents($argv[1]), true, flags: JSON_
   || fail "release.json commit is invalid."
 [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || fail "release.json commit is invalid."
 grep -q '/assets/' "$root/index.html" || fail "index.html does not reference Vite assets."
-while IFS= read -r asset; do [[ -f "$root/${asset#/}" ]] || fail "Referenced asset is missing: $asset"; done \
-  < <(grep -oE '/assets/[A-Za-z0-9._-]+' "$root/index.html" | LC_ALL=C sort -u)
+# Here-strings instead of process substitution: cPanel deploy shells have no /dev/fd.
+referenced_assets="$(grep -oE '/assets/[A-Za-z0-9._-]+' "$root/index.html" | LC_ALL=C sort -u)"
+[[ -n "$referenced_assets" ]] || fail "index.html does not reference Vite assets."
+while IFS= read -r asset; do [[ -f "$root/${asset#/}" ]] || fail "Referenced asset is missing: $asset"; done <<< "$referenced_assets"
 grep -Fq 'Content-Security-Policy' "$root/.htaccess" || fail "Staff CSP is missing."
 grep -Fq "frame-ancestors 'none'" "$root/.htaccess" || fail "Staff frame protection is missing."
 ! grep -Fq '__ARASYA_CONNECT_SRC__' "$root/.htaccess" || fail "Staff CSP placeholder remains unresolved."
