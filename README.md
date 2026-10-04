@@ -9,7 +9,7 @@ Order routes (`/orders/mine`, `/orders/{id}`, `/orders/lookup`, `/orders/resolve
 - PHP 8.2 or newer
 - PDO with `pdo_mysql`
 - `mbstring`, `json`, `openssl`, and `random_bytes`
-- MySQL 8+ or a compatible current MariaDB release using InnoDB and `utf8mb4`
+- MySQL 8+ or MariaDB 10.11+ using InnoDB and `utf8mb4` (CI runs both integration suites on MySQL 8.4 and MariaDB 10.11, the production engine)
 - HTTPS in production
 
 Configuration uses explicit environment variables first, then `$HOME/arasya-config/secrets.json`, then the legacy `$HOME/arasya-config/operations-api.php`. `ARASYA_CONFIG_FILE` can explicitly select JSON or PHP. The real JSON aliases cPanel's existing `DB_USER_NAME`, `DB_USER_PASSWORD`, `DB_NAME`, `DB_HOST`, and `DB_PORT` keys; canonical `ARASYA_*` values win. Required values, including `ARASYA_APP_SECRET`, fail closed. Web and CLI use the same loader.

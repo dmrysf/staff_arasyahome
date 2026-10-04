@@ -1,6 +1,6 @@
 b874fd4bb9d5288d15a76645c3d9b3c880463696f8c3b95f17110f0d81ccdee3  ./.cpanel.yml
 8286fc7aa3997b02b40cd802afc3af51f10c9025110534f38fa33c68beaa539e  ./.htaccess
-5d4ee4fa28e6a6551e9e584cb40632034d3bdc239eeb59ea0e94a92dfe11f628  ./README.md
+c04bc48bb48bd6da82da8bbd83d35f319946cca0f817cb29dbf2b510aea11f78  ./README.md
 c53137393d879c7548188f87745e52d6b31938c9c8a7c57caee1eea05667a396  ./bin/change-password.php
 16f48f6f953305ef2d1cec25b1e6af3e68da8852b7caa99bb30cb7325b009e5b  ./bin/check-migrations.php
 237b490c3b18df66fec94bec3e50d6d28a4efc2263f90bc61e34ead7749955c0  ./bin/cli-bootstrap.php
@@ -29,7 +29,7 @@ f62fac3e97b23988e2bd18d80b85c3932abdc0298b37d2a59d74cd3587da18f1  ./database/see
 a80d76fbdb4a0c8ac3533c3db5eb123a73ff6eb2c259927976d39dfeeb2f248b  ./public/.htaccess
 8302b6ec98573706b31b957a8f9ad9be8bf92a8b8bff02963c601650e7e8c420  ./public/RuntimeLocator.php
 edb234c39482536f0540e881da98cbdad6241af787f230295a79a4ae534e26be  ./public/index.php
-650ebf5f2d2ad151a957c3ebc32597e099962d85bc3ea1424ff9b24272e31b51  ./release.json
+b30b0cce0e0732ad954dbe06e889798d5989222fbc8ab0fbf348674b907fc54c  ./release.json
 0831908f60e49da4f4306e5f7ee7d87d03be05bcbcc9bc2e25718e9f49937a4a  ./scripts/api-release-common.sh
 d1795ddfa4cbd145a0bd889b74821650ce88ca47d5fc6227fa51796fc83b46b7  ./scripts/cpanel-deploy-api.sh
 90db53c750a7ee94bdaad0c19e0c57e9ee6744d703ca03603bb3764393d40f54  ./scripts/cpanel-rollback-api.sh
