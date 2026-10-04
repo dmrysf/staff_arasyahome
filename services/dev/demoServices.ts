@@ -33,6 +33,11 @@ export function createDemoServices(): ServiceBundle {
       memorySession = { ...memorySession, expiresAt: new Date(Date.now() + 3_600_000).toISOString() };
       return clone(memorySession);
     },
+    async changePassword() {
+      if (!memorySession) throw new StaffServiceError("SESSION_EXPIRED");
+      memorySession = { ...memorySession, employee: { ...memorySession.employee, mustChangePassword: false } };
+      return clone(memorySession);
+    },
     onSessionExpired() { return () => undefined; },
   };
 

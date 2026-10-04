@@ -17,6 +17,8 @@ const employeePayload = {
   status: "active",
   permissions: ["orders.scan", "orders.view_mine", "history.view_mine", "profile.view_self"],
   allowedStageIds: ["material-preparation"],
+  applications: ["staff"],
+  mustChangePassword: false,
 };
 
 const sessionPayload = { employee: employeePayload, expiresAt: "2026-08-19T18:00:00Z", csrfToken: "csrf-runtime-token" };

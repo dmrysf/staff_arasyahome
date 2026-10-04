@@ -10,6 +10,8 @@ export const previewEmployee: Employee = {
   departmentKey: "pregatire-material",
   permissions: ["orders.scan", "orders.view_mine", "orders.claim", "orders.advance_stage", "orders.handover", "history.view_mine", "profile.view_self"],
   allowedStageIds: ["material-preparation"],
+  applications: ["staff"],
+  mustChangePassword: false,
   role: "employee",
   status: "active",
   locale: "ro",

@@ -3,6 +3,8 @@ import type { Session } from "../services/contracts";
 import { createServices } from "../services/createServices";
 import { AppShell } from "../components/AppShell";
 import { LoginScreen } from "../features/auth/LoginScreen";
+import { ChangePasswordScreen } from "../features/auth/ChangePasswordScreen";
+import { NoStaffAccessScreen } from "../features/auth/NoStaffAccessScreen";
 import { routeForSession } from "../features/auth/routeProtection";
 import { HomeScreen } from "../features/home/HomeScreen";
 import { ScannerScreen } from "../features/scanner/ScannerScreen";
@@ -34,6 +36,12 @@ export function StaffApp({ initialRoute, mode, apiBaseUrl }: { initialRoute: str
   }, []);
 
   const expireSession = useCallback((error?: StaffServiceError) => {
+    // Central IAM changed this identity's access: re-read the session instead of logging out.
+    if (error?.code === "PASSWORD_CHANGE_REQUIRED" || error?.code === "APPLICATION_ACCESS_DENIED") {
+      setCheckingSession(true);
+      setBootstrapKey((value) => value + 1);
+      return;
+    }
     setSession(null);
     setSessionNotice(error?.code === "ACCOUNT_INACTIVE" ? "Contul nu este activ. Contactează managerul." : "Sesiunea a expirat. Autentifică-te din nou.");
     navigate("/login");
@@ -64,7 +72,8 @@ export function StaffApp({ initialRoute, mode, apiBaseUrl }: { initialRoute: str
   const parsedRoute = parseStaffRoute(route);
   const sessionRoute = routeForSession(parsedRoute.pathname, Boolean(session));
   const guardedRoute = session && !canAccessRoute(session.employee, sessionRoute) ? "/" : sessionRoute;
-  const workflowLifecycle = useProductionWorkflow({ authenticated: Boolean(session), route: guardedRoute, service: services.workflow });
+  const staffReady = Boolean(session && !session.employee.mustChangePassword && session.employee.applications.includes("staff"));
+  const workflowLifecycle = useProductionWorkflow({ authenticated: staffReady, route: guardedRoute, service: services.workflow });
 
   async function logout() {
     try { await services.auth.logout(); }
@@ -83,6 +92,10 @@ export function StaffApp({ initialRoute, mode, apiBaseUrl }: { initialRoute: str
   if (!session || guardedRoute === "/login") {
     return <LoginScreen mode={mode} notice={sessionNotice} onLogin={async (input) => { const next = await services.auth.login(input); workflowLifecycle.reset(); setSession(next); setSessionNotice(""); navigate("/"); return next; }} />;
   }
+  if (session.employee.mustChangePassword) {
+    return <ChangePasswordScreen displayName={session.employee.displayName} onLogout={logout} onChange={async (input) => { const next = await services.auth.changePassword(input); setSession(next); navigate("/"); }} />;
+  }
+  if (!session.employee.applications.includes("staff")) return <NoStaffAccessScreen displayName={session.employee.displayName} onLogout={logout} />;
   const workflow = workflowLifecycle.workflow;
   if (workflowLifecycle.initialError) return <main className="session-check" role="alert"><span className="brand-mark">A</span><p>Fluxul de producție nu este disponibil momentan.</p><button className="button button-secondary" type="button" onClick={workflowLifecycle.retry}>Reîncearcă</button></main>;
   if (!workflow) return <main className="session-check" aria-live="polite"><span className="brand-mark">A</span><p>Se încarcă fluxul de producție…</p></main>;

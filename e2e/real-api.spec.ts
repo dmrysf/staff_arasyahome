@@ -4,7 +4,7 @@ import path from "node:path";
 
 type Fixture = {
   password: string;
-  users: { ana: string; bogdan: string; mihai: string };
+  users: { ana: string; bogdan: string; mihai: string; dashboardOnly: string; temporary: string };
   orders: { flow: string; qr: string; claimedByOther: string; conflict: string };
   qr: Record<string, string>;
 };
@@ -205,4 +205,30 @@ test("service worker never handles API mutations, deep links reload, logout ends
   await expect(page.getByRole("heading", { name: "Bine ai revenit." })).toBeVisible();
   const afterLogout = await page.request.get(`${apiOrigin}/orders/mine`);
   expect(afterLogout.status()).toBe(401);
+});
+
+test("central IAM: a Dashboard-only identity is refused by Staff and a temporary password must be changed first", async ({ page }) => {
+  await page.goto("/login");
+  await page.getByLabel("Nume utilizator").fill(fixture.users.dashboardOnly);
+  await page.getByLabel("Parolă").fill(fixture.password);
+  await page.getByRole("button", { name: /Autentificare/ }).click();
+  await expect(page.getByRole("heading", { name: "Nu ai acces la Staff." })).toBeVisible();
+  const denied = await page.request.get(`${apiOrigin}/orders/mine`);
+  expect(denied.status()).toBe(403);
+  expect((await denied.json()).error.code).toBe("APPLICATION_ACCESS_DENIED");
+  await page.getByRole("button", { name: "Ieși din cont" }).click();
+  await expect(page.getByRole("heading", { name: "Bine ai revenit." })).toBeVisible();
+
+  await page.getByLabel("Nume utilizator").fill(fixture.users.temporary);
+  await page.getByLabel("Parolă").fill(fixture.password);
+  await page.getByRole("button", { name: /Autentificare/ }).click();
+  await expect(page.getByRole("heading", { name: "Schimbă parola" })).toBeVisible();
+  const blocked = await page.request.get(`${apiOrigin}/orders/mine`);
+  expect((await blocked.json()).error.code).toBe("PASSWORD_CHANGE_REQUIRED");
+  await page.getByLabel("Parola actuală").fill(fixture.password);
+  await page.getByLabel("Parola nouă", { exact: true }).fill("o parolă nouă pentru e2e");
+  await page.getByLabel("Confirmă parola nouă").fill("o parolă nouă pentru e2e");
+  await page.getByRole("button", { name: "Salvează parola nouă" }).click();
+  await expect(page.getByRole("heading", { name: /^Bună,/ })).toBeVisible();
+  expect((await page.request.get(`${apiOrigin}/orders/mine`)).status()).toBe(200);
 });

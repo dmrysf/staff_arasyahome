@@ -11,6 +11,10 @@ export type Employee = {
   status: "active" | "inactive" | "suspended";
   permissions: string[];
   allowedStageIds: string[];
+  /** Central IAM applications this identity may enter; Staff requires "staff". */
+  applications: string[];
+  /** A temporary password must be replaced before any other use. */
+  mustChangePassword: boolean;
   avatar?: string;
   locale: "ro";
 };
@@ -149,7 +153,11 @@ export type ServiceErrorCode =
   | "SERVICE_UNAVAILABLE"
   | "CSRF_INVALID"
   | "CONFIGURATION_ERROR"
-  | "WORKFLOW_UNAVAILABLE";
+  | "WORKFLOW_UNAVAILABLE"
+  | "PASSWORD_CHANGE_REQUIRED"
+  | "APPLICATION_ACCESS_DENIED"
+  | "CURRENT_PASSWORD_INVALID"
+  | "PASSWORD_POLICY";
 
 export class StaffServiceError extends Error {
   constructor(public readonly code: ServiceErrorCode, message?: string) {

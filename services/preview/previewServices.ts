@@ -95,6 +95,11 @@ export function createPreviewServices(options: PreviewServicesOptions = {}): Ser
       persistExpiry(expiry);
       return clone(memorySession);
     },
+    async changePassword() {
+      const current = await auth.getSession();
+      if (!current) throw new StaffServiceError("SESSION_EXPIRED");
+      return current;
+    },
     onSessionExpired() { return () => undefined; },
   };
 

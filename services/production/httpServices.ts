@@ -35,6 +35,10 @@ const backendErrorCodes: Partial<Record<string, ServiceErrorCode>> = {
   INVALID_QR: "INVALID_QR",
   UNKNOWN_QR: "UNKNOWN_QR",
   EXPIRED_QR: "EXPIRED_QR",
+  PASSWORD_CHANGE_REQUIRED: "PASSWORD_CHANGE_REQUIRED",
+  APPLICATION_ACCESS_DENIED: "APPLICATION_ACCESS_DENIED",
+  CURRENT_PASSWORD_INVALID: "CURRENT_PASSWORD_INVALID",
+  PASSWORD_POLICY: "PASSWORD_POLICY",
 };
 
 function objectValue(value: unknown): Record<string, unknown> {
@@ -44,6 +48,11 @@ function objectValue(value: unknown): Record<string, unknown> {
 
 function stringValue(value: unknown) {
   if (typeof value !== "string" || !value) throw new StaffServiceError("SERVER_ERROR");
+  return value;
+}
+
+function booleanValue(value: unknown) {
+  if (typeof value !== "boolean") throw new StaffServiceError("SERVER_ERROR");
   return value;
 }
 
@@ -86,6 +95,8 @@ export function mapProductionEmployee(value: unknown): Employee {
     status: employeeStatus(raw.status),
     permissions: stringList(raw.permissions),
     allowedStageIds: stringList(raw.allowedStageIds),
+    applications: stringList(raw.applications),
+    mustChangePassword: booleanValue(raw.mustChangePassword),
     locale: "ro",
   };
 }
@@ -294,6 +305,8 @@ function createRequest(apiBaseUrl: string, options: ProductionServicesOptions, o
               ? "SERVICE_UNAVAILABLE"
               : "SERVER_ERROR";
     const error = new StaffServiceError(backendErrorCodes[backendCode] ?? fallback);
+    // Access changed centrally (temporary password, application access removed): the app re-reads the session.
+    if (["PASSWORD_CHANGE_REQUIRED", "APPLICATION_ACCESS_DENIED"].includes(error.code) && path !== "/auth/session" && path !== "/auth/password") onSessionExpired(error);
     if (["SESSION_EXPIRED", "NO_SESSION", "ACCOUNT_INACTIVE"].includes(error.code) && path !== "/auth/login" && path !== "/auth/session") {
       csrfToken = "";
       onSessionExpired(error);
@@ -374,6 +387,11 @@ export function createProductionServices(apiBaseUrl: string, options: Production
         }
         throw error;
       }
+    },
+    async changePassword(input) {
+      const payload = await http.request("/auth/password", { method: "POST", body: JSON.stringify({ currentPassword: input.currentPassword, newPassword: input.newPassword }) }, mapProductionSession);
+      http.setCsrf(payload.csrfToken);
+      return { employee: payload.employee, expiresAt: payload.expiresAt };
     },
     async refreshSession() {
       const payload = await http.request("/auth/refresh", { method: "POST" }, mapProductionSession);

@@ -133,7 +133,7 @@ test("every production order method calls an existing Operations route with CSRF
   const order = { id: "trendhome:61833", source: "trendhome", orderNumber: "61833", productionStageId: "material-preparation", status: "in_progress", version: 2, productionVersion: 1, products: [], updatedAt: "2026-08-19T00:00:00Z" };
   const fetchImpl = (async (url: string, init: RequestInit) => {
     calls.push({ url, init });
-    if (url.endsWith("/auth/session")) return jsonResponse(200, { employee: { employeeUuid: "e", displayName: "A", username: "a", department: "D", role: "employee", status: "active", permissions: [], allowedStageIds: [] }, expiresAt: "2026-08-19T10:00:00Z", csrfToken: "csrf-1" });
+    if (url.endsWith("/auth/session")) return jsonResponse(200, { employee: { employeeUuid: "e", displayName: "A", username: "a", department: "D", role: "employee", status: "active", permissions: [], allowedStageIds: [], applications: ["staff"], mustChangePassword: false }, expiresAt: "2026-08-19T10:00:00Z", csrfToken: "csrf-1" });
     if (url.includes("/activity/mine")) return jsonResponse(200, { items: [], nextCursor: null, summary: { processed: 0, meters: 0, handedOver: 0, inProgress: 0 } });
     if (url.includes("/orders/mine")) return jsonResponse(200, { items: [order], nextCursor: null });
     return jsonResponse(200, order);

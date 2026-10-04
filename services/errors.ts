@@ -31,6 +31,10 @@ const presentations: Record<ServiceErrorCode, ErrorPresentation> = {
   SERVICE_UNAVAILABLE: { title: "Serviciu indisponibil", message: "Serviciul nu este disponibil momentan.", action: "Reîncearcă" },
   CSRF_INVALID: { title: "Acțiune neconfirmată", message: "Nu am putut confirma acțiunea în siguranță. Încearcă din nou.", action: "Încearcă din nou" },
   CONFIGURATION_ERROR: { title: "Serviciul nu este configurat", message: "Conexiunea cu serviciul Staff lipsește. Contactează administratorul.", action: "Reîncearcă" },
+  PASSWORD_CHANGE_REQUIRED: { title: "Schimbă parola", message: "Contul folosește o parolă temporară. Alege o parolă nouă pentru a continua.", action: "Schimbă parola" },
+  APPLICATION_ACCESS_DENIED: { title: "Fără acces la Staff", message: "Contul tău nu are acces la aplicația Staff. Contactează managerul.", action: "Ieși din cont" },
+  CURRENT_PASSWORD_INVALID: { title: "Parola actuală nu este corectă", message: "Verifică parola actuală și încearcă din nou.", action: "Încearcă din nou" },
+  PASSWORD_POLICY: { title: "Parolă prea slabă", message: "Parola nouă trebuie să aibă cel puțin 12 caractere, să fie diferită de cea actuală și să nu conțină numele de utilizator.", action: "Încearcă din nou" },
   WORKFLOW_UNAVAILABLE: { title: "Flux indisponibil", message: "Catalogul etapelor de producție nu poate fi încărcat momentan. Starea comenzii nu a fost schimbată.", action: "Reîncearcă" },
 };
 

@@ -8,6 +8,8 @@ export interface AuthService {
   logout(): Promise<void>;
   getSession(): Promise<Session | null>;
   refreshSession(): Promise<Session>;
+  /** Replaces the password (also the forced first-login change); the server issues a fresh session. */
+  changePassword(input: { currentPassword: string; newPassword: string }): Promise<Session>;
   onSessionExpired(handler: (error: import("../domain/models").StaffServiceError) => void): () => void;
 }
 

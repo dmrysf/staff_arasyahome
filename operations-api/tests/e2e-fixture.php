@@ -43,6 +43,12 @@ $password = 'e2e passphrase 2026';
 $admin->create('Ana Popescu', 'ana.e2e', 'E2E-ANA', 'pregatire-material', 'employee', $password, ['material-preparation'], 'e2e');
 $admin->create('Bogdan Ionescu', 'bogdan.e2e', 'E2E-BOB', 'pregatire-material', 'employee', $password, ['material-preparation'], 'e2e');
 $admin->create('Mihai Stan', 'mihai.e2e', 'E2E-MIH', 'pregatire-material', 'employee', $password, ['workshop-receiving'], 'e2e');
+// Central IAM: a Dashboard-only identity and an identity that still has a temporary password.
+$dora = $admin->create('Dora Manager', 'dora.e2e', 'E2E-DOR', 'pregatire-material', 'employee', $password, [], 'e2e');
+$pdo->prepare("DELETE FROM employee_application_access WHERE employee_uuid = :id")->execute(['id' => $dora->employeeUuid]);
+$pdo->prepare("INSERT INTO employee_application_access (employee_uuid, application_key, granted_at) VALUES (:id, 'dashboard', UTC_TIMESTAMP(6))")->execute(['id' => $dora->employeeUuid]);
+$temporary = $admin->create('Teodor Nou', 'teodor.e2e', 'E2E-TEO', 'pregatire-material', 'employee', $password, ['material-preparation'], 'e2e');
+$pdo->prepare('UPDATE employees SET must_change_password = 1 WHERE employee_uuid = :id')->execute(['id' => $temporary->employeeUuid]);
 
 $qr = [];
 $changedAt = gmdate('Y-m-d\TH:i:s\Z', time() - 60);
@@ -65,7 +71,7 @@ if ($claim['status'] !== 200) {
 
 echo json_encode([
     'password' => $password,
-    'users' => ['ana' => 'ana.e2e', 'bogdan' => 'bogdan.e2e', 'mihai' => 'mihai.e2e'],
+    'users' => ['ana' => 'ana.e2e', 'bogdan' => 'bogdan.e2e', 'mihai' => 'mihai.e2e', 'dashboardOnly' => 'dora.e2e', 'temporary' => 'teodor.e2e'],
     'orders' => ['flow' => '70001', 'qr' => '70002', 'claimedByOther' => '70003', 'conflict' => '70004'],
     'qr' => $qr,
 ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT), "\n";
