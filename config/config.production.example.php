@@ -23,6 +23,17 @@ return [
     'ARASYA_RATE_LIMIT_RETENTION_DAYS' => '7',
     // Set only after the owner chooses an audit-retention policy.
     // 'ARASYA_AUTH_AUDIT_RETENTION_DAYS' => '365',
+    'ARASYA_IDEMPOTENCY_RETENTION_DAYS' => '30',
+    // Signed source delivery (Trendhome/OutletPerdele connector). Each secret must be
+    // a unique random value of at least 32 bytes shared only with that website.
+    // 'ARASYA_SOURCE_SECRET_TRENDHOME' => '<64 random hex characters>',
+    // 'ARASYA_SOURCE_SECRET_OUTLETPERDELE' => '<64 random hex characters>',
+    'ARASYA_SOURCE_FRESH_SECONDS' => '900',
+    'ARASYA_SOURCE_UNAVAILABLE_SECONDS' => '3600',
+    // Trendyol Seller API (pull via bin/sync-trendyol.php). All three or none.
+    // 'ARASYA_TRENDYOL_SELLER_ID' => '<seller id>',
+    // 'ARASYA_TRENDYOL_API_KEY' => '<api key>',
+    // 'ARASYA_TRENDYOL_API_SECRET' => '<api secret>',
     'ARASYA_TRUST_PROXY' => 'false',
     'ARASYA_TRUSTED_PROXIES' => '',
 ];

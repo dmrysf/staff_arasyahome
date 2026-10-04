@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Arasya\Operations\Application;
 
+use Arasya\Operations\Activity\ActivityController;
+use Arasya\Operations\Activity\PdoActivityRepository;
 use Arasya\Operations\Audit\PdoAuditLogger;
 use Arasya\Operations\Authorization\AuthorizationService;
 use Arasya\Operations\Auth\AuthenticationService;
@@ -20,7 +22,15 @@ use Arasya\Operations\Http\HealthController;
 use Arasya\Operations\Http\RequestFactory;
 use Arasya\Operations\Http\RequestContext;
 use Arasya\Operations\Http\ProductionWorkflowController;
+use Arasya\Operations\Integration\SourceIngestionController;
+use Arasya\Operations\Integration\SourceSignatureVerifier;
+use Arasya\Operations\Integration\Trendyol\StreamTrendyolTransport;
+use Arasya\Operations\Integration\Trendyol\TrendyolClient;
+use Arasya\Operations\Integration\Trendyol\TrendyolSynchronizer;
 use Arasya\Operations\Order\OperationalOrderController;
+use Arasya\Operations\Order\OrderAccessPolicy;
+use Arasya\Operations\Order\OrderOperationsService;
+use Arasya\Operations\Order\OrderProjectionWriter;
 use Arasya\Operations\Order\OrderSerializer;
 use Arasya\Operations\Order\PdoOperationalOrderRepository;
 use Arasya\Operations\Production\PdoProductionWorkflowRepository;
@@ -28,6 +38,7 @@ use Arasya\Operations\Production\ProductionWorkflowService;
 use Arasya\Operations\Security\CookiePolicy;
 use Arasya\Operations\Security\CsrfGuard;
 use Arasya\Operations\Security\PasswordHasher;
+use Arasya\Operations\Security\PdoApiRateLimiter;
 use Arasya\Operations\Security\SessionTokenManager;
 use Arasya\Operations\Security\UsernameNormalizer;
 use Arasya\Operations\Support\StructuredLogger;
@@ -75,28 +86,61 @@ final class Container
     public function kernel(): ApiKernel
     {
         $context = new RequestContext();
+        $authorization = new AuthorizationService();
+        $csrf = new CsrfGuard($this->tokens);
+        $workflows = new ProductionWorkflowService(new PdoProductionWorkflowRepository($this->pdo));
+        $orders = $this->orderRepository();
+        $policy = new OrderAccessPolicy($authorization);
+        $serializer = new OrderSerializer();
+        $rateLimiter = new PdoApiRateLimiter($this->pdo, $this->clock, $this->config->appSecret);
         return new ApiKernel(
-            new AuthController($this->authentication, new CsrfGuard($this->tokens), new CookiePolicy($this->config), $this->config, new AuthorizationService(), $context),
+            new AuthController($this->authentication, $csrf, new CookiePolicy($this->config), $this->config, $authorization, $context),
             new HealthController($this->pdo, $this->clock),
             new CorsPolicy($this->config->allowedOrigins),
             new StructuredLogger(),
             new CookiePolicy($this->config),
             $context,
-            new ProductionWorkflowController(
-                new ProductionWorkflowService(new PdoProductionWorkflowRepository($this->pdo)),
-                $this->authentication,
-                $this->config,
-                $context,
-            ),
+            new ProductionWorkflowController($workflows, $this->authentication, $this->config, $context),
             new OperationalOrderController(
-                new PdoOperationalOrderRepository($this->pdo),
-                new OrderSerializer(),
+                $orders,
+                $serializer,
                 $this->authentication,
-                new AuthorizationService(),
+                $authorization,
                 $this->config,
                 $context,
+                $policy,
+                $workflows,
+                new OrderOperationsService($this->pdo, $workflows, $orders, $policy, $serializer, $this->clock, $this->audit),
+                $csrf,
+                $rateLimiter,
             ),
+            new ActivityController(new PdoActivityRepository($this->pdo), $this->authentication, $authorization, $this->config, $context, $this->clock),
+            new SourceIngestionController(new SourceSignatureVerifier($this->config->sourceSecrets), $this->projectionWriter(), $rateLimiter, $this->clock),
         );
+    }
+
+    public function orderRepository(): PdoOperationalOrderRepository
+    {
+        return new PdoOperationalOrderRepository($this->pdo, $this->clock, $this->config->sourceFreshSeconds, $this->config->sourceUnavailableSeconds);
+    }
+
+    public function projectionWriter(): OrderProjectionWriter
+    {
+        return new OrderProjectionWriter($this->pdo, $this->clock);
+    }
+
+    /** Returns null when Trendyol credentials are not configured. */
+    public function trendyolSynchronizer(): ?TrendyolSynchronizer
+    {
+        if ($this->config->trendyol === null) {
+            return null;
+        }
+        return new TrendyolSynchronizer($this->pdo, new TrendyolClient($this->config->trendyol, new StreamTrendyolTransport()), $this->projectionWriter(), $this->clock);
+    }
+
+    public function config(): Config
+    {
+        return $this->config;
     }
 
     public function requestFactory(): RequestFactory

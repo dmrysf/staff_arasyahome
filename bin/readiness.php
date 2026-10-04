@@ -67,12 +67,30 @@ try {
     $report('FAIL', 'canonical_workflow');
 }
 
+foreach (['trendhome', 'outletperdele'] as $sourceKey) {
+    $report(isset($config->sourceSecrets[$sourceKey]) ? 'OK' : 'WARN', "source_signing_{$sourceKey}");
+}
+$report($config->trendyol !== null ? 'OK' : 'WARN', 'trendyol_credentials');
+try {
+    $sources = $pdo->query("SELECT source_key, status, last_contact_at FROM order_sources ORDER BY source_key")->fetchAll();
+    foreach ($sources as $source) {
+        $contact = $source['last_contact_at'] === null ? null : new DateTimeImmutable((string) $source['last_contact_at'], new DateTimeZone('UTC'));
+        $fresh = $source['status'] === 'active' && $contact !== null && time() - $contact->getTimestamp() <= $config->sourceFreshSeconds;
+        $report($fresh ? 'OK' : 'WARN', 'source_contact_' . $source['source_key']);
+    }
+} catch (Throwable) {
+    $report('FAIL', 'source_registry');
+}
+
 try {
     $releasePath = dirname(__DIR__) . '/release.json';
+    if (!is_file($releasePath)) {
+        throw new RuntimeException('Release metadata is missing.');
+    }
     $release = json_decode((string) file_get_contents($releasePath), true, flags: JSON_THROW_ON_ERROR);
     $sourceCommit = is_array($release) ? ($release['sourceCommit'] ?? null) : null;
     $version = is_array($release) ? ($release['version'] ?? null) : null;
-    $valid = is_string($sourceCommit) && preg_match('/^[0-9a-f]{40}$/', $sourceCommit) === 1 && $version === '2.1.0';
+    $valid = is_string($sourceCommit) && preg_match('/^[0-9a-f]{40}$/', $sourceCommit) === 1 && $version === '2.2.0';
     $releaseDirectory = basename(dirname(__DIR__));
     if (preg_match('/^[0-9a-f]{40}$/', $releaseDirectory) === 1) {
         $valid = $valid && hash_equals($releaseDirectory, $sourceCommit);

@@ -6,7 +6,8 @@ namespace Arasya\Operations\Order;
 
 final readonly class OrderSerializer
 {
-    public function serializeOrder(OperationalOrder $order): array
+    /** @param array{action: string|null, blockedReason: string|null}|null $access */
+    public function serializeOrder(OperationalOrder $order, ?array $access = null): array
     {
         $data = [
             'id' => $order->globalId->toString(),
@@ -14,13 +15,14 @@ final readonly class OrderSerializer
             'orderNumber' => $order->orderNumber,
             'productionStageId' => $order->productionStageId,
             'products' => array_map(fn($item) => $this->serializeItem($item), $order->items),
-            'status' => $order->operationalStatus,
+            'status' => $order->staffStatus(),
             'freshness' => [
                 'status' => $order->freshness->status,
                 'sourceChangedAt' => $order->freshness->sourceChangedAt->format('Y-m-d\TH:i:s.v\Z'),
                 'lastSourceSeenAt' => $order->freshness->lastSourceSeenAt->format('Y-m-d\TH:i:s.v\Z'),
             ],
             'version' => $order->version,
+            'productionVersion' => $order->productionVersion,
             'updatedAt' => $order->updatedAt->format('Y-m-d\TH:i:s.v\Z'),
         ];
 
@@ -37,6 +39,19 @@ final readonly class OrderSerializer
 
         if ($order->acceptedAt !== null) {
             $data['acceptedAt'] = $order->acceptedAt->format('Y-m-d\TH:i:s.v\Z');
+        }
+
+        if ($order->productionCompletedAt !== null) {
+            $data['productionCompletedAt'] = $order->productionCompletedAt->format('Y-m-d\TH:i:s.v\Z');
+        }
+
+        if ($access !== null) {
+            if ($access['action'] !== null) {
+                $data['employeeAllowedAction'] = ['id' => $access['action']];
+            }
+            if ($access['blockedReason'] !== null) {
+                $data['employeeActionBlockedReason'] = $access['blockedReason'];
+            }
         }
 
         if ($order->relation !== null) {

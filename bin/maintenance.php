@@ -19,9 +19,11 @@ $report = (new AuthMaintenance(
     $config->loginAttemptRetentionDays,
     $config->rateLimitRetentionDays,
     $config->authAuditRetentionDays,
+    AuthMaintenance::DEFAULT_BATCH_SIZE,
+    $config->idempotencyRetentionDays,
 ))->run($dryRun);
 
-fwrite(STDOUT, ($dryRun ? 'DRY_RUN' : 'DELETED') . " sessions={$report['sessions']} login_attempts={$report['login_attempts']} rate_limit_buckets={$report['rate_limit_buckets']}\n");
+fwrite(STDOUT, ($dryRun ? 'DRY_RUN' : 'DELETED') . " sessions={$report['sessions']} login_attempts={$report['login_attempts']} rate_limit_buckets={$report['rate_limit_buckets']} idempotency_keys={$report['idempotency_keys']} api_rate_limit_buckets={$report['api_rate_limit_buckets']}\n");
 fwrite(STDOUT, $report['audit_events'] === null
     ? "AUDIT_RETENTION_NOT_CONFIGURED\n"
     : ($dryRun ? 'DRY_RUN' : 'DELETED') . " audit_events={$report['audit_events']}\n");

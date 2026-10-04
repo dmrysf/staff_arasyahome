@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Arasya\Operations\Http;
 
+use Arasya\Operations\Activity\ActivityController;
+use Arasya\Operations\Integration\SourceIngestionController;
 use Arasya\Operations\Order\OperationalOrderController;
 use Arasya\Operations\Security\CookiePolicy;
 use Arasya\Operations\Support\StructuredLogger;
@@ -20,6 +22,8 @@ final readonly class ApiKernel
         private RequestContext $context,
         private ?ProductionWorkflowController $workflow = null,
         private ?OperationalOrderController $orders = null,
+        private ?ActivityController $activity = null,
+        private ?SourceIngestionController $sources = null,
     ) {
     }
 
@@ -31,7 +35,10 @@ final readonly class ApiKernel
             if ($preflight !== null) {
                 return $this->secure($preflight, $request);
             }
-            $this->cors->requireUnsafeOrigin($request);
+            // Signed server-to-server source routes carry no browser credentials and no Origin.
+            if (!str_starts_with($request->path, '/integrations/')) {
+                $this->cors->requireUnsafeOrigin($request);
+            }
             $response = match ($request->method . ' ' . $request->path) {
                 'GET /health' => $this->health->show(),
                 'POST /auth/login' => $this->auth->login($request),
@@ -40,7 +47,10 @@ final readonly class ApiKernel
                 'POST /auth/refresh' => $this->auth->refresh($request),
                 'GET /employees/me' => $this->auth->employee($request),
                 'GET /production/workflow' => $this->workflow?->show($request) ?? throw new ApiException(503, 'WORKFLOW_UNAVAILABLE', 'Production workflow is not ready.'),
-                'GET /orders/mine' => $this->orders?->listMine($request) ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Orders API is not ready.'),
+                'GET /orders/mine' => $this->ordersController()->listMine($request),
+                'GET /orders/lookup' => $this->ordersController()->lookup($request),
+                'POST /orders/resolve-qr' => $this->ordersController()->resolveQr($request),
+                'GET /activity/mine' => ($this->activity ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Activity API is not ready.'))->listMine($request),
                 default => $this->matchDynamicRoutes($request),
             };
             $this->logger->log('info', 'http_request', $request->requestId, ['route' => $request->path, 'method' => $request->method, 'status' => $response->status, ...$this->context->logContext()]);
@@ -60,12 +70,27 @@ final readonly class ApiKernel
 
     private function matchDynamicRoutes(Request $request): Response
     {
-        if ($request->method === 'GET' && preg_match('#^/orders/([^/]+)$#', $request->path, $matches)) {
+        if (preg_match('#^/orders/([^/]{1,600})(?:/(claim|transition))?$#D', $request->path, $matches) === 1) {
             $globalIdString = rawurldecode($matches[1]);
-            return $this->orders?->show($request, $globalIdString) ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Orders API is not ready.');
+            $action = $matches[2] ?? '';
+            return match (true) {
+                $request->method === 'GET' && $action === '' => $this->ordersController()->show($request, $globalIdString),
+                $request->method === 'POST' && $action === 'claim' => $this->ordersController()->claim($request, $globalIdString),
+                $request->method === 'POST' && $action === 'transition' => $this->ordersController()->transition($request, $globalIdString),
+                default => throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.'),
+            };
+        }
+        if ($request->method === 'POST' && preg_match('#^/integrations/sources/([a-z0-9_-]{1,40})/(orders|heartbeat)$#D', $request->path, $matches) === 1) {
+            $sources = $this->sources ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Source ingestion is not ready.');
+            return $matches[2] === 'orders' ? $sources->ingestOrder($request, $matches[1]) : $sources->heartbeat($request, $matches[1]);
         }
 
         throw new ApiException(404, 'NOT_FOUND', 'API route was not found.');
+    }
+
+    private function ordersController(): OperationalOrderController
+    {
+        return $this->orders ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Orders API is not ready.');
     }
 
     private function secure(Response $response, Request $request): Response

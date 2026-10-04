@@ -12,6 +12,8 @@ use PDO;
 
 final readonly class OrderProjectionWriter
 {
+    public const INITIAL_STAGE_ID = 'waiting';
+
     public function __construct(private PDO $pdo, private Clock $clock)
     {
     }
@@ -19,6 +21,9 @@ final readonly class OrderProjectionWriter
     public function apply(SourceOrderSnapshot $snapshot): string
     {
         $globalId = $snapshot->globalId()->toString();
+        $itemsForHash = $snapshot->items;
+        usort($itemsForHash, fn($a, $b) => $a->lineNumber <=> $b->lineNumber);
+
         $hashData = [
             'source' => $snapshot->sourceKey,
             'source_order_id' => $snapshot->sourceOrderId,
@@ -41,7 +46,7 @@ final readonly class OrderProjectionWriter
                 'u' => $i->measurementUnit,
                 'm' => $i->meters !== null ? number_format((float)$i->meters, 3, '.', '') : null,
                 'qty' => $i->quantity
-            ], $snapshot->items),
+            ], $itemsForHash),
         ];
         // Ensure deterministic JSON
         $payloadHash = hash('sha256', json_encode($hashData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR), true);
@@ -54,25 +59,22 @@ final readonly class OrderProjectionWriter
             $stmt->execute([$snapshot->sourceKey]);
             $sourceRow = $stmt->fetch(PDO::FETCH_ASSOC);
             if (!$sourceRow) {
-                throw new ApiException(500, 'SOURCE_UNKNOWN', 'The source key is not registered.');
+                throw new ApiException(404, 'SOURCE_UNKNOWN', 'The source key is not registered.');
             }
             if ($sourceRow['status'] !== 'active') {
-                throw new ApiException(500, 'SOURCE_INACTIVE', 'The source is currently inactive.');
+                throw new ApiException(409, 'SOURCE_INACTIVE', 'The source is currently inactive.');
             }
             if ((int)$sourceRow['schema_version'] !== $snapshot->sourceSchemaVersion) {
-                throw new ApiException(500, 'SOURCE_SCHEMA_UNSUPPORTED', 'Snapshot schema version does not match active registry version.');
+                throw new ApiException(422, 'SOURCE_SCHEMA_UNSUPPORTED', 'Snapshot schema version does not match active registry version.');
             }
 
-            // Validate stage is canonical
-            $stmt = $this->pdo->prepare('
-                SELECT 1 
-                FROM production_stages ps
-                JOIN production_workflows pw ON pw.workflow_id = ps.workflow_id
-                WHERE ps.stage_id = ? AND pw.workflow_key = \'curtain-production\' AND pw.status = \'active\'
-            ');
-            $stmt->execute([$snapshot->productionStageId]);
-            if (!$stmt->fetchColumn()) {
-                throw new ApiException(400, 'INVALID_STAGE', 'The production stage does not belong to the active canonical workflow.');
+            // An explicit source stage must be an active canonical stage; it is never guessed.
+            $sourceStageOrdinal = null;
+            if ($snapshot->productionStageId !== null) {
+                $sourceStageOrdinal = $this->activeStageOrdinal($snapshot->productionStageId);
+                if ($sourceStageOrdinal === null) {
+                    throw new ApiException(422, 'SOURCE_STAGE_UNKNOWN', 'The production stage does not belong to the active canonical workflow or is inactive.');
+                }
             }
 
             // Check if receipt already exists
@@ -82,17 +84,17 @@ final readonly class OrderProjectionWriter
 
             if ($existingReceipt !== false) {
                 if ($existingReceipt['global_order_id'] !== $globalId) {
-                    throw new ApiException(500, 'SOURCE_EVENT_CONFLICT', 'Event ID conflict with different global order ID.');
+                    throw new ApiException(409, 'SOURCE_EVENT_CONFLICT', 'Event ID conflict with different global order ID.');
                 }
-                if ($existingReceipt['payload_hash'] === $payloadHash) {
+                if (hash_equals((string)$existingReceipt['payload_hash'], $payloadHash)) {
                     $this->pdo->rollBack();
                     return 'duplicate';
                 }
-                throw new ApiException(500, 'SOURCE_EVENT_CONFLICT', 'Event ID conflict with different payload hash.');
+                throw new ApiException(409, 'SOURCE_EVENT_CONFLICT', 'Event ID conflict with different payload hash.');
             }
 
             // Lock order row
-            $stmt = $this->pdo->prepare('SELECT order_uuid, source_changed_at, projection_hash, version, freshness_status, production_stage_id FROM operational_orders WHERE global_order_id = ? FOR UPDATE');
+            $stmt = $this->pdo->prepare('SELECT order_uuid, source_changed_at, projection_hash, version, production_version, production_stage_id, production_authority FROM operational_orders WHERE global_order_id = ? FOR UPDATE');
             $stmt->execute([$globalId]);
             $currentOrder = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -105,30 +107,48 @@ final readonly class OrderProjectionWriter
 
                 if ($sourceChangedSql < $currentChangedAt) {
                     $this->insertReceipt($snapshot, $globalId, $payloadHash, 'out_of_order', $nowSql);
+                    $this->touchSource($snapshot->sourceKey, $nowSql);
                     $this->pdo->commit();
                     return 'out_of_order';
                 }
                 
-                if ($sourceChangedSql === $currentChangedAt && $currentOrder['projection_hash'] !== $payloadHash) {
-                    throw new ApiException(500, 'SOURCE_REVISION_CONFLICT', 'Conflicting changes at the same timestamp.');
+                if ($sourceChangedSql === $currentChangedAt && !hash_equals((string)$currentOrder['projection_hash'], $payloadHash)) {
+                    throw new ApiException(409, 'SOURCE_REVISION_CONFLICT', 'Conflicting changes at the same timestamp.');
                 }
                 
-                if ($sourceChangedSql === $currentChangedAt && $currentOrder['projection_hash'] === $payloadHash) {
+                if (hash_equals((string)$currentOrder['projection_hash'], $payloadHash)) {
+                    // Same semantic payload: refresh observation time only; the order version never changes.
+                    $stmt = $this->pdo->prepare('UPDATE operational_orders SET source_event_id = ?, source_changed_at = ?, last_source_seen_at = ?, projected_at = ? WHERE order_uuid = ?');
+                    $stmt->execute([$snapshot->sourceEventId, $sourceChangedSql, $nowSql, $nowSql, $orderUuid]);
+                    $this->ensureQrReference($orderUuid, $nowSql);
                     $this->insertReceipt($snapshot, $globalId, $payloadHash, 'duplicate', $nowSql);
+                    $this->touchSource($snapshot->sourceKey, $nowSql);
                     $this->pdo->commit();
                     return 'duplicate';
                 }
 
-                $version = (int)$currentOrder['version'];
-                if ($currentOrder['projection_hash'] !== $payloadHash) {
-                    $version++;
+                $version = (int)$currentOrder['version'] + 1;
+                $productionVersion = (int)$currentOrder['production_version'];
+                $stageId = (string)$currentOrder['production_stage_id'];
+                // Production belongs to Operations once an employee acted on the order. Before that an
+                // explicit source stage may only move the order forward; commerce status never moves it.
+                if ($sourceStageOrdinal !== null && $currentOrder['production_authority'] === 'source' && $snapshot->productionStageId !== $stageId) {
+                    $currentOrdinal = $this->activeStageOrdinal($stageId);
+                    if ($currentOrdinal === null || $sourceStageOrdinal > $currentOrdinal) {
+                        $stageId = (string) $snapshot->productionStageId;
+                        $productionVersion++;
+                    }
                 }
+                $productionChanged = $stageId !== (string)$currentOrder['production_stage_id'];
 
                 // Update order
                 $stmt = $this->pdo->prepare('
                     UPDATE operational_orders SET 
                         order_number = ?,
+                        order_lookup_code = ?,
                         production_stage_id = ?,
+                        production_version = ?,
+                        production_changed_at = IF(?, ?, production_changed_at),
                         source_commerce_status_code = ?,
                         source_commerce_status_label = ?,
                         production_notes = ?,
@@ -147,7 +167,11 @@ final readonly class OrderProjectionWriter
                 ');
                 $stmt->execute([
                     $snapshot->orderNumber,
-                    $currentOrder['production_stage_id'],
+                    OrderLookupCode::fromOrderNumber($snapshot->orderNumber),
+                    $stageId,
+                    $productionVersion,
+                    $productionChanged ? 1 : 0,
+                    $nowSql,
                     $snapshot->sourceCommerceStatusCode,
                     $snapshot->sourceCommerceStatusLabel,
                     $snapshot->productionNotes,
@@ -165,51 +189,49 @@ final readonly class OrderProjectionWriter
                     $orderUuid,
                 ]);
 
-                if ($currentOrder['projection_hash'] !== $payloadHash) {
-                    $stmt = $this->pdo->prepare('SELECT item_uuid, source_item_id FROM operational_order_items WHERE order_uuid = ?');
-                    $stmt->execute([$orderUuid]);
-                    $existingItems = [];
-                    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
-                        $existingItems[$row['source_item_id']] = $row['item_uuid'];
-                    }
-
-                    // Update items: delete all and insert new ones
-                    $stmt = $this->pdo->prepare('DELETE FROM operational_order_items WHERE order_uuid = ?');
-                    $stmt->execute([$orderUuid]);
-
-                    $newItems = [];
-                    foreach ($snapshot->items as $item) {
-                        $uuid = $existingItems[$item->sourceItemId] ?? $item->itemUuid;
-                        $newItems[] = new OperationalOrderItem(
-                            $uuid,
-                            $item->sourceItemId,
-                            $item->lineNumber,
-                            $item->name,
-                            $item->productCode,
-                            $item->variant,
-                            $item->color,
-                            $item->widthValue,
-                            $item->heightValue,
-                            $item->measurementUnit,
-                            $item->meters,
-                            $item->quantity
-                        );
-                    }
-
-                    $this->insertItems($newItems, $orderUuid, $nowSql);
+                $stmt = $this->pdo->prepare('SELECT item_uuid, source_item_id FROM operational_order_items WHERE order_uuid = ?');
+                $stmt->execute([$orderUuid]);
+                $existingItems = [];
+                foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                    $existingItems[$row['source_item_id']] = $row['item_uuid'];
                 }
+
+                // Update items: delete all and insert new ones
+                $stmt = $this->pdo->prepare('DELETE FROM operational_order_items WHERE order_uuid = ?');
+                $stmt->execute([$orderUuid]);
+
+                $newItems = [];
+                foreach ($snapshot->items as $item) {
+                    $uuid = $existingItems[$item->sourceItemId] ?? $item->itemUuid;
+                    $newItems[] = new OperationalOrderItem(
+                        $uuid,
+                        $item->sourceItemId,
+                        $item->lineNumber,
+                        $item->name,
+                        $item->productCode,
+                        $item->variant,
+                        $item->color,
+                        $item->widthValue,
+                        $item->heightValue,
+                        $item->measurementUnit,
+                        $item->meters,
+                        $item->quantity
+                    );
+                }
+
+                $this->insertItems($newItems, $orderUuid, $nowSql);
 
             } else {
                 // Insert new order
                 $orderUuid = Uuid::v4();
                 $stmt = $this->pdo->prepare('
                     INSERT INTO operational_orders (
-                        order_uuid, global_order_id, source_key, source_order_id, order_number, 
+                        order_uuid, global_order_id, source_key, source_order_id, order_number, order_lookup_code,
                         production_stage_id, source_commerce_status_code, source_commerce_status_label, 
                         production_notes, operational_status, freshness_status, source_schema_version, 
                         source_event_id, source_changed_at, last_source_seen_at, projected_at, 
                         accepted_at, projection_hash, version, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ');
                 $stmt->execute([
                     $orderUuid,
@@ -217,7 +239,8 @@ final readonly class OrderProjectionWriter
                     $snapshot->sourceKey,
                     $snapshot->sourceOrderId,
                     $snapshot->orderNumber,
-                    $snapshot->productionStageId,
+                    OrderLookupCode::fromOrderNumber($snapshot->orderNumber),
+                    $snapshot->productionStageId ?? self::INITIAL_STAGE_ID,
                     $snapshot->sourceCommerceStatusCode,
                     $snapshot->sourceCommerceStatusLabel,
                     $snapshot->productionNotes,
@@ -238,7 +261,9 @@ final readonly class OrderProjectionWriter
                 $this->insertItems($snapshot->items, $orderUuid, $nowSql);
             }
 
+            $this->ensureQrReference($orderUuid, $nowSql);
             $this->insertReceipt($snapshot, $globalId, $payloadHash, 'applied', $nowSql);
+            $this->touchSource($snapshot->sourceKey, $nowSql);
 
             $this->pdo->commit();
             return 'applied';
@@ -249,6 +274,84 @@ final readonly class OrderProjectionWriter
             }
             throw $e;
         }
+    }
+
+    /** Returns the current active QR payload for an order, issuing one if none exists. */
+    public function qrPayloadFor(string $globalOrderId): ?string
+    {
+        $stmt = $this->pdo->prepare("SELECT q.qr_reference FROM order_qr_references q INNER JOIN operational_orders o ON o.order_uuid = q.order_uuid WHERE o.global_order_id = ? AND q.status = 'active' ORDER BY q.created_at DESC LIMIT 1");
+        $stmt->execute([$globalOrderId]);
+        $reference = $stmt->fetchColumn();
+        return is_string($reference) ? QrReference::fromStored($reference)->payload() : null;
+    }
+
+    /**
+     * Revokes every active QR reference of an order and issues a new one
+     * (for a lost or damaged label). Old printed codes then resolve as expired.
+     */
+    public function rotateQrReference(string $globalOrderId): string
+    {
+        $nowSql = $this->clock->now()->format('Y-m-d H:i:s.u');
+        $this->pdo->beginTransaction();
+        try {
+            $stmt = $this->pdo->prepare('SELECT order_uuid FROM operational_orders WHERE global_order_id = ? FOR UPDATE');
+            $stmt->execute([$globalOrderId]);
+            $orderUuid = $stmt->fetchColumn();
+            if (!is_string($orderUuid)) {
+                throw new ApiException(404, 'ORDER_NOT_FOUND', 'Order not found.');
+            }
+            $revoke = $this->pdo->prepare("UPDATE order_qr_references SET status = 'revoked', revoked_at = ? WHERE order_uuid = ? AND status = 'active'");
+            $revoke->execute([$nowSql, $orderUuid]);
+            $this->ensureQrReference($orderUuid, $nowSql);
+            $this->pdo->commit();
+        } catch (\Throwable $error) {
+            if ($this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            throw $error;
+        }
+        return $this->qrPayloadFor($globalOrderId) ?? throw new \RuntimeException('QR reference rotation failed.');
+    }
+
+    /** Records a signed heartbeat so source freshness recovers without an order event. */
+    public function recordHeartbeat(string $sourceKey): void
+    {
+        $nowSql = $this->clock->now()->format('Y-m-d H:i:s.u');
+        $stmt = $this->pdo->prepare("UPDATE order_sources SET last_contact_at = ?, updated_at = ? WHERE source_key = ? AND status = 'active'");
+        $stmt->execute([$nowSql, $nowSql, $sourceKey]);
+        if ($stmt->rowCount() !== 1) {
+            throw new ApiException(409, 'SOURCE_INACTIVE', 'The source is not registered or inactive.');
+        }
+    }
+
+    private function activeStageOrdinal(string $stageId): ?int
+    {
+        $stmt = $this->pdo->prepare("
+            SELECT ps.ordinal
+            FROM production_stages ps
+            JOIN production_workflows pw ON pw.workflow_id = ps.workflow_id
+            WHERE ps.stage_id = ? AND pw.workflow_key = 'curtain-production' AND pw.status = 'active' AND ps.status = 'active'
+        ");
+        $stmt->execute([$stageId]);
+        $ordinal = $stmt->fetchColumn();
+        return $ordinal === false ? null : (int) $ordinal;
+    }
+
+    private function ensureQrReference(string $orderUuid, string $nowSql): void
+    {
+        $stmt = $this->pdo->prepare("SELECT 1 FROM order_qr_references WHERE order_uuid = ? AND status = 'active' LIMIT 1");
+        $stmt->execute([$orderUuid]);
+        if ($stmt->fetchColumn() !== false) {
+            return;
+        }
+        $insert = $this->pdo->prepare("INSERT INTO order_qr_references (qr_reference, order_uuid, status, created_at) VALUES (?, ?, 'active', ?)");
+        $insert->execute([QrReference::generate()->value, $orderUuid, $nowSql]);
+    }
+
+    private function touchSource(string $sourceKey, string $nowSql): void
+    {
+        $stmt = $this->pdo->prepare('UPDATE order_sources SET last_contact_at = ?, last_event_at = ? WHERE source_key = ?');
+        $stmt->execute([$nowSql, $nowSql, $sourceKey]);
     }
 
     private function insertReceipt(SourceOrderSnapshot $snapshot, string $globalId, string $payloadHash, string $outcome, string $nowSql): void

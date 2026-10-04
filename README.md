@@ -1,6 +1,8 @@
 # Arasya Operations API
 
-Standalone PHP 8.2+ identity, authentication, and production-reference API for Staff and future Operations clients. It has no WordPress, Node, framework, Composer, or persistent-process dependency. Only `public/` may be configured as a web document root. The current release version is `2.1.0`.
+Standalone PHP 8.2+ identity, authentication, production workflow and order-operations API for Staff and future Operations clients. It has no WordPress, Node, framework, Composer, or persistent-process dependency. Only `public/` may be configured as a web document root. The current release version is `2.2.0`.
+
+Order routes (`/orders/mine`, `/orders/{id}`, `/orders/lookup`, `/orders/resolve-qr`, `/orders/{id}/claim`, `/orders/{id}/transition`), `/activity/mine` and signed source ingestion (`/integrations/sources/{source}/orders|heartbeat`) are documented in [Staff operations API](../docs/staff-operations-api.md) and [source integrations](../docs/source-integrations.md).
 
 ## Runtime requirements
 
@@ -34,6 +36,8 @@ php bin/revoke-sessions.php --employee=<employee_uuid>
 php bin/migration-status.php
 php bin/maintenance.php [--dry-run]
 php bin/readiness.php
+php bin/order-qr.php --order=<source:order-id> [--rotate]
+php bin/sync-trendyol.php
 ```
 
 Passwords are always read interactively without an argument. Disable and password-change operations revoke active sessions. Migrations never run from a web request. The workflow seed is idempotent and non-overwriting: reruns insert missing canonical rows but do not silently rename an existing workflow or stage.
@@ -47,8 +51,9 @@ php operations-api/tests/run.php
 /bin/bash operations-api/tests/release-validation.sh
 /bin/bash operations-api/tests/deploy-api.sh
 php operations-api/tests/mysql-integration.php
+php operations-api/tests/mysql-operations-integration.php
 ```
 
-The MySQL integration test skips unless `ARASYA_TEST_DB_*` variables identify a dedicated database whose name contains `test`. CI provisions that database and executes the full login/session/refresh/logout lifecycle.
+The MySQL tests skip unless `ARASYA_TEST_DB_*` variables identify a dedicated database whose name contains `test`. CI provisions that database and executes the authentication lifecycle plus the HTTP-level Staff operations lifecycle (signed ingestion, freshness, QR/lookup, claim, N → N+1, idempotency, multi-process races, cross-employee isolation, activity and maintenance).
 
 See [Operations API authentication](../docs/operations-api-auth.md), [Staff authentication security](../docs/staff-auth-security.md), and [cPanel provisioning](../docs/operations-api-cpanel.md).
