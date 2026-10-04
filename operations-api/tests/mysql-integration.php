@@ -92,6 +92,8 @@ try {
     $pdo->exec("DELETE FROM schema_migrations WHERE migration_name = '007_production_owner_interventions.sql'");
     // Migration 005 only extends 001 tables, so a reused database may already have it recorded.
     $iamApplied = (int) $pdo->query("SELECT COUNT(*) FROM schema_migrations WHERE migration_name = '005_central_iam.sql'")->fetchColumn() === 1;
+    // Migration 008 only inserts catalog rows into 005 tables, so it too may already be recorded.
+    $b2bApplied = (int) $pdo->query("SELECT COUNT(*) FROM schema_migrations WHERE migration_name = '008_b2b_application.sql'")->fetchColumn() === 1;
     $applied = $migrationRunner->migrate(dirname(__DIR__) . '/database/migrations');
     $expected = ['002_canonical_production_workflow.sql', '003_operational_orders.sql', '004_staff_operations.sql'];
     if (!$iamApplied) {
@@ -99,6 +101,9 @@ try {
     }
     $expected[] = '006_production_control_indexes.sql';
     $expected[] = '007_production_owner_interventions.sql';
+    if (!$b2bApplied) {
+        $expected[] = '008_b2b_application.sql';
+    }
     if ($applied !== $expected) {
         throw new RuntimeException('An existing 001 schema did not apply exactly the pending migrations in order: ' . implode(', ', $applied));
     }

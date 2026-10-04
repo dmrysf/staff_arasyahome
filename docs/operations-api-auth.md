@@ -16,6 +16,7 @@ The browser is never an identity or authorization authority. Every protected req
 | `POST` | `/auth/refresh` | Atomically revoke and rotate the opaque session token |
 | `POST` | `/auth/logout` | Revoke a valid server session and clear the cookie; already-invalid sessions are idempotent success |
 | `GET` | `/employees/me` | Return the employee derived from the current session |
+| `GET` | `/b2b/access` | B2B application gate: the current identity, only with B2B application access (2.7.0) |
 | `GET` | `/production/workflow` | Return the active canonical workflow and ordered stages with ETag support |
 | `GET` | `/orders/mine`, `/orders/{id}`, `/orders/lookup` | Visible orders for the session employee |
 | `POST` | `/orders/resolve-qr`, `/orders/{id}/claim`, `/orders/{id}/transition` | QR resolution and production mutations (CSRF, idempotency) |

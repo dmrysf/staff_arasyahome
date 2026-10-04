@@ -10,6 +10,7 @@ UPDATE permissions SET category = 'staff', label = 'Profil propriu' WHERE permis
 
 UPDATE applications SET name = 'Staff', description = 'Aplicația de producție pentru angajați' WHERE application_key = 'staff';
 UPDATE applications SET name = 'Dashboard', description = 'Panoul central de administrare' WHERE application_key = 'dashboard';
+UPDATE applications SET name = 'B2B', description = 'Management vânzări en-gros' WHERE application_key = 'b2b';
 
 INSERT INTO departments (department_key, name, description, status, created_at, updated_at)
 VALUES ('conducere', 'Conducere', 'Conducerea companiei', 'active', UTC_TIMESTAMP(6), UTC_TIMESTAMP(6))

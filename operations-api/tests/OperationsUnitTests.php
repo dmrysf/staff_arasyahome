@@ -391,3 +391,27 @@ test('CORS allows management methods only for exact origins and never with a wil
     expectApi('CORS_HEADER_DENIED', fn () => $cors->preflight($preflight('https://dashboard.arasyahome.ro', 'PATCH', 'x-employee-uuid')));
     expect($cors->headers('*') === [] && $cors->headers(null) === []);
 });
+
+test('CORS accepts the exact B2B origin next to Staff and Dashboard and rejects look-alikes', function (): void {
+    $origins = ['https://staff.arasyahome.ro', 'https://dashboard.arasyahome.ro', 'https://b2b.arasyahome.ro'];
+    $cors = new CorsPolicy($origins);
+    foreach ($origins as $origin) {
+        $response = $cors->preflight(new Request('OPTIONS', '/auth/login', ['origin' => $origin, 'access-control-request-method' => 'POST', 'access-control-request-headers' => 'content-type,x-csrf-token'], [], '', '127.0.0.1', 'test', 'cors-b2b'));
+        expect($response !== null && $response->headers['Access-Control-Allow-Origin'] === $origin && $response->headers['Access-Control-Allow-Credentials'] === 'true');
+        $cors->requireUnsafeOrigin(new Request('POST', '/auth/logout', ['origin' => $origin], [], '', '127.0.0.1', 'test', 'cors-b2b-post'));
+    }
+    foreach (['https://b2b.arasyahome.ro.evil.example', 'http://b2b.arasyahome.ro', 'https://b2b.arasyahome.ro/', 'https://b2b.arasyahome.ro:8443', 'https://evil.arasyahome.ro', 'https://arasyahome.ro', 'null'] as $hostile) {
+        expect($cors->headers($hostile) === []);
+        expectApi('ORIGIN_DENIED', fn () => $cors->requireUnsafeOrigin(new Request('POST', '/auth/login', ['origin' => $hostile], [], '{}', '127.0.0.1', 'test', 'cors-b2b-hostile')));
+    }
+});
+
+test('B2B application access carries only its own baseline and no production permission', function (): void {
+    $baseline = \Arasya\Operations\Iam\ApplicationAccess::baselineFor(['b2b']);
+    sort($baseline);
+    expect($baseline === ['b2b.access', 'profile.view_self']);
+    foreach (\Arasya\Operations\Iam\ApplicationAccess::PERMISSION_APPLICATION as $permission => $application) {
+        expect($application !== 'b2b' && !in_array($permission, $baseline, true));
+    }
+    expect(!in_array('b2b.access', \Arasya\Operations\Iam\ApplicationAccess::baselineFor(['staff', 'dashboard']), true));
+});

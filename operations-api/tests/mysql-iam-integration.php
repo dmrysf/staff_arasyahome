@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 // Central IAM lifecycle against a dedicated MySQL/MariaDB test database: protected root identity,
 // application access, RBAC authority ceiling, privilege escalation, immediate authorization changes,
-// forced password change, shared sessions across Staff and Dashboard origins, and the immutable IAM audit.
+// forced password change, shared sessions across Staff, Dashboard and B2B origins, and the immutable IAM audit.
 
 use Arasya\Operations\Application\Container;
 use Arasya\Operations\Database\Connection;
@@ -46,8 +46,9 @@ function checkOk(array $response, string $message, int $status = 200): array
 }
 
 const DASHBOARD_ORIGIN = 'http://127.0.0.1:4174';
+const B2B_ORIGIN = 'http://127.0.0.1:4177';
 
-$config = T::config($dbName, [T::ORIGIN, DASHBOARD_ORIGIN]);
+$config = T::config($dbName, [T::ORIGIN, DASHBOARD_ORIGIN, B2B_ORIGIN]);
 $pdo = Connection::create($config);
 (new MigrationRunner($pdo))->migrate(dirname(__DIR__) . '/database/migrations');
 $seedFiles = glob(dirname(__DIR__) . '/database/seeds/*.sql') ?: [];
@@ -59,6 +60,32 @@ foreach ($seedFiles as $seedFile) {
 foreach ($seedFiles as $seedFile) {
     (new SqlFileRunner($pdo))->run($seedFile);
 }
+
+// ---- Upgrade path to migration 008 (B2B application) ------------------------------------------
+// Rebuild the pre-008 catalog in this test database, then apply 008 exactly once on top of it.
+$applicationsBefore = $pdo->query("SELECT application_key, name, status, access_permission_key, sort_order FROM applications WHERE application_key <> 'b2b' ORDER BY application_key")->fetchAll();
+$permissionsBefore = $pdo->query("SELECT permission_key, role_grantable FROM permissions WHERE permission_key <> 'b2b.access' ORDER BY permission_key")->fetchAll();
+$pdo->exec("DELETE FROM employee_application_access WHERE application_key = 'b2b'");
+$pdo->exec("DELETE rp FROM role_permissions rp INNER JOIN permissions p ON p.permission_id = rp.permission_id WHERE p.permission_key = 'b2b.access'");
+$pdo->exec("DELETE FROM applications WHERE application_key = 'b2b'");
+$pdo->exec("DELETE FROM permissions WHERE permission_key = 'b2b.access'");
+$pdo->exec("DELETE FROM schema_migrations WHERE migration_name = '008_b2b_application.sql'");
+$upgraded = (new MigrationRunner($pdo))->migrate(dirname(__DIR__) . '/database/migrations');
+check($upgraded === ['008_b2b_application.sql'], 'a pre-008 database applies exactly migration 008 (got ' . implode(', ', $upgraded) . ')');
+check((new MigrationRunner($pdo))->migrate(dirname(__DIR__) . '/database/migrations') === [], 'migration 008 is recorded once');
+(new SqlFileRunner($pdo))->run(dirname(__DIR__) . '/database/migrations/008_b2b_application.sql');
+foreach ($seedFiles as $seedFile) {
+    (new SqlFileRunner($pdo))->run($seedFile);
+}
+$b2bApplication = $pdo->query("SELECT name, description, status, access_permission_key, sort_order FROM applications WHERE application_key = 'b2b'")->fetchAll();
+check(count($b2bApplication) === 1 && $b2bApplication[0]['name'] === 'B2B' && $b2bApplication[0]['status'] === 'active' && $b2bApplication[0]['access_permission_key'] === 'b2b.access' && (int) $b2bApplication[0]['sort_order'] === 30, 'migration 008 registers one active B2B application, also when re-run');
+$b2bPermission = $pdo->query("SELECT category, role_grantable FROM permissions WHERE permission_key = 'b2b.access'")->fetchAll();
+check(count($b2bPermission) === 1 && $b2bPermission[0]['category'] === 'applications' && (int) $b2bPermission[0]['role_grantable'] === 0, 'b2b.access exists once and is never role-grantable');
+check($pdo->query("SELECT application_key, name, status, access_permission_key, sort_order FROM applications WHERE application_key <> 'b2b' ORDER BY application_key")->fetchAll() == $applicationsBefore, 'migration 008 leaves the existing applications unchanged');
+check($pdo->query("SELECT permission_key, role_grantable FROM permissions WHERE permission_key <> 'b2b.access' ORDER BY permission_key")->fetchAll() == $permissionsBefore, 'migration 008 leaves the existing permissions unchanged');
+check((int) $pdo->query("SELECT COUNT(*) FROM employee_application_access WHERE application_key = 'b2b'")->fetchColumn() === 0, 'migration 008 grants B2B access to nobody');
+check((int) $pdo->query("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name LIKE 'b2b%'")->fetchColumn() === 0, 'migration 008 creates no B2B business tables');
+
 $container = new Container($config, $pdo);
 $kernel = $container->kernel();
 $suffix = substr(bin2hex(random_bytes(6)), 0, 10);
@@ -135,14 +162,14 @@ check(($root['body']['employee']['mustChangePassword'] ?? null) === false, 'pass
 checkError($get(['cookie' => $oldRootCookie, 'csrf' => ''], '/management/me'), 401, 'SESSION_EXPIRED', 'the temporary-password session is revoked after the change');
 checkError(T::call($kernel, 'POST', '/auth/login', ['username' => 'arasya.root.owner.' . $suffix, 'password' => $rootPassword], ['origin' => DASHBOARD_ORIGIN]), 401, 'INVALID_CREDENTIALS', 'the temporary password no longer works');
 $me = checkOk($get($root, '/management/me'), 'root reads management/me');
-check($me['isRoot'] === true && in_array('system.manage', $me['permissions'], true) && in_array('dashboard', $me['applications'], true) && in_array('staff', $me['applications'], true), 'root holds every permission and application');
+check($me['isRoot'] === true && in_array('system.manage', $me['permissions'], true) && in_array('dashboard', $me['applications'], true) && in_array('staff', $me['applications'], true) && in_array('b2b', $me['applications'], true) && in_array('b2b.access', $me['permissions'], true), 'root holds every permission and application, B2B included');
 
 // ---- Catalog, applications, workflow ----------------------------------------------------------
 $permissions = checkOk($get($root, '/management/permissions'), 'permission catalog');
 $catalogKeys = array_column($permissions['items'], 'key');
 check(in_array('employees.manage_roles', $catalogKeys, true) && in_array('staff.access', $catalogKeys, true), 'catalog contains management and application permissions');
 $applications = checkOk($get($root, '/management/applications'), 'applications');
-check(array_column($applications['items'], 'key') === ['staff', 'dashboard'], 'staff and dashboard are the registered applications');
+check(array_column($applications['items'], 'key') === ['staff', 'dashboard', 'b2b'], 'staff, dashboard and b2b are the registered applications');
 $roles = checkOk($get($root, '/management/roles'), 'roles');
 $roleId = static function (string $key) use ($roles): int {
     foreach ($roles['items'] as $role) {
@@ -215,6 +242,47 @@ checkOk($get($worker, '/management/me'), 'the Dashboard session stays valid whil
 checkOk($asDashboard($root, 'PUT', "/management/employees/{$workerId}/applications", ['applications' => ['staff']]), 'root restores Staff only');
 checkError($get($worker, '/management/me'), 403, 'APPLICATION_ACCESS_DENIED', 'Dashboard access removal applies on the next request');
 check($auditCount('employee.applications_changed', $workerId) === 3, 'every application access change is audited');
+
+// ---- B2B application: same central session, its own application gate -----------------------------
+$fromB2b = static fn (array $who, string $method, string $path, ?array $json = null): array => T::call($kernel, $method, $path, $json, ['origin' => B2B_ORIGIN, 'x-csrf-token' => $who['csrf']], $who['cookie']);
+$rootB2b = $fromB2b($root, 'GET', '/b2b/access');
+check($rootB2b['status'] === 200 && $rootB2b['body']['application'] === 'b2b' && $rootB2b['body']['employee']['isRoot'] === true && ($rootB2b['headers']['Access-Control-Allow-Origin'] ?? '') === B2B_ORIGIN, 'root enters B2B through the existing root semantics, from the exact B2B origin');
+check(!str_contains((string) json_encode($rootB2b['body']), 'password') && !isset($rootB2b['body']['employee']['permissions']), 'the B2B gate returns no secret and no permission catalog');
+$b2bPreflight = T::call($kernel, 'OPTIONS', '/auth/logout', null, ['origin' => B2B_ORIGIN, 'access-control-request-method' => 'POST', 'access-control-request-headers' => 'content-type,x-csrf-token']);
+check($b2bPreflight['status'] === 204 && ($b2bPreflight['headers']['Access-Control-Allow-Origin'] ?? '') === B2B_ORIGIN && ($b2bPreflight['headers']['Access-Control-Allow-Credentials'] ?? '') === 'true', 'the B2B origin passes the credentialed preflight');
+checkError(T::call($kernel, 'OPTIONS', '/auth/logout', null, ['origin' => 'https://b2b.arasyahome.ro.evil.example', 'access-control-request-method' => 'POST']), 403, 'ORIGIN_DENIED', 'a B2B look-alike origin is denied');
+checkError(T::call($kernel, 'POST', '/auth/login', ['username' => 'x', 'password' => 'y'], ['origin' => 'https://evil.example']), 403, 'ORIGIN_DENIED', 'hostile origins still cannot log in');
+$workerSessionFromB2b = T::call($kernel, 'GET', '/auth/session', null, ['origin' => B2B_ORIGIN], $worker['cookie']);
+check($workerSessionFromB2b['status'] === 200 && !in_array('b2b', $workerSessionFromB2b['body']['employee']['applications'], true), 'the existing Staff session is the same session seen from the B2B origin');
+checkError($fromB2b($worker, 'GET', '/b2b/access'), 403, 'APPLICATION_ACCESS_DENIED', 'an identity without B2B access is refused by the server');
+checkError($fromB2b($manager, 'GET', '/b2b/access'), 403, 'APPLICATION_ACCESS_DENIED', 'Dashboard access does not imply B2B access');
+checkError($asDashboard($ceo, 'PUT', "/management/employees/{$workerId}/applications", ['applications' => ['staff', 'b2b']]), 403, 'AUTHORITY_EXCEEDED', 'an administrator without B2B access cannot grant it');
+checkOk($asDashboard($root, 'PUT', "/management/employees/{$workerId}/applications", ['applications' => ['staff', 'b2b']]), 'root grants B2B access');
+$workerB2b = checkOk($fromB2b($worker, 'GET', '/b2b/access'), 'the B2B grant applies on the next request without a new login');
+check($workerB2b['employee']['isRoot'] === false && $workerB2b['employee']['username'] === "worker.{$suffix}", 'the B2B gate names the central identity');
+$workerAfterGrant = T::call($kernel, 'GET', '/auth/session', null, ['origin' => B2B_ORIGIN], $worker['cookie'])['body']['employee'];
+check(in_array('b2b.access', $workerAfterGrant['permissions'], true) && !in_array('dashboard.access', $workerAfterGrant['permissions'], true), 'B2B access adds b2b.access and nothing from the Dashboard');
+checkError($get($worker, '/management/me'), 403, 'APPLICATION_ACCESS_DENIED', 'B2B access does not open the Dashboard');
+checkOk(T::call($kernel, 'GET', '/orders/mine', null, ['origin' => T::ORIGIN], $worker['cookie']), 'Staff keeps working next to B2B');
+checkOk($asDashboard($root, 'PUT', "/management/employees/{$workerId}/applications", ['applications' => ['staff']]), 'root removes B2B access');
+checkError($fromB2b($worker, 'GET', '/b2b/access'), 403, 'APPLICATION_ACCESS_DENIED', 'B2B access removal applies on the next B2B request');
+check($auditCount('employee.applications_changed', $workerId) === 5, 'B2B grants and removals are audited like every application change');
+checkError($asDashboard($root, 'PUT', "/management/employees/{$me['employee']['id']}/applications", ['applications' => ['staff', 'dashboard']]), 403, 'ROOT_PROTECTED', 'root B2B access cannot be removed');
+
+$b2bCreated = checkOk($create($root, 'vanzari', ['b2b'], [], []), 'root creates a B2B-only employee', 201);
+$b2bUser = $loginAt("vanzari.{$suffix}", $b2bCreated['temporaryPassword'], B2B_ORIGIN);
+check($b2bUser['body']['employee']['mustChangePassword'] === true && $b2bUser['body']['employee']['applications'] === ['b2b'], 'a B2B-only identity logs in from the B2B origin with a temporary password');
+checkError($fromB2b($b2bUser, 'GET', '/b2b/access'), 403, 'PASSWORD_CHANGE_REQUIRED', 'B2B is blocked until the temporary password changes');
+$b2bChanged = T::call($kernel, 'POST', '/auth/password', ['currentPassword' => $b2bCreated['temporaryPassword'], 'newPassword' => 'Vanzari passphrase 2026!'], ['origin' => B2B_ORIGIN, 'x-csrf-token' => $b2bUser['csrf']], $b2bUser['cookie']);
+check($b2bChanged['status'] === 200 && preg_match('/^arasya_session=([^;]+);/', $b2bChanged['headers']['Set-Cookie'] ?? '', $b2bCookie) === 1 && str_contains($b2bChanged['headers']['Set-Cookie'], 'HttpOnly') && str_contains($b2bChanged['headers']['Set-Cookie'], 'SameSite=Lax'), 'the password change from the B2B origin rotates the same HttpOnly session cookie');
+$b2bUser = ['cookie' => rawurldecode($b2bCookie[1]), 'csrf' => (string) $b2bChanged['body']['csrfToken']];
+checkOk($fromB2b($b2bUser, 'GET', '/b2b/access'), 'the B2B-only identity enters B2B');
+checkError(T::call($kernel, 'GET', '/orders/mine', null, ['origin' => T::ORIGIN], $b2bUser['cookie']), 403, 'APPLICATION_ACCESS_DENIED', 'B2B access cannot drive production through Staff routes');
+checkError(T::call($kernel, 'POST', '/orders/trendhome:1/claim', ['expectedVersion' => 1], ['origin' => B2B_ORIGIN, 'x-csrf-token' => $b2bUser['csrf'], 'idempotency-key' => 'b2b-claim-' . $suffix], $b2bUser['cookie']), 403, 'APPLICATION_ACCESS_DENIED', 'a B2B identity cannot claim production orders');
+checkError($get($b2bUser, '/management/orders'), 403, 'APPLICATION_ACCESS_DENIED', 'a B2B identity cannot read Dashboard production data');
+checkOk($asDashboard($root, 'POST', "/management/employees/{$b2bCreated['employee']['id']}/deactivate"), 'root deactivates the B2B-only employee');
+checkError($fromB2b($b2bUser, 'GET', '/b2b/access'), 401, 'SESSION_EXPIRED', 'deactivation revokes the session and ends B2B access on the next request');
+checkError(T::call($kernel, 'GET', '/b2b/access', null, ['origin' => B2B_ORIGIN]), 401, 'SESSION_EXPIRED', 'the B2B gate needs the central session cookie, like every protected route');
 
 // ---- Staff stages --------------------------------------------------------------------------
 checkOk($asDashboard($root, 'PUT', "/management/employees/{$workerId}/stages", ['stageIds' => ['material-preparation', 'workshop-receiving']]), 'root assigns stages');

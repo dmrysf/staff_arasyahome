@@ -68,13 +68,13 @@ try {
 }
 
 try {
-    $applications = (int) $pdo->query("SELECT COUNT(*) FROM applications WHERE application_key IN ('staff', 'dashboard') AND status = 'active'")->fetchColumn();
-    $report($applications === 2 ? 'OK' : 'FAIL', 'iam_applications');
+    $applications = (int) $pdo->query("SELECT COUNT(*) FROM applications WHERE application_key IN ('staff', 'dashboard', 'b2b') AND status = 'active'")->fetchColumn();
+    $report($applications === 3 ? 'OK' : 'FAIL', 'iam_applications');
     $report((int) $pdo->query('SELECT COUNT(*) FROM system_root_identity')->fetchColumn() === 1 ? 'OK' : 'WARN', 'iam_root_identity');
 } catch (Throwable) {
     $report('FAIL', 'iam_applications');
 }
-foreach (['https://staff.arasyahome.ro', 'https://dashboard.arasyahome.ro'] as $origin) {
+foreach (['https://staff.arasyahome.ro', 'https://dashboard.arasyahome.ro', 'https://b2b.arasyahome.ro'] as $origin) {
     if ($config->isProduction()) {
         $report(in_array($origin, $config->allowedOrigins, true) ? 'OK' : 'WARN', 'cors_origin_' . parse_url($origin, PHP_URL_HOST));
     }
@@ -103,7 +103,7 @@ try {
     $release = json_decode((string) file_get_contents($releasePath), true, flags: JSON_THROW_ON_ERROR);
     $sourceCommit = is_array($release) ? ($release['sourceCommit'] ?? null) : null;
     $version = is_array($release) ? ($release['version'] ?? null) : null;
-    $valid = is_string($sourceCommit) && preg_match('/^[0-9a-f]{40}$/', $sourceCommit) === 1 && $version === '2.6.0';
+    $valid = is_string($sourceCommit) && preg_match('/^[0-9a-f]{40}$/', $sourceCommit) === 1 && $version === '2.7.0';
     $releaseDirectory = basename(dirname(__DIR__));
     if (preg_match('/^[0-9a-f]{40}$/', $releaseDirectory) === 1) {
         $valid = $valid && hash_equals($releaseDirectory, $sourceCommit);

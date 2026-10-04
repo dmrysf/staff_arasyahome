@@ -12,6 +12,7 @@ final class ApplicationAccess
 {
     public const STAFF = 'staff';
     public const DASHBOARD = 'dashboard';
+    public const B2B = 'b2b';
 
     /** @var array<string, list<string>> */
     public const BASELINE_PERMISSIONS = [
@@ -28,6 +29,10 @@ final class ApplicationAccess
         self::DASHBOARD => [
             'dashboard.access',
             'dashboard.overview.view',
+            'profile.view_self',
+        ],
+        self::B2B => [
+            'b2b.access',
             'profile.view_self',
         ],
     ];
