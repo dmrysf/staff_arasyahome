@@ -35,7 +35,7 @@ Daily auth cleanup runs outside HTTP requests through the stable active-release 
 17 3 * * * /bin/bash "$HOME/arasya-operations-api/bin/maintenance-active.sh" >> "$HOME/arasya-maintenance.log" 2>&1
 ```
 
-Test first with `--dry-run`. Deletes are batched at 500 rows. Defaults retain expired/revoked sessions for 30 days, login attempts for 30 days, stale login and API rate-limit buckets for 7 days, and stored idempotent results for 30 days (`ARASYA_IDEMPOTENCY_RETENTION_DAYS`). Order activity events are the production audit and are never deleted by maintenance. (Before V2.2.0 the command failed on MySQL because of a repeated SQL placeholder; it is now covered by the MySQL suite.) Audit events are never deleted unless `ARASYA_AUTH_AUDIT_RETENTION_DAYS` is explicitly configured; otherwise the command prints `AUDIT_RETENTION_NOT_CONFIGURED`. Output contains counts only. An advisory lock prevents overlapping runs.
+Test first with `--dry-run`. Deletes are batched at 500 rows. Defaults retain expired/revoked sessions for 30 days, login attempts for 30 days, stale login and API rate-limit buckets for 7 days, and stored idempotent results for 30 days (`ARASYA_IDEMPOTENCY_RETENTION_DAYS`). Order activity events (production audit) and `iam_audit_events` (IAM audit) are never deleted by maintenance. (Before V2.2.0 the command failed on MySQL because of a repeated SQL placeholder; it is now covered by the MySQL suite.) Audit events are never deleted unless `ARASYA_AUTH_AUDIT_RETENTION_DAYS` is explicitly configured; otherwise the command prints `AUDIT_RETENTION_NOT_CONFIGURED`. Output contains counts only. An advisory lock prevents overlapping runs.
 
 ## Readiness and browser safety
 

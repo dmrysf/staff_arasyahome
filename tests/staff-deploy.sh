@@ -19,7 +19,7 @@ create_release() {
   printf 'window.__ARASYA_RELEASE_MARKER__=%q;\n' "$marker" > "$target/dist/assets/release-$marker.js"
   sed "s#</body>#<script type=\"module\" src=\"/assets/release-$marker.js\"></script></body>#" "$target/dist/index.html" > "$target/dist/index.next"
   mv "$target/dist/index.next" "$target/dist/index.html"
-  printf '{"commit":"%s","builtAt":"2026-08-19T00:00:00Z","version":"2.2.0","preview":true}\n' "$sha" > "$target/dist/release.json"
+  printf '{"commit":"%s","builtAt":"2026-08-19T00:00:00Z","version":"2.3.0","preview":true}\n' "$sha" > "$target/dist/release.json"
   /bin/bash scripts/generate-sha256s.sh "$target/dist"
   /bin/bash scripts/validate-staff-release.sh "$target/dist" >/dev/null
   cp .cpanel.yml "$target/.cpanel.yml"
