@@ -1,10 +1,11 @@
+-- Inserts the baseline department and role only when missing; never overrides Dashboard changes.
 INSERT INTO departments (department_key, name, status, created_at, updated_at)
 VALUES ('pregatire-material', 'Pregătire Material', 'active', UTC_TIMESTAMP(6), UTC_TIMESTAMP(6))
-ON DUPLICATE KEY UPDATE name = VALUES(name), status = VALUES(status), updated_at = UTC_TIMESTAMP(6);
+ON DUPLICATE KEY UPDATE department_key = department_key;
 
 INSERT INTO roles (role_key, name, status, created_at, updated_at)
 VALUES ('employee', 'Angajat', 'active', UTC_TIMESTAMP(6), UTC_TIMESTAMP(6))
-ON DUPLICATE KEY UPDATE name = VALUES(name), status = VALUES(status), updated_at = UTC_TIMESTAMP(6);
+ON DUPLICATE KEY UPDATE role_key = role_key;
 
 INSERT INTO permissions (permission_key, description, created_at) VALUES
     ('orders.scan', 'Scan production order codes', UTC_TIMESTAMP(6)),

@@ -70,6 +70,19 @@ final readonly class AuthController
         return Response::json(['ok' => true], 200, ['Set-Cookie' => $this->cookies->clear()]);
     }
 
+    public function changePassword(Request $request): Response
+    {
+        $current = $this->current($request);
+        $this->csrf->requireValid($current->rawToken, $request->header('x-csrf-token'));
+        $input = $request->json();
+        $this->requireKeys($input, ['currentPassword', 'newPassword']);
+        if (!is_string($input['currentPassword']) || !is_string($input['newPassword'])) {
+            throw new ApiException(400, 'INVALID_REQUEST', 'Passwords must be strings.');
+        }
+        $result = $this->auth->changePassword($current, $input['currentPassword'], $input['newPassword'], $request->ipAddress, $request->userAgent, $request->requestId);
+        return Response::json($this->payload($result), 200, ['Set-Cookie' => $this->cookies->session($result->rawToken, $result->expiresAt)]);
+    }
+
     public function employee(Request $request): Response
     {
         $employee = $this->current($request)->employee;

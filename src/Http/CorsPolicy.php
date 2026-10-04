@@ -33,7 +33,7 @@ final readonly class CorsPolicy
         }
         $origin = $request->header('origin');
         $requestedMethod = strtoupper($request->header('access-control-request-method') ?? '');
-        if (!$this->isAllowed($origin) || !in_array($requestedMethod, ['GET', 'POST'], true)) {
+        if (!$this->isAllowed($origin) || !in_array($requestedMethod, ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'], true)) {
             throw new ApiException(403, 'ORIGIN_DENIED', 'CORS preflight denied.');
         }
         $allowedHeaders = ['content-type', 'idempotency-key', 'if-none-match', 'x-csrf-token', 'x-request-id'];
@@ -55,7 +55,7 @@ final readonly class CorsPolicy
         return [
             'Access-Control-Allow-Origin' => (string) $origin,
             'Access-Control-Allow-Credentials' => 'true',
-            'Access-Control-Allow-Methods' => 'GET, POST, OPTIONS',
+            'Access-Control-Allow-Methods' => 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
             'Access-Control-Allow-Headers' => 'Content-Type, Idempotency-Key, If-None-Match, X-CSRF-Token, X-Request-ID',
             'Access-Control-Expose-Headers' => 'ETag, X-Request-ID',
             'Access-Control-Max-Age' => '600',

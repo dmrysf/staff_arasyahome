@@ -29,5 +29,8 @@ interface EmployeeRepository
     public function updatePasswordHash(string $employeeUuid, string $passwordHash, string $now): bool;
 
     public function markLogin(string $employeeUuid, string $now): void;
+
+    /** Stores a new password chosen by the identity, clears any temporary-password requirement and invalidates authorization state. */
+    public function completePasswordChange(string $employeeUuid, string $passwordHash, string $now): bool;
 }
 

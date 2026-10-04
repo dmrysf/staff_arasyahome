@@ -37,6 +37,16 @@ final class PasswordHasher
         return password_needs_rehash($hash, $algorithm);
     }
 
+    /** Policy for passwords people choose: 12–1024 bytes, not trivially equal to the username. */
+    public function meetsPolicy(string $password, string $usernameNormalized = ''): bool
+    {
+        $length = strlen($password);
+        if ($length < 12 || $length > 1024 || trim($password) === '') {
+            return false;
+        }
+        return $usernameNormalized === '' || !str_contains(mb_strtolower($password), $usernameNormalized);
+    }
+
     public function assertPolicy(string $password): void
     {
         $length = strlen($password);

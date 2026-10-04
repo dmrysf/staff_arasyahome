@@ -141,6 +141,47 @@ final readonly class AuthenticationService
         return new AuthResult($current->employee, $newSession, $newRawToken, $this->tokens->csrfToken($newRawToken), $expiresAt);
     }
 
+    /**
+     * The identity changes its own password (also the forced first-login change). Every existing session
+     * is revoked and a fresh session is issued for this device only.
+     */
+    public function changePassword(AuthenticatedSession $current, string $currentPassword, string $newPassword, string $ipAddress, string $userAgent, string $requestId): AuthResult
+    {
+        $employee = $current->employee;
+        $now = $this->clock->now();
+        $nowSql = $this->sqlTime($now);
+        if (!$this->passwords->verify($currentPassword, $employee->passwordHash)) {
+            $this->rateLimiter->recordFailure($employee->usernameNormalized, $ipAddress, $nowSql);
+            $this->audit->record('AUTH_PASSWORD_CHANGE_DENIED', $employee->employeeUuid, null, $ipAddress, $userAgent, $requestId, $nowSql);
+            throw new ApiException(400, 'CURRENT_PASSWORD_INVALID', 'The current password is not correct.');
+        }
+        if (!$this->passwords->meetsPolicy($newPassword, $employee->usernameNormalized) || hash_equals($currentPassword, $newPassword)) {
+            throw new ApiException(400, 'PASSWORD_POLICY', 'The new password does not meet the password policy.');
+        }
+        if (!$this->employees->completePasswordChange($employee->employeeUuid, $this->passwords->hash($newPassword), $nowSql)) {
+            throw new ApiException(500, 'INTERNAL_ERROR', 'The password could not be changed.');
+        }
+        $revoked = $this->sessions->revokeAllForEmployee($employee->employeeUuid, $nowSql);
+        $rawToken = $this->tokens->generate();
+        $expiresAt = $now->modify("+{$this->sessionTtlSeconds} seconds");
+        $this->sessions->create(
+            Uuid::v4(),
+            $employee->employeeUuid,
+            $this->tokens->hash($rawToken),
+            $nowSql,
+            $this->sqlTime($expiresAt),
+            $this->tokens->metadataHash('ip', $ipAddress),
+            $this->tokens->metadataHash('user-agent', $userAgent),
+        );
+        $this->audit->record('AUTH_PASSWORD_CHANGED', $employee->employeeUuid, null, $ipAddress, $userAgent, $requestId, $nowSql, ['revoked_sessions' => $revoked, 'forced' => $employee->mustChangePassword]);
+        $session = $this->sessions->findByTokenHash($this->tokens->hash($rawToken));
+        $updated = $this->employees->findByUuid($employee->employeeUuid);
+        if ($session === null || $updated === null) {
+            throw new ApiException(500, 'INTERNAL_ERROR', 'Authentication session could not be created.');
+        }
+        return new AuthResult($updated, $session, $rawToken, $this->tokens->csrfToken($rawToken), $expiresAt);
+    }
+
     public function logout(AuthenticatedSession $current, string $ipAddress, string $userAgent, string $requestId): void
     {
         $nowSql = $this->sqlTime($this->clock->now());
