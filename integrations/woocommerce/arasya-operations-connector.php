@@ -152,12 +152,18 @@ function arasya_ops_post(string $route, array $payload): ?int
     return is_wp_error($response) ? null : (int) wp_remote_retrieve_response_code($response);
 }
 
+/**
+ * Every status except unpaid drafts is sent, including site-specific custom statuses
+ * (for example Trendhome's `se-proceseaza` or `expediat`), so Operations always holds the
+ * current commerce status. Commerce status never moves production.
+ */
 function arasya_ops_should_send(object $order): bool
 {
-    $statuses = function_exists('apply_filters')
-        ? (array) apply_filters('arasya_operations_send_statuses', ['processing', 'on-hold', 'completed', 'cancelled', 'refunded'])
-        : ['processing', 'on-hold', 'completed', 'cancelled', 'refunded'];
-    return in_array($order->get_status(), $statuses, true);
+    $skipped = ['pending', 'checkout-draft', 'draft', 'auto-draft', 'failed', 'trash'];
+    if (function_exists('apply_filters')) {
+        $skipped = (array) apply_filters('arasya_operations_skip_statuses', $skipped);
+    }
+    return !in_array($order->get_status(), $skipped, true);
 }
 
 function arasya_ops_enqueue(int $orderId, int $attempt = 0, int $delay = 0): void

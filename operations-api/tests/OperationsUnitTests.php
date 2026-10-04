@@ -297,6 +297,9 @@ test('WooCommerce connector payloads satisfy the Operations source contract and 
     $payload = arasya_ops_build_payload($order, $changedAt);
     expect(($payload['order']['notes'] ?? null) === 'Tiv dublu' && !str_contains(json_encode($payload, JSON_THROW_ON_ERROR), '0712'));
     expect(!isset($payload['production']) && $payload['order']['availability'] === 'active' && $payload['eventId'] === 'wc-61833-' . preg_replace('/\D/', '', $changedAt));
+    $withStatus = static fn (string $status): object => new class ($status) { public function __construct(private string $status) {} public function get_status(): string { return $this->status; } };
+    expect(arasya_ops_should_send($withStatus('processing')) && arasya_ops_should_send($withStatus('se-proceseaza')) && arasya_ops_should_send($withStatus('expediat')) && arasya_ops_should_send($withStatus('cancelled')));
+    expect(!arasya_ops_should_send($withStatus('pending')) && !arasya_ops_should_send($withStatus('checkout-draft')) && !arasya_ops_should_send($withStatus('failed')));
     $snapshot = SourceOrderPayloadMapper::map('trendhome', $payload);
     expect($snapshot->sourceOrderId === '61833' && $snapshot->productionStageId === null && $snapshot->items[0]->heightValue === 260.5 && $snapshot->items[0]->productCode === 'DV-302' && $snapshot->items[0]->quantity === 2);
     $body = json_encode($payload, JSON_THROW_ON_ERROR);
