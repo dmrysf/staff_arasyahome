@@ -15,12 +15,13 @@ use InvalidArgumentException;
 use PDO;
 
 /**
- * Production Control V1: read-only order workspace for the Dashboard.
+ * Production Control order workspace for the Dashboard (reads). Supervisor owner interventions live
+ * in OrderOwnershipService; nothing in this class writes.
  *
  * Two independent state machines are reported side by side and never derived from each other:
  * - commerce: the source's own status (e.g. WooCommerce "processing"), received inbound only;
  * - production: the canonical curtain-production@1 stage, owner and completion, owned by Operations.
- * Nothing here writes, and no Operations code path sends anything back to a source.
+ * No Operations code path sends anything back to a source.
  *
  * Access: dashboard application + orders.view_all. The production timeline additionally needs
  * activity.view_all (otherwise `activity` is null). Rows carry no customer personal data; the source
@@ -33,15 +34,23 @@ final readonly class OrderControlService
     private const ACTIVITY_LIMIT = 500;
     private const STATES = ['active', 'completed', 'cancelled'];
     private const ENTERED_AT = 'COALESCE(o.production_changed_at, o.created_at)';
+    private const OWNER_IS_ROOT = 'EXISTS (SELECT 1 FROM system_root_identity sri WHERE sri.employee_uuid = o.production_owner_employee_uuid)';
+    private const OWNER_ACTIVE = "(e.status = 'active' AND (od.status = 'active' OR " . self::OWNER_IS_ROOT . '))';
+    private const OWNER_STAFF = '(' . self::OWNER_IS_ROOT . " OR EXISTS (SELECT 1 FROM employee_application_access eaa INNER JOIN applications a ON a.application_key = eaa.application_key AND a.status = 'active'
+            WHERE eaa.employee_uuid = o.production_owner_employee_uuid AND eaa.application_key = 'staff'))";
+    private const OWNER_STAGE = 'EXISTS (SELECT 1 FROM employee_stage_access esa WHERE esa.employee_uuid = o.production_owner_employee_uuid AND esa.stage_id = o.production_stage_id)';
+    private const ACTIVE_STATE = "o.production_completed_at IS NULL AND o.operational_status <> 'unavailable'";
     private const SUMMARY = 'SELECT o.order_uuid, o.global_order_id, o.order_number, o.source_key, s.display_name AS source_name,
             o.source_commerce_status_code, o.source_commerce_status_label, o.operational_status,
             o.production_stage_id, ps.display_name AS stage_label, ps.ordinal AS stage_ordinal,
             o.production_owner_employee_uuid, e.display_name AS owner_name, o.production_claimed_at,
-            o.production_changed_at, o.production_completed_at, o.created_at, o.accepted_at
+            o.production_changed_at, o.production_completed_at, o.created_at, o.accepted_at,
+            ' . self::OWNER_ACTIVE . ' AS owner_active, ' . self::OWNER_STAFF . ' AS owner_staff, ' . self::OWNER_STAGE . ' AS owner_stage
         FROM operational_orders o
         INNER JOIN order_sources s ON s.source_key = o.source_key
         INNER JOIN production_stages ps ON ps.stage_id = o.production_stage_id
-        LEFT JOIN employees e ON e.employee_uuid = o.production_owner_employee_uuid';
+        LEFT JOIN employees e ON e.employee_uuid = o.production_owner_employee_uuid
+        LEFT JOIN departments od ON od.department_id = e.department_id';
 
     public function __construct(
         private PDO $pdo,
@@ -77,7 +86,20 @@ final readonly class OrderControlService
             'items' => array_map(fn (array $row): array => $this->summary($row), $rows),
             'nextCursor' => $next,
             'facets' => $this->facets(),
+            'counts' => $this->counts(),
         ];
+    }
+
+    /** Supervisor counters over active production, independent of the list filters. @return array{unassignedActive: int, ownerAttention: int} */
+    private function counts(): array
+    {
+        $row = $this->pdo->query('SELECT COALESCE(SUM(o.production_owner_employee_uuid IS NULL), 0) AS unassigned,
+                COALESCE(SUM(o.production_owner_employee_uuid IS NOT NULL AND NOT (' . self::OWNER_ACTIVE . ' AND ' . self::OWNER_STAFF . ' AND ' . self::OWNER_STAGE . ')), 0) AS attention
+            FROM operational_orders o
+            LEFT JOIN employees e ON e.employee_uuid = o.production_owner_employee_uuid
+            LEFT JOIN departments od ON od.department_id = e.department_id
+            WHERE ' . self::ACTIVE_STATE)->fetch(PDO::FETCH_ASSOC) ?: [];
+        return ['unassignedActive' => (int) ($row['unassigned'] ?? 0), 'ownerAttention' => (int) ($row['attention'] ?? 0)];
     }
 
     /** @return array<string, mixed> */
@@ -105,6 +127,10 @@ final readonly class OrderControlService
             'changedAt' => $this->isoOrNull($row['production_changed_at']),
             'version' => (int) $more['production_version'],
             'notes' => $more['production_notes'] === null ? null : (string) $more['production_notes'],
+            'control' => [
+                'canManageOwner' => $this->authorization->can($actor, OrderOwnershipService::PERMISSION),
+                'blockedReason' => OrderOwnershipService::blockedReason($row),
+            ],
         ];
         $detail['commerce'] += [
             'sourceChangedAt' => $this->iso((string) $more['source_changed_at']),
@@ -126,8 +152,11 @@ final readonly class OrderControlService
         $detail['activityTruncated'] = false;
         if ($this->authorization->can($actor, 'activity.view_all')) {
             $activity = $this->pdo->prepare('SELECT a.event_id, a.action, a.occurred_at, a.from_stage_id, a.from_stage_label_snapshot, a.to_stage_id, a.to_stage_label_snapshot,
-                    a.production_version_after, e.employee_uuid, e.display_name
+                    a.production_version_after, e.employee_uuid, e.display_name,
+                    a.previous_owner_employee_uuid, pe.display_name AS previous_owner_name, a.new_owner_employee_uuid, ne.display_name AS new_owner_name
                 FROM order_activity_events a INNER JOIN employees e ON e.employee_uuid = a.employee_uuid
+                LEFT JOIN employees pe ON pe.employee_uuid = a.previous_owner_employee_uuid
+                LEFT JOIN employees ne ON ne.employee_uuid = a.new_owner_employee_uuid
                 WHERE a.order_uuid = :id ORDER BY a.occurred_at ASC, a.production_version_after ASC LIMIT ' . (self::ACTIVITY_LIMIT + 1));
             $activity->execute(['id' => $row['order_uuid']]);
             $events = $activity->fetchAll(PDO::FETCH_ASSOC);
@@ -139,6 +168,8 @@ final readonly class OrderControlService
                 'employee' => ['id' => (string) $event['employee_uuid'], 'displayName' => (string) $event['display_name']],
                 'fromStage' => ['id' => (string) $event['from_stage_id'], 'label' => (string) $event['from_stage_label_snapshot']],
                 'toStage' => $event['to_stage_id'] === null ? null : ['id' => (string) $event['to_stage_id'], 'label' => (string) $event['to_stage_label_snapshot']],
+                'previousOwner' => $event['previous_owner_employee_uuid'] === null ? null : ['id' => (string) $event['previous_owner_employee_uuid'], 'displayName' => (string) $event['previous_owner_name']],
+                'newOwner' => $event['new_owner_employee_uuid'] === null ? null : ['id' => (string) $event['new_owner_employee_uuid'], 'displayName' => (string) $event['new_owner_name']],
                 'productionVersion' => (int) $event['production_version_after'],
             ], array_slice($events, 0, self::ACTIVITY_LIMIT));
         }
@@ -180,11 +211,12 @@ final readonly class OrderControlService
             '' => '1 = 1',
             'assigned' => 'o.production_owner_employee_uuid IS NOT NULL',
             'unassigned' => 'o.production_owner_employee_uuid IS NULL',
-            default => throw new ApiException(422, 'VALIDATION_FAILED', 'assignment must be assigned or unassigned.'),
+            'owner_attention' => 'o.production_owner_employee_uuid IS NOT NULL AND NOT (' . self::OWNER_ACTIVE . ' AND ' . self::OWNER_STAFF . ' AND ' . self::OWNER_STAGE . ')',
+            default => throw new ApiException(422, 'VALIDATION_FAILED', 'assignment must be assigned, unassigned or owner_attention.'),
         };
         $where[] = match ($filters['state'] ?? '') {
             '' => '1 = 1',
-            'active' => "o.production_completed_at IS NULL AND o.operational_status <> 'unavailable'",
+            'active' => self::ACTIVE_STATE,
             'completed' => 'o.production_completed_at IS NOT NULL',
             'cancelled' => "o.production_completed_at IS NULL AND o.operational_status = 'unavailable'",
             default => throw new ApiException(422, 'VALIDATION_FAILED', 'state must be active, completed or cancelled.'),
@@ -233,10 +265,29 @@ final readonly class OrderControlService
                 'claimedAt' => $this->isoOrNull($row['production_claimed_at']),
                 'stageEnteredAt' => $this->iso((string) ($row['production_changed_at'] ?? $row['created_at'])),
                 'completedAt' => $this->isoOrNull($row['production_completed_at']),
+                'attention' => $state === 'active' ? $this->attention($row) : null,
             ],
             'importedAt' => $this->iso((string) $row['created_at']),
             'acceptedAt' => $this->isoOrNull($row['accepted_at']),
         ];
+    }
+
+    /**
+     * Neutral, objective operational attention for active production. No SLA exists, so time never
+     * produces attention. An ineligible owner still owns the order (nothing moves automatically); Staff
+     * blocks that owner at operation time, and a supervisor can release or reassign.
+     *
+     * @param array<string, mixed> $row
+     */
+    private function attention(array $row): ?string
+    {
+        return match (true) {
+            $row['production_owner_employee_uuid'] === null => 'unassigned',
+            (int) $row['owner_active'] !== 1 => 'owner_inactive',
+            (int) $row['owner_staff'] !== 1 => 'owner_no_staff_access',
+            (int) $row['owner_stage'] !== 1 => 'owner_stage_not_allowed',
+            default => null,
+        };
     }
 
     private function encodeCursor(string $at, string $id): string

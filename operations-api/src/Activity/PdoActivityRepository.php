@@ -11,6 +11,12 @@ use PDO;
 
 final readonly class PdoActivityRepository
 {
+    /**
+     * A Staff history lists the employee's own production work. Supervisor owner interventions are
+     * recorded with the supervisor as actor and belong to the Dashboard timeline, not to Staff history.
+     */
+    private const STAFF_ACTIONS = "'claimed', 'stage_completed', 'production_completed'";
+
     public function __construct(private PDO $pdo)
     {
     }
@@ -39,7 +45,7 @@ final readonly class PdoActivityRepository
             SELECT event_id, occurred_at, action, global_order_id, source_key, order_number_snapshot,
                    from_stage_id, from_stage_label_snapshot, to_stage_id, to_stage_label_snapshot, meters_snapshot
             FROM order_activity_events
-            WHERE employee_uuid = ? AND occurred_at >= ? AND occurred_at < ?
+            WHERE employee_uuid = ? AND occurred_at >= ? AND occurred_at < ? AND action IN (" . self::STAFF_ACTIONS . ")
             {$cursorSql}
             ORDER BY occurred_at DESC, event_id DESC
             LIMIT {$queryLimit}
@@ -85,7 +91,7 @@ final readonly class PdoActivityRepository
                    COALESCE(SUM(CASE WHEN action IN ('stage_completed', 'production_completed') THEN 1 ELSE 0 END), 0) AS handed_over,
                    COALESCE(SUM(CASE WHEN action IN ('stage_completed', 'production_completed') THEN meters_snapshot ELSE 0 END), 0) AS meters
             FROM order_activity_events
-            WHERE employee_uuid = ? AND occurred_at >= ? AND occurred_at < ?
+            WHERE employee_uuid = ? AND occurred_at >= ? AND occurred_at < ? AND action IN (" . self::STAFF_ACTIONS . ")
         ");
         $statement->execute([$employeeUuid, $from, $to]);
         $row = $statement->fetch(PDO::FETCH_ASSOC) ?: [];

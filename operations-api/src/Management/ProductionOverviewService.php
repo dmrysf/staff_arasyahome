@@ -173,9 +173,12 @@ final readonly class ProductionOverviewService
     {
         $statement = $this->pdo->prepare(
             'SELECT a.event_id, a.action, a.order_number_snapshot, a.global_order_id, a.source_key, a.from_stage_id, a.from_stage_label_snapshot,
-                    a.to_stage_id, a.to_stage_label_snapshot, a.occurred_at, e.employee_uuid, e.display_name
+                    a.to_stage_id, a.to_stage_label_snapshot, a.occurred_at, e.employee_uuid, e.display_name,
+                    a.previous_owner_employee_uuid, pe.display_name AS previous_owner_name, a.new_owner_employee_uuid, ne.display_name AS new_owner_name
              FROM order_activity_events a
-             INNER JOIN employees e ON e.employee_uuid = a.employee_uuid'
+             INNER JOIN employees e ON e.employee_uuid = a.employee_uuid
+             LEFT JOIN employees pe ON pe.employee_uuid = a.previous_owner_employee_uuid
+             LEFT JOIN employees ne ON ne.employee_uuid = a.new_owner_employee_uuid'
             . ($source === '' ? '' : ' WHERE a.source_key = :source')
             . ' ORDER BY a.occurred_at DESC, a.event_id DESC LIMIT ' . self::ACTIVITY_LIMIT,
         );
@@ -188,6 +191,8 @@ final readonly class ProductionOverviewService
             'order' => ['globalOrderId' => (string) $row['global_order_id'], 'orderNumber' => (string) $row['order_number_snapshot'], 'source' => (string) $row['source_key']],
             'fromStage' => ['id' => (string) $row['from_stage_id'], 'label' => (string) $row['from_stage_label_snapshot']],
             'toStage' => $row['to_stage_id'] === null ? null : ['id' => (string) $row['to_stage_id'], 'label' => (string) $row['to_stage_label_snapshot']],
+            'previousOwner' => $row['previous_owner_employee_uuid'] === null ? null : ['id' => (string) $row['previous_owner_employee_uuid'], 'displayName' => (string) $row['previous_owner_name']],
+            'newOwner' => $row['new_owner_employee_uuid'] === null ? null : ['id' => (string) $row['new_owner_employee_uuid'], 'displayName' => (string) $row['new_owner_name']],
         ], $statement->fetchAll(PDO::FETCH_ASSOC));
     }
 
