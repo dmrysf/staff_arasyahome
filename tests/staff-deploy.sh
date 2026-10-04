@@ -7,6 +7,11 @@ cleanup() { rm -rf -- "$workspace"; }
 trap cleanup EXIT
 fail() { printf 'FAIL Staff deploy test: %s\n' "$1" >&2; exit 1; }
 
+# cPanel deploy shells have no /dev/fd; process substitution there silently skips loops.
+if grep -nE '<\(' scripts/cpanel-deploy.sh scripts/cpanel-rollback-staff.sh scripts/staff-release-common.sh scripts/validate-staff-release.sh; then
+  fail "deploy scripts must not use process substitution"
+fi
+
 create_release() {
   local target="$1" sha="$2" marker="$3"
   mkdir -p "$target/dist/assets" "$target/scripts"

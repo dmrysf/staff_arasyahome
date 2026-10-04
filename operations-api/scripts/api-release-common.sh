@@ -75,6 +75,8 @@ api_gc_releases() {
   [[ -d "$releases_root/$active" ]] && protected=$((protected + 1))
   [[ -n "$previous" && "$previous" != "$active" && -d "$releases_root/$previous" ]] && protected=$((protected + 1))
   kept="$protected"
+  # cPanel deploy shells have no /dev/fd, so process substitution is unavailable: use files.
+  sort -rn "$listing" > "$listing.sorted"
   while read -r _ name; do
     [[ -n "$name" ]] || continue
     if [[ "$name" == "$active" || "$name" == "$previous" ]]; then continue; fi
@@ -82,6 +84,6 @@ api_gc_releases() {
     directory="$releases_root/$name"
     [[ "${directory%/*}" == "$releases_root" && "$name" =~ ^[0-9a-f]{40}$ ]] || api_fail "Refusing unsafe release cleanup."
     if [[ "$dry_run" == "1" ]]; then api_log "Would remove retained release: $name"; else rm -rf -- "$directory"; fi
-  done < <(sort -rn "$listing")
-  rm -f -- "$listing"
+  done < "$listing.sorted"
+  rm -f -- "$listing" "$listing.sorted"
 }

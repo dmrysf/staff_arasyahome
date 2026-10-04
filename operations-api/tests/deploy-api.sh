@@ -7,6 +7,11 @@ cleanup() { rm -rf -- "$workspace"; }
 trap cleanup EXIT
 fail() { printf 'FAIL API deploy test: %s\n' "$1" >&2; exit 1; }
 
+# cPanel deploy shells have no /dev/fd; process substitution there silently skips release cleanup.
+if grep -nE '<\(' operations-api/scripts/*.sh; then
+  fail "deploy scripts must not use process substitution"
+fi
+
 sha_a="$(printf 'a%.0s' {1..40})"; sha_b="$(printf 'b%.0s' {1..40})"; sha_c="$(printf 'c%.0s' {1..40})"; sha_d="$(printf 'd%.0s' {1..40})"
 release_a="$workspace/release-a"; release_b="$workspace/release-b"; release_c="$workspace/release-c"; release_d="$workspace/release-d"
 /bin/bash operations-api/tests/create-release-fixture.sh "$release_a" "$sha_a"

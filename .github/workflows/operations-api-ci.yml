@@ -179,7 +179,7 @@ jobs:
             git -C "$publish_dir" checkout --orphan api-deploy
             git -C "$publish_dir" rm -rf .
           fi
-          rsync --archive --delete --exclude='.git' "$release_dir/" "$publish_dir/"
+          rsync --archive --checksum --delete --exclude='.git' "$release_dir/" "$publish_dir/"
           cmp "$release_dir/release.json" "$publish_dir/release.json"
           cmp "$release_dir/SHA256SUMS" "$publish_dir/SHA256SUMS"
           cmp "$release_dir/src/Http/HealthController.php" "$publish_dir/src/Http/HealthController.php"

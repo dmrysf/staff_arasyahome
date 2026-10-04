@@ -140,7 +140,7 @@ jobs:
             git -C "$publish_dir" checkout --orphan deploy
             git -C "$publish_dir" rm -rf .
           fi
-          rsync --archive --delete --exclude='.git' "$release_dir/" "$publish_dir/"
+          rsync --archive --checksum --delete --exclude='.git' "$release_dir/" "$publish_dir/"
           cmp "$release_dir/SHA256SUMS" "$publish_dir/SHA256SUMS"
           cmp "$release_dir/dist/SHA256SUMS" "$publish_dir/dist/SHA256SUMS"
           cmp "$release_dir/dist/release.json" "$publish_dir/dist/release.json"

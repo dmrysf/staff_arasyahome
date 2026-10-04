@@ -50,8 +50,11 @@ staff_activate_release() {
   staff_atomic_copy "$retained/release.json" "$live/release.json"
   [[ "${ARASYA_TEST_FAIL_BEFORE_INDEX:-0}" != "1" ]] || staff_fail "Eșec simulat înainte de index."
   staff_atomic_copy "$retained/index.html" "$live/index.html"
-  while IFS= read -r asset; do [[ -f "$live/${asset#/}" ]] || staff_fail "Asset activ lipsă: $asset"; done \
-    < <(grep -oE '/assets/[A-Za-z0-9._-]+' "$live/index.html" | LC_ALL=C sort -u)
+  # Here-strings and files instead of process substitution: cPanel deploy shells have no /dev/fd.
+  local referenced_assets
+  referenced_assets="$(grep -oE '/assets/[A-Za-z0-9._-]+' "$live/index.html" | LC_ALL=C sort -u)"
+  [[ -n "$referenced_assets" ]] || staff_fail "index.html activ nu referă asset-uri."
+  while IFS= read -r asset; do [[ -f "$live/${asset#/}" ]] || staff_fail "Asset activ lipsă: $asset"; done <<< "$referenced_assets"
   local old=""; if [[ -f "$storage/active-release" ]]; then old="$(staff_read_pointer "$storage/active-release")"; fi
   if [[ -n "$old" && "$old" != "$commit" ]]; then staff_write_pointer "$storage/previous-release" "$old"; fi
   staff_write_pointer "$storage/active-release" "$commit"
@@ -69,20 +72,23 @@ staff_gc_releases() {
   [[ -d "$storage/$active" ]] && protected=$((protected + 1))
   [[ -n "$previous" && "$previous" != "$active" && -d "$storage/$previous" ]] && protected=$((protected + 1))
   kept="$protected"
+  sort -rn "$listing" > "$listing.sorted"
   while read -r _ name; do
     [[ -n "$name" ]] || continue
     if [[ "$name" == "$active" || "$name" == "$previous" ]]; then continue; fi
     if (( kept < retain )); then kept=$((kept + 1)); continue; fi
     directory="$storage/$name"; [[ "${directory%/*}" == "$storage" ]] || staff_fail "Curățare release nesigură."
     if [[ "$dry_run" == "1" ]]; then staff_log "Ar elimina release: $name"; else rm -rf -- "$directory"; fi
-  done < <(sort -rn "$listing")
-  rm -f -- "$listing"
+  done < "$listing.sorted"
+  rm -f -- "$listing" "$listing.sorted"
 
-  local asset relative retained found
+  local asset relative retained found asset_listing="$storage/.gc-assets.$$"
   [[ -d "$live/assets" ]] || return 0
+  find "$live/assets" -type f -print0 > "$asset_listing"
   while IFS= read -r -d '' asset; do
     relative="${asset#"$live/assets/"}"; found=0
     for retained in "$storage"/[0-9a-f]*; do [[ -f "$retained/assets/$relative" ]] && { found=1; break; }; done
     if [[ "$found" == "0" ]]; then if [[ "$dry_run" == "1" ]]; then staff_log "Ar elimina asset: $relative"; else rm -f -- "$asset"; fi; fi
-  done < <(find "$live/assets" -type f -print0)
+  done < "$asset_listing"
+  rm -f -- "$asset_listing"
 }
