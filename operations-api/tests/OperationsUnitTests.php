@@ -288,12 +288,14 @@ test('WooCommerce connector payloads satisfy the Operations source contract and 
         public function get_status(): string { return 'processing'; }
         public function get_items(): array { return [981 => $this->item]; }
         public function get_date_created(): DateTimeImmutable { return new DateTimeImmutable('2026-10-04T10:00:00+03:00'); }
-        public function get_customer_note(): string { return ''; }
+        public function get_customer_note(): string { return 'Sună la 0712 345 678'; }
+        public function get_meta(string $key, bool $single): string { return $key === '_arasya_production_notes' ? 'Tiv dublu' : ''; }
         public function get_id(): int { return 61833; }
         public function get_order_number(): string { return '61833'; }
     };
     $changedAt = arasya_ops_now();
     $payload = arasya_ops_build_payload($order, $changedAt);
+    expect(($payload['order']['notes'] ?? null) === 'Tiv dublu' && !str_contains(json_encode($payload, JSON_THROW_ON_ERROR), '0712'));
     expect(!isset($payload['production']) && $payload['order']['availability'] === 'active' && $payload['eventId'] === 'wc-61833-' . preg_replace('/\D/', '', $changedAt));
     $snapshot = SourceOrderPayloadMapper::map('trendhome', $payload);
     expect($snapshot->sourceOrderId === '61833' && $snapshot->productionStageId === null && $snapshot->items[0]->heightValue === 260.5 && $snapshot->items[0]->productCode === 'DV-302' && $snapshot->items[0]->quantity === 2);

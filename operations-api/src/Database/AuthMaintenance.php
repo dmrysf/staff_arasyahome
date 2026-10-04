@@ -55,8 +55,9 @@ final readonly class AuthMaintenance
 
     private function pruneSessions(string $cutoff, bool $dryRun): int
     {
-        $where = '(expires_at < :cutoff OR (revoked_at IS NOT NULL AND revoked_at < :cutoff))';
-        return $this->pruneByQuery('auth_sessions', 'session_id', $where, ['cutoff' => $cutoff], $dryRun);
+        // Native MySQL prepares reject a repeated named placeholder, so each use is distinct.
+        $where = '(expires_at < :expires_cutoff OR (revoked_at IS NOT NULL AND revoked_at < :revoked_cutoff))';
+        return $this->pruneByQuery('auth_sessions', 'session_id', $where, ['expires_cutoff' => $cutoff, 'revoked_cutoff' => $cutoff], $dryRun);
     }
 
     private function pruneSimple(string $table, string $key, string $timestamp, string $cutoff, bool $dryRun): int

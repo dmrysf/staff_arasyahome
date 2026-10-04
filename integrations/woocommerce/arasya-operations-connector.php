@@ -12,7 +12,9 @@
  *   define('ARASYA_OPERATIONS_SECRET', '<same 64-hex secret as ARASYA_SOURCE_SECRET_* in Operations>');
  *
  * Commerce status is sent as commerce data only. This connector never sends a
- * production stage: Arasya Operations owns production.
+ * production stage: Arasya Operations owns production. No customer name, address,
+ * phone, e-mail or customer note is sent; production notes come only from the
+ * `_arasya_production_notes` order meta (or the `arasya_operations_production_notes` filter).
  */
 
 declare(strict_types=1);
@@ -90,7 +92,11 @@ function arasya_ops_build_payload(object $order, string $changedAt): array
         ], static fn (mixed $value): bool => $value !== null);
     }
     $created = $order->get_date_created();
-    $notes = trim((string) $order->get_customer_note());
+    // Only explicit production instructions are forwarded; customer notes may contain personal data.
+    $notes = trim((string) $order->get_meta('_arasya_production_notes', true));
+    if (function_exists('apply_filters')) {
+        $notes = trim((string) apply_filters('arasya_operations_production_notes', $notes, $order));
+    }
     return [
         'schemaVersion' => 1,
         'eventId' => 'wc-' . $order->get_id() . '-' . preg_replace('/\D/', '', $changedAt),

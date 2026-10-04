@@ -285,4 +285,12 @@ check($limited, 'manual lookups are rate limited per employee');
 $pdo->prepare("UPDATE employees SET status = 'inactive' WHERE employee_uuid = ?")->execute([$scanner['employeeUuid']]);
 checkError($get($scanner, '/orders/mine'), 401, 'ACCOUNT_INACTIVE', 'inactive employees lose operational access');
 
+// ---- Maintenance against real MySQL (native prepares) ---------------------------
+$maintenance = new \Arasya\Operations\Database\AuthMaintenance($pdo, 30, 30, 7, null, 500, 30);
+$dryRun = $maintenance->run(true);
+check(array_keys($dryRun) === ['sessions', 'login_attempts', 'rate_limit_buckets', 'audit_events', 'idempotency_keys', 'api_rate_limit_buckets'], 'maintenance dry-run reports every retained table on MySQL');
+$pdo->exec("UPDATE order_operation_idempotency SET created_at = UTC_TIMESTAMP(6) - INTERVAL 40 DAY WHERE idempotency_key = " . $pdo->quote($claimKey));
+check($maintenance->run(false)['idempotency_keys'] >= 1, 'expired idempotency results are pruned on MySQL');
+check((int) $pdo->query('SELECT COUNT(*) FROM order_activity_events')->fetchColumn() > 0, 'maintenance never deletes the activity audit');
+
 fwrite(STDOUT, "PASS MySQL Staff operations lifecycle ({$checks} checks).\n");

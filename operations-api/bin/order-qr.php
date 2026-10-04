@@ -18,9 +18,13 @@ try {
     exit(2);
 }
 $writer = $container->projectionWriter();
-$payload = array_key_exists('rotate', $options) ? $writer->rotateQrReference($globalId) : $writer->qrPayloadFor($globalId);
-if ($payload === null) {
-    fwrite(STDERR, "ORDER_QR_NOT_FOUND\n");
+try {
+    // Orders projected before QR references existed receive one on first request.
+    $payload = array_key_exists('rotate', $options)
+        ? $writer->rotateQrReference($globalId)
+        : ($writer->qrPayloadFor($globalId) ?? $writer->rotateQrReference($globalId));
+} catch (Arasya\Operations\Http\ApiException $error) {
+    fwrite(STDERR, $error->errorCode . "\n");
     exit(1);
 }
 fwrite(STDOUT, $payload . "\n");
