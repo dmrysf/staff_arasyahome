@@ -13,13 +13,13 @@ if grep -nE '<\(' scripts/cpanel-deploy.sh scripts/cpanel-rollback-staff.sh scri
 fi
 
 create_release() {
-  local target="$1" sha="$2" marker="$3"
+  local target="$1" sha="$2" marker="$3" version="${4:-$(node -p "require('./package.json').version")}"
   mkdir -p "$target/dist/assets" "$target/scripts"
   cp -R dist/. "$target/dist/"
   printf 'window.__ARASYA_RELEASE_MARKER__=%q;\n' "$marker" > "$target/dist/assets/release-$marker.js"
   sed "s#</body>#<script type=\"module\" src=\"/assets/release-$marker.js\"></script></body>#" "$target/dist/index.html" > "$target/dist/index.next"
   mv "$target/dist/index.next" "$target/dist/index.html"
-  printf '{"commit":"%s","builtAt":"2026-08-19T00:00:00Z","version":"2.3.1","preview":true}\n' "$sha" > "$target/dist/release.json"
+  printf '{"commit":"%s","builtAt":"2026-08-19T00:00:00Z","version":"%s","preview":true}\n' "$sha" "$version" > "$target/dist/release.json"
   /bin/bash scripts/generate-sha256s.sh "$target/dist"
   /bin/bash scripts/validate-staff-release.sh "$target/dist" >/dev/null
   cp .cpanel.yml "$target/.cpanel.yml"
@@ -32,7 +32,7 @@ sha_a="$(printf 'a%.0s' {1..40})"; sha_b="$(printf 'b%.0s' {1..40})"; sha_c="$(p
 release_a="$workspace/release-a"; release_b="$workspace/release-b"; release_c="$workspace/release-c"; release_d="$workspace/release-d"
 create_release "$release_a" "$sha_a" a
 create_release "$release_b" "$sha_b" b
-create_release "$release_c" "$sha_c" c
+create_release "$release_c" "$sha_c" c 2.3.1
 create_release "$release_d" "$sha_d" d
 
 test_home="$workspace/home"; live="$test_home/staff.arasyahome.ro"; storage="$test_home/arasya-staff-releases"
