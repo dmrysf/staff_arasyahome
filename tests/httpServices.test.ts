@@ -12,6 +12,17 @@ function assertServerError(fn: () => void) {
     assert.equal(error.code, "SERVER_ERROR");
   }
 }
+test('B2B manufacturing snapshots preserve line meters, kind and notes without importing finance', () => {
+  const context = { company: { legalName: 'Frozen Client', companyCode: 'B2B-000001', countryCode: 'RO', taxIdentifier: '12' } };
+  const item = { id: 'line-1', name: 'Curtain', quantity: 4, meters: 13.5, productionContext: { kind: 'curtain', notes: 'Line', productionNotes: 'Workshop' } };
+  const raw = { id: 'b2b:1', source: 'b2b', orderNumber: 'B2B-ORD-000001', productionStageId: 'waiting', status: 'in_progress', version: 1, productionVersion: 1,
+    products: [item], updatedAt: '2026-10-05T00:00:00Z', productionContext: { ...context, balance: '999.00' } };
+  const result = mapProductionOrder(raw);
+  assert.deepEqual(result.productionContext, context); assert.deepEqual(result.products[0].productionContext, item.productionContext);
+  assert.equal(result.products[0].meters, 13.5); assert.equal(result.products[0].quantity, 4);
+  assertServerError(() => mapProductionOrder({ ...raw, productionContext: { company: { legalName: 'Missing identity' } } }));
+  assertServerError(() => mapProductionOrder({ ...raw, products: [{ ...item, productionContext: { ...item.productionContext, kind: 'unknown' } }] }));
+});
 
 test("mapProductionOrder validates quantity", () => {
   const baseItem = { id: "item-1", name: "Item", quantity: 1 };

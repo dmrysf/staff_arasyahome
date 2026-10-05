@@ -1,6 +1,8 @@
 # Arasya Staff
 
-Operations API 2.10.0 adds [B2B Current Account V1](docs/b2b-current-account.md): an insert-only receivables ledger per company and currency (RON and EUR kept separate). Finalizing a Classic order posts its receivable in the same transaction; cancelling a finalized order posts a linked reversal. Payments with optional allocations, opening balances, adjustments, reversals, and CSV/PDF statements. Migration 011 is additive, grants nothing and does not backfill.
+Operations API 2.11.0 adds [B2B Operations + Staff V1](docs/b2b-production.md): explicit, exactly-once submission of a finalized commercial order into canonical Staff production. Finalize still only freezes and posts the receivable; submission changes no money. Migration 012 adds immutable handoffs and narrow permissions without automatic role grants. Staff 2.3.2 renders frozen manufacturing context. Deployment is manual after CI; no production deployment occurs in this implementation task.
+
+Operations API 2.10.0 introduced [B2B Current Account V1](docs/b2b-current-account.md): an insert-only receivables ledger per company and currency (RON and EUR kept separate). Finalizing a Classic order posts its receivable in the same transaction; cancelling before production submission posts a linked reversal. Payments with optional allocations, opening balances, adjustments, reversals, and CSV/PDF statements remain unchanged. Migration 011 is additive, grants nothing and does not backfill.
 
 Operations API 2.9.1 is a corrective release: order activity records `line_updated` only for lines whose business fields actually changed, and a draft save lists `lines` as changed only when line identities, order or fields changed. No schema, permission or route change.
 

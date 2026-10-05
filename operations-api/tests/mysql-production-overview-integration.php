@@ -176,14 +176,14 @@ check(array_keys($claimed) === ['globalOrderId', 'orderNumber', 'source', 'stage
 check(array_column($overview['activity'], 'action') === ['production_completed', 'claimed', 'claimed'] && $overview['activity'][0]['order']['orderNumber'] === '81006' && $overview['activity'][0]['employee']['displayName'] === 'Test worker', 'production activity, newest first: ' . json_encode(array_column($overview['activity'], 'action')));
 check($overview['activity'][0]['fromStage']['id'] === 'delivery' && $overview['activity'][0]['toStage'] === null, 'activity carries stage ids');
 $health = array_combine(array_column($overview['sources'], 'key'), array_column($overview['sources'], 'health'));
-check($health === ['outletperdele' => 'healthy', 'trendhome' => 'healthy', 'trendyol' => 'not_configured'], 'source health after signed contact: ' . json_encode($health));
+check($health === ['b2b'=>'healthy','outletperdele' => 'healthy', 'trendhome' => 'healthy', 'trendyol' => 'not_configured'], 'source health after signed contact: ' . json_encode($health));
 $sourceActive = array_combine(array_column($overview['sources'], 'key'), array_column($overview['sources'], 'activeOrders'));
-check($sourceActive === ['outletperdele' => 2, 'trendhome' => 3, 'trendyol' => 0], 'active orders per source');
+check($sourceActive === ['b2b'=>0,'outletperdele' => 2, 'trendhome' => 3, 'trendyol' => 0], 'active orders per source');
 
 // ---- Source filter ---------------------------------------------------------------------------------
 $filtered = checkOk($get($root, '/management/production-overview', ['source' => 'outletperdele']), 'source filter');
 check($filtered['filters']['source'] === 'outletperdele' && $filtered['summary'] === ['active' => 2, 'waiting' => 0, 'inWork' => 2, 'unassigned' => 2, 'completedToday' => 0], 'filtered summary: ' . json_encode($filtered['summary']));
-check(array_column($filtered['oldestOrders'], 'orderNumber') === ['81004', '81005'] && $filtered['activity'] === [] && count($filtered['sources']) === 3, 'filter scopes orders and activity, not source health');
+check(array_column($filtered['oldestOrders'], 'orderNumber') === ['81004', '81005'] && $filtered['activity'] === [] && count($filtered['sources']) === 4, 'filter scopes orders and activity, not source health');
 checkError($get($root, '/management/production-overview', ['source' => 'unknown']), 422, 'VALIDATION_FAILED', 'unknown source filters are rejected');
 
 // ---- Section scope ---------------------------------------------------------------------------------
@@ -192,17 +192,17 @@ check($production['summary'] === $overview['summary'] && $production['oldestOrde
 $supervised = checkOk($get($supervisor, '/management/production-overview'), 'supervisor reads the overview');
 check(count($supervised['oldestOrders']) === 5 && count($supervised['activity']) === 3 && $supervised['sources'] === null, 'supervisor without sources.view sees no source health');
 $directed = checkOk($get($director, '/management/production-overview'), 'operations director reads the overview');
-check(count($directed['sources']) === 3, 'operations director sees source health');
+check(count($directed['sources']) === 4, 'operations director sees source health');
 
 // ---- Source health states --------------------------------------------------------------------------
 $pdo->prepare('UPDATE order_sources SET last_contact_at = :at WHERE source_key = :key')->execute(['at' => gmdate('Y-m-d H:i:s', time() - 2000) . '.000000', 'key' => 'outletperdele']);
 $pdo->prepare('UPDATE order_sources SET last_contact_at = :at WHERE source_key = :key')->execute(['at' => gmdate('Y-m-d H:i:s', time() - 7200) . '.000000', 'key' => 'trendhome']);
 $health = array_column(checkOk($get($root, '/management/production-overview'), 'stale sources')['sources'], 'health', 'key');
-check($health === ['outletperdele' => 'stale', 'trendhome' => 'offline', 'trendyol' => 'not_configured'], 'stale and offline by last contact age: ' . json_encode($health));
+check($health === ['b2b'=>'healthy','outletperdele' => 'stale', 'trendhome' => 'offline', 'trendyol' => 'not_configured'], 'stale and offline by last contact age: ' . json_encode($health));
 $pdo->exec("UPDATE order_sources SET last_contact_at = NULL WHERE source_key = 'outletperdele'");
 $pdo->exec("UPDATE order_sources SET status = 'inactive' WHERE source_key = 'trendhome'");
 $health = array_column(checkOk($get($root, '/management/production-overview'), 'silent sources')['sources'], 'health', 'key');
-check($health === ['outletperdele' => 'no_contact', 'trendhome' => 'disabled', 'trendyol' => 'not_configured'], 'configured-but-silent and disabled sources: ' . json_encode($health));
+check($health === ['b2b'=>'healthy','outletperdele' => 'no_contact', 'trendhome' => 'disabled', 'trendyol' => 'not_configured'], 'configured-but-silent and disabled sources: ' . json_encode($health));
 $pdo->exec("UPDATE order_sources SET status = 'active' WHERE source_key = 'trendhome'");
 
 // ---- Completed today: Europe/Bucharest calendar day ------------------------------------------------

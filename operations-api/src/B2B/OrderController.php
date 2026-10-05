@@ -15,18 +15,31 @@ final readonly class OrderController
 {
     public function __construct(private OrderQueries $queries,private OrderCommands $commands,
         private AuthenticationService $auth,private AuthorizationService $authorization,
-        private CsrfGuard $csrf,private Config $config,private RequestContext $context) {}
+        private CsrfGuard $csrf,private Config $config,private RequestContext $context,
+        private ?ProductionCommands $productionCommands=null,private ?ProductionQueries $productionQueries=null) {}
 
     public function handle(Request $request): Response
     {
         $path=substr($request->path,strlen('/b2b/orders'));
-        if(preg_match('#^(?:/([^/]{1,64})(?:/(activity|finalize|cancel|duplicate|lines)(?:/([^/]{1,64})(?:/(duplicate|remove))?)?)?)?$#D',$path,$m)!==1)
+        if(preg_match('#^(?:/([^/]{1,64})(?:/(activity|finalize|cancel|duplicate|lines|production)(?:/([^/]{1,64})(?:/(duplicate|remove))?)?)?)?$#D',$path,$m)!==1)
             throw new ApiException(404,'NOT_FOUND','Route was not found.');
         $id=$m[1]??''; $section=$m[2]??''; $line=$m[3]??''; $action=$m[4]??'';
         $session=$this->auth->authenticate($request->cookie($this->config->cookieName())??'',$request->ipAddress,$request->userAgent,$request->requestId);
         $actor=$session->employee;
         $this->context->authenticatedAs($actor->employeeUuid);
         OrderAccess::require($this->authorization,$actor,'b2b.access');
+        if($section==='production') {
+            if($line!=='' || $request->query!==[]) throw new ApiException(400,'INVALID_REQUEST','Invalid production request.');
+            $queries=$this->productionQueries??throw new ApiException(503,'SERVICE_UNAVAILABLE','Production handoff is not ready.');
+            if($request->method==='GET') return Response::json(['production'=>$queries->read($actor,$id)]);
+            if($request->method!=='POST') throw new ApiException(405,'METHOD_NOT_ALLOWED','Method is not allowed.');
+            $this->csrf->requireValid($session->rawToken,$request->header('x-csrf-token'));
+            $data=$this->body($request,['expectedVersion'],['expectedVersion']);
+            if(!is_int($data['expectedVersion']) || $data['expectedVersion']<1) throw new ApiException(400,'INVALID_REQUEST','Invalid production version.');
+            $commands=$this->productionCommands??throw new ApiException(503,'SERVICE_UNAVAILABLE','Production handoff is not ready.');
+            $result=$commands->submit($actor,$id,$data['expectedVersion'],$request->header('idempotency-key')??'',$request->requestId);
+            return Response::json(['orderId'=>$id,'production'=>$queries->status($id)],$result['status']);
+        }
         if($request->method==='GET') {
             $data=match(true) {
                 $id===''=>$this->queries->list($actor,$this->filters($request,['search','status','companyId','currency','from','to','limit','cursor'])),

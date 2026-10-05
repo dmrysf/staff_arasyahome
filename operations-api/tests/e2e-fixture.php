@@ -69,9 +69,29 @@ if ($claim['status'] !== 200) {
     throw new RuntimeException('E2E fixture claim failed: ' . json_encode($claim['body']));
 }
 
+// Explicit B2B handoff through the real commercial commands; never inbound simulation or direct SQL order creation.
+$rootPassword=(new Arasya\Operations\Iam\RootBootstrapService($pdo,$container->passwordHasher(),$container->clock()))->bootstrap('staff-b2b-e2e');
+$root=T::login($kernel,Arasya\Operations\Iam\RootBootstrapService::ROOT_USERNAME,$rootPassword);
+$change=T::call($kernel,'POST','/auth/password',['currentPassword'=>$rootPassword,'newPassword'=>'staff root fixture permanent 2026'],['origin'=>$origin,'x-csrf-token'=>$root['csrf']],$root['cookie']);
+if($change['status']!==200) throw new RuntimeException('Staff B2B fixture root password change failed.');
+$root=T::login($kernel,Arasya\Operations\Iam\RootBootstrapService::ROOT_USERNAME,'staff root fixture permanent 2026');
+$commercial=static function(string $path,array $body)use($kernel,$root,$origin):array {
+    $r=T::call($kernel,'POST',$path,$body,['origin'=>$origin,'x-csrf-token'=>$root['csrf'],'idempotency-key'=>'staff-fixture-'.bin2hex(random_bytes(8))],$root['cookie']);
+    if($r['status']>=300) throw new RuntimeException('Staff B2B fixture command failed: '.json_encode($r['body']));
+    return $r['body'];
+};
+$b2bCompany=$commercial('/b2b/companies',['legalName'=>'Companie înghețată E2E','countryCode'=>'RO','taxIdentifier'=>'STAFFHANDOFF1'])['companyId'];
+$b2bOrder=$commercial('/b2b/orders',['companyId'=>$b2bCompany,'currencyCode'=>'RON','productionNotes'=>'Notă atelier înghețată',
+    'lines'=>[['productCode'=>'B2B-CURTAIN','kind'=>'curtain','quantity'=>4,'meters'=>'13.5','pricingUnit'=>'meter','unitPriceNet'=>'10.00','vatPercent'=>'19',
+        'width'=>'200','height'=>'260','notes'=>'Notă linie înghețată','productionNotes'=>'Instrucțiune producție înghețată']]])['detail']['order'];
+$b2bOrder=$commercial('/b2b/orders/'.$b2bOrder['id'].'/finalize',['expectedVersion'=>$b2bOrder['version']])['detail']['order'];
+$commercial('/b2b/orders/'.$b2bOrder['id'].'/production',['expectedVersion'=>$b2bOrder['version']]);
+$admin->create('Operator B2B','operator.b2b.e2e',null,'pregatire-material','employee',$password,['waiting','material-preparation'],'e2e');
+
 echo json_encode([
     'password' => $password,
     'users' => ['ana' => 'ana.e2e', 'bogdan' => 'bogdan.e2e', 'mihai' => 'mihai.e2e', 'dashboardOnly' => 'dora.e2e', 'temporary' => 'teodor.e2e'],
     'orders' => ['flow' => '70001', 'qr' => '70002', 'claimedByOther' => '70003', 'conflict' => '70004'],
     'qr' => $qr,
+    'b2b' => ['id'=>'b2b:'.$b2bOrder['id'],'code'=>$b2bOrder['code'],'username'=>'operator.b2b.e2e'],
 ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT), "\n";

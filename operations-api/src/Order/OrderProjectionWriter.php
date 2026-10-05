@@ -20,6 +20,10 @@ final readonly class OrderProjectionWriter
 
     public function apply(SourceOrderSnapshot $snapshot): string
     {
+        // Internal B2B identity can only be created by the authenticated explicit handoff command.
+        if ($snapshot->sourceKey === 'b2b') {
+            throw new ApiException(403, 'INTERNAL_SOURCE_ONLY', 'Internal orders cannot be ingested from a source.');
+        }
         $globalId = $snapshot->globalId()->toString();
         $itemsForHash = $snapshot->items;
         usort($itemsForHash, fn($a, $b) => $a->lineNumber <=> $b->lineNumber);
@@ -276,6 +280,37 @@ final readonly class OrderProjectionWriter
         }
     }
 
+    /** Create the canonical internal order inside the caller's atomic handoff transaction. */
+    public function createInternal(SourceOrderSnapshot $snapshot, array $context): string
+    {
+        if (!$this->pdo->inTransaction() || $snapshot->sourceKey !== 'b2b' || $snapshot->productionStageId !== self::INITIAL_STAGE_ID) {
+            throw new \LogicException('Internal creation requires the handoff transaction and canonical initial stage.');
+        }
+        $s = $this->pdo->prepare("SELECT 1 FROM order_sources WHERE source_key='b2b' AND source_type='internal' AND status='active' AND schema_version=1 FOR UPDATE");
+        $s->execute();
+        if ($s->fetchColumn() === false) throw new ApiException(409, 'SOURCE_INACTIVE', 'Internal production source is not active.');
+        $now = $this->clock->now()->format('Y-m-d H:i:s.u');
+        $id = Uuid::v4();
+        $this->pdo->prepare('INSERT INTO operational_orders (
+            order_uuid,global_order_id,source_key,source_order_id,order_number,order_lookup_code,production_stage_id,
+            production_authority,production_changed_at,source_commerce_status_code,source_commerce_status_label,
+            production_notes,production_context,operational_status,freshness_status,source_schema_version,source_event_id,
+            source_changed_at,last_source_seen_at,projected_at,accepted_at,projection_hash,version,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,\'operations\',?,?,?, ?,?,\'in_progress\',\'fresh\',1,?,?,?,?,?, ?,1,?,?)')->execute([
+                $id,$snapshot->globalId()->toString(),'b2b',$snapshot->sourceOrderId,$snapshot->orderNumber,
+                OrderLookupCode::fromOrderNumber($snapshot->orderNumber),self::INITIAL_STAGE_ID,$now,
+                $snapshot->sourceCommerceStatusCode,$snapshot->sourceCommerceStatusLabel,$snapshot->productionNotes,
+                json_encode($context,JSON_THROW_ON_ERROR|JSON_UNESCAPED_UNICODE),$snapshot->sourceEventId,
+                $snapshot->sourceChangedAt->format('Y-m-d H:i:s.u'),$now,$now,$now,
+                hash('sha256',json_encode([$context,$snapshot->items],JSON_THROW_ON_ERROR),true),$now,$now,
+            ]);
+        $this->insertItems($snapshot->items,$id,$now);
+        $s=$this->pdo->prepare('UPDATE operational_order_items SET production_context=? WHERE item_uuid=? AND order_uuid=?');
+        foreach($snapshot->items as $item) $s->execute([json_encode($item->productionContext,JSON_THROW_ON_ERROR|JSON_UNESCAPED_UNICODE),$item->itemUuid,$id]);
+        $this->ensureQrReference($id,$now);
+        return $id;
+    }
+
     /** Returns the current active QR payload for an order, issuing one if none exists. */
     public function qrPayloadFor(string $globalOrderId): ?string
     {
@@ -316,6 +351,7 @@ final readonly class OrderProjectionWriter
     /** Records a signed heartbeat so source freshness recovers without an order event. */
     public function recordHeartbeat(string $sourceKey): void
     {
+        if ($sourceKey==='b2b') throw new ApiException(403,'INTERNAL_SOURCE_ONLY','B2B production is submitted through its authenticated commercial command.');
         $nowSql = $this->clock->now()->format('Y-m-d H:i:s.u');
         $stmt = $this->pdo->prepare("UPDATE order_sources SET last_contact_at = ?, updated_at = ? WHERE source_key = ? AND status = 'active'");
         $stmt->execute([$nowSql, $nowSql, $sourceKey]);

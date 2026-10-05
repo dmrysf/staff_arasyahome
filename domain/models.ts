@@ -33,6 +33,7 @@ export type ProductionWorkflow = {
 };
 
 export type ProductionItem = {
+  productionContext?: { kind: 'curtain' | 'drapery' | 'other'; notes: string | null; productionNotes: string | null };
   id: string;
   name: string;
   code?: string;
@@ -73,6 +74,7 @@ export type OrderActionBlockedReason =
   | "workflow_unavailable";
 
 export type StaffOrder = {
+  productionContext?: { company: { legalName: string; companyCode: string; countryCode: string; taxIdentifier: string } };
   id: string;
   source: OrderSource;
   orderNumber: string;

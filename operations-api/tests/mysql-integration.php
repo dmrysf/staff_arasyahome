@@ -19,6 +19,7 @@ use Arasya\Operations\Support\SystemClock;
 use Arasya\Operations\Support\Uuid;
 
 require dirname(__DIR__) . '/bootstrap.php';
+require __DIR__.'/HandoffSchemaFixture.php';
 
 if (getenv('ARASYA_TEST_DB_NAME') === false) {
     fwrite(STDOUT, "SKIP MySQL integration test: ARASYA_TEST_DB_NAME is not configured.\n");
@@ -72,6 +73,7 @@ mkdir($migrationFixture, 0700, true);
 copy(dirname(__DIR__) . '/database/migrations/001_auth_foundation.sql', $migrationFixture . '/001_auth_foundation.sql');
 try {
     $migrationRunner->migrate($migrationFixture);
+    restorePreHandoffTestSchema($pdo);
     $pdo->exec('DROP TABLE IF EXISTS api_rate_limit_buckets');
     $pdo->exec('DROP TABLE IF EXISTS order_operation_idempotency');
     $pdo->exec('DROP TABLE IF EXISTS order_activity_events');
@@ -118,6 +120,7 @@ try {
     if (!$accountsApplied) {
         $expected[] = '011_b2b_current_account.sql';
     }
+    $expected[] = '012_b2b_production_handoff.sql';
     if ($applied !== $expected) {
         throw new RuntimeException('An existing 001 schema did not apply exactly the pending migrations in order: ' . implode(', ', $applied));
     }

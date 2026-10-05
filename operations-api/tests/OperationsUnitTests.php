@@ -412,7 +412,7 @@ test('B2B application access carries only its own baseline and no production per
     expect($baseline === ['b2b.access', 'profile.view_self']);
     foreach (\Arasya\Operations\Iam\ApplicationAccess::PERMISSION_APPLICATION as $permission => $application) {
         expect(!in_array($permission, $baseline, true));
-        expect($application === 'b2b' ? (str_starts_with($permission, 'b2b.companies.') || str_starts_with($permission,'b2b.orders.') || str_starts_with($permission,'b2b.accounts.')) : !str_starts_with($permission, 'b2b.'));
+        expect($application === 'b2b' ? (str_starts_with($permission, 'b2b.companies.') || str_starts_with($permission,'b2b.orders.') || str_starts_with($permission,'b2b.accounts.') || str_starts_with($permission,'b2b.production.')) : !str_starts_with($permission, 'b2b.'));
     }
     expect(!in_array('b2b.access', \Arasya\Operations\Iam\ApplicationAccess::baselineFor(['staff', 'dashboard']), true));
 });
@@ -524,7 +524,7 @@ test('B2B company data stays inside the B2B module and its activity is insert-on
         }
     }
     sort($readers);
-    expect($readers === ['B2B/AccountCommands.php', 'B2B/AccountQueries.php', 'B2B/CompanyCommands.php', 'B2B/CompanyQueries.php', 'B2B/OrderCommands.php', 'B2B/OrderStore.php', 'Database/AuthMaintenance.php']);
+    expect($readers === ['B2B/AccountCommands.php', 'B2B/AccountQueries.php', 'B2B/CompanyCommands.php', 'B2B/CompanyQueries.php', 'B2B/OrderCommands.php', 'B2B/OrderStore.php', 'B2B/ProductionCommands.php', 'Database/AuthMaintenance.php']);
     $maintenance = (string) file_get_contents($root . '/Database/AuthMaintenance.php');
     expect(preg_match_all('/b2b_compan\w+/', $maintenance, $tables) >= 1 && array_unique($tables[0]) === ['b2b_company_idempotency']);
 });
@@ -608,4 +608,3 @@ test('B2B statement CSV and PDF render the server dataset without recalculation 
     $statement['movements'] = array_fill(0, 120, $statement['movements'][0]);
     expect(substr_count($E::pdf($statement, 'ro'), '/Type /Page ') >= 3);
 });
-

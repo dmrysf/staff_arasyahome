@@ -3,11 +3,32 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 
 type Fixture = {
+  b2b: { id: string; code: string; username: string };
   password: string;
   users: { ana: string; bogdan: string; mihai: string; dashboardOnly: string; temporary: string };
   orders: { flow: string; qr: string; claimedByOther: string; conflict: string };
   qr: Record<string, string>;
 };
+
+test('a real B2B handoff shows frozen manufacturing context in Staff and uses the same claim/transition UI', async ({ page }) => {
+  const errors = trackErrors(page);
+  await login(page, fixture.b2b.username); await lookup(page, fixture.b2b.code);
+  await expect(page.getByRole('heading', { name: `Comanda #${fixture.b2b.code}` })).toBeVisible();
+  await page.getByRole('button', { name: /Preia comanda/ }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Confirmă' }).click();
+  await page.getByRole('button', { name: 'Vezi comanda' }).click();
+  await expect(page.getByRole('heading', { name: 'Companie înghețată E2E' })).toBeVisible();
+  await expect(page.locator('.detail-products')).toContainText('200 × 260 cm');
+  await expect(page.locator('.detail-products')).toContainText('13,5 m');
+  await expect(page.locator('.production-note')).toHaveCount(2);
+  await expect(page.getByText('Notă linie înghețată', { exact: true })).toBeVisible();
+  await expect(page.getByText('Instrucțiune producție înghețată', { exact: true })).toBeVisible();
+  await expect(page.locator('.commerce-status')).toContainText('Stare comercială: Finalizată');
+  await page.getByRole('button', { name: /Finalizează etapa/ }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Confirmă' }).click();
+  await expect(page.locator('.detail-hero')).toContainText('Pregătire material');
+  expect(errors).toEqual([]);
+});
 
 const fixture = JSON.parse(readFileSync(path.join(import.meta.dirname, ".real-api-fixture.json"), "utf8")) as Fixture;
 const apiOrigin = "http://127.0.0.1:8787";

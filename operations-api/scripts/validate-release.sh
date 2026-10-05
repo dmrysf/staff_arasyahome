@@ -33,6 +33,11 @@ for file in \
   src/B2B/OrderCalculator.php \
   src/B2B/OrderStore.php \
   database/migrations/011_b2b_current_account.sql \
+  database/migrations/012_b2b_production_handoff.sql \
+  src/B2B/ProductionAccess.php \
+  src/B2B/ProductionCommands.php \
+  src/B2B/ProductionQueries.php \
+  src/B2B/ProductionInput.php \
   src/B2B/AccountAccess.php \
   src/B2B/AccountCommands.php \
   src/B2B/AccountController.php \
@@ -58,7 +63,7 @@ for file in \
 done
 
 (cd -- "$release_root" && sha256sum -c SHA256SUMS >/dev/null) || fail "SHA256SUMS verification failed."
-php -r '$r=json_decode(file_get_contents($argv[1]), true, flags: JSON_THROW_ON_ERROR); if (!is_array($r) || preg_match("/^[0-9a-f]{40}$/", $r["sourceCommit"] ?? "") !== 1 || ($r["version"] ?? null) !== "2.10.0") exit(2);' "$release_root/release.json" \
+php -r '$r=json_decode(file_get_contents($argv[1]), true, flags: JSON_THROW_ON_ERROR); if (!is_array($r) || preg_match("/^[0-9a-f]{40}$/", $r["sourceCommit"] ?? "") !== 1 || ($r["version"] ?? null) !== "2.11.0") exit(2);' "$release_root/release.json" \
   || fail "release.json provenance/version is invalid."
 
 for directory in src database/migrations bin config; do

@@ -216,6 +216,7 @@ final readonly class ProductionOverviewService
             $lastContact = $row['last_contact_at'] === null ? null : new DateTimeImmutable((string) $row['last_contact_at'], new DateTimeZone('UTC'));
             $health = match (true) {
                 $row['status'] !== 'active' => 'disabled',
+                $key === 'b2b' && $row['source_type'] === 'internal' => 'healthy',
                 !$configured => 'not_configured',
                 $lastContact === null => 'no_contact',
                 default => match (OrderFreshness::classify('active', $lastContact, $now, $this->config->sourceFreshSeconds, $this->config->sourceUnavailableSeconds)) {

@@ -137,6 +137,12 @@ export function mapProductionOrderItem(value: unknown): import("../../domain/mod
       item.measurements.unit = rawMeas.unit as "mm" | "cm" | "m";
     }
   }
+  if (raw.productionContext != null) {
+    const context = objectValue(raw.productionContext), kind = stringValue(context.kind);
+    if (!['curtain', 'drapery', 'other'].includes(kind)) throw new StaffServiceError('SERVER_ERROR');
+    item.productionContext = { kind: kind as 'curtain' | 'drapery' | 'other',
+      notes: context.notes === null ? null : stringValue(context.notes), productionNotes: context.productionNotes === null ? null : stringValue(context.productionNotes) };
+  }
   return item;
 }
 
@@ -188,6 +194,12 @@ export function mapProductionOrder(value: unknown): import("../../domain/models"
     order.sourceCommerceStatus = { code: stringValue(scs.code), label: stringValue(scs.label) };
   }
   if (raw.productionNotes != null) order.productionNotes = stringValue(raw.productionNotes);
+  if (raw.productionContext != null) {
+    if (source !== 'b2b') throw new StaffServiceError('SERVER_ERROR');
+    const company = objectValue(objectValue(raw.productionContext).company);
+    order.productionContext = { company: { legalName: stringValue(company.legalName), companyCode: stringValue(company.companyCode),
+      countryCode: stringValue(company.countryCode), taxIdentifier: stringValue(company.taxIdentifier) } };
+  }
   if (raw.acceptedAt != null) order.acceptedAt = timestampValue(raw.acceptedAt);
 
   if (raw.employeeRelation != null) {

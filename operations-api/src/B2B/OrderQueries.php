@@ -77,7 +77,7 @@ final readonly class OrderQueries
         // The header, lines and calculation must belong to one committed aggregate version.
         $this->pdo->beginTransaction();
         try {
-            $s=$this->pdo->prepare('SELECT * FROM b2b_orders WHERE order_uuid=?');
+            $s=$this->pdo->prepare('SELECT o.*,EXISTS(SELECT 1 FROM b2b_production_handoffs h WHERE h.b2b_order_uuid=o.order_uuid) AS production_submitted FROM b2b_orders o WHERE o.order_uuid=?');
             $s->execute([$id]); $r=$s->fetch(PDO::FETCH_ASSOC);
             if(!$r) throw new ApiException(404,'ORDER_NOT_FOUND','Order was not found.');
             $order=$this->store->fields($r)+[
@@ -88,10 +88,13 @@ final readonly class OrderQueries
                 'updatedBy'=>['id'=>$r['updated_by_employee_uuid'],'displayName'=>$r['updated_by_name']],
                 'finalizedBy'=>$r['finalized_by_employee_uuid']===null?null:['id'=>$r['finalized_by_employee_uuid'],'displayName'=>$r['finalized_by_name']],
                 'calculation'=>OrderStore::decode($r['calculation']),
+                'productionSubmitted'=>(bool)$r['production_submitted'],
             ];
             foreach(OrderStore::SNAPSHOT_COLUMNS as $field=>$column) $order[$field]=OrderStore::decode($r[$column]);
             $this->pdo->commit();
-            return ['order'=>$order,'capabilities'=>OrderAccess::capabilities($this->authorization,$actor)];
+            $capabilities=OrderAccess::capabilities($this->authorization,$actor);
+            if($order['productionSubmitted']) $capabilities['canCancel']=false;
+            return ['order'=>$order,'capabilities'=>$capabilities];
         } catch(Throwable $e) { if($this->pdo->inTransaction()) $this->pdo->rollBack(); throw $e; }
     }
 

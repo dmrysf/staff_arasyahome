@@ -214,7 +214,7 @@ check($page['items'][0]['production']['owner'] === ['id' => $workerId, 'displayN
 check($page['items'][3]['production']['state'] === 'completed' && $page['items'][4]['production']['state'] === 'cancelled' && $page['items'][4]['commerce']['availability'] === 'cancelled', 'production state: completed and cancelled');
 check(array_keys($row) === ['globalOrderId', 'orderNumber', 'source', 'commerce', 'production', 'importedAt', 'acceptedAt'], 'list rows are summaries');
 $facets = $page['facets'];
-check(array_column($facets['sources'], 'key') === ['outletperdele', 'trendhome', 'trendyol'] && count($facets['stages']) === 14, 'facets list registered sources and the 14 stages');
+check(array_column($facets['sources'], 'key') === ['b2b','outletperdele', 'trendhome', 'trendyol'] && count($facets['stages']) === 14, 'facets list registered sources and the 14 stages');
 check(array_column($facets['commerceStatuses'], 'code') === ['cancelled', 'completed', 'on-hold', 'pending', 'processing'] && $facets['owners'] === [['id' => $workerId, 'displayName' => 'Test worker']], 'facets list commerce statuses and current owners');
 
 // ---- Filters -----------------------------------------------------------------------------------------

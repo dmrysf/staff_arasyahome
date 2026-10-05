@@ -27,6 +27,7 @@ final readonly class OperationalOrder
         public int $productionVersion = 1,
         public ?string $productionOwnerEmployeeUuid = null,
         public ?DateTimeImmutable $productionCompletedAt = null,
+        public ?array $productionContext = null,
     ) {
     }
 

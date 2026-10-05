@@ -36,6 +36,7 @@ final readonly class OrderSerializer
         if ($order->productionNotes !== null) {
             $data['productionNotes'] = $order->productionNotes;
         }
+        if ($order->productionContext !== null) $data['productionContext'] = $order->productionContext;
 
         if ($order->acceptedAt !== null) {
             $data['acceptedAt'] = $order->acceptedAt->format('Y-m-d\TH:i:s.v\Z');
@@ -86,6 +87,7 @@ final readonly class OrderSerializer
         }
         
         if ($item->meters !== null) $data['meters'] = $item->meters;
+        if ($item->productionContext !== null) $data['productionContext'] = $item->productionContext;
 
         return $data;
     }
