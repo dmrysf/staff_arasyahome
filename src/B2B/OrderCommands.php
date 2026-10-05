@@ -53,7 +53,10 @@ final readonly class OrderCommands
                 $data=$this->identities($data,$before['lines']);
                 $snap=$this->store->snapshots($company,$data);
                 $changed=[];
-                foreach($before as $field=>$value) if($value!==$data[$field]) $changed[]=$field;
+                foreach($before as $field=>$value) {
+                    $different=$field==='lines' ? !self::sameLines($value,$data['lines']) : $value!==$data[$field];
+                    if($different) $changed[]=$field;
+                }
                 $this->store->save($id,$data,$snap,$actor,$now);
                 $this->lineEvents($id,$before['lines'],$data['lines'],$actor,$request,$key,$now);
                 $this->store->event($id,$actor,'order_updated',$changed,$request,$key,$now);
@@ -130,7 +133,7 @@ final readonly class OrderCommands
                         $line=OrderInput::line($input);
                         if($line['id']!==null && $line['id']!==$lineId) throw new ApiException(400,'INVALID_REQUEST','Line identity is immutable.');
                         $line['id']=$lineId;
-                        $changed=array_keys(array_filter($line,static fn($v,$f)=>$v!==$lines[$index][$f],ARRAY_FILTER_USE_BOTH));
+                        $changed=self::lineChanges($lines[$index],$line);
                         $lines[$index]=$line;
                         break;
                     case 'duplicate':
@@ -160,7 +163,9 @@ final readonly class OrderCommands
                 foreach(OrderStore::SNAPSHOT_COLUMNS as $field=>$column) $snap[$field]=OrderStore::decode($order[$column]);
                 $this->store->save($id,$data,$snap,$actor,$now);
                 $event=match($action){'create'=>'line_created','update'=>'line_updated','duplicate'=>'line_duplicated','remove'=>'line_removed','reorder'=>'lines_reordered'};
-                $this->store->event($id,$actor,$event,$changed,$request,$key,$now,$lineId);
+                // An explicit line update whose fields all match the stored line still saves the draft,
+                // but it records no line_updated event: the history lists only real business changes.
+                if($action!=='update' || $changed!==[]) $this->store->event($id,$actor,$event,$changed,$request,$key,$now,$lineId);
                 return ['status'=>200,'orderId'=>$id,'lineId'=>$lineId];
             });
     }
@@ -186,11 +191,28 @@ final readonly class OrderCommands
         $old=array_column($before,null,'id'); $new=array_column($after,null,'id');
         foreach($new as $uuid=>$line) {
             if(!isset($old[$uuid])) $this->store->event($id,$actor,'line_created',OrderInput::LINE_FIELDS,$request,$key,$now,$uuid);
-            elseif($line!==$old[$uuid]) $this->store->event($id,$actor,'line_updated',
-                array_keys(array_filter($line,static fn($v,$f)=>$v!==$old[$uuid][$f],ARRAY_FILTER_USE_BOTH)),$request,$key,$now,$uuid);
+            elseif(($changed=self::lineChanges($old[$uuid],$line))!==[]) $this->store->event($id,$actor,'line_updated',$changed,$request,$key,$now,$uuid);
         }
         foreach(array_diff_key($old,$new) as $uuid=>$line) $this->store->event($id,$actor,'line_removed',['lines'],$request,$key,$now,$uuid);
         if(array_keys($old)!==array_keys($new)) $this->store->event($id,$actor,'lines_reordered',['position'],$request,$key,$now);
+    }
+
+    /**
+     * Business fields that differ between a stored line and its new value. Compared field by field, so the
+     * array key order of a stored row versus a normalized request never reads as a change.
+     * @return list<string>
+     */
+    private static function lineChanges(array $before,array $after): array
+    {
+        return array_values(array_filter(OrderInput::LINE_FIELDS,static fn(string $f): bool=>($before[$f]??null)!==($after[$f]??null)));
+    }
+
+    /** Same line identities in the same order, with no business field changed. */
+    private static function sameLines(array $before,array $after): bool
+    {
+        if(array_column($before,'id')!==array_column($after,'id')) return false;
+        foreach($before as $index=>$line) if(self::lineChanges($line,$after[$index])!==[]) return false;
+        return true;
     }
 
     private function authorize(EmployeeIdentity $actor,string $operation): void

@@ -1,6 +1,6 @@
 b874fd4bb9d5288d15a76645c3d9b3c880463696f8c3b95f17110f0d81ccdee3  ./.cpanel.yml
 8286fc7aa3997b02b40cd802afc3af51f10c9025110534f38fa33c68beaa539e  ./.htaccess
-5109784a10eb47d8e853dd48fc19ad6066299f53f32c4cfa15ca4e3ab8c6c88f  ./README.md
+b4baad5cb37ef6c881608caa447d9bbdac75e105401f0d190de9c24ad4892e3e  ./README.md
 022a3eaba163a146b3dc70de8aa893a6d0b01636805ebcaf639943913e544928  ./bin/bootstrap-root-admin.php
 c53137393d879c7548188f87745e52d6b31938c9c8a7c57caee1eea05667a396  ./bin/change-password.php
 39e2f5266807717e48d7c29934b5edfb21b9d8653ba3cfe01a7ef32af8b829b3  ./bin/check-migrations.php
@@ -12,7 +12,7 @@ fff486ee46fbff765a316108649741d8a77993af825089a295160194c30f7288  ./bin/maintena
 f2faad4a47c1765d4070c8f42a4256044c501fab43b572550896001d88a6f14d  ./bin/migrate.php
 49625456d438f17ee73a58f5bc96e52b249aa25216693b1e7b8305c6c1e78cee  ./bin/migration-status.php
 4a44e44a5da76e6de5b73f82958e2c750418dd7e5901fdebe8502ecf99d6ae69  ./bin/order-qr.php
-869d580efc8f28c94ba0fbe42f2563fad40952b8aec4405a68df216b7e93785f  ./bin/readiness.php
+6e1ba3760f9e72bb8475273abaaac0a90eb485e7a6bcf31def1f2cc83e0f993c  ./bin/readiness.php
 5deac92e29e28ffbd86cfcbfe21058df28218202a1f519ed7d589f2320481228  ./bin/recover-root-password.php
 0976b0a8932412b4a5b27e85cb73a01f4342e1a315bdabc54a08fb5600a4184f  ./bin/revoke-sessions.php
 1514aaa15408e01da2864d531b943f26727f4e09b85c8bf44cd07f25093966ee  ./bin/seed-reference-data.php
@@ -38,13 +38,13 @@ e3d5bd553859a3f0ade7ef0d41a29c8dab1eaaf486fb632bdb714b79e4c719aa  ./database/see
 a80d76fbdb4a0c8ac3533c3db5eb123a73ff6eb2c259927976d39dfeeb2f248b  ./public/.htaccess
 8302b6ec98573706b31b957a8f9ad9be8bf92a8b8bff02963c601650e7e8c420  ./public/RuntimeLocator.php
 edb234c39482536f0540e881da98cbdad6241af787f230295a79a4ae534e26be  ./public/index.php
-fb345d85043ec8f08cb22389124c8ae1f0b62043b766635971e919612e2fb4ba  ./release.json
+163b7ec32df2aac3aa76c3514eb8b04555a5f305adfb98c5bf8004f949c21b28  ./release.json
 3b42b0a0d462aa0ac0f368966a5703f6ecbbff9eea2bbbe47f269e9cd6ba03ea  ./scripts/api-release-common.sh
 d1795ddfa4cbd145a0bd889b74821650ce88ca47d5fc6227fa51796fc83b46b7  ./scripts/cpanel-deploy-api.sh
 90db53c750a7ee94bdaad0c19e0c57e9ee6744d703ca03603bb3764393d40f54  ./scripts/cpanel-rollback-api.sh
 ad963b363acfdc488f4b9638e31052d173e9b31437735990435acfd5c9e876ca  ./scripts/generate-sha256s.sh
 8120462fea5e6b8392d51f2f79fa82b86b48a759bafe65ef2eef4110d4cdd9a8  ./scripts/maintenance-active.sh
-82caf5c84a19a9f3704ea596613cba5c7db5d231a58687acfb1fe7aeb4e555e0  ./scripts/validate-release.sh
+f3683b5626b056179c42cb218e3618bd9d1aa864e341f0f45ee0ac764d3dedbc  ./scripts/validate-release.sh
 62e244f7394174e9be815b0f3406eb9df6226d90117c770fbc6aa36be535de74  ./src/Activity/ActivityController.php
 fffaf9848b4f34b5f257895192f34d7a6ef959791a2e944ba3a981bd6bbb874e  ./src/Activity/ActivityRange.php
 591b1ed97493fb4396cf147de6f8c998570ecfbe3a18e947546b1a3327a79eb6  ./src/Activity/PdoActivityRepository.php
@@ -68,7 +68,7 @@ cdfe3eefa2400cc718fef7a1ed509ebd6c3ad53a4111fa13a4a9a69add25de09  ./src/B2B/Comp
 7f2cc6e5f3e5b05cc1c12703e1668d13fabd6a9f7f121d980785a63eb961bd6a  ./src/B2B/CountryCodes.php
 06dad99cfb4e2995cc0aff0b4fbc46445843e63d16bf63dc79b9fbf530acb7c9  ./src/B2B/OrderAccess.php
 af92831334f22744372049a0c3a4e0680dd9354176aafd3bd485cd40b39c6fdf  ./src/B2B/OrderCalculator.php
-a2e880885663160ba3ac012cf39b45a359f54d2dd3b9901f2752c2ab96d9b800  ./src/B2B/OrderCommands.php
+2bc5faf0ee1a7f24190ad82ac808bc0a7db05f027d5ac6d50700ee0780245ad8  ./src/B2B/OrderCommands.php
 c1b871c5e13fccfe4060771a9c5a5892ba009386462d56b95578cba9aaa7f078  ./src/B2B/OrderController.php
 4a37bd30279f9bad1511179a2af09a047c25677e76199a53063942f734bb0b66  ./src/B2B/OrderInput.php
 fa078058d5e39d1d2670ba643a0f13e3cac13a795884aedab651ffc9ad9f32d5  ./src/B2B/OrderQueries.php
@@ -91,7 +91,7 @@ dab18c727f8af10b46a7b3ff81361a782ccccdd482ccc46cb40dbba649513e55  ./src/Http/Api
 b76b072fe66cad7b0c3ef3b5b8b32398f6966d99048b3cca3da913c83a3ebc64  ./src/Http/ApiKernel.php
 3b1e7deee60a14ff780739ebdf999b8640889b0f4a0bc37faef6a4997bc21721  ./src/Http/AuthController.php
 61ad3cbafb08e399aea7f0337595bff8d48be70d8a03c2c9069cb9cad38adc0c  ./src/Http/CorsPolicy.php
-34ec903c55b7bcabb7846572ccad84be8a2909e8c6681d992f7a1263a8cd8661  ./src/Http/HealthController.php
+a4d8ea28a6ffe053c01e213e11468172fe5ce77024590f93b634cf8b8116a524  ./src/Http/HealthController.php
 5135823a988e7ae06254297c5272a5ccb724e819a52c33217223c4299f286cb2  ./src/Http/ProductionWorkflowController.php
 57c77118c9f87c3b4475737e98d97bd7fcfaf456961cf637c7927d4eaad9ef32  ./src/Http/Request.php
 b49c2a94e90b750aeb5202e8ea263a42fd77fcc6442b3c2f46205cd5ab324688  ./src/Http/RequestContext.php
