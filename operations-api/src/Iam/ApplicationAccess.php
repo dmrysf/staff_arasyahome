@@ -59,6 +59,11 @@ final class ApplicationAccess
         'b2b.orders.create' => self::B2B,
         'b2b.orders.update' => self::B2B,
         'b2b.orders.manage_status' => self::B2B,
+        'b2b.accounts.view' => self::B2B,
+        'b2b.accounts.record_payment' => self::B2B,
+        'b2b.accounts.adjust' => self::B2B,
+        'b2b.accounts.reverse' => self::B2B,
+        'b2b.accounts.export' => self::B2B,
     ];
 
     /** @param list<string> $applications @return list<string> */

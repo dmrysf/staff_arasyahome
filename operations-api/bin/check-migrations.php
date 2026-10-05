@@ -8,7 +8,7 @@ sort($files, SORT_STRING);
 if ($files === []) {
     throw new RuntimeException('No database migrations were found.');
 }
-$expected = ['departments', 'roles', 'permissions', 'role_permissions', 'employees', 'employee_stage_access', 'auth_sessions', 'auth_login_attempts', 'auth_rate_limit_buckets', 'auth_audit_events', 'production_workflows', 'production_stages', 'order_sources', 'operational_orders', 'operational_order_items', 'employee_order_relations', 'order_projection_receipts', 'order_qr_references', 'order_activity_events', 'order_operation_idempotency', 'api_rate_limit_buckets', 'applications', 'employee_application_access', 'employee_role_assignments', 'system_root_identity', 'iam_audit_events', 'b2b_company_number_sequence', 'b2b_companies', 'b2b_company_contacts', 'b2b_company_addresses', 'b2b_company_activity_events', 'b2b_company_idempotency'];
+$expected = ['departments', 'roles', 'permissions', 'role_permissions', 'employees', 'employee_stage_access', 'auth_sessions', 'auth_login_attempts', 'auth_rate_limit_buckets', 'auth_audit_events', 'production_workflows', 'production_stages', 'order_sources', 'operational_orders', 'operational_order_items', 'employee_order_relations', 'order_projection_receipts', 'order_qr_references', 'order_activity_events', 'order_operation_idempotency', 'api_rate_limit_buckets', 'applications', 'employee_application_access', 'employee_role_assignments', 'system_root_identity', 'iam_audit_events', 'b2b_company_number_sequence', 'b2b_companies', 'b2b_company_contacts', 'b2b_company_addresses', 'b2b_company_activity_events', 'b2b_company_idempotency', 'b2b_account_movement_sequence', 'b2b_account_movements', 'b2b_account_allocations', 'b2b_account_allocation_releases', 'b2b_account_activity_events', 'b2b_account_idempotency'];
 $schema = implode("\n", array_map(static fn (string $path): string => (string) file_get_contents($path), $files));
 foreach ($expected as $table) {
     if (preg_match('/CREATE TABLE IF NOT EXISTS\s+' . preg_quote($table, '/') . '\b/i', $schema) !== 1) {
@@ -40,5 +40,15 @@ foreach (['UNIQUE KEY uq_b2b_companies_code', 'UNIQUE KEY uq_b2b_companies_tax_i
 $b2bSchema = (string) file_get_contents($root . '/database/migrations/009_b2b_companies.sql');
 if (preg_match('/ON DELETE (CASCADE|SET NULL)/i', $b2bSchema) === 1) {
     throw new RuntimeException('B2B company tables must not cascade or null out on delete.');
+}
+// Current account rows are insert-only evidence: no cascades, one receivable per order, one reversal per movement.
+$accountSchema = (string) file_get_contents($root . '/database/migrations/011_b2b_current_account.sql');
+if (preg_match('/ON (DELETE|UPDATE) (CASCADE|SET NULL)/i', $accountSchema) === 1) {
+    throw new RuntimeException('B2B current account tables must not cascade.');
+}
+foreach (['UNIQUE KEY uq_b2b_account_receivable_order(receivable_order_uuid)', 'UNIQUE KEY uq_b2b_account_reversed_movement(reversed_movement_uuid)', 'amount DECIMAL(16,2) NOT NULL', 'CONSTRAINT chk_b2b_account_amount CHECK(amount>0)'] as $required) {
+    if (!str_contains($accountSchema, $required)) {
+        throw new RuntimeException("B2B current account invariant is missing: {$required}");
+    }
 }
 fwrite(STDOUT, 'Migration sanity checks passed for ' . count($files) . " file(s).\n");

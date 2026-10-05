@@ -1,5 +1,7 @@
 # Arasya Staff
 
+Operations API 2.10.0 adds [B2B Current Account V1](docs/b2b-current-account.md): an insert-only receivables ledger per company and currency (RON and EUR kept separate). Finalizing a Classic order posts its receivable in the same transaction; cancelling a finalized order posts a linked reversal. Payments with optional allocations, opening balances, adjustments, reversals, and CSV/PDF statements. Migration 011 is additive, grants nothing and does not backfill.
+
 Operations API 2.9.1 is a corrective release: order activity records `line_updated` only for lines whose business fields actually changed, and a draft save lists `lines` as changed only when line identities, order or fields changed. No schema, permission or route change.
 
 Operations API 2.9.0 adds [B2B Classic Orders V1](docs/b2b-orders.md): isolated commercial drafts, structured lines, exact RON/EUR totals, explicit finalization/cancellation, immutable snapshots and safe activity. Migration 010 grants no role automatically and never touches production/source commerce. B2B 0.3.0 and Dashboard 0.5.2 consume this contract. Staff 2.3.1 preserves the existing small Bucharest-calendar boundary correction needed for the real-API regression suite; no B2B order integration enters Staff.

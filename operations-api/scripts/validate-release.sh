@@ -32,6 +32,20 @@ for file in \
   src/B2B/OrderQueries.php \
   src/B2B/OrderCalculator.php \
   src/B2B/OrderStore.php \
+  database/migrations/011_b2b_current_account.sql \
+  src/B2B/AccountAccess.php \
+  src/B2B/AccountCommands.php \
+  src/B2B/AccountController.php \
+  src/B2B/AccountInput.php \
+  src/B2B/AccountLedger.php \
+  src/B2B/AccountMoney.php \
+  src/B2B/AccountQueries.php \
+  src/B2B/AccountStatementExport.php \
+  src/B2B/Pdf/PdfDocument.php \
+  src/B2B/Pdf/TrueTypeFont.php \
+  src/B2B/Pdf/fonts/DejaVuSansCondensed.ttf \
+  src/B2B/Pdf/fonts/DejaVuSansCondensed-Bold.ttf \
+  src/B2B/Pdf/fonts/DejaVu-LICENSE.txt \
   scripts/api-release-common.sh \
   scripts/cpanel-deploy-api.sh \
   scripts/cpanel-rollback-api.sh \
@@ -44,7 +58,7 @@ for file in \
 done
 
 (cd -- "$release_root" && sha256sum -c SHA256SUMS >/dev/null) || fail "SHA256SUMS verification failed."
-php -r '$r=json_decode(file_get_contents($argv[1]), true, flags: JSON_THROW_ON_ERROR); if (!is_array($r) || preg_match("/^[0-9a-f]{40}$/", $r["sourceCommit"] ?? "") !== 1 || ($r["version"] ?? null) !== "2.9.1") exit(2);' "$release_root/release.json" \
+php -r '$r=json_decode(file_get_contents($argv[1]), true, flags: JSON_THROW_ON_ERROR); if (!is_array($r) || preg_match("/^[0-9a-f]{40}$/", $r["sourceCommit"] ?? "") !== 1 || ($r["version"] ?? null) !== "2.10.0") exit(2);' "$release_root/release.json" \
   || fail "release.json provenance/version is invalid."
 
 for directory in src database/migrations bin config; do

@@ -11,6 +11,9 @@ use Arasya\Operations\Authorization\AuthorizationService;
 use Arasya\Operations\Auth\AuthenticationService;
 use Arasya\Operations\Auth\PdoLoginRateLimiter;
 use Arasya\Operations\Auth\PdoSessionRepository;
+use Arasya\Operations\B2B\AccountCommands;
+use Arasya\Operations\B2B\AccountController;
+use Arasya\Operations\B2B\AccountQueries;
 use Arasya\Operations\B2B\CompanyCommands;
 use Arasya\Operations\B2B\CompanyController;
 use Arasya\Operations\B2B\CompanyQueries;
@@ -149,6 +152,8 @@ final class Container
             ),
             new OrderController(new OrderQueries($this->pdo,$authorization),new OrderCommands($this->pdo,$authorization,$this->clock),
                 $this->authentication,$authorization,$csrf,$this->config,$context),
+            new AccountController($this->authentication, $authorization, $csrf, $this->config, $context,
+                new AccountQueries($this->pdo, $authorization, $this->clock), new AccountCommands($this->pdo, $authorization, $this->clock)),
         );
     }
 

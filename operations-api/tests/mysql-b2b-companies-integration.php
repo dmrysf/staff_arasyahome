@@ -58,6 +58,8 @@ $migrations = dirname(__DIR__) . '/database/migrations';
 // Reconstruct the pre-009 fixture, including when earlier CI suites applied the additive 010 tables.
 // This guarded disposable database belongs to the integration suite.
 (new MigrationRunner($pdo))->migrate($migrations);
+foreach(['b2b_account_idempotency','b2b_account_activity_events','b2b_account_allocation_releases','b2b_account_allocations','b2b_account_movements','b2b_account_movement_sequence'] as $table)$pdo->exec('DROP TABLE IF EXISTS '.$table);
+$pdo->exec("DELETE rp FROM role_permissions rp JOIN permissions p ON p.permission_id=rp.permission_id WHERE p.permission_key LIKE 'b2b.accounts.%'");$pdo->exec("DELETE FROM permissions WHERE permission_key LIKE 'b2b.accounts.%'");$pdo->exec("DELETE FROM schema_migrations WHERE migration_name='011_b2b_current_account.sql'");
 foreach (['b2b_order_idempotency','b2b_order_activity_events','b2b_order_lines','b2b_orders','b2b_order_number_sequence'] as $table) {
     $pdo->exec("DROP TABLE IF EXISTS {$table}");
 }

@@ -75,6 +75,8 @@ try {
     $report($b2bPermissions === 4 ? 'OK' : 'FAIL', 'b2b_company_permissions');
     $orderPermissions = (int) $pdo->query("SELECT COUNT(*) FROM permissions WHERE permission_key IN ('b2b.orders.view','b2b.orders.create','b2b.orders.update','b2b.orders.manage_status') AND role_grantable=1")->fetchColumn();
     $report($orderPermissions === 4 ? 'OK' : 'FAIL', 'b2b_order_permissions');
+    $accountPermissions = (int) $pdo->query("SELECT COUNT(*) FROM permissions WHERE permission_key IN ('b2b.accounts.view','b2b.accounts.record_payment','b2b.accounts.adjust','b2b.accounts.reverse','b2b.accounts.export') AND role_grantable=1")->fetchColumn();
+    $report($accountPermissions === 5 ? 'OK' : 'FAIL', 'b2b_account_permissions');
     $report(PHP_INT_SIZE >= 8 ? 'OK' : 'FAIL', 'b2b_fixed_point_int64');
 } catch (Throwable) {
     $report('FAIL', 'iam_applications');
@@ -108,7 +110,7 @@ try {
     $release = json_decode((string) file_get_contents($releasePath), true, flags: JSON_THROW_ON_ERROR);
     $sourceCommit = is_array($release) ? ($release['sourceCommit'] ?? null) : null;
     $version = is_array($release) ? ($release['version'] ?? null) : null;
-    $valid = is_string($sourceCommit) && preg_match('/^[0-9a-f]{40}$/', $sourceCommit) === 1 && $version === '2.9.1';
+    $valid = is_string($sourceCommit) && preg_match('/^[0-9a-f]{40}$/', $sourceCommit) === 1 && $version === '2.10.0';
     $releaseDirectory = basename(dirname(__DIR__));
     if (preg_match('/^[0-9a-f]{40}$/', $releaseDirectory) === 1) {
         $valid = $valid && hash_equals($releaseDirectory, $sourceCommit);

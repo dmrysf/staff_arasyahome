@@ -82,7 +82,7 @@ final class OperationsTestSupport
             'test-' . bin2hex(random_bytes(6)),
             $query,
         ));
-        return ['status' => $response->status, 'body' => $response->payload, 'headers' => $response->headers];
+        return ['status' => $response->status, 'body' => $response->payload, 'headers' => $response->headers, 'raw' => $response->body];
     }
 
     /** @return array{cookie: string, csrf: string, employeeUuid: string} */

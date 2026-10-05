@@ -1,6 +1,6 @@
 # B2B Classic Orders V1 — Operations API 2.9.0
 
-Internal wholesale ordering on the existing Central IAM session. Commercial data belongs only to the B2B module. There is no production submission, Staff queue/stage/QR, WooCommerce or Trendyol writeback, stock reservation, payment, current-account ledger, invoice or currency conversion.
+Internal wholesale ordering on the existing Central IAM session. Commercial data belongs only to the B2B module. There is no production submission, Staff queue/stage/QR, WooCommerce or Trendyol writeback, stock reservation, invoice or currency conversion. Since 2.10.0, finalization posts the order receivable to the [B2B current account](b2b-current-account.md) in the same transaction, and cancelling a finalized order posts its reversal; the order lifecycle itself is unchanged.
 
 ## Authority and lifecycle
 

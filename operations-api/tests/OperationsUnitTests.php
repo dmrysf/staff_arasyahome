@@ -412,7 +412,7 @@ test('B2B application access carries only its own baseline and no production per
     expect($baseline === ['b2b.access', 'profile.view_self']);
     foreach (\Arasya\Operations\Iam\ApplicationAccess::PERMISSION_APPLICATION as $permission => $application) {
         expect(!in_array($permission, $baseline, true));
-        expect($application === 'b2b' ? (str_starts_with($permission, 'b2b.companies.') || str_starts_with($permission,'b2b.orders.')) : !str_starts_with($permission, 'b2b.'));
+        expect($application === 'b2b' ? (str_starts_with($permission, 'b2b.companies.') || str_starts_with($permission,'b2b.orders.') || str_starts_with($permission,'b2b.accounts.')) : !str_starts_with($permission, 'b2b.'));
     }
     expect(!in_array('b2b.access', \Arasya\Operations\Iam\ApplicationAccess::baselineFor(['staff', 'dashboard']), true));
 });
@@ -524,7 +524,88 @@ test('B2B company data stays inside the B2B module and its activity is insert-on
         }
     }
     sort($readers);
-    expect($readers === ['B2B/CompanyCommands.php', 'B2B/CompanyQueries.php', 'B2B/OrderCommands.php', 'B2B/OrderStore.php', 'Database/AuthMaintenance.php']);
+    expect($readers === ['B2B/AccountCommands.php', 'B2B/AccountQueries.php', 'B2B/CompanyCommands.php', 'B2B/CompanyQueries.php', 'B2B/OrderCommands.php', 'B2B/OrderStore.php', 'Database/AuthMaintenance.php']);
     $maintenance = (string) file_get_contents($root . '/Database/AuthMaintenance.php');
     expect(preg_match_all('/b2b_compan\w+/', $maintenance, $tables) >= 1 && array_unique($tables[0]) === ['b2b_company_idempotency']);
 });
+
+test('B2B current account ledger is insert-only, isolated from production and joins the order transaction', function (): void {
+    $root = dirname(__DIR__) . '/src';
+    $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS));
+    foreach ($files as $file) {
+        if (!$file->isFile() || $file->getExtension() !== 'php') continue;
+        $relative = substr($file->getPathname(), strlen($root) + 1);
+        $source = (string) file_get_contents($file->getPathname());
+        expect(preg_match('/\b(UPDATE|DELETE\s+FROM)\s+b2b_account_(movements|allocations|allocation_releases|activity_events|movement_sequence)\b/i', $source) !== 1, "{$relative} must not change ledger rows");
+        if (!str_starts_with($relative, 'B2B/') && $relative !== 'Database/AuthMaintenance.php')
+            expect(preg_match('/\bb2b_account_/', $source) !== 1, "{$relative} must not read current account data");
+    }
+    foreach (glob($root . '/B2B/Account*.php') as $file) {
+        $source = (string) file_get_contents($file);
+        expect(preg_match('/\b(operational_orders|operational_order_items|production_workflows|production_stages|order_activity_events|order_operation_idempotency|order_sources)\b/', $source) !== 1, basename($file) . ' must not access production or source tables');
+        expect(preg_match('/\b(float|floatval|round|number_format)\s*\(|\(float\)/', $source) !== 1, basename($file) . ' must not use floats for money');
+    }
+    // The ledger never manages transactions: it always runs inside the caller's (order or account) transaction.
+    $ledger = (string) file_get_contents($root . '/B2B/AccountLedger.php');
+    expect(preg_match('/beginTransaction|commit\(|rollBack/', $ledger) !== 1);
+    $orders = (string) file_get_contents($root . '/B2B/OrderCommands.php');
+    expect(str_contains($orders, '$this->ledger->postOrderReceivable(') && str_contains($orders, '$this->ledger->reverseOrderReceivable('));
+    $maintenance = (string) file_get_contents($root . '/Database/AuthMaintenance.php');
+    preg_match_all('/b2b_account\w+/', $maintenance, $tables);
+    expect(array_values(array_unique(array_filter($tables[0], static fn($n) => !str_ends_with($n, '_keys')))) === ['b2b_account_idempotency']);
+});
+
+test('B2B account money is exact integer cents from decimal strings only', function (): void {
+    $M = \Arasya\Operations\B2B\AccountMoney::class;
+    expect($M::parsePositive('12') === 1200 && $M::parsePositive('12.3') === 1230 && $M::parsePositive('0.01') === 1 && $M::parsePositive('9999999999.99') === 999_999_999_999);
+    foreach ([12.3, 12, '0', '0.00', '-1.00', '1.001', '01.00', '1e3', ' 1.00', '1,00', '10000000000.00', null, true, []] as $bad) expect($M::parsePositive($bad) === null, 'refuses ' . json_encode($bad));
+    expect($M::fromDecimal('-160.65') === -16065 && $M::fromDecimal('0.10') === 10 && $M::fromDecimal(null) === 0);
+    expect($M::format(-16065) === '-160.65' && $M::format(5) === '0.05' && $M::format(0) === '0.00' && $M::format(-5) === '-0.05');
+    expectRuntime(fn () => $M::fromDecimal('1.2.3'));
+    // 0.1 + 0.2 style drift cannot occur.
+    expect($M::format($M::fromDecimal('0.10') + $M::fromDecimal('0.20')) === '0.30');
+});
+
+test('B2B account input enforces method reference rules, business dates and strict allocations', function (): void {
+    $I = \Arasya\Operations\B2B\AccountInput::class;
+    $now = new DateTimeImmutable('2026-10-04T22:30:00Z'); // already 5 October in Bucharest
+    expect($I::today($now) === '2026-10-05');
+    $base = ['currencyCode' => 'RON', 'amount' => '10.00', 'valueDate' => '2026-10-05'];
+    $fields = function (Closure $call): array { try { $call(); } catch (\Arasya\Operations\Http\ApiException $e) { return $e->details['fields'] ?? []; } return []; };
+    expect($fields(fn () => $I::payment($base + ['method' => 'bank_transfer'], $now)) === ['externalReference' => 'required']);
+    expect($fields(fn () => $I::payment($base + ['method' => 'other', 'externalReference' => 'X'], $now)) === ['note' => 'required']);
+    expect($fields(fn () => $I::payment($base + ['method' => 'compensation'], $now)) === ['note' => 'required']);
+    expect($fields(fn () => $I::payment($base + ['method' => 'compensation', 'note' => 'netting'], $now)) === []);
+    expect($fields(fn () => $I::payment($base + ['method' => 'cash'], $now)) === [] && $fields(fn () => $I::payment($base + ['method' => 'card'], $now)) === []);
+    expect($fields(fn () => $I::payment(array_replace($base, ['valueDate' => '2026-10-06']) + ['method' => 'cash'], $now)) === ['valueDate' => 'future']);
+    expect($fields(fn () => $I::payment(array_replace($base, ['currencyCode' => 'USD']) + ['method' => 'cash'], $now)) === ['currencyCode' => 'invalid']);
+    $id = '11111111-1111-4111-8111-111111111111';
+    expect($fields(fn () => $I::payment($base + ['method' => 'cash', 'allocations' => [['receivableId' => $id, 'amount' => '1.00'], ['receivableId' => $id, 'amount' => '1.00']]], $now)) === ['allocations' => 'invalid']);
+    expect($fields(fn () => $I::payment($base + ['method' => 'cash', 'allocations' => [['receivableId' => $id, 'amount' => '1.00', 'extra' => 1]]], $now)) === ['allocations' => 'invalid']);
+    expect($fields(fn () => $I::entry($base + ['direction' => 'debit', 'reason' => " \t "], $now)) === ['reason' => 'required']);
+    expect($fields(fn () => $I::entry($base + ['direction' => 'debit', 'reason' => str_repeat('a', 2001)], $now)) === ['reason' => 'too_long']);
+    expect($fields(fn () => $I::statement(['currency' => 'EUR', 'from' => '2026-02-01', 'to' => '2026-01-01'], $now)) === ['from' => 'after_to']);
+    expect($I::statement(['currency' => 'EUR'], $now) === ['currencyCode' => 'EUR', 'from' => null, 'to' => '2026-10-05']);
+});
+
+test('B2B statement CSV and PDF render the server dataset without recalculation or leakage', function (): void {
+    $statement = ['company' => ['id' => 'internal-uuid', 'code' => 'B2B-000001', 'legalName' => 'Ţesătură Şi Ğüzel SRL', 'displayName' => 'X', 'countryCode' => 'RO', 'taxIdentifier' => '=1+2', 'vatNumber' => null, 'registrationNumber' => null, 'status' => 'active'],
+        'currencyCode' => 'RON', 'from' => '2026-01-01', 'to' => '2026-01-31', 'openingBalance' => '10.00', 'totals' => ['debit' => '160.65', 'credit' => '200.00'], 'closingBalance' => '-29.35',
+        'generatedAt' => '2026-02-01T00:00:00Z', 'movements' => [
+            ['id' => 'm1', 'code' => 'B2B-MV-000001', 'valueDate' => '2026-01-05', 'type' => 'order_receivable', 'direction' => 'debit', 'orderCode' => 'B2B-ORD-000001', 'method' => null, 'externalReference' => null, 'reasonCode' => null, 'reversesCode' => null, 'reversedByCode' => null, 'debit' => '160.65', 'credit' => null, 'runningBalance' => '170.65', 'createdAt' => '2026-01-05T10:00:00.000Z', 'createdBy' => 'Ana'],
+            ['id' => 'm2', 'code' => 'B2B-MV-000002', 'valueDate' => '2026-01-06', 'type' => 'payment', 'direction' => 'credit', 'orderCode' => null, 'method' => 'bank_transfer', 'externalReference' => '@SUM(A1)', 'reasonCode' => null, 'reversesCode' => null, 'reversedByCode' => null, 'debit' => null, 'credit' => '200.00', 'runningBalance' => '-29.35', 'createdAt' => '2026-01-06T10:00:00.000Z', 'createdBy' => '@SUM(A1)'],
+        ]];
+    $E = \Arasya\Operations\B2B\AccountStatementExport::class;
+    $csv = $E::csv($statement, 'ro');
+    expect(str_starts_with($csv, "\xEF\xBB\xBF") && str_contains($csv, '"\'@SUM(A1)"') && !str_contains($csv, '"@SUM(A1)"'), 'formula cells are neutralized');
+    expect(str_contains($csv, '"-29.35"') && str_contains($csv, '"Total perioadă";"";"";"";"160.65";"200.00"') && !str_contains($csv, 'internal-uuid'));
+    expect(str_contains($E::csv($statement, 'tr'), 'Dönem sonu bakiye') && $E::language('de') === 'ro' && $E::filename($statement, 'pdf') === 'extras-B2B-000001-RON-2026-01-31.pdf');
+    $pdf = $E::pdf($statement, 'tr');
+    expect(str_starts_with($pdf, '%PDF-1.4') && str_ends_with($pdf, "%%EOF\n") && strlen($pdf) < 200_000 && !str_contains($pdf, 'internal-uuid'));
+    preg_match('/startxref\n(\d+)\n/', $pdf, $m);
+    expect(substr($pdf, (int) $m[1], 4) === 'xref' && substr_count($pdf, '/Type /Page ') === 1 && str_contains($pdf, '/FontFile2'));
+    // Many rows paginate.
+    $statement['movements'] = array_fill(0, 120, $statement['movements'][0]);
+    expect(substr_count($E::pdf($statement, 'ro'), '/Type /Page ') >= 3);
+});
+

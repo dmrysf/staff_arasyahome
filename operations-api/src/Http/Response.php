@@ -13,6 +13,7 @@ final readonly class Response
         public int $status,
         public ?array $payload = null,
         public array $headers = [],
+        public ?string $body = null,
     ) {
     }
 
@@ -21,10 +22,16 @@ final readonly class Response
         return new self($status, $payload, $headers);
     }
 
+    /** A non-JSON download (statement CSV/PDF). The headers must name the Content-Type. @param array<string, string> $headers */
+    public static function file(string $body, array $headers): self
+    {
+        return new self(200, null, $headers, $body);
+    }
+
     /** @param array<string, string> $headers */
     public function withHeaders(array $headers): self
     {
-        return new self($this->status, $this->payload, [...$this->headers, ...$headers]);
+        return new self($this->status, $this->payload, [...$this->headers, ...$headers], $this->body);
     }
 
     public function send(): never
@@ -40,6 +47,8 @@ final readonly class Response
             } catch (JsonException) {
                 echo '{"error":{"code":"INTERNAL_ERROR","message":"Response encoding failed."}}';
             }
+        } elseif ($this->body !== null) {
+            echo $this->body;
         }
         exit;
     }

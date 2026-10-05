@@ -16,8 +16,9 @@ The browser is never an identity or authorization authority. Every protected req
 | `POST` | `/auth/refresh` | Atomically revoke and rotate the opaque session token |
 | `POST` | `/auth/logout` | Revoke a valid server session and clear the cookie; already-invalid sessions are idempotent success |
 | `GET` | `/employees/me` | Return the employee derived from the current session |
-| `GET` | `/b2b/access` | B2B application gate: the current identity, only with B2B application access (2.7.0); since 2.8.0 also its usable company permissions |
+| `GET` | `/b2b/access` | B2B application gate: the current identity, only with B2B application access (2.7.0); since 2.8.0 also its usable company permissions, since 2.10.0 also its usable account permissions |
 | `GET`, `POST`, `PUT` | `/b2b/companies…` | B2B Companies V1: companies, contacts, addresses, activity (2.8.0, CSRF, idempotency; see [b2b-companies.md](b2b-companies.md)) |
+| `GET`, `POST` | `/b2b/accounts…` | B2B Current Account V1: balances, movements, payments, allocations, opening balances, adjustments, reversals, CSV/PDF statements (2.10.0, CSRF, idempotency; see [b2b-current-account.md](b2b-current-account.md)) |
 | `GET` | `/production/workflow` | Return the active canonical workflow and ordered stages with ETag support |
 | `GET` | `/orders/mine`, `/orders/{id}`, `/orders/lookup` | Visible orders for the session employee |
 | `POST` | `/orders/resolve-qr`, `/orders/{id}/claim`, `/orders/{id}/transition` | QR resolution and production mutations (CSRF, idempotency) |
