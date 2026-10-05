@@ -74,7 +74,7 @@ final readonly class OrderCommands
             function($company,$order,$now) use($actor,$action,$version,$id,$key,$request) {
                 if($action==='cancel') {
                     // The shared company/order locks serialize this check with explicit production submission.
-                    $s=$this->pdo->prepare('SELECT 1 FROM b2b_production_handoffs WHERE b2b_order_uuid=?');
+                    $s=$this->pdo->prepare('SELECT 1 FROM b2b_production_handoffs WHERE b2b_order_uuid=? FOR UPDATE');
                     $s->execute([$id]);
                     if($s->fetchColumn()!==false) throw new ApiException(409,'ORDER_ALREADY_IN_PRODUCTION','An order submitted to production cannot be commercially cancelled.');
                 }

@@ -136,6 +136,37 @@ $statuses=[];foreach($workers as [$p,$pipes]){$out=stream_get_contents($pipes[1]
 sort($statuses);check($statuses===[200,201],'race existing result');$ro=$rows('SELECT * FROM operational_orders WHERE global_order_id=?',['b2b:'.$raceOrder['id']]);
 check(count($ro)===1 && count($rows('SELECT * FROM operational_order_items WHERE order_uuid=?',[$ro[0]['order_uuid']]))===1 && count($rows("SELECT * FROM order_activity_events WHERE order_uuid=? AND action='production_submitted'",[$ro[0]['order_uuid']]))===1,'race exactly-once side effects');
 try{$pdo->prepare('INSERT INTO b2b_production_handoffs SELECT * FROM b2b_production_handoffs WHERE b2b_order_uuid=?')->execute([$o['id']]);throw new RuntimeException('duplicate allowed');}catch(PDOException $e){check((int)$e->errorInfo[1]===1062,'DB uniqueness');}
+// Deterministic REPEATABLE READ interleaving: the cancel transaction's read view predates
+// a committed handoff. Company/order locks alone cannot refresh a non-locking SELECT.
+final class HandoffSnapshotPdo extends PDO {
+    public ?Closure $concurrentSubmit=null;
+    public function beginTransaction(): bool {
+        $started=parent::beginTransaction();
+        if($this->concurrentSubmit!==null) {
+            $submit=$this->concurrentSubmit;$this->concurrentSubmit=null;
+            $this->query('SELECT b2b_order_uuid FROM b2b_production_handoffs')->fetchAll();
+            $submit();
+        }
+        return $started;
+    }
+}
+$staleOrder=$finalize($draft());$staleMoney=$snapshot($financialTables);
+$stalePdo=new HandoffSnapshotPdo(sprintf('mysql:host=%s;port=%d;dbname=%s;charset=utf8mb4',$config->dbHost,$config->dbPort,$db),$config->dbUser,$config->dbPassword,[PDO::ATTR_ERRMODE=>PDO::ERRMODE_EXCEPTION,PDO::ATTR_DEFAULT_FETCH_MODE=>PDO::FETCH_ASSOC]);
+$stalePdo->exec('SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+$stalePdo->concurrentSubmit=fn()=>status($send('POST',"/b2b/orders/{$staleOrder['id']}/production",['expectedVersion'=>$staleOrder['version']]),201,'handoff commits after cancel snapshot');
+error(T::call((new Container($config,$stalePdo))->kernel(),'POST',"/b2b/orders/{$staleOrder['id']}/cancel",['expectedVersion'=>$staleOrder['version']],['x-csrf-token'=>$root['csrf'],'idempotency-key'=>'stale-cancel-'.$suffix],$root['cookie']),409,'ORDER_ALREADY_IN_PRODUCTION');
+check($snapshot($financialTables)===$staleMoney && $rows('SELECT status FROM b2b_orders WHERE order_uuid=?',[$staleOrder['id']])[0]['status']==='finalized','stale read view cannot reverse a committed handoff');
+// The same old read view must not supply pre-finalization line data to a new handoff.
+$staleDraft=$draft();$freezeVersion=$staleDraft['version']+2;
+$stalePdo->concurrentSubmit=function()use($send,$finalize,$staleDraft,$freezeVersion,$line,$company,$contact,$address) {
+    $updated=status($send('PUT',"/b2b/orders/{$staleDraft['id']}",['expectedVersion'=>$staleDraft['version'],
+        'companyId'=>$company,'currencyCode'=>'RON','contactId'=>$contact,'deliveryAddressId'=>$address,'productionNotes'=>'Order workshop note',
+        'lines'=>[array_replace($line,['id'=>$staleDraft['lines'][0]['id'],'meters'=>'17.125','quantity'=>7])]]),200,'concurrent pre-freeze line edit')['detail']['order'];
+    check($finalize($updated)['version']===$freezeVersion,'finalization commits after handoff read view');
+};
+status(T::call((new Container($config,$stalePdo))->kernel(),'POST',"/b2b/orders/{$staleDraft['id']}/production",['expectedVersion'=>$freezeVersion],['x-csrf-token'=>$root['csrf'],'idempotency-key'=>'stale-lines-'.$suffix],$root['cookie']),201,'handoff reads the locked finalized lines');
+$freshItem=$rows("SELECT i.meters,i.quantity FROM operational_order_items i JOIN operational_orders o ON o.order_uuid=i.order_uuid WHERE o.global_order_id=?",['b2b:'.$staleDraft['id']])[0];
+check($freshItem['meters']==='17.125' && (int)$freshItem['quantity']===7,'pre-freeze line read view cannot replace frozen production measurements');
 // Cancel and submit compete for the same locks. Neither winning outcome can leave a cancelled production order.
 for($round=0;$round<3;$round++) {
     $competing=$finalize($draft());$start=(string)(microtime(true)+0.3);$workers=[];

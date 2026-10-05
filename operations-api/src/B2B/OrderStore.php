@@ -26,9 +26,9 @@ final readonly class OrderStore
 
     public function __construct(private PDO $pdo) {}
 
-    public function lines(string $id): array
+    public function lines(string $id,bool $forUpdate=false): array
     {
-        $s=$this->pdo->prepare('SELECT * FROM b2b_order_lines WHERE order_uuid=? ORDER BY line_number');
+        $s=$this->pdo->prepare('SELECT * FROM b2b_order_lines WHERE order_uuid=? ORDER BY line_number'.($forUpdate?' FOR UPDATE':''));
         $s->execute([$id]);
         return array_map(static function(array $r): array {
             $line=[];
