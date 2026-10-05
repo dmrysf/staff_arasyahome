@@ -21,13 +21,21 @@ final readonly class OrderController
     public function handle(Request $request): Response
     {
         $path=substr($request->path,strlen('/b2b/orders'));
-        if(preg_match('#^(?:/([^/]{1,64})(?:/(activity|finalize|cancel|duplicate|lines|production)(?:/([^/]{1,64})(?:/(duplicate|remove))?)?)?)?$#D',$path,$m)!==1)
+        if(preg_match('#^(?:/([^/]{1,64})(?:/(activity|finalize|cancel|duplicate|lines|production|production-sheet\.pdf)(?:/([^/]{1,64})(?:/(duplicate|remove))?)?)?)?$#D',$path,$m)!==1)
             throw new ApiException(404,'NOT_FOUND','Route was not found.');
         $id=$m[1]??''; $section=$m[2]??''; $line=$m[3]??''; $action=$m[4]??'';
         $session=$this->auth->authenticate($request->cookie($this->config->cookieName())??'',$request->ipAddress,$request->userAgent,$request->requestId);
         $actor=$session->employee;
         $this->context->authenticatedAs($actor->employeeUuid);
         OrderAccess::require($this->authorization,$actor,'b2b.access');
+        if($section==='production-sheet.pdf') {
+            if($line!=='' || $request->method!=='GET') throw new ApiException(405,'METHOD_NOT_ALLOWED','Method is not allowed.');
+            $queries=$this->productionQueries??throw new ApiException(503,'SERVICE_UNAVAILABLE','Production handoff is not ready.');
+            $lang=ProductionSheetPdf::language($this->filters($request,['lang'])['lang']??null);
+            $sheet=$queries->sheet($actor,$id,new \DateTimeImmutable('now',new \DateTimeZone('UTC')));
+            return Response::file(ProductionSheetPdf::render($sheet,$lang),['Content-Type'=>'application/pdf',
+                'Content-Disposition'=>'attachment; filename="'.ProductionSheetPdf::filename($sheet).'"']);
+        }
         if($section==='production') {
             if($line!=='' || $request->query!==[]) throw new ApiException(400,'INVALID_REQUEST','Invalid production request.');
             $queries=$this->productionQueries??throw new ApiException(503,'SERVICE_UNAVAILABLE','Production handoff is not ready.');

@@ -22,6 +22,9 @@ use Arasya\Operations\B2B\OrderController;
 use Arasya\Operations\B2B\OrderQueries;
 use Arasya\Operations\B2B\ProductionCommands;
 use Arasya\Operations\B2B\ProductionQueries;
+use Arasya\Operations\B2B\ProjectCommands;
+use Arasya\Operations\B2B\ProjectController;
+use Arasya\Operations\B2B\ProjectQueries;
 use Arasya\Operations\Config\Config;
 use Arasya\Operations\Database\Connection;
 use Arasya\Operations\Employee\EmployeeAdminService;
@@ -158,6 +161,8 @@ final class Container
                 new ProductionQueries($this->pdo,$authorization,$workflows)),
             new AccountController($this->authentication, $authorization, $csrf, $this->config, $context,
                 new AccountQueries($this->pdo, $authorization, $this->clock), new AccountCommands($this->pdo, $authorization, $this->clock)),
+            new ProjectController(new ProjectQueries($this->pdo, $authorization, $this->clock), new ProjectCommands($this->pdo, $authorization, $this->clock),
+                $this->authentication, $authorization, $csrf, $this->config, $context),
         );
     }
 

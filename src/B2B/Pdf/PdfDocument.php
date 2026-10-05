@@ -65,6 +65,35 @@ final class PdfDocument
         return $text . '…';
     }
 
+    /** Splits text into lines that fit the width (words, then characters for very long words); keeps explicit line breaks. @return list<string> */
+    public function wrap(string $text, float $width, string $font = 'R', float $size = 9, int $maxLines = 0): array
+    {
+        $f = $this->fonts[$font];
+        $lines = [];
+        foreach (preg_split('/\R/u', $text) ?: [] as $paragraph) {
+            $current = '';
+            foreach (preg_split('/\s+/u', trim($paragraph)) ?: [] as $word) {
+                if ($word === '') continue;
+                $candidate = $current === '' ? $word : $current . ' ' . $word;
+                if ($f->textWidth($candidate, $size) <= $width) { $current = $candidate; continue; }
+                if ($current !== '') $lines[] = $current;
+                $current = $word;
+                while ($f->textWidth($current, $size) > $width && mb_strlen($current) > 1) {
+                    $cut = mb_strlen($current) - 1;
+                    while ($cut > 1 && $f->textWidth(mb_substr($current, 0, $cut), $size) > $width) $cut--;
+                    $lines[] = mb_substr($current, 0, $cut);
+                    $current = mb_substr($current, $cut);
+                }
+            }
+            $lines[] = $current;
+        }
+        if ($maxLines > 0 && count($lines) > $maxLines) {
+            $lines = array_slice($lines, 0, $maxLines);
+            $lines[$maxLines - 1] = $this->fit($lines[$maxLines - 1] . '…', $width, $font, $size);
+        }
+        return $lines;
+    }
+
     public function line(float $x1, float $y1, float $x2, float $y2, float $width = 0.5, float $gray = 0.6): void
     {
         $this->current .= sprintf("%.3F G %.2F w %.2F %.2F m %.2F %.2F l S 0 G\n", $gray, $width, $x1, $y1, $x2, $y2);
@@ -73,6 +102,39 @@ final class PdfDocument
     public function fillRect(float $x, float $y, float $w, float $h, float $gray = 0.94): void
     {
         $this->current .= sprintf("%.3F g %.2F %.2F %.2F %.2F re f 0 g\n", $gray, $x, $y, $w, $h);
+    }
+
+    public function fillRectRgb(float $x, float $y, float $w, float $h, array $rgb): void
+    {
+        $this->current .= sprintf("%.3F %.3F %.3F rg %.2F %.2F %.2F %.2F re f 0 g\n", ...[...$rgb, $x, $y, $w, $h]);
+    }
+
+    public function strokeRect(float $x, float $y, float $w, float $h, float $width = 0.5, float $gray = 0.6): void
+    {
+        $this->current .= sprintf("%.3F G %.2F w %.2F %.2F %.2F %.2F re S 0 G\n", $gray, $width, $x, $y, $w, $h);
+    }
+
+    /**
+     * Draws a QR matrix (dark modules, row-major) as filled black rectangles with a white quiet zone of 4 modules.
+     * $x/$y is the bottom-left corner of the whole symbol including the quiet zone; $size is its width in points.
+     * @param list<list<bool>> $matrix
+     */
+    public function qr(float $x, float $y, float $size, array $matrix): void
+    {
+        $n = count($matrix);
+        $module = $size / ($n + 8);
+        $this->current .= sprintf("1 g %.2F %.2F %.2F %.2F re f 0 g\n", $x, $y, $size, $size);
+        foreach ($matrix as $r => $row) {
+            $start = null;
+            foreach ([...$row, false] as $c => $dark) {
+                if ($dark && $start === null) $start = $c;
+                if (!$dark && $start !== null) {
+                    $this->current .= sprintf("%.3F %.3F %.3F %.3F re\n", $x + ($start + 4) * $module, $y + $size - ($r + 5) * $module, ($c - $start) * $module, $module);
+                    $start = null;
+                }
+            }
+        }
+        $this->current .= "f\n";
     }
 
     public function output(): string
