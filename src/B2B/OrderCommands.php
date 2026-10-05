@@ -17,9 +17,11 @@ use Throwable;
 final readonly class OrderCommands
 {
     private OrderStore $store;
+    private AccountLedger $ledger;
     public function __construct(private PDO $pdo,private AuthorizationService $authorization,private Clock $clock)
     {
         $this->store=new OrderStore($pdo);
+        $this->ledger=new AccountLedger($pdo);
     }
 
     public function create(EmployeeIdentity $actor,array $input,string $key,string $request): array
@@ -80,10 +82,18 @@ final readonly class OrderCommands
                     $this->store->save($id,$data,$snap,$actor,$now);
                     $this->pdo->prepare("UPDATE b2b_orders SET status='finalized',finalized_at=?,finalized_by_employee_uuid=?,finalized_by_name=? WHERE order_uuid=?")
                         ->execute([$now,$actor->employeeUuid,$actor->displayName,$id]);
+                    // The finalized commercial obligation posts its receivable in the same transaction, under the same
+                    // company and order locks and the same idempotency record: it commits or rolls back with the
+                    // finalization, and a unique key allows one receivable per order. Commercial domain only.
+                    $s=$this->pdo->prepare('SELECT * FROM b2b_orders WHERE order_uuid=?');
+                    $s->execute([$id]);
+                    $this->ledger->postOrderReceivable($company,$s->fetch(PDO::FETCH_ASSOC),$actor,$now,$request,$key);
                 } else {
                     if($order['status']==='cancelled') throw new ApiException(409,'ORDER_CANCELLED','Order is cancelled.');
                     $this->pdo->prepare("UPDATE b2b_orders SET status='cancelled',cancelled_at=?,version=version+1,updated_at=?,updated_by_employee_uuid=?,updated_by_name=? WHERE order_uuid=?")
                         ->execute([$now,$now,$actor->employeeUuid,$actor->displayName,$id]);
+                    // Cancelling a finalized order never edits its receivable: it posts the linked reversal.
+                    if($order['status']==='finalized') $this->ledger->reverseOrderReceivable($company,$id,$actor,$now,$request,$key);
                 }
                 $this->store->event($id,$actor,$action==='finalize'?'order_finalized':'order_cancelled',['status'],$request,$key,$now);
                 return ['status'=>200,'orderId'=>$id];
