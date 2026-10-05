@@ -40,7 +40,7 @@ e3d5bd553859a3f0ade7ef0d41a29c8dab1eaaf486fb632bdb714b79e4c719aa  ./database/see
 a80d76fbdb4a0c8ac3533c3db5eb123a73ff6eb2c259927976d39dfeeb2f248b  ./public/.htaccess
 8302b6ec98573706b31b957a8f9ad9be8bf92a8b8bff02963c601650e7e8c420  ./public/RuntimeLocator.php
 edb234c39482536f0540e881da98cbdad6241af787f230295a79a4ae534e26be  ./public/index.php
-e23afb437c9a0e34cb9ef4f2ac1988c519f0fd6bb3d2a62d66343c87a98abb70  ./release.json
+928005478e46a2c81a88f0e9fa91bb25dfb48462b9889a4cff2f6996706deb8f  ./release.json
 3b42b0a0d462aa0ac0f368966a5703f6ecbbff9eea2bbbe47f269e9cd6ba03ea  ./scripts/api-release-common.sh
 d1795ddfa4cbd145a0bd889b74821650ce88ca47d5fc6227fa51796fc83b46b7  ./scripts/cpanel-deploy-api.sh
 90db53c750a7ee94bdaad0c19e0c57e9ee6744d703ca03603bb3764393d40f54  ./scripts/cpanel-rollback-api.sh
