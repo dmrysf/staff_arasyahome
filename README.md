@@ -1,5 +1,7 @@
 # Arasya Staff
 
+Operations API 2.9.0 adds [B2B Classic Orders V1](docs/b2b-orders.md): isolated commercial drafts, structured lines, exact RON/EUR totals, explicit finalization/cancellation, immutable snapshots and safe activity. Migration 010 grants no role automatically and never touches production/source commerce. B2B 0.3.0 and Dashboard 0.5.2 consume this contract. Staff 2.3.1 preserves the existing small Bucharest-calendar boundary correction needed for the real-API regression suite; no B2B order integration enters Staff.
+
 Mobile-first React + TypeScript + Vite SPA/PWA for `staff.arasyahome.ro`. Production is a static `dist/` directory served by Apache/cPanel; no Node process is required after deployment.
 
 ## Local development
@@ -32,6 +34,8 @@ pnpm verify
 It runs typecheck, lint, unit/security tests, production build, artifact verification, and checksum-aware deployment/rollback simulation in fail-fast order. The Operations API gate is `pnpm verify:api` (PHP lint, migration checks, unit tests, release and deploy simulations, and the MySQL suites when `ARASYA_TEST_DB_*` names a dedicated `*test*` database). Two Chromium suites gate GitHub publishing: the isolated Preview smoke (`pnpm test:e2e:preview`) and the real Operations API + MySQL flow (`ARASYA_E2E_DB_NAME=<*e2e*test*> pnpm test:e2e:real`). See [`docs/production-reliability.md`](docs/production-reliability.md) for the production runbook, [`docs/cpanel-deployment.md`](docs/cpanel-deployment.md) for Staff delivery, [`docs/staff-security.md`](docs/staff-security.md) for browser policy, and [`docs/github-production-guardrails.md`](docs/github-production-guardrails.md) for manual repository settings.
 
 The independent PHP identity foundation lives in [`operations-api/`](operations-api/) with architecture, security, and cPanel provisioning documented in [`docs/operations-api-auth.md`](docs/operations-api-auth.md), [`docs/staff-auth-security.md`](docs/staff-auth-security.md), and [`docs/operations-api-cpanel.md`](docs/operations-api-cpanel.md).
+
+**Staff 2.3.1 fixes Calendar history around midnight.** Calendar defaults and activity labels now use Europe/Bucharest, matching the API, even when the employee browser uses another timezone. Regression tests cover UTC day boundaries and daylight-saving changes. There is no B2B production handoff.
 
 **Operations API 2.8.0 adds B2B Companies V1.** A separate `operations-api/src/B2B/` module and migration 009 (additive) hold wholesale companies with server-generated UUIDs and `B2B-000001` codes, country plus normalized tax identifier uniqueness, multiple contacts and typed addresses with safe primary rules, internal notes, deactivate/reactivate (no delete), optimistic concurrency, idempotency and an immutable B2B activity history. Four narrow role-grantable permissions (`b2b.companies.view`, `.create`, `.update`, `.manage_status`) work only together with `b2b.access`; no role receives them automatically. No B2B orders, balances, payments or inventory, and no production or source change. Staff is unchanged at 2.3.0. See [`docs/b2b-companies.md`](docs/b2b-companies.md).
 

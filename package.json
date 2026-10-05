@@ -1,6 +1,6 @@
 {
   "name": "arasya-staff",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "private": true,
   "packageManager": "pnpm@11.19.0",
   "engines": {
@@ -16,7 +16,7 @@
     "test:e2e:real": "node e2e/prepare-real-api.mjs && VITE_STAFF_DEMO_MODE=false VITE_STAFF_PREVIEW_MODE=false VITE_STAFF_API_BASE_URL=http://127.0.0.1:8787 vite build --mode e2e && playwright test -c playwright.real-api.config.ts",
     "test:e2e:preview": "VITE_STAFF_DEMO_MODE=false VITE_STAFF_PREVIEW_MODE=true pnpm build && playwright test",
     "lint": "eslint . --ignore-pattern dist",
-    "verify:api": "find operations-api integrations -type f -name '*.php' -print0 | xargs -0 -n1 php -l && php operations-api/bin/check-migrations.php && php operations-api/tests/run.php && php operations-api/tests/inbound-only-guard.php && /bin/bash operations-api/tests/release-validation.sh && /bin/bash operations-api/tests/deploy-api.sh && php operations-api/tests/mysql-integration.php && php operations-api/tests/mysql-operations-integration.php && php operations-api/tests/mysql-iam-integration.php && php operations-api/tests/mysql-production-overview-integration.php && php operations-api/tests/mysql-production-control-integration.php && php operations-api/tests/mysql-production-ownership-integration.php && php operations-api/tests/mysql-b2b-companies-integration.php",
+"verify:api": "find operations-api integrations -type f -name '*.php' -print0 | xargs -0 -n1 php -l && php operations-api/bin/check-migrations.php && php operations-api/tests/run.php && php operations-api/tests/order-calculator.php && php operations-api/tests/inbound-only-guard.php && /bin/bash operations-api/tests/release-validation.sh && /bin/bash operations-api/tests/deploy-api.sh && php operations-api/tests/mysql-integration.php && php operations-api/tests/mysql-operations-integration.php && php operations-api/tests/mysql-iam-integration.php && php operations-api/tests/mysql-production-overview-integration.php && php operations-api/tests/mysql-production-control-integration.php && php operations-api/tests/mysql-production-ownership-integration.php && php operations-api/tests/mysql-b2b-companies-integration.php && php operations-api/tests/mysql-b2b-orders-integration.php",
     "verify:artifacts": "node scripts/verify-build.mjs",
     "verify": "tsc --noEmit && eslint . --ignore-pattern dist && tsx --test tests/*.test.ts && node scripts/verify-staff-security.mjs && pnpm build && node scripts/verify-build.mjs && /bin/bash tests/staff-deploy.sh"
   },

@@ -6,17 +6,12 @@ import { SourceBadge } from "../../components/SourceBadge";
 import { ErrorState } from "../../components/ErrorState";
 import { toServiceError } from "../../services/errors";
 import { AppIcon } from "../../components/icons/AppIcon";
+import { historyDate, HISTORY_TIME_ZONE } from "./historyDate";
 import { formatMeters } from "../../domain/productFormat";
 
 type Range = "today" | "7days" | "month" | "custom";
 const rangeLabels: Record<Range, string> = { today: "Astăzi", "7days": "7 zile", month: "Luna aceasta", custom: "Calendar" };
 const MAX_CUSTOM_DAYS = 92;
-
-function localDate(offsetDays = 0) {
-  const date = new Date();
-  date.setDate(date.getDate() + offsetDays);
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-}
 
 /** Returns a Romanian validation message, or null when the custom range is valid. */
 export function validateCustomRange(from: string, to: string): string | null {
@@ -32,13 +27,13 @@ export function describeActivity(entry: ActivityEntry): string {
   return `${entry.fromStageLabelSnapshot} → ${entry.toStageLabelSnapshot ?? "—"}`;
 }
 
-const time = new Intl.DateTimeFormat("ro-RO", { hour: "2-digit", minute: "2-digit" });
-const day = new Intl.DateTimeFormat("ro-RO", { day: "numeric", month: "short" });
+const time = new Intl.DateTimeFormat("ro-RO", { hour: "2-digit", minute: "2-digit", timeZone: HISTORY_TIME_ZONE });
+const day = new Intl.DateTimeFormat("ro-RO", { day: "numeric", month: "short", timeZone: HISTORY_TIME_ZONE });
 
 export function HistoryScreen({ service, navigate }: { service: ActivityService; navigate: (path: string) => void }) {
   const [range, setRange] = useState<Range>("today");
-  const [customFrom, setCustomFrom] = useState(() => localDate(-6));
-  const [customTo, setCustomTo] = useState(() => localDate());
+  const [customFrom, setCustomFrom] = useState(() => historyDate(-6));
+  const [customTo, setCustomTo] = useState(() => historyDate());
   const [page, setPage] = useState<ActivityPage | null>(null);
   const [error, setError] = useState<StaffServiceError | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
@@ -69,7 +64,7 @@ export function HistoryScreen({ service, navigate }: { service: ActivityService;
     <div className="screen-stack">
       <section className="screen-heading"><h1>Istoric</h1><p>Acțiunile tale confirmate în producție.</p></section>
       <div className="range-scroll" role="group" aria-label="Interval istoric">{(Object.keys(rangeLabels) as Range[]).map((item) => <button key={item} className={item === range ? "active" : ""} aria-pressed={item === range} type="button" onClick={() => { setError(null); setPage(null); setRange(item); }}>{rangeLabels[item]}</button>)}</div>
-      {range === "custom" && <div className="date-range"><label>De la<input type="date" value={customFrom} max={customTo} onChange={(event) => { setPage(null); setCustomFrom(event.target.value); }} /></label><span>→</span><label>Până la<input type="date" value={customTo} min={customFrom} max={localDate()} onChange={(event) => { setPage(null); setCustomTo(event.target.value); }} /></label></div>}
+      {range === "custom" && <div className="date-range"><label>De la<input type="date" value={customFrom} max={customTo} onChange={(event) => { setPage(null); setCustomFrom(event.target.value); }} /></label><span>→</span><label>Până la<input type="date" value={customTo} min={customFrom} max={historyDate()} onChange={(event) => { setPage(null); setCustomTo(event.target.value); }} /></label></div>}
       {customError ? <p className="order-notice" role="alert">{customError}</p> : error ? <ErrorState error={error} onAction={() => { setError(null); setPage(null); setReloadKey((value) => value + 1); }} /> : page ? <>
         <section className="metrics-grid"><div><span>Comenzi</span><strong>{page.summary.processed}</strong></div><div><span>Metri predați</span><strong>{formatMeters(page.summary.meters).replace(" m", "")}<small>m</small></strong></div><div><span>Predate</span><strong>{page.summary.handedOver}</strong></div><div><span>În lucru acum</span><strong>{page.summary.inProgress}</strong></div></section>
         <section className="history-list"><h2>Cronologie</h2>

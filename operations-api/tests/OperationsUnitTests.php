@@ -412,7 +412,7 @@ test('B2B application access carries only its own baseline and no production per
     expect($baseline === ['b2b.access', 'profile.view_self']);
     foreach (\Arasya\Operations\Iam\ApplicationAccess::PERMISSION_APPLICATION as $permission => $application) {
         expect(!in_array($permission, $baseline, true));
-        expect($application === 'b2b' ? str_starts_with($permission, 'b2b.companies.') : !str_starts_with($permission, 'b2b.'));
+        expect($application === 'b2b' ? (str_starts_with($permission, 'b2b.companies.') || str_starts_with($permission,'b2b.orders.')) : !str_starts_with($permission, 'b2b.'));
     }
     expect(!in_array('b2b.access', \Arasya\Operations\Iam\ApplicationAccess::baselineFor(['staff', 'dashboard']), true));
 });
@@ -483,6 +483,28 @@ test('B2B company input is normalized on the server and failures name fields, ne
     expect($creation['contact'] === null && $creation['address'] === null);
 });
 
+test('B2B commercial orders are isolated from production and their audit is insert-only', function (): void {
+    $root = dirname(__DIR__) . '/src';
+    foreach (glob($root . '/B2B/Order*.php') as $file) {
+        $source = (string) file_get_contents($file);
+        expect(preg_match('/\b(operational_orders|operational_order_items|production_workflows|production_stages|order_activity_events|order_operation_idempotency)\b/', $source) !== 1, basename($file) . ' must not access production tables');
+        expect(preg_match('/\b(UPDATE|DELETE\s+FROM)\s+b2b_order_activity_events\b/i', $source) !== 1, 'Order history is insert-only');
+        expect(preg_match('/\bDELETE\s+FROM\s+b2b_orders\b/i', $source) !== 1, 'Commercial orders have no hard delete');
+    }
+    $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS));
+    foreach ($files as $file) {
+        if (!$file->isFile() || $file->getExtension() !== 'php') continue;
+        $relative = substr($file->getPathname(), strlen($root) + 1);
+        $source = (string) file_get_contents($file->getPathname());
+        if (!str_starts_with($relative, 'B2B/') && $relative !== 'Database/AuthMaintenance.php')
+            expect(preg_match('/\bb2b_order/', $source) !== 1, $relative . ' must not read commercial data');
+    }
+    $maintenance = (string) file_get_contents($root . '/Database/AuthMaintenance.php');
+    preg_match_all('/b2b_order\w+/', $maintenance, $tables);
+    $tableNames = array_filter($tables[0], static fn($name) => !str_ends_with($name, '_keys'));
+    expect(array_values(array_unique($tableNames)) === ['b2b_order_idempotency']);
+});
+
 test('B2B company data stays inside the B2B module and its activity is insert-only', function (): void {
     $root = dirname(__DIR__) . '/src';
     $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS));
@@ -502,7 +524,7 @@ test('B2B company data stays inside the B2B module and its activity is insert-on
         }
     }
     sort($readers);
-    expect($readers === ['B2B/CompanyCommands.php', 'B2B/CompanyQueries.php', 'Database/AuthMaintenance.php']);
+    expect($readers === ['B2B/CompanyCommands.php', 'B2B/CompanyQueries.php', 'B2B/OrderCommands.php', 'B2B/OrderStore.php', 'Database/AuthMaintenance.php']);
     $maintenance = (string) file_get_contents($root . '/Database/AuthMaintenance.php');
     expect(preg_match_all('/b2b_compan\w+/', $maintenance, $tables) >= 1 && array_unique($tables[0]) === ['b2b_company_idempotency']);
 });

@@ -544,7 +544,7 @@ test('authenticated production workflow route returns the exact canonical catalo
     expect(($unauthenticated->payload['error']['code'] ?? null) === 'SESSION_EXPIRED');
 
     $health = $kernel->handle(new Request('GET', '/health', [], [], '', '127.0.0.1', 'workflow-test', 'health-stable'));
-    expect($health->status === 200 && ($health->payload['version'] ?? null) === '2.8.0');
+    expect($health->status === 200 && ($health->payload['version'] ?? null) === '2.9.0');
 });
 
 test('JSON auth input rejects malformed, oversized and unexpected payloads', function (): void {
@@ -992,6 +992,8 @@ test('auth maintenance dry-run is inert and bounded cleanup preserves current re
     $pdo->exec('CREATE TABLE order_operation_idempotency (employee_uuid TEXT, idempotency_key TEXT, created_at TEXT, PRIMARY KEY (employee_uuid, idempotency_key))');
     $pdo->exec('CREATE TABLE api_rate_limit_buckets (bucket_scope TEXT, subject_hash BLOB, updated_at TEXT, PRIMARY KEY (bucket_scope, subject_hash))');
     $pdo->exec('CREATE TABLE b2b_company_idempotency (employee_uuid TEXT, idempotency_key TEXT, created_at TEXT, PRIMARY KEY (employee_uuid, idempotency_key))');
+    $pdo->exec('CREATE TABLE b2b_order_idempotency (employee_uuid TEXT, idempotency_key TEXT, created_at TEXT, PRIMARY KEY (employee_uuid, idempotency_key))');
+    $pdo->exec("INSERT INTO b2b_order_idempotency VALUES ('employee-b','old-order-replay','2026-01-01 00:00:00'),('employee-b','current-order-replay','2026-08-18 00:00:00')");
     $pdo->exec("INSERT INTO b2b_company_idempotency VALUES ('employee-b', 'old-b2b-key-000001', '2026-01-01 00:00:00'), ('employee-b', 'current-b2b-key-001', '2026-08-18 00:00:00')");
     $pdo->exec("INSERT INTO order_operation_idempotency VALUES ('employee-a', 'old-key-0000000001', '2026-01-01 00:00:00'), ('employee-a', 'current-key-0000001', '2026-08-18 00:00:00')");
     $insertApiBucket = $pdo->prepare('INSERT INTO api_rate_limit_buckets VALUES (:scope, :hash, :updated_at)');
@@ -1016,7 +1018,7 @@ test('auth maintenance dry-run is inert and bounded cleanup preserves current re
     $now = new DateTimeImmutable('2026-08-19T12:00:00Z');
     $maintenance = new AuthMaintenance($pdo, 30, 30, 7, null, 1);
     $dryRun = $maintenance->run(true, $now);
-    expect($dryRun === ['sessions' => 2, 'login_attempts' => 1, 'rate_limit_buckets' => 1, 'audit_events' => null, 'idempotency_keys' => 1, 'api_rate_limit_buckets' => 1, 'b2b_idempotency_keys' => 1]);
+    expect($dryRun === ['sessions' => 2, 'login_attempts' => 1, 'rate_limit_buckets' => 1, 'audit_events' => null, 'idempotency_keys' => 1, 'api_rate_limit_buckets' => 1, 'b2b_idempotency_keys' => 1, 'b2b_order_idempotency_keys'=>1]);
     expect((int) $pdo->query('SELECT COUNT(*) FROM auth_sessions')->fetchColumn() === 3);
     $deleted = $maintenance->run(false, $now);
     expect($deleted === $dryRun);
@@ -1027,6 +1029,7 @@ test('auth maintenance dry-run is inert and bounded cleanup preserves current re
     expect($pdo->query('SELECT idempotency_key FROM order_operation_idempotency')->fetchAll(PDO::FETCH_COLUMN) === ['current-key-0000001']);
     expect((int) $pdo->query('SELECT COUNT(*) FROM api_rate_limit_buckets')->fetchColumn() === 0);
     expect($pdo->query('SELECT idempotency_key FROM b2b_company_idempotency')->fetchAll(PDO::FETCH_COLUMN) === ['current-b2b-key-001']);
+    expect($pdo->query('SELECT idempotency_key FROM b2b_order_idempotency')->fetchAll(PDO::FETCH_COLUMN) === ['current-order-replay']);
     $auditMaintenance = new AuthMaintenance($pdo, 30, 30, 7, 90, 1);
     expect($auditMaintenance->run(false, $now)['audit_events'] === 1);
 });

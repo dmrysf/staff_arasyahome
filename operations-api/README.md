@@ -1,6 +1,8 @@
 # Arasya Operations API
 
-Standalone PHP 8.2+ identity, authentication, production workflow and order-operations API for Staff and future Operations clients. It has no WordPress, Node, framework, Composer, or persistent-process dependency. Only `public/` may be configured as a web document root. The current release version is `2.2.0`.
+Standalone PHP 8.2+ identity, authentication, production workflow and order-operations API for Staff, Dashboard and commercial B2B clients. It has no WordPress, Node, framework, Composer, or persistent-process dependency. Only `public/` may be configured as a web document root. The current release version is `2.9.0`.
+
+Classic commercial orders are documented in [B2B Orders V1](../docs/b2b-orders.md). Migration 010 is additive; commercial finalization never creates a production order or calls a source integration. Monetary calculations require 64-bit PHP.
 
 Order routes (`/orders/mine`, `/orders/{id}`, `/orders/lookup`, `/orders/resolve-qr`, `/orders/{id}/claim`, `/orders/{id}/transition`), `/activity/mine` and signed source ingestion (`/integrations/sources/{source}/orders|heartbeat`) are documented in [Staff operations API](../docs/staff-operations-api.md) and [source integrations](../docs/source-integrations.md).
 

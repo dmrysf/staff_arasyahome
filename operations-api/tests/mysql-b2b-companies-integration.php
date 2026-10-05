@@ -55,7 +55,25 @@ const UUID_V4 = '/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 $config = T::config($dbName, [T::ORIGIN, DASHBOARD_ORIGIN, B2B_ORIGIN]);
 $pdo = Connection::create($config);
 $migrations = dirname(__DIR__) . '/database/migrations';
+// Reconstruct the pre-009 fixture, including when earlier CI suites applied the additive 010 tables.
+// This guarded disposable database belongs to the integration suite.
 (new MigrationRunner($pdo))->migrate($migrations);
+foreach (['b2b_order_idempotency','b2b_order_activity_events','b2b_order_lines','b2b_orders','b2b_order_number_sequence'] as $table) {
+    $pdo->exec("DROP TABLE IF EXISTS {$table}");
+}
+$pdo->exec("DELETE rp FROM role_permissions rp JOIN permissions p ON p.permission_id=rp.permission_id WHERE p.permission_key LIKE 'b2b.orders.%'");
+$pdo->exec("DELETE FROM permissions WHERE permission_key LIKE 'b2b.orders.%'");
+$pdo->exec("DELETE FROM schema_migrations WHERE migration_name='010_b2b_orders.sql'");
+$companyMigrations = sys_get_temp_dir().'/arasya-company-migrations-'.bin2hex(random_bytes(8));
+mkdir($companyMigrations,0700);
+foreach (glob($migrations.'/*.sql') as $file) {
+    if (basename($file) < '010') copy($file,$companyMigrations.'/'.basename($file));
+}
+register_shutdown_function(static function() use($companyMigrations): void {
+    foreach (glob($companyMigrations.'/*.sql') as $file) unlink($file);
+    rmdir($companyMigrations);
+});
+$migrations=$companyMigrations;
 
 // ---- Upgrade path to migration 009 ---------------------------------------------------------------
 // Rebuild the pre-009 state in this test database, then apply 009 exactly once on top of it.
