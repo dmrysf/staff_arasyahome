@@ -77,14 +77,37 @@ status($send('POST',"/b2b/orders/$draftId/lines/$uuid/remove",['expectedVersion'
 status($send('POST',"/b2b/orders/$draftId/lines/$uuid/remove",['expectedVersion'=>5],$removeKey),200,'remove replay');
 check(count($detail($draftId)['lines'])===2,'removed only once');
 error($send('PUT',"/b2b/orders/$draftId/lines/00000000-0000-4000-8000-000000000000",array_replace($line,['expectedVersion'=>6])),404,'ORDER_LINE_NOT_FOUND');
+// line_updated is recorded only for real business changes, never for unchanged lines in a draft save.
+$lineEvents=function(string $orderId) use($pdo): array {
+    $s=$pdo->prepare("SELECT action,changed_fields FROM b2b_order_activity_events WHERE order_uuid=? AND action IN ('line_updated','order_updated') ORDER BY occurred_at,event_id");
+    $s->execute([$orderId]);
+    return array_map(static fn(array $r): array=>[$r['action'],json_decode((string)$r['changed_fields'],true)],$s->fetchAll(PDO::FETCH_ASSOC));
+};
+// Events of one save share occurred_at and have random ids, so compare them as a set.
+$sorted=static function(array $events): array {usort($events,static fn($a,$b)=>strcmp(json_encode($a),json_encode($b)));return $events;};
+$aggregate=static fn(array $o): array=>['companyId'=>$o['companyId'],'currencyCode'=>$o['currencyCode'],'contactId'=>$o['contactId'],'billingAddressId'=>$o['billingAddressId'],
+    'deliveryAddressId'=>$o['deliveryAddressId'],'customerReference'=>$o['customerReference'],'notes'=>$o['notes'],'productionNotes'=>$o['productionNotes'],'lines'=>$o['lines']];
+$current=$detail($draftId);$eventsBefore=count($lineEvents($draftId));
+status($send('PUT',"/b2b/orders/$draftId",array_replace($aggregate($current),['customerReference'=>'Header only','expectedVersion'=>$current['version']])),200,'header-only draft save');
+$new=array_slice($lineEvents($draftId),$eventsBefore);
+check($new===[['order_updated',['customerReference']]],'header-only save records no line_updated and no lines change '.json_encode($new));
+$current=$detail($draftId);$eventsBefore=count($lineEvents($draftId));
+$shuffled=array_map(static fn(array $l): array=>array_reverse($l,true),$current['lines']);
+$shuffled[0]['quantity']=$current['lines'][0]['quantity']+1;
+status($send('PUT',"/b2b/orders/$draftId",array_replace($aggregate($current),['lines'=>$shuffled,'expectedVersion'=>$current['version']])),200,'one line changed in draft save');
+$new=array_slice($lineEvents($draftId),$eventsBefore);
+check($sorted($new)===[['line_updated',['quantity']],['order_updated',['lines']]],'only the changed line is recorded, regardless of field order '.json_encode($new));
+$current=$detail($draftId);$eventsBefore=count($lineEvents($draftId));$same=$current['lines'][1];$sameId=$same['id'];unset($same['id']);
+status($send('PUT',"/b2b/orders/$draftId/lines/$sameId",$same+['expectedVersion'=>$current['version']]),200,'unchanged single line update');
+check(array_slice($lineEvents($draftId),$eventsBefore)===[],'unchanged single line update records no line_updated');
 $cancelKey='order-cancel-'.$suffix;
-status($send('POST',"/b2b/orders/$draftId/cancel",['expectedVersion'=>6],$cancelKey),200,'cancel draft');
-status($send('POST',"/b2b/orders/$draftId/cancel",['expectedVersion'=>6],$cancelKey),200,'cancel replay');
+status($send('POST',"/b2b/orders/$draftId/cancel",['expectedVersion'=>9],$cancelKey),200,'cancel draft');
+status($send('POST',"/b2b/orders/$draftId/cancel",['expectedVersion'=>9],$cancelKey),200,'cancel replay');
 $cancelled=$detail($draftId);
 check($cancelled['status']==='cancelled' && $cancelled['cancelledAt']!==null && count($cancelled['lines'])===2,'cancel preserves data');
-error($send('POST',"/b2b/orders/$draftId/lines",$line+['expectedVersion'=>7]),409,'ORDER_CANCELLED');
-error($send('POST',"/b2b/orders/$draftId/finalize",['expectedVersion'=>7]),409,'ORDER_CANCELLED');
-status($send('POST',"/b2b/orders/$draftId/duplicate",['expectedVersion'=>7]),201,'duplicate cancelled order');
+error($send('POST',"/b2b/orders/$draftId/lines",$line+['expectedVersion'=>10]),409,'ORDER_CANCELLED');
+error($send('POST',"/b2b/orders/$draftId/finalize",['expectedVersion'=>10]),409,'ORDER_CANCELLED');
+status($send('POST',"/b2b/orders/$draftId/duplicate",['expectedVersion'=>10]),201,'duplicate cancelled order');
 $snapshotBefore=$detail($id);
 status($send('POST',"/b2b/orders/$id/cancel",['expectedVersion'=>5]),200,'cancel finalized order');
 $snapshotAfter=$detail($id);

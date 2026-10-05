@@ -1,5 +1,7 @@
 # Arasya Staff
 
+Operations API 2.9.1 is a corrective release: order activity records `line_updated` only for lines whose business fields actually changed, and a draft save lists `lines` as changed only when line identities, order or fields changed. No schema, permission or route change.
+
 Operations API 2.9.0 adds [B2B Classic Orders V1](docs/b2b-orders.md): isolated commercial drafts, structured lines, exact RON/EUR totals, explicit finalization/cancellation, immutable snapshots and safe activity. Migration 010 grants no role automatically and never touches production/source commerce. B2B 0.3.0 and Dashboard 0.5.2 consume this contract. Staff 2.3.1 preserves the existing small Bucharest-calendar boundary correction needed for the real-API regression suite; no B2B order integration enters Staff.
 
 Mobile-first React + TypeScript + Vite SPA/PWA for `staff.arasyahome.ro`. Production is a static `dist/` directory served by Apache/cPanel; no Node process is required after deployment.

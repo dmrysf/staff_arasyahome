@@ -9,6 +9,6 @@ cp -R operations-api/public operations-api/src operations-api/database operation
 cp operations-api/config/config.example.php operations-api/config/config.production.example.php operations-api/config/secrets.example.json "$target/config/"
 cp operations-api/scripts/*.sh "$target/scripts/"
 chmod +x "$target/scripts/"*.sh
-printf '{"sourceCommit":"%s","builtAt":"2026-08-19T00:00:00Z","version":"2.9.0"}\n' "$source_commit" > "$target/release.json"
+printf '{"sourceCommit":"%s","builtAt":"2026-08-19T00:00:00Z","version":"2.9.1"}\n' "$source_commit" > "$target/release.json"
 /bin/bash "$target/scripts/generate-sha256s.sh" "$target"
 /bin/bash "$target/scripts/validate-release.sh" "$target" >/dev/null

@@ -42,7 +42,7 @@ Line fields: optional UUID id, productCode, nullable productName, variant, color
 
 Standalone line-create uses a server UUID; aggregate-save may accept a preallocated new UUID to retain keyboard-row identity, but rejects collisions belonging to another order. Reorder takes the exact unique lineIds set plus version. Unknown fields/methods fail closed.
 
-List uses server filters companyId, search (100 characters), status (draft/finalized/cancelled/all), currency (RON/EUR/all), UTC calendar from/to (inclusive), limit (25/50/100) and keyset cursor. Ordered by (created_at, order_uuid) descending. Search covers order code, customer reference, company snapshot name/code/tax ID and an indexed product-code prefix; no full line JSON scan. Activity uses (occurred_at,event_id) keyset pagination and returns actor, action, safe changed field names and request reference, never note/contact values.
+List uses server filters companyId, search (100 characters), status (draft/finalized/cancelled/all), currency (RON/EUR/all), UTC calendar from/to (inclusive), limit (25/50/100) and keyset cursor. Ordered by (created_at, order_uuid) descending. Search covers order code, customer reference, company snapshot name/code/tax ID and an indexed product-code prefix; no full line JSON scan. A draft save records `line_updated` only for a line whose business fields changed (compared field by field, server-side), and `order_updated` lists `lines` only when line identities, order or fields changed (2.9.1). Activity uses (occurred_at,event_id) keyset pagination and returns actor, action, safe changed field names and request reference, never note/contact values.
 
 ## Exact money policy
 
