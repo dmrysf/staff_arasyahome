@@ -10,6 +10,7 @@ use Arasya\Operations\Auth\AuthenticationService;
 use Arasya\Operations\B2B\AccountAccess;
 use Arasya\Operations\B2B\CompanyAccess;
 use Arasya\Operations\B2B\OrderAccess;
+use Arasya\Operations\B2B\ProductionAccess;
 use Arasya\Operations\Config\Config;
 use Arasya\Operations\Authorization\AuthorizationService;
 use Arasya\Operations\Employee\EmployeeSerializer;
@@ -112,7 +113,7 @@ final readonly class AuthController
             ],
             'authorizationVersion' => $employee->authorizationVersion,
             // B2B module permissions the identity can use right now; the server still checks every request.
-            'permissions' => [...CompanyAccess::granted($this->authorization, $employee), ...OrderAccess::granted($this->authorization, $employee), ...AccountAccess::granted($this->authorization, $employee)],
+            'permissions' => [...CompanyAccess::granted($this->authorization, $employee), ...OrderAccess::granted($this->authorization, $employee), ...AccountAccess::granted($this->authorization, $employee), ...ProductionAccess::granted($this->authorization, $employee)],
         ]);
     }
 

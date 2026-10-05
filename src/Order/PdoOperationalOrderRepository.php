@@ -17,8 +17,8 @@ final readonly class PdoOperationalOrderRepository implements OperationalOrderRe
             o.order_uuid, o.global_order_id, o.order_number, o.production_stage_id,
             o.source_commerce_status_code, o.source_commerce_status_label, o.production_notes,
             o.operational_status, o.version, o.production_version, o.production_owner_employee_uuid,
-            o.production_completed_at, o.accepted_at, o.updated_at, o.source_changed_at, o.last_source_seen_at,
-            s.status AS source_status, s.last_contact_at AS source_last_contact_at,
+            o.production_completed_at, o.accepted_at, o.updated_at, o.source_changed_at, o.last_source_seen_at,o.production_context,
+            o.source_key,s.source_type,s.status AS source_status, s.last_contact_at AS source_last_contact_at,
             r.employee_uuid AS relation_employee_uuid, r.relation_type, r.status AS relation_status,
             r.started_at AS relation_started_at, r.last_action_at AS relation_last_action_at
         FROM operational_orders o
@@ -119,7 +119,7 @@ final readonly class PdoOperationalOrderRepository implements OperationalOrderRe
         $placeholders = implode(',', array_fill(0, count($orderUuids), '?'));
         $statement = $this->pdo->prepare("
             SELECT item_uuid, order_uuid, source_item_id, line_number, name, product_code, variant, color,
-                   width_value, height_value, measurement_unit, meters, quantity
+                   width_value, height_value, measurement_unit, meters, quantity,production_context
             FROM operational_order_items
             WHERE order_uuid IN ({$placeholders})
             ORDER BY order_uuid ASC, line_number ASC
@@ -140,6 +140,7 @@ final readonly class PdoOperationalOrderRepository implements OperationalOrderRe
                 $item['measurement_unit'] === null ? null : (string) $item['measurement_unit'],
                 $item['meters'] === null ? null : (float) $item['meters'],
                 (int) $item['quantity'],
+                $item['production_context']===null?null:json_decode($item['production_context'],true,flags:JSON_THROW_ON_ERROR),
             );
         }
 
@@ -166,7 +167,7 @@ final readonly class PdoOperationalOrderRepository implements OperationalOrderRe
                 $row['production_notes'] === null ? null : (string) $row['production_notes'],
                 (string) $row['operational_status'],
                 new OrderFreshness(
-                    $this->freshness((string) $row['source_status'], $row['source_last_contact_at'] === null ? $lastSourceSeenAt : $this->utc((string) $row['source_last_contact_at'])),
+                    $row['source_key']==='b2b' && $row['source_type']==='internal' && $row['source_status']==='active' ? 'fresh' : $this->freshness((string) $row['source_status'], $row['source_last_contact_at'] === null ? $lastSourceSeenAt : $this->utc((string) $row['source_last_contact_at'])),
                     $this->utc((string) $row['source_changed_at']),
                     $lastSourceSeenAt,
                 ),
@@ -178,6 +179,7 @@ final readonly class PdoOperationalOrderRepository implements OperationalOrderRe
                 (int) $row['production_version'],
                 $row['production_owner_employee_uuid'] === null ? null : (string) $row['production_owner_employee_uuid'],
                 $row['production_completed_at'] === null ? null : $this->utc((string) $row['production_completed_at']),
+                $row['production_context']===null?null:json_decode($row['production_context'],true,flags:JSON_THROW_ON_ERROR),
             );
         }
         return $orders;
