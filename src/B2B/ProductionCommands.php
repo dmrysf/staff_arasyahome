@@ -49,7 +49,7 @@ final readonly class ProductionCommands
                     if((int)$order['version']!==$version) throw new ApiException(409,'ORDER_CHANGED','Order changed. Reload before submitting.');
                     $store=new OrderStore($this->pdo);
                     $companyContext=ProductionInput::company(OrderStore::decode($order['company_snapshot']));
-                    $items=ProductionInput::items($store->lines($id));
+                    $items=ProductionInput::items($store->lines($id,true));
                     try { $workflow=$this->workflows->current(); }
                     catch(\RuntimeException $e) { throw new ApiException(503,'WORKFLOW_UNAVAILABLE','Canonical production workflow is unavailable.'); }
                     if($workflow->id!==CanonicalProductionWorkflowContract::WORKFLOW_ID || $workflow->version!==CanonicalProductionWorkflowContract::VERSION)
