@@ -153,6 +153,8 @@
 .product-detail + .product-detail { margin-top: 19px; padding-top: 19px; border-top: 1px solid var(--color-border); }
 .product-detail > div { display: flex; justify-content: space-between; gap: 10px; }
 .product-detail > div span { color: var(--color-text-muted); font-size: .76rem; }
+.project-location { margin: 0 0 6px; font-size: .8rem; font-weight: 700; letter-spacing: .01em; color: var(--color-text-muted); overflow-wrap: anywhere; }
+.project-opening, .project-reference { margin: 4px 0 0; color: var(--color-text-muted); font-size: .86rem; overflow-wrap: anywhere; }
 .product-detail dl { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 14px; margin: 19px 0 0; }
 .product-detail dl div { display: grid; gap: 4px; }
 .product-detail dt { color: var(--color-text-muted); font-size: .68rem; }

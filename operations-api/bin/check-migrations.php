@@ -11,6 +11,7 @@ if ($files === []) {
 $expected = ['departments', 'roles', 'permissions', 'role_permissions', 'employees', 'employee_stage_access', 'auth_sessions', 'auth_login_attempts', 'auth_rate_limit_buckets', 'auth_audit_events', 'production_workflows', 'production_stages', 'order_sources', 'operational_orders', 'operational_order_items', 'employee_order_relations', 'order_projection_receipts', 'order_qr_references', 'order_activity_events', 'order_operation_idempotency', 'api_rate_limit_buckets', 'applications', 'employee_application_access', 'employee_role_assignments', 'system_root_identity', 'iam_audit_events', 'b2b_company_number_sequence', 'b2b_companies', 'b2b_company_contacts', 'b2b_company_addresses', 'b2b_company_activity_events', 'b2b_company_idempotency', 'b2b_account_movement_sequence', 'b2b_account_movements', 'b2b_account_allocations', 'b2b_account_allocation_releases', 'b2b_account_activity_events', 'b2b_account_idempotency'];
 $schema = implode("\n", array_map(static fn (string $path): string => (string) file_get_contents($path), $files));
 $expected[]='b2b_production_handoffs';
+array_push($expected,'b2b_project_number_sequence','b2b_projects','b2b_project_zones','b2b_project_rooms','b2b_project_openings','b2b_project_treatments','b2b_project_orders','b2b_project_order_lines','b2b_project_activity_events','b2b_project_idempotency');
 foreach ($expected as $table) {
     if (preg_match('/CREATE TABLE IF NOT EXISTS\s+' . preg_quote($table, '/') . '\b/i', $schema) !== 1) {
         throw new RuntimeException("Migration is missing table: {$table}");
@@ -47,6 +48,11 @@ $handoffSchema=(string)file_get_contents($root.'/database/migrations/012_b2b_pro
 foreach(['PRIMARY KEY(b2b_order_uuid)','UNIQUE KEY uq_b2b_handoff_operational','FOREIGN KEY(operational_order_uuid,source_key,b2b_order_uuid)',"CHECK(source_key='b2b')"] as $constraint)
     if(!str_contains($handoffSchema,$constraint)) throw new RuntimeException('B2B handoff identity constraint missing.');
 if(preg_match('/ON (DELETE|UPDATE) (CASCADE|SET NULL)|INSERT.*role_permissions/is',$handoffSchema)) throw new RuntimeException('Handoff must retain evidence and grant no roles.');
+// Project workspaces never cascade into commercial, financial or production records and grant no roles.
+$projectSchema=(string)file_get_contents($root.'/database/migrations/013_b2b_projects.sql');
+if(preg_match('/ON (DELETE|UPDATE) (CASCADE|SET NULL)|INSERT.*role_permissions|ALTER TABLE b2b_orders|ALTER TABLE operational_|b2b_account_/is',$projectSchema)) throw new RuntimeException('Project workspace must stay additive and isolated.');
+foreach(['PRIMARY KEY(order_uuid), KEY idx_b2b_project_orders_project','UNIQUE KEY uq_b2b_project_order_treatment(order_uuid,treatment_uuid)'] as $constraint)
+    if(!str_contains($projectSchema,$constraint)) throw new RuntimeException('Project order trace constraint missing.');
 $accountSchema = (string) file_get_contents($root . '/database/migrations/011_b2b_current_account.sql');
 if (preg_match('/ON (DELETE|UPDATE) (CASCADE|SET NULL)/i', $accountSchema) === 1) {
     throw new RuntimeException('B2B current account tables must not cascade.');

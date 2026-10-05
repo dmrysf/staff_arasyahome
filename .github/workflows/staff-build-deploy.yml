@@ -77,6 +77,8 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Install Playwright Chromium
         run: pnpm exec playwright install --with-deps chromium
+      - name: Decode printed production QR codes with jsQR
+        run: node operations-api/tests/qr-decode.mjs
       - name: Run real Operations API + MySQL Chromium flow
         run: pnpm test:e2e:real
 

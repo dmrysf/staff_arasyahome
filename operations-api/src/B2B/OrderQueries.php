@@ -91,11 +91,28 @@ final readonly class OrderQueries
                 'productionSubmitted'=>(bool)$r['production_submitted'],
             ];
             foreach(OrderStore::SNAPSHOT_COLUMNS as $field=>$column) $order[$field]=OrderStore::decode($r[$column]);
+            $order['origin']=$this->origin($id);
             $this->pdo->commit();
             $capabilities=OrderAccess::capabilities($this->authorization,$actor);
             if($order['productionSubmitted']) $capabilities['canCancel']=false;
             return ['order'=>$order,'capabilities'=>$capabilities];
         } catch(Throwable $e) { if($this->pdo->inTransaction()) $this->pdo->rollBack(); throw $e; }
+    }
+
+    /** Project-origin trace of an order: the source project and the frozen location of each converted line. */
+    private function origin(string $id): ?array
+    {
+        $s=$this->pdo->prepare('SELECT po.project_uuid,p.project_code,p.name FROM b2b_project_orders po JOIN b2b_projects p ON p.project_uuid=po.project_uuid WHERE po.order_uuid=?');
+        $s->execute([$id]); $project=$s->fetch(PDO::FETCH_ASSOC);
+        if(!$project) return null;
+        $s=$this->pdo->prepare('SELECT line_uuid,trace_context FROM b2b_project_order_lines WHERE order_uuid=?'); $s->execute([$id]);
+        $lines=[];
+        foreach($s->fetchAll(PDO::FETCH_KEY_PAIR) as $line=>$json) {
+            $context=ProductionInput::project(OrderStore::decode($json));
+            unset($context['project']);
+            $lines[$line]=$context;
+        }
+        return ['projectId'=>$project['project_uuid'],'projectCode'=>$project['project_code'],'projectName'=>$project['name'],'lines'=>(object)$lines];
     }
 
     public function activity(EmployeeIdentity $actor,string $id,array $filters): array

@@ -47,6 +47,7 @@ final readonly class AuthMaintenance
                 'b2b_order_idempotency_keys' => $this->pruneComposite('b2b_order_idempotency', ['employee_uuid','idempotency_key'], 'created_at', $this->cutoff($now,$this->idempotencyRetentionDays),$dryRun,false),
                 // Replay references only: account movements, allocations and activity are never pruned.
                 'b2b_account_idempotency_keys' => $this->pruneComposite('b2b_account_idempotency', ['employee_uuid','idempotency_key'], 'created_at', $this->cutoff($now,$this->idempotencyRetentionDays),$dryRun,false),
+                'b2b_project_idempotency_keys' => $this->pruneComposite('b2b_project_idempotency', ['employee_uuid','idempotency_key'], 'created_at', $this->cutoff($now,$this->idempotencyRetentionDays),$dryRun,false),
             ];
         } finally {
             $lock->release();

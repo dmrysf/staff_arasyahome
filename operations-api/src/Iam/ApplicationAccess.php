@@ -66,6 +66,11 @@ final class ApplicationAccess
         'b2b.accounts.export' => self::B2B,
         'b2b.production.view' => self::B2B,
         'b2b.production.submit' => self::B2B,
+        'b2b.projects.view' => self::B2B,
+        'b2b.projects.create' => self::B2B,
+        'b2b.projects.update' => self::B2B,
+        'b2b.projects.archive' => self::B2B,
+        'b2b.projects.convert' => self::B2B,
     ];
 
     /** @param list<string> $applications @return list<string> */

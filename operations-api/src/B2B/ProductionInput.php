@@ -20,8 +20,11 @@ final class ProductionInput
         return $out;
     }
 
-    /** @return list<OperationalOrderItem> */
-    public static function items(array $lines): array
+    /**
+     * @param array<string,array> $trace frozen project location per line id (only for project-origin lines)
+     * @return list<OperationalOrderItem>
+     */
+    public static function items(array $lines,array $trace=[]): array
     {
         if($lines===[]) throw new ApiException(422,'PRODUCTION_NOT_ELIGIBLE','No production lines exist.');
         $out=[];
@@ -31,13 +34,27 @@ final class ProductionInput
                 $out[]=new OperationalOrderItem(Uuid::v4(),$line['id'],$n+1,$line['productName']??$line['productCode'],
                     $line['productCode'],$line['variant'],$line['color'],self::measurement($line['width']),self::measurement($line['height']),
                     'cm',self::measurement($line['meters']),$line['quantity'],
-                    ['kind'=>$line['kind'],'notes'=>$line['notes'],'productionNotes'=>$line['productionNotes']]);
+                    ['kind'=>$line['kind'],'notes'=>$line['notes'],'productionNotes'=>$line['productionNotes']]+
+                        (isset($trace[$line['id']])?['project'=>self::project($trace[$line['id']])]:[]));
             } catch(\InvalidArgumentException $e) {
                 throw new ApiException(422,'PRODUCTION_LINE_UNSUPPORTED','A line cannot be represented safely in production.',
                     ['lineId'=>$line['id'],'lineNumber'=>$n+1]);
             }
         }
         return $out;
+    }
+
+    /** Whitelisted, money-free project location: identities, labels and opening geometry frozen at conversion. */
+    public static function project(array $trace): array
+    {
+        $pick=static fn(array $source,array $keys): array=>array_intersect_key($source,array_flip($keys))+array_fill_keys($keys,null);
+        return [
+            'project'=>$pick($trace['project']??[],['id','code','name','propertyType']),
+            'zone'=>$pick($trace['zone']??[],['id','name','zoneType','level','building']),
+            'room'=>$pick($trace['room']??[],['id','name']),
+            'opening'=>$pick($trace['opening']??[],['id','name','openingType','wallIndex','width','height','sillHeight','mounting','railType']),
+            'treatment'=>$pick($trace['treatment']??[],['id','treatmentType','panelLayout']),
+        ];
     }
 
     private static function measurement(?string $value): ?float

@@ -32,8 +32,17 @@ export type ProductionWorkflow = {
   readonly stages: readonly ProductionStage[];
 };
 
+/** Frozen B2B project location of a production item (labels at conversion time, no money). */
+export type ProjectLocation = {
+  projectCode: string; projectName: string;
+  zone: { name: string; zoneType: 'floor' | 'zone'; level: number | null; building: string | null };
+  room: { name: string };
+  opening: { name: string; openingType: string; width: string | null; height: string | null; sillHeight: string | null; mounting: 'ceiling' | 'wall' | 'recess' | null; railType: string | null };
+  treatment: { treatmentType: 'sheer' | 'drapery' | 'blackout' | 'rail' | 'accessory' | 'other'; panelLayout: 'single' | 'pair' | 'left' | 'right' | null };
+};
+
 export type ProductionItem = {
-  productionContext?: { kind: 'curtain' | 'drapery' | 'other'; notes: string | null; productionNotes: string | null };
+  productionContext?: { kind: 'curtain' | 'drapery' | 'other'; notes: string | null; productionNotes: string | null; project?: ProjectLocation };
   id: string;
   name: string;
   code?: string;

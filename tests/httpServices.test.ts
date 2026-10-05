@@ -24,6 +24,21 @@ test('B2B manufacturing snapshots preserve line meters, kind and notes without i
   assertServerError(() => mapProductionOrder({ ...raw, products: [{ ...item, productionContext: { ...item.productionContext, kind: 'unknown' } }] }));
 });
 
+test('B2B project-origin items carry the frozen project location and fail closed on malformed context', () => {
+  const project = { project: { id: 'p', code: 'B2B-PRJ-000001', name: 'Hotel', propertyType: 'hotel' }, zone: { id: 'z', name: 'Etaj 1', zoneType: 'floor', level: 1, building: null },
+    room: { id: 'r', name: 'Camera 101' }, opening: { id: 'o', name: 'Fereastra 1', openingType: 'window', wallIndex: 1, width: '160.000', height: '240.000', sillHeight: null, mounting: 'ceiling', railType: null },
+    treatment: { id: 't', treatmentType: 'blackout', panelLayout: 'pair' } };
+  const item = { id: 'line-1', name: 'Blackout', quantity: 1, meters: 5.4, productionContext: { kind: 'drapery', notes: null, productionNotes: null, project } };
+  const raw = { id: 'b2b:1', source: 'b2b', orderNumber: 'B2B-ORD-000001', productionStageId: 'waiting', status: 'in_progress', version: 1, productionVersion: 1,
+    products: [item], updatedAt: '2026-10-05T00:00:00Z', productionContext: { company: { legalName: 'Hotel SRL', companyCode: 'B2B-000001', countryCode: 'RO', taxIdentifier: '12' } } };
+  const location = mapProductionOrder(raw).products[0].productionContext?.project;
+  assert.deepEqual(location, { projectCode: 'B2B-PRJ-000001', projectName: 'Hotel', zone: { name: 'Etaj 1', zoneType: 'floor', level: 1, building: null }, room: { name: 'Camera 101' },
+    opening: { name: 'Fereastra 1', openingType: 'window', width: '160.000', height: '240.000', sillHeight: null, mounting: 'ceiling', railType: null },
+    treatment: { treatmentType: 'blackout', panelLayout: 'pair' } });
+  assertServerError(() => mapProductionOrder({ ...raw, products: [{ ...item, productionContext: { ...item.productionContext, project: { ...project, treatment: { treatmentType: 'hologram' } } } }] }));
+  assertServerError(() => mapProductionOrder({ ...raw, products: [{ ...item, productionContext: { ...item.productionContext, project: { ...project, room: {} } } }] }));
+});
+
 test("mapProductionOrder validates quantity", () => {
   const baseItem = { id: "item-1", name: "Item", quantity: 1 };
   const baseOrder = {

@@ -16,7 +16,7 @@ $config=T::config($db);$pdo=Connection::create($config);$migrations=dirname(__DI
 require __DIR__.'/HandoffSchemaFixture.php';restorePreHandoffTestSchema($pdo);
 $grantsBefore=$pdo->query('SELECT * FROM role_permissions ORDER BY role_id,permission_id')->fetchAll();
 $financeBefore=$pdo->query('SELECT * FROM b2b_account_movements ORDER BY movement_uuid')->fetchAll();
-check((new MigrationRunner($pdo))->migrate($migrations)===['012_b2b_production_handoff.sql'],'011→012 official additive upgrade');
+check((new MigrationRunner($pdo))->migrate($migrations)===['012_b2b_production_handoff.sql','013_b2b_projects.sql'],'011→012→013 official additive upgrade');
 check((new MigrationRunner($pdo))->migrate($migrations)===[],'012 recorded exactly once');
 check($pdo->query('SELECT * FROM role_permissions ORDER BY role_id,permission_id')->fetchAll()===$grantsBefore,'012 grants no roles');
 check($pdo->query('SELECT * FROM b2b_account_movements ORDER BY movement_uuid')->fetchAll()===$financeBefore,'012 leaves financial evidence unchanged');

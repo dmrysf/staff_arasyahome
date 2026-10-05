@@ -142,8 +142,32 @@ export function mapProductionOrderItem(value: unknown): import("../../domain/mod
     if (!['curtain', 'drapery', 'other'].includes(kind)) throw new StaffServiceError('SERVER_ERROR');
     item.productionContext = { kind: kind as 'curtain' | 'drapery' | 'other',
       notes: context.notes === null ? null : stringValue(context.notes), productionNotes: context.productionNotes === null ? null : stringValue(context.productionNotes) };
+    if (context.project != null) item.productionContext.project = mapProjectLocation(context.project);
   }
   return item;
+}
+
+const optionalString = (value: unknown) => value === null || value === undefined ? null : stringValue(value);
+function oneOf<T extends string>(value: unknown, allowed: readonly T[]): T {
+  if (!allowed.includes(value as T)) throw new StaffServiceError("SERVER_ERROR");
+  return value as T;
+}
+
+/** Strict mapping of the frozen project location; anything unexpected fails closed. */
+export function mapProjectLocation(value: unknown): import("../../domain/models").ProjectLocation {
+  const raw = objectValue(value), project = objectValue(raw.project), zone = objectValue(raw.zone), room = objectValue(raw.room);
+  const opening = objectValue(raw.opening), treatment = objectValue(raw.treatment);
+  const level = zone.level;
+  if (level !== null && level !== undefined && !Number.isInteger(level)) throw new StaffServiceError("SERVER_ERROR");
+  return {
+    projectCode: stringValue(project.code), projectName: stringValue(project.name),
+    zone: { name: stringValue(zone.name), zoneType: oneOf(zone.zoneType, ["floor", "zone"] as const), level: (level as number | null | undefined) ?? null, building: optionalString(zone.building) },
+    room: { name: stringValue(room.name) },
+    opening: { name: stringValue(opening.name), openingType: stringValue(opening.openingType), width: optionalString(opening.width), height: optionalString(opening.height),
+      sillHeight: optionalString(opening.sillHeight), mounting: opening.mounting == null ? null : oneOf(opening.mounting, ["ceiling", "wall", "recess"] as const), railType: optionalString(opening.railType) },
+    treatment: { treatmentType: oneOf(treatment.treatmentType, ["sheer", "drapery", "blackout", "rail", "accessory", "other"] as const),
+      panelLayout: treatment.panelLayout == null ? null : oneOf(treatment.panelLayout, ["single", "pair", "left", "right"] as const) },
+  };
 }
 
 export function mapProductionOrder(value: unknown): import("../../domain/models").StaffOrder {
