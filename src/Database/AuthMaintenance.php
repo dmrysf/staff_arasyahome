@@ -44,6 +44,7 @@ final readonly class AuthMaintenance
                 'api_rate_limit_buckets' => $this->pruneApiRateLimits($rateCutoff, $dryRun),
                 // Replay references for B2B company mutations; the companies and their activity are never pruned.
                 'b2b_idempotency_keys' => $this->pruneComposite('b2b_company_idempotency', ['employee_uuid', 'idempotency_key'], 'created_at', $this->cutoff($now, $this->idempotencyRetentionDays), $dryRun, false),
+                'b2b_order_idempotency_keys' => $this->pruneComposite('b2b_order_idempotency', ['employee_uuid','idempotency_key'], 'created_at', $this->cutoff($now,$this->idempotencyRetentionDays),$dryRun,false),
             ];
         } finally {
             $lock->release();

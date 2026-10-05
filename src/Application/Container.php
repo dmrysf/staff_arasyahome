@@ -14,6 +14,9 @@ use Arasya\Operations\Auth\PdoSessionRepository;
 use Arasya\Operations\B2B\CompanyCommands;
 use Arasya\Operations\B2B\CompanyController;
 use Arasya\Operations\B2B\CompanyQueries;
+use Arasya\Operations\B2B\OrderCommands;
+use Arasya\Operations\B2B\OrderController;
+use Arasya\Operations\B2B\OrderQueries;
 use Arasya\Operations\Config\Config;
 use Arasya\Operations\Database\Connection;
 use Arasya\Operations\Employee\EmployeeAdminService;
@@ -144,6 +147,8 @@ final class Container
                 $this->config,
                 $context,
             ),
+            new OrderController(new OrderQueries($this->pdo,$authorization),new OrderCommands($this->pdo,$authorization,$this->clock),
+                $this->authentication,$authorization,$csrf,$this->config,$context),
         );
     }
 

@@ -6,6 +6,7 @@ namespace Arasya\Operations\Http;
 
 use Arasya\Operations\Activity\ActivityController;
 use Arasya\Operations\B2B\CompanyController;
+use Arasya\Operations\B2B\OrderController;
 use Arasya\Operations\Integration\SourceIngestionController;
 use Arasya\Operations\Management\ManagementController;
 use Arasya\Operations\Order\OperationalOrderController;
@@ -28,6 +29,7 @@ final readonly class ApiKernel
         private ?SourceIngestionController $sources = null,
         private ?ManagementController $management = null,
         private ?CompanyController $b2bCompanies = null,
+        private ?OrderController $b2bOrders = null,
     ) {
     }
 
@@ -80,6 +82,9 @@ final readonly class ApiKernel
 
     private function matchDynamicRoutes(Request $request): Response
     {
+        if ($request->path === '/b2b/orders' || str_starts_with($request->path, '/b2b/orders/')) {
+            return ($this->b2bOrders ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'B2B orders API is not ready.'))->handle($request);
+        }
         if ($request->path === '/b2b/companies' || str_starts_with($request->path, '/b2b/companies/')) {
             return ($this->b2bCompanies ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'B2B companies API is not ready.'))->handle($request);
         }
