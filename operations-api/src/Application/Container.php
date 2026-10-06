@@ -134,6 +134,7 @@ final class Container
         $devices = new DisplayDevices($this->pdo, $this->config, $this->clock, $this->employees, $iamAudit, $idempotency);
         $cutting = new CuttingService($this->pdo, $this->employees, $approvers, $workflows, $idempotency, $iamAudit, $live, $this->clock);
         $faults = new CuttingFaultService($this->pdo, $authorization, $this->employees, $workflows, $approvers, $exceptions, $live, $idempotency, $iamAudit, $this->clock);
+        $analyticsPolicy=new \Arasya\Operations\Analytics\AnalyticsPolicy($this->pdo);
         return new ApiKernel(
             new AuthController($this->authentication, $csrf, new CookiePolicy($this->config), $this->config, $authorization, $context),
             new HealthController($this->pdo, $this->clock),
@@ -173,6 +174,7 @@ final class Container
                 new OrderLookupService($this->pdo, $authorization, $approvers, $exceptions, $rateLimiter),
                 new OrganizationService($this->pdo, $authorization, $idempotency, $iamAudit, $this->clock),
                 new ProductionSettingsService($this->pdo, $authorization, $idempotency, $iamAudit, $this->clock),
+                $analyticsPolicy,
             ),
             new CompanyController(
                 new CompanyQueries($this->pdo, $authorization),
@@ -193,6 +195,7 @@ final class Container
                 $this->authentication, $authorization, $csrf, $this->config, $context),
             new QualityController($faults, $exceptions, $approvers, $live, $this->authentication, $authorization, $csrf, $this->config, $context, $this->pdo, $this->clock),
             new CuttingController($cutting, $devices, new BoardSnapshot($this->pdo, $this->clock, $devices), $live, $this->authentication, $csrf, $this->config, $context, $rateLimiter),
+            new \Arasya\Operations\Analytics\AnalyticsController(new \Arasya\Operations\Analytics\AnalyticsService($this->pdo,$analyticsPolicy,$this->clock),$this->authentication,$csrf,$this->config,$context),
         );
     }
 

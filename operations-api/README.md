@@ -1,6 +1,8 @@
 # Arasya Operations API
 
-Standalone PHP 8.2+ identity, authentication, production workflow and order-operations API for Staff, Dashboard and commercial B2B clients. It has no WordPress, Node, framework, Composer, or persistent-process dependency. Only `public/` may be configured as a web document root. The current release version is `2.14.0`.
+Standalone PHP 8.2+ identity, authentication, production workflow and order-operations API for Staff, Dashboard and commercial B2B clients. It has no WordPress, Node, framework, Composer, or persistent-process dependency. Only `public/` may be configured as a web document root. The current release version is `2.15.0`.
+
+Authenticated management analytics are documented in [Management Analytics V1](../docs/management-analytics.md). After official migration 016 and reference readiness, explicitly run `php bin/rebuild-analytics.php` before interpreting historical reports. This CLI rebuilds only derived projections; it never backfills unknown approval eligibility or modifies canonical events.
 
 B2B production uses a separate authenticated GET/POST `/b2b/orders/{UUID}/production` contract; see [handoff and deployment safety](../docs/b2b-production.md). Finalization never auto-submits. Additive migration 012 grants no roles and writes no financial movements; cancellation after a handoff is blocked.
 

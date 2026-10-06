@@ -46,6 +46,7 @@ final readonly class ManagementController
         private ?OrderLookupService $lookup = null,
         private ?OrganizationService $organization = null,
         private ?ProductionSettingsService $settings = null,
+        private ?\Arasya\Operations\Analytics\AnalyticsPolicy $analytics = null,
     ) {
     }
 
@@ -191,6 +192,8 @@ final readonly class ManagementController
             'manageOrganization' => $this->organization?->canManage($actor) ?? false,
             'manageProductionSettings' => $actor->isRoot,
             'cancelExceptions' => $actor->isRoot,
+            'viewAnalytics' => $this->analytics?->canView($actor) ?? false,
+            'manageAnalyticsPolicy' => $actor->isRoot,
         ];
     }
 

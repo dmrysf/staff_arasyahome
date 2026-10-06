@@ -203,6 +203,7 @@ final readonly class OrderOperationsService
         $this->upsertRelation($employee->employeeUuid, $order->orderUuid, $relation, $now);
         $this->recordActivity($employee, $order, $workflow, 'claimed', $stage, null, $expectedVersion, $idempotencyKey, $context, $now);
         if ($stage->id === CuttingLifecycle::STAGE) (new CuttingLifecycle($this->pdo))->claimed($order->orderUuid, $expectedVersion + 1, $employee->employeeUuid, $now);
+        (new \Arasya\Operations\Analytics\AnalyticsCapture($this->pdo))->refreshOrder($order->orderUuid);
     }
 
     private function applyTransition(EmployeeIdentity $employee, OperationalOrder $order, ProductionWorkflow $workflow, int $expectedVersion, string $idempotencyKey, OperationContext $context, string $now): void
@@ -245,6 +246,7 @@ final readonly class OrderOperationsService
         $meters->execute([$order->orderUuid]);
         $total = $meters->fetchColumn();
         (new CuttingLifecycle($this->pdo))->changed($order->orderUuid, $expectedVersion + 1, $current->id, $next?->id, $employee->employeeUuid, $now, $total === null || $total === false ? null : (string) $total);
+        (new \Arasya\Operations\Analytics\AnalyticsCapture($this->pdo))->refreshOrder($order->orderUuid);
     }
 
     private function stage(ProductionWorkflow $workflow, string $stageId): ProductionStage

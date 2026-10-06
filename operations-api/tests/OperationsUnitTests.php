@@ -524,7 +524,9 @@ test('B2B company data stays inside the B2B module and its activity is insert-on
         }
     }
     sort($readers);
-    expect($readers === ['B2B/AccountCommands.php', 'B2B/AccountQueries.php', 'B2B/CompanyCommands.php', 'B2B/CompanyQueries.php', 'B2B/OrderCommands.php', 'B2B/OrderStore.php', 'B2B/ProductionCommands.php', 'B2B/ProjectCommands.php', 'B2B/ProjectQueries.php', 'Database/AuthMaintenance.php']);
+    expect($readers === ['B2B/AccountCommands.php', 'B2B/AccountQueries.php', 'B2B/CompanyCommands.php', 'B2B/CompanyQueries.php', 'B2B/OrderCommands.php', 'B2B/OrderStore.php', 'B2B/ProductionAnalyticsIdentity.php', 'B2B/ProductionCommands.php', 'B2B/ProjectCommands.php', 'B2B/ProjectQueries.php', 'Database/AuthMaintenance.php']);
+    $analyticsIdentity=(string)file_get_contents($root.'/B2B/ProductionAnalyticsIdentity.php');
+    expect(preg_match('/\b(INSERT|UPDATE|DELETE|balance|currency|grand_total|email|phone|tax_identifier|b2b_account)\b/i',$analyticsIdentity)!==1,'Analytics identity adapter is read-only and contains no financial/contact query');
     $maintenance = (string) file_get_contents($root . '/Database/AuthMaintenance.php');
     expect(preg_match_all('/b2b_compan\w+/', $maintenance, $tables) >= 1 && array_unique($tables[0]) === ['b2b_company_idempotency']);
 });

@@ -68,6 +68,7 @@ final readonly class ProductionCommands
                         VALUES(?,?,?,?,?,?,'production_submitted',?,?,?,?,0,1,?,?,?)")->execute([
                             Uuid::v4(),$actor->employeeUuid,$operational,'b2b:'.$id,'b2b',$order['order_code'],$workflow->id,$workflow->version,
                             $waiting->id,$waiting->label,mb_substr($request,0,100),'b2b-production:'.hash('sha256',$key),$sql]);
+                    (new \Arasya\Operations\Analytics\AnalyticsCapture($this->pdo))->refreshOrder($operational);
                     $result=['status'=>201,'orderId'=>$id];
                 }
                 $this->pdo->prepare("INSERT INTO b2b_order_idempotency(employee_uuid,idempotency_key,operation,request_hash,order_uuid,response_json,created_at)

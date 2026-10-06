@@ -322,6 +322,7 @@ final readonly class OrderOwnershipService
                 ],
             ];
             $this->storeResult($actor->employeeUuid, $idempotencyKey, $operation, $orderUuid, $requestHash, $response, $now);
+            (new \Arasya\Operations\Analytics\AnalyticsCapture($this->pdo))->refreshOrder($orderUuid);
             $this->pdo->commit();
             return $response;
         } catch (Throwable $error) {

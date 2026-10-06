@@ -15,6 +15,9 @@ $config = T::config($db);
 $pdo = Connection::create($config);
 (new MigrationRunner($pdo))->migrate(dirname(__DIR__) . '/database/migrations');
 foreach (glob(dirname(__DIR__) . '/database/seeds/*.sql') ?: [] as $file) (new SqlFileRunner($pdo))->run($file);
+// Independent disposable fixtures can run twice in the full suite. Do not inherit a previous
+// fixture's anonymous pairing quota; the production limiter itself remains unchanged.
+$pdo->exec("DELETE FROM api_rate_limit_buckets WHERE bucket_scope='cutting-pair'");
 $checks = 0;
 $check = static function(bool $condition, string $label) use (&$checks): void { $checks++; if (!$condition) throw new RuntimeException("FAIL {$label}"); };
 $ok = static function(array $r, string $label, int $status = 200) use ($check): array { $check($r['status'] === $status, $label . ' HTTP ' . $r['status'] . ' ' . ($r['body']['error']['code'] ?? '')); return $r['body'] ?? []; };
@@ -279,4 +282,7 @@ $clock->instant=new DateTimeImmutable('2026-10-11 10:00:00',new DateTimeZone('UT
 $clock->instant=new DateTimeImmutable('2026-10-05 01:59:59',new DateTimeZone('UTC'));$closedKey=$board->stateKey();$clock->instant=$clock->instant->modify('+1 second');$check($closedKey!==$board->stateKey(),'schedule boundary changes cursor state without mutation');
 // Dispose only this test's bulk preview fixtures through test SQL, retaining all source/fact history.
 $s=$pdo->prepare("UPDATE operational_orders SET production_stage_id='waiting' WHERE order_uuid=?");foreach($many as $row)$s->execute([$row['uuid']]);
+$pdo->exec("DELETE FROM api_rate_limit_buckets WHERE bucket_scope='cutting-pair'");
+for ($attempt=0;$attempt<10;$attempt++) $error(T::call($kernel,'POST','/display/cutting/pair',['code'=>'invalid-test-code']),422,'PAIRING_INVALID');
+$error(T::call($kernel,'POST','/display/cutting/pair',['code'=>'invalid-test-code']),429,'RATE_LIMITED');
 echo "PASS {$checks} cutting integration checks\n";

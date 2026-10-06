@@ -4,6 +4,17 @@ declare(strict_types=1);
 function restorePreCuttingTestSchema(PDO $pdo): void
 {
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    if ($pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='016_management_analytics.sql'")->fetchColumn()) {
+        foreach (['analytics_ownership_intervals','analytics_order_projection','analytics_approval_eligibility','analytics_approval_requests'] as $table) $pdo->exec('DROP TABLE '.$table);
+        foreach (['production_quality_events'=>['idx_analytics_quality_period'],'production_exception_decisions'=>['idx_analytics_decisions_period','idx_analytics_decisions_opened'],'cutting_transfers'=>['idx_analytics_transfer_period','idx_analytics_transfer_requested']] as $table=>$indexes) foreach ($indexes as $index) $pdo->exec('ALTER TABLE '.$table.' DROP INDEX '.$index);
+        $pdo->exec('ALTER TABLE production_exception_policy DROP CONSTRAINT chk_analytics_approval_grace, DROP COLUMN approval_grace_minutes, DROP COLUMN analytics_policy_version');
+        $pdo->exec("DELETE era FROM employee_role_assignments era JOIN roles r ON r.role_id=era.role_id WHERE r.role_key='analytics-reader'");
+        $pdo->exec("DELETE rp FROM role_permissions rp JOIN roles r ON r.role_id=rp.role_id WHERE r.role_key='analytics-reader'");
+        $pdo->exec("DELETE FROM roles WHERE role_key='analytics-reader'");
+        $pdo->exec("DELETE rp FROM role_permissions rp JOIN permissions p ON p.permission_id=rp.permission_id WHERE p.permission_key='analytics.view'");
+        $pdo->exec("DELETE FROM permissions WHERE permission_key='analytics.view'");
+        $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='016_management_analytics.sql'");
+    }
     if($pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='015_cutting_pool.sql'")->fetchColumn()) {
         foreach(['cutting_transfers','cutting_facts','cutting_display_devices','cutting_board_settings'] as $table) $pdo->exec('DROP TABLE '.$table);
         if ($pdo->query("SHOW INDEX FROM order_activity_events WHERE Key_name = 'idx_cutting_completed_today'")->fetch()) $pdo->exec('ALTER TABLE order_activity_events DROP INDEX idx_cutting_completed_today');
