@@ -70,6 +70,8 @@ Repeated interval calculations reuse report-local calendar/duration results (max
 
 016 also adds covering canonical activity indexes for `(order_uuid, action, occurred_at)` work proof and the period activity fields actually consumed by employee totals. These two fixed queries explicitly select the new indexes: MariaDB otherwise can choose the legacy order-time index and fetch full event rows. The 12,000-order performance fixture verifies actual `EXPLAIN` index-only reads on both engines (not merely index-condition pushdown) before measuring the unchanged time/query limits. These are additive indexes, not a canonical history rewrite; include their build time and storage in later manual migration planning.
 
+The bounded order timeline starts with `(order_uuid, production_version_after)` and then joins employee names. Its explicit join order prevents MySQL from scanning an employee's unrelated history before applying the order/page filter. Performance tests verify this access plan and the paginated timeline latency; the existing cursor, personnel-only payload and version semantics are unchanged.
+
 Code rollback uses the existing verified release pointer/deployment procedure. Leave additive 016 tables/columns/permission and immutable snapshots intact; never drop production data or roll back migrations as a code rollback. Old 2.14 code remains schema-compatible but does not capture new analytics; before returning to analytics, run the official rebuild for that gap. Approval eligibility during the older-code gap remains unknown, not inferred. Keep verified pre-change DB/config backups per the existing rollout procedure.
 
 ## Later manual rollout only

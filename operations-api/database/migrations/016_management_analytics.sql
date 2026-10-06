@@ -67,6 +67,7 @@ CREATE INDEX idx_analytics_transfer_requested ON cutting_transfers (requested_at
 -- Cover the bounded canonical work-proof and period activity reads without fetching full event payloads.
 CREATE INDEX idx_analytics_activity_work ON order_activity_events (order_uuid, action, occurred_at);
 CREATE INDEX idx_analytics_activity_period ON order_activity_events (occurred_at, action, employee_uuid, order_uuid, from_stage_id);
+CREATE INDEX idx_analytics_activity_timeline ON order_activity_events (order_uuid, production_version_after);
 
 INSERT INTO permissions (permission_key,category,label,description,role_grantable,created_at) VALUES
  ('analytics.view','analytics','Analiză managerială','Read explainable production analytics, without production or IAM authority',1,UTC_TIMESTAMP(6));

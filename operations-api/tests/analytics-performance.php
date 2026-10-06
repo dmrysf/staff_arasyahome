@@ -85,6 +85,10 @@ foreach($plans as [$label,$sql,$parameters]) {
     foreach($explain->fetchAll(PDO::FETCH_ASSOC) as $row) if(preg_match('/(?:^|;)\s*Using index(?:$|;| for group-by)/',(string)($row['Extra']??''))!==1) throw new RuntimeException('Canonical '.$label.' must use a covering index, not index-condition row fetches');
     echo 'PASS covering index: '.$label."\n";
 }
+$timelinePlan=$pdo->prepare('EXPLAIN SELECT a.*,e.display_name FROM order_activity_events a FORCE INDEX (idx_analytics_activity_timeline) STRAIGHT_JOIN employees e ON e.employee_uuid=a.employee_uuid WHERE a.order_uuid=? AND a.production_version_after>? ORDER BY a.production_version_after LIMIT 6');
+$timelinePlan->execute([$last,0]); $timelineAccess=$timelinePlan->fetchAll(PDO::FETCH_ASSOC);
+if(($timelineAccess[0]['table']??null)!=='a' || ($timelineAccess[0]['key']??null)!=='idx_analytics_activity_timeline' || str_contains((string)($timelineAccess[0]['Extra']??''),'filesort')) throw new RuntimeException('Timeline must start with the indexed order-version range');
+echo "PASS timeline index: order-version range before employee join\n";
 $service=new AnalyticsService($pdo,new AnalyticsPolicy($pdo),$c->clock());
 $measure=static function(string $label,string $section,array $query,?string $id=null) use($pdo,$service,$actor):array {
     $before=(int)$pdo->query("SHOW SESSION STATUS LIKE 'Questions'")->fetch(PDO::FETCH_NUM)[1]; $start=microtime(true);
