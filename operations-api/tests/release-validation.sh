@@ -31,4 +31,13 @@ printf '\ncorrupt\n' >> "$release/bootstrap.php"
 if /bin/bash "$release/scripts/validate-release.sh" "$release" >/dev/null 2>&1; then printf 'Validator accepted a checksum mismatch.\n' >&2; exit 1; fi
 cp "$workspace/bootstrap.original" "$release/bootstrap.php"
 
+for required in database/migrations/016_management_analytics.sql bin/rebuild-analytics.php src/Analytics/AnalyticsService.php; do
+  mv "$release/$required" "$workspace/required.original"
+  /bin/bash "$release/scripts/generate-sha256s.sh" "$release"
+  if /bin/bash "$release/scripts/validate-release.sh" "$release" >/dev/null 2>&1; then printf 'Validator accepted missing analytics component: %s.\n' "$required" >&2; exit 1; fi
+  mv "$workspace/required.original" "$release/$required"
+done
+/bin/bash "$release/scripts/generate-sha256s.sh" "$release"
+ARASYA_RELEASE_STRICT=1 /bin/bash "$release/scripts/validate-release.sh" "$release" >/dev/null
+
 printf 'PASS API release validator enforces structure, sensitive-file policy, provenance and byte-level checksums.\n'

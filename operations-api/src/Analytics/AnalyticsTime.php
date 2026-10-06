@@ -5,34 +5,56 @@ use DateTimeImmutable;
 use DateTimeZone;
 
 /** UTC intervals, authoritative Bucharest schedule. Grace applies only to approval clocks. */
-final readonly class AnalyticsTime
+final class AnalyticsTime
 {
-    public function __construct(private array $hours, private int $graceMinutes = 60) {}
+    // Instance lifetime is one report/policy snapshot, never a cross-request cache.
+    private const CACHE_LIMIT = 8192;
+    private array $durations = [];
+    private array $windows = [];
+    private readonly DateTimeZone $utc;
+    private readonly DateTimeZone $zone;
+    public function __construct(private readonly array $hours, private readonly int $graceMinutes = 60)
+    {
+        $this->utc = new DateTimeZone('UTC');
+        $this->zone = new DateTimeZone('Europe/Bucharest');
+    }
     public function duration(string $start, string $end, bool $approval = false): array
     {
-        $utc = new DateTimeZone('UTC');
-        $from = new DateTimeImmutable($start, $utc);
-        $to = new DateTimeImmutable($end, $utc);
+        $key = ($approval ? 'approval:' : 'normal:').$start.'|'.$end;
+        if (isset($this->durations[$key])) return $this->durations[$key];
+        $from = new DateTimeImmutable($start, $this->utc);
+        $to = new DateTimeImmutable($end, $this->utc);
         $wall = max(0, $to->getTimestamp() - $from->getTimestamp());
         if ($wall === 0) return ['wallSeconds'=>0, 'businessSeconds'=>0];
-        $zone = new DateTimeZone('Europe/Bucharest');
         // Include the preceding day: a configured grace can cross local midnight.
-        $day = $from->setTimezone($zone)->setTime(0, 0)->modify('-1 day');
-        $last = $to->setTimezone($zone)->setTime(0, 0);
+        $day = $from->setTimezone($this->zone)->setTime(0, 0)->modify('-1 day');
+        $last = $to->setTimezone($this->zone)->setTime(0, 0);
         $windows = [];
         while ($day <= $last) {
-            foreach ($this->hours as $row) {
-                if ((int)$row['weekday'] !== (int)$day->format('N') || !(int)$row['is_open']) continue;
-                $open = new DateTimeImmutable($day->format('Y-m-d').' '.$row['opens_at'], $zone);
-                $close = new DateTimeImmutable($day->format('Y-m-d').' '.$row['closes_at'], $zone);
-                $endTimestamp = $close->getTimestamp() + ($approval ? $this->graceMinutes * 60 : 0);
-                $a = max($from->getTimestamp(), $open->getTimestamp());
-                $b = min($to->getTimestamp(), $endTimestamp);
+            foreach ($this->dayWindows($day,$approval) as [$opens,$closes]) {
+                $a = max($from->getTimestamp(), $opens);
+                $b = min($to->getTimestamp(), $closes);
                 if ($b > $a) $windows[] = [$a, $b];
             }
             $day = $day->modify('+1 day');
         }
-        return ['wallSeconds'=>$wall, 'businessSeconds'=>self::unionSeconds($windows)];
+        $result = ['wallSeconds'=>$wall, 'businessSeconds'=>self::unionSeconds($windows)];
+        if (count($this->durations) < self::CACHE_LIMIT) $this->durations[$key] = $result;
+        return $result;
+    }
+    private function dayWindows(DateTimeImmutable $day,bool $approval): array
+    {
+        $date=$day->format('Y-m-d'); $key=($approval?'approval:':'normal:').$date;
+        if (isset($this->windows[$key])) return $this->windows[$key];
+        $windows=[];
+        foreach ($this->hours as $row) {
+            if ((int)$row['weekday']!==(int)$day->format('N') || !(int)$row['is_open']) continue;
+            $open=new DateTimeImmutable($date.' '.$row['opens_at'],$this->zone);
+            $close=new DateTimeImmutable($date.' '.$row['closes_at'],$this->zone);
+            $windows[]=[$open->getTimestamp(),$close->getTimestamp()+($approval?$this->graceMinutes*60:0)];
+        }
+        if (count($this->windows)<self::CACHE_LIMIT) $this->windows[$key]=$windows;
+        return $windows;
     }
     /** Blocks are clipped and unioned before subtraction; no double-counted waits. */
     public function active(string $start, string $end, array $blocks): array

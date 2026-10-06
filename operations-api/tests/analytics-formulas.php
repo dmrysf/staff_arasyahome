@@ -22,6 +22,18 @@ $check($time->duration('2026-10-04 08:00:00','2026-10-04 14:00:00',true)['busine
 $check($time->duration('2026-10-24 01:00:00','2026-10-26 04:00:00')['businessSeconds']===57600,'fall DST uses each local day offset');
 $custom=$hours;$custom[0]['closes_at']='18:00:00';
 $check((new AnalyticsTime($custom,30))->duration('2026-10-05 14:55:00','2026-10-05 15:45:00',true)['businessSeconds']===2100,'server custom schedule and Root policy reflected');
+$check($time->duration('2026-10-05 16:55:00','2026-10-05 17:45:00')===['wallSeconds'=>3000,'businessSeconds'=>300],'cached normal duration never inherits approval grace');
+$check((new AnalyticsTime($hours,0))->duration('2026-10-05 16:55:00','2026-10-05 17:45:00',true)['businessSeconds']===300,'new policy snapshot cannot reuse another report cache');
+$bounded=new AnalyticsTime($hours);
+for ($n=0;$n<8300;$n++) {
+    $date=(new DateTimeImmutable('2000-01-01',new DateTimeZone('UTC')))->modify('+'.$n.' days')->format('Y-m-d');
+    $bounded->duration($date.' 09:00:00',$date.' 10:00:00');
+}
+$cache=(new ReflectionClass($bounded))->getProperty('durations')->getValue($bounded);
+$windows=(new ReflectionClass($bounded))->getProperty('windows')->getValue($bounded);
+$check(count($cache)===8192 && count($windows)<=8192,'report-local duration and calendar caches remain bounded');
+$check($bounded->duration('2026-10-05 16:55:00','2026-10-05 17:45:00',true)===['wallSeconds'=>3000,'businessSeconds'=>3000],'uncached calculation remains correct after cache saturation');
+$check($bounded->duration('2026-10-24 01:00:00','2026-10-26 04:00:00')['businessSeconds']===57600,'cache saturation preserves independent DST calendar offsets');
 $check($time->active('2026-10-05 02:00:00','2026-10-05 04:00:00',[
  ['start'=>'2026-10-05 02:15:00','end'=>'2026-10-05 03:15:00'],
  ['start'=>'2026-10-05 02:45:00','end'=>'2026-10-05 03:30:00']

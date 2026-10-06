@@ -35,6 +35,12 @@ for file in \
   database/migrations/011_b2b_current_account.sql \
   database/migrations/012_b2b_production_handoff.sql \
   database/migrations/014_production_exceptions.sql \
+  database/migrations/016_management_analytics.sql \
+  bin/rebuild-analytics.php \
+  src/Analytics/AnalyticsController.php \
+  src/Analytics/AnalyticsService.php \
+  src/Analytics/AnalyticsCapture.php \
+  src/B2B/ProductionAnalyticsIdentity.php \
   database/reference/organization-roster.json \
   bin/organization-reconcile.php \
   src/Quality/CuttingFaultService.php \
