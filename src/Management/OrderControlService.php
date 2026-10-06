@@ -44,7 +44,7 @@ final readonly class OrderControlService
             o.source_commerce_status_code, o.source_commerce_status_label, o.operational_status,
             o.production_stage_id, ps.display_name AS stage_label, ps.ordinal AS stage_ordinal,
             o.production_owner_employee_uuid, e.display_name AS owner_name, o.production_claimed_at,
-            o.production_changed_at, o.production_completed_at, o.created_at, o.accepted_at,
+            o.production_changed_at, o.production_completed_at, o.created_at, o.accepted_at, o.open_exception_uuid,
             ' . self::OWNER_ACTIVE . ' AS owner_active, ' . self::OWNER_STAFF . ' AS owner_staff, ' . self::OWNER_STAGE . ' AS owner_stage
         FROM operational_orders o
         INNER JOIN order_sources s ON s.source_key = o.source_key

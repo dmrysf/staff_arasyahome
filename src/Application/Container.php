@@ -45,7 +45,10 @@ use Arasya\Operations\Integration\Trendyol\TrendyolSynchronizer;
 use Arasya\Operations\Management\ManagementController;
 use Arasya\Operations\Management\ManagementService;
 use Arasya\Operations\Management\OrderControlService;
+use Arasya\Operations\Management\OrderLookupService;
 use Arasya\Operations\Management\OrderOwnershipService;
+use Arasya\Operations\Management\OrganizationService;
+use Arasya\Operations\Management\ProductionSettingsService;
 use Arasya\Operations\Management\ProductionOverviewService;
 use Arasya\Operations\Order\OperationalOrderController;
 use Arasya\Operations\Order\OrderAccessPolicy;
@@ -55,6 +58,12 @@ use Arasya\Operations\Order\OrderSerializer;
 use Arasya\Operations\Order\PdoOperationalOrderRepository;
 use Arasya\Operations\Production\PdoProductionWorkflowRepository;
 use Arasya\Operations\Production\ProductionWorkflowService;
+use Arasya\Operations\Quality\ApproverPolicy;
+use Arasya\Operations\Quality\CuttingFaultService;
+use Arasya\Operations\Quality\ExceptionQueries;
+use Arasya\Operations\Quality\IdempotencyStore;
+use Arasya\Operations\Quality\LiveEvents;
+use Arasya\Operations\Quality\QualityController;
 use Arasya\Operations\Security\CookiePolicy;
 use Arasya\Operations\Security\CsrfGuard;
 use Arasya\Operations\Security\PasswordHasher;
@@ -113,6 +122,12 @@ final class Container
         $policy = new OrderAccessPolicy($authorization);
         $serializer = new OrderSerializer();
         $rateLimiter = new PdoApiRateLimiter($this->pdo, $this->clock, $this->config->appSecret);
+        $iamAudit = new IamAuditLogger($this->pdo);
+        $approvers = new ApproverPolicy($this->pdo, $authorization, $this->clock);
+        $exceptions = new ExceptionQueries($this->pdo);
+        $live = new LiveEvents($this->pdo);
+        $idempotency = new IdempotencyStore($this->pdo);
+        $faults = new CuttingFaultService($this->pdo, $authorization, $this->employees, $workflows, $approvers, $exceptions, $live, $idempotency, $iamAudit, $this->clock);
         return new ApiKernel(
             new AuthController($this->authentication, $csrf, new CookiePolicy($this->config), $this->config, $authorization, $context),
             new HealthController($this->pdo, $this->clock),
@@ -130,9 +145,10 @@ final class Container
                 $context,
                 $policy,
                 $workflows,
-                new OrderOperationsService($this->pdo, $workflows, $orders, $policy, $serializer, $this->clock, $this->audit),
+                new OrderOperationsService($this->pdo, $workflows, $orders, $policy, $serializer, $this->clock, $this->audit, $exceptions),
                 $csrf,
                 $rateLimiter,
+                $exceptions,
             ),
             new ActivityController(new PdoActivityRepository($this->pdo), $this->authentication, $authorization, $this->config, $context, $this->clock),
             new SourceIngestionController(new SourceSignatureVerifier($this->config->sourceSecrets), $this->projectionWriter(), $rateLimiter, $this->clock),
@@ -145,6 +161,12 @@ final class Container
                 new ProductionOverviewService($this->pdo, $authorization, $this->clock, $this->config),
                 new OrderControlService($this->pdo, $authorization),
                 new OrderOwnershipService($this->pdo, $authorization, $this->employees, $workflows, new IamAuditLogger($this->pdo), $this->clock),
+                $approvers,
+                $faults,
+                $exceptions,
+                new OrderLookupService($this->pdo, $authorization, $approvers, $exceptions, $rateLimiter),
+                new OrganizationService($this->pdo, $authorization, $idempotency, $iamAudit, $this->clock),
+                new ProductionSettingsService($this->pdo, $authorization, $idempotency, $iamAudit, $this->clock),
             ),
             new CompanyController(
                 new CompanyQueries($this->pdo, $authorization),
@@ -163,6 +185,7 @@ final class Container
                 new AccountQueries($this->pdo, $authorization, $this->clock), new AccountCommands($this->pdo, $authorization, $this->clock)),
             new ProjectController(new ProjectQueries($this->pdo, $authorization, $this->clock), new ProjectCommands($this->pdo, $authorization, $this->clock),
                 $this->authentication, $authorization, $csrf, $this->config, $context),
+            new QualityController($faults, $exceptions, $approvers, $live, $this->authentication, $authorization, $csrf, $this->config, $context, $this->pdo, $this->clock),
         );
     }
 
@@ -208,6 +231,17 @@ final class Container
     public function employeeAdmin(): EmployeeAdminService
     {
         return new EmployeeAdminService($this->employees, $this->sessions, $this->passwords, $this->usernames, $this->audit, $this->clock);
+    }
+
+    /** The official IAM service for server-side CLI tools (they act as the root identity). */
+    public function managementService(): ManagementService
+    {
+        return new ManagementService($this->pdo, new AuthorizationService(), new IamAuditLogger($this->pdo), $this->passwords, $this->usernames, $this->clock, HealthController::VERSION);
+    }
+
+    public function employeeRepository(): PdoEmployeeRepository
+    {
+        return $this->employees;
     }
 
     public function pdo(): PDO

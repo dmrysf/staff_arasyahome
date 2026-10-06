@@ -62,4 +62,22 @@ foreach (['UNIQUE KEY uq_b2b_account_receivable_order(receivable_order_uuid)', '
         throw new RuntimeException("B2B current account invariant is missing: {$required}");
     }
 }
+// Production exceptions: additive only, append-only history, one decision per attempt, quality facts once.
+$exceptionSchema = (string) file_get_contents($root . '/database/migrations/014_production_exceptions.sql');
+foreach (['organization_principals', 'employee_secondary_departments', 'responsibility_assignments', 'business_hours', 'production_exception_policy', 'production_fault_reasons', 'production_exceptions', 'production_exception_lines', 'production_exception_decisions', 'production_exception_events', 'production_quality_events', 'production_exception_idempotency', 'live_events'] as $table) {
+    if (preg_match('/CREATE TABLE IF NOT EXISTS\s+' . $table . '\b/', $exceptionSchema) !== 1) {
+        throw new RuntimeException("Migration 014 is missing table: {$table}");
+    }
+}
+foreach (['UNIQUE KEY uq_production_exceptions_rework_cycle (order_uuid, rework_cycle)', 'UNIQUE KEY uq_production_exception_decisions_attempt (exception_uuid, attempt_number)', 'UNIQUE KEY uq_production_quality_events_once (exception_uuid, event_type)', 'UNIQUE KEY uq_production_exception_events_version (exception_uuid, exception_version_after)', 'UNIQUE KEY uq_operational_orders_open_exception (open_exception_uuid)', "CHECK (approval_mode IN ('blocking'))", "'production_submitted',"] as $required) {
+    if (!str_contains($exceptionSchema, $required)) {
+        throw new RuntimeException("Production exception invariant is missing: {$required}");
+    }
+}
+if (preg_match('/ON (DELETE|UPDATE) (CASCADE|SET NULL)|DROP TABLE|DELETE FROM|TRUNCATE|UPDATE operational_orders|UPDATE order_activity_events/i', $exceptionSchema) === 1) {
+    throw new RuntimeException('Migration 014 must stay additive and must not rewrite history.');
+}
+if (preg_match_all('/INSERT IGNORE INTO role_permissions[\s\S]*?WHERE r\.role_key = \'([a-z-]+)\'/', $exceptionSchema, $grants) > 0 && array_unique($grants[1]) !== ['operations-manager']) {
+    throw new RuntimeException('Migration 014 may grant permissions only to the new operations-manager template.');
+}
 fwrite(STDOUT, 'Migration sanity checks passed for ' . count($files) . " file(s).\n");

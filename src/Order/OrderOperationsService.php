@@ -10,6 +10,7 @@ use Arasya\Operations\Http\ApiException;
 use Arasya\Operations\Production\ProductionStage;
 use Arasya\Operations\Production\ProductionWorkflow;
 use Arasya\Operations\Production\ProductionWorkflowService;
+use Arasya\Operations\Quality\ExceptionQueries;
 use Arasya\Operations\Support\Clock;
 use Arasya\Operations\Support\Uuid;
 use JsonException;
@@ -44,6 +45,7 @@ final readonly class OrderOperationsService
         private OrderSerializer $serializer,
         private Clock $clock,
         private AuditLogger $audit,
+        private ?ExceptionQueries $quality = null,
     ) {
     }
 
@@ -165,7 +167,7 @@ final readonly class OrderOperationsService
             "UPDATE operational_orders
              SET production_owner_employee_uuid = ?, production_claimed_at = ?, production_authority = 'operations',
                  production_version = production_version + 1, version = version + 1, updated_at = ?
-             WHERE order_uuid = ? AND production_version = ? AND production_owner_employee_uuid IS NULL AND production_completed_at IS NULL",
+             WHERE order_uuid = ? AND production_version = ? AND production_owner_employee_uuid IS NULL AND production_completed_at IS NULL AND open_exception_uuid IS NULL",
         );
         $update->execute([$employee->employeeUuid, $now, $now, $order->orderUuid, $expectedVersion]);
         if ($update->rowCount() !== 1) {
@@ -193,7 +195,7 @@ final readonly class OrderOperationsService
                 'UPDATE operational_orders
                  SET production_completed_at = ?, production_owner_employee_uuid = NULL, production_claimed_at = NULL, production_changed_at = ?,
                      production_version = production_version + 1, version = version + 1, updated_at = ?
-                 WHERE order_uuid = ? AND production_version = ? AND production_owner_employee_uuid = ? AND production_stage_id = ? AND production_completed_at IS NULL',
+                 WHERE order_uuid = ? AND production_version = ? AND production_owner_employee_uuid = ? AND production_stage_id = ? AND production_completed_at IS NULL AND open_exception_uuid IS NULL',
             );
             $update->execute([$now, $now, $now, $order->orderUuid, $expectedVersion, $employee->employeeUuid, $current->id]);
             $relation = 'completed';
@@ -203,7 +205,7 @@ final readonly class OrderOperationsService
                 'UPDATE operational_orders
                  SET production_stage_id = ?, production_owner_employee_uuid = NULL, production_claimed_at = NULL, production_changed_at = ?,
                      production_version = production_version + 1, version = version + 1, updated_at = ?
-                 WHERE order_uuid = ? AND production_version = ? AND production_owner_employee_uuid = ? AND production_stage_id = ? AND production_completed_at IS NULL',
+                 WHERE order_uuid = ? AND production_version = ? AND production_owner_employee_uuid = ? AND production_stage_id = ? AND production_completed_at IS NULL AND open_exception_uuid IS NULL',
             );
             $update->execute([$next->id, $now, $now, $order->orderUuid, $expectedVersion, $employee->employeeUuid, $current->id]);
             $relation = 'handover_out';
@@ -313,7 +315,7 @@ final readonly class OrderOperationsService
     {
         $order = $this->orders->findByGlobalId($employee->employeeUuid, $globalOrderId)
             ?? throw new RuntimeException('Mutated order could not be reloaded.');
-        return $this->serializer->serializeOrder($order, $this->policy->evaluate($employee, $order, $workflow));
+        return $this->serializer->serializeOrder($order, $this->policy->evaluate($employee, $order, $workflow), $this->quality?->orderQuality($order->orderUuid, $order->openExceptionUuid, $employee->employeeUuid));
     }
 
     private function blocked(string $reason, string $operation): ApiException
@@ -322,6 +324,7 @@ final readonly class OrderOperationsService
             'claimed_by_other' => new ApiException(409, 'ORDER_ALREADY_CLAIMED', 'Another employee is working on this order.'),
             'order_unavailable' => new ApiException(409, 'ORDER_UNAVAILABLE', 'The order is not available for production.'),
             'production_completed' => new ApiException(409, 'INVALID_STAGE_TRANSITION', 'Production is already completed.'),
+            'exception_pending' => new ApiException(409, 'ORDER_BLOCKED_BY_EXCEPTION', 'The order is waiting for a production exception decision.'),
             'workflow_unavailable' => new ApiException(503, 'WORKFLOW_UNAVAILABLE', 'Production workflow is not ready.'),
             default => new ApiException(403, 'UNAUTHORIZED_ACTION', $operation === self::OPERATION_CLAIM ? 'You cannot claim this order.' : 'You cannot complete this stage.'),
         };

@@ -102,8 +102,10 @@ final readonly class ManagementService
     {
         $this->require($actor, 'dashboard.overview.view');
         $count = fn (string $sql): int => (int) $this->pdo->query($sql)->fetchColumn();
+        // Company-wide counts are organisation analytics: only identities that may view employees get them.
+        // Narrow roles (for example the operations manager) receive null.
         $result = [
-            'counts' => [
+            'counts' => !$this->authorization->can($actor, 'employees.view') ? null : [
                 'activeEmployees' => $count("SELECT COUNT(*) FROM employees WHERE status = 'active'"),
                 'dashboardUsers' => $count("SELECT COUNT(*) FROM employee_application_access eaa INNER JOIN employees e ON e.employee_uuid = eaa.employee_uuid AND e.status = 'active' WHERE eaa.application_key = 'dashboard'"),
                 'staffUsers' => $count("SELECT COUNT(*) FROM employee_application_access eaa INNER JOIN employees e ON e.employee_uuid = eaa.employee_uuid AND e.status = 'active' WHERE eaa.application_key = 'staff'"),
@@ -193,7 +195,41 @@ final readonly class ManagementService
         );
         $permissions->execute(['id' => $summary['id']]);
         $summary['rolePermissions'] = $summary['isRoot'] ? ['*'] : array_map('strval', $permissions->fetchAll(PDO::FETCH_COLUMN));
+        $secondary = $this->pdo->prepare('SELECT d.department_id, d.name FROM employee_secondary_departments esd INNER JOIN departments d ON d.department_id = esd.department_id WHERE esd.employee_uuid = :id ORDER BY d.name');
+        $secondary->execute(['id' => $summary['id']]);
+        $summary['secondaryDepartments'] = array_map(static fn (array $row): array => ['id' => (int) $row['department_id'], 'name' => (string) $row['name']], $secondary->fetchAll());
         return $summary;
+    }
+
+    /**
+     * Additional organisational functions of one identity (for example Depozit + Montaj). Membership
+     * only: no permission, application or stage follows from it. Same authority rules as a profile edit.
+     *
+     * @return array<string, mixed>
+     */
+    public function setSecondaryDepartments(EmployeeIdentity $actor, string $employeeId, mixed $departmentIds, string $requestId): array
+    {
+        $this->require($actor, 'employees.update');
+        $ids = $this->intList($departmentIds, 'departmentIds');
+        if (count($ids) > 10) {
+            throw new ApiException(400, 'INVALID_REQUEST', 'Too many departments.');
+        }
+        $this->mutateEmployee($actor, $employeeId, function (array $target, string $now) use ($actor, $ids, $requestId): void {
+            foreach ($ids as $id) {
+                if ($this->activeDepartmentId($id) === (int) $target['department_id']) {
+                    throw new ApiException(400, 'INVALID_REQUEST', 'The primary department is not an additional function.');
+                }
+            }
+            $before = $this->column('SELECT department_id FROM employee_secondary_departments WHERE employee_uuid = :id ORDER BY department_id', $target['employee_uuid']);
+            $this->pdo->prepare('DELETE FROM employee_secondary_departments WHERE employee_uuid = :id')->execute(['id' => $target['employee_uuid']]);
+            $insert = $this->pdo->prepare('INSERT INTO employee_secondary_departments (employee_uuid, department_id, created_at) VALUES (:id, :department, :now)');
+            foreach ($ids as $id) {
+                $insert->execute(['id' => $target['employee_uuid'], 'department' => $id, 'now' => $now]);
+            }
+            sort($ids);
+            $this->audit->record($actor, 'employee.secondary_departments_changed', 'employee', $target['employee_uuid'], $this->label($target), ['departmentIds' => ['before' => array_map('intval', $before), 'after' => $ids]], $requestId, $now);
+        });
+        return $this->getEmployee($actor, $employeeId);
     }
 
     /** @param array<string, mixed> $input @return array{employee: array<string, mixed>, temporaryPassword: string} */
