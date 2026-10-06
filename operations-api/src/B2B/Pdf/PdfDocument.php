@@ -21,6 +21,10 @@ final class PdfDocument
     /** @var list<string> */
     private array $pages = [];
     private string $current = '';
+    /** @var list<array{page: int, x: float, y: float, width: float, size: float, font: string, text: string}> drawn text, for layout tests */
+    private array $textLog = [];
+    /** @var list<array{page: int, x: float, y: float, size: float, matrix: list<list<bool>>}> drawn QR symbols, for decoding tests */
+    private array $qrLog = [];
 
     /** @param array<string, TrueTypeFont> $fonts keyed by a short resource name, e.g. ['R' => regular, 'B' => bold] */
     public function __construct(array $fonts, private readonly string $title)
@@ -45,6 +49,7 @@ final class PdfDocument
     {
         $f = $this->fonts[$font];
         if ($align === 'right') $x -= $f->textWidth($text, $size);
+        $this->textLog[] = ['page' => count($this->pages) + 1, 'x' => $x, 'y' => $y, 'width' => $f->textWidth($text, $size), 'size' => $size, 'font' => $font, 'text' => $text];
         $hex = '';
         foreach (mb_str_split($text) as $char) {
             $code = mb_ord($char);
@@ -121,6 +126,7 @@ final class PdfDocument
      */
     public function qr(float $x, float $y, float $size, array $matrix): void
     {
+        $this->qrLog[] = ['page' => count($this->pages) + 1, 'x' => $x, 'y' => $y, 'size' => $size, 'matrix' => $matrix];
         $n = count($matrix);
         $module = $size / ($n + 8);
         $this->current .= sprintf("1 g %.2F %.2F %.2F %.2F re f 0 g\n", $x, $y, $size, $size);
@@ -135,6 +141,18 @@ final class PdfDocument
             }
         }
         $this->current .= "f\n";
+    }
+
+    /** Every text drawn so far with its page and box (layout and content tests read this, never the PDF bytes). */
+    public function textLog(): array
+    {
+        return $this->textLog;
+    }
+
+    /** Every QR symbol drawn so far with its page, position and module matrix. */
+    public function qrLog(): array
+    {
+        return $this->qrLog;
     }
 
     public function output(): string

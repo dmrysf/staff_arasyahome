@@ -6,6 +6,9 @@ import { AppIcon } from "../../components/icons/AppIcon";
 import { hasPermission } from "../../domain/permissions";
 import { CuttingWork } from "../cutting/CuttingWork";
 import type { CuttingApi } from "../../domain/cutting";
+import type { DocumentApi } from "../../domain/documents";
+import { DocumentsCard } from "../documents/DocumentsCard";
+import { DocumentLookup } from "../documents/DocumentScreen";
 
 type TodaySummary = ActivityPage["summary"];
 type MetricsState = { status: "loading" } | { status: "loaded"; summary: TodaySummary } | { status: "unavailable" };
@@ -18,7 +21,7 @@ export function formatHomeMetric(value: number | undefined): string {
   return typeof value === "number" && Number.isFinite(value) ? String(value) : "—";
 }
 
-export function HomeScreen({ employee, activityService, exceptionService, cutting, navigate }: { employee: Employee; activityService: ActivityService; exceptionService?: ExceptionService; cutting?: CuttingApi; navigate: (path: string) => void }) {
+export function HomeScreen({ employee, activityService, exceptionService, cutting, documents, navigate }: { employee: Employee; activityService: ActivityService; exceptionService?: ExceptionService; cutting?: CuttingApi; documents?: DocumentApi; navigate: (path: string) => void }) {
   const [metrics, setMetrics] = useState<MetricsState>({ status: "loading" });
 
   useEffect(() => {
@@ -40,6 +43,10 @@ export function HomeScreen({ employee, activityService, exceptionService, cuttin
         <span className="home-scan-copy"><strong>Scanează comanda</strong><span>Apropie codul QR pentru a începe.</span></span>
         <AppIcon name="arrow" size={24} />
       </button>
+      {documents && (employee.permissions.includes("production.documents.request_revision") || employee.permissions.includes("production.documents.generate")) && <>
+        <DocumentsCard service={documents} navigate={navigate} />
+        <DocumentLookup service={documents} navigate={navigate} />
+      </>}
       {exceptionService && <ExceptionsCard service={exceptionService} navigate={navigate} />}
       {cutting && employee.allowedStageIds.includes("material-preparation") && !employee.isRoot && <CuttingWork service={cutting} navigate={navigate} />}
       <section className="work-summary" aria-labelledby="today-summary" aria-live="polite"><p id="today-summary">{metrics.status === "unavailable" ? "Activitate indisponibilă" : "Astăzi"}</p><dl><div><dd className={metrics.status === "loaded" ? undefined : "metric-unavailable"}>{metrics.status === "loading" ? "…" : formatHomeMetric(inProgress)}</dd><dt>În lucru</dt></div><div><dd className={metrics.status === "loaded" ? undefined : "metric-unavailable"}>{metrics.status === "loading" ? "…" : formatHomeMetric(handedOver)}</dd><dt>Predate</dt></div></dl></section>

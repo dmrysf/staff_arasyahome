@@ -125,6 +125,7 @@ try {
     $expected[] = '014_production_exceptions.sql';
     $expected[] = '015_cutting_pool.sql';
     $expected[] = '016_management_analytics.sql';
+    $expected[] = '017_production_documents.sql';
     if ($applied !== $expected) {
         throw new RuntimeException('An existing 001 schema did not apply exactly the pending migrations in order: ' . implode(', ', $applied));
     }

@@ -6,7 +6,7 @@ import { liveMessage } from "../domain/faults";
 export function LiveNotice({ navigate }: { navigate: (path: string) => void }) {
   const { last, connection } = useLive();
   const [dismissed, setDismissed] = useState(0);
-  const text = last ? liveMessage(last.type, last.orderNumber) : null;
+  const text = last ? liveMessage(last.type, last.orderNumber, last.revisionNumber) : null;
   const visible = last !== null && text !== null && last.seq > dismissed;
   useEffect(() => { if (visible) navigator.vibrate?.([60, 40, 60]); }, [visible, last?.seq]);
   return (
@@ -16,6 +16,7 @@ export function LiveNotice({ navigate }: { navigate: (path: string) => void }) {
         <p>{text}</p>
         <div>
           {last.exceptionId && <button className="button button-primary" type="button" onClick={() => { setDismissed(last.seq); navigate(`/exceptions/${encodeURIComponent(last.exceptionId!)}`); }}>Deschide cererea</button>}
+          {last.type.startsWith("document.") && last.orderId && <button className="button button-primary" type="button" onClick={() => { setDismissed(last.seq); navigate(last.type === "document.blocked" || last.type === "document.reactivated" ? `/orders/${encodeURIComponent(last.orderId!)}` : `/documents/${encodeURIComponent(last.orderId!)}`); }}>Deschide</button>}
           {last.transferId && <button className="button button-primary" type="button" onClick={() => { setDismissed(last.seq); navigate("/"); }}>Vezi transferurile</button>}
           <button className="button button-link" type="button" onClick={() => setDismissed(last.seq)}>Închide</button>
         </div>

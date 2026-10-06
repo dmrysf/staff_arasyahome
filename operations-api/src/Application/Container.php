@@ -31,6 +31,12 @@ use Arasya\Operations\Cutting\CuttingController;
 use Arasya\Operations\Cutting\CuttingService;
 use Arasya\Operations\Cutting\DisplayDevices;
 use Arasya\Operations\Database\Connection;
+use Arasya\Operations\Document\DocumentAudiences;
+use Arasya\Operations\Document\DocumentController;
+use Arasya\Operations\Document\DocumentQueries;
+use Arasya\Operations\Document\DocumentService;
+use Arasya\Operations\Document\RevisionApproverPolicy;
+use Arasya\Operations\Document\TicketSnapshot;
 use Arasya\Operations\Employee\EmployeeAdminService;
 use Arasya\Operations\Employee\PdoEmployeeRepository;
 use Arasya\Operations\Http\ApiKernel;
@@ -135,6 +141,9 @@ final class Container
         $cutting = new CuttingService($this->pdo, $this->employees, $approvers, $workflows, $idempotency, $iamAudit, $live, $this->clock);
         $faults = new CuttingFaultService($this->pdo, $authorization, $this->employees, $workflows, $approvers, $exceptions, $live, $idempotency, $iamAudit, $this->clock);
         $analyticsPolicy=new \Arasya\Operations\Analytics\AnalyticsPolicy($this->pdo);
+        $documentQueries = new DocumentQueries($this->pdo);
+        $revisionApprovers = new RevisionApproverPolicy($this->pdo, $authorization, $this->clock);
+        $documents = $this->documentService($authorization, $revisionApprovers, $documentQueries, $live, $idempotency, $iamAudit);
         return new ApiKernel(
             new AuthController($this->authentication, $csrf, new CookiePolicy($this->config), $this->config, $authorization, $context),
             new HealthController($this->pdo, $this->clock),
@@ -152,10 +161,11 @@ final class Container
                 $context,
                 $policy,
                 $workflows,
-                new OrderOperationsService($this->pdo, $workflows, $orders, $policy, $serializer, $this->clock, $this->audit, $exceptions),
+                new OrderOperationsService($this->pdo, $workflows, $orders, $policy, $serializer, $this->clock, $this->audit, $exceptions, $documentQueries),
                 $csrf,
                 $rateLimiter,
                 $exceptions,
+                $documentQueries,
             ),
             new ActivityController(new PdoActivityRepository($this->pdo), $this->authentication, $authorization, $this->config, $context, $this->clock),
             new SourceIngestionController(new SourceSignatureVerifier($this->config->sourceSecrets), $this->projectionWriter(), $rateLimiter, $this->clock),
@@ -175,6 +185,7 @@ final class Container
                 new OrganizationService($this->pdo, $authorization, $idempotency, $iamAudit, $this->clock),
                 new ProductionSettingsService($this->pdo, $authorization, $idempotency, $iamAudit, $this->clock),
                 $analyticsPolicy,
+                $revisionApprovers,
             ),
             new CompanyController(
                 new CompanyQueries($this->pdo, $authorization),
@@ -187,15 +198,40 @@ final class Container
             ),
             new OrderController(new OrderQueries($this->pdo,$authorization),new OrderCommands($this->pdo,$authorization,$this->clock),
                 $this->authentication,$authorization,$csrf,$this->config,$context,
-                new ProductionCommands($this->pdo,$authorization,$this->clock,$workflows,$this->projectionWriter()),
-                new ProductionQueries($this->pdo,$authorization,$workflows)),
+                new ProductionCommands($this->pdo,$authorization,$this->clock,$workflows,$this->projectionWriter(),$documents),
+                new ProductionQueries($this->pdo,$authorization,$workflows),$documents,$this->pdo),
             new AccountController($this->authentication, $authorization, $csrf, $this->config, $context,
                 new AccountQueries($this->pdo, $authorization, $this->clock), new AccountCommands($this->pdo, $authorization, $this->clock)),
             new ProjectController(new ProjectQueries($this->pdo, $authorization, $this->clock), new ProjectCommands($this->pdo, $authorization, $this->clock),
                 $this->authentication, $authorization, $csrf, $this->config, $context),
-            new QualityController($faults, $exceptions, $approvers, $live, $this->authentication, $authorization, $csrf, $this->config, $context, $this->pdo, $this->clock),
+            new QualityController($faults, $exceptions, $approvers, $live, $this->authentication, $authorization, $csrf, $this->config, $context, $this->pdo, $this->clock, new DocumentAudiences($authorization, $revisionApprovers)),
             new CuttingController($cutting, $devices, new BoardSnapshot($this->pdo, $this->clock, $devices), $live, $this->authentication, $csrf, $this->config, $context, $rateLimiter),
             new \Arasya\Operations\Analytics\AnalyticsController(new \Arasya\Operations\Analytics\AnalyticsService($this->pdo,$analyticsPolicy,$this->clock),$this->authentication,$csrf,$this->config,$context),
+            new DocumentController($documents, $documentQueries, $revisionApprovers, $this->authentication, $csrf, $this->config, $context, $rateLimiter, $this->pdo),
+        );
+    }
+
+    /** The central production document engine (also used by server-side tools and tests). */
+    public function documentService(
+        ?AuthorizationService $authorization = null,
+        ?RevisionApproverPolicy $approvers = null,
+        ?DocumentQueries $queries = null,
+        ?LiveEvents $live = null,
+        ?IdempotencyStore $idempotency = null,
+        ?IamAuditLogger $audit = null,
+    ): DocumentService {
+        $authorization ??= new AuthorizationService();
+        return new DocumentService(
+            $this->pdo,
+            $authorization,
+            $this->employees,
+            $approvers ?? new RevisionApproverPolicy($this->pdo, $authorization, $this->clock),
+            new TicketSnapshot($this->pdo),
+            $queries ?? new DocumentQueries($this->pdo),
+            $live ?? new LiveEvents($this->pdo),
+            $idempotency ?? new IdempotencyStore($this->pdo),
+            $audit ?? new IamAuditLogger($this->pdo),
+            $this->clock,
         );
     }
 

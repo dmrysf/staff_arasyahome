@@ -18,10 +18,12 @@ import { ProductionRoadmap } from "../../components/ProductionRoadmap";
 import { OrderActionPanel } from "./OrderActionPanel";
 import type { CuttingApi } from "../../domain/cutting";
 import { CuttingTransferRequest } from "../cutting/CuttingWork";
+import { blockedDocumentNotice, canUseDocuments, type DocumentApi } from "../../domain/documents";
+import { DocumentPanel } from "../documents/DocumentPanel";
 
 const relationTime = new Intl.DateTimeFormat("ro-RO", { day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" });
 
-export function OrderDetailScreen({ orderId, service, exceptions, cutting, permissions, workflow, navigate, onSessionExpired }: { orderId: string; service: OrderService; exceptions: ExceptionService; cutting?: CuttingApi; permissions: readonly string[]; workflow: ProductionWorkflow; navigate: (path: string) => void; onSessionExpired: () => void }) {
+export function OrderDetailScreen({ orderId, service, exceptions, cutting, documents, permissions, workflow, navigate, onSessionExpired }: { orderId: string; service: OrderService; exceptions: ExceptionService; cutting?: CuttingApi; documents?: DocumentApi; permissions: readonly string[]; workflow: ProductionWorkflow; navigate: (path: string) => void; onSessionExpired: () => void }) {
   const [order, setOrder] = useState<StaffOrder | null>(null);
   const [error, setError] = useState<StaffServiceError | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
@@ -42,6 +44,7 @@ export function OrderDetailScreen({ orderId, service, exceptions, cutting, permi
     <article className="screen-stack detail-screen">
       <button className="back-link" type="button" onClick={() => navigate("/orders")}><AppIcon name="back" size={20} /> Comenzile mele</button>
       <section className="detail-hero"><div><SourceBadge source={order.source} /><h1>Comanda<br />#{order.orderNumber}</h1></div>{completed ? <span className="stage-label"><span>✓</span>Producție finalizată</span> : <StageLabel stage={getStageById(workflow, order.productionStageId)} />}</section>
+      <BlockedDocument order={order} />
       <OrderNotices order={order} />
       {order.productionQuality && <QualityNotices order={order} navigate={navigate} />}
       {order.productionContext && <section className="detail-section"><p className="eyebrow">Companie B2B · date istorice</p>
@@ -51,8 +54,9 @@ export function OrderDetailScreen({ orderId, service, exceptions, cutting, permi
       <OrderActionPanel order={order} workflow={workflow} service={service} cutting={cutting} onUpdated={(updated) => setOrder(requireProductionProducts(updated))} onReload={() => { setOrder(null); setReloadKey((value) => value + 1); }} onSessionExpired={onSessionExpired} />
       {cutting && order.productionStageId === "material-preparation" && order.employeeAllowedAction?.id === "complete_stage" && <CuttingTransferRequest order={order} service={cutting} onChanged={() => { setOrder(null); setReloadKey(v => v + 1); }} />}
       {canReturnToCutting(order, permissions) && <section className="detail-section return-section"><ReturnToCuttingPanel order={order} service={exceptions} onSessionExpired={onSessionExpired} onReported={(id) => navigate(`/exceptions/${encodeURIComponent(id)}`)} /></section>}
+      {documents && canUseDocuments(permissions) && <DocumentPanel orderId={order.id} service={documents} permissions={permissions} onChanged={() => setReloadKey((value) => value + 1)} />}
       <ProductionRoadmap workflow={workflow} currentStageId={order.productionStageId} />
-      <section className="detail-section detail-products"><div className="section-title"><p className="eyebrow">Producție</p><h2>{order.products.length === 1 ? "1 produs" : `${order.products.length} produse`}</h2></div>{order.products.map((item) => { const size = formatMeasurements(item); const location = item.productionContext?.project; return <div className="product-detail" key={item.id}>{location && <p className="project-location" data-testid="project-location">{projectPlace(location)}</p>}<div><strong>{item.name}</strong>{item.code && <span>{item.code}</span>}</div><dl>{item.color && <div><dt>Culoare</dt><dd>{item.color}</dd></div>}{item.variant && <div><dt>Variantă</dt><dd>{item.variant}</dd></div>}{size && <div><dt>Dimensiune</dt><dd>{size}</dd></div>}{item.meters != null && <div><dt>Metri</dt><dd>{formatMeters(item.meters)}</dd></div>}<div><dt>Cantitate</dt><dd>{item.quantity}</dd></div></dl></div>; })}</section>
+      <section className="detail-section detail-products"><div className="section-title"><p className="eyebrow">Producție</p><h2>{order.products.length === 1 ? "1 produs" : `${order.products.length} produse`}</h2></div>{order.products.map((item) => { const size = formatMeasurements(item); const location = item.productionContext?.project; return <div className="product-detail" key={item.id}>{location && <p className="project-location" data-testid="project-location">{projectPlace(location)}</p>}<div><strong>{item.name}</strong>{item.code && <span>{item.code}</span>}</div><dl>{item.color && <div><dt>Culoare</dt><dd>{item.color}</dd></div>}{item.variant && <div><dt>Variantă</dt><dd>{item.variant}</dd></div>}{size && <div><dt>Dimensiune</dt><dd>{size}</dd></div>}{item.meters != null && <div><dt>Metri</dt><dd>{formatMeters(item.meters)}</dd></div>}{item.options?.map((option) => <div key={option.label}><dt>{option.label}</dt><dd>{option.value}</dd></div>)}<div><dt>Cantitate</dt><dd>{item.quantity}</dd></div></dl></div>; })}</section>
       {order.productionNotes && <section className="production-note"><p className="eyebrow">Notă de producție</p><p>{order.productionNotes}</p></section>}
       {order.products.filter(item => item.productionContext).map(item => <section className="production-note" key={item.id}>
         <p className="eyebrow">{item.name} · {item.productionContext!.project ? projectTreatment(item.productionContext!.project) : { curtain: 'Perdea', drapery: 'Draperie', other: 'Alt produs' }[item.productionContext!.kind]}</p>
@@ -64,6 +68,13 @@ export function OrderDetailScreen({ orderId, service, exceptions, cutting, permi
       <section className="detail-section"><p className="eyebrow">Implicarea mea</p><div className="mini-timeline"><span /><div><strong>{order.employeeRelation ? getEmployeeRelationLabel(order) : "Încă nu ai lucrat la această comandă"}</strong>{order.employeeRelation && <time dateTime={getEmployeeRelationTime(order)}>{relationTime.format(new Date(getEmployeeRelationTime(order)))}</time>}</div></div></section>
     </article>
   );
+}
+
+/** Strong worker notice: the paper in hand must not be used while its document is stale or revoked. */
+function BlockedDocument({ order }: { order: StaffOrder }) {
+  const notice = blockedDocumentNotice(order.productionDocument);
+  if (!notice) return null;
+  return <div className="document-blocked" role="alert" data-testid="document-blocked"><strong>{notice.title}</strong>{notice.lines.map((line) => <span key={line}>{line}</span>)}</div>;
 }
 
 /** Internal quality context: arrival after revision, repeated rework and the open return request. */

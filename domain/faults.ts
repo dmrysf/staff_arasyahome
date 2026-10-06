@@ -1,3 +1,4 @@
+import { documentLiveMessage } from "./documents";
 import type { FaultException, FaultExceptionStatus, LiveEvent, ProductionItem } from "./models";
 
 export const faultStatusLabels: Record<FaultExceptionStatus, string> = {
@@ -41,12 +42,13 @@ const liveMessages: Partial<Record<string, (orderNumber: string) => string>> = {
   "exception.rejected": (n) => `Managerul a respins cererea pentru comanda #${n}.`,
 };
 
-export function liveMessage(type: string, orderNumber?: string): string | null {
+export function liveMessage(type: string, orderNumber?: string, revisionNumber?: number): string | null {
   const message = liveMessages[type];
-  return message && orderNumber ? message(orderNumber) : null;
+  if (message) return orderNumber ? message(orderNumber) : null;
+  return documentLiveMessage(type, orderNumber, revisionNumber);
 }
 
 /** Data invalidations refresh screens, but must not erase an actionable employee notice. */
 export function nextLiveNotice(current: LiveEvent | null, event: LiveEvent): LiveEvent | null {
-  return liveMessage(event.type, event.orderNumber) === null ? current : event;
+  return liveMessage(event.type, event.orderNumber, event.revisionNumber) === null ? current : event;
 }

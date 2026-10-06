@@ -16,7 +16,8 @@ final readonly class OrderController
     public function __construct(private OrderQueries $queries,private OrderCommands $commands,
         private AuthenticationService $auth,private AuthorizationService $authorization,
         private CsrfGuard $csrf,private Config $config,private RequestContext $context,
-        private ?ProductionCommands $productionCommands=null,private ?ProductionQueries $productionQueries=null) {}
+        private ?ProductionCommands $productionCommands=null,private ?ProductionQueries $productionQueries=null,
+        private ?\Arasya\Operations\Document\DocumentService $documents=null,private ?\PDO $pdo=null) {}
 
     public function handle(Request $request): Response
     {
@@ -29,12 +30,25 @@ final readonly class OrderController
         $this->context->authenticatedAs($actor->employeeUuid);
         OrderAccess::require($this->authorization,$actor,'b2b.access');
         if($section==='production-sheet.pdf') {
-            if($line!=='' || $request->method!=='GET') throw new ApiException(405,'METHOD_NOT_ALLOWED','Method is not allowed.');
-            $queries=$this->productionQueries??throw new ApiException(503,'SERVICE_UNAVAILABLE','Production handoff is not ready.');
-            $lang=ProductionSheetPdf::language($this->filters($request,['lang'])['lang']??null);
-            $sheet=$queries->sheet($actor,$id,new \DateTimeImmutable('now',new \DateTimeZone('UTC')));
-            return Response::file(ProductionSheetPdf::render($sheet,$lang),['Content-Type'=>'application/pdf',
-                'Content-Disposition'=>'attachment; filename="'.ProductionSheetPdf::filename($sheet).'"']);
+            // The canonical Arasya production ticket (Romanian), recorded as a print or reprint of the
+            // active revision with its unchanged QR. A submitter generates revision 1 if none exists.
+            if($line!=='' || $request->method!=='POST') throw new ApiException(405,'METHOD_NOT_ALLOWED','Method is not allowed.');
+            $this->csrf->requireValid($session->rawToken,$request->header('x-csrf-token'));
+            $documents=$this->documents??throw new ApiException(503,'SERVICE_UNAVAILABLE','Production documents are not ready.');
+            ProductionAccess::require($this->authorization,$actor,ProductionAccess::VIEW);
+            $data=$this->body($request,['reason'],[]);
+            $key=$request->header('idempotency-key')??'';
+            $global=$this->productionQueries?->operationalId($id)??throw new ApiException(409,'PRODUCTION_NOT_SUBMITTED','The order has not been submitted to production.');
+            $summary=$this->productionQueries->documentSummary($global);
+            if($summary['status']==='none') {
+                if(!$this->authorization->can($actor,ProductionAccess::SUBMIT)) throw new ApiException(409,'DOCUMENT_NOT_GENERATED','Comanda nu are încă un document de producție.');
+                \Arasya\Operations\Quality\IdempotencyStore::requireKey($key);
+                $documents->generate($actor,$global,['expectedDocumentVersion'=>$summary['version']],substr($key,0,90).'-gen1',$request->requestId,true);
+                $summary=$this->productionQueries->documentSummary($global);
+            }
+            if($summary['revisionNumber']===null) throw \Arasya\Operations\Document\DocumentGuard::blocked();
+            $print=$documents->recordPrint($actor,$global,['revisionNumber'=>$summary['revisionNumber']]+$data,$key,$request->requestId,true);
+            return \Arasya\Operations\Document\DocumentRenderer::response((new \Arasya\Operations\Document\DocumentRenderer($this->pdo))->render($print['revisionUuid']),$print['printNumber']);
         }
         if($section==='production') {
             if($line!=='' || $request->query!==[]) throw new ApiException(400,'INVALID_REQUEST','Invalid production request.');

@@ -2,7 +2,6 @@
 declare(strict_types=1);
 use Arasya\Operations\Application\Container;
 use Arasya\Operations\B2B\OrderCalculator;
-use Arasya\Operations\B2B\ProductionSheetPdf;
 use Arasya\Operations\B2B\ProjectProposalPdf;
 use Arasya\Operations\Database\Connection;
 use Arasya\Operations\Database\MigrationRunner;
@@ -20,9 +19,9 @@ $config=T::config($db);$pdo=Connection::create($config);$migrations=dirname(__DI
 require __DIR__.'/HandoffSchemaFixture.php';restorePreProjectsTestSchema($pdo);
 $grantsBefore=$pdo->query('SELECT * FROM role_permissions ORDER BY role_id,permission_id')->fetchAll();
 $commercialBefore=array_map(fn($t)=>$pdo->query("SELECT COUNT(*) FROM $t")->fetchColumn(),['b2b_orders','b2b_order_lines','b2b_account_movements','operational_orders']);
-check((new MigrationRunner($pdo))->migrate($migrations)===['013_b2b_projects.sql','014_production_exceptions.sql','015_cutting_pool.sql','016_management_analytics.sql'],'012→013→014→015 official additive upgrade');
+check((new MigrationRunner($pdo))->migrate($migrations)===['013_b2b_projects.sql','014_production_exceptions.sql','015_cutting_pool.sql','016_management_analytics.sql','017_production_documents.sql'],'012→013→014→015 official additive upgrade');
 check((new MigrationRunner($pdo))->migrate($migrations)===[],'013 recorded exactly once');
-check($pdo->query("SELECT rp.* FROM role_permissions rp JOIN roles r ON r.role_id=rp.role_id WHERE r.role_key NOT IN ('operations-manager','analytics-reader') ORDER BY rp.role_id,rp.permission_id")->fetchAll()===$grantsBefore,'013 changes no grant; 014 grants only its new operations-manager template');
+check($pdo->query("SELECT rp.* FROM role_permissions rp JOIN roles r ON r.role_id=rp.role_id WHERE r.role_key NOT IN ('operations-manager','analytics-reader','production-documents-operator','document-revision-approver') ORDER BY rp.role_id,rp.permission_id")->fetchAll()===$grantsBefore,'013 changes no grant; 014 grants only its new operations-manager template');
 check(array_map(fn($t)=>$pdo->query("SELECT COUNT(*) FROM $t")->fetchColumn(),['b2b_orders','b2b_order_lines','b2b_account_movements','operational_orders'])===$commercialBefore,'013 rewrites no commercial, financial or production row');
 foreach(glob(dirname(__DIR__).'/database/seeds/*.sql') as $f)(new SqlFileRunner($pdo))->run($f);
 $projectPermissions=['b2b.projects.view','b2b.projects.create','b2b.projects.update','b2b.projects.archive','b2b.projects.convert'];
@@ -234,20 +233,22 @@ $resolved=status(T::call($k,'POST','/orders/resolve-qr',['token'=>$qr],['x-csrf-
 check($resolved['id']===$global && count($rows('SELECT 1 FROM order_qr_references WHERE order_uuid=?',[$op['order_uuid']]))===1,'one canonical order QR, no per-item QR');
 $staff=status(T::call($k,'GET','/orders/'.$global,null,[],$operator['cookie']),200,'Staff detail');
 check($staff['products'][0]['productionContext']['project']['opening']['name']==='Fereastra 1','Staff sees project location after scan');
-// Production sheet: manufacturing snapshot only, canonical QR, no money.
-$sheet=(new Arasya\Operations\B2B\ProductionQueries($pdo,new Arasya\Operations\Authorization\AuthorizationService(),new Arasya\Operations\Production\ProductionWorkflowService(new Arasya\Operations\Production\PdoProductionWorkflowRepository($pdo))))
-    ->sheet($rootIdentity($rows('SELECT employee_uuid FROM system_root_identity')[0]['employee_uuid']),$orderId,new DateTimeImmutable());
-check($sheet['qrPayload']===$qr && $sheet['projects'][0]['code']===$outline['project']['code'] && count($sheet['items'])===4,'sheet dataset');
+// Production ticket: the canonical engine. The handoff generated revision 1 with the intake QR; the
+// workshop download records a print and renders the frozen snapshot (no money, project context kept).
+$revision=$rows("SELECT revision_number,status,qr_reference,snapshot_json FROM production_document_revisions WHERE order_uuid=?",[$op['order_uuid']]);
+check(count($revision)===1 && (int)$revision[0]['revision_number']===1 && $revision[0]['status']==='active' && 'ARASYA:Q1:'.$revision[0]['qr_reference']===$qr,'handoff generated revision 1 bound to the canonical QR');
+$sheet=json_decode($revision[0]['snapshot_json'],true);
+check(count($sheet['lines'])===4 && $sheet['lines'][0]['project']['project']['code']===$outline['project']['code'] && $sheet['lines'][0]['project']['opening']['name']==='Fereastra 1','ticket snapshot keeps frozen project location');
 $keys=[];array_walk_recursive($sheet,function($v,$key)use(&$keys){$keys[]=(string)$key;});
-check(array_intersect(array_map('strtolower',$keys),['unitpricenet','gross','net','vat','totals','balance','payment','amount','currencycode','discountpercent'])===[],'sheet has no money fields');
-$pdf=T::call($k,'GET',"/b2b/orders/$orderId/production-sheet.pdf",null,[],$root['cookie'],['lang'=>'tr']);
-check($pdf['status']===200,'sheet download');
-error($get("/b2b/orders/{$wholesale['id']}/production-sheet.pdf"),409,'PRODUCTION_NOT_SUBMITTED');
-$big=$sheet;$big['items']=[];
-for($i=1;$i<=120;$i++){$item=$sheet['items'][$i%4];$item['lineNumber']=$i;$item['context']['project']['room']['id']='room-'.intdiv($i,6);$item['context']['project']['room']['name']='Camera '.(100+intdiv($i,6));$big['items'][]=$item;}
-$bigPdf=ProductionSheetPdf::render($big,'ro');
+check(array_intersect(array_map('strtolower',$keys),['unitpricenet','gross','net','vat','totals','balance','payment','amount','currencycode','discountpercent','email'])===[],'ticket has no money or email fields');
+$pdf=T::call($k,'POST',"/b2b/orders/$orderId/production-sheet.pdf",['reason'=>null],['x-csrf-token'=>$root['csrf'],'idempotency-key'=>'sheet-'.bin2hex(random_bytes(8))],$root['cookie']);
+check($pdf['status']===200 && str_starts_with((string)$pdf['raw'],'%PDF-1.4') && ($pdf['headers']['X-Document-Print']??null)==='1' && str_contains($pdf['headers']['Content-Disposition'],'-R1.pdf'),'canonical workshop ticket download recorded as first print');
+error($send('POST',"/b2b/orders/{$wholesale['id']}/production-sheet.pdf",['reason'=>null]),409,'PRODUCTION_NOT_SUBMITTED');
+$big=$sheet;$big['lines']=[];
+for($i=1;$i<=120;$i++){$line=$sheet['lines'][$i%4];$line['line']=$i;$line['project']['room']['id']='room-'.intdiv($i,6);$line['project']['room']['name']='Camera '.(100+intdiv($i,6));$big['lines'][]=$line;}
+$bigPdf=Arasya\Operations\Document\ProductionTicketPdf::render($big,['number'=>1,'status'=>'active','generatedAt'=>'2026-10-06 09:12:00','qrPayload'=>$qr]);
 preg_match('/\/Type \/Pages \/Kids \[[^\]]*\] \/Count (\d+)/',$bigPdf,$m);
-check(str_starts_with($bigPdf,'%PDF-1.4') && (int)$m[1]>=20 && (int)$m[1]<=45,'120-item sheet paginates without splitting blocks ('.$m[1].' pages)');
+check(str_starts_with($bigPdf,'%PDF-1.4') && (int)$m[1]>=20 && (int)$m[1]<=60,'120-line ticket paginates without splitting blocks ('.$m[1].' pages)');
 // Cancelled orders free their treatments; the converted second order is a normal draft.
 $secondOrder=status($get("/b2b/orders/$second"),200,'second')['order'];
 status($send('POST',"/b2b/orders/$second/cancel",['expectedVersion'=>$secondOrder['version']]),200,'cancel second draft');

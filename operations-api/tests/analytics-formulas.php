@@ -109,4 +109,16 @@ $check($management['historicalRequestsWithoutEligibility']===1 && $management['i
 $wire=UtcPresentation::format(['asOf'=>'2026-10-05 10:00:00.123456','company'=>['name'=>'2026-10-05 10:00:00'],'timeline'=>[['occurred_at'=>'2026-10-05 11:00:00.000000']], 'unknown'=>null]);
 $check($wire['asOf']==='2026-10-05T10:00:00.123Z' && $wire['timeline'][0]['occurred_at']==='2026-10-05T11:00:00.000Z','API presents explicit UTC timestamps at all nested levels');
 $check($wire['company']['name']==='2026-10-05 10:00:00' && $wire['unknown']===null,'presentation never rewrites human names or invents unknown timestamps');
+// Production document revision waits: a separate blocked category, excluded from the owner's active time,
+// never a fault; without document blocks every earlier formula result is unchanged.
+$docOrder=['qr_created_at'=>'2026-10-05 06:00:00','first_claim_at'=>'2026-10-05 06:10:00','completed_at'=>null,'cutting_employee_uuid'=>null,'cutting_completed_at'=>null,'operational_status'=>'in_progress','source_reported_unavailable_at'=>null];
+$docIntervals=[['employee_uuid'=>'M','stage_id'=>'material-preparation','started_at'=>'2026-10-05 06:10:00','ended_at'=>'2026-10-05 07:10:00','start_version'=>2]];
+$plain=OrderMetrics::calculate($docOrder,$docIntervals,[],[],[],$time,'2026-10-05 08:00:00');
+$docOrder['document_blocks']=[['started_at'=>'2026-10-05 06:30:00','ended_at'=>'2026-10-05 06:50:00']];
+$blocked=OrderMetrics::calculate($docOrder,$docIntervals,[],[],[],$time,'2026-10-05 08:00:00');
+$check($plain['activeHandling']['wallSeconds']===3600 && $plain['documentRevisionWaiting']['wallSeconds']===0,'no document block: active handling unchanged');
+$check($blocked['activeHandling']['wallSeconds']===2400 && $blocked['documentRevisionWaiting']['wallSeconds']===1200 && $blocked['blockedUnion']['wallSeconds']===1200,'document revision wait is excluded from the owner and reported separately');
+$docOrder['document_blocks']=[['started_at'=>'2026-10-05 07:30:00','ended_at'=>null]];
+$open=OrderMetrics::calculate($docOrder,$docIntervals,[],[],[],$time,'2026-10-05 08:00:00');
+$check($open['documentRevisionWaiting']['wallSeconds']===1800 && $open['activeHandling']['wallSeconds']===3600,'an open revision wait runs until now and never touches finished work');
 echo "PASS {$checks} analytics formula checks\n";

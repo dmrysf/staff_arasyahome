@@ -65,6 +65,8 @@ export interface LiveService {
 
 export type ServiceBundle = {
   cutting?: import("../domain/cutting").CuttingApi;
+  /** Central production documents (generation, revision requests, prints); absent in preview and demo. */
+  documents?: import("../domain/documents").DocumentApi;
   auth: AuthService;
   employee: EmployeeService;
   orders: OrderService;

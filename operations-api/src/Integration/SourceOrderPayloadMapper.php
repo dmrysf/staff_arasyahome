@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Arasya\Operations\Integration;
 
+use Arasya\Operations\Document\DeliveryContext;
 use Arasya\Operations\Http\ApiException;
 use Arasya\Operations\Order\OperationalOrderItem;
 use Arasya\Operations\Order\SourceOrderSnapshot;
@@ -20,8 +21,9 @@ use InvalidArgumentException;
 final class SourceOrderPayloadMapper
 {
     private const ROOT_KEYS = ['schemaVersion', 'eventId', 'changedAt', 'order', 'production'];
-    private const ORDER_KEYS = ['id', 'number', 'status', 'availability', 'notes', 'acceptedAt', 'items'];
-    private const ITEM_KEYS = ['id', 'line', 'name', 'sku', 'variant', 'color', 'width', 'height', 'unit', 'meters', 'quantity'];
+    private const ORDER_KEYS = ['id', 'number', 'status', 'availability', 'notes', 'acceptedAt', 'items', 'delivery'];
+    private const ITEM_KEYS = ['id', 'line', 'name', 'sku', 'variant', 'color', 'width', 'height', 'unit', 'meters', 'quantity', 'options'];
+    private const MAX_OPTIONS = 20;
     private const MAX_ITEMS = 200;
 
     /** @param array<string, mixed> $payload */
@@ -79,6 +81,7 @@ final class SourceOrderPayloadMapper
                     self::optionalString($item['unit'] ?? null, "order.items[{$index}].unit"),
                     self::optionalNumber($item['meters'] ?? null, "order.items[{$index}].meters"),
                     self::positiveInt($item['quantity'], "order.items[{$index}].quantity"),
+                    self::options($item['options'] ?? null, "order.items[{$index}].options"),
                 );
             } catch (InvalidArgumentException) {
                 throw self::invalid("order.items[{$index}]");
@@ -100,10 +103,57 @@ final class SourceOrderPayloadMapper
                 $operationalStatus,
                 array_key_exists('acceptedAt', $order) && $order['acceptedAt'] !== null ? self::timestamp($order['acceptedAt'], 'order.acceptedAt') : null,
                 $items,
+                self::delivery($order['delivery'] ?? null),
             );
         } catch (InvalidArgumentException) {
             throw self::invalid('order');
         }
+    }
+
+    /**
+     * Optional printable delivery identity. Email is not part of the contract and is rejected; the
+     * phone is masked before it is stored.
+     *
+     * @return array{name: string|null, company: string|null, addressLines: list<string>, phoneMasked: string|null}|null
+     */
+    private static function delivery(mixed $value): ?array
+    {
+        if ($value === null) {
+            return null;
+        }
+        try {
+            return DeliveryContext::fromSource(self::object($value, 'order.delivery'));
+        } catch (InvalidArgumentException) {
+            throw self::invalid('order.delivery');
+        }
+    }
+
+    /**
+     * Optional source manufacturing options exactly as the source states them (for example
+     * "Confecționare: 2 bucăți"). Nothing is inferred when they are absent.
+     *
+     * @return array{options: list<array{label: string, value: string}>}|null
+     */
+    private static function options(mixed $value, string $field): ?array
+    {
+        if ($value === null) {
+            return null;
+        }
+        if (!is_array($value) || !array_is_list($value) || count($value) > self::MAX_OPTIONS) {
+            throw self::invalid($field);
+        }
+        $options = [];
+        foreach ($value as $index => $option) {
+            $option = self::object($option, "{$field}[{$index}]");
+            self::allowKeys($option, ['label', 'value'], ['label', 'value']);
+            $label = self::string($option['label'], "{$field}[{$index}].label");
+            $text = self::string($option['value'], "{$field}[{$index}].value");
+            if (mb_strlen($label) > 80 || mb_strlen($text) > 200) {
+                throw self::invalid("{$field}[{$index}]");
+            }
+            $options[] = ['label' => $label, 'value' => $text];
+        }
+        return $options === [] ? null : ['options' => $options];
     }
 
     /** @param array<string, mixed> $value @param list<string> $allowed @param list<string> $required */

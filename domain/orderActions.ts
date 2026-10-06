@@ -26,6 +26,7 @@ export const orderActionBlockedCopy: Record<OrderActionBlockedReason, string> = 
   permission_missing: "Nu ai permisiunea pentru această acțiune.",
   workflow_unavailable: "Fluxul de producție nu este disponibil momentan.",
   exception_pending: "Comanda este blocată: o cerere de returnare la tăiere așteaptă confirmarea și aprobarea.",
+  document_revision_pending: "Document blocat: comanda are o revizie de document în curs. Așteaptă aprobarea și documentul nou.",
 };
 
 export function isOrderActionId(value: unknown): value is OrderActionId {

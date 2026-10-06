@@ -19,7 +19,8 @@ use Throwable;
 final readonly class ProductionCommands
 {
     public function __construct(private PDO $pdo,private AuthorizationService $auth,private Clock $clock,
-        private ProductionWorkflowService $workflows,private OrderProjectionWriter $writer) {}
+        private ProductionWorkflowService $workflows,private OrderProjectionWriter $writer,
+        private ?\Arasya\Operations\Document\DocumentService $documents=null) {}
 
     public function submit(EmployeeIdentity $actor,string $id,int $version,string $key,string $request): array
     {
@@ -61,6 +62,10 @@ final readonly class ProductionCommands
                     $snapshot=new SourceOrderSnapshot('b2b',$id,'handoff-'.$id,1,$now,$order['order_code'],'waiting','finalized','Finalizată',
                         $order['production_notes'],'in_progress',$now,$items);
                     $operational=$this->writer->createInternal($snapshot,['company'=>$companyContext]);
+                    // Freeze the printable delivery identity (masked phone, no email) for the production ticket.
+                    $identity=ProductionDocumentIdentity::fromCommercialOrder($order);
+                    if($identity!==null) $this->pdo->prepare('UPDATE operational_orders SET document_context=? WHERE order_uuid=?')
+                        ->execute([json_encode($identity,JSON_THROW_ON_ERROR|JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES),$operational]);
                     $this->pdo->prepare('INSERT INTO b2b_production_handoffs(b2b_order_uuid,operational_order_uuid,submitted_by_employee_uuid,submitted_by_name,submitted_at,request_id,idempotency_key)
                         VALUES(?,?,?,?,?,?,?)')->execute([$id,$operational,$actor->employeeUuid,$actor->displayName,$sql,mb_substr($request,0,100),$key]);
                     $this->pdo->prepare("INSERT INTO order_activity_events(event_id,employee_uuid,order_uuid,global_order_id,source_key,order_number_snapshot,action,
@@ -68,6 +73,9 @@ final readonly class ProductionCommands
                         VALUES(?,?,?,?,?,?,'production_submitted',?,?,?,?,0,1,?,?,?)")->execute([
                             Uuid::v4(),$actor->employeeUuid,$operational,'b2b:'.$id,'b2b',$order['order_code'],$workflow->id,$workflow->version,
                             $waiting->id,$waiting->label,mb_substr($request,0,100),'b2b-production:'.hash('sha256',$key),$sql]);
+                    // The explicit handoff is the production submission: revision 1 of the canonical ticket is
+                    // generated in the same transaction (no approval for the first document).
+                    $this->documents?->generateInitialInTransaction($actor,$operational,$request);
                     (new \Arasya\Operations\Analytics\AnalyticsCapture($this->pdo))->refreshOrder($operational);
                     $result=['status'=>201,'orderId'=>$id];
                 }

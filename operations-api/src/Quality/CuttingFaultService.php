@@ -186,6 +186,8 @@ final readonly class CuttingFaultService
                 throw new ApiException(403, 'EXCEPTION_NOT_ASSIGNED', 'This request is not addressed to you.');
             }
             $this->assertStatus($exception, ['awaiting_acknowledgment'], $expected);
+            \Arasya\Operations\Document\DocumentGuard::assertOpen($order);
+            \Arasya\Operations\Document\DocumentGuard::assertQrUsable($this->pdo, $reference->value);
             $qr = $this->pdo->prepare('SELECT order_uuid, status, expires_at FROM order_qr_references WHERE qr_reference = ?');
             $qr->execute([$reference->value]);
             $qrRow = $qr->fetch(PDO::FETCH_ASSOC);
@@ -469,7 +471,7 @@ final readonly class CuttingFaultService
     {
         $statement = $this->pdo->prepare(
             'SELECT order_uuid, global_order_id, source_key, order_number, production_stage_id, production_owner_employee_uuid, production_completed_at,
-                    operational_status, production_version, open_exception_uuid
+                    operational_status, production_version, open_exception_uuid, document_status
              FROM operational_orders WHERE global_order_id = ? FOR UPDATE',
         );
         $statement->execute([$globalId]);
@@ -516,6 +518,7 @@ final readonly class CuttingFaultService
         if ($order['operational_status'] === 'unavailable') {
             throw new ApiException(409, 'ORDER_UNAVAILABLE', 'The order is not available for production.');
         }
+        \Arasya\Operations\Document\DocumentGuard::assertOpen($order);
     }
 
     /**

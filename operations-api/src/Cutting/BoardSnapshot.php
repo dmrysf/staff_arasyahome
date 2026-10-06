@@ -30,14 +30,15 @@ final readonly class BoardSnapshot
             $end = $local->setTime(0,0)->modify('+1 day')->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s.u');
             $daily = $this->pdo->prepare("SELECT COUNT(*) AS orders, COALESCE(SUM(meters_snapshot),0) AS meters FROM order_activity_events WHERE action = 'stage_completed' AND from_stage_id = 'material-preparation' AND to_stage_id = 'workshop-receiving' AND occurred_at >= ? AND occurred_at < ?");
             $daily->execute([$start, $end]); $today = $daily->fetch(PDO::FETCH_ASSOC);
-            $waitingWhere = "o.production_stage_id = 'material-preparation' AND o.production_completed_at IS NULL AND o.operational_status <> 'unavailable' AND o.source_reported_unavailable_at IS NULL AND o.production_owner_employee_uuid IS NULL AND o.open_exception_uuid IS NULL AND s.status = 'active'";
+            $waitingWhere = "o.production_stage_id = 'material-preparation' AND o.production_completed_at IS NULL AND o.operational_status <> 'unavailable' AND o.source_reported_unavailable_at IS NULL AND o.production_owner_employee_uuid IS NULL AND o.open_exception_uuid IS NULL AND o.document_status IN ('none', 'active') AND s.status = 'active'";
             $waitingCount = (int) $this->pdo->query("SELECT COUNT(*) FROM operational_orders o JOIN order_sources s ON s.source_key = o.source_key WHERE {$waitingWhere}")->fetchColumn();
             $active = $this->pdo->query("SELECT o.order_uuid, o.order_number, o.source_key, o.production_claimed_at, o.open_exception_uuid, o.operational_status, o.source_changed_at, e.display_name,
                 COUNT(*) OVER (PARTITION BY e.employee_uuid) AS employee_active_count,
-                t.status AS transfer_status, t.requested_at AS transfer_requested_at, t.decided_at AS transfer_decided_at, t.accepted_at AS transfer_accepted_at, ex.reported_at AS exception_reported_at
+                t.status AS transfer_status, t.requested_at AS transfer_requested_at, t.decided_at AS transfer_decided_at, t.accepted_at AS transfer_accepted_at, ex.reported_at AS exception_reported_at, db.started_at AS document_blocked_at
               FROM operational_orders o JOIN employees e ON e.employee_uuid = o.production_owner_employee_uuid
               LEFT JOIN cutting_transfers t ON t.open_order_uuid = o.order_uuid
               LEFT JOIN production_exceptions ex ON ex.exception_uuid = o.open_exception_uuid
+              LEFT JOIN production_document_blocks db ON db.open_order_uuid = o.order_uuid
               WHERE o.production_stage_id = 'material-preparation' AND o.production_completed_at IS NULL
               ORDER BY e.display_name, o.production_claimed_at, o.global_order_id")->fetchAll(PDO::FETCH_ASSOC);
             $waiting = $this->pdo->query("SELECT o.order_uuid, o.order_number, o.source_key FROM operational_orders o JOIN order_sources s ON s.source_key = o.source_key WHERE {$waitingWhere} ORDER BY o.production_changed_at, o.global_order_id LIMIT 20")->fetchAll(PDO::FETCH_ASSOC);
@@ -57,8 +58,8 @@ final readonly class BoardSnapshot
             $thresholds = $this->devices->settings()['thresholds'];
             $nowSql = $now->format('Y-m-d H:i:s.u');
             $cards = array_map(function(array $r) use ($products, $business, $thresholds, $nowSql): array {
-                $blocked = $r['transfer_status'] !== null || $r['open_exception_uuid'] !== null || $r['operational_status'] === 'unavailable';
-                $blockedAt = $r['transfer_requested_at'] ?? $r['exception_reported_at'] ?? ($blocked ? $r['source_changed_at'] : null);
+                $blocked = $r['transfer_status'] !== null || $r['open_exception_uuid'] !== null || $r['operational_status'] === 'unavailable' || $r['document_blocked_at'] !== null;
+                $blockedAt = $r['transfer_requested_at'] ?? $r['exception_reported_at'] ?? $r['document_blocked_at'] ?? ($blocked ? $r['source_changed_at'] : null);
                 $currentWaitAt = $r['transfer_status'] === 'accepted' ? $r['transfer_accepted_at'] : ($r['transfer_status'] === 'approved' ? $r['transfer_decided_at'] : $blockedAt);
                 $seconds = $r['production_claimed_at'] === null ? 0 : $business->seconds($r['production_claimed_at'], $blockedAt ?? $nowSql);
                 // Closed earlier transfer waits do not become active work after a rejection/cancel.

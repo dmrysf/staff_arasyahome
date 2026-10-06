@@ -217,6 +217,9 @@ final readonly class AnalyticsService
         $items=$this->pdo->prepare('SELECT line_number,meters,quantity FROM operational_order_items WHERE order_uuid=? ORDER BY line_number LIMIT 101'); $items->execute([$id]); $lines=$items->fetchAll(PDO::FETCH_ASSOC);
         $s=$this->pdo->prepare("SELECT production_version,occurred_at FROM cutting_facts WHERE order_uuid=? AND fact_type='pool_entered'"); $s->execute([$id]); $allPools=$s->fetchAll(PDO::FETCH_ASSOC);
         $s=$this->pdo->prepare("SELECT MIN(occurred_at) FROM order_activity_events FORCE INDEX (idx_analytics_activity_work) WHERE order_uuid=? AND action IN ('claimed','stage_completed','production_completed')"); $s->execute([$id]); $order['work_recorded_at']=$s->fetchColumn()?:null;
+        $s=$this->pdo->prepare('SELECT block_uuid,cause,started_at,ended_at,processed_meters,processed_lines,production_started,stage_id_snapshot FROM production_document_blocks WHERE order_uuid=? ORDER BY started_at LIMIT 200'); $s->execute([$id]); $order['document_blocks']=$s->fetchAll(PDO::FETCH_ASSOC);
+        $s=$this->pdo->prepare('SELECT revision_number,status,generated_at,stale_at,superseded_at,revoked_at FROM production_document_revisions WHERE order_uuid=? ORDER BY revision_number LIMIT 200'); $s->execute([$id]); $documentRevisions=$s->fetchAll(PDO::FETCH_ASSOC);
+        $s=$this->pdo->prepare('SELECT request_uuid,target_revision_number,status,requested_at,decided_at,decided_via,resolved_at FROM production_document_revision_requests WHERE order_uuid=? ORDER BY requested_at LIMIT 200'); $s->execute([$id]); $documentRequests=$s->fetchAll(PDO::FETCH_ASSOC);
         usort($rows['analytics_ownership_intervals'],static fn($a,$b)=>(int)$a['start_version']<=>(int)$b['start_version']);
         $lifecycle=OrderMetrics::calculate($order,$rows['analytics_ownership_intervals'],$rows['cutting_transfers'],$rows['production_exceptions'],$decisions,$time,$asOf,$allPools);
         $rawIntervals=[];
@@ -239,10 +242,13 @@ final readonly class AnalyticsService
         $decisionFacts=array_map(static fn($r)=>array_intersect_key($r,array_flip(['decision_uuid','previous_decision_uuid','attempt_number','opened_at','status','decided_at','decided_by_employee_uuid','decided_via'])),$decisions);
         return ['order'=>['id'=>$id,'globalOrderId'=>$order['global_order_id'],'number'=>$order['order_number'],'source'=>$order['source_key'],'stageId'=>$order['production_stage_id'],
             'operationalStatus'=>$order['operational_status'],'sourceImportedAt'=>$order['created_at'],'sourceChangedAt'=>$order['source_changed_at'],'qrCreatedAt'=>$order['qr_created_at'],
-            'documentCreatedAt'=>null,'firstClaimAt'=>$order['first_claim_at'],'completedAt'=>$order['completed_at'],'companyId'=>$order['company_uuid'],'companyName'=>$this->companyName($order),
+            'documentCreatedAt'=>$documentRevisions[0]['generated_at']??null,'firstClaimAt'=>$order['first_claim_at'],'completedAt'=>$order['completed_at'],'companyId'=>$order['company_uuid'],'companyName'=>$this->companyName($order),
             'cancelledAt'=>$order['source_reported_unavailable_at'],'cancellationPhase'=>$order['source_reported_unavailable_at']===null?null:(OrderMetrics::hasWorkBefore($order,$order['source_reported_unavailable_at'])?'after_work':'before_work')],
             'lifecycle'=>$lifecycle,'timeline'=>array_values(array_filter(array_slice($timeline,0,$limit),static fn($r)=>$next===null || (int)$r['production_version_after']<=$next)),
             'poolFacts'=>array_values(array_filter($poolFacts,static fn($r)=>$next===null || (int)$r['production_version']<=$next)),
+            // Document revision facts: counts, waits and decision durations; never a worker fault or score.
+            'documents'=>['revisionCount'=>count($documentRevisions),'revisions'=>$documentRevisions,'blocks'=>array_map(static fn($r)=>array_diff_key($r,['block_uuid'=>true]),$order['document_blocks']),
+                'requests'=>array_map(static fn($r)=>$r+['approvalSeconds'=>$r['decided_at']===null?null:max(0,(new \DateTimeImmutable($r['decided_at'],new \DateTimeZone('UTC')))->getTimestamp()-(new \DateTimeImmutable($r['requested_at'],new \DateTimeZone('UTC')))->getTimestamp())],$documentRequests)],
             'nextVersion'=>$next,'transfers'=>$transferFacts,'exceptions'=>$exceptionFacts,'decisions'=>$decisionFacts,
             'comparableLines'=>array_slice($lines,0,100),'moreComparableLines'=>count($lines)>100];
     }

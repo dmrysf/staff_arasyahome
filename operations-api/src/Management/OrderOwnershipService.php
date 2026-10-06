@@ -86,6 +86,9 @@ final readonly class OrderOwnershipService
         if (($order['open_exception_uuid'] ?? null) !== null) {
             return 'exception_pending';
         }
+        if (\Arasya\Operations\Document\DocumentGuard::isBlocked($order['document_status'] ?? null)) {
+            return \Arasya\Operations\Document\DocumentGuard::BLOCKED_REASON;
+        }
         return null;
     }
 
@@ -225,6 +228,9 @@ final readonly class OrderOwnershipService
             if ($blocked === 'exception_pending') {
                 throw new ApiException(409, 'ORDER_BLOCKED_BY_EXCEPTION', 'The order is waiting for a production exception decision.');
             }
+            if ($blocked === \Arasya\Operations\Document\DocumentGuard::BLOCKED_REASON) {
+                throw \Arasya\Operations\Document\DocumentGuard::blocked();
+            }
             $stage = $this->stage($workflow, (string) $order['production_stage_id']);
             $previousId = $order['production_owner_employee_uuid'] === null ? null : (string) $order['production_owner_employee_uuid'];
             if ($operation === self::OPERATION_RELEASE && $previousId === null) {
@@ -245,7 +251,7 @@ final readonly class OrderOwnershipService
                  SET production_owner_employee_uuid = :new_owner, production_claimed_at = :claimed_at,
                      production_version = production_version + 1, version = version + 1, updated_at = :now
                  WHERE order_uuid = :id AND production_version = :expected AND production_stage_id = :stage
-                   AND production_completed_at IS NULL AND open_exception_uuid IS NULL AND production_owner_employee_uuid <=> :previous_owner',
+                   AND production_completed_at IS NULL AND open_exception_uuid IS NULL AND document_status IN (\'none\', \'active\') AND production_owner_employee_uuid <=> :previous_owner',
             );
             $update->execute([
                 'new_owner' => $target?->employeeUuid,
@@ -404,7 +410,7 @@ final readonly class OrderOwnershipService
     {
         $statement = $this->pdo->prepare(
             'SELECT order_uuid, global_order_id, source_key, order_number, production_stage_id, production_owner_employee_uuid,
-                    production_completed_at, operational_status, production_version, open_exception_uuid
+                    production_completed_at, operational_status, production_version, open_exception_uuid, document_status
              FROM operational_orders WHERE global_order_id = ?' . ($lock ? ' FOR UPDATE' : ''),
         );
         $statement->execute([$globalId]);

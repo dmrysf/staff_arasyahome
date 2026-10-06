@@ -82,9 +82,9 @@ require __DIR__ . '/HandoffSchemaFixture.php';
 restorePreExceptionsTestSchema($pdo);
 $grantsBefore = $pdo->query('SELECT * FROM role_permissions ORDER BY role_id, permission_id')->fetchAll(PDO::FETCH_ASSOC);
 $activityBefore = (int) $pdo->query('SELECT COUNT(*) FROM order_activity_events')->fetchColumn();
-check((new MigrationRunner($pdo))->migrate($migrations) === ['014_production_exceptions.sql', '015_cutting_pool.sql','016_management_analytics.sql'], '013 -> 014 -> 015 official additive upgrade');
+check((new MigrationRunner($pdo))->migrate($migrations) === ['014_production_exceptions.sql', '015_cutting_pool.sql','016_management_analytics.sql','017_production_documents.sql'], '013 -> 014 -> 015 official additive upgrade');
 check((new MigrationRunner($pdo))->migrate($migrations) === [], '014 recorded exactly once');
-check($pdo->query("SELECT rp.* FROM role_permissions rp JOIN roles r ON r.role_id = rp.role_id WHERE r.role_key NOT IN ('operations-manager','analytics-reader') ORDER BY rp.role_id, rp.permission_id")->fetchAll(PDO::FETCH_ASSOC) === $grantsBefore, '014 changes no existing role grant');
+check($pdo->query("SELECT rp.* FROM role_permissions rp JOIN roles r ON r.role_id = rp.role_id WHERE r.role_key NOT IN ('operations-manager','analytics-reader','production-documents-operator','document-revision-approver') ORDER BY rp.role_id, rp.permission_id")->fetchAll(PDO::FETCH_ASSOC) === $grantsBefore, '014 changes no existing role grant');
 check((int) $pdo->query('SELECT COUNT(*) FROM order_activity_events')->fetchColumn() === $activityBefore, '014 rewrites no activity history');
 $opsPermissions = $pdo->query("SELECT p.permission_key FROM role_permissions rp JOIN roles r ON r.role_id = rp.role_id JOIN permissions p ON p.permission_id = rp.permission_id WHERE r.role_key = 'operations-manager' ORDER BY p.permission_key")->fetchAll(PDO::FETCH_COLUMN);
 check($opsPermissions === ['orders.lookup_exact', 'production.exceptions.approve'], 'the operations-manager template carries exactly approval and exact lookup: ' . json_encode($opsPermissions));
@@ -190,7 +190,7 @@ $denisaMe = checkOk($get($denisa, '/management/me'), 'Denisa me');
 $hikmetMe = checkOk($get($hikmet, '/management/me'), 'Hikmet me');
 check($denisaMe['permissions'] === $hikmetMe['permissions'] && $denisaMe['authorityRank'] === $hikmetMe['authorityRank'], 'Denisa and Hikmet have exactly the same permissions and rank');
 check($denisaMe['permissions'] === ['dashboard.access', 'dashboard.overview.view', 'orders.lookup_exact', 'production.exceptions.approve', 'profile.view_self'], 'the operations manager permission set is narrow: ' . json_encode($denisaMe['permissions']));
-check($denisaMe['capabilities'] === ['approveExceptions' => true, 'approvalViaBackup' => false, 'lookupOrders' => true, 'manageOrganization' => false, 'manageProductionSettings' => false, 'cancelExceptions' => false, 'viewAnalytics' => false, 'manageAnalyticsPolicy' => false], 'operations manager capabilities remain narrow, including no analytics');
+check($denisaMe['capabilities'] === ['approveExceptions' => true, 'approvalViaBackup' => false, 'lookupOrders' => true, 'manageOrganization' => false, 'manageProductionSettings' => false, 'cancelExceptions' => false, 'viewAnalytics' => false, 'manageAnalyticsPolicy' => false, 'approveDocumentRevisions' => false, 'documentRevisionViaBackup' => false, 'viewDocumentHistory' => false, 'revokeDocuments' => false], 'operations manager capabilities remain narrow, including no analytics and no document revision approval');
 foreach (['/management/employees', '/management/roles', '/management/permissions', '/management/departments', '/management/applications', '/management/audit', '/management/system', '/management/orders', '/management/production-overview', '/management/organization', '/management/production-settings', "/management/employees/{$cutterAId}"] as $path) {
     checkError($get($denisa, $path), 403, $path === '/management/production-settings' ? 'ROOT_ONLY' : 'UNAUTHORIZED_ACTION', "operations manager is denied {$path}");
 }

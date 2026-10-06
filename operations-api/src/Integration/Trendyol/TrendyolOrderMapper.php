@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Arasya\Operations\Integration\Trendyol;
 
+use Arasya\Operations\Document\DeliveryContext;
 use Arasya\Operations\Order\OperationalOrderItem;
 use Arasya\Operations\Order\SourceOrderSnapshot;
 use Arasya\Operations\Support\Uuid;
@@ -69,7 +70,39 @@ final class TrendyolOrderMapper
             in_array($status, self::UNAVAILABLE_STATUSES, true) ? 'unavailable' : 'in_progress',
             is_int($orderDate) ? self::fromMillis($orderDate) : null,
             $items,
+            self::delivery($package['shipmentAddress'] ?? null),
         );
+    }
+
+    /**
+     * Printable delivery identity from the inbound package. Email is never read; the phone is masked
+     * before storage. Missing fields stay missing.
+     *
+     * @return array{name: string|null, company: string|null, addressLines: list<string>, phoneMasked: string|null}|null
+     */
+    private static function delivery(mixed $address): ?array
+    {
+        if (!is_array($address)) {
+            return null;
+        }
+        $name = self::optional($address['fullName'] ?? null, 160)
+            ?? self::optional(trim(((string) ($address['firstName'] ?? '')) . ' ' . ((string) ($address['lastName'] ?? ''))), 160);
+        $street = self::optional(trim(((string) ($address['address1'] ?? '')) . ' ' . ((string) ($address['address2'] ?? ''))), 300)
+            ?? self::optional($address['fullAddress'] ?? null, 300);
+        try {
+            return DeliveryContext::fromSource(array_filter([
+                'name' => $name,
+                'company' => self::optional($address['company'] ?? null, 200),
+                'street' => $street,
+                'city' => self::optional($address['city'] ?? null, 120),
+                'county' => self::optional($address['district'] ?? null, 120),
+                'postalCode' => self::optional($address['postalCode'] ?? null, 20),
+                'country' => self::optional($address['countryCode'] ?? null, 80),
+                'phone' => self::optional($address['phone'] ?? null, 40),
+            ], static fn ($value): bool => $value !== null));
+        } catch (InvalidArgumentException) {
+            return null;
+        }
     }
 
     private static function optional(mixed $value, int $max): ?string

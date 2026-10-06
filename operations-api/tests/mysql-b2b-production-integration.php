@@ -16,9 +16,9 @@ $config=T::config($db);$pdo=Connection::create($config);$migrations=dirname(__DI
 require __DIR__.'/HandoffSchemaFixture.php';restorePreHandoffTestSchema($pdo);
 $grantsBefore=$pdo->query('SELECT * FROM role_permissions ORDER BY role_id,permission_id')->fetchAll();
 $financeBefore=$pdo->query('SELECT * FROM b2b_account_movements ORDER BY movement_uuid')->fetchAll();
-check((new MigrationRunner($pdo))->migrate($migrations)===['012_b2b_production_handoff.sql','013_b2b_projects.sql','014_production_exceptions.sql','015_cutting_pool.sql','016_management_analytics.sql'],'011→012→013→014→015 official additive upgrade');
+check((new MigrationRunner($pdo))->migrate($migrations)===['012_b2b_production_handoff.sql','013_b2b_projects.sql','014_production_exceptions.sql','015_cutting_pool.sql','016_management_analytics.sql','017_production_documents.sql'],'011→012→013→014→015 official additive upgrade');
 check((new MigrationRunner($pdo))->migrate($migrations)===[],'012 recorded exactly once');
-check($pdo->query("SELECT rp.* FROM role_permissions rp JOIN roles r ON r.role_id=rp.role_id WHERE r.role_key NOT IN ('operations-manager','analytics-reader') ORDER BY rp.role_id,rp.permission_id")->fetchAll()===$grantsBefore,'012/013 grant no roles; 014 grants only its new operations-manager template');
+check($pdo->query("SELECT rp.* FROM role_permissions rp JOIN roles r ON r.role_id=rp.role_id WHERE r.role_key NOT IN ('operations-manager','analytics-reader','production-documents-operator','document-revision-approver') ORDER BY rp.role_id,rp.permission_id")->fetchAll()===$grantsBefore,'012/013 grant no roles; 014 grants only its new operations-manager template');
 check($pdo->query('SELECT * FROM b2b_account_movements ORDER BY movement_uuid')->fetchAll()===$financeBefore,'012 leaves financial evidence unchanged');
 foreach(glob(dirname(__DIR__).'/database/seeds/*.sql') as $f)(new SqlFileRunner($pdo))->run($f);
 $c=new Container($config,$pdo);$k=$c->kernel();$suffix=bin2hex(random_bytes(5));$pdo->exec('DELETE FROM system_root_identity');

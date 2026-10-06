@@ -1,9 +1,34 @@
 <?php
 declare(strict_types=1);
+/** Restore a pre-017 disposable test fixture (no production documents). This is NOT a deployment/rollback mechanism. */
+function restorePreDocumentsTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='017_production_documents.sql'")->fetchColumn()) return;
+    $pdo->exec('ALTER TABLE operational_orders DROP FOREIGN KEY fk_operational_orders_active_document');
+    $pdo->exec('ALTER TABLE production_document_revisions DROP FOREIGN KEY fk_production_document_revisions_request');
+    foreach(['production_document_blocks','production_document_events','production_document_prints','production_document_revision_requests','production_document_revisions'] as $table) $pdo->exec('DROP TABLE '.$table);
+    $pdo->exec('ALTER TABLE operational_orders DROP CONSTRAINT chk_operational_orders_document_status');
+    $pdo->exec('ALTER TABLE operational_orders DROP INDEX idx_operational_orders_document, DROP COLUMN document_context, DROP COLUMN document_status, DROP COLUMN active_document_revision_uuid, DROP COLUMN document_version');
+    $pdo->exec("DELETE FROM responsibility_assignments WHERE responsibility_key='document_revision_backup_approver'");
+    $pdo->exec('ALTER TABLE responsibility_assignments DROP CONSTRAINT chk_responsibility_assignments_key');
+    $pdo->exec("ALTER TABLE responsibility_assignments ADD CONSTRAINT chk_responsibility_assignments_key CHECK (responsibility_key IN ('tailoring_intake_responsible', 'operations_backup_approver'))");
+    $pdo->exec("DELETE FROM live_events WHERE audience IN ('document_approvers','document_requesters')");
+    $pdo->exec('ALTER TABLE live_events DROP CONSTRAINT chk_live_events_audience');
+    $pdo->exec("ALTER TABLE live_events ADD CONSTRAINT chk_live_events_audience CHECK ((audience = 'employee' AND recipient_employee_uuid IS NOT NULL) OR (audience IN ('approvers','cutting','display') AND recipient_employee_uuid IS NULL))");
+    $pdo->exec("DELETE era FROM employee_role_assignments era JOIN roles r ON r.role_id=era.role_id WHERE r.role_key IN ('production-documents-operator','document-revision-approver')");
+    $pdo->exec("DELETE rp FROM role_permissions rp JOIN roles r ON r.role_id=rp.role_id WHERE r.role_key IN ('production-documents-operator','document-revision-approver')");
+    $pdo->exec("DELETE FROM roles WHERE role_key IN ('production-documents-operator','document-revision-approver')");
+    $pdo->exec("DELETE rp FROM role_permissions rp JOIN permissions p ON p.permission_id=rp.permission_id WHERE p.permission_key LIKE 'production.documents.%'");
+    $pdo->exec("DELETE FROM permissions WHERE permission_key LIKE 'production.documents.%'");
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='017_production_documents.sql'");
+}
+
 /** Restore a pre-014 disposable test fixture (no production exceptions). This is NOT a deployment/rollback mechanism. */
 function restorePreCuttingTestSchema(PDO $pdo): void
 {
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    restorePreDocumentsTestSchema($pdo);
     if ($pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='016_management_analytics.sql'")->fetchColumn()) {
         foreach (['analytics_ownership_intervals','analytics_order_projection','analytics_approval_eligibility','analytics_approval_requests'] as $table) $pdo->exec('DROP TABLE '.$table);
         foreach (['production_quality_events'=>['idx_analytics_quality_period'],'production_exception_decisions'=>['idx_analytics_decisions_period','idx_analytics_decisions_opened'],'cutting_transfers'=>['idx_analytics_transfer_period','idx_analytics_transfer_requested'],'order_activity_events'=>['idx_analytics_activity_work','idx_analytics_activity_period','idx_analytics_activity_timeline']] as $table=>$indexes) foreach ($indexes as $index) $pdo->exec('ALTER TABLE '.$table.' DROP INDEX '.$index);

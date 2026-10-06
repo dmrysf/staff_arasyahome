@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Arasya\Operations\Order;
 
+use Arasya\Operations\Document\DocumentStaleness;
 use Arasya\Operations\Http\ApiException;
 use Arasya\Operations\Support\Clock;
 use Arasya\Operations\Support\Uuid;
@@ -50,8 +51,11 @@ final readonly class OrderProjectionWriter
                 'u' => $i->measurementUnit,
                 'm' => $i->meters !== null ? number_format((float)$i->meters, 3, '.', '') : null,
                 'qty' => $i->quantity
-            ], $itemsForHash),
+            ] + (($i->productionContext['options'] ?? []) === [] ? [] : ['opt' => $i->productionContext['options']]), $itemsForHash),
         ];
+        // The printable delivery identity is kept outside the receipt hash so existing source events keep
+        // their hash; it is applied below and decides document staleness like any printed field.
+        $documentContext = $snapshot->delivery === null ? null : json_encode($snapshot->delivery, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
         // Ensure deterministic JSON
         $payloadHash = hash('sha256', json_encode($hashData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR), true);
 
@@ -91,6 +95,13 @@ final readonly class OrderProjectionWriter
                     throw new ApiException(409, 'SOURCE_EVENT_CONFLICT', 'Event ID conflict with different global order ID.');
                 }
                 if (hash_equals((string)$existingReceipt['payload_hash'], $payloadHash)) {
+                    // A replayed event may fill a delivery identity that was never stored, only while no
+                    // central document exists (nothing printed can become stale through this path).
+                    if ($documentContext !== null) {
+                        $this->pdo->prepare("UPDATE operational_orders SET document_context = ? WHERE global_order_id = ? AND document_context IS NULL AND document_status = 'none'")->execute([$documentContext, $globalId]);
+                        $this->pdo->commit();
+                        return 'duplicate';
+                    }
                     $this->pdo->rollBack();
                     return 'duplicate';
                 }
@@ -98,7 +109,7 @@ final readonly class OrderProjectionWriter
             }
 
             // Lock order row
-            $stmt = $this->pdo->prepare('SELECT order_uuid, source_changed_at, projection_hash, version, production_version, production_stage_id, production_authority, operational_status, cutting_first_claimed_at FROM operational_orders WHERE global_order_id = ? FOR UPDATE');
+            $stmt = $this->pdo->prepare('SELECT order_uuid, source_changed_at, projection_hash, version, production_version, production_stage_id, production_authority, operational_status, cutting_first_claimed_at, document_context FROM operational_orders WHERE global_order_id = ? FOR UPDATE');
             $stmt->execute([$globalId]);
             $currentOrder = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -124,6 +135,10 @@ final readonly class OrderProjectionWriter
                     // Same semantic payload: refresh observation time only; the order version never changes.
                     $stmt = $this->pdo->prepare('UPDATE operational_orders SET source_event_id = ?, source_changed_at = ?, last_source_seen_at = ?, projected_at = ? WHERE order_uuid = ?');
                     $stmt->execute([$snapshot->sourceEventId, $sourceChangedSql, $nowSql, $nowSql, $orderUuid]);
+                    if ($snapshot->delivery !== null && self::sortedKeys($snapshot->delivery) !== self::sortedKeys(json_decode((string) ($currentOrder['document_context'] ?? 'null'), true))) {
+                        $this->pdo->prepare('UPDATE operational_orders SET document_context = ?, version = version + 1, updated_at = ? WHERE order_uuid = ?')->execute([$documentContext, $nowSql, $orderUuid]);
+                        (new DocumentStaleness($this->pdo, $this->clock))->onContentChanged($orderUuid, $snapshot->sourceEventId);
+                    }
                     $this->ensureQrReference($orderUuid, $nowSql);
                     $this->insertReceipt($snapshot, $globalId, $payloadHash, 'duplicate', $nowSql);
                     $this->touchSource($snapshot->sourceKey, $nowSql);
@@ -166,6 +181,7 @@ final readonly class OrderProjectionWriter
                         projected_at = ?,
                         accepted_at = ?,
                         projection_hash = ?,
+                        document_context = COALESCE(?, document_context),
                         version = ?,
                         updated_at = ?
                     WHERE order_uuid = ?
@@ -191,6 +207,7 @@ final readonly class OrderProjectionWriter
                     $nowSql,
                     $snapshot->acceptedAt?->format('Y-m-d H:i:s.u'),
                     $payloadHash,
+                    $documentContext,
                     $version,
                     $nowSql,
                     $orderUuid,
@@ -222,11 +239,15 @@ final readonly class OrderProjectionWriter
                         $item->heightValue,
                         $item->measurementUnit,
                         $item->meters,
-                        $item->quantity
+                        $item->quantity,
+                        $item->productionContext,
                     );
                 }
 
                 $this->insertItems($newItems, $orderUuid, $nowSql);
+                // A printed field may have changed: an active production document becomes stale here,
+                // inside the same transaction, so production is blocked before the change is visible.
+                (new DocumentStaleness($this->pdo, $this->clock))->onContentChanged($orderUuid, $snapshot->sourceEventId);
 
             } else {
                 // Insert new order
@@ -237,8 +258,8 @@ final readonly class OrderProjectionWriter
                         production_stage_id, source_commerce_status_code, source_commerce_status_label, 
                         production_notes, operational_status, freshness_status, source_schema_version, 
                         source_event_id, source_changed_at, last_source_seen_at, projected_at, 
-                        accepted_at, projection_hash, version, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        accepted_at, projection_hash, version, created_at, updated_at, document_context
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ');
                 $stmt->execute([
                     $orderUuid,
@@ -263,6 +284,7 @@ final readonly class OrderProjectionWriter
                     1,
                     $nowSql,
                     $nowSql,
+                    $documentContext,
                 ]);
 
                 $this->insertItems($snapshot->items, $orderUuid, $nowSql);
@@ -369,6 +391,18 @@ final readonly class OrderProjectionWriter
         }
     }
 
+    /** JSON columns may return object keys in another order; compare by content. */
+    private static function sortedKeys(mixed $value): mixed
+    {
+        if (!is_array($value)) {
+            return $value;
+        }
+        if (!array_is_list($value)) {
+            ksort($value);
+        }
+        return array_map(self::sortedKeys(...), $value);
+    }
+
     private function activeStageOrdinal(string $stageId): ?int
     {
         $stmt = $this->pdo->prepare("
@@ -426,8 +460,8 @@ final readonly class OrderProjectionWriter
             INSERT INTO operational_order_items (
                 item_uuid, order_uuid, source_item_id, line_number, name, product_code, 
                 variant, color, width_value, height_value, measurement_unit, meters, quantity, 
-                created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                created_at, updated_at, production_context
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ');
         foreach ($items as $item) {
             $stmt->execute([
@@ -446,6 +480,7 @@ final readonly class OrderProjectionWriter
                 $item->quantity,
                 $nowSql,
                 $nowSql,
+                $item->productionContext === null ? null : json_encode($item->productionContext, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE),
             ]);
         }
     }

@@ -2,6 +2,7 @@ import { StaffServiceError, type ActivityAction, type ActivityEntry, type Activi
 import { isOrderActionBlockedReason, isOrderActionId, orderActionLabels } from "../../domain/orderActions";
 import type { ActivityService, AuthService, EmployeeService, ExceptionService, LiveService, OrderService, ServiceBundle, Session } from "../contracts";
 import { startLiveClient } from "./liveClient";
+import type { DocumentApi, DocumentAttention, DocumentRevision, OrderDocument, OrderDocumentSummary } from "../../domain/documents";
 import { createBrowserWorkflowCache, createUnavailableWorkflowCache, normalizeProductionApiBaseUrl, type WorkflowCache } from "./workflowCache";
 import { createProductionWorkflowService } from "./workflowService";
 
@@ -66,6 +67,21 @@ const backendErrorCodes: Partial<Record<string, ServiceErrorCode>> = {
   EXCEPTION_CHANGED: "EXCEPTION_CHANGED",
   EXCEPTION_STATE_INVALID: "EXCEPTION_STATE_INVALID",
   EXCEPTION_ALREADY_RESOLVED: "EXCEPTION_ALREADY_RESOLVED",
+  ORDER_BLOCKED_BY_DOCUMENT: "ORDER_BLOCKED_BY_DOCUMENT",
+  DOCUMENT_SUPERSEDED: "DOCUMENT_SUPERSEDED",
+  DOCUMENT_REVOKED: "DOCUMENT_REVOKED",
+  DOCUMENT_NOT_GENERATED: "DOCUMENT_NOT_GENERATED",
+  DOCUMENT_ALREADY_ACTIVE: "DOCUMENT_ALREADY_ACTIVE",
+  DOCUMENT_NOT_STALE: "DOCUMENT_NOT_STALE",
+  DOCUMENT_REQUEST_OPEN: "DOCUMENT_REQUEST_OPEN",
+  DOCUMENT_APPROVAL_REQUIRED: "DOCUMENT_APPROVAL_REQUIRED",
+  DOCUMENT_CONTENT_CHANGED: "DOCUMENT_CONTENT_CHANGED",
+  DOCUMENT_CHANGED: "DOCUMENT_CHANGED",
+  DOCUMENT_ORDER_COMPLETED: "DOCUMENT_ORDER_COMPLETED",
+  DOCUMENT_REVISION_NOT_ACTIVE: "DOCUMENT_REVISION_NOT_ACTIVE",
+  DOCUMENT_REQUEST_RESOLVED: "DOCUMENT_CHANGED",
+  DOCUMENT_REQUEST_CHANGED: "DOCUMENT_CHANGED",
+  DOCUMENT_NOT_ACTIVE: "DOCUMENT_CHANGED",
 };
 
 function objectValue(value: unknown): Record<string, unknown> {
@@ -165,6 +181,9 @@ export function mapProductionOrderItem(value: unknown): import("../../domain/mod
       item.measurements.unit = rawMeas.unit as "mm" | "cm" | "m";
     }
   }
+  if (Array.isArray(raw.options)) {
+    item.options = raw.options.map((option) => { const o = objectValue(option); return { label: stringValue(o.label), value: stringValue(o.value) }; });
+  }
   if (raw.productionContext != null) {
     const context = objectValue(raw.productionContext), kind = stringValue(context.kind);
     if (!['curtain', 'drapery', 'other'].includes(kind)) throw new StaffServiceError('SERVER_ERROR');
@@ -195,6 +214,57 @@ export function mapProjectLocation(value: unknown): import("../../domain/models"
       sillHeight: optionalString(opening.sillHeight), mounting: opening.mounting == null ? null : oneOf(opening.mounting, ["ceiling", "wall", "recess"] as const), railType: optionalString(opening.railType) },
     treatment: { treatmentType: oneOf(treatment.treatmentType, ["sheer", "drapery", "blackout", "rail", "accessory", "other"] as const),
       panelLayout: treatment.panelLayout == null ? null : oneOf(treatment.panelLayout, ["single", "pair", "left", "right"] as const) },
+  };
+}
+
+const documentStatuses = ["none", "active", "stale", "revoked"] as const;
+const requestStatuses = ["pending", "approved", "rejected", "superseded", "generated", "cancelled"] as const;
+const count = (value: unknown): number => { if (typeof value !== "number" || !Number.isInteger(value) || value < 0) throw new StaffServiceError("SERVER_ERROR"); return value; };
+
+export function mapDocumentSummary(value: unknown): OrderDocumentSummary {
+  const raw = objectValue(value);
+  const request = raw.request == null ? null : objectValue(raw.request);
+  return {
+    status: oneOf(raw.status, documentStatuses),
+    version: count(raw.version),
+    revisionNumber: raw.revisionNumber == null ? null : positiveInteger(raw.revisionNumber),
+    request: request === null ? null : { id: stringValue(request.id), status: oneOf(request.status, requestStatuses), targetRevision: positiveInteger(request.targetRevision), version: positiveInteger(request.version) },
+  };
+}
+
+function mapRevision(value: unknown): DocumentRevision {
+  const raw = objectValue(value);
+  return { number: positiveInteger(raw.number), status: oneOf(raw.status, ["active", "superseded", "revoked"] as const), generatedAt: timestampValue(raw.generatedAt), generatedBy: stringValue(raw.generatedBy), prints: count(raw.prints) };
+}
+
+export function mapOrderDocument(value: unknown): OrderDocument {
+  const raw = objectValue(value);
+  const order = objectValue(raw.order);
+  const request = raw.request == null ? null : objectValue(raw.request);
+  if (!Array.isArray(raw.revisions)) throw new StaffServiceError("SERVER_ERROR");
+  return {
+    order: { id: stringValue(order.id), number: stringValue(order.number), completed: booleanValue(order.completed), unavailable: booleanValue(order.unavailable) },
+    status: oneOf(raw.status, documentStatuses),
+    version: count(raw.version),
+    activeRevision: raw.activeRevision == null ? null : mapRevision(raw.activeRevision),
+    latestRevisionNumber: raw.latestRevisionNumber == null ? null : positiveInteger(raw.latestRevisionNumber),
+    request: request === null ? null : {
+      id: stringValue(request.id), status: oneOf(request.status, requestStatuses), version: positiveInteger(request.version), targetRevision: positiveInteger(request.targetRevision),
+      requestedBy: stringValue(request.requestedBy), requestedAt: timestampValue(request.requestedAt), comment: optionalString(request.comment),
+      changes: Array.isArray(request.changes) ? request.changes.map((change) => { const c = objectValue(change); return { field: stringValue(c.field), line: c.line == null ? null : positiveInteger(c.line), before: optionalString(c.before), after: optionalString(c.after) }; }) : [],
+      decidedBy: optionalString(request.decidedBy), decisionComment: optionalString(request.decisionComment), decidedAt: request.decidedAt == null ? null : timestampValue(request.decidedAt), resolutionNote: optionalString(request.resolutionNote),
+    },
+    revisions: raw.revisions.map(mapRevision),
+  };
+}
+
+export function mapDocumentAttention(value: unknown): DocumentAttention {
+  const raw = objectValue(value);
+  const request = raw.request == null ? null : objectValue(raw.request);
+  return {
+    orderId: stringValue(raw.orderId), orderNumber: stringValue(raw.orderNumber), documentStatus: oneOf(raw.documentStatus, documentStatuses),
+    revisionNumber: raw.revisionNumber == null ? null : positiveInteger(raw.revisionNumber),
+    request: request === null ? null : { id: stringValue(request.id), status: oneOf(request.status, requestStatuses), targetRevision: positiveInteger(request.targetRevision), requestedBy: stringValue(request.requestedBy) },
   };
 }
 
@@ -254,6 +324,8 @@ export function mapProductionOrder(value: unknown): import("../../domain/models"
   }
   if (raw.acceptedAt != null) order.acceptedAt = timestampValue(raw.acceptedAt);
   if (raw.productionQuality != null) order.productionQuality = mapOrderQuality(raw.productionQuality);
+  if (raw.documentStatus != null) order.documentStatus = oneOf(raw.documentStatus, ["none", "active", "stale", "revoked"] as const);
+  if (raw.productionDocument != null) order.productionDocument = mapDocumentSummary(raw.productionDocument);
 
   if (raw.employeeRelation != null) {
     const rel = objectValue(raw.employeeRelation);
@@ -439,10 +511,13 @@ function createRequest(apiBaseUrl: string, options: ProductionServicesOptions, o
 
   async function errorFromResponse(response: Response, path: string) {
     let backendCode = "";
+    let details: Record<string, unknown> | undefined;
     try {
       const payload = objectValue(await response.json());
       const error = objectValue(payload.error);
       backendCode = typeof error.code === "string" ? error.code : "";
+      // Only the active revision number is kept from details (an old QR scan tells which revision to use).
+      if (error.details && typeof error.details === "object" && typeof (error.details as Record<string, unknown>).activeRevisionNumber === "number") details = { activeRevisionNumber: (error.details as Record<string, unknown>).activeRevisionNumber };
     } catch { /* HTTP status fallback remains typed below. */ }
     const fallback: ServiceErrorCode = response.status === 401
       ? "SESSION_EXPIRED"
@@ -455,7 +530,7 @@ function createRequest(apiBaseUrl: string, options: ProductionServicesOptions, o
             : response.status === 503
               ? "SERVICE_UNAVAILABLE"
               : "SERVER_ERROR";
-    const error = new StaffServiceError(backendErrorCodes[backendCode] ?? fallback);
+    const error = new StaffServiceError(backendErrorCodes[backendCode] ?? fallback, undefined, details);
     // Access changed centrally (temporary password, application access removed): the app re-reads the session.
     if (["PASSWORD_CHANGE_REQUIRED", "APPLICATION_ACCESS_DENIED"].includes(error.code) && path !== "/auth/session" && path !== "/auth/password") onSessionExpired(error);
     if (["SESSION_EXPIRED", "NO_SESSION", "ACCOUNT_INACTIVE"].includes(error.code) && path !== "/auth/login" && path !== "/auth/session") {
@@ -605,6 +680,29 @@ export function createProductionServices(apiBaseUrl: string, options: Production
       });
     },
   };
+  const documents: DocumentApi = {
+    lookup: (number, signal) => http.request(`/production-documents/lookup?number=${encodeURIComponent(number)}`, { signal }, (value) => {
+      const raw = objectValue(value);
+      if (!Array.isArray(raw.items)) throw new StaffServiceError("SERVER_ERROR");
+      return raw.items.map((item) => { const row = objectValue(item); return { orderId: stringValue(row.orderId), orderNumber: stringValue(row.orderNumber), source: stringValue(row.source),
+        documentStatus: oneOf(row.documentStatus, documentStatuses), revisionNumber: row.revisionNumber == null ? null : positiveInteger(row.revisionNumber) }; });
+    }),
+    view: (orderId, signal) => http.request(`/production-documents/orders/${encodeURIComponent(orderId)}`, { signal }, mapOrderDocument),
+    attention: (signal) => http.request("/production-documents/attention", { signal }, (value) => {
+      const raw = objectValue(value);
+      if (!Array.isArray(raw.items)) throw new StaffServiceError("SERVER_ERROR");
+      return raw.items.map(mapDocumentAttention);
+    }),
+    generate: (orderId, input, key) => http.request(`/production-documents/orders/${encodeURIComponent(orderId)}/generate`, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapOrderDocument),
+    requestRevision: (orderId, input, key) => http.request(`/production-documents/orders/${encodeURIComponent(orderId)}/revision-requests`, { method: "POST", headers: { "Idempotency-Key": key },
+      body: JSON.stringify({ expectedDocumentVersion: input.expectedDocumentVersion, ...(input.comment ? { comment: input.comment } : {}) }) }, mapOrderDocument),
+    async print(orderId, input, key) {
+      const response = await http.send(`/production-documents/orders/${encodeURIComponent(orderId)}/print`, { method: "POST", headers: { "Idempotency-Key": key },
+        body: JSON.stringify({ revisionNumber: input.revisionNumber, ...(input.reason ? { reason: input.reason } : {}) }) });
+      if (!response.ok) throw await http.errorFromResponse(response, "/production-documents/print");
+      return response.blob();
+    },
+  };
   const cutting: import("../../domain/cutting").CuttingApi = {
     pool: (signal) => http.request("/cutting/pool", { signal }),
     targets: (signal) => http.request("/cutting/targets", { signal }),
@@ -612,5 +710,5 @@ export function createProductionServices(apiBaseUrl: string, options: Production
     request: (orderId, input, key) => http.request(`/cutting/orders/${encodeURIComponent(orderId)}/transfers`, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }),
     change: (id, action, input, key) => http.request(`/cutting/transfers/${encodeURIComponent(id)}/${action}`, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }),
   };
-  return { auth, employee, orders, activity, workflow, exceptions, live, cutting, mode: "production" };
+  return { auth, employee, orders, activity, workflow, exceptions, live, cutting, documents, mode: "production" };
 }

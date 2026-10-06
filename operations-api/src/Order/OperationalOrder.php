@@ -29,7 +29,14 @@ final readonly class OperationalOrder
         public ?DateTimeImmutable $productionCompletedAt = null,
         public ?array $productionContext = null,
         public ?string $openExceptionUuid = null,
+        public string $documentStatus = 'none',
     ) {
+    }
+
+    /** A stale or revoked production document blocks every production action until a new revision is active. */
+    public function isBlockedByDocument(): bool
+    {
+        return \Arasya\Operations\Document\DocumentGuard::isBlocked($this->documentStatus);
     }
 
     /** An open production exception (for example a cutting fault return) blocks every normal production action. */

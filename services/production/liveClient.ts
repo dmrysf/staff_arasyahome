@@ -75,7 +75,9 @@ export function startLiveClient(options: LiveClientOptions): () => void {
           options.onEvent({ seq: frame.id, type: frame.event, exceptionId: typeof data.exceptionId === "string" ? data.exceptionId : undefined,
             transferId: typeof data.transferId === "string" ? data.transferId : undefined,
             orderId: typeof data.orderId === "string" ? data.orderId : undefined, orderNumber: typeof data.orderNumber === "string" ? data.orderNumber : undefined,
-            status: typeof data.status === "string" ? data.status : undefined });
+            status: typeof data.status === "string" ? data.status : undefined,
+            requestId: typeof data.requestId === "string" ? data.requestId : undefined,
+            revisionNumber: typeof data.revisionNumber === "number" && Number.isSafeInteger(data.revisionNumber) ? data.revisionNumber : undefined });
         }
         if (failures > 0 || !bootstrapped) options.onState?.("connected");
         bootstrapped = true;

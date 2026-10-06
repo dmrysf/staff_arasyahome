@@ -44,6 +44,8 @@ export type ProjectLocation = {
 
 export type ProductionItem = {
   productionContext?: { kind: 'curtain' | 'drapery' | 'other'; notes: string | null; productionNotes: string | null; project?: ProjectLocation };
+  /** Manufacturing options exactly as the source stated them (never inferred). */
+  options?: { label: string; value: string }[];
   id: string;
   name: string;
   code?: string;
@@ -82,7 +84,8 @@ export type OrderActionBlockedReason =
   | "order_unavailable"
   | "permission_missing"
   | "workflow_unavailable"
-  | "exception_pending";
+  | "exception_pending"
+  | "document_revision_pending";
 
 export type StaffOrder = {
   productionContext?: { company: { legalName: string; companyCode: string; countryCode: string; taxIdentifier: string } };
@@ -110,6 +113,9 @@ export type StaffOrder = {
   productionVersion: number;
   /** Internal quality facts, present on single-order views only. Never shown to customers. */
   productionQuality?: OrderQuality;
+  /** Central production document state; a stale or revoked document blocks every production action. */
+  documentStatus?: import("./documents").DocumentStatus;
+  productionDocument?: import("./documents").OrderDocumentSummary;
 };
 
 export type FaultExceptionStatus = "awaiting_acknowledgment" | "awaiting_approval" | "approved" | "rejected" | "cancelled";
@@ -163,7 +169,7 @@ export type OrderQuality = {
 export type FaultReason = { key: string; label: string; requiresComment: boolean };
 
 /** One live notification; payloads carry identifiers only and the screen re-reads through REST. */
-export type LiveEvent = { seq: number; type: string; exceptionId?: string; transferId?: string; orderId?: string; orderNumber?: string; status?: string };
+export type LiveEvent = { seq: number; type: string; exceptionId?: string; transferId?: string; orderId?: string; orderNumber?: string; status?: string; requestId?: string; revisionNumber?: number };
 
 export type OrderPage = {
   items: StaffOrder[];
@@ -243,10 +249,22 @@ export type ServiceErrorCode =
   | "EXCEPTION_NOT_ASSIGNED"
   | "EXCEPTION_CHANGED"
   | "EXCEPTION_STATE_INVALID"
-  | "EXCEPTION_ALREADY_RESOLVED";
+  | "EXCEPTION_ALREADY_RESOLVED"
+  | "ORDER_BLOCKED_BY_DOCUMENT"
+  | "DOCUMENT_SUPERSEDED"
+  | "DOCUMENT_REVOKED"
+  | "DOCUMENT_NOT_GENERATED"
+  | "DOCUMENT_ALREADY_ACTIVE"
+  | "DOCUMENT_NOT_STALE"
+  | "DOCUMENT_REQUEST_OPEN"
+  | "DOCUMENT_APPROVAL_REQUIRED"
+  | "DOCUMENT_CONTENT_CHANGED"
+  | "DOCUMENT_CHANGED"
+  | "DOCUMENT_ORDER_COMPLETED"
+  | "DOCUMENT_REVISION_NOT_ACTIVE";
 
 export class StaffServiceError extends Error {
-  constructor(public readonly code: ServiceErrorCode, message?: string) {
+  constructor(public readonly code: ServiceErrorCode, message?: string, public readonly details?: Readonly<Record<string, unknown>>) {
     super(message ?? code);
     this.name = "StaffServiceError";
   }

@@ -22,6 +22,8 @@ export function permissionForRoute(path: string): StaffPermission | null {
 }
 
 export function canAccessRoute(employee: Employee, path: string) {
+  // Production documents: channel employees with a document permission, without needing a stage.
+  if (path.startsWith("/documents/")) return ["production.documents.generate", "production.documents.reprint", "production.documents.request_revision"].some((key) => employee.permissions.includes(key));
   const permission = permissionForRoute(path);
   return permission === null || hasPermission(employee, permission);
 }

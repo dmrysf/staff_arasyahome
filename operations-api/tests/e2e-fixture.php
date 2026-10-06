@@ -127,12 +127,53 @@ for($i=0;$i<77;$i++) {
     }
 }
 
+// Production documents: a channel requester (Staff), the revision approver (Dashboard, decides through
+// the API in the browser test) and a cutter who owns order 72001; order 72002 already has revision 2.
+$roleId=static fn(string $key):int=>(int)$pdo->query("SELECT role_id FROM roles WHERE role_key=".$pdo->quote($key))->fetchColumn();
+$iam=static function(string $employee,array $applications,array $roles)use($kernel,$root,$origin):void {
+    foreach([['applications',['applications'=>$applications]],['roles',['roleIds'=>$roles]]] as [$what,$body]){
+        $r=T::call($kernel,'PUT',"/management/employees/{$employee}/{$what}",$body,['origin'=>$origin,'x-csrf-token'=>$root['csrf']],$root['cookie']);
+        if($r['status']!==200) throw new RuntimeException('E2E document IAM setup failed: '.json_encode($r['body']));
+    }
+};
+$online=$admin->create('Ioana Online','online.doc.e2e',null,'pregatire-material','employee',$password,[],'e2e');
+$iam($online->employeeUuid,['staff'],[$roleId('production-documents-operator')]);
+$approver=$admin->create('Sinem Aprobare','sinem.doc.e2e',null,'pregatire-material','employee',$password,[],'e2e');
+$iam($approver->employeeUuid,['dashboard'],[$roleId('document-revision-approver')]);
+$docCutter=$admin->create('Murat Document','doc.cutter.e2e',null,'pregatire-material','employee',$password,['material-preparation'],'e2e');
+foreach(['72001'=>8.0,'72002'=>5.0] as $number=>$meters) {
+    $r=T::ingest($kernel,'trendhome',T::e2eDocumentOrder((string)$number,$meters,1));
+    if(($r['body']['outcome']??null)!=='applied') throw new RuntimeException('E2E document order ingestion failed.');
+    $qr[$number]=$r['body']['qr'];
+}
+$cutterSession=T::login($kernel,'doc.cutter.e2e',$password);
+$claim=T::call($kernel,'POST','/orders/'.rawurlencode('trendhome:72001').'/claim',T::cuttingClaim($pdo,'trendhome:72001',$cutterSession['employeeUuid'],1),['origin'=>$origin,'x-csrf-token'=>$cutterSession['csrf'],'idempotency-key'=>'doc-fixture-72001-claim'],$cutterSession['cookie']);
+if($claim['status']!==200) throw new RuntimeException('E2E document order claim failed.');
+$docCall=static function(array $who,string $path,array $body)use($kernel,$origin):array {
+    $r=T::call($kernel,'POST',$path,$body,['origin'=>$origin,'x-csrf-token'=>$who['csrf'],'idempotency-key'=>'doc-fixture-'.bin2hex(random_bytes(8))],$who['cookie']);
+    if($r['status']>=300) throw new RuntimeException('E2E document fixture step failed: '.$path.' '.json_encode($r['body']));
+    return $r['body'];
+};
+$onlineSession=T::login($kernel,'online.doc.e2e',$password);
+$approverSession=T::login($kernel,'sinem.doc.e2e',$password);
+$doc='/production-documents/orders/'.rawurlencode('trendhome:72002');
+$docCall($onlineSession,"{$doc}/generate",['expectedDocumentVersion'=>0]);
+$r=T::ingest($kernel,'trendhome',T::e2eDocumentOrder('72002',6.5,2));
+if(($r['body']['outcome']??null)!=='applied') throw new RuntimeException('E2E document change failed.');
+$state=$pdo->query("SELECT document_version FROM operational_orders WHERE global_order_id='trendhome:72002'")->fetchColumn();
+$request=$docCall($onlineSession,"{$doc}/revision-requests",['expectedDocumentVersion'=>(int)$state])['request'];
+$docCall($approverSession,"/production-documents/revision-requests/{$request['id']}/decision",['expectedVersion'=>1,'decision'=>'approve']);
+$state=$pdo->query("SELECT document_version FROM operational_orders WHERE global_order_id='trendhome:72002'")->fetchColumn();
+$docCall($onlineSession,"{$doc}/generate",['expectedDocumentVersion'=>(int)$state,'requestId'=>$request['id']]);
+$qr['72002-r2']='ARASYA:Q1:'.$pdo->query("SELECT q.qr_reference FROM order_qr_references q JOIN operational_orders o ON o.order_uuid=q.order_uuid WHERE o.global_order_id='trendhome:72002' AND q.status='active'")->fetchColumn();
+
 echo json_encode([
     'password' => $password,
     'users' => ['ana' => 'ana.e2e', 'bogdan' => 'bogdan.e2e', 'mihai' => 'mihai.e2e', 'dashboardOnly' => 'dora.e2e', 'temporary' => 'teodor.e2e'],
     'orders' => ['flow' => '70001', 'qr' => '70002', 'claimedByOther' => '70003', 'conflict' => '70004'],
     'qr' => $qr,
     'b2b' => ['id'=>'b2b:'.$b2bOrder['id'],'code'=>$b2bOrder['code'],'username'=>'operator.b2b.e2e'],
+    'documents' => ['order' => '72001', 'superseded' => '72002', 'requester' => 'online.doc.e2e', 'approver' => 'sinem.doc.e2e', 'cutter' => 'doc.cutter.e2e'],
     'exceptions' => ['order' => '70005', 'cutter' => 'crama.e2e', 'intake' => 'oprea.e2e', 'manager' => 'denisa.e2e'],
     'cutting' => ['order'=>'71000','source'=>'trendhome','owner'=>'cut.murat.e2e','target'=>'cut.andrea.e2e',
         'root'=>['username'=>Arasya\Operations\Iam\RootBootstrapService::ROOT_USERNAME,'password'=>'staff root fixture permanent 2026']],

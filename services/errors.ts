@@ -1,4 +1,5 @@
 import { StaffServiceError, type ServiceErrorCode } from "../domain/models";
+import { invalidDocumentMessage } from "../domain/documents";
 
 export type ErrorPresentation = { title: string; message: string; action: string };
 
@@ -53,10 +54,25 @@ const presentations: Record<ServiceErrorCode, ErrorPresentation> = {
   EXCEPTION_CHANGED: { title: "Cererea s-a modificat", message: "Cererea a fost actualizată între timp. Reîncarcă înainte de a continua.", action: "Reîncarcă" },
   EXCEPTION_STATE_INVALID: { title: "Acțiune indisponibilă", message: "Cererea nu mai permite această acțiune.", action: "Reîncarcă" },
   EXCEPTION_ALREADY_RESOLVED: { title: "Cerere rezolvată", message: "Cererea a fost deja rezolvată.", action: "Reîncarcă" },
+  ORDER_BLOCKED_BY_DOCUMENT: { title: "Document blocat", message: "Comanda are o revizie de document în curs. Așteaptă aprobarea și documentul nou.", action: "Reîncarcă" },
+  DOCUMENT_SUPERSEDED: { title: "Document invalid", message: "Acest document a fost înlocuit. Folosește revizia activă a documentului.", action: "Scanează din nou" },
+  DOCUMENT_REVOKED: { title: "Document invalid", message: "Acest document a fost anulat. Așteaptă documentul nou.", action: "Scanează din nou" },
+  DOCUMENT_NOT_GENERATED: { title: "Document negenerat", message: "Comanda nu are încă un document de producție.", action: "Reîncarcă" },
+  DOCUMENT_ALREADY_ACTIVE: { title: "Documentul există", message: "Documentul activ există deja. Pentru hârtie pierdută sau deteriorată folosește retipărirea.", action: "Reîncarcă" },
+  DOCUMENT_NOT_STALE: { title: "Revizie inutilă", message: "Documentul activ corespunde comenzii. Nu este necesară o revizie.", action: "Reîncarcă" },
+  DOCUMENT_REQUEST_OPEN: { title: "Cerere deja deschisă", message: "Există deja o cerere de revizie pentru această comandă.", action: "Reîncarcă" },
+  DOCUMENT_APPROVAL_REQUIRED: { title: "Aprobare necesară", message: "Revizia nouă necesită aprobare înainte de generare.", action: "Reîncarcă" },
+  DOCUMENT_CONTENT_CHANGED: { title: "Comanda s-a schimbat din nou", message: "Conținutul comenzii s-a schimbat după aprobare. Este necesară o nouă cerere de revizie.", action: "Reîncarcă" },
+  DOCUMENT_CHANGED: { title: "Documentul s-a schimbat", message: "Starea documentului a fost actualizată între timp. Reîncarcă înainte de a continua.", action: "Reîncarcă" },
+  DOCUMENT_ORDER_COMPLETED: { title: "Comandă finalizată", message: "Revizia documentului după finalizare nu face parte din acest flux.", action: "Înapoi" },
+  DOCUMENT_REVISION_NOT_ACTIVE: { title: "Revizie înlocuită", message: "Această revizie nu mai este documentul activ. Reîncarcă pagina.", action: "Reîncarcă" },
   WORKFLOW_UNAVAILABLE: { title: "Flux indisponibil", message: "Catalogul etapelor de producție nu poate fi încărcat momentan. Starea comenzii nu a fost schimbată.", action: "Reîncearcă" },
 };
 
 export function getErrorPresentation(error: unknown): ErrorPresentation {
+  // An old or blocked production document is shown in strong Romanian words, with the active revision.
+  const document = invalidDocumentMessage(error);
+  if (document && error instanceof StaffServiceError) return { title: document.title, message: document.lines.join(" "), action: presentations[error.code].action };
   if (error instanceof StaffServiceError) return presentations[error.code];
   return presentations.SERVER_ERROR;
 }

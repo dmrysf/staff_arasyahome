@@ -141,6 +141,17 @@ final class OperationsTestSupport
         return ['workflowKey' => 'curtain-production', 'workflowVersion' => 1, 'stageId' => $stageId, 'stageLabel' => 'diagnostic only'];
     }
 
+    /** A TEST curtain order with a printable delivery identity, used by the production document E2E flow. @return array<string, mixed> */
+    public static function e2eDocumentOrder(string $number, float $meters, int $minute): array
+    {
+        $payload = self::sourceOrder($number, "doc-e2e-{$number}-{$minute}", gmdate('Y-m-d\TH:i:s\Z', time() - 3600 + $minute), self::stage('material-preparation'), 'processing', 'active', [[
+            'id' => (int) $number * 10 + 1, 'line' => 1, 'name' => 'Draperie Velvet', 'sku' => 'DV-302', 'color' => 'Bej', 'variant' => 'Wave',
+            'width' => 300, 'height' => 260, 'unit' => 'cm', 'meters' => $meters, 'quantity' => 1, 'options' => [['label' => 'Confecționare', 'value' => '2 bucăți']],
+        ]], $number);
+        $payload['order']['delivery'] = ['name' => 'TEST Client Document', 'street' => 'Str. Test 1', 'city' => 'Cluj-Napoca', 'postalCode' => '400000', 'country' => 'RO', 'phone' => '0722000111'];
+        return $payload;
+    }
+
     /** Explicit scan/confirmation intent for legacy lifecycle fixtures, not used by negative QR tests. */
     public static function cuttingClaim(PDO $pdo, string $globalId, string $employee, int $version): array
     {

@@ -544,7 +544,7 @@ test('authenticated production workflow route returns the exact canonical catalo
     expect(($unauthenticated->payload['error']['code'] ?? null) === 'SESSION_EXPIRED');
 
     $health = $kernel->handle(new Request('GET', '/health', [], [], '', '127.0.0.1', 'workflow-test', 'health-stable'));
-    expect($health->status === 200 && ($health->payload['version'] ?? null) === '2.15.0');
+    expect($health->status === 200 && ($health->payload['version'] ?? null) === '2.16.0');
 });
 
 test('JSON auth input rejects malformed, oversized and unexpected payloads', function (): void {
