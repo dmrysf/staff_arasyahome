@@ -79,7 +79,14 @@ foreach([$w1,$w2] as $i=>$w) {
 $money=$snapshot($financialTables);
 $batch=status($changes($ops,'hierarchy-'.$suffix),200,'hierarchy batch');
 check($batch['revision']===2 && $batch['versions'][$room]===1 && count($batch['versions'])===9,'batch versions and revision');
-status($changes($ops,'hierarchy-'.$suffix),200,'batch replay');
+$replayed=status($changes($ops,'hierarchy-'.$suffix),200,'batch replay');
+check(json_encode($replayed['created'])===json_encode($batch['created']) && json_encode($replayed['versions'])===json_encode($batch['versions']),'replay keeps the original response shape');
+$dupKey='dup-replay-'.$suffix;
+$firstDup=T::call($k,'POST',"$p/changes",['operations'=>[['op'=>'treatment.duplicate','id'=>$ids[0]]]],['x-csrf-token'=>$root['csrf'],'idempotency-key'=>$dupKey],$root['cookie']);
+$againDup=T::call($k,'POST',"$p/changes",['operations'=>[['op'=>'treatment.duplicate','id'=>$ids[0]]]],['x-csrf-token'=>$root['csrf'],'idempotency-key'=>$dupKey],$root['cookie']);
+check(json_encode($firstDup['body'])===json_encode($againDup['body']),'index-keyed created map survives the replay as an object');
+$dupId=status($firstDup,200,'dup')['created'][0][0];
+status($changes([['op'=>'treatment.remove','id'=>$dupId,'expectedVersion'=>1]]),200,'remove replay probe');
 check(count($rows('SELECT 1 FROM b2b_project_treatments WHERE project_uuid=?',[$project]))===4,'batch replay creates nothing twice');
 error($changes([$ops[0]],'hierarchy-'.$suffix),409,'IDEMPOTENCY_CONFLICT');
 $t0=$rows('SELECT * FROM b2b_project_treatments WHERE treatment_uuid=?',[$ids[0]])[0];
@@ -259,6 +266,8 @@ $grouped=$pages(ProjectProposalPdf::render($data,'ro'));
 foreach($data['zones'][0]['rooms'] as $i=>&$r) $r['openings'][0]['name'].=' '.$i;
 unset($r);
 $distinct=$pages(ProjectProposalPdf::render($data,'tr'));
+check(ProjectProposalPdf::roomRange(['Camera 101','Camera 104','Camera 105','Camera 106','Camera 120'])==='Camera 101, Camera 104–106, Camera 120','group title never hides missing rooms');
+check(ProjectProposalPdf::roomDimensions(['widthCm'=>'400.000','lengthCm'=>null,'ceilingHeightCm'=>null],['dim_width'=>'lățime','dim_length'=>'lungime','dim_ceiling'=>'tavan'])==='lățime 400 cm','partial dimensions are named');
 check($grouped>=1 && $grouped*2<$distinct,"identical rooms grouped ($grouped vs $distinct pages)");
 
 // Status lifecycle and permissions.

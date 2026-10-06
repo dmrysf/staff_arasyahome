@@ -179,6 +179,19 @@ counts — never values). Order creation from a project is also recorded on the 
 Central inventory, stock, reservations, accounting expansion, SmartBill, FX, customer portal, Woo outbound writes,
 manufacturing formulas, AI room generation, any renderer.
 
+## Production acceptance fixes (API 2.12.1, B2B 0.6.1)
+
+Defects found in live TEST acceptance and fixed forward (no schema change):
+
+- D1: repeat/duplicate proposals reused names already in the room or project ("Fereastra 2" twice); proposals now skip
+  used names, including new room/window defaults.
+- D2: an idempotent replay of `changes` returned index-keyed maps as JSON lists, which the B2B client rejected; the replay
+  now restores the original object shape and the client also accepts the list form.
+- D3: the proposal group title "Camera 101 – Camera 120" hid missing rooms; titles list exact runs
+  ("Camera 101, Camera 104–120").
+- D4: partially measured rooms printed "400 × — × — cm"; only measured dimensions are printed, each named.
+- D5: the proposal filename used a stale client revision; it now uses the revision the server rendered.
+
 ## Local verification evidence (2026-10-05)
 
 - API: unit 64, calculator 45, production input 17, inbound-only guard 815, release validator, staged deploy, migration

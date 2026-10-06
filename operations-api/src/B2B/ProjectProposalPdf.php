@@ -32,7 +32,7 @@ final class ProjectProposalPdf
             'zone_total'=>'Subtotal','room'=>'Cameră','sill'=>'parapet','rail'=>'șină','empty_room'=>'Nicio fereastră definită încă.',
             'final'=>'Total ofertă','page'=>'Pagina','currency'=>'Monedă','qty'=>'buc.','meters'=>'m',
             'disclaimer'=>'Ofertă informativă calculată din proiect la revizia indicată. Prețurile și cantitățile devin definitive numai prin comanda comercială finalizată.',
-            'no_price'=>'fără preț'],
+            'no_price'=>'fără preț','dim_width'=>'lățime','dim_length'=>'lungime','dim_ceiling'=>'tavan'],
         'tr'=>['title'=>'Proje teklifi','client'=>'Müşteri','project'=>'Proje','prepared'=>'Hazırlayan','code'=>'Kod','tax'=>'Vergi numarası','vat'=>'KDV numarası',
             'type'=>'Tür','site'=>'Adres','reference'=>'Müşteri referansı','revision'=>'Revizyon','date'=>'Tarih','summary'=>'Özet',
             'zones'=>'Katlar / bölgeler','rooms'=>'Odalar','openings'=>'Açıklıklar','treatments'=>'Ürünler','net'=>'Net toplam','vat_total'=>'KDV','gross'=>'Toplam',
@@ -42,7 +42,7 @@ final class ProjectProposalPdf
             'zone_total'=>'Ara toplam','room'=>'Oda','sill'=>'denizlik','rail'=>'ray','empty_room'=>'Henüz pencere tanımlanmadı.',
             'final'=>'Teklif toplamı','page'=>'Sayfa','currency'=>'Para birimi','qty'=>'adet','meters'=>'m',
             'disclaimer'=>'Belirtilen revizyondaki projeden hesaplanan bilgilendirme amaçlı tekliftir. Fiyat ve miktarlar yalnızca kesinleşen ticari siparişle kesinleşir.',
-            'no_price'=>'fiyatsız'],
+            'no_price'=>'fiyatsız','dim_width'=>'genişlik','dim_length'=>'uzunluk','dim_ceiling'=>'tavan'],
     ];
 
     public static function language(mixed $value): string { return ProjectLabels::language($value); }
@@ -166,11 +166,10 @@ final class ProjectProposalPdf
                 $height=self::roomHeight($room);
                 if($height<=PdfDocument::HEIGHT-72-self::BOTTOM) $ensure($height);
                 else $ensure(90);
-                $names=array_column($group,'name');
-                $title=count($names)===1?$names[0]:(count($names)<=4?implode(', ',$names):$names[0].' – '.$names[count($names)-1]);
+                $title=self::roomRange(array_column($group,'name'));
                 $pdf->text(self::LEFT,$y,$pdf->fit($title,$width-140,'B',11.5),'B',11.5,'left',self::INK);
-                $dims=array_filter([$room['widthCm'],$room['lengthCm'],$room['ceilingHeightCm']],static fn($v): bool=>$v!==null);
-                if($dims) $pdf->text($right,$y,implode(' × ',array_map(ProjectLabels::measure(...),[$room['widthCm']??null,$room['lengthCm']??null,$room['ceilingHeightCm']??null])).' cm','R',8,'right',self::MUTED);
+                $dims=self::roomDimensions($room,$l);
+                if($dims!=='') $pdf->text($right,$y,$dims,'R',8,'right',self::MUTED);
                 $y-=14;
                 if(count($group)>1) { $pdf->text(self::LEFT,$y,sprintf($l['identical'],count($group)),'R',8,'left',self::ACCENT); $y-=12; }
                 $y-=8;
@@ -236,6 +235,36 @@ final class ProjectProposalPdf
         $name=$zone['name'];
         if($zone['level']!==null && !preg_match('/(^|\D)'.preg_quote((string)$zone['level'],'/').'(\D|$)/u',$name)) $name=$t['zone'][$zone['zoneType']].' '.$zone['level'].' · '.$name;
         return $name.($zone['building']?' · '.$zone['building']:'');
+    }
+
+    /**
+     * Title of a group of identical rooms that never hides a gap: "Camera 101, Camera 104–120" lists consecutive numbers
+     * of one prefix as ranges and every other name explicitly (shortened after 12 names with the exact count kept).
+     */
+    public static function roomRange(array $names): string
+    {
+        $runs=[]; $other=[];
+        foreach($names as $name) {
+            if(preg_match('/^(.*?)(\d+)$/u',$name,$m)!==1) { $other[]=$name; continue; }
+            $last=count($runs)-1;
+            if($last>=0 && $runs[$last]['prefix']===$m[1] && (int)$m[2]===$runs[$last]['to']+1 && strlen($m[2])===$runs[$last]['width']) { $runs[$last]['to']++; $runs[$last]['last']=$name; continue; }
+            $runs[]=['prefix'=>$m[1],'from'=>(int)$m[2],'to'=>(int)$m[2],'first'=>$name,'last'=>$name,'width'=>strlen($m[2])];
+        }
+        $parts=array_map(static function(array $r): string {
+            if($r['from']===$r['to']) return $r['first'];
+            return $r['first'].'–'.substr($r['last'],strlen($r['prefix']));
+        },$runs);
+        $parts=[...$parts,...$other];
+        return count($parts)>12 ? implode(', ',array_slice($parts,0,12)).' …' : implode(', ',$parts);
+    }
+
+    /** Only the measured room dimensions, each named, e.g. "lățime 400 cm" or "420 × 510 × 280 cm" when all three exist. */
+    public static function roomDimensions(array $room,array $l): string
+    {
+        $values=['width'=>$room['widthCm']??null,'length'=>$room['lengthCm']??null,'ceiling'=>$room['ceilingHeightCm']??null];
+        if(!in_array(null,$values,true)) return implode(' × ',array_map(ProjectLabels::measure(...),$values)).' cm';
+        $present=array_filter($values,static fn($v): bool=>$v!==null);
+        return implode(' · ',array_map(static fn(string $k,string $v): string=>$l['dim_'.$k].' '.ProjectLabels::measure($v).' cm',array_keys($present),$present));
     }
 
     /** Rooms with identical openings/treatments (names of the rooms excluded) form one printed group, in first-seen order. @return list<list<array>> */
