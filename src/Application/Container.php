@@ -26,6 +26,10 @@ use Arasya\Operations\B2B\ProjectCommands;
 use Arasya\Operations\B2B\ProjectController;
 use Arasya\Operations\B2B\ProjectQueries;
 use Arasya\Operations\Config\Config;
+use Arasya\Operations\Cutting\BoardSnapshot;
+use Arasya\Operations\Cutting\CuttingController;
+use Arasya\Operations\Cutting\CuttingService;
+use Arasya\Operations\Cutting\DisplayDevices;
 use Arasya\Operations\Database\Connection;
 use Arasya\Operations\Employee\EmployeeAdminService;
 use Arasya\Operations\Employee\PdoEmployeeRepository;
@@ -127,6 +131,8 @@ final class Container
         $exceptions = new ExceptionQueries($this->pdo);
         $live = new LiveEvents($this->pdo);
         $idempotency = new IdempotencyStore($this->pdo);
+        $devices = new DisplayDevices($this->pdo, $this->config, $this->clock, $this->employees, $iamAudit, $idempotency);
+        $cutting = new CuttingService($this->pdo, $this->employees, $approvers, $workflows, $idempotency, $iamAudit, $live, $this->clock);
         $faults = new CuttingFaultService($this->pdo, $authorization, $this->employees, $workflows, $approvers, $exceptions, $live, $idempotency, $iamAudit, $this->clock);
         return new ApiKernel(
             new AuthController($this->authentication, $csrf, new CookiePolicy($this->config), $this->config, $authorization, $context),
@@ -186,6 +192,7 @@ final class Container
             new ProjectController(new ProjectQueries($this->pdo, $authorization, $this->clock), new ProjectCommands($this->pdo, $authorization, $this->clock),
                 $this->authentication, $authorization, $csrf, $this->config, $context),
             new QualityController($faults, $exceptions, $approvers, $live, $this->authentication, $authorization, $csrf, $this->config, $context, $this->pdo, $this->clock),
+            new CuttingController($cutting, $devices, new BoardSnapshot($this->pdo, $this->clock, $devices), $live, $this->authentication, $csrf, $this->config, $context, $rateLimiter),
         );
     }
 

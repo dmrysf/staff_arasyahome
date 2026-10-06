@@ -13,6 +13,7 @@ use Arasya\Operations\Integration\SourceIngestionController;
 use Arasya\Operations\Management\ManagementController;
 use Arasya\Operations\Order\OperationalOrderController;
 use Arasya\Operations\Quality\QualityController;
+use Arasya\Operations\Cutting\CuttingController;
 use Arasya\Operations\Security\CookiePolicy;
 use Arasya\Operations\Support\StructuredLogger;
 use Throwable;
@@ -36,6 +37,7 @@ final readonly class ApiKernel
         private ?AccountController $b2bAccounts = null,
         private ?ProjectController $b2bProjects = null,
         private ?QualityController $quality = null,
+        private ?CuttingController $cutting = null,
     ) {
     }
 
@@ -64,7 +66,7 @@ final readonly class ApiKernel
                 'GET /orders/mine' => $this->ordersController()->listMine($request),
                 'GET /orders/lookup' => $this->ordersController()->lookup($request),
                 'POST /orders/resolve-qr' => $this->ordersController()->resolveQr($request),
-                'GET /live/events' => $this->qualityController()->events($request),
+                'GET /live/events' => $request->query('scope') === 'cutting-display' ? $this->cuttingController()->display($request) : $this->qualityController()->events($request),
                 'GET /activity/mine' => ($this->activity ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Activity API is not ready.'))->listMine($request),
                 default => $this->matchDynamicRoutes($request),
             };
@@ -89,6 +91,7 @@ final readonly class ApiKernel
 
     private function matchDynamicRoutes(Request $request): Response
     {
+        if (str_starts_with($request->path, '/cutting/') || str_starts_with($request->path, '/display/cutting/') || str_starts_with($request->path, '/management/cutting/')) return $this->cuttingController()->handle($request);
         if ($request->path === '/b2b/accounts' || str_starts_with($request->path, '/b2b/accounts/')) {
             return ($this->b2bAccounts ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'B2B current account API is not ready.'))->handle($request);
         }
@@ -131,6 +134,11 @@ final readonly class ApiKernel
     private function qualityController(): QualityController
     {
         return $this->quality ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Production exceptions are not ready.');
+    }
+
+    private function cuttingController(): CuttingController
+    {
+        return $this->cutting ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Cutting API is not ready.');
     }
 
     private function ordersController(): OperationalOrderController

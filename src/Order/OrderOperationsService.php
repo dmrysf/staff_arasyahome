@@ -6,6 +6,8 @@ namespace Arasya\Operations\Order;
 
 use Arasya\Operations\Audit\AuditLogger;
 use Arasya\Operations\Employee\EmployeeIdentity;
+use Arasya\Operations\Employee\PdoEmployeeRepository;
+use Arasya\Operations\Cutting\CuttingLifecycle;
 use Arasya\Operations\Http\ApiException;
 use Arasya\Operations\Production\ProductionStage;
 use Arasya\Operations\Production\ProductionWorkflow;
@@ -50,9 +52,9 @@ final readonly class OrderOperationsService
     }
 
     /** @return array<string, mixed> serialized order after the committed (or replayed) claim */
-    public function claim(EmployeeIdentity $employee, GlobalOrderId $orderId, int $expectedVersion, string $idempotencyKey, OperationContext $context): array
+    public function claim(EmployeeIdentity $employee, GlobalOrderId $orderId, int $expectedVersion, string $idempotencyKey, OperationContext $context, array $claimIntent = []): array
     {
-        return $this->mutate(self::OPERATION_CLAIM, $employee, $orderId, $expectedVersion, $idempotencyKey, $context);
+        return $this->mutate(self::OPERATION_CLAIM, $employee, $orderId, $expectedVersion, $idempotencyKey, $context, $claimIntent);
     }
 
     /** @return array<string, mixed> serialized order after the committed (or replayed) stage completion */
@@ -67,7 +69,7 @@ final readonly class OrderOperationsService
     }
 
     /** @return array<string, mixed> */
-    private function mutate(string $operation, EmployeeIdentity $employee, GlobalOrderId $orderId, int $expectedVersion, string $idempotencyKey, OperationContext $context): array
+    private function mutate(string $operation, EmployeeIdentity $employee, GlobalOrderId $orderId, int $expectedVersion, string $idempotencyKey, OperationContext $context, array $claimIntent = []): array
     {
         if (!self::isValidIdempotencyKey($idempotencyKey)) {
             throw new ApiException(400, 'INVALID_IDEMPOTENCY_KEY', 'A valid Idempotency-Key header is required.');
@@ -80,11 +82,14 @@ final readonly class OrderOperationsService
         } catch (RuntimeException) {
             throw new ApiException(503, 'WORKFLOW_UNAVAILABLE', 'Production workflow is not ready.');
         }
-        $requestHash = hash('sha256', implode('|', [$operation, $orderId->toString(), (string) $expectedVersion]), true);
+        $baseIntent = implode('|', [$operation, $orderId->toString(), (string) $expectedVersion]);
+        // Preserve hashes/replay for pre-V1 commands. QR/multiple intent gets its own canonical suffix.
+        $extra = array_intersect_key($claimIntent, array_flip(['qrToken','confirmedMultiple','ownedCount']));
+        $requestHash = hash('sha256', $baseIntent . ($extra === [] ? '' : '|' . json_encode([$extra['qrToken'] ?? null, $extra['confirmedMultiple'] ?? false, $extra['ownedCount'] ?? null], JSON_THROW_ON_ERROR)), true);
 
         for ($attempt = 1; ; $attempt++) {
             try {
-                return $this->attempt($operation, $employee, $orderId, $expectedVersion, $idempotencyKey, $requestHash, $workflow, $context);
+                return $this->attempt($operation, $employee, $orderId, $expectedVersion, $idempotencyKey, $requestHash, $workflow, $context, $claimIntent);
             } catch (ApiException $error) {
                 $this->recordDenied($operation, $employee, $orderId, $error, $context);
                 throw $error;
@@ -99,7 +104,7 @@ final readonly class OrderOperationsService
     }
 
     /** @return array<string, mixed> */
-    private function attempt(string $operation, EmployeeIdentity $employee, GlobalOrderId $orderId, int $expectedVersion, string $idempotencyKey, string $requestHash, ProductionWorkflow $workflow, OperationContext $context): array
+    private function attempt(string $operation, EmployeeIdentity $employee, GlobalOrderId $orderId, int $expectedVersion, string $idempotencyKey, string $requestHash, ProductionWorkflow $workflow, OperationContext $context, array $claimIntent): array
     {
         $this->pdo->beginTransaction();
         try {
@@ -110,11 +115,17 @@ final readonly class OrderOperationsService
                 throw new ApiException(404, 'ORDER_NOT_FOUND', 'Order not found.');
             }
 
+            // Before any consistent read: serialize this employee's claims across different orders.
+            $this->pdo->prepare('SELECT employee_uuid FROM employees WHERE employee_uuid = ? FOR UPDATE')->execute([$employee->employeeUuid]);
+
             $replay = $this->replay($employee->employeeUuid, $idempotencyKey, $operation, $orderUuid, $requestHash);
             if ($replay !== null) {
                 $this->pdo->rollBack();
                 return $replay;
             }
+
+            $employee = (new PdoEmployeeRepository($this->pdo))->findByUuid($employee->employeeUuid) ?? throw new ApiException(401, 'ACCOUNT_INACTIVE', 'Account is not active.');
+            if (!$employee->isOperationallyActive() || !$employee->hasApplication('staff') || $employee->mustChangePassword) throw new ApiException(403, 'UNAUTHORIZED_ACTION', 'Permission denied.');
 
             $order = $this->orders->findByGlobalId($employee->employeeUuid, $orderId->toString());
             if ($order === null || !$this->policy->canView($employee, $order)) {
@@ -125,7 +136,20 @@ final readonly class OrderOperationsService
             }
 
             $decision = $this->policy->evaluate($employee, $order, $workflow);
+            if ($decision['action'] === null) throw $this->blocked((string) $decision['blockedReason'], $operation);
             $now = $this->clock->now()->format('Y-m-d H:i:s.u');
+            $cutting = new CuttingLifecycle($this->pdo);
+            if ($order->productionStageId === CuttingLifecycle::STAGE) {
+                $cutting->requireNoTransfer($orderUuid);
+                if ($operation === self::OPERATION_CLAIM && $order->productionOwnerEmployeeUuid === null) {
+                    $availability = $this->pdo->prepare('SELECT o.source_reported_unavailable_at, s.status FROM operational_orders o JOIN order_sources s ON s.source_key = o.source_key WHERE o.order_uuid = ?');
+                    $availability->execute([$orderUuid]); $source = $availability->fetch(PDO::FETCH_ASSOC);
+                    if ($source['source_reported_unavailable_at'] !== null || $source['status'] !== 'active') throw $this->blocked('order_unavailable', $operation);
+                    if (!CuttingLifecycle::eligible($employee)) throw new ApiException(403, 'UNAUTHORIZED_ACTION', 'Nu poți prelua comenzi de tăiere.');
+                    $cutting->qr($orderUuid, $claimIntent['qrToken'] ?? null);
+                    $cutting->confirmMultiple($employee, $claimIntent, $context->requestId, $now);
+                }
+            }
             if ($operation === self::OPERATION_CLAIM) {
                 if ($decision['action'] === OrderAccessPolicy::ACTION_COMPLETE_STAGE || $decision['action'] === OrderAccessPolicy::ACTION_COMPLETE_PRODUCTION) {
                     // Already owned by this employee: a new claim request changes nothing.
@@ -178,6 +202,7 @@ final readonly class OrderOperationsService
         $relation = $previousHandover->fetchColumn() === false ? 'claimed' : 'handover_in';
         $this->upsertRelation($employee->employeeUuid, $order->orderUuid, $relation, $now);
         $this->recordActivity($employee, $order, $workflow, 'claimed', $stage, null, $expectedVersion, $idempotencyKey, $context, $now);
+        if ($stage->id === CuttingLifecycle::STAGE) (new CuttingLifecycle($this->pdo))->claimed($order->orderUuid, $expectedVersion + 1, $employee->employeeUuid, $now);
     }
 
     private function applyTransition(EmployeeIdentity $employee, OperationalOrder $order, ProductionWorkflow $workflow, int $expectedVersion, string $idempotencyKey, OperationContext $context, string $now): void
@@ -216,6 +241,10 @@ final readonly class OrderOperationsService
         }
         $this->upsertRelation($employee->employeeUuid, $order->orderUuid, $relation, $now);
         $this->recordActivity($employee, $order, $workflow, $action, $current, $next, $expectedVersion, $idempotencyKey, $context, $now);
+        $meters = $this->pdo->prepare('SELECT SUM(meters) FROM operational_order_items WHERE order_uuid = ?');
+        $meters->execute([$order->orderUuid]);
+        $total = $meters->fetchColumn();
+        (new CuttingLifecycle($this->pdo))->changed($order->orderUuid, $expectedVersion + 1, $current->id, $next?->id, $employee->employeeUuid, $now, $total === null || $total === false ? null : (string) $total);
     }
 
     private function stage(ProductionWorkflow $workflow, string $stageId): ProductionStage
@@ -240,7 +269,9 @@ final readonly class OrderOperationsService
 
     private function recordActivity(EmployeeIdentity $employee, OperationalOrder $order, ProductionWorkflow $workflow, string $action, ProductionStage $from, ?ProductionStage $to, int $versionBefore, string $idempotencyKey, OperationContext $context, string $now): void
     {
-        $meters = $order->totalMeters();
+        $sum = $this->pdo->prepare('SELECT SUM(meters) FROM operational_order_items WHERE order_uuid = ?');
+        $sum->execute([$order->orderUuid]);
+        $meters = $sum->fetchColumn();
         $statement = $this->pdo->prepare(
             'INSERT INTO order_activity_events (
                 event_id, employee_uuid, order_uuid, global_order_id, source_key, order_number_snapshot, action,
@@ -264,7 +295,7 @@ final readonly class OrderOperationsService
             $to?->label,
             $versionBefore,
             $versionBefore + 1,
-            $meters === null ? null : number_format($meters, 3, '.', ''),
+            $meters === null || $meters === false ? null : (string) $meters,
             $context->requestId,
             $idempotencyKey,
             $now,

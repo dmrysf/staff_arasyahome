@@ -111,7 +111,7 @@ final readonly class QualityController
         $approver = $this->approvers->via($actor) !== null;
         $deadline = microtime(true) + $this->config->liveHoldSeconds;
         do {
-            $events = $this->live->after($actor->employeeUuid, $approver, $cursor);
+            $events = $this->live->after($actor->employeeUuid, $approver, $cursor, \Arasya\Operations\Cutting\CuttingLifecycle::eligible($actor));
             if ($events !== [] || microtime(true) >= $deadline) {
                 break;
             }
@@ -128,7 +128,7 @@ final readonly class QualityController
     /** @param array<string, mixed> $data */
     private function frame(?int $id, string $event, array $data): string
     {
-        return ($id === null ? '' : "id: {$id}\n") . "event: {$event}\ndata: " . json_encode($data, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n\n";
+        return ($id === null ? '' : "id: {$id}\n") . "event: {$event}\ndata: " . json_encode($data === [] ? (object) [] : $data, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n\n";
     }
 
     /** @param list<string> $frames */

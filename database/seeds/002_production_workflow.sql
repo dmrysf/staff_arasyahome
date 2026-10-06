@@ -6,8 +6,8 @@ SELECT catalog.stage_id, workflow.workflow_id, catalog.display_name, catalog.ord
 FROM production_workflows workflow
 INNER JOIN (
     SELECT 'waiting' AS stage_id, 'În așteptare' AS display_name, 1 AS ordinal
-    UNION ALL SELECT 'material-preparation', 'Pregătire material', 2
-    UNION ALL SELECT 'workshop-receiving', 'Primire atelier', 3
+    UNION ALL SELECT 'material-preparation', 'Tăiere', 2
+    UNION ALL SELECT 'workshop-receiving', 'Primire Croitorie', 3
     UNION ALL SELECT 'labeling', 'Etichetare', 4
     UNION ALL SELECT 'material-straightening', 'Îndreptare material', 5
     UNION ALL SELECT 'bottom-hem', 'Tivul de jos', 6

@@ -98,7 +98,7 @@ final readonly class OrderProjectionWriter
             }
 
             // Lock order row
-            $stmt = $this->pdo->prepare('SELECT order_uuid, source_changed_at, projection_hash, version, production_version, production_stage_id, production_authority FROM operational_orders WHERE global_order_id = ? FOR UPDATE');
+            $stmt = $this->pdo->prepare('SELECT order_uuid, source_changed_at, projection_hash, version, production_version, production_stage_id, production_authority, operational_status, cutting_first_claimed_at FROM operational_orders WHERE global_order_id = ? FOR UPDATE');
             $stmt->execute([$globalId]);
             $currentOrder = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -157,6 +157,7 @@ final readonly class OrderProjectionWriter
                         source_commerce_status_label = ?,
                         production_notes = ?,
                         operational_status = ?,
+                        source_reported_unavailable_at = IF(?, ?, NULL),
                         freshness_status = ?,
                         source_schema_version = ?,
                         source_event_id = ?,
@@ -179,7 +180,9 @@ final readonly class OrderProjectionWriter
                     $snapshot->sourceCommerceStatusCode,
                     $snapshot->sourceCommerceStatusLabel,
                     $snapshot->productionNotes,
-                    $snapshot->operationalStatus,
+                    $snapshot->operationalStatus === 'unavailable' && $currentOrder['cutting_first_claimed_at'] !== null ? $currentOrder['operational_status'] : $snapshot->operationalStatus,
+                    $snapshot->operationalStatus === 'unavailable' ? 1 : 0,
+                    $nowSql,
                     'fresh',
                     $snapshot->sourceSchemaVersion,
                     $snapshot->sourceEventId,
@@ -266,6 +269,11 @@ final readonly class OrderProjectionWriter
             }
 
             $this->ensureQrReference($orderUuid, $nowSql);
+            $life = new \Arasya\Operations\Cutting\CuttingLifecycle($this->pdo);
+            $currentStage = $currentOrder ? $stageId : ($snapshot->productionStageId ?? self::INITIAL_STAGE_ID);
+            if ($currentStage === $life::STAGE && (!$currentOrder || $currentOrder['production_stage_id'] !== $currentStage)) $life->fact($orderUuid, $currentOrder ? $productionVersion : 1, 'pool_entered', null, $nowSql);
+            if ($snapshot->operationalStatus === 'unavailable') $life->fact($orderUuid, $currentOrder ? $productionVersion : 1, 'source_cancelled', null, $nowSql);
+            if ($currentStage === $life::STAGE || $snapshot->operationalStatus === 'unavailable') (new \Arasya\Operations\Quality\LiveEvents($this->pdo))->cuttingChanged($nowSql);
             $this->insertReceipt($snapshot, $globalId, $payloadHash, 'applied', $nowSql);
             $this->touchSource($snapshot->sourceKey, $nowSql);
 

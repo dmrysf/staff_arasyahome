@@ -300,6 +300,7 @@ final readonly class OrganizationService
             }
             $after = $this->workingHours();
             $this->audit->record($actor, 'organization.working_hours_changed', 'organization', 'working-hours', 'Program de lucru', ['days' => ['before' => $before, 'after' => $after], 'timezone' => self::TIMEZONE, 'authority' => $actor->isRoot ? 'root' : 'ceo'], $requestId, $now);
+            (new \Arasya\Operations\Quality\LiveEvents($this->pdo))->cuttingChanged($now);
             $response = $this->view($actor);
             $this->idempotency->store($actor->employeeUuid, $key, 'organization.hours', 'working-hours', $hash, $response, $now);
             return $response;

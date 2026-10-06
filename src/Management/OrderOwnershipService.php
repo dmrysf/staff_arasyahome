@@ -214,6 +214,7 @@ final readonly class OrderOwnershipService
             if ((int) $order['production_version'] !== $expectedVersion) {
                 throw new ApiException(409, 'ORDER_CHANGED', 'The order changed. Reload it before continuing.');
             }
+            if ($order['production_stage_id'] === \Arasya\Operations\Cutting\CuttingLifecycle::STAGE) (new \Arasya\Operations\Cutting\CuttingLifecycle($this->pdo))->requireNoTransfer($orderUuid);
             $blocked = self::blockedReason($order);
             if ($blocked === 'production_completed') {
                 throw new ApiException(409, 'PRODUCTION_COMPLETED', 'Production is completed; its ownership can no longer change.');
@@ -288,6 +289,12 @@ final readonly class OrderOwnershipService
             ]);
 
             $previousName = $previousId === null ? null : $this->displayName($previousId);
+            if ($stage->id === \Arasya\Operations\Cutting\CuttingLifecycle::STAGE) {
+                $life = new \Arasya\Operations\Cutting\CuttingLifecycle($this->pdo);
+                if ($previousId !== null) $life->fact($orderUuid, $expectedVersion + 1, 'interval_ended', $previousId, $now);
+                if ($target !== null) $life->claimed($orderUuid, $expectedVersion + 1, $target->employeeUuid, $now);
+                else { $life->fact($orderUuid, $expectedVersion + 1, 'pool_entered', null, $now); (new \Arasya\Operations\Quality\LiveEvents($this->pdo))->cuttingChanged($now); }
+            }
             $this->audit->record(
                 $actor,
                 $operation === self::OPERATION_RELEASE ? self::AUDIT_RELEASED : self::AUDIT_REASSIGNED,
