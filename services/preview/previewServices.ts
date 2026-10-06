@@ -3,6 +3,7 @@ import { previewActivityPages, previewEmployee, previewOrderDatabase } from "../
 import { previewProductionWorkflow } from "../../mocks/productionWorkflow";
 import type { AuthService, EmployeeService, ServiceBundle, Session } from "../contracts";
 import { createSimulatedOperations } from "../simulatedOperations";
+import { createUnavailableExceptionServices } from "../offlineExceptions";
 
 export const PREVIEW_SESSION_KEY = "arasya_staff_preview_session";
 const PREVIEW_SESSION_DURATION_MS = 8 * 60 * 60 * 1000;
@@ -127,6 +128,7 @@ export function createPreviewServices(options: PreviewServicesOptions = {}): Ser
     },
     activity: operations.activity,
     workflow: { async getCurrent() { return previewProductionWorkflow; } },
+    ...createUnavailableExceptionServices(),
     mode: "preview",
   };
 }

@@ -1,0 +1,277 @@
+{
+  "version": 1,
+  "description": "Canonical Arasya Home organisation roster (46 people). Organisation membership only: it never grants roles, permissions, applications or production stages.",
+  "departments": [
+    {
+      "key": "conducere",
+      "name": "Conducere",
+      "location": "Sediu Central"
+    },
+    {
+      "key": "operatiuni",
+      "name": "Operațiuni",
+      "location": "Sediu Central"
+    },
+    {
+      "key": "vanzari-online",
+      "name": "Vânzări Online",
+      "location": "Sediu Central"
+    },
+    {
+      "key": "financiar-contabilitate",
+      "name": "Financiar & Contabilitate",
+      "location": "Sediu Central"
+    },
+    {
+      "key": "vanzari-internationale",
+      "name": "Vânzări Internaționale",
+      "location": "Sediu Central"
+    },
+    {
+      "key": "magazin-dragon-7",
+      "name": "Magazin Dragon 7",
+      "location": "Dragon 7 (DR7)"
+    },
+    {
+      "key": "magazin-dragon-9",
+      "name": "Magazin Dragon 9",
+      "location": "Dragon 9 (DR9)"
+    },
+    {
+      "key": "croitorie-dragon",
+      "name": "Croitorie Dragon",
+      "location": "Dragon"
+    },
+    {
+      "key": "croitorie",
+      "name": "Croitorie",
+      "location": "Sediu Central"
+    },
+    {
+      "key": "taiere",
+      "name": "Tăiere",
+      "location": "Sediu Central — zona operațională / depozit"
+    },
+    {
+      "key": "depozit",
+      "name": "Depozit",
+      "location": "Sediu Central"
+    },
+    {
+      "key": "logistica-distributie",
+      "name": "Logistică & Distribuție",
+      "location": "Sediu Central — livrări en-gros în toată România"
+    },
+    {
+      "key": "expediere-curierat",
+      "name": "Expediere / Curierat",
+      "location": "Sediu Central"
+    },
+    {
+      "key": "montaj",
+      "name": "Montaj",
+      "location": "Teren"
+    }
+  ],
+  "people": [
+    {
+      "name": "YEMAN MESUT",
+      "department": "conducere",
+      "title": "CEO",
+      "principal": "ceo"
+    },
+    {
+      "name": "VOICAN DENISA NICOLETA",
+      "department": "operatiuni",
+      "title": "Manager operațional",
+      "proposedRole": "operations-manager"
+    },
+    {
+      "name": "YERLIKAYA HIKMET",
+      "department": "operatiuni",
+      "title": "Manager operațional",
+      "proposedRole": "operations-manager"
+    },
+    {
+      "name": "YETIS SINEM",
+      "department": "vanzari-online",
+      "title": "Director Online"
+    },
+    {
+      "name": "BLEGU DANIELA NICOLETA",
+      "department": "vanzari-online"
+    },
+    {
+      "name": "IANCU IULIANA",
+      "department": "vanzari-online"
+    },
+    {
+      "name": "IVAN IRINA",
+      "department": "vanzari-online"
+    },
+    {
+      "name": "YEMAN ZELAL",
+      "department": "financiar-contabilitate",
+      "title": "Director Financiar"
+    },
+    {
+      "name": "NITA CRISTINA",
+      "department": "financiar-contabilitate"
+    },
+    {
+      "name": "MANASRA MOHAMED",
+      "department": "vanzari-internationale"
+    },
+    {
+      "name": "YEMAN FURKAN",
+      "department": "vanzari-internationale"
+    },
+    {
+      "name": "RADUCANU STELUTA",
+      "department": "magazin-dragon-7"
+    },
+    {
+      "name": "STEFAN CORNELIA",
+      "department": "magazin-dragon-7"
+    },
+    {
+      "name": "STEREA DANIEL",
+      "department": "magazin-dragon-7"
+    },
+    {
+      "name": "BARAGAN CRISTINA",
+      "department": "magazin-dragon-9"
+    },
+    {
+      "name": "DAN NICULINA",
+      "department": "magazin-dragon-9"
+    },
+    {
+      "name": "MILITARU ALEXANDRA",
+      "department": "croitorie-dragon"
+    },
+    {
+      "name": "AGAMURADOVA ZULHUMORJAN",
+      "department": "croitorie"
+    },
+    {
+      "name": "EKANAYAKA ATHUKORALLAGE SRIYANTHA INDRA KUMARI",
+      "department": "croitorie"
+    },
+    {
+      "name": "GAMAGE SANATH PRIYANTHA",
+      "department": "croitorie"
+    },
+    {
+      "name": "IACOB MARINELA",
+      "department": "croitorie"
+    },
+    {
+      "name": "KADYROVA ZULFIYA",
+      "department": "croitorie"
+    },
+    {
+      "name": "KARADERILI HAYDAR",
+      "department": "croitorie"
+    },
+    {
+      "name": "MIHALCEA DANIELA",
+      "department": "croitorie"
+    },
+    {
+      "name": "NICULAE FLORENTINA GABRIELA",
+      "department": "croitorie"
+    },
+    {
+      "name": "OPREA DOINA",
+      "department": "croitorie"
+    },
+    {
+      "name": "REJEPOVA GULAYYM",
+      "department": "croitorie"
+    },
+    {
+      "name": "STANCIU FINITA",
+      "department": "croitorie"
+    },
+    {
+      "name": "VASILE PETRUTA",
+      "department": "croitorie"
+    },
+    {
+      "name": "VASILOAIA IULIANA",
+      "department": "croitorie"
+    },
+    {
+      "name": "ABDUL HAMEED HALEEM",
+      "department": "croitorie"
+    },
+    {
+      "name": "BUZATU ANDREEA",
+      "department": "taiere"
+    },
+    {
+      "name": "CRAMA FLORIN",
+      "department": "taiere"
+    },
+    {
+      "name": "HUDAYAROV MEKAN",
+      "department": "taiere"
+    },
+    {
+      "name": "REJEPOV AYMYRAT",
+      "department": "taiere"
+    },
+    {
+      "name": "ANNABERDIYEV SHIRALY",
+      "department": "depozit"
+    },
+    {
+      "name": "BERDIYEV AHAT",
+      "department": "depozit"
+    },
+    {
+      "name": "SISMAN KADIR",
+      "department": "depozit"
+    },
+    {
+      "name": "BARBU PAUL",
+      "department": "depozit",
+      "additionalDepartments": [
+        "montaj"
+      ]
+    },
+    {
+      "name": "ABOLBADA RFKI",
+      "department": "logistica-distributie"
+    },
+    {
+      "name": "BAZAROV ATAJAN",
+      "department": "logistica-distributie"
+    },
+    {
+      "name": "IONITA FANEL",
+      "department": "logistica-distributie"
+    },
+    {
+      "name": "SATYBALDYYEV GELDIMYRAT",
+      "department": "logistica-distributie"
+    },
+    {
+      "name": "PARASCHIV STANICA-LUCIAN",
+      "department": "logistica-distributie",
+      "additionalDepartments": [
+        "depozit",
+        "montaj"
+      ]
+    },
+    {
+      "name": "PARASCHIV CRISTINA NICOLETA",
+      "department": "expediere-curierat"
+    },
+    {
+      "name": "COJOCARU ION",
+      "department": "montaj"
+    }
+  ]
+}

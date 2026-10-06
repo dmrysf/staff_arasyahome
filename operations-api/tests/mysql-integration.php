@@ -122,6 +122,7 @@ try {
     }
     $expected[] = '012_b2b_production_handoff.sql';
     $expected[] = '013_b2b_projects.sql';
+    $expected[] = '014_production_exceptions.sql';
     if ($applied !== $expected) {
         throw new RuntimeException('An existing 001 schema did not apply exactly the pending migrations in order: ' . implode(', ', $applied));
     }

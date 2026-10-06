@@ -80,7 +80,8 @@ export type OrderActionBlockedReason =
   | "production_completed"
   | "order_unavailable"
   | "permission_missing"
-  | "workflow_unavailable";
+  | "workflow_unavailable"
+  | "exception_pending";
 
 export type StaffOrder = {
   productionContext?: { company: { legalName: string; companyCode: string; countryCode: string; taxIdentifier: string } };
@@ -106,7 +107,62 @@ export type StaffOrder = {
   version: number;
   /** Production revision used as expectedVersion; commerce-only updates never change it. */
   productionVersion: number;
+  /** Internal quality facts, present on single-order views only. Never shown to customers. */
+  productionQuality?: OrderQuality;
 };
+
+export type FaultExceptionStatus = "awaiting_acknowledgment" | "awaiting_approval" | "approved" | "rejected" | "cancelled";
+
+export type FaultDecision = {
+  attempt: number;
+  status: "pending" | "approved" | "rejected" | "cancelled";
+  openedReason: "acknowledged" | "rereview";
+  openedBy: string;
+  openedComment: string | null;
+  openedAt: string;
+  decidedAt: string | null;
+  decidedBy: string | null;
+  comment: string | null;
+};
+
+/** A cutting fault return request. Meters are exact decimal strings from the server ("17.000"). */
+export type FaultException = {
+  id: string;
+  number: string;
+  status: FaultExceptionStatus;
+  version: number;
+  order: { id: string; orderNumber: string; source: OrderSource; sourceName: string };
+  reason: { key: string; label: string };
+  lineCount: number;
+  faultMeters: string;
+  arrivalNumber: number;
+  reworkCycle: number | null;
+  repeatedError: boolean;
+  detector: { displayName: string };
+  responsible: { displayName: string };
+  reportedAt: string;
+  acknowledgedAt: string | null;
+  resolvedAt: string | null;
+  pendingSince: string | null;
+  role: "responsible" | "detector" | null;
+  actions: { canAcknowledge: boolean; canRequestRereview: boolean };
+  detectorComment?: string | null;
+  acknowledgmentComment?: string | null;
+  lines?: { itemId: string; lineNumber: number; name: string; code: string | null; variant: string | null; color: string | null; quantity: number; meters: string }[];
+  decisions?: FaultDecision[];
+};
+
+export type OrderQuality = {
+  arrivalNumber: number;
+  reworkCycles: number;
+  repeatedErrors: boolean;
+  openException: FaultException | null;
+};
+
+export type FaultReason = { key: string; label: string; requiresComment: boolean };
+
+/** One live notification; payloads carry identifiers only and the screen re-reads through REST. */
+export type LiveEvent = { seq: number; type: string; exceptionId?: string; orderId?: string; orderNumber?: string; status?: string };
 
 export type OrderPage = {
   items: StaffOrder[];
@@ -168,7 +224,25 @@ export type ServiceErrorCode =
   | "PASSWORD_CHANGE_REQUIRED"
   | "APPLICATION_ACCESS_DENIED"
   | "CURRENT_PASSWORD_INVALID"
-  | "PASSWORD_POLICY";
+  | "PASSWORD_POLICY"
+  | "ORDER_BLOCKED_BY_EXCEPTION"
+  | "EXCEPTION_ALREADY_OPEN"
+  | "EXCEPTION_STAGE_INVALID"
+  | "FAULT_REPORT_NOT_ALLOWED"
+  | "SELF_FAULT_REPORT_DENIED"
+  | "RESPONSIBLE_EMPLOYEE_UNKNOWN"
+  | "FAULT_LINES_INVALID"
+  | "FAULT_LINE_WITHOUT_METERS"
+  | "REASON_INVALID"
+  | "COMMENT_REQUIRED"
+  | "CONFIRMATION_REQUIRED"
+  | "QR_REQUIRED"
+  | "QR_ORDER_MISMATCH"
+  | "EXCEPTION_NOT_FOUND"
+  | "EXCEPTION_NOT_ASSIGNED"
+  | "EXCEPTION_CHANGED"
+  | "EXCEPTION_STATE_INVALID"
+  | "EXCEPTION_ALREADY_RESOLVED";
 
 export class StaffServiceError extends Error {
   constructor(public readonly code: ServiceErrorCode, message?: string) {

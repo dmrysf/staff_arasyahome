@@ -12,6 +12,8 @@ final readonly class AuthMaintenance
 {
     public const DEFAULT_BATCH_SIZE = 500;
 
+    private const LIVE_EVENT_RETENTION_DAYS = 7;
+
     public function __construct(
         private PDO $pdo,
         private int $sessionRetentionDays,
@@ -23,7 +25,7 @@ final readonly class AuthMaintenance
     ) {
     }
 
-    /** @return array{sessions: int, login_attempts: int, rate_limit_buckets: int, audit_events: int|null, idempotency_keys: int, api_rate_limit_buckets: int, b2b_idempotency_keys: int} */
+    /** @return array{sessions: int, login_attempts: int, rate_limit_buckets: int, audit_events: int|null, idempotency_keys: int, api_rate_limit_buckets: int, b2b_idempotency_keys: int, exception_idempotency_keys: int, live_events: int} */
     public function run(bool $dryRun, ?DateTimeImmutable $now = null): array
     {
         $lock = new DatabaseAdvisoryLock($this->pdo, 'arasya_operations_maintenance');
@@ -48,6 +50,10 @@ final readonly class AuthMaintenance
                 // Replay references only: account movements, allocations and activity are never pruned.
                 'b2b_account_idempotency_keys' => $this->pruneComposite('b2b_account_idempotency', ['employee_uuid','idempotency_key'], 'created_at', $this->cutoff($now,$this->idempotencyRetentionDays),$dryRun,false),
                 'b2b_project_idempotency_keys' => $this->pruneComposite('b2b_project_idempotency', ['employee_uuid','idempotency_key'], 'created_at', $this->cutoff($now,$this->idempotencyRetentionDays),$dryRun,false),
+                // Replay references only: exceptions, decisions, timelines and quality facts are never pruned.
+                'exception_idempotency_keys' => $this->pruneComposite('production_exception_idempotency', ['employee_uuid', 'idempotency_key'], 'created_at', $this->cutoff($now, $this->idempotencyRetentionDays), $dryRun, false),
+                // Live notifications are a delivery outbox, not history; the business record lives elsewhere.
+                'live_events' => $this->pruneSimple('live_events', 'event_seq', 'created_at', $this->cutoff($now, self::LIVE_EVENT_RETENTION_DAYS), $dryRun),
             ];
         } finally {
             $lock->release();

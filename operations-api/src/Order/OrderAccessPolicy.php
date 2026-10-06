@@ -43,6 +43,9 @@ final readonly class OrderAccessPolicy
         if ($order->isProductionCompleted()) {
             return $this->blocked('production_completed');
         }
+        if ($order->isBlockedByException()) {
+            return $this->blocked('exception_pending');
+        }
         if ($workflow === null) {
             return $this->blocked('workflow_unavailable');
         }

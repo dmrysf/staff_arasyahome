@@ -1,0 +1,64 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Arasya\Operations\Quality;
+
+use PDO;
+
+/**
+ * Live notification outbox. Writers append inside the business transaction, so a notification exists
+ * exactly when the change committed. Payloads carry identifiers and states, never details: readers
+ * re-fetch through endpoints that apply their own authorization.
+ */
+final readonly class LiveEvents
+{
+    public const AUDIENCE_EMPLOYEE = 'employee';
+    public const AUDIENCE_APPROVERS = 'approvers';
+    private const BATCH = 100;
+
+    public function __construct(private PDO $pdo)
+    {
+    }
+
+    /** @param array<string, mixed> $payload */
+    public function toEmployee(string $employeeUuid, string $type, array $payload, string $now): void
+    {
+        $this->insert(self::AUDIENCE_EMPLOYEE, $employeeUuid, $type, $payload, $now);
+    }
+
+    /** @param array<string, mixed> $payload */
+    public function toApprovers(string $type, array $payload, string $now): void
+    {
+        $this->insert(self::AUDIENCE_APPROVERS, null, $type, $payload, $now);
+    }
+
+    public function latestSequence(): int
+    {
+        return (int) $this->pdo->query('SELECT COALESCE(MAX(event_seq), 0) FROM live_events')->fetchColumn();
+    }
+
+    /** @return list<array{seq: int, type: string, payload: array<string, mixed>}> */
+    public function after(string $employeeUuid, bool $approver, int $after): array
+    {
+        $statement = $this->pdo->prepare(
+            'SELECT event_seq, event_type, payload_json FROM live_events
+             WHERE event_seq > :after AND (recipient_employee_uuid = :employee' . ($approver ? " OR audience = 'approvers'" : '') . ')
+             ORDER BY event_seq LIMIT ' . self::BATCH,
+        );
+        $statement->execute(['after' => $after, 'employee' => $employeeUuid]);
+        $events = [];
+        foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $payload = json_decode((string) $row['payload_json'], true);
+            $events[] = ['seq' => (int) $row['event_seq'], 'type' => (string) $row['event_type'], 'payload' => is_array($payload) ? $payload : []];
+        }
+        return $events;
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function insert(string $audience, ?string $recipient, string $type, array $payload, string $now): void
+    {
+        $this->pdo->prepare('INSERT INTO live_events (audience, recipient_employee_uuid, event_type, payload_json, created_at) VALUES (?, ?, ?, ?, ?)')
+            ->execute([$audience, $recipient, $type, json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), $now]);
+    }
+}

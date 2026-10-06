@@ -288,7 +288,7 @@ checkError($get($scanner, '/orders/mine'), 401, 'ACCOUNT_INACTIVE', 'inactive em
 // ---- Maintenance against real MySQL (native prepares) ---------------------------
 $maintenance = new \Arasya\Operations\Database\AuthMaintenance($pdo, 30, 30, 7, null, 500, 30);
 $dryRun = $maintenance->run(true);
-check(array_keys($dryRun) === ['sessions', 'login_attempts', 'rate_limit_buckets', 'audit_events', 'idempotency_keys', 'api_rate_limit_buckets', 'b2b_idempotency_keys', 'b2b_order_idempotency_keys', 'b2b_account_idempotency_keys', 'b2b_project_idempotency_keys'], 'maintenance dry-run reports every retained table on MySQL');
+check(array_keys($dryRun) === ['sessions', 'login_attempts', 'rate_limit_buckets', 'audit_events', 'idempotency_keys', 'api_rate_limit_buckets', 'b2b_idempotency_keys', 'b2b_order_idempotency_keys', 'b2b_account_idempotency_keys', 'b2b_project_idempotency_keys', 'exception_idempotency_keys', 'live_events'], 'maintenance dry-run reports every retained table on MySQL');
 $pdo->exec("UPDATE order_operation_idempotency SET created_at = UTC_TIMESTAMP(6) - INTERVAL 40 DAY WHERE idempotency_key = " . $pdo->quote($claimKey));
 check($maintenance->run(false)['idempotency_keys'] >= 1, 'expired idempotency results are pruned on MySQL');
 check((int) $pdo->query('SELECT COUNT(*) FROM order_activity_events')->fetchColumn() > 0, 'maintenance never deletes the activity audit');

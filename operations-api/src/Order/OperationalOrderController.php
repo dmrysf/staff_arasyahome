@@ -15,6 +15,7 @@ use Arasya\Operations\Http\RequestContext;
 use Arasya\Operations\Http\Response;
 use Arasya\Operations\Production\ProductionWorkflow;
 use Arasya\Operations\Production\ProductionWorkflowService;
+use Arasya\Operations\Quality\ExceptionQueries;
 use Arasya\Operations\Security\ApiRateLimiter;
 use Arasya\Operations\Security\CsrfGuard;
 use RuntimeException;
@@ -36,6 +37,7 @@ final readonly class OperationalOrderController
         private OrderOperationsService $operations,
         private CsrfGuard $csrf,
         private ApiRateLimiter $rateLimiter,
+        private ?ExceptionQueries $quality = null,
     ) {
     }
 
@@ -192,7 +194,11 @@ final readonly class OperationalOrderController
 
     private function orderResponse(EmployeeIdentity $employee, OperationalOrder $order): Response
     {
-        return Response::json($this->present($employee, $order, $this->workflowOrNull()), 200, ['Cache-Control' => 'private, no-store']);
+        return Response::json(
+            $this->serializer->serializeOrder($order, $this->policy->evaluate($employee, $order, $this->workflowOrNull()), $this->quality?->orderQuality($order->orderUuid, $order->openExceptionUuid, $employee->employeeUuid)),
+            200,
+            ['Cache-Control' => 'private, no-store'],
+        );
     }
 
     /** @return array<string, mixed> */

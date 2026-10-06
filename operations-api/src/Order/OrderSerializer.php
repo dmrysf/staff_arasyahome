@@ -6,8 +6,11 @@ namespace Arasya\Operations\Order;
 
 final readonly class OrderSerializer
 {
-    /** @param array{action: string|null, blockedReason: string|null}|null $access */
-    public function serializeOrder(OperationalOrder $order, ?array $access = null): array
+    /**
+     * @param array{action: string|null, blockedReason: string|null}|null $access
+     * @param array<string, mixed>|null $quality internal production quality facts (single-order views only)
+     */
+    public function serializeOrder(OperationalOrder $order, ?array $access = null, ?array $quality = null): array
     {
         $data = [
             'id' => $order->globalId->toString(),
@@ -53,6 +56,10 @@ final readonly class OrderSerializer
             if ($access['blockedReason'] !== null) {
                 $data['employeeActionBlockedReason'] = $access['blockedReason'];
             }
+        }
+
+        if ($quality !== null) {
+            $data['productionQuality'] = $quality;
         }
 
         if ($order->relation !== null) {

@@ -1,4 +1,4 @@
-import type { ActivityPage, Employee, OrderPage, ProductionWorkflow, StaffOrder } from "../domain/models";
+import type { ActivityPage, Employee, FaultException, FaultReason, LiveEvent, OrderPage, ProductionWorkflow, StaffOrder } from "../domain/models";
 import type { StaffRuntimeMode } from "../src/runtimeConfig";
 
 export type Session = { employee: Employee; expiresAt: string };
@@ -45,11 +45,31 @@ export interface ActivityService {
   listMine(input: { range: "today" | "7days" | "month" | "custom"; cursor?: string; from?: string; to?: string }, options?: { signal?: AbortSignal }): Promise<ActivityPage>;
 }
 
+/** Cutting fault return requests. Every mutation needs server confirmation; nothing is queued offline. */
+export interface ExceptionService {
+  listMine(options?: { signal?: AbortSignal }): Promise<FaultException[]>;
+  get(id: string, options?: { signal?: AbortSignal }): Promise<FaultException>;
+  reasons(options?: { signal?: AbortSignal }): Promise<FaultReason[]>;
+  /** Tailoring intake returns the order to cutting with the exact faulty lines. */
+  report(orderId: string, input: { expectedVersion: number; itemIds: string[]; reasonKey: string; comment: string | null; idempotencyKey: string }): Promise<FaultException>;
+  /** The responsible cutting employee confirms and scans the QR of the same order. */
+  acknowledge(id: string, input: { expectedVersion: number; qrToken: string; comment: string | null; idempotencyKey: string }): Promise<FaultException>;
+  /** After a rejection: ask for a new decision; the rejection stays in history. */
+  rereview(id: string, input: { expectedVersion: number; comment: string; idempotencyKey: string }): Promise<FaultException>;
+}
+
+/** Authenticated live updates (server-sent events). The handler receives each event exactly once. */
+export interface LiveService {
+  subscribe(handler: (event: LiveEvent) => void, onState?: (state: "connected" | "reconnecting") => void): () => void;
+}
+
 export type ServiceBundle = {
   auth: AuthService;
   employee: EmployeeService;
   orders: OrderService;
   activity: ActivityService;
   workflow: ProductionWorkflowService;
+  exceptions: ExceptionService;
+  live: LiveService;
   mode: StaffRuntimeMode;
 };

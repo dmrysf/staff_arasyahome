@@ -88,10 +88,34 @@ $b2bOrder=$commercial('/b2b/orders/'.$b2bOrder['id'].'/finalize',['expectedVersi
 $commercial('/b2b/orders/'.$b2bOrder['id'].'/production',['expectedVersion'=>$b2bOrder['version']]);
 $admin->create('Operator B2B','operator.b2b.e2e',null,'pregatire-material','employee',$password,['waiting','material-preparation'],'e2e');
 
+// Production exceptions: a four-line order (5/7/8/9 m) cut by a dedicated cutting employee and accepted at
+// tailoring intake by a dedicated intake employee, plus one operations manager. Everything goes through the real API commands.
+$lines=[];foreach([[1,'Voal A',5],[2,'Voal B',7],[3,'Draperie C',8],[4,'Draperie D',9]] as [$n,$name,$m]) $lines[]=['id'=>700050+$n,'line'=>$n,'name'=>$name,'sku'=>"EX-{$n}",'color'=>'Ivory','width'=>300,'height'=>260,'unit'=>'cm','meters'=>$m,'quantity'=>2];
+$exceptionOrder=T::ingest($kernel,'trendhome',T::sourceOrder('70005','e2e-70005-1',$changedAt,T::stage('material-preparation'),'processing','active',$lines));
+if(($exceptionOrder['body']['outcome']??null)!=='applied') throw new RuntimeException('E2E exception order ingestion failed.');
+$qr['70005']=$exceptionOrder['body']['qr'];
+$staffStep=static function(string $user,string $action,int $version,string $key)use($kernel,$password,$origin):void{
+    $s=T::login($kernel,$user,$password);
+    $r=T::call($kernel,'POST','/orders/'.rawurlencode('trendhome:70005').'/'.$action,['expectedVersion'=>$version],['origin'=>$origin,'x-csrf-token'=>$s['csrf'],'idempotency-key'=>$key],$s['cookie']);
+    if($r['status']!==200) throw new RuntimeException('E2E exception order step failed: '.json_encode($r['body']));
+};
+$admin->create('Crama Florin','crama.e2e',null,'pregatire-material','employee',$password,['material-preparation'],'e2e');
+$admin->create('Oprea Doina','oprea.e2e',null,'pregatire-material','employee',$password,['workshop-receiving'],'e2e');
+$staffStep('crama.e2e','claim',1,'e2e-fixture-70005-claim-c');
+$staffStep('crama.e2e','transition',2,'e2e-fixture-70005-cut-c');
+$staffStep('oprea.e2e','claim',3,'e2e-fixture-70005-intake-o');
+$opsman=$admin->create('Denisa Operațiuni','denisa.e2e',null,'pregatire-material','employee',$password,[],'e2e');
+$opsRole=(int)$pdo->query("SELECT role_id FROM roles WHERE role_key='operations-manager'")->fetchColumn();
+foreach([['applications',['applications'=>['dashboard']]],['roles',['roleIds'=>[$opsRole]]]] as [$what,$body]){
+    $r=T::call($kernel,'PUT',"/management/employees/{$opsman->employeeUuid}/{$what}",$body,['origin'=>$origin,'x-csrf-token'=>$root['csrf']],$root['cookie']);
+    if($r['status']!==200) throw new RuntimeException('E2E operations manager setup failed: '.json_encode($r['body']));
+}
+
 echo json_encode([
     'password' => $password,
     'users' => ['ana' => 'ana.e2e', 'bogdan' => 'bogdan.e2e', 'mihai' => 'mihai.e2e', 'dashboardOnly' => 'dora.e2e', 'temporary' => 'teodor.e2e'],
     'orders' => ['flow' => '70001', 'qr' => '70002', 'claimedByOther' => '70003', 'conflict' => '70004'],
     'qr' => $qr,
     'b2b' => ['id'=>'b2b:'.$b2bOrder['id'],'code'=>$b2bOrder['code'],'username'=>'operator.b2b.e2e'],
+    'exceptions' => ['order' => '70005', 'cutter' => 'crama.e2e', 'intake' => 'oprea.e2e', 'manager' => 'denisa.e2e'],
 ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT), "\n";

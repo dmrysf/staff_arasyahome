@@ -25,6 +25,7 @@ export const orderActionBlockedCopy: Record<OrderActionBlockedReason, string> = 
   order_unavailable: "Comanda a fost anulată la sursă și nu se mai lucrează.",
   permission_missing: "Nu ai permisiunea pentru această acțiune.",
   workflow_unavailable: "Fluxul de producție nu este disponibil momentan.",
+  exception_pending: "Comanda este blocată: o cerere de returnare la tăiere așteaptă confirmarea și aprobarea.",
 };
 
 export function isOrderActionId(value: unknown): value is OrderActionId {

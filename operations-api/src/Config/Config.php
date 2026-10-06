@@ -35,7 +35,12 @@ final readonly class Config
         public int $sourceUnavailableSeconds = 3600,
         public ?TrendyolCredentials $trendyol = null,
         public int $idempotencyRetentionDays = 30,
+        /** Seconds the live event stream may wait for new events before answering (0 = answer at once). */
+        public int $liveHoldSeconds = 0,
     ) {
+        if ($this->liveHoldSeconds < 0 || $this->liveHoldSeconds > 25) {
+            throw new RuntimeException('ARASYA_LIVE_HOLD_SECONDS must be between 0 and 25.');
+        }
         if (strlen($this->appSecret) < 32) {
             throw new RuntimeException('ARASYA_APP_SECRET must contain at least 32 bytes.');
         }
@@ -98,6 +103,7 @@ final readonly class Config
                 self::value($values, 'ARASYA_TRENDYOL_API_BASE_URL', ''),
             ),
             idempotencyRetentionDays: self::positiveInt($values, 'ARASYA_IDEMPOTENCY_RETENTION_DAYS', 30),
+            liveHoldSeconds: self::nonNegativeInt($values, 'ARASYA_LIVE_HOLD_SECONDS', 0),
         );
     }
 
@@ -133,6 +139,16 @@ final readonly class Config
         $value = self::value($values, $name, (string) $default);
         if (!ctype_digit($value) || (int) $value < 1) {
             throw new RuntimeException("{$name} must be a positive integer.");
+        }
+        return (int) $value;
+    }
+
+    /** @param array<string, string> $values */
+    private static function nonNegativeInt(array $values, string $name, int $default): int
+    {
+        $value = self::value($values, $name, (string) $default);
+        if (!ctype_digit($value)) {
+            throw new RuntimeException("{$name} must be a non-negative integer.");
         }
         return (int) $value;
     }

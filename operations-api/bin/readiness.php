@@ -79,6 +79,13 @@ try {
     $report($accountPermissions === 5 ? 'OK' : 'FAIL', 'b2b_account_permissions');
     $projectPermissions = (int) $pdo->query("SELECT COUNT(*) FROM permissions WHERE permission_key IN ('b2b.projects.view','b2b.projects.create','b2b.projects.update','b2b.projects.archive','b2b.projects.convert') AND role_grantable=1")->fetchColumn();
     $report($projectPermissions === 5 ? 'OK' : 'FAIL', 'b2b_project_permissions');
+    $exceptionPermissions = (int) $pdo->query("SELECT COUNT(*) FROM permissions WHERE (permission_key IN ('production.exceptions.approve','orders.lookup_exact') AND role_grantable=1) OR (permission_key IN ('orders.report_fault','orders.acknowledge_fault') AND role_grantable=0)")->fetchColumn();
+    $report($exceptionPermissions === 4 ? 'OK' : 'FAIL', 'production_exception_permissions');
+    $reasons = (int) $pdo->query("SELECT COUNT(*) FROM production_fault_reasons WHERE status = 'active'")->fetchColumn();
+    $policy = $pdo->query('SELECT approval_mode FROM production_exception_policy WHERE singleton_id = 1')->fetchColumn();
+    $report($reasons > 0 && $policy === 'blocking' ? 'OK' : 'FAIL', 'production_exception_policy');
+    $ceo = (int) $pdo->query("SELECT COUNT(*) FROM organization_principals WHERE principal_key = 'ceo'")->fetchColumn();
+    $report($ceo === 1 ? 'OK' : 'WARN', 'organization_ceo_principal');
     $report(PHP_INT_SIZE >= 8 ? 'OK' : 'FAIL', 'b2b_fixed_point_int64');
 } catch (Throwable) {
     $report('FAIL', 'iam_applications');
@@ -116,7 +123,7 @@ try {
     $release = json_decode((string) file_get_contents($releasePath), true, flags: JSON_THROW_ON_ERROR);
     $sourceCommit = is_array($release) ? ($release['sourceCommit'] ?? null) : null;
     $version = is_array($release) ? ($release['version'] ?? null) : null;
-    $valid = is_string($sourceCommit) && preg_match('/^[0-9a-f]{40}$/', $sourceCommit) === 1 && $version === '2.12.1';
+    $valid = is_string($sourceCommit) && preg_match('/^[0-9a-f]{40}$/', $sourceCommit) === 1 && $version === '2.13.0';
     $releaseDirectory = basename(dirname(__DIR__));
     if (preg_match('/^[0-9a-f]{40}$/', $releaseDirectory) === 1) {
         $valid = $valid && hash_equals($releaseDirectory, $sourceCommit);

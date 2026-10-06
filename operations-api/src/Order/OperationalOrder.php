@@ -28,7 +28,14 @@ final readonly class OperationalOrder
         public ?string $productionOwnerEmployeeUuid = null,
         public ?DateTimeImmutable $productionCompletedAt = null,
         public ?array $productionContext = null,
+        public ?string $openExceptionUuid = null,
     ) {
+    }
+
+    /** An open production exception (for example a cutting fault return) blocks every normal production action. */
+    public function isBlockedByException(): bool
+    {
+        return $this->openExceptionUuid !== null;
     }
 
     public function isProductionCompleted(): bool

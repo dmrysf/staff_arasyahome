@@ -3,6 +3,7 @@ import { previewActivityPages, previewEmployee, previewOrderDatabase } from "../
 import { previewProductionWorkflow } from "../../mocks/productionWorkflow";
 import type { AuthService, EmployeeService, ServiceBundle, Session } from "../contracts";
 import { createSimulatedOperations } from "../simulatedOperations";
+import { createUnavailableExceptionServices } from "../offlineExceptions";
 
 const clone = <T,>(value: T): T => structuredClone(value);
 
@@ -48,5 +49,5 @@ export function createDemoServices(): ServiceBundle {
     },
   };
 
-  return { auth, employee, orders: operations.orders, activity: operations.activity, workflow: { async getCurrent() { return previewProductionWorkflow; } }, mode: "demo" };
+  return { auth, employee, orders: operations.orders, activity: operations.activity, workflow: { async getCurrent() { return previewProductionWorkflow; } }, ...createUnavailableExceptionServices(), mode: "demo" };
 }

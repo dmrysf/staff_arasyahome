@@ -1,6 +1,7 @@
-import { StaffServiceError, type ActivityAction, type ActivityEntry, type ActivityPage, type Employee, type ServiceErrorCode } from "../../domain/models";
+import { StaffServiceError, type ActivityAction, type ActivityEntry, type ActivityPage, type Employee, type FaultDecision, type FaultException, type FaultReason, type OrderQuality, type ServiceErrorCode } from "../../domain/models";
 import { isOrderActionBlockedReason, isOrderActionId, orderActionLabels } from "../../domain/orderActions";
-import type { ActivityService, AuthService, EmployeeService, OrderService, ServiceBundle, Session } from "../contracts";
+import type { ActivityService, AuthService, EmployeeService, ExceptionService, LiveService, OrderService, ServiceBundle, Session } from "../contracts";
+import { startLiveClient } from "./liveClient";
 import { createBrowserWorkflowCache, createUnavailableWorkflowCache, normalizeProductionApiBaseUrl, type WorkflowCache } from "./workflowCache";
 import { createProductionWorkflowService } from "./workflowService";
 
@@ -39,6 +40,24 @@ const backendErrorCodes: Partial<Record<string, ServiceErrorCode>> = {
   APPLICATION_ACCESS_DENIED: "APPLICATION_ACCESS_DENIED",
   CURRENT_PASSWORD_INVALID: "CURRENT_PASSWORD_INVALID",
   PASSWORD_POLICY: "PASSWORD_POLICY",
+  ORDER_BLOCKED_BY_EXCEPTION: "ORDER_BLOCKED_BY_EXCEPTION",
+  EXCEPTION_ALREADY_OPEN: "EXCEPTION_ALREADY_OPEN",
+  EXCEPTION_STAGE_INVALID: "EXCEPTION_STAGE_INVALID",
+  FAULT_REPORT_NOT_ALLOWED: "FAULT_REPORT_NOT_ALLOWED",
+  SELF_FAULT_REPORT_DENIED: "SELF_FAULT_REPORT_DENIED",
+  RESPONSIBLE_EMPLOYEE_UNKNOWN: "RESPONSIBLE_EMPLOYEE_UNKNOWN",
+  FAULT_LINES_INVALID: "FAULT_LINES_INVALID",
+  FAULT_LINE_WITHOUT_METERS: "FAULT_LINE_WITHOUT_METERS",
+  REASON_INVALID: "REASON_INVALID",
+  COMMENT_REQUIRED: "COMMENT_REQUIRED",
+  CONFIRMATION_REQUIRED: "CONFIRMATION_REQUIRED",
+  QR_REQUIRED: "QR_REQUIRED",
+  QR_ORDER_MISMATCH: "QR_ORDER_MISMATCH",
+  EXCEPTION_NOT_FOUND: "EXCEPTION_NOT_FOUND",
+  EXCEPTION_NOT_ASSIGNED: "EXCEPTION_NOT_ASSIGNED",
+  EXCEPTION_CHANGED: "EXCEPTION_CHANGED",
+  EXCEPTION_STATE_INVALID: "EXCEPTION_STATE_INVALID",
+  EXCEPTION_ALREADY_RESOLVED: "EXCEPTION_ALREADY_RESOLVED",
 };
 
 function objectValue(value: unknown): Record<string, unknown> {
@@ -225,6 +244,7 @@ export function mapProductionOrder(value: unknown): import("../../domain/models"
       countryCode: stringValue(company.countryCode), taxIdentifier: stringValue(company.taxIdentifier) } };
   }
   if (raw.acceptedAt != null) order.acceptedAt = timestampValue(raw.acceptedAt);
+  if (raw.productionQuality != null) order.productionQuality = mapOrderQuality(raw.productionQuality);
 
   if (raw.employeeRelation != null) {
     const rel = objectValue(raw.employeeRelation);
@@ -253,6 +273,92 @@ export function mapProductionOrder(value: unknown): import("../../domain/models"
   }
 
   return order;
+}
+
+const decimalString = (value: unknown) => {
+  if (typeof value !== "string" || !/^\d{1,9}\.\d{3}$/.test(value)) throw new StaffServiceError("SERVER_ERROR");
+  return value;
+};
+const nullableText = (value: unknown) => value === null || value === undefined ? null : stringValue(value);
+const nullableTimestamp = (value: unknown) => value === null || value === undefined ? null : timestampValue(value);
+const exceptionStatuses = ["awaiting_acknowledgment", "awaiting_approval", "approved", "rejected", "cancelled"] as const;
+
+function mapDecision(value: unknown): FaultDecision {
+  const raw = objectValue(value);
+  return {
+    attempt: positiveInteger(raw.attempt),
+    status: oneOf(raw.status, ["pending", "approved", "rejected", "cancelled"] as const),
+    openedReason: oneOf(raw.openedReason, ["acknowledged", "rereview"] as const),
+    openedBy: stringValue(raw.openedBy),
+    openedComment: nullableText(raw.openedComment),
+    openedAt: timestampValue(raw.openedAt),
+    decidedAt: nullableTimestamp(raw.decidedAt),
+    decidedBy: nullableText(raw.decidedBy),
+    comment: nullableText(raw.comment),
+  };
+}
+
+/** Strict mapping of a cutting fault request; meters stay exact decimal strings. */
+export function mapFaultException(value: unknown): FaultException {
+  const raw = objectValue(value);
+  const order = objectValue(raw.order), reason = objectValue(raw.reason), actions = raw.actions == null ? null : objectValue(raw.actions);
+  const source = stringValue(order.source);
+  const mapped: FaultException = {
+    id: stringValue(raw.id),
+    number: stringValue(raw.number),
+    status: oneOf(raw.status, exceptionStatuses),
+    version: positiveInteger(raw.version),
+    order: { id: stringValue(order.id), orderNumber: stringValue(order.orderNumber), sourceName: stringValue(order.sourceName),
+      source: ["trendhome", "outletperdele", "trendyol", "b2b", "marketplace"].includes(source) ? source as FaultException["order"]["source"] : "unknown" },
+    reason: { key: stringValue(reason.key), label: stringValue(reason.label) },
+    lineCount: positiveInteger(raw.lineCount),
+    faultMeters: decimalString(raw.faultMeters),
+    arrivalNumber: positiveInteger(raw.arrivalNumber),
+    reworkCycle: raw.reworkCycle == null ? null : positiveInteger(raw.reworkCycle),
+    repeatedError: booleanValue(raw.repeatedError),
+    detector: { displayName: stringValue(objectValue(raw.detector).displayName) },
+    responsible: { displayName: stringValue(objectValue(raw.responsible).displayName) },
+    reportedAt: timestampValue(raw.reportedAt),
+    acknowledgedAt: nullableTimestamp(raw.acknowledgedAt),
+    resolvedAt: nullableTimestamp(raw.resolvedAt),
+    pendingSince: nullableTimestamp(raw.pendingSince),
+    role: raw.role == null ? null : oneOf(raw.role, ["responsible", "detector"] as const),
+    actions: { canAcknowledge: actions ? booleanValue(actions.canAcknowledge) : false, canRequestRereview: actions ? booleanValue(actions.canRequestRereview) : false },
+  };
+  if ("detectorComment" in raw) mapped.detectorComment = nullableText(raw.detectorComment);
+  if ("acknowledgmentComment" in raw) mapped.acknowledgmentComment = nullableText(raw.acknowledgmentComment);
+  if (raw.lines != null) {
+    if (!Array.isArray(raw.lines)) throw new StaffServiceError("SERVER_ERROR");
+    mapped.lines = raw.lines.map((item) => {
+      const line = objectValue(item);
+      return { itemId: stringValue(line.itemId), lineNumber: positiveInteger(line.lineNumber), name: stringValue(line.name), code: nullableText(line.code),
+        variant: nullableText(line.variant), color: nullableText(line.color), quantity: positiveInteger(line.quantity), meters: decimalString(line.meters) };
+    });
+  }
+  if (raw.decisions != null) {
+    if (!Array.isArray(raw.decisions)) throw new StaffServiceError("SERVER_ERROR");
+    mapped.decisions = raw.decisions.map(mapDecision);
+  }
+  return mapped;
+}
+
+export function mapOrderQuality(value: unknown): OrderQuality {
+  const raw = objectValue(value);
+  const count = (item: unknown) => { if (typeof item !== "number" || !Number.isInteger(item) || item < 0) throw new StaffServiceError("SERVER_ERROR"); return item; };
+  return { arrivalNumber: count(raw.arrivalNumber), reworkCycles: count(raw.reworkCycles), repeatedErrors: booleanValue(raw.repeatedErrors),
+    openException: raw.openException == null ? null : mapFaultException(raw.openException) };
+}
+
+function mapFaultList(value: unknown): FaultException[] {
+  const raw = objectValue(value);
+  if (!Array.isArray(raw.items)) throw new StaffServiceError("SERVER_ERROR");
+  return raw.items.map(mapFaultException);
+}
+
+function mapReasons(value: unknown): FaultReason[] {
+  const raw = objectValue(value);
+  if (!Array.isArray(raw.items)) throw new StaffServiceError("SERVER_ERROR");
+  return raw.items.map((item) => { const reason = objectValue(item); return { key: stringValue(reason.key), label: stringValue(reason.label), requiresComment: booleanValue(reason.requiresComment) }; });
 }
 
 export function mapOrderPage(value: unknown): import("../../domain/models").OrderPage {
@@ -469,5 +575,26 @@ export function createProductionServices(apiBaseUrl: string, options: Production
     get: (etag, signal) => http.send("/production/workflow", { signal, headers: etag ? { "If-None-Match": etag } : undefined }),
     failure: (response) => http.errorFromResponse(response, "/production/workflow"),
   }, options.workflowCache ?? (normalizedApiBaseUrl ? createBrowserWorkflowCache(normalizedApiBaseUrl) : createUnavailableWorkflowCache()));
-  return { auth, employee, orders, activity, workflow, mode: "production" };
+  const exceptions: ExceptionService = {
+    listMine: (requestOptions) => http.request("/production-exceptions/mine", { signal: requestOptions?.signal }, mapFaultList),
+    get: (id, requestOptions) => http.request(`/production-exceptions/${encodeURIComponent(id)}`, { signal: requestOptions?.signal }, mapFaultException),
+    reasons: (requestOptions) => http.request("/production-exceptions/reasons", { signal: requestOptions?.signal }, mapReasons),
+    report: (orderId, input) => http.request(`/orders/${encodeURIComponent(orderId)}/fault-reports`, { method: "POST", headers: { "Idempotency-Key": input.idempotencyKey },
+      body: JSON.stringify({ expectedVersion: input.expectedVersion, itemIds: input.itemIds, reasonKey: input.reasonKey, ...(input.comment ? { comment: input.comment } : {}) }) }, mapFaultException),
+    acknowledge: (id, input) => http.request(`/production-exceptions/${encodeURIComponent(id)}/acknowledge`, { method: "POST", headers: { "Idempotency-Key": input.idempotencyKey },
+      body: JSON.stringify({ expectedVersion: input.expectedVersion, confirmed: true, qrToken: input.qrToken, ...(input.comment ? { comment: input.comment } : {}) }) }, mapFaultException),
+    rereview: (id, input) => http.request(`/production-exceptions/${encodeURIComponent(id)}/rereview`, { method: "POST", headers: { "Idempotency-Key": input.idempotencyKey },
+      body: JSON.stringify({ expectedVersion: input.expectedVersion, comment: input.comment }) }, mapFaultException),
+  };
+  const live: LiveService = {
+    subscribe(handler, onState) {
+      return startLiveClient({
+        fetchStream: (path, signal) => http.send(path, { signal }),
+        onEvent: handler,
+        onState,
+        onDenied: (response) => { void http.errorFromResponse(response, "/live/events"); },
+      });
+    },
+  };
+  return { auth, employee, orders, activity, workflow, exceptions, live, mode: "production" };
 }

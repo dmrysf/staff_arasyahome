@@ -12,6 +12,7 @@ use Arasya\Operations\B2B\ProjectController;
 use Arasya\Operations\Integration\SourceIngestionController;
 use Arasya\Operations\Management\ManagementController;
 use Arasya\Operations\Order\OperationalOrderController;
+use Arasya\Operations\Quality\QualityController;
 use Arasya\Operations\Security\CookiePolicy;
 use Arasya\Operations\Support\StructuredLogger;
 use Throwable;
@@ -34,6 +35,7 @@ final readonly class ApiKernel
         private ?OrderController $b2bOrders = null,
         private ?AccountController $b2bAccounts = null,
         private ?ProjectController $b2bProjects = null,
+        private ?QualityController $quality = null,
     ) {
     }
 
@@ -62,6 +64,7 @@ final readonly class ApiKernel
                 'GET /orders/mine' => $this->ordersController()->listMine($request),
                 'GET /orders/lookup' => $this->ordersController()->lookup($request),
                 'POST /orders/resolve-qr' => $this->ordersController()->resolveQr($request),
+                'GET /live/events' => $this->qualityController()->events($request),
                 'GET /activity/mine' => ($this->activity ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Activity API is not ready.'))->listMine($request),
                 default => $this->matchDynamicRoutes($request),
             };
@@ -98,8 +101,14 @@ final readonly class ApiKernel
         if ($request->path === '/b2b/companies' || str_starts_with($request->path, '/b2b/companies/')) {
             return ($this->b2bCompanies ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'B2B companies API is not ready.'))->handle($request);
         }
+        if (str_starts_with($request->path, '/production-exceptions/')) {
+            return $this->qualityController()->handle($request);
+        }
         if (str_starts_with($request->path, '/management/')) {
             return ($this->management ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Management API is not ready.'))->handle($request);
+        }
+        if ($request->method === 'POST' && preg_match('#^/orders/([^/]{1,600})/fault-reports$#D', $request->path, $matches) === 1) {
+            return $this->qualityController()->report($request, rawurldecode($matches[1]));
         }
         if (preg_match('#^/orders/([^/]{1,600})(?:/(claim|transition))?$#D', $request->path, $matches) === 1) {
             $globalIdString = rawurldecode($matches[1]);
@@ -117,6 +126,11 @@ final readonly class ApiKernel
         }
 
         throw new ApiException(404, 'NOT_FOUND', 'API route was not found.');
+    }
+
+    private function qualityController(): QualityController
+    {
+        return $this->quality ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Production exceptions are not ready.');
     }
 
     private function ordersController(): OperationalOrderController

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { ActivityPage, Employee } from "../../domain/models";
-import type { ActivityService } from "../../services/contracts";
+import type { ActivityService, ExceptionService } from "../../services/contracts";
+import { ExceptionsCard } from "../exceptions/ExceptionsCard";
 import { AppIcon } from "../../components/icons/AppIcon";
 import { hasPermission } from "../../domain/permissions";
 
@@ -15,7 +16,7 @@ export function formatHomeMetric(value: number | undefined): string {
   return typeof value === "number" && Number.isFinite(value) ? String(value) : "—";
 }
 
-export function HomeScreen({ employee, activityService, navigate }: { employee: Employee; activityService: ActivityService; navigate: (path: string) => void }) {
+export function HomeScreen({ employee, activityService, exceptionService, navigate }: { employee: Employee; activityService: ActivityService; exceptionService?: ExceptionService; navigate: (path: string) => void }) {
   const [metrics, setMetrics] = useState<MetricsState>({ status: "loading" });
 
   useEffect(() => {
@@ -37,6 +38,7 @@ export function HomeScreen({ employee, activityService, navigate }: { employee: 
         <span className="home-scan-copy"><strong>Scanează comanda</strong><span>Apropie codul QR pentru a începe.</span></span>
         <AppIcon name="arrow" size={24} />
       </button>
+      {exceptionService && <ExceptionsCard service={exceptionService} navigate={navigate} />}
       <section className="work-summary" aria-labelledby="today-summary" aria-live="polite"><p id="today-summary">{metrics.status === "unavailable" ? "Activitate indisponibilă" : "Astăzi"}</p><dl><div><dd className={metrics.status === "loaded" ? undefined : "metric-unavailable"}>{metrics.status === "loading" ? "…" : formatHomeMetric(inProgress)}</dd><dt>În lucru</dt></div><div><dd className={metrics.status === "loaded" ? undefined : "metric-unavailable"}>{metrics.status === "loading" ? "…" : formatHomeMetric(handedOver)}</dd><dt>Predate</dt></div></dl></section>
     </div>
   );
