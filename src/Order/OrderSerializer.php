@@ -10,7 +10,7 @@ final readonly class OrderSerializer
      * @param array{action: string|null, blockedReason: string|null}|null $access
      * @param array<string, mixed>|null $quality internal production quality facts (single-order views only)
      */
-    public function serializeOrder(OperationalOrder $order, ?array $access = null, ?array $quality = null): array
+    public function serializeOrder(OperationalOrder $order, ?array $access = null, ?array $quality = null, ?array $document = null): array
     {
         $data = [
             'id' => $order->globalId->toString(),
@@ -25,6 +25,7 @@ final readonly class OrderSerializer
                 'lastSourceSeenAt' => $order->freshness->lastSourceSeenAt->format('Y-m-d\TH:i:s.v\Z'),
             ],
             'version' => $order->version,
+            'documentStatus' => $order->documentStatus,
             'productionVersion' => $order->productionVersion,
             'updatedAt' => $order->updatedAt->format('Y-m-d\TH:i:s.v\Z'),
         ];
@@ -61,6 +62,9 @@ final readonly class OrderSerializer
         if ($quality !== null) {
             $data['productionQuality'] = $quality;
         }
+        if ($document !== null) {
+            $data['productionDocument'] = $document;
+        }
 
         if ($order->relation !== null) {
             $data['employeeRelation'] = [
@@ -94,7 +98,18 @@ final readonly class OrderSerializer
         }
         
         if ($item->meters !== null) $data['meters'] = $item->meters;
-        if ($item->productionContext !== null) $data['productionContext'] = $item->productionContext;
+        if ($item->productionContext !== null) {
+            // Source manufacturing options travel as their own field, so earlier clients that only know the
+            // B2B manufacturing context (with its kind) keep working.
+            $context = $item->productionContext;
+            if (isset($context['options'])) {
+                $data['options'] = $context['options'];
+                unset($context['options']);
+            }
+            if (isset($context['kind'])) {
+                $data['productionContext'] = $context;
+            }
+        }
 
         return $data;
     }

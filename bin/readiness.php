@@ -86,6 +86,14 @@ try {
     $report($reasons > 0 && $policy === 'blocking' ? 'OK' : 'FAIL', 'production_exception_policy');
     $ceo = (int) $pdo->query("SELECT COUNT(*) FROM organization_principals WHERE principal_key = 'ceo'")->fetchColumn();
     $report($ceo === 1 ? 'OK' : 'WARN', 'organization_ceo_principal');
+    $documentPermissions = (int) $pdo->query("SELECT COUNT(*) FROM permissions WHERE permission_key IN ('production.documents.generate','production.documents.reprint','production.documents.request_revision','production.documents.approve_revision','production.documents.view_history') AND role_grantable=1")->fetchColumn();
+    $report($documentPermissions === 5 ? 'OK' : 'FAIL', 'production_document_permissions');
+    // Two active revisions of one order would be a document-integrity failure; the unique key prevents it.
+    $duplicateActive = (int) $pdo->query('SELECT COUNT(*) FROM (SELECT active_order_uuid FROM production_document_revisions WHERE active_order_uuid IS NOT NULL GROUP BY active_order_uuid HAVING COUNT(*) > 1) d')->fetchColumn();
+    $report($duplicateActive === 0 ? 'OK' : 'FAIL', 'production_document_single_active');
+    // Until root assigns the approver template, revision requests can only wait (WARN, not a failure).
+    $approvers = (int) $pdo->query("SELECT COUNT(*) FROM employee_role_assignments era JOIN role_permissions rp ON rp.role_id = era.role_id JOIN permissions p ON p.permission_id = rp.permission_id JOIN employees e ON e.employee_uuid = era.employee_uuid WHERE p.permission_key = 'production.documents.approve_revision' AND e.status = 'active'")->fetchColumn();
+    $report($approvers > 0 ? 'OK' : 'WARN', 'production_document_revision_approver');
     $report(PHP_INT_SIZE >= 8 ? 'OK' : 'FAIL', 'b2b_fixed_point_int64');
 } catch (Throwable) {
     $report('FAIL', 'iam_applications');

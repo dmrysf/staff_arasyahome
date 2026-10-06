@@ -21,7 +21,16 @@ final class OrderMetrics
         foreach ($transfers as $row) $blocks[]=['start'=>$row['requested_at'],'end'=>$row['resolved_at']??$asOf];
         foreach ($exceptions as $row) $blocks[]=['start'=>$row['reported_at'],'end'=>$row['resolved_at']??$asOf];
         if (($order['operational_status']??null)==='unavailable' && ($order['source_reported_unavailable_at']??null)!==null) $blocks[]=['start'=>$order['source_reported_unavailable_at'],'end'=>$asOf];
+        // Waiting for a production document revision (stale content or root revoke) is never active work.
+        foreach (self::documentWindows($order,$asOf) as $window) $blocks[]=$window;
         return $blocks;
+    }
+    /** @return list<array{start:string,end:string}> */
+    public static function documentWindows(?array $order,string $asOf): array
+    {
+        $windows=[];
+        foreach ($order['document_blocks']??[] as $row) $windows[]=['start'=>$row['started_at'],'end'=>$row['ended_at']??$asOf];
+        return $windows;
     }
     public static function calculate(array $order,array $intervals,array $transfers,array $exceptions,array $decisions,AnalyticsTime $time,string $asOf,array $pools=[]): array
     {
@@ -64,6 +73,7 @@ final class OrderMetrics
             'elapsedFromQr'=>$qrClock,'firstClaimDelay'=>$start!==null && $order['first_claim_at']!==null?$time->duration($start,$order['first_claim_at']):null,
             'activeHandling'=>$active,'cuttingActive'=>$cuttingIntervals?$cuttingActive:null,'cuttingWaiting'=>$pools?$waiting($poolWindows):null,'completedCuttingHandling'=>$completedHandling,
             'managerWaiting'=>$waiting($manager,true),'transferWaiting'=>$waiting($transfer),'exceptionBlocked'=>$waiting($exception),
+            'documentRevisionWaiting'=>$waiting(self::documentWindows($order,$end)),
             'blockedUnion'=>$waiting($blocks),'nonWorker'=>$nonWorker,'intervals'=>$raw];
     }
 }

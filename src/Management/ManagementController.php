@@ -47,6 +47,7 @@ final readonly class ManagementController
         private ?OrganizationService $organization = null,
         private ?ProductionSettingsService $settings = null,
         private ?\Arasya\Operations\Analytics\AnalyticsPolicy $analytics = null,
+        private ?\Arasya\Operations\Document\RevisionApproverPolicy $documentApprovers = null,
     ) {
     }
 
@@ -185,6 +186,7 @@ final readonly class ManagementController
     private function capabilities(EmployeeIdentity $actor): array
     {
         $approver = $this->approvers?->via($actor);
+        $documentVia = $this->documentApprovers?->via($actor);
         return [
             'approveExceptions' => $approver !== null,
             'approvalViaBackup' => $approver === ApproverPolicy::VIA_BACKUP,
@@ -194,6 +196,10 @@ final readonly class ManagementController
             'cancelExceptions' => $actor->isRoot,
             'viewAnalytics' => $this->analytics?->canView($actor) ?? false,
             'manageAnalyticsPolicy' => $actor->isRoot,
+            'approveDocumentRevisions' => $documentVia !== null && $documentVia !== \Arasya\Operations\Document\RevisionApproverPolicy::VIA_ROOT,
+            'documentRevisionViaBackup' => $documentVia === \Arasya\Operations\Document\RevisionApproverPolicy::VIA_BACKUP,
+            'viewDocumentHistory' => $actor->isRoot || $documentVia !== null || in_array(\Arasya\Operations\Document\DocumentService::HISTORY, $actor->permissions, true),
+            'revokeDocuments' => $actor->isRoot,
         ];
     }
 

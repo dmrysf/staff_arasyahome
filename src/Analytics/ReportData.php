@@ -18,6 +18,9 @@ final readonly class ReportData
         }
         $s=$this->pdo->prepare('SELECT DISTINCT order_uuid FROM analytics_ownership_intervals WHERE ended_at>=? AND started_at<? UNION SELECT DISTINCT order_uuid FROM analytics_ownership_intervals WHERE ended_at IS NULL AND started_at<?');
         $s->execute([$from,$to,$to]); foreach ($s->fetchAll(PDO::FETCH_COLUMN) as $id) $ids[$id]=true;
+        // Orders whose production document was blocked or unblocked in the range (revision waits).
+        $s=$this->pdo->prepare('SELECT DISTINCT order_uuid FROM production_document_blocks WHERE started_at>=? AND started_at<? UNION SELECT DISTINCT order_uuid FROM production_document_blocks WHERE ended_at>=? AND ended_at<?');
+        $s->execute([$from,$to,$from,$to]); foreach ($s->fetchAll(PDO::FETCH_COLUMN) as $id) $ids[$id]=true;
         $s=$this->pdo->prepare('SELECT DISTINCT e.order_uuid FROM production_exception_decisions d JOIN production_exceptions e ON e.exception_uuid=d.exception_uuid WHERE (d.opened_at>=? AND d.opened_at<?) OR (d.decided_at>=? AND d.decided_at<?)');
         $s->execute([$from,$to,$from,$to]); foreach ($s->fetchAll(PDO::FETCH_COLUMN) as $id) $ids[$id]=true;
         if ($includePending) {
@@ -33,6 +36,8 @@ final readonly class ReportData
             $s->execute($chunk); foreach ($s->fetchAll(PDO::FETCH_ASSOC) as $row) if (isset($orders[$row['order_uuid']])) $orders[$row['order_uuid']]+=array_diff_key($row,['order_uuid'=>true]);
             // A completed stage also proves actual work, even if an old Root assignment had no claimed event.
             // MariaDB can prefer the narrower legacy order-time index and fetch full event rows.
+            $s=$this->pdo->prepare("SELECT order_uuid,block_uuid,cause,started_at,ended_at,processed_meters,processed_lines,production_started FROM production_document_blocks WHERE order_uuid IN ({$marks}) ORDER BY order_uuid,started_at");
+            $s->execute($chunk); foreach ($s->fetchAll(PDO::FETCH_ASSOC) as $row) if (isset($orders[$row['order_uuid']])) $orders[$row['order_uuid']]['document_blocks'][]=$row;
             $s=$this->pdo->prepare("SELECT order_uuid,MIN(occurred_at) work_recorded_at FROM order_activity_events FORCE INDEX (idx_analytics_activity_work) WHERE order_uuid IN ({$marks}) AND action IN ('claimed','stage_completed','production_completed') GROUP BY order_uuid");
             $s->execute($chunk); foreach ($s->fetchAll(PDO::FETCH_ASSOC) as $row) if (isset($orders[$row['order_uuid']])) $orders[$row['order_uuid']]['work_recorded_at']=$row['work_recorded_at'];
             foreach (['analytics_ownership_intervals'=>&$intervals,'cutting_transfers'=>&$transfers,'production_exceptions'=>&$exceptions,'production_quality_events'=>&$quality] as $table=>&$target) {

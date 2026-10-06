@@ -38,6 +38,7 @@ final readonly class OperationalOrderController
         private CsrfGuard $csrf,
         private ApiRateLimiter $rateLimiter,
         private ?ExceptionQueries $quality = null,
+        private ?\Arasya\Operations\Document\DocumentQueries $documents = null,
     ) {
     }
 
@@ -124,6 +125,16 @@ final readonly class OperationalOrderController
             throw new ApiException(404, 'UNKNOWN_QR', 'The scanned code is not registered.');
         }
         if ($resolved['status'] !== 'active') {
+            // A QR of a replaced or revoked document revision says so clearly; the active revision
+            // number is shown only to an employee who may see the order.
+            $state = $this->documents?->qrRevision($reference->value);
+            if ($state !== null && $state['status'] !== 'active') {
+                $visible = $this->repository->findByGlobalId($employee->employeeUuid, $state['orderId']);
+                if ($visible === null || !$this->policy->canView($employee, $visible)) {
+                    $state['activeRevisionNumber'] = null;
+                }
+                throw \Arasya\Operations\Document\DocumentGuard::invalidQr($state);
+            }
             throw new ApiException(410, 'EXPIRED_QR', 'The scanned code is no longer valid.');
         }
         $order = $resolved['order'];
@@ -198,7 +209,7 @@ final readonly class OperationalOrderController
     private function orderResponse(EmployeeIdentity $employee, OperationalOrder $order): Response
     {
         return Response::json(
-            $this->serializer->serializeOrder($order, $this->policy->evaluate($employee, $order, $this->workflowOrNull()), $this->quality?->orderQuality($order->orderUuid, $order->openExceptionUuid, $employee->employeeUuid)),
+            $this->serializer->serializeOrder($order, $this->policy->evaluate($employee, $order, $this->workflowOrNull()), $this->quality?->orderQuality($order->orderUuid, $order->openExceptionUuid, $employee->employeeUuid), $this->documents?->summary($order->orderUuid)),
             200,
             ['Cache-Control' => 'private, no-store'],
         );

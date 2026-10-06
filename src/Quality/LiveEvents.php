@@ -33,6 +33,12 @@ final readonly class LiveEvents
         $this->insert(self::AUDIENCE_APPROVERS, null, $type, $payload, $now);
     }
 
+    /** Group audiences without a single recipient (for example document approvers or requesters). @param array<string, mixed> $payload */
+    public function toAudience(string $audience, string $type, array $payload, string $now): void
+    {
+        $this->insert($audience, null, $type, $payload, $now);
+    }
+
     public function latestSequence(): int
     {
         return (int) $this->pdo->query('SELECT COALESCE(MAX(event_seq), 0) FROM live_events')->fetchColumn();
@@ -53,11 +59,14 @@ final readonly class LiveEvents
     }
 
     /** @return list<array{seq: int, type: string, payload: array<string, mixed>}> */
-    public function after(string $employeeUuid, bool $approver, int $after, bool $cutter = false): array
+    /** @param list<string> $audiences additional group audiences the caller is currently authorized for */
+    public function after(string $employeeUuid, bool $approver, int $after, bool $cutter = false, array $audiences = []): array
     {
+        $groups = array_values(array_intersect($audiences, ['document_approvers', 'document_requesters']));
         $statement = $this->pdo->prepare(
             'SELECT event_seq, event_type, payload_json FROM live_events
-             WHERE event_seq > :after AND (recipient_employee_uuid = :employee' . ($approver ? " OR audience = 'approvers'" : '') . ($cutter ? " OR audience = 'cutting'" : '') . ')
+             WHERE event_seq > :after AND (recipient_employee_uuid = :employee' . ($approver ? " OR audience = 'approvers'" : '') . ($cutter ? " OR audience = 'cutting'" : '')
+             . implode('', array_map(static fn (string $group): string => " OR audience = '{$group}'", $groups)) . ')
              ORDER BY event_seq LIMIT ' . self::BATCH,
         );
         $statement->execute(['after' => $after, 'employee' => $employeeUuid]);

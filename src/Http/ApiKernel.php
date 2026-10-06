@@ -39,6 +39,7 @@ final readonly class ApiKernel
         private ?QualityController $quality = null,
         private ?CuttingController $cutting = null,
         private ?\Arasya\Operations\Analytics\AnalyticsController $analytics = null,
+        private ?\Arasya\Operations\Document\DocumentController $documents = null,
     ) {
     }
 
@@ -105,6 +106,9 @@ final readonly class ApiKernel
         }
         if ($request->path === '/b2b/companies' || str_starts_with($request->path, '/b2b/companies/')) {
             return ($this->b2bCompanies ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'B2B companies API is not ready.'))->handle($request);
+        }
+        if (str_starts_with($request->path, '/production-documents/')) {
+            return ($this->documents ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Production documents are not ready.'))->handle($request);
         }
         if (str_starts_with($request->path, '/production-exceptions/')) {
             return $this->qualityController()->handle($request);

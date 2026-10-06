@@ -8,7 +8,10 @@ use DateTimeImmutable;
 
 final readonly class SourceOrderSnapshot
 {
-    /** @param list<OperationalOrderItem> $items */
+    /**
+     * @param list<OperationalOrderItem> $items
+     * @param array{name: string|null, company: string|null, addressLines: list<string>, phoneMasked: string|null}|null $delivery printable delivery identity (masked phone only)
+     */
     public function __construct(
         public string $sourceKey,
         public string $sourceOrderId,
@@ -23,6 +26,7 @@ final readonly class SourceOrderSnapshot
         public string $operationalStatus,
         public ?DateTimeImmutable $acceptedAt,
         public array $items,
+        public ?array $delivery = null,
     ) {
         // Centralize identity validation
         new GlobalOrderId($this->sourceKey, $this->sourceOrderId);

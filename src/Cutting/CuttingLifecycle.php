@@ -31,6 +31,7 @@ final readonly class CuttingLifecycle
     {
         $qr = is_string($payload) ? QrReference::parsePayload($payload) : null;
         if ($qr === null) throw new ApiException(422, 'CUTTING_QR_REQUIRED', 'Scanează codul QR original al comenzii.');
+        \Arasya\Operations\Document\DocumentGuard::assertQrUsable($this->pdo, $qr->value);
         $s = $this->pdo->prepare("SELECT order_uuid FROM order_qr_references WHERE qr_reference = ? AND status = 'active'");
         $s->execute([$qr->value]);
         if ($s->fetchColumn() !== $order) throw new ApiException(409, 'QR_ORDER_MISMATCH', 'Codul QR nu aparține acestei comenzi.');

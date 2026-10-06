@@ -32,7 +32,7 @@ final readonly class CuttingService
     public function pool(EmployeeIdentity $actor): array
     {
         $this->requireCutter($actor);
-        $where = "o.production_stage_id = 'material-preparation' AND o.production_completed_at IS NULL AND o.operational_status <> 'unavailable' AND o.source_reported_unavailable_at IS NULL AND o.production_owner_employee_uuid IS NULL AND o.open_exception_uuid IS NULL AND s.status = 'active'";
+        $where = "o.production_stage_id = 'material-preparation' AND o.production_completed_at IS NULL AND o.operational_status <> 'unavailable' AND o.source_reported_unavailable_at IS NULL AND o.production_owner_employee_uuid IS NULL AND o.open_exception_uuid IS NULL AND o.document_status IN ('none', 'active') AND s.status = 'active'";
         $total = (int) $this->pdo->query("SELECT COUNT(*) FROM operational_orders o JOIN order_sources s ON s.source_key = o.source_key WHERE {$where}")->fetchColumn();
         $rows = $this->pdo->query("SELECT o.order_uuid, o.global_order_id, o.order_number, o.source_key, o.production_version, o.production_changed_at FROM operational_orders o JOIN order_sources s ON s.source_key = o.source_key WHERE {$where} ORDER BY o.production_changed_at, o.global_order_id LIMIT 100")->fetchAll(PDO::FETCH_ASSOC);
         return ['total' => $total, 'ownedCount' => (new CuttingLifecycle($this->pdo))->ownedCount($actor->employeeUuid), 'items' => array_map(static fn(array $row): array => [
@@ -238,6 +238,7 @@ final readonly class CuttingService
     private function assertOrder(array $order, string $owner): void
     {
         if ($order['production_stage_id'] !== CuttingLifecycle::STAGE || $order['production_owner_employee_uuid'] !== $owner || $order['production_completed_at'] !== null || $order['operational_status'] === 'unavailable' || $order['open_exception_uuid'] !== null) throw new ApiException(409, 'ORDER_CHANGED', 'Comanda nu mai poate fi transferată.');
+        \Arasya\Operations\Document\DocumentGuard::assertOpen($order);
     }
     private function bumpOrder(array $order, string $now): void
     {

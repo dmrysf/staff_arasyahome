@@ -45,6 +45,7 @@ final readonly class QualityController
         private RequestContext $context,
         private PDO $pdo,
         private Clock $clock,
+        private ?\Arasya\Operations\Document\DocumentAudiences $documentAudiences = null,
     ) {
     }
 
@@ -109,9 +110,10 @@ final readonly class QualityController
         }
         $cursor = (int) $after;
         $approver = $this->approvers->via($actor) !== null;
+        $documentAudiences = $this->documentAudiences?->for($actor) ?? [];
         $deadline = microtime(true) + $this->config->liveHoldSeconds;
         do {
-            $events = $this->live->after($actor->employeeUuid, $approver, $cursor, \Arasya\Operations\Cutting\CuttingLifecycle::eligible($actor));
+            $events = $this->live->after($actor->employeeUuid, $approver, $cursor, \Arasya\Operations\Cutting\CuttingLifecycle::eligible($actor), $documentAudiences);
             if ($events !== [] || microtime(true) >= $deadline) {
                 break;
             }

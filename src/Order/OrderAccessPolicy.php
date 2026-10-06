@@ -46,6 +46,9 @@ final readonly class OrderAccessPolicy
         if ($order->isBlockedByException()) {
             return $this->blocked('exception_pending');
         }
+        if ($order->isBlockedByDocument()) {
+            return $this->blocked(\Arasya\Operations\Document\DocumentGuard::BLOCKED_REASON);
+        }
         if ($workflow === null) {
             return $this->blocked('workflow_unavailable');
         }

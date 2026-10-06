@@ -80,4 +80,25 @@ if (preg_match('/ON (DELETE|UPDATE) (CASCADE|SET NULL)|DROP TABLE|DELETE FROM|TR
 if (preg_match_all('/INSERT IGNORE INTO role_permissions[\s\S]*?WHERE r\.role_key = \'([a-z-]+)\'/', $exceptionSchema, $grants) > 0 && array_unique($grants[1]) !== ['operations-manager']) {
     throw new RuntimeException('Migration 014 may grant permissions only to the new operations-manager template.');
 }
+// Production documents: additive, append-only history, one active revision and one open request per order.
+$documentSchema = (string) file_get_contents($root . '/database/migrations/017_production_documents.sql');
+foreach (['production_document_revisions', 'production_document_revision_requests', 'production_document_prints', 'production_document_events', 'production_document_blocks'] as $table) {
+    if (preg_match('/CREATE TABLE IF NOT EXISTS\s+' . $table . '\b/', $documentSchema) !== 1) {
+        throw new RuntimeException("Migration 017 is missing table: {$table}");
+    }
+}
+foreach (['UNIQUE KEY uq_production_document_revisions_active (active_order_uuid)', 'UNIQUE KEY uq_production_document_revisions_number (order_uuid, revision_number)', 'UNIQUE KEY uq_production_document_revisions_qr (qr_reference)', 'UNIQUE KEY uq_production_document_requests_open (open_order_uuid)', 'CHECK (status <> \'rejected\' OR decision_comment IS NOT NULL)'] as $required) {
+    if (!str_contains($documentSchema, $required)) {
+        throw new RuntimeException("Production document invariant is missing: {$required}");
+    }
+}
+if (preg_match('/ON (DELETE|UPDATE) (CASCADE|SET NULL)|DROP TABLE|DELETE FROM|TRUNCATE|UPDATE operational_orders|UPDATE order_qr_references|UPDATE order_activity_events/i', $documentSchema) === 1) {
+    throw new RuntimeException('Migration 017 must stay additive and must not rewrite history.');
+}
+if (preg_match_all('/INSERT IGNORE INTO role_permissions[\s\S]*?WHERE r\.role_key = \'([a-z-]+)\'/', $documentSchema, $documentGrants) > 0 && array_values(array_unique($documentGrants[1])) !== ['production-documents-operator', 'document-revision-approver']) {
+    throw new RuntimeException('Migration 017 may grant permissions only to its two new templates.');
+}
+if (str_contains($documentSchema, 'employee_role_assignments')) {
+    throw new RuntimeException('Migration 017 must not assign roles to employees.');
+}
 fwrite(STDOUT, 'Migration sanity checks passed for ' . count($files) . " file(s).\n");

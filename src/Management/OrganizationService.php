@@ -36,6 +36,7 @@ final readonly class OrganizationService
     public const TIMEZONE = 'Europe/Bucharest';
     public const TAILORING_INTAKE = 'tailoring_intake_responsible';
     public const OPERATIONS_BACKUP = 'operations_backup_approver';
+    public const DOCUMENT_REVISION_BACKUP = 'document_revision_backup_approver';
     private const BACKUP_MAX_DAYS = 90;
 
     public function __construct(
@@ -135,7 +136,7 @@ final readonly class OrganizationService
         $this->requireManager($actor);
         IdempotencyStore::requireKey($key);
         $responsibility = $input['responsibility'] ?? null;
-        if (!in_array($responsibility, [self::TAILORING_INTAKE, self::OPERATIONS_BACKUP], true)) {
+        if (!in_array($responsibility, [self::TAILORING_INTAKE, self::OPERATIONS_BACKUP, self::DOCUMENT_REVISION_BACKUP], true)) {
             throw new ApiException(400, 'INVALID_REQUEST', 'Unknown responsibility.');
         }
         $target = $this->uuid($input['employeeId'] ?? null);
@@ -147,7 +148,7 @@ final readonly class OrganizationService
             throw new ApiException(400, 'INVALID_REQUEST', 'note is invalid.');
         }
         $note = $note === null || trim($note) === '' ? null : trim($note);
-        if ($responsibility === self::OPERATIONS_BACKUP) {
+        if ($responsibility === self::OPERATIONS_BACKUP || $responsibility === self::DOCUMENT_REVISION_BACKUP) {
             if ($endsAt === null) {
                 throw new ApiException(422, 'END_REQUIRED', 'A temporary backup needs an end time.');
             }
@@ -185,6 +186,28 @@ final readonly class OrganizationService
                 $holds->execute([$target, ApproverPolicy::PERMISSION]);
                 if ($holds->fetchColumn() !== false) {
                     throw new ApiException(422, 'ALREADY_APPROVER', 'This employee already approves as an operations manager.');
+                }
+            } elseif ($responsibility === self::DOCUMENT_REVISION_BACKUP) {
+                // A scoped delegation of document revision approval only. It never grants a permission,
+                // and only one temporary backup exists at a time: a new appointment ends the previous one.
+                if ($identity->fetchColumn() === false) {
+                    throw new ApiException(422, 'EMPLOYEE_NEEDS_DASHBOARD', 'The backup approver needs Dashboard access to decide requests.');
+                }
+                $holds = $this->pdo->prepare(
+                    "SELECT 1 FROM employee_role_assignments era INNER JOIN roles r ON r.role_id = era.role_id AND r.status = 'active'
+                     INNER JOIN role_permissions rp ON rp.role_id = r.role_id INNER JOIN permissions p ON p.permission_id = rp.permission_id
+                     WHERE era.employee_uuid = ? AND p.permission_key = ? LIMIT 1",
+                );
+                $holds->execute([$target, \Arasya\Operations\Document\RevisionApproverPolicy::PERMISSION]);
+                if ($holds->fetchColumn() !== false) {
+                    throw new ApiException(422, 'ALREADY_APPROVER', 'This employee already approves document revisions.');
+                }
+                $current = $this->pdo->prepare("SELECT assignment_uuid, employee_uuid FROM responsibility_assignments WHERE responsibility_key = ? AND revoked_at IS NULL AND (ends_at IS NULL OR ends_at > ?) FOR UPDATE");
+                $current->execute([$responsibility, $now]);
+                foreach ($current->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                    $this->pdo->prepare("UPDATE responsibility_assignments SET revoked_at = ?, revoked_by_employee_uuid = ?, revoke_reason = 'Înlocuit de o nouă numire' WHERE assignment_uuid = ?")
+                        ->execute([$now, $actor->employeeUuid, $row['assignment_uuid']]);
+                    $replaced[] = ['assignmentId' => (string) $row['assignment_uuid'], 'employeeId' => (string) $row['employee_uuid']];
                 }
             } else {
                 // One tailoring intake responsible at a time: the previous appointment ends now.
