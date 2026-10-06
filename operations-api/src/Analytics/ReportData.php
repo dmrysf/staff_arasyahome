@@ -59,7 +59,7 @@ final readonly class ReportData
             foreach ([...$eligibility,...$s->fetchAll(PDO::FETCH_ASSOC)] as $row) $unique[$row['request_type'].':'.$row['request_uuid'].':'.$row['employee_uuid']]=$row;
             $eligibility=array_values($unique);
         }
-        $s=$this->pdo->prepare("SELECT employee_uuid,order_uuid,from_stage_id,action,occurred_at,meters_snapshot FROM order_activity_events WHERE action IN ('stage_completed','production_completed','production_submitted') AND occurred_at>=? AND occurred_at<?");
+        $s=$this->pdo->prepare("SELECT employee_uuid,order_uuid,from_stage_id,action FROM order_activity_events WHERE action IN ('stage_completed','production_completed','production_submitted') AND occurred_at>=? AND occurred_at<?");
         $s->execute([$from,$to]); $stageCompletions=$s->fetchAll(PDO::FETCH_ASSOC);
         $coverage=$this->pdo->query('SELECT (SELECT COUNT(*) FROM operational_orders) total_orders,(SELECT COUNT(*) FROM analytics_order_projection) projected_orders')->fetch(PDO::FETCH_ASSOC);
         return compact('orders','intervals','transfers','exceptions','decisions','quality','cancellations','employees','eligibility','captured','coverage','stageCompletions','transferDecisionTypes','sourceNames','pools');

@@ -64,6 +64,9 @@ CREATE INDEX idx_analytics_decisions_period ON production_exception_decisions (d
 CREATE INDEX idx_analytics_decisions_opened ON production_exception_decisions (opened_at, decision_uuid);
 CREATE INDEX idx_analytics_transfer_period ON cutting_transfers (decided_at, decided_by_employee_uuid);
 CREATE INDEX idx_analytics_transfer_requested ON cutting_transfers (requested_at, transfer_uuid);
+-- Cover the bounded canonical work-proof and period activity reads without fetching full event payloads.
+CREATE INDEX idx_analytics_activity_work ON order_activity_events (order_uuid, action, occurred_at);
+CREATE INDEX idx_analytics_activity_period ON order_activity_events (occurred_at, action, employee_uuid, order_uuid, from_stage_id);
 
 INSERT INTO permissions (permission_key,category,label,description,role_grantable,created_at) VALUES
  ('analytics.view','analytics','Analiză managerială','Read explainable production analytics, without production or IAM authority',1,UTC_TIMESTAMP(6));
