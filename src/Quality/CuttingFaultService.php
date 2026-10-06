@@ -587,6 +587,9 @@ final readonly class CuttingFaultService
             "INSERT INTO production_exception_decisions (decision_uuid, exception_uuid, attempt_number, previous_decision_uuid, opened_reason, opened_by_employee_uuid, opened_comment, opened_at, status)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')",
         )->execute([$uuid, $exceptionUuid, (int) $next->fetchColumn(), $previous, $reason, $openedBy, $comment, $now]);
+        $s=$this->pdo->prepare('SELECT detector_employee_uuid,responsible_employee_uuid FROM production_exceptions WHERE exception_uuid=?');
+        $s->execute([$exceptionUuid]);
+        (new \Arasya\Operations\Analytics\ApprovalEligibility($this->pdo,$this->employees,$this->approvers))->capture('exception',$uuid,$now,array_values($s->fetch(\PDO::FETCH_ASSOC)));
         return $uuid;
     }
 
@@ -636,6 +639,7 @@ final readonly class CuttingFaultService
             $workflow->id, $workflow->version, $from->id, $from->label, $to?->id, $to?->label,
             $previousOwner, $newOwner, $versionBefore, $versionBefore + 1, $meters, mb_substr($requestId, 0, 100), 'x-' . substr(hash('sha256', $action . '|' . $key), 0, 60), $now,
         ]);
+        (new \Arasya\Operations\Analytics\AnalyticsCapture($this->pdo))->refreshOrder($order['order_uuid']);
     }
 
     /** @param array<string, mixed> $order @return array<string, mixed> */

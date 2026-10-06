@@ -38,6 +38,7 @@ final readonly class ApiKernel
         private ?ProjectController $b2bProjects = null,
         private ?QualityController $quality = null,
         private ?CuttingController $cutting = null,
+        private ?\Arasya\Operations\Analytics\AnalyticsController $analytics = null,
     ) {
     }
 
@@ -91,6 +92,7 @@ final readonly class ApiKernel
 
     private function matchDynamicRoutes(Request $request): Response
     {
+        if (str_starts_with($request->path,'/management/analytics/')) return ($this->analytics ?? throw new ApiException(503,'SERVICE_UNAVAILABLE','Analytics unavailable.'))->handle($request);
         if (str_starts_with($request->path, '/cutting/') || str_starts_with($request->path, '/display/cutting/') || str_starts_with($request->path, '/management/cutting/')) return $this->cuttingController()->handle($request);
         if ($request->path === '/b2b/accounts' || str_starts_with($request->path, '/b2b/accounts/')) {
             return ($this->b2bAccounts ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'B2B current account API is not ready.'))->handle($request);

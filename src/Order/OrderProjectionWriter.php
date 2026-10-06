@@ -277,6 +277,7 @@ final readonly class OrderProjectionWriter
             $this->insertReceipt($snapshot, $globalId, $payloadHash, 'applied', $nowSql);
             $this->touchSource($snapshot->sourceKey, $nowSql);
 
+            (new \Arasya\Operations\Analytics\AnalyticsCapture($this->pdo))->refreshOrder($orderUuid);
             $this->pdo->commit();
             return 'applied';
 

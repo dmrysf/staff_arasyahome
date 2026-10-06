@@ -35,6 +35,12 @@ for file in \
   database/migrations/011_b2b_current_account.sql \
   database/migrations/012_b2b_production_handoff.sql \
   database/migrations/014_production_exceptions.sql \
+  database/migrations/016_management_analytics.sql \
+  bin/rebuild-analytics.php \
+  src/Analytics/AnalyticsController.php \
+  src/Analytics/AnalyticsService.php \
+  src/Analytics/AnalyticsCapture.php \
+  src/B2B/ProductionAnalyticsIdentity.php \
   database/reference/organization-roster.json \
   bin/organization-reconcile.php \
   src/Quality/CuttingFaultService.php \
@@ -68,7 +74,7 @@ for file in \
 done
 
 (cd -- "$release_root" && sha256sum -c SHA256SUMS >/dev/null) || fail "SHA256SUMS verification failed."
-php -r '$r=json_decode(file_get_contents($argv[1]), true, flags: JSON_THROW_ON_ERROR); if (!is_array($r) || preg_match("/^[0-9a-f]{40}$/", $r["sourceCommit"] ?? "") !== 1 || ($r["version"] ?? null) !== "2.14.0") exit(2);' "$release_root/release.json" \
+php -r '$r=json_decode(file_get_contents($argv[1]), true, flags: JSON_THROW_ON_ERROR); if (!is_array($r) || preg_match("/^[0-9a-f]{40}$/", $r["sourceCommit"] ?? "") !== 1 || ($r["version"] ?? null) !== "2.15.0") exit(2);' "$release_root/release.json" \
   || fail "release.json provenance/version is invalid."
 
 for directory in src database/migrations bin config; do

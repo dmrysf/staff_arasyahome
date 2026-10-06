@@ -103,6 +103,7 @@ final readonly class CuttingService
             $id = Uuid::v4();
             $this->pdo->prepare("INSERT INTO cutting_transfers (transfer_uuid, order_uuid, open_order_uuid, from_employee_uuid, to_employee_uuid, status, reason_key, reason_label, request_comment, requested_at) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)")
                 ->execute([$id, $order['order_uuid'], $order['order_uuid'], $actor->employeeUuid, $targetId, $reason, self::REASONS[$reason], $comment, $now]);
+            (new \Arasya\Operations\Analytics\ApprovalEligibility($this->pdo,$this->employees,$this->approvers))->capture('transfer',$id,$now,[$actor->employeeUuid,$targetId]);
             $this->bumpOrder($order, $now);
             $this->event($actor, $id, 'requested', ['orderId' => $globalId, 'targetId' => $targetId, 'reason' => $reason, 'comment' => $comment], $requestId, $now);
             $this->notify($id, $order, 'pending', $now);
@@ -243,6 +244,7 @@ final readonly class CuttingService
         $s = $this->pdo->prepare('UPDATE operational_orders SET production_version = production_version + 1, version = version + 1, updated_at = ? WHERE order_uuid = ? AND production_version = ?');
         $s->execute([$now, $order['order_uuid'], $order['production_version']]);
         if ($s->rowCount() !== 1) throw new ApiException(409, 'ORDER_CHANGED', 'Comanda s-a schimbat.');
+        (new \Arasya\Operations\Analytics\AnalyticsCapture($this->pdo))->refreshOrder($order['order_uuid']);
     }
     private function ownershipActivity(EmployeeIdentity $actor, array $order, array $transfer, string $key, string $requestId, string $now): void
     {
