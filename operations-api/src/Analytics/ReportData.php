@@ -32,7 +32,8 @@ final readonly class ReportData
             $s=$this->pdo->prepare("SELECT order_uuid,COUNT(*) order_lines,SUM(meters) order_meters,SUM(meters IS NULL) missing_line_meters FROM operational_order_items WHERE order_uuid IN ({$marks}) GROUP BY order_uuid");
             $s->execute($chunk); foreach ($s->fetchAll(PDO::FETCH_ASSOC) as $row) if (isset($orders[$row['order_uuid']])) $orders[$row['order_uuid']]+=array_diff_key($row,['order_uuid'=>true]);
             // A completed stage also proves actual work, even if an old Root assignment had no claimed event.
-            $s=$this->pdo->prepare("SELECT order_uuid,MIN(occurred_at) work_recorded_at FROM order_activity_events WHERE order_uuid IN ({$marks}) AND action IN ('claimed','stage_completed','production_completed') GROUP BY order_uuid");
+            // MariaDB can prefer the narrower legacy order-time index and fetch full event rows.
+            $s=$this->pdo->prepare("SELECT order_uuid,MIN(occurred_at) work_recorded_at FROM order_activity_events FORCE INDEX (idx_analytics_activity_work) WHERE order_uuid IN ({$marks}) AND action IN ('claimed','stage_completed','production_completed') GROUP BY order_uuid");
             $s->execute($chunk); foreach ($s->fetchAll(PDO::FETCH_ASSOC) as $row) if (isset($orders[$row['order_uuid']])) $orders[$row['order_uuid']]['work_recorded_at']=$row['work_recorded_at'];
             foreach (['analytics_ownership_intervals'=>&$intervals,'cutting_transfers'=>&$transfers,'production_exceptions'=>&$exceptions,'production_quality_events'=>&$quality] as $table=>&$target) {
                 $s=$this->pdo->prepare("SELECT * FROM {$table} WHERE order_uuid IN ({$marks})"); $s->execute($chunk);
@@ -59,7 +60,7 @@ final readonly class ReportData
             foreach ([...$eligibility,...$s->fetchAll(PDO::FETCH_ASSOC)] as $row) $unique[$row['request_type'].':'.$row['request_uuid'].':'.$row['employee_uuid']]=$row;
             $eligibility=array_values($unique);
         }
-        $s=$this->pdo->prepare("SELECT employee_uuid,order_uuid,from_stage_id,action FROM order_activity_events WHERE action IN ('stage_completed','production_completed','production_submitted') AND occurred_at>=? AND occurred_at<?");
+        $s=$this->pdo->prepare("SELECT employee_uuid,order_uuid,from_stage_id,action FROM order_activity_events FORCE INDEX (idx_analytics_activity_period) WHERE action IN ('stage_completed','production_completed','production_submitted') AND occurred_at>=? AND occurred_at<?");
         $s->execute([$from,$to]); $stageCompletions=$s->fetchAll(PDO::FETCH_ASSOC);
         $coverage=$this->pdo->query('SELECT (SELECT COUNT(*) FROM operational_orders) total_orders,(SELECT COUNT(*) FROM analytics_order_projection) projected_orders')->fetch(PDO::FETCH_ASSOC);
         return compact('orders','intervals','transfers','exceptions','decisions','quality','cancellations','employees','eligibility','captured','coverage','stageCompletions','transferDecisionTypes','sourceNames','pools');

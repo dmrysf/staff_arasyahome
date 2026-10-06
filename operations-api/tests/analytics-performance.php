@@ -77,12 +77,12 @@ echo 'Synthetic history: '.$orderCount.' orders / '.($orderCount*28).' canonical
 $planIds=$pdo->query('SELECT order_uuid FROM analytics_order_projection ORDER BY order_uuid LIMIT 400')->fetchAll(PDO::FETCH_COLUMN);
 $planMarks=implode(',',array_fill(0,count($planIds),'?'));
 $plans=[
-    ['batched work evidence',"SELECT order_uuid,MIN(occurred_at) FROM order_activity_events WHERE order_uuid IN ({$planMarks}) AND action IN ('claimed','stage_completed','production_completed') GROUP BY order_uuid",$planIds],
-    ['period activity',"SELECT employee_uuid,order_uuid,from_stage_id,action FROM order_activity_events WHERE action IN ('stage_completed','production_completed','production_submitted') AND occurred_at>=? AND occurred_at<?",[$now->modify('-6 months')->format('Y-m-d H:i:s'),$now->modify('+1 day')->format('Y-m-d H:i:s')]],
+    ['batched work evidence',"SELECT order_uuid,MIN(occurred_at) FROM order_activity_events FORCE INDEX (idx_analytics_activity_work) WHERE order_uuid IN ({$planMarks}) AND action IN ('claimed','stage_completed','production_completed') GROUP BY order_uuid",$planIds],
+    ['period activity',"SELECT employee_uuid,order_uuid,from_stage_id,action FROM order_activity_events FORCE INDEX (idx_analytics_activity_period) WHERE action IN ('stage_completed','production_completed','production_submitted') AND occurred_at>=? AND occurred_at<?",[$now->modify('-6 months')->format('Y-m-d H:i:s'),$now->modify('+1 day')->format('Y-m-d H:i:s')]],
 ];
 foreach($plans as [$label,$sql,$parameters]) {
     $explain=$pdo->prepare('EXPLAIN '.$sql); $explain->execute($parameters);
-    foreach($explain->fetchAll(PDO::FETCH_ASSOC) as $row) if(!str_contains((string)($row['Extra']??''),'Using index')) throw new RuntimeException('Canonical '.$label.' must use a covering index');
+    foreach($explain->fetchAll(PDO::FETCH_ASSOC) as $row) if(preg_match('/(?:^|;)\s*Using index(?:$|;| for group-by)/',(string)($row['Extra']??''))!==1) throw new RuntimeException('Canonical '.$label.' must use a covering index, not index-condition row fetches');
     echo 'PASS covering index: '.$label."\n";
 }
 $service=new AnalyticsService($pdo,new AnalyticsPolicy($pdo),$c->clock());
