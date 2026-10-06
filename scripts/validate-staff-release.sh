@@ -9,7 +9,7 @@ root="$(cd -- "$root" && pwd -P)"
 for file in index.html .htaccess manifest.webmanifest sw.js release.json SHA256SUMS; do [[ -f "$root/$file" ]] || fail "Required file is missing: $file"; done
 [[ -d "$root/assets" ]] || fail "assets directory is missing."
 (cd -- "$root" && sha256sum -c SHA256SUMS >/dev/null) || fail "SHA256SUMS verification failed."
-commit="$(php -r '$r=json_decode(file_get_contents($argv[1]), true, flags: JSON_THROW_ON_ERROR); $s=$r["commit"] ?? ""; if (!is_string($s) || preg_match("/^[0-9a-f]{40}$/", $s) !== 1 || !in_array($r["version"] ?? null, ["2.3.0", "2.3.1", "2.3.2", "2.3.3", "2.4.0"], true) || !is_bool($r["preview"] ?? null)) exit(2); echo $s;' "$root/release.json")" \
+commit="$(php -r '$r=json_decode(file_get_contents($argv[1]), true, flags: JSON_THROW_ON_ERROR); $s=$r["commit"] ?? ""; if (!is_string($s) || preg_match("/^[0-9a-f]{40}$/", $s) !== 1 || !in_array($r["version"] ?? null, ["2.3.0", "2.3.1", "2.3.2", "2.3.3", "2.4.0", "2.5.0"], true) || !is_bool($r["preview"] ?? null)) exit(2); echo $s;' "$root/release.json")" \
   || fail "release.json commit is invalid."
 [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || fail "release.json commit is invalid."
 grep -q '/assets/' "$root/index.html" || fail "index.html does not reference Vite assets."
