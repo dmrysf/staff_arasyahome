@@ -6,8 +6,8 @@ export const previewProductionWorkflow: ProductionWorkflow = {
   version: 1,
   stages: [
     { id: "waiting", ordinal: 1, label: "În așteptare" },
-    { id: "material-preparation", ordinal: 2, label: "Pregătire material" },
-    { id: "workshop-receiving", ordinal: 3, label: "Primire atelier" },
+    { id: "material-preparation", ordinal: 2, label: "Tăiere" },
+    { id: "workshop-receiving", ordinal: 3, label: "Primire Croitorie" },
     { id: "labeling", ordinal: 4, label: "Etichetare" },
     { id: "material-straightening", ordinal: 5, label: "Îndreptare material" },
     { id: "bottom-hem", ordinal: 6, label: "Tivul de jos" },

@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import type { LiveEvent } from "../domain/models";
 import type { LiveService } from "../services/contracts";
+import { nextLiveNotice } from "../domain/faults";
 
 /** byOrder counts events per order id so an order screen re-reads only when its own order changed. */
 type LiveState = { revision: number; last: LiveEvent | null; connection: "connected" | "reconnecting"; byOrder: Readonly<Record<string, number>> };
@@ -13,9 +14,9 @@ export function LiveProvider({ service, enabled, children }: { service: LiveServ
   useEffect(() => {
     if (!enabled) return undefined;
     return service.subscribe(
-      (event) => setState((current) => ({ ...current, revision: current.revision + 1, last: event,
+      (event) => setState((current) => ({ ...current, revision: current.revision + 1, last: nextLiveNotice(current.last, event),
         byOrder: event.orderId ? { ...current.byOrder, [event.orderId]: (current.byOrder[event.orderId] ?? 0) + 1 } : current.byOrder })),
-      (connection) => setState((current) => ({ ...current, connection })),
+      (connection) => setState((current) => ({ ...current, connection, revision: connection === "connected" ? current.revision + 1 : current.revision })),
     );
   }, [enabled, service]);
   return <LiveContext.Provider value={state}>{children}</LiveContext.Provider>;

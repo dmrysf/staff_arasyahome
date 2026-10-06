@@ -26,7 +26,7 @@ test('a real B2B handoff shows frozen manufacturing context in Staff and uses th
   await expect(page.locator('.commerce-status')).toContainText('Stare comercială: Finalizată');
   await page.getByRole('button', { name: /Finalizează etapa/ }).click();
   await page.getByRole('dialog').getByRole('button', { name: 'Confirmă' }).click();
-  await expect(page.locator('.detail-hero')).toContainText('Pregătire material');
+  await expect(page.locator('.detail-hero')).toContainText('Tăiere');
   expect(errors).toEqual([]);
 });
 
@@ -67,6 +67,16 @@ async function newEmployeePage(browser: Browser, username: string) {
   return { context, page };
 }
 
+async function captureClaimLabel(page: Page, orderNumber: string) {
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("button", { name: "Confirmă", exact: true })).toBeDisabled();
+  await dialog.getByRole("button", { name: "Introdu codul de pe etichetă" }).click();
+  await dialog.getByLabel("Cod etichetă (ARASYA:Q1:…)").fill(fixture.qr[orderNumber]);
+  await dialog.getByRole("button", { name: "Verifică codul" }).click();
+  const multiple = dialog.getByRole("checkbox");
+  if (await multiple.count()) await multiple.check();
+}
+
 test("login, session restore, manual lookup, claim, stage completion, handover and history use the real API", async ({ page }) => {
   const errors = trackErrors(page);
   const mutations: string[] = [];
@@ -84,6 +94,7 @@ test("login, session restore, manual lookup, claim, stage completion, handover a
   await expect(page.getByText("300 × 260 cm")).toBeVisible();
   await page.getByRole("button", { name: /Preia comanda/ }).click();
   await expect(page.getByRole("dialog")).toContainText("Preiei comanda?");
+  await captureClaimLabel(page, fixture.orders.flow);
   await page.getByRole("button", { name: "Confirmă" }).click();
   await expect(page.getByRole("heading", { name: "Comanda este la tine" })).toBeVisible();
 
@@ -91,12 +102,12 @@ test("login, session restore, manual lookup, claim, stage completion, handover a
   await expect(page.getByText("Preluată de tine")).toBeVisible();
   await page.getByRole("button", { name: /Finalizează etapa/ }).click();
   const dialog = page.getByRole("dialog");
-  await expect(dialog).toContainText("Pregătire material");
-  await expect(dialog).toContainText("Primire atelier");
+  await expect(dialog).toContainText("Tăiere");
+  await expect(dialog).toContainText("Primire Croitorie");
   await dialog.getByRole("button", { name: "Confirmă" }).dblclick();
   await expect(page.getByText("✓ Comanda a fost predată")).toBeVisible();
   await expect(page.getByText("Comanda este la o etapă care nu îți este alocată.")).toBeVisible();
-  await expect(page.locator(".detail-hero")).toContainText("Primire atelier");
+  await expect(page.locator(".detail-hero")).toContainText("Primire Croitorie");
   expect(mutations.filter((url) => url.endsWith("/transition"))).toHaveLength(1);
   expect(mutations.filter((url) => url.endsWith("/claim"))).toHaveLength(1);
 
@@ -105,8 +116,8 @@ test("login, session restore, manual lookup, claim, stage completion, handover a
   await expect(page.locator(".order-card")).toContainText(`#${fixture.orders.flow}`);
 
   await page.getByRole("button", { name: "Istoric", exact: true }).click();
-  await expect(page.locator(".history-list")).toContainText("Pregătire material → Primire atelier");
-  await expect(page.locator(".history-list")).toContainText("Preluată la Pregătire material");
+  await expect(page.locator(".history-list")).toContainText("Tăiere → Primire Croitorie");
+  await expect(page.locator(".history-list")).toContainText("Preluată la Tăiere");
   await page.getByRole("button", { name: "Calendar" }).click();
   await expect(page.locator(".history-list")).toContainText(`#${fixture.orders.flow}`);
 
@@ -144,10 +155,12 @@ test("a concurrent claim produces ORDER_CHANGED and a safe reload instead of fak
 
   await lookup(bogdan.page, fixture.orders.conflict);
   await bogdan.page.getByRole("button", { name: /Preia comanda/ }).click();
+  await captureClaimLabel(bogdan.page, fixture.orders.conflict);
   await bogdan.page.getByRole("button", { name: "Confirmă" }).click();
   await expect(bogdan.page.getByRole("heading", { name: "Comanda este la tine" })).toBeVisible();
 
   await ana.page.getByRole("button", { name: /Preia comanda/ }).click();
+  await captureClaimLabel(ana.page, fixture.orders.conflict);
   await ana.page.getByRole("button", { name: "Confirmă" }).click();
   await expect(ana.page.getByRole("heading", { name: "Comanda s-a modificat" })).toBeVisible();
   await ana.page.getByRole("button", { name: "Reîncarcă" }).click();

@@ -1,9 +1,20 @@
 <?php
 declare(strict_types=1);
 /** Restore a pre-014 disposable test fixture (no production exceptions). This is NOT a deployment/rollback mechanism. */
-function restorePreExceptionsTestSchema(PDO $pdo): void
+function restorePreCuttingTestSchema(PDO $pdo): void
 {
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    if($pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='015_cutting_pool.sql'")->fetchColumn()) {
+        foreach(['cutting_transfers','cutting_facts','cutting_display_devices','cutting_board_settings'] as $table) $pdo->exec('DROP TABLE '.$table);
+        if ($pdo->query("SHOW INDEX FROM order_activity_events WHERE Key_name = 'idx_cutting_completed_today'")->fetch()) $pdo->exec('ALTER TABLE order_activity_events DROP INDEX idx_cutting_completed_today');
+        $columns = $pdo->query("SHOW COLUMNS FROM operational_orders LIKE 'source_reported_unavailable_at'")->fetchColumn();
+        $pdo->exec('ALTER TABLE operational_orders DROP INDEX idx_cutting_pool, DROP COLUMN cutting_first_claimed_at' . ($columns ? ', DROP COLUMN source_reported_unavailable_at' : ''));
+        $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='015_cutting_pool.sql'");
+    }
+}
+function restorePreExceptionsTestSchema(PDO $pdo): void
+{
+    restorePreCuttingTestSchema($pdo);
     if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='014_production_exceptions.sql'")->fetchColumn()) return;
     $pdo->exec('ALTER TABLE operational_orders DROP FOREIGN KEY fk_operational_orders_open_exception');
     $pdo->exec('ALTER TABLE operational_orders DROP INDEX uq_operational_orders_open_exception, DROP COLUMN open_exception_uuid');

@@ -61,8 +61,9 @@ $scanner = T::login($kernel, $employee('scanner', ['material-preparation']), $pa
 
 $orderA = "A{$suffix}";
 $globalA = "trendhome:{$orderA}";
-$mutate = static function (array $who, string $operation, string $globalId, int $expectedVersion, ?string $key = null, array $headers = []) use ($kernel): array {
-    return T::call($kernel, 'POST', '/orders/' . rawurlencode($globalId) . '/' . $operation, ['expectedVersion' => $expectedVersion], [
+$mutate = static function (array $who, string $operation, string $globalId, int $expectedVersion, ?string $key = null, array $headers = []) use ($kernel, $pdo): array {
+    $input = $operation === 'claim' ? T::cuttingClaim($pdo, $globalId, $who['employeeUuid'], $expectedVersion) : ['expectedVersion' => $expectedVersion];
+    return T::call($kernel, 'POST', '/orders/' . rawurlencode($globalId) . '/' . $operation, $input, [
         'x-csrf-token' => $who['csrf'],
         'idempotency-key' => $key ?? 'key-' . bin2hex(random_bytes(12)),
         ...$headers,
@@ -248,17 +249,17 @@ check($activity['status'] === 200, 'activity loads');
 $aliceActions = array_column(array_filter($activity['body']['items'], static fn (array $item): bool => $item['orderId'] === $globalA), 'action');
 check($aliceActions === ['stage_completed', 'claimed'], 'activity lists the employee\'s claim and stage completion newest first');
 $completedEntry = array_values(array_filter($activity['body']['items'], static fn (array $item): bool => $item['orderId'] === $globalA && $item['action'] === 'stage_completed'))[0];
-check($completedEntry['fromStageId'] === 'material-preparation' && $completedEntry['toStageId'] === 'workshop-receiving' && $completedEntry['fromStageLabelSnapshot'] === 'Pregătire material' && $completedEntry['meters'] === 8.4, 'activity stores stable IDs, label snapshots and meters');
+check($completedEntry['fromStageId'] === 'material-preparation' && $completedEntry['toStageId'] === 'workshop-receiving' && $completedEntry['fromStageLabelSnapshot'] === 'Tăiere' && $completedEntry['meters'] === 8.4, 'activity stores stable IDs, label snapshots and meters');
 check($activity['body']['summary']['handedOver'] >= 1 && $activity['body']['summary']['processed'] >= 1, 'today summary is computed from persisted events');
 foreach ($get($carol, '/activity/mine', ['range' => 'today'])['body']['items'] as $item) {
     check($item['orderId'] !== "trendhome:{$raceOrder}", 'activity contains only the authenticated employee\'s events');
 }
-$pdo->exec("UPDATE production_stages SET display_name = 'Pregătire materiale (redenumit)' WHERE stage_id = 'material-preparation'");
+$pdo->exec("UPDATE production_stages SET display_name = 'Tăiere (redenumit)' WHERE stage_id = 'material-preparation'");
 try {
     $renamed = array_values(array_filter($get($alice, '/activity/mine', ['range' => 'today'])['body']['items'], static fn (array $item): bool => $item['orderId'] === $globalA && $item['action'] === 'stage_completed'))[0];
-    check($renamed['fromStageLabelSnapshot'] === 'Pregătire material', 'historical labels do not change after a rename');
+    check($renamed['fromStageLabelSnapshot'] === 'Tăiere', 'historical labels do not change after a rename');
 } finally {
-    $pdo->exec("UPDATE production_stages SET display_name = 'Pregătire material' WHERE stage_id = 'material-preparation'");
+    $pdo->exec("UPDATE production_stages SET display_name = 'Tăiere' WHERE stage_id = 'material-preparation'");
 }
 $today = (new DateTimeImmutable('now', new DateTimeZone('Europe/Bucharest')))->format('Y-m-d');
 check(count($get($alice, '/activity/mine', ['range' => 'custom', 'from' => $today, 'to' => $today])['body']['items']) >= 2, 'custom date range returns today\'s events');

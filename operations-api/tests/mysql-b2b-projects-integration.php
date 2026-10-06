@@ -20,7 +20,7 @@ $config=T::config($db);$pdo=Connection::create($config);$migrations=dirname(__DI
 require __DIR__.'/HandoffSchemaFixture.php';restorePreProjectsTestSchema($pdo);
 $grantsBefore=$pdo->query('SELECT * FROM role_permissions ORDER BY role_id,permission_id')->fetchAll();
 $commercialBefore=array_map(fn($t)=>$pdo->query("SELECT COUNT(*) FROM $t")->fetchColumn(),['b2b_orders','b2b_order_lines','b2b_account_movements','operational_orders']);
-check((new MigrationRunner($pdo))->migrate($migrations)===['013_b2b_projects.sql','014_production_exceptions.sql'],'012→013→014 official additive upgrade');
+check((new MigrationRunner($pdo))->migrate($migrations)===['013_b2b_projects.sql','014_production_exceptions.sql','015_cutting_pool.sql'],'012→013→014→015 official additive upgrade');
 check((new MigrationRunner($pdo))->migrate($migrations)===[],'013 recorded exactly once');
 check($pdo->query("SELECT rp.* FROM role_permissions rp JOIN roles r ON r.role_id=rp.role_id WHERE r.role_key<>'operations-manager' ORDER BY rp.role_id,rp.permission_id")->fetchAll()===$grantsBefore,'013 changes no grant; 014 grants only its new operations-manager template');
 check(array_map(fn($t)=>$pdo->query("SELECT COUNT(*) FROM $t")->fetchColumn(),['b2b_orders','b2b_order_lines','b2b_account_movements','operational_orders'])===$commercialBefore,'013 rewrites no commercial, financial or production row');

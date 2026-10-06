@@ -60,7 +60,7 @@ $container = new Container($config, $pdo);
 $kernel = $container->kernel();
 $suffix = substr(bin2hex(random_bytes(6)), 0, 10);
 
-foreach (['order_activity_events', 'order_operation_idempotency', 'employee_order_relations', 'order_qr_references', 'operational_order_items', 'order_projection_receipts', 'operational_orders'] as $table) {
+foreach (['cutting_transfers', 'cutting_facts', 'order_activity_events', 'order_operation_idempotency', 'employee_order_relations', 'order_qr_references', 'operational_order_items', 'order_projection_receipts', 'operational_orders'] as $table) {
     $pdo->exec("DELETE FROM {$table}");
 }
 $pdo->exec('DELETE FROM system_root_identity');

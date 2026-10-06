@@ -14,8 +14,8 @@ import { createProductionWorkflowService, mapProductionWorkflow } from "../servi
 
 const expectedStages = [
   ["waiting", "În așteptare"],
-  ["material-preparation", "Pregătire material"],
-  ["workshop-receiving", "Primire atelier"],
+  ["material-preparation", "Tăiere"],
+  ["workshop-receiving", "Primire Croitorie"],
   ["labeling", "Etichetare"],
   ["material-straightening", "Îndreptare material"],
   ["bottom-hem", "Tivul de jos"],

@@ -27,6 +27,7 @@ export type LiveClientOptions = {
   fetchStream: (path: string, signal: AbortSignal) => Promise<Response>;
   onEvent: (event: LiveEvent) => void;
   onState?: (state: "connected" | "reconnecting") => void;
+  onCursor?: (data: Record<string, unknown>) => void;
   /** Called for 401/403: the session or access changed; the loop stops. */
   onDenied?: (response: Response) => void;
   isVisible?: () => boolean;
@@ -53,6 +54,7 @@ export function startLiveClient(options: LiveClientOptions): () => void {
   let cursor: number | null = null;
   let failures = 0;
   let lastDelivered = 0;
+  let bootstrapped = false;
   void (async () => {
     while (!controller.signal.aborted) {
       try {
@@ -64,16 +66,19 @@ export function startLiveClient(options: LiveClientOptions): () => void {
           if (frame.event === "ready" || frame.event === "cursor") {
             const next = Number(frame.data.cursor);
             if (Number.isSafeInteger(next) && next >= 0 && (cursor === null || next >= cursor)) cursor = next;
+            options.onCursor?.(frame.data);
             continue;
           }
           if (frame.id === null || frame.id <= lastDelivered) continue;
           lastDelivered = frame.id;
           const data = frame.data;
           options.onEvent({ seq: frame.id, type: frame.event, exceptionId: typeof data.exceptionId === "string" ? data.exceptionId : undefined,
+            transferId: typeof data.transferId === "string" ? data.transferId : undefined,
             orderId: typeof data.orderId === "string" ? data.orderId : undefined, orderNumber: typeof data.orderNumber === "string" ? data.orderNumber : undefined,
             status: typeof data.status === "string" ? data.status : undefined });
         }
-        if (failures > 0) options.onState?.("connected");
+        if (failures > 0 || !bootstrapped) options.onState?.("connected");
+        bootstrapped = true;
         failures = 0;
         await sleep(visible() ? options.visibleDelayMs ?? 2_500 : options.hiddenDelayMs ?? 15_000, controller.signal);
       } catch {

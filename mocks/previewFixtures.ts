@@ -6,7 +6,7 @@ export const previewEmployee: Employee = {
   employeeCode: "EMP-DEMO",
   displayName: "Ali Demo",
   username: "demo",
-  department: "Pregătire material",
+  department: "Tăiere",
   departmentKey: "pregatire-material",
   permissions: ["orders.scan", "orders.view_mine", "orders.claim", "orders.advance_stage", "orders.handover", "history.view_mine", "profile.view_self"],
   allowedStageIds: ["material-preparation"],
@@ -103,7 +103,7 @@ export const previewUnrelatedOrders: SimulatedOrderSeed[] = [
 export const previewOrderDatabase: SimulatedOrderSeed[] = [...previewOrders, ...previewUnrelatedOrders];
 
 const todayActivities: ActivityEntry[] = [
-  { id: "preview-act-1", occurredAt: "2026-08-19T10:42:00+03:00", action: "claimed", orderId: "order-61833", orderNumber: "61833", source: "trendhome", fromStageId: "material-preparation", fromStageLabelSnapshot: "Pregătire material", meters: 8.4 },
+  { id: "preview-act-1", occurredAt: "2026-08-19T10:42:00+03:00", action: "claimed", orderId: "order-61833", orderNumber: "61833", source: "trendhome", fromStageId: "material-preparation", fromStageLabelSnapshot: "Tăiere", meters: 8.4 },
   { id: "preview-act-2", occurredAt: "2026-08-19T10:17:00+03:00", action: "stage_completed", orderId: "order-61829", orderNumber: "61829", source: "outletperdele", fromStageId: "bottom-hem", fromStageLabelSnapshot: "Tivul de jos", toStageId: "side-hem", toStageLabelSnapshot: "Tivul lateral", meters: 5.2 },
   { id: "preview-act-3", occurredAt: "2026-08-19T09:52:00+03:00", action: "stage_completed", orderId: "order-trendyol-1048", orderNumber: "TY-1048", source: "trendyol", fromStageId: "sewing-finishing", fromStageLabelSnapshot: "Finisare coasere", toStageId: "quality-control", toStageLabelSnapshot: "Control calitate", meters: 24 },
 ];

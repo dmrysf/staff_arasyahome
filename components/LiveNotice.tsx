@@ -16,6 +16,7 @@ export function LiveNotice({ navigate }: { navigate: (path: string) => void }) {
         <p>{text}</p>
         <div>
           {last.exceptionId && <button className="button button-primary" type="button" onClick={() => { setDismissed(last.seq); navigate(`/exceptions/${encodeURIComponent(last.exceptionId!)}`); }}>Deschide cererea</button>}
+          {last.transferId && <button className="button button-primary" type="button" onClick={() => { setDismissed(last.seq); navigate("/"); }}>Vezi transferurile</button>}
           <button className="button button-link" type="button" onClick={() => setDismissed(last.seq)}>Închide</button>
         </div>
       </div>}

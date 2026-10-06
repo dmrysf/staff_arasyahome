@@ -30,7 +30,7 @@ export interface OrderService {
   /** Claims the order at its current stage. The server decides eligibility. */
   claim(
     orderId: string,
-    input: { expectedVersion: number; idempotencyKey: string },
+    input: { expectedVersion: number; idempotencyKey: string; qrToken?: string; confirmedMultiple?: boolean; ownedCount?: number },
     options?: { signal?: AbortSignal },
   ): Promise<StaffOrder>;
   /** Completes the current stage; the server alone chooses the next canonical stage. */
@@ -64,6 +64,7 @@ export interface LiveService {
 }
 
 export type ServiceBundle = {
+  cutting?: import("../domain/cutting").CuttingApi;
   auth: AuthService;
   employee: EmployeeService;
   orders: OrderService;

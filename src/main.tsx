@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { StaffApp } from "../app/StaffApp";
+import { DisplayBoard } from "../features/cutting/DisplayBoard";
 import { PwaRegistration } from "../app/PwaRegistration";
 import { resolveRuntimeConfig } from "./runtimeConfig";
 import "../app/globals.css";
@@ -20,7 +21,7 @@ const config = resolveRuntimeConfig({
 
 createRoot(root).render(
   <StrictMode>
-    <StaffApp initialRoute={window.location.pathname} {...config} />
+    {window.location.pathname === "/cutting-board" ? <DisplayBoard apiBaseUrl={config.apiBaseUrl} /> : <StaffApp initialRoute={window.location.pathname} {...config} />}
     <PwaRegistration />
   </StrictMode>,
 );

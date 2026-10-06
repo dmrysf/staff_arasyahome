@@ -123,6 +123,7 @@ try {
     $expected[] = '012_b2b_production_handoff.sql';
     $expected[] = '013_b2b_projects.sql';
     $expected[] = '014_production_exceptions.sql';
+    $expected[] = '015_cutting_pool.sql';
     if ($applied !== $expected) {
         throw new RuntimeException('An existing 001 schema did not apply exactly the pending migrations in order: ' . implode(', ', $applied));
     }
@@ -143,8 +144,8 @@ foreach ($seedFiles as $seedFile) {
 
 $expectedStages = [
     [1, 'waiting', 'În așteptare'],
-    [2, 'material-preparation', 'Pregătire material'],
-    [3, 'workshop-receiving', 'Primire atelier'],
+    [2, 'material-preparation', 'Tăiere'],
+    [3, 'workshop-receiving', 'Primire Croitorie'],
     [4, 'labeling', 'Etichetare'],
     [5, 'material-straightening', 'Îndreptare material'],
     [6, 'bottom-hem', 'Tivul de jos'],

@@ -38,12 +38,26 @@ final readonly class LiveEvents
         return (int) $this->pdo->query('SELECT COALESCE(MAX(event_seq), 0) FROM live_events')->fetchColumn();
     }
 
+    /** Generic sanitized invalidation, never customer, IAM or exception detail. */
+    public function cuttingChanged(string $now): void
+    {
+        $this->insert('cutting', null, 'cutting.changed', [], $now);
+        $this->insert('display', null, 'cutting.changed', [], $now);
+    }
+
+    public function displayAfter(int $after): array
+    {
+        $statement = $this->pdo->prepare("SELECT event_seq, event_type FROM live_events WHERE audience = 'display' AND event_seq > ? ORDER BY event_seq LIMIT " . self::BATCH);
+        $statement->execute([$after]);
+        return array_map(static fn(array $row): array => ['seq' => (int) $row['event_seq'], 'type' => 'cutting.changed', 'payload' => []], $statement->fetchAll(PDO::FETCH_ASSOC));
+    }
+
     /** @return list<array{seq: int, type: string, payload: array<string, mixed>}> */
-    public function after(string $employeeUuid, bool $approver, int $after): array
+    public function after(string $employeeUuid, bool $approver, int $after, bool $cutter = false): array
     {
         $statement = $this->pdo->prepare(
             'SELECT event_seq, event_type, payload_json FROM live_events
-             WHERE event_seq > :after AND (recipient_employee_uuid = :employee' . ($approver ? " OR audience = 'approvers'" : '') . ')
+             WHERE event_seq > :after AND (recipient_employee_uuid = :employee' . ($approver ? " OR audience = 'approvers'" : '') . ($cutter ? " OR audience = 'cutting'" : '') . ')
              ORDER BY event_seq LIMIT ' . self::BATCH,
         );
         $statement->execute(['after' => $after, 'employee' => $employeeUuid]);

@@ -98,7 +98,7 @@ test("the live client starts from the current cursor, never repeats events, back
   });
   assert.deepEqual(paths, ["/live/events", "/live/events?after=10", "/live/events?after=11", "/live/events?after=11", "/live/events?after=12"]);
   assert.deepEqual(events.map((event) => [event.seq, event.type]), [[11, "exception.acknowledgment_required"], [12, "exception.approved"]]);
-  assert.deepEqual(states, ["reconnecting", "connected"]);
+  assert.deepEqual(states, ["connected", "reconnecting", "connected"]);
   assert.deepEqual(delays, [2500, 2500, 2000, 2500]);
   assert.equal(denied, true);
 });

@@ -77,7 +77,7 @@ test("preview orders support QR, manual lookup, server-equivalent transitions, i
 
   const updated = await services.orders.confirmStageTransition(order.id, { expectedVersion: order.productionVersion, idempotencyKey: "preview-transition-1" });
   assert.equal(updated.productionStageId, "workshop-receiving");
-  assert.equal(getStageById(await services.workflow.getCurrent(), updated.productionStageId)?.label, "Primire atelier");
+  assert.equal(getStageById(await services.workflow.getCurrent(), updated.productionStageId)?.label, "Primire Croitorie");
   assert.equal(updated.productionVersion, order.productionVersion + 1);
   assert.equal(updated.employeeRelation?.type, "handover_out");
   assert.equal(updated.employeeAllowedAction, undefined);
@@ -100,7 +100,7 @@ test("preview orders support QR, manual lookup, server-equivalent transitions, i
   );
   const today = await services.activity.listMine({ range: "today" });
   assert.equal(today.items[0].action, "stage_completed");
-  assert.equal(today.items[0].fromStageLabelSnapshot, "Pregătire material");
+  assert.equal(today.items[0].fromStageLabelSnapshot, "Tăiere");
 });
 
 test("preview activity and my orders stay behind service contracts", async () => {

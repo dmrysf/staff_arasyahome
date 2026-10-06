@@ -62,7 +62,7 @@ $container = new Container($config, $pdo);
 $kernel = $container->kernel();
 $suffix = substr(bin2hex(random_bytes(6)), 0, 10);
 
-foreach (['order_activity_events', 'order_operation_idempotency', 'employee_order_relations', 'order_qr_references', 'operational_order_items', 'order_projection_receipts', 'operational_orders'] as $table) {
+foreach (['cutting_transfers', 'cutting_facts', 'order_activity_events', 'order_operation_idempotency', 'employee_order_relations', 'order_qr_references', 'operational_order_items', 'order_projection_receipts', 'operational_orders'] as $table) {
     $pdo->exec("DELETE FROM {$table}");
 }
 $pdo->exec('DELETE FROM system_root_identity');
@@ -74,7 +74,7 @@ $login = static function (string $username, string $password) use ($kernel): arr
     if ($response['status'] !== 200 || !preg_match('/^arasya_session=([^;]+);/', $response['headers']['Set-Cookie'] ?? '', $match)) {
         throw new RuntimeException("Login failed for {$username}: " . json_encode($response['body']));
     }
-    return ['cookie' => rawurldecode($match[1]), 'csrf' => (string) $response['body']['csrfToken']];
+    return ['cookie' => rawurldecode($match[1]), 'csrf' => (string) $response['body']['csrfToken'], 'employeeUuid' => (string) $response['body']['employee']['employeeUuid']];
 };
 
 // ---- Identities ------------------------------------------------------------------------------------
@@ -146,8 +146,9 @@ $ingest('9103', "th-9103-{$suffix}", 'waiting', 'cancelled', 'cancelled');
 $ingest('9104', "th-9104-{$suffix}", 'waiting');
 $ingest('9105', "th-9105-{$suffix}", 'waiting');
 
-$staff = static function (array $who, string $globalId, string $action, int $version, string $key) use ($kernel): array {
-    return T::call($kernel, 'POST', '/orders/' . rawurlencode($globalId) . '/' . $action, ['expectedVersion' => $version], ['origin' => T::ORIGIN, 'x-csrf-token' => $who['csrf'], 'idempotency-key' => $key], $who['cookie']);
+$staff = static function (array $who, string $globalId, string $action, int $version, string $key) use ($kernel, $pdo): array {
+    $input = $action === 'claim' ? T::cuttingClaim($pdo, $globalId, $who['employeeUuid'], $version) : ['expectedVersion' => $version];
+    return T::call($kernel, 'POST', '/orders/' . rawurlencode($globalId) . '/' . $action, $input, ['origin' => T::ORIGIN, 'x-csrf-token' => $who['csrf'], 'idempotency-key' => $key], $who['cookie']);
 };
 $intervene = static function (array $who, string $method, string $globalId, array $body, ?string $key) use ($kernel): array {
     $headers = ['origin' => DASHBOARD_ORIGIN, 'x-csrf-token' => $who['csrf']];

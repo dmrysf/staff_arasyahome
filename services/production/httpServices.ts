@@ -14,6 +14,14 @@ export type ProductionServicesOptions = {
 };
 
 const backendErrorCodes: Partial<Record<string, ServiceErrorCode>> = {
+  CUTTING_QR_REQUIRED: "QR_REQUIRED",
+  CUTTING_TRANSFER_PENDING: "ORDER_BLOCKED_BY_EXCEPTION",
+  CUTTING_MULTIPLE_CONFIRMATION_REQUIRED: "CONFIRMATION_REQUIRED",
+  CUTTING_OWNED_COUNT_CHANGED: "ORDER_CHANGED",
+  TRANSFER_CHANGED: "ORDER_CHANGED",
+  TRANSFER_ALREADY_RESOLVED: "EXCEPTION_ALREADY_RESOLVED",
+  TRANSFER_STATE_INVALID: "EXCEPTION_STATE_INVALID",
+  INELIGIBLE_TRANSFER_TARGET: "UNAUTHORIZED_ACTION",
   INVALID_CREDENTIALS: "INVALID_CREDENTIALS",
   ACCOUNT_INACTIVE: "ACCOUNT_INACTIVE",
   RATE_LIMITED: "RATE_LIMITED",
@@ -104,6 +112,7 @@ function employeeStatus(value: unknown): Employee["status"] {
 export function mapProductionEmployee(value: unknown): Employee {
   const raw = objectValue(value);
   return {
+    isRoot: raw.isRoot === true,
     employeeUuid: stringValue(raw.employeeUuid),
     employeeCode: raw.employeeCode == null ? undefined : stringValue(raw.employeeCode),
     displayName: stringValue(raw.displayName),
@@ -556,7 +565,7 @@ export function createProductionServices(apiBaseUrl: string, options: Production
       return http.request(`/orders/mine${q}`, { signal: requestOptions?.signal }, mapOrderPage);
     },
     getById: (id, requestOptions) => http.request(`/orders/${encodeURIComponent(id)}`, { signal: requestOptions?.signal }, mapProductionOrder),
-    claim: (id, input, requestOptions) => http.request(`/orders/${encodeURIComponent(id)}/claim`, { method: "POST", body: JSON.stringify({ expectedVersion: input.expectedVersion }), headers: { "Idempotency-Key": input.idempotencyKey }, signal: requestOptions?.signal }, mapProductionOrder),
+    claim: (id, input, requestOptions) => http.request(`/orders/${encodeURIComponent(id)}/claim`, { method: "POST", body: JSON.stringify({ expectedVersion: input.expectedVersion, ...(input.qrToken ? { qrToken: input.qrToken } : {}), ...(input.confirmedMultiple !== undefined ? { confirmedMultiple: input.confirmedMultiple } : {}), ...(input.ownedCount !== undefined ? { ownedCount: input.ownedCount } : {}) }), headers: { "Idempotency-Key": input.idempotencyKey }, signal: requestOptions?.signal }, mapProductionOrder),
     confirmStageTransition: (id, input, requestOptions) => http.request(`/orders/${encodeURIComponent(id)}/transition`, { method: "POST", body: JSON.stringify({ expectedVersion: input.expectedVersion }), headers: { "Idempotency-Key": input.idempotencyKey }, signal: requestOptions?.signal }, mapProductionOrder),
   };
   const activity: ActivityService = {
@@ -596,5 +605,12 @@ export function createProductionServices(apiBaseUrl: string, options: Production
       });
     },
   };
-  return { auth, employee, orders, activity, workflow, exceptions, live, mode: "production" };
+  const cutting: import("../../domain/cutting").CuttingApi = {
+    pool: (signal) => http.request("/cutting/pool", { signal }),
+    targets: (signal) => http.request("/cutting/targets", { signal }),
+    transfers: (signal) => http.request("/cutting/transfers", { signal }),
+    request: (orderId, input, key) => http.request(`/cutting/orders/${encodeURIComponent(orderId)}/transfers`, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }),
+    change: (id, action, input, key) => http.request(`/cutting/transfers/${encodeURIComponent(id)}/${action}`, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }),
+  };
+  return { auth, employee, orders, activity, workflow, exceptions, live, cutting, mode: "production" };
 }

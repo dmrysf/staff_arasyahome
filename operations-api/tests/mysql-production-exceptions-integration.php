@@ -82,7 +82,7 @@ require __DIR__ . '/HandoffSchemaFixture.php';
 restorePreExceptionsTestSchema($pdo);
 $grantsBefore = $pdo->query('SELECT * FROM role_permissions ORDER BY role_id, permission_id')->fetchAll(PDO::FETCH_ASSOC);
 $activityBefore = (int) $pdo->query('SELECT COUNT(*) FROM order_activity_events')->fetchColumn();
-check((new MigrationRunner($pdo))->migrate($migrations) === ['014_production_exceptions.sql'], '013 -> 014 official additive upgrade');
+check((new MigrationRunner($pdo))->migrate($migrations) === ['014_production_exceptions.sql', '015_cutting_pool.sql'], '013 -> 014 -> 015 official additive upgrade');
 check((new MigrationRunner($pdo))->migrate($migrations) === [], '014 recorded exactly once');
 check($pdo->query("SELECT rp.* FROM role_permissions rp JOIN roles r ON r.role_id = rp.role_id WHERE r.role_key <> 'operations-manager' ORDER BY rp.role_id, rp.permission_id")->fetchAll(PDO::FETCH_ASSOC) === $grantsBefore, '014 changes no existing role grant');
 check((int) $pdo->query('SELECT COUNT(*) FROM order_activity_events')->fetchColumn() === $activityBefore, '014 rewrites no activity history');
@@ -134,7 +134,7 @@ $login = static function (string $username, string $password) use ($kernel): arr
     if ($response['status'] !== 200 || !preg_match('/^arasya_session=([^;]+);/', $response['headers']['Set-Cookie'] ?? '', $match)) {
         throw new RuntimeException("Login failed for {$username}: " . json_encode($response['body']));
     }
-    return ['cookie' => rawurldecode($match[1]), 'csrf' => (string) $response['body']['csrfToken']];
+    return ['cookie' => rawurldecode($match[1]), 'csrf' => (string) $response['body']['csrfToken'], 'employeeUuid' => (string) $response['body']['employee']['employeeUuid']];
 };
 $keys = 0;
 $key = static function (string $label) use (&$keys, $suffix): string {
@@ -230,8 +230,10 @@ $qr = static function (string $globalId) use ($pdo): string {
     $statement->execute([$globalId]);
     return 'ARASYA:Q1:' . $statement->fetchColumn();
 };
-$step = static function (array $who, string $globalId, string $action, string $label) use ($staffPost, $order, $key): array {
-    return checkOk($staffPost($who, '/orders/' . rawurlencode($globalId) . "/{$action}", ['expectedVersion' => (int) $order($globalId)['production_version']], $key($label)), "{$label} {$action} {$globalId}");
+$step = static function (array $who, string $globalId, string $action, string $label) use ($staffPost, $order, $key, $pdo): array {
+    $version = (int) $order($globalId)['production_version'];
+    $input = $action === 'claim' ? T::cuttingClaim($pdo, $globalId, $who['employeeUuid'], $version) : ['expectedVersion' => $version];
+    return checkOk($staffPost($who, '/orders/' . rawurlencode($globalId) . "/{$action}", $input, $key($label)), "{$label} {$action} {$globalId}");
 };
 $cut = static function (array $cutter, array $intake, string $globalId) use ($step): void {
     $step($cutter, $globalId, 'claim', 'cut');

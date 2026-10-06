@@ -65,7 +65,7 @@ $kernel = $container->kernel();
 $suffix = substr(bin2hex(random_bytes(6)), 0, 10);
 
 // Aggregates are production-wide, so this dedicated test database starts without operational orders.
-foreach (['order_activity_events', 'order_operation_idempotency', 'employee_order_relations', 'order_qr_references', 'operational_order_items', 'order_projection_receipts', 'operational_orders'] as $table) {
+foreach (['cutting_transfers', 'cutting_facts', 'order_activity_events', 'order_operation_idempotency', 'employee_order_relations', 'order_qr_references', 'operational_order_items', 'order_projection_receipts', 'operational_orders'] as $table) {
     $pdo->exec("DELETE FROM {$table}");
 }
 $pdo->exec("UPDATE order_sources SET status = 'active', last_contact_at = NULL, last_event_at = NULL");

@@ -15,6 +15,7 @@ export type Employee = {
   applications: string[];
   /** A temporary password must be replaced before any other use. */
   mustChangePassword: boolean;
+  isRoot?: boolean;
   avatar?: string;
   locale: "ro";
 };
@@ -162,7 +163,7 @@ export type OrderQuality = {
 export type FaultReason = { key: string; label: string; requiresComment: boolean };
 
 /** One live notification; payloads carry identifiers only and the screen re-reads through REST. */
-export type LiveEvent = { seq: number; type: string; exceptionId?: string; orderId?: string; orderNumber?: string; status?: string };
+export type LiveEvent = { seq: number; type: string; exceptionId?: string; transferId?: string; orderId?: string; orderNumber?: string; status?: string };
 
 export type OrderPage = {
   items: StaffOrder[];

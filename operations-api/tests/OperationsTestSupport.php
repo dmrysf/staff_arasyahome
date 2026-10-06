@@ -11,6 +11,7 @@ use Arasya\Operations\Http\Request;
 use Arasya\Operations\Http\Response;
 use Arasya\Operations\Integration\SourceSignatureVerifier;
 use RuntimeException;
+use PDO;
 
 /** Shared helpers for MySQL-backed HTTP tests, race workers and the E2E fixture. Never used in production. */
 final class OperationsTestSupport
@@ -138,6 +139,19 @@ final class OperationsTestSupport
     public static function stage(string $stageId): array
     {
         return ['workflowKey' => 'curtain-production', 'workflowVersion' => 1, 'stageId' => $stageId, 'stageLabel' => 'diagnostic only'];
+    }
+
+    /** Explicit scan/confirmation intent for legacy lifecycle fixtures, not used by negative QR tests. */
+    public static function cuttingClaim(PDO $pdo, string $globalId, string $employee, int $version): array
+    {
+        static $intents = [];
+        $intentKey = $employee . '/' . $globalId . '/' . $version;
+        if (isset($intents[$intentKey])) return $intents[$intentKey];
+        $s = $pdo->prepare("SELECT o.production_stage_id, q.qr_reference FROM operational_orders o LEFT JOIN order_qr_references q ON q.order_uuid = o.order_uuid AND q.status = 'active' WHERE o.global_order_id = ?");
+        $s->execute([$globalId]); $row = $s->fetch(\PDO::FETCH_ASSOC);
+        if (!is_array($row) || $row['production_stage_id'] !== 'material-preparation') return ['expectedVersion' => $version];
+        $count = (new \Arasya\Operations\Cutting\CuttingLifecycle($pdo))->ownedCount($employee);
+        return $intents[$intentKey] = ['expectedVersion' => $version, 'qrToken' => 'ARASYA:Q1:' . $row['qr_reference'], 'confirmedMultiple' => $count > 0, 'ownedCount' => $count];
     }
 
     public static function kernel(Config $config): ApiKernel

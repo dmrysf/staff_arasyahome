@@ -1,4 +1,4 @@
-import type { FaultException, FaultExceptionStatus, ProductionItem } from "./models";
+import type { FaultException, FaultExceptionStatus, LiveEvent, ProductionItem } from "./models";
 
 export const faultStatusLabels: Record<FaultExceptionStatus, string> = {
   awaiting_acknowledgment: "Așteaptă confirmarea de la tăiere",
@@ -33,6 +33,9 @@ export function needsMyAction(fault: FaultException): boolean {
 }
 
 const liveMessages: Partial<Record<string, (orderNumber: string) => string>> = {
+  "cutting.transfer.approved": (n) => `Transferul comenzii #${n} a fost aprobat. Acceptă și scanează aceeași etichetă pentru preluare.`,
+  "cutting.transfer.rejected": (n) => `Transferul comenzii #${n} a fost respins. Vezi motivul în cerere.`,
+  "cutting.transfer.completed": (n) => `Transferul comenzii #${n} este finalizat. Noul proprietar poate continua.`,
   "exception.acknowledgment_required": (n) => `Comanda #${n} a fost returnată la tăiere. Confirmă eroarea și scanează eticheta.`,
   "exception.approved": (n) => `Aprobarea a fost acordată. Lucrarea poate fi refăcută. Comanda #${n}.`,
   "exception.rejected": (n) => `Managerul a respins cererea pentru comanda #${n}.`,
@@ -41,4 +44,9 @@ const liveMessages: Partial<Record<string, (orderNumber: string) => string>> = {
 export function liveMessage(type: string, orderNumber?: string): string | null {
   const message = liveMessages[type];
   return message && orderNumber ? message(orderNumber) : null;
+}
+
+/** Data invalidations refresh screens, but must not erase an actionable employee notice. */
+export function nextLiveNotice(current: LiveEvent | null, event: LiveEvent): LiveEvent | null {
+  return liveMessage(event.type, event.orderNumber) === null ? current : event;
 }

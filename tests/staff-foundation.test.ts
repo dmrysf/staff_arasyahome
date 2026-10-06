@@ -71,7 +71,7 @@ test("successful demo QR flow waits for confirmed mutation", async () => {
   const order = await services.orders.resolveQr("arasya:61833");
   const updated = await services.orders.confirmStageTransition(order.id, { expectedVersion: order.productionVersion, idempotencyKey: "request-success" });
   const workflow = await services.workflow.getCurrent();
-  assert.equal(getStageById(workflow, updated.productionStageId)?.label, "Primire atelier");
+  assert.equal(getStageById(workflow, updated.productionStageId)?.label, "Primire Croitorie");
   assert.equal(updated.productionVersion, order.productionVersion + 1);
 });
 

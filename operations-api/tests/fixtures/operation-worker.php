@@ -6,12 +6,19 @@ declare(strict_types=1);
 // transition at an agreed start instant and prints the HTTP outcome as JSON.
 
 use Arasya\Operations\Tests\OperationsTestSupport;
+use Arasya\Operations\Database\Connection;
 
 require dirname(__DIR__, 2) . '/bootstrap.php';
 require dirname(__DIR__) . '/OperationsTestSupport.php';
 
 [, $dbName, $operation, $orderId, $expectedVersion, $idempotencyKey, $cookie, $csrf, $startAt] = $argv;
-$kernel = OperationsTestSupport::kernel(OperationsTestSupport::config($dbName));
+$config = OperationsTestSupport::config($dbName);
+$kernel = OperationsTestSupport::kernel($config);
+$input = ['expectedVersion' => (int) $expectedVersion];
+if ($operation === 'claim') {
+    $who = OperationsTestSupport::call($kernel, 'GET', '/auth/session', null, [], $cookie);
+    $input = OperationsTestSupport::cuttingClaim(Connection::create($config), $orderId, (string) $who['body']['employee']['employeeUuid'], (int) $expectedVersion);
+}
 while (microtime(true) < (float) $startAt) {
     usleep(500);
 }
@@ -19,7 +26,7 @@ $response = OperationsTestSupport::call(
     $kernel,
     'POST',
     '/orders/' . rawurlencode($orderId) . '/' . $operation,
-    ['expectedVersion' => (int) $expectedVersion],
+    $input,
     ['x-csrf-token' => $csrf, 'idempotency-key' => $idempotencyKey],
     $cookie,
 );

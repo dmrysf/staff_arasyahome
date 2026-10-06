@@ -64,7 +64,7 @@ foreach (['70001' => 'trendhome', '70002' => 'trendhome', '70003' => 'outletperd
 }
 // Another employee already works on 70003 so Ana sees a blocked action.
 $bobSession = T::login($kernel, 'bogdan.e2e', $password);
-$claim = T::call($kernel, 'POST', '/orders/' . rawurlencode('outletperdele:70003') . '/claim', ['expectedVersion' => 1], ['origin' => $origin, 'x-csrf-token' => $bobSession['csrf'], 'idempotency-key' => 'e2e-fixture-claim-70003'], $bobSession['cookie']);
+$claim = T::call($kernel, 'POST', '/orders/' . rawurlencode('outletperdele:70003') . '/claim', T::cuttingClaim($pdo,'outletperdele:70003',$bobSession['employeeUuid'],1), ['origin' => $origin, 'x-csrf-token' => $bobSession['csrf'], 'idempotency-key' => 'e2e-fixture-claim-70003'], $bobSession['cookie']);
 if ($claim['status'] !== 200) {
     throw new RuntimeException('E2E fixture claim failed: ' . json_encode($claim['body']));
 }
@@ -94,9 +94,10 @@ $lines=[];foreach([[1,'Voal A',5],[2,'Voal B',7],[3,'Draperie C',8],[4,'Draperie
 $exceptionOrder=T::ingest($kernel,'trendhome',T::sourceOrder('70005','e2e-70005-1',$changedAt,T::stage('material-preparation'),'processing','active',$lines));
 if(($exceptionOrder['body']['outcome']??null)!=='applied') throw new RuntimeException('E2E exception order ingestion failed.');
 $qr['70005']=$exceptionOrder['body']['qr'];
-$staffStep=static function(string $user,string $action,int $version,string $key)use($kernel,$password,$origin):void{
+$staffStep=static function(string $user,string $action,int $version,string $key)use($kernel,$password,$origin,$pdo):void{
     $s=T::login($kernel,$user,$password);
-    $r=T::call($kernel,'POST','/orders/'.rawurlencode('trendhome:70005').'/'.$action,['expectedVersion'=>$version],['origin'=>$origin,'x-csrf-token'=>$s['csrf'],'idempotency-key'=>$key],$s['cookie']);
+    $input=$action==='claim'?T::cuttingClaim($pdo,'trendhome:70005',$s['employeeUuid'],$version):['expectedVersion'=>$version];
+    $r=T::call($kernel,'POST','/orders/'.rawurlencode('trendhome:70005').'/'.$action,$input,['origin'=>$origin,'x-csrf-token'=>$s['csrf'],'idempotency-key'=>$key],$s['cookie']);
     if($r['status']!==200) throw new RuntimeException('E2E exception order step failed: '.json_encode($r['body']));
 };
 $admin->create('Crama Florin','crama.e2e',null,'pregatire-material','employee',$password,['material-preparation'],'e2e');
@@ -111,6 +112,21 @@ foreach([['applications',['applications'=>['dashboard']]],['roles',['roleIds'=>[
     if($r['status']!==200) throw new RuntimeException('E2E operations manager setup failed: '.json_encode($r['body']));
 }
 
+// Cutting milestone fixtures are isolated from the legacy Ana/Bogdan and fault-return flows.
+$murat=$admin->create('Murat Tăiere','cut.murat.e2e',null,'pregatire-material','employee',$password,['material-preparation'],'e2e');
+$andrea=$admin->create('Andrea Tăiere','cut.andrea.e2e',null,'pregatire-material','employee',$password,['material-preparation'],'e2e');
+for($i=0;$i<77;$i++) {
+    $number=(string)(71000+$i);
+    $r=T::ingest($kernel,'trendhome',T::sourceOrder($number,'cut-e2e-'.$number,$changedAt,T::stage('material-preparation'),'processing','active',$i===0?$lines:null));
+    if(($r['body']['outcome']??null)!=='applied') throw new RuntimeException('Cutting fixture ingestion failed.');
+    $qr[$number]=$r['body']['qr'];
+    if($i<10) {
+        $who=T::login($kernel,'cut.murat.e2e',$password);
+        $r=T::call($kernel,'POST','/orders/'.rawurlencode('trendhome:'.$number).'/claim',T::cuttingClaim($pdo,'trendhome:'.$number,$who['employeeUuid'],1),['origin'=>$origin,'x-csrf-token'=>$who['csrf'],'idempotency-key'=>'cut-fixture-'.$number],$who['cookie']);
+        if($r['status']!==200) throw new RuntimeException('Cutting fixture QR claim failed.');
+    }
+}
+
 echo json_encode([
     'password' => $password,
     'users' => ['ana' => 'ana.e2e', 'bogdan' => 'bogdan.e2e', 'mihai' => 'mihai.e2e', 'dashboardOnly' => 'dora.e2e', 'temporary' => 'teodor.e2e'],
@@ -118,4 +134,6 @@ echo json_encode([
     'qr' => $qr,
     'b2b' => ['id'=>'b2b:'.$b2bOrder['id'],'code'=>$b2bOrder['code'],'username'=>'operator.b2b.e2e'],
     'exceptions' => ['order' => '70005', 'cutter' => 'crama.e2e', 'intake' => 'oprea.e2e', 'manager' => 'denisa.e2e'],
+    'cutting' => ['order'=>'71000','source'=>'trendhome','owner'=>'cut.murat.e2e','target'=>'cut.andrea.e2e',
+        'root'=>['username'=>Arasya\Operations\Iam\RootBootstrapService::ROOT_USERNAME,'password'=>'staff root fixture permanent 2026']],
 ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT), "\n";

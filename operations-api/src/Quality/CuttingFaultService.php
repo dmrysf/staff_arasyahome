@@ -310,7 +310,9 @@ final readonly class CuttingFaultService
                          VALUES (?, ?, 'assigned', 'active', ?, ?, ?)
                          ON DUPLICATE KEY UPDATE relation_type = VALUES(relation_type), status = 'active', last_action_at = VALUES(last_action_at), updated_at = VALUES(updated_at)",
                     )->execute([$assignee, $orderUuid, $now, $now, $now]);
+                    (new \Arasya\Operations\Cutting\CuttingLifecycle($this->pdo))->claimed($orderUuid, $productionVersion + 1, $assignee, $now);
                 }
+                (new \Arasya\Operations\Cutting\CuttingLifecycle($this->pdo))->fact($orderUuid, $productionVersion + 1, 'pool_entered', null, $now);
                 $meters = (string) $exception['fault_meters'];
                 $this->activity($order, $workflow, 'fault_returned', $actor->employeeUuid, $detectionStage, $returnStage, $previousOwner, $assignee, $productionVersion, $meters, $key, $requestId, $now);
                 $quality = $this->pdo->prepare('INSERT INTO production_quality_events (event_uuid, event_type, employee_uuid, order_uuid, exception_uuid, rework_cycle, is_repeat, line_count, meters, occurred_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
@@ -447,6 +449,7 @@ final readonly class CuttingFaultService
             $this->pdo->beginTransaction();
             try {
                 $result = $operation();
+                $this->live->cuttingChanged($this->now());
                 $this->pdo->commit();
                 return $result;
             } catch (Throwable $error) {

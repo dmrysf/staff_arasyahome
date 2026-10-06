@@ -16,7 +16,7 @@ $config=T::config($db);$pdo=Connection::create($config);$migrations=dirname(__DI
 require __DIR__.'/HandoffSchemaFixture.php';restorePreHandoffTestSchema($pdo);
 $grantsBefore=$pdo->query('SELECT * FROM role_permissions ORDER BY role_id,permission_id')->fetchAll();
 $financeBefore=$pdo->query('SELECT * FROM b2b_account_movements ORDER BY movement_uuid')->fetchAll();
-check((new MigrationRunner($pdo))->migrate($migrations)===['012_b2b_production_handoff.sql','013_b2b_projects.sql','014_production_exceptions.sql'],'011→012→013→014 official additive upgrade');
+check((new MigrationRunner($pdo))->migrate($migrations)===['012_b2b_production_handoff.sql','013_b2b_projects.sql','014_production_exceptions.sql','015_cutting_pool.sql'],'011→012→013→014→015 official additive upgrade');
 check((new MigrationRunner($pdo))->migrate($migrations)===[],'012 recorded exactly once');
 check($pdo->query("SELECT rp.* FROM role_permissions rp JOIN roles r ON r.role_id=rp.role_id WHERE r.role_key<>'operations-manager' ORDER BY rp.role_id,rp.permission_id")->fetchAll()===$grantsBefore,'012/013 grant no roles; 014 grants only its new operations-manager template');
 check($pdo->query('SELECT * FROM b2b_account_movements ORDER BY movement_uuid')->fetchAll()===$financeBefore,'012 leaves financial evidence unchanged');
@@ -103,7 +103,8 @@ check($snapshot($financialTables)===$money,'Staff stage does not change finance'
 for($stage=2;$stage<=14;$stage++) {
     $current=status($staffGet(),200,'Staff canonical stage');
     foreach(['claim','transition'] as $action) {
-        $current=status(T::call($k,'POST','/orders/'.$global.'/'.$action,['expectedVersion'=>$current['productionVersion']],
+        $input=$action==='claim'?T::cuttingClaim($pdo,$global,$operator['employeeUuid'],$current['productionVersion']):['expectedVersion'=>$current['productionVersion']];
+        $current=status(T::call($k,'POST','/orders/'.$global.'/'.$action,$input,
             ['x-csrf-token'=>$operator['csrf'],'idempotency-key'=>'full-'.$stage.'-'.$action.$suffix],$operator['cookie']),200,'canonical '.$action);
     }
 }

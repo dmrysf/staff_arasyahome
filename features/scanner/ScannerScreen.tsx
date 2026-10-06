@@ -17,6 +17,8 @@ import { selectQrDecoder, type QrDecoder } from "./qrDecoder";
 import type { StaffRuntimeMode } from "../../src/runtimeConfig";
 import { AppIcon } from "../../components/icons/AppIcon";
 import { getNextStage, getStageById } from "../../domain/productionWorkflow";
+import type { CuttingApi } from "../../domain/cutting";
+import { QrCapture } from "../exceptions/QrCapture";
 
 type TorchCapabilities = MediaTrackCapabilities & { torch?: boolean };
 type TorchConstraintSet = MediaTrackConstraintSet & { torch?: boolean };
@@ -37,7 +39,7 @@ function ReviewContent({ order, item, workflow }: { order: StaffOrder; item: Pro
   );
 }
 
-export function ScannerScreen({ service, workflow, mode, navigate, onSessionExpired }: { service: OrderService; workflow: ProductionWorkflow; mode: StaffRuntimeMode; navigate: (path: string) => void; onSessionExpired: () => void }) {
+export function ScannerScreen({ service, cutting, workflow, mode, navigate, onSessionExpired }: { service: OrderService; cutting?: CuttingApi; workflow: ProductionWorkflow; mode: StaffRuntimeMode; navigate: (path: string) => void; onSessionExpired: () => void }) {
   const [state, dispatch] = useReducer(scannerReducer, initialScannerState);
   const [manualOpen, setManualOpen] = useState(false);
   const [manualCode, setManualCode] = useState("");
@@ -49,6 +51,16 @@ export function ScannerScreen({ service, workflow, mode, navigate, onSessionExpi
   const cameraStartingRef = useRef(false);
   const duplicateGuard = useMemo(() => createDuplicateGuard(), []);
   const submittingRef = useRef(false);
+  const [claimQr, setClaimQr] = useState("");
+  const [ownedCount, setOwnedCount] = useState<number | null>(null);
+  const [confirmedMultiple, setConfirmedMultiple] = useState(false);
+  const confirmingCutting = state.status === "confirming" && state.order.productionStageId === "material-preparation" && state.order.employeeAllowedAction?.id === "claim";
+  useEffect(() => {
+    if (!confirmingCutting || !cutting) return;
+    const controller = new AbortController();
+    cutting.pool(controller.signal).then((pool) => setOwnedCount(pool.ownedCount), () => { if (!controller.signal.aborted) setOwnedCount(null); });
+    return () => controller.abort();
+  }, [confirmingCutting, cutting]);
 
   const stopCamera = useCallback(() => {
     cameraAttemptRef.current += 1;
@@ -73,6 +85,7 @@ export function ScannerScreen({ service, workflow, mode, navigate, onSessionExpi
     try {
       const resolved = manual ? await service.lookup(normalized) : await service.resolveQr(normalized);
       const order = requireProductionProducts(resolved);
+      setClaimQr(manual ? "" : normalized);
       navigator.vibrate?.(35);
       dispatch({ type: "ORDER_RESOLVED", order });
     } catch (caught) {
@@ -149,6 +162,9 @@ export function ScannerScreen({ service, workflow, mode, navigate, onSessionExpi
     duplicateGuard.reset();
     setManualOpen(false);
     setManualCode("");
+    setClaimQr("");
+    setOwnedCount(null);
+    setConfirmedMultiple(false);
     dispatch({ type: "RESET" });
   }
 
@@ -157,7 +173,7 @@ export function ScannerScreen({ service, workflow, mode, navigate, onSessionExpi
     if (!action || submittingRef.current) return;
     submittingRef.current = true;
     try {
-      const input = { expectedVersion: order.productionVersion, idempotencyKey };
+      const input = { expectedVersion: order.productionVersion, idempotencyKey, ...(cutting && action.id === "claim" && order.productionStageId === "material-preparation" ? { qrToken: claimQr, ownedCount: ownedCount ?? 0, confirmedMultiple } : {}) };
       const updated = action.id === "claim" ? await service.claim(order.id, input) : await service.confirmStageTransition(order.id, input);
       navigator.vibrate?.([30, 40, 30]);
       dispatch({ type: "SUBMIT_SUCCEEDED", order: updated });
@@ -170,6 +186,7 @@ export function ScannerScreen({ service, workflow, mode, navigate, onSessionExpi
 
   function submit() {
     if (state.status !== "confirming" || submittingRef.current) return;
+    if (cutting && confirmingCutting && (!claimQr || ownedCount === null || (ownedCount > 0 && !confirmedMultiple))) return;
     const idempotencyKey = createIdempotencyKey();
     dispatch({ type: "SUBMIT", idempotencyKey });
     void perform(state.order, idempotencyKey);
@@ -200,6 +217,7 @@ export function ScannerScreen({ service, workflow, mode, navigate, onSessionExpi
   const pendingAction = pending?.employeeAllowedAction;
   const pendingCurrent = pending ? getStageById(workflow, pending.productionStageId) : undefined;
   const pendingNext = pending && pendingAction?.id === "complete_stage" ? getNextStage(workflow, pending.productionStageId) : undefined;
+  const needsCuttingQr = Boolean(cutting && pending?.productionStageId === "material-preparation" && pendingAction?.id === "claim");
 
   return (
     <main className="scanner-screen">
@@ -218,7 +236,12 @@ export function ScannerScreen({ service, workflow, mode, navigate, onSessionExpi
       {state.status === "review" && reviewItem && <section className="bottom-sheet review-sheet"><ReviewContent order={state.order} item={reviewItem} workflow={workflow} />{state.order.employeeAllowedAction && <button className="button button-primary button-large" type="button" onClick={() => dispatch({ type: "OPEN_CONFIRMATION" })}>{state.order.employeeAllowedAction.label}<span aria-hidden="true">→</span></button>}<button className="button button-secondary" type="button" onClick={() => navigate(`/orders/${encodeURIComponent(state.order.id)}`)}>Vezi detalii</button><button className="button button-link" type="button" onClick={reset}>Scanează alt cod</button></section>}
       {state.status === "review" && !reviewItem && <section className="bottom-sheet error-sheet"><ErrorState error={new ServiceError("ORDER_PRODUCTS_UNAVAILABLE")} compact onAction={reset} /></section>}
 
-      {pending && pendingAction && <section className="confirmation-layer" role="dialog" aria-modal="true" aria-labelledby="confirmation-title"><div className="confirmation-card"><span className="state-icon confirm-icon" aria-hidden="true">?</span><p className="eyebrow">Confirmare necesară</p><h2 id="confirmation-title">{orderActionConfirmation[pendingAction.id].title}</h2><p>Comanda #{pending.orderNumber}. {orderActionConfirmation[pendingAction.id].note}</p><div className="confirm-transition"><StageLabel stage={pendingCurrent} muted={pendingAction.id !== "claim"} />{pendingNext && <><span aria-hidden="true">↓</span><StageLabel stage={pendingNext} /></>}{pendingAction.id === "complete_production" && <><span aria-hidden="true">↓</span><span className="stage-label"><span>✓</span>Producție finalizată</span></>}</div><div className="confirmation-actions"><button className="button button-secondary" type="button" disabled={busy} onClick={() => dispatch({ type: "CANCEL_CONFIRMATION" })}>Anulează</button><button className="button button-primary" type="button" disabled={busy} onClick={submit}>{busy ? "Se procesează…" : "Confirmă"}</button></div>{busy && <small className="server-note">Așteptăm confirmarea serverului.</small>}</div></section>}
+      {pending && pendingAction && <section className="confirmation-layer" role="dialog" aria-modal="true" aria-labelledby="confirmation-title"><div className="confirmation-card"><span className="state-icon confirm-icon" aria-hidden="true">?</span><p className="eyebrow">Confirmare necesară</p><h2 id="confirmation-title">{orderActionConfirmation[pendingAction.id].title}</h2><p>Comanda #{pending.orderNumber}. {orderActionConfirmation[pendingAction.id].note}</p>
+        {needsCuttingQr && <>
+          {claimQr ? <p role="status">Etichetă QR capturată · serverul verifică aceeași comandă.</p> : <QrCapture onToken={setClaimQr} disabled={busy} />}
+          {ownedCount === null ? <p>Se verifică lucrările tale active…</p> : ownedCount > 0 && <div className="order-notice order-notice-warning"><strong>Ai deja {ownedCount} comenzi în lucru.</strong><p>Dacă preiei această comandă, trebuie să finalizezi sau să transferi toate comenzile active. Vrei să continui?</p><label><input type="checkbox" checked={confirmedMultiple} disabled={busy} onChange={(e) => setConfirmedMultiple(e.target.checked)} /> Confirm explicit preluarea încă unei comenzi.</label></div>}
+        </>}
+        <div className="confirm-transition"><StageLabel stage={pendingCurrent} muted={pendingAction.id !== "claim"} />{pendingNext && <><span aria-hidden="true">↓</span><StageLabel stage={pendingNext} /></>}{pendingAction.id === "complete_production" && <><span aria-hidden="true">↓</span><span className="stage-label"><span>✓</span>Producție finalizată</span></>}</div><div className="confirmation-actions"><button className="button button-secondary" type="button" disabled={busy} onClick={() => dispatch({ type: "CANCEL_CONFIRMATION" })}>Anulează</button><button className="button button-primary" type="button" disabled={busy || (needsCuttingQr && (!claimQr || ownedCount === null || (ownedCount > 0 && !confirmedMultiple)))} onClick={submit}>{busy ? "Se procesează…" : "Confirmă"}</button></div>{busy && <small className="server-note">Așteptăm confirmarea serverului.</small>}</div></section>}
 
       {state.status === "success" && <section className="success-state"><span className="success-check"><AppIcon name="check" size={34} /></span><p className="eyebrow">{orderActionSuccess[state.action].eyebrow}</p><h2>{orderActionSuccess[state.action].title}</h2>{state.order.productionCompletedAt ? <span className="stage-label"><span>✓</span>Producție finalizată</span> : <StageLabel stage={getStageById(workflow, state.order.productionStageId)} />}<div><button className="button button-primary button-large" type="button" onClick={reset}>Scanează altă comandă</button><button className="button button-secondary" type="button" onClick={() => navigate(`/orders/${encodeURIComponent(state.order.id)}`)}>Vezi comanda</button></div></section>}
 
