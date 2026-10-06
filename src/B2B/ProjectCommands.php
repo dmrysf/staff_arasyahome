@@ -266,7 +266,10 @@ final readonly class ProjectCommands
                     if($replay['operation']!=='project_'.$operation || !hash_equals($replay['request_hash'],$hash))
                         throw new ApiException(409,'IDEMPOTENCY_CONFLICT','Key was used for another request.');
                     $this->pdo->rollBack();
-                    return OrderStore::decode($replay['response_json']);
+                    // JSON maps keyed by operation index decode as lists; a replay must keep the original shape.
+                    $result=OrderStore::decode($replay['response_json']);
+                    foreach(['versions','created'] as $map) if(array_key_exists($map,$result)) $result[$map]=(object)$result[$map];
+                    return $result;
                 }
                 $now=$this->clock->now()->format('Y-m-d H:i:s.u');
                 $result=$work($project,$now,$company);
