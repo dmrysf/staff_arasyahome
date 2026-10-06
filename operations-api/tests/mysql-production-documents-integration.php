@@ -106,6 +106,8 @@ foreach (['production_document_blocks', 'production_document_events', 'productio
 }
 $pdo->exec('UPDATE operational_orders SET active_document_revision_uuid = NULL');
 $pdo->exec('UPDATE production_document_revisions SET request_uuid = NULL');
+$pdo->exec('UPDATE production_document_revision_requests SET previous_request_uuid = NULL');
+$pdo->exec('UPDATE production_exception_decisions SET previous_decision_uuid = NULL');
 $pdo->exec('DELETE FROM production_document_revision_requests');
 $pdo->exec('DELETE FROM production_document_revisions');
 foreach (['live_events', 'production_exception_idempotency', 'production_quality_events', 'production_exception_events', 'production_exception_decisions', 'production_exception_lines'] as $table) {
@@ -231,7 +233,7 @@ check($post($online, $docPath($o1, 'print'), ['revisionNumber' => 1, 'reason' =>
 checkError($post($murat, $docPath($o1, 'print'), ['revisionNumber' => 1], $key('print-murat'), T::ORIGIN), 403, 'UNAUTHORIZED_ACTION', 'a worker cannot reprint');
 check((int) $pdo->query("SELECT COUNT(*) FROM production_document_revisions WHERE order_uuid = " . $pdo->quote($uuid1))->fetchColumn() === 1 && $activeQr($uuid1) === $intakeQr, 'reprints never create a revision or a QR');
 check($pdo->query("SELECT print_kind, print_number, reason FROM production_document_prints WHERE order_uuid = " . $pdo->quote($uuid1) . ' ORDER BY print_number')->fetchAll(PDO::FETCH_ASSOC) === [['print_kind' => 'print', 'print_number' => '1', 'reason' => null] , ['print_kind' => 'reprint', 'print_number' => '2', 'reason' => 'Hârtie deteriorată']] || $pdo->query("SELECT COUNT(*) FROM production_document_prints WHERE order_uuid = " . $pdo->quote($uuid1))->fetchColumn() == 2, 'print history: one print, one reprint with its reason');
-check((int) $pdo->query("SELECT COUNT(*) FROM iam_audit_events WHERE action = 'production_document.reprinted'")->fetchColumn() === 1, 'the reprint is in the immutable audit');
+check((int) $pdo->query("SELECT COUNT(*) FROM iam_audit_events WHERE action = 'production_document.reprinted' AND actor_employee_uuid = " . $pdo->quote($onlineId))->fetchColumn() === 1, 'the reprint is in the immutable audit');
 
 // ---- Production starts with the QR of revision 1 ----------------------------------------------------
 $claim = static function (array $who, string $globalId, ?string $token) use ($post, $order, $pdo, $key): array {
@@ -505,7 +507,7 @@ check(array_slice($types, 0, 3) === ['generated', 'printed', 'reprinted'] && in_
 check(count($history['revisions']) === 3 && $history['revisions'][1]['approvedBy'] === 'Test backup' && $history['revisions'][1]['status'] === 'revoked' && $history['revisions'][0]['status'] === 'active' && $history['revisions'][2]['status'] === 'superseded', 'revisions show who approved and their final state');
 check(!str_contains(json_encode($history), substr($intakeQr, 10)) && !str_contains(json_encode($history), substr($r2Qr, 10)), 'no QR payload is exposed in history views');
 checkError($get($murat, $docPath($o1)), 403, 'UNAUTHORIZED_ACTION', 'a worker cannot open the management document history');
-$audit = $pdo->query("SELECT metadata_json FROM iam_audit_events WHERE action LIKE 'production_document.%'")->fetchAll(PDO::FETCH_COLUMN);
+$audit = $pdo->query("SELECT metadata_json FROM iam_audit_events WHERE action LIKE 'production_document.%' AND actor_employee_uuid IN (" . implode(',', array_map([$pdo, 'quote'], [$onlineId, $sinemId, $backupId, $root['employeeUuid']])) . ')')->fetchAll(PDO::FETCH_COLUMN);
 check(count($audit) >= 10 && !str_contains(implode('', $audit), substr($intakeQr, 10)) && preg_match('/password|csrf|cookie|token/i', implode('', $audit)) !== 1, 'document audit holds no QR secret, password or token');
 $analytics = $pdo->query("SELECT COUNT(*) FROM production_document_blocks WHERE order_uuid = " . $pdo->quote($uuid1))->fetchColumn();
 check((int) $analytics === 2, 'two revision waits for order 84521: content change and root revoke');
