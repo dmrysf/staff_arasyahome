@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Arasya\Operations\Integration;
 
 use Arasya\Operations\Config\Config;
+use Arasya\Operations\Production\ProductionAuthorityMode;
 
 /**
  * Config-backed registry of signed server-to-server sources (one entry per website).
@@ -72,6 +73,13 @@ final readonly class SourceRegistry
             $enabled = filter_var($settings['enabled'] ?? 'true', FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE);
             $type = $settings['integrationType'] ?? self::DEFAULT_INTEGRATION_TYPE;
             $displayName = trim($settings['displayName'] ?? (self::DEFAULT_DISPLAY_NAMES[$key] ?? $key));
+            // The production authority mode never makes a source unusable: an unreadable value is
+            // reported and falls back to LEGACY (today's behaviour), so ingestion keeps working.
+            $authority = ProductionAuthorityMode::tryFrom(strtolower($settings['authority'] ?? ProductionAuthorityMode::Legacy->value));
+            if ($authority === null) {
+                $issues[] = ['code' => 'invalid_authority_mode', 'sourceKey' => $key];
+                $authority = ProductionAuthorityMode::Legacy;
+            }
             $valid = true;
             foreach ([
                 'missing_secret' => !isset($config->sourceSecrets[$key]),
@@ -86,7 +94,7 @@ final readonly class SourceRegistry
                 }
             }
             if ($valid && $mode !== null && $enabled !== null) {
-                $sources[$key] = new SourceDefinition($key, $displayName, $type, $enabled, $mode);
+                $sources[$key] = new SourceDefinition($key, $displayName, $type, $enabled, $mode, $authority);
             }
         }
         return new self($sources, $issues);

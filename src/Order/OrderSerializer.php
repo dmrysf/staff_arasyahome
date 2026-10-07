@@ -27,6 +27,7 @@ final readonly class OrderSerializer
             'version' => $order->version,
             'documentStatus' => $order->documentStatus,
             'productionVersion' => $order->productionVersion,
+            'productionAuthority' => $order->productionAuthority,
             'updatedAt' => $order->updatedAt->format('Y-m-d\TH:i:s.v\Z'),
         ];
 

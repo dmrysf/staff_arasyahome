@@ -130,7 +130,8 @@ final class Container
         $csrf = new CsrfGuard($this->tokens);
         $workflows = new ProductionWorkflowService(new PdoProductionWorkflowRepository($this->pdo));
         $orders = $this->orderRepository();
-        $policy = new OrderAccessPolicy($authorization);
+        $authorityModes = $this->authorityModes();
+        $policy = new OrderAccessPolicy($authorization, $authorityModes);
         $serializer = new OrderSerializer();
         $rateLimiter = new PdoApiRateLimiter($this->pdo, $this->clock, $this->config->appSecret);
         $iamAudit = new IamAuditLogger($this->pdo);
@@ -169,7 +170,7 @@ final class Container
                 $documentQueries,
             ),
             new ActivityController(new PdoActivityRepository($this->pdo), $this->authentication, $authorization, $this->config, $context, $this->clock),
-            new SourceIngestionController(new SourceSignatureVerifier($this->config->sourceSecrets), $this->projectionWriter(), $rateLimiter, $this->clock, SourceRegistry::fromConfig($this->config)),
+            new SourceIngestionController(new SourceSignatureVerifier($this->config->sourceSecrets), $this->projectionWriter(), $rateLimiter, $this->clock, SourceRegistry::fromConfig($this->config), new \Arasya\Operations\Integration\SourceAuthorityQueries($this->pdo)),
             new ManagementController(
                 new ManagementService($this->pdo, $authorization, new IamAuditLogger($this->pdo), $this->passwords, $this->usernames, $this->clock, HealthController::VERSION),
                 $this->authentication,
@@ -178,7 +179,7 @@ final class Container
                 $context,
                 new ProductionOverviewService($this->pdo, $authorization, $this->clock, $this->config),
                 new OrderControlService($this->pdo, $authorization),
-                new OrderOwnershipService($this->pdo, $authorization, $this->employees, $workflows, new IamAuditLogger($this->pdo), $this->clock),
+                new OrderOwnershipService($this->pdo, $authorization, $this->employees, $workflows, new IamAuditLogger($this->pdo), $this->clock, $authorityModes),
                 $approvers,
                 $faults,
                 $exceptions,
@@ -209,6 +210,13 @@ final class Container
             new CuttingController($cutting, $devices, new BoardSnapshot($this->pdo, $this->clock, $devices), $live, $this->authentication, $csrf, $this->config, $context, $rateLimiter),
             new \Arasya\Operations\Analytics\AnalyticsController(new \Arasya\Operations\Analytics\AnalyticsService($this->pdo,$analyticsPolicy,$this->clock),$this->authentication,$csrf,$this->config,$context),
             new DocumentController($documents, $documentQueries, $revisionApprovers, $this->authentication, $csrf, $this->config, $context, $rateLimiter, $this->pdo),
+            new \Arasya\Operations\Production\ProductionAuthorityController(
+                new \Arasya\Operations\Production\ProductionAuthorityService($this->pdo, $authorization, $workflows, $authorityModes, $iamAudit, $this->audit, $this->clock),
+                $this->authentication,
+                $csrf,
+                $this->config,
+                $context,
+            ),
         );
     }
 
@@ -253,7 +261,13 @@ final class Container
 
     public function projectionWriter(): OrderProjectionWriter
     {
-        return new OrderProjectionWriter($this->pdo, $this->clock);
+        return new OrderProjectionWriter($this->pdo, $this->clock, $this->authorityModes());
+    }
+
+    /** Per-source production authority modes from the signed source registry (default: legacy). */
+    public function authorityModes(): \Arasya\Operations\Production\ProductionAuthorityModes
+    {
+        return \Arasya\Operations\Production\ProductionAuthorityModes::fromRegistry(SourceRegistry::fromConfig($this->config));
     }
 
     /** Returns null when Trendyol credentials are not configured. */

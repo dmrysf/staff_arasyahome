@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Arasya\Operations\Integration;
 
+use Arasya\Operations\Production\ProductionAuthorityMode;
+
 /**
  * Safe, non-secret metadata of one signed source. Trust comes only from the source key plus its own
  * HMAC secret (held by SourceSignatureVerifier), never from a hostname.
@@ -16,6 +18,7 @@ final readonly class SourceDefinition
         public string $integrationType,
         public bool $enabled,
         public SourceMode $mode,
+        public ProductionAuthorityMode $authorityMode = ProductionAuthorityMode::Legacy,
     ) {
     }
 

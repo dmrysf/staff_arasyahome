@@ -21,6 +21,7 @@ use Arasya\Operations\Support\Clock;
 final readonly class SourceIngestionController
 {
     public const MAX_BODY_BYTES = 262_144;
+    public const MAX_AUTHORITY_ORDERS = 50;
 
     public function __construct(
         private SourceSignatureVerifier $verifier,
@@ -28,6 +29,7 @@ final readonly class SourceIngestionController
         private ApiRateLimiter $rateLimiter,
         private Clock $clock,
         private SourceRegistry $registry,
+        private ?SourceAuthorityQueries $authority = null,
     ) {
     }
 
@@ -83,12 +85,43 @@ final readonly class SourceIngestionController
             'ok' => true,
             'sourceKey' => $source->key,
             'mode' => $source->mode->value,
+            'productionAuthorityMode' => $source->authorityMode->value,
             'contract' => [
                 'schemaVersion' => 1,
                 'workflowId' => $workflow['id'],
                 'workflowVersion' => $workflow['version'],
                 'stageCount' => $workflow['stageCount'],
             ],
+        ], 200, ['Cache-Control' => 'no-store']);
+    }
+
+    /**
+     * Production authority of up to 50 of the source's own orders: {"orderIds": ["63366", ...]}.
+     * Read-only and allowed in validation and active mode; nothing is written, not even the contact
+     * time. Unknown orders are reported with exists=false, never as an error.
+     */
+    public function orderAuthority(Request $request, string $sourceKey): Response
+    {
+        $source = $this->authorize($request, $sourceKey);
+        $queries = $this->authority ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Production authority queries are not ready.');
+        $input = $request->json(8192);
+        $ids = $input['orderIds'] ?? null;
+        if (array_keys($input) !== ['orderIds'] || !is_array($ids) || !array_is_list($ids) || $ids === [] || count($ids) > self::MAX_AUTHORITY_ORDERS) {
+            throw new ApiException(422, 'SOURCE_PAYLOAD_INVALID', 'orderIds must list between 1 and 50 order ids.');
+        }
+        foreach ($ids as $id) {
+            if (!is_string($id) || preg_match('/^[A-Za-z0-9._-]{1,128}$/D', $id) !== 1) {
+                throw new ApiException(422, 'SOURCE_PAYLOAD_INVALID', 'orderIds must list between 1 and 50 order ids.');
+            }
+        }
+        if (count(array_unique($ids)) !== count($ids)) {
+            throw new ApiException(422, 'SOURCE_PAYLOAD_INVALID', 'orderIds must be unique.');
+        }
+        return Response::json([
+            'ok' => true,
+            'sourceKey' => $source->key,
+            'productionAuthorityMode' => $source->authorityMode->value,
+            'orders' => $queries->forOrders($source->key, $ids),
         ], 200, ['Cache-Control' => 'no-store']);
     }
 
