@@ -17,7 +17,7 @@ final readonly class PdoOperationalOrderRepository implements OperationalOrderRe
             o.order_uuid, o.global_order_id, o.order_number, o.production_stage_id,
             o.source_commerce_status_code, o.source_commerce_status_label, o.production_notes,
             o.operational_status, o.version, o.production_version, o.production_owner_employee_uuid,
-            o.production_completed_at, o.open_exception_uuid, o.document_status, o.accepted_at, o.updated_at, o.source_changed_at, o.last_source_seen_at,o.production_context,
+            o.production_completed_at, o.open_exception_uuid, o.document_status, o.production_authority, o.accepted_at, o.updated_at, o.source_changed_at, o.last_source_seen_at,o.production_context,
             o.source_key,s.source_type,s.status AS source_status, s.last_contact_at AS source_last_contact_at,
             r.employee_uuid AS relation_employee_uuid, r.relation_type, r.status AS relation_status,
             r.started_at AS relation_started_at, r.last_action_at AS relation_last_action_at
@@ -182,6 +182,7 @@ final readonly class PdoOperationalOrderRepository implements OperationalOrderRe
                 $row['production_context']===null?null:json_decode($row['production_context'],true,flags:JSON_THROW_ON_ERROR),
                 $row['open_exception_uuid'] === null ? null : (string) $row['open_exception_uuid'],
                 (string) $row['document_status'],
+                (string) $row['production_authority'],
             );
         }
         return $orders;

@@ -22,6 +22,8 @@ export function permissionForRoute(path: string): StaffPermission | null {
 }
 
 export function canAccessRoute(employee: Employee, path: string) {
+  // Production authority takeover: managers holding the permission together with Dashboard access.
+  if (path === "/authority") return employee.permissions.includes("production.manage_authority") && employee.applications.includes("dashboard");
   // Production documents: channel employees with a document permission, without needing a stage.
   if (path.startsWith("/documents/")) return ["production.documents.generate", "production.documents.reprint", "production.documents.request_revision"].some((key) => employee.permissions.includes(key));
   const permission = permissionForRoute(path);

@@ -3,6 +3,7 @@ import { isOrderActionBlockedReason, isOrderActionId, orderActionLabels } from "
 import type { ActivityService, AuthService, EmployeeService, ExceptionService, LiveService, OrderService, ServiceBundle, Session } from "../contracts";
 import { startLiveClient } from "./liveClient";
 import type { DocumentApi, DocumentAttention, DocumentRevision, OrderDocument, OrderDocumentSummary } from "../../domain/documents";
+import { isProductionAuthority, type AuthorityApi, type AuthorityChange, type OrderAuthorityView, type ProductionAuthorityMode } from "../../domain/authority";
 import { createBrowserWorkflowCache, createUnavailableWorkflowCache, normalizeProductionApiBaseUrl, type WorkflowCache } from "./workflowCache";
 import { createProductionWorkflowService } from "./workflowService";
 
@@ -15,6 +16,15 @@ export type ProductionServicesOptions = {
 };
 
 const backendErrorCodes: Partial<Record<string, ServiceErrorCode>> = {
+  PRODUCTION_AUTHORITY_SOURCE: "PRODUCTION_AUTHORITY_SOURCE",
+  AUTHORITY_CUTOVER_DISABLED: "AUTHORITY_CUTOVER_DISABLED",
+  AUTHORITY_NOT_SUPPORTED: "AUTHORITY_NOT_SUPPORTED",
+  AUTHORITY_ALREADY_OPERATIONS: "AUTHORITY_ALREADY_OPERATIONS",
+  AUTHORITY_NOT_OPERATIONS: "AUTHORITY_NOT_OPERATIONS",
+  AUTHORITY_RELEASE_NOT_ALLOWED: "AUTHORITY_RELEASE_NOT_ALLOWED",
+  INVALID_STAGE: "INVALID_STAGE",
+  WORKFLOW_MISMATCH: "WORKFLOW_MISMATCH",
+  PRODUCTION_COMPLETED: "PRODUCTION_COMPLETED",
   CUTTING_QR_REQUIRED: "QR_REQUIRED",
   CUTTING_TRANSFER_PENDING: "ORDER_BLOCKED_BY_EXCEPTION",
   CUTTING_MULTIPLE_CONFIRMATION_REQUIRED: "CONFIRMATION_REQUIRED",
@@ -299,6 +309,10 @@ export function mapProductionOrder(value: unknown): import("../../domain/models"
     version,
     productionVersion: positiveInteger(raw.productionVersion),
   };
+  if (raw.productionAuthority != null) {
+    if (!isProductionAuthority(raw.productionAuthority)) throw new StaffServiceError("SERVER_ERROR");
+    order.productionAuthority = raw.productionAuthority;
+  }
 
   if (raw.employeeAllowedAction != null) {
     const action = objectValue(raw.employeeAllowedAction);
@@ -710,5 +724,46 @@ export function createProductionServices(apiBaseUrl: string, options: Production
     request: (orderId, input, key) => http.request(`/cutting/orders/${encodeURIComponent(orderId)}/transfers`, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }),
     change: (id, action, input, key) => http.request(`/cutting/transfers/${encodeURIComponent(id)}/${action}`, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }),
   };
-  return { auth, employee, orders, activity, workflow, exceptions, live, cutting, documents, mode: "production" };
+  const authority: AuthorityApi = {
+    inspect: (globalOrderId, signal) => http.request(`/orders/${encodeURIComponent(globalOrderId)}/production-authority`, { signal }, mapAuthorityView),
+    takeOver: (globalOrderId, input, key) => http.request(`/orders/${encodeURIComponent(globalOrderId)}/production-authority/takeover`, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapAuthorityChange),
+    release: (globalOrderId, input, key) => http.request(`/orders/${encodeURIComponent(globalOrderId)}/production-authority/release`, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapAuthorityChange),
+  };
+  return { auth, employee, orders, activity, workflow, exceptions, live, cutting, documents, authority, mode: "production" };
+}
+
+const authorityModes: readonly ProductionAuthorityMode[] = ["legacy", "observe", "enforce"];
+function authorityGate(value: unknown): { allowed: boolean; blockedReason: string | null } {
+  const raw = objectValue(value);
+  if (typeof raw.allowed !== "boolean") throw new StaffServiceError("SERVER_ERROR");
+  return { allowed: raw.allowed, blockedReason: raw.blockedReason == null ? null : stringValue(raw.blockedReason) };
+}
+function authorityStage(value: unknown): { id: string; label: string | null } {
+  const raw = objectValue(value);
+  return { id: stringValue(raw.id), label: raw.label == null ? null : stringValue(raw.label) };
+}
+export function mapAuthorityView(value: unknown): OrderAuthorityView {
+  const raw = objectValue(value);
+  const workflow = objectValue(raw.workflow);
+  if (!isProductionAuthority(raw.productionAuthority) || !authorityModes.includes(raw.authorityMode as ProductionAuthorityMode) || !Array.isArray(workflow.stages)) throw new StaffServiceError("SERVER_ERROR");
+  return {
+    globalOrderId: stringValue(raw.globalOrderId),
+    orderNumber: stringValue(raw.orderNumber),
+    source: stringValue(raw.source),
+    authorityMode: raw.authorityMode as ProductionAuthorityMode,
+    productionAuthority: raw.productionAuthority,
+    stage: authorityStage(raw.stage),
+    productionVersion: positiveInteger(raw.productionVersion),
+    operationalStatus: stringValue(raw.operationalStatus),
+    productionCompleted: raw.productionCompleted === true,
+    hasOwner: raw.hasOwner === true,
+    takeover: authorityGate(raw.takeover),
+    release: authorityGate(raw.release),
+    workflow: { id: stringValue(workflow.id), version: positiveInteger(workflow.version), stages: workflow.stages.map((stage) => { const s = objectValue(stage); return { id: stringValue(s.id), label: stringValue(s.label), ordinal: positiveInteger(s.ordinal) }; }) },
+  };
+}
+export function mapAuthorityChange(value: unknown): AuthorityChange {
+  const raw = objectValue(value);
+  if (!isProductionAuthority(raw.productionAuthority) || (raw.action !== "authority_taken_over" && raw.action !== "authority_released") || typeof raw.changed !== "boolean") throw new StaffServiceError("SERVER_ERROR");
+  return { globalOrderId: stringValue(raw.globalOrderId), action: raw.action, changed: raw.changed, productionAuthority: raw.productionAuthority, stage: authorityStage(raw.stage), productionVersion: positiveInteger(raw.productionVersion) };
 }

@@ -66,6 +66,15 @@ const presentations: Record<ServiceErrorCode, ErrorPresentation> = {
   DOCUMENT_CHANGED: { title: "Documentul s-a schimbat", message: "Starea documentului a fost actualizată între timp. Reîncarcă înainte de a continua.", action: "Reîncarcă" },
   DOCUMENT_ORDER_COMPLETED: { title: "Comandă finalizată", message: "Revizia documentului după finalizare nu face parte din acest flux.", action: "Înapoi" },
   DOCUMENT_REVISION_NOT_ACTIVE: { title: "Revizie înlocuită", message: "Această revizie nu mai este documentul activ. Reîncarcă pagina.", action: "Reîncarcă" },
+  PRODUCTION_AUTHORITY_SOURCE: { title: "Comanda nu este preluată în Arasya", message: "Producția acestei comenzi este încă gestionată în YD SOFT. Un manager trebuie să o preia în Arasya înainte de a lucra la ea.", action: "Înapoi" },
+  AUTHORITY_CUTOVER_DISABLED: { title: "Preluare neactivată", message: "Preluarea autorității de producție nu este activată pentru această sursă.", action: "Înapoi" },
+  AUTHORITY_NOT_SUPPORTED: { title: "Preluare indisponibilă", message: "Autoritatea de producție a acestei comenzi nu poate fi schimbată.", action: "Înapoi" },
+  AUTHORITY_ALREADY_OPERATIONS: { title: "Comanda este deja în Arasya", message: "Arasya gestionează deja producția acestei comenzi. Etapele se schimbă numai prin fluxul de producție.", action: "Reîncarcă" },
+  AUTHORITY_NOT_OPERATIONS: { title: "Comanda nu este în Arasya", message: "Producția acestei comenzi nu este gestionată în Arasya.", action: "Reîncarcă" },
+  AUTHORITY_RELEASE_NOT_ALLOWED: { title: "Anulare imposibilă", message: "Preluarea poate fi anulată numai dacă nimeni nu a lucrat la comandă după preluare.", action: "Reîncarcă" },
+  INVALID_STAGE: { title: "Etapă invalidă", message: "Alege o etapă din fluxul de producție Arasya.", action: "Înapoi" },
+  WORKFLOW_MISMATCH: { title: "Flux schimbat", message: "Fluxul de producție s-a schimbat. Reîncarcă și alege din nou etapa.", action: "Reîncarcă" },
+  PRODUCTION_COMPLETED: { title: "Producție finalizată", message: "Producția acestei comenzi este finalizată.", action: "Înapoi" },
   WORKFLOW_UNAVAILABLE: { title: "Flux indisponibil", message: "Catalogul etapelor de producție nu poate fi încărcat momentan. Starea comenzii nu a fost schimbată.", action: "Reîncearcă" },
 };
 

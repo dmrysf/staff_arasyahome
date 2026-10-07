@@ -1,17 +1,18 @@
 export type StaffRoute =
-  | { kind: "home" | "login" | "scan" | "orders" | "history" | "profile"; pathname: string }
+  | { kind: "home" | "login" | "scan" | "orders" | "history" | "profile" | "authority"; pathname: string }
   | { kind: "order-detail"; pathname: string; orderId: string }
   | { kind: "exception-detail"; pathname: string; exceptionId: string }
   | { kind: "document-detail"; pathname: string; orderId: string }
   | { kind: "invalid"; pathname: "/" };
 
-const fixedRoutes = new Map<string, "home" | "login" | "scan" | "orders" | "history" | "profile">([
+const fixedRoutes = new Map<string, "home" | "login" | "scan" | "orders" | "history" | "profile" | "authority">([
   ["/", "home"],
   ["/login", "login"],
   ["/scan", "scan"],
   ["/orders", "orders"],
   ["/history", "history"],
   ["/profile", "profile"],
+  ["/authority", "authority"],
 ]);
 
 const ORDER_PREFIX = "/orders/";

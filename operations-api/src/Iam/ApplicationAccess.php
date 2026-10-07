@@ -56,6 +56,7 @@ final class ApplicationAccess
         'orders.report_fault' => self::STAFF,
         'orders.acknowledge_fault' => self::STAFF,
         'production.exceptions.approve' => self::DASHBOARD,
+        'production.manage_authority' => self::DASHBOARD,
         'orders.lookup_exact' => self::DASHBOARD,
         'b2b.companies.view' => self::B2B,
         'b2b.companies.create' => self::B2B,

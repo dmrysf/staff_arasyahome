@@ -62,6 +62,7 @@ final readonly class OrderOwnershipService
         private ProductionWorkflowService $workflows,
         private IamAuditLogger $audit,
         private Clock $clock,
+        private ?\Arasya\Operations\Production\ProductionAuthorityModes $authorityModes = null,
     ) {
     }
 
@@ -241,6 +242,11 @@ final readonly class OrderOwnershipService
             }
 
             $target = null;
+            if ($operation === self::OPERATION_REASSIGN && $order['production_authority'] === \Arasya\Operations\Production\ProductionAuthority::SOURCE
+                && $this->authorityModes?->modeFor((string) $order['source_key']) === \Arasya\Operations\Production\ProductionAuthorityMode::Enforce) {
+                // Assigning work would let Arasya produce an order whose source still owns production.
+                throw new ApiException(409, 'PRODUCTION_AUTHORITY_SOURCE', 'Production of this order is still managed by its source. A manager must take it over first.');
+            }
             if ($operation === self::OPERATION_REASSIGN) {
                 $target = $this->eligibleTarget($actor, $targetExists ? (string) $targetId : null, $previousId, $stage);
             }
@@ -410,7 +416,7 @@ final readonly class OrderOwnershipService
     {
         $statement = $this->pdo->prepare(
             'SELECT order_uuid, global_order_id, source_key, order_number, production_stage_id, production_owner_employee_uuid,
-                    production_completed_at, operational_status, production_version, open_exception_uuid, document_status
+                    production_completed_at, operational_status, production_version, open_exception_uuid, document_status, production_authority
              FROM operational_orders WHERE global_order_id = ?' . ($lock ? ' FOR UPDATE' : ''),
         );
         $statement->execute([$globalId]);

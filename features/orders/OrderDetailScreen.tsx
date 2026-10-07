@@ -20,6 +20,7 @@ import type { CuttingApi } from "../../domain/cutting";
 import { CuttingTransferRequest } from "../cutting/CuttingWork";
 import { blockedDocumentNotice, canUseDocuments, type DocumentApi } from "../../domain/documents";
 import { DocumentPanel } from "../documents/DocumentPanel";
+import { authorityLabels } from "../../domain/authority";
 
 const relationTime = new Intl.DateTimeFormat("ro-RO", { day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" });
 
@@ -44,6 +45,7 @@ export function OrderDetailScreen({ orderId, service, exceptions, cutting, docum
     <article className="screen-stack detail-screen">
       <button className="back-link" type="button" onClick={() => navigate("/orders")}><AppIcon name="back" size={20} /> Comenzile mele</button>
       <section className="detail-hero"><div><SourceBadge source={order.source} /><h1>Comanda<br />#{order.orderNumber}</h1></div>{completed ? <span className="stage-label"><span>✓</span>Producție finalizată</span> : <StageLabel stage={getStageById(workflow, order.productionStageId)} />}</section>
+      {order.productionAuthority && permissions.includes("production.manage_authority") && <p className={`order-notice ${order.productionAuthority === "operations" ? "order-notice-muted" : "order-notice-warning"}`} role="note" data-testid="production-authority">{authorityLabels[order.productionAuthority]}{order.productionAuthority === "source" && <> · <button type="button" className="link-button" onClick={() => navigate(`/authority?order=${encodeURIComponent(order.id)}`)}>Preia în Arasya</button></>}</p>}
       <BlockedDocument order={order} />
       <OrderNotices order={order} />
       {order.productionQuality && <QualityNotices order={order} navigate={navigate} />}
