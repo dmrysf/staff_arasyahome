@@ -23,7 +23,7 @@ The browser is never an identity or authorization authority. Every protected req
 | `GET` | `/orders/mine`, `/orders/{id}`, `/orders/lookup` | Visible orders for the session employee |
 | `POST` | `/orders/resolve-qr`, `/orders/{id}/claim`, `/orders/{id}/transition` | QR resolution and production mutations (CSRF, idempotency) |
 | `GET` | `/activity/mine` | Persisted activity of the session employee |
-| `POST` | `/integrations/sources/{source}/orders`, `…/heartbeat` | Signed server-to-server source delivery (no cookies) |
+| `POST` | `/integrations/sources/{source}/orders`, `…/orders/validate`, `…/heartbeat` | Signed server-to-server source delivery (no cookies) |
 
 Success responses for login/session/refresh contain an allowlisted employee representation, absolute `expiresAt`, and a session-bound `csrfToken`. They never contain password hashes or a raw session token. Errors use `{ "error": { "code", "message", "requestId" } }` and authentication responses use `Cache-Control: no-store`.
 

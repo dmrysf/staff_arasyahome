@@ -544,7 +544,7 @@ test('authenticated production workflow route returns the exact canonical catalo
     expect(($unauthenticated->payload['error']['code'] ?? null) === 'SESSION_EXPIRED');
 
     $health = $kernel->handle(new Request('GET', '/health', [], [], '', '127.0.0.1', 'workflow-test', 'health-stable'));
-    expect($health->status === 200 && ($health->payload['version'] ?? null) === '2.16.0');
+    expect($health->status === 200 && ($health->payload['version'] ?? null) === '2.17.0');
 });
 
 test('JSON auth input rejects malformed, oversized and unexpected payloads', function (): void {
@@ -1115,6 +1115,7 @@ test('GlobalOrderId formats and parses source identifiers strictly and determini
 });
 
 require __DIR__ . '/OperationsUnitTests.php';
+require __DIR__ . '/SourceConnectionUnitTests.php';
 
 foreach ($tests as [$name, $callback]) {
     try {

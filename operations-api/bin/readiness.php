@@ -6,6 +6,8 @@ use Arasya\Operations\Config\Config;
 use Arasya\Operations\Config\ConfigLoader;
 use Arasya\Operations\Database\Connection;
 use Arasya\Operations\Database\MigrationStatus;
+use Arasya\Operations\Http\HealthController;
+use Arasya\Operations\Integration\SourceRegistry;
 use Arasya\Operations\Production\PdoProductionWorkflowRepository;
 
 if (PHP_SAPI !== 'cli') {
@@ -104,8 +106,14 @@ foreach (['https://staff.arasyahome.ro', 'https://dashboard.arasyahome.ro', 'htt
     }
 }
 
-foreach (['trendhome', 'outletperdele'] as $sourceKey) {
-    $report(isset($config->sourceSecrets[$sourceKey]) ? 'OK' : 'WARN', "source_signing_{$sourceKey}");
+// Signed source registry: one line per usable source and one WARN per configuration issue (never a secret).
+$sourceRegistry = SourceRegistry::fromConfig($config);
+foreach ($sourceRegistry->all() as $definition) {
+    $report('OK', "source_signing_{$definition->key}");
+    $report('OK', 'source_mode_' . $definition->key . '_' . ($definition->enabled ? $definition->mode->value : 'disabled'));
+}
+foreach ($sourceRegistry->issues() as $issue) {
+    $report('WARN', 'source_config_' . $issue['code'] . ($issue['sourceKey'] === null ? '' : '_' . $issue['sourceKey']));
 }
 $report($config->trendyol !== null ? 'OK' : 'WARN', 'trendyol_credentials');
 try {
@@ -115,9 +123,20 @@ try {
             $report($source['status']==='active'?'OK':'WARN','source_internal_b2b');
             continue;
         }
+        $definition = $sourceRegistry->find((string) $source['source_key']);
+        if ($definition !== null && $definition->canIngest() && $source['status'] !== 'active') {
+            $report('WARN', 'source_inactive_in_database_' . $source['source_key']);
+        }
         $contact = $source['last_contact_at'] === null ? null : new DateTimeImmutable((string) $source['last_contact_at'], new DateTimeZone('UTC'));
         $fresh = $source['status'] === 'active' && $contact !== null && time() - $contact->getTimestamp() <= $config->sourceFreshSeconds;
         $report($fresh ? 'OK' : 'WARN', 'source_contact_' . $source['source_key']);
+    }
+    // An active signed source also needs its order_sources row before real ingestion can write.
+    $registered = array_column($sources, 'source_key');
+    foreach ($sourceRegistry->all() as $definition) {
+        if ($definition->canIngest() && !in_array($definition->key, $registered, true)) {
+            $report('WARN', 'source_missing_in_database_' . $definition->key);
+        }
     }
 } catch (Throwable) {
     $report('FAIL', 'source_registry');
@@ -131,7 +150,7 @@ try {
     $release = json_decode((string) file_get_contents($releasePath), true, flags: JSON_THROW_ON_ERROR);
     $sourceCommit = is_array($release) ? ($release['sourceCommit'] ?? null) : null;
     $version = is_array($release) ? ($release['version'] ?? null) : null;
-    $valid = is_string($sourceCommit) && preg_match('/^[0-9a-f]{40}$/', $sourceCommit) === 1 && $version === '2.13.0';
+    $valid = is_string($sourceCommit) && preg_match('/^[0-9a-f]{40}$/', $sourceCommit) === 1 && $version === HealthController::VERSION;
     $releaseDirectory = basename(dirname(__DIR__));
     if (preg_match('/^[0-9a-f]{40}$/', $releaseDirectory) === 1) {
         $valid = $valid && hash_equals($releaseDirectory, $sourceCommit);

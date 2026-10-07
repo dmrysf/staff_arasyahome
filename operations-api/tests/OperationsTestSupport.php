@@ -32,7 +32,8 @@ final class OperationsTestSupport
         return $name;
     }
 
-    public static function config(string $dbName, array $origins = [self::ORIGIN]): Config
+    /** @param array<string, array<string, string>>|null $sourceSettings defaults to both test sources active */
+    public static function config(string $dbName, array $origins = [self::ORIGIN], ?array $sourceSettings = null, ?array $sourceSecrets = null): Config
     {
         return new Config(
             environment: 'test',
@@ -50,7 +51,8 @@ final class OperationsTestSupport
             loginWindowSeconds: 900,
             trustProxy: false,
             trustedProxies: [],
-            sourceSecrets: ['trendhome' => self::TRENDHOME_SECRET, 'outletperdele' => self::OUTLET_SECRET],
+            sourceSecrets: $sourceSecrets ?? ['trendhome' => self::TRENDHOME_SECRET, 'outletperdele' => self::OUTLET_SECRET],
+            sourceSettings: $sourceSettings ?? ['trendhome' => ['mode' => 'active'], 'outletperdele' => ['mode' => 'active']],
         );
     }
 
@@ -97,7 +99,7 @@ final class OperationsTestSupport
     }
 
     /** @param array<string, mixed> $payload @return array{status: int, body: array<string, mixed>|null, headers: array<string, string>} */
-    public static function ingest(ApiKernel $kernel, string $sourceKey, array $payload, ?string $secret = null, ?int $timestamp = null, string $route = 'orders'): array
+    public static function ingest(ApiKernel $kernel, string $sourceKey, array $payload, ?string $secret = null, ?int $timestamp = null, string $route = 'orders', ?string $signature = null): array
     {
         $body = json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         $timestamp ??= time();
@@ -105,7 +107,7 @@ final class OperationsTestSupport
         return self::call($kernel, 'POST', "/integrations/sources/{$sourceKey}/{$route}", null, [
             'origin' => null,
             'x-arasya-timestamp' => (string) $timestamp,
-            'x-arasya-signature' => SourceSignatureVerifier::sign($secret, (string) $timestamp, $body),
+            'x-arasya-signature' => $signature ?? SourceSignatureVerifier::sign($secret, (string) $timestamp, $body),
         ], null, [], $body);
     }
 

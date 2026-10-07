@@ -37,6 +37,18 @@ final readonly class Config
         public int $idempotencyRetentionDays = 30,
         /** Seconds the live event stream may wait for new events before answering (0 = answer at once). */
         public int $liveHoldSeconds = 0,
+        /**
+         * Declared signed sources in configuration order, exactly as written (may contain invalid or
+         * duplicate entries, which the SourceRegistry reports and fails closed). Empty means "derive
+         * from sourceSecrets/sourceSettings".
+         * @var list<string>
+         */
+        public array $sourceKeys = [],
+        /**
+         * Non-secret per-source settings (mode, enabled, displayName, integrationType) as raw strings.
+         * @var array<string, array<string, string>>
+         */
+        public array $sourceSettings = [],
     ) {
         if ($this->liveHoldSeconds < 0 || $this->liveHoldSeconds > 25) {
             throw new RuntimeException('ARASYA_LIVE_HOLD_SECONDS must be between 0 and 25.');
@@ -48,7 +60,7 @@ final readonly class Config
             throw new RuntimeException('ARASYA_ALLOWED_ORIGINS must contain at least one exact origin.');
         }
         foreach ($this->sourceSecrets as $sourceKey => $secret) {
-            if (preg_match('/^[a-z0-9_-]{1,40}$/D', (string) $sourceKey) !== 1 || strlen($secret) < 32 || str_starts_with($secret, 'replace-with') || str_starts_with($secret, '<')) {
+            if (preg_match('/^[a-z0-9_-]{1,40}$/D', (string) $sourceKey) !== 1 || strlen($secret) < 32 || str_starts_with($secret, 'replace-with') || str_starts_with($secret, 'CHANGE_ME') || str_starts_with($secret, '<')) {
                 throw new RuntimeException('Source webhook secrets must contain at least 32 bytes.');
             }
         }
@@ -70,6 +82,8 @@ final readonly class Config
     {
         $values = ($loader ?? new ConfigLoader())->load();
         $environment = self::value($values, 'ARASYA_APP_ENV', 'production');
+        // The two first-party WooCommerce sources stay declared by default so existing installs keep working.
+        $sourceKeys = self::csv(self::value($values, 'ARASYA_SOURCE_KEYS', 'trendhome,outletperdele'));
         return new self(
             environment: $environment,
             appSecret: self::required($values, 'ARASYA_APP_SECRET'),
@@ -90,10 +104,7 @@ final readonly class Config
             loginAttemptRetentionDays: self::positiveInt($values, 'ARASYA_LOGIN_ATTEMPT_RETENTION_DAYS', 30),
             rateLimitRetentionDays: self::positiveInt($values, 'ARASYA_RATE_LIMIT_RETENTION_DAYS', 7),
             authAuditRetentionDays: self::optionalPositiveInt($values, 'ARASYA_AUTH_AUDIT_RETENTION_DAYS'),
-            sourceSecrets: array_filter([
-                'trendhome' => self::value($values, 'ARASYA_SOURCE_SECRET_TRENDHOME', ''),
-                'outletperdele' => self::value($values, 'ARASYA_SOURCE_SECRET_OUTLETPERDELE', ''),
-            ], static fn (string $secret): bool => $secret !== ''),
+            sourceSecrets: self::sourceSecrets($values, $sourceKeys),
             sourceFreshSeconds: self::positiveInt($values, 'ARASYA_SOURCE_FRESH_SECONDS', 900),
             sourceUnavailableSeconds: self::positiveInt($values, 'ARASYA_SOURCE_UNAVAILABLE_SECONDS', 3600),
             trendyol: TrendyolCredentials::fromValues(
@@ -104,7 +115,50 @@ final readonly class Config
             ),
             idempotencyRetentionDays: self::positiveInt($values, 'ARASYA_IDEMPOTENCY_RETENTION_DAYS', 30),
             liveHoldSeconds: self::nonNegativeInt($values, 'ARASYA_LIVE_HOLD_SECONDS', 0),
+            sourceKeys: $sourceKeys,
+            sourceSettings: self::sourceSettings($values, $sourceKeys),
         );
+    }
+
+    /** Environment suffix of a source key: `outlet-perdele` reads ARASYA_SOURCE_*_OUTLET_PERDELE. */
+    public static function sourceEnvironmentSuffix(string $sourceKey): string
+    {
+        return strtoupper(str_replace('-', '_', $sourceKey));
+    }
+
+    /** @param array<string, string> $values @param list<string> $sourceKeys @return array<string, string> */
+    private static function sourceSecrets(array $values, array $sourceKeys): array
+    {
+        $secrets = [];
+        foreach ($sourceKeys as $sourceKey) {
+            if (preg_match('/^[a-z0-9_-]{1,40}$/D', $sourceKey) !== 1) {
+                continue;
+            }
+            $secret = self::value($values, 'ARASYA_SOURCE_SECRET_' . self::sourceEnvironmentSuffix($sourceKey), '');
+            if ($secret !== '') {
+                $secrets[$sourceKey] = $secret;
+            }
+        }
+        return $secrets;
+    }
+
+    /** @param array<string, string> $values @param list<string> $sourceKeys @return array<string, array<string, string>> */
+    private static function sourceSettings(array $values, array $sourceKeys): array
+    {
+        $settings = [];
+        foreach ($sourceKeys as $sourceKey) {
+            if (preg_match('/^[a-z0-9_-]{1,40}$/D', $sourceKey) !== 1) {
+                continue;
+            }
+            $suffix = self::sourceEnvironmentSuffix($sourceKey);
+            $settings[$sourceKey] = array_filter([
+                'mode' => self::value($values, "ARASYA_SOURCE_MODE_{$suffix}", ''),
+                'enabled' => self::value($values, "ARASYA_SOURCE_ENABLED_{$suffix}", ''),
+                'displayName' => self::value($values, "ARASYA_SOURCE_NAME_{$suffix}", ''),
+                'integrationType' => self::value($values, "ARASYA_SOURCE_TYPE_{$suffix}", ''),
+            ], static fn (string $value): bool => $value !== '');
+        }
+        return $settings;
     }
 
     public function isProduction(): bool

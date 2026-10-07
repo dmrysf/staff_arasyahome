@@ -14,6 +14,7 @@ The Operations API is the only authority for Arasya production state. Staff read
 | `POST` | `/orders/{globalOrderId}/transition` | `orders.advance_stage` | Complete the current stage; the server chooses the next stage |
 | `GET` | `/activity/mine?range=today\|7days\|month\|custom&from=&to=&cursor=` | `history.view_mine` | Persisted activity and summary for the employee |
 | `POST` | `/integrations/sources/{source}/orders` | HMAC signature | Signed source order event (server-to-server) |
+| `POST` | `/integrations/sources/{source}/orders/validate` | HMAC signature | Signed no-write schema validation of a source order (validation or active sources) |
 | `POST` | `/integrations/sources/{source}/heartbeat` | HMAC signature | Signed source heartbeat (freshness) |
 
 `globalOrderId` is `<source>:<source order id>`, for example `trendhome:61833`. Mutations require the exact Staff `Origin`, the session-bound `X-CSRF-Token`, an `Idempotency-Key` header (16–100 characters, `[A-Za-z0-9_-]`) and exactly the body `{ "expectedVersion": <productionVersion> }`. Any additional field, including a destination stage, is rejected with `INVALID_REQUEST`.

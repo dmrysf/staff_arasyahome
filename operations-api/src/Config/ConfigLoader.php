@@ -32,8 +32,7 @@ final readonly class ConfigLoader
         'ARASYA_AUTH_AUDIT_RETENTION_DAYS',
         'ARASYA_IDEMPOTENCY_RETENTION_DAYS',
         'ARASYA_LIVE_HOLD_SECONDS',
-        'ARASYA_SOURCE_SECRET_TRENDHOME',
-        'ARASYA_SOURCE_SECRET_OUTLETPERDELE',
+        'ARASYA_SOURCE_KEYS',
         'ARASYA_SOURCE_FRESH_SECONDS',
         'ARASYA_SOURCE_UNAVAILABLE_SECONDS',
         'ARASYA_TRENDYOL_SELLER_ID',
@@ -41,6 +40,12 @@ final readonly class ConfigLoader
         'ARASYA_TRENDYOL_API_SECRET',
         'ARASYA_TRENDYOL_API_BASE_URL',
     ];
+
+    /**
+     * Per-source settings are keyed by the source key in upper case (`-` becomes `_`), for example
+     * ARASYA_SOURCE_SECRET_TRENDHOME or ARASYA_SOURCE_MODE_OUTLETPERDELE.
+     */
+    private const SOURCE_KEY_PATTERN = '/^ARASYA_SOURCE_(?:SECRET|MODE|ENABLED|NAME|TYPE)_[A-Z0-9_]{1,40}$/D';
 
     /** @var array<string, string> */
     private const ALIASES = [
@@ -68,7 +73,7 @@ final readonly class ConfigLoader
         $privateValues = $path === null ? [] : $this->loadPrivateFile($path, $home);
 
         $values = [];
-        foreach (self::CONFIG_KEYS as $key) {
+        foreach ($this->knownKeys($privateValues) as $key) {
             $environmentValue = $this->environmentValue($key);
             if ($environmentValue !== null) {
                 $values[$key] = trim($environmentValue);
@@ -79,6 +84,17 @@ final readonly class ConfigLoader
             }
         }
         return $values;
+    }
+
+    /** @param array<string, string> $privateValues @return list<string> */
+    private function knownKeys(array $privateValues): array
+    {
+        $names = array_keys($privateValues);
+        foreach (array_keys($this->environment ?? getenv()) as $name) {
+            $names[] = (string) $name;
+        }
+        $sourceKeys = array_filter($names, static fn (string $name): bool => preg_match(self::SOURCE_KEY_PATTERN, $name) === 1);
+        return array_values(array_unique([...self::CONFIG_KEYS, ...$sourceKeys]));
     }
 
     public function privateFilePath(): ?string
@@ -205,8 +221,9 @@ final readonly class ConfigLoader
         }
 
         $values = [];
-        foreach (self::CONFIG_KEYS as $key) {
-            if (!array_key_exists($key, $input)) {
+        foreach (array_keys($input) as $key) {
+            $key = (string) $key;
+            if (!in_array($key, self::CONFIG_KEYS, true) && preg_match(self::SOURCE_KEY_PATTERN, $key) !== 1) {
                 continue;
             }
             $value = $input[$key];
