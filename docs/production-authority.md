@@ -76,6 +76,12 @@ POST /integrations/sources/{source}/orders/authority   {"orderIds": ["63366", "6
 - It accepts 1–50 unique IDs and answers only that source's own orders.
 - Each answer row contains `exists`, `productionAuthority`, `productionStageId`, `productionVersion`, `operationalStatus` and `productionCompleted`. It never contains customer data or QR values.
 
+### New orders and the YD SOFT race
+
+Under `enforce`, Arasya owns a new order the moment its first ingest event is applied. YD SOFT learns this only after its background worker delivered the event and asked the route above, which can take more than a minute. YD SOFT 2.6.0 therefore keeps a separate local state, "authority resolution pending", from the moment the event is queued until a trustworthy answer arrives. With its fence in `enforce`, every legacy production write is refused during that interval (`arasya_authority_pending`). Transport, signature, 5xx or contract failures keep the order pending; only `operations` (marker set), `source` (released) or a confirmed unknown order whose events can no longer create it clear the state. See `docs/arasya-connector.md` in yd-soft.
+
+Arasya needs nothing extra for this: the route answers from the committed canonical row, and the `/orders` response is unchanged.
+
 ## Audit table `production_authority_events` (migration 018)
 
 Each row records the order, global ID, source, action (`takeover`, `release`, `new_order_policy` or `claim_observed`), authority mode, previous and new authority, previous and selected stage, production version before and after, actor (none for `new_order_policy`), reason code, request ID, idempotency key and timestamp. It holds no customer data and no payload.
@@ -91,9 +97,13 @@ Each row records the order, global ID, source, action (`takeover`, `release`, `n
 1. Back up the database, deploy the API (2.18.0) and run migration 018. The code also works on 017 while every source is `legacy`.
 2. Deploy Staff 2.7.0.
 3. Deploy YD SOFT 2.6.0. Its local fence starts in `legacy`, so nothing changes.
-4. Cutover, per source and in a later controlled operation:
-   1. Set `ARASYA_SOURCE_AUTHORITY_<SOURCE>=observe` and set the YD fence to Observare.
+4. Cutover, per source and in a later controlled operation. The local YD fence always moves first:
+   1. Set the YD fence to Observare, then `ARASYA_SOURCE_AUTHORITY_<SOURCE>=observe`.
    2. Take pilot orders over explicitly in Staff, then run "Verifică în Arasya" in YD SOFT.
-   3. Set the source to `enforce` and the YD fence to Blocare.
+   3. Set the YD fence to Blocare, then the source to `enforce`. Never set a source to `enforce` while its YD fence is still `legacy`: new orders would be owned by Arasya without any local protection. The YD admin page warns about this state.
    4. Reconcile the open orders one by one, each with an explicitly selected stage.
-5. Rollback: set the source back to `observe` or `legacy`. No data is rewritten. Release individual untouched takeovers if needed, then re-run the YD reconciliation to repair the markers.
+5. Rollback: set the source back to `observe` or `legacy` first, then the YD fence. No data is rewritten. Release individual untouched takeovers if needed, then re-run the YD reconciliation to repair the markers.
+
+### Observe is a short pilot, not a resting state
+
+In `legacy` and `observe`, a normal Staff claim of a source-managed order still switches it to `operations` implicitly, exactly as before 2.18.0 (covered by the integration test "legacy claim keeps the historic implicit authority change" and the `claim_observed` assertions). Such an order is not taken over through the audited takeover, and YD SOFT only learns about it through reconciliation. Keep a source in `observe` only for a short, supervised pilot in which workers do not use Staff freely for production of that source. `enforce` is the final state: it refuses those claims (`409 PRODUCTION_AUTHORITY_SOURCE`).

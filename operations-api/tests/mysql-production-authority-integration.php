@@ -382,6 +382,10 @@ $observedNew = $ingest($kernel, 'outletperdele', '8201', "op-8201-a-{$suffix}", 
 check(($observedNew['body']['outcome'] ?? null) === 'applied' && $order('outletperdele:8201')['production_authority'] === 'source', 'an observing source keeps new orders source-managed');
 $observedClaim = checkOk($staffPost($waiter, '/orders/outletperdele%3A8101/claim', ['expectedVersion' => 1], $key('claim-observe')), 'observe mode blocks nothing');
 check($observedClaim['productionAuthority'] === 'operations', 'the historic implicit change still happens in observe mode');
+// Known risk (docs/production-authority.md, "Observe is a short pilot"): this implicit change bypasses the audited
+// takeover. The source can only see it through the signed authority answer, so a YD SOFT reconciliation marks it.
+$implicit = T::ingest($kernel, 'outletperdele', ['orderIds' => ['8101']], null, null, 'orders/authority');
+check($implicit['status'] === 200 && $implicit['body']['productionAuthorityMode'] === 'observe' && $implicit['body']['orders'][0]['productionAuthority'] === 'operations', 'known risk: an implicit claim flip in observe is visible to the source only through the authority answer');
 $observed = $pdo->query("SELECT action, authority_mode, previous_authority, new_authority, actor_employee_uuid, reason_code FROM production_authority_events WHERE global_order_id = 'outletperdele:8101'")->fetchAll(PDO::FETCH_ASSOC);
 check($observed === [['action' => 'claim_observed', 'authority_mode' => 'observe', 'previous_authority' => 'source', 'new_authority' => 'operations', 'actor_employee_uuid' => $waiterId, 'reason_code' => 'staff_claim_of_source_order']], 'the claim that enforcement would refuse is recorded: ' . json_encode($observed));
 checkOk($takeover($manager, 'outletperdele:8201', ['expectedVersion' => 1, 'stageId' => 'waiting'], $key('take-observe')), 'an observing source allows explicit pilot takeovers');
