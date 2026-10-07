@@ -48,6 +48,7 @@ use Arasya\Operations\Http\RequestContext;
 use Arasya\Operations\Http\ProductionWorkflowController;
 use Arasya\Operations\Iam\IamAuditLogger;
 use Arasya\Operations\Integration\SourceIngestionController;
+use Arasya\Operations\Integration\SourceRegistry;
 use Arasya\Operations\Integration\SourceSignatureVerifier;
 use Arasya\Operations\Integration\Trendyol\StreamTrendyolTransport;
 use Arasya\Operations\Integration\Trendyol\TrendyolClient;
@@ -168,7 +169,7 @@ final class Container
                 $documentQueries,
             ),
             new ActivityController(new PdoActivityRepository($this->pdo), $this->authentication, $authorization, $this->config, $context, $this->clock),
-            new SourceIngestionController(new SourceSignatureVerifier($this->config->sourceSecrets), $this->projectionWriter(), $rateLimiter, $this->clock),
+            new SourceIngestionController(new SourceSignatureVerifier($this->config->sourceSecrets), $this->projectionWriter(), $rateLimiter, $this->clock, SourceRegistry::fromConfig($this->config)),
             new ManagementController(
                 new ManagementService($this->pdo, $authorization, new IamAuditLogger($this->pdo), $this->passwords, $this->usernames, $this->clock, HealthController::VERSION),
                 $this->authentication,

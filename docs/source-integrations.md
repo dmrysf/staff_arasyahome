@@ -21,9 +21,9 @@ Each successful source contact (event or signed heartbeat) updates `order_source
 
 ## Trendhome and OutletPerdele (WooCommerce push)
 
-Endpoint: `POST https://api.arasyahome.ro/integrations/sources/{trendhome|outletperdele}/orders` and `/heartbeat`.
+Endpoint: `POST https://api.arasyahome.ro/integrations/sources/{trendhome|outletperdele}/orders`, `/orders/validate` and `/heartbeat`. Since Operations API 2.17.0 every source has a mode: `/orders` only accepts sources in `active` mode (others get `403 SOURCE_NOT_ACTIVE`), and `/orders/validate` checks a payload without writing anything. See [YD SOFT source integration](yd-soft-source-integration.md) for the source registry, modes and provisioning.
 
-Authentication: `X-Arasya-Timestamp: <unix seconds>` and `X-Arasya-Signature: v1=<hex HMAC-SHA256(secret, "<timestamp>.<raw body>")>`. Requests outside ±300 seconds are rejected; replays inside the window are neutralized by idempotent receipts. Each site has its own secret (`ARASYA_SOURCE_SECRET_TRENDHOME`, `ARASYA_SOURCE_SECRET_OUTLETPERDELE`, at least 32 random bytes) stored only in the Operations private configuration and in that site's `wp-config.php`. These routes need no cookie, CORS or CSRF and are limited to 1200 requests per minute per source.
+Authentication: `X-Arasya-Timestamp: <unix seconds>` and `X-Arasya-Signature: v1=<hex HMAC-SHA256(secret, "<timestamp>.<raw body>")>`. Requests outside ±300 seconds are rejected; replays inside the window are neutralized by idempotent receipts. Each site has its own secret (`ARASYA_SOURCE_SECRET_TRENDHOME`, `ARASYA_SOURCE_SECRET_OUTLETPERDELE`, at least 32 random bytes) and its own mode (`ARASYA_SOURCE_MODE_<KEY>`, default `validation`) stored only in the Operations private configuration and in that site's `wp-config.php`. These routes need no cookie, CORS or CSRF and are limited to 1200 requests per minute per source.
 
 Payload (schema version 1; unknown fields are rejected):
 

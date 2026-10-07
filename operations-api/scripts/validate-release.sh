@@ -36,6 +36,14 @@ for file in \
   database/migrations/012_b2b_production_handoff.sql \
   database/migrations/014_production_exceptions.sql \
   database/migrations/016_management_analytics.sql \
+  database/migrations/017_production_documents.sql \
+  src/Document/DocumentController.php \
+  src/Integration/SourceIngestionController.php \
+  src/Integration/SourceSignatureVerifier.php \
+  src/Integration/SourceOrderPayloadMapper.php \
+  src/Integration/SourceRegistry.php \
+  src/Integration/SourceDefinition.php \
+  src/Integration/SourceMode.php \
   bin/rebuild-analytics.php \
   src/Analytics/AnalyticsController.php \
   src/Analytics/AnalyticsService.php \
@@ -74,7 +82,7 @@ for file in \
 done
 
 (cd -- "$release_root" && sha256sum -c SHA256SUMS >/dev/null) || fail "SHA256SUMS verification failed."
-php -r '$r=json_decode(file_get_contents($argv[1]), true, flags: JSON_THROW_ON_ERROR); if (!is_array($r) || preg_match("/^[0-9a-f]{40}$/", $r["sourceCommit"] ?? "") !== 1 || ($r["version"] ?? null) !== "2.16.0") exit(2);' "$release_root/release.json" \
+php -r '$r=json_decode(file_get_contents($argv[1]), true, flags: JSON_THROW_ON_ERROR); if (!is_array($r) || preg_match("/^[0-9a-f]{40}$/", $r["sourceCommit"] ?? "") !== 1 || ($r["version"] ?? null) !== "2.17.0") exit(2);' "$release_root/release.json" \
   || fail "release.json provenance/version is invalid."
 
 for directory in src database/migrations bin config; do

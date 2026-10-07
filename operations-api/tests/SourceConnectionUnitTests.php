@@ -1,0 +1,400 @@
+<?php
+
+declare(strict_types=1);
+
+// Signed source connection foundation (no database). Included by run.php.
+
+use Arasya\Operations\Config\Config;
+use Arasya\Operations\Config\ConfigLoader;
+use Arasya\Operations\Http\ApiException;
+use Arasya\Operations\Http\Request;
+use Arasya\Operations\Http\Response;
+use Arasya\Operations\Integration\SourceIngestionController;
+use Arasya\Operations\Integration\SourceMode;
+use Arasya\Operations\Integration\SourceRegistry;
+use Arasya\Operations\Integration\SourceSignatureVerifier;
+use Arasya\Operations\Order\OrderProjectionWriter;
+use Arasya\Operations\Production\CanonicalProductionWorkflowContract;
+use Arasya\Operations\Security\ApiRateLimiter;
+use Arasya\Operations\Tests\MutableClock;
+
+const SOURCE_TEST_NOW = 1_790_000_000;
+const SOURCE_TEST_TRENDHOME_SECRET = 'trendhome-unit-secret-000000000000000000000000';
+const SOURCE_TEST_OUTLET_SECRET = 'outletperdele-unit-secret-11111111111111111111';
+const SOURCE_TEST_FUTURE_SECRET = 'perdele-noi-unit-secret-2222222222222222222222';
+
+/** @param array<string, array<string, string>> $settings @param array<string, string>|null $secrets @param list<string> $keys */
+function sourceTestConfig(array $settings, ?array $secrets = null, array $keys = []): Config
+{
+    return new Config(
+        'test', str_repeat('t', 32), 'localhost', 3306, 'db', 'u', 'p', ['https://staff.arasyahome.ro'], 3600, 300, 5, 30, 900, false, [],
+        sourceSecrets: $secrets ?? ['trendhome' => SOURCE_TEST_TRENDHOME_SECRET, 'outletperdele' => SOURCE_TEST_OUTLET_SECRET],
+        sourceKeys: $keys,
+        sourceSettings: $settings,
+    );
+}
+
+/** Records every statement so a test can prove that no database call happened at all. */
+function sourceRecordingPdo(): PDO
+{
+    return new class ('sqlite::memory:') extends PDO {
+        /** @var list<string> */
+        public array $statements = [];
+
+        public function prepare(string $query, array $options = []): PDOStatement|false
+        {
+            $this->statements[] = $query;
+            return parent::prepare($query, $options);
+        }
+
+        public function exec(string $statement): int|false
+        {
+            $this->statements[] = $statement;
+            return parent::exec($statement);
+        }
+
+        public function query(string $query, ?int $fetchMode = null, mixed ...$fetchModeArgs): PDOStatement|false
+        {
+            $this->statements[] = $query;
+            return $fetchMode === null ? parent::query($query) : parent::query($query, $fetchMode, ...$fetchModeArgs);
+        }
+
+        public function beginTransaction(): bool
+        {
+            $this->statements[] = 'BEGIN';
+            return parent::beginTransaction();
+        }
+    };
+}
+
+/** @return array{controller: SourceIngestionController, pdo: PDO, limiter: object} */
+function sourceTestController(Config $config): array
+{
+    $pdo = sourceRecordingPdo();
+    $clock = new MutableClock(new DateTimeImmutable('@' . SOURCE_TEST_NOW));
+    $limiter = new class implements ApiRateLimiter {
+        /** @var list<string> */
+        public array $hits = [];
+
+        public function hit(string $scope, string $subject, int $limit, int $windowSeconds): bool
+        {
+            $this->hits[] = "{$scope}/{$subject}";
+            return true;
+        }
+    };
+    $controller = new SourceIngestionController(new SourceSignatureVerifier($config->sourceSecrets), new OrderProjectionWriter($pdo, $clock), $limiter, $clock, SourceRegistry::fromConfig($config));
+    return ['controller' => $controller, 'pdo' => $pdo, 'limiter' => $limiter];
+}
+
+/** @param array<string, mixed>|string $payload */
+function sourceSignedRequest(array|string $payload, string $secret, ?int $timestamp = null, ?string $signature = null): Request
+{
+    $body = is_string($payload) ? $payload : json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    $timestamp ??= SOURCE_TEST_NOW;
+    return new Request('POST', '/integrations/sources/test', [
+        'content-type' => 'application/json',
+        'x-arasya-timestamp' => (string) $timestamp,
+        'x-arasya-signature' => $signature ?? SourceSignatureVerifier::sign($secret, (string) $timestamp, $body),
+    ], [], $body, '127.0.0.1', 'test', 'req-source', []);
+}
+
+/** @return array<string, mixed> */
+function sourceTestPayload(?array $production = null, array $orderOverrides = []): array
+{
+    $payload = [
+        'schemaVersion' => 1,
+        'eventId' => 'wc-61833-20261007100000',
+        'changedAt' => '2026-10-07T10:00:00Z',
+        'order' => [
+            'id' => 61833,
+            'number' => 'TH-61833',
+            'status' => ['code' => 'processing', 'label' => 'Se procesează'],
+            'availability' => 'active',
+            'notes' => 'Confidential note',
+            'acceptedAt' => '2026-10-07T09:00:00Z',
+            'items' => [[
+                'id' => 981, 'line' => 1, 'name' => 'Draperie Secret Velvet', 'sku' => 'SKU-SECRET-302', 'variant' => 'Wave', 'color' => 'Bej',
+                'width' => 300, 'height' => 260, 'unit' => 'cm', 'meters' => 8.4, 'quantity' => 1,
+                'options' => [['label' => 'Confecționare', 'value' => '2 bucăți']],
+            ]],
+            'delivery' => ['name' => 'Ion Clientescu', 'street' => 'Str. Privată 7', 'city' => 'Cluj-Napoca', 'postalCode' => '400000', 'country' => 'RO', 'phone' => '0722000111'],
+            ...$orderOverrides,
+        ],
+    ];
+    if ($production !== null) {
+        $payload['production'] = $production;
+    }
+    return $payload;
+}
+
+function sourceExpectApi(string $code, int $status, Closure $callback): ApiException
+{
+    try {
+        $callback();
+    } catch (ApiException $error) {
+        expect($error->errorCode === $code && $error->status === $status, "Expected {$status} {$code}, received {$error->status} {$error->errorCode}.");
+        foreach ([SOURCE_TEST_TRENDHOME_SECRET, SOURCE_TEST_OUTLET_SECRET, SOURCE_TEST_FUTURE_SECRET] as $secret) {
+            expect(!str_contains($error->getMessage(), $secret) && !str_contains(json_encode($error->details, JSON_THROW_ON_ERROR), $secret), 'An error must never carry a source secret.');
+        }
+        return $error;
+    }
+    throw new RuntimeException("Expected API error {$code}.");
+}
+
+function sourceJson(Response $response): string
+{
+    return json_encode($response->payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+}
+
+function sourceResponseHasNoSecret(Response $response): bool
+{
+    foreach ([SOURCE_TEST_TRENDHOME_SECRET, SOURCE_TEST_OUTLET_SECRET, SOURCE_TEST_FUTURE_SECRET] as $secret) {
+        if (str_contains(sourceJson($response), $secret) || str_contains(json_encode($response->headers, JSON_THROW_ON_ERROR), $secret)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+test('canonical curtain-production@1 keeps exactly 14 stages in their exact order', function (): void {
+    expect(CanonicalProductionWorkflowContract::WORKFLOW_ID === 'curtain-production' && CanonicalProductionWorkflowContract::VERSION === 1);
+    expect(CanonicalProductionWorkflowContract::STAGES === [
+        'waiting' => 1, 'material-preparation' => 2, 'workshop-receiving' => 3, 'labeling' => 4, 'material-straightening' => 5,
+        'bottom-hem' => 6, 'side-hem' => 7, 'ironing' => 8, 'height' => 9, 'header-tape' => 10, 'sewing-finishing' => 11,
+        'quality-control' => 12, 'packing' => 13, 'delivery' => 14,
+    ], 'The canonical 14-stage structure changed.');
+});
+
+test('source registry recognizes configured sites, defaults to validation and fails closed on bad configuration', function (): void {
+    $registry = SourceRegistry::fromConfig(sourceTestConfig(
+        ['trendhome' => ['mode' => 'active'], 'outletperdele' => [], 'perdele-noi' => ['mode' => 'validation', 'displayName' => 'Perdele Noi']],
+        ['trendhome' => SOURCE_TEST_TRENDHOME_SECRET, 'outletperdele' => SOURCE_TEST_OUTLET_SECRET, 'perdele-noi' => SOURCE_TEST_FUTURE_SECRET],
+    ));
+    expect($registry->find('trendhome')?->toArray() === ['sourceKey' => 'trendhome', 'displayName' => 'Trendhome', 'integrationType' => 'yd-soft-woocommerce', 'enabled' => true, 'mode' => 'active']);
+    expect($registry->find('outletperdele')?->toArray() === ['sourceKey' => 'outletperdele', 'displayName' => 'OutletPerdele', 'integrationType' => 'yd-soft-woocommerce', 'enabled' => true, 'mode' => 'validation'], 'A source without a mode must default to validation.');
+    expect($registry->find('perdele-noi')?->displayName === 'Perdele Noi' && $registry->find('perdele-noi')?->mode === SourceMode::Validation, 'A future configured site needs no new code.');
+    expect($registry->find('unknown-site') === null && $registry->issues() === []);
+    expect($registry->find('trendhome')->canIngest() && !$registry->find('outletperdele')->canIngest());
+
+    $disabled = SourceRegistry::fromConfig(sourceTestConfig(['trendhome' => ['mode' => 'active', 'enabled' => 'false'], 'outletperdele' => []]));
+    expect($disabled->find('trendhome')?->enabled === false && !$disabled->find('trendhome')->canIngest(), 'A disabled active source can never ingest.');
+
+    $broken = SourceRegistry::fromConfig(sourceTestConfig(
+        ['trendhome' => ['mode' => 'live'], 'outletperdele' => ['enabled' => 'maybe'], 'nosecret' => [], 'typed' => ['integrationType' => 'shopify']],
+        ['trendhome' => SOURCE_TEST_TRENDHOME_SECRET, 'outletperdele' => SOURCE_TEST_OUTLET_SECRET, 'typed' => SOURCE_TEST_FUTURE_SECRET, 'b2b' => SOURCE_TEST_FUTURE_SECRET],
+        ['trendhome', 'outletperdele', 'nosecret', 'typed', 'b2b', 'trendyol', 'dup', 'dup', 'a-b', 'a_b', 'Not Valid ' . SOURCE_TEST_FUTURE_SECRET],
+    ));
+    expect($broken->all() === [], 'Every misconfigured source must fail closed.');
+    $codes = array_map(static fn (array $issue): string => $issue['code'] . ':' . ($issue['sourceKey'] ?? '-'), $broken->issues());
+    sort($codes);
+    $expected = ['duplicate_key:dup', 'environment_collision:a-b', 'environment_collision:a_b', 'invalid_enabled:outletperdele', 'invalid_key:-', 'invalid_mode:trendhome', 'invalid_type:typed', 'missing_secret:nosecret', 'reserved_key:b2b', 'reserved_key:trendyol'];
+    sort($expected);
+    expect($codes === $expected, 'Unexpected registry issues: ' . implode(',', $codes));
+    expect(!str_contains(var_export($broken, true), SOURCE_TEST_FUTURE_SECRET) && !str_contains(var_export($broken->issues(), true), 'Not Valid'), 'Registry diagnostics never carry secrets or raw invalid values.');
+});
+
+test('source configuration loads one secret and mode per site from the environment and private file', function (): void {
+    $home = sys_get_temp_dir() . '/arasya-source-config-' . bin2hex(random_bytes(6));
+    mkdir($home . '/arasya-config', 0700, true);
+    try {
+        $base = ['HOME' => $home, 'ARASYA_APP_SECRET' => str_repeat('s', 32), 'ARASYA_DB_NAME' => 'db', 'ARASYA_DB_USER' => 'u', 'ARASYA_DB_PASSWORD' => 'p', 'ARASYA_ALLOWED_ORIGINS' => 'https://staff.arasyahome.ro'];
+        $default = Config::fromEnvironment(new ConfigLoader($base));
+        expect($default->sourceKeys === ['trendhome', 'outletperdele'] && $default->sourceSecrets === [], 'Both first-party sources stay declared by default.');
+        expect(array_column(SourceRegistry::fromConfig($default)->issues(), 'code') === ['missing_secret', 'missing_secret']);
+
+        $config = Config::fromEnvironment(new ConfigLoader([
+            ...$base,
+            'ARASYA_SOURCE_KEYS' => 'trendhome, outletperdele, perdele-noi',
+            'ARASYA_SOURCE_SECRET_TRENDHOME' => SOURCE_TEST_TRENDHOME_SECRET,
+            'ARASYA_SOURCE_MODE_TRENDHOME' => 'active',
+            'ARASYA_SOURCE_SECRET_OUTLETPERDELE' => SOURCE_TEST_OUTLET_SECRET,
+            'ARASYA_SOURCE_SECRET_PERDELE_NOI' => SOURCE_TEST_FUTURE_SECRET,
+            'ARASYA_SOURCE_NAME_PERDELE_NOI' => 'Perdele Noi',
+            'ARASYA_SOURCE_ENABLED_PERDELE_NOI' => 'false',
+            'ARASYA_SOURCE_SECRET_NOT_DECLARED' => SOURCE_TEST_FUTURE_SECRET,
+        ]));
+        expect($config->sourceSecrets === ['trendhome' => SOURCE_TEST_TRENDHOME_SECRET, 'outletperdele' => SOURCE_TEST_OUTLET_SECRET, 'perdele-noi' => SOURCE_TEST_FUTURE_SECRET], 'Only declared sources load a secret.');
+        $registry = SourceRegistry::fromConfig($config);
+        expect($registry->find('trendhome')?->mode === SourceMode::Active && $registry->find('outletperdele')?->mode === SourceMode::Validation);
+        expect($registry->find('perdele-noi')?->enabled === false && $registry->find('perdele-noi')?->displayName === 'Perdele Noi' && $registry->issues() === []);
+
+        // The preferred private secrets.json carries the same per-source keys.
+        file_put_contents($home . '/arasya-config/secrets.json', json_encode([
+            'ARASYA_APP_SECRET' => str_repeat('j', 32), 'DB_NAME' => 'db', 'DB_USER_NAME' => 'u', 'DB_USER_PASSWORD' => 'p', 'ARASYA_ALLOWED_ORIGINS' => ['https://staff.arasyahome.ro'],
+            'ARASYA_SOURCE_SECRET_OUTLETPERDELE' => SOURCE_TEST_OUTLET_SECRET, 'ARASYA_SOURCE_MODE_OUTLETPERDELE' => 'active',
+        ], JSON_THROW_ON_ERROR));
+        chmod($home . '/arasya-config/secrets.json', 0600);
+        $file = SourceRegistry::fromConfig(Config::fromEnvironment(new ConfigLoader(['HOME' => $home])));
+        expect($file->find('outletperdele')?->canIngest() === true && $file->find('trendhome') === null);
+
+        expectRuntime(fn () => Config::fromEnvironment(new ConfigLoader([...$base, 'ARASYA_SOURCE_SECRET_TRENDHOME' => 'CHANGE_ME' . str_repeat('x', 40)])));
+        expectRuntime(fn () => Config::fromEnvironment(new ConfigLoader([...$base, 'ARASYA_SOURCE_SECRET_TRENDHOME' => 'short'])));
+    } finally {
+        @unlink($home . '/arasya-config/secrets.json');
+        @rmdir($home . '/arasya-config');
+        @rmdir($home);
+    }
+});
+
+test('source HMAC secrets are isolated per site and bound to timestamp, body and source key', function (): void {
+    $config = sourceTestConfig(['trendhome' => ['mode' => 'active'], 'outletperdele' => ['mode' => 'active']]);
+    ['controller' => $controller, 'limiter' => $limiter] = sourceTestController($config);
+    $payload = sourceTestPayload();
+    $trendhome = $controller->validateOrder(sourceSignedRequest($payload, SOURCE_TEST_TRENDHOME_SECRET), 'trendhome');
+    expect($trendhome->status === 200 && $trendhome->payload['sourceKey'] === 'trendhome');
+    $outlet = $controller->validateOrder(sourceSignedRequest($payload, SOURCE_TEST_OUTLET_SECRET), 'outletperdele');
+    expect($outlet->status === 200 && $outlet->payload['sourceKey'] === 'outletperdele');
+    expect($limiter->hits === ['source-ingestion/trendhome', 'source-ingestion/outletperdele'], 'Each source has its own rate-limit identity.');
+
+    foreach (['validateOrder', 'ingestOrder', 'heartbeat'] as $operation) {
+        sourceExpectApi('SOURCE_SIGNATURE_INVALID', 401, fn () => $controller->{$operation}(sourceSignedRequest($payload, SOURCE_TEST_TRENDHOME_SECRET), 'outletperdele'));
+        sourceExpectApi('SOURCE_SIGNATURE_INVALID', 401, fn () => $controller->{$operation}(sourceSignedRequest($payload, SOURCE_TEST_OUTLET_SECRET), 'trendhome'));
+    }
+    // A captured valid trendhome request replayed under another source key is rejected.
+    $captured = sourceSignedRequest($payload, SOURCE_TEST_TRENDHOME_SECRET);
+    sourceExpectApi('SOURCE_SIGNATURE_INVALID', 401, fn () => $controller->validateOrder($captured, 'outletperdele'));
+
+    sourceExpectApi('SOURCE_SIGNATURE_INVALID', 401, fn () => $controller->validateOrder(sourceSignedRequest($payload, SOURCE_TEST_TRENDHOME_SECRET, null, 'v1=' . str_repeat('g', 64)), 'trendhome'));
+    sourceExpectApi('SOURCE_SIGNATURE_INVALID', 401, fn () => $controller->validateOrder(sourceSignedRequest($payload, SOURCE_TEST_TRENDHOME_SECRET, null, 'v2=' . hash_hmac('sha256', SOURCE_TEST_NOW . '.x', SOURCE_TEST_TRENDHOME_SECRET)), 'trendhome'));
+    sourceExpectApi('SOURCE_SIGNATURE_INVALID', 401, fn () => $controller->validateOrder(sourceSignedRequest($payload, SOURCE_TEST_TRENDHOME_SECRET, null, strtoupper(SourceSignatureVerifier::sign(SOURCE_TEST_TRENDHOME_SECRET, (string) SOURCE_TEST_NOW, json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)))), 'trendhome'));
+    sourceExpectApi('SOURCE_SIGNATURE_INVALID', 401, fn () => $controller->validateOrder(sourceSignedRequest($payload, SOURCE_TEST_TRENDHOME_SECRET, SOURCE_TEST_NOW - 301), 'trendhome'));
+    sourceExpectApi('SOURCE_SIGNATURE_INVALID', 401, fn () => $controller->validateOrder(sourceSignedRequest($payload, SOURCE_TEST_TRENDHOME_SECRET, SOURCE_TEST_NOW + 301), 'trendhome'));
+    expect($controller->validateOrder(sourceSignedRequest($payload, SOURCE_TEST_TRENDHOME_SECRET, SOURCE_TEST_NOW - 300), 'trendhome')->status === 200, 'The 300 second skew boundary is accepted.');
+    expect($controller->validateOrder(sourceSignedRequest($payload, SOURCE_TEST_TRENDHOME_SECRET, SOURCE_TEST_NOW + 300), 'trendhome')->status === 200);
+});
+
+test('order validation parses schemaVersion 1 strictly and answers a contract summary without echoing data', function (): void {
+    ['controller' => $controller] = sourceTestController(sourceTestConfig(['trendhome' => [], 'outletperdele' => []]));
+    $response = $controller->validateOrder(sourceSignedRequest(sourceTestPayload(['workflowKey' => 'curtain-production', 'workflowVersion' => 1, 'stageId' => 'waiting', 'stageLabel' => 'În așteptare']), SOURCE_TEST_TRENDHOME_SECRET), 'trendhome');
+    expect($response->status === 200 && $response->headers['Cache-Control'] === 'no-store');
+    expect($response->payload === [
+        'ok' => true,
+        'schemaVersion' => 1,
+        'sourceKey' => 'trendhome',
+        'mode' => 'validation',
+        'workflow' => ['id' => 'curtain-production', 'version' => 1, 'stageCount' => 14],
+        'itemCount' => 1,
+    ], 'Unexpected validation summary: ' . sourceJson($response));
+    foreach (['Ion Clientescu', 'Privată', '0722', 'Confidential', 'SKU-SECRET', 'Draperie', 'TH-61833', '61833', 'wc-61833', 'bucăți', '8.4', '300'] as $private) {
+        expect(!str_contains(sourceJson($response), $private), "Validation echoed a payload value: {$private}");
+    }
+
+    $valid = sourceTestPayload();
+    $invalid = [
+        'SOURCE_SCHEMA_UNSUPPORTED' => [...$valid, 'schemaVersion' => 2],
+        'SOURCE_PAYLOAD_INVALID' => [...$valid, 'customer' => ['email' => 'x@example.com']],
+    ];
+    foreach ($invalid as $code => $payload) {
+        sourceExpectApi($code, 422, fn () => $controller->validateOrder(sourceSignedRequest($payload, SOURCE_TEST_TRENDHOME_SECRET), 'trendhome'));
+    }
+    $unknownItemField = $valid;
+    $unknownItemField['order']['items'][0]['price'] = 120;
+    sourceExpectApi('SOURCE_PAYLOAD_INVALID', 422, fn () => $controller->validateOrder(sourceSignedRequest($unknownItemField, SOURCE_TEST_TRENDHOME_SECRET), 'trendhome'));
+    $email = $valid;
+    $email['order']['delivery']['email'] = 'client@example.com';
+    $emailError = sourceExpectApi('SOURCE_PAYLOAD_INVALID', 422, fn () => $controller->validateOrder(sourceSignedRequest($email, SOURCE_TEST_TRENDHOME_SECRET), 'trendhome'));
+    expect(!str_contains($emailError->getMessage(), 'client@example.com'), 'Errors name fields, never values.');
+    $tooMany = $valid;
+    $tooMany['order']['items'] = array_map(static fn (int $line): array => ['id' => $line, 'line' => $line, 'name' => 'Draperie', 'quantity' => 1], range(1, 201));
+    sourceExpectApi('SOURCE_PAYLOAD_INVALID', 422, fn () => $controller->validateOrder(sourceSignedRequest($tooMany, SOURCE_TEST_TRENDHOME_SECRET), 'trendhome'));
+    $maxItems = $valid;
+    $maxItems['order']['items'] = array_slice($tooMany['order']['items'], 0, 200);
+    expect($controller->validateOrder(sourceSignedRequest($maxItems, SOURCE_TEST_TRENDHOME_SECRET), 'trendhome')->payload['itemCount'] === 200, 'Exactly 200 items stay valid.');
+    $options = $valid;
+    $options['order']['items'][0]['options'] = [['label' => 'Confecționare', 'value' => '1 buc.', 'meaning' => 'pieces']];
+    sourceExpectApi('SOURCE_PAYLOAD_INVALID', 422, fn () => $controller->validateOrder(sourceSignedRequest($options, SOURCE_TEST_TRENDHOME_SECRET), 'trendhome'));
+
+    // Only explicit canonical stage IDs are accepted; labels, old 8-stage names and other workflows never map.
+    // Malformed IDs (labels, diacritics, spaces, upper case) fail like real ingestion: as an invalid payload.
+    foreach (['', 'Tăiere', 'In productie', 'MATERIAL-PREPARATION', 'În așteptare'] as $stageId) {
+        sourceExpectApi('SOURCE_PAYLOAD_INVALID', 422, fn () => $controller->validateOrder(sourceSignedRequest(sourceTestPayload(['workflowKey' => 'curtain-production', 'workflowVersion' => 1, 'stageId' => $stageId]), SOURCE_TEST_TRENDHOME_SECRET), 'trendhome'));
+    }
+    foreach (['cutting', 'taiere', 'croitorie', 'in-productie', 'finalizat', 'sewing'] as $stageId) {
+        sourceExpectApi('SOURCE_STAGE_UNKNOWN', 422, fn () => $controller->validateOrder(sourceSignedRequest(sourceTestPayload(['workflowKey' => 'curtain-production', 'workflowVersion' => 1, 'stageId' => $stageId]), SOURCE_TEST_TRENDHOME_SECRET), 'trendhome'));
+    }
+    sourceExpectApi('SOURCE_STAGE_UNKNOWN', 422, fn () => $controller->validateOrder(sourceSignedRequest(sourceTestPayload(['workflowKey' => 'yd-soft', 'workflowVersion' => 1, 'stageId' => 'waiting']), SOURCE_TEST_TRENDHOME_SECRET), 'trendhome'));
+    sourceExpectApi('SOURCE_STAGE_UNKNOWN', 422, fn () => $controller->validateOrder(sourceSignedRequest(sourceTestPayload(['workflowKey' => 'curtain-production', 'workflowVersion' => 2, 'stageId' => 'waiting']), SOURCE_TEST_TRENDHOME_SECRET), 'trendhome'));
+    foreach (array_keys(CanonicalProductionWorkflowContract::STAGES) as $stageId) {
+        expect($controller->validateOrder(sourceSignedRequest(sourceTestPayload(['workflowKey' => 'curtain-production', 'workflowVersion' => 1, 'stageId' => $stageId]), SOURCE_TEST_TRENDHOME_SECRET), 'trendhome')->status === 200);
+    }
+    sourceExpectApi('REQUEST_TOO_LARGE', 413, fn () => $controller->validateOrder(sourceSignedRequest(str_repeat(' ', SourceIngestionController::MAX_BODY_BYTES + 1), SOURCE_TEST_TRENDHOME_SECRET), 'trendhome'));
+});
+
+test('order validation and the mode guard perform zero database statements', function (): void {
+    ['controller' => $controller, 'pdo' => $pdo] = sourceTestController(sourceTestConfig(['trendhome' => ['mode' => 'validation'], 'outletperdele' => ['mode' => 'active']]));
+    $payload = sourceTestPayload(['workflowKey' => 'curtain-production', 'workflowVersion' => 1, 'stageId' => 'material-preparation']);
+    for ($i = 0; $i < 3; $i++) {
+        expect($controller->validateOrder(sourceSignedRequest($payload, SOURCE_TEST_TRENDHOME_SECRET), 'trendhome')->status === 200);
+        expect($controller->validateOrder(sourceSignedRequest($payload, SOURCE_TEST_OUTLET_SECRET), 'outletperdele')->status === 200, 'An active source may also validate.');
+    }
+    expect($pdo->statements === [], 'Validation touched the database: ' . implode(' | ', $pdo->statements));
+
+    sourceExpectApi('SOURCE_NOT_ACTIVE', 403, fn () => $controller->ingestOrder(sourceSignedRequest($payload, SOURCE_TEST_TRENDHOME_SECRET), 'trendhome'));
+    expect($pdo->statements === [], 'A validation source reached the projection writer.');
+});
+
+test('unknown, reserved and disabled sources fail closed on every signed route', function (): void {
+    $config = sourceTestConfig(
+        ['trendhome' => ['mode' => 'active', 'enabled' => 'false'], 'outletperdele' => ['mode' => 'validation', 'enabled' => 'false']],
+    );
+    ['controller' => $controller, 'pdo' => $pdo, 'limiter' => $limiter] = sourceTestController($config);
+    $payload = sourceTestPayload();
+    foreach (['validateOrder', 'ingestOrder', 'heartbeat'] as $operation) {
+        sourceExpectApi('SOURCE_NOT_CONFIGURED', 503, fn () => $controller->{$operation}(sourceSignedRequest($payload, SOURCE_TEST_TRENDHOME_SECRET), 'trendhome'));
+        sourceExpectApi('SOURCE_NOT_CONFIGURED', 503, fn () => $controller->{$operation}(sourceSignedRequest($payload, SOURCE_TEST_OUTLET_SECRET), 'outletperdele'));
+        sourceExpectApi('SOURCE_NOT_CONFIGURED', 503, fn () => $controller->{$operation}(sourceSignedRequest($payload, SOURCE_TEST_TRENDHOME_SECRET), 'unknown-site'));
+        sourceExpectApi('SOURCE_NOT_CONFIGURED', 503, fn () => $controller->{$operation}(sourceSignedRequest($payload, SOURCE_TEST_TRENDHOME_SECRET), 'b2b'));
+        sourceExpectApi('SOURCE_NOT_CONFIGURED', 503, fn () => $controller->{$operation}(sourceSignedRequest($payload, SOURCE_TEST_TRENDHOME_SECRET), 'trendyol'));
+        sourceExpectApi('NOT_FOUND', 404, fn () => $controller->{$operation}(sourceSignedRequest($payload, SOURCE_TEST_TRENDHOME_SECRET), 'Trendhome'));
+    }
+    expect($pdo->statements === [] && $limiter->hits === [], 'Rejected sources must not reach storage or consume a rate-limit identity.');
+
+    // A secret configured for a reserved key never makes it usable.
+    $reserved = sourceTestController(sourceTestConfig(['b2b' => ['mode' => 'active']], ['b2b' => SOURCE_TEST_FUTURE_SECRET]));
+    sourceExpectApi('SOURCE_NOT_CONFIGURED', 503, fn () => $reserved['controller']->ingestOrder(sourceSignedRequest($payload, SOURCE_TEST_FUTURE_SECRET), 'b2b'));
+});
+
+test('signed heartbeat reports mode and contract only, for validation and active sources', function (): void {
+    ['controller' => $controller, 'pdo' => $pdo] = sourceTestController(sourceTestConfig(['trendhome' => ['mode' => 'active'], 'outletperdele' => []]));
+    $pdo->exec("CREATE TABLE order_sources (source_key TEXT PRIMARY KEY, status TEXT NOT NULL, last_contact_at TEXT NULL, updated_at TEXT NULL)");
+    $pdo->exec("INSERT INTO order_sources (source_key, status) VALUES ('trendhome', 'active'), ('outletperdele', 'active')");
+    foreach (['trendhome' => [SOURCE_TEST_TRENDHOME_SECRET, 'active'], 'outletperdele' => [SOURCE_TEST_OUTLET_SECRET, 'validation']] as $key => [$secret, $mode]) {
+        $response = $controller->heartbeat(sourceSignedRequest(['sentAt' => '2026-10-07T10:00:00Z'], $secret), $key);
+        expect($response->payload === ['ok' => true, 'sourceKey' => $key, 'mode' => $mode, 'contract' => ['schemaVersion' => 1, 'workflowId' => 'curtain-production', 'workflowVersion' => 1, 'stageCount' => 14]], 'Unexpected heartbeat: ' . sourceJson($response));
+        expect(sourceResponseHasNoSecret($response));
+    }
+    $contacts = $pdo->query('SELECT COUNT(*) FROM order_sources WHERE last_contact_at IS NOT NULL')->fetchColumn();
+    expect((int) $contacts === 2, 'Heartbeat keeps recording source contact.');
+    sourceExpectApi('SOURCE_PAYLOAD_INVALID', 422, fn () => $controller->heartbeat(sourceSignedRequest(['sentAt' => '2026-10-07T10:00:00Z', 'secret' => 'x'], SOURCE_TEST_TRENDHOME_SECRET), 'trendhome'));
+});
+
+test('signed source routes dispatch validate, ingest and heartbeat without browser CORS', function (): void {
+    [$auth] = authFixture();
+    $config = sourceTestConfig(['trendhome' => ['mode' => 'validation'], 'outletperdele' => ['mode' => 'validation']]);
+    $context = new \Arasya\Operations\Http\RequestContext();
+    $cookies = new \Arasya\Operations\Security\CookiePolicy($config);
+    ['controller' => $controller, 'pdo' => $pdo] = sourceTestController($config);
+    $kernel = new \Arasya\Operations\Http\ApiKernel(
+        new \Arasya\Operations\Http\AuthController($auth, new \Arasya\Operations\Security\CsrfGuard(new \Arasya\Operations\Security\SessionTokenManager(str_repeat('p', 32))), $cookies, $config, new \Arasya\Operations\Authorization\AuthorizationService(), $context),
+        new \Arasya\Operations\Http\HealthController(new PDO('sqlite::memory:'), new \Arasya\Operations\Support\SystemClock()),
+        new \Arasya\Operations\Http\CorsPolicy($config->allowedOrigins),
+        new \Arasya\Operations\Support\StructuredLogger(static fn (string $line): null => null),
+        $cookies,
+        $context,
+        sources: $controller,
+    );
+    $send = static function (string $method, string $path, array|string $payload, string $secret) use ($kernel): Response {
+        $signed = sourceSignedRequest($payload, $secret);
+        return $kernel->handle(new Request($method, $path, $signed->headers, [], $signed->body, '127.0.0.1', 'test', 'req-route', []));
+    };
+    $payload = sourceTestPayload();
+    $valid = $send('POST', '/integrations/sources/trendhome/orders/validate', $payload, SOURCE_TEST_TRENDHOME_SECRET);
+    expect($valid->status === 200 && $valid->payload['ok'] === true && $valid->payload['mode'] === 'validation');
+    expect(!isset($valid->headers['Access-Control-Allow-Origin']) && sourceResponseHasNoSecret($valid));
+    $guarded = $send('POST', '/integrations/sources/trendhome/orders', $payload, SOURCE_TEST_TRENDHOME_SECRET);
+    expect($guarded->status === 403 && $guarded->payload['error']['code'] === 'SOURCE_NOT_ACTIVE' && sourceResponseHasNoSecret($guarded));
+    expect($send('POST', '/integrations/sources/trendhome/orders/validate/x', $payload, SOURCE_TEST_TRENDHOME_SECRET)->status === 404);
+    expect($send('GET', '/integrations/sources/trendhome/orders/validate', $payload, SOURCE_TEST_TRENDHOME_SECRET)->status === 404);
+    expect($send('POST', '/integrations/sources/trendhome/validate', $payload, SOURCE_TEST_TRENDHOME_SECRET)->status === 404);
+    expect($pdo->statements === [], 'Validation-mode routes never reached the database.');
+});

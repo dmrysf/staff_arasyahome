@@ -37,6 +37,12 @@ for required in database/migrations/016_management_analytics.sql bin/rebuild-ana
   if /bin/bash "$release/scripts/validate-release.sh" "$release" >/dev/null 2>&1; then printf 'Validator accepted missing analytics component: %s.\n' "$required" >&2; exit 1; fi
   mv "$workspace/required.original" "$release/$required"
 done
+for required in database/migrations/017_production_documents.sql src/Integration/SourceRegistry.php src/Integration/SourceIngestionController.php; do
+  mv "$release/$required" "$workspace/required.original"
+  /bin/bash "$release/scripts/generate-sha256s.sh" "$release"
+  if /bin/bash "$release/scripts/validate-release.sh" "$release" >/dev/null 2>&1; then printf 'Validator accepted missing runtime component: %s.\n' "$required" >&2; exit 1; fi
+  mv "$workspace/required.original" "$release/$required"
+done
 /bin/bash "$release/scripts/generate-sha256s.sh" "$release"
 ARASYA_RELEASE_STRICT=1 /bin/bash "$release/scripts/validate-release.sh" "$release" >/dev/null
 
