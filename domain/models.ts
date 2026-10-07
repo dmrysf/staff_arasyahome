@@ -85,7 +85,8 @@ export type OrderActionBlockedReason =
   | "permission_missing"
   | "workflow_unavailable"
   | "exception_pending"
-  | "document_revision_pending";
+  | "document_revision_pending"
+  | "production_authority_source";
 
 export type StaffOrder = {
   productionContext?: { company: { legalName: string; companyCode: string; countryCode: string; taxIdentifier: string } };
@@ -111,6 +112,8 @@ export type StaffOrder = {
   version: number;
   /** Production revision used as expectedVersion; commerce-only updates never change it. */
   productionVersion: number;
+  /** Who manages production: the commerce source (legacy YD SOFT) or Arasya. */
+  productionAuthority?: import("./authority").ProductionAuthority;
   /** Internal quality facts, present on single-order views only. Never shown to customers. */
   productionQuality?: OrderQuality;
   /** Central production document state; a stale or revoked document blocks every production action. */
@@ -261,7 +264,16 @@ export type ServiceErrorCode =
   | "DOCUMENT_CONTENT_CHANGED"
   | "DOCUMENT_CHANGED"
   | "DOCUMENT_ORDER_COMPLETED"
-  | "DOCUMENT_REVISION_NOT_ACTIVE";
+  | "DOCUMENT_REVISION_NOT_ACTIVE"
+  | "PRODUCTION_AUTHORITY_SOURCE"
+  | "AUTHORITY_CUTOVER_DISABLED"
+  | "AUTHORITY_NOT_SUPPORTED"
+  | "AUTHORITY_ALREADY_OPERATIONS"
+  | "AUTHORITY_NOT_OPERATIONS"
+  | "AUTHORITY_RELEASE_NOT_ALLOWED"
+  | "INVALID_STAGE"
+  | "WORKFLOW_MISMATCH"
+  | "PRODUCTION_COMPLETED";
 
 export class StaffServiceError extends Error {
   constructor(public readonly code: ServiceErrorCode, message?: string, public readonly details?: Readonly<Record<string, unknown>>) {
