@@ -398,3 +398,152 @@ test('signed source routes dispatch validate, ingest and heartbeat without brows
     expect($send('POST', '/integrations/sources/trendhome/validate', $payload, SOURCE_TEST_TRENDHOME_SECRET)->status === 404);
     expect($pdo->statements === [], 'Validation-mode routes never reached the database.');
 });
+
+/** A PDOException shaped like a real MySQL failure, whose message deliberately carries SQL, a value and an email. */
+function sourceMysqlStylePdoException(string $sqlState, int $driverCode): PDOException
+{
+    $error = new PDOException("SQLSTATE[{$sqlState}]: Integrity constraint violation: {$driverCode} Duplicate entry 'ion.clientescu@example.com-SKU-SECRET-302' for key 'uq_secret_marker' while running INSERT INTO operational_orders (secret_sql_marker) VALUES ('Ion Clientescu')");
+    $error->errorInfo = [$sqlState, $driverCode, "Duplicate entry 'ion.clientescu@example.com-SKU-SECRET-302' for key 'uq_secret_marker'"];
+    // Real PDO query errors carry the SQLSTATE string as their code.
+    (new ReflectionProperty(Exception::class, 'code'))->setValue($error, $sqlState);
+    return $error;
+}
+
+/** @return array{kernel: \Arasya\Operations\Http\ApiKernel, lines: ArrayObject<int, string>} */
+function sourceKernelWithFailingDatabase(PDOException $failure): array
+{
+    [$auth] = authFixture();
+    $config = sourceTestConfig(['trendhome' => ['mode' => 'active'], 'outletperdele' => ['mode' => 'validation']]);
+    $failing = new class ('sqlite::memory:') extends PDO {
+        public ?PDOException $failure = null;
+        public function prepare(string $query, array $options = []): PDOStatement|false { throw $this->failure; }
+        public function exec(string $statement): int|false { throw $this->failure; }
+        public function query(string $query, ?int $fetchMode = null, mixed ...$fetchModeArgs): PDOStatement|false { throw $this->failure; }
+        public function beginTransaction(): bool { throw $this->failure; }
+    };
+    $failing->failure = $failure;
+    $clock = new MutableClock(new DateTimeImmutable('@' . SOURCE_TEST_NOW));
+    $limiter = new class implements ApiRateLimiter {
+        public function hit(string $scope, string $subject, int $limit, int $windowSeconds): bool { return true; }
+    };
+    $controller = new SourceIngestionController(new SourceSignatureVerifier($config->sourceSecrets), new OrderProjectionWriter($failing, $clock), $limiter, $clock, SourceRegistry::fromConfig($config));
+    $context = new \Arasya\Operations\Http\RequestContext();
+    $cookies = new \Arasya\Operations\Security\CookiePolicy($config);
+    $lines = new ArrayObject();
+    $kernel = new \Arasya\Operations\Http\ApiKernel(
+        new \Arasya\Operations\Http\AuthController($auth, new \Arasya\Operations\Security\CsrfGuard(new \Arasya\Operations\Security\SessionTokenManager(str_repeat('p', 32))), $cookies, $config, new \Arasya\Operations\Authorization\AuthorizationService(), $context),
+        new \Arasya\Operations\Http\HealthController(new PDO('sqlite::memory:'), new \Arasya\Operations\Support\SystemClock()),
+        new \Arasya\Operations\Http\CorsPolicy($config->allowedOrigins),
+        new \Arasya\Operations\Support\StructuredLogger(static function (string $line) use ($lines): void { $lines[] = $line; }),
+        $cookies,
+        $context,
+        sources: $controller,
+    );
+    return ['kernel' => $kernel, 'lines' => $lines];
+}
+
+function sourceSendSigned(\Arasya\Operations\Http\ApiKernel $kernel, string $path, array $payload, string $secret): Response
+{
+    $signed = sourceSignedRequest($payload, $secret);
+    return $kernel->handle(new Request('POST', $path, $signed->headers, [], $signed->body, '127.0.0.1', 'test', 'req-pdo-diagnostics', []));
+}
+
+test('an ingestion database failure logs only safe SQLSTATE and driver code and answers a generic 500', function (): void {
+    ['kernel' => $kernel, 'lines' => $lines] = sourceKernelWithFailingDatabase(sourceMysqlStylePdoException('23000', 1062));
+    $response = sourceSendSigned($kernel, '/integrations/sources/trendhome/orders', sourceTestPayload(), SOURCE_TEST_TRENDHOME_SECRET);
+
+    // The caller sees exactly the generic contract, nothing from the database.
+    expect($response->status === 500);
+    expect($response->payload === ['error' => ['code' => 'INTERNAL_ERROR', 'message' => 'The service could not complete the request.', 'requestId' => 'req-pdo-diagnostics']]);
+    $body = sourceJson($response);
+    foreach (['23000', '1062', 'sqlstate', 'driver_code', 'PDOException', 'Duplicate', 'INSERT', 'operational_orders'] as $hidden) {
+        expect(!str_contains($body, $hidden), "The public 500 response must not carry {$hidden}.");
+    }
+
+    expect(count($lines) === 1);
+    $line = $lines[0];
+    $logged = json_decode($line, true, flags: JSON_THROW_ON_ERROR);
+    expect($logged['event'] === 'internal_error' && $logged['level'] === 'error' && $logged['status'] === 500);
+    expect($logged['route'] === '/integrations/sources/trendhome/orders' && $logged['method'] === 'POST' && $logged['request_id'] === 'req-pdo-diagnostics');
+    expect($logged['exception'] === 'PDOException' && $logged['sqlstate'] === '23000' && $logged['driver_code'] === 1062);
+    expect(!array_key_exists('cause', $logged));
+    // Neither the driver message, the SQL text, its parameters nor any payload value reaches the log.
+    foreach (['Duplicate entry', 'Integrity constraint', 'uq_secret_marker', 'INSERT INTO', 'secret_sql_marker', 'VALUES', 'ion.clientescu@example.com', '@', 'Ion Clientescu', 'Draperie Secret Velvet', 'SKU-SECRET-302', 'Confidential note', 'Str. Privată', '0722000111', 'trace', '.php', SOURCE_TEST_TRENDHOME_SECRET] as $forbidden) {
+        expect(!str_contains($line, $forbidden), "The internal_error log line must not contain {$forbidden}.");
+    }
+});
+
+test('a real driver failure through the projection writer is logged with its SQLSTATE only', function (): void {
+    // A schema-less SQLite database makes the real writer fail inside PDO itself (no such table).
+    [$auth] = authFixture();
+    $config = sourceTestConfig(['trendhome' => ['mode' => 'active'], 'outletperdele' => ['mode' => 'validation']]);
+    $pdo = new PDO('sqlite::memory:', options: [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+    $clock = new MutableClock(new DateTimeImmutable('@' . SOURCE_TEST_NOW));
+    $limiter = new class implements ApiRateLimiter {
+        public function hit(string $scope, string $subject, int $limit, int $windowSeconds): bool { return true; }
+    };
+    $controller = new SourceIngestionController(new SourceSignatureVerifier($config->sourceSecrets), new OrderProjectionWriter($pdo, $clock), $limiter, $clock, SourceRegistry::fromConfig($config));
+    $context = new \Arasya\Operations\Http\RequestContext();
+    $cookies = new \Arasya\Operations\Security\CookiePolicy($config);
+    $lines = [];
+    $kernel = new \Arasya\Operations\Http\ApiKernel(
+        new \Arasya\Operations\Http\AuthController($auth, new \Arasya\Operations\Security\CsrfGuard(new \Arasya\Operations\Security\SessionTokenManager(str_repeat('p', 32))), $cookies, $config, new \Arasya\Operations\Authorization\AuthorizationService(), $context),
+        new \Arasya\Operations\Http\HealthController(new PDO('sqlite::memory:'), new \Arasya\Operations\Support\SystemClock()),
+        new \Arasya\Operations\Http\CorsPolicy($config->allowedOrigins),
+        new \Arasya\Operations\Support\StructuredLogger(static function (string $line) use (&$lines): void { $lines[] = $line; }),
+        $cookies,
+        $context,
+        sources: $controller,
+    );
+    $response = sourceSendSigned($kernel, '/integrations/sources/trendhome/orders', sourceTestPayload(), SOURCE_TEST_TRENDHOME_SECRET);
+    expect($response->status === 500 && $response->payload['error']['code'] === 'INTERNAL_ERROR');
+    $logged = json_decode($lines[0] ?? '{}', true, flags: JSON_THROW_ON_ERROR);
+    expect(($logged['exception'] ?? null) === 'PDOException' && ($logged['sqlstate'] ?? null) === 'HY000' && is_int($logged['driver_code'] ?? null));
+    expect(!str_contains($lines[0], 'no such table') && !str_contains($lines[0], 'SELECT') && !str_contains($lines[0], 'operational_orders'));
+});
+
+test('safe exception context keeps only validated structured PDO fields', function (): void {
+    $of = static fn (Throwable $error): array => \Arasya\Operations\Support\SafeExceptionContext::of($error);
+
+    // Non-PDO exceptions keep the previous behaviour: the class only.
+    expect($of(new RuntimeException('Secret detail for customer@example.com')) === ['exception' => 'RuntimeException']);
+
+    // A connection failure carries no errorInfo; its integer code is the driver code (MySQL 2002).
+    $connection = new PDOException('SQLSTATE[HY000] [2002] Resource temporarily unavailable (host db.internal user arasya_app)', 2002);
+    expect($of($connection) === ['exception' => 'PDOException', 'driver_code' => 2002]);
+
+    // A wrapped PDO failure names the cause and its safe fields, never the wrapper's message.
+    $wrapped = new RuntimeException('Writer failed for Ion Clientescu', 0, sourceMysqlStylePdoException('40001', 1213));
+    expect($of($wrapped) === ['exception' => 'RuntimeException', 'cause' => 'PDOException', 'sqlstate' => '40001', 'driver_code' => 1213]);
+
+    // Anything that is not a well-formed SQLSTATE or a bounded positive integer is dropped.
+    $malformed = new PDOException('ignored');
+    $malformed->errorInfo = ["23000'; DROP TABLE x;--", '1062 Duplicate entry customer@example.com', 'driver message'];
+    expect($of($malformed) === ['exception' => 'PDOException']);
+    $hostile = new PDOException('ignored');
+    $hostile->errorInfo = ['00000', 999_999_999, 'driver message'];
+    expect($of($hostile) === ['exception' => 'PDOException']);
+
+    // The logger's redactor keeps these keys (they are diagnostics, not secrets).
+    $sanitized = \Arasya\Operations\Support\SensitiveDataRedactor::sanitize($of(sourceMysqlStylePdoException('23000', 1062)));
+    expect($sanitized === ['exception' => 'PDOException', 'sqlstate' => '23000', 'driver_code' => 1062]);
+});
+
+test('expected API errors and validation are unchanged by the PDO diagnostics', function (): void {
+    ['kernel' => $kernel, 'lines' => $lines] = sourceKernelWithFailingDatabase(sourceMysqlStylePdoException('23000', 1062));
+    // A validation-mode source is still refused before any database access, as a normal API error.
+    $guarded = sourceSendSigned($kernel, '/integrations/sources/outletperdele/orders', sourceTestPayload(), SOURCE_TEST_OUTLET_SECRET);
+    expect($guarded->status === 403 && $guarded->payload['error']['code'] === 'SOURCE_NOT_ACTIVE');
+    // Zero-write validation never touches the (failing) database and still succeeds.
+    $valid = sourceSendSigned($kernel, '/integrations/sources/trendhome/orders/validate', sourceTestPayload(), SOURCE_TEST_TRENDHOME_SECRET);
+    expect($valid->status === 200 && $valid->payload['ok'] === true);
+    $warning = json_decode($lines[0], true, flags: JSON_THROW_ON_ERROR);
+    expect($warning['event'] === 'api_error' && $warning['code'] === 'SOURCE_NOT_ACTIVE' && $warning['status'] === 403);
+    expect(!array_key_exists('exception', $warning) && !array_key_exists('sqlstate', $warning) && !array_key_exists('driver_code', $warning));
+});
+
+test('observability hardening ships no migration and no workflow change', function (): void {
+    $migrations = array_map('basename', glob(dirname(__DIR__) . '/database/migrations/*.sql') ?: []);
+    expect(count($migrations) === 17 && str_starts_with($migrations[0], '001_') && str_starts_with($migrations[16], '017_'));
+    expect(count(CanonicalProductionWorkflowContract::STAGES) === 14);
+});
