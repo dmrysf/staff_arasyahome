@@ -1,6 +1,6 @@
 b874fd4bb9d5288d15a76645c3d9b3c880463696f8c3b95f17110f0d81ccdee3  ./.cpanel.yml
 8286fc7aa3997b02b40cd802afc3af51f10c9025110534f38fa33c68beaa539e  ./.htaccess
-4d98e295a979959c7146e7353ee4c50f763ec21d80a647100cd0034dec3aa311  ./README.md
+1b6b40228d3302aa396b58ca36897351ca63e28130be1a28db1ef2a4b82ec099  ./README.md
 022a3eaba163a146b3dc70de8aa893a6d0b01636805ebcaf639943913e544928  ./bin/bootstrap-root-admin.php
 c53137393d879c7548188f87745e52d6b31938c9c8a7c57caee1eea05667a396  ./bin/change-password.php
 7518959efb50840bb8414d739ae6d3ed7719dd9a7b2cd5d99ad1a91e94239da3  ./bin/check-migrations.php
@@ -48,13 +48,13 @@ e3d5bd553859a3f0ade7ef0d41a29c8dab1eaaf486fb632bdb714b79e4c719aa  ./database/see
 a80d76fbdb4a0c8ac3533c3db5eb123a73ff6eb2c259927976d39dfeeb2f248b  ./public/.htaccess
 8302b6ec98573706b31b957a8f9ad9be8bf92a8b8bff02963c601650e7e8c420  ./public/RuntimeLocator.php
 edb234c39482536f0540e881da98cbdad6241af787f230295a79a4ae534e26be  ./public/index.php
-da035626e078d584e61fa524a346baa6c8e43f3daf5f36df593042d39148bb7e  ./release.json
+a33b45c1875276c44d1a97a9cde76e6a80e513d787bf4c4b660aa25b2c6305f4  ./release.json
 3b42b0a0d462aa0ac0f368966a5703f6ecbbff9eea2bbbe47f269e9cd6ba03ea  ./scripts/api-release-common.sh
 d1795ddfa4cbd145a0bd889b74821650ce88ca47d5fc6227fa51796fc83b46b7  ./scripts/cpanel-deploy-api.sh
 90db53c750a7ee94bdaad0c19e0c57e9ee6744d703ca03603bb3764393d40f54  ./scripts/cpanel-rollback-api.sh
 ad963b363acfdc488f4b9638e31052d173e9b31437735990435acfd5c9e876ca  ./scripts/generate-sha256s.sh
 8120462fea5e6b8392d51f2f79fa82b86b48a759bafe65ef2eef4110d4cdd9a8  ./scripts/maintenance-active.sh
-a9bc2de71f61d8eea2ae2e1c6e5cec7a8fb299b9ed6368f9f1cdbf56ba5c10e4  ./scripts/validate-release.sh
+713f389e23d8c0843ddd6f72c16939846c8223ec1362bff83a7737b1cd314db4  ./scripts/validate-release.sh
 62e244f7394174e9be815b0f3406eb9df6226d90117c770fbc6aa36be535de74  ./src/Activity/ActivityController.php
 fffaf9848b4f34b5f257895192f34d7a6ef959791a2e944ba3a981bd6bbb874e  ./src/Activity/ActivityRange.php
 591b1ed97493fb4396cf147de6f8c998570ecfbe3a18e947546b1a3327a79eb6  ./src/Activity/PdoActivityRepository.php
@@ -160,10 +160,10 @@ c19345e0bf4c0e108301a752d11fc1084d62d7f885b872a6bc757ffaabdb8049  ./src/Employee
 2fe47a59c8c68971ca7fb8b8e8423cc16de63634e7dd45d060de996fefc737f3  ./src/Employee/EmployeeSerializer.php
 801f0bbd588bf88d2a03dcefe6d6801dc5ae339ac2b07bc7dd041f2a0c233785  ./src/Employee/PdoEmployeeRepository.php
 dab18c727f8af10b46a7b3ff81361a782ccccdd482ccc46cb40dbba649513e55  ./src/Http/ApiException.php
-e4eefa47da74c19473f4de265b8322dcbb4f8a6c7fca45d2f8c69a0e22b02f8e  ./src/Http/ApiKernel.php
+a62caef31d50c9bab5911c6db5c15f4297d41001e4595ad06e608925bacc7318  ./src/Http/ApiKernel.php
 f9cc614f17939a96d596df982ce6961d0138def60fac39192a2b94bfdce77db3  ./src/Http/AuthController.php
 61ad3cbafb08e399aea7f0337595bff8d48be70d8a03c2c9069cb9cad38adc0c  ./src/Http/CorsPolicy.php
-ff0b4bfce1aaecb746ad8be2b91ea6f0970ed38d0e4377854d97bd20da8459ad  ./src/Http/HealthController.php
+78a328d3439ca35068c22d13e223bfd7791bd88ffe4c915b7d52316cc92139c5  ./src/Http/HealthController.php
 5135823a988e7ae06254297c5272a5ccb724e819a52c33217223c4299f286cb2  ./src/Http/ProductionWorkflowController.php
 57c77118c9f87c3b4475737e98d97bd7fcfaf456961cf637c7927d4eaad9ef32  ./src/Http/Request.php
 b49c2a94e90b750aeb5202e8ea263a42fd77fcc6442b3c2f46205cd5ab324688  ./src/Http/RequestContext.php
@@ -232,6 +232,7 @@ f6d78a464deb6cddbe40bf1c04de3bdfdabb7022c3ba47928de5dede787839a7  ./src/Security
 cfadab6f29a6859c51fa20afbfde3044a1fe5acc72525c08e491088add357222  ./src/Security/UsernameNormalizer.php
 b0ed28702241ae5a65913a539c1f45ceef8531213ca7e630bf3d4675b5e64332  ./src/Support/CliInput.php
 1b14f40e42f9d7ef891ff7ea74e8e3667d8354b8cd098bf0f34de8f76f68d415  ./src/Support/Clock.php
+360e39540c177d7af4bc493e19b33dd7d39bcb5f7eefdb48dbc39aeeaa2a76f8  ./src/Support/SafeExceptionContext.php
 a621dcef414b139ae779d872a1c38c28587d2b748f98962abb8c6f898d386fa7  ./src/Support/SensitiveDataRedactor.php
 7be422f30a322a11cd888b5c9aff15f5ee44cf77b7ae559c5143ff73c125a1dd  ./src/Support/StructuredLogger.php
 544f5ad911506ba35f68e04eceb84dd905a9ece43536220fc9abe9439450571e  ./src/Support/SystemClock.php
