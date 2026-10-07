@@ -69,3 +69,14 @@ The route parser bounds and catches order-ID decoding, so malformed percent esca
 11. If code rollback is required, invoke the appropriate checksummed rollback command above. V2.1 code tolerates the additive 004 schema, so a code rollback does not require a database rollback; never roll the database back automatically.
 
 Repository tests do not prove production migration, seed, headers, health, readiness, or rollback state. Report those as unverified until these commands are actually run against production.
+
+## Internal error diagnostics
+
+An unexpected exception becomes a generic `500 INTERNAL_ERROR` response ("The service could not complete the request.") and one structured `internal_error` log line. Since 2.17.1 that line carries, besides route, method, status and request ID:
+
+- `exception`: the exception class;
+- `cause`: the class of a wrapped `PDOException`, when the top-level exception is not one;
+- `sqlstate`: the five-character SQLSTATE (for example `23000`), only when it matches `^[0-9A-Z]{5}$`;
+- `driver_code`: the numeric driver error code (for example MySQL `1062`, or `2002` for a failed connection).
+
+These come from structured exception fields (`errorInfo`, the exception code) via `Support\SafeExceptionContext`. The exception message, SQL text, bound parameters, row values, payloads and stack traces are never logged, and none of these diagnostics are returned to the caller.

@@ -15,6 +15,7 @@ use Arasya\Operations\Order\OperationalOrderController;
 use Arasya\Operations\Quality\QualityController;
 use Arasya\Operations\Cutting\CuttingController;
 use Arasya\Operations\Security\CookiePolicy;
+use Arasya\Operations\Support\SafeExceptionContext;
 use Arasya\Operations\Support\StructuredLogger;
 use Throwable;
 
@@ -86,7 +87,7 @@ final readonly class ApiKernel
             }
             return $this->secure($response, $request);
         } catch (Throwable $error) {
-            $this->logger->log('error', 'internal_error', $request->requestId, ['route' => $request->path, 'method' => $request->method, 'status' => 500, 'exception' => $error::class, ...$this->context->logContext()]);
+            $this->logger->log('error', 'internal_error', $request->requestId, ['route' => $request->path, 'method' => $request->method, 'status' => 500, ...SafeExceptionContext::of($error), ...$this->context->logContext()]);
             return $this->secure(Response::json(['error' => ['code' => 'INTERNAL_ERROR', 'message' => 'The service could not complete the request.', 'requestId' => $request->requestId]], 500), $request);
         }
     }
