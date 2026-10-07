@@ -30,6 +30,8 @@ final readonly class OperationalOrder
         public ?array $productionContext = null,
         public ?string $openExceptionUuid = null,
         public string $documentStatus = 'none',
+        /** 'source' (still managed by the commerce source) or 'operations' (managed in Arasya). */
+        public string $productionAuthority = 'source',
     ) {
     }
 

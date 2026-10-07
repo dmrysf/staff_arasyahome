@@ -6,6 +6,9 @@ namespace Arasya\Operations\Order;
 
 use Arasya\Operations\Document\DocumentStaleness;
 use Arasya\Operations\Http\ApiException;
+use Arasya\Operations\Production\ProductionAuthority;
+use Arasya\Operations\Production\ProductionAuthorityMode;
+use Arasya\Operations\Production\ProductionAuthorityModes;
 use Arasya\Operations\Support\Clock;
 use Arasya\Operations\Support\Uuid;
 use DateTimeImmutable;
@@ -15,7 +18,11 @@ final readonly class OrderProjectionWriter
 {
     public const INITIAL_STAGE_ID = 'waiting';
 
-    public function __construct(private PDO $pdo, private Clock $clock)
+    /**
+     * @param ProductionAuthorityModes|null $authorityModes per-source production authority modes; without
+     *   them every source is LEGACY (new orders keep source authority, as before API 2.18.0)
+     */
+    public function __construct(private PDO $pdo, private Clock $clock, private ?ProductionAuthorityModes $authorityModes = null)
     {
     }
 
@@ -250,16 +257,20 @@ final readonly class OrderProjectionWriter
                 (new DocumentStaleness($this->pdo, $this->clock))->onContentChanged($orderUuid, $snapshot->sourceEventId);
 
             } else {
-                // Insert new order
+                // Insert new order. A source whose production authority is enforced hands every genuinely
+                // new order to Operations at the initial canonical stage; a source stage is never used then.
+                $authorityMode = $this->authorityModes?->modeFor($snapshot->sourceKey) ?? ProductionAuthorityMode::Legacy;
+                $operationsManaged = $authorityMode === ProductionAuthorityMode::Enforce;
+                $initialStage = $operationsManaged ? self::INITIAL_STAGE_ID : ($snapshot->productionStageId ?? self::INITIAL_STAGE_ID);
                 $orderUuid = Uuid::v4();
                 $stmt = $this->pdo->prepare('
                     INSERT INTO operational_orders (
                         order_uuid, global_order_id, source_key, source_order_id, order_number, order_lookup_code,
-                        production_stage_id, source_commerce_status_code, source_commerce_status_label, 
+                        production_stage_id, production_authority, production_changed_at, source_commerce_status_code, source_commerce_status_label, 
                         production_notes, operational_status, freshness_status, source_schema_version, 
                         source_event_id, source_changed_at, last_source_seen_at, projected_at, 
                         accepted_at, projection_hash, version, created_at, updated_at, document_context
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ');
                 $stmt->execute([
                     $orderUuid,
@@ -268,7 +279,9 @@ final readonly class OrderProjectionWriter
                     $snapshot->sourceOrderId,
                     $snapshot->orderNumber,
                     OrderLookupCode::fromOrderNumber($snapshot->orderNumber),
-                    $snapshot->productionStageId ?? self::INITIAL_STAGE_ID,
+                    $initialStage,
+                    $operationsManaged ? ProductionAuthority::OPERATIONS : ProductionAuthority::SOURCE,
+                    $operationsManaged ? $nowSql : null,
                     $snapshot->sourceCommerceStatusCode,
                     $snapshot->sourceCommerceStatusLabel,
                     $snapshot->productionNotes,
@@ -288,11 +301,14 @@ final readonly class OrderProjectionWriter
                 ]);
 
                 $this->insertItems($snapshot->items, $orderUuid, $nowSql);
+                if ($operationsManaged) {
+                    $this->recordNewOrderAuthority($orderUuid, $globalId, $snapshot->sourceKey, $nowSql);
+                }
             }
 
             $this->ensureQrReference($orderUuid, $nowSql);
             $life = new \Arasya\Operations\Cutting\CuttingLifecycle($this->pdo);
-            $currentStage = $currentOrder ? $stageId : ($snapshot->productionStageId ?? self::INITIAL_STAGE_ID);
+            $currentStage = $currentOrder ? $stageId : $initialStage;
             if ($currentStage === $life::STAGE && (!$currentOrder || $currentOrder['production_stage_id'] !== $currentStage)) $life->fact($orderUuid, $currentOrder ? $productionVersion : 1, 'pool_entered', null, $nowSql);
             if ($snapshot->operationalStatus === 'unavailable') $life->fact($orderUuid, $currentOrder ? $productionVersion : 1, 'source_cancelled', null, $nowSql);
             if ($currentStage === $life::STAGE || $snapshot->operationalStatus === 'unavailable') (new \Arasya\Operations\Quality\LiveEvents($this->pdo))->cuttingChanged($nowSql);
@@ -389,6 +405,18 @@ final readonly class OrderProjectionWriter
         if ($stmt->rowCount() !== 1) {
             throw new ApiException(409, 'SOURCE_INACTIVE', 'The source is not registered or inactive.');
         }
+    }
+
+    /** Authority evidence for a new order created under an enforcing source (no actor: source policy). */
+    private function recordNewOrderAuthority(string $orderUuid, string $globalId, string $sourceKey, string $nowSql): void
+    {
+        $this->pdo->prepare(
+            "INSERT INTO production_authority_events (
+                event_uuid, order_uuid, global_order_id, source_key, action, authority_mode, previous_authority, new_authority,
+                previous_stage_id, new_stage_id, production_version_before, production_version_after, actor_employee_uuid,
+                reason_code, request_id, idempotency_key, occurred_at
+            ) VALUES (?, ?, ?, ?, 'new_order_policy', 'enforce', NULL, 'operations', NULL, ?, NULL, 1, NULL, 'source_authority_enforced', NULL, NULL, ?)",
+        )->execute([Uuid::v4(), $orderUuid, $globalId, $sourceKey, self::INITIAL_STAGE_ID, $nowSql]);
     }
 
     /** JSON columns may return object keys in another order; compare by content. */

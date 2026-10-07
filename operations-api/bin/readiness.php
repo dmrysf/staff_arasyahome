@@ -111,6 +111,7 @@ $sourceRegistry = SourceRegistry::fromConfig($config);
 foreach ($sourceRegistry->all() as $definition) {
     $report('OK', "source_signing_{$definition->key}");
     $report('OK', 'source_mode_' . $definition->key . '_' . ($definition->enabled ? $definition->mode->value : 'disabled'));
+    $report('OK', 'source_authority_' . $definition->key . '_' . $definition->authorityMode->value);
 }
 foreach ($sourceRegistry->issues() as $issue) {
     $report('WARN', 'source_config_' . $issue['code'] . ($issue['sourceKey'] === null ? '' : '_' . $issue['sourceKey']));

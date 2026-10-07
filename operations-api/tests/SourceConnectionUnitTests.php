@@ -9,12 +9,15 @@ use Arasya\Operations\Config\ConfigLoader;
 use Arasya\Operations\Http\ApiException;
 use Arasya\Operations\Http\Request;
 use Arasya\Operations\Http\Response;
+use Arasya\Operations\Integration\SourceAuthorityQueries;
 use Arasya\Operations\Integration\SourceIngestionController;
 use Arasya\Operations\Integration\SourceMode;
 use Arasya\Operations\Integration\SourceRegistry;
 use Arasya\Operations\Integration\SourceSignatureVerifier;
 use Arasya\Operations\Order\OrderProjectionWriter;
 use Arasya\Operations\Production\CanonicalProductionWorkflowContract;
+use Arasya\Operations\Production\ProductionAuthorityMode;
+use Arasya\Operations\Production\ProductionAuthorityModes;
 use Arasya\Operations\Security\ApiRateLimiter;
 use Arasya\Operations\Tests\MutableClock;
 
@@ -82,7 +85,7 @@ function sourceTestController(Config $config): array
             return true;
         }
     };
-    $controller = new SourceIngestionController(new SourceSignatureVerifier($config->sourceSecrets), new OrderProjectionWriter($pdo, $clock), $limiter, $clock, SourceRegistry::fromConfig($config));
+    $controller = new SourceIngestionController(new SourceSignatureVerifier($config->sourceSecrets), new OrderProjectionWriter($pdo, $clock), $limiter, $clock, SourceRegistry::fromConfig($config), new SourceAuthorityQueries($pdo));
     return ['controller' => $controller, 'pdo' => $pdo, 'limiter' => $limiter];
 }
 
@@ -360,7 +363,7 @@ test('signed heartbeat reports mode and contract only, for validation and active
     $pdo->exec("INSERT INTO order_sources (source_key, status) VALUES ('trendhome', 'active'), ('outletperdele', 'active')");
     foreach (['trendhome' => [SOURCE_TEST_TRENDHOME_SECRET, 'active'], 'outletperdele' => [SOURCE_TEST_OUTLET_SECRET, 'validation']] as $key => [$secret, $mode]) {
         $response = $controller->heartbeat(sourceSignedRequest(['sentAt' => '2026-10-07T10:00:00Z'], $secret), $key);
-        expect($response->payload === ['ok' => true, 'sourceKey' => $key, 'mode' => $mode, 'contract' => ['schemaVersion' => 1, 'workflowId' => 'curtain-production', 'workflowVersion' => 1, 'stageCount' => 14]], 'Unexpected heartbeat: ' . sourceJson($response));
+        expect($response->payload === ['ok' => true, 'sourceKey' => $key, 'mode' => $mode, 'productionAuthorityMode' => 'legacy', 'contract' => ['schemaVersion' => 1, 'workflowId' => 'curtain-production', 'workflowVersion' => 1, 'stageCount' => 14]], 'Unexpected heartbeat: ' . sourceJson($response));
         expect(sourceResponseHasNoSecret($response));
     }
     $contacts = $pdo->query('SELECT COUNT(*) FROM order_sources WHERE last_contact_at IS NOT NULL')->fetchColumn();
@@ -482,7 +485,7 @@ test('a real driver failure through the projection writer is logged with its SQL
     $limiter = new class implements ApiRateLimiter {
         public function hit(string $scope, string $subject, int $limit, int $windowSeconds): bool { return true; }
     };
-    $controller = new SourceIngestionController(new SourceSignatureVerifier($config->sourceSecrets), new OrderProjectionWriter($pdo, $clock), $limiter, $clock, SourceRegistry::fromConfig($config));
+    $controller = new SourceIngestionController(new SourceSignatureVerifier($config->sourceSecrets), new OrderProjectionWriter($pdo, $clock), $limiter, $clock, SourceRegistry::fromConfig($config), new SourceAuthorityQueries($pdo));
     $context = new \Arasya\Operations\Http\RequestContext();
     $cookies = new \Arasya\Operations\Security\CookiePolicy($config);
     $lines = [];
@@ -542,8 +545,78 @@ test('expected API errors and validation are unchanged by the PDO diagnostics', 
     expect(!array_key_exists('exception', $warning) && !array_key_exists('sqlstate', $warning) && !array_key_exists('driver_code', $warning));
 });
 
-test('observability hardening ships no migration and no workflow change', function (): void {
+test('migrations stay sequential through 018 and the canonical workflow keeps its 14 stages', function (): void {
     $migrations = array_map('basename', glob(dirname(__DIR__) . '/database/migrations/*.sql') ?: []);
-    expect(count($migrations) === 17 && str_starts_with($migrations[0], '001_') && str_starts_with($migrations[16], '017_'));
+    expect(count($migrations) === 18 && str_starts_with($migrations[0], '001_') && str_starts_with($migrations[16], '017_') && $migrations[17] === '018_production_authority.sql');
     expect(count(CanonicalProductionWorkflowContract::STAGES) === 14);
+    expect(array_keys(CanonicalProductionWorkflowContract::STAGES) === ['waiting', 'material-preparation', 'workshop-receiving', 'labeling', 'material-straightening', 'bottom-hem', 'side-hem', 'ironing', 'height', 'header-tape', 'sewing-finishing', 'quality-control', 'packing', 'delivery']);
+    // 018 is additive: it never converts the authority of existing orders.
+    $sql = (string) file_get_contents(dirname(__DIR__) . '/database/migrations/018_production_authority.sql');
+    expect(preg_match('/UPDATE\s+operational_orders|DELETE\s+FROM|DROP\s+TABLE|production_authority\s*=/i', $sql) === 0, '018 must not rewrite orders or drop data.');
+});
+
+test('production authority mode is per source, defaults to legacy and never disables a source', function (): void {
+    $registry = SourceRegistry::fromConfig(sourceTestConfig(['trendhome' => ['mode' => 'active', 'authority' => 'Enforce'], 'outletperdele' => ['mode' => 'active']]));
+    expect($registry->find('trendhome')?->authorityMode === ProductionAuthorityMode::Enforce);
+    expect($registry->find('outletperdele')?->authorityMode === ProductionAuthorityMode::Legacy, 'Unset authority mode is legacy.');
+    $modes = ProductionAuthorityModes::fromRegistry($registry);
+    expect($modes->modeFor('trendhome') === ProductionAuthorityMode::Enforce && $modes->modeFor('outletperdele') === ProductionAuthorityMode::Legacy);
+    expect($modes->modeFor('b2b') === ProductionAuthorityMode::Legacy && !$modes->isManagedSource('b2b') && $modes->modeFor('trendyol') === ProductionAuthorityMode::Legacy);
+
+    $invalid = SourceRegistry::fromConfig(sourceTestConfig(['trendhome' => ['mode' => 'active', 'authority' => 'on'], 'outletperdele' => ['authority' => 'observe']]));
+    expect($invalid->find('trendhome')?->authorityMode === ProductionAuthorityMode::Legacy && $invalid->find('trendhome')?->canIngest() === true, 'An unreadable authority mode falls back to legacy and keeps ingestion working.');
+    expect(in_array(['code' => 'invalid_authority_mode', 'sourceKey' => 'trendhome'], $invalid->issues(), true));
+    expect($invalid->find('outletperdele')?->authorityMode === ProductionAuthorityMode::Observe);
+
+    $home = sys_get_temp_dir() . '/arasya-authority-config-' . bin2hex(random_bytes(6));
+    mkdir($home . '/arasya-config', 0700, true);
+    try {
+        file_put_contents($home . '/arasya-config/secrets.json', json_encode([
+            'ARASYA_APP_SECRET' => str_repeat('j', 32), 'DB_NAME' => 'db', 'DB_USER_NAME' => 'u', 'DB_USER_PASSWORD' => 'p', 'ARASYA_ALLOWED_ORIGINS' => ['https://staff.arasyahome.ro'],
+            'ARASYA_SOURCE_SECRET_TRENDHOME' => SOURCE_TEST_TRENDHOME_SECRET, 'ARASYA_SOURCE_MODE_TRENDHOME' => 'active', 'ARASYA_SOURCE_AUTHORITY_TRENDHOME' => 'observe',
+            'ARASYA_SOURCE_SECRET_OUTLETPERDELE' => SOURCE_TEST_OUTLET_SECRET, 'ARASYA_SOURCE_MODE_OUTLETPERDELE' => 'active',
+        ], JSON_THROW_ON_ERROR));
+        chmod($home . '/arasya-config/secrets.json', 0600);
+        $file = SourceRegistry::fromConfig(Config::fromEnvironment(new ConfigLoader(['HOME' => $home])));
+        expect($file->find('trendhome')?->authorityMode === ProductionAuthorityMode::Observe, 'ARASYA_SOURCE_AUTHORITY_<SOURCE> is read from the private configuration file.');
+        expect($file->find('outletperdele')?->authorityMode === ProductionAuthorityMode::Legacy && $file->issues() === []);
+    } finally {
+        @unlink($home . '/arasya-config/secrets.json');
+        @rmdir($home . '/arasya-config');
+        @rmdir($home);
+    }
+});
+
+test('heartbeat reports the source authority mode without changing the contract', function (): void {
+    ['controller' => $controller, 'pdo' => $pdo] = sourceTestController(sourceTestConfig(['trendhome' => ['mode' => 'active', 'authority' => 'enforce'], 'outletperdele' => ['authority' => 'observe']]));
+    $pdo->exec("CREATE TABLE order_sources (source_key TEXT PRIMARY KEY, status TEXT NOT NULL, last_contact_at TEXT NULL, updated_at TEXT NULL)");
+    $pdo->exec("INSERT INTO order_sources (source_key, status) VALUES ('trendhome', 'active'), ('outletperdele', 'active')");
+    $home = $controller->heartbeat(sourceSignedRequest(['sentAt' => '2026-10-07T10:00:00Z'], SOURCE_TEST_TRENDHOME_SECRET), 'trendhome');
+    $outlet = $controller->heartbeat(sourceSignedRequest(['sentAt' => '2026-10-07T10:00:00Z'], SOURCE_TEST_OUTLET_SECRET), 'outletperdele');
+    expect($home->payload['productionAuthorityMode'] === 'enforce' && $home->payload['mode'] === 'active' && $home->payload['contract']['stageCount'] === 14);
+    expect($outlet->payload['productionAuthorityMode'] === 'observe' && $outlet->payload['mode'] === 'validation');
+});
+
+test('signed order authority answers production facts only and rejects malformed requests without storage', function (): void {
+    ['controller' => $controller, 'pdo' => $pdo] = sourceTestController(sourceTestConfig(['trendhome' => ['mode' => 'validation', 'authority' => 'observe'], 'outletperdele' => []]));
+    foreach ([['orderIds' => []], ['orderIds' => array_map('strval', range(1, 51))], ['orderIds' => ['1', '1']], ['orderIds' => ['bad id']], ['orderIds' => [63366]], ['orderIds' => ['1'], 'x' => 1], ['ids' => ['1']]] as $bad) {
+        sourceExpectApi('SOURCE_PAYLOAD_INVALID', 422, fn () => $controller->orderAuthority(sourceSignedRequest($bad, SOURCE_TEST_TRENDHOME_SECRET), 'trendhome'));
+    }
+    sourceExpectApi('SOURCE_SIGNATURE_INVALID', 401, fn () => $controller->orderAuthority(sourceSignedRequest(['orderIds' => ['1']], SOURCE_TEST_OUTLET_SECRET), 'trendhome'));
+    expect($pdo->statements === [], 'Rejected authority requests never reach storage.');
+
+    $pdo->exec("CREATE TABLE operational_orders (global_order_id TEXT PRIMARY KEY, source_key TEXT NOT NULL, production_authority TEXT NOT NULL, production_stage_id TEXT NOT NULL, production_version INTEGER NOT NULL, operational_status TEXT NOT NULL, production_completed_at TEXT NULL)");
+    $pdo->exec("INSERT INTO operational_orders VALUES ('trendhome:63366', 'trendhome', 'operations', 'ironing', 4, 'in_progress', NULL), ('trendhome:63360', 'trendhome', 'source', 'waiting', 1, 'unavailable', NULL), ('outletperdele:63366', 'outletperdele', 'operations', 'delivery', 9, 'in_progress', '2026-10-07 10:00:00')");
+    $before = count($pdo->statements);
+    // Validation-mode sources may ask: the call is read-only.
+    $response = $controller->orderAuthority(sourceSignedRequest(['orderIds' => ['63366', '63360', '1']], SOURCE_TEST_TRENDHOME_SECRET), 'trendhome');
+    expect($response->status === 200 && $response->payload['ok'] === true && $response->payload['sourceKey'] === 'trendhome' && $response->payload['productionAuthorityMode'] === 'observe');
+    expect($response->payload['orders'] === [
+        ['orderId' => '63366', 'globalOrderId' => 'trendhome:63366', 'exists' => true, 'productionAuthority' => 'operations', 'productionStageId' => 'ironing', 'productionVersion' => 4, 'operationalStatus' => 'in_progress', 'productionCompleted' => false],
+        ['orderId' => '63360', 'globalOrderId' => 'trendhome:63360', 'exists' => true, 'productionAuthority' => 'source', 'productionStageId' => 'waiting', 'productionVersion' => 1, 'operationalStatus' => 'unavailable', 'productionCompleted' => false],
+        ['orderId' => '1', 'globalOrderId' => 'trendhome:1', 'exists' => false, 'productionAuthority' => null, 'productionStageId' => null, 'productionVersion' => null, 'operationalStatus' => null, 'productionCompleted' => false],
+    ], 'Unexpected authority answer: ' . sourceJson($response));
+    $writes = array_filter(array_slice($pdo->statements, $before), static fn (string $sql): bool => preg_match('/^\s*(INSERT|UPDATE|DELETE|BEGIN)/i', $sql) === 1);
+    expect($writes === [], 'The authority answer never writes, not even the contact time.');
+    expect(sourceResponseHasNoSecret($response) && !str_contains(sourceJson($response), 'ARASYA:Q1'), 'No secret and no QR value is returned.');
 });

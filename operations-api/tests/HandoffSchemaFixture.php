@@ -1,9 +1,27 @@
 <?php
 declare(strict_types=1);
+/** Restore a pre-018 disposable test fixture (no production authority control plane). This is NOT a deployment/rollback mechanism. */
+function restorePreAuthorityTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='018_production_authority.sql'")->fetchColumn()) return;
+    $pdo->exec('DROP TABLE IF EXISTS production_authority_events');
+    $pdo->exec('ALTER TABLE order_activity_events DROP CONSTRAINT chk_order_activity_action');
+    $pdo->exec("DELETE FROM order_activity_events WHERE action IN ('authority_taken_over','authority_released')");
+    $pdo->exec("ALTER TABLE order_activity_events ADD CONSTRAINT chk_order_activity_action CHECK (action IN ('claimed', 'stage_completed', 'production_completed', 'owner_released', 'owner_reassigned', 'production_submitted', 'fault_reported', 'fault_rejected', 'fault_rereview_requested', 'fault_returned', 'fault_cancelled'))");
+    $pdo->exec('ALTER TABLE order_operation_idempotency DROP CONSTRAINT chk_order_operation_idempotency_operation');
+    $pdo->exec("DELETE FROM order_operation_idempotency WHERE operation IN ('authority_takeover','authority_release')");
+    $pdo->exec("ALTER TABLE order_operation_idempotency ADD CONSTRAINT chk_order_operation_idempotency_operation CHECK (operation IN ('claim', 'transition', 'release_owner', 'reassign_owner'))");
+    $pdo->exec("DELETE rp FROM role_permissions rp JOIN permissions p ON p.permission_id=rp.permission_id WHERE p.permission_key='production.manage_authority'");
+    $pdo->exec("DELETE FROM permissions WHERE permission_key='production.manage_authority'");
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='018_production_authority.sql'");
+}
+
 /** Restore a pre-017 disposable test fixture (no production documents). This is NOT a deployment/rollback mechanism. */
 function restorePreDocumentsTestSchema(PDO $pdo): void
 {
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    restorePreAuthorityTestSchema($pdo);
     if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='017_production_documents.sql'")->fetchColumn()) return;
     $pdo->exec('ALTER TABLE operational_orders DROP FOREIGN KEY fk_operational_orders_active_document');
     $pdo->exec('ALTER TABLE production_document_revisions DROP FOREIGN KEY fk_production_document_revisions_request');

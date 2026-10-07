@@ -203,6 +203,16 @@ final readonly class OrderOperationsService
         $relation = $previousHandover->fetchColumn() === false ? 'claimed' : 'handover_in';
         $this->upsertRelation($employee->employeeUuid, $order->orderUuid, $relation, $now);
         $this->recordActivity($employee, $order, $workflow, 'claimed', $stage, null, $expectedVersion, $idempotencyKey, $context, $now);
+        if ($this->policy->isSourceManagedUnderObservation($order)) {
+            // Observe mode: this legacy implicit authority change would be refused under enforcement.
+            $this->pdo->prepare(
+                "INSERT INTO production_authority_events (
+                    event_uuid, order_uuid, global_order_id, source_key, action, authority_mode, previous_authority, new_authority,
+                    previous_stage_id, new_stage_id, production_version_before, production_version_after, actor_employee_uuid,
+                    reason_code, request_id, idempotency_key, occurred_at
+                ) VALUES (?, ?, ?, ?, 'claim_observed', 'observe', 'source', 'operations', ?, ?, ?, ?, ?, 'staff_claim_of_source_order', ?, ?, ?)",
+            )->execute([Uuid::v4(), $order->orderUuid, $order->globalId->toString(), $order->globalId->sourceKey, $stage->id, $stage->id, $expectedVersion, $expectedVersion + 1, $employee->employeeUuid, mb_substr($context->requestId, 0, 100), $idempotencyKey, $now]);
+        }
         if ($stage->id === CuttingLifecycle::STAGE) (new CuttingLifecycle($this->pdo))->claimed($order->orderUuid, $expectedVersion + 1, $employee->employeeUuid, $now);
         (new \Arasya\Operations\Analytics\AnalyticsCapture($this->pdo))->refreshOrder($order->orderUuid);
     }
@@ -356,6 +366,7 @@ final readonly class OrderOperationsService
     {
         return match ($reason) {
             'claimed_by_other' => new ApiException(409, 'ORDER_ALREADY_CLAIMED', 'Another employee is working on this order.'),
+            OrderAccessPolicy::BLOCKED_AUTHORITY_SOURCE => new ApiException(409, 'PRODUCTION_AUTHORITY_SOURCE', 'Production of this order is still managed by its source. A manager must take it over first.'),
             'order_unavailable' => new ApiException(409, 'ORDER_UNAVAILABLE', 'The order is not available for production.'),
             'production_completed' => new ApiException(409, 'INVALID_STAGE_TRANSITION', 'Production is already completed.'),
             'exception_pending' => new ApiException(409, 'ORDER_BLOCKED_BY_EXCEPTION', 'The order is waiting for a production exception decision.'),
