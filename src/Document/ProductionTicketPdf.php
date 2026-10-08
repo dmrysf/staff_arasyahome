@@ -30,7 +30,8 @@ final class ProductionTicketPdf
 
     /**
      * @param array<string, mixed> $snapshot the stored revision snapshot
-     * @param array{number: int, status: string, generatedAt: string, qrPayload: string|null, sourceDisplayName?: string|null} $revision
+     * @param array{number: int, status: string, generatedAt: string, qrPayload: string|null, sourceDisplayName?: string|null, preview?: bool} $revision
+     *   A preview carries no QR (qrPayload null) and is marked as not usable in production.
      */
     public static function render(array $snapshot, array $revision): string
     {
@@ -82,10 +83,11 @@ final class ProductionTicketPdf
         $stamp = SourceStamp::label((string) $snapshot['order']['source'], $revision['sourceDisplayName'] ?? null);
         $generated = (new \DateTimeImmutable((string) $revision['generatedAt'], new \DateTimeZone('UTC')))->setTimezone(new \DateTimeZone('Europe/Bucharest'))->format('d.m.Y H:i');
         $active = $revision['status'] === 'active';
+        $preview = ($revision['preview'] ?? false) === true;
         $page = 0;
         $y = 0.0;
 
-        $newPage = function () use ($pdf, $snapshot, $revision, $qr, $stamp, $generated, $active, $right, $width, $number, $total, &$page, &$y): void {
+        $newPage = function () use ($pdf, $snapshot, $revision, $qr, $stamp, $generated, $active, $preview, $right, $width, $number, $total, &$page, &$y): void {
             $pdf->addPage();
             $page++;
             $first = $page === 1;
@@ -94,7 +96,7 @@ final class ProductionTicketPdf
             if ($qr !== null) {
                 $pdf->qr($right - $qrSize, $top - $qrSize + 6, $qrSize, $qr);
             } else {
-                $pdf->text($right, $top - 20, 'Cod QR indisponibil — folosește codul manual.', 'B', 8, 'right');
+                $pdf->text($right, $top - 20, $preview ? 'PREVIZUALIZARE — fără cod QR' : 'Cod QR indisponibil — folosește codul manual.', 'B', 8, 'right');
             }
             // Source stamp: the channel is visible at a glance on every page.
             $stampSize = $first ? 14.0 : 12.0;
@@ -117,8 +119,8 @@ final class ProductionTicketPdf
             $boxHeight = $first ? 54.0 : 44.0;
             $pdf->strokeRect($boxX, $boxTop - $boxHeight, $boxWidth, $boxHeight, 2.4, 0.0);
             $pdf->text($boxX + $boxWidth / 2 - $pdf->font('B')->textWidth('REVIZIA ' . $revision['number'], $first ? 20 : 16) / 2, $boxTop - ($first ? 26 : 22), 'REVIZIA ' . $revision['number'], 'B', $first ? 20 : 16);
-            $state = $active ? 'DOCUMENT ACTIV' : 'DOCUMENT ÎNLOCUIT — NU SE FOLOSEȘTE';
-            $stateSize = $active ? 9.0 : 6.5;
+            $state = $preview ? 'PREVIZUALIZARE — NU SE TIPĂREȘTE' : ($active ? 'DOCUMENT ACTIV' : ($revision['status'] === 'revoked' ? 'DOCUMENT ANULAT — NU SE FOLOSEȘTE' : 'DOCUMENT ÎNLOCUIT — NU SE FOLOSEȘTE'));
+            $stateSize = $active && !$preview ? 9.0 : 6.5;
             $pdf->text($boxX + $boxWidth / 2 - $pdf->font('B')->textWidth($state, $stateSize) / 2, $boxTop - $boxHeight + 9, $state, 'B', $stateSize);
             $pdf->text($right, $top - $qrSize - 2, 'Cod manual: ' . (string) $snapshot['order']['lookupCode'], 'B', $first ? 10 : 8.5, 'right');
             $meta = 'Generat: ' . $generated . '   ·   Pagina ' . $page . ($total > 0 ? ' / ' . $total : '');
@@ -251,16 +253,17 @@ final class ProductionTicketPdf
     private static function blockHeight(PdfDocument $pdf, array $line, float $width): float
     {
         $textWidth = self::textWidth($line, $width);
-        $height = 100.0;
+        // Code row, the wrapped name (never cut), the measurement boxes and the bottom padding.
+        $height = 78.0 + 12 * (count(self::nameLines($pdf, $line, $textWidth)) - 1) + 8;
         if ($line['options'] !== []) {
-            $height += 14 + 13 * count($pdf->wrap(TicketSnapshot::optionsText($line['options']) ?? '', $textWidth, 'B', 10, 4));
+            $height += 4 + 13 * count($pdf->wrap(TicketSnapshot::optionsText($line['options']) ?? '', $textWidth, 'B', 10, 4));
         }
         foreach (['notes', 'productionNotes'] as $key) {
             if ($line[$key] !== null) {
                 $height += 14 + 13 * count($pdf->wrap($line[$key], $textWidth, 'R', 10, 6));
             }
         }
-        return $height;
+        return max($height, self::hasSchematic($line) ? 96.0 : 0.0);
     }
 
     /** @param array<string, mixed> $line */
@@ -277,24 +280,33 @@ final class ProductionTicketPdf
         $cx = $x + 62;
         $schematic = self::hasSchematic($line);
         $contentRight = $schematic ? $right - 116 : $right - 10;
+        $textWidth = self::textWidth($line, $width);
         $kind = self::kindLabel($line);
         $pdf->text($contentRight, $y - 8, $kind, 'B', 10, 'right', self::GOLD);
         $pdf->text($cx, $y - 8, $pdf->fit($line['code'] ?? '—', $contentRight - $cx - $pdf->font('B')->textWidth($kind, 10) - 12, 'B', 13), 'B', 13);
-        $name = implode('  ·  ', array_filter([$line['name'], $line['color'] === null ? null : 'Culoare: ' . $line['color'], $line['variant'] === null ? null : 'Variantă: ' . $line['variant']]));
-        $pdf->text($cx, $y - 24, $pdf->fit($name, $contentRight - $cx, 'R', 10), 'R', 10);
+        // The product name is wrapped, never shortened: the workshop must read the whole name.
+        $yy = $y - 22;
+        foreach (self::nameLines($pdf, $line, $textWidth) as $text) {
+            $pdf->text($cx, $yy, $text, 'R', 10);
+            $yy -= 12;
+        }
         $unit = $line['unit'];
+        $pieces = self::explicitPieces($line);
         $values = [
             ['LĂȚIME', TicketSnapshot::measure($line['width'], null), $unit],
             ['ÎNĂLȚIME', TicketSnapshot::measure($line['height'], null), $unit],
             ['CANTITATE', (string) $line['quantity'], 'buc.'],
-            ['METRI (LINIE)', TicketSnapshot::measure($line['meters'], null), 'm'],
+            // Whole-line meters when the source sends them; otherwise the explicit piece count the source states.
+            $line['meters'] === null && $pieces !== null
+                ? ['BUCĂȚI', (string) $pieces, $pieces > 1 ? 'egale' : null]
+                : ['METRI (LINIE)', TicketSnapshot::measure($line['meters'], null), 'm'],
         ];
         $boxWidth = ($contentRight - $cx) / 4;
-        $boxY = $y - 78;
+        $boxY = $yy + 12 - 8 - 36;
         foreach ($values as $i => [$caption, $value, $suffix]) {
             $bx = $cx + $i * $boxWidth;
-            $pdf->strokeRect($bx, $boxY, $boxWidth - 8, 42, 0.7, 0.5);
-            $pdf->text($bx + 6, $boxY + 31, $caption, 'B', 7, 'left', self::MUTED);
+            $pdf->strokeRect($bx, $boxY, $boxWidth - 8, 36, 0.7, 0.5);
+            $pdf->text($bx + 6, $boxY + 26, $caption, 'B', 7, 'left', self::MUTED);
             $shown = $value ?? '—';
             // Measurements are never shortened: the figure shrinks to fit its box instead.
             $room = $boxWidth - 20 - ($value !== null && $suffix !== null ? $pdf->font('R')->textWidth($suffix, 9) + 4 : 0);
@@ -302,16 +314,13 @@ final class ProductionTicketPdf
             while ($size > 9 && $pdf->font('B')->textWidth($shown, $size) > $room) {
                 $size -= 0.5;
             }
-            $pdf->text($bx + 6, $boxY + 9, $shown, 'B', $size);
+            $pdf->text($bx + 6, $boxY + 7, $shown, 'B', $size);
             if ($value !== null && $suffix !== null) {
-                $pdf->text($bx + 8 + $pdf->font('B')->textWidth($shown, $size), $boxY + 9, $suffix, 'R', 9, 'left', self::MUTED);
+                $pdf->text($bx + 8 + $pdf->font('B')->textWidth($shown, $size), $boxY + 7, $suffix, 'R', 9, 'left', self::MUTED);
             }
         }
-        $yy = $boxY - 14;
-        $textWidth = self::textWidth($line, $width);
+        $yy = $boxY - 13;
         if ($line['options'] !== []) {
-            $pdf->text($cx, $yy, 'OPȚIUNI DE CONFECȚIONARE', 'B', 7.5, 'left', self::MUTED);
-            $yy -= 13;
             foreach ($pdf->wrap(TicketSnapshot::optionsText($line['options']) ?? '', $textWidth, 'B', 10, 4) as $text) {
                 $pdf->text($cx, $yy, $text, 'B', 10);
                 $yy -= 13;
@@ -331,6 +340,34 @@ final class ProductionTicketPdf
         if ($schematic) {
             self::schematic($pdf, $line, $right - 108, $y - 6, 100, $height - 20);
         }
+    }
+
+    /**
+     * Name, colour and variant of a line, wrapped on at most three lines. A variant that only repeats the
+     * colour ("Culoare: Alb" next to colour "Alb") is printed once.
+     *
+     * @param array<string, mixed> $line
+     * @return list<string>
+     */
+    private static function nameLines(PdfDocument $pdf, array $line, float $textWidth): array
+    {
+        $variant = $line['variant'];
+        if ($variant !== null && $line['color'] !== null && preg_match('/^[^:,;]+:\s*(.+)$/uD', $variant, $m) === 1 && mb_strtolower(trim($m[1])) === mb_strtolower(trim((string) $line['color']))) {
+            $variant = null;
+        }
+        $text = implode('  ·  ', array_filter([$line['name'], $line['color'] === null ? null : 'Culoare: ' . $line['color'], $variant === null ? null : 'Variantă: ' . $variant]));
+        return $pdf->wrap($text, $textWidth, 'R', 10, 3);
+    }
+
+    /** The piece count an option states explicitly ("buc" = "2 buc."), else null. Nothing is inferred. @param array<string, mixed> $line */
+    private static function explicitPieces(array $line): ?int
+    {
+        foreach ($line['options'] as $option) {
+            if (preg_match('/buc|bucăți|bucati|segment|panou|panouri|pieces/iu', $option['label'] . ' ' . $option['value']) === 1 && preg_match('/(?<!\d)([1-8])(?!\d)/', $option['value'], $m) === 1) {
+                return (int) $m[1];
+            }
+        }
+        return null;
     }
 
     /**
@@ -384,12 +421,7 @@ final class ProductionTicketPdf
         if (($line['project']['treatment']['panelLayout'] ?? null) === 'pair') {
             return 2;
         }
-        foreach ($line['options'] as $option) {
-            if (preg_match('/buc|bucăți|bucati|segment|panou|panouri|pieces/iu', $option['label'] . ' ' . $option['value']) === 1 && preg_match('/\b([1-8])\b/', $option['value'], $m) === 1) {
-                return (int) $m[1];
-            }
-        }
-        return 1;
+        return self::explicitPieces($line) ?? 1;
     }
 
     /** @param array<string, mixed> $line */

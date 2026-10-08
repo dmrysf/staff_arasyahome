@@ -11,6 +11,9 @@ use Arasya\Operations\Http\ApiException;
 use Arasya\Operations\Iam\IamAuditLogger;
 use Arasya\Operations\Order\GlobalOrderId;
 use Arasya\Operations\Order\QrReference;
+use Arasya\Operations\Integration\SourceDefinition;
+use Arasya\Operations\Production\DocumentAuthorityMode;
+use Arasya\Operations\Production\ProductionAuthority;
 use Arasya\Operations\Production\ProductionAuthorityModes;
 use Arasya\Operations\Production\ProductionQrLedger;
 use Arasya\Operations\Quality\IdempotencyStore;
@@ -130,6 +133,7 @@ final readonly class DocumentService
             }
             $now = $this->now();
             if ($order['document_status'] === 'none') {
+                $this->assertArasyaDocumentAuthority($order);
                 $this->createInitial($fresh, $order, $now, $requestId);
             } elseif ($order['document_status'] === 'active') {
                 throw new ApiException(409, 'DOCUMENT_ALREADY_ACTIVE', 'Documentul activ există deja. Pentru hârtie pierdută sau deteriorată folosește retipărirea.');
@@ -463,6 +467,167 @@ final readonly class DocumentService
         });
     }
 
+    // ---------------------------------------------------------------- signed source contract
+
+    /**
+     * Whose production ticket an order uses: always Arasya for internal and unmanaged sources (B2B, Trendyol;
+     * unchanged since 2.16), and for a signed source's operations orders once its document mode is active.
+     */
+    public static function documentAuthorityOf(?ProductionAuthorityModes $modes, string $sourceKey, string $productionAuthority): string
+    {
+        if ($modes === null || !$modes->isManagedSource($sourceKey)) {
+            return 'arasya';
+        }
+        return $modes->documentModeFor($sourceKey)->isActive() && $productionAuthority === ProductionAuthority::OPERATIONS ? 'arasya' : 'source';
+    }
+
+    /**
+     * Signed read-only document state of up to 50 of the source's own orders, in request order. Never
+     * creates, prints or changes anything and never returns customer data or a QR payload.
+     *
+     * @param list<string> $orderIds
+     * @return list<array<string, mixed>>
+     */
+    public function sourceStates(SourceDefinition $source, array $orderIds): array
+    {
+        $states = [];
+        $statement = $this->pdo->prepare('SELECT order_uuid, production_authority, production_completed_at, operational_status, document_status, document_version FROM operational_orders WHERE global_order_id = ?');
+        foreach ($orderIds as $orderId) {
+            $globalId = $source->key . ':' . $orderId;
+            $statement->execute([$globalId]);
+            $order = $statement->fetch(PDO::FETCH_ASSOC);
+            if (!is_array($order)) {
+                $states[] = ['orderId' => $orderId, 'globalOrderId' => $globalId, 'exists' => false, 'productionAuthority' => null, 'documentAuthority' => null, 'documentStatus' => null, 'issueAllowed' => false, 'activeRevision' => null, 'request' => null];
+                continue;
+            }
+            $states[] = ['orderId' => $orderId, 'globalOrderId' => $globalId, 'exists' => true] + $this->sourceState($source, $order);
+        }
+        return $states;
+    }
+
+    /**
+     * The source's production ticket of one Arasya-managed order (document mode ENFORCE): creates revision 1
+     * when `issue` is true and no document exists yet (never a later revision), records the print of the
+     * active revision attributed to the source operator and returns the revision rendered from its immutable
+     * snapshot. Stale or revoked documents are refused: their replacement needs the central approval.
+     *
+     * @param array<string, mixed> $input {orderId: string, issue: bool, revisionNumber: int|null, actor: {id: int, name: string}}
+     * @return array{orderId: string, state: array<string, mixed>, revisionUuid: string, printNumber: int, issued: bool}
+     */
+    public function sourcePrint(SourceDefinition $source, array $input, string $requestId): array
+    {
+        if (array_diff(array_keys($input), ['orderId', 'issue', 'revisionNumber', 'actor']) !== [] || !is_string($input['orderId'] ?? null) || preg_match('/^[1-9][0-9]{0,19}$/D', $input['orderId']) !== 1
+            || !is_bool($input['issue'] ?? null) || (($input['revisionNumber'] ?? null) !== null && (!is_int($input['revisionNumber']) || $input['revisionNumber'] < 1))
+            || !is_array($input['actor'] ?? null) || array_keys($input['actor']) !== ['id', 'name'] || !is_int($input['actor']['id']) || $input['actor']['id'] < 1 || !is_string($input['actor']['name'])) {
+            throw new ApiException(422, 'SOURCE_PAYLOAD_INVALID', 'orderId, issue, revisionNumber and actor are required.');
+        }
+        $actorName = trim((string) preg_replace('/[\x00-\x1F\x7F]+/u', ' ', $input['actor']['name']));
+        $actorLabel = mb_substr('#' . $input['actor']['id'] . ($actorName === '' ? '' : ' ' . $actorName), 0, 120);
+        $globalId = $source->key . ':' . $input['orderId'];
+        $expectedRevision = $input['revisionNumber'] ?? null;
+
+        return $this->transaction(function () use ($source, $globalId, $input, $expectedRevision, $actorLabel, $requestId): array {
+            $order = $this->store->lockOrder($globalId);
+            if (self::documentAuthorityOf($this->modes, $source->key, (string) $order['production_authority']) !== 'arasya') {
+                throw new ApiException(409, 'DOCUMENT_AUTHORITY_SOURCE', 'Fișa de producție a acestei comenzi rămâne în sursa ei; Arasya nu o emite.');
+            }
+            if ($source->documentAuthorityMode !== DocumentAuthorityMode::Enforce) {
+                throw new ApiException(409, 'DOCUMENT_CUTOVER_INACTIVE', 'Autoritatea Arasya pentru fișa de producție nu este activă pentru această sursă.');
+            }
+            $now = $this->now();
+            $issued = false;
+            $sourceActor = ['source' => $source->key, 'actor' => $actorLabel];
+            if ($order['document_status'] === 'none') {
+                if (!$input['issue']) {
+                    throw new ApiException(409, 'DOCUMENT_NOT_GENERATED', 'Comanda nu are încă un document de producție.');
+                }
+                $this->assertOpenOrder($order, 'generate');
+                $this->createInitial(null, $order, $now, $requestId, $sourceActor);
+                $issued = true;
+                $order = $this->store->lockOrder($globalId);
+            }
+            if ($order['document_status'] !== 'active') {
+                throw $order['document_status'] === 'revoked'
+                    ? new ApiException(409, 'DOCUMENT_REVOKED', 'Documentul de producție a fost anulat în Arasya. Documentul nou se emite după aprobarea reviziei.')
+                    : new ApiException(409, 'DOCUMENT_REVISION_REQUIRED', 'Datele de producție s-au schimbat. Revizia nouă a documentului trebuie cerută și aprobată în Arasya.');
+            }
+            $statement = $this->pdo->prepare('SELECT revision_uuid, revision_number FROM production_document_revisions WHERE active_order_uuid = ? FOR UPDATE');
+            $statement->execute([$order['order_uuid']]);
+            $active = $statement->fetch(PDO::FETCH_ASSOC);
+            if (!is_array($active)) {
+                throw new ApiException(409, 'DOCUMENT_CHANGED', 'Documentul s-a schimbat. Reîncercați.');
+            }
+            if ($expectedRevision !== null && (int) $active['revision_number'] !== $expectedRevision) {
+                throw new ApiException(409, 'DOCUMENT_REVISION_NOT_ACTIVE', 'Această revizie nu mai este documentul activ.', ['activeRevisionNumber' => (int) $active['revision_number']]);
+            }
+            $count = $this->pdo->prepare('SELECT COUNT(*) FROM production_document_prints WHERE revision_uuid = ?');
+            $count->execute([$active['revision_uuid']]);
+            $number = (int) $count->fetchColumn() + 1;
+            $kind = $number === 1 ? 'print' : 'reprint';
+            $this->pdo->prepare('INSERT INTO production_document_prints (print_uuid, revision_uuid, order_uuid, print_number, print_kind, reason, printed_by_employee_uuid, printed_by_source_key, printed_by_source_actor, printed_at) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?)')
+                ->execute([Uuid::v4(), $active['revision_uuid'], $order['order_uuid'], $number, $kind, $source->key, $actorLabel, $now]);
+            $this->store->event((string) $order['order_uuid'], $kind === 'print' ? 'printed' : 'reprinted', (int) $active['revision_number'], (string) $active['revision_uuid'], null, null,
+                ['printNumber' => $number] + $sourceActor, $requestId, $now);
+            return ['orderId' => (string) $input['orderId'], 'state' => $this->sourceState($source, $order), 'revisionUuid' => (string) $active['revision_uuid'], 'printNumber' => $number, 'issued' => $issued];
+        });
+    }
+
+    /** @param array<string, mixed> $order @return array<string, mixed> */
+    private function sourceState(SourceDefinition $source, array $order): array
+    {
+        $authority = self::documentAuthorityOf($this->modes, $source->key, (string) $order['production_authority']);
+        $active = null;
+        $request = null;
+        if ($order['document_status'] !== 'none') {
+            $statement = $this->pdo->prepare(
+                "SELECT r.revision_number, r.status, r.qr_reference, r.generated_at, (SELECT COUNT(*) FROM production_document_prints p WHERE p.revision_uuid = r.revision_uuid) AS prints
+                 FROM production_document_revisions r WHERE r.order_uuid = ? ORDER BY r.revision_number DESC LIMIT 1",
+            );
+            $statement->execute([$order['order_uuid']]);
+            $latest = $statement->fetch(PDO::FETCH_ASSOC);
+            // Only a usable document is printable: a stale document keeps its active revision row until the
+            // approved replacement exists, but the source must not print it.
+            if (is_array($latest) && $latest['status'] === 'active' && $order['document_status'] === 'active') {
+                $active = [
+                    'number' => (int) $latest['revision_number'],
+                    'generatedAt' => (new \DateTimeImmutable((string) $latest['generated_at'], new \DateTimeZone('UTC')))->format('Y-m-d\TH:i:s\Z'),
+                    'prints' => (int) $latest['prints'],
+                    'qrRevision' => ProductionQrLedger::revisionOf($this->pdo, (string) $order['order_uuid'], (string) $latest['qr_reference']),
+                    'qrHint' => self::qrHint((string) $latest['qr_reference']),
+                ];
+            }
+            $open = $this->pdo->prepare('SELECT status, target_revision_number FROM production_document_revision_requests WHERE open_order_uuid = ?');
+            $open->execute([$order['order_uuid']]);
+            $row = $open->fetch(PDO::FETCH_ASSOC);
+            $request = is_array($row) ? ['status' => (string) $row['status'], 'targetRevision' => (int) $row['target_revision_number']] : null;
+        }
+        $open = $order['production_completed_at'] === null && $order['operational_status'] !== 'unavailable';
+        return [
+            'productionAuthority' => (string) $order['production_authority'],
+            'documentAuthority' => $authority,
+            'documentStatus' => (string) $order['document_status'],
+            'issueAllowed' => $authority === 'arasya' && $source->documentAuthorityMode === DocumentAuthorityMode::Enforce && $order['document_status'] === 'none' && $open,
+            'activeRevision' => $active,
+            'request' => $request,
+        ];
+    }
+
+    /**
+     * Once a signed source's document authority is being cut over (observe or enforce), the source keeps the
+     * ticket of every order it still manages itself: Arasya creates no competing revision 1 for it. In legacy
+     * mode the 2.16 behaviour is unchanged (the source does not use Arasya documents yet).
+     *
+     * @param array<string, mixed> $order
+     */
+    private function assertArasyaDocumentAuthority(array $order): void
+    {
+        $source = (string) $order['source_key'];
+        if ($this->modes !== null && $this->modes->isManagedSource($source) && $this->modes->documentModeFor($source)->isActive()
+            && self::documentAuthorityOf($this->modes, $source, (string) ($order['production_authority'] ?? '')) !== 'arasya') {
+            throw new ApiException(409, 'DOCUMENT_AUTHORITY_SOURCE', 'Fișa de producție a acestei comenzi este încă emisă de sursa comenzii. Documentul Arasya devine disponibil după activarea autorității de documente.');
+        }
+    }
+
     // ---------------------------------------------------------------- source change hook
 
     /** Delegates to DocumentStaleness; kept for callers that already hold a service. */
@@ -474,9 +639,15 @@ final readonly class DocumentService
 
     // ---------------------------------------------------------------- internals
 
-    /** @param array<string, mixed> $order */
-    private function createInitial(EmployeeIdentity $actor, array $order, string $now, string $requestId): void
+    /**
+     * @param array<string, mixed> $order
+     * @param array{source: string, actor: string}|null $sourceActor the signed source operator, when no employee generates it
+     */
+    private function createInitial(?EmployeeIdentity $actor, array $order, string $now, string $requestId, ?array $sourceActor = null): void
     {
+        if (($actor === null) === ($sourceActor === null)) {
+            throw new \LogicException('Revision 1 is generated by exactly one employee or one signed source.');
+        }
         $orderUuid = (string) $order['order_uuid'];
         // Revision 1 binds the canonical QR reference the order already received at intake, so labels
         // printed from it stay valid. Any other active reference of the order is retired.
@@ -491,13 +662,15 @@ final readonly class DocumentService
         if ($reference === null) {
             $reference = QrReference::generate()->value;
             $this->pdo->prepare("INSERT INTO order_qr_references (qr_reference, order_uuid, status, created_at) VALUES (?, ?, 'active', ?)")->execute([$reference, $orderUuid, $now]);
-            ProductionQrLedger::record($this->pdo, $order, ProductionQrLedger::ACTION_ISSUED, (string) $reference, null, $actor->employeeUuid, 'document_revision_1', $this->qrMode($order), $requestId, $now);
+            ProductionQrLedger::record($this->pdo, $order, ProductionQrLedger::ACTION_ISSUED, (string) $reference, null, $actor?->employeeUuid, 'document_revision_1', $this->qrMode($order), $requestId, $now);
         }
-        $revisionUuid = $this->insertRevision($orderUuid, 1, (string) $reference, null, $actor->employeeUuid, $now);
+        $revisionUuid = $this->insertRevision($orderUuid, 1, (string) $reference, null, $actor?->employeeUuid, $now, null, $sourceActor);
         $this->store->updateOrderDocument($orderUuid, 'active', $revisionUuid, $now);
-        $this->store->event($orderUuid, 'generated', 1, $revisionUuid, null, $actor->employeeUuid, null, $requestId, $now);
-        $this->audit->record($actor, 'production_document.generated', 'production_document', $revisionUuid, "{$order['order_number']} · R1",
-            ['order' => $order['global_order_id'], 'revision' => 1, 'qr' => self::qrHint((string) $reference)], $requestId, $now);
+        $this->store->event($orderUuid, 'generated', 1, $revisionUuid, null, $actor?->employeeUuid, $sourceActor, $requestId, $now);
+        if ($actor !== null) {
+            $this->audit->record($actor, 'production_document.generated', 'production_document', $revisionUuid, "{$order['order_number']} · R1",
+                ['order' => $order['global_order_id'], 'revision' => 1, 'qr' => self::qrHint((string) $reference)], $requestId, $now);
+        }
         $this->live->toAudience(self::AUDIENCE_REQUESTERS, 'document.changed', ['orderId' => $order['global_order_id'], 'orderNumber' => (string) $order['order_number']], $now);
     }
 
@@ -551,14 +724,20 @@ final readonly class DocumentService
         $this->live->cuttingChanged($now);
     }
 
-    /** @param array<string, mixed>|null $snapshot */
-    private function insertRevision(string $orderUuid, int $number, string $qrReference, ?string $requestUuid, string $actorUuid, string $now, ?array $snapshot = null): string
+    /**
+     * @param array<string, mixed>|null $snapshot
+     * @param array{source: string, actor: string}|null $sourceActor
+     */
+    private function insertRevision(string $orderUuid, int $number, string $qrReference, ?string $requestUuid, ?string $actorUuid, string $now, ?array $snapshot = null, ?array $sourceActor = null): string
     {
         $snapshot ??= $this->snapshots->build($orderUuid);
         $uuid = Uuid::v4();
-        $statement = $this->pdo->prepare(
-            "INSERT INTO production_document_revisions (revision_uuid, order_uuid, revision_number, status, active_order_uuid, qr_reference, snapshot_schema, fingerprint, snapshot_json, request_uuid, generated_by_employee_uuid, generated_at)
-             VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)",
+        // Source attribution columns exist from migration 020; employee-generated revisions keep the 2.16 insert.
+        $statement = $this->pdo->prepare($sourceActor === null
+            ? "INSERT INTO production_document_revisions (revision_uuid, order_uuid, revision_number, status, active_order_uuid, qr_reference, snapshot_schema, fingerprint, snapshot_json, request_uuid, generated_by_employee_uuid, generated_at)
+               VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)"
+            : "INSERT INTO production_document_revisions (revision_uuid, order_uuid, revision_number, status, active_order_uuid, qr_reference, snapshot_schema, fingerprint, snapshot_json, request_uuid, generated_by_employee_uuid, generated_at, generated_by_source_key, generated_by_source_actor)
+               VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         );
         $statement->bindValue(1, $uuid);
         $statement->bindValue(2, $orderUuid);
@@ -571,6 +750,10 @@ final readonly class DocumentService
         $statement->bindValue(9, $requestUuid);
         $statement->bindValue(10, $actorUuid);
         $statement->bindValue(11, $now);
+        if ($sourceActor !== null) {
+            $statement->bindValue(12, $sourceActor['source']);
+            $statement->bindValue(13, $sourceActor['actor']);
+        }
         $statement->execute();
         return $uuid;
     }

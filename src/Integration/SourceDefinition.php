@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Arasya\Operations\Integration;
 
+use Arasya\Operations\Production\DocumentAuthorityMode;
 use Arasya\Operations\Production\ProductionAuthorityMode;
 use Arasya\Operations\Production\QrAuthorityMode;
 
@@ -21,6 +22,7 @@ final readonly class SourceDefinition
         public SourceMode $mode,
         public ProductionAuthorityMode $authorityMode = ProductionAuthorityMode::Legacy,
         public QrAuthorityMode $qrAuthorityMode = QrAuthorityMode::Legacy,
+        public DocumentAuthorityMode $documentAuthorityMode = DocumentAuthorityMode::Legacy,
     ) {
     }
 

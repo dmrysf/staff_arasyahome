@@ -15,8 +15,9 @@ final readonly class ProductionAuthorityModes
     /**
      * @param array<string, ProductionAuthorityMode> $modes
      * @param array<string, QrAuthorityMode> $qrModes
+     * @param array<string, DocumentAuthorityMode> $documentModes
      */
-    public function __construct(private array $modes = [], private array $qrModes = [])
+    public function __construct(private array $modes = [], private array $qrModes = [], private array $documentModes = [])
     {
     }
 
@@ -24,11 +25,13 @@ final readonly class ProductionAuthorityModes
     {
         $modes = [];
         $qrModes = [];
+        $documentModes = [];
         foreach ($registry->all() as $source) {
             $modes[$source->key] = $source->authorityMode;
             $qrModes[$source->key] = $source->qrAuthorityMode;
+            $documentModes[$source->key] = $source->documentAuthorityMode;
         }
-        return new self($modes, $qrModes);
+        return new self($modes, $qrModes, $documentModes);
     }
 
     public function modeFor(string $sourceKey): ProductionAuthorityMode
@@ -40,6 +43,12 @@ final readonly class ProductionAuthorityModes
     public function qrModeFor(string $sourceKey): QrAuthorityMode
     {
         return $this->qrModes[$sourceKey] ?? QrAuthorityMode::Legacy;
+    }
+
+    /** The production document authority mode of a signed source; LEGACY for every other source. */
+    public function documentModeFor(string $sourceKey): DocumentAuthorityMode
+    {
+        return $this->documentModes[$sourceKey] ?? DocumentAuthorityMode::Legacy;
     }
 
     /** Whether the source is a signed commerce source whose authority can be managed at all. */

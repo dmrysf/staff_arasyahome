@@ -19,8 +19,11 @@ final readonly class DocumentRenderer
     {
     }
 
-    /** @return array{0: string, 1: string} PDF bytes and the download filename */
-    public function render(string $revisionUuid): array
+    /**
+     * @param bool $preview a screen preview: never a scannable QR, marked as not for production, no print recorded
+     * @return array{0: string, 1: string} PDF bytes and the download filename
+     */
+    public function render(string $revisionUuid, bool $preview = false): array
     {
         $statement = $this->pdo->prepare(
             'SELECT r.revision_number, r.status, r.qr_reference, r.snapshot_json, r.generated_at, s.display_name
@@ -38,10 +41,23 @@ final readonly class DocumentRenderer
             'status' => (string) $row['status'],
             'generatedAt' => (string) $row['generated_at'],
             // Only an active revision carries its QR; an invalid document never prints a scannable code.
-            'qrPayload' => $row['status'] === 'active' ? QrReference::fromStored((string) $row['qr_reference'])->payload() : null,
+            'qrPayload' => $row['status'] === 'active' && !$preview ? QrReference::fromStored((string) $row['qr_reference'])->payload() : null,
             'sourceDisplayName' => (string) $row['display_name'],
+            'preview' => $preview,
         ];
-        return [ProductionTicketPdf::render($snapshot, $revision), ProductionTicketPdf::filename($snapshot, $revision['number'])];
+        $filename = ProductionTicketPdf::filename($snapshot, $revision['number']);
+        return [ProductionTicketPdf::render($snapshot, $revision), $preview ? str_replace('.pdf', '-PREVIZUALIZARE.pdf', $filename) : $filename];
+    }
+
+    /** Inline preview of a revision: nothing is recorded, the document has no QR. @param array{0: string, 1: string} $document */
+    public static function preview(array $document): \Arasya\Operations\Http\Response
+    {
+        return \Arasya\Operations\Http\Response::file($document[0], [
+            'Content-Type' => 'application/pdf',
+            'Content-Disposition' => 'inline; filename="' . $document[1] . '"',
+            'Cache-Control' => 'private, no-store',
+            'X-Content-Type-Options' => 'nosniff',
+        ]);
     }
 
     /** @param array{0: string, 1: string} $document */

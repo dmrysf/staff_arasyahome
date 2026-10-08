@@ -31,6 +31,8 @@ final readonly class SourceIngestionController
         private SourceRegistry $registry,
         private ?SourceAuthorityQueries $authority = null,
         private ?\Arasya\Operations\Production\ProductionQrService $qr = null,
+        private ?\Arasya\Operations\Document\DocumentService $documents = null,
+        private ?\Arasya\Operations\Document\DocumentRenderer $renderer = null,
     ) {
     }
 
@@ -88,6 +90,7 @@ final readonly class SourceIngestionController
             'mode' => $source->mode->value,
             'productionAuthorityMode' => $source->authorityMode->value,
             'qrAuthorityMode' => $source->qrAuthorityMode->value,
+            'documentAuthorityMode' => $source->documentAuthorityMode->value,
             'contract' => [
                 'schemaVersion' => 1,
                 'workflowId' => $workflow['id'],
@@ -132,6 +135,51 @@ final readonly class SourceIngestionController
             'productionAuthorityMode' => $source->authorityMode->value,
             'qrAuthorityMode' => $source->qrAuthorityMode->value,
             'orders' => $qr->sourceStates($source->key, $ids),
+        ], 200, ['Cache-Control' => 'no-store']);
+    }
+
+    /**
+     * Production document state of up to 50 of the source's own orders: {"orderIds": ["63366", ...]}.
+     * Read-only (nothing is generated, printed or written) and allowed in validation and active mode. It
+     * carries document facts only: no customer data, no QR payload (a short hint), no PDF.
+     */
+    public function orderDocuments(Request $request, string $sourceKey): Response
+    {
+        $source = $this->authorize($request, $sourceKey);
+        $documents = $this->documents ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Production documents are not ready.');
+        $ids = self::orderIds($request);
+        return Response::json([
+            'ok' => true,
+            'sourceKey' => $source->key,
+            'documentAuthorityMode' => $source->documentAuthorityMode->value,
+            'orders' => $documents->sourceStates($source, $ids),
+        ], 200, ['Cache-Control' => 'no-store']);
+    }
+
+    /**
+     * The Arasya production ticket of one of the source's Arasya-managed orders, for printing by the source
+     * operator: {"orderId": "63366", "issue": true, "revisionNumber": null, "actor": {"id": 7, "name": "…"}}.
+     * Only in document mode ENFORCE. It may create revision 1 (never a later revision), records the print and
+     * returns the immutable revision rendered on demand, base64 encoded with its SHA-256.
+     */
+    public function orderDocument(Request $request, string $sourceKey): Response
+    {
+        $source = $this->authorize($request, $sourceKey);
+        $documents = $this->documents ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Production documents are not ready.');
+        $renderer = $this->renderer ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Production documents are not ready.');
+        $result = $documents->sourcePrint($source, $request->json(4096), $request->requestId);
+        [$pdf, $filename] = $renderer->render($result['revisionUuid']);
+        return Response::json([
+            'ok' => true,
+            'sourceKey' => $source->key,
+            'documentAuthorityMode' => $source->documentAuthorityMode->value,
+            'document' => ['orderId' => $result['orderId'], 'globalOrderId' => $source->key . ':' . $result['orderId']] + $result['state'] + [
+                'issued' => $result['issued'],
+                'printNumber' => $result['printNumber'],
+                'filename' => $filename,
+                'sha256' => hash('sha256', $pdf),
+                'pdf' => base64_encode($pdf),
+            ],
         ], 200, ['Cache-Control' => 'no-store']);
     }
 
