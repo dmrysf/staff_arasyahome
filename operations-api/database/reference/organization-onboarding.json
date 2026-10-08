@@ -68,25 +68,11 @@
       ]
     }
   },
-  "blockedApplications": {
-    "magazin-dragon-7": {
-      "applications": [
-        "b2b"
-      ],
-      "reason": "B2B has no shop-level isolation: a B2B grant would expose Dragon 9 customers and orders."
-    },
-    "magazin-dragon-9": {
-      "applications": [
-        "b2b"
-      ],
-      "reason": "B2B has no shop-level isolation: a B2B grant would expose Dragon 7 customers and orders."
-    }
-  },
   "pending": [
     "Direct managers of tailoring, cutting, warehouse, installation and driver staff (department oversight only).",
     "NITA CRISTINA -> YEMAN ZELAL reporting line (proposed).",
     "Installation and drivers under YERLIKAYA HIKMET as operational coordinator (proposed).",
-    "DR7 and DR9 shop managers and B2B shop isolation.",
+    "DR7 and DR9 managers and B2B sales application/role onboarding. Shared B2B visibility is accepted for now; shop-specific isolation is deferred, not a deployment blocker.",
     "Production stage owners (cutting candidates for stage 2; tailoring split, intake, quality control, packing, delivery).",
     "The permanent Document Operator for the internet sources.",
     "Document approvers for b2b and trendyol.",
