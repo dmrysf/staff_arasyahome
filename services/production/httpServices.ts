@@ -97,6 +97,8 @@ const backendErrorCodes: Partial<Record<string, ServiceErrorCode>> = {
   DOCUMENT_CHANGED: "DOCUMENT_CHANGED",
   DOCUMENT_ORDER_COMPLETED: "DOCUMENT_ORDER_COMPLETED",
   DOCUMENT_REVISION_NOT_ACTIVE: "DOCUMENT_REVISION_NOT_ACTIVE",
+  DOCUMENT_AUTHORITY_SOURCE: "DOCUMENT_AUTHORITY_SOURCE",
+  DOCUMENT_NOT_FOUND: "DOCUMENT_NOT_FOUND",
   DOCUMENT_REQUEST_RESOLVED: "DOCUMENT_CHANGED",
   DOCUMENT_REQUEST_CHANGED: "DOCUMENT_CHANGED",
   DOCUMENT_NOT_ACTIVE: "DOCUMENT_CHANGED",
@@ -252,7 +254,8 @@ export function mapDocumentSummary(value: unknown): OrderDocumentSummary {
 
 function mapRevision(value: unknown): DocumentRevision {
   const raw = objectValue(value);
-  return { number: positiveInteger(raw.number), status: oneOf(raw.status, ["active", "superseded", "revoked"] as const), generatedAt: timestampValue(raw.generatedAt), generatedBy: stringValue(raw.generatedBy), prints: count(raw.prints) };
+  return { number: positiveInteger(raw.number), status: oneOf(raw.status, ["active", "superseded", "revoked"] as const), generatedAt: timestampValue(raw.generatedAt), generatedBy: stringValue(raw.generatedBy), prints: count(raw.prints),
+    approvedBy: optionalString(raw.approvedBy), revokeReason: optionalString(raw.revokeReason) };
 }
 
 export function mapOrderDocument(value: unknown): OrderDocument {
@@ -723,6 +726,11 @@ export function createProductionServices(apiBaseUrl: string, options: Production
       const response = await http.send(`/production-documents/orders/${encodeURIComponent(orderId)}/print`, { method: "POST", headers: { "Idempotency-Key": key },
         body: JSON.stringify({ revisionNumber: input.revisionNumber, ...(input.reason ? { reason: input.reason } : {}) }) });
       if (!response.ok) throw await http.errorFromResponse(response, "/production-documents/print");
+      return response.blob();
+    },
+    async preview(orderId, revisionNumber) {
+      const response = await http.send(`/production-documents/orders/${encodeURIComponent(orderId)}/revisions/${revisionNumber}/preview`, {});
+      if (!response.ok) throw await http.errorFromResponse(response, "/production-documents/preview");
       return response.blob();
     },
   };

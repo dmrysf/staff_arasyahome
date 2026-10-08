@@ -27,6 +27,7 @@ use PDO;
  *   POST /production-documents/orders/{globalOrderId}/revoke             root emergency revoke
  *   GET  /production-documents/attention                                 requester worklist
  *   GET  /production-documents/lookup?number=                            exact order-number lookup (document users)
+ *   GET  /production-documents/orders/{id}/revisions/{n}/preview         inline preview, no QR, nothing recorded
  *   GET  /production-documents/revision-requests?view=pending|history    approver queue
  *   GET  /production-documents/revision-requests/{id}                    request detail with the production diff
  *   POST /production-documents/revision-requests/{id}/decision           approve / reject (first decision wins)
@@ -74,6 +75,13 @@ final readonly class DocumentController
                 'revoke' => $this->json($this->documents->revoke($actor, $globalId, $this->body($request, ['expectedDocumentVersion', 'reason'], ['expectedDocumentVersion', 'reason']), $key, $request->requestId)),
                 default => $this->pdf($this->documents->recordPrint($actor, $globalId, $this->body($request, ['revisionNumber', 'reason'], ['revisionNumber']), $key, $request->requestId)),
             };
+        }
+        if (preg_match('#^/orders/([^/]{1,600})/revisions/([1-9][0-9]{0,5})/preview$#D', $path, $m) === 1) {
+            if ($request->method !== 'GET') {
+                throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
+            }
+            $actor = $this->viewer($request);
+            return DocumentRenderer::preview((new DocumentRenderer($this->pdo))->render($this->revisionUuid($this->orderUuid(rawurldecode($m[1])), (int) $m[2], $this->documents->canViewHistory($actor) || $actor->isRoot), true));
         }
         if ($request->method === 'GET' && $path === '/lookup') {
             $actor = $this->viewer($request);
@@ -128,6 +136,18 @@ final readonly class DocumentController
     private function pdf(array $print): Response
     {
         return DocumentRenderer::response((new DocumentRenderer($this->pdo))->render($print['revisionUuid']), $print['printNumber']);
+    }
+
+    /** A revision of the order; obsolete revisions only for history viewers. */
+    private function revisionUuid(string $orderUuid, int $number, bool $history): string
+    {
+        $statement = $this->pdo->prepare('SELECT revision_uuid, status FROM production_document_revisions WHERE order_uuid = ? AND revision_number = ?');
+        $statement->execute([$orderUuid, $number]);
+        $row = $statement->fetch(PDO::FETCH_ASSOC);
+        if (!is_array($row) || ($row['status'] !== 'active' && !$history)) {
+            throw new ApiException(404, 'DOCUMENT_NOT_FOUND', 'Documentul nu a fost găsit.');
+        }
+        return (string) $row['revision_uuid'];
     }
 
     private function orderUuid(string $globalId): string

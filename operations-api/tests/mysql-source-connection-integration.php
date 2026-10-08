@@ -119,7 +119,7 @@ check($count('SELECT COUNT(*) FROM operational_orders WHERE global_order_id = ?'
 check($count('SELECT COUNT(*) FROM order_projection_receipts WHERE source_key = ? AND source_event_id = ?', ['trendhome', $eventId]) === 0, 'validation consumes no projection receipt');
 
 $heartbeat = T::ingest($validationKernel, 'trendhome', ['sentAt' => gmdate('Y-m-d\TH:i:s\Z')], null, null, 'heartbeat');
-check($heartbeat['status'] === 200 && $heartbeat['body'] === ['ok' => true, 'sourceKey' => 'trendhome', 'mode' => 'validation', 'productionAuthorityMode' => 'legacy', 'qrAuthorityMode' => 'legacy', 'contract' => ['schemaVersion' => 1, 'workflowId' => 'curtain-production', 'workflowVersion' => 1, 'stageCount' => 14]], 'a validation source heartbeat reports its mode and contract');
+check($heartbeat['status'] === 200 && $heartbeat['body'] === ['ok' => true, 'sourceKey' => 'trendhome', 'mode' => 'validation', 'productionAuthorityMode' => 'legacy', 'qrAuthorityMode' => 'legacy', 'documentAuthorityMode' => 'legacy', 'contract' => ['schemaVersion' => 1, 'workflowId' => 'curtain-production', 'workflowVersion' => 1, 'stageCount' => 14]], 'a validation source heartbeat reports its mode and contract');
 check($changedTables($after, $snapshot()) === ['order_sources'], 'heartbeat only records source contact');
 foreach ([T::TRENDHOME_SECRET, T::OUTLET_SECRET] as $secret) {
     check(!str_contains((string) $heartbeat['raw'], $secret) && !str_contains((string) $validated['raw'], $secret), 'responses never carry a source secret');

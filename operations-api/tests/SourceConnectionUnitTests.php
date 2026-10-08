@@ -364,7 +364,7 @@ test('signed heartbeat reports mode and contract only, for validation and active
     $pdo->exec("INSERT INTO order_sources (source_key, status) VALUES ('trendhome', 'active'), ('outletperdele', 'active')");
     foreach (['trendhome' => [SOURCE_TEST_TRENDHOME_SECRET, 'active'], 'outletperdele' => [SOURCE_TEST_OUTLET_SECRET, 'validation']] as $key => [$secret, $mode]) {
         $response = $controller->heartbeat(sourceSignedRequest(['sentAt' => '2026-10-07T10:00:00Z'], $secret), $key);
-        expect($response->payload === ['ok' => true, 'sourceKey' => $key, 'mode' => $mode, 'productionAuthorityMode' => 'legacy', 'qrAuthorityMode' => 'legacy', 'contract' => ['schemaVersion' => 1, 'workflowId' => 'curtain-production', 'workflowVersion' => 1, 'stageCount' => 14]], 'Unexpected heartbeat: ' . sourceJson($response));
+        expect($response->payload === ['ok' => true, 'sourceKey' => $key, 'mode' => $mode, 'productionAuthorityMode' => 'legacy', 'qrAuthorityMode' => 'legacy', 'documentAuthorityMode' => 'legacy', 'contract' => ['schemaVersion' => 1, 'workflowId' => 'curtain-production', 'workflowVersion' => 1, 'stageCount' => 14]], 'Unexpected heartbeat: ' . sourceJson($response));
         expect(sourceResponseHasNoSecret($response));
     }
     $contacts = $pdo->query('SELECT COUNT(*) FROM order_sources WHERE last_contact_at IS NOT NULL')->fetchColumn();
@@ -546,14 +546,33 @@ test('expected API errors and validation are unchanged by the PDO diagnostics', 
     expect(!array_key_exists('exception', $warning) && !array_key_exists('sqlstate', $warning) && !array_key_exists('driver_code', $warning));
 });
 
-test('migrations stay sequential through 018 and the canonical workflow keeps its 14 stages', function (): void {
+test('migrations stay sequential through 020 and the canonical workflow keeps its 14 stages', function (): void {
     $migrations = array_map('basename', glob(dirname(__DIR__) . '/database/migrations/*.sql') ?: []);
-    expect(count($migrations) === 19 && str_starts_with($migrations[0], '001_') && str_starts_with($migrations[16], '017_') && $migrations[17] === '018_production_authority.sql' && $migrations[18] === '019_production_qr_authority.sql');
+    expect(count($migrations) === 20 && str_starts_with($migrations[0], '001_') && str_starts_with($migrations[16], '017_') && $migrations[17] === '018_production_authority.sql' && $migrations[18] === '019_production_qr_authority.sql' && $migrations[19] === '020_production_document_authority.sql');
     expect(count(CanonicalProductionWorkflowContract::STAGES) === 14);
     expect(array_keys(CanonicalProductionWorkflowContract::STAGES) === ['waiting', 'material-preparation', 'workshop-receiving', 'labeling', 'material-straightening', 'bottom-hem', 'side-hem', 'ironing', 'height', 'header-tape', 'sewing-finishing', 'quality-control', 'packing', 'delivery']);
     // 018 is additive: it never converts the authority of existing orders.
     $sql = (string) file_get_contents(dirname(__DIR__) . '/database/migrations/018_production_authority.sql');
     expect(preg_match('/UPDATE\s+operational_orders|DELETE\s+FROM|DROP\s+TABLE|production_authority\s*=/i', $sql) === 0, '018 must not rewrite orders or drop data.');
+});
+
+test('document authority mode is per source, defaults to legacy and enforces only with QR authority enforce', function (): void {
+    $registry = SourceRegistry::fromConfig(sourceTestConfig([
+        'trendhome' => ['mode' => 'active', 'authority' => 'enforce', 'qrAuthority' => 'enforce', 'documentAuthority' => 'Enforce'],
+        'outletperdele' => ['mode' => 'active', 'authority' => 'enforce', 'qrAuthority' => 'observe', 'documentAuthority' => 'enforce'],
+    ]));
+    expect($registry->find('trendhome')?->documentAuthorityMode === \Arasya\Operations\Production\DocumentAuthorityMode::Enforce);
+    expect($registry->find('outletperdele')?->documentAuthorityMode === \Arasya\Operations\Production\DocumentAuthorityMode::Observe, 'Document enforce without QR enforce runs as observe.');
+    expect(in_array(['code' => 'document_authority_requires_qr_enforce', 'sourceKey' => 'outletperdele'], $registry->issues(), true));
+    $modes = ProductionAuthorityModes::fromRegistry($registry);
+    expect($modes->documentModeFor('trendhome') === \Arasya\Operations\Production\DocumentAuthorityMode::Enforce && $modes->documentModeFor('b2b') === \Arasya\Operations\Production\DocumentAuthorityMode::Legacy);
+    expect(\Arasya\Operations\Document\DocumentService::documentAuthorityOf($modes, 'trendhome', 'operations') === 'arasya');
+    expect(\Arasya\Operations\Document\DocumentService::documentAuthorityOf($modes, 'trendhome', 'source') === 'source', 'Orders the source still manages keep the source ticket.');
+    expect(\Arasya\Operations\Document\DocumentService::documentAuthorityOf($modes, 'b2b', 'operations') === 'arasya' && \Arasya\Operations\Document\DocumentService::documentAuthorityOf($modes, 'trendyol', 'source') === 'arasya', 'Internal and unmanaged sources are unchanged.');
+    $unset = SourceRegistry::fromConfig(sourceTestConfig(['trendhome' => ['mode' => 'active', 'documentAuthority' => 'on']]));
+    expect($unset->find('trendhome')?->documentAuthorityMode === \Arasya\Operations\Production\DocumentAuthorityMode::Legacy && $unset->find('trendhome')?->canIngest() === true);
+    expect(in_array(['code' => 'invalid_document_authority_mode', 'sourceKey' => 'trendhome'], $unset->issues(), true));
+    expect(\Arasya\Operations\Document\DocumentService::documentAuthorityOf(ProductionAuthorityModes::fromRegistry($unset), 'trendhome', 'operations') === 'source', 'Legacy: the source ticket stays.');
 });
 
 test('production authority mode is per source, defaults to legacy and never disables a source', function (): void {

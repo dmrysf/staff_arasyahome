@@ -1,9 +1,23 @@
 <?php
 declare(strict_types=1);
+/** Restore a pre-020 disposable test fixture (no source-attributed documents). This is NOT a deployment/rollback mechanism. */
+function restorePreDocumentAuthorityTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='020_production_document_authority.sql'")->fetchColumn()) return;
+    $pdo->exec('DELETE FROM production_document_prints WHERE printed_by_employee_uuid IS NULL');
+    $pdo->exec('ALTER TABLE production_document_prints DROP CONSTRAINT chk_production_document_prints_printer');
+    $pdo->exec('ALTER TABLE production_document_prints DROP COLUMN printed_by_source_actor, DROP COLUMN printed_by_source_key, MODIFY printed_by_employee_uuid CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL');
+    $pdo->exec('ALTER TABLE production_document_revisions DROP CONSTRAINT chk_production_document_revisions_generator');
+    $pdo->exec('ALTER TABLE production_document_revisions DROP COLUMN generated_by_source_actor, DROP COLUMN generated_by_source_key');
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='020_production_document_authority.sql'");
+}
+
 /** Restore a pre-019 disposable test fixture (no production QR authority). This is NOT a deployment/rollback mechanism. */
 function restorePreQrAuthorityTestSchema(PDO $pdo): void
 {
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    restorePreDocumentAuthorityTestSchema($pdo);
     if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='019_production_qr_authority.sql'")->fetchColumn()) return;
     $pdo->exec('DROP TABLE IF EXISTS production_qr_events');
     $pdo->exec('ALTER TABLE order_qr_references DROP CONSTRAINT chk_order_qr_references_retired');

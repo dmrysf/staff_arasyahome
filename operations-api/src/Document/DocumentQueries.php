@@ -77,11 +77,12 @@ final readonly class DocumentQueries
         }
         $revisions = $this->pdo->prepare(
             'SELECT r.revision_uuid, r.revision_number, r.status, r.qr_reference, r.generated_at, r.stale_at, r.superseded_at, r.revoked_at, r.revoke_reason,
-                    g.display_name AS generated_by, v.display_name AS revoked_by, a.display_name AS approved_by, q.decided_at AS approved_at,
+                    g.display_name AS generated_by, r.generated_by_source_key, r.generated_by_source_actor, gs.display_name AS generated_by_source_name, v.display_name AS revoked_by, a.display_name AS approved_by, q.decided_at AS approved_at,
                     (SELECT COUNT(*) FROM production_document_prints p WHERE p.revision_uuid = r.revision_uuid) AS prints,
                     (SELECT MAX(p.printed_at) FROM production_document_prints p WHERE p.revision_uuid = r.revision_uuid) AS last_printed_at
              FROM production_document_revisions r
-             INNER JOIN employees g ON g.employee_uuid = r.generated_by_employee_uuid
+             LEFT JOIN employees g ON g.employee_uuid = r.generated_by_employee_uuid
+             LEFT JOIN order_sources gs ON gs.source_key = r.generated_by_source_key
              LEFT JOIN employees v ON v.employee_uuid = r.revoked_by_employee_uuid
              LEFT JOIN production_document_revision_requests q ON q.request_uuid = r.request_uuid
              LEFT JOIN employees a ON a.employee_uuid = q.decided_by_employee_uuid
@@ -94,7 +95,10 @@ final readonly class DocumentQueries
             'status' => (string) $row['status'],
             'qrHint' => DocumentService::qrHint((string) $row['qr_reference']),
             'generatedAt' => $this->iso($row['generated_at']),
-            'generatedBy' => (string) $row['generated_by'],
+            // Revision 1 issued through the signed source contract names the source and its operator.
+            'generatedBy' => $row['generated_by'] !== null ? (string) $row['generated_by']
+                : ($row['generated_by_source_name'] ?? $row['generated_by_source_key'] ?? 'Sursă') . ' · ' . (string) $row['generated_by_source_actor'],
+            'generatedBySource' => $row['generated_by_source_key'] === null ? null : (string) $row['generated_by_source_key'],
             'approvedBy' => $row['approved_by'] === null ? null : (string) $row['approved_by'],
             'approvedAt' => $this->iso($row['approved_at']),
             'staleAt' => $this->iso($row['stale_at']),
@@ -155,12 +159,19 @@ final readonly class DocumentQueries
                 'type' => (string) $row['event_type'],
                 'revisionNumber' => $row['revision_number'] === null ? null : (int) $row['revision_number'],
                 'requestId' => $row['request_uuid'] === null ? null : (string) $row['request_uuid'],
-                'actorName' => $row['actor_name'] === null ? null : (string) $row['actor_name'],
+                'actorName' => $row['actor_name'] !== null ? (string) $row['actor_name'] : self::sourceActor($row['metadata_json']),
                 'occurredAt' => $this->iso($row['occurred_at']),
                 'details' => $this->details($row['metadata_json']),
             ], array_slice($rows, 0, self::HISTORY_LIMIT)),
             'nextHistoryCursor' => $next,
         ];
+    }
+
+    /** The signed source operator recorded on a source-issued event ("trendhome · #7 Ana"), else null. */
+    private static function sourceActor(mixed $json): ?string
+    {
+        $metadata = is_string($json) ? json_decode($json, true) : null;
+        return is_array($metadata) && is_string($metadata['source'] ?? null) && is_string($metadata['actor'] ?? null) ? $metadata['source'] . ' · ' . $metadata['actor'] : null;
     }
 
     /** @return array<string, mixed> */

@@ -395,6 +395,13 @@
 .document-state-active { color: #b7e4c4; background: rgba(90,190,120,.1); }
 .document-state-stale, .document-state-revoked { color: #ffc2c4; background: rgba(255,95,102,.1); }
 .document-meta, .document-hint { margin: 0; color: var(--color-text-muted); font-size: .78rem; line-height: 1.45; }
+.document-history { border-top: 1px solid var(--color-border); padding-top: 10px; min-width: 0; }
+.document-history summary { cursor: pointer; font-weight: 700; font-size: .85rem; }
+.document-history ul { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 8px; }
+.document-revision { display: grid; gap: 2px; padding: 8px 10px; border: 1px solid var(--color-border); border-radius: 10px; min-width: 0; overflow-wrap: anywhere; }
+.document-revision small { color: var(--color-text-muted); font-size: .75rem; line-height: 1.4; }
+.document-revision-superseded, .document-revision-revoked { opacity: .75; }
+.link-button { justify-self: start; border: 0; background: none; padding: 4px 0; color: var(--color-accent, inherit); font: inherit; font-size: .8rem; font-weight: 700; text-decoration: underline; cursor: pointer; }
 .document-request { display: grid; gap: 8px; min-width: 0; }
 .document-changes { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
 .document-changes li { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 4px 8px; padding: 9px 11px; border-radius: var(--radius-sm); background: var(--color-surface-soft); font-size: .85rem; overflow-wrap: anywhere; }

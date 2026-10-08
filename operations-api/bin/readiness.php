@@ -103,6 +103,12 @@ try {
     $report($duplicateQr === 0 ? 'OK' : 'FAIL', 'production_qr_single_active');
     $missingQr = (int) $pdo->query("SELECT COUNT(*) FROM operational_orders o WHERE o.production_authority = 'operations' AND NOT EXISTS (SELECT 1 FROM order_qr_references q WHERE q.order_uuid = o.order_uuid AND q.status = 'active') AND o.document_status IN ('none', 'active')")->fetchColumn();
     $report($missingQr === 0 ? 'OK' : 'WARN', 'production_qr_operations_active');
+    // Production document authority (020): source-attributed revisions and prints need both attribution checks.
+    $documentAuthority = (int) $pdo->query("SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = DATABASE() AND CONSTRAINT_NAME IN ('chk_production_document_revisions_generator', 'chk_production_document_prints_printer')")->fetchColumn();
+    $report($documentAuthority === 2 ? 'OK' : 'FAIL', 'production_document_source_attribution');
+    // A document of an operations order must print the order's single active QR.
+    $mismatch = (int) $pdo->query("SELECT COUNT(*) FROM production_document_revisions r JOIN order_qr_references q ON q.qr_reference = r.qr_reference WHERE r.status = 'active' AND q.status <> 'active'")->fetchColumn();
+    $report($mismatch === 0 ? 'OK' : 'FAIL', 'production_document_active_qr');
     $report(PHP_INT_SIZE >= 8 ? 'OK' : 'FAIL', 'b2b_fixed_point_int64');
 } catch (Throwable) {
     $report('FAIL', 'iam_applications');
@@ -120,6 +126,7 @@ foreach ($sourceRegistry->all() as $definition) {
     $report('OK', 'source_mode_' . $definition->key . '_' . ($definition->enabled ? $definition->mode->value : 'disabled'));
     $report('OK', 'source_authority_' . $definition->key . '_' . $definition->authorityMode->value);
     $report('OK', 'source_qr_authority_' . $definition->key . '_' . $definition->qrAuthorityMode->value);
+    $report('OK', 'source_document_authority_' . $definition->key . '_' . $definition->documentAuthorityMode->value);
 }
 foreach ($sourceRegistry->issues() as $issue) {
     $report('WARN', 'source_config_' . $issue['code'] . ($issue['sourceKey'] === null ? '' : '_' . $issue['sourceKey']));
