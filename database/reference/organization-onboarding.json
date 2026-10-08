@@ -1,0 +1,380 @@
+{
+  "version": 1,
+  "description": "Owner-authorized onboarding plan (October 2026) for the 46 people of organization-roster.json: one central identity per person, confirmed reporting lines, department oversight, and the only application, role, document-scope and principal grants the owner authorized. Production stages are never assigned here.",
+  "authorization": {
+    "date": "2026-10-08",
+    "by": "Business owner (onboarding and IAM rollout instruction)",
+    "rules": [
+      "An identity is active only when the owner authorized at least one application for it; every other identity is created inactive and receives no credential.",
+      "Usernames are the full roster name in lowercase ASCII with dots between the name parts.",
+      "A manager link is recorded only for a confirmed reporting line; department oversight is shown through the department hierarchy and description and grants nothing.",
+      "The tool only adds what this plan states. It never removes access, never reactivates a deactivated identity, never replaces a different CEO principal and never assigns production stages."
+    ]
+  },
+  "departments": {
+    "operatiuni": {
+      "description": "Sediu Central · Director producție: VOICAN DENISA NICOLETA · Manager depozit și operațiuni: YERLIKAYA HIKMET"
+    },
+    "croitorie": {
+      "parent": "operatiuni",
+      "description": "Sediu Central · Supraveghere producție: VOICAN DENISA NICOLETA"
+    },
+    "croitorie-dragon": {
+      "parent": "operatiuni",
+      "description": "Dragon · Supraveghere producție: VOICAN DENISA NICOLETA"
+    },
+    "taiere": {
+      "parent": "operatiuni",
+      "description": "Sediu Central — zona operațională / depozit · Supraveghere producție: VOICAN DENISA NICOLETA"
+    },
+    "depozit": {
+      "parent": "operatiuni",
+      "description": "Sediu Central · Manager operațional: YERLIKAYA HIKMET · Supraveghere producție: VOICAN DENISA NICOLETA"
+    },
+    "vanzari-online": {
+      "description": "Sediu Central · Director Online: YETIS SINEM"
+    },
+    "financiar-contabilitate": {
+      "description": "Sediu Central · Director Financiar: YEMAN ZELAL"
+    },
+    "expediere-curierat": {
+      "description": "Sediu Central · Responsabil curierat și expediere: PARASCHIV CRISTINA NICOLETA"
+    }
+  },
+  "roles": {
+    "director-financiar": {
+      "name": "Director financiar",
+      "description": "Conducerea financiară: conturi curente B2B (vizualizare, încasări, ajustări, stornări, export) și vizualizarea firmelor și comenzilor B2B",
+      "authorityRank": 450,
+      "permissions": [
+        "b2b.accounts.adjust",
+        "b2b.accounts.export",
+        "b2b.accounts.record_payment",
+        "b2b.accounts.reverse",
+        "b2b.accounts.view",
+        "b2b.companies.view",
+        "b2b.orders.view"
+      ]
+    },
+    "contabilitate": {
+      "name": "Contabilitate",
+      "description": "Contabilitate: conturi curente B2B (vizualizare, încasări, export) și vizualizarea firmelor B2B; fără ajustări sau stornări",
+      "authorityRank": 300,
+      "permissions": [
+        "b2b.accounts.export",
+        "b2b.accounts.record_payment",
+        "b2b.accounts.view",
+        "b2b.companies.view"
+      ]
+    }
+  },
+  "blockedApplications": {
+    "magazin-dragon-7": {
+      "applications": [
+        "b2b"
+      ],
+      "reason": "B2B has no shop-level isolation: a B2B grant would expose Dragon 9 customers and orders."
+    },
+    "magazin-dragon-9": {
+      "applications": [
+        "b2b"
+      ],
+      "reason": "B2B has no shop-level isolation: a B2B grant would expose Dragon 7 customers and orders."
+    }
+  },
+  "pending": [
+    "Direct managers of tailoring, cutting, warehouse, installation and driver staff (department oversight only).",
+    "NITA CRISTINA -> YEMAN ZELAL reporting line (proposed).",
+    "Installation and drivers under YERLIKAYA HIKMET as operational coordinator (proposed).",
+    "DR7 and DR9 shop managers and B2B shop isolation.",
+    "Production stage owners (cutting candidates for stage 2; tailoring split, intake, quality control, packing, delivery).",
+    "The permanent Document Operator for the internet sources.",
+    "Document approvers for b2b and trendyol.",
+    "Whether VOICAN DENISA NICOLETA and YERLIKAYA HIKMET also receive the supervisor template.",
+    "Any Arasya application for courier/shipping (AWB stays in YD SOFT and WooCommerce)."
+  ],
+  "people": [
+    {
+      "name": "YEMAN MESUT",
+      "username": "yeman.mesut",
+      "status": "active",
+      "applications": [
+        "dashboard"
+      ],
+      "roles": [
+        "ceo"
+      ],
+      "principal": "ceo"
+    },
+    {
+      "name": "VOICAN DENISA NICOLETA",
+      "username": "voican.denisa.nicoleta",
+      "status": "active",
+      "manager": "YEMAN MESUT",
+      "applications": [
+        "dashboard"
+      ],
+      "roles": [
+        "operations-manager"
+      ]
+    },
+    {
+      "name": "YERLIKAYA HIKMET",
+      "username": "yerlikaya.hikmet",
+      "status": "active",
+      "manager": "YEMAN MESUT",
+      "applications": [
+        "dashboard"
+      ],
+      "roles": [
+        "operations-manager"
+      ]
+    },
+    {
+      "name": "YETIS SINEM",
+      "username": "yetis.sinem",
+      "status": "active",
+      "manager": "YEMAN MESUT",
+      "applications": [
+        "dashboard"
+      ],
+      "roles": [
+        "document-revision-approver"
+      ],
+      "documentScopes": {
+        "operate": [],
+        "approve": [
+          "outletperdele",
+          "trendhome"
+        ]
+      }
+    },
+    {
+      "name": "BLEGU DANIELA NICOLETA",
+      "username": "blegu.daniela.nicoleta",
+      "status": "inactive",
+      "manager": "YETIS SINEM"
+    },
+    {
+      "name": "IANCU IULIANA",
+      "username": "iancu.iuliana",
+      "status": "inactive",
+      "manager": "YETIS SINEM"
+    },
+    {
+      "name": "IVAN IRINA",
+      "username": "ivan.irina",
+      "status": "inactive",
+      "manager": "YETIS SINEM"
+    },
+    {
+      "name": "YEMAN ZELAL",
+      "username": "yeman.zelal",
+      "status": "active",
+      "manager": "YEMAN MESUT",
+      "applications": [
+        "b2b"
+      ],
+      "roles": [
+        "director-financiar"
+      ]
+    },
+    {
+      "name": "NITA CRISTINA",
+      "username": "nita.cristina",
+      "status": "active",
+      "applications": [
+        "b2b"
+      ],
+      "roles": [
+        "contabilitate"
+      ]
+    },
+    {
+      "name": "MANASRA MOHAMED",
+      "username": "manasra.mohamed",
+      "status": "inactive"
+    },
+    {
+      "name": "YEMAN FURKAN",
+      "username": "yeman.furkan",
+      "status": "inactive"
+    },
+    {
+      "name": "RADUCANU STELUTA",
+      "username": "raducanu.steluta",
+      "status": "inactive"
+    },
+    {
+      "name": "STEFAN CORNELIA",
+      "username": "stefan.cornelia",
+      "status": "inactive"
+    },
+    {
+      "name": "STEREA DANIEL",
+      "username": "sterea.daniel",
+      "status": "inactive"
+    },
+    {
+      "name": "BARAGAN CRISTINA",
+      "username": "baragan.cristina",
+      "status": "inactive"
+    },
+    {
+      "name": "DAN NICULINA",
+      "username": "dan.niculina",
+      "status": "inactive"
+    },
+    {
+      "name": "MILITARU ALEXANDRA",
+      "username": "militaru.alexandra",
+      "status": "inactive"
+    },
+    {
+      "name": "AGAMURADOVA ZULHUMORJAN",
+      "username": "agamuradova.zulhumorjan",
+      "status": "inactive"
+    },
+    {
+      "name": "EKANAYAKA ATHUKORALLAGE SRIYANTHA INDRA KUMARI",
+      "username": "ekanayaka.athukorallage.sriyantha.indra.kumari",
+      "status": "inactive"
+    },
+    {
+      "name": "GAMAGE SANATH PRIYANTHA",
+      "username": "gamage.sanath.priyantha",
+      "status": "inactive"
+    },
+    {
+      "name": "IACOB MARINELA",
+      "username": "iacob.marinela",
+      "status": "inactive"
+    },
+    {
+      "name": "KADYROVA ZULFIYA",
+      "username": "kadyrova.zulfiya",
+      "status": "inactive"
+    },
+    {
+      "name": "KARADERILI HAYDAR",
+      "username": "karaderili.haydar",
+      "status": "inactive"
+    },
+    {
+      "name": "MIHALCEA DANIELA",
+      "username": "mihalcea.daniela",
+      "status": "inactive"
+    },
+    {
+      "name": "NICULAE FLORENTINA GABRIELA",
+      "username": "niculae.florentina.gabriela",
+      "status": "inactive"
+    },
+    {
+      "name": "OPREA DOINA",
+      "username": "oprea.doina",
+      "status": "inactive"
+    },
+    {
+      "name": "REJEPOVA GULAYYM",
+      "username": "rejepova.gulayym",
+      "status": "inactive"
+    },
+    {
+      "name": "STANCIU FINITA",
+      "username": "stanciu.finita",
+      "status": "inactive"
+    },
+    {
+      "name": "VASILE PETRUTA",
+      "username": "vasile.petruta",
+      "status": "inactive"
+    },
+    {
+      "name": "VASILOAIA IULIANA",
+      "username": "vasiloaia.iuliana",
+      "status": "inactive"
+    },
+    {
+      "name": "ABDUL HAMEED HALEEM",
+      "username": "abdul.hameed.haleem",
+      "status": "inactive"
+    },
+    {
+      "name": "BUZATU ANDREEA",
+      "username": "buzatu.andreea",
+      "status": "inactive"
+    },
+    {
+      "name": "CRAMA FLORIN",
+      "username": "crama.florin",
+      "status": "inactive"
+    },
+    {
+      "name": "HUDAYAROV MEKAN",
+      "username": "hudayarov.mekan",
+      "status": "inactive"
+    },
+    {
+      "name": "REJEPOV AYMYRAT",
+      "username": "rejepov.aymyrat",
+      "status": "inactive"
+    },
+    {
+      "name": "ANNABERDIYEV SHIRALY",
+      "username": "annaberdiyev.shiraly",
+      "status": "inactive"
+    },
+    {
+      "name": "BERDIYEV AHAT",
+      "username": "berdiyev.ahat",
+      "status": "inactive"
+    },
+    {
+      "name": "SISMAN KADIR",
+      "username": "sisman.kadir",
+      "status": "inactive"
+    },
+    {
+      "name": "BARBU PAUL",
+      "username": "barbu.paul",
+      "status": "inactive"
+    },
+    {
+      "name": "ABOLBADA RFKI",
+      "username": "abolbada.rfki",
+      "status": "inactive"
+    },
+    {
+      "name": "BAZAROV ATAJAN",
+      "username": "bazarov.atajan",
+      "status": "inactive"
+    },
+    {
+      "name": "IONITA FANEL",
+      "username": "ionita.fanel",
+      "status": "inactive"
+    },
+    {
+      "name": "SATYBALDYYEV GELDIMYRAT",
+      "username": "satybaldyyev.geldimyrat",
+      "status": "inactive"
+    },
+    {
+      "name": "PARASCHIV STANICA-LUCIAN",
+      "username": "paraschiv.stanica.lucian",
+      "status": "inactive"
+    },
+    {
+      "name": "PARASCHIV CRISTINA NICOLETA",
+      "username": "paraschiv.cristina.nicoleta",
+      "status": "inactive",
+      "manager": "YEMAN MESUT"
+    },
+    {
+      "name": "COJOCARU ION",
+      "username": "cojocaru.ion",
+      "status": "inactive"
+    }
+  ]
+}

@@ -150,11 +150,19 @@ final readonly class AuthenticationService
         $employee = $current->employee;
         $now = $this->clock->now();
         $nowSql = $this->sqlTime($now);
+        // The same per-username and per-address limit as the login: a borrowed or stolen session cannot be
+        // used to guess the current password without bound.
+        if (!$this->rateLimiter->isAllowed($employee->usernameNormalized, $ipAddress, $nowSql)) {
+            $this->audit->record('AUTH_ACCOUNT_BLOCKED', $employee->employeeUuid, $employee->usernameNormalized, $ipAddress, $userAgent, $requestId, $nowSql, ['operation' => 'password_change']);
+            throw new ApiException(429, 'RATE_LIMITED', 'Too many authentication attempts.');
+        }
         if (!$this->passwords->verify($currentPassword, $employee->passwordHash)) {
             $this->rateLimiter->recordFailure($employee->usernameNormalized, $ipAddress, $nowSql);
             $this->audit->record('AUTH_PASSWORD_CHANGE_DENIED', $employee->employeeUuid, null, $ipAddress, $userAgent, $requestId, $nowSql);
             throw new ApiException(400, 'CURRENT_PASSWORD_INVALID', 'The current password is not correct.');
         }
+        // The current password is proven: neither a refused new password nor the change itself counts against the limit.
+        $this->rateLimiter->recordSuccess($employee->usernameNormalized, $ipAddress, $nowSql);
         if (!$this->passwords->meetsPolicy($newPassword, $employee->usernameNormalized) || hash_equals($currentPassword, $newPassword)) {
             throw new ApiException(400, 'PASSWORD_POLICY', 'The new password does not meet the password policy.');
         }
