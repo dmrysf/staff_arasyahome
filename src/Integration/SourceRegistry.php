@@ -6,6 +6,7 @@ namespace Arasya\Operations\Integration;
 
 use Arasya\Operations\Config\Config;
 use Arasya\Operations\Production\ProductionAuthorityMode;
+use Arasya\Operations\Production\QrAuthorityMode;
 
 /**
  * Config-backed registry of signed server-to-server sources (one entry per website).
@@ -80,6 +81,16 @@ final readonly class SourceRegistry
                 $issues[] = ['code' => 'invalid_authority_mode', 'sourceKey' => $key];
                 $authority = ProductionAuthorityMode::Legacy;
             }
+            // Same for the QR authority mode. ENFORCE needs production authority ENFORCE: Arasya can only be
+            // the sole production QR authority for orders it owns, so any other combination runs as OBSERVE.
+            $qrAuthority = QrAuthorityMode::tryFrom(strtolower($settings['qrAuthority'] ?? QrAuthorityMode::Legacy->value));
+            if ($qrAuthority === null) {
+                $issues[] = ['code' => 'invalid_qr_authority_mode', 'sourceKey' => $key];
+                $qrAuthority = QrAuthorityMode::Legacy;
+            } elseif ($qrAuthority === QrAuthorityMode::Enforce && $authority !== ProductionAuthorityMode::Enforce) {
+                $issues[] = ['code' => 'qr_authority_requires_production_enforce', 'sourceKey' => $key];
+                $qrAuthority = QrAuthorityMode::Observe;
+            }
             $valid = true;
             foreach ([
                 'missing_secret' => !isset($config->sourceSecrets[$key]),
@@ -94,7 +105,7 @@ final readonly class SourceRegistry
                 }
             }
             if ($valid && $mode !== null && $enabled !== null) {
-                $sources[$key] = new SourceDefinition($key, $displayName, $type, $enabled, $mode, $authority);
+                $sources[$key] = new SourceDefinition($key, $displayName, $type, $enabled, $mode, $authority, $qrAuthority);
             }
         }
         return new self($sources, $issues);

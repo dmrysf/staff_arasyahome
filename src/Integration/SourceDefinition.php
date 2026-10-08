@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Arasya\Operations\Integration;
 
 use Arasya\Operations\Production\ProductionAuthorityMode;
+use Arasya\Operations\Production\QrAuthorityMode;
 
 /**
  * Safe, non-secret metadata of one signed source. Trust comes only from the source key plus its own
@@ -19,6 +20,7 @@ final readonly class SourceDefinition
         public bool $enabled,
         public SourceMode $mode,
         public ProductionAuthorityMode $authorityMode = ProductionAuthorityMode::Legacy,
+        public QrAuthorityMode $qrAuthorityMode = QrAuthorityMode::Legacy,
     ) {
     }
 
