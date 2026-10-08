@@ -79,6 +79,7 @@ Hierarchy never grants a permission (`docs/central-iam.md`). Manager links are s
   tailors, cutters, warehouse staff, drivers, installers, DR7, DR9 and accounting is not stated in the workbook.
 - **Missing stage assignments:** see section 8.
 - **No known application need:** drivers/agents (5), installers (3), Germany sales (2, excluded).
+- **Owner clarification (2026-10-08):** DR7 and DR9 are two physical wholesale stores using the SAME B2B platform. Do not block B2B users simply because the platform currently offers shared visibility. Per-store segmentation is deferred until specifically requested.
 - **Production:** 0 of 46 people have an account. Each needs explicit onboarding before
   `php bin/organization-reconcile.php --apply` can set membership.
 
@@ -189,7 +190,7 @@ derived from a department, a title or a role name.
 
 ## 7. B2B, finance, courier: what the platform can and cannot enforce today
 
-- **B2B shop isolation (DR7 vs DR9): not possible yet.** `b2b_companies` and `b2b_orders` have no shop or
+- **B2B shop isolation (DR7 vs DR9): not implemented and not required for the current B2B seller rollout.** `b2b_companies` and `b2b_orders` have no shop or
   sales-channel column; every `b2b.*` permission reaches every company and order, and document scopes stop at the
   `b2b` source. Required design once the owner decides the visibility rule: a `sales_channel_key` on companies
   (inherited by orders and the handoff), an employee channel scope like section 6 enforced in `B2B\*Queries` and
