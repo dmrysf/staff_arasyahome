@@ -76,3 +76,26 @@ test("live document notices are Romanian and actionable; routes and permissions 
   assert.equal(canUseDocuments(["orders.scan", "orders.claim"]), false);
   assert.equal(documentFilename("#84521", 2), "ARASYA-84521-R2.pdf");
 });
+
+test("revision preview is a plain GET of one revision (nothing recorded) and history keeps approver and revoke reason", async () => {
+  const calls: { url: string; method: string }[] = [];
+  const fetchImpl = (async (url: string, init?: RequestInit) => {
+    calls.push({ url: String(url), method: init?.method ?? "GET" });
+    return new Response(new Uint8Array([37, 80, 68, 70]), { status: 200, headers: { "Content-Type": "application/pdf" } });
+  }) as typeof fetch;
+  const services = createProductionServices("https://api.arasyahome.ro", { fetchImpl, isOnline: () => true, workflowCache: { read: () => null, write: () => undefined, clear: () => undefined } as never });
+  const blob = await services.documents!.preview("trendhome:84521", 2);
+  assert.equal(blob.size, 4);
+  assert.deepEqual(calls, [{ url: "https://api.arasyahome.ro/production-documents/orders/trendhome%3A84521/revisions/2/preview", method: "GET" }]);
+  const mapped = mapOrderDocument({ ...baseDocument, revisions: [
+    { id: "r2", number: 2, status: "active", qrHint: "def", generatedAt: "2026-10-06T09:00:00.000Z", generatedBy: "Trendhome · #7 Operator", approvedBy: "Director Online", prints: 1 },
+    { id: "r1", number: 1, status: "revoked", qrHint: "abc", generatedAt: "2026-10-06T07:12:00.000Z", generatedBy: "Online", approvedBy: null, revokeReason: "Test", prints: 2 },
+  ] });
+  assert.equal(mapped.revisions[0].approvedBy, "Director Online");
+  assert.equal(mapped.revisions[1].revokeReason, "Test");
+  assert.equal(JSON.stringify(mapped).includes("qrHint"), false);
+});
+
+test("a source-issued ticket refusal is explained in Romanian", () => {
+  assert.match(getErrorPresentation(new StaffServiceError("DOCUMENT_AUTHORITY_SOURCE")).message, /magazinul sursă/);
+});

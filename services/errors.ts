@@ -65,6 +65,8 @@ const presentations: Record<ServiceErrorCode, ErrorPresentation> = {
   DOCUMENT_CONTENT_CHANGED: { title: "Comanda s-a schimbat din nou", message: "Conținutul comenzii s-a schimbat după aprobare. Este necesară o nouă cerere de revizie.", action: "Reîncarcă" },
   DOCUMENT_CHANGED: { title: "Documentul s-a schimbat", message: "Starea documentului a fost actualizată între timp. Reîncarcă înainte de a continua.", action: "Reîncarcă" },
   DOCUMENT_ORDER_COMPLETED: { title: "Comandă finalizată", message: "Revizia documentului după finalizare nu face parte din acest flux.", action: "Înapoi" },
+  DOCUMENT_AUTHORITY_SOURCE: { title: "Fișa rămâne în magazin", message: "Fișa de producție a acestei comenzi este încă emisă de magazinul sursă. Documentul Arasya devine disponibil după activarea autorității de documente.", action: "Înapoi" },
+  DOCUMENT_NOT_FOUND: { title: "Document negăsit", message: "Revizia cerută nu există sau nu poate fi afișată.", action: "Reîncarcă" },
   DOCUMENT_REVISION_NOT_ACTIVE: { title: "Revizie înlocuită", message: "Această revizie nu mai este documentul activ. Reîncarcă pagina.", action: "Reîncarcă" },
   PRODUCTION_AUTHORITY_SOURCE: { title: "Comanda nu este preluată în Arasya", message: "Producția acestei comenzi este încă gestionată în YD SOFT. Un manager trebuie să o preia în Arasya înainte de a lucra la ea.", action: "Înapoi" },
   AUTHORITY_CUTOVER_DISABLED: { title: "Preluare neactivată", message: "Preluarea autorității de producție nu este activată pentru această sursă.", action: "Înapoi" },

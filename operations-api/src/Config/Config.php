@@ -45,7 +45,7 @@ final readonly class Config
          */
         public array $sourceKeys = [],
         /**
-         * Non-secret per-source settings (mode, enabled, displayName, integrationType, authority, qrAuthority) as raw strings.
+         * Non-secret per-source settings (mode, enabled, displayName, integrationType, authority, qrAuthority, documentAuthority) as raw strings.
          * @var array<string, array<string, string>>
          */
         public array $sourceSettings = [],
@@ -158,6 +158,7 @@ final readonly class Config
                 'integrationType' => self::value($values, "ARASYA_SOURCE_TYPE_{$suffix}", ''),
                 'authority' => self::value($values, "ARASYA_SOURCE_AUTHORITY_{$suffix}", ''),
                 'qrAuthority' => self::value($values, "ARASYA_SOURCE_QR_AUTHORITY_{$suffix}", ''),
+                'documentAuthority' => self::value($values, "ARASYA_SOURCE_DOCUMENT_AUTHORITY_{$suffix}", ''),
             ], static fn (string $value): bool => $value !== '');
         }
         return $settings;

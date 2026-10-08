@@ -29,7 +29,15 @@ export type RevisionRequest = {
   resolutionNote: string | null;
 };
 
-export type DocumentRevision = { number: number; status: "active" | "superseded" | "revoked"; generatedAt: string; generatedBy: string; prints: number };
+export type DocumentRevision = {
+  number: number;
+  status: "active" | "superseded" | "revoked";
+  generatedAt: string;
+  generatedBy: string;
+  prints: number;
+  approvedBy: string | null;
+  revokeReason: string | null;
+};
 
 /** The requester's document view of one order. */
 export type OrderDocument = {
@@ -60,9 +68,17 @@ export interface DocumentApi {
   requestRevision(orderId: string, input: { expectedDocumentVersion: number; comment: string | null }, key: string): Promise<OrderDocument>;
   /** Records a print (or reprint) of the active revision and returns the PDF. */
   print(orderId: string, input: { revisionNumber: number; reason: string | null }, key: string): Promise<Blob>;
+  /** Screen preview of one revision: no QR code, nothing is recorded, not usable in production. */
+  preview(orderId: string, revisionNumber: number): Promise<Blob>;
 }
 
 export const DOCUMENT_PERMISSIONS = ["production.documents.generate", "production.documents.reprint", "production.documents.request_revision"] as const;
+
+export const revisionStatusLabels: Record<DocumentRevision["status"], string> = {
+  active: "Activă",
+  superseded: "Înlocuită",
+  revoked: "Anulată",
+};
 
 export function canUseDocuments(permissions: readonly string[]): boolean {
   return DOCUMENT_PERMISSIONS.some((permission) => permissions.includes(permission));

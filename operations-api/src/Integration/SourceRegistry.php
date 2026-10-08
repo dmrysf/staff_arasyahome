@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Arasya\Operations\Integration;
 
 use Arasya\Operations\Config\Config;
+use Arasya\Operations\Production\DocumentAuthorityMode;
 use Arasya\Operations\Production\ProductionAuthorityMode;
 use Arasya\Operations\Production\QrAuthorityMode;
 
@@ -91,6 +92,16 @@ final readonly class SourceRegistry
                 $issues[] = ['code' => 'qr_authority_requires_production_enforce', 'sourceKey' => $key];
                 $qrAuthority = QrAuthorityMode::Observe;
             }
+            // Same for the document authority mode. ENFORCE needs QR authority ENFORCE: an Arasya document prints
+            // the order's Arasya production QR, so any other combination runs as OBSERVE.
+            $documentAuthority = DocumentAuthorityMode::tryFrom(strtolower($settings['documentAuthority'] ?? DocumentAuthorityMode::Legacy->value));
+            if ($documentAuthority === null) {
+                $issues[] = ['code' => 'invalid_document_authority_mode', 'sourceKey' => $key];
+                $documentAuthority = DocumentAuthorityMode::Legacy;
+            } elseif ($documentAuthority === DocumentAuthorityMode::Enforce && $qrAuthority !== QrAuthorityMode::Enforce) {
+                $issues[] = ['code' => 'document_authority_requires_qr_enforce', 'sourceKey' => $key];
+                $documentAuthority = DocumentAuthorityMode::Observe;
+            }
             $valid = true;
             foreach ([
                 'missing_secret' => !isset($config->sourceSecrets[$key]),
@@ -105,7 +116,7 @@ final readonly class SourceRegistry
                 }
             }
             if ($valid && $mode !== null && $enabled !== null) {
-                $sources[$key] = new SourceDefinition($key, $displayName, $type, $enabled, $mode, $authority, $qrAuthority);
+                $sources[$key] = new SourceDefinition($key, $displayName, $type, $enabled, $mode, $authority, $qrAuthority, $documentAuthority);
             }
         }
         return new self($sources, $issues);

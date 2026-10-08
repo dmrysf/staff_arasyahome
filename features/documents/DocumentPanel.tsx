@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { StaffServiceError } from "../../domain/models";
-import { changeLabel, documentFilename, documentStatusLabels, documentStep, type DocumentApi, type OrderDocument } from "../../domain/documents";
+import { changeLabel, documentFilename, documentStatusLabels, documentStep, revisionStatusLabels, type DocumentApi, type OrderDocument } from "../../domain/documents";
 import { useLive } from "../../app/liveContext";
 import { getErrorPresentation, toServiceError } from "../../services/errors";
 import { createIdempotencyKey } from "../../services/idempotency";
@@ -19,6 +19,24 @@ function saveBlob(blob: Blob, filename: string) {
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 30_000);
+}
+
+/**
+ * Opens a preview PDF in a new tab. The tab is opened inside the click (popup blockers allow it), then
+ * pointed at the PDF; without a tab the preview is saved instead.
+ */
+async function openPreview(load: () => Promise<Blob>, filename: string) {
+  const tab = window.open("", "_blank");
+  try {
+    const blob = await load();
+    const url = URL.createObjectURL(blob);
+    if (tab) tab.location.href = url;
+    else saveBlob(blob, filename);
+    setTimeout(() => URL.revokeObjectURL(url), 120_000);
+  } catch (caught) {
+    tab?.close();
+    throw caught;
+  }
 }
 
 /**
@@ -71,6 +89,13 @@ export function DocumentPanel({ orderId, service, permissions, onChanged, onLoad
 
   if (!document_) return error ? <section className="detail-section document-panel" role="alert"><p className="eyebrow">Document de producție</p><p>{getErrorPresentation(error).message}</p></section> : null;
   const step = documentStep(document_, permissions);
+  const canHistory = permissions.includes("production.documents.view_history");
+  async function preview(revision: number) {
+    if (busy) return;
+    setError(null);
+    try { await openPreview(() => service.preview(orderId, revision), documentFilename(document_!.order.number, revision).replace(".pdf", "-PREVIZUALIZARE.pdf")); }
+    catch (caught) { setError(toServiceError(caught)); }
+  }
   const active = document_.activeRevision;
   const request = document_.request;
   return (
@@ -100,6 +125,18 @@ export function DocumentPanel({ orderId, service, permissions, onChanged, onLoad
         <button className="button button-primary" type="button" disabled={busy} onClick={() => void run(`revision-${step.requestId}`, (key) => service.generate(orderId, { expectedDocumentVersion: document_.version, requestId: step.requestId }, key))}>Generează documentul nou (REVIZIA {step.target})</button>
       </div>}
       {step.kind === "completed" && <p className="document-hint">Comanda este finalizată. Documentul rămâne doar pentru istoric.</p>}
+      {active && <button className="button button-secondary" type="button" disabled={busy} onClick={() => void preview(active.number)}>Previzualizează REVIZIA {active.number}</button>}
+      {active && <p className="document-hint">Previzualizarea nu are cod QR și nu se folosește în atelier. Pentru atelier folosește tipărirea.</p>}
+      {document_.revisions.length > 0 && <details className="document-history" open={document_.revisions.length > 1}>
+        <summary>Istoric revizii ({document_.revisions.length})</summary>
+        <ul>{document_.revisions.map((revision) => <li key={revision.number} className={`document-revision document-revision-${revision.status}`}>
+          <span><strong>REVIZIA {revision.number}</strong> · {revisionStatusLabels[revision.status]}</span>
+          <small>Generată {time.format(new Date(revision.generatedAt))} de {revision.generatedBy}{revision.approvedBy ? ` · aprobată de ${revision.approvedBy}` : ""} · {revision.prints === 0 ? "netipărită" : revision.prints === 1 ? "tipărită o dată" : `tipărită de ${revision.prints} ori`}</small>
+          {revision.status === "superseded" && <small>Nu se mai folosește: a fost înlocuită de o revizie nouă.</small>}
+          {revision.status === "revoked" && <small>Anulată{revision.revokeReason ? `: ${revision.revokeReason}` : ""}. Nu se mai folosește.</small>}
+          {(revision.status === "active" || canHistory) && <button className="link-button" type="button" disabled={busy} onClick={() => void preview(revision.number)}>Previzualizează</button>}
+        </li>)}</ul>
+      </details>}
       {error && <p className="order-notice order-notice-warning" role="alert">{getErrorPresentation(error).message}</p>}
     </section>
   );

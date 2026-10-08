@@ -207,7 +207,7 @@ if ($pdo->query("SHOW COLUMNS FROM order_qr_references LIKE 'active_order_uuid'"
 $qrBefore = $pdo->query('SELECT qr_reference, order_uuid, status, created_at, expires_at, revoked_at FROM order_qr_references ORDER BY qr_reference')->fetchAll(PDO::FETCH_ASSOC);
 $ordersBefore = $pdo->query('SELECT global_order_id, production_authority, production_stage_id, production_version, version, document_status FROM operational_orders ORDER BY global_order_id')->fetchAll(PDO::FETCH_ASSOC);
 $grantsBefore = $pdo->query('SELECT * FROM role_permissions ORDER BY role_id, permission_id')->fetchAll(PDO::FETCH_ASSOC);
-check((new MigrationRunner($pdo))->migrate($migrations) === ['019_production_qr_authority.sql'], '018 -> 019 official additive upgrade');
+check((new MigrationRunner($pdo))->migrate($migrations) === ['019_production_qr_authority.sql', '020_production_document_authority.sql'], '018 -> 019 official additive upgrade');
 check((new MigrationRunner($pdo))->migrate($migrations) === [], '019 recorded exactly once');
 check($pdo->query('SELECT qr_reference, order_uuid, status, created_at, expires_at, revoked_at FROM order_qr_references ORDER BY qr_reference')->fetchAll(PDO::FETCH_ASSOC) === $qrBefore, '019 issues, rotates or revokes no QR reference');
 check($pdo->query('SELECT global_order_id, production_authority, production_stage_id, production_version, version, document_status FROM operational_orders ORDER BY global_order_id')->fetchAll(PDO::FETCH_ASSOC) === $ordersBefore, '019 changes no order');
