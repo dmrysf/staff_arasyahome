@@ -1,5 +1,7 @@
 # Arasya Staff
 
+Operations API **2.21.0** adds the [customer tracking authority](docs/customer-tracking-authority.md): a signed read-only `orders/tracking` answer gives YD SOFT the customer milestone of each Arasya-managed order (six Romanian milestones derived from the 14 canonical stages, never shipping), per-source `ARASYA_SOURCE_TRACKING_AUTHORITY_<SOURCE>` (legacy by default), its own rate-limit bucket and no migration. Readiness now counts only document approvers and operators who can actually act (active, non-root, with Dashboard or Staff access).
+
 Operations API **2.20.0** / Staff **2.9.0** add the [production document (PDF) authority](docs/production-document-authority.md): signed `orders/documents` and `orders/document` routes let YD SOFT print the current Arasya revision (revision 1 issued on first print, later revisions only through approval), per-source `ARASYA_SOURCE_DOCUMENT_AUTHORITY_<SOURCE>` (legacy by default), source-attributed revisions and prints (migration 020 is additive), a non-recording Staff preview and revision history.
 
 Operations API **2.19.0** / Staff **2.8.0** add the [production QR authority](docs/production-qr-authority.md): one database-enforced active QR per order, audited manager rotation with clear superseded/revoked scan refusals, a signed read-only `orders/qr` answer for YD SOFT and per-source `ARASYA_SOURCE_QR_AUTHORITY_<SOURCE>` (legacy by default; migration 019 is additive).
