@@ -242,7 +242,10 @@ $error($displayCall('GET','/live/events',null,['scope'=>'cutting-display']),401,
 
 // Snapshot coverage is independent of the wall viewport, and business-day reset never changes owner.
 $clock = new class implements \Arasya\Operations\Support\Clock { public DateTimeImmutable $instant; public function now(): DateTimeImmutable { return $this->instant; } };
-$clock->instant = new DateTimeImmutable(gmdate('Y-m-d').' 10:00:00',new DateTimeZone('UTC'));
+// The fixtures below are written at the real time, and the board counts the Europe/Bucharest day. Anchor the
+// injected clock on today's factory day, not the UTC date: between Bucharest midnight and UTC midnight they differ.
+$factoryNoon = (new DateTimeImmutable('now',new DateTimeZone('Europe/Bucharest')))->setTime(13,0)->setTimezone(new DateTimeZone('UTC'));
+$clock->instant = $factoryNoon;
 $devices = new \Arasya\Operations\Cutting\DisplayDevices($pdo,$config,$clock,new \Arasya\Operations\Employee\PdoEmployeeRepository($pdo),new \Arasya\Operations\Iam\IamAuditLogger($pdo),new \Arasya\Operations\Quality\IdempotencyStore($pdo));
 $board = new \Arasya\Operations\Cutting\BoardSnapshot($pdo,$clock,$devices);
 $beforeOwner=$ok($get($samePerson,'/cutting/pool'),'before day change')['ownedCount'];
@@ -257,7 +260,7 @@ $clock->instant=new DateTimeImmutable('2026-10-05 10:00:00',new DateTimeZone('UT
 $snapshot=$board->snapshot();$blockedCard=array_values(array_filter($snapshot['active'],static fn($c)=>$c['id']===substr(hash('sha256',$blockedOrder['uuid']),0,24)))[0];
 $check($blockedCard['activeSeconds']===600 && $blockedCard['blockedSeconds']===6600 && $blockedCard['tone']==='blocked' && $blockedCard['state']==='Așteaptă aprobarea','external wait never becomes worker red delay');
 $check(!in_array($blockedCard['id'],array_column($snapshot['waiting'],'id'),true),'transfer-blocked owned order never appears in free pool');
-$clock->instant=new DateTimeImmutable(gmdate('Y-m-d').' 10:00:00',new DateTimeZone('UTC'));
+$clock->instant=$factoryNoon;
 // All twenty long product codes survive the database engine's default GROUP_CONCAT limit.
 $codesOrder=$order('long-codes');$longItems=[];for($i=0;$i<20;$i++)$longItems[]=['id'=>900000+$i,'line'=>$i+1,'name'=>'Voal '.$i,'sku'=>str_repeat('X',70).'-'.$i,'meters'=>1.1,'quantity'=>2];
 $ok(T::ingest($kernel,'trendhome',T::sourceOrder($codesOrder['sourceId'],'codes-'.$suffix,gmdate('Y-m-d\TH:i:s\Z'),null,'processing','active',$longItems)),'long codes ingest');
