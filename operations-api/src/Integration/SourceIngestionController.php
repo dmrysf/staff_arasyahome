@@ -22,6 +22,7 @@ final readonly class SourceIngestionController
 {
     public const MAX_BODY_BYTES = 262_144;
     public const MAX_AUTHORITY_ORDERS = 50;
+    public const TRACKING_REQUESTS_PER_MINUTE = 300;
 
     public function __construct(
         private SourceSignatureVerifier $verifier,
@@ -33,6 +34,7 @@ final readonly class SourceIngestionController
         private ?\Arasya\Operations\Production\ProductionQrService $qr = null,
         private ?\Arasya\Operations\Document\DocumentService $documents = null,
         private ?\Arasya\Operations\Document\DocumentRenderer $renderer = null,
+        private ?SourceTrackingQueries $tracking = null,
     ) {
     }
 
@@ -91,6 +93,7 @@ final readonly class SourceIngestionController
             'productionAuthorityMode' => $source->authorityMode->value,
             'qrAuthorityMode' => $source->qrAuthorityMode->value,
             'documentAuthorityMode' => $source->documentAuthorityMode->value,
+            'trackingAuthorityMode' => $source->trackingAuthorityMode->value,
             'contract' => [
                 'schemaVersion' => 1,
                 'workflowId' => $workflow['id'],
@@ -183,6 +186,30 @@ final readonly class SourceIngestionController
         ], 200, ['Cache-Control' => 'no-store']);
     }
 
+    /**
+     * Customer tracking facts of up to 50 of the source's own orders: {"orderIds": ["63366", ...]}. Read-only (nothing
+     * is claimed, moved or written, not even the contact time) and only while the source's tracking authority mode is
+     * observe or enforce. The source calls it only after it verified the customer itself; the answer carries the
+     * customer milestone of each operations order and no customer, employee, document or QR data.
+     */
+    public function orderTracking(Request $request, string $sourceKey): Response
+    {
+        // Customer-driven reads have their own bucket: tracking traffic can never starve order ingestion.
+        $source = $this->authorize($request, $sourceKey, 'source-tracking', self::TRACKING_REQUESTS_PER_MINUTE);
+        $tracking = $this->tracking ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Customer tracking is not ready.');
+        $ids = self::orderIds($request);
+        if (!$source->trackingAuthorityMode->isActive()) {
+            throw new ApiException(409, 'TRACKING_CUTOVER_INACTIVE', 'Customer tracking authority is not active for this source.');
+        }
+        return Response::json([
+            'ok' => true,
+            'sourceKey' => $source->key,
+            'productionAuthorityMode' => $source->authorityMode->value,
+            'trackingAuthorityMode' => $source->trackingAuthorityMode->value,
+            'orders' => $tracking->forOrders($source, $ids),
+        ], 200, ['Cache-Control' => 'no-store']);
+    }
+
     /** @return list<string> */
     private static function orderIds(Request $request): array
     {
@@ -202,7 +229,7 @@ final readonly class SourceIngestionController
         return $ids;
     }
 
-    private function authorize(Request $request, string $sourceKey): SourceDefinition
+    private function authorize(Request $request, string $sourceKey, string $bucket = 'source-ingestion', int $perMinute = 1200): SourceDefinition
     {
         if (preg_match(SourceRegistry::KEY_PATTERN, $sourceKey) !== 1) {
             throw new ApiException(404, 'NOT_FOUND', 'API route was not found.');
@@ -213,7 +240,7 @@ final readonly class SourceIngestionController
             throw new ApiException(503, 'SOURCE_NOT_CONFIGURED', 'This source is not configured for signed delivery.');
         }
         $this->verifier->verify($sourceKey, $request->header('x-arasya-timestamp'), $request->header('x-arasya-signature'), $request->body, $this->clock->now());
-        if (!$this->rateLimiter->hit('source-ingestion', $sourceKey, 1200, 60)) {
+        if (!$this->rateLimiter->hit($bucket, $sourceKey, $perMinute, 60)) {
             throw new ApiException(429, 'RATE_LIMITED', 'Too many source requests.');
         }
         return $source;

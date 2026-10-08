@@ -7,6 +7,7 @@ namespace Arasya\Operations\Integration;
 use Arasya\Operations\Production\DocumentAuthorityMode;
 use Arasya\Operations\Production\ProductionAuthorityMode;
 use Arasya\Operations\Production\QrAuthorityMode;
+use Arasya\Operations\Production\TrackingAuthorityMode;
 
 /**
  * Safe, non-secret metadata of one signed source. Trust comes only from the source key plus its own
@@ -23,6 +24,7 @@ final readonly class SourceDefinition
         public ProductionAuthorityMode $authorityMode = ProductionAuthorityMode::Legacy,
         public QrAuthorityMode $qrAuthorityMode = QrAuthorityMode::Legacy,
         public DocumentAuthorityMode $documentAuthorityMode = DocumentAuthorityMode::Legacy,
+        public TrackingAuthorityMode $trackingAuthorityMode = TrackingAuthorityMode::Legacy,
     ) {
     }
 

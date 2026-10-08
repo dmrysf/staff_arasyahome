@@ -364,7 +364,7 @@ test('signed heartbeat reports mode and contract only, for validation and active
     $pdo->exec("INSERT INTO order_sources (source_key, status) VALUES ('trendhome', 'active'), ('outletperdele', 'active')");
     foreach (['trendhome' => [SOURCE_TEST_TRENDHOME_SECRET, 'active'], 'outletperdele' => [SOURCE_TEST_OUTLET_SECRET, 'validation']] as $key => [$secret, $mode]) {
         $response = $controller->heartbeat(sourceSignedRequest(['sentAt' => '2026-10-07T10:00:00Z'], $secret), $key);
-        expect($response->payload === ['ok' => true, 'sourceKey' => $key, 'mode' => $mode, 'productionAuthorityMode' => 'legacy', 'qrAuthorityMode' => 'legacy', 'documentAuthorityMode' => 'legacy', 'contract' => ['schemaVersion' => 1, 'workflowId' => 'curtain-production', 'workflowVersion' => 1, 'stageCount' => 14]], 'Unexpected heartbeat: ' . sourceJson($response));
+        expect($response->payload === ['ok' => true, 'sourceKey' => $key, 'mode' => $mode, 'productionAuthorityMode' => 'legacy', 'qrAuthorityMode' => 'legacy', 'documentAuthorityMode' => 'legacy', 'trackingAuthorityMode' => 'legacy', 'contract' => ['schemaVersion' => 1, 'workflowId' => 'curtain-production', 'workflowVersion' => 1, 'stageCount' => 14]], 'Unexpected heartbeat: ' . sourceJson($response));
         expect(sourceResponseHasNoSecret($response));
     }
     $contacts = $pdo->query('SELECT COUNT(*) FROM order_sources WHERE last_contact_at IS NOT NULL')->fetchColumn();

@@ -8,6 +8,7 @@ use Arasya\Operations\Config\Config;
 use Arasya\Operations\Production\DocumentAuthorityMode;
 use Arasya\Operations\Production\ProductionAuthorityMode;
 use Arasya\Operations\Production\QrAuthorityMode;
+use Arasya\Operations\Production\TrackingAuthorityMode;
 
 /**
  * Config-backed registry of signed server-to-server sources (one entry per website).
@@ -102,6 +103,16 @@ final readonly class SourceRegistry
                 $issues[] = ['code' => 'document_authority_requires_qr_enforce', 'sourceKey' => $key];
                 $documentAuthority = DocumentAuthorityMode::Observe;
             }
+            // Same for the customer tracking authority mode. ENFORCE needs production authority ENFORCE: Arasya can only
+            // be the customer-facing production truth of orders it owns, so any other combination runs as OBSERVE.
+            $trackingAuthority = TrackingAuthorityMode::tryFrom(strtolower($settings['trackingAuthority'] ?? TrackingAuthorityMode::Legacy->value));
+            if ($trackingAuthority === null) {
+                $issues[] = ['code' => 'invalid_tracking_authority_mode', 'sourceKey' => $key];
+                $trackingAuthority = TrackingAuthorityMode::Legacy;
+            } elseif ($trackingAuthority === TrackingAuthorityMode::Enforce && $authority !== ProductionAuthorityMode::Enforce) {
+                $issues[] = ['code' => 'tracking_authority_requires_production_enforce', 'sourceKey' => $key];
+                $trackingAuthority = TrackingAuthorityMode::Observe;
+            }
             $valid = true;
             foreach ([
                 'missing_secret' => !isset($config->sourceSecrets[$key]),
@@ -116,7 +127,7 @@ final readonly class SourceRegistry
                 }
             }
             if ($valid && $mode !== null && $enabled !== null) {
-                $sources[$key] = new SourceDefinition($key, $displayName, $type, $enabled, $mode, $authority, $qrAuthority, $documentAuthority);
+                $sources[$key] = new SourceDefinition($key, $displayName, $type, $enabled, $mode, $authority, $qrAuthority, $documentAuthority, $trackingAuthority);
             }
         }
         return new self($sources, $issues);
