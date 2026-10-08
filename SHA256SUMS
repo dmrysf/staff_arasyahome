@@ -10,7 +10,7 @@ a708aaa5d7ede287000f44f05bfcbeccd2811f8dd8d1f270d9463f4faa8c535f  ./bin/disable-
 2fab24a760063f12c743b28ab00b746d98c3573474609d8a072fd96a7073b1c0  ./bin/document-inventory.php
 086bf7051cdb6b6fd8f35f34e50bdd60f3491c6eafb31013acd3272b3a85cd73  ./bin/document-revoke.php
 3026b3c110bb1752c333d2463035ac91313430e5d369f037d141e0f8799d4cdb  ./bin/enable-employee.php
-e394358625031614edb680db4496db28a36d4a484a72e4d5a491a3ee1f895293  ./bin/maintenance.php
+f431d7d69027c9f6c61ddc675f1b9250be1a0122c2a5df646bc737cb215e73ff  ./bin/maintenance.php
 f2faad4a47c1765d4070c8f42a4256044c501fab43b572550896001d88a6f14d  ./bin/migrate.php
 49625456d438f17ee73a58f5bc96e52b249aa25216693b1e7b8305c6c1e78cee  ./bin/migration-status.php
 4a44e44a5da76e6de5b73f82958e2c750418dd7e5901fdebe8502ecf99d6ae69  ./bin/order-qr.php
@@ -57,12 +57,12 @@ e3d5bd553859a3f0ade7ef0d41a29c8dab1eaaf486fb632bdb714b79e4c719aa  ./database/see
 a80d76fbdb4a0c8ac3533c3db5eb123a73ff6eb2c259927976d39dfeeb2f248b  ./public/.htaccess
 8302b6ec98573706b31b957a8f9ad9be8bf92a8b8bff02963c601650e7e8c420  ./public/RuntimeLocator.php
 edb234c39482536f0540e881da98cbdad6241af787f230295a79a4ae534e26be  ./public/index.php
-f364d9bb62cb84ad9417d22ad75b1df62ab21c2503e36fb737d68cad9cf5bcd8  ./release.json
+5ccb737ed54aa99906912b34c4ae190a4c3c4e0c5a5a6974c098a08043526e4a  ./release.json
 3b42b0a0d462aa0ac0f368966a5703f6ecbbff9eea2bbbe47f269e9cd6ba03ea  ./scripts/api-release-common.sh
 d1795ddfa4cbd145a0bd889b74821650ce88ca47d5fc6227fa51796fc83b46b7  ./scripts/cpanel-deploy-api.sh
 90db53c750a7ee94bdaad0c19e0c57e9ee6744d703ca03603bb3764393d40f54  ./scripts/cpanel-rollback-api.sh
 ad963b363acfdc488f4b9638e31052d173e9b31437735990435acfd5c9e876ca  ./scripts/generate-sha256s.sh
-8120462fea5e6b8392d51f2f79fa82b86b48a759bafe65ef2eef4110d4cdd9a8  ./scripts/maintenance-active.sh
+668b254a048e20b209aa886a91bb14682e1f60255fa8e329ec6b9a8e896c355c  ./scripts/maintenance-active.sh
 e9ee3c5499d6ed34e821fc5e78ba15affd9c3143d7a274e56a856162e6064a27  ./scripts/validate-release.sh
 62e244f7394174e9be815b0f3406eb9df6226d90117c770fbc6aa36be535de74  ./src/Activity/ActivityController.php
 fffaf9848b4f34b5f257895192f34d7a6ef959791a2e944ba3a981bd6bbb874e  ./src/Activity/ActivityRange.php

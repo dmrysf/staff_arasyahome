@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+# Cron runs with a minimal PATH in which `php` is cPanel's CGI/FastCGI binary (/usr/bin/php): it has no $argv and
+# answers with HTTP headers. Always run the PHP CLI by absolute path; ARASYA_PHP_CLI overrides it only for tests.
+php_cli="${ARASYA_PHP_CLI:-/usr/local/bin/php}"
+[[ "$php_cli" == /* && -f "$php_cli" && -x "$php_cli" ]] || { printf 'PHP CLI %s is unavailable.\n' "$php_cli" >&2; exit 1; }
+
 application_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 pointer="$application_root/active-release"
 [[ -f "$pointer" && ! -L "$pointer" ]] || { printf 'Active API release pointer is unavailable.\n' >&2; exit 1; }
@@ -13,4 +18,4 @@ resolved_release="$(cd -- "$release" 2>/dev/null && pwd -P)" \
   || { printf 'Active API maintenance command is unavailable.\n' >&2; exit 1; }
 [[ "${resolved_release%/*}" == "$resolved_releases" && "${resolved_release##*/}" == "$source_commit" && -f "$resolved_release/bin/maintenance.php" ]] \
   || { printf 'Active API maintenance command is unavailable.\n' >&2; exit 1; }
-exec php "$resolved_release/bin/maintenance.php" "$@"
+exec "$php_cli" "$resolved_release/bin/maintenance.php" "$@"
