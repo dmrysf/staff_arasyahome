@@ -38,6 +38,7 @@ migration, no new permission and no new authorization path. Everything goes thro
   - Activation later goes through the Dashboard: root activates the identity, grants the application and stages,
     then uses **Reset password**, or runs `--reissue` (section 3).
   - Every new identity has `must_change_password = 1`.
+  - DR7/DR9 are ordinary B2B sales workplaces, not two companies. The owner chose to defer shop-level isolation; it is NOT a hard prohibition on their future B2B access. Their accounts are inactive in this six-person pilot solely because B2B sales activation is not in the initial grant list.
 - **Finance roles:** both are composed only from existing B2B permissions. Neither holds `b2b.access`, which stays
   an application grant.
 
@@ -51,8 +52,7 @@ migration, no new permission and no new authorization path. Everything goes thro
     children of `Operațiuni`.
   - The responsible manager names are written in the department description.
   - Both grant nothing. No direct manager link is recorded for people whose supervisor is unknown.
-- **Never in the plan:** production stages, document operators, B2B for DR7/DR9 (`blockedApplications`: B2B
-  has no shop isolation), access for Germany sales (`rollout: excluded`), `b2b`/`trendyol` document scopes, and the
+- **Never in the plan:** production stages, document operators, B2B grants for DR7/DR9 in this initial six-person pilot (their five identities are inactive until sales onboarding); access for Germany sales (`rollout: excluded`), `b2b`/`trendyol` document scopes, and the
   `supervisor` template.
 
 Validation fails closed. Each of these rejects the whole plan, and unit tests pin these refusals:

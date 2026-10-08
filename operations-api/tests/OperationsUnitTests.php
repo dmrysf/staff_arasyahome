@@ -668,6 +668,20 @@ test('The onboarding plan gives every roster person one name-based identity and 
             expect($person['status'] === 'inactive' && $person['applications'] === [] && $person['roles'] === [], "{$name}: directory only");
         }
     }
+    // DR7 / DR9 are physical wholesale sales locations within the existing shared B2B platform.
+    // Shop segmentation is deferred by owner decision; B2B access must be grantable per employee.
+    foreach (['STEREA DANIEL', 'BARAGAN CRISTINA'] as $seller) {
+        $salesPlan = $plan;
+        foreach ($salesPlan['people'] as &$entry) {
+            if ($entry['name'] === $seller) {
+                $entry['status'] = 'active';
+                $entry['applications'] = ['b2b'];
+            }
+        }
+        unset($entry);
+        $sales = $O::fromArrays($salesPlan, $roster)->people();
+        expect($sales[$seller]['status'] === 'active' && $sales[$seller]['applications'] === ['b2b'], "{$seller}: future authorized B2B grant allowed");
+    }
     $mutate = static function (callable $change) use ($plan): array {
         $copy = $plan;
         $change($copy);
@@ -680,7 +694,6 @@ test('The onboarding plan gives every roster person one name-based identity and 
         'cycle' => $mutate(static function (array &$p) use ($index): void { $p['people'][$index['YEMAN MESUT']]['manager'] = 'IVAN IRINA'; }),
         'self manager' => $mutate(static function (array &$p) use ($index): void { $p['people'][$index['IVAN IRINA']]['manager'] = 'IVAN IRINA'; }),
         'excluded access' => $mutate(static function (array &$p) use ($index): void { $p['people'][$index['YEMAN FURKAN']]['status'] = 'active'; $p['people'][$index['YEMAN FURKAN']]['applications'] = ['staff']; }),
-        'DR7 B2B' => $mutate(static function (array &$p) use ($index): void { $p['people'][$index['STEREA DANIEL']]['status'] = 'active'; $p['people'][$index['STEREA DANIEL']]['applications'] = ['b2b']; }),
         'active without application' => $mutate(static function (array &$p) use ($index): void { $p['people'][$index['IVAN IRINA']]['status'] = 'active'; }),
         'role while inactive' => $mutate(static function (array &$p) use ($index): void { $p['people'][$index['IVAN IRINA']]['roles'] = ['production-documents-operator']; }),
         'second CEO' => $mutate(static function (array &$p) use ($index): void { $p['people'][$index['VOICAN DENISA NICOLETA']]['principal'] = 'ceo'; }),

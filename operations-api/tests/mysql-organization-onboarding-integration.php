@@ -134,6 +134,19 @@ $reference = dirname(__DIR__) . '/database/reference';
 $realPlan = json_decode((string) file_get_contents("{$reference}/organization-onboarding.json"), true, 16, JSON_THROW_ON_ERROR);
 $realRoster = json_decode((string) file_get_contents("{$reference}/organization-roster.json"), true, 16, JSON_THROW_ON_ERROR);
 OrganizationOnboarding::fromArrays($realPlan, $realRoster);
+// DR7 and DR9 are wholesale sales locations on the shared B2B platform, not blocked applications.
+// A future owner-approved B2B grant must be structurally valid without an unrequested shop-isolation milestone.
+$dr7Pilot = $realPlan;
+foreach ($dr7Pilot['people'] as &$entry) {
+    if ($entry['name'] === 'RADUCANU STELUTA') {
+        $entry['status'] = 'active';
+        $entry['applications'] = ['b2b'];
+    }
+}
+unset($entry);
+check(OrganizationOnboarding::fromArrays($dr7Pilot, $realRoster) instanceof OrganizationOnboarding,
+    'a DR7 B2B application grant is allowed when explicitly authorized; no artificial shop isolation gate');
+
 $tokenize = static function (array $plan, array $roster, string $token): array {
     $rename = static fn (string $name): string => "{$name} {$token}";
     foreach ($roster['people'] as &$person) {
