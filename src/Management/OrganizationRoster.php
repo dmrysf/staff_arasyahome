@@ -45,7 +45,14 @@ final class OrganizationRoster
                 throw new RuntimeException('Roster names must be present and unique: ' . ($person['name'] ?? ''));
             }
             $names[$key] = true;
-            foreach ([$person['department'] ?? null, ...($person['additionalDepartments'] ?? [])] as $department) {
+            if (isset($person['rollout']) && $person['rollout'] !== 'excluded') {
+                throw new RuntimeException('Roster rollout marker must be "excluded": ' . $person['name']);
+            }
+            $memberships = [$person['department'] ?? null, ...($person['additionalDepartments'] ?? [])];
+            if (count(array_unique($memberships)) !== count($memberships)) {
+                throw new RuntimeException('Roster person repeats a department: ' . $person['name']);
+            }
+            foreach ($memberships as $department) {
                 if (!is_string($department) || !isset($departments[$department])) {
                     throw new RuntimeException('Roster person references an unknown department: ' . $person['name']);
                 }
@@ -106,7 +113,7 @@ final class OrganizationRoster
         foreach ($this->roster['people'] as $person) {
             $candidates = $byName[self::nameKey($person['name'])] ?? [];
             if ($candidates === []) {
-                $missing[] = ['name' => $person['name'], 'department' => $departmentPlan[$person['department']]['name'], 'title' => $person['title'] ?? null];
+                $missing[] = ['name' => $person['name'], 'department' => $departmentPlan[$person['department']]['name'], 'title' => $person['title'] ?? null, 'rollout' => $person['rollout'] ?? null];
                 continue;
             }
             if (count($candidates) > 1) {
@@ -143,6 +150,7 @@ final class OrganizationRoster
                     isset($person['principal']) ? "Root designates this person as {$person['principal']} principal in the Dashboard." : null,
                     isset($person['proposedRole']) ? "Role {$person['proposedRole']} is assigned separately by an authorised administrator." : null,
                     $identity['status'] !== 'active' ? 'The identity is inactive; membership changes do not activate it.' : null,
+                    ($person['rollout'] ?? null) === 'excluded' ? 'Excluded from the current rollout: no application access is planned.' : null,
                 ])),
             ];
         }

@@ -119,10 +119,60 @@ final readonly class ExceptionQueries
         ], $lines->fetchAll(PDO::FETCH_ASSOC));
         $detail['decisions'] = $this->decisions($exceptionUuid);
         if ($manager) {
+            $detail['detector']['id'] = (string) $row['detector_employee_uuid'];
+            $detail['responsible']['id'] = (string) $row['responsible_employee_uuid'];
             $detail['timeline'] = $this->timeline($exceptionUuid);
             $detail['orderHistory'] = $this->orderHistory((string) $more['order_uuid']);
+            $detail['accountability'] = $this->accountability($row);
         }
         return $detail;
+    }
+
+    /**
+     * One accountability record per decided attempt, for managers and audit: who reported, who was
+     * responsible, who decided (identity UUID and display label snapshot of the IAM audit event), through
+     * which authority, when (server time), the IAM audit reference and the resulting production
+     * transition. Display names are labels only; the UUIDs are the accountable identities.
+     *
+     * @param array<string, mixed> $row a SUMMARY row
+     * @return list<array<string, mixed>>
+     */
+    private function accountability(array $row): array
+    {
+        $statement = $this->pdo->prepare(
+            "SELECT d.attempt_number, d.status, d.decided_at, d.decided_via, d.decided_by_employee_uuid, d.decision_comment, decider.display_name AS decided_by_name,
+                    a.event_id AS audit_event_id, a.actor_label AS audit_actor_label, a.request_id AS audit_request_id
+             FROM production_exception_decisions d
+             LEFT JOIN employees decider ON decider.employee_uuid = d.decided_by_employee_uuid
+             LEFT JOIN iam_audit_events a ON a.target_type = 'production_exception' AND a.target_id = d.exception_uuid
+                AND a.action IN ('production.exception.approved', 'production.exception.rejected')
+                AND a.actor_employee_uuid = d.decided_by_employee_uuid AND a.created_at = d.decided_at
+             WHERE d.exception_uuid = ? AND d.decided_at IS NOT NULL ORDER BY d.attempt_number",
+        );
+        $statement->execute([$row['exception_uuid']]);
+        $stages = $this->pdo->query("SELECT stage_id, display_name FROM production_stages WHERE stage_id IN ('workshop-receiving', 'material-preparation')")->fetchAll(PDO::FETCH_KEY_PAIR);
+        $stage = static fn (string $id): array => ['id' => $id, 'label' => isset($stages[$id]) ? (string) $stages[$id] : null];
+        return array_map(static fn (array $decision): array => [
+            'attempt' => (int) $decision['attempt_number'],
+            'order' => ['id' => (string) $row['global_order_id'], 'orderNumber' => (string) $row['order_number_snapshot'], 'source' => (string) $row['source_key']],
+            'stage' => $stage(CuttingFaultService::DETECTION_STAGE),
+            'requestedAction' => ['type' => 'return_to_cutting', 'from' => $stage(CuttingFaultService::DETECTION_STAGE), 'to' => $stage(CuttingFaultService::RETURN_STAGE)],
+            'reason' => ['key' => (string) $row['reason_key'], 'label' => (string) $row['reason_label_snapshot']],
+            'reportedBy' => ['id' => (string) $row['detector_employee_uuid'], 'displayName' => (string) $row['detector_name']],
+            'responsible' => ['id' => (string) $row['responsible_employee_uuid'], 'displayName' => (string) $row['responsible_name']],
+            'decidedBy' => [
+                'id' => $decision['decided_by_employee_uuid'] === null ? null : (string) $decision['decided_by_employee_uuid'],
+                // The label recorded with the decision; the current name only when no audit label exists.
+                'displayName' => $decision['audit_actor_label'] !== null ? (string) $decision['audit_actor_label'] : ($decision['decided_by_name'] === null ? null : (string) $decision['decided_by_name']),
+            ],
+            'via' => $decision['decided_via'] === null ? null : (string) $decision['decided_via'],
+            'decision' => (string) $decision['status'],
+            'comment' => $decision['decision_comment'],
+            'decidedAt' => self::iso((string) $decision['decided_at']),
+            'auditEventId' => $decision['audit_event_id'] === null ? null : (string) $decision['audit_event_id'],
+            'requestId' => $decision['audit_request_id'] === null ? null : (string) $decision['audit_request_id'],
+            'transition' => $decision['status'] === 'approved' ? ['from' => CuttingFaultService::DETECTION_STAGE, 'to' => CuttingFaultService::RETURN_STAGE] : null,
+        ], $statement->fetchAll(PDO::FETCH_ASSOC));
     }
 
     /** Every exception of one order, oldest first. @return list<array<string, mixed>> */

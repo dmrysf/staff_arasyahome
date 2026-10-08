@@ -275,7 +275,10 @@ final readonly class CuttingFaultService
                 }
                 $this->event($exceptionUuid, 'rejected', $actor->employeeUuid, $version, ['attempt' => (int) $attempt['attempt_number'], 'via' => $via, 'comment' => $comment], $requestId, $now);
                 $this->audit->record($actor, 'production.exception.rejected', 'production_exception', $exceptionUuid, ExceptionQueries::number((int) $exception['exception_number']) . " · {$order['order_number']}",
-                    ['attempt' => (int) $attempt['attempt_number'], 'via' => $via, 'order' => $order['global_order_id'], 'status' => ['before' => 'awaiting_approval', 'after' => 'rejected']], $requestId, $now);
+                    ['attempt' => (int) $attempt['attempt_number'], 'via' => $via, 'order' => $order['global_order_id'], 'reasonKey' => $exception['reason_key'],
+                        'detector' => $exception['detector_employee_uuid'], 'responsible' => $exception['responsible_employee_uuid'],
+                        'stage' => ['before' => self::DETECTION_STAGE, 'after' => self::DETECTION_STAGE],
+                        'status' => ['before' => 'awaiting_approval', 'after' => 'rejected']], $requestId, $now);
                 $type = 'exception.rejected';
             } else {
                 $this->assertOrderOpenForProduction($order);
@@ -328,6 +331,7 @@ final readonly class CuttingFaultService
                 ], $requestId, $now);
                 $this->audit->record($actor, 'production.exception.approved', 'production_exception', $exceptionUuid, ExceptionQueries::number((int) $exception['exception_number']) . " · {$order['order_number']}", [
                     'attempt' => (int) $attempt['attempt_number'], 'via' => $via, 'order' => $order['global_order_id'], 'reworkCycle' => $cycle,
+                    'reasonKey' => $exception['reason_key'], 'detector' => $exception['detector_employee_uuid'], 'responsible' => $exception['responsible_employee_uuid'],
                     'stage' => ['before' => self::DETECTION_STAGE, 'after' => self::RETURN_STAGE],
                     'owner' => ['before' => $previousOwner, 'after' => $assignee],
                     'status' => ['before' => 'awaiting_approval', 'after' => 'approved'],

@@ -64,8 +64,8 @@ final readonly class DocumentStaleness
             $this->store->event($orderUuid, 'request_superseded', (int) $request['target_revision_number'], null, (string) $request['request_uuid'], null, ['previousStatus' => $request['status']], $requestId, $now);
             $payload = ['orderId' => $order['global_order_id'], 'orderNumber' => (string) $order['order_number'], 'requestId' => (string) $request['request_uuid'], 'revisionNumber' => (int) $request['target_revision_number'], 'status' => 'superseded'];
             $this->live->toEmployee((string) $request['requested_by_employee_uuid'], 'document.request_superseded', $payload, $now);
-            $this->live->toAudience(DocumentService::AUDIENCE_APPROVERS, 'document.request_resolved', $payload, $now);
-            $this->live->toAudience(DocumentService::AUDIENCE_REQUESTERS, 'document.changed', ['orderId' => $order['global_order_id'], 'orderNumber' => (string) $order['order_number']], $now);
+            $this->live->toAudience(DocumentService::AUDIENCE_APPROVERS, 'document.request_resolved', $payload, $now, (string) $order['source_key']);
+            $this->live->toAudience(DocumentService::AUDIENCE_REQUESTERS, 'document.changed', ['orderId' => $order['global_order_id'], 'orderNumber' => (string) $order['order_number']], $now, (string) $order['source_key']);
         }
     }
 }
