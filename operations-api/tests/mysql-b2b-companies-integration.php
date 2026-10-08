@@ -112,10 +112,12 @@ check($tables === ['b2b_companies', 'b2b_company_activity_events', 'b2b_company_
 check((int) $pdo->query("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND (table_name LIKE 'b2b_order%' OR table_name LIKE '%ledger%' OR table_name LIKE '%payment%' OR table_name LIKE '%invoice%' OR table_name LIKE '%inventory%')")->fetchColumn() === 0, 'no order, ledger, payment, invoice or inventory table exists');
 (new SqlFileRunner($pdo))->run($migrations . '/009_b2b_companies.sql');
 check((int) $pdo->query("SELECT COUNT(*) FROM permissions WHERE permission_key LIKE 'b2b.companies.%'")->fetchColumn() === 4, 'migration 009 is safe to run twice');
-// Identity management in the current code also reads the organisation tables of migration 014, which
-// is independent of 010-013; it is applied on its own so the company-only B2B catalog stays as asserted.
+// Identity management in the current code also reads the organisation tables of migration 014 and the
+// document scopes of migration 021, which are independent of 010-013; they are applied on their own so the
+// company-only B2B catalog stays as asserted.
 copy(dirname(__DIR__) . '/database/migrations/014_production_exceptions.sql', $migrations . '/014_production_exceptions.sql');
-check((new MigrationRunner($pdo))->migrate($migrations) === ['014_production_exceptions.sql'], 'migration 014 applies on top of 009 without 010-013');
+copy(dirname(__DIR__) . '/database/migrations/021_document_scopes.sql', $migrations . '/021_document_scopes.sql');
+check((new MigrationRunner($pdo))->migrate($migrations) === ['014_production_exceptions.sql', '021_document_scopes.sql'], 'migrations 014 and 021 apply on top of 009 without 010-013');
 
 $seedFiles = glob(dirname(__DIR__) . '/database/seeds/*.sql') ?: [];
 sort($seedFiles, SORT_STRING);

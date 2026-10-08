@@ -239,16 +239,23 @@ final readonly class DocumentQueries
     }
 
     /**
-     * Approver queue: pending requests (oldest first) or the latest decided ones.
+     * Approver queue: pending requests (oldest first) or the latest decided ones, limited to the given
+     * order sources (null: every source).
      *
+     * @param list<string>|null $sources
      * @return list<array<string, mixed>>
      */
-    public function queue(string $view): array
+    public function queue(string $view, ?array $sources = null): array
     {
+        $parameters = [];
+        $scope = DocumentScopePolicy::condition($sources, 'o.source_key', $parameters);
+        $from = 'SELECT q.request_uuid FROM production_document_revision_requests q INNER JOIN operational_orders o ON o.order_uuid = q.order_uuid';
         $sql = $view === 'pending'
-            ? "SELECT q.request_uuid FROM production_document_revision_requests q WHERE q.status = 'pending' ORDER BY q.requested_at, q.request_uuid LIMIT " . self::QUEUE_LIMIT
-            : "SELECT q.request_uuid FROM production_document_revision_requests q WHERE q.decided_at IS NOT NULL ORDER BY q.decided_at DESC, q.request_uuid DESC LIMIT " . self::QUEUE_LIMIT;
-        $ids = $this->pdo->query($sql)->fetchAll(PDO::FETCH_COLUMN);
+            ? "{$from} WHERE q.status = 'pending' AND {$scope} ORDER BY q.requested_at, q.request_uuid LIMIT " . self::QUEUE_LIMIT
+            : "{$from} WHERE q.decided_at IS NOT NULL AND {$scope} ORDER BY q.decided_at DESC, q.request_uuid DESC LIMIT " . self::QUEUE_LIMIT;
+        $statement = $this->pdo->prepare($sql);
+        $statement->execute($parameters);
+        $ids = $statement->fetchAll(PDO::FETCH_COLUMN);
         return array_map(function (string $id): array {
             $detail = $this->requestDetail($id);
             $detail['changeCount'] = count($detail['changes']);
@@ -257,29 +264,39 @@ final readonly class DocumentQueries
         }, $ids);
     }
 
-    public function pendingCount(): int
+    /** @param list<string>|null $sources */
+    public function pendingCount(?array $sources = null): int
     {
-        return (int) $this->pdo->query("SELECT COUNT(*) FROM production_document_revision_requests WHERE status = 'pending'")->fetchColumn();
+        $parameters = [];
+        $scope = DocumentScopePolicy::condition($sources, 'o.source_key', $parameters);
+        $statement = $this->pdo->prepare("SELECT COUNT(*) FROM production_document_revision_requests q INNER JOIN operational_orders o ON o.order_uuid = q.order_uuid WHERE q.status = 'pending' AND {$scope}");
+        $statement->execute($parameters);
+        return (int) $statement->fetchColumn();
     }
 
     /**
      * Requester worklist: orders whose document needs attention (stale or revoked) and approved requests
-     * waiting for generation. Bounded and served by the document status index.
+     * waiting for generation, limited to the given order sources (null: every source). Bounded and served
+     * by the document status index.
      *
+     * @param list<string>|null $sources
      * @return list<array<string, mixed>>
      */
-    public function attention(): array
+    public function attention(?array $sources = null): array
     {
-        $statement = $this->pdo->query(
+        $parameters = [];
+        $scope = DocumentScopePolicy::condition($sources, 'o.source_key', $parameters);
+        $statement = $this->pdo->prepare(
             "SELECT o.order_uuid, o.global_order_id, o.order_number, o.source_key, o.document_status, o.document_version, o.production_stage_id, o.updated_at,
                     r.revision_number, q.request_uuid, q.status AS request_status, q.target_revision_number, q.version AS request_version, req.display_name AS requested_by
              FROM operational_orders o
              LEFT JOIN production_document_revisions r ON r.revision_uuid = o.active_document_revision_uuid
              LEFT JOIN production_document_revision_requests q ON q.open_order_uuid = o.order_uuid
              LEFT JOIN employees req ON req.employee_uuid = q.requested_by_employee_uuid
-             WHERE o.document_status IN ('stale', 'revoked')
+             WHERE o.document_status IN ('stale', 'revoked') AND {$scope}
              ORDER BY o.updated_at DESC, o.order_uuid DESC LIMIT " . self::QUEUE_LIMIT,
         );
+        $statement->execute($parameters);
         return array_map(fn (array $row): array => [
             'orderId' => (string) $row['global_order_id'],
             'orderNumber' => (string) $row['order_number'],
@@ -300,19 +317,22 @@ final readonly class DocumentQueries
     }
 
     /**
-     * Exact order-number lookup for document requesters (indexed lookup code, at most five matches,
-     * no customer data).
+     * Exact order-number lookup for document users (indexed lookup code, at most five matches, no
+     * customer data), limited to the given order sources (null: every source).
      *
+     * @param list<string>|null $sources
      * @return list<array<string, mixed>>
      */
-    public function lookup(string $lookupCode): array
+    public function lookup(string $lookupCode, ?array $sources = null): array
     {
+        $parameters = [$lookupCode];
+        $scope = DocumentScopePolicy::condition($sources, 'o.source_key', $parameters);
         $statement = $this->pdo->prepare(
-            'SELECT o.global_order_id, o.order_number, o.source_key, o.document_status, r.revision_number
+            "SELECT o.global_order_id, o.order_number, o.source_key, o.document_status, r.revision_number
              FROM operational_orders o LEFT JOIN production_document_revisions r ON r.revision_uuid = o.active_document_revision_uuid
-             WHERE o.order_lookup_code = ? ORDER BY o.updated_at DESC, o.order_uuid DESC LIMIT 5',
+             WHERE o.order_lookup_code = ? AND {$scope} ORDER BY o.updated_at DESC, o.order_uuid DESC LIMIT 5",
         );
-        $statement->execute([$lookupCode]);
+        $statement->execute($parameters);
         return array_map(static fn (array $row): array => [
             'orderId' => (string) $row['global_order_id'],
             'orderNumber' => (string) $row['order_number'],

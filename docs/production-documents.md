@@ -215,6 +215,10 @@ The order analytics view adds `documents`: revision count, revisions, blocks and
 
 Customers see nothing of revisions, approvals, rejections or blocks; no customer surface reads these tables. The cutting TV only gains a "blocked" state on the card: no PII and no document data.
 
+## Source scopes (migration 021, API 2.22.0)
+
+A document permission alone reaches no order. A non-root identity also needs a root-granted scope for the order's source in `employee_document_scopes`: `operate` for generation, reprint, revision requests, reads, lookup and the worklist; `approve` for decisions, the approver queue and the pending count (primary approver and temporary backup alike). Reading needs either scope. Without a scope the order or request answers as not found; with only an operate scope a decision answers `403 DOCUMENT_SCOPE_DENIED`. Document live notifications carry the order's source and reach only readers scoped to it. Root keeps break-glass authority over every source. Root grants scopes with `PUT /management/employees/{id}/document-scopes`. The signed source contract, the B2B handoff and the B2B production sheet are unchanged. See [organization-iam.md](organization-iam.md).
+
 ## Permissions and templates (migration 017)
 
 | Permission | Grantable |

@@ -610,3 +610,42 @@ test('B2B statement CSV and PDF render the server dataset without recalculation 
     $statement['movements'] = array_fill(0, 120, $statement['movements'][0]);
     expect(substr_count($E::pdf($statement, 'ro'), '/Type /Page ') >= 3);
 });
+
+test('The canonical roster reproduces every workbook group membership with one identity per person', function (): void {
+    $roster = json_decode((string) file_get_contents(dirname(__DIR__) . '/database/reference/organization-roster.json'), true, 16, JSON_THROW_ON_ERROR);
+    \Arasya\Operations\Management\OrganizationRoster::fromArray($roster);
+    $names = array_map(static fn (array $p): string => \Arasya\Operations\Management\OrganizationRoster::nameKey($p['name']), $roster['people']);
+    expect(count($roster['people']) === 46 && count(array_unique($names)) === 46, 'one roster entry per person');
+    $members = [];
+    foreach ($roster['people'] as $person) {
+        foreach ([$person['department'], ...($person['additionalDepartments'] ?? [])] as $department) {
+            $members[$department][] = $person['name'];
+        }
+    }
+    $total = 0;
+    foreach ($roster['workbook']['groups'] as $group => $spec) {
+        $people = array_merge(...array_map(static fn (string $d): array => $members[$d] ?? [], $spec['departments']));
+        expect(count($people) === $spec['members'] && count(array_unique($people)) === count($people), "workbook group {$group} has {$spec['members']} members, roster gives " . count($people));
+        $total += count($people);
+    }
+    expect(count($roster['workbook']['groups']) === 12 && $total === 50, 'twelve workbook groups with fifty memberships');
+    $byName = array_column($roster['people'], null, 'name');
+    // Multi-department people keep one identity with additional functions, never a second account.
+    expect(($byName['PARASCHIV STANICA-LUCIAN']['additionalDepartments'] ?? []) === ['depozit', 'montaj'] && ($byName['BARBU PAUL']['additionalDepartments'] ?? []) === ['montaj']);
+    expect(($byName['YETIS SINEM']['additionalDepartments'] ?? []) === ['conducere'] && ($byName['VOICAN DENISA NICOLETA']['additionalDepartments'] ?? []) === ['conducere']);
+    // The roster describes membership only: no person carries a role, permission, application, stage or scope.
+    foreach ($roster['people'] as $person) {
+        expect(array_diff(array_keys($person), ['name', 'department', 'title', 'additionalDepartments', 'principal', 'proposedRole', 'rollout']) === [], 'no authority field in the roster: ' . $person['name']);
+    }
+    expect(array_keys(array_filter($byName, static fn (array $p): bool => ($p['rollout'] ?? null) === 'excluded')) === ['MANASRA MOHAMED', 'YEMAN FURKAN'], 'only Germany sales is excluded from the rollout');
+    expectRuntime(fn () => \Arasya\Operations\Management\OrganizationRoster::fromArray(['departments' => $roster['departments'], 'people' => [['name' => 'A B', 'department' => 'montaj', 'additionalDepartments' => ['montaj']]]]));
+    expectRuntime(fn () => \Arasya\Operations\Management\OrganizationRoster::fromArray(['departments' => $roster['departments'], 'people' => [['name' => 'A B', 'department' => 'montaj', 'rollout' => 'later']]]));
+});
+
+test('Document scope conditions are default deny and never interpolate source keys', function (): void {
+    $parameters = ['x'];
+    expect(\Arasya\Operations\Document\DocumentScopePolicy::condition(null, 'o.source_key', $parameters) === '1 = 1' && $parameters === ['x'], 'root: every source');
+    expect(\Arasya\Operations\Document\DocumentScopePolicy::condition([], 'o.source_key', $parameters) === '1 = 0' && $parameters === ['x'], 'no scope: nothing');
+    $condition = \Arasya\Operations\Document\DocumentScopePolicy::condition(["trendhome", "x' OR '1'='1"], 'o.source_key', $parameters);
+    expect($condition === 'o.source_key IN (?, ?)' && $parameters === ['x', 'trendhome', "x' OR '1'='1"], 'sources are bound parameters');
+});

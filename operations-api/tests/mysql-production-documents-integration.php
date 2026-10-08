@@ -80,7 +80,7 @@ require __DIR__ . '/HandoffSchemaFixture.php';
 restorePreDocumentsTestSchema($pdo);
 $grantsBefore = $pdo->query('SELECT * FROM role_permissions ORDER BY role_id, permission_id')->fetchAll(PDO::FETCH_ASSOC);
 $qrBefore = $pdo->query('SELECT qr_reference, order_uuid, status, created_at, expires_at, revoked_at FROM order_qr_references ORDER BY qr_reference')->fetchAll(PDO::FETCH_ASSOC);
-check((new MigrationRunner($pdo))->migrate($migrations) === ['017_production_documents.sql', '018_production_authority.sql','019_production_qr_authority.sql', '020_production_document_authority.sql'], '016 -> 017 official additive upgrade');
+check((new MigrationRunner($pdo))->migrate($migrations) === ['017_production_documents.sql', '018_production_authority.sql','019_production_qr_authority.sql', '020_production_document_authority.sql', '021_document_scopes.sql'], '016 -> 017 official additive upgrade');
 check((new MigrationRunner($pdo))->migrate($migrations) === [], '017 recorded exactly once');
 check($pdo->query("SELECT rp.* FROM role_permissions rp JOIN roles r ON r.role_id = rp.role_id WHERE rp.permission_id NOT IN (SELECT permission_id FROM permissions WHERE permission_key = 'production.manage_authority') AND r.role_key NOT IN ('production-documents-operator','document-revision-approver') ORDER BY rp.role_id, rp.permission_id")->fetchAll(PDO::FETCH_ASSOC) === $grantsBefore, '017 changes no existing role grant');
 check($pdo->query('SELECT qr_reference, order_uuid, status, created_at, expires_at, revoked_at FROM order_qr_references ORDER BY qr_reference')->fetchAll(PDO::FETCH_ASSOC) === $qrBefore, '017 and 019 rewrite no QR reference');
@@ -166,6 +166,11 @@ $backupId = $identity('backup', [], ['dashboard'], []);
 $muratId = $identity('murat', ['material-preparation'], ['staff'], []);
 $cutter2Id = $identity('cutter2', ['material-preparation'], ['staff'], []);
 $tailorId = $identity('tailor', ['workshop-receiving'], ['staff'], []);
+// Since 2.22 a document permission reaches only the order sources root scoped (default deny).
+$everySource = ['b2b', 'outletperdele', 'trendhome', 'trendyol'];
+foreach ([$onlineId => ['operate' => $everySource, 'approve' => []], $sinemId => ['operate' => [], 'approve' => $everySource], $backupId => ['operate' => [], 'approve' => $everySource]] as $scopedId => $scopes) {
+    checkOk($post($root, "/management/employees/{$scopedId}/document-scopes", $scopes, null, DASHBOARD_ORIGIN, 'PUT'), 'root scopes the document identities');
+}
 [$online, $sinem, $denisa, $mesut, $backup, $murat, $cutter2, $tailor] = array_map(static fn (string $name): array => $login("{$name}.{$suffix}", $password), ['online', 'sinem', 'denisa', 'mesut', 'backup', 'murat', 'cutter2', 'tailor']);
 checkOk($post($root, '/management/organization/ceo', ['employeeId' => $mesutId], $key('ceo'), DASHBOARD_ORIGIN, 'PUT'), 'root designates the CEO');
 $sinemMe = checkOk($get($sinem, '/management/me'), 'Sinem me');
