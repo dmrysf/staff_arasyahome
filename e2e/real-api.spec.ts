@@ -212,6 +212,49 @@ test("camera denial keeps manual lookup available; offline and expired sessions 
   await expect(page.getByRole("heading", { name: "Bine ai revenit." })).toBeVisible();
 });
 
+test("factory phone widths: home, lookup, order detail, claim dialog and navigation fit 320–430 px without a mutation", async ({ page }) => {
+  const errors = trackErrors(page);
+  const mutations: string[] = [];
+  page.on("request", (request) => { if (request.method() !== "GET" && /\/orders\//.test(request.url())) mutations.push(request.url()); });
+  const overflow = () => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  const inside = async (name: RegExp | string, width: number) => {
+    const box = await page.getByRole("button", { name }).first().boundingBox();
+    expect(box, `${name} at ${width}px`).not.toBeNull();
+    expect(box!.x).toBeGreaterThanOrEqual(0);
+    expect(box!.x + box!.width).toBeLessThanOrEqual(width);
+    expect(box!.height).toBeGreaterThanOrEqual(36);
+  };
+  await page.setViewportSize({ width: 320, height: 640 });
+  await login(page, fixture.users.ana);
+  for (const width of [320, 360, 375, 390, 430]) {
+    await page.setViewportSize({ width, height: 740 });
+    await page.getByRole("button", { name: "Acasă", exact: true }).click();
+    expect(await overflow(), `home at ${width}px`).toBeLessThanOrEqual(0);
+    await lookup(page, fixture.orders.qr);
+    await expect(page.getByRole("heading", { name: `Comanda #${fixture.orders.qr}` })).toBeVisible();
+    expect(await overflow(), `lookup result at ${width}px`).toBeLessThanOrEqual(0);
+    await inside(/Preia comanda/, width);
+    await page.getByRole("button", { name: /Preia comanda/ }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toContainText("Preiei comanda?");
+    expect(await overflow(), `claim dialog at ${width}px`).toBeLessThanOrEqual(0);
+    await inside("Confirmă", width);
+    await inside("Anulează", width);
+    await dialog.getByRole("button", { name: "Anulează" }).click();
+    await expect(dialog).toHaveCount(0);
+    await page.getByRole("button", { name: "Vezi detalii" }).click();
+    await expect(page.locator(".detail-hero")).toBeVisible();
+    expect(await overflow(), `order detail at ${width}px`).toBeLessThanOrEqual(0);
+    await inside(/Preia comanda/, width);
+    for (const tab of ["Comenzi", "Istoric", "Profil"]) {
+      await page.getByRole("button", { name: tab, exact: true }).click();
+      expect(await overflow(), `${tab} at ${width}px`).toBeLessThanOrEqual(0);
+    }
+  }
+  expect(mutations).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
 test("service worker never handles API mutations, deep links reload, logout ends the session, and tablet layout fits", async ({ page }) => {
   await login(page, fixture.users.ana);
   const controlled = await page.evaluate(async () => (await navigator.serviceWorker.ready).active !== null);
