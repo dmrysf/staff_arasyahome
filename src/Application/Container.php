@@ -172,7 +172,7 @@ final class Container
                 $authorityModes,
             ),
             new ActivityController(new PdoActivityRepository($this->pdo), $this->authentication, $authorization, $this->config, $context, $this->clock),
-            new SourceIngestionController(new SourceSignatureVerifier($this->config->sourceSecrets), $this->projectionWriter(), $rateLimiter, $this->clock, SourceRegistry::fromConfig($this->config), new \Arasya\Operations\Integration\SourceAuthorityQueries($this->pdo), $this->productionQrService($authorization, $iamAudit), $this->documentService($authorization, audit: $iamAudit), new \Arasya\Operations\Document\DocumentRenderer($this->pdo)),
+            new SourceIngestionController(new SourceSignatureVerifier($this->config->sourceSecrets), $this->projectionWriter(), $rateLimiter, $this->clock, SourceRegistry::fromConfig($this->config), new \Arasya\Operations\Integration\SourceAuthorityQueries($this->pdo), $this->productionQrService($authorization, $iamAudit), $this->documentService($authorization, audit: $iamAudit), new \Arasya\Operations\Document\DocumentRenderer($this->pdo), new \Arasya\Operations\Integration\SourceTrackingQueries($this->pdo)),
             new ManagementController(
                 new ManagementService($this->pdo, $authorization, new IamAuditLogger($this->pdo), $this->passwords, $this->usernames, $this->clock, HealthController::VERSION),
                 $this->authentication,
