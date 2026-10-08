@@ -255,6 +255,15 @@ jobs:
           ARASYA_TEST_DB_PASSWORD: root-test-password
         run: php operations-api/tests/mysql-organization-iam-integration.php
 
+      - name: Run MySQL employee onboarding provisioner, first login and password-change limits
+        env:
+          ARASYA_TEST_DB_HOST: 127.0.0.1
+          ARASYA_TEST_DB_PORT: "3306"
+          ARASYA_TEST_DB_NAME: arasya_operations_test
+          ARASYA_TEST_DB_USER: root
+          ARASYA_TEST_DB_PASSWORD: root-test-password
+        run: php operations-api/tests/mysql-organization-onboarding-integration.php
+
       - name: Measure MySQL analytics against three years of canonical history
         env:
           ARASYA_TEST_DB_HOST: 127.0.0.1
@@ -339,6 +348,8 @@ jobs:
         run: php operations-api/tests/mysql-customer-tracking-integration.php
       - name: Run MariaDB organization IAM, source-scoped document authority and exception accountability
         run: php operations-api/tests/mysql-organization-iam-integration.php
+      - name: Run MariaDB employee onboarding provisioner, first login and password-change limits
+        run: php operations-api/tests/mysql-organization-onboarding-integration.php
 
       - name: Measure MariaDB analytics against three years of canonical history
         env:

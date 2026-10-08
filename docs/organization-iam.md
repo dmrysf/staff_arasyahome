@@ -250,6 +250,13 @@ QR ownership, claim, handover, versions and idempotency rules are unchanged.
 8. Does PARASCHIV CRISTINA NICOLETA need an Arasya application (for example the `packing`/`delivery` stages), or
    does her work stay in YD SOFT and WooCommerce?
 
+### Owner decisions of October 2026 (onboarding, API 2.23.0)
+
+The owner's onboarding instruction settles questions 1, 2 (no operator yet), 5, 6 (CEO template yes; `supervisor`
+still open), 7 (finance director with adjust/reverse, accounting without) and 8 (no Arasya application). It keeps
+questions 3 and 4 open. [Employee onboarding](employee-onboarding.md) applies the result through
+`organization-onboarding.json`, and its `pending` list names what is still open.
+
 ## 11. Rollout of 2.22.0 (human-performed, after approval)
 
 1. Verify CI and the `api-deploy` 2.22.0 artifact; back up the database and the private configuration.

@@ -204,3 +204,25 @@ test("service worker and production adapter do not persist or cache authenticati
   assert.doesNotMatch(adapter, /localStorage|sessionStorage|indexedDB|caches\.open/);
   assert.match(adapter, /credentials:\s*"include"/);
 });
+
+test("the first-login password form explains every refusal in Romanian before calling the server", async () => {
+  const { passwordChangeProblem } = await import("../features/auth/ChangePasswordScreen");
+  const base = { currentPassword: "Temp-Password-2026!", newPassword: "o parolă personală lungă", confirmation: "o parolă personală lungă", username: "voican.denisa.nicoleta" };
+  assert.equal(passwordChangeProblem(base), "");
+  assert.equal(passwordChangeProblem({ ...base, confirmation: "" }), "Completează parola actuală, parola nouă și confirmarea.");
+  assert.equal(passwordChangeProblem({ ...base, newPassword: "scurtă", confirmation: "scurtă" }), "Parola nouă trebuie să aibă cel puțin 12 caractere.");
+  assert.equal(passwordChangeProblem({ ...base, newPassword: base.currentPassword, confirmation: base.currentPassword }), "Parola nouă trebuie să fie diferită de parola actuală.");
+  assert.equal(passwordChangeProblem({ ...base, newPassword: "Voican.Denisa.Nicoleta-2026", confirmation: "Voican.Denisa.Nicoleta-2026" }), "Parola nouă nu poate conține numele de utilizator.");
+  assert.equal(passwordChangeProblem({ ...base, confirmation: "o parolă personală diferită" }), "Confirmarea nu coincide cu parola nouă.");
+});
+
+test("every password field has its own Show/Hide control with a name that never repeats the field label", () => {
+  const field = readFileSync(new URL("../features/auth/PasswordField.tsx", import.meta.url), "utf8");
+  assert.match(field, /aria-pressed=\{visible\}/);
+  assert.match(field, /aria-controls=\{id\}/);
+  assert.match(field, /type=\{visible \? "text" : "password"\}/);
+  const screen = readFileSync(new URL("../features/auth/ChangePasswordScreen.tsx", import.meta.url), "utf8");
+  const names = [...screen.matchAll(/toggleName="([^"]+)"/g)].map((match) => match[1]);
+  assert.deepEqual(names, ["parola curentă", "noua parolă", "confirmarea parolei"]);
+  for (const label of ["Parola actuală", "Parola nouă", "Confirmă parola nouă"]) for (const name of names) assert.ok(!`Afișează ${name}`.toLowerCase().includes(label.toLowerCase()));
+});

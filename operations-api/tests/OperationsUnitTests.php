@@ -642,6 +642,58 @@ test('The canonical roster reproduces every workbook group membership with one i
     expectRuntime(fn () => \Arasya\Operations\Management\OrganizationRoster::fromArray(['departments' => $roster['departments'], 'people' => [['name' => 'A B', 'department' => 'montaj', 'rollout' => 'later']]]));
 });
 
+test('The onboarding plan gives every roster person one name-based identity and only the authorized access', function (): void {
+    $reference = dirname(__DIR__) . '/database/reference';
+    $plan = json_decode((string) file_get_contents("{$reference}/organization-onboarding.json"), true, 16, JSON_THROW_ON_ERROR);
+    $roster = json_decode((string) file_get_contents("{$reference}/organization-roster.json"), true, 16, JSON_THROW_ON_ERROR);
+    $O = \Arasya\Operations\Management\OrganizationOnboarding::class;
+    $people = $O::fromArrays($plan, $roster)->people();
+    expect(count($people) === 46 && count(array_unique(array_column($people, 'username'))) === 46, '46 people, 46 unique usernames');
+    expect($O::username('YEMAN MESUT') === 'yeman.mesut' && $O::username('VOICAN DENISA NICOLETA') === 'voican.denisa.nicoleta' && $O::username('PARASCHIV STANICA-LUCIAN') === 'paraschiv.stanica.lucian' && $O::username('Ștefan Țăran') === 'stefan.taran');
+    foreach ($people as $person) {
+        expect(preg_match('/^[a-z0-9]+(\.[a-z0-9]+)+$/D', $person['username']) === 1, "dotted lowercase username {$person['username']}");
+    }
+    $active = array_keys(array_filter($people, static fn (array $p): bool => $p['status'] === 'active'));
+    sort($active);
+    expect($active === ['NITA CRISTINA', 'VOICAN DENISA NICOLETA', 'YEMAN MESUT', 'YEMAN ZELAL', 'YERLIKAYA HIKMET', 'YETIS SINEM'], 'six authorized active identities');
+    expect($people['YETIS SINEM']['documentScopes'] === ['operate' => [], 'approve' => ['outletperdele', 'trendhome']] && $people['YETIS SINEM']['roles'] === ['document-revision-approver'], 'internet-only approval scope');
+    expect($people['VOICAN DENISA NICOLETA']['roles'] === ['operations-manager'] && $people['YERLIKAYA HIKMET']['roles'] === ['operations-manager'], 'two exception approvers');
+    expect($people['YEMAN MESUT']['principal'] === 'ceo' && count(array_filter($people, static fn (array $p): bool => $p['principal'] !== null)) === 1, 'one CEO principal');
+    foreach (['BLEGU DANIELA NICOLETA', 'IANCU IULIANA', 'IVAN IRINA'] as $name) {
+        expect($people[$name]['manager'] === 'YETIS SINEM', "{$name} reports to the online sales director");
+    }
+    expect($people['NITA CRISTINA']['manager'] === null && $people['BUZATU ANDREEA']['manager'] === null, 'proposed and unknown reporting lines stay empty');
+    foreach ($people as $name => $person) {
+        if (in_array($person['department'], ['magazin-dragon-7', 'magazin-dragon-9'], true) || $person['excluded']) {
+            expect($person['status'] === 'inactive' && $person['applications'] === [] && $person['roles'] === [], "{$name}: directory only");
+        }
+    }
+    $mutate = static function (callable $change) use ($plan): array {
+        $copy = $plan;
+        $change($copy);
+        return $copy;
+    };
+    $index = array_flip(array_column($plan['people'], 'name'));
+    $refusals = [
+        'stages' => $mutate(static function (array &$p) use ($index): void { $p['people'][$index['BUZATU ANDREEA']]['stages'] = ['material-preparation']; }),
+        'username' => $mutate(static function (array &$p) use ($index): void { $p['people'][$index['YEMAN MESUT']]['username'] = 'mesut'; }),
+        'cycle' => $mutate(static function (array &$p) use ($index): void { $p['people'][$index['YEMAN MESUT']]['manager'] = 'IVAN IRINA'; }),
+        'self manager' => $mutate(static function (array &$p) use ($index): void { $p['people'][$index['IVAN IRINA']]['manager'] = 'IVAN IRINA'; }),
+        'excluded access' => $mutate(static function (array &$p) use ($index): void { $p['people'][$index['YEMAN FURKAN']]['status'] = 'active'; $p['people'][$index['YEMAN FURKAN']]['applications'] = ['staff']; }),
+        'DR7 B2B' => $mutate(static function (array &$p) use ($index): void { $p['people'][$index['STEREA DANIEL']]['status'] = 'active'; $p['people'][$index['STEREA DANIEL']]['applications'] = ['b2b']; }),
+        'active without application' => $mutate(static function (array &$p) use ($index): void { $p['people'][$index['IVAN IRINA']]['status'] = 'active'; }),
+        'role while inactive' => $mutate(static function (array &$p) use ($index): void { $p['people'][$index['IVAN IRINA']]['roles'] = ['production-documents-operator']; }),
+        'second CEO' => $mutate(static function (array &$p) use ($index): void { $p['people'][$index['VOICAN DENISA NICOLETA']]['principal'] = 'ceo'; }),
+        'missing person' => $mutate(static function (array &$p): void { array_pop($p['people']); }),
+        'application in role' => $mutate(static function (array &$p): void { $p['roles']['contabilitate']['permissions'][] = 'b2b.access'; }),
+        'role at CEO rank' => $mutate(static function (array &$p): void { $p['roles']['director-financiar']['authorityRank'] = 900; }),
+        'department cycle' => $mutate(static function (array &$p): void { $p['departments']['operatiuni']['parent'] = 'depozit'; }),
+    ];
+    foreach ($refusals as $label => $invalid) {
+        expectRuntime(fn () => $O::fromArrays($invalid, $roster));
+    }
+});
+
 test('Document scope conditions are default deny and never interpolate source keys', function (): void {
     $parameters = ['x'];
     expect(\Arasya\Operations\Document\DocumentScopePolicy::condition(null, 'o.source_key', $parameters) === '1 = 1' && $parameters === ['x'], 'root: every source');

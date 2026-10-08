@@ -312,6 +312,12 @@ final class Container
         return new ManagementService($this->pdo, new AuthorizationService(), new IamAuditLogger($this->pdo), $this->passwords, $this->usernames, $this->clock, HealthController::VERSION);
     }
 
+    /** The organisation service (CEO principal, responsibilities) for server-side CLI tools acting as root. */
+    public function organizationService(): OrganizationService
+    {
+        return new OrganizationService($this->pdo, new AuthorizationService(), new IdempotencyStore($this->pdo), new IamAuditLogger($this->pdo), $this->clock);
+    }
+
     public function employeeRepository(): PdoEmployeeRepository
     {
         return $this->employees;

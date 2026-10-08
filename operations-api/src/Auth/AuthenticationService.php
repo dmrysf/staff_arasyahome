@@ -150,6 +150,12 @@ final readonly class AuthenticationService
         $employee = $current->employee;
         $now = $this->clock->now();
         $nowSql = $this->sqlTime($now);
+        // The same per-username and per-address limit as the login: a borrowed or stolen session cannot be
+        // used to guess the current password without bound.
+        if (!$this->rateLimiter->isAllowed($employee->usernameNormalized, $ipAddress, $nowSql)) {
+            $this->audit->record('AUTH_ACCOUNT_BLOCKED', $employee->employeeUuid, $employee->usernameNormalized, $ipAddress, $userAgent, $requestId, $nowSql, ['operation' => 'password_change']);
+            throw new ApiException(429, 'RATE_LIMITED', 'Too many authentication attempts.');
+        }
         if (!$this->passwords->verify($currentPassword, $employee->passwordHash)) {
             $this->rateLimiter->recordFailure($employee->usernameNormalized, $ipAddress, $nowSql);
             $this->audit->record('AUTH_PASSWORD_CHANGE_DENIED', $employee->employeeUuid, null, $ipAddress, $userAgent, $requestId, $nowSql);
@@ -161,6 +167,7 @@ final readonly class AuthenticationService
         if (!$this->employees->completePasswordChange($employee->employeeUuid, $this->passwords->hash($newPassword), $nowSql)) {
             throw new ApiException(500, 'INTERNAL_ERROR', 'The password could not be changed.');
         }
+        $this->rateLimiter->recordSuccess($employee->usernameNormalized, $ipAddress, $nowSql);
         $revoked = $this->sessions->revokeAllForEmployee($employee->employeeUuid, $nowSql);
         $rawToken = $this->tokens->generate();
         $expiresAt = $now->modify("+{$this->sessionTtlSeconds} seconds");

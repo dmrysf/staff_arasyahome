@@ -34,6 +34,8 @@ export function StaffApp({ initialRoute, mode, apiBaseUrl }: { initialRoute: str
   const [sessionCheckError, setSessionCheckError] = useState<StaffServiceError | null>(null);
   const [sessionNotice, setSessionNotice] = useState("");
   const [bootstrapKey, setBootstrapKey] = useState(0);
+  const [changingPassword, setChangingPassword] = useState(false);
+  const [passwordChanged, setPasswordChanged] = useState(false);
 
   const navigate = useCallback((path: string) => {
     if (window.location.pathname !== path) window.history.pushState({}, "", path);
@@ -90,6 +92,8 @@ export function StaffApp({ initialRoute, mode, apiBaseUrl }: { initialRoute: str
     workflowLifecycle.reset();
     setSession(null);
     setSessionNotice("");
+    setChangingPassword(false);
+    setPasswordChanged(false);
     navigate("/login");
   }
 
@@ -99,7 +103,10 @@ export function StaffApp({ initialRoute, mode, apiBaseUrl }: { initialRoute: str
     return <LoginScreen mode={mode} notice={sessionNotice} onLogin={async (input) => { const next = await services.auth.login(input); workflowLifecycle.reset(); setSession(next); setSessionNotice(""); navigate("/"); return next; }} />;
   }
   if (session.employee.mustChangePassword) {
-    return <ChangePasswordScreen displayName={session.employee.displayName} onLogout={logout} onChange={async (input) => { const next = await services.auth.changePassword(input); setSession(next); navigate("/"); }} />;
+    return <ChangePasswordScreen displayName={session.employee.displayName} username={session.employee.username} onLogout={logout} onChange={async (input) => { const next = await services.auth.changePassword(input); setSession(next); navigate("/"); }} />;
+  }
+  if (changingPassword) {
+    return <ChangePasswordScreen voluntary displayName={session.employee.displayName} username={session.employee.username} onLogout={logout} onCancel={() => setChangingPassword(false)} onChange={async (input) => { const next = await services.auth.changePassword(input); setSession(next); setChangingPassword(false); setPasswordChanged(true); }} />;
   }
   if (!session.employee.applications.includes("staff")) return <NoStaffAccessScreen displayName={session.employee.displayName} onLogout={logout} />;
   const workflow = workflowLifecycle.workflow;
@@ -118,7 +125,7 @@ export function StaffApp({ initialRoute, mode, apiBaseUrl }: { initialRoute: str
   else if (exceptionId) screen = <ExceptionScreen key={exceptionId} exceptionId={exceptionId} service={services.exceptions} navigate={navigate} onSessionExpired={() => expireSession(new StaffServiceError("SESSION_EXPIRED"))} />;
   else if (guardedRoute === "/authority" && services.authority) screen = <AuthorityScreen service={services.authority} initialOrderId={new URLSearchParams(window.location.search).get("order") ?? undefined} navigate={navigate} />;
   else if (guardedRoute === "/history") screen = <HistoryScreen service={services.activity} navigate={navigate} />;
-  else if (guardedRoute === "/profile") screen = <ProfileScreen employee={session.employee} mode={services.mode} onLogout={logout} />;
+  else if (guardedRoute === "/profile") screen = <ProfileScreen employee={session.employee} mode={services.mode} onLogout={logout} passwordChanged={passwordChanged} onChangePassword={() => { setPasswordChanged(false); setChangingPassword(true); }} />;
 
   return <LiveProvider service={services.live} enabled={staffReady}>
     <AppShell employee={session.employee} route={guardedRoute} mode={mode} navigate={navigate} immersive={immersive}>{screen}</AppShell>

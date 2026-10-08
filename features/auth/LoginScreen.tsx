@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import type { Session } from "../../services/contracts";
 import { StaffServiceError } from "../../domain/models";
 import type { StaffRuntimeMode } from "../../src/runtimeConfig";
+import { PasswordField } from "./PasswordField";
 
 export function LoginScreen({ mode, notice, onLogin }: { mode: StaffRuntimeMode; notice?: string; onLogin: (input: { username: string; password: string }) => Promise<Session> }) {
   const [username, setUsername] = useState("");
@@ -42,7 +43,7 @@ export function LoginScreen({ mode, notice, onLogin }: { mode: StaffRuntimeMode;
         {mode === "preview" && <div className="preview-notice" role="note"><span>Mod previzualizare</span> Datele afișate sunt pentru testare.</div>}
         {notice && <p className="session-notice" role="status">{notice}</p>}
         <label className="field"><span>Nume utilizator</span><input autoComplete="username" inputMode="text" value={username} onChange={(event) => setUsername(event.target.value)} placeholder="nume.utilizator" /></label>
-        <label className="field"><span>Parolă</span><input autoComplete="current-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="••••••••" /></label>
+        <PasswordField label="Parolă" toggleName="parola" value={password} onChange={setPassword} autoComplete="current-password" placeholder="••••••••" />
         {error && <p className="form-error" role="alert">{error}</p>}
         <button className="button button-primary button-large" type="submit" disabled={submitting}>{submitting ? "Se autentifică…" : "Autentificare"}<span aria-hidden="true">→</span></button>
       </form>
