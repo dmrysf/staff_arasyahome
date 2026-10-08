@@ -13,6 +13,7 @@ use Arasya\Operations\Http\ApiException;
 use Arasya\Operations\Http\Request;
 use Arasya\Operations\Http\RequestContext;
 use Arasya\Operations\Http\Response;
+use Arasya\Operations\Production\ProductionQrLedger;
 use Arasya\Operations\Production\ProductionWorkflow;
 use Arasya\Operations\Production\ProductionWorkflowService;
 use Arasya\Operations\Quality\ExceptionQueries;
@@ -39,6 +40,8 @@ final readonly class OperationalOrderController
         private ApiRateLimiter $rateLimiter,
         private ?ExceptionQueries $quality = null,
         private ?\Arasya\Operations\Document\DocumentQueries $documents = null,
+        private ?\PDO $qrLedger = null,
+        private ?\Arasya\Operations\Production\ProductionAuthorityModes $modes = null,
     ) {
     }
 
@@ -125,15 +128,26 @@ final readonly class OperationalOrderController
             throw new ApiException(404, 'UNKNOWN_QR', 'The scanned code is not registered.');
         }
         if ($resolved['status'] !== 'active') {
+            $qr = $this->qrLedger === null ? null : ProductionQrLedger::state($this->qrLedger, $reference->value);
+            $visible = $qr === null ? null : $this->repository->findByGlobalId($employee->employeeUuid, $qr['globalOrderId']);
+            $mayView = $visible !== null && $this->policy->canView($employee, $visible);
+            if ($qr !== null && $this->qrLedger !== null) {
+                // Evidence of the refused scan (employee, order, revision hint), never the scanned payload.
+                ProductionQrLedger::record($this->qrLedger, ['order_uuid' => $qr['orderUuid'], 'global_order_id' => $qr['globalOrderId'], 'source_key' => $qr['sourceKey']],
+                    ProductionQrLedger::ACTION_SCAN_REJECTED, $reference->value, null, $employee->employeeUuid, 'scan_' . $qr['state'], ProductionQrLedger::modeLabel($this->modes, $qr['sourceKey']), $request->requestId, $this->now());
+            }
             // A QR of a replaced or revoked document revision says so clearly; the active revision
             // number is shown only to an employee who may see the order.
             $state = $this->documents?->qrRevision($reference->value);
             if ($state !== null && $state['status'] !== 'active') {
-                $visible = $this->repository->findByGlobalId($employee->employeeUuid, $state['orderId']);
-                if ($visible === null || !$this->policy->canView($employee, $visible)) {
+                if (!$mayView) {
                     $state['activeRevisionNumber'] = null;
                 }
                 throw \Arasya\Operations\Document\DocumentGuard::invalidQr($state);
+            }
+            // A QR replaced by a manager rotation (superseded) or revoked never resolves the order.
+            if ($qr !== null && in_array($qr['state'], [ProductionQrLedger::RETIRED_SUPERSEDED, ProductionQrLedger::RETIRED_REVOKED], true)) {
+                throw ProductionQrLedger::invalid($qr, $mayView ? $qr['activeRevision'] : null);
             }
             throw new ApiException(410, 'EXPIRED_QR', 'The scanned code is no longer valid.');
         }
@@ -235,5 +249,10 @@ final readonly class OperationalOrderController
         if (!$this->rateLimiter->hit('order-lookup', $employee->employeeUuid, self::LOOKUP_LIMIT, self::LOOKUP_WINDOW_SECONDS)) {
             throw new ApiException(429, 'RATE_LIMITED', 'Too many lookups. Try again shortly.');
         }
+    }
+
+    private function now(): string
+    {
+        return (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s.u');
     }
 }

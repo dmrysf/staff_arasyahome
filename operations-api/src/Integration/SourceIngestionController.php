@@ -30,6 +30,7 @@ final readonly class SourceIngestionController
         private Clock $clock,
         private SourceRegistry $registry,
         private ?SourceAuthorityQueries $authority = null,
+        private ?\Arasya\Operations\Production\ProductionQrService $qr = null,
     ) {
     }
 
@@ -86,6 +87,7 @@ final readonly class SourceIngestionController
             'sourceKey' => $source->key,
             'mode' => $source->mode->value,
             'productionAuthorityMode' => $source->authorityMode->value,
+            'qrAuthorityMode' => $source->qrAuthorityMode->value,
             'contract' => [
                 'schemaVersion' => 1,
                 'workflowId' => $workflow['id'],
@@ -104,6 +106,38 @@ final readonly class SourceIngestionController
     {
         $source = $this->authorize($request, $sourceKey);
         $queries = $this->authority ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Production authority queries are not ready.');
+        $ids = self::orderIds($request);
+        return Response::json([
+            'ok' => true,
+            'sourceKey' => $source->key,
+            'productionAuthorityMode' => $source->authorityMode->value,
+            'orders' => $queries->forOrders($source->key, $ids),
+        ], 200, ['Cache-Control' => 'no-store']);
+    }
+
+    /**
+     * Production QR state of up to 50 of the source's own orders: {"orderIds": ["63366", ...]}. Read-only
+     * (nothing is issued or written, not even the contact time) and allowed in validation and active mode.
+     * The active QR payload is returned only for orders whose QR authority is Arasya (an operations order
+     * of a source in QR observe or enforce); unknown orders are reported with exists=false.
+     */
+    public function orderQr(Request $request, string $sourceKey): Response
+    {
+        $source = $this->authorize($request, $sourceKey);
+        $qr = $this->qr ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Production QR authority is not ready.');
+        $ids = self::orderIds($request);
+        return Response::json([
+            'ok' => true,
+            'sourceKey' => $source->key,
+            'productionAuthorityMode' => $source->authorityMode->value,
+            'qrAuthorityMode' => $source->qrAuthorityMode->value,
+            'orders' => $qr->sourceStates($source->key, $ids),
+        ], 200, ['Cache-Control' => 'no-store']);
+    }
+
+    /** @return list<string> */
+    private static function orderIds(Request $request): array
+    {
         $input = $request->json(8192);
         $ids = $input['orderIds'] ?? null;
         if (array_keys($input) !== ['orderIds'] || !is_array($ids) || !array_is_list($ids) || $ids === [] || count($ids) > self::MAX_AUTHORITY_ORDERS) {
@@ -117,12 +151,7 @@ final readonly class SourceIngestionController
         if (count(array_unique($ids)) !== count($ids)) {
             throw new ApiException(422, 'SOURCE_PAYLOAD_INVALID', 'orderIds must be unique.');
         }
-        return Response::json([
-            'ok' => true,
-            'sourceKey' => $source->key,
-            'productionAuthorityMode' => $source->authorityMode->value,
-            'orders' => $queries->forOrders($source->key, $ids),
-        ], 200, ['Cache-Control' => 'no-store']);
+        return $ids;
     }
 
     private function authorize(Request $request, string $sourceKey): SourceDefinition

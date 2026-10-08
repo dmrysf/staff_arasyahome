@@ -11,6 +11,8 @@ use Arasya\Operations\Http\ApiException;
 use Arasya\Operations\Iam\IamAuditLogger;
 use Arasya\Operations\Order\GlobalOrderId;
 use Arasya\Operations\Order\QrReference;
+use Arasya\Operations\Production\ProductionAuthorityModes;
+use Arasya\Operations\Production\ProductionQrLedger;
 use Arasya\Operations\Quality\IdempotencyStore;
 use Arasya\Operations\Quality\LiveEvents;
 use Arasya\Operations\Support\Clock;
@@ -65,6 +67,7 @@ final readonly class DocumentService
         private IdempotencyStore $idempotency,
         private IamAuditLogger $audit,
         private Clock $clock,
+        private ?ProductionAuthorityModes $modes = null,
     ) {
         $this->store = new DocumentStore($pdo);
     }
@@ -389,7 +392,9 @@ final readonly class DocumentService
             $revision = $this->store->latestRevision($orderUuid);
             $this->pdo->prepare("UPDATE production_document_revisions SET status = 'revoked', active_order_uuid = NULL, revoked_at = ?, revoked_by_employee_uuid = ?, revoke_reason = ? WHERE revision_uuid = ? AND status = 'active'")
                 ->execute([$now, $actor->employeeUuid, $reason, $revision['revision_uuid']]);
-            $this->pdo->prepare("UPDATE order_qr_references SET status = 'revoked', revoked_at = ? WHERE order_uuid = ? AND status = 'active'")->execute([$now, $orderUuid]);
+            foreach (ProductionQrLedger::retireActive($this->pdo, $orderUuid, ProductionQrLedger::RETIRED_REVOKED, $now) as $retired) {
+                ProductionQrLedger::record($this->pdo, $order, ProductionQrLedger::ACTION_REVOKED, $retired, null, $actor->employeeUuid, 'document_revoked', $this->qrMode($order), $requestId, $now);
+            }
             $this->store->updateOrderDocument($orderUuid, 'revoked', (string) $revision['revision_uuid'], $now);
             $this->store->openBlock($order, (string) $revision['revision_uuid'], 'root_revoked', null, $now);
             $this->store->event($orderUuid, 'revoked', (int) $revision['revision_number'], (string) $revision['revision_uuid'], null, $actor->employeeUuid, ['reason' => $reason], $requestId, $now);
@@ -479,12 +484,14 @@ final readonly class DocumentService
         $qr->execute([$orderUuid]);
         $active = $qr->fetchAll(PDO::FETCH_COLUMN);
         $reference = $active[0] ?? null;
+        foreach (array_slice($active, 1) as $other) {
+            // Unreachable since 2.19.0 (one active reference per order is enforced); kept for old data.
+            $this->pdo->prepare("UPDATE order_qr_references SET status = 'revoked', retired_reason = 'superseded', revoked_at = ? WHERE qr_reference = ? AND status = 'active'")->execute([$now, $other]);
+        }
         if ($reference === null) {
             $reference = QrReference::generate()->value;
             $this->pdo->prepare("INSERT INTO order_qr_references (qr_reference, order_uuid, status, created_at) VALUES (?, ?, 'active', ?)")->execute([$reference, $orderUuid, $now]);
-        }
-        foreach (array_slice($active, 1) as $other) {
-            $this->pdo->prepare("UPDATE order_qr_references SET status = 'revoked', revoked_at = ? WHERE qr_reference = ? AND status = 'active'")->execute([$now, $other]);
+            ProductionQrLedger::record($this->pdo, $order, ProductionQrLedger::ACTION_ISSUED, (string) $reference, null, $actor->employeeUuid, 'document_revision_1', $this->qrMode($order), $requestId, $now);
         }
         $revisionUuid = $this->insertRevision($orderUuid, 1, (string) $reference, null, $actor->employeeUuid, $now);
         $this->store->updateOrderDocument($orderUuid, 'active', $revisionUuid, $now);
@@ -519,9 +526,10 @@ final readonly class DocumentService
             $this->pdo->prepare("UPDATE production_document_revisions SET status = 'superseded', active_order_uuid = NULL, superseded_at = ? WHERE revision_uuid = ? AND status = 'active'")
                 ->execute([$now, $previous['revision_uuid']]);
         }
-        $this->pdo->prepare("UPDATE order_qr_references SET status = 'revoked', revoked_at = ? WHERE order_uuid = ? AND status = 'active'")->execute([$now, $orderUuid]);
+        $retired = ProductionQrLedger::retireActive($this->pdo, $orderUuid, ProductionQrLedger::RETIRED_SUPERSEDED, $now);
         $reference = QrReference::generate()->value;
         $this->pdo->prepare("INSERT INTO order_qr_references (qr_reference, order_uuid, status, created_at) VALUES (?, ?, 'active', ?)")->execute([$reference, $orderUuid, $now]);
+        ProductionQrLedger::record($this->pdo, $order, ProductionQrLedger::ACTION_ROTATED, $reference, $retired[0] ?? null, $actor->employeeUuid, 'document_revision', $this->qrMode($order), $requestId, $now);
         $revisionUuid = $this->insertRevision($orderUuid, $number, $reference, (string) $request['request_uuid'], $actor->employeeUuid, $now, $snapshot);
         $this->pdo->prepare('UPDATE production_document_revisions SET superseded_by_revision_uuid = ?, superseded_at = COALESCE(superseded_at, ?) WHERE revision_uuid = ?')
             ->execute([$revisionUuid, $now, $previous['revision_uuid']]);
@@ -626,7 +634,13 @@ final readonly class DocumentService
     /** A short, non-reversible QR reference for audit and screens: never the printed payload. */
     public static function qrHint(string $reference): string
     {
-        return substr(hash('sha256', $reference), 0, 10);
+        return ProductionQrLedger::hint($reference);
+    }
+
+    /** @param array<string, mixed> $order */
+    private function qrMode(array $order): string
+    {
+        return ProductionQrLedger::modeLabel($this->modes, (string) $order['source_key']);
     }
 
     /** @template T @param callable(): T $operation @return T */

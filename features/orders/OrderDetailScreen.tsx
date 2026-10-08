@@ -21,10 +21,12 @@ import { CuttingTransferRequest } from "../cutting/CuttingWork";
 import { blockedDocumentNotice, canUseDocuments, type DocumentApi } from "../../domain/documents";
 import { DocumentPanel } from "../documents/DocumentPanel";
 import { authorityLabels } from "../../domain/authority";
+import type { ProductionQrApi } from "../../domain/productionQr";
+import { ProductionQrPanel } from "./ProductionQrPanel";
 
 const relationTime = new Intl.DateTimeFormat("ro-RO", { day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" });
 
-export function OrderDetailScreen({ orderId, service, exceptions, cutting, documents, permissions, workflow, navigate, onSessionExpired }: { orderId: string; service: OrderService; exceptions: ExceptionService; cutting?: CuttingApi; documents?: DocumentApi; permissions: readonly string[]; workflow: ProductionWorkflow; navigate: (path: string) => void; onSessionExpired: () => void }) {
+export function OrderDetailScreen({ orderId, service, exceptions, cutting, documents, productionQr, permissions, workflow, navigate, onSessionExpired }: { orderId: string; service: OrderService; exceptions: ExceptionService; cutting?: CuttingApi; documents?: DocumentApi; /** Only passed for managers who may inspect QR authority. */ productionQr?: ProductionQrApi; permissions: readonly string[]; workflow: ProductionWorkflow; navigate: (path: string) => void; onSessionExpired: () => void }) {
   const [order, setOrder] = useState<StaffOrder | null>(null);
   const [error, setError] = useState<StaffServiceError | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
@@ -57,6 +59,7 @@ export function OrderDetailScreen({ orderId, service, exceptions, cutting, docum
       {cutting && order.productionStageId === "material-preparation" && order.employeeAllowedAction?.id === "complete_stage" && <CuttingTransferRequest order={order} service={cutting} onChanged={() => { setOrder(null); setReloadKey(v => v + 1); }} />}
       {canReturnToCutting(order, permissions) && <section className="detail-section return-section"><ReturnToCuttingPanel order={order} service={exceptions} onSessionExpired={onSessionExpired} onReported={(id) => navigate(`/exceptions/${encodeURIComponent(id)}`)} /></section>}
       {documents && canUseDocuments(permissions) && <DocumentPanel orderId={order.id} service={documents} permissions={permissions} onChanged={() => setReloadKey((value) => value + 1)} />}
+      {productionQr && <ProductionQrPanel orderId={order.id} service={productionQr} />}
       <ProductionRoadmap workflow={workflow} currentStageId={order.productionStageId} />
       <section className="detail-section detail-products"><div className="section-title"><p className="eyebrow">Producție</p><h2>{order.products.length === 1 ? "1 produs" : `${order.products.length} produse`}</h2></div>{order.products.map((item) => { const size = formatMeasurements(item); const location = item.productionContext?.project; return <div className="product-detail" key={item.id}>{location && <p className="project-location" data-testid="project-location">{projectPlace(location)}</p>}<div><strong>{item.name}</strong>{item.code && <span>{item.code}</span>}</div><dl>{item.color && <div><dt>Culoare</dt><dd>{item.color}</dd></div>}{item.variant && <div><dt>Variantă</dt><dd>{item.variant}</dd></div>}{size && <div><dt>Dimensiune</dt><dd>{size}</dd></div>}{item.meters != null && <div><dt>Metri</dt><dd>{formatMeters(item.meters)}</dd></div>}{item.options?.map((option) => <div key={option.label}><dt>{option.label}</dt><dd>{option.value}</dd></div>)}<div><dt>Cantitate</dt><dd>{item.quantity}</dd></div></dl></div>; })}</section>
       {order.productionNotes && <section className="production-note"><p className="eyebrow">Notă de producție</p><p>{order.productionNotes}</p></section>}

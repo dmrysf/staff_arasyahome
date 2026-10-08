@@ -371,6 +371,25 @@
 .document-blocked strong { font-size: 1.15rem; letter-spacing: .04em; color: #fff; }
 .document-blocked span { font-size: .9rem; line-height: 1.4; }
 .document-panel { display: grid; gap: 12px; min-width: 0; }
+.qr-panel { display: grid; gap: 12px; min-width: 0; }
+.qr-panel h2 { margin: 0; font-size: 1.35rem; letter-spacing: .02em; }
+.qr-authority { margin: 0; padding: 9px 12px; border-radius: var(--radius-sm); font-size: .82rem; font-weight: 700; }
+.qr-authority-arasya { color: #b7e4c4; background: rgba(90,190,120,.1); }
+.qr-authority-source { color: #dccbad; background: rgba(214,164,87,.08); }
+.qr-active { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 14px; align-items: center; min-width: 0; }
+.qr-preview { width: 168px; height: 168px; padding: 6px; border-radius: var(--radius-sm); background: #fff; image-rendering: pixelated; }
+.qr-active-meta { display: grid; gap: 8px; min-width: 0; }
+.qr-state { margin: 0; font-weight: 800; }
+.qr-state-active { color: var(--color-success); }
+.qr-rotate select { width: 100%; min-height: 50px; padding: 0 12px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface-soft); color: var(--color-text); font: inherit; }
+.qr-rotate-buttons { display: flex; flex-wrap: wrap; gap: 10px; }
+.qr-history summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; color: var(--color-text-muted); font-weight: 700; }
+.qr-history ol { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.qr-history li { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; padding: 9px 11px; border-radius: var(--radius-sm); background: var(--color-surface-soft); font-size: .85rem; }
+.qr-history li small { grid-column: 1 / -1; color: var(--color-text-muted); overflow-wrap: anywhere; }
+.qr-history-superseded span, .qr-history-revoked span { color: #ffc2c4; }
+.qr-history-active span { color: var(--color-success); }
+@media (max-width: 420px) { .qr-active { grid-template-columns: 1fr; justify-items: start; } }
 .document-panel h2 { margin: 0; font-size: 1.35rem; letter-spacing: .02em; }
 .document-state { margin: 0; padding: 9px 12px; border-radius: var(--radius-sm); background: var(--color-surface-soft); color: var(--color-text-muted); font-size: .82rem; font-weight: 700; }
 .document-state-active { color: #b7e4c4; background: rgba(90,190,120,.1); }

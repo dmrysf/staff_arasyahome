@@ -153,7 +153,7 @@ $rotated = $container->projectionWriter()->rotateQrReference("outletperdele:{$or
 $oldOutletQr = (string) $outlet['body']['qr'];
 check($rotated !== $oldOutletQr, 'QR rotation issues a new reference');
 $pdo->prepare("UPDATE operational_orders SET production_stage_id = 'material-preparation' WHERE global_order_id = ?")->execute(["outletperdele:{$orderOutlet}"]);
-checkError($qr($alice, $oldOutletQr), 410, 'EXPIRED_QR', 'a revoked QR reference is expired');
+checkError($qr($alice, $oldOutletQr), 410, 'QR_SUPERSEDED', 'a QR replaced by an operator rotation is refused as superseded');
 $pdo->prepare("UPDATE operational_orders SET production_stage_id = 'labeling' WHERE global_order_id = ?")->execute(["outletperdele:{$orderOutlet}"]);
 
 // ---- Claim -------------------------------------------------------------------

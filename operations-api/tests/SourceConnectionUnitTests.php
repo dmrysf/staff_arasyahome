@@ -18,6 +18,7 @@ use Arasya\Operations\Order\OrderProjectionWriter;
 use Arasya\Operations\Production\CanonicalProductionWorkflowContract;
 use Arasya\Operations\Production\ProductionAuthorityMode;
 use Arasya\Operations\Production\ProductionAuthorityModes;
+use Arasya\Operations\Production\QrAuthorityMode;
 use Arasya\Operations\Security\ApiRateLimiter;
 use Arasya\Operations\Tests\MutableClock;
 
@@ -363,7 +364,7 @@ test('signed heartbeat reports mode and contract only, for validation and active
     $pdo->exec("INSERT INTO order_sources (source_key, status) VALUES ('trendhome', 'active'), ('outletperdele', 'active')");
     foreach (['trendhome' => [SOURCE_TEST_TRENDHOME_SECRET, 'active'], 'outletperdele' => [SOURCE_TEST_OUTLET_SECRET, 'validation']] as $key => [$secret, $mode]) {
         $response = $controller->heartbeat(sourceSignedRequest(['sentAt' => '2026-10-07T10:00:00Z'], $secret), $key);
-        expect($response->payload === ['ok' => true, 'sourceKey' => $key, 'mode' => $mode, 'productionAuthorityMode' => 'legacy', 'contract' => ['schemaVersion' => 1, 'workflowId' => 'curtain-production', 'workflowVersion' => 1, 'stageCount' => 14]], 'Unexpected heartbeat: ' . sourceJson($response));
+        expect($response->payload === ['ok' => true, 'sourceKey' => $key, 'mode' => $mode, 'productionAuthorityMode' => 'legacy', 'qrAuthorityMode' => 'legacy', 'contract' => ['schemaVersion' => 1, 'workflowId' => 'curtain-production', 'workflowVersion' => 1, 'stageCount' => 14]], 'Unexpected heartbeat: ' . sourceJson($response));
         expect(sourceResponseHasNoSecret($response));
     }
     $contacts = $pdo->query('SELECT COUNT(*) FROM order_sources WHERE last_contact_at IS NOT NULL')->fetchColumn();
@@ -547,7 +548,7 @@ test('expected API errors and validation are unchanged by the PDO diagnostics', 
 
 test('migrations stay sequential through 018 and the canonical workflow keeps its 14 stages', function (): void {
     $migrations = array_map('basename', glob(dirname(__DIR__) . '/database/migrations/*.sql') ?: []);
-    expect(count($migrations) === 18 && str_starts_with($migrations[0], '001_') && str_starts_with($migrations[16], '017_') && $migrations[17] === '018_production_authority.sql');
+    expect(count($migrations) === 19 && str_starts_with($migrations[0], '001_') && str_starts_with($migrations[16], '017_') && $migrations[17] === '018_production_authority.sql' && $migrations[18] === '019_production_qr_authority.sql');
     expect(count(CanonicalProductionWorkflowContract::STAGES) === 14);
     expect(array_keys(CanonicalProductionWorkflowContract::STAGES) === ['waiting', 'material-preparation', 'workshop-receiving', 'labeling', 'material-straightening', 'bottom-hem', 'side-hem', 'ironing', 'height', 'header-tape', 'sewing-finishing', 'quality-control', 'packing', 'delivery']);
     // 018 is additive: it never converts the authority of existing orders.
@@ -587,6 +588,44 @@ test('production authority mode is per source, defaults to legacy and never disa
     }
 });
 
+test('QR authority mode is per source, defaults to legacy and enforce requires production authority enforce', function (): void {
+    $registry = SourceRegistry::fromConfig(sourceTestConfig([
+        'trendhome' => ['mode' => 'active', 'authority' => 'enforce', 'qrAuthority' => 'Enforce'],
+        'outletperdele' => ['mode' => 'active', 'authority' => 'enforce'],
+    ]));
+    expect($registry->find('trendhome')?->qrAuthorityMode === QrAuthorityMode::Enforce && $registry->issues() === []);
+    expect($registry->find('outletperdele')?->qrAuthorityMode === QrAuthorityMode::Legacy, 'Unset QR authority mode is legacy.');
+    $modes = ProductionAuthorityModes::fromRegistry($registry);
+    expect($modes->qrModeFor('trendhome') === QrAuthorityMode::Enforce && $modes->qrModeFor('outletperdele') === QrAuthorityMode::Legacy && $modes->qrModeFor('b2b') === QrAuthorityMode::Legacy);
+    expect($modes->modeFor('trendhome') === ProductionAuthorityMode::Enforce, 'The QR mode never changes the production authority mode.');
+
+    $guarded = SourceRegistry::fromConfig(sourceTestConfig([
+        'trendhome' => ['mode' => 'active', 'authority' => 'observe', 'qrAuthority' => 'enforce'],
+        'outletperdele' => ['mode' => 'active', 'qrAuthority' => 'sometimes'],
+    ]));
+    expect($guarded->find('trendhome')?->qrAuthorityMode === QrAuthorityMode::Observe && $guarded->find('trendhome')?->canIngest() === true, 'QR enforce without production enforce runs as observe and keeps ingestion working.');
+    expect(in_array(['code' => 'qr_authority_requires_production_enforce', 'sourceKey' => 'trendhome'], $guarded->issues(), true));
+    expect($guarded->find('outletperdele')?->qrAuthorityMode === QrAuthorityMode::Legacy && in_array(['code' => 'invalid_qr_authority_mode', 'sourceKey' => 'outletperdele'], $guarded->issues(), true), 'An unreadable QR mode falls back to legacy.');
+
+    $home = sys_get_temp_dir() . '/arasya-qr-config-' . bin2hex(random_bytes(6));
+    mkdir($home . '/arasya-config', 0700, true);
+    try {
+        file_put_contents($home . '/arasya-config/secrets.json', json_encode([
+            'ARASYA_APP_SECRET' => str_repeat('j', 32), 'DB_NAME' => 'db', 'DB_USER_NAME' => 'u', 'DB_USER_PASSWORD' => 'p', 'ARASYA_ALLOWED_ORIGINS' => ['https://staff.arasyahome.ro'],
+            'ARASYA_SOURCE_SECRET_TRENDHOME' => SOURCE_TEST_TRENDHOME_SECRET, 'ARASYA_SOURCE_MODE_TRENDHOME' => 'active', 'ARASYA_SOURCE_AUTHORITY_TRENDHOME' => 'enforce', 'ARASYA_SOURCE_QR_AUTHORITY_TRENDHOME' => 'observe',
+            'ARASYA_SOURCE_SECRET_OUTLETPERDELE' => SOURCE_TEST_OUTLET_SECRET, 'ARASYA_SOURCE_MODE_OUTLETPERDELE' => 'active',
+        ], JSON_THROW_ON_ERROR));
+        chmod($home . '/arasya-config/secrets.json', 0600);
+        $file = SourceRegistry::fromConfig(Config::fromEnvironment(new ConfigLoader(['HOME' => $home])));
+        expect($file->find('trendhome')?->qrAuthorityMode === QrAuthorityMode::Observe && $file->find('trendhome')?->authorityMode === ProductionAuthorityMode::Enforce, 'ARASYA_SOURCE_QR_AUTHORITY_<SOURCE> is read from the private configuration file.');
+        expect($file->find('outletperdele')?->qrAuthorityMode === QrAuthorityMode::Legacy && $file->issues() === []);
+    } finally {
+        @unlink($home . '/arasya-config/secrets.json');
+        @rmdir($home . '/arasya-config');
+        @rmdir($home);
+    }
+});
+
 test('heartbeat reports the source authority mode without changing the contract', function (): void {
     ['controller' => $controller, 'pdo' => $pdo] = sourceTestController(sourceTestConfig(['trendhome' => ['mode' => 'active', 'authority' => 'enforce'], 'outletperdele' => ['authority' => 'observe']]));
     $pdo->exec("CREATE TABLE order_sources (source_key TEXT PRIMARY KEY, status TEXT NOT NULL, last_contact_at TEXT NULL, updated_at TEXT NULL)");
@@ -595,6 +634,7 @@ test('heartbeat reports the source authority mode without changing the contract'
     $outlet = $controller->heartbeat(sourceSignedRequest(['sentAt' => '2026-10-07T10:00:00Z'], SOURCE_TEST_OUTLET_SECRET), 'outletperdele');
     expect($home->payload['productionAuthorityMode'] === 'enforce' && $home->payload['mode'] === 'active' && $home->payload['contract']['stageCount'] === 14);
     expect($outlet->payload['productionAuthorityMode'] === 'observe' && $outlet->payload['mode'] === 'validation');
+    expect($home->payload['qrAuthorityMode'] === 'legacy' && $outlet->payload['qrAuthorityMode'] === 'legacy', 'The heartbeat also reports the QR authority mode (legacy by default).');
 });
 
 test('signed order authority answers production facts only and rejects malformed requests without storage', function (): void {

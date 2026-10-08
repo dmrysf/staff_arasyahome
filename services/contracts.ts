@@ -69,6 +69,8 @@ export type ServiceBundle = {
   documents?: import("../domain/documents").DocumentApi;
   /** Manager-only production authority takeover; absent in preview and demo. */
   authority?: import("../domain/authority").AuthorityApi;
+  /** Manager-only production QR authority (view, preview, rotation); absent in preview and demo. */
+  productionQr?: import("../domain/productionQr").ProductionQrApi;
   auth: AuthService;
   employee: EmployeeService;
   orders: OrderService;

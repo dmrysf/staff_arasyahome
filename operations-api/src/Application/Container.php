@@ -168,9 +168,11 @@ final class Container
                 $rateLimiter,
                 $exceptions,
                 $documentQueries,
+                $this->pdo,
+                $authorityModes,
             ),
             new ActivityController(new PdoActivityRepository($this->pdo), $this->authentication, $authorization, $this->config, $context, $this->clock),
-            new SourceIngestionController(new SourceSignatureVerifier($this->config->sourceSecrets), $this->projectionWriter(), $rateLimiter, $this->clock, SourceRegistry::fromConfig($this->config), new \Arasya\Operations\Integration\SourceAuthorityQueries($this->pdo)),
+            new SourceIngestionController(new SourceSignatureVerifier($this->config->sourceSecrets), $this->projectionWriter(), $rateLimiter, $this->clock, SourceRegistry::fromConfig($this->config), new \Arasya\Operations\Integration\SourceAuthorityQueries($this->pdo), $this->productionQrService($authorization, $iamAudit)),
             new ManagementController(
                 new ManagementService($this->pdo, $authorization, new IamAuditLogger($this->pdo), $this->passwords, $this->usernames, $this->clock, HealthController::VERSION),
                 $this->authentication,
@@ -217,7 +219,14 @@ final class Container
                 $this->config,
                 $context,
             ),
+            new \Arasya\Operations\Production\ProductionQrController($this->productionQrService($authorization, $iamAudit), $this->authentication, $csrf, $this->config, $context),
         );
+    }
+
+    /** Production QR authority: manager view and rotation, signed source answer, operator reconciliation. */
+    public function productionQrService(?AuthorizationService $authorization = null, ?IamAuditLogger $iamAudit = null): \Arasya\Operations\Production\ProductionQrService
+    {
+        return new \Arasya\Operations\Production\ProductionQrService($this->pdo, $authorization ?? new AuthorizationService(), $this->authorityModes(), $iamAudit ?? new IamAuditLogger($this->pdo), $this->audit, $this->clock);
     }
 
     /** The central production document engine (also used by server-side tools and tests). */
@@ -241,6 +250,7 @@ final class Container
             $idempotency ?? new IdempotencyStore($this->pdo),
             $audit ?? new IamAuditLogger($this->pdo),
             $this->clock,
+            $this->authorityModes(),
         );
     }
 

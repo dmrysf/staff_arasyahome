@@ -273,7 +273,14 @@ export type ServiceErrorCode =
   | "AUTHORITY_RELEASE_NOT_ALLOWED"
   | "INVALID_STAGE"
   | "WORKFLOW_MISMATCH"
-  | "PRODUCTION_COMPLETED";
+  | "PRODUCTION_COMPLETED"
+  | "QR_SUPERSEDED"
+  | "QR_REVOKED"
+  | "QR_CHANGED"
+  | "QR_CUTOVER_DISABLED"
+  | "QR_NOT_ARASYA"
+  | "QR_NOT_SUPPORTED"
+  | "QR_DOCUMENT_CONTROLLED";
 
 export class StaffServiceError extends Error {
   constructor(public readonly code: ServiceErrorCode, message?: string, public readonly details?: Readonly<Record<string, unknown>>) {

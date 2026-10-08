@@ -82,7 +82,7 @@ require __DIR__ . '/HandoffSchemaFixture.php';
 restorePreExceptionsTestSchema($pdo);
 $grantsBefore = $pdo->query('SELECT * FROM role_permissions ORDER BY role_id, permission_id')->fetchAll(PDO::FETCH_ASSOC);
 $activityBefore = (int) $pdo->query('SELECT COUNT(*) FROM order_activity_events')->fetchColumn();
-check((new MigrationRunner($pdo))->migrate($migrations) === ['014_production_exceptions.sql', '015_cutting_pool.sql','016_management_analytics.sql','017_production_documents.sql','018_production_authority.sql'], '013 -> 014 -> 015 official additive upgrade');
+check((new MigrationRunner($pdo))->migrate($migrations) === ['014_production_exceptions.sql', '015_cutting_pool.sql','016_management_analytics.sql','017_production_documents.sql','018_production_authority.sql','019_production_qr_authority.sql'], '013 -> 014 -> 015 official additive upgrade');
 check((new MigrationRunner($pdo))->migrate($migrations) === [], '014 recorded exactly once');
 check($pdo->query("SELECT rp.* FROM role_permissions rp JOIN roles r ON r.role_id = rp.role_id WHERE rp.permission_id NOT IN (SELECT permission_id FROM permissions WHERE permission_key = 'production.manage_authority') AND r.role_key NOT IN ('operations-manager','analytics-reader','production-documents-operator','document-revision-approver') ORDER BY rp.role_id, rp.permission_id")->fetchAll(PDO::FETCH_ASSOC) === $grantsBefore, '014 changes no existing role grant');
 check((int) $pdo->query('SELECT COUNT(*) FROM order_activity_events')->fetchColumn() === $activityBefore, '014 rewrites no activity history');

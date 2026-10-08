@@ -37,16 +37,21 @@ final class DocumentGuard
     }
 
     /**
-     * A QR of a replaced or revoked document revision can never act for production. Returns quietly for
-     * an active or unknown reference (the caller's own QR checks still apply).
+     * A QR of a replaced or revoked document revision, or a QR retired by a rotation or revocation, can
+     * never act for production. Returns quietly for an active or unknown reference (the caller's own QR
+     * checks still apply).
      */
     public static function assertQrUsable(\PDO $pdo, string $qrReference): void
     {
         $state = (new DocumentQueries($pdo))->qrRevision($qrReference);
-        if ($state === null || $state['status'] === 'active') {
-            return;
+        if ($state !== null && $state['status'] !== 'active') {
+            throw self::invalidQr($state);
         }
-        throw self::invalidQr($state);
+        // A QR replaced by a manager rotation or revoked outside a document is refused the same way.
+        $qr = \Arasya\Operations\Production\ProductionQrLedger::state($pdo, $qrReference);
+        if ($qr !== null && in_array($qr['state'], [\Arasya\Operations\Production\ProductionQrLedger::RETIRED_SUPERSEDED, \Arasya\Operations\Production\ProductionQrLedger::RETIRED_REVOKED], true)) {
+            throw \Arasya\Operations\Production\ProductionQrLedger::invalid($qr, null);
+        }
     }
 
     /** @param array{revisionNumber: int, status: string, activeRevisionNumber: int|null} $state */
