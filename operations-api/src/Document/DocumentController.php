@@ -45,6 +45,7 @@ final readonly class DocumentController
         private RequestContext $context,
         private ApiRateLimiter $rateLimiter,
         private PDO $pdo,
+        private DocumentScopePolicy $scopes,
     ) {
     }
 
@@ -60,7 +61,7 @@ final readonly class DocumentController
                 if ($after !== null && (!ctype_digit($after) || strlen($after) > 18)) {
                     throw new ApiException(400, 'INVALID_CURSOR', 'The provided cursor is invalid.');
                 }
-                return $this->json($this->queries->orderDocument($this->orderUuid($globalId), $this->documents->canViewHistory($actor) || $actor->isRoot, $after === null ? null : (int) $after));
+                return $this->json($this->queries->orderDocument($this->orderUuid($globalId, $actor), $this->documents->canViewHistory($actor) || $actor->isRoot, $after === null ? null : (int) $after));
             }
             if ($request->method !== 'POST' || $action === '') {
                 throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
@@ -81,7 +82,7 @@ final readonly class DocumentController
                 throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
             }
             $actor = $this->viewer($request);
-            return DocumentRenderer::preview((new DocumentRenderer($this->pdo))->render($this->revisionUuid($this->orderUuid(rawurldecode($m[1])), (int) $m[2], $this->documents->canViewHistory($actor) || $actor->isRoot), true));
+            return DocumentRenderer::preview((new DocumentRenderer($this->pdo))->render($this->revisionUuid($this->orderUuid(rawurldecode($m[1]), $actor), (int) $m[2], $this->documents->canViewHistory($actor) || $actor->isRoot), true));
         }
         if ($request->method === 'GET' && $path === '/lookup') {
             $actor = $this->viewer($request);
@@ -89,7 +90,7 @@ final readonly class DocumentController
             if ($code === null) {
                 throw new ApiException(400, 'INVALID_LOOKUP_CODE', 'The order code is not valid.');
             }
-            return $this->json(['items' => $this->queries->lookup($code)]);
+            return $this->json(['items' => $this->queries->lookup($code, $this->scopes->visibleSources($actor))]);
         }
         if ($request->method === 'GET' && $path === '/attention') {
             $actor = $this->session($request)->employee;
@@ -97,7 +98,7 @@ final readonly class DocumentController
             if (!$this->documents->canRequest($actor) && !$this->documents->canGenerate($actor)) {
                 throw new ApiException(403, 'UNAUTHORIZED_ACTION', 'Permission denied.');
             }
-            return $this->json(['items' => $this->queries->attention()]);
+            return $this->json(['items' => $this->queries->attention($this->scopes->sources($actor, DocumentScopePolicy::OPERATE))]);
         }
         if ($request->method === 'GET' && $path === '/revision-requests') {
             $actor = $this->session($request)->employee;
@@ -106,15 +107,18 @@ final readonly class DocumentController
             if (!in_array($view, ['pending', 'history'], true)) {
                 throw new ApiException(400, 'INVALID_REQUEST', 'Unknown view.');
             }
-            return $this->json(['items' => $this->queries->queue($view), 'pendingCount' => $this->queries->pendingCount()]);
+            $sources = $this->approvers->via($actor) === RevisionApproverPolicy::VIA_ROOT ? null : $this->scopes->sources($actor, DocumentScopePolicy::APPROVE);
+            return $this->json(['items' => $this->queries->queue($view, $sources), 'pendingCount' => $this->queries->pendingCount($sources)]);
         }
         if (preg_match('#^/revision-requests/([0-9a-f-]{36})(?:/(decision|cancel))?$#D', $path, $m) === 1) {
             $action = $m[2] ?? '';
             if ($request->method === 'GET' && $action === '') {
                 $actor = $this->session($request)->employee;
                 $detail = $this->queries->requestDetail($m[1]);
-                $allowed = $this->approvers->via($actor) !== null || $this->documents->canViewHistory($actor)
-                    || ($detail['requestedById'] === $actor->employeeUuid && $this->documents->canRequest($actor));
+                // Every reader, the requester included, must still reach the order's source.
+                $allowed = $this->scopes->sees($actor, (string) $detail['order']['source'])
+                    && ($this->approvers->via($actor) !== null || $this->documents->canViewHistory($actor)
+                        || ($detail['requestedById'] === $actor->employeeUuid && $this->documents->canRequest($actor)));
                 if (!$allowed) {
                     throw new ApiException(404, 'DOCUMENT_REQUEST_NOT_FOUND', 'Cererea de revizie nu a fost găsită.');
                 }
@@ -150,12 +154,16 @@ final readonly class DocumentController
         return (string) $row['revision_uuid'];
     }
 
-    private function orderUuid(string $globalId): string
+    /** The order, when it exists and its source is in the reader's document scope (otherwise not found). */
+    private function orderUuid(string $globalId, EmployeeIdentity $reader): string
     {
-        $statement = $this->pdo->prepare('SELECT order_uuid FROM operational_orders WHERE global_order_id = ?');
+        $statement = $this->pdo->prepare('SELECT order_uuid, source_key FROM operational_orders WHERE global_order_id = ?');
         $statement->execute([$globalId]);
-        $uuid = $statement->fetchColumn();
-        return is_string($uuid) ? $uuid : throw new ApiException(404, 'ORDER_NOT_FOUND', 'Comanda nu a fost găsită.');
+        $row = $statement->fetch(PDO::FETCH_ASSOC);
+        if (!is_array($row) || !$this->scopes->sees($reader, (string) $row['source_key'])) {
+            throw new ApiException(404, 'ORDER_NOT_FOUND', 'Comanda nu a fost găsită.');
+        }
+        return (string) $row['order_uuid'];
     }
 
     private function viewer(Request $request): EmployeeIdentity

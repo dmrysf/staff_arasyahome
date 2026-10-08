@@ -93,17 +93,23 @@ try {
     // Two active revisions of one order would be a document-integrity failure; the unique key prevents it.
     $duplicateActive = (int) $pdo->query('SELECT COUNT(*) FROM (SELECT active_order_uuid FROM production_document_revisions WHERE active_order_uuid IS NOT NULL GROUP BY active_order_uuid HAVING COUNT(*) > 1) d')->fetchColumn();
     $report($duplicateActive === 0 ? 'OK' : 'FAIL', 'production_document_single_active');
+    // Source-scoped document authority (021): a document permission reaches only the sources root granted.
+    $scopeSchema = (int) $pdo->query("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'employee_document_scopes'")->fetchColumn()
+        + (int) $pdo->query("SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'live_events' AND COLUMN_NAME = 'scope_source_key'")->fetchColumn();
+    $report($scopeSchema === 2 ? 'OK' : 'FAIL', 'production_document_scope_schema');
     // Until root assigns the approver template, revision requests can only wait for root (WARN, not a failure).
     // Only a holder who can actually decide counts: an active, non-root employee with an active role granting the
-    // permission and Dashboard access (RevisionApproverPolicy). A temporary backup never makes this OK.
-    $holders = static fn (string $permission, string $application): int => (int) $pdo->query("SELECT COUNT(DISTINCT e.employee_uuid) FROM employees e
+    // permission, Dashboard access (RevisionApproverPolicy) and at least one approval scope. A temporary backup never
+    // makes this OK. Operators likewise need Staff access and at least one operate scope.
+    $holders = static fn (string $permission, string $application, string $capability): int => (int) $pdo->query("SELECT COUNT(DISTINCT e.employee_uuid) FROM employees e
         JOIN employee_role_assignments era ON era.employee_uuid = e.employee_uuid JOIN roles r ON r.role_id = era.role_id AND r.status = 'active'
         JOIN role_permissions rp ON rp.role_id = r.role_id JOIN permissions p ON p.permission_id = rp.permission_id AND p.permission_key = " . $pdo->quote($permission) . "
         JOIN employee_application_access a ON a.employee_uuid = e.employee_uuid AND a.application_key = " . $pdo->quote($application) . "
+        JOIN employee_document_scopes ds ON ds.employee_uuid = e.employee_uuid AND ds.capability = " . $pdo->quote($capability) . "
         WHERE e.status = 'active' AND NOT EXISTS (SELECT 1 FROM system_root_identity sr WHERE sr.employee_uuid = e.employee_uuid)")->fetchColumn();
-    $report($holders('production.documents.approve_revision', 'dashboard') > 0 ? 'OK' : 'WARN', 'production_document_revision_approver');
+    $report($scopeSchema === 2 && $holders('production.documents.approve_revision', 'dashboard', 'approve') > 0 ? 'OK' : 'WARN', 'production_document_revision_approver');
     // Revision requests come from document operators in Staff; without one only root can start a new revision.
-    $report($holders('production.documents.request_revision', 'staff') > 0 ? 'OK' : 'WARN', 'production_document_operator');
+    $report($scopeSchema === 2 && $holders('production.documents.request_revision', 'staff', 'operate') > 0 ? 'OK' : 'WARN', 'production_document_operator');
     // Production QR authority (019): one active QR per order is a database invariant; check it anyway.
     $qrSchema = (int) $pdo->query("SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'order_qr_references' AND INDEX_NAME = 'uq_order_qr_references_active'")->fetchColumn();
     $report($qrSchema > 0 ? 'OK' : 'FAIL', 'production_qr_single_active_index');

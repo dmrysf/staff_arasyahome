@@ -171,6 +171,12 @@ $identity = static function (string $name, array $stages, array $applications, a
 $operatorId = $identity('pdfoperator', [], ['staff', 'dashboard'], [$roleIds['production-documents-operator']]);
 $approverId = $identity('pdfapprover', [], ['dashboard'], [$roleIds['document-revision-approver']]);
 $identity('pdfworker', ['waiting', 'material-preparation'], ['staff'], []);
+// Since 2.22 a document permission reaches only the order sources root scoped (default deny).
+$scopeDocuments = static function () use ($call, $root, $operatorId, $approverId): void {
+    checkOk($call($root, 'PUT', "/management/employees/{$operatorId}/document-scopes", ['operate' => ['outletperdele', 'trendhome'], 'approve' => []]), 'operator scope');
+    checkOk($call($root, 'PUT', "/management/employees/{$approverId}/document-scopes", ['operate' => [], 'approve' => ['outletperdele', 'trendhome']]), 'approver scope');
+};
+$scopeDocuments();
 $operator = $login("pdfoperator.{$suffix}", $password);
 $approver = $login("pdfapprover.{$suffix}", $password);
 $worker = $login("pdfworker.{$suffix}", $password);
@@ -182,8 +188,9 @@ restorePreDocumentAuthorityTestSchema($pdo);
 $historyBefore = $pdo->query('SELECT revision_uuid, order_uuid, revision_number, status, qr_reference, generated_by_employee_uuid, generated_at FROM production_document_revisions ORDER BY revision_uuid')->fetchAll(PDO::FETCH_ASSOC);
 $qrBefore = $pdo->query('SELECT qr_reference, status FROM order_qr_references ORDER BY qr_reference')->fetchAll(PDO::FETCH_ASSOC);
 $ordersBefore = $pdo->query('SELECT global_order_id, production_authority, production_stage_id, production_version, document_status, document_version FROM operational_orders ORDER BY global_order_id')->fetchAll(PDO::FETCH_ASSOC);
-check((new MigrationRunner($pdo))->migrate($migrations) === ['020_production_document_authority.sql'], '019 -> 020 official additive upgrade');
+check((new MigrationRunner($pdo))->migrate($migrations) === ['020_production_document_authority.sql', '021_document_scopes.sql'], '019 -> 020 official additive upgrade');
 check((new MigrationRunner($pdo))->migrate($migrations) === [], '020 recorded exactly once');
+$scopeDocuments();
 check($pdo->query('SELECT revision_uuid, order_uuid, revision_number, status, qr_reference, generated_by_employee_uuid, generated_at FROM production_document_revisions ORDER BY revision_uuid')->fetchAll(PDO::FETCH_ASSOC) === $historyBefore, '020 rewrites no document revision');
 check($pdo->query('SELECT qr_reference, status FROM order_qr_references ORDER BY qr_reference')->fetchAll(PDO::FETCH_ASSOC) === $qrBefore, '020 changes no QR');
 check($pdo->query('SELECT global_order_id, production_authority, production_stage_id, production_version, document_status, document_version FROM operational_orders ORDER BY global_order_id')->fetchAll(PDO::FETCH_ASSOC) === $ordersBefore, '020 changes no order');

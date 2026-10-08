@@ -71,11 +71,14 @@ final readonly class DocumentService
         private IamAuditLogger $audit,
         private Clock $clock,
         private ?ProductionAuthorityModes $modes = null,
+        ?DocumentScopePolicy $scopes = null,
     ) {
         $this->store = new DocumentStore($pdo);
+        $this->scopes = $scopes ?? new DocumentScopePolicy($pdo);
     }
 
     private DocumentStore $store;
+    private DocumentScopePolicy $scopes;
 
     public function canGenerate(EmployeeIdentity $actor): bool
     {
@@ -126,6 +129,9 @@ final readonly class DocumentService
             $fresh = $this->freshActor($actor);
             if (!$b2bHandoffAuthority && !$this->canGenerate($fresh)) {
                 throw new ApiException(403, 'UNAUTHORIZED_ACTION', 'Nu ai dreptul să generezi documente de producție.');
+            }
+            if (!$b2bHandoffAuthority) {
+                $this->requireScope($fresh, DocumentScopePolicy::OPERATE, $order);
             }
             $this->assertOpenOrder($order, 'generate');
             if ((int) $order['document_version'] !== $expected) {
@@ -184,9 +190,11 @@ final readonly class DocumentService
             if ($replay !== null) {
                 return $replay;
             }
-            if (!$this->canRequest($this->freshActor($actor))) {
+            $fresh = $this->freshActor($actor);
+            if (!$this->canRequest($fresh)) {
                 throw new ApiException(403, 'UNAUTHORIZED_ACTION', 'Nu ai dreptul să ceri revizii de document.');
             }
+            $this->requireScope($fresh, DocumentScopePolicy::OPERATE, $order);
             $this->assertOpenOrder($order, 'request');
             if ((int) $order['document_version'] !== $expected) {
                 throw $this->changed();
@@ -239,8 +247,8 @@ final readonly class DocumentService
             $this->audit->record($actor, 'production_document.revision_requested', 'production_document_request', $uuid, "{$order['order_number']} · R{$target}",
                 ['order' => $globalId, 'targetRevision' => $target, 'changes' => count($diff)], $requestId, $now);
             $payload = ['orderId' => $globalId, 'orderNumber' => (string) $order['order_number'], 'requestId' => $uuid, 'revisionNumber' => $target, 'status' => 'pending'];
-            $this->live->toAudience(self::AUDIENCE_APPROVERS, 'document.revision_requested', $payload, $now);
-            $this->live->toAudience(self::AUDIENCE_REQUESTERS, 'document.changed', ['orderId' => $globalId, 'orderNumber' => (string) $order['order_number']], $now);
+            $this->live->toAudience(self::AUDIENCE_APPROVERS, 'document.revision_requested', $payload, $now, (string) $order['source_key']);
+            $this->live->toAudience(self::AUDIENCE_REQUESTERS, 'document.changed', ['orderId' => $globalId, 'orderNumber' => (string) $order['order_number']], $now, (string) $order['source_key']);
             $response = $this->queries->orderDocument((string) $order['order_uuid'], true);
             $this->idempotency->store($actor->employeeUuid, $key, 'document.request', $globalId, $hash, $response, $now);
             return $response;
@@ -272,8 +280,13 @@ final readonly class DocumentService
             if ($replay !== null) {
                 return $replay;
             }
-            // Authority is re-evaluated inside the transaction: an ended or revoked backup decides nothing.
-            $via = $this->approvers->via($this->freshActor($actor)) ?? throw new ApiException(403, 'UNAUTHORIZED_ACTION', 'Nu ai dreptul să aprobi revizii de document.');
+            // Authority is re-evaluated inside the transaction: an ended or revoked backup decides nothing,
+            // and a business approver decides only requests of the order sources in its approval scope.
+            $fresh = $this->freshActor($actor);
+            $via = $this->approvers->via($fresh) ?? throw new ApiException(403, 'UNAUTHORIZED_ACTION', 'Nu ai dreptul să aprobi revizii de document.');
+            if ($via !== RevisionApproverPolicy::VIA_ROOT) {
+                $this->requireScope($fresh, DocumentScopePolicy::APPROVE, $order, new ApiException(404, 'DOCUMENT_REQUEST_NOT_FOUND', 'Cererea de revizie nu a fost găsită.'));
+            }
             if ($request['status'] !== 'pending') {
                 throw new ApiException(409, 'DOCUMENT_REQUEST_RESOLVED', 'Cererea a fost deja soluționată.', ['status' => $request['status']]);
             }
@@ -306,8 +319,8 @@ final readonly class DocumentService
                 ['order' => $order['global_order_id'], 'targetRevision' => $target, 'via' => $via, 'status' => ['before' => 'pending', 'after' => $status]], $requestId, $now);
             $payload = ['orderId' => $order['global_order_id'], 'orderNumber' => (string) $order['order_number'], 'requestId' => $uuid, 'revisionNumber' => $target, 'status' => $status];
             $this->live->toEmployee((string) $request['requested_by_employee_uuid'], 'document.' . $type, $payload, $now);
-            $this->live->toAudience(self::AUDIENCE_APPROVERS, 'document.request_resolved', $payload, $now);
-            $this->live->toAudience(self::AUDIENCE_REQUESTERS, 'document.changed', ['orderId' => $order['global_order_id'], 'orderNumber' => (string) $order['order_number']], $now);
+            $this->live->toAudience(self::AUDIENCE_APPROVERS, 'document.request_resolved', $payload, $now, (string) $order['source_key']);
+            $this->live->toAudience(self::AUDIENCE_REQUESTERS, 'document.changed', ['orderId' => $order['global_order_id'], 'orderNumber' => (string) $order['order_number']], $now, (string) $order['source_key']);
             $response = $this->queries->requestDetail($uuid);
             $this->idempotency->store($actor->employeeUuid, $key, 'document.decide', $uuid, $hash, $response, $now);
             return $response;
@@ -335,7 +348,8 @@ final readonly class DocumentService
                 return $replay;
             }
             $fresh = $this->freshActor($actor);
-            $own = $request['requested_by_employee_uuid'] === $fresh->employeeUuid && $this->canRequest($fresh);
+            $own = $request['requested_by_employee_uuid'] === $fresh->employeeUuid && $this->canRequest($fresh)
+                && $this->scopes->allows($fresh, DocumentScopePolicy::OPERATE, (string) $order['source_key'], true);
             if (!$fresh->isRoot && !$own) {
                 throw new ApiException(403, 'UNAUTHORIZED_ACTION', 'Doar solicitantul sau administratorul principal poate retrage cererea.');
             }
@@ -353,8 +367,8 @@ final readonly class DocumentService
                 ['order' => $order['global_order_id'], 'authority' => $fresh->isRoot ? 'root' : 'requester', 'status' => ['before' => $request['status'], 'after' => 'cancelled']], $requestId, $now);
             $payload = ['orderId' => $order['global_order_id'], 'orderNumber' => (string) $order['order_number'], 'requestId' => $uuid, 'revisionNumber' => (int) $request['target_revision_number'], 'status' => 'cancelled'];
             $this->live->toEmployee((string) $request['requested_by_employee_uuid'], 'document.request_cancelled', $payload, $now);
-            $this->live->toAudience(self::AUDIENCE_APPROVERS, 'document.request_resolved', $payload, $now);
-            $this->live->toAudience(self::AUDIENCE_REQUESTERS, 'document.changed', ['orderId' => $order['global_order_id'], 'orderNumber' => (string) $order['order_number']], $now);
+            $this->live->toAudience(self::AUDIENCE_APPROVERS, 'document.request_resolved', $payload, $now, (string) $order['source_key']);
+            $this->live->toAudience(self::AUDIENCE_REQUESTERS, 'document.changed', ['orderId' => $order['global_order_id'], 'orderNumber' => (string) $order['order_number']], $now, (string) $order['source_key']);
             $response = $this->queries->requestDetail($uuid);
             $this->idempotency->store($actor->employeeUuid, $key, 'document.cancel', $uuid, $hash, $response, $now);
             return $response;
@@ -452,6 +466,9 @@ final readonly class DocumentService
             $allowed = $b2bViewerAuthority || ($kind === 'print' ? $this->canGenerate($fresh) || $this->canReprint($fresh) : $this->canReprint($fresh));
             if (!$allowed) {
                 throw new ApiException(403, 'UNAUTHORIZED_ACTION', 'Nu ai dreptul să retipărești documentul de producție.');
+            }
+            if (!$b2bViewerAuthority) {
+                $this->requireScope($fresh, DocumentScopePolicy::OPERATE, $order);
             }
             $now = $this->now();
             $this->pdo->prepare('INSERT INTO production_document_prints (print_uuid, revision_uuid, order_uuid, print_number, print_kind, reason, printed_by_employee_uuid, printed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
@@ -671,7 +688,7 @@ final readonly class DocumentService
             $this->audit->record($actor, 'production_document.generated', 'production_document', $revisionUuid, "{$order['order_number']} · R1",
                 ['order' => $order['global_order_id'], 'revision' => 1, 'qr' => self::qrHint((string) $reference)], $requestId, $now);
         }
-        $this->live->toAudience(self::AUDIENCE_REQUESTERS, 'document.changed', ['orderId' => $order['global_order_id'], 'orderNumber' => (string) $order['order_number']], $now);
+        $this->live->toAudience(self::AUDIENCE_REQUESTERS, 'document.changed', ['orderId' => $order['global_order_id'], 'orderNumber' => (string) $order['order_number']], $now, (string) $order['source_key']);
     }
 
     /** @param array<string, mixed> $order */
@@ -719,8 +736,8 @@ final readonly class DocumentService
         if ($order['production_owner_employee_uuid'] !== null) {
             $this->live->toEmployee((string) $order['production_owner_employee_uuid'], 'document.reactivated', ['orderId' => $order['global_order_id'], 'orderNumber' => (string) $order['order_number'], 'revisionNumber' => $number], $now);
         }
-        $this->live->toAudience(self::AUDIENCE_APPROVERS, 'document.request_resolved', $payload, $now);
-        $this->live->toAudience(self::AUDIENCE_REQUESTERS, 'document.changed', ['orderId' => $order['global_order_id'], 'orderNumber' => (string) $order['order_number']], $now);
+        $this->live->toAudience(self::AUDIENCE_APPROVERS, 'document.request_resolved', $payload, $now, (string) $order['source_key']);
+        $this->live->toAudience(self::AUDIENCE_REQUESTERS, 'document.changed', ['orderId' => $order['global_order_id'], 'orderNumber' => (string) $order['order_number']], $now, (string) $order['source_key']);
         $this->live->cuttingChanged($now);
     }
 
@@ -801,6 +818,24 @@ final readonly class DocumentService
             throw new ApiException(404, 'DOCUMENT_REQUEST_NOT_FOUND', 'Cererea de revizie nu a fost găsită.');
         }
         return [$order, $request];
+    }
+
+    /**
+     * The actor's capability must reach the order's source. An actor that cannot see the source at all
+     * gets the same answer as for an unknown order, so scopes never reveal which orders exist.
+     *
+     * @param array<string, mixed> $order a locked order row
+     */
+    private function requireScope(EmployeeIdentity $actor, string $capability, array $order, ?ApiException $notFound = null): void
+    {
+        $source = (string) $order['source_key'];
+        if ($this->scopes->allows($actor, $capability, $source, true)) {
+            return;
+        }
+        if (!$this->scopes->sees($actor, $source)) {
+            throw $notFound ?? new ApiException(404, 'ORDER_NOT_FOUND', 'Comanda nu a fost găsită.');
+        }
+        throw new ApiException(403, 'DOCUMENT_SCOPE_DENIED', 'Sursa acestei comenzi nu face parte din domeniul tău pentru documente de producție.');
     }
 
     private function freshActor(EmployeeIdentity $actor): EmployeeIdentity

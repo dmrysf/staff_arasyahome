@@ -145,6 +145,7 @@ final class Container
         $analyticsPolicy=new \Arasya\Operations\Analytics\AnalyticsPolicy($this->pdo);
         $documentQueries = new DocumentQueries($this->pdo);
         $revisionApprovers = new RevisionApproverPolicy($this->pdo, $authorization, $this->clock);
+        $documentScopes = new \Arasya\Operations\Document\DocumentScopePolicy($this->pdo);
         $documents = $this->documentService($authorization, $revisionApprovers, $documentQueries, $live, $idempotency, $iamAudit);
         return new ApiKernel(
             new AuthController($this->authentication, $csrf, new CookiePolicy($this->config), $this->config, $authorization, $context),
@@ -190,6 +191,7 @@ final class Container
                 new ProductionSettingsService($this->pdo, $authorization, $idempotency, $iamAudit, $this->clock),
                 $analyticsPolicy,
                 $revisionApprovers,
+                $documentScopes,
             ),
             new CompanyController(
                 new CompanyQueries($this->pdo, $authorization),
@@ -208,10 +210,10 @@ final class Container
                 new AccountQueries($this->pdo, $authorization, $this->clock), new AccountCommands($this->pdo, $authorization, $this->clock)),
             new ProjectController(new ProjectQueries($this->pdo, $authorization, $this->clock), new ProjectCommands($this->pdo, $authorization, $this->clock),
                 $this->authentication, $authorization, $csrf, $this->config, $context),
-            new QualityController($faults, $exceptions, $approvers, $live, $this->authentication, $authorization, $csrf, $this->config, $context, $this->pdo, $this->clock, new DocumentAudiences($authorization, $revisionApprovers)),
+            new QualityController($faults, $exceptions, $approvers, $live, $this->authentication, $authorization, $csrf, $this->config, $context, $this->pdo, $this->clock, new DocumentAudiences($authorization, $revisionApprovers, $documentScopes)),
             new CuttingController($cutting, $devices, new BoardSnapshot($this->pdo, $this->clock, $devices), $live, $this->authentication, $csrf, $this->config, $context, $rateLimiter),
             new \Arasya\Operations\Analytics\AnalyticsController(new \Arasya\Operations\Analytics\AnalyticsService($this->pdo,$analyticsPolicy,$this->clock),$this->authentication,$csrf,$this->config,$context),
-            new DocumentController($documents, $documentQueries, $revisionApprovers, $this->authentication, $csrf, $this->config, $context, $rateLimiter, $this->pdo),
+            new DocumentController($documents, $documentQueries, $revisionApprovers, $this->authentication, $csrf, $this->config, $context, $rateLimiter, $this->pdo, $documentScopes),
             new \Arasya\Operations\Production\ProductionAuthorityController(
                 new \Arasya\Operations\Production\ProductionAuthorityService($this->pdo, $authorization, $workflows, $authorityModes, $iamAudit, $this->audit, $this->clock),
                 $this->authentication,

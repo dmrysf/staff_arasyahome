@@ -33,10 +33,15 @@ final readonly class LiveEvents
         $this->insert(self::AUDIENCE_APPROVERS, null, $type, $payload, $now);
     }
 
-    /** Group audiences without a single recipient (for example document approvers or requesters). @param array<string, mixed> $payload */
-    public function toAudience(string $audience, string $type, array $payload, string $now): void
+    /**
+     * Group audiences without a single recipient (document approvers or requesters). The order's source
+     * is stored beside the event so the stream delivers it only to readers scoped to that source.
+     *
+     * @param array<string, mixed> $payload
+     */
+    public function toAudience(string $audience, string $type, array $payload, string $now, string $scopeSource): void
     {
-        $this->insert($audience, null, $type, $payload, $now);
+        $this->insert($audience, null, $type, $payload, $now, $scopeSource);
     }
 
     public function latestSequence(): int
@@ -58,18 +63,35 @@ final readonly class LiveEvents
         return array_map(static fn(array $row): array => ['seq' => (int) $row['event_seq'], 'type' => 'cutting.changed', 'payload' => []], $statement->fetchAll(PDO::FETCH_ASSOC));
     }
 
-    /** @return list<array{seq: int, type: string, payload: array<string, mixed>}> */
-    /** @param list<string> $audiences additional group audiences the caller is currently authorized for */
+    /**
+     * @param array<string, list<string>|null> $audiences additional group audiences the caller is currently
+     *        authorized for, each with the order sources it reaches (null: every source)
+     * @return list<array{seq: int, type: string, payload: array<string, mixed>}>
+     */
     public function after(string $employeeUuid, bool $approver, int $after, bool $cutter = false, array $audiences = []): array
     {
-        $groups = array_values(array_intersect($audiences, ['document_approvers', 'document_requesters']));
+        $parameters = [$after, $employeeUuid];
+        $groups = '';
+        foreach (['document_approvers', 'document_requesters'] as $group) {
+            if (!array_key_exists($group, $audiences)) {
+                continue;
+            }
+            $sources = $audiences[$group];
+            if ($sources === []) {
+                continue;
+            }
+            $groups .= " OR (audience = '{$group}'" . ($sources === null ? '' : ' AND scope_source_key IN (' . implode(', ', array_fill(0, count($sources), '?')) . ')') . ')';
+            if ($sources !== null) {
+                array_push($parameters, ...array_values($sources));
+            }
+        }
         $statement = $this->pdo->prepare(
             'SELECT event_seq, event_type, payload_json FROM live_events
-             WHERE event_seq > :after AND (recipient_employee_uuid = :employee' . ($approver ? " OR audience = 'approvers'" : '') . ($cutter ? " OR audience = 'cutting'" : '')
-             . implode('', array_map(static fn (string $group): string => " OR audience = '{$group}'", $groups)) . ')
+             WHERE event_seq > ? AND (recipient_employee_uuid = ?' . ($approver ? " OR audience = 'approvers'" : '') . ($cutter ? " OR audience = 'cutting'" : '')
+             . $groups . ')
              ORDER BY event_seq LIMIT ' . self::BATCH,
         );
-        $statement->execute(['after' => $after, 'employee' => $employeeUuid]);
+        $statement->execute($parameters);
         $events = [];
         foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
             $payload = json_decode((string) $row['payload_json'], true);
@@ -79,9 +101,9 @@ final readonly class LiveEvents
     }
 
     /** @param array<string, mixed> $payload */
-    private function insert(string $audience, ?string $recipient, string $type, array $payload, string $now): void
+    private function insert(string $audience, ?string $recipient, string $type, array $payload, string $now, ?string $scopeSource = null): void
     {
-        $this->pdo->prepare('INSERT INTO live_events (audience, recipient_employee_uuid, event_type, payload_json, created_at) VALUES (?, ?, ?, ?, ?)')
-            ->execute([$audience, $recipient, $type, json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), $now]);
+        $this->pdo->prepare('INSERT INTO live_events (audience, recipient_employee_uuid, scope_source_key, event_type, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+            ->execute([$audience, $recipient, $scopeSource, $type, json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), $now]);
     }
 }

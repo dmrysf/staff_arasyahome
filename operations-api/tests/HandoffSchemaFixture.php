@@ -1,9 +1,20 @@
 <?php
 declare(strict_types=1);
+/** Restore a pre-021 disposable test fixture (no document scopes). This is NOT a deployment/rollback mechanism. */
+function restorePreDocumentScopesTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='021_document_scopes.sql'")->fetchColumn()) return;
+    $pdo->exec('DROP TABLE IF EXISTS employee_document_scopes');
+    $pdo->exec('ALTER TABLE live_events DROP COLUMN scope_source_key');
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='021_document_scopes.sql'");
+}
+
 /** Restore a pre-020 disposable test fixture (no source-attributed documents). This is NOT a deployment/rollback mechanism. */
 function restorePreDocumentAuthorityTestSchema(PDO $pdo): void
 {
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    restorePreDocumentScopesTestSchema($pdo);
     if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='020_production_document_authority.sql'")->fetchColumn()) return;
     $pdo->exec('DELETE FROM production_document_prints WHERE printed_by_employee_uuid IS NULL');
     $pdo->exec('ALTER TABLE production_document_prints DROP CONSTRAINT chk_production_document_prints_printer');

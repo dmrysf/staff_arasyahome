@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Arasya\Operations\Management;
 
 use Arasya\Operations\Authorization\AuthorizationService;
+use Arasya\Operations\Document\DocumentScopePolicy;
 use Arasya\Operations\Employee\EmployeeIdentity;
 use Arasya\Operations\Http\ApiException;
 use Arasya\Operations\Iam\IamAuditLogger;
@@ -198,7 +199,54 @@ final readonly class ManagementService
         $secondary = $this->pdo->prepare('SELECT d.department_id, d.name FROM employee_secondary_departments esd INNER JOIN departments d ON d.department_id = esd.department_id WHERE esd.employee_uuid = :id ORDER BY d.name');
         $secondary->execute(['id' => $summary['id']]);
         $summary['secondaryDepartments'] = array_map(static fn (array $row): array => ['id' => (int) $row['department_id'], 'name' => (string) $row['name']], $secondary->fetchAll());
+        // Root reaches every source; a stored scope would be meaningless for it.
+        $summary['documentScopes'] = $summary['isRoot'] ? null : (new DocumentScopePolicy($this->pdo))->scopesOf((string) $summary['id']);
         return $summary;
+    }
+
+    /**
+     * Order sources an identity's production document permissions reach (migration 021). Root only: a
+     * scope widens what a document permission can touch, and only root may decide which sales channel's
+     * documents a person operates on or approves. A scope grants no permission by itself, and a
+     * permission without a scope reaches nothing.
+     *
+     * @param array<string, mixed> $input {operate: list<string>, approve: list<string>}
+     * @return array<string, mixed>
+     */
+    public function setDocumentScopes(EmployeeIdentity $actor, string $employeeId, array $input, string $requestId): array
+    {
+        $this->authorization->requireApplication($actor, 'dashboard');
+        if (!$actor->isRoot) {
+            throw new ApiException(403, 'ROOT_ONLY', 'Only the principal administrator can change document scopes.');
+        }
+        $wanted = [];
+        foreach (DocumentScopePolicy::CAPABILITIES as $capability) {
+            $sources = $this->stringList($input[$capability] ?? null, $capability);
+            sort($sources);
+            $wanted[$capability] = $sources;
+        }
+        $this->mutateEmployee($actor, $employeeId, function (array $target, string $now) use ($actor, $wanted, $requestId): void {
+            $known = $this->pdo->query("SELECT source_key FROM order_sources WHERE status = 'active'")->fetchAll(PDO::FETCH_COLUMN);
+            foreach ($wanted as $sources) {
+                if (array_diff($sources, $known) !== []) {
+                    throw new ApiException(400, 'UNKNOWN_SOURCE', 'A document scope names an unknown or inactive order source.');
+                }
+            }
+            $before = (new DocumentScopePolicy($this->pdo))->scopesOf($target['employee_uuid']);
+            if ($before === $wanted) {
+                return;
+            }
+            $this->pdo->prepare('DELETE FROM employee_document_scopes WHERE employee_uuid = :id')->execute(['id' => $target['employee_uuid']]);
+            $insert = $this->pdo->prepare('INSERT INTO employee_document_scopes (employee_uuid, capability, source_key, granted_at, granted_by_employee_uuid) VALUES (:id, :capability, :source, :now, :actor)');
+            foreach ($wanted as $capability => $sources) {
+                foreach ($sources as $source) {
+                    $insert->execute(['id' => $target['employee_uuid'], 'capability' => $capability, 'source' => $source, 'now' => $now, 'actor' => $actor->employeeUuid]);
+                }
+            }
+            $this->bumpAuthorization($target['employee_uuid'], $now);
+            $this->audit->record($actor, 'employee.document_scopes_changed', 'employee', $target['employee_uuid'], $this->label($target), ['before' => $before, 'after' => $wanted], $requestId, $now);
+        });
+        return $this->getEmployee($actor, $employeeId);
     }
 
     /**

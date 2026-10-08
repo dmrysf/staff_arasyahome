@@ -129,6 +129,7 @@ try {
     $expected[] = '018_production_authority.sql';
     $expected[] = '019_production_qr_authority.sql';
     $expected[] = '020_production_document_authority.sql';
+    $expected[] = '021_document_scopes.sql';
     if ($applied !== $expected) {
         throw new RuntimeException('An existing 001 schema did not apply exactly the pending migrations in order: ' . implode(', ', $applied));
     }

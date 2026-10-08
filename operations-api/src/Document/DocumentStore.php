@@ -50,7 +50,7 @@ final readonly class DocumentStore
         if ($order['production_owner_employee_uuid'] !== null) {
             $this->live->toEmployee((string) $order['production_owner_employee_uuid'], 'document.blocked', ['orderId' => $order['global_order_id'], 'orderNumber' => (string) $order['order_number']], $now);
         }
-        $this->live->toAudience(DocumentService::AUDIENCE_REQUESTERS, 'document.changed', ['orderId' => $order['global_order_id'], 'orderNumber' => (string) $order['order_number']], $now);
+        $this->live->toAudience(DocumentService::AUDIENCE_REQUESTERS, 'document.changed', ['orderId' => $order['global_order_id'], 'orderNumber' => (string) $order['order_number']], $now, (string) $order['source_key']);
         $this->live->cuttingChanged($now);
     }
 

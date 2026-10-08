@@ -97,6 +97,7 @@ All routes are under `https://api.arasyahome.ro/management`. Each route needs a 
 | PUT | `/employees/{id}/roles` `{roleIds}` | `employees.manage_roles` + `roles.assign` |
 | PUT | `/employees/{id}/stages` `{stageIds}` | `employees.manage_stages` (canonical active stages only) |
 | PUT | `/employees/{id}/manager` `{managerId}` | `employees.manage_hierarchy` |
+| PUT | `/employees/{id}/document-scopes` `{operate, approve}` | root only (order sources a document permission reaches; see [organization-iam.md](organization-iam.md)) |
 | GET | `/applications` | `applications.view` |
 | GET | `/permissions` | `roles.view` |
 | GET/POST | `/roles` | `roles.view` / `roles.create` |
@@ -120,7 +121,7 @@ Staff stages come only from the canonical `curtain-production@1` workflow (`GET 
 
 The logger refuses metadata keys that could carry secrets. Passwords, hashes, cookies and CSRF values are never recorded. Root and CLI actions are audited too.
 
-Actions: `employee.created`, `employee.updated`, `employee.activated`, `employee.deactivated`, `employee.password_reset`, `employee.applications_changed`, `employee.roles_changed`, `employee.stages_changed`, `employee.manager_changed`, `role.created`, `role.updated`, `role.deleted`, `department.created`, `department.updated`, `department.deleted`, `root.bootstrapped`, `root.password_recovered`.
+Actions: `employee.created`, `employee.updated`, `employee.activated`, `employee.deactivated`, `employee.password_reset`, `employee.applications_changed`, `employee.roles_changed`, `employee.stages_changed`, `employee.manager_changed`, `role.created`, `role.updated`, `role.deleted`, `department.created`, `department.updated`, `department.deleted`, `root.bootstrapped`, `root.password_recovered`, and since 2.22 `employee.document_scopes_changed`.
 
 ## Migration 005 and rollout
 

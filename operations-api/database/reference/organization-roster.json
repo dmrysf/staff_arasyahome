@@ -1,6 +1,85 @@
 {
-  "version": 1,
-  "description": "Canonical Arasya Home organisation roster (46 people). Organisation membership only: it never grants roles, permissions, applications or production stages.",
+  "version": 2,
+  "description": "Canonical Arasya Home organisation roster (46 people, 50 workbook memberships). Organisation membership only: it never grants roles, permissions, applications, production stages or document scopes.",
+  "workbook": {
+    "file": "NUME_PRENUME_ANGAJATI_gruplara_ayrilmis_duzeltilmis.xlsx",
+    "note": "Each workbook group maps to roster departments. \"operatiuni\" is the operations management unit confirmed by the owner (production director and warehouse/operations manager); it is not a workbook group.",
+    "groups": {
+      "Yönetim": {
+        "departments": [
+          "conducere"
+        ],
+        "members": 3
+      },
+      "İnternet": {
+        "departments": [
+          "vanzari-online"
+        ],
+        "members": 4
+      },
+      "Atölye - Terzi": {
+        "departments": [
+          "croitorie",
+          "croitorie-dragon"
+        ],
+        "members": 15
+      },
+      "Kesim": {
+        "departments": [
+          "taiere"
+        ],
+        "members": 4
+      },
+      "Depo": {
+        "departments": [
+          "depozit"
+        ],
+        "members": 6
+      },
+      "Montaj": {
+        "departments": [
+          "montaj"
+        ],
+        "members": 3
+      },
+      "Şoför - Agent": {
+        "departments": [
+          "logistica-distributie"
+        ],
+        "members": 5
+      },
+      "Kurye": {
+        "departments": [
+          "expediere-curierat"
+        ],
+        "members": 1
+      },
+      "DR7": {
+        "departments": [
+          "magazin-dragon-7"
+        ],
+        "members": 3
+      },
+      "DR9": {
+        "departments": [
+          "magazin-dragon-9"
+        ],
+        "members": 2
+      },
+      "Almanya Satış": {
+        "departments": [
+          "vanzari-internationale"
+        ],
+        "members": 2
+      },
+      "Muhasebe - Finans": {
+        "departments": [
+          "financiar-contabilitate"
+        ],
+        "members": 2
+      }
+    }
+  },
   "departments": [
     {
       "key": "conducere",
@@ -83,19 +162,28 @@
     {
       "name": "VOICAN DENISA NICOLETA",
       "department": "operatiuni",
-      "title": "Manager operațional",
-      "proposedRole": "operations-manager"
+      "title": "Director producție",
+      "proposedRole": "operations-manager",
+      "additionalDepartments": [
+        "conducere"
+      ]
     },
     {
       "name": "YERLIKAYA HIKMET",
       "department": "operatiuni",
-      "title": "Manager operațional",
-      "proposedRole": "operations-manager"
+      "title": "Manager depozit și operațiuni",
+      "proposedRole": "operations-manager",
+      "additionalDepartments": [
+        "depozit"
+      ]
     },
     {
       "name": "YETIS SINEM",
       "department": "vanzari-online",
-      "title": "Director Online"
+      "title": "Director Online",
+      "additionalDepartments": [
+        "conducere"
+      ]
     },
     {
       "name": "BLEGU DANIELA NICOLETA",
@@ -120,11 +208,13 @@
     },
     {
       "name": "MANASRA MOHAMED",
-      "department": "vanzari-internationale"
+      "department": "vanzari-internationale",
+      "rollout": "excluded"
     },
     {
       "name": "YEMAN FURKAN",
-      "department": "vanzari-internationale"
+      "department": "vanzari-internationale",
+      "rollout": "excluded"
     },
     {
       "name": "RADUCANU STELUTA",

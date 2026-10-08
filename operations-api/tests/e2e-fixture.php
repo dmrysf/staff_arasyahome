@@ -140,6 +140,11 @@ $online=$admin->create('Ioana Online','online.doc.e2e',null,'pregatire-material'
 $iam($online->employeeUuid,['staff'],[$roleId('production-documents-operator')]);
 $approver=$admin->create('Sinem Aprobare','sinem.doc.e2e',null,'pregatire-material','employee',$password,[],'e2e');
 $iam($approver->employeeUuid,['dashboard'],[$roleId('document-revision-approver')]);
+// Since API 2.22 a document permission reaches only the sources root scoped (default deny).
+foreach([[$online->employeeUuid,['operate'=>['trendhome'],'approve'=>[]]],[$approver->employeeUuid,['operate'=>[],'approve'=>['trendhome']]]] as [$scoped,$scopes]){
+    $r=T::call($kernel,'PUT',"/management/employees/{$scoped}/document-scopes",$scopes,['origin'=>$origin,'x-csrf-token'=>$root['csrf']],$root['cookie']);
+    if($r['status']!==200) throw new RuntimeException('E2E document scope setup failed: '.json_encode($r['body']));
+}
 $docCutter=$admin->create('Murat Document','doc.cutter.e2e',null,'pregatire-material','employee',$password,['material-preparation'],'e2e');
 foreach(['72001'=>8.0,'72002'=>5.0] as $number=>$meters) {
     $r=T::ingest($kernel,'trendhome',T::e2eDocumentOrder((string)$number,$meters,1));
