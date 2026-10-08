@@ -14,7 +14,8 @@ migration, no new permission and no new authorization path. Everything goes thro
 - **Security fix:** `POST /auth/password` now applies the login rate limit (same per-username and per-address
   buckets) before it verifies the current password. Before 2.23, a borrowed session could guess the current
   password without bound. Blocked attempts answer `429 RATE_LIMITED` and are audited as `AUTH_ACCOUNT_BLOCKED`
-  with `{"operation":"password_change"}`.
+  with `{"operation":"password_change"}`. Once the current password is proven, a refused new password does not
+  count against the limit.
 
 ## 1. What the plan grants
 

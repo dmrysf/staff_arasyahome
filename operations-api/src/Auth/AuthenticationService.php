@@ -161,13 +161,14 @@ final readonly class AuthenticationService
             $this->audit->record('AUTH_PASSWORD_CHANGE_DENIED', $employee->employeeUuid, null, $ipAddress, $userAgent, $requestId, $nowSql);
             throw new ApiException(400, 'CURRENT_PASSWORD_INVALID', 'The current password is not correct.');
         }
+        // The current password is proven: neither a refused new password nor the change itself counts against the limit.
+        $this->rateLimiter->recordSuccess($employee->usernameNormalized, $ipAddress, $nowSql);
         if (!$this->passwords->meetsPolicy($newPassword, $employee->usernameNormalized) || hash_equals($currentPassword, $newPassword)) {
             throw new ApiException(400, 'PASSWORD_POLICY', 'The new password does not meet the password policy.');
         }
         if (!$this->employees->completePasswordChange($employee->employeeUuid, $this->passwords->hash($newPassword), $nowSql)) {
             throw new ApiException(500, 'INTERNAL_ERROR', 'The password could not be changed.');
         }
-        $this->rateLimiter->recordSuccess($employee->usernameNormalized, $ipAddress, $nowSql);
         $revoked = $this->sessions->revokeAllForEmployee($employee->employeeUuid, $nowSql);
         $rawToken = $this->tokens->generate();
         $expiresAt = $now->modify("+{$this->sessionTtlSeconds} seconds");

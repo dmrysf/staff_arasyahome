@@ -357,6 +357,10 @@ $probeLogin = T::call($strictKernel, 'POST', '/auth/login', ['username' => $prob
 check($probeLogin['status'] === 200 && $probeLogin['body']['employee']['mustChangePassword'] === true, 'the probe signs in with its temporary password');
 $probeSession = $session($probeLogin);
 $attempt = static fn (string $current): array => T::call($strictKernel, 'POST', '/auth/password', ['currentPassword' => $current, 'newPassword' => 'Probe personal passphrase 2026'], ['origin' => DASHBOARD_ORIGIN, 'x-csrf-token' => $probeSession['csrf']], $probeSession['cookie']);
+// A right current password with a refused new one does not use up the limit.
+for ($i = 1; $i <= 6; $i++) {
+    checkError(T::call($strictKernel, 'POST', '/auth/password', ['currentPassword' => $probeCredentials->byUsername()[$probe], 'newPassword' => 'short'], ['origin' => DASHBOARD_ORIGIN, 'x-csrf-token' => $probeSession['csrf']], $probeSession['cookie']), 400, 'PASSWORD_POLICY', "policy refusal {$i} is not rate limited");
+}
 for ($i = 1; $i <= 4; $i++) {
     checkError($attempt("wrong current {$i} 2026"), 400, 'CURRENT_PASSWORD_INVALID', "wrong current password {$i}");
 }
