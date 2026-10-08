@@ -72,7 +72,7 @@ Sites that use the WC Kalkulator curtain calculator also install `integrations/w
 Configuration (all three or none; partial configuration fails closed): `ARASYA_TRENDYOL_SELLER_ID`, `ARASYA_TRENDYOL_API_KEY`, `ARASYA_TRENDYOL_API_SECRET`, optional `ARASYA_TRENDYOL_API_BASE_URL` (HTTPS, default `https://apigw.trendyol.com`). Without credentials the command prints `TRENDYOL_NOT_CONFIGURED` and exits successfully. Suggested cron:
 
 ```cron
-*/5 * * * * cd "$HOME/arasya-operations-api/releases/$(cat "$HOME/arasya-operations-api/active-release")" && php bin/sync-trendyol.php >> "$HOME/arasya-trendyol-sync.log" 2>&1
+*/5 * * * * cd "$HOME/arasya-operations-api/releases/$(cat "$HOME/arasya-operations-api/active-release")" && /usr/local/bin/php bin/sync-trendyol.php >> "$HOME/arasya-trendyol-sync.log" 2>&1
 ```
 
 **Status:** the adapter, mapper, client, cursor and configuration are implemented and contract-tested with realistic fixtures (`operations-api/tests/fixtures/trendyol-packages.json`). Live Trendyol synchronization has **not** been verified because no Trendyol credentials were available; enabling it requires only the three configuration values and the cron entry.

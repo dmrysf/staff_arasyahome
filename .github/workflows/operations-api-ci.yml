@@ -95,6 +95,9 @@ jobs:
       - name: Test two-target cPanel deployment
         run: /bin/bash operations-api/tests/deploy-api.sh
 
+      - name: Test the nightly maintenance launcher (absolute PHP CLI)
+        run: /bin/bash operations-api/tests/maintenance-launcher.sh
+
       - name: Run MySQL integration lifecycle
         env:
           ARASYA_TEST_DB_HOST: 127.0.0.1

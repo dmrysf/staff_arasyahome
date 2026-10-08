@@ -33,8 +33,10 @@ Source delivery secrets (`ARASYA_SOURCE_SECRET_TRENDHOME`, `ARASYA_SOURCE_SECRET
 
 ```cron
 17 3 * * * /bin/bash "$HOME/arasya-operations-api/bin/maintenance-active.sh" >> "$HOME/arasya-maintenance.log" 2>&1
-*/5 * * * * cd "$HOME/arasya-operations-api/releases/$(cat "$HOME/arasya-operations-api/active-release")" && php bin/sync-trendyol.php >> "$HOME/arasya-trendyol-sync.log" 2>&1
+*/5 * * * * cd "$HOME/arasya-operations-api/releases/$(cat "$HOME/arasya-operations-api/active-release")" && /usr/local/bin/php bin/sync-trendyol.php >> "$HOME/arasya-trendyol-sync.log" 2>&1
 ```
+
+Cron jobs must call the PHP CLI by absolute path. On this cPanel server `/usr/local/bin/php` is the CLI (SAPI `cli`); the `php` found through cron's default `PATH` is `/usr/bin/php`, the CGI/FastCGI binary, which has no command-line arguments. `maintenance-active.sh` already uses `/usr/local/bin/php`; it verifies the active-release pointer before running and forwards its arguments (for example `--dry-run`) unchanged.
 
 `php bin/order-qr.php --order=<source:id>` prints (or issues) an order's QR payload; `--rotate` revokes the old label.
 
