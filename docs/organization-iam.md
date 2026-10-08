@@ -175,7 +175,8 @@ dimension:
   `{"operate": [...], "approve": [...]}` (`ROOT_ONLY` for everybody else, including the CEO principal;
   `ROOT_PROTECTED` for root itself; `UNKNOWN_SOURCE` for unknown or inactive sources). A change increments the
   identity's `authorization_version` and writes `employee.document_scopes_changed` with before/after; an unchanged
-  request writes nothing. `GET /management/employees/{id}` returns `documentScopes` (`null` for root).
+  request writes nothing. `GET /management/employees/{id}` returns `documentScopes` (`null` for root) and, for a
+  root viewer of a non-root identity, `documentScopeSources` (the active sources the editor offers; `null` otherwise).
 - **Unchanged paths:** signed source printing (YD SOFT), the B2B production handoff (revision 1) and the B2B
   production sheet keep their own authorities.
 - **Readiness** adds `production_document_scope_schema` and counts approvers and operators only when they also

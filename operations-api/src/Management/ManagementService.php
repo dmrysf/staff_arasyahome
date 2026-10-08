@@ -201,6 +201,11 @@ final readonly class ManagementService
         $summary['secondaryDepartments'] = array_map(static fn (array $row): array => ['id' => (int) $row['department_id'], 'name' => (string) $row['name']], $secondary->fetchAll());
         // Root reaches every source; a stored scope would be meaningless for it.
         $summary['documentScopes'] = $summary['isRoot'] ? null : (new DocumentScopePolicy($this->pdo))->scopesOf((string) $summary['id']);
+        // The grantable sources, for the root-only scope editor; nobody else can change a scope.
+        $summary['documentScopeSources'] = $actor->isRoot && !$summary['isRoot'] ? array_map(
+            static fn (array $row): array => ['key' => (string) $row['source_key'], 'name' => (string) $row['display_name']],
+            $this->pdo->query("SELECT source_key, display_name FROM order_sources WHERE status = 'active' ORDER BY display_name, source_key")->fetchAll(PDO::FETCH_ASSOC),
+        ) : null;
         return $summary;
     }
 

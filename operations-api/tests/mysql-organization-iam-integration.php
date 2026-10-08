@@ -215,6 +215,11 @@ check(count($audit) === 1 && $audit[0]['actor_employee_uuid'] === $root['employe
 checkOk($send($root, 'PUT', $scopePath('webapprover'), ['operate' => [], 'approve' => $internet]), 'the same scope again');
 check(count($auditRows($ids['webapprover'])) === 1 && $authorizationVersion($ids['webapprover']) === $versionBefore + 1, 'an unchanged scope writes no audit and keeps the version');
 check(checkOk($get($root, "/management/employees/{$root['employeeUuid']}"), 'root view')['documentScopes'] === null, 'root has no stored scope: it reaches every source');
+$sourceKeys = static fn (?array $sources): ?array => $sources === null ? null : array_column($sources, 'key');
+$grantable = $sourceKeys($detail['documentScopeSources']);
+check($grantable !== null && in_array('trendhome', $grantable, true) && in_array('b2b', $grantable, true) && !in_array('germany', $grantable, true), 'root sees the active sources it can scope');
+check(checkOk($get($root, "/management/employees/{$root['employeeUuid']}"), 'root view')['documentScopeSources'] === null, 'root itself offers no scope editor');
+check(checkOk($get($who['director'], "/management/employees/{$ids['webapprover']}"), 'director view')['documentScopeSources'] === null, 'a non-root administrator is not offered the scope editor');
 foreach ([
     'webop' => ['operate' => $internet, 'approve' => []],
     'b2bop' => ['operate' => ['b2b'], 'approve' => []],
