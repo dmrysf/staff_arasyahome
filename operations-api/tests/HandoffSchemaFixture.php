@@ -1,9 +1,24 @@
 <?php
 declare(strict_types=1);
+/** Restore a pre-019 disposable test fixture (no production QR authority). This is NOT a deployment/rollback mechanism. */
+function restorePreQrAuthorityTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='019_production_qr_authority.sql'")->fetchColumn()) return;
+    $pdo->exec('DROP TABLE IF EXISTS production_qr_events');
+    $pdo->exec('ALTER TABLE order_qr_references DROP CONSTRAINT chk_order_qr_references_retired');
+    $pdo->exec('ALTER TABLE order_qr_references DROP INDEX uq_order_qr_references_active, DROP COLUMN active_order_uuid, DROP COLUMN retired_reason');
+    $pdo->exec('ALTER TABLE order_operation_idempotency DROP CONSTRAINT chk_order_operation_idempotency_operation');
+    $pdo->exec("DELETE FROM order_operation_idempotency WHERE operation = 'qr_rotate'");
+    $pdo->exec("ALTER TABLE order_operation_idempotency ADD CONSTRAINT chk_order_operation_idempotency_operation CHECK (operation IN ('claim', 'transition', 'release_owner', 'reassign_owner', 'authority_takeover', 'authority_release'))");
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='019_production_qr_authority.sql'");
+}
+
 /** Restore a pre-018 disposable test fixture (no production authority control plane). This is NOT a deployment/rollback mechanism. */
 function restorePreAuthorityTestSchema(PDO $pdo): void
 {
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    restorePreQrAuthorityTestSchema($pdo);
     if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='018_production_authority.sql'")->fetchColumn()) return;
     $pdo->exec('DROP TABLE IF EXISTS production_authority_events');
     $pdo->exec('ALTER TABLE order_activity_events DROP CONSTRAINT chk_order_activity_action');

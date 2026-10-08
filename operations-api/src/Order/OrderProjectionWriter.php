@@ -12,6 +12,7 @@ use Arasya\Operations\Production\ProductionAuthorityModes;
 use Arasya\Operations\Support\Clock;
 use Arasya\Operations\Support\Uuid;
 use DateTimeImmutable;
+use Arasya\Operations\Production\ProductionQrLedger;
 use PDO;
 
 final readonly class OrderProjectionWriter
@@ -146,7 +147,7 @@ final readonly class OrderProjectionWriter
                         $this->pdo->prepare('UPDATE operational_orders SET document_context = ?, version = version + 1, updated_at = ? WHERE order_uuid = ?')->execute([$documentContext, $nowSql, $orderUuid]);
                         (new DocumentStaleness($this->pdo, $this->clock))->onContentChanged($orderUuid, $snapshot->sourceEventId);
                     }
-                    $this->ensureQrReference($orderUuid, $nowSql);
+                    $this->ensureQrReference($orderUuid, $globalId, $snapshot->sourceKey, $nowSql, $snapshot->sourceEventId);
                     $this->insertReceipt($snapshot, $globalId, $payloadHash, 'duplicate', $nowSql);
                     $this->touchSource($snapshot->sourceKey, $nowSql);
                     $this->pdo->commit();
@@ -306,7 +307,7 @@ final readonly class OrderProjectionWriter
                 }
             }
 
-            $this->ensureQrReference($orderUuid, $nowSql);
+            $this->ensureQrReference($orderUuid, $globalId, $snapshot->sourceKey, $nowSql, $snapshot->sourceEventId);
             $life = new \Arasya\Operations\Cutting\CuttingLifecycle($this->pdo);
             $currentStage = $currentOrder ? $stageId : $initialStage;
             if ($currentStage === $life::STAGE && (!$currentOrder || $currentOrder['production_stage_id'] !== $currentStage)) $life->fact($orderUuid, $currentOrder ? $productionVersion : 1, 'pool_entered', null, $nowSql);
@@ -354,7 +355,7 @@ final readonly class OrderProjectionWriter
         $this->insertItems($snapshot->items,$id,$now);
         $s=$this->pdo->prepare('UPDATE operational_order_items SET production_context=? WHERE item_uuid=? AND order_uuid=?');
         foreach($snapshot->items as $item) $s->execute([json_encode($item->productionContext,JSON_THROW_ON_ERROR|JSON_UNESCAPED_UNICODE),$item->itemUuid,$id]);
-        $this->ensureQrReference($id,$now);
+        $this->ensureQrReference($id, $snapshot->globalId()->toString(), 'b2b', $now, null);
         return $id;
     }
 
@@ -368,23 +369,24 @@ final readonly class OrderProjectionWriter
     }
 
     /**
-     * Revokes every active QR reference of an order and issues a new one
-     * (for a lost or damaged label). Old printed codes then resolve as expired.
+     * Operator tool (bin/order-qr.php --rotate): retires every active QR reference of an order as
+     * superseded and issues a new one, with QR evidence. Managers use the audited Staff rotation instead.
      */
     public function rotateQrReference(string $globalOrderId): string
     {
         $nowSql = $this->clock->now()->format('Y-m-d H:i:s.u');
         $this->pdo->beginTransaction();
         try {
-            $stmt = $this->pdo->prepare('SELECT order_uuid FROM operational_orders WHERE global_order_id = ? FOR UPDATE');
+            $stmt = $this->pdo->prepare('SELECT order_uuid, global_order_id, source_key FROM operational_orders WHERE global_order_id = ? FOR UPDATE');
             $stmt->execute([$globalOrderId]);
-            $orderUuid = $stmt->fetchColumn();
-            if (!is_string($orderUuid)) {
+            $order = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!is_array($order)) {
                 throw new ApiException(404, 'ORDER_NOT_FOUND', 'Order not found.');
             }
-            $revoke = $this->pdo->prepare("UPDATE order_qr_references SET status = 'revoked', revoked_at = ? WHERE order_uuid = ? AND status = 'active'");
-            $revoke->execute([$nowSql, $orderUuid]);
-            $this->ensureQrReference($orderUuid, $nowSql);
+            $retired = ProductionQrLedger::retireActive($this->pdo, (string) $order['order_uuid'], ProductionQrLedger::RETIRED_SUPERSEDED, $nowSql);
+            $reference = \Arasya\Operations\Order\QrReference::generate()->value;
+            $this->pdo->prepare("INSERT INTO order_qr_references (qr_reference, order_uuid, status, created_at) VALUES (?, ?, 'active', ?)")->execute([$reference, $order['order_uuid'], $nowSql]);
+            ProductionQrLedger::record($this->pdo, $order, ProductionQrLedger::ACTION_ROTATED, $reference, $retired[0] ?? null, null, 'operator_cli', ProductionQrLedger::modeLabel($this->authorityModes, (string) $order['source_key']), null, $nowSql);
             $this->pdo->commit();
         } catch (\Throwable $error) {
             if ($this->pdo->inTransaction()) {
@@ -444,15 +446,21 @@ final readonly class OrderProjectionWriter
         return $ordinal === false ? null : (int) $ordinal;
     }
 
-    private function ensureQrReference(string $orderUuid, string $nowSql): void
+    /**
+     * Issues the order's canonical QR when it has no active one (a new order, or an order whose references
+     * were all retired). Never rotates: an existing active QR is always kept. Caller holds the order lock.
+     */
+    private function ensureQrReference(string $orderUuid, string $globalId, string $sourceKey, string $nowSql, ?string $requestId): void
     {
-        $stmt = $this->pdo->prepare("SELECT 1 FROM order_qr_references WHERE order_uuid = ? AND status = 'active' LIMIT 1");
-        $stmt->execute([$orderUuid]);
-        if ($stmt->fetchColumn() !== false) {
+        $order = ['order_uuid' => $orderUuid, 'global_order_id' => $globalId, 'source_key' => $sourceKey];
+        $known = $this->pdo->prepare("SELECT MAX(status = 'active') FROM order_qr_references WHERE order_uuid = ?");
+        $known->execute([$orderUuid]);
+        $state = $known->fetchColumn();
+        if ($state !== null && (int) $state === 1) {
             return;
         }
-        $insert = $this->pdo->prepare("INSERT INTO order_qr_references (qr_reference, order_uuid, status, created_at) VALUES (?, ?, 'active', ?)");
-        $insert->execute([QrReference::generate()->value, $orderUuid, $nowSql]);
+        $reason = $state === null ? 'intake' : 'reissued_without_active';
+        ProductionQrLedger::ensureActive($this->pdo, $order, ProductionQrLedger::modeLabel($this->authorityModes, $sourceKey), $reason, null, $requestId, $nowSql);
     }
 
     private function touchSource(string $sourceKey, string $nowSql): void

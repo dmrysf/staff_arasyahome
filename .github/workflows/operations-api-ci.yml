@@ -219,6 +219,15 @@ jobs:
           ARASYA_TEST_DB_PASSWORD: root-test-password
         run: php operations-api/tests/mysql-production-authority-integration.php
 
+      - name: Run MySQL production QR authority, rotation races and scan invariants
+        env:
+          ARASYA_TEST_DB_HOST: 127.0.0.1
+          ARASYA_TEST_DB_PORT: "3306"
+          ARASYA_TEST_DB_NAME: arasya_operations_test
+          ARASYA_TEST_DB_USER: root
+          ARASYA_TEST_DB_PASSWORD: root-test-password
+        run: php operations-api/tests/mysql-production-qr-integration.php
+
       - name: Measure MySQL analytics against three years of canonical history
         env:
           ARASYA_TEST_DB_HOST: 127.0.0.1
@@ -295,6 +304,8 @@ jobs:
         run: php operations-api/tests/mysql-production-documents-integration.php
       - name: Run MariaDB production authority control plane, takeover races and ingestion invariants
         run: php operations-api/tests/mysql-production-authority-integration.php
+      - name: Run MariaDB production QR authority, rotation races and scan invariants
+        run: php operations-api/tests/mysql-production-qr-integration.php
 
       - name: Measure MariaDB analytics against three years of canonical history
         env:

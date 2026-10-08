@@ -42,6 +42,7 @@ final readonly class ApiKernel
         private ?\Arasya\Operations\Analytics\AnalyticsController $analytics = null,
         private ?\Arasya\Operations\Document\DocumentController $documents = null,
         private ?\Arasya\Operations\Production\ProductionAuthorityController $authority = null,
+        private ?\Arasya\Operations\Production\ProductionQrController $productionQr = null,
     ) {
     }
 
@@ -125,6 +126,10 @@ final readonly class ApiKernel
             return ($this->authority ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Production authority control is not ready.'))
                 ->handle($request, rawurldecode($matches[1]), $matches[2] ?? '');
         }
+        if (preg_match('#^/orders/([^/]{1,600})/production-qr(?:/(rotate))?$#D', $request->path, $matches) === 1) {
+            return ($this->productionQr ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Production QR authority is not ready.'))
+                ->handle($request, rawurldecode($matches[1]), $matches[2] ?? '');
+        }
         if (preg_match('#^/orders/([^/]{1,600})(?:/(claim|transition))?$#D', $request->path, $matches) === 1) {
             $globalIdString = rawurldecode($matches[1]);
             $action = $matches[2] ?? '';
@@ -135,12 +140,13 @@ final readonly class ApiKernel
                 default => throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.'),
             };
         }
-        if ($request->method === 'POST' && preg_match('#^/integrations/sources/([a-z0-9_-]{1,40})/(orders|orders/validate|orders/authority|heartbeat)$#D', $request->path, $matches) === 1) {
+        if ($request->method === 'POST' && preg_match('#^/integrations/sources/([a-z0-9_-]{1,40})/(orders|orders/validate|orders/authority|orders/qr|heartbeat)$#D', $request->path, $matches) === 1) {
             $sources = $this->sources ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Source ingestion is not ready.');
             return match ($matches[2]) {
                 'orders' => $sources->ingestOrder($request, $matches[1]),
                 'orders/validate' => $sources->validateOrder($request, $matches[1]),
                 'orders/authority' => $sources->orderAuthority($request, $matches[1]),
+                'orders/qr' => $sources->orderQr($request, $matches[1]),
                 default => $sources->heartbeat($request, $matches[1]),
             };
         }

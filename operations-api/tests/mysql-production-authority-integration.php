@@ -61,7 +61,7 @@ require __DIR__ . '/HandoffSchemaFixture.php';
 restorePreAuthorityTestSchema($pdo);
 $grantsBefore = $pdo->query('SELECT * FROM role_permissions ORDER BY role_id, permission_id')->fetchAll(PDO::FETCH_ASSOC);
 $authorityBefore = $pdo->query('SELECT global_order_id, production_authority, production_stage_id, production_version, version FROM operational_orders ORDER BY global_order_id')->fetchAll(PDO::FETCH_ASSOC);
-check((new MigrationRunner($pdo))->migrate($migrations) === ['018_production_authority.sql'], '017 -> 018 official additive upgrade');
+check((new MigrationRunner($pdo))->migrate($migrations) === ['018_production_authority.sql', '019_production_qr_authority.sql'], '017 -> 018 -> 019 official additive upgrade');
 check((new MigrationRunner($pdo))->migrate($migrations) === [], '018 recorded exactly once');
 check($pdo->query('SELECT global_order_id, production_authority, production_stage_id, production_version, version FROM operational_orders ORDER BY global_order_id')->fetchAll(PDO::FETCH_ASSOC) === $authorityBefore, '018 changes the authority, stage or version of no existing order');
 $newGrants = $pdo->query("SELECT r.role_key FROM role_permissions rp JOIN roles r ON r.role_id = rp.role_id JOIN permissions p ON p.permission_id = rp.permission_id WHERE p.permission_key = 'production.manage_authority' ORDER BY r.role_key")->fetchAll(PDO::FETCH_COLUMN);

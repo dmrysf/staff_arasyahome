@@ -96,6 +96,13 @@ try {
     // Until root assigns the approver template, revision requests can only wait (WARN, not a failure).
     $approvers = (int) $pdo->query("SELECT COUNT(*) FROM employee_role_assignments era JOIN role_permissions rp ON rp.role_id = era.role_id JOIN permissions p ON p.permission_id = rp.permission_id JOIN employees e ON e.employee_uuid = era.employee_uuid WHERE p.permission_key = 'production.documents.approve_revision' AND e.status = 'active'")->fetchColumn();
     $report($approvers > 0 ? 'OK' : 'WARN', 'production_document_revision_approver');
+    // Production QR authority (019): one active QR per order is a database invariant; check it anyway.
+    $qrSchema = (int) $pdo->query("SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'order_qr_references' AND INDEX_NAME = 'uq_order_qr_references_active'")->fetchColumn();
+    $report($qrSchema > 0 ? 'OK' : 'FAIL', 'production_qr_single_active_index');
+    $duplicateQr = (int) $pdo->query("SELECT COUNT(*) FROM (SELECT order_uuid FROM order_qr_references WHERE status = 'active' GROUP BY order_uuid HAVING COUNT(*) > 1) d")->fetchColumn();
+    $report($duplicateQr === 0 ? 'OK' : 'FAIL', 'production_qr_single_active');
+    $missingQr = (int) $pdo->query("SELECT COUNT(*) FROM operational_orders o WHERE o.production_authority = 'operations' AND NOT EXISTS (SELECT 1 FROM order_qr_references q WHERE q.order_uuid = o.order_uuid AND q.status = 'active') AND o.document_status IN ('none', 'active')")->fetchColumn();
+    $report($missingQr === 0 ? 'OK' : 'WARN', 'production_qr_operations_active');
     $report(PHP_INT_SIZE >= 8 ? 'OK' : 'FAIL', 'b2b_fixed_point_int64');
 } catch (Throwable) {
     $report('FAIL', 'iam_applications');
@@ -112,6 +119,7 @@ foreach ($sourceRegistry->all() as $definition) {
     $report('OK', "source_signing_{$definition->key}");
     $report('OK', 'source_mode_' . $definition->key . '_' . ($definition->enabled ? $definition->mode->value : 'disabled'));
     $report('OK', 'source_authority_' . $definition->key . '_' . $definition->authorityMode->value);
+    $report('OK', 'source_qr_authority_' . $definition->key . '_' . $definition->qrAuthorityMode->value);
 }
 foreach ($sourceRegistry->issues() as $issue) {
     $report('WARN', 'source_config_' . $issue['code'] . ($issue['sourceKey'] === null ? '' : '_' . $issue['sourceKey']));
