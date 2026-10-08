@@ -76,12 +76,23 @@ const presentations: Record<ServiceErrorCode, ErrorPresentation> = {
   WORKFLOW_MISMATCH: { title: "Flux schimbat", message: "Fluxul de producție s-a schimbat. Reîncarcă și alege din nou etapa.", action: "Reîncarcă" },
   PRODUCTION_COMPLETED: { title: "Producție finalizată", message: "Producția acestei comenzi este finalizată.", action: "Înapoi" },
   WORKFLOW_UNAVAILABLE: { title: "Flux indisponibil", message: "Catalogul etapelor de producție nu poate fi încărcat momentan. Starea comenzii nu a fost schimbată.", action: "Reîncearcă" },
+  QR_SUPERSEDED: { title: "COD QR ÎNLOCUIT", message: "Acest cod nu mai este valabil pentru producție. Folosește eticheta cu codul QR activ.", action: "Scanează din nou" },
+  QR_REVOKED: { title: "COD QR ANULAT", message: "Acest cod a fost anulat și nu mai poate fi folosit pentru producție. Cere managerului eticheta nouă.", action: "Scanează din nou" },
+  QR_CHANGED: { title: "Codul QR s-a schimbat", message: "Codul QR al comenzii a fost schimbat între timp. Reîncarcă înainte de a continua.", action: "Reîncarcă" },
+  QR_CUTOVER_DISABLED: { title: "Autoritate QR neactivată", message: "Codul QR Arasya nu este încă autoritatea de producție pentru această sursă.", action: "Înapoi" },
+  QR_NOT_ARASYA: { title: "Comanda nu este în Arasya", message: "Producția acestei comenzi nu este gestionată în Arasya, deci codul QR nu poate fi schimbat aici.", action: "Înapoi" },
+  QR_NOT_SUPPORTED: { title: "Schimbare indisponibilă", message: "Codul QR al acestei comenzi se schimbă doar prin revizia documentului de producție.", action: "Înapoi" },
+  QR_DOCUMENT_CONTROLLED: { title: "Cod legat de document", message: "Comanda are un document de producție: codul QR se schimbă doar printr-o revizie aprobată a documentului.", action: "Înapoi" },
 };
 
 export function getErrorPresentation(error: unknown): ErrorPresentation {
   // An old or blocked production document is shown in strong Romanian words, with the active revision.
   const document = invalidDocumentMessage(error);
   if (document && error instanceof StaffServiceError) return { title: document.title, message: document.lines.join(" "), action: presentations[error.code].action };
+  // A replaced production QR names the active QR revision when the employee may see the order.
+  if (error instanceof StaffServiceError && error.code === "QR_SUPERSEDED" && typeof error.details?.activeQrRevision === "number") {
+    return { ...presentations.QR_SUPERSEDED, message: `Acest cod nu mai este valabil pentru producție. Folosește eticheta cu codul QR activ (revizia ${error.details.activeQrRevision}).` };
+  }
   if (error instanceof StaffServiceError) return presentations[error.code];
   return presentations.SERVER_ERROR;
 }

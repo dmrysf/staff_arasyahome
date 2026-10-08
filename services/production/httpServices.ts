@@ -4,6 +4,7 @@ import type { ActivityService, AuthService, EmployeeService, ExceptionService, L
 import { startLiveClient } from "./liveClient";
 import type { DocumentApi, DocumentAttention, DocumentRevision, OrderDocument, OrderDocumentSummary } from "../../domain/documents";
 import { isProductionAuthority, type AuthorityApi, type AuthorityChange, type OrderAuthorityView, type ProductionAuthorityMode } from "../../domain/authority";
+import type { ActiveQr, ProductionQrApi, ProductionQrView, QrAuthority, QrAuthorityMode, QrRevision, QrRevisionState, QrRotationReason } from "../../domain/productionQr";
 import { createBrowserWorkflowCache, createUnavailableWorkflowCache, normalizeProductionApiBaseUrl, type WorkflowCache } from "./workflowCache";
 import { createProductionWorkflowService } from "./workflowService";
 
@@ -25,6 +26,13 @@ const backendErrorCodes: Partial<Record<string, ServiceErrorCode>> = {
   INVALID_STAGE: "INVALID_STAGE",
   WORKFLOW_MISMATCH: "WORKFLOW_MISMATCH",
   PRODUCTION_COMPLETED: "PRODUCTION_COMPLETED",
+  QR_SUPERSEDED: "QR_SUPERSEDED",
+  QR_REVOKED: "QR_REVOKED",
+  QR_CHANGED: "QR_CHANGED",
+  QR_CUTOVER_DISABLED: "QR_CUTOVER_DISABLED",
+  QR_NOT_ARASYA: "QR_NOT_ARASYA",
+  QR_NOT_SUPPORTED: "QR_NOT_SUPPORTED",
+  QR_DOCUMENT_CONTROLLED: "QR_DOCUMENT_CONTROLLED",
   CUTTING_QR_REQUIRED: "QR_REQUIRED",
   CUTTING_TRANSFER_PENDING: "ORDER_BLOCKED_BY_EXCEPTION",
   CUTTING_MULTIPLE_CONFIRMATION_REQUIRED: "CONFIRMATION_REQUIRED",
@@ -532,6 +540,7 @@ function createRequest(apiBaseUrl: string, options: ProductionServicesOptions, o
       backendCode = typeof error.code === "string" ? error.code : "";
       // Only the active revision number is kept from details (an old QR scan tells which revision to use).
       if (error.details && typeof error.details === "object" && typeof (error.details as Record<string, unknown>).activeRevisionNumber === "number") details = { activeRevisionNumber: (error.details as Record<string, unknown>).activeRevisionNumber };
+      if (error.details && typeof error.details === "object" && typeof (error.details as Record<string, unknown>).activeQrRevision === "number") details = { activeQrRevision: (error.details as Record<string, unknown>).activeQrRevision };
     } catch { /* HTTP status fallback remains typed below. */ }
     const fallback: ServiceErrorCode = response.status === 401
       ? "SESSION_EXPIRED"
@@ -729,7 +738,52 @@ export function createProductionServices(apiBaseUrl: string, options: Production
     takeOver: (globalOrderId, input, key) => http.request(`/orders/${encodeURIComponent(globalOrderId)}/production-authority/takeover`, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapAuthorityChange),
     release: (globalOrderId, input, key) => http.request(`/orders/${encodeURIComponent(globalOrderId)}/production-authority/release`, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapAuthorityChange),
   };
-  return { auth, employee, orders, activity, workflow, exceptions, live, cutting, documents, authority, mode: "production" };
+  const productionQr: ProductionQrApi = {
+    inspect: (globalOrderId, signal) => http.request(`/orders/${encodeURIComponent(globalOrderId)}/production-qr`, { signal }, mapProductionQrView),
+    rotate: (globalOrderId, input, key) => http.request(`/orders/${encodeURIComponent(globalOrderId)}/production-qr/rotate`, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapProductionQrView),
+  };
+  return { auth, employee, orders, activity, workflow, exceptions, live, cutting, documents, authority, productionQr, mode: "production" };
+}
+
+const qrAuthorities: readonly QrAuthority[] = ["arasya", "source"];
+const qrModes: readonly QrAuthorityMode[] = ["legacy", "observe", "enforce", "internal"];
+const qrStates: readonly QrRevisionState[] = ["active", "superseded", "revoked", "retired"];
+const qrReasons: readonly QrRotationReason[] = ["label_lost", "label_damaged", "security"];
+const QR_PAYLOAD = /^ARASYA:Q1:[A-Z2-7]{26}$/;
+const QR_HINT = /^[0-9a-f]{10}$/;
+function qrDocumentRevision(value: unknown): number | null {
+  return value == null ? null : positiveInteger(value);
+}
+function mapQrRevision(value: unknown): QrRevision {
+  const raw = objectValue(value);
+  const hint = stringValue(raw.hint);
+  if (!QR_HINT.test(hint)) throw new StaffServiceError("SERVER_ERROR");
+  return { revision: positiveInteger(raw.revision), state: oneOf(raw.state, qrStates), issuedAt: timestampValue(raw.issuedAt), retiredAt: raw.retiredAt == null ? null : timestampValue(raw.retiredAt), hint, documentRevision: qrDocumentRevision(raw.documentRevision) };
+}
+function mapActiveQr(value: unknown): ActiveQr {
+  const raw = objectValue(value);
+  const payload = stringValue(raw.payload);
+  const svg = stringValue(raw.svg);
+  const hint = stringValue(raw.hint);
+  // Only the server's own QR drawing is accepted: one rect and one path, nothing executable.
+  if (!QR_PAYLOAD.test(payload) || !QR_HINT.test(hint) || !/^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg" viewBox="0 0 \d+ \d+" shape-rendering="crispEdges" role="img" aria-label="[^"<>]*"><rect width="100%" height="100%" fill="#fff"\/><path fill="#000" d="[Mhvz0-9 -]*"\/><\/svg>$/.test(svg)) throw new StaffServiceError("SERVER_ERROR");
+  return { revision: positiveInteger(raw.revision), issuedAt: timestampValue(raw.issuedAt), hint, documentRevision: qrDocumentRevision(raw.documentRevision), payload, svg };
+}
+export function mapProductionQrView(value: unknown): ProductionQrView {
+  const raw = objectValue(value);
+  const rotate = objectValue(raw.rotate);
+  if (!isProductionAuthority(raw.productionAuthority) || !Array.isArray(raw.history) || !Array.isArray(rotate.reasons)) throw new StaffServiceError("SERVER_ERROR");
+  return {
+    globalOrderId: stringValue(raw.globalOrderId),
+    orderNumber: stringValue(raw.orderNumber),
+    source: stringValue(raw.source),
+    qrAuthorityMode: oneOf(raw.qrAuthorityMode, qrModes),
+    productionAuthority: raw.productionAuthority,
+    qrAuthority: oneOf(raw.qrAuthority, qrAuthorities),
+    active: raw.active == null ? null : mapActiveQr(raw.active),
+    history: raw.history.map(mapQrRevision),
+    rotate: { allowed: booleanValue(rotate.allowed), blockedReason: rotate.blockedReason == null ? null : stringValue(rotate.blockedReason), reasons: rotate.reasons.map((reason) => oneOf(reason, qrReasons)) },
+  };
 }
 
 const authorityModes: readonly ProductionAuthorityMode[] = ["legacy", "observe", "enforce"];
