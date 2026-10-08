@@ -5,6 +5,13 @@ declare(strict_types=1);
 use Arasya\Operations\Config\Config;
 use Arasya\Operations\Database\AuthMaintenance;
 
+// Only the PHP CLI provides $argv and STDERR. Under CGI/FastCGI (cPanel's /usr/bin/php) refuse clearly instead of
+// failing with a fatal error; nothing is read or deleted.
+if (PHP_SAPI !== 'cli' || !isset($argv) || !is_array($argv)) {
+    file_put_contents('php://stderr', 'Arasya maintenance requires the PHP CLI (current SAPI: ' . PHP_SAPI . "). Run it with /usr/local/bin/php.\n");
+    exit(1);
+}
+
 $arguments = array_slice($argv, 1);
 if (array_diff($arguments, ['--dry-run']) !== []) {
     fwrite(STDERR, "Usage: php bin/maintenance.php [--dry-run]\n");

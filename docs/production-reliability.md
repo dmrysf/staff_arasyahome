@@ -35,6 +35,12 @@ Daily auth cleanup runs outside HTTP requests through the stable active-release 
 17 3 * * * /bin/bash "$HOME/arasya-operations-api/bin/maintenance-active.sh" >> "$HOME/arasya-maintenance.log" 2>&1
 ```
 
+The wrapper always runs the PHP CLI by absolute path, `/usr/local/bin/php`. Cron starts with a minimal `PATH` in which `php` is cPanel's CGI/FastCGI binary (`/usr/bin/php`, SAPI `cgi-fcgi`): it has no `$argv`, so up to release `4cdcbd4` every nightly run failed with `Status: 500 Internal Server Error` and a `TypeError` in `bin/maintenance.php`. `bin/maintenance.php` now refuses any SAPI other than `cli` with a clear message and exit code 1, and rejects unknown arguments with exit code 2 before touching the database. Failures stay visible in `$HOME/arasya-maintenance.log`. Check the CLI with `/usr/local/bin/php -r 'echo PHP_SAPI;'` (must print `cli`) and test the exact cron environment with:
+
+```bash
+env -i HOME="$HOME" PATH=/usr/bin:/bin /bin/bash "$HOME/arasya-operations-api/bin/maintenance-active.sh" --dry-run
+```
+
 Test first with `--dry-run`. Deletes are batched at 500 rows. Defaults retain expired/revoked sessions for 30 days, login attempts for 30 days, stale login and API rate-limit buckets for 7 days, and stored idempotent results for 30 days (`ARASYA_IDEMPOTENCY_RETENTION_DAYS`). Order activity events (production audit) and `iam_audit_events` (IAM audit) are never deleted by maintenance. (Before V2.2.0 the command failed on MySQL because of a repeated SQL placeholder; it is now covered by the MySQL suite.) Audit events are never deleted unless `ARASYA_AUTH_AUDIT_RETENTION_DAYS` is explicitly configured; otherwise the command prints `AUDIT_RETENTION_NOT_CONFIGURED`. Output contains counts only. An advisory lock prevents overlapping runs.
 
 ## Readiness and browser safety
