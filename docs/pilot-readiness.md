@@ -2,7 +2,11 @@
 
 Short checklist for putting the first real employees on Staff. Do each step in the Dashboard as an administrator (root or a role with the employee permissions), then verify it on a phone. Use a controlled test order for the claim, stage and intervention checks, never a real customer order.
 
-The employee page in the Dashboard (`/angajati/{id}`) shows a **Pilot readiness** card that summarises the account-side items below from data the API already returns (no password, hash or session data is exposed).
+The employee page in the Dashboard (`/angajati/{id}`) shows a **Pregătire operațională** card (Dashboard 0.12.0; formerly "Pregătire pilot"). It summarises the account-side items below from data the API already returns, and no password, hash or session data is exposed.
+
+- The card is contextual to the applications the person was granted.
+- `/angajati/etape` shows which stages have a ready employee.
+- Stage assignments and owner decisions are prepared in [factory-pilot-rollout.md](factory-pilot-rollout.md).
 
 ## Account (Dashboard, per employee)
 
@@ -11,8 +15,8 @@ The employee page in the Dashboard (`/angajati/{id}`) shows a **Pilot readiness*
 | 1 | Employee is active | employee page, status | `Activ` |
 | 2 | Staff access | employee page, applications | `Staff` granted |
 | 3 | Stage permissions | employee page, Staff stages | only the stages this person works on |
-| 4 | Temporary password changed | Pilot readiness card | "Parolă schimbată" after the first login; a fresh account shows "Parolă temporară" until then |
-| 5 | Account usable | Pilot readiness card | all items green |
+| 4 | Temporary password changed | Pregătire operațională card | "Parola temporară a fost schimbată" after the first login; until then the card shows "Așteaptă schimbarea parolei" |
+| 5 | Account usable | Pregătire operațională card | "Pregătit", with "Poate lucra în: Staff" |
 
 Give the temporary password to the employee in person. The API forces a change at first login; it is never shown again.
 
