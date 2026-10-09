@@ -9,7 +9,10 @@ use Arasya\Operations\Document\DocumentService;
 use Arasya\Operations\Employee\EmployeeIdentity;
 use Arasya\Operations\Employee\EmployeeRepository;
 use Arasya\Operations\Http\ApiException;
+use Arasya\Operations\Integration\Trendyol\TrendyolClient;
 use Arasya\Operations\Integration\Trendyol\TrendyolEligibility;
+use Arasya\Operations\Integration\Trendyol\TrendyolIntakeStore;
+use Arasya\Operations\Integration\Trendyol\TrendyolPackage;
 use Arasya\Operations\Integration\Trendyol\TrendyolSizeHint;
 use Arasya\Operations\Order\OperationalOrderItem;
 use Arasya\Operations\Order\OrderProjectionWriter;
@@ -23,6 +26,7 @@ use DateTimeImmutable;
 use DateTimeZone;
 use PDO;
 use PDOException;
+use RuntimeException;
 use Throwable;
 
 /**
@@ -64,6 +68,9 @@ final readonly class TrendyolWorkspace
         private DocumentService $documents,
         private IdempotencyStore $idempotency,
         private Clock $clock,
+        /** Read-only Trendyol API used to verify a package at approval time; null fails every approval closed. */
+        private ?TrendyolClient $marketplace = null,
+        private ?TrendyolIntakeStore $intake = null,
     ) {
     }
 
@@ -247,6 +254,15 @@ final readonly class TrendyolWorkspace
     /**
      * Explicit approval: creates the production order (stage 1), its Arasya QR and document revision 1.
      *
+     * The package is verified against a fresh Trendyol snapshot first (one GET by shipmentPackageIds, outside any
+     * database transaction so no lock waits on the network). The fresh copy is recorded exactly like a
+     * synchronization would record it, so the employee sees any change. Approval is refused when Trendyol cannot be
+     * read (fail closed), the package is gone, its status is not a new-order status, or its lines (identity, SKU,
+     * quantity, product data) differ from what was prepared. The production transaction then re-checks, under the
+     * package lock, that the row still carries the verified version, status and lines. A marketplace change in the
+     * short interval between that GET and the commit cannot be excluded across two systems; the next synchronization
+     * or reconciliation records it with the usual after-approval rules (cancellation makes the order unavailable).
+     *
      * @param array<string, mixed> $input {expectedVersion, confirm: true}
      */
     public function release(EmployeeIdentity $actor, string $packageId, array $input, string $key, string $requestId): array
@@ -259,25 +275,29 @@ final readonly class TrendyolWorkspace
             throw new ApiException(422, 'CONFIRMATION_REQUIRED', 'Confirmă verificarea comenzii înainte de aprobare.');
         }
         $hash = IdempotencyStore::hash('trendyol.release', (string) $id, [$expected]);
-        return $this->transaction(function () use ($actor, $id, $expected, $key, $hash, $requestId): array {
+        // A replayed request answers without calling Trendyol again.
+        $replay = $this->idempotency->replay($actor->employeeUuid, $key, 'trendyol.release', (string) $id, $hash);
+        if ($replay !== null) {
+            return $replay;
+        }
+        // Local checks first (no lock): nothing is sent to Trendyol for a request that would fail anyway.
+        $this->assertReleasable($this->readPackage($id), $expected);
+        $verified = $this->verifyAtMarketplace($id);
+
+        return $this->transaction(function () use ($actor, $id, $expected, $key, $hash, $requestId, $verified): array {
             $package = $this->lockPackage($id);
             $replay = $this->idempotency->replay($actor->employeeUuid, $key, 'trendyol.release', (string) $id, $hash);
             if ($replay !== null) {
                 return $replay;
             }
             $fresh = $this->freshActor($actor, self::RELEASE);
-            if ($package['intake_status'] === 'released') {
-                throw new ApiException(409, 'PACKAGE_ALREADY_RELEASED', 'Pachetul a fost deja aprobat pentru producție.');
-            }
-            $this->assertPending($package, $expected);
-            if (!TrendyolEligibility::releasable((string) $package['marketplace_status'])) {
-                throw new ApiException(409, 'MARKETPLACE_STATUS_NOT_RELEASABLE', 'Statusul actual din Trendyol nu permite intrarea în producție.', ['marketplaceStatus' => (string) $package['marketplace_status']]);
+            // The row must still be exactly what Trendyol confirmed a moment ago (a sync or an edit in between
+            // changes the version): otherwise the employee reloads and approves again.
+            $this->assertReleasable($package, $verified['version']);
+            if ((string) $package['marketplace_status'] !== $verified['status'] || !hash_equals((string) $package['lines_hash'], $verified['linesHash'])) {
+                throw $this->changed();
             }
             $lines = $this->lines($id);
-            $missing = self::missing($lines);
-            if ($missing !== []) {
-                throw new ApiException(422, 'PACKAGE_NOT_PREPARED', 'Completează datele de producție pentru toate liniile.', ['lines' => $missing]);
-            }
             try {
                 $workflow = $this->workflows->current();
             } catch (\RuntimeException) {
@@ -520,6 +540,70 @@ final readonly class TrendyolWorkspace
         if ((int) $package['version'] !== $expected) {
             throw $this->changed();
         }
+    }
+
+    /** @param array<string, mixed> $package */
+    private function assertReleasable(array $package, int $expected): void
+    {
+        if ($package['intake_status'] === 'released') {
+            throw new ApiException(409, 'PACKAGE_ALREADY_RELEASED', 'Pachetul a fost deja aprobat pentru producție.');
+        }
+        $this->assertPending($package, $expected);
+        if (!TrendyolEligibility::releasable((string) $package['marketplace_status'])) {
+            throw new ApiException(409, 'MARKETPLACE_STATUS_NOT_RELEASABLE', 'Statusul actual din Trendyol nu permite intrarea în producție.', ['marketplaceStatus' => (string) $package['marketplace_status']]);
+        }
+        $missing = self::missing($this->lines((int) $package['package_id']));
+        if ($missing !== []) {
+            throw new ApiException(422, 'PACKAGE_NOT_PREPARED', 'Completează datele de producție pentru toate liniile.', ['lines' => $missing]);
+        }
+    }
+
+    /**
+     * One GET for the package's current marketplace copy; records it like a synchronization and returns the
+     * verified version, status and lines hash. Fails closed on every Trendyol problem.
+     *
+     * @return array{version: int, status: string, linesHash: string}
+     */
+    private function verifyAtMarketplace(int $id): array
+    {
+        if ($this->marketplace === null || $this->intake === null) {
+            throw new ApiException(503, 'TRENDYOL_VERIFICATION_UNAVAILABLE', 'Verificarea în Trendyol nu este configurată. Comanda nu poate fi aprobată.');
+        }
+        $before = $this->readPackage($id);
+        try {
+            $raw = $this->marketplace->packagesByIds([$id])[$id] ?? null;
+            $package = $raw === null ? null : TrendyolPackage::fromApi($raw);
+        } catch (RuntimeException $error) {
+            $code = preg_match('/^TRENDYOL_[A-Z_]+$/D', $error->getMessage()) === 1 ? $error->getMessage() : 'TRENDYOL_REQUEST_FAILED';
+            throw new ApiException(503, 'TRENDYOL_VERIFICATION_FAILED', 'Nu am putut verifica acum comanda în Trendyol. Încearcă din nou peste câteva minute.', ['reason' => $code]);
+        } catch (\InvalidArgumentException) {
+            throw new ApiException(503, 'TRENDYOL_VERIFICATION_FAILED', 'Nu am putut verifica acum comanda în Trendyol. Încearcă din nou peste câteva minute.', ['reason' => 'TRENDYOL_MALFORMED_RESPONSE']);
+        }
+        if ($package === null) {
+            throw new ApiException(409, 'TRENDYOL_PACKAGE_UNAVAILABLE', 'Trendyol nu mai returnează acest pachet. Verifică în Seller Panel; comanda nu poate fi aprobată.');
+        }
+        if ($package->packageId !== $id) {
+            throw new ApiException(503, 'TRENDYOL_VERIFICATION_FAILED', 'Nu am putut verifica acum comanda în Trendyol. Încearcă din nou peste câteva minute.', ['reason' => 'TRENDYOL_MALFORMED_RESPONSE']);
+        }
+        // The fresh copy goes through the synchronization rules (its own short transaction), so a cancellation,
+        // a new status or changed lines are visible to the employee. Prepared data survives only on unchanged lines.
+        $this->intake->record($package, $this->baselineMillis() ?? 0);
+        if (!TrendyolEligibility::releasable($package->status)) {
+            throw new ApiException(409, 'MARKETPLACE_STATUS_NOT_RELEASABLE', 'Statusul actual din Trendyol nu permite intrarea în producție.', ['marketplaceStatus' => $package->status]);
+        }
+        if (!hash_equals((string) $before['lines_hash'], $package->linesHash())) {
+            throw new ApiException(409, 'MARKETPLACE_LINES_CHANGED', 'Produsele comenzii s-au schimbat în Trendyol. Verifică liniile și completează din nou datele de producție.');
+        }
+        return ['version' => (int) $this->readPackage($id)['version'], 'status' => $package->status, 'linesHash' => $package->linesHash()];
+    }
+
+    /** @return array<string, mixed> */
+    private function readPackage(int $id): array
+    {
+        $statement = $this->pdo->prepare('SELECT * FROM trendyol_packages WHERE package_id = ?');
+        $statement->execute([$id]);
+        $row = $statement->fetch(PDO::FETCH_ASSOC);
+        return is_array($row) ? $row : throw new ApiException(404, 'PACKAGE_NOT_FOUND', 'Pachetul Trendyol nu există.');
     }
 
     private function changed(): ApiException

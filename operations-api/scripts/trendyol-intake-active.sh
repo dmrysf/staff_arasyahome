@@ -2,7 +2,8 @@
 set -Eeuo pipefail
 
 # Cron launcher for Trendyol intake from the active API release. NOT installed by any deploy: the owner adds the
-# cron entry only after explicit authorization (docs/trendyol-intake.md). It runs bin/sync-trendyol.php, which
+# cron entry only after explicit authorization (docs/trendyol-intake.md). It runs bin/sync-trendyol.php (or, with
+# --reconcile, the read-only reconciliation of known packages), which
 # still does nothing unless credentials, ARASYA_TRENDYOL_INTAKE = 'enabled' and the database activation exist.
 # Cron's PATH `php` is cPanel's CGI binary: always run the PHP CLI by absolute path (ARASYA_PHP_CLI for tests).
 php_cli="${ARASYA_PHP_CLI:-/usr/local/bin/php}"

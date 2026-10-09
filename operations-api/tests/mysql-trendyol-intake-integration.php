@@ -30,6 +30,12 @@ require __DIR__ . '/OperationsTestSupport.php';
 $db = T::requireTestDatabase();
 if ($db === null) { echo "SKIP Trendyol intake integration: test database not configured\n"; exit; }
 $config = T::config($db);
+// Approval verifies each package with one GET: this disposable environment answers from a fixture file
+// (FixtureTrendyolTransport; Config refuses it in production).
+$marketplaceFile = (string) tempnam(sys_get_temp_dir(), 'arasya-trendyol-');
+$config = new \Arasya\Operations\Config\Config(...[...(array) $config, 'trendyolFixtureFile' => $marketplaceFile]);
+$marketplace = static function (array $fixture) use ($marketplaceFile): void { file_put_contents($marketplaceFile, json_encode($fixture, JSON_THROW_ON_ERROR)); };
+$marketplace(['packages' => []]);
 $pdo = Connection::create($config);
 $freshlyApplied = in_array('022_trendyol_intake.sql', (new MigrationRunner($pdo))->migrate(dirname(__DIR__) . '/database/migrations'), true);
 foreach (glob(dirname(__DIR__) . '/database/seeds/*.sql') ?: [] as $file) (new SqlFileRunner($pdo))->run($file);
@@ -203,6 +209,7 @@ $identity = static function (string $name, array $stages, array $applications, a
 };
 $preparer = $identity('typrep', [], ['staff'], [$roleIds['trendyol-order-preparer']]);
 $approver = $identity('tyapprove', [], ['staff'], [$roleIds['trendyol-order-approver']]);
+$identity('tyapprove2', [], ['staff'], [$roleIds['trendyol-order-approver']]);
 $trendyolWaiting = $identity('tywait', ['waiting'], ['staff'], [$roleIds['trendyol-order-preparer']]);
 $otherWaiting = $identity('otherwait', ['waiting'], ['staff'], []);
 $cutter = $identity('tycut', ['material-preparation'], ['staff'], []);
@@ -259,6 +266,22 @@ $error($send($preparer, 'POST', "{$p30}/release", ['expectedVersion' => $prepare
 $error($send($approver, 'POST', "{$p30}/release", ['expectedVersion' => $prepared['version'], 'confirm' => false], $key('unconfirmed')), 422, 'CONFIRMATION_REQUIRED', 'the approval is explicit');
 $check($trendyolOrders() === $trendyolOrdersBefore, 'preparation creates no production order');
 
+// Fresh verification at approval: one GET by package ID outside the production transaction; any problem fails closed.
+$releaseBody = ['expectedVersion' => $prepared['version'], 'confirm' => true];
+$untouched = static fn (): bool => (int) $one('SELECT version FROM trendyol_packages WHERE package_id = ?', [$base + 30]) === $prepared['version'] && $trendyolOrders() === $trendyolOrdersBefore;
+foreach ([[['fail' => true], 'TRENDYOL_REQUEST_FAILED', 'a network failure'], [['status' => 429], 'TRENDYOL_RATE_LIMITED', 'HTTP 429'], [['status' => 503], 'TRENDYOL_UNAVAILABLE', 'HTTP 503'], [['body' => '{"content":"x"}'], 'TRENDYOL_MALFORMED_RESPONSE', 'a malformed answer']] as [$fixture, $reason, $label]) {
+    $marketplace($fixture);
+    $failed = $send($approver, 'POST', "{$p30}/release", $releaseBody, $key('verify'));
+    $error($failed, 503, 'TRENDYOL_VERIFICATION_FAILED', "{$label} fails the approval closed");
+    $check(($failed['body']['error']['details']['reason'] ?? null) === $reason && $untouched(), "{$label}: reason {$reason}, nothing changed");
+}
+$marketplace(['packages' => []]);
+$error($send($approver, 'POST', "{$p30}/release", $releaseBody, $key('gone')), 409, 'TRENDYOL_PACKAGE_UNAVAILABLE', 'a package Trendyol no longer returns cannot be approved');
+$check($untouched(), 'an unavailable package changes nothing');
+$withoutClient = new Container(T::config($db), $pdo);
+$error(T::call($withoutClient->kernel(), 'POST', "{$p30}/release", $releaseBody, ['x-csrf-token' => $approver['csrf'], 'idempotency-key' => $key('no-client')], $approver['cookie']), 503, 'TRENDYOL_VERIFICATION_UNAVAILABLE', 'without a Trendyol client every approval fails closed');
+$marketplace(['packages' => [$package(30, $baseMs + $hours(4), $baseMs + 3000, 'Created')]]);
+
 // Approval: stage 1 order + Arasya QR + document revision 1, in one transaction.
 $releaseKey = $key('release');
 $released = $status($send($approver, 'POST', "{$p30}/release", ['expectedVersion' => $prepared['version'], 'confirm' => true], $releaseKey), 201, 'release');
@@ -276,10 +299,49 @@ $check(!str_contains($revision['qr_reference'], '86800030') && !str_contains($re
 $snapshot = json_decode($revision['snapshot_json'], true);
 $check($snapshot['order']['source'] === 'trendyol' && $snapshot['lines'][0]['width'] === '298.500' && $snapshot['lines'][0]['productionNotes'] === 'Rejansă 2x' && $snapshot['customer']['phoneMasked'] !== null && !str_contains($revision['snapshot_json'], '0744111222') && !str_contains($revision['snapshot_json'], '777.5'), 'the canonical ticket: measurements, masked phone, no price');
 $check($one("SELECT action FROM order_activity_events WHERE global_order_id = ?", [$global]) === 'production_submitted', 'the submission is on the shared production timeline');
-$replayed = $status($send($approver, 'POST', "{$p30}/release", ['expectedVersion' => $prepared['version'], 'confirm' => true], $releaseKey), 201, 'release replay');
+$marketplace(['fail' => true]);
+$replayed = $status($send($approver, 'POST', "{$p30}/release", ['expectedVersion' => $prepared['version'], 'confirm' => true], $releaseKey), 201, 'release replay (answered without calling Trendyol)');
 $check($replayed === $released && (int) $one('SELECT COUNT(*) FROM operational_orders WHERE global_order_id = ?', [$global]) === 1 && (int) $one('SELECT COUNT(*) FROM production_document_revisions WHERE order_uuid = ?', [$order['order_uuid']]) === 1, 'a replayed approval creates nothing twice');
 $error($send($approver, 'POST', "{$p30}/release", ['expectedVersion' => $released['version'], 'confirm' => true], $key('again')), 409, 'PACKAGE_ALREADY_RELEASED', 'a second approval is refused');
 $error($send($preparer, 'PUT', $line30, ['expectedVersion' => $released['version'], 'kind' => 'other'], $key('after')), 409, 'PACKAGE_NOT_PENDING', 'a released package can no longer be edited');
+$second = T::login($kernel, "tyapprove2.{$suffix}", $password);
+$error($send($second, 'POST', "{$p30}/release", ['expectedVersion' => $prepared['version'], 'confirm' => true], $key('concurrent')), 409, 'PACKAGE_ALREADY_RELEASED', 'a concurrent approval by another approver is refused (before calling Trendyol)');
+
+// Marketplace changes between synchronization and approval: the fresh GET refuses them and records them.
+$clock->instant = $t2->modify('+2 minutes');
+$late = [
+    90 => $package(90, $baseMs + $hours(6), $baseMs + 10000, 'Created'),
+    91 => $package(91, $baseMs + $hours(6), $baseMs + 10100, 'Created'),
+    92 => $package(92, $baseMs + $hours(6), $baseMs + 10200, 'Created'),
+    93 => $package(93, $baseMs + $hours(6), $baseMs + 10300, 'Picking'),
+];
+$transport->responses = [$page(array_values($late))];
+$sync->run();
+$ready = [];
+foreach (array_keys($late) as $o) {
+    $d = $status($get($preparer, '/trendyol/packages/' . ($base + $o)), 200, "p{$o}");
+    $ready[$o] = $status($send($preparer, 'PUT', '/trendyol/packages/' . ($base + $o) . '/lines/' . ($base + $o + 1), ['expectedVersion' => $d['version'], 'kind' => 'curtain', 'widthCm' => '200', 'heightCm' => '250'], $key("p{$o}")), 200, "prepare p{$o}");
+}
+$changedSku = [['lineId' => $base + 93, 'quantity' => 2, 'productName' => 'Perdea tul alb 300x260', 'stockCode' => 'PT-301', 'barcode' => '86800092', 'productSize' => '300x260', 'productColor' => 'Alb']];
+$marketplace(['packages' => [
+    $package(90, $baseMs + $hours(6), $baseMs + 40000, 'Cancelled'),
+    $package(91, $baseMs + $hours(6), $baseMs + 40100, 'ReadyToShip'),
+    $package(92, $baseMs + $hours(6), $baseMs + 40200, 'Created', $changedSku),
+    $package(93, $baseMs + $hours(6), $baseMs + 40300, 'Shipped'),
+]]);
+$release = static fn (int $o): array => $send($approver, 'POST', '/trendyol/packages/' . ($base + $o) . '/release', ['expectedVersion' => $ready[$o]['version'], 'confirm' => true], $key("late{$o}"));
+$error($release(90), 409, 'MARKETPLACE_STATUS_NOT_RELEASABLE', 'a package cancelled after the last sync is refused at approval');
+$check($one('SELECT intake_status FROM trendyol_packages WHERE package_id = ?', [$base + 90]) === 'marketplace_cancelled', 'the fresh cancellation is recorded and the package leaves the work list');
+$error($release(91), 409, 'MARKETPLACE_STATUS_NOT_RELEASABLE', 'a package that became ReadyToShip is refused');
+$error($release(93), 409, 'MARKETPLACE_STATUS_NOT_RELEASABLE', 'a package shipped meanwhile is refused');
+$check($pdo->query('SELECT package_id, marketplace_status FROM trendyol_packages WHERE package_id IN (' . ($base + 91) . ', ' . ($base + 93) . ') ORDER BY package_id')->fetchAll(PDO::FETCH_KEY_PAIR) === [$base + 91 => 'ReadyToShip', $base + 93 => 'Shipped'], 'the fresh statuses are recorded for the employee');
+$error($release(92), 409, 'MARKETPLACE_LINES_CHANGED', 'a changed SKU or quantity is refused at approval');
+$line92 = $row('SELECT quantity, stock_code, prepared_kind, prepared_width_cm FROM trendyol_package_lines WHERE package_id = ?', [$base + 92]);
+$check($line92 === ['quantity' => 2, 'stock_code' => 'PT-301', 'prepared_kind' => null, 'prepared_width_cm' => null], 'the changed line shows the marketplace data and must be prepared again (measurements never carried over silently): ' . json_encode($line92));
+$check($trendyolOrders() === $trendyolOrdersBefore + 1 && (int) $one("SELECT COUNT(*) FROM order_qr_references q JOIN operational_orders o ON o.order_uuid = q.order_uuid WHERE o.source_key = 'trendyol'") === 1, 'no order or QR for any refused approval');
+$d92 = $status($get($preparer, '/trendyol/packages/' . ($base + 92)), 200, 'p92 after change');
+$d92 = $status($send($preparer, 'PUT', '/trendyol/packages/' . ($base + 92) . '/lines/' . ($base + 93), ['expectedVersion' => $d92['version'], 'kind' => 'curtain', 'widthCm' => '210', 'heightCm' => '250'], $key('p92-again')), 200, 'p92 prepared again');
+$error($send($approver, 'POST', '/trendyol/packages/' . ($base + 92) . '/release', ['expectedVersion' => $ready[92]['version'], 'confirm' => true], $key('p92-stale')), 409, 'PACKAGE_CHANGED', 'an approval with the version seen before the change is refused');
 
 // Stage 1 visibility is source-scoped; the existing claim/transition hands the order to stage 2 (Tăiere).
 $path = '/orders/' . rawurlencode($global);
@@ -332,10 +394,24 @@ $check($dismissed['intakeStatus'] === 'dismissed' && $dismissed['dismissal']['re
 $reopened = $status($send($preparer, 'POST', '/trendyol/packages/' . ($base + 50) . '/reopen', ['expectedVersion' => $dismissed['version']], $key('reopen')), 200, 'reopen');
 $check($reopened['intakeStatus'] === 'pending' && $reopened['dismissal'] === null, 'a dismissed package can be reopened');
 
-// The marketplace cancels an approved order: unavailable for production, exactly like other sources.
+// A late cancellation of an approved order that the modification-time sync no longer sees (outside its overlap)
+// is caught by the read-only reconciliation: unavailable for production, exactly like other sources.
 $t4 = $t3->modify('+5 minutes'); $clock->instant = $t4;
-$transport->responses = [$page([$package(30, $baseMs + $hours(4), $baseMs + 30000, 'Cancelled', $changedLines)])];
+$transport->responses = [$page([])];
 $sync->run();
+$check($one('SELECT source_reported_unavailable_at FROM operational_orders WHERE global_order_id = ?', [$global]) === null, 'the sync window does not contain the late update');
+$reconciler = new \Arasya\Operations\Integration\Trendyol\TrendyolReconciler($pdo, $container->trendyolClient(), new TrendyolIntakeStore($pdo, $writer, $clock), $clock);
+$state->pause('Test operator');
+try { $reconciler->run(); $check(false, 'reconciliation must refuse while intake is not active'); } catch (RuntimeException $e) { $check($e->getMessage() === 'TRENDYOL_INTAKE_NOT_ACTIVE', 'reconciliation stays inactive until intake is active'); }
+$state->resume('Test operator');
+$known = (int) $one("SELECT COUNT(*) FROM trendyol_packages WHERE intake_status IN ('pending', 'released')");
+$itemsBefore = $pdo->query("SELECT * FROM operational_order_items WHERE order_uuid = '{$order['order_uuid']}'")->fetchAll(PDO::FETCH_ASSOC);
+$marketplace(['packages' => [$package(30, $baseMs + $hours(4), $baseMs + 30000, 'Cancelled', $changedLines)]]);
+$reconciled = $reconciler->run();
+$check($reconciled === ['checked' => $known, 'updated' => 1, 'unchanged' => 0, 'missing' => $known - 1, 'rejected' => 0, 'requests' => (int) ceil($known / 50)], 'reconciliation re-reads every known package by ID: ' . json_encode($reconciled));
+$check($pdo->query("SELECT * FROM operational_order_items WHERE order_uuid = '{$order['order_uuid']}'")->fetchAll(PDO::FETCH_ASSOC) === $itemsBefore, 'reconciliation never changes the approved items');
+$check($reconciler->run()['updated'] === 0, 'reconciliation is idempotent');
+$check((int) $one('SELECT COUNT(*) FROM trendyol_packages') === (int) $one('SELECT COUNT(*) FROM trendyol_packages') && $trendyolOrders() === $trendyolOrdersBefore + 1, 'reconciliation creates no package and no production order');
 $check($one('SELECT source_reported_unavailable_at FROM operational_orders WHERE global_order_id = ?', [$global]) !== null && $one('SELECT production_stage_id FROM operational_orders WHERE global_order_id = ?', [$global]) === 'material-preparation', 'a cancellation after approval is reported to production without moving the stage');
 
 // ---- Sliced windows, truncation and failures ----------------------------------------------------------------
