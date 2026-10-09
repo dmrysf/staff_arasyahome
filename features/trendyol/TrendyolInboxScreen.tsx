@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { ignoredReasonLabels, intakeStateLabels, intakeStatusLabels, marketplaceLabel, type TrendyolApi, type TrendyolIgnoredPackage, type TrendyolOverview, type TrendyolPackageSummary, type TrendyolView } from "../../domain/trendyol";
+import { ignoredReasonLabels, intakeLabel, intakeStateLabels, marketplaceClassLabels, marketplaceLabel, type TrendyolApi, type TrendyolIgnoredPackage, type TrendyolOverview, type TrendyolPackageSummary, type TrendyolView } from "../../domain/trendyol";
 import { getErrorPresentation, toServiceError } from "../../services/errors";
 import { AppIcon } from "../../components/icons/AppIcon";
 
 const views: { id: TrendyolView; label: string }[] = [
   { id: "pending", label: "De pregătit" },
+  { id: "attention", label: "Necesită atenție" },
   { id: "released", label: "În producție" },
   { id: "closed", label: "Închise" },
   { id: "ignored", label: "Ignorate" },
@@ -56,9 +57,9 @@ export function TrendyolInboxScreen({ service, navigate }: { service: TrendyolAp
         ? <p className="order-notice order-notice-muted">Nu există comenzi în această listă.</p>
         : <ul className="trendyol-list" aria-label="Pachete Trendyol">
           {items.map((item) => <li key={item.packageId}>
-            <button type="button" className={item.intakeStatus === "pending" ? "exception-row needs-action" : "exception-row"} onClick={() => navigate(`/trendyol/${item.packageId}`)}>
+            <button type="button" className={view === "pending" ? "exception-row needs-action" : "exception-row"} onClick={() => navigate(`/trendyol/${item.packageId}`)}>
               <span><strong>Comanda #{item.orderNumber}</strong><small>Pachet {item.packageId} · {date(item.orderDate)} · Trendyol: {marketplaceLabel(item.marketplaceStatus)}</small></span>
-              <span className="exception-status">{item.intakeStatus === "pending" && item.lineCount !== undefined ? `${item.preparedCount}/${item.lineCount} linii pregătite` : intakeStatusLabels[item.intakeStatus]}{item.changedAfterRelease ? " · modificată după aprobare" : ""}{item.orderDateNearActivation && item.intakeStatus === "pending" ? " · verifică data în Seller Panel" : ""}</span>
+              <span className="exception-status">{view === "attention" ? (item.marketplaceStatusKnown ? marketplaceClassLabels[item.marketplaceClass] : "Status necunoscut — verificare necesară") : item.intakeStatus === "pending" && item.lineCount !== undefined ? `${item.preparedCount}/${item.lineCount} linii pregătite` : intakeLabel(item)}{item.changedAfterRelease ? " · modificată după aprobare" : ""}{item.orderDateNearActivation && item.intakeStatus === "pending" ? " · verifică dublura manuală" : ""}</span>
             </button>
           </li>)}
         </ul>)}

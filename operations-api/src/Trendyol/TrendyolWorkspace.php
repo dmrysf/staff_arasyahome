@@ -46,7 +46,12 @@ final readonly class TrendyolWorkspace
     public const RELEASE = 'trendyol.orders.release';
     public const KINDS = ['curtain', 'drapery', 'other'];
     private const MEASURED_KINDS = ['curtain', 'drapery'];
-    private const VIEWS = ['pending' => ['pending'], 'released' => ['released'], 'closed' => ['dismissed', 'marketplace_cancelled']];
+    /**
+     * Inbox views. `pending` lists pending packages in a new-order status (workable); `attention` lists pending
+     * packages that cannot be released yet: payment pending, ReadyToShip or an unknown status (review), or
+     * shipped/returned at the marketplace. Their class follows the marketplace status on every update.
+     */
+    private const VIEWS = ['pending' => ['pending'], 'attention' => ['pending'], 'released' => ['released'], 'closed' => ['dismissed', 'marketplace_cancelled']];
     private const MAX_CENTIMETRES = '10000';
     private const MAX_METERS = '100000';
 
@@ -70,12 +75,8 @@ final readonly class TrendyolWorkspace
         $this->authorization->require($actor, self::VIEW);
         $state = $this->pdo->query('SELECT status, baseline_at, last_run_at, last_run_outcome FROM trendyol_intake_state WHERE state_id = 1')->fetch(PDO::FETCH_ASSOC) ?: [];
         $counts = array_fill_keys(array_keys(self::VIEWS), 0);
-        foreach ($this->pdo->query('SELECT intake_status, COUNT(*) AS n FROM trendyol_packages GROUP BY intake_status')->fetchAll(PDO::FETCH_ASSOC) as $row) {
-            foreach (self::VIEWS as $view => $statuses) {
-                if (in_array($row['intake_status'], $statuses, true)) {
-                    $counts[$view] += (int) $row['n'];
-                }
-            }
+        foreach ($this->pdo->query('SELECT intake_status, marketplace_status, COUNT(*) AS n FROM trendyol_packages GROUP BY intake_status, marketplace_status')->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $counts[self::viewOf((string) $row['intake_status'], (string) $row['marketplace_status'])] += (int) $row['n'];
         }
         return [
             'intake' => [
@@ -105,23 +106,28 @@ final readonly class TrendyolWorkspace
             ], $rows)];
         }
         $statuses = self::VIEWS[$view] ?? throw new ApiException(400, 'INVALID_VIEW', 'Unknown view.');
+        $workList = $view === 'pending' || $view === 'attention';
         $statement = $this->pdo->prepare(
             'SELECT p.*, (SELECT COUNT(*) FROM trendyol_package_lines l WHERE l.package_id = p.package_id) AS line_count,
                     (SELECT COUNT(*) FROM trendyol_package_lines l WHERE l.package_id = p.package_id AND l.prepared_kind IS NOT NULL) AS prepared_count,
                     o.global_order_id, o.production_stage_id
              FROM trendyol_packages p LEFT JOIN operational_orders o ON o.order_uuid = p.released_order_uuid
              WHERE p.intake_status IN (' . implode(', ', array_fill(0, count($statuses), '?')) . ')
-             ORDER BY p.order_date_ms ' . ($view === 'pending' ? 'ASC' : 'DESC') . ', p.package_id LIMIT 200',
+             ORDER BY p.order_date_ms ' . ($workList ? 'ASC' : 'DESC') . ', p.package_id LIMIT 500',
         );
         $statement->execute($statuses);
         $baseline = $this->baselineMillis();
+        $rows = array_slice(array_values(array_filter(
+            $statement->fetchAll(PDO::FETCH_ASSOC),
+            static fn (array $row): bool => self::viewOf((string) $row['intake_status'], (string) $row['marketplace_status']) === $view,
+        )), 0, 200);
         return ['items' => array_map(fn (array $row): array => [
             ...$this->summary($row, $baseline),
             'lineCount' => (int) $row['line_count'],
             'preparedCount' => (int) $row['prepared_count'],
             'globalOrderId' => $row['global_order_id'] === null ? null : (string) $row['global_order_id'],
             'stageId' => $row['production_stage_id'] === null ? null : (string) $row['production_stage_id'],
-        ], $statement->fetchAll(PDO::FETCH_ASSOC))];
+        ], $rows)];
     }
 
     /** @return array<string, mixed> */
@@ -228,7 +234,7 @@ final readonly class TrendyolWorkspace
                 throw $this->changed();
             }
             $now = $this->now();
-            $status = in_array((string) $package['marketplace_status'], TrendyolEligibility::WITHDRAWN_STATUSES, true) ? 'marketplace_cancelled' : 'pending';
+            $status = TrendyolEligibility::withdrawn((string) $package['marketplace_status']) ? 'marketplace_cancelled' : 'pending';
             $this->pdo->prepare('UPDATE trendyol_packages SET intake_status = ?, dismissed_by_employee_uuid = NULL, dismissed_at = NULL, dismiss_reason = NULL, version = version + 1 WHERE package_id = ?')
                 ->execute([$status, $id]);
             $this->event($id, 'reopened', $fresh, ['status' => $status], $requestId, $now);
@@ -265,7 +271,7 @@ final readonly class TrendyolWorkspace
             }
             $this->assertPending($package, $expected);
             if (!TrendyolEligibility::releasable((string) $package['marketplace_status'])) {
-                throw new ApiException(409, 'MARKETPLACE_STATUS_NOT_RELEASABLE', 'Statusul din Trendyol nu mai permite intrarea în producție.', ['marketplaceStatus' => (string) $package['marketplace_status']]);
+                throw new ApiException(409, 'MARKETPLACE_STATUS_NOT_RELEASABLE', 'Statusul actual din Trendyol nu permite intrarea în producție.', ['marketplaceStatus' => (string) $package['marketplace_status']]);
             }
             $lines = $this->lines($id);
             $missing = self::missing($lines);
@@ -389,7 +395,12 @@ final readonly class TrendyolWorkspace
                     'preparedAt' => self::iso($line['prepared_at']),
                 ],
             ], $lines),
-            'readiness' => ['ready' => $pending && $releasable && $missing === [], 'missingLines' => $missing, 'marketplaceReleasable' => $releasable],
+            'readiness' => [
+                'ready' => $pending && $releasable && $missing === [], 'missingLines' => $missing, 'marketplaceReleasable' => $releasable,
+                // Why a pending package cannot be released yet: the marketplace class, or unknown_status.
+                'blockedReason' => !$pending || $releasable ? null
+                    : (TrendyolEligibility::knownStatus((string) $package['marketplace_status']) ? TrendyolEligibility::statusClass((string) $package['marketplace_status']) : 'unknown_status'),
+            ],
             'siblings' => array_map(static fn (array $row): array => ['packageId' => (string) $row['package_id'], 'intakeStatus' => (string) $row['intake_status'], 'marketplaceStatus' => (string) $row['marketplace_status']], $siblings->fetchAll(PDO::FETCH_ASSOC)),
             'production' => $package['released_order_uuid'] === null ? null : [
                 'globalOrderId' => (string) $package['global_order_id'],
@@ -428,6 +439,8 @@ final readonly class TrendyolWorkspace
             'orderNumber' => (string) $row['order_number'],
             'intakeStatus' => (string) $row['intake_status'],
             'marketplaceStatus' => (string) $row['marketplace_status'],
+            'marketplaceClass' => TrendyolEligibility::statusClass((string) $row['marketplace_status']),
+            'marketplaceStatusKnown' => TrendyolEligibility::knownStatus((string) $row['marketplace_status']),
             'orderDate' => self::fromMillis($row['order_date_ms']),
             'channelId' => $row['channel_id'] === null ? null : (int) $row['channel_id'],
             'orderDateNearActivation' => $baselineMillis !== null && TrendyolEligibility::nearActivation($orderDateMillis, $baselineMillis),
@@ -435,6 +448,16 @@ final readonly class TrendyolWorkspace
             'firstSeenAt' => self::iso($row['first_seen_at']),
             'version' => (int) $row['version'],
         ];
+    }
+
+    /** The inbox view a package belongs to. */
+    private static function viewOf(string $intakeStatus, string $marketplaceStatus): string
+    {
+        return match ($intakeStatus) {
+            'pending' => TrendyolEligibility::releasable($marketplaceStatus) ? 'pending' : 'attention',
+            'released' => 'released',
+            default => 'closed',
+        };
     }
 
     /** The activation baseline in epoch milliseconds, or null while intake was never activated. */

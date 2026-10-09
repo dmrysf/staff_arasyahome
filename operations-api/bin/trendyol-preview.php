@@ -65,11 +65,11 @@ fwrite(STDOUT, sprintf("TRENDYOL_PREVIEW window=%s..%s baseline=%s pages=%d tota
 foreach ($report['counts'] as $name => $count) {
     fwrite(STDOUT, sprintf("  %-20s %d\n", $name, $count));
 }
-fwrite(STDOUT, sprintf("orderDate evidence: aheadOfClock=%d (non-zero proves GMT+3 wall time) nearActivation=%d\n",
-    $report['evidence']['orderDateAheadOfClock'], $report['evidence']['nearActivation']));
+fwrite(STDOUT, sprintf("orderDate evidence: aheadOfClock=%d (expected 0: UTC epoch) nearActivation=%d unknownStatuses=%s\n",
+    $report['evidence']['orderDateAheadOfClock'], $report['evidence']['nearActivation'], implode(',', $report['evidence']['unknownStatuses']) ?: '-'));
 fwrite(STDOUT, "Fields present: " . json_encode($report['fields'], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES) . "\n");
 foreach ($report['packages'] as $package) {
-    fwrite(STDOUT, sprintf("%s  #%s  %-12s ordered %s  -> %s%s\n", $package['packageId'], $package['orderNumber'], $package['status'], $package['orderDate'] ?? '?', $package['classification'], $package['orderDateNearActivation'] ? ' (near activation: check Seller Panel)' : ''));
+    fwrite(STDOUT, sprintf("%s  #%s  %-12s ordered %s  -> %s%s\n", $package['packageId'], $package['orderNumber'], $package['status'], $package['orderDate'] ?? '?', $package['classification'], $package['orderDateNearActivation'] ? ' (ordered within 5 minutes of activation: check it was not handled manually)' : ''));
     foreach ($package['lines'] as $line) {
         $hint = $line['sizeSuggestion'] === null ? '' : sprintf(' [suggestion %sx%s cm]', $line['sizeSuggestion']['width'], $line['sizeSuggestion']['height']);
         fwrite(STDOUT, sprintf("    %d x %s | %s | %s | %s%s\n", $line['quantity'], $line['productName'], $line['stockCode'] ?? '-', $line['productSize'] ?? '-', $line['productColor'] ?? '-', $hint));

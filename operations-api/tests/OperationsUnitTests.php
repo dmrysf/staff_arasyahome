@@ -227,28 +227,43 @@ test('Trendyol Order V2 packages parse without customer secrets and the client i
     expect(TrendyolSizeHint::suggest('140,5 X 260') === ['width' => '140.5', 'height' => '260']);
     expect(TrendyolSizeHint::suggest('Tek Ebat') === null && TrendyolSizeHint::suggest('1x2') === null);
 
-    // Historical protection: only packages ordered before the baseline under both orderDate readings are ignored.
-    // The three hours after the baseline are ambiguous (GMT+3 wall time): never ignored, flagged for the approver.
+    // Historical protection on real UTC epochs: a package ordered before the baseline (even by 1 ms) is ignored.
     $baseline = 1759564800000;
     $at = static fn (int $offsetMinutes, string $status): TrendyolPackage => TrendyolPackage::fromApi([...$fixture['content'][0], 'orderDate' => $baseline + $offsetMinutes * 60000, 'shipmentPackageStatus' => $status]);
     expect(TrendyolEligibility::classify($at(-1, 'Created'), $baseline) === 'historical');
     expect(TrendyolEligibility::classify(TrendyolPackage::fromApi([...$fixture['content'][0], 'orderDate' => $baseline - 1]), $baseline) === 'historical', 'one millisecond before the baseline');
-    foreach ([0, 1, 179] as $minutes) {
-        expect(TrendyolEligibility::classify($at($minutes, 'Created'), $baseline) === 'eligible', "a new order {$minutes} minutes after activation is never ignored");
-        expect(TrendyolEligibility::nearActivation($baseline + $minutes * 60000, $baseline), "{$minutes} minutes is inside the GMT+3 ambiguity");
+    expect(TrendyolEligibility::classify(TrendyolPackage::fromApi([...$fixture['content'][0], 'orderDate' => $baseline]), $baseline) === 'eligible', 'the baseline instant itself is new');
+    foreach (['ReadyToShip', 'SomethingNew', 'Awaiting'] as $status) {
+        expect(TrendyolEligibility::classify($at(-1, $status), $baseline) === 'historical', "a historical {$status} package stays excluded");
     }
-    expect(TrendyolEligibility::classify($at(30, 'Awaiting'), $baseline) === 'deferred' && TrendyolEligibility::classify($at(30, 'Delivered'), $baseline) === 'status_not_eligible');
-    expect(TrendyolEligibility::classify($at(181, 'Created'), $baseline) === 'eligible');
-    expect(!TrendyolEligibility::nearActivation($baseline - 1, $baseline) && !TrendyolEligibility::nearActivation($baseline + 3 * 3600000, $baseline) && !TrendyolEligibility::nearActivation(null, $baseline));
-    foreach (['Created', 'Picking', 'Invoiced'] as $status) {
-        expect(TrendyolEligibility::classify($at(240, $status), $baseline) === 'eligible', $status);
+    // Manual-duplication warning: five minutes after activation only (not a timezone rule).
+    expect(TrendyolEligibility::nearActivation($baseline, $baseline) && TrendyolEligibility::nearActivation($baseline + 299999, $baseline));
+    expect(!TrendyolEligibility::nearActivation($baseline + 300000, $baseline) && !TrendyolEligibility::nearActivation($baseline - 1, $baseline) && !TrendyolEligibility::nearActivation($baseline + 3600000, $baseline) && !TrendyolEligibility::nearActivation(null, $baseline));
+
+    // Status classes: every explicitly classified status, and unknown statuses kept for review.
+    $classes = [
+        'Created' => ['new', 'eligible', true], 'Picking' => ['new', 'eligible', true], 'Invoiced' => ['new', 'eligible', true],
+        'Awaiting' => ['payment_pending', 'payment_pending', false], 'Verified' => ['payment_pending', 'payment_pending', false],
+        'ReadyToShip' => ['review', 'review', false], 'SomethingNew' => ['review', 'review', false],
+        'Shipped' => ['fulfilment', 'status_not_eligible', false], 'Delivered' => ['fulfilment', 'status_not_eligible', false],
+        'AtCollectionPoint' => ['fulfilment', 'status_not_eligible', false], 'UnDelivered' => ['fulfilment', 'status_not_eligible', false],
+        'Returned' => ['returned', 'status_not_eligible', false], 'UnDeliveredAndReturned' => ['returned', 'status_not_eligible', false],
+        'Cancelled' => ['cancelled', 'status_not_eligible', false], 'UnSupplied' => ['cancelled', 'status_not_eligible', false],
+        'UnPacked' => ['split', 'status_not_eligible', false],
+    ];
+    foreach ($classes as $status => [$class, $decision, $releasable]) {
+        expect(TrendyolEligibility::statusClass($status) === $class, "{$status} is {$class}");
+        expect(TrendyolEligibility::classify($at(240, $status), $baseline) === $decision, "{$status} first seen after activation: {$decision}");
+        expect(TrendyolEligibility::releasable($status) === $releasable, "{$status} releasable: " . ($releasable ? 'yes' : 'no'));
+        expect(TrendyolEligibility::stored($decision) === in_array($decision, ['eligible', 'payment_pending', 'review'], true));
     }
-    foreach (['Awaiting', 'Verified'] as $status) {
-        expect(TrendyolEligibility::classify($at(240, $status), $baseline) === 'deferred', $status);
-    }
-    foreach (['Shipped', 'Delivered', 'Cancelled', 'UnSupplied', 'Returned', 'UnDelivered', 'AtCollectionPoint', 'UnPacked', 'SomethingNew'] as $status) {
-        expect(TrendyolEligibility::classify($at(240, $status), $baseline) === 'status_not_eligible', $status);
-    }
+    expect(!TrendyolEligibility::knownStatus('SomethingNew') && TrendyolEligibility::knownStatus('ReadyToShip') && TrendyolEligibility::knownStatus('UnDeliveredAndReturned'));
+    expect(TrendyolEligibility::withdrawn('Cancelled') && TrendyolEligibility::withdrawn('UnSupplied') && TrendyolEligibility::withdrawn('UnPacked'));
+    expect(!TrendyolEligibility::withdrawn('Returned') && !TrendyolEligibility::withdrawn('UnDeliveredAndReturned') && !TrendyolEligibility::withdrawn('ReadyToShip') && !TrendyolEligibility::withdrawn('SomethingNew'), 'returns and review statuses are not cancellations');
+    expect(TrendyolEligibility::cancelled('Cancelled') && TrendyolEligibility::cancelled('UnSupplied') && !TrendyolEligibility::cancelled('Returned') && !TrendyolEligibility::cancelled('UnPacked'));
+    // Live shape: shipmentPackageStatus=UnDeliveredAndReturned with top-level status=Returned; the package status wins.
+    $returned = TrendyolPackage::fromApi([...$fixture['content'][0], 'shipmentPackageStatus' => 'UnDeliveredAndReturned', 'status' => 'Returned']);
+    expect($returned->status === 'UnDeliveredAndReturned' && TrendyolEligibility::statusClass($returned->status) === 'returned' && !TrendyolEligibility::releasable($returned->status));
     $undated = $fixture['content'][0];
     unset($undated['orderDate']);
     expect(TrendyolEligibility::classify(TrendyolPackage::fromApi($undated), $baseline) === 'order_date_missing');
@@ -289,16 +304,17 @@ test('Trendyol Order V2 packages parse without customer secrets and the client i
     $transport->status = 200;
     // The preview reads, classifies and reports without customer identity; it has no database at all.
     $report = (new TrendyolPreview($client))->run(new DateTimeImmutable('@1759560000'), new DateTimeImmutable('@1759570000'), new DateTimeImmutable('@1759000000'));
-    expect($report['counts']['eligible'] === 2 && $report['counts']['status_not_eligible'] === 1 && count($report['packages']) === 3 && $report['fields']['shipmentPackageId'] === 2 && $report['fields']['id'] === 1);
+    expect($report['counts']['eligible'] === 2 && $report['counts']['status_not_eligible'] === 1 && $report['counts']['review'] === 0 && count($report['packages']) === 3 && $report['fields']['shipmentPackageId'] === 2 && $report['fields']['id'] === 1);
     $text = json_encode($report, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
     foreach (['Fictiv', 'Str. Test', '0744', 'example.invalid', 'api-key', 'api-secret'] as $private) {
         expect(!str_contains($text, $private), "the preview report holds no {$private}");
     }
     expect($report['packages'][0]['lines'][0]['sizeSuggestion'] === ['width' => '300', 'height' => '260']);
-    expect($report['evidence'] === ['orderDateAheadOfClock' => 0, 'nearActivation' => 0] && $report['packages'][0]['orderDateNearActivation'] === false);
-    // GMT+3 evidence: an orderDate later than the preview clock proves wall time; a baseline one hour earlier flags all three.
-    $nearReport = (new TrendyolPreview($client))->run(new DateTimeImmutable('@1759560000'), new DateTimeImmutable('@1759570000'), new DateTimeImmutable('@1759561200'), new DateTimeImmutable('@1759560000'));
-    expect($nearReport['evidence'] === ['orderDateAheadOfClock' => 3, 'nearActivation' => 3] && $nearReport['counts']['historical'] === 0 && $nearReport['counts']['eligible'] === 2);
+    expect($report['evidence'] === ['orderDateAheadOfClock' => 0, 'nearActivation' => 0, 'unknownStatuses' => []] && $report['packages'][0]['orderDateNearActivation'] === false && $report['packages'][0]['statusClass'] === 'new');
+    // Clock sanity and the five-minute activation check: the fixture orders lie 4800 s after the preview clock and
+    // 2 minutes after a proposed baseline.
+    $nearReport = (new TrendyolPreview($client))->run(new DateTimeImmutable('@1759560000'), new DateTimeImmutable('@1759570000'), new DateTimeImmutable('@1759564680'), new DateTimeImmutable('@1759560000'));
+    expect($nearReport['evidence'] === ['orderDateAheadOfClock' => 3, 'nearActivation' => 3, 'unknownStatuses' => []] && $nearReport['counts']['historical'] === 0 && $nearReport['counts']['eligible'] === 2);
     expect($nearReport['packages'][0]['orderDateNearActivation'] === true && $nearReport['packages'][0]['classification'] === 'eligible');
     $reflection = new ReflectionClass(TrendyolPreview::class);
     expect(array_map(static fn (ReflectionParameter $parameter): string => (string) $parameter->getType(), $reflection->getConstructor()->getParameters()) === [TrendyolClient::class], 'the preview depends on the read-only client only');

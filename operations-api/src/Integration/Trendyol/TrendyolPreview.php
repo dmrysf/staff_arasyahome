@@ -18,9 +18,10 @@ use RuntimeException;
  * line identifiers, statuses, timestamps, product data, the measurement suggestion and the classification, plus
  * a field-presence summary that shows which Order V2 field names the account really returns.
  *
- * `orderDateAheadOfClock` counts packages whose orderDate lies more than ten minutes after the preview's own clock.
- * A real order cannot be placed in the future, so a non-zero count proves that orderDate carries GMT+3 wall time
- * (the real instant plus three hours). `nearActivation` counts packages in the three-hour ambiguity after the baseline.
+ * `orderDateAheadOfClock` counts packages whose orderDate lies more than ten minutes after the preview's own clock:
+ * orderDate is a real UTC epoch, so it must stay 0 (a non-zero count means a clock or contract problem).
+ * `nearActivation` counts packages ordered within five minutes after the baseline (manual-duplication check).
+ * `unknownStatuses` lists marketplace statuses the code does not know; they are kept for review, never ignored.
  */
 final readonly class TrendyolPreview
 {
@@ -32,7 +33,7 @@ final readonly class TrendyolPreview
 
     /**
      * @return array{window: array{start: string, end: string}, baseline: string, pages: int, totalElements: int|null, truncated: bool,
-     *   counts: array<string, int>, evidence: array{orderDateAheadOfClock: int, nearActivation: int}, fields: array<string, int>, packages: list<array<string, mixed>>}
+     *   counts: array<string, int>, evidence: array{orderDateAheadOfClock: int, nearActivation: int, unknownStatuses: list<string>}, fields: array<string, int>, packages: list<array<string, mixed>>}
      */
     public function run(DateTimeImmutable $start, DateTimeImmutable $end, DateTimeImmutable $baseline, ?DateTimeImmutable $now = null): array
     {
@@ -43,8 +44,8 @@ final readonly class TrendyolPreview
         $utc = new DateTimeZone('UTC');
         $baselineMillis = $baseline->getTimestamp() * 1000;
         $packages = [];
-        $counts = ['eligible' => 0, 'deferred' => 0, 'historical' => 0, 'status_not_eligible' => 0, 'order_date_missing' => 0, 'malformed' => 0];
-        $evidence = ['orderDateAheadOfClock' => 0, 'nearActivation' => 0];
+        $counts = ['eligible' => 0, 'payment_pending' => 0, 'review' => 0, 'historical' => 0, 'status_not_eligible' => 0, 'order_date_missing' => 0, 'malformed' => 0];
+        $evidence = ['orderDateAheadOfClock' => 0, 'nearActivation' => 0, 'unknownStatuses' => []];
         $fields = [];
         $page = 0;
         $totalElements = null;
@@ -75,6 +76,9 @@ final readonly class TrendyolPreview
                 $nearActivation = TrendyolEligibility::nearActivation($package->orderDateMillis, $baselineMillis);
                 $evidence['nearActivation'] += $nearActivation ? 1 : 0;
                 $evidence['orderDateAheadOfClock'] += $package->orderDateMillis !== null && $package->orderDateMillis > $nowMillis + 600000 ? 1 : 0;
+                if (!TrendyolEligibility::knownStatus($package->status) && !in_array($package->status, $evidence['unknownStatuses'], true)) {
+                    $evidence['unknownStatuses'][] = $package->status;
+                }
                 if (count($packages) < self::MAX_PACKAGES) {
                     $packages[] = [
                         'packageId' => $package->packageId,
@@ -86,6 +90,7 @@ final readonly class TrendyolPreview
                         'channelId' => $package->channelId,
                         'hasDelivery' => $package->delivery !== null,
                         'classification' => $decision,
+                        'statusClass' => TrendyolEligibility::statusClass($package->status),
                         'orderDateNearActivation' => $nearActivation,
                         'lines' => array_map(static fn (array $line): array => [
                             'lineId' => $line['lineId'],

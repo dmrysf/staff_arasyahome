@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { intakeStatusLabels, lineKindLabels, marketplaceLabel, nearActivationWarning, normalizeMeasure, type TrendyolApi, type TrendyolLine, type TrendyolLineKind, type TrendyolPackageDetail } from "../../domain/trendyol";
+import { blockedReasonMessages, intakeLabel, intakeStatusLabels, lineKindLabels, marketplaceLabel, nearActivationWarning, normalizeMeasure, type TrendyolApi, type TrendyolLine, type TrendyolLineKind, type TrendyolPackageDetail } from "../../domain/trendyol";
 import { getErrorPresentation, toServiceError } from "../../services/errors";
 import { createIdempotencyKey } from "../../services/idempotency";
 import { AppIcon } from "../../components/icons/AppIcon";
@@ -87,7 +87,7 @@ export function TrendyolPackageScreen({ packageId, service, navigate }: { packag
         <h1>Comanda #{detail.orderNumber}</h1>
         <dl className="authority-facts">
           <div><dt>Status Trendyol (numai citire)</dt><dd>{marketplaceLabel(detail.marketplaceStatus)}</dd></div>
-          <div><dt>Stare în Arasya</dt><dd>{intakeStatusLabels[detail.intakeStatus]}</dd></div>
+          <div><dt>Stare în Arasya</dt><dd>{intakeLabel(detail)}</dd></div>
           <div><dt>Data comenzii</dt><dd>{date(detail.orderDate)}</dd></div>
         </dl>
         <p className="order-notice order-notice-muted">Arasya nu modifică nimic în Trendyol: statusul, expedierea, codul de bare al curierului și factura rămân în Seller Panel. Codul QR Arasya este doar pentru producție.</p>
@@ -130,7 +130,7 @@ export function TrendyolPackageScreen({ packageId, service, navigate }: { packag
 
       {detail.intakeStatus === "pending" && <section className="detail-section" aria-labelledby="trendyol-approval">
         <h2 id="trendyol-approval">Aprobare pentru producție</h2>
-        {!detail.readiness.marketplaceReleasable && <p className="order-notice" role="alert">Statusul din Trendyol ({marketplaceLabel(detail.marketplaceStatus)}) nu mai permite intrarea în producție.</p>}
+        {detail.readiness.blockedReason && <p className="order-notice" role="alert" data-testid="trendyol-blocked">{blockedReasonMessages[detail.readiness.blockedReason]} Status Trendyol: {marketplaceLabel(detail.marketplaceStatus)}.</p>}
         {detail.readiness.missingLines.length > 0 && <p className="order-notice order-notice-muted">De completat: {detail.readiness.missingLines.map((line) => `linia ${line}`).join(", ")}.</p>}
         {capabilities.release ? <>
           <label className="checkbox-field"><input type="checkbox" checked={confirmed} disabled={!capabilities.releaseNow} onChange={(event) => setConfirmed(event.target.checked)} /> Confirm că am verificat produsele și măsurile. Comanda intră în producție la etapa 1 (În așteptare), cu cod QR Arasya și fișa de producție, revizia 1.</label>
