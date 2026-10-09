@@ -4,6 +4,7 @@ import type { ActivityService, AuthService, EmployeeService, ExceptionService, L
 import { startLiveClient } from "./liveClient";
 import type { DocumentApi, DocumentAttention, DocumentRevision, OrderDocument, OrderDocumentSummary } from "../../domain/documents";
 import type { TrendyolApi, TrendyolCapabilities, TrendyolIgnoredPackage, TrendyolIntakeStatus, TrendyolLine, TrendyolLineKind, TrendyolOverview, TrendyolPackageDetail, TrendyolPackageSummary } from "../../domain/trendyol";
+import { marketplaceClassOf, marketplaceStatusLabels } from "../../domain/trendyol";
 import { isProductionAuthority, type AuthorityApi, type AuthorityChange, type OrderAuthorityView, type ProductionAuthorityMode } from "../../domain/authority";
 import type { ActiveQr, ProductionQrApi, ProductionQrView, QrAuthority, QrAuthorityMode, QrRevision, QrRevisionState, QrRotationReason } from "../../domain/productionQr";
 import { createBrowserWorkflowCache, createUnavailableWorkflowCache, normalizeProductionApiBaseUrl, type WorkflowCache } from "./workflowCache";
@@ -800,13 +801,15 @@ function mapTrendyolCapabilities(value: unknown): TrendyolCapabilities {
   const raw = objectValue(value);
   return { view: booleanValue(raw.view), prepare: booleanValue(raw.prepare), release: booleanValue(raw.release) };
 }
+const marketplaceClasses = ["new", "payment_pending", "review", "fulfilment", "returned", "cancelled", "split"] as const;
+const blockedReasons = ["payment_pending", "review", "fulfilment", "returned", "cancelled", "split", "unknown_status"] as const;
 export function mapTrendyolOverview(value: unknown): TrendyolOverview {
   const raw = objectValue(value);
   const intake = objectValue(raw.intake);
   const counts = objectValue(raw.counts);
   return {
     intake: { status: oneOf(intake.status, ["inactive", "active", "paused"] as const), baselineAt: nullableTimestamp(intake.baselineAt), lastRunAt: nullableTimestamp(intake.lastRunAt), lastRunOutcome: nullableText(intake.lastRunOutcome) },
-    counts: { pending: nonNegativeInteger(counts.pending), released: nonNegativeInteger(counts.released), closed: nonNegativeInteger(counts.closed), ignored: nonNegativeInteger(counts.ignored) },
+    counts: { pending: nonNegativeInteger(counts.pending), attention: counts.attention === undefined ? 0 : nonNegativeInteger(counts.attention), released: nonNegativeInteger(counts.released), closed: nonNegativeInteger(counts.closed), ignored: nonNegativeInteger(counts.ignored) },
     capabilities: mapTrendyolCapabilities(raw.capabilities),
   };
 }
@@ -817,6 +820,8 @@ export function mapTrendyolSummary(value: unknown): TrendyolPackageSummary {
     orderNumber: stringValue(raw.orderNumber),
     intakeStatus: oneOf(raw.intakeStatus, intakeStatuses),
     marketplaceStatus: stringValue(raw.marketplaceStatus),
+    marketplaceClass: raw.marketplaceClass === undefined ? marketplaceClassOf(stringValue(raw.marketplaceStatus)) : oneOf(raw.marketplaceClass, marketplaceClasses),
+    marketplaceStatusKnown: raw.marketplaceStatusKnown === undefined ? stringValue(raw.marketplaceStatus) in marketplaceStatusLabels : booleanValue(raw.marketplaceStatusKnown),
     orderDate: nullableTimestamp(raw.orderDate),
     orderDateNearActivation: raw.orderDateNearActivation === undefined ? false : booleanValue(raw.orderDateNearActivation),
     changedAfterRelease: booleanValue(raw.changedAfterRelease),
@@ -858,7 +863,7 @@ export function mapTrendyolDetail(value: unknown): TrendyolPackageDetail {
     ...mapTrendyolSummary(raw),
     delivery: delivery === null ? null : { name: nullableText(delivery.name), addressLines: (delivery.addressLines as unknown[]).map(stringValue), phoneMasked: nullableText(delivery.phoneMasked) },
     lines: raw.lines.map(mapTrendyolLine),
-    readiness: { ready: booleanValue(readiness.ready), missingLines: readiness.missingLines.map(positiveInteger), marketplaceReleasable: booleanValue(readiness.marketplaceReleasable) },
+    readiness: { ready: booleanValue(readiness.ready), missingLines: readiness.missingLines.map(positiveInteger), marketplaceReleasable: booleanValue(readiness.marketplaceReleasable), blockedReason: readiness.blockedReason == null ? null : oneOf(readiness.blockedReason, blockedReasons) },
     siblings: raw.siblings.map((item) => { const sibling = objectValue(item); return { packageId: packageIdValue(sibling.packageId), intakeStatus: oneOf(sibling.intakeStatus, intakeStatuses), marketplaceStatus: stringValue(sibling.marketplaceStatus) }; }),
     production: production === null ? null : { globalOrderId: stringValue(production.globalOrderId), stageId: stringValue(production.stageId), stageLabel: nullableText(production.stageLabel), documentStatus: stringValue(production.documentStatus), operationalStatus: stringValue(production.operationalStatus), releasedBy: nullableText(production.releasedBy), releasedAt: nullableTimestamp(production.releasedAt) },
     dismissal: dismissal === null ? null : { reason: stringValue(dismissal.reason), by: nullableText(dismissal.by), at: nullableTimestamp(dismissal.at) },

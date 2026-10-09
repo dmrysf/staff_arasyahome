@@ -6,14 +6,17 @@ import type { Employee } from "./models";
  * Nothing in this workspace writes to Trendyol; statuses, shipping and invoices stay in the Seller Panel.
  */
 export type TrendyolIntakeStatus = "pending" | "released" | "dismissed" | "marketplace_cancelled";
-export type TrendyolView = "pending" | "released" | "closed" | "ignored";
+export type TrendyolView = "pending" | "attention" | "released" | "closed" | "ignored";
+/** Server-side class of the marketplace status. Only `new` can be released into production. */
+export type TrendyolMarketplaceClass = "new" | "payment_pending" | "review" | "fulfilment" | "returned" | "cancelled" | "split";
+export type TrendyolBlockedReason = Exclude<TrendyolMarketplaceClass, "new"> | "unknown_status";
 export type TrendyolLineKind = "curtain" | "drapery" | "other";
 
 export type TrendyolCapabilities = { view: boolean; prepare: boolean; release: boolean };
 
 export type TrendyolOverview = {
   intake: { status: "inactive" | "active" | "paused"; baselineAt: string | null; lastRunAt: string | null; lastRunOutcome: string | null };
-  counts: { pending: number; released: number; closed: number; ignored: number };
+  counts: { pending: number; attention: number; released: number; closed: number; ignored: number };
   capabilities: TrendyolCapabilities;
 };
 
@@ -22,8 +25,10 @@ export type TrendyolPackageSummary = {
   orderNumber: string;
   intakeStatus: TrendyolIntakeStatus;
   marketplaceStatus: string;
+  marketplaceClass: TrendyolMarketplaceClass;
+  marketplaceStatusKnown: boolean;
   orderDate: string | null;
-  /** Ordered within three hours after activation: Trendyol's GMT+3 order date may predate activation. */
+  /** Ordered within five minutes after activation: the team may already have handled it manually. */
   orderDateNearActivation: boolean;
   changedAfterRelease: boolean;
   version: number;
@@ -53,7 +58,7 @@ export type TrendyolLine = {
 export type TrendyolPackageDetail = TrendyolPackageSummary & {
   delivery: { name: string | null; addressLines: string[]; phoneMasked: string | null } | null;
   lines: TrendyolLine[];
-  readiness: { ready: boolean; missingLines: number[]; marketplaceReleasable: boolean };
+  readiness: { ready: boolean; missingLines: number[]; marketplaceReleasable: boolean; blockedReason: TrendyolBlockedReason | null };
   siblings: { packageId: string; intakeStatus: TrendyolIntakeStatus; marketplaceStatus: string }[];
   production: { globalOrderId: string; stageId: string; stageLabel: string | null; documentStatus: string; operationalStatus: string; releasedBy: string | null; releasedAt: string | null } | null;
   dismissal: { reason: string; by: string | null; at: string | null } | null;
@@ -83,15 +88,17 @@ export function canUseTrendyolWorkspace(employee: Employee): boolean {
 
 /** Trendyol Seller Panel statuses, shown read-only. Arasya never changes them. */
 export const marketplaceStatusLabels: Record<string, string> = {
-  Awaiting: "Plată în verificare",
+  Awaiting: "În așteptarea confirmării plății",
   Verified: "Plată verificată",
   Created: "Nouă",
   Picking: "În pregătire",
   Invoiced: "Facturată",
+  ReadyToShip: "Pregătită pentru curier",
   Shipped: "Expediată",
   Delivered: "Livrată",
   UnDelivered: "Nelivrată",
   Returned: "Returnată",
+  UnDeliveredAndReturned: "Nelivrată și returnată",
   Cancelled: "Anulată",
   UnSupplied: "Nefurnizată",
   UnPacked: "Pachet împărțit",
@@ -111,8 +118,45 @@ export const ignoredReasonLabels: Record<TrendyolIgnoredPackage["reason"], strin
   order_date_missing: "Fără dată de comandă",
 };
 
-/** Shown on packages dated inside the GMT+3 ambiguity after activation, before anyone approves them. */
-export const nearActivationWarning = "Comanda are data în primele 3 ore după activarea conexiunii. Trendyol trimite ora Turciei (GMT+3), deci comanda poate fi plasată înainte de activare. Verifică în Seller Panel și în producție că nu a fost deja preluată manual înainte de aprobare.";
+/** Shown on packages ordered within five minutes after activation: a manual-duplication check, not a timezone rule. */
+export const nearActivationWarning = "Comanda a fost plasată în primele 5 minute după activarea conexiunii. Verifică să nu fi fost deja preluată manual în producție înainte de aprobare.";
+
+/** Section headings of the attention list, by marketplace class. */
+export const marketplaceClassLabels: Record<TrendyolMarketplaceClass, string> = {
+  new: "Gata de pregătire",
+  payment_pending: "În așteptarea confirmării plății",
+  review: "Necesită verificare",
+  fulfilment: "Excepție de livrare",
+  returned: "Returnată",
+  cancelled: "Anulată în Trendyol",
+  split: "Pachet împărțit în Trendyol",
+};
+
+/** Why a pending package cannot be released yet. The API enforces the same rule. */
+export const blockedReasonMessages: Record<TrendyolBlockedReason, string> = {
+  payment_pending: "În așteptarea confirmării plății. Comanda poate intra în producție numai după ce Trendyol confirmă plata.",
+  review: "Necesită verificare: Trendyol arată comanda ca pregătită pentru curier. Nu poate fi trimisă în producție din Arasya în acest status. Verifică în Seller Panel.",
+  unknown_status: "Status necunoscut — verificare necesară. Comanda nu poate fi trimisă în producție până când Trendyol o trece într-un status cunoscut.",
+  fulfilment: "Comanda este deja expediată sau în livrare în Trendyol (excepție de livrare). Nu poate intra în producție.",
+  returned: "Comanda a fost returnată în Trendyol (retur, nu anulare). Nu poate intra în producție.",
+  cancelled: "Comanda a fost anulată în Trendyol. Nu poate intra în producție.",
+  split: "Pachetul a fost împărțit în Trendyol. Pachetele noi apar separat.",
+};
+
+/** The Arasya intake label, naming a split instead of a cancellation. */
+export function intakeLabel(summary: Pick<TrendyolPackageSummary, "intakeStatus" | "marketplaceClass">): string {
+  return summary.intakeStatus === "marketplace_cancelled" && summary.marketplaceClass === "split" ? marketplaceClassLabels.split : intakeStatusLabels[summary.intakeStatus];
+}
+
+/** Client-side fallback only (the server classification wins); unknown statuses are review. */
+export function marketplaceClassOf(status: string): TrendyolMarketplaceClass {
+  const classes: Record<string, TrendyolMarketplaceClass> = {
+    Created: "new", Picking: "new", Invoiced: "new", Awaiting: "payment_pending", Verified: "payment_pending", ReadyToShip: "review",
+    Shipped: "fulfilment", Delivered: "fulfilment", AtCollectionPoint: "fulfilment", UnDelivered: "fulfilment",
+    Returned: "returned", UnDeliveredAndReturned: "returned", Cancelled: "cancelled", UnSupplied: "cancelled", UnPacked: "split",
+  };
+  return classes[status] ?? "review";
+}
 
 export const lineKindLabels: Record<TrendyolLineKind, string> = { curtain: "Perdea", drapery: "Draperie", other: "Alt produs (fără măsuri)" };
 

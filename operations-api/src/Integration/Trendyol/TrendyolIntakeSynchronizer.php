@@ -20,14 +20,15 @@ use Throwable;
  * order, a QR or a document.
  *
  * It refuses to call Trendyol unless the intake row is `active` (the caller also checks the configuration
- * switch). The window starts at the cursor (initially the activation baseline) minus a ten-minute overlap and
+ * switch). The window starts at the cursor (initially the activation baseline) minus a thirty-minute overlap and
  * is read in slices of at most two weeks (Trendyol's limit). A slice whose packages exceed the 50-page limit
  * stops the run with the cursor at the last package read, so the next run continues there. A failure never
  * moves the cursor past an unread package.
  */
 final readonly class TrendyolIntakeSynchronizer
 {
-    public const OVERLAP_SECONDS = 600;
+    /** Re-read window before the cursor: absorbs marketplace indexing delay of up to 30 minutes (UTC epochs). */
+    public const OVERLAP_SECONDS = 1800;
 
     public function __construct(
         private PDO $pdo,
@@ -83,10 +84,16 @@ final readonly class TrendyolIntakeSynchronizer
                     } while ($page < $result['totalPages'] && $page < TrendyolClient::MAX_PAGES);
 
                     if ($page < $result['totalPages']) {
-                        // Packages arrive ordered by modification time: continue at the last one read next run.
+                        // Packages arrive ordered by modification time: the next run starts at the last one read.
+                        // The next start is cursor minus overlap; when the overlap would not move it past this
+                        // start, the cursor is set so the next run starts exactly at the last package read
+                        // (re-reading that instant is idempotent), so a long burst can never stall the intake.
                         $resume = $lastModified === null ? $start : (new DateTimeImmutable('@' . intdiv($lastModified, 1000)))->setTimezone($utc);
-                        $floor = $start->modify('+' . self::OVERLAP_SECONDS . ' seconds');
-                        $this->saveCursor($resume > $floor ? $resume : $floor);
+                        $next = $resume->modify('-' . self::OVERLAP_SECONDS . ' seconds');
+                        if ($next <= $start) {
+                            $next = $resume;
+                        }
+                        $this->saveCursor($next->modify('+' . self::OVERLAP_SECONDS . ' seconds'));
                         $counts['truncated'] = true;
                         break;
                     }

@@ -1,4 +1,4 @@
-# Trendyol intake (API 2.24.1, Staff 2.11.1)
+# Trendyol intake (API 2.24.2, Staff 2.11.2)
 
 Trendyol orders reach the factory only through an explicit approval. The marketplace stays the commercial truth:
 statuses, shipping, the courier barcode and the invoice remain in the Trendyol Seller Panel and are never written by
@@ -10,11 +10,27 @@ Arasya.
    `GET {base}/integration/order/sellers/{sellerId}/v2/orders` (Basic authentication, `User-Agent: <sellerId> - SelfIntegration`).
    The unversioned endpoint is retired by Trendyol on 2026-10-15; only `/v2/orders` is built anywhere in the code
    (enforced by `tests/inbound-only-guard.php`).
-2. **Intake inbox.** Each package is classified once:
-   - ordered after the activation baseline and in `Created`, `Picking` or `Invoiced`: **intake work** (`trendyol_packages`, `pending`);
-   - `Awaiting` / `Verified` (payment pending): not stored yet; it comes back when Trendyol moves it to `Created`;
-   - ordered before the baseline, or first seen in any other status (shipped, delivered, cancelled, returned, split, ...):
-     **ignored for good** (`trendyol_ignored_packages`, with its reason). An ignored package is never reclassified.
+2. **Intake inbox.** A package seen for the first time is classified by order date and marketplace status class
+   (`TrendyolEligibility::STATUS_CLASSES`):
+
+   | Class | Statuses | First seen after the baseline | Releasable |
+   |---|---|---|---|
+   | new | `Created`, `Picking`, `Invoiced` | intake work (`pending`, list "De pregătit") | yes, after approval |
+   | payment pending | `Awaiting`, `Verified` | intake, list "Necesită atenție" | no |
+   | review | `ReadyToShip` and **any unknown status** | intake, list "Necesită atenție" | no |
+   | fulfilment | `Shipped`, `Delivered`, `AtCollectionPoint`, `UnDelivered` | ignored | no |
+   | returned | `Returned`, `UnDeliveredAndReturned` | ignored | no |
+   | cancelled | `Cancelled`, `UnSupplied` | ignored | no |
+   | split | `UnPacked` | ignored | no |
+
+   A package ordered before the baseline is **ignored for good** whatever its status (`trendyol_ignored_packages`,
+   with its reason); an ignored package is never reclassified. An unknown status can never lose a package ordered after
+   the baseline: it is kept for review. The class of a stored package follows every marketplace update, so a review or
+   payment-pending package becomes workable when Trendyol moves it to a new-order status (same package row, history
+   kept), and a package shipped or returned before approval stays visible as a shipping/return exception.
+   `ReadyToShip` (seen live as a transient state before `Shipped`: prepared for the courier) is not releasable: the
+   evidence does not prove that such a package still needs manufacturing. The package status `shipmentPackageStatus`
+   wins over the top-level `status` (live: `UnDeliveredAndReturned` with top-level `Returned`).
    Nothing in this step creates an operational order, an Arasya QR, a document or a production event.
 3. **Staff workspace** (`/trendyol`). Authorized Trendyol personnel see the inbox, the product data from Trendyol
    (read-only) and a size suggestion read from Trendyol's text. They confirm, per line, the product type (curtain,
@@ -28,13 +44,14 @@ Arasya.
    - production document revision 1 is generated with the canonical ticket (same template, same revision system);
    - `production_submitted` is recorded on the shared production timeline.
    Approval is refused when a line is incomplete, the package changed meanwhile (`expectedVersion`), the package is not
-   pending, or Trendyol already reports it as shipped, delivered or cancelled.
+   pending, or its marketplace class is not `new` (`MARKETPLACE_STATUS_NOT_RELEASABLE`, enforced by the API; Staff
+   shows the reason from `readiness.blockedReason`).
 5. **Stage 1 to stage 2.** The ordinary Staff claim and stage completion move the order from `waiting` to
    `material-preparation` (Tăiere), with stage access, document and authority checks unchanged. While the order is at
    `waiting` it is visible only to employees holding both the `waiting` stage and `trendyol.orders.view`; from stage 2
    on it is ordinary production work.
 6. **After approval.** A later Trendyol status is shown as commerce status only and never moves production. A
-   cancellation (`Cancelled`, `UnSupplied`) makes the order unavailable exactly like a source cancellation (an order
+   cancellation (`Cancelled`, `UnSupplied`; never a return) makes the order unavailable exactly like a source cancellation (an order
    already in cutting keeps its status and records the report). A content, delivery or split change after approval
    is flagged (`changed_after_release`) for a person to check; the approved items and the printed document stay.
 
@@ -67,27 +84,18 @@ Reading needs three independent switches; any one off means no HTTP call at all:
 3. the database activation with a baseline: `php bin/trendyol-intake.php activate --baseline=now --operator=<name> --confirm=ACTIVATE-TRENDYOL-INTAKE`.
 
 The baseline cannot lie more than five minutes in the past and never moves backwards; the first window starts at the
-baseline (minus a ten-minute overlap), never earlier. `pause` / `resume` stop and restart reading from the cursor.
+baseline (minus the thirty-minute overlap), never earlier. `pause` / `resume` stop and restart reading from the cursor.
 
-Trendyol documents `orderDate` as GMT+3 wall time, so the epoch value is either the real instant or the real instant
-plus three hours. Since API 2.24.1:
+**Timestamps (verified on the live account, 2026-10-09).** Trendyol documents `orderDate` as "GMT+3", but the API
+returns `orderDate`, `lastModifiedDate` and `packageHistories[].createdDate` as real UTC epoch milliseconds: the order
+ending 6094 has `orderDate` 1791580287929 = 2026-10-09 21:11:27Z, shown in the Seller Panel as 10 October 00:11
+(UTC+3). The `startDate`/`endDate` filter applies to the package's current `lastModifiedDate` with the same UTC epochs:
+a ±2-minute window around the real modification finds the package, windows shifted by ±3 hours do not. All comparisons
+are plain epoch comparisons, so midnight and Romanian daylight-saving changes cannot open a gap.
 
-- a package dated before the baseline is historical under both readings and is ignored for good;
-- a package dated within three hours after the baseline is ambiguous. It is never ignored, because under the first
-  reading it is a new order. It becomes intake work with `orderDateNearActivation: true`, and Staff (2.11.1) shows a
-  warning: under the second reading it was placed up to three hours before activation and may already be in
-  production through the manual process. The approver checks the Seller Panel before releasing it;
-- a package dated three hours or more after the baseline is new under both readings.
-
-Nothing enters production without the explicit approval, so the ambiguity can no longer lose a new order and cannot
-release an old one by itself. Activating at a quiet time (for example 00:00 Bucharest) keeps the flagged set small.
-The preview prints `orderDate evidence: aheadOfClock=N`: a package dated more than ten minutes after the server clock
-proves the GMT+3 wall-time reading. Run the preview while there are fresh orders.
-
-The query window (`startDate`/`endDate`) may carry the same GMT+3 meaning. If it does, a package becomes visible to
-the sync up to three hours after its modification (later, never lost: the windows stay contiguous). Confirm this with
-the preview before activation by comparing a fresh order's Seller Panel time with the preview output.
-
+A package ordered before the baseline (by even one millisecond) is historical. A package ordered within five minutes
+after the baseline carries `orderDateNearActivation: true`: Staff asks the approver to check it was not already handled
+manually (a duplication check, not a timezone rule).
 ## Read-only preview
 
 `php bin/trendyol-preview.php [--from=ISO] [--to=ISO] [--baseline=ISO] [--json]` reads one window (at most two weeks;
@@ -97,8 +105,14 @@ it cannot create an intake row, an order, a QR, a document or a cursor.
 
 ## Synchronization details
 
+- Each run reads from the cursor minus a **30-minute overlap** (absorbs marketplace indexing delay; re-reads are
+  idempotent and counted as `unchanged`). A modification that becomes visible in the API more than ~30 minutes after
+  its `lastModifiedDate` could be missed until the package changes again; there is no reconciliation job yet (a
+  separately approved periodic re-read of pending and released packages would close this).
 - Windows of at most two weeks (Trendyol limit), 200 packages per page, pages 0 to 49 (10,000 packages per filter).
-  More than that stops the run with the cursor at the last package read (`truncated`); the next run continues there.
+  More than that stops the run (`truncated`) and the next run starts at the last package read; when the overlap would
+  not move the start forward (a burst within 30 minutes), the next run starts exactly at that package, so a burst
+  cannot stall the intake. Only 10,000 packages with the identical second could repeat a window.
 - `401`/`403` → `TRENDYOL_AUTH_FAILED`, `426` → `TRENDYOL_UPGRADE_REQUIRED`, `429` → `TRENDYOL_RATE_LIMITED`, other
   non-200 → `TRENDYOL_UNAVAILABLE`, transport failure → `TRENDYOL_REQUEST_FAILED`. A failure never moves the cursor and
   is recorded in `trendyol_sync_runs` and `trendyol_intake_state.last_run_outcome` (readiness warns while active).
@@ -120,6 +134,9 @@ field names, data minimization, classification and historical protection, gates 
 truncation, failures, locking, the workspace permissions, preparation, approval with QR and revision 1, stage 1
 visibility, the Staff hand-off to cutting, marketplace changes after approval, isolation from the other sources.
 
-Needs the real API (first supervised connection): authentication and the User-Agent with the real seller ID, the real
-payload shapes and statuses of this account, the `orderDate` / `lastModifiedDate` epoch semantics, whether `productSize`
-carries the curtain dimensions, the date-range and paging behaviour, rate limits, and TLS from the server.
+Verified on the live account with GET-only preview calls (2026-10-09): authentication, User-Agent, TLS, the V2
+payload, UTC epochs and modification-time filtering, `productSize` as "W x H" on every line, `merchantSku` equal to
+`stockCode`, observed statuses (including `ReadyToShip` and `UnDeliveredAndReturned`).
+
+Still unverified: Trendyol indexing delay under load, rate limits beyond a few requests, and whether a `ReadyToShip`
+package can still need manufacturing.

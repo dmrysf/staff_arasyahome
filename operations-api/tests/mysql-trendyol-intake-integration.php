@@ -129,27 +129,34 @@ $transport->responses = [$page([
     $package(30, $baseMs + $hours(4), $baseMs + 3000, 'Created'),           // new order: intake work
     $package(40, $baseMs + $hours(4), $baseMs + 4000, 'Shipped'),           // new but already shipped
     $package(50, $baseMs + $hours(4), $baseMs + 5000, 'Awaiting'),          // payment pending
-    $package(60, $baseMs + $hours(1), $baseMs + 6000, 'Created'),           // inside the GMT+3 ambiguity: work, flagged
+    $package(60, $baseMs + $hours(1), $baseMs + 6000, 'Created'),           // an hour after activation: new work (UTC epoch)
+    $package(61, $baseMs + 120_000, $baseMs + 6100, 'Created'),             // two minutes after activation: work, duplication warning
+    $package(62, $baseMs + $hours(2), $baseMs + 6200, 'ReadyToShip'),       // prepared for the courier: review, never releasable
+    $package(63, $baseMs + $hours(2), $baseMs + 6300, 'Repackaged'),        // unknown status: review, never lost
+    [...$package(64, $baseMs + $hours(2), $baseMs + 6400, 'UnDeliveredAndReturned'), 'status' => 'Returned'], // live shape: returned
+    $package(65, $baseMs - 1, $baseMs + 6500, 'ReadyToShip'),               // one millisecond before activation: historical
     ['shipmentPackageId' => 'malformed'],
 ])];
 $counts = $sync->run();
-$check($counts['received'] === 2 && $counts['ignored'] === 3 && $counts['deferred'] === 1 && $counts['rejected'] === 1 && $counts['pages'] === 1, 'first run classification: ' . json_encode($counts));
+$check($counts['received'] === 5 && $counts['ignored'] === 5 && $counts['deferred'] === 1 && $counts['rejected'] === 1 && $counts['pages'] === 1, 'first run classification: ' . json_encode($counts));
 $first = $query($transport->calls[0]['url']);
 $check(str_starts_with($transport->calls[0]['url'], 'https://apigw.trendyol.com/integration/order/sellers/123456/v2/orders?'), 'the read-only Order V2 endpoint is used');
-$check((int) $first['startDate'] === $baseMs - 600_000 && (int) $first['endDate'] === $ms($t1), 'the first window starts at the baseline minus the overlap, never 14 days back');
+$check((int) $first['startDate'] === $baseMs - 1_800_000 && (int) $first['endDate'] === $ms($t1), 'the first window starts at the baseline minus the 30-minute overlap, never 14 days back');
 $check($transport->calls[0]['headers']['User-Agent'] === '123456 - SelfIntegration' && $transport->calls[0]['headers']['Authorization'] === 'Basic ' . base64_encode('fixture-key:fixture-secret'), 'seller authentication headers');
 $check($trendyolOrders() === $trendyolOrdersBefore, 'synchronization creates no production order');
 $check((int) $one("SELECT COUNT(*) FROM operational_orders WHERE global_order_id LIKE ?", ["trendyol:{$base}%"]) === 0, 'no production order, QR or document for any synchronized package');
 $check($one('SELECT intake_status FROM trendyol_packages WHERE package_id = ?', [$base + 30]) === 'pending', 'the new Created package is pending intake work');
 $ignored = $pdo->query('SELECT package_id, reason FROM trendyol_ignored_packages ORDER BY package_id')->fetchAll(PDO::FETCH_KEY_PAIR);
-$check($ignored === [$base + 10 => 'historical', $base + 20 => 'historical', $base + 40 => 'status_not_eligible'], 'historical and shipped packages are recorded as ignored: ' . json_encode($ignored));
-$check($one('SELECT intake_status FROM trendyol_packages WHERE package_id = ?', [$base + 60]) === 'pending', 'a package dated inside the GMT+3 ambiguity after activation is never ignored');
-$check($one('SELECT COUNT(*) FROM trendyol_packages WHERE package_id = ?', [$base + 50]) == 0, 'a payment-pending package is not stored yet');
+$check($ignored === [$base + 10 => 'historical', $base + 20 => 'historical', $base + 40 => 'status_not_eligible', $base + 64 => 'status_not_eligible', $base + 65 => 'historical'], 'historical, shipped and returned packages are recorded as ignored: ' . json_encode($ignored));
+$check($one('SELECT intake_status FROM trendyol_packages WHERE package_id = ?', [$base + 60]) === 'pending', 'a package ordered an hour after activation is new work');
+$check($pdo->query("SELECT package_id, marketplace_status FROM trendyol_packages WHERE intake_status = 'pending' AND package_id IN (" . ($base + 50) . ', ' . ($base + 62) . ', ' . ($base + 63) . ') ORDER BY package_id')->fetchAll(PDO::FETCH_KEY_PAIR) === [$base + 50 => 'Awaiting', $base + 62 => 'ReadyToShip', $base + 63 => 'Repackaged'], 'payment-pending, ReadyToShip and unknown-status packages are kept in the inbox, never lost');
+$check(json_decode((string) $one("SELECT details FROM trendyol_intake_events WHERE package_id = ? AND action = 'received'", [$base + 63]), true)['class'] === 'review', 'the audit records the review class');
+$check($one("SELECT marketplace_status FROM trendyol_ignored_packages WHERE package_id = ?", [$base + 64]) === 'UnDeliveredAndReturned', 'the package status (not the top-level Returned) is recorded');
 $stored = (string) $one('SELECT delivery_context FROM trendyol_packages WHERE package_id = ?', [$base + 30]) . json_encode($pdo->query('SELECT * FROM trendyol_package_lines')->fetchAll(PDO::FETCH_ASSOC));
 foreach (['0744111222', 'never@example', '19999999999', '777.5', '388.75', '7330009998887776'] as $private) $check(!str_contains($stored, $private), "intake never stores {$private}");
 $check($one('SELECT cursor_at FROM trendyol_intake_state WHERE state_id = 1') === $t1->format('Y-m-d H:i:s.u'), 'the cursor is the window end');
 $check($one("SELECT last_contact_at FROM order_sources WHERE source_key = 'trendyol'") !== null, 'a successful run records the Trendyol heartbeat');
-$check($row('SELECT outcome, received, ignored FROM trendyol_sync_runs ORDER BY run_id DESC LIMIT 1') === ['outcome' => 'ok', 'received' => 2, 'ignored' => 3], 'the run is logged');
+$check($row('SELECT outcome, received, ignored FROM trendyol_sync_runs ORDER BY run_id DESC LIMIT 1') === ['outcome' => 'ok', 'received' => 5, 'ignored' => 5], 'the run is logged');
 
 // ---- Second run: overlap, sticky ignore, deferred becomes work, line changes, withdrawal --------------------
 $t2 = $t1->modify('+5 minutes'); $clock->instant = $t2; $transport->calls = [];
@@ -159,14 +166,21 @@ $changedLines = [
 ];
 $transport->responses = [$page([
     $package(10, $baseMs - $hours(48), $baseMs + 7000, 'Picking'),                 // historical, now Picking: stays ignored
-    $package(50, $baseMs + $hours(4), $baseMs + 8000, 'Created'),                  // payment confirmed: becomes work
+    $package(50, $baseMs + $hours(4), $baseMs + 8000, 'Created'),                  // payment confirmed: becomes workable
+    $package(66, $baseMs + $hours(3), $baseMs + 8500, 'Created'),                  // will be returned before approval
     $package(70, $baseMs + $hours(5), $baseMs + 9000, 'Created'),                  // another new order
     $package(80, $baseMs + $hours(5), $baseMs + 9500, 'Created'),                  // will be withdrawn
+    $package(30, $baseMs + $hours(4), $baseMs + 3000, 'Created'),                  // overlap re-read: unchanged
 ])];
-$check($sync->run()['received'] === 3, 'second run receives the confirmed and the new packages');
-$check((int) $query($transport->calls[0]['url'])['startDate'] === $ms($t1) - 600_000, 'the next window overlaps ten minutes');
+$second = $sync->run();
+$check($second['received'] === 3 && $second['updated'] === 1 && $second['unchanged'] === 1, 'second run: new packages, the confirmed payment as an update, the overlap re-read unchanged ' . json_encode($second));
+$check((int) $query($transport->calls[0]['url'])['startDate'] === $ms($t1) - 1_800_000, 'the next window overlaps thirty minutes');
+$check((int) $one('SELECT COUNT(*) FROM trendyol_packages WHERE package_id = ?', [$base + 30]) === 1 && (int) $one("SELECT COUNT(*) FROM trendyol_intake_events WHERE package_id = ? AND action = 'received'", [$base + 30]) === 1, 'an overlapping re-read never duplicates a package or its history');
 $check($one('SELECT reason FROM trendyol_ignored_packages WHERE package_id = ?', [$base + 10]) === 'historical' && $one('SELECT COUNT(*) FROM trendyol_packages WHERE package_id = ?', [$base + 10]) == 0, 'an ignored historical package is never reclassified');
-$check($one('SELECT intake_status FROM trendyol_packages WHERE package_id = ?', [$base + 50]) === 'pending', 'a confirmed payment turns the deferred package into work');
+$check($one('SELECT intake_status FROM trendyol_packages WHERE package_id = ?', [$base + 50]) === 'pending' && $one('SELECT marketplace_status FROM trendyol_packages WHERE package_id = ?', [$base + 50]) === 'Created', 'a confirmed payment turns the payment-pending package into work');
+$classChange = json_decode((string) $one("SELECT details FROM trendyol_intake_events WHERE package_id = ? AND action = 'marketplace_updated' ORDER BY event_id DESC LIMIT 1", [$base + 50]), true);
+ksort($classChange);
+$check($classChange === ['from' => 'Awaiting', 'fromClass' => 'payment_pending', 'to' => 'Created', 'toClass' => 'new'], 'the audit records the class change');
 
 // ---- Staff workspace identities ---------------------------------------------------------------------------
 $kernel = $container->kernel();
@@ -202,16 +216,26 @@ $send = static fn (array $who, string $method, string $path, array $body, ?strin
 $error($get($otherWaiting, '/trendyol/overview'), 403, 'UNAUTHORIZED_ACTION', 'a Staff employee without Trendyol permission');
 $error($get($dashboardOnly, '/trendyol/overview'), 403, 'APPLICATION_ACCESS_DENIED', 'Trendyol permissions work only inside Staff');
 $overview = $status($get($preparer, '/trendyol/overview'), 200, 'preparer overview');
-$check($overview['intake']['status'] === 'active' && $overview['counts']['pending'] === 5 && $overview['counts']['ignored'] === 3 && $overview['capabilities'] === ['view' => true, 'prepare' => true, 'release' => false], 'overview: state, counts and capabilities ' . json_encode($overview));
+$check($overview['intake']['status'] === 'active' && $overview['counts']['pending'] === 7 && $overview['counts']['attention'] === 2 && $overview['counts']['ignored'] === 5 && $overview['capabilities'] === ['view' => true, 'prepare' => true, 'release' => false], 'overview: state, counts and capabilities ' . json_encode($overview));
 $pending = $status($get($preparer, '/trendyol/packages', ['view' => 'pending']), 200, 'pending list')['items'];
-$check(array_column($pending, 'packageId') === [(string) ($base + 60), (string) ($base + 30), (string) ($base + 50), (string) ($base + 70), (string) ($base + 80)], 'pending work oldest order first');
-$check(array_column($pending, 'orderDateNearActivation') === [true, false, false, false, false], 'only the package inside the GMT+3 ambiguity is flagged for a Seller Panel check');
-$check($status($get($preparer, '/trendyol/packages/' . ($base + 60)), 200, 'flagged detail')['orderDateNearActivation'] === true, 'the detail carries the near-activation flag');
-$check(count($status($get($preparer, '/trendyol/packages', ['view' => 'ignored']), 200, 'ignored list')['items']) === 3, 'ignored packages are visible with their reason');
+$check(array_column($pending, 'packageId') === array_map(static fn (int $o): string => (string) ($base + $o), [61, 60, 66, 30, 50, 70, 80]), 'pending work oldest order first: ' . json_encode(array_column($pending, 'packageId')));
+$check(array_column($pending, 'orderDateNearActivation') === [true, false, false, false, false, false, false], 'only the package ordered within five minutes of activation carries the duplication warning');
+$check(array_unique(array_column($pending, 'marketplaceClass')) === ['new'], 'the work list holds only releasable new-order statuses');
+$check($status($get($preparer, '/trendyol/packages/' . ($base + 61)), 200, 'flagged detail')['orderDateNearActivation'] === true, 'the detail carries the activation warning');
+$attention = $status($get($preparer, '/trendyol/packages', ['view' => 'attention']), 200, 'attention list')['items'];
+$check(array_column($attention, 'packageId') === [(string) ($base + 62), (string) ($base + 63)] && array_column($attention, 'marketplaceClass') === ['review', 'review'] && array_column($attention, 'marketplaceStatusKnown') === [true, false], 'ReadyToShip and unknown statuses are listed for review: ' . json_encode($attention));
+$p62 = $status($get($preparer, '/trendyol/packages/' . ($base + 62)), 200, 'ReadyToShip detail');
+$p63 = $status($get($approver, '/trendyol/packages/' . ($base + 63)), 200, 'unknown detail');
+$check($p62['readiness']['blockedReason'] === 'review' && $p62['readiness']['marketplaceReleasable'] === false && $p63['readiness']['blockedReason'] === 'unknown_status' && $p63['capabilities']['releaseNow'] === false, 'review packages explain why they cannot be released');
+$p62 = $status($send($preparer, 'PUT', '/trendyol/packages/' . ($base + 62) . '/lines/' . ($base + 63), ['expectedVersion' => $p62['version'], 'kind' => 'curtain', 'widthCm' => '300', 'heightCm' => '260'], $key('rts-line')), 200, 'a review package can be prepared');
+$check($p62['readiness']['ready'] === false && $p62['capabilities']['releaseNow'] === false, 'a prepared ReadyToShip package is still not ready for production');
+$error($send($approver, 'POST', '/trendyol/packages/' . ($base + 62) . '/release', ['expectedVersion' => $p62['version'], 'confirm' => true], $key('rts-release')), 409, 'MARKETPLACE_STATUS_NOT_RELEASABLE', 'the API refuses to release ReadyToShip even when prepared and confirmed');
+$error($send($approver, 'POST', '/trendyol/packages/' . ($base + 63) . '/release', ['expectedVersion' => $p63['version'], 'confirm' => true], $key('unknown-release')), 409, 'MARKETPLACE_STATUS_NOT_RELEASABLE', 'the API refuses to release an unknown status');
+$check(count($status($get($preparer, '/trendyol/packages', ['view' => 'ignored']), 200, 'ignored list')['items']) === 5, 'ignored packages are visible with their reason');
 $error($get($preparer, '/trendyol/packages', ['view' => 'everything']), 400, 'INVALID_VIEW', 'unknown view');
 $p30 = "/trendyol/packages/" . ($base + 30);
 $detail = $status($get($preparer, $p30), 200, 'detail');
-$check($detail['lines'][0]['sizeSuggestion'] === ['width' => '300', 'height' => '260'] && $detail['lines'][0]['prepared'] === null && $detail['readiness'] === ['ready' => false, 'missingLines' => [1], 'marketplaceReleasable' => true], 'detail shows the suggestion, never applies it');
+$check($detail['lines'][0]['sizeSuggestion'] === ['width' => '300', 'height' => '260'] && $detail['lines'][0]['prepared'] === null && $detail['readiness'] === ['ready' => false, 'missingLines' => [1], 'marketplaceReleasable' => true, 'blockedReason' => null], 'detail shows the suggestion, never applies it');
 $check($detail['delivery']['phoneMasked'] !== null && !str_contains(json_encode($detail), '0744111222'), 'the workspace shows only the masked phone');
 $error($get($preparer, '/trendyol/packages/999'), 404, 'PACKAGE_NOT_FOUND', 'unknown package');
 
@@ -274,8 +298,20 @@ $transport->responses = [$page([
     $package(30, $baseMs + $hours(4), $baseMs + 20000, 'Shipped', $changedLines),
     $package(80, $baseMs + $hours(5), $baseMs + 20500, 'Cancelled'),
     $package(70, $baseMs + $hours(5), $baseMs + 21000, 'Created', [...$changedLines]),
+    $package(62, $baseMs + $hours(2), $baseMs + 21100, 'Picking'),               // ReadyToShip back to a new-order status
+    $package(63, $baseMs + $hours(2), $baseMs + 21200, 'Created'),               // unknown status becomes Created
+    [...$package(66, $baseMs + $hours(3), $baseMs + 21300, 'UnDeliveredAndReturned'), 'status' => 'Returned'],
 ])];
 $sync->run();
+$check($one('SELECT intake_status FROM trendyol_packages WHERE package_id = ?', [$base + 62]) === 'pending' && $one('SELECT prepared_width_cm FROM trendyol_package_lines WHERE package_id = ?', [$base + 62]) === '300.000', 'ReadyToShip becoming Picking keeps the package and its prepared line');
+$p62 = $status($get($approver, '/trendyol/packages/' . ($base + 62)), 200, 'p62 after Picking');
+$check($p62['marketplaceClass'] === 'new' && $p62['readiness']['ready'] === true && $p62['readiness']['blockedReason'] === null && $p62['capabilities']['releaseNow'] === true, 'a later new-order status makes the reviewed package releasable');
+$check($status($get($approver, '/trendyol/packages/' . ($base + 63)), 200, 'p63')['marketplaceClass'] === 'new', 'an unknown status later Created becomes ordinary work');
+$check((int) $one('SELECT COUNT(*) FROM trendyol_packages WHERE package_id IN (?, ?)', [$base + 62, $base + 63]) === 2 && (int) $one("SELECT COUNT(*) FROM trendyol_intake_events WHERE package_id = ? AND action IN ('received', 'marketplace_updated')", [$base + 63]) === 2, 'no duplicate package and the earlier history is kept');
+$p66 = $status($get($approver, '/trendyol/packages/' . ($base + 66)), 200, 'returned detail');
+$check($p66['intakeStatus'] === 'pending' && $p66['marketplaceStatus'] === 'UnDeliveredAndReturned' && $p66['marketplaceClass'] === 'returned' && $p66['readiness']['blockedReason'] === 'returned', 'a returned package is a shipping exception, not a cancellation');
+$check((int) $one("SELECT COUNT(*) FROM trendyol_intake_events WHERE package_id = ? AND action = 'marketplace_cancelled'", [$base + 66]) === 0, 'no cancellation is recorded for a return');
+$error($send($approver, 'POST', '/trendyol/packages/' . ($base + 66) . '/release', ['expectedVersion' => $p66['version'], 'confirm' => true], $key('returned')), 409, 'MARKETPLACE_STATUS_NOT_RELEASABLE', 'a returned package cannot enter production');
 $after = $row('SELECT production_stage_id, production_version, source_commerce_status_code, operational_status FROM operational_orders WHERE global_order_id = ?', [$global]);
 $check($after['production_stage_id'] === 'material-preparation' && (int) $after['production_version'] === $version + 1 && $after['source_commerce_status_code'] === 'Shipped' && $after['operational_status'] === 'in_progress', 'a marketplace status never moves production: ' . json_encode($after));
 $check((int) $one("SELECT COUNT(*) FROM operational_order_items WHERE order_uuid = ?", [$order['order_uuid']]) === 1 && $one('SELECT changed_after_release FROM trendyol_packages WHERE package_id = ?', [$base + 30]) == 1, 'a content change after approval is flagged, the approved items stay');
@@ -319,6 +355,18 @@ $truncated = $sync->run();
 $lastRead = (new DateTimeImmutable('@' . intdiv($ms($t5) + 49 * 1000, 1000)))->setTimezone(new DateTimeZone('UTC'));
 $check(count($transport->calls) === 50 && $truncated['truncated'] === true && $one('SELECT cursor_at FROM trendyol_intake_state WHERE state_id = 1') === $lastRead->format('Y-m-d H:i:s.u'), 'more than 10,000 packages: the cursor stops at the last package read');
 $check($one('SELECT last_run_outcome FROM trendyol_intake_state WHERE state_id = 1') === 'truncated', 'a truncated run is visible to the operator');
+// A burst inside the 30-minute overlap must still move forward: the next run starts at the last package read.
+$burstStart = $lastRead->modify('-' . TrendyolIntakeSynchronizer::OVERLAP_SECONDS . ' seconds');
+$t6b = $t6->modify('+5 minutes'); $clock->instant = $t6b; $transport->calls = [];
+$transport->responses = [];
+for ($p = 0; $p < 50; $p++) $transport->responses[] = $page([$package(2000 + $p * 10, $baseMs - $hours(100), $ms($burstStart) + $p * 1000, 'Delivered')], 60);
+$sync->run();
+$check((int) $query($transport->calls[0]['url'])['startDate'] === $ms($burstStart), 'the truncated run resumed at the cursor minus the overlap');
+$burstLast = $burstStart->modify('+49 seconds');
+$check($one('SELECT cursor_at FROM trendyol_intake_state WHERE state_id = 1') === $burstLast->modify('+' . TrendyolIntakeSynchronizer::OVERLAP_SECONDS . ' seconds')->format('Y-m-d H:i:s.u'), 'a burst within the overlap still advances the cursor');
+$t6c = $t6b->modify('+5 minutes'); $clock->instant = $t6c; $transport->calls = []; $transport->responses = [];
+$sync->run();
+$check((int) $query($transport->calls[0]['url'])['startDate'] === $ms($burstLast), 'the following run starts after the burst, never at the same start again');
 
 $cursorBefore = $one('SELECT cursor_at FROM trendyol_intake_state WHERE state_id = 1');
 foreach ([[503, 'TRENDYOL_UNAVAILABLE'], [429, 'TRENDYOL_RATE_LIMITED'], [401, 'TRENDYOL_AUTH_FAILED'], [426, 'TRENDYOL_UPGRADE_REQUIRED']] as [$code, $expected]) {

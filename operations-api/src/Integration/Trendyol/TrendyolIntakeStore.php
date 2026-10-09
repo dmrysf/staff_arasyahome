@@ -14,11 +14,14 @@ use Throwable;
  * Arasya QR or a production document: only an explicit approval in the Staff workspace does that.
  *
  * Outcomes:
- *   received   a new eligible package became intake work (`pending`)
+ *   received   a package ordered after the baseline became intake work (`pending`): a new order, or a
+ *              ReadyToShip/unknown status kept for review (never releasable while in that status)
+ *   deferred   a package ordered after the baseline with payment pending: stored as `pending`, not releasable
+ *              until Trendyol moves it to a new-order status
  *   updated    a known package changed (status, lines or delivery)
  *   unchanged  nothing new (same or older marketplace modification)
- *   ignored    historical or not a new order: recorded once, never reclassified
- *   deferred   payment pending at Trendyol; decided when it comes back as Created
+ *   ignored    historical, or first seen already shipped, returned, cancelled or split: recorded once, never
+ *              reclassified
  *
  * After approval the marketplace stays the commercial truth only: a cancellation makes the production order
  * unavailable (like every other source), any other status is shown as commerce status, and a content change is
@@ -58,10 +61,7 @@ final readonly class TrendyolIntakeStore
     private function insert(TrendyolPackage $package, int $baselineMillis, string $now): string
     {
         $decision = TrendyolEligibility::classify($package, $baselineMillis);
-        if ($decision === TrendyolEligibility::DEFERRED) {
-            return 'deferred';
-        }
-        if ($decision !== TrendyolEligibility::ELIGIBLE) {
+        if (!TrendyolEligibility::stored($decision)) {
             $this->pdo->prepare('INSERT INTO trendyol_ignored_packages (package_id, order_number, reason, marketplace_status, order_date_ms, first_seen_at) VALUES (?, ?, ?, ?, ?, ?)')
                 ->execute([$package->packageId, $package->orderNumber, $decision, $package->status, $package->orderDateMillis, $now]);
             return 'ignored';
@@ -75,8 +75,8 @@ final readonly class TrendyolIntakeStore
             self::json($package->delivery), $package->linesHash(), $now, $now,
         ]);
         $this->insertLines($package, []);
-        $this->event($package->packageId, 'received', ['status' => $package->status, 'lines' => count($package->lines)], $now);
-        return 'received';
+        $this->event($package->packageId, 'received', ['status' => $package->status, 'class' => TrendyolEligibility::statusClass($package->status), 'lines' => count($package->lines)], $now);
+        return $decision === TrendyolEligibility::PAYMENT_PENDING ? 'deferred' : 'received';
     }
 
     /** @param array<string, mixed> $current a locked trendyol_packages row */
@@ -97,13 +97,18 @@ final readonly class TrendyolIntakeStore
         $values = [$package->status, $package->lastModifiedMillis, $now];
         $flagReasons = [];
         if ($statusChanged) {
-            $this->event($id, 'marketplace_updated', ['from' => (string) $current['marketplace_status'], 'to' => $package->status], $now);
-            if ($intake === 'pending' && in_array($package->status, TrendyolEligibility::WITHDRAWN_STATUSES, true)) {
+            $this->event($id, 'marketplace_updated', [
+                'from' => (string) $current['marketplace_status'], 'to' => $package->status,
+                'fromClass' => TrendyolEligibility::statusClass((string) $current['marketplace_status']), 'toClass' => TrendyolEligibility::statusClass($package->status),
+            ], $now);
+            // Only a cancellation or a split withdraws pending work; shipped, returned or review statuses stay
+            // visible (not releasable) so a person decides, and a later new-order status makes them workable again.
+            if ($intake === 'pending' && TrendyolEligibility::withdrawn($package->status)) {
                 $sets[] = "intake_status = 'marketplace_cancelled'";
                 $this->event($id, 'marketplace_cancelled', ['status' => $package->status], $now);
             }
             if ($released) {
-                $this->writer->recordMarketplaceStatus((string) $current['released_order_uuid'], $package->status, in_array($package->status, TrendyolEligibility::CANCELLED_STATUSES, true));
+                $this->writer->recordMarketplaceStatus((string) $current['released_order_uuid'], $package->status, TrendyolEligibility::cancelled($package->status));
                 if ($package->status === 'UnPacked') {
                     $flagReasons[] = 'split';
                 }

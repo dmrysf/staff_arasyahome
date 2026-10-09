@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mapTrendyolDetail, mapTrendyolOverview, mapTrendyolSummary } from "../services/production/httpServices";
-import { canUseTrendyolWorkspace, ignoredReasonLabels, marketplaceLabel, nearActivationWarning, normalizeMeasure } from "../domain/trendyol";
+import { blockedReasonMessages, canUseTrendyolWorkspace, ignoredReasonLabels, intakeLabel, marketplaceClassOf, marketplaceLabel, nearActivationWarning, normalizeMeasure } from "../domain/trendyol";
 import { canAccessRoute } from "../domain/permissions";
 import { parseStaffRoute } from "../domain/staffRoute";
 import { getErrorPresentation } from "../services/errors";
@@ -47,10 +47,30 @@ test("Trendyol answers are mapped strictly and fail closed", () => {
   assert.equal(mapped.orderDateNearActivation, false, "an API without the flag means no near-activation warning");
   assert.equal(mapTrendyolDetail({ ...detail, orderDateNearActivation: true }).orderDateNearActivation, true);
   assert.throws(() => mapTrendyolDetail({ ...detail, orderDateNearActivation: "yes" }), serverError);
-  assert.match(nearActivationWarning, /GMT\+3/);
-  assert.match(nearActivationWarning, /Seller Panel/);
+  assert.match(nearActivationWarning, /5 minute/);
+  assert.doesNotMatch(nearActivationWarning, /GMT/, "the activation warning is not a timezone rule");
+  // Status classes: the server class wins; an older API falls back to the same table; unknown statuses are review.
+  assert.equal(mapped.marketplaceClass, "new");
+  assert.equal(mapped.readiness.blockedReason, null);
+  const review = mapTrendyolDetail({ ...detail, marketplaceStatus: "ReadyToShip", marketplaceClass: "review", marketplaceStatusKnown: true, readiness: { ...detail.readiness, marketplaceReleasable: false, blockedReason: "review" } });
+  assert.equal(review.readiness.blockedReason, "review");
+  assert.match(blockedReasonMessages.review, /Necesită verificare/);
+  assert.equal(mapTrendyolSummary({ ...detail, marketplaceStatus: "Repackaged" }).marketplaceClass, "review");
+  assert.equal(mapTrendyolSummary({ ...detail, marketplaceStatus: "Repackaged" }).marketplaceStatusKnown, false);
+  assert.throws(() => mapTrendyolDetail({ ...detail, marketplaceClass: "shipped" }), serverError);
+  assert.throws(() => mapTrendyolDetail({ ...detail, readiness: { ...detail.readiness, blockedReason: "maybe" } }), serverError);
+  assert.equal(marketplaceClassOf("UnDeliveredAndReturned"), "returned");
+  assert.equal(marketplaceLabel("ReadyToShip"), "Pregătită pentru curier");
+  assert.equal(marketplaceLabel("UnDeliveredAndReturned"), "Nelivrată și returnată");
+  assert.equal(marketplaceLabel("Awaiting"), "În așteptarea confirmării plății");
+  assert.match(blockedReasonMessages.unknown_status, /^Status necunoscut — verificare necesară/);
+  assert.match(blockedReasonMessages.returned, /retur, nu anulare/);
+  assert.equal(intakeLabel({ intakeStatus: "marketplace_cancelled", marketplaceClass: "split" }), "Pachet împărțit în Trendyol");
+  assert.equal(intakeLabel({ intakeStatus: "marketplace_cancelled", marketplaceClass: "cancelled" }), "Anulată în Trendyol");
   const overview = mapTrendyolOverview({ intake: { status: "inactive", baselineAt: null, lastRunAt: null, lastRunOutcome: null }, counts: { pending: 0, released: 0, closed: 0, ignored: 0 }, capabilities: { view: true, prepare: false, release: false } });
   assert.equal(overview.intake.status, "inactive");
+  assert.equal(overview.counts.attention, 0, "an older API without the attention count reads as zero");
+  assert.equal(mapTrendyolOverview({ intake: { status: "active", baselineAt: null, lastRunAt: null, lastRunOutcome: null }, counts: { pending: 1, attention: 2, released: 0, closed: 0, ignored: 0 }, capabilities: { view: true, prepare: false, release: false } }).counts.attention, 2);
   assert.throws(() => mapTrendyolOverview({ intake: { status: "importing" }, counts: {}, capabilities: {} }), serverError);
 });
 
