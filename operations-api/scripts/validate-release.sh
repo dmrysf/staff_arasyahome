@@ -31,6 +31,7 @@ for file in \
   src/Trendyol/TrendyolWorkspace.php \
   src/Trendyol/TrendyolWorkspaceController.php \
   src/Integration/Trendyol/TrendyolIntakeSynchronizer.php \
+  src/Integration/Trendyol/TrendyolReconciler.php \
   database/migrations/004_staff_operations.sql \
   database/migrations/010_b2b_orders.sql \
   src/B2B/OrderController.php \
@@ -89,7 +90,7 @@ for file in \
 done
 
 (cd -- "$release_root" && sha256sum -c SHA256SUMS >/dev/null) || fail "SHA256SUMS verification failed."
-php -r '$r=json_decode(file_get_contents($argv[1]), true, flags: JSON_THROW_ON_ERROR); if (!is_array($r) || preg_match("/^[0-9a-f]{40}$/", $r["sourceCommit"] ?? "") !== 1 || ($r["version"] ?? null) !== "2.24.2") exit(2);' "$release_root/release.json" \
+php -r '$r=json_decode(file_get_contents($argv[1]), true, flags: JSON_THROW_ON_ERROR); if (!is_array($r) || preg_match("/^[0-9a-f]{40}$/", $r["sourceCommit"] ?? "") !== 1 || ($r["version"] ?? null) !== "2.24.3") exit(2);' "$release_root/release.json" \
   || fail "release.json provenance/version is invalid."
 
 for directory in src database/migrations bin config; do

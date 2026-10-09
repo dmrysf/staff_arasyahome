@@ -82,7 +82,10 @@ test("measurements are explicit positive decimals and statuses are shown read-on
   assert.equal(marketplaceLabel("Shipped"), "Expediată");
   assert.equal(marketplaceLabel("SomethingNew"), "SomethingNew");
   assert.match(ignoredReasonLabels.historical, /istoric/);
-  for (const code of ["TRENDYOL_PACKAGE_NOT_FOUND", "TRENDYOL_PACKAGE_CHANGED", "TRENDYOL_PACKAGE_NOT_PENDING", "TRENDYOL_PACKAGE_NOT_PREPARED", "TRENDYOL_STATUS_NOT_RELEASABLE", "TRENDYOL_INPUT_INVALID"] as const) {
+  for (const code of ["TRENDYOL_PACKAGE_NOT_FOUND", "TRENDYOL_PACKAGE_CHANGED", "TRENDYOL_PACKAGE_NOT_PENDING", "TRENDYOL_PACKAGE_NOT_PREPARED", "TRENDYOL_STATUS_NOT_RELEASABLE", "TRENDYOL_INPUT_INVALID", "TRENDYOL_VERIFICATION_FAILED", "TRENDYOL_PACKAGE_UNAVAILABLE", "TRENDYOL_LINES_CHANGED"] as const) {
     assert.ok(getErrorPresentation(new StaffServiceError(code)).message.length > 10, code);
   }
+  // A failed Trendyol verification says plainly that nothing entered production.
+  assert.match(getErrorPresentation(new StaffServiceError("TRENDYOL_VERIFICATION_FAILED")).message, /nu a intrat în producție/);
+  assert.match(getErrorPresentation(new StaffServiceError("TRENDYOL_LINES_CHANGED")).message, /completează din nou/);
 });

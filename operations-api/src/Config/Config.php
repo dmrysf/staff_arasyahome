@@ -54,7 +54,15 @@ final readonly class Config
          * synchronization read Trendyol into the intake inbox; credentials alone never do. Anything else is off.
          */
         public string $trendyolIntake = 'disabled',
+        /**
+         * Test-only stand-in for the Trendyol Order V2 API (ARASYA_TRENDYOL_FIXTURE_FILE): a JSON file answered by
+         * FixtureTrendyolTransport. Refused in production, where only the real HTTPS API is ever called.
+         */
+        public ?string $trendyolFixtureFile = null,
     ) {
+        if ($this->trendyolFixtureFile !== null && $this->isProduction()) {
+            throw new RuntimeException('ARASYA_TRENDYOL_FIXTURE_FILE is not allowed in production.');
+        }
         if ($this->liveHoldSeconds < 0 || $this->liveHoldSeconds > 25) {
             throw new RuntimeException('ARASYA_LIVE_HOLD_SECONDS must be between 0 and 25.');
         }
@@ -123,6 +131,7 @@ final readonly class Config
             sourceKeys: $sourceKeys,
             sourceSettings: self::sourceSettings($values, $sourceKeys),
             trendyolIntake: self::value($values, 'ARASYA_TRENDYOL_INTAKE', 'disabled'),
+            trendyolFixtureFile: self::value($values, 'ARASYA_TRENDYOL_FIXTURE_FILE', '') === '' ? null : self::value($values, 'ARASYA_TRENDYOL_FIXTURE_FILE', ''),
         );
     }
 

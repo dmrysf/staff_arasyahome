@@ -20,6 +20,7 @@ use Arasya\Operations\Integration\SourceSignatureVerifier;
 use Arasya\Operations\Integration\Trendyol\TrendyolClient;
 use Arasya\Operations\Integration\Trendyol\TrendyolEligibility;
 use Arasya\Operations\Integration\Trendyol\TrendyolPackage;
+use Arasya\Operations\Integration\Trendyol\FixtureTrendyolTransport;
 use Arasya\Operations\Integration\Trendyol\TrendyolPreview;
 use Arasya\Operations\Integration\Trendyol\TrendyolSizeHint;
 use Arasya\Operations\Integration\Trendyol\TrendyolTransport;
@@ -302,6 +303,30 @@ test('Trendyol Order V2 packages parse without customer secrets and the client i
         }
     }
     $transport->status = 200;
+    // Fresh copies by package ID (approval verification and reconciliation): GET with shipmentPackageIds only.
+    $transport->requests = [];
+    $byId = $client->packagesByIds([3318470214, 3318470215, 3318470216]);
+    expect(array_keys($byId) === [3318470214, 3318470215, 3318470216]);
+    expect(str_contains($transport->requests[0][0], '/v2/orders?shipmentPackageIds=3318470214%2C3318470215%2C3318470216&page=0&size=200') && !str_contains($transport->requests[0][0], 'startDate'), 'one GET by shipmentPackageIds, no date filter');
+    expectRuntime(fn () => $client->packagesByIds([3318470214]), 'an answer holding a package that was not asked for is malformed');
+    foreach ([[], range(1, 51), [5, 5], [0], [-3]] as $invalid) {
+        expectRuntime(fn () => $client->packagesByIds($invalid));
+    }
+    $transport->status = 429;
+    expectRuntime(fn () => $client->packagesByIds([3318470214, 3318470215, 3318470216]));
+    $transport->status = 200;
+    // The test-only fixture transport answers by ID or by modification window, and is refused in production.
+    $fixtureFile = (string) tempnam(sys_get_temp_dir(), 'arasya-fixture-');
+    file_put_contents($fixtureFile, json_encode(['packages' => $fixture['content']], JSON_THROW_ON_ERROR));
+    $fixtureClient = new TrendyolClient($credentials, new FixtureTrendyolTransport($fixtureFile));
+    expect(array_keys($fixtureClient->packagesByIds([3318470214, 999])) === [3318470214]);
+    expect(count($fixtureClient->packages(0, 1000, 0)['content']) === 0);
+    file_put_contents($fixtureFile, json_encode(['fail' => true]));
+    expectRuntime(fn () => $fixtureClient->packagesByIds([3318470214]));
+    unlink($fixtureFile);
+    $productionConfig = static fn (?string $file) => new Config('production', str_repeat('p', 32), 'localhost', 3306, 'db', 'user', 'pass', ['https://staff.arasyahome.ro'], 3600, 300, 5, 30, 900, false, [], trendyolFixtureFile: $file);
+    expectRuntime(fn () => $productionConfig('/tmp/fixture.json'), 'production refuses the Trendyol fixture');
+    expect($productionConfig(null)->trendyolFixtureFile === null);
     // The preview reads, classifies and reports without customer identity; it has no database at all.
     $report = (new TrendyolPreview($client))->run(new DateTimeImmutable('@1759560000'), new DateTimeImmutable('@1759570000'), new DateTimeImmutable('@1759000000'));
     expect($report['counts']['eligible'] === 2 && $report['counts']['status_not_eligible'] === 1 && $report['counts']['review'] === 0 && count($report['packages']) === 3 && $report['fields']['shipmentPackageId'] === 2 && $report['fields']['id'] === 1);

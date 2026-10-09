@@ -1,4 +1,4 @@
-# Trendyol intake (API 2.24.2, Staff 2.11.2)
+# Trendyol intake (API 2.24.3, Staff 2.11.3)
 
 Trendyol orders reach the factory only through an explicit approval. The marketplace stays the commercial truth:
 statuses, shipping, the courier barcode and the invoice remain in the Trendyol Seller Panel and are never written by
@@ -46,6 +46,27 @@ Arasya.
    Approval is refused when a line is incomplete, the package changed meanwhile (`expectedVersion`), the package is not
    pending, or its marketplace class is not `new` (`MARKETPLACE_STATUS_NOT_RELEASABLE`, enforced by the API; Staff
    shows the reason from `readiness.blockedReason`).
+
+   **Fresh verification (API 2.24.3).** Before the production transaction the API reads the package's current copy
+   from Trendyol with one GET (`/v2/orders?shipmentPackageIds=<id>`, no dates; verified live: works for packages last
+   modified beyond the one-week default range, an unknown ID returns an empty page). The read happens outside any
+   database transaction, so no lock waits on the network. The fresh copy is recorded exactly like a synchronization
+   would record it, then the approval is refused when:
+   - Trendyol cannot be read: network failure, 429, other HTTP error or malformed answer
+     (`503 TRENDYOL_VERIFICATION_FAILED`, `details.reason`), or no client is configured
+     (`503 TRENDYOL_VERIFICATION_UNAVAILABLE`): fail closed;
+   - the package is not returned (`409 TRENDYOL_PACKAGE_UNAVAILABLE`);
+   - its fresh status is not a new-order status (`409 MARKETPLACE_STATUS_NOT_RELEASABLE`; a cancellation also moves it
+     out of the work list);
+   - its lines differ from the prepared ones: line identity, SKU, quantity or product data (`409 MARKETPLACE_LINES_CHANGED`).
+     The changed lines show the marketplace data and must be prepared again; measurements are never carried over to a
+     changed line, and unchanged lines keep theirs.
+   The production transaction then locks the package and re-checks that the row still has the verified version,
+   status and lines (`PACKAGE_CHANGED` otherwise), so a concurrent sync, edit or second approval cannot slip in. A
+   replayed request (same idempotency key) answers from the stored result without calling Trendyol. What cannot be
+   excluded across two systems is a Trendyol change in the milliseconds between the final GET and the commit; the next
+   synchronization or reconciliation records it with the after-approval rules (a cancellation makes the order
+   unavailable, a content change is flagged).
 5. **Stage 1 to stage 2.** The ordinary Staff claim and stage completion move the order from `waiting` to
    `material-preparation` (Tăiere), with stage access, document and authority checks unchanged. While the order is at
    `waiting` it is visible only to employees holding both the `waiting` stage and `trendyol.orders.view`; from stage 2
@@ -106,9 +127,8 @@ it cannot create an intake row, an order, a QR, a document or a cursor.
 ## Synchronization details
 
 - Each run reads from the cursor minus a **30-minute overlap** (absorbs marketplace indexing delay; re-reads are
-  idempotent and counted as `unchanged`). A modification that becomes visible in the API more than ~30 minutes after
-  its `lastModifiedDate` could be missed until the package changes again; there is no reconciliation job yet (a
-  separately approved periodic re-read of pending and released packages would close this).
+  idempotent and counted as `unchanged`). A modification that becomes visible later than that is picked up by the
+  reconciliation (below) once it is scheduled.
 - Windows of at most two weeks (Trendyol limit), 200 packages per page, pages 0 to 49 (10,000 packages per filter).
   More than that stops the run (`truncated`) and the next run starts at the last package read; when the overlap would
   not move the start forward (a burst within 30 minutes), the next run starts exactly at that package, so a burst
@@ -118,6 +138,17 @@ it cannot create an intake row, an order, a QR, a document or a cursor.
   is recorded in `trendyol_sync_runs` and `trendyol_intake_state.last_run_outcome` (readiness warns while active).
 - An advisory lock (`arasya_trendyol_sync`) prevents overlapping runs. A successful run records the Trendyol heartbeat.
 
+## Reconciliation (read-only, NOT scheduled)
+
+`php bin/sync-trendyol.php --reconcile` (or the launcher with `--reconcile`) re-reads every pending package and every
+package released in the last 45 days by ID (`shipmentPackageIds`, 50 per GET, at most 1000 packages per run) and
+records each answer through the same intake store. That closes the delayed-update gap of the modification-time sync:
+a late cancellation makes the production order unavailable, a late line, delivery or split change is flagged, a
+pending package follows its marketplace class. It never creates a package or a production order and never touches
+stages, items or documents. A package Trendyol does not return is left as it is and counted as `missing`. It shares the
+synchronization lock, refuses unless the intake is `active`, and prints only counts:
+`TRENDYOL_RECONCILE checked= updated= unchanged= missing= rejected= requests=`.
+
 ## Cron (NOT installed)
 
 The deploy installs only the stable launcher `~/arasya-operations-api/bin/trendyol-intake-active.sh`. The entry is
@@ -125,6 +156,7 @@ added only after explicit owner authorization, after the preview and the activat
 
 ```cron
 */5 * * * * /bin/bash "$HOME/arasya-operations-api/bin/trendyol-intake-active.sh" >> "$HOME/arasya-trendyol-intake.log" 2>&1
+17,47 * * * * /bin/bash "$HOME/arasya-operations-api/bin/trendyol-intake-active.sh" --reconcile >> "$HOME/arasya-trendyol-intake.log" 2>&1
 ```
 
 ## Verified with fixtures vs. needs the real API

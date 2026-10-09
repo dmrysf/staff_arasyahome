@@ -58,7 +58,11 @@ export function TrendyolPackageScreen({ packageId, service, navigate }: { packag
   async function run(intent: string, command: (key: string) => Promise<TrendyolPackageDetail>, success: string) {
     setBusy(true); setMessage("");
     try { show(await command(keyFor(intent))); setMessage(success); }
-    catch (caught) { setMessage(getErrorPresentation(toServiceError(caught)).message); }
+    catch (caught) {
+      setMessage(getErrorPresentation(toServiceError(caught)).message);
+      // An approval may have recorded a fresh Trendyol status or changed lines: show what the server now holds.
+      try { show(await service.detail(packageId)); } catch { /* the error message above stays */ }
+    }
     finally { setBusy(false); }
   }
 

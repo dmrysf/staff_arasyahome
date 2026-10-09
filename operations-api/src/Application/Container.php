@@ -222,7 +222,8 @@ final class Container
             ),
             new \Arasya\Operations\Production\ProductionQrController($this->productionQrService($authorization, $iamAudit), $this->authentication, $csrf, $this->config, $context),
             new \Arasya\Operations\Trendyol\TrendyolWorkspaceController(
-                new \Arasya\Operations\Trendyol\TrendyolWorkspace($this->pdo, $authorization, $this->employees, $workflows, $this->projectionWriter(), $documents, $idempotency, $this->clock),
+                new \Arasya\Operations\Trendyol\TrendyolWorkspace($this->pdo, $authorization, $this->employees, $workflows, $this->projectionWriter(), $documents, $idempotency, $this->clock,
+                    $this->trendyolClient(), new \Arasya\Operations\Integration\Trendyol\TrendyolIntakeStore($this->pdo, $this->projectionWriter(), $this->clock)),
                 $this->authentication,
                 $csrf,
                 $this->config,
@@ -294,17 +295,51 @@ final class Container
      */
     public function trendyolIntakeSynchronizer(): ?\Arasya\Operations\Integration\Trendyol\TrendyolIntakeSynchronizer
     {
-        if ($this->config->trendyol === null || !$this->config->trendyolIntakeEnabled()) {
+        $client = $this->trendyolClient();
+        if ($client === null || !$this->config->trendyolIntakeEnabled()) {
             return null;
         }
         $writer = $this->projectionWriter();
         return new \Arasya\Operations\Integration\Trendyol\TrendyolIntakeSynchronizer(
             $this->pdo,
-            new TrendyolClient($this->config->trendyol, new StreamTrendyolTransport()),
+            $client,
             new \Arasya\Operations\Integration\Trendyol\TrendyolIntakeStore($this->pdo, $writer, $this->clock),
             $writer,
             $this->clock,
         );
+    }
+
+    /**
+     * Read-only reconciliation of known Trendyol packages, under the same gates as the synchronization: null without
+     * credentials or with the switch off; the reconciler itself refuses unless the intake is `active`.
+     */
+    public function trendyolReconciler(): ?\Arasya\Operations\Integration\Trendyol\TrendyolReconciler
+    {
+        $client = $this->trendyolClient();
+        if ($client === null || !$this->config->trendyolIntakeEnabled()) {
+            return null;
+        }
+        return new \Arasya\Operations\Integration\Trendyol\TrendyolReconciler(
+            $this->pdo,
+            $client,
+            new \Arasya\Operations\Integration\Trendyol\TrendyolIntakeStore($this->pdo, $this->projectionWriter(), $this->clock),
+            $this->clock,
+        );
+    }
+
+    /**
+     * The read-only Trendyol Order V2 client (GET only), or null without credentials. Outside production a test
+     * fixture file may stand in for the API (Config refuses it in production).
+     */
+    public function trendyolClient(): ?TrendyolClient
+    {
+        if ($this->config->trendyolFixtureFile !== null) {
+            return new TrendyolClient(
+                \Arasya\Operations\Config\TrendyolCredentials::fromValues('1000001', 'fixture', 'fixture', '') ?? throw new \LogicException('fixture credentials'),
+                new \Arasya\Operations\Integration\Trendyol\FixtureTrendyolTransport($this->config->trendyolFixtureFile),
+            );
+        }
+        return $this->config->trendyol === null ? null : new TrendyolClient($this->config->trendyol, new StreamTrendyolTransport());
     }
 
     /** The explicit Trendyol intake activation control (operator CLI). */

@@ -180,11 +180,19 @@ $trendyolBaseline=(new DateTimeImmutable('now', new DateTimeZone('UTC')))->modif
 (new Arasya\Operations\Integration\Trendyol\TrendyolIntakeState($pdo,$trendyolClock))->activate($trendyolBaseline,'E2E fixture');
 $trendyolStore=new Arasya\Operations\Integration\Trendyol\TrendyolIntakeStore($pdo,$container->projectionWriter(),$trendyolClock);
 $trendyolMs=intdiv((int)$trendyolBaseline->format('Uu'),1000);
+$trendyolMarketplace=[];
 foreach([[73001,$trendyolMs+5*3600000,'Created'],[73002,$trendyolMs-48*3600000,'Delivered']] as [$packageId,$orderDate,$status]){
-    $trendyolStore->record(Arasya\Operations\Integration\Trendyol\TrendyolPackage::fromApi(['shipmentPackageId'=>$packageId,'orderNumber'=>'TY'.$packageId,'orderDate'=>$orderDate,'lastModifiedDate'=>$trendyolMs+1000,
+    $trendyolRaw=['shipmentPackageId'=>$packageId,'orderNumber'=>'TY'.$packageId,'orderDate'=>$orderDate,'lastModifiedDate'=>$trendyolMs+1000,
         'shipmentPackageStatus'=>$status,'shipmentAddress'=>['fullName'=>'TEST Client Trendyol','address1'=>'Str. Test 9','city'=>'Iași','phone'=>'0744111222'],
-        'lines'=>[['lineId'=>$packageId*10+1,'quantity'=>1,'productName'=>'Perdea tul alb 300x260','stockCode'=>'TY-PT-300','productSize'=>'300x260','productColor'=>'Alb']]]),$trendyolMs);
+        'lines'=>[['lineId'=>$packageId*10+1,'quantity'=>1,'productName'=>'Perdea tul alb 300x260','stockCode'=>'TY-PT-300','productSize'=>'300x260','productColor'=>'Alb']]];
+    $trendyolStore->record(Arasya\Operations\Integration\Trendyol\TrendyolPackage::fromApi($trendyolRaw),$trendyolMs);
+    $trendyolMarketplace[]=$trendyolRaw;
 }
+// The approval verifies the package against Trendyol: the E2E API answers from this fixture file
+// (ARASYA_TRENDYOL_FIXTURE_FILE, refused in production).
+$trendyolFixtureFile=dirname(__DIR__,2).'/e2e/.runtime/trendyol-fixture.json';
+if(!is_dir(dirname($trendyolFixtureFile))) mkdir(dirname($trendyolFixtureFile),0700,true);
+file_put_contents($trendyolFixtureFile,json_encode(['packages'=>$trendyolMarketplace],JSON_THROW_ON_ERROR|JSON_UNESCAPED_UNICODE));
 $tyApprover=$admin->create('Ilinca Trendyol','ty.approve.e2e',null,'pregatire-material','employee',$password,['waiting'],'e2e');
 $iam($tyApprover->employeeUuid,['staff'],[$roleId('trendyol-order-approver'),$roleId('production-documents-operator')]);
 $r=T::call($kernel,'PUT',"/management/employees/{$tyApprover->employeeUuid}/document-scopes",['operate'=>['trendyol'],'approve'=>[]],['origin'=>$origin,'x-csrf-token'=>$root['csrf']],$root['cookie']);

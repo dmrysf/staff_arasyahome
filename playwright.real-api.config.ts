@@ -50,6 +50,9 @@ export default defineConfig({
         ARASYA_ALLOWED_ORIGINS: `http://127.0.0.1:${webPort}`,
         ARASYA_LOGIN_USERNAME_LIMIT: "50",
         ARASYA_LOGIN_IP_LIMIT: "500",
+        // Approval verifies a Trendyol package with a GET; the test API answers from the fixture written by
+        // operations-api/tests/e2e-fixture.php (refused in production).
+        ARASYA_TRENDYOL_FIXTURE_FILE: path.join(root, "e2e", ".runtime", "trendyol-fixture.json"),
       },
     },
     {
