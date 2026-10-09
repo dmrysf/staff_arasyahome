@@ -1,11 +1,12 @@
 export type StaffRoute =
-  | { kind: "home" | "login" | "scan" | "orders" | "history" | "profile" | "authority"; pathname: string }
+  | { kind: "home" | "login" | "scan" | "orders" | "history" | "profile" | "authority" | "trendyol"; pathname: string }
+  | { kind: "trendyol-package"; pathname: string; packageId: string }
   | { kind: "order-detail"; pathname: string; orderId: string }
   | { kind: "exception-detail"; pathname: string; exceptionId: string }
   | { kind: "document-detail"; pathname: string; orderId: string }
   | { kind: "invalid"; pathname: "/" };
 
-const fixedRoutes = new Map<string, "home" | "login" | "scan" | "orders" | "history" | "profile" | "authority">([
+const fixedRoutes = new Map<string, "home" | "login" | "scan" | "orders" | "history" | "profile" | "authority" | "trendyol">([
   ["/", "home"],
   ["/login", "login"],
   ["/scan", "scan"],
@@ -13,6 +14,7 @@ const fixedRoutes = new Map<string, "home" | "login" | "scan" | "orders" | "hist
   ["/history", "history"],
   ["/profile", "profile"],
   ["/authority", "authority"],
+  ["/trendyol", "trendyol"],
 ]);
 
 const ORDER_PREFIX = "/orders/";
@@ -30,6 +32,8 @@ function containsUnsafeOrderIdCharacter(value: string): boolean {
 export function parseStaffRoute(pathname: string): StaffRoute {
   const fixed = fixedRoutes.get(pathname);
   if (fixed) return { kind: fixed, pathname };
+  const trendyol = /^\/trendyol\/([1-9][0-9]{0,18})$/.exec(pathname);
+  if (trendyol) return { kind: "trendyol-package", pathname, packageId: trendyol[1] };
   const exception = /^\/exceptions\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/.exec(pathname);
   if (exception) return { kind: "exception-detail", pathname, exceptionId: exception[1] };
   const document = pathname.startsWith(DOCUMENT_PREFIX);

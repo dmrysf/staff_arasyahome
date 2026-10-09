@@ -57,6 +57,19 @@ $checks++;
 if (preg_match_all('/public function (\w+)\s*\(/', $interface, $functions) !== 1 || $functions[1] !== ['get']) {
     $fail('TrendyolTransport must expose only get().');
 }
+// Every Trendyol URL the code can build is the read-only Order V2 package listing: no status update, shipment,
+// tracking number, invoice, cancellation, split or claim endpoint exists anywhere in the Operations API.
+foreach (new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root . '/operations-api/src', FilesystemIterator::SKIP_DOTS)) as $file) {
+    $source = (string) file_get_contents($file->getPathname());
+    $checks++;
+    if (preg_match_all('#/integration/[A-Za-z0-9/{}%_.-]+#', $source, $paths) > 0 && array_unique($paths[0]) !== ['/integration/order/sellers/%s/v2/orders']) {
+        $fail(substr($file->getPathname(), strlen($root) + 1) . ' builds a Trendyol path other than the read-only Order V2 listing: ' . implode(', ', array_unique($paths[0])));
+    }
+    $checks++;
+    if (preg_match('#shipment-packages|update-tracking|send-invoice|invoice-link|/claims|split-shipment#i', $source) === 1) {
+        $fail(substr($file->getPathname(), strlen($root) + 1) . ' references a Trendyol write endpoint.');
+    }
+}
 
 // ---- WooCommerce connector: reads the order, sends signed events, never mutates the order ------
 $forbiddenConnector = [

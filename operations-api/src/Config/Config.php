@@ -49,6 +49,11 @@ final readonly class Config
          * @var array<string, array<string, string>>
          */
         public array $sourceSettings = [],
+        /**
+         * Trendyol intake switch as written (ARASYA_TRENDYOL_INTAKE). Only the exact value `enabled` lets the
+         * synchronization read Trendyol into the intake inbox; credentials alone never do. Anything else is off.
+         */
+        public string $trendyolIntake = 'disabled',
     ) {
         if ($this->liveHoldSeconds < 0 || $this->liveHoldSeconds > 25) {
             throw new RuntimeException('ARASYA_LIVE_HOLD_SECONDS must be between 0 and 25.');
@@ -117,7 +122,14 @@ final readonly class Config
             liveHoldSeconds: self::nonNegativeInt($values, 'ARASYA_LIVE_HOLD_SECONDS', 0),
             sourceKeys: $sourceKeys,
             sourceSettings: self::sourceSettings($values, $sourceKeys),
+            trendyolIntake: self::value($values, 'ARASYA_TRENDYOL_INTAKE', 'disabled'),
         );
+    }
+
+    /** Whether the Trendyol intake switch is on (a database activation with a baseline is still required). */
+    public function trendyolIntakeEnabled(): bool
+    {
+        return $this->trendyolIntake === 'enabled';
     }
 
     /** Environment suffix of a source key: `outlet-perdele` reads ARASYA_SOURCE_*_OUTLET_PERDELE. */

@@ -39,10 +39,13 @@ return [
     // (only 'yd-soft-woocommerce'), ARASYA_SOURCE_ENABLED_<KEY> ('true' or 'false').
     'ARASYA_SOURCE_FRESH_SECONDS' => '900',
     'ARASYA_SOURCE_UNAVAILABLE_SECONDS' => '3600',
-    // Trendyol Seller API (pull via bin/sync-trendyol.php). All three or none.
+    // Trendyol Seller API (read-only order packages, Order V2). All three or none. Credentials alone never import:
+    // bin/trendyol-preview.php only reads, and the intake inbox also needs ARASYA_TRENDYOL_INTAKE = 'enabled'
+    // plus an explicit `bin/trendyol-intake.php activate` (see docs/trendyol-intake.md).
     // 'ARASYA_TRENDYOL_SELLER_ID' => '<seller id>',
     // 'ARASYA_TRENDYOL_API_KEY' => '<api key>',
     // 'ARASYA_TRENDYOL_API_SECRET' => '<api secret>',
+    // 'ARASYA_TRENDYOL_INTAKE' => 'disabled',
     'ARASYA_TRUST_PROXY' => 'false',
     'ARASYA_TRUSTED_PROXIES' => '',
 ];

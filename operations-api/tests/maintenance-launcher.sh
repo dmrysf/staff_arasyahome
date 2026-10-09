@@ -52,6 +52,17 @@ printf 'not-a-sha\n' > "$api_root/active-release"
 if output="$(run ARASYA_PHP_CLI="$workspace/php-cli" 2>&1)"; then fail 'an invalid release pointer was accepted'; fi
 [[ "$output" == *'pointer is invalid'* && ! -e "$record" ]] || fail "an invalid pointer did not fail clearly: $output"
 
+# The Trendyol intake launcher resolves the active release the same way and runs only bin/sync-trendyol.php.
+trendyol_source="operations-api/scripts/trendyol-intake-active.sh"
+grep -q 'php_cli="${ARASYA_PHP_CLI:-/usr/local/bin/php}"' "$trendyol_source" || fail 'the Trendyol launcher default PHP CLI is not /usr/local/bin/php'
+if grep -nE '(^|[^_"$])exec php([[:space:]]|$)' "$trendyol_source"; then fail 'the Trendyol launcher executes `php` from PATH'; fi
+cp "$trendyol_source" "$api_root/bin/trendyol-intake-active.sh"
+printf '%s\n' "$sha" > "$api_root/active-release"
+printf '<?php\n' > "$api_root/releases/$sha/bin/sync-trendyol.php"
+rm -f "$record"
+env -i HOME="$workspace" PATH="$workspace/no-php:/usr/bin:/bin" ARASYA_PHP_CLI="$workspace/php-cli" /bin/bash "$api_root/bin/trendyol-intake-active.sh" >/dev/null || fail 'the Trendyol launcher failed with a valid PHP CLI'
+[[ "$(sed -n 1p "$record")" == "$(cd "$api_root/releases/$sha" && pwd -P)/bin/sync-trendyol.php" && "$(wc -l < "$record" | tr -d ' ')" == 1 ]] || fail "the Trendyol launcher did not run the active sync command: $(cat "$record")"
+
 # maintenance.php itself: invalid arguments are rejected before any database access, and a non-CLI SAPI refuses
 # without a PHP fatal error.
 php_bin="$(command -v php)"

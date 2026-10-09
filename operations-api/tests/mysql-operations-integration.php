@@ -10,7 +10,7 @@ use Arasya\Operations\Application\Container;
 use Arasya\Operations\Database\Connection;
 use Arasya\Operations\Database\MigrationRunner;
 use Arasya\Operations\Database\SqlFileRunner;
-use Arasya\Operations\Integration\Trendyol\TrendyolOrderMapper;
+use Arasya\Operations\Integration\Trendyol\TrendyolPackage;
 use Arasya\Operations\Tests\OperationsTestSupport as T;
 
 require dirname(__DIR__) . '/bootstrap.php';
@@ -268,14 +268,17 @@ checkError($get($alice, '/activity/mine', ['range' => 'custom', 'from' => '2026-
 checkError($get($alice, '/activity/mine', ['range' => 'year']), 400, 'INVALID_RANGE', 'unsupported ranges are rejected');
 checkError($get($alice, '/activity/mine', ['range' => 'today', 'employeeUuid' => $bob['employeeUuid']]), 400, 'INVALID_REQUEST', 'activity never accepts a browser employee identity');
 
-// ---- Trendyol adapter contract (fixture; no live credentials) -------------------
+// ---- Trendyol: the shared writer never projects a marketplace package into production ------------
 $fixture = json_decode((string) file_get_contents(__DIR__ . '/fixtures/trendyol-packages.json'), true, 64, JSON_THROW_ON_ERROR);
-$trendyolPackage = $fixture['content'][0];
-$trendyolPackage['id'] = (int) (hexdec(substr($suffix, 0, 7)) + 1000);
-check($container->projectionWriter()->apply(TrendyolOrderMapper::map($trendyolPackage)) === 'applied', 'a Trendyol package projects through the shared writer');
-$orderRow->execute(['trendyol:' . $trendyolPackage['id']]);
-$row = $orderRow->fetch();
-check($row['production_stage_id'] === 'waiting' && $row['source_commerce_status_code'] === 'Picking', 'Trendyol commerce status stays independent from production');
+$trendyolPackage = TrendyolPackage::fromApi([...$fixture['content'][0], 'shipmentPackageId' => (int) (hexdec(substr($suffix, 0, 7)) + 1000)]);
+try {
+    $container->projectionWriter()->apply(new \Arasya\Operations\Order\SourceOrderSnapshot('trendyol', (string) $trendyolPackage->packageId, 'direct-' . $trendyolPackage->packageId, 1, new DateTimeImmutable('now', new DateTimeZone('UTC')), $trendyolPackage->orderNumber, null, 'Picking', 'Picking', null, 'in_progress', null, []));
+    check(false, 'a Trendyol package must not project through the shared writer');
+} catch (\Arasya\Operations\Http\ApiException $error) {
+    check($error->errorCode === 'MARKETPLACE_APPROVAL_ONLY', 'Trendyol packages enter production only through the explicit approval');
+}
+$orderRow->execute(['trendyol:' . $trendyolPackage->packageId]);
+check($orderRow->fetch() === false, 'no Trendyol production order was created');
 
 // ---- Rate limiting and inactive accounts --------------------------------------
 $limited = false;

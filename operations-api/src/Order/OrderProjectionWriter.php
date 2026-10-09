@@ -33,6 +33,10 @@ final readonly class OrderProjectionWriter
         if ($snapshot->sourceKey === 'b2b') {
             throw new ApiException(403, 'INTERNAL_SOURCE_ONLY', 'Internal orders cannot be ingested from a source.');
         }
+        // Trendyol packages enter production only through an explicit approval in the Staff workspace.
+        if ($snapshot->sourceKey === 'trendyol') {
+            throw new ApiException(403, 'MARKETPLACE_APPROVAL_ONLY', 'Trendyol orders enter production only through an explicit approval.');
+        }
         $globalId = $snapshot->globalId()->toString();
         $itemsForHash = $snapshot->items;
         usort($itemsForHash, fn($a, $b) => $a->lineNumber <=> $b->lineNumber);
@@ -328,35 +332,78 @@ final readonly class OrderProjectionWriter
         }
     }
 
-    /** Create the canonical internal order inside the caller's atomic handoff transaction. */
+    /** Source keys whose canonical orders are created only by an explicit, authenticated command, with their source type. */
+    private const COMMAND_SOURCES = ['b2b' => 'internal', 'trendyol' => 'marketplace'];
+
+    /**
+     * Create the canonical order inside the caller's atomic command transaction: the internal B2B handoff or the
+     * approval of a prepared Trendyol package. The order starts at the canonical initial stage, managed by
+     * Operations, with its Arasya production QR.
+     *
+     * @param array<string, mixed> $context frozen order-level production context (B2B company); empty stores none
+     */
     public function createInternal(SourceOrderSnapshot $snapshot, array $context): string
     {
-        if (!$this->pdo->inTransaction() || $snapshot->sourceKey !== 'b2b' || $snapshot->productionStageId !== self::INITIAL_STAGE_ID) {
+        $sourceType = self::COMMAND_SOURCES[$snapshot->sourceKey] ?? null;
+        if (!$this->pdo->inTransaction() || $sourceType === null || $snapshot->productionStageId !== self::INITIAL_STAGE_ID) {
             throw new \LogicException('Internal creation requires the handoff transaction and canonical initial stage.');
         }
-        $s = $this->pdo->prepare("SELECT 1 FROM order_sources WHERE source_key='b2b' AND source_type='internal' AND status='active' AND schema_version=1 FOR UPDATE");
-        $s->execute();
+        $s = $this->pdo->prepare("SELECT 1 FROM order_sources WHERE source_key=? AND source_type=? AND status='active' AND schema_version=1 FOR UPDATE");
+        $s->execute([$snapshot->sourceKey, $sourceType]);
         if ($s->fetchColumn() === false) throw new ApiException(409, 'SOURCE_INACTIVE', 'Internal production source is not active.');
         $now = $this->clock->now()->format('Y-m-d H:i:s.u');
         $id = Uuid::v4();
+        $globalId = $snapshot->globalId()->toString();
         $this->pdo->prepare('INSERT INTO operational_orders (
             order_uuid,global_order_id,source_key,source_order_id,order_number,order_lookup_code,production_stage_id,
             production_authority,production_changed_at,source_commerce_status_code,source_commerce_status_label,
             production_notes,production_context,operational_status,freshness_status,source_schema_version,source_event_id,
             source_changed_at,last_source_seen_at,projected_at,accepted_at,projection_hash,version,created_at,updated_at)
             VALUES(?,?,?,?,?,?,?,\'operations\',?,?,?, ?,?,\'in_progress\',\'fresh\',1,?,?,?,?,?, ?,1,?,?)')->execute([
-                $id,$snapshot->globalId()->toString(),'b2b',$snapshot->sourceOrderId,$snapshot->orderNumber,
+                $id,$globalId,$snapshot->sourceKey,$snapshot->sourceOrderId,$snapshot->orderNumber,
                 OrderLookupCode::fromOrderNumber($snapshot->orderNumber),self::INITIAL_STAGE_ID,$now,
                 $snapshot->sourceCommerceStatusCode,$snapshot->sourceCommerceStatusLabel,$snapshot->productionNotes,
-                json_encode($context,JSON_THROW_ON_ERROR|JSON_UNESCAPED_UNICODE),$snapshot->sourceEventId,
-                $snapshot->sourceChangedAt->format('Y-m-d H:i:s.u'),$now,$now,$now,
+                $context === [] ? null : json_encode($context,JSON_THROW_ON_ERROR|JSON_UNESCAPED_UNICODE),$snapshot->sourceEventId,
+                $snapshot->sourceChangedAt->format('Y-m-d H:i:s.u'),$now,$now,($snapshot->acceptedAt ?? $this->clock->now())->format('Y-m-d H:i:s.u'),
                 hash('sha256',json_encode([$context,$snapshot->items],JSON_THROW_ON_ERROR),true),$now,$now,
             ]);
         $this->insertItems($snapshot->items,$id,$now);
         $s=$this->pdo->prepare('UPDATE operational_order_items SET production_context=? WHERE item_uuid=? AND order_uuid=?');
         foreach($snapshot->items as $item) $s->execute([json_encode($item->productionContext,JSON_THROW_ON_ERROR|JSON_UNESCAPED_UNICODE),$item->itemUuid,$id]);
-        $this->ensureQrReference($id, $snapshot->globalId()->toString(), 'b2b', $now, null);
+        $this->ensureQrReference($id, $globalId, $snapshot->sourceKey, $now, null);
         return $id;
+    }
+
+    /**
+     * Commerce status of an approved marketplace order (caller's transaction). A cancellation makes the order
+     * unavailable exactly like a source cancellation (an order already in cutting keeps its status and only
+     * records the report); any other status is shown as commerce data. Production stage, owner, items and the
+     * printed document are never changed here.
+     */
+    public function recordMarketplaceStatus(string $orderUuid, string $status, bool $cancelled): void
+    {
+        if (!$this->pdo->inTransaction()) {
+            throw new \LogicException('A marketplace status update requires the caller transaction.');
+        }
+        $statement = $this->pdo->prepare('SELECT production_version, production_stage_id, operational_status, cutting_first_claimed_at FROM operational_orders WHERE order_uuid = ? FOR UPDATE');
+        $statement->execute([$orderUuid]);
+        $order = $statement->fetch(PDO::FETCH_ASSOC);
+        if (!is_array($order)) {
+            throw new \RuntimeException('Approved marketplace order is missing.');
+        }
+        $now = $this->clock->now()->format('Y-m-d H:i:s.u');
+        $status = mb_substr($status, 0, 100);
+        $operational = $cancelled && $order['cutting_first_claimed_at'] === null ? 'unavailable' : (string) $order['operational_status'];
+        $this->pdo->prepare('UPDATE operational_orders SET source_commerce_status_code = ?, source_commerce_status_label = ?, operational_status = ?,
+                source_reported_unavailable_at = IF(?, COALESCE(source_reported_unavailable_at, ?), source_reported_unavailable_at),
+                last_source_seen_at = ?, version = version + 1, updated_at = ? WHERE order_uuid = ?')
+            ->execute([$status, $status, $operational, $cancelled ? 1 : 0, $now, $now, $now, $orderUuid]);
+        if ($cancelled) {
+            $life = new \Arasya\Operations\Cutting\CuttingLifecycle($this->pdo);
+            $life->fact($orderUuid, (int) $order['production_version'], 'source_cancelled', null, $now);
+            (new \Arasya\Operations\Quality\LiveEvents($this->pdo))->cuttingChanged($now);
+        }
+        (new \Arasya\Operations\Analytics\AnalyticsCapture($this->pdo))->refreshOrder($orderUuid);
     }
 
     /** Returns the current active QR payload for an order, issuing one if none exists. */

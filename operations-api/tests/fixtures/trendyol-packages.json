@@ -2,35 +2,42 @@
   "page": 0,
   "size": 200,
   "totalPages": 1,
-  "totalElements": 2,
+  "totalElements": 3,
   "content": [
     {
-      "id": 3318470214,
+      "shipmentPackageId": 3318470214,
       "orderNumber": "10847291463",
       "orderDate": 1759564800000,
       "lastModifiedDate": 1759568400123,
       "status": "Picking",
       "shipmentPackageStatus": "Picking",
+      "channelId": 1,
       "cargoProviderName": "Trendyol Express Marketplace",
+      "cargoTrackingNumber": 7330001112223334,
       "customerFirstName": "Fictiv",
       "customerLastName": "Client",
+      "customerEmail": "fictiv@example.invalid",
+      "identityNumber": "11111111111",
+      "packageTotalPrice": 499.8,
+      "shipmentAddress": {"fullName": "Fictiv Client", "address1": "Str. Test 1", "city": "București", "district": "Sector 1", "phone": "0744123456", "countryCode": "RO"},
+      "invoiceAddress": {"fullName": "Fictiv Client", "taxNumber": "RO000"},
       "lines": [
         {
-          "id": 4401183920,
+          "lineId": 4401183920,
           "quantity": 2,
           "productName": "Perdea tul alb 300x260",
-          "merchantSku": "PT-300-260",
-          "sku": "8681234567890",
+          "stockCode": "PT-300-260",
           "barcode": "8681234567890",
           "productColor": "Alb",
           "productSize": "300x260",
-          "price": 249.9,
-          "currencyCode": "RON"
+          "lineUnitPrice": 249.9,
+          "currencyCode": "RON",
+          "orderLineItemStatusName": "Picking"
         }
       ]
     },
     {
-      "id": 3318470215,
+      "shipmentPackageId": 3318470215,
       "orderNumber": "10847291464",
       "orderDate": 1759564800000,
       "lastModifiedDate": 1759568500000,
@@ -38,11 +45,27 @@
       "shipmentPackageStatus": "Cancelled",
       "lines": [
         {
-          "id": 4401183921,
+          "lineId": 4401183921,
           "quantity": 1,
           "productName": "Draperie blackout gri",
-          "merchantSku": "DB-GRI",
+          "stockCode": "DB-GRI",
           "productColor": "Gri"
+        }
+      ]
+    },
+    {
+      "id": 3318470216,
+      "orderNumber": "10847291465",
+      "orderDate": 1759564800000,
+      "lastModifiedDate": 1759568600000,
+      "status": "Created",
+      "lines": [
+        {
+          "id": 4401183922,
+          "quantity": 1,
+          "productName": "Perdea in natur",
+          "merchantSku": "PI-NAT",
+          "productSize": "140 cm x 245 cm"
         }
       ]
     }

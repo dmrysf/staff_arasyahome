@@ -17,7 +17,6 @@ use Arasya\Operations\Database\SqlFileRunner;
 use Arasya\Operations\Document\ProductionTicketPdf;
 use Arasya\Operations\Document\TicketSnapshot;
 use Arasya\Operations\Iam\RootBootstrapService;
-use Arasya\Operations\Integration\Trendyol\TrendyolOrderMapper;
 use Arasya\Operations\Tests\OperationsTestSupport as T;
 
 require dirname(__DIR__) . '/bootstrap.php';
@@ -80,9 +79,9 @@ require __DIR__ . '/HandoffSchemaFixture.php';
 restorePreDocumentsTestSchema($pdo);
 $grantsBefore = $pdo->query('SELECT * FROM role_permissions ORDER BY role_id, permission_id')->fetchAll(PDO::FETCH_ASSOC);
 $qrBefore = $pdo->query('SELECT qr_reference, order_uuid, status, created_at, expires_at, revoked_at FROM order_qr_references ORDER BY qr_reference')->fetchAll(PDO::FETCH_ASSOC);
-check((new MigrationRunner($pdo))->migrate($migrations) === ['017_production_documents.sql', '018_production_authority.sql','019_production_qr_authority.sql', '020_production_document_authority.sql', '021_document_scopes.sql'], '016 -> 017 official additive upgrade');
+check((new MigrationRunner($pdo))->migrate($migrations) === ['017_production_documents.sql', '018_production_authority.sql','019_production_qr_authority.sql', '020_production_document_authority.sql', '021_document_scopes.sql', '022_trendyol_intake.sql'], '016 -> 017 official additive upgrade');
 check((new MigrationRunner($pdo))->migrate($migrations) === [], '017 recorded exactly once');
-check($pdo->query("SELECT rp.* FROM role_permissions rp JOIN roles r ON r.role_id = rp.role_id WHERE rp.permission_id NOT IN (SELECT permission_id FROM permissions WHERE permission_key = 'production.manage_authority') AND r.role_key NOT IN ('production-documents-operator','document-revision-approver') ORDER BY rp.role_id, rp.permission_id")->fetchAll(PDO::FETCH_ASSOC) === $grantsBefore, '017 changes no existing role grant');
+check($pdo->query("SELECT rp.* FROM role_permissions rp JOIN roles r ON r.role_id = rp.role_id WHERE rp.permission_id NOT IN (SELECT permission_id FROM permissions WHERE permission_key = 'production.manage_authority' OR permission_key LIKE 'trendyol.%') AND r.role_key NOT IN ('production-documents-operator','document-revision-approver') ORDER BY rp.role_id, rp.permission_id")->fetchAll(PDO::FETCH_ASSOC) === $grantsBefore, '017 changes no existing role grant');
 check($pdo->query('SELECT qr_reference, order_uuid, status, created_at, expires_at, revoked_at FROM order_qr_references ORDER BY qr_reference')->fetchAll(PDO::FETCH_ASSOC) === $qrBefore, '017 and 019 rewrite no QR reference');
 $templatePermissions = static function (string $role) use ($pdo): array {
     $statement = $pdo->prepare('SELECT p.permission_key FROM role_permissions rp JOIN roles r ON r.role_id = rp.role_id JOIN permissions p ON p.permission_id = rp.permission_id WHERE r.role_key = ? ORDER BY p.permission_key');
@@ -496,10 +495,17 @@ checkError($post($online, $docPath($o3, 'revision-requests'), ['expectedDocument
 $pdo->prepare("UPDATE operational_orders SET document_status = 'active' WHERE order_uuid = ?")->execute([$uuid3]);
 
 // ---- Trendyol: limited data, no outbound call -------------------------------------------------------
-$package = ['id' => 7700 + random_int(1, 99), 'orderNumber' => '10930021', 'lastModifiedDate' => 1_780_000_000_000, 'shipmentPackageStatus' => 'Created',
+// A Trendyol order exists only through the approval command; its creation primitive is used here directly.
+$package = ['id' => 7700 + random_int(1, 99)];
+$pdo->beginTransaction();
+$tyUuid = $container->projectionWriter()->createInternal(new \Arasya\Operations\Order\SourceOrderSnapshot('trendyol', (string) $package['id'], 'approval-' . $package['id'], 1, new DateTimeImmutable('now', new DateTimeZone('UTC')), '10930021', 'waiting', 'Created', 'Created', null, 'in_progress', null,
+    [new \Arasya\Operations\Order\OperationalOrderItem(\Arasya\Operations\Support\Uuid::v4(), '1', 1, 'Draperie blackout gri', 'TY-555', null, 'Gri', null, null, null, null, 2, ['kind' => 'drapery', 'notes' => null, 'productionNotes' => null])]),
+    []);
+$pdo->prepare('UPDATE operational_orders SET document_context = ? WHERE order_uuid = ?')->execute([json_encode(\Arasya\Operations\Integration\Trendyol\TrendyolPackage::fromApi([
+    'shipmentPackageId' => $package['id'], 'orderNumber' => '10930021', 'lastModifiedDate' => 1_780_000_000_000, 'shipmentPackageStatus' => 'Created',
     'shipmentAddress' => ['fullName' => 'TEST Maria Enache', 'address1' => 'Str. Florilor 3', 'city' => 'Iași', 'phone' => '0744111222', 'email' => 'ignored@example.invalid'],
-    'lines' => [['id' => 1, 'productName' => 'Draperie blackout gri', 'merchantSku' => 'TY-555', 'productColor' => 'Gri', 'quantity' => 2]]];
-$container->projectionWriter()->apply(TrendyolOrderMapper::map($package));
+    'lines' => [['lineId' => 1, 'productName' => 'Draperie blackout gri', 'stockCode' => 'TY-555', 'productColor' => 'Gri', 'quantity' => 2]]])->delivery, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE), $tyUuid]);
+$pdo->commit();
 $ty = 'trendyol:' . $package['id'];
 checkOk($post($online, $docPath($ty, 'generate'), ['expectedDocumentVersion' => 0], $key('gen-ty'), T::ORIGIN), 'Trendyol order R1', 201);
 $tySnapshot = json_decode((string) $pdo->query("SELECT r.snapshot_json FROM production_document_revisions r JOIN operational_orders o ON o.order_uuid = r.order_uuid WHERE o.global_order_id = " . $pdo->quote($ty))->fetchColumn(), true);

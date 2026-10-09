@@ -4,6 +4,12 @@ import { invalidDocumentMessage } from "../domain/documents";
 export type ErrorPresentation = { title: string; message: string; action: string };
 
 const presentations: Record<ServiceErrorCode, ErrorPresentation> = {
+  TRENDYOL_PACKAGE_NOT_FOUND: { title: "Pachet inexistent", message: "Pachetul Trendyol nu există sau nu mai este disponibil.", action: "Înapoi" },
+  TRENDYOL_PACKAGE_CHANGED: { title: "Pachetul s-a modificat", message: "Un coleg sau Trendyol a actualizat pachetul între timp. Reîncarcă înainte de a continua.", action: "Reîncarcă" },
+  TRENDYOL_PACKAGE_NOT_PENDING: { title: "Pachetul nu mai este în lucru", message: "Pachetul a fost deja aprobat, scos din lucru sau anulat în Trendyol.", action: "Reîncarcă" },
+  TRENDYOL_PACKAGE_NOT_PREPARED: { title: "Date de producție incomplete", message: "Completează tipul produsului și, pentru perdele și draperii, lățimea și înălțimea fiecărei linii.", action: "Completează" },
+  TRENDYOL_STATUS_NOT_RELEASABLE: { title: "Status Trendyol incompatibil", message: "Comanda este expediată, livrată sau anulată în Trendyol și nu mai poate intra în producție.", action: "Reîncarcă" },
+  TRENDYOL_INPUT_INVALID: { title: "Date invalide", message: "Verifică valorile introduse (măsuri pozitive în cm, motiv obligatoriu, text de maxim 1000 de caractere).", action: "Corectează" },
   CAMERA_PERMISSION_DENIED: { title: "Acces la cameră blocat", message: "Permite accesul la cameră din setările browserului, apoi încearcă din nou.", action: "Încearcă din nou" },
   CAMERA_UNAVAILABLE: { title: "Camera nu este disponibilă", message: "Închide altă aplicație care folosește camera sau introdu codul manual.", action: "Introdu codul" },
   NO_CAMERA_DEVICE: { title: "Nu am găsit o cameră", message: "Poți continua introducând numărul sau codul comenzii.", action: "Introdu codul" },

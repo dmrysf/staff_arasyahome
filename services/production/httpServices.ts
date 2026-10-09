@@ -3,6 +3,7 @@ import { isOrderActionBlockedReason, isOrderActionId, orderActionLabels } from "
 import type { ActivityService, AuthService, EmployeeService, ExceptionService, LiveService, OrderService, ServiceBundle, Session } from "../contracts";
 import { startLiveClient } from "./liveClient";
 import type { DocumentApi, DocumentAttention, DocumentRevision, OrderDocument, OrderDocumentSummary } from "../../domain/documents";
+import type { TrendyolApi, TrendyolCapabilities, TrendyolIgnoredPackage, TrendyolIntakeStatus, TrendyolLine, TrendyolLineKind, TrendyolOverview, TrendyolPackageDetail, TrendyolPackageSummary } from "../../domain/trendyol";
 import { isProductionAuthority, type AuthorityApi, type AuthorityChange, type OrderAuthorityView, type ProductionAuthorityMode } from "../../domain/authority";
 import type { ActiveQr, ProductionQrApi, ProductionQrView, QrAuthority, QrAuthorityMode, QrRevision, QrRevisionState, QrRotationReason } from "../../domain/productionQr";
 import { createBrowserWorkflowCache, createUnavailableWorkflowCache, normalizeProductionApiBaseUrl, type WorkflowCache } from "./workflowCache";
@@ -17,6 +18,19 @@ export type ProductionServicesOptions = {
 };
 
 const backendErrorCodes: Partial<Record<string, ServiceErrorCode>> = {
+  PACKAGE_NOT_FOUND: "TRENDYOL_PACKAGE_NOT_FOUND",
+  LINE_NOT_FOUND: "TRENDYOL_PACKAGE_NOT_FOUND",
+  PACKAGE_CHANGED: "TRENDYOL_PACKAGE_CHANGED",
+  PACKAGE_NOT_PENDING: "TRENDYOL_PACKAGE_NOT_PENDING",
+  PACKAGE_ALREADY_RELEASED: "TRENDYOL_PACKAGE_NOT_PENDING",
+  PACKAGE_NOT_DISMISSED: "TRENDYOL_PACKAGE_NOT_PENDING",
+  PACKAGE_NOT_PREPARED: "TRENDYOL_PACKAGE_NOT_PREPARED",
+  MEASUREMENTS_REQUIRED: "TRENDYOL_PACKAGE_NOT_PREPARED",
+  MARKETPLACE_STATUS_NOT_RELEASABLE: "TRENDYOL_STATUS_NOT_RELEASABLE",
+  INVALID_MEASUREMENT: "TRENDYOL_INPUT_INVALID",
+  INVALID_KIND: "TRENDYOL_INPUT_INVALID",
+  INVALID_TEXT: "TRENDYOL_INPUT_INVALID",
+  REASON_REQUIRED: "TRENDYOL_INPUT_INVALID",
   PRODUCTION_AUTHORITY_SOURCE: "PRODUCTION_AUTHORITY_SOURCE",
   AUTHORITY_CUTOVER_DISABLED: "AUTHORITY_CUTOVER_DISABLED",
   AUTHORITY_NOT_SUPPORTED: "AUTHORITY_NOT_SUPPORTED",
@@ -750,7 +764,106 @@ export function createProductionServices(apiBaseUrl: string, options: Production
     inspect: (globalOrderId, signal) => http.request(`/orders/${encodeURIComponent(globalOrderId)}/production-qr`, { signal }, mapProductionQrView),
     rotate: (globalOrderId, input, key) => http.request(`/orders/${encodeURIComponent(globalOrderId)}/production-qr/rotate`, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapProductionQrView),
   };
-  return { auth, employee, orders, activity, workflow, exceptions, live, cutting, documents, authority, productionQr, mode: "production" };
+  const trendyolPackage = (packageId: string) => `/trendyol/packages/${encodeURIComponent(packageId)}`;
+  const trendyol: TrendyolApi = {
+    overview: (signal) => http.request("/trendyol/overview", { signal }, mapTrendyolOverview),
+    list: (view, signal) => http.request(`/trendyol/packages?view=${view}`, { signal }, (value) => itemsOf(value).map(mapTrendyolSummary)),
+    ignored: (signal) => http.request("/trendyol/packages?view=ignored", { signal }, (value) => itemsOf(value).map(mapTrendyolIgnored)),
+    detail: (packageId, signal) => http.request(trendyolPackage(packageId), { signal }, mapTrendyolDetail),
+    prepareLine: (packageId, lineId, input, key) => http.request(`${trendyolPackage(packageId)}/lines/${encodeURIComponent(lineId)}`, { method: "PUT", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapTrendyolDetail),
+    dismiss: (packageId, input, key) => http.request(`${trendyolPackage(packageId)}/dismiss`, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapTrendyolDetail),
+    reopen: (packageId, input, key) => http.request(`${trendyolPackage(packageId)}/reopen`, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapTrendyolDetail),
+    release: (packageId, input, key) => http.request(`${trendyolPackage(packageId)}/release`, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapTrendyolDetail),
+  };
+  return { auth, employee, orders, activity, workflow, exceptions, live, cutting, documents, authority, productionQr, trendyol, mode: "production" };
+}
+
+// ---------------------------------------------------------------- Trendyol workspace (strict; unexpected shapes fail closed)
+const PACKAGE_ID = /^[1-9][0-9]{0,18}$/;
+const intakeStatuses: readonly TrendyolIntakeStatus[] = ["pending", "released", "dismissed", "marketplace_cancelled"];
+const lineKinds: readonly TrendyolLineKind[] = ["curtain", "drapery", "other"];
+function nonNegativeInteger(value: unknown): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) throw new StaffServiceError("SERVER_ERROR");
+  return value;
+}
+function itemsOf(value: unknown): unknown[] {
+  const raw = objectValue(value);
+  if (!Array.isArray(raw.items)) throw new StaffServiceError("SERVER_ERROR");
+  return raw.items;
+}
+function packageIdValue(value: unknown): string {
+  const id = stringValue(value);
+  if (!PACKAGE_ID.test(id)) throw new StaffServiceError("SERVER_ERROR");
+  return id;
+}
+function mapTrendyolCapabilities(value: unknown): TrendyolCapabilities {
+  const raw = objectValue(value);
+  return { view: booleanValue(raw.view), prepare: booleanValue(raw.prepare), release: booleanValue(raw.release) };
+}
+export function mapTrendyolOverview(value: unknown): TrendyolOverview {
+  const raw = objectValue(value);
+  const intake = objectValue(raw.intake);
+  const counts = objectValue(raw.counts);
+  return {
+    intake: { status: oneOf(intake.status, ["inactive", "active", "paused"] as const), baselineAt: nullableTimestamp(intake.baselineAt), lastRunAt: nullableTimestamp(intake.lastRunAt), lastRunOutcome: nullableText(intake.lastRunOutcome) },
+    counts: { pending: nonNegativeInteger(counts.pending), released: nonNegativeInteger(counts.released), closed: nonNegativeInteger(counts.closed), ignored: nonNegativeInteger(counts.ignored) },
+    capabilities: mapTrendyolCapabilities(raw.capabilities),
+  };
+}
+export function mapTrendyolSummary(value: unknown): TrendyolPackageSummary {
+  const raw = objectValue(value);
+  return {
+    packageId: packageIdValue(raw.packageId),
+    orderNumber: stringValue(raw.orderNumber),
+    intakeStatus: oneOf(raw.intakeStatus, intakeStatuses),
+    marketplaceStatus: stringValue(raw.marketplaceStatus),
+    orderDate: nullableTimestamp(raw.orderDate),
+    changedAfterRelease: booleanValue(raw.changedAfterRelease),
+    version: positiveInteger(raw.version),
+    ...(raw.lineCount === undefined ? {} : { lineCount: nonNegativeInteger(raw.lineCount), preparedCount: nonNegativeInteger(raw.preparedCount) }),
+    ...(raw.globalOrderId === undefined ? {} : { globalOrderId: nullableText(raw.globalOrderId), stageId: nullableText(raw.stageId) }),
+  };
+}
+function mapTrendyolIgnored(value: unknown): TrendyolIgnoredPackage {
+  const raw = objectValue(value);
+  return { packageId: packageIdValue(raw.packageId), orderNumber: stringValue(raw.orderNumber), reason: oneOf(raw.reason, ["historical", "status_not_eligible", "order_date_missing"] as const), marketplaceStatus: stringValue(raw.marketplaceStatus), orderDate: nullableTimestamp(raw.orderDate), firstSeenAt: nullableTimestamp(raw.firstSeenAt) };
+}
+function mapTrendyolLine(value: unknown): TrendyolLine {
+  const raw = objectValue(value);
+  const suggestion = raw.sizeSuggestion == null ? null : objectValue(raw.sizeSuggestion);
+  const prepared = raw.prepared == null ? null : objectValue(raw.prepared);
+  return {
+    lineId: packageIdValue(raw.lineId),
+    lineNumber: positiveInteger(raw.lineNumber),
+    productName: stringValue(raw.productName),
+    stockCode: nullableText(raw.stockCode),
+    barcode: nullableText(raw.barcode),
+    productSize: nullableText(raw.productSize),
+    productColor: nullableText(raw.productColor),
+    quantity: positiveInteger(raw.quantity),
+    sizeSuggestion: suggestion === null ? null : { width: stringValue(suggestion.width), height: stringValue(suggestion.height) },
+    prepared: prepared === null ? null : { kind: oneOf(prepared.kind, lineKinds), widthCm: nullableText(prepared.widthCm), heightCm: nullableText(prepared.heightCm), meters: nullableText(prepared.meters), notes: nullableText(prepared.notes), preparedBy: nullableText(prepared.preparedBy), preparedAt: nullableTimestamp(prepared.preparedAt) },
+  };
+}
+export function mapTrendyolDetail(value: unknown): TrendyolPackageDetail {
+  const raw = objectValue(value);
+  const readiness = objectValue(raw.readiness);
+  const capabilities = objectValue(raw.capabilities);
+  const delivery = raw.delivery == null ? null : objectValue(raw.delivery);
+  const production = raw.production == null ? null : objectValue(raw.production);
+  const dismissal = raw.dismissal == null ? null : objectValue(raw.dismissal);
+  if (!Array.isArray(raw.lines) || !Array.isArray(raw.siblings) || !Array.isArray(raw.history) || !Array.isArray(readiness.missingLines) || (delivery !== null && !Array.isArray(delivery.addressLines))) throw new StaffServiceError("SERVER_ERROR");
+  return {
+    ...mapTrendyolSummary(raw),
+    delivery: delivery === null ? null : { name: nullableText(delivery.name), addressLines: (delivery.addressLines as unknown[]).map(stringValue), phoneMasked: nullableText(delivery.phoneMasked) },
+    lines: raw.lines.map(mapTrendyolLine),
+    readiness: { ready: booleanValue(readiness.ready), missingLines: readiness.missingLines.map(positiveInteger), marketplaceReleasable: booleanValue(readiness.marketplaceReleasable) },
+    siblings: raw.siblings.map((item) => { const sibling = objectValue(item); return { packageId: packageIdValue(sibling.packageId), intakeStatus: oneOf(sibling.intakeStatus, intakeStatuses), marketplaceStatus: stringValue(sibling.marketplaceStatus) }; }),
+    production: production === null ? null : { globalOrderId: stringValue(production.globalOrderId), stageId: stringValue(production.stageId), stageLabel: nullableText(production.stageLabel), documentStatus: stringValue(production.documentStatus), operationalStatus: stringValue(production.operationalStatus), releasedBy: nullableText(production.releasedBy), releasedAt: nullableTimestamp(production.releasedAt) },
+    dismissal: dismissal === null ? null : { reason: stringValue(dismissal.reason), by: nullableText(dismissal.by), at: nullableTimestamp(dismissal.at) },
+    history: raw.history.map((item) => { const event = objectValue(item); return { action: stringValue(event.action), actor: nullableText(event.actor), at: nullableTimestamp(event.at) }; }),
+    capabilities: { ...mapTrendyolCapabilities(capabilities), prepareNow: booleanValue(capabilities.prepareNow), releaseNow: booleanValue(capabilities.releaseNow), dismissNow: booleanValue(capabilities.dismissNow), reopenNow: booleanValue(capabilities.reopenNow) },
+  };
 }
 
 const qrAuthorities: readonly QrAuthority[] = ["arasya", "source"];

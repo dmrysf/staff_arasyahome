@@ -43,6 +43,7 @@ final readonly class ApiKernel
         private ?\Arasya\Operations\Document\DocumentController $documents = null,
         private ?\Arasya\Operations\Production\ProductionAuthorityController $authority = null,
         private ?\Arasya\Operations\Production\ProductionQrController $productionQr = null,
+        private ?\Arasya\Operations\Trendyol\TrendyolWorkspaceController $trendyol = null,
     ) {
     }
 
@@ -109,6 +110,9 @@ final readonly class ApiKernel
         }
         if ($request->path === '/b2b/companies' || str_starts_with($request->path, '/b2b/companies/')) {
             return ($this->b2bCompanies ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'B2B companies API is not ready.'))->handle($request);
+        }
+        if (str_starts_with($request->path, '/trendyol/')) {
+            return ($this->trendyol ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Trendyol workspace is not ready.'))->handle($request);
         }
         if (str_starts_with($request->path, '/production-documents/')) {
             return ($this->documents ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Production documents are not ready.'))->handle($request);

@@ -188,7 +188,7 @@ restorePreDocumentAuthorityTestSchema($pdo);
 $historyBefore = $pdo->query('SELECT revision_uuid, order_uuid, revision_number, status, qr_reference, generated_by_employee_uuid, generated_at FROM production_document_revisions ORDER BY revision_uuid')->fetchAll(PDO::FETCH_ASSOC);
 $qrBefore = $pdo->query('SELECT qr_reference, status FROM order_qr_references ORDER BY qr_reference')->fetchAll(PDO::FETCH_ASSOC);
 $ordersBefore = $pdo->query('SELECT global_order_id, production_authority, production_stage_id, production_version, document_status, document_version FROM operational_orders ORDER BY global_order_id')->fetchAll(PDO::FETCH_ASSOC);
-check((new MigrationRunner($pdo))->migrate($migrations) === ['020_production_document_authority.sql', '021_document_scopes.sql'], '019 -> 020 official additive upgrade');
+check((new MigrationRunner($pdo))->migrate($migrations) === ['020_production_document_authority.sql', '021_document_scopes.sql', '022_trendyol_intake.sql'], '019 -> 020 official additive upgrade');
 check((new MigrationRunner($pdo))->migrate($migrations) === [], '020 recorded exactly once');
 $scopeDocuments();
 check($pdo->query('SELECT revision_uuid, order_uuid, revision_number, status, qr_reference, generated_by_employee_uuid, generated_at FROM production_document_revisions ORDER BY revision_uuid')->fetchAll(PDO::FETCH_ASSOC) === $historyBefore, '020 rewrites no document revision');

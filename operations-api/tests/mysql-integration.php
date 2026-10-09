@@ -130,6 +130,7 @@ try {
     $expected[] = '019_production_qr_authority.sql';
     $expected[] = '020_production_document_authority.sql';
     $expected[] = '021_document_scopes.sql';
+    $expected[] = '022_trendyol_intake.sql';
     if ($applied !== $expected) {
         throw new RuntimeException('An existing 001 schema did not apply exactly the pending migrations in order: ' . implode(', ', $applied));
     }
