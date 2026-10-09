@@ -19,7 +19,7 @@ use Arasya\Operations\Security\CsrfGuard;
  * mutation, Idempotency-Key on every command, strict bodies). It never calls Trendyol.
  *
  *   GET  /trendyol/overview                               intake state, counts, the caller's capabilities
- *   GET  /trendyol/packages?view=pending|released|closed|ignored
+ *   GET  /trendyol/packages?view=pending|attention|released|closed|ignored
  *   GET  /trendyol/packages/{packageId}                   package, lines, readiness, production link, history
  *   PUT  /trendyol/packages/{packageId}/lines/{lineId}    {expectedVersion, kind, widthCm?, heightCm?, meters?, notes?}
  *   POST /trendyol/packages/{packageId}/dismiss           {expectedVersion, reason}
