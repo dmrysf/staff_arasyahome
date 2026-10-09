@@ -52,7 +52,6 @@ use Arasya\Operations\Integration\SourceRegistry;
 use Arasya\Operations\Integration\SourceSignatureVerifier;
 use Arasya\Operations\Integration\Trendyol\StreamTrendyolTransport;
 use Arasya\Operations\Integration\Trendyol\TrendyolClient;
-use Arasya\Operations\Integration\Trendyol\TrendyolSynchronizer;
 use Arasya\Operations\Management\ManagementController;
 use Arasya\Operations\Management\ManagementService;
 use Arasya\Operations\Management\OrderControlService;
@@ -222,6 +221,13 @@ final class Container
                 $context,
             ),
             new \Arasya\Operations\Production\ProductionQrController($this->productionQrService($authorization, $iamAudit), $this->authentication, $csrf, $this->config, $context),
+            new \Arasya\Operations\Trendyol\TrendyolWorkspaceController(
+                new \Arasya\Operations\Trendyol\TrendyolWorkspace($this->pdo, $authorization, $this->employees, $workflows, $this->projectionWriter(), $documents, $idempotency, $this->clock),
+                $this->authentication,
+                $csrf,
+                $this->config,
+                $context,
+            ),
         );
     }
 
@@ -282,13 +288,29 @@ final class Container
         return \Arasya\Operations\Production\ProductionAuthorityModes::fromRegistry(SourceRegistry::fromConfig($this->config));
     }
 
-    /** Returns null when Trendyol credentials are not configured. */
-    public function trendyolSynchronizer(): ?TrendyolSynchronizer
+    /**
+     * Trendyol intake synchronization, or null while it may not read Trendyol: credentials missing or the
+     * ARASYA_TRENDYOL_INTAKE switch not `enabled`. The database activation is checked by the synchronizer.
+     */
+    public function trendyolIntakeSynchronizer(): ?\Arasya\Operations\Integration\Trendyol\TrendyolIntakeSynchronizer
     {
-        if ($this->config->trendyol === null) {
+        if ($this->config->trendyol === null || !$this->config->trendyolIntakeEnabled()) {
             return null;
         }
-        return new TrendyolSynchronizer($this->pdo, new TrendyolClient($this->config->trendyol, new StreamTrendyolTransport()), $this->projectionWriter(), $this->clock);
+        $writer = $this->projectionWriter();
+        return new \Arasya\Operations\Integration\Trendyol\TrendyolIntakeSynchronizer(
+            $this->pdo,
+            new TrendyolClient($this->config->trendyol, new StreamTrendyolTransport()),
+            new \Arasya\Operations\Integration\Trendyol\TrendyolIntakeStore($this->pdo, $writer, $this->clock),
+            $writer,
+            $this->clock,
+        );
+    }
+
+    /** The explicit Trendyol intake activation control (operator CLI). */
+    public function trendyolIntakeState(): \Arasya\Operations\Integration\Trendyol\TrendyolIntakeState
+    {
+        return new \Arasya\Operations\Integration\Trendyol\TrendyolIntakeState($this->pdo, $this->clock);
     }
 
     public function config(): Config

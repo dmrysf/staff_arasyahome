@@ -16,7 +16,8 @@ use Arasya\Operations\Production\ProductionWorkflow;
  *
  * Visibility: an order is visible when the employee has a direct relation
  * with it, or when its current production stage is one of the employee's
- * allowed stages. Everything else is reported as not found.
+ * allowed stages (a Trendyol order at the initial stage also needs the
+ * Trendyol view permission). Everything else is reported as not found.
  *
  * Production authority: while the order's source enforces the authority split, an order that is still
  * managed by its source (production_authority = 'source') cannot be worked on in Staff at all; a manager
@@ -28,6 +29,8 @@ final readonly class OrderAccessPolicy
     public const ACTION_COMPLETE_STAGE = 'complete_stage';
     public const ACTION_COMPLETE_PRODUCTION = 'complete_production';
     public const BLOCKED_AUTHORITY_SOURCE = 'production_authority_source';
+    public const TRENDYOL_SOURCE = 'trendyol';
+    public const TRENDYOL_VIEW = 'trendyol.orders.view';
 
     public function __construct(private AuthorizationService $authorization, private ?ProductionAuthorityModes $authorityModes = null)
     {
@@ -52,8 +55,17 @@ final readonly class OrderAccessPolicy
         if (!$employee->isOperationallyActive()) {
             return false;
         }
-        return $order->relation !== null && $order->relation->employeeUuid === $employee->employeeUuid
-            || in_array($order->productionStageId, $employee->allowedStageIds, true);
+        if ($order->relation !== null && $order->relation->employeeUuid === $employee->employeeUuid) {
+            return true;
+        }
+        if (!in_array($order->productionStageId, $employee->allowedStageIds, true)) {
+            return false;
+        }
+        // An approved Trendyol order at the initial stage is still Trendyol preparation work: besides the stage, it
+        // is visible only to explicitly authorized Trendyol personnel. From the next stage on it is ordinary work.
+        return $order->globalId->sourceKey !== self::TRENDYOL_SOURCE
+            || $order->productionStageId !== OrderProjectionWriter::INITIAL_STAGE_ID
+            || $this->authorization->can($employee, self::TRENDYOL_VIEW);
     }
 
     /** @return array{action: string|null, blockedReason: string|null} */
