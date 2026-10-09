@@ -43,9 +43,13 @@ final readonly class TrendyolSynchronizer
                 : $now->modify('-' . self::INITIAL_LOOKBACK_DAYS . ' days');
             $counts = ['applied' => 0, 'duplicate' => 0, 'out_of_order' => 0, 'rejected' => 0];
             $page = 0;
+            $lastModifiedMillis = null;
             do {
                 $result = $this->client->packages($start->getTimestamp() * 1000, $now->getTimestamp() * 1000, $page);
                 foreach ($result['content'] as $package) {
+                    if (is_array($package) && is_int($package['lastModifiedDate'] ?? null)) {
+                        $lastModifiedMillis = max($lastModifiedMillis ?? 0, $package['lastModifiedDate']);
+                    }
                     try {
                         $outcome = $this->writer->apply(TrendyolOrderMapper::map(is_array($package) ? $package : []));
                         $counts[$outcome]++;
@@ -56,9 +60,17 @@ final readonly class TrendyolSynchronizer
                 $page++;
             } while ($page < $result['totalPages'] && $page < self::MAX_PAGES);
 
+            // Packages arrive ordered by modification time. When the page limit stops a run early, the cursor
+            // stays at the last package read so the next run continues there instead of skipping unread pages.
+            $cursorAt = $now;
+            if ($page < $result['totalPages']) {
+                $cursorAt = $lastModifiedMillis === null
+                    ? $start->modify('+' . self::OVERLAP_SECONDS . ' seconds')
+                    : (new \DateTimeImmutable('@' . intdiv($lastModifiedMillis, 1000)))->setTimezone(new \DateTimeZone('UTC'));
+            }
             $this->writer->recordHeartbeat('trendyol');
             $update = $this->pdo->prepare("UPDATE order_sources SET sync_cursor_at = ? WHERE source_key = 'trendyol'");
-            $update->execute([$now->format('Y-m-d H:i:s.u')]);
+            $update->execute([$cursorAt->format('Y-m-d H:i:s.u')]);
             return $counts;
         } finally {
             $lock->release();
