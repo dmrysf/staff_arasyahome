@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { intakeStatusLabels, lineKindLabels, marketplaceLabel, normalizeMeasure, type TrendyolApi, type TrendyolLine, type TrendyolLineKind, type TrendyolPackageDetail } from "../../domain/trendyol";
+import { intakeStatusLabels, lineKindLabels, marketplaceLabel, nearActivationWarning, normalizeMeasure, type TrendyolApi, type TrendyolLine, type TrendyolLineKind, type TrendyolPackageDetail } from "../../domain/trendyol";
 import { getErrorPresentation, toServiceError } from "../../services/errors";
 import { createIdempotencyKey } from "../../services/idempotency";
 import { AppIcon } from "../../components/icons/AppIcon";
@@ -91,6 +91,7 @@ export function TrendyolPackageScreen({ packageId, service, navigate }: { packag
           <div><dt>Data comenzii</dt><dd>{date(detail.orderDate)}</dd></div>
         </dl>
         <p className="order-notice order-notice-muted">Arasya nu modifică nimic în Trendyol: statusul, expedierea, codul de bare al curierului și factura rămân în Seller Panel. Codul QR Arasya este doar pentru producție.</p>
+        {detail.orderDateNearActivation && detail.intakeStatus === "pending" && <p className="order-notice" role="alert" data-testid="trendyol-near-activation">{nearActivationWarning}</p>}
         {detail.changedAfterRelease && <p className="order-notice" role="alert">Comanda s-a modificat în Trendyol după aprobare. Producția continuă cu datele aprobate; verifică manual diferențele.</p>}
         {detail.siblings.length > 0 && <p className="order-notice" role="note">Aceeași comandă Trendyol are și alte pachete: {detail.siblings.map((sibling) => `${sibling.packageId} (${intakeStatusLabels[sibling.intakeStatus]})`).join(", ")}. Verifică să nu intre de două ori în producție.</p>}
         {detail.delivery && <p className="trendyol-delivery"><strong>{detail.delivery.name ?? "Client"}</strong><br />{detail.delivery.addressLines.join(", ")}{detail.delivery.phoneMasked ? ` · ${detail.delivery.phoneMasked}` : ""}</p>}

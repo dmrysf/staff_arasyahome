@@ -17,6 +17,10 @@ use RuntimeException;
  * The report never contains credentials, customer names, addresses, phone numbers or email: only package and
  * line identifiers, statuses, timestamps, product data, the measurement suggestion and the classification, plus
  * a field-presence summary that shows which Order V2 field names the account really returns.
+ *
+ * `orderDateAheadOfClock` counts packages whose orderDate lies more than ten minutes after the preview's own clock.
+ * A real order cannot be placed in the future, so a non-zero count proves that orderDate carries GMT+3 wall time
+ * (the real instant plus three hours). `nearActivation` counts packages in the three-hour ambiguity after the baseline.
  */
 final readonly class TrendyolPreview
 {
@@ -28,10 +32,11 @@ final readonly class TrendyolPreview
 
     /**
      * @return array{window: array{start: string, end: string}, baseline: string, pages: int, totalElements: int|null, truncated: bool,
-     *   counts: array<string, int>, fields: array<string, int>, packages: list<array<string, mixed>>}
+     *   counts: array<string, int>, evidence: array{orderDateAheadOfClock: int, nearActivation: int}, fields: array<string, int>, packages: list<array<string, mixed>>}
      */
-    public function run(DateTimeImmutable $start, DateTimeImmutable $end, DateTimeImmutable $baseline): array
+    public function run(DateTimeImmutable $start, DateTimeImmutable $end, DateTimeImmutable $baseline, ?DateTimeImmutable $now = null): array
     {
+        $nowMillis = ($now ?? new DateTimeImmutable('now'))->getTimestamp() * 1000;
         if ($end <= $start || $end->getTimestamp() - $start->getTimestamp() > TrendyolClient::MAX_WINDOW_SECONDS) {
             throw new RuntimeException('TRENDYOL_WINDOW_INVALID');
         }
@@ -39,6 +44,7 @@ final readonly class TrendyolPreview
         $baselineMillis = $baseline->getTimestamp() * 1000;
         $packages = [];
         $counts = ['eligible' => 0, 'deferred' => 0, 'historical' => 0, 'status_not_eligible' => 0, 'order_date_missing' => 0, 'malformed' => 0];
+        $evidence = ['orderDateAheadOfClock' => 0, 'nearActivation' => 0];
         $fields = [];
         $page = 0;
         $totalElements = null;
@@ -66,6 +72,9 @@ final readonly class TrendyolPreview
                 }
                 $decision = TrendyolEligibility::classify($package, $baselineMillis);
                 $counts[$decision]++;
+                $nearActivation = TrendyolEligibility::nearActivation($package->orderDateMillis, $baselineMillis);
+                $evidence['nearActivation'] += $nearActivation ? 1 : 0;
+                $evidence['orderDateAheadOfClock'] += $package->orderDateMillis !== null && $package->orderDateMillis > $nowMillis + 600000 ? 1 : 0;
                 if (count($packages) < self::MAX_PACKAGES) {
                     $packages[] = [
                         'packageId' => $package->packageId,
@@ -77,6 +86,7 @@ final readonly class TrendyolPreview
                         'channelId' => $package->channelId,
                         'hasDelivery' => $package->delivery !== null,
                         'classification' => $decision,
+                        'orderDateNearActivation' => $nearActivation,
                         'lines' => array_map(static fn (array $line): array => [
                             'lineId' => $line['lineId'],
                             'productName' => $line['productName'],
@@ -100,6 +110,7 @@ final readonly class TrendyolPreview
             'totalElements' => $totalElements,
             'truncated' => $page < $result['totalPages'],
             'counts' => $counts,
+            'evidence' => $evidence,
             'fields' => $fields,
             'packages' => $packages,
         ];

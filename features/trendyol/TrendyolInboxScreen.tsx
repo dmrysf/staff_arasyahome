@@ -58,7 +58,7 @@ export function TrendyolInboxScreen({ service, navigate }: { service: TrendyolAp
           {items.map((item) => <li key={item.packageId}>
             <button type="button" className={item.intakeStatus === "pending" ? "exception-row needs-action" : "exception-row"} onClick={() => navigate(`/trendyol/${item.packageId}`)}>
               <span><strong>Comanda #{item.orderNumber}</strong><small>Pachet {item.packageId} · {date(item.orderDate)} · Trendyol: {marketplaceLabel(item.marketplaceStatus)}</small></span>
-              <span className="exception-status">{item.intakeStatus === "pending" && item.lineCount !== undefined ? `${item.preparedCount}/${item.lineCount} linii pregătite` : intakeStatusLabels[item.intakeStatus]}{item.changedAfterRelease ? " · modificată după aprobare" : ""}</span>
+              <span className="exception-status">{item.intakeStatus === "pending" && item.lineCount !== undefined ? `${item.preparedCount}/${item.lineCount} linii pregătite` : intakeStatusLabels[item.intakeStatus]}{item.changedAfterRelease ? " · modificată după aprobare" : ""}{item.orderDateNearActivation && item.intakeStatus === "pending" ? " · verifică data în Seller Panel" : ""}</span>
             </button>
           </li>)}
         </ul>)}

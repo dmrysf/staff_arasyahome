@@ -227,12 +227,19 @@ test('Trendyol Order V2 packages parse without customer secrets and the client i
     expect(TrendyolSizeHint::suggest('140,5 X 260') === ['width' => '140.5', 'height' => '260']);
     expect(TrendyolSizeHint::suggest('Tek Ebat') === null && TrendyolSizeHint::suggest('1x2') === null);
 
-    // Historical protection: only new orders after the baseline (under both orderDate readings) are intake work.
+    // Historical protection: only packages ordered before the baseline under both orderDate readings are ignored.
+    // The three hours after the baseline are ambiguous (GMT+3 wall time): never ignored, flagged for the approver.
     $baseline = 1759564800000;
     $at = static fn (int $offsetMinutes, string $status): TrendyolPackage => TrendyolPackage::fromApi([...$fixture['content'][0], 'orderDate' => $baseline + $offsetMinutes * 60000, 'shipmentPackageStatus' => $status]);
     expect(TrendyolEligibility::classify($at(-1, 'Created'), $baseline) === 'historical');
-    expect(TrendyolEligibility::classify($at(179, 'Created'), $baseline) === 'historical', 'the GMT+3 reading of orderDate is honoured');
+    expect(TrendyolEligibility::classify(TrendyolPackage::fromApi([...$fixture['content'][0], 'orderDate' => $baseline - 1]), $baseline) === 'historical', 'one millisecond before the baseline');
+    foreach ([0, 1, 179] as $minutes) {
+        expect(TrendyolEligibility::classify($at($minutes, 'Created'), $baseline) === 'eligible', "a new order {$minutes} minutes after activation is never ignored");
+        expect(TrendyolEligibility::nearActivation($baseline + $minutes * 60000, $baseline), "{$minutes} minutes is inside the GMT+3 ambiguity");
+    }
+    expect(TrendyolEligibility::classify($at(30, 'Awaiting'), $baseline) === 'deferred' && TrendyolEligibility::classify($at(30, 'Delivered'), $baseline) === 'status_not_eligible');
     expect(TrendyolEligibility::classify($at(181, 'Created'), $baseline) === 'eligible');
+    expect(!TrendyolEligibility::nearActivation($baseline - 1, $baseline) && !TrendyolEligibility::nearActivation($baseline + 3 * 3600000, $baseline) && !TrendyolEligibility::nearActivation(null, $baseline));
     foreach (['Created', 'Picking', 'Invoiced'] as $status) {
         expect(TrendyolEligibility::classify($at(240, $status), $baseline) === 'eligible', $status);
     }
@@ -288,6 +295,11 @@ test('Trendyol Order V2 packages parse without customer secrets and the client i
         expect(!str_contains($text, $private), "the preview report holds no {$private}");
     }
     expect($report['packages'][0]['lines'][0]['sizeSuggestion'] === ['width' => '300', 'height' => '260']);
+    expect($report['evidence'] === ['orderDateAheadOfClock' => 0, 'nearActivation' => 0] && $report['packages'][0]['orderDateNearActivation'] === false);
+    // GMT+3 evidence: an orderDate later than the preview clock proves wall time; a baseline one hour earlier flags all three.
+    $nearReport = (new TrendyolPreview($client))->run(new DateTimeImmutable('@1759560000'), new DateTimeImmutable('@1759570000'), new DateTimeImmutable('@1759561200'), new DateTimeImmutable('@1759560000'));
+    expect($nearReport['evidence'] === ['orderDateAheadOfClock' => 3, 'nearActivation' => 3] && $nearReport['counts']['historical'] === 0 && $nearReport['counts']['eligible'] === 2);
+    expect($nearReport['packages'][0]['orderDateNearActivation'] === true && $nearReport['packages'][0]['classification'] === 'eligible');
     $reflection = new ReflectionClass(TrendyolPreview::class);
     expect(array_map(static fn (ReflectionParameter $parameter): string => (string) $parameter->getType(), $reflection->getConstructor()->getParameters()) === [TrendyolClient::class], 'the preview depends on the read-only client only');
 });

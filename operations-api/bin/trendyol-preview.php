@@ -51,7 +51,7 @@ if ($config->trendyol === null) {
     exit(0);
 }
 try {
-    $report = (new TrendyolPreview(new TrendyolClient($config->trendyol, new StreamTrendyolTransport())))->run($from, $to, $baseline);
+    $report = (new TrendyolPreview(new TrendyolClient($config->trendyol, new StreamTrendyolTransport())))->run($from, $to, $baseline, $now);
 } catch (RuntimeException $error) {
     fwrite(STDERR, (preg_match('/^TRENDYOL_[A-Z_]+$/D', $error->getMessage()) === 1 ? $error->getMessage() : 'TRENDYOL_PREVIEW_FAILED') . "\n");
     exit(1);
@@ -65,9 +65,11 @@ fwrite(STDOUT, sprintf("TRENDYOL_PREVIEW window=%s..%s baseline=%s pages=%d tota
 foreach ($report['counts'] as $name => $count) {
     fwrite(STDOUT, sprintf("  %-20s %d\n", $name, $count));
 }
+fwrite(STDOUT, sprintf("orderDate evidence: aheadOfClock=%d (non-zero proves GMT+3 wall time) nearActivation=%d\n",
+    $report['evidence']['orderDateAheadOfClock'], $report['evidence']['nearActivation']));
 fwrite(STDOUT, "Fields present: " . json_encode($report['fields'], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES) . "\n");
 foreach ($report['packages'] as $package) {
-    fwrite(STDOUT, sprintf("%s  #%s  %-12s ordered %s  -> %s\n", $package['packageId'], $package['orderNumber'], $package['status'], $package['orderDate'] ?? '?', $package['classification']));
+    fwrite(STDOUT, sprintf("%s  #%s  %-12s ordered %s  -> %s%s\n", $package['packageId'], $package['orderNumber'], $package['status'], $package['orderDate'] ?? '?', $package['classification'], $package['orderDateNearActivation'] ? ' (near activation: check Seller Panel)' : ''));
     foreach ($package['lines'] as $line) {
         $hint = $line['sizeSuggestion'] === null ? '' : sprintf(' [suggestion %sx%s cm]', $line['sizeSuggestion']['width'], $line['sizeSuggestion']['height']);
         fwrite(STDOUT, sprintf("    %d x %s | %s | %s | %s%s\n", $line['quantity'], $line['productName'], $line['stockCode'] ?? '-', $line['productSize'] ?? '-', $line['productColor'] ?? '-', $hint));
