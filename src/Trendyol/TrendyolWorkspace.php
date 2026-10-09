@@ -114,8 +114,9 @@ final readonly class TrendyolWorkspace
              ORDER BY p.order_date_ms ' . ($view === 'pending' ? 'ASC' : 'DESC') . ', p.package_id LIMIT 200',
         );
         $statement->execute($statuses);
+        $baseline = $this->baselineMillis();
         return ['items' => array_map(fn (array $row): array => [
-            ...$this->summary($row),
+            ...$this->summary($row, $baseline),
             'lineCount' => (int) $row['line_count'],
             'preparedCount' => (int) $row['prepared_count'],
             'globalOrderId' => $row['global_order_id'] === null ? null : (string) $row['global_order_id'],
@@ -362,7 +363,7 @@ final readonly class TrendyolWorkspace
         $capabilities = $this->capabilities($actor);
         $delivery = is_string($package['delivery_context']) ? json_decode($package['delivery_context'], true) : null;
         return [
-            ...$this->summary($package),
+            ...$this->summary($package, $this->baselineMillis()),
             'delivery' => is_array($delivery) ? [
                 'name' => $delivery['name'] ?? null,
                 'addressLines' => is_array($delivery['addressLines'] ?? null) ? $delivery['addressLines'] : [],
@@ -419,8 +420,9 @@ final readonly class TrendyolWorkspace
     }
 
     /** @param array<string, mixed> $row */
-    private function summary(array $row): array
+    private function summary(array $row, ?int $baselineMillis): array
     {
+        $orderDateMillis = $row['order_date_ms'] === null ? null : (int) $row['order_date_ms'];
         return [
             'packageId' => (string) $row['package_id'],
             'orderNumber' => (string) $row['order_number'],
@@ -428,10 +430,20 @@ final readonly class TrendyolWorkspace
             'marketplaceStatus' => (string) $row['marketplace_status'],
             'orderDate' => self::fromMillis($row['order_date_ms']),
             'channelId' => $row['channel_id'] === null ? null : (int) $row['channel_id'],
+            'orderDateNearActivation' => $baselineMillis !== null && TrendyolEligibility::nearActivation($orderDateMillis, $baselineMillis),
             'changedAfterRelease' => (int) $row['changed_after_release'] === 1,
             'firstSeenAt' => self::iso($row['first_seen_at']),
             'version' => (int) $row['version'],
         ];
+    }
+
+    /** The activation baseline in epoch milliseconds, or null while intake was never activated. */
+    private function baselineMillis(): ?int
+    {
+        $baseline = $this->pdo->query('SELECT baseline_at FROM trendyol_intake_state WHERE state_id = 1')->fetchColumn();
+        return is_string($baseline) && $baseline !== ''
+            ? (int) (new DateTimeImmutable($baseline, new DateTimeZone('UTC')))->format('Uv')
+            : null;
     }
 
     /** @return array{view: bool, prepare: bool, release: bool} */
