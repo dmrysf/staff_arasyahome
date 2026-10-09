@@ -114,7 +114,7 @@ jobs:
           ARASYA_TEST_DB_NAME: arasya_operations_test
           ARASYA_TEST_DB_USER: root
           ARASYA_TEST_DB_PASSWORD: root-test-password
-        run: php operations-api/tests/mysql-operations-integration.php && php operations-api/tests/mysql-source-connection-integration.php
+        run: php operations-api/tests/mysql-operations-integration.php && php operations-api/tests/mysql-source-connection-integration.php && php operations-api/tests/mysql-trendyol-sync-integration.php
 
       - name: Run MySQL central IAM lifecycle
         env:
@@ -313,7 +313,7 @@ jobs:
         run: php operations-api/tests/mysql-integration.php
 
       - name: Run MariaDB Staff operations lifecycle
-        run: php operations-api/tests/mysql-operations-integration.php && php operations-api/tests/mysql-source-connection-integration.php
+        run: php operations-api/tests/mysql-operations-integration.php && php operations-api/tests/mysql-source-connection-integration.php && php operations-api/tests/mysql-trendyol-sync-integration.php
 
       - name: Run MariaDB central IAM lifecycle
         run: php operations-api/tests/mysql-iam-integration.php
