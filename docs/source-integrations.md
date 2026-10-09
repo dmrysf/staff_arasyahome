@@ -65,17 +65,13 @@ Sites that use the WC Kalkulator curtain calculator also install `integrations/w
 
 **Status:** implementation and contract tests are complete (the connector payload is validated against the API mapper and signature verifier in `php operations-api/tests/run.php`). Live delivery from the Trendhome and OutletPerdele sites has **not** been verified; it requires installing the connector, configuring both secrets, mapping measurement fields, and observing `applied` outcomes and `OK source_contact_*` in `php bin/readiness.php`.
 
-## Trendyol (Seller API pull)
+## Trendyol (Seller API pull, intake only)
 
-`bin/sync-trendyol.php` pulls shipment packages from `GET {base}/integration/order/sellers/{sellerId}/orders` (Basic authentication, `User-Agent: <sellerId> - SelfIntegration`), ordered by last modification, from a persisted cursor with a ten-minute overlap (first run: 14 days). Each package becomes one order `trendyol:<shipmentPackageId>` with event ID `package-<id>-<lastModifiedDate>`; `Cancelled`/`UnSupplied` packages are unavailable; the package status is commerce data only and production starts at `waiting`. A successful run records a source heartbeat and moves the cursor to the run time. One run reads at most 50 pages of 200 packages; if more remain, the cursor stops at the last package read and the next run continues from there. A failed run (`TRENDYOL_UNAVAILABLE`, `TRENDYOL_AUTH_FAILED`, `TRENDYOL_MALFORMED_RESPONSE`, exit 1) leaves the cursor unchanged, so the window is read again. A malformed package is counted as `rejected` without stopping the run. An advisory lock prevents overlapping runs; it never runs from a web request. Only `GET` requests are sent; nothing is written back to Trendyol.
-
-Configuration (all three or none; partial configuration fails closed): `ARASYA_TRENDYOL_SELLER_ID`, `ARASYA_TRENDYOL_API_KEY`, `ARASYA_TRENDYOL_API_SECRET`, optional `ARASYA_TRENDYOL_API_BASE_URL` (HTTPS, default `https://apigw.trendyol.com`). Without credentials the command prints `TRENDYOL_NOT_CONFIGURED` and exits successfully. Suggested cron:
-
-```cron
-*/5 * * * * cd "$HOME/arasya-operations-api/releases/$(cat "$HOME/arasya-operations-api/active-release")" && /usr/local/bin/php bin/sync-trendyol.php >> "$HOME/arasya-trendyol-sync.log" 2>&1
-```
-
-**Status:** the adapter, mapper, client, cursor and configuration are implemented and contract-tested with realistic fixtures (`operations-api/tests/fixtures/trendyol-packages.json`, `operations-api/tests/mysql-trendyol-sync-integration.php` for the cursor, overlap, pagination, duplicates, out-of-order updates, cancellations, failures and locking). Live Trendyol synchronization has **not** been verified because no Trendyol credentials were available; enabling it requires only the three configuration values and the cron entry.
+Since API 2.24.0 Trendyol packages never enter production by themselves. `bin/sync-trendyol.php` reads the Order V2
+endpoint (`GET .../integration/order/sellers/{sellerId}/v2/orders`, GET only) into a separate intake inbox, and an
+authorized person approves each prepared package into production from the Staff Trendyol workspace. Credentials alone
+never import anything. See [trendyol-intake.md](trendyol-intake.md) for the design, the historical protection, the
+workspace, the activation runbook and what still needs the real API.
 
 ## Future sources (B2B, other marketplaces)
 

@@ -10,6 +10,7 @@ import type { DocumentApi } from "../../domain/documents";
 import { DocumentsCard } from "../documents/DocumentsCard";
 import { DocumentLookup } from "../documents/DocumentScreen";
 import { canManageAuthority, type AuthorityApi } from "../../domain/authority";
+import { canUseTrendyolWorkspace, type TrendyolApi } from "../../domain/trendyol";
 
 type TodaySummary = ActivityPage["summary"];
 type MetricsState = { status: "loading" } | { status: "loaded"; summary: TodaySummary } | { status: "unavailable" };
@@ -22,7 +23,7 @@ export function formatHomeMetric(value: number | undefined): string {
   return typeof value === "number" && Number.isFinite(value) ? String(value) : "—";
 }
 
-export function HomeScreen({ employee, activityService, exceptionService, cutting, documents, authority, navigate }: { employee: Employee; activityService: ActivityService; exceptionService?: ExceptionService; cutting?: CuttingApi; documents?: DocumentApi; authority?: AuthorityApi; navigate: (path: string) => void }) {
+export function HomeScreen({ employee, activityService, exceptionService, cutting, documents, authority, trendyol, navigate }: { employee: Employee; activityService: ActivityService; exceptionService?: ExceptionService; cutting?: CuttingApi; documents?: DocumentApi; authority?: AuthorityApi; trendyol?: TrendyolApi; navigate: (path: string) => void }) {
   const [metrics, setMetrics] = useState<MetricsState>({ status: "loading" });
 
   useEffect(() => {
@@ -48,6 +49,7 @@ export function HomeScreen({ employee, activityService, exceptionService, cuttin
         <DocumentsCard service={documents} navigate={navigate} />
         <DocumentLookup service={documents} navigate={navigate} />
       </>}
+      {trendyol && canUseTrendyolWorkspace(employee) && <button type="button" className="exception-row needs-action" data-testid="home-trendyol" onClick={() => navigate("/trendyol")}><span><strong>Comenzi Trendyol</strong><small>Verifică produsele, completează măsurile și aprobă intrarea în producție</small></span><span aria-hidden="true">→</span></button>}
       {exceptionService && <ExceptionsCard service={exceptionService} navigate={navigate} />}
       {authority && canManageAuthority(employee) && <button type="button" className="exception-row" onClick={() => navigate("/authority")}><span><strong>Autoritate producție</strong><small>Preia o comandă din YD SOFT în Arasya, cu etapa aleasă explicit</small></span><span aria-hidden="true">→</span></button>}
       {cutting && employee.allowedStageIds.includes("material-preparation") && !employee.isRoot && <CuttingWork service={cutting} navigate={navigate} />}

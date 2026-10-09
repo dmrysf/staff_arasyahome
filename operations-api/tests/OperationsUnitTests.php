@@ -18,7 +18,10 @@ use Arasya\Operations\Http\RequestContext;
 use Arasya\Operations\Integration\SourceOrderPayloadMapper;
 use Arasya\Operations\Integration\SourceSignatureVerifier;
 use Arasya\Operations\Integration\Trendyol\TrendyolClient;
-use Arasya\Operations\Integration\Trendyol\TrendyolOrderMapper;
+use Arasya\Operations\Integration\Trendyol\TrendyolEligibility;
+use Arasya\Operations\Integration\Trendyol\TrendyolPackage;
+use Arasya\Operations\Integration\Trendyol\TrendyolPreview;
+use Arasya\Operations\Integration\Trendyol\TrendyolSizeHint;
 use Arasya\Operations\Integration\Trendyol\TrendyolTransport;
 use Arasya\Operations\Order\EmployeeOrderRelation;
 use Arasya\Operations\Order\GlobalOrderId;
@@ -198,15 +201,50 @@ test('source payload mapping is strict, deterministic and never infers productio
     expectApi('SOURCE_PAYLOAD_INVALID', fn () => SourceOrderPayloadMapper::map('trendhome', ['schemaVersion' => 1, 'eventId' => 'e', 'changedAt' => '2026-10-04T10:00:00Z', 'order' => [...$payload['order'], 'id' => '61/833']]));
 });
 
-test('Trendyol adapter maps fixture packages and authenticates without exposing credentials', function (): void {
+test('Trendyol Order V2 packages parse without customer secrets and the client is read-only', function (): void {
     $fixture = json_decode((string) file_get_contents(__DIR__ . '/fixtures/trendyol-packages.json'), true, 64, JSON_THROW_ON_ERROR);
-    $picking = TrendyolOrderMapper::map($fixture['content'][0]);
-    expect($picking->sourceKey === 'trendyol' && $picking->sourceOrderId === '3318470214' && $picking->orderNumber === '10847291463');
-    expect($picking->productionStageId === null && $picking->sourceCommerceStatusCode === 'Picking' && $picking->operationalStatus === 'in_progress');
-    expect($picking->sourceEventId === 'package-3318470214-1759568400123' && $picking->sourceChangedAt->format('Y-m-d\TH:i:s.v\Z') === '2025-10-04T09:00:00.123Z');
-    expect($picking->items[0]->productCode === 'PT-300-260' && $picking->items[0]->variant === '300x260' && $picking->items[0]->quantity === 2);
-    expect(TrendyolOrderMapper::map($fixture['content'][1])->operationalStatus === 'unavailable');
-    expectRuntime(fn () => TrendyolOrderMapper::map(['id' => 'x']));
+    $picking = TrendyolPackage::fromApi($fixture['content'][0]);
+    expect($picking->packageId === 3318470214 && $picking->orderNumber === '10847291463' && $picking->status === 'Picking' && $picking->channelId === 1);
+    expect($picking->orderDateMillis === 1759564800000 && $picking->lastModifiedMillis === 1759568400123);
+    expect($picking->lines[0]['lineId'] === 4401183920 && $picking->lines[0]['stockCode'] === 'PT-300-260' && $picking->lines[0]['productSize'] === '300x260' && $picking->lines[0]['quantity'] === 2 && $picking->lines[0]['lineStatus'] === 'Picking');
+    $serialized = json_encode($picking, JSON_THROW_ON_ERROR) . json_encode($picking->delivery, JSON_THROW_ON_ERROR);
+    expect($picking->delivery !== null && $picking->delivery['phoneMasked'] !== null && !str_contains($serialized, '0744123456'), 'the phone is masked');
+    foreach (['fictiv@example.invalid', '11111111111', '499.8', '249.9', '7330001112223334', 'RO000'] as $secret) {
+        expect(!str_contains($serialized, $secret), "no email, identity number, price, cargo number or invoice data is kept: {$secret}");
+    }
+    // The older field names (id, lines[].id, merchantSku) are still accepted.
+    $legacy = TrendyolPackage::fromApi($fixture['content'][2]);
+    expect($legacy->packageId === 3318470216 && $legacy->lines[0]['lineId'] === 4401183922 && $legacy->lines[0]['stockCode'] === 'PI-NAT');
+    expect(!hash_equals($picking->linesHash(), $legacy->linesHash()) && hash_equals($picking->linesHash(), TrendyolPackage::fromApi($fixture['content'][0])->linesHash()));
+    expectRuntime(fn () => TrendyolPackage::fromApi(['shipmentPackageId' => 'x']));
+    expectRuntime(fn () => TrendyolPackage::fromApi([...$fixture['content'][0], 'lines' => []]));
+    expectRuntime(fn () => TrendyolPackage::fromApi([...$fixture['content'][0], 'lines' => [$fixture['content'][0]['lines'][0], $fixture['content'][0]['lines'][0]]]));
+    expectRuntime(fn () => TrendyolPackage::fromApi([...$fixture['content'][0], 'shipmentPackageStatus' => 'Picking; DROP']));
+
+    // Size suggestions are read from Trendyol text, never applied automatically.
+    expect(TrendyolSizeHint::suggest('300x260') === ['width' => '300', 'height' => '260']);
+    expect(TrendyolSizeHint::suggest(null, '140 cm x 245 cm') === ['width' => '140', 'height' => '245']);
+    expect(TrendyolSizeHint::suggest('140,5 X 260') === ['width' => '140.5', 'height' => '260']);
+    expect(TrendyolSizeHint::suggest('Tek Ebat') === null && TrendyolSizeHint::suggest('1x2') === null);
+
+    // Historical protection: only new orders after the baseline (under both orderDate readings) are intake work.
+    $baseline = 1759564800000;
+    $at = static fn (int $offsetMinutes, string $status): TrendyolPackage => TrendyolPackage::fromApi([...$fixture['content'][0], 'orderDate' => $baseline + $offsetMinutes * 60000, 'shipmentPackageStatus' => $status]);
+    expect(TrendyolEligibility::classify($at(-1, 'Created'), $baseline) === 'historical');
+    expect(TrendyolEligibility::classify($at(179, 'Created'), $baseline) === 'historical', 'the GMT+3 reading of orderDate is honoured');
+    expect(TrendyolEligibility::classify($at(181, 'Created'), $baseline) === 'eligible');
+    foreach (['Created', 'Picking', 'Invoiced'] as $status) {
+        expect(TrendyolEligibility::classify($at(240, $status), $baseline) === 'eligible', $status);
+    }
+    foreach (['Awaiting', 'Verified'] as $status) {
+        expect(TrendyolEligibility::classify($at(240, $status), $baseline) === 'deferred', $status);
+    }
+    foreach (['Shipped', 'Delivered', 'Cancelled', 'UnSupplied', 'Returned', 'UnDelivered', 'AtCollectionPoint', 'UnPacked', 'SomethingNew'] as $status) {
+        expect(TrendyolEligibility::classify($at(240, $status), $baseline) === 'status_not_eligible', $status);
+    }
+    $undated = $fixture['content'][0];
+    unset($undated['orderDate']);
+    expect(TrendyolEligibility::classify(TrendyolPackage::fromApi($undated), $baseline) === 'order_date_missing');
 
     expect(TrendyolCredentials::fromValues('', '', '', '') === null);
     expectRuntime(fn () => TrendyolCredentials::fromValues('123', 'key', '', ''));
@@ -224,18 +262,34 @@ test('Trendyol adapter maps fixture packages and authenticates without exposing 
             return ['status' => $this->status, 'body' => json_encode($this->fixture, JSON_THROW_ON_ERROR)];
         }
     };
-    $page = (new TrendyolClient($credentials, $transport))->packages(1000, 2000, 0);
-    expect(count($page['content']) === 2 && $page['totalPages'] === 1);
+    $client = new TrendyolClient($credentials, $transport);
+    $page = $client->packages(1000, 2000, 0);
+    expect(count($page['content']) === 3 && $page['totalPages'] === 1 && $page['totalElements'] === 3);
     [$url, $headers] = $transport->requests[0];
-    expect(str_starts_with($url, 'https://apigw.trendyol.com/integration/order/sellers/123456/orders?startDate=1000&endDate=2000&page=0&size=200'));
+    expect(str_starts_with($url, 'https://apigw.trendyol.com/integration/order/sellers/123456/v2/orders?startDate=1000&endDate=2000&page=0&size=200&orderByField=PackageLastModifiedDate&orderByDirection=ASC'), 'the Order V2 endpoint is used');
     expect($headers['Authorization'] === 'Basic ' . base64_encode('api-key:api-secret') && $headers['User-Agent'] === '123456 - SelfIntegration');
-    $transport->status = 401;
-    try {
-        (new TrendyolClient($credentials, $transport))->packages(1000, 2000, 0);
-        throw new RuntimeException('Expected Trendyol authentication failure.');
-    } catch (RuntimeException $error) {
-        expect($error->getMessage() === 'TRENDYOL_AUTH_FAILED' && !str_contains($error->getMessage(), 'api-secret'));
+    expectRuntime(fn () => $client->packages(0, 15 * 86400 * 1000, 0));
+    expectRuntime(fn () => $client->packages(0, 1000, 50));
+    foreach ([401 => 'TRENDYOL_AUTH_FAILED', 403 => 'TRENDYOL_AUTH_FAILED', 426 => 'TRENDYOL_UPGRADE_REQUIRED', 429 => 'TRENDYOL_RATE_LIMITED', 500 => 'TRENDYOL_UNAVAILABLE'] as $status => $code) {
+        $transport->status = $status;
+        try {
+            $client->packages(1000, 2000, 0);
+            throw new RuntimeException("Expected {$code}.");
+        } catch (RuntimeException $error) {
+            expect($error->getMessage() === $code && !str_contains($error->getMessage(), 'api-secret'), "HTTP {$status} is {$code}");
+        }
     }
+    $transport->status = 200;
+    // The preview reads, classifies and reports without customer identity; it has no database at all.
+    $report = (new TrendyolPreview($client))->run(new DateTimeImmutable('@1759560000'), new DateTimeImmutable('@1759570000'), new DateTimeImmutable('@1759000000'));
+    expect($report['counts']['eligible'] === 2 && $report['counts']['status_not_eligible'] === 1 && count($report['packages']) === 3 && $report['fields']['shipmentPackageId'] === 2 && $report['fields']['id'] === 1);
+    $text = json_encode($report, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
+    foreach (['Fictiv', 'Str. Test', '0744', 'example.invalid', 'api-key', 'api-secret'] as $private) {
+        expect(!str_contains($text, $private), "the preview report holds no {$private}");
+    }
+    expect($report['packages'][0]['lines'][0]['sizeSuggestion'] === ['width' => '300', 'height' => '260']);
+    $reflection = new ReflectionClass(TrendyolPreview::class);
+    expect(array_map(static fn (ReflectionParameter $parameter): string => (string) $parameter->getType(), $reflection->getConstructor()->getParameters()) === [TrendyolClient::class], 'the preview depends on the read-only client only');
 });
 
 test('operations routes fail closed, reject wrong methods and keep integrations outside browser CORS', function (): void {

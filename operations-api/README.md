@@ -1,6 +1,6 @@
 # Arasya Operations API
 
-Standalone PHP 8.2+ identity, authentication, production workflow and order-operations API for Staff, Dashboard and commercial B2B clients. It has no WordPress, Node, framework, Composer, or persistent-process dependency. Only `public/` may be configured as a web document root. The current release version is `2.23.0`. Signed source sites, their modes and the zero-write validation endpoint are documented in [YD SOFT source integration](../docs/yd-soft-source-integration.md).
+Standalone PHP 8.2+ identity, authentication, production workflow and order-operations API for Staff, Dashboard and commercial B2B clients. It has no WordPress, Node, framework, Composer, or persistent-process dependency. Only `public/` may be configured as a web document root. The current release version is `2.24.0`. Trendyol intake (read-only Order V2 pull into an approval inbox) is documented in [Trendyol intake](../docs/trendyol-intake.md). Signed source sites, their modes and the zero-write validation endpoint are documented in [YD SOFT source integration](../docs/yd-soft-source-integration.md).
 
 Authenticated management analytics are documented in [Management Analytics V1](../docs/management-analytics.md). After official migration 016 and reference readiness, explicitly run `php bin/rebuild-analytics.php` before interpreting historical reports. This CLI rebuilds only derived projections; it never backfills unknown approval eligibility or modifies canonical events.
 
@@ -43,7 +43,9 @@ php bin/migration-status.php
 php bin/maintenance.php [--dry-run]
 php bin/readiness.php
 php bin/order-qr.php --order=<source:order-id> [--rotate]
-php bin/sync-trendyol.php
+php bin/sync-trendyol.php            # intake only; needs credentials, the switch and the activation
+php bin/trendyol-intake.php status   # activate|pause|resume (explicit, forward-only baseline)
+php bin/trendyol-preview.php         # read-only Order V2 preview, no database
 ```
 
 Passwords are always read interactively without an argument. Disable and password-change operations revoke active sessions. Migrations never run from a web request. The workflow seed is idempotent and non-overwriting: reruns insert missing canonical rows but do not silently rename an existing workflow or stage.

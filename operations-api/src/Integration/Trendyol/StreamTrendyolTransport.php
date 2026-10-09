@@ -28,7 +28,7 @@ final readonly class StreamTrendyolTransport implements TrendyolTransport
         ]);
         $body = @file_get_contents($url, false, $context, 0, 8 * 1024 * 1024);
         if ($body === false) {
-            throw new RuntimeException('Trendyol request failed.');
+            throw new RuntimeException('TRENDYOL_REQUEST_FAILED');
         }
         $status = 0;
         foreach ($http_response_header ?? [] as $line) {

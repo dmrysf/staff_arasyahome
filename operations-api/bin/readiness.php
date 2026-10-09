@@ -147,6 +147,17 @@ foreach ($sourceRegistry->issues() as $issue) {
     $report('WARN', 'source_config_' . $issue['code'] . ($issue['sourceKey'] === null ? '' : '_' . $issue['sourceKey']));
 }
 $report($config->trendyol !== null ? 'OK' : 'WARN', 'trendyol_credentials');
+// Trendyol intake reads Trendyol only with credentials, the switch AND the database activation (never by default).
+$report('OK', 'trendyol_intake_switch_' . ($config->trendyolIntakeEnabled() ? 'enabled' : 'disabled'));
+try {
+    $intake = $pdo->query('SELECT status, last_run_outcome FROM trendyol_intake_state WHERE state_id = 1')->fetch();
+    $report(is_array($intake) ? 'OK' : 'WARN', 'trendyol_intake_state_' . (is_array($intake) ? $intake['status'] : 'missing'));
+    if (is_array($intake) && $intake['status'] === 'active' && !in_array($intake['last_run_outcome'], ['ok', 'truncated'], true)) {
+        $report('WARN', 'trendyol_intake_last_run_' . strtolower((string) ($intake['last_run_outcome'] ?? 'none')));
+    }
+} catch (Throwable) {
+    $report('WARN', 'trendyol_intake_state_unavailable');
+}
 try {
     $sources = $pdo->query("SELECT source_key, source_type, status, last_contact_at FROM order_sources ORDER BY source_key")->fetchAll();
     foreach ($sources as $source) {

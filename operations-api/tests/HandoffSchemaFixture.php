@@ -1,9 +1,24 @@
 <?php
 declare(strict_types=1);
+/** Restore a pre-022 disposable test fixture (no Trendyol intake). This is NOT a deployment/rollback mechanism. */
+function restorePreTrendyolIntakeTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='022_trendyol_intake.sql'")->fetchColumn()) return;
+    foreach(['trendyol_intake_events','trendyol_package_lines','trendyol_packages','trendyol_ignored_packages','trendyol_sync_runs','trendyol_intake_state'] as $table) $pdo->exec("DROP TABLE IF EXISTS {$table}");
+    $pdo->exec("DELETE FROM production_exception_idempotency WHERE operation LIKE 'trendyol.%'");
+    $pdo->exec("DELETE era FROM employee_role_assignments era JOIN roles r ON r.role_id=era.role_id WHERE r.role_key IN ('trendyol-order-preparer','trendyol-order-approver')");
+    $pdo->exec("DELETE rp FROM role_permissions rp JOIN permissions p ON p.permission_id=rp.permission_id WHERE p.permission_key LIKE 'trendyol.%'");
+    $pdo->exec("DELETE FROM roles WHERE role_key IN ('trendyol-order-preparer','trendyol-order-approver')");
+    $pdo->exec("DELETE FROM permissions WHERE permission_key LIKE 'trendyol.%'");
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='022_trendyol_intake.sql'");
+}
+
 /** Restore a pre-021 disposable test fixture (no document scopes). This is NOT a deployment/rollback mechanism. */
 function restorePreDocumentScopesTestSchema(PDO $pdo): void
 {
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    restorePreTrendyolIntakeTestSchema($pdo);
     if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='021_document_scopes.sql'")->fetchColumn()) return;
     $pdo->exec('DROP TABLE IF EXISTS employee_document_scopes');
     $pdo->exec('ALTER TABLE live_events DROP COLUMN scope_source_key');

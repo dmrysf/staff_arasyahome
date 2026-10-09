@@ -71,6 +71,8 @@ export type ServiceBundle = {
   authority?: import("../domain/authority").AuthorityApi;
   /** Manager-only production QR authority (view, preview, rotation); absent in preview and demo. */
   productionQr?: import("../domain/productionQr").ProductionQrApi;
+  /** Trendyol workspace for explicitly authorized Trendyol personnel; absent in preview and demo. */
+  trendyol?: import("../domain/trendyol").TrendyolApi;
   auth: AuthService;
   employee: EmployeeService;
   orders: OrderService;

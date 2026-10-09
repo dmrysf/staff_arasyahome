@@ -172,8 +172,29 @@ $state=$pdo->query("SELECT document_version FROM operational_orders WHERE global
 $docCall($onlineSession,"{$doc}/generate",['expectedDocumentVersion'=>(int)$state,'requestId'=>$request['id']]);
 $qr['72002-r2']='ARASYA:Q1:'.$pdo->query("SELECT q.qr_reference FROM order_qr_references q JOIN operational_orders o ON o.order_uuid=q.order_uuid WHERE o.global_order_id='trendhome:72002' AND q.status='active'")->fetchColumn();
 
+// Trendyol intake: activated with a baseline, two packages written through the real intake store (no HTTP): a new
+// order that is preparation work and a historical one that stays ignored. Trendyol personnel are set up through
+// central IAM; an unrelated waiting-stage employee must never see the Trendyol work.
+$trendyolClock=new class implements Arasya\Operations\Support\Clock { public function now(): DateTimeImmutable { return new DateTimeImmutable('now', new DateTimeZone('UTC')); } };
+$trendyolBaseline=(new DateTimeImmutable('now', new DateTimeZone('UTC')))->modify('-1 minute');
+(new Arasya\Operations\Integration\Trendyol\TrendyolIntakeState($pdo,$trendyolClock))->activate($trendyolBaseline,'E2E fixture');
+$trendyolStore=new Arasya\Operations\Integration\Trendyol\TrendyolIntakeStore($pdo,$container->projectionWriter(),$trendyolClock);
+$trendyolMs=intdiv((int)$trendyolBaseline->format('Uu'),1000);
+foreach([[73001,$trendyolMs+5*3600000,'Created'],[73002,$trendyolMs-48*3600000,'Delivered']] as [$packageId,$orderDate,$status]){
+    $trendyolStore->record(Arasya\Operations\Integration\Trendyol\TrendyolPackage::fromApi(['shipmentPackageId'=>$packageId,'orderNumber'=>'TY'.$packageId,'orderDate'=>$orderDate,'lastModifiedDate'=>$trendyolMs+1000,
+        'shipmentPackageStatus'=>$status,'shipmentAddress'=>['fullName'=>'TEST Client Trendyol','address1'=>'Str. Test 9','city'=>'Iași','phone'=>'0744111222'],
+        'lines'=>[['lineId'=>$packageId*10+1,'quantity'=>1,'productName'=>'Perdea tul alb 300x260','stockCode'=>'TY-PT-300','productSize'=>'300x260','productColor'=>'Alb']]]),$trendyolMs);
+}
+$tyApprover=$admin->create('Ilinca Trendyol','ty.approve.e2e',null,'pregatire-material','employee',$password,['waiting'],'e2e');
+$iam($tyApprover->employeeUuid,['staff'],[$roleId('trendyol-order-approver'),$roleId('production-documents-operator')]);
+$r=T::call($kernel,'PUT',"/management/employees/{$tyApprover->employeeUuid}/document-scopes",['operate'=>['trendyol'],'approve'=>[]],['origin'=>$origin,'x-csrf-token'=>$root['csrf']],$root['cookie']);
+if($r['status']!==200) throw new RuntimeException('E2E Trendyol scope setup failed: '.json_encode($r['body']));
+$admin->create('Paul Așteptare','ty.outsider.e2e',null,'pregatire-material','employee',$password,['waiting'],'e2e');
+$admin->create('Tudor Tăiere','ty.cutter.e2e',null,'pregatire-material','employee',$password,['material-preparation'],'e2e');
+
 echo json_encode([
     'password' => $password,
+    'trendyol' => ['package' => '73001', 'orderNumber' => 'TY73001', 'ignored' => '73002', 'approver' => 'ty.approve.e2e', 'outsider' => 'ty.outsider.e2e', 'cutter' => 'ty.cutter.e2e'],
     'users' => ['ana' => 'ana.e2e', 'bogdan' => 'bogdan.e2e', 'mihai' => 'mihai.e2e', 'dashboardOnly' => 'dora.e2e', 'temporary' => 'teodor.e2e'],
     'orders' => ['flow' => '70001', 'qr' => '70002', 'claimedByOther' => '70003', 'conflict' => '70004'],
     'qr' => $qr,

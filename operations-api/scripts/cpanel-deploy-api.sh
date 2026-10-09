@@ -93,6 +93,9 @@ api_atomic_copy_file "$target_release/public/index.php" "$public_path/index.php"
 api_atomic_copy_file "$target_release/public/.htaccess" "$public_path/.htaccess"
 api_atomic_copy_file "$target_release/scripts/maintenance-active.sh" "$stable_bin/maintenance-active.sh"
 chmod 0755 "$stable_bin/maintenance-active.sh"
+# Installed only as a stable path for a future, separately authorized cron entry; no deploy installs a cron.
+api_atomic_copy_file "$target_release/scripts/trendyol-intake-active.sh" "$stable_bin/trendyol-intake-active.sh"
+chmod 0755 "$stable_bin/trendyol-intake-active.sh"
 
 if [[ -n "$old_active" ]]; then api_write_pointer "$previous_pointer" "$old_active"; fi
 api_write_pointer "$active_pointer" "$source_commit"

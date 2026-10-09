@@ -25,6 +25,8 @@ import { ExceptionScreen } from "../features/exceptions/ExceptionScreen";
 import { DocumentScreen } from "../features/documents/DocumentScreen";
 import { AuthorityScreen } from "../features/authority/AuthorityScreen";
 import { canManageAuthority } from "../domain/authority";
+import { TrendyolInboxScreen } from "../features/trendyol/TrendyolInboxScreen";
+import { TrendyolPackageScreen } from "../features/trendyol/TrendyolPackageScreen";
 
 export function StaffApp({ initialRoute, mode, apiBaseUrl }: { initialRoute: string; mode: StaffRuntimeMode; apiBaseUrl: string }) {
   const services = useMemo(() => createServices({ mode, apiBaseUrl }), [apiBaseUrl, mode]);
@@ -117,13 +119,16 @@ export function StaffApp({ initialRoute, mode, apiBaseUrl }: { initialRoute: str
   const immersive = guardedRoute === "/scan";
   const exceptionId = parsedRoute.kind === "exception-detail" && guardedRoute === parsedRoute.pathname ? parsedRoute.exceptionId : "";
   const documentOrderId = parsedRoute.kind === "document-detail" && guardedRoute === parsedRoute.pathname ? parsedRoute.orderId : "";
-  let screen = <HomeScreen employee={session.employee} activityService={services.activity} exceptionService={services.exceptions} cutting={services.cutting} documents={services.documents} authority={services.authority} navigate={navigate} />;
+  const trendyolPackageId = parsedRoute.kind === "trendyol-package" && guardedRoute === parsedRoute.pathname ? parsedRoute.packageId : "";
+  let screen = <HomeScreen employee={session.employee} activityService={services.activity} exceptionService={services.exceptions} cutting={services.cutting} documents={services.documents} authority={services.authority} trendyol={services.trendyol} navigate={navigate} />;
   if (guardedRoute === "/scan") screen = <ScannerScreen service={services.orders} cutting={services.cutting} workflow={workflow} mode={mode} navigate={navigate} onSessionExpired={() => expireSession(new StaffServiceError("SESSION_EXPIRED"))} />;
   else if (guardedRoute === "/orders") screen = <OrdersScreen service={services.orders} workflow={workflow} navigate={navigate} />;
   else if (orderId) screen = <OrderDetailScreen key={orderId} orderId={orderId} service={services.orders} exceptions={services.exceptions} cutting={services.cutting} documents={services.documents} productionQr={canManageAuthority(session.employee) ? services.productionQr : undefined} permissions={session.employee.permissions} workflow={workflow} navigate={navigate} onSessionExpired={() => expireSession(new StaffServiceError("SESSION_EXPIRED"))} />;
   else if (documentOrderId && services.documents) screen = <DocumentScreen key={documentOrderId} orderId={documentOrderId} service={services.documents} permissions={session.employee.permissions} navigate={navigate} />;
   else if (exceptionId) screen = <ExceptionScreen key={exceptionId} exceptionId={exceptionId} service={services.exceptions} navigate={navigate} onSessionExpired={() => expireSession(new StaffServiceError("SESSION_EXPIRED"))} />;
   else if (guardedRoute === "/authority" && services.authority) screen = <AuthorityScreen service={services.authority} initialOrderId={new URLSearchParams(window.location.search).get("order") ?? undefined} navigate={navigate} />;
+  else if (guardedRoute === "/trendyol" && services.trendyol) screen = <TrendyolInboxScreen service={services.trendyol} navigate={navigate} />;
+  else if (trendyolPackageId && services.trendyol) screen = <TrendyolPackageScreen key={trendyolPackageId} packageId={trendyolPackageId} service={services.trendyol} navigate={navigate} />;
   else if (guardedRoute === "/history") screen = <HistoryScreen service={services.activity} navigate={navigate} />;
   else if (guardedRoute === "/profile") screen = <ProfileScreen employee={session.employee} mode={services.mode} onLogout={logout} passwordChanged={passwordChanged} onChangePassword={() => { setPasswordChanged(false); setChangingPassword(true); }} />;
 

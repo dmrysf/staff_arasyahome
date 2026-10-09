@@ -39,6 +39,7 @@ final readonly class ConfigLoader
         'ARASYA_TRENDYOL_API_KEY',
         'ARASYA_TRENDYOL_API_SECRET',
         'ARASYA_TRENDYOL_API_BASE_URL',
+        'ARASYA_TRENDYOL_INTAKE',
     ];
 
     /**
