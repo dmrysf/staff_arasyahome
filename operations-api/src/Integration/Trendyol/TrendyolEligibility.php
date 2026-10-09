@@ -13,8 +13,12 @@ namespace Arasya\Operations\Integration\Trendyol;
  * automatically. Payment-pending packages (Awaiting, Verified) are not decided yet: Trendyol asks sellers not
  * to act on them, and they come back with a new modification time when they become Created.
  *
- * Trendyol documents `orderDate` as GMT+3 wall time. Until the real API confirms the epoch meaning, a package
- * counts as ordered after the baseline only if it is after it under both readings (the stricter one wins).
+ * Trendyol documents `orderDate` as GMT+3 wall time, so the epoch value may be the real instant or the real instant
+ * plus three hours. Only a package ordered before the baseline under both readings is historical and ignored for good.
+ * A package dated within three hours after the baseline is ambiguous: it may be a new order, or an order placed up
+ * to three hours before activation. It is never ignored (a new order must not be lost); it becomes intake work with
+ * the near-activation flag, so the approver checks the Seller Panel before releasing it. Nothing reaches production
+ * without that explicit approval.
  */
 final class TrendyolEligibility
 {
@@ -33,6 +37,7 @@ final class TrendyolEligibility
     /** A released production order becomes unavailable (cancelled at the source) in these statuses. */
     public const CANCELLED_STATUSES = ['Cancelled', 'UnSupplied'];
 
+    /** Width of the GMT+3 ambiguity after the baseline. */
     public const ORDER_DATE_SKEW_MILLIS = 3 * 3600 * 1000;
 
     private function __construct()
@@ -44,13 +49,19 @@ final class TrendyolEligibility
         if ($package->orderDateMillis === null) {
             return self::IGNORED_ORDER_DATE_MISSING;
         }
-        if ($package->orderDateMillis - self::ORDER_DATE_SKEW_MILLIS < $baselineMillis) {
+        if ($package->orderDateMillis < $baselineMillis) {
             return self::IGNORED_HISTORICAL;
         }
         if (in_array($package->status, self::PAYMENT_PENDING_STATUSES, true)) {
             return self::DEFERRED;
         }
         return in_array($package->status, self::NEW_ORDER_STATUSES, true) ? self::ELIGIBLE : self::IGNORED_STATUS;
+    }
+
+    /** Whether the order date falls in the GMT+3 ambiguity after the baseline (it may predate activation). */
+    public static function nearActivation(?int $orderDateMillis, int $baselineMillis): bool
+    {
+        return $orderDateMillis !== null && $orderDateMillis >= $baselineMillis && $orderDateMillis < $baselineMillis + self::ORDER_DATE_SKEW_MILLIS;
     }
 
     /** Whether an approved package may still be released into production in this marketplace status. */

@@ -23,6 +23,8 @@ export type TrendyolPackageSummary = {
   intakeStatus: TrendyolIntakeStatus;
   marketplaceStatus: string;
   orderDate: string | null;
+  /** Ordered within three hours after activation: Trendyol's GMT+3 order date may predate activation. */
+  orderDateNearActivation: boolean;
   changedAfterRelease: boolean;
   version: number;
   lineCount?: number;
@@ -108,6 +110,9 @@ export const ignoredReasonLabels: Record<TrendyolIgnoredPackage["reason"], strin
   status_not_eligible: "Nu era o comandă nouă (expediată, livrată, anulată…)",
   order_date_missing: "Fără dată de comandă",
 };
+
+/** Shown on packages dated inside the GMT+3 ambiguity after activation, before anyone approves them. */
+export const nearActivationWarning = "Comanda are data în primele 3 ore după activarea conexiunii. Trendyol trimite ora Turciei (GMT+3), deci comanda poate fi plasată înainte de activare. Verifică în Seller Panel și în producție că nu a fost deja preluată manual înainte de aprobare.";
 
 export const lineKindLabels: Record<TrendyolLineKind, string> = { curtain: "Perdea", drapery: "Draperie", other: "Alt produs (fără măsuri)" };
 

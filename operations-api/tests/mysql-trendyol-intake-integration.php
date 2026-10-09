@@ -129,11 +129,11 @@ $transport->responses = [$page([
     $package(30, $baseMs + $hours(4), $baseMs + 3000, 'Created'),           // new order: intake work
     $package(40, $baseMs + $hours(4), $baseMs + 4000, 'Shipped'),           // new but already shipped
     $package(50, $baseMs + $hours(4), $baseMs + 5000, 'Awaiting'),          // payment pending
-    $package(60, $baseMs + $hours(1), $baseMs + 6000, 'Created'),           // inside the GMT+3 ambiguity: historical
+    $package(60, $baseMs + $hours(1), $baseMs + 6000, 'Created'),           // inside the GMT+3 ambiguity: work, flagged
     ['shipmentPackageId' => 'malformed'],
 ])];
 $counts = $sync->run();
-$check($counts['received'] === 1 && $counts['ignored'] === 4 && $counts['deferred'] === 1 && $counts['rejected'] === 1 && $counts['pages'] === 1, 'first run classification: ' . json_encode($counts));
+$check($counts['received'] === 2 && $counts['ignored'] === 3 && $counts['deferred'] === 1 && $counts['rejected'] === 1 && $counts['pages'] === 1, 'first run classification: ' . json_encode($counts));
 $first = $query($transport->calls[0]['url']);
 $check(str_starts_with($transport->calls[0]['url'], 'https://apigw.trendyol.com/integration/order/sellers/123456/v2/orders?'), 'the read-only Order V2 endpoint is used');
 $check((int) $first['startDate'] === $baseMs - 600_000 && (int) $first['endDate'] === $ms($t1), 'the first window starts at the baseline minus the overlap, never 14 days back');
@@ -142,13 +142,14 @@ $check($trendyolOrders() === $trendyolOrdersBefore, 'synchronization creates no 
 $check((int) $one("SELECT COUNT(*) FROM operational_orders WHERE global_order_id LIKE ?", ["trendyol:{$base}%"]) === 0, 'no production order, QR or document for any synchronized package');
 $check($one('SELECT intake_status FROM trendyol_packages WHERE package_id = ?', [$base + 30]) === 'pending', 'the new Created package is pending intake work');
 $ignored = $pdo->query('SELECT package_id, reason FROM trendyol_ignored_packages ORDER BY package_id')->fetchAll(PDO::FETCH_KEY_PAIR);
-$check($ignored === [$base + 10 => 'historical', $base + 20 => 'historical', $base + 40 => 'status_not_eligible', $base + 60 => 'historical'], 'historical and shipped packages are recorded as ignored: ' . json_encode($ignored));
+$check($ignored === [$base + 10 => 'historical', $base + 20 => 'historical', $base + 40 => 'status_not_eligible'], 'historical and shipped packages are recorded as ignored: ' . json_encode($ignored));
+$check($one('SELECT intake_status FROM trendyol_packages WHERE package_id = ?', [$base + 60]) === 'pending', 'a package dated inside the GMT+3 ambiguity after activation is never ignored');
 $check($one('SELECT COUNT(*) FROM trendyol_packages WHERE package_id = ?', [$base + 50]) == 0, 'a payment-pending package is not stored yet');
 $stored = (string) $one('SELECT delivery_context FROM trendyol_packages WHERE package_id = ?', [$base + 30]) . json_encode($pdo->query('SELECT * FROM trendyol_package_lines')->fetchAll(PDO::FETCH_ASSOC));
 foreach (['0744111222', 'never@example', '19999999999', '777.5', '388.75', '7330009998887776'] as $private) $check(!str_contains($stored, $private), "intake never stores {$private}");
 $check($one('SELECT cursor_at FROM trendyol_intake_state WHERE state_id = 1') === $t1->format('Y-m-d H:i:s.u'), 'the cursor is the window end');
 $check($one("SELECT last_contact_at FROM order_sources WHERE source_key = 'trendyol'") !== null, 'a successful run records the Trendyol heartbeat');
-$check($row('SELECT outcome, received, ignored FROM trendyol_sync_runs ORDER BY run_id DESC LIMIT 1') === ['outcome' => 'ok', 'received' => 1, 'ignored' => 4], 'the run is logged');
+$check($row('SELECT outcome, received, ignored FROM trendyol_sync_runs ORDER BY run_id DESC LIMIT 1') === ['outcome' => 'ok', 'received' => 2, 'ignored' => 3], 'the run is logged');
 
 // ---- Second run: overlap, sticky ignore, deferred becomes work, line changes, withdrawal --------------------
 $t2 = $t1->modify('+5 minutes'); $clock->instant = $t2; $transport->calls = [];
@@ -201,10 +202,12 @@ $send = static fn (array $who, string $method, string $path, array $body, ?strin
 $error($get($otherWaiting, '/trendyol/overview'), 403, 'UNAUTHORIZED_ACTION', 'a Staff employee without Trendyol permission');
 $error($get($dashboardOnly, '/trendyol/overview'), 403, 'APPLICATION_ACCESS_DENIED', 'Trendyol permissions work only inside Staff');
 $overview = $status($get($preparer, '/trendyol/overview'), 200, 'preparer overview');
-$check($overview['intake']['status'] === 'active' && $overview['counts']['pending'] === 4 && $overview['counts']['ignored'] === 4 && $overview['capabilities'] === ['view' => true, 'prepare' => true, 'release' => false], 'overview: state, counts and capabilities ' . json_encode($overview));
+$check($overview['intake']['status'] === 'active' && $overview['counts']['pending'] === 5 && $overview['counts']['ignored'] === 3 && $overview['capabilities'] === ['view' => true, 'prepare' => true, 'release' => false], 'overview: state, counts and capabilities ' . json_encode($overview));
 $pending = $status($get($preparer, '/trendyol/packages', ['view' => 'pending']), 200, 'pending list')['items'];
-$check(array_column($pending, 'packageId') === [(string) ($base + 30), (string) ($base + 50), (string) ($base + 70), (string) ($base + 80)], 'pending work oldest order first');
-$check(count($status($get($preparer, '/trendyol/packages', ['view' => 'ignored']), 200, 'ignored list')['items']) === 4, 'ignored packages are visible with their reason');
+$check(array_column($pending, 'packageId') === [(string) ($base + 60), (string) ($base + 30), (string) ($base + 50), (string) ($base + 70), (string) ($base + 80)], 'pending work oldest order first');
+$check(array_column($pending, 'orderDateNearActivation') === [true, false, false, false, false], 'only the package inside the GMT+3 ambiguity is flagged for a Seller Panel check');
+$check($status($get($preparer, '/trendyol/packages/' . ($base + 60)), 200, 'flagged detail')['orderDateNearActivation'] === true, 'the detail carries the near-activation flag');
+$check(count($status($get($preparer, '/trendyol/packages', ['view' => 'ignored']), 200, 'ignored list')['items']) === 3, 'ignored packages are visible with their reason');
 $error($get($preparer, '/trendyol/packages', ['view' => 'everything']), 400, 'INVALID_VIEW', 'unknown view');
 $p30 = "/trendyol/packages/" . ($base + 30);
 $detail = $status($get($preparer, $p30), 200, 'detail');

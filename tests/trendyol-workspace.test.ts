@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mapTrendyolDetail, mapTrendyolOverview, mapTrendyolSummary } from "../services/production/httpServices";
-import { canUseTrendyolWorkspace, ignoredReasonLabels, marketplaceLabel, normalizeMeasure } from "../domain/trendyol";
+import { canUseTrendyolWorkspace, ignoredReasonLabels, marketplaceLabel, nearActivationWarning, normalizeMeasure } from "../domain/trendyol";
 import { canAccessRoute } from "../domain/permissions";
 import { parseStaffRoute } from "../domain/staffRoute";
 import { getErrorPresentation } from "../services/errors";
@@ -44,6 +44,11 @@ test("Trendyol answers are mapped strictly and fail closed", () => {
   assert.throws(() => mapTrendyolDetail({ ...detail, lines: [{ ...detail.lines[0], prepared: { kind: "sofa" } }] }), serverError);
   assert.throws(() => mapTrendyolDetail({ ...detail, capabilities: { view: true } }), serverError);
   assert.equal(mapTrendyolSummary({ ...detail, lineCount: 2, preparedCount: 1, globalOrderId: null, stageId: null }).preparedCount, 1);
+  assert.equal(mapped.orderDateNearActivation, false, "an API without the flag means no near-activation warning");
+  assert.equal(mapTrendyolDetail({ ...detail, orderDateNearActivation: true }).orderDateNearActivation, true);
+  assert.throws(() => mapTrendyolDetail({ ...detail, orderDateNearActivation: "yes" }), serverError);
+  assert.match(nearActivationWarning, /GMT\+3/);
+  assert.match(nearActivationWarning, /Seller Panel/);
   const overview = mapTrendyolOverview({ intake: { status: "inactive", baselineAt: null, lastRunAt: null, lastRunOutcome: null }, counts: { pending: 0, released: 0, closed: 0, ignored: 0 }, capabilities: { view: true, prepare: false, release: false } });
   assert.equal(overview.intake.status, "inactive");
   assert.throws(() => mapTrendyolOverview({ intake: { status: "importing" }, counts: {}, capabilities: {} }), serverError);

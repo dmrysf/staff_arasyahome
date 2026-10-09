@@ -818,6 +818,7 @@ export function mapTrendyolSummary(value: unknown): TrendyolPackageSummary {
     intakeStatus: oneOf(raw.intakeStatus, intakeStatuses),
     marketplaceStatus: stringValue(raw.marketplaceStatus),
     orderDate: nullableTimestamp(raw.orderDate),
+    orderDateNearActivation: raw.orderDateNearActivation === undefined ? false : booleanValue(raw.orderDateNearActivation),
     changedAfterRelease: booleanValue(raw.changedAfterRelease),
     version: positiveInteger(raw.version),
     ...(raw.lineCount === undefined ? {} : { lineCount: nonNegativeInteger(raw.lineCount), preparedCount: nonNegativeInteger(raw.preparedCount) }),

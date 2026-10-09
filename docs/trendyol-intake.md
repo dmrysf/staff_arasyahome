@@ -1,4 +1,4 @@
-# Trendyol intake (API 2.24.0, Staff 2.11.0)
+# Trendyol intake (API 2.24.1, Staff 2.11.1)
 
 Trendyol orders reach the factory only through an explicit approval. The marketplace stays the commercial truth:
 statuses, shipping, the courier barcode and the invoice remain in the Trendyol Seller Panel and are never written by
@@ -69,10 +69,24 @@ Reading needs three independent switches; any one off means no HTTP call at all:
 The baseline cannot lie more than five minutes in the past and never moves backwards; the first window starts at the
 baseline (minus a ten-minute overlap), never earlier. `pause` / `resume` stop and restart reading from the cursor.
 
-Trendyol documents `orderDate` as GMT+3 wall time. Until the real API confirms the epoch meaning, a package counts as
-ordered after the baseline only if it is so under both readings. Orders placed in the first three hours after the
-baseline may therefore be ignored as historical; they stay visible under "Ignorate" and are handled as today. Activate
-at a quiet time (for example 00:00 Bucharest) and narrow the rule once the preview has confirmed the semantics.
+Trendyol documents `orderDate` as GMT+3 wall time, so the epoch value is either the real instant or the real instant
+plus three hours. Since API 2.24.1:
+
+- a package dated before the baseline is historical under both readings and is ignored for good;
+- a package dated within three hours after the baseline is ambiguous. It is never ignored, because under the first
+  reading it is a new order. It becomes intake work with `orderDateNearActivation: true`, and Staff (2.11.1) shows a
+  warning: under the second reading it was placed up to three hours before activation and may already be in
+  production through the manual process. The approver checks the Seller Panel before releasing it;
+- a package dated three hours or more after the baseline is new under both readings.
+
+Nothing enters production without the explicit approval, so the ambiguity can no longer lose a new order and cannot
+release an old one by itself. Activating at a quiet time (for example 00:00 Bucharest) keeps the flagged set small.
+The preview prints `orderDate evidence: aheadOfClock=N`: a package dated more than ten minutes after the server clock
+proves the GMT+3 wall-time reading. Run the preview while there are fresh orders.
+
+The query window (`startDate`/`endDate`) may carry the same GMT+3 meaning. If it does, a package becomes visible to
+the sync up to three hours after its modification (later, never lost: the windows stay contiguous). Confirm this with
+the preview before activation by comparing a fresh order's Seller Panel time with the preview output.
 
 ## Read-only preview
 
