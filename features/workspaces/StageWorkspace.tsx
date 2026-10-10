@@ -1,13 +1,13 @@
 import { useCallback, useState } from "react";
 import type { Employee, ProductionWorkflow, StaffOrder } from "../../domain/models";
-import { stageGuides, type StageQueue, type StageSummary, type Workspace, type WorkspaceApi } from "../../domain/workspaces";
+import { stageGuides, stageSources, type StageQueue, type StageSummary, type Workspace, type WorkspaceApi } from "../../domain/workspaces";
 import { getStageById } from "../../domain/productionWorkflow";
 import { orderActionBlockedCopy } from "../../domain/orderActions";
 import { getUsableProductionProducts } from "../../domain/orderValidation";
 import { hasPermission } from "../../domain/permissions";
 import type { CuttingApi } from "../../domain/cutting";
 import { useLive } from "../../app/liveContext";
-import { SourceBadge } from "../../components/SourceBadge";
+import { SourceBadge, sourceLabels } from "../../components/SourceBadge";
 import { ErrorState } from "../../components/ErrorState";
 import { AppIcon } from "../../components/icons/AppIcon";
 import { CuttingWork } from "../cutting/CuttingWork";
@@ -63,6 +63,7 @@ export function StageWorkspace({ workspace, employee, workflow, api, cutting, na
   const queue = useDashboardData(api ? loadQueue : null, `${workspace.id}/${stageId}`, revision);
   const summary = useDashboardData(api && workspace.stageIds.length > 1 ? loadSummary : null, workspace.id, revision);
   const guide = stageGuides[stageId];
+  const scopedSources = stageSources(employee, stageId);
   const counts = queue.data?.counts;
   const metric = (value: number | undefined): MetricValue => !api || (queue.error && !queue.data) ? "unavailable" : value ?? "loading";
   const partial = queue.data ? !queue.data.countsComplete : false;
@@ -86,6 +87,7 @@ export function StageWorkspace({ workspace, employee, workflow, api, cutting, na
       <DashboardSection labelledBy={`stage-${stageId}`} eyebrow={stage ? `Etapa ${stage.ordinal} din ${workflow.stages.length}` : "Etapă"} title={stage?.label ?? "Etapă indisponibilă"}
         action={api ? <RefreshButton onRefresh={() => { queue.refresh(); summary.refresh(); }} busy={queue.busy} updatedAt={queue.updatedAt} /> : undefined}>
         {guide && <p className="dashboard-lead">{guide.focus}</p>}
+        {scopedSources && <p className="order-notice order-notice-muted" data-testid="stage-source-scope">Lucrezi la această etapă doar pe comenzile din: {scopedSources.map((source) => sourceLabels[source as keyof typeof sourceLabels] ?? source).join(", ")}.</p>}
         <MetricGrid label={`Situația etapei ${stage?.label ?? ""}`}>
           <Metric label="În lucru la mine" value={metric(counts?.mine)} tone="action" partial={partial} testId="metric-mine" />
           <Metric label="Disponibile" value={metric(counts?.available)} partial={partial} testId="metric-available" />

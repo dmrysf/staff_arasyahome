@@ -201,6 +201,8 @@ final readonly class ManagementService
         $summary['secondaryDepartments'] = array_map(static fn (array $row): array => ['id' => (int) $row['department_id'], 'name' => (string) $row['name']], $secondary->fetchAll());
         // Root reaches every source; a stored scope would be meaningless for it.
         $summary['documentScopes'] = $summary['isRoot'] ? null : (new DocumentScopePolicy($this->pdo))->scopesOf((string) $summary['id']);
+        // Granted stages narrowed to named sources (migration 023); a stage absent here reaches every source.
+        $summary['stageSourceScopes'] = $summary['isRoot'] ? null : (object) $this->stageScopesOf((string) $summary['id']);
         // The grantable sources, for the root-only scope editor; nobody else can change a scope.
         $summary['documentScopeSources'] = $actor->isRoot && !$summary['isRoot'] ? array_map(
             static fn (array $row): array => ['key' => (string) $row['source_key'], 'name' => (string) $row['display_name']],
@@ -252,6 +254,136 @@ final readonly class ManagementService
             $this->audit->record($actor, 'employee.document_scopes_changed', 'employee', $target['employee_uuid'], $this->label($target), ['before' => $before, 'after' => $wanted], $requestId, $now);
         });
         return $this->getEmployee($actor, $employeeId);
+    }
+
+    /**
+     * The source scope of ONE granted stage of the target (migration 023). Root only, like document scopes.
+     *
+     * Body: `stageId`, `sources` (a non-empty source list, or null for every source), `expectedSources` (the scope
+     * the caller read: a list, or null when the stage was unscoped) and, for a widening, `confirmWidening: true`.
+     *
+     * - Only the named stage changes; every other stage keeps its scope, so no restriction is lost by omission.
+     * - `expectedSources` must equal the current scope (`409 STAGE_SCOPE_CHANGED` otherwise): a decision taken on a
+     *   stale read is never applied.
+     * - Narrowing (a scope on an unscoped stage, or fewer sources) needs no confirmation. Widening (adding a source,
+     *   or `null` to reach every source) is a grant and needs `confirmWidening: true` (`409 SCOPE_WIDENING_UNCONFIRMED`).
+     * - A scope never grants a stage (`400 STAGE_NOT_GRANTED`); an empty list is refused, because "no source" is
+     *   expressed by removing the stage grant itself.
+     *
+     * @param array<string, mixed> $input
+     * @return array<string, mixed>
+     */
+    public function setStageScope(EmployeeIdentity $actor, string $employeeId, array $input, string $requestId): array
+    {
+        $this->authorization->requireApplication($actor, 'dashboard');
+        if (!$actor->isRoot) {
+            throw new ApiException(403, 'ROOT_ONLY', 'Only the principal administrator can change stage source scopes.');
+        }
+        $stageId = $input['stageId'] ?? null;
+        if (!is_string($stageId) || preg_match('/^[a-z0-9][a-z0-9-]{0,99}$/D', $stageId) !== 1) {
+            throw new ApiException(400, 'VALIDATION_FAILED', 'stageId must be a production stage id.');
+        }
+        $sources = $input['sources'] === null ? null : $this->sourceList($input['sources'], 'sources');
+        $expected = $input['expectedSources'] === null ? null : $this->sourceList($input['expectedSources'], 'expectedSources');
+        $confirm = $input['confirmWidening'] ?? false;
+        if (!is_bool($confirm)) {
+            throw new ApiException(400, 'VALIDATION_FAILED', 'confirmWidening must be a boolean.');
+        }
+        $this->mutateEmployee($actor, $employeeId, function (array $target, string $now) use ($actor, $stageId, $sources, $expected, $confirm, $requestId): void {
+            $granted = $this->column('SELECT stage_id FROM employee_stage_access WHERE employee_uuid = :id ORDER BY stage_id', $target['employee_uuid']);
+            if (!in_array($stageId, $granted, true)) {
+                throw new ApiException(400, 'STAGE_NOT_GRANTED', 'A stage scope names a stage the employee does not hold.');
+            }
+            $this->assertKnownSources($sources ?? []);
+            $scopesBefore = $this->stageScopesOf($target['employee_uuid']);
+            $current = $scopesBefore[$stageId] ?? null;
+            if ($current !== $expected) {
+                throw new ApiException(409, 'STAGE_SCOPE_CHANGED', 'The stage scope changed since it was read. Reload the employee and try again.');
+            }
+            if ($current === $sources) {
+                return;
+            }
+            $widening = $sources === null || ($current !== null && array_diff($sources, $current) !== []);
+            if ($widening && !$confirm) {
+                throw new ApiException(409, 'SCOPE_WIDENING_UNCONFIRMED', 'This change gives the employee access to more order sources. Confirm the widening explicitly.');
+            }
+            $this->pdo->prepare('DELETE FROM employee_stage_source_scopes WHERE employee_uuid = ? AND stage_id = ?')->execute([$target['employee_uuid'], $stageId]);
+            $this->writeStageScopes($target['employee_uuid'], [$stageId => $sources ?? []], $actor, $now);
+            $scopesAfter = $this->stageScopesOf($target['employee_uuid']);
+            $this->bumpAuthorization($target['employee_uuid'], $now);
+            $this->audit->record($actor, 'employee.stage_scopes_changed', 'employee', $target['employee_uuid'], $this->label($target), [
+                'stageId' => $stageId,
+                'before' => $current,
+                'after' => $sources,
+                'widening' => $widening,
+                'effectiveBefore' => $this->effectiveStageAccess($granted, $scopesBefore),
+                'effectiveAfter' => $this->effectiveStageAccess($granted, $scopesAfter),
+            ], $requestId, $now);
+        });
+        return $this->getEmployee($actor, $employeeId);
+    }
+
+    /**
+     * A validated, sorted, non-empty list of source keys.
+     *
+     * @return list<string>
+     */
+    private function sourceList(mixed $value, string $field): array
+    {
+        $list = $this->stringList($value, $field);
+        if ($list === []) {
+            throw new ApiException(400, 'VALIDATION_FAILED', 'A stage scope needs at least one source; remove the stage grant to revoke the stage.');
+        }
+        sort($list);
+        return $list;
+    }
+
+    /** @param list<string> $sources */
+    private function assertKnownSources(array $sources): void
+    {
+        $known = $this->pdo->query("SELECT source_key FROM order_sources WHERE status = 'active'")->fetchAll(PDO::FETCH_COLUMN);
+        if (array_diff($sources, $known) !== []) {
+            throw new ApiException(400, 'UNKNOWN_SOURCE', 'A stage scope names an unknown or inactive order source.');
+        }
+    }
+
+    /** @param array<string, list<string>> $scopes */
+    private function writeStageScopes(string $employeeUuid, array $scopes, EmployeeIdentity $actor, string $now): void
+    {
+        $insert = $this->pdo->prepare('INSERT INTO employee_stage_source_scopes (employee_uuid, stage_id, source_key, granted_at, granted_by_employee_uuid) VALUES (:id, :stage, :source, :now, :actor)');
+        foreach ($scopes as $stageId => $sources) {
+            foreach ($sources as $source) {
+                $insert->execute(['id' => $employeeUuid, 'stage' => $stageId, 'source' => $source, 'now' => $now, 'actor' => $actor->employeeUuid]);
+            }
+        }
+    }
+
+    /**
+     * Effective stage access for the audit record: every granted stage with its sources, or "all" when unscoped.
+     *
+     * @param list<string> $stages
+     * @param array<string, list<string>> $scopes
+     */
+    private function effectiveStageAccess(array $stages, array $scopes): object
+    {
+        $access = [];
+        foreach ($stages as $stageId) {
+            $access[$stageId] = $scopes[$stageId] ?? 'all';
+        }
+        ksort($access);
+        return (object) $access;
+    }
+
+    /** @return array<string, list<string>> stage id => sorted sources, stages sorted */
+    private function stageScopesOf(string $employeeUuid): array
+    {
+        $statement = $this->pdo->prepare('SELECT stage_id, source_key FROM employee_stage_source_scopes WHERE employee_uuid = :id ORDER BY stage_id, source_key');
+        $statement->execute(['id' => $employeeUuid]);
+        $scopes = [];
+        foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $scopes[(string) $row['stage_id']][] = (string) $row['source_key'];
+        }
+        return $scopes;
     }
 
     /**
@@ -460,17 +592,56 @@ final readonly class ManagementService
     }
 
     /** @return array<string, mixed> */
-    public function setStages(EmployeeIdentity $actor, string $employeeId, mixed $stageIds, string $requestId): array
+    public function setStages(EmployeeIdentity $actor, string $employeeId, mixed $stageIds, string $requestId, mixed $stageScopes = null, mixed $allSourcesStageIds = null): array
     {
         $this->require($actor, 'employees.manage_stages');
         $ids = $this->stringList($stageIds, 'stageIds');
-        $this->mutateEmployee($actor, $employeeId, function (array $target, string $now) use ($actor, $ids, $requestId): void {
+        // Optional source scopes for stages ADDED by this request, written in the same transaction as the stage
+        // grant, so a scoped stage is never observable unscoped. Choosing sources is root-only (like stage-scopes).
+        if ($stageScopes !== null && (!is_array($stageScopes) || ($stageScopes !== [] && array_is_list($stageScopes)))) {
+            throw new ApiException(400, 'VALIDATION_FAILED', 'stageScopes must be an object of stage ids to source lists.');
+        }
+        $newScopes = [];
+        foreach ($stageScopes ?? [] as $stageId => $sources) {
+            $newScopes[(string) $stageId] = $this->sourceList($sources, 'stageScopes');
+        }
+        $allSources = $allSourcesStageIds === null ? [] : $this->stringList($allSourcesStageIds, 'allSourcesStageIds');
+        if (($newScopes !== [] || $allSources !== []) && !$actor->isRoot) {
+            throw new ApiException(403, 'ROOT_ONLY', 'Only the principal administrator can choose stage source scopes.');
+        }
+        $this->mutateEmployee($actor, $employeeId, function (array $target, string $now) use ($actor, $ids, $newScopes, $allSources, $requestId): void {
             $stages = $this->canonicalStages($ids);
             $before = $this->column('SELECT stage_id FROM employee_stage_access WHERE employee_uuid = :id ORDER BY stage_id', $target['employee_uuid']);
+            $scopesBefore = $this->stageScopesOf($target['employee_uuid']);
+            $added = array_values(array_diff($stages, $before));
+            if (array_diff(array_keys($newScopes), $added) !== [] || array_diff($allSources, $added) !== [] || array_intersect(array_keys($newScopes), $allSources) !== []) {
+                throw new ApiException(400, 'VALIDATION_FAILED', 'stageScopes and allSourcesStageIds name only stages added by this request, each at most once; change a held stage through stage-scopes.');
+            }
+            $this->assertKnownSources(array_merge([], ...array_values($newScopes)));
+            // An employee already restricted to named sources is never widened implicitly: every stage added to them
+            // carries its scope, or root lists it in allSourcesStageIds to grant it for every source on purpose.
+            $implicit = array_values(array_diff($added, array_keys($newScopes), $allSources));
+            if (array_intersect_key($scopesBefore, array_flip($before)) !== [] && $implicit !== []) {
+                throw new ApiException(409, 'STAGE_SCOPE_REQUIRED', 'This employee works only on named order sources. Give the added stage its source scope, or confirm it for every source.');
+            }
             $this->pdo->prepare('DELETE FROM employee_stage_access WHERE employee_uuid = :id')->execute(['id' => $target['employee_uuid']]);
             $this->writeStages($target['employee_uuid'], $stages, $now);
+            // A removed stage takes its source scope with it; a kept stage keeps its scope unchanged.
+            $removedScopes = array_values(array_diff(array_keys($scopesBefore), $stages));
+            if ($removedScopes !== []) {
+                $this->pdo->prepare('DELETE FROM employee_stage_source_scopes WHERE employee_uuid = ? AND stage_id IN (' . implode(',', array_fill(0, count($removedScopes), '?')) . ')')
+                    ->execute([$target['employee_uuid'], ...$removedScopes]);
+            }
+            $this->writeStageScopes($target['employee_uuid'], $newScopes, $actor, $now);
             $this->bumpAuthorization($target['employee_uuid'], $now);
-            $this->audit->record($actor, 'employee.stages_changed', 'employee', $target['employee_uuid'], $this->label($target), ['before' => $before, 'after' => $stages], $requestId, $now);
+            $metadata = ['before' => $before, 'after' => $stages]
+                + ($removedScopes === [] ? [] : ['stageScopesRemoved' => array_intersect_key($scopesBefore, array_flip($removedScopes))])
+                + ($newScopes === [] ? [] : ['stageScopesGranted' => $newScopes])
+                + ($allSources === [] ? [] : ['allSourcesStageIds' => $allSources]);
+            if ($scopesBefore !== [] || $newScopes !== []) {
+                $metadata += ['effectiveBefore' => $this->effectiveStageAccess($before, $scopesBefore), 'effectiveAfter' => $this->effectiveStageAccess($stages, $this->stageScopesOf($target['employee_uuid']))];
+            }
+            $this->audit->record($actor, 'employee.stages_changed', 'employee', $target['employee_uuid'], $this->label($target), $metadata, $requestId, $now);
         });
         return $this->getEmployee($actor, $employeeId);
     }

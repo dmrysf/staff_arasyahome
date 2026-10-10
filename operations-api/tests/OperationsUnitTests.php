@@ -123,6 +123,53 @@ test('order access policy derives visibility and the only allowed action server-
     expect($policy->evaluate($viewer, operationsOrder('material-preparation', $viewer->employeeUuid), $workflow)['blockedReason'] === 'permission_missing');
 });
 
+test('source-scoped stage grants narrow a granted stage and never add one (migration 023)', function (): void {
+    $policy = new OrderAccessPolicy(new AuthorizationService());
+    $workflow = canonicalWorkflowFixture();
+    $scoped = static fn (array $stages, array $scopes): EmployeeIdentity => new EmployeeIdentity('44444444-4444-4444-8444-444444444444', null, 'ty', 'ty', 'hash', 'Ty', 'vanzari-online', 'Vânzări Online', 'active', 'employee', 'active', 'active',
+        ['orders.scan', 'orders.view_mine', 'orders.claim', 'orders.advance_stage'], $stages, stageSourceScopes: $scopes);
+    $trendhomeOnly = $scoped(['material-preparation', 'delivery'], ['material-preparation' => ['outletperdele']]);
+    expect(!$trendhomeOnly->worksAt('material-preparation', 'trendhome'), 'a scoped grant refuses another source');
+    expect($trendhomeOnly->worksAt('material-preparation', 'outletperdele'), 'a scoped grant reaches its source');
+    expect($trendhomeOnly->worksAt('delivery', 'trendhome') && $trendhomeOnly->sourcesAt('delivery') === null, 'an unscoped stage keeps every source');
+    expect($trendhomeOnly->sourcesAt('material-preparation') === ['outletperdele'] && $trendhomeOnly->sourcesAt('packing') === [], 'sources per stage: list, all (null) or none');
+    expect(!$scoped([], ['packing' => ['trendhome']])->worksAt('packing', 'trendhome'), 'a scope without the stage grant grants nothing');
+    expect(!$policy->canView($trendhomeOnly, operationsOrder('material-preparation')), 'the policy hides a Trendhome order from an OutletPerdele-only cutter');
+    expect($policy->canView($trendhomeOnly, operationsOrder('delivery')), 'the unscoped stage still sees Trendhome');
+    expect($policy->evaluate($trendhomeOnly, operationsOrder('material-preparation'), $workflow)['blockedReason'] === 'stage_not_allowed', 'claim is refused for another source');
+    expect($policy->evaluate($trendhomeOnly, operationsOrder('material-preparation', $trendhomeOnly->employeeUuid), $workflow)['blockedReason'] === 'stage_not_allowed', 'an own order of a source no longer granted cannot be advanced');
+    $legacy = operationsEmployee(['material-preparation']);
+    expect($legacy->stageSourceScopes === [] && $legacy->worksAt('material-preparation', 'trendhome') && $policy->canView($legacy, operationsOrder('material-preparation')), 'a legacy grant is unchanged');
+    $serialized = \Arasya\Operations\Employee\EmployeeSerializer::safe($trendhomeOnly);
+    expect(json_encode($serialized['stageSourceScopes']) === '{"material-preparation":["outletperdele"]}' && json_encode(\Arasya\Operations\Employee\EmployeeSerializer::safe($legacy)['stageSourceScopes']) === '{}', 'the session carries the scopes as an object');
+});
+
+test('a historical order relation never outlives the current source authorization (migration 023)', function (): void {
+    $policy = new OrderAccessPolicy(new AuthorizationService());
+    $workflow = canonicalWorkflowFixture();
+    $uuid = '44444444-4444-4444-8444-444444444444';
+    $employee = static fn (array $stages, array $scopes): EmployeeIdentity => new EmployeeIdentity($uuid, null, 'ty', 'ty', 'hash', 'Ty', 'vanzari-online', 'Vânzări Online', 'active', 'employee', 'active', 'active',
+        ['orders.scan', 'orders.view_mine', 'orders.claim', 'orders.advance_stage'], $stages, stageSourceScopes: $scopes);
+    $at = new DateTimeImmutable('2026-10-04T08:00:00Z');
+    // A Trendhome order the employee handed on from stage 1: it now waits at cutting, a stage the employee does not hold.
+    $handedOn = operationsOrder('material-preparation', null, new EmployeeOrderRelation($uuid, 'handover_out', 'active', $at, $at));
+    $legacy = $employee(['waiting'], []);
+    expect($legacy->reachableSources() === null && $legacy->reachesSource('trendhome'), 'an unscoped grant reaches every source');
+    expect($policy->canView($legacy, $handedOn), 'legacy history: the handed-on order stays visible');
+    $narrowed = $employee(['waiting'], ['waiting' => ['trendyol']]);
+    expect($narrowed->reachableSources() === ['trendyol'] && !$narrowed->reachesSource('trendhome'), 'a scoped employee reaches only the scoped sources');
+    expect(!$policy->canView($narrowed, $handedOn), 'after the narrowing the relation alone shows nothing');
+    expect(!$policy->canView($narrowed, operationsOrder('waiting', $uuid, new EmployeeOrderRelation($uuid, 'claimed', 'active', $at, $at))), 'nor an own claimed order of the revoked source');
+    expect($policy->evaluate($narrowed, operationsOrder('waiting', $uuid), $workflow)['action'] === null, 'and it can never be advanced');
+    $noStage = $employee([], []);
+    expect($noStage->reachableSources() === [] && !$policy->canView($noStage, $handedOn), 'without any stage no relation shows an order');
+    $mixed = $employee(['waiting', 'packing'], ['waiting' => ['b2b'], 'packing' => ['trendhome']]);
+    expect($mixed->reachableSources() === ['b2b', 'trendhome'] && $policy->canView($mixed, $handedOn), 'the union of scoped sources decides history only, never a stage');
+    expect(!$mixed->worksAt('waiting', 'trendhome'), 'the union never widens a stage');
+    expect($employee(['waiting', 'delivery'], ['waiting' => ['b2b']])->reachableSources() === null, 'one unscoped stage reaches every source');
+    expect($employee(['waiting'], ['packing' => ['trendhome']])->reachableSources() === null, 'an orphan scope row narrows nothing and adds nothing');
+});
+
 test('order serialization exposes the action and completion without other employee identities', function (): void {
     $order = operationsOrder('delivery', '33333333-3333-4333-8333-333333333333', null, 'in_progress', new DateTimeImmutable('2026-10-04T10:00:00Z'));
     $payload = (new OrderSerializer())->serializeOrder($order, ['action' => null, 'blockedReason' => 'production_completed']);

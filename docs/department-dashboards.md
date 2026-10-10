@@ -98,7 +98,7 @@ Workspaces follow central IAM. No code or name list is involved. For example, to
 
 1. Staff application access.
 2. The `trendyol-order-preparer` or `trendyol-order-approver` role.
-3. Optionally, the `waiting` stage for the stage-1 handoff. This adds the "Pornire producție" workspace.
+3. Optionally, the `waiting` stage for the stage-1 handoff, narrowed to Trendyol with a [stage source scope](source-scoped-stage-authorization.md) (API 2.26.0). This adds the "Pornire producție" workspace, limited to Trendyol orders.
 4. Optionally, the Trendyol document scope.
 
 The next session refresh shows the workspace. Removing a grant removes the workspace and the API access together.

@@ -38,7 +38,10 @@ final readonly class OrderControlService
     private const OWNER_ACTIVE = "(e.status = 'active' AND (od.status = 'active' OR " . self::OWNER_IS_ROOT . '))';
     private const OWNER_STAFF = '(' . self::OWNER_IS_ROOT . " OR EXISTS (SELECT 1 FROM employee_application_access eaa INNER JOIN applications a ON a.application_key = eaa.application_key AND a.status = 'active'
             WHERE eaa.employee_uuid = o.production_owner_employee_uuid AND eaa.application_key = 'staff'))";
-    private const OWNER_STAGE = 'EXISTS (SELECT 1 FROM employee_stage_access esa WHERE esa.employee_uuid = o.production_owner_employee_uuid AND esa.stage_id = o.production_stage_id)';
+    /** The owner still works at the order's stage for its source: the stage grant and, when scoped, the source (migration 023). */
+    private const OWNER_STAGE = 'EXISTS (SELECT 1 FROM employee_stage_access esa WHERE esa.employee_uuid = o.production_owner_employee_uuid AND esa.stage_id = o.production_stage_id
+            AND (NOT EXISTS (SELECT 1 FROM employee_stage_source_scopes sc WHERE sc.employee_uuid = esa.employee_uuid AND sc.stage_id = esa.stage_id)
+                 OR EXISTS (SELECT 1 FROM employee_stage_source_scopes sc WHERE sc.employee_uuid = esa.employee_uuid AND sc.stage_id = esa.stage_id AND sc.source_key = o.source_key)))';
     private const ACTIVE_STATE = "o.production_completed_at IS NULL AND o.operational_status <> 'unavailable'";
     private const SUMMARY = 'SELECT o.order_uuid, o.global_order_id, o.order_number, o.source_key, s.display_name AS source_name,
             o.source_commerce_status_code, o.source_commerce_status_label, o.operational_status,

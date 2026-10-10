@@ -98,7 +98,7 @@ final readonly class CuttingFaultService
             if ($order['open_exception_uuid'] !== null) {
                 throw new ApiException(409, 'EXCEPTION_ALREADY_OPEN', 'This order already has an open return request.');
             }
-            if ($order['production_owner_employee_uuid'] !== $actor->employeeUuid || !in_array(self::DETECTION_STAGE, $actor->allowedStageIds, true)) {
+            if ($order['production_owner_employee_uuid'] !== $actor->employeeUuid || !$actor->worksAt(self::DETECTION_STAGE, (string) $order['source_key'])) {
                 throw new ApiException(403, 'FAULT_REPORT_NOT_ALLOWED', 'Only the tailoring intake employee who accepted the order can return it to cutting.');
             }
             $reason = $this->reason($reasonKey);
@@ -293,7 +293,7 @@ final readonly class CuttingFaultService
                 // Lock the responsible employee so a concurrent deactivation is seen before assignment.
                 $this->pdo->prepare('SELECT employee_uuid FROM employees WHERE employee_uuid = ? FOR UPDATE')->execute([$exception['responsible_employee_uuid']]);
                 $responsible = $this->employees->findByUuid((string) $exception['responsible_employee_uuid']);
-                $assignee = $responsible !== null && OrderOwnershipService::isEligibleOwner($responsible, self::RETURN_STAGE) ? $responsible->employeeUuid : null;
+                $assignee = $responsible !== null && OrderOwnershipService::isEligibleOwner($responsible, self::RETURN_STAGE, (string) $order['source_key']) ? $responsible->employeeUuid : null;
                 $previousOwner = $order['production_owner_employee_uuid'] === null ? null : (string) $order['production_owner_employee_uuid'];
 
                 $this->pdo->prepare("UPDATE production_exceptions SET status = 'approved', version = ?, resolved_at = ?, rework_cycle = ?, updated_at = ? WHERE exception_uuid = ? AND version = ?")

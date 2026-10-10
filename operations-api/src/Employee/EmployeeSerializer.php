@@ -20,6 +20,8 @@ final class EmployeeSerializer
             'status' => $employee->status,
             'permissions' => $employee->permissions,
             'allowedStageIds' => $employee->allowedStageIds,
+            // Granted stages narrowed to named order sources; a stage absent here reaches every source.
+            'stageSourceScopes' => (object) $employee->stageSourceScopes,
             'applications' => $employee->applications,
             'roles' => $employee->roleKeys,
             'positionTitle' => $employee->positionTitle,

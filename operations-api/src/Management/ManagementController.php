@@ -135,7 +135,7 @@ final readonly class ManagementController
         if ($method === 'POST' && $path === '/employees') {
             return Response::json($this->management->createEmployee($actor, $this->body($request, self::EMPLOYEE_CREATE_FIELDS, ['displayName', 'username', 'departmentId']), $id), 201);
         }
-        if (preg_match('#^/employees/([0-9a-f-]{36})(?:/(activate|deactivate|password-reset|applications|roles|stages|manager|secondary-departments|document-scopes))?$#D', $path, $m) === 1) {
+        if (preg_match('#^/employees/([0-9a-f-]{36})(?:/(activate|deactivate|password-reset|applications|roles|stages|stage-scopes|manager|secondary-departments|document-scopes))?$#D', $path, $m) === 1) {
             $employeeId = $m[1];
             $action = $m[2] ?? '';
             return Response::json(match (true) {
@@ -145,8 +145,9 @@ final readonly class ManagementController
                 $method === 'POST' && $action === 'password-reset' => $this->management->resetPassword($actor, $employeeId, $this->emptyBody($request, $id)),
                 $method === 'PUT' && $action === 'applications' => $this->management->setApplications($actor, $employeeId, $this->body($request, ['applications'], ['applications'])['applications'], $id),
                 $method === 'PUT' && $action === 'roles' => $this->management->setRoles($actor, $employeeId, $this->body($request, ['roleIds'], ['roleIds'])['roleIds'], $id),
-                $method === 'PUT' && $action === 'stages' => $this->management->setStages($actor, $employeeId, $this->body($request, ['stageIds'], ['stageIds'])['stageIds'], $id),
+                $method === 'PUT' && $action === 'stages' => $this->setStages($actor, $employeeId, $request, $id),
                 $method === 'PUT' && $action === 'secondary-departments' => $this->management->setSecondaryDepartments($actor, $employeeId, $this->body($request, ['departmentIds'], ['departmentIds'])['departmentIds'], $id),
+                $method === 'PUT' && $action === 'stage-scopes' => $this->management->setStageScope($actor, $employeeId, $this->body($request, ['stageId', 'sources', 'expectedSources', 'confirmWidening'], ['stageId', 'sources', 'expectedSources']), $id),
                 $method === 'PUT' && $action === 'document-scopes' => $this->management->setDocumentScopes($actor, $employeeId, $this->body($request, ['operate', 'approve'], ['operate', 'approve']), $id),
                 $method === 'PUT' && $action === 'manager' => $this->management->setManager($actor, $employeeId, $this->body($request, ['managerId'], ['managerId'])['managerId'], $id),
                 default => throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.'),
@@ -255,6 +256,17 @@ final readonly class ManagementController
         $session = $this->auth->authenticate($request->cookie($this->config->cookieName()) ?? '', $request->ipAddress, $request->userAgent, $request->requestId);
         $this->context->authenticatedAs($session->employee->employeeUuid);
         return $session;
+    }
+
+    /**
+     * `stageIds` with optional, root-only `stageScopes` and `allSourcesStageIds` for the stages this request adds.
+     *
+     * @return array<string, mixed>
+     */
+    private function setStages(EmployeeIdentity $actor, string $employeeId, Request $request, string $requestId): array
+    {
+        $body = $this->body($request, ['stageIds', 'stageScopes', 'allSourcesStageIds'], ['stageIds']);
+        return $this->management->setStages($actor, $employeeId, $body['stageIds'], $requestId, $body['stageScopes'] ?? null, $body['allSourcesStageIds'] ?? null);
     }
 
     /**

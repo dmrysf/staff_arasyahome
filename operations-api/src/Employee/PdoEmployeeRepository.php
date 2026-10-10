@@ -203,6 +203,17 @@ final class PdoEmployeeRepository implements EmployeeRepository
         );
         $stageStatement->execute(['employee_uuid' => $uuid]);
         $stages = array_map('strval', $stageStatement->fetchAll(PDO::FETCH_COLUMN));
+        // Source scopes narrow granted stages only (migration 023); a scope row of an ungranted stage is ignored.
+        $stageSourceScopes = [];
+        if ($stages !== []) {
+            $scopeStatement = $this->pdo->prepare('SELECT stage_id, source_key FROM employee_stage_source_scopes WHERE employee_uuid = :employee_uuid ORDER BY stage_id, source_key');
+            $scopeStatement->execute(['employee_uuid' => $uuid]);
+            foreach ($scopeStatement->fetchAll(PDO::FETCH_ASSOC) as $scope) {
+                if (in_array((string) $scope['stage_id'], $stages, true)) {
+                    $stageSourceScopes[(string) $scope['stage_id']][] = (string) $scope['source_key'];
+                }
+            }
+        }
 
         return new EmployeeIdentity(
             employeeUuid: $uuid,
@@ -228,6 +239,7 @@ final class PdoEmployeeRepository implements EmployeeRepository
             roleKeys: $roleKeys,
             authorityRank: $isRoot ? PHP_INT_MAX : $authorityRank,
             departmentId: (int) $row['department_id'],
+            stageSourceScopes: $stageSourceScopes,
         );
     }
 

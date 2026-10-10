@@ -166,6 +166,13 @@ function employeeStatus(value: unknown): Employee["status"] {
   throw new StaffServiceError("SERVER_ERROR");
 }
 
+/** Optional (older APIs omit it); a present value must be an object of string lists. */
+function mapStageSourceScopes(value: unknown): Record<string, string[]> {
+  if (value == null) return {};
+  const raw = objectValue(value);
+  return Object.fromEntries(Object.entries(raw).map(([stageId, sources]) => [stageId, stringList(sources)]));
+}
+
 export function mapProductionEmployee(value: unknown): Employee {
   const raw = objectValue(value);
   return {
@@ -180,6 +187,7 @@ export function mapProductionEmployee(value: unknown): Employee {
     status: employeeStatus(raw.status),
     permissions: stringList(raw.permissions),
     allowedStageIds: stringList(raw.allowedStageIds),
+    stageSourceScopes: mapStageSourceScopes(raw.stageSourceScopes),
     applications: stringList(raw.applications),
     mustChangePassword: booleanValue(raw.mustChangePassword),
     locale: "ro",

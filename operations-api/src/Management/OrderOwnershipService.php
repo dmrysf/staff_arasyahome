@@ -94,15 +94,16 @@ final readonly class OrderOwnershipService
     }
 
     /**
-     * Whether an employee may own work at a stage: the same rules OrderAccessPolicy applies when the
-     * employee acts in Staff. A pending password change does not disqualify: it is resolved at login.
+     * Whether an employee may own work at a stage for an order source: the same rules OrderAccessPolicy applies
+     * when the employee acts in Staff (stage grant and, for a source-scoped grant, the source). A pending password
+     * change does not disqualify: it is resolved at login.
      */
-    public static function isEligibleOwner(EmployeeIdentity $employee, string $stageId): bool
+    public static function isEligibleOwner(EmployeeIdentity $employee, string $stageId, string $sourceKey): bool
     {
         return !$employee->isRoot
             && $employee->isOperationallyActive()
             && $employee->hasApplication('staff')
-            && in_array($stageId, $employee->allowedStageIds, true)
+            && $employee->worksAt($stageId, $sourceKey)
             && in_array('orders.advance_stage', $employee->permissions, true);
     }
 
@@ -126,9 +127,11 @@ final readonly class OrderOwnershipService
              INNER JOIN departments d ON d.department_id = e.department_id AND d.status = 'active'
              INNER JOIN employee_stage_access esa ON esa.employee_uuid = e.employee_uuid AND esa.stage_id = :stage
              INNER JOIN production_stages ps ON ps.stage_id = esa.stage_id AND ps.status = 'active'
+             LEFT JOIN employee_stage_source_scopes sss ON sss.employee_uuid = e.employee_uuid AND sss.stage_id = esa.stage_id AND sss.source_key = :source
              INNER JOIN employee_application_access eaa ON eaa.employee_uuid = e.employee_uuid AND eaa.application_key = 'staff'
              INNER JOIN applications a ON a.application_key = eaa.application_key AND a.status = 'active'
              WHERE e.status = 'active'
+               AND (sss.source_key IS NOT NULL OR NOT EXISTS (SELECT 1 FROM employee_stage_source_scopes any_scope WHERE any_scope.employee_uuid = e.employee_uuid AND any_scope.stage_id = esa.stage_id))
                AND NOT EXISTS (SELECT 1 FROM system_root_identity sri WHERE sri.employee_uuid = e.employee_uuid)
                AND e.employee_uuid <> :actor
                AND (:owner IS NULL OR e.employee_uuid <> :owner_eq)
@@ -136,7 +139,7 @@ final readonly class OrderOwnershipService
              LIMIT " . self::CANDIDATE_LIMIT,
         );
         $owner = $order['production_owner_employee_uuid'];
-        $statement->execute(['stage' => $stage->id, 'actor' => $actor->employeeUuid, 'owner' => $owner, 'owner_eq' => $owner ?? '']);
+        $statement->execute(['stage' => $stage->id, 'source' => (string) $order['source_key'], 'actor' => $actor->employeeUuid, 'owner' => $owner, 'owner_eq' => $owner ?? '']);
         foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
             if (!$actor->isRoot && (int) $row['authority_rank'] >= $actor->authorityRank) {
                 continue;
@@ -248,7 +251,7 @@ final readonly class OrderOwnershipService
                 throw new ApiException(409, 'PRODUCTION_AUTHORITY_SOURCE', 'Production of this order is still managed by its source. A manager must take it over first.');
             }
             if ($operation === self::OPERATION_REASSIGN) {
-                $target = $this->eligibleTarget($actor, $targetExists ? (string) $targetId : null, $previousId, $stage);
+                $target = $this->eligibleTarget($actor, $targetExists ? (string) $targetId : null, $previousId, $stage, (string) $order['source_key']);
             }
 
             $now = $this->clock->now()->format('Y-m-d H:i:s.u');
@@ -346,7 +349,7 @@ final readonly class OrderOwnershipService
     }
 
     /** The target row is already locked by the caller, so its identity is current for this transaction. */
-    private function eligibleTarget(EmployeeIdentity $actor, ?string $targetId, ?string $previousId, ProductionStage $stage): EmployeeIdentity
+    private function eligibleTarget(EmployeeIdentity $actor, ?string $targetId, ?string $previousId, ProductionStage $stage, string $sourceKey): EmployeeIdentity
     {
         $target = $targetId === null ? null : $this->employees->findByUuid($targetId);
         if ($target === null) {
@@ -362,7 +365,7 @@ final readonly class OrderOwnershipService
             throw new ApiException(400, 'INVALID_REQUEST', 'The employee already owns this order.');
         }
         $this->assertWithinAuthority($actor, $target->employeeUuid);
-        if (!self::isEligibleOwner($target, $stage->id)) {
+        if (!self::isEligibleOwner($target, $stage->id, $sourceKey)) {
             throw new ApiException(422, 'EMPLOYEE_NOT_ELIGIBLE_FOR_STAGE', 'The employee cannot work on the current production stage.');
         }
         return $target;

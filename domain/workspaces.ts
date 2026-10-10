@@ -141,6 +141,11 @@ export function saveWorkspacePreference(employeeUuid: string, workspaceId: strin
   catch { /* The dashboard still works without browser storage. */ }
 }
 
+/** Sources a granted stage is narrowed to, or null when the grant covers every source (presentation only). */
+export function stageSources(employee: Employee, stageId: string): readonly string[] | null {
+  return employee.stageSourceScopes?.[stageId] ?? null;
+}
+
 export function firstName(displayName: string): string {
   return displayName.trim().split(/\s+/)[0] || displayName;
 }
