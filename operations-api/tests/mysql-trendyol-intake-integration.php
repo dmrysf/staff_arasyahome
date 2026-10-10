@@ -344,6 +344,25 @@ $d92 = $status($send($preparer, 'PUT', '/trendyol/packages/' . ($base + 92) . '/
 $error($send($approver, 'POST', '/trendyol/packages/' . ($base + 92) . '/release', ['expectedVersion' => $ready[92]['version'], 'confirm' => true], $key('p92-stale')), 409, 'PACKAGE_CHANGED', 'an approval with the version seen before the change is refused');
 
 // Stage 1 visibility is source-scoped; the existing claim/transition hands the order to stage 2 (Tăiere).
+// Department dashboards read the same rule: the stage-1 queue and its totals hide the Trendyol order from
+// waiting-stage employees without Trendyol permission.
+$otherQueue = $status($get($otherWaiting, '/orders/stage-queue', ['stage' => 'waiting']), 200, 'waiting queue without Trendyol permission');
+$tyQueue = $status($get($trendyolWaiting, '/orders/stage-queue', ['stage' => 'waiting']), 200, 'waiting queue of Trendyol personnel');
+$check(!in_array($global, array_column($otherQueue['items'], 'id'), true) && $tyQueue['counts']['total'] === $otherQueue['counts']['total'] + 1, 'the waiting-stage queue counts and lists the Trendyol order only for Trendyol personnel');
+$tyItem = array_column($tyQueue['items'], null, 'id')[$global] ?? null;
+$check(($tyItem['employeeAllowedAction']['id'] ?? null) === 'claim', 'Trendyol personnel see the server-evaluated claim action, nothing is claimed by reading');
+$otherSummary = $status($get($otherWaiting, '/orders/stage-summary'), 200, 'stage summary without Trendyol permission');
+$tySummary = $status($get($trendyolWaiting, '/orders/stage-summary'), 200, 'stage summary of Trendyol personnel');
+$check($tySummary['stages'][0]['total'] === $otherSummary['stages'][0]['total'] + 1, 'the stage summary applies the same Trendyol visibility rule');
+$error($get($preparer, '/orders/stage-queue', ['stage' => 'waiting']), 403, 'STAGE_NOT_ALLOWED', 'Trendyol permission alone never opens a production stage queue');
+// The caller's own Trendyol activity: only the caller's events.
+$mine = $status($get($approver, '/trendyol/activity'), 200, 'approver activity');
+$check($mine['today']['released'] === 1 && ($mine['recent'][0]['action'] ?? null) === 'released' && ($mine['recent'][0]['packageId'] ?? null) === (string) ($base + 30), 'the approver sees the own approval');
+$prepActivity = $status($get($preparer, '/trendyol/activity'), 200, 'preparer activity');
+$check($prepActivity['today']['linesPrepared'] >= 1 && $prepActivity['today']['released'] === 0 && !in_array('released', array_column($prepActivity['recent'], 'action'), true), 'the preparer sees only own preparation, never the approver\'s approval');
+$error($get($otherWaiting, '/trendyol/activity'), 403, 'UNAUTHORIZED_ACTION', 'Trendyol activity needs the Trendyol view permission');
+$error($get($dashboardOnly, '/trendyol/activity'), 403, 'APPLICATION_ACCESS_DENIED', 'Trendyol activity works only inside Staff');
+
 $path = '/orders/' . rawurlencode($global);
 $error($get($otherWaiting, $path), 404, 'ORDER_NOT_FOUND', 'a waiting-stage employee without Trendyol permission does not see the Trendyol order');
 $seen = $status($get($trendyolWaiting, $path), 200, 'Trendyol waiting-stage employee sees the order');

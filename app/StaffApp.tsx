@@ -27,9 +27,11 @@ import { AuthorityScreen } from "../features/authority/AuthorityScreen";
 import { canManageAuthority } from "../domain/authority";
 import { TrendyolInboxScreen } from "../features/trendyol/TrendyolInboxScreen";
 import { TrendyolPackageScreen } from "../features/trendyol/TrendyolPackageScreen";
+import { dashboardUrlFor } from "../domain/workspaces";
 
 export function StaffApp({ initialRoute, mode, apiBaseUrl }: { initialRoute: string; mode: StaffRuntimeMode; apiBaseUrl: string }) {
   const services = useMemo(() => createServices({ mode, apiBaseUrl }), [apiBaseUrl, mode]);
+  const dashboardUrl = useMemo(() => mode === "production" ? dashboardUrlFor(apiBaseUrl) : null, [apiBaseUrl, mode]);
   const [route, setRoute] = useState(initialRoute);
   const [session, setSession] = useState<Session | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
@@ -120,7 +122,7 @@ export function StaffApp({ initialRoute, mode, apiBaseUrl }: { initialRoute: str
   const exceptionId = parsedRoute.kind === "exception-detail" && guardedRoute === parsedRoute.pathname ? parsedRoute.exceptionId : "";
   const documentOrderId = parsedRoute.kind === "document-detail" && guardedRoute === parsedRoute.pathname ? parsedRoute.orderId : "";
   const trendyolPackageId = parsedRoute.kind === "trendyol-package" && guardedRoute === parsedRoute.pathname ? parsedRoute.packageId : "";
-  let screen = <HomeScreen employee={session.employee} activityService={services.activity} exceptionService={services.exceptions} cutting={services.cutting} documents={services.documents} authority={services.authority} trendyol={services.trendyol} navigate={navigate} />;
+  let screen = <HomeScreen employee={session.employee} services={services} workflow={workflow} dashboardUrl={dashboardUrl} navigate={navigate} />;
   if (guardedRoute === "/scan") screen = <ScannerScreen service={services.orders} cutting={services.cutting} workflow={workflow} mode={mode} navigate={navigate} onSessionExpired={() => expireSession(new StaffServiceError("SESSION_EXPIRED"))} />;
   else if (guardedRoute === "/orders") screen = <OrdersScreen service={services.orders} workflow={workflow} navigate={navigate} />;
   else if (orderId) screen = <OrderDetailScreen key={orderId} orderId={orderId} service={services.orders} exceptions={services.exceptions} cutting={services.cutting} documents={services.documents} productionQr={canManageAuthority(session.employee) ? services.productionQr : undefined} permissions={session.employee.permissions} workflow={workflow} navigate={navigate} onSessionExpired={() => expireSession(new StaffServiceError("SESSION_EXPIRED"))} />;

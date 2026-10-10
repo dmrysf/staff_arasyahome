@@ -3,8 +3,9 @@ import { isOrderActionBlockedReason, isOrderActionId, orderActionLabels } from "
 import type { ActivityService, AuthService, EmployeeService, ExceptionService, LiveService, OrderService, ServiceBundle, Session } from "../contracts";
 import { startLiveClient } from "./liveClient";
 import type { DocumentApi, DocumentAttention, DocumentRevision, OrderDocument, OrderDocumentSummary } from "../../domain/documents";
-import type { TrendyolApi, TrendyolCapabilities, TrendyolIgnoredPackage, TrendyolIntakeStatus, TrendyolLine, TrendyolLineKind, TrendyolOverview, TrendyolPackageDetail, TrendyolPackageSummary } from "../../domain/trendyol";
+import type { TrendyolActivity, TrendyolApi, TrendyolCapabilities, TrendyolIgnoredPackage, TrendyolIntakeStatus, TrendyolLine, TrendyolLineKind, TrendyolOverview, TrendyolPackageDetail, TrendyolPackageSummary } from "../../domain/trendyol";
 import { marketplaceClassOf, marketplaceStatusLabels } from "../../domain/trendyol";
+import type { ManagementApi, ProductionOverview, StageQueue, StageSummary, WorkspaceApi } from "../../domain/workspaces";
 import { isProductionAuthority, type AuthorityApi, type AuthorityChange, type OrderAuthorityView, type ProductionAuthorityMode } from "../../domain/authority";
 import type { ActiveQr, ProductionQrApi, ProductionQrView, QrAuthority, QrAuthorityMode, QrRevision, QrRevisionState, QrRotationReason } from "../../domain/productionQr";
 import { createBrowserWorkflowCache, createUnavailableWorkflowCache, normalizeProductionApiBaseUrl, type WorkflowCache } from "./workflowCache";
@@ -29,6 +30,7 @@ const backendErrorCodes: Partial<Record<string, ServiceErrorCode>> = {
   MEASUREMENTS_REQUIRED: "TRENDYOL_PACKAGE_NOT_PREPARED",
   MARKETPLACE_STATUS_NOT_RELEASABLE: "TRENDYOL_STATUS_NOT_RELEASABLE",
   MARKETPLACE_LINES_CHANGED: "TRENDYOL_LINES_CHANGED",
+  STAGE_NOT_ALLOWED: "UNAUTHORIZED_ACTION",
   TRENDYOL_PACKAGE_UNAVAILABLE: "TRENDYOL_PACKAGE_UNAVAILABLE",
   TRENDYOL_VERIFICATION_FAILED: "TRENDYOL_VERIFICATION_FAILED",
   TRENDYOL_VERIFICATION_UNAVAILABLE: "TRENDYOL_VERIFICATION_FAILED",
@@ -772,6 +774,7 @@ export function createProductionServices(apiBaseUrl: string, options: Production
   const trendyolPackage = (packageId: string) => `/trendyol/packages/${encodeURIComponent(packageId)}`;
   const trendyol: TrendyolApi = {
     overview: (signal) => http.request("/trendyol/overview", { signal }, mapTrendyolOverview),
+    activity: (signal) => http.request("/trendyol/activity", { signal }, mapTrendyolActivity),
     list: (view, signal) => http.request(`/trendyol/packages?view=${view}`, { signal }, (value) => itemsOf(value).map(mapTrendyolSummary)),
     ignored: (signal) => http.request("/trendyol/packages?view=ignored", { signal }, (value) => itemsOf(value).map(mapTrendyolIgnored)),
     detail: (packageId, signal) => http.request(trendyolPackage(packageId), { signal }, mapTrendyolDetail),
@@ -780,7 +783,12 @@ export function createProductionServices(apiBaseUrl: string, options: Production
     reopen: (packageId, input, key) => http.request(`${trendyolPackage(packageId)}/reopen`, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapTrendyolDetail),
     release: (packageId, input, key) => http.request(`${trendyolPackage(packageId)}/release`, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapTrendyolDetail),
   };
-  return { auth, employee, orders, activity, workflow, exceptions, live, cutting, documents, authority, productionQr, trendyol, mode: "production" };
+  const workspace: WorkspaceApi = {
+    stageQueue: (stageId, signal) => http.request(`/orders/stage-queue?stage=${encodeURIComponent(stageId)}`, { signal }, mapStageQueue),
+    stageSummary: (signal) => http.request("/orders/stage-summary", { signal }, mapStageSummary),
+  };
+  const management: ManagementApi = { productionOverview: (signal) => http.request("/management/production-overview", { signal }, mapProductionOverview) };
+  return { auth, employee, orders, activity, workflow, exceptions, live, cutting, documents, authority, productionQr, trendyol, workspace, management, mode: "production" };
 }
 
 // ---------------------------------------------------------------- Trendyol workspace (strict; unexpected shapes fail closed)
@@ -807,6 +815,47 @@ function mapTrendyolCapabilities(value: unknown): TrendyolCapabilities {
 }
 const marketplaceClasses = ["new", "payment_pending", "review", "fulfilment", "returned", "cancelled", "split"] as const;
 const blockedReasons = ["payment_pending", "review", "fulfilment", "returned", "cancelled", "split", "unknown_status"] as const;
+export function mapTrendyolActivity(value: unknown): TrendyolActivity {
+  const raw = objectValue(value);
+  const today = objectValue(raw.today);
+  if (!Array.isArray(raw.recent)) throw new StaffServiceError("SERVER_ERROR");
+  return {
+    today: { linesPrepared: nonNegativeInteger(today.linesPrepared), released: nonNegativeInteger(today.released), dismissed: nonNegativeInteger(today.dismissed), reopened: nonNegativeInteger(today.reopened) },
+    recent: raw.recent.map((item) => {
+      const event = objectValue(item);
+      return { action: oneOf(event.action, ["line_prepared", "released", "dismissed", "reopened"] as const), packageId: event.packageId == null ? null : packageIdValue(event.packageId), orderNumber: nullableText(event.orderNumber), at: nullableTimestamp(event.at) };
+    }),
+  };
+}
+export function mapStageQueue(value: unknown): StageQueue {
+  const raw = objectValue(value);
+  const counts = objectValue(raw.counts);
+  if (!Array.isArray(raw.items) || typeof raw.countsComplete !== "boolean") throw new StaffServiceError("SERVER_ERROR");
+  return {
+    stageId: stringValue(raw.stageId),
+    counts: { total: nonNegativeInteger(counts.total), mine: nonNegativeInteger(counts.mine), available: nonNegativeInteger(counts.available), blocked: nonNegativeInteger(counts.blocked), claimedByOthers: nonNegativeInteger(counts.claimedByOthers) },
+    countsComplete: raw.countsComplete,
+    items: raw.items.map(mapProductionOrder),
+  };
+}
+export function mapStageSummary(value: unknown): StageSummary {
+  const raw = objectValue(value);
+  if (!Array.isArray(raw.stages)) throw new StaffServiceError("SERVER_ERROR");
+  return raw.stages.map((item) => { const stage = objectValue(item); return { stageId: stringValue(stage.stageId), total: nonNegativeInteger(stage.total), mine: nonNegativeInteger(stage.mine) }; });
+}
+export function mapProductionOverview(value: unknown): ProductionOverview {
+  const raw = objectValue(value);
+  const summary = objectValue(raw.summary);
+  if (!Array.isArray(raw.stages)) throw new StaffServiceError("SERVER_ERROR");
+  return {
+    generatedAt: timestampValue(raw.generatedAt),
+    summary: { active: nonNegativeInteger(summary.active), waiting: nonNegativeInteger(summary.waiting), inWork: nonNegativeInteger(summary.inWork), unassigned: nonNegativeInteger(summary.unassigned), completedToday: nonNegativeInteger(summary.completedToday) },
+    stages: raw.stages.map((item) => {
+      const stage = objectValue(item);
+      return { id: stringValue(stage.id), label: stringValue(stage.label), ordinal: positiveInteger(stage.ordinal), active: nonNegativeInteger(stage.active), unassigned: nonNegativeInteger(stage.unassigned), oldestEnteredAt: nullableTimestamp(stage.oldestEnteredAt) };
+    }),
+  };
+}
 export function mapTrendyolOverview(value: unknown): TrendyolOverview {
   const raw = objectValue(value);
   const intake = objectValue(raw.intake);

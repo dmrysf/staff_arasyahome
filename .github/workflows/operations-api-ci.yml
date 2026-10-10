@@ -385,9 +385,9 @@ jobs:
           cp operations-api/config/secrets.example.json "$release_dir/config/secrets.example.json"
           cp operations-api/scripts/*.sh "$release_dir/scripts/"
           chmod +x "$release_dir/scripts/"*.sh
-          printf '{\n  "sourceCommit": "%s",\n  "builtAt": "%s",\n  "version": "2.24.3"\n}\n' "$GITHUB_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$release_dir/release.json"
-          php -r '$r=json_decode(file_get_contents($argv[1]), true, flags: JSON_THROW_ON_ERROR); if (($r["sourceCommit"] ?? null) !== getenv("GITHUB_SHA") || ($r["version"] ?? null) !== "2.24.3") { throw new RuntimeException("API release metadata does not match source."); }' "$release_dir/release.json"
-          grep -Fq "public const VERSION = '2.24.3';" "$release_dir/src/Http/HealthController.php"
+          printf '{\n  "sourceCommit": "%s",\n  "builtAt": "%s",\n  "version": "2.25.0"\n}\n' "$GITHUB_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$release_dir/release.json"
+          php -r '$r=json_decode(file_get_contents($argv[1]), true, flags: JSON_THROW_ON_ERROR); if (($r["sourceCommit"] ?? null) !== getenv("GITHUB_SHA") || ($r["version"] ?? null) !== "2.25.0") { throw new RuntimeException("API release metadata does not match source."); }' "$release_dir/release.json"
+          grep -Fq "public const VERSION = '2.25.0';" "$release_dir/src/Http/HealthController.php"
           /bin/bash "$release_dir/scripts/generate-sha256s.sh" "$release_dir"
           ARASYA_RELEASE_STRICT=1 /bin/bash "$release_dir/scripts/validate-release.sh" "$release_dir"
 

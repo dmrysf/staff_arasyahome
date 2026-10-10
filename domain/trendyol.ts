@@ -66,10 +66,24 @@ export type TrendyolPackageDetail = TrendyolPackageSummary & {
   capabilities: TrendyolCapabilities & { prepareNow: boolean; releaseNow: boolean; dismissNow: boolean; reopenNow: boolean };
 };
 
+/** The caller's own Trendyol actions (GET /trendyol/activity): today's counts and the latest ten actions. */
+export type TrendyolActivity = {
+  today: { linesPrepared: number; released: number; dismissed: number; reopened: number };
+  recent: { action: "line_prepared" | "released" | "dismissed" | "reopened"; packageId: string | null; orderNumber: string | null; at: string | null }[];
+};
+
+export const activityActionLabels: Record<TrendyolActivity["recent"][number]["action"], string> = {
+  line_prepared: "Linie pregătită",
+  released: "Aprobată pentru producție",
+  dismissed: "Scoasă din lucru",
+  reopened: "Readusă în lucru",
+};
+
 export type TrendyolLineInput = { expectedVersion: number; kind: TrendyolLineKind; widthCm?: string; heightCm?: string; meters?: string; notes?: string };
 
 export interface TrendyolApi {
   overview(signal?: AbortSignal): Promise<TrendyolOverview>;
+  activity(signal?: AbortSignal): Promise<TrendyolActivity>;
   list(view: Exclude<TrendyolView, "ignored">, signal?: AbortSignal): Promise<TrendyolPackageSummary[]>;
   ignored(signal?: AbortSignal): Promise<TrendyolIgnoredPackage[]>;
   detail(packageId: string, signal?: AbortSignal): Promise<TrendyolPackageDetail>;

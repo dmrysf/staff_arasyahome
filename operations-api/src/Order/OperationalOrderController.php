@@ -25,6 +25,9 @@ final readonly class OperationalOrderController
 {
     private const LOOKUP_LIMIT = 60;
     private const LOOKUP_WINDOW_SECONDS = 60;
+    /** Open orders read per stage-queue request; counts beyond it are reported as incomplete, never guessed. */
+    private const STAGE_QUEUE_SCAN = 200;
+    private const STAGE_QUEUE_ITEMS = 30;
 
     public function __construct(
         private OperationalOrderRepository $repository,
@@ -60,6 +63,58 @@ final readonly class OperationalOrderController
         return Response::json([
             'items' => array_map(fn (OperationalOrder $order): array => $this->present($employee, $order, $workflow), $result['items']),
             'nextCursor' => $result['nextCursor'],
+        ], 200, ['Cache-Control' => 'private, no-store']);
+    }
+
+    /**
+     * Read-only queue of one production stage for the Staff department dashboards. The stage must be one of the
+     * employee's allowed stages; every order passes OrderAccessPolicy::canView (so Trendyol orders at the initial
+     * stage stay limited to Trendyol personnel) and carries the same action evaluation as the order screen.
+     * Nothing is claimed or changed here.
+     */
+    public function stageQueue(Request $request): Response
+    {
+        $employee = $this->authenticate($request)->employee;
+        $this->authorization->require($employee, 'orders.view_mine');
+        $stageId = $this->allowedStage($employee, $request->query('stage') ?? '');
+        $workflow = $this->workflowOrNull();
+        $rows = $this->repository->listOpenAtStage($employee->employeeUuid, $stageId, self::STAGE_QUEUE_SCAN + 1);
+        $complete = count($rows) <= self::STAGE_QUEUE_SCAN;
+        $buckets = ['mine' => [], 'available' => [], 'blocked' => [], 'claimedByOthers' => []];
+        foreach (array_slice($rows, 0, self::STAGE_QUEUE_SCAN) as $order) {
+            if (!$this->policy->canView($employee, $order)) {
+                continue;
+            }
+            $decision = $this->policy->evaluate($employee, $order, $workflow);
+            $bucket = match (true) {
+                $order->productionOwnerEmployeeUuid === $employee->employeeUuid => 'mine',
+                $decision['action'] === OrderAccessPolicy::ACTION_CLAIM => 'available',
+                $decision['blockedReason'] === 'claimed_by_other' => 'claimedByOthers',
+                default => 'blocked',
+            };
+            $buckets[$bucket][] = [$order, $decision];
+        }
+        $total = $this->repository->countOpenByStage($employee->employeeUuid, [$stageId], $this->authorization->can($employee, OrderAccessPolicy::TRENDYOL_VIEW))[$stageId]['total'] ?? 0;
+        $items = array_slice(array_merge(...array_values($buckets)), 0, self::STAGE_QUEUE_ITEMS);
+        return Response::json([
+            'stageId' => $stageId,
+            'counts' => ['total' => $total] + array_map('count', $buckets),
+            'countsComplete' => $complete,
+            'items' => array_map(fn (array $entry): array => $this->serializer->serializeOrder($entry[0], $entry[1]), $items),
+        ], 200, ['Cache-Control' => 'private, no-store']);
+    }
+
+    /** Open-order totals for each of the employee's allowed stages, in workflow order (one grouped query). */
+    public function stageSummary(Request $request): Response
+    {
+        $employee = $this->authenticate($request)->employee;
+        $this->authorization->require($employee, 'orders.view_mine');
+        $allowed = $employee->isOperationallyActive() ? $employee->allowedStageIds : [];
+        $workflow = $this->workflowOrNull();
+        $ordered = $workflow === null ? $allowed : array_values(array_filter(array_map(static fn ($stage): string => $stage->id, $workflow->stages), static fn (string $id): bool => in_array($id, $allowed, true)));
+        $counts = $this->repository->countOpenByStage($employee->employeeUuid, $ordered, $this->authorization->can($employee, OrderAccessPolicy::TRENDYOL_VIEW));
+        return Response::json([
+            'stages' => array_map(static fn (string $id): array => ['stageId' => $id, 'total' => $counts[$id]['total'] ?? 0, 'mine' => $counts[$id]['mine'] ?? 0], $ordered),
         ], 200, ['Cache-Control' => 'private, no-store']);
     }
 
@@ -200,6 +255,17 @@ final readonly class OperationalOrderController
         );
         $this->context->authenticatedAs($session->employee->employeeUuid);
         return $session;
+    }
+
+    private function allowedStage(EmployeeIdentity $employee, string $stageId): string
+    {
+        if (preg_match('/^[a-z0-9][a-z0-9-]{0,99}$/D', $stageId) !== 1) {
+            throw new ApiException(400, 'INVALID_STAGE', 'The stage is not valid.');
+        }
+        if (!$employee->isOperationallyActive() || !in_array($stageId, $employee->allowedStageIds, true)) {
+            throw new ApiException(403, 'STAGE_NOT_ALLOWED', 'This stage is not assigned to the employee.');
+        }
+        return $stageId;
     }
 
     private function parseOrderId(string $globalIdString): GlobalOrderId
