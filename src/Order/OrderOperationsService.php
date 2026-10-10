@@ -109,9 +109,10 @@ final readonly class OrderOperationsService
     {
         $this->pdo->beginTransaction();
         try {
-            $lock = $this->pdo->prepare('SELECT order_uuid FROM operational_orders WHERE global_order_id = ? FOR UPDATE');
+            $lock = $this->pdo->prepare('SELECT order_uuid, source_key FROM operational_orders WHERE global_order_id = ? FOR UPDATE');
             $lock->execute([$orderId->toString()]);
-            $orderUuid = $lock->fetchColumn();
+            $locked = $lock->fetch(PDO::FETCH_ASSOC);
+            $orderUuid = is_array($locked) ? $locked['order_uuid'] : false;
             if (!is_string($orderUuid)) {
                 throw new ApiException(404, 'ORDER_NOT_FOUND', 'Order not found.');
             }
@@ -119,14 +120,21 @@ final readonly class OrderOperationsService
             // Before any consistent read: serialize this employee's claims across different orders.
             $this->pdo->prepare('SELECT employee_uuid FROM employees WHERE employee_uuid = ? FOR UPDATE')->execute([$employee->employeeUuid]);
 
+            // The authorization is re-read under the employee lock (IAM changes lock the same row), so a stage or
+            // scope change committed while this request waited applies here, never the session-time snapshot.
+            $employee = (new PdoEmployeeRepository($this->pdo))->findByUuid($employee->employeeUuid) ?? throw new ApiException(401, 'ACCOUNT_INACTIVE', 'Account is not active.');
+            if (!$employee->isOperationallyActive() || !$employee->hasApplication('staff') || $employee->mustChangePassword) throw new ApiException(403, 'UNAUTHORIZED_ACTION', 'Permission denied.');
+
             $replay = $this->replay($employee->employeeUuid, $idempotencyKey, $operation, $orderUuid, $requestHash);
             if ($replay !== null) {
                 $this->pdo->rollBack();
+                // A stored response carries order details: it is replayed only while the employee still reaches the
+                // order's source.
+                if (!$employee->reachesSource((string) $locked['source_key'])) {
+                    throw new ApiException(404, 'ORDER_NOT_FOUND', 'Order not found.');
+                }
                 return $replay;
             }
-
-            $employee = (new PdoEmployeeRepository($this->pdo))->findByUuid($employee->employeeUuid) ?? throw new ApiException(401, 'ACCOUNT_INACTIVE', 'Account is not active.');
-            if (!$employee->isOperationallyActive() || !$employee->hasApplication('staff') || $employee->mustChangePassword) throw new ApiException(403, 'UNAUTHORIZED_ACTION', 'Permission denied.');
 
             $order = $this->orders->findByGlobalId($employee->employeeUuid, $orderId->toString());
             if ($order === null || !$this->policy->canView($employee, $order)) {

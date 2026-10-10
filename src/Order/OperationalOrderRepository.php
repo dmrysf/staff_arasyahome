@@ -7,11 +7,14 @@ namespace Arasya\Operations\Order;
 interface OperationalOrderRepository
 {
     /**
-     * Orders with an active direct relation to the employee, newest relation first.
+     * Orders with an active direct relation to the employee, newest relation first. $sources limits the relations
+     * to orders of those commerce sources (the sources the employee still reaches); null reads every source and an
+     * empty list returns nothing.
      *
+     * @param list<string>|null $sources
      * @return array{items: list<OperationalOrder>, nextCursor: string|null}
      */
-    public function listMine(string $employeeUuid, int $limit, ?string $cursor): array;
+    public function listMine(string $employeeUuid, int $limit, ?string $cursor, ?array $sources = null): array;
 
     /** Loads an order with only the given employee's relation attached. Visibility is decided by OrderAccessPolicy. */
     public function findByGlobalId(string $employeeUuid, string $globalOrderId): ?OperationalOrder;
@@ -25,17 +28,22 @@ interface OperationalOrderRepository
     /**
      * Open orders (not completed, not unavailable) currently at one production stage, longest waiting first,
      * with only the given employee's relation attached. Read-only and bounded by $max; the caller decides visibility.
+     * $sources limits the orders to those commerce sources (a source-scoped stage grant); null reads every source.
      *
+     * @param list<string>|null $sources
      * @return list<OperationalOrder>
      */
-    public function listOpenAtStage(string $employeeUuid, string $stageId, int $max): array;
+    public function listOpenAtStage(string $employeeUuid, string $stageId, int $max, ?array $sources = null): array;
 
     /**
      * Open-order counts per stage for the given stages: total and owned by the employee. Trendyol orders at the
      * initial stage are counted only when $includeTrendyolIntake is true (the same rule as OrderAccessPolicy::canView).
+     * $sourcesByStage restricts a stage to the listed sources (a source-scoped grant); a stage absent there is
+     * counted for every source.
      *
      * @param list<string> $stageIds
+     * @param array<string, list<string>> $sourcesByStage
      * @return array<string, array{total: int, mine: int}>
      */
-    public function countOpenByStage(string $employeeUuid, array $stageIds, bool $includeTrendyolIntake): array;
+    public function countOpenByStage(string $employeeUuid, array $stageIds, bool $includeTrendyolIntake, array $sourcesByStage = []): array;
 }
