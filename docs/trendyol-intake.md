@@ -107,6 +107,30 @@ Reading needs three independent switches; any one off means no HTTP call at all:
 The baseline cannot lie more than five minutes in the past and never moves backwards; the first window starts at the
 baseline (minus the thirty-minute overlap), never earlier. `pause` / `resume` stop and restart reading from the cursor.
 
+### Operator CLI (`bin/trendyol-intake.php`, fixed in API 2.26.1)
+
+```bash
+php bin/trendyol-intake.php status
+php bin/trendyol-intake.php activate --baseline=now --operator=<name> --confirm=ACTIVATE-TRENDYOL-INTAKE
+php bin/trendyol-intake.php pause --operator=<name>
+php bin/trendyol-intake.php resume --operator=<name>
+```
+
+The command comes first. Every option is `--name=value` and may appear once. `--baseline` is `now` or ISO-8601 with
+an offset, for example `2026-10-10T16:48:04+00:00` or `...Z`; an impossible date such as 30 February is refused. The
+operator name is 2–120 letters, digits, spaces and `._@-`.
+
+| Exit | Meaning |
+|---|---|
+| 0 | Done. The state is printed as JSON (credentials and the switch only as `credentialsConfigured` / `intakeSwitch`). |
+| 1 | Refused by the intake state (`TRENDYOL_BASELINE_IN_PAST`, `TRENDYOL_BASELINE_BACKWARDS`, `TRENDYOL_INTAKE_ALREADY_ACTIVE`, `TRENDYOL_INTAKE_NOT_ACTIVE`, `TRENDYOL_INTAKE_NOT_PAUSED`, `TRENDYOL_OPERATOR_REQUIRED`, ...) or failed (`TRENDYOL_INTAKE_COMMAND_FAILED`). Nothing changed. |
+| 2 | Invalid invocation: unsupported command, unknown, duplicate, empty or missing option, wrong confirmation, invalid baseline. Nothing was read or changed. |
+
+Messages never repeat an argument value. Up to API 2.26.0 the CLI used PHP `getopt()`, which stops at the first
+non-option argument (the command), so it never read the options: `activate` was always refused and `pause` /
+`resume` were refused for a missing operator. The 2026-10-10 production activation therefore called
+`TrendyolIntakeState::activate` directly, with the same rules and audit event.
+
 **Timestamps (verified on the live account, 2026-10-09).** Trendyol documents `orderDate` as "GMT+3", but the API
 returns `orderDate`, `lastModifiedDate` and `packageHistories[].createdDate` as real UTC epoch milliseconds: the order
 ending 6094 has `orderDate` 1791580287929 = 2026-10-09 21:11:27Z, shown in the Seller Panel as 10 October 00:11
