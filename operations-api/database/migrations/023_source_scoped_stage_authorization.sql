@@ -8,9 +8,11 @@
 -- works at that stage only on orders of the listed sources. A row never grants a stage by itself (it is ignored
 -- unless the stage grant exists), so the effective access is always the intersection, never a union.
 --
--- Rows are written only by root through PUT /management/employees/{id}/stage-scopes, which refuses an empty
--- source list (removing the stage grant is the only way to revoke a stage completely), and removing a stage
--- grant removes its scope rows in the same transaction. Every change is recorded in iam_audit_events.
+-- Rows are written only by root: PUT /management/employees/{id}/stages grants a stage already scoped in the same
+-- transaction (stageScopes), and PUT /management/employees/{id}/stage-scopes changes one stage at a time against
+-- the scope the caller read, with an explicit confirmation for any widening. An empty source list is refused
+-- (removing the stage grant is the only way to revoke a stage completely), and removing a stage grant removes its
+-- scope rows in the same transaction. Every change is recorded in iam_audit_events.
 CREATE TABLE IF NOT EXISTS employee_stage_source_scopes (
     employee_uuid CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     stage_id VARCHAR(100) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,

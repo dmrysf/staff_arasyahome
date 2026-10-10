@@ -57,11 +57,15 @@ final readonly class OperationalOrderController
         if (!ctype_digit($limitParam) || (int) $limitParam < 1 || (int) $limitParam > 100) {
             throw new ApiException(400, 'INVALID_LIMIT', 'Limit must be an integer between 1 and 100.');
         }
-        $result = $this->repository->listMine($employee->employeeUuid, (int) $limitParam, $request->query('cursor'));
+        // A relation lists an order only while the employee still reaches its source (the same rule as canView): an
+        // order of a source revoked by a narrowed scope or a removed stage never returns its operational details here.
+        $sources = $employee->isOperationallyActive() ? $employee->reachableSources() : [];
+        $result = $this->repository->listMine($employee->employeeUuid, (int) $limitParam, $request->query('cursor'), $sources);
         $workflow = $this->workflowOrNull();
+        $visible = array_values(array_filter($result['items'], fn (OperationalOrder $order): bool => $this->policy->canView($employee, $order)));
 
         return Response::json([
-            'items' => array_map(fn (OperationalOrder $order): array => $this->present($employee, $order, $workflow), $result['items']),
+            'items' => array_map(fn (OperationalOrder $order): array => $this->present($employee, $order, $workflow), $visible),
             'nextCursor' => $result['nextCursor'],
         ], 200, ['Cache-Control' => 'private, no-store']);
     }

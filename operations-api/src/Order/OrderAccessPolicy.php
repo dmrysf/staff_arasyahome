@@ -14,13 +14,15 @@ use Arasya\Operations\Production\ProductionWorkflow;
 /**
  * Server-side operational authority for one employee and one order.
  *
- * Visibility: an order is visible when the employee has a direct relation
- * with it, or when the employee works at its current production stage for
- * its source: the stage is granted and, for a source-scoped grant
- * (migration 023), the order's source is one of the granted sources (a
- * Trendyol order at the initial stage also needs the Trendyol view
- * permission). Everything else is reported as not found. Claim and stage
- * completion use the same stage-and-source rule.
+ * Visibility: an order is visible when the employee works at its current
+ * production stage for its source (the stage is granted and, for a
+ * source-scoped grant (migration 023), the order's source is one of the
+ * granted sources), or when the employee has a direct relation with it and
+ * still reaches its source at some granted stage. A Trendyol order at the
+ * initial stage also needs the Trendyol view permission on both paths.
+ * Everything else is reported as not found. Claim and stage completion
+ * always use the current stage-and-source rule; a relation never authorizes
+ * a mutation.
  *
  * Production authority: while the order's source enforces the authority split, an order that is still
  * managed by its source (production_authority = 'source') cannot be worked on in Staff at all; a manager
@@ -58,15 +60,18 @@ final readonly class OrderAccessPolicy
         if (!$employee->isOperationallyActive()) {
             return false;
         }
-        if ($order->relation !== null && $order->relation->employeeUuid === $employee->employeeUuid) {
-            return true;
-        }
-        if (!$employee->worksAt($order->productionStageId, $order->globalId->sourceKey)) {
+        $source = $order->globalId->sourceKey;
+        // A direct relation (an order the employee worked on) keeps the order visible after it moved on, but never
+        // past the employee's current source authorization: once no granted stage reaches the order's source any
+        // more (a narrowed scope or a removed stage), the relation alone shows nothing. The employee's own activity
+        // ledger (GET /activity/mine) and the audit trail keep the historical record.
+        $related = $order->relation !== null && $order->relation->employeeUuid === $employee->employeeUuid;
+        if ($related ? !$employee->reachesSource($source) : !$employee->worksAt($order->productionStageId, $source)) {
             return false;
         }
         // An approved Trendyol order at the initial stage is still Trendyol preparation work: besides the stage, it
         // is visible only to explicitly authorized Trendyol personnel. From the next stage on it is ordinary work.
-        return $order->globalId->sourceKey !== self::TRENDYOL_SOURCE
+        return $source !== self::TRENDYOL_SOURCE
             || $order->productionStageId !== OrderProjectionWriter::INITIAL_STAGE_ID
             || $this->authorization->can($employee, self::TRENDYOL_VIEW);
     }

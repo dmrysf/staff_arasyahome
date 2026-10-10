@@ -35,6 +35,16 @@ $status = static function (array $response, int $expected, string $message) use 
     $check($response['status'] === $expected, "{$message} (got {$response['status']} " . json_encode($response['body']) . ')');
     return json_decode(json_encode($response['body'] ?? []), true);
 };
+// JSON columns do not keep key order: audit metadata is compared with object keys sorted, lists kept as they are.
+$canon = static function (mixed $value) use (&$canon): mixed {
+    if (!is_array($value)) {
+        return $value;
+    }
+    if (!array_is_list($value)) {
+        ksort($value);
+    }
+    return array_map($canon, $value);
+};
 $error = static function (array $response, int $expected, string $code, string $message) use ($check): void {
     $check($response['status'] === $expected && ($response['body']['error']['code'] ?? null) === $code, "{$message} (got {$response['status']} " . json_encode($response['body']) . ')');
 };
@@ -104,7 +114,7 @@ $queueSources = static fn (array $queue): array => array_values(array_unique(arr
 
 // ---- Orders: Trendhome, OutletPerdele and B2B at `waiting` and at `material-preparation` --------------------
 $orders = [];
-foreach (['SW1' => ['trendhome', 'waiting'], 'SW2' => ['trendhome', 'waiting'], 'OW1' => ['outletperdele', 'waiting'], 'SM1' => ['trendhome', 'material-preparation'], 'OM1' => ['outletperdele', 'material-preparation']] as $tag => [$source, $stage]) {
+foreach (['SW1' => ['trendhome', 'waiting'], 'SW2' => ['trendhome', 'waiting'], 'SW3' => ['trendhome', 'waiting'], 'OW1' => ['outletperdele', 'waiting'], 'SM1' => ['trendhome', 'material-preparation'], 'OM1' => ['outletperdele', 'material-preparation']] as $tag => [$source, $stage]) {
     $number = "{$tag}{$suffix}";
     $applied = T::ingest($kernel, $source, T::sourceOrder($number, "evt-{$tag}-{$suffix}", gmdate('Y-m-d\TH:i:s\Z', time() - 120), T::stage($stage)));
     $check(($applied['body']['outcome'] ?? null) === 'applied', "order {$tag} ingested");
@@ -125,31 +135,38 @@ $mixed = $identity('mixed', ['waiting', 'material-preparation']);
 $cutScoped = $identity('cutscoped', ['material-preparation']);
 $cutLegacy = $identity('cutlegacy', ['material-preparation']);
 $manager = $identity('manager', [], ['staff', 'dashboard'], [$roleIds['department-manager']]);
+$hist = $identity('hist', ['waiting']);
 
 // Effective access of an unscoped (legacy) grant before any scope exists anywhere.
 $reach = static fn (array $who): array => array_map(static fn (string $tag): bool => $sees($who, $orders[$tag]), ['SW1' => 'SW1', 'SW2' => 'SW2', 'OW1' => 'OW1', 'BW1' => 'BW1']);
 $legacyBefore = $reach($legacy) + ['total' => $status($get($legacy, '/orders/stage-queue', ['stage' => 'waiting']), 200, 'legacy queue')['counts']['total']];
 $check($legacyBefore === ['SW1' => true, 'SW2' => true, 'OW1' => true, 'BW1' => true, 'total' => $openAt('waiting')], 'a legacy waiting grant reaches every source: ' . json_encode($legacyBefore));
 
-// ---- Root-only scope management --------------------------------------------------------------------------------
+// ---- Root-only scope management: one stage per request, optimistic, explicit widening -------------------------------
 $scopePath = static fn (string $name): string => "/management/employees/{$uuids[$name]}/stage-scopes";
-$error($send($manager, 'PUT', $scopePath('tyonly'), ['scopes' => ['waiting' => ['trendyol']]]), 403, 'ROOT_ONLY', 'a department manager cannot change stage scopes');
-$error($send($tyonly, 'PUT', $scopePath('tyonly'), ['scopes' => ['waiting' => ['trendhome', 'trendyol']]]), 403, 'APPLICATION_ACCESS_DENIED', 'an employee cannot widen the own scope');
-$error($asRoot('PUT', $scopePath('tyonly'), ['scopes' => ['packing' => ['trendyol']]]), 400, 'STAGE_NOT_GRANTED', 'a scope never grants a stage');
-$error($asRoot('PUT', $scopePath('tyonly'), ['scopes' => ['waiting' => []]]), 400, 'VALIDATION_FAILED', 'an empty scope is refused (remove the stage instead)');
-$error($asRoot('PUT', $scopePath('tyonly'), ['scopes' => ['waiting' => ['amazon']]]), 400, 'UNKNOWN_SOURCE', 'unknown sources are refused');
-$error($asRoot('PUT', $scopePath('tyonly'), ['scopes' => [['trendyol']]]), 400, 'VALIDATION_FAILED', 'scopes must be keyed by stage');
-$error($asRoot('PUT', $scopePath('tyonly'), ['scopes' => ['waiting' => ['trendyol']], 'isRoot' => true]), 400, 'INVALID_REQUEST', 'unknown body fields are refused');
+$scope = static fn (string $stage, ?array $sources, ?array $expected, ?bool $confirm = null): array => ['stageId' => $stage, 'sources' => $sources, 'expectedSources' => $expected] + ($confirm === null ? [] : ['confirmWidening' => $confirm]);
+$error($send($manager, 'PUT', $scopePath('tyonly'), $scope('waiting', ['trendyol'], null)), 403, 'ROOT_ONLY', 'a department manager cannot change stage scopes');
+$error($send($tyonly, 'PUT', $scopePath('tyonly'), $scope('waiting', ['trendhome', 'trendyol'], null, true)), 403, 'APPLICATION_ACCESS_DENIED', 'an employee cannot widen the own scope');
+$error($asRoot('PUT', $scopePath('tyonly'), $scope('packing', ['trendyol'], null)), 400, 'STAGE_NOT_GRANTED', 'a scope never grants a stage');
+$error($asRoot('PUT', $scopePath('tyonly'), $scope('waiting', [], null)), 400, 'VALIDATION_FAILED', 'an empty scope is refused (remove the stage instead)');
+$error($asRoot('PUT', $scopePath('tyonly'), $scope('waiting', ['amazon'], null)), 400, 'UNKNOWN_SOURCE', 'unknown sources are refused');
+$error($asRoot('PUT', $scopePath('tyonly'), ['stageId' => ['waiting'], 'sources' => ['trendyol'], 'expectedSources' => null]), 400, 'VALIDATION_FAILED', 'the stage must be one stage id');
+$error($asRoot('PUT', $scopePath('tyonly'), ['stageId' => 'waiting', 'sources' => ['trendyol']]), 400, 'INVALID_REQUEST', 'the expected current scope is required');
+$error($asRoot('PUT', $scopePath('tyonly'), ['scopes' => ['waiting' => ['trendyol']]]), 400, 'INVALID_REQUEST', 'the replace-all body of the first draft is refused');
+$error($asRoot('PUT', $scopePath('tyonly'), $scope('waiting', ['trendyol'], null) + ['isRoot' => true]), 400, 'INVALID_REQUEST', 'unknown body fields are refused');
+$error($asRoot('PUT', $scopePath('tyonly'), $scope('waiting', ['trendyol'], null) + ['confirmWidening' => 'yes']), 400, 'VALIDATION_FAILED', 'confirmWidening must be a boolean');
+$error($asRoot('PUT', $scopePath('tyonly'), $scope('waiting', ['trendyol'], ['trendhome'])), 409, 'STAGE_SCOPE_CHANGED', 'a decision taken on a stale read is refused');
 $check((int) $one('SELECT COUNT(*) FROM employee_stage_source_scopes') === 0, 'refused requests write nothing');
-$updated = $status($asRoot('PUT', $scopePath('tyonly'), ['scopes' => ['waiting' => ['trendyol']]]), 200, 'root scopes waiting to Trendyol');
+$updated = $status($asRoot('PUT', $scopePath('tyonly'), $scope('waiting', ['trendyol'], null)), 200, 'root narrows waiting to Trendyol without a widening confirmation');
 $check(($updated['stageSourceScopes']['waiting'] ?? null) === ['trendyol'], 'the management view shows the scope');
 $audit = $pdo->prepare("SELECT metadata_json FROM iam_audit_events WHERE action = 'employee.stage_scopes_changed' AND target_id = ? ORDER BY created_at DESC LIMIT 1");
 $audit->execute([$uuids['tyonly']]);
-$details = json_decode((string) $audit->fetchColumn(), true);
-$check(($details['after']['waiting'] ?? null) === ['trendyol'], 'the scope change is audited with before and after');
-$status($asRoot('PUT', $scopePath('multi'), ['scopes' => ['waiting' => ['outletperdele', 'trendhome']]]), 200, 'multi-source scope');
-$status($asRoot('PUT', $scopePath('mixed'), ['scopes' => ['waiting' => ['b2b']]]), 200, 'mixed: waiting scoped, cutting unscoped');
-$status($asRoot('PUT', $scopePath('cutscoped'), ['scopes' => ['material-preparation' => ['outletperdele']]]), 200, 'scoped cutter');
+$details = $canon(json_decode((string) $audit->fetchColumn(), true));
+$check($details === $canon(['stageId' => 'waiting', 'before' => null, 'after' => ['trendyol'], 'widening' => false, 'effectiveBefore' => ['waiting' => 'all'], 'effectiveAfter' => ['waiting' => ['trendyol']]]), 'the scope change is audited with the effective access before and after: ' . json_encode($details));
+$status($asRoot('PUT', $scopePath('tyonly'), $scope('waiting', ['trendyol'], ['trendyol'])), 200, 'an unchanged scope is a no-op');
+$status($asRoot('PUT', $scopePath('multi'), $scope('waiting', ['trendhome', 'outletperdele'], null)), 200, 'multi-source scope');
+$status($asRoot('PUT', $scopePath('mixed'), $scope('waiting', ['b2b'], null)), 200, 'mixed: waiting scoped, cutting unscoped');
+$status($asRoot('PUT', $scopePath('cutscoped'), $scope('material-preparation', ['outletperdele'], null)), 200, 'scoped cutter');
 $tyonly = $login('tyonly');
 $session = $status($get($tyonly, '/auth/session'), 200, 'scoped session');
 $check(($session['employee']['stageSourceScopes']['waiting'] ?? null) === ['trendyol'] && $session['employee']['allowedStageIds'] === ['waiting'], 'the session carries the stage scope');
@@ -194,6 +211,8 @@ $replay = $send($legacy, 'POST', '/orders/' . rawurlencode($orders['SW1']) . '/c
 $check($replay['status'] === 200 && json_encode($replay['body']) === json_encode($claimed['body']), 'an idempotent replay returns the same claim');
 $status($send($legacy, 'POST', '/orders/' . rawurlencode($orders['SW1']) . '/transition', ['expectedVersion' => $version($orders['SW1'])]), 200, 'legacy stage-1 hand-off');
 $check($stageOf($orders['SW1']) === 'material-preparation', 'the legacy hand-off reaches cutting');
+$mineIds = static fn (array $who): array => array_column($status($get($who, '/orders/mine'), 200, 'own orders')['items'], 'id');
+$check($sees($legacy, $orders['SW1']) && in_array($orders['SW1'], $mineIds($legacy), true), 'legacy history: an order handed on to a stage the employee does not hold stays visible in the own list');
 
 // ---- Multi-source and mixed grants -------------------------------------------------------------------------------
 $multi = $login('multi');
@@ -201,7 +220,8 @@ $multiQueue = $status($get($multi, '/orders/stage-queue', ['stage' => 'waiting']
 $check($sees($multi, $orders['SW2']) && $sees($multi, $orders['OW1']) && !$sees($multi, $orders['BW1']) && $multiQueue['counts']['total'] === $openAt('waiting', ['outletperdele', 'trendhome'])
     && array_diff($queueSources($multiQueue), ['outletperdele', 'trendhome']) === [], 'a multi-source grant reaches exactly its sources');
 $error($get($multi, '/orders/' . rawurlencode($orders['BW1'])), 404, 'ORDER_NOT_FOUND', 'the multi-source employee does not see B2B');
-$status($send($multi, 'POST', '/orders/' . rawurlencode($orders['OW1']) . '/claim', ['expectedVersion' => $version($orders['OW1'])]), 200, 'multi-source claim of OutletPerdele');
+$multiClaim = ['expectedVersion' => $version($orders['OW1'])];
+$status($send($multi, 'POST', '/orders/' . rawurlencode($orders['OW1']) . '/claim', $multiClaim, 'multi-claim-' . $suffix), 200, 'multi-source claim of OutletPerdele');
 $mixed = $login('mixed');
 $mixedQueue = $status($get($mixed, '/orders/stage-queue', ['stage' => 'waiting']), 200, 'mixed waiting queue');
 $check($queueSources($mixedQueue) === ['b2b'] && $mixedQueue['counts']['total'] === $openAt('waiting', ['b2b']) && $sees($mixed, $orders['BW1']) && !$sees($mixed, $orders['SW2']), 'the scoped waiting grant of a mixed employee reaches only B2B');
@@ -228,23 +248,137 @@ $error($asRoot('PUT', '/management/orders/' . rawurlencode($orders['SM1']) . '/o
 $omOwners = array_column($status($get($root, '/management/orders/' . rawurlencode($orders['SW2']) . '/eligible-owners'), 200, 'eligible owners at waiting')['items'], 'id');
 $check(in_array($uuids['legacy'], $omOwners, true) && in_array($uuids['multi'], $omOwners, true) && !in_array($uuids['tyonly'], $omOwners, true) && !in_array($uuids['mixed'], $omOwners, true), 'waiting owners for Trendhome: legacy and multi, never Trendyol-only or B2B-only');
 
-// ---- Revocation, re-grant and inactivity ----------------------------------------------------------------------------
-$status($asRoot('PUT', $scopePath('multi'), ['scopes' => ['waiting' => ['trendhome']]]), 200, 'narrow multi to Trendhome');
-$multi = $login('multi');
+// ---- Revocation after work: a narrowed scope hides even orders the employee already worked on ----------------------
+// The session opened before the narrowing is reused: authorization is re-read on every request, never cached.
+$owPath = '/orders/' . rawurlencode($orders['OW1']);
+$check($sees($multi, $orders['OW1']) && in_array($orders['OW1'], $mineIds($multi), true), 'before the narrowing the claimed OutletPerdele order is in the own list');
+$activityCount = static fn (string $name): int => (int) $one('SELECT COUNT(*) FROM order_activity_events WHERE employee_uuid = ?', [$uuids[$name]]);
+$relationActive = static fn (string $name, string $tag): int => (int) $one("SELECT COUNT(*) FROM employee_order_relations r JOIN operational_orders o ON o.order_uuid = r.order_uuid WHERE r.employee_uuid = ? AND o.global_order_id = ? AND r.status = 'active'", [$uuids[$name], $orders[$tag]]);
+$multiActivity = $activityCount('multi');
+$owVersion = $version($orders['OW1']);
+$status($asRoot('PUT', $scopePath('multi'), $scope('waiting', ['trendhome'], ['outletperdele', 'trendhome'])), 200, 'narrow multi to Trendhome');
 $narrowed = $status($get($multi, '/orders/stage-queue', ['stage' => 'waiting']), 200, 'narrowed queue');
-$check($queueSources($narrowed) === ['trendhome'] && $narrowed['counts']['total'] === $openAt('waiting', ['trendhome']) && !$sees($multi, $orders['BW1']), 'a narrowed scope drops the source from the queue at once');
-$blocked = $send($multi, 'POST', '/orders/' . rawurlencode($orders['OW1']) . '/transition', ['expectedVersion' => $version($orders['OW1'])]);
-$check($blocked['status'] === 403 && $stageOf($orders['OW1']) === 'waiting', 'an order claimed before the narrowing can no longer be advanced (' . $blocked['status'] . ')');
-$status($asRoot('PUT', "/management/employees/{$uuids['tyonly']}/stages", ['stageIds' => []]), 200, 'remove the waiting stage of the Trendyol-only employee');
+$check(array_diff($queueSources($narrowed), ['trendhome']) === [] && $narrowed['counts']['total'] === $openAt('waiting', ['trendhome']) && !$sees($multi, $orders['BW1']), 'a narrowed scope drops the source from the queue at once');
+$error($get($multi, $owPath), 404, 'ORDER_NOT_FOUND', 'the detail of an order worked before the narrowing is not found');
+$mine = $status($get($multi, '/orders/mine'), 200, 'own orders after the narrowing');
+$check(!in_array($orders['OW1'], array_column($mine['items'], 'id'), true) && !str_contains(json_encode($mine), "OW1{$suffix}"), '/orders/mine no longer returns it, not even its number');
+$error($send($multi, 'POST', '/orders/resolve-qr', ['token' => $qr($orders['OW1'])]), 404, 'ORDER_NOT_FOUND', 'its QR resolves nothing');
+$error($get($multi, '/orders/lookup', ['code' => "OW1{$suffix}"]), 404, 'ORDER_NOT_FOUND', 'its number finds nothing');
+$error($get($multi, '/orders/lookup', ['code' => $orders['OW1']]), 404, 'ORDER_NOT_FOUND', 'its source-qualified id finds nothing');
+$error($send($multi, 'POST', "{$owPath}/transition", ['expectedVersion' => $owVersion]), 404, 'ORDER_NOT_FOUND', 'the own claimed order can no longer be advanced');
+$replayed = $send($multi, 'POST', "{$owPath}/claim", $multiClaim, 'multi-claim-' . $suffix);
+$error($replayed, 404, 'ORDER_NOT_FOUND', 'an idempotent replay of the earlier claim returns no stored order details');
+$check(!str_contains(json_encode($replayed['body']), "OW1{$suffix}"), 'the refused replay carries no order number');
+$check($version($orders['OW1']) === $owVersion && $stageOf($orders['OW1']) === 'waiting', 'nothing changed on the order');
+$check($relationActive('multi', 'OW1') === 1 && $activityCount('multi') === $multiActivity, 'the relation and the activity ledger are kept, not rewritten or deleted');
+$ledger = array_values(array_filter($status($get($multi, '/activity/mine'), 200, 'own activity')['items'], static fn (array $item): bool => $item['orderId'] === $orders['OW1']));
+$check(count($ledger) === 1 && $ledger[0]['action'] === 'claimed'
+    && array_diff(array_keys($ledger[0]), ['id', 'occurredAt', 'action', 'orderId', 'orderNumber', 'source', 'fromStageId', 'fromStageLabelSnapshot', 'toStageId', 'toStageLabelSnapshot', 'meters']) === [],
+    'the own activity ledger keeps the claim as a minimal record (no items, notes, customer or document): ' . json_encode($ledger));
+
+// ---- Widening is explicit, optimistic and audited; one stage never drops another stage's scope ----------------------
+$error($asRoot('PUT', $scopePath('multi'), $scope('waiting', ['outletperdele', 'trendhome'], ['trendhome'])), 409, 'SCOPE_WIDENING_UNCONFIRMED', 'adding a source needs an explicit confirmation');
+$error($asRoot('PUT', $scopePath('multi'), $scope('waiting', null, ['trendhome'])), 409, 'SCOPE_WIDENING_UNCONFIRMED', 'lifting the restriction needs an explicit confirmation');
+$error($asRoot('PUT', $scopePath('multi'), $scope('waiting', null, ['trendhome'], false)), 409, 'SCOPE_WIDENING_UNCONFIRMED', 'confirmWidening false is no confirmation');
+$check($one("SELECT GROUP_CONCAT(source_key) FROM employee_stage_source_scopes WHERE employee_uuid = ?", [$uuids['multi']]) === 'trendhome' && !$sees($multi, $orders['OW1']), 'refused widenings change nothing');
+$status($asRoot('PUT', $scopePath('multi'), $scope('waiting', ['outletperdele', 'trendhome'], ['trendhome'], true)), 200, 'an explicitly confirmed widening');
+$error($asRoot('PUT', $scopePath('multi'), $scope('waiting', null, ['trendhome'], true)), 409, 'STAGE_SCOPE_CHANGED', 'a second administrator acting on the same, now stale read is refused');
+$audit->execute([$uuids['multi']]);
+$widened = $canon(json_decode((string) $audit->fetchColumn(), true));
+$check($widened === $canon(['stageId' => 'waiting', 'before' => ['trendhome'], 'after' => ['outletperdele', 'trendhome'], 'widening' => true, 'effectiveBefore' => ['waiting' => ['trendhome']], 'effectiveAfter' => ['waiting' => ['outletperdele', 'trendhome']]]), 'the widening is audited as a widening: ' . json_encode($widened));
+$check($sees($multi, $orders['OW1']) && in_array($orders['OW1'], $mineIds($multi), true), 'a re-granted source shows the earlier worked order again: it was hidden, never deleted');
+$status($asRoot('PUT', $scopePath('multi'), $scope('waiting', null, ['outletperdele', 'trendhome'], true)), 200, 'a confirmed widening back to every source');
+$check((int) $one('SELECT COUNT(*) FROM employee_stage_source_scopes WHERE employee_uuid = ?', [$uuids['multi']]) === 0 && $sees($multi, $orders['BW1']), 'the employee is a legacy, unrestricted waiting worker again');
+$status($asRoot('PUT', $scopePath('mixed'), $scope('material-preparation', ['outletperdele', 'trendhome'], null)), 200, 'narrow the cutting grant of the mixed employee');
+$check($one("SELECT GROUP_CONCAT(source_key ORDER BY source_key) FROM employee_stage_source_scopes WHERE employee_uuid = ? AND stage_id = 'waiting'", [$uuids['mixed']]) === 'b2b', 'updating one stage never drops the scope of another stage');
+
+// ---- Concurrency: an IAM change in flight holds the employee lock; a claim never acts on the earlier grant ---------
+// The second connection does what ManagementService::mutateEmployee does: lock the employee row, write, commit later.
+$iam = Connection::create($config);
+$iam->beginTransaction();
+$iam->prepare('SELECT employee_uuid FROM employees WHERE employee_uuid = ? FOR UPDATE')->execute([$uuids['legacy']]);
+$iam->prepare("INSERT INTO employee_stage_source_scopes (employee_uuid, stage_id, source_key, granted_at, granted_by_employee_uuid) VALUES (?, 'waiting', 'outletperdele', UTC_TIMESTAMP(6), ?)")->execute([$uuids['legacy'], $root['employeeUuid']]);
+$sw2Version = $version($orders['SW2']);
+$pdo->exec('SET SESSION innodb_lock_wait_timeout = 1');
+$inFlight = $send($legacy, 'POST', '/orders/' . rawurlencode($orders['SW2']) . '/claim', ['expectedVersion' => $sw2Version]);
+$pdo->exec('SET SESSION innodb_lock_wait_timeout = 50');
+$check($inFlight['status'] !== 200 && $version($orders['SW2']) === $sw2Version && $one('SELECT production_owner_employee_uuid FROM operational_orders WHERE global_order_id = ?', [$orders['SW2']]) === null, "a claim waits for the IAM change instead of using the earlier grant (got {$inFlight['status']})");
+$iam->commit();
+$error($send($legacy, 'POST', '/orders/' . rawurlencode($orders['SW2']) . '/claim', ['expectedVersion' => $sw2Version]), 404, 'ORDER_NOT_FOUND', 'after the commit the same session sees the narrowed scope');
+$pdo->prepare('DELETE FROM employee_stage_source_scopes WHERE employee_uuid = ?')->execute([$uuids['legacy']]);
+$check($sees($legacy, $orders['SW2']), 'the legacy grant is restored for the remaining checks');
+
+// ---- Atomic provisioning: a stage is granted already scoped, never observable unrestricted --------------------------
+$ayse = $identity('ayse', [], ['staff'], [$roleIds['trendyol-order-approver'], $roleIds['production-documents-operator']]);
+$stagesPath = static fn (string $name): string => "/management/employees/{$uuids[$name]}/stages";
+$error($send($manager, 'PUT', $stagesPath('ayse'), ['stageIds' => ['waiting'], 'stageScopes' => ['waiting' => ['trendyol']]]), 403, 'ROOT_ONLY', 'only root chooses the sources of a stage grant');
+$error($asRoot('PUT', $stagesPath('ayse'), ['stageIds' => ['waiting'], 'stageScopes' => ['packing' => ['trendyol']]]), 400, 'VALIDATION_FAILED', 'a scope names only a stage added by the same request');
+$error($asRoot('PUT', $stagesPath('ayse'), ['stageIds' => ['waiting'], 'stageScopes' => ['waiting' => []]]), 400, 'VALIDATION_FAILED', 'an empty provisioning scope is refused');
+$error($asRoot('PUT', $stagesPath('ayse'), ['stageIds' => ['waiting'], 'stageScopes' => ['waiting' => ['amazon']]]), 400, 'UNKNOWN_SOURCE', 'an unknown provisioning source is refused');
+$error($asRoot('PUT', $stagesPath('ayse'), ['stageIds' => ['waiting'], 'stageScopes' => [['trendyol']]]), 400, 'VALIDATION_FAILED', 'provisioning scopes are keyed by stage');
+$error($asRoot('PUT', $stagesPath('ayse'), ['stageIds' => ['waiting'], 'stageScopes' => ['waiting' => ['trendyol']], 'allSourcesStageIds' => ['waiting']]), 400, 'VALIDATION_FAILED', 'a stage is either scoped or explicitly unrestricted');
+$check((int) $one('SELECT COUNT(*) FROM employee_stage_access WHERE employee_uuid = ?', [$uuids['ayse']]) === 0 && (int) $one('SELECT COUNT(*) FROM employee_stage_source_scopes WHERE employee_uuid = ?', [$uuids['ayse']]) === 0, 'refused provisioning writes nothing');
+$provisioned = $status($asRoot('PUT', $stagesPath('ayse'), ['stageIds' => ['waiting'], 'stageScopes' => ['waiting' => ['trendyol']]]), 200, 'root grants waiting already scoped to Trendyol in one request');
+$check($provisioned['stageIds'] === ['waiting'] && $provisioned['stageSourceScopes'] === ['waiting' => ['trendyol']], 'the grant and its scope arrive together: ' . json_encode([$provisioned['stageIds'] ?? null, $provisioned['stageSourceScopes'] ?? null]));
+$ayseAudit = $pdo->prepare('SELECT action, metadata_json FROM iam_audit_events WHERE target_id = ? AND action IN (\'employee.stages_changed\', \'employee.stage_scopes_changed\') ORDER BY created_at');
+$ayseAudit->execute([$uuids['ayse']]);
+$ayseEvents = $ayseAudit->fetchAll(PDO::FETCH_ASSOC);
+$ayseMeta = json_decode((string) ($ayseEvents[0]['metadata_json'] ?? 'null'), true);
+$check(count($ayseEvents) === 1 && $ayseEvents[0]['action'] === 'employee.stages_changed' && $ayseMeta['stageScopesGranted'] === ['waiting' => ['trendyol']] && $ayseMeta['effectiveBefore'] === [] && $ayseMeta['effectiveAfter'] === ['waiting' => ['trendyol']]
+    && !str_contains(json_encode($ayseEvents), '"all"'), 'one audited change; no recorded state ever gave waiting for every source: ' . json_encode($ayseEvents));
+$status($asRoot('PUT', "/management/employees/{$uuids['ayse']}/document-scopes", ['operate' => ['trendyol'], 'approve' => []]), 200, 'Trendyol-only document scope');
+$ayse = $login('ayse');
+$ayseSession = $status($get($ayse, '/auth/session'), 200, 'provisioned session')['employee'];
+$check($ayseSession['allowedStageIds'] === ['waiting'] && $ayseSession['stageSourceScopes'] === ['waiting' => ['trendyol']], 'the session holds only the scoped waiting grant');
+$check(array_diff($queueSources($status($get($ayse, '/orders/stage-queue', ['stage' => 'waiting']), 200, 'provisioned queue')), ['trendyol']) === [] && $mineIds($ayse) === [], 'the queue holds only Trendyol orders and no foreign relation exists');
+foreach (['SW2', 'OW1', 'BW1'] as $tag) {
+    $path = '/orders/' . rawurlencode($orders[$tag]);
+    $error($get($ayse, $path), 404, 'ORDER_NOT_FOUND', "the provisioned Trendyol operator does not see {$tag}");
+    $error($send($ayse, 'POST', "{$path}/claim", ['expectedVersion' => $version($orders[$tag])]), 404, 'ORDER_NOT_FOUND', "nor claims {$tag}");
+    $error($send($ayse, 'POST', '/orders/resolve-qr', ['token' => $qr($orders[$tag])]), 404, 'ORDER_NOT_FOUND', "nor resolves the QR of {$tag}");
+    $error($get($ayse, '/production-documents/orders/' . rawurlencode($orders[$tag])), 404, 'ORDER_NOT_FOUND', "nor reads the document of {$tag}");
+}
+$error($asRoot('PUT', $stagesPath('ayse'), ['stageIds' => ['waiting', 'material-preparation']]), 409, 'STAGE_SCOPE_REQUIRED', 'a stage added to a source-restricted employee needs its scope, even from root');
+$error($asRoot('PUT', $stagesPath('ayse'), ['stageIds' => ['waiting'], 'stageScopes' => ['waiting' => ['trendhome', 'trendyol']]]), 400, 'VALIDATION_FAILED', 'the stage endpoint never changes the scope of a held stage');
+$check($one('SELECT GROUP_CONCAT(stage_id) FROM employee_stage_access WHERE employee_uuid = ?', [$uuids['ayse']]) === 'waiting' && $one('SELECT GROUP_CONCAT(source_key) FROM employee_stage_source_scopes WHERE employee_uuid = ?', [$uuids['ayse']]) === 'trendyol', 'the Trendyol operator profile is unchanged by refused requests');
+
+// ---- Stage changes for restricted and legacy employees ----------------------------------------------------------------
+$error($send($manager, 'PUT', $stagesPath('mixed'), ['stageIds' => ['waiting', 'material-preparation', 'packing']]), 409, 'STAGE_SCOPE_REQUIRED', 'a manager cannot add an unrestricted stage to a source-restricted employee');
+$error($asRoot('PUT', $stagesPath('mixed'), ['stageIds' => ['waiting', 'material-preparation', 'packing']]), 409, 'STAGE_SCOPE_REQUIRED', 'root neither, without saying which sources');
+$status($asRoot('PUT', $stagesPath('mixed'), ['stageIds' => ['waiting', 'material-preparation', 'packing'], 'stageScopes' => ['packing' => ['b2b']]]), 200, 'root adds packing scoped to B2B');
+$check($one("SELECT GROUP_CONCAT(CONCAT(stage_id, ':', source_key) ORDER BY stage_id, source_key) FROM employee_stage_source_scopes WHERE employee_uuid = ?", [$uuids['mixed']]) === 'material-preparation:outletperdele,material-preparation:trendhome,packing:b2b,waiting:b2b', 'changing stages keeps every existing scope');
+$status($asRoot('PUT', $stagesPath('mixed'), ['stageIds' => ['waiting', 'material-preparation', 'packing', 'labeling'], 'allSourcesStageIds' => ['labeling']]), 200, 'root adds labeling for every source on purpose');
+$mixedAudit = $pdo->prepare("SELECT metadata_json FROM iam_audit_events WHERE action = 'employee.stages_changed' AND target_id = ? ORDER BY created_at DESC LIMIT 1");
+$mixedAudit->execute([$uuids['mixed']]);
+$mixedMeta = json_decode((string) $mixedAudit->fetchColumn(), true);
+$check(($mixedMeta['allSourcesStageIds'] ?? null) === ['labeling'] && ($mixedMeta['effectiveAfter']['labeling'] ?? null) === 'all' && ($mixedMeta['effectiveAfter']['waiting'] ?? null) === ['b2b'], 'the deliberate unrestricted grant is audited: ' . json_encode($mixedMeta));
+$error($send($manager, 'PUT', $stagesPath('mixed'), ['stageIds' => ['waiting', 'material-preparation', 'packing', 'labeling'], 'allSourcesStageIds' => ['labeling']]), 403, 'ROOT_ONLY', 'a manager cannot confirm an unrestricted grant');
+$status($send($manager, 'PUT', $stagesPath('mixed'), ['stageIds' => ['waiting', 'material-preparation', 'packing']]), 200, 'a manager may still remove a stage of a restricted employee');
+$status($send($manager, 'PUT', $stagesPath('cutlegacy'), ['stageIds' => ['material-preparation', 'packing']]), 200, 'a manager adds a stage to a legacy employee exactly as before');
+$check((int) $one('SELECT COUNT(*) FROM employee_stage_source_scopes WHERE employee_uuid = ?', [$uuids['cutlegacy']]) === 0, 'and the legacy employee stays unrestricted');
+
+// ---- Complete stage removal: worked orders stay in the activity ledger only -------------------------------------------
+$sw3 = '/orders/' . rawurlencode($orders['SW3']);
+$status($send($hist, 'POST', "{$sw3}/claim", ['expectedVersion' => $version($orders['SW3'])]), 200, 'a legacy worker claims SW3');
+$status($send($hist, 'POST', "{$sw3}/transition", ['expectedVersion' => $version($orders['SW3'])]), 200, 'and hands it to cutting');
+$check($sees($hist, $orders['SW3']) && in_array($orders['SW3'], $mineIds($hist), true), 'the handed-on order is legacy history of the worker');
+$histActivity = $activityCount('hist');
+$status($asRoot('PUT', $stagesPath('hist'), ['stageIds' => []]), 200, 'remove every stage of the worker');
+$error($get($hist, $sw3), 404, 'ORDER_NOT_FOUND', 'without any stage the worked order is not shown');
+$check($mineIds($hist) === [], '/orders/mine is empty without any stage');
+$error($send($hist, 'POST', '/orders/resolve-qr', ['token' => $qr($orders['SW3'])]), 404, 'ORDER_NOT_FOUND', 'and its QR resolves nothing');
+$check($activityCount('hist') === $histActivity && count($status($get($hist, '/activity/mine'), 200, 'activity without stages')['items']) >= 2 && $relationActive('hist', 'SW3') === 1, 'the activity ledger and the relation are kept');
+$status($send($manager, 'PUT', $stagesPath('hist'), ['stageIds' => ['waiting']]), 200, 'a manager re-grants the legacy stage');
+$check($sees($hist, $orders['SW3']), 'the history is visible again: nothing was deleted');
+
+// ---- Stage removal clears its scope; inactivity ----------------------------------------------------------------------------
+$status($asRoot('PUT', $stagesPath('tyonly'), ['stageIds' => []]), 200, 'remove the waiting stage of the Trendyol-only employee');
 $check((int) $one('SELECT COUNT(*) FROM employee_stage_source_scopes WHERE employee_uuid = ?', [$uuids['tyonly']]) === 0, 'removing a stage removes its scope');
-$audit->execute([$uuids['tyonly']]);
 $removedAudit = $pdo->prepare("SELECT metadata_json FROM iam_audit_events WHERE action = 'employee.stages_changed' AND target_id = ? ORDER BY created_at DESC LIMIT 1");
 $removedAudit->execute([$uuids['tyonly']]);
-$check((json_decode((string) $removedAudit->fetchColumn(), true)['stageScopesRemoved']['waiting'] ?? null) === ['trendyol'], 'the removed scope is in the stage audit');
-$tyonly = $login('tyonly');
+$removedMeta = json_decode((string) $removedAudit->fetchColumn(), true);
+$check(($removedMeta['stageScopesRemoved']['waiting'] ?? null) === ['trendyol'] && $removedMeta['effectiveAfter'] === [], 'the removed scope is in the stage audit');
 $error($get($tyonly, '/orders/stage-queue', ['stage' => 'waiting']), 403, 'STAGE_NOT_ALLOWED', 'without the stage nothing remains');
-$status($asRoot('PUT', "/management/employees/{$uuids['mixed']}/stages", ['stageIds' => ['waiting', 'material-preparation', 'packing']]), 200, 'add a stage to the mixed employee');
-$check($one("SELECT GROUP_CONCAT(source_key) FROM employee_stage_source_scopes WHERE employee_uuid = ? AND stage_id = 'waiting'", [$uuids['mixed']]) === 'b2b', 'changing other stages keeps an existing scope');
 $pdo->prepare("UPDATE employees SET status = 'inactive' WHERE employee_uuid = ?")->execute([$uuids['cutscoped']]);
 $error($get($cutScoped, '/orders/stage-queue', ['stage' => 'material-preparation']), 401, 'ACCOUNT_INACTIVE', 'an inactive scoped employee cannot act');
 

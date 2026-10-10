@@ -67,6 +67,34 @@ final readonly class EmployeeIdentity
         return $this->stageSourceScopes[$stageId] ?? null;
     }
 
+    /**
+     * The sources the employee currently works on at any granted stage: null for every source (at least one
+     * unrestricted grant), the union of the scoped sources otherwise, and an empty list without any stage grant.
+     * Used only to decide whether a historical order relation may still show the order; it never grants a stage.
+     *
+     * @return list<string>|null
+     */
+    public function reachableSources(): ?array
+    {
+        $sources = [];
+        foreach (array_unique($this->allowedStageIds) as $stageId) {
+            $scoped = $this->stageSourceScopes[$stageId] ?? null;
+            if ($scoped === null) {
+                return null;
+            }
+            array_push($sources, ...$scoped);
+        }
+        $sources = array_values(array_unique($sources));
+        sort($sources);
+        return $sources;
+    }
+
+    public function reachesSource(string $sourceKey): bool
+    {
+        $sources = $this->reachableSources();
+        return $sources === null || in_array($sourceKey, $sources, true);
+    }
+
     public function isActive(): bool
     {
         return $this->status === 'active';

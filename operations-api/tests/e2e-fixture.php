@@ -203,10 +203,11 @@ $admin->create('Tudor Tăiere','ty.cutter.e2e',null,'pregatire-material','employ
 // (Staff + Dashboard, read-only production overview) with two stages.
 $tyPreparer=$admin->create('Ayla Pregătire','ty.prep.e2e',null,'pregatire-material','employee',$password,[],'e2e');
 $iam($tyPreparer->employeeUuid,['staff'],[$roleId('trendyol-order-preparer')]);
-// Source-scoped stage grant (migration 023): the Trendyol operator profile, `waiting` for Trendyol only.
-$tyScoped=$admin->create('Selin Trendyol','ty.scoped.e2e',null,'pregatire-material','employee',$password,['waiting'],'e2e');
+// Source-scoped stage grant (migration 023): the Trendyol operator profile, `waiting` granted already scoped to
+// Trendyol in one root request, so the identity never holds an unrestricted waiting grant.
+$tyScoped=$admin->create('Selin Trendyol','ty.scoped.e2e',null,'pregatire-material','employee',$password,[],'e2e');
 $iam($tyScoped->employeeUuid,['staff'],[$roleId('trendyol-order-approver')]);
-$r=T::call($kernel,'PUT',"/management/employees/{$tyScoped->employeeUuid}/stage-scopes",['scopes'=>['waiting'=>['trendyol']]],['origin'=>$origin,'x-csrf-token'=>$root['csrf']],$root['cookie']);
+$r=T::call($kernel,'PUT',"/management/employees/{$tyScoped->employeeUuid}/stages",['stageIds'=>['waiting'],'stageScopes'=>['waiting'=>['trendyol']]],['origin'=>$origin,'x-csrf-token'=>$root['csrf']],$root['cookie']);
 if($r['status']!==200) throw new RuntimeException('E2E stage scope setup failed: '.json_encode($r['body']));
 $admin->create('Ciprian Croitorie','sew.e2e',null,'pregatire-material','employee',$password,['bottom-hem','side-hem','header-tape'],'e2e');
 $supervisor=$admin->create('Sorina Supervizor','supervisor.e2e',null,'pregatire-material','employee',$password,['quality-control','packing'],'e2e');

@@ -49,8 +49,9 @@ The rule lives in `EmployeeIdentity::worksAt()` and `sourcesAt()`. It is loaded 
 
 | Path | Enforcement |
 |---|---|
-| Order detail, manual lookup, QR resolve | `OrderAccessPolicy::canView` → `worksAt`. An unrelated order is `404 ORDER_NOT_FOUND`, and a refused QR reveals no revision of an unreachable order. |
-| Claim, stage transition | `OrderOperationsService` → `canView` + `evaluate` (`worksAt`). An unrelated order is `404`. An own order whose source is no longer granted is `403` and cannot be advanced. |
+| Order detail, manual lookup, QR resolve | `OrderAccessPolicy::canView`: `worksAt` for the current stage, or a direct relation while the employee still `reachesSource` (see below). An unrelated order is `404 ORDER_NOT_FOUND`, and a refused QR reveals no revision of an unreachable order. |
+| Own orders (`/orders/mine`) | The relation list is filtered in SQL to the sources the employee still reaches, then by `canView`. An order of a revoked source never appears, not even its number. |
+| Claim, stage transition | `OrderOperationsService` re-reads the employee under the employee row lock (IAM changes take the same lock), then `canView` + `evaluate` (`worksAt`). An order of an unreached source is `404`, also when the employee claimed it before the narrowing. An idempotent replay of an earlier request is answered only while the employee still reaches the order's source. |
 | Stage queue, stage summary | The source filter is part of the SQL (`listOpenAtStage`, `countOpenByStage`), so counts and items never include other sources. |
 | Cutting pool | Lists and counts only the cutter's scoped sources. |
 | Cutting transfer (request, decision, accept/verify) | The target must work at cutting for the order's source (`422 INELIGIBLE_TRANSFER_TARGET`). |
@@ -59,23 +60,49 @@ The rule lives in `EmployeeIdentity::worksAt()` and `sourcesAt()`. It is loaded 
 | Fault report at tailoring intake; return-to-cutting assignee | The reporter must work at `workshop-receiving` for the source. The responsible cutter is reassigned only if still eligible for the source. |
 | Production documents | Independent, unchanged: `employee_document_scopes`. A stage scope grants no document access, and a document scope grants no stage. |
 | Live events | Unchanged. Cutting broadcasts carry no order data; other events are per recipient or per document scope. |
-| Activity/history | The employee's own events only (unchanged). |
+| Activity/history (`/activity/mine`) | The employee's own events only (unchanged): the minimal historical record (see below). |
 
-`/orders/mine` still lists orders the employee has a direct relation with, such as orders worked before a scope was narrowed. This is relation-based visibility, which already existed. Actions on such orders follow the scope.
+## Current access, history and audit
+
+Four things are kept apart:
+
+1. **Current operational visibility.** An order is visible when the employee works at its current stage for its source (`worksAt`). An order the employee worked on (a direct relation in `employee_order_relations`) also stays visible after it moved on, but only while at least one granted stage still reaches its source (`EmployeeIdentity::reachesSource`). A Trendyol order at the initial stage additionally needs `trendyol.orders.view` on both paths.
+2. **Current mutation authority.** Claim and transition always need `worksAt` for the current stage and source. A relation never authorizes a mutation.
+3. **Historical employee activity.** `GET /activity/mine` lists the employee's own claims and completions. Each entry carries only the time, the action, the order reference and number snapshot, the source, the stage labels and the meters. It has no items, notes, customer data, document or link authority. It is not filtered by scope: it is the employee's own work record and the minimum safe representation of history.
+4. **Audit.** `order_activity_events`, `employee_order_relations` and `iam_audit_events` are never rewritten or deleted to hide anything. Narrowing a scope or removing a stage only stops the relation from showing the order. Re-granting the source shows it again.
+
+Effect on existing employees:
+- A legacy employee holds at least one unscoped stage, so `reachesSource` is true for every source. Every handed-on order stays visible exactly as before.
+- An employee whose last stage is removed reaches no source, so relations show nothing until a stage is granted again. Their activity ledger stays.
 
 ## Managing scopes
 
-`PUT /management/employees/{id}/stage-scopes` with body `{"scopes": {"waiting": ["trendyol"]}}`.
+Source choices are root-only (plus Dashboard application access, `403 ROOT_ONLY` otherwise).
 
-- **Who:** root only, plus Dashboard application access (`403 ROOT_ONLY` otherwise). Narrowing is safe, but widening is a grant.
-- **What the body does:** it replaces every scope of the employee. A stage omitted from the body is unscoped (every source). This is how root deliberately widens a stage.
-- **Refusals:**
-  - an empty list: `400 VALIDATION_FAILED`. To revoke a stage, remove the stage grant itself.
-  - a stage the employee does not hold: `400 STAGE_NOT_GRANTED`.
-  - an unknown or inactive source: `400 UNKNOWN_SOURCE`.
-  - unknown body fields: `400 INVALID_REQUEST`.
-- **Audit:** `employee.stage_scopes_changed` with before and after. The employee's authorization version is bumped.
-- **Removing a stage:** `PUT /management/employees/{id}/stages` deletes the scope rows of removed stages in the same transaction (audited as `stageScopesRemoved`) and keeps the scopes of kept stages. Re-adding a stage later grants it unscoped until root narrows it again.
+### Granting a stage already scoped (atomic provisioning)
+
+`PUT /management/employees/{id}/stages` with body `{"stageIds": ["waiting"], "stageScopes": {"waiting": ["trendyol"]}}`.
+
+- The stage grant and its scope rows are written in one transaction under the employee row lock. No committed state, and no request of the employee, ever sees the stage unscoped.
+- `stageScopes` and `allSourcesStageIds` may name only stages this request adds, each once. A held stage's scope changes only through `stage-scopes`.
+- **Source-restricted employees** (any scope row on a held stage): every added stage needs its scope in `stageScopes`, or root lists it in `allSourcesStageIds` to grant it for every source on purpose. Otherwise the request is `409 STAGE_SCOPE_REQUIRED`, also for root. A non-root manager with `employees.manage_stages` can therefore only remove stages from a restricted employee. Adding stages to a legacy employee is unchanged.
+- Removing a stage deletes its scope rows in the same transaction (audited as `stageScopesRemoved`) and keeps the scopes of kept stages.
+- **Audit:** `employee.stages_changed` with before and after stages, plus `stageScopesGranted`, `allSourcesStageIds`, `stageScopesRemoved` and the effective access before and after (`effectiveBefore`, `effectiveAfter`: stage → sources or `"all"`) whenever a scope is involved.
+
+### Changing the scope of one held stage
+
+`PUT /management/employees/{id}/stage-scopes` with body `{"stageId": "waiting", "sources": ["trendyol"], "expectedSources": null}`.
+
+- Only the named stage changes. Every other stage keeps its scope, so no restriction is lost by omission.
+- `sources` is a non-empty list, or `null` for every source.
+- `expectedSources` is the scope the caller read (`null` when unscoped). A different current scope is `409 STAGE_SCOPE_CHANGED`, so two administrators never act on the same stale read.
+- Narrowing needs no confirmation. Widening (adding a source, or `null`) needs `"confirmWidening": true`, otherwise `409 SCOPE_WIDENING_UNCONFIRMED`.
+- **Refusals:** an empty list or a malformed field `400 VALIDATION_FAILED`; a stage the employee does not hold `400 STAGE_NOT_GRANTED`; an unknown or inactive source `400 UNKNOWN_SOURCE`; missing or unknown body fields `400 INVALID_REQUEST`.
+- **Audit:** `employee.stage_scopes_changed` with `stageId`, `before`, `after`, `widening` and the effective access before and after. The authorization version is bumped.
+
+### Concurrency
+
+Every IAM mutation locks the target's `employees` row. A claim or transition locks the same row before it re-reads the employee's grants and scopes. A request authenticated before a change therefore either completes before the change commits, or waits and then applies the committed change; it never acts on the earlier grant. Sessions are not cached: the next request of the same session applies the change.
 - **Visibility:** the employee views (`GET /management/employees/{id}`) and the Staff session carry `stageSourceScopes`.
 - **No Dashboard UI yet:** Dashboard has no editor for stage scopes in this release. Its audit page shows the event with its generic sentence.
 
@@ -86,7 +113,13 @@ After the account exists and the owner separately approves the grants:
 1. Staff application.
 2. `trendyol-order-approver` (view, prepare, release).
 3. `production-documents-operator` plus document scope `operate: ["trendyol"]`.
-4. Stage grant `waiting` plus stage scope `{"waiting": ["trendyol"]}`.
+4. Stage `waiting` granted already scoped, in one request: `{"stageIds": ["waiting"], "stageScopes": {"waiting": ["trendyol"]}}`.
+
+Provisioning procedure:
+1. Create the account without any stage. Optionally keep it inactive until step 4 is done.
+2. Grant the application, the roles and the document scope.
+3. Grant the stage with its scope in the single request above. Never grant `waiting` first and scope it later.
+4. Read the employee back: `stageIds = ["waiting"]` and `stageSourceScopes = {"waiting": ["trendyol"]}`. Activate the account if it was kept inactive.
 
 Result:
 - Trendyol inbox, preparation and approval.

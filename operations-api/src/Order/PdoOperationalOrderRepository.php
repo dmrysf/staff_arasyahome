@@ -33,10 +33,14 @@ final readonly class PdoOperationalOrderRepository implements OperationalOrderRe
     ) {
     }
 
-    public function listMine(string $employeeUuid, int $limit, ?string $cursor): array
+    public function listMine(string $employeeUuid, int $limit, ?string $cursor, ?array $sources = null): array
     {
         $limit = max(1, min(100, $limit));
-        $params = [$employeeUuid];
+        if ($sources === []) {
+            return ['items' => [], 'nextCursor' => null];
+        }
+        $params = [$employeeUuid, ...array_values($sources ?? [])];
+        $sourceSql = $sources === null ? '' : 'AND o.source_key IN (' . implode(',', array_fill(0, count($sources), '?')) . ')';
         $cursorSql = '';
         if ($cursor !== null) {
             $cursorData = $this->decodeCursor($cursor);
@@ -50,6 +54,7 @@ final readonly class PdoOperationalOrderRepository implements OperationalOrderRe
         $statement = $this->pdo->prepare(self::SELECT . "
             INNER JOIN employee_order_relations r ON r.order_uuid = o.order_uuid
             WHERE r.employee_uuid = ? AND r.status = 'active'
+            {$sourceSql}
             {$cursorSql}
             ORDER BY r.last_action_at DESC, o.order_uuid DESC
             LIMIT {$queryLimit}
