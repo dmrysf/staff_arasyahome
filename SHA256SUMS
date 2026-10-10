@@ -1,6 +1,6 @@
 b874fd4bb9d5288d15a76645c3d9b3c880463696f8c3b95f17110f0d81ccdee3  ./.cpanel.yml
 8286fc7aa3997b02b40cd802afc3af51f10c9025110534f38fa33c68beaa539e  ./.htaccess
-1f44a948587f2b0917362c42a451eee09f275c3066394e4a4715dc76099e572e  ./README.md
+10878742a901c6fd3220b9913c74dc805c82957cfb4a9ce1980338c6ffd1b6f9  ./README.md
 022a3eaba163a146b3dc70de8aa893a6d0b01636805ebcaf639943913e544928  ./bin/bootstrap-root-admin.php
 c53137393d879c7548188f87745e52d6b31938c9c8a7c57caee1eea05667a396  ./bin/change-password.php
 b35cae91cadb12d64f81d67bbfce6623984159f5b875fd8120ec12a4d1d45c08  ./bin/check-migrations.php
@@ -23,7 +23,7 @@ d37c105d807ef59660cc9a8d34213ea6390d52d0c3971645cc5474427a3376de  ./bin/organiza
 0976b0a8932412b4a5b27e85cb73a01f4342e1a315bdabc54a08fb5600a4184f  ./bin/revoke-sessions.php
 1514aaa15408e01da2864d531b943f26727f4e09b85c8bf44cd07f25093966ee  ./bin/seed-reference-data.php
 56c67c870d36b7a614e480fb8e705284853f75b79656269a3fad909cdbee4f72  ./bin/sync-trendyol.php
-ebbb521df9f880b9808e6c4960ee9031cbc66cad32a4b0bc7f8461352d338a75  ./bin/trendyol-intake.php
+10d770685d6aa326c63675e00cc8ece16311d1c39011c24cb858667a5181890c  ./bin/trendyol-intake.php
 3660bba8be1a3663a2393274424529be80bd17a8df503b950cee008e23e062b8  ./bin/trendyol-preview.php
 70683d890d638743a0b90ad4952cdbbd47a083c93466d43d5b612390baffaec7  ./bootstrap.php
 b8cff49d49d44ca8183cbc1dd935cc9bcbfc575cf27881a5bd5d8828b78c869b  ./config/config.example.php
@@ -61,14 +61,14 @@ e3d5bd553859a3f0ade7ef0d41a29c8dab1eaaf486fb632bdb714b79e4c719aa  ./database/see
 a80d76fbdb4a0c8ac3533c3db5eb123a73ff6eb2c259927976d39dfeeb2f248b  ./public/.htaccess
 8302b6ec98573706b31b957a8f9ad9be8bf92a8b8bff02963c601650e7e8c420  ./public/RuntimeLocator.php
 edb234c39482536f0540e881da98cbdad6241af787f230295a79a4ae534e26be  ./public/index.php
-eb80e3159b1decce4441f3f3a52bf249621286d6403b21cee89068949cdf3212  ./release.json
+0968800a716a0e1904a600db690fa72f017e173091674383a0f82ff1e0095b0e  ./release.json
 3b42b0a0d462aa0ac0f368966a5703f6ecbbff9eea2bbbe47f269e9cd6ba03ea  ./scripts/api-release-common.sh
 1eaa6d56372ffa47cf2a8a71ac6c9384bc41a25da4be607dc3e9c98ff7269373  ./scripts/cpanel-deploy-api.sh
 90db53c750a7ee94bdaad0c19e0c57e9ee6744d703ca03603bb3764393d40f54  ./scripts/cpanel-rollback-api.sh
 ad963b363acfdc488f4b9638e31052d173e9b31437735990435acfd5c9e876ca  ./scripts/generate-sha256s.sh
 668b254a048e20b209aa886a91bb14682e1f60255fa8e329ec6b9a8e896c355c  ./scripts/maintenance-active.sh
 19135ebb1f6829810e78b5a2f4a8647b52e7f1cc73b8fce2f42b481bb700135a  ./scripts/trendyol-intake-active.sh
-e6c6bcf9e3049c1f2ceb637d7f83220db13e654bda4f10e4b982afd0372213ec  ./scripts/validate-release.sh
+2b78fb27a7121b19717b1ca73171dfbd318e9bbbd4ade2bd8d1edc0d12b27c96  ./scripts/validate-release.sh
 62e244f7394174e9be815b0f3406eb9df6226d90117c770fbc6aa36be535de74  ./src/Activity/ActivityController.php
 fffaf9848b4f34b5f257895192f34d7a6ef959791a2e944ba3a981bd6bbb874e  ./src/Activity/ActivityRange.php
 591b1ed97493fb4396cf147de6f8c998570ecfbe3a18e947546b1a3327a79eb6  ./src/Activity/PdoActivityRepository.php
@@ -178,7 +178,7 @@ dab18c727f8af10b46a7b3ff81361a782ccccdd482ccc46cb40dbba649513e55  ./src/Http/Api
 148d4ac70b8f1b23954e9285a0b469b8e15e434bcf871336ee74c2166bc368df  ./src/Http/ApiKernel.php
 f9cc614f17939a96d596df982ce6961d0138def60fac39192a2b94bfdce77db3  ./src/Http/AuthController.php
 61ad3cbafb08e399aea7f0337595bff8d48be70d8a03c2c9069cb9cad38adc0c  ./src/Http/CorsPolicy.php
-9a983839dc33db9888dc9ce7ec82fe29c41d586fb9043adf95da30b7842fe44c  ./src/Http/HealthController.php
+5857a3dd7ab5cc7cd6a7edb125bc3a72b4bab317c0e2bcf6590aea33a0897e14  ./src/Http/HealthController.php
 5135823a988e7ae06254297c5272a5ccb724e819a52c33217223c4299f286cb2  ./src/Http/ProductionWorkflowController.php
 57c77118c9f87c3b4475737e98d97bd7fcfaf456961cf637c7927d4eaad9ef32  ./src/Http/Request.php
 b49c2a94e90b750aeb5202e8ea263a42fd77fcc6442b3c2f46205cd5ab324688  ./src/Http/RequestContext.php
