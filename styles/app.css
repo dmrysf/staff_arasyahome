@@ -461,6 +461,7 @@
 .dashboard-lead { margin: 0 0 14px; color: var(--color-text-muted); font-size: .86rem; line-height: 1.5; }
 .dashboard-footnote { margin: 12px 0 0; color: var(--color-text-subtle); font-size: .74rem; line-height: 1.45; }
 .dashboard-refresh { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; color: var(--color-text-subtle); font-size: .72rem; }
+.dashboard-refresh .refresh-stale { color: var(--color-warning); font-weight: 650; }
 .button-compact { min-height: 44px; gap: 8px; padding: 0 14px; font-size: .8rem; }
 .dashboard-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 0; }
 .dashboard-metric { min-width: 0; display: flex; flex-direction: column; gap: 4px; padding: 13px 14px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface-soft); }
