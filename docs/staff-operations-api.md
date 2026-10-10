@@ -10,6 +10,8 @@ The Operations API is the only authority for Arasya production state. Staff read
 | `GET` | `/orders/{globalOrderId}` | `orders.view_mine` | One visible order |
 | `GET` | `/orders/lookup?code=` | `orders.scan` | Exact manual lookup (rate limited) |
 | `POST` | `/orders/resolve-qr` | `orders.scan` | Resolve a printed QR payload `{ "token": "ARASYA:Q1:…" }` (CSRF, rate limited) |
+| `GET` | `/orders/stage-queue?stage={stageId}` | `orders.view_mine` + the stage in `allowedStageIds` | Read-only queue of one allowed stage for the department dashboards (API 2.25.0; see [department dashboards](department-dashboards.md)) |
+| `GET` | `/orders/stage-summary` | `orders.view_mine` | Open-order totals per allowed stage |
 | `POST` | `/orders/{globalOrderId}/claim` | `orders.claim` | Claim the order at its current stage |
 | `POST` | `/orders/{globalOrderId}/transition` | `orders.advance_stage` | Complete the current stage; the server chooses the next stage |
 | `GET` | `/activity/mine?range=today\|7days\|month\|custom&from=&to=&cursor=` | `history.view_mine` | Persisted activity and summary for the employee |
@@ -21,7 +23,7 @@ The Operations API is the only authority for Arasya production state. Staff read
 
 ## Visibility and the allowed action
 
-An order is visible to an employee when the employee has a direct relation with it (`claimed`, `assigned`, `updated`, `handover_in`, `handover_out`, `completed`) or when the order's current production stage is one of the employee's allowed stages. Everything else is reported as `ORDER_NOT_FOUND`, which also prevents enumeration of other employees' work. `/orders/mine` returns only relation-based orders; stage eligibility alone never adds an order to it.
+An order is visible to an employee when the employee has a direct relation with it (`claimed`, `assigned`, `updated`, `handover_in`, `handover_out`, `completed`) or when the order's current production stage is one of the employee's allowed stages. Everything else is reported as `ORDER_NOT_FOUND`, which also prevents enumeration of other employees' work. `/orders/mine` returns only relation-based orders; stage eligibility alone never adds an order to it. The stage queue lists exactly the orders this visibility rule already exposes at one of the employee's stages, bounded and read-only.
 
 Each order response carries the single action the server currently allows the employee, or the reason it is blocked:
 

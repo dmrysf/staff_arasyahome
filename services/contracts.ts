@@ -73,6 +73,10 @@ export type ServiceBundle = {
   productionQr?: import("../domain/productionQr").ProductionQrApi;
   /** Trendyol workspace for explicitly authorized Trendyol personnel; absent in preview and demo. */
   trendyol?: import("../domain/trendyol").TrendyolApi;
+  /** Read-only stage queues for the department dashboards; absent in preview and demo. */
+  workspace?: import("../domain/workspaces").WorkspaceApi;
+  /** Read-only management production overview (Dashboard access + production.view); absent in preview and demo. */
+  management?: import("../domain/workspaces").ManagementApi;
   auth: AuthService;
   employee: EmployeeService;
   orders: OrderService;

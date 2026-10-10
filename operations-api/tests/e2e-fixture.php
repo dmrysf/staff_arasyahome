@@ -199,9 +199,17 @@ $r=T::call($kernel,'PUT',"/management/employees/{$tyApprover->employeeUuid}/docu
 if($r['status']!==200) throw new RuntimeException('E2E Trendyol scope setup failed: '.json_encode($r['body']));
 $admin->create('Paul Așteptare','ty.outsider.e2e',null,'pregatire-material','employee',$password,['waiting'],'e2e');
 $admin->create('Tudor Tăiere','ty.cutter.e2e',null,'pregatire-material','employee',$password,['material-preparation'],'e2e');
+// Department dashboards: a Trendyol preparer without approval, a multi-stage sewing employee and a supervisor
+// (Staff + Dashboard, read-only production overview) with two stages.
+$tyPreparer=$admin->create('Ayla Pregătire','ty.prep.e2e',null,'pregatire-material','employee',$password,[],'e2e');
+$iam($tyPreparer->employeeUuid,['staff'],[$roleId('trendyol-order-preparer')]);
+$admin->create('Ciprian Croitorie','sew.e2e',null,'pregatire-material','employee',$password,['bottom-hem','side-hem','header-tape'],'e2e');
+$supervisor=$admin->create('Sorina Supervizor','supervisor.e2e',null,'pregatire-material','employee',$password,['quality-control','packing'],'e2e');
+$iam($supervisor->employeeUuid,['staff','dashboard'],[$roleId('supervisor')]);
 
 echo json_encode([
     'password' => $password,
+    'dashboards' => ['preparer' => 'ty.prep.e2e', 'sewing' => 'sew.e2e', 'supervisor' => 'supervisor.e2e', 'multi' => 'operator.b2b.e2e'],
     'trendyol' => ['package' => '73001', 'orderNumber' => 'TY73001', 'ignored' => '73002', 'approver' => 'ty.approve.e2e', 'outsider' => 'ty.outsider.e2e', 'cutter' => 'ty.cutter.e2e'],
     'users' => ['ana' => 'ana.e2e', 'bogdan' => 'bogdan.e2e', 'mihai' => 'mihai.e2e', 'dashboardOnly' => 'dora.e2e', 'temporary' => 'teodor.e2e'],
     'orders' => ['flow' => '70001', 'qr' => '70002', 'claimedByOther' => '70003', 'conflict' => '70004'],

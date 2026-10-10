@@ -71,6 +71,8 @@ final readonly class ApiKernel
                 'GET /production/workflow' => $this->workflow?->show($request) ?? throw new ApiException(503, 'WORKFLOW_UNAVAILABLE', 'Production workflow is not ready.'),
                 'GET /orders/mine' => $this->ordersController()->listMine($request),
                 'GET /orders/lookup' => $this->ordersController()->lookup($request),
+                'GET /orders/stage-queue' => $this->ordersController()->stageQueue($request),
+                'GET /orders/stage-summary' => $this->ordersController()->stageSummary($request),
                 'POST /orders/resolve-qr' => $this->ordersController()->resolveQr($request),
                 'GET /live/events' => $request->query('scope') === 'cutting-display' ? $this->cuttingController()->display($request) : $this->qualityController()->events($request),
                 'GET /activity/mine' => ($this->activity ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Activity API is not ready.'))->listMine($request),

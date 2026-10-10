@@ -19,6 +19,7 @@ use Arasya\Operations\Security\CsrfGuard;
  * mutation, Idempotency-Key on every command, strict bodies). It never calls Trendyol.
  *
  *   GET  /trendyol/overview                               intake state, counts, the caller's capabilities
+ *   GET  /trendyol/activity                               the caller's own actions (today's counts, latest ten)
  *   GET  /trendyol/packages?view=pending|attention|released|closed|ignored
  *   GET  /trendyol/packages/{packageId}                   package, lines, readiness, production link, history
  *   PUT  /trendyol/packages/{packageId}/lines/{lineId}    {expectedVersion, kind, widthCm?, heightCm?, meters?, notes?}
@@ -42,6 +43,9 @@ final readonly class TrendyolWorkspaceController
         $path = substr($request->path, strlen('/trendyol'));
         if ($request->method === 'GET' && $path === '/overview') {
             return $this->json($this->workspace->overview($this->session($request)->employee));
+        }
+        if ($request->method === 'GET' && $path === '/activity') {
+            return $this->json($this->workspace->myActivity($this->session($request)->employee));
         }
         if ($request->method === 'GET' && $path === '/packages') {
             $view = $request->query('view') ?? 'pending';

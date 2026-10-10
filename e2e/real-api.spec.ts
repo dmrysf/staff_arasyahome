@@ -86,7 +86,7 @@ test("login, session restore, manual lookup, claim, stage completion, handover a
   await expect(page.getByRole("heading", { name: "Bine ai revenit." })).toBeVisible();
   await login(page, fixture.users.ana);
   await page.reload();
-  await expect(page.getByRole("heading", { name: "Bună, Ana." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Bună, Ana!" })).toBeVisible();
   await expect(page.locator(".work-summary")).toContainText("Astăzi");
 
   await lookup(page, `#${fixture.orders.flow}`);

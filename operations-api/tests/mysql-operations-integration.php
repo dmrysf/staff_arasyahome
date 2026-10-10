@@ -280,6 +280,52 @@ try {
 $orderRow->execute(['trendyol:' . $trendyolPackage->packageId]);
 check($orderRow->fetch() === false, 'no Trendyol production order was created');
 
+// ---- Department dashboards: read-only stage queue and stage summary ----------------
+$erin = T::login($kernel, $employee('erin', ['height', 'header-tape']), $password);
+$frank = T::login($kernel, $employee('frank', ['height']), $password);
+$heightOrders = [];
+foreach (['H1', 'H2', 'H3', 'H4'] as $index => $tag) {
+    $number = "{$tag}{$suffix}";
+    $heightOrders[$tag] = "trendhome:{$number}";
+    $applied = T::ingest($kernel, 'trendhome', T::sourceOrder($number, "evt-{$tag}-{$suffix}", '2026-10-04T08:0' . $index . ':00.000Z', T::stage('height'), $tag === 'H4' ? 'cancelled' : 'processing', $tag === 'H4' ? 'cancelled' : 'active'));
+    check($tag === 'H4' || ($applied['body']['outcome'] ?? null) === 'applied', "height order {$tag} is ingested");
+}
+check($mutate($erin, 'claim', $heightOrders['H1'], 1)['status'] === 200, 'erin claims H1 at height');
+check($mutate($frank, 'claim', $heightOrders['H2'], 1)['status'] === 200, 'frank claims H2 at height');
+$snapshot = static fn (): string => (string) $pdo->query("SELECT SHA2(GROUP_CONCAT(CONCAT_WS('|', global_order_id, version, production_version, production_stage_id, COALESCE(production_owner_employee_uuid, '-'), updated_at) ORDER BY global_order_id), 256) FROM operational_orders")->fetchColumn()
+    . (string) $pdo->query('SELECT COUNT(*) FROM employee_order_relations')->fetchColumn() . '/' . (string) $pdo->query('SELECT COUNT(*) FROM order_activity_events')->fetchColumn();
+$before = $snapshot();
+$queue = $get($erin, '/orders/stage-queue', ['stage' => 'height']);
+check($queue['status'] === 200 && $queue['body']['stageId'] === 'height', 'an allowed stage queue is readable');
+$expectedTotal = (int) $pdo->query("SELECT COUNT(*) FROM operational_orders WHERE production_stage_id = 'height' AND operational_status <> 'unavailable' AND production_completed_at IS NULL")->fetchColumn();
+check($queue['body']['counts']['total'] === $expectedTotal && $queue['body']['countsComplete'] === true, 'the stage total equals the open orders at the stage');
+check($queue['body']['counts']['mine'] === 1, 'exactly one height order is owned by erin');
+check($queue['body']['counts']['claimedByOthers'] >= 1 && $queue['body']['counts']['available'] >= 1, 'orders claimed by colleagues and claimable orders are counted apart');
+check(array_sum(array_diff_key($queue['body']['counts'], ['total' => true])) === $expectedTotal, 'every open order falls in exactly one bucket');
+$queueIds = array_column($queue['body']['items'], 'id');
+check(($queue['body']['items'][0]['id'] ?? null) === $heightOrders['H1'], 'the employee\'s own work comes first');
+check((int) $pdo->query("SELECT COUNT(*) FROM operational_orders WHERE global_order_id = " . $pdo->quote($heightOrders['H4']) . " AND operational_status = 'unavailable'")->fetchColumn() <= 1, 'the cancelled height order is unavailable or absent');
+check(in_array($heightOrders['H3'], $queueIds, true) && !in_array($heightOrders['H4'], $queueIds, true), 'unavailable orders never appear in a stage queue');
+$byId = array_column($queue['body']['items'], null, 'id');
+check(($byId[$heightOrders['H3']]['employeeAllowedAction']['id'] ?? null) === 'claim', 'a free order offers the server-evaluated claim action');
+check(($byId[$heightOrders['H2']]['employeeActionBlockedReason'] ?? null) === 'claimed_by_other', 'a colleague\'s order is blocked as claimed by other');
+check(!str_contains(json_encode($queue['body'], JSON_THROW_ON_ERROR), 'customer') && !str_contains(json_encode($queue['body'], JSON_THROW_ON_ERROR), 'phone'), 'the stage queue carries no customer contact data');
+check($snapshot() === $before, 'reading the stage queue changes no order, relation or activity');
+checkError($get($erin, '/orders/stage-queue', ['stage' => 'packing']), 403, 'STAGE_NOT_ALLOWED', 'a stage the employee does not hold is refused');
+checkError($get($dan, '/orders/stage-queue', ['stage' => 'height']), 403, 'STAGE_NOT_ALLOWED', 'another department cannot read the height queue');
+checkError($get($erin, '/orders/stage-queue', ['stage' => '../height']), 400, 'INVALID_STAGE', 'a malformed stage is rejected');
+checkError($get($erin, '/orders/stage-queue'), 400, 'INVALID_STAGE', 'the stage is required');
+checkError(T::call($kernel, 'GET', '/orders/stage-queue', null, [], null, ['stage' => 'height']), 401, 'SESSION_EXPIRED', 'the stage queue needs a session');
+$summary = $get($erin, '/orders/stage-summary');
+check($summary['status'] === 200 && array_column($summary['body']['stages'], 'stageId') === ['height', 'header-tape'], 'the stage summary lists only the employee\'s stages, in workflow order');
+check($summary['body']['stages'][0]['total'] === $expectedTotal && $summary['body']['stages'][0]['mine'] === 1, 'the summary totals match the stage queue');
+check(array_column($get($dan, '/orders/stage-summary')['body']['stages'], 'stageId') === ['delivery'], 'the summary of another employee shows only that employee\'s stage');
+check($snapshot() === $before, 'reading the stage summary changes nothing');
+$pdo->prepare("DELETE FROM employee_stage_access WHERE employee_uuid = ? AND stage_id = 'height'")->execute([$frank['employeeUuid']]);
+$pdo->prepare('UPDATE employees SET authorization_version = authorization_version + 1 WHERE employee_uuid = ?')->execute([$frank['employeeUuid']]);
+$afterRemoval = $get($frank, '/orders/stage-queue', ['stage' => 'height']);
+check(in_array($afterRemoval['status'], [401, 403], true), 'a removed stage grant stops the stage queue immediately (got ' . $afterRemoval['status'] . ')');
+
 // ---- Rate limiting and inactive accounts --------------------------------------
 $limited = false;
 for ($i = 0; $i < 70 && !$limited; $i++) {
