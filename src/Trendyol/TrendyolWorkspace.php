@@ -97,6 +97,42 @@ final readonly class TrendyolWorkspace
         ];
     }
 
+    /** The caller's own Trendyol work actions recorded in the intake audit. */
+    private const OWN_ACTIONS = ['line_prepared', 'released', 'dismissed', 'reopened'];
+
+    /**
+     * The caller's own Trendyol work: today's counts (Europe/Bucharest business day) and the latest ten actions.
+     * Only events the caller performed are returned; no other employee's activity is visible here.
+     *
+     * @return array<string, mixed>
+     */
+    public function myActivity(EmployeeIdentity $actor): array
+    {
+        $this->authorization->require($actor, self::VIEW);
+        $zone = new DateTimeZone('Europe/Bucharest');
+        $dayStart = $this->clock->now()->setTimezone($zone)->setTime(0, 0)->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s.u');
+        $actions = "'" . implode("', '", self::OWN_ACTIONS) . "'";
+        $today = array_fill_keys(self::OWN_ACTIONS, 0);
+        $counts = $this->pdo->prepare("SELECT action, COUNT(*) AS n FROM trendyol_intake_events WHERE actor_employee_uuid = ? AND occurred_at >= ? AND action IN ({$actions}) GROUP BY action");
+        $counts->execute([$actor->employeeUuid, $dayStart]);
+        foreach ($counts->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $today[(string) $row['action']] = (int) $row['n'];
+        }
+        $recent = $this->pdo->prepare("SELECT e.action, e.package_id, e.occurred_at, p.order_number FROM trendyol_intake_events e
+            LEFT JOIN trendyol_packages p ON p.package_id = e.package_id
+            WHERE e.actor_employee_uuid = ? AND e.action IN ({$actions}) ORDER BY e.event_id DESC LIMIT 10");
+        $recent->execute([$actor->employeeUuid]);
+        return [
+            'today' => ['linesPrepared' => $today['line_prepared'], 'released' => $today['released'], 'dismissed' => $today['dismissed'], 'reopened' => $today['reopened']],
+            'recent' => array_map(static fn (array $row): array => [
+                'action' => (string) $row['action'],
+                'packageId' => $row['package_id'] === null ? null : (string) $row['package_id'],
+                'orderNumber' => $row['order_number'] === null ? null : (string) $row['order_number'],
+                'at' => self::iso($row['occurred_at']),
+            ], $recent->fetchAll(PDO::FETCH_ASSOC)),
+        ];
+    }
+
     /** @return array{items: list<array<string, mixed>>} */
     public function list(EmployeeIdentity $actor, string $view): array
     {

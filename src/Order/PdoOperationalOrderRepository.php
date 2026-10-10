@@ -106,6 +106,43 @@ final readonly class PdoOperationalOrderRepository implements OperationalOrderRe
         return $this->hydrate($statement->fetchAll(PDO::FETCH_ASSOC));
     }
 
+    public function listOpenAtStage(string $employeeUuid, string $stageId, int $max): array
+    {
+        $max = max(1, min(250, $max));
+        // Served by idx_cutting_pool (production_stage_id, operational_status, production_completed_at, ...).
+        $statement = $this->pdo->prepare(self::SELECT . "
+            LEFT JOIN employee_order_relations r ON r.order_uuid = o.order_uuid AND r.employee_uuid = ? AND r.status = 'active'
+            WHERE o.production_stage_id = ? AND o.operational_status <> 'unavailable' AND o.production_completed_at IS NULL
+            ORDER BY COALESCE(o.production_changed_at, o.created_at) ASC, o.order_uuid ASC
+            LIMIT {$max}
+        ");
+        $statement->execute([$employeeUuid, $stageId]);
+        return $this->hydrate($statement->fetchAll(PDO::FETCH_ASSOC));
+    }
+
+    public function countOpenByStage(string $employeeUuid, array $stageIds, bool $includeTrendyolIntake): array
+    {
+        $stageIds = array_values(array_unique(array_map('strval', $stageIds)));
+        if ($stageIds === []) {
+            return [];
+        }
+        $placeholders = implode(',', array_fill(0, count($stageIds), '?'));
+        $trendyol = $includeTrendyolIntake ? '' : " AND NOT (o.source_key = 'trendyol' AND o.production_stage_id = 'waiting')";
+        $statement = $this->pdo->prepare("
+            SELECT o.production_stage_id AS stage_id, COUNT(*) AS total,
+                   COALESCE(SUM(o.production_owner_employee_uuid = ?), 0) AS mine
+            FROM operational_orders o
+            WHERE o.production_stage_id IN ({$placeholders}) AND o.operational_status <> 'unavailable' AND o.production_completed_at IS NULL{$trendyol}
+            GROUP BY o.production_stage_id
+        ");
+        $statement->execute([$employeeUuid, ...$stageIds]);
+        $counts = array_fill_keys($stageIds, ['total' => 0, 'mine' => 0]);
+        foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $counts[(string) $row['stage_id']] = ['total' => (int) $row['total'], 'mine' => (int) $row['mine']];
+        }
+        return $counts;
+    }
+
     /**
      * @param list<array<string, mixed>> $rows
      * @return list<OperationalOrder>
