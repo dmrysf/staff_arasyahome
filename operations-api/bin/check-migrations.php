@@ -11,6 +11,7 @@ if ($files === []) {
 $expected = ['departments', 'roles', 'permissions', 'role_permissions', 'employees', 'employee_stage_access', 'auth_sessions', 'auth_login_attempts', 'auth_rate_limit_buckets', 'auth_audit_events', 'production_workflows', 'production_stages', 'order_sources', 'operational_orders', 'operational_order_items', 'employee_order_relations', 'order_projection_receipts', 'order_qr_references', 'order_activity_events', 'order_operation_idempotency', 'api_rate_limit_buckets', 'applications', 'employee_application_access', 'employee_role_assignments', 'system_root_identity', 'iam_audit_events', 'b2b_company_number_sequence', 'b2b_companies', 'b2b_company_contacts', 'b2b_company_addresses', 'b2b_company_activity_events', 'b2b_company_idempotency', 'b2b_account_movement_sequence', 'b2b_account_movements', 'b2b_account_allocations', 'b2b_account_allocation_releases', 'b2b_account_activity_events', 'b2b_account_idempotency'];
 $schema = implode("\n", array_map(static fn (string $path): string => (string) file_get_contents($path), $files));
 $expected[]='b2b_production_handoffs';
+$expected[]='employee_stage_source_scopes';
 array_push($expected,'b2b_project_number_sequence','b2b_projects','b2b_project_zones','b2b_project_rooms','b2b_project_openings','b2b_project_treatments','b2b_project_orders','b2b_project_order_lines','b2b_project_activity_events','b2b_project_idempotency');
 foreach ($expected as $table) {
     if (preg_match('/CREATE TABLE IF NOT EXISTS\s+' . preg_quote($table, '/') . '\b/i', $schema) !== 1) {

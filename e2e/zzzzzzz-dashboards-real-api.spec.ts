@@ -7,7 +7,8 @@ type Fixture = {
   users: { ana: string };
   documents: { requester: string };
   trendyol: { approver: string; outsider: string; cutter: string };
-  dashboards: { preparer: string; sewing: string; supervisor: string; multi: string };
+  dashboards: { scoped: string; preparer: string; sewing: string; supervisor: string; multi: string };
+  b2b: { id: string };
 };
 const fixture = JSON.parse(readFileSync(path.join(import.meta.dirname, ".real-api-fixture.json"), "utf8")) as Fixture;
 const API = "http://127.0.0.1:8787";
@@ -176,6 +177,23 @@ test("Trendyol: the approver's dashboard shows real counts and own activity; a p
     expect(outsider.errors).toEqual([]);
     await outsider.context.close();
   }
+});
+
+test("Trendyol-scoped waiting grant: the stage-1 workspace names its source and other sources stay unreachable through the API", async ({ browser }) => {
+  const scoped = await signIn(browser, fixture.dashboards.scoped, 375);
+  const { page } = scoped;
+  await expect(page.getByTestId("workspace-trendyol")).toBeVisible();
+  await page.getByRole("navigation", { name: "Spațiile mele de lucru" }).getByRole("button", { name: /Pornire producție/ }).click();
+  await expect(page.getByTestId("workspace-pornire")).toBeVisible();
+  await expect(page.getByTestId("stage-source-scope")).toContainText("doar pe comenzile din: Trendyol");
+  const queue = await page.evaluate(async (url) => (await fetch(url, { credentials: "include" })).json(), `${API}/orders/stage-queue?stage=waiting`);
+  expect(queue.items.every((item: { source: string }) => item.source === "trendyol")).toBe(true);
+  await expect(metricValue(page, "metric-total")).toHaveText(String(queue.counts.total));
+  expect(await apiStatus(page, `/orders/${encodeURIComponent(fixture.b2b.id)}`)).toBe(404);
+  expect(await overflow(page)).toBeLessThanOrEqual(0);
+  expect(scoped.writes).toEqual([]);
+  expect(scoped.errors).toEqual([]);
+  await scoped.context.close();
 });
 
 test("document-only channel employee keeps the document lookup as the workspace", async ({ browser }) => {

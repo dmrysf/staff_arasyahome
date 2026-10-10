@@ -68,7 +68,7 @@ final readonly class OperationalOrderController
 
     /**
      * Read-only queue of one production stage for the Staff department dashboards. The stage must be one of the
-     * employee's allowed stages; every order passes OrderAccessPolicy::canView (so Trendyol orders at the initial
+     * employee's allowed stages, a source-scoped grant reads only its sources; every order passes OrderAccessPolicy::canView (so Trendyol orders at the initial
      * stage stay limited to Trendyol personnel) and carries the same action evaluation as the order screen.
      * Nothing is claimed or changed here.
      */
@@ -78,7 +78,8 @@ final readonly class OperationalOrderController
         $this->authorization->require($employee, 'orders.view_mine');
         $stageId = $this->allowedStage($employee, $request->query('stage') ?? '');
         $workflow = $this->workflowOrNull();
-        $rows = $this->repository->listOpenAtStage($employee->employeeUuid, $stageId, self::STAGE_QUEUE_SCAN + 1);
+        // A source-scoped grant is applied in the query itself, so other sources never reach the scan window.
+        $rows = $this->repository->listOpenAtStage($employee->employeeUuid, $stageId, self::STAGE_QUEUE_SCAN + 1, $employee->sourcesAt($stageId));
         $complete = count($rows) <= self::STAGE_QUEUE_SCAN;
         $buckets = ['mine' => [], 'available' => [], 'blocked' => [], 'claimedByOthers' => []];
         foreach (array_slice($rows, 0, self::STAGE_QUEUE_SCAN) as $order) {
@@ -94,7 +95,7 @@ final readonly class OperationalOrderController
             };
             $buckets[$bucket][] = [$order, $decision];
         }
-        $total = $this->repository->countOpenByStage($employee->employeeUuid, [$stageId], $this->authorization->can($employee, OrderAccessPolicy::TRENDYOL_VIEW))[$stageId]['total'] ?? 0;
+        $total = $this->repository->countOpenByStage($employee->employeeUuid, [$stageId], $this->authorization->can($employee, OrderAccessPolicy::TRENDYOL_VIEW), $employee->stageSourceScopes)[$stageId]['total'] ?? 0;
         $items = array_slice(array_merge(...array_values($buckets)), 0, self::STAGE_QUEUE_ITEMS);
         return Response::json([
             'stageId' => $stageId,
@@ -112,7 +113,7 @@ final readonly class OperationalOrderController
         $allowed = $employee->isOperationallyActive() ? $employee->allowedStageIds : [];
         $workflow = $this->workflowOrNull();
         $ordered = $workflow === null ? $allowed : array_values(array_filter(array_map(static fn ($stage): string => $stage->id, $workflow->stages), static fn (string $id): bool => in_array($id, $allowed, true)));
-        $counts = $this->repository->countOpenByStage($employee->employeeUuid, $ordered, $this->authorization->can($employee, OrderAccessPolicy::TRENDYOL_VIEW));
+        $counts = $this->repository->countOpenByStage($employee->employeeUuid, $ordered, $this->authorization->can($employee, OrderAccessPolicy::TRENDYOL_VIEW), $employee->stageSourceScopes);
         return Response::json([
             'stages' => array_map(static fn (string $id): array => ['stageId' => $id, 'total' => $counts[$id]['total'] ?? 0, 'mine' => $counts[$id]['mine'] ?? 0], $ordered),
         ], 200, ['Cache-Control' => 'private, no-store']);

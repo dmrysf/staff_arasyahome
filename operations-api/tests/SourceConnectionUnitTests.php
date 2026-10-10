@@ -546,14 +546,18 @@ test('expected API errors and validation are unchanged by the PDO diagnostics', 
     expect(!array_key_exists('exception', $warning) && !array_key_exists('sqlstate', $warning) && !array_key_exists('driver_code', $warning));
 });
 
-test('migrations stay sequential through 022 and the canonical workflow keeps its 14 stages', function (): void {
+test('migrations stay sequential through 023 and the canonical workflow keeps its 14 stages', function (): void {
     $migrations = array_map('basename', glob(dirname(__DIR__) . '/database/migrations/*.sql') ?: []);
-    expect(count($migrations) === 22 && str_starts_with($migrations[0], '001_') && str_starts_with($migrations[16], '017_') && $migrations[17] === '018_production_authority.sql' && $migrations[18] === '019_production_qr_authority.sql' && $migrations[19] === '020_production_document_authority.sql' && $migrations[20] === '021_document_scopes.sql' && $migrations[21] === '022_trendyol_intake.sql');
+    expect(count($migrations) === 23 && str_starts_with($migrations[0], '001_') && str_starts_with($migrations[16], '017_') && $migrations[17] === '018_production_authority.sql' && $migrations[18] === '019_production_qr_authority.sql' && $migrations[19] === '020_production_document_authority.sql' && $migrations[20] === '021_document_scopes.sql' && $migrations[21] === '022_trendyol_intake.sql' && $migrations[22] === '023_source_scoped_stage_authorization.sql');
     expect(count(CanonicalProductionWorkflowContract::STAGES) === 14);
     expect(array_keys(CanonicalProductionWorkflowContract::STAGES) === ['waiting', 'material-preparation', 'workshop-receiving', 'labeling', 'material-straightening', 'bottom-hem', 'side-hem', 'ironing', 'height', 'header-tape', 'sewing-finishing', 'quality-control', 'packing', 'delivery']);
     // 018 is additive: it never converts the authority of existing orders.
     $sql = (string) file_get_contents(dirname(__DIR__) . '/database/migrations/018_production_authority.sql');
     expect(preg_match('/UPDATE\s+operational_orders|DELETE\s+FROM|DROP\s+TABLE|production_authority\s*=/i', $sql) === 0, '018 must not rewrite orders or drop data.');
+    // 023 is additive: one new table, no change to existing grants, employees or orders.
+    $scopes = (string) file_get_contents(dirname(__DIR__) . '/database/migrations/023_source_scoped_stage_authorization.sql');
+    $statements = preg_replace(['/^\s*--.*$/m', '/ON (UPDATE|DELETE) RESTRICT/'], '', $scopes);
+    expect(preg_match('/\b(UPDATE|DELETE|DROP|ALTER|INSERT|TRUNCATE|RENAME)\b/i', $statements) === 0 && substr_count($statements, 'CREATE TABLE IF NOT EXISTS employee_stage_source_scopes') === 1, '023 must only create the scope table.');
 });
 
 test('document authority mode is per source, defaults to legacy and enforces only with QR authority enforce', function (): void {

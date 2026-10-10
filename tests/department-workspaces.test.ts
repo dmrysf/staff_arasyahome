@@ -183,3 +183,18 @@ test("the home renders the authorized workspace with Romanian copy and only the 
   const preview = render(person({ allowedStageIds: ["material-preparation"] }), services({ workspace: undefined, mode: "preview" }));
   assert.match(preview, /Coada etapei nu este disponibilă în acest mod/);
 });
+
+test("source-scoped stage grants: the session mapping is strict and the stage dashboard names the covered sources", async () => {
+  const { mapProductionEmployee } = await import("../services/production/httpServices");
+  const raw = { employeeUuid: "u", displayName: "Ayla Test", username: "ayla", department: "Vânzări Online", departmentKey: "vanzari-online", role: "employee", status: "active", permissions: STAFF, allowedStageIds: ["waiting"], applications: ["staff"], mustChangePassword: false };
+  assert.deepEqual(mapProductionEmployee({ ...raw, stageSourceScopes: { waiting: ["trendyol"] } }).stageSourceScopes, { waiting: ["trendyol"] });
+  assert.deepEqual(mapProductionEmployee(raw).stageSourceScopes, {}, "an older API without scopes maps to no restriction (the server still enforces)");
+  assert.throws(() => mapProductionEmployee({ ...raw, stageSourceScopes: { waiting: "trendyol" } }));
+  const scoped = person({ allowedStageIds: ["waiting"], stageSourceScopes: { waiting: ["trendyol"] }, permissions: [...STAFF, "trendyol.orders.view"] });
+  assert.deepEqual(ids(scoped), ["trendyol", "pornire"], "a scoped stage is still the employee's workspace; the API narrows its orders");
+  const html = renderToStaticMarkup(createElement(HomeScreen, { employee: scoped, services: services(), workflow, dashboardUrl: null, navigate: () => undefined }));
+  assert.ok(!html.includes("stage-source-scope"), "the Trendyol workspace opens first");
+  const stageHtml = render(person({ allowedStageIds: ["waiting"], stageSourceScopes: { waiting: ["trendyol", "b2b"] } }));
+  assert.match(stageHtml, /Lucrezi la această etapă doar pe comenzile din: Trendyol, B2B\./);
+  assert.ok(!render(person({ allowedStageIds: ["waiting"] })).includes("stage-source-scope"), "an unscoped grant shows no restriction");
+});

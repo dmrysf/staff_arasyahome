@@ -100,6 +100,10 @@ $otherSources = static function () use ($pdo): string {
     $qr = $pdo->query("SELECT q.qr_reference, q.status FROM order_qr_references q JOIN operational_orders o ON o.order_uuid = q.order_uuid WHERE o.source_key <> 'trendyol' ORDER BY q.qr_reference")->fetchAll(PDO::FETCH_ASSOC);
     return hash('sha256', serialize([$rows, $qr, $pdo->query('SELECT * FROM employee_document_scopes ORDER BY employee_uuid, capability, source_key')->fetchAll(PDO::FETCH_ASSOC)]));
 };
+// A Trendhome order waiting at stage 1 next to the Trendyol work, for the source-scoped stage grant checks below;
+// created before the isolation snapshot so the snapshot proves nothing touches it afterwards.
+$otherNumber = 'SCOPE' . bin2hex(random_bytes(4));
+$check((T::ingest($container->kernel(), 'trendhome', T::sourceOrder($otherNumber, "evt-{$otherNumber}", gmdate('Y-m-d\TH:i:s\Z', time() - 60), T::stage('waiting')))['body']['outcome'] ?? null) === 'applied', 'a Trendhome order waits at stage 1 too');
 $othersBefore = $otherSources();
 $trendyolOrdersBefore = $trendyolOrders();
 
@@ -363,12 +367,23 @@ $check($prepActivity['today']['linesPrepared'] >= 1 && $prepActivity['today']['r
 $error($get($otherWaiting, '/trendyol/activity'), 403, 'UNAUTHORIZED_ACTION', 'Trendyol activity needs the Trendyol view permission');
 $error($get($dashboardOnly, '/trendyol/activity'), 403, 'APPLICATION_ACCESS_DENIED', 'Trendyol activity works only inside Staff');
 
+// The Trendyol operator profile: Trendyol approver role plus a `waiting` grant scoped to Trendyol only (migration 023).
+// Other sources' stage-1 work stays out of reach; the Trendyol hand-off uses the ordinary claim and transition.
+$scoped = $identity('tyscope', ['waiting'], ['staff'], [$roleIds['trendyol-order-approver']]);
+$status(T::call($kernel, 'PUT', "/management/employees/{$scoped['employeeUuid']}/stage-scopes", ['scopes' => ['waiting' => ['trendyol']]], ['x-csrf-token' => $root['csrf']], $root['cookie']), 200, 'root scopes the waiting grant to Trendyol');
+$otherPath = '/orders/' . rawurlencode("trendhome:{$otherNumber}");
+$status($get($otherWaiting, $otherPath), 200, 'an unscoped waiting employee sees the Trendhome order');
+$error($get($scoped, $otherPath), 404, 'ORDER_NOT_FOUND', 'the Trendyol-scoped employee does not see the Trendhome order');
+$error($send($scoped, 'POST', "{$otherPath}/claim", ['expectedVersion' => 1], $key('scope-other')), 404, 'ORDER_NOT_FOUND', 'nor claim it');
+$scopedQueue = $status($get($scoped, '/orders/stage-queue', ['stage' => 'waiting']), 200, 'scoped waiting queue');
+$check(array_unique(array_map(static fn (array $item): string => $item['source'], $scopedQueue['items'])) === ['trendyol'] && in_array($global, array_column($scopedQueue['items'], 'id'), true), 'the scoped queue holds the Trendyol order and nothing else');
 $path = '/orders/' . rawurlencode($global);
 $error($get($otherWaiting, $path), 404, 'ORDER_NOT_FOUND', 'a waiting-stage employee without Trendyol permission does not see the Trendyol order');
-$seen = $status($get($trendyolWaiting, $path), 200, 'Trendyol waiting-stage employee sees the order');
-$claimed = $status($send($trendyolWaiting, 'POST', "{$path}/claim", ['expectedVersion' => $seen['productionVersion'] ?? $seen['order']['productionVersion'] ?? 1], $key('claim')), 200, 'claim at stage 1');
+$status($get($trendyolWaiting, $path), 200, 'an unscoped Trendyol waiting-stage employee sees the order');
+$seen = $status($get($scoped, $path), 200, 'the Trendyol-scoped employee sees the order');
+$claimed = $status($send($scoped, 'POST', "{$path}/claim", ['expectedVersion' => $seen['productionVersion'] ?? $seen['order']['productionVersion'] ?? 1], $key('claim')), 200, 'claim at stage 1 under the Trendyol scope');
 $version = (int) $one('SELECT production_version FROM operational_orders WHERE global_order_id = ?', [$global]);
-$status($send($trendyolWaiting, 'POST', "{$path}/transition", ['expectedVersion' => $version], $key('transition')), 200, 'complete stage 1');
+$status($send($scoped, 'POST', "{$path}/transition", ['expectedVersion' => $version], $key('transition')), 200, 'complete stage 1 under the Trendyol scope');
 $check($one('SELECT production_stage_id FROM operational_orders WHERE global_order_id = ?', [$global]) === 'material-preparation', 'the order moved to stage 2 (material-preparation) through the existing transition');
 $status($get($cutter, $path), 200, 'from stage 2 on it is ordinary cutting work');
 $error($get($otherWaiting, $path), 404, 'ORDER_NOT_FOUND', 'still invisible to an unrelated waiting-stage employee');

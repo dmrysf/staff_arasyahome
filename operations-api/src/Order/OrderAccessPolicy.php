@@ -15,9 +15,12 @@ use Arasya\Operations\Production\ProductionWorkflow;
  * Server-side operational authority for one employee and one order.
  *
  * Visibility: an order is visible when the employee has a direct relation
- * with it, or when its current production stage is one of the employee's
- * allowed stages (a Trendyol order at the initial stage also needs the
- * Trendyol view permission). Everything else is reported as not found.
+ * with it, or when the employee works at its current production stage for
+ * its source: the stage is granted and, for a source-scoped grant
+ * (migration 023), the order's source is one of the granted sources (a
+ * Trendyol order at the initial stage also needs the Trendyol view
+ * permission). Everything else is reported as not found. Claim and stage
+ * completion use the same stage-and-source rule.
  *
  * Production authority: while the order's source enforces the authority split, an order that is still
  * managed by its source (production_authority = 'source') cannot be worked on in Staff at all; a manager
@@ -58,7 +61,7 @@ final readonly class OrderAccessPolicy
         if ($order->relation !== null && $order->relation->employeeUuid === $employee->employeeUuid) {
             return true;
         }
-        if (!in_array($order->productionStageId, $employee->allowedStageIds, true)) {
+        if (!$employee->worksAt($order->productionStageId, $order->globalId->sourceKey)) {
             return false;
         }
         // An approved Trendyol order at the initial stage is still Trendyol preparation work: besides the stage, it
@@ -89,7 +92,7 @@ final readonly class OrderAccessPolicy
         if ($this->isSourceManagedUnderEnforcement($order)) {
             return $this->blocked(self::BLOCKED_AUTHORITY_SOURCE);
         }
-        $stageAllowed = in_array($order->productionStageId, $employee->allowedStageIds, true);
+        $stageAllowed = $employee->worksAt($order->productionStageId, $order->globalId->sourceKey);
         $owner = $order->productionOwnerEmployeeUuid;
         if ($owner !== null && $owner !== $employee->employeeUuid) {
             return $this->blocked('claimed_by_other');

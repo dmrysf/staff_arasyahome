@@ -201,6 +201,8 @@ final readonly class ManagementService
         $summary['secondaryDepartments'] = array_map(static fn (array $row): array => ['id' => (int) $row['department_id'], 'name' => (string) $row['name']], $secondary->fetchAll());
         // Root reaches every source; a stored scope would be meaningless for it.
         $summary['documentScopes'] = $summary['isRoot'] ? null : (new DocumentScopePolicy($this->pdo))->scopesOf((string) $summary['id']);
+        // Granted stages narrowed to named sources (migration 023); a stage absent here reaches every source.
+        $summary['stageSourceScopes'] = $summary['isRoot'] ? null : (object) $this->stageScopesOf((string) $summary['id']);
         // The grantable sources, for the root-only scope editor; nobody else can change a scope.
         $summary['documentScopeSources'] = $actor->isRoot && !$summary['isRoot'] ? array_map(
             static fn (array $row): array => ['key' => (string) $row['source_key'], 'name' => (string) $row['display_name']],
@@ -252,6 +254,75 @@ final readonly class ManagementService
             $this->audit->record($actor, 'employee.document_scopes_changed', 'employee', $target['employee_uuid'], $this->label($target), ['before' => $before, 'after' => $wanted], $requestId, $now);
         });
         return $this->getEmployee($actor, $employeeId);
+    }
+
+    /**
+     * Source scopes of the target's granted stages (migration 023). Root only, like document scopes: a scope narrows
+     * a stage grant to named order sources, and removing a scope widens it back to every source, which is a grant.
+     *
+     * `$scopes` maps granted stage ids to non-empty source lists and replaces every scope of the employee; a stage
+     * omitted from it is unscoped. A scope never grants a stage: the stage must already be granted. An empty list
+     * is refused, because "no source" is expressed by removing the stage grant itself.
+     *
+     * @return array<string, mixed>
+     */
+    public function setStageScopes(EmployeeIdentity $actor, string $employeeId, mixed $scopes, string $requestId): array
+    {
+        $this->authorization->requireApplication($actor, 'dashboard');
+        if (!$actor->isRoot) {
+            throw new ApiException(403, 'ROOT_ONLY', 'Only the principal administrator can change stage source scopes.');
+        }
+        if (!is_array($scopes) || ($scopes !== [] && array_is_list($scopes))) {
+            throw new ApiException(400, 'VALIDATION_FAILED', 'scopes must be an object of stage ids to source lists.');
+        }
+        $wanted = [];
+        foreach ($scopes as $stageId => $sources) {
+            $list = $this->stringList($sources, 'scopes');
+            if ($list === []) {
+                throw new ApiException(400, 'VALIDATION_FAILED', 'A stage scope needs at least one source; remove the stage grant to revoke the stage.');
+            }
+            sort($list);
+            $wanted[(string) $stageId] = array_values(array_unique($list));
+        }
+        ksort($wanted);
+        $this->mutateEmployee($actor, $employeeId, function (array $target, string $now) use ($actor, $wanted, $requestId): void {
+            $granted = $this->column('SELECT stage_id FROM employee_stage_access WHERE employee_uuid = :id ORDER BY stage_id', $target['employee_uuid']);
+            if (array_diff(array_keys($wanted), $granted) !== []) {
+                throw new ApiException(400, 'STAGE_NOT_GRANTED', 'A stage scope names a stage the employee does not hold.');
+            }
+            $known = $this->pdo->query("SELECT source_key FROM order_sources WHERE status = 'active'")->fetchAll(PDO::FETCH_COLUMN);
+            foreach ($wanted as $sources) {
+                if (array_diff($sources, $known) !== []) {
+                    throw new ApiException(400, 'UNKNOWN_SOURCE', 'A stage scope names an unknown or inactive order source.');
+                }
+            }
+            $before = $this->stageScopesOf($target['employee_uuid']);
+            if ($before === $wanted) {
+                return;
+            }
+            $this->pdo->prepare('DELETE FROM employee_stage_source_scopes WHERE employee_uuid = :id')->execute(['id' => $target['employee_uuid']]);
+            $insert = $this->pdo->prepare('INSERT INTO employee_stage_source_scopes (employee_uuid, stage_id, source_key, granted_at, granted_by_employee_uuid) VALUES (:id, :stage, :source, :now, :actor)');
+            foreach ($wanted as $stageId => $sources) {
+                foreach ($sources as $source) {
+                    $insert->execute(['id' => $target['employee_uuid'], 'stage' => $stageId, 'source' => $source, 'now' => $now, 'actor' => $actor->employeeUuid]);
+                }
+            }
+            $this->bumpAuthorization($target['employee_uuid'], $now);
+            $this->audit->record($actor, 'employee.stage_scopes_changed', 'employee', $target['employee_uuid'], $this->label($target), ['before' => (object) $before, 'after' => (object) $wanted], $requestId, $now);
+        });
+        return $this->getEmployee($actor, $employeeId);
+    }
+
+    /** @return array<string, list<string>> stage id => sorted sources, stages sorted */
+    private function stageScopesOf(string $employeeUuid): array
+    {
+        $statement = $this->pdo->prepare('SELECT stage_id, source_key FROM employee_stage_source_scopes WHERE employee_uuid = :id ORDER BY stage_id, source_key');
+        $statement->execute(['id' => $employeeUuid]);
+        $scopes = [];
+        foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $scopes[(string) $row['stage_id']][] = (string) $row['source_key'];
+        }
+        return $scopes;
     }
 
     /**
@@ -467,10 +538,18 @@ final readonly class ManagementService
         $this->mutateEmployee($actor, $employeeId, function (array $target, string $now) use ($actor, $ids, $requestId): void {
             $stages = $this->canonicalStages($ids);
             $before = $this->column('SELECT stage_id FROM employee_stage_access WHERE employee_uuid = :id ORDER BY stage_id', $target['employee_uuid']);
+            $scopesBefore = $this->stageScopesOf($target['employee_uuid']);
             $this->pdo->prepare('DELETE FROM employee_stage_access WHERE employee_uuid = :id')->execute(['id' => $target['employee_uuid']]);
             $this->writeStages($target['employee_uuid'], $stages, $now);
+            // A removed stage takes its source scope with it; a kept stage keeps its scope unchanged. Re-adding a
+            // stage later grants it unscoped (every source) until root narrows it again.
+            $removedScopes = array_values(array_diff(array_keys($scopesBefore), $stages));
+            if ($removedScopes !== []) {
+                $this->pdo->prepare('DELETE FROM employee_stage_source_scopes WHERE employee_uuid = ? AND stage_id IN (' . implode(',', array_fill(0, count($removedScopes), '?')) . ')')
+                    ->execute([$target['employee_uuid'], ...$removedScopes]);
+            }
             $this->bumpAuthorization($target['employee_uuid'], $now);
-            $this->audit->record($actor, 'employee.stages_changed', 'employee', $target['employee_uuid'], $this->label($target), ['before' => $before, 'after' => $stages], $requestId, $now);
+            $this->audit->record($actor, 'employee.stages_changed', 'employee', $target['employee_uuid'], $this->label($target), ['before' => $before, 'after' => $stages] + ($removedScopes === [] ? [] : ['stageScopesRemoved' => array_intersect_key($scopesBefore, array_flip($removedScopes))]), $requestId, $now);
         });
         return $this->getEmployee($actor, $employeeId);
     }

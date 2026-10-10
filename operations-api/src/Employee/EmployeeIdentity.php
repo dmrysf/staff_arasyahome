@@ -11,6 +11,9 @@ final readonly class EmployeeIdentity
      * @param list<string> $allowedStageIds
      * @param list<string> $applications Active applications the identity may enter.
      * @param list<string> $roleKeys
+     * @param array<string, list<string>> $stageSourceScopes Source restriction per granted stage (migration 023). A stage
+     *        absent here keeps its legacy meaning (every order source); a stage present here reaches only the listed
+     *        sources. Scopes never grant a stage: only stages in $allowedStageIds are considered.
      */
     public function __construct(
         public string $employeeUuid,
@@ -36,7 +39,32 @@ final readonly class EmployeeIdentity
         public array $roleKeys = [],
         public int $authorityRank = 0,
         public int $departmentId = 0,
+        public array $stageSourceScopes = [],
     ) {
+    }
+
+    /** Whether the employee may work at the stage on orders of the source: the stage grant AND its source scope. */
+    public function worksAt(string $stageId, string $sourceKey): bool
+    {
+        if (!in_array($stageId, $this->allowedStageIds, true)) {
+            return false;
+        }
+        $sources = $this->stageSourceScopes[$stageId] ?? null;
+        return $sources === null || in_array($sourceKey, $sources, true);
+    }
+
+    /**
+     * The sources the employee reaches at a granted stage: null for every source (a legacy, unrestricted grant), a
+     * list for a scoped grant, or an empty list when the stage is not granted at all.
+     *
+     * @return list<string>|null
+     */
+    public function sourcesAt(string $stageId): ?array
+    {
+        if (!in_array($stageId, $this->allowedStageIds, true)) {
+            return [];
+        }
+        return $this->stageSourceScopes[$stageId] ?? null;
     }
 
     public function isActive(): bool

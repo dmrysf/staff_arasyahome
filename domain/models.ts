@@ -11,6 +11,11 @@ export type Employee = {
   status: "active" | "inactive" | "suspended";
   permissions: string[];
   allowedStageIds: string[];
+  /**
+   * Granted stages narrowed to named order sources (API 2.26.0). A stage absent here reaches every source. The
+   * server enforces it on every order route; Staff only uses it to say which sources a stage dashboard covers.
+   */
+  stageSourceScopes?: Readonly<Record<string, readonly string[]>>;
   /** Central IAM applications this identity may enter; Staff requires "staff". */
   applications: string[];
   /** A temporary password must be replaced before any other use. */

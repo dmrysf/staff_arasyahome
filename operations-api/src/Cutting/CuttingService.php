@@ -33,8 +33,16 @@ final readonly class CuttingService
     {
         $this->requireCutter($actor);
         $where = "o.production_stage_id = 'material-preparation' AND o.production_completed_at IS NULL AND o.operational_status <> 'unavailable' AND o.source_reported_unavailable_at IS NULL AND o.production_owner_employee_uuid IS NULL AND o.open_exception_uuid IS NULL AND o.document_status IN ('none', 'active') AND s.status = 'active'";
-        $total = (int) $this->pdo->query("SELECT COUNT(*) FROM operational_orders o JOIN order_sources s ON s.source_key = o.source_key WHERE {$where}")->fetchColumn();
-        $rows = $this->pdo->query("SELECT o.order_uuid, o.global_order_id, o.order_number, o.source_key, o.production_version, o.production_changed_at FROM operational_orders o JOIN order_sources s ON s.source_key = o.source_key WHERE {$where} ORDER BY o.production_changed_at, o.global_order_id LIMIT 100")->fetchAll(PDO::FETCH_ASSOC);
+        // A source-scoped cutting grant (migration 023) sees and counts only its own sources.
+        $sources = $actor->sourcesAt(CuttingLifecycle::STAGE) ?? [];
+        $scoped = $actor->sourcesAt(CuttingLifecycle::STAGE) !== null;
+        if ($scoped) $where .= ' AND o.source_key IN (' . ($sources === [] ? "''" : implode(',', array_fill(0, count($sources), '?'))) . ')';
+        $count = $this->pdo->prepare("SELECT COUNT(*) FROM operational_orders o JOIN order_sources s ON s.source_key = o.source_key WHERE {$where}");
+        $count->execute($sources);
+        $total = (int) $count->fetchColumn();
+        $list = $this->pdo->prepare("SELECT o.order_uuid, o.global_order_id, o.order_number, o.source_key, o.production_version, o.production_changed_at FROM operational_orders o JOIN order_sources s ON s.source_key = o.source_key WHERE {$where} ORDER BY o.production_changed_at, o.global_order_id LIMIT 100");
+        $list->execute($sources);
+        $rows = $list->fetchAll(PDO::FETCH_ASSOC);
         return ['total' => $total, 'ownedCount' => (new CuttingLifecycle($this->pdo))->ownedCount($actor->employeeUuid), 'items' => array_map(static fn(array $row): array => [
             'id' => $row['global_order_id'], 'orderNumber' => $row['order_number'], 'source' => $row['source_key'], 'productionVersion' => (int) $row['production_version'],
         ], $rows), 'reasons' => self::REASONS];
@@ -99,7 +107,7 @@ final readonly class CuttingService
             $this->assertOrder($order, $actor->employeeUuid);
             if ((int) $order['production_version'] !== $expected) throw new ApiException(409, 'ORDER_CHANGED', 'Comanda s-a schimbat.');
             (new CuttingLifecycle($this->pdo))->requireNoTransfer($order['order_uuid']);
-            $this->target($targetId, $actor);
+            $this->target($targetId, $actor, (string) $order['source_key']);
             $id = Uuid::v4();
             $this->pdo->prepare("INSERT INTO cutting_transfers (transfer_uuid, order_uuid, open_order_uuid, from_employee_uuid, to_employee_uuid, status, reason_key, reason_label, request_comment, requested_at) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)")
                 ->execute([$id, $order['order_uuid'], $order['order_uuid'], $actor->employeeUuid, $targetId, $reason, self::REASONS[$reason], $comment, $now]);
@@ -143,7 +151,7 @@ final readonly class CuttingService
             if ($action === 'decision') {
                 if ($transfer['status'] !== 'pending') throw new ApiException(409, 'TRANSFER_ALREADY_DECIDED', 'Alt manager a soluționat deja cererea.');
                 if (in_array($actor->employeeUuid, [$transfer['from_employee_uuid'], $transfer['to_employee_uuid']], true)) throw new ApiException(403, 'SELF_DECISION_DENIED', 'Nu poți decide propria cerere.');
-                if ($decision === 'approve') $this->target($transfer['to_employee_uuid'], $this->freshById($transfer['from_employee_uuid']));
+                if ($decision === 'approve') $this->target($transfer['to_employee_uuid'], $this->freshById($transfer['from_employee_uuid']), (string) $order['source_key']);
                 $status = $decision === 'approve' ? 'approved' : 'rejected';
                 $this->pdo->prepare('UPDATE cutting_transfers SET status = ?, open_order_uuid = ?, version = version + 1, decided_by_employee_uuid = ?, decided_via = ?, decision_comment = ?, decided_at = ?, resolved_at = ? WHERE transfer_uuid = ?')
                     ->execute([$status, $status === 'rejected' ? null : $order['order_uuid'], $actor->employeeUuid, $this->approvers->via($actor), $comment, $now, $status === 'rejected' ? $now : null, $id]);
@@ -152,7 +160,7 @@ final readonly class CuttingService
                 $this->pdo->prepare("UPDATE cutting_transfers SET status = 'cancelled', open_order_uuid = NULL, version = version + 1, resolved_at = ? WHERE transfer_uuid = ?")->execute([$now, $id]);
             } else {
                 if ($actor->employeeUuid !== $transfer['to_employee_uuid']) throw new ApiException(403, 'UNAUTHORIZED_ACTION', 'Doar destinatarul poate prelua transferul.');
-                $this->target($actor->employeeUuid, $this->freshById($transfer['from_employee_uuid']));
+                $this->target($actor->employeeUuid, $this->freshById($transfer['from_employee_uuid']), (string) $order['source_key']);
                 if ($action === 'accept') {
                     if ($transfer['status'] !== 'approved') throw new ApiException(409, 'TRANSFER_STATE_INVALID', 'Transferul nu a fost aprobat.');
                     $status = 'accepted';
@@ -229,10 +237,11 @@ final readonly class CuttingService
         if (!$fresh->isOperationallyActive() || $fresh->mustChangePassword) throw new ApiException(403, 'UNAUTHORIZED_ACTION', 'Accesul s-a schimbat.');
         return $fresh;
     }
-    private function target(string $id, EmployeeIdentity $from): EmployeeIdentity
+    /** A transfer target must be an eligible cutter of the same department who may cut orders of this source. */
+    private function target(string $id, EmployeeIdentity $from, string $sourceKey): EmployeeIdentity
     {
         $target = $this->freshById($id);
-        if ($id === $from->employeeUuid || !CuttingLifecycle::eligible($target) || $target->departmentId !== $from->departmentId) throw new ApiException(422, 'INELIGIBLE_TRANSFER_TARGET', 'Alege un coleg activ din același departament de tăiere.');
+        if ($id === $from->employeeUuid || !CuttingLifecycle::eligible($target) || $target->departmentId !== $from->departmentId || !$target->worksAt(CuttingLifecycle::STAGE, $sourceKey)) throw new ApiException(422, 'INELIGIBLE_TRANSFER_TARGET', 'Alege un coleg activ din același departament de tăiere.');
         return $target;
     }
     private function assertOrder(array $order, string $owner): void
