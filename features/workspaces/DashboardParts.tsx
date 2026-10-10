@@ -50,6 +50,25 @@ export function RefreshButton({ onRefresh, busy, updatedAt }: { onRefresh: () =>
   );
 }
 
+/**
+ * Automatic refresh status of the Trendyol workspace. "Ultima actualizare" is the last successful Staff read of the
+ * Operations API; it says nothing about when Arasya last synchronized with Trendyol (shown separately). A failed
+ * background read keeps the last good data and says so once, quietly, instead of an alert every minute.
+ */
+export function AutoRefreshBar({ onRefresh, busy, refreshing, updatedAt, stale, stopped, testId }: { onRefresh: () => void; busy: boolean; refreshing: boolean; updatedAt: number | null; stale: boolean; stopped: boolean; testId?: string }) {
+  return (
+    <div className="dashboard-refresh" data-testid={testId}>
+      <span>{stopped ? "Actualizare automată oprită" : "Actualizare automată la fiecare minut"}</span>
+      {updatedAt !== null && <span>Ultima actualizare {clock.format(updatedAt)}</span>}
+      {refreshing && <span>Se actualizează…</span>}
+      {stale && !busy && <span className="refresh-stale" role="status">Datele pot fi neactualizate</span>}
+      <button type="button" className="button button-secondary button-compact" onClick={onRefresh} disabled={busy} aria-label="Actualizează panoul">
+        <AppIcon name="refresh" size={18} /> {busy ? "Se actualizează…" : "Actualizează"}
+      </button>
+    </div>
+  );
+}
+
 /** Shown only when the employee holds more than one authorized workspace; switching never changes permissions. */
 export function WorkspaceSwitcher({ workspaces, current, onSelect }: { workspaces: readonly Workspace[]; current: Workspace; onSelect: (workspace: Workspace) => void }) {
   if (workspaces.length < 2) return null;

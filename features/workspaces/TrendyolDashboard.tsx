@@ -1,16 +1,15 @@
-import { useCallback } from "react";
+import { useMemo } from "react";
 import type { Employee } from "../../domain/models";
-import { activityActionLabels, intakeLabel, marketplaceClassLabels, marketplaceLabel, type TrendyolActivity, type TrendyolApi, type TrendyolOverview, type TrendyolPackageSummary } from "../../domain/trendyol";
+import { activityActionLabels, intakeLabel, marketplaceClassLabels, marketplaceLabel, type TrendyolApi, type TrendyolOverview, type TrendyolPackageSummary } from "../../domain/trendyol";
 import { ErrorState } from "../../components/ErrorState";
 import { AppIcon } from "../../components/icons/AppIcon";
-import { DashboardSection, EmptyState, Metric, MetricGrid, RefreshButton, type MetricValue } from "./DashboardParts";
-import { useDashboardData } from "./useDashboardData";
+import { trendyolDashboardLoader } from "../trendyol/trendyolRefresh";
+import { AutoRefreshBar, DashboardSection, EmptyState, Metric, MetricGrid, type MetricValue } from "./DashboardParts";
+import { useAutoRefresh } from "./useAutoRefresh";
 
 const LIST_LIMIT = 6;
 const dateTime = new Intl.DateTimeFormat("ro-RO", { dateStyle: "short", timeStyle: "short", timeZone: "Europe/Bucharest" });
 const formatDate = (value: string | null): string => value ? dateTime.format(new Date(value)) : "—";
-
-type TrendyolDashboardData = { overview: TrendyolOverview; pending: TrendyolPackageSummary[]; attention: TrendyolPackageSummary[]; released: TrendyolPackageSummary[]; activity: TrendyolActivity | null };
 
 /** Lines still missing confirmed production data across the listed pending packages (the API lists up to 200). */
 export function linesToComplete(pending: readonly TrendyolPackageSummary[]): number {
@@ -53,17 +52,12 @@ function PackageRow({ item, view, navigate }: { item: TrendyolPackageSummary; vi
 
 /**
  * Trendyol operations dashboard for explicitly authorized Trendyol personnel. It only reads the Operations API
- * (never Trendyol itself) and reuses the existing package screens for preparation and approval.
+ * (never Trendyol itself) and reuses the existing package screens for preparation and approval. It refreshes every
+ * minute while visible (overview only unless something changed); a failed refresh keeps the last good numbers.
  */
 export function TrendyolDashboard({ employee, service, navigate }: { employee: Employee; service: TrendyolApi; navigate: (path: string) => void }) {
-  const load = useCallback(async (signal: AbortSignal): Promise<TrendyolDashboardData> => {
-    const [overview, pending, attention, released, activity] = await Promise.all([
-      service.overview(signal), service.list("pending", signal), service.list("attention", signal), service.list("released", signal),
-      service.activity(signal).catch(() => null),
-    ]);
-    return { overview, pending, attention, released, activity };
-  }, [service]);
-  const dashboard = useDashboardData(load, "trendyol");
+  const load = useMemo(() => trendyolDashboardLoader(service), [service]);
+  const dashboard = useAutoRefresh(load, "trendyol");
   const data = dashboard.data;
   const metric = (value: number | undefined): MetricValue => data ? value ?? "unavailable" : dashboard.error ? "unavailable" : "loading";
   const pendingPartial = data ? data.overview.counts.pending > data.pending.length : false;
@@ -73,14 +67,14 @@ export function TrendyolDashboard({ employee, service, navigate }: { employee: E
   return (
     <div className="workspace-body" data-testid="workspace-trendyol">
       <DashboardSection labelledBy="trendyol-today" eyebrow="Panou operațional Trendyol" title="Activitatea de astăzi"
-        action={<RefreshButton onRefresh={dashboard.refresh} busy={dashboard.busy} updatedAt={dashboard.updatedAt} />}>
+        action={<AutoRefreshBar onRefresh={dashboard.refresh} busy={dashboard.busy} refreshing={dashboard.refreshing} updatedAt={dashboard.updatedAt} stale={data !== null && dashboard.error !== null} stopped={dashboard.stopped} testId="trendyol-refresh" />}>
         <MetricGrid label="Situația comenzilor Trendyol">
           <Metric label="Comenzi de pregătit" value={metric(data?.overview.counts.pending)} tone="action" testId="metric-trendyol-pending" />
           <Metric label="Linii de completat" value={metric(data ? linesToComplete(data.pending) : undefined)} partial={pendingPartial} testId="metric-trendyol-lines" />
           <Metric label="Necesită atenție" value={metric(data?.overview.counts.attention)} tone="warning" testId="metric-trendyol-attention" />
           <Metric label="Trimise în producție" value={metric(data?.overview.counts.released)} tone="success" testId="metric-trendyol-released" />
         </MetricGrid>
-        {dashboard.error && <ErrorState error={dashboard.error} compact onAction={dashboard.refresh} />}
+        {dashboard.error && (!data || dashboard.stopped) && <ErrorState error={dashboard.error} compact onAction={dashboard.refresh} />}
         <div className="dashboard-actions">
           <button type="button" className="button button-primary" data-testid="home-trendyol" onClick={() => navigate("/trendyol")}>Toate comenzile Trendyol</button>
         </div>
@@ -91,7 +85,7 @@ export function TrendyolDashboard({ employee, service, navigate }: { employee: E
           <p className="eyebrow">Conexiune Trendyol</p>
           <h2 id="trendyol-connection">{connection.label}</h2>
           <p>{connection.detail}</p>
-          {data.overview.intake.lastRunAt && <p>Ultima citire: {formatDate(data.overview.intake.lastRunAt)}{lastRunFailed(data.overview.intake.lastRunOutcome) ? " · ultima citire nu a reușit; datele pot fi neactualizate" : ""}</p>}
+          {data.overview.intake.lastRunAt && <p data-testid="trendyol-last-sync">Ultima sincronizare Trendyol: {formatDate(data.overview.intake.lastRunAt)}{lastRunFailed(data.overview.intake.lastRunOutcome) ? " · ultima citire nu a reușit; datele pot fi neactualizate" : ""}</p>}
         </section>
       )}
 

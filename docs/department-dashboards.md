@@ -87,10 +87,42 @@ None of these endpoints writes anything. The integration tests compare a hash of
 - **Cutting:** the cutting workspace keeps the existing cutting pool and the whole-order transfers.
 - **Trendyol:** the Trendyol workspace links to the existing inbox and package screens. Preparation, the fresh GET verification and the approval are unchanged (API 2.24.3 rules). The dashboard never reads Trendyol directly.
 - **Trendyol inactive:** while intake is inactive, the dashboard says so and shows empty lists.
-- **Refresh:** one read happens per open, live event or press of **Actualizează**. There is no polling loop and no automatic retry.
+- **Refresh:** in the production, documents and management workspaces one read happens per open, live event or press of **Actualizează**. They have no polling loop and no automatic retry. Only the Trendyol dashboard and inbox refresh automatically (below).
 - **Missing values:** a value that could not be loaded shows "—", never 0.
 - **Management overview:** shows stage-level aggregates only, with no employee activity. Detailed management stays in the Dashboard application.
 - **Existing routes:** deep links keep working: `/orders`, `/orders/:id`, `/scan`, `/documents/:id`, `/trendyol`, `/trendyol/:id`, `/history`, `/profile` and `/authority`. `/` is the dashboard.
+
+## Trendyol automatic refresh (Staff 2.14.0)
+
+The Trendyol dashboard (`/`) and the Trendyol inbox (`/trendyol`) refresh every **60 seconds** while the browser tab
+is visible. No other workspace polls. The package screen (`/trendyol/:id`, the measurement form) never refreshes by
+itself, so typed and unsaved values are never overwritten. Refreshing only reads the Operations API: it never calls
+Trendyol, never prepares, approves or dismisses a package, and never creates an order, a QR code or a PDF.
+
+| Read | Dashboard | Inbox (selected tab) |
+|---|---|---|
+| Open, **Actualizează**, tab visible again | overview + pending, attention, released lists + own activity (5 GET) | overview + selected list (2 GET) |
+| Minute without changes | overview (1 GET) | overview (1 GET) |
+| Minute after a count or connection-state change, or lists older than 5 minutes | overview + 3 lists (4 GET) | overview + selected list (2 GET) |
+
+- **One active operator:** about 96–105 GET per hour on the dashboard: 60 overviews, 36 list reads from the 5-minute age limit, and 3 per new package. A full reload every minute would need 300. The inbox needs about 72–80 per hour, against 120.
+- **One timer, one read at a time.** The next read starts 60 seconds after the previous one settled. A newer read aborts an older one, and an aborted or superseded answer is ignored. Leaving the screen stops the timer and aborts the read in flight.
+- **Hidden tab:** a hidden tab reads nothing. When it becomes visible again, it reads at once if the data is older than a minute.
+- **Failures:** the last good numbers and lists stay visible with "Datele pot fi neactualizate". The next automatic read waits 2, then 4, then at most 5 minutes. There is no alert every minute. A session or access refusal (`SESSION_EXPIRED`, `ACCOUNT_INACTIVE`, 403, …) stops automatic reads; the existing session handling returns to login.
+- **Two times, two meanings:**
+  - "Ultima actualizare HH:MM" is the last successful Staff read.
+  - "Ultima sincronizare Trendyol" is the server-side intake run (`lastRunAt`, every 5 minutes by cron).
+
+  A browser refresh never means that Trendyol was read.
+
+Code:
+- `features/workspaces/refreshScheduler.ts`: the framework-free timer and visibility logic.
+- `features/workspaces/useAutoRefresh.ts`: the React hook.
+- `features/trendyol/trendyolRefresh.ts`: the reads.
+
+Tests:
+- `tests/trendyol-auto-refresh.test.ts`: mocked timers.
+- `e2e/zzzzzzzz-trendyol-refresh-real-api.spec.ts`: real API and Chromium, with the browser clock under test control.
 
 ## Giving an employee a workspace
 
