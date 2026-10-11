@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "../services/contracts";
 import { createServices } from "../services/createServices";
 import { AppShell } from "../components/AppShell";
@@ -29,8 +29,20 @@ import { canManageAuthority } from "../domain/authority";
 import { TrendyolInboxScreen } from "../features/trendyol/TrendyolInboxScreen";
 import { TrendyolPackageScreen } from "../features/trendyol/TrendyolPackageScreen";
 import { dashboardUrlFor } from "../domain/workspaces";
+import { LoginIntroStage, introPlaysHere } from "../features/auth/LoginIntro";
 
-export function StaffApp({ initialRoute, mode, apiBaseUrl }: { initialRoute: string; mode: StaffRuntimeMode; apiBaseUrl: string }) {
+type StaffAppProps = { initialRoute: string; mode: StaffRuntimeMode; apiBaseUrl: string };
+
+/** Staff, with the sign-in intro: every successful sign-in from the login form plays it (a restored session does not). */
+export function StaffApp(props: StaffAppProps) {
+  const runs = useRef(0);
+  const [introRun, setIntroRun] = useState(0);
+  const playIntro = useCallback(() => { if (introPlaysHere()) setIntroRun(++runs.current); }, []);
+  const finishIntro = useCallback(() => setIntroRun(0), []);
+  return <LoginIntroStage run={introRun} onDone={finishIntro}><StaffScreens {...props} onSignedIn={playIntro} /></LoginIntroStage>;
+}
+
+function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppProps & { onSignedIn: () => void }) {
   const services = useMemo(() => createServices({ mode, apiBaseUrl }), [apiBaseUrl, mode]);
   const dashboardUrl = useMemo(() => mode === "production" ? dashboardUrlFor(apiBaseUrl) : null, [apiBaseUrl, mode]);
   const [route, setRoute] = useState(initialRoute);
@@ -105,7 +117,7 @@ export function StaffApp({ initialRoute, mode, apiBaseUrl }: { initialRoute: str
   if (checkingSession) return <BootScreen busy message="Se pregătește spațiul tău…" />;
   if (sessionCheckError) return <BootScreen role="alert" message={sessionCheckError.code === "CONFIGURATION_ERROR" ? "Serviciul de autentificare nu este configurat." : "Serviciul nu este disponibil momentan."} action={<button className="button button-secondary" type="button" onClick={() => { setCheckingSession(true); setSessionCheckError(null); setBootstrapKey((value) => value + 1); }}>Reîncearcă</button>} />;
   if (!session || guardedRoute === "/login") {
-    return <LoginScreen mode={mode} notice={sessionNotice} onLogin={async (input) => { const next = await services.auth.login(input); workflowLifecycle.reset(); setSession(next); setSessionNotice(""); navigate("/"); return next; }} />;
+    return <LoginScreen mode={mode} notice={sessionNotice} onLogin={async (input) => { const next = await services.auth.login(input); workflowLifecycle.reset(); setSession(next); setSessionNotice(""); navigate("/"); onSignedIn(); return next; }} />;
   }
   if (session.employee.mustChangePassword) {
     return <ChangePasswordScreen displayName={session.employee.displayName} username={session.employee.username} onLogout={logout} onChange={async (input) => { const next = await services.auth.changePassword(input); setSession(next); navigate("/"); }} />;

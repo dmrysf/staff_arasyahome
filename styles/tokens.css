@@ -157,6 +157,20 @@
   --z-nav: 30;
   --z-sheet: 50;
   --z-toast: 60;
+  --z-intro: 100;
+
+  /* Sign-in intro: a dark scene in both themes (horizon rim, blue glow, search bar), then Staff opens in white. */
+  --color-intro-bg: #020306;
+  --color-intro-surface: #07090e;
+  --color-intro-border: rgba(255, 255, 255, .09);
+  --color-intro-rim: #f2f5ff;
+  --color-intro-rim-glow: rgba(140, 180, 255, .6);
+  --color-intro-glow: rgba(38, 104, 255, .9);
+  --color-intro-glow-soft: rgba(38, 104, 255, .28);
+  --color-intro-blue: #2f6bff;
+  --color-intro-text: #ffffff;
+  --color-intro-text-fresh: #8fb4ff;
+  --color-intro-icon: rgba(255, 255, 255, .78);
 
   /* Safe areas (notches, home indicator). */
   --safe-top: max(12px, env(safe-area-inset-top));
