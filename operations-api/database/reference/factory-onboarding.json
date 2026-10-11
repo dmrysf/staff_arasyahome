@@ -1,0 +1,81 @@
+{
+  "version": 1,
+  "description": "Owner-reviewed 29-person factory matrix. Preparation only; each live group requires separate approval after manual deployment. Existing identities only; no other employee or source is included.",
+  "sources": [
+    "trendhome",
+    "outletperdele",
+    "trendyol"
+  ],
+  "groups": {
+    "cutting": {
+      "label": "Kesim",
+      "stageIds": [
+        "material-preparation"
+      ],
+      "names": [
+        "BUZATU ANDREEA",
+        "CRAMA FLORIN",
+        "HUDAYAROV MEKAN",
+        "REJEPOV AYMYRAT"
+      ]
+    },
+    "workshop": {
+      "label": "Atölye + Kalite",
+      "stageIds": [
+        "workshop-receiving",
+        "labeling",
+        "material-straightening",
+        "bottom-hem",
+        "side-hem",
+        "ironing",
+        "height",
+        "header-tape",
+        "sewing-finishing",
+        "quality-control"
+      ],
+      "names": [
+        "MILITARU ALEXANDRA",
+        "AGAMURADOVA ZULHUMORJAN",
+        "EKANAYAKA ATHUKORALLAGE SRIYANTHA INDRA KUMARI",
+        "GAMAGE SANATH PRIYANTHA",
+        "IACOB MARINELA",
+        "KADYROVA ZULFIYA",
+        "KARADERILI HAYDAR",
+        "MIHALCEA DANIELA",
+        "NICULAE FLORENTINA GABRIELA",
+        "OPREA DOINA",
+        "REJEPOVA GULAYYM",
+        "STANCIU FINITA",
+        "VASILE PETRUTA",
+        "VASILOAIA IULIANA",
+        "ABDUL HAMEED HALEEM"
+      ]
+    },
+    "packing": {
+      "label": "Paketleme",
+      "stageIds": [
+        "packing"
+      ],
+      "names": [
+        "ANNABERDIYEV SHIRALY",
+        "BERDIYEV AHAT",
+        "SISMAN KADIR",
+        "BARBU PAUL"
+      ]
+    },
+    "internal-handoff": {
+      "label": "İç Teslimat",
+      "stageIds": [
+        "delivery"
+      ],
+      "names": [
+        "ABOLBADA RFKI",
+        "BAZAROV ATAJAN",
+        "IONITA FANEL",
+        "SATYBALDYYEV GELDIMYRAT",
+        "PARASCHIV STANICA-LUCIAN",
+        "PARASCHIV CRISTINA NICOLETA"
+      ]
+    }
+  }
+}
