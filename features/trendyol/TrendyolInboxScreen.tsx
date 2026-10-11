@@ -1,8 +1,10 @@
 import { useMemo, useState } from "react";
-import { ignoredReasonLabels, intakeLabel, intakeStateLabels, marketplaceClassLabels, marketplaceLabel, type TrendyolApi, type TrendyolView } from "../../domain/trendyol";
+import { ignoredReasonLabels, intakeStateLabels, marketplaceLabel, type TrendyolApi, type TrendyolView } from "../../domain/trendyol";
 import { getErrorPresentation } from "../../services/errors";
 import { AppIcon } from "../../components/icons/AppIcon";
-import { AutoRefreshBar } from "../workspaces/DashboardParts";
+import { AutoRefreshBar, QueueSkeleton } from "../workspaces/DashboardParts";
+import { PackageRow } from "../workspaces/TrendyolDashboard";
+import { EmptyPanel, PageHeader } from "../../components/ui/States";
 import { useAutoRefresh } from "../workspaces/useAutoRefresh";
 import { trendyolInboxLoader } from "./trendyolRefresh";
 
@@ -34,31 +36,25 @@ export function TrendyolInboxScreen({ service, navigate }: { service: TrendyolAp
 
   const count = (id: TrendyolView): number | undefined => overview?.counts[id];
   return (
-    <article className="screen-stack detail-screen trendyol-screen">
+    <article className="screen-stack trendyol-screen trendyol-inbox">
       <button className="back-link" type="button" onClick={() => navigate("/")}><AppIcon name="back" size={20} /> Acasă</button>
-      <section className="detail-section">
-        <p className="eyebrow">Trendyol</p>
-        <h1>Comenzi Trendyol</h1>
-        <p>Comenzile noi din Trendyol intră aici, nu direct în fabrică. Completezi măsurile, apoi o persoană autorizată aprobă intrarea în producție. Statusurile, expedierea și facturile rămân în Trendyol Seller Panel.</p>
-        {overview && <p className="order-notice order-notice-muted" data-testid="trendyol-intake-state">{intakeStateLabels[overview.intake.status]}{overview.intake.lastRunAt ? ` Ultima sincronizare Trendyol: ${date(overview.intake.lastRunAt)}.` : ""}</p>}
+      <PageHeader eyebrow="Trendyol" title="Comenzi Trendyol" description="Comenzile noi din Trendyol intră aici, nu direct în fabrică. Completezi măsurile, apoi o persoană autorizată aprobă intrarea în producție. Statusurile, expedierea și facturile rămân în Trendyol Seller Panel." />
+      <div className="inbox-status">
+        {overview && <p className={`inbox-connection is-${overview.intake.status}`} data-testid="trendyol-intake-state">{intakeStateLabels[overview.intake.status]}{overview.intake.lastRunAt ? ` Ultima sincronizare Trendyol: ${date(overview.intake.lastRunAt)}.` : ""}</p>}
         <AutoRefreshBar onRefresh={inbox.refresh} busy={inbox.busy} refreshing={inbox.refreshing} updatedAt={inbox.updatedAt} stale={current !== null && inbox.error !== null} stopped={inbox.stopped} testId="trendyol-inbox-refresh" />
-      </section>
+      </div>
       <div className="segmented trendyol-tabs" role="tablist" aria-label="Filtrare comenzi Trendyol">
         {views.map((item) => <button key={item.id} type="button" role="tab" aria-selected={view === item.id} onClick={() => { if (item.id !== view) setView(item.id); }}>{item.label}{count(item.id) !== undefined && <span>{count(item.id)}</span>}</button>)}
       </div>
       {message && <p className="order-notice order-notice-muted" role="alert">{message}</p>}
+      {view !== "ignored" && !items && !message && <QueueSkeleton />}
       {view !== "ignored" && items && (items.length === 0
-        ? <p className="order-notice order-notice-muted">Nu există comenzi în această listă.</p>
-        : <ul className="trendyol-list" aria-label="Pachete Trendyol">
-          {items.map((item) => <li key={item.packageId}>
-            <button type="button" className={view === "pending" ? "exception-row needs-action" : "exception-row"} onClick={() => navigate(`/trendyol/${item.packageId}`)}>
-              <span><strong>Comanda #{item.orderNumber}</strong><small>Pachet {item.packageId} · {date(item.orderDate)} · Trendyol: {marketplaceLabel(item.marketplaceStatus)}</small></span>
-              <span className="exception-status">{view === "attention" ? (item.marketplaceStatusKnown ? marketplaceClassLabels[item.marketplaceClass] : "Status necunoscut — verificare necesară") : item.intakeStatus === "pending" && item.lineCount !== undefined ? `${item.preparedCount}/${item.lineCount} linii pregătite` : intakeLabel(item)}{item.changedAfterRelease ? " · modificată după aprobare" : ""}{item.orderDateNearActivation && item.intakeStatus === "pending" ? " · verifică dublura manuală" : ""}</span>
-            </button>
-          </li>)}
+        ? <EmptyPanel icon="package" title="Nu există comenzi în această listă.">Lista se actualizează automat la fiecare minut.</EmptyPanel>
+        : <ul className="queue-list trendyol-list" aria-label="Pachete Trendyol">
+          {items.map((item) => <PackageRow key={item.packageId} item={item} view={view} navigate={navigate} />)}
         </ul>)}
       {view === "ignored" && ignored && (ignored.length === 0
-        ? <p className="order-notice order-notice-muted">Nicio comandă ignorată.</p>
+        ? <EmptyPanel icon="package" title="Nicio comandă ignorată." />
         : <ul className="trendyol-list" aria-label="Pachete ignorate">
           {ignored.map((item) => <li key={item.packageId} className="trendyol-ignored">
             <strong>Comanda #{item.orderNumber}</strong>

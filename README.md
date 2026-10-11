@@ -1,5 +1,7 @@
 # Arasya Staff
 
+Staff **2.17.0** adds [department screens](docs/staff-ui-system.md#department-screens-staff-2170-package-3) (Package 3): a next step for every production department, department-specific order rows, a redesigned Trendyol inbox, scanner viewfinder states and order details with sizes first. Presentation only.
+
 Staff **2.16.0** extends the white-and-black [design system to every screen](docs/staff-ui-system.md#shared-system-across-every-screen-staff-2160-package-2) (Package 2): token-only stylesheets, shared boot, loading, empty, error and page-header components, drawn dialog icons. Presentation only.
 
 Staff **2.15.0** starts the [premium UI system](docs/staff-ui-system.md#design-system-staff-2150-package-1) (Package 1): a minimalist white-and-black design (animated buttons, color only for status signals), a docked mobile navigation that becomes a desktop sidebar, and redesigned reference screens for the department home, Trendyol preparation and the production document. Presentation only: no API, permission, polling or workflow change.

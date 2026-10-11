@@ -368,11 +368,8 @@
 .stage-table thead th { color: var(--color-text-subtle); font-size: var(--text-2xs); font-weight: var(--weight-bold); text-transform: uppercase; letter-spacing: .05em; }
 .stage-table tr.is-empty { color: var(--color-text-subtle); }
 .stage-ordinal { display: inline-grid; place-items: center; width: 22px; height: 22px; margin-right: 8px; border-radius: 7px; background: var(--color-fill-strong); font-size: var(--text-2xs); }
-.cutting-work .cutting-pool-list { margin: 12px 0; }
-.cutting-work .cutting-pool-list button { min-height: 56px; border-color: var(--color-border); background: var(--color-surface); color: var(--color-text); text-align: left; }
 .cutting-work .cutting-pool-list button strong { font-family: var(--font-mono); }
 .cutting-work .cutting-pool-list button small { color: var(--color-text-muted); text-transform: capitalize; }
-.cutting-work .cutting-transfer-card { border-top-color: var(--color-border); }
 
 /* ---- Responsive -------------------------------------------------------------------------------------------------- */
 @media (max-width: 420px) {
@@ -400,3 +397,5 @@
   .live-connection { bottom: 24px; }
 }
 .boot-screen h1 { margin: 0; font-size: var(--text-2xl); font-weight: var(--weight-bold); letter-spacing: var(--tracking-tight); }
+.product-detail .product-key dd { font-family: var(--font-mono); font-size: var(--text-lg); font-weight: var(--weight-bold); letter-spacing: -.02em; }
+@media (min-width: 720px) { .detail-screen > .detail-products { grid-row: auto; } }

@@ -4,8 +4,8 @@ import { activityActionLabels, intakeLabel, marketplaceClassLabels, marketplaceL
 import { ErrorState } from "../../components/ErrorState";
 import { AppIcon } from "../../components/icons/AppIcon";
 import { trendyolDashboardLoader } from "../trendyol/trendyolRefresh";
-import { AutoRefreshBar, DashboardSection, EmptyState, Metric, MetricGrid, QueueSkeleton, type MetricValue } from "./DashboardParts";
-import { trendyolNextAction, type NextAction } from "./trendyolNextAction";
+import { AutoRefreshBar, DashboardSection, EmptyState, Metric, MetricGrid, NextActionCard, NextActionSkeleton, QueueSkeleton, type MetricValue } from "./DashboardParts";
+import { trendyolNextAction } from "./trendyolNextAction";
 import { useAutoRefresh } from "./useAutoRefresh";
 
 const LIST_LIMIT = 6;
@@ -28,7 +28,7 @@ export function lastRunFailed(outcome: string | null): boolean {
   return outcome !== null && outcome !== "ok" && outcome !== "truncated";
 }
 
-function PackageRow({ item, view, navigate }: { item: TrendyolPackageSummary; view: "pending" | "attention" | "released"; navigate: (path: string) => void }) {
+export function PackageRow({ item, view, navigate }: { item: TrendyolPackageSummary; view: "pending" | "attention" | "released" | "closed"; navigate: (path: string) => void }) {
   const missing = Math.max(0, (item.lineCount ?? 0) - (item.preparedCount ?? 0));
   const status = view === "attention"
     ? (item.marketplaceStatusKnown ? marketplaceClassLabels[item.marketplaceClass] : "Status necunoscut — verificare necesară")
@@ -53,25 +53,6 @@ function PackageRow({ item, view, navigate }: { item: TrendyolPackageSummary; vi
   );
 }
 
-/** The one next step, chosen from data already on screen; a link to the existing screen, never an action itself. */
-function NextActionCard({ action, navigate }: { action: NextAction; navigate: (path: string) => void }) {
-  return (
-    <section className={`next-action tone-${action.tone}`} aria-labelledby="trendyol-next" data-testid="trendyol-next-action">
-      <div className="next-action-copy">
-        <p className="eyebrow">{action.eyebrow}</p>
-        <h2 id="trendyol-next">{action.title}</h2>
-        {action.orderNumber && <p className="next-action-order order-id">#{action.orderNumber}</p>}
-        <p className="next-action-detail">{action.detail}</p>
-      </div>
-      {action.cta && <button type="button" className="button button-primary next-action-cta" onClick={() => navigate(action.cta!.path)}>{action.cta.label}<AppIcon name="arrow" size={20} /></button>}
-    </section>
-  );
-}
-
-function NextActionSkeleton() {
-  return <div className="next-action is-loading" aria-hidden="true"><div className="next-action-copy"><span className="skeleton skeleton-line" style={{ width: "28%" }} /><span className="skeleton skeleton-title" /><span className="skeleton skeleton-line" style={{ width: "54%" }} /></div><span className="skeleton next-action-cta-skeleton" /></div>;
-}
-
 /**
  * Trendyol operations dashboard for explicitly authorized Trendyol personnel. It only reads the Operations API
  * (never Trendyol itself) and reuses the existing package screens for preparation and approval. It refreshes every
@@ -92,7 +73,7 @@ export function TrendyolDashboard({ employee, service, navigate }: { employee: E
   return (
     <div className="workspace-body trendyol-workspace" data-testid="workspace-trendyol">
       <div className="workspace-main">
-        {next ? <NextActionCard action={next} navigate={navigate} /> : loading ? <NextActionSkeleton /> : null}
+        {next ? <NextActionCard action={next} navigate={navigate} id="trendyol-next" testId="trendyol-next-action" /> : loading ? <NextActionSkeleton /> : null}
 
         {loading && <DashboardSection labelledBy="trendyol-pending-loading" eyebrow="De pregătit" title="Comenzi de pregătit"><QueueSkeleton /></DashboardSection>}
         {data && (
