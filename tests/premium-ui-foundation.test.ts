@@ -103,7 +103,8 @@ test("navigation renders only authorized destinations and keeps the QR action be
 test("the stylesheet foundation: every color of the new layers is a token, inputs never zoom on iOS, motion respects reduced motion", () => {
   const read = (file: string) => readFileSync(new URL(`../styles/${file}`, import.meta.url), "utf8");
   const tokens = read("tokens.css");
-  for (const theme of [":root {", ':root[data-theme="light"]']) assert.ok(tokens.includes(theme), theme);
+  for (const theme of [":root {", ':root[data-theme="dark"]']) assert.ok(tokens.includes(theme), theme);
+  assert.match(tokens, /:root \{[^}]*--color-bg: #ffffff;[^}]*--color-text: #000000;/, "the default look is white with black text");
   for (const file of ["foundation.css", "experiences.css"]) {
     const css = read(file).replace(/\/\*[\s\S]*?\*\//g, "");
     assert.doesNotMatch(css, /#[0-9a-f]{3,8}\b/i, `${file}: hex colors belong in tokens.css`);

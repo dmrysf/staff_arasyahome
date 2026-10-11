@@ -10,7 +10,7 @@ The visual hierarchy is: scan, understand the order, perform the permitted actio
 
 The official Arasya logo is reserved for quiet brand identification, most visibly on Login and at a much smaller scale inside the authenticated experience. It must retain its original proportions and artwork and must not be used as utility iconography.
 
-The palette uses deep graphite backgrounds, neutral raised surfaces, warm off-white text, and muted coral for the primary product action. Coral identifies Scan, active selection, and primary CTAs. Green is semantic and is reserved for connected, confirmed, completed, and success states. Amber communicates checking or warning. A stronger red communicates destructive, disconnected, and error states. These roles are centralized in CSS design tokens.
+The palette is white surfaces and black text; black identifies Scan, active selection, and primary CTAs. Green is semantic and is reserved for connected, confirmed, completed, and success states. Amber communicates checking or warning. A stronger red communicates destructive, disconnected, and error states. These roles are centralized in CSS design tokens.
 
 ## Navigation and Scan
 
@@ -22,11 +22,12 @@ The camera, decoder selection, duplicate guard, cleanup, confirmation, idempoten
 
 ## Design system (Staff 2.15.0, Package 1)
 
-`styles/tokens.css` is the only place for colors, type scale, spacing, radii, control heights, motion durations and easings, layers and safe areas. Two themes share the vocabulary: **Industrial Premium Dark** (default) and **Clean Operations Light** (`<html data-theme="light">`, opt-in until every screen has been reviewed in it). `styles/foundation.css` holds primitives (buttons, fields, status pills, notices, skeletons, task steps) and the app shell; `styles/experiences.css` holds the reference experiences. Neither file contains a hex color (a unit test enforces it).
+`styles/tokens.css` is the only place for colors, type scale, spacing, radii, control heights, motion durations and easings, layers and safe areas. The default look is **minimalist: white background, black text, black primary buttons** (owner decision, 2026-10-11). Color appears only as small functional signals (status dots, icons, edges and faint wells for warnings and errors); the text on them stays black. The earlier graphite theme remains available as an opt-in (`<html data-theme="dark">`); camera screens stay dark in every theme. `styles/foundation.css` holds primitives (buttons, fields, status pills, notices, skeletons, task steps) and the app shell; `styles/experiences.css` holds the reference experiences. Neither file contains a hex color (a unit test enforces it).
 
 - Typography uses system faces (no font download) with tabular figures for numbers and a monospace face for order identifiers and measurements. Inputs use 16px text so iOS never zooms.
-- Status is always words plus an icon; tone only reinforces it.
-- Motion uses transform and opacity only (press 110ms, hover 150ms, screen 240ms, success 380ms, stage 450ms) and collapses under `prefers-reduced-motion`. No animation triggers a request.
+- Status is always words plus an icon; the tone only colors the icon or dot.
+- Buttons move: the primary button lifts on hover and its trailing arrow travels; outlined buttons fill black from the left and turn their label white; every press scales in and shows a short ring (felt on touch screens without hover); a busy button shows a running bar under its label; a newly enabled primary action settles in once.
+- Motion uses transform and opacity only (press 110ms, hover 200ms, sweep 320ms, screen 240ms, success 380ms, stage 450ms) and collapses under `prefers-reduced-motion`. No animation triggers a request.
 
 Reference experiences:
 
