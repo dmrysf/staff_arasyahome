@@ -1,5 +1,7 @@
 # Arasya Staff
 
+Staff **2.15.0** starts the [premium UI system](docs/staff-ui-system.md#design-system-staff-2150-package-1) (Package 1): design tokens with dark and light themes, a docked mobile navigation that becomes a desktop sidebar, and redesigned reference screens for the department home, Trendyol preparation and the production document. Presentation only: no API, permission, polling or workflow change.
+
 Operations API **2.26.1** fixes the [Trendyol intake operator CLI](docs/trendyol-intake.md#operator-cli-bintrendyol-intakephp-fixed-in-api-2261): `bin/trendyol-intake.php activate|pause|resume` now reads its `--name=value` options (PHP `getopt()` stopped at the command), refuses unknown, duplicate, empty or missing options with exit 2, and keeps every intake-state rule. No migration, no Staff change.
 
 Operations API **2.26.0** / Staff **2.13.0** add [source-scoped stage authorization](docs/source-scoped-stage-authorization.md) (additive migration 023): root can narrow any stage grant to named commerce sources (for example `waiting` for Trendyol only); the API enforces it on order detail, lookup, QR, stage queues, claim, transition, cutting pool and transfers, ownership and fault reports. Grants without a scope keep every source, exactly as before. A relation to an order worked earlier never outlives the source authorization; a scoped stage is granted together with its scope in one request, and widening a scope needs an explicit, optimistic confirmation.

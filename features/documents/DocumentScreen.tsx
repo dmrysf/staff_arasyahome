@@ -10,10 +10,20 @@ export function DocumentScreen({ orderId, service, permissions, navigate }: { or
   const [, setChanged] = useState(0);
   const [number, setNumber] = useState<string | null>(null);
   return (
-    <article className="screen-stack detail-screen">
+    <article className="document-screen">
       <button className="back-link" type="button" onClick={() => navigate("/")}><AppIcon name="back" size={20} /> Acasă</button>
-      <section className="detail-hero"><div><p className="eyebrow">Document de producție</p><h1>Comanda<br />{number === null ? "…" : `#${number.replace(/^#/, "")}`}</h1></div></section>
-      <DocumentPanel orderId={orderId} service={service} permissions={permissions} onChanged={() => setChanged((value) => value + 1)} onLoaded={(document) => setNumber(document.order.number)} />
+      <header className="document-screen-hero"><p className="eyebrow">Document de producție</p><h1>Comanda <span className="order-id">{number === null ? "…" : `#${number.replace(/^#/, "")}`}</span></h1></header>
+      <div className="document-layout">
+        <DocumentPanel orderId={orderId} service={service} permissions={permissions} onChanged={() => setChanged((value) => value + 1)} onLoaded={(document) => setNumber(document.order.number)} />
+        <aside className="document-guide" aria-labelledby="document-guide-title">
+          <h2 id="document-guide-title">Cum se folosește fișa</h2>
+          <ol>
+            <li><strong>Tipărește</strong><span>Butonul de tipărire descarcă PDF-ul cu codul QR de producție. Tipărește-l pe imprimanta atelierului.</span></li>
+            <li><strong>Verifică foaia</strong><span>Revizia și codul QR trebuie să fie lizibile. Previzualizarea nu are cod QR și nu se folosește în atelier.</span></li>
+            <li><strong>Predă la Tăiere</strong><span>Fișa însoțește produsul. Finalizezi etapa 1 din pagina comenzii; la Tăiere comanda se preia scanând codul QR de pe foaie.</span></li>
+          </ol>
+        </aside>
+      </div>
     </article>
   );
 }

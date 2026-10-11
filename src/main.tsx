@@ -4,8 +4,11 @@ import { StaffApp } from "../app/StaffApp";
 import { DisplayBoard } from "../features/cutting/DisplayBoard";
 import { PwaRegistration } from "../app/PwaRegistration";
 import { resolveRuntimeConfig } from "./runtimeConfig";
+import "../styles/tokens.css";
 import "../app/globals.css";
 import "../styles/app.css";
+import "../styles/foundation.css";
+import "../styles/experiences.css";
 
 const root = document.getElementById("root");
 

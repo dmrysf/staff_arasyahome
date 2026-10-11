@@ -58,7 +58,8 @@ test("Trendyol package: review, confirm measurements, explicit approval to stage
   const line = page.getByTestId("trendyol-line-1");
   await line.getByRole("button", { name: /Preia sugestia 300 × 260 cm/ }).click();
   await expect(line.getByLabel("Lățime (cm)")).toHaveValue("300");
-  await line.getByLabel("Tip produs").selectOption("curtain");
+  await line.getByRole("radio", { name: "Perdea" }).check();
+  await expect(line.getByRole("group", { name: "Tip produs" }).getByRole("radio", { checked: true })).toHaveAccessibleName("Perdea");
   await line.getByLabel("Lățime (cm)").fill("298,5");
   await line.getByLabel(/Note pentru atelier/).fill("Rejansă 2x");
   await line.getByRole("button", { name: "Salvează linia 1" }).click();

@@ -14,6 +14,9 @@ import { TrendyolDashboard } from "../workspaces/TrendyolDashboard";
 import { ManagementWorkspace } from "../workspaces/ManagementWorkspace";
 
 type TodaySummary = ActivityPage["summary"];
+
+const today = new Intl.DateTimeFormat("ro-RO", { weekday: "long", day: "numeric", month: "long", timeZone: "Europe/Bucharest" });
+const todayLabel = (): string => { const text = today.format(new Date()); return text.charAt(0).toUpperCase() + text.slice(1); };
 type MetricsState = { status: "loading" } | { status: "loaded"; summary: TodaySummary } | { status: "unavailable" };
 
 export function loadTodaySummary(service: ActivityService, signal?: AbortSignal): Promise<TodaySummary> {
@@ -67,8 +70,9 @@ export function HomeScreen({ employee, services, workflow, dashboardUrl, navigat
     <div className="dashboard-layout">
       <header className="dashboard-header">
         <div className="greeting">
-          <p>{employee.department ? `Departament: ${employee.department}` : "Departament neatribuit"}</p>
+          <p className="greeting-context">{employee.department ? `Departament: ${employee.department}` : "Departament neatribuit"}</p>
           <h1>Bună, {firstName(employee.displayName)}!</h1>
+          <p className="greeting-date">{todayLabel()}</p>
         </div>
         <p className="workspace-title" data-testid="workspace-title"><span>Panou operațional</span><strong>{current.label}</strong></p>
       </header>
