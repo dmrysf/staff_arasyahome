@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, type ReactNode, type RefObject } from "react";
+import { lazy, Suspense, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 
 /** Typed into the intro search bar after every successful sign-in: the Arasya Home line chosen by the owner. */
 export const INTRO_TEXT = "Designed to Inspire. Made to Last.";
@@ -24,6 +24,17 @@ function typingTimes(text: string) {
   return times;
 }
 
+const TYPED_TIMES = typingTimes(INTRO_TEXT);
+const TYPED_AT = TYPED_TIMES[TYPED_TIMES.length - 1];
+const SEND_AT = TYPED_AT + 120;
+const PRESS_AT = SEND_AT + 450;
+
+// The map of Europe is its own chunk: nothing of it loads with the login page. A sign-in fetches it while the
+// credentials are being checked, so it is usually ready when the intro starts (and joins in on time if it is late).
+const loadIntroMap = () => import("./IntroMap");
+const IntroMap = lazy(loadIntroMap);
+export const preloadIntroMap = () => { void loadIntroMap().catch(() => undefined); };
+
 /**
  * Browser automation (Playwright sets navigator.webdriver) signs in hundreds of times per run; the intro would only
  * slow those runs down. Real browsers always play it: there is no way to pass it and no reduced-motion exception.
@@ -48,6 +59,7 @@ function LoginIntro({ stage, onDone }: { stage: RefObject<HTMLDivElement | null>
   const root = useRef<HTMLDivElement>(null);
   const typed = useRef<HTMLSpanElement>(null);
   const fresh = useRef<HTMLSpanElement>(null);
+  const [startedAt] = useState(() => performance.now());
 
   useLayoutEffect(() => {
     const scene = root.current;
@@ -109,8 +121,7 @@ function LoginIntro({ stage, onDone }: { stage: RefObject<HTMLDivElement | null>
     play(sheen, [{ transform: "translateX(-120%)" }, { transform: "translateX(320%)" }], { delay: 2050, duration: 900, easing: EASE_IN_OUT });
 
     // 5. The line types itself with a human rhythm; the newest letters arrive in champagne.
-    const times = typingTimes(INTRO_TEXT);
-    times.forEach((time, index) => {
+    TYPED_TIMES.forEach((time, index) => {
       const count = index + 1;
       timers.push(window.setTimeout(() => {
         const split = Math.max(0, count - FRESH_CHARACTERS);
@@ -118,15 +129,14 @@ function LoginIntro({ stage, onDone }: { stage: RefObject<HTMLDivElement | null>
         if (fresh.current) fresh.current.textContent = INTRO_TEXT.slice(split, count);
       }, time));
     });
-    const typedAt = times[times.length - 1];
     timers.push(window.setTimeout(() => {
       if (typed.current) typed.current.textContent = INTRO_TEXT;
       if (fresh.current) fresh.current.textContent = "";
-    }, typedAt + 320));
+    }, TYPED_AT + 320));
 
     // 6. The curtain button appears and is pressed: its drapes part and a ring of light leaves it …
-    const sendAt = typedAt + 120;
-    const pressAt = sendAt + 450;
+    const sendAt = SEND_AT;
+    const pressAt = PRESS_AT;
     play(send, [
       { opacity: 0, transform: "scale(.4)", easing: SPRING },
       { opacity: 1, transform: "scale(1)", offset: 0.4 },
@@ -183,6 +193,7 @@ function LoginIntro({ stage, onDone }: { stage: RefObject<HTMLDivElement | null>
         <div className="intro-backdrop">
           <div className="intro-horizon" />
           <div className="intro-glow" />
+          <Suspense fallback={null}><IntroMap start={startedAt} pressAt={PRESS_AT} /></Suspense>
         </div>
         <div className="intro-scene">
           <div className="intro-brand">

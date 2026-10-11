@@ -39,3 +39,18 @@ test("intro styles take colours from tokens and keyframes move only opacity", ()
   assert.match(read("styles/tokens.css"), /--z-intro: 100;[\s\S]*--color-intro-bg:/);
   assert.match(read("src/main.tsx"), /motion\.css";\nimport "\.\.\/styles\/intro\.css";/);
 });
+
+test("the map of Europe loads only when a sign-in starts and marks the Krefeld and Bucharest offices", async () => {
+  const intro = read("features/auth/LoginIntro.tsx");
+  assert.match(intro, /const loadIntroMap = \(\) => import\("\.\/IntroMap"\);/);
+  assert.match(intro, /lazy\(loadIntroMap\)/);
+  assert.doesNotMatch(intro, /^import[^;]*from "\.\/IntroMap"/m, "no static import: the map is its own chunk");
+  assert.match(read("app/StaffApp.tsx"), /onLogin=\{async \(input\) => \{ if \(introPlaysHere\(\)\) preloadIntroMap\(\); const next = await services\.auth\.login\(input\);/);
+  const map = read("features/auth/IntroMap.tsx");
+  assert.match(map, /name: "Krefeld"/);
+  assert.match(map, /name: "Bucharest"/);
+  const { INTRO_MAP } = await import("../features/auth/introMapData");
+  assert.ok(INTRO_MAP.labels.some((label) => label.text === "Germany" && label.key));
+  assert.ok(INTRO_MAP.labels.some((label) => label.text === "Romania" && label.key));
+  assert.ok(read("features/auth/introMapData.ts").length < 60_000, "map data stays small");
+});

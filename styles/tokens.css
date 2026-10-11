@@ -165,8 +165,8 @@
   --color-intro-border: rgba(255, 236, 205, .1);
   --color-intro-rim: #fbefd9;
   --color-intro-rim-glow: rgba(232, 196, 140, .55);
-  --color-intro-glow: rgba(186, 134, 72, .85);
-  --color-intro-glow-soft: rgba(186, 134, 72, .26);
+  --color-intro-glow: rgba(186, 134, 72, .5);
+  --color-intro-glow-soft: rgba(186, 134, 72, .2);
   --color-intro-gold: #d6b380;
   --color-intro-gold-light: #f2dfba;
   --color-intro-ink: #1c150c;
@@ -176,6 +176,16 @@
   --color-intro-text: #fffaf2;
   --color-intro-text-fresh: #e9c98e;
   --color-intro-icon: rgba(255, 246, 230, .75);
+  /* Intro map of Europe: blue country lines, champagne office markers. */
+  --color-intro-map-coast: rgba(112, 170, 255, .78);
+  --color-intro-map-border: rgba(112, 170, 255, .46);
+  --color-intro-map-grid: rgba(112, 170, 255, .14);
+  --color-intro-map-key: rgba(74, 134, 255, .2);
+  --color-intro-map-scan: rgba(186, 222, 255, 1);
+  --color-intro-map-label: rgba(184, 210, 255, .7);
+  --color-intro-map-label-key: rgba(222, 236, 255, .92);
+  --color-intro-city: #f4d7a2;
+  --color-intro-city-halo: rgba(233, 201, 142, .2);
 
   /* Safe areas (notches, home indicator). */
   --safe-top: max(12px, env(safe-area-inset-top));

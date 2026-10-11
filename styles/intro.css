@@ -63,6 +63,8 @@
 
 .intro-brand {
   position: relative;
+  /* One glow for the whole wordmark, so there is no seam where the "A" and the rest meet. */
+  filter: drop-shadow(0 0 10px var(--color-intro-rim-glow));
   display: flex;
   align-items: center;
   height: var(--intro-logo-h);
@@ -84,7 +86,7 @@
   max-width: none;
   height: var(--intro-logo-h);
   /* The supplied logo is black: invert it to white for the dark scene. */
-  filter: invert(1) drop-shadow(0 0 10px var(--color-intro-rim-glow));
+  filter: invert(1);
 }
 .intro-brand .intro-soft {
   position: absolute;
@@ -171,6 +173,54 @@
   border: 1.5px solid var(--color-intro-ring);
   border-radius: 50%;
   opacity: 0;
+}
+
+/*
+ * The map of Europe (IntroMap.tsx) fills the horizon disc: same box as .intro-horizon, faded out toward its rim. The
+ * SVG covers the part of the disc that is on screen (from the horizon, 61% down, to the bottom). Lines keep a fixed
+ * on-screen width (non-scaling strokes), so they stay hairline-sharp at any size or pixel density.
+ */
+.intro-map {
+  position: absolute;
+  left: 50%;
+  top: 61%;
+  width: max(118vmin, 520px);
+  aspect-ratio: 1;
+  translate: -50% 0;
+  -webkit-mask-image: radial-gradient(circle closest-side, black calc(100% - 72px), transparent 100%);
+  mask-image: radial-gradient(circle closest-side, black calc(100% - 72px), transparent 100%);
+  pointer-events: none;
+  opacity: 0;
+}
+.intro-map-view { position: absolute; inset: 0 0 auto; height: 39vh; height: 39dvh; transform-origin: 50% 0; }
+.intro-map svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.intro-map path { fill: none; vector-effect: non-scaling-stroke; stroke-linejoin: round; stroke-linecap: round; }
+.intro-map .intro-map-grid { stroke: var(--color-intro-map-grid); stroke-width: .7px; }
+.intro-map .intro-map-key { fill: var(--color-intro-map-key); stroke: none; }
+.intro-map .intro-map-coast { stroke: var(--color-intro-map-coast); stroke-width: 1px; }
+.intro-map .intro-map-borders { stroke: var(--color-intro-map-border); stroke-width: .8px; }
+.intro-map .intro-map-scan path { stroke: var(--color-intro-map-scan); stroke-width: 1.3px; }
+/* The route is dashed along its own length (pathLength 1), so it keeps normal, scaling strokes. */
+.intro-map .intro-map-route { vector-effect: none; stroke: var(--color-intro-city); stroke-width: 1.8; stroke-dasharray: 1; stroke-dashoffset: 1; }
+.intro-map .intro-map-spark { vector-effect: none; stroke: var(--color-intro-text); stroke-width: 3.2; stroke-dasharray: .1 1; stroke-dashoffset: .1; opacity: 0; }
+.intro-map text { font-family: var(--font-sans); text-transform: uppercase; }
+.intro-map-label { font-size: 12px; font-weight: 600; letter-spacing: .2em; fill: var(--color-intro-map-label); }
+.intro-map-label.is-small { font-size: 9px; }
+.intro-map-label.is-key { fill: var(--color-intro-map-label-key); }
+.intro-city-name { font-size: 15px; font-weight: 700; letter-spacing: .16em; fill: var(--color-intro-city); }
+.intro-city circle { transform-box: fill-box; transform-origin: center; }
+.intro-city-dot { fill: var(--color-intro-city); }
+.intro-city-halo { fill: var(--color-intro-city-halo); }
+.intro-city-ring { fill: none; stroke: var(--color-intro-city); stroke-width: 1px; vector-effect: non-scaling-stroke; opacity: 0; }
+
+/* Phones see a smaller map: fewer, larger names. */
+@media (max-width: 600px) {
+  .intro-map-label { font-size: 17px; }
+  .intro-map-label.is-small { display: none; }
+  .intro-city-name { font-size: 21px; text-anchor: middle; }
+  /* Only the middle of the disc is on a phone screen: names go above Krefeld and below Bucharest. */
+  .intro-city-krefeld .intro-city-tag { transform: translate(12px, -18px); }
+  .intro-city-bucharest .intro-city-tag { transform: translate(-12px, 28px); }
 }
 
 /* Lens finish: darker corners and a fine film grain over the scene (not over Staff, which opens above it). */
