@@ -9,6 +9,7 @@ import "../app/globals.css";
 import "../styles/app.css";
 import "../styles/foundation.css";
 import "../styles/experiences.css";
+import "../styles/motion.css";
 
 const root = document.getElementById("root");
 

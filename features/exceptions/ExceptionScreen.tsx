@@ -95,7 +95,7 @@ export function ExceptionScreen({ exceptionId, service, navigate, onSessionExpir
         <h2 id="rereview-title">Solicită reanalizarea</h2>
         <p>Dacă decizia pare greșită, cere o nouă analiză. Respingerea rămâne în istoric.</p>
         <label className="field"><span>Motivul reanalizării (obligatoriu)</span><textarea maxLength={1000} rows={3} value={comment} onChange={(event) => setComment(event.target.value)} /></label>
-        <button className="button button-primary" type="button" disabled={submitting || comment.trim().length < 3} onClick={() => void run((key) => service.rereview(fault.id, { expectedVersion: fault.version, comment: comment.trim(), idempotencyKey: key }))}>{submitting ? "Se trimite…" : "Solicită reanalizarea"}</button>
+        <button className="button button-primary" type="button" disabled={submitting || comment.trim().length < 3} aria-busy={submitting || undefined} onClick={() => void run((key) => service.rereview(fault.id, { expectedVersion: fault.version, comment: comment.trim(), idempotencyKey: key }))}>{submitting ? "Se trimite…" : "Solicită reanalizarea"}</button>
       </section>}
 
       {actionError && <ErrorState error={actionError} compact onAction={() => { setActionError(null); setReload((value) => value + 1); }} />}

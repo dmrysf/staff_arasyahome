@@ -15,7 +15,8 @@ export function formatMetric(value: MetricValue, partial = false): string {
 export function Metric({ label, value, hint, tone = "neutral", partial = false, testId }: { label: string; value: MetricValue; hint?: string; tone?: "neutral" | "action" | "warning" | "success"; partial?: boolean; testId?: string }) {
   return (
     <div className={`dashboard-metric tone-${tone}`} data-testid={testId}>
-      <dd className={typeof value === "number" ? undefined : "metric-unavailable"}>{formatMetric(value, partial)}</dd>
+      {/* A changed number remounts its span (keyed by value) and settles in once; an unchanged refresh does nothing. */}
+      <dd className={typeof value === "number" ? undefined : "metric-unavailable"}>{typeof value === "number" ? <span key={formatMetric(value, partial)} className="metric-number">{formatMetric(value, partial)}</span> : formatMetric(value, partial)}</dd>
       <dt>{label}</dt>
       {hint && <small>{hint}</small>}
     </div>

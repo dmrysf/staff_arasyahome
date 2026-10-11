@@ -75,6 +75,11 @@ export function ScannerScreen({ service, cutting, workflow, mode, navigate, onSe
   }, []);
 
   useEffect(() => stopCamera, [stopCamera]);
+  // Short haptic confirmation where the device supports it: a code was read, then the server confirmed the action.
+  useEffect(() => {
+    if (state.status === "decoded") navigator.vibrate?.(25);
+    else if (state.status === "success") navigator.vibrate?.([20, 40, 20]);
+  }, [state.status]);
 
   const resolveCode = useCallback(async (token: string, manual = false) => {
     const normalized = token.trim();
@@ -241,7 +246,7 @@ export function ScannerScreen({ service, cutting, workflow, mode, navigate, onSe
           {claimQr ? <p role="status">Etichetă QR capturată · serverul verifică aceeași comandă.</p> : <QrCapture onToken={setClaimQr} disabled={busy} />}
           {ownedCount === null ? <p>Se verifică lucrările tale active…</p> : ownedCount > 0 && <div className="order-notice order-notice-warning"><strong>Ai deja {ownedCount} comenzi în lucru.</strong><p>Dacă preiei această comandă, trebuie să finalizezi sau să transferi toate comenzile active. Vrei să continui?</p><label><input type="checkbox" checked={confirmedMultiple} disabled={busy} onChange={(e) => setConfirmedMultiple(e.target.checked)} /> Confirm explicit preluarea încă unei comenzi.</label></div>}
         </>}
-        <div className="confirm-transition"><StageLabel stage={pendingCurrent} muted={pendingAction.id !== "claim"} />{pendingNext && <><span aria-hidden="true">↓</span><StageLabel stage={pendingNext} /></>}{pendingAction.id === "complete_production" && <><span aria-hidden="true">↓</span><span className="stage-label"><span>✓</span>Producție finalizată</span></>}</div><div className="confirmation-actions"><button className="button button-secondary" type="button" disabled={busy} onClick={() => dispatch({ type: "CANCEL_CONFIRMATION" })}>Anulează</button><button className="button button-primary" type="button" disabled={busy || (needsCuttingQr && (!claimQr || ownedCount === null || (ownedCount > 0 && !confirmedMultiple)))} onClick={submit}>{busy ? "Se procesează…" : "Confirmă"}</button></div>{busy && <small className="server-note">Așteptăm confirmarea serverului.</small>}</div></section>}
+        <div className="confirm-transition"><StageLabel stage={pendingCurrent} muted={pendingAction.id !== "claim"} />{pendingNext && <><span aria-hidden="true">↓</span><StageLabel stage={pendingNext} /></>}{pendingAction.id === "complete_production" && <><span aria-hidden="true">↓</span><span className="stage-label"><span>✓</span>Producție finalizată</span></>}</div><div className="confirmation-actions"><button className="button button-secondary" type="button" disabled={busy} onClick={() => dispatch({ type: "CANCEL_CONFIRMATION" })}>Anulează</button><button className="button button-primary" type="button" disabled={busy || (needsCuttingQr && (!claimQr || ownedCount === null || (ownedCount > 0 && !confirmedMultiple)))} aria-busy={busy || undefined} onClick={submit}>{busy ? "Se procesează…" : "Confirmă"}</button></div>{busy && <small className="server-note">Așteptăm confirmarea serverului.</small>}</div></section>}
 
       {state.status === "success" && <section className="success-state"><span className="success-check"><AppIcon name="check" size={34} /></span><p className="eyebrow">{orderActionSuccess[state.action].eyebrow}</p><h2>{orderActionSuccess[state.action].title}</h2>{state.order.productionCompletedAt ? <span className="stage-label"><span>✓</span>Producție finalizată</span> : <StageLabel stage={getStageById(workflow, state.order.productionStageId)} />}<div><button className="button button-primary button-large" type="button" onClick={reset}>Scanează altă comandă</button><button className="button button-secondary" type="button" onClick={() => navigate(`/orders/${encodeURIComponent(state.order.id)}`)}>Vezi comanda</button></div></section>}
 

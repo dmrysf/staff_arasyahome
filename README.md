@@ -1,5 +1,7 @@
 # Arasya Staff
 
+Staff **2.18.0** adds the [motion layer](docs/staff-ui-system.md#motion-staff-2180-package-4) (Package 4): list settle-in, value-change numbers, roadmap and status transitions, busy buttons and scanner haptics; transform and opacity only, reduced motion respected, no new requests.
+
 Staff **2.17.0** adds [department screens](docs/staff-ui-system.md#department-screens-staff-2170-package-3) (Package 3): a next step for every production department, department-specific order rows, a redesigned Trendyol inbox, scanner viewfinder states and order details with sizes first. Presentation only.
 
 Staff **2.16.0** extends the white-and-black [design system to every screen](docs/staff-ui-system.md#shared-system-across-every-screen-staff-2160-package-2) (Package 2): token-only stylesheets, shared boot, loading, empty, error and page-header components, drawn dialog icons. Presentation only.

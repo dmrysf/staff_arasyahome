@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import type { ProductionWorkflow } from "../domain/models";
 import { getStageById, getStageProgress } from "../domain/productionWorkflow";
+import { AppIcon } from "./icons/AppIcon";
 
 export function ProductionRoadmap({ workflow, currentStageId }: { workflow: ProductionWorkflow; currentStageId: string }) {
   const currentRef = useRef<HTMLLIElement>(null);
@@ -29,7 +30,7 @@ export function ProductionRoadmap({ workflow, currentStageId }: { workflow: Prod
               ref={state === "current" ? currentRef : undefined}
               aria-current={state === "current" ? "step" : undefined}
             >
-              <span className="roadmap-marker" aria-hidden="true">{state === "completed" ? "✓" : stage.ordinal}</span>
+              <span className="roadmap-marker" aria-hidden="true">{state === "completed" ? <AppIcon name="check" size={16} /> : stage.ordinal}</span>
               <span className="roadmap-copy"><small>{state === "completed" ? "Finalizată" : state === "current" ? "Etapa actuală" : "Urmează"}</small><strong>{stage.label}</strong></span>
             </li>
           );

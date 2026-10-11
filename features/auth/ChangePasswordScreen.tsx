@@ -59,7 +59,7 @@ export function ChangePasswordScreen({ displayName, username, voluntary = false,
         <PasswordField label="Confirmă parola nouă" toggleName="confirmarea parolei" value={confirmation} onChange={setConfirmation} autoComplete="new-password" />
         <p className="login-footnote password-rules">Minimum 12 caractere, diferită de parola actuală și fără numele de utilizator. Aceeași parolă funcționează în toate aplicațiile Arasya.</p>
         {error && <p className="form-error" role="alert">{error}</p>}
-        <button className="button button-primary button-large" type="submit" disabled={submitting}>{submitting ? "Se salvează…" : "Salvează parola nouă"}</button>
+        <button className="button button-primary button-large" type="submit" disabled={submitting} aria-busy={submitting || undefined}>{submitting ? "Se salvează…" : "Salvează parola nouă"}</button>
         {voluntary && onCancel
           ? <button className="button button-secondary" type="button" onClick={onCancel}>Anulează</button>
           : <button className="button button-secondary" type="button" onClick={() => { void onLogout(); }}>Ieși din cont</button>}

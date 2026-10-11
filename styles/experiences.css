@@ -93,8 +93,6 @@
 .dashboard-metric.tone-action dd { color: var(--color-accent-text); }
 .dashboard-metric.tone-warning dd { color: var(--color-warning-text); }
 .dashboard-metric.tone-success dd { color: var(--color-success-text); }
-.dashboard-metric dd:not(.metric-unavailable) { animation: metric-in var(--motion-success) var(--ease-out); }
-@keyframes metric-in { from { opacity: .3; } }
 .dashboard-primary { width: 100%; margin-top: 14px; }
 .dashboard-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
 .dashboard-actions > * { flex: 1 1 200px; text-decoration: none; }

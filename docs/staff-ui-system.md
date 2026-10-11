@@ -52,6 +52,10 @@ Every production workspace (Pornire producție, Tăiere, Atelier, Croitorie, Con
 
 The Trendyol inbox uses the same order rows, status line and skeletons as the Trendyol home. The scanner viewfinder shows its state: a slow sweep while scanning, the frame closing in green once a code is read, one shake on a problem, with the instruction text announced. Order detail shows the products, with size and meters in large monospace figures, right after the action. Nothing in this package changes which orders are listed, which actions exist or who may take them.
 
+## Motion (Staff 2.18.0, Package 4)
+
+`styles/motion.css` is the motion layer. Lists settle in once with a short stagger when they first appear or a new item arrives; an automatic refresh that keeps the same rows animates nothing. A metric animates only when its value changes (the number is keyed by value). Status chips, progress bars and the production roadmap follow the server state with transitions, and the stage marker settles in when the server reports the new stage. Success screens reveal their title and actions in sequence after the server confirms. Every asynchronous primary button reports `aria-busy` and shows a running bar. The scanner adds a short vibration where supported when a code is read and when the server confirms the action. Only transform and opacity move (a test checks every keyframe), nothing starts a request, and `prefers-reduced-motion` removes durations, iterations and delays.
+
 ## YD Soft connection status
 
 `YDSoftConnectionStatus` accepts `connected`, `checking`, or `disconnected`. It maps each state to explicit Romanian text as well as a semantic color, so status is never color-only. Connected uses a small, reduced-motion-safe pulse. The current default is a designed `connected` placeholder; it is not derived from `navigator.onLine`, does not poll, and does not claim to be a real health check. A future health service can supply the same typed state without changing the component.

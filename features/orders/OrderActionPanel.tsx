@@ -96,7 +96,7 @@ export function OrderActionPanel({ order, workflow, service, cutting, onUpdated,
             </div>
             <div className="confirmation-actions">
               <button className="button button-secondary" type="button" disabled={state.status === "submitting"} onClick={() => setState({ status: "idle" })}>Anulează</button>
-              <button className="button button-primary" type="button" disabled={state.status === "submitting" || (cuttingClaim && (!qrToken || ownedCount === null || (ownedCount > 0 && !confirmedMultiple)))} onClick={() => void submit(state.idempotencyKey)}>{state.status === "submitting" ? "Se procesează…" : "Confirmă"}</button>
+              <button className="button button-primary" type="button" aria-busy={state.status === "submitting" || undefined} disabled={state.status === "submitting" || (cuttingClaim && (!qrToken || ownedCount === null || (ownedCount > 0 && !confirmedMultiple)))} onClick={() => void submit(state.idempotencyKey)}>{state.status === "submitting" ? "Se procesează…" : "Confirmă"}</button>
             </div>
             {state.status === "submitting" && <small className="server-note">Așteptăm confirmarea serverului.</small>}
           </div>

@@ -11,7 +11,7 @@ import { StaffServiceError } from "../domain/models";
 const root = path.resolve(import.meta.dirname, "..");
 
 test("every screen stylesheet takes its colours from tokens.css", () => {
-  for (const file of ["app.css", "foundation.css", "experiences.css"]) {
+  for (const file of ["app.css", "foundation.css", "experiences.css", "motion.css"]) {
     const css = readFileSync(path.join(root, "styles", file), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
     assert.doesNotMatch(css, /#[0-9a-f]{3,8}\b/i, `${file}: hex colour outside tokens.css`);
     assert.doesNotMatch(css, /rgba?\(/i, `${file}: rgb colour outside tokens.css`);
