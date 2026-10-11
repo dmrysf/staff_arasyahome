@@ -92,6 +92,9 @@ jobs:
       - name: Test API release validator
         run: /bin/bash operations-api/tests/release-validation.sh
 
+      - name: Build real API 2.26.2 publish package and validate deploy dry-run
+        run: /bin/bash operations-api/tests/release-package.sh
+
       - name: Test two-target cPanel deployment
         run: /bin/bash operations-api/tests/deploy-api.sh
 

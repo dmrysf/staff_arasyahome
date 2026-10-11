@@ -1,6 +1,6 @@
 # Arasya Operations API
 
-Standalone PHP 8.2+ identity, authentication, production workflow and order-operations API for Staff, Dashboard and commercial B2B clients. It has no WordPress, Node, framework, Composer, or persistent-process dependency. Only `public/` may be configured as a web document root. The current release version is `2.26.1`. Source-scoped stage grants (migration 023) are documented in [source-scoped stage authorization](../docs/source-scoped-stage-authorization.md). Read-only stage queues for the Staff department dashboards are documented in [department dashboards](../docs/department-dashboards.md). Trendyol intake (read-only Order V2 pull into an approval inbox) is documented in [Trendyol intake](../docs/trendyol-intake.md). Signed source sites, their modes and the zero-write validation endpoint are documented in [YD SOFT source integration](../docs/yd-soft-source-integration.md).
+Standalone PHP 8.2+ identity, authentication, production workflow and order-operations API for Staff, Dashboard and commercial B2B clients. It has no WordPress, Node, framework, Composer, or persistent-process dependency. Only `public/` may be configured as a web document root. The current release version is `2.26.2`. Source-scoped stage grants (migration 023) are documented in [source-scoped stage authorization](../docs/source-scoped-stage-authorization.md). Read-only stage queues for the Staff department dashboards are documented in [department dashboards](../docs/department-dashboards.md). Trendyol intake (read-only Order V2 pull into an approval inbox) is documented in [Trendyol intake](../docs/trendyol-intake.md). Signed source sites, their modes and the zero-write validation endpoint are documented in [YD SOFT source integration](../docs/yd-soft-source-integration.md).
 
 Authenticated management analytics are documented in [Management Analytics V1](../docs/management-analytics.md). After official migration 016 and reference readiness, explicitly run `php bin/rebuild-analytics.php` before interpreting historical reports. This CLI rebuilds only derived projections; it never backfills unknown approval eligibility or modifies canonical events.
 
@@ -64,6 +64,7 @@ find operations-api -type f -name '*.php' -print0 | xargs -0 -n1 php -l
 php operations-api/bin/check-migrations.php
 php operations-api/tests/run.php
 /bin/bash operations-api/tests/release-validation.sh
+/bin/bash operations-api/tests/release-package.sh
 /bin/bash operations-api/tests/deploy-api.sh
 php operations-api/tests/mysql-integration.php
 php operations-api/tests/mysql-operations-integration.php
