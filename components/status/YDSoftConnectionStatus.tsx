@@ -10,7 +10,7 @@ export function YDSoftConnectionStatus({ status = "connected" }: { status?: Syst
   return (
     <span className={`system-status status-${status}`} role="status">
       <span className="system-status-dot" aria-hidden="true" />
-      {systemConnectionLabels[status]}
+      <span className="system-status-label">{systemConnectionLabels[status]}</span>
     </span>
   );
 }

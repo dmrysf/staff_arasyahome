@@ -1,4 +1,4 @@
-.cutting-display { --ink:#172e3a; --muted:#58707c; box-sizing:border-box; color:var(--ink); font-family:Inter,Arial,sans-serif; }
+.cutting-display { --ink:#172e3a; --muted:#58707c; box-sizing:border-box; color:var(--ink); font-family:Inter,Arial,sans-serif; font-size:16px; line-height:normal; }
 .cutting-display * { box-sizing:border-box; }
 .cutting-display.board { height:100dvh; overflow:hidden; padding:clamp(16px,2vw,34px); background:linear-gradient(140deg,#f5faf9,#e8f0f4); display:grid; grid-template-rows:auto auto minmax(0,1fr) auto; gap:18px; }
 .cutting-display header,.display-section-heading { display:flex; align-items:center; justify-content:space-between; gap:16px; }

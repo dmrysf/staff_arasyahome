@@ -10,12 +10,16 @@ export const bottomNavigationItems = [
   { path: "/profile", label: "Profil", icon: "profile" as const, permission: "profile.view_self" as StaffPermission },
 ];
 
+/**
+ * Main navigation: a docked bar on phones (QR action in the thumb zone, centered) and a sidebar on desktop.
+ * Items the employee is not authorized for are not rendered; on phones an empty slot keeps the QR action centered.
+ */
 export function BottomNavigation({ employee, route, navigate }: { employee: Employee; route: string; navigate: (path: string) => void }) {
   const [home, orders, history, profile] = bottomNavigationItems;
   const renderItem = (item: (typeof bottomNavigationItems)[number]) => item.permission && !hasPermission(employee, item.permission)
     ? <span key={item.path} className="nav-permission-space" aria-hidden="true" />
     : (
-    <button key={item.path} className={route === item.path ? "active" : ""} type="button" onClick={() => navigate(item.path)} aria-current={route === item.path ? "page" : undefined}>
+    <button key={item.path} className={`nav-item nav-${item.icon}${route === item.path ? " active" : ""}`} type="button" onClick={() => navigate(item.path)} aria-current={route === item.path ? "page" : undefined}>
       <AppIcon name={item.icon} />
       <small>{item.label}</small>
     </button>
@@ -23,6 +27,7 @@ export function BottomNavigation({ employee, route, navigate }: { employee: Empl
 
   return (
     <nav className="app-nav" aria-label="Navigare principală">
+      <span className="app-nav-brand" aria-hidden="true"><span className="brand-mark">A</span><span><strong>Arasya</strong><small>Staff · Fabrică</small></span></span>
       {renderItem(home)}
       {renderItem(orders)}
       <span className="scan-nav-space" aria-hidden="true" />

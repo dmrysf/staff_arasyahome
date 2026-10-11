@@ -46,7 +46,7 @@ test("production document: R1 without approval, reprint keeps QR, stale blocks t
   const second = online.page.waitForEvent("download");
   await panel.getByRole("button", { name: "Retipărește REVIZIA 1" }).click();
   expect((await second).suggestedFilename()).toBe(`ARASYA-${fixture.documents.order}-R1.pdf`);
-  await expect(panel).toContainText("tipărit de 2 ori");
+  await expect(panel.getByTestId("document-print-count")).toHaveText("PDF pentru tipărire descărcat de 2 ori.");
 
   // The owner keeps working from his order page; the customer changes 8 m to 10 m at the source.
   await go(cutter.page, `/orders/${encodeURIComponent(orderId)}`);

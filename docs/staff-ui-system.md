@@ -14,9 +14,25 @@ The palette uses deep graphite backgrounds, neutral raised surfaces, warm off-wh
 
 ## Navigation and Scan
 
-Mobile navigation contains Acasă, Comenzi, a true center Scan action, Istoric, and Profil. Scan is a circular 66px control positioned at the exact horizontal center of the bar and elevated slightly for thumb access. Secondary items use quieter icons and labels. The bar respects safe-area insets and remains width-constrained on tablets and desktop.
+Phones use a docked bottom bar (Acasă, Comenzi, Scan, Istoric, Profil) that sits on the safe-area inset instead of floating over content; the active item carries an accent marker and an accent icon in addition to the label. Scan is a 64px rounded-square control raised from the center of the bar, rendered only with `orders.scan`; an empty slot keeps it centered when a destination is not authorized. Landscape phones use a shorter bar.
 
-The Home Scan surface is entirely interactive. It uses scale, position, and the warm accent—not animation or glow—to establish priority. The camera, decoder selection, duplicate guard, cleanup, confirmation, idempotency, expected-version, and server-confirmed success behavior are unchanged.
+From 1024px the same navigation element becomes a sidebar: brand, a labelled `Scanează QR` action, the destinations, and Profil pinned to the bottom. Content then uses the screen width up to 1320px instead of the former 880px column.
+
+The camera, decoder selection, duplicate guard, cleanup, confirmation, idempotency, expected-version, and server-confirmed success behavior are unchanged.
+
+## Design system (Staff 2.15.0, Package 1)
+
+`styles/tokens.css` is the only place for colors, type scale, spacing, radii, control heights, motion durations and easings, layers and safe areas. Two themes share the vocabulary: **Industrial Premium Dark** (default) and **Clean Operations Light** (`<html data-theme="light">`, opt-in until every screen has been reviewed in it). `styles/foundation.css` holds primitives (buttons, fields, status pills, notices, skeletons, task steps) and the app shell; `styles/experiences.css` holds the reference experiences. Neither file contains a hex color (a unit test enforces it).
+
+- Typography uses system faces (no font download) with tabular figures for numbers and a monospace face for order identifiers and measurements. Inputs use 16px text so iOS never zooms.
+- Status is always words plus an icon; tone only reinforces it.
+- Motion uses transform and opacity only (press 110ms, hover 150ms, screen 240ms, success 380ms, stage 450ms) and collapses under `prefers-reduced-motion`. No animation triggers a request.
+
+Reference experiences:
+
+- **Home**: a compact greeting, the workspace switcher as scrollable chips on phones, and for Trendyol operators one *next step* card chosen from data already loaded (ready for approval, then measurements to complete, then attention). It links to the existing screens and never acts. Desktop splits work (left) and status (right).
+- **Trendyol preparation**: five guided steps (`Verifică produsele`, `Completează măsurile`, `Aprobă producția`, `Tipărește fișa cu QR`, `Trimite la Tăiere`) derived only from the package the server returned. A step is done only when server data proves it; printing is never shown as done. Each line shows confirmed, unsaved or to-complete state, a radio product-type picker, the Trendyol size suggestion marked as unconfirmed, paired width × height inputs, and validation next to the field. The form never refreshes itself.
+- **Production document**: revision, status, a print card stating that the button downloads the server PDF with the production QR, a separate preview without QR, and the revision history. Counts say *PDF descărcat pentru tipărire*, never *tipărit*: the server cannot know that paper came out of a printer.
 
 ## YD Soft connection status
 

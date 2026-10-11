@@ -57,13 +57,16 @@ export function RefreshButton({ onRefresh, busy, updatedAt }: { onRefresh: () =>
  */
 export function AutoRefreshBar({ onRefresh, busy, refreshing, updatedAt, stale, stopped, testId }: { onRefresh: () => void; busy: boolean; refreshing: boolean; updatedAt: number | null; stale: boolean; stopped: boolean; testId?: string }) {
   return (
-    <div className="dashboard-refresh" data-testid={testId}>
-      <span>{stopped ? "Actualizare automată oprită" : "Actualizare automată la fiecare minut"}</span>
-      {updatedAt !== null && <span>Ultima actualizare {clock.format(updatedAt)}</span>}
-      {refreshing && <span>Se actualizează…</span>}
-      {stale && !busy && <span className="refresh-stale" role="status">Datele pot fi neactualizate</span>}
-      <button type="button" className="button button-secondary button-compact" onClick={onRefresh} disabled={busy} aria-label="Actualizează panoul">
-        <AppIcon name="refresh" size={18} /> {busy ? "Se actualizează…" : "Actualizează"}
+    <div className={`dashboard-refresh${stopped ? " is-stopped" : stale ? " is-stale" : refreshing || busy ? " is-refreshing" : ""}`} data-testid={testId}>
+      <span className="refresh-pulse" aria-hidden="true" />
+      <span className="refresh-copy">
+        <span>{stopped ? "Actualizare automată oprită" : "Actualizare automată la fiecare minut"}</span>
+        {updatedAt !== null && <span className="refresh-time">Ultima actualizare {clock.format(updatedAt)}</span>}
+        {refreshing && <span>Se actualizează…</span>}
+        {stale && !busy && <span className="refresh-stale" role="status">Datele pot fi neactualizate</span>}
+      </span>
+      <button type="button" className="button button-ghost button-compact refresh-button" onClick={onRefresh} disabled={busy} aria-label="Actualizează panoul">
+        <AppIcon name="refresh" size={18} className={busy || refreshing ? "is-spinning" : undefined} /> <span className="refresh-button-label">{busy ? "Se actualizează…" : "Actualizează"}</span>
       </button>
     </div>
   );
@@ -86,4 +89,13 @@ export function WorkspaceSwitcher({ workspaces, current, onSelect }: { workspace
 
 export function EmptyState({ title, children }: { title: string; children?: ReactNode }) {
   return <div className="dashboard-empty"><strong>{title}</strong>{children && <p>{children}</p>}</div>;
+}
+
+/** Placeholder rows shaped like the queue rows they stand for, shown only before the first answer. */
+export function QueueSkeleton({ rows = 3 }: { rows?: number }) {
+  return (
+    <ul className="queue-list queue-skeleton" aria-hidden="true">
+      {Array.from({ length: rows }, (_, index) => <li key={index} className="queue-row"><span className="queue-row-main"><span className="skeleton skeleton-title" /><span className="skeleton skeleton-line" style={{ width: `${70 - index * 12}%` }} /></span></li>)}
+    </ul>
+  );
 }

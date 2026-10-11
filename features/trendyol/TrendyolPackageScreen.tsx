@@ -3,6 +3,9 @@ import { blockedReasonMessages, intakeLabel, intakeStatusLabels, lineKindLabels,
 import { getErrorPresentation, toServiceError } from "../../services/errors";
 import { createIdempotencyKey } from "../../services/idempotency";
 import { AppIcon } from "../../components/icons/AppIcon";
+import { Notice, StatusPill, type Tone } from "../../components/ui/StatusPill";
+import { TaskSteps } from "../../components/ui/TaskSteps";
+import { draftOf, formatDecimal, lineStatus, preparationSteps, type LineDraft } from "./preparation";
 
 const date = (value: string | null): string => value ? new Date(value).toLocaleString("ro-RO", { dateStyle: "short", timeStyle: "short", timeZone: "Europe/Bucharest" }) : "—";
 const historyLabels: Record<string, string> = {
@@ -16,25 +19,53 @@ const historyLabels: Record<string, string> = {
   reopened: "Redeschisă",
   released: "Aprobată pentru producție (etapa 1)",
 };
+const kindOrder: TrendyolLineKind[] = ["curtain", "drapery", "other"];
+const lineStatusCopy: Record<ReturnType<typeof lineStatus>, { label: string; tone: Tone; icon: "check" | "clock" | "ruler" }> = {
+  confirmed: { label: "Confirmat", tone: "success", icon: "check" },
+  unsaved: { label: "Modificări nesalvate", tone: "warning", icon: "clock" },
+  todo: { label: "De completat", tone: "accent", icon: "ruler" },
+};
 
-type Draft = { kind: TrendyolLineKind | ""; widthCm: string; heightCm: string; meters: string; notes: string };
-const draftOf = (line: TrendyolLine): Draft => ({
-  kind: line.prepared?.kind ?? "",
-  widthCm: line.prepared?.widthCm ?? "",
-  heightCm: line.prepared?.heightCm ?? "",
-  meters: line.prepared?.meters ?? "",
-  notes: line.prepared?.notes ?? "",
-});
+type Field = "kind" | "widthCm" | "heightCm" | "meters";
+type LineError = { field: Field | null; text: string };
+type Message = { tone: Tone; text: string } | null;
+
+/** Validates one line exactly as before; the error names the field it belongs to. */
+function validate(draft: LineDraft): LineError | null {
+  if (!draft.kind) return { field: "kind", text: "Alege tipul produsului." };
+  const width = normalizeMeasure(draft.widthCm);
+  const height = normalizeMeasure(draft.heightCm);
+  const meters = normalizeMeasure(draft.meters);
+  const invalid: Field | null = width === "invalid" ? "widthCm" : height === "invalid" ? "heightCm" : meters === "invalid" ? "meters" : null;
+  if (invalid) return { field: invalid, text: "Măsurile sunt numere pozitive în centimetri (metri pentru consum), cu cel mult trei zecimale." };
+  if (draft.kind !== "other" && (width === null || height === null)) return { field: width === null ? "widthCm" : "heightCm", text: "Lățimea și înălțimea sunt obligatorii pentru perdele și draperii." };
+  return null;
+}
+
+/** A numeric measurement input with its unit; 16 px text, decimal keyboard, the label stays the accessible name. */
+function MeasureInput({ label, icon, unit, value, invalid, describedBy, onChange, testId }: { label: string; icon: "width" | "height" | "ruler"; unit: string; value: string; invalid: boolean; describedBy?: string; onChange: (value: string) => void; testId?: string }) {
+  return (
+    <label className="field measure-field">
+      <span className="measure-label"><AppIcon name={icon} size={16} />{label}</span>
+      <span className="measure-input">
+        <input inputMode="decimal" autoComplete="off" enterKeyHint="next" value={value} aria-invalid={invalid || undefined} aria-describedby={describedBy} onChange={(event) => onChange(event.target.value)} data-testid={testId} />
+        <span className="measure-unit" aria-hidden="true">{unit}</span>
+      </span>
+    </label>
+  );
+}
 
 /**
  * One Trendyol package: product data from Trendyol (read-only), the production data the employee confirms, and the
  * explicit approval that creates the production order at stage 1 with its Arasya QR and document revision 1.
+ * The guided steps only mirror what the server returned; nothing here acts without the employee's click.
  */
 export function TrendyolPackageScreen({ packageId, service, navigate }: { packageId: string; service: TrendyolApi; navigate: (path: string) => void }) {
   const [detail, setDetail] = useState<TrendyolPackageDetail | null>(null);
-  const [drafts, setDrafts] = useState<Record<string, Draft>>({});
-  const [message, setMessage] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [drafts, setDrafts] = useState<Record<string, LineDraft>>({});
+  const [lineErrors, setLineErrors] = useState<Record<string, LineError>>({});
+  const [message, setMessage] = useState<Message>(null);
+  const [busy, setBusy] = useState<string | null>(null);
   const [confirmed, setConfirmed] = useState(false);
   const [reason, setReason] = useState("");
   // One idempotency key per intent: a retried click replays the same command instead of a second one.
@@ -46,127 +77,195 @@ export function TrendyolPackageScreen({ packageId, service, navigate }: { packag
   const show = (next: TrendyolPackageDetail) => {
     setDetail(next);
     setDrafts(Object.fromEntries(next.lines.map((line) => [line.lineId, draftOf(line)])));
+    setLineErrors({});
     setConfirmed(false);
   };
 
   useEffect(() => {
     const controller = new AbortController();
-    service.detail(packageId, controller.signal).then(show).catch((caught) => { if (!controller.signal.aborted) setMessage(getErrorPresentation(toServiceError(caught)).message); });
+    service.detail(packageId, controller.signal).then(show).catch((caught) => { if (!controller.signal.aborted) setMessage({ tone: "danger", text: getErrorPresentation(toServiceError(caught)).message }); });
     return () => controller.abort();
   }, [packageId, service]);
 
   async function run(intent: string, command: (key: string) => Promise<TrendyolPackageDetail>, success: string) {
-    setBusy(true); setMessage("");
-    try { show(await command(keyFor(intent))); setMessage(success); }
+    setBusy(intent.split("|")[0] === "line" ? intent.split("|")[1] : intent.split("|")[0]); setMessage(null);
+    try { show(await command(keyFor(intent))); setMessage({ tone: "success", text: success }); }
     catch (caught) {
-      setMessage(getErrorPresentation(toServiceError(caught)).message);
+      setMessage({ tone: "danger", text: getErrorPresentation(toServiceError(caught)).message });
       // An approval may have recorded a fresh Trendyol status or changed lines: show what the server now holds.
       try { show(await service.detail(packageId)); } catch { /* the error message above stays */ }
     }
-    finally { setBusy(false); }
+    finally { setBusy(null); }
   }
 
   function saveLine(line: TrendyolLine) {
     if (!detail) return;
     const draft = drafts[line.lineId];
-    if (!draft?.kind) { setMessage("Alege tipul produsului."); return; }
+    const error = draft ? validate(draft) : { field: "kind" as const, text: "Alege tipul produsului." };
+    if (error || !draft?.kind) { setLineErrors((current) => ({ ...current, [line.lineId]: error ?? { field: "kind", text: "Alege tipul produsului." } })); return; }
+    setLineErrors((current) => { const next = { ...current }; delete next[line.lineId]; return next; });
     const width = normalizeMeasure(draft.widthCm);
     const height = normalizeMeasure(draft.heightCm);
     const meters = normalizeMeasure(draft.meters);
-    if (width === "invalid" || height === "invalid" || meters === "invalid") { setMessage("Măsurile sunt numere pozitive în centimetri (metri pentru consum), cu cel mult trei zecimale."); return; }
-    if (draft.kind !== "other" && (width === null || height === null)) { setMessage("Lățimea și înălțimea sunt obligatorii pentru perdele și draperii."); return; }
-    const input = { expectedVersion: detail.version, kind: draft.kind, ...(width ? { widthCm: width } : {}), ...(height ? { heightCm: height } : {}), ...(meters ? { meters } : {}), ...(draft.notes.trim() ? { notes: draft.notes.trim() } : {}) };
+    const input = { expectedVersion: detail.version, kind: draft.kind, ...(width && width !== "invalid" ? { widthCm: width } : {}), ...(height && height !== "invalid" ? { heightCm: height } : {}), ...(meters && meters !== "invalid" ? { meters } : {}), ...(draft.notes.trim() ? { notes: draft.notes.trim() } : {}) };
     void run(`line|${line.lineId}|${JSON.stringify(input)}`, (key) => service.prepareLine(detail.packageId, line.lineId, input, key), `Linia ${line.lineNumber} a fost salvată.`);
   }
 
-  const update = (lineId: string, patch: Partial<Draft>) => setDrafts((current) => ({ ...current, [lineId]: { ...current[lineId], ...patch } }));
+  const update = (lineId: string, patch: Partial<LineDraft>) => {
+    setDrafts((current) => ({ ...current, [lineId]: { ...current[lineId], ...patch } }));
+    if (lineErrors[lineId]) setLineErrors((current) => { const next = { ...current }; delete next[lineId]; return next; });
+  };
 
-  if (!detail) return <article className="screen-stack detail-screen trendyol-screen"><button className="back-link" type="button" onClick={() => navigate("/trendyol")}><AppIcon name="back" size={20} /> Comenzi Trendyol</button>{message ? <p className="order-notice order-notice-muted" role="alert">{message}</p> : <p aria-live="polite">Se încarcă…</p>}</article>;
+  if (!detail) {
+    return (
+      <article className="screen-stack trendyol-screen" aria-busy={!message}>
+        <button className="back-link" type="button" onClick={() => navigate("/trendyol")}><AppIcon name="back" size={20} /> Comenzi Trendyol</button>
+        {message ? <Notice tone={message.tone} role="alert">{message.text}</Notice> : <div className="package-skeleton" aria-hidden="true"><span className="skeleton skeleton-line" style={{ width: "30%" }} /><span className="skeleton skeleton-title" /><span className="skeleton package-skeleton-block" /><span className="skeleton package-skeleton-block" /></div>}
+        {!message && <p className="visually-hidden" aria-live="polite">Se încarcă…</p>}
+      </article>
+    );
+  }
   const { capabilities } = detail;
+  const steps = preparationSteps(detail);
+  const total = detail.lines.length;
+  const confirmedLines = detail.lines.filter((line) => line.prepared !== null).length;
+  const unsaved = detail.lines.filter((line) => drafts[line.lineId] && lineStatus(line, drafts[line.lineId]) === "unsaved").length;
+
   return (
-    <article className="screen-stack detail-screen trendyol-screen" data-testid="trendyol-package">
+    <article className="trendyol-screen trendyol-package" data-testid="trendyol-package">
       <button className="back-link" type="button" onClick={() => navigate("/trendyol")}><AppIcon name="back" size={20} /> Comenzi Trendyol</button>
-      <section className="detail-section">
+
+      <header className="package-header">
         <p className="eyebrow">Trendyol · pachet {detail.packageId}</p>
-        <h1>Comanda #{detail.orderNumber}</h1>
-        <dl className="authority-facts">
-          <div><dt>Status Trendyol (numai citire)</dt><dd>{marketplaceLabel(detail.marketplaceStatus)}</dd></div>
-          <div><dt>Stare în Arasya</dt><dd>{intakeLabel(detail)}</dd></div>
-          <div><dt>Data comenzii</dt><dd>{date(detail.orderDate)}</dd></div>
-        </dl>
-        <p className="order-notice order-notice-muted">Arasya nu modifică nimic în Trendyol: statusul, expedierea, codul de bare al curierului și factura rămân în Seller Panel. Codul QR Arasya este doar pentru producție.</p>
-        {detail.orderDateNearActivation && detail.intakeStatus === "pending" && <p className="order-notice" role="alert" data-testid="trendyol-near-activation">{nearActivationWarning}</p>}
-        {detail.changedAfterRelease && <p className="order-notice" role="alert">Comanda s-a modificat în Trendyol după aprobare. Producția continuă cu datele aprobate; verifică manual diferențele.</p>}
-        {detail.siblings.length > 0 && <p className="order-notice" role="note">Aceeași comandă Trendyol are și alte pachete: {detail.siblings.map((sibling) => `${sibling.packageId} (${intakeStatusLabels[sibling.intakeStatus]})`).join(", ")}. Verifică să nu intre de două ori în producție.</p>}
-        {detail.delivery && <p className="trendyol-delivery"><strong>{detail.delivery.name ?? "Client"}</strong><br />{detail.delivery.addressLines.join(", ")}{detail.delivery.phoneMasked ? ` · ${detail.delivery.phoneMasked}` : ""}</p>}
-      </section>
-
-      {message && <p className="order-notice order-notice-muted" role="status">{message}</p>}
-
-      <section className="detail-section" aria-labelledby="trendyol-lines">
-        <h2 id="trendyol-lines">Produse și date de producție</h2>
-        {detail.lines.map((line) => {
-          const draft = drafts[line.lineId] ?? draftOf(line);
-          return <div key={line.lineId} className="trendyol-line" data-testid={`trendyol-line-${line.lineNumber}`}>
-            <p><strong>{line.lineNumber}. {line.productName}</strong> × {line.quantity}</p>
-            <p className="trendyol-line-facts">Cod: {line.stockCode ?? "—"} · Mărime Trendyol: {line.productSize ?? "—"} · Culoare: {line.productColor ?? "—"}</p>
-            {line.prepared && <p className="trendyol-line-facts">Confirmat de {line.prepared.preparedBy ?? "—"} · {date(line.prepared.preparedAt)}</p>}
-            {capabilities.prepareNow ? <div className="trendyol-line-form">
-              <label className="field">Tip produs
-                <select value={draft.kind} onChange={(event) => update(line.lineId, { kind: event.target.value as TrendyolLineKind | "" })}>
-                  <option value="">Alege…</option>
-                  {(Object.keys(lineKindLabels) as TrendyolLineKind[]).map((kind) => <option key={kind} value={kind}>{lineKindLabels[kind]}</option>)}
-                </select>
-              </label>
-              <label className="field">Lățime (cm)<input inputMode="decimal" autoComplete="off" value={draft.widthCm} onChange={(event) => update(line.lineId, { widthCm: event.target.value })} /></label>
-              <label className="field">Înălțime (cm)<input inputMode="decimal" autoComplete="off" value={draft.heightCm} onChange={(event) => update(line.lineId, { heightCm: event.target.value })} /></label>
-              <label className="field">Consum (m, opțional)<input inputMode="decimal" autoComplete="off" value={draft.meters} onChange={(event) => update(line.lineId, { meters: event.target.value })} /></label>
-              <label className="field trendyol-notes">Note pentru atelier (opțional)<textarea maxLength={1000} value={draft.notes} onChange={(event) => update(line.lineId, { notes: event.target.value })} /></label>
-              <div className="trendyol-line-actions">
-                {line.sizeSuggestion && <button className="button button-secondary" type="button" onClick={() => update(line.lineId, { widthCm: line.sizeSuggestion?.width ?? "", heightCm: line.sizeSuggestion?.height ?? "" })}>Preia sugestia {line.sizeSuggestion.width} × {line.sizeSuggestion.height} cm</button>}
-                <button className="button button-primary" type="button" disabled={busy} onClick={() => saveLine(line)}>Salvează linia {line.lineNumber}</button>
-              </div>
-              {line.sizeSuggestion && <small>Sugestia este citită din textul Trendyol. Verifică măsura reală înainte de salvare.</small>}
-            </div> : line.prepared && <p className="trendyol-line-facts">{lineKindLabels[line.prepared.kind]}{line.prepared.widthCm ? ` · ${line.prepared.widthCm} × ${line.prepared.heightCm} cm` : ""}{line.prepared.meters ? ` · ${line.prepared.meters} m` : ""}{line.prepared.notes ? ` · ${line.prepared.notes}` : ""}</p>}
-          </div>;
-        })}
-      </section>
-
-      {detail.intakeStatus === "pending" && <section className="detail-section" aria-labelledby="trendyol-approval">
-        <h2 id="trendyol-approval">Aprobare pentru producție</h2>
-        {detail.readiness.blockedReason && <p className="order-notice" role="alert" data-testid="trendyol-blocked">{blockedReasonMessages[detail.readiness.blockedReason]} Status Trendyol: {marketplaceLabel(detail.marketplaceStatus)}.</p>}
-        {detail.readiness.missingLines.length > 0 && <p className="order-notice order-notice-muted">De completat: {detail.readiness.missingLines.map((line) => `linia ${line}`).join(", ")}.</p>}
-        {capabilities.release ? <>
-          <label className="checkbox-field"><input type="checkbox" checked={confirmed} disabled={!capabilities.releaseNow} onChange={(event) => setConfirmed(event.target.checked)} /> Confirm că am verificat produsele și măsurile. Comanda intră în producție la etapa 1 (În așteptare), cu cod QR Arasya și fișa de producție, revizia 1.</label>
-          <button className="button button-primary" type="button" disabled={busy || !confirmed || !capabilities.releaseNow} onClick={() => void run(`release|${detail.packageId}|${detail.version}`, (key) => service.release(detail.packageId, { expectedVersion: detail.version, confirm: true }, key), "Comanda a intrat în producție la etapa 1.")}>Aprobă și trimite în producție</button>
-        </> : <p className="order-notice order-notice-muted">Aprobarea o face o persoană cu drept de aprobare pentru comenzile Trendyol.</p>}
-        {capabilities.dismissNow && <form className="trendyol-dismiss" onSubmit={(event) => { event.preventDefault(); if (reason.trim()) void run(`dismiss|${detail.packageId}|${detail.version}|${reason.trim()}`, (key) => service.dismiss(detail.packageId, { expectedVersion: detail.version, reason: reason.trim() }, key), "Pachetul a fost scos din lucru."); }}>
-          <label className="field">Nu necesită confecție? Motiv<input autoComplete="off" maxLength={500} value={reason} onChange={(event) => setReason(event.target.value)} placeholder="ex. produs din stoc" /></label>
-          <button className="button button-secondary" type="submit" disabled={busy || !reason.trim()}>Scoate din lucru</button>
-        </form>}
-      </section>}
-
-      {capabilities.reopenNow && <button className="button button-secondary" type="button" disabled={busy} onClick={() => void run(`reopen|${detail.packageId}|${detail.version}`, (key) => service.reopen(detail.packageId, { expectedVersion: detail.version }, key), "Pachetul a fost redeschis.")}>Redeschide pachetul</button>}
-      {detail.dismissal && <p className="order-notice order-notice-muted">Scos din lucru de {detail.dismissal.by ?? "—"} · {date(detail.dismissal.at)} · {detail.dismissal.reason}</p>}
-
-      {detail.production && <section className="detail-section" aria-labelledby="trendyol-production" data-testid="trendyol-production">
-        <h2 id="trendyol-production">În producție</h2>
-        <dl className="authority-facts">
-          <div><dt>Etapa</dt><dd>{detail.production.stageLabel ?? detail.production.stageId}</dd></div>
-          <div><dt>Fișa de producție</dt><dd>{detail.production.documentStatus === "active" ? "Activă (cu cod QR Arasya)" : detail.production.documentStatus}</dd></div>
-          <div><dt>Aprobată de</dt><dd>{detail.production.releasedBy ?? "—"} · {date(detail.production.releasedAt)}</dd></div>
-          {detail.production.operationalStatus === "unavailable" && <div><dt>Atenție</dt><dd>Anulată în Trendyol</dd></div>}
-        </dl>
-        <div className="trendyol-line-actions">
-          <button className="button button-secondary" type="button" onClick={() => navigate(`/documents/${encodeURIComponent(detail.production?.globalOrderId ?? "")}`)}>Fișa de producție</button>
-          <button className="button button-primary" type="button" onClick={() => navigate(`/orders/${encodeURIComponent(detail.production?.globalOrderId ?? "")}`)}>Deschide comanda (etapa 1 → Tăiere)</button>
+        <h1>Comanda <span className="order-id">#{detail.orderNumber}</span></h1>
+        <div className="package-pills">
+          <StatusPill tone={detail.intakeStatus === "pending" ? "accent" : detail.intakeStatus === "released" ? "success" : "neutral"} icon={detail.intakeStatus === "released" ? "check" : "package"}>Arasya: {intakeLabel(detail)}</StatusPill>
+          <StatusPill tone="info" icon="lock">Trendyol: {marketplaceLabel(detail.marketplaceStatus)}</StatusPill>
+          <StatusPill icon="clock">{date(detail.orderDate)}</StatusPill>
         </div>
-      </section>}
+      </header>
 
-      {detail.history.length > 0 && <section className="detail-section" aria-labelledby="trendyol-history">
-        <h2 id="trendyol-history">Istoric</h2>
-        <ul className="trendyol-history">{detail.history.map((event, index) => <li key={`${event.action}-${index}`}>{historyLabels[event.action] ?? event.action} · {event.actor ?? "—"} · {date(event.at)}</li>)}</ul>
-      </section>}
+      <div className="package-layout">
+        <div className="package-main">
+          <TaskSteps steps={steps} label="Pașii comenzii Trendyol" testId="trendyol-steps" />
+
+          <div className="package-notices">
+            {detail.orderDateNearActivation && detail.intakeStatus === "pending" && <Notice tone="warning" role="alert" testId="trendyol-near-activation">{nearActivationWarning}</Notice>}
+            {detail.changedAfterRelease && <Notice tone="warning" role="alert">Comanda s-a modificat în Trendyol după aprobare. Producția continuă cu datele aprobate; verifică manual diferențele.</Notice>}
+            {detail.siblings.length > 0 && <Notice tone="warning" role="note">Aceeași comandă Trendyol are și alte pachete: {detail.siblings.map((sibling) => `${sibling.packageId} (${intakeStatusLabels[sibling.intakeStatus]})`).join(", ")}. Verifică să nu intre de două ori în producție.</Notice>}
+            <Notice tone="info">Arasya nu modifică nimic în Trendyol: statusul, expedierea, codul de bare al curierului și factura rămân în Seller Panel. Codul QR Arasya este doar pentru producție.</Notice>
+          </div>
+
+          {message && <Notice tone={message.tone} role={message.tone === "danger" ? "alert" : "status"} entering>{message.text}</Notice>}
+
+          <section className="package-lines" aria-labelledby="trendyol-lines">
+            <div className="package-section-heading">
+              <h2 id="trendyol-lines">Produse și date de producție</h2>
+              <StatusPill tone={confirmedLines === total ? "success" : "neutral"} testId="trendyol-lines-progress">{confirmedLines}/{total} confirmate{unsaved > 0 ? ` · ${unsaved} nesalvate` : ""}</StatusPill>
+            </div>
+            {detail.lines.map((line) => {
+              const draft = drafts[line.lineId] ?? draftOf(line);
+              const status = lineStatus(line, draft);
+              const copy = lineStatusCopy[status];
+              const error = lineErrors[line.lineId] ?? null;
+              const errorId = `line-error-${line.lineId}`;
+              const invalid = (field: Field) => error?.field === field;
+              const suggestionApplied = line.sizeSuggestion !== null && draft.widthCm === line.sizeSuggestion.width && draft.heightCm === line.sizeSuggestion.height;
+              return <div key={line.lineId} className={`trendyol-line line-${status}`} data-testid={`trendyol-line-${line.lineNumber}`}>
+                <div className="line-head">
+                  <span className="line-number"><span className="visually-hidden">Linia </span>{line.lineNumber}</span>
+                  <div className="line-title">
+                    <p className="line-name"><strong>{line.productName}</strong> <span className="line-quantity">× {line.quantity}</span></p>
+                    <p className="trendyol-line-facts">Cod: {line.stockCode ?? "—"} · Mărime Trendyol: {line.productSize ?? "—"} · Culoare: {line.productColor ?? "—"}</p>
+                  </div>
+                  <StatusPill tone={copy.tone} icon={copy.icon}>{copy.label}</StatusPill>
+                </div>
+                {line.prepared && <p className="trendyol-line-facts line-confirmed-by"><AppIcon name="check" size={14} />Confirmat de {line.prepared.preparedBy ?? "—"} · {date(line.prepared.preparedAt)}</p>}
+                {capabilities.prepareNow ? <div className="trendyol-line-form">
+                  <fieldset className="kind-picker" aria-invalid={invalid("kind") || undefined} aria-describedby={invalid("kind") ? errorId : undefined}>
+                    <legend>Tip produs</legend>
+                    <div className="kind-options">
+                      {kindOrder.map((kind) => <label key={kind} className={`kind-option${draft.kind === kind ? " is-selected" : ""}`}>
+                        <input type="radio" name={`kind-${line.lineId}`} value={kind} checked={draft.kind === kind} onChange={() => update(line.lineId, { kind })} />
+                        <span>{lineKindLabels[kind]}</span>
+                      </label>)}
+                    </div>
+                  </fieldset>
+
+                  {line.sizeSuggestion && <div className={`size-suggestion${suggestionApplied ? " is-applied" : ""}`}>
+                    <span className="size-suggestion-copy"><small>Sugestie din textul Trendyol · neconfirmată</small><strong className="mono">{line.sizeSuggestion.width} × {line.sizeSuggestion.height} cm</strong></span>
+                    <button className="button button-ghost button-compact" type="button" onClick={() => update(line.lineId, { widthCm: line.sizeSuggestion?.width ?? "", heightCm: line.sizeSuggestion?.height ?? "" })}>Preia sugestia {line.sizeSuggestion.width} × {line.sizeSuggestion.height} cm</button>
+                  </div>}
+
+                  <div className={`measure-pair${draft.kind === "other" ? " is-optional" : ""}`}>
+                    <MeasureInput label="Lățime (cm)" icon="width" unit="cm" value={draft.widthCm} invalid={invalid("widthCm")} describedBy={invalid("widthCm") ? errorId : undefined} onChange={(value) => update(line.lineId, { widthCm: value })} />
+                    <span className="measure-times" aria-hidden="true">×</span>
+                    <MeasureInput label="Înălțime (cm)" icon="height" unit="cm" value={draft.heightCm} invalid={invalid("heightCm")} describedBy={invalid("heightCm") ? errorId : undefined} onChange={(value) => update(line.lineId, { heightCm: value })} />
+                  </div>
+                  <MeasureInput label="Consum (m, opțional)" icon="ruler" unit="m" value={draft.meters} invalid={invalid("meters")} describedBy={invalid("meters") ? errorId : undefined} onChange={(value) => update(line.lineId, { meters: value })} />
+                  <label className="field trendyol-notes">Note pentru atelier (opțional)<textarea maxLength={1000} rows={2} value={draft.notes} onChange={(event) => update(line.lineId, { notes: event.target.value })} /></label>
+                  {error && <p className="field-error" id={errorId} role="alert"><AppIcon name="alert" size={16} />{error.text}</p>}
+                  <div className="trendyol-line-actions">
+                    <button className="button button-primary" type="button" disabled={busy !== null} aria-busy={busy === line.lineId || undefined} onClick={() => saveLine(line)}><AppIcon name="check" size={18} />Salvează linia {line.lineNumber}</button>
+                  </div>
+                </div> : line.prepared && <p className="trendyol-line-facts line-summary">{lineKindLabels[line.prepared.kind]}{line.prepared.widthCm ? ` · ${formatDecimal(line.prepared.widthCm)} × ${formatDecimal(line.prepared.heightCm)} cm` : ""}{line.prepared.meters ? ` · ${formatDecimal(line.prepared.meters)} m` : ""}{line.prepared.notes ? ` · ${line.prepared.notes}` : ""}</p>}
+              </div>;
+            })}
+          </section>
+        </div>
+
+        <div className="package-side">
+          <TaskSteps steps={steps} label="Pașii comenzii Trendyol" vertical />
+
+          {detail.intakeStatus === "pending" && <section className="package-card approval-card" aria-labelledby="trendyol-approval">
+            <p className="eyebrow">Pasul 3</p>
+            <h2 id="trendyol-approval">Aprobare pentru producție</h2>
+            {detail.readiness.blockedReason && <Notice tone="warning" role="alert" testId="trendyol-blocked">{blockedReasonMessages[detail.readiness.blockedReason]} Status Trendyol: {marketplaceLabel(detail.marketplaceStatus)}.</Notice>}
+            {detail.readiness.missingLines.length > 0 && <Notice>De completat: {detail.readiness.missingLines.map((line) => `linia ${line}`).join(", ")}.</Notice>}
+            {unsaved > 0 && <Notice tone="warning">Ai modificări nesalvate. Aprobarea folosește numai liniile salvate.</Notice>}
+            {capabilities.release ? <>
+              <label className="confirm-check"><input type="checkbox" checked={confirmed} disabled={!capabilities.releaseNow} onChange={(event) => setConfirmed(event.target.checked)} /><span>Confirm că am verificat produsele și măsurile. Comanda intră în producție la etapa 1 (În așteptare), cu cod QR Arasya și fișa de producție, revizia 1.</span></label>
+              <button className="button button-primary button-block" type="button" disabled={busy !== null || !confirmed || !capabilities.releaseNow} aria-busy={busy === "release" || undefined} onClick={() => void run(`release|${detail.packageId}|${detail.version}`, (key) => service.release(detail.packageId, { expectedVersion: detail.version, confirm: true }, key), "Comanda a intrat în producție la etapa 1.")}>Aprobă și trimite în producție</button>
+            </> : <Notice>Aprobarea o face o persoană cu drept de aprobare pentru comenzile Trendyol.</Notice>}
+            {capabilities.dismissNow && <details className="dismiss-details">
+              <summary>Nu necesită confecție?</summary>
+              <form className="trendyol-dismiss" onSubmit={(event) => { event.preventDefault(); if (reason.trim()) void run(`dismiss|${detail.packageId}|${detail.version}|${reason.trim()}`, (key) => service.dismiss(detail.packageId, { expectedVersion: detail.version, reason: reason.trim() }, key), "Pachetul a fost scos din lucru."); }}>
+                <label className="field">Nu necesită confecție? Motiv<input autoComplete="off" maxLength={500} value={reason} onChange={(event) => setReason(event.target.value)} placeholder="ex. produs din stoc" /></label>
+                <button className="button button-secondary" type="submit" disabled={busy !== null || !reason.trim()}>Scoate din lucru</button>
+              </form>
+            </details>}
+          </section>}
+
+          {capabilities.reopenNow && <button className="button button-secondary" type="button" disabled={busy !== null} onClick={() => void run(`reopen|${detail.packageId}|${detail.version}`, (key) => service.reopen(detail.packageId, { expectedVersion: detail.version }, key), "Pachetul a fost redeschis.")}>Redeschide pachetul</button>}
+          {detail.dismissal && <Notice>Scos din lucru de {detail.dismissal.by ?? "—"} · {date(detail.dismissal.at)} · {detail.dismissal.reason}</Notice>}
+
+          {detail.production && <section className="package-card production-card" aria-labelledby="trendyol-production" data-testid="trendyol-production">
+            <span className="production-card-icon" aria-hidden="true"><AppIcon name="check" size={22} /></span>
+            <p className="eyebrow">Aprobată · în producție</p>
+            <h2 id="trendyol-production">În producție</h2>
+            <dl className="authority-facts">
+              <div><dt>Etapa</dt><dd>{detail.production.stageLabel ?? detail.production.stageId}</dd></div>
+              <div><dt>Fișa de producție</dt><dd>{detail.production.documentStatus === "active" ? "Activă (cu cod QR Arasya)" : detail.production.documentStatus}</dd></div>
+              <div><dt>Aprobată de</dt><dd>{detail.production.releasedBy ?? "—"} · {date(detail.production.releasedAt)}</dd></div>
+              {detail.production.operationalStatus === "unavailable" && <div><dt>Atenție</dt><dd>Anulată în Trendyol</dd></div>}
+            </dl>
+            <div className="production-next">
+              <button className="button button-primary button-large" type="button" onClick={() => navigate(`/documents/${encodeURIComponent(detail.production?.globalOrderId ?? "")}`)}><span className="button-stack"><span>Fișa de producție</span><small>Tipărirea cu cod QR se face din fișă</small></span><AppIcon name="document" size={22} /></button>
+              <button className="button button-secondary button-large" type="button" onClick={() => navigate(`/orders/${encodeURIComponent(detail.production?.globalOrderId ?? "")}`)}><span>Deschide comanda (etapa 1 → Tăiere)</span><AppIcon name="arrow" size={20} /></button>
+            </div>
+          </section>}
+
+          {detail.delivery && <section className="package-card delivery-card" aria-label="Livrare">
+            <p className="eyebrow">Livrare (din Trendyol)</p>
+            <p className="trendyol-delivery"><strong>{detail.delivery.name ?? "Client"}</strong><br />{detail.delivery.addressLines.join(", ")}{detail.delivery.phoneMasked ? ` · ${detail.delivery.phoneMasked}` : ""}</p>
+          </section>}
+
+          {detail.history.length > 0 && <section className="package-card history-card" aria-labelledby="trendyol-history">
+            <h2 id="trendyol-history">Istoric</h2>
+            <ol className="timeline">{detail.history.map((event, index) => <li key={`${event.action}-${index}`}><strong>{historyLabels[event.action] ?? event.action}</strong><small>{event.actor ?? "—"} · {date(event.at)}</small></li>)}</ol>
+          </section>}
+        </div>
+      </div>
     </article>
   );
 }
