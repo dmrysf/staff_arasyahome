@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import type { Workspace } from "../../domain/workspaces";
+import type { NextAction } from "./trendyolNextAction";
 import { AppIcon } from "../../components/icons/AppIcon";
 
 /** A metric is either a real server value, still loading, or unavailable; never a placeholder number. */
@@ -98,4 +99,26 @@ export function QueueSkeleton({ rows = 3 }: { rows?: number }) {
       {Array.from({ length: rows }, (_, index) => <li key={index} className="queue-row"><span className="queue-row-main"><span className="skeleton skeleton-title" /><span className="skeleton skeleton-line" style={{ width: `${70 - index * 12}%` }} /></span></li>)}
     </ul>
   );
+}
+
+/** The one next step, chosen from data already on screen; a link to the existing screen, never an action itself. */
+export function NextActionCard({ action, navigate, id, testId, secondary }: { action: NextAction; navigate: (path: string) => void; id: string; testId: string; secondary?: ReactNode }) {
+  return (
+    <section className={`next-action tone-${action.tone}`} aria-labelledby={id} data-testid={testId}>
+      <div className="next-action-copy">
+        <p className="eyebrow">{action.eyebrow}</p>
+        <h2 id={id}>{action.title}</h2>
+        {action.orderNumber && <p className="next-action-order order-id">#{action.orderNumber}</p>}
+        <p className="next-action-detail">{action.detail}</p>
+      </div>
+      {(action.cta || secondary) && <div className="next-action-actions">
+        {action.cta && <button type="button" className="button button-primary next-action-cta" onClick={() => navigate(action.cta!.path)}>{action.cta.label}<AppIcon name="arrow" size={20} /></button>}
+        {secondary}
+      </div>}
+    </section>
+  );
+}
+
+export function NextActionSkeleton() {
+  return <div className="next-action is-loading" aria-hidden="true"><div className="next-action-copy"><span className="skeleton skeleton-line" style={{ width: "28%" }} /><span className="skeleton skeleton-title" /><span className="skeleton skeleton-line" style={{ width: "54%" }} /></div><span className="skeleton next-action-cta-skeleton" /></div>;
 }

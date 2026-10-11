@@ -35,6 +35,23 @@ Reference experiences:
 - **Trendyol preparation**: five guided steps (`Verifică produsele`, `Completează măsurile`, `Aprobă producția`, `Tipărește fișa cu QR`, `Trimite la Tăiere`) derived only from the package the server returned. A step is done only when server data proves it; printing is never shown as done. Each line shows confirmed, unsaved or to-complete state, a radio product-type picker, the Trendyol size suggestion marked as unconfirmed, paired width × height inputs, and validation next to the field. The form never refreshes itself.
 - **Production document**: revision, status, a print card stating that the button downloads the server PDF with the production QR, a separate preview without QR, and the revision history. Counts say *PDF descărcat pentru tipărire*, never *tipărit*: the server cannot know that paper came out of a printer.
 
+## Shared system across every screen (Staff 2.16.0, Package 2)
+
+`styles/app.css` now styles every remaining screen (login, orders, order detail, history, profile, scanner, sheets, confirmation and success states, exceptions, QR authority, document lookup, management tables, cutting tools) from the tokens only; a unit test refuses any hex or rgb colour outside `tokens.css`. Shared React states live in `components/ui/States.tsx`:
+
+- `BootScreen`: start-up and blocking states (session check, workflow load, no Staff access) with the brand, one sentence, a progress bar while busy and an optional action.
+- `LoadingState`: an announced label plus skeletons shaped like a list or a detail page (replaces the old spinner rows).
+- `EmptyPanel`: what will appear here and, when useful, the next action.
+- `PageHeader`: eyebrow, title, one sentence, optional actions.
+
+`ErrorState` and the confirmation dialogs draw their icons (no `!` or `?` glyphs). Tabs, range chips and selected options are filled black when active; status is a coloured dot next to black text. The scanner keeps a dark camera surface with white controls. Order identifiers use the monospace face everywhere. A theme switch is deliberately absent: the owner chose the white look, and the graphite theme stays an opt-in token set.
+
+## Department screens (Staff 2.17.0, Package 3)
+
+Every production workspace (Pornire producție, Tăiere, Atelier, Croitorie, Control calitate, Împachetare, Livrare) opens with one *next step* chosen from the stage queue already read (`features/workspaces/stageProfiles.ts`): continue own work first; then take new work, by scanning the original label in cutting or by opening the oldest available order elsewhere (opening never claims); then blocked orders. Queue rows show what the department checks first: sizes, fabric meters and quantity for cutting, workshop, sewing and quality control; items and quantities for packing and delivery. Desktop splits work (left) from the stage numbers and checklist (right). Cutting shows own and blocked work before the available pool.
+
+The Trendyol inbox uses the same order rows, status line and skeletons as the Trendyol home. The scanner viewfinder shows its state: a slow sweep while scanning, the frame closing in green once a code is read, one shake on a problem, with the instruction text announced. Order detail shows the products, with size and meters in large monospace figures, right after the action. Nothing in this package changes which orders are listed, which actions exist or who may take them.
+
 ## YD Soft connection status
 
 `YDSoftConnectionStatus` accepts `connected`, `checking`, or `disconnected`. It maps each state to explicit Romanian text as well as a semantic color, so status is never color-only. Connected uses a small, reduced-motion-safe pulse. The current default is a designed `connected` placeholder; it is not derived from `navigator.onLine`, does not poll, and does not claim to be a real health check. A future health service can supply the same typed state without changing the component.

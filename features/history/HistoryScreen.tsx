@@ -4,6 +4,7 @@ import type { StaffServiceError } from "../../domain/models";
 import type { ActivityService } from "../../services/contracts";
 import { SourceBadge } from "../../components/SourceBadge";
 import { ErrorState } from "../../components/ErrorState";
+import { EmptyPanel, LoadingState, PageHeader } from "../../components/ui/States";
 import { toServiceError } from "../../services/errors";
 import { AppIcon } from "../../components/icons/AppIcon";
 import { historyDate, HISTORY_TIME_ZONE } from "./historyDate";
@@ -62,17 +63,17 @@ export function HistoryScreen({ service, navigate }: { service: ActivityService;
 
   return (
     <div className="screen-stack">
-      <section className="screen-heading"><h1>Istoric</h1><p>Acțiunile tale confirmate în producție.</p></section>
+      <PageHeader title="Istoric" description="Acțiunile tale confirmate în producție." />
       <div className="range-scroll" role="group" aria-label="Interval istoric">{(Object.keys(rangeLabels) as Range[]).map((item) => <button key={item} className={item === range ? "active" : ""} aria-pressed={item === range} type="button" onClick={() => { setError(null); setPage(null); setRange(item); }}>{rangeLabels[item]}</button>)}</div>
       {range === "custom" && <div className="date-range"><label>De la<input type="date" value={customFrom} max={customTo} onChange={(event) => { setPage(null); setCustomFrom(event.target.value); }} /></label><span>→</span><label>Până la<input type="date" value={customTo} min={customFrom} max={historyDate()} onChange={(event) => { setPage(null); setCustomTo(event.target.value); }} /></label></div>}
       {customError ? <p className="order-notice" role="alert">{customError}</p> : error ? <ErrorState error={error} onAction={() => { setError(null); setPage(null); setReloadKey((value) => value + 1); }} /> : page ? <>
         <section className="metrics-grid"><div><span>Comenzi</span><strong>{page.summary.processed}</strong></div><div><span>Metri predați</span><strong>{formatMeters(page.summary.meters).replace(" m", "")}<small>m</small></strong></div><div><span>Predate</span><strong>{page.summary.handedOver}</strong></div><div><span>În lucru acum</span><strong>{page.summary.inProgress}</strong></div></section>
         <section className="history-list"><h2>Cronologie</h2>
-          {page.items.length === 0 && <div className="empty-state"><h2>Nicio activitate în acest interval.</h2><p>Acțiunile confirmate de server apar aici.</p></div>}
+          {page.items.length === 0 && <EmptyPanel icon="history" title="Nicio activitate în acest interval.">Acțiunile confirmate de server apar aici.</EmptyPanel>}
           {page.items.map((entry) => <button className="history-row" type="button" key={entry.id} onClick={() => navigate(`/orders/${encodeURIComponent(entry.orderId)}`)}><time dateTime={entry.occurredAt}>{range === "today" ? time.format(new Date(entry.occurredAt)) : <>{day.format(new Date(entry.occurredAt))}<br />{time.format(new Date(entry.occurredAt))}</>}</time><span className={`history-dot history-dot-${entry.action}`} /><span className="history-copy"><span><b>#{entry.orderNumber}</b><SourceBadge source={entry.source} /></span><small>{describeActivity(entry)}</small></span><AppIcon name="arrow" size={18} /></button>)}
           {page.nextCursor && <button className="button button-secondary" type="button" disabled={loadingMore} onClick={loadMore}>{loadingMore ? "Se încarcă…" : "Încarcă mai multe"}</button>}
         </section>
-      </> : <div className="inline-loading"><span /> Se încarcă activitatea…</div>}
+      </> : <LoadingState label="Se încarcă activitatea…" />}
     </div>
   );
 }

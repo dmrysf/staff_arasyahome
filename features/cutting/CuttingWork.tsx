@@ -23,7 +23,6 @@ export function CuttingWork({ service, navigate }: { service: CuttingApi; naviga
   return <section className="cutting-work screen-stack">
     <div className="detail-section"><p className="eyebrow">Tăiere · întreaga comandă</p><h2>Comenzi disponibile {pool && `· ${pool.total}`}</h2>
       <p>Ordinea afișată nu impune prioritate. Scanează eticheta QR originală pentru a prelua.</p>
-      <button type="button" className="button button-primary" onClick={() => navigate("/scan")}>Scanează pentru preluare</button>
       {error && <ErrorState error={error} compact onAction={() => setReload(v => v + 1)} />}
       {pool && <><p>Ai {pool.ownedCount} comenzi neterminate · rămân la tine și după deconectare.</p><ul className="cutting-pool-list">{pool.items.slice(0, 20).map(o => <li key={o.id}><button type="button" onClick={() => navigate(`/orders/${encodeURIComponent(o.id)}`)}><strong>#{o.orderNumber}</strong><small>{o.source}</small></button></li>)}</ul>{pool.total > 20 && <p>+ {pool.total - 20} comenzi în așteptare · disponibile prin scanare</p>}</>}
     </div>

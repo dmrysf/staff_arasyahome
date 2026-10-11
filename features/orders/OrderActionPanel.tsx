@@ -8,6 +8,7 @@ import { orderActionConfirmation, orderActionSuccess } from "../../domain/orderA
 import { getNextStage, getStageById } from "../../domain/productionWorkflow";
 import { StageLabel } from "../../components/StageLabel";
 import { ErrorState } from "../../components/ErrorState";
+import { AppIcon } from "../../components/icons/AppIcon";
 import { toServiceError } from "../../services/errors";
 import { createIdempotencyKey } from "../../services/idempotency";
 
@@ -80,7 +81,7 @@ export function OrderActionPanel({ order, workflow, service, cutting, onUpdated,
       {action && (state.status === "confirming" || state.status === "submitting") && (
         <div className="confirmation-layer" role="dialog" aria-modal="true" aria-labelledby="detail-confirmation-title">
           <div className="confirmation-card">
-            <span className="state-icon confirm-icon" aria-hidden="true">?</span>
+            <span className="state-icon confirm-icon" aria-hidden="true"><AppIcon name="arrow" size={24} /></span>
             <p className="eyebrow">Confirmare necesară</p>
             <h2 id="detail-confirmation-title">{orderActionConfirmation[action.id].title}</h2>
             <p>Comanda #{order.orderNumber}. {orderActionConfirmation[action.id].note}</p>
