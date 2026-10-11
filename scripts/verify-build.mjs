@@ -3,7 +3,7 @@ import path from "node:path";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "..");
 const dist = path.join(repositoryRoot, "dist");
-const requiredFiles = ["index.html", "manifest.webmanifest", "sw.js", ".htaccess"];
+const requiredFiles = ["index.html", "manifest.webmanifest", "sw.js", ".htaccess", "favicon.ico", "favicon.svg", "apple-touch-icon.png", "icon-192.png", "icon-512.png"];
 
 async function requireFile(relativePath) {
   const target = path.join(dist, relativePath);
