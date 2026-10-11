@@ -7,9 +7,9 @@ const root = path.resolve(import.meta.dirname, "..");
 const read = (file: string) => readFileSync(path.join(root, file), "utf8");
 const strip = (css: string) => css.replace(/\/\*[\s\S]*?\*\//g, "");
 
-test("the sign-in intro types the owner's text and uses the Arasya wordmark in white", async () => {
+test("the sign-in intro types the Arasya Home line and uses the Arasya wordmark in white", async () => {
   const { INTRO_TEXT } = await import("../features/auth/LoginIntro");
-  assert.equal(INTRO_TEXT, "Coded by the Roisey team");
+  assert.equal(INTRO_TEXT, "Designed to Inspire. Made to Last.");
   const source = read("features/auth/LoginIntro.tsx");
   assert.match(source, /components\/brand\/arasya-logo\.webp/);
   assert.match(strip(read("styles/intro.css")), /\.intro-brand img \{[^}]*filter: invert\(1\)/);
