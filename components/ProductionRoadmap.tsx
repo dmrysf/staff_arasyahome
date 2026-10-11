@@ -19,7 +19,8 @@ export function ProductionRoadmap({ workflow, currentStageId }: { workflow: Prod
         <span>v{workflow.version}</span>
       </header>
       {!current && <p className="roadmap-unavailable" role="status">Etapă indisponibilă</p>}
-      <ol className="roadmap-track" aria-label={`Etape producție: ${workflow.stages.length}`}>
+      {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- a horizontally scrollable region must be keyboard focusable (WCAG 2.1.1) */}
+      <ol className="roadmap-track" aria-label={`Etape producție: ${workflow.stages.length}`} tabIndex={0}>
         {workflow.stages.map((stage, index) => {
           const state = progress.index < 0 || index > progress.index ? "future" : index === progress.index ? "current" : "completed";
           return (

@@ -399,3 +399,4 @@
 .boot-screen h1 { margin: 0; font-size: var(--text-2xl); font-weight: var(--weight-bold); letter-spacing: var(--tracking-tight); }
 .product-detail .product-key dd { font-family: var(--font-mono); font-size: var(--text-lg); font-weight: var(--weight-bold); letter-spacing: -.02em; }
 @media (min-width: 720px) { .detail-screen > .detail-products { grid-row: auto; } }
+.roadmap-track:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; border-radius: var(--radius-md); }

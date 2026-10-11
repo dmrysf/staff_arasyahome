@@ -29,6 +29,7 @@ const lineStatusCopy: Record<ReturnType<typeof lineStatus>, { label: string; ton
 type Field = "kind" | "widthCm" | "heightCm" | "meters";
 type LineError = { field: Field | null; text: string };
 type Message = { tone: Tone; text: string } | null;
+const fieldId = (lineId: string, field: Field): string => `line-${lineId}-${field}`;
 
 /** Validates one line exactly as before; the error names the field it belongs to. */
 function validate(draft: LineDraft): LineError | null {
@@ -43,12 +44,12 @@ function validate(draft: LineDraft): LineError | null {
 }
 
 /** A numeric measurement input with its unit; 16 px text, decimal keyboard, the label stays the accessible name. */
-function MeasureInput({ label, icon, unit, value, invalid, describedBy, onChange, testId }: { label: string; icon: "width" | "height" | "ruler"; unit: string; value: string; invalid: boolean; describedBy?: string; onChange: (value: string) => void; testId?: string }) {
+function MeasureInput({ id, label, icon, unit, value, invalid, describedBy, onChange, testId }: { id: string; label: string; icon: "width" | "height" | "ruler"; unit: string; value: string; invalid: boolean; describedBy?: string; onChange: (value: string) => void; testId?: string }) {
   return (
     <label className="field measure-field">
       <span className="measure-label"><AppIcon name={icon} size={16} />{label}</span>
       <span className="measure-input">
-        <input inputMode="decimal" autoComplete="off" enterKeyHint="next" value={value} aria-invalid={invalid || undefined} aria-describedby={describedBy} onChange={(event) => onChange(event.target.value)} data-testid={testId} />
+        <input id={id} inputMode="decimal" autoComplete="off" enterKeyHint="next" value={value} aria-invalid={invalid || undefined} aria-describedby={describedBy} onChange={(event) => onChange(event.target.value)} data-testid={testId} />
         <span className="measure-unit" aria-hidden="true">{unit}</span>
       </span>
     </label>
@@ -102,7 +103,13 @@ export function TrendyolPackageScreen({ packageId, service, navigate }: { packag
     if (!detail) return;
     const draft = drafts[line.lineId];
     const error = draft ? validate(draft) : { field: "kind" as const, text: "Alege tipul produsului." };
-    if (error || !draft?.kind) { setLineErrors((current) => ({ ...current, [line.lineId]: error ?? { field: "kind", text: "Alege tipul produsului." } })); return; }
+    if (error || !draft?.kind) {
+      const failure = error ?? { field: "kind" as const, text: "Alege tipul produsului." };
+      setLineErrors((current) => ({ ...current, [line.lineId]: failure }));
+      // Move to the field that needs attention: it scrolls into view and its error is read next to its label.
+      document.getElementById(fieldId(line.lineId, failure.field ?? "kind"))?.focus();
+      return;
+    }
     setLineErrors((current) => { const next = { ...current }; delete next[line.lineId]; return next; });
     const width = normalizeMeasure(draft.widthCm);
     const height = normalizeMeasure(draft.heightCm);
@@ -186,11 +193,12 @@ export function TrendyolPackageScreen({ packageId, service, navigate }: { packag
                     <legend>Tip produs</legend>
                     <div className="kind-options">
                       {kindOrder.map((kind) => <label key={kind} className={`kind-option${draft.kind === kind ? " is-selected" : ""}`}>
-                        <input type="radio" name={`kind-${line.lineId}`} value={kind} checked={draft.kind === kind} onChange={() => update(line.lineId, { kind })} />
+                        <input type="radio" id={kind === kindOrder[0] ? fieldId(line.lineId, "kind") : undefined} name={`kind-${line.lineId}`} value={kind} checked={draft.kind === kind} onChange={() => update(line.lineId, { kind })} />
                         <span>{lineKindLabels[kind]}</span>
                       </label>)}
                     </div>
                   </fieldset>
+                  {error?.field === "kind" && <p className="field-error" id={errorId} role="alert"><AppIcon name="alert" size={16} />{error.text}</p>}
 
                   {line.sizeSuggestion && <div className={`size-suggestion${suggestionApplied ? " is-applied" : ""}`}>
                     <span className="size-suggestion-copy"><small>Sugestie din textul Trendyol · neconfirmată</small><strong className="mono">{line.sizeSuggestion.width} × {line.sizeSuggestion.height} cm</strong></span>
@@ -198,13 +206,15 @@ export function TrendyolPackageScreen({ packageId, service, navigate }: { packag
                   </div>}
 
                   <div className={`measure-pair${draft.kind === "other" ? " is-optional" : ""}`}>
-                    <MeasureInput label="Lățime (cm)" icon="width" unit="cm" value={draft.widthCm} invalid={invalid("widthCm")} describedBy={invalid("widthCm") ? errorId : undefined} onChange={(value) => update(line.lineId, { widthCm: value })} />
+                    <MeasureInput id={fieldId(line.lineId, "widthCm")} label="Lățime (cm)" icon="width" unit="cm" value={draft.widthCm} invalid={invalid("widthCm")} describedBy={invalid("widthCm") ? errorId : undefined} onChange={(value) => update(line.lineId, { widthCm: value })} />
                     <span className="measure-times" aria-hidden="true">×</span>
-                    <MeasureInput label="Înălțime (cm)" icon="height" unit="cm" value={draft.heightCm} invalid={invalid("heightCm")} describedBy={invalid("heightCm") ? errorId : undefined} onChange={(value) => update(line.lineId, { heightCm: value })} />
+                    <MeasureInput id={fieldId(line.lineId, "heightCm")} label="Înălțime (cm)" icon="height" unit="cm" value={draft.heightCm} invalid={invalid("heightCm")} describedBy={invalid("heightCm") ? errorId : undefined} onChange={(value) => update(line.lineId, { heightCm: value })} />
                   </div>
-                  <MeasureInput label="Consum (m, opțional)" icon="ruler" unit="m" value={draft.meters} invalid={invalid("meters")} describedBy={invalid("meters") ? errorId : undefined} onChange={(value) => update(line.lineId, { meters: value })} />
+                  {(error?.field === "widthCm" || error?.field === "heightCm") && <p className="field-error" id={errorId} role="alert"><AppIcon name="alert" size={16} />{error.text}</p>}
+                  <MeasureInput id={fieldId(line.lineId, "meters")} label="Consum (m, opțional)" icon="ruler" unit="m" value={draft.meters} invalid={invalid("meters")} describedBy={invalid("meters") ? errorId : undefined} onChange={(value) => update(line.lineId, { meters: value })} />
+                  {error?.field === "meters" && <p className="field-error" id={errorId} role="alert"><AppIcon name="alert" size={16} />{error.text}</p>}
                   <label className="field trendyol-notes">Note pentru atelier (opțional)<textarea maxLength={1000} rows={2} value={draft.notes} onChange={(event) => update(line.lineId, { notes: event.target.value })} /></label>
-                  {error && <p className="field-error" id={errorId} role="alert"><AppIcon name="alert" size={16} />{error.text}</p>}
+                  {error && error.field === null && <p className="field-error" id={errorId} role="alert"><AppIcon name="alert" size={16} />{error.text}</p>}
                   <div className="trendyol-line-actions">
                     <button className="button button-primary" type="button" disabled={busy !== null} aria-busy={busy === line.lineId || undefined} onClick={() => saveLine(line)}><AppIcon name="check" size={18} />Salvează linia {line.lineNumber}</button>
                   </div>

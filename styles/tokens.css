@@ -62,6 +62,7 @@
   --color-connected: var(--color-success);
   --color-disconnected: var(--color-danger);
   --color-focus: rgba(0, 0, 0, .55);
+  --color-focus-ring: rgba(0, 0, 0, .16);
   --color-disabled: #e6e6e6;
   --color-disabled-text: #5e5e5e;
   --color-scrim: rgba(0, 0, 0, .4);

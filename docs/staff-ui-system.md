@@ -56,6 +56,14 @@ The Trendyol inbox uses the same order rows, status line and skeletons as the Tr
 
 `styles/motion.css` is the motion layer. Lists settle in once with a short stagger when they first appear or a new item arrives; an automatic refresh that keeps the same rows animates nothing. A metric animates only when its value changes (the number is keyed by value). Status chips, progress bars and the production roadmap follow the server state with transitions, and the stage marker settles in when the server reports the new stage. Success screens reveal their title and actions in sequence after the server confirms. Every asynchronous primary button reports `aria-busy` and shows a running bar. The scanner adds a short vibration where supported when a code is read and when the server confirms the action. Only transform and opacity move (a test checks every keyframe), nothing starts a request, and `prefers-reduced-motion` removes durations, iterations and delays.
 
+## UX verification (Staff 2.19.0, Package 5)
+
+`e2e/zzzzzzzzzz-ux-verification-real-api.spec.ts` runs in the real-API Chromium job and fails on regressions: axe WCAG 2.2 AA on login, Trendyol home and inbox, profile, cutting home (phone and desktop), orders, order detail, history and scanner; every visible control at least 44 × 44 px; the skip link (`Sari la conținut`) is the first Tab stop and moves focus to the work; reduced motion leaves lists, numbers and cards still; a slow orders read shows content-shaped skeletons; a failed read shows a recoverable error instead of an empty list; package validation appears next to the invalid field, which receives focus, and nothing is written. `tests/premium-ui-accessibility.test.ts` computes WCAG contrast for every text token on every surface of the white theme (4.5:1) and for signals and focus (3:1).
+
+Fixes from the audit: refresh, size-suggestion and revision-preview buttons raised to 44 px; the production roadmap scroller is keyboard focusable; inputs show a visible focus ring; validation sits under its field with a red icon.
+
+Not verified here: physical iOS and Android devices, real screen readers (VoiceOver, TalkBack) and frame-rate profiling.
+
 ## YD Soft connection status
 
 `YDSoftConnectionStatus` accepts `connected`, `checking`, or `disconnected`. It maps each state to explicit Romanian text as well as a semantic color, so status is never color-only. Connected uses a small, reduced-motion-safe pulse. The current default is a designed `connected` placeholder; it is not derived from `navigator.onLine`, does not poll, and does not claim to be a real health check. A future health service can supply the same typed state without changing the component.
