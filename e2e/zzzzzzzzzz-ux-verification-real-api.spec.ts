@@ -78,6 +78,30 @@ test("WCAG 2.2 AA and 44 px touch targets on the redesigned screens", async ({ b
   await desktop.context.close();
 });
 
+test("brand logos load, keep their proportions and never shift the login layout", async ({ browser }) => {
+  for (const [width, height] of [[320, 568], [390, 844], [768, 1024], [1440, 900]] as const) {
+    const context = await browser.newContext({ viewport: { width, height }, reducedMotion: "reduce" });
+    const page = await context.newPage();
+    await page.addInitScript(() => {
+      const state = window as unknown as { __shift: number };
+      state.__shift = 0;
+      new PerformanceObserver((list) => { for (const entry of list.getEntries() as unknown as { value: number; hadRecentInput: boolean }[]) if (!entry.hadRecentInput) state.__shift += entry.value; }).observe({ type: "layout-shift", buffered: true });
+    });
+    await page.goto("/login");
+    const logo = page.getByRole("img", { name: "Arasya Home" });
+    await expect(logo).toBeVisible();
+    await expect.poll(() => logo.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0)).toBe(true);
+    const box = await logo.evaluate((img: HTMLImageElement) => ({ ratio: img.getBoundingClientRect().width / img.getBoundingClientRect().height, natural: img.naturalWidth / img.naturalHeight }));
+    expect(Math.abs(box.ratio - box.natural), `logo proportions at ${width}`).toBeLessThan(0.05);
+    expect(await page.evaluate(() => (window as unknown as { __shift: number }).__shift), `layout shift at ${width}`).toBeLessThan(0.01);
+    await context.close();
+  }
+  const { context, page } = await signIn(browser, fixture.trendyol.approver);
+  const trendyol = page.getByTestId("trendyol-connection").locator(".brand-logo img");
+  await expect.poll(() => trendyol.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0)).toBe(true);
+  await context.close();
+});
+
 test("keyboard: the first Tab offers the skip link, which moves focus to the work", async ({ browser }) => {
   const { context, page } = await signIn(browser, fixture.users.ana, 1280, 800);
   await page.locator("body").focus();
