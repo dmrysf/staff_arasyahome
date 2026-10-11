@@ -1,5 +1,5 @@
-const CACHE_NAME = "arasya-staff-static-v3";
-const SAFE_STATIC_ASSETS = ["/manifest.webmanifest", "/favicon.svg"];
+const CACHE_NAME = "arasya-staff-static-v4";
+const SAFE_STATIC_ASSETS = ["/manifest.webmanifest", "/favicon.svg", "/favicon.ico", "/apple-touch-icon.png", "/icon-192.png", "/icon-512.png"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(SAFE_STATIC_ASSETS)));
