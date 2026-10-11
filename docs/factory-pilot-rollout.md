@@ -1,5 +1,9 @@
 # Factory pilot rollout: stage permissions and owner decisions
 
+> Historical decision checklist. The separately reviewed 29-person matrix and preparation-only CLI procedure are now
+> documented in [factory-onboarding.md](factory-onboarding.md). Use that procedure for this rollout; its four group approvals
+> replace the candidate decisions and individual activation sequence below. No live activation is authorized by deployment.
+
 This page prepares the first real factory staff for Staff. It builds on the applied
 [onboarding plan](employee-onboarding.md) and the [pilot checklist](pilot-readiness.md). It adds no code, no
 migration and no grant. Every change described here is made by an administrator in the Dashboard, through the

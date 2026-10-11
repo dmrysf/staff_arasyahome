@@ -46,9 +46,16 @@ php bin/order-qr.php --order=<source:order-id> [--rotate]
 php bin/sync-trendyol.php            # intake only; needs credentials, the switch and the activation
 php bin/trendyol-intake.php status   # activate|pause|resume (explicit, forward-only baseline)
 php bin/trendyol-preview.php         # read-only Order V2 preview, no database
+php bin/factory-provision.php --json # existing 29-person factory matrix; READ ONLY by default
+php bin/factory-provision.php --group=cutting --json
 ```
 
 Passwords are always read interactively without an argument. Disable and password-change operations revoke active sessions. Migrations never run from a web request. The workflow seed is idempotent and non-overwriting: reruns insert missing canonical rows but do not silently rename an existing workflow or stage.
+
+Factory preparation generates no passwords. Its later apply requires `--apply`, one explicit group,
+`--expected-plan=<sha256>` and a private `--approval-file=<absolute-path>` recording the owner's separate activation
+approval. Existing audited IAM services apply the entire group transaction and use the existing private CredentialFile.
+No deployment activates a factory identity. See [the manual factory procedure](../docs/factory-onboarding.md).
 
 ## Local quality checks
 

@@ -1112,18 +1112,43 @@ final readonly class ManagementService
         });
     }
 
+    /** Root CLI orchestration: lock one reviewed group while existing audited methods share its transaction. */
+    public function withLockedEmployees(EmployeeIdentity $actor, array $employeeIds, callable $operation): mixed
+    {
+        $this->require($actor, 'employees.manage_stages');
+        if (!$actor->isRoot) throw new ApiException(403, 'ROOT_ONLY', 'Only root may orchestrate factory onboarding.');
+        if ($employeeIds === [] || count(array_unique($employeeIds)) !== count($employeeIds)) throw new ApiException(400, 'VALIDATION_FAILED', 'Distinct employee ids are required.');
+        sort($employeeIds, SORT_STRING);
+        $result = null;
+        $this->transaction(function () use ($actor, $employeeIds, $operation, &$result): void {
+            foreach ($employeeIds as $uuid) {
+                $this->lockEmployee($this->validUuid($uuid), 'EMPLOYEE_NOT_FOUND');
+                if ($uuid === $actor->employeeUuid) throw new ApiException(403, 'ROOT_PROTECTED', 'Root cannot be onboarded.');
+            }
+            $result = $operation();
+        });
+        return $result;
+    }
+
     // ---------------------------------------------------------------- persistence helpers
 
     /** @param callable(): void $operation */
     private function transaction(callable $operation): void
     {
-        $this->pdo->beginTransaction();
+        $nested = $this->pdo->inTransaction();
+        $savepoint = 'iam_' . bin2hex(random_bytes(6));
+        if ($nested) $this->pdo->exec('SAVEPOINT ' . $savepoint);
+        else $this->pdo->beginTransaction();
         try {
             $operation();
-            $this->pdo->commit();
+            if ($nested) $this->pdo->exec('RELEASE SAVEPOINT ' . $savepoint);
+            else $this->pdo->commit();
         } catch (Throwable $error) {
             if ($this->pdo->inTransaction()) {
-                $this->pdo->rollBack();
+                if ($nested) {
+                    $this->pdo->exec('ROLLBACK TO SAVEPOINT ' . $savepoint);
+                    $this->pdo->exec('RELEASE SAVEPOINT ' . $savepoint);
+                } else $this->pdo->rollBack();
             }
             if ($error instanceof PDOException && ($error->errorInfo[1] ?? null) === 1062) {
                 throw new ApiException(409, 'CONFLICT', 'The change conflicts with existing data.');
