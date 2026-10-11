@@ -21,6 +21,7 @@ import { useProductionWorkflow } from "./useProductionWorkflow";
 import { parseStaffRoute } from "../domain/staffRoute";
 import { LiveProvider } from "./liveContext";
 import { LiveNotice } from "../components/LiveNotice";
+import { BootScreen } from "../components/ui/States";
 import { ExceptionScreen } from "../features/exceptions/ExceptionScreen";
 import { DocumentScreen } from "../features/documents/DocumentScreen";
 import { AuthorityScreen } from "../features/authority/AuthorityScreen";
@@ -101,8 +102,8 @@ export function StaffApp({ initialRoute, mode, apiBaseUrl }: { initialRoute: str
     navigate("/login");
   }
 
-  if (checkingSession) return <main className="session-check" aria-live="polite"><span className="brand-mark">A</span><p>Se pregătește spațiul tău…</p></main>;
-  if (sessionCheckError) return <main className="session-check" role="alert"><span className="brand-mark">A</span><p>{sessionCheckError.code === "CONFIGURATION_ERROR" ? "Serviciul de autentificare nu este configurat." : "Serviciul nu este disponibil momentan."}</p><button className="button button-secondary" type="button" onClick={() => { setCheckingSession(true); setSessionCheckError(null); setBootstrapKey((value) => value + 1); }}>Reîncearcă</button></main>;
+  if (checkingSession) return <BootScreen busy message="Se pregătește spațiul tău…" />;
+  if (sessionCheckError) return <BootScreen role="alert" message={sessionCheckError.code === "CONFIGURATION_ERROR" ? "Serviciul de autentificare nu este configurat." : "Serviciul nu este disponibil momentan."} action={<button className="button button-secondary" type="button" onClick={() => { setCheckingSession(true); setSessionCheckError(null); setBootstrapKey((value) => value + 1); }}>Reîncearcă</button>} />;
   if (!session || guardedRoute === "/login") {
     return <LoginScreen mode={mode} notice={sessionNotice} onLogin={async (input) => { const next = await services.auth.login(input); workflowLifecycle.reset(); setSession(next); setSessionNotice(""); navigate("/"); return next; }} />;
   }
@@ -114,8 +115,8 @@ export function StaffApp({ initialRoute, mode, apiBaseUrl }: { initialRoute: str
   }
   if (!session.employee.applications.includes("staff")) return <NoStaffAccessScreen displayName={session.employee.displayName} onLogout={logout} />;
   const workflow = workflowLifecycle.workflow;
-  if (workflowLifecycle.initialError) return <main className="session-check" role="alert"><span className="brand-mark">A</span><p>Fluxul de producție nu este disponibil momentan.</p><button className="button button-secondary" type="button" onClick={workflowLifecycle.retry}>Reîncearcă</button></main>;
-  if (!workflow) return <main className="session-check" aria-live="polite"><span className="brand-mark">A</span><p>Se încarcă fluxul de producție…</p></main>;
+  if (workflowLifecycle.initialError) return <BootScreen role="alert" message="Fluxul de producție nu este disponibil momentan." action={<button className="button button-secondary" type="button" onClick={workflowLifecycle.retry}>Reîncearcă</button>} />;
+  if (!workflow) return <BootScreen busy message="Se încarcă fluxul de producție…" />;
 
   const orderId = parsedRoute.kind === "order-detail" && guardedRoute === parsedRoute.pathname ? parsedRoute.orderId : "";
   const immersive = guardedRoute === "/scan";

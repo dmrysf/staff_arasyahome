@@ -6,6 +6,7 @@ import type { StaffServiceError } from "../../domain/models";
 import type { OrderService } from "../../services/contracts";
 import { OrderCard } from "./OrderCard";
 import { ErrorState } from "../../components/ErrorState";
+import { EmptyPanel, LoadingState, PageHeader } from "../../components/ui/States";
 import { toServiceError } from "../../services/errors";
 import { matchesMyOrdersView, type MyOrdersView } from "../../domain/orderRelation";
 import { AppIcon } from "../../components/icons/AppIcon";
@@ -56,11 +57,11 @@ export function OrdersScreen({ service, workflow, navigate }: { service: OrderSe
   const visible = orders.filter((order) => matchesMyOrdersView(order, tab)).sort((left, right) => Date.parse(right.employeeRelation?.lastActionAt ?? right.updatedAt) - Date.parse(left.employeeRelation?.lastActionAt ?? left.updatedAt));
   return (
     <div className="screen-stack">
-      <section className="screen-heading"><h1>Comenzile mele</h1><p>Comenzi legate direct de activitatea ta.</p></section>
+      <PageHeader title="Comenzile mele" description="Comenzi legate direct de activitatea ta." />
       <div className="segmented" role="tablist" aria-label="Filtrare comenzi">{tabs.map((item) => <button key={item.id} role="tab" aria-selected={tab === item.id} onClick={() => setTab(item.id)}>{item.label}<span>{orders.filter((order) => matchesMyOrdersView(order, item.id)).length}</span></button>)}</div>
       {error ? <ErrorState error={error} onAction={() => { setError(null); setLoading(true); service.listMine({ limit: 50 }).then(page => { setOrders(page.items); setNextCursor(page.nextCursor); }).catch((caught) => setError(toServiceError(caught))).finally(() => setLoading(false)); }} /> : <div className="order-list" aria-live="polite">
-        {loading ? <div className="inline-loading"><span /> Se încarcă comenzile…</div> : visible.map((order) => <OrderCard key={order.id} order={order} workflow={workflow} onOpen={() => navigate(`/orders/${encodeURIComponent(order.id)}`)} />)}
-        {!loading && visible.length === 0 && <div className="empty-state"><AppIcon name="scan" size={26} /><h2>{tab === "in_progress" ? "Nu ai comenzi active." : "Nu există activitate aici."}</h2><p>Scanează codul unei comenzi pentru a continua.</p><button className="button button-primary" type="button" onClick={() => navigate("/scan")}><span>Scanează o comandă</span><AppIcon name="arrow" size={19} /></button></div>}
+        {loading ? <LoadingState label="Se încarcă comenzile…" /> : visible.map((order) => <OrderCard key={order.id} order={order} workflow={workflow} onOpen={() => navigate(`/orders/${encodeURIComponent(order.id)}`)} />)}
+        {!loading && visible.length === 0 && <EmptyPanel icon="scan" title={tab === "in_progress" ? "Nu ai comenzi active." : "Nu există activitate aici."} action={<button className="button button-primary" type="button" onClick={() => navigate("/scan")}><span>Scanează o comandă</span><AppIcon name="arrow" size={19} /></button>}>Scanează codul unei comenzi pentru a continua.</EmptyPanel>}
         {!loading && nextCursor && (
           <div className="load-more-container">
             {loadMoreError && <div className="load-more-error">Nu s-au putut încărca mai multe. {loadMoreError.message}</div>}

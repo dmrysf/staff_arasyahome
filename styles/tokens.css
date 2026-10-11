@@ -39,6 +39,7 @@
   --color-accent-soft: rgba(0, 0, 0, .04);
   --color-accent-line: rgba(0, 0, 0, .85);
   --color-accent-text: #000000;
+  --color-on-accent-fill: rgba(255, 255, 255, .22);
 
   /* Functional signals: colour only on dots, icons, edges and faint wells; the text on them stays black. */
   --color-success: #12823b;
@@ -65,6 +66,11 @@
   --color-disabled-text: #5e5e5e;
   --color-scrim: rgba(0, 0, 0, .4);
   --color-camera: #050606;
+  --color-camera-glow: #202324;
+  --color-camera-shade: rgba(0, 0, 0, .62);
+  --color-camera-control: rgba(0, 0, 0, .38);
+  --color-camera-text-muted: rgba(255, 255, 255, .72);
+  --color-qr-paper: #ffffff;
 
   /* Source identity (badges): black text, the source name says it. */
   --color-source-trendhome: #000000;

@@ -135,8 +135,9 @@
 }
 
 .stage-tabs { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; padding: 4px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface); }
-.stage-tabs button { flex: 1 1 120px; min-width: 0; min-height: var(--control-md); display: flex; align-items: center; justify-content: center; gap: 6px; padding: 0 10px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--color-text-muted); font-size: var(--text-sm); font-weight: var(--weight-semibold); }
-.stage-tabs button[aria-selected="true"] { background: var(--color-surface-raised); color: var(--color-text); box-shadow: var(--shadow-sm); }
+.stage-tabs button { transition: background-color var(--motion-standard) var(--ease-out), color var(--motion-fast) ease; flex: 1 1 120px; min-width: 0; min-height: var(--control-md); display: flex; align-items: center; justify-content: center; gap: 6px; padding: 0 10px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--color-text-muted); font-size: var(--text-sm); font-weight: var(--weight-semibold); }
+.stage-tabs button[aria-selected="true"] { background: var(--color-text); color: var(--color-bg); box-shadow: var(--shadow-sm); }
+.stage-tabs button[aria-selected="true"] span { background: var(--color-on-accent-fill); }
 .stage-tabs button span { min-width: 22px; padding: 2px 6px; border-radius: 7px; background: var(--color-fill); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
 
 .connection-card { min-width: 0; display: grid; grid-template-columns: 40px minmax(0, 1fr); gap: 12px; padding: 16px; border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-surface); }
@@ -161,10 +162,6 @@
 
 /* Trendyol inbox. */
 .trendyol-screen { display: grid; gap: var(--space-4); min-width: 0; }
-.segmented { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; padding: 4px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface); }
-.segmented button { min-width: 0; min-height: var(--control-md); display: flex; align-items: center; justify-content: center; gap: 6px; padding: 0 8px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--color-text-muted); font-size: var(--text-sm); font-weight: var(--weight-semibold); transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease; }
-.segmented button[aria-selected="true"] { background: var(--color-surface-raised); color: var(--color-text); box-shadow: var(--shadow-sm); }
-.segmented button span { min-width: 20px; padding: 2px 6px; border-radius: 7px; background: var(--color-fill); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
 .trendyol-tabs { display: flex; overflow-x: auto; scrollbar-width: none; }
 .trendyol-tabs::-webkit-scrollbar { display: none; }
 .trendyol-tabs button { flex: 1 0 auto; padding: 0 12px; white-space: nowrap; }
@@ -335,7 +332,7 @@
   .dashboard-layout { gap: var(--space-5); }
   .greeting h1 { font-size: var(--text-3xl); }
   .workspace-body { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
-  .workspace-body > :first-child, .workspace-body > :last-child:nth-child(even), .workspace-body > .stage-tabs, .workspace-body > .stage-tabs + * { grid-column: 1 / -1; }
+  .workspace-body > :first-child, .workspace-body > .stage-tabs, .workspace-body > .stage-tabs + * { grid-column: 1 / -1; }
   .trendyol-workspace { grid-template-columns: minmax(0, 1.65fr) minmax(340px, 1fr); gap: var(--space-5); }
   .workspace-body.trendyol-workspace > .workspace-main, .workspace-body.trendyol-workspace > .workspace-side { grid-column: auto; }
   .trendyol-workspace > .workspace-side { position: sticky; top: 16px; }
