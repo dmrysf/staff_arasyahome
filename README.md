@@ -1,5 +1,7 @@
 # Arasya Staff
 
+Staff **2.21.0** plays a [sign-in intro](docs/staff-ui-system.md#sign-in-intro-staff-2210) after every successful sign-in: the white Arasya wordmark over a glowing horizon, a search bar that types *Coded by the Roisey team*, and a send button that opens into Staff itself in white. About 5 seconds, no skip, also with reduced motion (owner decision).
+
 Staff **2.20.1**: the browser tab icon is now the Arasya "A" taken from the company wordmark, black on a white tile so it reads on light and dark tab bars (`favicon.svg`, a 16/32/48 px `favicon.ico` and a 180 px `apple-touch-icon.png`); the install manifest adds 192 and 512 px PNG icons. Same icon as Dashboard 0.12.2 and B2B 0.8.2.
 
 Staff **2.20.0** adds the [Arasya Home and Trendyol wordmarks](docs/staff-ui-system.md#brand-logos-staff-2200): login, start-up, header and sidebar carry the Arasya logo; the Trendyol logo appears only in the Trendyol workspace. No layout shift at any size.

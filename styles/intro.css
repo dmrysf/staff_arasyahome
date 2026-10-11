@@ -1,0 +1,144 @@
+/*
+ * Sign-in intro (features/auth/LoginIntro.tsx). After every successful sign-in a dark scene plays: a horizon rim
+ * rises, the white Arasya "A" appears and the rest of the wordmark follows, the horizon becomes a search bar that
+ * types "Coded by the Roisey team", the send button is pressed and opens into Staff itself, which grows to the full
+ * screen in white. The movement is driven by the Web Animations API (transform, opacity and the stage clip only);
+ * this file only places the pieces. Colours come from tokens.css.
+ */
+
+.login-intro {
+  --intro-logo-h: clamp(26px, 8.4vw, 46px);
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-intro);
+  overflow: hidden;
+  background: var(--color-intro-bg);
+  color: var(--color-intro-text);
+  pointer-events: auto;
+  touch-action: none;
+  user-select: none;
+}
+
+.intro-horizon {
+  position: absolute;
+  left: 50%;
+  top: 61%;
+  width: max(118vmin, 520px);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  translate: -50% 0;
+  background: var(--color-intro-bg);
+  box-shadow:
+    0 -1px 0 0 var(--color-intro-rim),
+    0 -4px 14px 0 var(--color-intro-rim-glow),
+    0 -30px 90px 0 var(--color-intro-glow-soft);
+  opacity: 0;
+}
+
+.intro-glow {
+  position: absolute;
+  inset: auto -20% 0;
+  height: 62%;
+  background:
+    radial-gradient(60% 75% at 50% 100%, var(--color-intro-glow) 0%, var(--color-intro-glow-soft) 45%, transparent 75%);
+  opacity: 0;
+}
+
+.intro-scene {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 560px);
+  place-content: center;
+  justify-items: center;
+  gap: 28px;
+  padding: 0 16px;
+}
+
+.intro-brand {
+  display: flex;
+  align-items: center;
+  height: var(--intro-logo-h);
+}
+
+/* One wordmark image, shown as two windows: the "A" (0–110 of 599 px) and the rest. */
+.intro-brand .intro-part {
+  display: block;
+  height: var(--intro-logo-h);
+  overflow: hidden;
+}
+.intro-brand .intro-mark { width: calc(var(--intro-logo-h) * 110 / 96); opacity: 0; }
+.intro-brand .intro-word { width: calc(var(--intro-logo-h) * 489 / 96); }
+.intro-brand .intro-word-inner { display: block; height: 100%; opacity: 0; }
+.intro-brand img {
+  display: block;
+  width: calc(var(--intro-logo-h) * 599 / 96);
+  max-width: none;
+  height: var(--intro-logo-h);
+  /* The supplied logo is black: invert it to white for the dark scene. */
+  filter: invert(1) drop-shadow(0 0 10px var(--color-intro-rim-glow));
+}
+.intro-brand .intro-word img { margin-left: calc(var(--intro-logo-h) * -110 / 96); }
+
+.intro-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  height: 58px;
+  padding: 0 7px 0 18px;
+  border: 1px solid var(--color-intro-border);
+  border-radius: 999px;
+  background: var(--color-intro-surface);
+  box-shadow: 0 -1px 0 0 var(--color-intro-rim), 0 -8px 26px 0 var(--color-intro-rim-glow);
+  opacity: 0;
+}
+.intro-bar svg { flex: none; width: 20px; height: 20px; color: var(--color-intro-icon); }
+.intro-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font: 500 16px/1.2 var(--font-sans);
+  letter-spacing: .005em;
+  white-space: nowrap;
+}
+.intro-fresh { color: var(--color-intro-text-fresh); }
+.intro-caret {
+  display: inline-block;
+  width: 2px;
+  height: 1.1em;
+  margin-left: 1px;
+  vertical-align: -.18em;
+  background: var(--color-intro-text);
+  animation: intro-caret 900ms steps(1, end) infinite;
+}
+.intro-send {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--color-intro-blue);
+  opacity: 0;
+}
+.intro-send svg { color: var(--color-intro-text); }
+
+@keyframes intro-caret { 50% { opacity: 0; } }
+
+/* Staff behind the intro: hidden until the send button opens it, then it grows from the button to the screen. */
+.intro-stage[data-intro="playing"] {
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--z-intro) + 1);
+  overflow: hidden;
+  background: var(--color-bg);
+  opacity: 0;
+  pointer-events: none;
+  will-change: transform, opacity;
+}
+
+@media (max-width: 380px) {
+  .intro-text { font-size: 15px; }
+  .intro-bar { gap: 10px; padding-left: 14px; }
+}

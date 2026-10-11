@@ -102,6 +102,35 @@ test("brand logos load, keep their proportions and never shift the login layout"
   await context.close();
 });
 
+test("every sign-in plays the intro, even with reduced motion, then opens Staff; signing in again plays it again", async ({ browser }) => {
+  test.setTimeout(60_000);
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, reducedMotion: "reduce" });
+  // Automation is exempt by default (navigator.webdriver); this test signs in as a real browser does.
+  await context.addInitScript(() => Object.defineProperty(Navigator.prototype, "webdriver", { get: () => false }));
+  const page = await context.newPage();
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  for (let round = 1; round <= 2; round += 1) {
+    await page.goto("/login");
+    await page.getByLabel("Nume utilizator").fill(fixture.users.ana);
+    await page.getByLabel("Parolă").fill(fixture.password);
+    await page.getByRole("button", { name: /Autentificare/ }).click();
+    const intro = page.getByTestId("login-intro");
+    await expect(intro).toBeVisible();
+    await expect(page.locator(".intro-stage")).toHaveAttribute("inert", "");
+    await expect(intro.getByRole("button")).toHaveCount(0);
+    await expect(intro.locator(".intro-text")).toHaveText("Coded by the Roisey team", { timeout: 6_000 });
+    await expect(intro).toHaveCount(0, { timeout: 10_000 });
+    await expect(page.locator(".intro-stage")).not.toHaveAttribute("data-intro", /./);
+    await expect(page.getByTestId("workspace-title")).toBeVisible();
+    await page.getByRole("button", { name: "Profil", exact: true }).click();
+    await page.getByRole("button", { name: "Ieși din cont" }).click();
+    await expect(page.getByLabel("Nume utilizator")).toBeVisible();
+  }
+  expect(errors).toEqual([]);
+  await context.close();
+});
+
 test("keyboard: the first Tab offers the skip link, which moves focus to the work", async ({ browser }) => {
   const { context, page } = await signIn(browser, fixture.users.ana, 1280, 800);
   await page.locator("body").focus();
