@@ -16,6 +16,7 @@ export function AppShell({ employee, route, mode, navigate, children, immersive 
   if (immersive) return <>{children}</>;
   return (
     <div className="app-shell">
+      <a className="skip-link" href="#content">Sari la conținut</a>
       <BottomNavigation employee={employee} route={route} navigate={navigate} />
       <div className="app-main">
         <header className="app-header">
@@ -31,7 +32,7 @@ export function AppShell({ employee, route, mode, navigate, children, immersive 
             </button>
           </div>
         </header>
-        <main className="app-content">{children}</main>
+        <main className="app-content" id="content" tabIndex={-1}>{children}</main>
       </div>
     </div>
   );

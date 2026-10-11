@@ -1,5 +1,7 @@
 # Arasya Staff
 
+Staff **2.19.0** closes the UI transformation with [UX verification](docs/staff-ui-system.md#ux-verification-staff-2190-package-5) (Package 5): WCAG 2.2 AA checks in the real-API browser suite, 44 px targets, a skip link, field-level validation focus, slow-network and failure states, and token contrast tests.
+
 Staff **2.18.0** adds the [motion layer](docs/staff-ui-system.md#motion-staff-2180-package-4) (Package 4): list settle-in, value-change numbers, roadmap and status transitions, busy buttons and scanner haptics; transform and opacity only, reduced motion respected, no new requests.
 
 Staff **2.17.0** adds [department screens](docs/staff-ui-system.md#department-screens-staff-2170-package-3) (Package 3): a next step for every production department, department-specific order rows, a redesigned Trendyol inbox, scanner viewfinder states and order details with sizes first. Presentation only.
