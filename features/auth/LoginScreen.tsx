@@ -3,6 +3,7 @@ import type { Session } from "../../services/contracts";
 import { StaffServiceError } from "../../domain/models";
 import type { StaffRuntimeMode } from "../../src/runtimeConfig";
 import { PasswordField } from "./PasswordField";
+import { ArasyaLogo } from "../../components/brand/BrandLogo";
 
 export function LoginScreen({ mode, notice, onLogin }: { mode: StaffRuntimeMode; notice?: string; onLogin: (input: { username: string; password: string }) => Promise<Session> }) {
   const [username, setUsername] = useState("");
@@ -36,7 +37,7 @@ export function LoginScreen({ mode, notice, onLogin }: { mode: StaffRuntimeMode;
 
   return (
     <main className="login-page">
-      <div className="login-brand" aria-label="Arasya"><span className="brand-mark">A</span><strong>ARASYA</strong></div>
+      <header className="login-brand"><ArasyaLogo className="login-logo" priority /><span className="login-app">Staff</span></header>
       <form className="login-card" onSubmit={handleSubmit} noValidate>
         <div className="login-heading"><h1>Bine ai revenit.</h1><p>Autentifică-te pentru a continua.</p></div>
         {mode === "demo" && <div className="demo-notice" role="note"><span>Demo</span> Pentru previzualizare locală, folosește orice valori completate.</div>}

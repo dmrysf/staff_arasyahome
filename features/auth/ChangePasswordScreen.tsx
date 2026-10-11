@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import { StaffServiceError } from "../../domain/models";
 import { getErrorPresentation } from "../../services/errors";
 import { PasswordField } from "./PasswordField";
+import { ArasyaLogo } from "../../components/brand/BrandLogo";
 
 /** Client-side checks in Romanian; the server enforces the same policy and remains the authority. */
 export function passwordChangeProblem(input: { currentPassword: string; newPassword: string; confirmation: string; username: string }): string {
@@ -47,7 +48,7 @@ export function ChangePasswordScreen({ displayName, username, voluntary = false,
 
   return (
     <main className="login-page">
-      <div className="login-brand" aria-label="Arasya"><span className="brand-mark">A</span><strong>ARASYA</strong></div>
+      <header className="login-brand"><ArasyaLogo className="login-logo" priority /><span className="login-app">Staff</span></header>
       <form className="login-card" onSubmit={handleSubmit} noValidate>
         <div className="login-heading">
           <h1>{voluntary ? "Schimbă parola" : "Setează parola personală"}</h1>

@@ -140,7 +140,7 @@
 .stage-tabs button[aria-selected="true"] span { background: var(--color-on-accent-fill); }
 .stage-tabs button span { min-width: 22px; padding: 2px 6px; border-radius: 7px; background: var(--color-fill); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
 
-.connection-card { min-width: 0; display: grid; grid-template-columns: 40px minmax(0, 1fr); gap: 12px; padding: 16px; border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-surface); }
+.connection-card { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 14px; padding: 16px; border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-surface); }
 .connection-icon { width: 40px; height: 40px; display: grid; place-items: center; border-radius: var(--radius-sm); background: var(--color-fill); color: var(--color-text-muted); }
 .connection-card h2 { margin: 0 0 4px; font-size: var(--text-md); }
 .connection-card p:not(.eyebrow) { margin: 4px 0 0; color: var(--color-text-muted); font-size: var(--text-sm); line-height: var(--leading-normal); }
@@ -414,3 +414,11 @@
 .cutting-work .cutting-transfer-card { display: grid; gap: 8px; padding: var(--space-4); border: 1.5px solid var(--color-text); border-radius: var(--radius-md); }
 .cutting-work .cutting-transfer-card h3 { margin: 0; font-family: var(--font-mono); font-size: var(--text-lg); }
 .cutting-work .cutting-transfer-card p { margin: 0; }
+
+/* Trendyol wordmark inside the Trendyol workspace only. */
+.connection-logo { display: grid; place-items: center; height: 40px; padding: 0 12px; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-surface); }
+.connection-logo .brand-logo { height: 15px; }
+.page-brand { line-height: 0; }
+.inbox-logo { height: 20px; }
+.package-eyebrow { display: inline-flex; align-items: center; gap: 6px; }
+.eyebrow-logo { height: 11px; }

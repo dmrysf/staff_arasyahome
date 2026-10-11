@@ -64,6 +64,10 @@ Fixes from the audit: refresh, size-suggestion and revision-preview buttons rais
 
 Not verified here: physical iOS and Android devices, real screen readers (VoiceOver, TalkBack) and frame-rate profiling.
 
+## Brand logos (Staff 2.20.0)
+
+The Arasya Home wordmark (`components/brand/arasya-logo.webp|png`, trimmed, 599 × 96) replaces the letter mark on login, password change, start-up and no-access screens, in the phone header (with a `Staff` tag from 420 px) and at the top of the desktop sidebar. The Trendyol wordmark (`trendyol-logo.webp|png`, 314 × 72) appears only inside the Trendyol workspace: the connection card, the inbox header and the package header. `components/brand/BrandLogo.tsx` loads both through `new URL(…, import.meta.url)`, so they ship as hashed immutable assets kept with every retained release; every image carries its intrinsic width and height and a fixed CSS height, so the space is reserved before the file arrives and nothing moves (layout shift 0 measured at 320–1920 px). WebP first, PNG fallback; the opt-in dark theme inverts the black wordmarks. The square favicon keeps the letter mark.
+
 ## YD Soft connection status
 
 `YDSoftConnectionStatus` accepts `connected`, `checking`, or `disconnected`. It maps each state to explicit Romanian text as well as a semantic color, so status is never color-only. Connected uses a small, reduced-motion-safe pulse. The current default is a designed `connected` placeholder; it is not derived from `navigator.onLine`, does not poll, and does not claim to be a real health check. A future health service can supply the same typed state without changing the component.

@@ -3,6 +3,7 @@ import type { Employee } from "../../domain/models";
 import { activityActionLabels, intakeLabel, marketplaceClassLabels, marketplaceLabel, type TrendyolApi, type TrendyolOverview, type TrendyolPackageSummary } from "../../domain/trendyol";
 import { ErrorState } from "../../components/ErrorState";
 import { AppIcon } from "../../components/icons/AppIcon";
+import { TrendyolLogo } from "../../components/brand/BrandLogo";
 import { trendyolDashboardLoader } from "../trendyol/trendyolRefresh";
 import { AutoRefreshBar, DashboardSection, EmptyState, Metric, MetricGrid, NextActionCard, NextActionSkeleton, QueueSkeleton, type MetricValue } from "./DashboardParts";
 import { trendyolNextAction } from "./trendyolNextAction";
@@ -117,7 +118,7 @@ export function TrendyolDashboard({ employee, service, navigate }: { employee: E
 
         {connection && data && (
           <section className={`connection-card tone-${connection.tone}`} aria-labelledby="trendyol-connection" data-testid="trendyol-connection">
-            <span className="connection-icon" aria-hidden="true"><AppIcon name={connection.tone === "success" ? "sync" : "info"} size={20} /></span>
+            <span className="connection-logo" aria-hidden="true"><TrendyolLogo alt="" /></span>
             <div>
               <p className="eyebrow">Conexiune Trendyol</p>
               <h2 id="trendyol-connection">{connection.label}</h2>

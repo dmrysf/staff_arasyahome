@@ -1,5 +1,7 @@
 # Arasya Staff
 
+Staff **2.20.0** adds the [Arasya Home and Trendyol wordmarks](docs/staff-ui-system.md#brand-logos-staff-2200): login, start-up, header and sidebar carry the Arasya logo; the Trendyol logo appears only in the Trendyol workspace. No layout shift at any size.
+
 Staff **2.19.0** closes the UI transformation with [UX verification](docs/staff-ui-system.md#ux-verification-staff-2190-package-5) (Package 5): WCAG 2.2 AA checks in the real-API browser suite, 44 px targets, a skip link, field-level validation focus, slow-network and failure states, and token contrast tests.
 
 Staff **2.18.0** adds the [motion layer](docs/staff-ui-system.md#motion-staff-2180-package-4) (Package 4): list settle-in, value-change numbers, roadmap and status transitions, busy buttons and scanner haptics; transform and opacity only, reduced motion respected, no new requests.

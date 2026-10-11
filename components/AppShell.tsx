@@ -5,6 +5,7 @@ import type { Employee } from "../domain/models";
 import type { StaffRuntimeMode } from "../src/runtimeConfig";
 import { YDSoftConnectionStatus } from "./status/YDSoftConnectionStatus";
 import { BottomNavigation } from "./navigation/BottomNavigation";
+import { ArasyaLogo } from "./brand/BrandLogo";
 
 export const initialsOf = (name: string): string => name.split(" ").filter(Boolean).map((part) => part[0]).join("").slice(0, 2).toUpperCase();
 
@@ -21,8 +22,8 @@ export function AppShell({ employee, route, mode, navigate, children, immersive 
       <div className="app-main">
         <header className="app-header">
           <button className="app-brand" type="button" onClick={() => navigate("/")} aria-label="Arasya Staff · Acasă">
-            <span className="brand-mark" aria-hidden="true">A</span>
-            <span className="app-brand-name" aria-hidden="true"><strong>Arasya</strong><small>Staff</small></span>
+            <ArasyaLogo className="app-brand-logo" alt="" priority />
+            <span className="app-brand-tag" aria-hidden="true">Staff</span>
           </button>
           <div className="header-actions">
             <YDSoftConnectionStatus />

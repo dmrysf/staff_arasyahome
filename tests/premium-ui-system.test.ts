@@ -27,7 +27,8 @@ test("shared states: loading is announced and shaped, empty states name what app
   assert.match(empty, /<h2>Nu ai comenzi active\.<\/h2>/);
   const boot = renderToStaticMarkup(createElement(BootScreen, { message: "Se pregătește spațiul tău…", busy: true }));
   assert.match(boot, /aria-busy="true"/);
-  assert.match(boot, /brand-mark/);
+  assert.match(boot, /brand-logo/);
+  assert.match(boot, /alt="Arasya Home"/);
   assert.match(renderToStaticMarkup(createElement(PageHeader, { title: "Istoric", description: "Acțiunile tale." })), /<h1>Istoric<\/h1>/);
 });
 

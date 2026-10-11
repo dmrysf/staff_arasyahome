@@ -1,11 +1,12 @@
 import type { ReactNode } from "react";
 import { AppIcon, type AppIconName } from "../icons/AppIcon";
+import { ArasyaLogo } from "../brand/BrandLogo";
 
 /** Full-screen start-up and blocking states (session check, workflow load): brand, one sentence, optional action. */
 export function BootScreen({ message, busy = false, role, action }: { message: string; busy?: boolean; role?: "alert"; action?: ReactNode }) {
   return (
     <main className="boot-screen" role={role} aria-live={busy ? "polite" : undefined} aria-busy={busy || undefined}>
-      <span className="brand-mark" aria-hidden="true">A</span>
+      <ArasyaLogo className="boot-logo" priority />
       <p>{message}</p>
       {busy && <span className="boot-progress" aria-hidden="true" />}
       {action}
@@ -41,9 +42,10 @@ export function EmptyPanel({ title, children, icon = "orders", action }: { title
 }
 
 /** Screen title block: optional eyebrow, the h1, one short sentence, optional actions on the right. */
-export function PageHeader({ title, eyebrow, description, actions }: { title: ReactNode; eyebrow?: string; description?: ReactNode; actions?: ReactNode }) {
+export function PageHeader({ title, eyebrow, description, actions, brand }: { title: ReactNode; eyebrow?: string; description?: ReactNode; actions?: ReactNode; brand?: ReactNode }) {
   return (
     <header className="page-header">
+      {brand && <div className="page-brand">{brand}</div>}
       {eyebrow && <p className="eyebrow">{eyebrow}</p>}
       <div className="page-header-row"><h1>{title}</h1>{actions}</div>
       {description && <p>{description}</p>}

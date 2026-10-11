@@ -1,5 +1,6 @@
 import { AppIcon } from "../icons/AppIcon";
 import { PrimaryScanButton } from "./PrimaryScanButton";
+import { ArasyaLogo } from "../brand/BrandLogo";
 import type { Employee } from "../../domain/models";
 import { hasPermission, type StaffPermission } from "../../domain/permissions";
 
@@ -27,7 +28,7 @@ export function BottomNavigation({ employee, route, navigate }: { employee: Empl
 
   return (
     <nav className="app-nav" aria-label="Navigare principală">
-      <span className="app-nav-brand" aria-hidden="true"><span className="brand-mark">A</span><span><strong>Arasya</strong><small>Staff · Fabrică</small></span></span>
+      <span className="app-nav-brand" aria-hidden="true"><ArasyaLogo className="sidebar-logo" alt="" /><small>Staff · Fabrică</small></span>
       {renderItem(home)}
       {renderItem(orders)}
       <span className="scan-nav-space" aria-hidden="true" />

@@ -3,6 +3,7 @@ import { blockedReasonMessages, intakeLabel, intakeStatusLabels, lineKindLabels,
 import { getErrorPresentation, toServiceError } from "../../services/errors";
 import { createIdempotencyKey } from "../../services/idempotency";
 import { AppIcon } from "../../components/icons/AppIcon";
+import { TrendyolLogo } from "../../components/brand/BrandLogo";
 import { Notice, StatusPill, type Tone } from "../../components/ui/StatusPill";
 import { TaskSteps } from "../../components/ui/TaskSteps";
 import { draftOf, formatDecimal, lineStatus, preparationSteps, type LineDraft } from "./preparation";
@@ -143,7 +144,7 @@ export function TrendyolPackageScreen({ packageId, service, navigate }: { packag
       <button className="back-link" type="button" onClick={() => navigate("/trendyol")}><AppIcon name="back" size={20} /> Comenzi Trendyol</button>
 
       <header className="package-header">
-        <p className="eyebrow">Trendyol · pachet {detail.packageId}</p>
+        <p className="eyebrow package-eyebrow"><TrendyolLogo className="eyebrow-logo" /><span>· pachet {detail.packageId}</span></p>
         <h1>Comanda <span className="order-id">#{detail.orderNumber}</span></h1>
         <div className="package-pills">
           <StatusPill tone={detail.intakeStatus === "pending" ? "accent" : detail.intakeStatus === "released" ? "success" : "neutral"} icon={detail.intakeStatus === "released" ? "check" : "package"}>Arasya: {intakeLabel(detail)}</StatusPill>

@@ -5,6 +5,7 @@ import { AppIcon } from "../../components/icons/AppIcon";
 import { AutoRefreshBar, QueueSkeleton } from "../workspaces/DashboardParts";
 import { PackageRow } from "../workspaces/TrendyolDashboard";
 import { EmptyPanel, PageHeader } from "../../components/ui/States";
+import { TrendyolLogo } from "../../components/brand/BrandLogo";
 import { useAutoRefresh } from "../workspaces/useAutoRefresh";
 import { trendyolInboxLoader } from "./trendyolRefresh";
 
@@ -38,7 +39,7 @@ export function TrendyolInboxScreen({ service, navigate }: { service: TrendyolAp
   return (
     <article className="screen-stack trendyol-screen trendyol-inbox">
       <button className="back-link" type="button" onClick={() => navigate("/")}><AppIcon name="back" size={20} /> Acasă</button>
-      <PageHeader eyebrow="Trendyol" title="Comenzi Trendyol" description="Comenzile noi din Trendyol intră aici, nu direct în fabrică. Completezi măsurile, apoi o persoană autorizată aprobă intrarea în producție. Statusurile, expedierea și facturile rămân în Trendyol Seller Panel." />
+      <PageHeader brand={<TrendyolLogo className="inbox-logo" />} title="Comenzi Trendyol" description="Comenzile noi din Trendyol intră aici, nu direct în fabrică. Completezi măsurile, apoi o persoană autorizată aprobă intrarea în producție. Statusurile, expedierea și facturile rămân în Trendyol Seller Panel." />
       <div className="inbox-status">
         {overview && <p className={`inbox-connection is-${overview.intake.status}`} data-testid="trendyol-intake-state">{intakeStateLabels[overview.intake.status]}{overview.intake.lastRunAt ? ` Ultima sincronizare Trendyol: ${date(overview.intake.lastRunAt)}.` : ""}</p>}
         <AutoRefreshBar onRefresh={inbox.refresh} busy={inbox.busy} refreshing={inbox.refreshing} updatedAt={inbox.updatedAt} stale={current !== null && inbox.error !== null} stopped={inbox.stopped} testId="trendyol-inbox-refresh" />
