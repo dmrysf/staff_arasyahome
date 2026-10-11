@@ -1,0 +1,53 @@
+/*
+ * Arasya Staff motion layer (Package 4). Purposeful, short and server-honest:
+ * - Only transform and opacity move; nothing animates layout.
+ * - Rows and cards settle in once when a list first appears or a new item arrives; an automatic refresh that keeps
+ *   the same rows (same React keys) animates nothing.
+ * - A number animates only when its value changes; a stage marker animates when the server reports the new stage.
+ * - Nothing here starts a request, and prefers-reduced-motion removes every movement and delay.
+ */
+
+/* Lists: a short staggered settle on first appearance. */
+.queue-list > li, .order-list > .order-card, .trendyol-list > li, .activity-list > li, .history-list > .history-row, .exceptions-card li, .document-lookup-results > li, .timeline > li {
+  animation: row-in 280ms var(--ease-out) both;
+}
+.queue-list > li:nth-child(2), .order-list > .order-card:nth-child(2), .trendyol-list > li:nth-child(2), .activity-list > li:nth-child(2), .history-list > .history-row:nth-of-type(2), .timeline > li:nth-child(2) { animation-delay: 35ms; }
+.queue-list > li:nth-child(3), .order-list > .order-card:nth-child(3), .trendyol-list > li:nth-child(3), .activity-list > li:nth-child(3), .history-list > .history-row:nth-of-type(3), .timeline > li:nth-child(3) { animation-delay: 70ms; }
+.queue-list > li:nth-child(4), .order-list > .order-card:nth-child(4), .trendyol-list > li:nth-child(4), .activity-list > li:nth-child(4), .history-list > .history-row:nth-of-type(4), .timeline > li:nth-child(4) { animation-delay: 105ms; }
+.queue-list > li:nth-child(5), .order-list > .order-card:nth-child(5), .trendyol-list > li:nth-child(5), .activity-list > li:nth-child(5), .history-list > .history-row:nth-of-type(5), .timeline > li:nth-child(5) { animation-delay: 140ms; }
+.queue-list > li:nth-child(n + 6), .order-list > .order-card:nth-child(n + 6), .trendyol-list > li:nth-child(n + 6), .activity-list > li:nth-child(n + 6), .history-list > .history-row:nth-of-type(n + 6), .timeline > li:nth-child(n + 6) { animation-delay: 170ms; }
+.cutting-work .cutting-pool-list > li { animation: row-in 240ms var(--ease-out) both; }
+@keyframes row-in { from { opacity: 0; transform: translateY(8px); } }
+.queue-skeleton > li { animation: none; }
+
+/* Numbers: a changed value slides into place once. */
+.metric-number { display: inline-block; animation: metric-change var(--motion-success) var(--ease-spring); }
+@keyframes metric-change { from { opacity: 0; transform: translateY(40%); } }
+
+/* Status changes: chips and progress follow the server state smoothly. */
+.queue-chip, .status-pill, .exception-status, .task-step-copy strong { transition: background-color var(--motion-standard) ease, color var(--motion-standard) ease, border-color var(--motion-standard) ease; }
+.line-progress > span { transition: transform var(--motion-stage) var(--ease-out); }
+
+/* Production roadmap: the stage the server reports settles in; completed stages fade to done. */
+.roadmap-stage { transition: border-color var(--motion-stage) ease, background-color var(--motion-stage) ease, color var(--motion-stage) ease; }
+.roadmap-marker { transition: background-color var(--motion-stage) ease, color var(--motion-stage) ease; }
+.roadmap-stage.current .roadmap-marker { animation: stage-arrive var(--motion-stage) var(--ease-spring); }
+@keyframes stage-arrive { from { transform: scale(.7); opacity: .4; } }
+.task-step.is-done .task-step-marker > svg { animation: check-draw var(--motion-success) var(--ease-spring); }
+@keyframes check-draw { from { transform: scale(.4); opacity: 0; } }
+
+/* Server-confirmed results. */
+.order-action-done { animation: notice-in var(--motion-success) var(--ease-out); }
+.success-state h2, .success-state .eyebrow, .success-state .stage-label { animation: row-in var(--motion-success) var(--ease-out) both; animation-delay: 120ms; }
+.success-state > div { animation: row-in var(--motion-success) var(--ease-out) both; animation-delay: 220ms; }
+
+/* Tabs and chips: the selected fill eases in; pressing is felt. */
+.segmented button:active, .stage-tabs button:active, .workspace-switcher button:active { transform: scale(.97); }
+.segmented button, .stage-tabs button { transition: background-color var(--motion-standard) var(--ease-out), color var(--motion-fast) ease, transform var(--motion-press) var(--ease-out), box-shadow var(--motion-standard) var(--ease-out); }
+
+/* Detail sections open softly (details/summary). */
+details[open] > :not(summary) { animation: row-in var(--motion-standard) var(--ease-out); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-delay: 0ms !important; transition-delay: 0ms !important; }
+}

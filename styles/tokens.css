@@ -1,81 +1,90 @@
 /*
  * Arasya Staff design tokens: "Precision Factory Operating System".
  *
- * Two themes share one vocabulary. "Industrial Premium Dark" (graphite, warm terracotta accent) is the default;
- * "Clean Operations Light" (warm paper neutrals) is opt-in through <html data-theme="light"> until every screen has
- * been reviewed in it. Components use only these tokens: no screen hardcodes a color, radius, duration or layer.
+ * Default look (owner decision, 2026-10-11): minimalist, white background, black text, black buttons. Colour appears
+ * only as small functional signals (status dots, icons, tinted wells for warnings) and never carries meaning alone.
+ * The earlier graphite theme stays available as an opt-in through <html data-theme="dark">. Components use only
+ * these tokens: no screen hardcodes a colour, radius, duration or layer.
  */
 :root {
-  color-scheme: dark;
+  color-scheme: light;
 
-  /* Surfaces: page < surface (cards) < raised (nested, hover) ; soft = wells and inputs. */
-  --color-bg: #0e0f11;
-  --color-bg-tint: #121417;
-  --color-surface: #17191c;
-  --color-surface-raised: #1f2226;
-  --color-surface-soft: #131518;
-  --color-surface-overlay: rgba(23, 25, 28, .96);
-  --color-fill: rgba(242, 238, 232, .06);
-  --color-fill-strong: rgba(242, 238, 232, .1);
+  /* Surfaces: white page, white cards separated by hairlines; soft = inputs and wells. */
+  --color-bg: #ffffff;
+  --color-bg-tint: #ffffff;
+  --color-surface: #ffffff;
+  --color-surface-raised: #f4f4f4;
+  --color-surface-soft: #fafafa;
+  --color-surface-overlay: rgba(255, 255, 255, .97);
+  --color-fill: rgba(0, 0, 0, .045);
+  --color-fill-strong: rgba(0, 0, 0, .085);
 
-  /* Text: muted and subtle both stay above 4.5:1 on every surface. */
-  --color-text: #f3f0ea;
-  --color-text-muted: #aba69e;
-  --color-text-subtle: #8f8a82;
-  --color-text-inverse: #16130f;
+  /* Text: black. Secondary text stays near-black (at least 9:1 on white); hierarchy comes from size and weight. */
+  --color-text: #000000;
+  --color-text-muted: #2e2e2e;
+  --color-text-subtle: #4a4a4a;
+  --color-text-inverse: #ffffff;
+  --color-camera-text: #ffffff;
 
-  /* Lines: hairlines carry structure; strong lines mark interactive edges. */
-  --color-border: rgba(242, 238, 232, .085);
-  --color-border-strong: rgba(242, 238, 232, .15);
-  --color-stitch: rgba(242, 238, 232, .2);
+  /* Lines. */
+  --color-border: rgba(0, 0, 0, .1);
+  --color-border-strong: rgba(0, 0, 0, .2);
+  --color-stitch: rgba(0, 0, 0, .28);
 
-  /* Accent: Arasya terracotta. Soft = tinted background, line = tinted edge, text = readable tint. */
-  --color-accent: #ee7b63;
-  --color-accent-hover: #f48b74;
-  --color-accent-pressed: #e06a52;
-  --color-accent-contrast: #210d07;
-  --color-accent-soft: rgba(238, 123, 99, .11);
-  --color-accent-line: rgba(238, 123, 99, .42);
-  --color-accent-text: #f6a28f;
+  /* Accent is black: primary buttons, the QR action, selection. */
+  --color-accent: #000000;
+  --color-accent-hover: #1f1f1f;
+  --color-accent-pressed: #000000;
+  --color-accent-contrast: #ffffff;
+  --color-accent-soft: rgba(0, 0, 0, .04);
+  --color-accent-line: rgba(0, 0, 0, .85);
+  --color-accent-text: #000000;
+  --color-on-accent-fill: rgba(255, 255, 255, .22);
 
-  /* Functional status colors (always paired with an icon or a word, never color alone). */
-  --color-success: #6fcf97;
-  --color-success-soft: rgba(111, 207, 151, .1);
-  --color-success-line: rgba(111, 207, 151, .32);
-  --color-success-text: #a6e4bf;
-  --color-warning: #e3b061;
-  --color-warning-soft: rgba(227, 176, 97, .1);
-  --color-warning-line: rgba(227, 176, 97, .32);
-  --color-warning-text: #ecca94;
-  --color-danger: #ff6b6b;
-  --color-danger-soft: rgba(255, 107, 107, .1);
-  --color-danger-line: rgba(255, 107, 107, .4);
-  --color-danger-text: #ffb3b3;
-  --color-info: #8fb3d9;
-  --color-info-soft: rgba(143, 179, 217, .1);
-  --color-info-line: rgba(143, 179, 217, .3);
-  --color-info-text: #bcd3ec;
+  /* Functional signals: colour only on dots, icons, edges and faint wells; the text on them stays black. */
+  --color-success: #12823b;
+  --color-success-soft: rgba(18, 130, 59, .07);
+  --color-success-line: rgba(18, 130, 59, .45);
+  --color-success-text: #000000;
+  --color-warning: #b45f00;
+  --color-warning-soft: rgba(214, 140, 0, .1);
+  --color-warning-line: rgba(180, 95, 0, .5);
+  --color-warning-text: #000000;
+  --color-danger: #d1242f;
+  --color-danger-soft: rgba(209, 36, 47, .07);
+  --color-danger-line: rgba(209, 36, 47, .5);
+  --color-danger-text: #000000;
+  --color-info: #000000;
+  --color-info-soft: rgba(0, 0, 0, .035);
+  --color-info-line: rgba(0, 0, 0, .3);
+  --color-info-text: #000000;
 
   --color-connected: var(--color-success);
   --color-disconnected: var(--color-danger);
-  --color-focus: rgba(238, 123, 99, .6);
-  --color-disabled: #4a4b4e;
-  --color-disabled-text: #8d8b88;
-  --color-scrim: rgba(5, 6, 7, .72);
+  --color-focus: rgba(0, 0, 0, .55);
+  --color-disabled: #e6e6e6;
+  --color-disabled-text: #5e5e5e;
+  --color-scrim: rgba(0, 0, 0, .4);
   --color-camera: #050606;
+  --color-camera-glow: #202324;
+  --color-camera-shade: rgba(0, 0, 0, .62);
+  --color-camera-control: rgba(0, 0, 0, .38);
+  --color-camera-text-muted: rgba(255, 255, 255, .72);
+  --color-qr-paper: #ffffff;
 
-  /* Source identity (badges only). */
-  --color-source-trendhome: #c9beb6;
-  --color-source-outletperdele: #b5c2d5;
-  --color-source-trendyol: #eaa86b;
-  --color-source-b2b: #cfbea4;
+  /* Source identity (badges): black text, the source name says it. */
+  --color-source-trendhome: #000000;
+  --color-source-outletperdele: #000000;
+  --color-source-trendyol: #000000;
+  --color-source-b2b: #000000;
 
-  /* Elevation: shadows are for floating layers only; cards are flat with hairlines. */
-  --shadow-sm: 0 1px 0 rgba(255, 255, 255, .03) inset, 0 1px 2px rgba(0, 0, 0, .3);
-  --shadow-md: 0 10px 28px rgba(0, 0, 0, .32);
-  --shadow-nav: 0 -1px 0 var(--color-border), 0 -12px 32px rgba(0, 0, 0, .28);
-  --shadow-sheet: 0 -14px 42px rgba(0, 0, 0, .38);
-  --shadow-accent: 0 8px 22px rgba(238, 123, 99, .28);
+  /* Elevation: almost flat; shadows only for floating layers and the lifted button. */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, .06);
+  --shadow-md: 0 10px 28px rgba(0, 0, 0, .1);
+  --shadow-nav: 0 -1px 0 var(--color-border);
+  --shadow-sheet: 0 -12px 36px rgba(0, 0, 0, .12);
+  --shadow-accent: 0 8px 20px rgba(0, 0, 0, .22);
+  --shadow-lift: 0 10px 22px rgba(0, 0, 0, .18);
 
   /* Typography: system faces (no font download), tabular figures for every number. */
   --font-sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -155,57 +164,76 @@
   --safe-right: env(safe-area-inset-right, 0px);
 }
 
-:root[data-theme="light"] {
-  color-scheme: light;
-  --color-bg: #f3f0ea;
-  --color-bg-tint: #ece8e0;
-  --color-surface: #fffefc;
-  --color-surface-raised: #f8f6f2;
-  --color-surface-soft: #f5f2ed;
-  --color-surface-overlay: rgba(255, 254, 252, .96);
-  --color-fill: rgba(28, 26, 23, .05);
-  --color-fill-strong: rgba(28, 26, 23, .09);
-  --color-text: #1c1a17;
-  --color-text-muted: #5c564e;
-  --color-text-subtle: #736b62;
-  --color-text-inverse: #fffefc;
-  --color-border: rgba(28, 26, 23, .1);
-  --color-border-strong: rgba(28, 26, 23, .18);
-  --color-stitch: rgba(28, 26, 23, .26);
-  --color-accent: #b9472a;
-  --color-accent-hover: #a63d22;
-  --color-accent-pressed: #93351d;
-  --color-accent-contrast: #ffffff;
-  --color-accent-soft: rgba(185, 71, 42, .08);
-  --color-accent-line: rgba(185, 71, 42, .38);
-  --color-accent-text: #9c3a20;
-  --color-success: #1f7a45;
-  --color-success-soft: rgba(31, 122, 69, .08);
-  --color-success-line: rgba(31, 122, 69, .3);
-  --color-success-text: #1a6a3b;
-  --color-warning: #8a5a00;
-  --color-warning-soft: rgba(196, 136, 22, .1);
-  --color-warning-line: rgba(160, 108, 10, .34);
-  --color-warning-text: #7a4f00;
-  --color-danger: #c2342f;
-  --color-danger-soft: rgba(194, 52, 47, .07);
-  --color-danger-line: rgba(194, 52, 47, .36);
-  --color-danger-text: #a52a26;
-  --color-info: #2f5f8f;
-  --color-info-soft: rgba(47, 95, 143, .07);
-  --color-info-line: rgba(47, 95, 143, .28);
-  --color-info-text: #2a557f;
-  --color-focus: rgba(185, 71, 42, .5);
-  --color-disabled: #d9d4cc;
-  --color-disabled-text: #7d766d;
-  --color-scrim: rgba(28, 26, 23, .45);
-  --color-source-trendhome: #6f625a;
-  --color-source-outletperdele: #4d5f78;
-  --color-source-trendyol: #a2541a;
-  --color-source-b2b: #7a6646;
-  --shadow-sm: 0 1px 2px rgba(28, 26, 23, .06);
-  --shadow-md: 0 10px 28px rgba(28, 26, 23, .1);
-  --shadow-nav: 0 -1px 0 var(--color-border), 0 -10px 28px rgba(28, 26, 23, .06);
-  --shadow-sheet: 0 -14px 42px rgba(28, 26, 23, .14);
-  --shadow-accent: 0 8px 20px rgba(185, 71, 42, .24);
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --color-camera-text: #ffffff;
+  /* Surfaces: page < surface (cards) < raised (nested, hover) ; soft = wells and inputs. */
+  --color-bg: #0e0f11;
+  --color-bg-tint: #121417;
+  --color-surface: #17191c;
+  --color-surface-raised: #1f2226;
+  --color-surface-soft: #131518;
+  --color-surface-overlay: rgba(23, 25, 28, .96);
+  --color-fill: rgba(242, 238, 232, .06);
+  --color-fill-strong: rgba(242, 238, 232, .1);
+
+  /* Text: muted and subtle both stay above 4.5:1 on every surface. */
+  --color-text: #f3f0ea;
+  --color-text-muted: #aba69e;
+  --color-text-subtle: #8f8a82;
+  --color-text-inverse: #16130f;
+
+  /* Lines: hairlines carry structure; strong lines mark interactive edges. */
+  --color-border: rgba(242, 238, 232, .085);
+  --color-border-strong: rgba(242, 238, 232, .15);
+  --color-stitch: rgba(242, 238, 232, .2);
+
+  /* Accent: Arasya terracotta. Soft = tinted background, line = tinted edge, text = readable tint. */
+  --color-accent: #ee7b63;
+  --color-accent-hover: #f48b74;
+  --color-accent-pressed: #e06a52;
+  --color-accent-contrast: #210d07;
+  --color-accent-soft: rgba(238, 123, 99, .11);
+  --color-accent-line: rgba(238, 123, 99, .42);
+  --color-accent-text: #f6a28f;
+
+  /* Functional status colors (always paired with an icon or a word, never color alone). */
+  --color-success: #6fcf97;
+  --color-success-soft: rgba(111, 207, 151, .1);
+  --color-success-line: rgba(111, 207, 151, .32);
+  --color-success-text: #a6e4bf;
+  --color-warning: #e3b061;
+  --color-warning-soft: rgba(227, 176, 97, .1);
+  --color-warning-line: rgba(227, 176, 97, .32);
+  --color-warning-text: #ecca94;
+  --color-danger: #ff6b6b;
+  --color-danger-soft: rgba(255, 107, 107, .1);
+  --color-danger-line: rgba(255, 107, 107, .4);
+  --color-danger-text: #ffb3b3;
+  --color-info: #8fb3d9;
+  --color-info-soft: rgba(143, 179, 217, .1);
+  --color-info-line: rgba(143, 179, 217, .3);
+  --color-info-text: #bcd3ec;
+
+  --color-connected: var(--color-success);
+  --color-disconnected: var(--color-danger);
+  --color-focus: rgba(238, 123, 99, .6);
+  --color-disabled: #4a4b4e;
+  --color-disabled-text: #8d8b88;
+  --color-scrim: rgba(5, 6, 7, .72);
+  --color-camera: #050606;
+
+  /* Source identity (badges only). */
+  --color-source-trendhome: #c9beb6;
+  --color-source-outletperdele: #b5c2d5;
+  --color-source-trendyol: #eaa86b;
+  --color-source-b2b: #cfbea4;
+
+  /* Elevation: shadows are for floating layers only; cards are flat with hairlines. */
+  --shadow-sm: 0 1px 0 rgba(255, 255, 255, .03) inset, 0 1px 2px rgba(0, 0, 0, .3);
+  --shadow-md: 0 10px 28px rgba(0, 0, 0, .32);
+  --shadow-nav: 0 -1px 0 var(--color-border), 0 -12px 32px rgba(0, 0, 0, .28);
+  --shadow-sheet: 0 -14px 42px rgba(0, 0, 0, .38);
+  --shadow-accent: 0 8px 22px rgba(238, 123, 99, .28);
+  --shadow-lift: 0 10px 22px rgba(0, 0, 0, .4);
 }

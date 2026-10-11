@@ -10,7 +10,7 @@ The visual hierarchy is: scan, understand the order, perform the permitted actio
 
 The official Arasya logo is reserved for quiet brand identification, most visibly on Login and at a much smaller scale inside the authenticated experience. It must retain its original proportions and artwork and must not be used as utility iconography.
 
-The palette uses deep graphite backgrounds, neutral raised surfaces, warm off-white text, and muted coral for the primary product action. Coral identifies Scan, active selection, and primary CTAs. Green is semantic and is reserved for connected, confirmed, completed, and success states. Amber communicates checking or warning. A stronger red communicates destructive, disconnected, and error states. These roles are centralized in CSS design tokens.
+The palette is white surfaces and black text; black identifies Scan, active selection, and primary CTAs. Green is semantic and is reserved for connected, confirmed, completed, and success states. Amber communicates checking or warning. A stronger red communicates destructive, disconnected, and error states. These roles are centralized in CSS design tokens.
 
 ## Navigation and Scan
 
@@ -22,17 +22,39 @@ The camera, decoder selection, duplicate guard, cleanup, confirmation, idempoten
 
 ## Design system (Staff 2.15.0, Package 1)
 
-`styles/tokens.css` is the only place for colors, type scale, spacing, radii, control heights, motion durations and easings, layers and safe areas. Two themes share the vocabulary: **Industrial Premium Dark** (default) and **Clean Operations Light** (`<html data-theme="light">`, opt-in until every screen has been reviewed in it). `styles/foundation.css` holds primitives (buttons, fields, status pills, notices, skeletons, task steps) and the app shell; `styles/experiences.css` holds the reference experiences. Neither file contains a hex color (a unit test enforces it).
+`styles/tokens.css` is the only place for colors, type scale, spacing, radii, control heights, motion durations and easings, layers and safe areas. The default look is **minimalist: white background, black text, black primary buttons** (owner decision, 2026-10-11). Color appears only as small functional signals (status dots, icons, edges and faint wells for warnings and errors); the text on them stays black. The earlier graphite theme remains available as an opt-in (`<html data-theme="dark">`); camera screens stay dark in every theme. `styles/foundation.css` holds primitives (buttons, fields, status pills, notices, skeletons, task steps) and the app shell; `styles/experiences.css` holds the reference experiences. Neither file contains a hex color (a unit test enforces it).
 
 - Typography uses system faces (no font download) with tabular figures for numbers and a monospace face for order identifiers and measurements. Inputs use 16px text so iOS never zooms.
-- Status is always words plus an icon; tone only reinforces it.
-- Motion uses transform and opacity only (press 110ms, hover 150ms, screen 240ms, success 380ms, stage 450ms) and collapses under `prefers-reduced-motion`. No animation triggers a request.
+- Status is always words plus an icon; the tone only colors the icon or dot.
+- Buttons move: the primary button lifts on hover and its trailing arrow travels; outlined buttons fill black from the left and turn their label white; every press scales in and shows a short ring (felt on touch screens without hover); a busy button shows a running bar under its label; a newly enabled primary action settles in once.
+- Motion uses transform and opacity only (press 110ms, hover 200ms, sweep 320ms, screen 240ms, success 380ms, stage 450ms) and collapses under `prefers-reduced-motion`. No animation triggers a request.
 
 Reference experiences:
 
 - **Home**: a compact greeting, the workspace switcher as scrollable chips on phones, and for Trendyol operators one *next step* card chosen from data already loaded (ready for approval, then measurements to complete, then attention). It links to the existing screens and never acts. Desktop splits work (left) and status (right).
 - **Trendyol preparation**: five guided steps (`Verifică produsele`, `Completează măsurile`, `Aprobă producția`, `Tipărește fișa cu QR`, `Trimite la Tăiere`) derived only from the package the server returned. A step is done only when server data proves it; printing is never shown as done. Each line shows confirmed, unsaved or to-complete state, a radio product-type picker, the Trendyol size suggestion marked as unconfirmed, paired width × height inputs, and validation next to the field. The form never refreshes itself.
 - **Production document**: revision, status, a print card stating that the button downloads the server PDF with the production QR, a separate preview without QR, and the revision history. Counts say *PDF descărcat pentru tipărire*, never *tipărit*: the server cannot know that paper came out of a printer.
+
+## Shared system across every screen (Staff 2.16.0, Package 2)
+
+`styles/app.css` now styles every remaining screen (login, orders, order detail, history, profile, scanner, sheets, confirmation and success states, exceptions, QR authority, document lookup, management tables, cutting tools) from the tokens only; a unit test refuses any hex or rgb colour outside `tokens.css`. Shared React states live in `components/ui/States.tsx`:
+
+- `BootScreen`: start-up and blocking states (session check, workflow load, no Staff access) with the brand, one sentence, a progress bar while busy and an optional action.
+- `LoadingState`: an announced label plus skeletons shaped like a list or a detail page (replaces the old spinner rows).
+- `EmptyPanel`: what will appear here and, when useful, the next action.
+- `PageHeader`: eyebrow, title, one sentence, optional actions.
+
+`ErrorState` and the confirmation dialogs draw their icons (no `!` or `?` glyphs). Tabs, range chips and selected options are filled black when active; status is a coloured dot next to black text. The scanner keeps a dark camera surface with white controls. Order identifiers use the monospace face everywhere. A theme switch is deliberately absent: the owner chose the white look, and the graphite theme stays an opt-in token set.
+
+## Department screens (Staff 2.17.0, Package 3)
+
+Every production workspace (Pornire producție, Tăiere, Atelier, Croitorie, Control calitate, Împachetare, Livrare) opens with one *next step* chosen from the stage queue already read (`features/workspaces/stageProfiles.ts`): continue own work first; then take new work, by scanning the original label in cutting or by opening the oldest available order elsewhere (opening never claims); then blocked orders. Queue rows show what the department checks first: sizes, fabric meters and quantity for cutting, workshop, sewing and quality control; items and quantities for packing and delivery. Desktop splits work (left) from the stage numbers and checklist (right). Cutting shows own and blocked work before the available pool.
+
+The Trendyol inbox uses the same order rows, status line and skeletons as the Trendyol home. The scanner viewfinder shows its state: a slow sweep while scanning, the frame closing in green once a code is read, one shake on a problem, with the instruction text announced. Order detail shows the products, with size and meters in large monospace figures, right after the action. Nothing in this package changes which orders are listed, which actions exist or who may take them.
+
+## Motion (Staff 2.18.0, Package 4)
+
+`styles/motion.css` is the motion layer. Lists settle in once with a short stagger when they first appear or a new item arrives; an automatic refresh that keeps the same rows animates nothing. A metric animates only when its value changes (the number is keyed by value). Status chips, progress bars and the production roadmap follow the server state with transitions, and the stage marker settles in when the server reports the new stage. Success screens reveal their title and actions in sequence after the server confirms. Every asynchronous primary button reports `aria-busy` and shows a running bar. The scanner adds a short vibration where supported when a code is read and when the server confirms the action. Only transform and opacity move (a test checks every keyframe), nothing starts a request, and `prefers-reduced-motion` removes durations, iterations and delays.
 
 ## YD Soft connection status
 

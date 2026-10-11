@@ -7,6 +7,7 @@ import { ReturnToCuttingPanel, canReturnToCutting } from "../exceptions/ReturnTo
 import { SourceBadge } from "../../components/SourceBadge";
 import { StageLabel } from "../../components/StageLabel";
 import { ErrorState } from "../../components/ErrorState";
+import { LoadingState } from "../../components/ui/States";
 import { OrderNotices } from "../../components/OrderNotices";
 import { toServiceError } from "../../services/errors";
 import { requireProductionProducts } from "../../domain/orderValidation";
@@ -41,12 +42,12 @@ export function OrderDetailScreen({ orderId, service, exceptions, cutting, docum
     return () => controller.abort();
   }, [orderId, reloadKey, liveRevision, service]);
   if (error) return <ErrorState error={error} onAction={() => { setError(null); setOrder(null); if (error.code === "ORDER_NOT_FOUND") navigate("/orders"); else setReloadKey((value) => value + 1); }} />;
-  if (!order) return <div className="inline-loading"><span /> Se încarcă detaliile…</div>;
+  if (!order) return <LoadingState label="Se încarcă detaliile…" shape="detail" />;
   const completed = Boolean(order.productionCompletedAt);
   return (
     <article className="screen-stack detail-screen">
       <button className="back-link" type="button" onClick={() => navigate("/orders")}><AppIcon name="back" size={20} /> Comenzile mele</button>
-      <section className="detail-hero"><div><SourceBadge source={order.source} /><h1>Comanda<br />#{order.orderNumber}</h1></div>{completed ? <span className="stage-label"><span>✓</span>Producție finalizată</span> : <StageLabel stage={getStageById(workflow, order.productionStageId)} />}</section>
+      <section className="detail-hero"><div><SourceBadge source={order.source} /><h1>Comanda <span className="order-id">#{order.orderNumber}</span></h1></div>{completed ? <span className="stage-label"><span>✓</span>Producție finalizată</span> : <StageLabel stage={getStageById(workflow, order.productionStageId)} />}</section>
       {order.productionAuthority && permissions.includes("production.manage_authority") && <p className={`order-notice ${order.productionAuthority === "operations" ? "order-notice-muted" : "order-notice-warning"}`} role="note" data-testid="production-authority">{authorityLabels[order.productionAuthority]}{order.productionAuthority === "source" && <> · <button type="button" className="link-button" onClick={() => navigate(`/authority?order=${encodeURIComponent(order.id)}`)}>Preia în Arasya</button></>}</p>}
       <BlockedDocument order={order} />
       <OrderNotices order={order} />
@@ -58,10 +59,10 @@ export function OrderDetailScreen({ orderId, service, exceptions, cutting, docum
       <OrderActionPanel order={order} workflow={workflow} service={service} cutting={cutting} onUpdated={(updated) => setOrder(requireProductionProducts(updated))} onReload={() => { setOrder(null); setReloadKey((value) => value + 1); }} onSessionExpired={onSessionExpired} />
       {cutting && order.productionStageId === "material-preparation" && order.employeeAllowedAction?.id === "complete_stage" && <CuttingTransferRequest order={order} service={cutting} onChanged={() => { setOrder(null); setReloadKey(v => v + 1); }} />}
       {canReturnToCutting(order, permissions) && <section className="detail-section return-section"><ReturnToCuttingPanel order={order} service={exceptions} onSessionExpired={onSessionExpired} onReported={(id) => navigate(`/exceptions/${encodeURIComponent(id)}`)} /></section>}
+      <section className="detail-section detail-products"><div className="section-title"><p className="eyebrow">Producție</p><h2>{order.products.length === 1 ? "1 produs" : `${order.products.length} produse`}</h2></div>{order.products.map((item) => { const size = formatMeasurements(item); const location = item.productionContext?.project; return <div className="product-detail" key={item.id}>{location && <p className="project-location" data-testid="project-location">{projectPlace(location)}</p>}<div><strong>{item.name}</strong>{item.code && <span>{item.code}</span>}</div><dl>{item.color && <div><dt>Culoare</dt><dd>{item.color}</dd></div>}{item.variant && <div><dt>Variantă</dt><dd>{item.variant}</dd></div>}{size && <div className="product-key"><dt>Dimensiune</dt><dd>{size}</dd></div>}{item.meters != null && <div className="product-key"><dt>Metri</dt><dd>{formatMeters(item.meters)}</dd></div>}{item.options?.map((option) => <div key={option.label}><dt>{option.label}</dt><dd>{option.value}</dd></div>)}<div><dt>Cantitate</dt><dd>{item.quantity}</dd></div></dl></div>; })}</section>
       {documents && canUseDocuments(permissions) && <DocumentPanel orderId={order.id} service={documents} permissions={permissions} onChanged={() => setReloadKey((value) => value + 1)} />}
       {productionQr && <ProductionQrPanel orderId={order.id} service={productionQr} />}
       <ProductionRoadmap workflow={workflow} currentStageId={order.productionStageId} />
-      <section className="detail-section detail-products"><div className="section-title"><p className="eyebrow">Producție</p><h2>{order.products.length === 1 ? "1 produs" : `${order.products.length} produse`}</h2></div>{order.products.map((item) => { const size = formatMeasurements(item); const location = item.productionContext?.project; return <div className="product-detail" key={item.id}>{location && <p className="project-location" data-testid="project-location">{projectPlace(location)}</p>}<div><strong>{item.name}</strong>{item.code && <span>{item.code}</span>}</div><dl>{item.color && <div><dt>Culoare</dt><dd>{item.color}</dd></div>}{item.variant && <div><dt>Variantă</dt><dd>{item.variant}</dd></div>}{size && <div><dt>Dimensiune</dt><dd>{size}</dd></div>}{item.meters != null && <div><dt>Metri</dt><dd>{formatMeters(item.meters)}</dd></div>}{item.options?.map((option) => <div key={option.label}><dt>{option.label}</dt><dd>{option.value}</dd></div>)}<div><dt>Cantitate</dt><dd>{item.quantity}</dd></div></dl></div>; })}</section>
       {order.productionNotes && <section className="production-note"><p className="eyebrow">Notă de producție</p><p>{order.productionNotes}</p></section>}
       {order.products.filter(item => item.productionContext).map(item => <section className="production-note" key={item.id}>
         <p className="eyebrow">{item.name} · {item.productionContext!.project ? projectTreatment(item.productionContext!.project) : { curtain: 'Perdea', drapery: 'Draperie', other: 'Alt produs' }[item.productionContext!.kind]}</p>

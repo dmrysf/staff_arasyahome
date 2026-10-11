@@ -75,7 +75,7 @@ export function ReturnToCuttingPanel({ order, service, onReported, onSessionExpi
         {error && <ErrorState error={error} compact onAction={() => setError(null)} />}
         <div className="confirmation-actions">
           <button className="button button-secondary" type="button" disabled={submitting} onClick={() => setOpen(false)}>Anulează</button>
-          <button className="button button-primary" type="button" disabled={!ready || submitting} onClick={() => void submit()}>{submitting ? "Se trimite…" : "Trimite cererea"}</button>
+          <button className="button button-primary" type="button" disabled={!ready || submitting} aria-busy={submitting || undefined} onClick={() => void submit()}>{submitting ? "Se trimite…" : "Trimite cererea"}</button>
         </div>
         {submitting && <small className="server-note">Așteptăm confirmarea serverului.</small>}
       </div>

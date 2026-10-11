@@ -4,6 +4,7 @@ import type { ExceptionService } from "../../services/contracts";
 import { useLive } from "../../app/liveContext";
 import { AppIcon } from "../../components/icons/AppIcon";
 import { ErrorState } from "../../components/ErrorState";
+import { LoadingState } from "../../components/ui/States";
 import { SourceBadge } from "../../components/SourceBadge";
 import { toServiceError } from "../../services/errors";
 import { createIdempotencyKey } from "../../services/idempotency";
@@ -55,12 +56,12 @@ export function ExceptionScreen({ exceptionId, service, navigate, onSessionExpir
   }
 
   if (error) return <ErrorState error={error} onAction={() => { setError(null); if (error.code === "EXCEPTION_NOT_FOUND") navigate("/"); else setReload((value) => value + 1); }} />;
-  if (!fault) return <div className="inline-loading"><span /> Se încarcă cererea…</div>;
+  if (!fault) return <LoadingState label="Se încarcă cererea…" shape="detail" />;
   const arrival = arrivalLabel(fault.arrivalNumber);
   return (
     <article className="screen-stack detail-screen exception-screen">
       <button className="back-link" type="button" onClick={() => navigate("/")}><AppIcon name="back" size={20} /> Acasă</button>
-      <section className="detail-hero"><div><SourceBadge source={fault.order.source} /><p className="eyebrow">Returnare la tăiere · {fault.number}</p><h1>Comanda<br />#{fault.order.orderNumber}</h1></div>
+      <section className="detail-hero"><div><SourceBadge source={fault.order.source} /><p className="eyebrow">Returnare la tăiere · {fault.number}</p><h1>Comanda <span className="order-id">#{fault.order.orderNumber}</span></h1></div>
         <span className={`exception-status status-${fault.status}`} role="status">{faultStatusLabels[fault.status]}</span></section>
       {fault.repeatedError && <p className="order-notice order-notice-warning" role="note">Eroare repetată: comanda a mai fost refăcută.</p>}
       {fault.status === "approved" && fault.role === "responsible" && <p className="order-action-done" role="status">✓ Aprobarea a fost acordată. Lucrarea poate fi refăcută.</p>}
@@ -94,7 +95,7 @@ export function ExceptionScreen({ exceptionId, service, navigate, onSessionExpir
         <h2 id="rereview-title">Solicită reanalizarea</h2>
         <p>Dacă decizia pare greșită, cere o nouă analiză. Respingerea rămâne în istoric.</p>
         <label className="field"><span>Motivul reanalizării (obligatoriu)</span><textarea maxLength={1000} rows={3} value={comment} onChange={(event) => setComment(event.target.value)} /></label>
-        <button className="button button-primary" type="button" disabled={submitting || comment.trim().length < 3} onClick={() => void run((key) => service.rereview(fault.id, { expectedVersion: fault.version, comment: comment.trim(), idempotencyKey: key }))}>{submitting ? "Se trimite…" : "Solicită reanalizarea"}</button>
+        <button className="button button-primary" type="button" disabled={submitting || comment.trim().length < 3} aria-busy={submitting || undefined} onClick={() => void run((key) => service.rereview(fault.id, { expectedVersion: fault.version, comment: comment.trim(), idempotencyKey: key }))}>{submitting ? "Se trimite…" : "Solicită reanalizarea"}</button>
       </section>}
 
       {actionError && <ErrorState error={actionError} compact onAction={() => { setActionError(null); setReload((value) => value + 1); }} />}

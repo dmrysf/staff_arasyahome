@@ -45,7 +45,7 @@ export function LoginScreen({ mode, notice, onLogin }: { mode: StaffRuntimeMode;
         <label className="field"><span>Nume utilizator</span><input autoComplete="username" inputMode="text" value={username} onChange={(event) => setUsername(event.target.value)} placeholder="nume.utilizator" /></label>
         <PasswordField label="Parolă" toggleName="parola" value={password} onChange={setPassword} autoComplete="current-password" placeholder="••••••••" />
         {error && <p className="form-error" role="alert">{error}</p>}
-        <button className="button button-primary button-large" type="submit" disabled={submitting}>{submitting ? "Se autentifică…" : "Autentificare"}<span aria-hidden="true">→</span></button>
+        <button className="button button-primary button-large" type="submit" disabled={submitting} aria-busy={submitting || undefined}>{submitting ? "Se autentifică…" : "Autentificare"}<span aria-hidden="true">→</span></button>
       </form>
       <p className="login-footnote">Aplicație internă · Arasya Home</p>
     </main>
