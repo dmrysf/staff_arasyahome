@@ -159,18 +159,33 @@
   --z-toast: 60;
   --z-intro: 100;
 
-  /* Sign-in intro: a dark scene in both themes (horizon rim, blue glow, search bar), then Staff opens in white. */
-  --color-intro-bg: #020306;
-  --color-intro-surface: #07090e;
-  --color-intro-border: rgba(255, 255, 255, .09);
-  --color-intro-rim: #f2f5ff;
-  --color-intro-rim-glow: rgba(140, 180, 255, .6);
-  --color-intro-glow: rgba(38, 104, 255, .9);
-  --color-intro-glow-soft: rgba(38, 104, 255, .28);
-  --color-intro-blue: #2f6bff;
-  --color-intro-text: #ffffff;
-  --color-intro-text-fresh: #8fb4ff;
-  --color-intro-icon: rgba(255, 255, 255, .78);
+  /* Sign-in intro: a warm dark scene in both themes (champagne horizon rim and glow, search bar), then Staff opens in white. */
+  --color-intro-bg: #060504;
+  --color-intro-surface: #0e0c09;
+  --color-intro-border: rgba(255, 236, 205, .1);
+  --color-intro-rim: #fbefd9;
+  --color-intro-rim-glow: rgba(232, 196, 140, .55);
+  --color-intro-glow: rgba(186, 134, 72, .5);
+  --color-intro-glow-soft: rgba(186, 134, 72, .2);
+  --color-intro-gold: #d6b380;
+  --color-intro-gold-light: #f2dfba;
+  --color-intro-ink: #1c150c;
+  --color-intro-ring: rgba(242, 214, 168, .85);
+  --color-intro-sheen: rgba(226, 190, 128, .9);
+  --color-intro-vignette: rgba(0, 0, 0, .7);
+  --color-intro-text: #fffaf2;
+  --color-intro-text-fresh: #e9c98e;
+  --color-intro-icon: rgba(255, 246, 230, .75);
+  /* Intro map of Europe: blue country lines, champagne office markers. */
+  --color-intro-map-coast: rgba(112, 170, 255, .78);
+  --color-intro-map-border: rgba(112, 170, 255, .46);
+  --color-intro-map-grid: rgba(112, 170, 255, .14);
+  --color-intro-map-key: rgba(74, 134, 255, .2);
+  --color-intro-map-scan: rgba(186, 222, 255, 1);
+  --color-intro-map-label: rgba(184, 210, 255, .7);
+  --color-intro-map-label-key: rgba(222, 236, 255, .92);
+  --color-intro-city: #f4d7a2;
+  --color-intro-city-halo: rgba(233, 201, 142, .2);
 
   /* Safe areas (notches, home indicator). */
   --safe-top: max(12px, env(safe-area-inset-top));

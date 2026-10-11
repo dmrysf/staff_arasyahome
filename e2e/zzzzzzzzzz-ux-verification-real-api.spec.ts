@@ -119,7 +119,7 @@ test("every sign-in plays the intro, even with reduced motion, then opens Staff;
     await expect(intro).toBeVisible();
     await expect(page.locator(".intro-stage")).toHaveAttribute("inert", "");
     await expect(intro.getByRole("button")).toHaveCount(0);
-    await expect(intro.locator(".intro-text")).toHaveText("Coded by the Roisey team", { timeout: 6_000 });
+    await expect(intro.locator(".intro-text")).toHaveText("Designed to Inspire. Made to Last.", { timeout: 6_000 });
     await expect(intro).toHaveCount(0, { timeout: 10_000 });
     await expect(page.locator(".intro-stage")).not.toHaveAttribute("data-intro", /./);
     await expect(page.getByTestId("workspace-title")).toBeVisible();

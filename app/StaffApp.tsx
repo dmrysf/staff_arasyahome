@@ -29,7 +29,7 @@ import { canManageAuthority } from "../domain/authority";
 import { TrendyolInboxScreen } from "../features/trendyol/TrendyolInboxScreen";
 import { TrendyolPackageScreen } from "../features/trendyol/TrendyolPackageScreen";
 import { dashboardUrlFor } from "../domain/workspaces";
-import { LoginIntroStage, introPlaysHere } from "../features/auth/LoginIntro";
+import { LoginIntroStage, introPlaysHere, preloadIntroMap } from "../features/auth/LoginIntro";
 
 type StaffAppProps = { initialRoute: string; mode: StaffRuntimeMode; apiBaseUrl: string };
 
@@ -117,7 +117,7 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
   if (checkingSession) return <BootScreen busy message="Se pregătește spațiul tău…" />;
   if (sessionCheckError) return <BootScreen role="alert" message={sessionCheckError.code === "CONFIGURATION_ERROR" ? "Serviciul de autentificare nu este configurat." : "Serviciul nu este disponibil momentan."} action={<button className="button button-secondary" type="button" onClick={() => { setCheckingSession(true); setSessionCheckError(null); setBootstrapKey((value) => value + 1); }}>Reîncearcă</button>} />;
   if (!session || guardedRoute === "/login") {
-    return <LoginScreen mode={mode} notice={sessionNotice} onLogin={async (input) => { const next = await services.auth.login(input); workflowLifecycle.reset(); setSession(next); setSessionNotice(""); navigate("/"); onSignedIn(); return next; }} />;
+    return <LoginScreen mode={mode} notice={sessionNotice} onLogin={async (input) => { if (introPlaysHere()) preloadIntroMap(); const next = await services.auth.login(input); workflowLifecycle.reset(); setSession(next); setSessionNotice(""); navigate("/"); onSignedIn(); return next; }} />;
   }
   if (session.employee.mustChangePassword) {
     return <ChangePasswordScreen displayName={session.employee.displayName} username={session.employee.username} onLogout={logout} onChange={async (input) => { const next = await services.auth.changePassword(input); setSession(next); navigate("/"); }} />;
