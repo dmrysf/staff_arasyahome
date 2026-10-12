@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Arasya\Operations\Order;
 
 use Arasya\Operations\Authorization\AuthorizationService;
+use Arasya\Operations\Cutting\CuttingLifecycle;
 use Arasya\Operations\Employee\EmployeeIdentity;
 use Arasya\Operations\Production\ProductionAuthority;
 use Arasya\Operations\Production\ProductionAuthorityMode;
@@ -27,6 +28,10 @@ use Arasya\Operations\Production\ProductionWorkflow;
  * Production authority: while the order's source enforces the authority split, an order that is still
  * managed by its source (production_authority = 'source') cannot be worked on in Staff at all; a manager
  * must take it over explicitly first. In legacy and observe modes nothing changes here.
+ *
+ * Cutting intake (evaluateCuttingIntake) is the one narrow exception to the current-stage rule: an eligible
+ * cutter who scans the active Arasya QR of a stage-1 order may receive it into cutting, because that cutter is
+ * authorized for the next stage. It authorizes only that command; canView and every other route are unchanged.
  */
 final readonly class OrderAccessPolicy
 {
@@ -36,6 +41,10 @@ final readonly class OrderAccessPolicy
     public const BLOCKED_AUTHORITY_SOURCE = 'production_authority_source';
     public const TRENDYOL_SOURCE = 'trendyol';
     public const TRENDYOL_VIEW = 'trendyol.orders.view';
+    public const ACTION_CUTTING_INTAKE = 'cutting_intake';
+    public const ACTION_ALREADY_MINE = 'already_mine';
+    /** Order sources whose stage-1 orders a cutter may receive by QR (B2B keeps its existing flow). */
+    public const CUTTING_INTAKE_SOURCES = ['trendyol', 'trendhome', 'outletperdele'];
 
     public function __construct(private AuthorizationService $authorization, private ?ProductionAuthorityModes $authorityModes = null)
     {
@@ -118,6 +127,76 @@ final readonly class OrderAccessPolicy
             'action' => $last !== null && $last->id === $order->productionStageId ? self::ACTION_COMPLETE_PRODUCTION : self::ACTION_COMPLETE_STAGE,
             'blockedReason' => null,
         ];
+    }
+
+    /** Whether the employee may use the QR cutting intake at all; checked before any order is read. */
+    public function mayUseCuttingIntake(EmployeeIdentity $employee): bool
+    {
+        return CuttingLifecycle::eligible($employee) && $this->authorization->can($employee, 'orders.scan');
+    }
+
+    /** Whether the order is one the employee could receive by cutting intake (it may still be blocked). */
+    public function reachesForCuttingIntake(EmployeeIdentity $employee, OperationalOrder $order): bool
+    {
+        $source = $order->globalId->sourceKey;
+        return $this->mayUseCuttingIntake($employee)
+            && $employee->worksAt(CuttingLifecycle::STAGE, $source)
+            && in_array($source, self::CUTTING_INTAKE_SOURCES, true)
+            && in_array($order->productionStageId, [OrderProjectionWriter::INITIAL_STAGE_ID, CuttingLifecycle::STAGE], true);
+    }
+
+    /**
+     * Cutting intake from a scanned Arasya QR. The employee must be an eligible cutter (CuttingLifecycle::eligible
+     * plus orders.scan) who works at the cutting stage for the order's source; the waiting-stage grant and the
+     * Trendyol view permission are deliberately not required, because the order is received into cutting, never
+     * worked on at stage 1. Every production block of evaluate() applies unchanged.
+     *
+     * Actions: cutting_intake (stage 1, unowned: move to cutting and claim), claim (cutting, unowned),
+     * already_mine (cutting, owned by the employee). Reasons: intake_not_allowed, not_found (source not reached),
+     * intake_not_applicable (another stage or source: the ordinary scan applies), plus the reasons of evaluate().
+     *
+     * @return array{action: string|null, blockedReason: string|null}
+     */
+    public function evaluateCuttingIntake(EmployeeIdentity $employee, OperationalOrder $order, ?ProductionWorkflow $workflow): array
+    {
+        if (!$this->mayUseCuttingIntake($employee)) {
+            return $this->blocked('intake_not_allowed');
+        }
+        if (!$employee->worksAt(CuttingLifecycle::STAGE, $order->globalId->sourceKey)) {
+            return $this->blocked('not_found');
+        }
+        if (!$this->reachesForCuttingIntake($employee, $order)) {
+            return $this->blocked('intake_not_applicable');
+        }
+        if ($order->operationalStatus === 'unavailable') {
+            return $this->blocked('order_unavailable');
+        }
+        if ($order->isProductionCompleted()) {
+            return $this->blocked('production_completed');
+        }
+        if ($order->isBlockedByException()) {
+            return $this->blocked('exception_pending');
+        }
+        if ($order->isBlockedByDocument()) {
+            return $this->blocked(\Arasya\Operations\Document\DocumentGuard::BLOCKED_REASON);
+        }
+        // The handoff relies on cutting being the stage right after stage 1 of the active workflow.
+        $ids = $workflow === null ? [] : array_map(static fn ($stage): string => $stage->id, $workflow->stages);
+        if (array_slice($ids, 0, 2) !== [OrderProjectionWriter::INITIAL_STAGE_ID, CuttingLifecycle::STAGE]) {
+            return $this->blocked('workflow_unavailable');
+        }
+        if ($this->isSourceManagedUnderEnforcement($order)) {
+            return $this->blocked(self::BLOCKED_AUTHORITY_SOURCE);
+        }
+        $owner = $order->productionOwnerEmployeeUuid;
+        if ($owner !== null && $owner !== $employee->employeeUuid) {
+            return $this->blocked('claimed_by_other');
+        }
+        if ($order->productionStageId === OrderProjectionWriter::INITIAL_STAGE_ID) {
+            // Owned at stage 1 by this employee (a waiting-stage claim): the ordinary stage completion applies.
+            return $owner === null ? ['action' => self::ACTION_CUTTING_INTAKE, 'blockedReason' => null] : $this->blocked('intake_not_applicable');
+        }
+        return ['action' => $owner === null ? self::ACTION_CLAIM : self::ACTION_ALREADY_MINE, 'blockedReason' => null];
     }
 
     /** @return array{action: null, blockedReason: string} */

@@ -65,6 +65,7 @@ The QR mode is independent of the ingestion mode and the production authority mo
   - **Unknown code:** `404 UNKNOWN_QR`, a generic answer that leaks no order.
   - **Malformed input** (for example a YD admin link): `400 INVALID_QR`.
   - Every refused scan of a known code is recorded as `scan_rejected`. Retired codes can never claim cutting work or acknowledge a fault (`DocumentGuard::assertQrUsable`).
+- `POST /cutting/intake` (one-scan cutting intake, API 2.27.0) answers a retired, unknown or malformed code exactly like `resolve-qr`, and checks the active code again under the order lock before it moves anything. See [cutting QR intake](cutting-qr-intake.md).
 - `php bin/qr-reconcile.php --source=<source> [--orders=<id,…>] [--limit=50] [--apply]`, a bounded operator reconciliation of operations orders:
   - A dry run is the default.
   - It keeps every active QR (`reused`) and issues one only where none exists (`issued`).

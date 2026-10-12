@@ -218,6 +218,10 @@ foreach (FactoryOnboardingPlan::STAGES as $group => $stageIds) {
             $check($employee->worksAt($stage->id, $source) === $allowed, 'exact stage and source intersection');
             $check($policy->canView($employee, $order) === $allowed, 'server visibility');
             $check(($policy->evaluate($employee, $order, $workflow)['action'] === 'claim') === $allowed, 'server claim');
+            if ($stage->id === 'waiting') {
+                // QR cutting intake: exactly the cutting group receives stage-1 orders of the three sources, without a waiting grant.
+                $check(($policy->evaluateCuttingIntake($employee, $order, $workflow)['action'] === 'cutting_intake') === ($group === 'cutting' && $source !== 'b2b'), 'QR cutting intake follows the matrix');
+            }
             if ($allowed) {
                 $owned = new OperationalOrder($order->orderUuid, $order->globalId, 'TEST', $stage->id, 'Picking', 'Picking', null, 'in_progress', $order->freshness, 1, null, $stamp, productionOwnerEmployeeUuid: $root->employeeUuid, productionAuthority: 'operations');
                 $check($policy->evaluate($employee, $owned, $workflow)['blockedReason'] === 'claimed_by_other', 'unauthorized takeover blocked');

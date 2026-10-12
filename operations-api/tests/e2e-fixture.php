@@ -52,7 +52,8 @@ $pdo->prepare('UPDATE employees SET must_change_password = 1 WHERE employee_uuid
 
 $qr = [];
 $changedAt = gmdate('Y-m-d\TH:i:s\Z', time() - 60);
-foreach (['70001' => 'trendhome', '70002' => 'trendhome', '70003' => 'outletperdele', '70004' => 'outletperdele'] as $number => $source) {
+// 70006 is the label shown by the fake camera: a cutter's single scan takes it (cutting QR intake).
+foreach (['70001' => 'trendhome', '70002' => 'trendhome', '70003' => 'outletperdele', '70004' => 'outletperdele', '70006' => 'trendhome'] as $number => $source) {
     $response = T::ingest($kernel, $source, T::sourceOrder((string) $number, "e2e-{$number}-1", $changedAt, T::stage('material-preparation'), 'processing', 'active', [[
         'id' => (int) $number * 10, 'line' => 1, 'name' => 'Draperie Velvet', 'sku' => "DV-{$number}", 'color' => 'Bej',
         'width' => 300, 'height' => 260, 'unit' => 'cm', 'meters' => 8.4, 'quantity' => 1,
@@ -210,6 +211,18 @@ $iam($tyScoped->employeeUuid,['staff'],[$roleId('trendyol-order-approver')]);
 $r=T::call($kernel,'PUT',"/management/employees/{$tyScoped->employeeUuid}/stages",['stageIds'=>['waiting'],'stageScopes'=>['waiting'=>['trendyol']]],['origin'=>$origin,'x-csrf-token'=>$root['csrf']],$root['cookie']);
 if($r['status']!==200) throw new RuntimeException('E2E stage scope setup failed: '.json_encode($r['body']));
 $admin->create('Ciprian Croitorie','sew.e2e',null,'pregatire-material','employee',$password,['bottom-hem','side-hem','header-tape'],'e2e');
+// QR cutting intake: approved stage-1 orders (Trendhome, OutletPerdele, Trendhome) received into cutting by one
+// scan; two cutting employees with only the cutting stage (no waiting grant, no Trendyol permission, no work yet).
+foreach (['74001' => 'trendhome', '74002' => 'outletperdele', '74003' => 'trendhome'] as $number => $source) {
+    $r = T::ingest($kernel, $source, T::sourceOrder((string) $number, "intake-e2e-{$number}", $changedAt, T::stage('waiting'), 'processing', 'active', [[
+        'id' => (int) $number * 10, 'line' => 1, 'name' => 'Draperie Velvet', 'sku' => "DV-{$number}", 'color' => 'Bej',
+        'width' => 300, 'height' => 260, 'unit' => 'cm', 'meters' => 8.4, 'quantity' => 1,
+    ]]));
+    if (($r['body']['outcome'] ?? null) !== 'applied') throw new RuntimeException('E2E intake order failed: ' . json_encode($r['body']));
+    $qr[$number] = $r['body']['qr'];
+}
+$admin->create('Ioana Tăiere','cut.intake.e2e',null,'pregatire-material','employee',$password,['material-preparation'],'e2e');
+$admin->create('Radu Tăiere','cut.intake2.e2e',null,'pregatire-material','employee',$password,['material-preparation'],'e2e');
 $supervisor=$admin->create('Sorina Supervizor','supervisor.e2e',null,'pregatire-material','employee',$password,['quality-control','packing'],'e2e');
 $iam($supervisor->employeeUuid,['staff','dashboard'],[$roleId('supervisor')]);
 
@@ -218,11 +231,12 @@ echo json_encode([
     'dashboards' => ['scoped' => 'ty.scoped.e2e', 'preparer' => 'ty.prep.e2e', 'sewing' => 'sew.e2e', 'supervisor' => 'supervisor.e2e', 'multi' => 'operator.b2b.e2e'],
     'trendyol' => ['package' => '73001', 'orderNumber' => 'TY73001', 'ignored' => '73002', 'approver' => 'ty.approve.e2e', 'outsider' => 'ty.outsider.e2e', 'cutter' => 'ty.cutter.e2e'],
     'users' => ['ana' => 'ana.e2e', 'bogdan' => 'bogdan.e2e', 'mihai' => 'mihai.e2e', 'dashboardOnly' => 'dora.e2e', 'temporary' => 'teodor.e2e'],
-    'orders' => ['flow' => '70001', 'qr' => '70002', 'claimedByOther' => '70003', 'conflict' => '70004'],
+    'orders' => ['flow' => '70001', 'qr' => '70002', 'claimedByOther' => '70003', 'conflict' => '70004', 'camera' => '70006'],
     'qr' => $qr,
     'b2b' => ['id'=>'b2b:'.$b2bOrder['id'],'code'=>$b2bOrder['code'],'username'=>'operator.b2b.e2e'],
     'documents' => ['order' => '72001', 'superseded' => '72002', 'requester' => 'online.doc.e2e', 'approver' => 'sinem.doc.e2e', 'cutter' => 'doc.cutter.e2e'],
     'exceptions' => ['order' => '70005', 'cutter' => 'crama.e2e', 'intake' => 'oprea.e2e', 'manager' => 'denisa.e2e'],
+    'intake' => ['cutter' => 'cut.intake.e2e', 'cutterName' => 'Ioana Tăiere', 'other' => 'cut.intake2.e2e', 'orders' => ['74001', '74002', '74003'], 'sources' => ['74001' => 'trendhome', '74002' => 'outletperdele', '74003' => 'trendhome']],
     'cutting' => ['order'=>'71000','source'=>'trendhome','owner'=>'cut.murat.e2e','target'=>'cut.andrea.e2e',
         'root'=>['username'=>Arasya\Operations\Iam\RootBootstrapService::ROOT_USERNAME,'password'=>'staff root fixture permanent 2026']],
 ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT), "\n";

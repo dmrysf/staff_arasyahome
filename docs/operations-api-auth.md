@@ -21,7 +21,7 @@ The browser is never an identity or authorization authority. Every protected req
 | `GET`, `POST` | `/b2b/accounts…` | B2B Current Account V1: balances, movements, payments, allocations, opening balances, adjustments, reversals, CSV/PDF statements (2.10.0, CSRF, idempotency; see [b2b-current-account.md](b2b-current-account.md)) |
 | `GET` | `/production/workflow` | Return the active canonical workflow and ordered stages with ETag support |
 | `GET` | `/orders/mine`, `/orders/{id}`, `/orders/lookup` | Visible orders for the session employee |
-| `POST` | `/orders/resolve-qr`, `/orders/{id}/claim`, `/orders/{id}/transition` | QR resolution and production mutations (CSRF, idempotency) |
+| `POST` | `/orders/resolve-qr`, `/orders/{id}/claim`, `/orders/{id}/transition`, `/cutting/intake` | QR resolution, production mutations and the one-scan cutting intake (CSRF, idempotency) |
 | `GET` | `/activity/mine` | Persisted activity of the session employee |
 | `POST` | `/integrations/sources/{source}/orders`, `…/orders/validate`, `…/heartbeat` | Signed server-to-server source delivery (no cookies) |
 
