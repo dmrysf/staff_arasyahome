@@ -1,9 +1,56 @@
 <?php
 declare(strict_types=1);
+/** Restore a pre-024 disposable test fixture (no tailoring quality supervision). This is NOT a deployment/rollback mechanism. */
+function restorePreTailoringSupervisionTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='024_tailoring_quality_supervision.sql'")->fetchColumn()) return;
+    $ids=$pdo->query("SELECT exception_uuid FROM production_exceptions WHERE exception_type='tailoring_defect' OR reason_key IN ('cut-meterage','cut-color','fabric-defect') OR confirmed_reason_key IS NOT NULL")->fetchAll(PDO::FETCH_COLUMN);
+    if($ids!==[]){
+        $list=implode(',',array_map([$pdo,'quote'],$ids));
+        $pdo->exec("UPDATE operational_orders SET open_exception_uuid=NULL WHERE open_exception_uuid IN ({$list})");
+        foreach(['production_quality_events','production_exception_events','production_exception_lines'] as $table) $pdo->exec("DELETE FROM {$table} WHERE exception_uuid IN ({$list})");
+        $pdo->exec("UPDATE production_exception_decisions SET previous_decision_uuid=NULL WHERE exception_uuid IN ({$list})");
+        $pdo->exec("DELETE FROM production_exception_decisions WHERE exception_uuid IN ({$list})");
+        $pdo->exec("DELETE FROM production_exceptions WHERE exception_uuid IN ({$list})");
+    }
+    $pdo->exec('DELETE FROM production_quality_events WHERE rework_cycle IS NULL OR meters = 0');
+    $pdo->exec('ALTER TABLE production_quality_events DROP CONSTRAINT chk_production_quality_events_meters');
+    $pdo->exec('ALTER TABLE production_quality_events MODIFY rework_cycle INT UNSIGNED NOT NULL');
+    $pdo->exec('ALTER TABLE production_quality_events ADD CONSTRAINT chk_production_quality_events_meters CHECK (meters > 0 AND line_count > 0 AND rework_cycle > 0)');
+    $pdo->exec('ALTER TABLE production_exception_lines DROP CONSTRAINT chk_production_exception_lines_meters');
+    $pdo->exec('ALTER TABLE production_exception_lines ADD CONSTRAINT chk_production_exception_lines_meters CHECK (meters_snapshot > 0)');
+    $pdo->exec('ALTER TABLE production_exceptions DROP CONSTRAINT chk_production_exceptions_meters');
+    $pdo->exec('ALTER TABLE production_exceptions ADD CONSTRAINT chk_production_exceptions_meters CHECK (fault_meters > 0)');
+    $pdo->exec('ALTER TABLE order_activity_events DROP CONSTRAINT chk_order_activity_action');
+    $pdo->exec("DELETE FROM order_activity_events WHERE action IN ('defect_custody_taken','defect_dismissed','defect_restored')");
+    $pdo->exec("ALTER TABLE order_activity_events ADD CONSTRAINT chk_order_activity_action CHECK (action IN ('claimed', 'stage_completed', 'production_completed', 'owner_released', 'owner_reassigned', 'production_submitted', 'fault_reported', 'fault_rejected', 'fault_rereview_requested', 'fault_returned', 'fault_cancelled', 'authority_taken_over', 'authority_released'))");
+    $pdo->exec('ALTER TABLE production_exception_events DROP CONSTRAINT chk_production_exception_events_action');
+    $pdo->exec("ALTER TABLE production_exception_events ADD CONSTRAINT chk_production_exception_events_action CHECK (action IN ('reported', 'acknowledged', 'approval_requested', 'approved', 'rejected', 'rereview_requested', 'cancelled'))");
+    $pdo->exec('ALTER TABLE production_exceptions DROP CONSTRAINT chk_production_exceptions_status');
+    $pdo->exec("ALTER TABLE production_exceptions ADD CONSTRAINT chk_production_exceptions_status CHECK (status IN ('awaiting_acknowledgment', 'awaiting_approval', 'approved', 'rejected', 'cancelled'))");
+    $pdo->exec('ALTER TABLE production_exceptions DROP CONSTRAINT chk_production_exceptions_type');
+    $pdo->exec("ALTER TABLE production_exceptions ADD CONSTRAINT chk_production_exceptions_type CHECK (exception_type IN ('cutting_fault'))");
+    foreach(['chk_production_exceptions_position','chk_production_exceptions_attribution','chk_production_exceptions_supervisor_people','chk_production_exceptions_receiver_people','chk_production_exceptions_tailoring'] as $check) $pdo->exec("ALTER TABLE production_exceptions DROP CONSTRAINT {$check}");
+    foreach(['fk_production_exceptions_detected_owner','fk_production_exceptions_supervisor','fk_production_exceptions_receiver','fk_production_exceptions_custodian','fk_production_exceptions_confirmed_reason'] as $fk) $pdo->exec("ALTER TABLE production_exceptions DROP FOREIGN KEY {$fk}");
+    $pdo->exec('ALTER TABLE production_exceptions DROP INDEX idx_production_exceptions_supervisor, DROP INDEX idx_production_exceptions_receiver, DROP INDEX idx_production_exceptions_type_status');
+    $pdo->exec('ALTER TABLE production_exceptions DROP COLUMN detected_owner_employee_uuid, DROP COLUMN supervisor_employee_uuid, DROP COLUMN supervisor_reviewed_at, DROP COLUMN supervisor_comment, DROP COLUMN confirmed_reason_key, DROP COLUMN confirmed_reason_label_snapshot, DROP COLUMN return_requested_at, DROP COLUMN receiver_employee_uuid, DROP COLUMN physical_custodian_employee_uuid, DROP COLUMN responsibility_position, DROP COLUMN attribution');
+    // Some MySQL/MariaDB versions keep the FK-supporting indexes after the FK is dropped; drop leftovers.
+    foreach($pdo->query("SELECT DISTINCT index_name FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='production_exceptions' AND index_name LIKE 'fk_production_exceptions_%' AND index_name IN ('fk_production_exceptions_detected_owner','fk_production_exceptions_custodian','fk_production_exceptions_confirmed_reason')")->fetchAll(PDO::FETCH_COLUMN) as $index) $pdo->exec("ALTER TABLE production_exceptions DROP INDEX {$index}");
+    $pdo->exec("DELETE FROM production_fault_reasons WHERE reason_key IN ('cut-meterage','cut-color','fabric-defect')");
+    $pdo->exec('ALTER TABLE production_fault_reasons DROP CONSTRAINT chk_production_fault_reasons_attributable');
+    $pdo->exec('ALTER TABLE production_fault_reasons DROP COLUMN cutting_attributable');
+    $pdo->exec("DELETE FROM responsibility_assignments WHERE responsibility_key='tailoring_quality_supervisor'");
+    $pdo->exec('ALTER TABLE responsibility_assignments DROP CONSTRAINT chk_responsibility_assignments_key');
+    $pdo->exec("ALTER TABLE responsibility_assignments ADD CONSTRAINT chk_responsibility_assignments_key CHECK (responsibility_key IN ('tailoring_intake_responsible', 'operations_backup_approver', 'document_revision_backup_approver'))");
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='024_tailoring_quality_supervision.sql'");
+}
+
 /** Restore a pre-022 disposable test fixture (no Trendyol intake). This is NOT a deployment/rollback mechanism. */
 function restorePreTrendyolIntakeTestSchema(PDO $pdo): void
 {
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    restorePreTailoringSupervisionTestSchema($pdo);
     if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='022_trendyol_intake.sql'")->fetchColumn()) return;
     foreach(['trendyol_intake_events','trendyol_package_lines','trendyol_packages','trendyol_ignored_packages','trendyol_sync_runs','trendyol_intake_state'] as $table) $pdo->exec("DROP TABLE IF EXISTS {$table}");
     $pdo->exec("DELETE FROM production_exception_idempotency WHERE operation LIKE 'trendyol.%'");

@@ -82,13 +82,14 @@ require __DIR__ . '/HandoffSchemaFixture.php';
 restorePreExceptionsTestSchema($pdo);
 $grantsBefore = $pdo->query('SELECT * FROM role_permissions ORDER BY role_id, permission_id')->fetchAll(PDO::FETCH_ASSOC);
 $activityBefore = (int) $pdo->query('SELECT COUNT(*) FROM order_activity_events')->fetchColumn();
-check((new MigrationRunner($pdo))->migrate($migrations) === ['014_production_exceptions.sql', '015_cutting_pool.sql','016_management_analytics.sql','017_production_documents.sql','018_production_authority.sql','019_production_qr_authority.sql', '020_production_document_authority.sql', '021_document_scopes.sql', '022_trendyol_intake.sql'], '013 -> 014 -> 015 official additive upgrade');
+check((new MigrationRunner($pdo))->migrate($migrations) === ['014_production_exceptions.sql', '015_cutting_pool.sql','016_management_analytics.sql','017_production_documents.sql','018_production_authority.sql','019_production_qr_authority.sql', '020_production_document_authority.sql', '021_document_scopes.sql', '022_trendyol_intake.sql', '024_tailoring_quality_supervision.sql'], '013 -> 014 -> 015 official additive upgrade');
 check((new MigrationRunner($pdo))->migrate($migrations) === [], '014 recorded exactly once');
 check($pdo->query("SELECT rp.* FROM role_permissions rp JOIN roles r ON r.role_id = rp.role_id WHERE rp.permission_id NOT IN (SELECT permission_id FROM permissions WHERE permission_key = 'production.manage_authority' OR permission_key LIKE 'trendyol.%') AND r.role_key NOT IN ('operations-manager','analytics-reader','production-documents-operator','document-revision-approver') ORDER BY rp.role_id, rp.permission_id")->fetchAll(PDO::FETCH_ASSOC) === $grantsBefore, '014 changes no existing role grant');
 check((int) $pdo->query('SELECT COUNT(*) FROM order_activity_events')->fetchColumn() === $activityBefore, '014 rewrites no activity history');
 $opsPermissions = $pdo->query("SELECT p.permission_key FROM role_permissions rp JOIN roles r ON r.role_id = rp.role_id JOIN permissions p ON p.permission_id = rp.permission_id WHERE r.role_key = 'operations-manager' ORDER BY p.permission_key")->fetchAll(PDO::FETCH_COLUMN);
 check($opsPermissions === ['orders.lookup_exact', 'production.exceptions.approve'], 'the operations-manager template carries exactly approval and exact lookup: ' . json_encode($opsPermissions));
-check($pdo->query("SELECT reason_key FROM production_fault_reasons ORDER BY sort_order")->fetchAll(PDO::FETCH_COLUMN) === ['wrong-cut', 'wrong-meterage', 'wrong-product', 'wrong-variant', 'material-defect', 'other'], 'six root-managed fault reasons are seeded');
+check($pdo->query("SELECT reason_key FROM production_fault_reasons ORDER BY sort_order")->fetchAll(PDO::FETCH_COLUMN) === ['cut-meterage', 'cut-color', 'fabric-defect', 'wrong-cut', 'wrong-meterage', 'wrong-product', 'wrong-variant', 'material-defect', 'other'], 'six root-managed fault reasons (014) and the three supervisor reasons (024) are seeded');
+check($pdo->query("SELECT reason_key FROM production_fault_reasons WHERE cutting_attributable = 0 ORDER BY reason_key")->fetchAll(PDO::FETCH_COLUMN) === ['fabric-defect', 'material-defect'], 'only material defects can never be attributed to the cutting employee');
 check($pdo->query("SELECT approval_mode FROM production_exception_policy")->fetchColumn() === 'blocking', 'policy starts in strict blocking mode');
 check($pdo->query('SELECT weekday, is_open, opens_at, closes_at FROM business_hours ORDER BY weekday')->fetchAll(PDO::FETCH_NUM) == [
     [1, 1, '05:00:00', '20:00:00'], [2, 1, '05:00:00', '20:00:00'], [3, 1, '05:00:00', '20:00:00'], [4, 1, '05:00:00', '20:00:00'],
@@ -381,7 +382,7 @@ check(in_array('exception.waiting_worker', $types($streamAfter($denisa, $cursorD
 $cursorA = (int) end($framesA)['data']['cursor'];
 check($types($streamAfter($cutterA, $cursorA)) === [], 'reconnecting with the last cursor never repeats events');
 checkError($staffGet($tailor2, "/production-exceptions/{$x1}"), 404, 'EXCEPTION_NOT_FOUND', 'uninvolved employees cannot read the request');
-check(checkOk($staffGet($cutterA, "/production-exceptions/{$x1}"), 'cutter detail')['actions'] === ['canAcknowledge' => true, 'canRequestRereview' => false], 'the responsible employee may acknowledge');
+check(array_filter(checkOk($staffGet($cutterA, "/production-exceptions/{$x1}"), 'cutter detail')['actions']) === ['canAcknowledge' => true], 'the responsible employee may acknowledge, nothing else');
 check(array_column(checkOk($staffGet($cutterA, '/production-exceptions/mine'), 'cutter list')['items'], 'id') === [$x1], 'the request is in the responsible employee list');
 
 // Acknowledgment: only the responsible employee, explicit confirmation, QR of the same order.

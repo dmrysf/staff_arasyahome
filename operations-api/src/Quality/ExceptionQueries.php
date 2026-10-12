@@ -16,18 +16,34 @@ use PDO;
  */
 final readonly class ExceptionQueries
 {
-    public const OPEN_STATUSES = ['awaiting_acknowledgment', 'awaiting_approval'];
-    private const SUMMARY = "SELECT x.exception_uuid, x.exception_number, x.status, x.version, x.global_order_id, x.source_key, s.display_name AS source_name,
+    /** Statuses that block the order. `rejected` (intake flow) does not; `return_rejected` (supervised flow) does. */
+    public const OPEN_STATUSES = ['awaiting_acknowledgment', 'awaiting_approval', 'awaiting_supervisor_review', 'in_supervisor_custody', 'return_rejected'];
+    /** Supervisor tabs: De verificat, În grija mea, De returnat la tăiere, Finalizate. */
+    public const SUPERVISOR_VIEWS = [
+        'review' => ['awaiting_supervisor_review'],
+        'custody' => ['in_supervisor_custody', 'return_rejected'],
+        'return' => ['awaiting_acknowledgment', 'awaiting_approval'],
+        'done' => ['dismissed', 'approved', 'restored', 'cancelled'],
+    ];
+    private const SUMMARY = "SELECT x.exception_uuid, x.exception_number, x.exception_type, x.status, x.version, x.global_order_id, x.source_key, s.display_name AS source_name,
             x.order_number_snapshot, x.reason_key, x.reason_label_snapshot, x.line_count, x.fault_meters, x.arrival_number, x.rework_cycle,
             x.reported_at, x.acknowledged_at, x.resolved_at, x.detector_employee_uuid, x.responsible_employee_uuid,
-            de.display_name AS detector_name, re.display_name AS responsible_name,
+            x.detected_stage_id, ds.display_name AS detected_stage_label, x.detected_owner_employee_uuid, x.supervisor_employee_uuid, x.supervisor_reviewed_at,
+            x.confirmed_reason_key, x.confirmed_reason_label_snapshot, cr.cutting_attributable AS confirmed_reason_attributable, x.return_requested_at,
+            x.receiver_employee_uuid, x.physical_custodian_employee_uuid, x.responsibility_position, x.attribution,
+            de.display_name AS detector_name, re.display_name AS responsible_name, se.display_name AS supervisor_name, rce.display_name AS receiver_name, pce.display_name AS custodian_name,
             (SELECT d.opened_at FROM production_exception_decisions d WHERE d.exception_uuid = x.exception_uuid AND d.status = 'pending' LIMIT 1) AS pending_since,
             (SELECT MAX(d.attempt_number) FROM production_exception_decisions d WHERE d.exception_uuid = x.exception_uuid) AS attempts,
             (SELECT COUNT(*) FROM production_exceptions p WHERE p.order_uuid = x.order_uuid AND p.rework_cycle IS NOT NULL AND p.exception_uuid <> x.exception_uuid) AS previous_cycles
         FROM production_exceptions x
         INNER JOIN order_sources s ON s.source_key = x.source_key
         INNER JOIN employees de ON de.employee_uuid = x.detector_employee_uuid
-        INNER JOIN employees re ON re.employee_uuid = x.responsible_employee_uuid";
+        INNER JOIN employees re ON re.employee_uuid = x.responsible_employee_uuid
+        LEFT JOIN employees se ON se.employee_uuid = x.supervisor_employee_uuid
+        LEFT JOIN employees rce ON rce.employee_uuid = x.receiver_employee_uuid
+        LEFT JOIN employees pce ON pce.employee_uuid = x.physical_custodian_employee_uuid
+        LEFT JOIN production_stages ds ON ds.stage_id = x.detected_stage_id
+        LEFT JOIN production_fault_reasons cr ON cr.reason_key = x.confirmed_reason_key";
 
     public function __construct(private PDO $pdo)
     {
@@ -46,15 +62,45 @@ final readonly class ExceptionQueries
         return sprintf('EX-%06d', $number);
     }
 
-    /** Exceptions in which the employee is the detector or the responsible employee: open ones and the last 14 days. @return list<array<string, mixed>> */
+    /**
+     * Exceptions in which the employee is the detector, the receiver or the responsible employee: open ones
+     * and the last 14 days. A supervised case reaches the responsible cutting employee only once the
+     * supervisor sent the return; before that it is internal to tailoring. @return list<array<string, mixed>>
+     */
     public function staffList(string $employeeUuid, string $since): array
     {
+        $open = "'" . implode("', '", self::OPEN_STATUSES) . "'";
         $statement = $this->pdo->prepare(self::SUMMARY . "
-            WHERE (x.detector_employee_uuid = :employee OR x.responsible_employee_uuid = :employee_again)
-              AND (x.status IN ('awaiting_acknowledgment', 'awaiting_approval') OR x.updated_at >= :since)
+            WHERE (x.detector_employee_uuid = :employee OR x.receiver_employee_uuid = :employee_receiver
+                   OR (x.responsible_employee_uuid = :employee_again AND (x.exception_type = 'cutting_fault' OR x.return_requested_at IS NOT NULL)))
+              AND (x.status IN ({$open}) OR x.updated_at >= :since)
             ORDER BY x.updated_at DESC, x.exception_number DESC LIMIT 50");
-        $statement->execute(['employee' => $employeeUuid, 'employee_again' => $employeeUuid, 'since' => $since]);
+        $statement->execute(['employee' => $employeeUuid, 'employee_receiver' => $employeeUuid, 'employee_again' => $employeeUuid, 'since' => $since]);
         return array_map(fn (array $row): array => $this->summary($row, $employeeUuid), $statement->fetchAll(PDO::FETCH_ASSOC));
+    }
+
+    /** Supervised cases of the given sources for one supervisor tab. @param list<string> $sources @return list<array<string, mixed>> */
+    public function supervisorList(string $view, array $sources, string $viewerUuid, string $since): array
+    {
+        $statuses = self::SUPERVISOR_VIEWS[$view] ?? throw new ApiException(400, 'INVALID_REQUEST', 'Unknown list.');
+        if ($sources === []) {
+            return [];
+        }
+        $statusList = "'" . implode("', '", $statuses) . "'";
+        $sourceMarks = implode(', ', array_fill(0, count($sources), '?'));
+        $statement = $this->pdo->prepare(self::SUMMARY . " WHERE x.exception_type = 'tailoring_defect' AND x.status IN ({$statusList}) AND x.source_key IN ({$sourceMarks})"
+            . ($view === 'done' ? ' AND x.updated_at >= ?' : '') . ' ORDER BY ' . ($view === 'done' ? 'x.updated_at DESC' : 'x.reported_at ASC') . ', x.exception_number ASC LIMIT 200');
+        $statement->execute([...$sources, ...($view === 'done' ? [$since] : [])]);
+        return array_map(fn (array $row): array => $this->summary($row, $viewerUuid, true), $statement->fetchAll(PDO::FETCH_ASSOC));
+    }
+
+    /** Raw exception row for authorization decisions. @return array<string, mixed>|null */
+    public function raw(string $exceptionUuid): ?array
+    {
+        $statement = $this->pdo->prepare('SELECT * FROM production_exceptions WHERE exception_uuid = ?');
+        $statement->execute([$exceptionUuid]);
+        $row = $statement->fetch(PDO::FETCH_ASSOC);
+        return is_array($row) ? $row : null;
     }
 
     /** @return list<array<string, mixed>> */
@@ -93,17 +139,18 @@ final readonly class ExceptionQueries
     }
 
     /** Full view for an involved Staff employee or a Dashboard approver. @return array<string, mixed> */
-    public function detail(string $exceptionUuid, ?string $viewerUuid, bool $manager): array
+    public function detail(string $exceptionUuid, ?string $viewerUuid, bool $manager, bool $supervisorView = false): array
     {
         $row = $this->find($exceptionUuid) ?? throw new ApiException(404, 'EXCEPTION_NOT_FOUND', 'The request was not found.');
-        $detail = $this->summary($row, $viewerUuid);
-        $extra = $this->pdo->prepare('SELECT detector_comment, acknowledgment_comment, qr_verified_at, order_uuid, cancel_reason FROM production_exceptions WHERE exception_uuid = ?');
+        $detail = $this->summary($row, $viewerUuid, $supervisorView);
+        $extra = $this->pdo->prepare('SELECT detector_comment, acknowledgment_comment, qr_verified_at, order_uuid, cancel_reason, supervisor_comment FROM production_exceptions WHERE exception_uuid = ?');
         $extra->execute([$exceptionUuid]);
         $more = $extra->fetch(PDO::FETCH_ASSOC);
         $detail['detectorComment'] = $more['detector_comment'];
         $detail['acknowledgmentComment'] = $more['acknowledgment_comment'];
         $detail['qrVerifiedAt'] = self::iso($more['qr_verified_at']);
         $detail['cancelReason'] = $more['cancel_reason'];
+        $detail['supervisorComment'] = $more['supervisor_comment'];
 
         $lines = $this->pdo->prepare('SELECT item_uuid, line_number, name_snapshot, product_code_snapshot, variant_snapshot, color_snapshot, quantity_snapshot, meters_snapshot FROM production_exception_lines WHERE exception_uuid = ? ORDER BY line_number');
         $lines->execute([$exceptionUuid]);
@@ -118,6 +165,12 @@ final readonly class ExceptionQueries
             'meters' => (string) $line['meters_snapshot'],
         ], $lines->fetchAll(PDO::FETCH_ASSOC));
         $detail['decisions'] = $this->decisions($exceptionUuid);
+        if ($row['exception_type'] === 'tailoring_defect') {
+            // Everyone allowed to open a supervised case sees its timeline and the cutting handoff it refers to.
+            $detail['timeline'] = $this->timeline($exceptionUuid);
+            $detail['cuttingHandoff'] = $this->handoff($exceptionUuid);
+            $detail['currentStage'] = $this->currentStage((string) $more['order_uuid']);
+        }
         if ($manager) {
             $detail['detector']['id'] = (string) $row['detector_employee_uuid'];
             $detail['responsible']['id'] = (string) $row['responsible_employee_uuid'];
@@ -243,6 +296,28 @@ final readonly class ExceptionQueries
         ], $statement->fetchAll(PDO::FETCH_ASSOC));
     }
 
+    /** The cutting handoff the responsibility was derived from: who completed it, when, which arrival. @return array<string, mixed>|null */
+    private function handoff(string $exceptionUuid): ?array
+    {
+        $statement = $this->pdo->prepare(
+            'SELECT a.occurred_at, a.meters_snapshot, e.display_name, x.arrival_number FROM production_exceptions x
+             INNER JOIN order_activity_events a ON a.event_id = x.responsible_activity_event_id
+             INNER JOIN employees e ON e.employee_uuid = a.employee_uuid WHERE x.exception_uuid = ?',
+        );
+        $statement->execute([$exceptionUuid]);
+        $row = $statement->fetch(PDO::FETCH_ASSOC);
+        return is_array($row) ? ['employee' => (string) $row['display_name'], 'at' => self::iso((string) $row['occurred_at']), 'meters' => $row['meters_snapshot'], 'arrivalNumber' => (int) $row['arrival_number']] : null;
+    }
+
+    /** @return array{id: string, label: string|null} */
+    private function currentStage(string $orderUuid): array
+    {
+        $statement = $this->pdo->prepare('SELECT o.production_stage_id, s.display_name FROM operational_orders o LEFT JOIN production_stages s ON s.stage_id = o.production_stage_id WHERE o.order_uuid = ?');
+        $statement->execute([$orderUuid]);
+        $row = $statement->fetch(PDO::FETCH_ASSOC);
+        return ['id' => (string) ($row['production_stage_id'] ?? ''), 'label' => isset($row['display_name']) ? (string) $row['display_name'] : null];
+    }
+
     /** @return list<array<string, mixed>> */
     private function timeline(string $exceptionUuid): array
     {
@@ -259,13 +334,15 @@ final readonly class ExceptionQueries
     }
 
     /** @param array<string, mixed> $row @return array<string, mixed> */
-    private function summary(array $row, ?string $viewerUuid): array
+    private function summary(array $row, ?string $viewerUuid, bool $supervisorView = false): array
     {
         $previousCycles = (int) $row['previous_cycles'];
+        $tailoring = $row['exception_type'] === 'tailoring_defect';
+        $person = static fn (mixed $name): ?array => $name === null ? null : ['displayName' => (string) $name];
         $summary = [
             'id' => (string) $row['exception_uuid'],
             'number' => self::number((int) $row['exception_number']),
-            'type' => 'cutting_fault',
+            'type' => (string) $row['exception_type'],
             'status' => (string) $row['status'],
             'version' => (int) $row['version'],
             'order' => ['id' => (string) $row['global_order_id'], 'orderNumber' => (string) $row['order_number_snapshot'], 'source' => (string) $row['source_key'], 'sourceName' => (string) $row['source_name']],
@@ -282,14 +359,32 @@ final readonly class ExceptionQueries
             'resolvedAt' => self::iso($row['resolved_at']),
             'pendingSince' => self::iso($row['pending_since']),
             'attempts' => (int) ($row['attempts'] ?? 0),
+            'detectedStage' => ['id' => (string) $row['detected_stage_id'], 'label' => $row['detected_stage_label'] === null ? null : (string) $row['detected_stage_label']],
+            'confirmedReason' => $row['confirmed_reason_key'] === null ? null : ['key' => (string) $row['confirmed_reason_key'], 'label' => (string) $row['confirmed_reason_label_snapshot'], 'cuttingAttributable' => (int) $row['confirmed_reason_attributable'] === 1],
+            'supervisor' => $person($row['supervisor_name']),
+            'receiver' => $person($row['receiver_name']),
+            'physicalCustodian' => $person($row['custodian_name']),
+            'responsibilityPosition' => $row['responsibility_position'],
+            'attribution' => $row['attribution'],
+            'supervisorReviewedAt' => self::iso($row['supervisor_reviewed_at']),
+            'returnRequestedAt' => self::iso($row['return_requested_at']),
         ];
         if ($viewerUuid !== null) {
             $isResponsible = $row['responsible_employee_uuid'] === $viewerUuid;
             $isDetector = $row['detector_employee_uuid'] === $viewerUuid;
-            $summary['role'] = $isResponsible ? 'responsible' : ($isDetector ? 'detector' : null);
+            $isReceiver = $row['receiver_employee_uuid'] === $viewerUuid;
+            $supervises = $tailoring && $supervisorView;
+            $status = (string) $row['status'];
+            $summary['role'] = $isResponsible ? 'responsible' : ($isReceiver ? 'receiver' : ($isDetector ? 'detector' : ($supervises ? 'supervisor' : null)));
             $summary['actions'] = [
-                'canAcknowledge' => $isResponsible && $row['status'] === 'awaiting_acknowledgment',
-                'canRequestRereview' => ($isResponsible || $isDetector) && $row['status'] === 'rejected',
+                'canAcknowledge' => $status === 'awaiting_acknowledgment' && ($tailoring ? $isReceiver : $isResponsible),
+                'statesResponsibility' => $tailoring && $isReceiver && $isResponsible,
+                'canRequestRereview' => !$tailoring && ($isResponsible || $isDetector) && $status === 'rejected',
+                'canReview' => $supervises && !$isDetector && $status === 'awaiting_supervisor_review',
+                'canRequestReturn' => $supervises && $status === 'in_supervisor_custody',
+                'canRestore' => $supervises && in_array($status, ['in_supervisor_custody', 'awaiting_acknowledgment', 'return_rejected'], true),
+                'canAskManagersAgain' => $supervises && $status === 'return_rejected',
+                'canAddNote' => $tailoring && in_array($status, self::OPEN_STATUSES, true) && ($supervises || $isDetector || $isReceiver || ($isResponsible && $row['return_requested_at'] !== null)),
             ];
         }
         return $summary;

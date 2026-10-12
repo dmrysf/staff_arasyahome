@@ -33,6 +33,12 @@ returns, 2D/3D, inventory. Nothing in this milestone touches stock, commerce sta
 
 Transitions:
 
+> **Since API 2.28.0** an appointed tailoring quality supervisor changes this flow for Trendyol, Trend Home and
+> OutletPerdele. Defects found at stages 3–12 go to the supervisor first. Only the final stage 3 → stage 2
+> return needs a manager, and that decision states whether cutting responsibility is established. See
+> [Tailoring quality supervision](tailoring-quality-supervision.md). The flow below applies when no supervisor
+> is appointed, and always to B2B.
+
 1. **Report** (`POST /orders/{id}/fault-reports`) — only the employee who accepted the order at
    `workshop-receiving` (current owner, stage allowed). Body: `expectedVersion` (production version),
    `itemIds` (exact faulty lines), `reasonKey`, optional `comment` (mandatory for "Alt motiv"). The server

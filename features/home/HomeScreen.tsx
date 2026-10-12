@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { ActivityPage, Employee, ProductionWorkflow } from "../../domain/models";
 import type { ActivityService, ServiceBundle } from "../../services/contracts";
 import { ExceptionsCard } from "../exceptions/ExceptionsCard";
+import { SupervisorCard } from "../exceptions/SupervisorScreen";
 import { DocumentsCard } from "../documents/DocumentsCard";
 import { DocumentLookup } from "../documents/DocumentScreen";
 import { hasPermission } from "../../domain/permissions";
@@ -77,6 +78,7 @@ export function HomeScreen({ employee, services, workflow, dashboardUrl, navigat
         <p className="workspace-title" data-testid="workspace-title"><span>Panou operațional</span><strong>{current.label}</strong></p>
       </header>
       <WorkspaceSwitcher workspaces={workspaces} current={current} onSelect={select} />
+      <SupervisorCard service={services.exceptions} navigate={navigate} />
 
       {current.kind === "trendyol" && services.trendyol && <TrendyolDashboard employee={employee} service={services.trendyol} navigate={navigate} />}
 

@@ -553,6 +553,39 @@ $check($pdo->query("SELECT action FROM order_activity_events WHERE global_order_
 $check($row('SELECT intake_status, version, released_at FROM trendyol_packages WHERE package_id = ?', [$base + 92]) === $package92, 'the Trendyol package is untouched (no marketplace write, no approval change)');
 $status($get($cutter, '/orders/' . rawurlencode($global92)), 200, 'from cutting on it is the cutter\'s ordinary work');
 
+// Tailoring quality supervision (API 2.28): a Trendyol defect found at stage 7 follows the same shared flow as
+// Trendhome and OutletPerdele. Root appoints the supervisor for this block only and revokes it again.
+$tailoringStages = ['workshop-receiving', 'labeling', 'material-straightening', 'bottom-hem', 'side-hem', 'ironing', 'height', 'header-tape', 'sewing-finishing', 'quality-control'];
+$tyTailor = $identity('tytailor', $tailoringStages, ['staff'], []);
+$tyChief = $identity('tychief', $tailoringStages, ['staff'], []);
+$tyManager = $identity('tymanager', [], ['dashboard'], [$roleIds['operations-manager']]);
+$version92 = static fn (): int => (int) $one('SELECT production_version FROM operational_orders WHERE global_order_id = ?', [$global92]);
+$path92 = '/orders/' . rawurlencode($global92);
+$status($send($cutter, 'POST', "{$path92}/transition", ['expectedVersion' => $version92()], $key('ty92-cut')), 200, 'the cutter hands the Trendyol order to tailoring');
+while (true) {
+    $status($send($tyTailor, 'POST', "{$path92}/claim", ['expectedVersion' => $version92()], $key('ty92-claim')), 200, 'tailor claims');
+    if ($one('SELECT production_stage_id FROM operational_orders WHERE global_order_id = ?', [$global92]) === 'side-hem') break;
+    $status($send($tyTailor, 'POST', "{$path92}/transition", ['expectedVersion' => $version92()], $key('ty92-move')), 200, 'tailor advances');
+}
+$appointment = $status(T::call($kernel, 'POST', '/management/organization/responsibilities', ['responsibility' => 'tailoring_quality_supervisor', 'employeeId' => $tyChief['employeeUuid']], ['x-csrf-token' => $root['csrf'], 'idempotency-key' => $key('ty-sup')], $root['cookie']), 201, 'root appoints the supervisor');
+// The p92 line was prepared by width and height only: the source sent no meters for it.
+$items92 = $pdo->query('SELECT i.item_uuid FROM operational_order_items i JOIN operational_orders o ON o.order_uuid = i.order_uuid WHERE o.global_order_id = ' . $pdo->quote($global92) . ' AND i.meters IS NULL ORDER BY i.line_number')->fetchAll(PDO::FETCH_COLUMN);
+$check($items92 !== [], 'the Trendyol order has a line without source meters');
+$defect = $status($send($tyTailor, 'POST', "{$path92}/fault-reports", ['expectedVersion' => $version92(), 'itemIds' => [$items92[0]], 'reasonKey' => 'cut-color'], $key('ty92-report')), 201, 'stage-7 Trendyol defect reported');
+$check($defect['type'] === 'tailoring_defect' && $defect['status'] === 'awaiting_supervisor_review' && $defect['order']['source'] === 'trendyol', 'a Trendyol defect goes to the supervisor');
+$check($defect['lineCount'] === 1 && $defect['faultMeters'] === '0.000', 'a line without source meters is reported as one line with 0.000 ("not measured"), never refused');
+$custody = $status($send($tyChief, 'POST', "/production-exceptions/{$defect['id']}/review", ['expectedVersion' => 1, 'decision' => 'accept', 'reasonKey' => 'cut-color', 'qrToken' => $qr92], $key('ty92-accept')), 200, 'the supervisor accepts');
+$check($one('SELECT production_stage_id FROM operational_orders WHERE global_order_id = ?', [$global92]) === 'workshop-receiving' && (int) $one('SELECT COUNT(*) FROM production_exception_decisions WHERE exception_uuid = ?', [$defect['id']]) === 0, 'Trendyol 7 -> 3 without a manager');
+$sent = $status($send($tyChief, 'POST', "/production-exceptions/{$defect['id']}/return", ['expectedVersion' => $custody['version']], $key('ty92-return')), 200, 'sent to the cutter');
+$received = $status($send($cutter, 'POST', "/production-exceptions/{$defect['id']}/acknowledge", ['expectedVersion' => $sent['version'], 'confirmed' => true, 'qrToken' => $qr92, 'responsibility' => 'accepted'], $key('ty92-ack')), 200, 'the cutter receives the Trendyol product');
+$approved = $status($send($tyManager, 'POST', "/management/production-exceptions/{$defect['id']}/decision", ['expectedVersion' => $received['version'], 'decision' => 'approve', 'attribution' => 'cutter'], $key('ty92-approve')), 200, 'the manager approves the 3 -> 2 return');
+$check($approved['status'] === 'approved' && $one('SELECT production_stage_id FROM operational_orders WHERE global_order_id = ?', [$global92]) === 'material-preparation', 'only the manager returns the Trendyol order to cutting');
+$check($pdo->query('SELECT event_type, line_count, meters FROM production_quality_events WHERE exception_uuid = ' . $pdo->quote($defect['id']) . ' ORDER BY event_type')->fetchAll(PDO::FETCH_ASSOC) == [['event_type' => 'cutting_fault', 'line_count' => 1, 'meters' => '0.000'], ['event_type' => 'fault_detected', 'line_count' => 1, 'meters' => '0.000']], 'KPI facts count the line and keep the unmeasured meters as 0.000');
+$check($row('SELECT intake_status, version, released_at FROM trendyol_packages WHERE package_id = ?', [$base + 92]) === $package92, 'the supervised flow never touches the Trendyol package or the marketplace');
+$assignment = array_values(array_filter($appointment['responsibilities'], static fn (array $r): bool => $r['responsibility'] === 'tailoring_quality_supervisor' && $r['state'] === 'active'))[0];
+$status(T::call($kernel, 'POST', "/management/organization/responsibilities/{$assignment['id']}/revoke", ['reason' => 'Test'], ['x-csrf-token' => $root['csrf'], 'idempotency-key' => $key('ty-sup-revoke')], $root['cookie']), 200, 'the appointment is revoked again');
+$pdo->exec("DELETE FROM production_exception_idempotency WHERE operation LIKE 'defect.%' OR operation LIKE 'fault.%'");
+
 // Leave the shared disposable database as later suites expect it: the intake rows and the approved Trendyol test
 // orders (with their QR, document revision and events) are removed, child rows first.
 $pdo->exec('DELETE FROM trendyol_package_lines');
@@ -564,6 +597,16 @@ if ($created !== []) {
     foreach (['production_document_blocks', 'production_document_prints', 'production_document_events'] as $table) $pdo->exec("DELETE FROM {$table} WHERE order_uuid IN ({$in})");
     $pdo->exec("UPDATE production_document_revisions SET request_uuid = NULL WHERE order_uuid IN ({$in})");
     $pdo->exec("UPDATE production_document_revision_requests SET previous_request_uuid = NULL WHERE order_uuid IN ({$in})");
+    $exceptions = $pdo->query("SELECT exception_uuid FROM production_exceptions WHERE order_uuid IN ({$in})")->fetchAll(PDO::FETCH_COLUMN);
+    if ($exceptions !== []) {
+        $ex = implode(', ', array_map([$pdo, 'quote'], $exceptions));
+        foreach (['production_exception_events', 'production_exception_lines'] as $table) $pdo->exec("DELETE FROM {$table} WHERE exception_uuid IN ({$ex})");
+        $pdo->exec("UPDATE production_exception_decisions SET previous_decision_uuid = NULL WHERE exception_uuid IN ({$ex})");
+        foreach (['analytics_approval_eligibility', 'analytics_approval_requests'] as $table) {
+            if ($pdo->query("SHOW COLUMNS FROM {$table} LIKE 'request_uuid'")->fetch()) $pdo->exec("DELETE FROM {$table} WHERE request_uuid IN (SELECT decision_uuid FROM production_exception_decisions WHERE exception_uuid IN ({$ex}))");
+        }
+        $pdo->exec("DELETE FROM production_exception_decisions WHERE exception_uuid IN ({$ex})");
+    }
     foreach (['production_document_revision_requests', 'production_document_revisions', 'production_qr_events', 'order_qr_references', 'production_quality_events', 'production_exceptions', 'order_activity_events',
         'order_operation_idempotency', 'employee_order_relations', 'production_authority_events', 'cutting_transfers', 'cutting_facts', 'analytics_ownership_intervals', 'analytics_order_projection', 'operational_order_items'] as $table) {
         $pdo->exec("DELETE FROM {$table} WHERE order_uuid IN ({$in})");

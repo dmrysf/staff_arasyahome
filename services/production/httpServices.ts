@@ -1,4 +1,4 @@
-import { StaffServiceError, type ActivityAction, type ActivityEntry, type ActivityPage, type Employee, type FaultDecision, type FaultException, type FaultReason, type OrderQuality, type ServiceErrorCode } from "../../domain/models";
+import { StaffServiceError, type ActivityAction, type ActivityEntry, type ActivityPage, type Employee, type FaultDecision, type FaultException, type FaultReason, type OrderQuality, type QualityCapabilities, type ServiceErrorCode } from "../../domain/models";
 import { isOrderActionBlockedReason, isOrderActionId, orderActionLabels } from "../../domain/orderActions";
 import type { ActivityService, AuthService, EmployeeService, ExceptionService, LiveService, OrderService, ServiceBundle, Session } from "../contracts";
 import { startLiveClient } from "./liveClient";
@@ -108,6 +108,12 @@ const backendErrorCodes: Partial<Record<string, ServiceErrorCode>> = {
   EXCEPTION_CHANGED: "EXCEPTION_CHANGED",
   EXCEPTION_STATE_INVALID: "EXCEPTION_STATE_INVALID",
   EXCEPTION_ALREADY_RESOLVED: "EXCEPTION_ALREADY_RESOLVED",
+  SUPERVISOR_REQUIRED: "SUPERVISOR_REQUIRED",
+  SELF_REVIEW_DENIED: "SELF_REVIEW_DENIED",
+  RESPONSIBLE_UNAVAILABLE: "RESPONSIBLE_UNAVAILABLE",
+  RECEIVER_NOT_ALLOWED: "RECEIVER_NOT_ALLOWED",
+  RECEIVER_INVALID: "RECEIVER_INVALID",
+  RECEIVER_NOT_ELIGIBLE: "RECEIVER_NOT_ELIGIBLE",
   ORDER_BLOCKED_BY_DOCUMENT: "ORDER_BLOCKED_BY_DOCUMENT",
   DOCUMENT_SUPERSEDED: "DOCUMENT_SUPERSEDED",
   DOCUMENT_REVOKED: "DOCUMENT_REVOKED",
@@ -418,7 +424,9 @@ const decimalString = (value: unknown) => {
 };
 const nullableText = (value: unknown) => value === null || value === undefined ? null : stringValue(value);
 const nullableTimestamp = (value: unknown) => value === null || value === undefined ? null : timestampValue(value);
-const exceptionStatuses = ["awaiting_acknowledgment", "awaiting_approval", "approved", "rejected", "cancelled"] as const;
+const exceptionStatuses = ["awaiting_acknowledgment", "awaiting_approval", "approved", "rejected", "cancelled", "awaiting_supervisor_review", "dismissed", "in_supervisor_custody", "return_rejected", "restored"] as const;
+const faultSources = ["trendhome", "outletperdele", "trendyol", "b2b", "marketplace"] as const;
+const person = (value: unknown): { displayName: string } | null => value == null ? null : { displayName: stringValue(objectValue(value).displayName) };
 
 function mapDecision(value: unknown): FaultDecision {
   const raw = objectValue(value);
@@ -443,10 +451,11 @@ export function mapFaultException(value: unknown): FaultException {
   const mapped: FaultException = {
     id: stringValue(raw.id),
     number: stringValue(raw.number),
+    type: raw.type === "tailoring_defect" ? "tailoring_defect" : "cutting_fault",
     status: oneOf(raw.status, exceptionStatuses),
     version: positiveInteger(raw.version),
     order: { id: stringValue(order.id), orderNumber: stringValue(order.orderNumber), sourceName: stringValue(order.sourceName),
-      source: ["trendhome", "outletperdele", "trendyol", "b2b", "marketplace"].includes(source) ? source as FaultException["order"]["source"] : "unknown" },
+      source: (faultSources as readonly string[]).includes(source) ? source as FaultException["order"]["source"] : "unknown" },
     reason: { key: stringValue(reason.key), label: stringValue(reason.label) },
     lineCount: positiveInteger(raw.lineCount),
     faultMeters: decimalString(raw.faultMeters),
@@ -459,10 +468,37 @@ export function mapFaultException(value: unknown): FaultException {
     acknowledgedAt: nullableTimestamp(raw.acknowledgedAt),
     resolvedAt: nullableTimestamp(raw.resolvedAt),
     pendingSince: nullableTimestamp(raw.pendingSince),
-    role: raw.role == null ? null : oneOf(raw.role, ["responsible", "detector"] as const),
-    actions: { canAcknowledge: actions ? booleanValue(actions.canAcknowledge) : false, canRequestRereview: actions ? booleanValue(actions.canRequestRereview) : false },
+    detectedStage: raw.detectedStage == null ? { id: "workshop-receiving", label: null } : { id: stringValue(objectValue(raw.detectedStage).id), label: nullableText(objectValue(raw.detectedStage).label) },
+    confirmedReason: raw.confirmedReason == null ? null : { key: stringValue(objectValue(raw.confirmedReason).key), label: stringValue(objectValue(raw.confirmedReason).label), cuttingAttributable: booleanValue(objectValue(raw.confirmedReason).cuttingAttributable) },
+    supervisor: person(raw.supervisor),
+    receiver: person(raw.receiver),
+    physicalCustodian: person(raw.physicalCustodian),
+    responsibilityPosition: raw.responsibilityPosition == null ? null : oneOf(raw.responsibilityPosition, ["accepted", "disputed", "not_stated"] as const),
+    attribution: raw.attribution == null ? null : oneOf(raw.attribution, ["cutter", "none"] as const),
+    returnRequestedAt: nullableTimestamp(raw.returnRequestedAt),
+    role: raw.role == null ? null : oneOf(raw.role, ["responsible", "detector", "receiver", "supervisor"] as const),
+    // Absent flags (an older API) are false: the screen never offers an action the server did not grant.
+    actions: {
+      canAcknowledge: flag(actions, "canAcknowledge"), statesResponsibility: flag(actions, "statesResponsibility"), canRequestRereview: flag(actions, "canRequestRereview"),
+      canReview: flag(actions, "canReview"), canRequestReturn: flag(actions, "canRequestReturn"), canRestore: flag(actions, "canRestore"),
+      canAskManagersAgain: flag(actions, "canAskManagersAgain"), canAddNote: flag(actions, "canAddNote"),
+    },
   };
   if ("detectorComment" in raw) mapped.detectorComment = nullableText(raw.detectorComment);
+  if ("supervisorComment" in raw) mapped.supervisorComment = nullableText(raw.supervisorComment);
+  if (raw.currentStage != null) mapped.currentStage = { id: stringValue(objectValue(raw.currentStage).id), label: nullableText(objectValue(raw.currentStage).label) };
+  if ("cuttingHandoff" in raw) {
+    const handoff = raw.cuttingHandoff == null ? null : objectValue(raw.cuttingHandoff);
+    mapped.cuttingHandoff = handoff === null ? null : { employee: stringValue(handoff.employee), at: timestampValue(handoff.at), arrivalNumber: positiveInteger(handoff.arrivalNumber) };
+  }
+  if (raw.timeline != null) {
+    if (!Array.isArray(raw.timeline)) throw new StaffServiceError("SERVER_ERROR");
+    mapped.timeline = raw.timeline.map((item) => {
+      const entry = objectValue(item);
+      const details = entry.details == null ? null : objectValue(entry.details);
+      return { action: stringValue(entry.action), actor: stringValue(entry.actor), at: timestampValue(entry.at), version: positiveInteger(entry.version), comment: details && typeof details.comment === "string" ? details.comment : null };
+    });
+  }
   if ("acknowledgmentComment" in raw) mapped.acknowledgmentComment = nullableText(raw.acknowledgmentComment);
   if (raw.lines != null) {
     if (!Array.isArray(raw.lines)) throw new StaffServiceError("SERVER_ERROR");
@@ -495,7 +531,26 @@ function mapFaultList(value: unknown): FaultException[] {
 function mapReasons(value: unknown): FaultReason[] {
   const raw = objectValue(value);
   if (!Array.isArray(raw.items)) throw new StaffServiceError("SERVER_ERROR");
-  return raw.items.map((item) => { const reason = objectValue(item); return { key: stringValue(reason.key), label: stringValue(reason.label), requiresComment: booleanValue(reason.requiresComment) }; });
+  return raw.items.map((item) => {
+    const reason = objectValue(item);
+    return { key: stringValue(reason.key), label: stringValue(reason.label), requiresComment: booleanValue(reason.requiresComment), cuttingAttributable: reason.cuttingAttributable == null ? true : booleanValue(reason.cuttingAttributable) };
+  });
+}
+
+function flag(actions: Record<string, unknown> | null, name: string): boolean {
+  return actions !== null && actions[name] === true;
+}
+
+export function mapQualityCapabilities(value: unknown): QualityCapabilities {
+  const raw = objectValue(value);
+  const sources = Array.isArray(raw.supervisedSources) ? raw.supervisedSources.filter((item): item is QualityCapabilities["supervisedSources"][number] => typeof item === "string" && (faultSources as readonly string[]).includes(item)) : [];
+  return { tailoringSupervisor: raw.tailoringSupervisor === true, supervisedSources: sources, supervisedFlowActive: raw.supervisedFlowActive === true };
+}
+
+function mapReceivers(value: unknown): { id: string; displayName: string }[] {
+  const raw = objectValue(value);
+  if (!Array.isArray(raw.items)) throw new StaffServiceError("SERVER_ERROR");
+  return raw.items.map((item) => { const receiver = objectValue(item); return { id: stringValue(receiver.id), displayName: stringValue(receiver.displayName) }; });
 }
 
 export function mapOrderPage(value: unknown): import("../../domain/models").OrderPage {
@@ -732,8 +787,19 @@ export function createProductionServices(apiBaseUrl: string, options: Production
     report: (orderId, input) => http.request(`/orders/${encodeURIComponent(orderId)}/fault-reports`, { method: "POST", headers: { "Idempotency-Key": input.idempotencyKey },
       body: JSON.stringify({ expectedVersion: input.expectedVersion, itemIds: input.itemIds, reasonKey: input.reasonKey, ...(input.comment ? { comment: input.comment } : {}) }) }, mapFaultException),
     acknowledge: (id, input) => http.request(`/production-exceptions/${encodeURIComponent(id)}/acknowledge`, { method: "POST", headers: { "Idempotency-Key": input.idempotencyKey },
-      body: JSON.stringify({ expectedVersion: input.expectedVersion, confirmed: true, qrToken: input.qrToken, ...(input.comment ? { comment: input.comment } : {}) }) }, mapFaultException),
+      body: JSON.stringify({ expectedVersion: input.expectedVersion, confirmed: true, qrToken: input.qrToken, ...(input.comment ? { comment: input.comment } : {}), ...(input.responsibility ? { responsibility: input.responsibility } : {}) }) }, mapFaultException),
     rereview: (id, input) => http.request(`/production-exceptions/${encodeURIComponent(id)}/rereview`, { method: "POST", headers: { "Idempotency-Key": input.idempotencyKey },
+      body: JSON.stringify({ expectedVersion: input.expectedVersion, comment: input.comment }) }, mapFaultException),
+    capabilities: (requestOptions) => http.request("/production-exceptions/capabilities", { signal: requestOptions?.signal }, mapQualityCapabilities),
+    supervisorList: (view, requestOptions) => http.request(`/production-exceptions/supervisor?view=${encodeURIComponent(view)}`, { signal: requestOptions?.signal }, mapFaultList),
+    receivers: (id, requestOptions) => http.request(`/production-exceptions/${encodeURIComponent(id)}/receivers`, { signal: requestOptions?.signal }, mapReceivers),
+    review: (id, input) => http.request(`/production-exceptions/${encodeURIComponent(id)}/review`, { method: "POST", headers: { "Idempotency-Key": input.idempotencyKey },
+      body: JSON.stringify({ expectedVersion: input.expectedVersion, decision: input.decision, ...(input.decision === "accept" ? { reasonKey: input.reasonKey, qrToken: input.qrToken } : {}), ...(input.comment ? { comment: input.comment } : {}) }) }, mapFaultException),
+    sendReturn: (id, input) => http.request(`/production-exceptions/${encodeURIComponent(id)}/return`, { method: "POST", headers: { "Idempotency-Key": input.idempotencyKey },
+      body: JSON.stringify({ expectedVersion: input.expectedVersion, ...(input.receiverEmployeeId ? { receiverEmployeeId: input.receiverEmployeeId } : {}), ...(input.comment ? { comment: input.comment } : {}) }) }, mapFaultException),
+    restore: (id, input) => http.request(`/production-exceptions/${encodeURIComponent(id)}/restore`, { method: "POST", headers: { "Idempotency-Key": input.idempotencyKey },
+      body: JSON.stringify({ expectedVersion: input.expectedVersion, qrToken: input.qrToken, comment: input.comment }) }, mapFaultException),
+    addNote: (id, input) => http.request(`/production-exceptions/${encodeURIComponent(id)}/notes`, { method: "POST", headers: { "Idempotency-Key": input.idempotencyKey },
       body: JSON.stringify({ expectedVersion: input.expectedVersion, comment: input.comment }) }, mapFaultException),
   };
   const live: LiveService = {

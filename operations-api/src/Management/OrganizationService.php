@@ -24,8 +24,8 @@ use Throwable;
  *
  * - Root designates the CEO principal (organization_principals.ceo). Nobody else can.
  * - Root and the CEO principal (and nobody else, whatever their permissions) may:
- *   appoint/replace/remove the tailoring intake responsible, appoint/revoke temporary operations backup
- *   approvers, and change working hours.
+ *   appoint/replace/remove the tailoring intake responsible and the tailoring quality supervisor,
+ *   appoint/revoke temporary operations backup approvers, and change working hours.
  * - Every change is idempotent, runs in one transaction and writes iam_audit_events with before/after.
  *
  * These controls are deliberately not permissions: a permission could be placed in a role by anyone
@@ -37,6 +37,7 @@ final readonly class OrganizationService
     public const TAILORING_INTAKE = 'tailoring_intake_responsible';
     public const OPERATIONS_BACKUP = 'operations_backup_approver';
     public const DOCUMENT_REVISION_BACKUP = 'document_revision_backup_approver';
+    public const TAILORING_QUALITY_SUPERVISOR = \Arasya\Operations\Quality\TailoringSupervisorPolicy::RESPONSIBILITY;
     private const BACKUP_MAX_DAYS = 90;
 
     public function __construct(
@@ -136,7 +137,7 @@ final readonly class OrganizationService
         $this->requireManager($actor);
         IdempotencyStore::requireKey($key);
         $responsibility = $input['responsibility'] ?? null;
-        if (!in_array($responsibility, [self::TAILORING_INTAKE, self::OPERATIONS_BACKUP, self::DOCUMENT_REVISION_BACKUP], true)) {
+        if (!in_array($responsibility, [self::TAILORING_INTAKE, self::OPERATIONS_BACKUP, self::DOCUMENT_REVISION_BACKUP, self::TAILORING_QUALITY_SUPERVISOR], true)) {
             throw new ApiException(400, 'INVALID_REQUEST', 'Unknown responsibility.');
         }
         $target = $this->uuid($input['employeeId'] ?? null);
@@ -210,7 +211,19 @@ final readonly class OrganizationService
                     $replaced[] = ['assignmentId' => (string) $row['assignment_uuid'], 'employeeId' => (string) $row['employee_uuid']];
                 }
             } else {
-                // One tailoring intake responsible at a time: the previous appointment ends now.
+                if ($responsibility === self::TAILORING_QUALITY_SUPERVISOR) {
+                    // The supervisor works in Staff and takes defective orders into custody at tailoring intake.
+                    // The appointment grants no permission, role, stage, source or approval right.
+                    $staff = $this->pdo->prepare("SELECT 1 FROM employee_application_access WHERE employee_uuid = ? AND application_key = 'staff'");
+                    $staff->execute([$target]);
+                    $stage = $this->pdo->prepare("SELECT 1 FROM employee_stage_access WHERE employee_uuid = ? AND stage_id = 'workshop-receiving'");
+                    $stage->execute([$target]);
+                    if ($staff->fetchColumn() === false || $stage->fetchColumn() === false) {
+                        throw new ApiException(422, 'EMPLOYEE_NEEDS_TAILORING_INTAKE', 'The tailoring quality supervisor needs Staff access and the tailoring intake stage.');
+                    }
+                }
+                // One tailoring intake responsible and one tailoring quality supervisor at a time: the previous
+                // appointment of the same responsibility ends now.
                 $current = $this->pdo->prepare("SELECT assignment_uuid, employee_uuid FROM responsibility_assignments WHERE responsibility_key = ? AND revoked_at IS NULL AND (ends_at IS NULL OR ends_at > ?) FOR UPDATE");
                 $current->execute([$responsibility, $now]);
                 foreach ($current->fetchAll(PDO::FETCH_ASSOC) as $row) {

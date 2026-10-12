@@ -1,4 +1,4 @@
-import type { ActivityPage, Employee, FaultException, FaultReason, LiveEvent, OrderPage, ProductionWorkflow, StaffOrder } from "../domain/models";
+import type { ActivityPage, Employee, FaultException, FaultReason, LiveEvent, OrderPage, ProductionWorkflow, QualityCapabilities, StaffOrder, SupervisorView } from "../domain/models";
 import type { StaffRuntimeMode } from "../src/runtimeConfig";
 
 export type Session = { employee: Employee; expiresAt: string };
@@ -52,10 +52,25 @@ export interface ExceptionService {
   reasons(options?: { signal?: AbortSignal }): Promise<FaultReason[]>;
   /** Tailoring intake returns the order to cutting with the exact faulty lines. */
   report(orderId: string, input: { expectedVersion: number; itemIds: string[]; reasonKey: string; comment: string | null; idempotencyKey: string }): Promise<FaultException>;
-  /** The responsible cutting employee confirms and scans the QR of the same order. */
-  acknowledge(id: string, input: { expectedVersion: number; qrToken: string; comment: string | null; idempotencyKey: string }): Promise<FaultException>;
+  /**
+   * The addressed cutting employee scans the QR of the same order. In the supervised flow this records
+   * physical receipt; only the responsible employee adds "accepted" or "disputed", never as an admission.
+   */
+  acknowledge(id: string, input: { expectedVersion: number; qrToken: string; comment: string | null; responsibility?: "accepted" | "disputed" | null; idempotencyKey: string }): Promise<FaultException>;
   /** After a rejection: ask for a new decision; the rejection stays in history. */
   rereview(id: string, input: { expectedVersion: number; comment: string; idempotencyKey: string }): Promise<FaultException>;
+  capabilities(options?: { signal?: AbortSignal }): Promise<QualityCapabilities>;
+  /** Tailoring quality supervisor tabs. */
+  supervisorList(view: SupervisorView, options?: { signal?: AbortSignal }): Promise<FaultException[]>;
+  /** Available cutting employees when the responsible one cannot receive the product. */
+  receivers(id: string, options?: { signal?: AbortSignal }): Promise<{ id: string; displayName: string }[]>;
+  /** Supervisor accepts (with the product's QR and the confirmed reason) or dismisses a report. No manager. */
+  review(id: string, input: { expectedVersion: number; decision: "accept" | "dismiss"; reasonKey?: string; qrToken?: string; comment: string | null; idempotencyKey: string }): Promise<FaultException>;
+  /** Supervisor sends the case to the cutting employee; the managers decide only after physical receipt. */
+  sendReturn(id: string, input: { expectedVersion: number; receiverEmployeeId?: string | null; comment: string | null; idempotencyKey: string }): Promise<FaultException>;
+  /** Supervisor ends the case inside tailoring with the product in hand (QR). */
+  restore(id: string, input: { expectedVersion: number; qrToken: string; comment: string; idempotencyKey: string }): Promise<FaultException>;
+  addNote(id: string, input: { expectedVersion: number; comment: string; idempotencyKey: string }): Promise<FaultException>;
 }
 
 /** Authenticated live updates (server-sent events). The handler receives each event exactly once. */

@@ -546,9 +546,9 @@ test('expected API errors and validation are unchanged by the PDO diagnostics', 
     expect(!array_key_exists('exception', $warning) && !array_key_exists('sqlstate', $warning) && !array_key_exists('driver_code', $warning));
 });
 
-test('migrations stay sequential through 023 and the canonical workflow keeps its 14 stages', function (): void {
+test('migrations stay sequential through 024 and the canonical workflow keeps its 14 stages', function (): void {
     $migrations = array_map('basename', glob(dirname(__DIR__) . '/database/migrations/*.sql') ?: []);
-    expect(count($migrations) === 23 && str_starts_with($migrations[0], '001_') && str_starts_with($migrations[16], '017_') && $migrations[17] === '018_production_authority.sql' && $migrations[18] === '019_production_qr_authority.sql' && $migrations[19] === '020_production_document_authority.sql' && $migrations[20] === '021_document_scopes.sql' && $migrations[21] === '022_trendyol_intake.sql' && $migrations[22] === '023_source_scoped_stage_authorization.sql');
+    expect(count($migrations) === 24 && $migrations[23] === '024_tailoring_quality_supervision.sql' && str_starts_with($migrations[0], '001_') && str_starts_with($migrations[16], '017_') && $migrations[17] === '018_production_authority.sql' && $migrations[18] === '019_production_qr_authority.sql' && $migrations[19] === '020_production_document_authority.sql' && $migrations[20] === '021_document_scopes.sql' && $migrations[21] === '022_trendyol_intake.sql' && $migrations[22] === '023_source_scoped_stage_authorization.sql');
     expect(count(CanonicalProductionWorkflowContract::STAGES) === 14);
     expect(array_keys(CanonicalProductionWorkflowContract::STAGES) === ['waiting', 'material-preparation', 'workshop-receiving', 'labeling', 'material-straightening', 'bottom-hem', 'side-hem', 'ironing', 'height', 'header-tape', 'sewing-finishing', 'quality-control', 'packing', 'delivery']);
     // 018 is additive: it never converts the authority of existing orders.
@@ -558,6 +558,11 @@ test('migrations stay sequential through 023 and the canonical workflow keeps it
     $scopes = (string) file_get_contents(dirname(__DIR__) . '/database/migrations/023_source_scoped_stage_authorization.sql');
     $statements = preg_replace(['/^\s*--.*$/m', '/ON (UPDATE|DELETE) RESTRICT/'], '', $scopes);
     expect(preg_match('/\b(UPDATE|DELETE|DROP|ALTER|INSERT|TRUNCATE|RENAME)\b/i', $statements) === 0 && substr_count($statements, 'CREATE TABLE IF NOT EXISTS employee_stage_source_scopes') === 1, '023 must only create the scope table.');
+    // 024 is additive: it widens constraints and adds nullable columns; the only data change is the new
+    // reasons and the attributable flag of the existing material-defect reason. No drop, delete or rename.
+    $supervision = preg_replace(['/^\s*--.*$/m', '/ON (UPDATE|DELETE) RESTRICT/', '/DROP CONSTRAINT chk_[a-z_]+;/'], '', (string) file_get_contents(dirname(__DIR__) . '/database/migrations/024_tailoring_quality_supervision.sql'));
+    expect(preg_match('/\b(DELETE|DROP|TRUNCATE|RENAME)\b/i', $supervision) === 0, '024 must not delete or drop anything except re-created CHECK constraints.');
+    expect(preg_match_all('/\bUPDATE\s+([a-z_]+)/i', $supervision, $updates) === 1 && $updates[1] === ['production_fault_reasons'], '024 updates only the material-defect reason flag.');
 });
 
 test('document authority mode is per source, defaults to legacy and enforces only with QR authority enforce', function (): void {

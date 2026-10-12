@@ -23,6 +23,7 @@ import { LiveProvider } from "./liveContext";
 import { LiveNotice } from "../components/LiveNotice";
 import { BootScreen } from "../components/ui/States";
 import { ExceptionScreen } from "../features/exceptions/ExceptionScreen";
+import { SupervisorScreen } from "../features/exceptions/SupervisorScreen";
 import { DocumentScreen } from "../features/documents/DocumentScreen";
 import { AuthorityScreen } from "../features/authority/AuthorityScreen";
 import { canManageAuthority } from "../domain/authority";
@@ -140,6 +141,7 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
   else if (guardedRoute === "/orders") screen = <OrdersScreen service={services.orders} workflow={workflow} navigate={navigate} />;
   else if (orderId) screen = <OrderDetailScreen key={orderId} orderId={orderId} service={services.orders} exceptions={services.exceptions} cutting={services.cutting} documents={services.documents} productionQr={canManageAuthority(session.employee) ? services.productionQr : undefined} permissions={session.employee.permissions} workflow={workflow} navigate={navigate} onSessionExpired={() => expireSession(new StaffServiceError("SESSION_EXPIRED"))} />;
   else if (documentOrderId && services.documents) screen = <DocumentScreen key={documentOrderId} orderId={documentOrderId} service={services.documents} permissions={session.employee.permissions} navigate={navigate} />;
+  else if (guardedRoute === "/problems") screen = <SupervisorScreen service={services.exceptions} navigate={navigate} />;
   else if (exceptionId) screen = <ExceptionScreen key={exceptionId} exceptionId={exceptionId} service={services.exceptions} navigate={navigate} onSessionExpired={() => expireSession(new StaffServiceError("SESSION_EXPIRED"))} />;
   else if (guardedRoute === "/authority" && services.authority) screen = <AuthorityScreen service={services.authority} initialOrderId={new URLSearchParams(window.location.search).get("order") ?? undefined} navigate={navigate} />;
   else if (guardedRoute === "/trendyol" && services.trendyol) screen = <TrendyolInboxScreen service={services.trendyol} navigate={navigate} />;
