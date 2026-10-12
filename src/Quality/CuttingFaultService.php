@@ -36,7 +36,8 @@ use Throwable;
  *     -> rejected: the order is unblocked and stays at workshop-receiving
  *   rereview (responsible or detector, after a rejection, mandatory comment)
  *     -> awaiting_approval with a new linked decision attempt; the rejection stays in history
- *   cancel (root only, recovery for a request that can no longer progress)
+ *   cancel (root only, recovery for a request that can no longer progress; a supervised case whose product
+ *     already left its owner is never released by cancellation, see cancel())
  *
  * Every command locks the order row first and then the exception row, replays a committed result
  * for the same actor idempotency key, checks expected versions and writes append-only events
@@ -118,10 +119,12 @@ final readonly class CuttingFaultService
             if ($responsible['employee_uuid'] === $actor->employeeUuid) {
                 throw new ApiException(409, 'SELF_FAULT_REPORT_DENIED', 'An employee cannot report a cutting fault attributed to themselves.');
             }
-            // Supervised flow: a line without source meters is reported with 0.000 ("not measured"), never refused,
-            // so every source (Trendyol lines may carry only width and height) uses the same defect workflow.
+            // Supervised flow: a line without source meters is still reported, never refused, so every source
+            // (Trendyol lines may carry only width and height) uses the same defect workflow. Its meterage stays
+            // unknown (NULL, counted in unmeasured_line_count); it is never recorded as a measured zero.
             $lines = $this->faultLines((string) $order['order_uuid'], $itemIds, !$supervised);
             $meters = $this->sumMeters((string) $order['order_uuid'], $itemIds);
+            $unmeasured = count(array_filter($lines, static fn (array $line): bool => !self::measured($line['meters'])));
             $now = $this->now();
             $uuid = Uuid::v4();
             $status = $supervised ? 'awaiting_supervisor_review' : 'awaiting_acknowledgment';
@@ -130,24 +133,25 @@ final readonly class CuttingFaultService
                 "INSERT INTO production_exceptions (
                     exception_uuid, exception_type, order_uuid, global_order_id, source_key, order_number_snapshot, detected_stage_id, return_stage_id,
                     status, version, detector_employee_uuid, detected_owner_employee_uuid, responsible_employee_uuid, responsible_activity_event_id, arrival_number,
-                    reason_key, reason_label_snapshot, detector_comment, line_count, fault_meters, production_version_at_report, reported_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    reason_key, reason_label_snapshot, detector_comment, line_count, fault_meters, unmeasured_line_count, production_version_at_report, reported_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )->execute([
                 $uuid, $supervised ? self::TYPE_TAILORING : 'cutting_fault', $order['order_uuid'], $globalId, $order['source_key'], $order['order_number'], $stageId, self::RETURN_STAGE,
                 $status, $actor->employeeUuid, $supervised ? $actor->employeeUuid : null, $responsible['employee_uuid'], $responsible['event_id'], $responsible['arrival'],
-                $reason['reason_key'], $reason['label'], $comment, count($lines), $meters, $expected, $now, $now,
+                $reason['reason_key'], $reason['label'], $comment, count($lines), $meters, $unmeasured, $expected, $now, $now,
             ]);
             $insertLine = $this->pdo->prepare(
                 'INSERT INTO production_exception_lines (exception_uuid, item_uuid, line_number, name_snapshot, product_code_snapshot, variant_snapshot, color_snapshot, quantity_snapshot, meters_snapshot)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
             );
             foreach ($lines as $line) {
-                $insertLine->execute([$uuid, $line['item_uuid'], $line['line_number'], $line['name'], $line['product_code'], $line['variant'], $line['color'], $line['quantity'], $line['meters'] ?? '0.000']);
+                $insertLine->execute([$uuid, $line['item_uuid'], $line['line_number'], $line['name'], $line['product_code'], $line['variant'], $line['color'], $line['quantity'], self::measured($line['meters']) ? $line['meters'] : null]);
             }
             $this->event($uuid, 'reported', $actor->employeeUuid, 1, [
                 'itemIds' => array_column($lines, 'item_uuid'),
-                'lines' => array_map(static fn (array $line): array => ['itemId' => $line['item_uuid'], 'lineNumber' => (int) $line['line_number'], 'meters' => (string) ($line['meters'] ?? '0.000')], $lines),
+                'lines' => array_map(static fn (array $line): array => ['itemId' => $line['item_uuid'], 'lineNumber' => (int) $line['line_number'], 'meters' => self::measured($line['meters']) ? (string) $line['meters'] : null], $lines),
                 'faultMeters' => $meters,
+                'unmeasuredLineCount' => $unmeasured,
                 'reason' => ['key' => $reason['reason_key'], 'label' => $reason['label']],
                 'responsibleEmployeeId' => $responsible['employee_uuid'],
                 'responsibleActivityEventId' => $responsible['event_id'],
@@ -159,7 +163,7 @@ final readonly class CuttingFaultService
 
             $this->updateOrder((string) $order['order_uuid'], $expected, ['open_exception_uuid' => $uuid], $now, 'open_exception_uuid IS NULL');
             $stage = $this->stage($workflow, $stageId);
-            $this->activity($order, $workflow, 'fault_reported', $actor->employeeUuid, $stage, null, null, null, $expected, $meters, $key, $requestId, $now);
+            $this->activity($order, $workflow, 'fault_reported', $actor->employeeUuid, $stage, null, null, null, $expected, $unmeasured === 0 ? $meters : null, $key, $requestId, $now);
 
             $payload = $this->livePayload($uuid, $order, $status, 1);
             if ($supervised) {
@@ -381,16 +385,16 @@ final readonly class CuttingFaultService
                 }
                 (new \Arasya\Operations\Cutting\CuttingLifecycle($this->pdo))->fact($orderUuid, $productionVersion + 1, 'pool_entered', null, $now);
                 $meters = (string) $exception['fault_meters'];
-                $this->activity($order, $workflow, 'fault_returned', $actor->employeeUuid, $detectionStage, $returnStage, $previousOwner, $assignee, $productionVersion, $meters, $key, $requestId, $now);
+                $this->activity($order, $workflow, 'fault_returned', $actor->employeeUuid, $detectionStage, $returnStage, $previousOwner, $assignee, $productionVersion, self::activityMeters($exception), $key, $requestId, $now);
                 // Intake flow: fault and detection facts as before. Supervised flow: detection was credited when the
                 // supervisor verified the defect; a cutting fault exists only when the manager established cutting
                 // responsibility, and it is attributed to the historical responsible employee, not the receiver.
                 $facts = $tailoring
                     ? ($attribution === 'cutter' ? ['cutting_fault' => $exception['responsible_employee_uuid']] : [])
                     : ['cutting_fault' => $exception['responsible_employee_uuid'], 'fault_detected' => $exception['detector_employee_uuid']];
-                $quality = $this->pdo->prepare('INSERT INTO production_quality_events (event_uuid, event_type, employee_uuid, order_uuid, exception_uuid, rework_cycle, is_repeat, line_count, meters, occurred_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+                $quality = $this->pdo->prepare('INSERT INTO production_quality_events (event_uuid, event_type, employee_uuid, order_uuid, exception_uuid, rework_cycle, is_repeat, line_count, meters, unmeasured_line_count, occurred_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
                 foreach ($facts as $type => $employee) {
-                    $quality->execute([Uuid::v4(), $type, $employee, $orderUuid, $exceptionUuid, $cycle, $cycle >= 2 ? 1 : 0, (int) $exception['line_count'], $meters, $now]);
+                    $quality->execute([Uuid::v4(), $type, $employee, $orderUuid, $exceptionUuid, $cycle, $cycle >= 2 ? 1 : 0, (int) $exception['line_count'], $meters, (int) $exception['unmeasured_line_count'], $now]);
                 }
                 $this->event($exceptionUuid, 'approved', $actor->employeeUuid, $version, [
                     'attempt' => (int) $attempt['attempt_number'], 'via' => $via, 'comment' => $comment, 'reworkCycle' => $cycle, 'repeated' => $cycle >= 2,
@@ -474,7 +478,17 @@ final readonly class CuttingFaultService
         });
     }
 
-    /** Root-only recovery for a request that can no longer progress (for example the responsible employee left). @param array<string, mixed> $input @return array<string, mixed> */
+    /**
+     * Root-only recovery for a request that can no longer progress (for example the responsible employee left).
+     *
+     * Intake flow, and a supervised report before custody (the order never moved, its owner still holds the
+     * product): cancelled, and the order is unblocked where it is. A supervised case after custody (the product
+     * is with the supervisor or a cutting employee, the order at stage 3 without an owner) is never released by
+     * cancellation: root names the tailoring employee who receives the product back, the case waits for that
+     * employee's QR receipt (awaiting_restore_receipt) and ends as `cancelled` only then (receiveRestore). Root
+     * can address another recipient while the handover is pending. No manager decision is involved.
+     * @param array<string, mixed> $input @return array<string, mixed>
+     */
     public function cancel(EmployeeIdentity $actor, string $exceptionId, array $input, string $key, string $requestId): array
     {
         $this->authorization->requireApplication($actor, 'dashboard');
@@ -485,10 +499,11 @@ final readonly class CuttingFaultService
         $exceptionUuid = $this->uuid($exceptionId);
         $expected = $this->positiveInt($input['expectedVersion'] ?? null, 'expectedVersion');
         $reason = $this->comment($input['reason'] ?? null, true);
+        $recipientId = $this->optionalEmployeeId($input['recipientEmployeeId'] ?? null, 'recipientEmployeeId');
         $workflow = $this->workflow();
-        $hash = IdempotencyStore::hash('fault.cancel', $exceptionUuid, [$expected, $reason]);
+        $hash = IdempotencyStore::hash('fault.cancel', $exceptionUuid, $recipientId === null ? [$expected, $reason] : [$expected, $reason, $recipientId]);
 
-        return $this->transaction(function () use ($actor, $exceptionUuid, $expected, $reason, $workflow, $key, $hash, $requestId): array {
+        return $this->transaction(function () use ($actor, $exceptionUuid, $expected, $reason, $recipientId, $workflow, $key, $hash, $requestId): array {
             [$order, $exception] = $this->lockException($exceptionUuid);
             $replay = $this->idempotency->replay($actor->employeeUuid, $key, 'fault.cancel', $exceptionUuid, $hash);
             if ($replay !== null) {
@@ -497,6 +512,19 @@ final readonly class CuttingFaultService
             $this->assertStatus($exception, ExceptionQueries::OPEN_STATUSES, $expected);
             $now = $this->now();
             $version = $expected + 1;
+            $label = ExceptionQueries::number((int) $exception['exception_number']) . " · {$order['order_number']}";
+            if (self::custodyMoved($exception)) {
+                return $this->recover($actor, $order, $exception, $reason, $recipientId, $version, $label, $key, $hash, $requestId, $now);
+            }
+            if ($recipientId !== null) {
+                throw new ApiException(400, 'INVALID_REQUEST', 'Request fields are invalid.');
+            }
+            if ($exception['exception_type'] === self::TYPE_TAILORING
+                && ($order['open_exception_uuid'] !== $exceptionUuid || $order['production_stage_id'] !== $exception['detected_stage_id'] || $order['production_owner_employee_uuid'] !== $exception['detected_owner_employee_uuid'])) {
+                // Before custody the order must still be where it was reported, with the same owner; anything else
+                // is not a state cancellation can safely release.
+                throw new ApiException(409, 'ORDER_CHANGED', 'The order changed. The request cannot be cancelled safely.');
+            }
             $this->pdo->prepare("UPDATE production_exception_decisions SET status = 'cancelled', decided_by_employee_uuid = ?, decided_via = 'root', decision_comment = ?, decided_at = ? WHERE exception_uuid = ? AND status = 'pending'")
                 ->execute([$actor->employeeUuid, $reason, $now, $exceptionUuid]);
             $this->pdo->prepare("UPDATE production_exceptions SET status = 'cancelled', version = ?, resolved_at = ?, cancelled_by_employee_uuid = ?, cancel_reason = ?, updated_at = ? WHERE exception_uuid = ? AND version = ?")
@@ -506,7 +534,7 @@ final readonly class CuttingFaultService
                 $this->activity($order, $workflow, 'fault_cancelled', $actor->employeeUuid, $this->stage($workflow, (string) $order['production_stage_id']), null, null, null, (int) $order['production_version'], null, $key, $requestId, $now);
             }
             $this->event($exceptionUuid, 'cancelled', $actor->employeeUuid, $version, ['reason' => $reason, 'statusBefore' => $exception['status']], $requestId, $now);
-            $this->audit->record($actor, 'production.exception.cancelled', 'production_exception', $exceptionUuid, ExceptionQueries::number((int) $exception['exception_number']) . " · {$order['order_number']}",
+            $this->audit->record($actor, 'production.exception.cancelled', 'production_exception', $exceptionUuid, $label,
                 ['order' => $order['global_order_id'], 'status' => ['before' => $exception['status'], 'after' => 'cancelled']], $requestId, $now);
             $payload = $this->livePayload($exceptionUuid, $order, 'cancelled', $version);
             $this->notify($exception, 'exception.updated', $payload, $now, [(string) $exception['responsible_employee_uuid']]);
@@ -515,6 +543,49 @@ final readonly class CuttingFaultService
             $this->idempotency->store($actor->employeeUuid, $key, 'fault.cancel', $exceptionUuid, $hash, $response, $now);
             return $response;
         });
+    }
+
+    /** Whether the product left its owner at detection: a supervised case after the supervisor took custody. @param array<string, mixed> $exception */
+    public static function custodyMoved(array $exception): bool
+    {
+        return ($exception['exception_type'] ?? null) === self::TYPE_TAILORING && ($exception['status'] ?? null) !== 'awaiting_supervisor_review';
+    }
+
+    /**
+     * Root recovery of a supervised case after custody: the order stays blocked at stage 3 without an owner and the
+     * product is addressed to a tailoring employee, who unblocks it only by a QR receipt.
+     * @param array<string, mixed> $order @param array<string, mixed> $exception @return array<string, mixed>
+     */
+    private function recover(EmployeeIdentity $actor, array $order, array $exception, string $reason, ?string $recipientId, int $version, string $label, string $key, string $hash, string $requestId, string $now): array
+    {
+        $exceptionUuid = (string) $exception['exception_uuid'];
+        if ($recipientId === null) {
+            throw new ApiException(422, 'RECIPIENT_REQUIRED', 'The product is no longer with the employee who reported it. Name the employee who receives it back.');
+        }
+        $this->assertHeldAtCustodyStage($order, $exceptionUuid);
+        $custodian = $exception['physical_custodian_employee_uuid'] === null ? null : (string) $exception['physical_custodian_employee_uuid'];
+        $recipient = $this->restoreRecipient($exception, $recipientId, $custodian);
+        $this->pdo->prepare("UPDATE production_exception_decisions SET status = 'cancelled', decided_by_employee_uuid = ?, decided_via = 'root', decision_comment = ?, decided_at = ? WHERE exception_uuid = ? AND status = 'pending'")
+            ->execute([$actor->employeeUuid, $reason, $now, $exceptionUuid]);
+        $this->pdo->prepare("UPDATE production_exceptions SET status = 'awaiting_restore_receipt', version = ?, cancelled_by_employee_uuid = ?, cancel_reason = ?, restore_recipient_employee_uuid = ?, restore_requested_at = ?, updated_at = ?
+             WHERE exception_uuid = ? AND version = ?")
+            ->execute([$version, $actor->employeeUuid, $reason, $recipient, $now, $now, $exceptionUuid, (int) $exception['version']]);
+        $this->event($exceptionUuid, 'recovery_requested', $actor->employeeUuid, $version, [
+            'reason' => $reason, 'statusBefore' => $exception['status'], 'targetStage' => $exception['detected_stage_id'], 'recipient' => $recipient,
+            'previousRecipient' => $exception['restore_recipient_employee_uuid'], 'physicalCustodian' => $custodian, 'orderBlocked' => true,
+        ], $requestId, $now);
+        $this->audit->record($actor, 'production.exception.recovery_requested', 'production_exception', $exceptionUuid, $label, [
+            'order' => $order['global_order_id'], 'recipient' => $recipient, 'physicalCustodian' => $custodian, 'targetStage' => $exception['detected_stage_id'],
+            'status' => ['before' => $exception['status'], 'after' => 'awaiting_restore_receipt'],
+        ], $requestId, $now);
+        $payload = $this->livePayload($exceptionUuid, $order, 'awaiting_restore_receipt', $version);
+        $this->live->toEmployee($recipient, 'exception.restore_receipt_required', $payload, $now);
+        $previous = $exception['restore_recipient_employee_uuid'];
+        $this->notify($exception, 'exception.updated', $payload, $now, [...($custodian !== null ? [$custodian] : []), ...(is_string($previous) ? [$previous] : []), ...($exception['return_requested_at'] !== null ? [(string) $exception['responsible_employee_uuid']] : [])], [$recipient]);
+        $this->live->toApprovers('exception.resolved', $payload, $now);
+        $response = $this->queries->detail($exceptionUuid, null, true);
+        $this->idempotency->store($actor->employeeUuid, $key, 'fault.cancel', $exceptionUuid, $hash, $response, $now);
+        return $response;
     }
 
     // ---------------------------------------------------------------- supervised tailoring defects
@@ -529,7 +600,11 @@ final readonly class CuttingFaultService
     //   decide approve (manager)                 -> approved                     stage 3 -> stage 2, owned by the receiver
     //   decide reject (manager)                  -> return_rejected              order stays blocked under the supervisor
     //   rereview (supervisor)                    -> awaiting_approval            new linked decision attempt
-    //   restore + QR (supervisor)                -> restored                     back to the detected stage and owner
+    //   restore + QR (supervisor)                -> awaiting_restore_receipt     still blocked at stage 3, no owner; addressed to
+    //                                                                            the owner at detection (or an eligible substitute)
+    //   receive + QR (that employee)             -> restored                     back to the detected stage, owned by the
+    //                                                                            employee who physically received it, unblocked
+    //   root cancel after custody                -> awaiting_restore_receipt     same handover; ends as cancelled on receipt
     //
     // No operations-manager decision exists anywhere in this flow except the stage 3 -> stage 2 return.
 
@@ -618,13 +693,13 @@ final readonly class CuttingFaultService
                     $this->pdo->prepare("UPDATE employee_order_relations SET status = 'inactive', updated_at = ? WHERE employee_uuid = ? AND order_uuid = ?")
                         ->execute([$now, $previousOwner, $orderUuid]);
                 }
-                $this->activity($order, $workflow, 'defect_custody_taken', $actor->employeeUuid, $from, $this->stage($workflow, TailoringSupervisorPolicy::CUSTODY_STAGE), $previousOwner, null, $productionVersion, (string) $exception['fault_meters'], $key, $requestId, $now);
+                $this->activity($order, $workflow, 'defect_custody_taken', $actor->employeeUuid, $from, $this->stage($workflow, TailoringSupervisorPolicy::CUSTODY_STAGE), $previousOwner, null, $productionVersion, self::activityMeters($exception), $key, $requestId, $now);
                 // The supervisor verified a real defect: the detection belongs to the detector from now on,
                 // whatever the managers later decide about cutting responsibility.
                 $cycles = $this->pdo->prepare('SELECT COUNT(*) FROM production_exceptions WHERE order_uuid = ? AND rework_cycle IS NOT NULL');
                 $cycles->execute([$orderUuid]);
-                $this->pdo->prepare('INSERT INTO production_quality_events (event_uuid, event_type, employee_uuid, order_uuid, exception_uuid, rework_cycle, is_repeat, line_count, meters, occurred_at) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)')
-                    ->execute([Uuid::v4(), 'fault_detected', $exception['detector_employee_uuid'], $orderUuid, $exceptionUuid, (int) $cycles->fetchColumn() >= 1 ? 1 : 0, (int) $exception['line_count'], (string) $exception['fault_meters'], $now]);
+                $this->pdo->prepare('INSERT INTO production_quality_events (event_uuid, event_type, employee_uuid, order_uuid, exception_uuid, rework_cycle, is_repeat, line_count, meters, unmeasured_line_count, occurred_at) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)')
+                    ->execute([Uuid::v4(), 'fault_detected', $exception['detector_employee_uuid'], $orderUuid, $exceptionUuid, (int) $cycles->fetchColumn() >= 1 ? 1 : 0, (int) $exception['line_count'], (string) $exception['fault_meters'], (int) $exception['unmeasured_line_count'], $now]);
                 $this->event($exceptionUuid, 'supervisor_accepted', $actor->employeeUuid, $version, [
                     'qrVerified' => true, 'confirmedReason' => ['key' => $reason['reason_key'], 'label' => $reason['label']], 'comment' => $comment,
                     'transition' => ['from' => $detectedStage, 'to' => TailoringSupervisorPolicy::CUSTODY_STAGE], 'previousOwner' => $previousOwner, 'physicalCustodian' => $actor->employeeUuid,
@@ -702,10 +777,14 @@ final readonly class CuttingFaultService
     }
 
     /**
-     * Supervisor ends the case inside tailoring: the product is back with the supervisor (QR scan) and the
-     * order returns to the stage where the defect was found, to its original owner when that employee can
-     * still work there, otherwise unowned at that stage. Allowed before the return is received, while the
-     * case is in custody, and after the managers rejected the return. @param array<string, mixed> $input @return array<string, mixed>
+     * Supervisor ends the case inside tailoring, first half of a two-party handover: the supervisor holds the
+     * product (QR scan) and addresses it to the tailoring employee who must receive it back. The order stays
+     * blocked at stage 3 without a production owner until that employee scans the QR and confirms receipt
+     * (receiveRestore). The recipient is the owner at detection while they can still work at the detected stage;
+     * only when they cannot does the supervisor name an eligible employee of that stage. Allowed while the case
+     * is in custody, before the cutting return is received, after the managers rejected the return, and again
+     * while the handover is pending (to address another recipient). No manager decision is involved.
+     * @param array<string, mixed> $input @return array<string, mixed>
      */
     public function restore(EmployeeIdentity $actor, string $exceptionId, array $input, string $key, string $requestId): array
     {
@@ -716,57 +795,41 @@ final readonly class CuttingFaultService
         $token = is_string($input['qrToken'] ?? null) ? $input['qrToken'] : throw new ApiException(400, 'QR_REQUIRED', 'The order QR code must be scanned.');
         $reference = QrReference::parsePayload($token) ?? throw new ApiException(422, 'INVALID_QR', 'The scanned code is not an Arasya order code.');
         $comment = $this->comment($input['comment'] ?? null, true);
-        $workflow = $this->workflow();
-        $hash = IdempotencyStore::hash('defect.restore', $exceptionUuid, [$expected, $reference->value, $comment]);
+        $recipientId = $this->optionalEmployeeId($input['recipientEmployeeId'] ?? null, 'recipientEmployeeId');
+        $hash = IdempotencyStore::hash('defect.restore', $exceptionUuid, $recipientId === null ? [$expected, $reference->value, $comment] : [$expected, $reference->value, $comment, $recipientId]);
 
-        return $this->transaction(function () use ($actor, $exceptionUuid, $expected, $reference, $comment, $workflow, $key, $hash, $requestId): array {
+        return $this->transaction(function () use ($actor, $exceptionUuid, $expected, $reference, $comment, $recipientId, $key, $hash, $requestId): array {
             [$order, $exception] = $this->lockException($exceptionUuid);
             $replay = $this->idempotency->replay($actor->employeeUuid, $key, 'defect.restore', $exceptionUuid, $hash);
             if ($replay !== null) {
                 return $replay;
             }
             $this->requireSupervisor($actor, $exception);
-            $this->assertStatus($exception, ['in_supervisor_custody', 'awaiting_acknowledgment', 'return_rejected'], $expected);
-            $this->assertOrderOpenForProduction($order);
-            if ($order['production_stage_id'] !== self::DETECTION_STAGE || $order['open_exception_uuid'] !== $exceptionUuid) {
-                throw new ApiException(409, 'ORDER_CHANGED', 'The order changed. Reload it before continuing.');
+            $this->assertStatus($exception, ['in_supervisor_custody', 'awaiting_acknowledgment', 'return_rejected', 'awaiting_restore_receipt'], $expected);
+            if ($exception['status'] === 'awaiting_restore_receipt' && $exception['cancelled_by_employee_uuid'] !== null) {
+                // A root recovery is under way; only root addresses it again.
+                throw new ApiException(409, 'EXCEPTION_STATE_INVALID', 'The request is not in a state that allows this action.', ['status' => $exception['status']]);
             }
+            $this->assertOrderOpenForProduction($order);
+            $this->assertHeldAtCustodyStage($order, $exceptionUuid);
             $now = $this->now();
             $this->verifyQr($order, $exception, $reference, $now);
-            $target = (string) $exception['detected_stage_id'];
-            $source = (string) $order['source_key'];
-            $originalOwner = (string) $exception['detected_owner_employee_uuid'];
-            $this->pdo->prepare('SELECT employee_uuid FROM employees WHERE employee_uuid = ? FOR UPDATE')->execute([$originalOwner]);
-            $owner = $this->employees->findByUuid($originalOwner);
-            $restoredOwner = $owner !== null && OrderOwnershipService::isEligibleOwner($owner, $target, $source) ? $originalOwner : null;
+            $recipient = $this->restoreRecipient($exception, $recipientId, $actor->employeeUuid);
             $version = $expected + 1;
-            $orderUuid = (string) $order['order_uuid'];
-            $productionVersion = (int) $order['production_version'];
             $previousCustodian = $exception['physical_custodian_employee_uuid'];
-            $this->pdo->prepare("UPDATE production_exceptions SET status = 'restored', version = ?, physical_custodian_employee_uuid = ?, resolved_at = ?, updated_at = ? WHERE exception_uuid = ? AND version = ?")
-                ->execute([$version, $actor->employeeUuid, $now, $now, $exceptionUuid, $expected]);
-            $this->updateOrder($orderUuid, $productionVersion, [
-                'production_stage_id' => $target,
-                'production_owner_employee_uuid' => $restoredOwner,
-                'production_claimed_at' => $restoredOwner === null ? null : $now,
-                'production_changed_at' => $now,
-                'open_exception_uuid' => null,
-            ], $now, "production_stage_id = '" . self::DETECTION_STAGE . "' AND production_owner_employee_uuid IS NULL AND open_exception_uuid = " . $this->pdo->quote($exceptionUuid));
-            if ($restoredOwner !== null) {
-                $this->pdo->prepare(
-                    "INSERT INTO employee_order_relations (employee_uuid, order_uuid, relation_type, status, started_at, last_action_at, updated_at)
-                     VALUES (?, ?, 'assigned', 'active', ?, ?, ?)
-                     ON DUPLICATE KEY UPDATE relation_type = VALUES(relation_type), status = 'active', last_action_at = VALUES(last_action_at), updated_at = VALUES(updated_at)",
-                )->execute([$restoredOwner, $orderUuid, $now, $now, $now]);
-            }
-            $this->activity($order, $workflow, 'defect_restored', $actor->employeeUuid, $this->stage($workflow, self::DETECTION_STAGE), $this->stage($workflow, $target), null, $restoredOwner, $productionVersion, null, $key, $requestId, $now);
-            $this->event($exceptionUuid, 'restored', $actor->employeeUuid, $version, [
-                'comment' => $comment, 'qrVerified' => true, 'statusBefore' => $exception['status'],
-                'transition' => ['from' => self::DETECTION_STAGE, 'to' => $target], 'owner' => $restoredOwner, 'ownerRestored' => $restoredOwner !== null,
-                'physicalCustodian' => ['before' => $previousCustodian, 'after' => $actor->employeeUuid],
+            $previousRecipient = $exception['restore_recipient_employee_uuid'];
+            $this->pdo->prepare("UPDATE production_exceptions SET status = 'awaiting_restore_receipt', version = ?, physical_custodian_employee_uuid = ?, restore_recipient_employee_uuid = ?, restore_requested_at = ?, updated_at = ?
+                 WHERE exception_uuid = ? AND version = ?")
+                ->execute([$version, $actor->employeeUuid, $recipient, $now, $now, $exceptionUuid, $expected]);
+            $this->event($exceptionUuid, 'restore_requested', $actor->employeeUuid, $version, [
+                'comment' => $comment, 'qrVerified' => true, 'statusBefore' => $exception['status'], 'targetStage' => $exception['detected_stage_id'],
+                'recipient' => $recipient, 'originalOwner' => $exception['detected_owner_employee_uuid'], 'substitute' => $recipient !== $exception['detected_owner_employee_uuid'],
+                'previousRecipient' => $previousRecipient, 'physicalCustodian' => ['before' => $previousCustodian, 'after' => $actor->employeeUuid], 'orderBlocked' => true,
             ], $requestId, $now);
-            $payload = $this->livePayload($exceptionUuid, $order, 'restored', $version);
-            $this->notify($exception, 'exception.restored', $payload, $now, [$actor->employeeUuid, ...($exception['return_requested_at'] !== null ? [(string) $exception['responsible_employee_uuid']] : [])]);
+            $payload = $this->livePayload($exceptionUuid, $order, 'awaiting_restore_receipt', $version);
+            $this->live->toEmployee($recipient, 'exception.restore_receipt_required', $payload, $now);
+            $extra = [$actor->employeeUuid, ...($exception['return_requested_at'] !== null ? [(string) $exception['responsible_employee_uuid']] : []), ...(is_string($previousRecipient) ? [$previousRecipient] : [])];
+            $this->notify($exception, 'exception.updated', $payload, $now, $extra, [$recipient]);
             if ($exception['status'] === 'awaiting_acknowledgment') {
                 $this->live->toApprovers('exception.resolved', $payload, $now);
             }
@@ -774,6 +837,116 @@ final readonly class CuttingFaultService
             $this->idempotency->store($actor->employeeUuid, $key, 'defect.restore', $exceptionUuid, $hash, $response, $now);
             return $response;
         });
+    }
+
+    /**
+     * Second half of the handover: the addressed tailoring employee physically received the product, scanned its
+     * QR and confirms. Only now, in one transaction, the order returns to the detected stage, owned by this
+     * employee, and is unblocked. The order is never released unowned to a stage queue. A supervisor restoration
+     * ends as `restored`, a root recovery as `cancelled`. No manager decision is involved.
+     * @param array<string, mixed> $input @return array<string, mixed>
+     */
+    public function receiveRestore(EmployeeIdentity $actor, string $exceptionId, array $input, string $key, string $requestId): array
+    {
+        $this->authorization->requireApplication($actor, 'staff');
+        IdempotencyStore::requireKey($key);
+        $exceptionUuid = $this->uuid($exceptionId);
+        $expected = $this->positiveInt($input['expectedVersion'] ?? null, 'expectedVersion');
+        if (($input['confirmed'] ?? null) !== true) {
+            throw new ApiException(400, 'CONFIRMATION_REQUIRED', 'The receipt must be confirmed explicitly.');
+        }
+        $token = is_string($input['qrToken'] ?? null) ? $input['qrToken'] : throw new ApiException(400, 'QR_REQUIRED', 'The order QR code must be scanned.');
+        $reference = QrReference::parsePayload($token) ?? throw new ApiException(422, 'INVALID_QR', 'The scanned code is not an Arasya order code.');
+        $comment = $this->comment($input['comment'] ?? null, false);
+        $workflow = $this->workflow();
+        $hash = IdempotencyStore::hash('defect.receive', $exceptionUuid, [$expected, $reference->value, $comment]);
+
+        return $this->transaction(function () use ($actor, $exceptionUuid, $expected, $reference, $comment, $workflow, $key, $hash, $requestId): array {
+            [$order, $exception] = $this->lockException($exceptionUuid);
+            $replay = $this->idempotency->replay($actor->employeeUuid, $key, 'defect.receive', $exceptionUuid, $hash);
+            if ($replay !== null) {
+                return $replay;
+            }
+            if ($exception['exception_type'] !== self::TYPE_TAILORING || $exception['restore_recipient_employee_uuid'] !== $actor->employeeUuid) {
+                throw new ApiException(403, 'EXCEPTION_NOT_ASSIGNED', 'This request is not addressed to you.');
+            }
+            $this->assertStatus($exception, ['awaiting_restore_receipt'], $expected);
+            $this->assertOrderOpenForProduction($order);
+            $this->assertHeldAtCustodyStage($order, $exceptionUuid);
+            $now = $this->now();
+            $this->verifyQr($order, $exception, $reference, $now);
+            $target = (string) $exception['detected_stage_id'];
+            // Re-checked with the employee row locked: a deactivation or a removed stage committed meanwhile
+            // leaves the order blocked, waiting for a new recipient.
+            if (!$this->eligibleOwnerAt($actor->employeeUuid, $target, (string) $order['source_key'])) {
+                throw new ApiException(409, 'RESTORE_RECIPIENT_UNAVAILABLE', 'You cannot take this order at its stage now.');
+            }
+            $outcome = $exception['cancelled_by_employee_uuid'] === null ? 'restored' : 'cancelled';
+            $version = $expected + 1;
+            $orderUuid = (string) $order['order_uuid'];
+            $productionVersion = (int) $order['production_version'];
+            $previousCustodian = $exception['physical_custodian_employee_uuid'];
+            $this->pdo->prepare("UPDATE production_exceptions SET status = ?, version = ?, physical_custodian_employee_uuid = ?, restore_received_at = ?, resolved_at = ?, updated_at = ?
+                 WHERE exception_uuid = ? AND version = ? AND status = 'awaiting_restore_receipt'")
+                ->execute([$outcome, $version, $actor->employeeUuid, $now, $now, $now, $exceptionUuid, $expected]);
+            $this->updateOrder($orderUuid, $productionVersion, [
+                'production_stage_id' => $target,
+                'production_owner_employee_uuid' => $actor->employeeUuid,
+                'production_claimed_at' => $now,
+                'production_changed_at' => $now,
+                'open_exception_uuid' => null,
+            ], $now, "production_stage_id = '" . self::DETECTION_STAGE . "' AND production_owner_employee_uuid IS NULL AND open_exception_uuid = " . $this->pdo->quote($exceptionUuid));
+            $this->pdo->prepare(
+                "INSERT INTO employee_order_relations (employee_uuid, order_uuid, relation_type, status, started_at, last_action_at, updated_at)
+                 VALUES (?, ?, 'assigned', 'active', ?, ?, ?)
+                 ON DUPLICATE KEY UPDATE relation_type = VALUES(relation_type), status = 'active', last_action_at = VALUES(last_action_at), updated_at = VALUES(updated_at)",
+            )->execute([$actor->employeeUuid, $orderUuid, $now, $now, $now]);
+            $this->activity($order, $workflow, 'defect_restored', $actor->employeeUuid, $this->stage($workflow, self::DETECTION_STAGE), $this->stage($workflow, $target), null, $actor->employeeUuid, $productionVersion, null, $key, $requestId, $now);
+            $this->event($exceptionUuid, 'restore_received', $actor->employeeUuid, $version, [
+                'qrVerified' => true, 'qrReference' => $reference->value, 'comment' => $comment, 'outcome' => $outcome,
+                'transition' => ['from' => self::DETECTION_STAGE, 'to' => $target], 'owner' => $actor->employeeUuid,
+                'physicalCustodian' => ['before' => $previousCustodian, 'after' => $actor->employeeUuid],
+                'productionVersion' => ['before' => $productionVersion, 'after' => $productionVersion + 1],
+            ], $requestId, $now);
+            $payload = $this->livePayload($exceptionUuid, $order, $outcome, $version);
+            $this->notify($exception, 'exception.restored', $payload, $now, [$actor->employeeUuid, ...(is_string($previousCustodian) ? [$previousCustodian] : []), ...($exception['return_requested_at'] !== null ? [(string) $exception['responsible_employee_uuid']] : [])]);
+            if ($outcome === 'cancelled') {
+                $this->live->toApprovers('exception.resolved', $payload, $now);
+            }
+            $response = $this->queries->detail($exceptionUuid, $actor->employeeUuid, false);
+            $this->idempotency->store($actor->employeeUuid, $key, 'defect.receive', $exceptionUuid, $hash, $response, $now);
+            return $response;
+        });
+    }
+
+    /** Tailoring employees who may receive the product back when the owner at detection cannot. @return list<array{id: string, displayName: string}> */
+    public function restoreRecipients(EmployeeIdentity $actor, string $exceptionId, bool $root = false): array
+    {
+        $this->authorization->requireApplication($actor, $root ? 'dashboard' : 'staff');
+        $exception = $this->queries->raw($this->uuid($exceptionId)) ?? throw new ApiException(404, 'EXCEPTION_NOT_FOUND', 'The request was not found.');
+        if ($root ? !$actor->isRoot : !$this->supervisorFor($actor, $exception)) {
+            throw new ApiException(404, 'EXCEPTION_NOT_FOUND', 'The request was not found.');
+        }
+        if ($exception['exception_type'] !== self::TYPE_TAILORING) {
+            return [];
+        }
+        $stage = (string) $exception['detected_stage_id'];
+        $source = (string) $exception['source_key'];
+        $original = $this->employees->findByUuid((string) $exception['detected_owner_employee_uuid']);
+        if ($original !== null && OrderOwnershipService::isEligibleOwner($original, $stage, $source)) {
+            return [['id' => $original->employeeUuid, 'displayName' => $original->displayName, 'original' => true]];
+        }
+        $handingOver = $root ? $exception['physical_custodian_employee_uuid'] : $actor->employeeUuid;
+        $candidates = $this->pdo->prepare("SELECT e.employee_uuid FROM employees e INNER JOIN employee_stage_access s ON s.employee_uuid = e.employee_uuid AND s.stage_id = ? WHERE e.status = 'active' ORDER BY e.display_name, e.employee_uuid LIMIT 200");
+        $candidates->execute([$stage]);
+        $items = [];
+        foreach ($candidates->fetchAll(PDO::FETCH_COLUMN) as $uuid) {
+            $employee = $uuid === $handingOver ? null : $this->employees->findByUuid((string) $uuid);
+            if ($employee !== null && OrderOwnershipService::isEligibleOwner($employee, $stage, $source)) {
+                $items[] = ['id' => $employee->employeeUuid, 'displayName' => $employee->displayName, 'original' => false];
+            }
+        }
+        return $items;
     }
 
     /** Additional information on an open supervised case by anyone involved; never changes the state. @param array<string, mixed> $input @return array<string, mixed> */
@@ -797,7 +970,7 @@ final readonly class CuttingFaultService
             }
             $supervisor = $this->supervisorFor($actor, $exception);
             $visibleToResponsible = $exception['return_requested_at'] !== null && $exception['responsible_employee_uuid'] === $actor->employeeUuid;
-            if (!$supervisor && !$visibleToResponsible && !in_array($actor->employeeUuid, [$exception['detector_employee_uuid'], $exception['receiver_employee_uuid']], true)) {
+            if (!$supervisor && !$visibleToResponsible && !in_array($actor->employeeUuid, [$exception['detector_employee_uuid'], $exception['receiver_employee_uuid'], $exception['restore_recipient_employee_uuid']], true)) {
                 throw new ApiException(403, 'EXCEPTION_NOT_ASSIGNED', 'This request is not addressed to you.');
             }
             $this->assertStatus($exception, ExceptionQueries::OPEN_STATUSES, $expected);
@@ -806,7 +979,7 @@ final readonly class CuttingFaultService
             $this->pdo->prepare('UPDATE production_exceptions SET version = ?, updated_at = ? WHERE exception_uuid = ? AND version = ?')->execute([$version, $now, $exceptionUuid, $expected]);
             $this->event($exceptionUuid, 'note_added', $actor->employeeUuid, $version, ['comment' => $comment], $requestId, $now);
             $payload = $this->livePayload($exceptionUuid, $order, (string) $exception['status'], $version);
-            $this->notify($exception, 'exception.updated', $payload, $now, $exception['return_requested_at'] !== null ? [(string) $exception['responsible_employee_uuid']] : []);
+            $this->notify($exception, 'exception.updated', $payload, $now, [...($exception['return_requested_at'] !== null ? [(string) $exception['responsible_employee_uuid']] : []), ...(is_string($exception['restore_recipient_employee_uuid']) ? [$exception['restore_recipient_employee_uuid']] : [])]);
             $response = $this->queries->detail($exceptionUuid, $actor->employeeUuid, false, $supervisor);
             $this->idempotency->store($actor->employeeUuid, $key, 'defect.note', $exceptionUuid, $hash, $response, $now);
             return $response;
@@ -889,6 +1062,56 @@ final readonly class CuttingFaultService
             throw new ApiException($status, $code, 'This cutting employee cannot take the product now.');
         }
         return $employeeUuid;
+    }
+
+    /** Whether the employee can own the order at this stage for this source now; the employee row is locked first. */
+    private function eligibleOwnerAt(string $employeeUuid, string $stageId, string $sourceKey): bool
+    {
+        $this->pdo->prepare('SELECT employee_uuid FROM employees WHERE employee_uuid = ? FOR UPDATE')->execute([$employeeUuid]);
+        $employee = $this->employees->findByUuid($employeeUuid);
+        return $employee !== null && OrderOwnershipService::isEligibleOwner($employee, $stageId, $sourceKey);
+    }
+
+    /**
+     * The tailoring employee who receives the product back: the owner at detection while they can still work at
+     * the detected stage; otherwise an eligible employee of that stage named explicitly. Never the person who
+     * hands the product over, so the handover always involves two people. @param array<string, mixed> $exception
+     */
+    private function restoreRecipient(array $exception, ?string $requested, ?string $handingOver): string
+    {
+        $stage = (string) $exception['detected_stage_id'];
+        $source = (string) $exception['source_key'];
+        $original = (string) $exception['detected_owner_employee_uuid'];
+        $originalAvailable = $original !== $handingOver && $this->eligibleOwnerAt($original, $stage, $source);
+        if ($requested === null || $requested === $original) {
+            if (!$originalAvailable) {
+                throw new ApiException(409, 'RESTORE_RECIPIENT_UNAVAILABLE', 'The employee who had the order cannot receive it now. Choose an available employee of that stage.');
+            }
+            return $original;
+        }
+        if ($originalAvailable) {
+            throw new ApiException(422, 'RECIPIENT_NOT_ALLOWED', 'The employee who had the order is available and receives it.');
+        }
+        if ($requested === $handingOver || !$this->eligibleOwnerAt($requested, $stage, $source)) {
+            throw new ApiException(422, 'RECIPIENT_INVALID', 'Choose an available employee of the stage where the defect was found.');
+        }
+        return $requested;
+    }
+
+    /** A blocked supervised case: the order waits at stage 3 without a production owner. @param array<string, mixed> $order */
+    private function assertHeldAtCustodyStage(array $order, string $exceptionUuid): void
+    {
+        if ($order['production_stage_id'] !== self::DETECTION_STAGE || $order['production_owner_employee_uuid'] !== null || $order['open_exception_uuid'] !== $exceptionUuid) {
+            throw new ApiException(409, 'ORDER_CHANGED', 'The order changed. Reload it before continuing.');
+        }
+    }
+
+    private function optionalEmployeeId(mixed $value, string $field): ?string
+    {
+        if ($value !== null && (!is_string($value) || preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/D', $value) !== 1)) {
+            throw new ApiException(400, 'INVALID_REQUEST', "{$field} is invalid.");
+        }
+        return $value;
     }
 
     /** The scanned label must be the active Arasya QR of this order, with a usable production document. @param array<string, mixed> $order @param array<string, mixed> $exception */
@@ -1060,14 +1283,29 @@ final readonly class CuttingFaultService
             throw new ApiException(422, 'FAULT_LINES_INVALID', 'Every selected line must belong to this order.');
         }
         foreach ($lines as $line) {
-            if ($requireMeters && ($line['meters'] === null || preg_match('/^0*\.?0*$/', (string) $line['meters']) === 1)) {
+            if ($requireMeters && !self::measured($line['meters'])) {
                 throw new ApiException(422, 'FAULT_LINE_WITHOUT_METERS', 'A selected line has no meters, so the fault scope cannot be measured.');
             }
         }
         return $lines;
     }
 
-    /** Exact decimal sum computed by the database: whole-line meters, never quantity x meters. @param list<string> $itemIds */
+    /** A source line is measured only when it carries positive meters; NULL or zero means the source sent none. */
+    private static function measured(mixed $meters): bool
+    {
+        return $meters !== null && preg_match('/^0*\.?0*$/', (string) $meters) !== 1;
+    }
+
+    /**
+     * Meters written on an activity event of a request: the fault scope only when every line was measured, so a
+     * partial sum is never shown as the scope of the request. @param array<string, mixed> $exception
+     */
+    private static function activityMeters(array $exception): ?string
+    {
+        return (int) ($exception['unmeasured_line_count'] ?? 0) === 0 ? (string) $exception['fault_meters'] : null;
+    }
+
+    /** Exact decimal sum of the measured lines, computed by the database: whole-line meters, never quantity x meters. @param list<string> $itemIds */
     private function sumMeters(string $orderUuid, array $itemIds): string
     {
         $placeholders = implode(',', array_fill(0, count($itemIds), '?'));
