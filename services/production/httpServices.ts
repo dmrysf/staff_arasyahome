@@ -55,6 +55,8 @@ const backendErrorCodes: Partial<Record<string, ServiceErrorCode>> = {
   QR_NOT_SUPPORTED: "QR_NOT_SUPPORTED",
   QR_DOCUMENT_CONTROLLED: "QR_DOCUMENT_CONTROLLED",
   CUTTING_QR_REQUIRED: "QR_REQUIRED",
+  CUTTING_INTAKE_NOT_ALLOWED: "CUTTING_INTAKE_NOT_APPLICABLE",
+  CUTTING_INTAKE_NOT_APPLICABLE: "CUTTING_INTAKE_NOT_APPLICABLE",
   CUTTING_TRANSFER_PENDING: "ORDER_BLOCKED_BY_EXCEPTION",
   CUTTING_MULTIPLE_CONFIRMATION_REQUIRED: "CONFIRMATION_REQUIRED",
   CUTTING_OWNED_COUNT_CHANGED: "ORDER_CHANGED",
@@ -557,6 +559,13 @@ export function mapProductionSession(value: unknown): ProductionAuthPayload {
   };
 }
 
+/** Strict mapping of a committed cutting intake: the outcome and the order exactly as the server reloaded it. */
+export function mapCuttingIntake(value: unknown): import("../../domain/cutting").CuttingIntakeResult {
+  const raw = objectValue(value);
+  if (raw.outcome !== "started" && raw.outcome !== "claimed" && raw.outcome !== "already_mine") throw new StaffServiceError("SERVER_ERROR");
+  return { outcome: raw.outcome, order: mapProductionOrder(raw.order) };
+}
+
 function createRequest(apiBaseUrl: string, options: ProductionServicesOptions, onSessionExpired: (error: StaffServiceError) => void) {
   const fetchImpl = options.fetchImpl ?? fetch;
   const isOnline = options.isOnline ?? (() => typeof navigator === "undefined" || navigator.onLine);
@@ -573,6 +582,8 @@ function createRequest(apiBaseUrl: string, options: ProductionServicesOptions, o
       // Only the active revision number is kept from details (an old QR scan tells which revision to use).
       if (error.details && typeof error.details === "object" && typeof (error.details as Record<string, unknown>).activeRevisionNumber === "number") details = { activeRevisionNumber: (error.details as Record<string, unknown>).activeRevisionNumber };
       if (error.details && typeof error.details === "object" && typeof (error.details as Record<string, unknown>).activeQrRevision === "number") details = { activeQrRevision: (error.details as Record<string, unknown>).activeQrRevision };
+      // The cutting workload count tells the scanner which multiple-job confirmation to ask for.
+      if (error.details && typeof error.details === "object" && typeof (error.details as Record<string, unknown>).ownedCount === "number") details = { ownedCount: (error.details as Record<string, unknown>).ownedCount };
     } catch { /* HTTP status fallback remains typed below. */ }
     const fallback: ServiceErrorCode = response.status === 401
       ? "SESSION_EXPIRED"
@@ -765,6 +776,8 @@ export function createProductionServices(apiBaseUrl: string, options: Production
   };
   const cutting: import("../../domain/cutting").CuttingApi = {
     pool: (signal) => http.request("/cutting/pool", { signal }),
+    intake: (input, key, signal) => http.request("/cutting/intake", { method: "POST", headers: { "Idempotency-Key": key }, signal,
+      body: JSON.stringify({ qrToken: input.qrToken, ...(input.confirmedMultiple !== undefined ? { confirmedMultiple: input.confirmedMultiple } : {}), ...(input.ownedCount !== undefined ? { ownedCount: input.ownedCount } : {}) }) }, mapCuttingIntake),
     targets: (signal) => http.request("/cutting/targets", { signal }),
     transfers: (signal) => http.request("/cutting/transfers", { signal }),
     request: (orderId, input, key) => http.request(`/cutting/orders/${encodeURIComponent(orderId)}/transfers`, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }),

@@ -9,6 +9,7 @@ use Arasya\Operations\Employee\EmployeeIdentity;
 use Arasya\Operations\Employee\PdoEmployeeRepository;
 use Arasya\Operations\Cutting\CuttingLifecycle;
 use Arasya\Operations\Http\ApiException;
+use Arasya\Operations\Iam\IamAuditLogger;
 use Arasya\Operations\Production\ProductionStage;
 use Arasya\Operations\Production\ProductionWorkflow;
 use Arasya\Operations\Production\ProductionWorkflowService;
@@ -35,6 +36,11 @@ final readonly class OrderOperationsService
 {
     public const OPERATION_CLAIM = 'claim';
     public const OPERATION_TRANSITION = 'transition';
+    /** Stored as a claim in order_operation_idempotency (its own request hash keeps the two apart). */
+    public const OPERATION_CUTTING_INTAKE = 'cutting_intake';
+    public const INTAKE_STARTED = 'started';
+    public const INTAKE_CLAIMED = 'claimed';
+    public const INTAKE_ALREADY_MINE = 'already_mine';
 
     private const MAX_ATTEMPTS = 3;
     private const RETRYABLE_MYSQL_ERRORS = [1062, 1205, 1213];
@@ -62,6 +68,44 @@ final readonly class OrderOperationsService
     public function completeCurrentStage(EmployeeIdentity $employee, GlobalOrderId $orderId, int $expectedVersion, string $idempotencyKey, OperationContext $context): array
     {
         return $this->mutate(self::OPERATION_TRANSITION, $employee, $orderId, $expectedVersion, $idempotencyKey, $context);
+    }
+
+    /**
+     * Cutting intake from a scanned Arasya QR, in one transaction: a stage-1 order moves to cutting and is claimed by
+     * the scanning cutter (two canonical events, `stage_completed` waiting -> material-preparation and `claimed`,
+     * each with its own production version); an unowned cutting order is claimed as by the ordinary QR claim; an
+     * order the cutter already owns changes nothing. The server reads the version under the row lock, so a scan
+     * needs no expected version; the QR, the workload confirmation and the authorization are checked again under
+     * the locks. Never completes cutting.
+     *
+     * @param array{confirmedMultiple?: bool, ownedCount?: int} $intent
+     * @return array{outcome: string, order: array<string, mixed>}
+     */
+    public function cuttingIntake(EmployeeIdentity $employee, GlobalOrderId $orderId, QrReference $qr, array $intent, string $idempotencyKey, OperationContext $context): array
+    {
+        if (!self::isValidIdempotencyKey($idempotencyKey)) {
+            throw new ApiException(400, 'INVALID_IDEMPOTENCY_KEY', 'A valid Idempotency-Key header is required.');
+        }
+        try {
+            $workflow = $this->workflows->current();
+        } catch (RuntimeException) {
+            throw new ApiException(503, 'WORKFLOW_UNAVAILABLE', 'Production workflow is not ready.');
+        }
+        $requestHash = hash('sha256', implode('|', [self::OPERATION_CUTTING_INTAKE, $orderId->toString(), json_encode([$qr->value, $intent['confirmedMultiple'] ?? false, $intent['ownedCount'] ?? null], JSON_THROW_ON_ERROR)]), true);
+        for ($attempt = 1; ; $attempt++) {
+            try {
+                return $this->attemptIntake($employee, $orderId, $qr, $intent, $idempotencyKey, $requestHash, $workflow, $context);
+            } catch (ApiException $error) {
+                $this->recordDenied(self::OPERATION_CUTTING_INTAKE, $employee, $orderId, $error, $context);
+                throw $error;
+            } catch (PDOException $error) {
+                $driverCode = (int) ($error->errorInfo[1] ?? 0);
+                if ($attempt < self::MAX_ATTEMPTS && in_array($driverCode, self::RETRYABLE_MYSQL_ERRORS, true)) {
+                    continue;
+                }
+                throw $error;
+            }
+        }
     }
 
     public static function isValidIdempotencyKey(string $key): bool
@@ -191,6 +235,114 @@ final readonly class OrderOperationsService
             }
             throw $error;
         }
+    }
+
+    /** @return array{outcome: string, order: array<string, mixed>} */
+    private function attemptIntake(EmployeeIdentity $employee, GlobalOrderId $orderId, QrReference $qr, array $intent, string $idempotencyKey, string $requestHash, ProductionWorkflow $workflow, OperationContext $context): array
+    {
+        $this->pdo->beginTransaction();
+        try {
+            // Same lock order as every order mutation: the order row, then the employee row.
+            $lock = $this->pdo->prepare('SELECT order_uuid, source_key FROM operational_orders WHERE global_order_id = ? FOR UPDATE');
+            $lock->execute([$orderId->toString()]);
+            $locked = $lock->fetch(PDO::FETCH_ASSOC);
+            if (!is_array($locked)) {
+                throw new ApiException(404, 'ORDER_NOT_FOUND', 'Order not found.');
+            }
+            $orderUuid = (string) $locked['order_uuid'];
+            $this->pdo->prepare('SELECT employee_uuid FROM employees WHERE employee_uuid = ? FOR UPDATE')->execute([$employee->employeeUuid]);
+            $employee = (new PdoEmployeeRepository($this->pdo))->findByUuid($employee->employeeUuid) ?? throw new ApiException(401, 'ACCOUNT_INACTIVE', 'Account is not active.');
+            if (!$employee->isOperationallyActive() || !$employee->hasApplication('staff') || $employee->mustChangePassword) throw new ApiException(403, 'UNAUTHORIZED_ACTION', 'Permission denied.');
+            if (!$this->policy->mayUseCuttingIntake($employee)) throw self::intakeNotAllowed();
+            // A source the employee does not cut for is reported exactly like an order that does not exist.
+            if (!$employee->worksAt(CuttingLifecycle::STAGE, (string) $locked['source_key'])) throw new ApiException(404, 'ORDER_NOT_FOUND', 'Order not found.');
+
+            $replay = $this->replay($employee->employeeUuid, $idempotencyKey, self::OPERATION_CLAIM, $orderUuid, $requestHash);
+            if ($replay !== null) {
+                $this->pdo->rollBack();
+                return $replay;
+            }
+
+            $order = $this->orders->findByGlobalId($employee->employeeUuid, $orderId->toString()) ?? throw new ApiException(404, 'ORDER_NOT_FOUND', 'Order not found.');
+            $decision = $this->policy->evaluateCuttingIntake($employee, $order, $workflow);
+            if ($decision['action'] === null) throw $this->intakeBlocked((string) $decision['blockedReason']);
+            $now = $this->clock->now()->format('Y-m-d H:i:s.u');
+            if ($decision['action'] === OrderAccessPolicy::ACTION_ALREADY_MINE) {
+                // The cutter's own job: nothing is claimed, moved or recorded again.
+                (new CuttingLifecycle($this->pdo))->qr($orderUuid, $qr->payload());
+                $response = ['outcome' => self::INTAKE_ALREADY_MINE, 'order' => $this->serialize($employee, $order->globalId->toString(), $workflow)];
+                $this->storeResult($employee->employeeUuid, $idempotencyKey, self::OPERATION_CLAIM, $orderUuid, $requestHash, $response, $now);
+                $this->pdo->commit();
+                return $response;
+            }
+
+            $cutting = new CuttingLifecycle($this->pdo);
+            $cutting->requireNoTransfer($orderUuid);
+            $availability = $this->pdo->prepare('SELECT o.source_reported_unavailable_at, s.status FROM operational_orders o JOIN order_sources s ON s.source_key = o.source_key WHERE o.order_uuid = ?');
+            $availability->execute([$orderUuid]);
+            $source = $availability->fetch(PDO::FETCH_ASSOC);
+            if (!is_array($source) || $source['source_reported_unavailable_at'] !== null || $source['status'] !== 'active') throw $this->blocked('order_unavailable', self::OPERATION_CLAIM);
+            // Under the lock: the scanned QR is still the active QR of exactly this order and its document is usable.
+            $cutting->qr($orderUuid, $qr->payload());
+            $cutting->confirmMultiple($employee, $intent, $context->requestId, $now);
+
+            if ($decision['action'] === OrderAccessPolicy::ACTION_CUTTING_INTAKE) {
+                $this->applyIntakeHandoff($employee, $order, $workflow, $idempotencyKey, $context, $now);
+                $outcome = self::INTAKE_STARTED;
+            } else {
+                $this->applyClaim($employee, $order, $workflow, $order->productionVersion, $idempotencyKey, $context, $now);
+                $outcome = self::INTAKE_CLAIMED;
+            }
+            $response = ['outcome' => $outcome, 'order' => $this->serialize($employee, $order->globalId->toString(), $workflow)];
+            $this->storeResult($employee->employeeUuid, $idempotencyKey, self::OPERATION_CLAIM, $orderUuid, $requestHash, $response, $now);
+            $this->pdo->commit();
+            return $response;
+        } catch (Throwable $error) {
+            if ($this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            throw $error;
+        }
+    }
+
+    /**
+     * Stage 1 -> cutting for the scanning cutter, inside the caller's transaction. First the stage completion of
+     * stage 1 (version v -> v+1, the order enters the cutting pool), then the ordinary cutting claim (v+1 -> v+2),
+     * so reports, the cutting facts and the ownership intervals read it exactly like the two existing steps. The
+     * intermediate state is never committed. The IAM audit marks the pair as one QR intake.
+     */
+    private function applyIntakeHandoff(EmployeeIdentity $employee, OperationalOrder $order, ProductionWorkflow $workflow, string $idempotencyKey, OperationContext $context, string $now): void
+    {
+        $from = $this->stage($workflow, OrderProjectionWriter::INITIAL_STAGE_ID);
+        $to = $this->stage($workflow, CuttingLifecycle::STAGE);
+        $version = $order->productionVersion;
+        $update = $this->pdo->prepare(
+            "UPDATE operational_orders
+             SET production_stage_id = ?, production_changed_at = ?, production_version = production_version + 1, version = version + 1, updated_at = ?
+             WHERE order_uuid = ? AND production_version = ? AND production_stage_id = ? AND production_owner_employee_uuid IS NULL AND production_completed_at IS NULL AND open_exception_uuid IS NULL AND document_status IN ('none', 'active')",
+        );
+        $update->execute([$to->id, $now, $now, $order->orderUuid, $version, $from->id]);
+        if ($update->rowCount() !== 1) {
+            throw new ApiException(409, 'ORDER_CHANGED', 'The order changed. Reload it before continuing.');
+        }
+        // Each canonical event carries its own idempotency key (unique per employee); the handoff event's key is
+        // derived from the scan's key, and both events share the request id.
+        $this->recordActivity($employee, $order, $workflow, 'stage_completed', $from, $to, $version, substr($idempotencyKey, 0, 90) . '.handoff', $context, $now);
+        $meters = $this->pdo->prepare('SELECT SUM(meters) FROM operational_order_items WHERE order_uuid = ?');
+        $meters->execute([$order->orderUuid]);
+        $total = $meters->fetchColumn();
+        (new CuttingLifecycle($this->pdo))->changed($order->orderUuid, $version + 1, $from->id, $to->id, $employee->employeeUuid, $now, $total === null || $total === false ? null : (string) $total);
+        $moved = $this->orders->findByGlobalId($employee->employeeUuid, $order->globalId->toString()) ?? throw new RuntimeException('Moved order could not be reloaded.');
+        $this->applyClaim($employee, $moved, $workflow, $version + 1, $idempotencyKey, $context, $now);
+        (new IamAuditLogger($this->pdo))->record($employee, 'cutting.intake_from_qr', 'order', $order->globalId->toString(), '#' . $order->orderNumber, [
+            'orderId' => $order->globalId->toString(),
+            'source' => $order->globalId->sourceKey,
+            'fromStage' => $from->id,
+            'toStage' => $to->id,
+            'owner' => $employee->employeeUuid,
+            'productionVersionBefore' => $version,
+            'productionVersionAfter' => $version + 2,
+        ], $context->requestId, $now);
     }
 
     private function applyClaim(EmployeeIdentity $employee, OperationalOrder $order, ProductionWorkflow $workflow, int $expectedVersion, string $idempotencyKey, OperationContext $context, string $now): void
@@ -384,11 +536,27 @@ final readonly class OrderOperationsService
         };
     }
 
+    private function intakeBlocked(string $reason): ApiException
+    {
+        return match ($reason) {
+            'intake_not_allowed' => self::intakeNotAllowed(),
+            'not_found' => new ApiException(404, 'ORDER_NOT_FOUND', 'Order not found.'),
+            'intake_not_applicable' => new ApiException(409, 'CUTTING_INTAKE_NOT_APPLICABLE', 'Comanda nu așteaptă preluarea la tăiere.'),
+            'claimed_by_other' => new ApiException(409, 'ORDER_ALREADY_CLAIMED', 'Comanda este deja preluată de un coleg.'),
+            default => $this->blocked($reason, self::OPERATION_CLAIM),
+        };
+    }
+
+    public static function intakeNotAllowed(): ApiException
+    {
+        return new ApiException(403, 'CUTTING_INTAKE_NOT_ALLOWED', 'Preluarea prin scanare este disponibilă doar angajaților eligibili pentru tăiere.');
+    }
+
     private function recordDenied(string $operation, EmployeeIdentity $employee, GlobalOrderId $orderId, ApiException $error, OperationContext $context): void
     {
         try {
             $this->audit->record(
-                $operation === self::OPERATION_CLAIM ? 'ORDER_CLAIM_DENIED' : 'ORDER_TRANSITION_DENIED',
+                match ($operation) { self::OPERATION_CLAIM => 'ORDER_CLAIM_DENIED', self::OPERATION_CUTTING_INTAKE => 'CUTTING_INTAKE_DENIED', default => 'ORDER_TRANSITION_DENIED' },
                 $employee->employeeUuid,
                 null,
                 $context->ipAddress,

@@ -524,6 +524,35 @@ $check((int) $one("SELECT COUNT(*) FROM operational_orders WHERE source_key = 't
 $check($otherSources() === $othersBefore, 'Trendhome, OutletPerdele and B2B orders, QR codes and document scopes are untouched');
 $check((int) $one("SELECT COUNT(*) FROM employee_role_assignments era JOIN roles r ON r.role_id = era.role_id JOIN employees e ON e.employee_uuid = era.employee_uuid WHERE r.role_key LIKE 'trendyol-%' AND e.username NOT LIKE ?", ["%.{$suffix}"]) === 0, 'only the disposable test identities hold Trendyol roles');
 
+// QR cutting intake: an approved Trendyol order at stage 1 is received into cutting by an eligible cutter who
+// holds neither the waiting stage nor any Trendyol permission; nobody else learns anything through the intake.
+$marketplace(['packages' => [$package(92, $baseMs + $hours(6), $baseMs + 40200, 'Created', $changedSku)]]);
+$d92 = $status($get($preparer, '/trendyol/packages/' . ($base + 92)), 200, 'p92 before its approval');
+if (($d92['readiness']['ready'] ?? false) !== true) {
+    $d92 = $status($send($preparer, 'PUT', '/trendyol/packages/' . ($base + 92) . '/lines/' . ($base + 93), ['expectedVersion' => $d92['version'], 'kind' => 'curtain', 'widthCm' => '210', 'heightCm' => '250'], $key('p92-final')), 200, 'p92 prepared for its approval');
+}
+$released92 = $status($send($approver, 'POST', '/trendyol/packages/' . ($base + 92) . '/release', ['expectedVersion' => $d92['version'], 'confirm' => true], $key('p92-release')), 201, 'p92 released after its new preparation');
+$global92 = 'trendyol:' . ($base + 92);
+$check($released92['production']['globalOrderId'] === $global92 && $released92['production']['stageId'] === 'waiting', 'the second approval creates its stage-1 order');
+$qr92 = 'ARASYA:Q1:' . (string) $one("SELECT q.qr_reference FROM order_qr_references q JOIN operational_orders o ON o.order_uuid = q.order_uuid WHERE o.global_order_id = ? AND q.status = 'active'", [$global92]);
+$package92 = $row('SELECT intake_status, version, released_at FROM trendyol_packages WHERE package_id = ?', [$base + 92]);
+$intakeAs = static fn (array $who, array $body, string $idem): array => $send($who, 'POST', '/cutting/intake', $body, $idem);
+foreach (['otherWaiting' => $otherWaiting, 'trendyolWaiting' => $trendyolWaiting, 'preparer' => $preparer, 'approver' => $approver] as $label => $who) {
+    $refused = $intakeAs($who, ['qrToken' => $qr92], $key("intake-{$label}"));
+    $check($refused['status'] === 403 && ($refused['body']['error']['code'] ?? null) === 'CUTTING_INTAKE_NOT_ALLOWED' && !str_contains(json_encode($refused['body']), (string) ($base + 92)), "{$label}: the intake is no way to read a stage-1 Trendyol order");
+}
+$error($intakeAs($cutter, ['qrToken' => '86800092'], $key('intake-barcode')), 400, 'INVALID_QR', 'a Trendyol product barcode is not an Arasya production QR');
+$error($intakeAs($cutter, ['qrToken' => '7330009998887776'], $key('intake-cargo')), 400, 'INVALID_QR', 'nor is a cargo number');
+$error($get($cutter, '/orders/' . rawurlencode($global92)), 404, 'ORDER_NOT_FOUND', 'the cutter still cannot open the stage-1 Trendyol order');
+$error($send($cutter, 'POST', '/orders/resolve-qr', ['token' => $qr92], $key('cutter-resolve')), 404, 'ORDER_NOT_FOUND', 'nor resolve it through the ordinary scan');
+$error($get($cutter, '/trendyol/overview'), 403, 'UNAUTHORIZED_ACTION', 'the cutter has no Trendyol permission');
+$received = $status($intakeAs($cutter, ['qrToken' => $qr92], $key('intake-cutter')), 200, 'the cutter scans the approved Trendyol order once');
+$order92 = $row('SELECT production_stage_id, production_owner_employee_uuid, production_version, production_completed_at FROM operational_orders WHERE global_order_id = ?', [$global92]);
+$check($received['outcome'] === 'started' && $received['order']['productionStageId'] === 'material-preparation' && $order92['production_stage_id'] === 'material-preparation' && $order92['production_owner_employee_uuid'] === $cutter['employeeUuid'] && (int) $order92['production_version'] === 3 && $order92['production_completed_at'] === null, 'Trendyol: stage 2, owned by the scanning cutter, not completed');
+$check($pdo->query("SELECT action FROM order_activity_events WHERE global_order_id = " . $pdo->quote($global92) . " ORDER BY production_version_after")->fetchAll(PDO::FETCH_COLUMN) === ['production_submitted', 'stage_completed', 'claimed'], 'the Trendyol timeline: approval, handoff to cutting, cutting claim');
+$check($row('SELECT intake_status, version, released_at FROM trendyol_packages WHERE package_id = ?', [$base + 92]) === $package92, 'the Trendyol package is untouched (no marketplace write, no approval change)');
+$status($get($cutter, '/orders/' . rawurlencode($global92)), 200, 'from cutting on it is the cutter\'s ordinary work');
+
 // Leave the shared disposable database as later suites expect it: the intake rows and the approved Trendyol test
 // orders (with their QR, document revision and events) are removed, child rows first.
 $pdo->exec('DELETE FROM trendyol_package_lines');

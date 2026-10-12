@@ -10,6 +10,7 @@ The Operations API is the only authority for Arasya production state. Staff read
 | `GET` | `/orders/{globalOrderId}` | `orders.view_mine` | One visible order |
 | `GET` | `/orders/lookup?code=` | `orders.scan` | Exact manual lookup (rate limited) |
 | `POST` | `/orders/resolve-qr` | `orders.scan` | Resolve a printed QR payload `{ "token": "ARASYA:Q1:…" }` (CSRF, rate limited) |
+| `POST` | `/cutting/intake` | `orders.scan` + cutting eligibility | One-scan cutting intake `{ "qrToken": "ARASYA:Q1:…", "confirmedMultiple"?, "ownedCount"? }`: a stage-1 order moves to cutting and is claimed by the scanning cutter in one transaction (API 2.27.0; CSRF, idempotency, rate limited; see [cutting QR intake](cutting-qr-intake.md)) |
 | `GET` | `/orders/stage-queue?stage={stageId}` | `orders.view_mine` + the stage in `allowedStageIds` | Read-only queue of one allowed stage for the department dashboards (API 2.25.0; see [department dashboards](department-dashboards.md)) |
 | `GET` | `/orders/stage-summary` | `orders.view_mine` | Open-order totals per allowed stage |
 | `POST` | `/orders/{globalOrderId}/claim` | `orders.claim` | Claim the order at its current stage |

@@ -170,6 +170,57 @@ test('a historical order relation never outlives the current source authorizatio
     expect($employee(['waiting'], ['packing' => ['trendhome']])->reachableSources() === null, 'an orphan scope row narrows nothing and adds nothing');
 });
 
+test('cutting intake is a narrow exception: an eligible cutter receives a stage-1 order without the waiting grant', function (): void {
+    $workflow = canonicalWorkflowFixture();
+    $enforcing = new \Arasya\Operations\Production\ProductionAuthorityModes(['trendhome' => \Arasya\Operations\Production\ProductionAuthorityMode::Enforce]);
+    $policy = new OrderAccessPolicy(new AuthorizationService(), $enforcing);
+    $cutter = operationsEmployee(['material-preparation']);
+    $self = $cutter->employeeUuid;
+    $order = static fn (string $stage, string $source = 'trendhome', ?string $owner = null, array $extra = []): OperationalOrder => new OperationalOrder(
+        '22222222-2222-4222-8222-222222222222', new GlobalOrderId($source, '61833'), '61833', $stage, 'processing', 'Processing', null, $extra['status'] ?? 'in_progress',
+        new OrderFreshness('fresh', new DateTimeImmutable(), new DateTimeImmutable()), 3, null, new DateTimeImmutable(), [], null, 2, $owner, $extra['completed'] ?? null, null,
+        $extra['exception'] ?? null, $extra['document'] ?? 'active', productionAuthority: $extra['authority'] ?? 'operations');
+
+    // The waiting stage stays closed for every ordinary route.
+    expect(!$policy->canView($cutter, $order('waiting')), 'a cutter does not see stage 1');
+    expect($policy->evaluate($cutter, $order('waiting'), $workflow)['blockedReason'] === 'stage_not_allowed', 'nor claim it');
+    foreach (['trendyol', 'trendhome', 'outletperdele'] as $source) {
+        expect($policy->evaluateCuttingIntake($cutter, $order('waiting', $source), $workflow) === ['action' => 'cutting_intake', 'blockedReason' => null], "stage-1 intake for {$source}");
+    }
+    expect($policy->evaluateCuttingIntake($cutter, $order('material-preparation'), $workflow) === ['action' => 'claim', 'blockedReason' => null], 'unowned cutting order: claim');
+    expect($policy->evaluateCuttingIntake($cutter, $order('material-preparation', 'trendhome', $self), $workflow) === ['action' => 'already_mine', 'blockedReason' => null], 'own cutting order: nothing new');
+    expect($policy->evaluateCuttingIntake($cutter, $order('waiting', 'trendhome', $self), $workflow)['blockedReason'] === 'intake_not_applicable', 'own stage-1 claim: the ordinary completion applies');
+    expect($policy->evaluateCuttingIntake($cutter, $order('material-preparation', 'trendhome', '33333333-3333-4333-8333-333333333333'), $workflow)['blockedReason'] === 'claimed_by_other', 'never overwrites another owner');
+    expect($policy->evaluateCuttingIntake($cutter, $order('waiting', 'trendhome', '33333333-3333-4333-8333-333333333333'), $workflow)['blockedReason'] === 'claimed_by_other', 'nor a stage-1 owner');
+    expect($policy->evaluateCuttingIntake($cutter, $order('workshop-receiving'), $workflow)['blockedReason'] === 'intake_not_applicable', 'later stages keep the ordinary scan');
+    expect($policy->evaluateCuttingIntake($cutter, $order('waiting', 'b2b'), $workflow)['blockedReason'] === 'intake_not_applicable', 'B2B keeps its existing flow');
+
+    // Every production block of the ordinary policy applies.
+    expect($policy->evaluateCuttingIntake($cutter, $order('waiting', 'trendhome', null, ['status' => 'unavailable']), $workflow)['blockedReason'] === 'order_unavailable');
+    expect($policy->evaluateCuttingIntake($cutter, $order('waiting', 'trendhome', null, ['exception' => '55555555-5555-4555-8555-555555555555']), $workflow)['blockedReason'] === 'exception_pending');
+    expect($policy->evaluateCuttingIntake($cutter, $order('waiting', 'trendhome', null, ['document' => 'stale']), $workflow)['blockedReason'] === \Arasya\Operations\Document\DocumentGuard::BLOCKED_REASON);
+    expect($policy->evaluateCuttingIntake($cutter, $order('waiting', 'trendhome', null, ['authority' => 'source']), $workflow)['blockedReason'] === 'production_authority_source', 'source-managed under enforcement');
+    expect($policy->evaluateCuttingIntake($cutter, $order('waiting', 'outletperdele', null, ['authority' => 'source']), $workflow)['action'] === 'cutting_intake', 'legacy mode of another source is unchanged');
+    expect($policy->evaluateCuttingIntake($cutter, $order('waiting'), null)['blockedReason'] === 'workflow_unavailable');
+
+    // Who may use it at all.
+    expect($policy->mayUseCuttingIntake($cutter));
+    $make = static fn (array $stages, array $permissions, string $department = 'taiere', array $scopes = [], bool $root = false, bool $mustChange = false, array $apps = ['staff']): EmployeeIdentity => new EmployeeIdentity('66666666-6666-4666-8666-666666666666', null, 'c', 'c', 'hash', 'C', $department, 'Tăiere', 'active', 'employee', 'active', 'active', $permissions, $stages, $apps, $mustChange, isRoot: $root, stageSourceScopes: $scopes);
+    $all = ['orders.scan', 'orders.view_mine', 'orders.claim', 'orders.advance_stage'];
+    expect($policy->evaluateCuttingIntake($make(['material-preparation'], $all), $order('waiting', 'trendyol'), $workflow)['action'] === 'cutting_intake', 'a taiere cutter without the waiting grant or Trendyol permission');
+    expect($policy->evaluateCuttingIntake($make(['waiting'], $all), $order('waiting'), $workflow)['blockedReason'] === 'intake_not_allowed', 'a waiting-stage employee is not a cutter');
+    expect($policy->evaluateCuttingIntake($make(['material-preparation'], $all, 'croitorie'), $order('waiting'), $workflow)['blockedReason'] === 'intake_not_allowed', 'another department');
+    expect($policy->evaluateCuttingIntake($make(['material-preparation'], ['orders.view_mine', 'orders.claim', 'orders.advance_stage']), $order('waiting'), $workflow)['blockedReason'] === 'intake_not_allowed', 'without orders.scan');
+    expect($policy->evaluateCuttingIntake($make(['material-preparation'], ['orders.scan', 'orders.view_mine', 'orders.claim']), $order('waiting'), $workflow)['blockedReason'] === 'intake_not_allowed', 'without orders.advance_stage');
+    expect($policy->evaluateCuttingIntake($make(['material-preparation'], $all, root: true), $order('waiting'), $workflow)['blockedReason'] === 'intake_not_allowed', 'root is never a cutter');
+    expect($policy->evaluateCuttingIntake($make(['material-preparation'], $all, mustChange: true), $order('waiting'), $workflow)['blockedReason'] === 'intake_not_allowed', 'temporary password');
+    expect($policy->evaluateCuttingIntake($make(['material-preparation'], $all, apps: ['dashboard']), $order('waiting'), $workflow)['blockedReason'] === 'intake_not_allowed', 'without Staff access');
+    expect($policy->evaluateCuttingIntake(operationsEmployee(['material-preparation'], status: 'suspended'), $order('waiting'), $workflow)['blockedReason'] === 'intake_not_allowed', 'inactive');
+    $outletOnly = $make(['material-preparation'], $all, 'taiere', ['material-preparation' => ['outletperdele']]);
+    expect($policy->evaluateCuttingIntake($outletOnly, $order('waiting', 'trendhome'), $workflow)['blockedReason'] === 'not_found', 'a source outside the cutting scope does not exist for the cutter');
+    expect($policy->evaluateCuttingIntake($outletOnly, $order('waiting', 'outletperdele'), $workflow)['action'] === 'cutting_intake', 'the scoped source works');
+});
+
 test('order serialization exposes the action and completion without other employee identities', function (): void {
     $order = operationsOrder('delivery', '33333333-3333-4333-8333-333333333333', null, 'in_progress', new DateTimeImmutable('2026-10-04T10:00:00Z'));
     $payload = (new OrderSerializer())->serializeOrder($order, ['action' => null, 'blockedReason' => 'production_completed']);

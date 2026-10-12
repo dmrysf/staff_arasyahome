@@ -74,6 +74,7 @@ final readonly class ApiKernel
                 'GET /orders/stage-queue' => $this->ordersController()->stageQueue($request),
                 'GET /orders/stage-summary' => $this->ordersController()->stageSummary($request),
                 'POST /orders/resolve-qr' => $this->ordersController()->resolveQr($request),
+                'POST /cutting/intake' => $this->ordersController()->cuttingIntake($request),
                 'GET /live/events' => $request->query('scope') === 'cutting-display' ? $this->cuttingController()->display($request) : $this->qualityController()->events($request),
                 'GET /activity/mine' => ($this->activity ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Activity API is not ready.'))->listMine($request),
                 default => $this->matchDynamicRoutes($request),

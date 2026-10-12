@@ -41,8 +41,8 @@ export const productionDepartments: readonly ProductionDepartment[] = Object.fre
 
 /** Stage guidance shown on the stage dashboards: instructions only, every action stays on the order screen. */
 export const stageGuides: Readonly<Record<string, { focus: string; checks: readonly string[] }>> = Object.freeze({
-  "waiting": { focus: "Comenzi intrate în producție care așteaptă predarea la tăiere.", checks: ["Verifică sursa comenzii și documentul de producție activ.", "Preia comanda, apoi finalizează etapa pentru a o trimite la Tăiere."] },
-  "material-preparation": { focus: "Comenzi gata de tăiere. Preluarea se face numai cu eticheta QR originală.", checks: ["Scanează eticheta QR originală a comenzii.", "Verifică măsurile și consumul din documentul de producție.", "Pentru boală sau indisponibilitate folosește transferul întregii comenzi."] },
+  "waiting": { focus: "Comenzi intrate în producție care așteaptă predarea la tăiere.", checks: ["Verifică sursa comenzii și documentul de producție activ.", "Preia comanda, apoi finalizează etapa pentru a o trimite la Tăiere.", "Un angajat de la Tăiere poate prelua comanda direct, scanând eticheta QR."] },
+  "material-preparation": { focus: "Comenzi gata de tăiere. Preluarea se face numai cu eticheta QR originală.", checks: ["Scanează o singură dată eticheta QR originală: comanda îți este atribuită și tăierea începe (și pentru comenzile aflate încă la pornire).", "Scanarea nu finalizează tăierea: finalizezi etapa din pagina comenzii.", "Verifică măsurile și consumul din documentul de producție.", "Pentru boală sau indisponibilitate folosește transferul întregii comenzi."] },
   "workshop-receiving": { focus: "Comenzi sosite de la tăiere în croitorie.", checks: ["Verifică produsele primite față de documentul de producție.", "Dacă tăierea este greșită, folosește «Returnează la Tăiere» din comandă."] },
   "labeling": { focus: "Comenzi de etichetat.", checks: ["Verifică produsele și cantitățile.", "Etichetează conform documentului de producție."] },
   "material-straightening": { focus: "Material de îndreptat.", checks: ["Verifică dimensiunile din document înainte de lucru."] },

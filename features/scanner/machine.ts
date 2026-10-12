@@ -1,4 +1,8 @@
 import type { OrderActionId, StaffOrder, StaffServiceError } from "../../domain/models";
+import type { CuttingIntakeOutcome } from "../../domain/cutting";
+
+/** One cutting-intake request: the scanned label, its own idempotency key and the explicit workload confirmation. */
+export type IntakeAttempt = { token: string; idempotencyKey: string; confirmedMultiple?: boolean; ownedCount?: number };
 
 export type ScannerState =
   | { status: "idle" }
@@ -6,11 +10,13 @@ export type ScannerState =
   | { status: "scanning"; torchSupported: boolean; torchOn: boolean }
   | { status: "decoded"; token: string }
   | { status: "resolving"; token: string }
+  | { status: "taking"; attempt: IntakeAttempt }
+  | { status: "take_confirm"; token: string; ownedCount: number; changed: boolean }
   | { status: "review"; order: StaffOrder }
   | { status: "confirming"; order: StaffOrder }
   | { status: "submitting"; order: StaffOrder; idempotencyKey: string; action: OrderActionId }
-  | { status: "success"; order: StaffOrder; action: OrderActionId }
-  | { status: "error"; error: StaffServiceError; recovery: "scan" | "manual" | "reload" | "login"; failedSubmission?: { order: StaffOrder; idempotencyKey: string; action: OrderActionId } };
+  | { status: "success"; order: StaffOrder; action: OrderActionId; intake?: CuttingIntakeOutcome }
+  | { status: "error"; error: StaffServiceError; recovery: "scan" | "manual" | "reload" | "login"; failedSubmission?: { order: StaffOrder; idempotencyKey: string; action: OrderActionId }; failedIntake?: IntakeAttempt };
 
 export type ScannerEvent =
   | { type: "REQUEST_CAMERA" }
@@ -27,6 +33,12 @@ export type ScannerEvent =
   | { type: "SUBMIT_SUCCEEDED"; order: StaffOrder }
   | { type: "RETRY_SUBMIT" }
   | { type: "SUBMIT_FAILED"; error: StaffServiceError }
+  | { type: "INTAKE_STARTED"; attempt: IntakeAttempt }
+  | { type: "INTAKE_SUCCEEDED"; order: StaffOrder; outcome: CuttingIntakeOutcome }
+  | { type: "INTAKE_CONFIRM_REQUIRED"; ownedCount: number }
+  | { type: "INTAKE_FAILED"; error: StaffServiceError }
+  | { type: "INTAKE_NOT_APPLICABLE" }
+  | { type: "RETRY_INTAKE" }
   | { type: "RESET" }
   | { type: "OPEN_MANUAL" };
 
@@ -81,6 +93,24 @@ export function scannerReducer(state: ScannerState, event: ScannerEvent): Scanne
       return state.status === "error" && state.failedSubmission && isTransient(state.error)
         ? { status: "submitting", ...state.failedSubmission }
         : state;
+    // Cutting intake: one scan, one in-flight request; the order is shown only after the server committed it.
+    case "INTAKE_STARTED":
+      return state.status === "decoded" || (state.status === "take_confirm" && state.token === event.attempt.token)
+        || (state.status === "taking" && state.attempt.token === event.attempt.token && state.attempt.idempotencyKey !== event.attempt.idempotencyKey && event.attempt.confirmedMultiple === undefined)
+        ? { status: "taking", attempt: event.attempt }
+        : state;
+    case "INTAKE_SUCCEEDED":
+      return state.status === "taking" ? { status: "success", order: event.order, action: "claim", intake: event.outcome } : state;
+    case "INTAKE_CONFIRM_REQUIRED":
+      return state.status === "taking" ? { status: "take_confirm", token: state.attempt.token, ownedCount: event.ownedCount, changed: state.attempt.confirmedMultiple === true } : state;
+    case "INTAKE_FAILED":
+      return state.status === "taking" ? { status: "error", error: event.error, recovery: recoveryFor(event.error), failedIntake: state.attempt } : state;
+    case "INTAKE_NOT_APPLICABLE":
+      // Not a cutting intake (another stage or source): the same scanned code takes the ordinary verification.
+      return state.status === "taking" ? { status: "resolving", token: state.attempt.token } : state;
+    case "RETRY_INTAKE":
+      // A transient failure is retried with the same key and intent: the server replays a committed intake.
+      return state.status === "error" && state.failedIntake && isTransient(state.error) ? { status: "taking", attempt: state.failedIntake } : state;
     case "OPEN_MANUAL":
       return state.status === "scanning" || state.status === "idle" || state.status === "error" ? { status: "idle" } : state;
     case "RESET":
