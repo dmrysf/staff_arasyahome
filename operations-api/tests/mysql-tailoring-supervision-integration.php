@@ -266,11 +266,11 @@ $check($received['status'] === 'awaiting_approval' && $received['physicalCustodi
 $check(in_array('exception.approval_pending', $liveTypes($denisa, $cursorMgr), true), 'the managers are notified');
 $check($state($a)['stage'] === 'workshop-receiving' && $state($a)['exception'] === $xa, 'stage 3 until a manager decides');
 $error($post($cutterA, $a['path'] . '/claim', ['expectedVersion' => (int) $state($a)['version']]), 409, 'ORDER_BLOCKED_BY_EXCEPTION', 'no rework before the approval');
-// Separation of duties: the supervisor is refused even when she also holds the manager role.
+// Separation of duties: the supervisor is refused even when they also hold the manager role.
 $ok($dash($root, 'PUT', "/management/employees/{$uuids['iuliana']}/applications", ['applications' => ['staff', 'dashboard']]), 'temporary Dashboard access');
 $ok($dash($root, 'PUT', "/management/employees/{$uuids['iuliana']}/roles", ['roleIds' => [$roleIds['employee'], $roleIds['operations-manager']]]), 'temporary manager role');
 $iulianaDash = T::login($kernel, "iuliana.{$suffix}", $password);
-$error($decide($iulianaDash, $xa, ['decision' => 'approve', 'attribution' => 'cutter']), 403, 'SELF_DECISION_DENIED', 'the supervisor cannot approve the 3 -> 2 return of her own case');
+$error($decide($iulianaDash, $xa, ['decision' => 'approve', 'attribution' => 'cutter']), 403, 'SELF_DECISION_DENIED', 'the supervisor cannot approve the 3 -> 2 return of their own case');
 $ok($dash($root, 'PUT', "/management/employees/{$uuids['iuliana']}/roles", ['roleIds' => [$roleIds['employee']]]), 'manager role removed again');
 $ok($dash($root, 'PUT', "/management/employees/{$uuids['iuliana']}/applications", ['applications' => ['staff']]), 'Dashboard access removed again');
 $iuliana = T::login($kernel, "iuliana.{$suffix}", $password) + ['employeeUuid' => $uuids['iuliana']];
@@ -345,9 +345,9 @@ $error($post($tailor2, $c['path'] . '/claim', ['expectedVersion' => (int) $state
 $check(in_array($xc, array_column($ok($get($iuliana, '/production-exceptions/supervisor', ['view' => 'custody']), 'custody pending')['items'], 'id'), true), 'B: the supervisor still sees the pending handover in "În grija mea"');
 $mineC = array_values(array_filter($ok($get($tailor, '/production-exceptions/mine'), 'recipient list')['items'], static fn (array $i): bool => $i['id'] === $xc));
 $check($mineC !== [] && $mineC[0]['actions']['canConfirmRestore'] === true && $mineC[0]['status'] === 'awaiting_restore_receipt', 'B: the original worker gets an actionable receipt');
-// P0-5.7: nobody but the addressed worker confirms; the supervisor cannot confirm her own handover.
+// P0-5.7: nobody but the addressed worker confirms; the supervisor cannot confirm their own handover.
 $error($receive($tailor2, $xc, $c['qr']), 403, 'EXCEPTION_NOT_ASSIGNED', 'B: another tailor cannot confirm receipt');
-$error($receive($iuliana, $xc, $c['qr']), 403, 'EXCEPTION_NOT_ASSIGNED', 'B: the supervisor cannot receive her own handover');
+$error($receive($iuliana, $xc, $c['qr']), 403, 'EXCEPTION_NOT_ASSIGNED', 'B: the supervisor cannot receive their own handover');
 $error($receive($cutterA, $xc, $c['qr']), 403, 'EXCEPTION_NOT_ASSIGNED', 'B: the cutter cannot confirm receipt');
 // P0-5.8: only the active Arasya QR of this very order.
 $error($receive($tailor, $xc, $a['qr']), 422, 'QR_ORDER_MISMATCH', 'B: the label of another order is refused');
