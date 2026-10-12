@@ -186,7 +186,7 @@ test("supervisor dismisses a stage 5 report: the worker keeps the order where it
   await chief.context.close();
 });
 
-test("manager rejects the cutting return: the order stays blocked with the supervisor until she restores it with the product", async ({ browser }) => {
+test("manager rejects the cutting return: the order stays blocked until the tailor scans the product back and confirms receipt", async ({ browser }) => {
   test.setTimeout(150_000);
   const orderId = orders.stage3;
   const number = numberOf(orderId);
@@ -220,11 +220,26 @@ test("manager rejects the cutting return: the order stays blocked with the super
   const restore = chief.page.getByTestId("supervisor-restore");
   await restore.getByLabel(/Motiv/).fill("Produsul a revenit la croitorie");
   await typeLabel(restore, labels[number]);
-  await expect(chief.page.getByTestId("exception-status")).toHaveText("Rezolvată în croitorie");
-  await expect(chief.page.getByText("Readusă în producție la croitorie")).toBeVisible();
+  // The supervisor's scan alone releases nothing: the order stays blocked, unowned, at the custody stage.
+  await expect(chief.page.getByTestId("exception-status")).toHaveText("Așteaptă primirea înapoi la croitorie");
+  await expect(chief.page.getByTestId("supervisor-restore")).toContainText("Predă produsul altui angajat");
+  expect(await stageOf(orderId), "pending handover: still blocked, no production owner").toEqual({ stage: "workshop-receiving", owner: null });
+
+  // The original tailor is asked live, ticks the receipt, scans the label: only now the order is released to them.
+  const notice = tailor.page.locator(".live-notice");
+  await expect(notice).toContainText(`Comanda #${number} îți este predată înapoi`, { timeout: 15_000 });
+  await notice.getByRole("button", { name: "Deschide cererea" }).click();
+  const back = tailor.page.getByTestId("restore-receipt");
+  await expect(back).toContainText("Primește comanda înapoi");
+  await back.getByRole("checkbox", { name: "Am primit produsul în mână și continui lucrul." }).check();
+  await typeLabel(back, labels[number]);
+  await expect(tailor.page.getByTestId("exception-status")).toHaveText("Rezolvată în croitorie");
+  await expect(chief.page.getByTestId("exception-status")).toHaveText("Rezolvată în croitorie", { timeout: 15_000 });
+  await expect(chief.page.getByText("Predată înapoi la croitorie · așteaptă confirmarea primirii")).toBeVisible();
+  await expect(chief.page.getByText("Primită înapoi (etichetă scanată) · producția continuă")).toBeVisible();
   for (const width of [320, 360, 390]) { await chief.page.setViewportSize({ width, height: 740 }); expect(await overflow(chief.page), `case at ${width}`).toBeLessThanOrEqual(0); }
   await chief.page.screenshot({ path: "e2e/.runtime/supervision-restored-320.png", fullPage: true });
-  expect(await stageOf(orderId), "restored at the detected stage with the original owner").toEqual({ stage: "workshop-receiving", owner: "Elena Croitorie" });
+  expect(await stageOf(orderId), "restored at the detected stage with the original owner, after their receipt").toEqual({ stage: "workshop-receiving", owner: "Elena Croitorie" });
   await go(tailor.page, `/orders/${encodeURIComponent(orderId)}`);
   await expect(tailor.page.getByRole("button", { name: /Finalizează etapa/ })).toBeVisible();
   for (const who of [tailor, chief, cutter]) expect(who.errors).toEqual([]);

@@ -16,22 +16,24 @@ use PDO;
  */
 final readonly class ExceptionQueries
 {
-    /** Statuses that block the order. `rejected` (intake flow) does not; `return_rejected` (supervised flow) does. */
-    public const OPEN_STATUSES = ['awaiting_acknowledgment', 'awaiting_approval', 'awaiting_supervisor_review', 'in_supervisor_custody', 'return_rejected'];
+    /** Statuses that block the order. `rejected` (intake flow) does not; `return_rejected` and `awaiting_restore_receipt` (supervised flow) do. */
+    public const OPEN_STATUSES = ['awaiting_acknowledgment', 'awaiting_approval', 'awaiting_supervisor_review', 'in_supervisor_custody', 'return_rejected', 'awaiting_restore_receipt'];
     /** Supervisor tabs: De verificat, În grija mea, De returnat la tăiere, Finalizate. */
     public const SUPERVISOR_VIEWS = [
         'review' => ['awaiting_supervisor_review'],
-        'custody' => ['in_supervisor_custody', 'return_rejected'],
+        'custody' => ['in_supervisor_custody', 'return_rejected', 'awaiting_restore_receipt'],
         'return' => ['awaiting_acknowledgment', 'awaiting_approval'],
         'done' => ['dismissed', 'approved', 'restored', 'cancelled'],
     ];
     private const SUMMARY = "SELECT x.exception_uuid, x.exception_number, x.exception_type, x.status, x.version, x.global_order_id, x.source_key, s.display_name AS source_name,
-            x.order_number_snapshot, x.reason_key, x.reason_label_snapshot, x.line_count, x.fault_meters, x.arrival_number, x.rework_cycle,
+            x.order_number_snapshot, x.reason_key, x.reason_label_snapshot, x.line_count, x.fault_meters, x.unmeasured_line_count, x.arrival_number, x.rework_cycle,
             x.reported_at, x.acknowledged_at, x.resolved_at, x.detector_employee_uuid, x.responsible_employee_uuid,
             x.detected_stage_id, ds.display_name AS detected_stage_label, x.detected_owner_employee_uuid, x.supervisor_employee_uuid, x.supervisor_reviewed_at,
             x.confirmed_reason_key, x.confirmed_reason_label_snapshot, cr.cutting_attributable AS confirmed_reason_attributable, x.return_requested_at,
             x.receiver_employee_uuid, x.physical_custodian_employee_uuid, x.responsibility_position, x.attribution,
+            x.restore_recipient_employee_uuid, x.restore_requested_at, x.restore_received_at, x.cancelled_by_employee_uuid,
             de.display_name AS detector_name, re.display_name AS responsible_name, se.display_name AS supervisor_name, rce.display_name AS receiver_name, pce.display_name AS custodian_name,
+            rre.display_name AS restore_recipient_name,
             (SELECT d.opened_at FROM production_exception_decisions d WHERE d.exception_uuid = x.exception_uuid AND d.status = 'pending' LIMIT 1) AS pending_since,
             (SELECT MAX(d.attempt_number) FROM production_exception_decisions d WHERE d.exception_uuid = x.exception_uuid) AS attempts,
             (SELECT COUNT(*) FROM production_exceptions p WHERE p.order_uuid = x.order_uuid AND p.rework_cycle IS NOT NULL AND p.exception_uuid <> x.exception_uuid) AS previous_cycles
@@ -42,6 +44,7 @@ final readonly class ExceptionQueries
         LEFT JOIN employees se ON se.employee_uuid = x.supervisor_employee_uuid
         LEFT JOIN employees rce ON rce.employee_uuid = x.receiver_employee_uuid
         LEFT JOIN employees pce ON pce.employee_uuid = x.physical_custodian_employee_uuid
+        LEFT JOIN employees rre ON rre.employee_uuid = x.restore_recipient_employee_uuid
         LEFT JOIN production_stages ds ON ds.stage_id = x.detected_stage_id
         LEFT JOIN production_fault_reasons cr ON cr.reason_key = x.confirmed_reason_key";
 
@@ -63,19 +66,19 @@ final readonly class ExceptionQueries
     }
 
     /**
-     * Exceptions in which the employee is the detector, the receiver or the responsible employee: open ones
-     * and the last 14 days. A supervised case reaches the responsible cutting employee only once the
-     * supervisor sent the return; before that it is internal to tailoring. @return list<array<string, mixed>>
+     * Exceptions in which the employee is the detector, the receiver, the restore recipient or the responsible
+     * employee: open ones and the last 14 days. A supervised case reaches the responsible cutting employee only
+     * once the supervisor sent the return; before that it is internal to tailoring. @return list<array<string, mixed>>
      */
     public function staffList(string $employeeUuid, string $since): array
     {
         $open = "'" . implode("', '", self::OPEN_STATUSES) . "'";
         $statement = $this->pdo->prepare(self::SUMMARY . "
-            WHERE (x.detector_employee_uuid = :employee OR x.receiver_employee_uuid = :employee_receiver
+            WHERE (x.detector_employee_uuid = :employee OR x.receiver_employee_uuid = :employee_receiver OR x.restore_recipient_employee_uuid = :employee_recipient
                    OR (x.responsible_employee_uuid = :employee_again AND (x.exception_type = 'cutting_fault' OR x.return_requested_at IS NOT NULL)))
               AND (x.status IN ({$open}) OR x.updated_at >= :since)
             ORDER BY x.updated_at DESC, x.exception_number DESC LIMIT 50");
-        $statement->execute(['employee' => $employeeUuid, 'employee_receiver' => $employeeUuid, 'employee_again' => $employeeUuid, 'since' => $since]);
+        $statement->execute(['employee' => $employeeUuid, 'employee_receiver' => $employeeUuid, 'employee_recipient' => $employeeUuid, 'employee_again' => $employeeUuid, 'since' => $since]);
         return array_map(fn (array $row): array => $this->summary($row, $employeeUuid), $statement->fetchAll(PDO::FETCH_ASSOC));
     }
 
@@ -162,7 +165,8 @@ final readonly class ExceptionQueries
             'variant' => $line['variant_snapshot'],
             'color' => $line['color_snapshot'],
             'quantity' => (int) $line['quantity_snapshot'],
-            'meters' => (string) $line['meters_snapshot'],
+            // NULL: the source sent no meters for this line; never shown as a measured zero.
+            'meters' => $line['meters_snapshot'] === null ? null : (string) $line['meters_snapshot'],
         ], $lines->fetchAll(PDO::FETCH_ASSOC));
         $detail['decisions'] = $this->decisions($exceptionUuid);
         if ($row['exception_type'] === 'tailoring_defect') {
@@ -348,7 +352,9 @@ final readonly class ExceptionQueries
             'order' => ['id' => (string) $row['global_order_id'], 'orderNumber' => (string) $row['order_number_snapshot'], 'source' => (string) $row['source_key'], 'sourceName' => (string) $row['source_name']],
             'reason' => ['key' => (string) $row['reason_key'], 'label' => (string) $row['reason_label_snapshot']],
             'lineCount' => (int) $row['line_count'],
-            'faultMeters' => (string) $row['fault_meters'],
+            // Sum of the measured lines; null when no line was measured. unmeasuredLineCount lines have no known meters.
+            'faultMeters' => (int) $row['unmeasured_line_count'] === (int) $row['line_count'] ? null : (string) $row['fault_meters'],
+            'unmeasuredLineCount' => (int) $row['unmeasured_line_count'],
             'arrivalNumber' => (int) $row['arrival_number'],
             'reworkCycle' => $row['rework_cycle'] === null ? null : (int) $row['rework_cycle'],
             'repeatedError' => $previousCycles >= 1,
@@ -368,23 +374,29 @@ final readonly class ExceptionQueries
             'attribution' => $row['attribution'],
             'supervisorReviewedAt' => self::iso($row['supervisor_reviewed_at']),
             'returnRequestedAt' => self::iso($row['return_requested_at']),
+            'restoreRecipient' => $person($row['restore_recipient_name']),
+            'restoreRequestedAt' => self::iso($row['restore_requested_at']),
+            'restoreReceivedAt' => self::iso($row['restore_received_at']),
+            'cancelledByRoot' => $row['cancelled_by_employee_uuid'] !== null,
         ];
         if ($viewerUuid !== null) {
             $isResponsible = $row['responsible_employee_uuid'] === $viewerUuid;
             $isDetector = $row['detector_employee_uuid'] === $viewerUuid;
             $isReceiver = $row['receiver_employee_uuid'] === $viewerUuid;
+            $isRecipient = $row['restore_recipient_employee_uuid'] === $viewerUuid;
             $supervises = $tailoring && $supervisorView;
             $status = (string) $row['status'];
-            $summary['role'] = $isResponsible ? 'responsible' : ($isReceiver ? 'receiver' : ($isDetector ? 'detector' : ($supervises ? 'supervisor' : null)));
+            $summary['role'] = $isResponsible ? 'responsible' : ($isReceiver ? 'receiver' : ($isDetector ? 'detector' : ($isRecipient ? 'recipient' : ($supervises ? 'supervisor' : null))));
             $summary['actions'] = [
                 'canAcknowledge' => $status === 'awaiting_acknowledgment' && ($tailoring ? $isReceiver : $isResponsible),
                 'statesResponsibility' => $tailoring && $isReceiver && $isResponsible,
                 'canRequestRereview' => !$tailoring && ($isResponsible || $isDetector) && $status === 'rejected',
                 'canReview' => $supervises && !$isDetector && $status === 'awaiting_supervisor_review',
                 'canRequestReturn' => $supervises && $status === 'in_supervisor_custody',
-                'canRestore' => $supervises && in_array($status, ['in_supervisor_custody', 'awaiting_acknowledgment', 'return_rejected'], true),
+                'canRestore' => $supervises && (in_array($status, ['in_supervisor_custody', 'awaiting_acknowledgment', 'return_rejected'], true) || ($status === 'awaiting_restore_receipt' && $row['cancelled_by_employee_uuid'] === null)),
+                'canConfirmRestore' => $tailoring && $isRecipient && $status === 'awaiting_restore_receipt',
                 'canAskManagersAgain' => $supervises && $status === 'return_rejected',
-                'canAddNote' => $tailoring && in_array($status, self::OPEN_STATUSES, true) && ($supervises || $isDetector || $isReceiver || ($isResponsible && $row['return_requested_at'] !== null)),
+                'canAddNote' => $tailoring && in_array($status, self::OPEN_STATUSES, true) && ($supervises || $isDetector || $isReceiver || $isRecipient || ($isResponsible && $row['return_requested_at'] !== null)),
             ];
         }
         return $summary;

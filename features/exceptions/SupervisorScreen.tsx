@@ -7,7 +7,7 @@ import { ErrorState } from "../../components/ErrorState";
 import { LoadingState } from "../../components/ui/States";
 import { SourceBadge } from "../../components/SourceBadge";
 import { toServiceError } from "../../services/errors";
-import { faultStatusLabel, formatDecimalMeters, needsMyAction, supervisorViews } from "../../domain/faults";
+import { faultStatusLabel, formatFaultMeters, needsMyAction, supervisorViews } from "../../domain/faults";
 
 const time = new Intl.DateTimeFormat("ro-RO", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "Europe/Bucharest" });
 
@@ -66,7 +66,7 @@ export function SupervisorScreen({ service, navigate }: { service: ExceptionServ
           <button type="button" className={needsMyAction(fault) ? "exception-row needs-action" : "exception-row"} onClick={() => navigate(`/exceptions/${encodeURIComponent(fault.id)}`)}>
             <span>
               <strong><SourceBadge source={fault.order.source} /> Comanda #{fault.order.orderNumber}</strong>
-              <small>{(fault.confirmedReason ?? fault.reason).label} · {formatDecimalMeters(fault.faultMeters)} · {fault.detectedStage.label ?? fault.detectedStage.id}</small>
+              <small>{(fault.confirmedReason ?? fault.reason).label} · {formatFaultMeters(fault)} · {fault.detectedStage.label ?? fault.detectedStage.id}</small>
               <small>Raportat de {fault.detector.displayName} · {time.format(new Date(fault.reportedAt))}</small>
             </span>
             <span className={`exception-status status-${fault.status}`}>{faultStatusLabel(fault)}</span>

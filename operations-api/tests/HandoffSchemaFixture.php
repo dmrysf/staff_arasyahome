@@ -14,11 +14,13 @@ function restorePreTailoringSupervisionTestSchema(PDO $pdo): void
         $pdo->exec("DELETE FROM production_exception_decisions WHERE exception_uuid IN ({$list})");
         $pdo->exec("DELETE FROM production_exceptions WHERE exception_uuid IN ({$list})");
     }
-    $pdo->exec('DELETE FROM production_quality_events WHERE rework_cycle IS NULL OR meters = 0');
+    $pdo->exec('DELETE FROM production_quality_events WHERE rework_cycle IS NULL OR meters = 0 OR unmeasured_line_count > 0');
     $pdo->exec('ALTER TABLE production_quality_events DROP CONSTRAINT chk_production_quality_events_meters');
+    $pdo->exec('ALTER TABLE production_quality_events DROP COLUMN unmeasured_line_count');
     $pdo->exec('ALTER TABLE production_quality_events MODIFY rework_cycle INT UNSIGNED NOT NULL');
     $pdo->exec('ALTER TABLE production_quality_events ADD CONSTRAINT chk_production_quality_events_meters CHECK (meters > 0 AND line_count > 0 AND rework_cycle > 0)');
     $pdo->exec('ALTER TABLE production_exception_lines DROP CONSTRAINT chk_production_exception_lines_meters');
+    $pdo->exec('ALTER TABLE production_exception_lines MODIFY meters_snapshot DECIMAL(12,3) NOT NULL');
     $pdo->exec('ALTER TABLE production_exception_lines ADD CONSTRAINT chk_production_exception_lines_meters CHECK (meters_snapshot > 0)');
     $pdo->exec('ALTER TABLE production_exceptions DROP CONSTRAINT chk_production_exceptions_meters');
     $pdo->exec('ALTER TABLE production_exceptions ADD CONSTRAINT chk_production_exceptions_meters CHECK (fault_meters > 0)');
@@ -31,10 +33,10 @@ function restorePreTailoringSupervisionTestSchema(PDO $pdo): void
     $pdo->exec("ALTER TABLE production_exceptions ADD CONSTRAINT chk_production_exceptions_status CHECK (status IN ('awaiting_acknowledgment', 'awaiting_approval', 'approved', 'rejected', 'cancelled'))");
     $pdo->exec('ALTER TABLE production_exceptions DROP CONSTRAINT chk_production_exceptions_type');
     $pdo->exec("ALTER TABLE production_exceptions ADD CONSTRAINT chk_production_exceptions_type CHECK (exception_type IN ('cutting_fault'))");
-    foreach(['chk_production_exceptions_position','chk_production_exceptions_attribution','chk_production_exceptions_supervisor_people','chk_production_exceptions_receiver_people','chk_production_exceptions_tailoring'] as $check) $pdo->exec("ALTER TABLE production_exceptions DROP CONSTRAINT {$check}");
-    foreach(['fk_production_exceptions_detected_owner','fk_production_exceptions_supervisor','fk_production_exceptions_receiver','fk_production_exceptions_custodian','fk_production_exceptions_confirmed_reason'] as $fk) $pdo->exec("ALTER TABLE production_exceptions DROP FOREIGN KEY {$fk}");
-    $pdo->exec('ALTER TABLE production_exceptions DROP INDEX idx_production_exceptions_supervisor, DROP INDEX idx_production_exceptions_receiver, DROP INDEX idx_production_exceptions_type_status');
-    $pdo->exec('ALTER TABLE production_exceptions DROP COLUMN detected_owner_employee_uuid, DROP COLUMN supervisor_employee_uuid, DROP COLUMN supervisor_reviewed_at, DROP COLUMN supervisor_comment, DROP COLUMN confirmed_reason_key, DROP COLUMN confirmed_reason_label_snapshot, DROP COLUMN return_requested_at, DROP COLUMN receiver_employee_uuid, DROP COLUMN physical_custodian_employee_uuid, DROP COLUMN responsibility_position, DROP COLUMN attribution');
+    foreach(['chk_production_exceptions_position','chk_production_exceptions_attribution','chk_production_exceptions_supervisor_people','chk_production_exceptions_receiver_people','chk_production_exceptions_tailoring','chk_production_exceptions_restore','chk_production_exceptions_unmeasured'] as $check) $pdo->exec("ALTER TABLE production_exceptions DROP CONSTRAINT {$check}");
+    foreach(['fk_production_exceptions_detected_owner','fk_production_exceptions_supervisor','fk_production_exceptions_receiver','fk_production_exceptions_custodian','fk_production_exceptions_restore_recipient','fk_production_exceptions_confirmed_reason'] as $fk) $pdo->exec("ALTER TABLE production_exceptions DROP FOREIGN KEY {$fk}");
+    $pdo->exec('ALTER TABLE production_exceptions DROP INDEX idx_production_exceptions_supervisor, DROP INDEX idx_production_exceptions_receiver, DROP INDEX idx_production_exceptions_type_status, DROP INDEX idx_production_exceptions_restore_recipient');
+    $pdo->exec('ALTER TABLE production_exceptions DROP COLUMN detected_owner_employee_uuid, DROP COLUMN supervisor_employee_uuid, DROP COLUMN supervisor_reviewed_at, DROP COLUMN supervisor_comment, DROP COLUMN confirmed_reason_key, DROP COLUMN confirmed_reason_label_snapshot, DROP COLUMN return_requested_at, DROP COLUMN receiver_employee_uuid, DROP COLUMN physical_custodian_employee_uuid, DROP COLUMN restore_recipient_employee_uuid, DROP COLUMN restore_requested_at, DROP COLUMN restore_received_at, DROP COLUMN unmeasured_line_count, DROP COLUMN responsibility_position, DROP COLUMN attribution');
     // Some MySQL/MariaDB versions keep the FK-supporting indexes after the FK is dropped; drop leftovers.
     foreach($pdo->query("SELECT DISTINCT index_name FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='production_exceptions' AND index_name LIKE 'fk_production_exceptions_%' AND index_name IN ('fk_production_exceptions_detected_owner','fk_production_exceptions_custodian','fk_production_exceptions_confirmed_reason')")->fetchAll(PDO::FETCH_COLUMN) as $index) $pdo->exec("ALTER TABLE production_exceptions DROP INDEX {$index}");
     $pdo->exec("DELETE FROM production_fault_reasons WHERE reason_key IN ('cut-meterage','cut-color','fabric-defect')");

@@ -33,7 +33,9 @@ use PDO;
  *   GET  /production-exceptions/{id}/receivers       substitute cutting employees when the responsible one is unavailable
  *   POST /production-exceptions/{id}/review          supervisor accepts (QR) or dismisses a report
  *   POST /production-exceptions/{id}/return          supervisor sends the case to the cutting employee
- *   POST /production-exceptions/{id}/restore         supervisor ends the case inside tailoring (QR)
+ *   GET  /production-exceptions/{id}/restore-recipients  who can receive the product back (supervisor only)
+ *   POST /production-exceptions/{id}/restore         supervisor hands the product back to tailoring (QR); the order stays blocked
+ *   POST /production-exceptions/{id}/receive         the addressed tailoring employee confirms receipt (QR); unblocks the order
  *   POST /production-exceptions/{id}/notes           additional information by anyone involved
  *
  * Live: GET /live/events?after=<sequence> answers text/event-stream with the events addressed to the
@@ -86,6 +88,9 @@ final readonly class QualityController
             if (preg_match('#^/([0-9a-f-]{36})/receivers$#D', $path, $m) === 1) {
                 return $this->json(['items' => $this->faults->substituteReceivers($actor, $m[1])]);
             }
+            if (preg_match('#^/([0-9a-f-]{36})/restore-recipients$#D', $path, $m) === 1) {
+                return $this->json(['items' => $this->faults->restoreRecipients($actor, $m[1])]);
+            }
             if ($path === '/mine') {
                 $since = $this->clock->now()->modify('-14 days')->format('Y-m-d H:i:s.u');
                 return $this->json(['items' => $this->queries->staffList($actor->employeeUuid, $since)]);
@@ -103,14 +108,14 @@ final readonly class QualityController
                 $tailoring = $row['exception_type'] === 'tailoring_defect';
                 $supervises = $tailoring && $this->supervisors()->supervises($actor, (string) $row['source_key']);
                 $responsible = $row['responsible_employee_uuid'] === $actor->employeeUuid && (!$tailoring || $row['return_requested_at'] !== null);
-                if (!$supervises && !$responsible && !in_array($actor->employeeUuid, [$row['detector_employee_uuid'], $row['receiver_employee_uuid']], true)) {
+                if (!$supervises && !$responsible && !in_array($actor->employeeUuid, [$row['detector_employee_uuid'], $row['receiver_employee_uuid'], $row['restore_recipient_employee_uuid']], true)) {
                     throw new ApiException(404, 'EXCEPTION_NOT_FOUND', 'The request was not found.');
                 }
                 return $this->json($this->queries->detail($m[1], $actor->employeeUuid, false, $supervises));
             }
             throw new ApiException(404, 'NOT_FOUND', 'API route was not found.');
         }
-        if ($request->method === 'POST' && preg_match('#^/([0-9a-f-]{36})/(acknowledge|rereview|review|return|restore|notes)$#D', $path, $m) === 1) {
+        if ($request->method === 'POST' && preg_match('#^/([0-9a-f-]{36})/(acknowledge|rereview|review|return|restore|receive|notes)$#D', $path, $m) === 1) {
             $session = $this->mutationSession($request);
             $key = $request->header('idempotency-key') ?? '';
             $actor = $session->employee;
@@ -119,7 +124,8 @@ final readonly class QualityController
                 'rereview' => $this->faults->requestRereview($actor, $m[1], $this->body($request, ['expectedVersion', 'comment'], ['expectedVersion', 'comment']), $key, $request->requestId),
                 'review' => $this->faults->supervisorReview($actor, $m[1], $this->body($request, ['expectedVersion', 'decision', 'reasonKey', 'qrToken', 'comment'], ['expectedVersion', 'decision']), $key, $request->requestId),
                 'return' => $this->faults->requestReturn($actor, $m[1], $this->body($request, ['expectedVersion', 'receiverEmployeeId', 'comment'], ['expectedVersion']), $key, $request->requestId),
-                'restore' => $this->faults->restore($actor, $m[1], $this->body($request, ['expectedVersion', 'qrToken', 'comment'], ['expectedVersion', 'qrToken', 'comment']), $key, $request->requestId),
+                'restore' => $this->faults->restore($actor, $m[1], $this->body($request, ['expectedVersion', 'qrToken', 'comment', 'recipientEmployeeId'], ['expectedVersion', 'qrToken', 'comment']), $key, $request->requestId),
+                'receive' => $this->faults->receiveRestore($actor, $m[1], $this->body($request, ['expectedVersion', 'confirmed', 'qrToken', 'comment'], ['expectedVersion', 'confirmed', 'qrToken']), $key, $request->requestId),
                 default => $this->faults->addNote($actor, $m[1], $this->body($request, ['expectedVersion', 'comment'], ['expectedVersion', 'comment']), $key, $request->requestId),
             });
         }

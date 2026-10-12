@@ -34,8 +34,9 @@ INSERT IGNORE INTO production_fault_reasons (reason_key, label, requires_comment
 -- Separate actors, never merged: detector (reported), detected owner (owned the order when it was
 -- reported), supervisor (reviewed and holds the case), receiver (cutting employee who physically took
 -- the product by scanning its QR), physical custodian (who holds the product now), responsible (cutting
--- employee of the last 2 -> 3 handoff, derived by the server). Attribution is the manager's decision on
--- whether cutting responsibility was established.
+-- employee of the last 2 -> 3 handoff, derived by the server), restore recipient (tailoring employee who must
+-- physically receive the product back, scanning its QR, before the order is unblocked). Attribution is the
+-- manager's decision on whether cutting responsibility was established.
 ALTER TABLE production_exceptions
     ADD COLUMN detected_owner_employee_uuid CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL AFTER detector_employee_uuid,
     ADD COLUMN supervisor_employee_uuid CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL AFTER responsible_activity_event_id,
@@ -46,21 +47,29 @@ ALTER TABLE production_exceptions
     ADD COLUMN return_requested_at DATETIME(6) NULL AFTER supervisor_comment,
     ADD COLUMN receiver_employee_uuid CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL AFTER return_requested_at,
     ADD COLUMN physical_custodian_employee_uuid CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL AFTER receiver_employee_uuid,
+    ADD COLUMN restore_recipient_employee_uuid CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL AFTER physical_custodian_employee_uuid,
+    ADD COLUMN restore_requested_at DATETIME(6) NULL AFTER restore_recipient_employee_uuid,
+    ADD COLUMN restore_received_at DATETIME(6) NULL AFTER restore_requested_at,
+    ADD COLUMN unmeasured_line_count INT UNSIGNED NOT NULL DEFAULT 0 AFTER fault_meters,
     ADD COLUMN responsibility_position VARCHAR(20) CHARACTER SET ascii COLLATE ascii_bin NULL AFTER acknowledgment_comment,
     ADD COLUMN attribution VARCHAR(20) CHARACTER SET ascii COLLATE ascii_bin NULL AFTER rework_cycle,
     ADD KEY idx_production_exceptions_supervisor (supervisor_employee_uuid, status),
     ADD KEY idx_production_exceptions_receiver (receiver_employee_uuid, status),
     ADD KEY idx_production_exceptions_type_status (exception_type, status, updated_at),
+    ADD KEY idx_production_exceptions_restore_recipient (restore_recipient_employee_uuid, status),
     ADD CONSTRAINT fk_production_exceptions_detected_owner FOREIGN KEY (detected_owner_employee_uuid) REFERENCES employees (employee_uuid) ON UPDATE RESTRICT ON DELETE RESTRICT,
     ADD CONSTRAINT fk_production_exceptions_supervisor FOREIGN KEY (supervisor_employee_uuid) REFERENCES employees (employee_uuid) ON UPDATE RESTRICT ON DELETE RESTRICT,
     ADD CONSTRAINT fk_production_exceptions_receiver FOREIGN KEY (receiver_employee_uuid) REFERENCES employees (employee_uuid) ON UPDATE RESTRICT ON DELETE RESTRICT,
     ADD CONSTRAINT fk_production_exceptions_custodian FOREIGN KEY (physical_custodian_employee_uuid) REFERENCES employees (employee_uuid) ON UPDATE RESTRICT ON DELETE RESTRICT,
+    ADD CONSTRAINT fk_production_exceptions_restore_recipient FOREIGN KEY (restore_recipient_employee_uuid) REFERENCES employees (employee_uuid) ON UPDATE RESTRICT ON DELETE RESTRICT,
     ADD CONSTRAINT fk_production_exceptions_confirmed_reason FOREIGN KEY (confirmed_reason_key) REFERENCES production_fault_reasons (reason_key) ON UPDATE RESTRICT ON DELETE RESTRICT,
     ADD CONSTRAINT chk_production_exceptions_position CHECK (responsibility_position IS NULL OR responsibility_position IN ('accepted', 'disputed', 'not_stated')),
     ADD CONSTRAINT chk_production_exceptions_attribution CHECK (attribution IS NULL OR attribution IN ('cutter', 'none')),
     ADD CONSTRAINT chk_production_exceptions_supervisor_people CHECK (supervisor_employee_uuid IS NULL OR supervisor_employee_uuid <> detector_employee_uuid),
     ADD CONSTRAINT chk_production_exceptions_receiver_people CHECK (receiver_employee_uuid IS NULL OR (receiver_employee_uuid <> detector_employee_uuid AND (supervisor_employee_uuid IS NULL OR receiver_employee_uuid <> supervisor_employee_uuid))),
-    ADD CONSTRAINT chk_production_exceptions_tailoring CHECK (exception_type <> 'tailoring_defect' OR detected_owner_employee_uuid IS NOT NULL);
+    ADD CONSTRAINT chk_production_exceptions_tailoring CHECK (exception_type <> 'tailoring_defect' OR detected_owner_employee_uuid IS NOT NULL),
+    ADD CONSTRAINT chk_production_exceptions_restore CHECK ((restore_requested_at IS NULL) = (restore_recipient_employee_uuid IS NULL) AND (restore_received_at IS NULL OR restore_requested_at IS NOT NULL)),
+    ADD CONSTRAINT chk_production_exceptions_unmeasured CHECK (unmeasured_line_count <= line_count);
 
 ALTER TABLE production_exceptions DROP CONSTRAINT chk_production_exceptions_type;
 ALTER TABLE production_exceptions ADD CONSTRAINT chk_production_exceptions_type CHECK (exception_type IN ('cutting_fault', 'tailoring_defect'));
@@ -68,26 +77,33 @@ ALTER TABLE production_exceptions ADD CONSTRAINT chk_production_exceptions_type 
 ALTER TABLE production_exceptions DROP CONSTRAINT chk_production_exceptions_status;
 ALTER TABLE production_exceptions ADD CONSTRAINT chk_production_exceptions_status CHECK (status IN (
     'awaiting_acknowledgment', 'awaiting_approval', 'approved', 'rejected', 'cancelled',
-    'awaiting_supervisor_review', 'dismissed', 'in_supervisor_custody', 'return_rejected', 'restored'));
+    'awaiting_supervisor_review', 'dismissed', 'in_supervisor_custody', 'return_rejected', 'awaiting_restore_receipt', 'restored'));
 
 ALTER TABLE production_exception_events DROP CONSTRAINT chk_production_exception_events_action;
 ALTER TABLE production_exception_events ADD CONSTRAINT chk_production_exception_events_action CHECK (action IN (
     'reported', 'acknowledged', 'approval_requested', 'approved', 'rejected', 'rereview_requested', 'cancelled',
-    'supervisor_accepted', 'supervisor_dismissed', 'return_requested', 'restored', 'note_added'));
+    'supervisor_accepted', 'supervisor_dismissed', 'return_requested', 'restored', 'note_added',
+    'restore_requested', 'restore_received', 'recovery_requested'));
 
 -- A detection verified by the supervisor is credited to the detector when it is verified, before any
 -- rework cycle exists. Existing rows keep their cycle; the CHECK still requires a positive cycle when set.
 ALTER TABLE production_quality_events MODIFY rework_cycle INT UNSIGNED NULL;
 
--- A line whose meters the source never sent (for example a Trendyol line prepared by width and height only) can
--- still be reported in the supervised flow: its meters are recorded as 0.000, meaning "not measured", while the
--- line itself is counted. The intake-only flow keeps refusing such lines. At least one line is still required.
+-- Unknown meterage is never recorded as a measured zero. A line whose meters the source never sent (for example a
+-- Trendyol line prepared by width and height only) can still be reported in the supervised flow: its snapshot is
+-- NULL ("not measured"), the request and the quality fact count it in unmeasured_line_count, and fault_meters /
+-- meters hold only the sum of the measured lines (0 only when no line was measured). Existing rows are fully
+-- measured (unmeasured_line_count = 0, meters > 0) and still satisfy every constraint. The intake-only flow keeps
+-- refusing unmeasured lines.
 ALTER TABLE production_exceptions DROP CONSTRAINT chk_production_exceptions_meters;
-ALTER TABLE production_exceptions ADD CONSTRAINT chk_production_exceptions_meters CHECK (fault_meters >= 0);
+ALTER TABLE production_exceptions ADD CONSTRAINT chk_production_exceptions_meters CHECK (fault_meters > 0 OR (fault_meters = 0 AND unmeasured_line_count = line_count));
 ALTER TABLE production_exception_lines DROP CONSTRAINT chk_production_exception_lines_meters;
-ALTER TABLE production_exception_lines ADD CONSTRAINT chk_production_exception_lines_meters CHECK (meters_snapshot >= 0);
+ALTER TABLE production_exception_lines MODIFY meters_snapshot DECIMAL(12,3) NULL;
+ALTER TABLE production_exception_lines ADD CONSTRAINT chk_production_exception_lines_meters CHECK (meters_snapshot IS NULL OR meters_snapshot > 0);
+ALTER TABLE production_quality_events ADD COLUMN unmeasured_line_count INT UNSIGNED NOT NULL DEFAULT 0 AFTER meters;
 ALTER TABLE production_quality_events DROP CONSTRAINT chk_production_quality_events_meters;
-ALTER TABLE production_quality_events ADD CONSTRAINT chk_production_quality_events_meters CHECK (meters >= 0 AND line_count > 0 AND (rework_cycle IS NULL OR rework_cycle > 0));
+ALTER TABLE production_quality_events ADD CONSTRAINT chk_production_quality_events_meters CHECK (line_count > 0 AND unmeasured_line_count <= line_count
+    AND (meters > 0 OR (meters = 0 AND unmeasured_line_count = line_count)) AND (rework_cycle IS NULL OR rework_cycle > 0));
 
 -- ---------------------------------------------------------------- immutable production activity
 

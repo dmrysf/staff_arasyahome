@@ -11,6 +11,7 @@ export const faultStatusLabels: Record<FaultExceptionStatus, string> = {
   dismissed: "Închisă de șeful de croitorie",
   in_supervisor_custody: "În grija șefului de croitorie",
   return_rejected: "Returnarea la tăiere a fost respinsă",
+  awaiting_restore_receipt: "Așteaptă primirea înapoi la croitorie",
   restored: "Rezolvată în croitorie",
 };
 
@@ -60,6 +61,9 @@ const timelineLabels: Record<string, string> = {
   rejected: "Respinsă de manager",
   rereview_requested: "Reanalizare cerută",
   restored: "Readusă în producție la croitorie",
+  restore_requested: "Predată înapoi la croitorie · așteaptă confirmarea primirii",
+  restore_received: "Primită înapoi (etichetă scanată) · producția continuă",
+  recovery_requested: "Recuperare cerută de administrator · așteaptă primirea",
   note_added: "Informație adăugată",
   cancelled: "Anulată",
 };
@@ -68,9 +72,9 @@ export function timelineLabel(action: string): string {
   return timelineLabels[action] ?? action;
 }
 
-/** "17.000" -> "17 m", "8.400" -> "8,4 m", "0.000" -> "fără metraj" (a line the source sent without meters). Display only. */
-export function formatDecimalMeters(value: string): string {
-  if (/^0*\.?0*$/.test(value)) return "fără metraj";
+/** "17.000" -> "17 m", "8.400" -> "8,4 m"; null (the source sent no meters) -> "fără metraj". Display only. */
+export function formatDecimalMeters(value: string | null): string {
+  if (value === null) return "fără metraj";
   const trimmed = value.includes(".") ? value.replace(/0+$/, "").replace(/\.$/, "") : value;
   return `${trimmed.replace(".", ",")} m`;
 }
@@ -84,6 +88,13 @@ export function selectedMeters(items: ProductionItem[], selected: ReadonlySet<st
   return `${Math.floor(thousandths / 1000)}.${String(thousandths % 1000).padStart(3, "0")}`;
 }
 
+/** Scope of a request: known meters and, separately, the lines without meters. Never shows unknown meters as 0. */
+export function formatFaultMeters(fault: Pick<FaultException, "faultMeters" | "unmeasuredLineCount">): string {
+  const unknown = fault.unmeasuredLineCount === 1 ? "1 produs fără metraj" : `${fault.unmeasuredLineCount} produse fără metraj`;
+  if (fault.faultMeters === null) return unknown;
+  return fault.unmeasuredLineCount > 0 ? `${formatDecimalMeters(fault.faultMeters)} + ${unknown}` : formatDecimalMeters(fault.faultMeters);
+}
+
 export function arrivalLabel(arrival: number): string | null {
   if (arrival < 2) return null;
   return arrival === 2 ? "A doua sosire · după revizie" : `Sosirea a ${arrival}-a · după revizie`;
@@ -91,7 +102,7 @@ export function arrivalLabel(arrival: number): string | null {
 
 export function needsMyAction(fault: FaultException): boolean {
   const actions = fault.actions;
-  return actions.canAcknowledge || actions.canRequestRereview || actions.canReview || actions.canRequestReturn || actions.canAskManagersAgain;
+  return actions.canAcknowledge || actions.canRequestRereview || actions.canReview || actions.canRequestReturn || actions.canAskManagersAgain || actions.canConfirmRestore;
 }
 
 const liveMessages: Partial<Record<string, (orderNumber: string) => string>> = {
@@ -103,6 +114,7 @@ const liveMessages: Partial<Record<string, (orderNumber: string) => string>> = {
   "exception.custody_taken": (n) => `Șeful de croitorie a preluat comanda #${n}.`,
   "exception.dismissed": (n) => `Șeful de croitorie a închis raportul pentru comanda #${n}.`,
   "exception.restored": (n) => `Comanda #${n} a revenit în producție la croitorie.`,
+  "exception.restore_receipt_required": (n) => `Comanda #${n} îți este predată înapoi. Primește produsul, scanează eticheta și confirmă primirea.`,
   "exception.approved": (n) => `Aprobarea a fost acordată. Lucrarea poate fi refăcută. Comanda #${n}.`,
   "exception.rejected": (n) => `Managerul a respins returnarea la tăiere pentru comanda #${n}.`,
 };

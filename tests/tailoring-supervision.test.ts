@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
-import { canReportDefect, faultStatusLabel, isSupervised, liveMessage, needsMyAction, supervisorViews } from "../domain/faults";
+import { canReportDefect, faultStatusLabel, formatDecimalMeters, formatFaultMeters, isSupervised, liveMessage, needsMyAction, supervisorViews } from "../domain/faults";
 import { StaffServiceError, type QualityCapabilities, type StaffOrder } from "../domain/models";
 import { parseStaffRoute } from "../domain/staffRoute";
 import { canReturnToCutting } from "../features/exceptions/ReturnToCuttingPanel";
@@ -20,7 +20,7 @@ const worker = ["orders.report_fault", "orders.claim", "orders.advance_stage"];
 const serverFault = {
   id: "8f866d73-a99c-4f6c-85de-e88f0a629072", number: "EX-000042", type: "tailoring_defect", status: "awaiting_supervisor_review", version: 1,
   order: { id: "trendhome:9001", orderNumber: "9001", source: "trendhome", sourceName: "Trend Home" },
-  reason: { key: "cut-meterage", label: "Metraj tăiat greșit" }, lineCount: 2, faultMeters: "15.000", arrivalNumber: 1, reworkCycle: null, repeatedError: false,
+  reason: { key: "cut-meterage", label: "Metraj tăiat greșit" }, lineCount: 2, faultMeters: "15.000", unmeasuredLineCount: 0, arrivalNumber: 1, reworkCycle: null, repeatedError: false,
   detector: { displayName: "Ana Croitorie" }, responsible: { displayName: "Ioana Tăiere" }, reportedAt: "2026-10-12T08:00:00.000Z", acknowledgedAt: null, resolvedAt: null, pendingSince: null, attempts: 0,
   detectedStage: { id: "side-hem", label: "Tiv lateral" }, confirmedReason: null, supervisor: null, receiver: null, physicalCustodian: null,
   responsibilityPosition: null, attribution: null, supervisorReviewedAt: null, returnRequestedAt: null,
@@ -83,4 +83,36 @@ test("capabilities accept only canonical sources; the supervisor route parses", 
   assert.deepEqual(mapQualityCapabilities({ tailoringSupervisor: true, supervisedSources: ["trendhome", "evil", 3], supervisedFlowActive: true }), { tailoringSupervisor: true, supervisedSources: ["trendhome"], supervisedFlowActive: true });
   assert.deepEqual(mapQualityCapabilities({}), { tailoringSupervisor: false, supervisedSources: [], supervisedFlowActive: false });
   assert.equal(parseStaffRoute("/problems").kind, "problems");
+});
+
+test("the two-party handover back to tailoring: only the addressed worker confirms, and the screen says the order stays blocked", () => {
+  const pending = mapFaultException({ ...serverFault, status: "awaiting_restore_receipt", role: "detector", physicalCustodian: { displayName: "VASILOAIA IULIANA" },
+    restoreRecipient: { displayName: "Ana Croitorie" }, restoreRequestedAt: "2026-10-12T09:00:00.000Z", restoreReceivedAt: null, cancelledByRoot: false,
+    actions: { canConfirmRestore: true, canAddNote: true } });
+  assert.equal(pending.status, "awaiting_restore_receipt");
+  assert.equal(pending.actions.canConfirmRestore, true);
+  assert.equal(needsMyAction(pending), true, "the worker must act: receive and scan");
+  assert.equal(pending.restoreRecipient?.displayName, "Ana Croitorie");
+  assert.equal(faultStatusLabel(pending), "Așteaptă primirea înapoi la croitorie");
+  const older = mapFaultException({ ...serverFault, status: "awaiting_restore_receipt", actions: {} });
+  assert.equal(older.actions.canConfirmRestore, false, "an absent flag never offers the receipt");
+  assert.equal(mapFaultException({ ...serverFault, role: "recipient" }).role, "recipient");
+  assert.match(liveMessage("exception.restore_receipt_required", "9001") ?? "", /Primește produsul, scanează eticheta și confirmă primirea/);
+  const screen = readFileSync(path.join(root, "features/exceptions/ExceptionScreen.tsx"), "utf8");
+  assert.match(screen, /Comanda rămâne blocată până când/);
+  assert.match(screen, /service\.receiveRestore\(/);
+  assert.equal(getErrorPresentation(new StaffServiceError("RESTORE_RECIPIENT_UNAVAILABLE")).title, "Angajatul nu poate primi comanda");
+});
+
+test("unknown meterage is never shown or parsed as a measured zero", () => {
+  const unknown = mapFaultException({ ...serverFault, lineCount: 1, faultMeters: null, unmeasuredLineCount: 1, lines: [{ itemId: "i1", lineNumber: 1, name: "Voal", code: null, variant: null, color: null, quantity: 1, meters: null }] });
+  assert.equal(unknown.faultMeters, null);
+  assert.equal(unknown.lines?.[0]?.meters, null);
+  assert.equal(formatFaultMeters(unknown), "1 produs fără metraj");
+  assert.equal(formatFaultMeters({ faultMeters: "4.500", unmeasuredLineCount: 2 }), "4,5 m + 2 produse fără metraj");
+  assert.equal(formatFaultMeters({ faultMeters: "15.000", unmeasuredLineCount: 0 }), "15 m");
+  assert.equal(formatDecimalMeters(null), "fără metraj");
+  assert.equal(mapFaultException({ ...serverFault, unmeasuredLineCount: undefined }).unmeasuredLineCount, 0, "an older API (no field) means every line was measured");
+  assert.throws(() => mapFaultException({ ...serverFault, unmeasuredLineCount: -1 }));
+  assert.throws(() => mapFaultException({ ...serverFault, faultMeters: "abc" }));
 });

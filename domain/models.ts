@@ -127,7 +127,7 @@ export type StaffOrder = {
 };
 
 export type FaultExceptionStatus = "awaiting_acknowledgment" | "awaiting_approval" | "approved" | "rejected" | "cancelled"
-  | "awaiting_supervisor_review" | "dismissed" | "in_supervisor_custody" | "return_rejected" | "restored";
+  | "awaiting_supervisor_review" | "dismissed" | "in_supervisor_custody" | "return_rejected" | "awaiting_restore_receipt" | "restored";
 
 /** What the signed-in employee may do with one request; the server decides every flag. */
 export type FaultActions = {
@@ -140,6 +140,8 @@ export type FaultActions = {
   canRestore: boolean;
   canAskManagersAgain: boolean;
   canAddNote: boolean;
+  /** The addressed tailoring employee confirms, with the product's QR, that the product is back in their hands. */
+  canConfirmRestore: boolean;
 };
 
 export type FaultTimelineEntry = { action: string; actor: string; at: string; version: number; comment: string | null };
@@ -170,7 +172,10 @@ export type FaultException = {
   order: { id: string; orderNumber: string; source: OrderSource; sourceName: string };
   reason: { key: string; label: string };
   lineCount: number;
-  faultMeters: string;
+  /** Sum of the measured lines; null when no line was measured. Unknown meters are never a measured zero. */
+  faultMeters: string | null;
+  /** Lines the source sent without meters. */
+  unmeasuredLineCount: number;
   arrivalNumber: number;
   reworkCycle: number | null;
   repeatedError: boolean;
@@ -188,7 +193,13 @@ export type FaultException = {
   responsibilityPosition: "accepted" | "disputed" | "not_stated" | null;
   attribution: "cutter" | "none" | null;
   returnRequestedAt: string | null;
-  role: "responsible" | "detector" | "receiver" | "supervisor" | null;
+  /** Tailoring employee who must physically receive the product back before the order is unblocked. */
+  restoreRecipient: { displayName: string } | null;
+  restoreRequestedAt: string | null;
+  restoreReceivedAt: string | null;
+  /** Root recovery: the case ends as cancelled once the recipient receives the product. */
+  cancelledByRoot: boolean;
+  role: "responsible" | "detector" | "receiver" | "recipient" | "supervisor" | null;
   actions: FaultActions;
   detectorComment?: string | null;
   supervisorComment?: string | null;
@@ -196,7 +207,7 @@ export type FaultException = {
   cuttingHandoff?: { employee: string; at: string; arrivalNumber: number } | null;
   currentStage?: { id: string; label: string | null };
   acknowledgmentComment?: string | null;
-  lines?: { itemId: string; lineNumber: number; name: string; code: string | null; variant: string | null; color: string | null; quantity: number; meters: string }[];
+  lines?: { itemId: string; lineNumber: number; name: string; code: string | null; variant: string | null; color: string | null; quantity: number; meters: string | null }[];
   decisions?: FaultDecision[];
 };
 
@@ -308,6 +319,9 @@ export type ServiceErrorCode =
   | "SUPERVISOR_REQUIRED"
   | "SELF_REVIEW_DENIED"
   | "RESPONSIBLE_UNAVAILABLE"
+  | "RESTORE_RECIPIENT_UNAVAILABLE"
+  | "RECIPIENT_NOT_ALLOWED"
+  | "RECIPIENT_INVALID"
   | "RECEIVER_NOT_ALLOWED"
   | "RECEIVER_INVALID"
   | "RECEIVER_NOT_ELIGIBLE"

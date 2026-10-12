@@ -112,6 +112,9 @@ const backendErrorCodes: Partial<Record<string, ServiceErrorCode>> = {
   SELF_REVIEW_DENIED: "SELF_REVIEW_DENIED",
   RESPONSIBLE_UNAVAILABLE: "RESPONSIBLE_UNAVAILABLE",
   RECEIVER_NOT_ALLOWED: "RECEIVER_NOT_ALLOWED",
+  RESTORE_RECIPIENT_UNAVAILABLE: "RESTORE_RECIPIENT_UNAVAILABLE",
+  RECIPIENT_NOT_ALLOWED: "RECIPIENT_NOT_ALLOWED",
+  RECIPIENT_INVALID: "RECIPIENT_INVALID",
   RECEIVER_INVALID: "RECEIVER_INVALID",
   RECEIVER_NOT_ELIGIBLE: "RECEIVER_NOT_ELIGIBLE",
   ORDER_BLOCKED_BY_DOCUMENT: "ORDER_BLOCKED_BY_DOCUMENT",
@@ -424,7 +427,7 @@ const decimalString = (value: unknown) => {
 };
 const nullableText = (value: unknown) => value === null || value === undefined ? null : stringValue(value);
 const nullableTimestamp = (value: unknown) => value === null || value === undefined ? null : timestampValue(value);
-const exceptionStatuses = ["awaiting_acknowledgment", "awaiting_approval", "approved", "rejected", "cancelled", "awaiting_supervisor_review", "dismissed", "in_supervisor_custody", "return_rejected", "restored"] as const;
+const exceptionStatuses = ["awaiting_acknowledgment", "awaiting_approval", "approved", "rejected", "cancelled", "awaiting_supervisor_review", "dismissed", "in_supervisor_custody", "return_rejected", "awaiting_restore_receipt", "restored"] as const;
 const faultSources = ["trendhome", "outletperdele", "trendyol", "b2b", "marketplace"] as const;
 const person = (value: unknown): { displayName: string } | null => value == null ? null : { displayName: stringValue(objectValue(value).displayName) };
 
@@ -458,7 +461,8 @@ export function mapFaultException(value: unknown): FaultException {
       source: (faultSources as readonly string[]).includes(source) ? source as FaultException["order"]["source"] : "unknown" },
     reason: { key: stringValue(reason.key), label: stringValue(reason.label) },
     lineCount: positiveInteger(raw.lineCount),
-    faultMeters: decimalString(raw.faultMeters),
+    faultMeters: raw.faultMeters === null ? null : decimalString(raw.faultMeters),
+    unmeasuredLineCount: raw.unmeasuredLineCount == null ? 0 : count(raw.unmeasuredLineCount),
     arrivalNumber: positiveInteger(raw.arrivalNumber),
     reworkCycle: raw.reworkCycle == null ? null : positiveInteger(raw.reworkCycle),
     repeatedError: booleanValue(raw.repeatedError),
@@ -476,12 +480,16 @@ export function mapFaultException(value: unknown): FaultException {
     responsibilityPosition: raw.responsibilityPosition == null ? null : oneOf(raw.responsibilityPosition, ["accepted", "disputed", "not_stated"] as const),
     attribution: raw.attribution == null ? null : oneOf(raw.attribution, ["cutter", "none"] as const),
     returnRequestedAt: nullableTimestamp(raw.returnRequestedAt),
-    role: raw.role == null ? null : oneOf(raw.role, ["responsible", "detector", "receiver", "supervisor"] as const),
+    restoreRecipient: person(raw.restoreRecipient),
+    restoreRequestedAt: nullableTimestamp(raw.restoreRequestedAt),
+    restoreReceivedAt: nullableTimestamp(raw.restoreReceivedAt),
+    cancelledByRoot: raw.cancelledByRoot === true,
+    role: raw.role == null ? null : oneOf(raw.role, ["responsible", "detector", "receiver", "recipient", "supervisor"] as const),
     // Absent flags (an older API) are false: the screen never offers an action the server did not grant.
     actions: {
       canAcknowledge: flag(actions, "canAcknowledge"), statesResponsibility: flag(actions, "statesResponsibility"), canRequestRereview: flag(actions, "canRequestRereview"),
       canReview: flag(actions, "canReview"), canRequestReturn: flag(actions, "canRequestReturn"), canRestore: flag(actions, "canRestore"),
-      canAskManagersAgain: flag(actions, "canAskManagersAgain"), canAddNote: flag(actions, "canAddNote"),
+      canAskManagersAgain: flag(actions, "canAskManagersAgain"), canAddNote: flag(actions, "canAddNote"), canConfirmRestore: flag(actions, "canConfirmRestore"),
     },
   };
   if ("detectorComment" in raw) mapped.detectorComment = nullableText(raw.detectorComment);
@@ -505,7 +513,7 @@ export function mapFaultException(value: unknown): FaultException {
     mapped.lines = raw.lines.map((item) => {
       const line = objectValue(item);
       return { itemId: stringValue(line.itemId), lineNumber: positiveInteger(line.lineNumber), name: stringValue(line.name), code: nullableText(line.code),
-        variant: nullableText(line.variant), color: nullableText(line.color), quantity: positiveInteger(line.quantity), meters: decimalString(line.meters) };
+        variant: nullableText(line.variant), color: nullableText(line.color), quantity: positiveInteger(line.quantity), meters: line.meters === null ? null : decimalString(line.meters) };
     });
   }
   if (raw.decisions != null) {
@@ -797,8 +805,11 @@ export function createProductionServices(apiBaseUrl: string, options: Production
       body: JSON.stringify({ expectedVersion: input.expectedVersion, decision: input.decision, ...(input.decision === "accept" ? { reasonKey: input.reasonKey, qrToken: input.qrToken } : {}), ...(input.comment ? { comment: input.comment } : {}) }) }, mapFaultException),
     sendReturn: (id, input) => http.request(`/production-exceptions/${encodeURIComponent(id)}/return`, { method: "POST", headers: { "Idempotency-Key": input.idempotencyKey },
       body: JSON.stringify({ expectedVersion: input.expectedVersion, ...(input.receiverEmployeeId ? { receiverEmployeeId: input.receiverEmployeeId } : {}), ...(input.comment ? { comment: input.comment } : {}) }) }, mapFaultException),
+    restoreRecipients: (id, requestOptions) => http.request(`/production-exceptions/${encodeURIComponent(id)}/restore-recipients`, { signal: requestOptions?.signal }, mapReceivers),
     restore: (id, input) => http.request(`/production-exceptions/${encodeURIComponent(id)}/restore`, { method: "POST", headers: { "Idempotency-Key": input.idempotencyKey },
-      body: JSON.stringify({ expectedVersion: input.expectedVersion, qrToken: input.qrToken, comment: input.comment }) }, mapFaultException),
+      body: JSON.stringify({ expectedVersion: input.expectedVersion, qrToken: input.qrToken, comment: input.comment, ...(input.recipientEmployeeId ? { recipientEmployeeId: input.recipientEmployeeId } : {}) }) }, mapFaultException),
+    receiveRestore: (id, input) => http.request(`/production-exceptions/${encodeURIComponent(id)}/receive`, { method: "POST", headers: { "Idempotency-Key": input.idempotencyKey },
+      body: JSON.stringify({ expectedVersion: input.expectedVersion, confirmed: true, qrToken: input.qrToken, ...(input.comment ? { comment: input.comment } : {}) }) }, mapFaultException),
     addNote: (id, input) => http.request(`/production-exceptions/${encodeURIComponent(id)}/notes`, { method: "POST", headers: { "Idempotency-Key": input.idempotencyKey },
       body: JSON.stringify({ expectedVersion: input.expectedVersion, comment: input.comment }) }, mapFaultException),
   };
