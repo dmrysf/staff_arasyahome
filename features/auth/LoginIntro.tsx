@@ -66,9 +66,9 @@ function LoginIntro({ stage, onDone }: { stage: RefObject<HTMLDivElement | null>
     const target = stage.current;
     if (!scene || !target || typeof scene.animate !== "function") { onDone(); return; }
     const part = (selector: string) => scene.querySelector<HTMLElement>(selector) as HTMLElement;
-    const [camera, backdrop, layout, horizon, glow, brand, mark, sharp, soft, word, sheen, bar, text, send, ring, drapeLeft, drapeRight] = [
+    const [camera, backdrop, layout, horizon, glow, brand, mark, sharp, soft, word, sheen, bar, text, send, ring, drapeLeft, drapeRight, cardShape] = [
       ".intro-camera", ".intro-backdrop", ".intro-scene", ".intro-horizon", ".intro-glow", ".intro-brand", ".intro-mark", ".intro-sharp", ".intro-soft",
-      ".intro-word-inner", ".intro-sheen-band", ".intro-bar", ".intro-text", ".intro-send", ".intro-ring", ".intro-drape-left", ".intro-drape-right",
+      ".intro-word-inner", ".intro-sheen-band", ".intro-bar", ".intro-text", ".intro-send", ".intro-ring", ".intro-drape-left", ".intro-drape-right", ".intro-card",
     ].map(part);
     const animations: Animation[] = [];
     const timers: number[] = [];
@@ -113,7 +113,10 @@ function LoginIntro({ stage, onDone }: { stage: RefObject<HTMLDivElement | null>
     ], { duration: 1700 });
     play(soft, [{ opacity: 0 }, { opacity: 1, offset: 0.3 }, { opacity: 0, offset: 0.58 }, { opacity: 0 }], { duration: 1700 });
     play(sharp, [{ opacity: 0 }, { opacity: 0, offset: 0.3 }, { opacity: 1, offset: 0.58 }, { opacity: 1 }], { duration: 1700 });
-    play(word, [{ opacity: 0, transform: "translateX(-10%)", clipPath: "inset(0 100% 0 0)" }, { opacity: 1, transform: "none", clipPath: "inset(0 0% 0 0)" }], { delay: 1400, duration: 640 });
+    // The rest of the wordmark is drawn out of it from left to right: a window slides in while the letters inside it
+    // slide back by the same amount, so they stay in place and nothing is repainted.
+    play(word, [{ opacity: 0, transform: "translateX(-100%)" }, { opacity: 1, transform: "none" }], { delay: 1400, duration: 640 });
+    play(part(".intro-word-inner img"), [{ transform: `translateX(${wordShift * 2}px)` }, { transform: "none" }], { delay: 1400, duration: 640 });
     play(brand, [{ transform: `translateY(${lift}px)` }, { transform: "none" }], { delay: 1500, duration: 650, easing: EASE_IN_OUT });
     play(bar, [{ opacity: 0, transform: "scaleX(.3) scaleY(.35)" }, { opacity: 1, transform: "none" }], { delay: 1560, duration: 650 });
     play(glow, [{ opacity: 0, transform: "translateY(30%)" }, { opacity: 1, transform: "none" }], { delay: 1500, duration: 900 });
@@ -156,7 +159,9 @@ function LoginIntro({ stage, onDone }: { stage: RefObject<HTMLDivElement | null>
     camera.style.transformOrigin = `${sendX}px ${sendY}px`;
     play(camera, [{ transform: "none" }, { transform: "scale(1.22)" }], { delay: pressAt, duration: 1000, easing: EASE_IN, fill: "forwards" });
 
-    // … and Staff opens from the button: a circle, a card, then the whole screen, settling from slightly close.
+    // … and Staff opens from the button: a white circle, a card, then the whole screen. The shape is an empty white
+    // layer (cheap to redraw while it changes); Staff itself only fades and settles in once the card fills the screen,
+    // so its screen is never repainted frame by frame.
     const side = Math.min(width, height);
     const insetX = (width - side) / 2;
     const insetY = (height - side) / 2;
@@ -165,22 +170,30 @@ function LoginIntro({ stage, onDone }: { stage: RefObject<HTMLDivElement | null>
     const fromScale = (sendBox.width * 1.15) / side;
     const clip = (y: number, x: number, radius: number) => `inset(${y}px ${x}px ${y}px ${x}px round ${radius}px)`;
     const cardAt = pressAt + 110;
-    const card = play(target, [
+    const card = play(cardShape, [
       { opacity: 0, transform: `translate(${fromX}px, ${fromY}px) scale(${fromScale})`, clipPath: clip(insetY, insetX, side / 2), easing: EASE_IN_OUT },
       { opacity: 1, transform: `translate(${fromX * 0.82}px, ${fromY * 0.82}px) scale(${fromScale * 1.6})`, clipPath: clip(insetY, insetX, side / 2), offset: 0.12, easing: EASE_IN_OUT },
       { opacity: 1, transform: `translate(${fromX * 0.3}px, ${fromY * 0.3}px) scale(.44)`, clipPath: clip(insetY, insetX, side * 0.12), offset: 0.46, easing: EASE_IN_OUT },
       { opacity: 1, transform: "scale(1.05)", clipPath: clip(0, 0, 0), offset: 0.8, easing: EASE_OUT },
       { opacity: 1, transform: "none", clipPath: clip(0, 0, 0) },
     ], { delay: cardAt, duration: 1000 });
-    play(scene, [{ opacity: 1 }, { opacity: 0 }], { delay: cardAt + 800, duration: 200, easing: "linear" });
+    play(part(".intro-card img"), [{ opacity: 1 }, { opacity: 0 }], { delay: cardAt + 620, duration: 180, easing: EASE_IN, fill: "forwards" });
+    const open = play(target, [{ opacity: 0, transform: "scale(1.05)" }, { opacity: 1, transform: "none" }], { delay: cardAt + 800, duration: 340 });
+    play(scene, [{ opacity: 1 }, { opacity: 0 }], { delay: cardAt + 1140, duration: 120, easing: "linear" });
 
     // 7. Inside Staff the header, the first blocks and the navigation rise in one after another.
     const content = [target.querySelector(".app-header"), ...target.querySelectorAll(".app-content > *"), target.querySelector(".app-nav")]
       .filter((element): element is Element => element !== null).slice(0, 6);
-    const settle = content.map((element, index) => play(element, [{ opacity: 0, transform: "translateY(22px)" }, { opacity: 1, transform: "none" }], { delay: cardAt + 480 + index * 70, duration: 520 }));
+    const settle = content.map((element, index) => play(element, [{ opacity: 0, transform: "translateY(22px)" }, { opacity: 1, transform: "none" }], { delay: cardAt + 800 + index * 70, duration: 520 }));
 
-    Promise.all([card, ...settle].map((animation) => animation.finished)).then(onDone, () => undefined);
+    // Staff opens when the last animation ends. A timer backs this up, so an animation the browser holds back can
+    // never leave the intro on screen over an inert Staff.
+    let finished = false;
+    const finish = () => { if (!finished) { finished = true; onDone(); } };
+    Promise.all([card, open, ...settle].map((animation) => animation.finished)).then(finish, () => undefined);
+    timers.push(window.setTimeout(finish, cardAt + 800 + content.length * 70 + 520 + 1500));
     return () => {
+      finished = true;
       for (const timer of timers) window.clearTimeout(timer);
       for (const animation of animations) animation.cancel();
     };
@@ -221,6 +234,7 @@ function LoginIntro({ stage, onDone }: { stage: RefObject<HTMLDivElement | null>
       </div>
       <div className="intro-vignette" />
       <div className="intro-grain" />
+      <div className="intro-card"><img src={logo.src} width={logo.width} height={logo.height} alt="" decoding="sync" draggable={false} /></div>
     </div>
   );
 }

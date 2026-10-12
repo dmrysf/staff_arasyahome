@@ -76,8 +76,22 @@ Inside the horizon disc a map of Europe opens (owner request): blue coastlines a
 
 - `features/auth/IntroMap.tsx` + `features/auth/introMapData.ts`: the map is vector (SVG with non-scaling hairline strokes), so it is sharp at any resolution, including 4K. The data (Natural Earth 1:50m, public domain, orthographic projection centred on Central Europe) was generated once into a ~40 KB module (~15 KB gzip). It is a separate lazy chunk: the login page does not load it; a sign-in fetches it while the credentials are checked (`preloadIntroMap`), and if it arrives late it joins the running timeline. Phones show fewer, larger names; office names move above Krefeld and below Bucharest so they stay on screen.
 - `features/auth/LoginIntro.tsx`: `LoginIntroStage` wraps Staff; while the intro runs Staff is rendered in a hidden, `inert` stage (it loads its data meanwhile) and the intro opens that stage, so the user lands in the live screen. `styles/intro.css` places the pieces; colours are `--color-intro-*` tokens.
-- Motion uses the Web Animations API (transform, opacity and clips only; blur is a static copy that cross-fades, never an animated filter), so the global reduced-motion CSS does not shorten it. Owner decision: no skip control and no reduced-motion exception.
+- Motion uses the Web Animations API (transforms and opacity, plus the clip of the empty white card; blur is a static copy that cross-fades, never an animated filter), so the global reduced-motion CSS does not shorten it. Owner decision: no skip control and no reduced-motion exception.
 - Browser automation (`navigator.webdriver`) does not play it, so test runs are not slowed; `e2e/zzzzzzzzzz-ux-verification-real-api.spec.ts` turns that off and checks the intro twice, with reduced motion.
+
+### Smooth playback on phones (Staff 2.21.1)
+
+Employees reported that the intro froze on their phones. A trace of 2.21.0 in Chromium with the CPU slowed six times (390 × 844, 3× pixel density) showed why: the map was repainted on every frame (SVG children were animated, the scan was an animated SVG mask, the view was revealed with an animated `clip-path`, and SVG text is laid out again whenever a parent layer moves), and Staff itself was repainted on every frame of the card transition (its stage carried the animated clip). The intro asked for about 7.5 s of rasterisation in 6 s, plus 2.6 s of main-thread work, so a phone's GPU and main thread could not keep up, especially while Staff loads its data behind the intro.
+
+2.21.1 keeps the look but moves only whole layers:
+
+- Map: the drawing (graticule, coastlines, borders) is painted once. Germany and Romania are a separate layer that fades in. The scan is a window of brighter lines that slides across while its content slides back. Country names are HTML text, revealed from west to east by a sliding window. Office dots, halos, rings and names are HTML elements, and the route is revealed by a window in its own small box; the spark follows the curve through precomputed transform keyframes. Sizes follow the map through container units (`1cqw` = 10 map units).
+- Wordmark: the rest of the logo is still drawn out of the "A" from left to right, with a sliding window instead of an animated clip.
+- Card: the circle → rounded card → full screen shape is an empty white layer with the black wordmark (cheap to redraw). Staff fades and settles in only once the card fills the screen, so its screen is never repainted frame by frame.
+- Film grain: the noise layer is now about the size of the screen instead of four times its area, which saves GPU memory on phones.
+- A timer backs up the end of the intro, so an animation the browser holds back can never leave the intro over an inert Staff.
+
+The same trace for 2.21.1: about 0.15 s of rasterisation (from 7.5 s), 0.9 s of main-thread work (from 2.6 s), 216 paints (from 805), and 55 ms of layout (from 870 ms). The only per-frame paints left are the typed line and the white card. Browser emulation only (Chromium and WebKit); not measured on a real device.
 
 ## YD Soft connection status
 
