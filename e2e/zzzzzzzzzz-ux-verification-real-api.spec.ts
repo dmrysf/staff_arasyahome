@@ -194,6 +194,8 @@ test("package validation appears next to the field and moves focus there; nothin
   expect(await kindError.evaluate((element) => element.previousElementSibling?.classList.contains("kind-picker"))).toBe(true);
 
   await line.getByRole("radio", { name: "Draperie" }).check();
+  // The title may be prefilled from the title approved for this product code; an empty title is refused.
+  await line.getByLabel(/Denumire de producție/).fill("");
   await line.getByRole("button", { name: "Salvează linia 1" }).click();
   await expect(line.getByLabel(/Denumire de producție/)).toBeFocused();
   await expect(line.getByRole("alert").filter({ hasText: "Scrie denumirea de producție în limba română" })).toBeVisible();
