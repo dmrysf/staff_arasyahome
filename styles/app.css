@@ -409,3 +409,15 @@
 .product-detail .product-key dd { font-family: var(--font-mono); font-size: var(--text-lg); font-weight: var(--weight-bold); letter-spacing: -.02em; }
 @media (min-width: 720px) { .detail-screen > .detail-products { grid-row: auto; } }
 .roadmap-track:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; border-radius: var(--radius-md); }
+
+/* Tailoring quality supervision */
+.supervisor-tabs { grid-template-columns: repeat(2, 1fr); }
+@media (min-width: 640px) { .supervisor-tabs { grid-template-columns: repeat(4, 1fr); } }
+.supervisor-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.supervisor-list .exception-row > span:first-child { display: grid; gap: 2px; min-width: 0; }
+.supervisor-list .exception-row small { overflow-wrap: anywhere; }
+.supervisor-entry { margin-top: 4px; }
+.empty-note { margin: 0; padding: 16px; border: 1px dashed var(--color-border); border-radius: var(--radius-md); color: var(--color-text-muted); text-align: center; }
+.choice-group { display: grid; gap: 8px; margin: 0; padding: 0; border: 0; }
+.choice-group legend { margin-bottom: 6px; font-weight: var(--weight-semibold); }
+.fault-action > .button { width: 100%; }

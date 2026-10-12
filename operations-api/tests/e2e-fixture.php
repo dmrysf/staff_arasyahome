@@ -223,6 +223,12 @@ foreach (['74001' => 'trendhome', '74002' => 'outletperdele', '74003' => 'trendh
 }
 $admin->create('Ioana Tăiere','cut.intake.e2e',null,'pregatire-material','employee',$password,['material-preparation'],'e2e');
 $admin->create('Radu Tăiere','cut.intake2.e2e',null,'pregatire-material','employee',$password,['material-preparation'],'e2e');
+// Tailoring quality supervision: the people only. Its synthetic orders are created by e2e-supervision-fixture.php
+// when that spec starts, and the spec appoints the supervisor itself, so earlier suites see neither.
+$tailoringStages=['workshop-receiving','labeling','material-straightening','bottom-hem','side-hem','ironing','height','header-tape','sewing-finishing','quality-control'];
+$admin->create('Mihai Tăiere','sup.cutter.e2e',null,'pregatire-material','employee',$password,['material-preparation'],'e2e');
+$admin->create('Elena Croitorie','sup.tailor.e2e',null,'pregatire-material','employee',$password,$tailoringStages,'e2e');
+$admin->create('VASILOAIA IULIANA','sup.chief.e2e',null,'pregatire-material','employee',$password,$tailoringStages,'e2e');
 $supervisor=$admin->create('Sorina Supervizor','supervisor.e2e',null,'pregatire-material','employee',$password,['quality-control','packing'],'e2e');
 $iam($supervisor->employeeUuid,['staff','dashboard'],[$roleId('supervisor')]);
 
@@ -236,6 +242,7 @@ echo json_encode([
     'b2b' => ['id'=>'b2b:'.$b2bOrder['id'],'code'=>$b2bOrder['code'],'username'=>'operator.b2b.e2e'],
     'documents' => ['order' => '72001', 'superseded' => '72002', 'requester' => 'online.doc.e2e', 'approver' => 'sinem.doc.e2e', 'cutter' => 'doc.cutter.e2e'],
     'exceptions' => ['order' => '70005', 'cutter' => 'crama.e2e', 'intake' => 'oprea.e2e', 'manager' => 'denisa.e2e'],
+    'supervision' => ['chief' => 'sup.chief.e2e', 'chiefName' => 'VASILOAIA IULIANA', 'tailor' => 'sup.tailor.e2e', 'cutter' => 'sup.cutter.e2e', 'manager' => 'denisa.e2e'],
     'intake' => ['cutter' => 'cut.intake.e2e', 'cutterName' => 'Ioana Tăiere', 'other' => 'cut.intake2.e2e', 'orders' => ['74001', '74002', '74003'], 'sources' => ['74001' => 'trendhome', '74002' => 'outletperdele', '74003' => 'trendhome']],
     'cutting' => ['order'=>'71000','source'=>'trendhome','owner'=>'cut.murat.e2e','target'=>'cut.andrea.e2e',
         'root'=>['username'=>Arasya\Operations\Iam\RootBootstrapService::ROOT_USERNAME,'password'=>'staff root fixture permanent 2026']],

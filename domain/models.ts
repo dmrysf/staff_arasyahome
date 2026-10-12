@@ -126,7 +126,23 @@ export type StaffOrder = {
   productionDocument?: import("./documents").OrderDocumentSummary;
 };
 
-export type FaultExceptionStatus = "awaiting_acknowledgment" | "awaiting_approval" | "approved" | "rejected" | "cancelled";
+export type FaultExceptionStatus = "awaiting_acknowledgment" | "awaiting_approval" | "approved" | "rejected" | "cancelled"
+  | "awaiting_supervisor_review" | "dismissed" | "in_supervisor_custody" | "return_rejected" | "restored";
+
+/** What the signed-in employee may do with one request; the server decides every flag. */
+export type FaultActions = {
+  canAcknowledge: boolean;
+  /** The receiver is also the responsible cutting employee and states "accepted" or "disputed". */
+  statesResponsibility: boolean;
+  canRequestRereview: boolean;
+  canReview: boolean;
+  canRequestReturn: boolean;
+  canRestore: boolean;
+  canAskManagersAgain: boolean;
+  canAddNote: boolean;
+};
+
+export type FaultTimelineEntry = { action: string; actor: string; at: string; version: number; comment: string | null };
 
 export type FaultDecision = {
   attempt: number;
@@ -140,10 +156,15 @@ export type FaultDecision = {
   comment: string | null;
 };
 
-/** A cutting fault return request. Meters are exact decimal strings from the server ("17.000"). */
+/**
+ * A production exception. `cutting_fault`: the original return from tailoring intake to cutting.
+ * `tailoring_defect`: a defect found at stages 3-12, handled by the tailoring quality supervisor; only
+ * its final return to cutting needs a manager. Meters are exact decimal strings ("17.000").
+ */
 export type FaultException = {
   id: string;
   number: string;
+  type: "cutting_fault" | "tailoring_defect";
   status: FaultExceptionStatus;
   version: number;
   order: { id: string; orderNumber: string; source: OrderSource; sourceName: string };
@@ -159,9 +180,21 @@ export type FaultException = {
   acknowledgedAt: string | null;
   resolvedAt: string | null;
   pendingSince: string | null;
-  role: "responsible" | "detector" | null;
-  actions: { canAcknowledge: boolean; canRequestRereview: boolean };
+  detectedStage: { id: string; label: string | null };
+  confirmedReason: { key: string; label: string; cuttingAttributable: boolean } | null;
+  supervisor: { displayName: string } | null;
+  receiver: { displayName: string } | null;
+  physicalCustodian: { displayName: string } | null;
+  responsibilityPosition: "accepted" | "disputed" | "not_stated" | null;
+  attribution: "cutter" | "none" | null;
+  returnRequestedAt: string | null;
+  role: "responsible" | "detector" | "receiver" | "supervisor" | null;
+  actions: FaultActions;
   detectorComment?: string | null;
+  supervisorComment?: string | null;
+  timeline?: FaultTimelineEntry[];
+  cuttingHandoff?: { employee: string; at: string; arrivalNumber: number } | null;
+  currentStage?: { id: string; label: string | null };
   acknowledgmentComment?: string | null;
   lines?: { itemId: string; lineNumber: number; name: string; code: string | null; variant: string | null; color: string | null; quantity: number; meters: string }[];
   decisions?: FaultDecision[];
@@ -174,7 +207,12 @@ export type OrderQuality = {
   openException: FaultException | null;
 };
 
-export type FaultReason = { key: string; label: string; requiresComment: boolean };
+export type FaultReason = { key: string; label: string; requiresComment: boolean; cuttingAttributable: boolean };
+
+/** Whether the signed-in employee supervises tailoring defects, and whether the supervised flow is active. */
+export type QualityCapabilities = { tailoringSupervisor: boolean; supervisedSources: OrderSource[]; supervisedFlowActive: boolean };
+
+export type SupervisorView = "review" | "custody" | "return" | "done";
 
 /** One live notification; payloads carry identifiers only and the screen re-reads through REST. */
 export type LiveEvent = { seq: number; type: string; exceptionId?: string; transferId?: string; orderId?: string; orderNumber?: string; status?: string; requestId?: string; revisionNumber?: number };
@@ -267,6 +305,12 @@ export type ServiceErrorCode =
   | "EXCEPTION_CHANGED"
   | "EXCEPTION_STATE_INVALID"
   | "EXCEPTION_ALREADY_RESOLVED"
+  | "SUPERVISOR_REQUIRED"
+  | "SELF_REVIEW_DENIED"
+  | "RESPONSIBLE_UNAVAILABLE"
+  | "RECEIVER_NOT_ALLOWED"
+  | "RECEIVER_INVALID"
+  | "RECEIVER_NOT_ELIGIBLE"
   | "ORDER_BLOCKED_BY_DOCUMENT"
   | "DOCUMENT_SUPERSEDED"
   | "DOCUMENT_REVOKED"

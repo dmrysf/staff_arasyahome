@@ -15,8 +15,15 @@ export function canReturnToCutting(order: StaffOrder, permissions: readonly stri
     && !order.productionQuality?.openException && permissions.includes("orders.report_fault");
 }
 
+const copy = {
+  intake: { open: "Returnează la Tăiere", title: "Returnează la Tăiere", intro: "Bifează doar produsele tăiate greșit. Responsabilul este stabilit automat din istoricul comenzii.", picker: "Produse cu eroare", total: "Metraj cu eroare", reason: "Motiv", comment: "Comentariu", submit: "Trimite cererea" },
+  // Supervised flow: the worker only reports; the tailoring quality supervisor verifies and decides.
+  defect: { open: "Raportează o problemă", title: "Raportează o problemă", intro: "Alege produsele afectate și descrie problema. Șeful de croitorie verifică produsul și decide pașii următori.", picker: "Produse afectate", total: "Metraj afectat", reason: "Problema observată", comment: "Descriere", submit: "Raportează șefului de croitorie" },
+} as const;
+
 /** Selection of the exact faulty lines, reason and comment; one server-confirmed request. */
-export function ReturnToCuttingPanel({ order, service, onReported, onSessionExpired }: { order: StaffOrder; service: ExceptionService; onReported: (exceptionId: string) => void; onSessionExpired: () => void }) {
+export function ReturnToCuttingPanel({ order, service, onReported, onSessionExpired, variant = "intake" }: { order: StaffOrder; service: ExceptionService; onReported: (exceptionId: string) => void; onSessionExpired: () => void; variant?: "intake" | "defect" }) {
+  const text = copy[variant];
   const [open, setOpen] = useState(false);
   const [reasons, setReasons] = useState<FaultReason[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -34,7 +41,8 @@ export function ReturnToCuttingPanel({ order, service, onReported, onSessionExpi
   }, [open, service]);
 
   const reason = reasons.find((item) => item.key === reasonKey);
-  const metered = order.products.filter((item) => item.meters != null && item.meters > 0);
+  // The intake-only return needs measured lines; a reported defect may concern a line the source sent without meters.
+  const metered = variant === "defect" ? order.products : order.products.filter((item) => item.meters != null && item.meters > 0);
   const commentMissing = Boolean(reason?.requiresComment) && comment.trim().length < 3;
   const ready = selected.size > 0 && reason && !commentMissing;
   const toggle = (id: string) => setSelected((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); keyRef.current = null; return next; });
@@ -57,25 +65,25 @@ export function ReturnToCuttingPanel({ order, service, onReported, onSessionExpi
     } finally { setSubmitting(false); }
   }
 
-  if (!open) return <button className="button button-danger-outline" type="button" onClick={() => setOpen(true)}>Returnează la Tăiere</button>;
+  if (!open) return <button className="button button-danger-outline" type="button" onClick={() => setOpen(true)}>{text.open}</button>;
   return (
     <div className="confirmation-layer" role="dialog" aria-modal="true" aria-labelledby="return-title">
       <div className="confirmation-card return-card">
         <p className="eyebrow">Comanda #{order.orderNumber}</p>
-        <h2 id="return-title">Returnează la Tăiere</h2>
-        <p>Bifează doar produsele tăiate greșit. Responsabilul este stabilit automat din istoricul comenzii.</p>
-        <fieldset className="fault-picker"><legend>Produse cu eroare</legend>
+        <h2 id="return-title">{text.title}</h2>
+        <p>{text.intro}</p>
+        <fieldset className="fault-picker"><legend>{text.picker}</legend>
           {metered.map((item) => <label key={item.id} className="check-field"><input type="checkbox" checked={selected.has(item.id)} onChange={() => toggle(item.id)} />
-            <span><strong>{item.name}</strong><small>{[item.code, item.color].filter(Boolean).join(" · ")}</small></span><b>{formatMeters(item.meters!)}</b></label>)}
+            <span><strong>{item.name}</strong><small>{[item.code, item.color].filter(Boolean).join(" · ")}</small></span><b>{item.meters != null && item.meters > 0 ? formatMeters(item.meters) : "fără metraj"}</b></label>)}
         </fieldset>
-        <p className="fault-total" role="status">Metraj cu eroare: <b>{formatDecimalMeters(selectedMeters(order.products, selected))}</b></p>
-        <label className="field"><span>Motiv</span><select value={reasonKey} onChange={(event) => { setReasonKey(event.target.value); keyRef.current = null; }}>
+        <p className="fault-total" role="status">{text.total}: <b>{formatDecimalMeters(selectedMeters(order.products, selected))}</b></p>
+        <label className="field"><span>{text.reason}</span><select value={reasonKey} onChange={(event) => { setReasonKey(event.target.value); keyRef.current = null; }}>
           <option value="">Alege motivul</option>{reasons.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}</select></label>
-        <label className="field"><span>{reason?.requiresComment ? "Comentariu (obligatoriu)" : "Comentariu (opțional)"}</span><textarea maxLength={1000} rows={2} value={comment} onChange={(event) => { setComment(event.target.value); keyRef.current = null; }} /></label>
+        <label className="field"><span>{text.comment} {reason?.requiresComment ? "(obligatoriu)" : "(opțional)"}</span><textarea maxLength={1000} rows={2} value={comment} onChange={(event) => { setComment(event.target.value); keyRef.current = null; }} /></label>
         {error && <ErrorState error={error} compact onAction={() => setError(null)} />}
         <div className="confirmation-actions">
           <button className="button button-secondary" type="button" disabled={submitting} onClick={() => setOpen(false)}>Anulează</button>
-          <button className="button button-primary" type="button" disabled={!ready || submitting} aria-busy={submitting || undefined} onClick={() => void submit()}>{submitting ? "Se trimite…" : "Trimite cererea"}</button>
+          <button className="button button-primary" type="button" disabled={!ready || submitting} aria-busy={submitting || undefined} onClick={() => void submit()}>{submitting ? "Se trimite…" : text.submit}</button>
         </div>
         {submitting && <small className="server-note">Așteptăm confirmarea serverului.</small>}
       </div>

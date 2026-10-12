@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import type { ProductionWorkflow, StaffOrder, StaffServiceError } from "../../domain/models";
+import type { ProductionWorkflow, QualityCapabilities, StaffOrder, StaffServiceError } from "../../domain/models";
 import type { ExceptionService, OrderService } from "../../services/contracts";
 import { useLive } from "../../app/liveContext";
-import { arrivalLabel, faultStatusLabels, formatDecimalMeters } from "../../domain/faults";
+import { arrivalLabel, canReportDefect, faultStatusLabel, formatDecimalMeters, isSupervised } from "../../domain/faults";
 import { ReturnToCuttingPanel, canReturnToCutting } from "../exceptions/ReturnToCuttingPanel";
 import { SourceBadge } from "../../components/SourceBadge";
 import { StageLabel } from "../../components/StageLabel";
@@ -41,6 +41,14 @@ export function OrderDetailScreen({ orderId, service, exceptions, cutting, docum
       .catch((caught) => { if (!controller.signal.aborted) setError(toServiceError(caught)); });
     return () => controller.abort();
   }, [orderId, reloadKey, liveRevision, service]);
+  // Whether defects go to the tailoring quality supervisor (and so which report action is offered).
+  const [quality, setQuality] = useState<QualityCapabilities | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    // Unknown (older API, network) means the supervised flow is treated as inactive: only the original return applies.
+    exceptions.capabilities({ signal: controller.signal }).then(setQuality).catch(() => { if (!controller.signal.aborted) setQuality({ tailoringSupervisor: false, supervisedSources: [], supervisedFlowActive: false }); });
+    return () => controller.abort();
+  }, [exceptions]);
   if (error) return <ErrorState error={error} onAction={() => { setError(null); setOrder(null); if (error.code === "ORDER_NOT_FOUND") navigate("/orders"); else setReloadKey((value) => value + 1); }} />;
   if (!order) return <LoadingState label="Se încarcă detaliile…" shape="detail" />;
   const completed = Boolean(order.productionCompletedAt);
@@ -58,7 +66,8 @@ export function OrderDetailScreen({ orderId, service, exceptions, cutting, docum
       </section>}
       <OrderActionPanel order={order} workflow={workflow} service={service} cutting={cutting} onUpdated={(updated) => setOrder(requireProductionProducts(updated))} onReload={() => { setOrder(null); setReloadKey((value) => value + 1); }} onSessionExpired={onSessionExpired} />
       {cutting && order.productionStageId === "material-preparation" && order.employeeAllowedAction?.id === "complete_stage" && <CuttingTransferRequest order={order} service={cutting} onChanged={() => { setOrder(null); setReloadKey(v => v + 1); }} />}
-      {canReturnToCutting(order, permissions) && <section className="detail-section return-section"><ReturnToCuttingPanel order={order} service={exceptions} onSessionExpired={onSessionExpired} onReported={(id) => navigate(`/exceptions/${encodeURIComponent(id)}`)} /></section>}
+      {canReportDefect(order, permissions, quality) && <section className="detail-section return-section"><ReturnToCuttingPanel variant="defect" order={order} service={exceptions} onSessionExpired={onSessionExpired} onReported={(id) => navigate(`/exceptions/${encodeURIComponent(id)}`)} /></section>}
+      {quality && !isSupervised(order, quality) && canReturnToCutting(order, permissions) && <section className="detail-section return-section"><ReturnToCuttingPanel order={order} service={exceptions} onSessionExpired={onSessionExpired} onReported={(id) => navigate(`/exceptions/${encodeURIComponent(id)}`)} /></section>}
       <section className="detail-section detail-products"><div className="section-title"><p className="eyebrow">Producție</p><h2>{order.products.length === 1 ? "1 produs" : `${order.products.length} produse`}</h2></div>{order.products.map((item) => { const size = formatMeasurements(item); const location = item.productionContext?.project; return <div className="product-detail" key={item.id}>{location && <p className="project-location" data-testid="project-location">{projectPlace(location)}</p>}<div><strong>{item.name}</strong>{item.code && <span>{item.code}</span>}</div><dl>{item.color && <div><dt>Culoare</dt><dd>{item.color}</dd></div>}{item.variant && <div><dt>Variantă</dt><dd>{item.variant}</dd></div>}{size && <div className="product-key"><dt>Dimensiune</dt><dd>{size}</dd></div>}{item.meters != null && <div className="product-key"><dt>Metri</dt><dd>{formatMeters(item.meters)}</dd></div>}{item.options?.map((option) => <div key={option.label}><dt>{option.label}</dt><dd>{option.value}</dd></div>)}<div><dt>Cantitate</dt><dd>{item.quantity}</dd></div></dl></div>; })}</section>
       {documents && canUseDocuments(permissions) && <DocumentPanel orderId={order.id} service={documents} permissions={permissions} onChanged={() => setReloadKey((value) => value + 1)} />}
       {productionQr && <ProductionQrPanel orderId={order.id} service={productionQr} />}
@@ -92,7 +101,7 @@ function QualityNotices({ order, navigate }: { order: StaffOrder; navigate: (pat
     {arrival && <p className="order-notice order-notice-warning" role="note" data-testid="arrival">{arrival}</p>}
     {quality.repeatedErrors && <p className="order-notice order-notice-warning" role="note">Atenție: comanda are erori de producție repetate ({quality.reworkCycles} refaceri).</p>}
     {open && <button type="button" className="exception-banner" onClick={() => navigate(`/exceptions/${encodeURIComponent(open.id)}`)}>
-      <span><strong>Returnare la tăiere · {formatDecimalMeters(open.faultMeters)}</strong><small>{faultStatusLabels[open.status]}</small></span><span aria-hidden="true">→</span>
+      <span><strong>{open.type === "tailoring_defect" ? "Problemă raportată" : "Returnare la tăiere"} · {formatDecimalMeters(open.faultMeters)}</strong><small>{faultStatusLabel(open)}</small></span><span aria-hidden="true">→</span>
     </button>}
   </>;
 }

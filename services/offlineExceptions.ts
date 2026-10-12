@@ -15,6 +15,13 @@ export function createUnavailableExceptionServices(): { exceptions: ExceptionSer
       report: unavailable,
       acknowledge: unavailable,
       rereview: unavailable,
+      capabilities: async () => ({ tailoringSupervisor: false, supervisedSources: [], supervisedFlowActive: false }),
+      supervisorList: async () => [],
+      receivers: async () => [],
+      review: unavailable,
+      sendReturn: unavailable,
+      restore: unavailable,
+      addNote: unavailable,
     },
     live: { subscribe: () => () => undefined },
   };

@@ -46,7 +46,7 @@ test("cutting fault: report at tailoring intake, live acknowledgment with QR, ma
 
   // The responsible cutting employee is told live, without reloading the page.
   const notice = cutter.page.locator(".live-notice");
-  await expect(notice).toContainText(`Comanda #${fixture.exceptions.order} a fost returnată la tăiere`, { timeout: 15_000 });
+  await expect(notice).toContainText(`Comanda #${fixture.exceptions.order} este trimisă la tăiere`, { timeout: 15_000 });
   await notice.getByRole("button", { name: "Deschide cererea" }).click();
   await expect(cutter.page.getByText("Tăiat de")).toBeVisible();
   const ack = cutter.page.locator(".fault-action");
@@ -54,7 +54,7 @@ test("cutting fault: report at tailoring intake, live acknowledgment with QR, ma
   await ack.getByRole("button", { name: "Introdu codul de pe etichetă" }).click();
   await ack.getByLabel(/Cod etichetă/).fill(fixture.qr[fixture.exceptions.order]);
   await ack.getByRole("button", { name: "Verifică codul" }).click();
-  await expect(cutter.page.getByText("Cererea așteaptă aprobarea managerului operațional.")).toBeVisible();
+  await expect(cutter.page.getByText("Returnarea la tăiere așteaptă aprobarea managerului operațional.")).toBeVisible();
   // Stage 3 detector sees the new state live too.
   await expect(intake.page.getByText("Așteaptă aprobarea managerului").first()).toBeVisible({ timeout: 15_000 });
 
