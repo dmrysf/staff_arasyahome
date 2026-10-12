@@ -23,7 +23,7 @@ writeFileSync(realApiPaths.fixture, JSON.stringify(fixture, null, 2));
 
 const width = 640;
 const height = 480;
-const qr = QRCode.create(fixture.qr[fixture.orders.qr], { errorCorrectionLevel: "M" });
+const qr = QRCode.create(fixture.qr[fixture.orders.camera], { errorCorrectionLevel: "M" });
 const modules = qr.modules.size;
 const scale = Math.floor(300 / (modules + 8));
 const size = (modules + 8) * scale;

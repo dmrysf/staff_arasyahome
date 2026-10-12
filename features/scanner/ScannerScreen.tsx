@@ -1,13 +1,13 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { OrderService } from "../../services/contracts";
-import type { ProductionItem, ProductionWorkflow, StaffOrder } from "../../domain/models";
+import type { Employee, ProductionItem, ProductionWorkflow, StaffOrder } from "../../domain/models";
 import { StaffServiceError as ServiceError } from "../../domain/models";
 import { SourceBadge } from "../../components/SourceBadge";
 import { StageLabel } from "../../components/StageLabel";
 import { ErrorState } from "../../components/ErrorState";
 import { OrderNotices } from "../../components/OrderNotices";
 import { createDuplicateGuard } from "./duplicateGuard";
-import { initialScannerState, isTransient, scannerReducer } from "./machine";
+import { initialScannerState, isTransient, scannerReducer, type IntakeAttempt } from "./machine";
 import { mapCameraError, toServiceError } from "../../services/errors";
 import { createIdempotencyKey } from "../../services/idempotency";
 import { getUsableProductionProducts, requireProductionProducts } from "../../domain/orderValidation";
@@ -17,7 +17,7 @@ import { selectQrDecoder, type QrDecoder } from "./qrDecoder";
 import type { StaffRuntimeMode } from "../../src/runtimeConfig";
 import { AppIcon } from "../../components/icons/AppIcon";
 import { getNextStage, getStageById } from "../../domain/productionWorkflow";
-import type { CuttingApi } from "../../domain/cutting";
+import { canUseCuttingIntake, cuttingIntakeCopy, type CuttingApi } from "../../domain/cutting";
 import { QrCapture } from "../exceptions/QrCapture";
 
 type TorchCapabilities = MediaTrackCapabilities & { torch?: boolean };
@@ -39,7 +39,7 @@ function ReviewContent({ order, item, workflow }: { order: StaffOrder; item: Pro
   );
 }
 
-export function ScannerScreen({ service, cutting, workflow, mode, navigate, onSessionExpired }: { service: OrderService; cutting?: CuttingApi; workflow: ProductionWorkflow; mode: StaffRuntimeMode; navigate: (path: string) => void; onSessionExpired: () => void }) {
+export function ScannerScreen({ service, cutting, employee, workflow, mode, navigate, onSessionExpired }: { service: OrderService; cutting?: CuttingApi; employee?: Employee; workflow: ProductionWorkflow; mode: StaffRuntimeMode; navigate: (path: string) => void; onSessionExpired: () => void }) {
   const [state, dispatch] = useReducer(scannerReducer, initialScannerState);
   const [manualOpen, setManualOpen] = useState(false);
   const [manualCode, setManualCode] = useState("");
@@ -54,6 +54,11 @@ export function ScannerScreen({ service, cutting, workflow, mode, navigate, onSe
   const [claimQr, setClaimQr] = useState("");
   const [ownedCount, setOwnedCount] = useState<number | null>(null);
   const [confirmedMultiple, setConfirmedMultiple] = useState(false);
+  // An eligible cutter's camera scan goes to the cutting intake first: one scan receives the order into cutting.
+  const intakeEnabled = Boolean(cutting && employee && canUseCuttingIntake(employee));
+  const intakeInFlightRef = useRef(false);
+  const activeIntakeRef = useRef<string | null>(null);
+  const runIntakeRef = useRef<(attempt: IntakeAttempt) => Promise<void>>(async () => undefined);
   const confirmingCutting = state.status === "confirming" && state.order.productionStageId === "material-preparation" && state.order.employeeAllowedAction?.id === "claim";
   useEffect(() => {
     if (!confirmingCutting || !cutting) return;
@@ -81,12 +86,7 @@ export function ScannerScreen({ service, cutting, workflow, mode, navigate, onSe
     else if (state.status === "success") navigator.vibrate?.([20, 40, 20]);
   }, [state.status]);
 
-  const resolveCode = useCallback(async (token: string, manual = false) => {
-    const normalized = token.trim();
-    if (!normalized || !duplicateGuard.accept(normalized)) return;
-    stopCamera();
-    dispatch({ type: "CODE_DETECTED", token: normalized });
-    dispatch({ type: "RESOLVE_STARTED" });
+  const resolveOrder = useCallback(async (normalized: string, manual: boolean) => {
     try {
       const resolved = manual ? await service.lookup(normalized) : await service.resolveQr(normalized);
       const order = requireProductionProducts(resolved);
@@ -98,7 +98,74 @@ export function ScannerScreen({ service, cutting, workflow, mode, navigate, onSe
       if (error.code === "SESSION_EXPIRED" || error.code === "NO_SESSION") onSessionExpired();
       dispatch({ type: "RESOLVE_FAILED", error });
     }
-  }, [duplicateGuard, onSessionExpired, service, stopCamera]);
+  }, [onSessionExpired, service]);
+
+  const resolveCode = useCallback(async (token: string, manual = false) => {
+    const normalized = token.trim();
+    if (!normalized || !duplicateGuard.accept(normalized)) return;
+    stopCamera();
+    dispatch({ type: "CODE_DETECTED", token: normalized });
+    if (!manual && intakeEnabled) {
+      const attempt = { token: normalized, idempotencyKey: createIdempotencyKey() };
+      dispatch({ type: "INTAKE_STARTED", attempt });
+      await runIntakeRef.current(attempt);
+      return;
+    }
+    dispatch({ type: "RESOLVE_STARTED" });
+    await resolveOrder(normalized, manual);
+  }, [duplicateGuard, intakeEnabled, resolveOrder, stopCamera]);
+
+  /**
+   * One intake request at a time. Success is shown only from the committed server answer; a workload warning asks
+   * for the explicit confirmation and reuses the scanned label; another stage or source falls back to the ordinary
+   * verification of the same code; a transient failure keeps the attempt for a retry with the same key.
+   */
+  async function runIntake(attempt: IntakeAttempt) {
+    if (!cutting || intakeInFlightRef.current) return;
+    intakeInFlightRef.current = true;
+    activeIntakeRef.current = attempt.idempotencyKey;
+    // A late answer to an abandoned scan (screen reset meanwhile) never changes the current screen.
+    const current = () => activeIntakeRef.current === attempt.idempotencyKey;
+    let next: (() => Promise<void>) | null = null;
+    try {
+      const result = await cutting.intake({ qrToken: attempt.token, ...(attempt.confirmedMultiple ? { confirmedMultiple: true, ownedCount: attempt.ownedCount } : {}) }, attempt.idempotencyKey);
+      if (!current()) return;
+      dispatch({ type: "INTAKE_SUCCEEDED", order: result.order, outcome: result.outcome });
+    } catch (caught) {
+      const error = toServiceError(caught);
+      if (error.code === "SESSION_EXPIRED" || error.code === "NO_SESSION") onSessionExpired();
+      if (!current()) return;
+      const ownedCount = typeof error.details?.ownedCount === "number" ? error.details.ownedCount : null;
+      if (error.code === "CUTTING_INTAKE_NOT_APPLICABLE") {
+        dispatch({ type: "INTAKE_NOT_APPLICABLE" });
+        next = () => resolveOrder(attempt.token, false);
+      } else if (ownedCount !== null && (error.code === "CONFIRMATION_REQUIRED" || error.code === "ORDER_CHANGED")) {
+        if (ownedCount === 0) {
+          // The other jobs were finished meanwhile: no confirmation is needed any more (a new intent, a new key).
+          const plain = { token: attempt.token, idempotencyKey: createIdempotencyKey() };
+          dispatch({ type: "INTAKE_STARTED", attempt: plain });
+          next = () => runIntake(plain);
+        } else {
+          dispatch({ type: "INTAKE_CONFIRM_REQUIRED", ownedCount });
+        }
+      } else {
+        dispatch({ type: "INTAKE_FAILED", error });
+      }
+    } finally {
+      intakeInFlightRef.current = false;
+    }
+    if (next) await next();
+  }
+  useLayoutEffect(() => { runIntakeRef.current = runIntake; });
+
+  function confirmIntake() {
+    if (state.status !== "take_confirm" || !confirmedMultiple || intakeInFlightRef.current) return;
+    // A changed intent (the explicit confirmation of this count) is a new request with a new key.
+    const attempt = { token: state.token, idempotencyKey: createIdempotencyKey(), confirmedMultiple: true, ownedCount: state.ownedCount };
+    setConfirmedMultiple(false);
+    dispatch({ type: "INTAKE_STARTED", attempt });
+    void runIntake(attempt);
+  }
 
   useEffect(() => {
     if (state.status !== "scanning" || !decoderRef.current) return;
@@ -164,6 +231,8 @@ export function ScannerScreen({ service, cutting, workflow, mode, navigate, onSe
   function reset() {
     stopCamera();
     submittingRef.current = false;
+    intakeInFlightRef.current = false;
+    activeIntakeRef.current = null;
     duplicateGuard.reset();
     setManualOpen(false);
     setManualCode("");
@@ -216,7 +285,8 @@ export function ScannerScreen({ service, cutting, workflow, mode, navigate, onSe
     }
   }
 
-  const busy = state.status === "submitting";
+  const busy = state.status === "submitting" || state.status === "taking";
+  const intakeProduct = state.status === "success" && state.intake ? getUsableProductionProducts(state.order).at(0) : undefined;
   const reviewItem = state.status === "review" ? getUsableProductionProducts(state.order).at(0) : undefined;
   const pending = state.status === "confirming" || state.status === "submitting" ? state.order : null;
   const pendingAction = pending?.employeeAllowedAction;
@@ -226,16 +296,17 @@ export function ScannerScreen({ service, cutting, workflow, mode, navigate, onSe
 
   return (
     <main className="scanner-screen">
-      <div className={`camera-view${["review", "confirming", "submitting", "success", "error"].includes(state.status) ? " camera-dimmed" : ""}`}>
+      <div className={`camera-view${["review", "confirming", "submitting", "taking", "take_confirm", "success", "error"].includes(state.status) ? " camera-dimmed" : ""}`}>
         <video ref={videoRef} muted playsInline aria-label="Imagine cameră pentru scanare QR" />
         <div className="camera-fallback" aria-hidden="true" />
         <header className="scanner-toolbar"><button type="button" disabled={busy} onClick={() => { stopCamera(); navigate("/"); }} aria-label="Înapoi la pagina principală"><AppIcon name="back" /></button><span>Scanare QR</span>{state.status === "scanning" && state.torchSupported ? <button type="button" className={state.torchOn ? "active" : ""} onClick={toggleTorch} aria-label={state.torchOn ? "Oprește lanterna" : "Pornește lanterna"}><AppIcon name="torch" /></button> : <span />}</header>
         <div className="scanner-target" data-state={state.status} aria-hidden="true"><i /><i /><i /><i /><span /></div>
-        <div className="scanner-instruction" aria-live="polite"><strong>{state.status === "requesting_permission" ? "Se deschide camera…" : state.status === "scanning" ? "Aliniază codul QR în cadru" : state.status === "decoded" || state.status === "resolving" ? "Cod citit · se verifică" : "Scanează o comandă"}</strong>{state.status === "scanning" && <span>{state.torchSupported ? "Codul se citește automat. În lumină slabă pornește lanterna." : "Codul se citește automat."}</span>}</div>
+        <div className="scanner-instruction" aria-live="polite"><strong>{state.status === "requesting_permission" ? "Se deschide camera…" : state.status === "scanning" ? "Aliniază codul QR în cadru" : state.status === "decoded" || state.status === "resolving" ? "Cod citit · se verifică" : state.status === "taking" ? "Cod citit · se preia comanda" : "Scanează o comandă"}</strong>{state.status === "scanning" && <span>{state.torchSupported ? "Codul se citește automat. În lumină slabă pornește lanterna." : "Codul se citește automat."}</span>}</div>
         {state.status === "scanning" && <div className="scanner-manual-switch"><button className="manual-link" type="button" onClick={() => { stopCamera(); dispatch({ type: "OPEN_MANUAL" }); setManualOpen(true); }}>Introdu codul manual</button></div>}
         {state.status === "idle" && !manualOpen && <div className="camera-start"><button className="button button-primary button-large" type="button" onClick={startCamera}>Deschide camera</button>{mode === "demo" && <button className="button button-demo" type="button" onClick={() => resolveCode("arasya:61833")}>Previzualizează scanare demo</button>}{mode === "preview" && <button className="button button-preview" type="button" onClick={() => resolveCode("arasya:61833")}>Simulează scanarea</button>}<button className="manual-link" type="button" onClick={() => setManualOpen(true)}>Introdu manual numărul / codul comenzii</button></div>}
         {manualOpen && state.status === "idle" && <form className="manual-panel" onSubmit={(event) => { event.preventDefault(); void resolveCode(manualCode, true); }}><div className="sheet-handle" /><label className="field"><span>Număr / cod comandă</span><input inputMode="text" autoComplete="off" autoCapitalize="characters" spellCheck={false} maxLength={128} value={manualCode} onChange={(event) => setManualCode(event.target.value)} placeholder="Ex: 61833" /></label><button className="button button-primary" type="submit" disabled={!manualCode.trim()}>Caută comanda</button><button className="button button-link" type="button" onClick={() => setManualOpen(false)}>Anulează</button></form>}
         {state.status === "resolving" && <div className="resolving-card" role="status"><span className="inline-spinner" /><strong>Se verifică comanda…</strong><small>Nu închide această fereastră.</small></div>}
+        {state.status === "taking" && <div className="resolving-card" role="status" aria-busy="true" data-testid="cutting-intake-progress"><span className="inline-spinner" /><strong>Se preia comanda…</strong><small>Serverul verifică eticheta și îți atribuie comanda. Nu închide această fereastră.</small></div>}
       </div>
 
       {state.status === "review" && reviewItem && <section className="bottom-sheet review-sheet"><ReviewContent order={state.order} item={reviewItem} workflow={workflow} />{state.order.employeeAllowedAction && <button className="button button-primary button-large" type="button" onClick={() => dispatch({ type: "OPEN_CONFIRMATION" })}>{state.order.employeeAllowedAction.label}<AppIcon name="arrow" size={20} /></button>}<button className="button button-secondary" type="button" onClick={() => navigate(`/orders/${encodeURIComponent(state.order.id)}`)}>Vezi detalii</button><button className="button button-link" type="button" onClick={reset}>Scanează alt cod</button></section>}
@@ -248,11 +319,22 @@ export function ScannerScreen({ service, cutting, workflow, mode, navigate, onSe
         </>}
         <div className="confirm-transition"><StageLabel stage={pendingCurrent} muted={pendingAction.id !== "claim"} />{pendingNext && <><span aria-hidden="true">↓</span><StageLabel stage={pendingNext} /></>}{pendingAction.id === "complete_production" && <><span aria-hidden="true">↓</span><span className="stage-label"><span>✓</span>Producție finalizată</span></>}</div><div className="confirmation-actions"><button className="button button-secondary" type="button" disabled={busy} onClick={() => dispatch({ type: "CANCEL_CONFIRMATION" })}>Anulează</button><button className="button button-primary" type="button" disabled={busy || (needsCuttingQr && (!claimQr || ownedCount === null || (ownedCount > 0 && !confirmedMultiple)))} aria-busy={busy || undefined} onClick={submit}>{busy ? "Se procesează…" : "Confirmă"}</button></div>{busy && <small className="server-note">Așteptăm confirmarea serverului.</small>}</div></section>}
 
-      {state.status === "success" && <section className="success-state"><span className="success-check"><AppIcon name="check" size={34} /></span><p className="eyebrow">{orderActionSuccess[state.action].eyebrow}</p><h2>{orderActionSuccess[state.action].title}</h2>{state.order.productionCompletedAt ? <span className="stage-label"><span>✓</span>Producție finalizată</span> : <StageLabel stage={getStageById(workflow, state.order.productionStageId)} />}<div><button className="button button-primary button-large" type="button" onClick={reset}>Scanează altă comandă</button><button className="button button-secondary" type="button" onClick={() => navigate(`/orders/${encodeURIComponent(state.order.id)}`)}>Vezi comanda</button></div></section>}
+      {state.status === "take_confirm" && <section className="confirmation-layer" role="dialog" aria-modal="true" aria-labelledby="intake-confirm-title" data-testid="cutting-intake-confirm"><div className="confirmation-card"><span className="state-icon confirm-icon" aria-hidden="true"><AppIcon name="arrow" size={24} /></span><p className="eyebrow">Confirmare necesară</p><h2 id="intake-confirm-title">Preiei încă o comandă?</h2>
+        {state.changed && <p role="status">Numărul comenzilor tale s-a schimbat. Verifică și confirmă din nou.</p>}
+        <div className="order-notice order-notice-warning"><strong>Ai deja {state.ownedCount} comenzi în lucru.</strong><p>Dacă preiei această comandă, trebuie să finalizezi sau să transferi toate comenzile active. Vrei să continui?</p><label><input type="checkbox" checked={confirmedMultiple} onChange={(e) => setConfirmedMultiple(e.target.checked)} /> Confirm explicit preluarea încă unei comenzi.</label></div>
+        <p>Folosim eticheta deja scanată. Nu este nevoie să o scanezi din nou.</p>
+        <div className="confirmation-actions"><button className="button button-secondary" type="button" onClick={reset}>Anulează</button><button className="button button-primary" type="button" disabled={!confirmedMultiple} onClick={confirmIntake}>Confirmă preluarea</button></div></div></section>}
+
+      {state.status === "success" && state.intake && <section className="success-state" data-testid="cutting-intake-success"><span className="success-check"><AppIcon name="check" size={34} /></span><p className="eyebrow">{cuttingIntakeCopy[state.intake].eyebrow}</p><h2>{cuttingIntakeCopy[state.intake].title}</h2><p className="intake-note">{cuttingIntakeCopy[state.intake].text}</p>
+        <dl className="intake-facts"><div><dt>Comanda</dt><dd>#{state.order.orderNumber}</dd></div><div><dt>Sursa</dt><dd><SourceBadge source={state.order.source} /></dd></div><div><dt>Etapa curentă</dt><dd><StageLabel stage={getStageById(workflow, state.order.productionStageId)} /></dd></div>{employee && <div><dt>Responsabil</dt><dd>{employee.displayName}</dd></div>}{intakeProduct && <div className="intake-product"><dt>Produs</dt><dd>{[intakeProduct.name, formatMeasurements(intakeProduct), intakeProduct.meters != null ? formatMeters(intakeProduct.meters) : null].filter(Boolean).join(" · ")}</dd></div>}</dl>
+        <div><button className="button button-primary button-large" type="button" onClick={() => navigate(`/orders/${encodeURIComponent(state.order.id)}`)}>Deschide comanda</button><button className="button button-secondary" type="button" onClick={reset}>Scanează altă comandă</button></div></section>}
+
+      {state.status === "success" && !state.intake && <section className="success-state"><span className="success-check"><AppIcon name="check" size={34} /></span><p className="eyebrow">{orderActionSuccess[state.action].eyebrow}</p><h2>{orderActionSuccess[state.action].title}</h2>{state.order.productionCompletedAt ? <span className="stage-label"><span>✓</span>Producție finalizată</span> : <StageLabel stage={getStageById(workflow, state.order.productionStageId)} />}<div><button className="button button-primary button-large" type="button" onClick={reset}>Scanează altă comandă</button><button className="button button-secondary" type="button" onClick={() => navigate(`/orders/${encodeURIComponent(state.order.id)}`)}>Vezi comanda</button></div></section>}
 
       {state.status === "error" && <section className="bottom-sheet error-sheet"><ErrorState error={state.error} compact onAction={() => {
         if (state.recovery === "login") onSessionExpired();
         else if (state.failedSubmission && isTransient(state.error)) retrySubmit();
+        else if (state.failedIntake && isTransient(state.error)) { const attempt = state.failedIntake; dispatch({ type: "RETRY_INTAKE" }); void runIntake(attempt); }
         else if (state.recovery === "reload" && state.failedSubmission) void reloadOrder(state.failedSubmission.order.id);
         else { reset(); if (state.recovery === "manual") setManualOpen(true); }
       }} /><button className="button button-link" type="button" disabled={busy} onClick={() => navigate("/")}>Înapoi acasă</button></section>}

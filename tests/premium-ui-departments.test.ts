@@ -37,3 +37,10 @@ test("the production next step continues own work first and never claims: it lin
   assert.equal(stageNextAction(queue([order("b1", null)], { blocked: 1 }), stageProfile("ambalare"), true).tone, "attention");
   assert.equal(stageNextAction(queue([]), stageProfile("livrare"), true).cta, null);
 });
+
+test("an idle cutting workspace still points to the scanner: stage-1 labels are received by one scan", () => {
+  const idle = stageNextAction(queue([]), stageProfile("taiere"), true);
+  assert.equal(idle.cta?.path, "/scan");
+  assert.match(idle.detail, /o singură scanare/);
+  assert.equal(stageNextAction(queue([]), stageProfile("taiere"), false).cta, null, "no scanner link without orders.scan");
+});

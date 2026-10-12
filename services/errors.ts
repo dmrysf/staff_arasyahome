@@ -77,6 +77,7 @@ const presentations: Record<ServiceErrorCode, ErrorPresentation> = {
   DOCUMENT_AUTHORITY_SOURCE: { title: "Fișa rămâne în magazin", message: "Fișa de producție a acestei comenzi este încă emisă de magazinul sursă. Documentul Arasya devine disponibil după activarea autorității de documente.", action: "Înapoi" },
   DOCUMENT_NOT_FOUND: { title: "Document negăsit", message: "Revizia cerută nu există sau nu poate fi afișată.", action: "Reîncarcă" },
   DOCUMENT_REVISION_NOT_ACTIVE: { title: "Revizie înlocuită", message: "Această revizie nu mai este documentul activ. Reîncarcă pagina.", action: "Reîncarcă" },
+  CUTTING_INTAKE_NOT_APPLICABLE: { title: "Comanda nu așteaptă tăierea", message: "Comanda nu este la etapa de pornire sau de tăiere. Se deschide verificarea obișnuită.", action: "Scanează din nou" },
   PRODUCTION_AUTHORITY_SOURCE: { title: "Comanda nu este preluată în Arasya", message: "Producția acestei comenzi este încă gestionată în YD SOFT. Un manager trebuie să o preia în Arasya înainte de a lucra la ea.", action: "Înapoi" },
   AUTHORITY_CUTOVER_DISABLED: { title: "Preluare neactivată", message: "Preluarea autorității de producție nu este activată pentru această sursă.", action: "Înapoi" },
   AUTHORITY_NOT_SUPPORTED: { title: "Preluare indisponibilă", message: "Autoritatea de producție a acestei comenzi nu poate fi schimbată.", action: "Înapoi" },

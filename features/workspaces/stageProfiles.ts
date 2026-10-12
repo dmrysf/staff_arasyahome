@@ -61,7 +61,7 @@ export function stageNextAction(queue: StageQueue, profile: StageProfile, canSca
   }
   if (queue.counts.available > 0) {
     if (profile.claimByScan) {
-      return { tone: "action", eyebrow: "Următorul pas", title: "Preia o comandă nouă", detail: `${queue.counts.available} ${queue.counts.available === 1 ? "comandă disponibilă" : "comenzi disponibile"}. Preluarea se face scanând eticheta QR originală.`, orderNumber: null, cta: canScan ? { label: "Scanează eticheta QR", path: "/scan" } : null };
+      return { tone: "action", eyebrow: "Următorul pas", title: "Preia o comandă nouă", detail: `${queue.counts.available} ${queue.counts.available === 1 ? "comandă disponibilă" : "comenzi disponibile"}. O singură scanare a etichetei QR originale îți atribuie comanda.`, orderNumber: null, cta: canScan ? { label: "Scanează eticheta QR", path: "/scan" } : null };
     }
     const available = items.find((order) => order.employeeAllowedAction?.id === "claim");
     if (available) {
@@ -70,6 +70,10 @@ export function stageNextAction(queue: StageQueue, profile: StageProfile, canSca
   }
   if (queue.counts.blocked > 0) {
     return { tone: "attention", eyebrow: "Verificare", title: `${queue.counts.blocked} ${queue.counts.blocked === 1 ? "comandă blocată" : "comenzi blocate"}`, detail: "Motivul apare pe fiecare comandă din listă.", orderNumber: null, cta: null };
+  }
+  if (profile.claimByScan) {
+    // Stage-1 orders are not listed for cutting; their label is scanned directly and the scan hands them over.
+    return { tone: "calm", eyebrow: "Totul este la zi", title: "Nicio comandă în lucru", detail: "Comenzile aprobate se preiau scanând eticheta QR: o singură scanare le trece la Tăiere și ți le atribuie.", orderNumber: null, cta: canScan ? { label: "Scanează eticheta QR", path: "/scan" } : null };
   }
   return { tone: "calm", eyebrow: "Totul este la zi", title: "Nicio comandă de preluat", detail: "Lista se actualizează automat când o comandă ajunge aici.", orderNumber: null, cta: null };
 }

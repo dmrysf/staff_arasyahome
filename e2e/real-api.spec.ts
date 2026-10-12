@@ -6,7 +6,7 @@ type Fixture = {
   b2b: { id: string; code: string; username: string };
   password: string;
   users: { ana: string; bogdan: string; mihai: string; dashboardOnly: string; temporary: string };
-  orders: { flow: string; qr: string; claimedByOther: string; conflict: string };
+  orders: { flow: string; qr: string; claimedByOther: string; conflict: string; camera: string };
   qr: Record<string, string>;
 };
 
@@ -169,7 +169,7 @@ test("a concurrent claim produces ORDER_CHANGED and a safe reload instead of fak
   await bogdan.context.close();
 });
 
-test("camera QR scanning uses the lazy fallback decoder, resolves the opaque reference and stops the stream", async ({ page }) => {
+test("camera QR scanning uses the lazy fallback decoder, sends the opaque reference once and stops the stream", async ({ page }) => {
   await page.addInitScript(() => { Reflect.deleteProperty(window, "BarcodeDetector"); });
   const errors = trackErrors(page);
   const fallbackRequests: string[] = [];
@@ -178,15 +178,19 @@ test("camera QR scanning uses the lazy fallback decoder, resolves the opaque ref
   await page.goto("/scan");
   await page.waitForTimeout(300);
   expect(fallbackRequests).toHaveLength(0);
+  const intakes: string[] = [];
+  page.on("request", (request) => { if (request.method() === "POST" && request.url().endsWith("/cutting/intake")) intakes.push(request.url()); });
   await page.getByRole("button", { name: "Deschide camera" }).click();
-  await expect(page.getByRole("heading", { name: `Comanda #${fixture.orders.qr}` })).toBeVisible({ timeout: 15_000 });
+  // Ana cuts: the single scan of the unowned cutting order assigns it to her (cutting QR intake).
+  await expect(page.getByTestId("cutting-intake-success")).toContainText(`#${fixture.orders.camera}`, { timeout: 15_000 });
   expect(fallbackRequests).toHaveLength(1);
+  expect(intakes).toHaveLength(1);
   const liveTracks = await page.evaluate(() => {
     const video = document.querySelector("video");
     return video?.srcObject instanceof MediaStream ? video.srcObject.getTracks().filter((track) => track.readyState === "live").length : 0;
   });
   expect(liveTracks).toBe(0);
-  await expect(page.getByRole("button", { name: /Preia comanda/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Deschide comanda" })).toBeVisible();
   expect(errors).toEqual([]);
 });
 
