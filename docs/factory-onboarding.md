@@ -30,7 +30,7 @@ Deploy öncesi yeni siparişler oluştuysa yönetici yeni tutarlı yedek ve rest
 ## 2. Manuel cPanel API kurulumu (yönetici)
 
 1. PR'ı ve testleri inceleyin. İncelemeden sonra kaynak PR'ı kendiniz birleştirin.
-2. `main` üzerindeki Operations API CI başarılı olsun. Başarılı yayın işi `api-deploy` paketini API **2.27.0** olarak üretir.
+2. `main` üzerindeki Operations API CI başarılı olsun. Başarılı yayın işi `api-deploy` paketini API **2.28.0** olarak üretir.
    PR CI yayın yapmaz. `release.json.sourceCommit` birleşen kaynak commit'i olmalıdır.
 3. cPanel Git Version Control'de **Operations API** deposunu/`api-deploy` branch'ini seçin; *Update from Remote* yapın.
    Staff deposunu bu işlem için deploy etmeyin. Bu hazırlık yeni migration veya seed gerektirmez; production 001–023 zaten uygulanmıştır.
@@ -59,7 +59,7 @@ Deploy öncesi yeni siparişler oluştuysa yönetici yeni tutarlı yedek ve rest
    /usr/local/bin/php "$api_runtime/bin/readiness.php"
    ```
 
-   23 migration, readiness OK, API 2.27.0 ve doğru `sourceCommit` beklenir. Eksik migration varsa bu prosedürü durdurun;
+   24 migration, readiness OK, API 2.28.0 ve doğru `sourceCommit` beklenir. Eksik migration varsa bu prosedürü durdurun;
    onboarding bahanesiyle `migrate.php`, `seed.php` veya `organization-provision.php --apply` çalıştırmayın.
    QR/PDF ve Ayşe'nin mevcut Trendyol işlemlerini mevcut hesaplarla kontrol edin; test için gerçek sipariş oluşturmayın/ilerletmeyin.
 

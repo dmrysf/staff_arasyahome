@@ -27,6 +27,15 @@ use PDO;
  *   POST /production-exceptions/{id}/acknowledge     responsible employee confirms + QR of the same order
  *   POST /production-exceptions/{id}/rereview        ask for a new decision after a rejection
  *
+ * Supervised tailoring defects (stages 3-12; see CuttingFaultService):
+ *   GET  /production-exceptions/capabilities         whether the caller supervises tailoring defects, and for which sources
+ *   GET  /production-exceptions/supervisor?view=     review | custody | return | done (supervisor only)
+ *   GET  /production-exceptions/{id}/receivers       substitute cutting employees when the responsible one is unavailable
+ *   POST /production-exceptions/{id}/review          supervisor accepts (QR) or dismisses a report
+ *   POST /production-exceptions/{id}/return          supervisor sends the case to the cutting employee
+ *   POST /production-exceptions/{id}/restore         supervisor ends the case inside tailoring (QR)
+ *   POST /production-exceptions/{id}/notes           additional information by anyone involved
+ *
  * Live: GET /live/events?after=<sequence> answers text/event-stream with the events addressed to the
  * caller (and, for approvers, the approval queue events). Without `after` it only reports the current
  * cursor, so a client loads state through REST first and never replays history twice.
@@ -62,30 +71,57 @@ final readonly class QualityController
         if ($request->method === 'GET') {
             $actor = $this->session($request)->employee;
             $this->authorization->requireApplication($actor, 'staff');
+            if ($path === '/capabilities') {
+                $sources = $this->supervisors()->sourcesOf($actor);
+                return $this->json(['tailoringSupervisor' => $sources !== [], 'supervisedSources' => $sources, 'supervisedFlowActive' => $this->supervisors()->isActive()]);
+            }
+            if ($path === '/supervisor') {
+                $sources = $this->supervisors()->sourcesOf($actor);
+                if ($sources === []) {
+                    throw new ApiException(403, 'SUPERVISOR_REQUIRED', 'Only the appointed tailoring quality supervisor can see this list.');
+                }
+                $since = $this->clock->now()->modify('-30 days')->format('Y-m-d H:i:s.u');
+                return $this->json(['items' => $this->queries->supervisorList($request->query('view') ?? 'review', $sources, $actor->employeeUuid, $since)]);
+            }
+            if (preg_match('#^/([0-9a-f-]{36})/receivers$#D', $path, $m) === 1) {
+                return $this->json(['items' => $this->faults->substituteReceivers($actor, $m[1])]);
+            }
             if ($path === '/mine') {
                 $since = $this->clock->now()->modify('-14 days')->format('Y-m-d H:i:s.u');
                 return $this->json(['items' => $this->queries->staffList($actor->employeeUuid, $since)]);
             }
             if ($path === '/reasons') {
                 $this->authorization->require($actor, 'orders.report_fault');
-                $rows = $this->pdo->query("SELECT reason_key, label, requires_comment FROM production_fault_reasons WHERE status = 'active' ORDER BY sort_order, reason_key")->fetchAll(PDO::FETCH_ASSOC);
-                return $this->json(['items' => array_map(static fn (array $row): array => ['key' => (string) $row['reason_key'], 'label' => (string) $row['label'], 'requiresComment' => (int) $row['requires_comment'] === 1], $rows)]);
+                $rows = $this->pdo->query("SELECT reason_key, label, requires_comment, cutting_attributable FROM production_fault_reasons WHERE status = 'active' ORDER BY sort_order, reason_key")->fetchAll(PDO::FETCH_ASSOC);
+                return $this->json(['items' => array_map(static fn (array $row): array => ['key' => (string) $row['reason_key'], 'label' => (string) $row['label'], 'requiresComment' => (int) $row['requires_comment'] === 1, 'cuttingAttributable' => (int) $row['cutting_attributable'] === 1], $rows)]);
             }
             if (preg_match('#^/([0-9a-f-]{36})$#D', $path, $m) === 1) {
                 $row = $this->queries->find($m[1]);
-                if ($row === null || !in_array($actor->employeeUuid, [$row['detector_employee_uuid'], $row['responsible_employee_uuid']], true)) {
+                if ($row === null) {
                     throw new ApiException(404, 'EXCEPTION_NOT_FOUND', 'The request was not found.');
                 }
-                return $this->json($this->queries->detail($m[1], $actor->employeeUuid, false));
+                $tailoring = $row['exception_type'] === 'tailoring_defect';
+                $supervises = $tailoring && $this->supervisors()->supervises($actor, (string) $row['source_key']);
+                $responsible = $row['responsible_employee_uuid'] === $actor->employeeUuid && (!$tailoring || $row['return_requested_at'] !== null);
+                if (!$supervises && !$responsible && !in_array($actor->employeeUuid, [$row['detector_employee_uuid'], $row['receiver_employee_uuid']], true)) {
+                    throw new ApiException(404, 'EXCEPTION_NOT_FOUND', 'The request was not found.');
+                }
+                return $this->json($this->queries->detail($m[1], $actor->employeeUuid, false, $supervises));
             }
             throw new ApiException(404, 'NOT_FOUND', 'API route was not found.');
         }
-        if ($request->method === 'POST' && preg_match('#^/([0-9a-f-]{36})/(acknowledge|rereview)$#D', $path, $m) === 1) {
+        if ($request->method === 'POST' && preg_match('#^/([0-9a-f-]{36})/(acknowledge|rereview|review|return|restore|notes)$#D', $path, $m) === 1) {
             $session = $this->mutationSession($request);
             $key = $request->header('idempotency-key') ?? '';
-            return $this->json($m[2] === 'acknowledge'
-                ? $this->faults->acknowledge($session->employee, $m[1], $this->body($request, ['expectedVersion', 'confirmed', 'qrToken', 'comment'], ['expectedVersion', 'confirmed', 'qrToken']), $key, $request->requestId)
-                : $this->faults->requestRereview($session->employee, $m[1], $this->body($request, ['expectedVersion', 'comment'], ['expectedVersion', 'comment']), $key, $request->requestId));
+            $actor = $session->employee;
+            return $this->json(match ($m[2]) {
+                'acknowledge' => $this->faults->acknowledge($actor, $m[1], $this->body($request, ['expectedVersion', 'confirmed', 'qrToken', 'comment', 'responsibility'], ['expectedVersion', 'confirmed', 'qrToken']), $key, $request->requestId),
+                'rereview' => $this->faults->requestRereview($actor, $m[1], $this->body($request, ['expectedVersion', 'comment'], ['expectedVersion', 'comment']), $key, $request->requestId),
+                'review' => $this->faults->supervisorReview($actor, $m[1], $this->body($request, ['expectedVersion', 'decision', 'reasonKey', 'qrToken', 'comment'], ['expectedVersion', 'decision']), $key, $request->requestId),
+                'return' => $this->faults->requestReturn($actor, $m[1], $this->body($request, ['expectedVersion', 'receiverEmployeeId', 'comment'], ['expectedVersion']), $key, $request->requestId),
+                'restore' => $this->faults->restore($actor, $m[1], $this->body($request, ['expectedVersion', 'qrToken', 'comment'], ['expectedVersion', 'qrToken', 'comment']), $key, $request->requestId),
+                default => $this->faults->addNote($actor, $m[1], $this->body($request, ['expectedVersion', 'comment'], ['expectedVersion', 'comment']), $key, $request->requestId),
+            });
         }
         throw new ApiException(404, 'NOT_FOUND', 'API route was not found.');
     }
@@ -125,6 +161,11 @@ final readonly class QualityController
         }
         $lines[] = $this->frame(null, 'cursor', ['cursor' => $cursor, 'authorizationVersion' => $actor->authorizationVersion]);
         return $this->stream($lines);
+    }
+
+    private function supervisors(): TailoringSupervisorPolicy
+    {
+        return new TailoringSupervisorPolicy($this->pdo, $this->clock);
     }
 
     /** @param array<string, mixed> $data */
