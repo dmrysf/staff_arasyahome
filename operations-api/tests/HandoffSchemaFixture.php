@@ -1,9 +1,20 @@
 <?php
 declare(strict_types=1);
+/** Restore a pre-025 disposable test fixture (no source payment gate). This is NOT a deployment/rollback mechanism. */
+function restorePrePaymentGateTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='025_source_payment_gate.sql'")->fetchColumn()) return;
+    foreach(['chk_operational_orders_payment_method','chk_operational_orders_advance_status','chk_operational_orders_payment_complete','chk_operational_orders_payment_online','chk_operational_orders_advance_confirmed'] as $check) $pdo->exec("ALTER TABLE operational_orders DROP CONSTRAINT {$check}");
+    $pdo->exec('ALTER TABLE operational_orders DROP COLUMN payment_method, DROP COLUMN advance_status, DROP COLUMN advance_revision, DROP COLUMN advance_confirmed_at, DROP COLUMN payment_synced_at, DROP COLUMN payment_reversed_at');
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='025_source_payment_gate.sql'");
+}
+
 /** Restore a pre-024 disposable test fixture (no tailoring quality supervision). This is NOT a deployment/rollback mechanism. */
 function restorePreTailoringSupervisionTestSchema(PDO $pdo): void
 {
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    restorePrePaymentGateTestSchema($pdo);
     if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='024_tailoring_quality_supervision.sql'")->fetchColumn()) return;
     $ids=$pdo->query("SELECT exception_uuid FROM production_exceptions WHERE exception_type='tailoring_defect' OR reason_key IN ('cut-meterage','cut-color','fabric-defect') OR confirmed_reason_key IS NOT NULL")->fetchAll(PDO::FETCH_COLUMN);
     if($ids!==[]){

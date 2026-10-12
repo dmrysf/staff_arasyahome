@@ -250,6 +250,11 @@ final readonly class OrderOwnershipService
                 // Assigning work would let Arasya produce an order whose source still owns production.
                 throw new ApiException(409, 'PRODUCTION_AUTHORITY_SOURCE', 'Production of this order is still managed by its source. A manager must take it over first.');
             }
+            if ($operation === self::OPERATION_REASSIGN && $order['production_stage_id'] === \Arasya\Operations\Order\OrderProjectionWriter::INITIAL_STAGE_ID) {
+                // Assigning a stage-1 order starts its production like a claim: the enforced advance gate applies to
+                // managers too. Releasing an owner never needs it.
+                \Arasya\Operations\Production\PaymentGate::assertOpen($this->authorityModes, $order);
+            }
             if ($operation === self::OPERATION_REASSIGN) {
                 $target = $this->eligibleTarget($actor, $targetExists ? (string) $targetId : null, $previousId, $stage, (string) $order['source_key']);
             }
@@ -419,7 +424,8 @@ final readonly class OrderOwnershipService
     {
         $statement = $this->pdo->prepare(
             'SELECT order_uuid, global_order_id, source_key, order_number, production_stage_id, production_owner_employee_uuid,
-                    production_completed_at, operational_status, production_version, open_exception_uuid, document_status, production_authority
+                    production_completed_at, operational_status, production_version, open_exception_uuid, document_status, production_authority,
+                    payment_method, advance_status
              FROM operational_orders WHERE global_order_id = ?' . ($lock ? ' FOR UPDATE' : ''),
         );
         $statement->execute([$globalId]);

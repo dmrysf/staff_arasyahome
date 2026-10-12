@@ -118,6 +118,7 @@ const backendErrorCodes: Partial<Record<string, ServiceErrorCode>> = {
   RECEIVER_INVALID: "RECEIVER_INVALID",
   RECEIVER_NOT_ELIGIBLE: "RECEIVER_NOT_ELIGIBLE",
   ORDER_BLOCKED_BY_DOCUMENT: "ORDER_BLOCKED_BY_DOCUMENT",
+  AVANS_NEVALIDAT: "AVANS_NEVALIDAT",
   DOCUMENT_SUPERSEDED: "DOCUMENT_SUPERSEDED",
   DOCUMENT_REVOKED: "DOCUMENT_REVOKED",
   DOCUMENT_NOT_GENERATED: "DOCUMENT_NOT_GENERATED",
@@ -391,6 +392,17 @@ export function mapProductionOrder(value: unknown): import("../../domain/models"
   if (raw.productionQuality != null) order.productionQuality = mapOrderQuality(raw.productionQuality);
   if (raw.documentStatus != null) order.documentStatus = oneOf(raw.documentStatus, ["none", "active", "stale", "revoked"] as const);
   if (raw.productionDocument != null) order.productionDocument = mapDocumentSummary(raw.productionDocument);
+  if (raw.paymentGate != null) {
+    const gate = objectValue(raw.paymentGate);
+    if (typeof gate.blocking !== "boolean") throw new StaffServiceError("SERVER_ERROR");
+    order.paymentGate = {
+      state: oneOf(gate.state, ["online", "not_required", "confirmed", "waiting", "partial", "unknown"] as const),
+      label: stringValue(gate.label),
+      mode: oneOf(gate.mode, ["observe", "enforce"] as const),
+      blocking: gate.blocking,
+      reversedAt: gate.reversedAt == null ? null : timestampValue(gate.reversedAt),
+    };
+  }
 
   if (raw.employeeRelation != null) {
     const rel = objectValue(raw.employeeRelation);

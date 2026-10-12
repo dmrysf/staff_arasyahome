@@ -364,7 +364,7 @@ test('signed heartbeat reports mode and contract only, for validation and active
     $pdo->exec("INSERT INTO order_sources (source_key, status) VALUES ('trendhome', 'active'), ('outletperdele', 'active')");
     foreach (['trendhome' => [SOURCE_TEST_TRENDHOME_SECRET, 'active'], 'outletperdele' => [SOURCE_TEST_OUTLET_SECRET, 'validation']] as $key => [$secret, $mode]) {
         $response = $controller->heartbeat(sourceSignedRequest(['sentAt' => '2026-10-07T10:00:00Z'], $secret), $key);
-        expect($response->payload === ['ok' => true, 'sourceKey' => $key, 'mode' => $mode, 'productionAuthorityMode' => 'legacy', 'qrAuthorityMode' => 'legacy', 'documentAuthorityMode' => 'legacy', 'trackingAuthorityMode' => 'legacy', 'contract' => ['schemaVersion' => 1, 'workflowId' => 'curtain-production', 'workflowVersion' => 1, 'stageCount' => 14]], 'Unexpected heartbeat: ' . sourceJson($response));
+        expect($response->payload === ['ok' => true, 'sourceKey' => $key, 'mode' => $mode, 'productionAuthorityMode' => 'legacy', 'qrAuthorityMode' => 'legacy', 'documentAuthorityMode' => 'legacy', 'trackingAuthorityMode' => 'legacy', 'paymentGateMode' => 'off', 'contract' => ['schemaVersion' => 1, 'workflowId' => 'curtain-production', 'workflowVersion' => 1, 'stageCount' => 14]], 'Unexpected heartbeat: ' . sourceJson($response));
         expect(sourceResponseHasNoSecret($response));
     }
     $contacts = $pdo->query('SELECT COUNT(*) FROM order_sources WHERE last_contact_at IS NOT NULL')->fetchColumn();
@@ -546,9 +546,9 @@ test('expected API errors and validation are unchanged by the PDO diagnostics', 
     expect(!array_key_exists('exception', $warning) && !array_key_exists('sqlstate', $warning) && !array_key_exists('driver_code', $warning));
 });
 
-test('migrations stay sequential through 024 and the canonical workflow keeps its 14 stages', function (): void {
+test('migrations stay sequential through 025 and the canonical workflow keeps its 14 stages', function (): void {
     $migrations = array_map('basename', glob(dirname(__DIR__) . '/database/migrations/*.sql') ?: []);
-    expect(count($migrations) === 24 && $migrations[23] === '024_tailoring_quality_supervision.sql' && str_starts_with($migrations[0], '001_') && str_starts_with($migrations[16], '017_') && $migrations[17] === '018_production_authority.sql' && $migrations[18] === '019_production_qr_authority.sql' && $migrations[19] === '020_production_document_authority.sql' && $migrations[20] === '021_document_scopes.sql' && $migrations[21] === '022_trendyol_intake.sql' && $migrations[22] === '023_source_scoped_stage_authorization.sql');
+    expect(count($migrations) === 25 && $migrations[23] === '024_tailoring_quality_supervision.sql' && $migrations[24] === '025_source_payment_gate.sql' && str_starts_with($migrations[0], '001_') && str_starts_with($migrations[16], '017_') && $migrations[17] === '018_production_authority.sql' && $migrations[18] === '019_production_qr_authority.sql' && $migrations[19] === '020_production_document_authority.sql' && $migrations[20] === '021_document_scopes.sql' && $migrations[21] === '022_trendyol_intake.sql' && $migrations[22] === '023_source_scoped_stage_authorization.sql');
     expect(count(CanonicalProductionWorkflowContract::STAGES) === 14);
     expect(array_keys(CanonicalProductionWorkflowContract::STAGES) === ['waiting', 'material-preparation', 'workshop-receiving', 'labeling', 'material-straightening', 'bottom-hem', 'side-hem', 'ironing', 'height', 'header-tape', 'sewing-finishing', 'quality-control', 'packing', 'delivery']);
     // 018 is additive: it never converts the authority of existing orders.
@@ -563,6 +563,26 @@ test('migrations stay sequential through 024 and the canonical workflow keeps it
     $supervision = preg_replace(['/^\s*--.*$/m', '/ON (UPDATE|DELETE) RESTRICT/', '/DROP CONSTRAINT chk_[a-z_]+;/'], '', (string) file_get_contents(dirname(__DIR__) . '/database/migrations/024_tailoring_quality_supervision.sql'));
     expect(preg_match('/\b(DELETE|DROP|TRUNCATE|RENAME)\b/i', $supervision) === 0, '024 must not delete or drop anything except re-created CHECK constraints.');
     expect(preg_match_all('/\bUPDATE\s+([a-z_]+)/i', $supervision, $updates) === 1 && $updates[1] === ['production_fault_reasons'], '024 updates only the material-defect reason flag.');
+    // 025 is additive: nullable payment gate columns and their CHECKs on operational_orders. No row is rewritten.
+    $gate = preg_replace(['/^\s*--.*$/m'], '', (string) file_get_contents(dirname(__DIR__) . '/database/migrations/025_source_payment_gate.sql'));
+    expect(preg_match('/\b(UPDATE|DELETE|DROP|TRUNCATE|RENAME|INSERT)\b/i', $gate) === 0 && substr_count($gate, 'ALTER TABLE operational_orders') === 1 && substr_count($gate, 'NOT NULL') === 0, '025 must only add nullable columns.');
+});
+
+test('payment gate mode is per source, defaults to off and an unreadable value falls back to off', function (): void {
+    $registry = SourceRegistry::fromConfig(sourceTestConfig([
+        'trendhome' => ['mode' => 'active', 'paymentGate' => 'Enforce'],
+        'outletperdele' => ['mode' => 'active', 'paymentGate' => 'sometimes'],
+    ]));
+    expect($registry->find('trendhome')?->paymentGateMode === \Arasya\Operations\Production\PaymentGateMode::Enforce);
+    expect($registry->find('outletperdele')?->paymentGateMode === \Arasya\Operations\Production\PaymentGateMode::Off);
+    expect(in_array(['code' => 'invalid_payment_gate_mode', 'sourceKey' => 'outletperdele'], $registry->issues(), true));
+    $modes = \Arasya\Operations\Production\ProductionAuthorityModes::fromRegistry($registry);
+    expect($modes->paymentGateModeFor('trendhome') === \Arasya\Operations\Production\PaymentGateMode::Enforce && $modes->paymentGateModeFor('b2b') === \Arasya\Operations\Production\PaymentGateMode::Off && $modes->paymentGateModeFor('trendyol') === \Arasya\Operations\Production\PaymentGateMode::Off);
+    $gate = \Arasya\Operations\Production\PaymentGate::class;
+    expect($gate::state(null, null) === 'unknown' && $gate::state('online', 'not_required') === 'online' && $gate::state('cod', 'confirmed') === 'confirmed' && $gate::state('cod', 'partial') === 'partial' && $gate::state('cod', 'waiting') === 'waiting' && $gate::state('cod', 'not_required') === 'not_required');
+    expect($gate::blocksStart($modes, 'trendhome', 'cod', 'waiting') && $gate::blocksStart($modes, 'trendhome', null, null) && !$gate::blocksStart($modes, 'trendhome', 'cod', 'confirmed') && !$gate::blocksStart($modes, 'trendhome', 'online', 'not_required'));
+    expect(!$gate::blocksStart($modes, 'outletperdele', 'cod', 'waiting') && !$gate::blocksStart($modes, 'b2b', null, null) && !$gate::blocksStart($modes, 'trendyol', null, null), 'only an enforced source gate blocks; B2B and Trendyol never');
+    expect($gate::view($modes, 'outletperdele', 'cod', 'waiting', 'waiting', null) === null, 'an off gate adds nothing to the order view');
 });
 
 test('document authority mode is per source, defaults to legacy and enforces only with QR authority enforce', function (): void {

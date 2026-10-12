@@ -6,6 +6,7 @@ namespace Arasya\Operations\Order;
 
 use Arasya\Operations\Document\DocumentStaleness;
 use Arasya\Operations\Http\ApiException;
+use Arasya\Operations\Production\PaymentGate;
 use Arasya\Operations\Production\ProductionAuthority;
 use Arasya\Operations\Production\ProductionAuthorityMode;
 use Arasya\Operations\Production\ProductionAuthorityModes;
@@ -65,6 +66,15 @@ final readonly class OrderProjectionWriter
                 'qty' => $i->quantity
             ] + (($i->productionContext['options'] ?? []) === [] ? [] : ['opt' => $i->productionContext['options']]), $itemsForHash),
         ];
+        // Payment facts join the hash only when the source states them, so every earlier event keeps its hash.
+        if ($snapshot->payment !== null) {
+            $hashData['payment'] = [
+                'method' => $snapshot->payment['method'],
+                'advance' => $snapshot->payment['advanceStatus'],
+                'revision' => $snapshot->payment['advanceRevision'],
+                'confirmed_at' => $snapshot->payment['advanceConfirmedAt']?->format('Y-m-d\TH:i:s.u\Z'),
+            ];
+        }
         // The printable delivery identity is kept outside the receipt hash so existing source events keep
         // their hash; it is applied below and decides document staleness like any printed field.
         $documentContext = $snapshot->delivery === null ? null : json_encode($snapshot->delivery, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
@@ -257,6 +267,7 @@ final readonly class OrderProjectionWriter
                 }
 
                 $this->insertItems($newItems, $orderUuid, $nowSql);
+                $this->applyPayment($orderUuid, $snapshot, $stageId, $sourceChangedSql, $nowSql);
                 // A printed field may have changed: an active production document becomes stale here,
                 // inside the same transaction, so production is blocked before the change is visible.
                 (new DocumentStaleness($this->pdo, $this->clock))->onContentChanged($orderUuid, $snapshot->sourceEventId);
@@ -306,6 +317,7 @@ final readonly class OrderProjectionWriter
                 ]);
 
                 $this->insertItems($snapshot->items, $orderUuid, $nowSql);
+                $this->applyPayment($orderUuid, $snapshot, $initialStage, $sourceChangedSql, $nowSql);
                 if ($operationsManaged) {
                     $this->recordNewOrderAuthority($orderUuid, $globalId, $snapshot->sourceKey, $nowSql);
                 }
@@ -330,6 +342,42 @@ final readonly class OrderProjectionWriter
             }
             throw $e;
         }
+    }
+
+    /**
+     * Stores the source's latest advance payment facts with the order row locked, in the projection transaction.
+     * A snapshot without facts (an older source build) leaves the stored facts unchanged: absence never opens or
+     * erases a gate. The latest source event is the payment truth (events older than the stored one never reach
+     * this point: they are out_of_order). A gate that closes again after production left stage 1 is recorded in
+     * payment_reversed_at for managers; the stage, the owner and the work already done are never touched.
+     */
+    private function applyPayment(string $orderUuid, SourceOrderSnapshot $snapshot, string $stageId, string $sourceChangedSql, string $nowSql): void
+    {
+        $payment = $snapshot->payment;
+        if ($payment === null) {
+            return;
+        }
+        $stmt = $this->pdo->prepare('SELECT payment_method, advance_status, payment_reversed_at, production_completed_at FROM operational_orders WHERE order_uuid = ?');
+        $stmt->execute([$orderUuid]);
+        $current = $stmt->fetch(PDO::FETCH_ASSOC);
+        $wasOpen = $current['payment_method'] !== null && !PaymentGate::isClosed(PaymentGate::state($current['payment_method'], $current['advance_status']));
+        $isOpen = !PaymentGate::isClosed(PaymentGate::state($payment['method'], $payment['advanceStatus']));
+        $reversedAt = $current['payment_reversed_at'];
+        if ($isOpen) {
+            $reversedAt = null;
+        } elseif ($wasOpen && $stageId !== self::INITIAL_STAGE_ID && $current['production_completed_at'] === null) {
+            $reversedAt = $nowSql;
+        }
+        $this->pdo->prepare('UPDATE operational_orders SET payment_method = ?, advance_status = ?, advance_revision = ?, advance_confirmed_at = ?, payment_synced_at = ?, payment_reversed_at = ? WHERE order_uuid = ?')
+            ->execute([
+                $payment['method'],
+                $payment['advanceStatus'],
+                $payment['advanceRevision'],
+                $payment['advanceConfirmedAt']?->format('Y-m-d H:i:s.u'),
+                $sourceChangedSql,
+                $reversedAt,
+                $orderUuid,
+            ]);
     }
 
     /** Source keys whose canonical orders are created only by an explicit, authenticated command, with their source type. */

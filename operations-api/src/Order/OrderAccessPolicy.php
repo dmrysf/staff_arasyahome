@@ -7,6 +7,7 @@ namespace Arasya\Operations\Order;
 use Arasya\Operations\Authorization\AuthorizationService;
 use Arasya\Operations\Cutting\CuttingLifecycle;
 use Arasya\Operations\Employee\EmployeeIdentity;
+use Arasya\Operations\Production\PaymentGate;
 use Arasya\Operations\Production\ProductionAuthority;
 use Arasya\Operations\Production\ProductionAuthorityMode;
 use Arasya\Operations\Production\ProductionAuthorityModes;
@@ -57,6 +58,17 @@ final readonly class OrderAccessPolicy
             && $this->authorityModes?->modeFor($order->globalId->sourceKey) === ProductionAuthorityMode::Enforce;
     }
 
+    /**
+     * Whether the source's enforced advance payment gate keeps this order at stage 1: every action that starts
+     * production (claim, stage completion, cutting intake) is refused while the advance is waiting, partial or
+     * unknown. Orders past stage 1 are never stopped by the gate.
+     */
+    public function blocksPaymentStart(OperationalOrder $order): bool
+    {
+        return $order->productionStageId === OrderProjectionWriter::INITIAL_STAGE_ID
+            && PaymentGate::blocksStart($this->authorityModes, $order->globalId->sourceKey, $order->paymentMethod, $order->advanceStatus);
+    }
+
     /** Observe mode: a Staff claim of a source-managed order is allowed but recorded. */
     public function isSourceManagedUnderObservation(OperationalOrder $order): bool
     {
@@ -99,6 +111,9 @@ final readonly class OrderAccessPolicy
         }
         if ($order->isBlockedByDocument()) {
             return $this->blocked(\Arasya\Operations\Document\DocumentGuard::BLOCKED_REASON);
+        }
+        if ($this->blocksPaymentStart($order)) {
+            return $this->blocked(PaymentGate::BLOCKED_REASON);
         }
         if ($workflow === null) {
             return $this->blocked('workflow_unavailable');
@@ -179,6 +194,9 @@ final readonly class OrderAccessPolicy
         }
         if ($order->isBlockedByDocument()) {
             return $this->blocked(\Arasya\Operations\Document\DocumentGuard::BLOCKED_REASON);
+        }
+        if ($this->blocksPaymentStart($order)) {
+            return $this->blocked(PaymentGate::BLOCKED_REASON);
         }
         // The handoff relies on cutting being the stage right after stage 1 of the active workflow.
         $ids = $workflow === null ? [] : array_map(static fn ($stage): string => $stage->id, $workflow->stages);

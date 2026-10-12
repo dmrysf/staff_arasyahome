@@ -28,6 +28,7 @@ export const orderActionBlockedCopy: Record<OrderActionBlockedReason, string> = 
   exception_pending: "Comanda este blocată: o cerere de returnare la tăiere așteaptă confirmarea și aprobarea.",
   document_revision_pending: "Document blocat: comanda are o revizie de document în curs. Așteaptă aprobarea și documentul nou.",
   production_authority_source: "Producția acestei comenzi este încă gestionată în YD SOFT. Un manager trebuie să o preia în Arasya înainte de a lucra la ea.",
+  payment_gate_closed: "Comanda nu poate intra în producție. Avansul necesar nu a fost confirmat.",
 };
 
 export function isOrderActionId(value: unknown): value is OrderActionId {

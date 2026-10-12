@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Arasya\Operations\Integration;
 
 use Arasya\Operations\Production\DocumentAuthorityMode;
+use Arasya\Operations\Production\PaymentGateMode;
 use Arasya\Operations\Production\ProductionAuthorityMode;
 use Arasya\Operations\Production\QrAuthorityMode;
 use Arasya\Operations\Production\TrackingAuthorityMode;
@@ -25,6 +26,7 @@ final readonly class SourceDefinition
         public QrAuthorityMode $qrAuthorityMode = QrAuthorityMode::Legacy,
         public DocumentAuthorityMode $documentAuthorityMode = DocumentAuthorityMode::Legacy,
         public TrackingAuthorityMode $trackingAuthorityMode = TrackingAuthorityMode::Legacy,
+        public PaymentGateMode $paymentGateMode = PaymentGateMode::Off,
     ) {
     }
 

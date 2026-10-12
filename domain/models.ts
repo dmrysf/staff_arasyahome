@@ -91,7 +91,12 @@ export type OrderActionBlockedReason =
   | "workflow_unavailable"
   | "exception_pending"
   | "document_revision_pending"
-  | "production_authority_source";
+  | "production_authority_source"
+  | "payment_gate_closed";
+
+/** Advance payment gate of a Trend Home / Outlet Perdele order: state only, never an amount. */
+export type PaymentGateState = "online" | "not_required" | "confirmed" | "waiting" | "partial" | "unknown";
+export type PaymentGateView = { state: PaymentGateState; label: string; mode: "observe" | "enforce"; blocking: boolean; reversedAt: string | null };
 
 export type StaffOrder = {
   productionContext?: { company: { legalName: string; companyCode: string; countryCode: string; taxIdentifier: string } };
@@ -124,6 +129,8 @@ export type StaffOrder = {
   /** Central production document state; a stale or revoked document blocks every production action. */
   documentStatus?: import("./documents").DocumentStatus;
   productionDocument?: import("./documents").OrderDocumentSummary;
+  /** Present only while the source's advance gate is observed or enforced. */
+  paymentGate?: PaymentGateView;
 };
 
 export type FaultExceptionStatus = "awaiting_acknowledgment" | "awaiting_approval" | "approved" | "rejected" | "cancelled"
@@ -326,6 +333,7 @@ export type ServiceErrorCode =
   | "RECEIVER_INVALID"
   | "RECEIVER_NOT_ELIGIBLE"
   | "ORDER_BLOCKED_BY_DOCUMENT"
+  | "AVANS_NEVALIDAT"
   | "DOCUMENT_SUPERSEDED"
   | "DOCUMENT_REVOKED"
   | "DOCUMENT_NOT_GENERATED"

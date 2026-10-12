@@ -6,6 +6,10 @@ namespace Arasya\Operations\Order;
 
 final readonly class OrderSerializer
 {
+    public function __construct(private ?\Arasya\Operations\Production\ProductionAuthorityModes $modes = null)
+    {
+    }
+
     /**
      * @param array{action: string|null, blockedReason: string|null}|null $access
      * @param array<string, mixed>|null $quality internal production quality facts (single-order views only)
@@ -40,6 +44,11 @@ final readonly class OrderSerializer
 
         if ($order->productionNotes !== null) {
             $data['productionNotes'] = $order->productionNotes;
+        }
+        // Gate state only (no amounts), and only while the source's gate is observed or enforced.
+        $gate = \Arasya\Operations\Production\PaymentGate::view($this->modes, $order->globalId->sourceKey, $order->paymentMethod, $order->advanceStatus, $order->productionStageId, $order->paymentReversedAt);
+        if ($gate !== null) {
+            $data['paymentGate'] = $gate;
         }
         if ($order->productionContext !== null) $data['productionContext'] = $order->productionContext;
 

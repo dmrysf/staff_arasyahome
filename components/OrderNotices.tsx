@@ -9,6 +9,7 @@ export function OrderNotices({ order }: { order: StaffOrder }) {
       {freshness === "stale" && <p className="order-notice" role="status">Datele magazinului pot fi întârziate. Etapa de producție este cea confirmată de Arasya.</p>}
       {freshness === "source_unavailable" && <p className="order-notice" role="status">Magazinul sursă nu răspunde momentan. Etapa de producție rămâne valabilă.</p>}
       {order.employeeActionBlockedReason && <p className="order-notice order-notice-muted" role="note">{orderActionBlockedCopy[order.employeeActionBlockedReason]}</p>}
+      {order.paymentGate?.reversedAt && <p className="order-notice" role="status">Avansul nu mai este confirmat după începerea producției. Lucrul continuă; anunță managerul.</p>}
     </>
   );
 }
