@@ -188,34 +188,52 @@ final readonly class OperationalOrderController
             throw new ApiException(404, 'UNKNOWN_QR', 'The scanned code is not registered.');
         }
         if ($resolved['status'] !== 'active') {
-            $qr = $this->qrLedger === null ? null : ProductionQrLedger::state($this->qrLedger, $reference->value);
-            $visible = $qr === null ? null : $this->repository->findByGlobalId($employee->employeeUuid, $qr['globalOrderId']);
-            $mayView = $visible !== null && $this->policy->canView($employee, $visible);
-            if ($qr !== null && $this->qrLedger !== null) {
-                // Evidence of the refused scan (employee, order, revision hint), never the scanned payload.
-                ProductionQrLedger::record($this->qrLedger, ['order_uuid' => $qr['orderUuid'], 'global_order_id' => $qr['globalOrderId'], 'source_key' => $qr['sourceKey']],
-                    ProductionQrLedger::ACTION_SCAN_REJECTED, $reference->value, null, $employee->employeeUuid, 'scan_' . $qr['state'], ProductionQrLedger::modeLabel($this->modes, $qr['sourceKey']), $request->requestId, $this->now());
-            }
-            // A QR of a replaced or revoked document revision says so clearly; the active revision
-            // number is shown only to an employee who may see the order.
-            $state = $this->documents?->qrRevision($reference->value);
-            if ($state !== null && $state['status'] !== 'active') {
-                if (!$mayView) {
-                    $state['activeRevisionNumber'] = null;
-                }
-                throw \Arasya\Operations\Document\DocumentGuard::invalidQr($state);
-            }
-            // A QR replaced by a manager rotation (superseded) or revoked never resolves the order.
-            if ($qr !== null && in_array($qr['state'], [ProductionQrLedger::RETIRED_SUPERSEDED, ProductionQrLedger::RETIRED_REVOKED], true)) {
-                throw ProductionQrLedger::invalid($qr, $mayView ? $qr['activeRevision'] : null);
-            }
-            throw new ApiException(410, 'EXPIRED_QR', 'The scanned code is no longer valid.');
+            $this->rejectInactiveQr($employee, $reference, $request, fn (OperationalOrder $order): bool => $this->policy->canView($employee, $order));
         }
         $order = $resolved['order'];
         if ($order === null || !$this->policy->canView($employee, $order)) {
             throw new ApiException(404, 'ORDER_NOT_FOUND', 'Order not found.');
         }
         return $this->orderResponse($employee, $order);
+    }
+
+    /**
+     * POST /cutting/intake: an eligible cutter scans the active Arasya QR once and receives the order into cutting
+     * (stage 1 -> cutting and the claim in one transaction, see OrderOperationsService::cuttingIntake). The scan
+     * itself is the intent: no order id or version comes from the client, only the QR and, when the cutter already
+     * has unfinished cutting work, the explicit multiple-job confirmation. Same authentication, CSRF and lookup
+     * rate limit as the ordinary QR resolution.
+     */
+    public function cuttingIntake(Request $request): Response
+    {
+        $session = $this->authenticate($request);
+        $employee = $session->employee;
+        $this->csrf->requireValid($session->rawToken, $request->header('x-csrf-token'));
+        $this->authorization->require($employee, 'orders.scan');
+        if (!$this->policy->mayUseCuttingIntake($employee)) {
+            throw OrderOperationsService::intakeNotAllowed();
+        }
+        $this->limitLookups($employee);
+        $input = $request->json(2048);
+        if (array_diff(array_keys($input), ['qrToken', 'confirmedMultiple', 'ownedCount']) !== [] || !is_string($input['qrToken'] ?? null)
+            || (isset($input['confirmedMultiple']) && !is_bool($input['confirmedMultiple'])) || (isset($input['ownedCount']) && (!is_int($input['ownedCount']) || $input['ownedCount'] < 0))) {
+            throw new ApiException(400, 'INVALID_REQUEST', 'Request fields are invalid.');
+        }
+        $reference = QrReference::parsePayload($input['qrToken']);
+        if ($reference === null) {
+            throw new ApiException(400, 'INVALID_QR', 'The scanned code is not an Arasya order code.');
+        }
+        $resolved = $this->repository->findByQrReference($employee->employeeUuid, $reference);
+        if ($resolved['status'] === 'missing') {
+            throw new ApiException(404, 'UNKNOWN_QR', 'The scanned code is not registered.');
+        }
+        if ($resolved['status'] !== 'active') {
+            $this->rejectInactiveQr($employee, $reference, $request, fn (OperationalOrder $order): bool => $this->policy->canView($employee, $order) || $this->policy->reachesForCuttingIntake($employee, $order));
+        }
+        $order = $resolved['order'] ?? throw new ApiException(404, 'ORDER_NOT_FOUND', 'Order not found.');
+        $intent = array_intersect_key($input, array_flip(['confirmedMultiple', 'ownedCount']));
+        $payload = $this->operations->cuttingIntake($employee, $order->globalId, $reference, $intent, $request->header('idempotency-key') ?? '', OperationContext::fromRequest($request));
+        return Response::json($payload, 200, ['Cache-Control' => 'private, no-store']);
     }
 
     public function claim(Request $request, string $globalIdString): Response
@@ -248,6 +266,39 @@ final readonly class OperationalOrderController
             ? $this->operations->claim($employee, $orderId, $input['expectedVersion'], $idempotencyKey, $context, $input)
             : $this->operations->completeCurrentStage($employee, $orderId, $input['expectedVersion'], $idempotencyKey, $context);
         return Response::json($payload, 200, ['Cache-Control' => 'private, no-store']);
+    }
+
+    /**
+     * A scanned QR that is not active never resolves an order: a replaced or revoked document revision or QR says
+     * so clearly (the active revision only to an employee who may see the order), anything else is expired. The
+     * refusal is recorded in the QR ledger without the scanned payload.
+     *
+     * @param callable(OperationalOrder): bool $mayViewOrder
+     */
+    private function rejectInactiveQr(EmployeeIdentity $employee, QrReference $reference, Request $request, callable $mayViewOrder): never
+    {
+        $qr = $this->qrLedger === null ? null : ProductionQrLedger::state($this->qrLedger, $reference->value);
+        $visible = $qr === null ? null : $this->repository->findByGlobalId($employee->employeeUuid, $qr['globalOrderId']);
+        $mayView = $visible !== null && $mayViewOrder($visible);
+        if ($qr !== null && $this->qrLedger !== null) {
+            // Evidence of the refused scan (employee, order, revision hint), never the scanned payload.
+            ProductionQrLedger::record($this->qrLedger, ['order_uuid' => $qr['orderUuid'], 'global_order_id' => $qr['globalOrderId'], 'source_key' => $qr['sourceKey']],
+                ProductionQrLedger::ACTION_SCAN_REJECTED, $reference->value, null, $employee->employeeUuid, 'scan_' . $qr['state'], ProductionQrLedger::modeLabel($this->modes, $qr['sourceKey']), $request->requestId, $this->now());
+        }
+        // A QR of a replaced or revoked document revision says so clearly; the active revision
+        // number is shown only to an employee who may see the order.
+        $state = $this->documents?->qrRevision($reference->value);
+        if ($state !== null && $state['status'] !== 'active') {
+            if (!$mayView) {
+                $state['activeRevisionNumber'] = null;
+            }
+            throw \Arasya\Operations\Document\DocumentGuard::invalidQr($state);
+        }
+        // A QR replaced by a manager rotation (superseded) or revoked never resolves the order.
+        if ($qr !== null && in_array($qr['state'], [ProductionQrLedger::RETIRED_SUPERSEDED, ProductionQrLedger::RETIRED_REVOKED], true)) {
+            throw ProductionQrLedger::invalid($qr, $mayView ? $qr['activeRevision'] : null);
+        }
+        throw new ApiException(410, 'EXPIRED_QR', 'The scanned code is no longer valid.');
     }
 
     private function authenticate(Request $request): AuthenticatedSession
