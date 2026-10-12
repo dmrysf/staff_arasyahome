@@ -68,8 +68,12 @@ export interface ExceptionService {
   review(id: string, input: { expectedVersion: number; decision: "accept" | "dismiss"; reasonKey?: string; qrToken?: string; comment: string | null; idempotencyKey: string }): Promise<FaultException>;
   /** Supervisor sends the case to the cutting employee; the managers decide only after physical receipt. */
   sendReturn(id: string, input: { expectedVersion: number; receiverEmployeeId?: string | null; comment: string | null; idempotencyKey: string }): Promise<FaultException>;
-  /** Supervisor ends the case inside tailoring with the product in hand (QR). */
-  restore(id: string, input: { expectedVersion: number; qrToken: string; comment: string; idempotencyKey: string }): Promise<FaultException>;
+  /** Tailoring employees who can receive the product back when the employee who had the order cannot (supervisor only). */
+  restoreRecipients(id: string, options?: { signal?: AbortSignal }): Promise<{ id: string; displayName: string }[]>;
+  /** Supervisor hands the product back to tailoring with it in hand (QR). The order stays blocked until the recipient confirms. */
+  restore(id: string, input: { expectedVersion: number; qrToken: string; comment: string; recipientEmployeeId?: string | null; idempotencyKey: string }): Promise<FaultException>;
+  /** The addressed tailoring employee received the product (QR); only this unblocks the order, owned by them. No manager. */
+  receiveRestore(id: string, input: { expectedVersion: number; qrToken: string; comment: string | null; idempotencyKey: string }): Promise<FaultException>;
   addNote(id: string, input: { expectedVersion: number; comment: string; idempotencyKey: string }): Promise<FaultException>;
 }
 

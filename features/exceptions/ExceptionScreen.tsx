@@ -8,12 +8,13 @@ import { LoadingState } from "../../components/ui/States";
 import { SourceBadge } from "../../components/SourceBadge";
 import { toServiceError } from "../../services/errors";
 import { createIdempotencyKey } from "../../services/idempotency";
-import { arrivalLabel, faultStatusLabel, formatDecimalMeters, responsibilityLabels, timelineLabel } from "../../domain/faults";
+import { arrivalLabel, faultStatusLabel, formatDecimalMeters, formatFaultMeters, responsibilityLabels, timelineLabel } from "../../domain/faults";
 import { QrCapture } from "./QrCapture";
 
 const time = new Intl.DateTimeFormat("ro-RO", { day: "numeric", month: "long", hour: "2-digit", minute: "2-digit", timeZone: "Europe/Bucharest" });
 const ACK_TEXT = "Confirm că eroarea îmi aparține și refac lucrarea.";
 const RECEIPT_TEXT = "Am primit produsul pentru verificare.";
+const RESTORE_RECEIPT_TEXT = "Am primit produsul în mână și continui lucrul.";
 const RETRY_CODES = ["NETWORK_UNAVAILABLE", "REQUEST_TIMEOUT", "SERVICE_UNAVAILABLE", "SERVER_ERROR"];
 
 /**
@@ -33,6 +34,8 @@ export function ExceptionScreen({ exceptionId, service, navigate, onSessionExpir
   const [reasonKey, setReasonKey] = useState("");
   const [receivers, setReceivers] = useState<{ id: string; displayName: string }[] | null>(null);
   const [receiverId, setReceiverId] = useState("");
+  const [recipients, setRecipients] = useState<{ id: string; displayName: string }[] | null>(null);
+  const [recipientId, setRecipientId] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [actionError, setActionError] = useState<StaffServiceError | null>(null);
   const keyRef = useRef<string | null>(null);
@@ -68,12 +71,15 @@ export function ExceptionScreen({ exceptionId, service, navigate, onSessionExpir
       setPosition(null);
       setReceivers(null);
       setReceiverId("");
+      setRecipients(null);
+      setRecipientId("");
     } catch (caught) {
       const failure = toServiceError(caught);
       if (failure.code === "SESSION_EXPIRED" || failure.code === "NO_SESSION") onSessionExpired();
       // A transient failure keeps the key so a retry replays the same intent; anything else starts over.
       if (!RETRY_CODES.includes(failure.code)) keyRef.current = null;
       if (failure.code === "RESPONSIBLE_UNAVAILABLE" && fault) service.receivers(fault.id).then(setReceivers).catch(() => setReceivers([]));
+      if (failure.code === "RESTORE_RECIPIENT_UNAVAILABLE" && fault?.actions.canRestore) service.restoreRecipients(fault.id).then(setRecipients).catch(() => setRecipients([]));
       setActionError(failure);
     } finally { setSubmitting(false); }
   }
@@ -96,10 +102,11 @@ export function ExceptionScreen({ exceptionId, service, navigate, onSessionExpir
       {fault.repeatedError && <p className="order-notice order-notice-warning" role="note">Eroare repetată: comanda a mai fost refăcută.</p>}
       {fault.status === "approved" && (fault.role === "responsible" || fault.role === "receiver") && <p className="order-action-done" role="status">✓ Aprobarea a fost acordată. Lucrarea poate fi refăcută.</p>}
       {tailoring && fault.status === "return_rejected" && <p className="order-notice order-notice-warning" role="note">Managerul a respins returnarea la tăiere. Comanda rămâne blocată în grija șefului de croitorie până când produsul revine și este readus în producție sau se cere o nouă decizie.</p>}
+      {fault.status === "awaiting_restore_receipt" && !actions.canConfirmRestore && <p className="order-notice" role="status" data-testid="restore-pending">Produsul este predat înapoi către {fault.restoreRecipient?.displayName ?? "angajatul de croitorie"}. Comanda rămâne blocată până când acesta scanează eticheta și confirmă primirea.</p>}
 
       <section className="detail-section">
         <p className="eyebrow">{tailoring ? "Produse afectate" : "Produse cu eroare"}</p>
-        <h2>{fault.lineCount === 1 ? "1 produs" : `${fault.lineCount} produse`} · {formatDecimalMeters(fault.faultMeters)}</h2>
+        <h2>{fault.lineCount === 1 ? "1 produs" : `${fault.lineCount} produse`} · {formatFaultMeters(fault)}</h2>
         <ul className="fault-lines">{fault.lines?.map((line) => <li key={line.itemId}><span><strong>{line.name}</strong><small>{[line.code, line.color, line.variant].filter(Boolean).join(" · ")}</small></span><b>{formatDecimalMeters(line.meters)}</b></li>)}</ul>
         <dl className="fault-facts">
           <div><dt>{tailoring ? "Problema raportată" : "Motiv"}</dt><dd>{fault.reason.label}</dd></div>
@@ -113,6 +120,7 @@ export function ExceptionScreen({ exceptionId, service, navigate, onSessionExpir
           {fault.cuttingHandoff && <div><dt>Predare de la tăiere</dt><dd><time dateTime={fault.cuttingHandoff.at}>{time.format(new Date(fault.cuttingHandoff.at))}</time></dd></div>}
           {fault.receiver && <div><dt>Trimis la tăiere către</dt><dd>{fault.receiver.displayName}</dd></div>}
           {tailoring && fault.physicalCustodian && <div><dt>Produsul se află la</dt><dd>{fault.physicalCustodian.displayName}</dd></div>}
+          {fault.restoreRecipient && <div><dt>{fault.restoreReceivedAt ? "Primit înapoi de" : "Predat înapoi către"}</dt><dd>{fault.restoreRecipient.displayName}</dd></div>}
           {fault.responsibilityPosition && <div><dt>Responsabilitate</dt><dd>{responsibilityLabels[fault.responsibilityPosition]}</dd></div>}
           {fault.attribution && <div><dt>Decizia managerului</dt><dd>{fault.attribution === "cutter" ? "Eroare de tăiere confirmată" : "Fără vină atribuită tăietorului"}</dd></div>}
           {fault.supervisorComment && <div><dt>Comentariul șefului de croitorie</dt><dd>{fault.supervisorComment}</dd></div>}
@@ -178,20 +186,33 @@ export function ExceptionScreen({ exceptionId, service, navigate, onSessionExpir
       </section>}
 
       {actions.canRestore && <section className="detail-section fault-action" aria-labelledby="restore-title" data-testid="supervisor-restore">
-        <h2 id="restore-title">Readu în producție la croitorie</h2>
-        <p>Folosește această acțiune când produsul este din nou la tine. Comanda revine în etapa {fault.detectedStage.label ?? fault.detectedStage.id}, la angajatul care o lucra, dacă mai poate lucra acolo.</p>
+        <h2 id="restore-title">{fault.status === "awaiting_restore_receipt" ? "Predă produsul altui angajat" : "Predă înapoi la croitorie"}</h2>
+        <p>Scanează eticheta cu produsul în mână. Comanda rămâne blocată până când angajatul care o primește scanează eticheta și confirmă primirea. Abia atunci revine în etapa {fault.detectedStage.label ?? fault.detectedStage.id}, la acel angajat. Nu este nevoie de aprobarea managerului.</p>
+        {recipients && <label className="field"><span>Angajatul care primește produsul</span><select value={recipientId} onChange={(event) => edit(setRecipientId)(event.target.value)}>
+          <option value="">Alege angajatul</option>{recipients.map((item) => <option key={item.id} value={item.id}>{item.displayName}</option>)}</select></label>}
+        {recipients && recipients.length === 0 && <small className="server-note">Niciun angajat nu poate primi acum comanda în această etapă. Comanda rămâne blocată.</small>}
         <label className="field"><span>Motiv (obligatoriu)</span><textarea maxLength={1000} rows={2} value={comment} onChange={(event) => edit(setComment)(event.target.value)} /></label>
         <p className="eyebrow">Scanează eticheta produsului</p>
-        <QrCapture disabled={submitting || !commentReady} onToken={(token) => void run((key) => service.restore(fault.id, { expectedVersion: fault.version, qrToken: token, comment: comment.trim(), idempotencyKey: key }))} />
+        <QrCapture disabled={submitting || !commentReady || (recipients !== null && !recipientId)} onToken={(token) => void run((key) => service.restore(fault.id, { expectedVersion: fault.version, qrToken: token, comment: comment.trim(), recipientEmployeeId: recipientId || null, idempotencyKey: key }))} />
       </section>}
 
-      {actions.canAddNote && !actions.canReview && !actions.canRestore && !actions.canAcknowledge && <section className="detail-section fault-action" aria-labelledby="note-title">
+      {actions.canConfirmRestore && <section className="detail-section fault-action" aria-labelledby="restore-receipt-title" data-testid="restore-receipt">
+        <h2 id="restore-receipt-title">Primește comanda înapoi</h2>
+        <p>Ia produsul de la {fault.physicalCustodian?.displayName ?? "șeful de croitorie"}, scanează eticheta și confirmă. Comanda revine la tine în etapa {fault.detectedStage.label ?? fault.detectedStage.id} și poți continua lucrul.</p>
+        <label className="check-field"><input type="checkbox" checked={confirmed} onChange={(event) => edit(setConfirmed)(event.target.checked)} /> <span>{RESTORE_RECEIPT_TEXT}</span></label>
+        <label className="field"><span>Comentariu (opțional)</span><textarea maxLength={1000} rows={2} value={comment} onChange={(event) => edit(setComment)(event.target.value)} /></label>
+        <p className="eyebrow">Scanează eticheta produsului primit</p>
+        <QrCapture disabled={!confirmed || submitting} onToken={(token) => { if (confirmed) void run((key) => service.receiveRestore(fault.id, { expectedVersion: fault.version, qrToken: token, comment: comment.trim() || null, idempotencyKey: key })); }} />
+        {!confirmed && <small className="server-note">Bifează primirea înainte de scanare.</small>}
+      </section>}
+
+      {actions.canAddNote && !actions.canReview && !actions.canRestore && !actions.canAcknowledge && !actions.canConfirmRestore && <section className="detail-section fault-action" aria-labelledby="note-title">
         <h2 id="note-title">Adaugă informații</h2>
         <label className="field"><span>Informație</span><textarea maxLength={1000} rows={2} value={comment} onChange={(event) => edit(setComment)(event.target.value)} /></label>
         <button className="button button-secondary" type="button" disabled={submitting || !commentReady} onClick={() => void run((key) => service.addNote(fault.id, { expectedVersion: fault.version, comment: comment.trim(), idempotencyKey: key }))}>Adaugă</button>
       </section>}
 
-      {actionError && <ErrorState error={actionError} compact onAction={() => { setActionError(null); if (actionError.code !== "RESPONSIBLE_UNAVAILABLE") setReload((value) => value + 1); }} />}
+      {actionError && <ErrorState error={actionError} compact onAction={() => { setActionError(null); if (actionError.code !== "RESPONSIBLE_UNAVAILABLE" && actionError.code !== "RESTORE_RECIPIENT_UNAVAILABLE") setReload((value) => value + 1); }} />}
       {submitting && <p className="server-note" role="status">Așteptăm confirmarea serverului.</p>}
 
       {fault.decisions && fault.decisions.length > 0 && <section className="detail-section"><p className="eyebrow">Decizii manager</p>

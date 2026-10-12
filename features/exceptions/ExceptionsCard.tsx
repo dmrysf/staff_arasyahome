@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { FaultException } from "../../domain/models";
 import type { ExceptionService } from "../../services/contracts";
 import { useLive } from "../../app/liveContext";
-import { faultStatusLabel, formatDecimalMeters, needsMyAction } from "../../domain/faults";
+import { faultStatusLabel, formatFaultMeters, needsMyAction } from "../../domain/faults";
 
 /** Home card: my open and recent cutting fault requests, refreshed live. */
 export function ExceptionsCard({ service, navigate }: { service: ExceptionService; navigate: (path: string) => void }) {
@@ -21,7 +21,7 @@ export function ExceptionsCard({ service, navigate }: { service: ExceptionServic
       <ul>
         {items.map((fault) => <li key={fault.id}>
           <button type="button" className={needsMyAction(fault) ? "exception-row needs-action" : "exception-row"} onClick={() => navigate(`/exceptions/${encodeURIComponent(fault.id)}`)}>
-            <span><strong>Comanda #{fault.order.orderNumber}</strong><small>{fault.reason.label} · {formatDecimalMeters(fault.faultMeters)}</small></span>
+            <span><strong>Comanda #{fault.order.orderNumber}</strong><small>{fault.reason.label} · {formatFaultMeters(fault)}</small></span>
             <span className={`exception-status status-${fault.status}`}>{faultStatusLabel(fault)}</span>
           </button>
         </li>)}

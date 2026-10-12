@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { ProductionWorkflow, QualityCapabilities, StaffOrder, StaffServiceError } from "../../domain/models";
 import type { ExceptionService, OrderService } from "../../services/contracts";
 import { useLive } from "../../app/liveContext";
-import { arrivalLabel, canReportDefect, faultStatusLabel, formatDecimalMeters, isSupervised } from "../../domain/faults";
+import { arrivalLabel, canReportDefect, faultStatusLabel, formatFaultMeters, isSupervised } from "../../domain/faults";
 import { ReturnToCuttingPanel, canReturnToCutting } from "../exceptions/ReturnToCuttingPanel";
 import { SourceBadge } from "../../components/SourceBadge";
 import { StageLabel } from "../../components/StageLabel";
@@ -101,7 +101,7 @@ function QualityNotices({ order, navigate }: { order: StaffOrder; navigate: (pat
     {arrival && <p className="order-notice order-notice-warning" role="note" data-testid="arrival">{arrival}</p>}
     {quality.repeatedErrors && <p className="order-notice order-notice-warning" role="note">Atenție: comanda are erori de producție repetate ({quality.reworkCycles} refaceri).</p>}
     {open && <button type="button" className="exception-banner" onClick={() => navigate(`/exceptions/${encodeURIComponent(open.id)}`)}>
-      <span><strong>{open.type === "tailoring_defect" ? "Problemă raportată" : "Returnare la tăiere"} · {formatDecimalMeters(open.faultMeters)}</strong><small>{faultStatusLabel(open)}</small></span><span aria-hidden="true">→</span>
+      <span><strong>{open.type === "tailoring_defect" ? "Problemă raportată" : "Returnare la tăiere"} · {formatFaultMeters(open)}</strong><small>{faultStatusLabel(open)}</small></span><span aria-hidden="true">→</span>
     </button>}
   </>;
 }

@@ -4,12 +4,19 @@ import type { ExceptionService } from "../../services/contracts";
 import { ErrorState } from "../../components/ErrorState";
 import { toServiceError } from "../../services/errors";
 import { createIdempotencyKey } from "../../services/idempotency";
-import { formatDecimalMeters, selectedMeters } from "../../domain/faults";
+import { formatFaultMeters, selectedMeters } from "../../domain/faults";
 import { formatMeters } from "../../domain/productFormat";
 
 export const DETECTION_STAGE_ID = "workshop-receiving";
 
 /** Shown only to the tailoring intake employee who accepted the order and may complete its stage. */
+/** Preview of the selected scope: measured meters, and lines without meters counted apart (never as 0 m). */
+function selectionScope(items: StaffOrder["products"], selected: ReadonlySet<string>) {
+  const unmeasured = items.filter((item) => selected.has(item.id) && !(item.meters != null && item.meters > 0)).length;
+  const picked = [...selected].length;
+  return { faultMeters: picked > 0 && unmeasured === picked ? null : selectedMeters(items, selected), unmeasuredLineCount: unmeasured };
+}
+
 export function canReturnToCutting(order: StaffOrder, permissions: readonly string[]): boolean {
   return order.productionStageId === DETECTION_STAGE_ID && order.employeeAllowedAction?.id === "complete_stage"
     && !order.productionQuality?.openException && permissions.includes("orders.report_fault");
@@ -76,7 +83,7 @@ export function ReturnToCuttingPanel({ order, service, onReported, onSessionExpi
           {metered.map((item) => <label key={item.id} className="check-field"><input type="checkbox" checked={selected.has(item.id)} onChange={() => toggle(item.id)} />
             <span><strong>{item.name}</strong><small>{[item.code, item.color].filter(Boolean).join(" · ")}</small></span><b>{item.meters != null && item.meters > 0 ? formatMeters(item.meters) : "fără metraj"}</b></label>)}
         </fieldset>
-        <p className="fault-total" role="status">{text.total}: <b>{formatDecimalMeters(selectedMeters(order.products, selected))}</b></p>
+        <p className="fault-total" role="status">{text.total}: <b>{formatFaultMeters(selectionScope(order.products, selected))}</b></p>
         <label className="field"><span>{text.reason}</span><select value={reasonKey} onChange={(event) => { setReasonKey(event.target.value); keyRef.current = null; }}>
           <option value="">Alege motivul</option>{reasons.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}</select></label>
         <label className="field"><span>{text.comment} {reason?.requiresComment ? "(obligatoriu)" : "(opțional)"}</span><textarea maxLength={1000} rows={2} value={comment} onChange={(event) => { setComment(event.target.value); keyRef.current = null; }} /></label>
