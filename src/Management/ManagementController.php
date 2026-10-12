@@ -94,7 +94,7 @@ final readonly class ManagementController
         if ($method === 'POST' && preg_match('#^/production-exceptions/([0-9a-f-]{36})/(decision|cancel)$#D', $path, $m) === 1) {
             $faults = $this->service($this->faults);
             return Response::json($m[2] === 'decision'
-                ? $this->withActions($actor, $faults->decide($actor, $m[1], $this->body($request, ['expectedVersion', 'decision', 'comment'], ['expectedVersion', 'decision']), $key, $id))
+                ? $this->withActions($actor, $faults->decide($actor, $m[1], $this->body($request, ['expectedVersion', 'decision', 'comment', 'attribution'], ['expectedVersion', 'decision']), $key, $id))
                 : $this->withActions($actor, $faults->cancel($actor, $m[1], $this->body($request, ['expectedVersion', 'reason'], ['expectedVersion', 'reason']), $key, $id)));
         }
         if ($path === '/organization/ceo' && $method === 'PUT') {
@@ -225,12 +225,16 @@ final readonly class ManagementController
     /** @param array<string, mixed> $detail @return array<string, mixed> */
     private function withActions(EmployeeIdentity $actor, array $detail): array
     {
-        $row = $this->service($this->exceptions)->find((string) $detail['id']);
-        $involved = $row !== null && in_array($actor->employeeUuid, [$row['detector_employee_uuid'], $row['responsible_employee_uuid']], true);
+        $row = $this->service($this->exceptions)->raw((string) $detail['id']);
+        $involved = $row !== null && in_array($actor->employeeUuid, \Arasya\Operations\Quality\CuttingFaultService::involved($row), true);
         $detail['actions'] = [
             'canDecide' => $detail['status'] === 'awaiting_approval' && !$involved && $this->approvers?->via($actor) !== null,
             'canCancel' => $actor->isRoot && in_array($detail['status'], ExceptionQueries::OPEN_STATUSES, true),
             'involved' => $involved,
+            // Supervised cases: the manager states whether cutting responsibility is established; a material
+            // defect can only be returned without attributing it to the cutting employee.
+            'requiresAttribution' => $detail['type'] === 'tailoring_defect',
+            'canAttributeToCutter' => $detail['type'] === 'tailoring_defect' && ($detail['confirmedReason']['cuttingAttributable'] ?? false) === true,
         ];
         return $detail;
     }
