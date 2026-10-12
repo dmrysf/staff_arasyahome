@@ -40,14 +40,20 @@ export type TrendyolPackageSummary = {
 
 export type TrendyolIgnoredPackage = { packageId: string; orderNumber: string; reason: "historical" | "status_not_eligible" | "order_date_missing"; marketplaceStatus: string; orderDate: string | null; firstSeenAt: string | null };
 
-export type TrendyolPreparedLine = { kind: TrendyolLineKind; widthCm: string | null; heightCm: string | null; meters: string | null; notes: string | null; preparedBy: string | null; preparedAt: string | null };
+export type TrendyolPreparedLine = { kind: TrendyolLineKind; widthCm: string | null; heightCm: string | null; meters: string | null; notes: string | null; productionTitle: string | null; preparedBy: string | null; preparedAt: string | null };
 
 export type TrendyolLine = {
   lineId: string;
   lineNumber: number;
+  /** The original Trendyol title, kept for traceability; the factory prints the Romanian production title. */
   productName: string;
   stockCode: string | null;
+  /** The seller's product code (never Trendyol's "merchantSku" placeholder). */
+  productCode: string | null;
   barcode: string | null;
+  /** The Romanian title approved earlier for this product code, if any. */
+  suggestedTitle: string | null;
+  suggestedTitleApproval: { by: string | null; at: string | null } | null;
   productSize: string | null;
   productColor: string | null;
   quantity: number;
@@ -79,7 +85,7 @@ export const activityActionLabels: Record<TrendyolActivity["recent"][number]["ac
   reopened: "Readusă în lucru",
 };
 
-export type TrendyolLineInput = { expectedVersion: number; kind: TrendyolLineKind; widthCm?: string; heightCm?: string; meters?: string; notes?: string };
+export type TrendyolLineInput = { expectedVersion: number; kind: TrendyolLineKind; productionTitle: string; widthCm?: string; heightCm?: string; meters?: string; notes?: string };
 
 export interface TrendyolApi {
   overview(signal?: AbortSignal): Promise<TrendyolOverview>;

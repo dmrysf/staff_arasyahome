@@ -2,10 +2,12 @@ import type { TaskStep } from "../../components/ui/TaskSteps";
 import type { TrendyolLine, TrendyolLineKind, TrendyolPackageDetail } from "../../domain/trendyol";
 
 /** The employee's unsaved values of one line (strings exactly as typed). */
-export type LineDraft = { kind: TrendyolLineKind | ""; widthCm: string; heightCm: string; meters: string; notes: string };
+export type LineDraft = { kind: TrendyolLineKind | ""; productionTitle: string; widthCm: string; heightCm: string; meters: string; notes: string };
 
+/** The Romanian production title starts from the saved one, else from the title approved for the product code. */
 export const draftOf = (line: TrendyolLine): LineDraft => ({
   kind: line.prepared?.kind ?? "",
+  productionTitle: line.prepared?.productionTitle ?? line.suggestedTitle ?? "",
   widthCm: line.prepared?.widthCm ?? "",
   heightCm: line.prepared?.heightCm ?? "",
   meters: line.prepared?.meters ?? "",
@@ -19,6 +21,8 @@ export const draftOf = (line: TrendyolLine): LineDraft => ({
 export function lineStatus(line: TrendyolLine, draft: LineDraft): "confirmed" | "unsaved" | "todo" {
   const saved = draftOf(line);
   const same = (Object.keys(saved) as (keyof LineDraft)[]).every((key) => saved[key].trim() === draft[key].trim());
+  // A line saved before the Romanian title existed still needs it before the package can be approved.
+  if (line.prepared && !line.prepared.productionTitle) return same ? "todo" : "unsaved";
   if (line.prepared && same) return "confirmed";
   if (!line.prepared && same) return "todo";
   return "unsaved";

@@ -86,6 +86,9 @@ final readonly class TrendyolIntakeStore
         $statusChanged = $package->status !== (string) $current['marketplace_status'];
         $linesChanged = !hash_equals((string) $current['lines_hash'], $package->linesHash());
         $deliveryChanged = self::canonical($package->delivery) !== self::canonical(self::decode($current['delivery_context']));
+        // The resolved seller code is intake data outside the lines hash: it is filled for every line that lacks it,
+        // also after release (the released production order keeps its frozen content).
+        $this->fillProductCodes($package);
         if ($package->lastModifiedMillis < (int) $current['marketplace_modified_ms'] || !$statusChanged && !$linesChanged && !$deliveryChanged) {
             $this->pdo->prepare('UPDATE trendyol_packages SET last_seen_at = ? WHERE package_id = ?')->execute([$now, $id]);
             return 'unchanged';
@@ -155,13 +158,23 @@ final readonly class TrendyolIntakeStore
         $this->insertLines($package, $previous);
     }
 
+    private function fillProductCodes(TrendyolPackage $package): void
+    {
+        $statement = $this->pdo->prepare('UPDATE trendyol_package_lines SET product_code = ? WHERE package_id = ? AND line_id = ? AND product_code IS NULL');
+        foreach ($package->lines as $line) {
+            if ($line['productCode'] !== null) {
+                $statement->execute([$line['productCode'], $package->packageId, $line['lineId']]);
+            }
+        }
+    }
+
     /** @param array<int, array<string, mixed>> $previous earlier rows by line ID */
     private function insertLines(TrendyolPackage $package, array $previous): void
     {
         $insert = $this->pdo->prepare(
-            'INSERT INTO trendyol_package_lines (package_id, line_id, line_number, product_name, stock_code, barcode, product_size, product_color, quantity, line_status,
-                prepared_kind, prepared_width_cm, prepared_height_cm, prepared_meters, prepared_notes, prepared_by_employee_uuid, prepared_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            'INSERT INTO trendyol_package_lines (package_id, line_id, line_number, product_name, stock_code, product_code, barcode, product_size, product_color, quantity, line_status,
+                prepared_kind, prepared_width_cm, prepared_height_cm, prepared_meters, prepared_notes, prepared_title, prepared_by_employee_uuid, prepared_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         );
         foreach ($package->lines as $line) {
             $old = $previous[$line['lineId']] ?? null;
@@ -170,9 +183,9 @@ final readonly class TrendyolIntakeStore
                 && $old['product_size'] === $line['productSize'] && $old['product_color'] === $line['productColor'] && (int) $old['quantity'] === $line['quantity'];
             $keep = static fn (string $column): mixed => $same ? $old[$column] : null;
             $insert->execute([
-                $package->packageId, $line['lineId'], $line['lineNumber'], $line['productName'], $line['stockCode'], $line['barcode'], $line['productSize'],
+                $package->packageId, $line['lineId'], $line['lineNumber'], $line['productName'], $line['stockCode'], $line['productCode'], $line['barcode'], $line['productSize'],
                 $line['productColor'], $line['quantity'], $line['lineStatus'],
-                $keep('prepared_kind'), $keep('prepared_width_cm'), $keep('prepared_height_cm'), $keep('prepared_meters'), $keep('prepared_notes'),
+                $keep('prepared_kind'), $keep('prepared_width_cm'), $keep('prepared_height_cm'), $keep('prepared_meters'), $keep('prepared_notes'), $keep('prepared_title'),
                 $keep('prepared_by_employee_uuid'), $keep('prepared_at'),
             ]);
         }

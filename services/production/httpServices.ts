@@ -1006,12 +1006,15 @@ function mapTrendyolLine(value: unknown): TrendyolLine {
     lineNumber: positiveInteger(raw.lineNumber),
     productName: stringValue(raw.productName),
     stockCode: nullableText(raw.stockCode),
+    productCode: nullableText(raw.productCode),
     barcode: nullableText(raw.barcode),
+    suggestedTitle: nullableText(raw.suggestedTitle),
+    suggestedTitleApproval: raw.suggestedTitleApproval == null ? null : { by: nullableText(objectValue(raw.suggestedTitleApproval).by), at: nullableTimestamp(objectValue(raw.suggestedTitleApproval).at) },
     productSize: nullableText(raw.productSize),
     productColor: nullableText(raw.productColor),
     quantity: positiveInteger(raw.quantity),
     sizeSuggestion: suggestion === null ? null : { width: stringValue(suggestion.width), height: stringValue(suggestion.height) },
-    prepared: prepared === null ? null : { kind: oneOf(prepared.kind, lineKinds), widthCm: nullableText(prepared.widthCm), heightCm: nullableText(prepared.heightCm), meters: nullableText(prepared.meters), notes: nullableText(prepared.notes), preparedBy: nullableText(prepared.preparedBy), preparedAt: nullableTimestamp(prepared.preparedAt) },
+    prepared: prepared === null ? null : { kind: oneOf(prepared.kind, lineKinds), widthCm: nullableText(prepared.widthCm), heightCm: nullableText(prepared.heightCm), meters: nullableText(prepared.meters), notes: nullableText(prepared.notes), productionTitle: nullableText(prepared.productionTitle), preparedBy: nullableText(prepared.preparedBy), preparedAt: nullableTimestamp(prepared.preparedAt) },
   };
 }
 export function mapTrendyolDetail(value: unknown): TrendyolPackageDetail {

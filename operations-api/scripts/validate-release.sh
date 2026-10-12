@@ -40,6 +40,7 @@ for file in \
   database/migrations/023_source_scoped_stage_authorization.sql \
   database/migrations/024_tailoring_quality_supervision.sql \
   database/migrations/025_source_payment_gate.sql \
+  database/migrations/026_trendyol_product_identity.sql \
   src/Quality/TailoringSupervisorPolicy.php \
   src/Production/PaymentGate.php \
   src/Trendyol/TrendyolWorkspace.php \

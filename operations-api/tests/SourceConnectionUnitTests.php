@@ -546,9 +546,9 @@ test('expected API errors and validation are unchanged by the PDO diagnostics', 
     expect(!array_key_exists('exception', $warning) && !array_key_exists('sqlstate', $warning) && !array_key_exists('driver_code', $warning));
 });
 
-test('migrations stay sequential through 025 and the canonical workflow keeps its 14 stages', function (): void {
+test('migrations stay sequential through 026 and the canonical workflow keeps its 14 stages', function (): void {
     $migrations = array_map('basename', glob(dirname(__DIR__) . '/database/migrations/*.sql') ?: []);
-    expect(count($migrations) === 25 && $migrations[23] === '024_tailoring_quality_supervision.sql' && $migrations[24] === '025_source_payment_gate.sql' && str_starts_with($migrations[0], '001_') && str_starts_with($migrations[16], '017_') && $migrations[17] === '018_production_authority.sql' && $migrations[18] === '019_production_qr_authority.sql' && $migrations[19] === '020_production_document_authority.sql' && $migrations[20] === '021_document_scopes.sql' && $migrations[21] === '022_trendyol_intake.sql' && $migrations[22] === '023_source_scoped_stage_authorization.sql');
+    expect(count($migrations) === 26 && $migrations[23] === '024_tailoring_quality_supervision.sql' && $migrations[24] === '025_source_payment_gate.sql' && $migrations[25] === '026_trendyol_product_identity.sql' && str_starts_with($migrations[0], '001_') && str_starts_with($migrations[16], '017_') && $migrations[17] === '018_production_authority.sql' && $migrations[18] === '019_production_qr_authority.sql' && $migrations[19] === '020_production_document_authority.sql' && $migrations[20] === '021_document_scopes.sql' && $migrations[21] === '022_trendyol_intake.sql' && $migrations[22] === '023_source_scoped_stage_authorization.sql');
     expect(count(CanonicalProductionWorkflowContract::STAGES) === 14);
     expect(array_keys(CanonicalProductionWorkflowContract::STAGES) === ['waiting', 'material-preparation', 'workshop-receiving', 'labeling', 'material-straightening', 'bottom-hem', 'side-hem', 'ironing', 'height', 'header-tape', 'sewing-finishing', 'quality-control', 'packing', 'delivery']);
     // 018 is additive: it never converts the authority of existing orders.
@@ -566,6 +566,9 @@ test('migrations stay sequential through 025 and the canonical workflow keeps it
     // 025 is additive: nullable payment gate columns and their CHECKs on operational_orders. No row is rewritten.
     $gate = preg_replace(['/^\s*--.*$/m'], '', (string) file_get_contents(dirname(__DIR__) . '/database/migrations/025_source_payment_gate.sql'));
     expect(preg_match('/\b(UPDATE|DELETE|DROP|TRUNCATE|RENAME|INSERT)\b/i', $gate) === 0 && substr_count($gate, 'ALTER TABLE operational_orders') === 1 && substr_count($gate, 'NOT NULL') === 0, '025 must only add nullable columns.');
+    // 026 is additive: two nullable line columns and two new tables. No row is rewritten.
+    $identity = preg_replace(['/^\s*--.*$/m', '/ON (UPDATE|DELETE) RESTRICT/'], '', (string) file_get_contents(dirname(__DIR__) . '/database/migrations/026_trendyol_product_identity.sql'));
+    expect(preg_match('/\b(UPDATE|DELETE|DROP|TRUNCATE|RENAME|INSERT)\b/i', $identity) === 0 && substr_count($identity, 'CREATE TABLE IF NOT EXISTS') === 2, '026 must only add columns and tables.');
 });
 
 test('payment gate mode is per source, defaults to off and an unreadable value falls back to off', function (): void {

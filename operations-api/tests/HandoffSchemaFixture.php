@@ -1,9 +1,20 @@
 <?php
 declare(strict_types=1);
+/** Restore a pre-026 disposable test fixture (no Trendyol product identity). This is NOT a deployment/rollback mechanism. */
+function restorePreTrendyolProductIdentityTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='026_trendyol_product_identity.sql'")->fetchColumn()) return;
+    foreach(['trendyol_product_title_events','trendyol_product_titles'] as $table) $pdo->exec("DROP TABLE IF EXISTS {$table}");
+    $pdo->exec('ALTER TABLE trendyol_package_lines DROP COLUMN product_code, DROP COLUMN prepared_title');
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='026_trendyol_product_identity.sql'");
+}
+
 /** Restore a pre-025 disposable test fixture (no source payment gate). This is NOT a deployment/rollback mechanism. */
 function restorePrePaymentGateTestSchema(PDO $pdo): void
 {
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    restorePreTrendyolProductIdentityTestSchema($pdo);
     if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='025_source_payment_gate.sql'")->fetchColumn()) return;
     foreach(['chk_operational_orders_payment_method','chk_operational_orders_advance_status','chk_operational_orders_payment_complete','chk_operational_orders_payment_online','chk_operational_orders_advance_confirmed'] as $check) $pdo->exec("ALTER TABLE operational_orders DROP CONSTRAINT {$check}");
     $pdo->exec('ALTER TABLE operational_orders DROP COLUMN payment_method, DROP COLUMN advance_status, DROP COLUMN advance_revision, DROP COLUMN advance_confirmed_at, DROP COLUMN payment_synced_at, DROP COLUMN payment_reversed_at');
