@@ -14,7 +14,7 @@ final class EmployeeMetrics
             $rows[$employee['employee_uuid']]=['id'=>$employee['employee_uuid'],'name'=>$employee['display_name'],'positionTitle'=>$employee['position_title'],'status'=>$employee['status'],
                 'department'=>['id'=>(int)$employee['department_id'],'key'=>$employee['department_key'],'name'=>$employee['department_name']],
                 'completedOrders'=>0,'completedLines'=>0,'completedMeterUnits'=>0,'missingMeterSamples'=>0,'missingLineSamples'=>0,
-                'faultOrders'=>[],'faultLines'=>0,'faultMeterUnits'=>0,'detectedOrders'=>[],'detectedLines'=>0,'detectedMeterUnits'=>0,'reworkCycles'=>0,'repeatedCycles'=>0,
+                'faultOrders'=>[],'faultLines'=>0,'faultMeterUnits'=>0,'faultUnmeasuredLines'=>0,'detectedOrders'=>[],'detectedLines'=>0,'detectedMeterUnits'=>0,'detectedUnmeasuredLines'=>0,'reworkCycles'=>0,'repeatedCycles'=>0,
                 'repeatedOrders'=>[],'repeatedMeterUnits'=>0,'onlineSubmissions'=>0,
                 'initiatedTransfers'=>0,'outgoingTransfers'=>0,'incomingTransfers'=>0,'activeHandling'=>['wallSeconds'=>0,'businessSeconds'=>0],
                 'cuttingActiveHandling'=>['wallSeconds'=>0,'businessSeconds'=>0],'stageHandling'=>[],
@@ -61,6 +61,8 @@ final class EmployeeMetrics
                 $employee=$event['employee_uuid']; if (!isset($rows[$employee]) || !$inside($event['occurred_at'])) continue;
                 $r=&$rows[$employee]; $r['relatedOrderIds'][$id]=true; $fault=$event['event_type']==='cutting_fault'; $prefix=$fault?'fault':'detected';
                 $r[$prefix.'Orders'][$id]=true; $r[$prefix.'Lines']+=(int)$event['line_count']; $r[$prefix.'MeterUnits']+=Metrics::units($event['meters']);
+                // Lines without source meters are counted, never as measured zero meters (024).
+                $r[$prefix.'UnmeasuredLines']+=(int)($event['unmeasured_line_count']??0);
                 if ($fault) { $r['reworkCycles']++; $r['repeatedCycles']+=(int)$event['is_repeat']; }
                 if ($fault && (int)$event['is_repeat']===1) { $r['repeatedOrders'][$id]=true; $r['repeatedMeterUnits']+=Metrics::units($event['meters']); }
                 $date=$day($event['occurred_at']); $r['daily'][$date][$prefix.'Cycles']=($r['daily'][$date][$prefix.'Cycles']??0)+1;
@@ -95,6 +97,8 @@ final class EmployeeMetrics
             $r['faultOrderRate']=['numerator'=>$r['faultOrders'],'denominator'=>$r['completedOrders'],'percent'=>$r['completedOrders']===0?null:round($r['faultOrders']/$r['completedOrders']*100,2)];
             $r['faultLineRate']=['numerator'=>$r['faultLines'],'denominator'=>$r['missingLineSamples']?null:$r['completedLines'],'percent'=>$r['missingLineSamples']||$r['completedLines']===0?null:round($r['faultLines']/$r['completedLines']*100,2)];
             if ($r['missingMeterSamples']) { $r['averageMetersPerOrder']=null; $r['faultMeterRate']['percent']=null; }
+            // A fault with unknown meterage would make the measured fault-meter rate look lower than it is.
+            if ($r['faultUnmeasuredLines']) $r['faultMeterRate']['percent']=null;
             foreach ($r['completedHandling'] as $clock=>$values) $r['completedHandling'][$clock]=Metrics::distribution($values)+['totalSeconds'=>array_sum($values)];
             $weekly=[]; ksort($r['daily']);
             foreach ($r['daily'] as $date=>&$trend) {

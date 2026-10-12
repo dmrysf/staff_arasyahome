@@ -68,6 +68,7 @@ final readonly class ManagementController
                 $path === '/me' => $this->management->me($actor) + ['capabilities' => $this->capabilities($actor)],
                 $path === '/production-exceptions' => $this->exceptionList($actor, $request->query('view') ?? 'pending'),
                 preg_match('#^/production-exceptions/([0-9a-f-]{36})$#D', $path, $m) === 1 => $this->exceptionView($actor, $m[1]),
+                preg_match('#^/production-exceptions/([0-9a-f-]{36})/restore-recipients$#D', $path, $m) === 1 => ['items' => $this->service($this->faults)->restoreRecipients($actor, $m[1], true)],
                 $path === '/order-lookup' => $this->service($this->lookup)->search($actor, $request->query('number') ?? ''),
                 preg_match('#^/order-lookup/([^/]{1,600})$#D', $path, $m) === 1 => $this->service($this->lookup)->detail($actor, rawurldecode($m[1])),
                 $path === '/organization' => $this->service($this->organization)->view($actor),
@@ -95,7 +96,7 @@ final readonly class ManagementController
             $faults = $this->service($this->faults);
             return Response::json($m[2] === 'decision'
                 ? $this->withActions($actor, $faults->decide($actor, $m[1], $this->body($request, ['expectedVersion', 'decision', 'comment', 'attribution'], ['expectedVersion', 'decision']), $key, $id))
-                : $this->withActions($actor, $faults->cancel($actor, $m[1], $this->body($request, ['expectedVersion', 'reason'], ['expectedVersion', 'reason']), $key, $id)));
+                : $this->withActions($actor, $faults->cancel($actor, $m[1], $this->body($request, ['expectedVersion', 'reason', 'recipientEmployeeId'], ['expectedVersion', 'reason']), $key, $id)));
         }
         if ($path === '/organization/ceo' && $method === 'PUT') {
             return Response::json($this->service($this->organization)->designateCeo($actor, $this->body($request, ['employeeId'], ['employeeId'])['employeeId'], $key, $id));
@@ -230,6 +231,8 @@ final readonly class ManagementController
         $detail['actions'] = [
             'canDecide' => $detail['status'] === 'awaiting_approval' && !$involved && $this->approvers?->via($actor) !== null,
             'canCancel' => $actor->isRoot && in_array($detail['status'], ExceptionQueries::OPEN_STATUSES, true),
+            // After custody a cancellation never releases the order: root names who receives the product back.
+            'cancelNeedsRecipient' => $row !== null && \Arasya\Operations\Quality\CuttingFaultService::custodyMoved($row),
             'involved' => $involved,
             // Supervised cases: the manager states whether cutting responsibility is established; a material
             // defect can only be returned without attributing it to the cutting employee.

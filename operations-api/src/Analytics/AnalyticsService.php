@@ -107,9 +107,9 @@ final readonly class AnalyticsService
         $groups=[];
         foreach ($employees as $employee) {
             $key=$employee['department']['id']; $g=&$groups[$key];
-            $g??=['department'=>$employee['department'],'employees'=>0,'completedOrders'=>0,'completedLines'=>0,'meterUnits'=>0,'faultLines'=>0,'faultMeterUnits'=>0,'detectedLines'=>0,'detectedMeterUnits'=>0,'activeHandling'=>['wallSeconds'=>0,'businessSeconds'=>0],'stageCompletions'=>[],'reworkCycles'=>0,'repeatedCycles'=>0,'onlineSubmissions'=>0,'managerWaitingForRelatedOrders'=>['wallSeconds'=>0,'businessSeconds'=>0],'orderIds'=>[]];
+            $g??=['department'=>$employee['department'],'employees'=>0,'completedOrders'=>0,'completedLines'=>0,'meterUnits'=>0,'faultLines'=>0,'faultMeterUnits'=>0,'faultUnmeasuredLines'=>0,'detectedLines'=>0,'detectedMeterUnits'=>0,'detectedUnmeasuredLines'=>0,'activeHandling'=>['wallSeconds'=>0,'businessSeconds'=>0],'stageCompletions'=>[],'reworkCycles'=>0,'repeatedCycles'=>0,'onlineSubmissions'=>0,'managerWaitingForRelatedOrders'=>['wallSeconds'=>0,'businessSeconds'=>0],'orderIds'=>[]];
             $g['employees']++;
-            foreach (['completedOrders','completedLines','faultLines','detectedLines','reworkCycles','repeatedCycles','onlineSubmissions'] as $field) $g[$field]+=$employee[$field];
+            foreach (['completedOrders','completedLines','faultLines','faultUnmeasuredLines','detectedLines','detectedUnmeasuredLines','reworkCycles','repeatedCycles','onlineSubmissions'] as $field) $g[$field]+=$employee[$field];
             foreach ($employee['relatedOrderIds'] as $orderId) $g['orderIds'][$orderId]=true;
             $g['meterUnits']+=Metrics::units($employee['completedMeters']); $g['faultMeterUnits']+=Metrics::units($employee['faultMeters']); $g['detectedMeterUnits']+=Metrics::units($employee['detectedMeters']);
             foreach ($employee['activeHandling'] as $clock=>$seconds) $g['activeHandling'][$clock]+=$seconds;

@@ -95,6 +95,17 @@ $check($metrics['A']['faultMeters']==='17.400' && $metrics['C']['detectedMeters'
 $check($metrics['A']['reworkCycles']===2 && $metrics['A']['repeatedCycles']===1 && $metrics['A']['repeatedOrders']===1 && $metrics['A']['repeatedMeters']==='8.400','distinct orders and repeated cycles/meters are not conflated');
 $check($metrics['A']['daily']['2026-10-05']['faultMeters']==='17.400' && $metrics['C']['weekly']['2026-W41']['detectedMeters']==='8.400','daily and weekly exact quality meters stay separate');
 $check($metrics['A']['faultMeterRate']['percent']===null && $metrics['C']['onlineSubmissions']===1,'zero completion denominator stays unavailable, online counts only canonical submissions');
+// Unknown meterage (024): a fault line without source meters is counted, never as a measured zero, and the
+// measured fault-meter rate is not shown, because the unknown meters would make it look lower than it is.
+$measured=$data; $measured['quality']['O'][]=['employee_uuid'=>'B','occurred_at'=>'2026-10-05 04:30:00','event_type'=>'cutting_fault','line_count'=>1,'meters'=>'2.900','unmeasured_line_count'=>0,'is_repeat'=>0];
+$rate=EmployeeMetrics::calculate($measured,$range,$time,'2026-10-06 06:00:00')['B'];
+$check($rate['faultMeterRate']['percent']==='10.00' && $rate['faultUnmeasuredLines']===0,'a fully measured fault keeps its measured rate: '.json_encode($rate['faultMeterRate']));
+$unknown=$data; $unknown['quality']['O'][]=['employee_uuid'=>'B','occurred_at'=>'2026-10-05 04:30:00','event_type'=>'cutting_fault','line_count'=>2,'meters'=>'2.900','unmeasured_line_count'=>1,'is_repeat'=>0];
+$unknown['quality']['O'][]=['employee_uuid'=>'C','occurred_at'=>'2026-10-05 04:30:00','event_type'=>'fault_detected','line_count'=>1,'meters'=>'0.000','unmeasured_line_count'=>1,'is_repeat'=>0];
+$partial=EmployeeMetrics::calculate($unknown,$range,$time,'2026-10-06 06:00:00');
+$check($partial['B']['faultMeters']==='2.900' && $partial['B']['faultLines']===2 && $partial['B']['faultUnmeasuredLines']===1 && $partial['B']['faultMeterRate']['percent']===null,'unknown meters: known meters and line counts stay exact, the unmeasured line is reported, the measured rate is not understated');
+$check($partial['C']['detectedLines']===2 && $partial['C']['detectedUnmeasuredLines']===1 && $partial['C']['detectedMeters']==='8.400','a detection with unknown meters counts as a line, never as 0 measured meters');
+$check($partial['B']['faultLineRate']['denominator']===3 && $partial['B']['faultLineRate']['numerator']===2,'line-based KPI denominators are unaffected by unknown meters');
 $request=static fn(string $id,string $opened,?string $decided,string $status,?string $manager,?string $previous=null):array=>['decision_uuid'=>$id,'exception_uuid'=>'E','attempt_number'=>$previous===null?1:2,'previous_decision_uuid'=>$previous,'opened_at'=>$opened,'decided_at'=>$decided,'decided_by_employee_uuid'=>$manager,'status'=>$status,'decided_via'=>'backup_approver'];
 $managerData=['employees'=>$employees,'decisions'=>['O'=>[$request('old','2026-10-04 12:00:00','2026-10-04 12:30:00','rejected','A'),$request('review','2026-10-05 02:00:00','2026-10-05 02:30:00','approved','B','old'),$request('pending','2026-10-04 12:00:00',null,'pending',null)]],
  'transfers'=>[],'transferDecisionTypes'=>[],'captured'=>[['request_type'=>'exception','request_uuid'=>'review'],['request_type'=>'exception','request_uuid'=>'pending']],

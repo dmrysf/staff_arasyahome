@@ -7,7 +7,8 @@ declare(strict_types=1);
 // without any operations-manager decision; only the final workshop-receiving -> material-preparation return
 // needs one. Also covers physical custody versus production ownership, both rejection recoveries, separate
 // KPI attribution (detector, supervisor, responsible cutter, receiver, manager), substitutes for an
-// unavailable cutter, revoked authority, idempotent replays and concurrent commands.
+// unavailable cutter, revoked authority, idempotent replays and concurrent commands, the two-party handover back
+// to tailoring (restore + receipt), state-aware root recovery and unknown meterage.
 
 use Arasya\Operations\Database\Connection;
 use Arasya\Operations\Database\MigrationRunner;
@@ -83,6 +84,7 @@ $cutterA = $identity('cuttera', 'Test Cutter A', ['material-preparation']);
 $cutterB = $identity('cutterb', 'Test Cutter B', ['material-preparation']);
 $tailor = $identity('tailor', 'Test Tailor Seven', $tailoringStages);
 $tailor2 = $identity('tailor2', 'Test Tailor Two', $tailoringStages);
+$tailor3 = $identity('tailor3', 'Test Tailor Three', $tailoringStages);
 // The original supervisor identity and a replacement with the same display name: only an explicit
 // appointment of a UUID grants supervision, never the name.
 $iuliana = $identity('iuliana', "VASILOAIA IULIANA {$suffix}", $tailoringStages);
@@ -115,14 +117,15 @@ $claim = static function (array $who, array $o) use ($post, $ok, $state, $pdo, $
 $advance = static function (array $who, array $o) use ($post, $ok, $state, $key): void {
     $ok($post($who, $o['path'] . '/transition', ['expectedVersion' => (int) $state($o)['version']], $key('move')), "transition {$o['id']}");
 };
-// Cut by the given cutter, then carried through tailoring by the tailor up to the target stage (owned there).
-$bring = static function (array $o, array $cutter, string $target) use ($claim, $advance, $state, $tailor, $check): void {
+// Cut by the given cutter, then carried through tailoring by the tailor (or another one) up to the target stage (owned there).
+$bring = static function (array $o, array $cutter, string $target, ?array $by = null) use ($claim, $advance, $state, $tailor, $check): void {
+    $by ??= $tailor;
     $claim($cutter, $o);
     $advance($cutter, $o);
     while (true) {
-        $claim($tailor, $o);
+        $claim($by, $o);
         if ($state($o)['stage'] === $target) break;
-        $advance($tailor, $o);
+        $advance($by, $o);
     }
     $check($state($o)['stage'] === $target, "order at {$target}");
 };
@@ -133,7 +136,28 @@ $review = static fn (array $who, string $id, array $body, ?string $idem = null) 
 $sendReturn = static fn (array $who, string $id, array $body = [], ?string $idem = null) => $post($who, "/production-exceptions/{$id}/return", ['expectedVersion' => $exVersion($id)] + $body, $idem);
 $ack = static fn (array $who, string $id, string $qr, array $body = [], ?string $idem = null) => $post($who, "/production-exceptions/{$id}/acknowledge", ['expectedVersion' => $exVersion($id), 'confirmed' => true, 'qrToken' => $qr] + $body, $idem);
 $decide = static fn (array $who, string $id, array $body, ?string $idem = null) => $dash($who, 'POST', "/management/production-exceptions/{$id}/decision", ['expectedVersion' => $exVersion($id)] + $body, $idem);
-$restore = static fn (array $who, string $id, string $qr, string $comment, ?string $idem = null) => $post($who, "/production-exceptions/{$id}/restore", ['expectedVersion' => $exVersion($id), 'qrToken' => $qr, 'comment' => $comment], $idem);
+$restore = static fn (array $who, string $id, string $qr, string $comment, ?string $idem = null, ?string $recipient = null) => $post($who, "/production-exceptions/{$id}/restore", ['expectedVersion' => $exVersion($id), 'qrToken' => $qr, 'comment' => $comment] + ($recipient === null ? [] : ['recipientEmployeeId' => $recipient]), $idem);
+$receive = static fn (array $who, string $id, string $qr, ?string $idem = null) => $post($who, "/production-exceptions/{$id}/receive", ['expectedVersion' => $exVersion($id), 'confirmed' => true, 'qrToken' => $qr], $idem);
+$rootCancel = static fn (string $id, string $reason, ?string $recipient = null, ?string $idem = null) => $dash($root, 'POST', "/management/production-exceptions/{$id}/cancel", ['expectedVersion' => $exVersion($id), 'reason' => $reason] + ($recipient === null ? [] : ['recipientEmployeeId' => $recipient]), $idem);
+$blocked = static fn (array $o, string $id): bool => $state($o)['stage'] === 'workshop-receiving' && $state($o)['owner'] === null && $state($o)['exception'] === $id;
+$race = static function (array $calls) use ($dbName): array {
+    $startAt = (string) (microtime(true) + 0.4);
+    $workers = [];
+    foreach ($calls as [$who, $path, $body, $idem, $origin]) {
+        $process = proc_open([PHP_BINARY, __DIR__ . '/fixtures/b2b-order-worker.php', $dbName, 'POST', $path, json_encode($body, JSON_THROW_ON_ERROR), $idem, $who['cookie'], $who['csrf'], $startAt, ...($origin === null ? [] : [$origin])], [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+        fclose($pipes[0]);
+        $workers[] = [$process, $pipes];
+    }
+    $results = [];
+    foreach ($workers as [$process, $pipes]) {
+        $out = stream_get_contents($pipes[1]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        proc_close($process);
+        $results[] = json_decode((string) $out, true) ?? ['status' => 0, 'error' => $out];
+    }
+    return $results;
+};
 $quality = static fn (string $id): array => $rows('SELECT event_type, employee_uuid, rework_cycle, is_repeat, line_count, meters FROM production_quality_events WHERE exception_uuid = ? ORDER BY event_type', [$id]);
 $decisions = static fn (string $id): int => (int) $one('SELECT COUNT(*) FROM production_exception_decisions WHERE exception_uuid = ?', [$id]);
 $cursor = static function (array $who) use ($get): int {
@@ -312,10 +336,46 @@ $error($post($tailor, "/production-exceptions/{$xc}/rereview", ['expectedVersion
 $error($post($tailor2, $c['path'] . '/claim', ['expectedVersion' => (int) $sc['version']]), 409, 'ORDER_BLOCKED_BY_EXCEPTION', 'B: never unblocked while custody and ownership disagree');
 $check(in_array($xc, array_column($ok($get($iuliana, '/production-exceptions/supervisor', ['view' => 'custody']), 'custody')['items'], 'id'), true), 'B: back in "În grija mea"');
 $error($restore($iuliana, $xc, $c['qr'], ''), 422, 'COMMENT_REQUIRED', 'B: restoring needs an explanation');
-$restored = $ok($restore($iuliana, $xc, $c['qr'], 'Produsul a revenit la croitorie, se continuă'), 'B: the supervisor restores with the product in hand');
+$decisionsBefore = $decisions($xc);
+$pending = $ok($restore($iuliana, $xc, $c['qr'], 'Produsul a revenit la croitorie, se continuă'), 'B: the supervisor hands the product back with it in hand (QR)');
+// P0-5.1: the supervisor's restoration alone never unblocks the order.
+$check($pending['status'] === 'awaiting_restore_receipt' && $blocked($c, $xc), 'B: until the worker receives it, the order stays blocked at stage 3 without an owner');
+$check($pending['physicalCustodian']['displayName'] === "VASILOAIA IULIANA {$suffix}" && $pending['restoreRecipient']['displayName'] === 'Test Tailor Seven' && $pending['restoreReceivedAt'] === null, 'B: the supervisor holds the product; the original worker is addressed; nothing is received yet');
+$error($post($tailor2, $c['path'] . '/claim', ['expectedVersion' => (int) $state($c)['version']]), 409, 'ORDER_BLOCKED_BY_EXCEPTION', 'B: a pending handover is never in a stage queue');
+$check(in_array($xc, array_column($ok($get($iuliana, '/production-exceptions/supervisor', ['view' => 'custody']), 'custody pending')['items'], 'id'), true), 'B: the supervisor still sees the pending handover in "În grija mea"');
+$mineC = array_values(array_filter($ok($get($tailor, '/production-exceptions/mine'), 'recipient list')['items'], static fn (array $i): bool => $i['id'] === $xc));
+$check($mineC !== [] && $mineC[0]['actions']['canConfirmRestore'] === true && $mineC[0]['status'] === 'awaiting_restore_receipt', 'B: the original worker gets an actionable receipt');
+// P0-5.7: nobody but the addressed worker confirms; the supervisor cannot confirm her own handover.
+$error($receive($tailor2, $xc, $c['qr']), 403, 'EXCEPTION_NOT_ASSIGNED', 'B: another tailor cannot confirm receipt');
+$error($receive($iuliana, $xc, $c['qr']), 403, 'EXCEPTION_NOT_ASSIGNED', 'B: the supervisor cannot receive her own handover');
+$error($receive($cutterA, $xc, $c['qr']), 403, 'EXCEPTION_NOT_ASSIGNED', 'B: the cutter cannot confirm receipt');
+// P0-5.8: only the active Arasya QR of this very order.
+$error($receive($tailor, $xc, $a['qr']), 422, 'QR_ORDER_MISMATCH', 'B: the label of another order is refused');
+$error($receive($tailor, $xc, 'ARASYA:Q1:not-a-real-reference'), 422, 'INVALID_QR', 'B: an unknown code is refused');
+$error($receive($tailor, $xc, 'https://example.test/x'), 422, 'INVALID_QR', 'B: a foreign code is refused');
+$qrRef = substr($c['qr'], strlen('ARASYA:Q1:'));
+$pdo->prepare('UPDATE order_qr_references SET expires_at = ? WHERE qr_reference = ?')->execute([gmdate('Y-m-d H:i:s', time() - 60), $qrRef]);
+$expired = $receive($tailor, $xc, $c['qr']);
+$check($expired['status'] === 422 && in_array($expired['body']['error']['code'] ?? '', ['INVALID_QR', 'QR_NOT_USABLE', 'QR_EXPIRED'], true), 'B: an expired QR is refused: ' . json_encode($expired['body']));
+$pdo->prepare('UPDATE order_qr_references SET expires_at = NULL, status = ? WHERE qr_reference = ?')->execute(['revoked', $qrRef]);
+$revoked = $receive($tailor, $xc, $c['qr']);
+$check(in_array($revoked['status'], [409, 422], true) && $revoked['status'] !== 200, 'B: a revoked QR is refused: ' . json_encode($revoked['body']));
+$pdo->prepare('UPDATE order_qr_references SET status = ? WHERE qr_reference = ?')->execute(['active', $qrRef]);
+$check($blocked($c, $xc) && $exVersion($xc) === $pending['version'], 'B: refused receipts changed nothing');
+// P0-5.2 + P0-5.9: the receipt restores, owns and unblocks atomically; a lost answer is replayed, never repeated.
+$receiveKey = $key('receive-c');
+$restored = $ok($receive($tailor, $xc, $c['qr'], $receiveKey), 'B: the original worker scans the QR and confirms receipt');
 $sc = $state($c);
-$check($restored['status'] === 'restored' && $sc['stage'] === 'workshop-receiving' && $sc['owner'] === $tailor['employeeUuid'] && $sc['exception'] === null, 'B: back at the detected stage with the original owner');
-$check($restored['physicalCustodian']['displayName'] === "VASILOAIA IULIANA {$suffix}", 'B: the physical return to tailoring is recorded by the QR scan');
+$check($restored['status'] === 'restored' && $sc['stage'] === 'workshop-receiving' && $sc['owner'] === $tailor['employeeUuid'] && $sc['exception'] === null, 'B: back at the detected stage, owned by the worker who received it, unblocked');
+$check($restored['physicalCustodian']['displayName'] === 'Test Tailor Seven' && $restored['restoreReceivedAt'] !== null, 'B: the physical receipt is recorded by the QR scan');
+$replayed = $post($tailor, "/production-exceptions/{$xc}/receive", ['expectedVersion' => $pending['version'], 'confirmed' => true, 'qrToken' => $c['qr']], $receiveKey);
+$check($replayed['status'] === 200 && $replayed['body'] === $restored, 'B: a duplicate receipt submission replays the committed answer');
+$error($post($tailor, "/production-exceptions/{$xc}/receive", ['expectedVersion' => $pending['version'], 'confirmed' => true, 'qrToken' => $c['qr']], $key('receive-c-again')), 409, 'EXCEPTION_CHANGED', 'B: a second receipt with a new key is refused');
+$check((int) $one("SELECT COUNT(*) FROM production_exception_events WHERE exception_uuid = ? AND action = 'restore_received'", [$xc]) === 1
+    && (int) $one("SELECT COUNT(*) FROM order_activity_events WHERE order_uuid = ? AND action = 'defect_restored'", [$c['uuid']]) === 1, 'B: exactly one receipt and one restoration were written');
+$check($rows("SELECT employee_uuid, new_owner_employee_uuid, to_stage_id FROM order_activity_events WHERE order_uuid = ? AND action = 'defect_restored'", [$c['uuid']]) === [['employee_uuid' => $tailor['employeeUuid'], 'new_owner_employee_uuid' => $tailor['employeeUuid'], 'to_stage_id' => 'workshop-receiving']], 'B: the restoration is the receiving worker\'s action, at the moment of receipt');
+// P0-5.11: no operations manager was involved in the internal return or the restoration.
+$check($decisions($xc) === $decisionsBefore, 'B: restoration and receipt opened no manager decision');
 $check($quality($xc) == [['event_type' => 'fault_detected', 'employee_uuid' => $tailor['employeeUuid'], 'rework_cycle' => null, 'is_repeat' => 0, 'line_count' => 1, 'meters' => '5.000']], 'B: KPI unchanged by the restoration');
 $advance($tailor, $c);
 $check($state($c)['stage'] === 'labeling', 'B: normal production continues');
@@ -411,9 +471,174 @@ $check((int) $one("SELECT COUNT(*) FROM responsibility_assignments WHERE respons
 $error($review($iuliana1, $xh, ['decision' => 'accept', 'reasonKey' => 'cut-meterage', 'qrToken' => $h['qr']]), 403, 'SUPERVISOR_REQUIRED', 'the replaced substitute lost the authority');
 $ok($review($iuliana, $xh, ['decision' => 'dismiss', 'comment' => 'Verificat, fără defect']), 'the restored supervisor continues');
 
+// ==== Scenario 7: the original worker is inactive; a substitute recipient; a recipient losing the stage ============
+$j = $order('J', 'outletperdele');
+$bring($j, $cutterA, 'ironing', $tailor2);
+$xj = $ok($report($tailor2, $j, [$j['items'][0]], 'cut-meterage', null), 'stage-8 report by the second tailor', 201)['id'];
+$ok($review($iuliana, $xj, ['decision' => 'accept', 'reasonKey' => 'cut-meterage', 'qrToken' => $j['qr']]), 'accepted');
+$ok($dash($root, 'POST', "/management/employees/{$uuids['tailor2']}/deactivate"), 'the original worker leaves');
+// P0-5.3: an inactive original worker is never assigned.
+$error($restore($iuliana, $xj, $j['qr'], 'Revine la călcat'), 409, 'RESTORE_RECIPIENT_UNAVAILABLE', 'the inactive original worker is not addressed');
+$error($restore($iuliana, $xj, $j['qr'], 'Revine la călcat', null, $uuids['tailor2']), 409, 'RESTORE_RECIPIENT_UNAVAILABLE', 'naming the inactive original worker explicitly changes nothing');
+$recipients = $ok($get($iuliana, "/production-exceptions/{$xj}/restore-recipients"), 'recipients')['items'];
+$check(in_array($uuids['tailor3'], array_column($recipients, 'id'), true) && !in_array($uuids['tailor2'], array_column($recipients, 'id'), true) && !in_array($uuids['iuliana'], array_column($recipients, 'id'), true), 'only eligible employees of the detected stage are offered, never the supervisor herself');
+$error($restore($iuliana, $xj, $j['qr'], 'Revine la călcat', null, $uuids['iuliana']), 422, 'RECIPIENT_INVALID', 'the supervisor cannot hand the product to herself');
+$error($restore($iuliana, $xj, $j['qr'], 'Revine la călcat', null, $uuids['cuttera']), 422, 'RECIPIENT_INVALID', 'a cutter cannot receive a tailoring order');
+$error($get($tailor, "/production-exceptions/{$xj}/restore-recipients"), 404, 'EXCEPTION_NOT_FOUND', 'only the supervisor lists recipients');
+$pendingJ = $ok($restore($iuliana, $xj, $j['qr'], 'Revine la călcat', null, $uuids['tailor3']), 'a substitute tailor is addressed');
+$check($pendingJ['status'] === 'awaiting_restore_receipt' && $blocked($j, $xj) && $pendingJ['restoreRecipient']['displayName'] === 'Test Tailor Three', 'still blocked; the substitute is addressed');
+// The substitute loses the detected stage before receiving: the order stays blocked.
+$ok($dash($root, 'PUT', "/management/employees/{$uuids['tailor3']}/stages", ['stageIds' => array_values(array_diff($tailoringStages, ['ironing']))]), 'the substitute no longer works at ironing');
+$tailor3 = T::login($kernel, "tailor3.{$suffix}", $password) + ['employeeUuid' => $uuids['tailor3']];
+$error($receive($tailor3, $xj, $j['qr']), 409, 'RESTORE_RECIPIENT_UNAVAILABLE', 'a recipient who lost the stage cannot take the order');
+$check($blocked($j, $xj), 'the order stays blocked');
+// Root recovery addresses an eligible employee; the case ends as cancelled only on receipt.
+$error($rootCancel($xj, 'Angajata nu mai lucrează la călcat'), 422, 'RECIPIENT_REQUIRED', 'root must name who receives the product');
+$recoveredJ = $ok($rootCancel($xj, 'Angajata nu mai lucrează la călcat', $uuids['tailor']), 'root addresses another tailor');
+$check($recoveredJ['status'] === 'awaiting_restore_receipt' && $recoveredJ['cancelledByRoot'] === true && $blocked($j, $xj), 'root recovery keeps the order blocked');
+$check(($recoveredJ['actions']['cancelNeedsRecipient'] ?? null) === true, 'the Dashboard is told that a recipient is required');
+$error($restore($iuliana, $xj, $j['qr'], 'Încerc altcineva', null, $uuids['tailor3']), 409, 'EXCEPTION_STATE_INVALID', 'a root recovery is re-addressed only by root');
+$error($receive($tailor3, $xj, $j['qr']), 403, 'EXCEPTION_NOT_ASSIGNED', 'the previous recipient lost the handover');
+$doneJ = $ok($receive($tailor, $xj, $j['qr']), 'the addressed tailor receives the product');
+$check($doneJ['status'] === 'cancelled' && $state($j)['stage'] === 'ironing' && $state($j)['owner'] === $tailor['employeeUuid'] && $state($j)['exception'] === null, 'the recovery ends at the detected stage with the employee who physically received it');
+$check(count($quality($xj)) === 1 && $quality($xj)[0]['employee_uuid'] === $uuids['tailor2'], 'the detection stays credited to the original detector');
+$ok($dash($root, 'POST', "/management/employees/{$uuids['tailor2']}/activate"), 'second tailor reactivated');
+$tailor2 = T::login($kernel, "tailor2.{$suffix}", $password) + ['employeeUuid' => $uuids['tailor2']];
+$ok($dash($root, 'PUT', "/management/employees/{$uuids['tailor3']}/stages", ['stageIds' => $tailoringStages]), 'third tailor stages restored');
+$tailor3 = T::login($kernel, "tailor3.{$suffix}", $password) + ['employeeUuid' => $uuids['tailor3']];
+
+// ==== Scenario 8: supervisor revoked during a pending handover ===================================================
+$k = $order('K', 'trendhome');
+$bring($k, $cutterA, 'header-tape');
+$xk = $ok($report($tailor, $k, [$k['items'][0]], 'cut-meterage', null), 'stage-10 report', 201)['id'];
+$ok($review($iuliana, $xk, ['decision' => 'accept', 'reasonKey' => 'cut-meterage', 'qrToken' => $k['qr']]), 'accepted');
+$ok($restore($iuliana, $xk, $k['qr'], 'Defect minor, se continuă'), 'handover started');
+$assignmentK = array_values(array_filter($ok($dashGet($ceo, '/management/organization'), 'organization')['responsibilities'], static fn (array $r): bool => $r['responsibility'] === 'tailoring_quality_supervisor' && $r['state'] === 'active'))[0];
+$ok($dash($ceo, 'POST', "/management/organization/responsibilities/{$assignmentK['id']}/revoke", ['reason' => 'Test revocare în timpul predării']), 'the CEO revokes the supervisor mid-handover');
+// P0-5.4: the revocation leaves the order blocked, never open and unowned.
+$check($blocked($k, $xk), 'after the revocation the order is still blocked at stage 3 without an owner');
+$error($restore($iuliana, $xk, $k['qr'], 'Încă o dată'), 403, 'SUPERVISOR_REQUIRED', 'the revoked supervisor cannot re-address');
+$error($post($tailor2, $k['path'] . '/claim', ['expectedVersion' => (int) $state($k)['version']]), 409, 'ORDER_BLOCKED_BY_EXCEPTION', 'nobody can claim it');
+$doneK = $ok($receive($tailor, $xk, $k['qr']), 'the addressed worker can still complete the physical handover');
+$check($doneK['status'] === 'restored' && $state($k)['stage'] === 'header-tape' && $state($k)['owner'] === $tailor['employeeUuid'] && $state($k)['exception'] === null, 'the handover completes with a verified receipt only');
+$ok($appoint($ceo, $uuids['iuliana']), 'the supervisor is appointed again', 201);
+
+// ==== Scenario 9: root cancellation before and after supervisor custody =======================================
+$l = $order('L', 'trendhome');
+$bring($l, $cutterA, 'bottom-hem');
+$xl = $ok($report($tailor, $l, [$l['items'][0]], 'cut-meterage', null), 'stage-6 report', 201)['id'];
+$error($rootCancel($xl, 'Raport greșit', $uuids['tailor2']), 400, 'INVALID_REQUEST', 'before custody there is nothing to hand over');
+$cancelledL = $ok($rootCancel($xl, 'Raport greșit'), 'root cancels before custody');
+$check($cancelledL['status'] === 'cancelled' && $state($l)['stage'] === 'bottom-hem' && $state($l)['owner'] === $tailor['employeeUuid'] && $state($l)['exception'] === null, 'before custody: unblocked where it is, with the worker who still holds it');
+$xl2 = $ok($report($tailor, $l, [$l['items'][1]], 'cut-meterage', null), 'reported again', 201)['id'];
+$ok($review($iuliana, $xl2, ['decision' => 'accept', 'reasonKey' => 'cut-meterage', 'qrToken' => $l['qr']]), 'accepted: the supervisor holds it');
+// P0-5.5: cancelling while the supervisor holds the product never unlocks the order.
+$error($rootCancel($xl2, 'Anulare'), 422, 'RECIPIENT_REQUIRED', 'root cannot simply cancel a case in custody');
+$check($blocked($l, $xl2), 'still blocked, still no owner');
+$recoveredL = $ok($rootCancel($xl2, 'Anulare: produsul revine la tiv', $uuids['tailor']), 'root names the original worker');
+$check($recoveredL['status'] === 'awaiting_restore_receipt' && $blocked($l, $xl2), 'root cancellation in custody keeps the order blocked until a verified receipt');
+$check($recoveredL['physicalCustodian']['displayName'] === "VASILOAIA IULIANA {$suffix}", 'the product is still recorded with the supervisor');
+$error($post($tailor2, $l['path'] . '/claim', ['expectedVersion' => (int) $state($l)['version']]), 409, 'ORDER_BLOCKED_BY_EXCEPTION', 'not in any queue');
+$doneL = $ok($receive($tailor, $xl2, $l['qr']), 'the worker receives the product from the supervisor');
+$check($doneL['status'] === 'cancelled' && $state($l)['stage'] === 'bottom-hem' && $state($l)['owner'] === $tailor['employeeUuid'] && $state($l)['exception'] === null, 'cancelled only once the next owner physically holds it');
+$check(array_column($ok($dashGet($root, "/management/production-exceptions/{$xl2}"), 'root detail')['timeline'], 'action') === ['reported', 'supervisor_accepted', 'recovery_requested', 'restore_received'], 'append-only recovery history');
+$check((int) $one("SELECT COUNT(*) FROM iam_audit_events WHERE action = 'production.exception.recovery_requested' AND target_id = ?", [$xl2]) === 1, 'the root recovery is audited');
+
+// ==== Scenario 10: root cancellation while the cutter holds the product; competing recipient actions ============
+$m = $order('M', 'outletperdele');
+$bring($m, $cutterA, 'side-hem');
+$xm = $ok($report($tailor, $m, [$m['items'][0]], 'cut-meterage', null), 'stage-7 report', 201)['id'];
+$ok($review($iuliana, $xm, ['decision' => 'accept', 'reasonKey' => 'cut-meterage', 'qrToken' => $m['qr']]), 'accepted');
+$ok($sendReturn($iuliana, $xm), 'sent to cutting');
+$ok($ack($cutterA, $xm, $m['qr'], ['responsibility' => 'accepted']), 'the cutter physically holds the product');
+// P0-5.6: cancelling while the cutter holds the product never unlocks the order.
+$error($rootCancel($xm, 'Anulare'), 422, 'RECIPIENT_REQUIRED', 'root cannot simply cancel while the cutter holds it');
+$recoveredM = $ok($rootCancel($xm, 'Produsul nu se mai taie, revine la croitorie', $uuids['tailor']), 'root recovery');
+$check($recoveredM['status'] === 'awaiting_restore_receipt' && $blocked($m, $xm) && $recoveredM['physicalCustodian']['displayName'] === 'Test Cutter A', 'still blocked; the product is still recorded with the cutter');
+$check(array_column($recoveredM['decisions'], 'status') === ['cancelled'], 'the pending manager decision is closed by the recovery');
+$error($decide($denisa, $xm, ['decision' => 'approve', 'attribution' => 'cutter']), 409, 'EXCEPTION_STATE_INVALID', 'no manager can return it to cutting any more');
+$check($state($m)['stage'] === 'workshop-receiving', 'never moved to cutting');
+// P0-5.10: two receipts racing (different keys), then a receipt racing a root re-addressing: exactly one wins.
+$versionM = $exVersion($xm);
+$results = $race([
+    [$tailor, "/production-exceptions/{$xm}/receive", ['expectedVersion' => $versionM, 'confirmed' => true, 'qrToken' => $m['qr']], $key('race-receive-1'), null],
+    [$tailor, "/production-exceptions/{$xm}/receive", ['expectedVersion' => $versionM, 'confirmed' => true, 'qrToken' => $m['qr']], $key('race-receive-2'), null],
+]);
+$statuses = array_column($results, 'status');
+sort($statuses);
+$check($statuses === [200, 409], 'two receipt submissions: exactly one wins: ' . json_encode($results));
+$check((int) $one("SELECT COUNT(*) FROM production_exception_events WHERE exception_uuid = ? AND action = 'restore_received'", [$xm]) === 1
+    && (int) $one("SELECT COUNT(*) FROM order_activity_events WHERE order_uuid = ? AND action = 'defect_restored'", [$m['uuid']]) === 1
+    && $state($m)['owner'] === $tailor['employeeUuid'] && $state($m)['stage'] === 'side-hem', 'one receipt, one owner');
+$n = $order('N', 'trendhome');
+$bring($n, $cutterA, 'labeling');
+$xn = $ok($report($tailor, $n, [$n['items'][0]], 'cut-meterage', null), 'stage-4 report', 201)['id'];
+$ok($review($iuliana, $xn, ['decision' => 'accept', 'reasonKey' => 'cut-meterage', 'qrToken' => $n['qr']]), 'accepted');
+$ok($restore($iuliana, $xn, $n['qr'], 'Revine la etichetare'), 'handover started');
+$versionN = $exVersion($xn);
+$results = $race([
+    [$tailor, "/production-exceptions/{$xn}/receive", ['expectedVersion' => $versionN, 'confirmed' => true, 'qrToken' => $n['qr']], $key('race-n-receive'), null],
+    [$root, "/management/production-exceptions/{$xn}/cancel", ['expectedVersion' => $versionN, 'reason' => 'Recuperare paralelă', 'recipientEmployeeId' => $uuids['tailor']], $key('race-n-cancel'), DASHBOARD],
+]);
+$statuses = array_column($results, 'status');
+sort($statuses);
+$check($statuses === [200, 409], 'a receipt racing a root re-addressing: exactly one wins: ' . json_encode($results));
+$sn = $state($n);
+$statusN = (string) $one('SELECT status FROM production_exceptions WHERE exception_uuid = ?', [$xn]);
+$check(($statusN === 'restored' && $sn['owner'] === $tailor['employeeUuid'] && $sn['exception'] === null && $sn['stage'] === 'labeling')
+    || ($statusN === 'awaiting_restore_receipt' && $blocked($n, $xn)), "never conflicting ownership: {$statusN} " . json_encode($sn));
+if ($statusN === 'awaiting_restore_receipt') {
+    $ok($receive($tailor, $xn, $n['qr']), 'the receipt after the re-addressing');
+}
+$check($state($n)['owner'] === $tailor['employeeUuid'] && $state($n)['exception'] === null, 'the order ends owned by the employee who received it');
+
+// ==== Scenario 11: unknown meterage stays distinguishable from measured meters ====================================
+$mixed = static fn (): array => [
+    ['id' => 1, 'line' => 1, 'name' => 'Voal măsurat', 'sku' => 'SKU-M', 'color' => 'Ivory', 'width' => 300, 'height' => 260, 'unit' => 'cm', 'meters' => 4.5, 'quantity' => 1],
+    ['id' => 2, 'line' => 2, 'name' => 'Voal fără metraj', 'sku' => 'SKU-U', 'color' => 'Ivory', 'width' => 300, 'height' => 260, 'unit' => 'cm', 'meters' => null, 'quantity' => 1],
+];
+$numberU = "TSU{$suffix}";
+$ok(T::ingest($kernel, 'trendhome', T::sourceOrder($numberU, "evt-ts-u-{$suffix}", gmdate('Y-m-d\TH:i:s\Z', time() - 300), T::stage('material-preparation'), 'processing', 'active', $mixed(), $numberU)), 'ingest a partly measured order');
+$uUuid = (string) $one('SELECT order_uuid FROM operational_orders WHERE global_order_id = ?', ["trendhome:{$numberU}"]);
+$u = ['id' => "trendhome:{$numberU}", 'uuid' => $uUuid, 'path' => '/orders/' . rawurlencode("trendhome:{$numberU}"),
+    'qr' => 'ARASYA:Q1:' . (string) $one("SELECT qr_reference FROM order_qr_references WHERE order_uuid = ? AND status = 'active'", [$uUuid]),
+    'items' => array_column($rows('SELECT item_uuid FROM operational_order_items WHERE order_uuid = ? ORDER BY line_number', [$uUuid]), 'item_uuid')];
+$check($one('SELECT meters FROM operational_order_items WHERE item_uuid = ?', [$u['items'][1]]) === null, 'the source sent no meters for line 2');
+$bring($u, $cutterA, 'side-hem');
+$both = $ok($report($tailor, $u, $u['items'], 'cut-meterage', null), 'a defect on a measured and an unmeasured line', 201);
+$check($both['lineCount'] === 2 && $both['faultMeters'] === '4.500' && $both['unmeasuredLineCount'] === 1, 'known meters and the unmeasured line are reported separately: ' . json_encode([$both['faultMeters'], $both['unmeasuredLineCount']]));
+$detailU = $ok($get($tailor, "/production-exceptions/{$both['id']}"), 'detail');
+$check(array_column($detailU['lines'], 'meters') === ['4.500', null], 'the unmeasured line shows unknown meters, not 0.000');
+$ok($review($iuliana, $both['id'], ['decision' => 'accept', 'reasonKey' => 'cut-meterage', 'qrToken' => $u['qr']]), 'accepted');
+$check($rows('SELECT line_count, meters, unmeasured_line_count FROM production_quality_events WHERE exception_uuid = ?', [$both['id']]) === [['line_count' => 2, 'meters' => '4.500', 'unmeasured_line_count' => 1]], 'the KPI fact keeps the known meters and the unmeasured line apart');
+$check($one("SELECT meters_snapshot FROM order_activity_events WHERE order_uuid = ? AND action = 'defect_custody_taken'", [$u['uuid']]) === null, 'a partial sum is never written as the scope of the request');
+$ok($sendReturn($iuliana, $both['id']), 'return');
+$ok($ack($cutterA, $both['id'], $u['qr'], ['responsibility' => 'accepted']), 'received');
+$ok($decide($denisa, $both['id'], ['decision' => 'approve', 'attribution' => 'cutter']), 'approved');
+$check($rows("SELECT event_type, meters, unmeasured_line_count FROM production_quality_events WHERE exception_uuid = ? AND event_type = 'cutting_fault'", [$both['id']]) === [['event_type' => 'cutting_fault', 'meters' => '4.500', 'unmeasured_line_count' => 1]], 'the cutting fault keeps the unmeasured line too');
+// A measured zero can never be stored as a fault scope: the constraints refuse it on MySQL and MariaDB.
+foreach ([
+    ['UPDATE production_exception_lines SET meters_snapshot = 0 WHERE exception_uuid = ? AND meters_snapshot IS NOT NULL', 'a measured line of 0.000'],
+    ['UPDATE production_quality_events SET meters = 0 WHERE exception_uuid = ?', 'a fact of 0.000 with a measured line'],
+    ['UPDATE production_exceptions SET unmeasured_line_count = line_count + 1 WHERE exception_uuid = ?', 'more unmeasured lines than lines'],
+] as [$sql, $label]) {
+    try {
+        $pdo->prepare($sql)->execute([$both['id']]);
+        $refused = false;
+    } catch (PDOException) {
+        $refused = true;
+    }
+    $check($refused, "the database refuses {$label}");
+}
+$analyticsFault = $rows("SELECT unmeasured_line_count FROM production_quality_events WHERE employee_uuid = ? AND unmeasured_line_count > 0", [$uuids['cuttera']]);
+$check(count($analyticsFault) === 1, 'the responsible cutter has exactly one fact with unknown meterage');
+
 // ---- Invariants --------------------------------------------------------------------------------------------------
 $check((int) $one("SELECT COUNT(*) FROM production_exception_decisions d JOIN production_exceptions x ON x.exception_uuid = d.exception_uuid WHERE x.exception_type = 'tailoring_defect' AND x.acknowledged_at IS NULL") === 0, 'no manager decision exists for any case before physical receipt at stage 3');
 $check((int) $one("SELECT COUNT(*) FROM production_quality_events q JOIN production_exceptions x ON x.exception_uuid = q.exception_uuid WHERE x.status = 'dismissed'") === 0, 'dismissed reports never count');
+$check((int) $one("SELECT COUNT(*) FROM production_exceptions WHERE exception_type = 'tailoring_defect' AND supervisor_reviewed_at IS NOT NULL AND status IN ('restored', 'cancelled') AND restore_received_at IS NULL AND confirmed_reason_key IS NOT NULL") === 0, 'no case that left its owner was closed inside tailoring without a verified receipt');
+$check((int) $one("SELECT COUNT(*) FROM order_activity_events a JOIN production_exceptions x ON x.order_uuid = a.order_uuid AND x.restore_recipient_employee_uuid = a.employee_uuid WHERE a.action = 'defect_restored' AND a.new_owner_employee_uuid <> a.employee_uuid") === 0, 'every restoration made its receiving employee the owner');
+$check((int) $one("SELECT COUNT(*) FROM production_exception_decisions d JOIN production_exceptions x ON x.exception_uuid = d.exception_uuid WHERE x.exception_type = 'tailoring_defect' AND d.opened_reason NOT IN ('acknowledged', 'rereview')") === 0, 'manager decisions are opened only by a cutter receipt or a supervisor re-review');
 $check((int) $one("SELECT COUNT(*) FROM order_activity_events WHERE action IN ('defect_custody_taken', 'defect_restored', 'defect_dismissed') AND to_stage_id = 'material-preparation'") === 0, 'no internal action ever reaches stage 2');
 $check((int) $one("SELECT COUNT(*) FROM order_activity_events a JOIN production_exceptions x ON x.order_uuid = a.order_uuid WHERE a.action = 'fault_returned' AND x.exception_type = 'tailoring_defect' AND x.status = 'approved' AND a.employee_uuid NOT IN (?, ?)", [$uuids['denisa'], $uuids['hikmet']]) === 0, 'every 3 -> 2 return was committed by a manager decision');
 $audit = $pdo->query("SELECT metadata_json FROM iam_audit_events WHERE action LIKE 'production.exception.%' OR action LIKE 'responsibility.%'")->fetchAll(PDO::FETCH_COLUMN);
