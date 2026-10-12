@@ -3,8 +3,9 @@
  * camera drifts in: a champagne horizon rim rises, the white Arasya "A" comes into focus and the rest of the wordmark
  * is drawn out of it, a light sweeps across the logo, the horizon becomes a search bar that types "Designed to
  * Inspire. Made to Last.", the curtain button is pressed (its drapes part), the line and logo leave toward the camera
- * and Staff opens from the button in white. The movement is driven by the Web Animations API (transform, opacity and
- * clips only); this file only places the pieces. Colours come from tokens.css.
+ * and Staff opens from the button in white. The movement is driven by the Web Animations API: transforms and opacity,
+ * which the compositor runs without repainting (only the empty white card changes its clip), so the intro stays
+ * smooth on phones while Staff loads behind it. This file only places the pieces. Colours come from tokens.css.
  */
 
 .login-intro {
@@ -79,7 +80,7 @@
 /* The "A" window is clipped on the right only, so its soft (out-of-focus) copy can spill over the other edges. */
 .intro-brand .intro-mark { width: calc(var(--intro-logo-h) * 110 / 96); clip-path: inset(-24px 0 -24px -24px); opacity: 0; }
 .intro-brand .intro-word { width: calc(var(--intro-logo-h) * 489 / 96); overflow: hidden; }
-.intro-brand .intro-word-inner { display: block; height: 100%; opacity: 0; }
+.intro-brand .intro-word-inner { display: block; height: 100%; overflow: hidden; opacity: 0; }
 .intro-brand img {
   display: block;
   width: calc(var(--intro-logo-h) * 599 / 96);
@@ -137,6 +138,8 @@
   font: 500 16px/1.2 var(--font-sans);
   letter-spacing: .005em;
   white-space: nowrap;
+  /* Each typed letter only re-lays out this line. */
+  contain: layout paint;
 }
 .intro-fresh { color: var(--color-intro-text-fresh); }
 .intro-caret {
@@ -177,8 +180,10 @@
 
 /*
  * The map of Europe (IntroMap.tsx) fills the horizon disc: same box as .intro-horizon, faded out toward its rim. The
- * SVG covers the part of the disc that is on screen (from the horizon, 61% down, to the bottom). Lines keep a fixed
- * on-screen width (non-scaling strokes), so they stay hairline-sharp at any size or pixel density.
+ * plane is the map's 1000 × 500 drawing scaled to cover the visible part of the disc (from the horizon, 61% down, to
+ * the bottom), so offices and the route are placed in percentages of it. Lines keep a fixed on-screen width
+ * (non-scaling strokes), so they stay hairline-sharp at any size or pixel density. Nothing in here is repainted while
+ * the intro plays: each piece is its own layer that only moves or fades.
  */
 .intro-map {
   position: absolute;
@@ -193,34 +198,104 @@
   opacity: 0;
 }
 .intro-map-view { position: absolute; inset: 0 0 auto; height: 39vh; height: 39dvh; transform-origin: 50% 0; }
-.intro-map svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.intro-map-plane {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  width: max(100%, 78vh);
+  width: max(100%, 78dvh);
+  aspect-ratio: 2;
+  translate: -50% 0;
+  container-type: inline-size;
+}
+.intro-map svg { position: absolute; inset: 0; display: block; width: 100%; height: 100%; overflow: visible; }
 .intro-map path { fill: none; vector-effect: non-scaling-stroke; stroke-linejoin: round; stroke-linecap: round; }
 .intro-map .intro-map-grid { stroke: var(--color-intro-map-grid); stroke-width: .7px; }
-.intro-map .intro-map-key { fill: var(--color-intro-map-key); stroke: none; }
 .intro-map .intro-map-coast { stroke: var(--color-intro-map-coast); stroke-width: 1px; }
 .intro-map .intro-map-borders { stroke: var(--color-intro-map-border); stroke-width: .8px; }
-.intro-map .intro-map-scan path { stroke: var(--color-intro-map-scan); stroke-width: 1.3px; }
-/* The route is dashed along its own length (pathLength 1), so it keeps normal, scaling strokes. */
-.intro-map .intro-map-route { vector-effect: none; stroke: var(--color-intro-city); stroke-width: 1.8; stroke-dasharray: 1; stroke-dashoffset: 1; }
-.intro-map .intro-map-spark { vector-effect: none; stroke: var(--color-intro-text); stroke-width: 3.2; stroke-dasharray: .1 1; stroke-dashoffset: .1; opacity: 0; }
-.intro-map text { font-family: var(--font-sans); text-transform: uppercase; }
-.intro-map-label { font-size: 12px; font-weight: 600; letter-spacing: .2em; fill: var(--color-intro-map-label); }
-.intro-map-label.is-small { font-size: 9px; }
-.intro-map-label.is-key { fill: var(--color-intro-map-label-key); }
-.intro-city-name { font-size: 15px; font-weight: 700; letter-spacing: .16em; fill: var(--color-intro-city); }
-.intro-city circle { transform-box: fill-box; transform-origin: center; }
-.intro-city-dot { fill: var(--color-intro-city); }
-.intro-city-halo { fill: var(--color-intro-city-halo); }
-.intro-city-ring { fill: none; stroke: var(--color-intro-city); stroke-width: 1px; vector-effect: non-scaling-stroke; opacity: 0; }
+.intro-map .intro-map-key path { fill: var(--color-intro-map-key); stroke: none; }
+.intro-map-key { opacity: 0; }
+
+/* Reveal windows: the window slides in from the west while its content slides back, so the content stays put. */
+.intro-wipe {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 120%;
+  overflow: hidden;
+  transform: translateX(-100%);
+  -webkit-mask-image: linear-gradient(90deg, black 83%, transparent);
+  mask-image: linear-gradient(90deg, black 83%, transparent);
+}
+.intro-wipe-inner { position: absolute; inset: 0 auto 0 0; width: calc(100% / 1.2); transform: translateX(120%); }
+
+/* The scan: a soft band of brighter lines that crosses the map (it waits off the map, on the left). */
+.intro-map-scan {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 32%;
+  overflow: hidden;
+  transform: translateX(-112.5%);
+  -webkit-mask-image: linear-gradient(90deg, transparent, black 50%, transparent);
+  mask-image: linear-gradient(90deg, transparent, black 50%, transparent);
+}
+.intro-map .intro-map-scan-lines { inset: 0 auto 0 0; width: 312.5%; transform: translateX(36%); }
+.intro-map .intro-map-scan-lines path { stroke: var(--color-intro-map-scan); stroke-width: 1.3px; }
+
+/* Country names, centred on their point with the baseline on it (sizes in map units: 1cqw = 10). */
+.intro-map-label {
+  position: absolute;
+  translate: -50% -80%;
+  font: 600 1.2cqw/1 var(--font-sans);
+  letter-spacing: .2em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--color-intro-map-label);
+}
+.intro-map-label.is-small { font-size: .9cqw; }
+.intro-map-label.is-key { color: var(--color-intro-map-label-key); }
+
+/* The route between the offices and the spark that travels along it (the spark's box is the route's box). */
+.intro-map-route { position: absolute; }
+.intro-map .intro-map-route path { vector-effect: none; stroke: var(--color-intro-city); stroke-width: 1.8; }
+.intro-map-spark { position: absolute; inset: 0; opacity: 0; }
+.intro-map-spark > span {
+  position: absolute;
+  left: -3px;
+  top: -3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-intro-text);
+  box-shadow: 0 0 8px 2px var(--color-intro-city);
+}
+
+/* An office: a point on the map (sizes follow the map, 1cqw = 10 map units) with its dot, halo, rings and name. */
+.intro-city { position: absolute; width: 0; height: 0; }
+.intro-city > span:not(.intro-city-name) { position: absolute; border-radius: 50%; translate: -50% -50%; }
+.intro-city-halo { width: 3.2cqw; height: 3.2cqw; background: var(--color-intro-city-halo); opacity: 0; }
+.intro-city-ring { width: 4.1cqw; height: 4.1cqw; border: 1.5px solid var(--color-intro-city); opacity: 0; }
+.intro-city-dot { width: .72cqw; height: .72cqw; background: var(--color-intro-city); transform: scale(0); }
+.intro-city-name {
+  position: absolute;
+  top: 0;
+  font: 700 1.5cqw/1 var(--font-sans);
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--color-intro-city);
+  opacity: 0;
+}
+.intro-city-krefeld .intro-city-name { right: 1.2cqw; translate: 0 -40%; }
+.intro-city-bucharest .intro-city-name { left: 1.2cqw; translate: 0 -40%; }
 
 /* Phones see a smaller map: fewer, larger names. */
 @media (max-width: 600px) {
-  .intro-map-label { font-size: 17px; }
+  .intro-map-label { font-size: 1.7cqw; }
   .intro-map-label.is-small { display: none; }
-  .intro-city-name { font-size: 21px; text-anchor: middle; }
+  .intro-city-name { font-size: 2.1cqw; }
   /* Only the middle of the disc is on a phone screen: names go above Krefeld and below Bucharest. */
-  .intro-city-krefeld .intro-city-tag { transform: translate(12px, -18px); }
-  .intro-city-bucharest .intro-city-tag { transform: translate(-12px, 28px); }
+  .intro-city-krefeld .intro-city-name { right: auto; left: 0; top: -1.6cqw; translate: -50% -100%; }
+  .intro-city-bucharest .intro-city-name { left: 0; top: 1.6cqw; translate: -50% 0; }
 }
 
 /* Lens finish: darker corners and a fine film grain over the scene (not over Staff, which opens above it). */
@@ -232,7 +307,7 @@
 }
 .intro-grain {
   position: absolute;
-  inset: -50%;
+  inset: -40px;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
   opacity: .06;
   pointer-events: none;
@@ -242,12 +317,24 @@
 @keyframes intro-caret { 50% { opacity: 0; } }
 @keyframes intro-grain {
   0% { transform: translate(0, 0); }
-  25% { transform: translate(-4%, 3%); }
-  50% { transform: translate(3%, -5%); }
-  75% { transform: translate(-2%, -3%); }
+  25% { transform: translate(-24px, 18px); }
+  50% { transform: translate(18px, -30px); }
+  75% { transform: translate(-12px, -18px); }
 }
 
-/* Staff behind the intro: hidden until the send button opens it, then it grows from the button to the screen. */
+/* The white shape that grows from the send button into the full screen, carrying the black wordmark; Staff appears on it. */
+.intro-card {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: var(--color-bg);
+  opacity: 0;
+  pointer-events: none;
+}
+.intro-card img { display: block; width: auto; height: 26px; }
+
+/* Staff behind the intro: hidden until the white card from the send button fills the screen, then it fades in. */
 .intro-stage[data-intro="playing"] {
   position: fixed;
   inset: 0;

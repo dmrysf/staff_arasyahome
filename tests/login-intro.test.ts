@@ -54,3 +54,17 @@ test("the map of Europe loads only when a sign-in starts and marks the Krefeld a
   assert.ok(INTRO_MAP.labels.some((label) => label.text === "Romania" && label.key));
   assert.ok(read("features/auth/introMapData.ts").length < 60_000, "map data stays small");
 });
+
+test("the intro moves whole layers only, so phones play it without repainting (2.21.1)", () => {
+  const map = read("features/auth/IntroMap.tsx");
+  // SVG children, SVG masks, animated clips, dash offsets and SVG text all force a repaint (or a relayout) per frame.
+  assert.doesNotMatch(map, /strokeDashoffset|clipPath|mask=|<text|<circle|<g /, "the map's drawing is painted once");
+  for (const frames of map.match(/\.animate\(|play\([^;]*\[\{[^;]*;/g) ?? []) assert.doesNotMatch(frames, /\b(clipPath|strokeDashoffset|width|height|top|left|filter)\s*:/, frames);
+  const intro = read("features/auth/LoginIntro.tsx");
+  assert.match(intro, /const card = play\(cardShape, \[/, "the shape that grows from the button is an empty white layer");
+  const stage = intro.match(/const open = play\(target, \[[^\]]*\]/)?.[0] ?? "";
+  assert.ok(stage && !/clipPath/.test(stage), "Staff itself only fades and settles in");
+  assert.doesNotMatch(intro, /clipPath: "inset\(0 100%/, "the wordmark is revealed by a sliding window, not a clip");
+  assert.match(intro, /timers\.push\(window\.setTimeout\(finish, /, "a timer backs up the end of the intro");
+  assert.doesNotMatch(strip(read("styles/intro.css")), /\.intro-grain \{[^}]*inset: -50%/, "the grain layer stays about screen-sized");
+});
