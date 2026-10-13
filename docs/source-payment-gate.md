@@ -17,8 +17,8 @@ Arasya stores only what the factory needs to decide whether production may start
 
 | Field | Rule |
 |---|---|
-| `method` | `cod` or `online` (the source's PaymentResolver class). |
-| `advanceStatus` | `not_required`, `waiting`, `partial` or `confirmed`. An online order is always `not_required`. |
+| `method` | `cod` (a cash-on-delivery gateway), `online` (a gateway the source verified, with the payment recorded as received) or `unverified` (anything else). |
+| `advanceStatus` | `not_required`, `waiting`, `partial` or `confirmed`. `online` is always `not_required`; `unverified` is always `waiting`. |
 | `advanceRevision` | Number of recorded confirmations (integer ≥ 0). |
 | `advanceConfirmedAt` | Optional UTC time; only with `confirmed`. |
 
@@ -37,6 +37,7 @@ Arasya stores only what the factory needs to decide whether production may start
 | Stored facts | State | Gate |
 |---|---|---|
 | `online` | online | open |
+| `unverified` | unverified | closed |
 | `cod` + `not_required` | not_required | open |
 | `cod` + `confirmed` | confirmed | open |
 | `cod` + `waiting` | waiting | closed |
@@ -44,6 +45,22 @@ Arasya stores only what the factory needs to decide whether production may start
 | nothing stated (every order ingested before 2.29) | unknown | closed |
 
 A WooCommerce `processing` status, an Arasya order, a QR or a document is never read as a confirmed advance.
+
+### Non-COD payments (YD SOFT 2.10.0, `PaymentFacts`)
+
+A non-COD gateway is not proof of payment. The source sends `online` only when both hold:
+
+- the gateway is on the verified list (`yd_arasya_verified_online_methods`, default `netopiapayments`). Netopia moves
+  an order to `processing` only from its signed IPN `confirmed` notification for the full amount; a partial or
+  pending payment goes to `on-hold`, a card error to `failed`;
+- WooCommerce recorded the payment (`date_paid` set) and the order is not `pending`, `on-hold`, `failed`,
+  `checkout-draft`, `cancelled`, `refunded` or `trash`.
+
+Everything else is `unverified` and closed: bank transfer (`bacs`), cheque, TBI financing (`tbi_bank`, `tbiro`,
+`tbiirisro`), an empty or unknown gateway, and a Netopia payment that is pending, on hold or failed. A gateway joins
+the verified list only by an explicit business decision (filter), never by default. Live evidence (2026-10-13):
+every order Arasya received is `cod` or `netopiapayments`; `bacs` and `cheque` are disabled on both sites; no TBI
+order has reached `processing`.
 
 ## Modes: `ARASYA_SOURCE_PAYMENT_GATE_<SOURCE>`
 

@@ -9,13 +9,15 @@ use Arasya\Operations\Http\ApiException;
 /**
  * Advance payment gate of a signed commerce source order (Trend Home, Outlet Perdele).
  *
- * The source states the payment facts in its signed order snapshot: the payment method class (cod/online) and
- * the advance status it holds (not_required/waiting/partial/confirmed), with a monotonic confirmation revision.
- * Arasya never infers payment: an order whose source has not stated them is UNKNOWN, and a WooCommerce status,
- * an Arasya order, a QR or a document never count as a confirmed advance.
+ * The source states the payment facts in its signed order snapshot: the payment method class and the advance
+ * status it holds (not_required/waiting/partial/confirmed), with a monotonic confirmation revision. The class is
+ * `cod` (cash on delivery, advance rules), `online` (a payment gateway the source verified, and the payment is
+ * recorded as received) or `unverified` (any other gateway, or an online payment that is pending, on hold or
+ * failed). Arasya never infers payment: an order whose source has not stated them is UNKNOWN, and a WooCommerce
+ * status, an Arasya order, a QR or a document never count as a confirmed advance or payment.
  *
- * Open:   online payment, an advance that is not required, a confirmed advance.
- * Closed: an advance that is waiting, partial or unknown.
+ * Open:   verified online payment, an advance that is not required, a confirmed advance.
+ * Closed: an advance that is waiting, partial or unknown; an unverified payment.
  *
  * With the source's gate in ENFORCE mode a closed gate refuses the first production document and every action
  * that starts production from stage 1 (claim, stage completion, cutting intake, reassignment). Every check runs
@@ -34,8 +36,9 @@ final class PaymentGate
     public const STATE_WAITING = 'waiting';
     public const STATE_PARTIAL = 'partial';
     public const STATE_UNKNOWN = 'unknown';
+    public const STATE_UNVERIFIED = 'unverified';
 
-    public const METHODS = ['cod', 'online'];
+    public const METHODS = ['cod', 'online', 'unverified'];
     public const ADVANCE_STATUSES = ['not_required', 'waiting', 'partial', 'confirmed'];
 
     private const LABELS = [
@@ -45,12 +48,14 @@ final class PaymentGate
         self::STATE_WAITING => 'Avans neachitat',
         self::STATE_PARTIAL => 'Avans parțial',
         self::STATE_UNKNOWN => 'Avans neverificat',
+        self::STATE_UNVERIFIED => 'Plată neconfirmată',
     ];
 
     private const MESSAGES = [
         self::STATE_WAITING => 'Comanda nu poate intra în producție. Avansul necesar nu a fost confirmat.',
         self::STATE_PARTIAL => 'Comanda nu poate intra în producție. Avansul a fost achitat doar parțial.',
         self::STATE_UNKNOWN => 'Comanda nu poate intra în producție. Magazinul nu a transmis încă starea avansului.',
+        self::STATE_UNVERIFIED => 'Comanda nu poate intra în producție. Plata comenzii nu este confirmată de magazin.',
     ];
 
     private function __construct()
@@ -66,6 +71,9 @@ final class PaymentGate
         if ($method === 'online') {
             return self::STATE_ONLINE;
         }
+        if ($method === 'unverified') {
+            return self::STATE_UNVERIFIED;
+        }
         return match ($advanceStatus) {
             'not_required' => self::STATE_NOT_REQUIRED,
             'confirmed' => self::STATE_CONFIRMED,
@@ -76,7 +84,7 @@ final class PaymentGate
 
     public static function isClosed(string $state): bool
     {
-        return in_array($state, [self::STATE_WAITING, self::STATE_PARTIAL, self::STATE_UNKNOWN], true);
+        return in_array($state, [self::STATE_WAITING, self::STATE_PARTIAL, self::STATE_UNKNOWN, self::STATE_UNVERIFIED], true);
     }
 
     public static function modeFor(?ProductionAuthorityModes $modes, string $sourceKey): PaymentGateMode

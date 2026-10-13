@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 // Read-only backlog report of the source advance payment gate (API 2.29.0). Counts the open orders of each signed
 // source by gate state, document state and production stage, and lists the order numbers that need a person:
-// a closed gate (waiting, partial, unknown) with no document yet, and reversals after production started.
+// a closed gate (waiting, partial, unknown, unverified) with no document yet, and reversals after production started.
 // Opens a read-only transaction; prints no customer data, no amount and no QR.
 //
 //   php bin/payment-gate-report.php [--source=trendhome] [--json]

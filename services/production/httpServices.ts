@@ -396,7 +396,7 @@ export function mapProductionOrder(value: unknown): import("../../domain/models"
     const gate = objectValue(raw.paymentGate);
     if (typeof gate.blocking !== "boolean") throw new StaffServiceError("SERVER_ERROR");
     order.paymentGate = {
-      state: oneOf(gate.state, ["online", "not_required", "confirmed", "waiting", "partial", "unknown"] as const),
+      state: oneOf(gate.state, ["online", "not_required", "confirmed", "waiting", "partial", "unknown", "unverified"] as const),
       label: stringValue(gate.label),
       mode: oneOf(gate.mode, ["observe", "enforce"] as const),
       blocking: gate.blocking,

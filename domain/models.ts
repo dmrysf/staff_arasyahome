@@ -95,7 +95,7 @@ export type OrderActionBlockedReason =
   | "payment_gate_closed";
 
 /** Advance payment gate of a Trend Home / Outlet Perdele order: state only, never an amount. */
-export type PaymentGateState = "online" | "not_required" | "confirmed" | "waiting" | "partial" | "unknown";
+export type PaymentGateState = "online" | "not_required" | "confirmed" | "waiting" | "partial" | "unknown" | "unverified";
 export type PaymentGateView = { state: PaymentGateState; label: string; mode: "observe" | "enforce"; blocking: boolean; reversedAt: string | null };
 
 export type StaffOrder = {

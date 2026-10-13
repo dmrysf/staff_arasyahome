@@ -87,6 +87,7 @@ $payload = static function (string $id, ?array $payment, ?int $ago = null, ?stri
 };
 $cod = static fn (string $status, int $revision = 0, ?string $at = null): array => ['method' => 'cod', 'advanceStatus' => $status, 'advanceRevision' => $revision] + ($at === null ? [] : ['advanceConfirmedAt' => $at]);
 $online = ['method' => 'online', 'advanceStatus' => 'not_required', 'advanceRevision' => 0];
+$unverified = ['method' => 'unverified', 'advanceStatus' => 'waiting', 'advanceRevision' => 0];
 $send = static function (string $source, string $id, ?array $payment, ?object $k = null, ?int $ago = null, ?string $event = null) use ($kernel, $payload, $ok): array {
     return $ok(T::ingest($k ?? $kernel, $source, $payload($id, $payment, $ago, $event)), "ingest {$source}:{$id}");
 };
@@ -112,6 +113,8 @@ $check($heartbeat('trendhome')['paymentGateMode'] === 'enforce' && $heartbeat('o
 foreach ([
     'online with an advance' => ['method' => 'online', 'advanceStatus' => 'waiting', 'advanceRevision' => 0],
     'unknown method' => ['method' => 'card', 'advanceStatus' => 'not_required', 'advanceRevision' => 0],
+    'unverified payment stated as not requiring anything' => ['method' => 'unverified', 'advanceStatus' => 'not_required', 'advanceRevision' => 0],
+    'unverified payment stated as confirmed' => ['method' => 'unverified', 'advanceStatus' => 'confirmed', 'advanceRevision' => 1],
     'unknown status' => ['method' => 'cod', 'advanceStatus' => 'paid', 'advanceRevision' => 0],
     'negative revision' => ['method' => 'cod', 'advanceStatus' => 'waiting', 'advanceRevision' => -1],
     'string revision' => ['method' => 'cod', 'advanceStatus' => 'waiting', 'advanceRevision' => '1'],
@@ -186,6 +189,23 @@ $check($ok($intake("trendhome:{$id(5)}"), 'online intake')['outcome'] === 'start
 $send('trendhome', $id(6), $cod('not_required'));
 $check($ok($generate("trendhome:{$id(6)}"), 'not-required generate', 201) !== [] && $revisions("trendhome:{$id(6)}") === 1, 'a COD order whose source stated no advance requirement is open');
 
+// ---- Unverified payment (unknown gateway, pending/on-hold/failed card) is closed until the source verifies it ----
+$unverifiedId = "trendhome:{$id(11)}";
+$send('trendhome', $id(11), $unverified);
+$check($gate($unverifiedId)['payment_method'] === 'unverified' && $gate($unverifiedId)['advance_status'] === 'waiting', 'the unverified class is stored as stated');
+$check(($error($sourcePrint('trendhome', $id(11)), 409, 'AVANS_NEVALIDAT', 'an unverified payment blocks the first document')['error']['details']['paymentGate'] ?? null) === 'unverified', 'the refusal names the unverified payment');
+$check(($error($generate($unverifiedId), 409, 'AVANS_NEVALIDAT', 'Staff generation is refused too')['error']['message'] ?? '') === 'Comanda nu poate intra în producție. Plata comenzii nu este confirmată de magazin.', 'the unverified refusal is Romanian');
+$error($intake($unverifiedId), 409, 'AVANS_NEVALIDAT', 'an unverified payment blocks the cutting intake');
+$check($sourceStates('trendhome', [$id(11)])['orders'][0]['paymentGate'] === 'unverified' && $revisions($unverifiedId) === 0, 'the source sees the unverified state and no revision exists');
+$unverifiedView = $ok($staff($waiter, 'GET', '/orders/' . rawurlencode($unverifiedId)), 'stage-1 employee reads the unverified order');
+$check(($unverifiedView['paymentGate'] ?? null) === ['state' => 'unverified', 'label' => 'Plată neconfirmată', 'mode' => 'enforce', 'blocking' => true, 'reversedAt' => null], 'Staff shows the unverified payment: ' . json_encode($unverifiedView['paymentGate'] ?? null));
+$check($send('trendhome', $id(11), $online)['outcome'] === 'applied' && $ok($sourcePrint('trendhome', $id(11)), 'verified payment prints')['document']['issued'] === true, 'the gate opens once the source verifies the payment');
+// An online payment that the source later reports pending again (for example a reversed card capture) after
+// cutting started: the stage is kept and the reversal is recorded.
+$ok($intake($unverifiedId), 'the cutter receives the verified order');
+$check($send('trendhome', $id(11), $unverified)['outcome'] === 'applied', 'the source reports the payment unverified after cutting started');
+$check($gate($unverifiedId)['production_stage_id'] === 'material-preparation' && $gate($unverifiedId)['payment_reversed_at'] !== null, 'stage kept, reversal recorded for an unverified payment');
+
 // ---- Source isolation: an Outlet confirmation never opens a Trend Home order ------------------------------------
 $send('trendhome', $id(7), $cod('waiting'));
 $send('outletperdele', $id(7), $cod('confirmed', 1, $confirmedAt));
@@ -230,6 +250,7 @@ $check($gate("trendhome:{$id(10)}")['production_owner_employee_uuid'] === $uuids
 $uuid = (string) $one('SELECT order_uuid FROM operational_orders WHERE global_order_id = ?', ["trendhome:{$id(5)}"]);
 foreach ([
     "UPDATE operational_orders SET advance_status = 'waiting' WHERE order_uuid = ?" => 'online with a waiting advance',
+    "UPDATE operational_orders SET payment_method = 'unverified' WHERE order_uuid = ?" => 'unverified payment that requires nothing',
     "UPDATE operational_orders SET advance_status = NULL WHERE order_uuid = ?" => 'half-stated facts',
     "UPDATE operational_orders SET payment_method = 'card' WHERE order_uuid = ?" => 'unknown method',
     "UPDATE operational_orders SET advance_confirmed_at = UTC_TIMESTAMP(6) WHERE order_uuid = ?" => 'confirmation time without confirmation',

@@ -134,9 +134,10 @@ final class SourceOrderPayloadMapper
     /**
      * Optional advance payment facts (schema 1 extension, sent only by sources that saw the heartbeat's
      * paymentGateMode). Classes and states only, never amounts:
-     * {"method": "cod"|"online", "advanceStatus": "not_required"|"waiting"|"partial"|"confirmed",
+     * {"method": "cod"|"online"|"unverified", "advanceStatus": "not_required"|"waiting"|"partial"|"confirmed",
      *  "advanceRevision": int (number of recorded confirmations, never decreasing for one source order),
-     *  "advanceConfirmedAt": ISO-8601 UTC|null (only with "confirmed")}. An online order never needs an advance.
+     *  "advanceConfirmedAt": ISO-8601 UTC|null (only with "confirmed")}. A verified online payment never needs an
+     * advance (`not_required`); an unverified payment is always `waiting` (closed until the source confirms it).
      *
      * @return array{method: string, advanceStatus: string, advanceRevision: int, advanceConfirmedAt: DateTimeImmutable|null}|null
      */
@@ -153,7 +154,7 @@ final class SourceOrderPayloadMapper
         if (!in_array($method, \Arasya\Operations\Production\PaymentGate::METHODS, true)) {
             throw self::invalid('order.payment.method');
         }
-        if (!in_array($status, \Arasya\Operations\Production\PaymentGate::ADVANCE_STATUSES, true) || ($method === 'online' && $status !== 'not_required')) {
+        if (!in_array($status, \Arasya\Operations\Production\PaymentGate::ADVANCE_STATUSES, true) || ($method === 'online' && $status !== 'not_required') || ($method === 'unverified' && $status !== 'waiting')) {
             throw self::invalid('order.payment.advanceStatus');
         }
         if (!is_int($revision) || $revision < 0 || $revision > self::MAX_ADVANCE_REVISION) {

@@ -33,6 +33,9 @@ test("the gate view carries no amount and fails closed on unknown values", () =>
   const reversed = mapProductionOrder({ ...order, productionStageId: "material-preparation",
     paymentGate: { state: "partial", label: "Avans parțial", mode: "enforce", blocking: false, reversedAt: "2026-10-13T09:00:00Z" } });
   assert.equal(reversed.paymentGate?.reversedAt, "2026-10-13T09:00:00Z");
+  const unverified = mapProductionOrder({ ...order, employeeActionBlockedReason: "payment_gate_closed",
+    paymentGate: { state: "unverified", label: "Plată neconfirmată", mode: "enforce", blocking: true, reversedAt: null } });
+  assert.equal(unverified.paymentGate?.state, "unverified");
   assert.ok(!JSON.stringify(reversed).match(/amount|lei|RON/i));
 });
 
