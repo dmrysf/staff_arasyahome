@@ -131,7 +131,7 @@ final class Container
         $orders = $this->orderRepository();
         $authorityModes = $this->authorityModes();
         $policy = new OrderAccessPolicy($authorization, $authorityModes);
-        $serializer = new OrderSerializer();
+        $serializer = new OrderSerializer($this->authorityModes());
         $rateLimiter = new PdoApiRateLimiter($this->pdo, $this->clock, $this->config->appSecret);
         $iamAudit = new IamAuditLogger($this->pdo);
         $approvers = new ApproverPolicy($this->pdo, $authorization, $this->clock);

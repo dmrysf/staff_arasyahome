@@ -181,6 +181,7 @@ final readonly class Config
                 'qrAuthority' => self::value($values, "ARASYA_SOURCE_QR_AUTHORITY_{$suffix}", ''),
                 'documentAuthority' => self::value($values, "ARASYA_SOURCE_DOCUMENT_AUTHORITY_{$suffix}", ''),
                 'trackingAuthority' => self::value($values, "ARASYA_SOURCE_TRACKING_AUTHORITY_{$suffix}", ''),
+                'paymentGate' => self::value($values, "ARASYA_SOURCE_PAYMENT_GATE_{$suffix}", ''),
             ], static fn (string $value): bool => $value !== '');
         }
         return $settings;

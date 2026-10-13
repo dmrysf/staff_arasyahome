@@ -94,6 +94,8 @@ final readonly class SourceIngestionController
             'qrAuthorityMode' => $source->qrAuthorityMode->value,
             'documentAuthorityMode' => $source->documentAuthorityMode->value,
             'trackingAuthorityMode' => $source->trackingAuthorityMode->value,
+            // Present means this server accepts the optional order.payment facts in schema 1.
+            'paymentGateMode' => $source->paymentGateMode->value,
             'contract' => [
                 'schemaVersion' => 1,
                 'workflowId' => $workflow['id'],

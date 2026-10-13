@@ -16,8 +16,9 @@ final readonly class ProductionAuthorityModes
      * @param array<string, ProductionAuthorityMode> $modes
      * @param array<string, QrAuthorityMode> $qrModes
      * @param array<string, DocumentAuthorityMode> $documentModes
+     * @param array<string, PaymentGateMode> $paymentGateModes
      */
-    public function __construct(private array $modes = [], private array $qrModes = [], private array $documentModes = [])
+    public function __construct(private array $modes = [], private array $qrModes = [], private array $documentModes = [], private array $paymentGateModes = [])
     {
     }
 
@@ -26,12 +27,14 @@ final readonly class ProductionAuthorityModes
         $modes = [];
         $qrModes = [];
         $documentModes = [];
+        $paymentGateModes = [];
         foreach ($registry->all() as $source) {
             $modes[$source->key] = $source->authorityMode;
             $qrModes[$source->key] = $source->qrAuthorityMode;
             $documentModes[$source->key] = $source->documentAuthorityMode;
+            $paymentGateModes[$source->key] = $source->paymentGateMode;
         }
-        return new self($modes, $qrModes, $documentModes);
+        return new self($modes, $qrModes, $documentModes, $paymentGateModes);
     }
 
     public function modeFor(string $sourceKey): ProductionAuthorityMode
@@ -49,6 +52,12 @@ final readonly class ProductionAuthorityModes
     public function documentModeFor(string $sourceKey): DocumentAuthorityMode
     {
         return $this->documentModes[$sourceKey] ?? DocumentAuthorityMode::Legacy;
+    }
+
+    /** The advance payment gate mode of a signed source; OFF for every other source (B2B, Trendyol). */
+    public function paymentGateModeFor(string $sourceKey): PaymentGateMode
+    {
+        return $this->paymentGateModes[$sourceKey] ?? PaymentGateMode::Off;
     }
 
     /** Whether the source is a signed commerce source whose authority can be managed at all. */

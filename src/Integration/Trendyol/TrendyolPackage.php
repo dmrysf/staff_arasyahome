@@ -15,11 +15,16 @@ use InvalidArgumentException;
  * invoice address, the customer email and identity numbers are never read. The delivery identity is reduced
  * to the printable form (masked phone). Cargo barcodes and tracking numbers are never read either: they belong
  * to Trendyol's courier and are never confused with an Arasya production QR.
+ *
+ * `stockCode` keeps the raw marketplace value (it is part of the lines hash). `productCode` is the seller's own
+ * product code resolved from it: Trendyol answers the literal placeholder "merchantSku" in `stockCode` and
+ * `merchantSku` when the seller has no stock code, and then the seller's code is the line's `sku`. A placeholder or
+ * an empty value is never a product code; the barcode is never used as one.
  */
 final readonly class TrendyolPackage
 {
     /**
-     * @param list<array{lineId: int, lineNumber: int, productName: string, stockCode: string|null, barcode: string|null, productSize: string|null, productColor: string|null, quantity: int, lineStatus: string|null}> $lines
+     * @param list<array{lineId: int, lineNumber: int, productName: string, stockCode: string|null, productCode: string|null, barcode: string|null, productSize: string|null, productColor: string|null, quantity: int, lineStatus: string|null}> $lines
      * @param array{name: string|null, company: string|null, addressLines: list<string>, phoneMasked: string|null}|null $delivery
      */
     private function __construct(
@@ -65,6 +70,7 @@ final readonly class TrendyolPackage
                 'lineNumber' => $index + 1,
                 'productName' => mb_substr(trim($line['productName']), 0, 255),
                 'stockCode' => self::optional($line['stockCode'] ?? $line['merchantSku'] ?? null, 120),
+                'productCode' => self::productCode($line),
                 'barcode' => self::optional($line['barcode'] ?? null, 120),
                 'productSize' => self::optional($line['productSize'] ?? null, 160),
                 'productColor' => self::optional($line['productColor'] ?? null, 160),
@@ -121,6 +127,26 @@ final readonly class TrendyolPackage
         } catch (InvalidArgumentException) {
             return null;
         }
+    }
+
+    /** Field values Trendyol uses as placeholders instead of a code (compared case-insensitively). */
+    public const CODE_PLACEHOLDERS = ['merchantsku', 'stockcode', 'sku', 'barcode'];
+
+    /**
+     * The seller's product code of a marketplace line: the first real value of stockCode, merchantSku and sku, in
+     * that order. Empty strings and placeholders are skipped (null coalescing alone would keep them).
+     *
+     * @param array<string, mixed> $line
+     */
+    public static function productCode(array $line): ?string
+    {
+        foreach (['stockCode', 'merchantSku', 'sku'] as $field) {
+            $value = self::optional($line[$field] ?? null, 120);
+            if ($value !== null && !in_array(strtolower($value), self::CODE_PLACEHOLDERS, true)) {
+                return $value;
+            }
+        }
+        return null;
     }
 
     private static function optional(mixed $value, int $max): ?string

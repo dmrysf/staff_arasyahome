@@ -6,6 +6,7 @@ namespace Arasya\Operations\Integration;
 
 use Arasya\Operations\Config\Config;
 use Arasya\Operations\Production\DocumentAuthorityMode;
+use Arasya\Operations\Production\PaymentGateMode;
 use Arasya\Operations\Production\ProductionAuthorityMode;
 use Arasya\Operations\Production\QrAuthorityMode;
 use Arasya\Operations\Production\TrackingAuthorityMode;
@@ -113,6 +114,13 @@ final readonly class SourceRegistry
                 $issues[] = ['code' => 'tracking_authority_requires_production_enforce', 'sourceKey' => $key];
                 $trackingAuthority = TrackingAuthorityMode::Observe;
             }
+            // The advance payment gate never makes a source unusable either: an unreadable value is reported and
+            // falls back to OFF (no gate), exactly like a deployment without the setting.
+            $paymentGate = PaymentGateMode::tryFrom(strtolower($settings['paymentGate'] ?? PaymentGateMode::Off->value));
+            if ($paymentGate === null) {
+                $issues[] = ['code' => 'invalid_payment_gate_mode', 'sourceKey' => $key];
+                $paymentGate = PaymentGateMode::Off;
+            }
             $valid = true;
             foreach ([
                 'missing_secret' => !isset($config->sourceSecrets[$key]),
@@ -127,7 +135,7 @@ final readonly class SourceRegistry
                 }
             }
             if ($valid && $mode !== null && $enabled !== null) {
-                $sources[$key] = new SourceDefinition($key, $displayName, $type, $enabled, $mode, $authority, $qrAuthority, $documentAuthority, $trackingAuthority);
+                $sources[$key] = new SourceDefinition($key, $displayName, $type, $enabled, $mode, $authority, $qrAuthority, $documentAuthority, $trackingAuthority, $paymentGate);
             }
         }
         return new self($sources, $issues);

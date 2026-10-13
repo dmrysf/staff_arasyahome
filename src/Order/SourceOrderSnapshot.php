@@ -11,6 +11,8 @@ final readonly class SourceOrderSnapshot
     /**
      * @param list<OperationalOrderItem> $items
      * @param array{name: string|null, company: string|null, addressLines: list<string>, phoneMasked: string|null}|null $delivery printable delivery identity (masked phone only)
+     * @param array{method: string, advanceStatus: string, advanceRevision: int, advanceConfirmedAt: DateTimeImmutable|null}|null $payment
+     *        the source's advance payment facts (no amounts); null when the source did not state them
      */
     public function __construct(
         public string $sourceKey,
@@ -27,6 +29,7 @@ final readonly class SourceOrderSnapshot
         public ?DateTimeImmutable $acceptedAt,
         public array $items,
         public ?array $delivery = null,
+        public ?array $payment = null,
     ) {
         // Centralize identity validation
         new GlobalOrderId($this->sourceKey, $this->sourceOrderId);
