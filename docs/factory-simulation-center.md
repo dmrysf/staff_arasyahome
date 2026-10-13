@@ -94,7 +94,7 @@ The URL is fixed to loopback and the authenticated environment/session marker mu
 
 ## Scenario catalog and honest result semantics
 
-Exactly four Woo bases: two Trendhome, two OutletPerdele; measured curtain, drapery, mixed accessory and standard-only lines. The sixteen Trendyol bases cover quantity, size variants, colors, missing title/measurement, placeholder SKU, changes/cancellations, replay, 429, ReadyToShip, unknown status, split and historical boundary.
+Exactly four Woo bases: two Trendhome, two OutletPerdele; measured curtain, drapery, mixed accessory and standard-only lines. Permitted prepared Trendyol packages and measured/mixed Woo orders continue through all fourteen stages; a recovered TY-12 fixture retries real release after its expected 429 refusal. The sixteen Trendyol bases cover quantity, size variants, colors, missing title/measurement, placeholder SKU, changes/cancellations, replay, 429, ReadyToShip, unknown status, split and historical boundary.
 
 The Woo matrix separately covers m/cm/mm, numeric boundaries, invalid text/unit/quantity and legacy/observe/enforce on both sources. Tests preserve units; they do not invent a conversion or meter-consumption rule. API-level numbers are JSON numbers, so comma conversion is tested in the actual connector; a numeric string at the wire is rejected by the strict API.
 

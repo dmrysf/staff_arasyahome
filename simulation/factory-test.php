@@ -143,7 +143,7 @@ try {
                 $packages=[]; foreach (ScenarioCatalog::TY as $restoreId=>$def) $packages[]=ScenarioCatalog::trendyol($restoreId,$manifest['sessionId'],1,(int)$env['baseline_ms']);
                 file_put_contents($container->config()->trendyolFixtureFile,json_encode(['packages'=>$packages],JSON_THROW_ON_ERROR));
             }
-            continue;
+            if ($id!=='TY-12') continue;
         }
         $key='factory-release-' . $id;
         $released=$ok($call('trendyol-approver','POST',$path . '/release',['expectedVersion'=>$detail['version'],'confirm'=>true],$key),$id . '-release',201);
@@ -173,7 +173,7 @@ try {
         $check($state($global)['production_completed_at']!==null,$label . '-finished','Production completed once');
     };
     foreach (['WOO-TH-002','WOO-OP-001'] as $id) $complete((string)$one('SELECT order_id FROM simulation_runs WHERE scenario_id=?',[$id]),$id);
-    foreach (['TY-01','TY-02','TY-03','TY-04','TY-07','TY-11','TY-15'] as $id) {
+    foreach (['TY-01','TY-02','TY-03','TY-04','TY-07','TY-11','TY-12','TY-15'] as $id) {
         $packageId=$one('SELECT package_id FROM simulation_runs WHERE scenario_id=?',[$id]);
         $global=$one('SELECT global_order_id FROM operational_orders WHERE source_key=\'trendyol\' AND source_order_id=?',[$packageId]);
         $complete((string)$global,$id);
