@@ -1,3 +1,5 @@
+import { liveLabels } from "../i18n";
+
 /** Who issues the production QR identity of an order: Arasya, or still the commerce source (legacy YD SOFT). */
 export type QrAuthority = "arasya" | "source";
 export type QrAuthorityMode = "legacy" | "observe" | "enforce" | "internal";
@@ -42,40 +44,13 @@ export interface ProductionQrApi {
   rotate(globalOrderId: string, input: { expectedQrRevision: number; reason: QrRotationReason }, idempotencyKey: string): Promise<ProductionQrView>;
 }
 
-export const qrAuthorityLabels: Record<QrAuthority, string> = {
-  arasya: "Cod QR gestionat de Arasya",
-  source: "Cod QR gestionat încă de sursă (YD SOFT)",
-};
-
-export const qrAuthorityModeLabels: Record<QrAuthorityMode, string> = {
-  legacy: "Autoritatea QR Arasya nu este activată pentru această sursă.",
-  observe: "Mod observare: YD SOFT încă tipărește propriul cod; Arasya înregistrează diferențele.",
-  enforce: "Arasya este singura autoritate pentru codul QR de producție al acestei surse.",
-  internal: "Comandă internă Arasya.",
-};
-
-export const qrRevisionStateLabels: Record<QrRevisionState, string> = {
-  active: "Activ",
-  superseded: "Înlocuit",
-  revoked: "Anulat",
-  retired: "Retras",
-};
-
-export const qrRotationReasonLabels: Record<QrRotationReason, string> = {
-  label_lost: "Eticheta s-a pierdut",
-  label_damaged: "Eticheta este deteriorată",
-  security: "Motiv de securitate",
-};
-
-export const qrRotateBlockedCopy: Record<string, string> = {
-  qr_source_not_supported: "Codul QR al acestei comenzi se schimbă doar prin revizia documentului de producție.",
-  qr_cutover_disabled: "Autoritatea QR Arasya nu este activată pentru această sursă.",
-  qr_not_arasya: "Producția comenzii nu este gestionată în Arasya.",
-  production_completed: "Producția comenzii este finalizată.",
-  order_unavailable: "Comanda nu este disponibilă pentru producție.",
-  qr_document_controlled: "Comanda are un document de producție: codul se schimbă doar printr-o revizie aprobată.",
-  qr_missing: "Comanda nu are încă un cod QR activ.",
-};
+export const qrAuthorityLabels: Readonly<Record<QrAuthority, string>> = liveLabels("qrp.authority.", ["arasya", "source"]);
+export const qrAuthorityModeLabels: Readonly<Record<QrAuthorityMode, string>> = liveLabels("qrp.mode.", ["legacy", "observe", "enforce", "internal"]);
+export const qrRevisionStateLabels: Readonly<Record<QrRevisionState, string>> = liveLabels("qrp.state.", ["active", "superseded", "revoked", "retired"]);
+export const qrRotationReasonLabels: Readonly<Record<QrRotationReason, string>> = liveLabels("qrp.reason.", ["label_lost", "label_damaged", "security"]);
+export const qrRotateBlockedCopy: Readonly<Record<string, string>> = liveLabels("qrp.blocked.", [
+  "qr_source_not_supported", "qr_cutover_disabled", "qr_not_arasya", "production_completed", "order_unavailable", "qr_document_controlled", "qr_missing",
+]);
 
 /** "ARASYA-QR-63380-R2.svg" — no customer data in file names. */
 export function qrLabelFilename(orderNumber: string, revision: number): string {

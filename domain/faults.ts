@@ -1,24 +1,16 @@
 import { documentLiveMessage } from "./documents";
+import { liveLabels, t, tKnown, type MessageKey } from "../i18n";
 import type { FaultException, FaultExceptionStatus, LiveEvent, OrderSource, ProductionItem, QualityCapabilities, StaffOrder, SupervisorView } from "./models";
 
-export const faultStatusLabels: Record<FaultExceptionStatus, string> = {
-  awaiting_acknowledgment: "Așteaptă confirmarea de la tăiere",
-  awaiting_approval: "Așteaptă aprobarea managerului",
-  approved: "Aprobată · lucrarea se reface",
-  rejected: "Respinsă de manager",
-  cancelled: "Anulată",
-  awaiting_supervisor_review: "Așteaptă verificarea șefului de croitorie",
-  dismissed: "Închisă de șeful de croitorie",
-  in_supervisor_custody: "În grija șefului de croitorie",
-  return_rejected: "Returnarea la tăiere a fost respinsă",
-  awaiting_restore_receipt: "Așteaptă primirea înapoi la croitorie",
-  restored: "Rezolvată în croitorie",
-};
+export const faultStatusLabels: Readonly<Record<FaultExceptionStatus, string>> = liveLabels("fault.status.", [
+  "awaiting_acknowledgment", "awaiting_approval", "approved", "rejected", "cancelled", "awaiting_supervisor_review", "dismissed",
+  "in_supervisor_custody", "return_rejected", "awaiting_restore_receipt", "restored",
+]);
 
 /** Supervised cases word receipt and rework without implying that anyone admitted a fault. */
 export function faultStatusLabel(fault: Pick<FaultException, "type" | "status">): string {
-  if (fault.type === "tailoring_defect" && fault.status === "awaiting_acknowledgment") return "Așteaptă primirea la tăiere";
-  if (fault.type === "tailoring_defect" && fault.status === "approved") return "Aprobată · se reface la tăiere";
+  if (fault.type === "tailoring_defect" && fault.status === "awaiting_acknowledgment") return t("fault.status.tailoringAwaitingAcknowledgment");
+  if (fault.type === "tailoring_defect" && fault.status === "approved") return t("fault.status.tailoringApproved");
   return faultStatusLabels[fault.status];
 }
 
@@ -37,44 +29,24 @@ export function canReportDefect(order: StaffOrder, permissions: readonly string[
     && order.employeeAllowedAction?.id === "complete_stage" && !order.productionQuality?.openException && permissions.includes("orders.report_fault");
 }
 
-export const supervisorViews: { id: SupervisorView; label: string; empty: string }[] = [
-  { id: "review", label: "De verificat", empty: "Nicio problemă nouă de verificat." },
-  { id: "custody", label: "În grija mea", empty: "Nu ai comenzi în grijă." },
-  { id: "return", label: "De returnat la tăiere", empty: "Nicio returnare la tăiere în curs." },
-  { id: "done", label: "Finalizate", empty: "Nicio comandă finalizată în ultimele 30 de zile." },
-];
+const SUPERVISOR_VIEWS: readonly SupervisorView[] = ["review", "custody", "return", "done"];
+/** The supervisor's four tabs; label and empty text are read in the active language. */
+export const supervisorViews: readonly { readonly id: SupervisorView; readonly label: string; readonly empty: string }[] = SUPERVISOR_VIEWS.map((id) => Object.freeze({
+  id,
+  get label() { return t(`supervisor.view.${id}`); },
+  get empty() { return t(`supervisor.view.${id}.empty`); },
+}));
 
-export const responsibilityLabels: Record<"accepted" | "disputed" | "not_stated", string> = {
-  accepted: "Tăietorul recunoaște eroarea",
-  disputed: "Tăietorul contestă responsabilitatea",
-  not_stated: "Primit de un alt tăietor · fără poziție",
-};
+export const responsibilityLabels: Readonly<Record<"accepted" | "disputed" | "not_stated", string>> = liveLabels("fault.responsibility.", ["accepted", "disputed", "not_stated"]);
 
-const timelineLabels: Record<string, string> = {
-  reported: "Problemă raportată",
-  supervisor_accepted: "Confirmată de șeful de croitorie · preluată în grijă",
-  supervisor_dismissed: "Închisă de șeful de croitorie",
-  return_requested: "Trimisă la tăiere pentru verificare",
-  acknowledged: "Produs primit la tăiere (etichetă scanată)",
-  approval_requested: "Aprobare cerută managerului",
-  approved: "Aprobată de manager · returnată la tăiere",
-  rejected: "Respinsă de manager",
-  rereview_requested: "Reanalizare cerută",
-  restored: "Readusă în producție la croitorie",
-  restore_requested: "Predată înapoi la croitorie · așteaptă confirmarea primirii",
-  restore_received: "Primită înapoi (etichetă scanată) · producția continuă",
-  recovery_requested: "Recuperare cerută de administrator · așteaptă primirea",
-  note_added: "Informație adăugată",
-  cancelled: "Anulată",
-};
 
 export function timelineLabel(action: string): string {
-  return timelineLabels[action] ?? action;
+  return tKnown("fault.timeline", action, action);
 }
 
 /** "17.000" -> "17 m", "8.400" -> "8,4 m"; null (the source sent no meters) -> "fără metraj". Display only. */
 export function formatDecimalMeters(value: string | null): string {
-  if (value === null) return "fără metraj";
+  if (value === null) return t("common.noMeters");
   const trimmed = value.includes(".") ? value.replace(/0+$/, "").replace(/\.$/, "") : value;
   return `${trimmed.replace(".", ",")} m`;
 }
@@ -90,14 +62,14 @@ export function selectedMeters(items: ProductionItem[], selected: ReadonlySet<st
 
 /** Scope of a request: known meters and, separately, the lines without meters. Never shows unknown meters as 0. */
 export function formatFaultMeters(fault: Pick<FaultException, "faultMeters" | "unmeasuredLineCount">): string {
-  const unknown = fault.unmeasuredLineCount === 1 ? "1 produs fără metraj" : `${fault.unmeasuredLineCount} produse fără metraj`;
+  const unknown = t("fault.unmeasured", { count: fault.unmeasuredLineCount });
   if (fault.faultMeters === null) return unknown;
   return fault.unmeasuredLineCount > 0 ? `${formatDecimalMeters(fault.faultMeters)} + ${unknown}` : formatDecimalMeters(fault.faultMeters);
 }
 
 export function arrivalLabel(arrival: number): string | null {
   if (arrival < 2) return null;
-  return arrival === 2 ? "A doua sosire · după revizie" : `Sosirea a ${arrival}-a · după revizie`;
+  return arrival === 2 ? t("fault.arrivalSecond") : t("fault.arrivalNth", { count: arrival });
 }
 
 export function needsMyAction(fault: FaultException): boolean {
@@ -105,23 +77,14 @@ export function needsMyAction(fault: FaultException): boolean {
   return actions.canAcknowledge || actions.canRequestRereview || actions.canReview || actions.canRequestReturn || actions.canAskManagersAgain || actions.canConfirmRestore;
 }
 
-const liveMessages: Partial<Record<string, (orderNumber: string) => string>> = {
-  "cutting.transfer.approved": (n) => `Transferul comenzii #${n} a fost aprobat. Acceptă și scanează aceeași etichetă pentru preluare.`,
-  "cutting.transfer.rejected": (n) => `Transferul comenzii #${n} a fost respins. Vezi motivul în cerere.`,
-  "cutting.transfer.completed": (n) => `Transferul comenzii #${n} este finalizat. Noul proprietar poate continua.`,
-  "exception.acknowledgment_required": (n) => `Comanda #${n} este trimisă la tăiere. Verifică produsul și scanează eticheta.`,
-  "exception.review_required": (n) => `Problemă nouă raportată la comanda #${n}. Verific-o în „Comenzi cu probleme”.`,
-  "exception.custody_taken": (n) => `Șeful de croitorie a preluat comanda #${n}.`,
-  "exception.dismissed": (n) => `Șeful de croitorie a închis raportul pentru comanda #${n}.`,
-  "exception.restored": (n) => `Comanda #${n} a revenit în producție la croitorie.`,
-  "exception.restore_receipt_required": (n) => `Comanda #${n} îți este predată înapoi. Primește produsul, scanează eticheta și confirmă primirea.`,
-  "exception.approved": (n) => `Aprobarea a fost acordată. Lucrarea poate fi refăcută. Comanda #${n}.`,
-  "exception.rejected": (n) => `Managerul a respins returnarea la tăiere pentru comanda #${n}.`,
-};
+const LIVE_TYPES = new Set([
+  "cutting.transfer.approved", "cutting.transfer.rejected", "cutting.transfer.completed", "exception.acknowledgment_required",
+  "exception.review_required", "exception.custody_taken", "exception.dismissed", "exception.restored", "exception.restore_receipt_required",
+  "exception.approved", "exception.rejected",
+]);
 
 export function liveMessage(type: string, orderNumber?: string, revisionNumber?: number): string | null {
-  const message = liveMessages[type];
-  if (message) return orderNumber ? message(orderNumber) : null;
+  if (LIVE_TYPES.has(type)) return orderNumber ? t(`live.${type}` as MessageKey, { number: orderNumber }) : null;
   return documentLiveMessage(type, orderNumber, revisionNumber);
 }
 

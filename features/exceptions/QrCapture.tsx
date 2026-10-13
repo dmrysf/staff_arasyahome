@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useI18n } from "../../i18n";
 import { selectQrDecoder, type QrDecoder } from "../scanner/qrDecoder";
 
 /**
@@ -6,6 +7,7 @@ import { selectQrDecoder, type QrDecoder } from "../scanner/qrDecoder";
  * employee can type the label code. The server verifies that the code belongs to the same order.
  */
 export function QrCapture({ onToken, disabled }: { onToken: (token: string) => void; disabled?: boolean }) {
+  const { t } = useI18n();
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const decoderRef = useRef<QrDecoder | null>(null);
@@ -61,14 +63,14 @@ export function QrCapture({ onToken, disabled }: { onToken: (token: string) => v
 
   return (
     <div className="qr-capture">
-      <div className={state === "scanning" ? "qr-capture-view active" : "qr-capture-view"}><video ref={videoRef} muted playsInline aria-label="Imagine cameră pentru eticheta comenzii" /></div>
-      {state !== "scanning" && <button className="button button-primary button-large" type="button" disabled={disabled || state === "starting"} onClick={start}>{state === "starting" ? "Se deschide camera…" : "Scanează eticheta QR a comenzii"}</button>}
-      {state === "scanning" && <p className="qr-capture-hint" role="status">Aliniază eticheta comenzii în cadru.</p>}
-      {state === "failed" && <p className="order-notice" role="status">Camera nu este disponibilă. Introdu codul de pe etichetă.</p>}
-      {!manual && <button className="button button-link" type="button" onClick={() => { stop(); setState("idle"); setManual(true); }}>Introdu codul de pe etichetă</button>}
+      <div className={state === "scanning" ? "qr-capture-view active" : "qr-capture-view"}><video ref={videoRef} muted playsInline aria-label={t("qr.videoLabel")} /></div>
+      {state !== "scanning" && <button className="button button-primary button-large" type="button" disabled={disabled || state === "starting"} onClick={start}>{state === "starting" ? t("scanner.opening") : t("qr.scan")}</button>}
+      {state === "scanning" && <p className="qr-capture-hint" role="status">{t("qr.align")}</p>}
+      {state === "failed" && <p className="order-notice" role="status">{t("qr.cameraUnavailable")}</p>}
+      {!manual && <button className="button button-link" type="button" onClick={() => { stop(); setState("idle"); setManual(true); }}>{t("qr.manual")}</button>}
       {manual && <form className="qr-manual" onSubmit={(event) => { event.preventDefault(); if (code.trim()) onToken(code.trim()); }}>
-        <label className="field"><span>Cod etichetă (ARASYA:Q1:…)</span><input autoComplete="off" autoCapitalize="characters" spellCheck={false} maxLength={64} value={code} onChange={(event) => setCode(event.target.value)} /></label>
-        <button className="button button-secondary" type="submit" disabled={disabled || !code.trim()}>Verifică codul</button>
+        <label className="field"><span>{t("qr.codeLabel")}</span><input autoComplete="off" autoCapitalize="characters" spellCheck={false} maxLength={64} value={code} onChange={(event) => setCode(event.target.value)} /></label>
+        <button className="button button-secondary" type="submit" disabled={disabled || !code.trim()}>{t("qr.verify")}</button>
       </form>}
     </div>
   );

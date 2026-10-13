@@ -1,4 +1,5 @@
 import type { Employee } from "./models";
+import { liveLabels, t } from "../i18n";
 
 /**
  * Staff Trendyol workspace. Incoming Trendyol packages are intake work only: they enter production solely through
@@ -82,12 +83,7 @@ export type TrendyolActivity = {
   recent: { action: "line_prepared" | "released" | "dismissed" | "reopened"; packageId: string | null; orderNumber: string | null; at: string | null }[];
 };
 
-export const activityActionLabels: Record<TrendyolActivity["recent"][number]["action"], string> = {
-  line_prepared: "Linie pregătită",
-  released: "Aprobată pentru producție",
-  dismissed: "Scoasă din lucru",
-  reopened: "Readusă în lucru",
-};
+export const activityActionLabels: Readonly<Record<TrendyolActivity["recent"][number]["action"], string>> = liveLabels("ty.activity.", ["line_prepared", "released", "dismissed", "reopened"]);
 
 export type TrendyolLineInput = { expectedVersion: number; kind: TrendyolLineKind; productionTitle: string; widthCm?: string; heightCm?: string; meters?: string; notes?: string };
 
@@ -112,61 +108,23 @@ export function canUseTrendyolWorkspace(employee: Employee): boolean {
 }
 
 /** Trendyol Seller Panel statuses, shown read-only. Arasya never changes them. */
-export const marketplaceStatusLabels: Record<string, string> = {
-  Awaiting: "În așteptarea confirmării plății",
-  Verified: "Plată verificată",
-  Created: "Nouă",
-  Picking: "În pregătire",
-  Invoiced: "Facturată",
-  ReadyToShip: "Pregătită pentru curier",
-  Shipped: "Expediată",
-  Delivered: "Livrată",
-  UnDelivered: "Nelivrată",
-  Returned: "Returnată",
-  UnDeliveredAndReturned: "Nelivrată și returnată",
-  Cancelled: "Anulată",
-  UnSupplied: "Nefurnizată",
-  UnPacked: "Pachet împărțit",
-  AtCollectionPoint: "La punctul de ridicare",
-};
+export const marketplaceStatusLabels: Readonly<Record<string, string>> = liveLabels("ty.marketplace.", [
+  "Awaiting", "Verified", "Created", "Picking", "Invoiced", "ReadyToShip", "Shipped", "Delivered", "UnDelivered", "Returned",
+  "UnDeliveredAndReturned", "Cancelled", "UnSupplied", "UnPacked", "AtCollectionPoint",
+]);
 
-export const intakeStatusLabels: Record<TrendyolIntakeStatus, string> = {
-  pending: "De pregătit",
-  released: "Trimisă în producție",
-  dismissed: "Scoasă din lucru",
-  marketplace_cancelled: "Anulată în Trendyol",
-};
+export const intakeStatusLabels: Readonly<Record<TrendyolIntakeStatus, string>> = liveLabels("ty.intake.", ["pending", "released", "dismissed", "marketplace_cancelled"]);
 
-export const ignoredReasonLabels: Record<TrendyolIgnoredPackage["reason"], string> = {
-  historical: "Comandă anterioară activării (istorică)",
-  status_not_eligible: "Nu era o comandă nouă (expediată, livrată, anulată…)",
-  order_date_missing: "Fără dată de comandă",
-};
+export const ignoredReasonLabels: Readonly<Record<TrendyolIgnoredPackage["reason"], string>> = liveLabels("ty.ignored.", ["historical", "status_not_eligible", "order_date_missing"]);
 
 /** Shown on packages ordered within five minutes after activation: a manual-duplication check, not a timezone rule. */
-export const nearActivationWarning = "Comanda a fost plasată în primele 5 minute după activarea conexiunii. Verifică să nu fi fost deja preluată manual în producție înainte de aprobare.";
+export const nearActivationWarning = (): string => t("ty.nearActivation");
 
 /** Section headings of the attention list, by marketplace class. */
-export const marketplaceClassLabels: Record<TrendyolMarketplaceClass, string> = {
-  new: "Gata de pregătire",
-  payment_pending: "În așteptarea confirmării plății",
-  review: "Necesită verificare",
-  fulfilment: "Excepție de livrare",
-  returned: "Returnată",
-  cancelled: "Anulată în Trendyol",
-  split: "Pachet împărțit în Trendyol",
-};
+export const marketplaceClassLabels: Readonly<Record<TrendyolMarketplaceClass, string>> = liveLabels("ty.class.", ["new", "payment_pending", "review", "fulfilment", "returned", "cancelled", "split"]);
 
 /** Why a pending package cannot be released yet. The API enforces the same rule. */
-export const blockedReasonMessages: Record<TrendyolBlockedReason, string> = {
-  payment_pending: "În așteptarea confirmării plății. Comanda poate intra în producție numai după ce Trendyol confirmă plata.",
-  review: "Necesită verificare: Trendyol arată comanda ca pregătită pentru curier. Nu poate fi trimisă în producție din Arasya în acest status. Verifică în Seller Panel.",
-  unknown_status: "Status necunoscut — verificare necesară. Comanda nu poate fi trimisă în producție până când Trendyol o trece într-un status cunoscut.",
-  fulfilment: "Comanda este deja expediată sau în livrare în Trendyol (excepție de livrare). Nu poate intra în producție.",
-  returned: "Comanda a fost returnată în Trendyol (retur, nu anulare). Nu poate intra în producție.",
-  cancelled: "Comanda a fost anulată în Trendyol. Nu poate intra în producție.",
-  split: "Pachetul a fost împărțit în Trendyol. Pachetele noi apar separat.",
-};
+export const blockedReasonMessages: Readonly<Record<TrendyolBlockedReason, string>> = liveLabels("ty.blocked.", ["payment_pending", "review", "unknown_status", "fulfilment", "returned", "cancelled", "split"]);
 
 /** The Arasya intake label, naming a split instead of a cancellation. */
 export function intakeLabel(summary: Pick<TrendyolPackageSummary, "intakeStatus" | "marketplaceClass">): string {
@@ -183,13 +141,9 @@ export function marketplaceClassOf(status: string): TrendyolMarketplaceClass {
   return classes[status] ?? "review";
 }
 
-export const lineKindLabels: Record<TrendyolLineKind, string> = { curtain: "Perdea", drapery: "Draperie", other: "Alt produs (fără măsuri)" };
+export const lineKindLabels: Readonly<Record<TrendyolLineKind, string>> = liveLabels("ty.kind.", ["curtain", "drapery", "other"]);
 
-export const intakeStateLabels: Record<TrendyolOverview["intake"]["status"], string> = {
-  inactive: "Conexiunea Trendyol nu este activată. Nu se citesc comenzi.",
-  active: "Conexiune activă (numai citire).",
-  paused: "Conexiune oprită temporar.",
-};
+export const intakeStateLabels: Readonly<Record<TrendyolOverview["intake"]["status"], string>> = liveLabels("ty.connection.", ["inactive", "active", "paused"]);
 
 /** Exact decimal text the API accepts: up to six digits and three decimals, comma or dot. */
 export function normalizeMeasure(value: string): string | null {
@@ -199,5 +153,5 @@ export function normalizeMeasure(value: string): string | null {
 }
 
 export function marketplaceLabel(status: string): string {
-  return marketplaceStatusLabels[status] ?? status;
+  return Object.hasOwn(marketplaceStatusLabels, status) ? marketplaceStatusLabels[status] : status;
 }

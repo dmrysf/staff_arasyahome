@@ -1,14 +1,16 @@
 import { AppIcon } from "../icons/AppIcon";
+import { t, useI18n } from "../../i18n";
 import { PrimaryScanButton } from "./PrimaryScanButton";
 import { ArasyaLogo } from "../brand/BrandLogo";
 import type { Employee } from "../../domain/models";
 import { hasPermission, type StaffPermission } from "../../domain/permissions";
 
+// Labels are read in the active language when the bar renders.
 export const bottomNavigationItems = [
-  { path: "/", label: "Acasă", icon: "home" as const, permission: null },
-  { path: "/orders", label: "Comenzi", icon: "orders" as const, permission: "orders.view_mine" as StaffPermission },
-  { path: "/history", label: "Istoric", icon: "history" as const, permission: "history.view_mine" as StaffPermission },
-  { path: "/profile", label: "Profil", icon: "profile" as const, permission: "profile.view_self" as StaffPermission },
+  { path: "/", get label() { return t("nav.home"); }, icon: "home" as const, permission: null },
+  { path: "/orders", get label() { return t("nav.orders"); }, icon: "orders" as const, permission: "orders.view_mine" as StaffPermission },
+  { path: "/history", get label() { return t("nav.history"); }, icon: "history" as const, permission: "history.view_mine" as StaffPermission },
+  { path: "/profile", get label() { return t("nav.profile"); }, icon: "profile" as const, permission: "profile.view_self" as StaffPermission },
 ];
 
 /**
@@ -16,6 +18,7 @@ export const bottomNavigationItems = [
  * Items the employee is not authorized for are not rendered; on phones an empty slot keeps the QR action centered.
  */
 export function BottomNavigation({ employee, route, navigate }: { employee: Employee; route: string; navigate: (path: string) => void }) {
+  useI18n();
   const [home, orders, history, profile] = bottomNavigationItems;
   const renderItem = (item: (typeof bottomNavigationItems)[number]) => item.permission && !hasPermission(employee, item.permission)
     ? <span key={item.path} className="nav-permission-space" aria-hidden="true" />
@@ -27,8 +30,8 @@ export function BottomNavigation({ employee, route, navigate }: { employee: Empl
     );
 
   return (
-    <nav className="app-nav" aria-label="Navigare principală">
-      <span className="app-nav-brand" aria-hidden="true"><ArasyaLogo className="sidebar-logo" alt="" /><small>Staff · Fabrică</small></span>
+    <nav className="app-nav" aria-label={t("nav.label")}>
+      <span className="app-nav-brand" aria-hidden="true"><ArasyaLogo className="sidebar-logo" alt="" /><small>{t("nav.brand")}</small></span>
       {renderItem(home)}
       {renderItem(orders)}
       <span className="scan-nav-space" aria-hidden="true" />

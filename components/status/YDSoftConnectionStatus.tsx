@@ -1,10 +1,8 @@
+import { liveLabels } from "../../i18n";
+
 export type SystemConnectionStatus = "connected" | "checking" | "disconnected";
 
-export const systemConnectionLabels: Record<SystemConnectionStatus, string> = {
-  connected: "YD Soft conectat",
-  checking: "Se verifică...",
-  disconnected: "YD Soft deconectat",
-};
+export const systemConnectionLabels: Readonly<Record<SystemConnectionStatus, string>> = liveLabels("ydsoft.", ["connected", "checking", "disconnected"]);
 
 export function YDSoftConnectionStatus({ status = "connected" }: { status?: SystemConnectionStatus }) {
   return (

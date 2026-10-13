@@ -40,3 +40,15 @@ h1, h2, p { margin-top: 0; }
     animation-iteration-count: 1 !important;
   }
 }
+
+/*
+ * Sinhala (සිංහල) is ordinary Unicode text in the device's own Sinhala font (Noto Sans Sinhala on Android, Sinhala
+ * Sangam MN on iOS and macOS, Nirmala UI or Iskoola Pota on Windows); no web font is loaded. Its vowel signs and
+ * conjuncts need taller lines and must never be pulled apart by letter spacing; capitals do not exist. Left-to-right.
+ */
+:root:lang(si) {
+  --font-sans: "Noto Sans Sinhala", "Sinhala Sangam MN", "Nirmala UI", "Iskoola Pota", ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+:lang(si) body { line-height: 1.65; }
+:lang(si) :not(.mono):not(.order-id):not(code) { letter-spacing: normal !important; }
+:lang(si) h1, :lang(si) h2, :lang(si) h3 { line-height: 1.35; }

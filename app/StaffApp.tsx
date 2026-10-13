@@ -31,6 +31,8 @@ import { TrendyolInboxScreen } from "../features/trendyol/TrendyolInboxScreen";
 import { TrendyolPackageScreen } from "../features/trendyol/TrendyolPackageScreen";
 import { dashboardUrlFor } from "../domain/workspaces";
 import { LoginIntroStage, introPlaysHere, preloadIntroMap } from "../features/auth/LoginIntro";
+import { I18nProvider, normalizeLocale, readDeviceLocale, saveDeviceLocale, t, type Locale } from "../i18n";
+import { localizeWorkflow } from "../domain/stageNames";
 
 type StaffAppProps = { initialRoute: string; mode: StaffRuntimeMode; apiBaseUrl: string };
 
@@ -50,7 +52,13 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
   const [session, setSession] = useState<Session | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
   const [sessionCheckError, setSessionCheckError] = useState<StaffServiceError | null>(null);
-  const [sessionNotice, setSessionNotice] = useState("");
+  const [sessionNotice, setSessionNotice] = useState<"" | "app.accountInactive" | "app.sessionExpired">("");
+  // Before sign-in nobody is known: the sign-in screen uses this device's choice. Once signed in, only the
+  // account's language (central IAM, session `employee.locale`) applies, on any device; signing out returns to
+  // the device choice, so one employee's language never carries over to the next person on a shared phone.
+  const [deviceLocale, setDeviceLocale] = useState<Locale>(() => readDeviceLocale() ?? "ro");
+  const locale: Locale = session ? normalizeLocale(session.employee.locale) : deviceLocale;
+  const chooseDeviceLocale = useCallback((next: Locale) => { setDeviceLocale(next); saveDeviceLocale(next); }, []);
   const [bootstrapKey, setBootstrapKey] = useState(0);
   const [changingPassword, setChangingPassword] = useState(false);
   const [passwordChanged, setPasswordChanged] = useState(false);
@@ -69,7 +77,7 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
       return;
     }
     setSession(null);
-    setSessionNotice(error?.code === "ACCOUNT_INACTIVE" ? "Contul nu este activ. Contactează managerul." : "Sesiunea a expirat. Autentifică-te din nou.");
+    setSessionNotice(error?.code === "ACCOUNT_INACTIVE" ? "app.accountInactive" : "app.sessionExpired");
     navigate("/login");
   }, [navigate]);
 
@@ -101,6 +109,9 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
   const staffReady = Boolean(session && !session.employee.mustChangePassword && session.employee.applications.includes("staff"));
   const workflowLifecycle = useProductionWorkflow({ authenticated: staffReady, route: guardedRoute, service: services.workflow });
 
+  // Stage names come from the catalog by canonical stage id; the ids, ordinals and order stay the server's.
+  const workflow = useMemo(() => workflowLifecycle.workflow ? localizeWorkflow(workflowLifecycle.workflow, locale) : null, [workflowLifecycle.workflow, locale]);
+
   async function logout() {
     try { await services.auth.logout(); }
     catch (caught) {
@@ -115,10 +126,14 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
     navigate("/login");
   }
 
-  if (checkingSession) return <BootScreen busy message="Se pregătește spațiul tău…" />;
-  if (sessionCheckError) return <BootScreen role="alert" message={sessionCheckError.code === "CONFIGURATION_ERROR" ? "Serviciul de autentificare nu este configurat." : "Serviciul nu este disponibil momentan."} action={<button className="button button-secondary" type="button" onClick={() => { setCheckingSession(true); setSessionCheckError(null); setBootstrapKey((value) => value + 1); }}>Reîncearcă</button>} />;
+  return <I18nProvider locale={locale}>{render()}</I18nProvider>;
+
+
+  function render() {
+  if (checkingSession) return <BootScreen busy message={t("app.preparing")} />;
+  if (sessionCheckError) return <BootScreen role="alert" message={sessionCheckError.code === "CONFIGURATION_ERROR" ? t("app.authNotConfigured") : t("common.serviceUnavailable")} action={<button className="button button-secondary" type="button" onClick={() => { setCheckingSession(true); setSessionCheckError(null); setBootstrapKey((value) => value + 1); }}>{t("common.retry")}</button>} />;
   if (!session || guardedRoute === "/login") {
-    return <LoginScreen mode={mode} notice={sessionNotice} onLogin={async (input) => { if (introPlaysHere()) preloadIntroMap(); const next = await services.auth.login(input); workflowLifecycle.reset(); setSession(next); setSessionNotice(""); navigate("/"); onSignedIn(); return next; }} />;
+    return <LoginScreen mode={mode} notice={sessionNotice ? t(sessionNotice) : ""} locale={deviceLocale} onLocaleChange={chooseDeviceLocale} onLogin={async (input) => { if (introPlaysHere()) preloadIntroMap(); const next = await services.auth.login(input); workflowLifecycle.reset(); setSession(next); setSessionNotice(""); navigate("/"); onSignedIn(); return next; }} />;
   }
   if (session.employee.mustChangePassword) {
     return <ChangePasswordScreen displayName={session.employee.displayName} username={session.employee.username} onLogout={logout} onChange={async (input) => { const next = await services.auth.changePassword(input); setSession(next); navigate("/"); }} />;
@@ -127,9 +142,8 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
     return <ChangePasswordScreen voluntary displayName={session.employee.displayName} username={session.employee.username} onLogout={logout} onCancel={() => setChangingPassword(false)} onChange={async (input) => { const next = await services.auth.changePassword(input); setSession(next); setChangingPassword(false); setPasswordChanged(true); }} />;
   }
   if (!session.employee.applications.includes("staff")) return <NoStaffAccessScreen displayName={session.employee.displayName} onLogout={logout} />;
-  const workflow = workflowLifecycle.workflow;
-  if (workflowLifecycle.initialError) return <BootScreen role="alert" message="Fluxul de producție nu este disponibil momentan." action={<button className="button button-secondary" type="button" onClick={workflowLifecycle.retry}>Reîncearcă</button>} />;
-  if (!workflow) return <BootScreen busy message="Se încarcă fluxul de producție…" />;
+  if (workflowLifecycle.initialError) return <BootScreen role="alert" message={t("app.workflowUnavailable")} action={<button className="button button-secondary" type="button" onClick={workflowLifecycle.retry}>{t("common.retry")}</button>} />;
+  if (!workflow) return <BootScreen busy message={t("app.workflowLoading")} />;
 
   const orderId = parsedRoute.kind === "order-detail" && guardedRoute === parsedRoute.pathname ? parsedRoute.orderId : "";
   const immersive = guardedRoute === "/scan";
@@ -153,4 +167,5 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
     <AppShell employee={session.employee} route={guardedRoute} mode={mode} navigate={navigate} immersive={immersive}>{screen}</AppShell>
     <LiveNotice navigate={navigate} />
   </LiveProvider>;
+  }
 }

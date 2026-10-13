@@ -1,3 +1,5 @@
+import type { Locale } from "../i18n/locales";
+
 export type OrderSource = "trendhome" | "outletperdele" | "trendyol" | "b2b" | "marketplace" | "unknown";
 
 export type Employee = {
@@ -22,7 +24,8 @@ export type Employee = {
   mustChangePassword: boolean;
   isRoot?: boolean;
   avatar?: string;
-  locale: "ro";
+  /** Staff interface language assigned to the account in central IAM (API 2.30.0); Romanian when none. */
+  locale: Locale;
 };
 
 export type ProductionStage = {

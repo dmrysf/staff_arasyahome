@@ -1,4 +1,5 @@
 import { StaffServiceError, type ActivityAction, type ActivityEntry, type ActivityPage, type Employee, type FaultDecision, type FaultException, type FaultReason, type OrderQuality, type QualityCapabilities, type ServiceErrorCode } from "../../domain/models";
+import { normalizeLocale } from "../../i18n/locales";
 import { isOrderActionBlockedReason, isOrderActionId, orderActionLabels } from "../../domain/orderActions";
 import type { ActivityService, AuthService, EmployeeService, ExceptionService, LiveService, OrderService, ServiceBundle, Session } from "../contracts";
 import { startLiveClient } from "./liveClient";
@@ -202,7 +203,8 @@ export function mapProductionEmployee(value: unknown): Employee {
     stageSourceScopes: mapStageSourceScopes(raw.stageSourceScopes),
     applications: stringList(raw.applications),
     mustChangePassword: booleanValue(raw.mustChangePassword),
-    locale: "ro",
+    // An older API (always "ro"), a missing or an unknown value all read as Romanian.
+    locale: normalizeLocale(raw.locale),
   };
 }
 

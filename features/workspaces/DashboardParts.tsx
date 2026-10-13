@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { formatDate, useI18n } from "../../i18n";
 import type { Workspace } from "../../domain/workspaces";
 import type { NextAction } from "./trendyolNextAction";
 import { AppIcon } from "../../components/icons/AppIcon";
@@ -39,14 +40,15 @@ export function DashboardSection({ title, eyebrow, action, children, labelledBy 
   );
 }
 
-const clock = new Intl.DateTimeFormat("ro-RO", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Bucharest" });
+const clock = { format: (value: Date | number): string => formatDate(value, { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Bucharest" }) };
 
 export function RefreshButton({ onRefresh, busy, updatedAt }: { onRefresh: () => void; busy: boolean; updatedAt: Date | null }) {
+  const { t } = useI18n();
   return (
     <div className="dashboard-refresh">
-      {updatedAt && <span aria-live="polite">Ultima actualizare {clock.format(updatedAt)}</span>}
-      <button type="button" className="button button-secondary button-compact" onClick={onRefresh} disabled={busy} aria-label="Actualizează panoul">
-        <AppIcon name="refresh" size={18} /> {busy ? "Se actualizează…" : "Actualizează"}
+      {updatedAt && <span aria-live="polite">{t("common.lastUpdate", { time: clock.format(updatedAt) })}</span>}
+      <button type="button" className="button button-secondary button-compact" onClick={onRefresh} disabled={busy} aria-label={t("common.updatePanel")}>
+        <AppIcon name="refresh" size={18} /> {busy ? t("common.updating") : t("common.update")}
       </button>
     </div>
   );
@@ -58,17 +60,18 @@ export function RefreshButton({ onRefresh, busy, updatedAt }: { onRefresh: () =>
  * background read keeps the last good data and says so once, quietly, instead of an alert every minute.
  */
 export function AutoRefreshBar({ onRefresh, busy, refreshing, updatedAt, stale, stopped, testId }: { onRefresh: () => void; busy: boolean; refreshing: boolean; updatedAt: number | null; stale: boolean; stopped: boolean; testId?: string }) {
+  const { t } = useI18n();
   return (
     <div className={`dashboard-refresh${stopped ? " is-stopped" : stale ? " is-stale" : refreshing || busy ? " is-refreshing" : ""}`} data-testid={testId}>
       <span className="refresh-pulse" aria-hidden="true" />
       <span className="refresh-copy">
-        <span>{stopped ? "Actualizare automată oprită" : "Actualizare automată la fiecare minut"}</span>
-        {updatedAt !== null && <span className="refresh-time">Ultima actualizare {clock.format(updatedAt)}</span>}
-        {refreshing && <span>Se actualizează…</span>}
-        {stale && !busy && <span className="refresh-stale" role="status">Datele pot fi neactualizate</span>}
+        <span>{stopped ? t("refresh.stopped") : t("refresh.everyMinute")}</span>
+        {updatedAt !== null && <span className="refresh-time">{t("common.lastUpdate", { time: clock.format(updatedAt) })}</span>}
+        {refreshing && <span>{t("common.updating")}</span>}
+        {stale && !busy && <span className="refresh-stale" role="status">{t("refresh.stale")}</span>}
       </span>
-      <button type="button" className="button button-ghost button-compact refresh-button" onClick={onRefresh} disabled={busy} aria-label="Actualizează panoul">
-        <AppIcon name="refresh" size={18} className={busy || refreshing ? "is-spinning" : undefined} /> <span className="refresh-button-label">{busy ? "Se actualizează…" : "Actualizează"}</span>
+      <button type="button" className="button button-ghost button-compact refresh-button" onClick={onRefresh} disabled={busy} aria-label={t("common.updatePanel")}>
+        <AppIcon name="refresh" size={18} className={busy || refreshing ? "is-spinning" : undefined} /> <span className="refresh-button-label">{busy ? t("common.updating") : t("common.update")}</span>
       </button>
     </div>
   );
@@ -76,9 +79,10 @@ export function AutoRefreshBar({ onRefresh, busy, refreshing, updatedAt, stale, 
 
 /** Shown only when the employee holds more than one authorized workspace; switching never changes permissions. */
 export function WorkspaceSwitcher({ workspaces, current, onSelect }: { workspaces: readonly Workspace[]; current: Workspace; onSelect: (workspace: Workspace) => void }) {
+  const { t } = useI18n();
   if (workspaces.length < 2) return null;
   return (
-    <nav className="workspace-switcher" aria-label="Spațiile mele de lucru">
+    <nav className="workspace-switcher" aria-label={t("workspace.switcher")}>
       {workspaces.map((workspace) => (
         <button key={workspace.id} type="button" aria-pressed={workspace.id === current.id} onClick={() => { if (workspace.id !== current.id) onSelect(workspace); }}>
           <strong>{workspace.label}</strong>

@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { ro } from "../i18n/messages/ro";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -47,7 +48,8 @@ test("buttons and signals: labels on filled buttons pass AA, status dots and foc
 
 test("the shell offers a skip link to the work and the content can receive it", () => {
   const shell = readFileSync(path.join(root, "components/AppShell.tsx"), "utf8");
-  assert.match(shell, /className="skip-link" href="#content">Sari la conținut</);
+  assert.match(shell, /className="skip-link" href="#content">\{t\("shell\.skip"\)\}</);
+  assert.equal(ro["shell.skip"], "Sari la conținut");
   assert.match(shell, /id="content" tabIndex=\{-1\}/);
 });
 

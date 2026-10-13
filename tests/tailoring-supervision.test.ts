@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { ro } from "../i18n/messages/ro";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
@@ -74,8 +75,10 @@ test("receipt wording never implies admitting a fault; statuses and tabs are Rom
   assert.doesNotMatch(liveMessage("exception.acknowledgment_required", "9001") ?? "", /Confirmă eroarea/);
   assert.equal(getErrorPresentation(new StaffServiceError("SUPERVISOR_REQUIRED")).title, "Doar șeful de croitorie");
   const screen = readFileSync(path.join(root, "features/exceptions/ExceptionScreen.tsx"), "utf8");
-  assert.match(screen, /Problema a fost raportată șefului de croitorie\./);
-  assert.match(screen, /Nu înseamnă că recunoști o greșeală/);
+  assert.match(screen, /t\("exc\.reportedToSupervisor"\)/);
+  assert.match(screen, /t\("exc\.receipt\.body"\)/);
+  assert.match(ro["exc.reportedToSupervisor"], /Problema a fost raportată șefului de croitorie\./);
+  assert.match(ro["exc.receipt.body"], /Nu înseamnă că recunoști o greșeală/);
   assert.doesNotMatch(screen, /window\.location|localStorage/);
 });
 
@@ -99,7 +102,8 @@ test("the two-party handover back to tailoring: only the addressed worker confir
   assert.equal(mapFaultException({ ...serverFault, role: "recipient" }).role, "recipient");
   assert.match(liveMessage("exception.restore_receipt_required", "9001") ?? "", /Primește produsul, scanează eticheta și confirmă primirea/);
   const screen = readFileSync(path.join(root, "features/exceptions/ExceptionScreen.tsx"), "utf8");
-  assert.match(screen, /Comanda rămâne blocată până când/);
+  assert.match(screen, /t\("exc\.restorePending"/);
+  assert.match(ro["exc.restorePending"], /Comanda rămâne blocată până când/);
   assert.match(screen, /service\.receiveRestore\(/);
   assert.equal(getErrorPresentation(new StaffServiceError("RESTORE_RECIPIENT_UNAVAILABLE")).title, "Angajatul nu poate primi comanda");
 });

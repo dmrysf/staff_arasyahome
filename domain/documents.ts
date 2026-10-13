@@ -1,4 +1,5 @@
 import { StaffServiceError } from "./models";
+import { liveLabels, t, type MessageKey } from "../i18n";
 
 /** Central production document state of an order (the server is the only authority). */
 export type DocumentStatus = "none" | "active" | "stale" | "revoked";
@@ -74,11 +75,7 @@ export interface DocumentApi {
 
 export const DOCUMENT_PERMISSIONS = ["production.documents.generate", "production.documents.reprint", "production.documents.request_revision"] as const;
 
-export const revisionStatusLabels: Record<DocumentRevision["status"], string> = {
-  active: "Activă",
-  superseded: "Înlocuită",
-  revoked: "Anulată",
-};
+export const revisionStatusLabels: Readonly<Record<DocumentRevision["status"], string>> = liveLabels("doc.revisionStatus.", ["active", "superseded", "revoked"]);
 
 export function canUseDocuments(permissions: readonly string[]): boolean {
   return DOCUMENT_PERMISSIONS.some((permission) => permissions.includes(permission));
@@ -107,79 +104,47 @@ export function documentStep(document: OrderDocument, permissions: readonly stri
   return can("production.documents.request_revision") ? { kind: "request", revision: (document.latestRevisionNumber ?? 0) + 1 } : { kind: "none" };
 }
 
-export const documentStatusLabels: Record<DocumentStatus, string> = {
-  none: "Document de producție negenerat",
-  active: "Document activ",
-  stale: "Document blocat · datele de producție s-au schimbat",
-  revoked: "Document anulat · așteaptă documentul nou",
-};
+export const documentStatusLabels: Readonly<Record<DocumentStatus, string>> = liveLabels("doc.status.", ["none", "active", "stale", "revoked"]);
 
-export const changeFieldLabels: Record<string, string> = {
-  orderNumber: "Număr comandă",
-  "customer.name": "Client",
-  "customer.company": "Companie",
-  "customer.contact": "Persoană de contact",
-  "customer.address": "Adresă livrare",
-  "customer.phone": "Telefon (mascat)",
-  notes: "Instrucțiuni comandă",
-  "line.added": "Linie nouă",
-  "line.removed": "Linie eliminată",
-  "line.code": "Cod produs",
-  "line.name": "Produs",
-  "line.kind": "Tip produs",
-  "line.variant": "Variantă",
-  "line.color": "Culoare",
-  "line.width": "Lățime",
-  "line.height": "Înălțime",
-  "line.meters": "Metri (linie)",
-  "line.quantity": "Cantitate",
-  "line.notes": "Note",
-  "line.productionNotes": "Note de producție",
-  "line.options": "Opțiuni de confecționare",
-  "line.location": "Locație proiect",
-};
+export const changeFieldLabels: Readonly<Record<string, string>> = liveLabels("doc.change.", [
+  "orderNumber", "customer.name", "customer.company", "customer.contact", "customer.address", "customer.phone", "notes", "line.added",
+  "line.removed", "line.code", "line.name", "line.kind", "line.variant", "line.color", "line.width", "line.height", "line.meters",
+  "line.quantity", "line.notes", "line.productionNotes", "line.options", "line.location",
+]);
 
 export function changeLabel(change: DocumentChange): string {
-  const label = changeFieldLabels[change.field] ?? change.field;
-  return change.line === null ? label : `Linia ${change.line} · ${label}`;
+  const label = Object.hasOwn(changeFieldLabels, change.field) ? changeFieldLabels[change.field] : change.field;
+  return change.line === null ? label : t("doc.line", { line: change.line, label });
 }
 
 /** The Staff order notice for workers: the paper in hand must not be used while a revision is open. */
 export function blockedDocumentNotice(summary: OrderDocumentSummary | undefined): { title: string; lines: string[] } | null {
   if (!summary || (summary.status !== "stale" && summary.status !== "revoked")) return null;
   return {
-    title: "DOCUMENT BLOCAT",
+    title: t("doc.blocked.title"),
     lines: summary.status === "revoked"
-      ? ["Documentul de producție a fost anulat.", "Așteaptă documentul nou înainte de a continua."]
-      : ["Comanda are o revizie în curs.", "Așteaptă aprobarea și documentul nou."],
+      ? [t("doc.blocked.revoked1"), t("doc.blocked.revoked2")]
+      : [t("doc.blocked.pending1"), t("doc.blocked.pending2")],
   };
 }
 
-/** Romanian text for an old QR scan (details come from the server). */
+/** Worker text for an old QR scan, in the active language (details come from the server). */
 export function invalidDocumentMessage(error: unknown): { title: string; lines: string[] } | null {
   if (!(error instanceof StaffServiceError)) return null;
   if (error.code === "DOCUMENT_SUPERSEDED") {
     const active = typeof error.details?.activeRevisionNumber === "number" ? error.details.activeRevisionNumber : null;
-    return { title: "DOCUMENT INVALID", lines: ["Acest document a fost înlocuit.", active === null ? "Există o revizie mai nouă a documentului." : `Folosește REVIZIA ${active}.`] };
+    return { title: t("doc.invalid.title"), lines: [t("doc.invalid.superseded"), active === null ? t("doc.invalid.newer") : t("doc.invalid.useRevision", { number: active })] };
   }
-  if (error.code === "DOCUMENT_REVOKED") return { title: "DOCUMENT INVALID", lines: ["Acest document a fost anulat.", "Așteaptă documentul nou."] };
-  if (error.code === "AVANS_NEVALIDAT") return { title: "PLATĂ NECONFIRMATĂ", lines: ["Comanda nu poate intra în producție.", "Avansul necesar sau plata comenzii nu a fost confirmată."] };
-  if (error.code === "ORDER_BLOCKED_BY_DOCUMENT") return { title: "DOCUMENT BLOCAT", lines: ["Comanda are o revizie în curs.", "Așteaptă aprobarea și documentul nou."] };
+  if (error.code === "DOCUMENT_REVOKED") return { title: t("doc.invalid.title"), lines: [t("doc.invalid.revoked"), t("doc.invalid.waitNew")] };
+  if (error.code === "AVANS_NEVALIDAT") return { title: t("doc.payment.title"), lines: [t("doc.payment.line1"), t("doc.payment.line2")] };
+  if (error.code === "ORDER_BLOCKED_BY_DOCUMENT") return { title: t("doc.blocked.title"), lines: [t("doc.blocked.pending1"), t("doc.blocked.pending2")] };
   return null;
 }
 
-const documentLiveMessages: Partial<Record<string, (orderNumber: string, revision: number | undefined) => string>> = {
-  "document.revision_approved": (n, r) => `Revizia ${r ?? ""} a fost aprobată pentru comanda #${n}. Poți genera documentul nou.`,
-  "document.revision_rejected": (n) => `Cererea de revizie pentru comanda #${n} a fost respinsă. Vezi motivul.`,
-  "document.request_superseded": (n) => `Comanda #${n} s-a schimbat din nou. Este necesară o nouă cerere de revizie.`,
-  "document.blocked": (n) => `Comanda #${n}: documentul de producție este blocat. Așteaptă documentul nou.`,
-  "document.reactivated": (n, r) => `Comanda #${n}: REVIZIA ${r ?? ""} este activă. Poți continua lucrul.`,
-  "document.revision_generated": (n, r) => `REVIZIA ${r ?? ""} a comenzii #${n} a fost generată. Tipărește documentul nou.`,
-};
+const DOCUMENT_LIVE_TYPES = new Set(["document.revision_approved", "document.revision_rejected", "document.request_superseded", "document.blocked", "document.reactivated", "document.revision_generated"]);
 
 export function documentLiveMessage(type: string, orderNumber?: string, revisionNumber?: number): string | null {
-  const message = documentLiveMessages[type];
-  return message && orderNumber ? message(orderNumber, revisionNumber) : null;
+  return DOCUMENT_LIVE_TYPES.has(type) && orderNumber ? t(`live.${type}` as MessageKey, { number: orderNumber, revision: revisionNumber ?? "" }) : null;
 }
 
 /** "ARASYA-84521-R2.pdf" — no customer data in file names. */

@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { useI18n } from "../../i18n";
+import { faultReasonName } from "../../domain/stageNames";
 import type { FaultException } from "../../domain/models";
 import type { ExceptionService } from "../../services/contracts";
 import { useLive } from "../../app/liveContext";
@@ -6,6 +8,7 @@ import { faultStatusLabel, formatFaultMeters, needsMyAction } from "../../domain
 
 /** Home card: my open and recent cutting fault requests, refreshed live. */
 export function ExceptionsCard({ service, navigate }: { service: ExceptionService; navigate: (path: string) => void }) {
+  const { t } = useI18n();
   const { revision } = useLive();
   const [items, setItems] = useState<FaultException[] | null>(null);
   useEffect(() => {
@@ -17,11 +20,11 @@ export function ExceptionsCard({ service, navigate }: { service: ExceptionServic
   const pending = items.filter(needsMyAction).length;
   return (
     <section className="exceptions-card" aria-labelledby="exceptions-title">
-      <div className="section-title"><p className="eyebrow">Probleme și returnări</p><h2 id="exceptions-title">{pending > 0 ? `${pending} ${pending === 1 ? "acțiune necesară" : "acțiuni necesare"}` : "Cererile mele"}</h2></div>
+      <div className="section-title"><p className="eyebrow">{t("exceptions.eyebrow")}</p><h2 id="exceptions-title">{pending > 0 ? t("exceptions.actions", { count: pending }) : t("exceptions.mine")}</h2></div>
       <ul>
         {items.map((fault) => <li key={fault.id}>
           <button type="button" className={needsMyAction(fault) ? "exception-row needs-action" : "exception-row"} onClick={() => navigate(`/exceptions/${encodeURIComponent(fault.id)}`)}>
-            <span><strong>Comanda #{fault.order.orderNumber}</strong><small>{fault.reason.label} · {formatFaultMeters(fault)}</small></span>
+            <span><strong>{t("common.order", { number: fault.order.orderNumber })}</strong><small>{faultReasonName(fault.reason.key, fault.reason.label)} · {formatFaultMeters(fault)}</small></span>
             <span className={`exception-status status-${fault.status}`}>{faultStatusLabel(fault)}</span>
           </button>
         </li>)}

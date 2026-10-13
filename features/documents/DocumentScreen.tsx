@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useI18n } from "../../i18n";
 import type { DocumentApi, DocumentLookupItem } from "../../domain/documents";
 import { documentStatusLabels } from "../../domain/documents";
 import { AppIcon } from "../../components/icons/AppIcon";
@@ -7,20 +8,21 @@ import { DocumentPanel } from "./DocumentPanel";
 
 /** Document workflow of one order for channel employees (they need no production stage to use it). */
 export function DocumentScreen({ orderId, service, permissions, navigate }: { orderId: string; service: DocumentApi; permissions: readonly string[]; navigate: (path: string) => void }) {
+  const { t } = useI18n();
   const [, setChanged] = useState(0);
   const [number, setNumber] = useState<string | null>(null);
   return (
     <article className="document-screen">
-      <button className="back-link" type="button" onClick={() => navigate("/")}><AppIcon name="back" size={20} /> Acasă</button>
-      <header className="document-screen-hero"><p className="eyebrow">Document de producție</p><h1>Comanda <span className="order-id">{number === null ? "…" : `#${number.replace(/^#/, "")}`}</span></h1></header>
+      <button className="back-link" type="button" onClick={() => navigate("/")}><AppIcon name="back" size={20} /> {t("common.home")}</button>
+      <header className="document-screen-hero"><p className="eyebrow">{t("doc.eyebrow")}</p><h1>{t("common.orderWord")} <span className="order-id">{number === null ? "…" : `#${number.replace(/^#/, "")}`}</span></h1></header>
       <div className="document-layout">
         <DocumentPanel orderId={orderId} service={service} permissions={permissions} onChanged={() => setChanged((value) => value + 1)} onLoaded={(document) => setNumber(document.order.number)} />
         <aside className="document-guide" aria-labelledby="document-guide-title">
-          <h2 id="document-guide-title">Cum se folosește fișa</h2>
+          <h2 id="document-guide-title">{t("doc.guide.title")}</h2>
           <ol>
-            <li><strong>Tipărește</strong><span>Butonul de tipărire descarcă PDF-ul cu codul QR de producție. Tipărește-l pe imprimanta atelierului.</span></li>
-            <li><strong>Verifică foaia</strong><span>Revizia și codul QR trebuie să fie lizibile. Previzualizarea nu are cod QR și nu se folosește în atelier.</span></li>
-            <li><strong>Predă la Tăiere</strong><span>Fișa însoțește produsul. Finalizezi etapa 1 din pagina comenzii; la Tăiere comanda se preia scanând codul QR de pe foaie.</span></li>
+            <li><strong>{t("doc.guide.print.title")}</strong><span>{t("doc.guide.print.body")}</span></li>
+            <li><strong>{t("doc.guide.check.title")}</strong><span>{t("doc.guide.check.body")}</span></li>
+            <li><strong>{t("doc.guide.handoff.title")}</strong><span>{t("doc.guide.handoff.body")}</span></li>
           </ol>
         </aside>
       </div>
@@ -30,6 +32,7 @@ export function DocumentScreen({ orderId, service, permissions, navigate }: { or
 
 /** Exact order-number search for documents; no customer data is listed. */
 export function DocumentLookup({ service, navigate }: { service: DocumentApi; navigate: (path: string) => void }) {
+  const { t } = useI18n();
   const [number, setNumber] = useState("");
   const [items, setItems] = useState<DocumentLookupItem[] | null>(null);
   const [message, setMessage] = useState("");
@@ -41,16 +44,16 @@ export function DocumentLookup({ service, navigate }: { service: DocumentApi; na
       const found = await service.lookup(number.trim());
       if (found.length === 1) navigate(`/documents/${encodeURIComponent(found[0].orderId)}`);
       setItems(found);
-      if (found.length === 0) setMessage("Nu am găsit nicio comandă cu acest număr.");
+      if (found.length === 0) setMessage(t("doc.lookup.notFound"));
     } catch (caught) { setMessage(getErrorPresentation(toServiceError(caught)).message); }
   }
   return (
     <section className="detail-section document-lookup" aria-labelledby="document-lookup-title">
-      <p className="eyebrow">Documente de producție</p>
-      <h2 id="document-lookup-title">Generează sau tipărește documentul</h2>
+      <p className="eyebrow">{t("doc.lookup.eyebrow")}</p>
+      <h2 id="document-lookup-title">{t("doc.lookup.title")}</h2>
       <form onSubmit={(event) => void search(event)} className="document-lookup-form">
-        <label className="field">Numărul comenzii<input inputMode="text" autoComplete="off" value={number} maxLength={120} onChange={(event) => setNumber(event.target.value)} placeholder="ex. 84521" /></label>
-        <button className="button button-primary" type="submit">Caută</button>
+        <label className="field">{t("doc.lookup.number")}<input inputMode="text" autoComplete="off" value={number} maxLength={120} onChange={(event) => setNumber(event.target.value)} placeholder={t("doc.lookup.placeholder")} /></label>
+        <button className="button button-primary" type="submit">{t("common.search")}</button>
       </form>
       {message && <p className="order-notice order-notice-muted" role="status">{message}</p>}
       {items && items.length > 1 && <ul className="document-lookup-results">{items.map((item) => <li key={item.orderId}><button type="button" className="exception-row" onClick={() => navigate(`/documents/${encodeURIComponent(item.orderId)}`)}><span><strong>#{item.orderNumber}</strong><small>{item.source}</small></span><span className="exception-status">{documentStatusLabels[item.documentStatus]}</span></button></li>)}</ul>}

@@ -1,15 +1,9 @@
 import type { EmployeeOrderRelationType, StaffOrder } from "./models";
+import { liveLabels, t } from "../i18n";
 
 export type MyOrdersView = "in_progress" | "recent" | "handed_over";
 
-const relationLabels: Record<EmployeeOrderRelationType, string> = {
-  claimed: "Preluată de tine",
-  assigned: "Alocată ție",
-  updated: "Actualizată de tine",
-  handover_in: "Primită prin transfer",
-  handover_out: "Predată către etapa următoare",
-  completed: "Finalizată de tine",
-};
+const relationLabels: Readonly<Record<EmployeeOrderRelationType, string>> = liveLabels("relation.", ["claimed", "assigned", "updated", "handover_in", "handover_out", "completed"]);
 
 const activeRelations = new Set<EmployeeOrderRelationType>(["claimed", "assigned", "handover_in"]);
 const handedOverRelations = new Set<EmployeeOrderRelationType>(["handover_out", "completed"]);
@@ -19,7 +13,7 @@ export function isEmployeeRelevantOrder(order: StaffOrder, employeeUuid: string)
 }
 
 export function getEmployeeRelationLabel(order: StaffOrder): string {
-  return order.employeeRelation ? relationLabels[order.employeeRelation.type] : "Activitate recentă";
+  return order.employeeRelation ? relationLabels[order.employeeRelation.type] : t("relation.recent");
 }
 
 export function matchesMyOrdersView(order: StaffOrder, view: MyOrdersView): boolean {
