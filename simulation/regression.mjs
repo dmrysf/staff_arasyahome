@@ -9,7 +9,7 @@ if (!runtime || !path.isAbsolute(runtime) || !["fast", "nightly"].includes(profi
 const suites = ["mysql-operations-integration.php", "mysql-source-connection-integration.php", "mysql-trendyol-intake-integration.php", "mysql-production-documents-integration.php", "mysql-stage-source-scopes-integration.php", "mysql-tailoring-supervision-integration.php"];
 if (profile === "nightly") suites.push("mysql-iam-integration.php", "mysql-production-authority-integration.php", "mysql-production-qr-integration.php", "mysql-production-document-authority-integration.php", "mysql-production-ownership-integration.php", "mysql-cutting-intake-integration.php", "mysql-payment-gate-integration.php", "mysql-staff-locale-integration.php");
 const selectedSuite = process.argv[5];
-if (selectedSuite && !suites.includes(selectedSuite)) throw new Error("Only a suite in the selected fixed profile may run.");
+if (selectedSuite && ![...suites, "mysql-integration.php"].includes(selectedSuite)) throw new Error("Only a suite in the selected fixed profile may run.");
 const out = path.join(runtime, "reports"); mkdirSync(out, { recursive: true });
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("ARASYA_")));
 const report = { profile, sourceCommit: spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim(), apiVersion: "2.30.0", staffVersion: "2.25.0", date: new Date().toISOString(), results: [] };
