@@ -41,6 +41,9 @@ for file in \
   database/migrations/024_tailoring_quality_supervision.sql \
   database/migrations/025_source_payment_gate.sql \
   database/migrations/026_trendyol_product_identity.sql \
+  database/migrations/027_employee_staff_locale.sql \
+  bin/set-employee-locale.php \
+  src/Employee/StaffLocale.php \
   src/Quality/TailoringSupervisorPolicy.php \
   src/Production/PaymentGate.php \
   src/Trendyol/TrendyolWorkspace.php \
@@ -105,7 +108,7 @@ for file in \
 done
 
 (cd -- "$release_root" && sha256sum -c SHA256SUMS >/dev/null) || fail "SHA256SUMS verification failed."
-php -r '$r=json_decode(file_get_contents($argv[1]), true, flags: JSON_THROW_ON_ERROR); require $argv[2]."/bootstrap.php"; if (!is_array($r) || preg_match("/^[0-9a-f]{40}$/", $r["sourceCommit"] ?? "") !== 1 || ($r["version"] ?? null) !== "2.29.1" || $r["version"] !== Arasya\Operations\Http\HealthController::VERSION) exit(2);' "$release_root/release.json" "$release_root" \
+php -r '$r=json_decode(file_get_contents($argv[1]), true, flags: JSON_THROW_ON_ERROR); require $argv[2]."/bootstrap.php"; if (!is_array($r) || preg_match("/^[0-9a-f]{40}$/", $r["sourceCommit"] ?? "") !== 1 || ($r["version"] ?? null) !== "2.30.0" || $r["version"] !== Arasya\Operations\Http\HealthController::VERSION) exit(2);' "$release_root/release.json" "$release_root" \
   || fail "release.json provenance/version is invalid."
 
 for directory in src database/migrations bin config; do

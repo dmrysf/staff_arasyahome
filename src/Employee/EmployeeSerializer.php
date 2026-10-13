@@ -28,7 +28,8 @@ final class EmployeeSerializer
             'isRoot' => $employee->isRoot,
             'mustChangePassword' => $employee->mustChangePassword,
             'authorizationVersion' => $employee->authorizationVersion,
-            'locale' => 'ro',
+            // The Staff interface language of this identity (migration 027); Romanian unless one was assigned.
+            'locale' => $employee->staffLocale,
         ];
     }
 }

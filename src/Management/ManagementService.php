@@ -7,6 +7,7 @@ namespace Arasya\Operations\Management;
 use Arasya\Operations\Authorization\AuthorizationService;
 use Arasya\Operations\Document\DocumentScopePolicy;
 use Arasya\Operations\Employee\EmployeeIdentity;
+use Arasya\Operations\Employee\StaffLocale;
 use Arasya\Operations\Http\ApiException;
 use Arasya\Operations\Iam\IamAuditLogger;
 use Arasya\Operations\Iam\TemporaryPasswordGenerator;
@@ -200,6 +201,7 @@ final readonly class ManagementService
         $secondary->execute(['id' => $summary['id']]);
         $summary['secondaryDepartments'] = array_map(static fn (array $row): array => ['id' => (int) $row['department_id'], 'name' => (string) $row['name']], $secondary->fetchAll());
         // Root reaches every source; a stored scope would be meaningless for it.
+        $summary['staffLocale'] = $this->staffLocaleOf((string) $summary['id']);
         $summary['documentScopes'] = $summary['isRoot'] ? null : (new DocumentScopePolicy($this->pdo))->scopesOf((string) $summary['id']);
         // Granted stages narrowed to named sources (migration 023); a stage absent here reaches every source.
         $summary['stageSourceScopes'] = $summary['isRoot'] ? null : (object) $this->stageScopesOf((string) $summary['id']);
@@ -534,6 +536,34 @@ final readonly class ManagementService
                 $revoked = $this->revokeSessions($target['employee_uuid'], $now);
             }
             $this->audit->record($actor, $status === 'active' ? 'employee.activated' : 'employee.deactivated', 'employee', $target['employee_uuid'], $this->label($target), ['before' => $target['status'], 'after' => $status, 'revokedSessions' => $revoked], $requestId, $now);
+        });
+        return $this->getEmployee($actor, $employeeId);
+    }
+
+    /**
+     * The Staff interface language of one identity (migration 027): `ro`, `tr`, `en`, `si`, or null for the default
+     * (Romanian). Presentation only: it is not a permission, so the authorization version, the sessions, the roles,
+     * the stages, the password and the account status stay exactly as they were. An unchanged value writes nothing.
+     *
+     * @return array<string, mixed>
+     */
+    public function setStaffLocale(EmployeeIdentity $actor, string $employeeId, mixed $locale, string $requestId): array
+    {
+        $this->require($actor, 'employees.update');
+        if ($locale !== null && !StaffLocale::isSupported($locale)) {
+            throw new ApiException(422, 'VALIDATION_FAILED', 'locale must be one of: ' . implode(', ', StaffLocale::SUPPORTED) . ', or null.');
+        }
+        $this->mutateEmployee($actor, $employeeId, function (array $target, string $now) use ($actor, $locale, $requestId): void {
+            $current = $this->pdo->prepare('SELECT staff_locale FROM employees WHERE employee_uuid = :uuid');
+            $current->execute(['uuid' => $target['employee_uuid']]);
+            $before = $current->fetchColumn();
+            $before = is_string($before) ? $before : null;
+            if ($before === $locale) {
+                return;
+            }
+            $this->pdo->prepare('UPDATE employees SET staff_locale = :locale, updated_at = :now WHERE employee_uuid = :uuid')
+                ->execute(['locale' => $locale, 'now' => $now, 'uuid' => $target['employee_uuid']]);
+            $this->audit->record($actor, 'employee.staff_locale_changed', 'employee', $target['employee_uuid'], $this->label($target), ['staffLocale' => ['before' => $before, 'after' => $locale]], $requestId, $now);
         });
         return $this->getEmployee($actor, $employeeId);
     }
@@ -1390,6 +1420,21 @@ final readonly class ManagementService
     }
 
     // ---------------------------------------------------------------- input helpers
+
+    /** The stored Staff language, or Romanian (also before migration 027 runs). */
+    private function staffLocaleOf(string $employeeUuid): string
+    {
+        try {
+            $statement = $this->pdo->prepare('SELECT staff_locale FROM employees WHERE employee_uuid = :uuid');
+            $statement->execute(['uuid' => $employeeUuid]);
+            return StaffLocale::normalize($statement->fetchColumn());
+        } catch (PDOException $error) {
+            if (($error->errorInfo[1] ?? null) === 1054) {
+                return StaffLocale::DEFAULT;
+            }
+            throw $error;
+        }
+    }
 
     private function validUuid(string $value): string
     {

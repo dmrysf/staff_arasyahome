@@ -40,6 +40,8 @@ final readonly class EmployeeIdentity
         public int $authorityRank = 0,
         public int $departmentId = 0,
         public array $stageSourceScopes = [],
+        /** Staff interface language (migration 027): presentation only, never a permission. */
+        public string $staffLocale = StaffLocale::DEFAULT,
     ) {
     }
 
