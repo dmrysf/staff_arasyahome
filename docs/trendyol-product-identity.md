@@ -1,4 +1,4 @@
-# Trendyol product code and Romanian production titles (API 2.29.0, migration 026)
+# Trendyol product code and Romanian production titles (API 2.29.1, migration 026)
 
 ## Product code
 
@@ -26,4 +26,46 @@ Live evidence (read-only GET, 2026-10-12): every Trendyol Romania order line ans
   barcode are kept in the line's production context for traceability; the production ticket does not print them.
 - The release approves each title for its product code in `trendyol_product_titles` (approver, time, version) with an
   append-only history in `trendyol_product_title_events`. No machine translation is used.
-- Pending packages prepared before 2.29 need their titles before release. Released packages are never rewritten.
+- Pending packages prepared before 2.29 need their titles before release. A synchronization never rewrites released
+  packages.
+
+## Live catalogue check (read-only GET, 2026-10-13)
+
+64 stored packages (62 pending, 2 released), 78 lines:
+
+- `stockCode` and `merchantSku` are the literal "merchantSku" on every line.
+- `sku` is set on every line and equals the barcode.
+- There are 71 distinct `sku` values, and each one maps to exactly one size, colour and title, so a title keyed by
+  the seller code is never reused across variants.
+- Trendyol's numeric `productCode`/`contentId` never groups several `sku` values in this data.
+
+## Correcting an approved package (API 2.29.1)
+
+Two packages approved before the fix print "merchantSku" and the English title. Their frozen items and revision 1 are
+corrected only through `POST /trendyol/packages/{id}/correct-identity`:
+
+```json
+{"expectedVersion": 7, "confirm": true, "lines": [{"lineId": "…", "productionTitle": "…"}]}
+```
+
+Conditions:
+
+- The caller needs `trendyol.orders.release` (Staff "Corectează denumirea și codul" on the approved package).
+- The request needs one Romanian title per line, validated like preparation.
+- The order is still at `waiting`, without an owner, not completed, available, and not changed in Trendyol after
+  approval. Otherwise the answer is `409 TRENDYOL_CORRECTION_IN_PRODUCTION`, `DOCUMENT_NOT_CORRECTABLE` or
+  `MARKETPLACE_CHANGED_AFTER_RELEASE`.
+- Each line's seller code comes from one fresh Trendyol GET; the stored code must match it, or the answer is
+  `PRODUCT_CODE_UNRESOLVED`. Without Trendyol, nothing is corrected.
+
+One transaction then:
+
+- writes the title and code to the items;
+- keeps measurements, quantity, marketplace title and barcode;
+- approves the titles for their codes;
+- records before, after and the employee as `production_identity_corrected`;
+- makes revision 1 stale through the canonical staleness rule. Production is blocked; stage and owner are kept.
+
+Revision 2, with a new QR that supersedes the old one, then follows the ordinary path: a document operator requests
+it, another employee with an `approve` scope for `trendyol` approves it, and the operator generates it. Retries
+replay, and a second identical correction writes nothing. Migration 026 adds the event action.

@@ -26,6 +26,7 @@ use Arasya\Operations\Security\CsrfGuard;
  *   POST /trendyol/packages/{packageId}/dismiss           {expectedVersion, reason}
  *   POST /trendyol/packages/{packageId}/reopen            {expectedVersion}
  *   POST /trendyol/packages/{packageId}/release           {expectedVersion, confirm: true}
+ *   POST /trendyol/packages/{packageId}/correct-identity  {expectedVersion, confirm: true, lines: [{lineId, productionTitle}]}
  */
 final readonly class TrendyolWorkspaceController
 {
@@ -64,6 +65,14 @@ final readonly class TrendyolWorkspaceController
             $session = $this->mutation($request);
             $input = $this->body($request, ['expectedVersion', 'kind', 'productionTitle', 'widthCm', 'heightCm', 'meters', 'notes'], ['expectedVersion', 'kind']);
             return $this->json($this->workspace->prepareLine($session->employee, $m[1], $m[2], $input, $request->header('idempotency-key') ?? '', $request->requestId));
+        }
+        if (preg_match('#^/packages/([0-9]{1,19})/correct-identity$#D', $path, $m) === 1) {
+            if ($request->method !== 'POST') {
+                throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
+            }
+            $session = $this->mutation($request);
+            $input = $this->body($request, ['expectedVersion', 'confirm', 'lines'], ['expectedVersion', 'confirm', 'lines']);
+            return $this->json($this->workspace->correctIdentity($session->employee, $m[1], $input, $request->header('idempotency-key') ?? '', $request->requestId));
         }
         if (preg_match('#^/packages/([0-9]{1,19})/(dismiss|reopen|release)$#D', $path, $m) === 1) {
             if ($request->method !== 'POST') {

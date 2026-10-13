@@ -58,6 +58,18 @@ test("Trendyol answers are mapped strictly and fail closed", () => {
   assert.equal(mapTrendyolSummary({ ...detail, marketplaceStatus: "Repackaged" }).marketplaceClass, "review");
   assert.equal(mapTrendyolSummary({ ...detail, marketplaceStatus: "Repackaged" }).marketplaceStatusKnown, false);
   assert.throws(() => mapTrendyolDetail({ ...detail, marketplaceClass: "shipped" }), serverError);
+  // Correction of an approved order's printed identity: an older API sends nothing (no correction offered).
+  assert.equal(mapped.correction, null);
+  assert.equal(mapped.capabilities.correctNow, false);
+  assert.equal(mapped.lines[0].productionItem, null);
+  const released = mapTrendyolDetail({ ...detail, intakeStatus: "released", correction: { needed: true, allowed: true },
+    lines: [{ ...detail.lines[0], productCode: "40427-1-7", productionItem: { name: "Linen Curtain with White 3D Floral Embroidery", productCode: null } }],
+    capabilities: { ...detail.capabilities, release: true, correctNow: true } });
+  assert.deepEqual(released.correction, { needed: true, allowed: true });
+  assert.equal(released.capabilities.correctNow, true);
+  assert.deepEqual(released.lines[0].productionItem, { name: "Linen Curtain with White 3D Floral Embroidery", productCode: null });
+  assert.throws(() => mapTrendyolDetail({ ...detail, correction: { needed: "yes", allowed: true } }), serverError);
+  assert.throws(() => mapTrendyolDetail({ ...detail, lines: [{ ...detail.lines[0], productionItem: { productCode: "x" } }] }), serverError);
   assert.throws(() => mapTrendyolDetail({ ...detail, readiness: { ...detail.readiness, blockedReason: "maybe" } }), serverError);
   assert.equal(marketplaceClassOf("UnDeliveredAndReturned"), "returned");
   assert.equal(marketplaceLabel("ReadyToShip"), "Pregătită pentru curier");

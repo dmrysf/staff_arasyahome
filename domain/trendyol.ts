@@ -59,6 +59,8 @@ export type TrendyolLine = {
   quantity: number;
   sizeSuggestion: { width: string; height: string } | null;
   prepared: TrendyolPreparedLine | null;
+  /** What the released production order prints for this line (its frozen item); null before approval. */
+  productionItem: { name: string; productCode: string | null } | null;
 };
 
 export type TrendyolPackageDetail = TrendyolPackageSummary & {
@@ -68,8 +70,10 @@ export type TrendyolPackageDetail = TrendyolPackageSummary & {
   siblings: { packageId: string; intakeStatus: TrendyolIntakeStatus; marketplaceStatus: string }[];
   production: { globalOrderId: string; stageId: string; stageLabel: string | null; documentStatus: string; operationalStatus: string; releasedBy: string | null; releasedAt: string | null } | null;
   dismissal: { reason: string; by: string | null; at: string | null } | null;
+  /** Released packages only: the printed identity is wrong (placeholder code or marketplace title) and whether it can still be corrected. */
+  correction: { needed: boolean; allowed: boolean } | null;
   history: { action: string; actor: string | null; at: string | null }[];
-  capabilities: TrendyolCapabilities & { prepareNow: boolean; releaseNow: boolean; dismissNow: boolean; reopenNow: boolean };
+  capabilities: TrendyolCapabilities & { prepareNow: boolean; releaseNow: boolean; dismissNow: boolean; reopenNow: boolean; correctNow: boolean };
 };
 
 /** The caller's own Trendyol actions (GET /trendyol/activity): today's counts and the latest ten actions. */
@@ -97,6 +101,7 @@ export interface TrendyolApi {
   dismiss(packageId: string, input: { expectedVersion: number; reason: string }, idempotencyKey: string): Promise<TrendyolPackageDetail>;
   reopen(packageId: string, input: { expectedVersion: number }, idempotencyKey: string): Promise<TrendyolPackageDetail>;
   release(packageId: string, input: { expectedVersion: number; confirm: true }, idempotencyKey: string): Promise<TrendyolPackageDetail>;
+  correctIdentity(packageId: string, input: { expectedVersion: number; confirm: true; lines: { lineId: string; productionTitle: string }[] }, idempotencyKey: string): Promise<TrendyolPackageDetail>;
 }
 
 export const TRENDYOL_VIEW_PERMISSION = "trendyol.orders.view";

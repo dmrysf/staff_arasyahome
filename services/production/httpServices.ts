@@ -892,6 +892,7 @@ export function createProductionServices(apiBaseUrl: string, options: Production
     dismiss: (packageId, input, key) => http.request(`${trendyolPackage(packageId)}/dismiss`, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapTrendyolDetail),
     reopen: (packageId, input, key) => http.request(`${trendyolPackage(packageId)}/reopen`, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapTrendyolDetail),
     release: (packageId, input, key) => http.request(`${trendyolPackage(packageId)}/release`, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapTrendyolDetail),
+    correctIdentity: (packageId, input, key) => http.request(`${trendyolPackage(packageId)}/correct-identity`, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapTrendyolDetail),
   };
   const workspace: WorkspaceApi = {
     stageQueue: (stageId, signal) => http.request(`/orders/stage-queue?stage=${encodeURIComponent(stageId)}`, { signal }, mapStageQueue),
@@ -1001,6 +1002,7 @@ function mapTrendyolLine(value: unknown): TrendyolLine {
   const raw = objectValue(value);
   const suggestion = raw.sizeSuggestion == null ? null : objectValue(raw.sizeSuggestion);
   const prepared = raw.prepared == null ? null : objectValue(raw.prepared);
+  const item = raw.productionItem == null ? null : objectValue(raw.productionItem);
   return {
     lineId: packageIdValue(raw.lineId),
     lineNumber: positiveInteger(raw.lineNumber),
@@ -1015,6 +1017,7 @@ function mapTrendyolLine(value: unknown): TrendyolLine {
     quantity: positiveInteger(raw.quantity),
     sizeSuggestion: suggestion === null ? null : { width: stringValue(suggestion.width), height: stringValue(suggestion.height) },
     prepared: prepared === null ? null : { kind: oneOf(prepared.kind, lineKinds), widthCm: nullableText(prepared.widthCm), heightCm: nullableText(prepared.heightCm), meters: nullableText(prepared.meters), notes: nullableText(prepared.notes), productionTitle: nullableText(prepared.productionTitle), preparedBy: nullableText(prepared.preparedBy), preparedAt: nullableTimestamp(prepared.preparedAt) },
+    productionItem: item === null ? null : { name: stringValue(item.name), productCode: nullableText(item.productCode) },
   };
 }
 export function mapTrendyolDetail(value: unknown): TrendyolPackageDetail {
@@ -1024,6 +1027,7 @@ export function mapTrendyolDetail(value: unknown): TrendyolPackageDetail {
   const delivery = raw.delivery == null ? null : objectValue(raw.delivery);
   const production = raw.production == null ? null : objectValue(raw.production);
   const dismissal = raw.dismissal == null ? null : objectValue(raw.dismissal);
+  const correction = raw.correction == null ? null : objectValue(raw.correction);
   if (!Array.isArray(raw.lines) || !Array.isArray(raw.siblings) || !Array.isArray(raw.history) || !Array.isArray(readiness.missingLines) || (delivery !== null && !Array.isArray(delivery.addressLines))) throw new StaffServiceError("SERVER_ERROR");
   return {
     ...mapTrendyolSummary(raw),
@@ -1033,8 +1037,9 @@ export function mapTrendyolDetail(value: unknown): TrendyolPackageDetail {
     siblings: raw.siblings.map((item) => { const sibling = objectValue(item); return { packageId: packageIdValue(sibling.packageId), intakeStatus: oneOf(sibling.intakeStatus, intakeStatuses), marketplaceStatus: stringValue(sibling.marketplaceStatus) }; }),
     production: production === null ? null : { globalOrderId: stringValue(production.globalOrderId), stageId: stringValue(production.stageId), stageLabel: nullableText(production.stageLabel), documentStatus: stringValue(production.documentStatus), operationalStatus: stringValue(production.operationalStatus), releasedBy: nullableText(production.releasedBy), releasedAt: nullableTimestamp(production.releasedAt) },
     dismissal: dismissal === null ? null : { reason: stringValue(dismissal.reason), by: nullableText(dismissal.by), at: nullableTimestamp(dismissal.at) },
+    correction: correction === null ? null : { needed: booleanValue(correction.needed), allowed: booleanValue(correction.allowed) },
     history: raw.history.map((item) => { const event = objectValue(item); return { action: stringValue(event.action), actor: nullableText(event.actor), at: nullableTimestamp(event.at) }; }),
-    capabilities: { ...mapTrendyolCapabilities(capabilities), prepareNow: booleanValue(capabilities.prepareNow), releaseNow: booleanValue(capabilities.releaseNow), dismissNow: booleanValue(capabilities.dismissNow), reopenNow: booleanValue(capabilities.reopenNow) },
+    capabilities: { ...mapTrendyolCapabilities(capabilities), prepareNow: booleanValue(capabilities.prepareNow), releaseNow: booleanValue(capabilities.releaseNow), dismissNow: booleanValue(capabilities.dismissNow), reopenNow: booleanValue(capabilities.reopenNow), correctNow: capabilities.correctNow === true },
   };
 }
 

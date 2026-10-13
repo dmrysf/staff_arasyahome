@@ -599,6 +599,92 @@ $assignment = array_values(array_filter($appointment['responsibilities'], static
 $status(T::call($kernel, 'POST', "/management/organization/responsibilities/{$assignment['id']}/revoke", ['reason' => 'Test'], ['x-csrf-token' => $root['csrf'], 'idempotency-key' => $key('ty-sup-revoke')], $root['cookie']), 200, 'the appointment is revoked again');
 $pdo->exec("DELETE FROM production_exception_idempotency WHERE operation LIKE 'defect.%' OR operation LIKE 'fault.%'");
 
+// ---- Correction of an approved package's production identity ----------------------------------------------------
+// Live 2026-10-13: two packages were approved before the product-code fix. Their frozen items (and revision 1) print
+// the English marketplace title and no real seller code; Trendyol states the code in `sku` only. Reproduced here:
+// the line has the placeholder codes and no `sku` at approval, and the preparer confirmed the marketplace title.
+$clock->instant = $clock->instant->modify('+10 minutes');
+$legacyTitle = 'Linen Curtain with White 3D Floral Embroidery, 40427-1, 200 x 260';
+$legacyLine = static fn (bool $withSku): array => [['lineId' => $base + 701, 'quantity' => 2, 'productName' => $legacyTitle, 'stockCode' => 'merchantSku', 'merchantSku' => 'merchantSku',
+    'barcode' => '40427-1-7', 'productSize' => '200 x 260', 'productColor' => 'Alb'] + ($withSku ? ['sku' => '40427-1-7'] : [])];
+$legacyPackage = static fn (bool $withSku, int $modified): array => $package(700, $baseMs + $hours(8), $modified, 'Picking', $legacyLine($withSku));
+$transport->responses = [$page([$legacyPackage(false, $baseMs + 40000)])];
+$sync->run();
+$p700 = '/trendyol/packages/' . ($base + 700);
+$legacy = $status($get($preparer, $p700), 200, 'the legacy package');
+$check($legacy['lines'][0]['productCode'] === null && $legacy['lines'][0]['stockCode'] === 'merchantSku', 'no seller code can be resolved before Trendyol states it');
+$legacy = $status($send($preparer, 'PUT', "{$p700}/lines/" . ($base + 701), ['expectedVersion' => $legacy['version'], 'kind' => 'curtain', 'widthCm' => '200', 'heightCm' => '260', 'productionTitle' => $legacyTitle], $key('legacy-prep')), 200, 'prepared like before the fix');
+$marketplace(['packages' => [$legacyPackage(false, $baseMs + 40000)]]);
+$legacy = $status($send($approver, 'POST', "{$p700}/release", ['expectedVersion' => $legacy['version'], 'confirm' => true], $key('legacy-release')), 201, 'approved like before the fix');
+$global700 = 'trendyol:' . ($base + 700);
+$uuid700 = (string) $one('SELECT order_uuid FROM operational_orders WHERE global_order_id = ?', [$global700]);
+$r1 = $row('SELECT revision_uuid, qr_reference, snapshot_json FROM production_document_revisions WHERE order_uuid = ? AND revision_number = 1', [$uuid700]);
+$check(json_decode($r1['snapshot_json'], true)['lines'][0]['name'] === $legacyTitle && json_decode($r1['snapshot_json'], true)['lines'][0]['code'] === null, 'revision 1 prints the English title and no seller code (the live defect)');
+$check($legacy['correction'] === ['needed' => true, 'allowed' => true] && $legacy['lines'][0]['productionItem'] === ['name' => $legacyTitle, 'productCode' => null], 'the package shows the wrong printed identity: ' . json_encode($legacy['correction']));
+// The next synchronization reads the seller code from `sku` (outside the lines hash): the package is not flagged.
+$clock->instant = $clock->instant->modify('+5 minutes');
+$transport->responses = [$page([$legacyPackage(true, $baseMs + 40000)])];
+$sync->run();
+$legacy = $status($get($approver, $p700), 200, 'after the sync');
+$check($legacy['lines'][0]['productCode'] === '40427-1-7' && $legacy['changedAfterRelease'] === false && $legacy['lines'][0]['productionItem']['productCode'] === null, 'the code is resolved for the package; the released items stay frozen');
+$check($legacy['capabilities']['correctNow'] === true, 'the approver may correct it');
+$roTitle = 'Perdea in brodată cu flori 3D albe, 200 × 260';
+$correctBody = ['expectedVersion' => $legacy['version'], 'confirm' => true, 'lines' => [['lineId' => (string) ($base + 701), 'productionTitle' => $roTitle]]];
+$error($send($preparer, 'POST', "{$p700}/correct-identity", $correctBody, $key('corr-prep')), 403, 'UNAUTHORIZED_ACTION', 'a preparer cannot correct an approved order');
+$error($send($approver, 'POST', "{$p700}/correct-identity", ['confirm' => false] + $correctBody, $key('corr-unconfirmed')), 422, 'CONFIRMATION_REQUIRED', 'the correction is explicit');
+$error($send($approver, 'POST', "{$p700}/correct-identity", ['lines' => [['lineId' => (string) ($base + 701), 'productionTitle' => ' ']]] + $correctBody, $key('corr-empty')), 422, 'PRODUCTION_TITLE_REQUIRED', 'an empty title is refused');
+$error($send($approver, 'POST', "{$p700}/correct-identity", ['lines' => []] + $correctBody, $key('corr-nolines')), 422, 'INVALID_LINES', 'every line needs its title');
+$marketplace(['fail' => true]);
+$error($send($approver, 'POST', "{$p700}/correct-identity", $correctBody, $key('corr-offline')), 503, 'TRENDYOL_VERIFICATION_FAILED', 'without a fresh Trendyol read nothing is corrected');
+$check((string) $one('SELECT name FROM operational_order_items WHERE order_uuid = ?', [$uuid700]) === $legacyTitle, 'the failed attempt changed nothing');
+$marketplace(['packages' => [$legacyPackage(true, $baseMs + 40000)]]);
+$corrKey = $key('corr');
+$corrected = $status($send($approver, 'POST', "{$p700}/correct-identity", $correctBody, $corrKey), 200, 'the approver corrects the identity');
+$item700 = $row('SELECT name, product_code, width_value, height_value, measurement_unit, quantity, production_context FROM operational_order_items WHERE order_uuid = ?', [$uuid700]);
+$check($item700['name'] === $roTitle && $item700['product_code'] === '40427-1-7' && $item700['width_value'] === '200.000' && $item700['height_value'] === '260.000' && $item700['measurement_unit'] === 'cm' && (int) $item700['quantity'] === 2
+    && json_decode($item700['production_context'], true)['marketplaceTitle'] === $legacyTitle && json_decode($item700['production_context'], true)['barcode'] === '40427-1-7', 'title and code corrected; measurements, quantity, marketplace title and barcode kept: ' . json_encode($item700));
+$order700 = $row('SELECT production_stage_id, production_owner_employee_uuid, document_status FROM operational_orders WHERE global_order_id = ?', [$global700]);
+$check($order700['document_status'] === 'stale' && $order700['production_stage_id'] === 'waiting' && $order700['production_owner_employee_uuid'] === null, 'the canonical rule makes revision 1 stale; stage and owner unchanged');
+$check($row('SELECT status, stale_at IS NOT NULL AS stale FROM production_document_revisions WHERE revision_uuid = ?', [$r1['revision_uuid']]) == ['status' => 'active', 'stale' => 1] && json_decode((string) $one('SELECT snapshot_json FROM production_document_revisions WHERE revision_uuid = ?', [$r1['revision_uuid']]), true)['lines'][0]['name'] === $legacyTitle, 'revision 1 is kept unchanged as history');
+$event = json_decode((string) $one("SELECT details FROM trendyol_intake_events WHERE package_id = ? AND action = 'production_identity_corrected'", [$base + 700]), true);
+$check($event['lines'][0]['before'] === ['name' => $legacyTitle, 'productCode' => null] && $event['lines'][0]['after'] === ['name' => $roTitle, 'productCode' => '40427-1-7'] && (string) $one("SELECT actor_employee_uuid IS NOT NULL FROM trendyol_intake_events WHERE package_id = ? AND action = 'production_identity_corrected'", [$base + 700]) === '1', 'the history records before, after and the employee');
+$check($one('SELECT title_ro FROM trendyol_product_titles WHERE product_code = ?', ['40427-1-7']) === $roTitle, 'the Romanian title is approved for the seller code');
+$check($status($send($approver, 'POST', "{$p700}/correct-identity", $correctBody, $corrKey), 200, 'a retried correction') === $corrected, 'a retried request replays the committed answer');
+$again = $status($send($approver, 'POST', "{$p700}/correct-identity", ['expectedVersion' => $corrected['version']] + $correctBody, $key('corr-again')), 200, 'the same correction again');
+$check((int) $one("SELECT COUNT(*) FROM trendyol_intake_events WHERE package_id = ? AND action = 'production_identity_corrected'", [$base + 700]) === 1 && $again['correction']['needed'] === false, 'nothing left to correct: no second event');
+// Revision 2 through the ordinary approval: an operator requests, another employee approves, the operator generates.
+$docOperator = $identity('tydocop', [], ['staff', 'dashboard'], [$roleIds['production-documents-operator']]);
+$docApprover = $identity('tydocok', [], ['staff', 'dashboard'], [$roleIds['document-revision-approver']]);
+$opUuid = (string) $one('SELECT employee_uuid FROM employees WHERE username = ?', ["tydocop.{$suffix}"]);
+$okUuid = (string) $one('SELECT employee_uuid FROM employees WHERE username = ?', ["tydocok.{$suffix}"]);
+$status(T::call($kernel, 'PUT', "/management/employees/{$opUuid}/document-scopes", ['operate' => ['trendyol'], 'approve' => []], ['x-csrf-token' => $root['csrf']], $root['cookie']), 200, 'operator scope');
+$status(T::call($kernel, 'PUT', "/management/employees/{$okUuid}/document-scopes", ['operate' => [], 'approve' => ['trendyol']], ['x-csrf-token' => $root['csrf']], $root['cookie']), 200, 'approver scope');
+$docPath700 = '/production-documents/orders/' . rawurlencode($global700);
+$doc = $status($get($docOperator, $docPath700), 200, 'the operator reads the stale document');
+$request = $status($send($docOperator, 'POST', "{$docPath700}/revision-requests", ['expectedDocumentVersion' => (int) $one('SELECT document_version FROM operational_orders WHERE order_uuid = ?', [$uuid700]), 'comment' => 'Denumire în română și cod produs corect.'], $key('req700')), 201, 'revision requested')['request'];
+$error($send($docOperator, 'POST', "/production-documents/revision-requests/{$request['id']}/decision", ['expectedVersion' => $request['version'] ?? 1, 'decision' => 'approve'], $key('self-approve')), 403, 'UNAUTHORIZED_ACTION', 'the requester cannot approve');
+$status($send($docApprover, 'POST', "/production-documents/revision-requests/{$request['id']}/decision", ['expectedVersion' => $request['version'] ?? 1, 'decision' => 'approve'], $key('approve700')), 200, 'another employee approves');
+$r2 = $status($send($docOperator, 'POST', "{$docPath700}/generate", ['expectedDocumentVersion' => (int) $one('SELECT document_version FROM operational_orders WHERE order_uuid = ?', [$uuid700])], $key('gen700')), 201, 'revision 2 generated');
+$revisions700 = $pdo->query('SELECT revision_number, status, qr_reference, snapshot_json FROM production_document_revisions WHERE order_uuid = ' . $pdo->quote($uuid700) . ' ORDER BY revision_number')->fetchAll(PDO::FETCH_ASSOC);
+$lines2 = json_decode($revisions700[1]['snapshot_json'], true)['lines'][0];
+$check(count($revisions700) === 2 && $revisions700[0]['status'] === 'superseded' && $revisions700[1]['status'] === 'active' && $revisions700[1]['qr_reference'] !== $revisions700[0]['qr_reference'], 'revision 1 superseded, revision 2 active with a new QR');
+$check($lines2['name'] === $roTitle && $lines2['code'] === '40427-1-7' && $lines2['width'] === '200.000' && (int) $lines2['quantity'] === 2, 'revision 2 prints the Romanian title and the seller code: ' . json_encode($lines2));
+$qr700 = $pdo->query('SELECT qr_reference, status FROM order_qr_references WHERE order_uuid = ' . $pdo->quote($uuid700) . ' ORDER BY created_at')->fetchAll(PDO::FETCH_KEY_PAIR);
+$check(($qr700[$revisions700[0]['qr_reference']] ?? null) !== 'active' && ($qr700[$revisions700[1]['qr_reference']] ?? null) === 'active', 'the old QR is no longer active; the new one is: ' . json_encode($qr700));
+$check($one('SELECT document_status FROM operational_orders WHERE order_uuid = ?', [$uuid700]) === 'active', 'production is unblocked by revision 2');
+$printed2 = $send($docOperator, 'POST', "{$docPath700}/print", ['revisionNumber' => 2], $key('print700'));
+$check($printed2['status'] === 200 && str_starts_with((string) $printed2['raw'], '%PDF-') && str_contains($printed2['headers']['Content-Disposition'] ?? '', '-R2.pdf') && !str_contains((string) $printed2['raw'], 'merchantSku'), 'revision 2 prints as a PDF without the placeholder code');
+if (is_string(getenv('ARASYA_TEST_ARTIFACT_DIR')) && is_dir((string) getenv('ARASYA_TEST_ARTIFACT_DIR'))) {
+    file_put_contents(getenv('ARASYA_TEST_ARTIFACT_DIR') . '/trendyol-corrected-R2.pdf', (string) $printed2['raw']);
+}
+$check((int) $one('SELECT COUNT(*) FROM operational_orders WHERE global_order_id = ?', [$global700]) === 1, 'still one canonical order');
+// Once work started the correction is refused: the stage-1 operator claims the order.
+$after = $status($get($approver, $p700), 200, 'after revision 2');
+$pdo->prepare('UPDATE operational_orders SET production_owner_employee_uuid = ? WHERE order_uuid = ?')->execute([$opUuid, $uuid700]);
+$error($send($approver, 'POST', "{$p700}/correct-identity", ['expectedVersion' => $after['version']] + $correctBody, $key('corr-owned')), 409, 'TRENDYOL_CORRECTION_IN_PRODUCTION', 'a correction is refused once someone holds the order');
+$pdo->prepare('UPDATE operational_orders SET production_owner_employee_uuid = NULL WHERE order_uuid = ?')->execute([$uuid700]);
+foreach ([$opUuid, $okUuid] as $uuid) $status(T::call($kernel, 'PUT', "/management/employees/{$uuid}/document-scopes", ['operate' => [], 'approve' => []], ['x-csrf-token' => $root['csrf']], $root['cookie']), 200, 'document scopes removed again');
+
 // Leave the shared disposable database as later suites expect it: the intake rows and the approved Trendyol test
 // orders (with their QR, document revision and events) are removed, child rows first.
 $pdo->exec('DELETE FROM trendyol_package_lines');
