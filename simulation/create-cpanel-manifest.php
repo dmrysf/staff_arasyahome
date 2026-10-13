@@ -8,7 +8,7 @@ if (!str_starts_with($dir,'/') || !preg_match('/^[a-f0-9]{12}$/D',$id) || file_e
 if (!preg_match('/^(?:[a-z0-9]+_)?arasya_sim_test_' . $id . '$/D',$argv[3]) || !preg_match('/^(?:[a-z0-9]+_)?sim_' . $id . '$/D',$argv[4])) throw new RuntimeException('SIMULATION_DATABASE_BOUNDARY');
 $password=trim((string)stream_get_contents(STDIN)); if ($password==='') throw new RuntimeException('Database password is required on STDIN.');
 mkdir($dir,0700,true); $fixture=$dir . '/marketplace.json';file_put_contents($fixture,'{"packages":[]}');chmod($fixture,0600);
-$env=['ARASYA_APP_ENV'=>'simulation','ARASYA_APP_SECRET'=>'sim:' . bin2hex(random_bytes(32)),
+$env=['ARASYA_APP_ENV'=>'simulation','ARASYA_LINE_ROUTING'=>'enforce','ARASYA_APP_SECRET'=>'sim:' . bin2hex(random_bytes(32)),
 'ARASYA_DB_HOST'=>'localhost','ARASYA_DB_PORT'=>'3306','ARASYA_DB_NAME'=>$argv[3],'ARASYA_DB_USER'=>$argv[4],'ARASYA_DB_PASSWORD'=>$password,
 'ARASYA_ALLOWED_ORIGINS'=>'https://sim.arasyahome.ro','ARASYA_SOURCE_SECRET_TRENDHOME'=>'sim:' . bin2hex(random_bytes(32)),
 'ARASYA_SOURCE_SECRET_OUTLETPERDELE'=>'sim:' . bin2hex(random_bytes(32)),'ARASYA_SOURCE_MODE_TRENDHOME'=>'active','ARASYA_SOURCE_MODE_OUTLETPERDELE'=>'active',

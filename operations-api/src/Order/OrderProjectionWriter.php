@@ -64,7 +64,7 @@ final readonly class OrderProjectionWriter
                 'u' => $i->measurementUnit,
                 'm' => $i->meters !== null ? number_format((float)$i->meters, 3, '.', '') : null,
                 'qty' => $i->quantity
-            ] + (($i->productionContext['options'] ?? []) === [] ? [] : ['opt' => $i->productionContext['options']]), $itemsForHash),
+            ] + (($i->productionContext['options'] ?? []) === [] ? [] : ['opt' => $i->productionContext['options']]) + (isset($i->productionContext['manufacturingType'])?['manufacturingType'=>$i->productionContext['manufacturingType']]:[]), $itemsForHash),
         ];
         // Payment facts join the hash only when the source states them, so every earlier event keeps its hash.
         if ($snapshot->payment !== null) {

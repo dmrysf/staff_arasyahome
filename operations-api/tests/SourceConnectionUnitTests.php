@@ -546,9 +546,9 @@ test('expected API errors and validation are unchanged by the PDO diagnostics', 
     expect(!array_key_exists('exception', $warning) && !array_key_exists('sqlstate', $warning) && !array_key_exists('driver_code', $warning));
 });
 
-test('migrations stay sequential through 027 and the canonical workflow keeps its 14 stages', function (): void {
+test('migrations stay sequential through 028 and the canonical workflow keeps its 14 stages', function (): void {
     $migrations = array_map('basename', glob(dirname(__DIR__) . '/database/migrations/*.sql') ?: []);
-    expect(count($migrations) === 27 && $migrations[23] === '024_tailoring_quality_supervision.sql' && $migrations[24] === '025_source_payment_gate.sql' && $migrations[25] === '026_trendyol_product_identity.sql' && $migrations[26] === '027_employee_staff_locale.sql' && str_starts_with($migrations[0], '001_') && str_starts_with($migrations[16], '017_') && $migrations[17] === '018_production_authority.sql' && $migrations[18] === '019_production_qr_authority.sql' && $migrations[19] === '020_production_document_authority.sql' && $migrations[20] === '021_document_scopes.sql' && $migrations[21] === '022_trendyol_intake.sql' && $migrations[22] === '023_source_scoped_stage_authorization.sql');
+    expect(count($migrations) === 28 && $migrations[23] === '024_tailoring_quality_supervision.sql' && $migrations[24] === '025_source_payment_gate.sql' && $migrations[25] === '026_trendyol_product_identity.sql' && $migrations[26] === '027_employee_staff_locale.sql' && str_starts_with($migrations[0], '001_') && str_starts_with($migrations[16], '017_') && $migrations[17] === '018_production_authority.sql' && $migrations[18] === '019_production_qr_authority.sql' && $migrations[19] === '020_production_document_authority.sql' && $migrations[20] === '021_document_scopes.sql' && $migrations[21] === '022_trendyol_intake.sql' && $migrations[22] === '023_source_scoped_stage_authorization.sql');
     expect(count(CanonicalProductionWorkflowContract::STAGES) === 14);
     expect(array_keys(CanonicalProductionWorkflowContract::STAGES) === ['waiting', 'material-preparation', 'workshop-receiving', 'labeling', 'material-straightening', 'bottom-hem', 'side-hem', 'ironing', 'height', 'header-tape', 'sewing-finishing', 'quality-control', 'packing', 'delivery']);
     // 018 is additive: it never converts the authority of existing orders.
@@ -742,4 +742,24 @@ test('configured payment gate enforcement survives private JSON loading and envi
         $override=SourceRegistry::fromConfig(Config::fromEnvironment(new ConfigLoader(['HOME'=>$home,'ARASYA_SOURCE_PAYMENT_GATE_TRENDHOME'=>'off'])));
         expect($override->find('trendhome')?->paymentGateMode === \Arasya\Operations\Production\PaymentGateMode::Off,'Explicit environment override remains authoritative.');
     } finally { unlink($file); rmdir(dirname($file)); rmdir($home); }
+});
+
+test('explicit fabric classification requires normalized positive dimensions and preserves manufacturing options', function (): void {
+    $payload=sourceTestPayload();$payload['order']['items'][0]['manufacturingType']='custom_drapery';
+    $snapshot=\Arasya\Operations\Integration\SourceOrderPayloadMapper::map('trendhome',$payload);
+    expect($snapshot->items[0]->productionContext['manufacturingType']==='custom_drapery');
+    foreach ([['width'=>null],['height'=>0],['width'=>0.0001],['unit'=>'inch'],['width'=>'3.4'],['manufacturingType'=>'curtain-from-name']] as $change) {
+        $bad=$payload;$bad['order']['items'][0]=array_replace($bad['order']['items'][0],$change);
+        sourceExpectApi('SOURCE_PAYLOAD_INVALID',422,fn()=>\Arasya\Operations\Integration\SourceOrderPayloadMapper::map('trendhome',$bad));
+    }
+});
+
+test('measurement-free ready-made products are classified explicitly regardless of their name', function (): void {
+    $payload=sourceTestPayload();$payload['order']['items'][0]['manufacturingType']='ready_made';$payload['order']['items'][0]['name']='Curtain named accessory';
+    foreach(['width','height','unit','meters'] as $key) unset($payload['order']['items'][0][$key]);
+    $item=\Arasya\Operations\Integration\SourceOrderPayloadMapper::map('outletperdele',$payload)->items[0];
+    expect($item->widthValue===null && $item->heightValue===null && $item->meters===null);
+    expect(!\Arasya\Operations\Production\LineReadiness::applicable($item,'material-preparation'));
+    expect(!\Arasya\Operations\Production\LineReadiness::applicable($item,'side-hem'));
+    expect(\Arasya\Operations\Production\LineReadiness::applicable($item,'packing'));
 });

@@ -1195,4 +1195,13 @@ export const en: Catalog = {
   "mgmt.col.unassigned": "Not taken",
   "mgmt.col.oldest": "Oldest",
   "mgmt.footnote": "Details by order, employee and exception stay in the Dashboard app.",
+  "lines.title": "Product checks",
+  "lines.ready": "All products are ready for packing",
+  "lines.unfinished": "Products or operations remain unfinished",
+  "lines.standard": "Ready-made · no cutting/tailoring",
+  "lines.fabric": "Fabric with validated measurements",
+  "lines.packed": "Checked in package",
+  "lines.quantity": "Completed quantity",
+  "lines.pack": "Check product in package",
+  "lines.confirm": "Confirm product work",
 };

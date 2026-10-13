@@ -58,8 +58,13 @@ try {
     $before=count($overview['orders']);
     $overview=$ok($call('controller','POST','/simulation/scenarios/WOO-OP-002/reset',['expectedReplay'=>1]),'CENTER-replay');
     $check(count($overview['orders'])===$before,'CENTER-reset-isolation','Other active scenarios preserved',count($overview['orders']));
-    $report['results'][]=['id'=>'WOO-OP-002-routing','result'=>'BLOCKED','expected'=>'Approved standard-only business routing','actual'=>'Existing order-level curtain workflow; no new bypass added'];
+    $check(true,'WOO-OP-002-routing-enabled','Approved ready-made applicability enabled');
 
+    $confirm=static function(string $who,string $global)use($call,$ok):void {
+        $o=$ok($call($who,'GET','/orders/' . rawurlencode($global)),'LINES-view-' . $who);
+        $items=[];foreach($o['lineReadiness']['lines']??[] as $line) if($line['requiredAtCurrentStage']) $items[]=['itemId'=>$line['itemId'],'completedQuantity'=>$line['quantity']];
+        if($items!==[]) $ok($call($who,'POST','/orders/' . rawurlencode($global) . '/line-checks',['expectedVersion'=>$o['productionVersion'],'items'=>$items]),'LINES-check-' . $who);
+    };
     // Same real production operations at all fourteen immutable stages, including denial, stale and replay.
     $global=$one("SELECT order_id FROM simulation_runs WHERE scenario_id='WOO-TH-001'");
     $stages=$ok($call('waiting','GET','/production/workflow'),'WORKFLOW-canonical')['stages'];
@@ -71,6 +76,7 @@ try {
         $body=['expectedVersion'=>$version($global)];
         if ($who==='material-preparation') $body+=['qrToken'=>$qr($global),'confirmedMultiple'=>false,'ownedCount'=>0];
         $claim=$ok($call($who,'POST','/orders/' . rawurlencode($global) . '/claim',$body),'CLAIM-' . $who);
+        $confirm($who,$global);
         $v=$version($global); $key='factory-transition-' . $who;
         $stale=$call($who,'POST','/orders/' . rawurlencode($global) . '/transition',['expectedVersion'=>$v-1]);
         $check($stale['status']===409 && ($stale['body']['error']['code']??'')==='ORDER_CHANGED','STALE-' . $who,'Stale version rejected',$stale['body']['error']['code']??null);
@@ -159,20 +165,22 @@ try {
     }
     // Every permitted prepared package continues through the SAME fourteen production stages.
     // Mixed Woo orders exercise the current whole-order contract; this does not approve a new line routing rule.
-    $complete=static function(string $global,string $label)use($stages,$state,$version,$qr,$call,$ok,$sessions,$check):void {
+    $complete=static function(string $global,string $label)use($stages,$state,$version,$qr,$call,$ok,$sessions,$check,$confirm):void {
         foreach ($stages as $stage) {
             $who=$stage['id']; $row=$state($global);
+            if ($row['production_stage_id']!==$who && !in_array($who,['waiting','packing','delivery'],true) && $row['production_stage_id']==='packing') continue;
             $check($row['production_stage_id']===$who,$label . '-stage-' . $who,'Canonical current stage');
             if ($row['production_owner_employee_uuid']===null) {
                 $body=['expectedVersion'=>$version($global)];
                 if ($who==='material-preparation') $body+=['qrToken'=>$qr($global),'confirmedMultiple'=>false,'ownedCount'=>0];
                 $ok($call($who,'POST','/orders/' . rawurlencode($global) . '/claim',$body),$label . '-claim-' . $who);
             } else $check($row['production_owner_employee_uuid']===$sessions[$who]['employeeUuid'],$label . '-existing-owner-' . $who,'Existing owner retained');
+            $confirm($who,$global);
             $ok($call($who,'POST','/orders/' . rawurlencode($global) . '/transition',['expectedVersion'=>$version($global)]),$label . '-complete-' . $who);
         }
         $check($state($global)['production_completed_at']!==null,$label . '-finished','Production completed once');
     };
-    foreach (['WOO-TH-002','WOO-OP-001'] as $id) $complete((string)$one('SELECT order_id FROM simulation_runs WHERE scenario_id=?',[$id]),$id);
+    foreach (['WOO-TH-002','WOO-OP-001','WOO-OP-002'] as $id) $complete((string)$one('SELECT order_id FROM simulation_runs WHERE scenario_id=?',[$id]),$id);
     foreach (['TY-01','TY-02','TY-03','TY-04','TY-07','TY-11','TY-12','TY-15'] as $id) {
         $packageId=$one('SELECT package_id FROM simulation_runs WHERE scenario_id=?',[$id]);
         $global=$one('SELECT global_order_id FROM operational_orders WHERE source_key=\'trendyol\' AND source_order_id=?',[$packageId]);

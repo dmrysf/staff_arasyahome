@@ -26,7 +26,7 @@ type TorchConstraintSet = MediaTrackConstraintSet & { torch?: boolean };
 
 function ReviewContent({ order, item, workflow }: { order: StaffOrder; item: ProductionItem; workflow: ProductionWorkflow }) {
   const currentStage = getStageById(workflow, order.productionStageId);
-  const nextStage = order.employeeAllowedAction?.id === "complete_stage" ? getNextStage(workflow, order.productionStageId) : undefined;
+  const nextStage = order.employeeAllowedAction?.id === "complete_stage" ? (order.lineReadiness?.nextStageId ? getStageById(workflow,order.lineReadiness.nextStageId) : getNextStage(workflow, order.productionStageId)) : undefined;
   const { t } = useI18n();
   const products = getUsableProductionProducts(order);
   const size = formatMeasurements(item);
@@ -294,7 +294,7 @@ export function ScannerScreen({ service, cutting, employee, workflow, mode, navi
   const pending = state.status === "confirming" || state.status === "submitting" ? state.order : null;
   const pendingAction = pending?.employeeAllowedAction;
   const pendingCurrent = pending ? getStageById(workflow, pending.productionStageId) : undefined;
-  const pendingNext = pending && pendingAction?.id === "complete_stage" ? getNextStage(workflow, pending.productionStageId) : undefined;
+  const pendingNext = pending && pendingAction?.id === "complete_stage" ? (pending.lineReadiness?.nextStageId ? getStageById(workflow,pending.lineReadiness.nextStageId) : getNextStage(workflow, pending.productionStageId)) : undefined;
   const needsCuttingQr = Boolean(cutting && pending?.productionStageId === "material-preparation" && pendingAction?.id === "claim");
 
   return (

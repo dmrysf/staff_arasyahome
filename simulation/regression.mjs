@@ -8,10 +8,12 @@ const [runtime, port = "13361", profile = "fast"] = process.argv.slice(2);
 if (!runtime || !path.isAbsolute(runtime) || !["fast", "nightly"].includes(profile) || !/^\d{4,5}$/.test(port)) throw new Error("Usage: node simulation/regression.mjs /absolute/runtime port fast|nightly");
 const suites = ["mysql-operations-integration.php", "mysql-source-connection-integration.php", "mysql-trendyol-intake-integration.php", "mysql-production-documents-integration.php", "mysql-stage-source-scopes-integration.php", "mysql-tailoring-supervision-integration.php"];
 if (profile === "nightly") suites.push("mysql-iam-integration.php", "mysql-production-authority-integration.php", "mysql-production-qr-integration.php", "mysql-production-document-authority-integration.php", "mysql-production-ownership-integration.php", "mysql-cutting-intake-integration.php", "mysql-payment-gate-integration.php", "mysql-staff-locale-integration.php");
+const selectedSuite = process.argv[5];
+if (selectedSuite && !suites.includes(selectedSuite)) throw new Error("Only a suite in the selected fixed profile may run.");
 const out = path.join(runtime, "reports"); mkdirSync(out, { recursive: true });
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("ARASYA_")));
 const report = { profile, sourceCommit: spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim(), apiVersion: "2.30.0", staffVersion: "2.25.0", date: new Date().toISOString(), results: [] };
-for (const suite of suites) {
+for (const suite of selectedSuite ? [selectedSuite] : suites) {
   const id = randomBytes(6).toString("hex");
   const setupEnv = { ...env, ARASYA_SIMULATION_EMPTY: "true" };
   if (process.env.GITHUB_ACTIONS === "true" && process.env.ARASYA_SIMULATION_CI_SERVER === "dedicated") {
@@ -32,6 +34,6 @@ for (const suite of suites) {
   report.results.push({ suite, environmentId: id, result: state, durationMs: Date.now() - started, summary });
   console.log(`${state} ${suite} (${Date.now() - started} ms)`);
 }
-writeFileSync(path.join(out, `regression-${profile}.json`), JSON.stringify(report, null, 2));
-writeFileSync(path.join(out, `regression-${profile}.md`), `# Factory regression — ${profile}\n\nCommit: ${report.sourceCommit}\n\nEach suite used a fresh database and a schema-only user on the disposable local server.\n\n| Suite | Result | Duration ms |\n|---|---|---|\n${report.results.map((r) => `| ${r.suite} | ${r.result} | ${r.durationMs ?? "—"} |`).join("\n")}\n\nReal phones and production services: NOT VERIFIED.\n`);
+writeFileSync(path.join(out, `regression-${profile}${selectedSuite ? "-" + selectedSuite.replace(".php", "") : ""}.json`), JSON.stringify(report, null, 2));
+writeFileSync(path.join(out, `regression-${profile}${selectedSuite ? "-" + selectedSuite.replace(".php", "") : ""}.md`), `# Factory regression — ${profile}\n\nCommit: ${report.sourceCommit}\n\nEach suite used a fresh database and a schema-only user on the disposable local server.\n\n| Suite | Result | Duration ms |\n|---|---|---|\n${report.results.map((r) => `| ${r.suite} | ${r.result} | ${r.durationMs ?? "—"} |`).join("\n")}\n\nReal phones and production services: NOT VERIFIED.\n`);
 process.exitCode = report.results.some((r) => r.result !== "PASS") ? 1 : 0;

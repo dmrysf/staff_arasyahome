@@ -36,6 +36,7 @@ final readonly class OrderOperationsService
 {
     public const OPERATION_CLAIM = 'claim';
     public const OPERATION_TRANSITION = 'transition';
+    public const OPERATION_LINE_CHECK = 'line_check';
     /** Stored as a claim in order_operation_idempotency (its own request hash keeps the two apart). */
     public const OPERATION_CUTTING_INTAKE = 'cutting_intake';
     public const INTAKE_STARTED = 'started';
@@ -55,6 +56,7 @@ final readonly class OrderOperationsService
         private AuditLogger $audit,
         private ?ExceptionQueries $quality = null,
         private ?\Arasya\Operations\Document\DocumentQueries $documents = null,
+        private string $lineRoutingMode = 'legacy',
     ) {
     }
 
@@ -62,6 +64,11 @@ final readonly class OrderOperationsService
     public function claim(EmployeeIdentity $employee, GlobalOrderId $orderId, int $expectedVersion, string $idempotencyKey, OperationContext $context, array $claimIntent = []): array
     {
         return $this->mutate(self::OPERATION_CLAIM, $employee, $orderId, $expectedVersion, $idempotencyKey, $context, $claimIntent);
+    }
+
+    public function confirmLines(EmployeeIdentity $employee, GlobalOrderId $orderId, int $version, string $key, OperationContext $context, array $input): array
+    {
+        return $this->mutate(self::OPERATION_LINE_CHECK,$employee,$orderId,$version,$key,$context,$input);
     }
 
     /** @return array<string, mixed> serialized order after the committed (or replayed) stage completion */
@@ -130,6 +137,7 @@ final readonly class OrderOperationsService
         $baseIntent = implode('|', [$operation, $orderId->toString(), (string) $expectedVersion]);
         // Preserve hashes/replay for pre-V1 commands. QR/multiple intent gets its own canonical suffix.
         $extra = array_intersect_key($claimIntent, array_flip(['qrToken','confirmedMultiple','ownedCount']));
+        $baseIntent .= $operation===self::OPERATION_LINE_CHECK ? '|' . json_encode($claimIntent['items']??null,JSON_THROW_ON_ERROR) : '';
         $requestHash = hash('sha256', $baseIntent . ($extra === [] ? '' : '|' . json_encode([$extra['qrToken'] ?? null, $extra['confirmedMultiple'] ?? false, $extra['ownedCount'] ?? null], JSON_THROW_ON_ERROR)), true);
 
         for ($attempt = 1; ; $attempt++) {
@@ -203,7 +211,12 @@ final readonly class OrderOperationsService
                     $cutting->confirmMultiple($employee, $claimIntent, $context->requestId, $now);
                 }
             }
-            if ($operation === self::OPERATION_CLAIM) {
+            if ($operation === self::OPERATION_LINE_CHECK) {
+                if ($order->productionOwnerEmployeeUuid!==$employee->employeeUuid) throw new ApiException(403,'LINE_OWNER_REQUIRED','Only the current stage owner may check products.');
+                $lines=new \Arasya\Operations\Production\LineReadiness($this->pdo,$this->lineRoutingMode);
+                $lines->confirm($order,$claimIntent,$employee->employeeUuid,$context->requestId,$now);
+                $this->pdo->prepare('UPDATE operational_orders SET production_version=production_version+1,version=version+1,updated_at=? WHERE order_uuid=?')->execute([$now,$orderUuid]);
+            } elseif ($operation === self::OPERATION_CLAIM) {
                 if ($decision['action'] === OrderAccessPolicy::ACTION_COMPLETE_STAGE || $decision['action'] === OrderAccessPolicy::ACTION_COMPLETE_PRODUCTION) {
                     // Already owned by this employee: a new claim request changes nothing.
                     $response = $this->serialize($employee, $order->globalId->toString(), $workflow);
@@ -264,6 +277,11 @@ final readonly class OrderOperationsService
             }
 
             $order = $this->orders->findByGlobalId($employee->employeeUuid, $orderId->toString()) ?? throw new ApiException(404, 'ORDER_NOT_FOUND', 'Order not found.');
+            $lineRouting=new \Arasya\Operations\Production\LineReadiness($this->pdo,$this->lineRoutingMode);
+            if ($lineRouting->enabled($order)) {
+                $lineRouting->validate($order);
+                if ($lineRouting->view($order)['nextStageId']==='packing') throw new ApiException(409,'CUTTING_NOT_REQUIRED','These ready-made products must be received and checked in packing.');
+            }
             $decision = $this->policy->evaluateCuttingIntake($employee, $order, $workflow);
             if ($decision['action'] === null) throw $this->intakeBlocked((string) $decision['blockedReason'], $order);
             $now = $this->clock->now()->format('Y-m-d H:i:s.u');
@@ -380,12 +398,18 @@ final readonly class OrderOperationsService
     private function applyTransition(EmployeeIdentity $employee, OperationalOrder $order, ProductionWorkflow $workflow, int $expectedVersion, string $idempotencyKey, OperationContext $context, string $now): void
     {
         $current = $this->stage($workflow, $order->productionStageId);
+        $lines=new \Arasya\Operations\Production\LineReadiness($this->pdo,$this->lineRoutingMode);
+        $lines->requireCompleted($order);
         $next = null;
         foreach ($workflow->stages as $index => $stage) {
             if ($stage->id === $current->id) {
                 $next = $workflow->stages[$index + 1] ?? null;
                 break;
             }
+        }
+        if ($lines->view($order)['nextStageId']??null) {
+            $next=$this->stage($workflow,'packing');
+            foreach (\Arasya\Operations\Production\LineReadiness::MANUFACTURING as $skip) if ($this->stage($workflow,$skip)->ordinal >= $current->ordinal) $lines->event($order->orderUuid,null,$skip,'not_required',null,null,$employee->employeeUuid,$expectedVersion+1,$context->requestId,$now);
         }
         if ($next === null) {
             $update = $this->pdo->prepare(

@@ -54,7 +54,7 @@ final readonly class TicketSnapshot
                 'line' => (int) $item['line_number'],
                 'code' => $item['product_code'] === null ? null : (string) $item['product_code'],
                 'name' => (string) $item['name'],
-                'kind' => is_string($context['kind'] ?? null) ? $context['kind'] : null,
+                'kind' => is_string($context['kind'] ?? null) ? $context['kind'] : (match($context['manufacturingType']??null){'custom_curtain'=>'curtain','custom_drapery'=>'drapery','ready_made'=>'other',default=>null}),
                 'variant' => $item['variant'] === null ? null : (string) $item['variant'],
                 'color' => $item['color'] === null ? null : (string) $item['color'],
                 'width' => self::decimal($item['width_value']),

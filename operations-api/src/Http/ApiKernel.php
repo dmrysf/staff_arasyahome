@@ -141,12 +141,13 @@ final readonly class ApiKernel
             return ($this->productionQr ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Production QR authority is not ready.'))
                 ->handle($request, rawurldecode($matches[1]), $matches[2] ?? '');
         }
-        if (preg_match('#^/orders/([^/]{1,600})(?:/(claim|transition))?$#D', $request->path, $matches) === 1) {
+        if (preg_match('#^/orders/([^/]{1,600})(?:/(claim|transition|line-checks))?$#D', $request->path, $matches) === 1) {
             $globalIdString = rawurldecode($matches[1]);
             $action = $matches[2] ?? '';
             return match (true) {
                 $request->method === 'GET' && $action === '' => $this->ordersController()->show($request, $globalIdString),
                 $request->method === 'POST' && $action === 'claim' => $this->ordersController()->claim($request, $globalIdString),
+                $request->method === 'POST' && $action === 'line-checks' => $this->ordersController()->confirmLines($request,$globalIdString),
                 $request->method === 'POST' && $action === 'transition' => $this->ordersController()->transition($request, $globalIdString),
                 default => throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.'),
             };

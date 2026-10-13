@@ -6,7 +6,7 @@ namespace Arasya\Operations\Order;
 
 final readonly class OrderSerializer
 {
-    public function __construct(private ?\Arasya\Operations\Production\ProductionAuthorityModes $modes = null)
+    public function __construct(private ?\Arasya\Operations\Production\ProductionAuthorityModes $modes = null, private ?\Arasya\Operations\Production\LineReadiness $lines = null)
     {
     }
 
@@ -51,6 +51,8 @@ final readonly class OrderSerializer
             $data['paymentGate'] = $gate;
         }
         if ($order->productionContext !== null) $data['productionContext'] = $order->productionContext;
+        $readiness=$this->lines?->view($order);
+        if ($readiness!==null) $data['lineReadiness']=$readiness;
 
         if ($order->acceptedAt !== null) {
             $data['acceptedAt'] = $order->acceptedAt->format('Y-m-d\TH:i:s.v\Z');
@@ -93,8 +95,11 @@ final readonly class OrderSerializer
             'id' => $item->itemUuid,
             'name' => $item->name,
             'quantity' => $item->quantity,
+            'sourceItemId' => $item->sourceItemId,
         ];
         
+        $type=\Arasya\Operations\Production\LineReadiness::type($item);
+        if ($type!==null) $data['manufacturingType']=$type;
         if ($item->productCode !== null) $data['code'] = $item->productCode;
         if ($item->variant !== null) $data['variant'] = $item->variant;
         if ($item->color !== null) $data['color'] = $item->color;

@@ -133,7 +133,7 @@ final class Container
         $orders = $this->orderRepository();
         $authorityModes = $this->authorityModes();
         $policy = new OrderAccessPolicy($authorization, $authorityModes);
-        $serializer = new OrderSerializer($this->authorityModes());
+        $serializer = new OrderSerializer($this->authorityModes(), new \Arasya\Operations\Production\LineReadiness($this->pdo, $this->config->lineRoutingMode));
         $rateLimiter = new PdoApiRateLimiter($this->pdo, $this->clock, $this->config->appSecret);
         $iamAudit = new IamAuditLogger($this->pdo);
         $approvers = new ApproverPolicy($this->pdo, $authorization, $this->clock);
@@ -165,7 +165,7 @@ final class Container
                 $context,
                 $policy,
                 $workflows,
-                new OrderOperationsService($this->pdo, $workflows, $orders, $policy, $serializer, $this->clock, $this->audit, $exceptions, $documentQueries),
+                new OrderOperationsService($this->pdo, $workflows, $orders, $policy, $serializer, $this->clock, $this->audit, $exceptions, $documentQueries, $this->config->lineRoutingMode),
                 $csrf,
                 $rateLimiter,
                 $exceptions,

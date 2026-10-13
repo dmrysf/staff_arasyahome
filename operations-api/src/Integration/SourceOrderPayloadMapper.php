@@ -24,7 +24,7 @@ final class SourceOrderPayloadMapper
     private const ORDER_KEYS = ['id', 'number', 'status', 'availability', 'notes', 'acceptedAt', 'items', 'delivery', 'payment'];
     private const PAYMENT_KEYS = ['method', 'advanceStatus', 'advanceRevision', 'advanceConfirmedAt'];
     private const MAX_ADVANCE_REVISION = 1000000;
-    private const ITEM_KEYS = ['id', 'line', 'name', 'sku', 'variant', 'color', 'width', 'height', 'unit', 'meters', 'quantity', 'options'];
+    private const ITEM_KEYS = ['id', 'line', 'name', 'sku', 'variant', 'color', 'width', 'height', 'unit', 'meters', 'quantity', 'options', 'manufacturingType'];
     private const MAX_OPTIONS = 20;
     private const MAX_ITEMS = 200;
 
@@ -83,7 +83,7 @@ final class SourceOrderPayloadMapper
                     self::optionalString($item['unit'] ?? null, "order.items[{$index}].unit"),
                     self::optionalNumber($item['meters'] ?? null, "order.items[{$index}].meters"),
                     self::positiveInt($item['quantity'], "order.items[{$index}].quantity"),
-                    self::options($item['options'] ?? null, "order.items[{$index}].options"),
+                    self::manufacturing($item,$index),
                 );
             } catch (InvalidArgumentException) {
                 throw self::invalid("order.items[{$index}]");
@@ -111,6 +111,16 @@ final class SourceOrderPayloadMapper
         } catch (InvalidArgumentException) {
             throw self::invalid('order');
         }
+    }
+
+    private static function manufacturing(array $item,int $index): ?array
+    {
+        $context=self::options($item['options']??null,"order.items[{$index}].options");
+        if (!array_key_exists('manufacturingType',$item)) return $context;
+        $type=$item['manufacturingType'];
+        if (!in_array($type,\Arasya\Operations\Production\LineReadiness::TYPES,true)) throw self::invalid("order.items[{$index}].manufacturingType");
+        if ($type!=='ready_made' && (((self::optionalNumber($item['width']??null,"order.items[{$index}].width")??0)<=0) || ((self::optionalNumber($item['height']??null,"order.items[{$index}].height")??0)<=0) || !in_array($item['unit']??null,['m','cm','mm'],true))) throw self::invalid("order.items[{$index}].measurements");
+        return ($context??[])+['manufacturingType'=>$type];
     }
 
     /**

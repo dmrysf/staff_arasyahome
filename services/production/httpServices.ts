@@ -76,6 +76,15 @@ const backendErrorCodes: Partial<Record<string, ServiceErrorCode>> = {
   CSRF_INVALID: "CSRF_INVALID",
   CONFIGURATION_ERROR: "CONFIGURATION_ERROR",
   WORKFLOW_UNAVAILABLE: "WORKFLOW_UNAVAILABLE",
+  PRODUCT_CLASSIFICATION_REQUIRED: "PRODUCT_CLASSIFICATION_REQUIRED",
+  PRODUCT_MEASUREMENTS_REQUIRED: "PRODUCT_MEASUREMENTS_REQUIRED",
+  LINE_CHECKS_UNAVAILABLE: "LINE_CHECKS_UNAVAILABLE",
+  LINE_OWNER_REQUIRED: "LINE_OWNER_REQUIRED",
+  LINE_CHECK_INVALID: "LINE_CHECK_INVALID",
+  LINE_QUANTITY_REGRESSION: "LINE_QUANTITY_REGRESSION",
+  LINES_NOT_READY: "LINES_NOT_READY",
+  LINES_UNFINISHED: "LINES_UNFINISHED",
+  CUTTING_NOT_REQUIRED: "CUTTING_NOT_REQUIRED",
   ORDER_CHANGED: "ORDER_CHANGED",
   ORDER_NOT_FOUND: "ORDER_NOT_FOUND",
   ORDER_UNAVAILABLE: "ORDER_UNAVAILABLE",
@@ -364,6 +373,15 @@ export function mapProductionOrder(value: unknown): import("../../domain/models"
     version,
     productionVersion: positiveInteger(raw.productionVersion),
   };
+  if (raw.lineReadiness != null) {
+    const r=objectValue(raw.lineReadiness);
+    if (!Array.isArray(r.lines) || typeof r.readyForPacking!=="boolean") throw new StaffServiceError("SERVER_ERROR");
+    order.lineReadiness={mode:oneOf(r.mode,["legacy","enforce"] as const),nextStageId:r.nextStageId==null?null:stringValue(r.nextStageId),readyForPacking:r.readyForPacking,
+      lines:r.lines.map(value=>{ const l=objectValue(value); const quantities=Array.isArray(l.completedQuantities)&&l.completedQuantities.length===0?{}:objectValue(l.completedQuantities);
+        if (!Array.isArray(l.requiredStages) || [l.readyForPacking,l.packed,l.requiredAtCurrentStage].some(v=>typeof v!=="boolean")) throw new StaffServiceError("SERVER_ERROR");
+        return {itemId:stringValue(l.itemId),sourceItemId:stringValue(l.sourceItemId),manufacturingType:l.manufacturingType==null?null:oneOf(l.manufacturingType,["custom_curtain","custom_drapery","ready_made"] as const),quantity:positiveInteger(l.quantity),requiredStages:l.requiredStages.map(stringValue),
+          completedQuantities:Object.fromEntries(Object.entries(quantities).map(([k,v])=>[k,positiveInteger(v)])),readyForPacking:l.readyForPacking as boolean,packed:l.packed as boolean,requiredAtCurrentStage:l.requiredAtCurrentStage as boolean}; })};
+  }
   if (raw.productionAuthority != null) {
     if (!isProductionAuthority(raw.productionAuthority)) throw new StaffServiceError("SERVER_ERROR");
     order.productionAuthority = raw.productionAuthority;
@@ -787,6 +805,7 @@ export function createProductionServices(apiBaseUrl: string, options: Production
     },
     getById: (id, requestOptions) => http.request(`/orders/${encodeURIComponent(id)}`, { signal: requestOptions?.signal }, mapProductionOrder),
     claim: (id, input, requestOptions) => http.request(`/orders/${encodeURIComponent(id)}/claim`, { method: "POST", body: JSON.stringify({ expectedVersion: input.expectedVersion, ...(input.qrToken ? { qrToken: input.qrToken } : {}), ...(input.confirmedMultiple !== undefined ? { confirmedMultiple: input.confirmedMultiple } : {}), ...(input.ownedCount !== undefined ? { ownedCount: input.ownedCount } : {}) }), headers: { "Idempotency-Key": input.idempotencyKey }, signal: requestOptions?.signal }, mapProductionOrder),
+    confirmLines: (id, input) => http.request(`/orders/${encodeURIComponent(id)}/line-checks`, { method: "POST", body: JSON.stringify({ expectedVersion: input.expectedVersion, items: input.items }), headers: { "Idempotency-Key": input.idempotencyKey } }, mapProductionOrder),
     confirmStageTransition: (id, input, requestOptions) => http.request(`/orders/${encodeURIComponent(id)}/transition`, { method: "POST", body: JSON.stringify({ expectedVersion: input.expectedVersion }), headers: { "Idempotency-Key": input.idempotencyKey }, signal: requestOptions?.signal }, mapProductionOrder),
   };
   const activity: ActivityService = {

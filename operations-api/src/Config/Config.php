@@ -60,8 +60,10 @@ final readonly class Config
          */
         public ?string $trendyolFixtureFile = null,
         public string $simulationClockMode = 'realtime',
+        public string $lineRoutingMode = 'legacy',
     ) {
         if ($this->environment === 'simulation' && !in_array($this->simulationClockMode,['realtime','frozen'],true)) throw new RuntimeException('SIMULATION_CLOCK_INVALID');
+        if (!in_array($this->lineRoutingMode,['legacy','enforce'],true)) throw new RuntimeException('ARASYA_LINE_ROUTING must be legacy or enforce.');
         \Arasya\Operations\Simulation\IsolationGuard::configuration($this);
         if ($this->trendyolFixtureFile !== null && $this->isProduction()) {
             throw new RuntimeException('ARASYA_TRENDYOL_FIXTURE_FILE is not allowed in production.');
@@ -135,6 +137,7 @@ final readonly class Config
             sourceSettings: self::sourceSettings($values, $sourceKeys),
             trendyolIntake: self::value($values, 'ARASYA_TRENDYOL_INTAKE', 'disabled'),
             simulationClockMode: self::value($values, 'ARASYA_SIMULATION_CLOCK_MODE', 'realtime'),
+            lineRoutingMode: self::value($values, 'ARASYA_LINE_ROUTING', 'legacy'),
             trendyolFixtureFile: self::value($values, 'ARASYA_TRENDYOL_FIXTURE_FILE', '') === '' ? null : self::value($values, 'ARASYA_TRENDYOL_FIXTURE_FILE', ''),
         );
     }

@@ -33,6 +33,7 @@ export interface OrderService {
     input: { expectedVersion: number; idempotencyKey: string; qrToken?: string; confirmedMultiple?: boolean; ownedCount?: number },
     options?: { signal?: AbortSignal },
   ): Promise<StaffOrder>;
+  confirmLines?(orderId: string, input: { expectedVersion: number; items: { itemId: string; completedQuantity: number }[]; idempotencyKey: string }): Promise<StaffOrder>;
   /** Completes the current stage; the server alone chooses the next canonical stage. */
   confirmStageTransition(
     orderId: string,

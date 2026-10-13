@@ -9,7 +9,7 @@ final class ScenarioCatalog
         'WOO-TH-001' => ['trendhome', 'Perdea — măsură personalizată', [['Perdea Voal','Alb',2,'1,80','2,50'],['Perdea Premium','Crem',1,'3.40','2.70']]],
         'WOO-TH-002' => ['trendhome', 'Draperie și accesoriu', [['Draperie Blackout','Gri',2,'2,40','2,60'],['Accesoriu prindere','Alb',4,null,null]]],
         'WOO-OP-001' => ['outletperdele', 'Perdea, draperie și accesoriu', [['Perdea','Alb',2,'2,20','2,50'],['Draperie','Crem',1,'2.80','2.60'],['Accesoriu','Gri',6,null,null]]],
-        'WOO-OP-002' => ['outletperdele', 'Numai produse standard — regulă de rutare de confirmat', [['Accesoriu','Alb',3,null,null],['Accesoriu variabil','Crem',2,null,null],['Produs gata','Gri',1,null,null]]],
+        'WOO-OP-002' => ['outletperdele', 'Numai produse standard — verificare la împachetare', [['Accesoriu','Alb',3,null,null],['Accesoriu variabil','Crem',2,null,null],['Produs gata','Gri',1,null,null]]],
     ];
     public const TY = [
         'TY-01' => ['Un produs, o variantă', 'Created'],
@@ -51,6 +51,8 @@ final class ScenarioCatalog
         $items = [];
         foreach ($specs as $index => [$name,$color,$quantity,$width,$height]) {
             $meta = $width === null ? [] : ['_wck_fields'=>['lungimea'=>$width,'inaltime'=>$height,'manopera'=>'18:Rejansă 10 cm','buc'=>'1:2 buc.'], '_wck_stock_reduction_multiplier'=>$width,'Lungimea (L)'=>$width,'Inaltime (H)'=>$height,'buc'=>'2 buc.','Manopera'=>'Rejansă 10 cm'];
+            $types=['WOO-TH-001'=>['custom_curtain','custom_curtain'],'WOO-TH-002'=>['custom_drapery','ready_made'],'WOO-OP-001'=>['custom_curtain','custom_drapery','ready_made'],'WOO-OP-002'=>['ready_made','ready_made','ready_made']];
+            $meta['_arasya_manufacturing_type']=$types[$scenario][$index];
             $items[$index+1] = new class($name,$color,$quantity,$meta,$index) {
                 public function __construct(private string $name, private string $color, private int $quantity, private array $meta, private int $index) {}
                 public function get_name(): string { return 'TEST ' . $this->name; }

@@ -96,6 +96,7 @@ function arasya_ops_build_payload(object $order, string $changedAt): array
             'unit' => $measurements['unit'] ?? null,
             'meters' => $measurements['meters'] ?? null,
             'quantity' => $quantity,
+            'manufacturingType' => arasya_ops_manufacturing_type($item, $order),
         ], static fn (mixed $value): bool => $value !== null);
     }
     $created = $order->get_date_created();
@@ -250,4 +251,14 @@ if (function_exists('add_action')) {
             wp_schedule_event(time() + 60, 'arasya_five_minutes', ARASYA_OPS_HEARTBEAT_HOOK);
         }
     });
+}
+
+/** Explicit per-order-line metadata or an installed, validated source mapping; never a product-name heuristic. */
+function arasya_ops_manufacturing_type(object $item, object $order): ?string
+{
+    $type=$item->get_meta('_arasya_manufacturing_type',true);
+    if (function_exists('apply_filters')) $type=apply_filters('arasya_operations_manufacturing_type',$type,$item,$order);
+    if ($type===null || $type==='') return null;
+    if (!in_array($type,['custom_curtain','custom_drapery','ready_made'],true)) throw new InvalidArgumentException('Invalid explicit manufacturing type.');
+    return $type;
 }

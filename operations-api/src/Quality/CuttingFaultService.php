@@ -346,6 +346,7 @@ final readonly class CuttingFaultService
                     throw new ApiException(409, 'ORDER_CHANGED', 'The order changed. The request cannot be approved.');
                 }
                 $returnStage = $this->stage($workflow, self::RETURN_STAGE);
+                (new \Arasya\Operations\Production\LineReadiness($this->pdo))->invalidate($order['order_uuid'],self::RETURN_STAGE,$actor->employeeUuid,(int)$order['production_version']+1,$requestId,$now);
                 $cycles = $this->pdo->prepare('SELECT COUNT(*) FROM production_exceptions WHERE order_uuid = ? AND rework_cycle IS NOT NULL');
                 $cycles->execute([$orderUuid]);
                 $cycle = (int) $cycles->fetchColumn() + 1;
@@ -700,6 +701,7 @@ final readonly class CuttingFaultService
                 $cycles->execute([$orderUuid]);
                 $this->pdo->prepare('INSERT INTO production_quality_events (event_uuid, event_type, employee_uuid, order_uuid, exception_uuid, rework_cycle, is_repeat, line_count, meters, unmeasured_line_count, occurred_at) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)')
                     ->execute([Uuid::v4(), 'fault_detected', $exception['detector_employee_uuid'], $orderUuid, $exceptionUuid, (int) $cycles->fetchColumn() >= 1 ? 1 : 0, (int) $exception['line_count'], (string) $exception['fault_meters'], (int) $exception['unmeasured_line_count'], $now]);
+                (new \Arasya\Operations\Production\LineReadiness($this->pdo))->invalidate($order['order_uuid'],$detectedStage,$actor->employeeUuid,$productionVersion,$requestId,$now);
                 $this->event($exceptionUuid, 'supervisor_accepted', $actor->employeeUuid, $version, [
                     'qrVerified' => true, 'confirmedReason' => ['key' => $reason['reason_key'], 'label' => $reason['label']], 'comment' => $comment,
                     'transition' => ['from' => $detectedStage, 'to' => TailoringSupervisorPolicy::CUSTODY_STAGE], 'previousOwner' => $previousOwner, 'physicalCustodian' => $actor->employeeUuid,

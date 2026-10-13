@@ -7,7 +7,7 @@ This is a separate simulation build of the **real Staff application and Operatio
 | Repository | Audited baseline | Role |
 |---|---|---|
 | `dmrysf/staff_arasyahome` | `79dde14bd4d754af52d6618ae959a189eded9464`; API 2.30.0, Staff 2.25.0, migrations 001–027 | Operations, Staff, MU Woo connector and tests |
-| `dmrysf/dashboard_arasyahome` | `18a1732cca546664ebdef06f1fa05a2b27756c04`; 0.13.1 | Existing management UI; inspected, unchanged |
+| `dmrysf/dashboard_arasyahome` | `18a1732cca546664ebdef06f1fa05a2b27756c04`; 0.13.1 | Existing management UI; unchanged source, actually exercised locally against the isolated API |
 | `dmrysf/yd-soft` | `6aede0c2f4552c1951c5581259633d27f0693382`; 2.10.0 | Real Woo mapper, signer, outbox and production/document/QR fences; inspected, unchanged |
 
 Woo fixture objects implement Woo's read interface. The real `arasya_ops_build_payload` + WC Kalkulator filter produce their data; the signed request goes through `SourceIngestionController`, `SourceOrderPayloadMapper`, `SourceOrderSnapshot` and `OrderProjectionWriter`. Production work uses normal `/orders/*`, `/cutting/*`, quality and document endpoints, through the original IAM and policy checks. No harness writes an order's stage or owner directly.
@@ -52,7 +52,7 @@ php simulation/provision.php "$PWD/work/sim-runtime" 012345abcdef 13361 > work/p
 node scripts/simulation-serve.mjs "$PWD/work/sim-runtime/sessions/012345abcdef/private.json"
 ```
 
-Open `http://127.0.0.1:4175/login`, sign in with the relevant account from the private manifest, and work in the actual Staff UI. `sim.controller` uses `/simulation`; workers use their usual home, queues, scanner, order detail, history and profile. The manifest includes all fourteen stage accounts, another cutter, preparer/approver, document operator/independent approver, appointed tailoring supervisor, operations manager, outsider, inactive account and temporary-password account. The protected test root is kept separate. Never copy a real worker's password, session or authorization record.
+Open `http://127.0.0.1:4175/login`, sign in with the relevant account from the private manifest, and work in the actual Staff UI. `sim.controller` uses `/simulation`; workers use their usual home, queues, scanner, order detail, history and profile. The manifest includes the 46 anonymized organization profiles with the separately approved 29-person factory layer, all fourteen supplementary stage accounts, another cutter, IAM stage supervisor, preparer/approver, document operator/independent approver, document backup, appointed tailoring quality supervisor, two operations managers, appointed operations backup, intake responsible, outsider, inactive and temporary-password accounts. The original plan's unapproved reporting links and access remain unapproved. The protected test root is kept separate. Never copy a real worker's password, session or authorization record.
 
 The local loopback address is not a phone-accessible published test domain. Phone testing awaits the separate hosting setup below.
 
@@ -63,6 +63,7 @@ Use a separate fresh full session for destructive factory tests; keep the human 
 ```bash
 php simulation/isolation-test.php
 php simulation/factory-test.php /absolute/private.json "$PWD/work/factory-report"
+php simulation/organization-workflow-test.php /absolute/test-private.json "$PWD/work/reports"
 php simulation/woo-matrix-test.php /absolute/private.json "$PWD/work/factory-report"
 php simulation/race-test.php /absolute/private.json "$PWD/work/factory-report"
 php simulation/yd-contract-test.php /absolute/private.json /absolute/yd-soft "$PWD/work/factory-report"
@@ -115,8 +116,8 @@ Before deploying SIM-BUG-002 to production, review the existing declared gate mo
 
 ## Business decisions and acceptance limits
 
-1. **Standard-only/mixed routing (P1 business blocker).** Current production completion is order-level, not per-line. There is no approved accessory-only bypass or separate stage catalog. The simulator does not add one. Safe proposed next step: document the business routing and whole-order completion criteria; if line-level progress is needed, design it as a reviewed extension of the existing engine.
-2. **Required fabric dimensions (P1 business blocker).** The generic source contract permits missing/one-sided/zero dimensions because it also represents normal products. It does not carry a validated Woo manufacturing kind. The boundary matrix records that actual behavior; it does not approve zero/missing curtain measurements. An explicit source/product manufacturing classification and authorized validation policy are needed before claiming complete manufacturing safety. Do not classify by product-name guessing.
+1. **BR-001 resolved in classified/enforced routing.** Quantity-aware line confirmations gate the real order transitions. Ready-made items have no cutting/tailoring tasks; standard-only receipt moves to packing under the current authorized owner. Mixed orders retain fabric operations. Every item must be checked in packing. No new canonical stages or unrestricted backward commands exist.
+2. **BR-002 resolved through explicit classification.** The source schema has additive `manufacturingType`: `custom_curtain`, `custom_drapery`, `ready_made`. Custom fabrics require normalized positive width/height and valid units; unknown classifications fail closed in enforce. The Woo connector reads explicit order-line `_arasya_manufacturing_type` or `arasya_operations_manufacturing_type` mapping. Default `ARASYA_LINE_ROUTING=legacy` preserves old unclassified production; simulation explicitly enables enforce. Existing Trendyol kind metadata alone does not opt a legacy deployment in. Live adoption needs source metadata/backlog reconciliation before enforcing. YD SOFT's unchanged mapper does not emit this new Woo classification and is therefore not claimed as live rollout-ready. See [the recorded model design](factory-line-readiness-design.md).
 3. Actual Android/iPhone cameras, Safari, worker comprehension, physical custody and final supervisor/manager acceptance remain human tests. Chromium is not an iPhone certification.
 4. The full pairwise/adversarial matrix in the master request is broader than this implementation. Untested combinations, detailed query cost/RSS, full load on every operation, account auto-expiry, hard snapshot restore and all fault controls are NOT VERIFIED or incomplete.
 
@@ -137,3 +138,21 @@ Prepare only a separate test environment:
 7. Open only the test hosts, check environment markers, HTTPS cookie/CORS/CSP, blocked outbound, private-file denial, account isolation and an initial real Staff exercise. Hosting publication and real-phone acceptance are not claimed by local tests.
 
 Rollback is explicit **simulation code-only**: retain the old checksummed package/private release and rerun its fenced publisher against the same test docroots after compatibility review. Immutable test data remains. To restore test state, use a separate simulation-only DB snapshot and manifest/user, or start a fresh session. Never use a production DB backup for reset. If the schema changes incompatibly, a simulation-only snapshot restore is a separate deliberate operation; no automatic database rollback exists.
+
+## Real organization rehearsal and Dashboard
+
+Run `php simulation/organization-workflow-test.php /absolute/test-private.json /absolute/report-dir` on a fresh full session, after the core runner if desired. It authenticates the synthetic organization and checks status, departments, applications, roles, reporting relationships, exact stage grants and per-stage source scopes. Four fabric product/source profiles execute accepted defects and full rework from each of the ten supported tailoring stages; dismissal/restoration, appointments, revoked rights, backups, unavailable worker, stale documents and QR, and real simultaneous independent manager decisions also run. Standard-only has no tailoring operation, so its tailoring defect cases are NOT APPLICABLE, not passed by a fictitious sewing path.
+
+The real, unchanged Dashboard source at the audited SHA can be tested locally:
+
+```bash
+# In its own Dashboard checkout (install the committed lockfile first):
+VITE_DASHBOARD_API_BASE_URL=http://127.0.0.1:8788 pnpm exec vite build --mode e2e
+pnpm exec vite preview --mode e2e --host 127.0.0.1 --port 4173 --strictPort
+# In Staff, with the separate human simulation server already running:
+ARASYA_SIMULATION_MANIFEST=/absolute/human-private.json ARASYA_SIMULATION_DASHBOARD=enabled pnpm exec playwright test -c playwright.simulation.config.ts
+```
+
+The organization browser test uses separate authenticated Staff worker, appointed supervisor, cutting worker and actual Dashboard manager contexts. All stage work, line confirmations, QR custody and the 3→2 approval use their respective real UI. On CI without a separate Dashboard checkout/runtime this one cross-repository browser test is explicitly SKIPPED/NOT VERIFIED; it is not replaced with a controller approval. The remaining Staff browser suite and all API organization tests run normally. The hosting package contains Staff/API, not Dashboard; a separately marked isolated Dashboard host/build is required for hosted human rehearsal. Local Dashboard uses its E2E loopback build and synthetic login; its existing UI has no simulation banner. Do not expose that build as a live site.
+
+Deploy API/migration compatibility before any source starts sending the additive field. On rollback to an older API, stop the new source field first; the older strict mapper rejects it. No live feature switch is enabled by this PR. Payment-gate review remains a separate predeployment prerequisite.

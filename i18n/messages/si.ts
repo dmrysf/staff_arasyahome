@@ -1196,4 +1196,13 @@ export const si: Catalog = {
   "mgmt.col.unassigned": "භාර නොගත්",
   "mgmt.col.oldest": "පැරණිතම",
   "mgmt.footnote": "ඇණවුම්, සේවකයන් සහ ව්‍යතිරේක පිළිබඳ විස්තර Dashboard යෙදුමේ පවතී.",
+  "lines.title": "භාණ්ඩ පරීක්ෂා",
+  "lines.ready": "සියලු භාණ්ඩ ඇසුරුම් කිරීමට සූදානම්",
+  "lines.unfinished": "අවසන් නොකළ භාණ්ඩ හෝ ක්‍රියා ඇත",
+  "lines.standard": "සූදානම් භාණ්ඩ · කැපීම/මැසීම අවශ්‍ය නැත",
+  "lines.fabric": "තහවුරු කළ මිනුම් සහිත රෙදි",
+  "lines.packed": "පැකේජයේ පරීක්ෂා කළා",
+  "lines.quantity": "අවසන් කළ ප්‍රමාණය",
+  "lines.pack": "පැකේජයේ භාණ්ඩය පරීක්ෂා කරන්න",
+  "lines.confirm": "භාණ්ඩයේ කාර්යය තහවුරු කරන්න",
 };

@@ -1,7 +1,7 @@
 name: Factory Simulation
 on:
   pull_request:
-    paths: ["simulation/**", "operations-api/**", "integrations/**", "features/simulation/**", "domain/simulation.ts", "app/**", "services/**", "i18n/**", "e2e/simulation/**", "scripts/*simulation*", "playwright.simulation.config.ts", "vite.config.ts", ".github/workflows/factory-simulation.yml"]
+    paths: ["simulation/**", "operations-api/**", "integrations/**", "features/simulation/**", "features/orders/**", "features/scanner/**", "domain/models.ts", "domain/simulation.ts", "app/**", "services/**", "i18n/**", "e2e/simulation/**", "scripts/*simulation*", "playwright.simulation.config.ts", "vite.config.ts", ".github/workflows/factory-simulation.yml"]
   workflow_dispatch:
     inputs:
       profile:
@@ -48,6 +48,7 @@ jobs:
       - name: Canonical factory and parallel race verification
         run: |
           php simulation/factory-test.php "$PWD/work/ci-runtime/sessions/000000000001/private.json" "$PWD/work/ci-report"
+          php simulation/organization-workflow-test.php "$PWD/work/ci-runtime/sessions/000000000001/private.json" "$PWD/work/ci-report"
           php simulation/woo-matrix-test.php "$PWD/work/ci-runtime/sessions/000000000001/private.json" "$PWD/work/ci-report"
           php simulation/race-test.php "$PWD/work/ci-runtime/sessions/000000000001/private.json" "$PWD/work/ci-report"
       - name: Module regression profile

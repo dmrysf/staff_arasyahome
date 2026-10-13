@@ -10,7 +10,7 @@ $m=json_decode((string)file_get_contents($argv[1]),true,32,JSON_THROW_ON_ERROR);
 $c=new Container(); $pdo=$c->pdo(); $env=$pdo->query('SELECT * FROM simulation_environment')->fetch(); $results=[]; $seq=0;
 $cases=[
  ['metre',['width'=>1.8,'height'=>2.5,'unit'=>'m'],200],['centimetre',['width'=>180,'height'=>250,'unit'=>'cm'],200],['millimetre',['width'=>1800,'height'=>2500,'unit'=>'mm'],200],
- ['width-only',['width'=>1.8,'height'=>null],200],['height-only',['width'=>null,'height'=>2.5],200],['zero-current-contract',['width'=>0],200],
+ ['width-only',['width'=>1.8,'height'=>null],422],['height-only',['width'=>null,'height'=>2.5],422],['zero-custom-rejected',['width'=>0],422],
  ['minimum-precision-current-contract',['width'=>0.001],200],['maximum-current-contract',['width'=>1000000],200],
  ['negative',['width'=>-1],422],['over-contract-maximum',['width'=>1000001],422],['numeric-string-wire-invalid',['width'=>'1.8'],422],['decimal-comma-wire-invalid',['width'=>'1,80'],422],['empty-string-wire-invalid',['width'=>''],422],['nonnumeric',['width'=>'fabric'],422],['unsupported-unit',['unit'=>'inch'],422],
  ['quantity-one',['quantity'=>1],200],['quantity-two',['quantity'=>2],200],['quantity-five',['quantity'=>5],200],['quantity-maximum',['quantity'=>1000000],200],
@@ -40,5 +40,5 @@ try {
 } catch(Throwable $e) { $failure=$e instanceof RuntimeException?$e->getMessage():get_class($e); }
 $out=$argv[2]; if (!is_dir($out)) mkdir($out,0700,true);
 file_put_contents($out . '/woo-matrix.json',json_encode(['environmentId'=>$m['sessionId'],'results'=>$results,'error'=>$failure??null,
-'limits'=>'Zero and one-sided dimensions are accepted by the CURRENT source contract. These checks do not approve them as safe curtain manufacturing data. Product-specific required-dimension rules need a business decision.'],JSON_THROW_ON_ERROR|JSON_PRETTY_PRINT));
+'limits'=>'Explicit custom fabrics reject zero, missing and one-sided dimensions; valid units and quantities are preserved. Legacy unclassified contracts require an explicit live rollout and are not readiness acceptance evidence.'],JSON_THROW_ON_ERROR|JSON_PRETTY_PRINT));
 echo json_encode(['checks'=>count($results),'error'=>$failure??null],JSON_THROW_ON_ERROR) . "\n";exit(isset($failure)?1:0);

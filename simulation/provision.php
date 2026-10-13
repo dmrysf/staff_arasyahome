@@ -33,7 +33,7 @@ if (file_exists($sessionDir)) throw new RuntimeException('SIMULATION_SESSION_EXI
 mkdir($sessionDir,0700,true);
 $fixture=$sessionDir . '/marketplace.json'; file_put_contents($fixture,'{"packages":[]}'); chmod($fixture,0600);
 $env=[
- 'ARASYA_APP_ENV'=>'simulation','ARASYA_SIMULATION_CLOCK_MODE'=>(string)(getenv('ARASYA_SIMULATION_CLOCK_MODE')?:'realtime'),'ARASYA_APP_SECRET'=>'sim:' . bin2hex(random_bytes(32)),
+ 'ARASYA_APP_ENV'=>'simulation','ARASYA_LINE_ROUTING'=>'enforce','ARASYA_SIMULATION_CLOCK_MODE'=>(string)(getenv('ARASYA_SIMULATION_CLOCK_MODE')?:'realtime'),'ARASYA_APP_SECRET'=>'sim:' . bin2hex(random_bytes(32)),
  'ARASYA_DB_HOST'=>'127.0.0.1','ARASYA_DB_PORT'=>(string)$port,'ARASYA_DB_NAME'=>$db,'ARASYA_DB_USER'=>$user,'ARASYA_DB_PASSWORD'=>$password,
  'ARASYA_ALLOWED_ORIGINS'=>'http://127.0.0.1:4175,http://127.0.0.1:4173',
  'ARASYA_SOURCE_SECRET_TRENDHOME'=>'sim:' . bin2hex(random_bytes(32)), 'ARASYA_SOURCE_SECRET_OUTLETPERDELE'=>'sim:' . bin2hex(random_bytes(32)),

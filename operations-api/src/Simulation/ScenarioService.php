@@ -43,7 +43,7 @@ final readonly class ScenarioService
             'apiVersion'=>\Arasya\Operations\Http\HealthController::VERSION,
             'scenarios'=>ScenarioCatalog::all(),'runs'=>$runs,'orders'=>$orders,'accounts'=>$accounts,
             'invariants'=>$this->invariants(),
-            'limits'=>['Human acceptance pending','Accessory-only routing business decision pending','Setup checks do not verify an entire factory scenario']];
+            'limits'=>['Human acceptance pending','Validated line classification required; live metadata rollout pending','Setup checks do not verify an entire factory scenario']];
     }
 
     public function command(string $id, string $action, string $actor, int $expectedReplay): array
@@ -94,6 +94,7 @@ $lock->release();
                 'width'=>$row['width_value']===null?null:(float)$row['width_value'],'height'=>$row['height_value']===null?null:(float)$row['height_value'],'unit'=>$row['measurement_unit'],
                 'meters'=>$row['meters']===null?null:(float)$row['meters'],'quantity'=>(int)$row['quantity']];
                 $context=$row['production_context']===null?null:json_decode($row['production_context'],true,32,JSON_THROW_ON_ERROR);
+                if (isset($context['manufacturingType'])) $items[array_key_last($items)]['manufacturingType']=$context['manufacturingType'];
                 if (isset($context['options'])) $items[array_key_last($items)]['options']=$context['options'];
             }
             $at=(new \DateTimeImmutable($order['source_changed_at'],new \DateTimeZone('UTC')))->modify('+1 second');

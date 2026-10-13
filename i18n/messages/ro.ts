@@ -1196,4 +1196,13 @@ export const ro = {
   "mgmt.col.unassigned": "Nepreluate",
   "mgmt.col.oldest": "Cea mai veche",
   "mgmt.footnote": "Detaliile pe comenzi, angajați și excepții rămân în aplicația Dashboard.",
+  "lines.title": "Verificarea produselor",
+  "lines.ready": "Toate produsele sunt pregătite pentru împachetare",
+  "lines.unfinished": "Produse sau operațiuni neterminate",
+  "lines.standard": "Produs standard · fără tăiere/croitorie",
+  "lines.fabric": "Material cu măsuri validate",
+  "lines.packed": "Verificat la împachetare",
+  "lines.quantity": "Cantitate finalizată",
+  "lines.pack": "Verifică produsul în colet",
+  "lines.confirm": "Confirmă lucrul la produs",
 } as const;

@@ -42,6 +42,7 @@ final readonly class ConfigLoader
         'ARASYA_TRENDYOL_INTAKE',
         'ARASYA_TRENDYOL_FIXTURE_FILE',
         'ARASYA_SIMULATION_CLOCK_MODE',
+        'ARASYA_LINE_ROUTING',
     ];
 
     /**

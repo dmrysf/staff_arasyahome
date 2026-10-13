@@ -1195,4 +1195,13 @@ export const tr: Catalog = {
   "mgmt.col.unassigned": "Üstlenilmemiş",
   "mgmt.col.oldest": "En eski",
   "mgmt.footnote": "Sipariş, çalışan ve istisna ayrıntıları Dashboard uygulamasında kalır.",
+  "lines.title": "Ürün kontrolleri",
+  "lines.ready": "Tüm ürünler paketlemeye hazır",
+  "lines.unfinished": "Tamamlanmamış ürün veya işlem var",
+  "lines.standard": "Hazır ürün · kesim/dikiş gerekmez",
+  "lines.fabric": "Ölçüleri doğrulanmış kumaş",
+  "lines.packed": "Pakette kontrol edildi",
+  "lines.quantity": "Tamamlanan adet",
+  "lines.pack": "Ürünü pakette kontrol et",
+  "lines.confirm": "Ürün işlemini onayla",
 };
