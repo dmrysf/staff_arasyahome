@@ -35,3 +35,12 @@ CREATE TABLE IF NOT EXISTS trendyol_product_title_events (
     KEY idx_trendyol_product_title_events_code (product_code, occurred_at),
     CONSTRAINT fk_trendyol_product_title_events_employee FOREIGN KEY (employee_uuid) REFERENCES employees (employee_uuid) ON UPDATE RESTRICT ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 3. A package approved before this fix prints the placeholder code and the English title. Its production identity is
+--    corrected by an explicit, authorized command (TrendyolWorkspace::correctIdentity) that records the before and
+--    after values in the package history; the document then follows the ordinary stale -> revision 2 path.
+ALTER TABLE trendyol_intake_events DROP CONSTRAINT chk_trendyol_intake_events_action;
+ALTER TABLE trendyol_intake_events ADD CONSTRAINT chk_trendyol_intake_events_action CHECK (action IN (
+    'intake_activated', 'intake_paused', 'intake_resumed',
+    'received', 'marketplace_updated', 'marketplace_lines_changed', 'marketplace_cancelled', 'changed_after_release',
+    'line_prepared', 'dismissed', 'reopened', 'released', 'production_identity_corrected'));

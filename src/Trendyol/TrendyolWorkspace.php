@@ -405,13 +405,132 @@ final readonly class TrendyolWorkspace
         });
     }
 
+    /**
+     * Corrects the production identity (approved Romanian title and seller product code) of a package that was
+     * already approved, through the canonical document path. Packages released before the product-code fix carry
+     * the literal "merchantSku" and the English marketplace title in their frozen production items; a read-only
+     * intake update never rewrites released items.
+     *
+     * Allowed only while no physical work started: the order is still at the first stage (`waiting`), has no
+     * owner, is not completed or unavailable. The product code is the one Trendyol returns now (one fresh GET,
+     * fail closed); every line needs a Romanian title (validated like preparation). In one transaction the items
+     * get the new title and code, the titles are approved for their code (history kept), the package history
+     * records the before/after values and the employee, and the active document becomes stale through the
+     * canonical staleness rule (production blocked, stage and owner kept). Revision 2, with a new QR, then follows
+     * the ordinary revision request and an approval by another employee. The marketplace data and the earlier
+     * revision stay untouched. A correction with nothing to change writes nothing.
+     *
+     * @param array<string, mixed> $input {expectedVersion, confirm: true, lines: list<{lineId, productionTitle}>}
+     */
+    public function correctIdentity(EmployeeIdentity $actor, string $packageId, array $input, string $key, string $requestId): array
+    {
+        $this->authorization->require($actor, self::RELEASE);
+        IdempotencyStore::requireKey($key);
+        $id = $this->packageId($packageId);
+        $expected = $this->version($input['expectedVersion'] ?? null);
+        if (($input['confirm'] ?? null) !== true) {
+            throw new ApiException(422, 'CONFIRMATION_REQUIRED', 'Confirmă corecția înainte de a o trimite.');
+        }
+        $titles = [];
+        $rawLines = $input['lines'] ?? null;
+        if (!is_array($rawLines) || !array_is_list($rawLines) || $rawLines === [] || count($rawLines) > 200) {
+            throw new ApiException(422, 'INVALID_LINES', 'Trimite denumirea de producție pentru fiecare linie.');
+        }
+        foreach ($rawLines as $row) {
+            if (!is_array($row) || array_diff(array_keys($row), ['lineId', 'productionTitle']) !== [] || !is_string($row['lineId'] ?? null)) {
+                throw new ApiException(422, 'INVALID_LINES', 'Trimite denumirea de producție pentru fiecare linie.');
+            }
+            $line = $this->lineId($row['lineId']);
+            if (isset($titles[$line])) {
+                throw new ApiException(422, 'INVALID_LINES', 'Fiecare linie se trimite o singură dată.');
+            }
+            $titles[$line] = self::productionTitle($row['productionTitle'] ?? null);
+        }
+        ksort($titles);
+        $hash = IdempotencyStore::hash('trendyol.correct_identity', (string) $id, [$expected, $titles]);
+        $replay = $this->idempotency->replay($actor->employeeUuid, $key, 'trendyol.correct_identity', (string) $id, $hash);
+        if ($replay !== null) {
+            return $replay;
+        }
+        $this->assertCorrectable($this->readPackage($id), $expected);
+        $verified = $this->verifyCodesAtMarketplace($id);
+
+        return $this->transaction(function () use ($actor, $id, $expected, $titles, $key, $hash, $requestId, $verified): array {
+            $package = $this->lockPackage($id);
+            $replay = $this->idempotency->replay($actor->employeeUuid, $key, 'trendyol.correct_identity', (string) $id, $hash);
+            if ($replay !== null) {
+                return $replay;
+            }
+            $fresh = $this->freshActor($actor, self::RELEASE);
+            $this->assertCorrectable($package, $expected);
+            if (!hash_equals((string) $package['lines_hash'], $verified['linesHash'])) {
+                throw $this->changed();
+            }
+            $order = (new \Arasya\Operations\Document\DocumentStore($this->pdo))->lockOrderByUuid((string) $package['released_order_uuid']);
+            if ($order['production_stage_id'] !== OrderProjectionWriter::INITIAL_STAGE_ID || $order['production_owner_employee_uuid'] !== null
+                || $order['production_completed_at'] !== null || $order['operational_status'] !== 'in_progress') {
+                throw new ApiException(409, 'TRENDYOL_CORRECTION_IN_PRODUCTION', 'Comanda a intrat deja în lucru. Corecția se face numai cu acordul managerului și al operatorului de producție.', ['stageId' => (string) $order['production_stage_id']]);
+            }
+            if (!in_array($order['document_status'], ['active', 'stale'], true)) {
+                throw new ApiException(409, 'DOCUMENT_NOT_CORRECTABLE', 'Fișa de producție nu poate fi corectată în starea actuală.', ['documentStatus' => (string) $order['document_status']]);
+            }
+            $lines = $this->lines($id);
+            if (count($lines) !== count($titles)) {
+                throw new ApiException(422, 'INVALID_LINES', 'Trimite denumirea de producție pentru fiecare linie.');
+            }
+            $items = $this->pdo->prepare('SELECT item_uuid, name, product_code FROM operational_order_items WHERE order_uuid = ? AND source_item_id = ? FOR UPDATE');
+            $changes = [];
+            foreach ($lines as $line) {
+                $lineId = (int) $line['line_id'];
+                if (!isset($titles[$lineId])) {
+                    throw new ApiException(422, 'INVALID_LINES', 'Trimite denumirea de producție pentru fiecare linie.');
+                }
+                $code = $verified['codes'][$lineId] ?? null;
+                if ($code === null || $line['product_code'] !== $code) {
+                    throw new ApiException(422, 'PRODUCT_CODE_UNRESOLVED', 'Codul produsului nu este confirmat de Trendyol pentru această linie.', ['lineNumber' => (int) $line['line_number']]);
+                }
+                $items->execute([$order['order_uuid'], (string) $lineId]);
+                $item = $items->fetch(PDO::FETCH_ASSOC);
+                if (!is_array($item)) {
+                    throw new ApiException(409, 'TRENDYOL_CORRECTION_ITEM_MISSING', 'Linia nu există în comanda de producție.', ['lineNumber' => (int) $line['line_number']]);
+                }
+                if ((string) $item['name'] !== $titles[$lineId] || $item['product_code'] !== $code) {
+                    $changes[] = ['line' => $line, 'item' => $item, 'title' => $titles[$lineId], 'code' => $code];
+                }
+            }
+            $now = $this->now();
+            if ($changes !== []) {
+                $record = [];
+                foreach ($changes as $change) {
+                    $this->pdo->prepare('UPDATE operational_order_items SET name = ?, product_code = ?, updated_at = ? WHERE item_uuid = ?')
+                        ->execute([$change['title'], $change['code'], $now, $change['item']['item_uuid']]);
+                    $this->pdo->prepare('UPDATE trendyol_package_lines SET prepared_title = ? WHERE package_id = ? AND line_id = ?')
+                        ->execute([$change['title'], $id, $change['line']['line_id']]);
+                    $this->approveTitle($change['code'], $change['title'], $id, $fresh, $requestId, $now);
+                    $record[] = ['lineId' => (string) $change['line']['line_id'], 'lineNumber' => (int) $change['line']['line_number'],
+                        'before' => ['name' => (string) $change['item']['name'], 'productCode' => $change['item']['product_code']],
+                        'after' => ['name' => $change['title'], 'productCode' => $change['code']]];
+                }
+                $this->pdo->prepare('UPDATE operational_orders SET version = version + 1, updated_at = ? WHERE order_uuid = ?')->execute([$now, $order['order_uuid']]);
+                $this->pdo->prepare('UPDATE trendyol_packages SET version = version + 1 WHERE package_id = ?')->execute([$id]);
+                $this->event($id, 'production_identity_corrected', $fresh, ['globalOrderId' => (string) $order['global_order_id'], 'lines' => $record], $requestId, $now);
+                // The canonical rule: the printed content changed, so the active revision is stale and production is
+                // blocked until revision 2 (requested, approved by another employee, generated with a new QR).
+                (new \Arasya\Operations\Document\DocumentStaleness($this->pdo, $this->clock))->onContentChanged((string) $order['order_uuid'], $requestId);
+            }
+            $response = $this->view($fresh, $id);
+            $this->idempotency->store($actor->employeeUuid, $key, 'trendyol.correct_identity', (string) $id, $hash, $response, $now);
+            return $response;
+        });
+    }
+
     // ---------------------------------------------------------------- views
 
     /** @return array<string, mixed> */
     private function view(EmployeeIdentity $actor, int $id): array
     {
         $statement = $this->pdo->prepare(
-            'SELECT p.*, o.global_order_id, o.production_stage_id, o.document_status, o.operational_status, ps.display_name AS stage_label,
+            'SELECT p.*, o.global_order_id, o.production_stage_id, o.document_status, o.operational_status, o.production_owner_employee_uuid, o.production_completed_at, ps.display_name AS stage_label,
                     rb.display_name AS released_by_name, db.display_name AS dismissed_by_name
              FROM trendyol_packages p
              LEFT JOIN operational_orders o ON o.order_uuid = p.released_order_uuid
@@ -426,6 +545,22 @@ final readonly class TrendyolWorkspace
             throw new ApiException(404, 'PACKAGE_NOT_FOUND', 'Pachetul Trendyol nu există.');
         }
         $lines = $this->lines($id);
+        // What the released production order prints for each line (its frozen items), to spot a wrong identity.
+        $printed = [];
+        if ($package['released_order_uuid'] !== null) {
+            $items = $this->pdo->prepare('SELECT source_item_id, name, product_code FROM operational_order_items WHERE order_uuid = ?');
+            $items->execute([$package['released_order_uuid']]);
+            foreach ($items->fetchAll(PDO::FETCH_ASSOC) as $item) {
+                $printed[(string) $item['source_item_id']] = ['name' => (string) $item['name'], 'productCode' => $item['product_code'] === null ? null : (string) $item['product_code']];
+            }
+        }
+        $correctionNeeded = false;
+        foreach ($lines as $line) {
+            $item = $printed[(string) $line['line_id']] ?? null;
+            if ($item !== null && ($line['product_code'] !== null && $item['productCode'] !== $line['product_code'] || $item['name'] === (string) $line['product_name'])) {
+                $correctionNeeded = true;
+            }
+        }
         $siblings = $this->pdo->prepare('SELECT package_id, intake_status, marketplace_status FROM trendyol_packages WHERE order_number = ? AND package_id <> ? ORDER BY package_id');
         $siblings->execute([(string) $package['order_number'], $id]);
         $events = $this->pdo->prepare(
@@ -455,6 +590,7 @@ final readonly class TrendyolWorkspace
                 'suggestedTitle' => $line['approved_title'],
                 'suggestedTitleApproval' => $line['approved_title'] === null ? null : ['by' => $line['approved_title_by'], 'at' => self::iso($line['approved_title_at'])],
                 'barcode' => $line['barcode'],
+                'productionItem' => $printed[(string) $line['line_id']] ?? null,
                 'productSize' => $line['product_size'],
                 'productColor' => $line['product_color'],
                 'quantity' => (int) $line['quantity'],
@@ -470,6 +606,13 @@ final readonly class TrendyolWorkspace
                     'preparedAt' => self::iso($line['prepared_at']),
                 ],
             ], $lines),
+            // A released order whose printed identity is wrong (placeholder code or the marketplace title): it can be
+            // corrected only while no work started, then revision 2 follows the ordinary approval.
+            'correction' => $package['intake_status'] !== 'released' ? null : [
+                'needed' => $correctionNeeded,
+                'allowed' => $package['production_stage_id'] === OrderProjectionWriter::INITIAL_STAGE_ID && $package['production_owner_employee_uuid'] === null
+                    && $package['production_completed_at'] === null && $package['operational_status'] === 'in_progress' && in_array($package['document_status'], ['active', 'stale'], true),
+            ],
             'readiness' => [
                 'ready' => $pending && $releasable && $missing === [], 'missingLines' => $missing, 'marketplaceReleasable' => $releasable,
                 // Why a pending package cannot be released yet: the marketplace class, or unknown_status.
@@ -501,6 +644,9 @@ final readonly class TrendyolWorkspace
                 'releaseNow' => $capabilities['release'] && $pending && $releasable && $missing === [],
                 'dismissNow' => $capabilities['prepare'] && $pending,
                 'reopenNow' => $capabilities['prepare'] && $package['intake_status'] === 'dismissed',
+                'correctNow' => $capabilities['release'] && $package['intake_status'] === 'released' && $package['production_stage_id'] === OrderProjectionWriter::INITIAL_STAGE_ID
+                    && $package['production_owner_employee_uuid'] === null && $package['production_completed_at'] === null && $package['operational_status'] === 'in_progress'
+                    && in_array($package['document_status'], ['active', 'stale'], true),
             ],
         ];
     }
@@ -657,6 +803,48 @@ final readonly class TrendyolWorkspace
             throw new ApiException(409, 'MARKETPLACE_LINES_CHANGED', 'Produsele comenzii s-au schimbat în Trendyol. Verifică liniile și completează din nou datele de producție.');
         }
         return ['version' => (int) $this->readPackage($id)['version'], 'status' => $package->status, 'linesHash' => $package->linesHash()];
+    }
+
+    /** @param array<string, mixed> $package */
+    private function assertCorrectable(array $package, int $expected): void
+    {
+        if ($package['intake_status'] !== 'released') {
+            throw new ApiException(409, 'PACKAGE_NOT_RELEASED', 'Numai o comandă aprobată pentru producție poate fi corectată.', ['intakeStatus' => (string) $package['intake_status']]);
+        }
+        if ((int) $package['version'] !== $expected) {
+            throw $this->changed();
+        }
+        if ((int) $package['changed_after_release'] === 1) {
+            throw new ApiException(409, 'MARKETPLACE_CHANGED_AFTER_RELEASE', 'Comanda s-a modificat în Trendyol după aprobare. Verifică manual diferențele înainte de corecție.');
+        }
+    }
+
+    /**
+     * One GET for the package's current marketplace copy (recorded like a synchronization) and the seller code
+     * Trendyol states now for each line. Fails closed on every Trendyol problem.
+     *
+     * @return array{linesHash: string, codes: array<int, string|null>}
+     */
+    private function verifyCodesAtMarketplace(int $id): array
+    {
+        if ($this->marketplace === null || $this->intake === null) {
+            throw new ApiException(503, 'TRENDYOL_VERIFICATION_UNAVAILABLE', 'Verificarea în Trendyol nu este configurată. Corecția nu poate fi făcută.');
+        }
+        try {
+            $raw = $this->marketplace->packagesByIds([$id])[$id] ?? null;
+            $package = $raw === null ? null : TrendyolPackage::fromApi($raw);
+        } catch (RuntimeException | \InvalidArgumentException) {
+            throw new ApiException(503, 'TRENDYOL_VERIFICATION_FAILED', 'Nu am putut verifica acum comanda în Trendyol. Încearcă din nou peste câteva minute.');
+        }
+        if ($package === null || $package->packageId !== $id) {
+            throw new ApiException(409, 'TRENDYOL_PACKAGE_UNAVAILABLE', 'Trendyol nu mai returnează acest pachet. Corecția nu poate fi făcută.');
+        }
+        $this->intake->record($package, $this->baselineMillis() ?? 0);
+        $codes = [];
+        foreach ($package->lines as $line) {
+            $codes[(int) $line['lineId']] = $line['productCode'];
+        }
+        return ['linesHash' => $package->linesHash(), 'codes' => $codes];
     }
 
     /** @return array<string, mixed> */
