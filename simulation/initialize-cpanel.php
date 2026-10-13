@@ -16,3 +16,4 @@ $pdo=new PDO(sprintf('mysql:host=%s;port=%d;dbname=%s;charset=utf8mb4',$config->
 $sessionDir=dirname($file);
 require __DIR__ . '/initialize-session.php';
 HostedManifest::load($file);
+echo "SIMULATION_DB_INITIALIZE_OK\n";

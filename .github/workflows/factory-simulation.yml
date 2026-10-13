@@ -57,6 +57,8 @@ jobs:
         run: php simulation/provision.php "$PWD/work/ci-runtime" 000000000002 3306 > work/browser-provision-summary.json
       - name: Hosted three-domain API boundary (Staff + Dashboard origins, cookies, CSRF, roles, manifest)
         run: php simulation/hosted-api-test.php "$PWD/work/ci-runtime/sessions/000000000001/private.json" "$PWD/work/ci-report"
+      - name: Hosted cPanel initialization (real manifest creator + initializer, re-run and partial database refused)
+        run: php simulation/hosted-initialize-test.php "$PWD/work/ci-runtime" 3306
       - name: Check out the pinned real Dashboard (public repository, read-only)
         run: |
           git init -q .ci-dashboard

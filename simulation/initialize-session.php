@@ -9,13 +9,16 @@ use Arasya\Operations\Iam\RootBootstrapService;
 use Arasya\Operations\Simulation\ScenarioCatalog;
 use Arasya\Operations\Simulation\ScenarioService;
 
+// Both callers must supply the same context; a missing variable or any PHP warning stops before the next write.
+foreach (['config','pdo','env','id','sessionDir'] as $required) if (!isset($$required)) throw new RuntimeException('SIMULATION_INITIALIZER_CONTEXT');
+set_error_handler(static function(int $severity,string $message,string $file,int $line): never { throw new ErrorException($message,0,$severity,$file,$line); },E_WARNING|E_NOTICE|E_USER_WARNING|E_USER_NOTICE);
 \Arasya\Operations\Simulation\IsolationGuard::identityPrivileges($config,$pdo);
 $q=$pdo->prepare('SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=?'); $q->execute([$config->dbName]);
 if ((int)$q->fetchColumn()!==0) throw new RuntimeException('SIMULATION_INITIALIZATION_REQUIRES_EMPTY_DATABASE');
 $pdo->exec("SET time_zone = '+00:00'");
 (new SqlFileRunner($pdo))->run(__DIR__ . '/schema.sql');
 $baseline=(int) floor(microtime(true)*1000);
-$pdo->prepare('INSERT INTO simulation_environment VALUES(1,?,?,?,?,UTC_TIMESTAMP(6))')->execute([$db,hash('sha256',$env['ARASYA_APP_SECRET']),$id,$baseline]);
+$pdo->prepare('INSERT INTO simulation_environment VALUES(1,?,?,?,?,UTC_TIMESTAMP(6))')->execute([$config->dbName,hash('sha256',$env['ARASYA_APP_SECRET']),$id,$baseline]);
 (new MigrationRunner($pdo))->migrate(dirname(__DIR__) . '/operations-api/database/migrations');
 foreach (glob(dirname(__DIR__) . '/operations-api/database/seeds/*.sql') as $seed) (new SqlFileRunner($pdo))->run($seed);
 $pdo->exec("INSERT INTO permissions(permission_key,category,label,description,role_grantable,created_at) VALUES('simulation.manage','simulation','Simulation controller','Control only isolated scenario fixtures',1,UTC_TIMESTAMP(6))");
