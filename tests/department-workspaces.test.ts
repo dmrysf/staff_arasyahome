@@ -145,7 +145,7 @@ const services = (extra: Partial<ServiceBundle> = {}): ServiceBundle => ({
   orders: { listMine: unused, getById: unused, lookup: unused, resolveQr: unused, claim: unused, confirmStageTransition: unused },
   activity: { listMine: unused }, exceptions: { listMine: unused, get: unused, reasons: unused, report: unused, acknowledge: unused, rereview: unused, capabilities: unused, supervisorList: unused, receivers: unused, review: unused, sendReturn: unused, restoreRecipients: unused, restore: unused, receiveRestore: unused, addNote: unused },
   workspace: { stageQueue: unused, stageSummary: unused }, management: { productionOverview: unused },
-  trendyol: { overview: unused, activity: unused, list: unused, ignored: unused, detail: unused, prepareLine: unused, dismiss: unused, reopen: unused, release: unused },
+  trendyol: { overview: unused, activity: unused, list: unused, ignored: unused, detail: unused, prepareLine: unused, dismiss: unused, reopen: unused, release: unused, correctIdentity: unused },
   mode: "production", ...extra,
 });
 const workflow = { id: "curtain-production", name: "Flux", version: 1, stages: CANONICAL_CURTAIN_WORKFLOW_V1_STRUCTURE.map((stage) => ({ id: stage.id, ordinal: stage.ordinal, label: `Etapa ${stage.ordinal}` })) };

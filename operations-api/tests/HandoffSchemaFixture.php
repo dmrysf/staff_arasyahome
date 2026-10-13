@@ -7,6 +7,9 @@ function restorePreTrendyolProductIdentityTestSchema(PDO $pdo): void
     if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='026_trendyol_product_identity.sql'")->fetchColumn()) return;
     foreach(['trendyol_product_title_events','trendyol_product_titles'] as $table) $pdo->exec("DROP TABLE IF EXISTS {$table}");
     $pdo->exec('ALTER TABLE trendyol_package_lines DROP COLUMN product_code, DROP COLUMN prepared_title');
+    $pdo->exec("DELETE FROM trendyol_intake_events WHERE action = 'production_identity_corrected'");
+    $pdo->exec('ALTER TABLE trendyol_intake_events DROP CONSTRAINT chk_trendyol_intake_events_action');
+    $pdo->exec("ALTER TABLE trendyol_intake_events ADD CONSTRAINT chk_trendyol_intake_events_action CHECK (action IN ('intake_activated','intake_paused','intake_resumed','received','marketplace_updated','marketplace_lines_changed','marketplace_cancelled','changed_after_release','line_prepared','dismissed','reopened','released'))");
     $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='026_trendyol_product_identity.sql'");
 }
 

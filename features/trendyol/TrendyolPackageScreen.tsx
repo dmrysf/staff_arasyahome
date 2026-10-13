@@ -19,6 +19,7 @@ const historyLabels: Record<string, string> = {
   dismissed: "Scoasă din lucru",
   reopened: "Redeschisă",
   released: "Aprobată pentru producție (etapa 1)",
+  production_identity_corrected: "Denumire și cod corectate pe fișă",
 };
 const kindOrder: TrendyolLineKind[] = ["curtain", "drapery", "other"];
 const lineStatusCopy: Record<ReturnType<typeof lineStatus>, { label: string; tone: Tone; icon: "check" | "clock" | "ruler" }> = {
@@ -72,6 +73,9 @@ export function TrendyolPackageScreen({ packageId, service, navigate }: { packag
   const [busy, setBusy] = useState<string | null>(null);
   const [confirmed, setConfirmed] = useState(false);
   const [reason, setReason] = useState("");
+  // Correction of an approved order's printed identity: one Romanian title per line, never the marketplace title.
+  const [titles, setTitles] = useState<Record<string, string>>({});
+  const [correctionConfirmed, setCorrectionConfirmed] = useState(false);
   // One idempotency key per intent: a retried click replays the same command instead of a second one.
   const intentKey = useRef<{ intent: string; key: string } | null>(null);
   const keyFor = (intent: string): string => {
@@ -83,6 +87,12 @@ export function TrendyolPackageScreen({ packageId, service, navigate }: { packag
     setDrafts(Object.fromEntries(next.lines.map((line) => [line.lineId, draftOf(line)])));
     setLineErrors({});
     setConfirmed(false);
+    setCorrectionConfirmed(false);
+    setTitles(Object.fromEntries(next.lines.map((line) => {
+      const printed = line.productionItem?.name ?? "";
+      const known = line.suggestedTitle ?? (printed !== line.productName ? printed : "");
+      return [line.lineId, known];
+    })));
   };
 
   useEffect(() => {
@@ -270,6 +280,17 @@ export function TrendyolPackageScreen({ packageId, service, navigate }: { packag
               <div><dt>Aprobată de</dt><dd>{detail.production.releasedBy ?? "—"} · {date(detail.production.releasedAt)}</dd></div>
               {detail.production.operationalStatus === "unavailable" && <div><dt>Atenție</dt><dd>Anulată în Trendyol</dd></div>}
             </dl>
+            {detail.correction?.needed && <div className="identity-correction" data-testid="trendyol-correction">
+              <Notice tone="warning" role="alert">Fișa de producție tipărește titlul original Trendyol sau un cod de produs greșit. Corectează denumirea în română; codul vine din Trendyol.</Notice>
+              {detail.capabilities.correctNow ? <>
+                {detail.lines.map((line) => <label key={line.lineId} className="field trendyol-title">Linia {line.lineNumber} · cod {line.productCode ?? "nerezolvat"} · pe fișă acum: {line.productionItem?.name ?? "—"} ({line.productionItem?.productCode ?? "fără cod"})
+                  <input autoComplete="off" maxLength={255} value={titles[line.lineId] ?? ""} onChange={(event) => setTitles((current) => ({ ...current, [line.lineId]: event.target.value }))} data-testid={`trendyol-correction-${line.lineNumber}`} />
+                </label>)}
+                <label className="confirm-check"><input type="checkbox" checked={correctionConfirmed} onChange={(event) => setCorrectionConfirmed(event.target.checked)} /><span>Confirm denumirile în română. Fișa actuală se blochează; revizia 2, cu cod QR nou, se cere din fișa de producție și se aprobă de altă persoană.</span></label>
+                <button className="button button-primary button-block" type="button" disabled={busy !== null || !correctionConfirmed || detail.lines.some((line) => (titles[line.lineId] ?? "").trim().length < 3 || line.productCode === null)} aria-busy={busy === "correct" || undefined}
+                  onClick={() => void run(`correct|${detail.packageId}|${detail.version}|${JSON.stringify(titles)}`, (key) => service.correctIdentity(detail.packageId, { expectedVersion: detail.version, confirm: true, lines: detail.lines.map((line) => ({ lineId: line.lineId, productionTitle: (titles[line.lineId] ?? "").trim().replace(/\s+/g, " ") })) }, key), "Denumirea și codul au fost corectate. Cere revizia 2 din fișa de producție.")}>Corectează denumirea și codul</button>
+              </> : <p className="trendyol-line-facts">{detail.correction.allowed ? "Corecția o face o persoană cu drept de aprobare Trendyol." : "Comanda a intrat deja în lucru: corecția se face numai cu acordul managerului."}</p>}
+            </div>}
             <div className="production-next">
               <button className="button button-primary button-large" type="button" onClick={() => navigate(`/documents/${encodeURIComponent(detail.production?.globalOrderId ?? "")}`)}><span className="button-stack"><span>Fișa de producție</span><small>Tipărirea cu cod QR se face din fișă</small></span><AppIcon name="document" size={22} /></button>
               <button className="button button-secondary button-large" type="button" onClick={() => navigate(`/orders/${encodeURIComponent(detail.production?.globalOrderId ?? "")}`)}><span>Deschide comanda (etapa 1 → Tăiere)</span><AppIcon name="arrow" size={20} /></button>

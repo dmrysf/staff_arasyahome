@@ -14,15 +14,15 @@ import type { Employee } from "../domain/models";
 
 const line = (number: number, prepared: TrendyolLine["prepared"] = null): TrendyolLine => ({
   lineId: `l${number}`, lineNumber: number, productName: "Draperie blackout catifea verde smarald cu rejansă și inele", stockCode: "DB-1", productCode: "DB-1", barcode: null,
-  suggestedTitle: null, suggestedTitleApproval: null, productSize: "280x250", productColor: "Verde", quantity: 2, sizeSuggestion: { width: "280", height: "250" }, prepared,
+  suggestedTitle: null, suggestedTitleApproval: null, productSize: "280x250", productColor: "Verde", quantity: 2, sizeSuggestion: { width: "280", height: "250" }, prepared, productionItem: null,
 });
 const confirmed = { kind: "drapery" as const, widthCm: "280", heightCm: "250", meters: null, notes: null, productionTitle: "Draperie blackout verde smarald", preparedBy: "Ayşe", preparedAt: "2026-10-11T08:00:00Z" };
 const pkg = (patch: Partial<TrendyolPackageDetail> = {}): TrendyolPackageDetail => ({
   packageId: "74101", orderNumber: "TY74101", intakeStatus: "pending", marketplaceStatus: "Created", marketplaceClass: "new", marketplaceStatusKnown: true,
   orderDate: "2026-10-11T08:00:00Z", orderDateNearActivation: false, changedAfterRelease: false, version: 3,
   delivery: null, lines: [line(1), line(2)], readiness: { ready: false, missingLines: [1, 2], marketplaceReleasable: true, blockedReason: null },
-  siblings: [], production: null, dismissal: null, history: [],
-  capabilities: { view: true, prepare: true, release: true, prepareNow: true, releaseNow: false, dismissNow: true, reopenNow: false },
+  siblings: [], production: null, dismissal: null, correction: null, history: [],
+  capabilities: { view: true, prepare: true, release: true, prepareNow: true, releaseNow: false, dismissNow: true, reopenNow: false, correctNow: false },
   ...patch,
 });
 const states = (detail: TrendyolPackageDetail) => preparationSteps(detail).map((step) => `${step.id}:${step.state}`);

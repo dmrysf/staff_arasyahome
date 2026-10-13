@@ -566,9 +566,9 @@ test('migrations stay sequential through 026 and the canonical workflow keeps it
     // 025 is additive: nullable payment gate columns and their CHECKs on operational_orders. No row is rewritten.
     $gate = preg_replace(['/^\s*--.*$/m'], '', (string) file_get_contents(dirname(__DIR__) . '/database/migrations/025_source_payment_gate.sql'));
     expect(preg_match('/\b(UPDATE|DELETE|DROP|TRUNCATE|RENAME|INSERT)\b/i', $gate) === 0 && substr_count($gate, 'ALTER TABLE operational_orders') === 1 && substr_count($gate, 'NOT NULL') === 0, '025 must only add nullable columns.');
-    // 026 is additive: two nullable line columns and two new tables. No row is rewritten.
-    $identity = preg_replace(['/^\s*--.*$/m', '/ON (UPDATE|DELETE) RESTRICT/'], '', (string) file_get_contents(dirname(__DIR__) . '/database/migrations/026_trendyol_product_identity.sql'));
-    expect(preg_match('/\b(UPDATE|DELETE|DROP|TRUNCATE|RENAME|INSERT)\b/i', $identity) === 0 && substr_count($identity, 'CREATE TABLE IF NOT EXISTS') === 2, '026 must only add columns and tables.');
+    // 026 is additive: two nullable line columns, two new tables and one re-created CHECK (a new event action). No row is rewritten.
+    $identity = preg_replace(['/^\s*--.*$/m', '/ON (UPDATE|DELETE) RESTRICT/', '/DROP CONSTRAINT chk_trendyol_intake_events_action;/'], '', (string) file_get_contents(dirname(__DIR__) . '/database/migrations/026_trendyol_product_identity.sql'));
+    expect(preg_match('/\b(UPDATE|DELETE|DROP|TRUNCATE|RENAME|INSERT)\b/i', $identity) === 0 && substr_count($identity, 'CREATE TABLE IF NOT EXISTS') === 2 && substr_count($identity, "'production_identity_corrected'") === 1, '026 must only add columns, tables and the correction event action.');
 });
 
 test('payment gate mode is per source, defaults to off and an unreadable value falls back to off', function (): void {
