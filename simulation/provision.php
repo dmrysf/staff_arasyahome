@@ -19,7 +19,10 @@ $socket=$runtime . '/sim-mariadb.sock';
 if (getenv('GITHUB_ACTIONS') === 'true' && getenv('ARASYA_SIMULATION_CI_SERVER') === 'dedicated') {
     // The workflow's disposable MySQL service, never an application or deployment secret.
     $server=new PDO('mysql:host=127.0.0.1;port=' . $port . ';charset=utf8mb4','root',(string)getenv('ARASYA_SIMULATION_CI_PASSWORD'),[PDO::ATTR_ERRMODE=>PDO::ERRMODE_EXCEPTION]);
+    // Published service ports reach MySQL from the Docker bridge, not its internal loopback.
+    $accountHost=explode('@',(string)$server->query('SELECT USER()')->fetchColumn(),2)[1];
 } else {
+    $accountHost='127.0.0.1';
     $server=new PDO('mysql:unix_socket=' . $socket . ';charset=utf8mb4','root','',[PDO::ATTR_ERRMODE=>PDO::ERRMODE_EXCEPTION]);
     $datadir=$server->query("SHOW VARIABLES LIKE 'datadir'")->fetch(PDO::FETCH_NUM)[1];
     if (realpath($datadir)!==realpath($runtime . '/mariadb')) throw new RuntimeException('SIMULATION_SERVER_BOUNDARY');
@@ -44,8 +47,9 @@ $env=[
 foreach ($env as $key=>$value) putenv($key . '=' . $value);
 $config=Config::fromEnvironment();
 $server->exec("CREATE DATABASE `{$db}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
-$server->exec("CREATE USER '{$user}'@'127.0.0.1' IDENTIFIED BY " . $server->quote($password));
+$account="'{$user}'@" . $server->quote($accountHost);
+$server->exec('CREATE USER ' . $account . ' IDENTIFIED BY ' . $server->quote($password));
 $grantDb=str_replace('_','\\_',$db);
-$server->exec("GRANT ALL PRIVILEGES ON `{$grantDb}`.* TO '{$user}'@'127.0.0.1'");
+$server->exec("GRANT ALL PRIVILEGES ON `{$grantDb}`.* TO " . $account);
 $pdo=new PDO("mysql:host=127.0.0.1;port={$port};dbname={$db};charset=utf8mb4",$user,$password,[PDO::ATTR_ERRMODE=>PDO::ERRMODE_EXCEPTION,PDO::ATTR_DEFAULT_FETCH_MODE=>PDO::FETCH_ASSOC,PDO::ATTR_EMULATE_PREPARES=>false]);
 require __DIR__ . '/initialize-session.php';
