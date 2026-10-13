@@ -22,6 +22,36 @@ $refuse('privileged_user',['dbUser'=>'root']);
 $refuse('other_session_user',['dbUser'=>'sim_abcdef012345']);
 $refuse('production_db_host',['dbHost'=>'api.arasyahome.ro']);
 $refuse('production_origin',['allowedOrigins'=>['https://staff.arasyahome.ro']]);
+// Hosted origins: exactly the Staff and Dashboard simulation frontends, never a production, lookalike or mixed set.
+new Config(...array_replace($base,['allowedOrigins'=>['https://sim.arasyahome.ro','https://dashboard.sim.arasyahome.ro']])); $passed++; echo "PASS hosted_staff_and_dashboard_origins\n";
+new Config(...array_replace($base,['allowedOrigins'=>['https://dashboard.sim.arasyahome.ro']])); $passed++; echo "PASS hosted_dashboard_origin\n";
+foreach ([
+  'production_dashboard_origin'=>['https://dashboard.arasyahome.ro'],
+  'production_api_origin'=>['https://api.arasyahome.ro'],
+  'simulation_api_as_browser_origin'=>['https://api.sim.arasyahome.ro'],
+  'arbitrary_external_origin'=>['https://evil.example'],
+  'lookalike_suffix'=>['https://dashboard.sim.arasyahome.ro.evil.example'],
+  'lookalike_prefix'=>['https://evildashboard.sim.arasyahome.ro'],
+  'other_simulation_subdomain'=>['https://x.sim.arasyahome.ro'],
+  'http_hosted_origin'=>['http://dashboard.sim.arasyahome.ro'],
+  'hosted_origin_with_port'=>['https://dashboard.sim.arasyahome.ro:8443'],
+  'hosted_origin_with_slash'=>['https://dashboard.sim.arasyahome.ro/'],
+  'hosted_origin_with_path'=>['https://sim.arasyahome.ro/app'],
+  'hosted_origin_with_credentials'=>['https://user@sim.arasyahome.ro'],
+  'uppercase_hosted_origin'=>['https://SIM.arasyahome.ro'],
+  'wildcard_origin'=>['*'],
+  'null_origin'=>['null'],
+  'empty_origin'=>[''],
+  'no_origin'=>[],
+  'duplicate_origin'=>['https://sim.arasyahome.ro','https://sim.arasyahome.ro'],
+  'mixed_hosted_and_loopback'=>['https://sim.arasyahome.ro','http://127.0.0.1:4175'],
+  'mixed_hosted_and_production'=>['https://sim.arasyahome.ro','https://dashboard.arasyahome.ro'],
+  'https_loopback'=>['https://127.0.0.1:4175'],
+  'loopback_without_port'=>['http://127.0.0.1'],
+  'private_network_origin'=>['http://192.168.1.2:4175'],
+] as $name=>$origins) $refuse($name,['allowedOrigins'=>$origins]);
+$refuse('trusted_proxy_header',['trustProxy'=>true,'trustedProxies'=>['127.0.0.1']]);
+$refuse('trusted_proxy_list',['trustedProxies'=>['10.0.0.1']]);
 $refuse('production_application_secret',['appSecret'=>str_repeat('p',64)]);
 $refuse('production_source_secret',['sourceSecrets'=>['trendhome'=>str_repeat('p',64)]]);
 $refuse('real_trendyol_credentials',['trendyol'=>TrendyolCredentials::fromValues('123456','real-key','real-secret','')]);

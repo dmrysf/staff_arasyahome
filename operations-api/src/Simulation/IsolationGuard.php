@@ -11,6 +11,28 @@ use RuntimeException;
 /** Defense in depth. The runtime identity may access exactly one simulation schema. */
 final class IsolationGuard
 {
+    /** The hosted simulation: two browser applications, one API. Exact strings; no other host, port or scheme. */
+    public const STAFF_ORIGIN = 'https://sim.arasyahome.ro';
+    public const DASHBOARD_ORIGIN = 'https://dashboard.sim.arasyahome.ro';
+    public const API_ORIGIN = 'https://api.sim.arasyahome.ro';
+    public const HOSTED_ORIGINS = [self::STAFF_ORIGIN, self::DASHBOARD_ORIGIN];
+
+    /**
+     * Browser origins of a simulation runtime: either only the exact hosted frontends, or only loopback HTTP
+     * origins of a local rehearsal. Never a mix, a production host, a wildcard, a path or a duplicate.
+     * @param list<string> $origins
+     */
+    public static function originsAllowed(array $origins): bool
+    {
+        if ($origins === [] || count($origins) !== count(array_unique($origins))) return false;
+        $hosted = array_filter($origins, static fn(string $origin): bool => in_array($origin, self::HOSTED_ORIGINS, true));
+        if ($hosted !== []) return count($hosted) === count($origins);
+        foreach ($origins as $origin) {
+            if (!preg_match('/^http:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):[1-9][0-9]{0,4}$/D', $origin)) return false;
+        }
+        return true;
+    }
+
     public static function configuration(Config $config): void
     {
         if ($config->environment !== 'simulation') return;
@@ -25,12 +47,12 @@ final class IsolationGuard
         if ($config->trendyol !== null || $config->trendyolFixtureFile === null || !is_file($config->trendyolFixtureFile)) {
             throw new RuntimeException('SIMULATION_TRANSPORT_BOUNDARY');
         }
-        foreach ($config->allowedOrigins as $origin) {
-            $host = parse_url($origin, PHP_URL_HOST);
-            if (!in_array($host, ['127.0.0.1', 'localhost', '::1', '[::1]', 'sim.arasyahome.ro'], true)
-                || ($host === 'sim.arasyahome.ro' && parse_url($origin, PHP_URL_SCHEME) !== 'https')) {
-                throw new RuntimeException('SIMULATION_ORIGIN_BOUNDARY');
-            }
+        if (!self::originsAllowed($config->allowedOrigins)) {
+            throw new RuntimeException('SIMULATION_ORIGIN_BOUNDARY');
+        }
+        // Client addresses come from the socket only: a forwarded header can never pick the rate-limit identity.
+        if ($config->trustProxy || $config->trustedProxies !== []) {
+            throw new RuntimeException('SIMULATION_PROXY_BOUNDARY');
         }
     }
 

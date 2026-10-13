@@ -20,7 +20,7 @@ $pdo->prepare('INSERT INTO simulation_environment VALUES(1,?,?,?,?,UTC_TIMESTAMP
 foreach (glob(dirname(__DIR__) . '/operations-api/database/seeds/*.sql') as $seed) (new SqlFileRunner($pdo))->run($seed);
 $pdo->exec("INSERT INTO permissions(permission_key,category,label,description,role_grantable,created_at) VALUES('simulation.manage','simulation','Simulation controller','Control only isolated scenario fixtures',1,UTC_TIMESTAMP(6))");
 if (getenv('ARASYA_SIMULATION_EMPTY') === 'true') {
-    file_put_contents($sessionDir . '/private.json',json_encode(['sessionId'=>$id,'environment'=>$env,'accounts'=>[]],JSON_THROW_ON_ERROR|JSON_PRETTY_PRINT));
+    file_put_contents($sessionDir . '/private.json',json_encode([...($hostedManifest ?? []),'sessionId'=>$id,'environment'=>$env,'accounts'=>[]],JSON_THROW_ON_ERROR|JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES));
     chmod($sessionDir . '/private.json',0600);
     echo json_encode(['sessionId'=>$id,'privateManifest'=>$sessionDir . '/private.json'],JSON_THROW_ON_ERROR) . "\n";
     exit;
@@ -92,6 +92,6 @@ require __DIR__ . '/organization-fixtures.php';
 (new Arasya\Operations\Integration\Trendyol\TrendyolIntakeState($pdo,$container->clock()))->activate($container->clock()->now(),'SIMULATION setup');
 $service=new ScenarioService($container);
 foreach (ScenarioCatalog::all() as $scenario) $service->command($scenario['id'],'start',$root['employeeUuid'],0);
-$manifest=['sessionId'=>$id,'environment'=>$env,'accounts'=>$accounts,'organizationProfiles'=>$organizationProfiles,'root'=>['username'=>'sim.root','password'=>$rootPassword],'sourceCommit'=>(string)(getenv('ARASYA_SIMULATION_SOURCE_COMMIT')?:'not-recorded')];
-file_put_contents($sessionDir . '/private.json',json_encode($manifest,JSON_THROW_ON_ERROR|JSON_PRETTY_PRINT)); chmod($sessionDir . '/private.json',0600);
+$manifest=[...($hostedManifest ?? []),'sessionId'=>$id,'environment'=>$env,'accounts'=>$accounts,'organizationProfiles'=>$organizationProfiles,'root'=>['username'=>'sim.root','password'=>$rootPassword],'sourceCommit'=>(string)(getenv('ARASYA_SIMULATION_SOURCE_COMMIT')?:'not-recorded')];
+file_put_contents($sessionDir . '/private.json',json_encode($manifest,JSON_THROW_ON_ERROR|JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)); chmod($sessionDir . '/private.json',0600);
 echo json_encode(['sessionId'=>$id,'privateManifest'=>$sessionDir . '/private.json','accounts'=>array_map(static fn(array $a):array=>array_diff_key($a,['password'=>true]),$accounts)],JSON_THROW_ON_ERROR) . "\n";

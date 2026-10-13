@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# Publishes only explicitly named simulation docroots. No live release pointer, migrations, secrets or DB reset.
+# Publishes only explicitly named simulation docroots (Staff + API). No live release pointer, migrations, secrets or
+# DB reset. The simulation Dashboard has its own publisher (deploy-simulation-dashboard.sh). DRY_RUN=1 checks only.
 set -euo pipefail
 [ "$#" -eq 5 ] || { echo 'Usage: package private-release-root private-manifest sim-docroot api-sim-docroot' >&2; exit 2; }
+# Symbolic links could redirect a write into a live tree: refuse them as arguments and inside the package.
+for argument in "$1" "$2" "$3" "$4" "$5"; do [ ! -L "$argument" ] || { echo 'SIMULATION_LINK_BOUNDARY' >&2; exit 2; }; done
 package=$(cd "$1" && pwd -P)
 release=$(cd "$2" && pwd -P)
 manifest=$3
@@ -16,16 +19,19 @@ case "$release:$manifest:$staff:$api" in *'"'*|*'|'*) exit 2 ;; esac
 case "$release/" in "$staff/"*|"$api/"*) exit 2 ;; esac
 [ -f "$manifest" ] && [ -f "$package/SHA256SUMS" ] || exit 2
 case "$manifest" in "$staff/"*|"$api/"*) echo SIMULATION_PRIVATE_MANIFEST_BOUNDARY >&2; exit 2 ;; esac
+case "$package/" in "$staff/"*|"$api/"*) exit 2 ;; esac
+[ -z "$(find "$package" "$release" "$staff" "$api" -type l -print -quit)" ] || { echo 'SIMULATION_LINK_BOUNDARY' >&2; exit 2; }
 (cd "$package" && sha256sum --check --status SHA256SUMS)
-php -r '$r=json_decode(file_get_contents($argv[1]),true); if(($r["environment"]??"")!=="simulation" || ($r["apiOrigin"]??"")!=="https://api.sim.arasyahome.ro" || ($r["sourceCommit"]??"")!==$argv[2] || !($r["workingTreeClean"]??false)) exit(2);' "$package/release.json" "$sha"
+php -r '$r=json_decode(file_get_contents($argv[1]),true); if(($r["environment"]??"")!=="simulation" || ($r["apiOrigin"]??"")!=="https://api.sim.arasyahome.ro" || ($r["staffOrigin"]??"")!=="https://sim.arasyahome.ro" || ($r["dashboardOrigin"]??"")!=="https://dashboard.sim.arasyahome.ro" || ($r["sourceCommit"]??"")!==$argv[2] || !($r["workingTreeClean"]??false)) exit(2);' "$package/release.json" "$sha"
 # Verify private runtime bytes before executing any of them.
 while read -r checksum file; do
   case "$file" in
     runtime/*) relative=${file#runtime/}; [ -f "$release/$relative" ] || exit 2; actual=$(sha256sum "$release/$relative"); [ "${actual%% *}" = "$checksum" ] || exit 2 ;;
   esac
 done < "$package/SHA256SUMS"
-php -r '$m=json_decode(file_get_contents($argv[1]),true); if(($m["environment"]["ARASYA_APP_ENV"]??"")!=="simulation" || ($m["environment"]["ARASYA_ALLOWED_ORIGINS"]??"")!=="https://sim.arasyahome.ro") exit(2);' "$manifest"
-php -d allow_url_fopen=0 "$release/simulation/check-environment.php" "$manifest"
+# The hosted manifest (schema 2): exact Staff + Dashboard origins, one simulation DB identity, private 0600/0700 paths.
+php -d allow_url_fopen=0 "$release/simulation/verify-hosted-manifest.php" "$manifest"
+php -d allow_url_fopen=0 "$release/simulation/check-environment.php" "$manifest" --hosted
 if [ "${DRY_RUN:-0}" = 1 ]; then echo 'SIMULATION_DEPLOY_DRY_RUN_OK'; exit; fi
 # Runtime must have been uploaded and checksummed under the PRIVATE release root first.
 [ -f "$release/operations-api/bootstrap.php" ] && [ -f "$release/simulation/check-environment.php" ] || exit 2
