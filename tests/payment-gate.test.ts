@@ -17,7 +17,7 @@ test("a closed advance gate is a known blocked reason with Romanian copy", () =>
   assert.equal(mapped.employeeActionBlockedReason, "payment_gate_closed");
   assert.deepEqual(mapped.paymentGate, { state: "waiting", label: "Avans neachitat", mode: "enforce", blocking: true, reversedAt: null });
   assert.ok(isOrderActionBlockedReason("payment_gate_closed"));
-  assert.equal(orderActionBlockedCopy.payment_gate_closed, "Comanda nu poate intra în producție. Avansul necesar nu a fost confirmat.");
+  assert.equal(orderActionBlockedCopy.payment_gate_closed, "Comanda nu poate intra în producție. Avansul necesar sau plata comenzii nu a fost confirmată.");
 });
 
 test("the gate view carries no amount and fails closed on unknown values", () => {
@@ -41,7 +41,7 @@ test("the gate view carries no amount and fails closed on unknown values", () =>
 
 test("AVANS_NEVALIDAT is presented in Romanian on screens and at the QR scanner", () => {
   const presentation = getErrorPresentation(new StaffServiceError("AVANS_NEVALIDAT"));
-  assert.equal(presentation.title.toLowerCase(), "avans neconfirmat");
-  assert.match(presentation.message, /Avansul necesar nu a fost confirmat/);
-  assert.deepEqual(invalidDocumentMessage(new StaffServiceError("AVANS_NEVALIDAT")), { title: "AVANS NECONFIRMAT", lines: ["Comanda nu poate intra în producție.", "Avansul necesar nu a fost confirmat."] });
+  assert.equal(presentation.title.toLowerCase(), "plată neconfirmată");
+  assert.match(presentation.message, /Avansul necesar sau plata comenzii nu a fost confirmată/);
+  assert.deepEqual(invalidDocumentMessage(new StaffServiceError("AVANS_NEVALIDAT")), { title: "PLATĂ NECONFIRMATĂ", lines: ["Comanda nu poate intra în producție.", "Avansul necesar sau plata comenzii nu a fost confirmată."] });
 });

@@ -163,7 +163,7 @@ export function invalidDocumentMessage(error: unknown): { title: string; lines: 
     return { title: "DOCUMENT INVALID", lines: ["Acest document a fost înlocuit.", active === null ? "Există o revizie mai nouă a documentului." : `Folosește REVIZIA ${active}.`] };
   }
   if (error.code === "DOCUMENT_REVOKED") return { title: "DOCUMENT INVALID", lines: ["Acest document a fost anulat.", "Așteaptă documentul nou."] };
-  if (error.code === "AVANS_NEVALIDAT") return { title: "AVANS NECONFIRMAT", lines: ["Comanda nu poate intra în producție.", "Avansul necesar nu a fost confirmat."] };
+  if (error.code === "AVANS_NEVALIDAT") return { title: "PLATĂ NECONFIRMATĂ", lines: ["Comanda nu poate intra în producție.", "Avansul necesar sau plata comenzii nu a fost confirmată."] };
   if (error.code === "ORDER_BLOCKED_BY_DOCUMENT") return { title: "DOCUMENT BLOCAT", lines: ["Comanda are o revizie în curs.", "Așteaptă aprobarea și documentul nou."] };
   return null;
 }
