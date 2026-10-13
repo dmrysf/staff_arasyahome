@@ -101,6 +101,10 @@ final readonly class LineReadiness
     }
     public function invalidate(string $order,string $from,string $actor,int $version,string $request,string $now): void
     {
+        // Legacy orders have no line confirmations to invalidate; never manufacture new readiness history for them.
+        $checks=$this->pdo->prepare('SELECT 1 FROM production_line_checks WHERE order_uuid=? LIMIT 1');
+        $checks->execute([$order]);
+        if ($checks->fetchColumn()===false) return;
         $all=[...self::MANUFACTURING,'packing'];$index=array_search($from,$all,true);
         if($index===false) return;
         foreach(array_slice($all,$index) as $stage) {

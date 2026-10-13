@@ -74,6 +74,9 @@ copy(dirname(__DIR__) . '/database/migrations/001_auth_foundation.sql', $migrati
 try {
     $migrationRunner->migrate($migrationFixture);
     restorePreHandoffTestSchema($pdo);
+    $pdo->exec('DROP TABLE IF EXISTS production_line_checks');
+    $pdo->exec('DROP TABLE IF EXISTS production_line_events');
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name = '028_production_line_readiness.sql'");
     $pdo->exec('DROP TABLE IF EXISTS api_rate_limit_buckets');
     $pdo->exec('DROP TABLE IF EXISTS order_operation_idempotency');
     $pdo->exec('DROP TABLE IF EXISTS order_activity_events');
