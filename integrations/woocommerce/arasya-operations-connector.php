@@ -69,6 +69,7 @@ function arasya_ops_build_payload(object $order, string $changedAt): array
     $line = 0;
     foreach ($order->get_items() as $itemId => $item) {
         $line++;
+        $quantity = arasya_ops_quantity($item->get_quantity());
         $product = method_exists($item, 'get_product') ? $item->get_product() : null;
         $measurements = [
             'width' => arasya_ops_number($item->get_meta('_arasya_width', true)),
@@ -94,7 +95,7 @@ function arasya_ops_build_payload(object $order, string $changedAt): array
             'height' => $measurements['height'] ?? null,
             'unit' => $measurements['unit'] ?? null,
             'meters' => $measurements['meters'] ?? null,
-            'quantity' => max(1, (int) $item->get_quantity()),
+            'quantity' => $quantity,
         ], static fn (mixed $value): bool => $value !== null);
     }
     $created = $order->get_date_created();
@@ -133,6 +134,16 @@ function arasya_ops_sign(string $secret, string $body, ?int $timestamp = null): 
 {
     $timestamp = (string) ($timestamp ?? time());
     return ['timestamp' => $timestamp, 'signature' => 'v1=' . hash_hmac('sha256', $timestamp . '.' . $body, $secret)];
+}
+
+/** Whole production quantities use the same 1..1,000,000 contract as Operations. */
+function arasya_ops_quantity(mixed $value): int
+{
+    if (!is_numeric($value) || !is_finite((float) $value) || (float) $value < 1
+        || (float) $value > 1000000 || floor((float) $value) !== (float) $value) {
+        throw new InvalidArgumentException('SOURCE_QUANTITY_INVALID');
+    }
+    return (int) $value;
 }
 
 /** @return int|null HTTP status, or null for a transport failure */
@@ -193,7 +204,14 @@ function arasya_ops_send_order(int $orderId, int $attempt = 0): void
         return;
     }
     // The payload is built at send time so a retry always carries the newest order state.
-    $status = arasya_ops_post('orders', arasya_ops_build_payload($order, arasya_ops_now()));
+    try {
+        $payload = arasya_ops_build_payload($order, arasya_ops_now());
+    } catch (InvalidArgumentException) {
+        // Permanent source-data error: send nothing, do not invent units or retry a bad value.
+        error_log(sprintf('[arasya-operations] order %d not delivered (SOURCE_QUANTITY_INVALID)', $orderId));
+        return;
+    }
+    $status = arasya_ops_post('orders', $payload);
     if ($status !== null && $status >= 200 && $status < 300) {
         return;
     }

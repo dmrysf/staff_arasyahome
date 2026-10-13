@@ -73,7 +73,7 @@ function arasya_wck_item_measurements(array $measurements, object $item): array
     if (($measurements['meters'] ?? null) === null) {
         $perUnit = arasya_ops_number($item->get_meta('_wck_stock_reduction_multiplier', true));
         if ($perUnit !== null && $perUnit > 0) {
-            $measurements['meters'] = round($perUnit * max(1, (int) $item->get_quantity()), 3);
+            $measurements['meters'] = round($perUnit * arasya_ops_quantity($item->get_quantity()), 3);
         }
     }
     return $measurements;
