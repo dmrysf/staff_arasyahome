@@ -17,7 +17,7 @@ writeFileSync(path.join(out, "staff", ".htaccess"), template.replaceAll("__ARASY
 mkdirSync(path.join(out, "api"));
 cpSync(path.join(root, "simulation", "cpanel-index.php"), path.join(out, "api", "index.php"));
 writeFileSync(path.join(out, "api", ".user.ini"), "allow_url_fopen=0\nallow_url_include=0\ndisplay_errors=0\n");
-writeFileSync(path.join(out, "api", ".htaccess.template"), `Options -Indexes -MultiViews\nRewriteEngine On\nRewriteRule ^ index.php [L]\nSetEnv ARASYA_SIMULATION_RELEASE_ROOT "__RELEASE_ROOT__"\nSetEnv ARASYA_SIMULATION_MANIFEST "__PRIVATE_MANIFEST__"\n`);
+writeFileSync(path.join(out, "api", ".htaccess.template"), `Options -Indexes -MultiViews\nRewriteEngine On\nRewriteRule ^index\\.php$ - [L]\nRewriteRule ^ index.php [L]\nSetEnv ARASYA_SIMULATION_RELEASE_ROOT "__RELEASE_ROOT__"\nSetEnv ARASYA_SIMULATION_MANIFEST "__PRIVATE_MANIFEST__"\n`);
 cpSync(path.join(root, "scripts", "cpanel-deploy-simulation.sh"), path.join(out, "deploy-simulation.sh"));
 const commit = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim();
 const tree = spawnSync("git", ["status", "--porcelain"], { cwd: root, encoding: "utf8" }).stdout.trim();

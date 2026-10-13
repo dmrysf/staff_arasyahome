@@ -24,6 +24,7 @@ while read -r checksum file; do
     runtime/*) relative=${file#runtime/}; [ -f "$release/$relative" ] || exit 2; actual=$(sha256sum "$release/$relative"); [ "${actual%% *}" = "$checksum" ] || exit 2 ;;
   esac
 done < "$package/SHA256SUMS"
+php -r '$m=json_decode(file_get_contents($argv[1]),true); if(($m["environment"]["ARASYA_APP_ENV"]??"")!=="simulation" || ($m["environment"]["ARASYA_ALLOWED_ORIGINS"]??"")!=="https://sim.arasyahome.ro") exit(2);' "$manifest"
 php -d allow_url_fopen=0 "$release/simulation/check-environment.php" "$manifest"
 if [ "${DRY_RUN:-0}" = 1 ]; then echo 'SIMULATION_DEPLOY_DRY_RUN_OK'; exit; fi
 # Runtime must have been uploaded and checksummed under the PRIVATE release root first.
