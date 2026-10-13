@@ -157,6 +157,27 @@ try {
             $check($one('SELECT operational_status FROM operational_orders WHERE source_order_id=?',[$packageId])==='unavailable',$id . '-cancel','Released order preserved as unavailable');
         }
     }
+    // Every permitted prepared package continues through the SAME fourteen production stages.
+    // Mixed Woo orders exercise the current whole-order contract; this does not approve a new line routing rule.
+    $complete=static function(string $global,string $label)use($stages,$state,$version,$qr,$call,$ok,$sessions,$check):void {
+        foreach ($stages as $stage) {
+            $who=$stage['id']; $row=$state($global);
+            $check($row['production_stage_id']===$who,$label . '-stage-' . $who,'Canonical current stage');
+            if ($row['production_owner_employee_uuid']===null) {
+                $body=['expectedVersion'=>$version($global)];
+                if ($who==='material-preparation') $body+=['qrToken'=>$qr($global),'confirmedMultiple'=>false,'ownedCount'=>0];
+                $ok($call($who,'POST','/orders/' . rawurlencode($global) . '/claim',$body),$label . '-claim-' . $who);
+            } else $check($row['production_owner_employee_uuid']===$sessions[$who]['employeeUuid'],$label . '-existing-owner-' . $who,'Existing owner retained');
+            $ok($call($who,'POST','/orders/' . rawurlencode($global) . '/transition',['expectedVersion'=>$version($global)]),$label . '-complete-' . $who);
+        }
+        $check($state($global)['production_completed_at']!==null,$label . '-finished','Production completed once');
+    };
+    foreach (['WOO-TH-002','WOO-OP-001'] as $id) $complete((string)$one('SELECT order_id FROM simulation_runs WHERE scenario_id=?',[$id]),$id);
+    foreach (['TY-01','TY-02','TY-03','TY-04','TY-07','TY-11','TY-15'] as $id) {
+        $packageId=$one('SELECT package_id FROM simulation_runs WHERE scenario_id=?',[$id]);
+        $global=$one('SELECT global_order_id FROM operational_orders WHERE source_key=\'trendyol\' AND source_order_id=?',[$packageId]);
+        $complete((string)$global,$id);
+    }
     foreach ($service->invariants() as $id=>$pass) $check($pass,'INVARIANT-' . $id,'Database invariant holds');
     // The SQL principal itself cannot read or create another schema, independent of application guards.
     try { $pdo->query('SELECT * FROM mysql.user'); $check(false,'DB-no-global-read','Permission denied'); } catch (PDOException) { $check(true,'DB-no-global-read','Permission denied'); }
