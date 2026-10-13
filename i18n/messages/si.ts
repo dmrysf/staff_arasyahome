@@ -7,6 +7,32 @@ import { siErrors } from "./si.errors";
  * Wording to be reviewed on a real phone by a native Sinhala-speaking employee.
  */
 export const si: Catalog = {
+  "simulation.orderDetail": "නිෂ්පාදන, QR සහ ඉතිහාසය",
+  "simulation.units": "ඒකක",
+  "simulation.accounts": "පරීක්ෂණ ගිණුම් සහ කාර්යයන්",
+  "simulation.accountsHelp": "සෑම සේවකයෙකුම තමන්ගේ පරීක්ෂණ ගිණුමෙන් ඇතුළු වේ. මෙම පුවරුව භූමිකාව වෙනස් නොකරයි.",
+
+  "simulation.title": "කර්මාන්තශාලා අනුකරණ මධ්‍යස්ථානය",
+  "simulation.description": "පරීක්ෂණ ඇණවුම්. එකම Staff සහ නිෂ්පාදන නීති.",
+  "simulation.all": "සියලු මූලාශ්‍ර",
+  "simulation.start": "ආරම්භ කරන්න",
+  "simulation.pause": "නවත්වන්න",
+  "simulation.resume": "ඉදිරියට යන්න",
+  "simulation.reset": "නව දත්ත සමඟ නැවත කරන්න",
+  "simulation.fault": "දෝෂ තත්ත්වය යොදන්න",
+  "simulation.retry": "නැවත පූරණය කරන්න",
+  "simulation.export": "JSON අපනයනය",
+  "simulation.pending": "මානව තහවුරු කිරීම අවශ්‍යයි",
+  "simulation.checks": "සැකසුම් පරීක්ෂණ",
+  "simulation.orders": "පරීක්ෂණ ඇණවුම්",
+  "simulation.real": "සැබෑ වේලාව",
+  "simulation.fixture": "පරීක්ෂණ දත්ත වේලාව",
+  "simulation.loading": "පූරණය වෙමින්…",
+  "simulation.open": "Staff හි විවෘත කරන්න",
+  "simulation.scan": "QR ස්කෑනරය",
+  "simulation.unknown": "උපාංග පමණක් ඇති ඇණවුම් සඳහා නීතිය තහවුරු කළ යුතුය.",
+  "simulation.invariants": "දත්ත සමුදා අඛණ්ඩතාව",
+
   ...siErrors,
 
   // ---- common

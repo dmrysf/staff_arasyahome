@@ -27,6 +27,13 @@ final readonly class FixtureTrendyolTransport implements TrendyolTransport
             return ['status' => (int) ($fixture['status'] ?? 200), 'body' => (string) ($fixture['body'] ?? '')];
         }
         parse_str((string) parse_url($url, PHP_URL_QUERY), $query);
+        // Simulation faults are package-scoped; unrelated fixtures keep answering normally.
+        foreach (explode(',', (string) ($query['shipmentPackageIds'] ?? '')) as $id) {
+            $fault = $fixture['faults'][$id] ?? null;
+            if (!is_array($fault)) continue;
+            if (($fault['fail'] ?? false) === true) throw new RuntimeException('TRENDYOL_REQUEST_FAILED');
+            return ['status' => (int) ($fault['status'] ?? 200), 'body' => (string) ($fault['body'] ?? '')];
+        }
         $packages = array_values(array_filter(is_array($fixture['packages'] ?? null) ? $fixture['packages'] : [], static function (mixed $package) use ($query): bool {
             if (!is_array($package)) {
                 return false;

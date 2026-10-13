@@ -22,6 +22,7 @@ export function permissionForRoute(path: string): StaffPermission | null {
 }
 
 export function canAccessRoute(employee: Employee, path: string) {
+  if (path === "/simulation") return employee.applications.includes("staff") && employee.permissions.includes("simulation.manage");
   // Production authority takeover: managers holding the permission together with Dashboard access.
   if (path === "/authority") return employee.permissions.includes("production.manage_authority") && employee.applications.includes("dashboard");
   // Trendyol workspace: only explicitly authorized Trendyol personnel (Staff access plus the Trendyol view permission).

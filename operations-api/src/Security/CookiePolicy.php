@@ -21,7 +21,7 @@ final readonly class CookiePolicy
             rawurlencode($rawToken),
             $expiresAt->format('D, d M Y H:i:s') . ' GMT',
             max(0, $expiresAt->getTimestamp() - time()),
-            $this->config->isProduction() ? ' Secure;' : '',
+            $this->config->secureCookies() ? ' Secure;' : '',
         );
     }
 
@@ -30,7 +30,7 @@ final readonly class CookiePolicy
         return sprintf(
             '%s=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0; Path=/;%s HttpOnly; SameSite=Lax',
             $this->config->cookieName(),
-            $this->config->isProduction() ? ' Secure;' : '',
+            $this->config->secureCookies() ? ' Secure;' : '',
         );
     }
 }

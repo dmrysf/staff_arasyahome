@@ -1,3 +1,4 @@
+import { simulationApiAllowed, simulationOverview } from "../../domain/simulation";
 import { StaffServiceError, type ActivityAction, type ActivityEntry, type ActivityPage, type Employee, type FaultDecision, type FaultException, type FaultReason, type OrderQuality, type QualityCapabilities, type ServiceErrorCode } from "../../domain/models";
 import { normalizeLocale } from "../../i18n/locales";
 import { isOrderActionBlockedReason, isOrderActionId, orderActionLabels } from "../../domain/orderActions";
@@ -726,6 +727,8 @@ function createRequest(apiBaseUrl: string, options: ProductionServicesOptions, o
 }
 
 export function createProductionServices(apiBaseUrl: string, options: ProductionServicesOptions = {}): ServiceBundle {
+  const simulation = import.meta.env?.MODE === "simulation";
+  if (simulation && !simulationApiAllowed(apiBaseUrl)) throw new StaffServiceError("CONFIGURATION_ERROR");
   const normalizedApiBaseUrl = normalizeProductionApiBaseUrl(apiBaseUrl) ?? "";
   const sessionExpiredHandlers = new Set<(error: StaffServiceError) => void>();
   const http = createRequest(normalizedApiBaseUrl, options, (error) => sessionExpiredHandlers.forEach((handler) => handler(error)));
@@ -901,7 +904,9 @@ export function createProductionServices(apiBaseUrl: string, options: Production
     stageSummary: (signal) => http.request("/orders/stage-summary", { signal }, mapStageSummary),
   };
   const management: ManagementApi = { productionOverview: (signal) => http.request("/management/production-overview", { signal }, mapProductionOverview) };
-  return { auth, employee, orders, activity, workflow, exceptions, live, cutting, documents, authority, productionQr, trendyol, workspace, management, mode: "production" };
+  return { auth, employee, orders, activity, workflow, exceptions, live, cutting, documents, authority, productionQr, trendyol, workspace, management, mode: "production",
+    ...(simulation ? { simulation: { overview: () => http.request("/simulation/overview", {}, simulationOverview), command: (id: string, action: import("../../domain/simulation").SimulationAction, replay: number) => http.request(`/simulation/scenarios/${encodeURIComponent(id)}/${action}`, { method: "POST", body: JSON.stringify({ expectedReplay: replay }) }, simulationOverview) } } : {}),
+  };
 }
 
 // ---------------------------------------------------------------- Trendyol workspace (strict; unexpected shapes fail closed)

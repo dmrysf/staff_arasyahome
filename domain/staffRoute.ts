@@ -1,12 +1,12 @@
 export type StaffRoute =
-  | { kind: "home" | "login" | "scan" | "orders" | "history" | "profile" | "authority" | "trendyol" | "problems"; pathname: string }
+  | { kind: "home" | "login" | "scan" | "orders" | "history" | "profile" | "authority" | "trendyol" | "problems" | "simulation"; pathname: string }
   | { kind: "trendyol-package"; pathname: string; packageId: string }
   | { kind: "order-detail"; pathname: string; orderId: string }
   | { kind: "exception-detail"; pathname: string; exceptionId: string }
   | { kind: "document-detail"; pathname: string; orderId: string }
   | { kind: "invalid"; pathname: "/" };
 
-const fixedRoutes = new Map<string, "home" | "login" | "scan" | "orders" | "history" | "profile" | "authority" | "trendyol" | "problems">([
+const fixedRoutes = new Map<string, "home" | "login" | "scan" | "orders" | "history" | "profile" | "authority" | "trendyol" | "problems" | "simulation">([
   ["/", "home"],
   ["/login", "login"],
   ["/scan", "scan"],
@@ -16,6 +16,7 @@ const fixedRoutes = new Map<string, "home" | "login" | "scan" | "orders" | "hist
   ["/authority", "authority"],
   ["/trendyol", "trendyol"],
   ["/problems", "problems"],
+  ["/simulation", "simulation"],
 ]);
 
 const ORDER_PREFIX = "/orders/";

@@ -49,3 +49,6 @@ yarn-error.log*
 /dist-e2e/
 /e2e/.real-api-fixture.json
 /e2e/.runtime/
+
+/dist-simulation/
+/simulation/.runtime/

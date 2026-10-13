@@ -41,6 +41,7 @@ final readonly class ConfigLoader
         'ARASYA_TRENDYOL_API_BASE_URL',
         'ARASYA_TRENDYOL_INTAKE',
         'ARASYA_TRENDYOL_FIXTURE_FILE',
+        'ARASYA_SIMULATION_CLOCK_MODE',
     ];
 
     /**
@@ -69,6 +70,15 @@ final readonly class ConfigLoader
     /** @return array<string, string> */
     public function load(): array
     {
+        // Simulation never inherits a production private file or aliases. All values must be explicit.
+        if ($this->environmentValue('ARASYA_APP_ENV') === 'simulation') {
+            $values = [];
+            foreach ($this->knownKeys([]) as $key) {
+                $value = $this->environmentValue($key);
+                if ($value !== null) $values[$key] = trim($value);
+            }
+            return $values;
+        }
         $overridePath = trim($this->environmentValue('ARASYA_CONFIG_FILE') ?? '');
         $home = $this->resolveHome($overridePath === '');
         $path = $this->selectPrivateFile($overridePath, $home);

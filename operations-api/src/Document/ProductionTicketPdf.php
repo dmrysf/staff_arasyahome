@@ -80,7 +80,7 @@ final class ProductionTicketPdf
         $right = PdfDocument::WIDTH - self::LEFT;
         $width = $right - self::LEFT;
         $qr = $revision['qrPayload'] === null ? null : QrCode::matrix((string) $revision['qrPayload'], 'Q');
-        $stamp = SourceStamp::label((string) $snapshot['order']['source'], $revision['sourceDisplayName'] ?? null);
+        $stamp = ($revision['simulation'] ?? false) ? 'SIMULARE / TEST' : SourceStamp::label((string) $snapshot['order']['source'], $revision['sourceDisplayName'] ?? null);
         $generated = (new \DateTimeImmutable((string) $revision['generatedAt'], new \DateTimeZone('UTC')))->setTimezone(new \DateTimeZone('Europe/Bucharest'))->format('d.m.Y H:i');
         $active = $revision['status'] === 'active';
         $preview = ($revision['preview'] ?? false) === true;
@@ -103,7 +103,7 @@ final class ProductionTicketPdf
             $stampWidth = $pdf->font('B')->textWidth($stamp, $stampSize) + 20;
             $pdf->fillRect(self::LEFT, $top - 22, $stampWidth, 24, 0.1);
             $pdf->text(self::LEFT + 10, $top - 15, $stamp, 'B', $stampSize, 'left', [1, 1, 1]);
-            $pdf->text(self::LEFT + $stampWidth + 10, $top - 15, 'ARASYA HOME · DOCUMENT DE PRODUCȚIE', 'B', 8.5, 'left', self::GOLD);
+            $pdf->text(self::LEFT + $stampWidth + 10, $top - 15, (($revision['simulation'] ?? false) ? SourceStamp::label((string) $snapshot['order']['source'], $revision['sourceDisplayName'] ?? null) . ' · ARASYA HOME' : 'ARASYA HOME · DOCUMENT DE PRODUCȚIE'), 'B', 8.5, 'left', self::GOLD);
             $pdf->text(self::LEFT, $top - ($first ? 44 : 40), 'COMANDA', 'B', 7.5, 'left', self::MUTED);
             // Revision mark: impossible to confuse revision 1 with revision 2.
             $boxWidth = 132.0;

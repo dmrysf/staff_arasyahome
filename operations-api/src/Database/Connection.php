@@ -25,6 +25,7 @@ final class Connection
             PDO::ATTR_STRINGIFY_FETCHES => false,
             PDO::ATTR_TIMEOUT => 5,
         ]);
+        \Arasya\Operations\Simulation\IsolationGuard::database($config, $pdo);
         $pdo->exec("SET time_zone = '+00:00'");
         return $pdo;
     }

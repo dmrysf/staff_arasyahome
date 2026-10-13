@@ -82,6 +82,7 @@ use Arasya\Operations\Security\SessionTokenManager;
 use Arasya\Operations\Security\UsernameNormalizer;
 use Arasya\Operations\Support\StructuredLogger;
 use Arasya\Operations\Support\SystemClock;
+use Arasya\Operations\Support\Clock;
 use PDO;
 
 final class Container
@@ -94,20 +95,21 @@ final class Container
     private readonly PasswordHasher $passwords;
     private readonly SessionTokenManager $tokens;
     private readonly UsernameNormalizer $usernames;
-    private readonly SystemClock $clock;
+    private readonly Clock $clock;
     private readonly AuthenticationService $authentication;
 
-    public function __construct(?Config $config = null, ?PDO $pdo = null)
+    public function __construct(?Config $config = null, ?PDO $pdo = null, ?Clock $clock = null)
     {
         $this->config = $config ?? Config::fromEnvironment();
         $this->pdo = $pdo ?? Connection::create($this->config);
+        \Arasya\Operations\Simulation\IsolationGuard::database($this->config, $this->pdo);
         $this->employees = new PdoEmployeeRepository($this->pdo);
         $this->sessions = new PdoSessionRepository($this->pdo);
         $this->audit = new PdoAuditLogger($this->pdo, $this->config->appSecret);
         $this->passwords = new PasswordHasher();
         $this->tokens = new SessionTokenManager($this->config->appSecret);
         $this->usernames = new UsernameNormalizer();
-        $this->clock = new SystemClock();
+        $this->clock = $clock ?? ($this->config->environment === 'simulation' && $this->config->simulationClockMode === 'frozen' ? new \Arasya\Operations\Simulation\SimulationClock($this->pdo) : new SystemClock());
         $this->authentication = new AuthenticationService(
             $this->employees,
             $this->sessions,
@@ -229,6 +231,7 @@ final class Container
                 $this->config,
                 $context,
             ),
+            $this->config->environment === 'simulation' ? new \Arasya\Operations\Simulation\SimulationController($this, $this->authentication, $csrf, $authorization, $context) : null,
         );
     }
 
@@ -268,7 +271,7 @@ final class Container
         return $this->passwords;
     }
 
-    public function clock(): SystemClock
+    public function clock(): Clock
     {
         return $this->clock;
     }

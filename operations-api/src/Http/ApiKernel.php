@@ -44,6 +44,7 @@ final readonly class ApiKernel
         private ?\Arasya\Operations\Production\ProductionAuthorityController $authority = null,
         private ?\Arasya\Operations\Production\ProductionQrController $productionQr = null,
         private ?\Arasya\Operations\Trendyol\TrendyolWorkspaceController $trendyol = null,
+        private ?\Arasya\Operations\Simulation\SimulationController $simulation = null,
     ) {
     }
 
@@ -100,6 +101,9 @@ final readonly class ApiKernel
 
     private function matchDynamicRoutes(Request $request): Response
     {
+        if (str_starts_with($request->path, '/simulation/')) {
+            return ($this->simulation ?? throw new ApiException(404, 'NOT_FOUND', 'API route was not found.'))->handle($request);
+        }
         if (str_starts_with($request->path,'/management/analytics/')) return ($this->analytics ?? throw new ApiException(503,'SERVICE_UNAVAILABLE','Analytics unavailable.'))->handle($request);
         if (str_starts_with($request->path, '/cutting/') || str_starts_with($request->path, '/display/cutting/') || str_starts_with($request->path, '/management/cutting/')) return $this->cuttingController()->handle($request);
         if ($request->path === '/b2b/accounts' || str_starts_with($request->path, '/b2b/accounts/')) {
