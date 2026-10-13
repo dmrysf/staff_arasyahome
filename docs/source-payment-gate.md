@@ -55,10 +55,16 @@ A non-COD gateway is not proof of payment. The source sends `online` only when b
   pending payment goes to `on-hold`, a card error to `failed`;
 - WooCommerce recorded the payment (`date_paid` set) and the order is not `pending`, `on-hold`, `failed`,
   `checkout-draft`, `cancelled`, `refunded` or `trash`.
+- the gateway's own evidence exists. For Netopia this is the private note its IPN `confirmed` handler writes
+  ("Plata prin NETOPIA payments / Transaction ID: <id>"); Netopia stores no transaction id. A payment date alone is
+  not proof: Trend Home 63438 is `processing` with a payment date but without that note, so it is `unverified`.
 
-Everything else is `unverified` and closed: bank transfer (`bacs`), cheque, TBI financing (`tbi_bank`, `tbiro`,
-`tbiirisro`), an empty or unknown gateway, and a Netopia payment that is pending, on hold or failed. A gateway joins
-the verified list only by an explicit business decision (filter), never by default. Live evidence (2026-10-13):
+Everything else is `unverified` and closed: bank transfer (`bacs`, until an authorised accounting verification with a
+provable collection exists), cheque, TBI financing (`tbi_bank`, `tbiro`, `tbiirisro`: the Romanian TBI plugin only
+records the credit application decision `_tbi_checkout_status` 0 Canceled / 1 Approved / 2 Draft / 3 Rejected, with
+WooCommerce status sync disabled for Romania; "Approved" is not a proven payment), an empty or unknown gateway,
+and a Netopia payment that is pending, on hold, failed or without IPN evidence. A gateway joins the verified list
+only by an explicit business decision backed by evidence (filter), never by default. Live evidence (2026-10-13):
 every order Arasya received is `cod` or `netopiapayments`; `bacs` and `cheque` are disabled on both sites; no TBI
 order has reached `processing`.
 

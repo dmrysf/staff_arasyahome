@@ -246,6 +246,37 @@ $v10 = (int) $one('SELECT production_version FROM operational_orders WHERE globa
 $ok($asRoot('PUT', '/management/orders/' . rawurlencode("trendhome:{$id(10)}") . '/owner', ['employeeId' => $uuids['gatewaiter'], 'expectedVersion' => $v10]), 'root assigns a confirmed stage-1 order');
 $check($gate("trendhome:{$id(10)}")['production_owner_employee_uuid'] === $uuids['gatewaiter'], 'the assignment applies');
 
+// ---- ENFORCE acceptance matrix: every gate state against both document paths and the cutting QR -----------------
+// Closed states: the source print, the Staff generation and the cutting intake are refused with the state named,
+// no revision, no QR intake, stage and owner unchanged. Open states: revision 1 is created and cutting starts.
+$matrix = [
+    'waiting' => [$cod('waiting'), false],
+    'partial' => [$cod('partial', 1), false],
+    'unknown' => [null, false],
+    'unverified' => [$unverified, false],
+    'confirmed' => [$cod('confirmed', 1, $confirmedAt), true],
+    'online' => [$online, true],
+    'not_required' => [$cod('not_required'), true],
+];
+$n = 30;
+foreach ($matrix as $state => [$facts, $open]) {
+    $n++;
+    $send('trendhome', $id($n), $facts);
+    $globalId = "trendhome:{$id($n)}";
+    if (!$open) {
+        $printRefusal = $error($sourcePrint('trendhome', $id($n)), 409, 'AVANS_NEVALIDAT', "matrix {$state}: source print refused");
+        $generateRefusal = $error($generate($globalId), 409, 'AVANS_NEVALIDAT', "matrix {$state}: Staff generation refused");
+        $intakeRefusal = $error($intake($globalId), 409, 'AVANS_NEVALIDAT', "matrix {$state}: cutting QR intake refused");
+        $after = $gate($globalId);
+        $check(($printRefusal['error']['details']['paymentGate'] ?? null) === $state && ($generateRefusal['error']['details']['paymentGate'] ?? null) === $state && ($intakeRefusal['error']['details']['paymentGate'] ?? null) === $state, "matrix {$state}: every refusal names the state");
+        $check($revisions($globalId) === 0 && $after['document_status'] === 'none' && $after['production_stage_id'] === 'waiting' && $after['production_owner_employee_uuid'] === null, "matrix {$state}: no revision, no document, stage and owner unchanged");
+        $check($sourceStates('trendhome', [$id($n)])['orders'][0]['issueAllowed'] === false, "matrix {$state}: the source may not issue");
+    } else {
+        $check($ok($generate($globalId), "matrix {$state}: Staff generation", 201) !== [] && $revisions($globalId) === 1, "matrix {$state}: revision 1 is created");
+        $check($ok($intake($globalId), "matrix {$state}: cutting intake")['outcome'] === 'started' && $gate($globalId)['production_stage_id'] === 'material-preparation', "matrix {$state}: cutting starts");
+    }
+}
+
 // ---- Database constraints reject inconsistent facts -------------------------------------------------------------
 $uuid = (string) $one('SELECT order_uuid FROM operational_orders WHERE global_order_id = ?', ["trendhome:{$id(5)}"]);
 foreach ([
@@ -260,4 +291,4 @@ foreach ([
     $check($refusedSql, "the schema refuses {$label}");
 }
 
-printf("PASS MySQL payment gate integration: %d checks (contract, enforce/observe/off, document, intake, claim, reassign, replay, out-of-order, isolation, reversal, constraints).\n", $checks);
+printf("PASS MySQL payment gate integration: %d checks (contract, enforce state matrix, enforce/observe/off, document, intake, claim, reassign, replay, out-of-order, isolation, reversal, constraints).\n", $checks);
