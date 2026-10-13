@@ -715,3 +715,31 @@ test('signed order authority answers production facts only and rejects malformed
     expect($writes === [], 'The authority answer never writes, not even the contact time.');
     expect(sourceResponseHasNoSecret($response) && !str_contains(sourceJson($response), 'ARASYA:Q1'), 'No secret and no QR value is returned.');
 });
+
+test('configured payment gate enforcement survives environment loading into the production start policy', function (): void {
+    $home=sys_get_temp_dir() . '/arasya-payment-env-' . bin2hex(random_bytes(6)); mkdir($home,0700);
+    try {
+        $values=['HOME'=>$home,'ARASYA_APP_SECRET'=>str_repeat('s',32),'ARASYA_DB_NAME'=>'db','ARASYA_DB_USER'=>'u','ARASYA_DB_PASSWORD'=>'p','ARASYA_ALLOWED_ORIGINS'=>'https://staff.arasyahome.ro',
+            'ARASYA_SOURCE_SECRET_TRENDHOME'=>SOURCE_TEST_TRENDHOME_SECRET,'ARASYA_SOURCE_MODE_TRENDHOME'=>'active','ARASYA_SOURCE_PAYMENT_GATE_TRENDHOME'=>'enforce',
+            'ARASYA_SOURCE_SECRET_OUTLETPERDELE'=>SOURCE_TEST_OUTLET_SECRET,'ARASYA_SOURCE_MODE_OUTLETPERDELE'=>'active','ARASYA_SOURCE_PAYMENT_GATE_OUTLETPERDELE'=>'off'];
+        $config=Config::fromEnvironment(new ConfigLoader($values));
+        $registry=SourceRegistry::fromConfig($config);
+        expect($registry->find('trendhome')?->paymentGateMode === \Arasya\Operations\Production\PaymentGateMode::Enforce,'Configured enforce must not disappear during environment loading.');
+        $modes=\Arasya\Operations\Production\ProductionAuthorityModes::fromRegistry($registry);
+        expect(\Arasya\Operations\Production\PaymentGate::blocksStart($modes,'trendhome','cod','waiting'),'Configured unpaid COD must block production start.');
+        expect(!\Arasya\Operations\Production\PaymentGate::blocksStart($modes,'outletperdele','cod','waiting'),'Another source keeps its explicit off policy.');
+    } finally { rmdir($home); }
+});
+
+test('configured payment gate enforcement survives private JSON loading and environment precedence', function (): void {
+    $home=sys_get_temp_dir() . '/arasya-payment-file-' . bin2hex(random_bytes(6)); mkdir($home . '/arasya-config',0700,true);
+    $file=$home . '/arasya-config/secrets.json';
+    try {
+        file_put_contents($file,json_encode(['ARASYA_APP_SECRET'=>str_repeat('s',32),'ARASYA_DB_NAME'=>'db','ARASYA_DB_USER'=>'u','ARASYA_DB_PASSWORD'=>'p','ARASYA_ALLOWED_ORIGINS'=>'https://staff.arasyahome.ro',
+            'ARASYA_SOURCE_SECRET_TRENDHOME'=>SOURCE_TEST_TRENDHOME_SECRET,'ARASYA_SOURCE_MODE_TRENDHOME'=>'active','ARASYA_SOURCE_PAYMENT_GATE_TRENDHOME'=>'enforce'],JSON_THROW_ON_ERROR)); chmod($file,0600);
+        $registry=SourceRegistry::fromConfig(Config::fromEnvironment(new ConfigLoader(['HOME'=>$home])));
+        expect($registry->find('trendhome')?->paymentGateMode === \Arasya\Operations\Production\PaymentGateMode::Enforce,'Configured enforce must not disappear during private JSON loading.');
+        $override=SourceRegistry::fromConfig(Config::fromEnvironment(new ConfigLoader(['HOME'=>$home,'ARASYA_SOURCE_PAYMENT_GATE_TRENDHOME'=>'off'])));
+        expect($override->find('trendhome')?->paymentGateMode === \Arasya\Operations\Production\PaymentGateMode::Off,'Explicit environment override remains authoritative.');
+    } finally { unlink($file); rmdir(dirname($file)); rmdir($home); }
+});

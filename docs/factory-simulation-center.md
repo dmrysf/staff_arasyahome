@@ -106,6 +106,13 @@ Faults are package-scoped fixture API conditions or signed event conflicts. Mark
 
 Parallel tests launch two PHP/PDO workers, wait for both readiness markers, release a common barrier and temporarily hold the canonical row lock. They assert real request-time overlap, one winner, no stage skip and one canonical order/active QR/active document. Sequential retries are not called races.
 
+## Verified production-code bugs and deployment impact
+
+- **SIM-BUG-001 (P1): MU Woo quantity clamping.** Zero, negative and fractional source quantities were silently coerced to 1. A failing connector regression proves it. The connector now rejects invalid values before HTTP and preserves valid whole quantities. Its plugin deployment needs separate approval.
+- **SIM-BUG-002 (P0): payment-gate configuration dropped.** `ConfigLoader` omitted `ARASYA_SOURCE_PAYMENT_GATE_<SOURCE>` from its recognized dynamic keys, both for environment variables and private JSON. Consequently a declared enforce value became the default **off**, and the real payment start policy did not block unpaid COD. Two failing configuration-to-policy regressions prove it; the whitelist now preserves the existing key and environment precedence. No default gate mode or payment business rule is changed.
+
+Before deploying SIM-BUG-002 to production, review the existing declared gate modes and the source payment-facts backlog: an already configured `enforce` value will finally take effect, and unknown/unverified/waiting advances correctly block new production starts. That rollout is a separate approval; no live configuration, payment record or order was changed here. Existing payment-gate DB tests remain the nearby regression.
+
 ## Business decisions and acceptance limits
 
 1. **Standard-only/mixed routing (P1 business blocker).** Current production completion is order-level, not per-line. There is no approved accessory-only bypass or separate stage catalog. The simulator does not add one. Safe proposed next step: document the business routing and whole-order completion criteria; if line-level progress is needed, design it as a reviewed extension of the existing engine.
