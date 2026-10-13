@@ -4,7 +4,8 @@ import type { SimulationOverview } from "../../domain/simulation";
 const file = process.env.ARASYA_SIMULATION_MANIFEST;
 if (!file) throw new Error("ARASYA_SIMULATION_MANIFEST is required");
 const manifest = JSON.parse(readFileSync(file, "utf8")) as { accounts: Record<string, { username: string; password: string; locale: string }> };
-const api = "http://127.0.0.1:8788";
+const api = process.env.ARASYA_SIMULATION_API_URL ?? "http://127.0.0.1:8788";
+const staff = process.env.ARASYA_SIMULATION_STAFF_URL ?? "http://127.0.0.1:4175";
 async function login(page: Page, account: string) {
   await page.goto("/login");
   await expect(page.locator(".sim-banner")).toContainText("SIMULARE / TEST");
@@ -14,7 +15,7 @@ async function login(page: Page, account: string) {
   await expect(page.locator(".app-main")).toBeVisible();
 }
 async function controllerOverview(page: Page): Promise<SimulationOverview> {
-  const response = await page.request.get(`${api}/simulation/overview`, { headers: { Origin: "http://127.0.0.1:4175" } });
+  const response = await page.request.get(`${api}/simulation/overview`, { headers: { Origin: staff } });
   expect(response.status()).toBe(200); return response.json();
 }
 

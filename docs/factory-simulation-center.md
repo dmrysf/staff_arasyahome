@@ -22,7 +22,7 @@ The unchanged workflow is `curtain-production@1`, exactly `waiting`, `material-p
 
 - `ARASYA_APP_ENV=simulation` never loads the user's production private file or its legacy DB aliases. Every value is explicit.
 - DB names must be `arasya_sim_test_<12 hex>` (optional cPanel account prefix; the E2E harness additionally permits `arasya_sim_e2e_test_<12 hex>`). SQL usernames must end in `sim_<same 12 hex>`. Hosts are loopback only.
-- Secrets are freshly generated `sim:<64 random hex>`. Real Trendyol credentials are refused; an existing fixture file is required. Origins are loopback or exactly `https://sim.arasyahome.ro`.
+- Secrets are freshly generated `sim:<64 random hex>`. Real Trendyol credentials are refused; an existing fixture file is required. Browser origins are either only loopback HTTP origins with a port (local rehearsal) or exactly `https://sim.arasyahome.ro` and/or `https://dashboard.sim.arasyahome.ro` (hosted); never a mix, a production host, a lookalike, a port, a path, a wildcard or `null`. Proxy trust (`ARASYA_TRUST_PROXY`, `ARASYA_TRUSTED_PROXIES`) is refused, so forwarded headers never choose the client identity.
 - The actual SQL identity and schema are checked, including a secret-bound `simulation_environment` marker. **SHOW GRANTS must contain only USAGE and a single escaped schema grant; global, role, wildcard, other-schema and GRANT OPTION privileges fail closed.** A privileged/root test user cannot serve simulation requests.
 - Local provisioning verifies the disposable server's datadir before server-level DDL. The initializer refuses a nonempty database. The GitHub-only alternative uses the workflow's disposable MySQL service and no repository deployment secrets.
 - The local API and prepared cPanel PHP configuration disable outbound URL streams. The only real HTTPS transport additionally refuses simulation; Container only constructs the fixture transport. No shipment/payment/invoice/notification transport is added. Network namespace/firewall enforcement on shared cPanel remains a hosting requirement; it is not claimed to have been installed.
@@ -123,36 +123,121 @@ Before deploying SIM-BUG-002 to production, review the existing declared gate mo
 
 No `READY FOR FRESH START` claim is allowed. Live Trendyol activation/baseline/cursor changes require separate acceptance and authorization.
 
-## Separate cPanel release preparation
+## Hosted three-domain simulation (cPanel)
 
-Read-only hosting inspection on 2026-10-13 found PHP 8.2.34 and existing api/staff/dashboard/b2b domains. cPanel `DomainInfo list_domains` did **not** list `sim.arasyahome.ro` or `api.sim.arasyahome.ro`; DNS A queries returned no address. No domain, SSL, DB, cron or server file was changed.
+```
+https://sim.arasyahome.ro            Staff simulation      ─┐
+                                                             ├─► https://api.sim.arasyahome.ro ─► arasya_sim_test_<id> (one schema-only user)
+https://dashboard.sim.arasyahome.ro  Dashboard simulation  ─┘
+```
 
-Prepare only a separate test environment:
+- **Origins.** The API accepts browser requests only from the two exact frontends (CORS, unsafe-method origin check and preflight are exact string matches; credentials are never combined with a wildcard). The production Staff/Dashboard origins, `api.sim` itself, lookalikes, ports, paths and `null` are refused. The production API never lists a simulation origin, and the simulation builds never contain a production API address.
+- **Sessions.** One host-only `arasya_sim_session` cookie on `api.sim.arasyahome.ro` (HttpOnly, Secure, SameSite=Lax, no `Domain`). Both frontends are same-site with the API, so credentialed requests work without widening anything; the production `__Host-arasya_session` cookie is a different name on a different host and is never read. Every mutation still needs the session-bound CSRF token, the right application (`staff`/`dashboard`), permissions, stage/source scopes and authority rank. The origin allowlist is not authentication.
+- **Entry point.** Only `index.php`, `.htaccess` and `.user.ini` live in the API docroot. `index.php` answers only for `Host: api.sim.arasyahome.ro` (an optional `:443`), refuses `X-Forwarded-Host` tricks and any other name (also a parent web root), and starts only with a valid hosted manifest and a release under `arasya-simulation/releases/<40-hex commit>`; otherwise it returns `503 SIMULATION_ISOLATION_FAILURE`.
+- **Dashboard.** A real Dashboard build in its `simulation` mode (Dashboard repository, `pnpm build:simulation`): API fixed at build time to `https://api.sim.arasyahome.ro` (a production build refuses that origin), CSP `connect-src 'self' https://api.sim.arasyahome.ro`, links to the simulation Staff, and an always-visible translated banner — RO `MEDIU DE SIMULARE — Date de test`, TR `SİMÜLASYON ORTAMI — Test Verileri` — plus a `SIMULARE ·` page title. The banner comes only from the build mode; no URL parameter, storage value or server answer can switch it on or off. The Dashboard has no EN/SI interface language, so the banner follows its RO/TR switcher. The production Dashboard renders no banner (its verifier fails if the marker appears).
 
-1. Create the two domains with distinct docroots ending exactly `sim.arasyahome.ro` and `api.sim.arasyahome.ro`; add DNS and SSL for both. Do not repoint any live domain.
-2. Create an empty DB and a new schema-only user with the required matching suffix. Ensure the grant escapes database underscores, has no other schema/global privileges and no GRANT OPTION. Verify the actual SHOW GRANTS output; the app refuses a broader grant. If the panel cannot provide that grant, a hosting-admin operation is required.
-3. Use a private session folder outside every webroot. Create a 0600 manifest with `create-cpanel-manifest.php`, supplying the new test DB password on STDIN, then `initialize-cpanel.php`. Initialization fails on a nonempty schema and never migrates the live DB. Both source HMACs and the application secret are new.
-4. Keep API runtime under a new private `$HOME/arasya-simulation/releases/<source-sha>` directory. Keep the manifest/fixture outside the release too. Only the simulation index/router, rewrite configuration and PHP restrictions go in the test API docroot.
-5. Build `node scripts/package-simulation.mjs /fresh/output/directory` from a clean commit. It builds `dist-simulation` for exactly `https://api.sim.arasyahome.ro`, produces private runtime/public Staff/API components, release metadata and checksums. It does not call either existing production deploy script or write generated branches.
-6. Upload the private runtime and verify checksums. Run the packaged `deploy-simulation.sh` with the package, private release, private manifest and the two test docroots. `DRY_RUN=1` performs all checks without publishing. The script refuses production docroots and verifies private runtime bytes before executing its environment check. No migration, database reset or credential copying happens during deployment.
-7. Open only the test hosts, check environment markers, HTTPS cookie/CORS/CSP, blocked outbound, private-file denial, account isolation and an initial real Staff exercise. Hosting publication and real-phone acceptance are not claimed by local tests.
+### Private layout on the server (outside every web root)
 
-Rollback is explicit **simulation code-only**: retain the old checksummed package/private release and rerun its fenced publisher against the same test docroots after compatibility review. Immutable test data remains. To restore test state, use a separate simulation-only DB snapshot and manifest/user, or start a fresh session. Never use a production DB backup for reset. If the schema changes incompatibly, a simulation-only snapshot restore is a separate deliberate operation; no automatic database rollback exists.
+```
+$HOME/arasya-simulation/                     0700
+  packages/<commit>/                         uploaded package (verify SHA256SUMS)
+  releases/<commit>/                         private runtime = the package's runtime/ folder
+  sessions/<session id>/                     0700
+    private.json                             0600 hosted manifest (schema 2) — DB password, test secrets, test accounts
+    marketplace.json                         0600 Trendyol fixture (no real marketplace)
+$HOME/sim.arasyahome.ro/                     Staff docroot
+$HOME/api.sim.arasyahome.ro/                 API docroot (index.php, .htaccess, .user.ini only)
+$HOME/dashboard.sim.arasyahome.ro/           Dashboard docroot
+```
+
+### Hosted manifest (schema 2)
+
+`create-cpanel-manifest.php` writes it; nobody edits it by hand. Every consumer (`verify-hosted-manifest.php`, `check-environment.php --hosted`, `initialize-cpanel.php`, the API `index.php`, both publishers) validates it identically and fails closed with a code only.
+
+| Field | Rule |
+|---|---|
+| `schemaVersion`, `kind` | `2`, `arasya-hosted-simulation` |
+| `sessionId` | 12 hex; the session folder has exactly this name under `arasya-simulation/sessions/` |
+| `origins` | exactly `{staff: https://sim.arasyahome.ro, dashboard: https://dashboard.sim.arasyahome.ro, api: https://api.sim.arasyahome.ro}` |
+| `environment.ARASYA_ALLOWED_ORIGINS` | exactly `https://sim.arasyahome.ro,https://dashboard.sim.arasyahome.ro` |
+| `database` / `ARASYA_DB_*` | `arasya_sim_test_<id>`, user `sim_<id>` (optional cPanel prefix), host `localhost`/`127.0.0.1`, identical in both places |
+| secrets | `ARASYA_APP_SECRET` and every `ARASYA_SOURCE_SECRET_*` are distinct `sim:<64 hex>` values |
+| forbidden | real Trendyol credentials, `ARASYA_CONFIG_FILE`, proxy trust |
+| `paths` | the real session folder and the fixture inside it |
+| files | manifest and fixture 0600, session folder 0700, no symbolic link, no path segment that is a web root (`public_html`, `www`, `htdocs`, `*.arasyahome.ro`) |
+
+Payment gates (`ARASYA_SOURCE_PAYMENT_GATE_<SOURCE>`) are not set or overridden by the manifest creator; any explicit value is preserved exactly (SIM-BUG-002 regression is part of `hosted-api-test.php`).
+
+### Release package (built off the server; cPanel needs no Node)
+
+From clean checkouts (Staff/API at the commit to rehearse; Dashboard at `simulation/dashboard.ref`, its own lockfile installed):
+
+```bash
+node scripts/package-simulation.mjs /fresh/output/directory --dashboard /path/to/dashboard_arasyahome
+```
+
+It builds the Staff simulation bundle, the Dashboard simulation bundle (and its CSP and verifier), and writes `runtime/` (private API code), `staff/`, `dashboard/`, `api/` (entry, `.user.ini`, `.htaccess` template that also denies `.user.ini`), `deploy-simulation.sh`, `deploy-simulation-dashboard.sh`, `release.json` (Staff/API and Dashboard commits, clean-tree flags, the three origins) and `SHA256SUMS`. It refuses symbolic links and any production API address in a frontend bundle, and never calls a production deploy script or writes a release branch.
+
+### Owner steps (each a separate approval; the first is preparation only)
+
+1. **Private folders.** In cPanel Terminal: `mkdir -p ~/arasya-simulation/packages ~/arasya-simulation/releases ~/arasya-simulation/sessions && chmod 700 ~/arasya-simulation ~/arasya-simulation/*`.
+2. **Upload.** Upload the package to `~/arasya-simulation/packages/<commit>/`; run `sha256sum -c SHA256SUMS` there. Copy its `runtime/` contents to `~/arasya-simulation/releases/<commit>/`.
+3. **Manifest.** In the terminal (the password is typed, never shown or stored in history):
+   ```bash
+   R=$HOME/arasya-simulation/releases/<commit>
+   read -rs -p 'simulation DB password: ' P; echo
+   printf '%s' "$P" | php -d allow_url_fopen=0 "$R/simulation/create-cpanel-manifest.php" "$HOME/arasya-simulation/sessions/<id>" <id> arasya_sim_test_<id> sim_<id>; unset P
+   php "$R/simulation/verify-hosted-manifest.php" "$HOME/arasya-simulation/sessions/<id>/private.json"   # SIMULATION_HOSTED_MANIFEST_OK
+   ```
+4. **Initialize the EMPTY simulation database** (writes schema and synthetic organization into the simulation DB only; refuses a non-empty schema): `php "$R/simulation/initialize-cpanel.php" "$HOME/arasya-simulation/sessions/<id>/private.json"`.
+5. **Dry runs** (publish nothing; markers `SIMULATION_DEPLOY_DRY_RUN_OK`, `SIMULATION_DASHBOARD_DRY_RUN_OK`):
+   ```bash
+   P=$HOME/arasya-simulation/packages/<commit>; M=$HOME/arasya-simulation/sessions/<id>/private.json
+   DRY_RUN=1 bash "$P/deploy-simulation.sh" "$P" "$R" "$M" "$HOME/sim.arasyahome.ro" "$HOME/api.sim.arasyahome.ro"
+   DRY_RUN=1 bash "$P/deploy-simulation-dashboard.sh" "$P" "$R" "$M" "$HOME/dashboard.sim.arasyahome.ro"
+   ```
+6. **Publish** the same two commands without `DRY_RUN` (markers `SIMULATION_ACTIVATED <commit>`, `SIMULATION_DASHBOARD_ACTIVATED <commit>`). Neither runs a migration, touches the database, a cron, a secret or another docroot.
+7. **First sign-in.** `php "$R/simulation/account-password.php" "$M"` lists the synthetic accounts; `php "$R/simulation/account-password.php" "$M" manager` shows one password on an interactive terminal only (it refuses pipes and files). Staff: `https://sim.arasyahome.ro/login` (workers, supervisor, cutter; `sim.controller` for `/simulation`). Dashboard: `https://dashboard.sim.arasyahome.ro` (`sim.manager`, `sim.manager-second`, `sim.backup-approver`, document approvers; `sim.root` only for administration).
+
+Both publishers check: exact destination name (`sim.arasyahome.ro`, `api.sim.arasyahome.ro`, `dashboard.sim.arasyahome.ro`; any production docroot fails), no symbolic link in arguments, package, release or docroots, `SHA256SUMS`, `release.json` provenance (commit = release folder, clean trees, exact origins), the private runtime bytes before executing them, the hosted manifest outside the docroots, and for the Dashboard the exact CSP, the simulation API and banner compiled in and no production host anywhere in its files. The entry point and assets are written before `index.html`.
+
+### Manager approval acceptance scenario (hosted, by people)
+
+Scenario `WOO-TH-002` (mixed curtain + accessory): workers take the order through stages 1–5 in Staff; the stage-5 worker reports a cut-meterage defect; the appointed tailoring supervisor confirms it with the QR and sends it to cutting; the cutter acknowledges with the QR; `sim.manager` approves the return in the simulation Dashboard (`Aprobă returnarea la tăiere`); the cutter re-cuts and confirms the lines; the order re-enters at the approved stage and finishes; packing requires every line check. A worker signed in to the Dashboard sees "no access"; the decision is in the audit log under the manager's identity. The same chain runs automatically in the browser suite (below).
+
+### Security validation checklist after publication
+
+- `https://api.sim.arasyahome.ro/health` shows the release version; `https://arasyahome.ro/api.sim.arasyahome.ro/` (if a parent web root exists) does not answer as the API.
+- Browser devtools: Staff and Dashboard call only `https://api.sim.arasyahome.ro`; the cookie is `arasya_sim_session` on that host only; the Dashboard banner is visible on sign-in and every page, on a phone and a desktop.
+- `https://api.sim.arasyahome.ro/.user.ini`, `/private.json` and the release paths are not served.
+- A preflight from `https://dashboard.arasyahome.ro` to the simulation API is refused; the production Staff/Dashboard still talk only to `https://api.arasyahome.ro`.
+
+### Rollback
+
+Simulation code only: keep the previous package and release folder and re-run both publishers with them (dry run first). Test data stays. To reset test state, create a new database/user/session and run steps 3–6, or use a simulation-only snapshot; never a production backup. Removing the three docroots' published files takes the simulation offline without affecting production.
+
+### Known limitations and remaining manual acceptance
+
+- Live hosting, LiteSpeed `SetEnv` propagation to PHP, real iPhone/Android cameras and Safari, physical QR labels and the people-run acceptance above are NOT VERIFIED until performed on the hosted environment.
+- Shared cPanel offers no outbound network firewall here; outbound isolation is enforced in code (`allow_url_fopen=0`, refusing real transports), not by the network.
+- Dashboard has RO/TR only; Sinhala/English banner text is not applicable until Dashboard gains those languages.
 
 ## Real organization rehearsal and Dashboard
 
 Run `php simulation/organization-workflow-test.php /absolute/test-private.json /absolute/report-dir` on a fresh full session, after the core runner if desired. It authenticates the synthetic organization and checks status, departments, applications, roles, reporting relationships, exact stage grants and per-stage source scopes. Four fabric product/source profiles execute accepted defects and full rework from each of the ten supported tailoring stages; dismissal/restoration, appointments, revoked rights, backups, unavailable worker, stale documents and QR, and real simultaneous independent manager decisions also run. Standard-only has no tailoring operation, so its tailoring defect cases are NOT APPLICABLE, not passed by a fictitious sewing path.
 
-The real, unchanged Dashboard source at the audited SHA can be tested locally:
+The real Dashboard, at the commit pinned in `simulation/dashboard.ref`, runs in its `simulation-e2e` mode (same banner and simulation-only API rule as the hosted build, loopback API):
 
 ```bash
-# In its own Dashboard checkout (install the committed lockfile first):
-VITE_DASHBOARD_API_BASE_URL=http://127.0.0.1:8788 pnpm exec vite build --mode e2e
-pnpm exec vite preview --mode e2e --host 127.0.0.1 --port 4173 --strictPort
+# In the Dashboard checkout (install the committed lockfile first):
+VITE_DASHBOARD_API_BASE_URL=http://127.0.0.1:8788 pnpm exec vite build --mode simulation-e2e
+pnpm exec vite preview --mode simulation-e2e --host 127.0.0.1 --port 4173 --strictPort
 # In Staff, with the separate human simulation server already running:
 ARASYA_SIMULATION_MANIFEST=/absolute/human-private.json ARASYA_SIMULATION_DASHBOARD=enabled pnpm exec playwright test -c playwright.simulation.config.ts
 ```
 
-The organization browser test uses separate authenticated Staff worker, appointed supervisor, cutting worker and actual Dashboard manager contexts. All stage work, line confirmations, QR custody and the 3→2 approval use their respective real UI. On CI without a separate Dashboard checkout/runtime this one cross-repository browser test is explicitly SKIPPED/NOT VERIFIED; it is not replaced with a controller approval. The remaining Staff browser suite and all API organization tests run normally. The hosting package contains Staff/API, not Dashboard; a separately marked isolated Dashboard host/build is required for hosted human rehearsal. Local Dashboard uses its E2E loopback build and synthetic login; its existing UI has no simulation banner. Do not expose that build as a live site.
+Ports can be moved when another rehearsal is running: `ARASYA_SIMULATION_STAFF_PORT`/`ARASYA_SIMULATION_DASHBOARD_PORT` for `provision.php` (the loopback CORS origins), `ARASYA_SIMULATION_API_PORT`/`ARASYA_SIMULATION_STAFF_PORT` for `simulation-serve.mjs`, and `ARASYA_SIMULATION_API_URL`/`ARASYA_SIMULATION_STAFF_URL`/`ARASYA_SIMULATION_DASHBOARD_URL` for Playwright.
+
+The organization browser test uses separate authenticated Staff worker, appointed supervisor, cutting worker and actual Dashboard manager contexts. All stage work, line confirmations, QR custody and the 3→2 approval use their respective real UI; a worker signed in to the Dashboard is refused, the banner is checked on phone and desktop in RO and TR, and the approval is read back from the audit log. CI checks out the pinned Dashboard, so this test runs there too, together with `hosted-api-test.php` and `deploy-test.mjs` on a real package. It is never replaced with a controller approval.
 
 Deploy API/migration compatibility before any source starts sending the additive field. On rollback to an older API, stop the new source field first; the older strict mapper rejects it. No live feature switch is enabled by this PR. Payment-gate review remains a separate predeployment prerequisite.

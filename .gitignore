@@ -52,3 +52,5 @@ yarn-error.log*
 
 /dist-simulation/
 /simulation/.runtime/
+/.ci-dashboard/
+/dist-simulation-e2e/

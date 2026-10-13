@@ -1,7 +1,7 @@
 name: Factory Simulation
 on:
   pull_request:
-    paths: ["simulation/**", "operations-api/**", "integrations/**", "features/simulation/**", "features/orders/**", "features/scanner/**", "domain/models.ts", "domain/simulation.ts", "app/**", "services/**", "i18n/**", "e2e/simulation/**", "scripts/*simulation*", "playwright.simulation.config.ts", "vite.config.ts", ".github/workflows/factory-simulation.yml"]
+    paths: ["simulation/**", "operations-api/**", "integrations/**", "features/simulation/**", "features/orders/**", "features/scanner/**", "domain/models.ts", "domain/simulation.ts", "app/**", "services/**", "i18n/**", "e2e/simulation/**", "scripts/*simulation*", "tests/simulation.test.ts", "simulation/dashboard.ref", "playwright.simulation.config.ts", "vite.config.ts", ".github/workflows/factory-simulation.yml"]
   workflow_dispatch:
     inputs:
       profile:
@@ -16,7 +16,7 @@ concurrency:
 jobs:
   simulation:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     services:
       mysql:
         image: mysql:8.4
@@ -55,12 +55,28 @@ jobs:
         run: node simulation/regression.mjs "$PWD/work/ci-runtime" 3306 "${{ inputs.profile || 'fast' }}"
       - name: Fresh human and browser session
         run: php simulation/provision.php "$PWD/work/ci-runtime" 000000000002 3306 > work/browser-provision-summary.json
-      - name: Real Staff simulation browser verification
+      - name: Hosted three-domain API boundary (Staff + Dashboard origins, cookies, CSRF, roles, manifest)
+        run: php simulation/hosted-api-test.php "$PWD/work/ci-runtime/sessions/000000000001/private.json" "$PWD/work/ci-report"
+      - name: Check out the pinned real Dashboard (public repository, read-only)
+        run: |
+          git init -q .ci-dashboard
+          git -C .ci-dashboard fetch -q --depth 1 https://github.com/dmrysf/dashboard_arasyahome.git "$(cat simulation/dashboard.ref)"
+          git -C .ci-dashboard checkout -q FETCH_HEAD
+          test "$(git -C .ci-dashboard rev-parse HEAD)" = "$(cat simulation/dashboard.ref)"
+          (cd .ci-dashboard && pnpm install --frozen-lockfile)
+      - name: Package Staff, API and Dashboard; exercise both publishers and the API entry point
+        run: |
+          node scripts/package-simulation.mjs "$PWD/work/simulation-package" --dashboard "$PWD/.ci-dashboard"
+          node simulation/deploy-test.mjs "$PWD/work/simulation-package" "$PWD/work/ci-runtime/sessions/000000000001/private.json" "$PWD/work/deploy-test"
+      - name: Real Staff and Dashboard simulation browser verification
         env:
           ARASYA_SIMULATION_MANIFEST: ${{ github.workspace }}/work/ci-runtime/sessions/000000000002/private.json
+          ARASYA_SIMULATION_DASHBOARD: enabled
         run: |
+          (cd .ci-dashboard && VITE_DASHBOARD_API_BASE_URL=http://127.0.0.1:8788 pnpm exec vite build --mode simulation-e2e)
+          (cd .ci-dashboard && pnpm exec vite preview --mode simulation-e2e --host 127.0.0.1 --port 4173 --strictPort > ../work/dashboard-preview.private.log 2>&1 &)
           node scripts/simulation-serve.mjs "$ARASYA_SIMULATION_MANIFEST" > work/browser-server.private.log 2>&1 &
-          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8788/health > /dev/null && curl -fsS http://127.0.0.1:4175/login > /dev/null && break; sleep 1; done
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8788/health > /dev/null && curl -fsS http://127.0.0.1:4175/login > /dev/null && curl -fsS http://127.0.0.1:4173/ > /dev/null && break; sleep 1; done
           pnpm exec playwright test -c playwright.simulation.config.ts
       - name: Upload sanitized machine report
         if: always()
@@ -70,6 +86,7 @@ jobs:
           path: |
             work/ci-report/*.json
             work/ci-report/*.md
+            work/deploy-test/deploy-test.json
             work/ci-runtime/reports/*.json
             work/ci-runtime/reports/*.md
             work/simulation-browser.json

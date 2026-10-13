@@ -5,7 +5,7 @@ import { canAccessRoute } from "../domain/permissions";
 import type { Employee } from "../domain/models";
 
 test("simulation build refuses all production and deceptive API origins", () => {
-  for (const origin of ["https://api.arasyahome.ro", "https://api.sim.arasyahome.ro.evil.test", "https://api.sim.arasyahome.ro/path", "https://user@api.sim.arasyahome.ro", "http://api.sim.arasyahome.ro", "http://192.168.1.2:8788", ""]) assert.equal(simulationApiAllowed(origin), false, origin);
+  for (const origin of ["https://api.arasyahome.ro", "https://api.sim.arasyahome.ro.evil.test", "https://api.sim.arasyahome.ro/path", "https://user@api.sim.arasyahome.ro", "https://api.sim.arasyahome.ro:8443", "http://api.sim.arasyahome.ro", "http://192.168.1.2:8788", ""]) assert.equal(simulationApiAllowed(origin), false, origin);
   for (const origin of ["http://127.0.0.1:8788", "http://localhost:8788", "https://api.sim.arasyahome.ro"]) assert.equal(simulationApiAllowed(origin), true, origin);
 });
 

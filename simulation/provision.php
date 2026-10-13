@@ -27,6 +27,8 @@ if (getenv('GITHUB_ACTIONS') === 'true' && getenv('ARASYA_SIMULATION_CI_SERVER')
     $datadir=$server->query("SHOW VARIABLES LIKE 'datadir'")->fetch(PDO::FETCH_NUM)[1];
     if (realpath($datadir)!==realpath($runtime . '/mariadb')) throw new RuntimeException('SIMULATION_SERVER_BOUNDARY');
 }
+// Loopback browser ports of this local rehearsal (defaults 4175 Staff, 4173 Dashboard).
+$localPort=static function(string $name,string $default): string { $v=(string)(getenv($name)?:$default); if (!preg_match('/^[1-9][0-9]{3,4}$/D',$v)) throw new RuntimeException('SIMULATION_PROVISION_ARGUMENTS'); return $v; };
 $db=(getenv('ARASYA_SIMULATION_E2E') === 'true' ? 'arasya_sim_e2e_test_' : 'arasya_sim_test_') . $id; $user='sim_' . $id; $password=bin2hex(random_bytes(32));
 $sessionDir=$runtime . '/sessions/' . $id;
 if (file_exists($sessionDir)) throw new RuntimeException('SIMULATION_SESSION_EXISTS');
@@ -35,7 +37,7 @@ $fixture=$sessionDir . '/marketplace.json'; file_put_contents($fixture,'{"packag
 $env=[
  'ARASYA_APP_ENV'=>'simulation','ARASYA_LINE_ROUTING'=>'enforce','ARASYA_SIMULATION_CLOCK_MODE'=>(string)(getenv('ARASYA_SIMULATION_CLOCK_MODE')?:'realtime'),'ARASYA_APP_SECRET'=>'sim:' . bin2hex(random_bytes(32)),
  'ARASYA_DB_HOST'=>'127.0.0.1','ARASYA_DB_PORT'=>(string)$port,'ARASYA_DB_NAME'=>$db,'ARASYA_DB_USER'=>$user,'ARASYA_DB_PASSWORD'=>$password,
- 'ARASYA_ALLOWED_ORIGINS'=>'http://127.0.0.1:4175,http://127.0.0.1:4173',
+ 'ARASYA_ALLOWED_ORIGINS'=>'http://127.0.0.1:' . $localPort('ARASYA_SIMULATION_STAFF_PORT','4175') . ',http://127.0.0.1:' . $localPort('ARASYA_SIMULATION_DASHBOARD_PORT','4173'),
  'ARASYA_SOURCE_SECRET_TRENDHOME'=>'sim:' . bin2hex(random_bytes(32)), 'ARASYA_SOURCE_SECRET_OUTLETPERDELE'=>'sim:' . bin2hex(random_bytes(32)),
  'ARASYA_SOURCE_MODE_TRENDHOME'=>'active','ARASYA_SOURCE_MODE_OUTLETPERDELE'=>'active',
  'ARASYA_SOURCE_AUTHORITY_TRENDHOME'=>'enforce','ARASYA_SOURCE_AUTHORITY_OUTLETPERDELE'=>'enforce',

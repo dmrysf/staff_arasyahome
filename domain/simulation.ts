@@ -22,7 +22,7 @@ export function simulationApiAllowed(origin: string): boolean {
     const u = new URL(origin);
     return !u.username && !u.password && !u.search && !u.hash && u.pathname === "/" &&
       ((u.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(u.hostname)) ||
-       (u.protocol === "https:" && u.hostname === "api.sim.arasyahome.ro"));
+       (u.protocol === "https:" && u.host === "api.sim.arasyahome.ro"));
   } catch { return false; }
 }
 export function simulationOverview(value: unknown): SimulationOverview {
