@@ -185,7 +185,10 @@ final readonly class TrendyolWorkspace
     /**
      * Records the production data of one line, confirmed by the employee (never inferred from Trendyol text).
      *
-     * @param array<string, mixed> $input {expectedVersion, kind, widthCm?, heightCm?, meters?, notes?}
+     * The Romanian production title is confirmed by the employee too: the factory document never prints the English
+     * marketplace title or a machine translation. It is prefilled from the approved title of the product code.
+     *
+     * @param array<string, mixed> $input {expectedVersion, kind, productionTitle, widthCm?, heightCm?, meters?, notes?}
      */
     public function prepareLine(EmployeeIdentity $actor, string $packageId, string $lineId, array $input, string $key, string $requestId): array
     {
@@ -205,9 +208,10 @@ final readonly class TrendyolWorkspace
             throw new ApiException(422, 'MEASUREMENTS_REQUIRED', 'Lățimea și înălțimea sunt obligatorii pentru perdele și draperii.');
         }
         $notes = $this->text($input['notes'] ?? null);
-        $hash = IdempotencyStore::hash('trendyol.prepare_line', $id . ':' . $line, [$expected, $kind, $width, $height, $meters, $notes]);
+        $title = self::productionTitle($input['productionTitle'] ?? null);
+        $hash = IdempotencyStore::hash('trendyol.prepare_line', $id . ':' . $line, [$expected, $kind, $width, $height, $meters, $notes, $title]);
 
-        return $this->transaction(function () use ($actor, $id, $line, $expected, $kind, $width, $height, $meters, $notes, $key, $hash, $requestId): array {
+        return $this->transaction(function () use ($actor, $id, $line, $expected, $kind, $width, $height, $meters, $notes, $title, $key, $hash, $requestId): array {
             $package = $this->lockPackage($id);
             $replay = $this->idempotency->replay($actor->employeeUuid, $key, 'trendyol.prepare_line', (string) $id, $hash);
             if ($replay !== null) {
@@ -216,13 +220,13 @@ final readonly class TrendyolWorkspace
             $fresh = $this->freshActor($actor, self::PREPARE);
             $this->assertPending($package, $expected);
             $now = $this->now();
-            $statement = $this->pdo->prepare('UPDATE trendyol_package_lines SET prepared_kind = ?, prepared_width_cm = ?, prepared_height_cm = ?, prepared_meters = ?, prepared_notes = ?, prepared_by_employee_uuid = ?, prepared_at = ? WHERE package_id = ? AND line_id = ?');
-            $statement->execute([$kind, $width, $height, $meters, $notes, $fresh->employeeUuid, $now, $id, $line]);
+            $statement = $this->pdo->prepare('UPDATE trendyol_package_lines SET prepared_kind = ?, prepared_width_cm = ?, prepared_height_cm = ?, prepared_meters = ?, prepared_notes = ?, prepared_title = ?, prepared_by_employee_uuid = ?, prepared_at = ? WHERE package_id = ? AND line_id = ?');
+            $statement->execute([$kind, $width, $height, $meters, $notes, $title, $fresh->employeeUuid, $now, $id, $line]);
             if ($statement->rowCount() !== 1 && !$this->lineExists($id, $line)) {
                 throw new ApiException(404, 'LINE_NOT_FOUND', 'Linia nu există în acest pachet.');
             }
             $this->pdo->prepare('UPDATE trendyol_packages SET version = version + 1 WHERE package_id = ?')->execute([$id]);
-            $this->event($id, 'line_prepared', $fresh, ['lineId' => (string) $line, 'kind' => $kind, 'widthCm' => $width, 'heightCm' => $height, 'meters' => $meters], $requestId, $now);
+            $this->event($id, 'line_prepared', $fresh, ['lineId' => (string) $line, 'kind' => $kind, 'widthCm' => $width, 'heightCm' => $height, 'meters' => $meters, 'productionTitle' => $title], $requestId, $now);
             $response = $this->view($fresh, $id);
             $this->idempotency->store($actor->employeeUuid, $key, 'trendyol.prepare_line', (string) $id, $hash, $response, $now);
             return $response;
@@ -346,12 +350,14 @@ final readonly class TrendyolWorkspace
             $nowSql = $now->format('Y-m-d H:i:s.u');
             $items = [];
             foreach ($lines as $line) {
+                // The factory prints the approved Romanian title and the seller's own code; the marketplace title and the
+                // barcode stay in the line's production context for traceability (never printed as the product name).
                 $items[] = new OperationalOrderItem(
                     Uuid::v4(),
                     (string) $line['line_id'],
                     (int) $line['line_number'],
-                    (string) $line['product_name'],
-                    $line['stock_code'] === null ? null : (string) $line['stock_code'],
+                    (string) $line['prepared_title'],
+                    $line['product_code'] === null ? null : (string) $line['product_code'],
                     $line['product_size'] === null ? null : (string) $line['product_size'],
                     $line['product_color'] === null ? null : (string) $line['product_color'],
                     $line['prepared_width_cm'] === null ? null : (float) $line['prepared_width_cm'],
@@ -359,8 +365,16 @@ final readonly class TrendyolWorkspace
                     $line['prepared_width_cm'] === null && $line['prepared_height_cm'] === null ? null : 'cm',
                     $line['prepared_meters'] === null ? null : (float) $line['prepared_meters'],
                     (int) $line['quantity'],
-                    ['kind' => (string) $line['prepared_kind'], 'notes' => null, 'productionNotes' => $line['prepared_notes'] === null ? null : (string) $line['prepared_notes']],
+                    ['kind' => (string) $line['prepared_kind'], 'notes' => null, 'productionNotes' => $line['prepared_notes'] === null ? null : (string) $line['prepared_notes'],
+                        'marketplaceTitle' => (string) $line['product_name'], 'barcode' => $line['barcode'] === null ? null : (string) $line['barcode']],
                 );
+            }
+            // The release approves the Romanian titles it sends to production: each one becomes the approved title of its
+            // product code (history kept), so the next package of the same product is prefilled.
+            foreach ($lines as $line) {
+                if ($line['product_code'] !== null) {
+                    $this->approveTitle((string) $line['product_code'], (string) $line['prepared_title'], $id, $fresh, $requestId, $nowSql);
+                }
             }
             $status = (string) $package['marketplace_status'];
             $orderDate = (new DateTimeImmutable('@' . intdiv((int) $package['order_date_ms'], 1000)))->setTimezone(new DateTimeZone('UTC'));
@@ -436,6 +450,10 @@ final readonly class TrendyolWorkspace
                 'lineNumber' => (int) $line['line_number'],
                 'productName' => (string) $line['product_name'],
                 'stockCode' => $line['stock_code'],
+                // The seller's code resolved from the marketplace fields (never the "merchantSku" placeholder).
+                'productCode' => $line['product_code'],
+                'suggestedTitle' => $line['approved_title'],
+                'suggestedTitleApproval' => $line['approved_title'] === null ? null : ['by' => $line['approved_title_by'], 'at' => self::iso($line['approved_title_at'])],
                 'barcode' => $line['barcode'],
                 'productSize' => $line['product_size'],
                 'productColor' => $line['product_color'],
@@ -447,6 +465,7 @@ final readonly class TrendyolWorkspace
                     'heightCm' => $line['prepared_height_cm'] === null ? null : (string) $line['prepared_height_cm'],
                     'meters' => $line['prepared_meters'] === null ? null : (string) $line['prepared_meters'],
                     'notes' => $line['prepared_notes'],
+                    'productionTitle' => $line['prepared_title'],
                     'preparedBy' => $line['prepared_by_name'],
                     'preparedAt' => self::iso($line['prepared_at']),
                 ],
@@ -538,7 +557,14 @@ final readonly class TrendyolWorkspace
     /** @return list<array<string, mixed>> */
     private function lines(int $id): array
     {
-        $statement = $this->pdo->prepare('SELECT l.*, e.display_name AS prepared_by_name FROM trendyol_package_lines l LEFT JOIN employees e ON e.employee_uuid = l.prepared_by_employee_uuid WHERE l.package_id = ? ORDER BY l.line_number');
+        $statement = $this->pdo->prepare(
+            'SELECT l.*, e.display_name AS prepared_by_name, t.title_ro AS approved_title, t.approved_at AS approved_title_at, a.display_name AS approved_title_by
+             FROM trendyol_package_lines l
+             LEFT JOIN employees e ON e.employee_uuid = l.prepared_by_employee_uuid
+             LEFT JOIN trendyol_product_titles t ON t.product_code = l.product_code
+             LEFT JOIN employees a ON a.employee_uuid = t.approved_by_employee_uuid
+             WHERE l.package_id = ? ORDER BY l.line_number',
+        );
         $statement->execute([$id]);
         return $statement->fetchAll(PDO::FETCH_ASSOC);
     }
@@ -549,7 +575,7 @@ final readonly class TrendyolWorkspace
         $missing = [];
         foreach ($lines as $line) {
             $kind = $line['prepared_kind'];
-            if ($kind === null || in_array($kind, self::MEASURED_KINDS, true) && ($line['prepared_width_cm'] === null || $line['prepared_height_cm'] === null)) {
+            if ($kind === null || $line['prepared_title'] === null || in_array($kind, self::MEASURED_KINDS, true) && ($line['prepared_width_cm'] === null || $line['prepared_height_cm'] === null)) {
                 $missing[] = (int) $line['line_number'];
             }
         }
@@ -731,6 +757,39 @@ final readonly class TrendyolWorkspace
             throw new ApiException(422, 'INVALID_MEASUREMENT', 'Valoare invalidă.', ['field' => $field]);
         }
         return $value;
+    }
+
+    /** The Romanian production title as confirmed by the employee: required, one line, 3-255 characters. */
+    private static function productionTitle(mixed $value): string
+    {
+        if (!is_string($value) || preg_match('/[\x00-\x1F\x7F]/', $value) === 1) {
+            throw new ApiException(422, 'PRODUCTION_TITLE_REQUIRED', 'Scrie denumirea de producție în limba română.');
+        }
+        $value = trim((string) preg_replace('/\s+/u', ' ', $value));
+        if (mb_strlen($value) < 3 || mb_strlen($value) > 255) {
+            throw new ApiException(422, 'PRODUCTION_TITLE_REQUIRED', 'Scrie denumirea de producție în limba română (3–255 caractere).');
+        }
+        return $value;
+    }
+
+    /** Records the Romanian title approved by a release for a product code; unchanged titles write nothing. */
+    private function approveTitle(string $productCode, string $title, int $packageId, EmployeeIdentity $approver, string $requestId, string $now): void
+    {
+        $current = $this->pdo->prepare('SELECT title_ro FROM trendyol_product_titles WHERE product_code = ? FOR UPDATE');
+        $current->execute([$productCode]);
+        $previous = $current->fetchColumn();
+        if ($previous === $title) {
+            return;
+        }
+        if ($previous === false) {
+            $this->pdo->prepare('INSERT INTO trendyol_product_titles (product_code, title_ro, approved_by_employee_uuid, approved_at, version) VALUES (?, ?, ?, ?, 1)')
+                ->execute([$productCode, $title, $approver->employeeUuid, $now]);
+        } else {
+            $this->pdo->prepare('UPDATE trendyol_product_titles SET title_ro = ?, approved_by_employee_uuid = ?, approved_at = ?, version = version + 1 WHERE product_code = ?')
+                ->execute([$title, $approver->employeeUuid, $now, $productCode]);
+        }
+        $this->pdo->prepare('INSERT INTO trendyol_product_title_events (event_uuid, product_code, title_ro, previous_title_ro, package_id, employee_uuid, request_id, occurred_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+            ->execute([Uuid::v4(), $productCode, $title, $previous === false ? null : (string) $previous, $packageId, $approver->employeeUuid, mb_substr($requestId, 0, 100), $now]);
     }
 
     private function text(mixed $value): ?string

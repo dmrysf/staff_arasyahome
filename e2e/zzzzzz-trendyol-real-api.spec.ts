@@ -60,6 +60,11 @@ test("Trendyol package: review, confirm measurements, explicit approval to stage
   await expect(line.getByLabel("Lățime (cm)")).toHaveValue("300");
   await line.getByRole("radio", { name: "Perdea" }).check();
   await expect(line.getByRole("group", { name: "Tip produs" }).getByRole("radio", { checked: true })).toHaveAccessibleName("Perdea");
+  // The Trendyol title stays visible as the original; the factory prints the Romanian title the employee confirms.
+  await expect(line.getByTestId("trendyol-line-1-original")).toContainText("Titlu Trendyol (original): Perdea tul alb 300x260");
+  await expect(line).toContainText("Cod produs: TY-PT-300");
+  await expect(line.getByLabel(/Denumire de producție/)).toHaveValue("");
+  await line.getByLabel(/Denumire de producție/).fill("Perdea tul alb");
   await line.getByLabel("Lățime (cm)").fill("298,5");
   await line.getByLabel(/Note pentru atelier/).fill("Rejansă 2x");
   await line.getByRole("button", { name: "Salvează linia 1" }).click();

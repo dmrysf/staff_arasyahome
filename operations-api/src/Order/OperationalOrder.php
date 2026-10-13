@@ -32,6 +32,10 @@ final readonly class OperationalOrder
         public string $documentStatus = 'none',
         /** 'source' (still managed by the commerce source) or 'operations' (managed in Arasya). */
         public string $productionAuthority = 'source',
+        /** Advance payment facts stated by the source ('cod'/'online' and the advance status); null when unstated. */
+        public ?string $paymentMethod = null,
+        public ?string $advanceStatus = null,
+        public ?string $paymentReversedAt = null,
     ) {
     }
 

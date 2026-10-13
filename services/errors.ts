@@ -72,6 +72,7 @@ const presentations: Record<ServiceErrorCode, ErrorPresentation> = {
   RECIPIENT_INVALID: { title: "Angajat indisponibil", message: "Alege un alt angajat activ, care lucrează în etapa în care a fost găsită problema.", action: "Reîncarcă" },
   RECEIVER_INVALID: { title: "Tăietor indisponibil", message: "Alege un tăietor activ, care lucrează la tăiere pentru această sursă.", action: "Reîncarcă" },
   RECEIVER_NOT_ELIGIBLE: { title: "Primire indisponibilă", message: "Contul tău nu poate prelua acum lucrări de tăiere.", action: "Înapoi" },
+  AVANS_NEVALIDAT: { title: "Plată neconfirmată", message: "Comanda nu poate intra în producție. Avansul necesar sau plata comenzii nu a fost confirmată.", action: "Înapoi" },
   ORDER_BLOCKED_BY_DOCUMENT: { title: "Document blocat", message: "Comanda are o revizie de document în curs. Așteaptă aprobarea și documentul nou.", action: "Reîncarcă" },
   DOCUMENT_SUPERSEDED: { title: "Document invalid", message: "Acest document a fost înlocuit. Folosește revizia activă a documentului.", action: "Scanează din nou" },
   DOCUMENT_REVOKED: { title: "Document invalid", message: "Acest document a fost anulat. Așteaptă documentul nou.", action: "Scanează din nou" },

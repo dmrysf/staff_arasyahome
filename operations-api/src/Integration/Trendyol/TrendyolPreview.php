@@ -59,7 +59,7 @@ final readonly class TrendyolPreview
                     }
                 }
                 foreach (is_array($raw) && is_array($raw['lines'] ?? null) ? $raw['lines'] : [] as $line) {
-                    foreach (['lineId', 'id', 'stockCode', 'merchantSku', 'barcode', 'productSize', 'productColor', 'orderLineItemStatusName'] as $field) {
+                    foreach (['lineId', 'id', 'stockCode', 'merchantSku', 'sku', 'barcode', 'productSize', 'productColor', 'orderLineItemStatusName'] as $field) {
                         if (is_array($line) && array_key_exists($field, $line)) {
                             $fields['lines.' . $field] = ($fields['lines.' . $field] ?? 0) + 1;
                         }
@@ -96,6 +96,7 @@ final readonly class TrendyolPreview
                             'lineId' => $line['lineId'],
                             'productName' => $line['productName'],
                             'stockCode' => $line['stockCode'],
+                            'productCode' => $line['productCode'],
                             'productSize' => $line['productSize'],
                             'productColor' => $line['productColor'],
                             'quantity' => $line['quantity'],

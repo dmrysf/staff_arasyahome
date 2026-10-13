@@ -118,6 +118,7 @@ const backendErrorCodes: Partial<Record<string, ServiceErrorCode>> = {
   RECEIVER_INVALID: "RECEIVER_INVALID",
   RECEIVER_NOT_ELIGIBLE: "RECEIVER_NOT_ELIGIBLE",
   ORDER_BLOCKED_BY_DOCUMENT: "ORDER_BLOCKED_BY_DOCUMENT",
+  AVANS_NEVALIDAT: "AVANS_NEVALIDAT",
   DOCUMENT_SUPERSEDED: "DOCUMENT_SUPERSEDED",
   DOCUMENT_REVOKED: "DOCUMENT_REVOKED",
   DOCUMENT_NOT_GENERATED: "DOCUMENT_NOT_GENERATED",
@@ -391,6 +392,17 @@ export function mapProductionOrder(value: unknown): import("../../domain/models"
   if (raw.productionQuality != null) order.productionQuality = mapOrderQuality(raw.productionQuality);
   if (raw.documentStatus != null) order.documentStatus = oneOf(raw.documentStatus, ["none", "active", "stale", "revoked"] as const);
   if (raw.productionDocument != null) order.productionDocument = mapDocumentSummary(raw.productionDocument);
+  if (raw.paymentGate != null) {
+    const gate = objectValue(raw.paymentGate);
+    if (typeof gate.blocking !== "boolean") throw new StaffServiceError("SERVER_ERROR");
+    order.paymentGate = {
+      state: oneOf(gate.state, ["online", "not_required", "confirmed", "waiting", "partial", "unknown", "unverified"] as const),
+      label: stringValue(gate.label),
+      mode: oneOf(gate.mode, ["observe", "enforce"] as const),
+      blocking: gate.blocking,
+      reversedAt: gate.reversedAt == null ? null : timestampValue(gate.reversedAt),
+    };
+  }
 
   if (raw.employeeRelation != null) {
     const rel = objectValue(raw.employeeRelation);
@@ -994,12 +1006,15 @@ function mapTrendyolLine(value: unknown): TrendyolLine {
     lineNumber: positiveInteger(raw.lineNumber),
     productName: stringValue(raw.productName),
     stockCode: nullableText(raw.stockCode),
+    productCode: nullableText(raw.productCode),
     barcode: nullableText(raw.barcode),
+    suggestedTitle: nullableText(raw.suggestedTitle),
+    suggestedTitleApproval: raw.suggestedTitleApproval == null ? null : { by: nullableText(objectValue(raw.suggestedTitleApproval).by), at: nullableTimestamp(objectValue(raw.suggestedTitleApproval).at) },
     productSize: nullableText(raw.productSize),
     productColor: nullableText(raw.productColor),
     quantity: positiveInteger(raw.quantity),
     sizeSuggestion: suggestion === null ? null : { width: stringValue(suggestion.width), height: stringValue(suggestion.height) },
-    prepared: prepared === null ? null : { kind: oneOf(prepared.kind, lineKinds), widthCm: nullableText(prepared.widthCm), heightCm: nullableText(prepared.heightCm), meters: nullableText(prepared.meters), notes: nullableText(prepared.notes), preparedBy: nullableText(prepared.preparedBy), preparedAt: nullableTimestamp(prepared.preparedAt) },
+    prepared: prepared === null ? null : { kind: oneOf(prepared.kind, lineKinds), widthCm: nullableText(prepared.widthCm), heightCm: nullableText(prepared.heightCm), meters: nullableText(prepared.meters), notes: nullableText(prepared.notes), productionTitle: nullableText(prepared.productionTitle), preparedBy: nullableText(prepared.preparedBy), preparedAt: nullableTimestamp(prepared.preparedAt) },
   };
 }
 export function mapTrendyolDetail(value: unknown): TrendyolPackageDetail {

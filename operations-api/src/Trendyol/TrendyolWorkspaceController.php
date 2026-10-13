@@ -22,7 +22,7 @@ use Arasya\Operations\Security\CsrfGuard;
  *   GET  /trendyol/activity                               the caller's own actions (today's counts, latest ten)
  *   GET  /trendyol/packages?view=pending|attention|released|closed|ignored
  *   GET  /trendyol/packages/{packageId}                   package, lines, readiness, production link, history
- *   PUT  /trendyol/packages/{packageId}/lines/{lineId}    {expectedVersion, kind, widthCm?, heightCm?, meters?, notes?}
+ *   PUT  /trendyol/packages/{packageId}/lines/{lineId}    {expectedVersion, kind, productionTitle, widthCm?, heightCm?, meters?, notes?}
  *   POST /trendyol/packages/{packageId}/dismiss           {expectedVersion, reason}
  *   POST /trendyol/packages/{packageId}/reopen            {expectedVersion}
  *   POST /trendyol/packages/{packageId}/release           {expectedVersion, confirm: true}
@@ -62,7 +62,7 @@ final readonly class TrendyolWorkspaceController
                 throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
             }
             $session = $this->mutation($request);
-            $input = $this->body($request, ['expectedVersion', 'kind', 'widthCm', 'heightCm', 'meters', 'notes'], ['expectedVersion', 'kind']);
+            $input = $this->body($request, ['expectedVersion', 'kind', 'productionTitle', 'widthCm', 'heightCm', 'meters', 'notes'], ['expectedVersion', 'kind']);
             return $this->json($this->workspace->prepareLine($session->employee, $m[1], $m[2], $input, $request->header('idempotency-key') ?? '', $request->requestId));
         }
         if (preg_match('#^/packages/([0-9]{1,19})/(dismiss|reopen|release)$#D', $path, $m) === 1) {

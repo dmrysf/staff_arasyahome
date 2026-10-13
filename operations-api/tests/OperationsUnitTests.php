@@ -315,6 +315,16 @@ test('Trendyol Order V2 packages parse without customer secrets and the client i
     $legacy = TrendyolPackage::fromApi($fixture['content'][2]);
     expect($legacy->packageId === 3318470216 && $legacy->lines[0]['lineId'] === 4401183922 && $legacy->lines[0]['stockCode'] === 'PI-NAT');
     expect(!hash_equals($picking->linesHash(), $legacy->linesHash()) && hash_equals($picking->linesHash(), TrendyolPackage::fromApi($fixture['content'][0])->linesHash()));
+    // The seller's product code: Trendyol's literal "merchantSku" placeholder and empty strings are skipped (null
+    // coalescing alone would keep them), the line's sku is the fallback, and the barcode is never used.
+    $line = static fn (array $fields): array => ['lineId' => 1, 'productName' => 'Draperie', 'quantity' => 1] + $fields;
+    expect(TrendyolPackage::productCode($line(['stockCode' => 'merchantSku', 'merchantSku' => 'merchantSku', 'sku' => 'Bella-4402-10', 'barcode' => 'Bella-4402-10'])) === 'Bella-4402-10');
+    expect(TrendyolPackage::productCode($line(['stockCode' => '', 'merchantSku' => 'MS-1', 'sku' => 'SKU-1'])) === 'MS-1');
+    expect(TrendyolPackage::productCode($line(['stockCode' => '  ST-1 ', 'merchantSku' => 'MS-1', 'sku' => 'SKU-1'])) === 'ST-1');
+    expect(TrendyolPackage::productCode($line(['stockCode' => 'MERCHANTSKU', 'sku' => '   '])) === null);
+    expect(TrendyolPackage::productCode($line(['barcode' => '8690001112223'])) === null, 'a barcode alone is never a product code');
+    $placeholder = TrendyolPackage::fromApi([...$fixture['content'][0], 'lines' => [[...$fixture['content'][0]['lines'][0], 'stockCode' => 'merchantSku', 'merchantSku' => 'merchantSku', 'sku' => 'PT-REAL-1']]]);
+    expect($placeholder->lines[0]['stockCode'] === 'merchantSku' && $placeholder->lines[0]['productCode'] === 'PT-REAL-1', 'the raw field is kept for the lines hash, the resolved code beside it');
     expectRuntime(fn () => TrendyolPackage::fromApi(['shipmentPackageId' => 'x']));
     expectRuntime(fn () => TrendyolPackage::fromApi([...$fixture['content'][0], 'lines' => []]));
     expectRuntime(fn () => TrendyolPackage::fromApi([...$fixture['content'][0], 'lines' => [$fixture['content'][0]['lines'][0], $fixture['content'][0]['lines'][0]]]));

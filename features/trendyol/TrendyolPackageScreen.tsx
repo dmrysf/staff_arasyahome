@@ -27,7 +27,7 @@ const lineStatusCopy: Record<ReturnType<typeof lineStatus>, { label: string; ton
   todo: { label: "De completat", tone: "accent", icon: "ruler" },
 };
 
-type Field = "kind" | "widthCm" | "heightCm" | "meters";
+type Field = "kind" | "productionTitle" | "widthCm" | "heightCm" | "meters";
 type LineError = { field: Field | null; text: string };
 type Message = { tone: Tone; text: string } | null;
 const fieldId = (lineId: string, field: Field): string => `line-${lineId}-${field}`;
@@ -35,6 +35,8 @@ const fieldId = (lineId: string, field: Field): string => `line-${lineId}-${fiel
 /** Validates one line exactly as before; the error names the field it belongs to. */
 function validate(draft: LineDraft): LineError | null {
   if (!draft.kind) return { field: "kind", text: "Alege tipul produsului." };
+  const title = draft.productionTitle.trim();
+  if (title.length < 3 || title.length > 255) return { field: "productionTitle", text: "Scrie denumirea de producție în limba română (3–255 caractere)." };
   const width = normalizeMeasure(draft.widthCm);
   const height = normalizeMeasure(draft.heightCm);
   const meters = normalizeMeasure(draft.meters);
@@ -115,7 +117,7 @@ export function TrendyolPackageScreen({ packageId, service, navigate }: { packag
     const width = normalizeMeasure(draft.widthCm);
     const height = normalizeMeasure(draft.heightCm);
     const meters = normalizeMeasure(draft.meters);
-    const input = { expectedVersion: detail.version, kind: draft.kind, ...(width && width !== "invalid" ? { widthCm: width } : {}), ...(height && height !== "invalid" ? { heightCm: height } : {}), ...(meters && meters !== "invalid" ? { meters } : {}), ...(draft.notes.trim() ? { notes: draft.notes.trim() } : {}) };
+    const input = { expectedVersion: detail.version, kind: draft.kind, productionTitle: draft.productionTitle.trim().replace(/\s+/g, " "), ...(width && width !== "invalid" ? { widthCm: width } : {}), ...(height && height !== "invalid" ? { heightCm: height } : {}), ...(meters && meters !== "invalid" ? { meters } : {}), ...(draft.notes.trim() ? { notes: draft.notes.trim() } : {}) };
     void run(`line|${line.lineId}|${JSON.stringify(input)}`, (key) => service.prepareLine(detail.packageId, line.lineId, input, key), `Linia ${line.lineNumber} a fost salvată.`);
   }
 
@@ -183,8 +185,10 @@ export function TrendyolPackageScreen({ packageId, service, navigate }: { packag
                 <div className="line-head">
                   <span className="line-number"><span className="visually-hidden">Linia </span>{line.lineNumber}</span>
                   <div className="line-title">
-                    <p className="line-name"><strong>{line.productName}</strong> <span className="line-quantity">× {line.quantity}</span></p>
-                    <p className="trendyol-line-facts">Cod: {line.stockCode ?? "—"} · Mărime Trendyol: {line.productSize ?? "—"} · Culoare: {line.productColor ?? "—"}</p>
+                    <p className="line-name"><strong>{line.prepared?.productionTitle ?? line.productName}</strong> <span className="line-quantity">× {line.quantity}</span></p>
+                    <p className="trendyol-line-facts" data-testid={`trendyol-line-${line.lineNumber}-original`}>Titlu Trendyol (original): {line.productName}</p>
+                    <p className="trendyol-line-facts">Cod produs: <span className="mono">{line.productCode ?? "—"}</span> · Cod de bare: <span className="mono">{line.barcode ?? "—"}</span></p>
+                    <p className="trendyol-line-facts">Mărime Trendyol: {line.productSize ?? "—"} · Culoare: {line.productColor ?? "—"}</p>
                   </div>
                   <StatusPill tone={copy.tone} icon={copy.icon}>{copy.label}</StatusPill>
                 </div>
@@ -200,6 +204,12 @@ export function TrendyolPackageScreen({ packageId, service, navigate }: { packag
                     </div>
                   </fieldset>
                   {error?.field === "kind" && <p className="field-error" id={errorId} role="alert"><AppIcon name="alert" size={16} />{error.text}</p>}
+
+                  <label className="field trendyol-title">Denumire de producție (română)
+                    <input id={fieldId(line.lineId, "productionTitle")} autoComplete="off" maxLength={255} value={draft.productionTitle} aria-invalid={invalid("productionTitle") || undefined} aria-describedby={invalid("productionTitle") ? errorId : undefined} onChange={(event) => update(line.lineId, { productionTitle: event.target.value })} data-testid={`trendyol-line-${line.lineNumber}-title`} />
+                    <small>{line.suggestedTitle ? `Denumire aprobată${line.suggestedTitleApproval?.by ? ` de ${line.suggestedTitleApproval.by}` : ""}. Verific-o înainte de salvare.` : "Nicio denumire aprobată pentru acest cod. Scrie denumirea în română; apare pe fișa de producție."}</small>
+                  </label>
+                  {error?.field === "productionTitle" && <p className="field-error" id={errorId} role="alert"><AppIcon name="alert" size={16} />{error.text}</p>}
 
                   {line.sizeSuggestion && <div className={`size-suggestion${suggestionApplied ? " is-applied" : ""}`}>
                     <span className="size-suggestion-copy"><small>Sugestie din textul Trendyol · neconfirmată</small><strong className="mono">{line.sizeSuggestion.width} × {line.sizeSuggestion.height} cm</strong></span>

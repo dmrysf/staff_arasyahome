@@ -189,7 +189,7 @@ final readonly class OrderOperationsService
             }
 
             $decision = $this->policy->evaluate($employee, $order, $workflow);
-            if ($decision['action'] === null) throw $this->blocked((string) $decision['blockedReason'], $operation);
+            if ($decision['action'] === null) throw $this->blocked((string) $decision['blockedReason'], $operation, $order);
             $now = $this->clock->now()->format('Y-m-d H:i:s.u');
             $cutting = new CuttingLifecycle($this->pdo);
             if ($order->productionStageId === CuttingLifecycle::STAGE) {
@@ -212,7 +212,7 @@ final readonly class OrderOperationsService
                     return $response;
                 }
                 if ($decision['action'] !== OrderAccessPolicy::ACTION_CLAIM) {
-                    throw $this->blocked((string) $decision['blockedReason'], $operation);
+                    throw $this->blocked((string) $decision['blockedReason'], $operation, $order);
                 }
                 $this->applyClaim($employee, $order, $workflow, $expectedVersion, $idempotencyKey, $context, $now);
             } else {
@@ -220,7 +220,7 @@ final readonly class OrderOperationsService
                     throw new ApiException(409, 'INVALID_STAGE_TRANSITION', 'The order must be claimed before its stage can be completed.');
                 }
                 if ($decision['action'] === null) {
-                    throw $this->blocked((string) $decision['blockedReason'], $operation);
+                    throw $this->blocked((string) $decision['blockedReason'], $operation, $order);
                 }
                 $this->applyTransition($employee, $order, $workflow, $expectedVersion, $idempotencyKey, $context, $now);
             }
@@ -265,7 +265,7 @@ final readonly class OrderOperationsService
 
             $order = $this->orders->findByGlobalId($employee->employeeUuid, $orderId->toString()) ?? throw new ApiException(404, 'ORDER_NOT_FOUND', 'Order not found.');
             $decision = $this->policy->evaluateCuttingIntake($employee, $order, $workflow);
-            if ($decision['action'] === null) throw $this->intakeBlocked((string) $decision['blockedReason']);
+            if ($decision['action'] === null) throw $this->intakeBlocked((string) $decision['blockedReason'], $order);
             $now = $this->clock->now()->format('Y-m-d H:i:s.u');
             if ($decision['action'] === OrderAccessPolicy::ACTION_ALREADY_MINE) {
                 // The cutter's own job: nothing is claimed, moved or recorded again.
@@ -522,9 +522,12 @@ final readonly class OrderOperationsService
         return $this->serializer->serializeOrder($order, $this->policy->evaluate($employee, $order, $workflow), $this->quality?->orderQuality($order->orderUuid, $order->openExceptionUuid, $employee->employeeUuid), $this->documents?->summary($order->orderUuid));
     }
 
-    private function blocked(string $reason, string $operation): ApiException
+    private function blocked(string $reason, string $operation, ?OperationalOrder $order = null): ApiException
     {
         return match ($reason) {
+            \Arasya\Operations\Production\PaymentGate::BLOCKED_REASON => \Arasya\Operations\Production\PaymentGate::closed(
+                \Arasya\Operations\Production\PaymentGate::state($order?->paymentMethod, $order?->advanceStatus),
+            ),
             'claimed_by_other' => new ApiException(409, 'ORDER_ALREADY_CLAIMED', 'Another employee is working on this order.'),
             OrderAccessPolicy::BLOCKED_AUTHORITY_SOURCE => new ApiException(409, 'PRODUCTION_AUTHORITY_SOURCE', 'Production of this order is still managed by its source. A manager must take it over first.'),
             'order_unavailable' => new ApiException(409, 'ORDER_UNAVAILABLE', 'The order is not available for production.'),
@@ -536,14 +539,14 @@ final readonly class OrderOperationsService
         };
     }
 
-    private function intakeBlocked(string $reason): ApiException
+    private function intakeBlocked(string $reason, ?OperationalOrder $order = null): ApiException
     {
         return match ($reason) {
             'intake_not_allowed' => self::intakeNotAllowed(),
             'not_found' => new ApiException(404, 'ORDER_NOT_FOUND', 'Order not found.'),
             'intake_not_applicable' => new ApiException(409, 'CUTTING_INTAKE_NOT_APPLICABLE', 'Comanda nu așteaptă preluarea la tăiere.'),
             'claimed_by_other' => new ApiException(409, 'ORDER_ALREADY_CLAIMED', 'Comanda este deja preluată de un coleg.'),
-            default => $this->blocked($reason, self::OPERATION_CLAIM),
+            default => $this->blocked($reason, self::OPERATION_CLAIM, $order),
         };
     }
 

@@ -13,10 +13,10 @@ import { BottomNavigation } from "../components/navigation/BottomNavigation";
 import type { Employee } from "../domain/models";
 
 const line = (number: number, prepared: TrendyolLine["prepared"] = null): TrendyolLine => ({
-  lineId: `l${number}`, lineNumber: number, productName: "Draperie blackout catifea verde smarald cu rejansă și inele", stockCode: "DB-1", barcode: null,
-  productSize: "280x250", productColor: "Verde", quantity: 2, sizeSuggestion: { width: "280", height: "250" }, prepared,
+  lineId: `l${number}`, lineNumber: number, productName: "Draperie blackout catifea verde smarald cu rejansă și inele", stockCode: "DB-1", productCode: "DB-1", barcode: null,
+  suggestedTitle: null, suggestedTitleApproval: null, productSize: "280x250", productColor: "Verde", quantity: 2, sizeSuggestion: { width: "280", height: "250" }, prepared,
 });
-const confirmed = { kind: "drapery" as const, widthCm: "280", heightCm: "250", meters: null, notes: null, preparedBy: "Ayşe", preparedAt: "2026-10-11T08:00:00Z" };
+const confirmed = { kind: "drapery" as const, widthCm: "280", heightCm: "250", meters: null, notes: null, productionTitle: "Draperie blackout verde smarald", preparedBy: "Ayşe", preparedAt: "2026-10-11T08:00:00Z" };
 const pkg = (patch: Partial<TrendyolPackageDetail> = {}): TrendyolPackageDetail => ({
   packageId: "74101", orderNumber: "TY74101", intakeStatus: "pending", marketplaceStatus: "Created", marketplaceClass: "new", marketplaceStatusKnown: true,
   orderDate: "2026-10-11T08:00:00Z", orderDateNearActivation: false, changedAfterRelease: false, version: 3,
@@ -52,6 +52,12 @@ test("a line is confirmed only while the screen shows exactly what the server sa
   assert.equal(lineStatus(saved, { ...draftOf(saved), widthCm: "281" }), "unsaved");
   assert.equal(lineStatus(line(1), draftOf(line(1))), "todo");
   assert.equal(lineStatus(line(1), { ...draftOf(line(1)), kind: "curtain" }), "unsaved");
+  assert.equal(lineStatus(saved, { ...draftOf(saved), productionTitle: "Draperie" }), "unsaved", "editing the Romanian title is an unsaved change");
+  const beforeTitles = line(1, { ...confirmed, productionTitle: null });
+  assert.equal(lineStatus(beforeTitles, draftOf(beforeTitles)), "todo", "a line saved before Romanian titles existed still needs its title");
+  const suggested: TrendyolLine = { ...line(2), suggestedTitle: "Draperie blackout verde", suggestedTitleApproval: { by: "Ayşe", at: "2026-10-11T08:00:00Z" } };
+  assert.equal(draftOf(suggested).productionTitle, "Draperie blackout verde", "the approved title of the product code prefills the draft");
+  assert.equal(draftOf(line(1, confirmed)).productionTitle, "Draperie blackout verde smarald", "a saved title wins over the suggestion");
 });
 
 const summary = (id: string, lineCount: number, preparedCount: number): TrendyolPackageSummary => ({

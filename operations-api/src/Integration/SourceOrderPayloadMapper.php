@@ -21,7 +21,9 @@ use InvalidArgumentException;
 final class SourceOrderPayloadMapper
 {
     private const ROOT_KEYS = ['schemaVersion', 'eventId', 'changedAt', 'order', 'production'];
-    private const ORDER_KEYS = ['id', 'number', 'status', 'availability', 'notes', 'acceptedAt', 'items', 'delivery'];
+    private const ORDER_KEYS = ['id', 'number', 'status', 'availability', 'notes', 'acceptedAt', 'items', 'delivery', 'payment'];
+    private const PAYMENT_KEYS = ['method', 'advanceStatus', 'advanceRevision', 'advanceConfirmedAt'];
+    private const MAX_ADVANCE_REVISION = 1000000;
     private const ITEM_KEYS = ['id', 'line', 'name', 'sku', 'variant', 'color', 'width', 'height', 'unit', 'meters', 'quantity', 'options'];
     private const MAX_OPTIONS = 20;
     private const MAX_ITEMS = 200;
@@ -104,6 +106,7 @@ final class SourceOrderPayloadMapper
                 array_key_exists('acceptedAt', $order) && $order['acceptedAt'] !== null ? self::timestamp($order['acceptedAt'], 'order.acceptedAt') : null,
                 $items,
                 self::delivery($order['delivery'] ?? null),
+                self::payment($order['payment'] ?? null),
             );
         } catch (InvalidArgumentException) {
             throw self::invalid('order');
@@ -126,6 +129,45 @@ final class SourceOrderPayloadMapper
         } catch (InvalidArgumentException) {
             throw self::invalid('order.delivery');
         }
+    }
+
+    /**
+     * Optional advance payment facts (schema 1 extension, sent only by sources that saw the heartbeat's
+     * paymentGateMode). Classes and states only, never amounts:
+     * {"method": "cod"|"online"|"unverified", "advanceStatus": "not_required"|"waiting"|"partial"|"confirmed",
+     *  "advanceRevision": int (number of recorded confirmations, never decreasing for one source order),
+     *  "advanceConfirmedAt": ISO-8601 UTC|null (only with "confirmed")}. A verified online payment never needs an
+     * advance (`not_required`); an unverified payment is always `waiting` (closed until the source confirms it).
+     *
+     * @return array{method: string, advanceStatus: string, advanceRevision: int, advanceConfirmedAt: DateTimeImmutable|null}|null
+     */
+    private static function payment(mixed $value): ?array
+    {
+        if ($value === null) {
+            return null;
+        }
+        $payment = self::object($value, 'order.payment');
+        self::allowKeys($payment, self::PAYMENT_KEYS, ['method', 'advanceStatus', 'advanceRevision']);
+        $method = $payment['method'];
+        $status = $payment['advanceStatus'];
+        $revision = $payment['advanceRevision'];
+        if (!in_array($method, \Arasya\Operations\Production\PaymentGate::METHODS, true)) {
+            throw self::invalid('order.payment.method');
+        }
+        if (!in_array($status, \Arasya\Operations\Production\PaymentGate::ADVANCE_STATUSES, true) || ($method === 'online' && $status !== 'not_required') || ($method === 'unverified' && $status !== 'waiting')) {
+            throw self::invalid('order.payment.advanceStatus');
+        }
+        if (!is_int($revision) || $revision < 0 || $revision > self::MAX_ADVANCE_REVISION) {
+            throw self::invalid('order.payment.advanceRevision');
+        }
+        $confirmedAt = null;
+        if (array_key_exists('advanceConfirmedAt', $payment) && $payment['advanceConfirmedAt'] !== null) {
+            if ($status !== 'confirmed') {
+                throw self::invalid('order.payment.advanceConfirmedAt');
+            }
+            $confirmedAt = self::timestamp($payment['advanceConfirmedAt'], 'order.payment.advanceConfirmedAt');
+        }
+        return ['method' => $method, 'advanceStatus' => $status, 'advanceRevision' => $revision, 'advanceConfirmedAt' => $confirmedAt];
     }
 
     /**

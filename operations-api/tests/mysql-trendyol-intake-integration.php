@@ -238,7 +238,7 @@ $check(array_column($attention, 'packageId') === [(string) ($base + 62), (string
 $p62 = $status($get($preparer, '/trendyol/packages/' . ($base + 62)), 200, 'ReadyToShip detail');
 $p63 = $status($get($approver, '/trendyol/packages/' . ($base + 63)), 200, 'unknown detail');
 $check($p62['readiness']['blockedReason'] === 'review' && $p62['readiness']['marketplaceReleasable'] === false && $p63['readiness']['blockedReason'] === 'unknown_status' && $p63['capabilities']['releaseNow'] === false, 'review packages explain why they cannot be released');
-$p62 = $status($send($preparer, 'PUT', '/trendyol/packages/' . ($base + 62) . '/lines/' . ($base + 63), ['expectedVersion' => $p62['version'], 'kind' => 'curtain', 'widthCm' => '300', 'heightCm' => '260'], $key('rts-line')), 200, 'a review package can be prepared');
+$p62 = $status($send($preparer, 'PUT', '/trendyol/packages/' . ($base + 62) . '/lines/' . ($base + 63), ['expectedVersion' => $p62['version'], 'productionTitle' => 'Perdea tul alb', 'kind' => 'curtain', 'widthCm' => '300', 'heightCm' => '260'], $key('rts-line')), 200, 'a review package can be prepared');
 $check($p62['readiness']['ready'] === false && $p62['capabilities']['releaseNow'] === false, 'a prepared ReadyToShip package is still not ready for production');
 $error($send($approver, 'POST', '/trendyol/packages/' . ($base + 62) . '/release', ['expectedVersion' => $p62['version'], 'confirm' => true], $key('rts-release')), 409, 'MARKETPLACE_STATUS_NOT_RELEASABLE', 'the API refuses to release ReadyToShip even when prepared and confirmed');
 $error($send($approver, 'POST', '/trendyol/packages/' . ($base + 63) . '/release', ['expectedVersion' => $p63['version'], 'confirm' => true], $key('unknown-release')), 409, 'MARKETPLACE_STATUS_NOT_RELEASABLE', 'the API refuses to release an unknown status');
@@ -253,18 +253,21 @@ $error($get($preparer, '/trendyol/packages/999'), 404, 'PACKAGE_NOT_FOUND', 'unk
 // Preparation: confirmed production data only.
 $line30 = "{$p30}/lines/" . ($base + 31);
 $error($send($approver, 'POST', "{$p30}/release", ['expectedVersion' => $detail['version'], 'confirm' => true], $key('early')), 422, 'PACKAGE_NOT_PREPARED', 'release needs every line prepared');
-$error($send($preparer, 'PUT', $line30, ['expectedVersion' => $detail['version'], 'kind' => 'curtain', 'widthCm' => '300'], $key('no-height')), 422, 'MEASUREMENTS_REQUIRED', 'a curtain needs width and height');
-$error($send($preparer, 'PUT', $line30, ['expectedVersion' => $detail['version'], 'kind' => 'curtain', 'widthCm' => '-3', 'heightCm' => '260'], $key('negative')), 422, 'INVALID_MEASUREMENT', 'measurements are positive decimals');
-$error($send($preparer, 'PUT', $line30, ['expectedVersion' => $detail['version'], 'kind' => 'curtain', 'widthCm' => '300', 'heightCm' => '260', 'stage' => 'delivery'], $key('extra')), 400, 'INVALID_REQUEST', 'strict body');
-$error($send($preparer, 'PUT', $line30, ['expectedVersion' => $detail['version'], 'kind' => 'curtain', 'widthCm' => '300', 'heightCm' => '260'], $key('csrf'), ['x-csrf-token' => 'invalid']), 403, 'CSRF_INVALID', 'CSRF is required');
-$error($send($preparer, 'PUT', $line30, ['expectedVersion' => $detail['version'], 'kind' => 'curtain', 'widthCm' => '300', 'heightCm' => '260'], null), 400, 'INVALID_IDEMPOTENCY_KEY', 'an idempotency key is required');
-$error($send($otherWaiting, 'PUT', $line30, ['expectedVersion' => $detail['version'], 'kind' => 'curtain', 'widthCm' => '300', 'heightCm' => '260'], $key('outsider')), 403, 'UNAUTHORIZED_ACTION', 'an outsider cannot prepare');
+$error($send($preparer, 'PUT', $line30, ['expectedVersion' => $detail['version'], 'productionTitle' => 'Perdea tul alb', 'kind' => 'curtain', 'widthCm' => '300'], $key('no-height')), 422, 'MEASUREMENTS_REQUIRED', 'a curtain needs width and height');
+$error($send($preparer, 'PUT', $line30, ['expectedVersion' => $detail['version'], 'productionTitle' => 'Perdea tul alb', 'kind' => 'curtain', 'widthCm' => '-3', 'heightCm' => '260'], $key('negative')), 422, 'INVALID_MEASUREMENT', 'measurements are positive decimals');
+$error($send($preparer, 'PUT', $line30, ['expectedVersion' => $detail['version'], 'productionTitle' => 'Perdea tul alb', 'kind' => 'curtain', 'widthCm' => '300', 'heightCm' => '260', 'stage' => 'delivery'], $key('extra')), 400, 'INVALID_REQUEST', 'strict body');
+$error($send($preparer, 'PUT', $line30, ['expectedVersion' => $detail['version'], 'productionTitle' => 'Perdea tul alb', 'kind' => 'curtain', 'widthCm' => '300', 'heightCm' => '260'], $key('csrf'), ['x-csrf-token' => 'invalid']), 403, 'CSRF_INVALID', 'CSRF is required');
+$error($send($preparer, 'PUT', $line30, ['expectedVersion' => $detail['version'], 'productionTitle' => 'Perdea tul alb', 'kind' => 'curtain', 'widthCm' => '300', 'heightCm' => '260'], null), 400, 'INVALID_IDEMPOTENCY_KEY', 'an idempotency key is required');
+$error($send($otherWaiting, 'PUT', $line30, ['expectedVersion' => $detail['version'], 'productionTitle' => 'Perdea tul alb', 'kind' => 'curtain', 'widthCm' => '300', 'heightCm' => '260'], $key('outsider')), 403, 'UNAUTHORIZED_ACTION', 'an outsider cannot prepare');
+$error($send($preparer, 'PUT', $line30, ['expectedVersion' => $detail['version'], 'kind' => 'curtain', 'widthCm' => '300', 'heightCm' => '260'], $key('no-title')), 422, 'PRODUCTION_TITLE_REQUIRED', 'the Romanian production title is required');
+$error($send($preparer, 'PUT', $line30, ['expectedVersion' => $detail['version'], 'productionTitle' => '  P ', 'kind' => 'curtain', 'widthCm' => '300', 'heightCm' => '260'], $key('short-title')), 422, 'PRODUCTION_TITLE_REQUIRED', 'a one-letter title is refused');
+$check($detail['lines'][0]['productCode'] === 'PT-300' && $detail['lines'][0]['suggestedTitle'] === null, 'the line shows the seller code and no approved title yet');
 $prepareKey = $key('prepare');
-$prepared = $status($send($preparer, 'PUT', $line30, ['expectedVersion' => $detail['version'], 'kind' => 'curtain', 'widthCm' => '298.5', 'heightCm' => '255', 'meters' => '6.2', 'notes' => 'Rejansă 2x'], $prepareKey), 200, 'prepare line');
+$prepared = $status($send($preparer, 'PUT', $line30, ['expectedVersion' => $detail['version'], 'productionTitle' => 'Perdea tul alb', 'kind' => 'curtain', 'widthCm' => '298.5', 'heightCm' => '255', 'meters' => '6.2', 'notes' => 'Rejansă 2x'], $prepareKey), 200, 'prepare line');
 $check($prepared['version'] === $detail['version'] + 1 && $prepared['lines'][0]['prepared']['widthCm'] === '298.500' && $prepared['lines'][0]['prepared']['preparedBy'] === 'Test typrep' && $prepared['readiness']['ready'] === true, 'the prepared line is recorded with its author');
-$check($status($send($preparer, 'PUT', $line30, ['expectedVersion' => $detail['version'], 'kind' => 'curtain', 'widthCm' => '298.5', 'heightCm' => '255', 'meters' => '6.2', 'notes' => 'Rejansă 2x'], $prepareKey), 200, 'replay')['version'] === $prepared['version'], 'the same key replays the same result');
-$error($send($preparer, 'PUT', $line30, ['expectedVersion' => $detail['version'], 'kind' => 'other'], $prepareKey), 409, 'IDEMPOTENCY_CONFLICT', 'the same key with another body');
-$error($send($preparer, 'PUT', $line30, ['expectedVersion' => $detail['version'], 'kind' => 'other'], $key('stale')), 409, 'PACKAGE_CHANGED', 'a stale version is refused');
+$check($status($send($preparer, 'PUT', $line30, ['expectedVersion' => $detail['version'], 'productionTitle' => 'Perdea tul alb', 'kind' => 'curtain', 'widthCm' => '298.5', 'heightCm' => '255', 'meters' => '6.2', 'notes' => 'Rejansă 2x'], $prepareKey), 200, 'replay')['version'] === $prepared['version'], 'the same key replays the same result');
+$error($send($preparer, 'PUT', $line30, ['expectedVersion' => $detail['version'], 'productionTitle' => 'Perdea tul alb', 'kind' => 'other'], $prepareKey), 409, 'IDEMPOTENCY_CONFLICT', 'the same key with another body');
+$error($send($preparer, 'PUT', $line30, ['expectedVersion' => $detail['version'], 'productionTitle' => 'Perdea tul alb', 'kind' => 'other'], $key('stale')), 409, 'PACKAGE_CHANGED', 'a stale version is refused');
 $check($prepared['capabilities']['releaseNow'] === false, 'the preparer cannot release');
 $error($send($preparer, 'POST', "{$p30}/release", ['expectedVersion' => $prepared['version'], 'confirm' => true], $key('prep-release')), 403, 'UNAUTHORIZED_ACTION', 'releasing needs the release permission');
 $error($send($approver, 'POST', "{$p30}/release", ['expectedVersion' => $prepared['version'], 'confirm' => false], $key('unconfirmed')), 422, 'CONFIRMATION_REQUIRED', 'the approval is explicit');
@@ -303,11 +306,19 @@ $check(!str_contains($revision['qr_reference'], '86800030') && !str_contains($re
 $snapshot = json_decode($revision['snapshot_json'], true);
 $check($snapshot['order']['source'] === 'trendyol' && $snapshot['lines'][0]['width'] === '298.500' && $snapshot['lines'][0]['productionNotes'] === 'Rejansă 2x' && $snapshot['customer']['phoneMasked'] !== null && !str_contains($revision['snapshot_json'], '0744111222') && !str_contains($revision['snapshot_json'], '777.5'), 'the canonical ticket: measurements, masked phone, no price');
 $check($one("SELECT action FROM order_activity_events WHERE global_order_id = ?", [$global]) === 'production_submitted', 'the submission is on the shared production timeline');
+// Romanian production title: printed name, original title kept for traceability, title approved for the product code.
+$itemContext = json_decode((string) $items[0]['production_context'], true);
+$check($items[0]['name'] === 'Perdea tul alb' && $itemContext['marketplaceTitle'] === 'Perdea tul alb 300x260' && $itemContext['barcode'] === '86800030', 'the order prints the approved Romanian title; the marketplace title and barcode stay in the line context: ' . json_encode($itemContext));
+$check($snapshot['lines'][0]['name'] === 'Perdea tul alb' && !str_contains($revision['snapshot_json'], 'Perdea tul alb 300x260'), 'the production ticket prints the Romanian title, never the marketplace title');
+$approvedTitle = $row('SELECT t.title_ro, t.approved_by_employee_uuid, t.version, (SELECT COUNT(*) FROM trendyol_product_title_events e WHERE e.product_code = t.product_code) AS events FROM trendyol_product_titles t WHERE t.product_code = ?', ['PT-300']);
+$check($approvedTitle['title_ro'] === 'Perdea tul alb' && (int) $approvedTitle['version'] === 1 && (int) $approvedTitle['events'] === 1 && $approvedTitle['approved_by_employee_uuid'] === (string) $one('SELECT released_by_employee_uuid FROM trendyol_packages WHERE package_id = ?', [$base + 30]), 'the release approved the title for the product code, by the approver');
+$prefilled = $status(T::call($kernel, 'GET', '/trendyol/packages/' . ($base + 62), null, [], $preparer['cookie']), 200, 'another package of the same product');
+$check($prefilled['lines'][0]['productCode'] === 'PT-300' && $prefilled['lines'][0]['suggestedTitle'] === 'Perdea tul alb' && ($prefilled['lines'][0]['suggestedTitleApproval']['by'] ?? null) !== null, 'the next package of the product is prefilled with the approved title');
 $marketplace(['fail' => true]);
 $replayed = $status($send($approver, 'POST', "{$p30}/release", ['expectedVersion' => $prepared['version'], 'confirm' => true], $releaseKey), 201, 'release replay (answered without calling Trendyol)');
 $check($replayed === $released && (int) $one('SELECT COUNT(*) FROM operational_orders WHERE global_order_id = ?', [$global]) === 1 && (int) $one('SELECT COUNT(*) FROM production_document_revisions WHERE order_uuid = ?', [$order['order_uuid']]) === 1, 'a replayed approval creates nothing twice');
 $error($send($approver, 'POST', "{$p30}/release", ['expectedVersion' => $released['version'], 'confirm' => true], $key('again')), 409, 'PACKAGE_ALREADY_RELEASED', 'a second approval is refused');
-$error($send($preparer, 'PUT', $line30, ['expectedVersion' => $released['version'], 'kind' => 'other'], $key('after')), 409, 'PACKAGE_NOT_PENDING', 'a released package can no longer be edited');
+$error($send($preparer, 'PUT', $line30, ['expectedVersion' => $released['version'], 'productionTitle' => 'Perdea tul alb', 'kind' => 'other'], $key('after')), 409, 'PACKAGE_NOT_PENDING', 'a released package can no longer be edited');
 $second = T::login($kernel, "tyapprove2.{$suffix}", $password);
 $error($send($second, 'POST', "{$p30}/release", ['expectedVersion' => $prepared['version'], 'confirm' => true], $key('concurrent')), 409, 'PACKAGE_ALREADY_RELEASED', 'a concurrent approval by another approver is refused (before calling Trendyol)');
 
@@ -324,7 +335,7 @@ $sync->run();
 $ready = [];
 foreach (array_keys($late) as $o) {
     $d = $status($get($preparer, '/trendyol/packages/' . ($base + $o)), 200, "p{$o}");
-    $ready[$o] = $status($send($preparer, 'PUT', '/trendyol/packages/' . ($base + $o) . '/lines/' . ($base + $o + 1), ['expectedVersion' => $d['version'], 'kind' => 'curtain', 'widthCm' => '200', 'heightCm' => '250'], $key("p{$o}")), 200, "prepare p{$o}");
+    $ready[$o] = $status($send($preparer, 'PUT', '/trendyol/packages/' . ($base + $o) . '/lines/' . ($base + $o + 1), ['expectedVersion' => $d['version'], 'productionTitle' => 'Perdea tul alb', 'kind' => 'curtain', 'widthCm' => '200', 'heightCm' => '250'], $key("p{$o}")), 200, "prepare p{$o}");
 }
 $changedSku = [['lineId' => $base + 93, 'quantity' => 2, 'productName' => 'Perdea tul alb 300x260', 'stockCode' => 'PT-301', 'barcode' => '86800092', 'productSize' => '300x260', 'productColor' => 'Alb']];
 $marketplace(['packages' => [
@@ -344,7 +355,7 @@ $line92 = $row('SELECT quantity, stock_code, prepared_kind, prepared_width_cm FR
 $check($line92 === ['quantity' => 2, 'stock_code' => 'PT-301', 'prepared_kind' => null, 'prepared_width_cm' => null], 'the changed line shows the marketplace data and must be prepared again (measurements never carried over silently): ' . json_encode($line92));
 $check($trendyolOrders() === $trendyolOrdersBefore + 1 && (int) $one("SELECT COUNT(*) FROM order_qr_references q JOIN operational_orders o ON o.order_uuid = q.order_uuid WHERE o.source_key = 'trendyol'") === 1, 'no order or QR for any refused approval');
 $d92 = $status($get($preparer, '/trendyol/packages/' . ($base + 92)), 200, 'p92 after change');
-$d92 = $status($send($preparer, 'PUT', '/trendyol/packages/' . ($base + 92) . '/lines/' . ($base + 93), ['expectedVersion' => $d92['version'], 'kind' => 'curtain', 'widthCm' => '210', 'heightCm' => '250'], $key('p92-again')), 200, 'p92 prepared again');
+$d92 = $status($send($preparer, 'PUT', '/trendyol/packages/' . ($base + 92) . '/lines/' . ($base + 93), ['expectedVersion' => $d92['version'], 'productionTitle' => 'Perdea tul alb', 'kind' => 'curtain', 'widthCm' => '210', 'heightCm' => '250'], $key('p92-again')), 200, 'p92 prepared again');
 $error($send($approver, 'POST', '/trendyol/packages/' . ($base + 92) . '/release', ['expectedVersion' => $ready[92]['version'], 'confirm' => true], $key('p92-stale')), 409, 'PACKAGE_CHANGED', 'an approval with the version seen before the change is refused');
 
 // Stage 1 visibility is source-scoped; the existing claim/transition hands the order to stage 2 (Tăiere).
@@ -443,7 +454,7 @@ $check((int) $one('SELECT COUNT(*) FROM trendyol_package_lines WHERE package_id 
 $p80 = $status($get($approver, '/trendyol/packages/' . ($base + 80)), 200, 'cancelled detail');
 $error($send($approver, 'POST', '/trendyol/packages/' . ($base + 80) . '/release', ['expectedVersion' => $p80['version'], 'confirm' => true], $key('cancelled')), 409, 'PACKAGE_NOT_PENDING', 'a marketplace-cancelled package cannot be released');
 $p50 = $status($get($preparer, '/trendyol/packages/' . ($base + 50)), 200, 'p50');
-$p50 = $status($send($preparer, 'PUT', '/trendyol/packages/' . ($base + 50) . '/lines/' . ($base + 51), ['expectedVersion' => $p50['version'], 'kind' => 'other'], $key('p50-line')), 200, 'an other product needs no measurements');
+$p50 = $status($send($preparer, 'PUT', '/trendyol/packages/' . ($base + 50) . '/lines/' . ($base + 51), ['expectedVersion' => $p50['version'], 'productionTitle' => 'Perdea tul alb', 'kind' => 'other'], $key('p50-line')), 200, 'an other product needs no measurements');
 $pdo->prepare("UPDATE trendyol_packages SET marketplace_status = 'Shipped' WHERE package_id = ?")->execute([$base + 50]);
 $error($send($approver, 'POST', '/trendyol/packages/' . ($base + 50) . '/release', ['expectedVersion' => $p50['version'], 'confirm' => true], $key('shipped')), 409, 'MARKETPLACE_STATUS_NOT_RELEASABLE', 'a package shipped in the Seller Panel cannot enter production');
 $error($send($preparer, 'POST', '/trendyol/packages/' . ($base + 50) . '/dismiss', ['expectedVersion' => $p50['version'], 'reason' => ''], $key('no-reason')), 422, 'REASON_REQUIRED', 'dismissal needs a reason');
@@ -529,7 +540,7 @@ $check((int) $one("SELECT COUNT(*) FROM employee_role_assignments era JOIN roles
 $marketplace(['packages' => [$package(92, $baseMs + $hours(6), $baseMs + 40200, 'Created', $changedSku)]]);
 $d92 = $status($get($preparer, '/trendyol/packages/' . ($base + 92)), 200, 'p92 before its approval');
 if (($d92['readiness']['ready'] ?? false) !== true) {
-    $d92 = $status($send($preparer, 'PUT', '/trendyol/packages/' . ($base + 92) . '/lines/' . ($base + 93), ['expectedVersion' => $d92['version'], 'kind' => 'curtain', 'widthCm' => '210', 'heightCm' => '250'], $key('p92-final')), 200, 'p92 prepared for its approval');
+    $d92 = $status($send($preparer, 'PUT', '/trendyol/packages/' . ($base + 92) . '/lines/' . ($base + 93), ['expectedVersion' => $d92['version'], 'productionTitle' => 'Perdea tul alb', 'kind' => 'curtain', 'widthCm' => '210', 'heightCm' => '250'], $key('p92-final')), 200, 'p92 prepared for its approval');
 }
 $released92 = $status($send($approver, 'POST', '/trendyol/packages/' . ($base + 92) . '/release', ['expectedVersion' => $d92['version'], 'confirm' => true], $key('p92-release')), 201, 'p92 released after its new preparation');
 $global92 = 'trendyol:' . ($base + 92);
