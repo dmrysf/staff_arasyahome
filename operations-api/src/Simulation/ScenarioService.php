@@ -49,9 +49,12 @@ final readonly class ScenarioService
     public function command(string $id, string $action, string $actor, int $expectedReplay): array
     {
         $pdo = $this->container->pdo();
-        $lock = 'sim-center-' . hash('sha256',$this->container->config()->dbName);
-        $q = $pdo->prepare('SELECT GET_LOCK(?, 2)'); $q->execute([$lock]);
-        if ((int)$q->fetchColumn() !== 1) throw new ApiException(409,'SIMULATION_BUSY','Another simulation control is running.');
+        $lock=new \Arasya\Operations\Database\DatabaseAdvisoryLock($pdo,'sim_center_' . substr(hash('sha256',$this->container->config()->dbName),0,40));
+        try { $lock->acquire(2); }
+        catch (\RuntimeException $error) {
+            if ($error->getMessage()==='The database maintenance lock is already held.') throw new ApiException(409,'SIMULATION_BUSY','Another simulation control is running.');
+            throw $error;
+        }
         try {
             $q=$pdo->prepare('SELECT * FROM simulation_runs WHERE scenario_id = ?'); $q->execute([$id]); $run=$q->fetch();
             if (!is_array($run)) throw new ApiException(404,'SIMULATION_SCENARIO_UNKNOWN','Scenario was not found.');
@@ -73,7 +76,7 @@ final readonly class ScenarioService
             $pdo->prepare('INSERT INTO simulation_control_events(scenario_id,replay_number,actor_uuid,action,created_at) SELECT scenario_id,replay_number,?,?,UTC_TIMESTAMP(6) FROM simulation_runs WHERE scenario_id=?')->execute([$actor,$action,$id]);
             return $this->overview();
         } finally {
-            $pdo->prepare('SELECT RELEASE_LOCK(?)')->execute([$lock]);
+$lock->release();
         }
     }
 
