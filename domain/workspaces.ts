@@ -1,5 +1,6 @@
 import type { Employee, StaffOrder } from "./models";
 import { canUseTrendyolWorkspace } from "./trendyol";
+import { t, type MessageKey } from "../i18n";
 
 /**
  * Department dashboards. A workspace is a presentation of work the employee is already authorized for; it never
@@ -29,33 +30,31 @@ export type ProductionDepartment = { id: string; label: string; description: str
  * Explicit, tested grouping of the fourteen canonical stages (curtain-production@1) into production workspaces.
  * Pure presentation: the employee's stage grants decide which stages of a group appear.
  */
-export const productionDepartments: readonly ProductionDepartment[] = Object.freeze([
-  { id: "pornire", label: "Pornire producție", description: "Comenzi aprobate, predare la tăiere", stageIds: ["waiting"] },
-  { id: "taiere", label: "Tăiere", description: "Tăiere și transferuri", stageIds: ["material-preparation"] },
-  { id: "atelier", label: "Atelier · pregătire", description: "Primire, etichetare, îndreptare", stageIds: ["workshop-receiving", "labeling", "material-straightening"] },
-  { id: "croitorie", label: "Croitorie", description: "Tivuri, călcare, înălțime, rejansă, finisare", stageIds: ["bottom-hem", "side-hem", "ironing", "height", "header-tape", "sewing-finishing"] },
-  { id: "control-calitate", label: "Control calitate", description: "Verificare înainte de împachetare", stageIds: ["quality-control"] },
-  { id: "ambalare", label: "Împachetare", description: "Ambalare și verificarea produselor", stageIds: ["packing"] },
-  { id: "livrare", label: "Livrare", description: "Etapa internă finală", stageIds: ["delivery"] },
-]);
+const DEPARTMENT_STAGES: readonly [string, readonly string[]][] = [
+  ["pornire", ["waiting"]],
+  ["taiere", ["material-preparation"]],
+  ["atelier", ["workshop-receiving", "labeling", "material-straightening"]],
+  ["croitorie", ["bottom-hem", "side-hem", "ironing", "height", "header-tape", "sewing-finishing"]],
+  ["control-calitate", ["quality-control"]],
+  ["ambalare", ["packing"]],
+  ["livrare", ["delivery"]],
+];
+export const productionDepartments: readonly ProductionDepartment[] = Object.freeze(DEPARTMENT_STAGES.map(([id, stageIds]) => Object.freeze({
+  id,
+  get label() { return t(`workspace.${id}.label` as MessageKey); },
+  get description() { return t(`workspace.${id}.description` as MessageKey); },
+  stageIds,
+})));
 
 /** Stage guidance shown on the stage dashboards: instructions only, every action stays on the order screen. */
-export const stageGuides: Readonly<Record<string, { focus: string; checks: readonly string[] }>> = Object.freeze({
-  "waiting": { focus: "Comenzi intrate în producție care așteaptă predarea la tăiere.", checks: ["Verifică sursa comenzii și documentul de producție activ.", "Preia comanda, apoi finalizează etapa pentru a o trimite la Tăiere.", "Un angajat de la Tăiere poate prelua comanda direct, scanând eticheta QR."] },
-  "material-preparation": { focus: "Comenzi gata de tăiere. Preluarea se face numai cu eticheta QR originală.", checks: ["Scanează o singură dată eticheta QR originală: comanda îți este atribuită și tăierea începe (și pentru comenzile aflate încă la pornire).", "Scanarea nu finalizează tăierea: finalizezi etapa din pagina comenzii.", "Verifică măsurile și consumul din documentul de producție.", "Pentru boală sau indisponibilitate folosește transferul întregii comenzi."] },
-  "workshop-receiving": { focus: "Comenzi sosite de la tăiere în croitorie.", checks: ["Verifică produsele primite față de documentul de producție.", "Dacă tăierea este greșită, folosește «Returnează la Tăiere» din comandă."] },
-  "labeling": { focus: "Comenzi de etichetat.", checks: ["Verifică produsele și cantitățile.", "Etichetează conform documentului de producție."] },
-  "material-straightening": { focus: "Material de îndreptat.", checks: ["Verifică dimensiunile din document înainte de lucru."] },
-  "bottom-hem": { focus: "Tivul de jos.", checks: ["Respectă înălțimea confirmată din documentul de producție.", "Semnalează orice neconcordanță înainte de finalizare."] },
-  "side-hem": { focus: "Tivul lateral.", checks: ["Respectă lățimea confirmată din documentul de producție."] },
-  "ironing": { focus: "Produse de călcat.", checks: ["Verifică notele de producție înainte de călcare."] },
-  "height": { focus: "Reglarea înălțimii.", checks: ["Folosește numai înălțimea confirmată din documentul de producție. Măsurile nu se modifică în aplicație."] },
-  "header-tape": { focus: "Coaserea rejansei.", checks: ["Verifică tipul de rejansă din notele de producție."] },
-  "sewing-finishing": { focus: "Finisarea coaserii.", checks: ["Verifică instrucțiunile de finisare din document."] },
-  "quality-control": { focus: "Produse de verificat înainte de împachetare.", checks: ["Compară produsul cu documentul de producție: măsuri, cantitate, culoare.", "Predă la Împachetare numai produsele conforme."] },
-  "packing": { focus: "Comenzi de împachetat.", checks: ["Verifică produsele și cantitățile înainte de ambalare.", "Ambalarea Arasya nu creează etichete de curier în Trendyol sau în magazine."] },
-  "delivery": { focus: "Etapa internă finală a producției.", checks: ["Finalizarea etapei Livrare încheie producția în Arasya.", "Statusurile din Trendyol și din magazine nu se schimbă din Arasya."] },
+const GUIDE_CHECKS: Readonly<Record<string, number>> = Object.freeze({
+  "waiting": 3, "material-preparation": 4, "workshop-receiving": 2, "labeling": 2, "material-straightening": 1, "bottom-hem": 2, "side-hem": 1,
+  "ironing": 1, "height": 1, "header-tape": 1, "sewing-finishing": 1, "quality-control": 2, "packing": 2, "delivery": 2,
 });
+export const stageGuides: Readonly<Record<string, { focus: string; checks: readonly string[] }>> = Object.freeze(Object.fromEntries(Object.entries(GUIDE_CHECKS).map(([stageId, count]) => [stageId, Object.freeze({
+  get focus() { return t(`guide.${stageId}.focus` as MessageKey); },
+  get checks() { return Array.from({ length: count }, (_, index) => t(`guide.${stageId}.${index + 1}` as MessageKey)); },
+})])));
 
 const DOCUMENT_PERMISSIONS = ["production.documents.generate", "production.documents.request_revision"];
 
@@ -73,6 +72,11 @@ const departmentHints: Readonly<Record<string, string>> = Object.freeze({
   "conducere": "management",
 });
 
+/** A workspace without stages; its title and subtitle are read in the active language. */
+function fixedWorkspace(id: "trendyol" | "documente" | "management" | "general", kind: WorkspaceKind): Workspace {
+  return { id, kind, get label() { return t(`workspace.${id}.label`); }, get description() { return t(`workspace.${id}.description`); }, stageIds: [] };
+}
+
 export type WorkspaceAvailability = { trendyol: boolean; documents: boolean; management: boolean };
 
 export function canUseManagementWorkspace(employee: Employee): boolean {
@@ -87,22 +91,22 @@ export function resolveWorkspaces(employee: Employee, available: WorkspaceAvaila
   if (employee.status !== "active" || !employee.applications.includes("staff") || employee.mustChangePassword) return [];
   const workspaces: Workspace[] = [];
   if (available.trendyol && canUseTrendyolWorkspace(employee)) {
-    workspaces.push({ id: "trendyol", kind: "trendyol", label: "Operațiuni Trendyol", description: "Pregătire și aprobare comenzi", stageIds: [] });
+    workspaces.push(fixedWorkspace("trendyol", "trendyol"));
   }
   if (employee.permissions.includes("orders.view_mine")) {
     for (const department of productionDepartments) {
       const stageIds = department.stageIds.filter((stageId) => employee.allowedStageIds.includes(stageId));
-      if (stageIds.length > 0) workspaces.push({ id: department.id, kind: "production", label: department.label, description: department.description, stageIds });
+      if (stageIds.length > 0) workspaces.push({ id: department.id, kind: "production", get label() { return department.label; }, get description() { return department.description; }, stageIds });
     }
   }
   if (available.documents && DOCUMENT_PERMISSIONS.some((permission) => employee.permissions.includes(permission))) {
-    workspaces.push({ id: "documente", kind: "documents", label: "Documente de producție", description: "Revizii, generare și tipărire", stageIds: [] });
+    workspaces.push(fixedWorkspace("documente", "documents"));
   }
   if (available.management && canUseManagementWorkspace(employee)) {
-    workspaces.push({ id: "management", kind: "management", label: "Conducere producție", description: "Privire de ansamblu, numai citire", stageIds: [] });
+    workspaces.push(fixedWorkspace("management", "management"));
   }
   if (workspaces.length === 0) {
-    workspaces.push({ id: "general", kind: "general", label: "Panoul meu", description: "Activitatea mea", stageIds: [] });
+    workspaces.push(fixedWorkspace("general", "general"));
   }
   return workspaces;
 }

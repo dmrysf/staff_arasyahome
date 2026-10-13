@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+import { activeLocale, formatDate, useI18n } from "../../i18n";
+import { departmentName } from "../../domain/stageNames";
 import type { ActivityPage, Employee, ProductionWorkflow } from "../../domain/models";
 import type { ActivityService, ServiceBundle } from "../../services/contracts";
 import { ExceptionsCard } from "../exceptions/ExceptionsCard";
@@ -16,8 +18,7 @@ import { ManagementWorkspace } from "../workspaces/ManagementWorkspace";
 
 type TodaySummary = ActivityPage["summary"];
 
-const today = new Intl.DateTimeFormat("ro-RO", { weekday: "long", day: "numeric", month: "long", timeZone: "Europe/Bucharest" });
-const todayLabel = (): string => { const text = today.format(new Date()); return text.charAt(0).toUpperCase() + text.slice(1); };
+const todayLabel = (): string => { const text = formatDate(new Date(), { weekday: "long", day: "numeric", month: "long", timeZone: "Europe/Bucharest" }); return text.charAt(0).toLocaleUpperCase(activeLocale()) + text.slice(1); };
 type MetricsState = { status: "loading" } | { status: "loaded"; summary: TodaySummary } | { status: "unavailable" };
 
 export function loadTodaySummary(service: ActivityService, signal?: AbortSignal): Promise<TodaySummary> {
@@ -30,6 +31,7 @@ export function formatHomeMetric(value: number | undefined): string {
 
 /** The employee's own stage activity today (claims in progress, handovers). */
 function TodayWork({ service }: { service: ActivityService }) {
+  const { t } = useI18n();
   const [metrics, setMetrics] = useState<MetricsState>({ status: "loading" });
   useEffect(() => {
     const controller = new AbortController();
@@ -41,10 +43,10 @@ function TodayWork({ service }: { service: ActivityService }) {
   const value = (pick: (summary: TodaySummary) => number) => metrics.status === "loading" ? "…" : metrics.status === "loaded" ? formatHomeMetric(pick(metrics.summary)) : "—";
   return (
     <section className="work-summary" aria-labelledby="today-summary" aria-live="polite">
-      <p id="today-summary">{metrics.status === "unavailable" ? "Activitate indisponibilă" : "Astăzi · activitatea ta"}</p>
+      <p id="today-summary">{metrics.status === "unavailable" ? t("home.todayUnavailable") : t("home.today")}</p>
       <dl>
-        <div><dd className={metrics.status === "loaded" ? undefined : "metric-unavailable"}>{value((summary) => summary.inProgress)}</dd><dt>În lucru</dt></div>
-        <div><dd className={metrics.status === "loaded" ? undefined : "metric-unavailable"}>{value((summary) => summary.handedOver)}</dd><dt>Predate</dt></div>
+        <div><dd className={metrics.status === "loaded" ? undefined : "metric-unavailable"}>{value((summary) => summary.inProgress)}</dd><dt>{t("home.inProgress")}</dt></div>
+        <div><dd className={metrics.status === "loaded" ? undefined : "metric-unavailable"}>{value((summary) => summary.handedOver)}</dd><dt>{t("home.handedOver")}</dt></div>
       </dl>
     </section>
   );
@@ -56,6 +58,7 @@ function TodayWork({ service }: { service: ActivityService }) {
  * workspace reads its own server-authorized data and links to the existing screens for every action.
  */
 export function HomeScreen({ employee, services, workflow, dashboardUrl, navigate }: { employee: Employee; services: ServiceBundle; workflow: ProductionWorkflow; dashboardUrl: string | null; navigate: (path: string) => void }) {
+  const { t } = useI18n();
   const workspaces = useMemo(() => resolveWorkspaces(employee, { trendyol: Boolean(services.trendyol), documents: Boolean(services.documents), management: Boolean(services.management) }), [employee, services]);
   const [chosen, setChosen] = useState<string | null>(() => readWorkspacePreference(employee.employeeUuid));
   const current = selectPrimaryWorkspace(workspaces, employee, chosen);
@@ -71,11 +74,11 @@ export function HomeScreen({ employee, services, workflow, dashboardUrl, navigat
     <div className="dashboard-layout">
       <header className="dashboard-header">
         <div className="greeting">
-          <p className="greeting-context">{employee.department ? `Departament: ${employee.department}` : "Departament neatribuit"}</p>
-          <h1>Bună, {firstName(employee.displayName)}!</h1>
+          <p className="greeting-context">{employee.department ? t("home.department", { name: departmentName(employee.departmentKey, employee.department) }) : t("home.noDepartment")}</p>
+          <h1>{t("home.greeting", { name: firstName(employee.displayName) })}</h1>
           <p className="greeting-date">{todayLabel()}</p>
         </div>
-        <p className="workspace-title" data-testid="workspace-title"><span>Panou operațional</span><strong>{current.label}</strong></p>
+        <p className="workspace-title" data-testid="workspace-title"><span>{t("home.workspace")}</span><strong>{current.label}</strong></p>
       </header>
       <WorkspaceSwitcher workspaces={workspaces} current={current} onSelect={select} />
       <SupervisorCard service={services.exceptions} navigate={navigate} />
@@ -97,17 +100,17 @@ export function HomeScreen({ employee, services, workflow, dashboardUrl, navigat
 
       {current.kind === "general" && <div className="workspace-body" data-testid="workspace-general">
         <section className="dashboard-section" aria-labelledby="general-title">
-          <p className="eyebrow">Panoul meu</p>
-          <h2 id="general-title">Nu ai încă un spațiu de lucru operațional</h2>
-          <p className="dashboard-lead">Contul tău nu are alocată nicio etapă de producție sau alt departament operațional. Managerul îți poate atribui accesul din Dashboard.</p>
-          {scanner && <button type="button" className="button button-primary dashboard-primary" onClick={() => navigate("/scan")}><AppIcon name="scan" size={22} /> Scanează comanda</button>}
+          <p className="eyebrow">{t("home.generalEyebrow")}</p>
+          <h2 id="general-title">{t("home.generalTitle")}</h2>
+          <p className="dashboard-lead">{t("home.generalLead")}</p>
+          {scanner && <button type="button" className="button button-primary dashboard-primary" onClick={() => navigate("/scan")}><AppIcon name="scan" size={22} /> {t("common.scanOrder")}</button>}
         </section>
         <ExceptionsCard service={services.exceptions} navigate={navigate} />
         <TodayWork service={services.activity} />
       </div>}
 
       {current.kind !== "management" && services.authority && canManageAuthority(employee) && (
-        <button type="button" className="exception-row" onClick={() => navigate("/authority")}><span><strong>Autoritate producție</strong><small>Preia o comandă din YD SOFT în Arasya, cu etapa aleasă explicit</small></span><span aria-hidden="true">→</span></button>
+        <button type="button" className="exception-row" onClick={() => navigate("/authority")}><span><strong>{t("home.authorityTitle")}</strong><small>{t("home.authorityBody")}</small></span><span aria-hidden="true">→</span></button>
       )}
     </div>
   );

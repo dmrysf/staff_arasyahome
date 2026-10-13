@@ -1,4 +1,6 @@
 import type { TaskStep } from "../../components/ui/TaskSteps";
+import { t } from "../../i18n";
+import { stageName } from "../../domain/stageNames";
 import type { TrendyolLine, TrendyolLineKind, TrendyolPackageDetail } from "../../domain/trendyol";
 
 /** The employee's unsaved values of one line (strings exactly as typed). */
@@ -44,21 +46,21 @@ export function preparationSteps(detail: TrendyolPackageDetail): TaskStep[] {
     const handedOver = production.stageId !== "waiting";
     const documentReady = production.documentStatus === "active";
     return [
-      { id: "review", label: "Verifică produsele", state: "done", detail: `${total} ${total === 1 ? "produs verificat" : "produse verificate"}` },
-      { id: "measure", label: "Completează măsurile", state: "done", detail: `${total}/${total} linii confirmate` },
-      { id: "approve", label: "Aprobă producția", state: "done", detail: production.releasedBy ? `Aprobată de ${production.releasedBy}` : "Aprobată" },
-      { id: "print", label: "Tipărește fișa cu QR", state: !documentReady ? "blocked" : handedOver ? "ready" : "current", detail: documentReady ? "Fișa de producție (REVIZIA 1) este gata" : "Fișa de producție nu este activă" },
-      { id: "handoff", label: "Trimite la Tăiere", state: handedOver ? "done" : "upcoming", detail: handedOver ? `Etapa actuală: ${production.stageLabel ?? production.stageId}` : "Etapa 1 se finalizează din pagina comenzii" },
+      { id: "review", label: t("ty.steps.review"), state: "done", detail: t("ty.steps.checked", { count: total }) },
+      { id: "measure", label: t("ty.steps.measure"), state: "done", detail: t("ty.steps.linesConfirmed", { confirmed: total, total }) },
+      { id: "approve", label: t("ty.steps.approve"), state: "done", detail: production.releasedBy ? t("ty.steps.approvedBy", { name: production.releasedBy }) : t("ty.steps.approved") },
+      { id: "print", label: t("ty.steps.print"), state: !documentReady ? "blocked" : handedOver ? "ready" : "current", detail: documentReady ? t("ty.steps.sheetReady") : t("ty.steps.sheetNotActive") },
+      { id: "handoff", label: t("ty.steps.handoff"), state: handedOver ? "done" : "upcoming", detail: handedOver ? t("ty.steps.currentStage", { stage: stageName(production.stageId, production.stageLabel) }) : t("ty.steps.stage1") },
     ];
   }
 
   const blocked = detail.readiness.blockedReason !== null;
   return [
-    { id: "review", label: "Verifică produsele", state: confirmed > 0 ? "done" : "current", detail: `${total} ${total === 1 ? "produs" : "produse"} din Trendyol` },
-    { id: "measure", label: "Completează măsurile", state: allConfirmed ? "done" : confirmed > 0 ? "current" : "upcoming", detail: `${confirmed}/${total} linii confirmate` },
-    { id: "approve", label: "Aprobă producția", state: blocked ? "blocked" : allConfirmed ? "current" : "upcoming", detail: blocked ? "Blocată de statusul din Trendyol" : allConfirmed ? "Toate liniile sunt confirmate" : "După confirmarea tuturor liniilor" },
-    { id: "print", label: "Tipărește fișa cu QR", state: "upcoming", detail: "Fișa apare după aprobare" },
-    { id: "handoff", label: "Trimite la Tăiere", state: "upcoming", detail: "După tipărirea fișei" },
+    { id: "review", label: t("ty.steps.review"), state: confirmed > 0 ? "done" : "current", detail: t("ty.steps.fromTrendyol", { count: total }) },
+    { id: "measure", label: t("ty.steps.measure"), state: allConfirmed ? "done" : confirmed > 0 ? "current" : "upcoming", detail: t("ty.steps.linesConfirmed", { confirmed, total }) },
+    { id: "approve", label: t("ty.steps.approve"), state: blocked ? "blocked" : allConfirmed ? "current" : "upcoming", detail: blocked ? t("ty.steps.blocked") : allConfirmed ? t("ty.steps.allConfirmed") : t("ty.steps.afterAll") },
+    { id: "print", label: t("ty.steps.print"), state: "upcoming", detail: t("ty.steps.afterApproval") },
+    { id: "handoff", label: t("ty.steps.handoff"), state: "upcoming", detail: t("ty.steps.afterPrint") },
   ];
 }
 

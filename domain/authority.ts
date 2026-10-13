@@ -1,4 +1,5 @@
 import type { Employee } from "./models";
+import { liveLabels } from "../i18n";
 
 /** Who may change the production state of an order: its commerce source (legacy YD SOFT) or Arasya. */
 export type ProductionAuthority = "source" | "operations";
@@ -45,30 +46,12 @@ export function canManageAuthority(employee: Pick<Employee, "permissions" | "app
   return employee.permissions.includes(AUTHORITY_PERMISSION) && employee.applications.includes("dashboard");
 }
 
-export const authorityLabels: Record<ProductionAuthority, string> = {
-  source: "Producție gestionată în sursă (YD SOFT)",
-  operations: "Producție gestionată în Arasya",
-};
-
-export const authorityModeLabels: Record<ProductionAuthorityMode, string> = {
-  legacy: "Preluarea nu este activată pentru această sursă",
-  observe: "Mod observare: preluările se fac explicit, comandă cu comandă",
-  enforce: "Arasya este autoritatea de producție pentru comenzile noi ale acestei surse",
-};
-
-export const authorityBlockedCopy: Record<string, string> = {
-  source_not_supported: "Autoritatea de producție a acestei surse nu poate fi schimbată.",
-  authority_cutover_disabled: "Preluarea nu este activată pentru această sursă.",
-  already_operations: "Arasya gestionează deja producția acestei comenzi.",
-  production_completed: "Producția este finalizată.",
-  order_unavailable: "Comanda a fost anulată la sursă.",
-  exception_pending: "Comanda așteaptă o decizie pentru o excepție de producție.",
-  document_revision_pending: "Comanda are o revizie de document în curs.",
-  owner_present: "Comanda are deja un responsabil de producție.",
-  not_operations: "Comanda nu este gestionată în Arasya.",
-  production_started: "Producția a început deja în Arasya; preluarea nu mai poate fi anulată.",
-  not_untouched_takeover: "Comanda a fost modificată după preluare; preluarea nu mai poate fi anulată.",
-};
+export const authorityLabels: Readonly<Record<ProductionAuthority, string>> = liveLabels("authority.", ["source", "operations"]);
+export const authorityModeLabels: Readonly<Record<ProductionAuthorityMode, string>> = liveLabels("authority.mode.", ["legacy", "observe", "enforce"]);
+export const authorityBlockedCopy: Readonly<Record<string, string>> = liveLabels("authority.blocked.", [
+  "source_not_supported", "authority_cutover_disabled", "already_operations", "production_completed", "order_unavailable", "exception_pending",
+  "document_revision_pending", "owner_present", "not_operations", "production_started", "not_untouched_takeover",
+]);
 
 export function isProductionAuthority(value: unknown): value is ProductionAuthority {
   return value === "source" || value === "operations";

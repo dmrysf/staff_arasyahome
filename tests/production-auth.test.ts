@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { CATALOGS } from "../i18n";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { StaffServiceError } from "../domain/models";
@@ -222,7 +223,12 @@ test("every password field has its own Show/Hide control with a name that never 
   assert.match(field, /aria-controls=\{id\}/);
   assert.match(field, /type=\{visible \? "text" : "password"\}/);
   const screen = readFileSync(new URL("../features/auth/ChangePasswordScreen.tsx", import.meta.url), "utf8");
-  const names = [...screen.matchAll(/toggleName="([^"]+)"/g)].map((match) => match[1]);
-  assert.deepEqual(names, ["parola curentă", "noua parolă", "confirmarea parolei"]);
+  const nameKeys = [...screen.matchAll(/toggleName=\{t\("([^"]+)"\)\}/g)].map((match) => match[1]);
+  assert.deepEqual(nameKeys, ["password.currentName", "password.newName", "password.confirmName"]);
+  // In every language the three Show/Hide controls have distinct names.
+  for (const catalog of Object.values(CATALOGS)) assert.equal(new Set(nameKeys.map((key) => catalog[key as "password.currentName"])).size, nameKeys.length);
+  // Romanian (default, used by the browser tests): a control's name never repeats a field label.
+  const names = nameKeys.map((key) => CATALOGS.ro[key as "password.currentName"]);
   for (const label of ["Parola actuală", "Parola nouă", "Confirmă parola nouă"]) for (const name of names) assert.ok(!`Afișează ${name}`.toLowerCase().includes(label.toLowerCase()));
+  assert.deepEqual(nameKeys.map((key) => CATALOGS.ro[key as "password.currentName"]), ["parola curentă", "noua parolă", "confirmarea parolei"]);
 });

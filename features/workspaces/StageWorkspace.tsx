@@ -1,4 +1,5 @@
 import { useCallback, useState } from "react";
+import { liveLabels, useI18n } from "../../i18n";
 import type { Employee, ProductionWorkflow, StaffOrder } from "../../domain/models";
 import { stageGuides, stageSources, type StageQueue, type StageSummary, type Workspace, type WorkspaceApi } from "../../domain/workspaces";
 import { getStageById } from "../../domain/productionWorkflow";
@@ -27,7 +28,7 @@ export function queueStateOf(order: StaffOrder): QueueState {
   return "blocked";
 }
 
-const queueStateLabels: Record<QueueState, string> = { mine: "La tine", available: "Disponibilă", claimedByOthers: "Preluată de un coleg", blocked: "Blocată" };
+const queueStateLabels: Readonly<Record<QueueState, string>> = liveLabels("stageWs.queue.", ["mine", "available", "claimedByOthers", "blocked"]);
 
 function QueueRow({ order, detail, navigate }: { order: StaffOrder; detail: StageProfile["detail"]; navigate: (path: string) => void }) {
   const state = queueStateOf(order);
@@ -54,6 +55,7 @@ function QueueRow({ order, detail, navigate }: { order: StaffOrder; detail: Stag
  * server-authorized stage queue; opening an order never claims it (the order screen keeps the explicit actions).
  */
 export function StageWorkspace({ workspace, employee, workflow, api, cutting, navigate }: { workspace: Workspace; employee: Employee; workflow: ProductionWorkflow; api?: WorkspaceApi; cutting?: CuttingApi; navigate: (path: string) => void }) {
+  const { t } = useI18n();
   const { revision } = useLive();
   const [selected, setSelected] = useState(workspace.stageIds[0] ?? "");
   const stageId = workspace.stageIds.includes(selected) ? selected : workspace.stageIds[0] ?? "";
@@ -78,10 +80,10 @@ export function StageWorkspace({ workspace, employee, workflow, api, cutting, na
   return (
     <div className="workspace-body split-workspace" data-testid={`workspace-${workspace.id}`}>
       {workspace.stageIds.length > 1 && (
-        <div className="stage-tabs" role="tablist" aria-label="Etapele mele">
+        <div className="stage-tabs" role="tablist" aria-label={t("stageWs.myStages")}>
           {workspace.stageIds.map((id) => (
             <button key={id} type="button" role="tab" aria-selected={id === stageId} onClick={() => setSelected(id)}>
-              {getStageById(workflow, id)?.label ?? "Etapă"}
+              {getStageById(workflow, id)?.label ?? t("common.stage")}
               {totals.has(id) && <span>{totals.get(id)}</span>}
             </button>
           ))}
@@ -90,41 +92,41 @@ export function StageWorkspace({ workspace, employee, workflow, api, cutting, na
 
       <div className="workspace-main">
         {next ? <NextActionCard action={next} navigate={navigate} id={`next-${stageId}`} testId="stage-next-action"
-          secondary={canScan && next.cta?.path !== "/scan" ? <button type="button" className="button button-secondary next-action-cta" onClick={() => navigate("/scan")}><AppIcon name="scan" size={20} /> Scanează comanda</button> : undefined} />
+          secondary={canScan && next.cta?.path !== "/scan" ? <button type="button" className="button button-secondary next-action-cta" onClick={() => navigate("/scan")}><AppIcon name="scan" size={20} /> {t("common.scanOrder")}</button> : undefined} />
           : api && !queue.error ? <NextActionSkeleton /> : null}
 
         {api && queue.data && (
-          <DashboardSection labelledBy={`queue-${stageId}`} eyebrow={stage?.label} title={cuttingTools ? "La tine și blocate" : "Comenzi la etapă"}>
+          <DashboardSection labelledBy={`queue-${stageId}`} eyebrow={stage?.label} title={cuttingTools ? t("stageWs.mineAndBlocked") : t("stageWs.atStage")}>
             {items.length === 0
-              ? <EmptyState title={cuttingTools ? "Nu ai comenzi în lucru la tăiere" : "Nu există comenzi la această etapă"}>Lista se actualizează automat când o comandă ajunge aici.</EmptyState>
+              ? <EmptyState title={cuttingTools ? t("stageWs.emptyCutting") : t("stageWs.empty")}>{t("stageWs.autoUpdate")}</EmptyState>
               : <ul className="queue-list">{items.map((order) => <QueueRow key={order.id} order={order} detail={profile.detail} navigate={navigate} />)}</ul>}
-            {!cuttingTools && queue.data.counts.total > queue.data.items.length && <p className="dashboard-footnote">Sunt afișate primele {queue.data.items.length} comenzi: întâi ale tale, apoi cele disponibile, de la cea mai veche.</p>}
+            {!cuttingTools && queue.data.counts.total > queue.data.items.length && <p className="dashboard-footnote">{t("stageWs.firstShown", { count: queue.data.items.length })}</p>}
           </DashboardSection>
         )}
         {cuttingTools && cutting && <CuttingWork service={cutting} navigate={navigate} />}
-        {api && !queue.data && !queue.error && <DashboardSection labelledBy={`queue-loading-${stageId}`} eyebrow={stage?.label} title="Comenzi la etapă"><QueueSkeleton /></DashboardSection>}
+        {api && !queue.data && !queue.error && <DashboardSection labelledBy={`queue-loading-${stageId}`} eyebrow={stage?.label} title={t("stageWs.atStage")}><QueueSkeleton /></DashboardSection>}
       </div>
 
       <div className="workspace-side">
-        <DashboardSection labelledBy={`stage-${stageId}`} eyebrow={stage ? `Etapa ${stage.ordinal} din ${workflow.stages.length}` : "Etapă"} title={stage?.label ?? "Etapă indisponibilă"}
+        <DashboardSection labelledBy={`stage-${stageId}`} eyebrow={stage ? t("stageWs.stageOf", { ordinal: stage.ordinal, total: workflow.stages.length }) : t("common.stage")} title={stage?.label ?? t("common.stageUnavailable")}
           action={api ? <RefreshButton onRefresh={() => { queue.refresh(); summary.refresh(); }} busy={queue.busy} updatedAt={queue.updatedAt} /> : undefined}>
           <span className="stage-icon" aria-hidden="true"><AppIcon name={profile.icon} size={22} /></span>
           {guide && <p className="dashboard-lead">{guide.focus}</p>}
-          {scopedSources && <p className="order-notice order-notice-muted" data-testid="stage-source-scope">Lucrezi la această etapă doar pe comenzile din: {scopedSources.map((source) => sourceLabels[source as keyof typeof sourceLabels] ?? source).join(", ")}.</p>}
-          <MetricGrid label={`Situația etapei ${stage?.label ?? ""}`}>
-            <Metric label="În lucru la mine" value={metric(counts?.mine)} tone="action" partial={partial} testId="metric-mine" />
-            <Metric label="Disponibile" value={metric(counts?.available)} partial={partial} testId="metric-available" />
-            <Metric label="Blocate" value={metric(counts?.blocked)} tone="warning" partial={partial} testId="metric-blocked" />
-            <Metric label="Preluate de colegi" value={metric(counts?.claimedByOthers)} partial={partial} testId="metric-others" />
-            <Metric label="Total la etapă" value={metric(counts?.total)} testId="metric-total" />
+          {scopedSources && <p className="order-notice order-notice-muted" data-testid="stage-source-scope">{t("stageWs.sourceScope", { sources: scopedSources.map((source) => sourceLabels[source as keyof typeof sourceLabels] ?? source).join(", ") })}</p>}
+          <MetricGrid label={t("stageWs.metrics", { stage: stage?.label ?? "" })}>
+            <Metric label={t("stageWs.metric.mine")} value={metric(counts?.mine)} tone="action" partial={partial} testId="metric-mine" />
+            <Metric label={t("stageWs.metric.available")} value={metric(counts?.available)} partial={partial} testId="metric-available" />
+            <Metric label={t("stageWs.metric.blocked")} value={metric(counts?.blocked)} tone="warning" partial={partial} testId="metric-blocked" />
+            <Metric label={t("stageWs.metric.others")} value={metric(counts?.claimedByOthers)} partial={partial} testId="metric-others" />
+            <Metric label={t("stageWs.metric.total")} value={metric(counts?.total)} testId="metric-total" />
           </MetricGrid>
-          {!api && <p className="order-notice order-notice-muted">Coada etapei nu este disponibilă în acest mod. Comenzile tale rămân în „Comenzi”.</p>}
+          {!api && <p className="order-notice order-notice-muted">{t("stageWs.noQueue")}</p>}
           {queue.error && <ErrorState error={queue.error} compact onAction={queue.refresh} />}
-          {canScan && !next && <button type="button" className="button button-primary dashboard-primary" onClick={() => navigate("/scan")}><AppIcon name="scan" size={22} /> Scanează comanda</button>}
+          {canScan && !next && <button type="button" className="button button-primary dashboard-primary" onClick={() => navigate("/scan")}><AppIcon name="scan" size={22} /> {t("common.scanOrder")}</button>}
         </DashboardSection>
 
         {guide && (
-          <DashboardSection labelledBy={`guide-${stageId}`} eyebrow="Instrucțiuni" title="De verificat la această etapă">
+          <DashboardSection labelledBy={`guide-${stageId}`} eyebrow={t("stageWs.guideEyebrow")} title={t("stageWs.guideTitle")}>
             <ul className="dashboard-checklist">{guide.checks.map((check) => <li key={check}>{check}</li>)}</ul>
           </DashboardSection>
         )}

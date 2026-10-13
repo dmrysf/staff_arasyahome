@@ -1,17 +1,12 @@
 import type { CSSProperties } from "react";
+import { liveLabels } from "../../i18n";
 import { AppIcon } from "../icons/AppIcon";
 
 export type TaskStepState = "done" | "current" | "ready" | "upcoming" | "blocked";
 export type TaskStep = { id: string; label: string; state: TaskStepState; detail: string };
 
 /** Words for each state, so the steps never depend on color or the check mark alone. */
-export const taskStepStateLabels: Record<TaskStepState, string> = {
-  done: "Finalizat",
-  current: "Pasul curent",
-  ready: "Disponibil",
-  upcoming: "Urmează",
-  blocked: "Blocat",
-};
+export const taskStepStateLabels: Readonly<Record<TaskStepState, string>> = liveLabels("taskStep.", ["done", "current", "ready", "upcoming", "blocked"]);
 
 /**
  * Guided sequence over server states. It only presents what the server already reported: a step is "done" only when

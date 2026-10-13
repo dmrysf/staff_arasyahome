@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
+import { useI18n } from "../../i18n";
 import type { CuttingApi } from "../../domain/cutting";
 import { QrCapture } from "../exceptions/QrCapture";
-import type { ProductionWorkflow, StaffOrder } from "../../domain/models";
+import type { OrderActionId, ProductionWorkflow, StaffOrder } from "../../domain/models";
 import { StaffServiceError } from "../../domain/models";
 import type { OrderService } from "../../services/contracts";
-import { orderActionConfirmation, orderActionSuccess } from "../../domain/orderActions";
+import { orderActionConfirmation, orderActionLabels, orderActionSuccess } from "../../domain/orderActions";
 import { getNextStage, getStageById } from "../../domain/productionWorkflow";
 import { StageLabel } from "../../components/StageLabel";
 import { ErrorState } from "../../components/ErrorState";
@@ -16,7 +17,7 @@ type PanelState =
   | { status: "idle" }
   | { status: "confirming"; idempotencyKey: string }
   | { status: "submitting"; idempotencyKey: string }
-  | { status: "done"; message: string }
+  | { status: "done"; message: OrderActionId }
   | { status: "error"; error: StaffServiceError; idempotencyKey: string };
 
 /**
@@ -32,6 +33,7 @@ export function OrderActionPanel({ order, workflow, service, cutting, onUpdated,
   onReload: () => void;
   onSessionExpired: () => void;
 }) {
+  const { t } = useI18n();
   const [state, setState] = useState<PanelState>({ status: "idle" });
   const inFlight = useRef(false);
   const action = order.employeeAllowedAction;
@@ -56,7 +58,7 @@ export function OrderActionPanel({ order, workflow, service, cutting, onUpdated,
     try {
       const input = { expectedVersion: order.productionVersion, idempotencyKey, ...(cuttingClaim ? { qrToken, ownedCount: ownedCount ?? 0, confirmedMultiple } : {}) };
       const updated = action.id === "claim" ? await service.claim(order.id, input) : await service.confirmStageTransition(order.id, input);
-      setState({ status: "done", message: orderActionSuccess[action.id].title });
+      setState({ status: "done", message: action.id });
       onUpdated(updated);
     } catch (caught) {
       const error = toServiceError(caught);
@@ -71,8 +73,8 @@ export function OrderActionPanel({ order, workflow, service, cutting, onUpdated,
   const next = getNextStage(workflow, order.productionStageId);
   return (
     <section className="detail-section order-action-panel" aria-live="polite">
-      {state.status === "done" && <p className="order-action-done" role="status">✓ {state.message}</p>}
-      {action && (state.status === "idle" || state.status === "done") && <button className="button button-primary button-large" type="button" onClick={() => { setQrToken(""); setOwnedCount(null); setConfirmedMultiple(false); setState({ status: "confirming", idempotencyKey: createIdempotencyKey() }); }}>{action.label}<span aria-hidden="true">→</span></button>}
+      {state.status === "done" && <p className="order-action-done" role="status">✓ {orderActionSuccess[state.message].title}</p>}
+      {action && (state.status === "idle" || state.status === "done") && <button className="button button-primary button-large" type="button" onClick={() => { setQrToken(""); setOwnedCount(null); setConfirmedMultiple(false); setState({ status: "confirming", idempotencyKey: createIdempotencyKey() }); }}>{orderActionLabels[action.id]}<span aria-hidden="true">→</span></button>}
       {state.status === "error" && <ErrorState error={state.error} compact onAction={() => {
         const transient = ["NETWORK_UNAVAILABLE", "REQUEST_TIMEOUT", "SERVICE_UNAVAILABLE", "SERVER_ERROR"].includes(state.error.code);
         if (transient) void submit(state.idempotencyKey);
@@ -82,23 +84,23 @@ export function OrderActionPanel({ order, workflow, service, cutting, onUpdated,
         <div className="confirmation-layer" role="dialog" aria-modal="true" aria-labelledby="detail-confirmation-title">
           <div className="confirmation-card">
             <span className="state-icon confirm-icon" aria-hidden="true"><AppIcon name="arrow" size={24} /></span>
-            <p className="eyebrow">Confirmare necesară</p>
+            <p className="eyebrow">{t("common.confirmationRequired")}</p>
             <h2 id="detail-confirmation-title">{orderActionConfirmation[action.id].title}</h2>
-            <p>Comanda #{order.orderNumber}. {orderActionConfirmation[action.id].note}</p>
+            <p>{t("orderAction.orderNote", { number: order.orderNumber, note: orderActionConfirmation[action.id].note })}</p>
             {cuttingClaim && <>
-              {qrToken ? <p role="status">Etichetă QR capturată · serverul verifică aceeași comandă.</p> : <QrCapture onToken={setQrToken} disabled={state.status === "submitting"} />}
-              {ownedCount === null ? <p>Se verifică lucrările tale active…</p> : ownedCount > 0 && <div className="order-notice order-notice-warning"><strong>Ai deja {ownedCount} comenzi în lucru.</strong><p>Dacă preiei această comandă, trebuie să finalizezi sau să transferi toate comenzile active. Vrei să continui?</p><label><input type="checkbox" checked={confirmedMultiple} onChange={(e) => setConfirmedMultiple(e.target.checked)} /> Confirm explicit preluarea încă unei comenzi.</label></div>}
+              {qrToken ? <p role="status">{t("orderAction.qrCaptured")}</p> : <QrCapture onToken={setQrToken} disabled={state.status === "submitting"} />}
+              {ownedCount === null ? <p>{t("orderAction.checkingWork")}</p> : ownedCount > 0 && <div className="order-notice order-notice-warning"><strong>{t("orderAction.alreadyOwned", { count: ownedCount })}</strong><p>{t("orderAction.multipleBody")}</p><label><input type="checkbox" checked={confirmedMultiple} onChange={(e) => setConfirmedMultiple(e.target.checked)} /> {t("orderAction.multipleConfirm")}</label></div>}
             </>}
             <div className="confirm-transition">
               <StageLabel stage={current} muted={action.id !== "claim"} />
               {action.id === "complete_stage" && <><span aria-hidden="true">↓</span><StageLabel stage={next} /></>}
-              {action.id === "complete_production" && <><span aria-hidden="true">↓</span><span className="stage-label"><span>✓</span>Producție finalizată</span></>}
+              {action.id === "complete_production" && <><span aria-hidden="true">↓</span><span className="stage-label"><span>✓</span>{t("common.productionCompleted")}</span></>}
             </div>
             <div className="confirmation-actions">
-              <button className="button button-secondary" type="button" disabled={state.status === "submitting"} onClick={() => setState({ status: "idle" })}>Anulează</button>
-              <button className="button button-primary" type="button" aria-busy={state.status === "submitting" || undefined} disabled={state.status === "submitting" || (cuttingClaim && (!qrToken || ownedCount === null || (ownedCount > 0 && !confirmedMultiple)))} onClick={() => void submit(state.idempotencyKey)}>{state.status === "submitting" ? "Se procesează…" : "Confirmă"}</button>
+              <button className="button button-secondary" type="button" disabled={state.status === "submitting"} onClick={() => setState({ status: "idle" })}>{t("common.cancel")}</button>
+              <button className="button button-primary" type="button" aria-busy={state.status === "submitting" || undefined} disabled={state.status === "submitting" || (cuttingClaim && (!qrToken || ownedCount === null || (ownedCount > 0 && !confirmedMultiple)))} onClick={() => void submit(state.idempotencyKey)}>{state.status === "submitting" ? t("common.processing") : t("common.confirm")}</button>
             </div>
-            {state.status === "submitting" && <small className="server-note">Așteptăm confirmarea serverului.</small>}
+            {state.status === "submitting" && <small className="server-note">{t("common.waitingServer")}</small>}
           </div>
         </div>
       )}

@@ -1,4 +1,5 @@
 import type { ProductionWorkflow, StaffOrder } from "../../domain/models";
+import { formatDate, t, useI18n } from "../../i18n";
 import { getStageById } from "../../domain/productionWorkflow";
 import { SourceBadge } from "../../components/SourceBadge";
 import { StageLabel } from "../../components/StageLabel";
@@ -6,18 +7,18 @@ import { getUsableProductionProducts } from "../../domain/orderValidation";
 import { getEmployeeRelationLabel, getEmployeeRelationTime } from "../../domain/orderRelation";
 import { AppIcon } from "../../components/icons/AppIcon";
 
-const time = new Intl.DateTimeFormat("ro-RO", { hour: "2-digit", minute: "2-digit" });
 
 export function OrderCard({ order, workflow, onOpen }: { order: StaffOrder; workflow: ProductionWorkflow; onOpen: () => void }) {
+  useI18n();
   const products = getUsableProductionProducts(order);
   const item = products.at(0);
   const relevantAt = getEmployeeRelationTime(order);
   return (
     <button className="order-card" type="button" onClick={onOpen}>
       <span className="order-card-top"><strong>#{order.orderNumber}</strong><SourceBadge source={order.source} /></span>
-      <span className="order-product">{item ? `${item.name} · ${item.code}${products.length > 1 ? ` +${products.length - 1}` : ""}` : "Produse indisponibile"}</span>
+      <span className="order-product">{item ? `${item.name} · ${item.code}${products.length > 1 ? ` +${products.length - 1}` : ""}` : t("common.productsUnavailable")}</span>
       <span className="order-card-stage"><StageLabel stage={getStageById(workflow, order.productionStageId)} /><AppIcon name="arrow" size={19} /></span>
-      <span className="order-relation"><span>{getEmployeeRelationLabel(order)}</span><time dateTime={relevantAt}>{time.format(new Date(relevantAt))}</time></span>
+      <span className="order-relation"><span>{getEmployeeRelationLabel(order)}</span><time dateTime={relevantAt}>{formatDate(relevantAt, { hour: "2-digit", minute: "2-digit" })}</time></span>
     </button>
   );
 }

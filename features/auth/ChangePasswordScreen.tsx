@@ -1,16 +1,17 @@
 import { useState, type FormEvent } from "react";
+import { t, useI18n } from "../../i18n";
 import { StaffServiceError } from "../../domain/models";
 import { getErrorPresentation } from "../../services/errors";
 import { PasswordField } from "./PasswordField";
 import { ArasyaLogo } from "../../components/brand/BrandLogo";
 
-/** Client-side checks in Romanian; the server enforces the same policy and remains the authority. */
+/** Client-side checks in the active language; the server enforces the same policy and remains the authority. */
 export function passwordChangeProblem(input: { currentPassword: string; newPassword: string; confirmation: string; username: string }): string {
-  if (!input.currentPassword || !input.newPassword || !input.confirmation) return "Completează parola actuală, parola nouă și confirmarea.";
-  if (input.newPassword.length < 12) return "Parola nouă trebuie să aibă cel puțin 12 caractere.";
-  if (input.newPassword === input.currentPassword) return "Parola nouă trebuie să fie diferită de parola actuală.";
-  if (input.username && input.newPassword.toLowerCase().includes(input.username.toLowerCase())) return "Parola nouă nu poate conține numele de utilizator.";
-  if (input.newPassword !== input.confirmation) return "Confirmarea nu coincide cu parola nouă.";
+  if (!input.currentPassword || !input.newPassword || !input.confirmation) return t("password.problem.missing");
+  if (input.newPassword.length < 12) return t("password.problem.length");
+  if (input.newPassword === input.currentPassword) return t("password.problem.same");
+  if (input.username && input.newPassword.toLowerCase().includes(input.username.toLowerCase())) return t("password.problem.username");
+  if (input.newPassword !== input.confirmation) return t("password.problem.mismatch");
   return "";
 }
 
@@ -26,6 +27,7 @@ export function ChangePasswordScreen({ displayName, username, voluntary = false,
   onLogout: () => Promise<void>;
   onCancel?: () => void;
 }) {
+  useI18n();
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
@@ -41,7 +43,7 @@ export function ChangePasswordScreen({ displayName, username, voluntary = false,
     setError("");
     try { await onChange({ currentPassword, newPassword }); }
     catch (caught) {
-      setError(caught instanceof StaffServiceError ? getErrorPresentation(caught.code).message : "Parola nu a putut fi schimbată.");
+      setError(caught instanceof StaffServiceError ? getErrorPresentation(caught).message : t("password.failed"));
       setSubmitting(false);
     }
   }
@@ -51,19 +53,19 @@ export function ChangePasswordScreen({ displayName, username, voluntary = false,
       <header className="login-brand"><ArasyaLogo className="login-logo" priority /><span className="login-app">Staff</span></header>
       <form className="login-card" onSubmit={handleSubmit} noValidate>
         <div className="login-heading">
-          <h1>{voluntary ? "Schimbă parola" : "Setează parola personală"}</h1>
-          <p>{voluntary ? `${displayName}, alege o parolă nouă. Celelalte sesiuni vor fi închise.` : `${displayName}, contul folosește o parolă temporară.`}</p>
+          <h1>{voluntary ? t("password.titleVoluntary") : t("password.titleRequired")}</h1>
+          <p>{voluntary ? t("password.leadVoluntary", { name: displayName }) : t("password.leadRequired", { name: displayName })}</p>
         </div>
-        {!voluntary && <div className="password-required" role="note"><strong>Pas obligatoriu</strong><span>Înainte de a accesa informațiile companiei trebuie să alegi o parolă personală. Parola temporară nu mai funcționează după schimbare.</span></div>}
-        <PasswordField label={voluntary ? "Parola actuală" : "Parola actuală (temporară)"} toggleName="parola curentă" value={currentPassword} onChange={setCurrentPassword} autoComplete="current-password" />
-        <PasswordField label="Parola nouă" toggleName="noua parolă" value={newPassword} onChange={setNewPassword} autoComplete="new-password" />
-        <PasswordField label="Confirmă parola nouă" toggleName="confirmarea parolei" value={confirmation} onChange={setConfirmation} autoComplete="new-password" />
-        <p className="login-footnote password-rules">Minimum 12 caractere, diferită de parola actuală și fără numele de utilizator. Aceeași parolă funcționează în toate aplicațiile Arasya.</p>
+        {!voluntary && <div className="password-required" role="note"><strong>{t("password.requiredStep")}</strong><span>{t("password.requiredNote")}</span></div>}
+        <PasswordField label={voluntary ? t("password.current") : t("password.currentTemporary")} toggleName={t("password.currentName")} value={currentPassword} onChange={setCurrentPassword} autoComplete="current-password" />
+        <PasswordField label={t("password.new")} toggleName={t("password.newName")} value={newPassword} onChange={setNewPassword} autoComplete="new-password" />
+        <PasswordField label={t("password.confirm")} toggleName={t("password.confirmName")} value={confirmation} onChange={setConfirmation} autoComplete="new-password" />
+        <p className="login-footnote password-rules">{t("password.rules")}</p>
         {error && <p className="form-error" role="alert">{error}</p>}
-        <button className="button button-primary button-large" type="submit" disabled={submitting} aria-busy={submitting || undefined}>{submitting ? "Se salvează…" : "Salvează parola nouă"}</button>
+        <button className="button button-primary button-large" type="submit" disabled={submitting} aria-busy={submitting || undefined}>{submitting ? t("password.saving") : t("password.save")}</button>
         {voluntary && onCancel
-          ? <button className="button button-secondary" type="button" onClick={onCancel}>Anulează</button>
-          : <button className="button button-secondary" type="button" onClick={() => { void onLogout(); }}>Ieși din cont</button>}
+          ? <button className="button button-secondary" type="button" onClick={onCancel}>{t("common.cancel")}</button>
+          : <button className="button button-secondary" type="button" onClick={() => { void onLogout(); }}>{t("common.signOut")}</button>}
       </form>
     </main>
   );

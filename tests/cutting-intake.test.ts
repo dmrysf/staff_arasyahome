@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { ro } from "../i18n/messages/ro";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
@@ -62,7 +63,9 @@ test("the multiple-job warning reuses the scanned label and a confirmation is a 
   const source = readFileSync(path.join(root, "features/scanner/ScannerScreen.tsx"), "utf8");
   const dialog = source.slice(source.indexOf('state.status === "take_confirm" &&'), source.indexOf('data-testid="cutting-intake-success"'));
   assert.doesNotMatch(dialog, /QrCapture/, "the confirmation never asks for a second scan");
-  assert.match(dialog, /Nu este nevoie să o scanezi din nou/);
+  // The words live in the language catalogs (Romanian reference shown here); the dialog uses that message.
+  assert.match(dialog, /t\("scanner\.reuseLabel"\)/);
+  assert.match(ro["scanner.reuseLabel"], /Nu este nevoie să o scanezi din nou/);
 });
 
 test("another stage falls back to the ordinary scan; a transient failure retries the same request only", () => {

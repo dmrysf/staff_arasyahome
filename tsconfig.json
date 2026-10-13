@@ -23,6 +23,8 @@
     "e2e/**/*.ts",
     "features/**/*.ts",
     "features/**/*.tsx",
+    "i18n/**/*.ts",
+    "i18n/**/*.tsx",
     "mocks/**/*.ts",
     "services/**/*.ts",
     "src/**/*.ts",

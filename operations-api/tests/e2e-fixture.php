@@ -232,6 +232,22 @@ $admin->create('VASILOAIA IULIANA','sup.chief.e2e',null,'pregatire-material','em
 $supervisor=$admin->create('Sorina Supervizor','supervisor.e2e',null,'pregatire-material','employee',$password,['quality-control','packing'],'e2e');
 $iam($supervisor->employeeUuid,['staff','dashboard'],[$roleId('supervisor')]);
 
+// Staff languages (migration 027): one Turkish, one Sinhala and one English tailoring employee, a Turkish identity
+// that still has a temporary password, and one order at labeling (Romanian product data, never translated). The
+// language is assigned through the audited IAM route, exactly as in production.
+$localeUsers = [];
+foreach (['tr' => ['Haydar Test', 'tr.e2e'], 'si' => ['Priyantha Test', 'si.e2e'], 'en' => ['Haleem Test', 'en.e2e'], 'tr-temp' => ['Zulfiya Test', 'tr.temp.e2e']] as $locale => [$name, $username]) {
+    $person = $admin->create($name, $username, null, 'pregatire-material', 'employee', $password, ['labeling'], 'e2e');
+    $r = T::call($kernel, 'PUT', "/management/employees/{$person->employeeUuid}/staff-locale", ['locale' => substr($locale, 0, 2)], ['origin' => $origin, 'x-csrf-token' => $root['csrf']], $root['cookie']);
+    if ($r['status'] !== 200 || ($r['body']['staffLocale'] ?? null) !== substr($locale, 0, 2)) throw new RuntimeException('E2E locale setup failed: ' . json_encode($r['body']));
+    $localeUsers[$locale] = $username;
+}
+$pdo->prepare("UPDATE employees SET must_change_password = 1 WHERE username_normalized = 'tr.temp.e2e'")->execute();
+$r = T::ingest($kernel, 'trendhome', T::sourceOrder('76001', 'locale-e2e-76001', $changedAt, T::stage('labeling'), 'processing', 'active', [[
+    'id' => 760010, 'line' => 1, 'name' => 'Perdea Voal Alb', 'sku' => 'PV-ALB-76001', 'color' => 'Alb', 'width' => 300, 'height' => 260, 'unit' => 'cm', 'meters' => 8.4, 'quantity' => 2,
+]]));
+if (($r['body']['outcome'] ?? null) !== 'applied') throw new RuntimeException('E2E locale order failed: ' . json_encode($r['body']));
+
 echo json_encode([
     'password' => $password,
     'dashboards' => ['scoped' => 'ty.scoped.e2e', 'preparer' => 'ty.prep.e2e', 'sewing' => 'sew.e2e', 'supervisor' => 'supervisor.e2e', 'multi' => 'operator.b2b.e2e'],
@@ -239,6 +255,7 @@ echo json_encode([
     'users' => ['ana' => 'ana.e2e', 'bogdan' => 'bogdan.e2e', 'mihai' => 'mihai.e2e', 'dashboardOnly' => 'dora.e2e', 'temporary' => 'teodor.e2e'],
     'orders' => ['flow' => '70001', 'qr' => '70002', 'claimedByOther' => '70003', 'conflict' => '70004', 'camera' => '70006'],
     'qr' => $qr,
+    'locales' => ['users' => $localeUsers, 'order' => '76001', 'product' => 'Perdea Voal Alb', 'color' => 'Alb'],
     'b2b' => ['id'=>'b2b:'.$b2bOrder['id'],'code'=>$b2bOrder['code'],'username'=>'operator.b2b.e2e'],
     'documents' => ['order' => '72001', 'superseded' => '72002', 'requester' => 'online.doc.e2e', 'approver' => 'sinem.doc.e2e', 'cutter' => 'doc.cutter.e2e'],
     'exceptions' => ['order' => '70005', 'cutter' => 'crama.e2e', 'intake' => 'oprea.e2e', 'manager' => 'denisa.e2e'],

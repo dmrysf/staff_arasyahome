@@ -47,8 +47,8 @@ test("Trendyol answers are mapped strictly and fail closed", () => {
   assert.equal(mapped.orderDateNearActivation, false, "an API without the flag means no near-activation warning");
   assert.equal(mapTrendyolDetail({ ...detail, orderDateNearActivation: true }).orderDateNearActivation, true);
   assert.throws(() => mapTrendyolDetail({ ...detail, orderDateNearActivation: "yes" }), serverError);
-  assert.match(nearActivationWarning, /5 minute/);
-  assert.doesNotMatch(nearActivationWarning, /GMT/, "the activation warning is not a timezone rule");
+  assert.match(nearActivationWarning(), /5 minute/);
+  assert.doesNotMatch(nearActivationWarning(), /GMT/, "the activation warning is not a timezone rule");
   // Status classes: the server class wins; an older API falls back to the same table; unknown statuses are review.
   assert.equal(mapped.marketplaceClass, "new");
   assert.equal(mapped.readiness.blockedReason, null);

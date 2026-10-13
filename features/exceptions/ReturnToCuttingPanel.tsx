@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import { liveRecords, useI18n } from "../../i18n";
+import { faultReasonName } from "../../domain/stageNames";
 import type { FaultReason, StaffOrder, StaffServiceError } from "../../domain/models";
 import type { ExceptionService } from "../../services/contracts";
 import { ErrorState } from "../../components/ErrorState";
@@ -22,14 +24,12 @@ export function canReturnToCutting(order: StaffOrder, permissions: readonly stri
     && !order.productionQuality?.openException && permissions.includes("orders.report_fault");
 }
 
-const copy = {
-  intake: { open: "Returnează la Tăiere", title: "Returnează la Tăiere", intro: "Bifează doar produsele tăiate greșit. Responsabilul este stabilit automat din istoricul comenzii.", picker: "Produse cu eroare", total: "Metraj cu eroare", reason: "Motiv", comment: "Comentariu", submit: "Trimite cererea" },
-  // Supervised flow: the worker only reports; the tailoring quality supervisor verifies and decides.
-  defect: { open: "Raportează o problemă", title: "Raportează o problemă", intro: "Alege produsele afectate și descrie problema. Șeful de croitorie verifică produsul și decide pașii următori.", picker: "Produse afectate", total: "Metraj afectat", reason: "Problema observată", comment: "Descriere", submit: "Raportează șefului de croitorie" },
-} as const;
+// Supervised flow ("defect"): the worker only reports; the tailoring quality supervisor verifies and decides.
+const copy = liveRecords("ret.", ["intake", "defect"], ["open", "intro", "picker", "total", "reason", "comment", "submit"]);
 
 /** Selection of the exact faulty lines, reason and comment; one server-confirmed request. */
 export function ReturnToCuttingPanel({ order, service, onReported, onSessionExpired, variant = "intake" }: { order: StaffOrder; service: ExceptionService; onReported: (exceptionId: string) => void; onSessionExpired: () => void; variant?: "intake" | "defect" }) {
+  const { t } = useI18n();
   const text = copy[variant];
   const [open, setOpen] = useState(false);
   const [reasons, setReasons] = useState<FaultReason[]>([]);
@@ -76,23 +76,23 @@ export function ReturnToCuttingPanel({ order, service, onReported, onSessionExpi
   return (
     <div className="confirmation-layer" role="dialog" aria-modal="true" aria-labelledby="return-title">
       <div className="confirmation-card return-card">
-        <p className="eyebrow">Comanda #{order.orderNumber}</p>
-        <h2 id="return-title">{text.title}</h2>
+        <p className="eyebrow">{t("common.order", { number: order.orderNumber })}</p>
+        <h2 id="return-title">{text.open}</h2>
         <p>{text.intro}</p>
         <fieldset className="fault-picker"><legend>{text.picker}</legend>
           {metered.map((item) => <label key={item.id} className="check-field"><input type="checkbox" checked={selected.has(item.id)} onChange={() => toggle(item.id)} />
-            <span><strong>{item.name}</strong><small>{[item.code, item.color].filter(Boolean).join(" · ")}</small></span><b>{item.meters != null && item.meters > 0 ? formatMeters(item.meters) : "fără metraj"}</b></label>)}
+            <span><strong>{item.name}</strong><small>{[item.code, item.color].filter(Boolean).join(" · ")}</small></span><b>{item.meters != null && item.meters > 0 ? formatMeters(item.meters) : t("common.noMeters")}</b></label>)}
         </fieldset>
         <p className="fault-total" role="status">{text.total}: <b>{formatFaultMeters(selectionScope(order.products, selected))}</b></p>
         <label className="field"><span>{text.reason}</span><select value={reasonKey} onChange={(event) => { setReasonKey(event.target.value); keyRef.current = null; }}>
-          <option value="">Alege motivul</option>{reasons.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}</select></label>
-        <label className="field"><span>{text.comment} {reason?.requiresComment ? "(obligatoriu)" : "(opțional)"}</span><textarea maxLength={1000} rows={2} value={comment} onChange={(event) => { setComment(event.target.value); keyRef.current = null; }} /></label>
+          <option value="">{t("common.chooseReason")}</option>{reasons.map((item) => <option key={item.key} value={item.key}>{faultReasonName(item.key, item.label)}</option>)}</select></label>
+        <label className="field"><span>{text.comment} {reason?.requiresComment ? t("common.requiredSuffix") : t("common.optionalSuffix")}</span><textarea maxLength={1000} rows={2} value={comment} onChange={(event) => { setComment(event.target.value); keyRef.current = null; }} /></label>
         {error && <ErrorState error={error} compact onAction={() => setError(null)} />}
         <div className="confirmation-actions">
-          <button className="button button-secondary" type="button" disabled={submitting} onClick={() => setOpen(false)}>Anulează</button>
-          <button className="button button-primary" type="button" disabled={!ready || submitting} aria-busy={submitting || undefined} onClick={() => void submit()}>{submitting ? "Se trimite…" : text.submit}</button>
+          <button className="button button-secondary" type="button" disabled={submitting} onClick={() => setOpen(false)}>{t("common.cancel")}</button>
+          <button className="button button-primary" type="button" disabled={!ready || submitting} aria-busy={submitting || undefined} onClick={() => void submit()}>{submitting ? t("common.sending") : text.submit}</button>
         </div>
-        {submitting && <small className="server-note">Așteptăm confirmarea serverului.</small>}
+        {submitting && <small className="server-note">{t("common.waitingServer")}</small>}
       </div>
     </div>
   );

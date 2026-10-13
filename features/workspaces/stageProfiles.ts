@@ -1,4 +1,5 @@
 import type { AppIconName } from "../../components/icons/AppIcon";
+import { t } from "../../i18n";
 import type { ProductionItem, StaffOrder } from "../../domain/models";
 import type { StageQueue } from "../../domain/workspaces";
 import { formatMeasurements, formatMeters } from "../../domain/productFormat";
@@ -35,10 +36,10 @@ export const stageProfile = (workspaceId: string): StageProfile => profiles[work
 export function orderFacts(order: StaffOrder, detail: StageProfile["detail"]): { primary: string; chips: string[] } {
   const products = getUsableProductionProducts(order);
   const first: ProductionItem | undefined = products.at(0);
-  if (!first) return { primary: "Produse indisponibile", chips: [] };
+  if (!first) return { primary: t("common.productsUnavailable"), chips: [] };
   const more = products.length > 1 ? ` +${products.length - 1}` : "";
   if (detail === "items") {
-    return { primary: `${products.length} ${products.length === 1 ? "produs" : "produse"} · ${products.reduce((sum, item) => sum + item.quantity, 0)} buc.`, chips: products.slice(0, 3).map((item) => `${item.name} × ${item.quantity}`) };
+    return { primary: `${t("common.products", { count: products.length })} · ${t("product.pieces", { count: products.reduce((sum, item) => sum + item.quantity, 0) })}`, chips: products.slice(0, 3).map((item) => `${item.name} × ${item.quantity}`) };
   }
   if (detail === "measures") {
     const chips = [formatMeasurements(first), first.meters != null ? formatMeters(first.meters) : undefined, first.quantity > 1 ? `× ${first.quantity}` : undefined].filter((value): value is string => Boolean(value));
@@ -57,23 +58,23 @@ export function stageNextAction(queue: StageQueue, profile: StageProfile, canSca
   const mine = items.find((order) => order.employeeAllowedAction?.id === "complete_stage" || order.employeeAllowedAction?.id === "complete_production");
   if (mine) {
     const others = queue.counts.mine - 1;
-    return { tone: "action", eyebrow: "Următorul pas", title: "Continuă lucrul", detail: others > 0 ? `Mai ai ${others} ${others === 1 ? "comandă" : "comenzi"} în lucru la această etapă.` : "Finalizează etapa din pagina comenzii.", orderNumber: mine.orderNumber, cta: { label: `Deschide comanda #${mine.orderNumber}`, path: `/orders/${encodeURIComponent(mine.id)}` } };
+    return { tone: "action", eyebrow: t("next.step"), title: t("next.continueTitle"), detail: others > 0 ? t("next.continueMore", { count: others }) : t("next.continueFinish"), orderNumber: mine.orderNumber, cta: { label: t("common.openOrderNumber", { number: mine.orderNumber }), path: `/orders/${encodeURIComponent(mine.id)}` } };
   }
   if (queue.counts.available > 0) {
     if (profile.claimByScan) {
-      return { tone: "action", eyebrow: "Următorul pas", title: "Preia o comandă nouă", detail: `${queue.counts.available} ${queue.counts.available === 1 ? "comandă disponibilă" : "comenzi disponibile"}. O singură scanare a etichetei QR originale îți atribuie comanda.`, orderNumber: null, cta: canScan ? { label: "Scanează eticheta QR", path: "/scan" } : null };
+      return { tone: "action", eyebrow: t("next.step"), title: t("next.takeNewTitle"), detail: t("next.takeNewDetail", { available: t("next.available", { count: queue.counts.available }) }), orderNumber: null, cta: canScan ? { label: t("next.scanLabel"), path: "/scan" } : null };
     }
     const available = items.find((order) => order.employeeAllowedAction?.id === "claim");
     if (available) {
-      return { tone: "action", eyebrow: "Următorul pas", title: "Preia următoarea comandă", detail: `${queue.counts.available} ${queue.counts.available === 1 ? "comandă disponibilă" : "comenzi disponibile"}. Deschiderea nu o preia: confirmi în pagina comenzii.`, orderNumber: available.orderNumber, cta: { label: `Deschide comanda #${available.orderNumber}`, path: `/orders/${encodeURIComponent(available.id)}` } };
+      return { tone: "action", eyebrow: t("next.step"), title: t("next.takeNextTitle"), detail: t("next.takeNextDetail", { available: t("next.available", { count: queue.counts.available }) }), orderNumber: available.orderNumber, cta: { label: t("common.openOrderNumber", { number: available.orderNumber }), path: `/orders/${encodeURIComponent(available.id)}` } };
     }
   }
   if (queue.counts.blocked > 0) {
-    return { tone: "attention", eyebrow: "Verificare", title: `${queue.counts.blocked} ${queue.counts.blocked === 1 ? "comandă blocată" : "comenzi blocate"}`, detail: "Motivul apare pe fiecare comandă din listă.", orderNumber: null, cta: null };
+    return { tone: "attention", eyebrow: t("next.checkEyebrow"), title: t("next.blockedTitle", { count: queue.counts.blocked }), detail: t("next.blockedDetail"), orderNumber: null, cta: null };
   }
   if (profile.claimByScan) {
     // Stage-1 orders are not listed for cutting; their label is scanned directly and the scan hands them over.
-    return { tone: "calm", eyebrow: "Totul este la zi", title: "Nicio comandă în lucru", detail: "Comenzile aprobate se preiau scanând eticheta QR: o singură scanare le trece la Tăiere și ți le atribuie.", orderNumber: null, cta: canScan ? { label: "Scanează eticheta QR", path: "/scan" } : null };
+    return { tone: "calm", eyebrow: t("next.upToDate"), title: t("next.noWorkTitle"), detail: t("next.noWorkDetail"), orderNumber: null, cta: canScan ? { label: t("next.scanLabel"), path: "/scan" } : null };
   }
-  return { tone: "calm", eyebrow: "Totul este la zi", title: "Nicio comandă de preluat", detail: "Lista se actualizează automat când o comandă ajunge aici.", orderNumber: null, cta: null };
+  return { tone: "calm", eyebrow: t("next.upToDate"), title: t("next.nothingTitle"), detail: t("next.nothingDetail"), orderNumber: null, cta: null };
 }

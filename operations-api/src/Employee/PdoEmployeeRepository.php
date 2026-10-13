@@ -6,11 +6,14 @@ namespace Arasya\Operations\Employee;
 
 use Arasya\Operations\Iam\ApplicationAccess;
 use PDO;
+use PDOException;
 use RuntimeException;
 use Throwable;
 
 final class PdoEmployeeRepository implements EmployeeRepository
 {
+    private bool $staffLocaleColumn = true;
+
     public function __construct(private readonly PDO $pdo)
     {
     }
@@ -130,9 +133,11 @@ final class PdoEmployeeRepository implements EmployeeRepository
 
     private function find(string $where, string $value): ?EmployeeIdentity
     {
-        $statement = $this->pdo->prepare(
-            "SELECT e.employee_uuid, e.employee_code, e.username, e.username_normalized, e.password_hash, e.display_name, e.status,
-                    e.position_title, e.manager_employee_uuid, e.must_change_password, e.authorization_version, e.department_id,
+        // Before migration 027 runs the column does not exist yet: every identity then reads as Romanian, so a code
+        // release activated ahead of its migration never blocks a login.
+        $locale = $this->staffLocaleColumn ? 'e.staff_locale' : 'NULL AS staff_locale';
+        $sql = "SELECT e.employee_uuid, e.employee_code, e.username, e.username_normalized, e.password_hash, e.display_name, e.status,
+                    e.position_title, e.manager_employee_uuid, e.must_change_password, e.authorization_version, e.department_id, {$locale},
                     d.department_key, d.name AS department_name, d.status AS department_status,
                     r.role_key, r.status AS role_status,
                     (SELECT COUNT(*) FROM system_root_identity sri WHERE sri.employee_uuid = e.employee_uuid) AS is_root
@@ -140,9 +145,17 @@ final class PdoEmployeeRepository implements EmployeeRepository
              INNER JOIN departments d ON d.department_id = e.department_id
              INNER JOIN roles r ON r.role_id = e.role_id
              WHERE {$where}
-             LIMIT 1",
-        );
-        $statement->execute(['value' => $value]);
+             LIMIT 1";
+        try {
+            $statement = $this->pdo->prepare($sql);
+            $statement->execute(['value' => $value]);
+        } catch (PDOException $error) {
+            if (!$this->staffLocaleColumn || ($error->errorInfo[1] ?? null) !== 1054 || !str_contains($error->getMessage(), 'staff_locale')) {
+                throw $error;
+            }
+            $this->staffLocaleColumn = false;
+            return $this->find($where, $value);
+        }
         $row = $statement->fetch();
         if (!is_array($row)) {
             return null;
@@ -240,6 +253,7 @@ final class PdoEmployeeRepository implements EmployeeRepository
             authorityRank: $isRoot ? PHP_INT_MAX : $authorityRank,
             departmentId: (int) $row['department_id'],
             stageSourceScopes: $stageSourceScopes,
+            staffLocale: StaffLocale::normalize($row['staff_locale'] ?? null),
         );
     }
 

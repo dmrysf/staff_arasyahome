@@ -135,6 +135,7 @@ try {
     $expected[] = '024_tailoring_quality_supervision.sql';
     $expected[] = '025_source_payment_gate.sql';
     $expected[] = '026_trendyol_product_identity.sql';
+    $expected[] = '027_employee_staff_locale.sql';
     if ($applied !== $expected) {
         throw new RuntimeException('An existing 001 schema did not apply exactly the pending migrations in order: ' . implode(', ', $applied));
     }

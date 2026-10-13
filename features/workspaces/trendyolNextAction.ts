@@ -1,4 +1,5 @@
 import type { TrendyolPackageSummary } from "../../domain/trendyol";
+import { t } from "../../i18n";
 import type { TrendyolDashboardData } from "../trendyol/trendyolRefresh";
 
 export type NextAction = {
@@ -22,22 +23,22 @@ export function trendyolNextAction(data: TrendyolDashboardData): NextAction {
   const { capabilities, counts, intake } = data.overview;
   const ready = capabilities.release ? data.pending.find((item) => missingLines(item) === 0) : undefined;
   if (ready) {
-    return { tone: "ready", eyebrow: "Următorul pas", title: "Aprobă intrarea în producție", detail: "Toate liniile sunt confirmate. Verifică încă o dată și aprobă.", orderNumber: ready.orderNumber, cta: { label: `Deschide comanda #${ready.orderNumber}`, path: `/trendyol/${ready.packageId}` } };
+    return { tone: "ready", eyebrow: t("ty.next.step"), title: t("ty.next.approveTitle"), detail: t("ty.next.approveDetail"), orderNumber: ready.orderNumber, cta: { label: t("common.openOrderNumber", { number: ready.orderNumber }), path: `/trendyol/${ready.packageId}` } };
   }
   const toPrepare = data.pending.find((item) => (missingLines(item) ?? 1) > 0) ?? data.pending[0];
   if (toPrepare && capabilities.prepare) {
     const missing = missingLines(toPrepare);
-    const detail = missing === null ? "Completează măsurile fiecărui produs." : `${missing} din ${toPrepare.lineCount} ${toPrepare.lineCount === 1 ? "linie" : "linii"} de completat.`;
-    return { tone: "action", eyebrow: "Următorul pas", title: "Completează măsurile", detail, orderNumber: toPrepare.orderNumber, cta: { label: `Deschide comanda #${toPrepare.orderNumber}`, path: `/trendyol/${toPrepare.packageId}` } };
+    const detail = missing === null ? t("ty.next.measureDetail") : t("ty.next.missingLines", { missing, count: toPrepare.lineCount ?? 0 });
+    return { tone: "action", eyebrow: t("ty.next.step"), title: t("ty.next.measureTitle"), detail, orderNumber: toPrepare.orderNumber, cta: { label: t("common.openOrderNumber", { number: toPrepare.orderNumber }), path: `/trendyol/${toPrepare.packageId}` } };
   }
   if (counts.pending > 0) {
-    return { tone: "action", eyebrow: "De pregătit", title: `${counts.pending} ${counts.pending === 1 ? "comandă așteaptă" : "comenzi așteaptă"} pregătirea`, detail: "Poți vedea comenzile; pregătirea o face o persoană cu drept de pregătire.", orderNumber: null, cta: { label: "Vezi comenzile", path: "/trendyol" } };
+    return { tone: "action", eyebrow: t("ty.next.pendingEyebrow"), title: t("ty.next.pendingTitle", { count: counts.pending }), detail: t("ty.next.pendingDetail"), orderNumber: null, cta: { label: t("ty.next.viewOrders"), path: "/trendyol" } };
   }
   if (counts.attention > 0) {
-    return { tone: "attention", eyebrow: "Verificare manuală", title: `${counts.attention} ${counts.attention === 1 ? "comandă necesită" : "comenzi necesită"} atenție`, detail: "Statusul din Trendyol nu permite încă intrarea în producție.", orderNumber: null, cta: { label: "Vezi comenzile", path: "/trendyol" } };
+    return { tone: "attention", eyebrow: t("ty.next.attentionEyebrow"), title: t("ty.next.attentionTitle", { count: counts.attention }), detail: t("ty.next.attentionDetail"), orderNumber: null, cta: { label: t("ty.next.viewOrders"), path: "/trendyol" } };
   }
   if (intake.status !== "active") {
-    return { tone: "calm", eyebrow: "Conexiune Trendyol", title: intake.status === "paused" ? "Citirea comenzilor este oprită temporar" : "Conexiunea Trendyol nu este activată", detail: "Nu există comenzi de pregătit.", orderNumber: null, cta: null };
+    return { tone: "calm", eyebrow: t("ty.next.connectionEyebrow"), title: intake.status === "paused" ? t("ty.next.paused") : t("ty.next.inactive"), detail: t("ty.next.nothingToPrepare"), orderNumber: null, cta: null };
   }
-  return { tone: "calm", eyebrow: "Totul este la zi", title: "Nicio comandă de pregătit", detail: "Comenzile noi din Trendyol apar aici automat.", orderNumber: null, cta: null };
+  return { tone: "calm", eyebrow: t("ty.next.upToDate"), title: t("ty.next.noneTitle"), detail: t("ty.next.noneDetail"), orderNumber: null, cta: null };
 }
