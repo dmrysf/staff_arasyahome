@@ -13,6 +13,6 @@ while (!is_file($input['barrier'])) {
 }
 $started=microtime(true);
 touch($input['started']);
-$r=$container->kernel()->handle(new Arasya\Operations\Http\Request('POST',$input['path'],['origin'=>'http://127.0.0.1:4175','content-type'=>'application/json','x-csrf-token'=>$input['csrf'],'idempotency-key'=>$input['key']],
+$r=$container->kernel()->handle(new Arasya\Operations\Http\Request('POST',$input['path'],['origin'=>explode(',',(string)getenv('ARASYA_ALLOWED_ORIGINS'))[0],'content-type'=>'application/json','x-csrf-token'=>$input['csrf'],'idempotency-key'=>$input['key']],
     [$container->config()->cookieName()=>$input['cookie']],json_encode($input['body'],JSON_THROW_ON_ERROR),'127.0.0.1','factory-race','factory-race-' . getmypid()));
 echo json_encode(['pid'=>getmypid(),'startedAt'=>$started,'endedAt'=>microtime(true),'status'=>$r->status,'code'=>$r->payload['error']['code']??null],JSON_THROW_ON_ERROR);

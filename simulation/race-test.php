@@ -14,7 +14,7 @@ $sessions=[]; $checks=[];
 $check=static function(bool $pass,string $name,mixed $actual=null)use(&$checks):void { $checks[]=['id'=>$name,'result'=>$pass?'PASS':'FAIL','actual'=>$actual]; if (!$pass) throw new RuntimeException('FAIL ' . $name); };
 $call=static function(string $who,string $method,string $path,array $body=[],?string $key=null)use($container,$kernel,&$sessions):array {
     $s=$sessions[$who]??null;
-    $r=$kernel->handle(new Request($method,$path,['origin'=>'http://127.0.0.1:4175','content-type'=>'application/json','x-csrf-token'=>$s['csrf']??'','idempotency-key'=>$key??'race-setup-' . bin2hex(random_bytes(8))],$s===null?[]:[$container->config()->cookieName()=>$s['cookie']],$method==='GET'?'':json_encode($body,JSON_THROW_ON_ERROR),'127.0.0.1','factory-race','race-setup'));
+    $r=$kernel->handle(new Request($method,$path,['origin'=>explode(',',(string)getenv('ARASYA_ALLOWED_ORIGINS'))[0],'content-type'=>'application/json','x-csrf-token'=>$s['csrf']??'','idempotency-key'=>$key??'race-setup-' . bin2hex(random_bytes(8))],$s===null?[]:[$container->config()->cookieName()=>$s['cookie']],$method==='GET'?'':json_encode($body,JSON_THROW_ON_ERROR),'127.0.0.1','factory-race','race-setup'));
     return ['status'=>$r->status,'body'=>$r->payload,'headers'=>$r->headers];
 };
 $one=static function(string $sql,array $params=[])use($pdo):mixed { $s=$pdo->prepare($sql);$s->execute($params);return $s->fetchColumn(); };

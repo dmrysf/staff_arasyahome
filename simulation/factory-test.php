@@ -22,7 +22,7 @@ $check=static function(bool $condition,string $id,string $expected,mixed $actual
     if (!$condition) throw new RuntimeException('FAIL ' . $id);
 };
 $call=static function(string $who,string $method,string $path,?array $body=null,?string $key=null,?string $csrf=null)use($manifest,$container,$kernel,&$sessions,&$keys):array {
-    $headers=['origin'=>'http://127.0.0.1:4175','content-type'=>'application/json'];
+    $headers=['origin'=>explode(',',(string)getenv('ARASYA_ALLOWED_ORIGINS'))[0],'content-type'=>'application/json'];
     $s=$sessions[$who]??null;
     if ($s!==null) $headers['x-csrf-token']=$csrf??$s['csrf'];
     if ($method!=='GET') $headers['idempotency-key']=$key??'factory-' . $manifest['sessionId'] . '-' . ++$keys;

@@ -9,7 +9,7 @@ $future=static function(string $who,string $path,array $body,int $seconds=120)us
         public function __construct(private int $seconds) {}
         public function now(): \DateTimeImmutable {return (new \DateTimeImmutable('now',new \DateTimeZone('UTC')))->modify('+' . $this->seconds . ' seconds');}
     };
-    $test=new Container($container->config(),$pdo,$clock);$s=$sessions[$who];$r=$test->kernel()->handle(new Request('POST',$path,['origin'=>'http://127.0.0.1:4175','content-type'=>'application/json','x-csrf-token'=>$s['csrf'],'idempotency-key'=>'future-' . bin2hex(random_bytes(10))],[$test->config()->cookieName()=>$s['cookie']],json_encode($body,JSON_THROW_ON_ERROR),'127.0.0.1','simulation-expiry','simulation-expiry'));
+    $test=new Container($container->config(),$pdo,$clock);$s=$sessions[$who];$r=$test->kernel()->handle(new Request('POST',$path,['origin'=>explode(',',(string)getenv('ARASYA_ALLOWED_ORIGINS'))[0],'content-type'=>'application/json','x-csrf-token'=>$s['csrf'],'idempotency-key'=>'future-' . bin2hex(random_bytes(10))],[$test->config()->cookieName()=>$s['cookie']],json_encode($body,JSON_THROW_ON_ERROR),'127.0.0.1','simulation-expiry','simulation-expiry'));
     return ['status'=>$r->status,'body'=>$r->payload];
 };
 $role=(int)$one("SELECT role_id FROM roles WHERE role_key='operations-manager'");
