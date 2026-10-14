@@ -70,6 +70,7 @@ const actions: Record<ServiceErrorCode, ErrorActionKey> = {
   SUPERVISOR_REQUIRED: "back",
   SELF_REVIEW_DENIED: "back",
   RESPONSIBLE_UNAVAILABLE: "chooseCutter",
+  RETURN_CANCEL_CONFIRMATION_REQUIRED: "back",
   RECEIVER_NOT_ALLOWED: "reload",
   RESTORE_RECIPIENT_UNAVAILABLE: "chooseEmployee",
   RECIPIENT_NOT_ALLOWED: "reload",

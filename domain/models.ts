@@ -209,6 +209,8 @@ export type FaultException = {
   restoreReceivedAt: string | null;
   /** Root recovery: the case ends as cancelled once the recipient receives the product. */
   cancelledByRoot: boolean;
+  /** Production is routed per order: an approved return moves the whole order, not only the affected lines. Absent on older APIs. */
+  orderScope?: { orderLineCount: number; orderQuantity: number; affectedLineCount: number; affectedQuantity: number; wholeOrderMoves: boolean };
   role: "responsible" | "detector" | "receiver" | "recipient" | "supervisor" | null;
   actions: FaultActions;
   detectorComment?: string | null;
@@ -329,6 +331,7 @@ export type ServiceErrorCode =
   | "SUPERVISOR_REQUIRED"
   | "SELF_REVIEW_DENIED"
   | "RESPONSIBLE_UNAVAILABLE"
+  | "RETURN_CANCEL_CONFIRMATION_REQUIRED"
   | "RESTORE_RECIPIENT_UNAVAILABLE"
   | "RECIPIENT_NOT_ALLOWED"
   | "RECIPIENT_INVALID"

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { formatDate, useI18n } from "../../i18n";
+import { formatDate, t as translateNow, useI18n } from "../../i18n";
 import { faultReasonName, stageName } from "../../domain/stageNames";
 import type { FaultException, FaultReason, StaffServiceError } from "../../domain/models";
 import type { ExceptionService } from "../../services/contracts";
@@ -19,6 +19,19 @@ const time = { format: (value: Date): string => formatDate(value, { day: "numeri
 function emphasize(text: string, name: string) {
   const index = text.indexOf(name);
   return index < 0 ? text : <>{text.slice(0, index)}<strong>{name}</strong>{text.slice(index + name.length)}</>;
+}
+/**
+ * Production is routed per order: an approved return to cutting moves the whole order. The warning names what
+ * really moves whenever the order holds more than the affected lines, or the affected line has several pieces.
+ */
+export function returnScopeWarning(fault: Pick<FaultException, "orderScope" | "lineCount">): string | null {
+  const t = translateNow;
+  const scope = fault.orderScope;
+  if (!scope || !scope.wholeOrderMoves) return null;
+  if (scope.orderLineCount > scope.affectedLineCount) {
+    return t("exc.scope.wholeOrder", { lines: scope.orderLineCount, pieces: scope.orderQuantity, affected: t("common.products", { count: scope.affectedLineCount }) });
+  }
+  return scope.affectedQuantity > 1 ? t("exc.scope.allPieces", { pieces: scope.affectedQuantity }) : null;
 }
 const RETRY_CODES = ["NETWORK_UNAVAILABLE", "REQUEST_TIMEOUT", "SERVICE_UNAVAILABLE", "SERVER_ERROR"];
 
@@ -99,6 +112,9 @@ export function ExceptionScreen({ exceptionId, service, navigate, onSessionExpir
   const actions = fault.actions;
   const commentReady = comment.trim().length >= 3;
   const reason = reasons.find((item) => item.key === reasonKey);
+  const scopeWarning = tailoring ? returnScopeWarning(fault) : null;
+  // Restoring before the cutting employee received the product withdraws the return to cutting: a deliberate, ticked choice.
+  const cancelsReturn = fault.status === "awaiting_acknowledgment";
   return (
     <article className="screen-stack detail-screen exception-screen" data-testid="exception-screen">
       <button className="back-link" type="button" onClick={() => navigate(fault.role === "supervisor" ? "/problems" : "/")}><AppIcon name="back" size={20} /> {fault.role === "supervisor" ? t("supervisor.title") : t("common.home")}</button>
@@ -108,12 +124,14 @@ export function ExceptionScreen({ exceptionId, service, navigate, onSessionExpir
       {fault.repeatedError && <p className="order-notice order-notice-warning" role="note">{t("exc.repeated")}</p>}
       {fault.status === "approved" && (fault.role === "responsible" || fault.role === "receiver") && <p className="order-action-done" role="status">✓ {t("exc.approvedRework")}</p>}
       {tailoring && fault.status === "return_rejected" && <p className="order-notice order-notice-warning" role="note">{t("exc.returnRejected")}</p>}
+      {tailoring && fault.status === "awaiting_acknowledgment" && !actions.canAcknowledge && <p className="order-notice" role="status" data-testid="waiting-cutter">{t("exc.waitingCutter", { name: fault.receiver?.displayName ?? fault.responsible.displayName })}</p>}
       {fault.status === "awaiting_restore_receipt" && !actions.canConfirmRestore && <p className="order-notice" role="status" data-testid="restore-pending">{t("exc.restorePending", { name: fault.restoreRecipient?.displayName ?? t("exc.tailoringEmployee") })}</p>}
 
       <section className="detail-section">
         <p className="eyebrow">{tailoring ? t("exc.affected") : t("exc.faulty")}</p>
         <h2>{t("common.products", { count: fault.lineCount })} · {formatFaultMeters(fault)}</h2>
-        <ul className="fault-lines">{fault.lines?.map((line) => <li key={line.itemId}><span><strong>{line.name}</strong><small>{[line.code, line.color, line.variant].filter(Boolean).join(" · ")}</small></span><b>{formatDecimalMeters(line.meters)}</b></li>)}</ul>
+        <ul className="fault-lines">{fault.lines?.map((line) => <li key={line.itemId}><span><strong>{line.name}</strong><small>{[line.code, line.color, line.variant, t("exc.lineQuantity", { count: line.quantity })].filter(Boolean).join(" · ")}</small></span><b>{formatDecimalMeters(line.meters)}</b></li>)}</ul>
+        {scopeWarning && ["awaiting_supervisor_review", "in_supervisor_custody", "awaiting_acknowledgment", "awaiting_approval", "return_rejected"].includes(fault.status) && <p className="order-notice order-notice-warning" role="note" data-testid="return-scope-warning">{scopeWarning}</p>}
         <dl className="fault-facts">
           <div><dt>{tailoring ? t("exc.reportedProblem") : t("exc.reason")}</dt><dd>{faultReasonName(fault.reason.key, fault.reason.label)}</dd></div>
           {fault.confirmedReason && <div><dt>{t("exc.confirmedBySupervisor")}</dt><dd>{faultReasonName(fault.confirmedReason.key, fault.confirmedReason.label)}</dd></div>}
@@ -192,14 +210,15 @@ export function ExceptionScreen({ exceptionId, service, navigate, onSessionExpir
       </section>}
 
       {actions.canRestore && <section className="detail-section fault-action" aria-labelledby="restore-title" data-testid="supervisor-restore">
-        <h2 id="restore-title">{fault.status === "awaiting_restore_receipt" ? t("exc.restore.otherEmployee") : t("exc.restore.title")}</h2>
-        <p>{t("exc.restore.body", { stage: stageName(fault.detectedStage.id, fault.detectedStage.label) })}</p>
+        <h2 id="restore-title">{cancelsReturn ? t("exc.restore.cancelTitle") : fault.status === "awaiting_restore_receipt" ? t("exc.restore.otherEmployee") : t("exc.restore.title")}</h2>
+        <p>{cancelsReturn ? t("exc.restore.cancelBody", { name: fault.receiver?.displayName ?? fault.responsible.displayName, stage: stageName(fault.detectedStage.id, fault.detectedStage.label) }) : t("exc.restore.body", { stage: stageName(fault.detectedStage.id, fault.detectedStage.label) })}</p>
+        {cancelsReturn && <label className="check-field" data-testid="cancel-return-confirm"><input type="checkbox" checked={confirmed} onChange={(event) => edit(setConfirmed)(event.target.checked)} /> <span>{t("exc.restore.cancelConfirm")}</span></label>}
         {recipients && <label className="field"><span>{t("exc.restore.recipient")}</span><select value={recipientId} onChange={(event) => edit(setRecipientId)(event.target.value)}>
           <option value="">{t("exc.restore.chooseEmployee")}</option>{recipients.map((item) => <option key={item.id} value={item.id}>{item.displayName}</option>)}</select></label>}
         {recipients && recipients.length === 0 && <small className="server-note">{t("exc.restore.none")}</small>}
         <label className="field"><span>{t("common.reasonRequired")}</span><textarea maxLength={1000} rows={2} value={comment} onChange={(event) => edit(setComment)(event.target.value)} /></label>
         <p className="eyebrow">{t("exc.scanProduct")}</p>
-        <QrCapture disabled={submitting || !commentReady || (recipients !== null && !recipientId)} onToken={(token) => void run((key) => service.restore(fault.id, { expectedVersion: fault.version, qrToken: token, comment: comment.trim(), recipientEmployeeId: recipientId || null, idempotencyKey: key }))} />
+        <QrCapture disabled={submitting || !commentReady || (recipients !== null && !recipientId) || (cancelsReturn && !confirmed)} onToken={(token) => void run((key) => service.restore(fault.id, { expectedVersion: fault.version, qrToken: token, comment: comment.trim(), recipientEmployeeId: recipientId || null, ...(cancelsReturn ? { cancelReturn: true as const } : {}), idempotencyKey: key }))} />
       </section>}
 
       {actions.canConfirmRestore && <section className="detail-section fault-action" aria-labelledby="restore-receipt-title" data-testid="restore-receipt">

@@ -144,6 +144,8 @@ export const siErrors: { readonly [K in keyof typeof roErrors]: string } = {
   "error.SELF_REVIEW_DENIED.message": "ඔබ විසින්ම වාර්තා කළ ගැටලුවක් ඔබට පරීක්ෂා කළ නොහැක.",
   "error.RESPONSIBLE_UNAVAILABLE.title": "කැපීම් සේවකයා නොමැත",
   "error.RESPONSIBLE_UNAVAILABLE.message": "ඇණවුම භාරදුන් කැපීම් සේවකයාට දැන් භාණ්ඩය ලබාගත නොහැක. සිටින කැපීම් සේවකයෙකු තෝරන්න.",
+  "error.RETURN_CANCEL_CONFIRMATION_REQUIRED.title": "කැපීමට යැවීම අවලංගු කිරීම තහවුරු කරන්න",
+  "error.RETURN_CANCEL_CONFIRMATION_REQUIRED.message": "භාණ්ඩය කැපීමට යවා ඇති අතර කැපීම් සේවකයා එය ලබා ගන්නා තෙක් රැඳී සිටී. මැසීමට ආපසු භාර දීමට පෙර කැපීමට යැවීම අවලංගු කරන බව සලකුණු කරන්න.",
   "error.RECEIVER_NOT_ALLOWED.title": "වගකිවයුතු කැපීම් සේවකයා සිටී",
   "error.RECEIVER_NOT_ALLOWED.message": "භාණ්ඩය භාර දෙන්නේ ඇණවුම කැපූ සේවකයාට ය.",
   "error.RESTORE_RECIPIENT_UNAVAILABLE.title": "සේවකයාට ඇණවුම ලබාගත නොහැක",

@@ -124,7 +124,7 @@ final readonly class QualityController
                 'rereview' => $this->faults->requestRereview($actor, $m[1], $this->body($request, ['expectedVersion', 'comment'], ['expectedVersion', 'comment']), $key, $request->requestId),
                 'review' => $this->faults->supervisorReview($actor, $m[1], $this->body($request, ['expectedVersion', 'decision', 'reasonKey', 'qrToken', 'comment'], ['expectedVersion', 'decision']), $key, $request->requestId),
                 'return' => $this->faults->requestReturn($actor, $m[1], $this->body($request, ['expectedVersion', 'receiverEmployeeId', 'comment'], ['expectedVersion']), $key, $request->requestId),
-                'restore' => $this->faults->restore($actor, $m[1], $this->body($request, ['expectedVersion', 'qrToken', 'comment', 'recipientEmployeeId'], ['expectedVersion', 'qrToken', 'comment']), $key, $request->requestId),
+                'restore' => $this->faults->restore($actor, $m[1], $this->body($request, ['expectedVersion', 'qrToken', 'comment', 'recipientEmployeeId', 'cancelReturn'], ['expectedVersion', 'qrToken', 'comment']), $key, $request->requestId),
                 'receive' => $this->faults->receiveRestore($actor, $m[1], $this->body($request, ['expectedVersion', 'confirmed', 'qrToken', 'comment'], ['expectedVersion', 'confirmed', 'qrToken']), $key, $request->requestId),
                 default => $this->faults->addNote($actor, $m[1], $this->body($request, ['expectedVersion', 'comment'], ['expectedVersion', 'comment']), $key, $request->requestId),
             });

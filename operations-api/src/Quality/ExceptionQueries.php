@@ -36,7 +36,10 @@ final readonly class ExceptionQueries
             rre.display_name AS restore_recipient_name,
             (SELECT d.opened_at FROM production_exception_decisions d WHERE d.exception_uuid = x.exception_uuid AND d.status = 'pending' LIMIT 1) AS pending_since,
             (SELECT MAX(d.attempt_number) FROM production_exception_decisions d WHERE d.exception_uuid = x.exception_uuid) AS attempts,
-            (SELECT COUNT(*) FROM production_exceptions p WHERE p.order_uuid = x.order_uuid AND p.rework_cycle IS NOT NULL AND p.exception_uuid <> x.exception_uuid) AS previous_cycles
+            (SELECT COUNT(*) FROM production_exceptions p WHERE p.order_uuid = x.order_uuid AND p.rework_cycle IS NOT NULL AND p.exception_uuid <> x.exception_uuid) AS previous_cycles,
+            (SELECT COUNT(*) FROM operational_order_items i WHERE i.order_uuid = x.order_uuid) AS order_line_count,
+            (SELECT COALESCE(SUM(i.quantity), 0) FROM operational_order_items i WHERE i.order_uuid = x.order_uuid) AS order_quantity,
+            (SELECT COALESCE(SUM(l.quantity_snapshot), 0) FROM production_exception_lines l WHERE l.exception_uuid = x.exception_uuid) AS affected_quantity
         FROM production_exceptions x
         INNER JOIN order_sources s ON s.source_key = x.source_key
         INNER JOIN employees de ON de.employee_uuid = x.detector_employee_uuid
@@ -378,6 +381,15 @@ final readonly class ExceptionQueries
             'restoreRequestedAt' => self::iso($row['restore_requested_at']),
             'restoreReceivedAt' => self::iso($row['restore_received_at']),
             'cancelledByRoot' => $row['cancelled_by_employee_uuid'] !== null,
+            // Production is routed per order: an approved return moves the WHOLE order (every line and piece) back to
+            // cutting, not only the affected lines. Clients warn when the order holds more than the affected lines.
+            'orderScope' => [
+                'orderLineCount' => (int) $row['order_line_count'],
+                'orderQuantity' => (int) $row['order_quantity'],
+                'affectedLineCount' => (int) $row['line_count'],
+                'affectedQuantity' => (int) $row['affected_quantity'],
+                'wholeOrderMoves' => true,
+            ],
         ];
         if ($viewerUuid !== null) {
             $isResponsible = $row['responsible_employee_uuid'] === $viewerUuid;

@@ -142,6 +142,8 @@ export const roErrors = {
   "error.SELF_REVIEW_DENIED.message": "Nu poți verifica o problemă raportată de tine.",
   "error.RESPONSIBLE_UNAVAILABLE.title": "Tăietorul nu este disponibil",
   "error.RESPONSIBLE_UNAVAILABLE.message": "Tăietorul care a predat comanda nu poate primi produsul acum. Alege un tăietor disponibil.",
+  "error.RETURN_CANCEL_CONFIRMATION_REQUIRED.title": "Confirmă anularea trimiterii la tăiere",
+  "error.RETURN_CANCEL_CONFIRMATION_REQUIRED.message": "Produsul este trimis la tăiere și așteaptă ca tăietorul să-l primească. Bifează că anulezi trimiterea la tăiere înainte de a-l preda înapoi la croitorie.",
   "error.RECEIVER_NOT_ALLOWED.title": "Tăietorul responsabil este disponibil",
   "error.RECEIVER_NOT_ALLOWED.message": "Produsul se predă tăietorului care a lucrat comanda.",
   "error.RESTORE_RECIPIENT_UNAVAILABLE.title": "Angajatul nu poate primi comanda",
