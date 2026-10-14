@@ -10,7 +10,7 @@ import { TrendyolLogo } from "../../components/brand/BrandLogo";
 import { useAutoRefresh } from "../workspaces/useAutoRefresh";
 import { trendyolInboxLoader } from "./trendyolRefresh";
 
-const views: readonly TrendyolView[] = ["pending", "attention", "released", "closed", "ignored"];
+const views: readonly TrendyolView[] = ["pending", "attention", "released", "closed", "earlier", "ignored"];
 
 const date = (value: string | null): string => value ? formatDate(value, { dateStyle: "short", timeStyle: "short", timeZone: "Europe/Bucharest" }) : "—";
 
@@ -38,12 +38,14 @@ export function TrendyolInboxScreen({ service, navigate }: { service: TrendyolAp
       <PageHeader brand={<TrendyolLogo className="inbox-logo" />} title={t("ty.inbox.title")} description={t("ty.inbox.description")} />
       <div className="inbox-status">
         {overview && <p className={`inbox-connection is-${overview.intake.status}`} data-testid="trendyol-intake-state">{intakeStateLabels[overview.intake.status]}{overview.intake.lastRunAt ? ` ${t("ty.inbox.lastSync", { date: date(overview.intake.lastRunAt) })}` : ""}</p>}
+        {overview?.intake.baselineAt && <p className="inbox-cohort" data-testid="trendyol-cohort">{t("ty.inbox.cohort", { date: date(overview.intake.baselineAt) })}</p>}
         <AutoRefreshBar onRefresh={inbox.refresh} busy={inbox.busy} refreshing={inbox.refreshing} updatedAt={inbox.updatedAt} stale={current !== null && inbox.error !== null} stopped={inbox.stopped} testId="trendyol-inbox-refresh" />
       </div>
       <div className="segmented trendyol-tabs" role="tablist" aria-label={t("ty.inbox.filter")}>
         {views.map((item) => <button key={item} type="button" role="tab" aria-selected={view === item} onClick={() => { if (item !== view) setView(item); }}>{t(`ty.view.${item}`)}{count(item) !== undefined && <span>{count(item)}</span>}</button>)}
       </div>
       {message && <p className="order-notice order-notice-muted" role="alert">{message}</p>}
+      {view === "earlier" && <p className="order-notice order-notice-muted" data-testid="trendyol-earlier-hint">{t("ty.inbox.earlierHint")}</p>}
       {view !== "ignored" && !items && !message && <QueueSkeleton />}
       {view !== "ignored" && items && (items.length === 0
         ? <EmptyPanel icon="package" title={t("ty.inbox.empty")}>{t("ty.inbox.emptyHint")}</EmptyPanel>

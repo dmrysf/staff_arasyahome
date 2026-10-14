@@ -975,7 +975,7 @@ export function mapTrendyolOverview(value: unknown): TrendyolOverview {
   const counts = objectValue(raw.counts);
   return {
     intake: { status: oneOf(intake.status, ["inactive", "active", "paused"] as const), baselineAt: nullableTimestamp(intake.baselineAt), lastRunAt: nullableTimestamp(intake.lastRunAt), lastRunOutcome: nullableText(intake.lastRunOutcome) },
-    counts: { pending: nonNegativeInteger(counts.pending), attention: counts.attention === undefined ? 0 : nonNegativeInteger(counts.attention), released: nonNegativeInteger(counts.released), closed: nonNegativeInteger(counts.closed), ignored: nonNegativeInteger(counts.ignored) },
+    counts: { pending: nonNegativeInteger(counts.pending), attention: counts.attention === undefined ? 0 : nonNegativeInteger(counts.attention), released: nonNegativeInteger(counts.released), closed: nonNegativeInteger(counts.closed), earlier: counts.earlier === undefined ? 0 : nonNegativeInteger(counts.earlier), ignored: nonNegativeInteger(counts.ignored) },
     capabilities: mapTrendyolCapabilities(raw.capabilities),
   };
 }
@@ -990,6 +990,7 @@ export function mapTrendyolSummary(value: unknown): TrendyolPackageSummary {
     marketplaceStatusKnown: raw.marketplaceStatusKnown === undefined ? stringValue(raw.marketplaceStatus) in marketplaceStatusLabels : booleanValue(raw.marketplaceStatusKnown),
     orderDate: nullableTimestamp(raw.orderDate),
     orderDateNearActivation: raw.orderDateNearActivation === undefined ? false : booleanValue(raw.orderDateNearActivation),
+    ...(raw.beforeBaseline === undefined ? {} : { beforeBaseline: booleanValue(raw.beforeBaseline) }),
     changedAfterRelease: booleanValue(raw.changedAfterRelease),
     version: positiveInteger(raw.version),
     ...(raw.lineCount === undefined ? {} : { lineCount: nonNegativeInteger(raw.lineCount), preparedCount: nonNegativeInteger(raw.preparedCount) }),

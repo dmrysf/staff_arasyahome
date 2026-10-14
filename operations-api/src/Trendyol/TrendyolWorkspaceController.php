@@ -20,7 +20,7 @@ use Arasya\Operations\Security\CsrfGuard;
  *
  *   GET  /trendyol/overview                               intake state, counts, the caller's capabilities
  *   GET  /trendyol/activity                               the caller's own actions (today's counts, latest ten)
- *   GET  /trendyol/packages?view=pending|attention|released|closed|ignored
+ *   GET  /trendyol/packages?view=pending|attention|released|closed|earlier|ignored
  *   GET  /trendyol/packages/{packageId}                   package, lines, readiness, production link, history
  *   PUT  /trendyol/packages/{packageId}/lines/{lineId}    {expectedVersion, kind, productionTitle, widthCm?, heightCm?, meters?, notes?}
  *   POST /trendyol/packages/{packageId}/dismiss           {expectedVersion, reason}

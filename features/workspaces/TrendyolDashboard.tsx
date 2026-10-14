@@ -31,7 +31,7 @@ export function lastRunFailed(outcome: string | null): boolean {
   return outcome !== null && outcome !== "ok" && outcome !== "truncated";
 }
 
-export function PackageRow({ item, view, navigate }: { item: TrendyolPackageSummary; view: "pending" | "attention" | "released" | "closed"; navigate: (path: string) => void }) {
+export function PackageRow({ item, view, navigate }: { item: TrendyolPackageSummary; view: "pending" | "attention" | "released" | "closed" | "earlier"; navigate: (path: string) => void }) {
   const { t } = useI18n();
   const missing = Math.max(0, (item.lineCount ?? 0) - (item.preparedCount ?? 0));
   const status = view === "attention"
@@ -127,6 +127,7 @@ export function TrendyolDashboard({ employee, service, navigate }: { employee: E
               <p className="eyebrow">{t("ty.dash.connectionEyebrow")}</p>
               <h2 id="trendyol-connection">{connection.label}</h2>
               <p>{connection.detail}</p>
+              {data.overview.intake.baselineAt && <p data-testid="trendyol-cohort">{t("ty.dash.cohort", { date: formatDate(data.overview.intake.baselineAt) })}</p>}
               {data.overview.intake.lastRunAt && <p data-testid="trendyol-last-sync">{t("ty.dash.lastSync", { date: formatDate(data.overview.intake.lastRunAt) })}{lastRunFailed(data.overview.intake.lastRunOutcome) ? t("ty.dash.lastSyncFailed") : ""}</p>}
             </div>
           </section>

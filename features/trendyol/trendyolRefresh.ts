@@ -13,7 +13,7 @@ export const LIST_MAX_AGE_MS = 5 * 60_000;
 /** Changes whenever a package enters, leaves or moves between views, or the connection state changes. */
 export function overviewSignature(overview: TrendyolOverview): string {
   const { counts } = overview;
-  return [overview.intake.status, counts.pending, counts.attention, counts.released, counts.closed, counts.ignored].join("|");
+  return [overview.intake.status, overview.intake.baselineAt, counts.pending, counts.attention, counts.released, counts.closed, counts.earlier, counts.ignored].join("|");
 }
 
 export type TrendyolDashboardData = {

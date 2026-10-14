@@ -7,7 +7,8 @@ import { liveLabels, t } from "../i18n";
  * Nothing in this workspace writes to Trendyol; statuses, shipping and invoices stay in the Seller Panel.
  */
 export type TrendyolIntakeStatus = "pending" | "released" | "dismissed" | "marketplace_cancelled";
-export type TrendyolView = "pending" | "attention" | "released" | "closed" | "ignored";
+/** `pending` and `attention` hold only the current cohort (ordered at or after the baseline); `earlier` holds pending packages of an earlier cohort. */
+export type TrendyolView = "pending" | "attention" | "released" | "closed" | "earlier" | "ignored";
 /** Server-side class of the marketplace status. Only `new` can be released into production. */
 export type TrendyolMarketplaceClass = "new" | "payment_pending" | "review" | "fulfilment" | "returned" | "cancelled" | "split";
 export type TrendyolBlockedReason = Exclude<TrendyolMarketplaceClass, "new"> | "unknown_status";
@@ -17,7 +18,7 @@ export type TrendyolCapabilities = { view: boolean; prepare: boolean; release: b
 
 export type TrendyolOverview = {
   intake: { status: "inactive" | "active" | "paused"; baselineAt: string | null; lastRunAt: string | null; lastRunOutcome: string | null };
-  counts: { pending: number; attention: number; released: number; closed: number; ignored: number };
+  counts: { pending: number; attention: number; released: number; closed: number; earlier: number; ignored: number };
   capabilities: TrendyolCapabilities;
 };
 
@@ -31,6 +32,8 @@ export type TrendyolPackageSummary = {
   orderDate: string | null;
   /** Ordered within five minutes after activation: the team may already have handled it manually. */
   orderDateNearActivation: boolean;
+  /** Ordered before the current activation baseline (earlier cohort): outside the active work lists. */
+  beforeBaseline?: boolean;
   changedAfterRelease: boolean;
   version: number;
   lineCount?: number;
