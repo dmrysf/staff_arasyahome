@@ -2,25 +2,54 @@
 
 declare(strict_types=1);
 
-// Controlled activation of per-piece (partial) defect reports, migration 028 (operator only; changes no order,
-// permission or grant).
+// Controlled activation of the per-piece capabilities, migrations 028 and 029 (operator only; changes no order stage,
+// permission or grant). Every flag and cohort change is audited in production_feature_flag_events.
 //
 //   php bin/partial-rework.php status
-//   php bin/partial-rework.php enable --operator=<name> --confirm=ENABLE-PARTIAL-REWORK
-//   php bin/partial-rework.php disable --operator=<name>
-//   php bin/partial-rework.php backfill --operator=<name> [--limit=<orders>]
+//   php bin/partial-rework.php enable --operator=<name> --confirm=ENABLE-PARTIAL-REWORK [--reason=<text>]
+//   php bin/partial-rework.php disable --operator=<name> [--reason=<text>]
+//   php bin/partial-rework.php routing-enable --operator=<name> --confirm=ENABLE-PIECE-ROUTING [--reason=<text>]
+//   php bin/partial-rework.php routing-disable --operator=<name> [--reason=<text>]
+//   php bin/partial-rework.php cohort-add --feature=partial_rework|piece_routing --order=<global order id> --operator=<name> --reason=<text>
+//   php bin/partial-rework.php cohort-remove --feature=partial_rework|piece_routing --order=<global order id> --operator=<name> --reason=<text>
+//   php bin/partial-rework.php cohort-list --feature=partial_rework|piece_routing
+//   php bin/partial-rework.php backfill --operator=<name> [--limit=<orders>] [--dry-run=1]
+//   php bin/partial-rework.php rollback-check
 //
-// Enable only after API 2.31.0, Staff 2.26.0 and Dashboard 0.14.0 are all live. Disabling refuses new partial reports
-// and leaves every piece already in rework on its track until it rejoins its order at packing. The backfill writes the
-// piece identities of open orders (idempotent; a re-run writes nothing new); pieces are otherwise written on first use.
+// Enable globally only after API 2.32.0, Staff and Dashboard are all live, the database backup was restored once in a
+// test and the pilot cohort was verified. A pilot cohort names orders by their global id; nothing is hardcoded.
+// Disabling refuses new partial reports / new route splits and leaves every piece already on a track on its way.
 //
-// Exit codes: 0 done; 1 failed; 2 invalid invocation (nothing read or changed). Messages never echo an argument value.
+// backfill writes nothing about the physical plan: piece counts are never derived from commercial quantities. With
+// --dry-run=1 it only reports, per open order, the lines whose plan needs an authorized confirmation (with the source
+// evidence) and the pieces that would be materialized for lines already confirmed. Without --dry-run it materializes
+// the pieces of confirmed lines only (idempotent).
+//
+// rollback-check exits 3 when an API older than 2.32.0 must NOT be activated: active tracks (pieces away from their
+// order), pieces that were replaced, or confirmed plans whose pieces differ from the commercial quantity exist, which an
+// older API would silently ignore. Exit 0 means no per-piece state would be lost by such a rollback.
+//
+// Exit codes: 0 done; 1 failed; 2 invalid invocation (nothing read or changed); 3 rollback unsafe. Messages never echo an
+// argument value.
 
+use Arasya\Operations\Production\FeatureActivation;
+use Arasya\Operations\Production\ManufacturingPlans;
 use Arasya\Operations\Production\WorkUnits;
 
-$commands = ['status' => [], 'enable' => ['operator', 'confirm'], 'disable' => ['operator'], 'backfill' => ['operator']];
+$commands = [
+    'status' => [[], []],
+    'enable' => [['operator', 'confirm'], ['reason']],
+    'disable' => [['operator'], ['reason']],
+    'routing-enable' => [['operator', 'confirm'], ['reason']],
+    'routing-disable' => [['operator'], ['reason']],
+    'cohort-add' => [['feature', 'order', 'operator', 'reason'], []],
+    'cohort-remove' => [['feature', 'order', 'operator', 'reason'], []],
+    'cohort-list' => [['feature'], []],
+    'backfill' => [['operator'], ['limit', 'dry-run']],
+    'rollback-check' => [[], []],
+];
 $refuse = static function (string $message): never {
-    fwrite(STDERR, "Refused: {$message}\nUsage: php bin/partial-rework.php status|enable|disable|backfill [--name=value ...]\n");
+    fwrite(STDERR, "Refused: {$message}\nUsage: php bin/partial-rework.php status|enable|disable|routing-enable|routing-disable|cohort-add|cohort-remove|cohort-list|backfill|rollback-check [--name=value ...]\n");
     exit(2);
 };
 $arguments = array_slice($argv, 1);
@@ -28,54 +57,124 @@ $command = $arguments === [] ? 'status' : (string) array_shift($arguments);
 if (!array_key_exists($command, $commands)) {
     $refuse('unsupported command.');
 }
+[$required, $optional] = $commands[$command];
 $options = [];
 foreach ($arguments as $argument) {
-    if (preg_match('/^--([a-z]+)=(.*)$/sD', (string) $argument, $match) !== 1) {
+    if (preg_match('/^--([a-z-]+)=(.*)$/sD', (string) $argument, $match) !== 1) {
         $refuse('unexpected argument; options are --name=value.');
     }
-    if (!in_array($match[1], [...$commands[$command], ...($command === 'backfill' ? ['limit'] : [])], true) || array_key_exists($match[1], $options)) {
+    if (!in_array($match[1], [...$required, ...$optional], true) || array_key_exists($match[1], $options)) {
         $refuse("option --{$match[1]} is not accepted here.");
     }
     $options[$match[1]] = $match[2];
 }
-foreach ($commands[$command] as $required) {
-    if (trim($options[$required] ?? '') === '') {
-        $refuse("--{$required} is required.");
+foreach ($required as $name) {
+    if (trim($options[$name] ?? '') === '') {
+        $refuse("--{$name} is required.");
     }
 }
 if ($command === 'enable' && $options['confirm'] !== 'ENABLE-PARTIAL-REWORK') {
     $refuse('the confirmation phrase does not match.');
 }
+if ($command === 'routing-enable' && $options['confirm'] !== 'ENABLE-PIECE-ROUTING') {
+    $refuse('the confirmation phrase does not match.');
+}
+if (isset($options['feature']) && !in_array($options['feature'], ['partial_rework', 'piece_routing'], true)) {
+    $refuse('--feature must be partial_rework or piece_routing.');
+}
+if (isset($options['dry-run']) && !in_array($options['dry-run'], ['0', '1'], true)) {
+    $refuse('--dry-run must be 0 or 1.');
+}
 $limit = isset($options['limit']) ? (ctype_digit($options['limit']) && (int) $options['limit'] > 0 ? (int) $options['limit'] : $refuse('--limit must be a positive integer.')) : 500;
+$operator = mb_substr(trim($options['operator'] ?? 'operator'), 0, 80);
+$reason = mb_substr(trim($options['reason'] ?? ''), 0, 200);
 
 $container = require __DIR__ . '/cli-bootstrap.php';
 $pdo = $container->pdo();
 $units = new WorkUnits($pdo);
+$features = new FeatureActivation($pdo);
 $now = (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format('Y-m-d H:i:s.u');
+$print = static fn (array $payload) => fwrite(STDOUT, json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n");
 try {
-    if ($command === 'enable' || $command === 'disable') {
-        $pdo->beginTransaction();
-        $result = $units->setPartialRework($command === 'enable', ($command === 'enable' ? 'Enabled' : 'Disabled') . ' by operator ' . mb_substr($options['operator'], 0, 80), $now);
-        $pdo->commit();
-        fwrite(STDOUT, json_encode(['partialRework' => $result['enabled'], 'changed' => $result['changed']] + $units->inventory(), JSON_THROW_ON_ERROR) . "\n");
+    if (in_array($command, ['enable', 'disable', 'routing-enable', 'routing-disable'], true)) {
+        $feature = str_starts_with($command, 'routing') ? FeatureActivation::PIECE_ROUTING : FeatureActivation::PARTIAL_REWORK;
+        $on = in_array($command, ['enable', 'routing-enable'], true);
+        $result = $features->setEnabled($feature, $on, $operator, $reason !== '' ? $reason : ($on ? 'Enabled' : 'Disabled') . ' from the operator CLI', $now);
+        $print(['feature' => $feature, 'enabled' => $result['enabled'], 'changed' => $result['changed']] + $units->inventory());
+        exit(0);
+    }
+    if ($command === 'cohort-add' || $command === 'cohort-remove') {
+        $order = $pdo->prepare('SELECT order_uuid FROM operational_orders WHERE global_order_id = ?');
+        $order->execute([$options['order']]);
+        $orderUuid = $order->fetchColumn();
+        if (!is_string($orderUuid)) {
+            fwrite(STDERR, "Refused: the order does not exist.\n");
+            exit(2);
+        }
+        $result = $features->setCohortMember($options['feature'], $orderUuid, $command === 'cohort-add', $operator, $reason, $now);
+        $print(['feature' => $options['feature'], 'member' => $result['member'], 'changed' => $result['changed'], 'cohortSize' => count($features->cohort($options['feature']))]);
+        exit(0);
+    }
+    if ($command === 'cohort-list') {
+        $print(['feature' => $options['feature'], 'enabledGlobally' => $features->enabled($options['feature']), 'cohort' => $features->cohort($options['feature'])]);
         exit(0);
     }
     if ($command === 'backfill') {
-        $orders = $pdo->query("SELECT o.order_uuid FROM operational_orders o WHERE o.production_completed_at IS NULL AND o.operational_status <> 'unavailable'
-            AND NOT EXISTS (SELECT 1 FROM production_work_units u WHERE u.order_uuid = o.order_uuid) ORDER BY o.created_at LIMIT {$limit}")->fetchAll(PDO::FETCH_COLUMN);
-        $written = 0;
-        foreach ($orders as $orderUuid) {
-            // One short transaction per order, under the same order row lock every production mutation takes.
-            $pdo->beginTransaction();
-            $pdo->prepare('SELECT order_uuid FROM operational_orders WHERE order_uuid = ? FOR UPDATE')->execute([$orderUuid]);
-            $units->ensure((string) $orderUuid, $now, 'backfill');
-            $pdo->commit();
-            $written++;
+        $dryRun = ($options['dry-run'] ?? '0') === '1';
+        $orders = $pdo->query("SELECT o.order_uuid, o.global_order_id, o.production_stage_id FROM operational_orders o WHERE o.production_completed_at IS NULL AND o.operational_status <> 'unavailable' ORDER BY o.created_at LIMIT {$limit}")->fetchAll(PDO::FETCH_ASSOC);
+        $plans = new ManufacturingPlans($pdo);
+        $report = ['orders' => 0, 'lines' => 0, 'linesNeedingConfirmation' => 0, 'linesWithStalePlan' => 0, 'confirmedLines' => 0, 'piecesToMaterialize' => 0, 'ordersMaterialized' => 0, 'samples' => []];
+        foreach ($orders as $order) {
+            $report['orders']++;
+            $existing = $pdo->prepare("SELECT COUNT(*) FROM production_work_units WHERE order_uuid = ? AND status = 'active'");
+            $existing->execute([$order['order_uuid']]);
+            $have = (int) $existing->fetchColumn();
+            $want = 0;
+            foreach ($plans->lines((string) $order['order_uuid']) as $line) {
+                $report['lines']++;
+                if ($line['known']) {
+                    $report['confirmedLines']++;
+                    $want += (int) $line['plan']['pieceCount'];
+                    continue;
+                }
+                $report[$line['stale'] ? 'linesWithStalePlan' : 'linesNeedingConfirmation']++;
+                if (count($report['samples']) < 20) {
+                    $report['samples'][] = ['order' => $order['global_order_id'], 'line' => $line['lineNumber'], 'stage' => $order['production_stage_id'], 'commercialQuantity' => $line['commercialQuantity'],
+                        'productType' => $line['plan']['productType'], 'typeSource' => $line['plan']['typeSource'], 'evidence' => $line['proposal']['evidence'], 'stale' => $line['stale']];
+                }
+            }
+            $report['piecesToMaterialize'] += max(0, $want - $have);
+            if (!$dryRun && $want > $have) {
+                // One short transaction per order, under the same order row lock every production mutation takes.
+                $pdo->beginTransaction();
+                $pdo->prepare('SELECT order_uuid FROM operational_orders WHERE order_uuid = ? FOR UPDATE')->execute([$order['order_uuid']]);
+                $beforeUnits = array_column($units->carrierUnits((string) $order['order_uuid'], null), 'unit_uuid');
+                $units->ensure((string) $order['order_uuid'], $now, 'backfill');
+                $createdUnits = array_values(array_diff(array_column($units->carrierUnits((string) $order['order_uuid'], null), 'unit_uuid'), $beforeUnits));
+                if ($createdUnits !== []) {
+                    (new \Arasya\Operations\Iam\IamAuditLogger($pdo))->record(null, 'production.manifest.backfilled', 'order', (string) $order['global_order_id'], (string) $order['global_order_id'],
+                        ['operator' => $operator, 'units' => $createdUnits, 'identitySource' => 'backfill', 'historicalCompletionsInferred' => false], 'manifest-backfill-' . bin2hex(random_bytes(12)), $now);
+                }
+                $pdo->commit();
+                if ($createdUnits !== []) $report['ordersMaterialized']++;
+            }
         }
-        fwrite(STDOUT, json_encode(['ordersMaterialized' => $written, 'more' => count($orders) === $limit] + $units->inventory(), JSON_THROW_ON_ERROR) . "\n");
+        $print(['dryRun' => $dryRun, 'more' => count($orders) === $limit] + $report + $units->inventory());
         exit(0);
     }
-    fwrite(STDOUT, json_encode(['partialRework' => $units->partialReworkEnabled()] + $units->inventory(), JSON_THROW_ON_ERROR) . "\n");
+    if ($command === 'rollback-check') {
+        $inventory = $units->inventory();
+        $diverging = (int) $pdo->query("SELECT COUNT(*) FROM production_line_plan_heads h INNER JOIN production_line_plans p ON p.plan_uuid = h.plan_uuid
+            INNER JOIN operational_order_items i ON i.item_uuid = h.item_uuid INNER JOIN operational_orders o ON o.order_uuid = h.order_uuid
+            WHERE p.piece_count IS NOT NULL AND p.piece_count <> i.quantity AND o.production_completed_at IS NULL")->fetchColumn();
+        $unsafe = $inventory['activeTracks'] > 0 || $inventory['replacements'] > 0 || $diverging > 0;
+        $print(['rollbackToOlderApiSafe' => !$unsafe, 'activeTracks' => $inventory['activeTracks'], 'activeRouteTracks' => $inventory['activeRouteTracks'],
+            'replacements' => $inventory['replacements'], 'openLinesWithPiecesDifferentFromQuantity' => $diverging,
+            'rule' => 'Do not activate an API older than 2.32.0 while this check fails: it would ignore pieces on tracks, replacements and confirmed piece counts.']);
+        exit($unsafe ? 3 : 0);
+    }
+    $print(['partialRework' => $features->enabled(FeatureActivation::PARTIAL_REWORK), 'pieceRouting' => $features->enabled(FeatureActivation::PIECE_ROUTING),
+        'partialReworkCohort' => count($features->cohort(FeatureActivation::PARTIAL_REWORK)), 'pieceRoutingCohort' => count($features->cohort(FeatureActivation::PIECE_ROUTING))] + $units->inventory());
 } catch (Throwable $error) {
     if ($pdo->inTransaction()) {
         $pdo->rollBack();

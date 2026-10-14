@@ -15,8 +15,8 @@ cp -R operations-api/public operations-api/src operations-api/database operation
 cp operations-api/config/config.example.php operations-api/config/config.production.example.php operations-api/config/secrets.example.json "$release_dir/config/"
 cp operations-api/scripts/*.sh "$release_dir/scripts/"
 chmod +x "$release_dir/scripts/"*.sh
-printf '{\n  "sourceCommit": "%s",\n  "builtAt": "%s",\n  "version": "2.31.0"\n}\n' "$source_commit" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$release_dir/release.json"
-php -r '$r=json_decode(file_get_contents($argv[1]),true,flags:JSON_THROW_ON_ERROR); if ($r["sourceCommit"]!==$argv[2] || $r["version"]!=="2.31.0") exit(1);' "$release_dir/release.json" "$source_commit"
+printf '{\n  "sourceCommit": "%s",\n  "builtAt": "%s",\n  "version": "2.32.0"\n}\n' "$source_commit" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$release_dir/release.json"
+php -r '$r=json_decode(file_get_contents($argv[1]),true,flags:JSON_THROW_ON_ERROR); if ($r["sourceCommit"]!==$argv[2] || $r["version"]!=="2.32.0") exit(1);' "$release_dir/release.json" "$source_commit"
 /bin/bash "$release_dir/scripts/generate-sha256s.sh" "$release_dir"
 ARASYA_RELEASE_STRICT=1 /bin/bash "$release_dir/scripts/validate-release.sh" "$release_dir"
 
@@ -40,4 +40,4 @@ test_api_root="$workspace/isolated-home/arasya-operations-api"
 test_public_root="$workspace/isolated-home/api.arasyahome.ro"
 ARASYA_API_ROOT_PATH="$test_api_root" ARASYA_API_PUBLIC_PATH="$test_public_root" DRY_RUN=1 /bin/bash "$release_dir/scripts/cpanel-deploy-api.sh"
 [[ ! -e "$test_api_root" && ! -e "$test_public_root" ]] || { printf 'Packaged deploy dry-run mutated its isolated targets.\n' >&2; exit 1; }
-printf 'PASS real API 2.31.0 package: source %s, complete/checksummed factory runtime, 29-person matrix, strict validation and zero-write deploy dry-run.\n' "$source_commit"
+printf 'PASS real API 2.32.0 package: source %s, complete/checksummed factory runtime, 29-person matrix, strict validation and zero-write deploy dry-run.\n' "$source_commit"

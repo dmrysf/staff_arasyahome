@@ -1,9 +1,27 @@
 <?php
 declare(strict_types=1);
+/** Restore a pre-029 disposable test fixture (no manufacturing manifest). This is NOT a deployment/rollback mechanism. */
+function restorePreManifestTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='029_production_manifest_routing.sql'")->fetchColumn()) return;
+    \Arasya\Operations\Tests\OperationsTestSupport::clearPieces($pdo);
+    foreach(['production_unit_verifications','production_feature_flag_events','production_pilot_cohort','production_exception_links','production_material_records','production_custody_events','production_unit_custody','production_locations',
+        'production_unit_replacements','production_unit_cycles','production_unit_stage_log','production_route_decisions','production_plan_pieces','production_line_plan_heads','production_line_plans'] as $table) $pdo->exec("DROP TABLE IF EXISTS {$table}");
+    $pdo->exec("DELETE FROM production_feature_flags WHERE flag_key='piece_routing'");
+    // MySQL refuses to tighten a column used by a foreign key while the checks are on (error 1832); test fixture only.
+    $pdo->exec("DELETE FROM production_tracks WHERE origin_exception_uuid IS NULL");
+    $pdo->exec('SET FOREIGN_KEY_CHECKS = 0');
+    $pdo->exec('ALTER TABLE production_tracks MODIFY origin_exception_uuid CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL');
+    $pdo->exec('SET FOREIGN_KEY_CHECKS = 1');
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='029_production_manifest_routing.sql'");
+}
+
 /** Restore a pre-028 disposable test fixture (no production work units). This is NOT a deployment/rollback mechanism. */
 function restorePreWorkUnitsTestSchema(PDO $pdo): void
 {
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    restorePreManifestTestSchema($pdo);
     if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='028_production_work_units.sql'")->fetchColumn()) return;
     \Arasya\Operations\Tests\OperationsTestSupport::clearPieces($pdo);
     foreach(['production_track_idempotency','production_unit_labels','production_exception_units','production_exception_scopes','production_track_events','production_work_units','production_tracks','production_feature_flags'] as $table) $pdo->exec("DROP TABLE IF EXISTS {$table}");

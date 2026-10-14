@@ -72,6 +72,67 @@ final readonly class ProductionTracks
     }
 
     /**
+     * Moves pieces of a carrier that follow another product route onto a new route track, unowned, at their own next
+     * stage (no exception: this is ordinary production). A piece split off a reworked track keeps that track's rework
+     * cycle and its pending defect verification. Pieces must already be locked by the caller.
+     *
+     * @param array<string, mixed>|null $parentTrack the locked carrier track, or null for the order @param list<string> $unitUuids
+     */
+    public function splitRoute(string $orderUuid, ?array $parentTrack, array $unitUuids, string $stageId, int $reworkCycle, string $actorUuid, string $key, string $requestId, string $now): string
+    {
+        $trackUuid = Uuid::v4();
+        $parentUuid = $parentTrack === null ? null : (string) $parentTrack['track_uuid'];
+        $verify = $parentTrack !== null && $parentTrack['verify_stage_id'] !== null;
+        $this->pdo->prepare(
+            "INSERT INTO production_tracks (track_uuid, order_uuid, parent_track_uuid, origin_exception_uuid, status, stage_id, owner_employee_uuid, claimed_at, changed_at, version,
+                rework_cycle, open_exception_uuid, verify_stage_id, verify_exception_uuid, resolution_confirmed_at, resolution_confirmed_by_employee_uuid, created_at, updated_at)
+             VALUES (?, ?, ?, NULL, 'active', ?, NULL, NULL, ?, 1, ?, NULL, ?, ?, ?, ?, ?, ?)",
+        )->execute([$trackUuid, $orderUuid, $parentUuid, $stageId, $now, $reworkCycle,
+            $verify ? $parentTrack['verify_stage_id'] : null, $verify ? $parentTrack['verify_exception_uuid'] : null,
+            $verify ? $parentTrack['resolution_confirmed_at'] : null, $verify ? $parentTrack['resolution_confirmed_by_employee_uuid'] : null, $now, $now]);
+        $marks = implode(',', array_fill(0, count($unitUuids), '?'));
+        $move = $this->pdo->prepare("UPDATE production_work_units SET track_uuid = ?, updated_at = ? WHERE order_uuid = ? AND status = 'active' AND track_uuid <=> ? AND unit_uuid IN ({$marks})");
+        $move->execute([$trackUuid, $now, $orderUuid, $parentUuid, ...$unitUuids]);
+        if ($move->rowCount() !== count($unitUuids)) {
+            throw new ApiException(409, 'ORDER_CHANGED', 'The pieces changed. Reload the order before continuing.');
+        }
+        $this->event($trackUuid, $orderUuid, 'created', $actorUuid, $stageId, null, null, null, 0, $reworkCycle, null,
+            ['units' => $unitUuids, 'parentTrack' => $parentUuid, 'reason' => 'route_split'], $requestId, $key . '.split', $now);
+        return $trackUuid;
+    }
+
+    /**
+     * Rejoins with the order every route track (no defect history, nothing open) that waits unowned at exactly the stage
+     * where the order waits unowned and unblocked: from there the pieces travel together again. Reworked tracks keep
+     * rejoining only at packing (mergeAtGate). @return int merged tracks
+     */
+    public function mergeAligned(string $orderUuid, string $actorUuid, string $key, string $requestId, string $now): int
+    {
+        $order = $this->pdo->prepare('SELECT production_stage_id, production_owner_employee_uuid, open_exception_uuid, production_completed_at FROM operational_orders WHERE order_uuid = ?');
+        $order->execute([$orderUuid]);
+        $row = $order->fetch(PDO::FETCH_ASSOC);
+        if (!is_array($row) || $row['production_owner_employee_uuid'] !== null || $row['open_exception_uuid'] !== null || $row['production_completed_at'] !== null) {
+            return 0;
+        }
+        try {
+            $tracks = $this->pdo->prepare("SELECT track_uuid FROM production_tracks WHERE order_uuid = ? AND status = 'active' AND stage_id = ? AND owner_employee_uuid IS NULL
+                 AND open_exception_uuid IS NULL AND origin_exception_uuid IS NULL AND verify_stage_id IS NULL ORDER BY track_number FOR UPDATE");
+            $tracks->execute([$orderUuid, $row['production_stage_id']]);
+        } catch (\PDOException) {
+            return 0;
+        }
+        $merged = 0;
+        foreach ($tracks->fetchAll(PDO::FETCH_COLUMN) as $trackUuid) {
+            $track = $this->lock((string) $trackUuid);
+            if ($track !== null) {
+                $this->merge($track, 'route_aligned', $actorUuid, $key . '.aligned.' . $merged, $requestId, $now);
+                $merged++;
+            }
+        }
+        return $merged;
+    }
+
+    /**
      * Applies columns to an active track and increments its version, guarded by the expected version and an extra
      * condition; anything changed concurrently is a 409, never an overwrite.
      *

@@ -1,4 +1,7 @@
-# Per-piece rework (API 2.31.0, Staff 2.26.0, Dashboard 0.14.0, migration 028)
+# Per-piece rework (API 2.32.0 follow-up, migrations 028 and 029)
+
+Current backend contract: [manufacturing plans, routes and UI payloads](per-piece-manifest-routing.md).
+Staff/Dashboard PR67/11 remain inputs; the completed backend follow-up must be integrated and reviewed before release.
 
 Status: **implemented, not deployed.** Partial (per-piece) reports stay refused until the `partial_rework` flag is enabled after
 API, Staff and Dashboard are all live (see [Rollout](#rollout)).
@@ -7,9 +10,9 @@ This replaces the blocked design in `docs/item-level-rework-design.md`.
 
 ## The rule
 
-An order line of quantity N is N physical pieces ("Bucata 1/2", "Bucata 2/2"). When only some pieces are defective, only those
-pieces go through the supervisor, the cutter's receipt, one manager decision and cutting again. They then repeat every canonical
-stage from cutting onward, one stage at a time, with new events. The healthy pieces keep their stage, owner and history. The
+An authorized manufacturing plan gives N physical pieces ("Bucata 1/2", "Bucata 2/2"). Commercial quantity does not define N. When only some pieces are defective, only those
+pieces go through the supervisor, the cutter's receipt, one manager decision and cutting again. They then repeat every applicable
+stage from cutting onward under the shared product route policy, one stage at a time, with new events. The healthy pieces keep their stage, owner and history. The
 order cannot be packed until every piece is at packing again.
 
 Primary acceptance scenario, the business shape of Trendyol order 11709027615 (EX-000001): one line, `12754-21`, Crem, 250 x 260 cm,
@@ -23,7 +26,7 @@ no source meters, quantity 2. Piece A is defective at ironing (stage 8); piece B
 | Cutter receipt (tick + label/QR scan) | exactly one pending manager decision | ironing |
 | Manager approves | stage 2, owned by the receiving cutter, rework cycle 2 | ironing |
 | Cutter completes cutting | stage 3, no owner (never straight back to 8) | ironing (or further, by its own work) |
-| Stages 3, 4, 5, 6, 7 | claimed and completed one by one by employees of each stage | unchanged |
+| Applicable stages 3-7 (PERDEA skips 6/7; DRAPERII performs them) | claimed and completed one by one by employees of each stage | unchanged |
 | Ironing (stage 8) | completion needs "defectul inițial a fost remediat" | unchanged |
 | Stages 9-12 | own claims and completions | its own progress |
 | Packing | waits; rejoins the order when the order is at packing | packing claim refused while A is away |
@@ -52,7 +55,7 @@ as the stage of every piece.
 
 - **Report.** Staff 2.26.0 sends `units` (and `trackId` for a piece already in rework). All pieces of the carrier: the existing
   whole-carrier behaviour. Some pieces: a new track at the same stage with the same owner, blocked by the report; the order is not
-  blocked. Older clients send `itemIds` and keep the exact old meaning (whole order). Meters of k of q pieces are k/q of the line.
+  blocked. Older clients send `itemIds` and keep the old whole-order meaning only for inactive legacy orders. Activated orders require explicit `units`, including a single commercial line containing multiple physical pieces. Fabric of selected pieces comes from their confirmed plan. Unknown stays NULL; no k/q division is inferred.
 - **Exception flow.** `CuttingFaultService` acts on the carrier: order row or track, same states, same rules, same separation of
   duties (`ApproverPolicy` unchanged). Approval moves only the carrier; for a track: stage 2, owner = receiving cutter, rework
   cycle + 1, `verify_stage_id` = detected stage.
@@ -80,15 +83,18 @@ as the stage of every piece.
 | Dashboard 0.13.x | | | approvals work; the piece scope is not shown |
 | Dashboard 0.14.0 | shows `orderScope` when present | | shows the exact pieces |
 
-## Rollout
+## Original PR67 rollout (historical)
+
+The following 2.31.0 sequence describes PR67 only. Do not execute it for the 2.32.0 follow-up: use the migration 029,
+cohort, evidence and release gates in [the current contract](per-piece-manifest-routing.md#migration-backfill-and-rollback).
 
 1. Backup of the production database (cPanel backup or `mysqldump --single-transaction` of the operations schema).
 2. Apply migration 028 (`bin/migrate.php`). API 2.30.x ignores the new tables. Readiness of API 2.31.0 requires it.
 3. Deploy API 2.31.0; verify `/health` and readiness. The flag is still off.
 4. Deploy Staff 2.26.0, then Dashboard 0.14.0.
-5. Optional: `php bin/partial-rework.php backfill --operator=<name>` writes the piece identities of open orders (idempotent; pieces
+5. Confirm physical plans first. Optional dry-run: `php bin/partial-rework.php backfill --operator=<name> --dry-run=1` reports unknown plans; materialization without dry-run writes only confirmed piece identities of open orders (idempotent; pieces
    are also written on first use).
-6. Enable: `php bin/partial-rework.php enable --operator=<name> --confirm=ENABLE-PARTIAL-REWORK`.
+6. Separate release authorization and all backup/QA/client gates are required. Then controlled pilot, before global enable: `php bin/partial-rework.php enable --operator=<name> --confirm=ENABLE-PARTIAL-REWORK`.
 
 Migration locking risk: 8 new tables with foreign keys to `operational_orders`, `production_exceptions`, `employees` and
 `production_stages`. Creating an InnoDB foreign key takes a short metadata lock on the parent table; there is no table copy and no

@@ -95,9 +95,19 @@ final readonly class ReworkTrackService
         if ($resolved !== null && $resolved !== true) {
             throw new ApiException(400, 'INVALID_REQUEST', 'defectResolved must be true when present.');
         }
-        $hash = hash('sha256', implode('|', ['track.complete', $trackUuid, (string) $expected, $resolved === true ? 'resolved' : '']), true);
+        // API 2.32.0: completing the re-cut of a rework cycle declares whether the original pieces were repaired or replaced.
+        $outcome = $input['pieceOutcome'] ?? null;
+        if ($outcome !== null && !in_array($outcome, PieceReplacement::OUTCOMES, true)) {
+            throw new ApiException(400, 'INVALID_REQUEST', 'pieceOutcome must be repair or replacement.');
+        }
+        $disposition = $input['originalDisposition'] ?? null;
+        if ($disposition !== null && ($outcome !== PieceReplacement::REPLACEMENT || !in_array($disposition, PieceReplacement::DISPOSITIONS, true))) {
+            throw new ApiException(400, 'INVALID_REQUEST', 'originalDisposition (scrapped or quarantined) is only accepted with a replacement.');
+        }
+        $pieceOutcomes = $input['pieceOutcomes'] ?? null;
+        $hash = hash('sha256', implode('|', ['track.complete', $trackUuid, (string) $expected, $resolved === true ? 'resolved' : '']) . ($outcome === null ? '' : '|' . $outcome . '|' . ($disposition ?? '')) . ($pieceOutcomes === null ? '' : '|pieces|' . json_encode($pieceOutcomes, JSON_THROW_ON_ERROR)), true);
         $workflow = $this->workflow();
-        return $this->transaction($actor, $trackUuid, $key, 'complete', $hash, function (EmployeeIdentity $employee, array $order, array $track, string $now) use ($expected, $resolved, $key, $requestId, $workflow): array {
+        return $this->transaction($actor, $trackUuid, $key, 'complete', $hash, function (EmployeeIdentity $employee, array $order, array $track, string $now) use ($expected, $resolved, $outcome, $disposition, $input, $key, $requestId, $workflow): array {
             $this->requireVersion($track, $expected);
             $decision = $this->evaluate($employee, $track, $order);
             if ($decision['action'] === self::ACTION_CLAIM) {
@@ -107,12 +117,20 @@ final readonly class ReworkTrackService
                 throw self::blocked((string) $decision['blockedReason']);
             }
             $current = (string) $track['stage_id'];
-            $next = self::nextStage($workflow, $current);
+            $orderUuid = (string) $order['order_uuid'];
+            $replaced = [];
+            $replacement = new PieceReplacement($this->pdo);
+            $replaced = $replacement->applyOutcomes($orderUuid, (string) $track['track_uuid'], $track['verify_exception_uuid'] === null ? null : (string) $track['verify_exception_uuid'], $current, $input, $employee->employeeUuid, $requestId, $key, $now);
+            // The central route policy chooses the next stage of exactly these pieces (the same rules as normal production).
+            $routing = new PieceRouting($this->pdo);
+            $route = $routing->plan($workflow, $orderUuid, (string) $track['track_uuid'], $current, $now);
+            $next = $route['next'];
             if ($next === null) {
                 throw new ApiException(409, 'INVALID_STAGE_TRANSITION', 'A piece in rework rejoins its order before the last stage.');
             }
+            (new PieceVerification($this->pdo))->complete($workflow, $orderUuid, (string) $track['track_uuid'], $current, $resolved === true, $employee->employeeUuid, $expected, $requestId, $now);
             $columns = ['stage_id' => $next->id, 'owner_employee_uuid' => null, 'claimed_at' => null, 'changed_at' => $now];
-            $verification = $track['verify_stage_id'] === $current && $track['resolution_confirmed_at'] === null;
+            $verification = self::verificationDue($workflow, $track, $current);
             if ($verification) {
                 if ($resolved !== true) {
                     throw new ApiException(422, 'DEFECT_RESOLUTION_REQUIRED', 'Confirmă că defectul inițial a fost remediat la această bucată.');
@@ -120,13 +138,18 @@ final readonly class ReworkTrackService
                 $columns += ['resolution_confirmed_at' => $now, 'resolution_confirmed_by_employee_uuid' => $employee->employeeUuid];
             }
             $this->tracks()->update((string) $track['track_uuid'], $expected, $columns, $now, 'owner_employee_uuid = ' . $this->pdo->quote($employee->employeeUuid) . ' AND open_exception_uuid IS NULL');
-            $this->relation($employee->employeeUuid, (string) $order['order_uuid'], 'handover_out', $now);
-            $this->tracks()->event((string) $track['track_uuid'], (string) $order['order_uuid'], 'stage_completed', $employee->employeeUuid, $current, $next->id, $employee->employeeUuid, null,
+            $this->relation($employee->employeeUuid, $orderUuid, 'handover_out', $now);
+            $this->tracks()->event((string) $track['track_uuid'], $orderUuid, 'stage_completed', $employee->employeeUuid, $current, $next->id, $employee->employeeUuid, null,
                 $expected, (int) $track['rework_cycle'], $verification ? (string) $track['verify_exception_uuid'] : null,
-                $verification ? ['defectResolved' => true, 'verifiedStage' => $current] : null, $requestId, $key, $now);
+                ($verification ? ['defectResolved' => true, 'verifiedStage' => $current] : [])
+                + ($route['skipped'] === [] ? [] : ['notApplicableStages' => $route['skipped'], 'productTypes' => $route['types']])
+                + (isset($input['pieceOutcomes']) ? ['pieceOutcomes' => $input['pieceOutcomes'], 'replacements' => $replaced] : [])
+                + ($outcome === null || $current !== CuttingLifecycle::STAGE ? [] : ['pieceOutcome' => $outcome, 'replacements' => $replaced]) ?: null, $requestId, $key, $now);
+            $routing->apply($workflow, $route, $orderUuid, $track, $current, $employee->employeeUuid, $expected, $key, $requestId, $now);
             if ($next->id === ProductionTracks::GATE_STAGE) {
-                $this->tracks()->mergeAtGate((string) $order['order_uuid'], $employee->employeeUuid, $key, $requestId, $now);
+                $this->tracks()->mergeAtGate($orderUuid, $employee->employeeUuid, $key, $requestId, $now);
             }
+            $this->tracks()->mergeAligned($orderUuid, $employee->employeeUuid, $key, $requestId, $now);
             $this->notify($order, $track, [$employee->employeeUuid], $now);
             return $this->view($employee, (string) $order['order_uuid'], (string) $track['track_uuid'], $workflow);
         });
@@ -194,6 +217,8 @@ final readonly class ReworkTrackService
         if (($order['production_authority'] ?? null) === ProductionAuthority::SOURCE && $this->modes?->modeFor((string) $order['source_key']) === ProductionAuthorityMode::Enforce) {
             return $blocked(OrderAccessPolicy::BLOCKED_AUTHORITY_SOURCE);
         }
+        $pieceReason = (new PieceGate($this->pdo))->carrierReason((string) $order['order_uuid'], (string) $track['track_uuid']);
+        if ($pieceReason !== null) return $blocked($pieceReason);
         if ($track['stage_id'] === ProductionTracks::GATE_STAGE) {
             return $blocked(self::BLOCKED_WAITING_FOR_ORDER);
         }
@@ -222,6 +247,8 @@ final readonly class ReworkTrackService
     {
         $uuids = array_map(static fn (array $order): string => (string) $order['order_uuid'], $orders);
         $pieces = (new WorkUnits($this->pdo))->piecesFor($uuids);
+        $plans = (new ManufacturingPlans($this->pdo))->linesFor($uuids);
+        $features = new FeatureActivation($this->pdo);
         $tracks = $this->tracks()->activeFor($uuids);
         $result = [];
         foreach ($orders as $order) {
@@ -246,21 +273,33 @@ final readonly class ReworkTrackService
                     'waitingForOrder' => $track['stage_id'] === ProductionTracks::GATE_STAGE,
                     'verifyStageId' => $track['verify_stage_id'] === null ? null : (string) $track['verify_stage_id'],
                     'resolutionConfirmed' => $track['resolution_confirmed_at'] !== null,
-                    'requiresDefectResolution' => $track['verify_stage_id'] !== null && $track['verify_stage_id'] === $track['stage_id'] && $track['resolution_confirmed_at'] === null,
-                    'nextStageId' => $workflow === null ? null : self::nextStage($workflow, (string) $track['stage_id'])?->id,
+                    'requiresDefectResolution' => $workflow === null ? ($track['verify_stage_id'] !== null && $track['verify_stage_id'] === $track['stage_id'] && $track['resolution_confirmed_at'] === null) : self::verificationDue($workflow, $track, (string) $track['stage_id']),
+                    // The next stage of these pieces under the central route policy (PERDEA after stage 5: ironing).
+                    'nextStageId' => $workflow === null || $track['stage_id'] === ProductionTracks::GATE_STAGE ? null : (new PieceRouting($this->pdo))->plan($workflow, (string) $track['order_uuid'], (string) $track['track_uuid'], (string) $track['stage_id'], '')['next']?->id,
+                    // API 2.32.0: a route track carries pieces of another product route (no defect); a rework track went through a defect.
+                    'kind' => $track['origin_exception_uuid'] === null ? 'route' : 'rework',
+                    'requiresPieceOutcome' => $track['stage_id'] === CuttingLifecycle::STAGE && (new PieceReplacement($this->pdo))->outcomeRequired((new WorkUnits($this->pdo))->carrierUnits((string) $track['order_uuid'], (string) $track['track_uuid']), CuttingLifecycle::STAGE),
                     'changedAt' => self::iso((string) $track['changed_at']),
                 ] + ($decision === null ? [] : ['allowedAction' => $decision['action'] === null ? null : ['id' => $decision['action']], 'blockedReason' => $decision['blockedReason']]);
             }
             $onOrder = count(array_filter($units, static fn (array $unit): bool => $unit['trackId'] === null));
+            $allPlansKnown = isset($plans[$uuid]) && array_filter($plans[$uuid], static fn (array $line): bool => !$line['known']) === [];
             $result[$uuid] = [
-                'total' => count($units),
+                'total' => $allPlansKnown ? count($units) : null,
+                'allPlansKnown' => $allPlansKnown,
+                'partialRework' => $features->appliesTo(FeatureActivation::PARTIAL_REWORK, $uuid),
+                'pieceRouting' => $features->appliesTo(FeatureActivation::PIECE_ROUTING, $uuid),
                 'onOrder' => $onOrder,
                 'inRework' => count($units) - $onOrder,
                 'mixedProgress' => $views !== [],
                 'units' => array_map(static fn (array $unit): array => [
                     'id' => $unit['id'], 'itemId' => $unit['itemId'], 'index' => $unit['index'], 'count' => $unit['count'], 'lineNumber' => $unit['lineNumber'],
                     'trackId' => $unit['trackId'], 'reworkCycle' => $unit['reworkCycle'], 'reviewRequired' => $unit['reviewRequired'],
+                    'productType' => $unit['productType'], 'fabricMeters' => $unit['fabricMeters'], 'replacementOf' => $unit['replacementOf'],
+                    'defectResolution' => $unit['defectResolution'],
                 ], $units),
+                'requiresDefectResolution' => count(array_filter($units, static fn (array $unit): bool => $unit['trackId'] === null && $unit['defectResolution'] !== null && $unit['defectResolution']['confirmedAt'] === null && (CanonicalProductionWorkflowContract::STAGES[$order['production_stage_id']] ?? 0) >= (CanonicalProductionWorkflowContract::STAGES[$unit['defectResolution']['detectedStageId']] ?? PHP_INT_MAX))) > 0,
+                'requiresPieceOutcome' => ($order['production_stage_id'] ?? null) === CuttingLifecycle::STAGE && (new PieceReplacement($this->pdo))->outcomeRequired((new WorkUnits($this->pdo))->carrierUnits($uuid, null), CuttingLifecycle::STAGE),
                 'tracks' => $views,
             ];
         }
@@ -332,6 +371,27 @@ final readonly class ReworkTrackService
         return $counts;
     }
 
+    /**
+     * Whether completing $current must confirm that the original defect is resolved: the track carries a defect found
+     * at verify_stage_id, not yet confirmed, and the track reached that stage (or, when the product route does not
+     * apply that stage to these pieces, the first applicable stage after it). @param array<string, mixed> $track
+     */
+    public static function verificationDue(ProductionWorkflow $workflow, array $track, string $current): bool
+    {
+        if ($track['verify_stage_id'] === null || $track['resolution_confirmed_at'] !== null) {
+            return false;
+        }
+        $ordinal = static function (string $id) use ($workflow): int {
+            foreach ($workflow->stages as $stage) {
+                if ($stage->id === $id) {
+                    return $stage->ordinal;
+                }
+            }
+            return PHP_INT_MAX;
+        };
+        return $ordinal($current) >= $ordinal((string) $track['verify_stage_id']);
+    }
+
     public static function nextStage(ProductionWorkflow $workflow, string $stageId): ?ProductionStage
     {
         foreach ($workflow->stages as $index => $stage) {
@@ -346,6 +406,9 @@ final readonly class ReworkTrackService
     {
         return match ($reason) {
             'claimed_by_other' => new ApiException(409, 'TRACK_ALREADY_CLAIMED', 'Another employee is working on this piece.'),
+            'pieces_held' => new ApiException(409, 'ORDER_PIECES_HELD', 'Bucata este reținută fizic.'),
+            'pieces_incomplete' => new ApiException(409, 'ORDER_PIECES_INCOMPLETE', 'Identitatea bucății trebuie verificată.'),
+            'plan_confirmation_required' => new ApiException(409, 'PLAN_CONFIRMATION_REQUIRED', 'Planul de producție trebuie confirmat după modificarea sursei.'),
             'exception_pending' => new ApiException(409, 'ORDER_BLOCKED_BY_EXCEPTION', 'The piece is waiting for a production exception decision.'),
             self::BLOCKED_WAITING_FOR_ORDER => new ApiException(409, 'TRACK_WAITING_FOR_ORDER', 'Bucata așteaptă restul comenzii la ambalare.'),
             'order_unavailable' => new ApiException(409, 'ORDER_UNAVAILABLE', 'The order is not available for production.'),
@@ -394,6 +457,8 @@ final readonly class ReworkTrackService
     private function transaction(EmployeeIdentity $actor, string $trackUuid, string $key, string $operation, string $hash, callable $operation_): array
     {
         for ($attempt = 1; ; $attempt++) {
+            // orderOf() runs before the order lock. Do not retain a snapshot from before a competing commit.
+            $this->pdo->exec('SET TRANSACTION ISOLATION LEVEL READ COMMITTED');
             $this->pdo->beginTransaction();
             try {
                 $orderUuid = $this->tracks()->orderOf($trackUuid) ?? throw new ApiException(404, 'TRACK_NOT_FOUND', 'The piece was not found.');

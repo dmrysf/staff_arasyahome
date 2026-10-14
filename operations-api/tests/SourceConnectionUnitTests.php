@@ -546,9 +546,9 @@ test('expected API errors and validation are unchanged by the PDO diagnostics', 
     expect(!array_key_exists('exception', $warning) && !array_key_exists('sqlstate', $warning) && !array_key_exists('driver_code', $warning));
 });
 
-test('migrations stay sequential through 028 and the canonical workflow keeps its 14 stages', function (): void {
+test('migrations stay sequential through 029 and the canonical workflow keeps its 14 stages', function (): void {
     $migrations = array_map('basename', glob(dirname(__DIR__) . '/database/migrations/*.sql') ?: []);
-    expect(count($migrations) === 28 && $migrations[27] === '028_production_work_units.sql' && $migrations[23] === '024_tailoring_quality_supervision.sql' && $migrations[24] === '025_source_payment_gate.sql' && $migrations[25] === '026_trendyol_product_identity.sql' && $migrations[26] === '027_employee_staff_locale.sql' && str_starts_with($migrations[0], '001_') && str_starts_with($migrations[16], '017_') && $migrations[17] === '018_production_authority.sql' && $migrations[18] === '019_production_qr_authority.sql' && $migrations[19] === '020_production_document_authority.sql' && $migrations[20] === '021_document_scopes.sql' && $migrations[21] === '022_trendyol_intake.sql' && $migrations[22] === '023_source_scoped_stage_authorization.sql');
+    expect(count($migrations) === 29 && $migrations[28] === '029_production_manifest_routing.sql' && $migrations[27] === '028_production_work_units.sql' && $migrations[23] === '024_tailoring_quality_supervision.sql' && $migrations[24] === '025_source_payment_gate.sql' && $migrations[25] === '026_trendyol_product_identity.sql' && $migrations[26] === '027_employee_staff_locale.sql' && str_starts_with($migrations[0], '001_') && str_starts_with($migrations[16], '017_') && $migrations[17] === '018_production_authority.sql' && $migrations[18] === '019_production_qr_authority.sql' && $migrations[19] === '020_production_document_authority.sql' && $migrations[20] === '021_document_scopes.sql' && $migrations[21] === '022_trendyol_intake.sql' && $migrations[22] === '023_source_scoped_stage_authorization.sql');
     expect(count(CanonicalProductionWorkflowContract::STAGES) === 14);
     expect(array_keys(CanonicalProductionWorkflowContract::STAGES) === ['waiting', 'material-preparation', 'workshop-receiving', 'labeling', 'material-straightening', 'bottom-hem', 'side-hem', 'ironing', 'height', 'header-tape', 'sewing-finishing', 'quality-control', 'packing', 'delivery']);
     // 018 is additive: it never converts the authority of existing orders.
@@ -578,6 +578,15 @@ test('migrations stay sequential through 028 and the canonical workflow keeps it
     $units = preg_replace(['/^\s*--.*$/m', '/ON (UPDATE|DELETE) RESTRICT/'], '', (string) file_get_contents(dirname(__DIR__) . '/database/migrations/028_production_work_units.sql'));
     expect(preg_match('/\b(UPDATE|DELETE|DROP|TRUNCATE|RENAME|ALTER)\b/i', $units) === 0 && substr_count($units, 'CREATE TABLE IF NOT EXISTS') === 8 && substr_count($units, 'INSERT IGNORE INTO production_feature_flags') === 1
         && preg_match('/role_permissions|employee_role_assignments|INTO\s+operational_/i', $units) === 0, '028 must only create its tables and the disabled flag.');
+    // 029 is additive and re-runnable: CREATE TABLE IF NOT EXISTS, one INSERT IGNORE of the disabled piece_routing flag
+    // and one idempotent MODIFY that only relaxes production_tracks.origin_exception_uuid to NULL. No row is rewritten,
+    // no grant, role, order or item is touched, and 028 itself is unchanged.
+    $manifest = preg_replace(['/^\s*--.*$/m', '/ON (UPDATE|DELETE) RESTRICT/'], '', (string) file_get_contents(dirname(__DIR__) . '/database/migrations/029_production_manifest_routing.sql'));
+    expect(preg_match('/\b(UPDATE|DELETE|DROP|TRUNCATE|RENAME)\b/i', $manifest) === 0 && substr_count($manifest, 'CREATE TABLE IF NOT EXISTS') === 15
+        && preg_match_all('/ALTER TABLE ([a-z_]+)/i', $manifest, $alters) === 1 && $alters[1] === ['production_tracks'] && str_contains($manifest, 'MODIFY origin_exception_uuid CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL;')
+        && substr_count($manifest, "VALUES ('piece_routing', 0,") === 1
+        && preg_match('/role_permissions|employee_role_assignments|INTO\s+operational_/i', $manifest) === 0, '029 must only create its tables, the disabled flag and relax one column.');
+    expect(hash_file('sha256', dirname(__DIR__) . '/database/migrations/028_production_work_units.sql') === 'e147e1149628120a83d0f084273084c07e3e71b3989c394cb92d17cfb708ed91', 'the applied definition of 028 is never edited');
 });
 
 test('payment gate mode is per source, defaults to off and an unreadable value falls back to off', function (): void {

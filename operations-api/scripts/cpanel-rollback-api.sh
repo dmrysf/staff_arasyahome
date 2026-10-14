@@ -22,6 +22,15 @@ resolved_target="$(cd -- "$target_release" 2>/dev/null && pwd -P)" || api_fail "
 [[ "${resolved_target%/*}" == "$resolved_releases" && "${resolved_target##*/}" == "$target" ]] || api_fail "Rollback release escaped releases root."
 api_validate_packaged_release "$resolved_target"
 [[ "$(api_release_sha "$resolved_target")" == "$target" ]] || api_fail "Rollback release provenance is invalid."
+# Any older target must pass the checker from the CURRENT release, before either pointer is written.
+# A target's checker cannot know newer schema semantics. Failed/unknown DB access refuses the rollback.
+target_version="$(php -r '$r=json_decode(file_get_contents($argv[1]),true,32,JSON_THROW_ON_ERROR); echo $r["version"] ?? "";' "$resolved_target/release.json")"
+[[ "$target_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || api_fail "Rollback target version is invalid."
+if ! php -r 'exit(version_compare($argv[1], "2.32.0", ">=") ? 0 : 1);' "$target_version"; then
+  current_release="$releases_root/$current"
+  [[ -f "$current_release/bin/check-rollback.php" ]] || api_fail "Current release has no per-piece rollback guard."
+  php "$current_release/bin/check-rollback.php" "$target_version" || api_fail "Rollback would hide per-piece production state."
+fi
 if [[ "${DRY_RUN:-0}" == "1" ]]; then api_log "Would activate source commit: $target"; exit 0; fi
 api_write_pointer "$previous_pointer" "$current"; api_write_pointer "$active_pointer" "$target"
 [[ "$(api_read_pointer "$active_pointer")" == "$target" ]] || api_fail "Rollback pointer verification failed."

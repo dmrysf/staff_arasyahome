@@ -72,6 +72,19 @@ final class OperationsTestSupport
         if ($pdo->query("SHOW TABLES LIKE 'production_tracks'")->fetchColumn() === false || $orderUuids === []) return;
         $in = $orderUuids === null ? null : implode(',', array_map([$pdo, 'quote'], $orderUuids));
         $where = static fn (string $column): string => $in === null ? '' : " WHERE {$column} IN ({$in})";
+        if ($pdo->query("SHOW TABLES LIKE 'production_line_plans'")->fetchColumn() !== false) {
+            // Migration 029 rows first (they reference pieces, tracks and exceptions).
+            $pdo->exec('UPDATE production_material_records SET corrects_record_uuid = NULL' . $where('order_uuid'));
+            foreach (['production_unit_verifications', 'production_material_records', 'production_custody_events', 'production_unit_custody', 'production_unit_replacements', 'production_unit_stage_log', 'production_route_decisions', 'production_pilot_cohort', 'production_feature_flag_events'] as $table) {
+                $pdo->exec("DELETE FROM {$table}" . $where('order_uuid'));
+            }
+            $pdo->exec('DELETE c FROM production_unit_cycles c INNER JOIN production_work_units u ON u.unit_uuid = c.unit_uuid' . $where('u.order_uuid'));
+            $pdo->exec('DELETE l FROM production_exception_links l INNER JOIN production_exceptions x ON x.exception_uuid = l.exception_uuid' . $where('x.order_uuid'));
+            $pdo->exec('DELETE FROM production_line_plan_heads' . $where('order_uuid'));
+            $pdo->exec('DELETE p FROM production_plan_pieces p INNER JOIN production_line_plans l ON l.plan_uuid = p.plan_uuid' . $where('l.order_uuid'));
+            $pdo->exec('UPDATE production_line_plans SET supersedes_plan_uuid = NULL' . $where('order_uuid'));
+            $pdo->exec('DELETE FROM production_line_plans' . $where('order_uuid'));
+        }
         $pdo->exec('DELETE i FROM production_track_idempotency i INNER JOIN production_tracks t ON t.track_uuid = i.track_uuid' . $where('t.order_uuid'));
         $pdo->exec('DELETE FROM production_unit_labels' . $where('order_uuid'));
         $pdo->exec('DELETE u FROM production_exception_units u INNER JOIN production_exceptions x ON x.exception_uuid = u.exception_uuid' . $where('x.order_uuid'));

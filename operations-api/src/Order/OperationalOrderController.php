@@ -282,8 +282,8 @@ final readonly class OperationalOrderController
             throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
         }
         $this->csrf->requireValid($session->rawToken, $request->header('x-csrf-token'));
-        $input = $request->json(2048);
-        $allowed = $action === 'claim' ? ['expectedVersion', 'qrToken'] : ['expectedVersion', 'defectResolved'];
+        $input = $request->json($action === 'claim' ? 2048 : 32_768);
+        $allowed = $action === 'claim' ? ['expectedVersion', 'qrToken'] : ['expectedVersion', 'defectResolved', 'pieceOutcome', 'originalDisposition', 'pieceOutcomes'];
         if (array_diff(array_keys($input), $allowed) !== []) {
             throw new ApiException(400, 'INVALID_REQUEST', 'Request fields are invalid.');
         }
@@ -378,18 +378,21 @@ final readonly class OperationalOrderController
         $this->csrf->requireValid($session->rawToken, $request->header('x-csrf-token'));
         $this->authorization->require($employee, $permission);
         $orderId = $this->parseOrderId($globalIdString);
-        $input = $request->json(2048);
-        $allowed = $operation === OrderOperationsService::OPERATION_CLAIM ? ['expectedVersion', 'qrToken', 'confirmedMultiple', 'ownedCount'] : ['expectedVersion'];
+        $input = $request->json($operation === OrderOperationsService::OPERATION_CLAIM ? 2048 : 32_768);
+        $allowed = $operation === OrderOperationsService::OPERATION_CLAIM ? ['expectedVersion', 'qrToken', 'confirmedMultiple', 'ownedCount'] : ['expectedVersion', 'pieceOutcome', 'originalDisposition', 'defectResolved', 'pieceOutcomes'];
         if (array_diff(array_keys($input), $allowed) !== [] || !is_int($input['expectedVersion'] ?? null) || $input['expectedVersion'] < 1
             || (isset($input['qrToken']) && !is_string($input['qrToken'])) || (isset($input['confirmedMultiple']) && !is_bool($input['confirmedMultiple']))
-            || (isset($input['ownedCount']) && (!is_int($input['ownedCount']) || $input['ownedCount'] < 0))) {
+            || (isset($input['ownedCount']) && (!is_int($input['ownedCount']) || $input['ownedCount'] < 0))
+            || (array_key_exists('defectResolved', $input) && $input['defectResolved'] !== true)
+            || (isset($input['pieceOutcome']) && !in_array($input['pieceOutcome'], ['repair', 'replacement'], true))
+            || (isset($input['originalDisposition']) && (($input['pieceOutcome'] ?? null) !== 'replacement' || !in_array($input['originalDisposition'], ['scrapped', 'quarantined'], true)))) {
             throw new ApiException(400, 'INVALID_REQUEST', 'Request fields are invalid.');
         }
         $idempotencyKey = $request->header('idempotency-key') ?? '';
         $context = OperationContext::fromRequest($request);
         $payload = $operation === OrderOperationsService::OPERATION_CLAIM
             ? $this->operations->claim($employee, $orderId, $input['expectedVersion'], $idempotencyKey, $context, $input)
-            : $this->operations->completeCurrentStage($employee, $orderId, $input['expectedVersion'], $idempotencyKey, $context);
+            : $this->operations->completeCurrentStage($employee, $orderId, $input['expectedVersion'], $idempotencyKey, $context, array_intersect_key($input, array_flip(['pieceOutcome', 'originalDisposition', 'defectResolved', 'pieceOutcomes'])));
         return Response::json($payload, 200, ['Cache-Control' => 'private, no-store']);
     }
 
