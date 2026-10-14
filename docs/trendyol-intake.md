@@ -144,11 +144,12 @@ manually (a duplication check, not a timezone rule).
 ## Fresh Start (re-baseline to a fixed cutoff)
 
 A Fresh Start moves the baseline forward to a fixed instant chosen by the owner, without deleting or changing any
-stored package. Example: 14.10.2026 11:30 Europe/Bucharest = `2026-10-14T08:30:00+00:00` = 1791966600000 ms.
+stored package. Fresh Start 2026: 14.10.2026 12:00 Europe/Bucharest = `2026-10-14T09:00:00+00:00` = 1791968400000 ms
+(re-baselined on 2026-10-14 08:40Z; the earlier 11:30 cutoff was cancelled by the owner).
 
 ```
 php bin/trendyol-intake.php pause --operator="<label>"
-php bin/trendyol-intake.php activate --baseline=2026-10-14T08:30:00+00:00 --operator="<label>" --confirm=ACTIVATE-TRENDYOL-INTAKE
+php bin/trendyol-intake.php activate --baseline=2026-10-14T09:00:00+00:00 --operator="<label>" --confirm=ACTIVATE-TRENDYOL-INTAKE
 ```
 
 - Run it before the cutoff (a future baseline up to 7 days ahead is accepted) or at most five minutes after it.

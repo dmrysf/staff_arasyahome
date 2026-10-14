@@ -686,14 +686,15 @@ $pdo->prepare('UPDATE operational_orders SET production_owner_employee_uuid = NU
 foreach ([$opUuid, $okUuid] as $uuid) $status(T::call($kernel, 'PUT', "/management/employees/{$uuid}/document-scopes", ['operate' => [], 'approve' => []], ['x-csrf-token' => $root['csrf']], $root['cookie']), 200, 'document scopes removed again');
 
 // ---- Fresh Start: a fixed future cutoff re-baselines intake without touching earlier packages ----------------
-// The owner's cutoff 14.10.2026 11:30 Europe/Bucharest is exactly 08:30:00Z, epoch 1791966600000 ms.
-$owner = new DateTimeImmutable('2026-10-14 11:30:00', new DateTimeZone('Europe/Bucharest'));
-$check($owner->getTimestamp() * 1000 === 1791966600000 && $owner->setTimezone(new DateTimeZone('UTC'))->format(DATE_ATOM) === '2026-10-14T08:30:00+00:00'
-    && $owner == new DateTimeImmutable('2026-10-14T11:30:00+03:00') && $ms($owner) === 1791966600000, 'the Bucharest cutoff, the UTC cutoff, the ISO offset and the epoch milliseconds are the same instant');
+// The owner's cutoff 14.10.2026 12:00 Europe/Bucharest is exactly 09:00:00Z, epoch 1791968400000 ms.
+$owner = new DateTimeImmutable('2026-10-14 12:00:00', new DateTimeZone('Europe/Bucharest'));
+$check($owner->getTimestamp() * 1000 === 1791968400000 && $owner->setTimezone(new DateTimeZone('UTC'))->format(DATE_ATOM) === '2026-10-14T09:00:00+00:00'
+    && $owner == new DateTimeImmutable('2026-10-14T12:00:00+03:00') && $ms($owner) === 1791968400000, 'the Bucharest cutoff, the UTC cutoff, the ISO offset and the epoch milliseconds are the same instant');
 $freshPackage = static fn (int $orderMs): \Arasya\Operations\Integration\Trendyol\TrendyolPackage => \Arasya\Operations\Integration\Trendyol\TrendyolPackage::fromApi($package(990, $orderMs, $orderMs + 1, 'Created'));
 $E = \Arasya\Operations\Integration\Trendyol\TrendyolEligibility::class;
-$check($E::classify($freshPackage(1791966599999), 1791966600000) === $E::IGNORED_HISTORICAL && $E::classify($freshPackage(1791966600000), 1791966600000) === $E::ELIGIBLE
-    && $E::classify($freshPackage(1791966600001), 1791966600000) === $E::ELIGIBLE, 'cutoff boundary: 11:29:59.999 is historical, exactly 11:30:00.000 and one millisecond later are eligible');
+$check($E::classify($freshPackage(1791968399999), 1791968400000) === $E::IGNORED_HISTORICAL && $E::classify($freshPackage(1791968400000), 1791968400000) === $E::ELIGIBLE
+    && $E::classify($freshPackage(1791968400001), 1791968400000) === $E::ELIGIBLE
+    && $E::classify($freshPackage(1791966600000), 1791968400000) === $E::IGNORED_HISTORICAL, 'cutoff boundary: 11:59:59.999 and the cancelled 11:30 cutoff are historical, exactly 12:00:00.000 and one millisecond later are eligible');
 
 $beforeFresh = $status($get($approver, '/trendyol/overview'), 200, 'overview before Fresh Start');
 $workBefore = $beforeFresh['counts']['pending'] + $beforeFresh['counts']['attention'];
@@ -702,8 +703,8 @@ $packagesBefore = hash('sha256', serialize([$pdo->query('SELECT * FROM trendyol_
 $othersAtFresh = $otherSources();
 $trendyolOrdersAtFresh = $trendyolOrders();
 // Activation happens twenty minutes BEFORE the cutoff with the exact future baseline, never "now".
-// The next day (after every earlier test package) at :30; the clock never moves backwards.
-$cut = $t0->modify('+1 day')->setTime((int) $t0->format('G'), 30);
+// The next day (after every earlier test package) on the hour; the clock never moves backwards.
+$cut = $t0->modify('+1 day');
 $cutMs = $ms($cut);
 $clock->instant = $cut->modify('-20 minutes');
 if ($state->read()['status'] === 'active') $state->pause('Fresh Start operator');
@@ -728,16 +729,17 @@ $clock->instant = $cut->modify('+15 minutes'); $transport->calls = [];
 $earlierId = (int) $earlier[0]['packageId'];
 $earlierRaw = $package($earlierId - $base, (int) $one('SELECT order_date_ms FROM trendyol_packages WHERE package_id = ?', [$earlierId]), $cutMs + 4000, 'Picking');
 $freshPage = [
-    $package(901, $cutMs - 1, $cutMs + 1000, 'Created'),                   // 11:29:59.999: historical
-    $package(902, $cutMs, $cutMs + 2000, 'Created'),                       // exactly 11:30:00.000: eligible
+    $package(901, $cutMs - 1, $cutMs + 1000, 'Created'),                   // 11:59:59.999: historical
+    $package(902, $cutMs, $cutMs + 2000, 'Created'),                       // exactly 12:00:00.000: eligible
     $package(903, $cutMs + 1, $cutMs + 3000, 'Created'),                   // one millisecond later: eligible
     $package(904, $cutMs - $hours(3), $cutMs + 3500, 'Picking'),           // ordered before, modified after the cutoff: historical
+    $package(907, $cutMs - 1_800_000, $cutMs + 3600, 'Created'),           // between the cancelled 11:30 and the 12:00 cutoff: historical
     $package(905, $cutMs + 600_000, $cutMs + 5000, 'Awaiting'),            // payment pending: attention, never releasable
 ];
 $transport->responses = [$page([...$freshPage, $earlierRaw])];
 $firstFresh = $sync->run();
 $check((int) $query($transport->calls[0]['url'])['startDate'] === $cutMs - 1_800_000, 'the first window after Fresh Start starts at the cutoff minus the overlap');
-$check($pdo->query('SELECT package_id FROM trendyol_ignored_packages WHERE package_id IN (' . ($base + 901) . ', ' . ($base + 904) . ') AND reason = \'historical\' ORDER BY package_id')->fetchAll(PDO::FETCH_COLUMN) == [$base + 901, $base + 904], 'orders placed before the cutoff stay historical even when modified or fetched after it');
+$check($pdo->query('SELECT package_id FROM trendyol_ignored_packages WHERE package_id IN (' . ($base + 901) . ', ' . ($base + 904) . ', ' . ($base + 907) . ') AND reason = \'historical\' ORDER BY package_id')->fetchAll(PDO::FETCH_COLUMN) == [$base + 901, $base + 904, $base + 907], 'orders placed before the cutoff stay historical even when modified or fetched after it');
 // A new order indexed late (fetched an hour after it was placed) and a repeated poll of the same page.
 $clock->instant = $cut->modify('+75 minutes'); $transport->calls = [];
 $transport->responses = [$page([...$freshPage, $package(906, $cutMs + 60_000, $cutMs + $hours(1), 'Created')])];

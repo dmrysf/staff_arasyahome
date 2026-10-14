@@ -85,7 +85,7 @@ test("Trendyol answers are mapped strictly and fail closed", () => {
   assert.equal(mapTrendyolOverview({ intake: { status: "active", baselineAt: null, lastRunAt: null, lastRunOutcome: null }, counts: { pending: 1, attention: 2, released: 0, closed: 0, ignored: 0 }, capabilities: { view: true, prepare: false, release: false } }).counts.attention, 2);
   // Fresh Start: pending packages of an earlier cohort are counted apart; an older API without the count reads 0.
   assert.equal(overview.counts.earlier, 0);
-  assert.equal(mapTrendyolOverview({ intake: { status: "active", baselineAt: "2026-10-14T08:30:00Z", lastRunAt: null, lastRunOutcome: null }, counts: { pending: 0, attention: 0, released: 2, closed: 3, earlier: 78, ignored: 89 }, capabilities: { view: true, prepare: true, release: true } }).counts.earlier, 78);
+  assert.equal(mapTrendyolOverview({ intake: { status: "active", baselineAt: "2026-10-14T09:00:00Z", lastRunAt: null, lastRunOutcome: null }, counts: { pending: 0, attention: 0, released: 2, closed: 3, earlier: 78, ignored: 89 }, capabilities: { view: true, prepare: true, release: true } }).counts.earlier, 78);
   assert.throws(() => mapTrendyolOverview({ intake: { status: "importing" }, counts: {}, capabilities: {} }), serverError);
 });
 
