@@ -417,7 +417,13 @@ $ok($post($kadyrova, "/production-units/{$pb['id']}/custody", ['action' => 'loca
 $error($post($kadyrova, "/production-units/{$pb['id']}/custody", ['action' => 'locate', 'expectedVersion' => 2, 'locationId' => $ironingLocation, 'qrToken' => $m6['qr']]), 409, 'CUSTODY_CHANGED', 'a stale custody version is refused');
 // Supervisor, return, receipt; the cutter cannot start before the approval.
 $ok($review($iuliana, $x6['id'], ['decision' => 'accept', 'reasonKey' => 'material-defect', 'qrToken' => $labelA]), '10. the supervisor accepts the exact piece');
+$ok($post($murat, '/auth/logout', []), '18. cutter signs out before the physical return is requested');
 $ok($sendReturn($iuliana, $x6['id']), '10. return addressed to the cutter');
+$check($one('SELECT status FROM production_exceptions WHERE exception_uuid = ?', [$x6['id']]) === 'awaiting_acknowledgment'
+    && (int) $one('SELECT COUNT(*) FROM production_exception_decisions WHERE exception_uuid = ?', [$x6['id']]) === 0, '18. offline cutter does not prevent the committed return and does not create a receipt or manager decision');
+$murat = T::login($kernel, "murat.{$suffix}", $password) + ['name' => 'REJEPOV AYMYRAT'];
+$offlineReturn6 = $ok($get($murat, "/production-exceptions/{$x6['id']}"), '18. new cutter session reloads the committed physical return');
+$check($offlineReturn6['status'] === 'awaiting_acknowledgment' && $offlineReturn6['actions']['canAcknowledge'] === true && $offlineReturn6['orderScope']['affectedQuantity'] === 1, '18. re-login restores the exact pending piece and explicit receipt action');
 $error($trackClaim($murat, $t6, $labelA), 409, 'ORDER_BLOCKED_BY_EXCEPTION', 'the cutter cannot start before the receipt and the approval');
 $ack6 = $ok($ack($murat, $x6['id'], $labelA, ['responsibility' => 'disputed', 'comment' => 'Defect de material, nu de croială']), '11. the cutter confirms receipt with the piece label');
 $check($ack6['status'] === 'awaiting_approval' && (int) $one("SELECT COUNT(*) FROM production_exception_decisions WHERE exception_uuid = ? AND status = 'pending'", [$x6['id']]) === 1, '11. exactly one pending decision');
