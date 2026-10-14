@@ -685,6 +685,76 @@ $error($send($approver, 'POST', "{$p700}/correct-identity", ['expectedVersion' =
 $pdo->prepare('UPDATE operational_orders SET production_owner_employee_uuid = NULL WHERE order_uuid = ?')->execute([$uuid700]);
 foreach ([$opUuid, $okUuid] as $uuid) $status(T::call($kernel, 'PUT', "/management/employees/{$uuid}/document-scopes", ['operate' => [], 'approve' => []], ['x-csrf-token' => $root['csrf']], $root['cookie']), 200, 'document scopes removed again');
 
+// ---- Fresh Start: a fixed future cutoff re-baselines intake without touching earlier packages ----------------
+// The owner's cutoff 14.10.2026 12:00 Europe/Bucharest is exactly 09:00:00Z, epoch 1791968400000 ms.
+$owner = new DateTimeImmutable('2026-10-14 12:00:00', new DateTimeZone('Europe/Bucharest'));
+$check($owner->getTimestamp() * 1000 === 1791968400000 && $owner->setTimezone(new DateTimeZone('UTC'))->format(DATE_ATOM) === '2026-10-14T09:00:00+00:00'
+    && $owner == new DateTimeImmutable('2026-10-14T12:00:00+03:00') && $ms($owner) === 1791968400000, 'the Bucharest cutoff, the UTC cutoff, the ISO offset and the epoch milliseconds are the same instant');
+$freshPackage = static fn (int $orderMs): \Arasya\Operations\Integration\Trendyol\TrendyolPackage => \Arasya\Operations\Integration\Trendyol\TrendyolPackage::fromApi($package(990, $orderMs, $orderMs + 1, 'Created'));
+$E = \Arasya\Operations\Integration\Trendyol\TrendyolEligibility::class;
+$check($E::classify($freshPackage(1791968399999), 1791968400000) === $E::IGNORED_HISTORICAL && $E::classify($freshPackage(1791968400000), 1791968400000) === $E::ELIGIBLE
+    && $E::classify($freshPackage(1791968400001), 1791968400000) === $E::ELIGIBLE
+    && $E::classify($freshPackage(1791966600000), 1791968400000) === $E::IGNORED_HISTORICAL, 'cutoff boundary: 11:59:59.999 and the cancelled 11:30 cutoff are historical, exactly 12:00:00.000 and one millisecond later are eligible');
+
+$beforeFresh = $status($get($approver, '/trendyol/overview'), 200, 'overview before Fresh Start');
+$workBefore = $beforeFresh['counts']['pending'] + $beforeFresh['counts']['attention'];
+$check($workBefore > 0 && $beforeFresh['counts']['earlier'] === 0, 'before Fresh Start the earlier cohort is still in the work lists: ' . json_encode($beforeFresh['counts']));
+$packagesBefore = hash('sha256', serialize([$pdo->query('SELECT * FROM trendyol_packages ORDER BY package_id')->fetchAll(PDO::FETCH_ASSOC), $pdo->query('SELECT * FROM trendyol_package_lines ORDER BY package_id, line_id')->fetchAll(PDO::FETCH_ASSOC), $pdo->query('SELECT * FROM trendyol_ignored_packages ORDER BY package_id')->fetchAll(PDO::FETCH_ASSOC)]));
+$othersAtFresh = $otherSources();
+$trendyolOrdersAtFresh = $trendyolOrders();
+// Activation happens twenty minutes BEFORE the cutoff with the exact future baseline, never "now".
+// The next day (after every earlier test package) on the hour; the clock never moves backwards.
+$cut = $t0->modify('+1 day');
+$cutMs = $ms($cut);
+$clock->instant = $cut->modify('-20 minutes');
+if ($state->read()['status'] === 'active') $state->pause('Fresh Start operator');
+$fresh = $state->activate($cut, 'Fresh Start operator');
+$check($fresh['status'] === 'active' && $fresh['baselineAt'] === $cut->format('Y-m-d H:i:s.u') && $fresh['cursorAt'] === $fresh['baselineAt'], 'the exact future cutoff is persisted as baseline and cursor');
+$afterFresh = $status($get($approver, '/trendyol/overview'), 200, 'overview after Fresh Start');
+$check($afterFresh['counts']['pending'] === 0 && $afterFresh['counts']['attention'] === 0 && $afterFresh['counts']['earlier'] === $workBefore
+    && $afterFresh['counts']['released'] === $beforeFresh['counts']['released'] && $afterFresh['counts']['closed'] === $beforeFresh['counts']['closed'] && $afterFresh['counts']['ignored'] === $beforeFresh['counts']['ignored'],
+    'Fresh Start: the work lists start clean, the earlier cohort is counted apart, history counts unchanged: ' . json_encode($afterFresh['counts']));
+$check($afterFresh['intake']['baselineAt'] === $cut->format('Y-m-d\TH:i:s\Z'), 'the overview names the Fresh Start baseline');
+$check($status($get($approver, '/trendyol/packages', ['view' => 'pending']), 200, 'empty pending')['items'] === [] && $status($get($approver, '/trendyol/packages', ['view' => 'attention']), 200, 'empty attention')['items'] === [], 'a legitimately empty queue is an empty list, not an error');
+$earlier = $status($get($approver, '/trendyol/packages', ['view' => 'earlier']), 200, 'earlier list')['items'];
+$check(count($earlier) === $workBefore && array_unique(array_column($earlier, 'beforeBaseline')) === [true], 'the earlier cohort stays readable under its own view');
+$earlierDetail = $status($get($approver, '/trendyol/packages/' . $earlier[0]['packageId']), 200, 'earlier package detail');
+$check($earlierDetail['beforeBaseline'] === true && $earlierDetail['intakeStatus'] === 'pending' && $earlierDetail['capabilities']['prepare'] === true, 'an earlier package is not deleted or closed and stays workable on its own screen');
+$check(hash('sha256', serialize([$pdo->query('SELECT * FROM trendyol_packages ORDER BY package_id')->fetchAll(PDO::FETCH_ASSOC), $pdo->query('SELECT * FROM trendyol_package_lines ORDER BY package_id, line_id')->fetchAll(PDO::FETCH_ASSOC), $pdo->query('SELECT * FROM trendyol_ignored_packages ORDER BY package_id')->fetchAll(PDO::FETCH_ASSOC)])) === $packagesBefore, 'the re-baseline changes no stored package, line or ignored record');
+$error($get($approver, '/trendyol/packages', ['view' => 'everything']), 400, 'INVALID_VIEW', 'an unknown view is refused');
+
+// First runs after the cutoff: boundary packages, a late-indexed new order, a historical package modified later,
+// an earlier-cohort package re-read, a payment-pending one, and a repeated poll.
+$clock->instant = $cut->modify('+15 minutes'); $transport->calls = [];
+$earlierId = (int) $earlier[0]['packageId'];
+$earlierRaw = $package($earlierId - $base, (int) $one('SELECT order_date_ms FROM trendyol_packages WHERE package_id = ?', [$earlierId]), $cutMs + 4000, 'Picking');
+$freshPage = [
+    $package(901, $cutMs - 1, $cutMs + 1000, 'Created'),                   // 11:59:59.999: historical
+    $package(902, $cutMs, $cutMs + 2000, 'Created'),                       // exactly 12:00:00.000: eligible
+    $package(903, $cutMs + 1, $cutMs + 3000, 'Created'),                   // one millisecond later: eligible
+    $package(904, $cutMs - $hours(3), $cutMs + 3500, 'Picking'),           // ordered before, modified after the cutoff: historical
+    $package(907, $cutMs - 1_800_000, $cutMs + 3600, 'Created'),           // between the cancelled 11:30 and the 12:00 cutoff: historical
+    $package(905, $cutMs + 600_000, $cutMs + 5000, 'Awaiting'),            // payment pending: attention, never releasable
+];
+$transport->responses = [$page([...$freshPage, $earlierRaw])];
+$firstFresh = $sync->run();
+$check((int) $query($transport->calls[0]['url'])['startDate'] === $cutMs - 1_800_000, 'the first window after Fresh Start starts at the cutoff minus the overlap');
+$check($pdo->query('SELECT package_id FROM trendyol_ignored_packages WHERE package_id IN (' . ($base + 901) . ', ' . ($base + 904) . ', ' . ($base + 907) . ') AND reason = \'historical\' ORDER BY package_id')->fetchAll(PDO::FETCH_COLUMN) == [$base + 901, $base + 904, $base + 907], 'orders placed before the cutoff stay historical even when modified or fetched after it');
+// A new order indexed late (fetched an hour after it was placed) and a repeated poll of the same page.
+$clock->instant = $cut->modify('+75 minutes'); $transport->calls = [];
+$transport->responses = [$page([...$freshPage, $package(906, $cutMs + 60_000, $cutMs + $hours(1), 'Created')])];
+$secondFresh = $sync->run();
+$check($secondFresh['received'] === 1, 'the repeated poll stores only the late-indexed new order: ' . json_encode($secondFresh));
+foreach ([902, 903, 905, 906] as $o) $check((int) $one('SELECT COUNT(*) FROM trendyol_packages WHERE package_id = ?', [$base + $o]) === 1 && (int) $one("SELECT COUNT(*) FROM trendyol_intake_events WHERE package_id = ? AND action IN ('received','deferred')", [$base + $o]) === 1, "package {$o} is stored exactly once");
+$freshOverview = $status($get($approver, '/trendyol/overview'), 200, 'overview with the new cohort');
+$freshPending = $status($get($approver, '/trendyol/packages', ['view' => 'pending']), 200, 'new cohort list')['items'];
+$check(array_column($freshPending, 'packageId') === [(string) ($base + 902), (string) ($base + 903), (string) ($base + 906)] && $freshOverview['counts']['pending'] === 3, 'the active queue holds only the new cohort: ' . json_encode(array_column($freshPending, 'packageId')));
+$check(array_column($freshPending, 'orderDateNearActivation') === [true, true, true] && array_unique(array_column($freshPending, 'beforeBaseline')) === [false], 'orders within five minutes after the cutoff carry the manual-duplication warning');
+$check(array_column($status($get($approver, '/trendyol/packages', ['view' => 'attention']), 200, 'new attention')['items'], 'packageId') === [(string) ($base + 905)], 'the payment-pending new order waits under attention');
+$check($freshOverview['counts']['earlier'] === $workBefore && $one('SELECT intake_status FROM trendyol_packages WHERE package_id = ?', [$earlierId]) === 'pending', 'an earlier-cohort package re-read after the cutoff stays in the earlier view, never duplicated');
+$error($send($approver, 'POST', '/trendyol/packages/' . ($base + 905) . '/release', ['expectedVersion' => 1, 'confirm' => true], $key('fresh-awaiting')), 409, 'MARKETPLACE_STATUS_NOT_RELEASABLE', 'a payment-pending new order cannot be released');
+$check($trendyolOrders() === $trendyolOrdersAtFresh && $otherSources() === $othersAtFresh, 'Fresh Start polling creates no production order and touches no other source');
+
 // Leave the shared disposable database as later suites expect it: the intake rows and the approved Trendyol test
 // orders (with their QR, document revision and events) are removed, child rows first.
 $pdo->exec('DELETE FROM trendyol_package_lines');

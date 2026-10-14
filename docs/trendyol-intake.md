@@ -141,6 +141,25 @@ are plain epoch comparisons, so midnight and Romanian daylight-saving changes ca
 A package ordered before the baseline (by even one millisecond) is historical. A package ordered within five minutes
 after the baseline carries `orderDateNearActivation: true`: Staff asks the approver to check it was not already handled
 manually (a duplication check, not a timezone rule).
+## Fresh Start (re-baseline to a fixed cutoff)
+
+A Fresh Start moves the baseline forward to a fixed instant chosen by the owner, without deleting or changing any
+stored package. Fresh Start 2026: 14.10.2026 12:00 Europe/Bucharest = `2026-10-14T09:00:00+00:00` = 1791968400000 ms
+(re-baselined on 2026-10-14 08:40Z; the earlier 11:30 cutoff was cancelled by the owner).
+
+```
+php bin/trendyol-intake.php pause --operator="<label>"
+php bin/trendyol-intake.php activate --baseline=2026-10-14T09:00:00+00:00 --operator="<label>" --confirm=ACTIVATE-TRENDYOL-INTAKE
+```
+
+- Run it before the cutoff (a future baseline up to 7 days ahead is accepted) or at most five minutes after it.
+  Never use `--baseline=now` for a fixed cutoff.
+- Packages first seen afterwards are historical when `orderDate < baseline`, whatever their modification or fetch time.
+- Staff (API 2.30.1 / Staff 2.25.1): the work lists `pending` and `attention` and their counts hold only packages
+  ordered at or after the current baseline. Pending packages of an earlier cohort are listed under `earlier`
+  ("Înainte de start"): still readable and workable on the package screen, never deleted, closed or recounted as
+  work. Released, closed and ignored history is unchanged.
+
 ## Read-only preview
 
 `php bin/trendyol-preview.php [--from=ISO] [--to=ISO] [--baseline=ISO] [--json]` reads one window (at most two weeks;

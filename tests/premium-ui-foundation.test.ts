@@ -65,7 +65,7 @@ const summary = (id: string, lineCount: number, preparedCount: number): Trendyol
   orderDate: null, orderDateNearActivation: false, changedAfterRelease: false, version: 1, lineCount, preparedCount,
 });
 const dashboard = (pending: TrendyolPackageSummary[], patch: { release?: boolean; prepare?: boolean; attention?: number; status?: "active" | "paused" | "inactive" } = {}): TrendyolDashboardData => ({
-  overview: { intake: { status: patch.status ?? "active", baselineAt: null, lastRunAt: null, lastRunOutcome: null }, counts: { pending: pending.length, attention: patch.attention ?? 0, released: 0, closed: 0, ignored: 0 }, capabilities: { view: true, prepare: patch.prepare ?? true, release: patch.release ?? true } },
+  overview: { intake: { status: patch.status ?? "active", baselineAt: null, lastRunAt: null, lastRunOutcome: null }, counts: { pending: pending.length, attention: patch.attention ?? 0, released: 0, closed: 0, earlier: 0, ignored: 0 }, capabilities: { view: true, prepare: patch.prepare ?? true, release: patch.release ?? true } },
   pending, attention: [], released: [], activity: null, listsAt: 0,
 });
 

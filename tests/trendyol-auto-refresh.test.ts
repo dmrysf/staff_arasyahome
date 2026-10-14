@@ -214,13 +214,13 @@ test("without an interval the scheduler reads only on start and on the button", 
 // ---- Trendyol loaders: few reads, read-only ---------------------------------------------------------------------
 const overview = (counts: Partial<TrendyolOverview["counts"]> = {}): TrendyolOverview => ({
   intake: { status: "active", baselineAt: "2026-10-10T16:48:04Z", lastRunAt: "2026-10-10T16:50:03Z", lastRunOutcome: "ok" },
-  counts: { pending: 0, attention: 0, released: 0, closed: 0, ignored: 2, ...counts },
+  counts: { pending: 0, attention: 0, released: 0, closed: 0, earlier: 0, ignored: 2, ...counts },
   capabilities: { view: true, prepare: true, release: true },
 });
 const summary = (packageId: string): TrendyolPackageSummary => ({ packageId, orderNumber: `TY${packageId}`, intakeStatus: "pending", marketplaceStatus: "Created", marketplaceClass: "new", marketplaceStatusKnown: true, orderDate: "2026-10-10T17:00:00Z", lineCount: 1, preparedCount: 0 } as TrendyolPackageSummary);
 
 function fakeService() {
-  const state = { overview: overview(), lists: { pending: [] as TrendyolPackageSummary[], attention: [] as TrendyolPackageSummary[], released: [] as TrendyolPackageSummary[], closed: [] as TrendyolPackageSummary[] } };
+  const state = { overview: overview(), lists: { pending: [] as TrendyolPackageSummary[], attention: [] as TrendyolPackageSummary[], released: [] as TrendyolPackageSummary[], closed: [] as TrendyolPackageSummary[], earlier: [] as TrendyolPackageSummary[] } };
   const calls: string[] = [];
   const mutation = () => { throw new Error("a refresh must never change data"); };
   const service = {
