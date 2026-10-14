@@ -54,8 +54,13 @@ final readonly class TrendyolWorkspace
      * Inbox views. `pending` lists pending packages in a new-order status (workable); `attention` lists pending
      * packages that cannot be released yet: payment pending, ReadyToShip or an unknown status (review), or
      * shipped/returned at the marketplace. Their class follows the marketplace status on every update.
+     *
+     * Fresh Start: the work lists (`pending`, `attention`) hold only the current cohort, the packages ordered at or
+     * after the current activation baseline. Pending packages ordered before it (stored under an earlier baseline)
+     * are listed under `earlier`: still readable and workable on the package screen, never deleted or changed, but
+     * outside the active queue and its counts.
      */
-    private const VIEWS = ['pending' => ['pending'], 'attention' => ['pending'], 'released' => ['released'], 'closed' => ['dismissed', 'marketplace_cancelled']];
+    private const VIEWS = ['pending' => ['pending'], 'attention' => ['pending'], 'released' => ['released'], 'closed' => ['dismissed', 'marketplace_cancelled'], 'earlier' => ['pending']];
     private const MAX_CENTIMETRES = '10000';
     private const MAX_METERS = '100000';
 
@@ -82,8 +87,11 @@ final readonly class TrendyolWorkspace
         $this->authorization->require($actor, self::VIEW);
         $state = $this->pdo->query('SELECT status, baseline_at, last_run_at, last_run_outcome FROM trendyol_intake_state WHERE state_id = 1')->fetch(PDO::FETCH_ASSOC) ?: [];
         $counts = array_fill_keys(array_keys(self::VIEWS), 0);
-        foreach ($this->pdo->query('SELECT intake_status, marketplace_status, COUNT(*) AS n FROM trendyol_packages GROUP BY intake_status, marketplace_status')->fetchAll(PDO::FETCH_ASSOC) as $row) {
-            $counts[self::viewOf((string) $row['intake_status'], (string) $row['marketplace_status'])] += (int) $row['n'];
+        $baseline = $this->baselineMillis();
+        $grouped = $this->pdo->prepare('SELECT intake_status, marketplace_status, order_date_ms < ? AS before_baseline, COUNT(*) AS n FROM trendyol_packages GROUP BY intake_status, marketplace_status, before_baseline');
+        $grouped->execute([$baseline ?? 0]);
+        foreach ($grouped->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $counts[self::viewOf((string) $row['intake_status'], (string) $row['marketplace_status'], (int) $row['before_baseline'] === 1)] += (int) $row['n'];
         }
         return [
             'intake' => [
@@ -149,7 +157,7 @@ final readonly class TrendyolWorkspace
             ], $rows)];
         }
         $statuses = self::VIEWS[$view] ?? throw new ApiException(400, 'INVALID_VIEW', 'Unknown view.');
-        $workList = $view === 'pending' || $view === 'attention';
+        $workList = $view === 'pending' || $view === 'attention' || $view === 'earlier';
         $statement = $this->pdo->prepare(
             'SELECT p.*, (SELECT COUNT(*) FROM trendyol_package_lines l WHERE l.package_id = p.package_id) AS line_count,
                     (SELECT COUNT(*) FROM trendyol_package_lines l WHERE l.package_id = p.package_id AND l.prepared_kind IS NOT NULL) AS prepared_count,
@@ -162,7 +170,7 @@ final readonly class TrendyolWorkspace
         $baseline = $this->baselineMillis();
         $rows = array_slice(array_values(array_filter(
             $statement->fetchAll(PDO::FETCH_ASSOC),
-            static fn (array $row): bool => self::viewOf((string) $row['intake_status'], (string) $row['marketplace_status']) === $view,
+            static fn (array $row): bool => self::viewOf((string) $row['intake_status'], (string) $row['marketplace_status'], self::beforeBaseline($row, $baseline)) === $view,
         )), 0, 200);
         return ['items' => array_map(fn (array $row): array => [
             ...$this->summary($row, $baseline),
@@ -665,20 +673,28 @@ final readonly class TrendyolWorkspace
             'orderDate' => self::fromMillis($row['order_date_ms']),
             'channelId' => $row['channel_id'] === null ? null : (int) $row['channel_id'],
             'orderDateNearActivation' => $baselineMillis !== null && TrendyolEligibility::nearActivation($orderDateMillis, $baselineMillis),
+            // Ordered before the current activation baseline (an earlier cohort): outside the active work lists.
+            'beforeBaseline' => self::beforeBaseline($row, $baselineMillis),
             'changedAfterRelease' => (int) $row['changed_after_release'] === 1,
             'firstSeenAt' => self::iso($row['first_seen_at']),
             'version' => (int) $row['version'],
         ];
     }
 
-    /** The inbox view a package belongs to. */
-    private static function viewOf(string $intakeStatus, string $marketplaceStatus): string
+    /** The inbox view a package belongs to; a pending package of an earlier cohort is never in the work lists. */
+    private static function viewOf(string $intakeStatus, string $marketplaceStatus, bool $beforeBaseline): string
     {
         return match ($intakeStatus) {
-            'pending' => TrendyolEligibility::releasable($marketplaceStatus) ? 'pending' : 'attention',
+            'pending' => $beforeBaseline ? 'earlier' : (TrendyolEligibility::releasable($marketplaceStatus) ? 'pending' : 'attention'),
             'released' => 'released',
             default => 'closed',
         };
+    }
+
+    /** @param array<string, mixed> $row Whether the package was ordered before the current activation baseline. */
+    private static function beforeBaseline(array $row, ?int $baselineMillis): bool
+    {
+        return $baselineMillis !== null && $row['order_date_ms'] !== null && (int) $row['order_date_ms'] < $baselineMillis;
     }
 
     /** The activation baseline in epoch milliseconds, or null while intake was never activated. */
