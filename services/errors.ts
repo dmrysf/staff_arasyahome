@@ -110,6 +110,16 @@ const actions: Record<ServiceErrorCode, ErrorActionKey> = {
   QR_NOT_ARASYA: "back",
   QR_NOT_SUPPORTED: "back",
   QR_DOCUMENT_CONTROLLED: "back",
+  PARTIAL_REWORK_DISABLED: "back",
+  UNITS_INVALID: "reload",
+  UNIT_REVIEW_REQUIRED: "back",
+  UNIT_LABEL_MISMATCH: "scanAgain",
+  TRACK_NOT_FOUND: "back",
+  TRACK_CHANGED: "reload",
+  TRACK_ALREADY_CLAIMED: "reload",
+  TRACK_WAITING_FOR_ORDER: "back",
+  DEFECT_RESOLUTION_REQUIRED: "back",
+  ORDER_PIECES_IN_REWORK: "back",
 };
 
 /** Title, message and action of one error code in the active language (catalog keys `error.<CODE>.*`). */

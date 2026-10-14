@@ -81,6 +81,7 @@ $cleanup = static function () use ($pdo): void {
         $pdo->exec("DELETE FROM {$table}");
     }
     $pdo->exec('UPDATE operational_orders SET open_exception_uuid = NULL');
+    T::clearPieces($pdo);
     foreach (['production_exceptions', 'cutting_transfers', 'cutting_facts', 'analytics_ownership_intervals', 'analytics_order_projection', 'responsibility_assignments', 'organization_principals', 'order_activity_events', 'order_operation_idempotency', 'employee_order_relations', 'order_qr_references', 'operational_order_items', 'order_projection_receipts'] as $table) {
         $pdo->exec("DELETE FROM {$table}");
     }
@@ -188,7 +189,7 @@ restorePreDocumentAuthorityTestSchema($pdo);
 $historyBefore = $pdo->query('SELECT revision_uuid, order_uuid, revision_number, status, qr_reference, generated_by_employee_uuid, generated_at FROM production_document_revisions ORDER BY revision_uuid')->fetchAll(PDO::FETCH_ASSOC);
 $qrBefore = $pdo->query('SELECT qr_reference, status FROM order_qr_references ORDER BY qr_reference')->fetchAll(PDO::FETCH_ASSOC);
 $ordersBefore = $pdo->query('SELECT global_order_id, production_authority, production_stage_id, production_version, document_status, document_version FROM operational_orders ORDER BY global_order_id')->fetchAll(PDO::FETCH_ASSOC);
-check((new MigrationRunner($pdo))->migrate($migrations) === ['020_production_document_authority.sql', '021_document_scopes.sql', '022_trendyol_intake.sql', '024_tailoring_quality_supervision.sql','025_source_payment_gate.sql','026_trendyol_product_identity.sql'], '019 -> 020 official additive upgrade');
+check((new MigrationRunner($pdo))->migrate($migrations) === ['020_production_document_authority.sql', '021_document_scopes.sql', '022_trendyol_intake.sql', '024_tailoring_quality_supervision.sql','025_source_payment_gate.sql','026_trendyol_product_identity.sql','028_production_work_units.sql'], '019 -> 020 official additive upgrade');
 check((new MigrationRunner($pdo))->migrate($migrations) === [], '020 recorded exactly once');
 $scopeDocuments();
 check($pdo->query('SELECT revision_uuid, order_uuid, revision_number, status, qr_reference, generated_by_employee_uuid, generated_at FROM production_document_revisions ORDER BY revision_uuid')->fetchAll(PDO::FETCH_ASSOC) === $historyBefore, '020 rewrites no document revision');

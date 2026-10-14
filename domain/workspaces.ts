@@ -161,9 +161,12 @@ export type StageQueue = {
   /** False when the stage holds more open orders than one request reads; the bucket counts are then partial. */
   countsComplete: boolean;
   items: StaffOrder[];
+  /** Pieces in rework at this stage (API 2.31.0); empty from older APIs. */
+  trackItems: { trackId: string; order: StaffOrder }[];
 };
 
-export type StageSummary = { stageId: string; total: number; mine: number }[];
+/** reworkTotal / reworkMine: pieces in rework at the stage, counted apart from orders (API 2.31.0; 0 from older APIs). */
+export type StageSummary = { stageId: string; total: number; mine: number; reworkTotal: number; reworkMine: number }[];
 
 export type WorkspaceApi = {
   stageQueue(stageId: string, signal?: AbortSignal): Promise<StageQueue>;

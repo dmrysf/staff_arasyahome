@@ -36,7 +36,19 @@ final readonly class OperationalOrder
         public ?string $paymentMethod = null,
         public ?string $advanceStatus = null,
         public ?string $paymentReversedAt = null,
+        /**
+         * Active rework tracks (migration 028): pieces of this order that travel separately, each with its stage and
+         * owner. Empty for every order whose pieces all travel together; the fields above describe those pieces.
+         * @var list<array{trackUuid: string, stageId: string, ownerEmployeeUuid: ?string}>
+         */
+        public array $activeTracks = [],
     ) {
+    }
+
+    /** Whether some pieces are away from the order in rework (its stage is then not the stage of every piece). */
+    public function hasActiveTracks(): bool
+    {
+        return $this->activeTracks !== [];
     }
 
     /** A stale or revoked production document blocks every production action until a new revision is active. */

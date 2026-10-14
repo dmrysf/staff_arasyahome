@@ -1,6 +1,7 @@
-# Item-level rework routing: design (NOT implemented, BLOCKED)
+# Item-level rework routing: original design (superseded)
 
-Status: **BLOCKED**. This document is a design only. Production still routes per order.
+Status: **superseded** by [per-piece rework](per-piece-rework.md) (API 2.31.0, Staff 2.26.0, Dashboard 0.14.0, migration 028),
+implemented and not yet deployed. This file keeps the analysis of the order-level behaviour that API 2.30.x still has.
 
 ## What the system does today (verified 2026-10-14, API 2.30.2)
 

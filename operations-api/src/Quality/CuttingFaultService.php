@@ -71,48 +71,106 @@ final readonly class CuttingFaultService
 
     // ---------------------------------------------------------------- commands
 
-    /** @param array<string, mixed> $input @return array<string, mixed> */
+    /**
+     * A defect report. Staff 2.26.0+ names the exact physical pieces (`units`), optionally on a rework track
+     * (`trackId`); older clients name whole lines (`itemIds`, every piece of those lines that travels with the order).
+     *
+     * When the named pieces are all the pieces of the carrier (the order, or the track), the report acts on that
+     * carrier exactly as before: it is blocked and, if approved, the whole carrier returns to cutting. When they are
+     * only some of its pieces (one defective curtain of two), those pieces leave the carrier on a new rework track at
+     * the same stage with the same owner, the report acts on that track only, and the rest of the order is not blocked
+     * and keeps its progress. Partial reports are refused until the partial_rework flag is enabled.
+     *
+     * @param array<string, mixed> $input @return array<string, mixed>
+     */
     public function report(EmployeeIdentity $actor, string $globalOrderId, array $input, string $key, string $requestId): array
     {
         $this->authorization->require($actor, 'orders.report_fault');
         IdempotencyStore::requireKey($key);
         $globalId = $this->globalId($globalOrderId);
         $expected = $this->positiveInt($input['expectedVersion'] ?? null, 'expectedVersion');
-        $itemIds = $this->itemIds($input['itemIds'] ?? null);
+        $unitIds = array_key_exists('units', $input) ? $this->unitIds($input['units']) : null;
+        $trackId = $input['trackId'] ?? null;
+        if ($trackId !== null && (!\Arasya\Operations\Production\WorkUnits::isUuid($trackId) || $unitIds === null)) {
+            throw new ApiException(400, 'INVALID_REQUEST', 'trackId must be a piece track id and requires units.');
+        }
+        if ($unitIds === null) {
+            $itemIds = $this->itemIds($input['itemIds'] ?? null);
+        } elseif (array_key_exists('itemIds', $input)) {
+            throw new ApiException(400, 'INVALID_REQUEST', 'Name either the pieces or the lines, not both.');
+        } else {
+            $itemIds = [];
+        }
         $reasonKey = is_string($input['reasonKey'] ?? null) ? $input['reasonKey'] : throw new ApiException(400, 'INVALID_REQUEST', 'reasonKey is required.');
         $comment = $this->comment($input['comment'] ?? null, false);
         $workflow = $this->workflow();
-        $hash = IdempotencyStore::hash('fault.report', $globalId, [$expected, $itemIds, $reasonKey, $comment]);
+        // Line reports keep their original hash, so a retry from an older client replays exactly as before.
+        $hash = $unitIds === null
+            ? IdempotencyStore::hash('fault.report', $globalId, [$expected, $itemIds, $reasonKey, $comment])
+            : IdempotencyStore::hash('fault.report', $globalId, [$expected, 'units', $unitIds, $trackId, $reasonKey, $comment]);
 
-        return $this->transaction(function () use ($actor, $globalId, $expected, $itemIds, $reasonKey, $comment, $workflow, $key, $hash, $requestId): array {
+        return $this->transaction(function () use ($actor, $globalId, $expected, $unitIds, $trackId, $itemIds, $reasonKey, $comment, $workflow, $key, $hash, $requestId): array {
             $order = $this->lockOrderByGlobalId($globalId);
             $replay = $this->idempotency->replay($actor->employeeUuid, $key, 'fault.report', $globalId, $hash);
             if ($replay !== null) {
                 return $replay;
             }
-            if ((int) $order['production_version'] !== $expected) {
-                throw new ApiException(409, 'ORDER_CHANGED', 'The order changed. Reload it before continuing.');
+            $orderUuid = (string) $order['order_uuid'];
+            $now = $this->now();
+            $carrier = self::orderCarrier($order);
+            if ($trackId !== null) {
+                $track = $this->tracks()->lock((string) $trackId);
+                if ($track === null || $track['order_uuid'] !== $orderUuid || $track['status'] !== 'active') {
+                    throw new ApiException(404, 'TRACK_NOT_FOUND', 'The piece was not found.');
+                }
+                $carrier = self::trackCarrier($track);
+            }
+            if ((int) $carrier['production_version'] !== $expected) {
+                throw new ApiException(409, $trackId === null ? 'ORDER_CHANGED' : 'TRACK_CHANGED', 'The order changed. Reload it before continuing.');
             }
             $this->assertOrderOpenForProduction($order);
             // With an appointed tailoring quality supervisor, Trendyol, Trendhome and OutletPerdele defects found at
             // stages 3-12 go to the supervisor first. Without one (and always for B2B) the original intake-only
             // return to cutting applies unchanged.
             $supervised = TailoringSupervisorPolicy::supervisedFlowApplies((string) $order['source_key']) && $this->supervisors()->isActive();
-            $stageId = (string) $order['production_stage_id'];
+            $stageId = (string) $carrier['production_stage_id'];
             if ($supervised ? !in_array($stageId, TailoringSupervisorPolicy::TAILORING_STAGES, true) : $stageId !== self::DETECTION_STAGE) {
                 throw new ApiException(409, 'EXCEPTION_STAGE_INVALID', $supervised ? 'A defect can only be reported during tailoring (stages 3-12).' : 'A cutting fault can only be reported at tailoring intake.');
             }
-            if ($order['open_exception_uuid'] !== null) {
+            if ($carrier['open_exception_uuid'] !== null) {
                 throw new ApiException(409, 'EXCEPTION_ALREADY_OPEN', 'This order already has an open return request.');
             }
-            if ($order['production_owner_employee_uuid'] !== $actor->employeeUuid || !$actor->worksAt($stageId, (string) $order['source_key'])) {
+            if ($carrier['production_owner_employee_uuid'] !== $actor->employeeUuid || !$actor->worksAt($stageId, (string) $order['source_key'])) {
                 throw new ApiException(403, 'FAULT_REPORT_NOT_ALLOWED', $supervised ? 'Only the employee who owns the order at its current stage can report a defect.' : 'Only the tailoring intake employee who accepted the order can return it to cutting.');
             }
             $reason = $this->reason($reasonKey);
             if ((int) $reason['requires_comment'] === 1 && $comment === null) {
                 throw new ApiException(422, 'COMMENT_REQUIRED', 'A comment is required for this reason.');
             }
-            $responsible = $this->responsibleHandoff((string) $order['order_uuid']);
+
+            // The exact pieces. Line reports name every piece of the lines that is here, on the order.
+            $this->units()->ensure($orderUuid, $now);
+            $carrierUnits = $this->units()->carrierUnits($orderUuid, $carrier['track_uuid']);
+            if ($unitIds === null) {
+                $this->faultLines($orderUuid, $itemIds, false);
+                $unitIds = array_values(array_map(static fn (array $unit): string => (string) $unit['unit_uuid'], array_filter($carrierUnits, static fn (array $unit): bool => in_array($unit['item_uuid'], $itemIds, true))));
+                if ($unitIds === []) {
+                    throw new ApiException(422, 'FAULT_LINES_INVALID', 'Every selected line must have pieces that travel with this order.');
+                }
+                $selected = $this->units()->requireCarrierUnits($orderUuid, null, $unitIds);
+                $partial = false;
+            } else {
+                $selected = $this->units()->requireCarrierUnits($orderUuid, $carrier['track_uuid'], $unitIds);
+                $partial = count($selected) < count($carrierUnits);
+                if ($partial && !$this->units()->partialReworkEnabled()) {
+                    throw new ApiException(409, 'PARTIAL_REWORK_DISABLED', 'Reporting only some pieces is not enabled yet. Select every piece or ask a manager.');
+                }
+            }
+            $itemIds = array_values(array_unique(array_map(static fn (array $unit): string => (string) $unit['item_uuid'], $selected)));
+            sort($itemIds, SORT_STRING);
+            $perLine = array_count_values(array_map(static fn (array $unit): string => (string) $unit['item_uuid'], $selected));
+
+            $responsible = $this->responsibleHandoff($orderUuid, $carrier['track_uuid']);
             if ($responsible === null) {
                 throw new ApiException(409, 'RESPONSIBLE_EMPLOYEE_UNKNOWN', 'The order has no recorded cutting handoff, so no responsible employee can be determined.');
             }
@@ -122,10 +180,10 @@ final readonly class CuttingFaultService
             // Supervised flow: a line without source meters is still reported, never refused, so every source
             // (Trendyol lines may carry only width and height) uses the same defect workflow. Its meterage stays
             // unknown (NULL, counted in unmeasured_line_count); it is never recorded as a measured zero.
-            $lines = $this->faultLines((string) $order['order_uuid'], $itemIds, !$supervised);
-            $meters = $this->sumMeters((string) $order['order_uuid'], $itemIds);
+            $lines = $this->faultLines($orderUuid, $itemIds, !$supervised);
+            // Pieces of one line share its dimensions, so k of q pieces carry exactly k/q of the line's meters.
+            $meters = self::scopeMeters($lines, $perLine);
             $unmeasured = count(array_filter($lines, static fn (array $line): bool => !self::measured($line['meters'])));
-            $now = $this->now();
             $uuid = Uuid::v4();
             $status = $supervised ? 'awaiting_supervisor_review' : 'awaiting_acknowledgment';
 
@@ -136,7 +194,7 @@ final readonly class CuttingFaultService
                     reason_key, reason_label_snapshot, detector_comment, line_count, fault_meters, unmeasured_line_count, production_version_at_report, reported_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )->execute([
-                $uuid, $supervised ? self::TYPE_TAILORING : 'cutting_fault', $order['order_uuid'], $globalId, $order['source_key'], $order['order_number'], $stageId, self::RETURN_STAGE,
+                $uuid, $supervised ? self::TYPE_TAILORING : 'cutting_fault', $orderUuid, $globalId, $order['source_key'], $order['order_number'], $stageId, self::RETURN_STAGE,
                 $status, $actor->employeeUuid, $supervised ? $actor->employeeUuid : null, $responsible['employee_uuid'], $responsible['event_id'], $responsible['arrival'],
                 $reason['reason_key'], $reason['label'], $comment, count($lines), $meters, $unmeasured, $expected, $now, $now,
             ]);
@@ -147,23 +205,51 @@ final readonly class CuttingFaultService
             foreach ($lines as $line) {
                 $insertLine->execute([$uuid, $line['item_uuid'], $line['line_number'], $line['name'], $line['product_code'], $line['variant'], $line['color'], $line['quantity'], self::measured($line['meters']) ? $line['meters'] : null]);
             }
+
+            $selectedIds = array_map(static fn (array $unit): string => (string) $unit['unit_uuid'], $selected);
+            $actsOn = $carrier;
+            if ($partial) {
+                // Only the named pieces leave: a new track at the same stage with the same owner, blocked by this report.
+                $cycle = max(array_map(static fn (array $unit): int => (int) $unit['rework_cycle'], $selected));
+                $newTrack = $this->tracks()->split($orderUuid, $carrier['track_uuid'], $selectedIds, $stageId, $actor->employeeUuid, $uuid, $cycle, $actor->employeeUuid, $key, $requestId, $now);
+                $this->units()->issueLabels($orderUuid, $selectedIds, $actor->employeeUuid, $now);
+                $actsOn = self::trackCarrier($this->tracks()->lock($newTrack) ?? throw new RuntimeException('The new track could not be reloaded.'));
+            } else {
+                $this->updateCarrier($orderUuid, $carrier, ['open_exception_uuid' => $uuid], $now, 'open_exception_uuid IS NULL');
+                $this->activity($order, $carrier, $workflow, 'fault_reported', $actor->employeeUuid, $this->stage($workflow, $stageId), null, null, null, $expected, $unmeasured === 0 ? $meters : null, $key, $requestId, $now, $uuid);
+            }
+            $this->pdo->prepare(
+                'INSERT INTO production_exception_scopes (exception_uuid, order_uuid, track_uuid, reported_on_track_uuid, affected_quantity, carrier_quantity_at_report, order_quantity_at_report, partial, responsible_track_event_uuid, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            )->execute([$uuid, $orderUuid, $actsOn['track_uuid'], $carrier['track_uuid'], count($selected), count($carrierUnits), $this->orderQuantity($orderUuid), $partial ? 1 : 0, $responsible['track_event_uuid'], $now]);
+            $counts = [];
+            foreach ($this->units()->pieces($orderUuid) as $piece) {
+                $counts[$piece['id']] = $piece['count'];
+            }
+            $insertUnit = $this->pdo->prepare('INSERT INTO production_exception_units (exception_uuid, unit_uuid, item_uuid, unit_index, unit_count_snapshot, rework_cycle_at_report) VALUES (?, ?, ?, ?, ?, ?)');
+            foreach ($selected as $unit) {
+                $insertUnit->execute([$uuid, $unit['unit_uuid'], $unit['item_uuid'], (int) $unit['unit_index'], $counts[$unit['unit_uuid']] ?? (int) $unit['unit_index'], (int) $unit['rework_cycle']]);
+            }
+
             $this->event($uuid, 'reported', $actor->employeeUuid, 1, [
                 'itemIds' => array_column($lines, 'item_uuid'),
                 'lines' => array_map(static fn (array $line): array => ['itemId' => $line['item_uuid'], 'lineNumber' => (int) $line['line_number'], 'meters' => self::measured($line['meters']) ? (string) $line['meters'] : null], $lines),
+                'units' => $selectedIds,
+                'affectedQuantity' => count($selected),
+                'partial' => $partial,
+                'trackId' => $actsOn['track_uuid'],
+                'reportedOnTrackId' => $carrier['track_uuid'],
                 'faultMeters' => $meters,
                 'unmeasuredLineCount' => $unmeasured,
                 'reason' => ['key' => $reason['reason_key'], 'label' => $reason['label']],
                 'responsibleEmployeeId' => $responsible['employee_uuid'],
                 'responsibleActivityEventId' => $responsible['event_id'],
+                'responsibleTrackEventId' => $responsible['track_event_uuid'],
                 'arrivalNumber' => $responsible['arrival'],
                 'productionVersion' => $expected,
                 'detectedStage' => $stageId,
                 'flow' => $supervised ? 'supervised' : 'intake',
             ], $requestId, $now);
-
-            $this->updateOrder((string) $order['order_uuid'], $expected, ['open_exception_uuid' => $uuid], $now, 'open_exception_uuid IS NULL');
-            $stage = $this->stage($workflow, $stageId);
-            $this->activity($order, $workflow, 'fault_reported', $actor->employeeUuid, $stage, null, null, null, $expected, $unmeasured === 0 ? $meters : null, $key, $requestId, $now);
 
             $payload = $this->livePayload($uuid, $order, $status, 1);
             if ($supervised) {
@@ -193,8 +279,7 @@ final readonly class CuttingFaultService
         if (($input['confirmed'] ?? null) !== true) {
             throw new ApiException(400, 'CONFIRMATION_REQUIRED', 'The acknowledgment must be confirmed explicitly.');
         }
-        $token = is_string($input['qrToken'] ?? null) ? $input['qrToken'] : throw new ApiException(400, 'QR_REQUIRED', 'The order QR code must be scanned.');
-        $reference = QrReference::parsePayload($token) ?? throw new ApiException(422, 'INVALID_QR', 'The scanned code is not an Arasya order code.');
+        $reference = self::scannedCode($input['qrToken'] ?? null);
         $comment = $this->comment($input['comment'] ?? null, false);
         $position = $input['responsibility'] ?? null;
         if ($position !== null && !in_array($position, ['accepted', 'disputed'], true)) {
@@ -203,7 +288,7 @@ final readonly class CuttingFaultService
         $hash = IdempotencyStore::hash('fault.acknowledge', $exceptionUuid, $position === null ? [$expected, $reference->value, $comment] : [$expected, $reference->value, $comment, $position]);
 
         return $this->transaction(function () use ($actor, $exceptionUuid, $expected, $reference, $comment, $position, $key, $hash, $requestId): array {
-            [$order, $exception] = $this->lockException($exceptionUuid);
+            [$order, $exception, $carrier] = $this->lockException($exceptionUuid);
             $replay = $this->idempotency->replay($actor->employeeUuid, $key, 'fault.acknowledge', $exceptionUuid, $hash);
             if ($replay !== null) {
                 return $replay;
@@ -275,7 +360,7 @@ final readonly class CuttingFaultService
         $hash = IdempotencyStore::hash('fault.decide', $exceptionUuid, $attribution === null ? [$expected, $decision, $comment] : [$expected, $decision, $comment, $attribution]);
 
         return $this->transaction(function () use ($actor, $via, $exceptionUuid, $expected, $decision, $comment, $attribution, $workflow, $key, $hash, $requestId): array {
-            [$order, $exception] = $this->lockException($exceptionUuid);
+            [$order, $exception, $carrier] = $this->lockException($exceptionUuid);
             $replay = $this->idempotency->replay($actor->employeeUuid, $key, 'fault.decide', $exceptionUuid, $hash);
             if ($replay !== null) {
                 return $replay;
@@ -314,7 +399,8 @@ final readonly class CuttingFaultService
             $now = $this->now();
             $version = $expected + 1;
             $orderUuid = (string) $order['order_uuid'];
-            $productionVersion = (int) $order['production_version'];
+            $productionVersion = (int) $carrier['production_version'];
+            $onTrack = $carrier['track_uuid'] !== null;
 
             $this->pdo->prepare("UPDATE production_exception_decisions SET status = ?, decided_by_employee_uuid = ?, decided_via = ?, decision_comment = ?, decided_at = ? WHERE decision_uuid = ? AND status = 'pending'")
                 ->execute([$decision === 'approve' ? 'approved' : 'rejected', $actor->employeeUuid, $via, $comment, $now, $attempt['decision_uuid']]);
@@ -327,9 +413,9 @@ final readonly class CuttingFaultService
                 $statusAfter = $tailoring ? 'return_rejected' : 'rejected';
                 $this->pdo->prepare('UPDATE production_exceptions SET status = ?, version = ?, resolved_at = ?, updated_at = ? WHERE exception_uuid = ? AND version = ?')
                     ->execute([$statusAfter, $version, $tailoring ? null : $now, $now, $exceptionUuid, $expected]);
-                if ($order['open_exception_uuid'] === $exceptionUuid) {
-                    $this->updateOrder($orderUuid, $productionVersion, ['open_exception_uuid' => $tailoring ? $exceptionUuid : null], $now, 'open_exception_uuid = ' . $this->pdo->quote($exceptionUuid));
-                    $this->activity($order, $workflow, 'fault_rejected', $actor->employeeUuid, $detectionStage, null, null, null, $productionVersion, null, $key, $requestId, $now);
+                if ($carrier['open_exception_uuid'] === $exceptionUuid) {
+                    $this->updateCarrier($orderUuid, $carrier, ['open_exception_uuid' => $tailoring ? $exceptionUuid : null], $now, 'open_exception_uuid = ' . $this->pdo->quote($exceptionUuid));
+                    $this->activity($order, $carrier, $workflow, 'fault_rejected', $actor->employeeUuid, $detectionStage, null, null, null, $productionVersion, null, $key, $requestId, $now, $exceptionUuid);
                 }
                 $this->event($exceptionUuid, 'rejected', $actor->employeeUuid, $version, ['attempt' => (int) $attempt['attempt_number'], 'via' => $via, 'comment' => $comment]
                     + ($tailoring ? ['orderBlocked' => true, 'physicalCustodian' => $exception['physical_custodian_employee_uuid']] : []), $requestId, $now);
@@ -342,7 +428,7 @@ final readonly class CuttingFaultService
                 $type = 'exception.rejected';
             } else {
                 $this->assertOrderOpenForProduction($order);
-                if ($order['production_stage_id'] !== self::DETECTION_STAGE || $order['open_exception_uuid'] !== $exceptionUuid) {
+                if ($carrier['production_stage_id'] !== self::DETECTION_STAGE || $carrier['open_exception_uuid'] !== $exceptionUuid) {
                     throw new ApiException(409, 'ORDER_CHANGED', 'The order changed. The request cannot be approved.');
                 }
                 $returnStage = $this->stage($workflow, self::RETURN_STAGE);
@@ -360,20 +446,33 @@ final readonly class CuttingFaultService
                     $responsible = $this->employees->findByUuid((string) $exception['responsible_employee_uuid']);
                     $assignee = $responsible !== null && OrderOwnershipService::isEligibleOwner($responsible, self::RETURN_STAGE, (string) $order['source_key']) ? $responsible->employeeUuid : null;
                 }
-                $previousOwner = $order['production_owner_employee_uuid'] === null ? null : (string) $order['production_owner_employee_uuid'];
+                $previousOwner = $carrier['production_owner_employee_uuid'] === null ? null : (string) $carrier['production_owner_employee_uuid'];
 
                 $this->pdo->prepare("UPDATE production_exceptions SET status = 'approved', version = ?, resolved_at = ?, rework_cycle = ?, attribution = ?, updated_at = ? WHERE exception_uuid = ? AND version = ?")
                     ->execute([$version, $now, $cycle, $tailoring ? $attribution : null, $now, $exceptionUuid, $expected]);
-                $this->updateOrder($orderUuid, $productionVersion, [
+                // Only the carrier moves: the whole order when the report named every piece on it, otherwise the track
+                // holding exactly the reported pieces. A track's pieces start a new rework cycle, and the stage where
+                // the defect was found must later confirm that it is resolved.
+                $pieceCycle = $onTrack ? (int) $carrier['rework_cycle'] + 1 : null;
+                $this->updateCarrier($orderUuid, $carrier, [
                     'production_stage_id' => self::RETURN_STAGE,
                     'production_owner_employee_uuid' => $assignee,
                     'production_claimed_at' => $assignee === null ? null : $now,
                     'production_changed_at' => $now,
                     'open_exception_uuid' => null,
-                ], $now, "production_stage_id = '" . self::DETECTION_STAGE . "' AND open_exception_uuid = " . $this->pdo->quote($exceptionUuid));
+                ], $now, "production_stage_id = '" . self::DETECTION_STAGE . "' AND open_exception_uuid = " . $this->pdo->quote($exceptionUuid), $onTrack ? [
+                    'rework_cycle' => $pieceCycle,
+                    'verify_stage_id' => (string) $exception['detected_stage_id'],
+                    'verify_exception_uuid' => $exceptionUuid,
+                    'resolution_confirmed_at' => null,
+                    'resolution_confirmed_by_employee_uuid' => null,
+                ] : []);
+                if ($onTrack) {
+                    $this->pdo->prepare("UPDATE production_work_units SET rework_cycle = ?, updated_at = ? WHERE track_uuid = ? AND status = 'active'")->execute([$pieceCycle, $now, $carrier['track_uuid']]);
+                    $carrier['rework_cycle'] = $pieceCycle;
+                }
                 if ($previousOwner !== null) {
-                    $this->pdo->prepare("UPDATE employee_order_relations SET status = 'inactive', updated_at = ? WHERE employee_uuid = ? AND order_uuid = ?")
-                        ->execute([$now, $previousOwner, $orderUuid]);
+                    $this->deactivateRelationIfIdle($previousOwner, $orderUuid, $now);
                 }
                 if ($assignee !== null) {
                     $this->pdo->prepare(
@@ -381,11 +480,16 @@ final readonly class CuttingFaultService
                          VALUES (?, ?, 'assigned', 'active', ?, ?, ?)
                          ON DUPLICATE KEY UPDATE relation_type = VALUES(relation_type), status = 'active', last_action_at = VALUES(last_action_at), updated_at = VALUES(updated_at)",
                     )->execute([$assignee, $orderUuid, $now, $now, $now]);
-                    (new \Arasya\Operations\Cutting\CuttingLifecycle($this->pdo))->claimed($orderUuid, $productionVersion + 1, $assignee, $now);
+                    if (!$onTrack) {
+                        (new \Arasya\Operations\Cutting\CuttingLifecycle($this->pdo))->claimed($orderUuid, $productionVersion + 1, $assignee, $now);
+                    }
                 }
-                (new \Arasya\Operations\Cutting\CuttingLifecycle($this->pdo))->fact($orderUuid, $productionVersion + 1, 'pool_entered', null, $now);
+                if (!$onTrack) {
+                    // Cutting pool facts are keyed by the order's production version; a track has its own history.
+                    (new \Arasya\Operations\Cutting\CuttingLifecycle($this->pdo))->fact($orderUuid, $productionVersion + 1, 'pool_entered', null, $now);
+                }
                 $meters = (string) $exception['fault_meters'];
-                $this->activity($order, $workflow, 'fault_returned', $actor->employeeUuid, $detectionStage, $returnStage, $previousOwner, $assignee, $productionVersion, self::activityMeters($exception), $key, $requestId, $now);
+                $this->activity($order, $carrier, $workflow, 'fault_returned', $actor->employeeUuid, $detectionStage, $returnStage, $previousOwner, $assignee, $productionVersion, self::activityMeters($exception), $key, $requestId, $now, $exceptionUuid, $onTrack ? ['reworkCycle' => $pieceCycle] : null);
                 // Intake flow: fault and detection facts as before. Supervised flow: detection was credited when the
                 // supervisor verified the defect; a cutting fault exists only when the manager established cutting
                 // responsibility, and it is attributed to the historical responsible employee, not the receiver.
@@ -400,6 +504,8 @@ final readonly class CuttingFaultService
                     'attempt' => (int) $attempt['attempt_number'], 'via' => $via, 'comment' => $comment, 'reworkCycle' => $cycle, 'repeated' => $cycle >= 2,
                     'transition' => ['from' => self::DETECTION_STAGE, 'to' => self::RETURN_STAGE], 'assignedTo' => $assignee,
                     'productionVersion' => ['before' => $productionVersion, 'after' => $productionVersion + 1],
+                    'carrier' => $onTrack ? ['type' => 'track', 'trackId' => $carrier['track_uuid'], 'pieceCycle' => $pieceCycle] : ['type' => 'order'],
+                    'units' => $this->exceptionUnitIds($exceptionUuid),
                 ] + ($tailoring ? ['attribution' => $attribution] : []), $requestId, $now);
                 $this->audit->record($actor, 'production.exception.approved', 'production_exception', $exceptionUuid, ExceptionQueries::number((int) $exception['exception_number']) . " · {$order['order_number']}", [
                     'attempt' => (int) $attempt['attempt_number'], 'via' => $via, 'order' => $order['global_order_id'], 'reworkCycle' => $cycle,
@@ -408,6 +514,8 @@ final readonly class CuttingFaultService
                     'stage' => ['before' => self::DETECTION_STAGE, 'after' => self::RETURN_STAGE],
                     'owner' => ['before' => $previousOwner, 'after' => $assignee],
                     'status' => ['before' => 'awaiting_approval', 'after' => 'approved'],
+                    'carrier' => $onTrack ? ['type' => 'track', 'trackId' => $carrier['track_uuid']] : ['type' => 'order'],
+                    'affectedQuantity' => count($this->exceptionUnitIds($exceptionUuid)),
                 ], $requestId, $now);
                 $type = 'exception.approved';
             }
@@ -434,7 +542,7 @@ final readonly class CuttingFaultService
         $hash = IdempotencyStore::hash('fault.rereview', $exceptionUuid, [$expected, $comment]);
 
         return $this->transaction(function () use ($actor, $exceptionUuid, $expected, $comment, $workflow, $key, $hash, $requestId): array {
-            [$order, $exception] = $this->lockException($exceptionUuid);
+            [$order, $exception, $carrier] = $this->lockException($exceptionUuid);
             $replay = $this->idempotency->replay($actor->employeeUuid, $key, 'fault.rereview', $exceptionUuid, $hash);
             if ($replay !== null) {
                 return $replay;
@@ -449,7 +557,7 @@ final readonly class CuttingFaultService
             }
             $this->assertStatus($exception, [$tailoring ? 'return_rejected' : 'rejected'], $expected);
             $this->assertOrderOpenForProduction($order);
-            if ($order['production_stage_id'] !== self::DETECTION_STAGE || $order['open_exception_uuid'] !== ($tailoring ? $exceptionUuid : null)) {
+            if ($carrier['production_stage_id'] !== self::DETECTION_STAGE || $carrier['open_exception_uuid'] !== ($tailoring ? $exceptionUuid : null)) {
                 throw new ApiException(409, 'ORDER_CHANGED', 'The order is no longer at tailoring intake; the request cannot be reviewed again.');
             }
             $previous = $this->pdo->prepare("SELECT decision_uuid, attempt_number FROM production_exception_decisions WHERE exception_uuid = ? ORDER BY attempt_number DESC LIMIT 1 FOR UPDATE");
@@ -460,12 +568,12 @@ final readonly class CuttingFaultService
             }
             $now = $this->now();
             $version = $expected + 1;
-            $productionVersion = (int) $order['production_version'];
+            $productionVersion = (int) $carrier['production_version'];
             $this->pdo->prepare("UPDATE production_exceptions SET status = 'awaiting_approval', version = ?, resolved_at = NULL, updated_at = ? WHERE exception_uuid = ? AND version = ? AND status = ?")
                 ->execute([$version, $now, $exceptionUuid, $expected, $exception['status']]);
             $decisionUuid = $this->openDecision($exceptionUuid, (string) $last['decision_uuid'], 'rereview', $actor->employeeUuid, $comment, $now);
-            $this->updateOrder((string) $order['order_uuid'], $productionVersion, ['open_exception_uuid' => $exceptionUuid], $now, $tailoring ? 'open_exception_uuid = ' . $this->pdo->quote($exceptionUuid) : 'open_exception_uuid IS NULL');
-            $this->activity($order, $workflow, 'fault_rereview_requested', $actor->employeeUuid, $this->stage($workflow, self::DETECTION_STAGE), null, null, null, $productionVersion, null, $key, $requestId, $now);
+            $this->updateCarrier((string) $order['order_uuid'], $carrier, ['open_exception_uuid' => $exceptionUuid], $now, $tailoring ? 'open_exception_uuid = ' . $this->pdo->quote($exceptionUuid) : 'open_exception_uuid IS NULL');
+            $this->activity($order, $carrier, $workflow, 'fault_rereview_requested', $actor->employeeUuid, $this->stage($workflow, self::DETECTION_STAGE), null, null, null, $productionVersion, null, $key, $requestId, $now, $exceptionUuid);
             $this->event($exceptionUuid, 'rereview_requested', $actor->employeeUuid, $version, ['attempt' => (int) $last['attempt_number'] + 1, 'previousDecisionId' => $last['decision_uuid'], 'decisionId' => $decisionUuid, 'comment' => $comment], $requestId, $now);
 
             $payload = $this->livePayload($exceptionUuid, $order, 'awaiting_approval', $version);
@@ -504,7 +612,7 @@ final readonly class CuttingFaultService
         $hash = IdempotencyStore::hash('fault.cancel', $exceptionUuid, $recipientId === null ? [$expected, $reason] : [$expected, $reason, $recipientId]);
 
         return $this->transaction(function () use ($actor, $exceptionUuid, $expected, $reason, $recipientId, $workflow, $key, $hash, $requestId): array {
-            [$order, $exception] = $this->lockException($exceptionUuid);
+            [$order, $exception, $carrier] = $this->lockException($exceptionUuid);
             $replay = $this->idempotency->replay($actor->employeeUuid, $key, 'fault.cancel', $exceptionUuid, $hash);
             if ($replay !== null) {
                 return $replay;
@@ -514,13 +622,13 @@ final readonly class CuttingFaultService
             $version = $expected + 1;
             $label = ExceptionQueries::number((int) $exception['exception_number']) . " · {$order['order_number']}";
             if (self::custodyMoved($exception)) {
-                return $this->recover($actor, $order, $exception, $reason, $recipientId, $version, $label, $key, $hash, $requestId, $now);
+                return $this->recover($actor, $order, $exception, $carrier, $reason, $recipientId, $version, $label, $key, $hash, $requestId, $now);
             }
             if ($recipientId !== null) {
                 throw new ApiException(400, 'INVALID_REQUEST', 'Request fields are invalid.');
             }
             if ($exception['exception_type'] === self::TYPE_TAILORING
-                && ($order['open_exception_uuid'] !== $exceptionUuid || $order['production_stage_id'] !== $exception['detected_stage_id'] || $order['production_owner_employee_uuid'] !== $exception['detected_owner_employee_uuid'])) {
+                && ($carrier['open_exception_uuid'] !== $exceptionUuid || $carrier['production_stage_id'] !== $exception['detected_stage_id'] || $carrier['production_owner_employee_uuid'] !== $exception['detected_owner_employee_uuid'])) {
                 // Before custody the order must still be where it was reported, with the same owner; anything else
                 // is not a state cancellation can safely release.
                 throw new ApiException(409, 'ORDER_CHANGED', 'The order changed. The request cannot be cancelled safely.');
@@ -529,9 +637,10 @@ final readonly class CuttingFaultService
                 ->execute([$actor->employeeUuid, $reason, $now, $exceptionUuid]);
             $this->pdo->prepare("UPDATE production_exceptions SET status = 'cancelled', version = ?, resolved_at = ?, cancelled_by_employee_uuid = ?, cancel_reason = ?, updated_at = ? WHERE exception_uuid = ? AND version = ?")
                 ->execute([$version, $now, $actor->employeeUuid, $reason, $now, $exceptionUuid, $expected]);
-            if ($order['open_exception_uuid'] === $exceptionUuid) {
-                $this->updateOrder((string) $order['order_uuid'], (int) $order['production_version'], ['open_exception_uuid' => null], $now, 'open_exception_uuid = ' . $this->pdo->quote($exceptionUuid));
-                $this->activity($order, $workflow, 'fault_cancelled', $actor->employeeUuid, $this->stage($workflow, (string) $order['production_stage_id']), null, null, null, (int) $order['production_version'], null, $key, $requestId, $now);
+            if ($carrier['open_exception_uuid'] === $exceptionUuid) {
+                $this->updateCarrier((string) $order['order_uuid'], $carrier, ['open_exception_uuid' => null], $now, 'open_exception_uuid = ' . $this->pdo->quote($exceptionUuid));
+                $this->activity($order, $carrier, $workflow, 'fault_cancelled', $actor->employeeUuid, $this->stage($workflow, (string) $carrier['production_stage_id']), null, null, null, (int) $carrier['production_version'], null, $key, $requestId, $now, $exceptionUuid);
+                $this->rejoinIfAligned($order, $carrier, 'cancelled', $actor->employeeUuid, $key, $requestId, $now);
             }
             $this->event($exceptionUuid, 'cancelled', $actor->employeeUuid, $version, ['reason' => $reason, 'statusBefore' => $exception['status']], $requestId, $now);
             $this->audit->record($actor, 'production.exception.cancelled', 'production_exception', $exceptionUuid, $label,
@@ -556,13 +665,13 @@ final readonly class CuttingFaultService
      * product is addressed to a tailoring employee, who unblocks it only by a QR receipt.
      * @param array<string, mixed> $order @param array<string, mixed> $exception @return array<string, mixed>
      */
-    private function recover(EmployeeIdentity $actor, array $order, array $exception, string $reason, ?string $recipientId, int $version, string $label, string $key, string $hash, string $requestId, string $now): array
+    private function recover(EmployeeIdentity $actor, array $order, array $exception, array $carrier, string $reason, ?string $recipientId, int $version, string $label, string $key, string $hash, string $requestId, string $now): array
     {
         $exceptionUuid = (string) $exception['exception_uuid'];
         if ($recipientId === null) {
             throw new ApiException(422, 'RECIPIENT_REQUIRED', 'The product is no longer with the employee who reported it. Name the employee who receives it back.');
         }
-        $this->assertHeldAtCustodyStage($order, $exceptionUuid);
+        $this->assertHeldAtCustodyStage($carrier, $exceptionUuid);
         $custodian = $exception['physical_custodian_employee_uuid'] === null ? null : (string) $exception['physical_custodian_employee_uuid'];
         $recipient = $this->restoreRecipient($exception, $recipientId, $custodian);
         $this->pdo->prepare("UPDATE production_exception_decisions SET status = 'cancelled', decided_by_employee_uuid = ?, decided_via = 'root', decision_comment = ?, decided_at = ? WHERE exception_uuid = ? AND status = 'pending'")
@@ -632,12 +741,12 @@ final readonly class CuttingFaultService
         if (!$accept && ($reasonKey !== null || $token !== null)) {
             throw new ApiException(400, 'INVALID_REQUEST', 'Request fields are invalid.');
         }
-        $reference = $accept ? (QrReference::parsePayload((string) $token) ?? throw new ApiException(422, 'INVALID_QR', 'The scanned code is not an Arasya order code.')) : null;
+        $reference = $accept ? self::scannedCode($token) : null;
         $workflow = $this->workflow();
         $hash = IdempotencyStore::hash('defect.review', $exceptionUuid, [$expected, $decision, $reasonKey, $reference?->value, $comment]);
 
         return $this->transaction(function () use ($actor, $exceptionUuid, $expected, $accept, $comment, $reasonKey, $reference, $workflow, $key, $hash, $requestId): array {
-            [$order, $exception] = $this->lockException($exceptionUuid);
+            [$order, $exception, $carrier] = $this->lockException($exceptionUuid);
             $replay = $this->idempotency->replay($actor->employeeUuid, $key, 'defect.review', $exceptionUuid, $hash);
             if ($replay !== null) {
                 return $replay;
@@ -648,13 +757,13 @@ final readonly class CuttingFaultService
                 throw new ApiException(403, 'SELF_REVIEW_DENIED', 'You cannot review a defect you reported.');
             }
             $detectedStage = (string) $exception['detected_stage_id'];
-            if ($order['open_exception_uuid'] !== $exceptionUuid || $order['production_stage_id'] !== $detectedStage) {
+            if ($carrier['open_exception_uuid'] !== $exceptionUuid || $carrier['production_stage_id'] !== $detectedStage) {
                 throw new ApiException(409, 'ORDER_CHANGED', 'The order changed. Reload it before continuing.');
             }
             $now = $this->now();
             $version = $expected + 1;
             $orderUuid = (string) $order['order_uuid'];
-            $productionVersion = (int) $order['production_version'];
+            $productionVersion = (int) $carrier['production_version'];
             $from = $this->stage($workflow, $detectedStage);
 
             if (!$accept) {
@@ -663,9 +772,11 @@ final readonly class CuttingFaultService
                 $this->pdo->prepare("UPDATE production_exceptions SET status = 'dismissed', version = ?, supervisor_employee_uuid = ?, supervisor_reviewed_at = ?, supervisor_comment = ?, resolved_at = ?, updated_at = ?
                      WHERE exception_uuid = ? AND version = ? AND status = 'awaiting_supervisor_review'")
                     ->execute([$version, $actor->employeeUuid, $now, $comment, $now, $now, $exceptionUuid, $expected]);
-                $this->updateOrder($orderUuid, $productionVersion, ['open_exception_uuid' => null], $now, 'open_exception_uuid = ' . $this->pdo->quote($exceptionUuid));
-                $this->activity($order, $workflow, 'defect_dismissed', $actor->employeeUuid, $from, null, null, null, $productionVersion, null, $key, $requestId, $now);
-                $this->event($exceptionUuid, 'supervisor_dismissed', $actor->employeeUuid, $version, ['comment' => $comment, 'stage' => $detectedStage, 'owner' => $order['production_owner_employee_uuid']], $requestId, $now);
+                $this->updateCarrier($orderUuid, $carrier, ['open_exception_uuid' => null], $now, 'open_exception_uuid = ' . $this->pdo->quote($exceptionUuid));
+                $this->activity($order, $carrier, $workflow, 'defect_dismissed', $actor->employeeUuid, $from, null, null, null, $productionVersion, null, $key, $requestId, $now, $exceptionUuid);
+                $rejoined = $this->rejoinIfAligned($order, $carrier, 'dismissed', $actor->employeeUuid, $key, $requestId, $now);
+                $this->event($exceptionUuid, 'supervisor_dismissed', $actor->employeeUuid, $version, ['comment' => $comment, 'stage' => $detectedStage, 'owner' => $carrier['production_owner_employee_uuid']]
+                    + ($carrier['track_uuid'] === null ? [] : ['trackId' => $carrier['track_uuid'], 'rejoinedOrder' => $rejoined]), $requestId, $now);
                 $payload = $this->livePayload($exceptionUuid, $order, 'dismissed', $version);
                 $this->notify($exception, 'exception.dismissed', $payload, $now, [$actor->employeeUuid]);
             } else {
@@ -675,7 +786,7 @@ final readonly class CuttingFaultService
                 if ((int) $reason['requires_comment'] === 1 && $comment === null) {
                     throw new ApiException(422, 'COMMENT_REQUIRED', 'A comment is required for this reason.');
                 }
-                $previousOwner = $order['production_owner_employee_uuid'] === null ? null : (string) $order['production_owner_employee_uuid'];
+                $previousOwner = $carrier['production_owner_employee_uuid'] === null ? null : (string) $carrier['production_owner_employee_uuid'];
                 $this->pdo->prepare("UPDATE production_exceptions SET status = 'in_supervisor_custody', version = ?, supervisor_employee_uuid = ?, supervisor_reviewed_at = ?, supervisor_comment = ?,
                         confirmed_reason_key = ?, confirmed_reason_label_snapshot = ?, physical_custodian_employee_uuid = ?, updated_at = ?
                      WHERE exception_uuid = ? AND version = ? AND status = 'awaiting_supervisor_review'")
@@ -683,17 +794,16 @@ final readonly class CuttingFaultService
                 // Internal tailoring return to stage 3 (or custody at stage 3 without a stage change). Not a
                 // stage completion and not a manager decision: the order has no production owner while the
                 // supervisor holds the case, and stays blocked.
-                $this->updateOrder($orderUuid, $productionVersion, [
+                $this->updateCarrier($orderUuid, $carrier, [
                     'production_stage_id' => TailoringSupervisorPolicy::CUSTODY_STAGE,
                     'production_owner_employee_uuid' => null,
                     'production_claimed_at' => null,
                     'production_changed_at' => $now,
                 ], $now, 'open_exception_uuid = ' . $this->pdo->quote($exceptionUuid) . ' AND production_stage_id = ' . $this->pdo->quote($detectedStage));
                 if ($previousOwner !== null) {
-                    $this->pdo->prepare("UPDATE employee_order_relations SET status = 'inactive', updated_at = ? WHERE employee_uuid = ? AND order_uuid = ?")
-                        ->execute([$now, $previousOwner, $orderUuid]);
+                    $this->deactivateRelationIfIdle($previousOwner, $orderUuid, $now);
                 }
-                $this->activity($order, $workflow, 'defect_custody_taken', $actor->employeeUuid, $from, $this->stage($workflow, TailoringSupervisorPolicy::CUSTODY_STAGE), $previousOwner, null, $productionVersion, self::activityMeters($exception), $key, $requestId, $now);
+                $this->activity($order, $carrier, $workflow, 'defect_custody_taken', $actor->employeeUuid, $from, $this->stage($workflow, TailoringSupervisorPolicy::CUSTODY_STAGE), $previousOwner, null, $productionVersion, self::activityMeters($exception), $key, $requestId, $now, $exceptionUuid);
                 // The supervisor verified a real defect: the detection belongs to the detector from now on,
                 // whatever the managers later decide about cutting responsibility.
                 $cycles = $this->pdo->prepare('SELECT COUNT(*) FROM production_exceptions WHERE order_uuid = ? AND rework_cycle IS NOT NULL');
@@ -729,7 +839,7 @@ final readonly class CuttingFaultService
         $hash = IdempotencyStore::hash('defect.return', $exceptionUuid, [$expected, $receiverId, $comment]);
 
         return $this->transaction(function () use ($actor, $exceptionUuid, $expected, $receiverId, $comment, $key, $hash, $requestId): array {
-            [$order, $exception] = $this->lockException($exceptionUuid);
+            [$order, $exception, $carrier] = $this->lockException($exceptionUuid);
             $replay = $this->idempotency->replay($actor->employeeUuid, $key, 'defect.return', $exceptionUuid, $hash);
             if ($replay !== null) {
                 return $replay;
@@ -737,7 +847,7 @@ final readonly class CuttingFaultService
             $this->requireSupervisor($actor, $exception);
             $this->assertStatus($exception, ['in_supervisor_custody'], $expected);
             $this->assertOrderOpenForProduction($order);
-            if ($order['production_stage_id'] !== self::DETECTION_STAGE || $order['open_exception_uuid'] !== $exceptionUuid) {
+            if ($carrier['production_stage_id'] !== self::DETECTION_STAGE || $carrier['open_exception_uuid'] !== $exceptionUuid) {
                 throw new ApiException(409, 'ORDER_CHANGED', 'The order changed. Reload it before continuing.');
             }
             $source = (string) $exception['source_key'];
@@ -792,8 +902,7 @@ final readonly class CuttingFaultService
         IdempotencyStore::requireKey($key);
         $exceptionUuid = $this->uuid($exceptionId);
         $expected = $this->positiveInt($input['expectedVersion'] ?? null, 'expectedVersion');
-        $token = is_string($input['qrToken'] ?? null) ? $input['qrToken'] : throw new ApiException(400, 'QR_REQUIRED', 'The order QR code must be scanned.');
-        $reference = QrReference::parsePayload($token) ?? throw new ApiException(422, 'INVALID_QR', 'The scanned code is not an Arasya order code.');
+        $reference = self::scannedCode($input['qrToken'] ?? null);
         $comment = $this->comment($input['comment'] ?? null, true);
         $recipientId = $this->optionalEmployeeId($input['recipientEmployeeId'] ?? null, 'recipientEmployeeId');
         // Restoring while the cutting employee has not yet received the product withdraws the return to cutting
@@ -805,7 +914,7 @@ final readonly class CuttingFaultService
         $hash = IdempotencyStore::hash('defect.restore', $exceptionUuid, $recipientId === null ? [$expected, $reference->value, $comment] : [$expected, $reference->value, $comment, $recipientId]);
 
         return $this->transaction(function () use ($actor, $exceptionUuid, $expected, $reference, $comment, $recipientId, $cancelReturn, $key, $hash, $requestId): array {
-            [$order, $exception] = $this->lockException($exceptionUuid);
+            [$order, $exception, $carrier] = $this->lockException($exceptionUuid);
             $replay = $this->idempotency->replay($actor->employeeUuid, $key, 'defect.restore', $exceptionUuid, $hash);
             if ($replay !== null) {
                 return $replay;
@@ -820,7 +929,7 @@ final readonly class CuttingFaultService
                 throw new ApiException(409, 'EXCEPTION_STATE_INVALID', 'The request is not in a state that allows this action.', ['status' => $exception['status']]);
             }
             $this->assertOrderOpenForProduction($order);
-            $this->assertHeldAtCustodyStage($order, $exceptionUuid);
+            $this->assertHeldAtCustodyStage($carrier, $exceptionUuid);
             $now = $this->now();
             $this->verifyQr($order, $exception, $reference, $now);
             $recipient = $this->restoreRecipient($exception, $recipientId, $actor->employeeUuid);
@@ -864,14 +973,13 @@ final readonly class CuttingFaultService
         if (($input['confirmed'] ?? null) !== true) {
             throw new ApiException(400, 'CONFIRMATION_REQUIRED', 'The receipt must be confirmed explicitly.');
         }
-        $token = is_string($input['qrToken'] ?? null) ? $input['qrToken'] : throw new ApiException(400, 'QR_REQUIRED', 'The order QR code must be scanned.');
-        $reference = QrReference::parsePayload($token) ?? throw new ApiException(422, 'INVALID_QR', 'The scanned code is not an Arasya order code.');
+        $reference = self::scannedCode($input['qrToken'] ?? null);
         $comment = $this->comment($input['comment'] ?? null, false);
         $workflow = $this->workflow();
         $hash = IdempotencyStore::hash('defect.receive', $exceptionUuid, [$expected, $reference->value, $comment]);
 
         return $this->transaction(function () use ($actor, $exceptionUuid, $expected, $reference, $comment, $workflow, $key, $hash, $requestId): array {
-            [$order, $exception] = $this->lockException($exceptionUuid);
+            [$order, $exception, $carrier] = $this->lockException($exceptionUuid);
             $replay = $this->idempotency->replay($actor->employeeUuid, $key, 'defect.receive', $exceptionUuid, $hash);
             if ($replay !== null) {
                 return $replay;
@@ -881,7 +989,7 @@ final readonly class CuttingFaultService
             }
             $this->assertStatus($exception, ['awaiting_restore_receipt'], $expected);
             $this->assertOrderOpenForProduction($order);
-            $this->assertHeldAtCustodyStage($order, $exceptionUuid);
+            $this->assertHeldAtCustodyStage($carrier, $exceptionUuid);
             $now = $this->now();
             $this->verifyQr($order, $exception, $reference, $now);
             $target = (string) $exception['detected_stage_id'];
@@ -893,12 +1001,12 @@ final readonly class CuttingFaultService
             $outcome = $exception['cancelled_by_employee_uuid'] === null ? 'restored' : 'cancelled';
             $version = $expected + 1;
             $orderUuid = (string) $order['order_uuid'];
-            $productionVersion = (int) $order['production_version'];
+            $productionVersion = (int) $carrier['production_version'];
             $previousCustodian = $exception['physical_custodian_employee_uuid'];
             $this->pdo->prepare("UPDATE production_exceptions SET status = ?, version = ?, physical_custodian_employee_uuid = ?, restore_received_at = ?, resolved_at = ?, updated_at = ?
                  WHERE exception_uuid = ? AND version = ? AND status = 'awaiting_restore_receipt'")
                 ->execute([$outcome, $version, $actor->employeeUuid, $now, $now, $now, $exceptionUuid, $expected]);
-            $this->updateOrder($orderUuid, $productionVersion, [
+            $this->updateCarrier($orderUuid, $carrier, [
                 'production_stage_id' => $target,
                 'production_owner_employee_uuid' => $actor->employeeUuid,
                 'production_claimed_at' => $now,
@@ -910,13 +1018,17 @@ final readonly class CuttingFaultService
                  VALUES (?, ?, 'assigned', 'active', ?, ?, ?)
                  ON DUPLICATE KEY UPDATE relation_type = VALUES(relation_type), status = 'active', last_action_at = VALUES(last_action_at), updated_at = VALUES(updated_at)",
             )->execute([$actor->employeeUuid, $orderUuid, $now, $now, $now]);
-            $this->activity($order, $workflow, 'defect_restored', $actor->employeeUuid, $this->stage($workflow, self::DETECTION_STAGE), $this->stage($workflow, $target), null, $actor->employeeUuid, $productionVersion, null, $key, $requestId, $now);
+            $this->activity($order, $carrier, $workflow, 'defect_restored', $actor->employeeUuid, $this->stage($workflow, self::DETECTION_STAGE), $this->stage($workflow, $target), null, $actor->employeeUuid, $productionVersion, null, $key, $requestId, $now, $exceptionUuid);
+            // The pieces came back without any rework: when the rest of the order is exactly there (same stage, same
+            // owner), they travel with it again; otherwise they continue on their own track.
+            $carrier = ['production_stage_id' => $target, 'production_owner_employee_uuid' => $actor->employeeUuid, 'production_version' => $productionVersion + 1] + $carrier;
+            $rejoined = $this->rejoinIfAligned($order, $carrier, 'restored', $actor->employeeUuid, $key, $requestId, $now);
             $this->event($exceptionUuid, 'restore_received', $actor->employeeUuid, $version, [
                 'qrVerified' => true, 'qrReference' => $reference->value, 'comment' => $comment, 'outcome' => $outcome,
                 'transition' => ['from' => self::DETECTION_STAGE, 'to' => $target], 'owner' => $actor->employeeUuid,
                 'physicalCustodian' => ['before' => $previousCustodian, 'after' => $actor->employeeUuid],
                 'productionVersion' => ['before' => $productionVersion, 'after' => $productionVersion + 1],
-            ], $requestId, $now);
+            ] + ($carrier['track_uuid'] === null ? [] : ['trackId' => $carrier['track_uuid'], 'rejoinedOrder' => $rejoined]), $requestId, $now);
             $payload = $this->livePayload($exceptionUuid, $order, $outcome, $version);
             $this->notify($exception, 'exception.restored', $payload, $now, [$actor->employeeUuid, ...(is_string($previousCustodian) ? [$previousCustodian] : []), ...($exception['return_requested_at'] !== null ? [(string) $exception['responsible_employee_uuid']] : [])]);
             if ($outcome === 'cancelled') {
@@ -969,7 +1081,7 @@ final readonly class CuttingFaultService
         $hash = IdempotencyStore::hash('defect.note', $exceptionUuid, [$expected, $comment]);
 
         return $this->transaction(function () use ($actor, $exceptionUuid, $expected, $comment, $key, $hash, $requestId): array {
-            [$order, $exception] = $this->lockException($exceptionUuid);
+            [$order, $exception, $carrier] = $this->lockException($exceptionUuid);
             $replay = $this->idempotency->replay($actor->employeeUuid, $key, 'defect.note', $exceptionUuid, $hash);
             if ($replay !== null) {
                 return $replay;
@@ -1107,7 +1219,7 @@ final readonly class CuttingFaultService
         return $requested;
     }
 
-    /** A blocked supervised case: the order waits at stage 3 without a production owner. @param array<string, mixed> $order */
+    /** A blocked supervised case: the carrier (order or track) waits at stage 3 without a production owner. @param array<string, mixed> $order */
     private function assertHeldAtCustodyStage(array $order, string $exceptionUuid): void
     {
         if ($order['production_stage_id'] !== self::DETECTION_STAGE || $order['production_owner_employee_uuid'] !== null || $order['open_exception_uuid'] !== $exceptionUuid) {
@@ -1123,13 +1235,47 @@ final readonly class CuttingFaultService
         return $value;
     }
 
-    /** The scanned label must be the active Arasya QR of this order, with a usable production document. @param array<string, mixed> $order @param array<string, mixed> $exception */
-    private function verifyQr(array $order, array $exception, ?QrReference $reference, string $now): void
+    /**
+     * Parses a scanned code: the order QR (ARASYA:Q1:) or the label of one piece (ARASYA:U1:). Anything else is not an
+     * Arasya production code.
+     */
+    private static function scannedCode(mixed $token): QrReference|\Arasya\Operations\Order\UnitLabelReference
+    {
+        if (!is_string($token)) {
+            throw new ApiException(400, 'QR_REQUIRED', 'The order QR code must be scanned.');
+        }
+        return QrReference::parsePayload($token) ?? \Arasya\Operations\Order\UnitLabelReference::parsePayload($token)
+            ?? throw new ApiException(422, 'INVALID_QR', 'The scanned code is not an Arasya order code.');
+    }
+
+    /**
+     * The scanned code must identify what is physically handed over: the active Arasya QR of this order (with a usable
+     * production document), or the active label of a piece named in this request. A label of another piece, of a piece
+     * outside the request or of another order fails closed.
+     *
+     * @param array<string, mixed> $order @param array<string, mixed> $exception
+     */
+    private function verifyQr(array $order, array $exception, QrReference|\Arasya\Operations\Order\UnitLabelReference|null $reference, string $now): void
     {
         if ($reference === null) {
             throw new ApiException(400, 'QR_REQUIRED', 'The order QR code must be scanned.');
         }
         \Arasya\Operations\Document\DocumentGuard::assertOpen($order);
+        if ($reference instanceof \Arasya\Operations\Order\UnitLabelReference) {
+            $label = $this->units()->resolveLabel($reference);
+            if ($label === null || $label['status'] !== 'active') {
+                throw new ApiException(422, 'INVALID_QR', 'The scanned piece label is not valid.');
+            }
+            if ($label['orderUuid'] !== $exception['order_uuid']) {
+                throw new ApiException(422, 'QR_ORDER_MISMATCH', 'The scanned code belongs to a different order.');
+            }
+            $named = $this->pdo->prepare('SELECT 1 FROM production_exception_units WHERE exception_uuid = ? AND unit_uuid = ?');
+            $named->execute([$exception['exception_uuid'], $label['unitUuid']]);
+            if ($named->fetchColumn() === false) {
+                throw new ApiException(422, 'UNIT_LABEL_MISMATCH', 'Eticheta scanată aparține altei bucăți.');
+            }
+            return;
+        }
         \Arasya\Operations\Document\DocumentGuard::assertQrUsable($this->pdo, $reference->value);
         $qr = $this->pdo->prepare('SELECT order_uuid, status, expires_at FROM order_qr_references WHERE qr_reference = ?');
         $qr->execute([$reference->value]);
@@ -1215,7 +1361,14 @@ final readonly class CuttingFaultService
         return is_array($row) ? $row : throw new ApiException(404, 'ORDER_NOT_FOUND', 'Order not found.');
     }
 
-    /** Locks the order row, then the exception row (the same order every command uses). @return array{0: array<string, mixed>, 1: array<string, mixed>} */
+    /**
+     * Locks the order row, then the exception row, then the track the exception acts on, if any (the same order every
+     * command uses). The third element is the carrier: the production state the exception moves. For an exception
+     * on the order it is the order row itself; for an exception on a rework track it is the track, presented with the
+     * same keys (stage, owner, open exception, version) so every rule below reads one shape.
+     *
+     * @return array{0: array<string, mixed>, 1: array<string, mixed>, 2: array<string, mixed>}
+     */
     private function lockException(string $exceptionUuid): array
     {
         $find = $this->pdo->prepare('SELECT global_order_id FROM production_exceptions WHERE exception_uuid = ?');
@@ -1231,7 +1384,106 @@ final readonly class CuttingFaultService
         if (!is_array($exception) || $exception['order_uuid'] !== $order['order_uuid']) {
             throw new ApiException(404, 'EXCEPTION_NOT_FOUND', 'The request was not found.');
         }
-        return [$order, $exception];
+        $scope = $this->pdo->prepare('SELECT track_uuid FROM production_exception_scopes WHERE exception_uuid = ?');
+        $scope->execute([$exceptionUuid]);
+        $trackUuid = $scope->fetchColumn();
+        if (!is_string($trackUuid)) {
+            return [$order, $exception, self::orderCarrier($order)];
+        }
+        $track = $this->tracks()->lock($trackUuid) ?? throw new RuntimeException('The track of an exception is missing.');
+        return [$order, $exception, self::trackCarrier($track)];
+    }
+
+    /** @param array<string, mixed> $order @return array<string, mixed> */
+    private static function orderCarrier(array $order): array
+    {
+        return [
+            'track_uuid' => null,
+            'production_stage_id' => $order['production_stage_id'],
+            'production_owner_employee_uuid' => $order['production_owner_employee_uuid'],
+            'open_exception_uuid' => $order['open_exception_uuid'],
+            'production_version' => (int) $order['production_version'],
+            'rework_cycle' => null,
+            'track_status' => null,
+        ];
+    }
+
+    /** @param array<string, mixed> $track @return array<string, mixed> */
+    private static function trackCarrier(array $track): array
+    {
+        return [
+            'track_uuid' => (string) $track['track_uuid'],
+            'production_stage_id' => (string) $track['stage_id'],
+            'production_owner_employee_uuid' => $track['owner_employee_uuid'] === null ? null : (string) $track['owner_employee_uuid'],
+            'open_exception_uuid' => $track['open_exception_uuid'] === null ? null : (string) $track['open_exception_uuid'],
+            'production_version' => (int) $track['version'],
+            'rework_cycle' => (int) $track['rework_cycle'],
+            'track_status' => (string) $track['status'],
+        ];
+    }
+
+    private function tracks(): \Arasya\Operations\Production\ProductionTracks
+    {
+        return new \Arasya\Operations\Production\ProductionTracks($this->pdo);
+    }
+
+    private function units(): \Arasya\Operations\Production\WorkUnits
+    {
+        return new \Arasya\Operations\Production\WorkUnits($this->pdo);
+    }
+
+    /**
+     * updateOrder() for the carrier: the order row, or the track (same column meaning, track column names). Columns
+     * only a track has may be passed in $trackOnly; they are ignored for an order carrier.
+     *
+     * @param array<string, mixed> $carrier @param array<string, string|null> $columns @param array<string, string|int|null> $trackOnly
+     */
+    private function updateCarrier(string $orderUuid, array $carrier, array $columns, string $now, string $guard, array $trackOnly = []): void
+    {
+        if ($carrier['track_uuid'] === null) {
+            $this->updateOrder($orderUuid, (int) $carrier['production_version'], $columns, $now, $guard);
+            return;
+        }
+        $map = ['production_stage_id' => 'stage_id', 'production_owner_employee_uuid' => 'owner_employee_uuid', 'production_claimed_at' => 'claimed_at', 'production_changed_at' => 'changed_at', 'open_exception_uuid' => 'open_exception_uuid'];
+        $mapped = [];
+        foreach ($columns as $column => $value) {
+            $mapped[$map[$column] ?? throw new RuntimeException("Unknown carrier column {$column}.")] = $value;
+        }
+        $this->tracks()->update((string) $carrier['track_uuid'], (int) $carrier['production_version'], $mapped + $trackOnly, $now, strtr($guard, ['production_stage_id' => 'stage_id', 'production_owner_employee_uuid' => 'owner_employee_uuid']));
+    }
+
+    /**
+     * After a report ended without rework (dismissed, cancelled before custody, product received back), a track rejoins
+     * the order when it is exactly where the order is. @param array<string, mixed> $order @param array<string, mixed> $carrier
+     */
+    private function rejoinIfAligned(array $order, array $carrier, string $reason, string $actorUuid, string $key, string $requestId, string $now): bool
+    {
+        if ($carrier['track_uuid'] === null) {
+            return false;
+        }
+        return $this->tracks()->mergeIfAligned((string) $carrier['track_uuid'], $order, $reason, $actorUuid, $key, $requestId, $now);
+    }
+
+    /** @return list<string> */
+    private function exceptionUnitIds(string $exceptionUuid): array
+    {
+        $statement = $this->pdo->prepare('SELECT unit_uuid FROM production_exception_units WHERE exception_uuid = ? ORDER BY item_uuid, unit_index');
+        $statement->execute([$exceptionUuid]);
+        return array_map('strval', $statement->fetchAll(PDO::FETCH_COLUMN));
+    }
+
+    /**
+     * An employee who handed a carrier on keeps the order relation while they still own another carrier of the same
+     * order (the order itself or a track): their work list must not lose work they still hold.
+     */
+    private function deactivateRelationIfIdle(string $employeeUuid, string $orderUuid, string $now): void
+    {
+        $owns = $this->pdo->prepare("SELECT (SELECT COUNT(*) FROM operational_orders WHERE order_uuid = ? AND production_owner_employee_uuid = ?) + (SELECT COUNT(*) FROM production_tracks WHERE order_uuid = ? AND status = 'active' AND owner_employee_uuid = ?)");
+        $owns->execute([$orderUuid, $employeeUuid, $orderUuid, $employeeUuid]);
+        if ((int) $owns->fetchColumn() > 0) {
+            return;
+        }
+        $this->pdo->prepare("UPDATE employee_order_relations SET status = 'inactive', updated_at = ? WHERE employee_uuid = ? AND order_uuid = ?")->execute([$now, $employeeUuid, $orderUuid]);
     }
 
     /** @param array<string, mixed> $exception @param list<string> $statuses */
@@ -1259,9 +1511,14 @@ final readonly class CuttingFaultService
 
     /**
      * The employee who completed the latest material-preparation -> workshop-receiving handoff owns the
-     * cutting result (also after a future transfer between cutting employees). @return array{employee_uuid: string, event_id: string, arrival: int}|null
+     * cutting result (also after a future transfer between cutting employees). For pieces on a rework track, a re-cut
+     * on the track (or on a track it was split from) is the latest handoff; otherwise the order's own cutting handoff
+     * applies, because those pieces were cut with the order. responsible_activity_event_id always references the
+     * order's handoff (its foreign key); the track handoff, when it applies, is returned as track_event_uuid.
+     *
+     * @return array{employee_uuid: string, event_id: string, arrival: int, track_event_uuid: ?string}|null
      */
-    private function responsibleHandoff(string $orderUuid): ?array
+    private function responsibleHandoff(string $orderUuid, ?string $trackUuid = null): ?array
     {
         $statement = $this->pdo->prepare(
             "SELECT event_id, employee_uuid FROM order_activity_events
@@ -1275,7 +1532,69 @@ final readonly class CuttingFaultService
         }
         $count = $this->pdo->prepare("SELECT COUNT(*) FROM order_activity_events WHERE order_uuid = ? AND action = 'stage_completed' AND from_stage_id = ? AND to_stage_id = ?");
         $count->execute([$orderUuid, self::RETURN_STAGE, self::DETECTION_STAGE]);
-        return ['employee_uuid' => (string) $row['employee_uuid'], 'event_id' => (string) $row['event_id'], 'arrival' => (int) $count->fetchColumn()];
+        $arrivals = (int) $count->fetchColumn();
+        $result = ['employee_uuid' => (string) $row['employee_uuid'], 'event_id' => (string) $row['event_id'], 'arrival' => $arrivals, 'track_event_uuid' => null];
+        if ($trackUuid === null) {
+            return $result;
+        }
+        $lineage = $this->tracks()->lineage($trackUuid);
+        $marks = implode(',', array_fill(0, count($lineage), '?'));
+        $track = $this->pdo->prepare("SELECT event_uuid, employee_uuid FROM production_track_events WHERE track_uuid IN ({$marks}) AND action = 'stage_completed' AND from_stage_id = ? AND to_stage_id = ? ORDER BY occurred_at DESC, version_after DESC LIMIT 1");
+        $track->execute([...$lineage, self::RETURN_STAGE, self::DETECTION_STAGE]);
+        $recut = $track->fetch(PDO::FETCH_ASSOC);
+        if (!is_array($recut)) {
+            return $result;
+        }
+        $trackCount = $this->pdo->prepare("SELECT COUNT(*) FROM production_track_events WHERE track_uuid IN ({$marks}) AND action = 'stage_completed' AND from_stage_id = ? AND to_stage_id = ?");
+        $trackCount->execute([...$lineage, self::RETURN_STAGE, self::DETECTION_STAGE]);
+        return ['employee_uuid' => (string) $recut['employee_uuid'], 'event_id' => (string) $row['event_id'], 'arrival' => $arrivals + (int) $trackCount->fetchColumn(), 'track_event_uuid' => (string) $recut['event_uuid']];
+    }
+
+    /**
+     * Exact decimal meters of the selected pieces: every measured line contributes k/q of its meters for k of its q
+     * pieces (pieces of one line share its dimensions), rounded half up to the millimetre. Whole lines (k = q) give
+     * exactly the line's meters, as before. @param list<array<string, mixed>> $lines @param array<string, int> $perLine
+     */
+    private static function scopeMeters(array $lines, array $perLine): string
+    {
+        $total = 0;
+        foreach ($lines as $line) {
+            if (!self::measured($line['meters'])) {
+                continue;
+            }
+            [$whole, $fraction] = array_pad(explode('.', (string) $line['meters'], 2), 2, '');
+            $thousandths = (int) $whole * 1000 + (int) str_pad(substr($fraction, 0, 3), 3, '0');
+            $quantity = max(1, (int) $line['quantity']);
+            $pieces = min($quantity, $perLine[(string) $line['item_uuid']] ?? $quantity);
+            $total += intdiv($thousandths * $pieces * 2 + $quantity, 2 * $quantity);
+        }
+        return sprintf('%d.%03d', intdiv($total, 1000), $total % 1000);
+    }
+
+    private function orderQuantity(string $orderUuid): int
+    {
+        $statement = $this->pdo->prepare('SELECT COALESCE(SUM(quantity), 0) FROM operational_order_items WHERE order_uuid = ?');
+        $statement->execute([$orderUuid]);
+        return (int) $statement->fetchColumn();
+    }
+
+    /** @return list<string> */
+    private function unitIds(mixed $value): array
+    {
+        if (!is_array($value) || !array_is_list($value) || $value === [] || count($value) > self::MAX_LINES * 10) {
+            throw new ApiException(400, 'INVALID_REQUEST', 'units must list the defective pieces.');
+        }
+        foreach ($value as $id) {
+            if (!\Arasya\Operations\Production\WorkUnits::isUuid($id)) {
+                throw new ApiException(400, 'INVALID_REQUEST', 'units must list the defective pieces.');
+            }
+        }
+        if (count(array_unique($value)) !== count($value)) {
+            throw new ApiException(400, 'INVALID_REQUEST', 'A piece can be selected only once.');
+        }
+        $ids = $value;
+        sort($ids, SORT_STRING);
+        return $ids;
     }
 
     /** @param list<string> $itemIds @return list<array<string, mixed>> */
@@ -1378,9 +1697,19 @@ final readonly class CuttingFaultService
         }
     }
 
-    /** @param array<string, mixed> $order */
-    private function activity(array $order, ProductionWorkflow $workflow, string $action, string $actorUuid, ProductionStage $from, ?ProductionStage $to, ?string $previousOwner, ?string $newOwner, int $versionBefore, ?string $meters, string $key, string $requestId, string $now): void
+    /**
+     * The immutable production event of a carrier change: order_activity_events for the order (unchanged meaning for
+     * every existing report), production_track_events for a track (its own version sequence and rework cycle).
+     *
+     * @param array<string, mixed> $order @param array<string, mixed> $carrier
+     */
+    private function activity(array $order, array $carrier, ProductionWorkflow $workflow, string $action, string $actorUuid, ProductionStage $from, ?ProductionStage $to, ?string $previousOwner, ?string $newOwner, int $versionBefore, ?string $meters, string $key, string $requestId, string $now, ?string $exceptionUuid = null, ?array $metadata = null): void
     {
+        if ($carrier['track_uuid'] !== null) {
+            $this->tracks()->event((string) $carrier['track_uuid'], (string) $order['order_uuid'], $action, $actorUuid, $from->id, $to?->id, $previousOwner, $newOwner, $versionBefore,
+                (int) $carrier['rework_cycle'], $exceptionUuid, (($metadata ?? []) + ($meters === null ? [] : ['meters' => $meters])) ?: null, $requestId, $key, $now);
+            return;
+        }
         $this->pdo->prepare(
             'INSERT INTO order_activity_events (
                 event_id, employee_uuid, order_uuid, global_order_id, source_key, order_number_snapshot, action,

@@ -546,9 +546,9 @@ test('expected API errors and validation are unchanged by the PDO diagnostics', 
     expect(!array_key_exists('exception', $warning) && !array_key_exists('sqlstate', $warning) && !array_key_exists('driver_code', $warning));
 });
 
-test('migrations stay sequential through 027 and the canonical workflow keeps its 14 stages', function (): void {
+test('migrations stay sequential through 028 and the canonical workflow keeps its 14 stages', function (): void {
     $migrations = array_map('basename', glob(dirname(__DIR__) . '/database/migrations/*.sql') ?: []);
-    expect(count($migrations) === 27 && $migrations[23] === '024_tailoring_quality_supervision.sql' && $migrations[24] === '025_source_payment_gate.sql' && $migrations[25] === '026_trendyol_product_identity.sql' && $migrations[26] === '027_employee_staff_locale.sql' && str_starts_with($migrations[0], '001_') && str_starts_with($migrations[16], '017_') && $migrations[17] === '018_production_authority.sql' && $migrations[18] === '019_production_qr_authority.sql' && $migrations[19] === '020_production_document_authority.sql' && $migrations[20] === '021_document_scopes.sql' && $migrations[21] === '022_trendyol_intake.sql' && $migrations[22] === '023_source_scoped_stage_authorization.sql');
+    expect(count($migrations) === 28 && $migrations[27] === '028_production_work_units.sql' && $migrations[23] === '024_tailoring_quality_supervision.sql' && $migrations[24] === '025_source_payment_gate.sql' && $migrations[25] === '026_trendyol_product_identity.sql' && $migrations[26] === '027_employee_staff_locale.sql' && str_starts_with($migrations[0], '001_') && str_starts_with($migrations[16], '017_') && $migrations[17] === '018_production_authority.sql' && $migrations[18] === '019_production_qr_authority.sql' && $migrations[19] === '020_production_document_authority.sql' && $migrations[20] === '021_document_scopes.sql' && $migrations[21] === '022_trendyol_intake.sql' && $migrations[22] === '023_source_scoped_stage_authorization.sql');
     expect(count(CanonicalProductionWorkflowContract::STAGES) === 14);
     expect(array_keys(CanonicalProductionWorkflowContract::STAGES) === ['waiting', 'material-preparation', 'workshop-receiving', 'labeling', 'material-straightening', 'bottom-hem', 'side-hem', 'ironing', 'height', 'header-tape', 'sewing-finishing', 'quality-control', 'packing', 'delivery']);
     // 018 is additive: it never converts the authority of existing orders.
@@ -573,6 +573,11 @@ test('migrations stay sequential through 027 and the canonical workflow keeps it
     // grant, role, stage, session or password column is touched.
     $locale = preg_replace(['/^\s*--.*$/m'], '', (string) file_get_contents(dirname(__DIR__) . '/database/migrations/027_employee_staff_locale.sql'));
     expect(preg_match('/\b(UPDATE|DELETE|DROP|TRUNCATE|RENAME|INSERT|NOT NULL|DEFAULT)\b/i', $locale) === 0 && substr_count($locale, 'ALTER TABLE employees') === 1 && substr_count($locale, 'ADD COLUMN') === 1 && str_contains($locale, "staff_locale IN ('ro', 'tr', 'en', 'si')") && preg_match('/password|authorization_version|status|role_id|department_id/', $locale) === 0, '027 must only add the nullable staff_locale column.');
+    // 028 is additive and re-runnable: only CREATE TABLE IF NOT EXISTS and one INSERT IGNORE of the disabled flag.
+    // No existing table is altered, no row rewritten, no grant or role touched.
+    $units = preg_replace(['/^\s*--.*$/m', '/ON (UPDATE|DELETE) RESTRICT/'], '', (string) file_get_contents(dirname(__DIR__) . '/database/migrations/028_production_work_units.sql'));
+    expect(preg_match('/\b(UPDATE|DELETE|DROP|TRUNCATE|RENAME|ALTER)\b/i', $units) === 0 && substr_count($units, 'CREATE TABLE IF NOT EXISTS') === 8 && substr_count($units, 'INSERT IGNORE INTO production_feature_flags') === 1
+        && preg_match('/role_permissions|employee_role_assignments|INTO\s+operational_/i', $units) === 0, '028 must only create its tables and the disabled flag.');
 });
 
 test('payment gate mode is per source, defaults to off and an unreadable value falls back to off', function (): void {

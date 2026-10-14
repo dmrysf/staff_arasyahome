@@ -39,8 +39,11 @@ final readonly class ExceptionQueries
             (SELECT COUNT(*) FROM production_exceptions p WHERE p.order_uuid = x.order_uuid AND p.rework_cycle IS NOT NULL AND p.exception_uuid <> x.exception_uuid) AS previous_cycles,
             (SELECT COUNT(*) FROM operational_order_items i WHERE i.order_uuid = x.order_uuid) AS order_line_count,
             (SELECT COALESCE(SUM(i.quantity), 0) FROM operational_order_items i WHERE i.order_uuid = x.order_uuid) AS order_quantity,
-            (SELECT COALESCE(SUM(l.quantity_snapshot), 0) FROM production_exception_lines l WHERE l.exception_uuid = x.exception_uuid) AS affected_quantity
+            (SELECT COALESCE(SUM(l.quantity_snapshot), 0) FROM production_exception_lines l WHERE l.exception_uuid = x.exception_uuid) AS affected_quantity,
+            sc.exception_uuid AS scope_recorded, sc.track_uuid AS scope_track_uuid, sc.partial AS scope_partial, sc.affected_quantity AS scope_affected_quantity,
+            sc.carrier_quantity_at_report AS scope_carrier_quantity, sc.order_quantity_at_report AS scope_order_quantity
         FROM production_exceptions x
+        LEFT JOIN production_exception_scopes sc ON sc.exception_uuid = x.exception_uuid
         INNER JOIN order_sources s ON s.source_key = x.source_key
         INNER JOIN employees de ON de.employee_uuid = x.detector_employee_uuid
         INNER JOIN employees re ON re.employee_uuid = x.responsible_employee_uuid
@@ -135,6 +138,13 @@ final readonly class ExceptionQueries
         return $items;
     }
 
+    /** One request as the given employee sees it (role and granted actions), or null. @return array<string, mixed>|null */
+    public function viewerSummary(string $exceptionUuid, string $viewerUuid): ?array
+    {
+        $row = $this->find($exceptionUuid);
+        return $row === null ? null : $this->summary($row, $viewerUuid);
+    }
+
     /** @return array<string, mixed>|null */
     public function find(string $exceptionUuid): ?array
     {
@@ -171,12 +181,20 @@ final readonly class ExceptionQueries
             // NULL: the source sent no meters for this line; never shown as a measured zero.
             'meters' => $line['meters_snapshot'] === null ? null : (string) $line['meters_snapshot'],
         ], $lines->fetchAll(PDO::FETCH_ASSOC));
+        $detail['affectedPieces'] = $this->affectedPieces($exceptionUuid);
+        if ($detail['orderScope']['piecesRecorded']) {
+            $perLine = array_count_values(array_column($detail['affectedPieces'], 'itemId'));
+            foreach ($detail['lines'] as &$line) {
+                $line['affectedQuantity'] = $perLine[$line['itemId']] ?? 0;
+            }
+            unset($line);
+        }
         $detail['decisions'] = $this->decisions($exceptionUuid);
         if ($row['exception_type'] === 'tailoring_defect') {
             // Everyone allowed to open a supervised case sees its timeline and the cutting handoff it refers to.
             $detail['timeline'] = $this->timeline($exceptionUuid);
             $detail['cuttingHandoff'] = $this->handoff($exceptionUuid);
-            $detail['currentStage'] = $this->currentStage((string) $more['order_uuid']);
+            $detail['currentStage'] = $this->currentStage((string) $more['order_uuid'], $row['scope_track_uuid'] === null ? null : (string) $row['scope_track_uuid']);
         }
         if ($manager) {
             $detail['detector']['id'] = (string) $row['detector_employee_uuid'];
@@ -306,6 +324,18 @@ final readonly class ExceptionQueries
     /** The cutting handoff the responsibility was derived from: who completed it, when, which arrival. @return array<string, mixed>|null */
     private function handoff(string $exceptionUuid): ?array
     {
+        // A re-cut piece: the responsibility refers to the cutting handoff on its rework track.
+        $recut = $this->pdo->prepare(
+            'SELECT t.occurred_at, JSON_UNQUOTE(JSON_EXTRACT(t.metadata_json, \'$.meters\')) AS meters_snapshot, e.display_name, x.arrival_number FROM production_exception_scopes sc
+             INNER JOIN production_track_events t ON t.event_uuid = sc.responsible_track_event_uuid
+             INNER JOIN production_exceptions x ON x.exception_uuid = sc.exception_uuid
+             INNER JOIN employees e ON e.employee_uuid = t.employee_uuid WHERE sc.exception_uuid = ?',
+        );
+        $recut->execute([$exceptionUuid]);
+        $row = $recut->fetch(PDO::FETCH_ASSOC);
+        if (is_array($row)) {
+            return ['employee' => (string) $row['display_name'], 'at' => self::iso((string) $row['occurred_at']), 'meters' => $row['meters_snapshot'], 'arrivalNumber' => (int) $row['arrival_number'], 'rework' => true];
+        }
         $statement = $this->pdo->prepare(
             'SELECT a.occurred_at, a.meters_snapshot, e.display_name, x.arrival_number FROM production_exceptions x
              INNER JOIN order_activity_events a ON a.event_id = x.responsible_activity_event_id
@@ -317,10 +347,13 @@ final readonly class ExceptionQueries
     }
 
     /** @return array{id: string, label: string|null} */
-    private function currentStage(string $orderUuid): array
+    private function currentStage(string $orderUuid, ?string $trackUuid = null): array
     {
-        $statement = $this->pdo->prepare('SELECT o.production_stage_id, s.display_name FROM operational_orders o LEFT JOIN production_stages s ON s.stage_id = o.production_stage_id WHERE o.order_uuid = ?');
-        $statement->execute([$orderUuid]);
+        // For a report on pieces in rework, the stage of those pieces (their track), not of the rest of the order.
+        $statement = $trackUuid === null
+            ? $this->pdo->prepare('SELECT o.production_stage_id, s.display_name FROM operational_orders o LEFT JOIN production_stages s ON s.stage_id = o.production_stage_id WHERE o.order_uuid = ?')
+            : $this->pdo->prepare('SELECT t.stage_id AS production_stage_id, s.display_name FROM production_tracks t LEFT JOIN production_stages s ON s.stage_id = t.stage_id WHERE t.track_uuid = ?');
+        $statement->execute([$trackUuid ?? $orderUuid]);
         $row = $statement->fetch(PDO::FETCH_ASSOC);
         return ['id' => (string) ($row['production_stage_id'] ?? ''), 'label' => isset($row['display_name']) ? (string) $row['display_name'] : null];
     }
@@ -381,15 +414,7 @@ final readonly class ExceptionQueries
             'restoreRequestedAt' => self::iso($row['restore_requested_at']),
             'restoreReceivedAt' => self::iso($row['restore_received_at']),
             'cancelledByRoot' => $row['cancelled_by_employee_uuid'] !== null,
-            // Production is routed per order: an approved return moves the WHOLE order (every line and piece) back to
-            // cutting, not only the affected lines. Clients warn when the order holds more than the affected lines.
-            'orderScope' => [
-                'orderLineCount' => (int) $row['order_line_count'],
-                'orderQuantity' => (int) $row['order_quantity'],
-                'affectedLineCount' => (int) $row['line_count'],
-                'affectedQuantity' => (int) $row['affected_quantity'],
-                'wholeOrderMoves' => true,
-            ],
+            'orderScope' => self::scope($row),
         ];
         if ($viewerUuid !== null) {
             $isResponsible = $row['responsible_employee_uuid'] === $viewerUuid;
@@ -412,6 +437,64 @@ final readonly class ExceptionQueries
             ];
         }
         return $summary;
+    }
+
+    /**
+     * What an approval moves. A report that named exact pieces (Staff 2.26.0+) acts on its carrier: only the reported
+     * pieces when they were some of the carrier's pieces (partial: they travel on their own track), the whole order
+     * when they were every piece of it. An older report (no scope row) named whole lines and moves the whole order.
+     *
+     * @param array<string, mixed> $row @return array<string, mixed>
+     */
+    private static function scope(array $row): array
+    {
+        $recorded = $row['scope_recorded'] !== null;
+        $partial = $recorded && (int) $row['scope_partial'] === 1;
+        $affected = $recorded ? (int) $row['scope_affected_quantity'] : (int) $row['affected_quantity'];
+        $moving = !$recorded ? (int) $row['order_quantity'] : ($partial ? $affected : (int) $row['scope_carrier_quantity']);
+        return [
+            'orderLineCount' => (int) $row['order_line_count'],
+            'orderQuantity' => (int) $row['order_quantity'],
+            'affectedLineCount' => (int) $row['line_count'],
+            'affectedQuantity' => $affected,
+            'movingQuantity' => $moving,
+            'unaffectedQuantity' => max(0, (int) $row['order_quantity'] - $affected),
+            'wholeOrderMoves' => $moving >= (int) $row['order_quantity'],
+            'partial' => $partial,
+            'piecesRecorded' => $recorded,
+            'carrier' => $recorded && $row['scope_track_uuid'] !== null ? 'track' : 'order',
+            'trackId' => $recorded && $row['scope_track_uuid'] !== null ? (string) $row['scope_track_uuid'] : null,
+        ];
+    }
+
+    /** The exact pieces a report named, with their line facts and label (Bucata i/n). @return list<array<string, mixed>> */
+    public function affectedPieces(string $exceptionUuid): array
+    {
+        $statement = $this->pdo->prepare(
+            'SELECT u.unit_uuid, u.item_uuid, u.unit_index, u.unit_count_snapshot, u.rework_cycle_at_report, l.line_number, l.name_snapshot, l.product_code_snapshot, l.color_snapshot,
+                    i.width_value, i.height_value, i.measurement_unit, w.track_uuid
+             FROM production_exception_units u
+             LEFT JOIN production_exception_lines l ON l.exception_uuid = u.exception_uuid AND l.item_uuid = u.item_uuid
+             LEFT JOIN operational_order_items i ON i.item_uuid = u.item_uuid
+             LEFT JOIN production_work_units w ON w.unit_uuid = u.unit_uuid
+             WHERE u.exception_uuid = ? ORDER BY l.line_number, u.unit_index',
+        );
+        $statement->execute([$exceptionUuid]);
+        return array_map(static fn (array $row): array => [
+            'unitId' => (string) $row['unit_uuid'],
+            'itemId' => (string) $row['item_uuid'],
+            'piece' => (int) $row['unit_index'] . '/' . (int) $row['unit_count_snapshot'],
+            'index' => (int) $row['unit_index'],
+            'count' => (int) $row['unit_count_snapshot'],
+            'lineNumber' => $row['line_number'] === null ? null : (int) $row['line_number'],
+            'name' => $row['name_snapshot'],
+            'code' => $row['product_code_snapshot'],
+            'color' => $row['color_snapshot'],
+            // Decimal strings, exactly as stored (a replayed response must equal the original one).
+            'measurements' => $row['width_value'] === null && $row['height_value'] === null ? null : ['width' => $row['width_value'] === null ? null : (string) $row['width_value'], 'height' => $row['height_value'] === null ? null : (string) $row['height_value'], 'unit' => $row['measurement_unit']],
+            'reworkCycleAtReport' => (int) $row['rework_cycle_at_report'],
+            'trackId' => $row['track_uuid'] === null ? null : (string) $row['track_uuid'],
+        ], $statement->fetchAll(PDO::FETCH_ASSOC));
     }
 
     private static function seconds(string $from, string $to): int

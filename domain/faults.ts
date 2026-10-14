@@ -98,14 +98,22 @@ export function nextLiveNotice(current: LiveEvent | null, event: LiveEvent): Liv
  * a generic scan never acts on the exception, it only guides the employee to the request's own screen, where the
  * receipt still needs the explicit confirmation and a fresh QR scan. Uninvolved employees only learn the order is blocked.
  */
-export type ScannerExceptionPrompt = { kind: "receipt" | "restoreReceipt" | "supervisor" | "blocked"; exceptionId: string };
-export function scannerExceptionPrompt(order: Pick<StaffOrder, "productionQuality">): ScannerExceptionPrompt | null {
-  const open = order.productionQuality?.openException;
+export type ScannerExceptionPrompt = { kind: "receipt" | "restoreReceipt" | "supervisor" | "blocked"; exceptionId: string; number: string; pieces: number | null };
+/**
+ * The open request a scan concerns: the request of the scanned piece (piece label), otherwise the order's own request,
+ * otherwise a request of a piece in rework that is addressed to this employee (API 2.31.0).
+ */
+export function scannerExceptionPrompt(order: Pick<StaffOrder, "productionQuality"> & Partial<Pick<StaffOrder, "pieces" | "scannedPiece">>): ScannerExceptionPrompt | null {
+  const tracks = order.pieces?.tracks ?? [];
+  const scannedTrack = order.scannedPiece?.trackId ? tracks.find((track) => track.id === order.scannedPiece?.trackId) : undefined;
+  const addressed = tracks.find((track) => track.openException?.actions && (track.openException.actions.canAcknowledge || track.openException.actions.canConfirmRestore))?.openException;
+  const trackOpen = scannedTrack?.openException ?? addressed ?? null;
+  const open = order.scannedPiece ? (order.scannedPiece.trackId ? trackOpen : order.productionQuality?.openException ?? null) : order.productionQuality?.openException ?? trackOpen;
   if (!open) return null;
   const actions = open.actions;
   const kind = actions?.canAcknowledge ? "receipt"
     : actions?.canConfirmRestore ? "restoreReceipt"
       : actions && (actions.canReview || actions.canRequestReturn || actions.canRestore || actions.canAskManagersAgain) ? "supervisor"
         : "blocked";
-  return { kind, exceptionId: open.id };
+  return { kind, exceptionId: open.id, number: open.number, pieces: open.orderScope?.piecesRecorded ? open.orderScope.affectedQuantity : null };
 }

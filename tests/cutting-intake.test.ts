@@ -110,7 +110,7 @@ test("the intake client sends the label once with its key, maps the committed or
 test("the scanner wires the intake for eligible cutters only and shows the employee's own name", () => {
   const source = readFileSync(path.join(root, "features/scanner/ScannerScreen.tsx"), "utf8");
   assert.match(source, /intakeEnabled = Boolean\(cutting && employee && canUseCuttingIntake\(employee\)\)/);
-  assert.match(source, /if \(!manual && intakeEnabled\)/, "manual codes keep the ordinary lookup");
+  assert.match(source, /if \(!manual && intakeEnabled && !isPieceLabel\(normalized\)\)/, "manual codes and piece labels keep the ordinary lookup");
   assert.match(source, /employee\.displayName/);
   assert.match(readFileSync(path.join(root, "app/StaffApp.tsx"), "utf8"), /<ScannerScreen [^>]*employee=\{session\.employee\}/);
 });

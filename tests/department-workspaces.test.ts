@@ -101,7 +101,9 @@ test("stage queue, summary, activity and overview answers are mapped strictly", 
   for (const bad of [{}, { stageId: "height", counts: { total: -1 }, countsComplete: true, items: [] }, { stageId: "height", counts: { total: 1, mine: 0, available: 0, blocked: 0, claimedByOthers: 0 }, countsComplete: "yes", items: [] }]) {
     assert.throws(() => mapStageQueue(bad), (error) => error instanceof StaffServiceError && error.code === "SERVER_ERROR");
   }
-  assert.deepEqual(mapStageSummary({ stages: [{ stageId: "height", total: 2, mine: 1 }] }), [{ stageId: "height", total: 2, mine: 1 }]);
+  assert.deepEqual(mapStageSummary({ stages: [{ stageId: "height", total: 2, mine: 1 }] }), [{ stageId: "height", total: 2, mine: 1, reworkTotal: 0, reworkMine: 0 }], "an older API counts no rework");
+  assert.deepEqual(mapStageSummary({ stages: [{ stageId: "height", total: 2, mine: 1, reworkTotal: 1, reworkMine: 1 }] }), [{ stageId: "height", total: 2, mine: 1, reworkTotal: 1, reworkMine: 1 }]);
+  assert.deepEqual(queue.trackItems, [], "an older API has no pieces in rework");
   assert.throws(() => mapStageSummary({ stages: [{ stageId: "height", total: 1.5, mine: 0 }] }));
   const activity = mapTrendyolActivity({ today: { linesPrepared: 2, released: 1, dismissed: 0, reopened: 0 }, recent: [{ action: "released", packageId: "3318470214", orderNumber: "10847291463", at: "2026-10-10T08:00:00Z" }] });
   assert.equal(activity.recent[0].action, "released");

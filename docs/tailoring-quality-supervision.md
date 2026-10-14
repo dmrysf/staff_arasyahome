@@ -209,7 +209,8 @@ Changes:
 - **Staff scanner:** when the scanned order has an open exception, the review sheet tells the employee what the request needs. If the request addresses them, a button opens the request screen. The receipt itself still needs the explicit confirmation and a QR scan inside the request (`/acknowledge`). An uninvolved employee only learns that the order is blocked.
 - **Supervisor, while the return waits for the cutter:** a notice names the cutter and says the manager is asked only after the cutter's scan. The restore section becomes "Anulează trimiterea la tăiere" and requires a ticked confirmation.
 - **API:** `POST /production-exceptions/{id}/restore` from `awaiting_acknowledgment` requires `cancelReturn: true`; otherwise it answers 422 `RETURN_CANCEL_CONFIRMATION_REQUIRED`. The event records `returnCancelled` and the withdrawn receiver.
-- **Scope:** exception details carry `orderScope`, and Staff warns that the whole order moves on approval. See `docs/item-level-rework-design.md`.
+- **Scope:** exception details carry `orderScope`, and Staff warns that the whole order moves on approval. Per-piece rework (only the
+  defective pieces return to cutting) follows in API 2.31.0: see [per-piece rework](per-piece-rework.md).
 
 Deploy order:
 1. API 2.30.2 first. Old Staff cannot withdraw a pending return until Staff is updated: it gets a clear 422, and nothing changes.

@@ -137,6 +137,9 @@ final readonly class ApiKernel
             return ($this->productionQr ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Production QR authority is not ready.'))
                 ->handle($request, rawurldecode($matches[1]), $matches[2] ?? '');
         }
+        if (preg_match('#^/production-tracks/([0-9a-f-]{36})/(claim|complete|labels)$#D', $request->path, $matches) === 1) {
+            return $this->ordersController()->track($request, $matches[1], $matches[2]);
+        }
         if (preg_match('#^/orders/([^/]{1,600})(?:/(claim|transition))?$#D', $request->path, $matches) === 1) {
             $globalIdString = rawurldecode($matches[1]);
             $action = $matches[2] ?? '';

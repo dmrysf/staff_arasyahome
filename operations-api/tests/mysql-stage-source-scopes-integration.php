@@ -176,7 +176,7 @@ $waitingQueue = $status($get($tyonly, '/orders/stage-queue', ['stage' => 'waitin
 $trendyolWaiting = (int) $one("SELECT COUNT(*) FROM operational_orders WHERE production_stage_id = 'waiting' AND source_key = 'trendyol' AND production_completed_at IS NULL AND operational_status <> 'unavailable'");
 $check(array_diff($queueSources($waitingQueue), ['trendyol']) === [] && $waitingQueue['counts']['total'] === $trendyolWaiting, 'the queue and its total count only Trendyol orders');
 $summary = $status($get($tyonly, '/orders/stage-summary'), 200, 'Trendyol-only summary');
-$check($summary['stages'] === [['stageId' => 'waiting', 'total' => $trendyolWaiting, 'mine' => 0]], 'the summary counts no other source');
+$check($summary['stages'] === [['stageId' => 'waiting', 'total' => $trendyolWaiting, 'mine' => 0, 'reworkTotal' => 0, 'reworkMine' => 0]], 'the summary counts no other source');
 $denied = [];
 foreach (['SW1', 'OW1', 'BW1'] as $tag) {
     $path = '/orders/' . rawurlencode($orders[$tag]);

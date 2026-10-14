@@ -14,6 +14,7 @@ import { CuttingWork } from "../cutting/CuttingWork";
 import { DashboardSection, EmptyState, Metric, MetricGrid, NextActionCard, NextActionSkeleton, QueueSkeleton, RefreshButton, type MetricValue } from "./DashboardParts";
 import { orderFacts, stageNextAction, stageProfile, type StageProfile } from "./stageProfiles";
 import { useDashboardData } from "./useDashboardData";
+import { pieceName, trackPieces, trackStatusLabel } from "../../domain/pieces";
 
 const CUTTING_STAGE = "material-preparation";
 
@@ -42,6 +43,27 @@ function QueueRow({ order, detail, navigate }: { order: StaffOrder; detail: Stag
           <small>{facts.primary}</small>
           {facts.chips.length > 0 && <span className="fact-chips">{facts.chips.map((chip, index) => <span key={`${chip}-${index}`} className="fact-chip">{chip}</span>)}</span>}
           {reason && <small className="queue-row-reason">{reason}</small>}
+        </span>
+        <span className="queue-chip">{queueStateLabels[state]}</span>
+        <AppIcon name="chevron" size={18} />
+      </button>
+    </li>
+  );
+}
+
+/** A piece in rework at this stage (API 2.31.0): its own work item, opened on the order screen; never claimed here. */
+function TrackRow({ entry, navigate }: { entry: StageQueue["trackItems"][number]; navigate: (path: string) => void }) {
+  const { t } = useI18n();
+  const track = entry.order.pieces?.tracks.find((item) => item.id === entry.trackId);
+  if (!track || !entry.order.pieces) return null;
+  const state = track.owner?.isMe ? "mine" : track.allowedAction?.id === "claim" ? "available" : track.blockedReason === "claimed_by_other" ? "claimedByOthers" : "blocked";
+  return (
+    <li>
+      <button type="button" className={`queue-row queue-${state}`} data-testid="rework-row" onClick={() => navigate(`/orders/${encodeURIComponent(entry.order.id)}`)}>
+        <span className="queue-row-main">
+          <span className="queue-row-top"><strong className="order-id">#{entry.order.orderNumber}</strong><SourceBadge source={entry.order.source} /></span>
+          <small>{trackPieces(entry.order.pieces, track).map(pieceName).join(", ")} · {trackStatusLabel(track)}</small>
+          {track.owner && <small>{t("piece.owner")}: {track.owner.displayName}</small>}
         </span>
         <span className="queue-chip">{queueStateLabels[state]}</span>
         <AppIcon name="chevron" size={18} />
@@ -101,6 +123,11 @@ export function StageWorkspace({ workspace, employee, workflow, api, cutting, na
               ? <EmptyState title={cuttingTools ? t("stageWs.emptyCutting") : t("stageWs.empty")}>{t("stageWs.autoUpdate")}</EmptyState>
               : <ul className="queue-list">{items.map((order) => <QueueRow key={order.id} order={order} detail={profile.detail} navigate={navigate} />)}</ul>}
             {!cuttingTools && queue.data.counts.total > queue.data.items.length && <p className="dashboard-footnote">{t("stageWs.firstShown", { count: queue.data.items.length })}</p>}
+          </DashboardSection>
+        )}
+        {api && queue.data && queue.data.trackItems.length > 0 && (
+          <DashboardSection labelledBy={`rework-${stageId}`} eyebrow={stage?.label} title={t("ws.rework.title")}>
+            <ul className="queue-list" data-testid="rework-queue">{queue.data.trackItems.map((entry) => <TrackRow key={entry.trackId} entry={entry} navigate={navigate} />)}</ul>
           </DashboardSection>
         )}
         {cuttingTools && cutting && <CuttingWork service={cutting} navigate={navigate} />}

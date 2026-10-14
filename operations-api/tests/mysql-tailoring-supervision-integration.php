@@ -34,13 +34,15 @@ sort($seeds, SORT_STRING);
 foreach ($seeds as $seed) {
     (new SqlFileRunner($pdo))->run($seed);
 }
+T::clearPieces($pdo);
 foreach (['live_events', 'production_exception_idempotency', 'production_quality_events', 'production_exception_events', 'production_exception_lines'] as $table) {
     $pdo->exec("DELETE FROM {$table}");
 }
 $pdo->exec('UPDATE production_exception_decisions SET previous_decision_uuid = NULL');
 $pdo->exec('DELETE FROM production_exception_decisions');
 $pdo->exec('UPDATE operational_orders SET open_exception_uuid = NULL');
-foreach (['production_exceptions', 'responsibility_assignments', 'organization_principals'] as $table) {
+T::clearPieces($pdo);
+    foreach (['production_exceptions', 'responsibility_assignments', 'organization_principals'] as $table) {
     $pdo->exec("DELETE FROM {$table}");
 }
 $pdo->exec('DELETE FROM system_root_identity');
@@ -174,7 +176,7 @@ $liveTypes = static function (array $who, int $after) use ($get): array {
 $pre = $order('PRE', 'trendhome');
 $bring($pre, $cutterA, 'side-hem');
 $error($report($tailor, $pre, [$pre['items'][0]], 'cut-meterage', null), 409, 'EXCEPTION_STAGE_INVALID', 'without a supervisor a stage-7 report is not available (intake-only flow)');
-$check($ok($get($iuliana, '/production-exceptions/capabilities'), 'caps before') === ['tailoringSupervisor' => false, 'supervisedSources' => [], 'supervisedFlowActive' => false], 'nobody supervises before the appointment');
+$check($ok($get($iuliana, '/production-exceptions/capabilities'), 'caps before') === ['tailoringSupervisor' => false, 'supervisedSources' => [], 'supervisedFlowActive' => false, 'partialRework' => false], 'nobody supervises before the appointment');
 $error($get($iuliana, '/production-exceptions/supervisor', ['view' => 'review']), 403, 'SUPERVISOR_REQUIRED', 'the supervisor list needs the appointment');
 
 // ---- Appointment: CEO or root only, one explicit UUID, never a name ---------------------------------------------
@@ -185,7 +187,7 @@ $error($appoint($ceo, $uuids['denisa']), 422, 'EMPLOYEE_NEEDS_TAILORING_INTAKE',
 $appointed = $ok($appoint($ceo, $uuids['iuliana']), 'the CEO appoints the original identity', 201);
 $active = array_values(array_filter($appointed['responsibilities'], static fn (array $r): bool => $r['responsibility'] === 'tailoring_quality_supervisor' && $r['state'] === 'active'));
 $check(count($active) === 1 && $active[0]['employee']['id'] === $uuids['iuliana'], 'exactly one active supervisor appointment, for the original UUID');
-$check($ok($get($iuliana, '/production-exceptions/capabilities'), 'caps') === ['tailoringSupervisor' => true, 'supervisedSources' => ['trendyol', 'trendhome', 'outletperdele'], 'supervisedFlowActive' => true], 'the appointed UUID supervises the three canonical sources');
+$check($ok($get($iuliana, '/production-exceptions/capabilities'), 'caps') === ['tailoringSupervisor' => true, 'supervisedSources' => ['trendyol', 'trendhome', 'outletperdele'], 'supervisedFlowActive' => true, 'partialRework' => false], 'the appointed UUID supervises the three canonical sources');
 $check($ok($get($iuliana1, '/production-exceptions/capabilities'), 'caps duplicate')['tailoringSupervisor'] === false, 'the same display name on another UUID grants nothing');
 $check($ok($get($tailor2, '/production-exceptions/capabilities'), 'caps worker')['tailoringSupervisor'] === false, 'working in the same stages grants nothing');
 $check($session($iuliana)['permissions'] === $session($iuliana1)['permissions'] && !in_array('production.exceptions.approve', $session($iuliana)['permissions'], true), 'the appointment adds no permission and no approval right');
@@ -641,7 +643,8 @@ $bring($v, $cutterA, 'ironing');
 $xv = $ok($report($tailor, $v, [$v['items'][0]], 'material-defect', null), 'stage-8 report of one product of three', 201)['id'];
 $ok($review($iuliana, $xv, ['decision' => 'accept', 'reasonKey' => 'material-defect', 'qrToken' => $v['qr']]), 'accepted into custody');
 $scope = $ok($get($iuliana, "/production-exceptions/{$xv}"), 'supervisor detail')['orderScope'];
-$check($scope === ['orderLineCount' => 3, 'orderQuantity' => 5, 'affectedLineCount' => 1, 'affectedQuantity' => 2, 'wholeOrderMoves' => true], 'the detail states that the whole order (3 products, 5 pieces) moves, not only the affected one: ' . json_encode($scope));
+$check($scope === ['orderLineCount' => 3, 'orderQuantity' => 5, 'affectedLineCount' => 1, 'affectedQuantity' => 2, 'movingQuantity' => 5, 'unaffectedQuantity' => 3, 'wholeOrderMoves' => true,
+    'partial' => false, 'piecesRecorded' => true, 'carrier' => 'order', 'trackId' => null], 'a line report (older client) states that the whole order (3 products, 5 pieces) moves, not only the affected one: ' . json_encode($scope));
 $ok($sendReturn($iuliana, $xv, ['comment' => 'Fir tras']), 'return to cutting sent');
 $cutterOrder = $ok($get($cutterA, $v['path']), 'the cutter scans the order (generic order view)');
 $check(($cutterOrder['productionQuality']['openException']['actions']['canAcknowledge'] ?? null) === true && $cutterOrder['productionQuality']['openException']['id'] === $xv, 'a generic scan by the addressed cutter exposes the actionable receipt of this exact request');

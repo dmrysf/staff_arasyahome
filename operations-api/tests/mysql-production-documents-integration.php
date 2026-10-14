@@ -79,7 +79,7 @@ require __DIR__ . '/HandoffSchemaFixture.php';
 restorePreDocumentsTestSchema($pdo);
 $grantsBefore = $pdo->query('SELECT * FROM role_permissions ORDER BY role_id, permission_id')->fetchAll(PDO::FETCH_ASSOC);
 $qrBefore = $pdo->query('SELECT qr_reference, order_uuid, status, created_at, expires_at, revoked_at FROM order_qr_references ORDER BY qr_reference')->fetchAll(PDO::FETCH_ASSOC);
-check((new MigrationRunner($pdo))->migrate($migrations) === ['017_production_documents.sql', '018_production_authority.sql','019_production_qr_authority.sql', '020_production_document_authority.sql', '021_document_scopes.sql', '022_trendyol_intake.sql', '024_tailoring_quality_supervision.sql','025_source_payment_gate.sql','026_trendyol_product_identity.sql'], '016 -> 017 official additive upgrade');
+check((new MigrationRunner($pdo))->migrate($migrations) === ['017_production_documents.sql', '018_production_authority.sql','019_production_qr_authority.sql', '020_production_document_authority.sql', '021_document_scopes.sql', '022_trendyol_intake.sql', '024_tailoring_quality_supervision.sql','025_source_payment_gate.sql','026_trendyol_product_identity.sql','028_production_work_units.sql'], '016 -> 017 official additive upgrade');
 check((new MigrationRunner($pdo))->migrate($migrations) === [], '017 recorded exactly once');
 check($pdo->query("SELECT rp.* FROM role_permissions rp JOIN roles r ON r.role_id = rp.role_id WHERE rp.permission_id NOT IN (SELECT permission_id FROM permissions WHERE permission_key = 'production.manage_authority' OR permission_key LIKE 'trendyol.%') AND r.role_key NOT IN ('production-documents-operator','document-revision-approver') ORDER BY rp.role_id, rp.permission_id")->fetchAll(PDO::FETCH_ASSOC) === $grantsBefore, '017 changes no existing role grant');
 check($pdo->query('SELECT qr_reference, order_uuid, status, created_at, expires_at, revoked_at FROM order_qr_references ORDER BY qr_reference')->fetchAll(PDO::FETCH_ASSOC) === $qrBefore, '017 and 019 rewrite no QR reference');
@@ -113,7 +113,8 @@ foreach (['live_events', 'production_exception_idempotency', 'production_quality
     $pdo->exec("DELETE FROM {$table}");
 }
 $pdo->exec('UPDATE operational_orders SET open_exception_uuid = NULL');
-foreach (['production_exceptions', 'cutting_transfers', 'cutting_facts', 'analytics_ownership_intervals', 'analytics_order_projection', 'responsibility_assignments', 'organization_principals', 'order_activity_events', 'order_operation_idempotency', 'employee_order_relations', 'order_qr_references', 'operational_order_items', 'order_projection_receipts'] as $table) {
+T::clearPieces($pdo);
+    foreach (['production_exceptions', 'cutting_transfers', 'cutting_facts', 'analytics_ownership_intervals', 'analytics_order_projection', 'responsibility_assignments', 'organization_principals', 'order_activity_events', 'order_operation_idempotency', 'employee_order_relations', 'order_qr_references', 'operational_order_items', 'order_projection_receipts'] as $table) {
     $pdo->exec("DELETE FROM {$table}");
 }
 $pdo->exec("DELETE FROM operational_orders WHERE source_key <> 'b2b'");

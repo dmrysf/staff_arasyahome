@@ -61,7 +61,7 @@ require __DIR__ . '/HandoffSchemaFixture.php';
 restorePreAuthorityTestSchema($pdo);
 $grantsBefore = $pdo->query('SELECT * FROM role_permissions ORDER BY role_id, permission_id')->fetchAll(PDO::FETCH_ASSOC);
 $authorityBefore = $pdo->query('SELECT global_order_id, production_authority, production_stage_id, production_version, version FROM operational_orders ORDER BY global_order_id')->fetchAll(PDO::FETCH_ASSOC);
-check((new MigrationRunner($pdo))->migrate($migrations) === ['018_production_authority.sql', '019_production_qr_authority.sql', '020_production_document_authority.sql', '021_document_scopes.sql', '022_trendyol_intake.sql', '024_tailoring_quality_supervision.sql','025_source_payment_gate.sql','026_trendyol_product_identity.sql'], '017 -> 018 -> 019 official additive upgrade');
+check((new MigrationRunner($pdo))->migrate($migrations) === ['018_production_authority.sql', '019_production_qr_authority.sql', '020_production_document_authority.sql', '021_document_scopes.sql', '022_trendyol_intake.sql', '024_tailoring_quality_supervision.sql','025_source_payment_gate.sql','026_trendyol_product_identity.sql','028_production_work_units.sql'], '017 -> 018 -> 019 official additive upgrade');
 check((new MigrationRunner($pdo))->migrate($migrations) === [], '018 recorded exactly once');
 check($pdo->query('SELECT global_order_id, production_authority, production_stage_id, production_version, version FROM operational_orders ORDER BY global_order_id')->fetchAll(PDO::FETCH_ASSOC) === $authorityBefore, '018 changes the authority, stage or version of no existing order');
 $newGrants = $pdo->query("SELECT r.role_key FROM role_permissions rp JOIN roles r ON r.role_id = rp.role_id JOIN permissions p ON p.permission_id = rp.permission_id WHERE p.permission_key = 'production.manage_authority' ORDER BY r.role_key")->fetchAll(PDO::FETCH_COLUMN);
@@ -86,6 +86,7 @@ $cleanup = static function () use ($pdo): void {
         $pdo->exec("DELETE FROM {$table}");
     }
     $pdo->exec('UPDATE operational_orders SET open_exception_uuid = NULL');
+    T::clearPieces($pdo);
     foreach (['production_exceptions', 'cutting_transfers', 'cutting_facts', 'analytics_ownership_intervals', 'analytics_order_projection', 'responsibility_assignments', 'organization_principals', 'order_activity_events', 'order_operation_idempotency', 'employee_order_relations', 'order_qr_references', 'operational_order_items', 'order_projection_receipts'] as $table) {
         $pdo->exec("DELETE FROM {$table}");
     }

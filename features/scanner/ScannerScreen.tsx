@@ -21,7 +21,8 @@ import { getNextStage, getStageById } from "../../domain/productionWorkflow";
 import { canUseCuttingIntake, cuttingIntakeCopy, type CuttingApi } from "../../domain/cutting";
 import { QrCapture } from "../exceptions/QrCapture";
 import { scannerExceptionPrompt } from "../../domain/faults";
-import { faultReasonName } from "../../domain/stageNames";
+import { faultReasonName, stageName } from "../../domain/stageNames";
+import { isPieceLabel, pieceName, scanNeedsPieceChoice, trackPieces, trackStatusLabel } from "../../domain/pieces";
 
 type TorchCapabilities = MediaTrackCapabilities & { torch?: boolean };
 type TorchConstraintSet = MediaTrackConstraintSet & { torch?: boolean };
@@ -47,6 +48,8 @@ export function ScannerScreen({ service, cutting, employee, workflow, mode, navi
   const { t } = useI18n();
   const [state, dispatch] = useReducer(scannerReducer, initialScannerState);
   const [manualOpen, setManualOpen] = useState(false);
+  // Pieces of a scanned order at different stages: the order's own action needs the explicit choice of those pieces.
+  const [orderChosen, setOrderChosen] = useState<string | null>(null);
   const [manualCode, setManualCode] = useState("");
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -110,7 +113,8 @@ export function ScannerScreen({ service, cutting, employee, workflow, mode, navi
     if (!normalized || !duplicateGuard.accept(normalized)) return;
     stopCamera();
     dispatch({ type: "CODE_DETECTED", token: normalized });
-    if (!manual && intakeEnabled) {
+    // A piece label names one exact piece: it is resolved, never sent to the cutting intake of the whole order.
+    if (!manual && intakeEnabled && !isPieceLabel(normalized)) {
       const attempt = { token: normalized, idempotencyKey: createIdempotencyKey() };
       dispatch({ type: "INTAKE_STARTED", attempt });
       await runIntakeRef.current(attempt);
@@ -314,7 +318,7 @@ export function ScannerScreen({ service, cutting, employee, workflow, mode, navi
         {state.status === "taking" && <div className="resolving-card" role="status" aria-busy="true" data-testid="cutting-intake-progress"><span className="inline-spinner" /><strong>{t("scanner.taking")}</strong><small>{t("scanner.takingNote")}</small></div>}
       </div>
 
-      {state.status === "review" && reviewItem && <section className="bottom-sheet review-sheet"><ExceptionPrompt order={state.order} navigate={navigate} /><ReviewContent order={state.order} item={reviewItem} workflow={workflow} />{state.order.employeeAllowedAction && <button className="button button-primary button-large" type="button" onClick={() => dispatch({ type: "OPEN_CONFIRMATION" })}>{orderActionLabels[state.order.employeeAllowedAction.id]}<AppIcon name="arrow" size={20} /></button>}<button className="button button-secondary" type="button" onClick={() => navigate(`/orders/${encodeURIComponent(state.order.id)}`)}>{t("scanner.details")}</button><button className="button button-link" type="button" onClick={reset}>{t("scanner.scanOtherCode")}</button></section>}
+      {state.status === "review" && reviewItem && <section className="bottom-sheet review-sheet"><ExceptionPrompt order={state.order} navigate={navigate} /><PieceScan order={state.order} chosen={orderChosen === state.order.id} onChooseOrder={() => setOrderChosen(state.order.id)} navigate={navigate} /><ReviewContent order={state.order} item={reviewItem} workflow={workflow} />{state.order.employeeAllowedAction && (!scanNeedsPieceChoice(state.order) || orderChosen === state.order.id) && !state.order.scannedPiece?.trackId && <button className="button button-primary button-large" type="button" onClick={() => dispatch({ type: "OPEN_CONFIRMATION" })}>{orderActionLabels[state.order.employeeAllowedAction.id]}<AppIcon name="arrow" size={20} /></button>}<button className="button button-secondary" type="button" onClick={() => navigate(`/orders/${encodeURIComponent(state.order.id)}`)}>{t("scanner.details")}</button><button className="button button-link" type="button" onClick={reset}>{t("scanner.scanOtherCode")}</button></section>}
       {state.status === "review" && !reviewItem && <section className="bottom-sheet error-sheet"><ErrorState error={new ServiceError("ORDER_PRODUCTS_UNAVAILABLE")} compact onAction={reset} /></section>}
 
       {pending && pendingAction && <section className="confirmation-layer" role="dialog" aria-modal="true" aria-labelledby="confirmation-title"><div className="confirmation-card"><span className="state-icon confirm-icon" aria-hidden="true"><AppIcon name="arrow" size={24} /></span><p className="eyebrow">{t("common.confirmationRequired")}</p><h2 id="confirmation-title">{orderActionConfirmation[pendingAction.id].title}</h2><p>{t("orderAction.orderNote", { number: pending.orderNumber, note: orderActionConfirmation[pendingAction.id].note })}</p>
@@ -347,17 +351,46 @@ export function ScannerScreen({ service, cutting, employee, workflow, mode, navi
   );
 }
 
-/** An open production exception on the scanned order: the employee it addresses is guided to the request's screen. */
+/**
+ * Pieces of the scanned order (API 2.31.0). A scanned piece label names one exact piece: its stage and status are
+ * shown and its work happens on the order screen. Without a label, an order whose pieces are at different stages asks
+ * which piece is in the hand; nothing acts on the order until the employee chose the pieces that travel with it.
+ */
+function PieceScan({ order, chosen, onChooseOrder, navigate }: { order: StaffOrder; chosen: boolean; onChooseOrder: () => void; navigate: (path: string) => void }) {
+  const { t } = useI18n();
+  const pieces = order.pieces;
+  if (!pieces) return null;
+  const scannedTrack = order.scannedPiece?.trackId ? pieces.tracks.find((track) => track.id === order.scannedPiece?.trackId) : undefined;
+  const scannedUnit = order.scannedPiece ? pieces.units.find((unit) => unit.id === order.scannedPiece?.unitId) : undefined;
+  if (scannedUnit) {
+    return <div className="order-notice order-notice-muted piece-scan" role="status" data-testid="scanned-piece">
+      <strong>{t("piece.scanned", { piece: pieceName(scannedUnit) })}</strong>
+      {scannedTrack ? <small>{trackStatusLabel(scannedTrack)} · {t("piece.currentStage")}: {stageName(scannedTrack.stage.id, scannedTrack.stage.label)}</small> : <small>{t("piece.withOrder")}</small>}
+      {scannedTrack && !scannedTrack.openException && <button className="button button-primary" type="button" onClick={() => navigate(`/orders/${encodeURIComponent(order.id)}`)}>{t("common.openOrder")}</button>}
+    </div>;
+  }
+  if (!scanNeedsPieceChoice(order) || chosen) return null;
+  return <div className="order-notice piece-choice" role="group" aria-labelledby="piece-choice-title" data-testid="piece-choice">
+    <strong id="piece-choice-title">{t("piece.choose.title")}</strong>
+    <small>{t("piece.choose.body")}</small>
+    {pieces.onOrder > 0 && <button className="button button-secondary" type="button" onClick={onChooseOrder}>{t("piece.choose.order", { count: pieces.onOrder, stage: stageName(order.productionStageId) })}</button>}
+    {pieces.tracks.map((track) => <button key={track.id} className="button button-secondary" type="button" onClick={() => navigate(track.openException ? `/exceptions/${encodeURIComponent(track.openException.id)}` : `/orders/${encodeURIComponent(order.id)}`)}>
+      {trackPieces(pieces, track).map(pieceName).join(", ")} · {stageName(track.stage.id, track.stage.label)} · {trackStatusLabel(track)}
+    </button>)}
+  </div>;
+}
+
+/** An open production exception on the scanned order or piece: the employee it addresses is guided to the request's screen. */
 function ExceptionPrompt({ order, navigate }: { order: StaffOrder; navigate: (path: string) => void }) {
   const { t } = useI18n();
   const prompt = scannerExceptionPrompt(order);
-  const open = order.productionQuality?.openException;
-  if (!prompt || !open) return null;
+  if (!prompt) return null;
+  const open = order.productionQuality?.openException?.id === prompt.exceptionId ? order.productionQuality.openException : null;
   const text = { receipt: t("scanner.exception.receipt"), restoreReceipt: t("scanner.exception.restoreReceipt"), supervisor: t("scanner.exception.supervisor"), blocked: t("scanner.exception.blocked") }[prompt.kind];
   return <div className="order-notice order-notice-warning scanner-exception" role="alert" data-testid="scanner-exception" data-kind={prompt.kind}>
     <strong>{text}</strong>
     {prompt.kind !== "blocked" && <>
-      <small>{open.number} · {faultReasonName(open.reason.key, open.reason.label)} · {t("common.products", { count: open.lineCount })}</small>
+      <small>{open ? `${open.number} · ${faultReasonName(open.reason.key, open.reason.label)} · ${t("common.products", { count: open.lineCount })}` : `${prompt.number}${prompt.pieces !== null ? ` · ${t("piece.defective", { count: prompt.pieces })}` : ""}`}</small>
       <button className="button button-primary" type="button" onClick={() => navigate(`/exceptions/${encodeURIComponent(prompt.exceptionId)}`)}>{t("scanner.exception.open")}</button>
     </>}
   </div>;

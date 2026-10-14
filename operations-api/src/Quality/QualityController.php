@@ -63,7 +63,11 @@ final readonly class QualityController
     public function report(Request $request, string $globalOrderId): Response
     {
         $session = $this->mutationSession($request);
-        $input = $this->body($request, ['expectedVersion', 'itemIds', 'reasonKey', 'comment'], ['expectedVersion', 'itemIds', 'reasonKey']);
+        // Staff 2.26.0+ names the exact pieces (units, optionally on a rework track); older clients name lines (itemIds).
+        $input = $this->body($request, ['expectedVersion', 'itemIds', 'units', 'trackId', 'reasonKey', 'comment'], ['expectedVersion', 'reasonKey']);
+        if (!array_key_exists('itemIds', $input) && !array_key_exists('units', $input)) {
+            throw new ApiException(400, 'INVALID_REQUEST', 'Request fields are invalid.');
+        }
         return $this->json($this->faults->report($session->employee, $globalOrderId, $input, $request->header('idempotency-key') ?? '', $request->requestId), 201);
     }
 
@@ -75,7 +79,8 @@ final readonly class QualityController
             $this->authorization->requireApplication($actor, 'staff');
             if ($path === '/capabilities') {
                 $sources = $this->supervisors()->sourcesOf($actor);
-                return $this->json(['tailoringSupervisor' => $sources !== [], 'supervisedSources' => $sources, 'supervisedFlowActive' => $this->supervisors()->isActive()]);
+                return $this->json(['tailoringSupervisor' => $sources !== [], 'supervisedSources' => $sources, 'supervisedFlowActive' => $this->supervisors()->isActive(),
+                    'partialRework' => (new \Arasya\Operations\Production\WorkUnits($this->pdo))->partialReworkEnabled()]);
             }
             if ($path === '/supervisor') {
                 $sources = $this->supervisors()->sourcesOf($actor);

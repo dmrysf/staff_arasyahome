@@ -83,8 +83,9 @@ test("receipt wording never implies admitting a fault; statuses and tabs are Rom
 });
 
 test("capabilities accept only canonical sources; the supervisor route parses", () => {
-  assert.deepEqual(mapQualityCapabilities({ tailoringSupervisor: true, supervisedSources: ["trendhome", "evil", 3], supervisedFlowActive: true }), { tailoringSupervisor: true, supervisedSources: ["trendhome"], supervisedFlowActive: true });
-  assert.deepEqual(mapQualityCapabilities({}), { tailoringSupervisor: false, supervisedSources: [], supervisedFlowActive: false });
+  assert.deepEqual(mapQualityCapabilities({ tailoringSupervisor: true, supervisedSources: ["trendhome", "evil", 3], supervisedFlowActive: true }), { tailoringSupervisor: true, supervisedSources: ["trendhome"], supervisedFlowActive: true, partialRework: false });
+  assert.deepEqual(mapQualityCapabilities({}), { tailoringSupervisor: false, supervisedSources: [], supervisedFlowActive: false, partialRework: false });
+  assert.equal(mapQualityCapabilities({ partialRework: true }).partialRework, true);
   assert.equal(parseStaffRoute("/problems").kind, "problems");
 });
 

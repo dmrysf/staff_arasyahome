@@ -27,7 +27,7 @@ const scanned = (fault: ReturnType<typeof serverFault> | null): Pick<StaffOrder,
 
 test("a scanned order with a return addressed to me guides me to the receipt; nobody else gets an action", () => {
   assert.equal(scannerExceptionPrompt(scanned(null)), null, "no open exception: the scanner behaves as before");
-  assert.deepEqual(scannerExceptionPrompt(scanned(serverFault("awaiting_acknowledgment", { canAcknowledge: true, statesResponsibility: true }))), { kind: "receipt", exceptionId: "a3bbc08e-95ec-40d4-95f7-a54f107b0f2c" });
+  assert.deepEqual(scannerExceptionPrompt(scanned(serverFault("awaiting_acknowledgment", { canAcknowledge: true, statesResponsibility: true }))), { kind: "receipt", exceptionId: "a3bbc08e-95ec-40d4-95f7-a54f107b0f2c", number: "EX-000001", pieces: null });
   assert.equal(scannerExceptionPrompt(scanned(serverFault("awaiting_restore_receipt", { canConfirmRestore: true })))?.kind, "restoreReceipt");
   assert.equal(scannerExceptionPrompt(scanned(serverFault("awaiting_acknowledgment", { canRestore: true, canAddNote: true })))?.kind, "supervisor");
   // An uninvolved employee (or an older API without actions) only learns that the order is blocked.

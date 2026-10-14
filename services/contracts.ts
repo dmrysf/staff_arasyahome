@@ -51,7 +51,8 @@ export interface ExceptionService {
   get(id: string, options?: { signal?: AbortSignal }): Promise<FaultException>;
   reasons(options?: { signal?: AbortSignal }): Promise<FaultReason[]>;
   /** Tailoring intake returns the order to cutting with the exact faulty lines. */
-  report(orderId: string, input: { expectedVersion: number; itemIds: string[]; reasonKey: string; comment: string | null; idempotencyKey: string }): Promise<FaultException>;
+  /** units (API 2.31.0): the exact defective pieces, optionally on a piece track (expectedVersion is then the track's). */
+  report(orderId: string, input: { expectedVersion: number; itemIds: string[]; units?: string[]; trackId?: string | null; reasonKey: string; comment: string | null; idempotencyKey: string }): Promise<FaultException>;
   /**
    * The addressed cutting employee scans the QR of the same order. In the supervised flow this records
    * physical receipt; only the responsible employee adds "accepted" or "disputed", never as an admission.
@@ -93,6 +94,8 @@ export type ServiceBundle = {
   productionQr?: import("../domain/productionQr").ProductionQrApi;
   /** Trendyol workspace for explicitly authorized Trendyol personnel; absent in preview and demo. */
   trendyol?: import("../domain/trendyol").TrendyolApi;
+  /** Work on pieces in rework (API 2.31.0); absent in preview and demo. */
+  pieces?: import("../domain/pieces").PieceApi;
   /** Read-only stage queues for the department dashboards; absent in preview and demo. */
   workspace?: import("../domain/workspaces").WorkspaceApi;
   /** Read-only management production overview (Dashboard access + production.view); absent in preview and demo. */

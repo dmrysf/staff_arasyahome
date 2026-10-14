@@ -44,6 +44,10 @@ final readonly class OrderAccessPolicy
     public const TRENDYOL_VIEW = 'trendyol.orders.view';
     public const ACTION_CUTTING_INTAKE = 'cutting_intake';
     public const ACTION_ALREADY_MINE = 'already_mine';
+    /** The order is at packing but some of its pieces are still in rework on a separate track. */
+    public const BLOCKED_PIECES_IN_REWORK = 'pieces_in_rework';
+    /** Stages an order may not be worked at while any of its pieces is away in rework. */
+    public const PIECE_GATE_STAGES = ['packing', 'delivery'];
     /** Order sources whose stage-1 orders a cutter may receive by QR (B2B keeps its existing flow). */
     public const CUTTING_INTAKE_SOURCES = ['trendyol', 'trendhome', 'outletperdele'];
 
@@ -87,7 +91,16 @@ final readonly class OrderAccessPolicy
         // more (a narrowed scope or a removed stage), the relation alone shows nothing. The employee's own activity
         // ledger (GET /activity/mine) and the audit trail keep the historical record.
         $related = $order->relation !== null && $order->relation->employeeUuid === $employee->employeeUuid;
-        if ($related ? !$employee->reachesSource($source) : !$employee->worksAt($order->productionStageId, $source)) {
+        // A piece in rework is work at its own stage: an employee of that stage (or its owner) sees the order too.
+        $tracked = false;
+        foreach ($order->activeTracks as $track) {
+            if ($track['ownerEmployeeUuid'] === $employee->employeeUuid || $employee->worksAt($track['stageId'], $source)) {
+                $tracked = true;
+                break;
+            }
+        }
+        if ($related || ($tracked && !$employee->worksAt($order->productionStageId, $source))
+            ? !$employee->reachesSource($source) : !$employee->worksAt($order->productionStageId, $source)) {
             return false;
         }
         // An approved Trendyol order at the initial stage is still Trendyol preparation work: besides the stage, it
@@ -120,6 +133,11 @@ final readonly class OrderAccessPolicy
         }
         if ($this->isSourceManagedUnderEnforcement($order)) {
             return $this->blocked(self::BLOCKED_AUTHORITY_SOURCE);
+        }
+        // An order is never packed, delivered or completed while one of its pieces is still in rework: the pieces
+        // rejoin the order at packing first (ProductionTracks::mergeAtGate).
+        if ($order->hasActiveTracks() && in_array($order->productionStageId, self::PIECE_GATE_STAGES, true)) {
+            return $this->blocked(self::BLOCKED_PIECES_IN_REWORK);
         }
         $stageAllowed = $employee->worksAt($order->productionStageId, $order->globalId->sourceKey);
         $owner = $order->productionOwnerEmployeeUuid;
