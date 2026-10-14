@@ -35,21 +35,23 @@ php -d allow_url_fopen=0 "$release/simulation/check-environment.php" "$manifest"
 if [ "${DRY_RUN:-0}" = 1 ]; then echo 'SIMULATION_DEPLOY_DRY_RUN_OK'; exit; fi
 # Runtime must have been uploaded and checksummed under the PRIVATE release root first.
 [ -f "$release/operations-api/bootstrap.php" ] && [ -f "$release/simulation/check-environment.php" ] || exit 2
-cp -R "$package/staff/assets/." "$staff/assets/" 2>/dev/null || { mkdir -p "$staff/assets"; cp -R "$package/staff/assets/." "$staff/assets/"; }
+# Published files get explicit web-readable modes: an upload extracted under umask 077 (0600/0700) would otherwise be
+# copied as-is, and the web server could read neither the files nor .htaccess (HTTP 403, no CSP).
+publish() { cp "$1" "$2.sim-new"; chmod 0644 "$2.sim-new"; mv "$2.sim-new" "$2"; }
+mkdir -p "$staff/assets"
+cp -R "$package/staff/assets/." "$staff/assets/"
+find "$staff/assets" -type d -exec chmod 0755 {} +
+find "$staff/assets" -type f -exec chmod 0644 {} +
 for file in "$package/staff/"*; do
   [ -f "$file" ] || continue
   [ "$(basename "$file")" = index.html ] && continue
-  cp "$file" "$staff/$(basename "$file").sim-new"
-  mv "$staff/$(basename "$file").sim-new" "$staff/$(basename "$file")"
+  publish "$file" "$staff/$(basename "$file")"
 done
-cp "$package/staff/.htaccess" "$staff/.htaccess.sim-new"
-mv "$staff/.htaccess.sim-new" "$staff/.htaccess"
+publish "$package/staff/.htaccess" "$staff/.htaccess"
 sed -e "s|__RELEASE_ROOT__|$release|g" -e "s|__PRIVATE_MANIFEST__|$manifest|g" "$package/api/.htaccess.template" > "$api/.htaccess.sim-new"
-cp "$package/api/.user.ini" "$api/.user.ini.sim-new"
-cp "$package/api/index.php" "$api/index.php.sim-new"
-mv "$api/.user.ini.sim-new" "$api/.user.ini"
-mv "$api/index.php.sim-new" "$api/index.php"
+chmod 0644 "$api/.htaccess.sim-new"
+publish "$package/api/.user.ini" "$api/.user.ini"
+publish "$package/api/index.php" "$api/index.php"
 mv "$api/.htaccess.sim-new" "$api/.htaccess"
-cp "$package/staff/index.html" "$staff/index.html.sim-new"
-mv "$staff/index.html.sim-new" "$staff/index.html"
+publish "$package/staff/index.html" "$staff/index.html"
 echo "SIMULATION_ACTIVATED $sha"

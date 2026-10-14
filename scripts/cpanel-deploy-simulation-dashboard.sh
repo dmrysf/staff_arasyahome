@@ -39,17 +39,18 @@ for host in 'https://api.arasyahome.ro' 'https://staff.arasyahome.ro' 'https://d
   if grep -rqF "$host" "$package/dashboard"; then echo 'SIMULATION_DASHBOARD_PRODUCTION_HOST' >&2; exit 2; fi
 done
 if [ "${DRY_RUN:-0}" = 1 ]; then echo 'SIMULATION_DASHBOARD_DRY_RUN_OK'; exit; fi
+# Published files get explicit web-readable modes, whatever umask the upload was extracted with (see deploy-simulation.sh).
+publish() { cp "$1" "$2.sim-new"; chmod 0644 "$2.sim-new"; mv "$2.sim-new" "$2"; }
 mkdir -p "$dashboard/assets"
 cp -R "$package/dashboard/assets/." "$dashboard/assets/"
+find "$dashboard/assets" -type d -exec chmod 0755 {} +
+find "$dashboard/assets" -type f -exec chmod 0644 {} +
 for file in "$package/dashboard/"*; do
   [ -f "$file" ] || continue
   [ "$(basename "$file")" = index.html ] && continue
-  cp "$file" "$dashboard/$(basename "$file").sim-new"
-  mv "$dashboard/$(basename "$file").sim-new" "$dashboard/$(basename "$file")"
+  publish "$file" "$dashboard/$(basename "$file")"
 done
-cp "$package/dashboard/.htaccess" "$dashboard/.htaccess.sim-new"
-mv "$dashboard/.htaccess.sim-new" "$dashboard/.htaccess"
+publish "$package/dashboard/.htaccess" "$dashboard/.htaccess"
 # The entry point goes last, so a browser never loads an index that refers to assets not yet published.
-cp "$package/dashboard/index.html" "$dashboard/index.html.sim-new"
-mv "$dashboard/index.html.sim-new" "$dashboard/index.html"
+publish "$package/dashboard/index.html" "$dashboard/index.html"
 echo "SIMULATION_DASHBOARD_ACTIVATED $sha"

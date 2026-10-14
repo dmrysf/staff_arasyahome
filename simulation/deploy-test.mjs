@@ -2,7 +2,7 @@
 // fake cPanel home: exact destinations, private paths, hosted manifest, integrity, dry runs and Host/origin boundaries.
 // Usage: node simulation/deploy-test.mjs /package /abs/arasya-simulation/sessions/<id>/private.json /fresh/work
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import http from "node:http";
 import path from "node:path";
@@ -92,10 +92,22 @@ try {
   const tampered = spawnSync("bash", [path.join(pkg, "deploy-simulation-dashboard.sh"), forged, release, manifestFile, dash], { env: { ...process.env, DRY_RUN: "1" }, encoding: "utf8" });
   record("dashboard-reject-checksum-mismatch", "packaging", tampered.status !== 0);
   // Publication.
-  run("staff-api-publish-only-simulation-docroots", "deploy-simulation.sh", staffArgs(), {}, true, `SIMULATION_ACTIVATED ${releaseInfo.sourceCommit}`);
+  // Publication runs from a copy extracted the way a umask-077 shell leaves it (files 0600, folders 0700), under umask 077:
+  // the published web files must still be readable by the web server.
+  const strict = path.join(work, "umask077-package"); cpSync(pkg, strict, { recursive: true });
+  (function tighten(dir) { for (const entry of readdirSync(dir, { withFileTypes: true })) { const full = path.join(dir, entry.name); if (entry.isDirectory()) { tighten(full); chmodSync(full, 0o700); } else chmodSync(full, 0o600); } })(strict);
+  const publishStrict = (id, script, args, marker) => {
+    const r = spawnSync("bash", ["-c", 'umask 077; exec bash "$0" "$@"', path.join(strict, script), ...args], { env: process.env, encoding: "utf8" });
+    record(id, "packaging", r.status === 0 && r.stdout.includes(marker), (r.stderr || r.stdout).slice(-300));
+  };
+  const mode = (file) => statSync(file).mode & 0o777;
+  const webReadable = (root) => { const bad = []; (function walk(dir) { for (const entry of readdirSync(dir, { withFileTypes: true })) { if (entry.name === ".well-known") continue; const full = path.join(dir, entry.name); if (entry.isDirectory()) { if (mode(full) !== 0o755) bad.push(full); walk(full); } else if (mode(full) !== 0o644) bad.push(full); } })(root); return bad; };
+  publishStrict("staff-api-publish-only-simulation-docroots", "deploy-simulation.sh", [strict, release, manifestFile, sim, api], `SIMULATION_ACTIVATED ${releaseInfo.sourceCommit}`);
+  record("staff-api-published-files-web-readable", "packaging", webReadable(sim).length === 0 && [".htaccess", ".user.ini", "index.php"].every((f) => mode(path.join(api, f)) === 0o644), webReadable(sim).slice(0, 3).join(","));
   record("staff-entrypoint-published", "packaging", readFileSync(path.join(sim, "index.html"), "utf8").includes("root") && existsSync(path.join(api, "index.php")) && readFileSync(path.join(api, ".htaccess"), "utf8").includes(release));
   record("staff-api-publisher-leaves-dashboard-docroot", "packaging", !existsSync(path.join(dash, "index.html")));
-  run("dashboard-publish-only-dashboard-docroot", "deploy-simulation-dashboard.sh", dashArgs(), {}, true, `SIMULATION_DASHBOARD_ACTIVATED ${releaseInfo.sourceCommit}`);
+  publishStrict("dashboard-publish-only-dashboard-docroot", "deploy-simulation-dashboard.sh", [strict, release, manifestFile, dash], `SIMULATION_DASHBOARD_ACTIVATED ${releaseInfo.sourceCommit}`);
+  record("dashboard-published-files-web-readable", "packaging", webReadable(dash).length === 0, webReadable(dash).slice(0, 3).join(","));
   const published = JSON.parse(readFileSync(path.join(dash, "release.json"), "utf8"));
   record("dashboard-published-with-provenance", "packaging", published.dashboardCommit === releaseInfo.dashboardCommit && published.sourceCommit === releaseInfo.sourceCommit && readFileSync(path.join(dash, ".htaccess"), "utf8").includes("connect-src 'self' https://api.sim.arasyahome.ro;") && existsSync(path.join(dash, ".well-known")));
   record("production-docroots-unchanged", "packaging", sentinels() === before);
