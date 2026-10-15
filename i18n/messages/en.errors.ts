@@ -64,6 +64,8 @@ export const enErrors: { readonly [K in keyof typeof roErrors]: string } = {
   "error.IDEMPOTENCY_CONFLICT.message": "The request could not be confirmed safely. Reload and try again.",
   "error.ORDER_UNAVAILABLE.title": "Order not available",
   "error.ORDER_UNAVAILABLE.message": "The order was cancelled or can no longer be processed.",
+  "error.ORDER_PRODUCTION_STOPPED.title": "Production is stopped",
+  "error.ORDER_PRODUCTION_STOPPED.message": "Production of this order is stopped. You cannot continue production of this order.",
   "error.ORDER_PRODUCTS_UNAVAILABLE.title": "No products available",
   "error.ORDER_PRODUCTS_UNAVAILABLE.message": "The order has no products available for production.",
   "error.ORDER_CHANGED.title": "The order changed",

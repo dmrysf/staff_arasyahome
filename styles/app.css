@@ -345,6 +345,8 @@
 .document-blocked { display: grid; gap: 4px; padding: var(--space-4) 18px; border: 2px solid var(--color-danger); border-radius: var(--radius-md); background: var(--color-danger-soft); color: var(--color-text); }
 .document-blocked strong { font-size: var(--text-lg); letter-spacing: .04em; color: var(--color-text); }
 .document-blocked span { font-size: var(--text-md); line-height: var(--leading-snug); }
+/* API 2.35.0: a stopped order's card is marked; the stop notice reuses the strong document-blocked alert. */
+.order-card-stop { align-self: flex-start; max-width: 100%; margin: 6px 0 0; background: var(--color-danger-soft); color: var(--color-text); white-space: normal; }
 .qr-panel { display: grid; gap: 12px; min-width: 0; }
 .qr-panel h2 { margin: 0; font-size: var(--text-xl); font-weight: var(--weight-bold); letter-spacing: .01em; }
 .qr-authority { display: flex; align-items: center; gap: 8px; margin: 0; padding: 9px 12px; border: 1px solid var(--color-border); border-radius: var(--radius-sm); color: var(--color-text); font-size: var(--text-sm); font-weight: var(--weight-semibold); }

@@ -1,3 +1,5 @@
+Operations API **2.35.0** / Staff **2.27.0** / Dashboard **0.15.0** add the [order cancellation control](docs/order-cancellation-control.md) (additive migration 033): a cancellation reported by Trendhome, OutletPerdele or Trendyol, or a stop decided by an authorized manager, freezes production at any of the 14 stages through one server-side guard, keeping the stage, owner, quality and piece history. A later "active" from the source never resumes production; an authorized release does, after the physical state, the source state and the document were verified. Nothing is ever written back to a source.
+
 Operations API **2.31.0** / Staff **2.26.0** / Dashboard **0.14.0** add [per-piece rework](docs/per-piece-rework.md) (additive migration 028, activation flag `partial_rework` off by default): a worker reports exactly the defective pieces („Bucata 1/2”); only those pieces go to the supervisor, the cutter’s receipt, one manager approval and cutting, then repeat every stage from cutting onward on their own track, while the healthy pieces keep their stage. The order cannot be packed until every piece is back.
 
 # Arasya Staff

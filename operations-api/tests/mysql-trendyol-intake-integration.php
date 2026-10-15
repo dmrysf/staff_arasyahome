@@ -777,7 +777,7 @@ if ($created !== []) {
         }
         $pdo->exec("DELETE FROM production_exception_decisions WHERE exception_uuid IN ({$ex})");
     }
-    foreach (['production_document_revision_requests', 'production_document_revisions', 'production_qr_events', 'order_qr_references', 'production_quality_events', 'production_exceptions', 'order_activity_events',
+    foreach (['order_cancellation_events', 'order_cancellation_controls', 'production_document_revision_requests', 'production_document_revisions', 'production_qr_events', 'order_qr_references', 'production_quality_events', 'production_exceptions', 'order_activity_events',
         'order_operation_idempotency', 'employee_order_relations', 'production_authority_events', 'cutting_transfers', 'cutting_facts', 'analytics_ownership_intervals', 'analytics_order_projection', 'operational_order_items'] as $table) {
         $pdo->exec("DELETE FROM {$table} WHERE order_uuid IN ({$in})");
     }

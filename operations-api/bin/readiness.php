@@ -127,6 +127,25 @@ try {
 } catch (Throwable) {
     $report('FAIL', 'iam_applications');
 }
+// Cancellation control (033, API 2.35.0): the order projection and the control rows agree, and open orders whose source
+// reported a cancellation before 033 without ever being stopped are named as a count (never changed here).
+try {
+    $controlSchema = (int) $pdo->query("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN ('order_cancellation_controls', 'order_cancellation_events')")->fetchColumn()
+        + (int) $pdo->query("SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'operational_orders' AND COLUMN_NAME IN ('cancellation_state', 'production_stopped_at')")->fetchColumn();
+    $report($controlSchema === 4 ? 'OK' : 'FAIL', 'production_cancellation_schema');
+    if ($controlSchema === 4) {
+        $drift = (int) $pdo->query('SELECT COUNT(*) FROM operational_orders o LEFT JOIN order_cancellation_controls c ON c.order_uuid = o.order_uuid
+            WHERE (o.cancellation_state IS NULL) <> (c.order_uuid IS NULL) OR o.cancellation_state <> c.hold_status')->fetchColumn();
+        $report($drift === 0 ? 'OK' : 'FAIL', 'production_cancellation_projection');
+        $permissions = (int) $pdo->query("SELECT COUNT(*) FROM permissions WHERE permission_key IN ('production.cancellation.manage', 'production.cancellation.release') AND role_grantable = 1")->fetchColumn();
+        $report($permissions === 2 ? 'OK' : 'FAIL', 'production_cancellation_permissions');
+        $legacy = (int) $pdo->query("SELECT COUNT(*) FROM operational_orders WHERE production_completed_at IS NULL AND cancellation_state IS NULL AND operational_status <> 'unavailable' AND source_reported_unavailable_at IS NOT NULL")->fetchColumn();
+        $report($legacy === 0 ? 'OK' : 'WARN', 'production_cancellation_legacy_unstopped');
+    }
+} catch (Throwable) {
+    $report('FAIL', 'production_cancellation_schema');
+}
+
 foreach (['https://staff.arasyahome.ro', 'https://dashboard.arasyahome.ro', 'https://b2b.arasyahome.ro'] as $origin) {
     if ($config->isProduction()) {
         $report(in_array($origin, $config->allowedOrigins, true) ? 'OK' : 'WARN', 'cors_origin_' . parse_url($origin, PHP_URL_HOST));

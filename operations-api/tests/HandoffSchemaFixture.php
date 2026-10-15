@@ -1,9 +1,23 @@
 <?php
 declare(strict_types=1);
+/** Restore a pre-033 disposable test fixture (no cancellation control). This is NOT a deployment/rollback mechanism. */
+function restorePreCancellationControlTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='033_order_cancellation_control.sql'")->fetchColumn()) return;
+    foreach(['order_cancellation_events','order_cancellation_controls'] as $table) $pdo->exec("DROP TABLE IF EXISTS {$table}");
+    $pdo->exec("DELETE rp FROM role_permissions rp INNER JOIN permissions p ON p.permission_id = rp.permission_id WHERE p.permission_key IN ('production.cancellation.manage','production.cancellation.release')");
+    $pdo->exec("DELETE FROM permissions WHERE permission_key IN ('production.cancellation.manage','production.cancellation.release')");
+    $pdo->exec('ALTER TABLE operational_orders DROP CONSTRAINT chk_operational_orders_cancellation');
+    $pdo->exec('ALTER TABLE operational_orders DROP INDEX idx_operational_orders_cancellation, DROP COLUMN production_stopped_at, DROP COLUMN cancellation_state');
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='033_order_cancellation_control.sql'");
+}
+
 /** Restore a pre-029 disposable test fixture (no manufacturing manifest). This is NOT a deployment/rollback mechanism. */
 function restorePreManifestTestSchema(PDO $pdo): void
 {
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    restorePreCancellationControlTestSchema($pdo);
     if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='029_production_manifest_routing.sql'")->fetchColumn()) return;
     \Arasya\Operations\Tests\OperationsTestSupport::clearPieces($pdo);
     foreach(['production_assisted_checkpoint_events','production_assisted_checkpoints','production_route_reconciliation_stages','production_route_reconciliations','production_unit_verifications','production_feature_flag_events','production_pilot_cohort','production_exception_links','production_material_records','production_custody_events','production_unit_custody','production_locations',

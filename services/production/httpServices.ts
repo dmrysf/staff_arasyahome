@@ -79,6 +79,7 @@ const backendErrorCodes: Partial<Record<string, ServiceErrorCode>> = {
   ORDER_CHANGED: "ORDER_CHANGED",
   ORDER_NOT_FOUND: "ORDER_NOT_FOUND",
   ORDER_UNAVAILABLE: "ORDER_UNAVAILABLE",
+  ORDER_PRODUCTION_STOPPED: "ORDER_PRODUCTION_STOPPED",
   ORDER_ALREADY_CLAIMED: "ORDER_ALREADY_CLAIMED",
   ORDER_AMBIGUOUS: "ORDER_AMBIGUOUS",
   INVALID_LOOKUP_CODE: "INVALID_ORDER_CODE",
@@ -344,6 +345,24 @@ export function mapDocumentAttention(value: unknown): DocumentAttention {
   };
 }
 
+/** API 2.35.0: the effective production stop. Every field is a closed server enumeration; anything else is a server error. */
+export function mapProductionStop(value: unknown): import("../../domain/models").ProductionStopView {
+  const raw = objectValue(value);
+  if (raw.state !== "stopped" || raw.canContinue !== false || typeof raw.managementAttention !== "boolean") throw new StaffServiceError("SERVER_ERROR");
+  return {
+    state: "stopped",
+    reason: oneOf(raw.reason, ["source_cancelled", "marketplace_cancelled", "manager_stop", "legacy_source_cancellation"] as const),
+    origin: oneOf(raw.origin, ["source", "local"] as const),
+    sourceStatus: oneOf(raw.sourceStatus, ["cancelled", "reactivated", "not_reported"] as const),
+    sourceRequest: oneOf(raw.sourceRequest, ["not_requested", "pending", "confirmed", "withdrawn"] as const),
+    phase: oneOf(raw.phase, ["not_started", "in_progress", "completed"] as const),
+    physical: oneOf(raw.physical, ["not_required", "pending", "verified"] as const),
+    since: timestampValue(raw.since),
+    canContinue: false,
+    managementAttention: raw.managementAttention,
+  };
+}
+
 export function mapProductionOrder(value: unknown): import("../../domain/models").StaffOrder {
   const raw = objectValue(value);
   const source = stringValue(raw.source);
@@ -432,6 +451,7 @@ export function mapProductionOrder(value: unknown): import("../../domain/models"
   }
 
   if (raw.pieces != null) order.pieces = mapOrderPieces(raw.pieces);
+  if (raw.productionStop != null) order.productionStop = mapProductionStop(raw.productionStop);
   if (raw.scannedPiece != null) {
     const scanned = objectValue(raw.scannedPiece);
     order.scannedPiece = { unitId: stringValue(scanned.unitId), trackId: scanned.trackId == null ? null : stringValue(scanned.trackId) };

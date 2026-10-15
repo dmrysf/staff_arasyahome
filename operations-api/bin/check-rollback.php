@@ -37,6 +37,14 @@ try {
     if (is_string($assisted) && (!isset($tables['production_assisted_checkpoints']) || !hash_equals(hash_file('sha256', dirname(__DIR__) . '/database/migrations/031_production_assisted_checkpoints.sql'), $assisted))) {
         throw new RuntimeException('Current migration could not be verified.');
     }
+    // Migration 033 (cancellation control) likewise: optional, verified when recorded. An API older than 2.35.0 ignores
+    // production stops, so an open stopped order would become workable again: refused while any stop is in force.
+    $cancellation = $pdo->query("SELECT checksum FROM schema_migrations WHERE migration_name = '033_order_cancellation_control.sql'")->fetchColumn();
+    if (is_string($cancellation) && (!isset($tables['order_cancellation_controls']) || !hash_equals(hash_file('sha256', dirname(__DIR__) . '/database/migrations/033_order_cancellation_control.sql'), $cancellation))) {
+        throw new RuntimeException('Current migration could not be verified.');
+    }
+    $stoppedOpen = isset($tables['order_cancellation_controls'])
+        ? (int) $pdo->query("SELECT COUNT(*) FROM operational_orders WHERE cancellation_state = 'held' AND production_completed_at IS NULL")->fetchColumn() : 0;
     $state = [];
     $assistedOpen = isset($tables['production_assisted_checkpoints'])
         ? (int) $pdo->query('SELECT COUNT(DISTINCT c.order_uuid) FROM production_assisted_checkpoints c INNER JOIN operational_orders o ON o.order_uuid = c.order_uuid WHERE o.production_completed_at IS NULL')->fetchColumn() : 0;
@@ -48,9 +56,9 @@ try {
     }
     if (isset($tables['production_feature_flags'])) $state['enabledFeatures'] = (int) $pdo->query('SELECT COUNT(*) FROM production_feature_flags WHERE enabled = 1')->fetchColumn();
     if (isset($tables['production_pilot_cohort'])) $state['activeCohort'] = (int) $pdo->query("SELECT COUNT(*) FROM production_pilot_cohort WHERE status = 'active'")->fetchColumn();
-    $floor = $assistedOpen > 0 ? '2.34.0' : (array_sum($state) > 0 ? '2.32.0' : null);
+    $floor = $stoppedOpen > 0 ? '2.35.0' : ($assistedOpen > 0 ? '2.34.0' : (array_sum($state) > 0 ? '2.32.0' : null));
     $safe = $floor === null || version_compare($argv[1], $floor, '>=');
-    fwrite(STDOUT, json_encode(['safe' => $safe, 'targetVersion' => $argv[1], 'requiredFloor' => $floor, 'state' => $state + ['openOrdersWithAssistedCheckpoints' => $assistedOpen]], JSON_THROW_ON_ERROR) . "\n");
+    fwrite(STDOUT, json_encode(['safe' => $safe, 'targetVersion' => $argv[1], 'requiredFloor' => $floor, 'state' => $state + ['openOrdersWithAssistedCheckpoints' => $assistedOpen, 'openStoppedOrders' => $stoppedOpen]], JSON_THROW_ON_ERROR) . "\n");
     exit($safe ? 0 : 3);
 } catch (Throwable) {
     fwrite(STDERR, "Rollback refused: current database state could not be verified.\n");

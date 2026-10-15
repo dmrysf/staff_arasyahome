@@ -24,8 +24,8 @@ use Throwable;
  *              reclassified
  *
  * After approval the marketplace stays the commercial truth only: a cancellation makes the production order
- * unavailable (like every other source), any other status is shown as commerce status, and a content change is
- * flagged for a person to check. Production stage, items and the printed document are never touched from here.
+ * unavailable and stops its production at whatever stage it is (like every other source, API 2.35.0), any other
+ * status is shown as commerce status and never releases a stop, and a content change is flagged for a person to check. Production stage, items and the printed document are never touched from here.
  */
 final readonly class TrendyolIntakeStore
 {
@@ -111,7 +111,7 @@ final readonly class TrendyolIntakeStore
                 $this->event($id, 'marketplace_cancelled', ['status' => $package->status], $now);
             }
             if ($released) {
-                $this->writer->recordMarketplaceStatus((string) $current['released_order_uuid'], $package->status, TrendyolEligibility::cancelled($package->status));
+                $this->writer->recordMarketplaceStatus((string) $current['released_order_uuid'], $package->status, TrendyolEligibility::cancelled($package->status), 'trendyol:' . $package->packageId . '@' . $package->lastModifiedMillis);
                 if ($package->status === 'UnPacked') {
                     $flagReasons[] = 'split';
                 }

@@ -59,6 +59,10 @@ final readonly class OrderSerializer
         if ($order->productionCompletedAt !== null) {
             $data['productionCompletedAt'] = $order->productionCompletedAt->format('Y-m-d\TH:i:s.v\Z');
         }
+        // API 2.35.0: the effective production stop (cancellation control), the same state the Dashboard shows.
+        if ($order->productionStop !== null) {
+            $data['productionStop'] = $order->productionStop;
+        }
 
         if ($access !== null) {
             if ($access['action'] !== null) {

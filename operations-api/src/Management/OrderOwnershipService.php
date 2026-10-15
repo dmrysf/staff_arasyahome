@@ -84,6 +84,10 @@ final readonly class OrderOwnershipService
         if ($order['operational_status'] === 'unavailable') {
             return 'order_unavailable';
         }
+        // API 2.35.0: a stopped order keeps its owner; nobody releases or reassigns it until an authorized release.
+        if (($order['production_stopped_at'] ?? null) !== null) {
+            return \Arasya\Operations\Cancellation\ProductionStop::BLOCKED_REASON;
+        }
         if (($order['open_exception_uuid'] ?? null) !== null) {
             return 'exception_pending';
         }
@@ -226,6 +230,8 @@ final readonly class OrderOwnershipService
             if ($blocked === 'production_completed') {
                 throw new ApiException(409, 'PRODUCTION_COMPLETED', 'Production is completed; its ownership can no longer change.');
             }
+            // The shared cancellation guard, with a locking read of the row this transaction holds.
+            \Arasya\Operations\Cancellation\ProductionStop::assertOpen($this->pdo, $orderUuid);
             if ($blocked === 'order_unavailable') {
                 throw new ApiException(409, 'ORDER_UNAVAILABLE', 'The order is not available for production.');
             }
@@ -265,7 +271,7 @@ final readonly class OrderOwnershipService
                  SET production_owner_employee_uuid = :new_owner, production_claimed_at = :claimed_at,
                      production_version = production_version + 1, version = version + 1, updated_at = :now
                  WHERE order_uuid = :id AND production_version = :expected AND production_stage_id = :stage
-                   AND production_completed_at IS NULL AND open_exception_uuid IS NULL AND document_status IN (\'none\', \'active\') AND production_owner_employee_uuid <=> :previous_owner',
+                   AND production_completed_at IS NULL AND open_exception_uuid IS NULL AND document_status IN (\'none\', \'active\') AND production_stopped_at IS NULL AND production_owner_employee_uuid <=> :previous_owner',
             );
             $update->execute([
                 'new_owner' => $target?->employeeUuid,
@@ -425,7 +431,7 @@ final readonly class OrderOwnershipService
         $statement = $this->pdo->prepare(
             'SELECT order_uuid, global_order_id, source_key, order_number, production_stage_id, production_owner_employee_uuid,
                     production_completed_at, operational_status, production_version, open_exception_uuid, document_status, production_authority,
-                    payment_method, advance_status
+                    payment_method, advance_status, production_stopped_at
              FROM operational_orders WHERE global_order_id = ?' . ($lock ? ' FOR UPDATE' : ''),
         );
         $statement->execute([$globalId]);
