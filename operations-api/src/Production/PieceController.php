@@ -25,7 +25,7 @@ use Arasya\Operations\Security\CsrfGuard;
  *   POST /production-units/{unitId}/material                                 actual | replacement_actual | waste | remnant | correction
  *   GET  /production-units/{unitId}/history                                  lineage, labels, stage ledger, custody, material
  *   POST /production-units/{unitId}/route-evidence                           verified evidence of stages before the piece's ledger (030)
- *   POST /production-units/{unitId}/assisted-checkpoint                      take | return | verify a PERDEA piece at stage 6 / 7 (031)
+ *   POST /production-units/{unitId}/assisted-checkpoint                      informational PERDEA auxiliary-work status at stage 6 / 7 (031)
  */
 final readonly class PieceController
 {
@@ -89,7 +89,7 @@ final readonly class PieceController
             return $this->json($this->pieces->reconcileRoute($session->employee, $m[1], $input, $key, $request->requestId), 201);
         }
         if ($m[2] === 'assisted-checkpoint') {
-            $input = $this->body($request, ['action', 'stageId', 'outcome', 'expectedVersion', 'qrToken', 'note'], ['action', 'stageId', 'expectedVersion', 'qrToken']);
+            $input = $this->body($request, ['stageId', 'status', 'expectedVersion', 'qrToken', 'note'], ['stageId', 'status', 'expectedVersion']);
             return $this->json($this->pieces->assistedCheckpoint($session->employee, $m[1], $input, $key, $request->requestId));
         }
         if ($m[2] === 'custody') {

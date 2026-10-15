@@ -41,8 +41,8 @@ carrier waits for reviewed reconciliation. Confirmation before manufacturing wor
 PERDEA performs stages 2, 3, 4, 5, 8 onward. DRAPERII performs 2, 3, 4, 5, 6, 7, 8 onward. Unknown/other keeps the full route.
 
 > Route policy version 2 (API 2.34.0, `perdea_assisted_checkpoints`) supersedes the PERDEA exemption for orders in its
-> cohort: PERDEA goes through stages 6 and 7 with a mandatory per-piece assisted checkpoint and a mixed basket no longer
-> splits by type. See [perdea-assisted-checkpoints.md](perdea-assisted-checkpoints.md). Version 1 below stays the
+> cohort: PERDEA goes through stages 6 and 7 with an informational per-piece auxiliary-work status (never a gate) and a
+> mixed basket no longer splits by type. See [perdea-assisted-checkpoints.md](perdea-assisted-checkpoints.md). Version 1 below stays the
 > contract for orders outside that cohort and for exemptions already recorded.
 An unknown plan in a mixed carrier keeps the safe aggregate route and records `full_route_unverified` when it would diverge.
 
@@ -221,7 +221,7 @@ ledger that starts at that later stage. The applicable stages before it can only
 - Only the appointed tailoring quality supervisor of the source (Staff) or an operations approver (Dashboard) may record it
   (`RECONCILIATION_NOT_ALLOWED`), the same authority as a plan confirmation.
 - Only applicable stages of the piece's product type, from cutting up to (excluding) its ledger start, without a ledger
-  completion, can be named (`RECONCILIATION_STAGE_INVALID`); a PERDEA piece never receives evidence for stages 6-7 under policy version 1 (under version 2 those stages are applicable and need evidence like any other).
+  completion, can be named (`RECONCILIATION_STAGE_INVALID`); a PERDEA piece never needs or receives evidence for stages 6-7 (under policy version 2 its status there is informational).
 - `order_activity` must reference the order-level `stage_completed` of exactly that stage, recorded before the piece's
   ledger started (`RECONCILIATION_EVIDENCE_INVALID`); `physical_inspection` records that the verifier inspected the piece.
 - A stage is reconciled once per piece and cycle (`RECONCILIATION_STAGE_RECORDED`). Stages declared `uncertainStages` are

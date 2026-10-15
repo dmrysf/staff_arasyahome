@@ -20,11 +20,9 @@ use PDOException;
  *                              production cycle (from cutting onward); a stage recorded as
  *                              not applicable never satisfies an applicable stage. A stage before the start of the
  *                              piece's ledger is satisfied only by verified historical evidence (RouteReconciliation)
- *   assisted_unverified        route policy version 2 (AssistedCheckpoints): a PERDEA piece has no verified assisted
- *                              checkpoint for stage 6 or 7 in its current cycle. A stage-6 check never satisfies stage 7.
- *                              A row recorded before the order adopted version 2 (a version-1 not_applicable exemption or
- *                              an order-level completion logged for the piece) stays valid for that piece cycle: version 2
- *                              itself never writes such rows for PERDEA at those stages, and history is never rewritten
+ *
+ * Route policy version 2 (AssistedCheckpoints) adds nothing here: the PERDEA auxiliary-work status at stages 6-7 is
+ * informational and is never required for packing or delivery.
  *
  * Lines whose plan was never confirmed keep the order-level behaviour (their progress is the order's). No partial
  * shipment exists. Read-only.
@@ -116,9 +114,6 @@ final readonly class PieceGate
             $byItem[(string) $unit['item_uuid']][] = $unit;
         }
         $reconciled = (new RouteReconciliation($this->pdo))->reconciled($orderUuid);
-        $checkpoints = new AssistedCheckpoints($this->pdo);
-        $assisted = $checkpoints->appliesTo($orderUuid);
-        $verifiedChecks = $assisted ? $checkpoints->verifiedKeys($orderUuid) : [];
         $log = $this->pdo->prepare('SELECT unit_uuid, rework_cycle, stage_id, outcome FROM production_unit_stage_log WHERE order_uuid = ?');
         $log->execute([$orderUuid]);
         $outcomes = [];
@@ -143,8 +138,7 @@ final readonly class PieceGate
             if ($workflow === null) {
                 return 'route_incomplete';
             }
-            $type = (string) $line['plan']['productType'];
-            $route = ProductRoutePolicy::route($workflow, $type, $assisted);
+            $route = ProductRoutePolicy::route($workflow, (string) $line['plan']['productType']);
             foreach ($pieces as $piece) {
                 if ((int) $piece['review_required'] === 1) {
                     return 'pieces_incomplete';
@@ -163,16 +157,7 @@ final readonly class PieceGate
                     // Require actual piece/cycle completions from cutting; never fill the gap from aggregate history.
                     // Only a stage before the piece's ledger start may instead carry verified evidence (migration 030).
                     $inLedger = $inLedger || $stage->id === (ProductRoutePolicy::canonical($workflow) ? \Arasya\Operations\Cutting\CuttingLifecycle::STAGE : $workflow->stages[0]->id);
-                    if (!$inLedger || !in_array($stage->id, $route, true) || ($beforeStart && isset($verified[$stage->id]))) {
-                        continue;
-                    }
-                    if (ProductRoutePolicy::requirement($workflow, $type, $stage->id, $assisted) === ProductRoutePolicy::ASSISTED_CHECKPOINT) {
-                        if (!isset($recorded[$stage->id]) && !isset($verifiedChecks[(string) $piece['unit_uuid'] . '|' . (int) $piece['rework_cycle'] . '|' . $stage->id])) {
-                            return 'assisted_unverified';
-                        }
-                        continue;
-                    }
-                    if (($recorded[$stage->id] ?? null) !== 'completed') {
+                    if ($inLedger && in_array($stage->id, $route, true) && ($recorded[$stage->id] ?? null) !== 'completed' && !($beforeStart && isset($verified[$stage->id]))) {
                         return 'route_incomplete';
                     }
                 }

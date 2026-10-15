@@ -67,26 +67,24 @@ final readonly class ReportData
         }
         $s=$this->pdo->prepare("SELECT event_id,employee_uuid,order_uuid,from_stage_id,action FROM order_activity_events FORCE INDEX (idx_analytics_activity_period) WHERE action IN ('stage_completed','production_completed','production_submitted') AND occurred_at>=? AND occurred_at<?");
         $s->execute([$from,$to]); $stageCompletions=$s->fetchAll(PDO::FETCH_ASSOC);
-        // Assisted PERDEA checkpoints (migration 031): a stage 6/7 transition whose carrier held only checked PERDEA pieces
-        // (no piece completion was logged with it) is a verification, not manufacturing: it leaves the stage and track
-        // completions and is counted with the verifications. Verifications, negative checks and the recorded helper's
-        // confirmed work stay separate metrics; a later withdrawn verification is not counted.
-        $assistedOnlyActivity=[]; $assistedOnlyTrack=[]; $assisted=['verified'=>[],'notPerformed'=>[],'helperWork'=>[]];
+        // Informational PERDEA auxiliary-work status (migration 031): a stage 6/7 transition whose carrier held only PERDEA
+        // pieces (status rows exist, no piece completion was logged with it) is not manufacturing: it leaves the stage and
+        // track completions and is counted as stageTransitions. Marks are counted by their latest marker (performed and
+        // not_performed apart, never as work); nobody is credited for an unmarked piece.
+        $assistedOnlyActivity=[]; $assistedOnlyTrack=[]; $assisted=['performed'=>[],'notPerformed'=>[]];
         try {
             $s=$this->pdo->prepare("SELECT a.event_id FROM order_activity_events a WHERE a.action='stage_completed' AND a.from_stage_id IN ('bottom-hem','side-hem') AND a.occurred_at>=? AND a.occurred_at<?
-                AND EXISTS (SELECT 1 FROM production_assisted_checkpoints c WHERE c.order_uuid=a.order_uuid AND c.stage_id=a.from_stage_id AND c.status='verified' AND c.carrier_track_uuid IS NULL AND c.verified_at<=a.occurred_at)
+                AND EXISTS (SELECT 1 FROM production_assisted_checkpoints c WHERE c.order_uuid=a.order_uuid AND c.stage_id=a.from_stage_id AND c.carrier_track_uuid IS NULL AND c.created_at<=a.occurred_at)
                 AND NOT EXISTS (SELECT 1 FROM production_unit_stage_log l WHERE l.order_uuid=a.order_uuid AND l.stage_id=a.from_stage_id AND l.outcome='completed' AND l.carrier_track_uuid IS NULL AND l.occurred_at=a.occurred_at)");
             $s->execute([$from,$to]); $assistedOnlyActivity=array_fill_keys($s->fetchAll(PDO::FETCH_COLUMN),true);
             $s=$this->pdo->prepare("SELECT e.event_uuid FROM production_track_events e WHERE e.action='stage_completed' AND e.from_stage_id IN ('bottom-hem','side-hem') AND e.occurred_at>=? AND e.occurred_at<?
-                AND EXISTS (SELECT 1 FROM production_assisted_checkpoints c WHERE c.carrier_track_uuid=e.track_uuid AND c.stage_id=e.from_stage_id AND c.status='verified' AND c.verified_at<=e.occurred_at)
+                AND EXISTS (SELECT 1 FROM production_assisted_checkpoints c WHERE c.carrier_track_uuid=e.track_uuid AND c.stage_id=e.from_stage_id AND c.created_at<=e.occurred_at)
                 AND NOT EXISTS (SELECT 1 FROM production_unit_stage_log l WHERE l.carrier_track_uuid=e.track_uuid AND l.stage_id=e.from_stage_id AND l.outcome='completed' AND l.occurred_at=e.occurred_at)");
             $s->execute([$from,$to]); $assistedOnlyTrack=array_fill_keys($s->fetchAll(PDO::FETCH_COLUMN),true);
-            $s=$this->pdo->prepare("SELECT verified_by_employee_uuid employee_uuid,order_uuid,stage_id,COUNT(*) pieces FROM production_assisted_checkpoints WHERE status='verified' AND verified_at>=? AND verified_at<? GROUP BY verified_by_employee_uuid,order_uuid,stage_id");
-            $s->execute([$from,$to]); $assisted['verified']=$s->fetchAll(PDO::FETCH_ASSOC);
-            $s=$this->pdo->prepare("SELECT helper_employee_uuid employee_uuid,order_uuid,stage_id,COUNT(*) pieces FROM production_assisted_checkpoints WHERE status='verified' AND helper_employee_uuid IS NOT NULL AND verified_at>=? AND verified_at<? GROUP BY helper_employee_uuid,order_uuid,stage_id");
-            $s->execute([$from,$to]); $assisted['helperWork']=$s->fetchAll(PDO::FETCH_ASSOC);
-            $s=$this->pdo->prepare("SELECT actor_employee_uuid employee_uuid,order_uuid,stage_id,COUNT(*) pieces FROM production_assisted_checkpoint_events WHERE action='not_performed' AND occurred_at>=? AND occurred_at<? GROUP BY actor_employee_uuid,order_uuid,stage_id");
-            $s->execute([$from,$to]); $assisted['notPerformed']=$s->fetchAll(PDO::FETCH_ASSOC);
+            foreach (['performed'=>'performed','notPerformed'=>'not_performed'] as $metric=>$status) {
+                $s=$this->pdo->prepare("SELECT marked_by_employee_uuid employee_uuid,order_uuid,stage_id,COUNT(*) pieces FROM production_assisted_checkpoints WHERE status=? AND marked_at>=? AND marked_at<? GROUP BY marked_by_employee_uuid,order_uuid,stage_id");
+                $s->execute([$status,$from,$to]); $assisted[$metric]=$s->fetchAll(PDO::FETCH_ASSOC);
+            }
         } catch (\PDOException $error) {
             if ((int)($error->errorInfo[1]??0)!==1146) throw $error;
         }

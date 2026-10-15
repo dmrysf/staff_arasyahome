@@ -18,7 +18,7 @@ final class EmployeeMetrics
                 'repeatedOrders'=>[],'repeatedMeterUnits'=>0,'onlineSubmissions'=>0,
                 'initiatedTransfers'=>0,'outgoingTransfers'=>0,'incomingTransfers'=>0,'activeHandling'=>['wallSeconds'=>0,'businessSeconds'=>0],
                 'cuttingActiveHandling'=>['wallSeconds'=>0,'businessSeconds'=>0],'stageHandling'=>[],
-                'completedHandling'=>['wallSeconds'=>[],'businessSeconds'=>[]],'stageCompletions'=>[], 'trackStageCompletions'=>[], 'pieceWork'=>['order'=>0,'route'=>0,'rework'=>0,'byStage'=>[]], 'assistedCheckpoints'=>['verified'=>0,'notPerformed'=>0,'helperWork'=>0,'stageTransitions'=>0,'byStage'=>[]], 'daily'=>[], 'relatedOrderIds'=>[]];
+                'completedHandling'=>['wallSeconds'=>[],'businessSeconds'=>[]],'stageCompletions'=>[], 'trackStageCompletions'=>[], 'pieceWork'=>['order'=>0,'route'=>0,'rework'=>0,'byStage'=>[]], 'assistedCheckpoints'=>['performed'=>0,'notPerformed'=>0,'stageTransitions'=>0,'byStage'=>[]], 'daily'=>[], 'relatedOrderIds'=>[]];
         }
         $day=static fn(string $date):string => (new DateTimeImmutable($date,new DateTimeZone('UTC')))->setTimezone(new DateTimeZone('Europe/Bucharest'))->format('Y-m-d');
         foreach ($data['orders'] as $id=>$order) {
@@ -97,9 +97,9 @@ final class EmployeeMetrics
             $r=&$rows[$row['employee_uuid']]; $r['pieceWork'][$row['kind']]+=(int)$row['pieces'];
             $r['pieceWork']['byStage'][$row['stage_id']][$row['kind']]=($r['pieceWork']['byStage'][$row['stage_id']][$row['kind']]??0)+(int)$row['pieces']; unset($r);
         }
-        // Assisted PERDEA checkpoints (route policy version 2): verifications are not manufacturing; the recorded helper is
-        // credited only for work a stage employee verified; a negative check is counted apart and never as work.
-        foreach (['verified','notPerformed','helperWork'] as $metric) {
+        // Informational PERDEA auxiliary-work marks (route policy version 2): never manufacturing, never a gate; the
+        // auxiliary work itself is credited to nobody (the helper is not recorded).
+        foreach (['performed','notPerformed'] as $metric) {
             foreach ($data['assisted'][$metric]??[] as $row) {
                 if (!isset($rows[$row['employee_uuid']])) continue;
                 $r=&$rows[$row['employee_uuid']]; $r['relatedOrderIds'][$row['order_uuid']]=true; $r['assistedCheckpoints'][$metric]+=(int)$row['pieces'];

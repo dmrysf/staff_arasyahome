@@ -22,8 +22,9 @@ declare(strict_types=1);
 // Enable globally only after API 2.32.0, Staff and Dashboard are all live, the database backup was restored once in a
 // test and the pilot cohort was verified. A pilot cohort names orders by their global id; nothing is hardcoded.
 // Disabling refuses new partial reports / new route splits and leaves every piece already on a track on its way.
-// perdea_assisted_checkpoints (route policy version 2, API 2.34.0) needs Staff with the checkpoint screens; an order that
-// already has a checkpoint keeps policy version 2 when the flag or its cohort membership is withdrawn.
+// perdea_assisted_checkpoints (route policy version 2, API 2.34.0): PERDEA keeps stages 6-7 with an informational
+// auxiliary-work status (never a gate); an order that already has a status row keeps version 2 when the flag or its
+// cohort membership is withdrawn.
 //
 // backfill writes nothing about the physical plan: piece counts are never derived from commercial quantities. With
 // --dry-run=1 it only reports, per open order, the lines whose plan needs an authorized confirmation (with the source
@@ -32,7 +33,7 @@ declare(strict_types=1);
 //
 // rollback-check exits 3 when an API older than 2.32.0 must NOT be activated: active tracks (pieces away from their
 // order), pieces that were replaced, or confirmed plans whose pieces differ from the commercial quantity exist, which an
-// older API would silently ignore; or (API older than 2.34.0) an open order already has assisted PERDEA checkpoints. Exit 0 means no per-piece state would be lost by such a rollback.
+// older API would silently ignore; or (API older than 2.34.0) an open order already follows route policy version 2. Exit 0 means no per-piece state would be lost by such a rollback.
 //
 // route-audit is read-only (RouteAudit): it classifies every open order for the per-piece model (unresolved exception,
 // conflicting data, requires verified historical stage evidence, requires plan confirmation, safe identity
@@ -205,7 +206,7 @@ try {
         $unsafe = $inventory['activeTracks'] > 0 || $inventory['replacements'] > 0 || $diverging > 0 || $assisted > 0;
         $print(['rollbackToOlderApiSafe' => !$unsafe, 'activeTracks' => $inventory['activeTracks'], 'activeRouteTracks' => $inventory['activeRouteTracks'],
             'replacements' => $inventory['replacements'], 'openLinesWithPiecesDifferentFromQuantity' => $diverging, 'openOrdersWithAssistedCheckpoints' => $assisted,
-            'rule' => 'Do not activate an API older than 2.32.0 while this check fails: it would ignore pieces on tracks, replacements and confirmed piece counts. Do not activate an API older than 2.34.0 while open orders have assisted PERDEA checkpoints: it would not require their verification.']);
+            'rule' => 'Do not activate an API older than 2.32.0 while this check fails: it would ignore pieces on tracks, replacements and confirmed piece counts. Do not activate an API older than 2.34.0 while open orders follow route policy version 2: it would re-route them with version 1 (PERDEA skipping 6-7, mixed orders split) in the middle of their route.']);
         exit($unsafe ? 3 : 0);
     }
     $print(['partialRework' => $features->enabled(FeatureActivation::PARTIAL_REWORK), 'pieceRouting' => $features->enabled(FeatureActivation::PIECE_ROUTING),

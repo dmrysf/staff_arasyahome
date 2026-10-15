@@ -124,7 +124,6 @@ const backendErrorCodes: Partial<Record<string, ServiceErrorCode>> = {
   TRACK_WAITING_FOR_ORDER: "TRACK_WAITING_FOR_ORDER",
   DEFECT_RESOLUTION_REQUIRED: "DEFECT_RESOLUTION_REQUIRED",
   ORDER_PIECES_IN_REWORK: "ORDER_PIECES_IN_REWORK",
-  ASSISTED_VERIFICATION_REQUIRED: "ASSISTED_VERIFICATION_REQUIRED",
   RECEIVER_NOT_ALLOWED: "RECEIVER_NOT_ALLOWED",
   RESTORE_RECIPIENT_UNAVAILABLE: "RESTORE_RECIPIENT_UNAVAILABLE",
   RECIPIENT_NOT_ALLOWED: "RECIPIENT_NOT_ALLOWED",
@@ -455,13 +454,15 @@ export function mapProductionOrder(value: unknown): import("../../domain/models"
 }
 
 /** Pieces and tracks of an order (API 2.31.0). Unknown actions fail closed: no action is offered. */
-/** API 2.34.0 assisted PERDEA checks of one carrier; absent on older APIs, a present block must be complete (fails closed). */
+/** API 2.34.0 informational PERDEA status of one carrier; absent on older APIs, a present block must be complete (fails closed). */
 function mapAssistedCheckpoints(value: unknown): import("../../domain/models").AssistedCheckpoints | null {
   if (value == null) return null;
   const raw = objectValue(value);
-  if (!Array.isArray(raw.pieces) || typeof raw.planRequired !== "boolean") throw new StaffServiceError("SERVER_ERROR");
+  if (!Array.isArray(raw.pieces) || !Array.isArray(raw.unconfirmedLines) || raw.informational !== true) throw new StaffServiceError("SERVER_ERROR");
   try {
-    return { stageId: stringValue(raw.stageId), policyVersion: positiveInteger(raw.policyVersion), planRequired: raw.planRequired, required: nonNegativeInteger(raw.required), verified: nonNegativeInteger(raw.verified), pieces: raw.pieces.map(mapAssistedCheckpoint) };
+    return { stageId: stringValue(raw.stageId), policyVersion: positiveInteger(raw.policyVersion), informational: true, total: nonNegativeInteger(raw.total), performed: nonNegativeInteger(raw.performed),
+      notPerformed: nonNegativeInteger(raw.notPerformed), unmarked: nonNegativeInteger(raw.unmarked), pieces: raw.pieces.map(mapAssistedCheckpoint),
+      unconfirmedLines: raw.unconfirmedLines.map(item => { const line = objectValue(item); return { itemId: stringValue(line.itemId), lineNumber: positiveInteger(line.lineNumber), name: stringValue(line.name), code: nullableText(line.code) }; }) };
   } catch {
     throw new StaffServiceError("SERVER_ERROR");
   }

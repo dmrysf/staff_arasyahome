@@ -16,10 +16,10 @@ namespace Arasya\Operations\Production;
  *   unknown    every canonical stage (the safe existing route) and the classification needs confirmation
  *
  * Policy version 2 ($assisted, feature perdea_assisted_checkpoints): identical, except that a PERDEA piece goes through
- * bottom-hem and side-hem with the requirement assisted_checkpoint instead of skipping them. A helper may do the work
- * and the stage employee verifies every PERDEA piece separately per stage and production cycle (AssistedCheckpoints).
- * The verification is not manufacturing: no stage completion is logged for the piece and nobody earns piece work for it.
- * Every type then shares one route, so no carrier splits by product type any more.
+ * bottom-hem and side-hem with its carrier (requirement assisted_checkpoint) instead of skipping them. There the stage
+ * employee may record whether the auxiliary work was done (AssistedCheckpoints). That status is informational: it never
+ * blocks a transition, packing or delivery, it is not manufacturing (no stage completion is logged for the piece, nobody
+ * earns piece work for it) and it needs no stage evidence. Every type shares one route, so no carrier splits by type.
  *
  * The 14 canonical stage ids and ordinals never change; a route only marks what a stage requires. The exemption and the
  * checkpoint apply only to the canonical workflow they were defined for (curtain-production v1); any other workflow keeps
@@ -37,7 +37,7 @@ final class ProductRoutePolicy
     public const TYPES = [self::PERDEA, self::DRAPERII, self::OTHER, self::UNKNOWN];
     /** Stages whose manufacturing operations a PERDEA does not have. */
     public const PERDEA_NOT_APPLICABLE = ['bottom-hem', 'side-hem'];
-    /** Stages where policy version 2 requires a verified assisted checkpoint of every PERDEA piece. */
+    /** Stages where policy version 2 shows the informational PERDEA auxiliary-work status. */
     public const ASSISTED_STAGES = self::PERDEA_NOT_APPLICABLE;
     public const MANUFACTURING = 'manufacturing';
     public const ASSISTED_CHECKPOINT = 'assisted_checkpoint';

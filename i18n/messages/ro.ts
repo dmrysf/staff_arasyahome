@@ -272,7 +272,6 @@ export const ro = {
   "orderAction.blocked.plan_confirmation_required": "Planul fizic al unei linii trebuie verificat și confirmat de o persoană autorizată.",
   "orderAction.blocked.pieces_incomplete": "Lipsesc bucăți sau o bucată necesită verificarea identității. Comanda nu poate continua încă.",
   "orderAction.blocked.route_incomplete": "Comanda nu poate fi ambalată încă: o bucată nu a terminat toate etapele traseului său.",
-  "orderAction.blocked.assisted_unverified": "Comanda nu poate avansa: lucrarea auxiliară a unei perdele nu este verificată la etapa 6 sau 7.",
   "orderAction.blocked.defect_unresolved": "Comanda nu poate fi ambalată încă: rezolvarea unui defect nu a fost confirmată.",
   "orderAction.orderNote": "Comanda #{number}. {note}",
   "orderAction.qrCaptured": "Etichetă QR capturată · serverul verifică aceeași comandă.",

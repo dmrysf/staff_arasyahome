@@ -162,8 +162,6 @@ export const roErrors = {
   "error.TRACK_WAITING_FOR_ORDER.message": "Bucata a ajuns la ambalare și așteaptă restul comenzii. Se ambalează împreună cu ea.",
   "error.DEFECT_RESOLUTION_REQUIRED.title": "Confirmă remedierea",
   "error.DEFECT_RESOLUTION_REQUIRED.message": "La această etapă fusese găsit defectul. Confirmă că defectul a fost remediat înainte de a finaliza.",
-  "error.ASSISTED_VERIFICATION_REQUIRED.title": "Verifică perdelele",
-  "error.ASSISTED_VERIFICATION_REQUIRED.message": "Lucrarea auxiliară pentru această perdea nu a fost confirmată. Comanda nu poate avansa. Există produse nefinalizate la această etapă.",
   "error.ORDER_PIECES_IN_REWORK.title": "O bucată este în refacere",
   "error.ORDER_PIECES_IN_REWORK.message": "Comanda nu poate fi ambalată până când toate bucățile ajung la ambalare.",
   "error.RECEIVER_NOT_ALLOWED.title": "Tăietorul responsabil este disponibil",

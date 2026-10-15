@@ -440,14 +440,15 @@
 .piece-actions { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; }
 .piece-actions .button { flex: 1 1 auto; min-width: 0; white-space: normal; }
 .piece-list { margin: 0; padding-left: 18px; display: grid; gap: 4px; overflow-wrap: anywhere; }
-/* Assisted PERDEA checks (API 2.34.0): one block per physical piece, status on its own line, full-width touch targets. */
+/* Informational PERDEA status (API 2.34.0): one block per physical piece, status on its own line, full-width touch targets. */
 .assisted-list { margin: 12px 0 0; padding: 0; list-style: none; display: grid; gap: 12px; }
 .assisted-piece { display: grid; gap: 6px; padding: 12px; border: 1px solid var(--color-border); border-radius: var(--radius-md); overflow-wrap: anywhere; }
 .assisted-piece .queue-chip { justify-self: start; max-width: 100%; white-space: normal; }
-.assisted-piece .piece-actions { display: grid; gap: 8px; }
-.assisted-piece .piece-actions .button { width: 100%; min-height: var(--control-md); }
-.assisted-verified { border-color: var(--color-success-line, var(--color-border-strong)); }
-.assisted-not_performed { border-color: var(--color-danger-line); }
+.assisted-controls { display: grid; gap: 8px; }
+.assisted-controls .check-field { min-height: var(--control-md); align-items: center; }
+.assisted-controls .button { width: 100%; min-height: var(--control-md); }
+.assisted-performed { border-color: var(--color-success-line, var(--color-border-strong)); }
+.assisted-not_performed { border-color: var(--color-warning-line, var(--color-border-strong)); }
 .piece-approved { display: grid; gap: 4px; text-align: left; overflow-wrap: anywhere; }
 .piece-labels { display: grid; gap: 10px; min-width: 0; }
 .piece-label { display: grid; justify-items: start; gap: 6px; margin: 0; min-width: 0; }

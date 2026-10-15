@@ -91,12 +91,12 @@ export function PhysicalHistoryView({ service, unitId, label, stageName }: { ser
         <dt>{pt("physical.blocaj_fizic")}</dt><dd>{holdLabel(data.custody.hold)}</dd></dl>
       <p>{pt("physical.pozitia_fizica_nu_schimba_etapa_sau_responsabilul")}</p>
       <ol>{data.stageLedger.map((entry, i) => <li key={i}>{stageName(entry.stageId)} · {entry.outcome === "not_applicable" ? pt("physical.nu_se_aplica_fara_timp_sau_puncte") : pt("physical.lucrare_inregistrata")}{pt("physical.ciclul")}{entry.reworkCycle}{entry.employee ? ` · ${entry.employee}` : ""}</li>)}</ol>
-      {(data.assistedCheckpoints?.length ?? 0) > 0 && <><h4>{pt("physical.history.assisted")}</h4><ol data-testid="assisted-history">{data.assistedCheckpoints!.map((entry, i) => <li key={i}>{pt("physical.history.assistedEntry", { stage: stageName(entry.stageId), cycle: entry.reworkCycle, status: assistedStatusLabel(entry.action), by: entry.by })}</li>)}</ol></>}
+      {(data.assistedCheckpoints?.length ?? 0) > 0 && <><h4>{pt("physical.history.assisted")}</h4><ol data-testid="assisted-history">{data.assistedCheckpoints!.map((entry, i) => <li key={i}>{pt("physical.history.assistedEntry", { stage: stageName(entry.stageId), cycle: entry.reworkCycle, status: assistedStatusLabel(entry.status), by: entry.by })}</li>)}</ol></>}
       {data.material.length > 0 && <><h4>{pt("physical.material_inregistrat")}</h4><ul>{data.material.map((entry, i) => <li key={i}>{materialLabel(entry.kind)} · {entry.meters === null ? pt("physical.metraj_necunoscut") : `${entry.meters} m`}</li>)}</ul><p>{pt("physical.fara_scadere_de_stoc_pretul_clientului_ramane")}</p></>}
     </>}
   </article>;
 }
-const assistedStatusLabel = (action: string) => ({ taken_for_work: pt("physical.assisted.status.taken_for_work"), work_returned: pt("physical.assisted.status.work_returned"), verified: pt("physical.assisted.status.verified"), not_performed: pt("physical.assisted.status.not_performed") }[action] ?? action);
+const assistedStatusLabel = (status: string) => ({ unmarked: pt("physical.assisted.status.unmarked"), performed: pt("physical.assisted.status.performed"), not_performed: pt("physical.assisted.status.not_performed") }[status] ?? status);
 export const holdLabel = (value: string | null) => ({ companion_rework: pt("physical.asteapta_bucata_in_refacere"), inspection: pt("physical.verificare"), reunion_wait: pt("physical.asteapta_reunirea"), quarantine: pt("physical.carantina") }[value ?? ""] ?? pt("physical.fara_blocaj"));
 export const materialLabel = (value: string) => ({ planned: pt("physical.planificat"), actual: pt("physical.consum_efectiv"), replacement_actual: pt("physical.consum_pentru_inlocuire"), waste: pt("physical.pierdere"), remnant: pt("physical.rest"), correction: pt("physical.corectie") }[value] ?? pt("physical.inregistrare_material"));
 

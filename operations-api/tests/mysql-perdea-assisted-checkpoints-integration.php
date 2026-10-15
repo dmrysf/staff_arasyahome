@@ -2,23 +2,24 @@
 
 declare(strict_types=1);
 
-// Assisted PERDEA checkpoints at bottom-hem (6) and side-hem (7), route policy version 2 (migration 031, API 2.34.0),
+// Informational PERDEA auxiliary-work status at bottom-hem (6) and side-hem (7), route policy version 2 (migration 031, API 2.34.0),
 // against a dedicated MySQL/MariaDB test database, end to end through the HTTP kernel and the operator CLIs. Every
 // assertion reads committed rows.
 //
-//   A1  PERDEA only (tests 02, 04, 05): stages 6 and 7 appear and never complete without a verified checkpoint; helper
-//       take / return, negative check, separate stage-6 and stage-7 checks, self-verification and wrong-stage refusals,
-//       stale versions, idempotent replay, no per-piece completion and no route decision at 6/7, policy sticks to the order
-//   A2  mixed DRAPERII + 2 PERDEA pieces (tests 03, 06): no route split, the basket waits for every PERDEA piece one by
-//       one, DRAPERII keeps its manufacturing completion, a DRAPERII piece has no checkpoint
-//   A3  PERDEA rework of one of two pieces (tests 07, 08, 14, 16): the repaired piece replays 2..8 with its own cycle-2
-//       checks at 6 and 7; a cycle-1 check never satisfies cycle 2; the healthy piece keeps its state; packing gate
-//   A4  historical transition (test 24): a version-1 exemption stays valid, nothing is backfilled or rewritten
-//   A5  feature off (test 34): orders outside the cohort keep version 1 or the full route exactly as before
-//   A6  unconfirmed plan under version 2 fails closed at stage 6
-//   A7  concurrency, physical hold and deactivation (tests 26, 27)
-//   A8  employee KPI (test 30): verification is not manufacturing, the helper is credited only for verified work
-//   A9  migration 031 re-run, rollback guards, CLI activation, route audit and piece history (tests 34, 35)
+//   A0  migration 031 re-run, checksums 028-031, a single 028 prefix
+//   A1  PERDEA only: stages 6 and 7 appear; leaving them unmarked, marked or marked not done never blocks (Scenario E);
+//       unmarked passage is recorded as unmarked; stage authority, optional scan, stale versions, idempotent replay,
+//       unchecking, audited events, the policy sticks to the order; packing and delivery never wait for the status
+//   A2  mixed DRAPERII + 2 PERDEA pieces: Scenarios A-D, per-piece and per-stage statuses, DRAPERII completion kept
+//   A3  one defective PERDEA piece of two: supervisor, cutter receipt, unauthorized and authorized approval, repair,
+//       replay 2..7 without marks, cycle-2 status independent, defect resolution and rework packing gates intact
+//   A4  historical transition: a version-1 exemption stays valid, nothing is backfilled or rewritten
+//   A5  feature off: orders outside the cohort keep version 1 or the full route exactly as before
+//   A6  unconfirmed plan under version 2: line-level information only, nothing invented, nothing blocked
+//   A7  concurrent marks, a real physical hold still blocks, deactivation
+//   A8  management overview: genuine blockers with who must act, PERDEA status shown separately as information
+//   A9  employee KPI: a mark is not manufacturing, no helper credit
+//   A10 rollback guards, operator CLI, route audit
 
 use Arasya\Operations\Application\Container;
 use Arasya\Operations\Database\Connection;
@@ -211,9 +212,10 @@ $hikmet['dashboard'] = true;
 $assisted = FeatureActivation::PERDEA_ASSISTED_CHECKPOINTS;
 $checkpoint = static fn (string $unit, int $cycle, string $stage): ?array => $rows('SELECT * FROM production_assisted_checkpoints WHERE unit_uuid = ? AND rework_cycle = ? AND stage_id = ?', [$unit, $cycle, $stage])[0] ?? null;
 $cpVersion = static fn (string $unit, int $cycle, string $stage): int => (int) ($checkpoint($unit, $cycle, $stage)['version'] ?? 0);
-// One checkpoint action on a piece: take / return (helper) or verify (stage employee) with an explicit stage and version.
-$act = static function (array $who, string $unit, string $stage, string $action, string $qr, ?string $outcome = null, int $cycle = 1, ?string $idem = null, ?int $version = null) use ($post, $cpVersion): array {
-    return $post($who, "/production-units/{$unit}/assisted-checkpoint", ['action' => $action, 'stageId' => $stage, 'expectedVersion' => $version ?? $cpVersion($unit, $cycle, $stage), 'qrToken' => $qr] + ($outcome === null ? [] : ['outcome' => $outcome]), $idem);
+$cpStatus = static fn (string $unit, int $cycle, string $stage): ?string => $checkpoint($unit, $cycle, $stage)['status'] ?? null;
+// One informational mark of a piece at stage 6 / 7: performed, not_performed or unmarked; the scan is optional.
+$mark = static function (array $who, string $unit, string $stage, string $status, ?string $qr = null, int $cycle = 1, ?string $idem = null, ?int $version = null) use ($post, $cpVersion): array {
+    return $post($who, "/production-units/{$unit}/assisted-checkpoint", ['stageId' => $stage, 'status' => $status, 'expectedVersion' => $version ?? $cpVersion($unit, $cycle, $stage)] + ($qr === null ? [] : ['qrToken' => $qr]), $idem);
 };
 $stageLog = static fn (string $unit, int $cycle, string $stage): int => (int) $one('SELECT COUNT(*) FROM production_unit_stage_log WHERE unit_uuid = ? AND rework_cycle = ? AND stage_id = ?', [$unit, $cycle, $stage]);
 $transition = static fn (array $who, array $o): array => $post($who, $o['path'] . '/transition', ['expectedVersion' => (int) $state($o)['version']]);
@@ -228,13 +230,16 @@ $finish = static function (array $o) use ($claim, $advance, $state, $check, $fin
 };
 
 // ==== A0. Migration 031 is additive, created disabled and re-runnable =================================================
-$check((int) $one("SELECT enabled FROM production_feature_flags WHERE flag_key = 'perdea_assisted_checkpoints'") === 0, '34. the assisted checkpoint policy is created disabled');
+$check((int) $one("SELECT enabled FROM production_feature_flags WHERE flag_key = 'perdea_assisted_checkpoints'") === 0, '34. the PERDEA status policy is created disabled');
 $tables31 = (int) $one('SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE()');
 (new SqlFileRunner($pdo))->run($migrations . '/031_production_assisted_checkpoints.sql');
 $check((int) $one('SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE()') === $tables31 && (int) $one("SELECT COUNT(*) FROM production_feature_flags WHERE flag_key = 'perdea_assisted_checkpoints'") === 1, '35. migration 031 re-runs: no table or flag twice');
-$check((string) $one("SELECT checksum FROM schema_migrations WHERE migration_name = '030_production_route_reconciliation.sql'") === hash_file('sha256', $migrations . '/030_production_route_reconciliation.sql'), '035. the 030 checksum is unchanged');
+foreach (['028_production_work_units.sql', '029_production_manifest_routing.sql', '030_production_route_reconciliation.sql', '031_production_assisted_checkpoints.sql'] as $file) {
+    $check((string) $one('SELECT checksum FROM schema_migrations WHERE migration_name = ?', [$file]) === hash_file('sha256', $migrations . '/' . $file), "35. the recorded {$file} checksum equals the file");
+}
+$check($rows("SELECT migration_name FROM schema_migrations WHERE migration_name LIKE '028\\_%'") === [['migration_name' => '028_production_work_units.sql']], '35. exactly one migration uses the 028 prefix');
 
-// ==== A1. PERDEA only: mandatory, separate assisted checkpoints at stages 6 and 7 ======================================
+// ==== A1. PERDEA only: stages 6 and 7 appear, the status is optional and never blocks =================================
 $a1 = $trendyol('K', [$line('Perdea voal ivory', 'P-900', 1, 3.0, 'curtain')]);
 $cohort($a1, FeatureActivation::PIECE_ROUTING, $assisted);
 $ok($confirm($iuliana, $a1, $a1['items'][0], ['expectedRevision' => 0, 'productType' => 'perdea', 'pieceCount' => 1, 'note' => 'o bucată']), 'A1 plan');
@@ -243,64 +248,42 @@ $cut($murat, $a1);
 $bring($a1, 'material-straightening', $staffBy);
 $claim($tailor2, $a1);
 $advance($tailor2, $a1);
-$check($state($a1)['stage'] === 'bottom-hem', '02. under policy version 2 a PERDEA goes 5 -> 6 (no automatic skip)');
-$check($decisions($a1) === [], '02. no stage_not_applicable decision is written for the new policy');
+$check($state($a1)['stage'] === 'bottom-hem' && $decisions($a1) === [], 'policy v2: a PERDEA goes 5 -> 6, no stage_not_applicable decision');
 $plan1 = $planOf($iuliana, $a1);
 $check($plan1['perdeaAssistedCheckpoints'] === true && $plan1['routePolicyVersion'] === 2 && $plan1['lines'][0]['assistedStages'] === ['bottom-hem', 'side-hem'] && $plan1['lines'][0]['notApplicableStages'] === []
-    && in_array('bottom-hem', $plan1['lines'][0]['route'], true) && in_array('side-hem', $plan1['lines'][0]['route'], true), '02. the authoritative route shows 6 and 7 as assisted checkpoints: ' . json_encode($plan1['lines'][0]['route']));
-$check($plan1['lines'][0]['pieces'][0]['assistedCheckpoint']['status'] === 'awaiting_work' && $plan1['lines'][0]['pieces'][0]['assistedCheckpoint']['stageId'] === 'bottom-hem', 'the piece shows its current checkpoint: awaiting the auxiliary work');
-$view1 = $ok($get($hemmer, $a1['path']), 'A1 order view')['pieces'];
-$check($view1['perdeaAssistedCheckpoints'] === true && $view1['assistedCheckpoints']['required'] === 1 && $view1['assistedCheckpoints']['verified'] === 0 && $view1['assistedCheckpoints']['pieces'][0]['piece'] === '1/1', '16. the stage queue order view shows the pending PERDEA check');
+    && $plan1['lines'][0]['pieces'][0]['assistedCheckpoint']['status'] === 'unmarked', 'the plan shows 6 and 7 with an unmarked informational status');
+$view1 = $ok($get($hemmer, $a1['path']), 'A1 order view')['pieces']['assistedCheckpoints'];
+$check($view1['informational'] === true && $view1['total'] === 1 && $view1['unmarked'] === 1 && $view1['pieces'][0]['piece'] === '1/1', 'the order view shows the status as information');
+$check($ok($get($hemmer, $a1['path']), 'A1 order')['employeeAllowedAction']['id'] === 'claim', '5.1 the stage action is offered without any mark');
 $claim($hemmer, $a1);
-$blocked1 = $error($transition($hemmer, $a1), 409, 'ASSISTED_VERIFICATION_REQUIRED', '02. stage 6 cannot complete without the PERDEA verification');
-$check(($blocked1['error']['message'] ?? '') === 'Lucrarea auxiliară pentru această perdea nu a fost confirmată.' && $blocked1['error']['details']['pieces'][0]['unitId'] === $u1 && $blocked1['error']['details']['pieces'][0]['status'] === 'awaiting_work', '23. the exact piece and its state come back in Romanian: ' . json_encode($blocked1));
-$before1 = $state($a1);
-$ok($get($hemmer, $a1['path']), 'a refresh');
-$check($state($a1) === $before1 && $stageLog($u1, 1, 'bottom-hem') === 0 && $checkpoint($u1, 1, 'bottom-hem') === null, '05. nothing advances or completes by itself (no timeout, refresh or scheduler)');
-$error($act($labeler, $u1, 'side-hem', 'take', $a1['qr']), 409, 'ASSISTED_STAGE_MISMATCH', '3.8 the stage is named explicitly and must be the piece stage');
-$error($post($labeler, "/production-units/{$u1}/assisted-checkpoint", ['action' => 'verify', 'stageId' => 'bottom-hem', 'expectedVersion' => 0, 'qrToken' => $a1['qr']]), 400, 'INVALID_REQUEST', 'a verification needs an explicit outcome');
-$error($post($labeler, "/production-units/{$u1}/assisted-checkpoint", ['action' => 'take', 'stageId' => 'bottom-hem', 'expectedVersion' => 0]), 400, 'INVALID_REQUEST', 'the piece scan is required');
-$error($act($labeler, $u1, 'bottom-hem', 'take', 'ARASYA:Q1:' . str_repeat('A', 26)), 422, 'INVALID_QR', 'an unknown code identifies no piece');
-$taken1 = $ok($act($labeler, $u1, 'bottom-hem', 'take', $a1['qr']), '3.7 the helper from another area takes the curtain');
-$check($taken1['checkpoint']['version'] === 1 && $checkpoint($u1, 1, 'bottom-hem')['status'] === 'taken_for_work' && $checkpoint($u1, 1, 'bottom-hem')['helper_employee_uuid'] === $uuids['labeler'], '3.7 collection recorded with the helper and time');
-$error($act($hemmer, $u1, 'bottom-hem', 'verify', $a1['qr'], 'performed'), 409, 'ASSISTED_WORK_IN_PROGRESS', 'a piece still with the helper cannot be verified');
-$error($act($hemmer, $u1, 'bottom-hem', 'return', $a1['qr']), 403, 'ASSISTED_HELPER_MISMATCH', 'nobody else can declare the return for the helper');
-$returnKey = $key('return');
-$returned1 = $ok($act($labeler, $u1, 'bottom-hem', 'return', $a1['qr'], null, 1, $returnKey), '3.7 the helper brings it back to the verification point');
-$check($ok($act($labeler, $u1, 'bottom-hem', 'return', $a1['qr'], null, 1, $returnKey, 1), 'replay') === $returned1 && (int) $one('SELECT COUNT(*) FROM production_assisted_checkpoint_events WHERE unit_uuid = ?', [$u1]) === 2, '13/26. a retried return (lost answer) replays; no second event');
-$error($act($labeler, $u1, 'bottom-hem', 'return', $a1['qr'], null, 1, null, 1), 409, 'ASSISTED_CHECKPOINT_CHANGED', '21.3 a stale version is refused');
-$error($act($labeler, $u1, 'bottom-hem', 'verify', $a1['qr'], 'performed'), 403, 'ASSISTED_VERIFY_NOT_ALLOWED', 'the helper of another area cannot verify the stage');
-$verified1 = $ok($act($hemmer, $u1, 'bottom-hem', 'verify', $a1['qr'], 'performed'), '3.2 the stage employee verifies the returned curtain');
-$check($verified1['checkpoint']['version'] === 3 && $verified1['lines'][0]['pieces'][0]['assistedCheckpoint']['status'] === 'verified' && $verified1['lines'][0]['pieces'][0]['assistedCheckpoint']['helper']['displayName'] === 'Test Labeler'
-    && $verified1['lines'][0]['pieces'][0]['assistedCheckpoint']['verifiedBy']['isMe'] === true, '3.3 the verifier and the helper are recorded apart');
-$check($state($a1)['stage'] === 'bottom-hem', '05. a verification itself never moves the order');
 $advance($hemmer, $a1);
-$check($state($a1)['stage'] === 'side-hem' && $stageLog($u1, 1, 'bottom-hem') === 0, '3.3 the stage completes; the verification is not logged as a manufacturing completion of the PERDEA piece');
-// The policy stays with the order once it has a checkpoint, even if the pilot membership is withdrawn.
+$check($state($a1)['stage'] === 'side-hem', 'Scenario E: a PERDEA-only order leaves stage 6 without any mark');
+$check($cpStatus($u1, 1, 'bottom-hem') === 'unmarked' && $checkpoint($u1, 1, 'bottom-hem')['marked_by_employee_uuid'] === null && $stageLog($u1, 1, 'bottom-hem') === 0, 'passing unmarked is recorded as unmarked (no fabricated mark, no manufacturing completion)');
+$check((int) $one('SELECT COUNT(*) FROM production_assisted_checkpoint_events WHERE unit_uuid = ?', [$u1]) === 0, 'no mark event was fabricated');
+$error($mark($hemmer, $u1, 'bottom-hem', 'performed'), 409, 'ASSISTED_STAGE_MISMATCH', 'a mark belongs to the stage the piece is at');
+$error($mark($labeler, $u1, 'side-hem', 'performed'), 403, 'ASSISTED_MARK_NOT_ALLOWED', '6. existing stage authority only: an employee of another stage cannot mark');
+$error($post($hemmer, "/production-units/{$u1}/assisted-checkpoint", ['stageId' => 'side-hem', 'status' => 'done', 'expectedVersion' => 0]), 400, 'INVALID_REQUEST', 'only the three statuses exist');
+$error($mark($hemmer, $u1, 'side-hem', 'performed', 'ARASYA:Q1:' . str_repeat('A', 26)), 422, 'INVALID_QR', '10. a scan, when sent, must identify the piece');
+$markKey = $key('mark');
+$marked1 = $ok($mark($hemmer, $u1, 'side-hem', 'performed', null, 1, $markKey), '3.2 the stage employee marks Efectuată without any scan or helper');
+$check($ok($mark($hemmer, $u1, 'side-hem', 'performed', null, 1, $markKey, 0), 'replay') === $marked1 && (int) $one('SELECT COUNT(*) FROM production_assisted_checkpoint_events WHERE unit_uuid = ?', [$u1]) === 1, 'a retried mark (lost answer) replays; one event');
+$check($marked1['checkpoint']['status'] === 'performed' && $marked1['lines'][0]['pieces'][0]['assistedCheckpoint']['markedBy']['isMe'] === true, 'the saved state names the employee');
+$error($mark($hemmer, $u1, 'side-hem', 'performed'), 409, 'ASSISTED_CHECKPOINT_STATE', 'the same status twice is a stale screen');
+$error($mark($hemmer, $u1, 'side-hem', 'not_performed', null, 1, null, 0), 409, 'ASSISTED_CHECKPOINT_CHANGED', 'a stale version is refused');
+$ok($mark($hemmer, $u1, 'side-hem', 'unmarked'), '3.2 the checkbox can be unchecked');
+$ok($mark($hemmer, $u1, 'side-hem', 'not_performed', $a1['qr']), 'Neefectuată with an optional order scan');
+$check(array_map(static fn (array $r): string => $r['status_before'] . '>' . $r['status_after'], $rows('SELECT status_before, status_after FROM production_assisted_checkpoint_events WHERE unit_uuid = ? ORDER BY version_after', [$u1])) === ['unmarked>performed', 'performed>unmarked', 'unmarked>not_performed'], '12. every change is an audited event');
 $features->setCohortMember($assisted, $a1['uuid'], false, 'test-operator', 'withdraw the pilot membership mid-route', $now());
+$check($ok($get($hemmer, $a1['path']), 'A1 view after withdrawal')['pieces']['assistedCheckpoints']['notPerformed'] === 1, '13.1 the policy stays with the order after the cohort is withdrawn');
 $claim($hemmer, $a1);
-$error($transition($hemmer, $a1), 409, 'ASSISTED_VERIFICATION_REQUIRED', '3.8 a stage-6 verification never satisfies stage 7; 24.2 the policy is not lost with the cohort');
-$ok($act($tailor2, $u1, 'side-hem', 'take', $a1['qr']), 'a helper who also works at stage 7 takes it');
-$ok($act($tailor2, $u1, 'side-hem', 'return', $a1['qr']), 'and returns it');
-$error($act($tailor2, $u1, 'side-hem', 'verify', $a1['qr'], 'performed'), 403, 'ASSISTED_SELF_VERIFICATION', 'the helper never verifies their own work');
-$ok($act($hemmer, $u1, 'side-hem', 'verify', $a1['qr'], 'not_performed'), '04. the stage employee records: not performed');
-$np1 = $checkpoint($u1, 1, 'side-hem');
-$check($np1['status'] === 'not_performed' && $np1['helper_employee_uuid'] === null && $np1['verified_by_employee_uuid'] === $uuids['hemmer'], '04. the rejected attempt credits no helper');
-$error($transition($hemmer, $a1), 409, 'ASSISTED_VERIFICATION_REQUIRED', '04. a negative verification blocks progression');
-$error($act($hemmer, $u1, 'side-hem', 'verify', $a1['qr'], 'not_performed'), 409, 'ASSISTED_CHECKPOINT_STATE', 'no duplicate negative check');
-$ok($act($tailor2, $u1, 'side-hem', 'take', $a1['qr']), '04. the curtain goes back for the work');
-$ok($act($tailor2, $u1, 'side-hem', 'return', $a1['qr']), '04. returned again');
-$ok($act($hemmer, $u1, 'side-hem', 'verify', $a1['qr'], 'performed'), '04. the authorized positive check');
 $advance($hemmer, $a1);
-$check($state($a1)['stage'] === 'ironing' && $stageLog($u1, 1, 'side-hem') === 0, '04. progression after the positive check only');
-$check(array_column($rows('SELECT action FROM production_assisted_checkpoint_events WHERE unit_uuid = ? AND stage_id = ? ORDER BY version_after', [$u1, 'side-hem']), 'action') === ['taken_for_work', 'work_returned', 'not_performed', 'taken_for_work', 'work_returned', 'verified'], '14. the complete side-hem history is append-only');
-$check($checkpoint($u1, 1, 'side-hem')['helper_employee_uuid'] === $uuids['tailor2'] && $checkpoint($u1, 1, 'bottom-hem')['helper_employee_uuid'] === $uuids['labeler'], 'each stage keeps its own helper');
-$check($decisions($a1) === [] && $activity($a1) === ['waiting>material-preparation', 'material-preparation>workshop-receiving', 'workshop-receiving>labeling', 'labeling>material-straightening', 'material-straightening>bottom-hem', 'bottom-hem>side-hem', 'side-hem>ironing'], '02. stages 6 and 7 appear in the order history: ' . json_encode($activity($a1)));
+$check($state($a1)['stage'] === 'ironing' && $cpStatus($u1, 1, 'side-hem') === 'not_performed' && $stageLog($u1, 1, 'side-hem') === 0, '3.3 a negative status is kept visible and does not block');
+$check((int) $one('SELECT COUNT(*) FROM production_exceptions WHERE order_uuid = ?', [$a1['uuid']]) === 0, '3.3 a negative status is never a quality exception');
 $bring($a1, 'packing', $staffBy);
 $finish($a1);
-$check($state($a1)['completed'] !== null, '28. packing accepts verified checkpoints as the PERDEA evidence of 6 and 7');
+$check($state($a1)['completed'] !== null, '28. packing and delivery never wait for the PERDEA status');
 
-// ==== A2. Mixed DRAPERII + PERDEA (2 pieces): the basket waits for every piece ==========================================
+// ==== A2. Mixed DRAPERII + PERDEA (2 pieces): Scenarios A-D =============================================================
 $a2 = $trendyol('L', [$line('Perdea in', 'P-910', 1, 4.0, 'curtain'), $line('Draperie catifea', 'D-910', 1, 4.0, 'drapery')]);
 $cohort($a2, FeatureActivation::PIECE_ROUTING, $assisted);
 $ok($confirm($iuliana, $a2, $a2['items'][0], ['expectedRevision' => 0, 'productType' => 'perdea', 'pieceCount' => 2, 'equalSplit' => true, 'note' => 'două panouri']), 'A2 perdea plan');
@@ -310,102 +293,75 @@ $cut($murat, $a2);
 $bring($a2, 'material-straightening', $staffBy);
 $claim($tailor2, $a2);
 $advance($tailor2, $a2);
-$check($state($a2)['stage'] === 'bottom-hem' && (int) $one('SELECT COUNT(*) FROM production_tracks WHERE order_uuid = ?', [$a2['uuid']]) === 0 && $decisions($a2) === [], '03. the mixed basket stays together at stage 6 (no route split under version 2)');
-$error($act($hemmer, $d2, 'bottom-hem', 'verify', $a2['qr'], 'performed'), 409, 'ASSISTED_CHECKPOINT_NOT_APPLICABLE', '3.3 a DRAPERII piece has manufacturing, not an assisted check');
-$ok($act($hemmer, $p2a, 'bottom-hem', 'verify', $a2['qr'], 'performed'), '06. piece 1 verified (the helper did not use the application)');
-$check($state($a2)['stage'] === 'bottom-hem', '3.5 DRAPERII pending + PERDEA verified: the stage is not complete');
-$claim($hemmer, $a2);
-$blocked2 = $error($transition($hemmer, $a2), 409, 'ASSISTED_VERIFICATION_REQUIRED', '3.5 DRAPERII done + PERDEA piece 2 pending: blocked');
-$check(count($blocked2['error']['details']['pieces']) === 1 && $blocked2['error']['details']['pieces'][0]['unitId'] === $p2b && $blocked2['error']['details']['pieces'][0]['piece'] === '2/2', '06. one confirmation never covers the second physical piece: ' . json_encode($blocked2['error']['details']));
+$check($state($a2)['stage'] === 'bottom-hem' && (int) $one('SELECT COUNT(*) FROM production_tracks WHERE order_uuid = ?', [$a2['uuid']]) === 0, 'the mixed basket stays together at stage 6');
+$error($mark($hemmer, $d2, 'bottom-hem', 'performed'), 409, 'ASSISTED_CHECKPOINT_NOT_APPLICABLE', 'a DRAPERII piece has its manufacturing, not a PERDEA status');
+$ok($mark($hemmer, $p2a, 'bottom-hem', 'performed'), 'piece 1 marked Efectuată');
+$check($state($a2)['stage'] === 'bottom-hem' && $cpStatus($p2b, 1, 'bottom-hem') === null, 'Scenario D / 3.6: the mark moves nothing and never covers piece 2');
 $view2 = $ok($get($hemmer, $a2['path']), 'A2 view')['pieces']['assistedCheckpoints'];
-$check($view2['required'] === 2 && $view2['verified'] === 1 && array_column($view2['pieces'], 'status') === ['verified', 'awaiting_work'], '16.2 exact piece states are visible');
-$ok($act($hemmer, $p2b, 'bottom-hem', 'verify', $a2['qr'], 'performed'), 'piece 2 verified');
-$advance($hemmer, $a2);
-$check($state($a2)['stage'] === 'side-hem' && $stageLog($d2, 1, 'bottom-hem') === 1 && $stageLog($p2a, 1, 'bottom-hem') === 0 && $stageLog($p2b, 1, 'bottom-hem') === 0, '3.3 DRAPERII keeps its manufacturing completion; PERDEA only its verification');
+$check(array_column($view2['pieces'], 'status') === ['performed', 'unmarked'] && $view2['performed'] === 1 && $view2['unmarked'] === 1, '3.6 exact piece states');
 $claim($hemmer, $a2);
-$ok($act($hemmer, $p2a, 'side-hem', 'verify', $a2['qr'], 'performed'), 'stage 7 piece 1');
-$ok($act($hemmer, $p2b, 'side-hem', 'verify', $a2['qr'], 'not_performed'), 'stage 7 piece 2 not done');
-$blocked2b = $error($transition($hemmer, $a2), 409, 'ASSISTED_VERIFICATION_REQUIRED', '3.5 DRAPERII done + PERDEA explicitly not done: blocked');
-$check($blocked2b['error']['details']['pieces'][0]['status'] === 'not_performed', 'the negative state is reported');
-$ok($act($hemmer, $p2b, 'side-hem', 'verify', $a2['qr'], 'performed'), 'after the work, a positive check');
 $advance($hemmer, $a2);
-$check($state($a2)['stage'] === 'ironing', '3.5 DRAPERII complete + every PERDEA verified: eligible');
+$check($state($a2)['stage'] === 'side-hem' && $stageLog($d2, 1, 'bottom-hem') === 1 && $stageLog($p2a, 1, 'bottom-hem') === 0 && $cpStatus($p2b, 1, 'bottom-hem') === 'unmarked', 'Scenario A/B: DRAPERII done, PERDEA piece 2 unmarked: the order advances; DRAPERII keeps its completion');
+$check($cpStatus($p2a, 1, 'side-hem') === null, '3.5 the stage-6 mark never marks stage 7');
+$ok($mark($hemmer, $p2b, 'side-hem', 'not_performed'), 'piece 2 Neefectuată at stage 7');
+$claim($hemmer, $a2);
+$advance($hemmer, $a2);
+$check($state($a2)['stage'] === 'ironing' && $cpStatus($p2b, 1, 'side-hem') === 'not_performed' && $cpStatus($p2a, 1, 'side-hem') === 'unmarked', 'Scenario C: a negative PERDEA status does not block; it stays visible');
 $bring($a2, 'packing', $staffBy);
 $finish($a2);
-$check($state($a2)['completed'] !== null, '28. a mixed basket with every requirement satisfied ships as one order');
+$check($state($a2)['completed'] !== null, '28. the mixed basket ships with unmarked and negative PERDEA statuses');
 
-// Verifies every PERDEA piece of the carrier at the current assisted stage and completes the stage.
-$passAssisted = static function (array $o, array $units, string $qr) use ($state, $claim, $advance, $act, $ok, $hemmer, $check): void {
-    foreach (['bottom-hem', 'side-hem'] as $stage) {
-        $check($state($o)['stage'] === $stage, "order at {$stage}");
-        foreach ($units as $unit) $ok($act($hemmer, $unit, $stage, 'verify', $qr, 'performed'), "verify {$stage}");
-        $claim($hemmer, $o);
-        $advance($hemmer, $o);
-    }
-};
-
-// ==== A3. PERDEA rework of one of two pieces: cycle-2 checks at 6 and 7, healthy companion untouched ====================
+// ==== A3. One defective PERDEA piece of two: genuine quality gates intact, cycle-2 status independent ==================
 $a3 = $trendyol('M', [$line('Perdea voal două panouri', 'P-920', 1, 5.0, 'curtain')]);
 $cohort($a3, FeatureActivation::PIECE_ROUTING, FeatureActivation::PARTIAL_REWORK, $assisted);
 $ok($confirm($iuliana, $a3, $a3['items'][0], ['expectedRevision' => 0, 'productType' => 'perdea', 'pieceCount' => 2, 'equalSplit' => true, 'note' => 'două panouri egale']), 'A3 plan');
 [$p3a, $p3b] = [WorkUnits::unitUuid($a3['items'][0], 1), WorkUnits::unitUuid($a3['items'][0], 2)];
 $cut($murat, $a3);
 $bring($a3, 'bottom-hem', $staffBy);
-$passAssisted($a3, [$p3a, $p3b], $a3['qr']);
-$check($state($a3)['stage'] === 'ironing', 'both pieces passed 6 and 7 with their own checks');
+$ok($mark($hemmer, $p3a, 'bottom-hem', 'performed'), 'cycle-1 mark of piece A at stage 6');
+$bring($a3, 'ironing', $staffBy);
 $claim($kadyrova, $a3);
-$x3 = $ok($report($kadyrova, $a3, ['units' => [$p3a], 'comment' => 'Tiv inegal pe panoul 1']), '08. stage 8 reports exactly piece 1 of 2', 201);
-$check($x3['orderScope']['affectedQuantity'] === 1 && $x3['orderScope']['orderQuantity'] === 2, '08. 1 bucată defectă din 2');
+$x3 = $ok($report($kadyrova, $a3, ['units' => [$p3a], 'comment' => 'Tiv inegal pe panoul 1']), '7.1 stage 8 reports exactly piece A of 2', 201);
+$check($x3['orderScope']['affectedQuantity'] === 1 && $x3['orderScope']['orderQuantity'] === 2, '7. 1 bucată defectă din 2');
 $t3 = (string) $x3['orderScope']['trackId'];
 $label3 = (string) $ok($get($iuliana, "/production-tracks/{$t3}/labels"), 'A3 labels')['labels'][0]['payload'];
-$ok($review($iuliana, $x3['id'], ['decision' => 'accept', 'reasonKey' => 'material-defect', 'qrToken' => $label3]), '09. the supervisor accepts the exact piece with its label');
-$ok($sendReturn($iuliana, $x3['id']), '09. return to cutting');
-$ok($ack($murat, $x3['id'], $label3, ['responsibility' => 'accepted']), '10. the cutter confirms receipt of that piece');
-$ok($decide($denisa, $x3['id'], ['decision' => 'approve', 'attribution' => 'none']), '11. the manager approves');
-$check($track($t3)['stage_id'] === 'material-preparation' && (int) $track($t3)['rework_cycle'] === 2 && $state($a3)['stage'] === 'ironing', '08. only piece 1 returns; piece 2 keeps stage 8');
-$ok($trackComplete($murat, $t3, ['pieceOutcome' => 'repair']), '14. the piece is repaired');
+$error($trackClaim($murat, $t3, $label3), 409, 'ORDER_BLOCKED_BY_EXCEPTION', '7. nothing is cut before supervisor, receipt and approval');
+$ok($review($iuliana, $x3['id'], ['decision' => 'accept', 'reasonKey' => 'material-defect', 'qrToken' => $label3]), '7.3 the supervisor accepts the exact piece');
+$ok($sendReturn($iuliana, $x3['id']), '7.4 return to cutting');
+$ok($ack($murat, $x3['id'], $label3, ['responsibility' => 'accepted']), '7.5 the cutter receives the piece with its label');
+$unauthorized = $decide($hemmer + ['dashboard' => true], $x3['id'], ['decision' => 'approve', 'attribution' => 'none']);
+$check(in_array($unauthorized['status'], [401, 403], true) && $one('SELECT status FROM production_exceptions WHERE exception_uuid = ?', [$x3['id']]) === 'awaiting_approval', '8.1 a stage employee cannot approve: ' . $unauthorized['status']);
+$ok($decide($denisa, $x3['id'], ['decision' => 'approve', 'attribution' => 'none']), '7.7 the eligible manager approves');
+$check($track($t3)['stage_id'] === 'material-preparation' && (int) $track($t3)['rework_cycle'] === 2 && $state($a3)['stage'] === 'ironing', '7.8 only piece A returns to cutting; piece B keeps stage 8');
+$ok($trackComplete($murat, $t3, ['pieceOutcome' => 'repair']), '7.9 the piece is repaired');
 $guard = 0;
-while (($stage3 = $track($t3)['stage_id']) !== 'bottom-hem') {
+while (($stage3 = $track($t3)['stage_id']) !== 'ironing') {
     $who3 = $staffBy($stage3);
     $ok($trackClaim($who3, $t3, $label3), "repaired piece claimed at {$stage3}");
-    $ok($trackComplete($who3, $t3), "repaired piece completed at {$stage3}");
+    $ok($trackComplete($who3, $t3), "repaired piece completed at {$stage3} (no PERDEA mark needed)");
     $check(++$guard < 10, 'terminates');
 }
-$check($track($t3)['stage_id'] === 'bottom-hem', '07. the repaired PERDEA piece replays stage 6 (no automatic bypass in rework)');
-$ok($trackClaim($hemmer, $t3, $label3), 'stage 6 claims the repaired piece');
-$blocked3 = $error($trackComplete($hemmer, $t3), 409, 'ASSISTED_VERIFICATION_REQUIRED', '07/15. a cycle-1 check never satisfies cycle 2');
-$check($blocked3['error']['details']['pieces'][0]['unitId'] === $p3a && $checkpoint($p3a, 1, 'bottom-hem')['status'] === 'verified', 'the cycle-1 history is preserved and not reused');
-$error($act($hemmer, $p3a, 'bottom-hem', 'verify', 'ARASYA:U1:' . str_repeat('B', 26), 'performed', 2), 422, 'INVALID_QR', '22.1 an unknown piece label identifies nothing');
-$ok($act($hemmer, $p3a, 'bottom-hem', 'verify', $label3, 'performed', 2), '07. cycle-2 check at stage 6 with the piece label');
-$ok($trackComplete($hemmer, $t3), 'stage 6 of the repaired piece');
-$ok($trackClaim($hemmer, $t3, $label3), 'stage 7 claims the repaired piece');
-$error($trackComplete($hemmer, $t3), 409, 'ASSISTED_VERIFICATION_REQUIRED', '07. stage 7 needs its own cycle-2 check');
-$ok($act($hemmer, $p3a, 'side-hem', 'verify', $label3, 'performed', 2), '07. cycle-2 check at stage 7');
-$ok($trackComplete($hemmer, $t3), 'stage 7 of the repaired piece');
-$check($track($t3)['stage_id'] === 'ironing' && $stageLog($p3a, 2, 'bottom-hem') === 0 && $stageLog($p3a, 2, 'side-hem') === 0 && $stageLog($p3a, 2, 'material-straightening') === 1, '10. the corrected piece reaches stage 8 through every stage; 6/7 by verification only');
+$replay3 = array_map(static fn (array $e): string => $e['from_stage_id'], $rows("SELECT from_stage_id FROM production_track_events WHERE track_uuid = ? AND action = 'stage_completed' ORDER BY version_after", [$t3]));
+$check($replay3 === ['material-preparation', 'workshop-receiving', 'labeling', 'material-straightening', 'bottom-hem', 'side-hem'], '7.11 the repaired PERDEA piece replays 2..7 (6 and 7 included, unmarked allowed): ' . json_encode($replay3));
+$check($cpStatus($p3a, 1, 'bottom-hem') === 'performed' && $cpStatus($p3a, 2, 'bottom-hem') === 'unmarked' && $cpStatus($p3a, 2, 'side-hem') === 'unmarked', '3.7 cycle-1 status is kept and never reused for cycle 2');
 $ok($trackClaim($ironer, $t3, $label3), 'ironing claims the repaired piece');
-$error($trackComplete($ironer, $t3), 422, 'DEFECT_RESOLUTION_REQUIRED', '10.1 the defect resolution is confirmed for the current cycle');
-$ok($post($kadyrova, '/production-units/reunite', ['unitIds' => [$p3a, $p3b], 'confirmed' => true]), '16. physical reunion at stage 8 (no stage change)');
-$ok($trackComplete($ironer, $t3, ['defectResolved' => true]), '16. resolved and moving on');
-$check($checkpoint($p3b, 1, 'bottom-hem')['status'] === 'verified' && $checkpoint($p3b, 2, 'bottom-hem') === null, '11. the healthy piece keeps its cycle-1 checks and needs no new one');
+$error($trackComplete($ironer, $t3), 422, 'DEFECT_RESOLUTION_REQUIRED', '7.13 the defect resolution confirmation stays mandatory');
+$ok($post($kadyrova, '/production-units/reunite', ['unitIds' => [$p3a, $p3b], 'confirmed' => true]), '7.15 physical reunion at stage 8 (no stage change)');
+$ok($trackComplete($ironer, $t3, ['defectResolved' => true]), 'resolved and moving on');
+$check($cpStatus($p3b, 1, 'bottom-hem') === 'unmarked' && $cpStatus($p3b, 2, 'bottom-hem') === null, '7.14 the healthy piece keeps its history and gets no cycle-2 row');
 $advance($kadyrova, $a3);
 $bring($a3, 'packing', $staffBy);
-$error($post($finisher, $a3['path'] . '/claim', ['expectedVersion' => (int) $state($a3)['version']]), 409, 'ORDER_PIECES_IN_REWORK', '28. packing waits for the repaired piece');
+$error($post($finisher, $a3['path'] . '/claim', ['expectedVersion' => (int) $state($a3)['version']]), 409, 'ORDER_PIECES_IN_REWORK', '7.17 packing stays blocked while real rework is unresolved');
 $guard = 0;
 while (($stage3 = $track($t3)['stage_id']) !== 'packing') {
     $ok($trackClaim($finisher, $t3, $label3), "repaired piece claimed at {$stage3}");
     $ok($trackComplete($finisher, $t3), "repaired piece completed at {$stage3}");
     $check(++$guard < 10, 'terminates');
 }
-// Packing gate: remove the verified cycle-2 stage-7 check for a moment; packing must fail closed.
-$saved3 = $checkpoint($p3a, 2, 'side-hem');
-$pdo->prepare("UPDATE production_assisted_checkpoints SET status = 'not_performed' WHERE unit_uuid = ? AND rework_cycle = 2 AND stage_id = 'side-hem'")->execute([$p3a]);
-$error($post($finisher, $a3['path'] . '/claim', ['expectedVersion' => (int) $state($a3)['version']]), 409, 'ASSISTED_VERIFICATION_REQUIRED', '20/28. packing refuses a PERDEA piece without its verified stage-7 check');
-$pdo->prepare('UPDATE production_assisted_checkpoints SET status = ? WHERE unit_uuid = ? AND rework_cycle = 2 AND stage_id = ?')->execute([$saved3['status'], $p3a, 'side-hem']);
 $finish($a3);
-$check($state($a3)['completed'] !== null && (int) $one('SELECT COUNT(*) FROM production_assisted_checkpoints WHERE unit_uuid = ?', [$p3a]) === 4, '07. piece 1: four separate checks (two stages x two cycles)');
+$check($state($a3)['completed'] !== null, '28. the order ships once the real rework is done; no PERDEA mark was needed');
 $history3 = $ok($get($iuliana, "/production-units/{$p3a}/history"), 'A3 piece history');
-$check(count($history3['assistedCheckpoints']) === 4 && array_column($history3['assistedCheckpoints'], 'reworkCycle') === [1, 1, 2, 2], '14. the piece history shows every check with its cycle: ' . json_encode(array_column($history3['assistedCheckpoints'], 'reworkCycle')));
+$check(count($history3['assistedCheckpoints']) === 1 && $history3['assistedCheckpoints'][0]['status'] === 'performed' && $history3['assistedCheckpoints'][0]['reworkCycle'] === 1, '12. the piece history shows the real marks with their cycle');
 
 // ==== A4. Historical transition: a version-1 exemption stays valid; nothing is backfilled =============================
 $a4 = $trendyol('N', [$line('Perdea veche', 'P-930', 1, 2.0, 'curtain')]);
@@ -415,12 +371,12 @@ $u4 = WorkUnits::unitUuid($a4['items'][0], 1);
 $cut($murat, $a4);
 $bring($a4, 'ironing', $staffBy);
 $d4 = $rows('SELECT kind, policy_version, skipped_stages_json FROM production_route_decisions WHERE order_uuid = ?', [$a4['uuid']]);
-$check(count($d4) === 1 && $d4[0]['kind'] === 'stage_not_applicable' && (int) $d4[0]['policy_version'] === 1 && $ledger($u4, 1)['bottom-hem'] === 'not_applicable', '24. version 1 skipped 6/7 with an auditable exemption');
+$check(count($d4) === 1 && $d4[0]['kind'] === 'stage_not_applicable' && (int) $d4[0]['policy_version'] === 1 && $ledger($u4, 1)['bottom-hem'] === 'not_applicable', '13.2 version 1 skipped 6/7 with an auditable exemption');
 $cohort($a4, $assisted);
 $bring($a4, 'packing', $staffBy);
 $finish($a4);
-$check($state($a4)['completed'] !== null, '24. the order adopted version 2 after its exemption: the historical exemption stays valid');
-$check((int) $one('SELECT COUNT(*) FROM production_assisted_checkpoints WHERE order_uuid = ?', [$a4['uuid']]) === 0 && $rows('SELECT kind, policy_version, skipped_stages_json FROM production_route_decisions WHERE order_uuid = ?', [$a4['uuid']]) === $d4 && $ledger($u4, 1)['side-hem'] === 'not_applicable', '24. no checkpoint is fabricated, no decision or ledger row is rewritten');
+$check($state($a4)['completed'] !== null && (int) $one('SELECT COUNT(*) FROM production_assisted_checkpoints WHERE order_uuid = ?', [$a4['uuid']]) === 0
+    && $rows('SELECT kind, policy_version, skipped_stages_json FROM production_route_decisions WHERE order_uuid = ?', [$a4['uuid']]) === $d4 && $ledger($u4, 1)['side-hem'] === 'not_applicable', '13.2 no status is fabricated, no exemption rewritten');
 
 // ==== A5. Feature off: unchanged behaviour ==========================================================================
 $a5 = $trendyol('O', [$line('Perdea fără pilot', 'P-940', 1, 2.0, 'curtain')]);
@@ -428,20 +384,22 @@ $ok($confirm($iuliana, $a5, $a5['items'][0], ['expectedRevision' => 0, 'productT
 $u5 = WorkUnits::unitUuid($a5['items'][0], 1);
 $cut($murat, $a5);
 $bring($a5, 'bottom-hem', $staffBy);
-$error($act($hemmer, $u5, 'bottom-hem', 'verify', $a5['qr'], 'performed'), 409, 'ASSISTED_CHECKPOINT_NOT_APPLICABLE', '34. outside the cohort no checkpoint exists');
-$check($ok($get($hemmer, $a5['path']), 'A5 view')['pieces']['assistedCheckpoints'] === null, '34. the order view shows no checkpoint');
+$error($mark($hemmer, $u5, 'bottom-hem', 'performed'), 409, 'ASSISTED_CHECKPOINT_NOT_APPLICABLE', '34. outside the cohort no status exists');
+$check($ok($get($hemmer, $a5['path']), 'A5 view')['pieces']['assistedCheckpoints'] === null, '34. the order view shows none');
 $claim($hemmer, $a5);
 $advance($hemmer, $a5);
-$check($state($a5)['stage'] === 'side-hem' && $stageLog($u5, 1, 'bottom-hem') === 1, '34. flags off: the existing full route, exactly as before');
+$check($state($a5)['stage'] === 'side-hem' && $stageLog($u5, 1, 'bottom-hem') === 1 && $cpStatus($u5, 1, 'bottom-hem') === null, '34. flags off: the existing full route, exactly as before');
 
-// ==== A6. Version 2 with an unconfirmed plan fails closed at stage 6 ==================================================
+// ==== A6. Version 2 with an unconfirmed plan: line-level information, nothing invented, nothing blocked =================
 $a6 = $trendyol('P', [$line('Perdea neconfirmată', 'P-950', 1, 2.0, 'curtain')]);
 $cohort($a6, $assisted);
 $cut($murat, $a6);
 $bring($a6, 'bottom-hem', $staffBy);
+$view6 = $ok($get($hemmer, $a6['path']), 'A6 view')['pieces']['assistedCheckpoints'];
+$check($view6['pieces'] === [] && count($view6['unconfirmedLines']) === 1 && $view6['unconfirmedLines'][0]['code'] === 'P-950', '3.6 an unknown piece count shows the line, never invented pieces');
 $claim($hemmer, $a6);
-$error($transition($hemmer, $a6), 409, 'PLAN_CONFIRMATION_REQUIRED', '20.3 unknown pieces are not treated as verified');
-$check((int) $one('SELECT COUNT(*) FROM production_work_units WHERE order_uuid = ?', [$a6['uuid']]) === 0, '4. no piece is invented for an unconfirmed plan');
+$advance($hemmer, $a6);
+$check($state($a6)['stage'] === 'side-hem' && (int) $one('SELECT COUNT(*) FROM production_work_units WHERE order_uuid = ?', [$a6['uuid']]) === 0, 'the order advances; no piece identity is fabricated');
 
 // ==== A7. Concurrency, physical hold, deactivation ====================================================================
 $a7 = $trendyol('Q', [$line('Perdea concurență', 'P-960', 1, 2.0, 'curtain')]);
@@ -450,47 +408,67 @@ $ok($confirm($iuliana, $a7, $a7['items'][0], ['expectedRevision' => 0, 'productT
 $u7 = WorkUnits::unitUuid($a7['items'][0], 1);
 $cut($murat, $a7);
 $bring($a7, 'bottom-hem', $staffBy);
-$body7 = ['action' => 'verify', 'stageId' => 'bottom-hem', 'outcome' => 'performed', 'expectedVersion' => 0, 'qrToken' => $a7['qr']];
+$body7 = ['stageId' => 'bottom-hem', 'status' => 'performed', 'expectedVersion' => 0];
 $raced = $race([[$hemmer, "/production-units/{$u7}/assisted-checkpoint", $body7, $key('race'), null], [$tailor2, "/production-units/{$u7}/assisted-checkpoint", $body7, $key('race'), null]]);
 $statuses = array_column($raced, 'status');
 sort($statuses);
-$check($statuses === [200, 409] && in_array('ASSISTED_CHECKPOINT_CHANGED', array_column($raced, 'error'), true), '26. two stage employees verify the same curtain at once: exactly one wins: ' . json_encode($raced));
-$check((int) $one('SELECT COUNT(*) FROM production_assisted_checkpoint_events WHERE unit_uuid = ?', [$u7]) === 1, '26. one event');
+$check($statuses === [200, 409] && in_array('ASSISTED_CHECKPOINT_CHANGED', array_column($raced, 'error'), true), '14. two stage employees mark the same piece at once: exactly one wins: ' . json_encode($raced));
+$check((int) $one('SELECT COUNT(*) FROM production_assisted_checkpoint_events WHERE unit_uuid = ?', [$u7]) === 1, '14. one event');
+$claim($hemmer, $a7);
 $ok($post($iuliana, "/production-units/{$u7}/custody", ['action' => 'hold', 'holdReason' => 'inspection', 'expectedVersion' => 0, 'qrToken' => $a7['qr']]), 'the supervisor holds the curtain');
-$error($act($hemmer, $u7, 'bottom-hem', 'verify', $a7['qr'], 'not_performed'), 409, 'ORDER_PIECES_HELD', '21.4 a held piece cannot be verified');
+$error($transition($hemmer, $a7), 409, 'ORDER_PIECES_HELD', '5.1 a real physical hold still blocks the stage');
+$ok($mark($hemmer, $u7, 'bottom-hem', 'not_performed'), 'the informational status can still be recorded while held');
 $ok($post($iuliana, "/production-units/{$u7}/custody", ['action' => 'release', 'expectedVersion' => 1, 'qrToken' => $a7['qr']]), 'released');
 $hemmer2 = $identity('hemmer2', 'Test Second Hemmer', ['bottom-hem', 'side-hem']);
 $ok($dash($root, 'POST', "/management/employees/{$uuids['hemmer2']}/deactivate"), 'the second hemmer leaves');
-$gone = $act($hemmer2, $u7, 'bottom-hem', 'verify', $a7['qr'], 'not_performed');
-$check(in_array($gone['status'], [401, 403], true) && $checkpoint($u7, 1, 'bottom-hem')['status'] === 'verified', '27. a deactivated employee with an open page changes nothing: ' . $gone['status']);
-$error($act($kadyrova, $u7, 'side-hem', 'verify', $a7['qr'], 'performed'), 409, 'ASSISTED_STAGE_MISMATCH', 'no check of a stage the piece has not reached');
+$gone = $mark($hemmer2, $u7, 'bottom-hem', 'performed');
+$check(in_array($gone['status'], [401, 403], true) && $cpStatus($u7, 1, 'bottom-hem') === 'not_performed', '27. a deactivated employee with an open page changes nothing: ' . $gone['status']);
+$error($mark($kadyrova, $u7, 'side-hem', 'performed'), 409, 'ASSISTED_STAGE_MISMATCH', 'no mark for a stage the piece has not reached');
 
-// ==== A8. Employee KPI: verification is not manufacturing ============================================================
-$employees8 = [];
-$cursor8 = null;
+// ==== A8. Management overview: genuine blockers apart from PERDEA information =========================================
+$a8 = $trendyol('R', [$line('Draperie cu defect', 'D-970', 1, 3.0, 'drapery')]);
+$cohort($a8, FeatureActivation::PARTIAL_REWORK);
+$ok($confirm($iuliana, $a8, $a8['items'][0], ['expectedRevision' => 0, 'productType' => 'draperii', 'pieceCount' => 1, 'note' => 'o bucată']), 'A8 plan');
+$cut($murat, $a8);
+$bring($a8, 'ironing', $staffBy);
+$claim($kadyrova, $a8);
+$x8 = $ok($report($kadyrova, $a8, ['units' => [WorkUnits::unitUuid($a8['items'][0], 1)], 'comment' => 'Pată']), 'a genuine defect report', 201);
+$overview = $ok($dashGet($root, '/management/production-overview'), 'production overview');
+$blocked8 = array_values(array_filter($overview['blockers']['items'], static fn (array $item): bool => $item['globalOrderId'] === $a8['id']));
+$check(count($blocked8) === 1 && $blocked8[0]['action'] === 'supervisor_review' && $blocked8[0]['exception']['status'] === 'awaiting_supervisor_review', '9.1 a genuine defect is a blocker with who must act: ' . json_encode($blocked8));
+$check(array_filter($overview['blockers']['items'], static fn (array $item): bool => in_array($item['globalOrderId'], [$a1['id'], $a2['id'], $a6['id']], true) || str_contains($item['reason'], 'assisted')) === [], '9.2 PERDEA status is never a blocker');
+$held = array_values(array_filter($overview['blockers']['items'], static fn (array $item): bool => $item['globalOrderId'] === $a7['id']));
+$check($held === [], 'a released hold is no longer listed');
+$check($overview['perdeaInformation']['informational'] === true && in_array($a7['id'], array_column($overview['perdeaInformation']['items'], 'orderId'), true)
+    && $overview['perdeaInformation']['counts']['notPerformed'] >= 1, '9.2 the PERDEA status is shown separately as information');
+$check($dashGet($denisa, '/management/production-overview')['status'] === 403, 'the overview keeps its existing permission (production.view)');
+
+// ==== A9. Employee KPI: a mark is not manufacturing ===================================================================
+$employees9 = [];
+$cursor9 = null;
 do {
-    $page8 = $ok($dashGet($root, '/management/analytics/employees', ['period' => 'month', 'limit' => '100'] + ($cursor8 === null ? [] : ['cursor' => $cursor8])), 'analytics employees');
-    foreach ($page8['items'] as $item8) $employees8[$item8['id']] = $item8;
-    $cursor8 = $page8['nextCursor'] ?? null;
-} while ($cursor8 !== null);
-$h8 = $employees8[$uuids['hemmer']];
-$check($h8['assistedCheckpoints']['verified'] === (int) $one("SELECT COUNT(*) FROM production_assisted_checkpoints WHERE verified_by_employee_uuid = ? AND status = 'verified'", [$uuids['hemmer']]), '30. verifications are counted as verifications: ' . json_encode($h8['assistedCheckpoints']));
-$check($h8['assistedCheckpoints']['notPerformed'] === 2, '30. negative checks are counted apart, never as work');
-$check($employees8[$uuids['labeler']]['assistedCheckpoints']['helperWork'] === 1 && $employees8[$uuids['tailor2']]['assistedCheckpoints']['helperWork'] === 1, '3.3 the recorded helper is credited once for verified work only (the rejected attempt is not credited)');
-$marks8 = implode(',', array_fill(0, 2, '?'));
-$expectedStage6 = (int) $one("SELECT COUNT(*) FROM order_activity_events WHERE employee_uuid = ? AND action = 'stage_completed' AND from_stage_id = 'bottom-hem' AND order_uuid NOT IN ({$marks8})", [$uuids['hemmer'], $a1['uuid'], $a3['uuid']]);
-$check(($h8['stageCompletions']['bottom-hem'] ?? 0) === $expectedStage6 && $expectedStage6 === 2, '30. a PERDEA-only transition at 6 earns no stage completion; a mixed basket (DRAPERII work) does: ' . json_encode($h8['stageCompletions']));
-$check($h8['assistedCheckpoints']['stageTransitions'] === 6 && !isset($h8['trackStageCompletions']['bottom-hem']) && !isset($h8['trackStageCompletions']['side-hem']), '30. the PERDEA-only transitions (order and track) are reported as verification transitions: ' . json_encode([$h8['assistedCheckpoints'], $h8['trackStageCompletions']]));
-$check((int) $one('SELECT COUNT(*) FROM production_unit_stage_log l INNER JOIN production_assisted_checkpoints c ON c.unit_uuid = l.unit_uuid AND c.rework_cycle = l.rework_cycle AND c.stage_id = l.stage_id') === 0, '30. no verified PERDEA piece has a manufacturing completion for the same stage and cycle');
-foreach (['hemmer', 'tailor2', 'labeler'] as $who8) {
-    $row8 = $employees8[$uuids[$who8]];
-    $check($row8['pieceWork']['order'] + $row8['pieceWork']['route'] + $row8['pieceWork']['rework'] === (int) $one("SELECT COUNT(*) FROM production_unit_stage_log WHERE employee_uuid = ? AND outcome = 'completed'", [$uuids[$who8]]), "30. piece work of {$who8} equals its own completions");
+    $page9 = $ok($dashGet($root, '/management/analytics/employees', ['period' => 'month', 'limit' => '100'] + ($cursor9 === null ? [] : ['cursor' => $cursor9])), 'analytics employees');
+    foreach ($page9['items'] as $item9) $employees9[$item9['id']] = $item9;
+    $cursor9 = $page9['nextCursor'] ?? null;
+} while ($cursor9 !== null);
+$h9 = $employees9[$uuids['hemmer']];
+$check($h9['assistedCheckpoints']['performed'] === (int) $one("SELECT COUNT(*) FROM production_assisted_checkpoints WHERE marked_by_employee_uuid = ? AND status = 'performed'", [$uuids['hemmer']])
+    && $h9['assistedCheckpoints']['notPerformed'] === (int) $one("SELECT COUNT(*) FROM production_assisted_checkpoints WHERE marked_by_employee_uuid = ? AND status = 'not_performed'", [$uuids['hemmer']]), '11.2 marks are counted apart: ' . json_encode($h9['assistedCheckpoints']));
+$check(!array_key_exists('helperWork', $h9['assistedCheckpoints']), '11.3 no helper credit exists');
+$marks9 = implode(',', array_fill(0, 2, '?'));
+$expectedStage6 = (int) $one("SELECT COUNT(*) FROM order_activity_events WHERE employee_uuid = ? AND action = 'stage_completed' AND from_stage_id = 'bottom-hem' AND order_uuid NOT IN ({$marks9})", [$uuids['hemmer'], $a1['uuid'], $a3['uuid']]);
+$check(($h9['stageCompletions']['bottom-hem'] ?? 0) === $expectedStage6 && $expectedStage6 === 4, '11.1 PERDEA-only transitions earn no stage completion; DRAPERII and flag-off work does: ' . json_encode($h9['stageCompletions']));
+$check($h9['assistedCheckpoints']['stageTransitions'] === 6 && !isset($h9['trackStageCompletions']['bottom-hem']) && !isset($h9['trackStageCompletions']['side-hem']), '11.2 PERDEA-only transitions (order and track) are counted apart: ' . json_encode([$h9['assistedCheckpoints'], $h9['trackStageCompletions']]));
+$check((int) $one("SELECT COUNT(*) FROM production_unit_stage_log l INNER JOIN production_assisted_checkpoints c ON c.unit_uuid = l.unit_uuid AND c.rework_cycle = l.rework_cycle AND c.stage_id = l.stage_id") === 0, '11.2 no PERDEA status row has a manufacturing completion for the same stage and cycle');
+foreach (['hemmer', 'tailor2', 'labeler'] as $who9) {
+    $row9 = $employees9[$uuids[$who9]];
+    $check($row9['pieceWork']['order'] + $row9['pieceWork']['route'] + $row9['pieceWork']['rework'] === (int) $one("SELECT COUNT(*) FROM production_unit_stage_log WHERE employee_uuid = ? AND outcome = 'completed'", [$uuids[$who9]]), "11.4 piece work of {$who9} equals its own completions");
 }
-$departments8 = $ok($dashGet($root, '/management/analytics/departments', ['period' => 'month', 'limit' => '100']), 'analytics departments')['items'];
-$check(array_sum(array_map(static fn (array $d): int => $d['assistedCheckpoints']['verified'], $departments8)) === (int) $one("SELECT COUNT(*) FROM production_assisted_checkpoints WHERE status = 'verified'"), '17.6 department totals equal the verified checks');
+$departments9 = $ok($dashGet($root, '/management/analytics/departments', ['period' => 'month', 'limit' => '100']), 'analytics departments')['items'];
+$check(array_sum(array_map(static fn (array $d): int => $d['assistedCheckpoints']['performed'], $departments9)) === (int) $one("SELECT COUNT(*) FROM production_assisted_checkpoints WHERE status = 'performed'"), '11.5 department totals equal the performed marks');
 
-// ==== A9. Rollback guard, operator CLI, route audit ===================================================================
-$check($cli('check-rollback.php', '2.33.0')['code'] === 3 && $cli('check-rollback.php', '2.34.0')['code'] === 0, '35. an API older than 2.34.0 is refused while an open order has checkpoints');
+// ==== A10. Rollback guard, operator CLI, route audit ==================================================================
+$check($cli('check-rollback.php', '2.33.0')['code'] === 3 && $cli('check-rollback.php', '2.34.0')['code'] === 0, '35. an API older than 2.34.0 is refused while an open order follows policy v2');
 $original31 = (string) $one("SELECT checksum FROM schema_migrations WHERE migration_name = '031_production_assisted_checkpoints.sql'");
 $pdo->exec("UPDATE schema_migrations SET checksum = REPEAT('0', 64) WHERE migration_name = '031_production_assisted_checkpoints.sql'");
 try {
@@ -498,15 +476,16 @@ try {
 } finally {
     $pdo->prepare("UPDATE schema_migrations SET checksum = ? WHERE migration_name = '031_production_assisted_checkpoints.sql'")->execute([$original31]);
 }
-$rollback9 = $cli('partial-rework.php', 'rollback-check');
-$check($rollback9['code'] === 3 && ($rollback9['json']['openOrdersWithAssistedCheckpoints'] ?? 0) >= 1, '35. the operator rollback check names the open checkpoint orders: ' . $rollback9['out']);
+$rollback10 = $cli('partial-rework.php', 'rollback-check');
+$check($rollback10['code'] === 3 && ($rollback10['json']['openOrdersWithAssistedCheckpoints'] ?? 0) >= 1, '35. the operator rollback check names the open policy-v2 orders: ' . $rollback10['out']);
 $check($cli('partial-rework.php', 'assisted-enable', '--operator=test', '--confirm=WRONG')['code'] === 2, '34. global activation needs the exact confirmation phrase');
-$status9 = $cli('partial-rework.php', 'status');
-$check($status9['code'] === 0 && $status9['json']['perdeaAssistedCheckpoints'] === false && $status9['json']['perdeaAssistedCheckpointsCohort'] >= 5, '34. the flag stays off globally; only the audited cohort is active: ' . $status9['out']);
+$status10 = $cli('partial-rework.php', 'status');
+$check($status10['code'] === 0 && $status10['json']['perdeaAssistedCheckpoints'] === false && $status10['json']['perdeaAssistedCheckpointsCohort'] >= 4, '34. the flag stays off globally; only the audited cohort is active: ' . $status10['out']);
 $cohortCli = $cli('partial-rework.php', 'cohort-add', '--feature=perdea_assisted_checkpoints', '--order=' . $a5['id'], '--operator=test-operator', '--reason=pilot');
 $check($cohortCli['code'] === 0 && $cohortCli['json']['member'] === true && (int) $one("SELECT COUNT(*) FROM production_feature_flag_events WHERE feature_key = 'perdea_assisted_checkpoints' AND action = 'cohort_added' AND order_uuid = ?", [$a5['uuid']]) === 1, '34. cohort changes are audited');
-$audit9 = $cli('partial-rework.php', 'route-audit', '--details=1');
-$byOrder9 = array_column($audit9['json']['orders'] ?? [], null, 'order');
-$check($audit9['code'] === 0 && ($byOrder9[$a6['id']]['routePolicyVersion'] ?? null) === 2 && ($byOrder9[$a7['id']]['routePolicyVersion'] ?? null) === 2 && $audit9['json']['schema']['assistedCheckpoints'] === true, '19.2 the read-only route audit reports the policy version per order');
+$audit10 = $cli('partial-rework.php', 'route-audit', '--details=1');
+$byOrder10 = array_column($audit10['json']['orders'] ?? [], null, 'order');
+$check($audit10['code'] === 0 && ($byOrder10[$a6['id']]['routePolicyVersion'] ?? null) === 2 && ($byOrder10[$a7['id']]['routePolicyVersion'] ?? null) === 2 && $audit10['json']['schema']['assistedCheckpoints'] === true
+    && !in_array('bottom-hem', $byOrder10[$a6['id']]['missingEvidence'] ?? ['bottom-hem'], true), '19.2 the route audit reports the policy and never asks evidence for the PERDEA status');
 
 fwrite(STDOUT, "OK MySQL PERDEA assisted checkpoints integration ({$checks} checks)\n");

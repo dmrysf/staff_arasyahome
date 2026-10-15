@@ -271,7 +271,6 @@ export const en: Catalog = {
   "orderAction.blocked.plan_confirmation_required": "A line's physical plan must be verified and confirmed by an authorized person.",
   "orderAction.blocked.pieces_incomplete": "Pieces are missing or a piece needs an identity review. The order cannot continue yet.",
   "orderAction.blocked.route_incomplete": "The order cannot be packed yet: a piece has not finished every stage of its route.",
-  "orderAction.blocked.assisted_unverified": "The order cannot move on: the auxiliary work of a curtain is not checked at stage 6 or 7.",
   "orderAction.blocked.defect_unresolved": "The order cannot be packed yet: the resolution of a defect has not been confirmed.",
   "orderAction.orderNote": "Order #{number}. {note}",
   "orderAction.qrCaptured": "QR label captured · the server checks it is the same order.",

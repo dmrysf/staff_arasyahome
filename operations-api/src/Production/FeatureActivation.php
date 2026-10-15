@@ -20,9 +20,9 @@ use RuntimeException;
  *   partial_rework   reporting only some pieces of a carrier (a defective piece leaves on its own track)
  *   piece_routing    the product route policy for normal production (PERDEA skips 6-7; a mixed order splits by route)
  *   perdea_assisted_checkpoints
- *                    route policy version 2: PERDEA goes through 6-7 and every PERDEA piece needs a verified assisted
- *                    checkpoint per stage and cycle before its carrier may leave the stage (AssistedCheckpoints). Once an
- *                    order has a checkpoint row the policy stays with it, even if the flag or the cohort is withdrawn.
+ *                    route policy version 2: PERDEA goes through 6-7 with its carrier; the stage employee may record an
+ *                    informational auxiliary-work status per piece, stage and cycle (AssistedCheckpoints), never a gate.
+ *                    Once an order has a status row the policy stays with it, even if the flag or the cohort is withdrawn.
  */
 final readonly class FeatureActivation
 {

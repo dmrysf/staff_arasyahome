@@ -31,8 +31,8 @@ try {
     if (is_string($reconciliation) && (!isset($tables['production_route_reconciliations']) || !hash_equals(hash_file('sha256', dirname(__DIR__) . '/database/migrations/030_production_route_reconciliation.sql'), $reconciliation))) {
         throw new RuntimeException('Current migration could not be verified.');
     }
-    // Migration 031 (assisted PERDEA checkpoints) likewise: optional, verified when recorded. An open order with a checkpoint
-    // needs API 2.34.0 or newer, which still requires the verification of its PERDEA pieces at stages 6 and 7.
+    // Migration 031 (PERDEA auxiliary-work status) likewise: optional, verified when recorded. An open order with a status
+    // row follows route policy version 2; an API older than 2.34.0 would re-route it with version 1 mid-route.
     $assisted = $pdo->query("SELECT checksum FROM schema_migrations WHERE migration_name = '031_production_assisted_checkpoints.sql'")->fetchColumn();
     if (is_string($assisted) && (!isset($tables['production_assisted_checkpoints']) || !hash_equals(hash_file('sha256', dirname(__DIR__) . '/database/migrations/031_production_assisted_checkpoints.sql'), $assisted))) {
         throw new RuntimeException('Current migration could not be verified.');

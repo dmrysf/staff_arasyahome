@@ -118,9 +118,6 @@ final readonly class ReworkTrackService
             }
             $current = (string) $track['stage_id'];
             $orderUuid = (string) $order['order_uuid'];
-            // Route policy version 2: the PERDEA pieces of this track need their own verified checkpoint at stage 6 / 7 in
-            // the current cycle (rework replay included).
-            (new AssistedCheckpoints($this->pdo))->requireVerified($workflow, $orderUuid, (string) $track['track_uuid'], $current);
             $replaced = [];
             $replacement = new PieceReplacement($this->pdo);
             $replaced = $replacement->applyOutcomes($orderUuid, (string) $track['track_uuid'], $track['verify_exception_uuid'] === null ? null : (string) $track['verify_exception_uuid'], $current, $input, $employee->employeeUuid, $requestId, $key, $now);
@@ -283,7 +280,7 @@ final readonly class ReworkTrackService
                     // API 2.32.0: a route track carries pieces of another product route (no defect); a rework track went through a defect.
                     'kind' => $track['origin_exception_uuid'] === null ? 'route' : 'rework',
                     'requiresPieceOutcome' => $track['stage_id'] === CuttingLifecycle::STAGE && (new PieceReplacement($this->pdo))->outcomeRequired((new WorkUnits($this->pdo))->carrierUnits((string) $track['order_uuid'], (string) $track['track_uuid']), CuttingLifecycle::STAGE),
-                    // API 2.34.0: the PERDEA pieces of this track that need a verified assisted checkpoint at stage 6 / 7.
+                    // API 2.34.0: informational PERDEA auxiliary-work status of this track at stage 6 / 7 (never a gate).
                     'assistedCheckpoints' => $workflow === null ? null : $assisted->carrier($workflow, $uuid, (string) $track['track_uuid'], (string) $track['stage_id'], $viewer?->employeeUuid),
                     'changedAt' => self::iso((string) $track['changed_at']),
                 ] + ($decision === null ? [] : ['allowedAction' => $decision['action'] === null ? null : ['id' => $decision['action']], 'blockedReason' => $decision['blockedReason']]);
@@ -296,8 +293,8 @@ final readonly class ReworkTrackService
                 'partialRework' => $features->appliesTo(FeatureActivation::PARTIAL_REWORK, $uuid),
                 'pieceRouting' => $features->appliesTo(FeatureActivation::PIECE_ROUTING, $uuid),
                 'perdeaAssistedCheckpoints' => $assisted->appliesTo($uuid),
-                // API 2.34.0: the PERDEA pieces travelling with the order that need a verified checkpoint at its stage 6 / 7;
-                // the order cannot complete the stage before every one is verified (null: no checkpoint at this stage).
+                // API 2.34.0: informational PERDEA auxiliary-work status of the pieces travelling with the order at its
+                // stage 6 / 7 (null: none at this stage). It never blocks the stage.
                 'assistedCheckpoints' => $workflow === null || !isset($order['production_stage_id']) ? null : $assisted->carrier($workflow, $uuid, null, (string) $order['production_stage_id'], $viewer?->employeeUuid),
                 'onOrder' => $onOrder,
                 'inRework' => count($units) - $onOrder,

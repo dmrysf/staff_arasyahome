@@ -272,7 +272,6 @@ export const si: Catalog = {
   "orderAction.blocked.plan_confirmation_required": "පේළියක භෞතික සැලැස්ම බලයලත් පුද්ගලයෙකු විසින් සත්‍යාපනය කර තහවුරු කළ යුතුය.",
   "orderAction.blocked.pieces_incomplete": "කෑලි අඩුයි හෝ කෑල්ලක අනන්‍යතාවය පරීක්ෂා කළ යුතුය. ඇණවුම තවම ඉදිරියට යා නොහැක.",
   "orderAction.blocked.route_incomplete": "ඇණවුම තවම ඇසුරුම් කළ නොහැක: එක් කෑල්ලක් එහි මාර්ගයේ සියලු අදියර අවසන් කර නැත.",
-  "orderAction.blocked.assisted_unverified": "ඇණවුමට ඉදිරියට යා නොහැක: තිරයක සහායක වැඩ 6 හෝ 7 අදියරේ පරීක්ෂා කර නැත.",
   "orderAction.blocked.defect_unresolved": "ඇණවුම තවම ඇසුරුම් කළ නොහැක: දෝෂයක් විසඳූ බව තහවුරු කර නැත.",
   "orderAction.orderNote": "ඇණවුම #{number}. {note}",
   "orderAction.qrCaptured": "QR ලේබලය කියවා ඇත · සේවාදායකය එය එකම ඇණවුම දැයි පරීක්ෂා කරයි.",

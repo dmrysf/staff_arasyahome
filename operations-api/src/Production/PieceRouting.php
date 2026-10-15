@@ -22,8 +22,8 @@ use PDO;
  *
  * Every completion is also written per physical piece (production_unit_stage_log) with the cycle, employee, carrier
  * version and target stage; the packing gate reads that ledger. Under route policy version 2 (AssistedCheckpoints) a
- * PERDEA piece goes through stages 6-7 with its carrier; at those stages its verified checkpoint is its evidence, so no
- * completion row is written for it (assistedUnits) and nobody earns piece work for it. The product types used by a decision are locked in the
+ * PERDEA piece goes through stages 6-7 with its carrier; its auxiliary work there is informational, so no completion row
+ * is written for it (assistedUnits), nobody earns piece work for it, and a piece left unmarked is recorded as unmarked. The product types used by a decision are locked in the
  * plan, so a later edit cannot silently re-route pieces already routed. Without the piece_routing feature for the order
  * (global flag or pilot cohort) every carrier keeps the full route, exactly as before; the ledger is still written.
  *
@@ -112,9 +112,10 @@ final readonly class PieceRouting
     {
         $trackUuid = $parentTrack === null ? null : (string) $parentTrack['track_uuid'];
         $allUnits = [...$plan['units'], ...array_merge(...array_map(static fn (array $split): array => $split['units'], $plan['splits']) ?: [[]])];
-        // The completion of the current stage, for every piece the carrier held; a PERDEA piece at an assisted checkpoint
-        // was verified, not manufactured, by the stage employee (its checkpoint row is the evidence).
+        // The completion of the current stage, for every piece the carrier held; a PERDEA piece at stage 6 / 7 under policy
+        // version 2 was not manufactured by the stage employee (its informational status row records what is known).
         $assistedUnits = $plan['assistedUnits'] ?? [];
+        (new AssistedCheckpoints($this->pdo))->recordPassed($allUnits, $assistedUnits, $orderUuid, $trackUuid, $current, $now);
         $this->logCompleted(array_values(array_filter($allUnits, static fn (array $unit): bool => !in_array((string) $unit['unit_uuid'], $assistedUnits, true))), $orderUuid, $current, $trackUuid, $actorUuid, $plan['next']?->id, $versionBefore, $now);
         $usedItems = [];
         if ($plan['skipped'] !== []) {

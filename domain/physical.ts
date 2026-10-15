@@ -6,7 +6,7 @@ export type PlanPiece = { index: number; width: string | null; height: string | 
 export type PlanLine = { itemId: string; sourcePlanHash: string; lineNumber: number; name: string; code: string | null; color: string | null;
   commercialQuantity: number; lineMeasurements: { width: string | null; height: string | null; unit: string | null }; lineMeters: string | null;
   planKnown: boolean; staleAfterSourceChange: boolean; typeVerified: boolean; route: string[]; notApplicableStages: string[];
-  /** API 2.34.0: stages where these pieces need an assisted check instead of manufacturing (absent on older APIs). */
+  /** API 2.34.0: stages where these pieces show the informational PERDEA auxiliary-work status (absent on older APIs). */
   assistedStages?: string[];
   proposal: { evidence: { kind: string; value: string }[] }; pieces: { id: string; index: number; count: number; trackId: string | null; routeEvidence?: RouteEvidence | null; assistedCheckpoint?: AssistedCheckpointPiece | null }[];
   plan: { revision: number; productType: ProductType; typeLocked: boolean; pieceCount: number | null; materialTotal: string | null; pieces: PlanPiece[]; note: string | null } };
@@ -23,8 +23,8 @@ export type PhysicalHistory = { unitId: string; status: string; reworkCycle: num
   labels: { payload: string; status: string }[];
   stageLedger: { reworkCycle: number; stageId: string; outcome: string; employee: string | null; at: string }[];
   material: { id: string; kind: string; meters: string | null; stockEffect?: string }[];
-  /** API 2.34.0: every assisted check action of the piece, per stage and cycle. */
-  assistedCheckpoints?: { reworkCycle: number; stageId: string; action: string; by: string; helper: string | null; at: string }[] };
+  /** API 2.34.0: every informational PERDEA mark of the piece, per stage and cycle. */
+  assistedCheckpoints?: { reworkCycle: number; stageId: string; statusBefore: string; status: string; by: string; at: string }[] };
 export type PhysicalApi = {
   plan(orderId: string, signal?: AbortSignal): Promise<ManufacturingPlan>;
   confirmPlan(orderId: string, lineId: string, input: PlanConfirmation, key: string): Promise<ManufacturingPlan>;
@@ -33,14 +33,14 @@ export type PhysicalApi = {
   reconcileRoute?(unitId: string, input: RouteEvidenceInput, key: string): Promise<ManufacturingPlan>;
 };
 export type CustodyInput = { action: "take" | "locate" | "hold" | "release"; expectedVersion: number; qrToken: string; locationId?: string; holdReason?: string };
-/** API 2.34.0: one action on the assisted check of a PERDEA piece at stage 6 or 7. The stage is always named explicitly. */
-export type AssistedCheckpointInput = { action: "take" | "return" | "verify"; stageId: string; expectedVersion: number; qrToken: string; outcome?: "performed" | "not_performed"; note?: string };
+/** API 2.34.0: one informational PERDEA mark at stage 6 or 7. The stage is named explicitly; the scan is optional. */
+export type AssistedCheckpointInput = { stageId: string; status: "performed" | "not_performed" | "unmarked"; expectedVersion: number; qrToken?: string; note?: string };
 export type StaffPhysicalApi = PhysicalApi & {
   locations(signal?: AbortSignal): Promise<{ locations: { id: string; label: string }[] }>;
   custody(unitId: string, input: CustodyInput, key: string): Promise<unknown>;
   reunite(input: { unitIds: string[]; confirmed: true; locationId?: string }, key: string): Promise<unknown>;
   material(unitId: string, input: { kind: string; meters: string; note?: string; correctsRecordId?: string }, key: string): Promise<unknown>;
-  /** Present when the API supports assisted PERDEA checks (2.34.0). */
+  /** Present when the API supports the informational PERDEA status (2.34.0). */
   assistedCheckpoint?(unitId: string, input: AssistedCheckpointInput, key: string): Promise<ManufacturingPlan>;
 };
 /** No floating point division, no inferred measurements. Empty remains unknown. */
@@ -83,13 +83,9 @@ export function physicalError(error: unknown): string {
   if (code === "RECONCILIATION_EVIDENCE_INVALID") return pt("physical.error.reconciliationEvidence");
   if (code === "RECONCILIATION_STAGE_RECORDED") return pt("physical.error.reconciliationRecorded");
   if (code === "RECONCILIATION_UNAVAILABLE") return pt("physical.error.reconciliationUnavailable");
-  if (code === "ASSISTED_VERIFICATION_REQUIRED") return pt("physical.error.assistedRequired");
-  if (code === "ASSISTED_WORK_IN_PROGRESS") return pt("physical.error.assistedWorkInProgress");
-  if (code === "ASSISTED_SELF_VERIFICATION") return pt("physical.error.assistedSelf");
-  if (code === "ASSISTED_VERIFY_NOT_ALLOWED") return pt("physical.error.assistedNotAllowed");
+  if (code === "ASSISTED_MARK_NOT_ALLOWED") return pt("physical.error.assistedNotAllowed");
   if (["ASSISTED_CHECKPOINT_CHANGED", "ASSISTED_CHECKPOINT_STATE"].includes(code)) return pt("physical.error.assistedChanged");
   if (code === "ASSISTED_STAGE_MISMATCH") return pt("physical.error.assistedStage");
-  if (code === "ASSISTED_HELPER_MISMATCH") return pt("physical.error.assistedHelper");
   if (code === "ASSISTED_CHECKPOINT_NOT_APPLICABLE") return pt("physical.error.assistedNotApplicable");
   if (code === "UNIT_LABEL_MISMATCH") return pt("physical.error.labelMismatch");
   if (code === "INVALID_QR" || code === "QR_ORDER_MISMATCH") return pt("physical.error.invalidScan");
@@ -131,12 +127,12 @@ export function mapManufacturingPlan(value: unknown): ManufacturingPlan {
   }
   return { ...(raw as unknown as ManufacturingPlan), canConfirm: raw.canConfirm === true, allPlansKnown: raw.allPlansKnown === true, partialRework: raw.partialRework === true, pieceRouting: raw.pieceRouting === true, perdeaAssistedCheckpoints: raw.perdeaAssistedCheckpoints === true };
 }
-const ASSISTED_STATUSES = ["awaiting_work", "taken_for_work", "work_returned", "verified", "not_performed"];
-/** A present assisted check must be complete; an unknown state fails closed (never shown as verified). */
+const ASSISTED_STATUSES = ["unmarked", "performed", "not_performed"];
+/** A present PERDEA status must be complete; an unknown state fails closed (never shown as done). */
 export function mapAssistedCheckpoint(value: unknown): AssistedCheckpointPiece {
   const raw = record(value); text(raw.unitId); text(raw.stageId); text(raw.piece); number(raw.index, 1); number(raw.count, 1); number(raw.reworkCycle, 1); number(raw.version);
   if (!ASSISTED_STATUSES.includes(text(raw.status))) throw invalidPhysicalResponse();
-  for (const field of ["helper", "verifiedBy"]) if (raw[field] !== null) { const who = record(raw[field]); text(who.displayName); if (typeof who.isMe !== "boolean") throw invalidPhysicalResponse(); }
+  if (raw.markedBy !== null) { const who = record(raw.markedBy); text(who.displayName); if (typeof who.isMe !== "boolean") throw invalidPhysicalResponse(); }
   return raw as unknown as AssistedCheckpointPiece;
 }
 /** An older API sends no routeEvidence; a present one must be complete. */

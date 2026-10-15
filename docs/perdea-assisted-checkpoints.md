@@ -1,111 +1,110 @@
-# Assisted PERDEA checkpoints at stages 6 and 7 (API 2.34.0, migration 031)
+# PERDEA auxiliary-work status at stages 6 and 7 (API 2.34.0, migration 031)
 
-Status: implemented on `feat/perdea-assisted-checkpoints` (stacked on PR #70). Not merged, not deployed, migration 031
-not applied, feature `perdea_assisted_checkpoints` not enabled anywhere in production.
+Status: implemented on `feat/perdea-assisted-checkpoints` (PR #71, stacked on #70). Not merged, not deployed, migration
+031 not applied, feature `perdea_assisted_checkpoints` not enabled anywhere in production.
 
-## Why
+## Owner decision (2026-10-15)
 
-Under route policy version 1 (`piece_routing`) a PERDEA piece skips bottom-hem (6) and side-hem (7) and the route
-decision records them as `not_applicable`. In the factory a PERDEA piece does need work at those stages. That work is
-usually done by a helper from another area, and the stage employee must check every curtain before the basket moves on.
-Route policy version 2 replaces the automatic skip with a mandatory, per-piece, per-stage, per-cycle verification.
+- **Previous behaviour (first #71 revision):** PERDEA 6/7 had a mandatory assisted verification. A helper took and
+  returned the curtain, the stage employee verified each piece, and the backend blocked stage progression and packing
+  until every piece was verified.
+- **New behaviour:** at stages 6 and 7 the existing stage employee may mark, per PERDEA piece, whether the auxiliary work
+  was done. The mark is informational only. An unmarked or negative status never blocks an otherwise eligible stage,
+  track completion, packing or delivery. There is no helper role, no helper permission, no take/return handoff and no
+  required scan.
+- **Unchanged:** every genuine gate. Quality exceptions, supervisor custody, cutter receipt, manager approval,
+  repair/replacement, defect-resolution confirmation at the detection stage, physical holds, plan/route evidence and
+  the packing gate all stay enforced.
 
-## Policy (backend, `ProductRoutePolicy`)
+## Policy (`ProductRoutePolicy`)
 
-`ProductRoutePolicy::requirement(workflow, type, stage, assisted)` is the single answer to "what does this stage require
-of this piece":
+| Type      | Stage 6/7, version 1 | Stage 6/7, version 2                    | Other stages  |
+|-----------|----------------------|-----------------------------------------|---------------|
+| draperii  | manufacturing        | manufacturing                           | manufacturing |
+| perdea    | not_applicable       | assisted_checkpoint (informational)     | manufacturing |
+| other     | manufacturing        | manufacturing                           | manufacturing |
+| unknown   | manufacturing        | manufacturing                           | manufacturing |
 
-| Type      | Stage 6/7, version 1 | Stage 6/7, version 2  | Other stages  |
-|-----------|----------------------|-----------------------|---------------|
-| draperii  | manufacturing        | manufacturing         | manufacturing |
-| perdea    | not_applicable       | assisted_checkpoint   | manufacturing |
-| other     | manufacturing        | manufacturing         | manufacturing |
-| unknown   | manufacturing        | manufacturing         | manufacturing |
+- **Version 2** applies to an order when the `perdea_assisted_checkpoints` feature applies to it: the global flag, or
+  an active audited pilot cohort member. It stays with the order once the order has a status row.
+- Under version 2 every type shares one route, so a mixed basket is never split by type. A PERDEA piece goes through
+  stages 6 and 7 with its carrier.
+- No `production_unit_stage_log` completion is written for a PERDEA piece at stages 6 and 7. The stage employee did not
+  manufacture it, so nobody earns stage or piece-work credit for it.
+- `PieceGate` and `RouteReconciliation` never require anything for PERDEA stages 6 and 7 under either version.
 
-Under version 2 every product type shares one route, so a mixed basket is never split by type. Only the canonical
-workflow `curtain-production` v1 has the exemption or the checkpoint.
+## Status model (`AssistedCheckpoints`, migration 031)
 
-Version 2 applies to an order when the feature applies to it (global flag or an active audited pilot cohort member,
-`production_pilot_cohort`), and stays with the order once the order has a checkpoint row (withdrawing the cohort does not
-strand a half-checked order). `production_route_decisions.policy_version` records 1 or 2.
+There is one row per physical piece, production cycle and stage, in `production_assisted_checkpoints`. Every change is
+appended to `production_assisted_checkpoint_events`.
 
-## Checkpoint state machine (`AssistedCheckpoints`)
+| Status        | Label        | Meaning                                                                |
+|---------------|--------------|------------------------------------------------------------------------|
+| unmarked      | Neconfirmată | Never marked. This row is also written when the carrier leaves the stage unmarked. |
+| performed     | Efectuată    | The stage employee marked the work as done.                            |
+| not_performed | Neefectuată  | The stage employee marked the work as not done. This is not a quality exception. |
 
-One row per physical piece, production cycle and stage (`production_assisted_checkpoints`, PK unit/cycle/stage). No row
-means "awaiting the auxiliary work". Every action writes `production_assisted_checkpoint_events` (append-only).
+`POST /production-units/{unitId}/assisted-checkpoint` with body `{ stageId, status, expectedVersion, qrToken?, note? }`:
 
-| Status           | Romanian label                                            | Who                                  |
-|------------------|-----------------------------------------------------------|--------------------------------------|
-| awaiting_work    | În așteptarea lucrării auxiliare                          | –                                    |
-| taken_for_work   | Preluată pentru lucrare                                   | helper (`take`)                      |
-| work_returned    | Înapoi la punctul de verificare · În așteptarea confirmării | the same helper (`return`)          |
-| verified         | Verificată – lucrare efectuată                            | stage employee / supervisor (`verify performed`) |
-| not_performed    | Neefectuată – necesită intervenție                        | stage employee / supervisor (`verify not_performed`) |
+- CSRF and an `Idempotency-Key` are required.
+- `status` is `performed`, `not_performed` or `unmarked`; `unmarked` withdraws a mark.
+- `stageId` is named explicitly and must be the piece's current stage.
+- Authority is the existing stage authority only: an employee of that stage for the order's source, or the appointed
+  tailoring quality supervisor.
+- `qrToken` is optional. When it is sent, it must identify this piece (its label, or the order QR).
+- A stale version returns `ASSISTED_CHECKPOINT_CHANGED`. Setting the status the row already has returns
+  `ASSISTED_CHECKPOINT_STATE`. A lost response is replayed with the same key.
+- A stage-6 mark never stands for stage 7. A cycle-1 mark never stands for cycle 2. One mark never covers another piece.
+- When the piece count of a line is unknown, the order view lists the line (`unconfirmedLines`) and never invents pieces.
 
-Rules enforced by the server:
+## Management overview
 
-- `POST /production-units/{unitId}/assisted-checkpoint` with `action`, `stageId` (explicit; must be the piece's current
-  stage), `expectedVersion` (0 before the first action), `qrToken` (the piece label, or the order QR with this piece
-  chosen explicitly), `outcome` (verify only), optional `note`; `Idempotency-Key` and CSRF required.
-- take: any active Staff employee with `orders.claim` who reaches the order's source; from awaiting or not_performed.
-- return: only the employee who took the piece.
-- verify: an employee assigned to that stage for the order's source, or the appointed tailoring quality supervisor;
-  never while the piece is with the helper; never by the recorded helper of the attempt. A positive check can be
-  withdrawn (not_performed) while the carrier is still at the stage.
-- not_performed clears the helper of the rejected attempt; the next attempt records its own helper.
-- A held piece (custody hold) cannot be taken or verified; a return is still recorded.
-- Order and piece rows are locked; a stale version returns `ASSISTED_CHECKPOINT_CHANGED`; a lost response is replayed by
-  the same idempotency key.
+`GET /management/production-overview` adds two sections. Both need `orders.view_all`.
 
-## Gates
+`blockers` lists genuine server-defined reasons, each with the party that must act:
 
-- Order completion of stage 6/7 (`OrderOperationsService::applyTransition`) and track completion
-  (`ReworkTrackService::complete`) call `AssistedCheckpoints::requireVerified`: every PERDEA piece on the carrier must be
-  `verified` for that stage in its current cycle, otherwise `409 ASSISTED_VERIFICATION_REQUIRED` with the exact pending
-  pieces in `error.details.pieces`. A stage-6 check never satisfies stage 7, a cycle-1 check never satisfies cycle 2.
-- Version 2 with an unconfirmed plan on the order carrier fails closed at stage 6/7 with `PLAN_CONFIRMATION_REQUIRED`
-  (unknown pieces could be PERDEA).
-- `PieceRouting::apply` writes no `production_unit_stage_log` completion for a PERDEA piece at an assisted stage: the
-  verification is not manufacturing.
-- `PieceGate` (packing / delivery): a PERDEA stage 6/7 in version 2 is satisfied by a verified checkpoint of the current
-  cycle, by verified historical evidence before the ledger start (migration 030), or by a ledger row recorded before the
-  order adopted version 2 (a version-1 `not_applicable` exemption or an earlier order-level completion). Otherwise the
-  order is blocked with `assisted_unverified` / `ASSISTED_VERIFICATION_REQUIRED`.
-- `RouteReconciliation::preLedgerStages` and `RouteAudit` use the same policy (`routePolicyVersion` per order).
+| Action            | Reasons                                                                                              |
+|-------------------|------------------------------------------------------------------------------------------------------|
+| manager_decision  | an exception in `awaiting_approval`                                                                  |
+| physical_receipt  | an exception in `awaiting_acknowledgment` or `awaiting_restore_receipt`                              |
+| supervisor_review | an exception in `awaiting_supervisor_review`, `in_supervisor_custody` or `return_rejected`; a physical hold |
+| employee_work     | approved rework, pieces on their own route, unconfirmed defect resolution                            |
+| plan_review       | an unconfirmed or stale plan, missing or unreviewed pieces, incomplete route evidence                |
 
-## Transition strategy for existing orders
-
-- Nothing is backfilled. No checkpoint, decision or ledger row is synthesized or rewritten.
-- An order that skipped 6/7 under version 1 keeps that exemption for those piece cycles; if it later joins the version 2
-  cohort, only stages it has not yet passed (and new rework cycles) require checkpoints.
-- A version-1 route track already apart stays on its route; the main carrier at 6/7 checks only the PERDEA pieces it
-  actually carries.
-- Orders outside the cohort behave exactly as before (version 1 with `piece_routing`, or the full route without it).
+`perdeaInformation` shows the PERDEA status counts and recent rows. It is information only and never a blocker.
 
 ## KPI
 
-- `assistedCheckpoints.verified` (current verified rows by verifier), `notPerformed` (negative checks, never work),
-  `helperWork` (verified checks whose recorded helper did the work), `stageTransitions` (stage 6/7 transitions of a
-  carrier that held only checked PERDEA pieces).
-- Such PERDEA-only transitions are excluded from `stageCompletions` and `trackStageCompletions`; `pieceWork` never
-  includes a PERDEA piece at an assisted stage (no ledger row). A mixed basket keeps its DRAPERII manufacturing credit.
+- `assistedCheckpoints.performed` and `assistedCheckpoints.notPerformed` count the latest marker's marks.
+- `assistedCheckpoints.stageTransitions` counts the stage 6/7 transitions of carriers that held only PERDEA pieces. Those
+  transitions are excluded from `stageCompletions` and `trackStageCompletions`.
+- A mixed basket keeps its DRAPERII manufacturing credit.
+- Nobody receives helper credit. The helper is not recorded.
 
-## Staff
+## Migration 028 collision (resolved)
 
-`AssistedCheckpointsPanel` on the order screen: per carrier (order and every track at 6/7) the progress
-(`Verificate: x din y`), the basket notice (`Comanda nu poate avansa. Există produse nefinalizate la această etapă.`),
-the DRAPERII products of the basket as manufacturing work, and per PERDEA piece its state, helper, verifier and the
-actions the viewer may try (scan + explicit confirmation; a lost answer keeps the same key and offers a replay). The
-server remains the authority for every permission.
+The simulation PR #64 had `028_production_line_readiness.sql` in the same migration directory and the same
+`schema_migrations` registry as this chain's `028_production_work_units.sql`.
+
+- **Effect if both were merged:** the runner keys rows by file name and sorts the files, so both would apply. The
+  simulation file would sort first, and both branches' migration-order assertions would break.
+- **Fix:** PR #64 renumbers it to `032_production_line_readiness.sql` and makes its tables create-if-missing. A
+  simulation database that already applied the old name re-applies it without error.
+- **Production:** at 027; it never recorded either 028 file.
+- **Verified locally (MySQL 9.6):**
+  - a fresh install of 001–032;
+  - an upgrade from 027 to 032;
+  - the simulation database state with the old 028 recorded;
+  - re-runs, which apply nothing.
 
 ## Rollout
 
-1. Merge the chain (#66 … #70, then this PR); Dashboard #11 … #13 and the Dashboard PR of this change.
-2. Backup + isolated restore test, then migrations 028, 029, 030, 031 in order (all additive; flags created disabled).
-3. Deploy API 2.34.0, then Staff, then Dashboard. Keep every flag off; run `partial-rework.php route-audit`.
-4. Pilot: `partial-rework.php cohort-add --feature=perdea_assisted_checkpoints --order=<id> --operator=<name> --reason=<text>`
-   (together with `piece_routing`) for a reviewed order with confirmed plans before stage 6.
-5. Global: `partial-rework.php assisted-enable --operator=<name> --confirm=ENABLE-PERDEA-ASSISTED-CHECKPOINTS`.
+1. Merge the chain #66 … #71, then Dashboard #11 … #14.
+2. Take a production backup and test the restore in isolation.
+3. Apply migrations 028 → 029 → 030 → 031 in order. All are additive; the flags are created disabled.
+4. Deploy API 2.34.0, then Staff, then Dashboard. Keep every flag off. Run `partial-rework.php route-audit`.
+5. Pilot: `partial-rework.php cohort-add --feature=perdea_assisted_checkpoints --order=<id> --operator=<name> --reason=<text>`,
+   together with `piece_routing`.
 
-Rollback: `check-rollback.php <target>` and `partial-rework.php rollback-check` refuse an API older than 2.34.0 while an
-open order has checkpoints (an older API would not require their verification).
+**Rollback:** `check-rollback.php` refuses an API older than 2.34.0 while an open order follows version 2. An older API
+would re-route that order with version 1 in the middle of its route.

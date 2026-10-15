@@ -26,9 +26,9 @@ use PDOException;
  *                                    ledger from cutting on, nothing historical is needed
  *
  * Order-level history is never treated as per-piece evidence here; the audit only reports where evidence exists.
- * Route policy: a PERDEA-only order skips stages 6-7 under policy version 1; under version 2 (perdea_assisted_checkpoints
- * applies to the order: global flag, active cohort member or an existing checkpoint, migration 031) those stages are
- * required assisted checkpoints and need evidence like any other stage. routePolicyVersion reports which applied.
+ * Route policy: a PERDEA-only order needs no manufacturing evidence for stages 6-7 under either policy version (version 2,
+ * perdea_assisted_checkpoints, only adds an informational auxiliary-work status there). routePolicyVersion reports
+ * which version applies to the order (global flag, active cohort member or an existing status row, migration 031).
  */
 final readonly class RouteAudit
 {
@@ -109,7 +109,7 @@ final readonly class RouteAudit
                 foreach ($order as $id) {
                     if ($ordinal[$id] < $cutting) continue;
                     if ($id === $stage) break;
-                    if ($perdeaOnly && !$assisted && in_array($id, self::PERDEA_NOT_APPLICABLE, true)) continue;
+                    if ($perdeaOnly && in_array($id, self::PERDEA_NOT_APPLICABLE, true)) continue;
                     $needed[] = $id;
                 }
             }
