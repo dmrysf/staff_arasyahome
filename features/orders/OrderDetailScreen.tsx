@@ -1,3 +1,4 @@
+import { latestProductionView } from "../../domain/orderReads";
 import { physicalText as pt } from "../../i18n/physical";
 import { PhysicalOperations } from "./PhysicalOperations";
 import { ManufacturingPanel } from "../../components/ManufacturingPanel";
@@ -45,7 +46,7 @@ export function OrderDetailScreen({ orderId, service, exceptions, cutting, docum
     const controller = new AbortController();
     service.getById(orderId, { signal: controller.signal })
       .then(requireProductionProducts)
-      .then((loaded) => { setError(null); setOrder(loaded); })
+      .then((loaded) => { if (controller.signal.aborted) return; setError(null); setOrder(current => latestProductionView(current, loaded)); })
       .catch((caught) => { if (!controller.signal.aborted) setError(toServiceError(caught)); });
     return () => controller.abort();
   }, [orderId, reloadKey, liveRevision, service]);
@@ -82,7 +83,7 @@ export function OrderDetailScreen({ orderId, service, exceptions, cutting, docum
         <h2>{order.productionContext.company.legalName}</h2><p>{order.productionContext.company.companyCode} · {order.productionContext.company.countryCode} · {order.productionContext.company.taxIdentifier}</p>
         {projectsOf(order).map(project => <p className="project-reference" key={project}>{t("detail.project", { name: project })}</p>)}
       </section>}
-      <OrderActionPanel order={order} workflow={workflow} service={service} cutting={cutting} onUpdated={(updated) => setOrder(requireProductionProducts(updated))} onReload={() => { setOrder(null); setReloadKey((value) => value + 1); }} onSessionExpired={onSessionExpired} />
+      <OrderActionPanel order={order} workflow={workflow} service={service} cutting={cutting} onUpdated={(updated) => setOrder(current => latestProductionView(current, requireProductionProducts(updated)))} onReload={() => { setOrder(null); setReloadKey((value) => value + 1); }} onSessionExpired={onSessionExpired} />
       {cutting && order.productionStageId === "material-preparation" && order.employeeAllowedAction?.id === "complete_stage" && <CuttingTransferRequest order={order} service={cutting} onChanged={() => { setOrder(null); setReloadKey(v => v + 1); }} />}
       {physical && <ManufacturingPanel orderId={order.id} revision={reloadKey} service={physical} newKey={createIdempotencyKey} stageName={stageName} onChanged={() => setReloadKey(v => v + 1)} />}
       {physical && <PhysicalOperations order={order} service={physical} onChanged={() => setReloadKey(v => v + 1)} />}
