@@ -96,7 +96,7 @@ test("a scan of the order QR with pieces apart asks which piece is in the hand (
   const label = mapProductionOrder(serverOrder({ pieces: pieces(), scannedPiece: { unitId: pieceA, trackId } }));
   assert.equal(scanNeedsPieceChoice(label), false);
   assert.deepEqual(actionableTracks(label).map((item) => item.id), [trackId]);
-  assert.equal(scanNeedsPieceChoice(mapProductionOrder(serverOrder({ pieces: pieces([]) }))), false, "an ordinary order is unchanged");
+  assert.equal(scanNeedsPieceChoice(mapProductionOrder(serverOrder({ pieces: pieces([]) }))), true, "a multi-piece order QR requires explicit carrier choice");
   assert.equal(isPieceLabel("ARASYA:U1:3C57C6YJ5WMOFEOIEO53S6IA7Y"), true);
   assert.equal(isPieceLabel("ARASYA:Q1:3C57C6YJ5WMOFEOIEO53S6IA7Y"), false, "the order QR is not a piece label");
   const source = readFileSync(path.join(root, "features/scanner/ScannerScreen.tsx"), "utf8");
@@ -138,7 +138,7 @@ test("the defect report selects exact pieces, k of n, never a silent default", (
   assert.match(panel, /useState<Set<string>>\(new Set\(\)\)/, "nothing is preselected");
   assert.match(panel, /units: chosen\.map\(\(piece\) => piece\.id\), trackId: track\?\.id \?\? null/);
   const piecesPanel = readFileSync(path.join(root, "features/orders/PiecesPanel.tsx"), "utf8");
-  assert.match(piecesPanel, /disabled=\{submitting \|\| \(confirm\.track\.requiresDefectResolution && !resolved\)\}/, "the stage of the defect needs the explicit resolution");
+  assert.match(piecesPanel, /disabled=\{submitting \|\| \(confirm\.track\.requiresDefectResolution && !resolved\)/, "the stage of the defect needs the explicit resolution");
   assert.equal(pieceLabelFilename("11709027615", "1/2"), "ARASYA-PIECE-11709027615-1-2.svg");
 });
 

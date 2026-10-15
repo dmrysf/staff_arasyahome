@@ -1,3 +1,6 @@
+import { physicalText as pt } from "../../i18n/physical";
+import { PieceOutcomeEditor, outcomesReady } from "../../components/PieceOutcomeEditor";
+import type { PieceOutcome } from "../../domain/pieces";
 import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../../i18n";
 import type { PieceTrack, ProductionWorkflow, QualityCapabilities, StaffOrder, StaffServiceError } from "../../domain/models";
@@ -29,23 +32,27 @@ function saveSvg(svg: string, filename: string) {
 }
 
 /** Printable labels of the pieces on one track (server-rendered QR). The label identifies exactly that piece when scanned. */
-export function PieceLabelsView({ trackId, service }: { trackId: string; service: PieceApi }) {
+export function PieceLabelsView({ trackId, service, revision }: { trackId: string; service: PieceApi; revision?: number }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
+  const [reload, setReload] = useState(0);
+  const [loadedTag, setLoadedTag] = useState("");
+  const tag = `${trackId}:${revision ?? "legacy"}:${reload}`;
   const [labels, setLabels] = useState<PieceLabels | null>(null);
   const [error, setError] = useState<StaffServiceError | null>(null);
   useEffect(() => {
     if (!open) return undefined;
     const controller = new AbortController();
-    service.labels(trackId, controller.signal).then(setLabels).catch((caught) => { if (!controller.signal.aborted) setError(toServiceError(caught)); });
+    service.labels(trackId, controller.signal).then(value => { setLabels(value); setLoadedTag(tag); setError(null); }).catch((caught) => { if (!controller.signal.aborted) setError(toServiceError(caught)); });
     return () => controller.abort();
-  }, [open, service, trackId]);
+  }, [open, service, trackId, revision, reload, tag]);
   if (!open) return <button type="button" className="button button-secondary" onClick={() => setOpen(true)} data-testid="piece-labels-open">{t("piece.showLabels")}</button>;
   return <div className="piece-labels" data-testid="piece-labels">
     <p className="eyebrow">{t("piece.labels")}</p>
     <p className="server-note">{t("piece.labelHint")}</p>
-    {error && <ErrorState error={error} compact onAction={() => setError(null)} />}
-    {labels?.labels.map((label) => <figure key={label.unitId} className="piece-label">
+    {error && <ErrorState error={error} compact onAction={() => { setError(null); setReload(v => v + 1); }} />}
+    {loadedTag !== tag && !error && <p role="status">{t("common.loading")}</p>}
+    {loadedTag === tag && labels?.labels.map((label) => <figure key={label.unitId} className="piece-label">
       {label.svg && <img className="qr-preview" src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(label.svg)}`} alt={t("piece.label", { index: label.piece.split("/")[0], count: label.piece.split("/")[1] })} width={168} height={168} />}
       <figcaption><strong>#{labels.orderNumber} · {t("piece.label", { index: label.piece.split("/")[0], count: label.piece.split("/")[1] })}</strong><small>{[label.code, label.color, label.name].filter(Boolean).join(" · ")}</small></figcaption>
       {label.svg && <button type="button" className="button button-secondary" onClick={() => saveSvg(label.svg!, pieceLabelFilename(labels.orderNumber, label.piece))}>{t("piece.downloadLabel")}</button>}
@@ -67,13 +74,14 @@ export function PiecesPanel({ order, workflow, service, exceptions, quality, per
 }) {
   const { t } = useI18n();
   const [confirm, setConfirm] = useState<Confirm | null>(null);
+  const [outcomes, setOutcomes] = useState<PieceOutcome[]>([]);
   const [resolved, setResolved] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<StaffServiceError | null>(null);
   const [done, setDone] = useState<string | null>(null);
   const inFlight = useRef(false);
   const pieces = order.pieces;
-  if (!pieces || pieces.tracks.length === 0) return null;
+  if (!pieces || (pieces.tracks.length === 0 && pieces.total !== null)) return null;
   const productOf = (itemId: string) => order.products.find((item) => item.id === itemId);
   const approved = approvedReturnFor(order);
   const withOrder = orderPieces(pieces);
@@ -85,7 +93,7 @@ export function PiecesPanel({ order, workflow, service, exceptions, quality, per
     setError(null);
     try {
       if (current.action === "claim") await service.claim(current.track.id, { expectedVersion: current.track.version, qrToken: qrToken ?? "", idempotencyKey: current.key });
-      else await service.complete(current.track.id, { expectedVersion: current.track.version, ...(current.track.requiresDefectResolution ? { defectResolved: true as const } : {}), idempotencyKey: current.key });
+      else await service.complete(current.track.id, { expectedVersion: current.track.version, ...(current.track.requiresPieceOutcome ? { pieceOutcomes: outcomes } : {}), ...(current.track.requiresDefectResolution ? { defectResolved: true as const } : {}), idempotencyKey: current.key });
       setDone(current.action);
       setConfirm(null);
       setResolved(false);
@@ -105,7 +113,7 @@ export function PiecesPanel({ order, workflow, service, exceptions, quality, per
   return (
     <section className="detail-section pieces-panel" aria-labelledby="pieces-title" data-testid="pieces-panel">
       <p className="eyebrow">{t("piece.title")}</p>
-      <h2 id="pieces-title">{t("piece.summary", { total: pieces.total, onOrder: pieces.onOrder, inRework: pieces.inRework })}</h2>
+      <h2 id="pieces-title">{pieces.total === null ? pt("physical.numar_de_bucati_neconfirmat") : t("piece.summary", { total: pieces.total, onOrder: pieces.onOrder, inRework: pieces.inRework })}</h2>
       {approved && <div className="order-action-done piece-approved" role="status" data-testid="piece-approved">
         <strong>{t("piece.approved.title")}</strong>
         <span>{t("piece.approved.order", { number: order.orderNumber })}</span>
@@ -140,8 +148,8 @@ export function PiecesPanel({ order, workflow, service, exceptions, quality, per
           <div className="piece-actions">
             {track.openException && <button type="button" className="button button-primary" onClick={() => navigate(`/exceptions/${encodeURIComponent(track.openException!.id)}`)}>{t("piece.openRequest")}</button>}
             {service && track.allowedAction?.id === "claim" && <button type="button" className="button button-primary" data-testid="piece-claim" onClick={() => { setError(null); setDone(null); setConfirm({ track, action: "claim", key: createIdempotencyKey() }); }}>{t("piece.claim")}</button>}
-            {service && track.allowedAction?.id === "complete_stage" && <button type="button" className="button button-primary" data-testid="piece-complete" onClick={() => { setError(null); setDone(null); setResolved(false); setConfirm({ track, action: "complete_stage", key: createIdempotencyKey() }); }}>{t("piece.complete")}</button>}
-            {service && <PieceLabelsView trackId={track.id} service={service} />}
+            {service && track.allowedAction?.id === "complete_stage" && <button type="button" className="button button-primary" data-testid="piece-complete" onClick={() => { setError(null); setDone(null); setResolved(false); setOutcomes([]); setConfirm({ track, action: "complete_stage", key: createIdempotencyKey() }); }}>{t("piece.complete")}</button>}
+            {service && <PieceLabelsView trackId={track.id} service={service} revision={track.version} />}
           </div>
           {canReport && <div className="return-section"><ReturnToCuttingPanel variant="defect" order={order} track={track} service={exceptions} partialRework={quality?.partialRework === true} onSessionExpired={onSessionExpired} onReported={(id) => navigate(`/exceptions/${encodeURIComponent(id)}`)} /></div>}
         </article>;
@@ -158,14 +166,15 @@ export function PiecesPanel({ order, workflow, service, exceptions, quality, per
             <p>{t("piece.claimScan")}</p>
             <QrCapture disabled={submitting} onToken={(token) => void run(confirm, token)} />
           </>}
+          {confirm.action === "complete_stage" && confirm.track.requiresPieceOutcome && <PieceOutcomeEditor units={trackPieces(pieces, confirm.track).map(p => ({ id: p.id, label: `${pieceName(p)} · ${productOf(p.itemId)?.code ?? ""}` }))} value={outcomes} onChange={setOutcomes} disabled={submitting || error !== null} />}
           {confirm.action === "complete_stage" && confirm.track.requiresDefectResolution && <>
             <p className="order-notice" role="note">{t("piece.defectResolvedNote", { stage: stageName(confirm.track.stage.id, confirm.track.stage.label) })}</p>
-            <label className="check-field" data-testid="piece-defect-resolved"><input type="checkbox" checked={resolved} onChange={(event) => setResolved(event.target.checked)} /> <span>{t("piece.defectResolved")}</span></label>
+            <label className="check-field" data-testid="piece-defect-resolved"><input type="checkbox" checked={resolved} disabled={submitting || error !== null} onChange={(event) => setResolved(event.target.checked)} /> <span>{t("piece.defectResolved")}</span></label>
           </>}
           <div className="confirmation-actions">
             <button className="button button-secondary" type="button" disabled={submitting} onClick={() => setConfirm(null)}>{t("common.cancel")}</button>
             {confirm.action === "complete_stage" && <button className="button button-primary" type="button" aria-busy={submitting || undefined}
-              disabled={submitting || (confirm.track.requiresDefectResolution && !resolved)} onClick={() => void run(confirm)}>{submitting ? t("common.processing") : t("common.confirm")}</button>}
+              disabled={submitting || (confirm.track.requiresDefectResolution && !resolved) || (confirm.track.requiresPieceOutcome && !outcomesReady(trackPieces(pieces, confirm.track), outcomes))} onClick={() => void run(confirm)}>{submitting ? t("common.processing") : t("common.confirm")}</button>}
           </div>
           {submitting && <small className="server-note">{t("common.waitingServer")}</small>}
         </div>

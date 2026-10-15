@@ -1,3 +1,4 @@
+import { mapManufacturingPlan, mapPhysicalHistory } from "../../domain/physical";
 import { StaffServiceError, type ActivityAction, type ActivityEntry, type ActivityPage, type Employee, type FaultDecision, type FaultException, type FaultReason, type OrderQuality, type QualityCapabilities, type ServiceErrorCode } from "../../domain/models";
 import { normalizeLocale } from "../../i18n/locales";
 import { isOrderActionBlockedReason, isOrderActionId, orderActionLabels } from "../../domain/orderActions";
@@ -458,11 +459,11 @@ export function mapOrderPieces(value: unknown): import("../../domain/models").Or
   if (!Array.isArray(raw.units) || !Array.isArray(raw.tracks)) throw new StaffServiceError("SERVER_ERROR");
   const nonNegative = (item: unknown) => { if (typeof item !== "number" || !Number.isInteger(item) || item < 0) throw new StaffServiceError("SERVER_ERROR"); return item; };
   return {
-    total: nonNegative(raw.total), onOrder: nonNegative(raw.onOrder), inRework: nonNegative(raw.inRework), mixedProgress: raw.mixedProgress === true,
+    total: raw.total == null ? null : nonNegative(raw.total), allPlansKnown: raw.allPlansKnown === true, partialRework: raw.partialRework === true, pieceRouting: raw.pieceRouting === true, requiresPieceOutcome: raw.requiresPieceOutcome === true, requiresDefectResolution: raw.requiresDefectResolution === true, onOrder: nonNegative(raw.onOrder), inRework: nonNegative(raw.inRework), mixedProgress: raw.mixedProgress === true,
     units: raw.units.map((item) => {
       const unit = objectValue(item);
       return { id: stringValue(unit.id), itemId: stringValue(unit.itemId), index: positiveInteger(unit.index), count: positiveInteger(unit.count), lineNumber: positiveInteger(unit.lineNumber),
-        trackId: unit.trackId == null ? null : stringValue(unit.trackId), reworkCycle: positiveInteger(unit.reworkCycle), reviewRequired: unit.reviewRequired === true };
+        trackId: unit.trackId == null ? null : stringValue(unit.trackId), reworkCycle: positiveInteger(unit.reworkCycle), reviewRequired: unit.reviewRequired === true, productType: nullableText(unit.productType) ?? undefined, fabricMeters: nullableText(unit.fabricMeters), replacementOf: nullableText(unit.replacementOf) };
     }),
     tracks: raw.tracks.map((item) => {
       const track = objectValue(item);
@@ -486,7 +487,7 @@ export function mapOrderPieces(value: unknown): import("../../domain/models").Or
         waitingForOrder: track.waitingForOrder === true,
         verifyStageId: track.verifyStageId == null ? null : stringValue(track.verifyStageId),
         resolutionConfirmed: track.resolutionConfirmed === true,
-        requiresDefectResolution: track.requiresDefectResolution === true,
+        requiresDefectResolution: track.requiresDefectResolution === true, requiresPieceOutcome: track.requiresPieceOutcome === true, kind: track.kind === "route" ? "route" : "rework",
         nextStageId: track.nextStageId == null ? null : stringValue(track.nextStageId),
         changedAt: timestampValue(track.changedAt),
         allowedAction: actionId === null ? null : { id: actionId },
@@ -779,7 +780,7 @@ function createRequest(apiBaseUrl: string, options: ProductionServicesOptions, o
             : response.status === 503
               ? "SERVICE_UNAVAILABLE"
               : "SERVER_ERROR";
-    const error = new StaffServiceError(backendErrorCodes[backendCode] ?? fallback, undefined, details);
+    const error = new StaffServiceError(backendErrorCodes[backendCode] ?? fallback, undefined, /^(PLAN_|SOURCE_PLAN_|PIECE_OUTCOME|UNIT_RETIRED|ORDER_PIECES_|ORDER_ROUTE_|CUSTODY_|MATERIAL_|EXACT_PIECES_|CUTTING_NOT_)/.test(backendCode) || /\/manufacturing-plan|^\/production-units/.test(path) ? { ...details, backendCode, httpStatus: response.status } : details);
     // Access changed centrally (temporary password, application access removed): the app re-reads the session.
     if (["PASSWORD_CHANGE_REQUIRED", "APPLICATION_ACCESS_DENIED"].includes(error.code) && path !== "/auth/session" && path !== "/auth/password") onSessionExpired(error);
     if (["SESSION_EXPIRED", "NO_SESSION", "ACCOUNT_INACTIVE"].includes(error.code) && path !== "/auth/login" && path !== "/auth/session") {
@@ -890,7 +891,7 @@ export function createProductionServices(apiBaseUrl: string, options: Production
     },
     getById: (id, requestOptions) => http.request(`/orders/${encodeURIComponent(id)}`, { signal: requestOptions?.signal }, mapProductionOrder),
     claim: (id, input, requestOptions) => http.request(`/orders/${encodeURIComponent(id)}/claim`, { method: "POST", body: JSON.stringify({ expectedVersion: input.expectedVersion, ...(input.qrToken ? { qrToken: input.qrToken } : {}), ...(input.confirmedMultiple !== undefined ? { confirmedMultiple: input.confirmedMultiple } : {}), ...(input.ownedCount !== undefined ? { ownedCount: input.ownedCount } : {}) }), headers: { "Idempotency-Key": input.idempotencyKey }, signal: requestOptions?.signal }, mapProductionOrder),
-    confirmStageTransition: (id, input, requestOptions) => http.request(`/orders/${encodeURIComponent(id)}/transition`, { method: "POST", body: JSON.stringify({ expectedVersion: input.expectedVersion }), headers: { "Idempotency-Key": input.idempotencyKey }, signal: requestOptions?.signal }, mapProductionOrder),
+    confirmStageTransition: (id, input, requestOptions) => http.request(`/orders/${encodeURIComponent(id)}/transition`, { method: "POST", body: JSON.stringify({ expectedVersion: input.expectedVersion, ...(input.defectResolved ? { defectResolved: true } : {}), ...(input.pieceOutcomes ? { pieceOutcomes: input.pieceOutcomes } : {}) }), headers: { "Idempotency-Key": input.idempotencyKey }, signal: requestOptions?.signal }, mapProductionOrder),
   };
   const activity: ActivityService = {
     listMine: (input, requestOptions) => {
@@ -914,7 +915,7 @@ export function createProductionServices(apiBaseUrl: string, options: Production
     reasons: (requestOptions) => http.request("/production-exceptions/reasons", { signal: requestOptions?.signal }, mapReasons),
     report: (orderId, input) => http.request(`/orders/${encodeURIComponent(orderId)}/fault-reports`, { method: "POST", headers: { "Idempotency-Key": input.idempotencyKey },
       // Exact pieces (API 2.31.0) when chosen; otherwise the lines, exactly as older APIs expect.
-      body: JSON.stringify({ expectedVersion: input.expectedVersion, ...(input.units ? { units: input.units, ...(input.trackId ? { trackId: input.trackId } : {}) } : { itemIds: input.itemIds }), reasonKey: input.reasonKey, ...(input.comment ? { comment: input.comment } : {}) }) }, mapFaultException),
+      body: JSON.stringify({ expectedVersion: input.expectedVersion, ...(input.units ? { units: input.units, ...(input.trackId ? { trackId: input.trackId } : {}) } : { itemIds: input.itemIds }), reasonKey: input.reasonKey, ...(input.recoversExceptionId ? { recoversExceptionId: input.recoversExceptionId } : {}), ...(input.comment ? { comment: input.comment } : {}) }) }, mapFaultException),
     acknowledge: (id, input) => http.request(`/production-exceptions/${encodeURIComponent(id)}/acknowledge`, { method: "POST", headers: { "Idempotency-Key": input.idempotencyKey },
       body: JSON.stringify({ expectedVersion: input.expectedVersion, confirmed: true, qrToken: input.qrToken, ...(input.comment ? { comment: input.comment } : {}), ...(input.responsibility ? { responsibility: input.responsibility } : {}) }) }, mapFaultException),
     rereview: (id, input) => http.request(`/production-exceptions/${encodeURIComponent(id)}/rereview`, { method: "POST", headers: { "Idempotency-Key": input.idempotencyKey },
@@ -1012,10 +1013,19 @@ export function createProductionServices(apiBaseUrl: string, options: Production
     claim: (trackId, input) => http.request(`/production-tracks/${encodeURIComponent(trackId)}/claim`, { method: "POST", headers: { "Idempotency-Key": input.idempotencyKey },
       body: JSON.stringify({ expectedVersion: input.expectedVersion, qrToken: input.qrToken }) }, mapPieceActionResult),
     complete: (trackId, input) => http.request(`/production-tracks/${encodeURIComponent(trackId)}/complete`, { method: "POST", headers: { "Idempotency-Key": input.idempotencyKey },
-      body: JSON.stringify({ expectedVersion: input.expectedVersion, ...(input.defectResolved ? { defectResolved: true } : {}) }) }, mapPieceActionResult),
+      body: JSON.stringify({ expectedVersion: input.expectedVersion, ...(input.defectResolved ? { defectResolved: true } : {}), ...(input.pieceOutcomes ? { pieceOutcomes: input.pieceOutcomes } : {}), ...(input.pieceOutcome ? { pieceOutcome: input.pieceOutcome } : {}), ...(input.originalDisposition ? { originalDisposition: input.originalDisposition } : {}) }) }, mapPieceActionResult),
     labels: (trackId, signal) => http.request(`/production-tracks/${encodeURIComponent(trackId)}/labels`, { signal }, mapPieceLabels),
   };
-  return { auth, employee, orders, activity, workflow, exceptions, live, cutting, documents, authority, productionQr, trendyol, workspace, management, pieces, mode: "production" };
+  const physical: import("../../domain/physical").StaffPhysicalApi = {
+    plan: (id, signal) => http.request(`/orders/${encodeURIComponent(id)}/manufacturing-plan`, { signal }, mapManufacturingPlan),
+    confirmPlan: (id, lineId, input, key) => http.request(`/orders/${encodeURIComponent(id)}/manufacturing-plan/lines/${encodeURIComponent(lineId)}/confirm`, { method: "POST", body: JSON.stringify(input), headers: { "Idempotency-Key": key } }, mapManufacturingPlan),
+    history: (id, signal) => http.request(`/production-units/${encodeURIComponent(id)}/history`, { signal }, mapPhysicalHistory),
+    locations: signal => http.request("/production-locations", { signal }, value => value as { locations: { id: string; label: string }[] }),
+    custody: (id, input, key) => http.request(`/production-units/${encodeURIComponent(id)}/custody`, { method: "POST", body: JSON.stringify(input), headers: { "Idempotency-Key": key } }),
+    reunite: (input, key) => http.request("/production-units/reunite", { method: "POST", body: JSON.stringify(input), headers: { "Idempotency-Key": key } }),
+    material: (id, input, key) => http.request(`/production-units/${encodeURIComponent(id)}/material`, { method: "POST", body: JSON.stringify(input), headers: { "Idempotency-Key": key } }),
+  };
+  return { physical, auth, employee, orders, activity, workflow, exceptions, live, cutting, documents, authority, productionQr, trendyol, workspace, management, pieces, mode: "production" };
 }
 
 // ---------------------------------------------------------------- Trendyol workspace (strict; unexpected shapes fail closed)

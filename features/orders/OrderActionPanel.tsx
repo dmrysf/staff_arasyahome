@@ -1,3 +1,6 @@
+import { physicalText as pt } from "../../i18n/physical";
+import { PieceOutcomeEditor, outcomesReady } from "../../components/PieceOutcomeEditor";
+import { orderPieces, pieceName, type PieceOutcome } from "../../domain/pieces";
 import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../../i18n";
 import type { CuttingApi } from "../../domain/cutting";
@@ -36,6 +39,12 @@ export function OrderActionPanel({ order, workflow, service, cutting, onUpdated,
   const { t } = useI18n();
   const [state, setState] = useState<PanelState>({ status: "idle" });
   const inFlight = useRef(false);
+  const intent = useRef<{ key: string; orderId: string; action: OrderActionId; input: Parameters<OrderService["claim"]>[1] & Parameters<OrderService["confirmStageTransition"]>[1] } | null>(null);
+  const [resolved, setResolved] = useState(false);
+  const [outcomes, setOutcomes] = useState<PieceOutcome[]>([]);
+  const affected = order.pieces ? orderPieces(order.pieces) : [];
+  const needsOutcome = order.pieces?.requiresPieceOutcome === true;
+  const needsResolution = order.pieces?.requiresDefectResolution === true;
   const action = order.employeeAllowedAction;
   const cuttingClaim = Boolean(cutting && order.productionStageId === "material-preparation" && action?.id === "claim");
   const [qrToken, setQrToken] = useState("");
@@ -56,8 +65,11 @@ export function OrderActionPanel({ order, workflow, service, cutting, onUpdated,
     inFlight.current = true;
     setState({ status: "submitting", idempotencyKey });
     try {
-      const input = { expectedVersion: order.productionVersion, idempotencyKey, ...(cuttingClaim ? { qrToken, ownedCount: ownedCount ?? 0, confirmedMultiple } : {}) };
-      const updated = action.id === "claim" ? await service.claim(order.id, input) : await service.confirmStageTransition(order.id, input);
+      const input = { expectedVersion: order.productionVersion, idempotencyKey, ...(needsOutcome ? { pieceOutcomes: outcomes } : {}), ...(needsResolution ? { defectResolved: true as const } : {}), ...(cuttingClaim ? { qrToken, ownedCount: ownedCount ?? 0, confirmedMultiple } : {}) };
+      if (intent.current?.key !== idempotencyKey) intent.current = { key: idempotencyKey, orderId: order.id, action: action.id, input };
+      const command = intent.current;
+      const updated = command.action === "claim" ? await service.claim(command.orderId, command.input) : await service.confirmStageTransition(command.orderId, command.input);
+      intent.current = null;
       setState({ status: "done", message: action.id });
       onUpdated(updated);
     } catch (caught) {
@@ -70,15 +82,15 @@ export function OrderActionPanel({ order, workflow, service, cutting, onUpdated,
   }
 
   const current = getStageById(workflow, order.productionStageId);
-  const next = getNextStage(workflow, order.productionStageId);
+  const next = order.pieces?.pieceRouting ? undefined : getNextStage(workflow, order.productionStageId);
   return (
     <section className="detail-section order-action-panel" aria-live="polite">
       {state.status === "done" && <p className="order-action-done" role="status">✓ {orderActionSuccess[state.message].title}</p>}
-      {action && (state.status === "idle" || state.status === "done") && <button className="button button-primary button-large" type="button" onClick={() => { setQrToken(""); setOwnedCount(null); setConfirmedMultiple(false); setState({ status: "confirming", idempotencyKey: createIdempotencyKey() }); }}>{orderActionLabels[action.id]}<span aria-hidden="true">→</span></button>}
+      {action && (state.status === "idle" || state.status === "done") && <button className="button button-primary button-large" type="button" onClick={() => { intent.current = null; setQrToken(""); setResolved(false); setOutcomes([]); setOwnedCount(null); setConfirmedMultiple(false); setState({ status: "confirming", idempotencyKey: createIdempotencyKey() }); }}>{orderActionLabels[action.id]}<span aria-hidden="true">→</span></button>}
       {state.status === "error" && <ErrorState error={state.error} compact onAction={() => {
         const transient = ["NETWORK_UNAVAILABLE", "REQUEST_TIMEOUT", "SERVICE_UNAVAILABLE", "SERVER_ERROR"].includes(state.error.code);
         if (transient) void submit(state.idempotencyKey);
-        else { setState({ status: "idle" }); onReload(); }
+        else { intent.current = null; setState({ status: "idle" }); onReload(); }
       }} />}
       {action && (state.status === "confirming" || state.status === "submitting") && (
         <div className="confirmation-layer" role="dialog" aria-modal="true" aria-labelledby="detail-confirmation-title">
@@ -92,14 +104,16 @@ export function OrderActionPanel({ order, workflow, service, cutting, onUpdated,
               {qrToken ? <p role="status">{t("orderAction.qrCaptured")}</p> : <QrCapture onToken={setQrToken} disabled={state.status === "submitting"} />}
               {ownedCount === null ? <p>{t("orderAction.checkingWork")}</p> : ownedCount > 0 && <div className="order-notice order-notice-warning"><strong>{t("orderAction.alreadyOwned", { count: ownedCount })}</strong><p>{t("orderAction.multipleBody")}</p><label><input type="checkbox" checked={confirmedMultiple} onChange={(e) => setConfirmedMultiple(e.target.checked)} /> {t("orderAction.multipleConfirm")}</label></div>}
             </>}
+            {action.id !== "claim" && needsOutcome && <PieceOutcomeEditor units={affected.map(p => ({ id: p.id, label: pieceName(p) }))} value={outcomes} onChange={setOutcomes} disabled={state.status === "submitting"} />}
+            {action.id !== "claim" && needsResolution && <label className="check-field"><input type="checkbox" checked={resolved} disabled={state.status === "submitting"} onChange={e => setResolved(e.target.checked)} />{pt("physical.am_verificat_bucatile_afectate_si_defectul_este")}</label>}
             <div className="confirm-transition">
               <StageLabel stage={current} muted={action.id !== "claim"} />
-              {action.id === "complete_stage" && <><span aria-hidden="true">↓</span><StageLabel stage={next} /></>}
+              {action.id === "complete_stage" && next && <><span aria-hidden="true">↓</span><StageLabel stage={next} /></>}
               {action.id === "complete_production" && <><span aria-hidden="true">↓</span><span className="stage-label"><span>✓</span>{t("common.productionCompleted")}</span></>}
             </div>
             <div className="confirmation-actions">
               <button className="button button-secondary" type="button" disabled={state.status === "submitting"} onClick={() => setState({ status: "idle" })}>{t("common.cancel")}</button>
-              <button className="button button-primary" type="button" aria-busy={state.status === "submitting" || undefined} disabled={state.status === "submitting" || (cuttingClaim && (!qrToken || ownedCount === null || (ownedCount > 0 && !confirmedMultiple)))} onClick={() => void submit(state.idempotencyKey)}>{state.status === "submitting" ? t("common.processing") : t("common.confirm")}</button>
+              <button className="button button-primary" type="button" aria-busy={state.status === "submitting" || undefined} disabled={state.status === "submitting" || (action.id !== "claim" && ((needsOutcome && !outcomesReady(affected, outcomes)) || (needsResolution && !resolved))) || (cuttingClaim && (!qrToken || ownedCount === null || (ownedCount > 0 && !confirmedMultiple)))} onClick={() => void submit(state.idempotencyKey)}>{state.status === "submitting" ? t("common.processing") : t("common.confirm")}</button>
             </div>
             {state.status === "submitting" && <small className="server-note">{t("common.waitingServer")}</small>}
           </div>

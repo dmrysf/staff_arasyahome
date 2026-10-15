@@ -1,3 +1,4 @@
+import { physicalSI } from "./physical";
 import type { Catalog } from "../types";
 import { siErrors } from "./si.errors";
 
@@ -7,6 +8,7 @@ import { siErrors } from "./si.errors";
  * Wording to be reviewed on a real phone by a native Sinhala-speaking employee.
  */
 export const si: Catalog = {
+  ...physicalSI,
   ...siErrors,
 
   // ---- common
@@ -517,7 +519,7 @@ export const si: Catalog = {
   "exc.lineQuantity": "කෑලි {count}",
   "piece.label": "කෑල්ල {index}/{count}",
   "piece.title": "කෑලි",
-  "piece.summary": "ඇණවුමේ කෑලි {total} · ඇණවුම සමඟ {onOrder} · නැවත සකස් කිරීමේ {inRework}",
+  "piece.summary": "භෞතික කැබලි {total} · ඇණවුම සමඟ {onOrder} · වෙන් කළ {inRework}",
   "piece.mixed": "මෙම ඇණවුමේ කෑලි එකම අදියරේ නැත. ඇණවුමේ අදියර අදාළ වන්නේ එකට ගමන් කරන කෑලි සඳහා පමණි.",
   "piece.withOrder": "ඇණවුම සමඟ",
   "piece.currentStage": "වත්මන් අදියර",
@@ -565,8 +567,8 @@ export const si: Catalog = {
   "exc.pieces.title": "බලපෑමට ලක් වූ කෑලි",
   "exc.pieces.lineAffected": "කෑලි {quantity} න් {affected}",
   "exc.scope.partial": "මෙම ඉල්ලීමේ කෑලි පමණක් කැපීමට ආපසු යයි: {affected}. ඇණවුමේ ඉතිරිය ({healthy}) නැවත සකස් නොකර එහි අදියරේ රැඳේ.",
-  "ws.rework.title": "මෙම අදියරේ නැවත සකස් කරන කෑලි",
-  "ws.rework.count": { one: "නැවත සකස් කරන කෑලි {count}", other: "නැවත සකස් කරන කෑලි {count}" },
+  "ws.rework.title": "මෙම අදියරේ වෙන් කළ කැබලි",
+  "ws.rework.count": { one: "වෙන් කළ කැබලි {count}", other: "වෙන් කළ කැබලි {count}" },
   "exc.tailoringEmployee": "මැහුම් අංශයේ සේවකයා",
   "exc.affected": "බලපෑමට ලක් වූ භාණ්ඩ",
   "exc.faulty": "දෝෂ සහිත භාණ්ඩ",

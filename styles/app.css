@@ -450,3 +450,16 @@
 .piece-counts { margin: 10px 0 0; overflow-wrap: anywhere; }
 .piece-choice, .piece-scan { display: grid; gap: 8px; }
 .piece-choice .button, .piece-scan .button { white-space: normal; text-align: left; }
+
+/* Physical-plan forms remain usable on narrow phones and with long source evidence. */
+.manufacturing-panel, .manufacturing-panel article { min-width: 0; overflow-wrap: anywhere; }
+.manufacturing-panel dl { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+.manufacturing-panel dd { margin: 0; }
+.manufacturing-panel fieldset, [data-testid="physical-operations"] fieldset, [data-testid="piece-outcomes"] fieldset { min-width: 0; margin: 12px 0; padding: 12px; }
+.manufacturing-panel label, [data-testid="physical-operations"] label, [data-testid="piece-outcomes"] label { display: block; margin: 10px 0; }
+.manufacturing-panel input, .manufacturing-panel select, .manufacturing-panel textarea,
+[data-testid="physical-operations"] select, [data-testid="physical-operations"] textarea, [data-testid="piece-outcomes"] select { max-width: 100%; min-width: 0; }
+.confirmation-card { max-height: calc(100dvh - 36px); overflow-y: auto; }
+
+[data-testid="piece-outcomes"] select { width: 100%; box-sizing: border-box; }
+.manufacturing-panel legend, [data-testid="piece-outcomes"] legend { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }

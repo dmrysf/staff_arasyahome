@@ -1,3 +1,4 @@
+import { physicalEN } from "./physical";
 import type { Catalog } from "../types";
 import { enErrors } from "./en.errors";
 
@@ -6,6 +7,7 @@ import { enErrors } from "./en.errors";
  * sizes, colors, notes, numbers) is always shown exactly as stored.
  */
 export const en: Catalog = {
+  ...physicalEN,
   ...enErrors,
 
   // ---- common
@@ -516,7 +518,7 @@ export const en: Catalog = {
   "exc.lineQuantity": "{count} pcs",
   "piece.label": "Piece {index}/{count}",
   "piece.title": "Pieces",
-  "piece.summary": "{total} pcs in the order · {onOrder} with the order · {inRework} in rework",
+  "piece.summary": "{total} physical pieces · {onOrder} with the order · {inRework} separated",
   "piece.mixed": "The pieces of this order are not at the same stage. The order stage applies only to the pieces that travel together.",
   "piece.withOrder": "With the order",
   "piece.currentStage": "Current stage",
@@ -564,8 +566,8 @@ export const en: Catalog = {
   "exc.pieces.title": "Affected pieces",
   "exc.pieces.lineAffected": "{affected} of {quantity} pcs",
   "exc.scope.partial": "Only the pieces of this request return to cutting: {affected}. The rest of the order ({healthy}) stays at its stage, without rework.",
-  "ws.rework.title": "Pieces in rework at this stage",
-  "ws.rework.count": { one: "{count} piece in rework", other: "{count} pieces in rework" },
+  "ws.rework.title": "Separated pieces at this stage",
+  "ws.rework.count": { one: "{count} separated piece", other: "{count} separated pieces" },
   "exc.tailoringEmployee": "the tailoring employee",
   "exc.affected": "Affected products",
   "exc.faulty": "Products with errors",

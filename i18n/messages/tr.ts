@@ -1,3 +1,4 @@
+import { physicalTR } from "./physical";
 import type { Catalog } from "../types";
 import { trErrors } from "./tr.errors";
 
@@ -6,6 +7,7 @@ import { trErrors } from "./tr.errors";
  * codes, sizes, colors, notes, numbers) is always shown exactly as stored.
  */
 export const tr: Catalog = {
+  ...physicalTR,
   ...trErrors,
 
   // ---- common
@@ -516,7 +518,7 @@ export const tr: Catalog = {
   "exc.lineQuantity": "{count} adet",
   "piece.label": "Parça {index}/{count}",
   "piece.title": "Parçalar",
-  "piece.summary": "Siparişte {total} adet · {onOrder} siparişle birlikte · {inRework} yeniden işlemede",
+  "piece.summary": "{total} fiziksel parça · {onOrder} siparişle birlikte · {inRework} ayrı",
   "piece.mixed": "Bu siparişin parçaları aynı aşamada değil. Siparişin aşaması yalnız birlikte ilerleyen parçalar içindir.",
   "piece.withOrder": "Siparişle birlikte",
   "piece.currentStage": "Mevcut aşama",
@@ -564,8 +566,8 @@ export const tr: Catalog = {
   "exc.pieces.title": "Etkilenen parçalar",
   "exc.pieces.lineAffected": "{quantity} adetten {affected}",
   "exc.scope.partial": "Yalnız bu talepteki parçalar kesime döner: {affected}. Siparişin geri kalanı ({healthy}) kendi aşamasında kalır, yeniden işlenmez.",
-  "ws.rework.title": "Bu aşamada yeniden işlenen parçalar",
-  "ws.rework.count": { one: "{count} parça yeniden işlemede", other: "{count} parça yeniden işlemede" },
+  "ws.rework.title": "Bu aşamadaki ayrı parçalar",
+  "ws.rework.count": { one: "{count} ayrı parça", other: "{count} ayrı parça" },
   "exc.tailoringEmployee": "terzihane çalışanı",
   "exc.affected": "Etkilenen ürünler",
   "exc.faulty": "Hatalı ürünler",

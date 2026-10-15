@@ -1,3 +1,4 @@
+import { physicalMessages } from "./physical";
 import { roErrors } from "./ro.errors";
 
 /**
@@ -7,6 +8,7 @@ import { roErrors } from "./ro.errors";
  * (product names, codes, sizes, colors, notes, numbers) is always shown exactly as stored.
  */
 export const ro = {
+  ...physicalMessages,
   ...roErrors,
 
   // ---- common ------------------------------------------------------------------------------------------------
@@ -517,7 +519,7 @@ export const ro = {
   "exc.lineQuantity": "{count} buc.",
   "piece.label": "Bucata {index}/{count}",
   "piece.title": "Bucăți",
-  "piece.summary": "{total} buc. în comandă · {onOrder} cu comanda · {inRework} în refacere",
+  "piece.summary": "{total} buc. fizice · {onOrder} cu comanda · {inRework} separate",
   "piece.mixed": "Bucățile acestei comenzi nu sunt la aceeași etapă. Etapa comenzii privește doar bucățile care merg împreună.",
   "piece.withOrder": "Cu comanda",
   "piece.currentStage": "Etapa actuală",
@@ -565,8 +567,8 @@ export const ro = {
   "exc.pieces.title": "Bucăți afectate",
   "exc.pieces.lineAffected": "{affected} din {quantity} buc.",
   "exc.scope.partial": "Doar bucățile din această cerere se întorc la tăiere: {affected}. Restul comenzii ({healthy}) rămâne la etapa ei, fără refacere.",
-  "ws.rework.title": "Bucăți în refacere la această etapă",
-  "ws.rework.count": { one: "{count} buc. în refacere", other: "{count} buc. în refacere" },
+  "ws.rework.title": "Bucăți separate la această etapă",
+  "ws.rework.count": { one: "{count} buc. separate", other: "{count} buc. separate" },
   "exc.tailoringEmployee": "angajatul de croitorie",
   "exc.affected": "Produse afectate",
   "exc.faulty": "Produse cu eroare",
