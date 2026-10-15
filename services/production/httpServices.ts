@@ -113,6 +113,16 @@ const backendErrorCodes: Partial<Record<string, ServiceErrorCode>> = {
   SELF_REVIEW_DENIED: "SELF_REVIEW_DENIED",
   RESPONSIBLE_UNAVAILABLE: "RESPONSIBLE_UNAVAILABLE",
   RETURN_CANCEL_CONFIRMATION_REQUIRED: "RETURN_CANCEL_CONFIRMATION_REQUIRED",
+  PARTIAL_REWORK_DISABLED: "PARTIAL_REWORK_DISABLED",
+  UNITS_INVALID: "UNITS_INVALID",
+  UNIT_REVIEW_REQUIRED: "UNIT_REVIEW_REQUIRED",
+  UNIT_LABEL_MISMATCH: "UNIT_LABEL_MISMATCH",
+  TRACK_NOT_FOUND: "TRACK_NOT_FOUND",
+  TRACK_CHANGED: "TRACK_CHANGED",
+  TRACK_ALREADY_CLAIMED: "TRACK_ALREADY_CLAIMED",
+  TRACK_WAITING_FOR_ORDER: "TRACK_WAITING_FOR_ORDER",
+  DEFECT_RESOLUTION_REQUIRED: "DEFECT_RESOLUTION_REQUIRED",
+  ORDER_PIECES_IN_REWORK: "ORDER_PIECES_IN_REWORK",
   RECEIVER_NOT_ALLOWED: "RECEIVER_NOT_ALLOWED",
   RESTORE_RECIPIENT_UNAVAILABLE: "RESTORE_RECIPIENT_UNAVAILABLE",
   RECIPIENT_NOT_ALLOWED: "RECIPIENT_NOT_ALLOWED",
@@ -420,6 +430,12 @@ export function mapProductionOrder(value: unknown): import("../../domain/models"
     };
   }
 
+  if (raw.pieces != null) order.pieces = mapOrderPieces(raw.pieces);
+  if (raw.scannedPiece != null) {
+    const scanned = objectValue(raw.scannedPiece);
+    order.scannedPiece = { unitId: stringValue(scanned.unitId), trackId: scanned.trackId == null ? null : stringValue(scanned.trackId) };
+  }
+
   if (raw.freshness != null) {
     const fresh = objectValue(raw.freshness);
     const freshStatus = stringValue(fresh.status);
@@ -434,6 +450,67 @@ export function mapProductionOrder(value: unknown): import("../../domain/models"
   }
 
   return order;
+}
+
+/** Pieces and tracks of an order (API 2.31.0). Unknown actions fail closed: no action is offered. */
+export function mapOrderPieces(value: unknown): import("../../domain/models").OrderPieces {
+  const raw = objectValue(value);
+  if (!Array.isArray(raw.units) || !Array.isArray(raw.tracks)) throw new StaffServiceError("SERVER_ERROR");
+  const nonNegative = (item: unknown) => { if (typeof item !== "number" || !Number.isInteger(item) || item < 0) throw new StaffServiceError("SERVER_ERROR"); return item; };
+  return {
+    total: nonNegative(raw.total), onOrder: nonNegative(raw.onOrder), inRework: nonNegative(raw.inRework), mixedProgress: raw.mixedProgress === true,
+    units: raw.units.map((item) => {
+      const unit = objectValue(item);
+      return { id: stringValue(unit.id), itemId: stringValue(unit.itemId), index: positiveInteger(unit.index), count: positiveInteger(unit.count), lineNumber: positiveInteger(unit.lineNumber),
+        trackId: unit.trackId == null ? null : stringValue(unit.trackId), reworkCycle: positiveInteger(unit.reworkCycle), reviewRequired: unit.reviewRequired === true };
+    }),
+    tracks: raw.tracks.map((item) => {
+      const track = objectValue(item);
+      const stage = objectValue(track.stage);
+      const owner = track.owner == null ? null : objectValue(track.owner);
+      const open = track.openException == null ? null : objectValue(track.openException);
+      const action = track.allowedAction == null ? null : objectValue(track.allowedAction);
+      const actionId = action === null ? null : action.id === "claim" || action.id === "complete_stage" ? action.id : null;
+      if (!Array.isArray(track.unitIds)) throw new StaffServiceError("SERVER_ERROR");
+      return {
+        id: stringValue(track.id), number: positiveInteger(track.number),
+        stage: { id: stringValue(stage.id), label: nullableText(stage.label) },
+        owner: owner === null ? null : { displayName: stringValue(owner.displayName), isMe: owner.isMe === true },
+        version: positiveInteger(track.version), reworkCycle: positiveInteger(track.reworkCycle), reworked: track.reworked === true,
+        unitIds: track.unitIds.map(stringValue), quantity: nonNegative(track.quantity),
+        openException: open === null ? null : {
+          id: stringValue(open.id), number: stringValue(open.number), status: oneOf(open.status, exceptionStatuses),
+          ...(open.actions == null ? {} : { actions: mapFaultActions(objectValue(open.actions)) }),
+          ...(open.orderScope == null ? {} : { orderScope: mapOrderScope(open.orderScope) }),
+        },
+        waitingForOrder: track.waitingForOrder === true,
+        verifyStageId: track.verifyStageId == null ? null : stringValue(track.verifyStageId),
+        resolutionConfirmed: track.resolutionConfirmed === true,
+        requiresDefectResolution: track.requiresDefectResolution === true,
+        nextStageId: track.nextStageId == null ? null : stringValue(track.nextStageId),
+        changedAt: timestampValue(track.changedAt),
+        allowedAction: actionId === null ? null : { id: actionId },
+        blockedReason: track.blockedReason == null ? null : stringValue(track.blockedReason),
+      };
+    }),
+  };
+}
+
+export function mapPieceActionResult(value: unknown): import("../../domain/pieces").PieceActionResult {
+  const raw = objectValue(value);
+  return { orderId: stringValue(raw.orderId), trackId: stringValue(raw.trackId), trackStatus: raw.trackStatus == null ? null : oneOf(raw.trackStatus, ["active", "merged"] as const),
+    stageId: raw.stageId == null ? null : stringValue(raw.stageId), pieces: mapOrderPieces(raw.pieces) };
+}
+
+export function mapPieceLabels(value: unknown): import("../../domain/pieces").PieceLabels {
+  const raw = objectValue(value);
+  if (!Array.isArray(raw.labels)) throw new StaffServiceError("SERVER_ERROR");
+  return { trackId: stringValue(raw.trackId), orderId: stringValue(raw.orderId), orderNumber: stringValue(raw.orderNumber), reworkCycle: positiveInteger(raw.reworkCycle),
+    labels: raw.labels.map((item) => {
+      const label = objectValue(item);
+      return { unitId: stringValue(label.unitId), piece: stringValue(label.piece), name: stringValue(label.name), code: nullableText(label.code), color: nullableText(label.color),
+        payload: label.payload == null ? null : stringValue(label.payload), svg: label.svg == null ? null : stringValue(label.svg) };
+    }) };
 }
 
 const decimalString = (value: unknown) => {
@@ -465,7 +542,14 @@ function mapDecision(value: unknown): FaultDecision {
 function mapOrderScope(value: unknown): NonNullable<FaultException["orderScope"]> {
   const raw = objectValue(value);
   return { orderLineCount: nonNegativeInteger(raw.orderLineCount), orderQuantity: nonNegativeInteger(raw.orderQuantity), affectedLineCount: nonNegativeInteger(raw.affectedLineCount),
-    affectedQuantity: nonNegativeInteger(raw.affectedQuantity), wholeOrderMoves: raw.wholeOrderMoves === true };
+    affectedQuantity: nonNegativeInteger(raw.affectedQuantity), wholeOrderMoves: raw.wholeOrderMoves === true,
+    // API 2.31.0 additions; absent from older APIs (then the whole order moves, as stated by wholeOrderMoves).
+    ...(raw.movingQuantity == null ? {} : { movingQuantity: nonNegativeInteger(raw.movingQuantity) }),
+    ...(raw.unaffectedQuantity == null ? {} : { unaffectedQuantity: nonNegativeInteger(raw.unaffectedQuantity) }),
+    ...(raw.partial == null ? {} : { partial: raw.partial === true }),
+    ...(raw.piecesRecorded == null ? {} : { piecesRecorded: raw.piecesRecorded === true }),
+    ...(raw.carrier == null ? {} : { carrier: oneOf(raw.carrier, ["order", "track"] as const) }),
+    ...(raw.trackId === undefined ? {} : { trackId: raw.trackId === null ? null : stringValue(raw.trackId) }) };
 }
 export function mapFaultException(value: unknown): FaultException {
   const raw = objectValue(value);
@@ -507,11 +591,7 @@ export function mapFaultException(value: unknown): FaultException {
     ...(raw.orderScope == null ? {} : { orderScope: mapOrderScope(raw.orderScope) }),
     role: raw.role == null ? null : oneOf(raw.role, ["responsible", "detector", "receiver", "recipient", "supervisor"] as const),
     // Absent flags (an older API) are false: the screen never offers an action the server did not grant.
-    actions: {
-      canAcknowledge: flag(actions, "canAcknowledge"), statesResponsibility: flag(actions, "statesResponsibility"), canRequestRereview: flag(actions, "canRequestRereview"),
-      canReview: flag(actions, "canReview"), canRequestReturn: flag(actions, "canRequestReturn"), canRestore: flag(actions, "canRestore"),
-      canAskManagersAgain: flag(actions, "canAskManagersAgain"), canAddNote: flag(actions, "canAddNote"), canConfirmRestore: flag(actions, "canConfirmRestore"),
-    },
+    actions: mapFaultActions(actions),
   };
   if ("detectorComment" in raw) mapped.detectorComment = nullableText(raw.detectorComment);
   if ("supervisorComment" in raw) mapped.supervisorComment = nullableText(raw.supervisorComment);
@@ -534,7 +614,17 @@ export function mapFaultException(value: unknown): FaultException {
     mapped.lines = raw.lines.map((item) => {
       const line = objectValue(item);
       return { itemId: stringValue(line.itemId), lineNumber: positiveInteger(line.lineNumber), name: stringValue(line.name), code: nullableText(line.code),
-        variant: nullableText(line.variant), color: nullableText(line.color), quantity: positiveInteger(line.quantity), meters: line.meters === null ? null : decimalString(line.meters) };
+        variant: nullableText(line.variant), color: nullableText(line.color), quantity: positiveInteger(line.quantity), meters: line.meters === null ? null : decimalString(line.meters),
+        ...(line.affectedQuantity == null ? {} : { affectedQuantity: nonNegativeInteger(line.affectedQuantity) }) };
+    });
+  }
+  if (raw.affectedPieces != null) {
+    if (!Array.isArray(raw.affectedPieces)) throw new StaffServiceError("SERVER_ERROR");
+    mapped.affectedPieces = raw.affectedPieces.map((item) => {
+      const piece = objectValue(item);
+      return { unitId: stringValue(piece.unitId), itemId: stringValue(piece.itemId), piece: stringValue(piece.piece), index: positiveInteger(piece.index), count: positiveInteger(piece.count),
+        lineNumber: piece.lineNumber == null ? null : positiveInteger(piece.lineNumber), name: nullableText(piece.name), code: nullableText(piece.code), color: nullableText(piece.color),
+        reworkCycleAtReport: positiveInteger(piece.reworkCycleAtReport), trackId: piece.trackId == null ? null : stringValue(piece.trackId) };
     });
   }
   if (raw.decisions != null) {
@@ -566,6 +656,15 @@ function mapReasons(value: unknown): FaultReason[] {
   });
 }
 
+/** Granted actions of one request; an absent flag is false. */
+function mapFaultActions(actions: Record<string, unknown> | null): FaultException["actions"] {
+  return {
+    canAcknowledge: flag(actions, "canAcknowledge"), statesResponsibility: flag(actions, "statesResponsibility"), canRequestRereview: flag(actions, "canRequestRereview"),
+    canReview: flag(actions, "canReview"), canRequestReturn: flag(actions, "canRequestReturn"), canRestore: flag(actions, "canRestore"),
+    canAskManagersAgain: flag(actions, "canAskManagersAgain"), canAddNote: flag(actions, "canAddNote"), canConfirmRestore: flag(actions, "canConfirmRestore"),
+  };
+}
+
 function flag(actions: Record<string, unknown> | null, name: string): boolean {
   return actions !== null && actions[name] === true;
 }
@@ -573,7 +672,7 @@ function flag(actions: Record<string, unknown> | null, name: string): boolean {
 export function mapQualityCapabilities(value: unknown): QualityCapabilities {
   const raw = objectValue(value);
   const sources = Array.isArray(raw.supervisedSources) ? raw.supervisedSources.filter((item): item is QualityCapabilities["supervisedSources"][number] => typeof item === "string" && (faultSources as readonly string[]).includes(item)) : [];
-  return { tailoringSupervisor: raw.tailoringSupervisor === true, supervisedSources: sources, supervisedFlowActive: raw.supervisedFlowActive === true };
+  return { tailoringSupervisor: raw.tailoringSupervisor === true, supervisedSources: sources, supervisedFlowActive: raw.supervisedFlowActive === true, partialRework: raw.partialRework === true };
 }
 
 function mapReceivers(value: unknown): { id: string; displayName: string }[] {
@@ -814,7 +913,8 @@ export function createProductionServices(apiBaseUrl: string, options: Production
     get: (id, requestOptions) => http.request(`/production-exceptions/${encodeURIComponent(id)}`, { signal: requestOptions?.signal }, mapFaultException),
     reasons: (requestOptions) => http.request("/production-exceptions/reasons", { signal: requestOptions?.signal }, mapReasons),
     report: (orderId, input) => http.request(`/orders/${encodeURIComponent(orderId)}/fault-reports`, { method: "POST", headers: { "Idempotency-Key": input.idempotencyKey },
-      body: JSON.stringify({ expectedVersion: input.expectedVersion, itemIds: input.itemIds, reasonKey: input.reasonKey, ...(input.comment ? { comment: input.comment } : {}) }) }, mapFaultException),
+      // Exact pieces (API 2.31.0) when chosen; otherwise the lines, exactly as older APIs expect.
+      body: JSON.stringify({ expectedVersion: input.expectedVersion, ...(input.units ? { units: input.units, ...(input.trackId ? { trackId: input.trackId } : {}) } : { itemIds: input.itemIds }), reasonKey: input.reasonKey, ...(input.comment ? { comment: input.comment } : {}) }) }, mapFaultException),
     acknowledge: (id, input) => http.request(`/production-exceptions/${encodeURIComponent(id)}/acknowledge`, { method: "POST", headers: { "Idempotency-Key": input.idempotencyKey },
       body: JSON.stringify({ expectedVersion: input.expectedVersion, confirmed: true, qrToken: input.qrToken, ...(input.comment ? { comment: input.comment } : {}), ...(input.responsibility ? { responsibility: input.responsibility } : {}) }) }, mapFaultException),
     rereview: (id, input) => http.request(`/production-exceptions/${encodeURIComponent(id)}/rereview`, { method: "POST", headers: { "Idempotency-Key": input.idempotencyKey },
@@ -908,7 +1008,14 @@ export function createProductionServices(apiBaseUrl: string, options: Production
     stageSummary: (signal) => http.request("/orders/stage-summary", { signal }, mapStageSummary),
   };
   const management: ManagementApi = { productionOverview: (signal) => http.request("/management/production-overview", { signal }, mapProductionOverview) };
-  return { auth, employee, orders, activity, workflow, exceptions, live, cutting, documents, authority, productionQr, trendyol, workspace, management, mode: "production" };
+  const pieces: import("../../domain/pieces").PieceApi = {
+    claim: (trackId, input) => http.request(`/production-tracks/${encodeURIComponent(trackId)}/claim`, { method: "POST", headers: { "Idempotency-Key": input.idempotencyKey },
+      body: JSON.stringify({ expectedVersion: input.expectedVersion, qrToken: input.qrToken }) }, mapPieceActionResult),
+    complete: (trackId, input) => http.request(`/production-tracks/${encodeURIComponent(trackId)}/complete`, { method: "POST", headers: { "Idempotency-Key": input.idempotencyKey },
+      body: JSON.stringify({ expectedVersion: input.expectedVersion, ...(input.defectResolved ? { defectResolved: true } : {}) }) }, mapPieceActionResult),
+    labels: (trackId, signal) => http.request(`/production-tracks/${encodeURIComponent(trackId)}/labels`, { signal }, mapPieceLabels),
+  };
+  return { auth, employee, orders, activity, workflow, exceptions, live, cutting, documents, authority, productionQr, trendyol, workspace, management, pieces, mode: "production" };
 }
 
 // ---------------------------------------------------------------- Trendyol workspace (strict; unexpected shapes fail closed)
@@ -956,12 +1063,15 @@ export function mapStageQueue(value: unknown): StageQueue {
     counts: { total: nonNegativeInteger(counts.total), mine: nonNegativeInteger(counts.mine), available: nonNegativeInteger(counts.available), blocked: nonNegativeInteger(counts.blocked), claimedByOthers: nonNegativeInteger(counts.claimedByOthers) },
     countsComplete: raw.countsComplete,
     items: raw.items.map(mapProductionOrder),
+    // Pieces in rework at this stage (API 2.31.0): each entry names the track and carries its order.
+    trackItems: Array.isArray(raw.trackItems) ? raw.trackItems.map((item) => { const entry = objectValue(item); return { trackId: stringValue(entry.trackId), order: mapProductionOrder(entry.order) }; }) : [],
   };
 }
 export function mapStageSummary(value: unknown): StageSummary {
   const raw = objectValue(value);
   if (!Array.isArray(raw.stages)) throw new StaffServiceError("SERVER_ERROR");
-  return raw.stages.map((item) => { const stage = objectValue(item); return { stageId: stringValue(stage.stageId), total: nonNegativeInteger(stage.total), mine: nonNegativeInteger(stage.mine) }; });
+  return raw.stages.map((item) => { const stage = objectValue(item); return { stageId: stringValue(stage.stageId), total: nonNegativeInteger(stage.total), mine: nonNegativeInteger(stage.mine),
+    reworkTotal: stage.reworkTotal == null ? 0 : nonNegativeInteger(stage.reworkTotal), reworkMine: stage.reworkMine == null ? 0 : nonNegativeInteger(stage.reworkMine) }; });
 }
 export function mapProductionOverview(value: unknown): ProductionOverview {
   const raw = objectValue(value);

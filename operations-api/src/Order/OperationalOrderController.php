@@ -45,6 +45,7 @@ final readonly class OperationalOrderController
         private ?\Arasya\Operations\Document\DocumentQueries $documents = null,
         private ?\PDO $qrLedger = null,
         private ?\Arasya\Operations\Production\ProductionAuthorityModes $modes = null,
+        private ?\Arasya\Operations\Production\ReworkTrackService $tracks = null,
     ) {
     }
 
@@ -63,9 +64,10 @@ final readonly class OperationalOrderController
         $result = $this->repository->listMine($employee->employeeUuid, (int) $limitParam, $request->query('cursor'), $sources);
         $workflow = $this->workflowOrNull();
         $visible = array_values(array_filter($result['items'], fn (OperationalOrder $order): bool => $this->policy->canView($employee, $order)));
+        $pieces = $this->piecesOf($visible, $employee, $workflow);
 
         return Response::json([
-            'items' => array_map(fn (OperationalOrder $order): array => $this->present($employee, $order, $workflow), $visible),
+            'items' => array_map(fn (OperationalOrder $order): array => $this->present($employee, $order, $workflow, $pieces[$order->orderUuid] ?? null), $visible),
             'nextCursor' => $result['nextCursor'],
         ], 200, ['Cache-Control' => 'private, no-store']);
     }
@@ -101,12 +103,13 @@ final readonly class OperationalOrderController
         }
         $total = $this->repository->countOpenByStage($employee->employeeUuid, [$stageId], $this->authorization->can($employee, OrderAccessPolicy::TRENDYOL_VIEW), $employee->stageSourceScopes)[$stageId]['total'] ?? 0;
         $items = array_slice(array_merge(...array_values($buckets)), 0, self::STAGE_QUEUE_ITEMS);
+        $pieces = $this->piecesOf(array_map(static fn (array $entry): OperationalOrder => $entry[0], $items), $employee, $workflow);
         return Response::json([
             'stageId' => $stageId,
             'counts' => ['total' => $total] + array_map('count', $buckets),
             'countsComplete' => $complete,
-            'items' => array_map(fn (array $entry): array => $this->serializer->serializeOrder($entry[0], $entry[1]), $items),
-        ], 200, ['Cache-Control' => 'private, no-store']);
+            'items' => array_map(fn (array $entry): array => $this->serializer->serializeOrder($entry[0], $entry[1], pieces: $pieces[$entry[0]->orderUuid] ?? null), $items),
+        ] + $this->trackQueue($employee, $stageId, $workflow), 200, ['Cache-Control' => 'private, no-store']);
     }
 
     /** Open-order totals for each of the employee's allowed stages, in workflow order (one grouped query). */
@@ -118,8 +121,11 @@ final readonly class OperationalOrderController
         $workflow = $this->workflowOrNull();
         $ordered = $workflow === null ? $allowed : array_values(array_filter(array_map(static fn ($stage): string => $stage->id, $workflow->stages), static fn (string $id): bool => in_array($id, $allowed, true)));
         $counts = $this->repository->countOpenByStage($employee->employeeUuid, $ordered, $this->authorization->can($employee, OrderAccessPolicy::TRENDYOL_VIEW), $employee->stageSourceScopes);
+        // Pieces in rework are separate work at their own stage, counted apart so an order is never counted twice.
+        $rework = $this->tracks?->countByStage($employee->employeeUuid, $ordered, $employee->stageSourceScopes) ?? [];
         return Response::json([
-            'stages' => array_map(static fn (string $id): array => ['stageId' => $id, 'total' => $counts[$id]['total'] ?? 0, 'mine' => $counts[$id]['mine'] ?? 0], $ordered),
+            'stages' => array_map(static fn (string $id): array => ['stageId' => $id, 'total' => $counts[$id]['total'] ?? 0, 'mine' => $counts[$id]['mine'] ?? 0,
+                'reworkTotal' => $rework[$id]['total'] ?? 0, 'reworkMine' => $rework[$id]['mine'] ?? 0], $ordered),
         ], 200, ['Cache-Control' => 'private, no-store']);
     }
 
@@ -179,6 +185,10 @@ final readonly class OperationalOrderController
         if (array_keys($input) !== ['token'] || !is_string($input['token'])) {
             throw new ApiException(400, 'INVALID_REQUEST', 'Request fields are invalid.');
         }
+        $label = UnitLabelReference::parsePayload($input['token']);
+        if ($label !== null && $this->tracks !== null) {
+            return $this->resolvePieceLabel($employee, $label);
+        }
         $reference = QrReference::parsePayload($input['token']);
         if ($reference === null) {
             throw new ApiException(400, 'INVALID_QR', 'The scanned code is not an Arasya order code.');
@@ -234,6 +244,121 @@ final readonly class OperationalOrderController
         $intent = array_intersect_key($input, array_flip(['confirmedMultiple', 'ownedCount']));
         $payload = $this->operations->cuttingIntake($employee, $order->globalId, $reference, $intent, $request->header('idempotency-key') ?? '', OperationContext::fromRequest($request));
         return Response::json($payload, 200, ['Cache-Control' => 'private, no-store']);
+    }
+
+    /**
+     * A scanned piece label resolves its order, like the order QR, plus the exact piece (and its track) that was
+     * scanned, so the Staff screen opens the work of that piece and never guesses between pieces.
+     */
+    private function resolvePieceLabel(EmployeeIdentity $employee, UnitLabelReference $label): Response
+    {
+        $resolved = (new \Arasya\Operations\Production\WorkUnits($this->qrLedger ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Orders API is not ready.')))->resolveLabel($label);
+        if ($resolved === null) {
+            throw new ApiException(404, 'UNKNOWN_QR', 'The scanned code is not registered.');
+        }
+        if ($resolved['status'] !== 'active') {
+            throw new ApiException(410, 'EXPIRED_QR', 'The scanned code is no longer valid.');
+        }
+        $order = $this->repository->findByGlobalId($employee->employeeUuid, $resolved['globalOrderId']);
+        if ($order === null || !$this->policy->canView($employee, $order)) {
+            throw new ApiException(404, 'ORDER_NOT_FOUND', 'Order not found.');
+        }
+        $body = $this->orderResponse($employee, $order)->payload ?? [];
+        $body['scannedPiece'] = ['unitId' => $resolved['unitUuid'], 'trackId' => $resolved['trackUuid']];
+        return Response::json($body, 200, ['Cache-Control' => 'private, no-store']);
+    }
+
+    /** POST /production-tracks/{id}/claim | complete, GET /production-tracks/{id}/labels: work on a piece in rework. */
+    public function track(Request $request, string $trackId, string $action): Response
+    {
+        $tracks = $this->tracks ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Piece tracking is not ready.');
+        $session = $this->authenticate($request);
+        $employee = $session->employee;
+        if ($request->method === 'GET' && $action === 'labels') {
+            $this->authorization->require($employee, 'orders.view_mine');
+            return Response::json($tracks->labels($employee, $trackId), 200, ['Cache-Control' => 'private, no-store']);
+        }
+        if ($request->method !== 'POST' || !in_array($action, ['claim', 'complete'], true)) {
+            throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
+        }
+        $this->csrf->requireValid($session->rawToken, $request->header('x-csrf-token'));
+        $input = $request->json(2048);
+        $allowed = $action === 'claim' ? ['expectedVersion', 'qrToken'] : ['expectedVersion', 'defectResolved'];
+        if (array_diff(array_keys($input), $allowed) !== []) {
+            throw new ApiException(400, 'INVALID_REQUEST', 'Request fields are invalid.');
+        }
+        $key = $request->header('idempotency-key') ?? '';
+        $payload = $action === 'claim' ? $tracks->claim($employee, $trackId, $input, $key, $request->requestId) : $tracks->complete($employee, $trackId, $input, $key, $request->requestId);
+        return Response::json($payload, 200, ['Cache-Control' => 'private, no-store']);
+    }
+
+    /**
+     * Pieces in rework at one stage (the stage queue's second list), bucketed like the orders.
+     * @return array{trackItems: list<array<string, mixed>>, trackCounts: array<string, int>}
+     */
+    private function trackQueue(EmployeeIdentity $employee, string $stageId, ?ProductionWorkflow $workflow): array
+    {
+        if ($this->tracks === null) {
+            return ['trackItems' => [], 'trackCounts' => ['total' => 0, 'mine' => 0, 'available' => 0, 'blocked' => 0, 'claimedByOthers' => 0]];
+        }
+        $rows = $this->tracks->atStage($stageId, $employee->sourcesAt($stageId), self::STAGE_QUEUE_SCAN);
+        $orderRows = [];
+        foreach ($this->tracks->orderRows(array_values(array_unique(array_column($rows, 'order_uuid')))) as $row) {
+            $orderRows[(string) $row['order_uuid']] = $row;
+        }
+        $buckets = ['mine' => [], 'available' => [], 'blocked' => [], 'claimedByOthers' => []];
+        $orders = [];
+        foreach ($rows as $row) {
+            $orderRow = $orderRows[(string) $row['order_uuid']] ?? null;
+            $order = $orderRow === null ? null : ($orders[(string) $row['order_uuid']] ??= $this->repository->findByGlobalId($employee->employeeUuid, (string) $orderRow['global_order_id']));
+            if ($order === null || !$this->policy->canView($employee, $order)) {
+                continue;
+            }
+            $pieces = $this->tracks->piecesFor([$orderRow], $employee, $workflow)[$order->orderUuid] ?? null;
+            $track = null;
+            foreach ($pieces['tracks'] ?? [] as $candidate) {
+                if ($candidate['id'] === $row['track_uuid']) {
+                    $track = $candidate;
+                }
+            }
+            if ($track === null) {
+                continue;
+            }
+            $bucket = match (true) {
+                ($track['owner']['isMe'] ?? false) === true => 'mine',
+                ($track['allowedAction']['id'] ?? null) === \Arasya\Operations\Production\ReworkTrackService::ACTION_CLAIM => 'available',
+                ($track['blockedReason'] ?? null) === 'claimed_by_other' => 'claimedByOthers',
+                default => 'blocked',
+            };
+            $buckets[$bucket][] = ['trackId' => $track['id'], 'order' => $this->serializer->serializeOrder($order, $this->policy->evaluate($employee, $order, $workflow), pieces: $pieces)];
+        }
+        return [
+            'trackItems' => array_slice(array_merge(...array_values($buckets)), 0, self::STAGE_QUEUE_ITEMS),
+            'trackCounts' => ['total' => array_sum(array_map('count', $buckets))] + array_map('count', $buckets),
+        ];
+    }
+
+    /** @param list<OperationalOrder> $orders @return array<string, array<string, mixed>> */
+    private function piecesOf(array $orders, EmployeeIdentity $employee, ?ProductionWorkflow $workflow, bool $detailed = false): array
+    {
+        if ($this->tracks === null || $orders === []) {
+            return [];
+        }
+        $pieces = $this->tracks->piecesFor($this->tracks->orderRows(array_map(static fn (OperationalOrder $order): string => $order->orderUuid, $orders)), $employee, $workflow);
+        if ($detailed && $this->quality !== null) {
+            // Single-order views: the open request of each piece in rework as this employee sees it (role, actions),
+            // so a scan guides the addressed employee to that exact request, like the order's own open request.
+            foreach ($pieces as &$view) {
+                foreach ($view['tracks'] as &$track) {
+                    if ($track['openException'] !== null) {
+                        $track['openException'] = $this->quality->viewerSummary($track['openException']['id'], $employee->employeeUuid) ?? $track['openException'];
+                    }
+                }
+                unset($track);
+            }
+            unset($view);
+        }
+        return $pieces;
     }
 
     public function claim(Request $request, string $globalIdString): Response
@@ -345,16 +470,16 @@ final readonly class OperationalOrderController
     private function orderResponse(EmployeeIdentity $employee, OperationalOrder $order): Response
     {
         return Response::json(
-            $this->serializer->serializeOrder($order, $this->policy->evaluate($employee, $order, $this->workflowOrNull()), $this->quality?->orderQuality($order->orderUuid, $order->openExceptionUuid, $employee->employeeUuid), $this->documents?->summary($order->orderUuid)),
+            $this->serializer->serializeOrder($order, $this->policy->evaluate($employee, $order, $workflow = $this->workflowOrNull()), $this->quality?->orderQuality($order->orderUuid, $order->openExceptionUuid, $employee->employeeUuid), $this->documents?->summary($order->orderUuid), $this->piecesOf([$order], $employee, $workflow, true)[$order->orderUuid] ?? null),
             200,
             ['Cache-Control' => 'private, no-store'],
         );
     }
 
     /** @return array<string, mixed> */
-    private function present(EmployeeIdentity $employee, OperationalOrder $order, ?ProductionWorkflow $workflow): array
+    private function present(EmployeeIdentity $employee, OperationalOrder $order, ?ProductionWorkflow $workflow, ?array $pieces = null): array
     {
-        return $this->serializer->serializeOrder($order, $this->policy->evaluate($employee, $order, $workflow));
+        return $this->serializer->serializeOrder($order, $this->policy->evaluate($employee, $order, $workflow), pieces: $pieces);
     }
 
     private function workflowOrNull(): ?ProductionWorkflow

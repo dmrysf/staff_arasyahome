@@ -79,6 +79,7 @@ $cleanup = static function () use ($pdo): void {
         $pdo->exec("DELETE FROM {$table}");
     }
     $pdo->exec('UPDATE operational_orders SET open_exception_uuid = NULL');
+    T::clearPieces($pdo);
     foreach (['production_exceptions', 'cutting_transfers', 'cutting_facts', 'analytics_ownership_intervals', 'analytics_order_projection', 'responsibility_assignments', 'organization_principals', 'order_activity_events', 'order_operation_idempotency', 'employee_order_relations', 'order_qr_references', 'operational_order_items', 'order_projection_receipts', 'api_rate_limit_buckets'] as $table) {
         $pdo->exec("DELETE FROM {$table}");
     }

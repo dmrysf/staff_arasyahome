@@ -1,3 +1,5 @@
+Operations API **2.31.0** / Staff **2.26.0** / Dashboard **0.14.0** add [per-piece rework](docs/per-piece-rework.md) (additive migration 028, activation flag `partial_rework` off by default): a worker reports exactly the defective pieces („Bucata 1/2”); only those pieces go to the supervisor, the cutter’s receipt, one manager approval and cutting, then repeat every stage from cutting onward on their own track, while the healthy pieces keep their stage. The order cannot be packed until every piece is back.
+
 # Arasya Staff
 
 Staff **2.23.0** adds [tailoring quality supervision](docs/tailoring-quality-supervision.md) (API 2.28.0, migration 024): a worker at stages 3–12 reports a defect with „Raportează o problemă”, the appointed tailoring quality supervisor handles it in „Comenzi cu probleme” without any manager, and only the final return from tailoring intake to cutting waits for an operations manager.

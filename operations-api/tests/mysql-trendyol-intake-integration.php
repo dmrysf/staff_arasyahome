@@ -766,6 +766,7 @@ if ($created !== []) {
     foreach (['production_document_blocks', 'production_document_prints', 'production_document_events'] as $table) $pdo->exec("DELETE FROM {$table} WHERE order_uuid IN ({$in})");
     $pdo->exec("UPDATE production_document_revisions SET request_uuid = NULL WHERE order_uuid IN ({$in})");
     $pdo->exec("UPDATE production_document_revision_requests SET previous_request_uuid = NULL WHERE order_uuid IN ({$in})");
+    T::clearPieces($pdo, $pdo->query("SELECT order_uuid FROM operational_orders WHERE order_uuid IN ({$in})")->fetchAll(PDO::FETCH_COLUMN));
     $exceptions = $pdo->query("SELECT exception_uuid FROM production_exceptions WHERE order_uuid IN ({$in})")->fetchAll(PDO::FETCH_COLUMN);
     if ($exceptions !== []) {
         $ex = implode(', ', array_map([$pdo, 'quote'], $exceptions));

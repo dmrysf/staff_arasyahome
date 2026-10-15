@@ -146,6 +146,7 @@ final class Container
         $revisionApprovers = new RevisionApproverPolicy($this->pdo, $authorization, $this->clock);
         $documentScopes = new \Arasya\Operations\Document\DocumentScopePolicy($this->pdo);
         $documents = $this->documentService($authorization, $revisionApprovers, $documentQueries, $live, $idempotency, $iamAudit);
+        $tracks = new \Arasya\Operations\Production\ReworkTrackService($this->pdo, $workflows, $authorization, $this->clock, $live, $authorityModes);
         return new ApiKernel(
             new AuthController($this->authentication, $csrf, new CookiePolicy($this->config), $this->config, $authorization, $context),
             new HealthController($this->pdo, $this->clock),
@@ -163,13 +164,14 @@ final class Container
                 $context,
                 $policy,
                 $workflows,
-                new OrderOperationsService($this->pdo, $workflows, $orders, $policy, $serializer, $this->clock, $this->audit, $exceptions, $documentQueries),
+                new OrderOperationsService($this->pdo, $workflows, $orders, $policy, $serializer, $this->clock, $this->audit, $exceptions, $documentQueries, $tracks),
                 $csrf,
                 $rateLimiter,
                 $exceptions,
                 $documentQueries,
                 $this->pdo,
                 $authorityModes,
+                $tracks,
             ),
             new ActivityController(new PdoActivityRepository($this->pdo), $this->authentication, $authorization, $this->config, $context, $this->clock),
             new SourceIngestionController(new SourceSignatureVerifier($this->config->sourceSecrets), $this->projectionWriter(), $rateLimiter, $this->clock, SourceRegistry::fromConfig($this->config), new \Arasya\Operations\Integration\SourceAuthorityQueries($this->pdo), $this->productionQrService($authorization, $iamAudit), $this->documentService($authorization, audit: $iamAudit), new \Arasya\Operations\Document\DocumentRenderer($this->pdo), new \Arasya\Operations\Integration\SourceTrackingQueries($this->pdo)),

@@ -427,3 +427,26 @@
 .choice-group { display: grid; gap: 8px; margin: 0; padding: 0; border: 0; }
 .choice-group legend { margin-bottom: 6px; font-weight: var(--weight-semibold); }
 .fault-action > .button { width: 100%; }
+
+/* Per-piece rework (API 2.31.0): pieces of an order, pieces in rework, piece labels. Mobile first, never wider than the screen. */
+.pieces-panel { display: grid; gap: 12px; min-width: 0; }
+.pieces-panel h2 { overflow-wrap: anywhere; }
+.piece-track { display: grid; gap: 10px; min-width: 0; padding: 14px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface); }
+.piece-track-mine { border-color: var(--color-accent); }
+.piece-track-blocked { border-color: var(--color-warning-line); background: var(--color-warning-soft); }
+.piece-track-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.piece-track-head strong { min-width: 0; overflow-wrap: anywhere; }
+.piece-track .fault-facts { grid-template-columns: repeat(auto-fit, minmax(min(140px, 100%), 1fr)); margin: 0; }
+.piece-actions { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.piece-actions .button { flex: 1 1 auto; min-width: 0; white-space: normal; }
+.piece-list { margin: 0; padding-left: 18px; display: grid; gap: 4px; overflow-wrap: anywhere; }
+.piece-approved { display: grid; gap: 4px; text-align: left; overflow-wrap: anywhere; }
+.piece-labels { display: grid; gap: 10px; min-width: 0; }
+.piece-label { display: grid; justify-items: start; gap: 6px; margin: 0; min-width: 0; }
+.piece-label img { max-width: 100%; height: auto; }
+.piece-label figcaption { display: grid; gap: 2px; overflow-wrap: anywhere; }
+.piece-line { display: grid; gap: 6px; padding: 8px 0; border-bottom: 1px solid var(--color-border); }
+.piece-line p { display: grid; gap: 2px; margin: 0; }
+.piece-counts { margin: 10px 0 0; overflow-wrap: anywhere; }
+.piece-choice, .piece-scan { display: grid; gap: 8px; }
+.piece-choice .button, .piece-scan .button { white-space: normal; text-align: left; }

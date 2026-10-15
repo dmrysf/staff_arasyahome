@@ -102,4 +102,20 @@ if (preg_match_all('/INSERT IGNORE INTO role_permissions[\s\S]*?WHERE r\.role_ke
 if (str_contains($documentSchema, 'employee_role_assignments')) {
     throw new RuntimeException('Migration 017 must not assign roles to employees.');
 }
+// Per-piece rework: purely additive and re-runnable (no ALTER of an existing table), append-only track history,
+// one identity per physical piece, one open exception per track, created disabled.
+$unitSchema = (string) file_get_contents($root . '/database/migrations/028_production_work_units.sql');
+foreach (['production_feature_flags', 'production_tracks', 'production_work_units', 'production_exception_scopes', 'production_exception_units', 'production_track_events', 'production_track_idempotency', 'production_unit_labels'] as $table) {
+    if (preg_match('/CREATE TABLE IF NOT EXISTS\s+' . $table . '\b/', $unitSchema) !== 1) {
+        throw new RuntimeException("Migration 028 is missing table: {$table}");
+    }
+}
+foreach (['UNIQUE KEY uq_production_work_units_identity (item_uuid, unit_index)', 'UNIQUE KEY uq_production_tracks_open_exception (open_exception_uuid)', 'UNIQUE KEY uq_production_track_events_version (track_uuid, version_after)', 'UNIQUE KEY uq_production_track_events_idempotency (employee_uuid, idempotency_key)', "VALUES ('partial_rework', 0,"] as $required) {
+    if (!str_contains($unitSchema, $required)) {
+        throw new RuntimeException("Per-piece rework invariant is missing: {$required}");
+    }
+}
+if (preg_match('/ON (DELETE|UPDATE) (CASCADE|SET NULL)|ALTER TABLE|DROP |DELETE FROM|TRUNCATE|(?<!ON )UPDATE |role_permissions|employee_role_assignments/i', preg_replace('/^--.*$/m', '', $unitSchema) ?? '') === 1) {
+    throw new RuntimeException('Migration 028 must stay additive, re-runnable and must not grant roles.');
+}
 fwrite(STDOUT, 'Migration sanity checks passed for ' . count($files) . " file(s).\n");

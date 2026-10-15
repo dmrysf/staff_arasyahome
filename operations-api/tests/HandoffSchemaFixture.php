@@ -1,9 +1,20 @@
 <?php
 declare(strict_types=1);
+/** Restore a pre-028 disposable test fixture (no production work units). This is NOT a deployment/rollback mechanism. */
+function restorePreWorkUnitsTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='028_production_work_units.sql'")->fetchColumn()) return;
+    \Arasya\Operations\Tests\OperationsTestSupport::clearPieces($pdo);
+    foreach(['production_track_idempotency','production_unit_labels','production_exception_units','production_exception_scopes','production_track_events','production_work_units','production_tracks','production_feature_flags'] as $table) $pdo->exec("DROP TABLE IF EXISTS {$table}");
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='028_production_work_units.sql'");
+}
+
 /** Restore a pre-026 disposable test fixture (no Trendyol product identity). This is NOT a deployment/rollback mechanism. */
 function restorePreTrendyolProductIdentityTestSchema(PDO $pdo): void
 {
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    restorePreWorkUnitsTestSchema($pdo);
     if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='026_trendyol_product_identity.sql'")->fetchColumn()) return;
     foreach(['trendyol_product_title_events','trendyol_product_titles'] as $table) $pdo->exec("DROP TABLE IF EXISTS {$table}");
     $pdo->exec('ALTER TABLE trendyol_package_lines DROP COLUMN product_code, DROP COLUMN prepared_title');

@@ -12,6 +12,8 @@ import { toServiceError } from "../../services/errors";
 import { createIdempotencyKey } from "../../services/idempotency";
 import { arrivalLabel, faultStatusLabel, formatDecimalMeters, formatFaultMeters, responsibilityLabels, timelineLabel } from "../../domain/faults";
 import { QrCapture } from "./QrCapture";
+import { isPartialScope, scopeCounts, type PieceApi } from "../../domain/pieces";
+import { PieceLabelsView } from "../orders/PiecesPanel";
 
 const time = { format: (value: Date): string => formatDate(value, { day: "numeric", month: "long", hour: "2-digit", minute: "2-digit", timeZone: "Europe/Bucharest" }) };
 
@@ -20,6 +22,13 @@ function emphasize(text: string, name: string) {
   const index = text.indexOf(name);
   return index < 0 ? text : <>{text.slice(0, index)}<strong>{name}</strong>{text.slice(index + name.length)}</>;
 }
+/** A request on exact pieces (API 2.31.0): only those pieces move; the rest of the order keeps its stage. */
+export function partialScopeNotice(fault: Pick<FaultException, "orderScope">): string | null {
+  if (!isPartialScope(fault)) return null;
+  const counts = scopeCounts(fault);
+  return counts ? translateNow("exc.scope.partial", { affected: counts.defective, healthy: counts.healthy }) : null;
+}
+
 /**
  * Production is routed per order: an approved return to cutting moves the whole order. The warning names what
  * really moves whenever the order holds more than the affected lines, or the affected line has several pieces.
@@ -28,6 +37,8 @@ export function returnScopeWarning(fault: Pick<FaultException, "orderScope" | "l
   const t = translateNow;
   const scope = fault.orderScope;
   if (!scope || !scope.wholeOrderMoves) return null;
+  // Every piece of the order was named (API 2.31.0): nothing beyond the reported pieces moves, so no warning.
+  if (scope.piecesRecorded && scope.affectedQuantity >= scope.orderQuantity) return null;
   if (scope.orderLineCount > scope.affectedLineCount) {
     return t("exc.scope.wholeOrder", { lines: scope.orderLineCount, pieces: scope.orderQuantity, affected: t("common.products", { count: scope.affectedLineCount }) });
   }
@@ -40,7 +51,7 @@ const RETRY_CODES = ["NETWORK_UNAVAILABLE", "REQUEST_TIMEOUT", "SERVICE_UNAVAILA
  * the supervised tailoring defect (worker, tailoring quality supervisor, cutter, manager). Every action is
  * shown only when the server granted it, and every result is the server's committed state.
  */
-export function ExceptionScreen({ exceptionId, service, navigate, onSessionExpired }: { exceptionId: string; service: ExceptionService; navigate: (path: string) => void; onSessionExpired: () => void }) {
+export function ExceptionScreen({ exceptionId, service, pieces, navigate, onSessionExpired }: { exceptionId: string; service: ExceptionService; /** Piece labels (API 2.31.0). */ pieces?: PieceApi; navigate: (path: string) => void; onSessionExpired: () => void }) {
   const { t } = useI18n();
   const { revision } = useLive();
   const [fault, setFault] = useState<FaultException | null>(null);
@@ -113,6 +124,8 @@ export function ExceptionScreen({ exceptionId, service, navigate, onSessionExpir
   const commentReady = comment.trim().length >= 3;
   const reason = reasons.find((item) => item.key === reasonKey);
   const scopeWarning = tailoring ? returnScopeWarning(fault) : null;
+  const partialNotice = partialScopeNotice(fault);
+  const counts = scopeCounts(fault);
   // Restoring before the cutting employee received the product withdraws the return to cutting: a deliberate, ticked choice.
   const cancelsReturn = fault.status === "awaiting_acknowledgment";
   return (
@@ -130,7 +143,12 @@ export function ExceptionScreen({ exceptionId, service, navigate, onSessionExpir
       <section className="detail-section">
         <p className="eyebrow">{tailoring ? t("exc.affected") : t("exc.faulty")}</p>
         <h2>{t("common.products", { count: fault.lineCount })} · {formatFaultMeters(fault)}</h2>
-        <ul className="fault-lines">{fault.lines?.map((line) => <li key={line.itemId}><span><strong>{line.name}</strong><small>{[line.code, line.color, line.variant, t("exc.lineQuantity", { count: line.quantity })].filter(Boolean).join(" · ")}</small></span><b>{formatDecimalMeters(line.meters)}</b></li>)}</ul>
+        <ul className="fault-lines">{fault.lines?.map((line) => <li key={line.itemId}><span><strong>{line.name}</strong><small>{[line.code, line.color, line.variant, line.affectedQuantity !== undefined ? t("exc.pieces.lineAffected", { affected: line.affectedQuantity, quantity: line.quantity }) : t("exc.lineQuantity", { count: line.quantity })].filter(Boolean).join(" · ")}</small></span><b>{formatDecimalMeters(line.meters)}</b></li>)}</ul>
+        {counts && <p className="piece-counts" data-testid="piece-counts"><strong>{counts.defective}</strong> · <span>{counts.healthy}</span></p>}
+        {fault.affectedPieces && fault.affectedPieces.length > 0 && <div className="affected-pieces" data-testid="affected-pieces"><p className="eyebrow">{t("exc.pieces.title")}</p>
+          <ul className="piece-list">{fault.affectedPieces.map((piece) => <li key={piece.unitId}>{t("piece.label", { index: piece.index, count: piece.count })} · {[piece.code, piece.color].filter(Boolean).join(" · ")}</li>)}</ul></div>}
+        {partialNotice && <p className="order-notice order-notice-muted" role="note" data-testid="partial-scope">{partialNotice}</p>}
+        {pieces && fault.role === "supervisor" && fault.orderScope?.trackId && <PieceLabelsView trackId={fault.orderScope.trackId} service={pieces} />}
         {scopeWarning && ["awaiting_supervisor_review", "in_supervisor_custody", "awaiting_acknowledgment", "awaiting_approval", "return_rejected"].includes(fault.status) && <p className="order-notice order-notice-warning" role="note" data-testid="return-scope-warning">{scopeWarning}</p>}
         <dl className="fault-facts">
           <div><dt>{tailoring ? t("exc.reportedProblem") : t("exc.reason")}</dt><dd>{faultReasonName(fault.reason.key, fault.reason.label)}</dd></div>

@@ -55,6 +55,7 @@ final readonly class OrderOperationsService
         private AuditLogger $audit,
         private ?ExceptionQueries $quality = null,
         private ?\Arasya\Operations\Document\DocumentQueries $documents = null,
+        private ?\Arasya\Operations\Production\ReworkTrackService $tracks = null,
     ) {
     }
 
@@ -413,6 +414,10 @@ final readonly class OrderOperationsService
         }
         $this->upsertRelation($employee->employeeUuid, $order->orderUuid, $relation, $now);
         $this->recordActivity($employee, $order, $workflow, $action, $current, $next, $expectedVersion, $idempotencyKey, $context, $now);
+        if ($next?->id === \Arasya\Operations\Production\ProductionTracks::GATE_STAGE) {
+            // Reworked pieces already waiting at packing travel with the order again from here.
+            (new \Arasya\Operations\Production\ProductionTracks($this->pdo))->mergeAtGate($order->orderUuid, $employee->employeeUuid, $idempotencyKey, $context->requestId, $now);
+        }
         $meters = $this->pdo->prepare('SELECT SUM(meters) FROM operational_order_items WHERE order_uuid = ?');
         $meters->execute([$order->orderUuid]);
         $total = $meters->fetchColumn();
@@ -519,7 +524,16 @@ final readonly class OrderOperationsService
     {
         $order = $this->orders->findByGlobalId($employee->employeeUuid, $globalOrderId)
             ?? throw new RuntimeException('Mutated order could not be reloaded.');
-        return $this->serializer->serializeOrder($order, $this->policy->evaluate($employee, $order, $workflow), $this->quality?->orderQuality($order->orderUuid, $order->openExceptionUuid, $employee->employeeUuid), $this->documents?->summary($order->orderUuid));
+        $pieces = $this->tracks === null ? null : ($this->tracks->piecesFor($this->tracks->orderRows([$order->orderUuid]), $employee, $workflow)[$order->orderUuid] ?? null);
+        if ($pieces !== null && $this->quality !== null) {
+            foreach ($pieces['tracks'] as &$track) {
+                if ($track['openException'] !== null) {
+                    $track['openException'] = $this->quality->viewerSummary($track['openException']['id'], $employee->employeeUuid) ?? $track['openException'];
+                }
+            }
+            unset($track);
+        }
+        return $this->serializer->serializeOrder($order, $this->policy->evaluate($employee, $order, $workflow), $this->quality?->orderQuality($order->orderUuid, $order->openExceptionUuid, $employee->employeeUuid), $this->documents?->summary($order->orderUuid), $pieces);
     }
 
     private function blocked(string $reason, string $operation, ?OperationalOrder $order = null): ApiException
@@ -533,6 +547,7 @@ final readonly class OrderOperationsService
             'order_unavailable' => new ApiException(409, 'ORDER_UNAVAILABLE', 'The order is not available for production.'),
             'production_completed' => new ApiException(409, 'INVALID_STAGE_TRANSITION', 'Production is already completed.'),
             'exception_pending' => new ApiException(409, 'ORDER_BLOCKED_BY_EXCEPTION', 'The order is waiting for a production exception decision.'),
+            OrderAccessPolicy::BLOCKED_PIECES_IN_REWORK => new ApiException(409, 'ORDER_PIECES_IN_REWORK', 'Comanda nu poate fi ambalată: o bucată este încă în refacere.'),
             \Arasya\Operations\Document\DocumentGuard::BLOCKED_REASON => \Arasya\Operations\Document\DocumentGuard::blocked(),
             'workflow_unavailable' => new ApiException(503, 'WORKFLOW_UNAVAILABLE', 'Production workflow is not ready.'),
             default => new ApiException(403, 'UNAUTHORIZED_ACTION', $operation === self::OPERATION_CLAIM ? 'You cannot claim this order.' : 'You cannot complete this stage.'),

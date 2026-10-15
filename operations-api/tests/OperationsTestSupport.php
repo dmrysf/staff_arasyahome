@@ -61,6 +61,27 @@ final class OperationsTestSupport
      * @param array<string, string> $query
      * @return array{status: int, body: array<string, mixed>|null, headers: array<string, string>}
      */
+    /**
+     * Disposable test databases only: removes per-piece rework rows (migration 028), all of them or those of the given
+     * orders, in foreign-key order, so a test can delete its exceptions and orders afterwards. Production never deletes them.
+     * @param list<string>|null $orderUuids
+     */
+    public static function clearPieces(PDO $pdo, ?array $orderUuids = null): void
+    {
+        if (!str_contains(strtolower((string) $pdo->query('SELECT DATABASE()')->fetchColumn()), 'test')) throw new \RuntimeException('Test database required.');
+        if ($pdo->query("SHOW TABLES LIKE 'production_tracks'")->fetchColumn() === false || $orderUuids === []) return;
+        $in = $orderUuids === null ? null : implode(',', array_map([$pdo, 'quote'], $orderUuids));
+        $where = static fn (string $column): string => $in === null ? '' : " WHERE {$column} IN ({$in})";
+        $pdo->exec('DELETE i FROM production_track_idempotency i INNER JOIN production_tracks t ON t.track_uuid = i.track_uuid' . $where('t.order_uuid'));
+        $pdo->exec('DELETE FROM production_unit_labels' . $where('order_uuid'));
+        $pdo->exec('DELETE u FROM production_exception_units u INNER JOIN production_exceptions x ON x.exception_uuid = u.exception_uuid' . $where('x.order_uuid'));
+        $pdo->exec('DELETE FROM production_exception_scopes' . $where('order_uuid'));
+        $pdo->exec('DELETE FROM production_track_events' . $where('order_uuid'));
+        $pdo->exec('DELETE FROM production_work_units' . $where('order_uuid'));
+        $pdo->exec('UPDATE production_tracks SET parent_track_uuid = NULL' . $where('order_uuid'));
+        $pdo->exec('DELETE FROM production_tracks' . $where('order_uuid'));
+    }
+
     public static function call(ApiKernel $kernel, string $method, string $path, ?array $json = null, array $headers = [], ?string $cookie = null, array $query = [], ?string $rawBody = null): array
     {
         $normalized = ['user-agent' => 'operations-integration'];

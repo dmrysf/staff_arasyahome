@@ -95,7 +95,43 @@ export type OrderActionBlockedReason =
   | "exception_pending"
   | "document_revision_pending"
   | "production_authority_source"
-  | "payment_gate_closed";
+  | "payment_gate_closed"
+  /** The order is at packing while some of its pieces are still in rework (API 2.31.0). */
+  | "pieces_in_rework";
+
+/** One physical piece of an order line ("Bucata 1/2"); trackId is set while the piece travels apart, in rework. */
+export type ProductionPiece = { id: string; itemId: string; index: number; count: number; lineNumber: number; trackId: string | null; reworkCycle: number; reviewRequired: boolean };
+
+export type PieceTrackActionId = "claim" | "complete_stage";
+
+/** Pieces that left the order because only they were defective: their own stage, owner, rework cycle and work. */
+export type PieceTrack = {
+  id: string;
+  number: number;
+  stage: { id: string; label: string | null };
+  owner: { displayName: string; isMe: boolean } | null;
+  version: number;
+  reworkCycle: number;
+  /** The pieces went through an approved return to cutting (not only a report that was later closed). */
+  reworked: boolean;
+  unitIds: string[];
+  quantity: number;
+  /** The open request of these pieces: as the employee sees it on single-order views, otherwise id/number/status. */
+  openException: { id: string; number: string; status: FaultExceptionStatus; actions?: FaultActions; orderScope?: FaultException["orderScope"] } | null;
+  /** At packing: the pieces wait for the rest of the order and rejoin it there. */
+  waitingForOrder: boolean;
+  verifyStageId: string | null;
+  resolutionConfirmed: boolean;
+  /** Completing the current stage needs the confirmation that the original defect is resolved. */
+  requiresDefectResolution: boolean;
+  nextStageId: string | null;
+  changedAt: string;
+  allowedAction: { id: PieceTrackActionId } | null;
+  blockedReason: string | null;
+};
+
+/** Every physical piece of the order and the tracks of pieces in rework. mixedProgress: not every piece is at the order's stage. */
+export type OrderPieces = { total: number; onOrder: number; inRework: number; mixedProgress: boolean; units: ProductionPiece[]; tracks: PieceTrack[] };
 
 /** Advance payment gate of a Trend Home / Outlet Perdele order: state only, never an amount. */
 export type PaymentGateState = "online" | "not_required" | "confirmed" | "waiting" | "partial" | "unknown" | "unverified";
@@ -134,6 +170,10 @@ export type StaffOrder = {
   productionDocument?: import("./documents").OrderDocumentSummary;
   /** Present only while the source's advance gate is observed or enforced. */
   paymentGate?: PaymentGateView;
+  /** Physical pieces (API 2.31.0). productionStageId is the stage of the pieces that travel with the order. */
+  pieces?: OrderPieces;
+  /** The exact piece a scanned piece label (ARASYA:U1:) identified. */
+  scannedPiece?: { unitId: string; trackId: string | null };
 };
 
 export type FaultExceptionStatus = "awaiting_acknowledgment" | "awaiting_approval" | "approved" | "rejected" | "cancelled"
@@ -210,7 +250,13 @@ export type FaultException = {
   /** Root recovery: the case ends as cancelled once the recipient receives the product. */
   cancelledByRoot: boolean;
   /** Production is routed per order: an approved return moves the whole order, not only the affected lines. Absent on older APIs. */
-  orderScope?: { orderLineCount: number; orderQuantity: number; affectedLineCount: number; affectedQuantity: number; wholeOrderMoves: boolean };
+  orderScope?: {
+    orderLineCount: number; orderQuantity: number; affectedLineCount: number; affectedQuantity: number; wholeOrderMoves: boolean;
+    /** API 2.31.0: pieces an approval moves, pieces not affected, whether only the named pieces move (on their own track). */
+    movingQuantity?: number; unaffectedQuantity?: number; partial?: boolean; piecesRecorded?: boolean; carrier?: "order" | "track"; trackId?: string | null;
+  };
+  /** The exact pieces the report named (API 2.31.0); absent for older line reports. */
+  affectedPieces?: { unitId: string; itemId: string; piece: string; index: number; count: number; lineNumber: number | null; name: string | null; code: string | null; color: string | null; reworkCycleAtReport: number; trackId: string | null }[];
   role: "responsible" | "detector" | "receiver" | "recipient" | "supervisor" | null;
   actions: FaultActions;
   detectorComment?: string | null;
@@ -219,7 +265,7 @@ export type FaultException = {
   cuttingHandoff?: { employee: string; at: string; arrivalNumber: number } | null;
   currentStage?: { id: string; label: string | null };
   acknowledgmentComment?: string | null;
-  lines?: { itemId: string; lineNumber: number; name: string; code: string | null; variant: string | null; color: string | null; quantity: number; meters: string | null }[];
+  lines?: { itemId: string; lineNumber: number; name: string; code: string | null; variant: string | null; color: string | null; quantity: number; meters: string | null; affectedQuantity?: number }[];
   decisions?: FaultDecision[];
 };
 
@@ -233,7 +279,7 @@ export type OrderQuality = {
 export type FaultReason = { key: string; label: string; requiresComment: boolean; cuttingAttributable: boolean };
 
 /** Whether the signed-in employee supervises tailoring defects, and whether the supervised flow is active. */
-export type QualityCapabilities = { tailoringSupervisor: boolean; supervisedSources: OrderSource[]; supervisedFlowActive: boolean };
+export type QualityCapabilities = { tailoringSupervisor: boolean; supervisedSources: OrderSource[]; supervisedFlowActive: boolean; /** Reporting single pieces is enabled (API 2.31.0). */ partialRework?: boolean };
 
 export type SupervisorView = "review" | "custody" | "return" | "done";
 
@@ -369,7 +415,17 @@ export type ServiceErrorCode =
   | "QR_CUTOVER_DISABLED"
   | "QR_NOT_ARASYA"
   | "QR_NOT_SUPPORTED"
-  | "QR_DOCUMENT_CONTROLLED";
+  | "QR_DOCUMENT_CONTROLLED"
+  | "PARTIAL_REWORK_DISABLED"
+  | "UNITS_INVALID"
+  | "UNIT_REVIEW_REQUIRED"
+  | "UNIT_LABEL_MISMATCH"
+  | "TRACK_NOT_FOUND"
+  | "TRACK_CHANGED"
+  | "TRACK_ALREADY_CLAIMED"
+  | "TRACK_WAITING_FOR_ORDER"
+  | "DEFECT_RESOLUTION_REQUIRED"
+  | "ORDER_PIECES_IN_REWORK";
 
 export class StaffServiceError extends Error {
   constructor(public readonly code: ServiceErrorCode, message?: string, public readonly details?: Readonly<Record<string, unknown>>) {

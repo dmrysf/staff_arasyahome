@@ -87,6 +87,7 @@ export function OrderActionPanel({ order, workflow, service, cutting, onUpdated,
             <p className="eyebrow">{t("common.confirmationRequired")}</p>
             <h2 id="detail-confirmation-title">{orderActionConfirmation[action.id].title}</h2>
             <p>{t("orderAction.orderNote", { number: order.orderNumber, note: orderActionConfirmation[action.id].note })}</p>
+            {order.pieces?.mixedProgress && <p className="order-notice order-notice-muted" role="note" data-testid="order-pieces-scope">{t("piece.choose.order", { count: order.pieces.onOrder, stage: current?.label ?? "" })}</p>}
             {cuttingClaim && <>
               {qrToken ? <p role="status">{t("orderAction.qrCaptured")}</p> : <QrCapture onToken={setQrToken} disabled={state.status === "submitting"} />}
               {ownedCount === null ? <p>{t("orderAction.checkingWork")}</p> : ownedCount > 0 && <div className="order-notice order-notice-warning"><strong>{t("orderAction.alreadyOwned", { count: ownedCount })}</strong><p>{t("orderAction.multipleBody")}</p><label><input type="checkbox" checked={confirmedMultiple} onChange={(e) => setConfirmedMultiple(e.target.checked)} /> {t("orderAction.multipleConfirm")}</label></div>}

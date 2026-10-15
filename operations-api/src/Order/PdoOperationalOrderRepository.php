@@ -203,6 +203,17 @@ final readonly class PdoOperationalOrderRepository implements OperationalOrderRe
             );
         }
 
+        $tracksByOrder = [];
+        try {
+            $tracks = $this->pdo->prepare("SELECT track_uuid, order_uuid, stage_id, owner_employee_uuid FROM production_tracks WHERE status = 'active' AND order_uuid IN ({$placeholders}) ORDER BY track_number");
+            $tracks->execute($orderUuids);
+            foreach ($tracks->fetchAll(PDO::FETCH_ASSOC) as $track) {
+                $tracksByOrder[(string) $track['order_uuid']][] = ['trackUuid' => (string) $track['track_uuid'], 'stageId' => (string) $track['stage_id'], 'ownerEmployeeUuid' => $track['owner_employee_uuid'] === null ? null : (string) $track['owner_employee_uuid']];
+            }
+        } catch (\PDOException) {
+            // Before migration 028 no order has pieces in rework.
+        }
+
         $orders = [];
         foreach ($rows as $row) {
             $relation = null;
@@ -245,6 +256,7 @@ final readonly class PdoOperationalOrderRepository implements OperationalOrderRe
                 $row['payment_method'] === null ? null : (string) $row['payment_method'],
                 $row['advance_status'] === null ? null : (string) $row['advance_status'],
                 $row['payment_reversed_at'] === null ? null : (string) $row['payment_reversed_at'],
+                $tracksByOrder[(string) $row['order_uuid']] ?? [],
             );
         }
         return $orders;
