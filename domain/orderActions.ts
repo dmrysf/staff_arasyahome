@@ -5,7 +5,7 @@ const ACTIONS: readonly OrderActionId[] = ["claim", "complete_stage", "complete_
 const BLOCKED_REASONS: readonly OrderActionBlockedReason[] = [
   "claimed_by_other", "stage_not_allowed", "production_completed", "order_unavailable", "permission_missing", "workflow_unavailable",
   "exception_pending", "document_revision_pending", "production_authority_source", "payment_gate_closed", "pieces_in_rework",
-  "pieces_held", "pieces_awaiting_reunion", "plan_confirmation_required", "pieces_incomplete", "route_incomplete", "defect_unresolved",
+  "pieces_held", "pieces_awaiting_reunion", "plan_confirmation_required", "pieces_incomplete", "route_incomplete", "defect_unresolved", "assisted_unverified",
 ];
 
 // Words in the active language (i18n catalogs); the action ids and blocked reasons are the server's codes.

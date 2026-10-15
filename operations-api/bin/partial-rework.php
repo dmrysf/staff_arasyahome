@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-// Controlled activation of the per-piece capabilities, migrations 028 and 029 (operator only; changes no order stage,
+// Controlled activation of the per-piece capabilities, migrations 028, 029 and 031 (operator only; changes no order stage,
 // permission or grant). Every flag and cohort change is audited in production_feature_flag_events.
 //
 //   php bin/partial-rework.php status
@@ -10,9 +10,11 @@ declare(strict_types=1);
 //   php bin/partial-rework.php disable --operator=<name> [--reason=<text>]
 //   php bin/partial-rework.php routing-enable --operator=<name> --confirm=ENABLE-PIECE-ROUTING [--reason=<text>]
 //   php bin/partial-rework.php routing-disable --operator=<name> [--reason=<text>]
-//   php bin/partial-rework.php cohort-add --feature=partial_rework|piece_routing --order=<global order id> --operator=<name> --reason=<text>
-//   php bin/partial-rework.php cohort-remove --feature=partial_rework|piece_routing --order=<global order id> --operator=<name> --reason=<text>
-//   php bin/partial-rework.php cohort-list --feature=partial_rework|piece_routing
+//   php bin/partial-rework.php assisted-enable --operator=<name> --confirm=ENABLE-PERDEA-ASSISTED-CHECKPOINTS [--reason=<text>]
+//   php bin/partial-rework.php assisted-disable --operator=<name> [--reason=<text>]
+//   php bin/partial-rework.php cohort-add --feature=partial_rework|piece_routing|perdea_assisted_checkpoints --order=<global order id> --operator=<name> --reason=<text>
+//   php bin/partial-rework.php cohort-remove --feature=partial_rework|piece_routing|perdea_assisted_checkpoints --order=<global order id> --operator=<name> --reason=<text>
+//   php bin/partial-rework.php cohort-list --feature=partial_rework|piece_routing|perdea_assisted_checkpoints
 //   php bin/partial-rework.php backfill --operator=<name> [--limit=<orders>] [--dry-run=1]
 //   php bin/partial-rework.php rollback-check
 //   php bin/partial-rework.php route-audit [--limit=<orders>] [--details=1]
@@ -20,6 +22,8 @@ declare(strict_types=1);
 // Enable globally only after API 2.32.0, Staff and Dashboard are all live, the database backup was restored once in a
 // test and the pilot cohort was verified. A pilot cohort names orders by their global id; nothing is hardcoded.
 // Disabling refuses new partial reports / new route splits and leaves every piece already on a track on its way.
+// perdea_assisted_checkpoints (route policy version 2, API 2.34.0) needs Staff with the checkpoint screens; an order that
+// already has a checkpoint keeps policy version 2 when the flag or its cohort membership is withdrawn.
 //
 // backfill writes nothing about the physical plan: piece counts are never derived from commercial quantities. With
 // --dry-run=1 it only reports, per open order, the lines whose plan needs an authorized confirmation (with the source
@@ -28,7 +32,7 @@ declare(strict_types=1);
 //
 // rollback-check exits 3 when an API older than 2.32.0 must NOT be activated: active tracks (pieces away from their
 // order), pieces that were replaced, or confirmed plans whose pieces differ from the commercial quantity exist, which an
-// older API would silently ignore. Exit 0 means no per-piece state would be lost by such a rollback.
+// older API would silently ignore; or (API older than 2.34.0) an open order already has assisted PERDEA checkpoints. Exit 0 means no per-piece state would be lost by such a rollback.
 //
 // route-audit is read-only (RouteAudit): it classifies every open order for the per-piece model (unresolved exception,
 // conflicting data, requires verified historical stage evidence, requires plan confirmation, safe identity
@@ -48,6 +52,8 @@ $commands = [
     'disable' => [['operator'], ['reason']],
     'routing-enable' => [['operator', 'confirm'], ['reason']],
     'routing-disable' => [['operator'], ['reason']],
+    'assisted-enable' => [['operator', 'confirm'], ['reason']],
+    'assisted-disable' => [['operator'], ['reason']],
     'cohort-add' => [['feature', 'order', 'operator', 'reason'], []],
     'cohort-remove' => [['feature', 'order', 'operator', 'reason'], []],
     'cohort-list' => [['feature'], []],
@@ -56,7 +62,7 @@ $commands = [
     'route-audit' => [[], ['limit', 'details']],
 ];
 $refuse = static function (string $message): never {
-    fwrite(STDERR, "Refused: {$message}\nUsage: php bin/partial-rework.php status|enable|disable|routing-enable|routing-disable|cohort-add|cohort-remove|cohort-list|backfill|rollback-check|route-audit [--name=value ...]\n");
+    fwrite(STDERR, "Refused: {$message}\nUsage: php bin/partial-rework.php status|enable|disable|routing-enable|routing-disable|assisted-enable|assisted-disable|cohort-add|cohort-remove|cohort-list|backfill|rollback-check|route-audit [--name=value ...]\n");
     exit(2);
 };
 $arguments = array_slice($argv, 1);
@@ -86,8 +92,11 @@ if ($command === 'enable' && $options['confirm'] !== 'ENABLE-PARTIAL-REWORK') {
 if ($command === 'routing-enable' && $options['confirm'] !== 'ENABLE-PIECE-ROUTING') {
     $refuse('the confirmation phrase does not match.');
 }
-if (isset($options['feature']) && !in_array($options['feature'], ['partial_rework', 'piece_routing'], true)) {
-    $refuse('--feature must be partial_rework or piece_routing.');
+if ($command === 'assisted-enable' && $options['confirm'] !== 'ENABLE-PERDEA-ASSISTED-CHECKPOINTS') {
+    $refuse('the confirmation phrase does not match.');
+}
+if (isset($options['feature']) && !in_array($options['feature'], ['partial_rework', 'piece_routing', 'perdea_assisted_checkpoints'], true)) {
+    $refuse('--feature must be partial_rework, piece_routing or perdea_assisted_checkpoints.');
 }
 if (isset($options['dry-run']) && !in_array($options['dry-run'], ['0', '1'], true)) {
     $refuse('--dry-run must be 0 or 1.');
@@ -106,9 +115,9 @@ $features = new FeatureActivation($pdo);
 $now = (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format('Y-m-d H:i:s.u');
 $print = static fn (array $payload) => fwrite(STDOUT, json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n");
 try {
-    if (in_array($command, ['enable', 'disable', 'routing-enable', 'routing-disable'], true)) {
-        $feature = str_starts_with($command, 'routing') ? FeatureActivation::PIECE_ROUTING : FeatureActivation::PARTIAL_REWORK;
-        $on = in_array($command, ['enable', 'routing-enable'], true);
+    if (in_array($command, ['enable', 'disable', 'routing-enable', 'routing-disable', 'assisted-enable', 'assisted-disable'], true)) {
+        $feature = str_starts_with($command, 'routing') ? FeatureActivation::PIECE_ROUTING : (str_starts_with($command, 'assisted') ? FeatureActivation::PERDEA_ASSISTED_CHECKPOINTS : FeatureActivation::PARTIAL_REWORK);
+        $on = in_array($command, ['enable', 'routing-enable', 'assisted-enable'], true);
         $result = $features->setEnabled($feature, $on, $operator, $reason !== '' ? $reason : ($on ? 'Enabled' : 'Disabled') . ' from the operator CLI', $now);
         $print(['feature' => $feature, 'enabled' => $result['enabled'], 'changed' => $result['changed']] + $units->inventory());
         exit(0);
@@ -189,14 +198,20 @@ try {
         $diverging = (int) $pdo->query("SELECT COUNT(*) FROM production_line_plan_heads h INNER JOIN production_line_plans p ON p.plan_uuid = h.plan_uuid
             INNER JOIN operational_order_items i ON i.item_uuid = h.item_uuid INNER JOIN operational_orders o ON o.order_uuid = h.order_uuid
             WHERE p.piece_count IS NOT NULL AND p.piece_count <> i.quantity AND o.production_completed_at IS NULL")->fetchColumn();
-        $unsafe = $inventory['activeTracks'] > 0 || $inventory['replacements'] > 0 || $diverging > 0;
+        $assisted = 0;
+        if ((new \Arasya\Operations\Production\AssistedCheckpoints($pdo))->available()) {
+            $assisted = (int) $pdo->query('SELECT COUNT(DISTINCT c.order_uuid) FROM production_assisted_checkpoints c INNER JOIN operational_orders o ON o.order_uuid = c.order_uuid WHERE o.production_completed_at IS NULL')->fetchColumn();
+        }
+        $unsafe = $inventory['activeTracks'] > 0 || $inventory['replacements'] > 0 || $diverging > 0 || $assisted > 0;
         $print(['rollbackToOlderApiSafe' => !$unsafe, 'activeTracks' => $inventory['activeTracks'], 'activeRouteTracks' => $inventory['activeRouteTracks'],
-            'replacements' => $inventory['replacements'], 'openLinesWithPiecesDifferentFromQuantity' => $diverging,
-            'rule' => 'Do not activate an API older than 2.32.0 while this check fails: it would ignore pieces on tracks, replacements and confirmed piece counts.']);
+            'replacements' => $inventory['replacements'], 'openLinesWithPiecesDifferentFromQuantity' => $diverging, 'openOrdersWithAssistedCheckpoints' => $assisted,
+            'rule' => 'Do not activate an API older than 2.32.0 while this check fails: it would ignore pieces on tracks, replacements and confirmed piece counts. Do not activate an API older than 2.34.0 while open orders have assisted PERDEA checkpoints: it would not require their verification.']);
         exit($unsafe ? 3 : 0);
     }
     $print(['partialRework' => $features->enabled(FeatureActivation::PARTIAL_REWORK), 'pieceRouting' => $features->enabled(FeatureActivation::PIECE_ROUTING),
-        'partialReworkCohort' => count($features->cohort(FeatureActivation::PARTIAL_REWORK)), 'pieceRoutingCohort' => count($features->cohort(FeatureActivation::PIECE_ROUTING))] + $units->inventory());
+        'perdeaAssistedCheckpoints' => $features->enabled(FeatureActivation::PERDEA_ASSISTED_CHECKPOINTS),
+        'partialReworkCohort' => count($features->cohort(FeatureActivation::PARTIAL_REWORK)), 'pieceRoutingCohort' => count($features->cohort(FeatureActivation::PIECE_ROUTING)),
+        'perdeaAssistedCheckpointsCohort' => count($features->cohort(FeatureActivation::PERDEA_ASSISTED_CHECKPOINTS))] + $units->inventory());
 } catch (Throwable $error) {
     if ($pdo->inTransaction()) {
         $pdo->rollBack();

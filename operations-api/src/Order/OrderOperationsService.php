@@ -399,6 +399,9 @@ final readonly class OrderOperationsService
         (new \Arasya\Operations\Production\PieceVerification($this->pdo))->complete($workflow, $order->orderUuid, null, $current->id, ($completion['defectResolved'] ?? null) === true, $employee->employeeUuid, $expectedVersion, $context->requestId, $now);
         // The central route policy chooses the next stage (PERDEA skips 6-7; a mixed order splits by route).
         (new \Arasya\Operations\Production\WorkUnits($this->pdo))->ensure($order->orderUuid, $now, 'on_demand');
+        // Route policy version 2: every PERDEA piece travelling with the order must be verified at stage 6 / 7 in its current
+        // cycle before the order leaves the stage; the DRAPERII work alone never completes the basket.
+        (new \Arasya\Operations\Production\AssistedCheckpoints($this->pdo))->requireVerified($workflow, $order->orderUuid, null, $current->id);
         $route = $routing->plan($workflow, $order->orderUuid, null, $current->id, $now);
         $next = $route['next'];
         if ($next === null) {
@@ -571,6 +574,7 @@ final readonly class OrderOperationsService
             'defect_unresolved' => new ApiException(409, 'DEFECT_RESOLUTION_REQUIRED', 'Defectul inițial nu a fost confirmat ca remediat în ciclul curent.'),
             'pieces_incomplete' => new ApiException(409, 'ORDER_PIECES_INCOMPLETE', 'Comanda nu are toate bucățile necesare, valide, pentru ambalare.'),
             'route_incomplete' => new ApiException(409, 'ORDER_ROUTE_INCOMPLETE', 'O bucată nu a trecut prin toate etapele aplicabile tipului ei.'),
+            'assisted_unverified' => new ApiException(409, 'ASSISTED_VERIFICATION_REQUIRED', 'Lucrarea auxiliară pentru această perdea nu a fost confirmată.'),
             'plan_confirmation_required' => new ApiException(409, 'PLAN_CONFIRMATION_REQUIRED', 'Planul de producție trebuie reconfirmat: comanda s-a schimbat la sursă.'),
             \Arasya\Operations\Document\DocumentGuard::BLOCKED_REASON => \Arasya\Operations\Document\DocumentGuard::blocked(),
             'workflow_unavailable' => new ApiException(503, 'WORKFLOW_UNAVAILABLE', 'Production workflow is not ready.'),

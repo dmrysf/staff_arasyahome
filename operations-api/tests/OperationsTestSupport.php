@@ -75,7 +75,7 @@ final class OperationsTestSupport
         if ($pdo->query("SHOW TABLES LIKE 'production_line_plans'")->fetchColumn() !== false) {
             // Migration 029 rows first (they reference pieces, tracks and exceptions).
             $pdo->exec('UPDATE production_material_records SET corrects_record_uuid = NULL' . $where('order_uuid'));
-            foreach (['production_route_reconciliation_stages', 'production_route_reconciliations', 'production_unit_verifications', 'production_material_records', 'production_custody_events', 'production_unit_custody', 'production_unit_replacements', 'production_unit_stage_log', 'production_route_decisions', 'production_pilot_cohort', 'production_feature_flag_events'] as $table) {
+            foreach (['production_assisted_checkpoint_events', 'production_assisted_checkpoints', 'production_route_reconciliation_stages', 'production_route_reconciliations', 'production_unit_verifications', 'production_material_records', 'production_custody_events', 'production_unit_custody', 'production_unit_replacements', 'production_unit_stage_log', 'production_route_decisions', 'production_pilot_cohort', 'production_feature_flag_events'] as $table) {
                 $pdo->exec("DELETE FROM {$table}" . $where('order_uuid'));
             }
             $pdo->exec('DELETE c FROM production_unit_cycles c INNER JOIN production_work_units u ON u.unit_uuid = c.unit_uuid' . $where('u.order_uuid'));

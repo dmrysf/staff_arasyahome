@@ -64,12 +64,13 @@ final readonly class RouteReconciliation
 
     /**
      * The applicable stages of a piece cycle that precede its ledger start (from cutting onward), in workflow order.
-     * Only these can ever be reconciled. @return list<string>
+     * Only these can ever be reconciled. Under route policy version 2 ($assisted) a PERDEA piece's stages 6 and 7 are
+     * applicable (assisted checkpoints) and need evidence like any other stage. @return list<string>
      */
-    public static function preLedgerStages(ProductionWorkflow $workflow, string $productType, string $ledgerStart): array
+    public static function preLedgerStages(ProductionWorkflow $workflow, string $productType, string $ledgerStart, bool $assisted = false): array
     {
         $first = ProductRoutePolicy::canonical($workflow) ? CuttingLifecycle::STAGE : $workflow->stages[0]->id;
-        $route = ProductRoutePolicy::route($workflow, $productType);
+        $route = ProductRoutePolicy::route($workflow, $productType, $assisted);
         $stages = [];
         $inside = false;
         foreach ($workflow->stages as $stage) {
@@ -125,10 +126,11 @@ final readonly class RouteReconciliation
         $activity->execute([$orderUuid]);
         $events = $activity->fetchAll(PDO::FETCH_ASSOC);
         $result = [];
+        $assisted = (new AssistedCheckpoints($this->pdo))->appliesTo($orderUuid);
         foreach ($units as $unit) {
             $key = (string) $unit['unit_uuid'] . '|' . (int) $unit['rework_cycle'];
             $start = $unit['started_stage_id'] === null ? null : (string) $unit['started_stage_id'];
-            $pre = $start === null ? [] : self::preLedgerStages($workflow, $types[(string) $unit['item_uuid']] ?? ProductRoutePolicy::UNKNOWN, $start);
+            $pre = $start === null ? [] : self::preLedgerStages($workflow, $types[(string) $unit['item_uuid']] ?? ProductRoutePolicy::UNKNOWN, $start, $assisted);
             $done = $reconciled[$key] ?? [];
             $candidates = [];
             foreach ($events as $event) {
@@ -162,7 +164,7 @@ final readonly class RouteReconciliation
         if (!is_array($ledger)) {
             throw new ApiException(409, 'ROUTE_LEDGER_MISSING', 'Bucata nu are încă un registru de etape; confirmă planul de producție.');
         }
-        $pre = self::preLedgerStages($workflow, $productType, (string) $ledger['started_stage_id']);
+        $pre = self::preLedgerStages($workflow, $productType, (string) $ledger['started_stage_id'], (new AssistedCheckpoints($this->pdo))->appliesTo((string) $order['order_uuid']));
         $completed = $this->pdo->prepare("SELECT stage_id FROM production_unit_stage_log WHERE unit_uuid = ? AND rework_cycle = ? AND outcome = 'completed'");
         $completed->execute([$unit['unit_uuid'], $cycle]);
         $already = array_flip($completed->fetchAll(PDO::FETCH_COLUMN));

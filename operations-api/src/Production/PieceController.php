@@ -25,6 +25,7 @@ use Arasya\Operations\Security\CsrfGuard;
  *   POST /production-units/{unitId}/material                                 actual | replacement_actual | waste | remnant | correction
  *   GET  /production-units/{unitId}/history                                  lineage, labels, stage ledger, custody, material
  *   POST /production-units/{unitId}/route-evidence                           verified evidence of stages before the piece's ledger (030)
+ *   POST /production-units/{unitId}/assisted-checkpoint                      take | return | verify a PERDEA piece at stage 6 / 7 (031)
  */
 final readonly class PieceController
 {
@@ -69,7 +70,7 @@ final readonly class PieceController
             $input = $this->body($request, ['unitIds', 'locationId', 'confirmed'], ['unitIds', 'confirmed']);
             return $this->json($this->pieces->reunite($session->employee, $input, $request->header('idempotency-key') ?? '', $request->requestId));
         }
-        if (preg_match('#^/production-units/([0-9a-f-]{36})/(custody|material|history|route-evidence)$#D', $request->path, $m) !== 1) {
+        if (preg_match('#^/production-units/([0-9a-f-]{36})/(custody|material|history|route-evidence|assisted-checkpoint)$#D', $request->path, $m) !== 1) {
             throw new ApiException(404, 'NOT_FOUND', 'Ruta API nu a fost găsită.');
         }
         if ($m[2] === 'history') {
@@ -86,6 +87,10 @@ final readonly class PieceController
         if ($m[2] === 'route-evidence') {
             $input = $this->body($request, ['stages', 'uncertainStages', 'note'], ['note']);
             return $this->json($this->pieces->reconcileRoute($session->employee, $m[1], $input, $key, $request->requestId), 201);
+        }
+        if ($m[2] === 'assisted-checkpoint') {
+            $input = $this->body($request, ['action', 'stageId', 'outcome', 'expectedVersion', 'qrToken', 'note'], ['action', 'stageId', 'expectedVersion', 'qrToken']);
+            return $this->json($this->pieces->assistedCheckpoint($session->employee, $m[1], $input, $key, $request->requestId));
         }
         if ($m[2] === 'custody') {
             $input = $this->body($request, ['action', 'expectedVersion', 'locationId', 'holdReason', 'qrToken', 'note'], ['action', 'expectedVersion', 'qrToken']);

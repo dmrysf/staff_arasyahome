@@ -164,6 +164,8 @@ export const enErrors: { readonly [K in keyof typeof roErrors]: string } = {
   "error.TRACK_WAITING_FOR_ORDER.message": "The piece reached packing and waits for the rest of the order. It is packed together with it.",
   "error.DEFECT_RESOLUTION_REQUIRED.title": "Confirm the fix",
   "error.DEFECT_RESOLUTION_REQUIRED.message": "The defect was found at this stage. Confirm that it is resolved before completing.",
+  "error.ASSISTED_VERIFICATION_REQUIRED.title": "Check the curtains",
+  "error.ASSISTED_VERIFICATION_REQUIRED.message": "The auxiliary work for this curtain has not been confirmed. The order cannot move on while products are unfinished at this stage.",
   "error.ORDER_PIECES_IN_REWORK.title": "A piece is in rework",
   "error.ORDER_PIECES_IN_REWORK.message": "The order cannot be packed until every piece reached packing.",
   "error.RECEIVER_NOT_ALLOWED.title": "The responsible cutter is available",

@@ -271,6 +271,7 @@ export const tr: Catalog = {
   "orderAction.blocked.plan_confirmation_required": "Bir satırın fiziksel planı yetkili bir kişi tarafından doğrulanıp onaylanmalı.",
   "orderAction.blocked.pieces_incomplete": "Eksik parça var veya bir parçanın kimliği doğrulanmalı. Sipariş henüz devam edemez.",
   "orderAction.blocked.route_incomplete": "Sipariş henüz paketlenemez: bir parça rotasındaki tüm aşamaları bitirmedi.",
+  "orderAction.blocked.assisted_unverified": "Sipariş ilerleyemez: bir perdenin yardımcı işi 6. veya 7. aşamada kontrol edilmedi.",
   "orderAction.blocked.defect_unresolved": "Sipariş henüz paketlenemez: bir hatanın giderildiği onaylanmadı.",
   "orderAction.orderNote": "Sipariş #{number}. {note}",
   "orderAction.qrCaptured": "QR etiketi okundu · sunucu aynı siparişi kontrol ediyor.",

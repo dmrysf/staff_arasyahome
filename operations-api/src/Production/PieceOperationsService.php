@@ -352,6 +352,102 @@ final readonly class PieceOperationsService
         });
     }
 
+    /**
+     * One action on the assisted checkpoint of a PERDEA piece at stage 6 or 7 (route policy version 2, AssistedCheckpoints).
+     * take / return: the helper who physically takes the piece for the auxiliary work and brings it back (any active Staff
+     * employee with the claim permission who reaches the order's source). verify: the stage employee (or the tailoring
+     * quality supervisor) checks the returned piece and records performed or not_performed. The stage is named explicitly
+     * and must be the piece's current stage, the piece label (or the order QR with this piece chosen) is scanned, and
+     * expectedVersion is the checkpoint version (0 before the first action). Writes no stage completion and moves nothing.
+     * @param array<string, mixed> $input @return array<string, mixed>
+     */
+    public function assistedCheckpoint(EmployeeIdentity $actor, string $unitId, array $input, string $key, string $requestId): array
+    {
+        IdempotencyStore::requireKey($key);
+        $unitUuid = WorkUnits::isUuid($unitId) ? $unitId : throw new ApiException(404, 'UNIT_NOT_FOUND', 'Bucata nu a fost găsită.');
+        $action = $input['action'] ?? null;
+        if (!in_array($action, AssistedCheckpoints::ACTIONS, true)) {
+            throw new ApiException(400, 'INVALID_REQUEST', 'action trebuie să fie take, return sau verify.');
+        }
+        $stageId = $input['stageId'] ?? null;
+        if (!is_string($stageId) || !in_array($stageId, ProductRoutePolicy::ASSISTED_STAGES, true)) {
+            throw new ApiException(400, 'INVALID_REQUEST', 'stageId trebuie să fie bottom-hem sau side-hem.');
+        }
+        $outcome = $input['outcome'] ?? null;
+        if ($action === 'verify' ? !in_array($outcome, AssistedCheckpoints::OUTCOMES, true) : $outcome !== null) {
+            throw new ApiException(400, 'INVALID_REQUEST', 'outcome (performed sau not_performed) este obligatoriu numai la verificare.');
+        }
+        $expected = $input['expectedVersion'] ?? null;
+        if (!is_int($expected) || $expected < 0) {
+            throw new ApiException(400, 'INVALID_REQUEST', 'expectedVersion trebuie să fie un număr întreg nenegativ (0 înaintea primei acțiuni).');
+        }
+        $token = is_string($input['qrToken'] ?? null) ? trim($input['qrToken']) : throw new ApiException(400, 'QR_REQUIRED', 'Scanează eticheta bucății sau codul QR al comenzii.');
+        $note = is_string($input['note'] ?? null) && trim($input['note']) !== '' ? mb_substr(trim($input['note']), 0, 500) : null;
+        $hash = IdempotencyStore::hash('piece.assisted', $unitUuid, [$action, $stageId, $outcome, $expected, strtoupper($token), $note]);
+        return $this->transaction(function () use ($actor, $unitUuid, $action, $stageId, $outcome, $expected, $token, $note, $key, $hash, $requestId): array {
+            [$order, $unit] = $this->lockUnit($unitUuid);
+            $employee = $this->lockEmployee($actor);
+            $this->requirePlanReader($employee, $order);
+            $replay = $this->idempotency->replay($employee->employeeUuid, $key, 'piece.assisted', $unitUuid, $hash);
+            if ($replay !== null) {
+                return $replay;
+            }
+            if (!$employee->hasApplication('staff') || !$employee->reachesSource((string) $order['source_key'])) {
+                throw new ApiException(404, 'UNIT_NOT_FOUND', 'Bucata nu a fost găsită.');
+            }
+            $checkpoints = new AssistedCheckpoints($this->pdo);
+            $workflow = $this->workflow();
+            if (!$checkpoints->available() || !ProductRoutePolicy::assistedStage($workflow, $stageId) || !$checkpoints->appliesTo((string) $order['order_uuid'])) {
+                throw new ApiException(409, 'ASSISTED_CHECKPOINT_NOT_APPLICABLE', 'Verificarea lucrării auxiliare nu se aplică acestei comenzi.');
+            }
+            if ($order['production_completed_at'] !== null || $order['operational_status'] === 'unavailable') {
+                throw new ApiException(409, 'PRODUCTION_COMPLETED', 'Comanda nu mai este în producție.');
+            }
+            $line = (new ManufacturingPlans($this->pdo))->line((string) $order['order_uuid'], (string) $unit['item_uuid']);
+            if ($line === null || !$line['known']) {
+                throw new ApiException(409, 'PLAN_CONFIRMATION_REQUIRED', 'Confirmă mai întâi planul de producție al liniei.');
+            }
+            if (ProductRoutePolicy::requirement($workflow, (string) $line['plan']['productType'], $stageId, true) !== ProductRoutePolicy::ASSISTED_CHECKPOINT) {
+                throw new ApiException(409, 'ASSISTED_CHECKPOINT_NOT_APPLICABLE', 'Numai o perdea are verificare de lucrare auxiliară la această etapă.');
+            }
+            if ((int) $unit['review_required'] === 1) {
+                throw new ApiException(409, 'PIECE_REVIEW_REQUIRED', 'Identitatea bucății necesită mai întâi o verificare.');
+            }
+            if ($this->pieceStage($order, $unit) !== $stageId) {
+                throw new ApiException(409, 'ASSISTED_STAGE_MISMATCH', 'Bucata nu se află la această etapă. Reîncarcă comanda.');
+            }
+            if ($this->carrierException($order, $unit) !== null) {
+                throw new ApiException(409, 'ORDER_BLOCKED_BY_EXCEPTION', 'Bucata așteaptă decizia unei excepții de producție.');
+            }
+            $custody = $this->custodyRow($unitUuid);
+            if ($action !== 'return' && $custody !== null && $custody['hold_reason'] !== null) {
+                throw new ApiException(409, 'ORDER_PIECES_HELD', 'Bucata este reținută fizic; eliberează reținerea înainte de a continua.');
+            }
+            $supervisor = (new TailoringSupervisorPolicy($this->pdo, $this->clock))->supervises($employee, (string) $order['source_key']);
+            if ($action === 'verify') {
+                $via = $employee->worksAt($stageId, (string) $order['source_key']) ? 'stage_employee' : ($supervisor ? 'tailoring_quality_supervisor' : null);
+                if ($via === null) {
+                    throw new ApiException(403, 'ASSISTED_VERIFY_NOT_ALLOWED', 'Numai un angajat al acestei etape sau șeful de croitorie poate verifica lucrarea auxiliară.');
+                }
+            } else {
+                if (!$this->authorization->can($employee, 'orders.claim')) {
+                    throw new ApiException(403, 'UNAUTHORIZED_ACTION', 'Nu poți prelua lucrări de producție.');
+                }
+                $via = 'helper';
+            }
+            $scanned = $this->verifyPieceScan($order, $unit, $token);
+            $current = $checkpoints->lockRow($unitUuid, (int) $unit['rework_cycle'], $stageId);
+            if (($current === null ? 0 : (int) $current['version']) !== $expected) {
+                throw new ApiException(409, 'ASSISTED_CHECKPOINT_CHANGED', 'Verificarea perdelei s-a schimbat. Reîncarcă înainte de a continua.');
+            }
+            $now = $this->now();
+            $version = $checkpoints->apply($order, $unit, $unit['track_uuid'] === null ? null : (string) $unit['track_uuid'], $stageId, $current, $action, $outcome, $employee->employeeUuid, $via, $scanned, $note, $requestId, $key, $now);
+            $response = ['checkpoint' => ['unitId' => $unitUuid, 'stageId' => $stageId, 'reworkCycle' => (int) $unit['rework_cycle'], 'version' => $version]] + $this->planPayload($employee, $order);
+            $this->idempotency->store($employee->employeeUuid, $key, 'piece.assisted', $unitUuid, $hash, $response, $now);
+            return $response;
+        });
+    }
+
     // ------------------------------------------------------------------ history
 
     /** Audit view of one piece (also a retired or replaced one). @return array<string, mixed> */
@@ -384,6 +480,7 @@ final readonly class PieceOperationsService
             'labels' => array_map(static fn (array $row): array => ['payload' => UnitLabelReference::fromStored((string) $row['label_reference'])->payload(), 'status' => (string) $row['status'],
                 'issuedAt' => self::iso((string) $row['issued_at']), 'revokedAt' => $row['revoked_at'] === null ? null : self::iso((string) $row['revoked_at'])], $labels->fetchAll(PDO::FETCH_ASSOC)),
             'material' => (new MaterialLedger($this->pdo))->forUnits([$unitUuid]),
+            'assistedCheckpoints' => (new AssistedCheckpoints($this->pdo))->history($unitUuid),
         ];
     }
 
@@ -400,19 +497,46 @@ final readonly class PieceOperationsService
         }
         $features = new FeatureActivation($this->pdo);
         $evidence = (new RouteReconciliation($this->pdo))->evidence($workflow, (string) $order['order_uuid']);
+        $checkpoints = new AssistedCheckpoints($this->pdo);
+        $assisted = $checkpoints->appliesTo((string) $order['order_uuid']);
+        // Route policy version 2: the current-stage checkpoint of every PERDEA piece at stage 6 / 7, per carrier.
+        $checks = [];
+        if ($assisted) {
+            $trackStages = [];
+            foreach ($pieces as $itemPieces) {
+                foreach ($itemPieces as $piece) {
+                    if ($piece['trackId'] !== null) $trackStages[$piece['trackId']] = null;
+                }
+            }
+            $carriers = [[null, (string) $order['production_stage_id']]];
+            if ($trackStages !== []) {
+                $statement = $this->pdo->prepare('SELECT track_uuid, stage_id FROM production_tracks WHERE track_uuid IN (' . implode(',', array_fill(0, count($trackStages), '?')) . ')');
+                $statement->execute(array_keys($trackStages));
+                foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) $carriers[] = [(string) $row['track_uuid'], (string) $row['stage_id']];
+            }
+            foreach ($carriers as [$track, $stage]) {
+                foreach ($checkpoints->carrier($workflow, (string) $order['order_uuid'], $track, $stage, $viewer->employeeUuid)['pieces'] ?? [] as $check) {
+                    $checks[$check['unitId']] = $check;
+                }
+            }
+        }
         foreach ($pieces as &$itemPieces) {
             foreach ($itemPieces as &$piece) {
                 $piece['routeEvidence'] = $evidence[$piece['id']] ?? null;
+                $piece['assistedCheckpoint'] = $checks[$piece['id']] ?? null;
             }
             unset($piece);
         }
         unset($itemPieces);
+        $route = static fn (string $type): array => ProductRoutePolicy::route($workflow, $type, $assisted);
         return [
             'orderId' => (string) $order['global_order_id'],
             'orderNumber' => (string) $order['order_number'],
             'canConfirm' => $this->confirmVia($viewer, $order) !== null,
             'partialRework' => $features->appliesTo(FeatureActivation::PARTIAL_REWORK, (string) $order['order_uuid']),
             'pieceRouting' => $features->appliesTo(FeatureActivation::PIECE_ROUTING, (string) $order['order_uuid']),
+            'perdeaAssistedCheckpoints' => $assisted,
+            'routePolicyVersion' => ProductRoutePolicy::version($assisted),
             'allPlansKnown' => array_filter($lines, static fn (array $line): bool => !$line['known']) === [],
             'lines' => array_map(static fn (array $line): array => [
                 'itemId' => $line['itemId'], 'sourcePlanHash' => $line['sourcePlanHash'], 'lineNumber' => $line['lineNumber'], 'name' => $line['name'], 'code' => $line['code'], 'variant' => $line['variant'], 'color' => $line['color'],
@@ -424,8 +548,10 @@ final readonly class PieceOperationsService
                 'requiresConfirmation' => !$line['known'],
                 'staleAfterSourceChange' => $line['stale'],
                 'typeVerified' => $line['typeVerified'],
-                'route' => ProductRoutePolicy::route($workflow, (string) $line['plan']['productType']),
-                'notApplicableStages' => array_values(array_diff(array_map(static fn (ProductionStage $stage): string => $stage->id, $workflow->stages), ProductRoutePolicy::route($workflow, (string) $line['plan']['productType']))),
+                'route' => $route((string) $line['plan']['productType']),
+                'notApplicableStages' => array_values(array_diff(array_map(static fn (ProductionStage $stage): string => $stage->id, $workflow->stages), $route((string) $line['plan']['productType']))),
+                // API 2.34.0: stages where this line's pieces need an assisted checkpoint instead of manufacturing.
+                'assistedStages' => array_values(array_filter(ProductRoutePolicy::ASSISTED_STAGES, static fn (string $stage): bool => ProductRoutePolicy::requirement($workflow, (string) $line['plan']['productType'], $stage, $assisted) === ProductRoutePolicy::ASSISTED_CHECKPOINT)),
                 'proposal' => $line['proposal'],
                 'pieces' => $pieces[$line['itemId']] ?? [],
             ], $lines),
@@ -485,6 +611,18 @@ final readonly class PieceOperationsService
         $statement = $this->pdo->prepare('SELECT stage_id FROM production_tracks WHERE track_uuid = ?');
         $statement->execute([$unit['track_uuid']]);
         return (string) $statement->fetchColumn();
+    }
+
+    /** The open exception blocking the carrier of a piece (the order's, or its track's). @param array<string, mixed> $order @param array<string, mixed> $unit */
+    private function carrierException(array $order, array $unit): ?string
+    {
+        if ($unit['track_uuid'] === null) {
+            return $order['open_exception_uuid'] === null ? null : (string) $order['open_exception_uuid'];
+        }
+        $statement = $this->pdo->prepare('SELECT open_exception_uuid FROM production_tracks WHERE track_uuid = ?');
+        $statement->execute([$unit['track_uuid']]);
+        $value = $statement->fetchColumn();
+        return is_string($value) ? $value : null;
     }
 
     /** The scan identifies the piece in hand: its active label, or the active order QR (the piece chosen explicitly). @param array<string, mixed> $order @param array<string, mixed> $unit */

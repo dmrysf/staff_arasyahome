@@ -122,6 +122,7 @@ const actions: Record<ServiceErrorCode, ErrorActionKey> = {
   TRACK_WAITING_FOR_ORDER: "back",
   DEFECT_RESOLUTION_REQUIRED: "back",
   ORDER_PIECES_IN_REWORK: "back",
+  ASSISTED_VERIFICATION_REQUIRED: "back",
 };
 
 /** Title, message and action of one error code in the active language (catalog keys `error.<CODE>.*`). */

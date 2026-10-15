@@ -21,7 +21,9 @@ use PDO;
  *                the carrier keeps every stage (the safe existing route) and full_route_unverified is recorded
  *
  * Every completion is also written per physical piece (production_unit_stage_log) with the cycle, employee, carrier
- * version and target stage; the packing gate reads that ledger. The product types used by a decision are locked in the
+ * version and target stage; the packing gate reads that ledger. Under route policy version 2 (AssistedCheckpoints) a
+ * PERDEA piece goes through stages 6-7 with its carrier; at those stages its verified checkpoint is its evidence, so no
+ * completion row is written for it (assistedUnits) and nobody earns piece work for it. The product types used by a decision are locked in the
  * plan, so a later edit cannot silently re-route pieces already routed. Without the piece_routing feature for the order
  * (global flag or pilot cohort) every carrier keeps the full route, exactly as before; the ledger is still written.
  *
@@ -36,11 +38,13 @@ final readonly class PieceRouting
     /**
      * Decides the route step of a carrier completing $current. Nothing is written.
      *
-     * @return array{next: ?ProductionStage, skipped: list<string>, types: list<string>, units: list<array<string, mixed>>, splits: list<array{units: list<array<string, mixed>>, next: ?ProductionStage, skipped: list<string>, types: list<string>}>, unverified: ?string, routing: bool}
+     * @return array{next: ?ProductionStage, skipped: list<string>, types: list<string>, units: list<array<string, mixed>>, splits: list<array{units: list<array<string, mixed>>, next: ?ProductionStage, skipped: list<string>, types: list<string>}>, unverified: ?string, routing: bool, assisted: bool, assistedUnits: list<string>}
      */
     public function plan(ProductionWorkflow $workflow, string $orderUuid, ?string $trackUuid, string $current, string $now): array
     {
         $full = ProductRoutePolicy::next($workflow, $current, ProductRoutePolicy::DRAPERII);
+        // Route policy version 2: PERDEA keeps stages 6-7 (assisted checkpoints), so no type leaves the carrier any more.
+        $assisted = (new AssistedCheckpoints($this->pdo))->appliesTo($orderUuid);
         $routing = (new FeatureActivation($this->pdo))->appliesTo(FeatureActivation::PIECE_ROUTING, $orderUuid);
         // Disabling activation stops new cohorts, not the routes of pieces already separated or exempted.
         if (!$routing) {
@@ -61,7 +65,8 @@ final readonly class PieceRouting
         unset($unit);
         // The lines whose production type a decision uses (locked in their plan when the decision is written).
         $typeItems = $piecewise ? array_values(array_unique(array_map(static fn (array $unit): string => (string) $unit['item_uuid'], $units))) : array_keys($lines);
-        $result = ['next' => $full['next'], 'skipped' => [], 'types' => [], 'units' => $units, 'splits' => [], 'unverified' => null, 'routing' => $routing, 'typeItems' => $typeItems];
+        $result = ['next' => $full['next'], 'skipped' => [], 'types' => [], 'units' => $units, 'splits' => [], 'unverified' => null, 'routing' => $routing, 'typeItems' => $typeItems,
+            'assisted' => $assisted, 'assistedUnits' => $assisted ? AssistedCheckpoints::checkpointUnits($workflow, $units, $current) : []];
         if (!$routing) {
             return $result;
         }
@@ -72,8 +77,8 @@ final readonly class PieceRouting
         if ($types === []) {
             return $result;
         }
-        $groups = array_values(ProductRoutePolicy::groups($workflow, $current, $types));
-        $diverges = ProductRoutePolicy::next($workflow, $current, ProductRoutePolicy::PERDEA)['next']?->id !== $full['next']?->id;
+        $groups = array_values(ProductRoutePolicy::groups($workflow, $current, $types, $assisted));
+        $diverges = ProductRoutePolicy::next($workflow, $current, ProductRoutePolicy::PERDEA, $assisted)['next']?->id !== $full['next']?->id;
         if (count($groups) > 1 && !$piecewise) {
             $result['unverified'] = 'plan_unverified';
             return $result;
@@ -107,16 +112,18 @@ final readonly class PieceRouting
     {
         $trackUuid = $parentTrack === null ? null : (string) $parentTrack['track_uuid'];
         $allUnits = [...$plan['units'], ...array_merge(...array_map(static fn (array $split): array => $split['units'], $plan['splits']) ?: [[]])];
-        // The completion of the current stage, for every piece the carrier held.
-        $this->logCompleted($allUnits, $orderUuid, $current, $trackUuid, $actorUuid, $plan['next']?->id, $versionBefore, $now);
+        // The completion of the current stage, for every piece the carrier held; a PERDEA piece at an assisted checkpoint
+        // was verified, not manufactured, by the stage employee (its checkpoint row is the evidence).
+        $assistedUnits = $plan['assistedUnits'] ?? [];
+        $this->logCompleted(array_values(array_filter($allUnits, static fn (array $unit): bool => !in_array((string) $unit['unit_uuid'], $assistedUnits, true))), $orderUuid, $current, $trackUuid, $actorUuid, $plan['next']?->id, $versionBefore, $now);
         $usedItems = [];
         if ($plan['skipped'] !== []) {
-            $decision = $this->decision($orderUuid, $trackUuid, null, 'stage_not_applicable', $current, $plan['next']?->id, $plan['skipped'], $plan['types'], $plan['units'], 'product_route_policy', $actorUuid, $parentTrack, $requestId, $now);
+            $decision = $this->decision($orderUuid, $trackUuid, null, 'stage_not_applicable', $current, $plan['next']?->id, $plan['skipped'], $plan['types'], $plan['units'], 'product_route_policy', $actorUuid, $parentTrack, $requestId, $now, $plan['assisted'] ?? false);
             $this->logNotApplicable($plan['units'], $orderUuid, $plan['skipped'], $trackUuid, $decision, $now);
             $usedItems = [...$usedItems, ...$plan['typeItems']];
         }
         if ($plan['unverified'] !== null) {
-            $this->decision($orderUuid, $trackUuid, null, 'full_route_unverified', $current, $plan['next']?->id, [], $plan['types'], $plan['units'], $plan['unverified'], $actorUuid, $parentTrack, $requestId, $now);
+            $this->decision($orderUuid, $trackUuid, null, 'full_route_unverified', $current, $plan['next']?->id, [], $plan['types'], $plan['units'], $plan['unverified'], $actorUuid, $parentTrack, $requestId, $now, $plan['assisted'] ?? false);
         }
         $created = [];
         foreach ($plan['splits'] as $index => $split) {
@@ -125,7 +132,7 @@ final readonly class PieceRouting
             $newTrack = (new ProductionTracks($this->pdo))->splitRoute($orderUuid, $parentTrack, $unitIds, $split['next']?->id ?? $current, $cycle, $actorUuid, $key . '.route.' . $index, $requestId, $now);
             // Pieces that travel apart can be told apart physically: each gets its printable label.
             (new WorkUnits($this->pdo))->issueLabels($orderUuid, $unitIds, $actorUuid, $now);
-            $decision = $this->decision($orderUuid, $trackUuid, $newTrack, 'route_split', $current, $split['next']?->id, $split['skipped'], $split['types'], $split['units'], 'product_route_policy', $actorUuid, $parentTrack, $requestId, $now);
+            $decision = $this->decision($orderUuid, $trackUuid, $newTrack, 'route_split', $current, $split['next']?->id, $split['skipped'], $split['types'], $split['units'], 'product_route_policy', $actorUuid, $parentTrack, $requestId, $now, $plan['assisted'] ?? false);
             $this->logNotApplicable($split['units'], $orderUuid, $split['skipped'], $newTrack, $decision, $now);
             $usedItems = [...$usedItems, ...array_column($split['units'], 'item_uuid')];
             $created[] = $newTrack;
@@ -168,7 +175,7 @@ final readonly class PieceRouting
     /**
      * @param list<string> $skipped @param list<string> $types @param list<array<string, mixed>> $units @param array<string, mixed>|null $parentTrack
      */
-    private function decision(string $orderUuid, ?string $trackUuid, ?string $newTrack, string $kind, string $from, ?string $to, array $skipped, array $types, array $units, string $reason, string $actorUuid, ?array $parentTrack, string $requestId, string $now): string
+    private function decision(string $orderUuid, ?string $trackUuid, ?string $newTrack, string $kind, string $from, ?string $to, array $skipped, array $types, array $units, string $reason, string $actorUuid, ?array $parentTrack, string $requestId, string $now, bool $assisted): string
     {
         $uuid = Uuid::v4();
         $cycles = array_map(static fn (array $unit): int => (int) $unit['rework_cycle'], $units);
@@ -178,7 +185,7 @@ final readonly class PieceRouting
         )->execute([
             $uuid, $orderUuid, $trackUuid, $newTrack, $kind, $from, $to, $skipped === [] ? null : json_encode($skipped, JSON_THROW_ON_ERROR), json_encode(array_values($types), JSON_THROW_ON_ERROR),
             $units === [] ? null : json_encode(array_map(static fn (array $unit): string => (string) $unit['unit_uuid'], $units), JSON_THROW_ON_ERROR),
-            $reason, ProductRoutePolicy::VERSION, $cycles === [] ? ($parentTrack === null ? null : (int) $parentTrack['rework_cycle']) : max($cycles), $actorUuid, mb_substr($requestId, 0, 100), $now,
+            $reason, ProductRoutePolicy::version($assisted), $cycles === [] ? ($parentTrack === null ? null : (int) $parentTrack['rework_cycle']) : max($cycles), $actorUuid, mb_substr($requestId, 0, 100), $now,
         ]);
         return $uuid;
     }

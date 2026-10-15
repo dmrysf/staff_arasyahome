@@ -48,3 +48,32 @@ test("every historical evidence refusal has a specific Romanian message", () => 
   }
   assert.match(physicalError(new StaffServiceError("ORDER_CHANGED", undefined, { backendCode: "RECONCILIATION_STAGE_RECORDED" })), /dovezi verificate/);
 });
+const assistedPiece = (status: string, extra: Record<string, unknown> = {}) => ({ unitId: "u1", itemId: "i", lineNumber: 1, name: "Perdea", code: "P-1", index: 1, count: 2, piece: "1/2", reworkCycle: 1, stageId: "bottom-hem",
+  status, version: 0, helper: null, verifiedBy: null, takenAt: null, returnedAt: null, verifiedAt: null, ...extra });
+const piecesWith = (assistedCheckpoints: unknown) => ({ total: 2, onOrder: 2, inRework: 0, units: [], tracks: [], allPlansKnown: true, partialRework: false, pieceRouting: true, perdeaAssistedCheckpoints: true, assistedCheckpoints });
+test("assisted PERDEA checks from API 2.34.0 map per piece; an older API without them still maps", () => {
+  const block = { stageId: "bottom-hem", policyVersion: 2, planRequired: false, required: 2, verified: 1, pieces: [assistedPiece("verified", { version: 3, verifiedBy: { displayName: "Synthetic Hemmer", isMe: true } }), assistedPiece("awaiting_work", { unitId: "u2", index: 2, piece: "2/2" })] };
+  const mapped = mapOrderPieces(piecesWith(block));
+  assert.equal(mapped.perdeaAssistedCheckpoints, true);
+  assert.deepEqual(mapped.assistedCheckpoints?.pieces.map(piece => piece.status), ["verified", "awaiting_work"]);
+  assert.equal(mapped.assistedCheckpoints?.verified, 1);
+  const older = mapOrderPieces({ total: 1, onOrder: 1, inRework: 0, units: [], tracks: [] });
+  assert.equal(older.assistedCheckpoints, null);
+  assert.equal(older.perdeaAssistedCheckpoints, false);
+});
+test("an unknown or incomplete assisted check fails closed instead of being shown as verified", () => {
+  const block = (piece: unknown) => ({ stageId: "side-hem", policyVersion: 2, planRequired: false, required: 1, verified: 0, pieces: [piece] });
+  assert.throws(() => mapOrderPieces(piecesWith(block(assistedPiece("done")))));
+  assert.throws(() => mapOrderPieces(piecesWith(block(assistedPiece("verified", { verifiedBy: { displayName: "x" } })))));
+  assert.throws(() => mapOrderPieces(piecesWith({ stageId: "side-hem", policyVersion: 2, required: 1, verified: 0, pieces: [] })));
+  const line = { ...evidenceLine(undefined).lines[0], assistedStages: ["bottom-hem", "side-hem"], pieces: [{ id: "u", index: 1, count: 2, trackId: null, assistedCheckpoint: assistedPiece("taken_for_work", { helper: { displayName: "Synthetic Helper", isMe: false } }) }] };
+  assert.equal(mapManufacturingPlan({ orderId: "source:synthetic", perdeaAssistedCheckpoints: true, lines: [line] }).lines[0].pieces[0].assistedCheckpoint?.status, "taken_for_work");
+  assert.throws(() => mapManufacturingPlan({ orderId: "source:synthetic", lines: [{ ...line, pieces: [{ id: "u", index: 1, count: 2, trackId: null, assistedCheckpoint: assistedPiece("maybe") }] }] }));
+});
+test("every assisted check refusal has a specific Romanian message", () => {
+  for (const code of ["ASSISTED_VERIFICATION_REQUIRED", "ASSISTED_WORK_IN_PROGRESS", "ASSISTED_SELF_VERIFICATION", "ASSISTED_VERIFY_NOT_ALLOWED", "ASSISTED_CHECKPOINT_CHANGED", "ASSISTED_CHECKPOINT_STATE", "ASSISTED_STAGE_MISMATCH", "ASSISTED_HELPER_MISMATCH", "ASSISTED_CHECKPOINT_NOT_APPLICABLE"]) {
+    const message = physicalError(new StaffServiceError("ORDER_CHANGED", undefined, { backendCode: code }));
+    assert.doesNotMatch(message, /Ceva nu a funcționat|Operațiune neconfirmată/, code);
+  }
+  assert.equal(physicalError(new StaffServiceError("ORDER_CHANGED", undefined, { backendCode: "ASSISTED_VERIFICATION_REQUIRED" })), "Lucrarea auxiliară pentru această perdea nu a fost confirmată.");
+});

@@ -164,6 +164,8 @@ export const trErrors: { readonly [K in keyof typeof roErrors]: string } = {
   "error.TRACK_WAITING_FOR_ORDER.message": "Parça paketlemeye ulaştı ve siparişin geri kalanını bekliyor. Onunla birlikte paketlenir.",
   "error.DEFECT_RESOLUTION_REQUIRED.title": "Düzeltmeyi onayla",
   "error.DEFECT_RESOLUTION_REQUIRED.message": "Kusur bu aşamada bulunmuştu. Tamamlamadan önce kusurun giderildiğini onayla.",
+  "error.ASSISTED_VERIFICATION_REQUIRED.title": "Perdeleri kontrol et",
+  "error.ASSISTED_VERIFICATION_REQUIRED.message": "Bu perde için yardımcı iş onaylanmadı. Bu aşamada bitmemiş ürünler varken sipariş ilerleyemez.",
   "error.ORDER_PIECES_IN_REWORK.title": "Bir parça yeniden işlemede",
   "error.ORDER_PIECES_IN_REWORK.message": "Tüm parçalar paketlemeye ulaşana kadar sipariş paketlenemez.",
   "error.RECEIVER_NOT_ALLOWED.title": "Sorumlu kesimci müsait",

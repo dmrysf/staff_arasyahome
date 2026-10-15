@@ -164,6 +164,8 @@ export const siErrors: { readonly [K in keyof typeof roErrors]: string } = {
   "error.TRACK_WAITING_FOR_ORDER.message": "කෑල්ල ඇසුරුම් අදියරට පැමිණ ඇණවුමේ ඉතිරිය සඳහා රැඳී සිටී. එය ඇණවුම සමඟ එකට ඇසුරුම් කෙරේ.",
   "error.DEFECT_RESOLUTION_REQUIRED.title": "නිවැරදි කිරීම තහවුරු කරන්න",
   "error.DEFECT_RESOLUTION_REQUIRED.message": "දෝෂය හමු වූයේ මෙම අදියරේදීය. සම්පූර්ණ කිරීමට පෙර එය නිවැරදි කළ බව තහවුරු කරන්න.",
+  "error.ASSISTED_VERIFICATION_REQUIRED.title": "තිර පරීක්ෂා කරන්න",
+  "error.ASSISTED_VERIFICATION_REQUIRED.message": "මෙම තිරය සඳහා සහායක වැඩ තහවුරු කර නැත. මෙම අදියරේ නිම නොකළ නිෂ්පාදන ඇති තාක් ඇණවුමට ඉදිරියට යා නොහැක.",
   "error.ORDER_PIECES_IN_REWORK.title": "කෑල්ලක් නැවත සකස් කරමින් පවතී",
   "error.ORDER_PIECES_IN_REWORK.message": "සියලු කෑලි ඇසුරුම් අදියරට පැමිණෙන තුරු ඇණවුම ඇසුරුම් කළ නොහැක.",
   "error.RECEIVER_NOT_ALLOWED.title": "වගකිවයුතු කැපීම් සේවකයා සිටී",

@@ -104,12 +104,24 @@ export type OrderActionBlockedReason =
   | "plan_confirmation_required"
   | "pieces_incomplete"
   | "route_incomplete"
-  | "defect_unresolved";
+  | "defect_unresolved"
+  /** Route policy version 2 (API 2.34.0): a PERDEA piece has no verified assisted check at stage 6 or 7 in its current cycle. */
+  | "assisted_unverified";
 
 /** One physical piece of an order line ("Bucata 1/2"); trackId is set while the piece travels apart, in rework. */
 export type ProductionPiece = { id: string; itemId: string; index: number; count: number; lineNumber: number; trackId: string | null; reworkCycle: number; reviewRequired: boolean; productType?: string; fabricMeters?: string | null; replacementOf?: string | null };
 
 export type PieceTrackActionId = "claim" | "complete_stage";
+
+/** API 2.34.0: the state of one assisted PERDEA check (one piece, one stage, one production cycle). */
+export type AssistedCheckpointStatus = "awaiting_work" | "taken_for_work" | "work_returned" | "verified" | "not_performed";
+export type AssistedCheckpointPiece = {
+  unitId: string; itemId: string; lineNumber: number; name: string; code: string | null; index: number; count: number; piece: string; reworkCycle: number; stageId: string;
+  status: AssistedCheckpointStatus; version: number; helper: { displayName: string; isMe: boolean } | null; verifiedBy: { displayName: string; isMe: boolean } | null;
+  takenAt: string | null; returnedAt: string | null; verifiedAt: string | null;
+};
+/** The PERDEA pieces of one carrier that need a verified check before the carrier may complete stage 6 / 7 (null: none at this stage). */
+export type AssistedCheckpoints = { stageId: string; policyVersion: number; planRequired: boolean; required: number; verified: number; pieces: AssistedCheckpointPiece[] };
 
 /** Pieces that left the order because only they were defective: their own stage, owner, rework cycle and work. */
 export type PieceTrack = {
@@ -137,10 +149,12 @@ export type PieceTrack = {
   changedAt: string;
   allowedAction: { id: PieceTrackActionId } | null;
   blockedReason: string | null;
+  /** API 2.34.0: the assisted PERDEA checks this track needs at its current stage. */
+  assistedCheckpoints?: AssistedCheckpoints | null;
 };
 
 /** Every physical piece of the order and the tracks of pieces in rework. mixedProgress: not every piece is at the order's stage. */
-export type OrderPieces = { total: number | null; allPlansKnown?: boolean; partialRework?: boolean; pieceRouting?: boolean; requiresPieceOutcome?: boolean; requiresDefectResolution?: boolean; onOrder: number; inRework: number; mixedProgress: boolean; units: ProductionPiece[]; tracks: PieceTrack[] };
+export type OrderPieces = { total: number | null; allPlansKnown?: boolean; partialRework?: boolean; pieceRouting?: boolean; perdeaAssistedCheckpoints?: boolean; assistedCheckpoints?: AssistedCheckpoints | null; requiresPieceOutcome?: boolean; requiresDefectResolution?: boolean; onOrder: number; inRework: number; mixedProgress: boolean; units: ProductionPiece[]; tracks: PieceTrack[] };
 
 /** Advance payment gate of a Trend Home / Outlet Perdele order: state only, never an amount. */
 export type PaymentGateState = "online" | "not_required" | "confirmed" | "waiting" | "partial" | "unknown" | "unverified";
@@ -434,7 +448,8 @@ export type ServiceErrorCode =
   | "TRACK_ALREADY_CLAIMED"
   | "TRACK_WAITING_FOR_ORDER"
   | "DEFECT_RESOLUTION_REQUIRED"
-  | "ORDER_PIECES_IN_REWORK";
+  | "ORDER_PIECES_IN_REWORK"
+  | "ASSISTED_VERIFICATION_REQUIRED";
 
 export class StaffServiceError extends Error {
   constructor(public readonly code: ServiceErrorCode, message?: string, public readonly details?: Readonly<Record<string, unknown>>) {
