@@ -64,7 +64,7 @@ final readonly class QualityController
     {
         $session = $this->mutationSession($request);
         // Staff 2.26.0+ names the exact pieces (units, optionally on a rework track); older clients name lines (itemIds).
-        $input = $this->body($request, ['expectedVersion', 'itemIds', 'units', 'trackId', 'reasonKey', 'comment'], ['expectedVersion', 'reasonKey']);
+        $input = $this->body($request, ['expectedVersion', 'itemIds', 'units', 'trackId', 'reasonKey', 'comment', 'recoversExceptionId'], ['expectedVersion', 'reasonKey']);
         if (!array_key_exists('itemIds', $input) && !array_key_exists('units', $input)) {
             throw new ApiException(400, 'INVALID_REQUEST', 'Request fields are invalid.');
         }
@@ -80,7 +80,9 @@ final readonly class QualityController
             if ($path === '/capabilities') {
                 $sources = $this->supervisors()->sourcesOf($actor);
                 return $this->json(['tailoringSupervisor' => $sources !== [], 'supervisedSources' => $sources, 'supervisedFlowActive' => $this->supervisors()->isActive(),
-                    'partialRework' => (new \Arasya\Operations\Production\WorkUnits($this->pdo))->partialReworkEnabled()]);
+                    // true when the feature is on globally or for a pilot cohort; each order states its own scope (pieces.partialRework).
+                    'partialRework' => (new \Arasya\Operations\Production\FeatureActivation($this->pdo))->anywhere(\Arasya\Operations\Production\FeatureActivation::PARTIAL_REWORK),
+                    'pieceRouting' => (new \Arasya\Operations\Production\FeatureActivation($this->pdo))->anywhere(\Arasya\Operations\Production\FeatureActivation::PIECE_ROUTING)]);
             }
             if ($path === '/supervisor') {
                 $sources = $this->supervisors()->sourcesOf($actor);

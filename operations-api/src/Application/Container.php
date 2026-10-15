@@ -231,6 +231,13 @@ final class Container
                 $this->config,
                 $context,
             ),
+            new \Arasya\Operations\Production\PieceController(
+                new \Arasya\Operations\Production\PieceOperationsService($this->pdo, $authorization, $approvers, $idempotency, $this->clock, $workflows),
+                $this->authentication,
+                $csrf,
+                $this->config,
+                $context,
+            ),
         );
     }
 

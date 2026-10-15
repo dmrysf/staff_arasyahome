@@ -65,10 +65,14 @@ final readonly class OrderOperationsService
         return $this->mutate(self::OPERATION_CLAIM, $employee, $orderId, $expectedVersion, $idempotencyKey, $context, $claimIntent);
     }
 
-    /** @return array<string, mixed> serialized order after the committed (or replayed) stage completion */
-    public function completeCurrentStage(EmployeeIdentity $employee, GlobalOrderId $orderId, int $expectedVersion, string $idempotencyKey, OperationContext $context): array
+    /**
+     * @param array{pieceOutcome?: string, originalDisposition?: string} $completion API 2.32.0: when the order's pieces are
+     *        re-cut in a rework cycle, the cutter declares repair or replacement (PieceReplacement)
+     * @return array<string, mixed> serialized order after the committed (or replayed) stage completion
+     */
+    public function completeCurrentStage(EmployeeIdentity $employee, GlobalOrderId $orderId, int $expectedVersion, string $idempotencyKey, OperationContext $context, array $completion = []): array
     {
-        return $this->mutate(self::OPERATION_TRANSITION, $employee, $orderId, $expectedVersion, $idempotencyKey, $context);
+        return $this->mutate(self::OPERATION_TRANSITION, $employee, $orderId, $expectedVersion, $idempotencyKey, $context, $completion);
     }
 
     /**
@@ -131,7 +135,9 @@ final readonly class OrderOperationsService
         $baseIntent = implode('|', [$operation, $orderId->toString(), (string) $expectedVersion]);
         // Preserve hashes/replay for pre-V1 commands. QR/multiple intent gets its own canonical suffix.
         $extra = array_intersect_key($claimIntent, array_flip(['qrToken','confirmedMultiple','ownedCount']));
-        $requestHash = hash('sha256', $baseIntent . ($extra === [] ? '' : '|' . json_encode([$extra['qrToken'] ?? null, $extra['confirmedMultiple'] ?? false, $extra['ownedCount'] ?? null], JSON_THROW_ON_ERROR)), true);
+        $outcome = array_intersect_key($claimIntent, array_flip(['pieceOutcome', 'originalDisposition', 'defectResolved', 'pieceOutcomes']));
+        $requestHash = hash('sha256', $baseIntent . ($extra === [] ? '' : '|' . json_encode([$extra['qrToken'] ?? null, $extra['confirmedMultiple'] ?? false, $extra['ownedCount'] ?? null], JSON_THROW_ON_ERROR))
+            . ($outcome === [] ? '' : '|outcome|' . json_encode([$outcome['pieceOutcome'] ?? null, $outcome['originalDisposition'] ?? null, $outcome['defectResolved'] ?? null, $outcome['pieceOutcomes'] ?? null], JSON_THROW_ON_ERROR)), true);
 
         for ($attempt = 1; ; $attempt++) {
             try {
@@ -223,7 +229,7 @@ final readonly class OrderOperationsService
                 if ($decision['action'] === null) {
                     throw $this->blocked((string) $decision['blockedReason'], $operation, $order);
                 }
-                $this->applyTransition($employee, $order, $workflow, $expectedVersion, $idempotencyKey, $context, $now);
+                $this->applyTransition($employee, $order, $workflow, $expectedVersion, $idempotencyKey, $context, $now, $claimIntent);
             }
 
             $response = $this->serialize($employee, $order->globalId->toString(), $workflow);
@@ -329,6 +335,10 @@ final readonly class OrderOperationsService
         // Each canonical event carries its own idempotency key (unique per employee); the handoff event's key is
         // derived from the scan's key, and both events share the request id.
         $this->recordActivity($employee, $order, $workflow, 'stage_completed', $from, $to, $version, substr($idempotencyKey, 0, 90) . '.handoff', $context, $now);
+        // Stage 1 applies to every product type: the per-piece ledger records the completion for materialized pieces.
+        $routing = new \Arasya\Operations\Production\PieceRouting($this->pdo);
+        $routing->apply($workflow, ['next' => $to, 'skipped' => [], 'types' => [], 'units' => (new \Arasya\Operations\Production\WorkUnits($this->pdo))->carrierUnits($order->orderUuid, null), 'splits' => [], 'unverified' => null, 'routing' => false, 'typeItems' => []],
+            $order->orderUuid, null, $from->id, $employee->employeeUuid, $version, substr($idempotencyKey, 0, 90) . '.handoff', $context->requestId, $now);
         $meters = $this->pdo->prepare('SELECT SUM(meters) FROM operational_order_items WHERE order_uuid = ?');
         $meters->execute([$order->orderUuid]);
         $total = $meters->fetchColumn();
@@ -378,16 +388,19 @@ final readonly class OrderOperationsService
         (new \Arasya\Operations\Analytics\AnalyticsCapture($this->pdo))->refreshOrder($order->orderUuid);
     }
 
-    private function applyTransition(EmployeeIdentity $employee, OperationalOrder $order, ProductionWorkflow $workflow, int $expectedVersion, string $idempotencyKey, OperationContext $context, string $now): void
+    /** @param array<string, mixed> $completion */
+    private function applyTransition(EmployeeIdentity $employee, OperationalOrder $order, ProductionWorkflow $workflow, int $expectedVersion, string $idempotencyKey, OperationContext $context, string $now, array $completion = []): void
     {
         $current = $this->stage($workflow, $order->productionStageId);
-        $next = null;
-        foreach ($workflow->stages as $index => $stage) {
-            if ($stage->id === $current->id) {
-                $next = $workflow->stages[$index + 1] ?? null;
-                break;
-            }
-        }
+        $routing = new \Arasya\Operations\Production\PieceRouting($this->pdo);
+        // Re-cutting the order's pieces in a rework cycle: the cutter states whether new pieces were cut.
+        $replacement = new \Arasya\Operations\Production\PieceReplacement($this->pdo);
+        $replacement->applyOutcomes($order->orderUuid, null, $order->openExceptionUuid, $current->id, $completion, $employee->employeeUuid, $context->requestId, $idempotencyKey, $now);
+        (new \Arasya\Operations\Production\PieceVerification($this->pdo))->complete($workflow, $order->orderUuid, null, $current->id, ($completion['defectResolved'] ?? null) === true, $employee->employeeUuid, $expectedVersion, $context->requestId, $now);
+        // The central route policy chooses the next stage (PERDEA skips 6-7; a mixed order splits by route).
+        (new \Arasya\Operations\Production\WorkUnits($this->pdo))->ensure($order->orderUuid, $now, 'on_demand');
+        $route = $routing->plan($workflow, $order->orderUuid, null, $current->id, $now);
+        $next = $route['next'];
         if ($next === null) {
             $update = $this->pdo->prepare(
                 'UPDATE operational_orders
@@ -414,10 +427,15 @@ final readonly class OrderOperationsService
         }
         $this->upsertRelation($employee->employeeUuid, $order->orderUuid, $relation, $now);
         $this->recordActivity($employee, $order, $workflow, $action, $current, $next, $expectedVersion, $idempotencyKey, $context, $now);
+        // Per-piece ledger, stage_not_applicable decisions and route tracks of the pieces that follow another route.
+        $routing->apply($workflow, $route, $order->orderUuid, null, $current->id, $employee->employeeUuid, $expectedVersion, $idempotencyKey, $context->requestId, $now);
+        $tracks = new \Arasya\Operations\Production\ProductionTracks($this->pdo);
         if ($next?->id === \Arasya\Operations\Production\ProductionTracks::GATE_STAGE) {
             // Reworked pieces already waiting at packing travel with the order again from here.
-            (new \Arasya\Operations\Production\ProductionTracks($this->pdo))->mergeAtGate($order->orderUuid, $employee->employeeUuid, $idempotencyKey, $context->requestId, $now);
+            $tracks->mergeAtGate($order->orderUuid, $employee->employeeUuid, $idempotencyKey, $context->requestId, $now);
         }
+        // Pieces of another route that wait, unowned, at the stage the order reached travel with it again.
+        $tracks->mergeAligned($order->orderUuid, $employee->employeeUuid, $idempotencyKey, $context->requestId, $now);
         $meters = $this->pdo->prepare('SELECT SUM(meters) FROM operational_order_items WHERE order_uuid = ?');
         $meters->execute([$order->orderUuid]);
         $total = $meters->fetchColumn();
@@ -548,6 +566,12 @@ final readonly class OrderOperationsService
             'production_completed' => new ApiException(409, 'INVALID_STAGE_TRANSITION', 'Production is already completed.'),
             'exception_pending' => new ApiException(409, 'ORDER_BLOCKED_BY_EXCEPTION', 'The order is waiting for a production exception decision.'),
             OrderAccessPolicy::BLOCKED_PIECES_IN_REWORK => new ApiException(409, 'ORDER_PIECES_IN_REWORK', 'Comanda nu poate fi ambalată: o bucată este încă în refacere.'),
+            'pieces_awaiting_reunion' => new ApiException(409, 'ORDER_PIECES_NOT_READY', 'Comanda așteaptă reunirea pieselor.'),
+            'pieces_held' => new ApiException(409, 'ORDER_PIECES_HELD', 'O bucată este reținută fizic; eliberează reținerea înainte de ambalare.'),
+            'defect_unresolved' => new ApiException(409, 'DEFECT_RESOLUTION_REQUIRED', 'Defectul inițial nu a fost confirmat ca remediat în ciclul curent.'),
+            'pieces_incomplete' => new ApiException(409, 'ORDER_PIECES_INCOMPLETE', 'Comanda nu are toate bucățile necesare, valide, pentru ambalare.'),
+            'route_incomplete' => new ApiException(409, 'ORDER_ROUTE_INCOMPLETE', 'O bucată nu a trecut prin toate etapele aplicabile tipului ei.'),
+            'plan_confirmation_required' => new ApiException(409, 'PLAN_CONFIRMATION_REQUIRED', 'Planul de producție trebuie reconfirmat: comanda s-a schimbat la sursă.'),
             \Arasya\Operations\Document\DocumentGuard::BLOCKED_REASON => \Arasya\Operations\Document\DocumentGuard::blocked(),
             'workflow_unavailable' => new ApiException(503, 'WORKFLOW_UNAVAILABLE', 'Production workflow is not ready.'),
             default => new ApiException(403, 'UNAUTHORIZED_ACTION', $operation === self::OPERATION_CLAIM ? 'You cannot claim this order.' : 'You cannot complete this stage.'),

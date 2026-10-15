@@ -136,8 +136,11 @@ final readonly class OrderAccessPolicy
         }
         // An order is never packed, delivered or completed while one of its pieces is still in rework: the pieces
         // rejoin the order at packing first (ProductionTracks::mergeAtGate).
-        if ($order->hasActiveTracks() && in_array($order->productionStageId, self::PIECE_GATE_STAGES, true)) {
-            return $this->blocked(self::BLOCKED_PIECES_IN_REWORK);
+        if ($order->pieceGateReason !== null || (in_array($order->productionStageId, self::PIECE_GATE_STAGES, true) && $order->hasActiveTracks())) {
+            // API 2.32.0: every required physical piece, with its lineage and every stage of its product route, must be
+            // ready (PieceGate); an order with pieces apart keeps the reason pieces_in_rework for older clients only when
+            // the gate reason is unknown.
+            return $this->blocked($order->pieceGateReason ?? self::BLOCKED_PIECES_IN_REWORK);
         }
         $stageAllowed = $employee->worksAt($order->productionStageId, $order->globalId->sourceKey);
         $owner = $order->productionOwnerEmployeeUuid;

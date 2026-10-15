@@ -207,6 +207,20 @@ $replay = static function (string $trackId, string $target, callable $by, string
     }
     return $done;
 };
+// API 2.32.0: the commercial quantity is not the number of physical pieces. Every order whose pieces are worked on
+// individually first gets its manufacturing plan confirmed by an operations manager; here each line is confirmed as
+// "quantity" equal pieces (a stated, audited fact), so the per-piece scenarios keep the business shape they test.
+$confirmPlan = static function (array $o, ?string $type = 'draperii') use ($dash, $dashGet, $denisa, $ok): array {
+    $plan = $ok($dashGet($denisa, $o['path'] . '/manufacturing-plan'), 'plan view');
+    foreach ($plan['lines'] as $planLine) {
+        $body = ['expectedSourceHash' => $planLine['sourcePlanHash'], 'expectedRevision' => $planLine['plan']['revision'], 'productType' => $type, 'pieceCount' => $planLine['commercialQuantity'], 'note' => 'Plan verificat: bucăți egale, câte una pe unitate comercială'];
+        if ($planLine['lineMeters'] !== null) {
+            $body['equalSplit'] = true;
+        }
+        $plan = $ok($dash($denisa, 'POST', $o['path'] . '/manufacturing-plan/lines/' . $planLine['itemId'] . '/confirm', $body), 'plan confirmed');
+    }
+    return $plan;
+};
 $stageOrder = ['waiting', 'material-preparation', 'workshop-receiving', 'labeling', 'material-straightening', 'bottom-hem', 'side-hem', 'ironing', 'height', 'header-tape', 'sewing-finishing', 'quality-control', 'packing', 'delivery'];
 
 // ==== Migration: additive and re-runnable ========================================================================
@@ -219,6 +233,7 @@ $check((int) $one("SELECT enabled FROM production_feature_flags WHERE flag_key =
 // ==== Scenario 1: the two curtains of Trendyol order 11709027615 ================================================
 $o = $trendyol('A', [$line('Draperie de Textura Nisip Turcesc Ivory', '12754-21', 2)]);
 $check($o['source'] === 'trendyol' && count($o['items']) === 1, 'one Trendyol commercial order with one line');
+$confirmPlan($o);
 $bring($o, $murat, 'ironing', $kadyrova);
 $check($state($o)['owner'] === $uuids['kadyrova'], 'KADYROVA ZULFIYA owns the order at ironing (stage 8)');
 $pieces = $piecesOf($kadyrova, $o);
@@ -226,7 +241,7 @@ $check($pieces['total'] === 2 && $pieces['onOrder'] === 2 && $pieces['mixedProgr
 [$pieceA, $pieceB] = [$pieces['units'][0], $pieces['units'][1]];
 $check($pieceA['id'] !== $pieceB['id'] && $pieceA['index'] === 1 && $pieceB['index'] === 2 && $pieceA['count'] === 2 && $pieceA['itemId'] === $pieceB['itemId'], '1. Bucata 1/2 and Bucata 2/2 are distinct identities of the same line');
 $check($pieceA['id'] === WorkUnits::unitUuid($o['items'][0], 1), '1. the piece identity is derived from (line, index) and stable before any write');
-$check((int) $one('SELECT COUNT(*) FROM production_work_units WHERE order_uuid = ?', [$o['uuid']]) === 0, 'nothing is written for the pieces before they are needed');
+$check((int) $one("SELECT COUNT(*) FROM production_work_units WHERE order_uuid = ? AND status = 'active'", [$o['uuid']]) === 2, 'the two pieces exist from the confirmation of the plan, with the derived identities');
 
 // Controlled activation: a partial report is refused while the flag is off; the whole carrier is always allowed.
 $error($reportUnits($kadyrova, $o, [$pieceA['id']], 'material-defect'), 409, 'PARTIAL_REWORK_DISABLED', 'one piece of two is refused until per-piece rework is enabled');
@@ -340,15 +355,16 @@ $check($myTrack !== null && $myTrack['owner']['isMe'] === true && $myTrack['owne
     '14. the cutter sees the approved return in his list: 1 piece, cutting, owner REJEPOV AYMYRAT');
 $check(!isset($listed[0]['employeeAllowedAction']), 'the order itself (piece B) is not his work');
 $summary = $ok($get($murat, '/orders/stage-summary'), 'cutting counters')['stages'];
-$check($summary[0]['stageId'] === 'material-preparation' && $summary[0]['reworkTotal'] === 1 && $summary[0]['reworkMine'] === 1, 'the cutting counters show the piece in rework');
+$check($summary[0]['stageId'] === 'material-preparation' && $summary[0]['reworkTotal'] === 1 && $summary[0]['reworkMine'] === 1, 'the cutting counters show the piece in rework: ' . json_encode($summary));
 $check((int) $one("SELECT COUNT(*) FROM order_activity_events WHERE order_uuid = ? AND occurred_at >= (SELECT reported_at FROM production_exceptions WHERE exception_uuid = ?)", [$o['uuid'], $x1]) === 0, 'piece A moves wrote nothing into the order (piece B) history');
 
 // 16/17. Murat re-cuts piece A; it arrives at stage 3, unowned — never straight back to ironing.
 $cursorKad = $cursor($kadyrova);
 $error($trackComplete($murat, $t1, [], null, $trackVersion($t1) - 1), 409, 'TRACK_CHANGED', 'a stale piece version is refused');
 $doneKey = $key('recut');
-$recut = $ok($trackComplete($murat, $t1, [], $doneKey), '16. the cutter completes stage 2 on piece A');
-$check($ok($trackComplete($murat, $t1, [], $doneKey, $trackVersion($t1) - 1), 'complete replay') === $recut, 'a duplicate completion replays the committed result');
+$error($trackComplete($murat, $t1), 422, 'PIECE_OUTCOME_REQUIRED', 'the re-cut must state repair or replacement');
+$recut = $ok($trackComplete($murat, $t1, ['pieceOutcome' => 'repair'], $doneKey), '16. the cutter completes stage 2 on piece A');
+$check($ok($trackComplete($murat, $t1, ['pieceOutcome' => 'repair'], $doneKey, $trackVersion($t1) - 1), 'complete replay') === $recut, 'a duplicate completion replays the committed result');
 $tr = $track($t1);
 $check($tr['stage_id'] === 'workshop-receiving' && $tr['owner_employee_uuid'] === null, '17. piece A is at stage 3 without owner');
 
@@ -421,12 +437,13 @@ $check((int) $one("SELECT COUNT(*) FROM order_activity_events WHERE order_uuid =
 
 // ==== Scenario 2: five products, one faulty piece of product B ==================================================
 $five = $signed('FIVE', 'trendhome', [$line('Produs A', 'A-1', 1, 4.0), $line('Produs B', 'B-1', 2, 6.0), $line('Produs C', 'C-1', 1, 3.0), $line('Produs D', 'D-1', 3, 9.0), $line('Produs E', 'E-1', 1, 2.0)]);
+$confirmPlan($five);
 $bring($five, $cutter2, 'side-hem', $kadyrova);
 $fp = $piecesOf($kadyrova, $five);
 $check($fp['total'] === 8, 'eight physical pieces');
 $bPiece = array_values(array_filter($fp['units'], static fn ($u) => $u['itemId'] === $five['items'][1] && $u['index'] === 2))[0];
 $x2 = $ok($reportUnits($kadyrova, $five, [$bPiece['id']], 'cut-meterage', 'Prea scurtă'), 'one piece of product B', 201);
-$check($x2['orderScope']['affectedQuantity'] === 1 && $x2['orderScope']['unaffectedQuantity'] === 7 && $x2['faultMeters'] === '3.000', 'one of eight pieces; 1 of 2 pieces of a 6 m line is 3 m');
+$check($x2['orderScope']['affectedQuantity'] === 1 && $x2['orderScope']['unaffectedQuantity'] === 7 && $x2['faultMeters'] === '3.000', 'one of eight pieces; the confirmed equal plan gives 3 m for 1 of 2 pieces of a 6 m line');
 $t2 = $x2['orderScope']['trackId'];
 $ok($review($iuliana, $x2['id'], ['decision' => 'accept', 'reasonKey' => 'cut-meterage', 'qrToken' => $five['qr']]), 'custody');
 $label2 = (string) $labels($iuliana, $t2)['labels'][0]['payload'];
@@ -438,7 +455,7 @@ $check($state($five)['stage'] === 'side-hem' && $state($five)['owner'] === $uuid
 $check(count(array_filter($unitsOf($five), static fn ($u) => $u['track_uuid'] !== null)) === 1, 'only one piece is in rework');
 $check((int) $one("SELECT COUNT(*) FROM production_quality_events WHERE exception_uuid = ? AND event_type = 'cutting_fault'", [$x2['id']]) === 1 && (int) $one("SELECT line_count FROM production_quality_events WHERE exception_uuid = ? AND event_type = 'cutting_fault'", [$x2['id']]) === 1, 'one cutting fault for one line');
 // Repeat rework of the same piece: re-cut, then a new defect at stage 5 on the track itself (whole track).
-$ok($trackComplete($cutter2, $t2), 're-cut');
+$ok($trackComplete($cutter2, $t2, ['pieceOutcome' => 'repair']), 're-cut');
 $replay($t2, 'material-straightening', static fn (string $stage): array => $stage === 'labeling' ? $labeler : $tailor2, $label2);
 $ok($trackClaim($tailor3, $t2, $label2), 'stage 5 claimed');
 $x3 = $ok($reportUnits($tailor3, $five, [$bPiece['id']], 'cut-meterage', 'Din nou scurtă', $t2), 'a second defect on the same piece', 201);
@@ -454,6 +471,7 @@ $check((int) $one('SELECT COUNT(*) FROM production_exceptions WHERE order_uuid =
 
 // ==== Scenario 3: two faulty pieces of different products in one case ===========================================
 $multi = $signed('MULTI', 'outletperdele', [$line('Produs A', 'A-1', 1, 4.0), $line('Produs B', 'B-1', 2, 6.0), $line('Produs D', 'D-1', 3, 9.0)]);
+$confirmPlan($multi);
 $bring($multi, $cutter2, 'ironing', $kadyrova);
 $mp = $piecesOf($kadyrova, $multi);
 $picked = [$mp['units'][1]['id'], $mp['units'][4]['id']];
@@ -468,10 +486,11 @@ $check((int) $one('SELECT COUNT(*) FROM production_quality_events WHERE exceptio
 
 // ==== Scenario 4: five identical pieces, two faulty; rejection, then deliberate withdrawal ======================
 $same = $signed('SAME', 'trendhome', [$line('Draperie Identica', 'S-5', 5, 10.0)]);
+$confirmPlan($same);
 $bring($same, $cutter2, 'bottom-hem', $kadyrova);
 $sp = $piecesOf($kadyrova, $same);
 $x5 = $ok($reportUnits($kadyrova, $same, [$sp['units'][1]['id'], $sp['units'][3]['id']], 'cut-meterage'), 'two of five identical pieces', 201);
-$check($x5['orderScope']['affectedQuantity'] === 2 && $x5['orderScope']['unaffectedQuantity'] === 3 && $x5['faultMeters'] === '4.000', '2 of 5 pieces; 2/5 of 10 m');
+$check($x5['orderScope']['affectedQuantity'] === 2 && $x5['orderScope']['unaffectedQuantity'] === 3 && $x5['faultMeters'] === '4.000', '2 of 5 pieces; 2 m each by the confirmed equal plan');
 $t5 = $x5['orderScope']['trackId'];
 $ok($review($iuliana, $x5['id'], ['decision' => 'accept', 'reasonKey' => 'cut-meterage', 'qrToken' => $same['qr']]), 'custody');
 $ok($sendReturn($iuliana, $x5['id']), 'return');
@@ -498,6 +517,7 @@ $check($track($t6)['stage_id'] === 'side-hem', 'the piece follows the canonical 
 
 // ==== Scenario 5: inactive receiver; a manager rejection is never an automatic release =========================
 $solo = $signed('SOLO', 'trendhome', [$line('Draperie Solo', 'P-2', 2, 6.0)]);
+$confirmPlan($solo);
 $bring($solo, $cutter2, 'ironing', $kadyrova);
 $pp = $piecesOf($kadyrova, $solo);
 $x7 = $ok($reportUnits($kadyrova, $solo, [$pp['units'][0]['id']], 'cut-meterage'), 'one piece', 201);
@@ -523,6 +543,7 @@ $check($track($t6)['owner_employee_uuid'] === $uuids['kadyrova'], 'existing trac
 // ==== Concurrent ordinary orders of three sources keep their normal flow =========================================
 foreach (['trendhome', 'outletperdele'] as $source) {
     $n = $signed('N' . strtoupper(substr($source, 0, 2)), $source, [$line('Normal', 'N-1', 2, 4.0)]);
+    $confirmPlan($n);
     $bring($n, $murat, 'labeling', $tailor2);
     $check($piecesOf($tailor2, $n)['mixedProgress'] === false && $piecesOf($tailor2, $n)['total'] === 2, "{$source}: an ordinary order is unaffected");
 }

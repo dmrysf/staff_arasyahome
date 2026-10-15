@@ -42,6 +42,12 @@ final readonly class OperationalOrder
          * @var list<array{trackUuid: string, stageId: string, ownerEmployeeUuid: ?string}>
          */
         public array $activeTracks = [],
+        /**
+         * API 2.32.0: why the order may not be packed or delivered yet although it is at packing or delivery
+         * (PieceGate: pieces_in_rework, pieces_awaiting_reunion, plan_confirmation_required, pieces_incomplete,
+         * route_incomplete); null when nothing blocks it or the order is not at a gated stage.
+         */
+        public ?string $pieceGateReason = null,
     ) {
     }
 

@@ -182,6 +182,7 @@ final readonly class ExceptionQueries
             'meters' => $line['meters_snapshot'] === null ? null : (string) $line['meters_snapshot'],
         ], $lines->fetchAll(PDO::FETCH_ASSOC));
         $detail['affectedPieces'] = $this->affectedPieces($exceptionUuid);
+        $detail['administrativeRecovery'] = $this->recoveryLinks($exceptionUuid);
         if ($detail['orderScope']['piecesRecorded']) {
             $perLine = array_count_values(array_column($detail['affectedPieces'], 'itemId'));
             foreach ($detail['lines'] as &$line) {
@@ -451,15 +452,19 @@ final readonly class ExceptionQueries
         $recorded = $row['scope_recorded'] !== null;
         $partial = $recorded && (int) $row['scope_partial'] === 1;
         $affected = $recorded ? (int) $row['scope_affected_quantity'] : (int) $row['affected_quantity'];
-        $moving = !$recorded ? (int) $row['order_quantity'] : ($partial ? $affected : (int) $row['scope_carrier_quantity']);
+        // API 2.32.0: a recorded scope counts physical pieces (the confirmed plan), an older report commercial units.
+        $total = $recorded ? (int) $row['scope_order_quantity'] : (int) $row['order_quantity'];
+        $moving = !$recorded ? $total : ($partial ? $affected : (int) $row['scope_carrier_quantity']);
         return [
             'orderLineCount' => (int) $row['order_line_count'],
-            'orderQuantity' => (int) $row['order_quantity'],
+            'orderQuantity' => $total,
+            'quantityUnit' => $recorded ? 'physical_pieces' : 'commercial_units',
+            'commercialOrderQuantity' => (int) $row['order_quantity'],
             'affectedLineCount' => (int) $row['line_count'],
             'affectedQuantity' => $affected,
             'movingQuantity' => $moving,
-            'unaffectedQuantity' => max(0, (int) $row['order_quantity'] - $affected),
-            'wholeOrderMoves' => $moving >= (int) $row['order_quantity'],
+            'unaffectedQuantity' => max(0, $total - $affected),
+            'wholeOrderMoves' => $moving >= $total,
             'partial' => $partial,
             'piecesRecorded' => $recorded,
             'carrier' => $recorded && $row['scope_track_uuid'] !== null ? 'track' : 'order',
@@ -472,11 +477,17 @@ final readonly class ExceptionQueries
     {
         $statement = $this->pdo->prepare(
             'SELECT u.unit_uuid, u.item_uuid, u.unit_index, u.unit_count_snapshot, u.rework_cycle_at_report, l.line_number, l.name_snapshot, l.product_code_snapshot, l.color_snapshot,
-                    i.width_value, i.height_value, i.measurement_unit, w.track_uuid
+                    i.width_value, i.height_value, i.measurement_unit, w.track_uuid, w.status AS unit_status,
+                    pp.width_value AS piece_width, pp.height_value AS piece_height, pp.measurement_unit AS piece_unit, pp.fabric_length, pp.measurement_source, pp.fabric_source,
+                    lp.product_type, lp.revision AS plan_revision, rp.replacement_unit_uuid AS replaced_by
              FROM production_exception_units u
              LEFT JOIN production_exception_lines l ON l.exception_uuid = u.exception_uuid AND l.item_uuid = u.item_uuid
              LEFT JOIN operational_order_items i ON i.item_uuid = u.item_uuid
              LEFT JOIN production_work_units w ON w.unit_uuid = u.unit_uuid
+             LEFT JOIN production_line_plan_heads h ON h.item_uuid = u.item_uuid
+             LEFT JOIN production_line_plans lp ON lp.plan_uuid = h.plan_uuid
+             LEFT JOIN production_plan_pieces pp ON pp.plan_uuid = h.plan_uuid AND pp.piece_index = u.unit_index
+             LEFT JOIN production_unit_replacements rp ON rp.original_unit_uuid = u.unit_uuid
              WHERE u.exception_uuid = ? ORDER BY l.line_number, u.unit_index',
         );
         $statement->execute([$exceptionUuid]);
@@ -490,11 +501,44 @@ final readonly class ExceptionQueries
             'name' => $row['name_snapshot'],
             'code' => $row['product_code_snapshot'],
             'color' => $row['color_snapshot'],
-            // Decimal strings, exactly as stored (a replayed response must equal the original one).
+            // Decimal strings, exactly as stored (a replayed response must equal the original one). The commercial line's
+            // finished size; the cutting size of this piece is pieceMeasurements (null: unknown, must be verified).
             'measurements' => $row['width_value'] === null && $row['height_value'] === null ? null : ['width' => $row['width_value'] === null ? null : (string) $row['width_value'], 'height' => $row['height_value'] === null ? null : (string) $row['height_value'], 'unit' => $row['measurement_unit']],
+            'pieceMeasurements' => $row['piece_width'] === null && $row['piece_height'] === null ? null : ['width' => $row['piece_width'] === null ? null : (string) $row['piece_width'], 'height' => $row['piece_height'] === null ? null : (string) $row['piece_height'], 'unit' => $row['piece_unit'], 'source' => $row['measurement_source']],
+            // Planned fabric of this piece from the confirmed plan; null means unknown (never 0, never a share of the line).
+            'fabricMeters' => $row['fabric_length'] === null ? null : (string) $row['fabric_length'],
+            'fabricSource' => $row['fabric_source'] ?? 'unknown',
+            'productType' => $row['product_type'] ?? 'unknown',
+            'planRevision' => $row['plan_revision'] === null ? null : (int) $row['plan_revision'],
+            'unitStatus' => $row['unit_status'] === null ? null : (string) $row['unit_status'],
+            'replacedBy' => $row['replaced_by'] === null ? null : (string) $row['replaced_by'],
             'reworkCycleAtReport' => (int) $row['rework_cycle_at_report'],
             'trackId' => $row['track_uuid'] === null ? null : (string) $row['track_uuid'],
         ], $statement->fetchAll(PDO::FETCH_ASSOC));
+    }
+
+    /**
+     * An administrative recovery link (API 2.32.0): this request recovers an earlier one of the same physical defect, or
+     * was recovered by a later one. Quality facts of the incident are counted once. @return array{recovers: ?string, recoveredBy: ?string}
+     */
+    public function recoveryLinks(string $exceptionUuid): array
+    {
+        try {
+            $statement = $this->pdo->prepare("SELECT exception_uuid, linked_exception_uuid FROM production_exception_links WHERE link_type = 'administrative_recovery' AND (exception_uuid = ? OR linked_exception_uuid = ?)");
+            $statement->execute([$exceptionUuid, $exceptionUuid]);
+            $rows = $statement->fetchAll(PDO::FETCH_ASSOC);
+        } catch (\PDOException) {
+            return ['recovers' => null, 'recoveredBy' => null];
+        }
+        $links = ['recovers' => null, 'recoveredBy' => null];
+        foreach ($rows as $row) {
+            if ($row['exception_uuid'] === $exceptionUuid) {
+                $links['recovers'] = (string) $row['linked_exception_uuid'];
+            } else {
+                $links['recoveredBy'] = (string) $row['exception_uuid'];
+            }
+        }
+        return $links;
     }
 
     private static function seconds(string $from, string $to): int
