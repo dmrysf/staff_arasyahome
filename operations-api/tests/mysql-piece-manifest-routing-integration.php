@@ -769,21 +769,31 @@ $tables12 = (int) $one('SELECT COUNT(*) FROM information_schema.tables WHERE tab
 $check((int) $one('SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE()') === $tables12 && (int) $one('SELECT COUNT(*) FROM production_route_reconciliation_stages WHERE order_uuid = ?', [$m12['uuid']]) === 16, 'J. migration 030 re-runs without change');
 
 // ==== M13. Employee KPI: track and piece work apart from commercial completions ===================================
-$employees13 = array_column($ok($dashGet($root, '/management/analytics/employees', ['period' => 'month', 'limit' => '100']), 'analytics employees')['items'], null, 'id');
+// The test database may hold employees of earlier suites (CI shares it): read every page, then check this suite's people.
+$employees13 = [];
+$cursor13 = null;
+do {
+    $page13 = $ok($dashGet($root, '/management/analytics/employees', ['period' => 'month', 'limit' => '100'] + ($cursor13 === null ? [] : ['cursor' => $cursor13])), 'analytics employees');
+    foreach ($page13['items'] as $item13) $employees13[$item13['id']] = $item13;
+    $cursor13 = $page13['nextCursor'] ?? null;
+} while ($cursor13 !== null);
+$check(array_diff(array_values($uuids), array_keys($employees13)) === [], 'KPI: every employee of this suite is reported');
 $muratRow = $employees13[$uuids['murat']];
 $commercialCuts = (int) $one("SELECT COUNT(*) FROM order_activity_events WHERE employee_uuid = ? AND action = 'stage_completed' AND from_stage_id = 'material-preparation'", [$uuids['murat']]);
 $check(($muratRow['stageCompletions']['material-preparation'] ?? 0) === $commercialCuts, 'KPI: commercial cutting completions are only order-level completions (rework is not new commercial production)');
 $check(($muratRow['trackStageCompletions']['material-preparation']['rework'] ?? 0) >= 1 && $muratRow['pieceWork']['rework'] >= 1, 'KPI: the cutter is credited with the authorized re-cutting as rework work: ' . json_encode([$muratRow['trackStageCompletions'], $muratRow['pieceWork']]));
 $trackTotal = 0;
-foreach ($employees13 as $id => $row13) {
+foreach (array_values($uuids) as $id) {
+    $row13 = $employees13[$id];
     $logged = (int) $one("SELECT COUNT(*) FROM production_unit_stage_log WHERE employee_uuid = ? AND outcome = 'completed'", [$id]);
     $check($row13['pieceWork']['order'] + $row13['pieceWork']['route'] + $row13['pieceWork']['rework'] === $logged, "KPI: piece work of {$id} equals its own per-piece completions");
     foreach ($row13['trackStageCompletions'] as $kinds) $trackTotal += array_sum($kinds);
 }
-$check($trackTotal === (int) $one("SELECT COUNT(*) FROM production_track_events WHERE action = 'stage_completed'"), 'KPI: every track completion is attributed exactly once');
+$marks13 = implode(',', array_fill(0, count($uuids), '?'));
+$check($trackTotal === (int) $one("SELECT COUNT(*) FROM production_track_events WHERE action = 'stage_completed' AND employee_uuid IN ({$marks13})", array_values($uuids)), 'KPI: every track completion is attributed exactly once');
 $check((int) $one("SELECT COUNT(*) FROM production_unit_stage_log WHERE outcome = 'not_applicable' AND employee_uuid IS NOT NULL") === 0 && ($employees13[$uuids['hemmer']]['pieceWork']['byStage']['bottom-hem']['route'] ?? 0) === 0, 'KPI: a stage not applicable to PERDEA gives nobody credit');
 $check($muratRow['faultLines'] === (int) $one("SELECT COALESCE(SUM(line_count), 0) FROM production_quality_events WHERE employee_uuid = ? AND event_type = 'cutting_fault'", [$uuids['murat']]), 'KPI: receiving or repairing a defect adds no fault to the cutter');
 $departments13 = $ok($dashGet($root, '/management/analytics/departments', ['period' => 'month', 'limit' => '100']), 'analytics departments')['items'];
-$check(array_sum(array_map(static fn (array $d): int => $d['pieceWork']['rework'], $departments13)) === array_sum(array_map(static fn (array $e): int => $e['pieceWork']['rework'], $employees13)), 'KPI: department rework totals equal employee totals');
+$check(array_sum(array_map(static fn (array $d): int => $d['pieceWork']['rework'], $departments13)) === (int) $one("SELECT COUNT(*) FROM production_unit_stage_log l LEFT JOIN production_tracks t ON t.track_uuid = l.carrier_track_uuid WHERE l.outcome = 'completed' AND (l.rework_cycle > 1 OR t.origin_exception_uuid IS NOT NULL)"), 'KPI: department rework totals equal every recorded rework piece completion');
 
 fwrite(STDOUT, "OK MySQL piece manifest and routing integration ({$checks} checks)\n");
