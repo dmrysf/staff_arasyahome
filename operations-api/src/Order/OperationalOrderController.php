@@ -246,6 +246,11 @@ final readonly class OperationalOrderController
         return $this->mutate($request, $globalIdString, 'orders.advance_stage', OrderOperationsService::OPERATION_TRANSITION);
     }
 
+    public function confirmLines(Request $request,string $id): Response
+    {
+        return $this->mutate($request,$id,'orders.advance_stage',OrderOperationsService::OPERATION_LINE_CHECK);
+    }
+
     private function mutate(Request $request, string $globalIdString, string $permission, string $operation): Response
     {
         $session = $this->authenticate($request);
@@ -253,8 +258,8 @@ final readonly class OperationalOrderController
         $this->csrf->requireValid($session->rawToken, $request->header('x-csrf-token'));
         $this->authorization->require($employee, $permission);
         $orderId = $this->parseOrderId($globalIdString);
-        $input = $request->json(2048);
-        $allowed = $operation === OrderOperationsService::OPERATION_CLAIM ? ['expectedVersion', 'qrToken', 'confirmedMultiple', 'ownedCount'] : ['expectedVersion'];
+        $input = $request->json(32768);
+        $allowed = $operation === OrderOperationsService::OPERATION_CLAIM ? ['expectedVersion', 'qrToken', 'confirmedMultiple', 'ownedCount'] : ($operation===OrderOperationsService::OPERATION_LINE_CHECK ? ['expectedVersion','items'] : ['expectedVersion']);
         if (array_diff(array_keys($input), $allowed) !== [] || !is_int($input['expectedVersion'] ?? null) || $input['expectedVersion'] < 1
             || (isset($input['qrToken']) && !is_string($input['qrToken'])) || (isset($input['confirmedMultiple']) && !is_bool($input['confirmedMultiple']))
             || (isset($input['ownedCount']) && (!is_int($input['ownedCount']) || $input['ownedCount'] < 0))) {
@@ -262,9 +267,11 @@ final readonly class OperationalOrderController
         }
         $idempotencyKey = $request->header('idempotency-key') ?? '';
         $context = OperationContext::fromRequest($request);
-        $payload = $operation === OrderOperationsService::OPERATION_CLAIM
+        $payload = $operation===OrderOperationsService::OPERATION_LINE_CHECK
+            ? $this->operations->confirmLines($employee,$orderId,$input['expectedVersion'],$idempotencyKey,$context,$input)
+            : ($operation === OrderOperationsService::OPERATION_CLAIM
             ? $this->operations->claim($employee, $orderId, $input['expectedVersion'], $idempotencyKey, $context, $input)
-            : $this->operations->completeCurrentStage($employee, $orderId, $input['expectedVersion'], $idempotencyKey, $context);
+            : $this->operations->completeCurrentStage($employee, $orderId, $input['expectedVersion'], $idempotencyKey, $context));
         return Response::json($payload, 200, ['Cache-Control' => 'private, no-store']);
     }
 

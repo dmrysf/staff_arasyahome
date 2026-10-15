@@ -7,6 +7,32 @@ import { roErrors } from "./ro.errors";
  * (product names, codes, sizes, colors, notes, numbers) is always shown exactly as stored.
  */
 export const ro = {
+  "simulation.orderDetail": "Produse, QR și istoric",
+  "simulation.units": "buc.",
+  "simulation.accounts": "Conturi de test și sarcini",
+  "simulation.accountsHelp": "Fiecare angajat intră cu propriul cont de test. Acest panou nu schimbă rolul persoanei conectate.",
+
+  "simulation.title": "Centrul de simulare",
+  "simulation.description": "Comenzi sintetice. Același Staff și aceleași reguli de producție.",
+  "simulation.all": "Toate sursele",
+  "simulation.start": "Pornește",
+  "simulation.pause": "Oprește",
+  "simulation.resume": "Continuă",
+  "simulation.reset": "Reia cu date noi",
+  "simulation.fault": "Injectează condiția",
+  "simulation.retry": "Reîncarcă",
+  "simulation.export": "Export JSON",
+  "simulation.pending": "Verificarea umană este necesară",
+  "simulation.checks": "Verificări de configurare",
+  "simulation.orders": "Comenzi de test",
+  "simulation.real": "Timp real",
+  "simulation.fixture": "Timp fixture",
+  "simulation.loading": "Se încarcă…",
+  "simulation.open": "Deschide în Staff",
+  "simulation.scan": "Scanner QR",
+  "simulation.unknown": "Regulile pentru comenzile numai cu accesorii trebuie confirmate.",
+  "simulation.invariants": "Integritatea bazei de date",
+
   ...roErrors,
 
   // ---- common ------------------------------------------------------------------------------------------------
@@ -1174,4 +1200,13 @@ export const ro = {
   "mgmt.col.unassigned": "Nepreluate",
   "mgmt.col.oldest": "Cea mai veche",
   "mgmt.footnote": "Detaliile pe comenzi, angajați și excepții rămân în aplicația Dashboard.",
+  "lines.title": "Verificarea produselor",
+  "lines.ready": "Toate produsele sunt pregătite pentru împachetare",
+  "lines.unfinished": "Produse sau operațiuni neterminate",
+  "lines.standard": "Produs standard · fără tăiere/croitorie",
+  "lines.fabric": "Material cu măsuri validate",
+  "lines.packed": "Verificat la împachetare",
+  "lines.quantity": "Cantitate finalizată",
+  "lines.pack": "Verifică produsul în colet",
+  "lines.confirm": "Confirmă lucrul la produs",
 } as const;

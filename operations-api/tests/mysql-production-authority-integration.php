@@ -72,6 +72,8 @@ foreach (glob(dirname(__DIR__) . '/database/seeds/*.sql') ?: [] as $seed) {
     (new SqlFileRunner($pdo))->run($seed);
 }
 $cleanup = static function () use ($pdo): void {
+    $pdo->exec('DELETE FROM production_line_checks');
+    $pdo->exec('DELETE FROM production_line_events');
     $pdo->exec('DELETE FROM production_authority_events');
     foreach (['production_document_blocks', 'production_document_events', 'production_document_prints'] as $table) {
         $pdo->exec("DELETE FROM {$table}");
@@ -96,6 +98,8 @@ $pdo->exec('DELETE FROM system_root_identity');
 // Later suites delete orders: never leave authority evidence that would pin them, even after a failure.
 register_shutdown_function(static function () use ($pdo): void {
     try {
+        $pdo->exec('DELETE FROM production_line_checks');
+        $pdo->exec('DELETE FROM production_line_events');
         $pdo->exec('DELETE FROM production_authority_events');
     } catch (Throwable) {
     }

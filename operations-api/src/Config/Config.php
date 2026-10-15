@@ -59,7 +59,12 @@ final readonly class Config
          * FixtureTrendyolTransport. Refused in production, where only the real HTTPS API is ever called.
          */
         public ?string $trendyolFixtureFile = null,
+        public string $simulationClockMode = 'realtime',
+        public string $lineRoutingMode = 'legacy',
     ) {
+        if ($this->environment === 'simulation' && !in_array($this->simulationClockMode,['realtime','frozen'],true)) throw new RuntimeException('SIMULATION_CLOCK_INVALID');
+        if (!in_array($this->lineRoutingMode,['legacy','enforce'],true)) throw new RuntimeException('ARASYA_LINE_ROUTING must be legacy or enforce.');
+        \Arasya\Operations\Simulation\IsolationGuard::configuration($this);
         if ($this->trendyolFixtureFile !== null && $this->isProduction()) {
             throw new RuntimeException('ARASYA_TRENDYOL_FIXTURE_FILE is not allowed in production.');
         }
@@ -131,6 +136,8 @@ final readonly class Config
             sourceKeys: $sourceKeys,
             sourceSettings: self::sourceSettings($values, $sourceKeys),
             trendyolIntake: self::value($values, 'ARASYA_TRENDYOL_INTAKE', 'disabled'),
+            simulationClockMode: self::value($values, 'ARASYA_SIMULATION_CLOCK_MODE', 'realtime'),
+            lineRoutingMode: self::value($values, 'ARASYA_LINE_ROUTING', 'legacy'),
             trendyolFixtureFile: self::value($values, 'ARASYA_TRENDYOL_FIXTURE_FILE', '') === '' ? null : self::value($values, 'ARASYA_TRENDYOL_FIXTURE_FILE', ''),
         );
     }
@@ -192,9 +199,14 @@ final readonly class Config
         return $this->environment === 'production';
     }
 
+    public function secureCookies(): bool
+    {
+        return $this->isProduction() || ($this->environment === 'simulation' && array_reduce($this->allowedOrigins, static fn(bool $secure,string $origin):bool => $secure && str_starts_with($origin, 'https://'), true));
+    }
+
     public function cookieName(): string
     {
-        return $this->isProduction() ? '__Host-arasya_session' : 'arasya_session';
+        return $this->environment === 'simulation' ? 'arasya_sim_session' : ($this->isProduction() ? '__Host-arasya_session' : 'arasya_session');
     }
 
     /** @param array<string, string> $values */

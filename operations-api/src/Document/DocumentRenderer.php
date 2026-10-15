@@ -44,6 +44,7 @@ final readonly class DocumentRenderer
             'qrPayload' => $row['status'] === 'active' && !$preview ? QrReference::fromStored((string) $row['qr_reference'])->payload() : null,
             'sourceDisplayName' => (string) $row['display_name'],
             'preview' => $preview,
+            'simulation' => getenv('ARASYA_APP_ENV') === 'simulation',
         ];
         $filename = ProductionTicketPdf::filename($snapshot, $revision['number']);
         return [ProductionTicketPdf::render($snapshot, $revision), $preview ? str_replace('.pdf', '-PREVIZUALIZARE.pdf', $filename) : $filename];

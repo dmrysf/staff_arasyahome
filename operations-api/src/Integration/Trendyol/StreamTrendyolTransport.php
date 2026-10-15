@@ -15,6 +15,7 @@ final readonly class StreamTrendyolTransport implements TrendyolTransport
 
     public function get(string $url, array $headers): array
     {
+        if (getenv('ARASYA_APP_ENV') === 'simulation') throw new RuntimeException('SIMULATION_OUTBOUND_DENIED');
         if (!str_starts_with($url, 'https://')) {
             throw new RuntimeException('Trendyol requests require HTTPS.');
         }

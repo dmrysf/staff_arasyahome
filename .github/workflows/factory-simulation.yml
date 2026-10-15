@@ -1,0 +1,95 @@
+name: Factory Simulation
+on:
+  pull_request:
+    paths: ["simulation/**", "operations-api/**", "integrations/**", "features/simulation/**", "features/orders/**", "features/scanner/**", "domain/models.ts", "domain/simulation.ts", "app/**", "services/**", "i18n/**", "e2e/simulation/**", "scripts/*simulation*", "tests/simulation.test.ts", "simulation/dashboard.ref", "playwright.simulation.config.ts", "vite.config.ts", ".github/workflows/factory-simulation.yml"]
+  workflow_dispatch:
+    inputs:
+      profile:
+        type: choice
+        options: [fast, nightly]
+        default: fast
+permissions:
+  contents: read
+concurrency:
+  group: factory-simulation-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  simulation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: simulation-ci-only
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -psimulation-ci-only"
+          --health-interval=10s --health-timeout=5s --health-retries=10
+    env:
+      ARASYA_SIMULATION_CI_SERVER: dedicated
+      ARASYA_SIMULATION_CI_PASSWORD: simulation-ci-only
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2
+        with:
+          php-version: "8.2"
+          extensions: mbstring, pdo_mysql
+          coverage: none
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      - name: Install repository toolchain
+        run: npm install --global pnpm@11.19.0 && pnpm install --frozen-lockfile && pnpm exec playwright install --with-deps chromium
+      - name: Configuration and outbound isolation
+        run: php simulation/isolation-test.php
+      - name: Provision isolated interactive fixture
+        run: mkdir -p work/ci-runtime && php simulation/provision.php "$PWD/work/ci-runtime" 000000000001 3306 > work/provision-summary.json
+      - name: Canonical factory and parallel race verification
+        run: |
+          php simulation/factory-test.php "$PWD/work/ci-runtime/sessions/000000000001/private.json" "$PWD/work/ci-report"
+          php simulation/organization-workflow-test.php "$PWD/work/ci-runtime/sessions/000000000001/private.json" "$PWD/work/ci-report"
+          php simulation/woo-matrix-test.php "$PWD/work/ci-runtime/sessions/000000000001/private.json" "$PWD/work/ci-report"
+          php simulation/race-test.php "$PWD/work/ci-runtime/sessions/000000000001/private.json" "$PWD/work/ci-report"
+      - name: Module regression profile
+        run: node simulation/regression.mjs "$PWD/work/ci-runtime" 3306 "${{ inputs.profile || 'fast' }}"
+      - name: Fresh human and browser session
+        run: php simulation/provision.php "$PWD/work/ci-runtime" 000000000002 3306 > work/browser-provision-summary.json
+      - name: Hosted three-domain API boundary (Staff + Dashboard origins, cookies, CSRF, roles, manifest)
+        run: php simulation/hosted-api-test.php "$PWD/work/ci-runtime/sessions/000000000001/private.json" "$PWD/work/ci-report"
+      - name: Hosted cPanel initialization (real manifest creator + initializer, re-run and partial database refused)
+        run: php simulation/hosted-initialize-test.php "$PWD/work/ci-runtime" 3306
+      - name: Check out the pinned real Dashboard (public repository, read-only)
+        run: |
+          git init -q .ci-dashboard
+          git -C .ci-dashboard fetch -q --depth 1 https://github.com/dmrysf/dashboard_arasyahome.git "$(cat simulation/dashboard.ref)"
+          git -C .ci-dashboard checkout -q FETCH_HEAD
+          test "$(git -C .ci-dashboard rev-parse HEAD)" = "$(cat simulation/dashboard.ref)"
+          (cd .ci-dashboard && pnpm install --frozen-lockfile)
+      - name: Package Staff, API and Dashboard; exercise both publishers and the API entry point
+        run: |
+          node scripts/package-simulation.mjs "$PWD/work/simulation-package" --dashboard "$PWD/.ci-dashboard"
+          node simulation/deploy-test.mjs "$PWD/work/simulation-package" "$PWD/work/ci-runtime/sessions/000000000001/private.json" "$PWD/work/deploy-test"
+      - name: Real Staff and Dashboard simulation browser verification
+        env:
+          ARASYA_SIMULATION_MANIFEST: ${{ github.workspace }}/work/ci-runtime/sessions/000000000002/private.json
+          ARASYA_SIMULATION_DASHBOARD: enabled
+        run: |
+          (cd .ci-dashboard && VITE_DASHBOARD_API_BASE_URL=http://127.0.0.1:8788 pnpm exec vite build --mode simulation-e2e)
+          (cd .ci-dashboard && pnpm exec vite preview --mode simulation-e2e --host 127.0.0.1 --port 4173 --strictPort > ../work/dashboard-preview.private.log 2>&1 &)
+          node scripts/simulation-serve.mjs "$ARASYA_SIMULATION_MANIFEST" > work/browser-server.private.log 2>&1 &
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8788/health > /dev/null && curl -fsS http://127.0.0.1:4175/login > /dev/null && curl -fsS http://127.0.0.1:4173/ > /dev/null && break; sleep 1; done
+          pnpm exec playwright test -c playwright.simulation.config.ts
+      - name: Upload sanitized machine report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: factory-simulation-report
+          path: |
+            work/ci-report/*.json
+            work/ci-report/*.md
+            work/deploy-test/deploy-test.json
+            work/ci-runtime/reports/*.json
+            work/ci-runtime/reports/*.md
+            work/simulation-browser.json
+          if-no-files-found: warn

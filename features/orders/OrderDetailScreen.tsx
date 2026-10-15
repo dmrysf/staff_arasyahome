@@ -17,6 +17,7 @@ import { getEmployeeRelationLabel, getEmployeeRelationTime } from "../../domain/
 import { getStageById } from "../../domain/productionWorkflow";
 import { formatMeasurements, formatMeters } from "../../domain/productFormat";
 import { ProductionRoadmap } from "../../components/ProductionRoadmap";
+import { LineCheckPanel } from "./LineCheckPanel";
 import { OrderActionPanel } from "./OrderActionPanel";
 import type { CuttingApi } from "../../domain/cutting";
 import { CuttingTransferRequest } from "../cutting/CuttingWork";
@@ -65,6 +66,7 @@ export function OrderDetailScreen({ orderId, service, exceptions, cutting, docum
         <h2>{order.productionContext.company.legalName}</h2><p>{order.productionContext.company.companyCode} · {order.productionContext.company.countryCode} · {order.productionContext.company.taxIdentifier}</p>
         {projectsOf(order).map(project => <p className="project-reference" key={project}>{t("detail.project", { name: project })}</p>)}
       </section>}
+      <LineCheckPanel order={order} service={service} onUpdated={setOrder} onSessionExpired={onSessionExpired} />
       <OrderActionPanel order={order} workflow={workflow} service={service} cutting={cutting} onUpdated={(updated) => setOrder(requireProductionProducts(updated))} onReload={() => { setOrder(null); setReloadKey((value) => value + 1); }} onSessionExpired={onSessionExpired} />
       {cutting && order.productionStageId === "material-preparation" && order.employeeAllowedAction?.id === "complete_stage" && <CuttingTransferRequest order={order} service={cutting} onChanged={() => { setOrder(null); setReloadKey(v => v + 1); }} />}
       {canReportDefect(order, permissions, quality) && <section className="detail-section return-section"><ReturnToCuttingPanel variant="defect" order={order} service={exceptions} onSessionExpired={onSessionExpired} onReported={(id) => navigate(`/exceptions/${encodeURIComponent(id)}`)} /></section>}

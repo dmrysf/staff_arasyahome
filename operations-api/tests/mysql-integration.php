@@ -74,6 +74,12 @@ copy(dirname(__DIR__) . '/database/migrations/001_auth_foundation.sql', $migrati
 try {
     $migrationRunner->migrate($migrationFixture);
     restorePreHandoffTestSchema($pdo);
+    // These source-scoped grants pin order_sources in a reused, fully migrated disposable schema.
+    $pdo->exec('DROP TABLE IF EXISTS employee_stage_source_scopes');
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name = '023_source_scoped_stage_authorization.sql'");
+    $pdo->exec('DROP TABLE IF EXISTS production_line_checks');
+    $pdo->exec('DROP TABLE IF EXISTS production_line_events');
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name = '032_production_line_readiness.sql'");
     $pdo->exec('DROP TABLE IF EXISTS api_rate_limit_buckets');
     $pdo->exec('DROP TABLE IF EXISTS order_operation_idempotency');
     $pdo->exec('DROP TABLE IF EXISTS order_activity_events');
@@ -101,6 +107,7 @@ try {
     $ordersApplied = (int) $pdo->query("SELECT COUNT(*) FROM schema_migrations WHERE migration_name = '010_b2b_orders.sql'")->fetchColumn() === 1;
     // Migration 011 only adds current account tables that reference 001 employees and the B2B tables, so it may already be recorded.
     $accountsApplied = (int) $pdo->query("SELECT COUNT(*) FROM schema_migrations WHERE migration_name = '011_b2b_current_account.sql'")->fetchColumn() === 1;
+    $localeApplied = (int) $pdo->query("SELECT COUNT(*) FROM schema_migrations WHERE migration_name = '027_employee_staff_locale.sql'")->fetchColumn() === 1;
     $applied = $migrationRunner->migrate(dirname(__DIR__) . '/database/migrations');
     $expected = ['002_canonical_production_workflow.sql', '003_operational_orders.sql', '004_staff_operations.sql'];
     if (!$iamApplied) {
@@ -135,7 +142,8 @@ try {
     $expected[] = '024_tailoring_quality_supervision.sql';
     $expected[] = '025_source_payment_gate.sql';
     $expected[] = '026_trendyol_product_identity.sql';
-    $expected[] = '027_employee_staff_locale.sql';
+    if (!$localeApplied) $expected[] = '027_employee_staff_locale.sql';
+    $expected[] = '032_production_line_readiness.sql';
     if ($applied !== $expected) {
         throw new RuntimeException('An existing 001 schema did not apply exactly the pending migrations in order: ' . implode(', ', $applied));
     }

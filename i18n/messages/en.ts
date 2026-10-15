@@ -6,6 +6,32 @@ import { enErrors } from "./en.errors";
  * sizes, colors, notes, numbers) is always shown exactly as stored.
  */
 export const en: Catalog = {
+  "simulation.orderDetail": "Products, QR and history",
+  "simulation.units": "units",
+  "simulation.accounts": "Test accounts and tasks",
+  "simulation.accountsHelp": "Each worker signs in with their own test account. This panel does not change the signed-in person’s role.",
+
+  "simulation.title": "Factory Simulation Center",
+  "simulation.description": "Synthetic orders. The same Staff and production rules.",
+  "simulation.all": "All sources",
+  "simulation.start": "Start",
+  "simulation.pause": "Stop",
+  "simulation.resume": "Resume",
+  "simulation.reset": "Replay with fresh data",
+  "simulation.fault": "Inject condition",
+  "simulation.retry": "Refresh",
+  "simulation.export": "Export JSON",
+  "simulation.pending": "Human verification required",
+  "simulation.checks": "Setup checks",
+  "simulation.orders": "Test orders",
+  "simulation.real": "Real time",
+  "simulation.fixture": "Fixture time",
+  "simulation.loading": "Loading…",
+  "simulation.open": "Open in Staff",
+  "simulation.scan": "QR scanner",
+  "simulation.unknown": "Accessory-only routing needs a business decision.",
+  "simulation.invariants": "Database invariants",
+
   ...enErrors,
 
   // ---- common
@@ -1173,4 +1199,13 @@ export const en: Catalog = {
   "mgmt.col.unassigned": "Not taken",
   "mgmt.col.oldest": "Oldest",
   "mgmt.footnote": "Details by order, employee and exception stay in the Dashboard app.",
+  "lines.title": "Product checks",
+  "lines.ready": "All products are ready for packing",
+  "lines.unfinished": "Products or operations remain unfinished",
+  "lines.standard": "Ready-made · no cutting/tailoring",
+  "lines.fabric": "Fabric with validated measurements",
+  "lines.packed": "Checked in package",
+  "lines.quantity": "Completed quantity",
+  "lines.pack": "Check product in package",
+  "lines.confirm": "Confirm product work",
 };

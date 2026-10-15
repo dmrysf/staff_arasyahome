@@ -10,6 +10,9 @@ const eslintConfig = defineConfig([
   globalIgnores([
     "dist/**",
     "dist-e2e/**",
+    "dist-simulation/**",
+    "work/**",
+    "simulation/.runtime/**",
     "e2e/.runtime/**",
     "playwright-report/**",
     "test-results/**",

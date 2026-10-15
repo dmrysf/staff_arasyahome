@@ -44,6 +44,7 @@ final readonly class ApiKernel
         private ?\Arasya\Operations\Production\ProductionAuthorityController $authority = null,
         private ?\Arasya\Operations\Production\ProductionQrController $productionQr = null,
         private ?\Arasya\Operations\Trendyol\TrendyolWorkspaceController $trendyol = null,
+        private ?\Arasya\Operations\Simulation\SimulationController $simulation = null,
     ) {
     }
 
@@ -100,6 +101,9 @@ final readonly class ApiKernel
 
     private function matchDynamicRoutes(Request $request): Response
     {
+        if (str_starts_with($request->path, '/simulation/')) {
+            return ($this->simulation ?? throw new ApiException(404, 'NOT_FOUND', 'API route was not found.'))->handle($request);
+        }
         if (str_starts_with($request->path,'/management/analytics/')) return ($this->analytics ?? throw new ApiException(503,'SERVICE_UNAVAILABLE','Analytics unavailable.'))->handle($request);
         if (str_starts_with($request->path, '/cutting/') || str_starts_with($request->path, '/display/cutting/') || str_starts_with($request->path, '/management/cutting/')) return $this->cuttingController()->handle($request);
         if ($request->path === '/b2b/accounts' || str_starts_with($request->path, '/b2b/accounts/')) {
@@ -137,12 +141,13 @@ final readonly class ApiKernel
             return ($this->productionQr ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Production QR authority is not ready.'))
                 ->handle($request, rawurldecode($matches[1]), $matches[2] ?? '');
         }
-        if (preg_match('#^/orders/([^/]{1,600})(?:/(claim|transition))?$#D', $request->path, $matches) === 1) {
+        if (preg_match('#^/orders/([^/]{1,600})(?:/(claim|transition|line-checks))?$#D', $request->path, $matches) === 1) {
             $globalIdString = rawurldecode($matches[1]);
             $action = $matches[2] ?? '';
             return match (true) {
                 $request->method === 'GET' && $action === '' => $this->ordersController()->show($request, $globalIdString),
                 $request->method === 'POST' && $action === 'claim' => $this->ordersController()->claim($request, $globalIdString),
+                $request->method === 'POST' && $action === 'line-checks' => $this->ordersController()->confirmLines($request,$globalIdString),
                 $request->method === 'POST' && $action === 'transition' => $this->ordersController()->transition($request, $globalIdString),
                 default => throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.'),
             };

@@ -546,9 +546,9 @@ test('expected API errors and validation are unchanged by the PDO diagnostics', 
     expect(!array_key_exists('exception', $warning) && !array_key_exists('sqlstate', $warning) && !array_key_exists('driver_code', $warning));
 });
 
-test('migrations stay sequential through 027 and the canonical workflow keeps its 14 stages', function (): void {
+test('migrations stay sequential through 027, the simulation migration is 032 and the canonical workflow keeps its 14 stages', function (): void {
     $migrations = array_map('basename', glob(dirname(__DIR__) . '/database/migrations/*.sql') ?: []);
-    expect(count($migrations) === 27 && $migrations[23] === '024_tailoring_quality_supervision.sql' && $migrations[24] === '025_source_payment_gate.sql' && $migrations[25] === '026_trendyol_product_identity.sql' && $migrations[26] === '027_employee_staff_locale.sql' && str_starts_with($migrations[0], '001_') && str_starts_with($migrations[16], '017_') && $migrations[17] === '018_production_authority.sql' && $migrations[18] === '019_production_qr_authority.sql' && $migrations[19] === '020_production_document_authority.sql' && $migrations[20] === '021_document_scopes.sql' && $migrations[21] === '022_trendyol_intake.sql' && $migrations[22] === '023_source_scoped_stage_authorization.sql');
+    expect(count($migrations) === 28 && $migrations[27] === '032_production_line_readiness.sql' && count(array_filter($migrations, static fn (string $m): bool => str_starts_with($m, '028_'))) === 0 && $migrations[23] === '024_tailoring_quality_supervision.sql' && $migrations[24] === '025_source_payment_gate.sql' && $migrations[25] === '026_trendyol_product_identity.sql' && $migrations[26] === '027_employee_staff_locale.sql' && str_starts_with($migrations[0], '001_') && str_starts_with($migrations[16], '017_') && $migrations[17] === '018_production_authority.sql' && $migrations[18] === '019_production_qr_authority.sql' && $migrations[19] === '020_production_document_authority.sql' && $migrations[20] === '021_document_scopes.sql' && $migrations[21] === '022_trendyol_intake.sql' && $migrations[22] === '023_source_scoped_stage_authorization.sql');
     expect(count(CanonicalProductionWorkflowContract::STAGES) === 14);
     expect(array_keys(CanonicalProductionWorkflowContract::STAGES) === ['waiting', 'material-preparation', 'workshop-receiving', 'labeling', 'material-straightening', 'bottom-hem', 'side-hem', 'ironing', 'height', 'header-tape', 'sewing-finishing', 'quality-control', 'packing', 'delivery']);
     // 018 is additive: it never converts the authority of existing orders.
@@ -714,4 +714,52 @@ test('signed order authority answers production facts only and rejects malformed
     $writes = array_filter(array_slice($pdo->statements, $before), static fn (string $sql): bool => preg_match('/^\s*(INSERT|UPDATE|DELETE|BEGIN)/i', $sql) === 1);
     expect($writes === [], 'The authority answer never writes, not even the contact time.');
     expect(sourceResponseHasNoSecret($response) && !str_contains(sourceJson($response), 'ARASYA:Q1'), 'No secret and no QR value is returned.');
+});
+
+test('configured payment gate enforcement survives environment loading into the production start policy', function (): void {
+    $home=sys_get_temp_dir() . '/arasya-payment-env-' . bin2hex(random_bytes(6)); mkdir($home,0700);
+    try {
+        $values=['HOME'=>$home,'ARASYA_APP_SECRET'=>str_repeat('s',32),'ARASYA_DB_NAME'=>'db','ARASYA_DB_USER'=>'u','ARASYA_DB_PASSWORD'=>'p','ARASYA_ALLOWED_ORIGINS'=>'https://staff.arasyahome.ro',
+            'ARASYA_SOURCE_SECRET_TRENDHOME'=>SOURCE_TEST_TRENDHOME_SECRET,'ARASYA_SOURCE_MODE_TRENDHOME'=>'active','ARASYA_SOURCE_PAYMENT_GATE_TRENDHOME'=>'enforce',
+            'ARASYA_SOURCE_SECRET_OUTLETPERDELE'=>SOURCE_TEST_OUTLET_SECRET,'ARASYA_SOURCE_MODE_OUTLETPERDELE'=>'active','ARASYA_SOURCE_PAYMENT_GATE_OUTLETPERDELE'=>'off'];
+        $config=Config::fromEnvironment(new ConfigLoader($values));
+        $registry=SourceRegistry::fromConfig($config);
+        expect($registry->find('trendhome')?->paymentGateMode === \Arasya\Operations\Production\PaymentGateMode::Enforce,'Configured enforce must not disappear during environment loading.');
+        $modes=\Arasya\Operations\Production\ProductionAuthorityModes::fromRegistry($registry);
+        expect(\Arasya\Operations\Production\PaymentGate::blocksStart($modes,'trendhome','cod','waiting'),'Configured unpaid COD must block production start.');
+        expect(!\Arasya\Operations\Production\PaymentGate::blocksStart($modes,'outletperdele','cod','waiting'),'Another source keeps its explicit off policy.');
+    } finally { rmdir($home); }
+});
+
+test('configured payment gate enforcement survives private JSON loading and environment precedence', function (): void {
+    $home=sys_get_temp_dir() . '/arasya-payment-file-' . bin2hex(random_bytes(6)); mkdir($home . '/arasya-config',0700,true);
+    $file=$home . '/arasya-config/secrets.json';
+    try {
+        file_put_contents($file,json_encode(['ARASYA_APP_SECRET'=>str_repeat('s',32),'ARASYA_DB_NAME'=>'db','ARASYA_DB_USER'=>'u','ARASYA_DB_PASSWORD'=>'p','ARASYA_ALLOWED_ORIGINS'=>'https://staff.arasyahome.ro',
+            'ARASYA_SOURCE_SECRET_TRENDHOME'=>SOURCE_TEST_TRENDHOME_SECRET,'ARASYA_SOURCE_MODE_TRENDHOME'=>'active','ARASYA_SOURCE_PAYMENT_GATE_TRENDHOME'=>'enforce'],JSON_THROW_ON_ERROR)); chmod($file,0600);
+        $registry=SourceRegistry::fromConfig(Config::fromEnvironment(new ConfigLoader(['HOME'=>$home])));
+        expect($registry->find('trendhome')?->paymentGateMode === \Arasya\Operations\Production\PaymentGateMode::Enforce,'Configured enforce must not disappear during private JSON loading.');
+        $override=SourceRegistry::fromConfig(Config::fromEnvironment(new ConfigLoader(['HOME'=>$home,'ARASYA_SOURCE_PAYMENT_GATE_TRENDHOME'=>'off'])));
+        expect($override->find('trendhome')?->paymentGateMode === \Arasya\Operations\Production\PaymentGateMode::Off,'Explicit environment override remains authoritative.');
+    } finally { unlink($file); rmdir(dirname($file)); rmdir($home); }
+});
+
+test('explicit fabric classification requires normalized positive dimensions and preserves manufacturing options', function (): void {
+    $payload=sourceTestPayload();$payload['order']['items'][0]['manufacturingType']='custom_drapery';
+    $snapshot=\Arasya\Operations\Integration\SourceOrderPayloadMapper::map('trendhome',$payload);
+    expect($snapshot->items[0]->productionContext['manufacturingType']==='custom_drapery');
+    foreach ([['width'=>null],['height'=>0],['width'=>0.0001],['unit'=>'inch'],['width'=>'3.4'],['manufacturingType'=>'curtain-from-name']] as $change) {
+        $bad=$payload;$bad['order']['items'][0]=array_replace($bad['order']['items'][0],$change);
+        sourceExpectApi('SOURCE_PAYLOAD_INVALID',422,fn()=>\Arasya\Operations\Integration\SourceOrderPayloadMapper::map('trendhome',$bad));
+    }
+});
+
+test('measurement-free ready-made products are classified explicitly regardless of their name', function (): void {
+    $payload=sourceTestPayload();$payload['order']['items'][0]['manufacturingType']='ready_made';$payload['order']['items'][0]['name']='Curtain named accessory';
+    foreach(['width','height','unit','meters'] as $key) unset($payload['order']['items'][0][$key]);
+    $item=\Arasya\Operations\Integration\SourceOrderPayloadMapper::map('outletperdele',$payload)->items[0];
+    expect($item->widthValue===null && $item->heightValue===null && $item->meters===null);
+    expect(!\Arasya\Operations\Production\LineReadiness::applicable($item,'material-preparation'));
+    expect(!\Arasya\Operations\Production\LineReadiness::applicable($item,'side-hem'));
+    expect(\Arasya\Operations\Production\LineReadiness::applicable($item,'packing'));
 });

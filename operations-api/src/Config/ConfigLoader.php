@@ -41,13 +41,15 @@ final readonly class ConfigLoader
         'ARASYA_TRENDYOL_API_BASE_URL',
         'ARASYA_TRENDYOL_INTAKE',
         'ARASYA_TRENDYOL_FIXTURE_FILE',
+        'ARASYA_SIMULATION_CLOCK_MODE',
+        'ARASYA_LINE_ROUTING',
     ];
 
     /**
      * Per-source settings are keyed by the source key in upper case (`-` becomes `_`), for example
-     * ARASYA_SOURCE_SECRET_TRENDHOME, ARASYA_SOURCE_MODE_OUTLETPERDELE, ARASYA_SOURCE_AUTHORITY_TRENDHOME, ARASYA_SOURCE_QR_AUTHORITY_TRENDHOME, ARASYA_SOURCE_DOCUMENT_AUTHORITY_TRENDHOME or ARASYA_SOURCE_TRACKING_AUTHORITY_TRENDHOME.
+     * ARASYA_SOURCE_SECRET_TRENDHOME, ARASYA_SOURCE_MODE_OUTLETPERDELE, ARASYA_SOURCE_AUTHORITY_TRENDHOME, ARASYA_SOURCE_QR_AUTHORITY_TRENDHOME, ARASYA_SOURCE_DOCUMENT_AUTHORITY_TRENDHOME ARASYA_SOURCE_TRACKING_AUTHORITY_TRENDHOME or ARASYA_SOURCE_PAYMENT_GATE_TRENDHOME.
      */
-    private const SOURCE_KEY_PATTERN = '/^ARASYA_SOURCE_(?:SECRET|MODE|ENABLED|NAME|TYPE|AUTHORITY|QR_AUTHORITY|DOCUMENT_AUTHORITY|TRACKING_AUTHORITY)_[A-Z0-9_]{1,40}$/D';
+    private const SOURCE_KEY_PATTERN = '/^ARASYA_SOURCE_(?:SECRET|MODE|ENABLED|NAME|TYPE|AUTHORITY|QR_AUTHORITY|DOCUMENT_AUTHORITY|TRACKING_AUTHORITY|PAYMENT_GATE)_[A-Z0-9_]{1,40}$/D';
 
     /** @var array<string, string> */
     private const ALIASES = [
@@ -69,6 +71,15 @@ final readonly class ConfigLoader
     /** @return array<string, string> */
     public function load(): array
     {
+        // Simulation never inherits a production private file or aliases. All values must be explicit.
+        if ($this->environmentValue('ARASYA_APP_ENV') === 'simulation') {
+            $values = [];
+            foreach ($this->knownKeys([]) as $key) {
+                $value = $this->environmentValue($key);
+                if ($value !== null) $values[$key] = trim($value);
+            }
+            return $values;
+        }
         $overridePath = trim($this->environmentValue('ARASYA_CONFIG_FILE') ?? '');
         $home = $this->resolveHome($overridePath === '');
         $path = $this->selectPrivateFile($overridePath, $home);

@@ -33,6 +33,7 @@ export interface OrderService {
     input: { expectedVersion: number; idempotencyKey: string; qrToken?: string; confirmedMultiple?: boolean; ownedCount?: number },
     options?: { signal?: AbortSignal },
   ): Promise<StaffOrder>;
+  confirmLines?(orderId: string, input: { expectedVersion: number; items: { itemId: string; completedQuantity: number }[]; idempotencyKey: string }): Promise<StaffOrder>;
   /** Completes the current stage; the server alone chooses the next canonical stage. */
   confirmStageTransition(
     orderId: string,
@@ -83,6 +84,7 @@ export interface LiveService {
 }
 
 export type ServiceBundle = {
+  simulation?: import("../domain/simulation").SimulationApi;
   cutting?: import("../domain/cutting").CuttingApi;
   /** Central production documents (generation, revision requests, prints); absent in preview and demo. */
   documents?: import("../domain/documents").DocumentApi;

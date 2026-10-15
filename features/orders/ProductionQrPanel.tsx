@@ -10,7 +10,9 @@ const time = { format: (value: Date): string => formatDate(value, { day: "numeri
 
 /** Saves the server-rendered label; nothing is drawn or encoded in the browser. */
 function saveSvg(svg: string, filename: string) {
-  const url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
+  // The QR path remains server-rendered; a simulation export adds an unmistakable physical label.
+  const output = import.meta.env?.MODE === "simulation" ? `<svg xmlns="http://www.w3.org/2000/svg" width="240" height="280" viewBox="0 0 240 280"><rect width="240" height="280" fill="white"/><text x="120" y="20" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="bold">SIMULARE / TEST</text><svg x="10" y="35" width="220" height="220" ${svg.slice(svg.indexOf("viewBox"))}</svg>` : svg;
+  const url = URL.createObjectURL(new Blob([output], { type: "image/svg+xml" }));
   const link = document.createElement("a");
   link.href = url;
   link.download = filename;

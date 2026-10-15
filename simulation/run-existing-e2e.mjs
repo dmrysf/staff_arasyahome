@@ -1,0 +1,11 @@
+import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+const root = path.resolve(import.meta.dirname, "..");
+const manifest = JSON.parse(readFileSync(process.argv[2], "utf8"));
+const e = manifest.environment;
+if (e?.ARASYA_APP_ENV !== "simulation" || !/^arasya_sim_e2e_test_[a-f0-9]{12}$/.test(e.ARASYA_DB_NAME)) throw new Error("A separately provisioned simulation E2E database is required.");
+const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("ARASYA_") && !key.startsWith("VITE_STAFF_")));
+Object.assign(env, { ARASYA_E2E_DB_NAME: e.ARASYA_DB_NAME, ARASYA_TEST_DB_HOST: e.ARASYA_DB_HOST, ARASYA_TEST_DB_PORT: e.ARASYA_DB_PORT, ARASYA_TEST_DB_USER: e.ARASYA_DB_USER, ARASYA_TEST_DB_PASSWORD: e.ARASYA_DB_PASSWORD });
+const result = spawnSync("pnpm", ["test:e2e:real"], { cwd: root, env, stdio: "inherit", timeout: 600000 });
+process.exitCode = result.status ?? 1;

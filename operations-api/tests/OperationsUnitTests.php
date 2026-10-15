@@ -929,3 +929,35 @@ test('Document scope conditions are default deny and never interpolate source ke
     $condition = \Arasya\Operations\Document\DocumentScopePolicy::condition(["trendhome", "x' OR '1'='1"], 'o.source_key', $parameters);
     expect($condition === 'o.source_key IN (?, ?)' && $parameters === ['x', 'trendhome', "x' OR '1'='1"], 'sources are bound parameters');
 });
+
+
+test('Woo connector never silently changes invalid quantities into production units', function (): void {
+    if (!defined('ABSPATH')) define('ABSPATH', sys_get_temp_dir() . '/');
+    require_once dirname(__DIR__, 2) . '/integrations/woocommerce/arasya-operations-connector.php';
+    $order = static function (mixed $quantity): object {
+        $item = new class($quantity) {
+            public function __construct(private mixed $quantity) {}
+            public function get_quantity(): mixed { return $this->quantity; }
+            public function get_name(): string { return 'TEST quantity'; }
+            public function get_meta(string $key, bool $single): string { return ''; }
+            public function get_product(): ?object { return null; }
+        };
+        return new class($item) {
+            public function __construct(private object $item) {}
+            public function get_items(): array { return [1=>$this->item]; }
+            public function get_status(): string { return 'processing'; }
+            public function get_date_created(): ?object { return null; }
+            public function get_meta(string $key, bool $single): string { return ''; }
+            public function get_id(): int { return 9990001; }
+            public function get_order_number(): string { return 'TEST-QUANTITY'; }
+        };
+    };
+    foreach ([0,-1,1.5,'not-a-number',1000001] as $quantity) {
+        expectRuntime(fn () => arasya_ops_build_payload($order($quantity),'2026-10-13T12:00:00Z'));
+    }
+    foreach ([1,2,5,1000000,'2',2.0] as $quantity) {
+        $payload=arasya_ops_build_payload($order($quantity),'2026-10-13T12:00:00Z');
+        expect($payload['order']['items'][0]['quantity']===(int)$quantity);
+        expect(SourceOrderPayloadMapper::map('trendhome',$payload)->items[0]->quantity===(int)$quantity);
+    }
+});

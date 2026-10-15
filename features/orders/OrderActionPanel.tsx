@@ -70,7 +70,7 @@ export function OrderActionPanel({ order, workflow, service, cutting, onUpdated,
   }
 
   const current = getStageById(workflow, order.productionStageId);
-  const next = getNextStage(workflow, order.productionStageId);
+  const next = order.lineReadiness?.nextStageId ? getStageById(workflow,order.lineReadiness.nextStageId) : getNextStage(workflow, order.productionStageId);
   return (
     <section className="detail-section order-action-panel" aria-live="polite">
       {state.status === "done" && <p className="order-action-done" role="status">✓ {orderActionSuccess[state.message].title}</p>}

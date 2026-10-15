@@ -101,7 +101,10 @@ export type OrderActionBlockedReason =
 export type PaymentGateState = "online" | "not_required" | "confirmed" | "waiting" | "partial" | "unknown" | "unverified";
 export type PaymentGateView = { state: PaymentGateState; label: string; mode: "observe" | "enforce"; blocking: boolean; reversedAt: string | null };
 
+export type LineReadiness = { mode: "legacy" | "enforce"; nextStageId: string | null; readyForPacking: boolean; lines: { itemId: string; sourceItemId: string; manufacturingType: string | null; quantity: number; requiredStages: string[]; completedQuantities: Record<string, number>; readyForPacking: boolean; packed: boolean; requiredAtCurrentStage: boolean }[] };
+
 export type StaffOrder = {
+  lineReadiness?: LineReadiness;
   productionContext?: { company: { legalName: string; companyCode: string; countryCode: string; taxIdentifier: string } };
   id: string;
   source: OrderSource;
@@ -284,6 +287,15 @@ export type ServiceErrorCode =
   | "ORDER_NOT_FOUND"
   | "ORDER_UNAVAILABLE"
   | "ORDER_PRODUCTS_UNAVAILABLE"
+  | "PRODUCT_CLASSIFICATION_REQUIRED"
+  | "PRODUCT_MEASUREMENTS_REQUIRED"
+  | "LINE_CHECKS_UNAVAILABLE"
+  | "LINE_OWNER_REQUIRED"
+  | "LINE_CHECK_INVALID"
+  | "LINE_QUANTITY_REGRESSION"
+  | "LINES_NOT_READY"
+  | "LINES_UNFINISHED"
+  | "CUTTING_NOT_REQUIRED"
   | "ORDER_CHANGED"
   | "ORDER_ALREADY_CLAIMED"
   | "ORDER_AMBIGUOUS"

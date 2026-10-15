@@ -6,6 +6,32 @@ import { trErrors } from "./tr.errors";
  * codes, sizes, colors, notes, numbers) is always shown exactly as stored.
  */
 export const tr: Catalog = {
+  "simulation.orderDetail": "Ürünler, QR ve geçmiş",
+  "simulation.units": "adet",
+  "simulation.accounts": "Test hesapları ve görevler",
+  "simulation.accountsHelp": "Her çalışan kendi test hesabıyla giriş yapar. Bu panel oturum açan kişinin rolünü değiştirmez.",
+
+  "simulation.title": "Simülasyon Merkezi",
+  "simulation.description": "Sentetik siparişler. Aynı Staff ve üretim kuralları.",
+  "simulation.all": "Tüm kaynaklar",
+  "simulation.start": "Başlat",
+  "simulation.pause": "Durdur",
+  "simulation.resume": "Devam et",
+  "simulation.reset": "Yeni veriyle tekrar oynat",
+  "simulation.fault": "Hata koşulunu tetikle",
+  "simulation.retry": "Yenile",
+  "simulation.export": "JSON dışa aktar",
+  "simulation.pending": "İnsan doğrulaması gerekli",
+  "simulation.checks": "Kurulum kontrolleri",
+  "simulation.orders": "Test siparişleri",
+  "simulation.real": "Gerçek zaman",
+  "simulation.fixture": "Fixture zamanı",
+  "simulation.loading": "Yükleniyor…",
+  "simulation.open": "Staff’ta aç",
+  "simulation.scan": "QR tarayıcı",
+  "simulation.unknown": "Yalnız aksesuar siparişlerinin iş kuralı onay bekliyor.",
+  "simulation.invariants": "Veritabanı bütünlüğü",
+
   ...trErrors,
 
   // ---- common
@@ -1173,4 +1199,13 @@ export const tr: Catalog = {
   "mgmt.col.unassigned": "Üstlenilmemiş",
   "mgmt.col.oldest": "En eski",
   "mgmt.footnote": "Sipariş, çalışan ve istisna ayrıntıları Dashboard uygulamasında kalır.",
+  "lines.title": "Ürün kontrolleri",
+  "lines.ready": "Tüm ürünler paketlemeye hazır",
+  "lines.unfinished": "Tamamlanmamış ürün veya işlem var",
+  "lines.standard": "Hazır ürün · kesim/dikiş gerekmez",
+  "lines.fabric": "Ölçüleri doğrulanmış kumaş",
+  "lines.packed": "Pakette kontrol edildi",
+  "lines.quantity": "Tamamlanan adet",
+  "lines.pack": "Ürünü pakette kontrol et",
+  "lines.confirm": "Ürün işlemini onayla",
 };
