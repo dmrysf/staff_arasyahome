@@ -26,6 +26,9 @@ use PDOException;
  *                                    ledger from cutting on, nothing historical is needed
  *
  * Order-level history is never treated as per-piece evidence here; the audit only reports where evidence exists.
+ * Route policy: a PERDEA-only order needs no manufacturing evidence for stages 6-7 under either policy version (version 2,
+ * perdea_assisted_checkpoints, only adds an informational auxiliary-work status there). routePolicyVersion reports
+ * which version applies to the order (global flag, active cohort member or an existing status row, migration 031).
  */
 final readonly class RouteAudit
 {
@@ -52,6 +55,9 @@ final readonly class RouteAudit
         $exceptions = $this->pdo->prepare('SELECT COUNT(*) FROM production_exceptions WHERE order_uuid = ? AND resolved_at IS NULL');
         $head = $plans ? $this->pdo->prepare('SELECT p.piece_count, p.product_type, p.commercial_quantity_snapshot FROM production_line_plan_heads h INNER JOIN production_line_plans p ON p.plan_uuid = h.plan_uuid WHERE h.item_uuid = ?') : null;
         $review = $units ? $this->pdo->prepare("SELECT COUNT(*) FROM production_work_units WHERE order_uuid = ? AND status = 'active' AND review_required = 1") : null;
+        $assistedTables = $this->table('production_assisted_checkpoints');
+        $assistedGlobal = $assistedTables && (int) $this->pdo->query("SELECT COALESCE(MAX(enabled), 0) FROM production_feature_flags WHERE flag_key = 'perdea_assisted_checkpoints'")->fetchColumn() === 1;
+        $assistedOrder = $assistedTables ? $this->pdo->prepare("SELECT (SELECT COUNT(*) FROM production_pilot_cohort WHERE order_uuid = ? AND feature_key = 'perdea_assisted_checkpoints' AND status = 'active') + (SELECT COUNT(*) FROM production_assisted_checkpoints WHERE order_uuid = ?)") : null;
         $result = [];
         $totals = [];
         $byStage = [];
@@ -89,6 +95,11 @@ final readonly class RouteAudit
                 if ((int) $review->fetchColumn() > 0) $conflicts[] = 'piece_identity_review';
             }
             if (!isset($ordinal[$stage])) $conflicts[] = 'stage_not_in_workflow';
+            $assisted = $assistedGlobal;
+            if (!$assisted && $assistedOrder !== null) {
+                $assistedOrder->execute([$uuid, $uuid]);
+                $assisted = (int) $assistedOrder->fetchColumn() > 0;
+            }
             $pastCutting = $cutting !== null && isset($ordinal[$stage]) && $ordinal[$stage] > $cutting;
             if ($pastCutting && !isset($completed[self::CUTTING])) $conflicts[] = 'past_cutting_without_cutting_completion';
             // Applicable stages from cutting up to (not including) the current stage; without a confirmed PERDEA plan the
@@ -115,11 +126,11 @@ final readonly class RouteAudit
             $result[] = [
                 'order' => (string) $row['global_order_id'], 'source' => (string) $row['source_key'], 'stage' => $stage, 'class' => $class,
                 'lines' => count($lines), 'unconfirmedLines' => $unconfirmed, 'unknownTypeLines' => $unknownType, 'openExceptions' => $open,
-                'conflicts' => array_values(array_unique($conflicts)), 'evidenceAvailable' => $pastCutting ? $missing === [] : null, 'missingEvidence' => $missing,
+                'conflicts' => array_values(array_unique($conflicts)), 'routePolicyVersion' => $assisted ? 2 : 1, 'evidenceAvailable' => $pastCutting ? $missing === [] : null, 'missingEvidence' => $missing,
             ];
         }
         ksort($totals);
-        return ['generatedAt' => gmdate('c'), 'schema' => ['plans' => $plans, 'workUnits' => $units, 'reconciliation' => $this->table('production_route_reconciliation_stages')],
+        return ['generatedAt' => gmdate('c'), 'schema' => ['plans' => $plans, 'workUnits' => $units, 'reconciliation' => $this->table('production_route_reconciliation_stages'), 'assistedCheckpoints' => $assistedTables],
             'openOrders' => count($result), 'more' => count($orders) === max(1, $limit), 'totals' => $totals, 'byStage' => $byStage, 'orders' => $result];
     }
 

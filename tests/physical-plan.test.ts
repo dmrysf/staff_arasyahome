@@ -48,3 +48,33 @@ test("every historical evidence refusal has a specific Romanian message", () => 
   }
   assert.match(physicalError(new StaffServiceError("ORDER_CHANGED", undefined, { backendCode: "RECONCILIATION_STAGE_RECORDED" })), /dovezi verificate/);
 });
+const assistedPiece = (status: string, extra: Record<string, unknown> = {}) => ({ unitId: "u1", itemId: "i", lineNumber: 1, name: "Perdea", code: "P-1", index: 1, count: 2, piece: "1/2", reworkCycle: 1, stageId: "bottom-hem",
+  status, version: 0, markedBy: null, markedAt: null, ...extra });
+const statusBlock = (pieces: unknown[], extra: Record<string, unknown> = {}) => ({ stageId: "bottom-hem", policyVersion: 2, informational: true, total: pieces.length, performed: 0, notPerformed: 0, unmarked: pieces.length, pieces, unconfirmedLines: [], ...extra });
+const piecesWith = (assistedCheckpoints: unknown) => ({ total: 2, onOrder: 2, inRework: 0, units: [], tracks: [], allPlansKnown: true, partialRework: false, pieceRouting: true, perdeaAssistedCheckpoints: true, assistedCheckpoints });
+test("informational PERDEA status from API 2.34.0 maps per piece; an older API without it still maps", () => {
+  const block = statusBlock([assistedPiece("performed", { version: 1, markedBy: { displayName: "Synthetic Hemmer", isMe: true }, markedAt: "2026-10-15T10:00:00.000Z" }), assistedPiece("unmarked", { unitId: "u2", index: 2, piece: "2/2" })], { performed: 1, unmarked: 1 });
+  const mapped = mapOrderPieces(piecesWith(block));
+  assert.equal(mapped.perdeaAssistedCheckpoints, true);
+  assert.deepEqual(mapped.assistedCheckpoints?.pieces.map(piece => piece.status), ["performed", "unmarked"]);
+  assert.equal(mapped.assistedCheckpoints?.informational, true);
+  const lines = mapOrderPieces(piecesWith(statusBlock([], { unconfirmedLines: [{ itemId: "i", lineNumber: 1, name: "Perdea", code: "P-1" }] })));
+  assert.equal(lines.assistedCheckpoints?.unconfirmedLines[0].code, "P-1");
+  const older = mapOrderPieces({ total: 1, onOrder: 1, inRework: 0, units: [], tracks: [] });
+  assert.equal(older.assistedCheckpoints, null);
+  assert.equal(older.perdeaAssistedCheckpoints, false);
+});
+test("an unknown or incomplete PERDEA status fails closed instead of being shown as done", () => {
+  assert.throws(() => mapOrderPieces(piecesWith(statusBlock([assistedPiece("verified")]))));
+  assert.throws(() => mapOrderPieces(piecesWith(statusBlock([assistedPiece("performed", { markedBy: { displayName: "x" } })]))));
+  assert.throws(() => mapOrderPieces(piecesWith({ ...statusBlock([]), informational: false })));
+  const line = { ...evidenceLine(undefined).lines[0], assistedStages: ["bottom-hem", "side-hem"], pieces: [{ id: "u", index: 1, count: 2, trackId: null, assistedCheckpoint: assistedPiece("not_performed", { markedBy: { displayName: "Synthetic Hemmer", isMe: false } }) }] };
+  assert.equal(mapManufacturingPlan({ orderId: "source:synthetic", perdeaAssistedCheckpoints: true, lines: [line] }).lines[0].pieces[0].assistedCheckpoint?.status, "not_performed");
+  assert.throws(() => mapManufacturingPlan({ orderId: "source:synthetic", lines: [{ ...line, pieces: [{ id: "u", index: 1, count: 2, trackId: null, assistedCheckpoint: assistedPiece("taken_for_work") }] }] }));
+});
+test("every PERDEA status refusal has a specific Romanian message", () => {
+  for (const code of ["ASSISTED_MARK_NOT_ALLOWED", "ASSISTED_CHECKPOINT_CHANGED", "ASSISTED_CHECKPOINT_STATE", "ASSISTED_STAGE_MISMATCH", "ASSISTED_CHECKPOINT_NOT_APPLICABLE"]) {
+    const message = physicalError(new StaffServiceError("ORDER_CHANGED", undefined, { backendCode: code }));
+    assert.doesNotMatch(message, /Ceva nu a funcționat|Operațiune neconfirmată/, code);
+  }
+});

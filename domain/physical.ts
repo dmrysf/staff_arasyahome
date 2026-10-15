@@ -1,17 +1,20 @@
 import { physicalText as pt } from "../i18n/physical";
-/** Physical facts from API 2.32.0 (historical route evidence: 2.33.0). Commercial quantity never establishes physical count. */
+import type { AssistedCheckpointPiece } from "./models";
+/** Physical facts from API 2.32.0 (historical route evidence: 2.33.0, assisted PERDEA checks: 2.34.0). Commercial quantity never establishes physical count. */
 export type ProductType = "perdea" | "draperii" | "other" | "unknown";
 export type PlanPiece = { index: number; width: string | null; height: string | null; unit: string | null; fabricMeters?: string | null; fabric?: string | null };
 export type PlanLine = { itemId: string; sourcePlanHash: string; lineNumber: number; name: string; code: string | null; color: string | null;
   commercialQuantity: number; lineMeasurements: { width: string | null; height: string | null; unit: string | null }; lineMeters: string | null;
   planKnown: boolean; staleAfterSourceChange: boolean; typeVerified: boolean; route: string[]; notApplicableStages: string[];
-  proposal: { evidence: { kind: string; value: string }[] }; pieces: { id: string; index: number; count: number; trackId: string | null; routeEvidence?: RouteEvidence | null }[];
+  /** API 2.34.0: stages where these pieces show the informational PERDEA auxiliary-work status (absent on older APIs). */
+  assistedStages?: string[];
+  proposal: { evidence: { kind: string; value: string }[] }; pieces: { id: string; index: number; count: number; trackId: string | null; routeEvidence?: RouteEvidence | null; assistedCheckpoint?: AssistedCheckpointPiece | null }[];
   plan: { revision: number; productType: ProductType; typeLocked: boolean; pieceCount: number | null; materialTotal: string | null; pieces: PlanPiece[]; note: string | null } };
 /** API 2.33.0: stages of a piece before its per-piece ledger started, and the verified historical evidence recorded for them. */
 export type RouteEvidence = { reworkCycle: number; ledgerStartStageId: string | null; preLedgerStages: string[]; reconciledStages: { stageId: string; evidence: string }[];
   missingStages: string[]; uncertainStages: string[]; candidates: { stageId: string; activityEventId: string; employee: string; at: string }[] };
 export type RouteEvidenceInput = { stages: { stageId: string; evidence: "order_activity" | "physical_inspection"; activityEventId: string | null }[]; uncertainStages: string[]; note: string };
-export type ManufacturingPlan = { orderId: string; canConfirm: boolean; allPlansKnown: boolean; partialRework: boolean; pieceRouting: boolean; lines: PlanLine[] };
+export type ManufacturingPlan = { orderId: string; canConfirm: boolean; allPlansKnown: boolean; partialRework: boolean; pieceRouting: boolean; perdeaAssistedCheckpoints?: boolean; routePolicyVersion?: number; lines: PlanLine[] };
 export type PlanConfirmation = { expectedRevision: number; expectedSourceHash: string; productType: ProductType; pieceCount: number;
   materialTotalMeters: string | null; pieces: PlanPiece[]; note: string };
 export type PhysicalHistory = { unitId: string; status: string; reworkCycle: number; productionStageId: string | null;
@@ -19,7 +22,9 @@ export type PhysicalHistory = { unitId: string; status: string; reworkCycle: num
   custody: { version: number; custodian: { displayName: string } | null; location: { id: string; label: string } | null; hold: string | null };
   labels: { payload: string; status: string }[];
   stageLedger: { reworkCycle: number; stageId: string; outcome: string; employee: string | null; at: string }[];
-  material: { id: string; kind: string; meters: string | null; stockEffect?: string }[] };
+  material: { id: string; kind: string; meters: string | null; stockEffect?: string }[];
+  /** API 2.34.0: every informational PERDEA mark of the piece, per stage and cycle. */
+  assistedCheckpoints?: { reworkCycle: number; stageId: string; statusBefore: string; status: string; by: string; at: string }[] };
 export type PhysicalApi = {
   plan(orderId: string, signal?: AbortSignal): Promise<ManufacturingPlan>;
   confirmPlan(orderId: string, lineId: string, input: PlanConfirmation, key: string): Promise<ManufacturingPlan>;
@@ -28,11 +33,15 @@ export type PhysicalApi = {
   reconcileRoute?(unitId: string, input: RouteEvidenceInput, key: string): Promise<ManufacturingPlan>;
 };
 export type CustodyInput = { action: "take" | "locate" | "hold" | "release"; expectedVersion: number; qrToken: string; locationId?: string; holdReason?: string };
+/** API 2.34.0: one informational PERDEA mark at stage 6 or 7. The stage is named explicitly; the scan is optional. */
+export type AssistedCheckpointInput = { stageId: string; status: "performed" | "not_performed" | "unmarked"; expectedVersion: number; qrToken?: string; note?: string };
 export type StaffPhysicalApi = PhysicalApi & {
   locations(signal?: AbortSignal): Promise<{ locations: { id: string; label: string }[] }>;
   custody(unitId: string, input: CustodyInput, key: string): Promise<unknown>;
   reunite(input: { unitIds: string[]; confirmed: true; locationId?: string }, key: string): Promise<unknown>;
   material(unitId: string, input: { kind: string; meters: string; note?: string; correctsRecordId?: string }, key: string): Promise<unknown>;
+  /** Present when the API supports the informational PERDEA status (2.34.0). */
+  assistedCheckpoint?(unitId: string, input: AssistedCheckpointInput, key: string): Promise<ManufacturingPlan>;
 };
 /** No floating point division, no inferred measurements. Empty remains unknown. */
 export function planDecimal(value: string): string | null {
@@ -68,11 +77,18 @@ export function physicalError(error: unknown): string {
   if (["SOURCE_PLAN_CHANGED", "PLAN_CHANGED", "SOURCE_PLAN_HASH_REQUIRED"].includes(code)) return pt("physical.error.sourceChanged");
   if (code === "PLAN_BLOCKED_BY_EXCEPTION") return pt("physical.error.planBlockedByException");
   if (["PLAN_PIECE_IN_USE", "PLAN_TYPE_LOCKED"].includes(code)) return pt("physical.planul_folosit_nu_poate_fi_schimbat_astfel");
+  if (code === "ORDER_PIECES_HELD") return pt("physical.error.pieceHeld");
   if (["ORDER_PIECES_HELD", "ORDER_PIECES_INCOMPLETE", "ORDER_ROUTE_INCOMPLETE", "ORDER_PIECES_IN_REWORK", "ORDER_PIECES_NOT_READY"].includes(code)) return pt("physical.ambalarea_asteapta_toate_bucatile_etapele_aplicabile_si");
   if (code === "RECONCILIATION_STAGE_INVALID") return pt("physical.error.reconciliationStage");
   if (code === "RECONCILIATION_EVIDENCE_INVALID") return pt("physical.error.reconciliationEvidence");
   if (code === "RECONCILIATION_STAGE_RECORDED") return pt("physical.error.reconciliationRecorded");
   if (code === "RECONCILIATION_UNAVAILABLE") return pt("physical.error.reconciliationUnavailable");
+  if (code === "ASSISTED_MARK_NOT_ALLOWED") return pt("physical.error.assistedNotAllowed");
+  if (["ASSISTED_CHECKPOINT_CHANGED", "ASSISTED_CHECKPOINT_STATE"].includes(code)) return pt("physical.error.assistedChanged");
+  if (code === "ASSISTED_STAGE_MISMATCH") return pt("physical.error.assistedStage");
+  if (code === "ASSISTED_CHECKPOINT_NOT_APPLICABLE") return pt("physical.error.assistedNotApplicable");
+  if (code === "UNIT_LABEL_MISMATCH") return pt("physical.error.labelMismatch");
+  if (code === "INVALID_QR" || code === "QR_ORDER_MISMATCH") return pt("physical.error.invalidScan");
   if (["UNIT_RETIRED", "EXPIRED_QR"].includes(code)) return pt("physical.bucata_inlocuita_foloseste_eticheta_noua");
   if (isAmbiguous(error)) return pt("physical.raspuns_neconfirmat_reincarca_starea_salvata_sau_reincearca");
   if (["UNAUTHORIZED_ACTION", "PLAN_CONFIRMATION_NOT_ALLOWED", "RECONCILIATION_NOT_ALLOWED", "APPLICATION_ACCESS_DENIED"].includes(code)) return pt("physical.contul_actual_nu_este_autorizat_pentru_aceasta");
@@ -105,10 +121,19 @@ export function mapManufacturingPlan(value: unknown): ManufacturingPlan {
     (line.route as unknown[]).forEach(text); (line.notApplicableStages as unknown[]).forEach(text);
     const proposal = record(line.proposal); if (!Array.isArray(proposal.evidence)) throw invalidPhysicalResponse();
     proposal.evidence.forEach(v => text(record(v).value));
-    (line.pieces as unknown[]).forEach(v => { const p = record(v); text(p.id); number(p.index, 1); number(p.count, 1); if (p.routeEvidence != null) mapRouteEvidence(p.routeEvidence); });
+    if (line.assistedStages !== undefined) { if (!Array.isArray(line.assistedStages)) throw invalidPhysicalResponse(); line.assistedStages.forEach(text); }
+    (line.pieces as unknown[]).forEach(v => { const p = record(v); text(p.id); number(p.index, 1); number(p.count, 1); if (p.routeEvidence != null) mapRouteEvidence(p.routeEvidence); if (p.assistedCheckpoint != null) mapAssistedCheckpoint(p.assistedCheckpoint); });
     (plan.pieces as unknown[]).forEach(v => { const p = record(v); number(p.index, 1); nullableDecimal(p.width); nullableDecimal(p.height); nullableDecimal(p.fabric ?? p.fabricMeters ?? null); });
   }
-  return { ...(raw as unknown as ManufacturingPlan), canConfirm: raw.canConfirm === true, allPlansKnown: raw.allPlansKnown === true, partialRework: raw.partialRework === true, pieceRouting: raw.pieceRouting === true };
+  return { ...(raw as unknown as ManufacturingPlan), canConfirm: raw.canConfirm === true, allPlansKnown: raw.allPlansKnown === true, partialRework: raw.partialRework === true, pieceRouting: raw.pieceRouting === true, perdeaAssistedCheckpoints: raw.perdeaAssistedCheckpoints === true };
+}
+const ASSISTED_STATUSES = ["unmarked", "performed", "not_performed"];
+/** A present PERDEA status must be complete; an unknown state fails closed (never shown as done). */
+export function mapAssistedCheckpoint(value: unknown): AssistedCheckpointPiece {
+  const raw = record(value); text(raw.unitId); text(raw.stageId); text(raw.piece); number(raw.index, 1); number(raw.count, 1); number(raw.reworkCycle, 1); number(raw.version);
+  if (!ASSISTED_STATUSES.includes(text(raw.status))) throw invalidPhysicalResponse();
+  if (raw.markedBy !== null) { const who = record(raw.markedBy); text(who.displayName); if (typeof who.isMe !== "boolean") throw invalidPhysicalResponse(); }
+  return raw as unknown as AssistedCheckpointPiece;
 }
 /** An older API sends no routeEvidence; a present one must be complete. */
 function mapRouteEvidence(value: unknown): void {

@@ -74,7 +74,7 @@
 .login-footnote { margin: var(--space-5) 0 0; color: var(--color-text-subtle); text-align: center; font-size: var(--text-xs); }
 /* Sign-in language: four native names, small and secondary; wraps on the narrowest phones. */
 .login-languages { display: flex; flex-wrap: wrap; gap: 6px; margin: calc(var(--space-8) * -0.5) 0 var(--space-6); }
-.login-languages button { min-height: 44px; min-width: 44px; padding: 0 14px; border: 1px solid var(--color-border); border-radius: var(--radius-pill); background: transparent; color: var(--color-text-muted); font-size: var(--text-sm); cursor: pointer; }
+.login-languages button { min-height: var(--control-md); min-width: 44px; padding: 0 14px; border: 1px solid var(--color-border); border-radius: var(--radius-pill); background: transparent; color: var(--color-text-muted); font-size: var(--text-sm); cursor: pointer; }
 .login-languages button[aria-pressed="true"] { border-color: var(--color-text); background: var(--color-text); color: var(--color-bg); font-weight: var(--weight-semibold); }
 .login-languages button:focus-visible { outline: 2px solid var(--color-accent, currentColor); outline-offset: 2px; }
 
@@ -440,6 +440,15 @@
 .piece-actions { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; }
 .piece-actions .button { flex: 1 1 auto; min-width: 0; white-space: normal; }
 .piece-list { margin: 0; padding-left: 18px; display: grid; gap: 4px; overflow-wrap: anywhere; }
+/* Informational PERDEA status (API 2.34.0): one block per physical piece, status on its own line, full-width touch targets. */
+.assisted-list { margin: 12px 0 0; padding: 0; list-style: none; display: grid; gap: 12px; }
+.assisted-piece { display: grid; gap: 6px; padding: 12px; border: 1px solid var(--color-border); border-radius: var(--radius-md); overflow-wrap: anywhere; }
+.assisted-piece .queue-chip { justify-self: start; max-width: 100%; white-space: normal; }
+.assisted-controls { display: grid; gap: 8px; }
+.assisted-controls .check-field { min-height: var(--control-md); align-items: center; }
+.assisted-controls .button { width: 100%; min-height: var(--control-md); }
+.assisted-performed { border-color: var(--color-success-line, var(--color-border-strong)); }
+.assisted-not_performed { border-color: var(--color-warning-line, var(--color-border-strong)); }
 .piece-approved { display: grid; gap: 4px; text-align: left; overflow-wrap: anywhere; }
 .piece-labels { display: grid; gap: 10px; min-width: 0; }
 .piece-label { display: grid; justify-items: start; gap: 6px; margin: 0; min-width: 0; }

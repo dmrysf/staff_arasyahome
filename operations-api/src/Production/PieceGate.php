@@ -21,6 +21,9 @@ use PDOException;
  *                              not applicable never satisfies an applicable stage. A stage before the start of the
  *                              piece's ledger is satisfied only by verified historical evidence (RouteReconciliation)
  *
+ * Route policy version 2 (AssistedCheckpoints) adds nothing here: the PERDEA auxiliary-work status at stages 6-7 is
+ * informational and is never required for packing or delivery.
+ *
  * Lines whose plan was never confirmed keep the order-level behaviour (their progress is the order's). No partial
  * shipment exists. Read-only.
  */

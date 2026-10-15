@@ -107,7 +107,7 @@ final readonly class AnalyticsService
         $groups=[];
         foreach ($employees as $employee) {
             $key=$employee['department']['id']; $g=&$groups[$key];
-            $g??=['department'=>$employee['department'],'employees'=>0,'completedOrders'=>0,'completedLines'=>0,'meterUnits'=>0,'faultLines'=>0,'faultMeterUnits'=>0,'faultUnmeasuredLines'=>0,'detectedLines'=>0,'detectedMeterUnits'=>0,'detectedUnmeasuredLines'=>0,'activeHandling'=>['wallSeconds'=>0,'businessSeconds'=>0],'stageCompletions'=>[],'trackStageCompletions'=>[],'pieceWork'=>['order'=>0,'route'=>0,'rework'=>0],'reworkCycles'=>0,'repeatedCycles'=>0,'onlineSubmissions'=>0,'managerWaitingForRelatedOrders'=>['wallSeconds'=>0,'businessSeconds'=>0],'orderIds'=>[]];
+            $g??=['department'=>$employee['department'],'employees'=>0,'completedOrders'=>0,'completedLines'=>0,'meterUnits'=>0,'faultLines'=>0,'faultMeterUnits'=>0,'faultUnmeasuredLines'=>0,'detectedLines'=>0,'detectedMeterUnits'=>0,'detectedUnmeasuredLines'=>0,'activeHandling'=>['wallSeconds'=>0,'businessSeconds'=>0],'stageCompletions'=>[],'trackStageCompletions'=>[],'pieceWork'=>['order'=>0,'route'=>0,'rework'=>0],'assistedCheckpoints'=>['performed'=>0,'notPerformed'=>0,'stageTransitions'=>0],'reworkCycles'=>0,'repeatedCycles'=>0,'onlineSubmissions'=>0,'managerWaitingForRelatedOrders'=>['wallSeconds'=>0,'businessSeconds'=>0],'orderIds'=>[]];
             $g['employees']++;
             foreach (['completedOrders','completedLines','faultLines','faultUnmeasuredLines','detectedLines','detectedUnmeasuredLines','reworkCycles','repeatedCycles','onlineSubmissions'] as $field) $g[$field]+=$employee[$field];
             foreach ($employee['relatedOrderIds'] as $orderId) $g['orderIds'][$orderId]=true;
@@ -116,6 +116,7 @@ final readonly class AnalyticsService
             foreach ($employee['stageCompletions'] as $stage=>$count) $g['stageCompletions'][$stage]=($g['stageCompletions'][$stage]??0)+$count;
             foreach ($employee['trackStageCompletions'] as $stage=>$kinds) foreach ($kinds as $kind=>$count) $g['trackStageCompletions'][$stage][$kind]=($g['trackStageCompletions'][$stage][$kind]??0)+$count;
             foreach (['order','route','rework'] as $kind) $g['pieceWork'][$kind]+=$employee['pieceWork'][$kind];
+            foreach (['performed','notPerformed','stageTransitions'] as $metric) $g['assistedCheckpoints'][$metric]+=$employee['assistedCheckpoints'][$metric];
             unset($g);
         }
         foreach ($groups as &$group) {

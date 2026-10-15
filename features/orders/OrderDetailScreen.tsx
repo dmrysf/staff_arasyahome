@@ -32,6 +32,7 @@ import { authorityLabels } from "../../domain/authority";
 import type { ProductionQrApi } from "../../domain/productionQr";
 import { ProductionQrPanel } from "./ProductionQrPanel";
 import { PiecesPanel } from "./PiecesPanel";
+import { AssistedCheckpointsPanel } from "./AssistedCheckpointsPanel";
 import type { PieceApi } from "../../domain/pieces";
 
 
@@ -85,6 +86,7 @@ export function OrderDetailScreen({ orderId, service, exceptions, cutting, docum
       </section>}
       <OrderActionPanel order={order} workflow={workflow} service={service} cutting={cutting} onUpdated={(updated) => setOrder(current => latestProductionView(current, requireProductionProducts(updated)))} onReload={() => { setOrder(null); setReloadKey((value) => value + 1); }} onSessionExpired={onSessionExpired} />
       {cutting && order.productionStageId === "material-preparation" && order.employeeAllowedAction?.id === "complete_stage" && <CuttingTransferRequest order={order} service={cutting} onChanged={() => { setOrder(null); setReloadKey(v => v + 1); }} />}
+      {physical && <AssistedCheckpointsPanel order={order} service={physical} supervisor={quality?.tailoringSupervisor === true} onChanged={() => setReloadKey(v => v + 1)} />}
       {physical && <ManufacturingPanel orderId={order.id} revision={reloadKey} service={physical} newKey={createIdempotencyKey} stageName={stageName} onChanged={() => setReloadKey(v => v + 1)} />}
       {physical && <PhysicalOperations order={order} service={physical} onChanged={() => setReloadKey(v => v + 1)} />}
       <PiecesPanel order={order} workflow={workflow} service={pieces} exceptions={exceptions} quality={quality} permissions={permissions} navigate={navigate} onChanged={() => setReloadKey((value) => value + 1)} onSessionExpired={onSessionExpired} />

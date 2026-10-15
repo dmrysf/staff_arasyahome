@@ -111,6 +111,16 @@ export type ProductionPiece = { id: string; itemId: string; index: number; count
 
 export type PieceTrackActionId = "claim" | "complete_stage";
 
+/** API 2.34.0: informational PERDEA auxiliary-work status of one piece, stage (6/7) and production cycle. Never a gate. */
+export type AssistedCheckpointStatus = "unmarked" | "performed" | "not_performed";
+export type AssistedCheckpointPiece = {
+  unitId: string; itemId: string; lineNumber: number; name: string; code: string | null; index: number; count: number; piece: string; reworkCycle: number; stageId: string;
+  status: AssistedCheckpointStatus; version: number; markedBy: { displayName: string; isMe: boolean } | null; markedAt: string | null;
+};
+/** PERDEA status of one carrier at stage 6 / 7 (null: none). unconfirmedLines: lines without a confirmed piece count, shown per line. */
+export type AssistedCheckpoints = { stageId: string; policyVersion: number; informational: true; total: number; performed: number; notPerformed: number; unmarked: number;
+  pieces: AssistedCheckpointPiece[]; unconfirmedLines: { itemId: string; lineNumber: number; name: string; code: string | null }[] };
+
 /** Pieces that left the order because only they were defective: their own stage, owner, rework cycle and work. */
 export type PieceTrack = {
   id: string;
@@ -137,10 +147,12 @@ export type PieceTrack = {
   changedAt: string;
   allowedAction: { id: PieceTrackActionId } | null;
   blockedReason: string | null;
+  /** API 2.34.0: informational PERDEA status of this track at its current stage (never a gate). */
+  assistedCheckpoints?: AssistedCheckpoints | null;
 };
 
 /** Every physical piece of the order and the tracks of pieces in rework. mixedProgress: not every piece is at the order's stage. */
-export type OrderPieces = { total: number | null; allPlansKnown?: boolean; partialRework?: boolean; pieceRouting?: boolean; requiresPieceOutcome?: boolean; requiresDefectResolution?: boolean; onOrder: number; inRework: number; mixedProgress: boolean; units: ProductionPiece[]; tracks: PieceTrack[] };
+export type OrderPieces = { total: number | null; allPlansKnown?: boolean; partialRework?: boolean; pieceRouting?: boolean; perdeaAssistedCheckpoints?: boolean; assistedCheckpoints?: AssistedCheckpoints | null; requiresPieceOutcome?: boolean; requiresDefectResolution?: boolean; onOrder: number; inRework: number; mixedProgress: boolean; units: ProductionPiece[]; tracks: PieceTrack[] };
 
 /** Advance payment gate of a Trend Home / Outlet Perdele order: state only, never an amount. */
 export type PaymentGateState = "online" | "not_required" | "confirmed" | "waiting" | "partial" | "unknown" | "unverified";

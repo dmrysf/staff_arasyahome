@@ -1,4 +1,4 @@
-import { mapManufacturingPlan, mapPhysicalHistory } from "../../domain/physical";
+import { mapAssistedCheckpoint, mapManufacturingPlan, mapPhysicalHistory } from "../../domain/physical";
 import { StaffServiceError, type ActivityAction, type ActivityEntry, type ActivityPage, type Employee, type FaultDecision, type FaultException, type FaultReason, type OrderQuality, type QualityCapabilities, type ServiceErrorCode } from "../../domain/models";
 import { normalizeLocale } from "../../i18n/locales";
 import { isOrderActionBlockedReason, isOrderActionId, orderActionLabels } from "../../domain/orderActions";
@@ -454,12 +454,26 @@ export function mapProductionOrder(value: unknown): import("../../domain/models"
 }
 
 /** Pieces and tracks of an order (API 2.31.0). Unknown actions fail closed: no action is offered. */
+/** API 2.34.0 informational PERDEA status of one carrier; absent on older APIs, a present block must be complete (fails closed). */
+function mapAssistedCheckpoints(value: unknown): import("../../domain/models").AssistedCheckpoints | null {
+  if (value == null) return null;
+  const raw = objectValue(value);
+  if (!Array.isArray(raw.pieces) || !Array.isArray(raw.unconfirmedLines) || raw.informational !== true) throw new StaffServiceError("SERVER_ERROR");
+  try {
+    return { stageId: stringValue(raw.stageId), policyVersion: positiveInteger(raw.policyVersion), informational: true, total: nonNegativeInteger(raw.total), performed: nonNegativeInteger(raw.performed),
+      notPerformed: nonNegativeInteger(raw.notPerformed), unmarked: nonNegativeInteger(raw.unmarked), pieces: raw.pieces.map(mapAssistedCheckpoint),
+      unconfirmedLines: raw.unconfirmedLines.map(item => { const line = objectValue(item); return { itemId: stringValue(line.itemId), lineNumber: positiveInteger(line.lineNumber), name: stringValue(line.name), code: nullableText(line.code) }; }) };
+  } catch {
+    throw new StaffServiceError("SERVER_ERROR");
+  }
+}
+
 export function mapOrderPieces(value: unknown): import("../../domain/models").OrderPieces {
   const raw = objectValue(value);
   if (!Array.isArray(raw.units) || !Array.isArray(raw.tracks)) throw new StaffServiceError("SERVER_ERROR");
   const nonNegative = (item: unknown) => { if (typeof item !== "number" || !Number.isInteger(item) || item < 0) throw new StaffServiceError("SERVER_ERROR"); return item; };
   return {
-    total: raw.total == null ? null : nonNegative(raw.total), allPlansKnown: raw.allPlansKnown === true, partialRework: raw.partialRework === true, pieceRouting: raw.pieceRouting === true, requiresPieceOutcome: raw.requiresPieceOutcome === true, requiresDefectResolution: raw.requiresDefectResolution === true, onOrder: nonNegative(raw.onOrder), inRework: nonNegative(raw.inRework), mixedProgress: raw.mixedProgress === true,
+    total: raw.total == null ? null : nonNegative(raw.total), allPlansKnown: raw.allPlansKnown === true, partialRework: raw.partialRework === true, pieceRouting: raw.pieceRouting === true, perdeaAssistedCheckpoints: raw.perdeaAssistedCheckpoints === true, assistedCheckpoints: mapAssistedCheckpoints(raw.assistedCheckpoints), requiresPieceOutcome: raw.requiresPieceOutcome === true, requiresDefectResolution: raw.requiresDefectResolution === true, onOrder: nonNegative(raw.onOrder), inRework: nonNegative(raw.inRework), mixedProgress: raw.mixedProgress === true,
     units: raw.units.map((item) => {
       const unit = objectValue(item);
       return { id: stringValue(unit.id), itemId: stringValue(unit.itemId), index: positiveInteger(unit.index), count: positiveInteger(unit.count), lineNumber: positiveInteger(unit.lineNumber),
@@ -492,6 +506,7 @@ export function mapOrderPieces(value: unknown): import("../../domain/models").Or
         changedAt: timestampValue(track.changedAt),
         allowedAction: actionId === null ? null : { id: actionId },
         blockedReason: track.blockedReason == null ? null : stringValue(track.blockedReason),
+        assistedCheckpoints: mapAssistedCheckpoints(track.assistedCheckpoints),
       };
     }),
   };
@@ -780,7 +795,7 @@ function createRequest(apiBaseUrl: string, options: ProductionServicesOptions, o
             : response.status === 503
               ? "SERVICE_UNAVAILABLE"
               : "SERVER_ERROR";
-    const error = new StaffServiceError(backendErrorCodes[backendCode] ?? fallback, undefined, /^(PLAN_|SOURCE_PLAN_|PIECE_OUTCOME|UNIT_RETIRED|ORDER_PIECES_|ORDER_ROUTE_|CUSTODY_|MATERIAL_|EXACT_PIECES_|CUTTING_NOT_|RECONCILIATION_)/.test(backendCode) || /\/manufacturing-plan|^\/production-units/.test(path) ? { ...details, backendCode, httpStatus: response.status } : details);
+    const error = new StaffServiceError(backendErrorCodes[backendCode] ?? fallback, undefined, /^(PLAN_|SOURCE_PLAN_|PIECE_OUTCOME|UNIT_RETIRED|ORDER_PIECES_|ORDER_ROUTE_|CUSTODY_|MATERIAL_|EXACT_PIECES_|CUTTING_NOT_|RECONCILIATION_|ASSISTED_)/.test(backendCode) || /\/manufacturing-plan|^\/production-units/.test(path) ? { ...details, backendCode, httpStatus: response.status } : details);
     // Access changed centrally (temporary password, application access removed): the app re-reads the session.
     if (["PASSWORD_CHANGE_REQUIRED", "APPLICATION_ACCESS_DENIED"].includes(error.code) && path !== "/auth/session" && path !== "/auth/password") onSessionExpired(error);
     if (["SESSION_EXPIRED", "NO_SESSION", "ACCOUNT_INACTIVE"].includes(error.code) && path !== "/auth/login" && path !== "/auth/session") {
@@ -1021,6 +1036,7 @@ export function createProductionServices(apiBaseUrl: string, options: Production
     confirmPlan: (id, lineId, input, key) => http.request(`/orders/${encodeURIComponent(id)}/manufacturing-plan/lines/${encodeURIComponent(lineId)}/confirm`, { method: "POST", body: JSON.stringify(input), headers: { "Idempotency-Key": key } }, mapManufacturingPlan),
     history: (id, signal) => http.request(`/production-units/${encodeURIComponent(id)}/history`, { signal }, mapPhysicalHistory),
     reconcileRoute: (id, input, key) => http.request(`/production-units/${encodeURIComponent(id)}/route-evidence`, { method: "POST", body: JSON.stringify(input), headers: { "Idempotency-Key": key } }, mapManufacturingPlan),
+    assistedCheckpoint: (id, input, key) => http.request(`/production-units/${encodeURIComponent(id)}/assisted-checkpoint`, { method: "POST", body: JSON.stringify(input), headers: { "Idempotency-Key": key } }, mapManufacturingPlan),
     locations: signal => http.request("/production-locations", { signal }, value => value as { locations: { id: string; label: string }[] }),
     custody: (id, input, key) => http.request(`/production-units/${encodeURIComponent(id)}/custody`, { method: "POST", body: JSON.stringify(input), headers: { "Idempotency-Key": key } }),
     reunite: (input, key) => http.request("/production-units/reunite", { method: "POST", body: JSON.stringify(input), headers: { "Idempotency-Key": key } }),

@@ -10,7 +10,7 @@ use PDOException;
 use RuntimeException;
 
 /**
- * Controlled activation of the per-piece capabilities (migrations 028, 029).
+ * Controlled activation of the per-piece capabilities (migrations 028, 029, 031).
  *
  * A feature applies to an order when its global flag is enabled, or when the order is an active member of the audited
  * pilot cohort of that feature. Cohort membership is stored by order identity (never by a hardcoded order number) and
@@ -19,12 +19,17 @@ use RuntimeException;
  *
  *   partial_rework   reporting only some pieces of a carrier (a defective piece leaves on its own track)
  *   piece_routing    the product route policy for normal production (PERDEA skips 6-7; a mixed order splits by route)
+ *   perdea_assisted_checkpoints
+ *                    route policy version 2: PERDEA goes through 6-7 with its carrier; the stage employee may record an
+ *                    informational auxiliary-work status per piece, stage and cycle (AssistedCheckpoints), never a gate.
+ *                    Once an order has a status row the policy stays with it, even if the flag or the cohort is withdrawn.
  */
 final readonly class FeatureActivation
 {
     public const PARTIAL_REWORK = 'partial_rework';
     public const PIECE_ROUTING = 'piece_routing';
-    public const FEATURES = [self::PARTIAL_REWORK, self::PIECE_ROUTING];
+    public const PERDEA_ASSISTED_CHECKPOINTS = 'perdea_assisted_checkpoints';
+    public const FEATURES = [self::PARTIAL_REWORK, self::PIECE_ROUTING, self::PERDEA_ASSISTED_CHECKPOINTS];
 
     public function __construct(private PDO $pdo)
     {
@@ -88,7 +93,7 @@ final readonly class FeatureActivation
             $statement->execute([$feature]);
             $current = $statement->fetchColumn();
             if ($current === false) {
-                throw new RuntimeException("The {$feature} flag row is missing; apply migrations 028 and 029 first.");
+                throw new RuntimeException("The {$feature} flag row is missing; apply migrations 028, 029 and 031 first.");
             }
             if ((int) $current === ($enabled ? 1 : 0)) {
                 $own && $this->pdo->commit();

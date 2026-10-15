@@ -31,7 +31,16 @@ use PDO;
  *   imported if it never moved.
  *
  * Sections that need more than production.view are null when the actor lacks their permission:
- * oldest orders (orders.view_all), production activity (activity.view_all), sources (sources.view).
+ * oldest orders, blockers and PERDEA information (orders.view_all), production activity (activity.view_all), sources
+ * (sources.view).
+ *
+ * Blockers (API 2.34.0) are the server's genuine reasons why an active order cannot move on, each with who has to act:
+ *   manager_decision   a production exception waits for an operations manager (awaiting_approval)
+ *   physical_receipt   a returned piece waits to be physically received (awaiting_acknowledgment, awaiting_restore_receipt)
+ *   supervisor_review  the tailoring supervisor must review, hold or return the piece, or release a physical hold
+ *   employee_work      approved rework or pieces on their own route still need production work
+ *   plan_review        a manufacturing plan, piece identity or route evidence needs an authorized review (PieceGate)
+ * PERDEA auxiliary-work status (stages 6-7, route policy version 2) is information only and never appears as a blocker.
  */
 final readonly class ProductionOverviewService
 {
@@ -73,6 +82,8 @@ final readonly class ProductionOverviewService
             'oldestOrders' => $this->authorization->can($actor, 'orders.view_all') ? $this->oldestOrders($scope, $params) : null,
             'activity' => $this->authorization->can($actor, 'activity.view_all') ? $this->activity($source) : null,
             'sources' => $this->authorization->can($actor, 'sources.view') ? $this->sources($sources, $now) : null,
+            'blockers' => $this->authorization->can($actor, 'orders.view_all') ? $this->blockers($scope, $params) : null,
+            'perdeaInformation' => $this->authorization->can($actor, 'orders.view_all') ? $this->perdeaInformation($scope, $params) : null,
         ];
     }
 
@@ -166,6 +177,84 @@ final readonly class ProductionOverviewService
                 'label' => $row['source_commerce_status_label'] === null ? null : (string) $row['source_commerce_status_label'],
             ],
         ], $statement->fetchAll(PDO::FETCH_ASSOC));
+    }
+
+    private const BLOCKER_LIMIT = 100;
+    private const EXCEPTION_ACTIONS = [
+        'awaiting_approval' => 'manager_decision', 'awaiting_acknowledgment' => 'physical_receipt', 'awaiting_restore_receipt' => 'physical_receipt',
+        'awaiting_supervisor_review' => 'supervisor_review', 'in_supervisor_custody' => 'supervisor_review', 'return_rejected' => 'supervisor_review',
+    ];
+    private const GATE_ACTIONS = [
+        'pieces_in_rework' => 'employee_work', 'pieces_awaiting_reunion' => 'employee_work', 'defect_unresolved' => 'employee_work',
+        'pieces_held' => 'supervisor_review', 'plan_confirmation_required' => 'plan_review', 'pieces_incomplete' => 'plan_review', 'route_incomplete' => 'plan_review',
+    ];
+
+    /**
+     * Genuine blockers of active orders: open production exceptions by state, active rework / route tracks, physical holds
+     * and the PieceGate reason of orders that carry physical pieces or wait at packing / delivery. Read-only.
+     * @param array<string, string> $params @return array{counts: array<string, int>, items: list<array<string, mixed>>, more: bool}
+     */
+    private function blockers(string $scope, array $params): array
+    {
+        $orders = $this->pdo->prepare('SELECT o.order_uuid, o.global_order_id, o.order_number, o.source_key, s.display_name AS source_name, o.production_stage_id, ps.display_name AS stage_label, ' . self::ENTERED_AT . ' AS entered_at
+             FROM operational_orders o INNER JOIN order_sources s ON s.source_key = o.source_key INNER JOIN production_stages ps ON ps.stage_id = o.production_stage_id
+             WHERE ' . self::ACTIVE . $scope);
+        $orders->execute($params);
+        $byUuid = [];
+        foreach ($orders->fetchAll(PDO::FETCH_ASSOC) as $row) $byUuid[(string) $row['order_uuid']] = $row;
+        $items = [];
+        $add = function (array $order, string $reason, string $action, ?array $exception = null) use (&$items): void {
+            $items[] = [
+                'globalOrderId' => (string) $order['global_order_id'], 'orderNumber' => (string) $order['order_number'],
+                'source' => ['key' => (string) $order['source_key'], 'name' => (string) $order['source_name']],
+                'stage' => ['id' => (string) $order['production_stage_id'], 'label' => (string) $order['stage_label']],
+                'reason' => $reason, 'action' => $action, 'exception' => $exception, 'since' => $this->isoSql((string) $order['entered_at']),
+            ];
+        };
+        if ($byUuid !== []) {
+            $exceptions = $this->pdo->query("SELECT order_uuid, exception_number, status FROM production_exceptions WHERE resolved_at IS NULL ORDER BY exception_number")->fetchAll(PDO::FETCH_ASSOC);
+            foreach ($exceptions as $row) {
+                $order = $byUuid[(string) $row['order_uuid']] ?? null;
+                if ($order !== null && isset(self::EXCEPTION_ACTIONS[$row['status']])) {
+                    $add($order, 'exception_' . $row['status'], self::EXCEPTION_ACTIONS[$row['status']], ['number' => sprintf('EX-%06d', (int) $row['exception_number']), 'status' => (string) $row['status']]);
+                }
+            }
+            try {
+                $pieceOrders = array_column($this->pdo->query("SELECT DISTINCT order_uuid FROM production_work_units WHERE status = 'active'")->fetchAll(PDO::FETCH_ASSOC), 'order_uuid');
+                $gate = [];
+                foreach ($byUuid as $uuid => $order) {
+                    if (in_array($order['production_stage_id'], \Arasya\Operations\Production\PieceGate::GATED_STAGES, true) || in_array($uuid, $pieceOrders, true)) $gate[$uuid] = (string) $order['production_stage_id'];
+                }
+                $reasons = (new \Arasya\Operations\Production\PieceGate($this->pdo))->reasons($gate);
+                $tracks = $this->pdo->query("SELECT order_uuid, origin_exception_uuid, open_exception_uuid FROM production_tracks WHERE status = 'active'")->fetchAll(PDO::FETCH_ASSOC);
+                $trackReasons = [];
+                foreach ($tracks as $track) {
+                    if ($track['open_exception_uuid'] !== null) continue; // its open exception is listed above
+                    $trackReasons[(string) $track['order_uuid']][$track['origin_exception_uuid'] === null ? 'pieces_awaiting_reunion' : 'pieces_in_rework'] = true;
+                }
+                foreach ($byUuid as $uuid => $order) {
+                    $listed = [];
+                    foreach (array_keys($trackReasons[$uuid] ?? []) as $reason) { $add($order, $reason, self::GATE_ACTIONS[$reason]); $listed[$reason] = true; }
+                    $reason = $reasons[$uuid] ?? null;
+                    if ($reason !== null && !isset($listed[$reason]) && isset(self::GATE_ACTIONS[$reason])) $add($order, $reason, self::GATE_ACTIONS[$reason]);
+                }
+            } catch (\PDOException $error) {
+                if ((int) ($error->errorInfo[1] ?? 0) !== 1146) throw $error;
+                // Before migrations 028/029 no order has physical pieces.
+            }
+        }
+        $counts = ['manager_decision' => 0, 'physical_receipt' => 0, 'supervisor_review' => 0, 'employee_work' => 0, 'plan_review' => 0];
+        foreach ($items as $item) $counts[$item['action']]++;
+        usort($items, static fn (array $a, array $b): int => [$a['since'], $a['globalOrderId']] <=> [$b['since'], $b['globalOrderId']]);
+        return ['counts' => $counts, 'items' => array_slice($items, 0, self::BLOCKER_LIMIT), 'more' => count($items) > self::BLOCKER_LIMIT];
+    }
+
+    /** Informational PERDEA auxiliary-work status of active orders (route policy version 2); never a blocker. @param array<string, string> $params @return array<string, mixed> */
+    private function perdeaInformation(string $scope, array $params): array
+    {
+        $orders = $this->pdo->prepare('SELECT o.order_uuid FROM operational_orders o WHERE ' . self::ACTIVE . $scope);
+        $orders->execute($params);
+        return ['informational' => true] + (new \Arasya\Operations\Production\AssistedCheckpoints($this->pdo))->overview(array_column($orders->fetchAll(PDO::FETCH_ASSOC), 'order_uuid'), 50);
     }
 
     /** Latest production events from the immutable activity log; IAM audit is a separate concern. @return list<array<string, mixed>> */

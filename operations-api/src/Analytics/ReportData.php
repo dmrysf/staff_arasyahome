@@ -65,21 +65,50 @@ final readonly class ReportData
             foreach ([...$eligibility,...$s->fetchAll(PDO::FETCH_ASSOC)] as $row) $unique[$row['request_type'].':'.$row['request_uuid'].':'.$row['employee_uuid']]=$row;
             $eligibility=array_values($unique);
         }
-        $s=$this->pdo->prepare("SELECT employee_uuid,order_uuid,from_stage_id,action FROM order_activity_events FORCE INDEX (idx_analytics_activity_period) WHERE action IN ('stage_completed','production_completed','production_submitted') AND occurred_at>=? AND occurred_at<?");
+        $s=$this->pdo->prepare("SELECT event_id,employee_uuid,order_uuid,from_stage_id,action FROM order_activity_events FORCE INDEX (idx_analytics_activity_period) WHERE action IN ('stage_completed','production_completed','production_submitted') AND occurred_at>=? AND occurred_at<?");
         $s->execute([$from,$to]); $stageCompletions=$s->fetchAll(PDO::FETCH_ASSOC);
+        // Informational PERDEA auxiliary-work status (migration 031): a stage 6/7 transition whose carrier held only PERDEA
+        // pieces (status rows exist, no piece completion was logged with it) is not manufacturing: it leaves the stage and
+        // track completions and is counted as stageTransitions. Marks are counted by their latest marker (performed and
+        // not_performed apart, never as work); nobody is credited for an unmarked piece.
+        $assistedOnlyActivity=[]; $assistedOnlyTrack=[]; $assisted=['performed'=>[],'notPerformed'=>[]];
+        try {
+            $s=$this->pdo->prepare("SELECT a.event_id FROM order_activity_events a WHERE a.action='stage_completed' AND a.from_stage_id IN ('bottom-hem','side-hem') AND a.occurred_at>=? AND a.occurred_at<?
+                AND EXISTS (SELECT 1 FROM production_assisted_checkpoints c WHERE c.order_uuid=a.order_uuid AND c.stage_id=a.from_stage_id AND c.carrier_track_uuid IS NULL AND c.created_at<=a.occurred_at)
+                AND NOT EXISTS (SELECT 1 FROM production_unit_stage_log l WHERE l.order_uuid=a.order_uuid AND l.stage_id=a.from_stage_id AND l.outcome='completed' AND l.carrier_track_uuid IS NULL AND l.occurred_at=a.occurred_at)");
+            $s->execute([$from,$to]); $assistedOnlyActivity=array_fill_keys($s->fetchAll(PDO::FETCH_COLUMN),true);
+            $s=$this->pdo->prepare("SELECT e.event_uuid FROM production_track_events e WHERE e.action='stage_completed' AND e.from_stage_id IN ('bottom-hem','side-hem') AND e.occurred_at>=? AND e.occurred_at<?
+                AND EXISTS (SELECT 1 FROM production_assisted_checkpoints c WHERE c.carrier_track_uuid=e.track_uuid AND c.stage_id=e.from_stage_id AND c.created_at<=e.occurred_at)
+                AND NOT EXISTS (SELECT 1 FROM production_unit_stage_log l WHERE l.carrier_track_uuid=e.track_uuid AND l.stage_id=e.from_stage_id AND l.outcome='completed' AND l.occurred_at=e.occurred_at)");
+            $s->execute([$from,$to]); $assistedOnlyTrack=array_fill_keys($s->fetchAll(PDO::FETCH_COLUMN),true);
+            foreach (['performed'=>'performed','notPerformed'=>'not_performed'] as $metric=>$status) {
+                $s=$this->pdo->prepare("SELECT marked_by_employee_uuid employee_uuid,order_uuid,stage_id,COUNT(*) pieces FROM production_assisted_checkpoints WHERE status=? AND marked_at>=? AND marked_at<? GROUP BY marked_by_employee_uuid,order_uuid,stage_id");
+                $s->execute([$status,$from,$to]); $assisted[$metric]=$s->fetchAll(PDO::FETCH_ASSOC);
+            }
+        } catch (\PDOException $error) {
+            if ((int)($error->errorInfo[1]??0)!==1146) throw $error;
+        }
+        $assistedTransitions=[];
+        foreach ($stageCompletions as $index=>$event) {
+            if (isset($assistedOnlyActivity[$event['event_id']])) { $assistedTransitions[]=$event; unset($stageCompletions[$index]); }
+        }
+        $stageCompletions=array_values($stageCompletions);
         // Independent production-track work (migration 028/029): completions of a rework or route track and the physical
         // pieces each completion carried. Kept apart from the commercial order-level completions above, so rework is never
         // counted as new commercial production and a stage recorded as not applicable never appears (no employee, no row).
         $trackCompletions=[]; $pieceCompletions=[];
         try {
-            $s=$this->pdo->prepare("SELECT e.employee_uuid,e.order_uuid,e.from_stage_id,CASE WHEN t.origin_exception_uuid IS NOT NULL OR e.rework_cycle>1 THEN 'rework' ELSE 'route' END kind FROM production_track_events e JOIN production_tracks t ON t.track_uuid=e.track_uuid WHERE e.action='stage_completed' AND e.occurred_at>=? AND e.occurred_at<?");
-            $s->execute([$from,$to]); $trackCompletions=$s->fetchAll(PDO::FETCH_ASSOC);
+            $s=$this->pdo->prepare("SELECT e.event_uuid,e.employee_uuid,e.order_uuid,e.from_stage_id,CASE WHEN t.origin_exception_uuid IS NOT NULL OR e.rework_cycle>1 THEN 'rework' ELSE 'route' END kind FROM production_track_events e JOIN production_tracks t ON t.track_uuid=e.track_uuid WHERE e.action='stage_completed' AND e.occurred_at>=? AND e.occurred_at<?");
+            $s->execute([$from,$to]);
+            foreach ($s->fetchAll(PDO::FETCH_ASSOC) as $event) {
+                if (isset($assistedOnlyTrack[$event['event_uuid']])) $assistedTransitions[]=$event; else $trackCompletions[]=$event;
+            }
             $s=$this->pdo->prepare("SELECT l.employee_uuid,l.order_uuid,l.stage_id,CASE WHEN l.rework_cycle>1 OR t.origin_exception_uuid IS NOT NULL THEN 'rework' WHEN l.carrier_track_uuid IS NOT NULL THEN 'route' ELSE 'order' END kind,COUNT(*) pieces FROM production_unit_stage_log l LEFT JOIN production_tracks t ON t.track_uuid=l.carrier_track_uuid WHERE l.outcome='completed' AND l.occurred_at>=? AND l.occurred_at<? GROUP BY l.employee_uuid,l.order_uuid,l.stage_id,kind");
             $s->execute([$from,$to]); $pieceCompletions=$s->fetchAll(PDO::FETCH_ASSOC);
         } catch (\PDOException $error) {
             if ((int)($error->errorInfo[1]??0)!==1146) throw $error;
         }
         $coverage=$this->pdo->query('SELECT (SELECT COUNT(*) FROM operational_orders) total_orders,(SELECT COUNT(*) FROM analytics_order_projection) projected_orders')->fetch(PDO::FETCH_ASSOC);
-        return compact('orders','intervals','transfers','exceptions','decisions','quality','cancellations','employees','eligibility','captured','coverage','stageCompletions','trackCompletions','pieceCompletions','transferDecisionTypes','sourceNames','pools');
+        return compact('orders','intervals','transfers','exceptions','decisions','quality','cancellations','employees','eligibility','captured','coverage','stageCompletions','trackCompletions','pieceCompletions','assisted','assistedTransitions','transferDecisionTypes','sourceNames','pools');
     }
 }

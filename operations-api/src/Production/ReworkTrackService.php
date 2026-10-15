@@ -249,6 +249,7 @@ final readonly class ReworkTrackService
         $pieces = (new WorkUnits($this->pdo))->piecesFor($uuids);
         $plans = (new ManufacturingPlans($this->pdo))->linesFor($uuids);
         $features = new FeatureActivation($this->pdo);
+        $assisted = new AssistedCheckpoints($this->pdo);
         $tracks = $this->tracks()->activeFor($uuids);
         $result = [];
         foreach ($orders as $order) {
@@ -279,6 +280,8 @@ final readonly class ReworkTrackService
                     // API 2.32.0: a route track carries pieces of another product route (no defect); a rework track went through a defect.
                     'kind' => $track['origin_exception_uuid'] === null ? 'route' : 'rework',
                     'requiresPieceOutcome' => $track['stage_id'] === CuttingLifecycle::STAGE && (new PieceReplacement($this->pdo))->outcomeRequired((new WorkUnits($this->pdo))->carrierUnits((string) $track['order_uuid'], (string) $track['track_uuid']), CuttingLifecycle::STAGE),
+                    // API 2.34.0: informational PERDEA auxiliary-work status of this track at stage 6 / 7 (never a gate).
+                    'assistedCheckpoints' => $workflow === null ? null : $assisted->carrier($workflow, $uuid, (string) $track['track_uuid'], (string) $track['stage_id'], $viewer?->employeeUuid),
                     'changedAt' => self::iso((string) $track['changed_at']),
                 ] + ($decision === null ? [] : ['allowedAction' => $decision['action'] === null ? null : ['id' => $decision['action']], 'blockedReason' => $decision['blockedReason']]);
             }
@@ -289,6 +292,10 @@ final readonly class ReworkTrackService
                 'allPlansKnown' => $allPlansKnown,
                 'partialRework' => $features->appliesTo(FeatureActivation::PARTIAL_REWORK, $uuid),
                 'pieceRouting' => $features->appliesTo(FeatureActivation::PIECE_ROUTING, $uuid),
+                'perdeaAssistedCheckpoints' => $assisted->appliesTo($uuid),
+                // API 2.34.0: informational PERDEA auxiliary-work status of the pieces travelling with the order at its
+                // stage 6 / 7 (null: none at this stage). It never blocks the stage.
+                'assistedCheckpoints' => $workflow === null || !isset($order['production_stage_id']) ? null : $assisted->carrier($workflow, $uuid, null, (string) $order['production_stage_id'], $viewer?->employeeUuid),
                 'onOrder' => $onOrder,
                 'inRework' => count($units) - $onOrder,
                 'mixedProgress' => $views !== [],
