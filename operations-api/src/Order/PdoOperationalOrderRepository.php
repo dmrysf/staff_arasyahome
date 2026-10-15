@@ -20,9 +20,12 @@ final readonly class PdoOperationalOrderRepository implements OperationalOrderRe
             o.production_completed_at, o.open_exception_uuid, o.document_status, o.production_authority, o.payment_method, o.advance_status, o.payment_reversed_at, o.accepted_at, o.updated_at, o.source_changed_at, o.last_source_seen_at,o.production_context,
             o.source_key,s.source_type,s.status AS source_status, s.last_contact_at AS source_last_contact_at,
             r.employee_uuid AS relation_employee_uuid, r.relation_type, r.status AS relation_status,
-            r.started_at AS relation_started_at, r.last_action_at AS relation_last_action_at
+            r.started_at AS relation_started_at, r.last_action_at AS relation_last_action_at,
+            o.production_stopped_at, c.origin AS stop_origin, c.reason_code AS stop_reason, c.source_status AS stop_source_status,
+            c.source_request_status AS stop_request, c.production_phase AS stop_phase, c.physical_status AS stop_physical
         FROM operational_orders o
         INNER JOIN order_sources s ON s.source_key = o.source_key
+        LEFT JOIN order_cancellation_controls c ON c.order_uuid = o.order_uuid AND o.cancellation_state = 'held'
     ";
 
     public function __construct(
@@ -121,7 +124,7 @@ final readonly class PdoOperationalOrderRepository implements OperationalOrderRe
         // Served by idx_cutting_pool (production_stage_id, operational_status, production_completed_at, ...).
         $statement = $this->pdo->prepare(self::SELECT . "
             LEFT JOIN employee_order_relations r ON r.order_uuid = o.order_uuid AND r.employee_uuid = ? AND r.status = 'active'
-            WHERE o.production_stage_id = ? AND o.operational_status <> 'unavailable' AND o.production_completed_at IS NULL{$sourceSql}
+            WHERE o.production_stage_id = ? AND o.operational_status <> 'unavailable' AND o.production_completed_at IS NULL AND o.production_stopped_at IS NULL{$sourceSql}
             ORDER BY COALESCE(o.production_changed_at, o.created_at) ASC, o.order_uuid ASC
             LIMIT {$max}
         ");
@@ -155,7 +158,7 @@ final readonly class PdoOperationalOrderRepository implements OperationalOrderRe
             SELECT o.production_stage_id AS stage_id, COUNT(*) AS total,
                    COALESCE(SUM(o.production_owner_employee_uuid = ?), 0) AS mine
             FROM operational_orders o
-            WHERE (' . implode(' OR ', $conditions) . ") AND o.operational_status <> 'unavailable' AND o.production_completed_at IS NULL{$trendyol}
+            WHERE (' . implode(' OR ', $conditions) . ") AND o.operational_status <> 'unavailable' AND o.production_completed_at IS NULL AND o.production_stopped_at IS NULL{$trendyol}
             GROUP BY o.production_stage_id
         ");
         $statement->execute($parameters);
@@ -268,6 +271,7 @@ final readonly class PdoOperationalOrderRepository implements OperationalOrderRe
                 $row['payment_reversed_at'] === null ? null : (string) $row['payment_reversed_at'],
                 $tracksByOrder[(string) $row['order_uuid']] ?? [],
                 $gate[(string) $row['order_uuid']] ?? null,
+                \Arasya\Operations\Cancellation\CancellationView::staff($row),
             );
         }
         return $orders;

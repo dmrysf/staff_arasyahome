@@ -60,6 +60,8 @@ final class ApplicationAccess
         'trendyol.orders.release' => self::STAFF,
         'production.exceptions.approve' => self::DASHBOARD,
         'production.manage_authority' => self::DASHBOARD,
+        'production.cancellation.manage' => self::DASHBOARD,
+        'production.cancellation.release' => self::DASHBOARD,
         'orders.lookup_exact' => self::DASHBOARD,
         'b2b.companies.view' => self::B2B,
         'b2b.companies.create' => self::B2B,

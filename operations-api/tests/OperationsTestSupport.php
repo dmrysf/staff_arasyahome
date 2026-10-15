@@ -69,9 +69,16 @@ final class OperationsTestSupport
     public static function clearPieces(PDO $pdo, ?array $orderUuids = null): void
     {
         if (!str_contains(strtolower((string) $pdo->query('SELECT DATABASE()')->fetchColumn()), 'test')) throw new \RuntimeException('Test database required.');
-        if ($pdo->query("SHOW TABLES LIKE 'production_tracks'")->fetchColumn() === false || $orderUuids === []) return;
+        if ($orderUuids === []) return;
         $in = $orderUuids === null ? null : implode(',', array_map([$pdo, 'quote'], $orderUuids));
         $where = static fn (string $column): string => $in === null ? '' : " WHERE {$column} IN ({$in})";
+        // Migration 033 rows reference the orders; a test that deletes its orders removes their cancellation control first.
+        if ($pdo->query("SHOW TABLES LIKE 'order_cancellation_controls'")->fetchColumn() !== false) {
+            $pdo->exec('DELETE FROM order_cancellation_events' . $where('order_uuid'));
+            $pdo->exec('DELETE FROM order_cancellation_controls' . $where('order_uuid'));
+            $pdo->exec('UPDATE operational_orders SET cancellation_state = NULL, production_stopped_at = NULL' . $where('order_uuid'));
+        }
+        if ($pdo->query("SHOW TABLES LIKE 'production_tracks'")->fetchColumn() === false) return;
         if ($pdo->query("SHOW TABLES LIKE 'production_line_plans'")->fetchColumn() !== false) {
             // Migration 029 rows first (they reference pieces, tracks and exceptions).
             $pdo->exec('UPDATE production_material_records SET corrects_record_uuid = NULL' . $where('order_uuid'));

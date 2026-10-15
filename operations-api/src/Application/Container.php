@@ -193,6 +193,7 @@ final class Container
                 $analyticsPolicy,
                 $revisionApprovers,
                 $documentScopes,
+                new \Arasya\Operations\Cancellation\CancellationService($this->pdo, $authorization, $idempotency, $this->clock),
             ),
             new CompanyController(
                 new CompanyQueries($this->pdo, $authorization),

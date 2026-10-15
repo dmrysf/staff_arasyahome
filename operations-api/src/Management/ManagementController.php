@@ -49,6 +49,7 @@ final readonly class ManagementController
         private ?\Arasya\Operations\Analytics\AnalyticsPolicy $analytics = null,
         private ?\Arasya\Operations\Document\RevisionApproverPolicy $documentApprovers = null,
         private ?\Arasya\Operations\Document\DocumentScopePolicy $documentScopes = null,
+        private ?\Arasya\Operations\Cancellation\CancellationService $cancellations = null,
     ) {
     }
 
@@ -80,6 +81,7 @@ final readonly class ManagementController
                 $path === '/orders' => $this->orderControl()->list($actor, $this->filters($request, ['search', 'source', 'stage', 'commerceStatus', 'ownerId', 'assignment', 'state', 'cursor', 'limit'])),
                 preg_match('#^/orders/([^/]{1,600})$#D', $path, $m) === 1 => $this->orderControl()->detail($actor, rawurldecode($m[1])),
                 preg_match('#^/orders/([^/]{1,600})/eligible-owners$#D', $path, $m) === 1 => $this->ownership()->eligibleOwners($actor, rawurldecode($m[1])),
+                preg_match('#^/orders/([^/]{1,600})/cancellation$#D', $path, $m) === 1 => $this->service($this->cancellations)->view($actor, rawurldecode($m[1])),
                 $path === '/applications' => $this->management->applications($actor),
                 $path === '/permissions' => $this->management->permissions($actor),
                 $path === '/roles' => $this->management->listRoles($actor),
@@ -118,6 +120,18 @@ final readonly class ManagementController
         }
         if ($method === 'PATCH' && preg_match('#^/production-settings/stages/([a-z][a-z0-9-]{1,99})$#D', $path, $m) === 1) {
             return Response::json($this->service($this->settings)->renameStage($actor, $m[1], $this->body($request, ['label'], ['label']), $key, $id));
+        }
+
+        // Cancellation control (API 2.35.0): a local stop, the physical reconciliation and the authorized release. None
+        // of them changes a stage or an owner, and none sends anything to a source.
+        if ($method === 'POST' && preg_match('#^/orders/([^/]{1,600})/cancellation/(stop|physical|release)$#D', $path, $m) === 1) {
+            $cancellations = $this->service($this->cancellations);
+            $orderId = rawurldecode($m[1]);
+            return Response::json(match ($m[2]) {
+                'stop' => $cancellations->stop($actor, $orderId, $this->body($request, ['reason', 'requestSourceCancellation'], ['reason']), $key, $id),
+                'physical' => $cancellations->physical($actor, $orderId, $this->body($request, ['expectedVersion', 'outcome', 'note', 'qrToken'], ['expectedVersion', 'outcome', 'note']), $key, $id),
+                default => $cancellations->release($actor, $orderId, $this->body($request, ['expectedVersion', 'reason'], ['expectedVersion', 'reason']), $key, $id),
+            });
         }
 
         // Supervisor owner interventions: exactly two operations, never a stage or any other field.
@@ -207,6 +221,8 @@ final readonly class ManagementController
             'documentRevisionViaBackup' => $documentVia === \Arasya\Operations\Document\RevisionApproverPolicy::VIA_BACKUP,
             'viewDocumentHistory' => $actor->isRoot || $documentVia !== null || in_array(\Arasya\Operations\Document\DocumentService::HISTORY, $actor->permissions, true),
             'revokeDocuments' => $actor->isRoot,
+            'manageCancellations' => in_array(\Arasya\Operations\Cancellation\CancellationService::MANAGE, $actor->permissions, true) && $actor->hasApplication('dashboard'),
+            'releaseCancellations' => in_array(\Arasya\Operations\Cancellation\CancellationService::RELEASE, $actor->permissions, true) && $actor->hasApplication('dashboard'),
         ];
     }
 
