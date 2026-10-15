@@ -18,7 +18,8 @@ use PDOException;
  *                              piece needs an identity review (a replaced original never counts; its replacement does)
  *   route_incomplete           a piece lacks a completion of a stage that applies to its product type in its current
  *                              production cycle (from cutting onward); a stage recorded as
- *                              not applicable never satisfies an applicable stage
+ *                              not applicable never satisfies an applicable stage. A stage before the start of the
+ *                              piece's ledger is satisfied only by verified historical evidence (RouteReconciliation)
  *
  * Lines whose plan was never confirmed keep the order-level behaviour (their progress is the order's). No partial
  * shipment exists. Read-only.
@@ -109,6 +110,7 @@ final readonly class PieceGate
         foreach ($units->fetchAll(PDO::FETCH_ASSOC) as $unit) {
             $byItem[(string) $unit['item_uuid']][] = $unit;
         }
+        $reconciled = (new RouteReconciliation($this->pdo))->reconciled($orderUuid);
         $log = $this->pdo->prepare('SELECT unit_uuid, rework_cycle, stage_id, outcome FROM production_unit_stage_log WHERE order_uuid = ?');
         $log->execute([$orderUuid]);
         $outcomes = [];
@@ -140,15 +142,19 @@ final readonly class PieceGate
                 }
                 if ($piece['ledger_start'] === null) return 'route_incomplete';
                 $recorded = $outcomes[(string) $piece['unit_uuid'] . '|' . (int) $piece['rework_cycle']] ?? [];
+                $verified = $reconciled[(string) $piece['unit_uuid'] . '|' . (int) $piece['rework_cycle']] ?? [];
                 $inLedger = false;
+                $beforeStart = true;
                 foreach ($workflow->stages as $stage) {
                     if ($stage->id === $currentStage) {
                         break;
                     }
+                    $beforeStart = $beforeStart && $stage->id !== $piece['ledger_start'];
                     // Materializing a historical piece at packing is no evidence that earlier work happened.
                     // Require actual piece/cycle completions from cutting; never fill the gap from aggregate history.
+                    // Only a stage before the piece's ledger start may instead carry verified evidence (migration 030).
                     $inLedger = $inLedger || $stage->id === (ProductRoutePolicy::canonical($workflow) ? \Arasya\Operations\Cutting\CuttingLifecycle::STAGE : $workflow->stages[0]->id);
-                    if ($inLedger && in_array($stage->id, $route, true) && ($recorded[$stage->id] ?? null) !== 'completed') {
+                    if ($inLedger && in_array($stage->id, $route, true) && ($recorded[$stage->id] ?? null) !== 'completed' && !($beforeStart && isset($verified[$stage->id]))) {
                         return 'route_incomplete';
                     }
                 }

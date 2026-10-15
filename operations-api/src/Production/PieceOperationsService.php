@@ -36,6 +36,7 @@ use Throwable;
  *                         stage completion and no logical merge)
  *   material              actual, waste, remnant and corrections of fabric per piece and cycle (MaterialLedger)
  *   history               lineage, labels, per-piece stage ledger, custody and material of one piece (audit)
+ *   route evidence        verified historical evidence for the stages of a piece before its ledger started (030)
  *
  * Every command runs in one transaction that locks the order row first, then the employee row, re-reads the employee's
  * authority, replays a committed result for the same idempotency key, checks the expected version and writes the
@@ -297,6 +298,54 @@ final readonly class PieceOperationsService
         });
     }
 
+    // ------------------------------------------------------------------ historical route evidence
+
+    /**
+     * Records verified historical evidence for stages of one piece that precede its ledger start (RouteReconciliation).
+     * Same authority as a plan confirmation. Writes no stage completion, credits no employee, moves nothing.
+     * @param array<string, mixed> $input @return array<string, mixed>
+     */
+    public function reconcileRoute(EmployeeIdentity $actor, string $unitId, array $input, string $key, string $requestId): array
+    {
+        IdempotencyStore::requireKey($key);
+        $unitUuid = WorkUnits::isUuid($unitId) ? $unitId : throw new ApiException(404, 'UNIT_NOT_FOUND', 'Bucata nu a fost găsită.');
+        $request = RouteReconciliation::parse($input);
+        $hash = IdempotencyStore::hash('route.reconcile', $unitUuid, $request);
+        return $this->transaction(function () use ($actor, $unitUuid, $request, $key, $hash, $requestId): array {
+            [$order, $unit] = $this->lockUnit($unitUuid);
+            $employee = $this->lockEmployee($actor);
+            $this->requirePlanReader($employee, $order);
+            $replay = $this->idempotency->replay($employee->employeeUuid, $key, 'route.reconcile', $unitUuid, $hash);
+            if ($replay !== null) {
+                return $replay;
+            }
+            $via = $this->confirmVia($employee, $order) ?? throw new ApiException(403, 'RECONCILIATION_NOT_ALLOWED', 'Numai șeful autorizat de croitorie sau un manager operațional poate verifica dovezile istorice ale unei bucăți.');
+            if ($order['production_completed_at'] !== null) {
+                throw new ApiException(409, 'PRODUCTION_COMPLETED', 'Producția este deja finalizată.');
+            }
+            $reconciliation = new RouteReconciliation($this->pdo);
+            if (!$reconciliation->available()) {
+                throw new ApiException(503, 'RECONCILIATION_UNAVAILABLE', 'Verificarea dovezilor istorice nu este încă disponibilă.');
+            }
+            $line = (new ManufacturingPlans($this->pdo))->line((string) $order['order_uuid'], (string) $unit['item_uuid']);
+            if ($line === null || !$line['known']) {
+                throw new ApiException(409, 'PLAN_CONFIRMATION_REQUIRED', 'Confirmă mai întâi planul de producție al liniei.');
+            }
+            if ((int) $unit['review_required'] === 1) {
+                throw new ApiException(409, 'PIECE_REVIEW_REQUIRED', 'Identitatea bucății necesită mai întâi o verificare.');
+            }
+            $now = $this->now();
+            $id = $reconciliation->record($this->workflow(), $order, $unit, (string) $line['plan']['productType'], $request, $employee->employeeUuid, $via, $requestId, $now);
+            (new IamAuditLogger($this->pdo))->record($employee, 'production.route.reconciled', 'order', (string) $order['global_order_id'], '#' . $order['order_number'] . ' · bucata ' . $unit['slot'], [
+                'order' => $order['global_order_id'], 'unitId' => $unitUuid, 'reworkCycle' => (int) $unit['rework_cycle'], 'via' => $via, 'reconciliationId' => $id,
+                'supported' => array_map(static fn (array $stage): string => $stage['stageId'] . ':' . $stage['evidence'], $request['stages']), 'uncertain' => $request['uncertainStages'],
+            ], $requestId, $now);
+            $response = ['reconciliationId' => $id] + $this->planPayload($employee, $order);
+            $this->idempotency->store($employee->employeeUuid, $key, 'route.reconcile', $unitUuid, $hash, $response, $now);
+            return $response;
+        });
+    }
+
     // ------------------------------------------------------------------ history
 
     /** Audit view of one piece (also a retired or replaced one). @return array<string, mixed> */
@@ -344,6 +393,14 @@ final readonly class PieceOperationsService
             $pieces[$piece['itemId']][] = $piece;
         }
         $features = new FeatureActivation($this->pdo);
+        $evidence = (new RouteReconciliation($this->pdo))->evidence($workflow, (string) $order['order_uuid']);
+        foreach ($pieces as &$itemPieces) {
+            foreach ($itemPieces as &$piece) {
+                $piece['routeEvidence'] = $evidence[$piece['id']] ?? null;
+            }
+            unset($piece);
+        }
+        unset($itemPieces);
         return [
             'orderId' => (string) $order['global_order_id'],
             'orderNumber' => (string) $order['order_number'],

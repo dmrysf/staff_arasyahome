@@ -18,7 +18,7 @@ final class EmployeeMetrics
                 'repeatedOrders'=>[],'repeatedMeterUnits'=>0,'onlineSubmissions'=>0,
                 'initiatedTransfers'=>0,'outgoingTransfers'=>0,'incomingTransfers'=>0,'activeHandling'=>['wallSeconds'=>0,'businessSeconds'=>0],
                 'cuttingActiveHandling'=>['wallSeconds'=>0,'businessSeconds'=>0],'stageHandling'=>[],
-                'completedHandling'=>['wallSeconds'=>[],'businessSeconds'=>[]],'stageCompletions'=>[], 'daily'=>[], 'relatedOrderIds'=>[]];
+                'completedHandling'=>['wallSeconds'=>[],'businessSeconds'=>[]],'stageCompletions'=>[], 'trackStageCompletions'=>[], 'pieceWork'=>['order'=>0,'route'=>0,'rework'=>0,'byStage'=>[]], 'daily'=>[], 'relatedOrderIds'=>[]];
         }
         $day=static fn(string $date):string => (new DateTimeImmutable($date,new DateTimeZone('UTC')))->setTimezone(new DateTimeZone('Europe/Bucharest'))->format('Y-m-d');
         foreach ($data['orders'] as $id=>$order) {
@@ -85,6 +85,17 @@ final class EmployeeMetrics
             $r=&$rows[$event['employee_uuid']]; $stage=$event['from_stage_id'];
             if ($event['action']==='production_submitted') { $r['onlineSubmissions']++; $r['relatedOrderIds'][$event['order_uuid']]=true; unset($r); continue; }
             $r['stageCompletions'][$stage]=($r['stageCompletions'][$stage]??0)+1; unset($r);
+        }
+        // Track work (rework replay and route tracks) and physical pieces worked, apart from commercial completions.
+        foreach ($data['trackCompletions']??[] as $event) {
+            if (!isset($rows[$event['employee_uuid']])) continue;
+            $r=&$rows[$event['employee_uuid']]; $r['relatedOrderIds'][$event['order_uuid']]=true;
+            $r['trackStageCompletions'][$event['from_stage_id']][$event['kind']]=($r['trackStageCompletions'][$event['from_stage_id']][$event['kind']]??0)+1; unset($r);
+        }
+        foreach ($data['pieceCompletions']??[] as $row) {
+            if (!isset($rows[$row['employee_uuid']])) continue;
+            $r=&$rows[$row['employee_uuid']]; $r['pieceWork'][$row['kind']]+=(int)$row['pieces'];
+            $r['pieceWork']['byStage'][$row['stage_id']][$row['kind']]=($r['pieceWork']['byStage'][$row['stage_id']][$row['kind']]??0)+(int)$row['pieces']; unset($r);
         }
         foreach ($rows as &$r) {
             $r['completedMeters']=Metrics::meters($r['completedMeterUnits']);

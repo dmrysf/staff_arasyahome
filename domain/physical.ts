@@ -1,12 +1,16 @@
 import { physicalText as pt } from "../i18n/physical";
-/** Physical facts from API 2.32.0. Commercial quantity never establishes physical count. */
+/** Physical facts from API 2.32.0 (historical route evidence: 2.33.0). Commercial quantity never establishes physical count. */
 export type ProductType = "perdea" | "draperii" | "other" | "unknown";
 export type PlanPiece = { index: number; width: string | null; height: string | null; unit: string | null; fabricMeters?: string | null; fabric?: string | null };
 export type PlanLine = { itemId: string; sourcePlanHash: string; lineNumber: number; name: string; code: string | null; color: string | null;
   commercialQuantity: number; lineMeasurements: { width: string | null; height: string | null; unit: string | null }; lineMeters: string | null;
   planKnown: boolean; staleAfterSourceChange: boolean; typeVerified: boolean; route: string[]; notApplicableStages: string[];
-  proposal: { evidence: { kind: string; value: string }[] }; pieces: { id: string; index: number; count: number; trackId: string | null }[];
+  proposal: { evidence: { kind: string; value: string }[] }; pieces: { id: string; index: number; count: number; trackId: string | null; routeEvidence?: RouteEvidence | null }[];
   plan: { revision: number; productType: ProductType; typeLocked: boolean; pieceCount: number | null; materialTotal: string | null; pieces: PlanPiece[]; note: string | null } };
+/** API 2.33.0: stages of a piece before its per-piece ledger started, and the verified historical evidence recorded for them. */
+export type RouteEvidence = { reworkCycle: number; ledgerStartStageId: string | null; preLedgerStages: string[]; reconciledStages: { stageId: string; evidence: string }[];
+  missingStages: string[]; uncertainStages: string[]; candidates: { stageId: string; activityEventId: string; employee: string; at: string }[] };
+export type RouteEvidenceInput = { stages: { stageId: string; evidence: "order_activity" | "physical_inspection"; activityEventId: string | null }[]; uncertainStages: string[]; note: string };
 export type ManufacturingPlan = { orderId: string; canConfirm: boolean; allPlansKnown: boolean; partialRework: boolean; pieceRouting: boolean; lines: PlanLine[] };
 export type PlanConfirmation = { expectedRevision: number; expectedSourceHash: string; productType: ProductType; pieceCount: number;
   materialTotalMeters: string | null; pieces: PlanPiece[]; note: string };
@@ -20,6 +24,8 @@ export type PhysicalApi = {
   plan(orderId: string, signal?: AbortSignal): Promise<ManufacturingPlan>;
   confirmPlan(orderId: string, lineId: string, input: PlanConfirmation, key: string): Promise<ManufacturingPlan>;
   history(unitId: string, signal?: AbortSignal): Promise<PhysicalHistory>;
+  /** Present only where the client may record verified historical evidence (API 2.33.0). */
+  reconcileRoute?(unitId: string, input: RouteEvidenceInput, key: string): Promise<ManufacturingPlan>;
 };
 export type CustodyInput = { action: "take" | "locate" | "hold" | "release"; expectedVersion: number; qrToken: string; locationId?: string; holdReason?: string };
 export type StaffPhysicalApi = PhysicalApi & {
@@ -62,9 +68,13 @@ export function physicalError(error: unknown): string {
   if (["SOURCE_PLAN_CHANGED", "PLAN_CHANGED", "SOURCE_PLAN_HASH_REQUIRED"].includes(code)) return pt("physical.error.sourceChanged");
   if (["PLAN_PIECE_IN_USE", "PLAN_TYPE_LOCKED"].includes(code)) return pt("physical.planul_folosit_nu_poate_fi_schimbat_astfel");
   if (["ORDER_PIECES_HELD", "ORDER_PIECES_INCOMPLETE", "ORDER_ROUTE_INCOMPLETE", "ORDER_PIECES_IN_REWORK", "ORDER_PIECES_NOT_READY"].includes(code)) return pt("physical.ambalarea_asteapta_toate_bucatile_etapele_aplicabile_si");
+  if (code === "RECONCILIATION_STAGE_INVALID") return pt("physical.error.reconciliationStage");
+  if (code === "RECONCILIATION_EVIDENCE_INVALID") return pt("physical.error.reconciliationEvidence");
+  if (code === "RECONCILIATION_STAGE_RECORDED") return pt("physical.error.reconciliationRecorded");
+  if (code === "RECONCILIATION_UNAVAILABLE") return pt("physical.error.reconciliationUnavailable");
   if (["UNIT_RETIRED", "EXPIRED_QR"].includes(code)) return pt("physical.bucata_inlocuita_foloseste_eticheta_noua");
   if (isAmbiguous(error)) return pt("physical.raspuns_neconfirmat_reincarca_starea_salvata_sau_reincearca");
-  if (["UNAUTHORIZED_ACTION", "PLAN_CONFIRMATION_NOT_ALLOWED", "APPLICATION_ACCESS_DENIED"].includes(code)) return pt("physical.contul_actual_nu_este_autorizat_pentru_aceasta");
+  if (["UNAUTHORIZED_ACTION", "PLAN_CONFIRMATION_NOT_ALLOWED", "RECONCILIATION_NOT_ALLOWED", "APPLICATION_ACCESS_DENIED"].includes(code)) return pt("physical.contul_actual_nu_este_autorizat_pentru_aceasta");
   if (error instanceof Error && !code) return error.message;
   return pt("physical.operatiune_neconfirmata_reincarca_datele_si_verifica_selectia");
 }
@@ -94,10 +104,18 @@ export function mapManufacturingPlan(value: unknown): ManufacturingPlan {
     (line.route as unknown[]).forEach(text); (line.notApplicableStages as unknown[]).forEach(text);
     const proposal = record(line.proposal); if (!Array.isArray(proposal.evidence)) throw invalidPhysicalResponse();
     proposal.evidence.forEach(v => text(record(v).value));
-    (line.pieces as unknown[]).forEach(v => { const p = record(v); text(p.id); number(p.index, 1); number(p.count, 1); });
+    (line.pieces as unknown[]).forEach(v => { const p = record(v); text(p.id); number(p.index, 1); number(p.count, 1); if (p.routeEvidence != null) mapRouteEvidence(p.routeEvidence); });
     (plan.pieces as unknown[]).forEach(v => { const p = record(v); number(p.index, 1); nullableDecimal(p.width); nullableDecimal(p.height); nullableDecimal(p.fabric ?? p.fabricMeters ?? null); });
   }
   return { ...(raw as unknown as ManufacturingPlan), canConfirm: raw.canConfirm === true, allPlansKnown: raw.allPlansKnown === true, partialRework: raw.partialRework === true, pieceRouting: raw.pieceRouting === true };
+}
+/** An older API sends no routeEvidence; a present one must be complete. */
+function mapRouteEvidence(value: unknown): void {
+  const raw = record(value); number(raw.reworkCycle, 1); if (raw.ledgerStartStageId !== null) text(raw.ledgerStartStageId);
+  if (![raw.preLedgerStages, raw.reconciledStages, raw.missingStages, raw.uncertainStages, raw.candidates].every(Array.isArray)) throw invalidPhysicalResponse();
+  (raw.preLedgerStages as unknown[]).forEach(text); (raw.missingStages as unknown[]).forEach(text); (raw.uncertainStages as unknown[]).forEach(text);
+  (raw.reconciledStages as unknown[]).forEach(v => { const r = record(v); text(r.stageId); text(r.evidence); });
+  (raw.candidates as unknown[]).forEach(v => { const c = record(v); text(c.stageId); text(c.activityEventId); text(c.employee); text(c.at); });
 }
 export function mapPhysicalHistory(value: unknown): PhysicalHistory {
   const raw = record(value); text(raw.unitId); text(raw.status); number(raw.reworkCycle, 1);
