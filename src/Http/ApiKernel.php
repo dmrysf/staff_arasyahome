@@ -44,6 +44,7 @@ final readonly class ApiKernel
         private ?\Arasya\Operations\Production\ProductionAuthorityController $authority = null,
         private ?\Arasya\Operations\Production\ProductionQrController $productionQr = null,
         private ?\Arasya\Operations\Trendyol\TrendyolWorkspaceController $trendyol = null,
+        private ?\Arasya\Operations\Production\PieceController $pieces = null,
     ) {
     }
 
@@ -137,6 +138,15 @@ final readonly class ApiKernel
             return ($this->productionQr ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Production QR authority is not ready.'))
                 ->handle($request, rawurldecode($matches[1]), $matches[2] ?? '');
         }
+        if (preg_match('#^/orders/([^/]{1,600})/manufacturing-plan(?:/lines/([0-9a-f-]{36})/confirm)?$#D', $request->path, $matches) === 1) {
+            return $this->piecesController()->plan($request, rawurldecode($matches[1]), $matches[2] ?? null);
+        }
+        if ($request->path === '/production-locations' || str_starts_with($request->path, '/production-units/')) {
+            return $this->piecesController()->handle($request);
+        }
+        if (preg_match('#^/production-tracks/([0-9a-f-]{36})/(claim|complete|labels)$#D', $request->path, $matches) === 1) {
+            return $this->ordersController()->track($request, $matches[1], $matches[2]);
+        }
         if (preg_match('#^/orders/([^/]{1,600})(?:/(claim|transition))?$#D', $request->path, $matches) === 1) {
             $globalIdString = rawurldecode($matches[1]);
             $action = $matches[2] ?? '';
@@ -172,6 +182,11 @@ final readonly class ApiKernel
     private function cuttingController(): CuttingController
     {
         return $this->cutting ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Cutting API is not ready.');
+    }
+
+    private function piecesController(): \Arasya\Operations\Production\PieceController
+    {
+        return $this->pieces ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Piece tracking is not ready.');
     }
 
     private function ordersController(): OperationalOrderController

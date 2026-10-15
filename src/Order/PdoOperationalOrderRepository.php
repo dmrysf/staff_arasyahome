@@ -203,6 +203,27 @@ final readonly class PdoOperationalOrderRepository implements OperationalOrderRe
             );
         }
 
+        $tracksByOrder = [];
+        try {
+            $tracks = $this->pdo->prepare("SELECT track_uuid, order_uuid, stage_id, owner_employee_uuid FROM production_tracks WHERE status = 'active' AND order_uuid IN ({$placeholders}) ORDER BY track_number");
+            $tracks->execute($orderUuids);
+            foreach ($tracks->fetchAll(PDO::FETCH_ASSOC) as $track) {
+                $tracksByOrder[(string) $track['order_uuid']][] = ['trackUuid' => (string) $track['track_uuid'], 'stageId' => (string) $track['stage_id'], 'ownerEmployeeUuid' => $track['owner_employee_uuid'] === null ? null : (string) $track['owner_employee_uuid']];
+            }
+        } catch (\PDOException) {
+            // Before migration 028 no order has pieces in rework.
+        }
+
+        // The packing / delivery gate of every order at a gated stage (PieceGate), computed only for those orders.
+        $gate = [];
+        try {
+            $gate = (new \Arasya\Operations\Production\PieceGate($this->pdo))->reasons(array_column(array_map(static fn (array $row): array => ['o' => (string) $row['order_uuid'], 's' => (string) $row['production_stage_id']], $rows), 's', 'o'));
+        } catch (\PDOException $error) {
+            if ((int) ($error->errorInfo[1] ?? 0) !== 1146) throw $error;
+            if ($this->pdo->query("SHOW TABLES LIKE 'production_line_plan_heads'")->fetchColumn() !== false) throw $error;
+            // Before migrations 028/029 nothing gates packing beyond the order itself.
+        }
+
         $orders = [];
         foreach ($rows as $row) {
             $relation = null;
@@ -245,6 +266,8 @@ final readonly class PdoOperationalOrderRepository implements OperationalOrderRe
                 $row['payment_method'] === null ? null : (string) $row['payment_method'],
                 $row['advance_status'] === null ? null : (string) $row['advance_status'],
                 $row['payment_reversed_at'] === null ? null : (string) $row['payment_reversed_at'],
+                $tracksByOrder[(string) $row['order_uuid']] ?? [],
+                $gate[(string) $row['order_uuid']] ?? null,
             );
         }
         return $orders;

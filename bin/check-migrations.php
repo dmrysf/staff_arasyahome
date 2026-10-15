@@ -102,4 +102,40 @@ if (preg_match_all('/INSERT IGNORE INTO role_permissions[\s\S]*?WHERE r\.role_ke
 if (str_contains($documentSchema, 'employee_role_assignments')) {
     throw new RuntimeException('Migration 017 must not assign roles to employees.');
 }
+// Per-piece rework: purely additive and re-runnable (no ALTER of an existing table), append-only track history,
+// one identity per physical piece, one open exception per track, created disabled.
+$unitSchema = (string) file_get_contents($root . '/database/migrations/028_production_work_units.sql');
+foreach (['production_feature_flags', 'production_tracks', 'production_work_units', 'production_exception_scopes', 'production_exception_units', 'production_track_events', 'production_track_idempotency', 'production_unit_labels'] as $table) {
+    if (preg_match('/CREATE TABLE IF NOT EXISTS\s+' . $table . '\b/', $unitSchema) !== 1) {
+        throw new RuntimeException("Migration 028 is missing table: {$table}");
+    }
+}
+foreach (['UNIQUE KEY uq_production_work_units_identity (item_uuid, unit_index)', 'UNIQUE KEY uq_production_tracks_open_exception (open_exception_uuid)', 'UNIQUE KEY uq_production_track_events_version (track_uuid, version_after)', 'UNIQUE KEY uq_production_track_events_idempotency (employee_uuid, idempotency_key)', "VALUES ('partial_rework', 0,"] as $required) {
+    if (!str_contains($unitSchema, $required)) {
+        throw new RuntimeException("Per-piece rework invariant is missing: {$required}");
+    }
+}
+if (preg_match('/ON (DELETE|UPDATE) (CASCADE|SET NULL)|ALTER TABLE|DROP |DELETE FROM|TRUNCATE|(?<!ON )UPDATE |role_permissions|employee_role_assignments/i', preg_replace('/^--.*$/m', '', $unitSchema) ?? '') === 1) {
+    throw new RuntimeException('Migration 028 must stay additive, re-runnable and must not grant roles.');
+}
+// Manufacturing manifest and routes: additive and re-runnable; the only ALTER relaxes one column of a 028 table; one
+// active plan head per line, one replacement per original, one material record per piece/kind/cycle; created disabled.
+$manifestSchema = (string) file_get_contents($root . '/database/migrations/029_production_manifest_routing.sql');
+foreach (['production_unit_verifications', 'production_line_plans', 'production_line_plan_heads', 'production_plan_pieces', 'production_route_decisions', 'production_unit_stage_log', 'production_unit_cycles', 'production_unit_replacements',
+    'production_locations', 'production_unit_custody', 'production_custody_events', 'production_material_records', 'production_exception_links', 'production_pilot_cohort', 'production_feature_flag_events'] as $table) {
+    if (preg_match('/CREATE TABLE IF NOT EXISTS\s+' . $table . '\b/', $manifestSchema) !== 1) {
+        throw new RuntimeException("Migration 029 is missing table: {$table}");
+    }
+}
+foreach (['UNIQUE KEY uq_production_line_plans_revision (item_uuid, revision)', 'UNIQUE KEY uq_production_unit_replacements_original (original_unit_uuid)', 'UNIQUE KEY uq_production_material_records_once (dedupe_key)',
+    'UNIQUE KEY uq_production_unit_stage_log_once (unit_uuid, rework_cycle, stage_id)', "CHECK (stock_effect = 'none' AND unit = 'm')", "VALUES ('piece_routing', 0,"] as $required) {
+    if (!str_contains($manifestSchema, $required)) {
+        throw new RuntimeException("Manufacturing manifest invariant is missing: {$required}");
+    }
+}
+$manifestStatements = preg_replace(['/^--.*$/m', '/ON (UPDATE|DELETE) RESTRICT/'], '', $manifestSchema) ?? '';
+if (preg_match('/ON (DELETE|UPDATE) (CASCADE|SET NULL)|DROP |DELETE FROM|TRUNCATE|\bUPDATE |role_permissions|employee_role_assignments/i', $manifestStatements) === 1
+    || preg_match_all('/ALTER TABLE ([a-z_]+)/', $manifestStatements, $manifestAlters) !== 1 || $manifestAlters[1] !== ['production_tracks']) {
+    throw new RuntimeException('Migration 029 must stay additive, re-runnable and must not grant roles.');
+}
 fwrite(STDOUT, 'Migration sanity checks passed for ' . count($files) . " file(s).\n");

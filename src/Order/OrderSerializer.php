@@ -14,7 +14,7 @@ final readonly class OrderSerializer
      * @param array{action: string|null, blockedReason: string|null}|null $access
      * @param array<string, mixed>|null $quality internal production quality facts (single-order views only)
      */
-    public function serializeOrder(OperationalOrder $order, ?array $access = null, ?array $quality = null, ?array $document = null): array
+    public function serializeOrder(OperationalOrder $order, ?array $access = null, ?array $quality = null, ?array $document = null, ?array $pieces = null): array
     {
         $data = [
             'id' => $order->globalId->toString(),
@@ -74,6 +74,11 @@ final readonly class OrderSerializer
         }
         if ($document !== null) {
             $data['productionDocument'] = $document;
+        }
+        // Physical pieces and the tracks of pieces in rework (migration 028). productionStageId above is the stage of
+        // the pieces that travel with the order; with mixedProgress, other pieces are elsewhere (pieces.tracks).
+        if ($pieces !== null) {
+            $data['pieces'] = $pieces;
         }
 
         if ($order->relation !== null) {
