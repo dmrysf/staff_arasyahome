@@ -97,7 +97,14 @@ export type OrderActionBlockedReason =
   | "production_authority_source"
   | "payment_gate_closed"
   /** The order is at packing while some of its pieces are still in rework (API 2.31.0). */
-  | "pieces_in_rework";
+  | "pieces_in_rework"
+  /** PieceGate (API 2.32.0): a held piece, a piece apart on its route, an unconfirmed plan, missing pieces, an unfinished route or an unconfirmed defect resolution. */
+  | "pieces_held"
+  | "pieces_awaiting_reunion"
+  | "plan_confirmation_required"
+  | "pieces_incomplete"
+  | "route_incomplete"
+  | "defect_unresolved";
 
 /** One physical piece of an order line ("Bucata 1/2"); trackId is set while the piece travels apart, in rework. */
 export type ProductionPiece = { id: string; itemId: string; index: number; count: number; lineNumber: number; trackId: string | null; reworkCycle: number; reviewRequired: boolean; productType?: string; fabricMeters?: string | null; replacementOf?: string | null };

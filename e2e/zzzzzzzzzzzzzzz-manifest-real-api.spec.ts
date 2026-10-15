@@ -78,6 +78,22 @@ test("Test39/40: confirmed physical counts, committed recovery, normal mixed rou
   await physical.getByLabel("Metri verificați").fill("0.333"); await physical.getByLabel("Explicație").fill("Pierdere măsurată în scenariul izolat."); await physical.getByRole("button", { name: "Înregistrează materialul măsurat" }).click();
   await expect(physical.getByText("Operațiune salvată de server.", { exact: true })).toBeVisible();
   const h = await root.get(`/production-units/${unit.id}/history`); expect(h.custody.location.id).toBe("roi36-rail"); expect(h.material.find((r: { kind: string }) => r.kind === "waste").stockEffect).toBe("none");
+  await physical.getByLabel("Operațiune", { exact: true }).selectOption("hold"); await physical.getByLabel("Motiv").selectOption("inspection");
+  await scan(chief.page, created.qr); await physical.getByRole("checkbox", { name: "Confirm bucata și operațiunea fizică selectată." }).check();
+  const holding = chief.page.waitForResponse(r => r.url().endsWith(`/production-units/${unit.id}/custody`) && r.request().method() === "POST"); await physical.getByRole("button", { name: "Salvează operațiunea fizică" }).click(); expect((await holding).status()).toBe(200);
+  // The hold blocks only the carrier; the order stays readable (pieces_held is a known reason, not a broken page).
+  await expect(physical.getByText("Operațiune salvată de server.", { exact: true })).toBeVisible(); await expect(physical).toContainText("Șina QA înregistrată · Verificare");
+  expect((await tailor.get(pathOrder)).employeeActionBlockedReason).toBe("pieces_held");
+  await physical.getByRole("checkbox", { name: /Bucata 1\/2.*P-QA/ }).check(); await physical.getByRole("checkbox", { name: /Bucata 1\/1.*D-QA/ }).check();
+  const reunited = chief.page.waitForResponse(r => r.url().endsWith("/production-units/reunite") && r.request().method() === "POST");
+  await physical.getByRole("button", { name: "Confirm reunirea bucăților selectate" }).click(); expect((await reunited).status()).toBe(200);
+  const held = await root.get(`/production-units/${unit.id}/history`); expect(held.custody.hold).toBe("inspection");
+  const unchanged = await tailor.get(pathOrder); expect(unchanged.productionVersion).toBe(productionVersion); expect(unchanged.productionStageId).toBe("bottom-hem"); expect(unchanged.pieces.tracks[0].stage.id).toBe("ironing"); expect(unchanged.pieces.tracks[0].openException).toBeNull();
+  await chief.page.screenshot({ path: "e2e/.runtime/staff-physical-reunion.png", fullPage: true });
+  await physical.getByLabel("Operațiune", { exact: true }).selectOption("release"); await scan(chief.page, created.qr); await physical.getByRole("checkbox", { name: "Confirm bucata și operațiunea fizică selectată." }).check();
+  const released = chief.page.waitForResponse(r => r.url().endsWith(`/production-units/${unit.id}/custody`) && r.request().method() === "POST"); await physical.getByRole("button", { name: "Salvează operațiunea fizică" }).click(); expect((await released).status()).toBe(200);
+  expect((await root.get(`/production-units/${unit.id}/history`)).custody.hold).toBeNull(); await expect(physical).toContainText("Șina QA înregistrată · Fără blocaj");
+  expect((await tailor.get(pathOrder)).employeeActionBlockedReason).not.toBe("pieces_held");
   expect((await tailor.get(pathOrder)).productionVersion).toBe(productionVersion); expect(chief.errors).toEqual([]);
   await root.post(`/management/organization/responsibilities/${assignment}/revoke`, { reason: "Scenariu frontend încheiat" });
   await chief.context.close(); await root.context.dispose(); await cutter.context.dispose(); await tailor.context.dispose();

@@ -154,3 +154,16 @@ test("every language carries the piece words; packing waits with a clear reason"
     assert.notEqual(presentation.title, getErrorPresentation(new StaffServiceError("SERVER_ERROR")).title, code);
   }
 });
+
+test("every PieceGate reason keeps the order readable with a clear blocked reason in every language", () => {
+  // A held piece at any stage (or a gate reason at packing) is a normal server state; an unknown reason used to make the
+  // whole order unreadable ("Ceva nu a funcționat") although the server committed the hold.
+  const gate = readFileSync(path.join(root, "operations-api/src/Production/PieceGate.php"), "utf8");
+  const reasons = [...new Set([...gate.matchAll(/return '([a-z_]+)';/g)].map((match) => match[1]))];
+  assert.ok(reasons.includes("pieces_held") && reasons.length >= 6, reasons.join(","));
+  for (const reason of reasons) {
+    assert.equal(mapProductionOrder(serverOrder({ employeeActionBlockedReason: reason })).employeeActionBlockedReason, reason);
+    for (const catalog of [ro, tr, en, si]) assert.ok(String((catalog as Record<string, unknown>)[`orderAction.blocked.${reason}`] ?? "").length > 0, reason);
+  }
+  assert.match(orderActionBlockedCopy.pieces_held, /reținută fizic/);
+});
