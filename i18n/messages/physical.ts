@@ -145,7 +145,8 @@ export const physicalMessages = {
   "physical.error.reconciliationStage": "Etapa aleasă nu poate primi dovezi istorice pentru această bucată. Reîncarcă planul.",
   "physical.error.reconciliationEvidence": "Evenimentul ales nu dovedește această etapă pentru această bucată.",
   "physical.error.reconciliationRecorded": "Etapa are deja dovezi verificate. Reîncarcă starea salvată.",
-  "physical.error.reconciliationUnavailable": "Verificarea dovezilor istorice nu este încă disponibilă pe server."
+  "physical.error.reconciliationUnavailable": "Verificarea dovezilor istorice nu este încă disponibilă pe server.",
+  "physical.error.planBlockedByException": "Comanda are o problemă de calitate deschisă. Confirmă planul după ce comanda revine la etapa ei (primirea confirmată)."
 } as const;
 
 export const physicalEN = {
@@ -294,7 +295,8 @@ export const physicalEN = {
   "physical.error.reconciliationStage": "The chosen stage cannot receive historical evidence for this piece. Reload the plan.",
   "physical.error.reconciliationEvidence": "The chosen event does not prove this stage for this piece.",
   "physical.error.reconciliationRecorded": "The stage already has verified evidence. Reload the saved state.",
-  "physical.error.reconciliationUnavailable": "Historical evidence verification is not available on the server yet."
+  "physical.error.reconciliationUnavailable": "Historical evidence verification is not available on the server yet.",
+  "physical.error.planBlockedByException": "The order has an open quality problem. Confirm the plan after the order is back at its stage (receipt confirmed)."
 } as const;
 
 export const physicalTR = {
@@ -443,7 +445,8 @@ export const physicalTR = {
   "physical.error.reconciliationStage": "Seçilen aşama bu parça için geçmiş kanıt alamaz. Planı yenile.",
   "physical.error.reconciliationEvidence": "Seçilen olay bu parça için bu aşamayı kanıtlamaz.",
   "physical.error.reconciliationRecorded": "Aşamanın zaten doğrulanmış kanıtı var. Kayıtlı durumu yenile.",
-  "physical.error.reconciliationUnavailable": "Geçmiş kanıt doğrulaması sunucuda henüz yok."
+  "physical.error.reconciliationUnavailable": "Geçmiş kanıt doğrulaması sunucuda henüz yok.",
+  "physical.error.planBlockedByException": "Siparişte açık bir kalite sorunu var. Sipariş kendi aşamasına döndükten sonra (teslim onaylandıktan sonra) planı onayla."
 } as const;
 
 export const physicalSI = {
@@ -592,5 +595,6 @@ export const physicalSI = {
   "physical.error.reconciliationStage": "තෝරාගත් අදියරට මෙම කැබැල්ල සඳහා ඓතිහාසික සාක්ෂි ලබා දිය නොහැක. සැලැස්ම නැවත පූරණය කරන්න.",
   "physical.error.reconciliationEvidence": "තෝරාගත් සිදුවීම මෙම කැබැල්ල සඳහා මෙම අදියර ඔප්පු නොකරයි.",
   "physical.error.reconciliationRecorded": "අදියරට දැනටමත් තහවුරු කළ සාක්ෂි ඇත. සුරකින ලද තත්ත්වය නැවත පූරණය කරන්න.",
-  "physical.error.reconciliationUnavailable": "ඓතිහාසික සාක්ෂි තහවුරු කිරීම සේවාදායකයේ තවම නැත."
+  "physical.error.reconciliationUnavailable": "ඓතිහාසික සාක්ෂි තහවුරු කිරීම සේවාදායකයේ තවම නැත.",
+  "physical.error.planBlockedByException": "ඇණවුමේ විවෘත ගුණාත්මක ගැටලුවක් ඇත. ඇණවුම එහි අදියරට ආපසු පැමිණි පසු සැලැස්ම තහවුරු කරන්න."
 } as const;

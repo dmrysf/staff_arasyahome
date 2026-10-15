@@ -527,6 +527,9 @@ $ok($review($iuliana, $x7['id'], ['decision' => 'accept', 'reasonKey' => 'materi
 $check((int) $one("SELECT COUNT(*) FROM production_quality_events WHERE order_uuid = ? AND event_type = 'fault_detected'", [$m7['uuid']]) === 1, 'detection credited once');
 $ok($sendReturn($iuliana, $x7['id']), 'return to the cutter');
 $ok($restore($iuliana, $x7['id'], $m7['qr'], 'Retrimis din greșeală', ['cancelReturn' => true]), 'the return is withdrawn (the incident)');
+$beforeEarly7 = $state($m7);
+$error($confirm($iuliana, $m7, $m7['items'][0], ['expectedRevision' => 0, 'productType' => 'draperii', 'pieceCount' => 2, 'note' => 'Prea devreme']), 409, 'PLAN_BLOCKED_BY_EXCEPTION', 'EX-000001: no plan while the order waits at the supervisor stage (its ledger would start there)');
+$check($state($m7) === $beforeEarly7 && (int) $one('SELECT COUNT(*) FROM production_work_units WHERE order_uuid = ?', [$m7['uuid']]) === 0, 'EX-000001: the refused confirmation materializes nothing');
 $ok($receive($kadyrova, $x7['id'], $m7['qr']), 'the worker receives the order back');
 $check($one('SELECT status FROM production_exceptions WHERE exception_uuid = ?', [$x7['id']]) === 'restored' && $state($m7)['stage'] === 'ironing', 'the earlier request is preserved as restored');
 $ok($confirm($iuliana, $m7, $m7['items'][0], ['expectedRevision' => 0, 'productType' => 'draperii', 'pieceCount' => 2, 'note' => 'Două bucăți, confirmat fizic']), 'the supervisor confirms the two physical pieces');

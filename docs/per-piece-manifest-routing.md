@@ -202,6 +202,11 @@ verified cohort.
 
 ### Historical route evidence (migration 030, API 2.33.0)
 
+A plan cannot be confirmed while the order has an open order-level quality exception (`PLAN_BLOCKED_BY_EXCEPTION`):
+during supervisor custody the order sits at the supervisor's stage, so pieces materialized then would start their ledger
+there and stages the order already passed could never be verified. Confirm after the receipt returns the order to its
+stage (the EX-000001 sequence).
+
 A piece materialized after cutting (its plan was confirmed while the order was already past stage 2) has a per-piece
 ledger that starts at that later stage. The applicable stages before it can only be satisfied by verified evidence:
 

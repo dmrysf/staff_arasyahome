@@ -90,6 +90,12 @@ final readonly class PieceOperationsService
             if ($order['production_completed_at'] !== null) {
                 throw new ApiException(409, 'PRODUCTION_COMPLETED', 'Producția este deja finalizată.');
             }
+            // While an order-level quality exception is open, the order may sit at the supervisor's stage instead of its
+            // real progress. Pieces materialized then would start their ledger at that stage, and stages the order already
+            // passed could never be verified. Confirm once the order is back at its stage (receipt confirmed).
+            if ($order['open_exception_uuid'] !== null) {
+                throw new ApiException(409, 'PLAN_BLOCKED_BY_EXCEPTION', 'Comanda are o problemă de calitate deschisă. Confirmă planul după ce comanda revine la etapa ei.');
+            }
             $now = $this->now();
             $plans = new ManufacturingPlans($this->pdo);
             $before = $plans->line((string) $order['order_uuid'], $itemId) ?? throw new ApiException(404, 'LINE_NOT_FOUND', 'Linia nu a fost găsită.');

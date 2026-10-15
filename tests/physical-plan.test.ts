@@ -42,7 +42,7 @@ test("historical route evidence from API 2.33.0 is validated; an older API witho
   assert.throws(() => mapManufacturingPlan(evidenceLine({ ...evidence, candidates: [{ stageId: "material-preparation" }] })));
 });
 test("every historical evidence refusal has a specific Romanian message", () => {
-  for (const code of ["RECONCILIATION_STAGE_INVALID", "RECONCILIATION_EVIDENCE_INVALID", "RECONCILIATION_STAGE_RECORDED", "RECONCILIATION_UNAVAILABLE", "RECONCILIATION_NOT_ALLOWED"]) {
+  for (const code of ["PLAN_BLOCKED_BY_EXCEPTION", "RECONCILIATION_STAGE_INVALID", "RECONCILIATION_EVIDENCE_INVALID", "RECONCILIATION_STAGE_RECORDED", "RECONCILIATION_UNAVAILABLE", "RECONCILIATION_NOT_ALLOWED"]) {
     const message = physicalError(new StaffServiceError("ORDER_CHANGED", undefined, { backendCode: code }));
     assert.doesNotMatch(message, /Ceva nu a funcționat|Operațiune neconfirmată/, code);
   }

@@ -66,6 +66,7 @@ export function physicalError(error: unknown): string {
   if (["EXACT_PIECES_REQUIRED", "PLAN_CONFIRMATION_REQUIRED"].includes(code)) return pt("physical.error.planRequired");
   if (["PIECE_OUTCOME_REQUIRED", "DEFECT_RESOLUTION_REQUIRED"].includes(code)) return pt("physical.error.resultRequired");
   if (["SOURCE_PLAN_CHANGED", "PLAN_CHANGED", "SOURCE_PLAN_HASH_REQUIRED"].includes(code)) return pt("physical.error.sourceChanged");
+  if (code === "PLAN_BLOCKED_BY_EXCEPTION") return pt("physical.error.planBlockedByException");
   if (["PLAN_PIECE_IN_USE", "PLAN_TYPE_LOCKED"].includes(code)) return pt("physical.planul_folosit_nu_poate_fi_schimbat_astfel");
   if (["ORDER_PIECES_HELD", "ORDER_PIECES_INCOMPLETE", "ORDER_ROUTE_INCOMPLETE", "ORDER_PIECES_IN_REWORK", "ORDER_PIECES_NOT_READY"].includes(code)) return pt("physical.ambalarea_asteapta_toate_bucatile_etapele_aplicabile_si");
   if (code === "RECONCILIATION_STAGE_INVALID") return pt("physical.error.reconciliationStage");
