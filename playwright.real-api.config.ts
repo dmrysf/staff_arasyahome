@@ -24,6 +24,7 @@ export default defineConfig({
     ...devices["Desktop Chrome"],
     viewport: { width: 375, height: 667 },
     launchOptions: {
+      executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
       args: [
         "--use-fake-ui-for-media-stream",
         "--use-fake-device-for-media-stream",

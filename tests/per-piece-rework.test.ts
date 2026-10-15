@@ -96,7 +96,7 @@ test("a scan of the order QR with pieces apart asks which piece is in the hand (
   const label = mapProductionOrder(serverOrder({ pieces: pieces(), scannedPiece: { unitId: pieceA, trackId } }));
   assert.equal(scanNeedsPieceChoice(label), false);
   assert.deepEqual(actionableTracks(label).map((item) => item.id), [trackId]);
-  assert.equal(scanNeedsPieceChoice(mapProductionOrder(serverOrder({ pieces: pieces([]) }))), false, "an ordinary order is unchanged");
+  assert.equal(scanNeedsPieceChoice(mapProductionOrder(serverOrder({ pieces: pieces([]) }))), true, "a multi-piece order QR requires explicit carrier choice");
   assert.equal(isPieceLabel("ARASYA:U1:3C57C6YJ5WMOFEOIEO53S6IA7Y"), true);
   assert.equal(isPieceLabel("ARASYA:Q1:3C57C6YJ5WMOFEOIEO53S6IA7Y"), false, "the order QR is not a piece label");
   const source = readFileSync(path.join(root, "features/scanner/ScannerScreen.tsx"), "utf8");
@@ -138,7 +138,7 @@ test("the defect report selects exact pieces, k of n, never a silent default", (
   assert.match(panel, /useState<Set<string>>\(new Set\(\)\)/, "nothing is preselected");
   assert.match(panel, /units: chosen\.map\(\(piece\) => piece\.id\), trackId: track\?\.id \?\? null/);
   const piecesPanel = readFileSync(path.join(root, "features/orders/PiecesPanel.tsx"), "utf8");
-  assert.match(piecesPanel, /disabled=\{submitting \|\| \(confirm\.track\.requiresDefectResolution && !resolved\)\}/, "the stage of the defect needs the explicit resolution");
+  assert.match(piecesPanel, /disabled=\{submitting \|\| \(confirm\.track\.requiresDefectResolution && !resolved\)/, "the stage of the defect needs the explicit resolution");
   assert.equal(pieceLabelFilename("11709027615", "1/2"), "ARASYA-PIECE-11709027615-1-2.svg");
 });
 
@@ -153,4 +153,17 @@ test("every language carries the piece words; packing waits with a clear reason"
     const presentation = getErrorPresentation(new StaffServiceError(code));
     assert.notEqual(presentation.title, getErrorPresentation(new StaffServiceError("SERVER_ERROR")).title, code);
   }
+});
+
+test("every PieceGate reason keeps the order readable with a clear blocked reason in every language", () => {
+  // A held piece at any stage (or a gate reason at packing) is a normal server state; an unknown reason used to make the
+  // whole order unreadable ("Ceva nu a funcționat") although the server committed the hold.
+  const gate = readFileSync(path.join(root, "operations-api/src/Production/PieceGate.php"), "utf8");
+  const reasons = [...new Set([...gate.matchAll(/return '([a-z_]+)';/g)].map((match) => match[1]))];
+  assert.ok(reasons.includes("pieces_held") && reasons.length >= 6, reasons.join(","));
+  for (const reason of reasons) {
+    assert.equal(mapProductionOrder(serverOrder({ employeeActionBlockedReason: reason })).employeeActionBlockedReason, reason);
+    for (const catalog of [ro, tr, en, si]) assert.ok(String((catalog as Record<string, unknown>)[`orderAction.blocked.${reason}`] ?? "").length > 0, reason);
+  }
+  assert.match(orderActionBlockedCopy.pieces_held, /reținută fizic/);
 });

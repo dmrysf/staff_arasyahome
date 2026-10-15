@@ -1,3 +1,9 @@
+import { latestProductionView } from "../../domain/orderReads";
+import { physicalText as pt } from "../../i18n/physical";
+import { PhysicalOperations } from "./PhysicalOperations";
+import { ManufacturingPanel } from "../../components/ManufacturingPanel";
+import { createIdempotencyKey } from "../../services/idempotency";
+import { stageName } from "../../domain/stageNames";
 import { useEffect, useState } from "react";
 import { activeLocale, formatDate, liveLabels, t, translate, useI18n } from "../../i18n";
 import type { ProductionWorkflow, QualityCapabilities, StaffOrder, StaffServiceError } from "../../domain/models";
@@ -29,7 +35,7 @@ import { PiecesPanel } from "./PiecesPanel";
 import type { PieceApi } from "../../domain/pieces";
 
 
-export function OrderDetailScreen({ orderId, service, exceptions, cutting, documents, productionQr, pieces, permissions, workflow, navigate, onSessionExpired }: { orderId: string; service: OrderService; exceptions: ExceptionService; cutting?: CuttingApi; documents?: DocumentApi; /** Only passed for managers who may inspect QR authority. */ productionQr?: ProductionQrApi; /** Work on pieces in rework (API 2.31.0). */ pieces?: PieceApi; permissions: readonly string[]; workflow: ProductionWorkflow; navigate: (path: string) => void; onSessionExpired: () => void }) {
+export function OrderDetailScreen({ orderId, service, exceptions, cutting, documents, productionQr, pieces, physical, permissions, workflow, navigate, onSessionExpired }: { orderId: string; service: OrderService; exceptions: ExceptionService; cutting?: CuttingApi; documents?: DocumentApi; /** Only passed for managers who may inspect QR authority. */ productionQr?: ProductionQrApi; /** Work on pieces in rework (API 2.31.0). */ pieces?: PieceApi; physical?: import("../../domain/physical").StaffPhysicalApi; permissions: readonly string[]; workflow: ProductionWorkflow; navigate: (path: string) => void; onSessionExpired: () => void }) {
   useI18n();
   const [order, setOrder] = useState<StaffOrder | null>(null);
   const [error, setError] = useState<StaffServiceError | null>(null);
@@ -40,11 +46,19 @@ export function OrderDetailScreen({ orderId, service, exceptions, cutting, docum
     const controller = new AbortController();
     service.getById(orderId, { signal: controller.signal })
       .then(requireProductionProducts)
-      .then((loaded) => { setError(null); setOrder(loaded); })
+      .then((loaded) => { if (controller.signal.aborted) return; setError(null); setOrder(current => latestProductionView(current, loaded)); })
       .catch((caught) => { if (!controller.signal.aborted) setError(toServiceError(caught)); });
     return () => controller.abort();
   }, [orderId, reloadKey, liveRevision, service]);
   // Whether defects go to the tailoring quality supervisor (and so which report action is offered).
+  const recoveryId = new URLSearchParams(window.location.search).get("recover");
+  const [recovery, setRecovery] = useState<import("../../domain/models").FaultException | null>(null);
+  useEffect(() => {
+    if (!recoveryId) return;
+    const controller = new AbortController();
+    exceptions.get(recoveryId, { signal: controller.signal }).then(value => { if (value.order.id === orderId && value.type === "tailoring_defect" && ["restored", "cancelled"].includes(value.status)) setRecovery(value); }, () => undefined);
+    return () => controller.abort();
+  }, [exceptions, orderId, recoveryId]);
   const [quality, setQuality] = useState<QualityCapabilities | null>(null);
   useEffect(() => {
     const controller = new AbortController();
@@ -52,6 +66,8 @@ export function OrderDetailScreen({ orderId, service, exceptions, cutting, docum
     exceptions.capabilities({ signal: controller.signal }).then(setQuality).catch(() => { if (!controller.signal.aborted) setQuality({ tailoringSupervisor: false, supervisedSources: [], supervisedFlowActive: false }); });
     return () => controller.abort();
   }, [exceptions]);
+  const effectiveRecovery = recovery?.id === recoveryId ? recovery : null;
+  if (error?.code === "ORDER_NOT_FOUND" && physical) return <section className="screen-stack"><ManufacturingPanel orderId={orderId} service={physical} revision={reloadKey} newKey={createIdempotencyKey} stageName={stageName} onChanged={() => setReloadKey(v => v + 1)} /></section>;
   if (error) return <ErrorState error={error} onAction={() => { setError(null); setOrder(null); if (error.code === "ORDER_NOT_FOUND") navigate("/orders"); else setReloadKey((value) => value + 1); }} />;
   if (!order) return <LoadingState label={t("detail.loading")} shape="detail" />;
   const completed = Boolean(order.productionCompletedAt);
@@ -67,15 +83,18 @@ export function OrderDetailScreen({ orderId, service, exceptions, cutting, docum
         <h2>{order.productionContext.company.legalName}</h2><p>{order.productionContext.company.companyCode} · {order.productionContext.company.countryCode} · {order.productionContext.company.taxIdentifier}</p>
         {projectsOf(order).map(project => <p className="project-reference" key={project}>{t("detail.project", { name: project })}</p>)}
       </section>}
-      <OrderActionPanel order={order} workflow={workflow} service={service} cutting={cutting} onUpdated={(updated) => setOrder(requireProductionProducts(updated))} onReload={() => { setOrder(null); setReloadKey((value) => value + 1); }} onSessionExpired={onSessionExpired} />
+      <OrderActionPanel order={order} workflow={workflow} service={service} cutting={cutting} onUpdated={(updated) => setOrder(current => latestProductionView(current, requireProductionProducts(updated)))} onReload={() => { setOrder(null); setReloadKey((value) => value + 1); }} onSessionExpired={onSessionExpired} />
       {cutting && order.productionStageId === "material-preparation" && order.employeeAllowedAction?.id === "complete_stage" && <CuttingTransferRequest order={order} service={cutting} onChanged={() => { setOrder(null); setReloadKey(v => v + 1); }} />}
+      {physical && <ManufacturingPanel orderId={order.id} revision={reloadKey} service={physical} newKey={createIdempotencyKey} stageName={stageName} onChanged={() => setReloadKey(v => v + 1)} />}
+      {physical && <PhysicalOperations order={order} service={physical} onChanged={() => setReloadKey(v => v + 1)} />}
       <PiecesPanel order={order} workflow={workflow} service={pieces} exceptions={exceptions} quality={quality} permissions={permissions} navigate={navigate} onChanged={() => setReloadKey((value) => value + 1)} onSessionExpired={onSessionExpired} />
-      {canReportDefect(order, permissions, quality) && <section className="detail-section return-section"><ReturnToCuttingPanel variant="defect" order={order} service={exceptions} partialRework={quality?.partialRework === true} onSessionExpired={onSessionExpired} onReported={(id) => navigate(`/exceptions/${encodeURIComponent(id)}`)} /></section>}
+      {recoveryId && !effectiveRecovery && <p role="alert">{pt("physical.recovery.unavailable")}</p>}
+      {canReportDefect(order, permissions, quality) && (!recoveryId || effectiveRecovery !== null) && <section className="detail-section return-section"><ReturnToCuttingPanel variant="defect" order={order} service={exceptions} recovery={effectiveRecovery ?? undefined} partialRework={quality?.partialRework === true} onSessionExpired={onSessionExpired} onReported={(id) => navigate(`/exceptions/${encodeURIComponent(id)}`)} /></section>}
       {quality && !isSupervised(order, quality) && canReturnToCutting(order, permissions) && <section className="detail-section return-section"><ReturnToCuttingPanel order={order} service={exceptions} onSessionExpired={onSessionExpired} onReported={(id) => navigate(`/exceptions/${encodeURIComponent(id)}`)} /></section>}
       <section className="detail-section detail-products"><div className="section-title"><p className="eyebrow">{t("detail.productionEyebrow")}</p><h2>{t("common.products", { count: order.products.length })}</h2></div>{order.products.map((item) => { const size = formatMeasurements(item); const location = item.productionContext?.project; return <div className="product-detail" key={item.id}>{location && <p className="project-location" data-testid="project-location">{projectPlace(location)}</p>}<div><strong>{item.name}</strong>{item.code && <span>{item.code}</span>}</div><dl>{item.color && <div><dt>{t("product.color")}</dt><dd>{item.color}</dd></div>}{item.variant && <div><dt>{t("product.variant")}</dt><dd>{item.variant}</dd></div>}{size && <div className="product-key"><dt>{t("product.size")}</dt><dd>{size}</dd></div>}{item.meters != null && <div className="product-key"><dt>{t("product.meters")}</dt><dd>{formatMeters(item.meters)}</dd></div>}{item.options?.map((option) => <div key={option.label}><dt>{option.label}</dt><dd>{option.value}</dd></div>)}<div><dt>{t("product.quantity")}</dt><dd>{item.quantity}</dd></div></dl></div>; })}</section>
       {documents && canUseDocuments(permissions) && <DocumentPanel orderId={order.id} service={documents} permissions={permissions} onChanged={() => setReloadKey((value) => value + 1)} />}
       {productionQr && <ProductionQrPanel orderId={order.id} service={productionQr} />}
-      <ProductionRoadmap workflow={workflow} currentStageId={order.productionStageId} />
+      {!order.pieces?.pieceRouting && !order.pieces?.partialRework && <ProductionRoadmap workflow={workflow} currentStageId={order.productionStageId} />}
       {order.productionNotes && <section className="production-note"><p className="eyebrow">{t("detail.productionNote")}</p><p>{order.productionNotes}</p></section>}
       {order.products.filter(item => item.productionContext).map(item => <section className="production-note" key={item.id}>
         <p className="eyebrow">{item.name} · {item.productionContext!.project ? projectTreatment(item.productionContext!.project) : t(`kind.${item.productionContext!.kind}`)}</p>

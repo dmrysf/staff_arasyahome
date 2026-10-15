@@ -1,3 +1,4 @@
+import { physicalEN } from "./physical";
 import type { Catalog } from "../types";
 import { enErrors } from "./en.errors";
 
@@ -6,6 +7,7 @@ import { enErrors } from "./en.errors";
  * sizes, colors, notes, numbers) is always shown exactly as stored.
  */
 export const en: Catalog = {
+  ...physicalEN,
   ...enErrors,
 
   // ---- common
@@ -264,6 +266,12 @@ export const en: Catalog = {
   "orderAction.blocked.production_authority_source": "Production of this order is still managed in YD SOFT. A manager must take it over in Arasya before anyone works on it.",
   "orderAction.blocked.payment_gate_closed": "The order cannot enter production. The required advance or the order payment has not been confirmed.",
   "orderAction.blocked.pieces_in_rework": "The order cannot be packed yet: a piece is still in rework. Packing starts once every piece reached packing.",
+  "orderAction.blocked.pieces_held": "The order cannot continue while a piece is physically held. It continues once the hold is released.",
+  "orderAction.blocked.pieces_awaiting_reunion": "The order cannot be packed yet: a piece is following its own route and has not rejoined the order.",
+  "orderAction.blocked.plan_confirmation_required": "A line's physical plan must be verified and confirmed by an authorized person.",
+  "orderAction.blocked.pieces_incomplete": "Pieces are missing or a piece needs an identity review. The order cannot continue yet.",
+  "orderAction.blocked.route_incomplete": "The order cannot be packed yet: a piece has not finished every stage of its route.",
+  "orderAction.blocked.defect_unresolved": "The order cannot be packed yet: the resolution of a defect has not been confirmed.",
   "orderAction.orderNote": "Order #{number}. {note}",
   "orderAction.qrCaptured": "QR label captured · the server checks it is the same order.",
   "orderAction.checkingWork": "Checking your active jobs…",
@@ -516,7 +524,7 @@ export const en: Catalog = {
   "exc.lineQuantity": "{count} pcs",
   "piece.label": "Piece {index}/{count}",
   "piece.title": "Pieces",
-  "piece.summary": "{total} pcs in the order · {onOrder} with the order · {inRework} in rework",
+  "piece.summary": "{total} physical pieces · {onOrder} with the order · {inRework} separated",
   "piece.mixed": "The pieces of this order are not at the same stage. The order stage applies only to the pieces that travel together.",
   "piece.withOrder": "With the order",
   "piece.currentStage": "Current stage",
@@ -564,8 +572,8 @@ export const en: Catalog = {
   "exc.pieces.title": "Affected pieces",
   "exc.pieces.lineAffected": "{affected} of {quantity} pcs",
   "exc.scope.partial": "Only the pieces of this request return to cutting: {affected}. The rest of the order ({healthy}) stays at its stage, without rework.",
-  "ws.rework.title": "Pieces in rework at this stage",
-  "ws.rework.count": { one: "{count} piece in rework", other: "{count} pieces in rework" },
+  "ws.rework.title": "Separated pieces at this stage",
+  "ws.rework.count": { one: "{count} separated piece", other: "{count} separated pieces" },
   "exc.tailoringEmployee": "the tailoring employee",
   "exc.affected": "Affected products",
   "exc.faulty": "Products with errors",

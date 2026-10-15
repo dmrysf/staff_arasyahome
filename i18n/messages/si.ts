@@ -1,3 +1,4 @@
+import { physicalSI } from "./physical";
 import type { Catalog } from "../types";
 import { siErrors } from "./si.errors";
 
@@ -7,6 +8,7 @@ import { siErrors } from "./si.errors";
  * Wording to be reviewed on a real phone by a native Sinhala-speaking employee.
  */
 export const si: Catalog = {
+  ...physicalSI,
   ...siErrors,
 
   // ---- common
@@ -265,6 +267,12 @@ export const si: Catalog = {
   "orderAction.blocked.production_authority_source": "මෙම ඇණවුමේ නිෂ්පාදනය තවම YD SOFT හි කළමනාකරණය වේ. කිසිවෙකු වැඩ කිරීමට පෙර කළමනාකරුවෙකු එය Arasya වෙත භාරගත යුතුය.",
   "orderAction.blocked.payment_gate_closed": "ඇණවුම නිෂ්පාදනයට ඇතුළු විය නොහැක. අවශ්‍ය අත්තිකාරම හෝ ඇණවුමේ ගෙවීම තහවුරු කර නැත.",
   "orderAction.blocked.pieces_in_rework": "ඇණවුම තවම ඇසුරුම් කළ නොහැක: එක් කෑල්ලක් නැවත සකස් කරමින් පවතී. සියලු කෑලි ඇසුරුම් අදියරට පැමිණි පසු ඇසුරුම් ආරම්භ වේ.",
+  "orderAction.blocked.pieces_held": "කෑල්ලක් භෞතිකව රඳවා ඇති විට ඇණවුම ඉදිරියට යා නොහැක. රඳවීම නිදහස් කළ පසු එය ඉදිරියට යයි.",
+  "orderAction.blocked.pieces_awaiting_reunion": "ඇණවුම තවම ඇසුරුම් කළ නොහැක: එක් කෑල්ලක් තමන්ගේම මාර්ගයේ ගමන් කරන අතර ඇණවුම හා නැවත එක් වී නැත.",
+  "orderAction.blocked.plan_confirmation_required": "පේළියක භෞතික සැලැස්ම බලයලත් පුද්ගලයෙකු විසින් සත්‍යාපනය කර තහවුරු කළ යුතුය.",
+  "orderAction.blocked.pieces_incomplete": "කෑලි අඩුයි හෝ කෑල්ලක අනන්‍යතාවය පරීක්ෂා කළ යුතුය. ඇණවුම තවම ඉදිරියට යා නොහැක.",
+  "orderAction.blocked.route_incomplete": "ඇණවුම තවම ඇසුරුම් කළ නොහැක: එක් කෑල්ලක් එහි මාර්ගයේ සියලු අදියර අවසන් කර නැත.",
+  "orderAction.blocked.defect_unresolved": "ඇණවුම තවම ඇසුරුම් කළ නොහැක: දෝෂයක් විසඳූ බව තහවුරු කර නැත.",
   "orderAction.orderNote": "ඇණවුම #{number}. {note}",
   "orderAction.qrCaptured": "QR ලේබලය කියවා ඇත · සේවාදායකය එය එකම ඇණවුම දැයි පරීක්ෂා කරයි.",
   "orderAction.checkingWork": "ඔබේ සක්‍රිය වැඩ පරීක්ෂා කරමින්…",
@@ -517,7 +525,7 @@ export const si: Catalog = {
   "exc.lineQuantity": "කෑලි {count}",
   "piece.label": "කෑල්ල {index}/{count}",
   "piece.title": "කෑලි",
-  "piece.summary": "ඇණවුමේ කෑලි {total} · ඇණවුම සමඟ {onOrder} · නැවත සකස් කිරීමේ {inRework}",
+  "piece.summary": "භෞතික කැබලි {total} · ඇණවුම සමඟ {onOrder} · වෙන් කළ {inRework}",
   "piece.mixed": "මෙම ඇණවුමේ කෑලි එකම අදියරේ නැත. ඇණවුමේ අදියර අදාළ වන්නේ එකට ගමන් කරන කෑලි සඳහා පමණි.",
   "piece.withOrder": "ඇණවුම සමඟ",
   "piece.currentStage": "වත්මන් අදියර",
@@ -565,8 +573,8 @@ export const si: Catalog = {
   "exc.pieces.title": "බලපෑමට ලක් වූ කෑලි",
   "exc.pieces.lineAffected": "කෑලි {quantity} න් {affected}",
   "exc.scope.partial": "මෙම ඉල්ලීමේ කෑලි පමණක් කැපීමට ආපසු යයි: {affected}. ඇණවුමේ ඉතිරිය ({healthy}) නැවත සකස් නොකර එහි අදියරේ රැඳේ.",
-  "ws.rework.title": "මෙම අදියරේ නැවත සකස් කරන කෑලි",
-  "ws.rework.count": { one: "නැවත සකස් කරන කෑලි {count}", other: "නැවත සකස් කරන කෑලි {count}" },
+  "ws.rework.title": "මෙම අදියරේ වෙන් කළ කැබලි",
+  "ws.rework.count": { one: "වෙන් කළ කැබලි {count}", other: "වෙන් කළ කැබලි {count}" },
   "exc.tailoringEmployee": "මැහුම් අංශයේ සේවකයා",
   "exc.affected": "බලපෑමට ලක් වූ භාණ්ඩ",
   "exc.faulty": "දෝෂ සහිත භාණ්ඩ",

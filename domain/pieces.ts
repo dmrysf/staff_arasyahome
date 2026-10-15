@@ -2,10 +2,12 @@ import { t } from "../i18n";
 import type { FaultException, OrderPieces, PieceTrack, ProductionPiece, StaffOrder } from "./models";
 
 /**
- * Physical pieces of an order (API 2.31.0). A line of quantity 2 is two pieces, "Bucata 1/2" and "Bucata 2/2". Pieces
+ * Physical pieces of an order (API 2.31.0). The confirmed physical plan defines "Bucata 1/2" and "Bucata 2/2", independently of commercial quantity. Pieces
  * reported defective alone travel on their own track (own stage, owner, rework cycle) and rejoin the order at packing.
  * Every action on a track names the track explicitly; nothing here guesses which piece is in the employee's hand.
  */
+
+export type PieceOutcome = { unitId: string; outcome: "repair" | "replacement"; originalDisposition?: "quarantined" | "scrapped" };
 
 export type PieceLabel = { unitId: string; piece: string; name: string; code: string | null; color: string | null; payload: string | null; svg: string | null };
 export type PieceLabels = { trackId: string; orderId: string; orderNumber: string; reworkCycle: number; labels: PieceLabel[] };
@@ -15,7 +17,7 @@ export type PieceActionResult = { orderId: string; trackId: string; trackStatus:
 /** Work on a piece in rework. Each mutation is server-confirmed; a retry after a network failure reuses the same key. */
 export interface PieceApi {
   claim(trackId: string, input: { expectedVersion: number; qrToken: string; idempotencyKey: string }): Promise<PieceActionResult>;
-  complete(trackId: string, input: { expectedVersion: number; defectResolved?: true; idempotencyKey: string }): Promise<PieceActionResult>;
+  complete(trackId: string, input: { expectedVersion: number; defectResolved?: true; pieceOutcome?: "repair" | "replacement"; originalDisposition?: "quarantined" | "scrapped"; pieceOutcomes?: PieceOutcome[]; idempotencyKey: string }): Promise<PieceActionResult>;
   labels(trackId: string, signal?: AbortSignal): Promise<PieceLabels>;
 }
 
@@ -71,7 +73,7 @@ export function actionableTracks(order: Pick<StaffOrder, "pieces" | "scannedPiec
  * one. The scanner then asks which piece is in the hand instead of acting on the order (fail closed).
  */
 export function scanNeedsPieceChoice(order: Pick<StaffOrder, "pieces" | "scannedPiece">): boolean {
-  return Boolean(order.pieces?.mixedProgress) && !order.scannedPiece;
+  return (Boolean(order.pieces?.mixedProgress) || (order.pieces?.total ?? 0) > 1) && !order.scannedPiece;
 }
 
 /** Partial selection helpers for the defect report: k of n pieces of each line, never a silent default. */

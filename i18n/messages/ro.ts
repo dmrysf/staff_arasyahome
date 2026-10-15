@@ -1,3 +1,4 @@
+import { physicalMessages } from "./physical";
 import { roErrors } from "./ro.errors";
 
 /**
@@ -7,6 +8,7 @@ import { roErrors } from "./ro.errors";
  * (product names, codes, sizes, colors, notes, numbers) is always shown exactly as stored.
  */
 export const ro = {
+  ...physicalMessages,
   ...roErrors,
 
   // ---- common ------------------------------------------------------------------------------------------------
@@ -265,6 +267,12 @@ export const ro = {
   "orderAction.blocked.production_authority_source": "Producția acestei comenzi este încă gestionată în YD SOFT. Un manager trebuie să o preia în Arasya înainte de a lucra la ea.",
   "orderAction.blocked.payment_gate_closed": "Comanda nu poate intra în producție. Avansul necesar sau plata comenzii nu a fost confirmată.",
   "orderAction.blocked.pieces_in_rework": "Comanda nu poate fi ambalată încă: o bucată este în refacere. Ambalarea începe după ce toate bucățile ajung la ambalare.",
+  "orderAction.blocked.pieces_held": "Comanda nu poate continua cât timp o bucată este reținută fizic. Continuă după eliberarea reținerii.",
+  "orderAction.blocked.pieces_awaiting_reunion": "Comanda nu poate fi ambalată încă: o bucată își urmează traseul și nu s-a reunit cu comanda.",
+  "orderAction.blocked.plan_confirmation_required": "Planul fizic al unei linii trebuie verificat și confirmat de o persoană autorizată.",
+  "orderAction.blocked.pieces_incomplete": "Lipsesc bucăți sau o bucată necesită verificarea identității. Comanda nu poate continua încă.",
+  "orderAction.blocked.route_incomplete": "Comanda nu poate fi ambalată încă: o bucată nu a terminat toate etapele traseului său.",
+  "orderAction.blocked.defect_unresolved": "Comanda nu poate fi ambalată încă: rezolvarea unui defect nu a fost confirmată.",
   "orderAction.orderNote": "Comanda #{number}. {note}",
   "orderAction.qrCaptured": "Etichetă QR capturată · serverul verifică aceeași comandă.",
   "orderAction.checkingWork": "Se verifică lucrările tale active…",
@@ -517,7 +525,7 @@ export const ro = {
   "exc.lineQuantity": "{count} buc.",
   "piece.label": "Bucata {index}/{count}",
   "piece.title": "Bucăți",
-  "piece.summary": "{total} buc. în comandă · {onOrder} cu comanda · {inRework} în refacere",
+  "piece.summary": "{total} buc. fizice · {onOrder} cu comanda · {inRework} separate",
   "piece.mixed": "Bucățile acestei comenzi nu sunt la aceeași etapă. Etapa comenzii privește doar bucățile care merg împreună.",
   "piece.withOrder": "Cu comanda",
   "piece.currentStage": "Etapa actuală",
@@ -565,8 +573,8 @@ export const ro = {
   "exc.pieces.title": "Bucăți afectate",
   "exc.pieces.lineAffected": "{affected} din {quantity} buc.",
   "exc.scope.partial": "Doar bucățile din această cerere se întorc la tăiere: {affected}. Restul comenzii ({healthy}) rămâne la etapa ei, fără refacere.",
-  "ws.rework.title": "Bucăți în refacere la această etapă",
-  "ws.rework.count": { one: "{count} buc. în refacere", other: "{count} buc. în refacere" },
+  "ws.rework.title": "Bucăți separate la această etapă",
+  "ws.rework.count": { one: "{count} buc. separate", other: "{count} buc. separate" },
   "exc.tailoringEmployee": "angajatul de croitorie",
   "exc.affected": "Produse afectate",
   "exc.faulty": "Produse cu eroare",

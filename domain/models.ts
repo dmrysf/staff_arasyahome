@@ -97,10 +97,17 @@ export type OrderActionBlockedReason =
   | "production_authority_source"
   | "payment_gate_closed"
   /** The order is at packing while some of its pieces are still in rework (API 2.31.0). */
-  | "pieces_in_rework";
+  | "pieces_in_rework"
+  /** PieceGate (API 2.32.0): a held piece, a piece apart on its route, an unconfirmed plan, missing pieces, an unfinished route or an unconfirmed defect resolution. */
+  | "pieces_held"
+  | "pieces_awaiting_reunion"
+  | "plan_confirmation_required"
+  | "pieces_incomplete"
+  | "route_incomplete"
+  | "defect_unresolved";
 
 /** One physical piece of an order line ("Bucata 1/2"); trackId is set while the piece travels apart, in rework. */
-export type ProductionPiece = { id: string; itemId: string; index: number; count: number; lineNumber: number; trackId: string | null; reworkCycle: number; reviewRequired: boolean };
+export type ProductionPiece = { id: string; itemId: string; index: number; count: number; lineNumber: number; trackId: string | null; reworkCycle: number; reviewRequired: boolean; productType?: string; fabricMeters?: string | null; replacementOf?: string | null };
 
 export type PieceTrackActionId = "claim" | "complete_stage";
 
@@ -124,6 +131,8 @@ export type PieceTrack = {
   resolutionConfirmed: boolean;
   /** Completing the current stage needs the confirmation that the original defect is resolved. */
   requiresDefectResolution: boolean;
+  requiresPieceOutcome?: boolean;
+  kind?: "route" | "rework";
   nextStageId: string | null;
   changedAt: string;
   allowedAction: { id: PieceTrackActionId } | null;
@@ -131,7 +140,7 @@ export type PieceTrack = {
 };
 
 /** Every physical piece of the order and the tracks of pieces in rework. mixedProgress: not every piece is at the order's stage. */
-export type OrderPieces = { total: number; onOrder: number; inRework: number; mixedProgress: boolean; units: ProductionPiece[]; tracks: PieceTrack[] };
+export type OrderPieces = { total: number | null; allPlansKnown?: boolean; partialRework?: boolean; pieceRouting?: boolean; requiresPieceOutcome?: boolean; requiresDefectResolution?: boolean; onOrder: number; inRework: number; mixedProgress: boolean; units: ProductionPiece[]; tracks: PieceTrack[] };
 
 /** Advance payment gate of a Trend Home / Outlet Perdele order: state only, never an amount. */
 export type PaymentGateState = "online" | "not_required" | "confirmed" | "waiting" | "partial" | "unknown" | "unverified";

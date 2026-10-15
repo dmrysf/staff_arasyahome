@@ -1,3 +1,4 @@
+import { physicalText as pt } from "../../i18n/physical";
 import { useEffect, useRef, useState } from "react";
 import { formatDate, t as translateNow, useI18n } from "../../i18n";
 import { faultReasonName, stageName } from "../../domain/stageNames";
@@ -270,6 +271,7 @@ export function ExceptionScreen({ exceptionId, service, pieces, navigate, onSess
           <strong>{timelineLabel(entry.action)}</strong><small>{entry.actor} · <time dateTime={entry.at}>{time.format(new Date(entry.at))}</time></small>{entry.comment && <small>{t("common.quote", { text: entry.comment })}</small>}
         </li>)}</ol>
       </section>}
+      {fault.type === "tailoring_defect" && ["restored", "cancelled"].includes(fault.status) && <button className="button button-secondary" type="button" onClick={() => navigate(`/orders/${encodeURIComponent(fault.order.id)}?recover=${encodeURIComponent(fault.id)}`)}>{pt("physical.recovery.open")}</button>}
       {fault.role !== "supervisor" && <button className="button button-secondary" type="button" onClick={() => navigate(`/orders/${encodeURIComponent(fault.order.id)}`)}>{t("common.viewOrder")}</button>}
     </article>
   );

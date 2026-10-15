@@ -1,0 +1,105 @@
+name: Staff Piece Quality
+
+# Test-only pipeline for stacked frontend PRs. It never prepares or publishes a deploy release.
+on:
+  pull_request:
+    paths:
+      - 'app/**'
+      - 'components/**'
+      - 'domain/**'
+      - 'features/**'
+      - 'i18n/**'
+      - 'services/**'
+      - 'styles/**'
+      - 'tests/**'
+      - 'e2e/**'
+      - 'playwright*.ts'
+      - '.github/workflows/staff-piece-quality.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: arasya-staff-piece-quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    env:
+      VITE_STAFF_DEMO_MODE: 'false'
+      VITE_STAFF_PREVIEW_MODE: 'false'
+      VITE_STAFF_API_BASE_URL: https://api.arasyahome.ro
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962
+        with:
+          php-version: '8.2'
+          coverage: none
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm verify
+
+  browser-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:e2e:preview
+
+  real-api-e2e:
+    name: real-api-e2e (${{ matrix.engine }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - engine: mysql-8.4
+            image: mysql:8.4
+            health: mysqladmin ping -h 127.0.0.1 -proot-test-password
+          - engine: mariadb-10.11
+            image: mariadb:10.11
+            health: mariadb-admin ping -h 127.0.0.1 -proot-test-password
+    services:
+      database:
+        image: ${{ matrix.image }}
+        env:
+          MYSQL_ROOT_PASSWORD: root-test-password
+          MARIADB_ROOT_PASSWORD: root-test-password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="${{ matrix.health }}"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      ARASYA_E2E_DB_NAME: arasya_e2e_test
+      ARASYA_TEST_DB_HOST: 127.0.0.1
+      ARASYA_TEST_DB_PORT: '3306'
+      ARASYA_TEST_DB_USER: root
+      ARASYA_TEST_DB_PASSWORD: root-test-password
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962
+        with:
+          php-version: '8.2'
+          extensions: mbstring, pdo_mysql
+          coverage: none
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: node operations-api/tests/qr-decode.mjs
+      - run: pnpm test:e2e:real

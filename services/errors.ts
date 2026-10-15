@@ -1,3 +1,5 @@
+import { physicalText as pt } from "../i18n/physical";
+import { physicalError } from "../domain/physical";
 import { StaffServiceError, type ServiceErrorCode } from "../domain/models";
 import { invalidDocumentMessage } from "../domain/documents";
 import { t } from "../i18n";
@@ -128,6 +130,7 @@ function presentation(code: ServiceErrorCode): ErrorPresentation {
 }
 
 export function getErrorPresentation(error: unknown): ErrorPresentation {
+  if (error instanceof StaffServiceError && typeof error.details?.backendCode === "string" && /^(PLAN_|SOURCE_PLAN_|PIECE_OUTCOME|UNIT_RETIRED|ORDER_PIECES_|ORDER_ROUTE_|CUSTODY_|MATERIAL_|EXACT_PIECES_|CUTTING_NOT_)/.test(error.details.backendCode)) return { title: pt("physical.operatiune_neconfirmata"), message: physicalError(error), action: pt("physical.reincarca_starea_salvata") };
   // An old or blocked production document is shown in strong words, with the active revision.
   const document = invalidDocumentMessage(error);
   if (document && error instanceof StaffServiceError) return { title: document.title, message: document.lines.join(" "), action: presentation(error.code).action };

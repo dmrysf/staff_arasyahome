@@ -93,9 +93,33 @@ test("Trendyol package: review, confirm measurements, explicit approval to stage
   await page.getByRole("dialog").getByRole("button", { name: "Confirmă" }).click();
   await expect(page.getByText("Comanda este la tine")).toBeVisible();
   await expect(page.locator(".detail-products")).toContainText("298,5 × 260 cm");
+  // Delay a real stage-1 read until after the stage-2 commit. It must never roll the screen back.
+  let releaseRead!: () => void;
+  let capturedRead!: () => void;
+  let finishedRead!: () => void;
+  const release = new Promise<void>(resolve => { releaseRead = resolve; });
+  const captured = new Promise<void>(resolve => { capturedRead = resolve; });
+  const finished = new Promise<void>(resolve => { finishedRead = resolve; });
+  const orderUrl = `**/orders/${encodeURIComponent(`trendyol:${fixture.trendyol.package}`)}`;
+  let intercepted = false;
+  await page.route(orderUrl, async route => {
+    if (route.request().method() !== "GET" || intercepted) { await route.continue(); return; }
+    intercepted = true;
+    const response = await route.fetch();
+    capturedRead();
+    await release;
+    await route.fulfill({ response });
+    finishedRead();
+  });
+  await page.getByTestId("manufacturing-plan").getByRole("button", { name: "Reîncarcă starea salvată" }).click();
+  await captured;
   await page.getByRole("button", { name: /Finalizează etapa/ }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Confirmă" }).click();
   await expect(page.locator(".detail-hero")).toContainText("Tăiere");
+  releaseRead();
+  await finished;
+  await expect(page.locator(".detail-hero")).toContainText("Tăiere");
+  await page.unroute(orderUrl);
   expect(approver.errors).toEqual([]);
   await approver.context.close();
 

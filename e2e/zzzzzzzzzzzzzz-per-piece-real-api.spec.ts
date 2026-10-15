@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 
 // Per-piece rework against the real Operations API in Chromium (browser emulation of phone and desktop viewports, not a
-// real device). The business shape of Trendyol order 11709027615: one line, quantity 2, one defective curtain at
+// real device). The business shape of Trendyol order 11709027615: one line, commercial quantity 1, physical pieces 2, one defective curtain at
 // ironing. Only that curtain goes worker -> supervisor -> cutter receipt -> manager -> cutting, and replays 2..8 through
 // the Staff screens, one stage at a time; the healthy curtain stays at ironing.
 type Fixture = { password: string; supervision: { chief: string; tailor: string; cutter: string; manager: string }; cutting: { root: { username: string; password: string } } };
@@ -53,7 +53,7 @@ async function piecesAs(username: string, orderId: string) {
 
 let created = { order: "", number: "", qr: "" };
 test.beforeAll(async () => {
-  created = JSON.parse(execFileSync("php", [path.join(import.meta.dirname, "..", "operations-api", "tests", "e2e-piece-fixture.php")], { env: process.env, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] }));
+  created = JSON.parse(execFileSync("php", [path.join(import.meta.dirname, "..", "e2e", "piece-fixture.php")], { env: process.env, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] }));
 });
 
 test("one defective curtain of two: report, custody, receipt, approval, re-cut and the full replay 2-8; the healthy curtain stays at ironing", async ({ browser }) => {
@@ -149,6 +149,7 @@ test("one defective curtain of two: report, custody, receipt, approval, re-cut a
 
   // 16-17. Re-cut: the piece goes to stage 3, never straight back to ironing.
   await cutter.page.getByTestId("piece-complete").click();
+  await cutter.page.getByTestId("piece-outcomes").getByLabel("Rezultat", { exact: true }).selectOption("repair");
   await cutter.page.getByRole("dialog").getByRole("button", { name: "Confirmă" }).click();
   await expect(cutter.page.getByText("✓", { exact: false }).first()).toBeVisible();
   state = await piecesAs(sup.tailor, orderId);
@@ -179,7 +180,7 @@ test("one defective curtain of two: report, custody, receipt, approval, re-cut a
   // Desktop: the same order screen, no horizontal overflow.
   const desktop = await signIn(browser, sup.tailor, 1280, 900);
   await go(desktop.page, `/orders/${encodeURIComponent(orderId)}`);
-  await expect(desktop.page.getByTestId("pieces-panel")).toContainText("2 buc. în comandă · 1 cu comanda · 1 în refacere");
+  await expect(desktop.page.getByTestId("pieces-panel")).toContainText("2 buc. fizice · 1 cu comanda · 1 separate");
   expect(await overflow(desktop.page)).toBeLessThanOrEqual(0);
   await desktop.page.screenshot({ path: "e2e/.runtime/piece-desktop-1280.png", fullPage: true });
 
@@ -188,4 +189,60 @@ test("one defective curtain of two: report, custody, receipt, approval, re-cut a
   await root.ctx.dispose();
   await manager.ctx.dispose();
   for (const who of [tailor, chief, cutter, desktop]) await who.context.close();
+});
+
+test("replacement declares original disposition, refreshes the new physical label and rejects the retired QR", async ({ browser }) => {
+  test.setTimeout(120_000);
+  const created = JSON.parse(execFileSync("php", [path.join(import.meta.dirname, "piece-fixture.php")], { env: { ...process.env, ARASYA_E2E_PIECE_NUMBER: `76036${Math.floor(Math.random() * 9000 + 1000)}` }, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] }));
+  const root = await api(fixture.cutting.root.username, fixture.cutting.root.password);
+  const chiefId = (await (await root.ctx.get(`/management/employees?search=${sup.chief}`)).json()).items.find((e: { username: string }) => e.username === sup.chief).id;
+  const appointment = await post(root, "/management/organization/responsibilities", { responsibility: "tailoring_quality_supervisor", employeeId: chiefId }); expect(appointment.status()).toBe(201);
+  const assignment = (await appointment.json()).responsibilities.find((a: { responsibility: string; state: string }) => a.state === "active" && a.responsibility === "tailoring_quality_supervisor").id;
+  const tailor = await api(sup.tailor); const chief = await api(sup.chief); const cutter = await api(sup.cutter); const manager = await api(sup.manager);
+  let state = await (await tailor.ctx.get(`/orders/${encodeURIComponent(created.order)}`)).json(); const original = state.pieces.units.find((u: { index: number }) => u.index === 1);
+  const reported = await post(tailor, `/orders/${encodeURIComponent(created.order)}/fault-reports`, { expectedVersion: state.productionVersion, units: [original.id], reasonKey: "material-defect", comment: "Înlocuire verificată pentru scenariul sintetic." }); expect(reported.status(), await reported.text()).toBe(201);
+  let fault = await reported.json();
+  const accepted = await post(chief, `/production-exceptions/${fault.id}/review`, { expectedVersion: fault.version, decision: "accept", reasonKey: "material-defect", qrToken: created.qr }); expect(accepted.status()).toBe(200); fault = await accepted.json();
+  const oldLabel = (await (await chief.ctx.get(`/production-tracks/${fault.orderScope.trackId}/labels`)).json()).labels[0].payload;
+  const sent = await post(chief, `/production-exceptions/${fault.id}/return`, { expectedVersion: fault.version }); expect(sent.status()).toBe(200); fault = await sent.json();
+  const received = await post(cutter, `/production-exceptions/${fault.id}/acknowledge`, { expectedVersion: fault.version, confirmed: true, qrToken: oldLabel, responsibility: "accepted" }); expect(received.status()).toBe(200); fault = await received.json();
+  const approved = await post(manager, `/management/production-exceptions/${fault.id}/decision`, { expectedVersion: fault.version, decision: "approve", attribution: "none" }); expect(approved.status()).toBe(200);
+  const worker = await signIn(browser, sup.cutter, 320, 844); await go(worker.page, `/orders/${encodeURIComponent(created.order)}`);
+  const track = worker.page.getByTestId("piece-track"); await track.getByTestId("piece-labels-open").click(); await expect(track.getByTestId("piece-labels").getByRole("img")).toHaveCount(1);
+  const beforeLabel = await track.getByTestId("piece-labels").getByRole("img").getAttribute("src");
+  await track.getByTestId("piece-complete").click(); const dialog = worker.page.getByRole("dialog");
+  await dialog.getByLabel("Rezultat", { exact: true }).selectOption("replacement"); await expect(dialog.getByRole("button", { name: "Confirmă" })).toBeDisabled(); await dialog.getByLabel("Destinația originalului", { exact: true }).selectOption("quarantined");
+  await worker.page.screenshot({ path: "e2e/.runtime/staff-replacement-320.png", fullPage: true }); await dialog.getByRole("button", { name: "Confirmă" }).click(); await expect(dialog).toHaveCount(0);
+  await expect.poll(async () => track.getByTestId("piece-labels").getByRole("img").getAttribute("src")).not.toBe(beforeLabel);
+  state = await (await tailor.ctx.get(`/orders/${encodeURIComponent(created.order)}`)).json(); expect(state.pieces.total).toBe(2); const replacement = state.pieces.units.find((u: { replacementOf: string }) => u.replacementOf === original.id); expect(replacement).toBeTruthy();
+  const old = await (await chief.ctx.get(`/production-units/${original.id}/history`)).json(); expect(old.status).toBe("retired"); expect(old.replacedBy).toBe(replacement.id);
+  const obsolete = await cutter.ctx.post("/orders/resolve-qr", { data: { token: oldLabel }, headers: { "X-CSRF-Token": cutter.csrf } }); expect(obsolete.status()).toBe(410);
+  expect(worker.errors).toEqual([]);
+  const revoked = await post(root, `/management/organization/responsibilities/${assignment}/revoke`, { reason: "Scenariu înlocuire încheiat" }); expect(revoked.status()).toBe(200);
+  await Promise.all([worker.context.close(), root.ctx.dispose(), tailor.ctx.dispose(), chief.ctx.dispose(), cutter.ctx.dispose(), manager.ctx.dispose()]);
+});
+
+test("administrative recovery selects the original piece explicitly and keeps one detection credit for the same physical incident", async ({ browser }) => {
+  test.setTimeout(120_000);
+  const created = JSON.parse(execFileSync("php", [path.join(import.meta.dirname, "piece-fixture.php")], { env: { ...process.env, ARASYA_E2E_PIECE_NUMBER: `76136${Math.floor(Math.random() * 9000 + 1000)}` }, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] }));
+  const root = await api(fixture.cutting.root.username, fixture.cutting.root.password); const chief = await api(sup.chief); const tailor = await api(sup.tailor);
+  const employees = await (await root.ctx.get(`/management/employees?search=${sup.chief}`)).json(); const chiefId = employees.items.find((e: { username: string }) => e.username === sup.chief).id;
+  const appointment = await post(root, "/management/organization/responsibilities", { responsibility: "tailoring_quality_supervisor", employeeId: chiefId }); expect(appointment.status()).toBe(201);
+  const assignment = (await appointment.json()).responsibilities.find((a: { responsibility: string; state: string }) => a.state === "active" && a.responsibility === "tailoring_quality_supervisor").id;
+  const state = await (await tailor.ctx.get(`/orders/${encodeURIComponent(created.order)}`)).json(); const unit = state.pieces.units.find((p: { index: number }) => p.index === 1);
+  const report = await post(tailor, `/orders/${encodeURIComponent(created.order)}/fault-reports`, { expectedVersion: state.productionVersion, units: [unit.id], reasonKey: "material-defect", comment: "Aceeași problemă fizică în scenariul sintetic." }); expect(report.status()).toBe(201); let fault = await report.json(); const originalId = fault.id;
+  const accepted = await post(chief, `/production-exceptions/${fault.id}/review`, { expectedVersion: fault.version, decision: "accept", reasonKey: "material-defect", qrToken: created.qr }); expect(accepted.status()).toBe(200); fault = await accepted.json();
+  const tailorId = (await (await root.ctx.get(`/management/employees?search=${sup.tailor}`)).json()).items.find((e: { username: string }) => e.username === sup.tailor).id;
+  const cancelled = await post(root, `/management/production-exceptions/${fault.id}/cancel`, { expectedVersion: fault.version, reason: "Recuperare administrativă în test, nu o problemă nouă.", recipientEmployeeId: tailorId }); expect(cancelled.status()).toBe(200); fault = await cancelled.json();
+  const received = await post(tailor, `/production-exceptions/${fault.id}/receive`, { expectedVersion: fault.version, confirmed: true, qrToken: created.qr }); expect(received.status()).toBe(200); fault = await received.json(); expect(fault.status).toBe("cancelled");
+  const worker = await signIn(browser, sup.tailor, 360, 844); await go(worker.page, `/exceptions/${fault.id}`); await worker.page.getByRole("button", { name: "Reia aceeași problemă fizică" }).click();
+  await worker.page.getByRole("button", { name: "Raportează o problemă" }).click(); const dialog = worker.page.getByRole("dialog");
+  await expect(dialog.getByRole("checkbox", { name: "Bucata 2/2", exact: true })).toHaveCount(0); await expect(dialog.getByRole("checkbox", { name: "Bucata 1/2", exact: true })).not.toBeChecked();
+  await dialog.getByRole("checkbox", { name: "Bucata 1/2", exact: true }).check(); await dialog.getByLabel("Problema observată").selectOption("material-defect"); await dialog.getByLabel(/Descriere/).fill("Confirm aceeași problemă fizică; originalul este în audit.");
+  await expect(dialog.getByRole("button", { name: "Raportează șefului de croitorie" })).toBeDisabled(); await dialog.getByRole("checkbox", { name: /Confirm că este aceeași problemă fizică/ }).check(); await dialog.getByRole("button", { name: "Raportează șefului de croitorie" }).click();
+  await expect(worker.page.getByTestId("exception-status")).toHaveText("Așteaptă verificarea șefului de croitorie");
+  const newId = worker.page.url().split("/exceptions/")[1]; const next = await (await chief.ctx.get(`/production-exceptions/${newId}`)).json();
+  const verified = await post(chief, `/production-exceptions/${newId}/review`, { expectedVersion: next.version, decision: "accept", reasonKey: "material-defect", qrToken: created.qr }); expect(verified.status()).toBe(200);
+  const ledger = JSON.parse(execFileSync("php", ["-r", '$p=new PDO("mysql:host=".getenv("ARASYA_TEST_DB_HOST").";port=".getenv("ARASYA_TEST_DB_PORT").";dbname=".getenv("ARASYA_E2E_DB_NAME"),getenv("ARASYA_TEST_DB_USER"),getenv("ARASYA_TEST_DB_PASSWORD")); $s=$p->prepare("SELECT COUNT(*) FROM production_exception_links WHERE exception_uuid=? AND linked_exception_uuid=? AND link_type=?");$s->execute([$argv[1],$argv[2],"administrative_recovery"]);$link=(int)$s->fetchColumn();$s=$p->prepare("SELECT COUNT(*) FROM production_quality_events WHERE exception_uuid IN (?,?) AND event_type=?");$s->execute([$argv[1],$argv[2],"fault_detected"]);echo json_encode([$link,(int)$s->fetchColumn()]);', newId, originalId], { env: process.env, encoding: "utf8" })); expect(ledger).toEqual([1, 1]);
+  expect(worker.errors).toEqual([]); await post(root, `/management/organization/responsibilities/${assignment}/revoke`, { reason: "Scenariu recuperare încheiat" }); await Promise.all([worker.context.close(), root.ctx.dispose(), chief.ctx.dispose(), tailor.ctx.dispose()]);
 });

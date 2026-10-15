@@ -1,3 +1,4 @@
+import { physicalTR } from "./physical";
 import type { Catalog } from "../types";
 import { trErrors } from "./tr.errors";
 
@@ -6,6 +7,7 @@ import { trErrors } from "./tr.errors";
  * codes, sizes, colors, notes, numbers) is always shown exactly as stored.
  */
 export const tr: Catalog = {
+  ...physicalTR,
   ...trErrors,
 
   // ---- common
@@ -264,6 +266,12 @@ export const tr: Catalog = {
   "orderAction.blocked.production_authority_source": "Bu siparişin üretimi hâlâ YD SOFT'ta yönetiliyor. Üzerinde çalışmadan önce bir yönetici onu Arasya'ya almalı.",
   "orderAction.blocked.payment_gate_closed": "Sipariş üretime giremez. Gerekli kapora veya sipariş ödemesi onaylanmadı.",
   "orderAction.blocked.pieces_in_rework": "Sipariş henüz paketlenemez: bir parça yeniden işlemede. Tüm parçalar paketlemeye ulaşınca paketleme başlar.",
+  "orderAction.blocked.pieces_held": "Bir parça fiziksel olarak bekletilirken sipariş devam edemez. Bekletme kaldırılınca devam eder.",
+  "orderAction.blocked.pieces_awaiting_reunion": "Sipariş henüz paketlenemez: bir parça kendi rotasında ve siparişle henüz birleşmedi.",
+  "orderAction.blocked.plan_confirmation_required": "Bir satırın fiziksel planı yetkili bir kişi tarafından doğrulanıp onaylanmalı.",
+  "orderAction.blocked.pieces_incomplete": "Eksik parça var veya bir parçanın kimliği doğrulanmalı. Sipariş henüz devam edemez.",
+  "orderAction.blocked.route_incomplete": "Sipariş henüz paketlenemez: bir parça rotasındaki tüm aşamaları bitirmedi.",
+  "orderAction.blocked.defect_unresolved": "Sipariş henüz paketlenemez: bir hatanın giderildiği onaylanmadı.",
   "orderAction.orderNote": "Sipariş #{number}. {note}",
   "orderAction.qrCaptured": "QR etiketi okundu · sunucu aynı siparişi kontrol ediyor.",
   "orderAction.checkingWork": "Devam eden işlerin kontrol ediliyor…",
@@ -516,7 +524,7 @@ export const tr: Catalog = {
   "exc.lineQuantity": "{count} adet",
   "piece.label": "Parça {index}/{count}",
   "piece.title": "Parçalar",
-  "piece.summary": "Siparişte {total} adet · {onOrder} siparişle birlikte · {inRework} yeniden işlemede",
+  "piece.summary": "{total} fiziksel parça · {onOrder} siparişle birlikte · {inRework} ayrı",
   "piece.mixed": "Bu siparişin parçaları aynı aşamada değil. Siparişin aşaması yalnız birlikte ilerleyen parçalar içindir.",
   "piece.withOrder": "Siparişle birlikte",
   "piece.currentStage": "Mevcut aşama",
@@ -564,8 +572,8 @@ export const tr: Catalog = {
   "exc.pieces.title": "Etkilenen parçalar",
   "exc.pieces.lineAffected": "{quantity} adetten {affected}",
   "exc.scope.partial": "Yalnız bu talepteki parçalar kesime döner: {affected}. Siparişin geri kalanı ({healthy}) kendi aşamasında kalır, yeniden işlenmez.",
-  "ws.rework.title": "Bu aşamada yeniden işlenen parçalar",
-  "ws.rework.count": { one: "{count} parça yeniden işlemede", other: "{count} parça yeniden işlemede" },
+  "ws.rework.title": "Bu aşamadaki ayrı parçalar",
+  "ws.rework.count": { one: "{count} ayrı parça", other: "{count} ayrı parça" },
   "exc.tailoringEmployee": "terzihane çalışanı",
   "exc.affected": "Etkilenen ürünler",
   "exc.faulty": "Hatalı ürünler",
