@@ -1,6 +1,6 @@
 import { physicalText as pt } from "../i18n/physical";
 import { useEffect, useRef, useState } from "react";
-import { isAmbiguous, physicalError, planDecimal, type ManufacturingPlan, type PhysicalApi, type PhysicalHistory, type PlanConfirmation, type PlanLine, type ProductType } from "../domain/physical";
+import { isAmbiguous, physicalError, planDecimal, type ManufacturingPlan, type PhysicalApi, type PhysicalHistory, type PlanConfirmation, type PlanLine, type ProductType, type RouteEvidence, type RouteEvidenceInput } from "../domain/physical";
 
 /** Source evidence is displayed for human confirmation. It never sets a piece count or divides fabric. */
 export function ManufacturingPanel({ orderId, service, revision, newKey, stageName, onChanged }: {
@@ -11,6 +11,7 @@ export function ManufacturingPanel({ orderId, service, revision, newKey, stageNa
   const [refresh, setRefresh] = useState(0);
   const [editing, setEditing] = useState<PlanLine | null>(null);
   const [selected, setSelected] = useState<{ id: string; label: string } | null>(null);
+  const [verifying, setVerifying] = useState<{ id: string; label: string; evidence: RouteEvidence } | null>(null);
   useEffect(() => {
     const controller = new AbortController();
     service.plan(orderId, controller.signal).then(value => { setPlan(value); setError(null); }, caught => {
@@ -41,10 +42,18 @@ export function ManufacturingPanel({ orderId, service, revision, newKey, stageNa
       {line.plan.pieces.map(piece => <p key={piece.index}>{pt("physical.bucata")}{piece.index}/{line.plan.pieceCount}: {piece.width ?? pt("physical.necunoscut")} × {piece.height ?? pt("physical.necunoscut")} {piece.unit ?? ""} · {(piece.fabricMeters ?? piece.fabric) == null ? pt("physical.metraj_necunoscut") : `${piece.fabricMeters ?? piece.fabric} m`}</p>)}
       {line.pieces.map(piece => <PiecePosition key={piece.id} label={`${pt("physical.bucata")}${piece.index}/${piece.count}`} unitId={piece.id} service={service} revision={revision + refresh} stageName={stageName} />)}
       {line.pieces.length === 0 && <p>{pt("physical.identitati_fizice_neconfirmate_lista_goala_nu_inseamna")}</p>}
+      {line.pieces.map(piece => piece.routeEvidence && piece.routeEvidence.missingStages.length > 0 && <div key={`evidence-${piece.id}`} className="order-notice notice notice-warning" role="note" data-testid="route-evidence-missing">
+        <p>{pt("physical.evidence.missing", { piece: `${piece.index}/${piece.count}`, stages: piece.routeEvidence.missingStages.map(stageName).join(" · ") })}</p>
+        {piece.routeEvidence.uncertainStages.length > 0 && <p>{pt("physical.evidence.uncertain", { stages: piece.routeEvidence.uncertainStages.map(stageName).join(" · ") })}</p>}
+        {plan.canConfirm === true && service.reconcileRoute && <button className="button button-secondary" type="button" onClick={() => { setVerifying({ id: piece.id, label: `${piece.index}/${piece.count} · ${line.code ?? line.name}`, evidence: piece.routeEvidence as RouteEvidence }); setError(null); }}>{pt("physical.evidence.open")}</button>}
+      </div>)}
       <div className="button-row piece-actions">{line.pieces.map(piece => <button key={piece.id} className="button button-secondary" type="button" onClick={() => setSelected({ id: piece.id, label: pt("physical.bucata_20", { p0: piece.index, p1: piece.count, p2: line.code ?? line.name }) })}>{pt("physical.bucata")}{piece.index}/{piece.count}{pt("physical.pozitie_si_istoric")}</button>)}</div>
       {plan.canConfirm === true && <button className="button button-primary" type="button" onClick={() => { setEditing(line); setError(null); }}>{pt("physical.verifica_si_confirma_planul")}</button>}
     </article>)}
     {selected && <PhysicalHistoryView key={selected.id} service={service} unitId={selected.id} label={selected.label} stageName={stageName} />}
+    {verifying && service.reconcileRoute && <RouteEvidenceEditor key={verifying.id} label={verifying.label} evidence={verifying.evidence} stageName={stageName} newKey={newKey}
+      submit={(body, key) => (service.reconcileRoute as NonNullable<PhysicalApi["reconcileRoute"]>)(verifying.id, body, key)}
+      onCancel={() => { setVerifying(null); setRefresh(v => v + 1); onChanged(); }} onDone={value => { setPlan(value); setVerifying(null); onChanged(); }} />}
     {editing && <PlanEditor key={editing.itemId} line={editing} newKey={newKey} submit={(body, key) => service.confirmPlan(orderId, editing.itemId, body, key)}
       onCancel={() => { setEditing(null); setRefresh(v => v + 1); onChanged(); }} onDone={value => { setPlan(value); setEditing(null); onChanged(); }} />}
   </section>;
@@ -128,5 +137,50 @@ function PlanEditor({ line, newKey, submit, onCancel, onDone }: { line: PlanLine
     </fieldset>
     {error && <p role="alert">{error}</p>}
     <div className="confirmation-actions dialog-actions"><button type="button" className="button button-secondary" disabled={busy} onClick={onCancel}>{pt("physical.inchide_si_reincarca")}</button><button type="button" className="button button-primary" disabled={busy || !validCount || note.trim().length < 3} onClick={() => void run()}>{busy ? pt("physical.asteapta_confirmarea_serverului") : pending ? pt("physical.reincearca_aceeasi_cerere") : pt("physical.confirma_planul_verificat")}</button></div>
+  </div></div>;
+}
+
+type EvidenceChoice = "skip" | "physical" | "uncertain" | `activity:${string}`;
+/** Historical evidence is chosen stage by stage by the verifier. Nothing is preselected; an unverifiable stage stays blocked. */
+function RouteEvidenceEditor({ label, evidence, stageName, newKey, submit, onCancel, onDone }: { label: string; evidence: RouteEvidence; stageName: (id: string) => string; newKey: () => string;
+  submit: (body: RouteEvidenceInput, key: string) => Promise<ManufacturingPlan>; onCancel: () => void; onDone: (plan: ManufacturingPlan) => void }) {
+  const [choices, setChoices] = useState<Record<string, EvidenceChoice>>({});
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState<{ body: RouteEvidenceInput; key: string } | null>(null);
+  const lock = useRef(false);
+  const chosen = evidence.missingStages.filter(stage => (choices[stage] ?? "skip") !== "skip");
+  const ready = chosen.length > 0 && note.trim().length >= 10;
+  async function run() {
+    if (lock.current || !ready) return;
+    lock.current = true; setBusy(true); setError(null);
+    let command = pending;
+    try {
+      command ??= { key: newKey(), body: {
+        stages: chosen.filter(stage => choices[stage] !== "uncertain").map(stage => { const choice = choices[stage] as EvidenceChoice;
+          return choice === "physical" ? { stageId: stage, evidence: "physical_inspection" as const, activityEventId: null } : { stageId: stage, evidence: "order_activity" as const, activityEventId: choice.slice("activity:".length) }; }),
+        uncertainStages: chosen.filter(stage => choices[stage] === "uncertain"), note: note.trim() } };
+      setPending(command);
+      onDone(await submit(command.body, command.key));
+    } catch (caught) { setError(physicalError(caught)); if (!isAmbiguous(caught)) setPending(null); }
+    finally { lock.current = false; setBusy(false); }
+  }
+  return <div className="confirmation-layer" role="dialog" aria-modal="true" aria-labelledby="route-evidence-title"><div className="confirmation-card dialog-body" data-testid="route-evidence-editor">
+    <h2 id="route-evidence-title">{pt("physical.evidence.title", { piece: label })}</h2>
+    <p>{pt("physical.evidence.intro")}</p>
+    <fieldset disabled={busy || pending !== null}>
+      {evidence.missingStages.map(stage => <label key={stage}>{stageName(stage)}
+        <select value={choices[stage] ?? "skip"} onChange={e => setChoices(old => ({ ...old, [stage]: e.target.value as EvidenceChoice }))}>
+          <option value="skip">{pt("physical.evidence.skip")}</option>
+          {evidence.candidates.filter(c => c.stageId === stage).map(c => <option key={c.activityEventId} value={`activity:${c.activityEventId}`}>{pt("physical.evidence.activity", { employee: c.employee, at: new Date(c.at).toLocaleString("ro-RO") })}</option>)}
+          <option value="physical">{pt("physical.evidence.physical")}</option>
+          <option value="uncertain">{pt("physical.evidence.uncertainOption")}</option>
+        </select></label>)}
+      <label>{pt("physical.evidence.note")}<textarea maxLength={500} value={note} onChange={e => setNote(e.target.value)} /></label>
+    </fieldset>
+    {error && <p role="alert">{error}</p>}
+    <div className="confirmation-actions dialog-actions"><button type="button" className="button button-secondary" disabled={busy} onClick={onCancel}>{pt("physical.inchide_si_reincarca")}</button>
+      <button type="button" className="button button-primary" disabled={busy || !ready} onClick={() => void run()}>{busy ? pt("physical.asteapta_confirmarea_serverului") : pending ? pt("physical.reincearca_aceeasi_cerere") : pt("physical.evidence.submit")}</button></div>
   </div></div>;
 }

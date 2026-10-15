@@ -197,13 +197,49 @@ Every materializing transaction writes a `production.manifest.backfilled` CLI au
 Read-only route previews cannot materialize missing identities.
 Confirmed historical plans are not evidence of earlier physical completions. Missing current-cycle manufacturing evidence
 blocks packing with `ORDER_ROUTE_INCOMPLETE`, including after confirmation at packing. No API synthesizes those missing
-completions or automatically reconciles a used plan with changed source facts. Such orders require a separately reviewed
-reconciliation process based on actual physical evidence. Release review must choose an auditable verified cohort.
+completions or automatically reconciles a used plan with changed source facts. Release review must choose an auditable
+verified cohort.
+
+### Historical route evidence (migration 030, API 2.33.0)
+
+A plan cannot be confirmed while the order has an open order-level quality exception (`PLAN_BLOCKED_BY_EXCEPTION`):
+during supervisor custody the order sits at the supervisor's stage, so pieces materialized then would start their ledger
+there and stages the order already passed could never be verified. Confirm after the receipt returns the order to its
+stage (the EX-000001 sequence).
+
+A piece materialized after cutting (its plan was confirmed while the order was already past stage 2) has a per-piece
+ledger that starts at that later stage. The applicable stages before it can only be satisfied by verified evidence:
+
+`POST /production-units/{unitId}/route-evidence` (CSRF, `Idempotency-Key`), body
+`{ stages: [{ stageId, evidence: "order_activity" | "physical_inspection", activityEventId }], uncertainStages: [...], note }`.
+
+- Only the appointed tailoring quality supervisor of the source (Staff) or an operations approver (Dashboard) may record it
+  (`RECONCILIATION_NOT_ALLOWED`), the same authority as a plan confirmation.
+- Only applicable stages of the piece's product type, from cutting up to (excluding) its ledger start, without a ledger
+  completion, can be named (`RECONCILIATION_STAGE_INVALID`); a PERDEA piece never receives evidence for stages 6-7.
+- `order_activity` must reference the order-level `stage_completed` of exactly that stage, recorded before the piece's
+  ledger started (`RECONCILIATION_EVIDENCE_INVALID`); `physical_inspection` records that the verifier inspected the piece.
+- A stage is reconciled once per piece and cycle (`RECONCILIATION_STAGE_RECORDED`). Stages declared `uncertainStages` are
+  recorded and keep packing blocked until evidence is recorded or the physical state is verified.
+- The note (10-500 characters) describes the evidence reviewed. Every session writes `production_route_reconciliations`
+  (verifier, via, ledger start, supported and uncertain stages, time) and `production.route.reconciled` in the IAM audit.
+- Nothing else changes: no `production_unit_stage_log` row, no `order_activity_events` row, no stage, owner or version,
+  no employee credit. The original history stays untouched; PieceGate accepts a pre-ledger stage only with such evidence.
+
+The manufacturing-plan view returns `routeEvidence` per piece (ledger start, pre-ledger stages, reconciled, missing and
+uncertain stages, and the order-level completions recorded before the ledger as candidates). Staff shows the gap per piece
+and, for an authorized verifier, a stage-by-stage form without any preselection.
+
+`partial-rework.php route-audit [--details=1]` is a read-only classification of every open order (database-enforced
+read-only transaction, works before and after 028/029/030): `unresolved_exception`, `conflicting_data`,
+`requires_stage_evidence` (past cutting; `evidenceAvailable` and `missingEvidence` report the order-level completions a
+verifier can review), `requires_plan_confirmation`, `safe_identity_materialization`.
 
 `partial-rework.php cohort-add|cohort-remove --feature=partial_rework|piece_routing --order=<global ID> --operator=<name> --reason=<text>`
 records pilot membership. Global enable/disable records feature events. No order number is hardcoded. Do not run these live in ROI-35.
 
-The current release's `bin/check-rollback.php <targetVersion>` is read-only and refuses an API below 2.32.0 while per-piece state,
+The current release's `bin/check-rollback.php <targetVersion>` is read-only and refuses an API below 2.32.0 while per-piece state
+(including 030 route evidence; a recorded 030 must match its file checksum),
 recorded plans/routes/replacements, material/custody evidence, enabled features or active cohorts exist. Missing tables,
 an absent or mismatched 029 checksum and unknown database state refuse rollback.
 `cpanel-rollback-api.sh` invokes the CURRENT release guard before changing either pointer to an older target, including dry-run.
@@ -219,13 +255,19 @@ Staff/Dashboard PRs cited here are engineering inputs, not proof of their deploy
 `mysql-piece-manifest-routing-integration.php` tests committed HTTP/CLI state: quantity1/pieces2, unequal/unknown fabric, source
 resync and concurrent changes, normal mixed routes, healthy independence, receipt before approval, repair/replacement/obsolete QR,
 current-cycle correction for track and whole carrier, holds/reunion, packing, races, failed-command rollback, additive rerun,
-uncertain backfill and rollback guard. `mysql-per-piece-rework-integration.php` keeps existing PR67 regressions.
+uncertain backfill and rollback guard, historical route evidence (M12) and employee KPI separation (M13).
+`mysql-per-piece-rework-integration.php` keeps existing PR67 regressions.
 Run with an isolated database whose name includes `test`; do not run against live incident data.
 
 Final verification toolchain: MariaDB 10.11.19 and MySQL 8.4.9, PHP 8.2.32. Production baseline engine is MariaDB 10.11.19;
 these are isolated synthetic test databases, not a live migration or production backup restore. CI and exact test counts
 belong in the task report after the final commit is pushed.
 
-Existing employee KPI reports do not count track work; per-piece/route audit never creates phantom performance credit.
+Employee KPI (API 2.33.0): `stageCompletions` remains the commercial order-level completions only, so rework is never
+counted as new commercial production. `trackStageCompletions` (stage => `rework` | `route` counts of track completions)
+and `pieceWork` (`order`, `route`, `rework` physical pieces completed, with `byStage`) report independent track and piece
+work; departments sum them. A stage recorded as not applicable has no employee and gives nobody credit. Fault attribution
+(`faultLines`) and detection (`detectedLines`) are unchanged: receiving or repairing a defect adds no fault to the cutter.
+Dashboard display of the two new fields is a separate follow-up; the API exposes them.
 Raw marketplace metadata cannot establish physical count. Physical worker/supervisor confirmation and real independent management
 decision remain necessary for EX-000001. No live identity, responsible piece, physical position or manager decision is fabricated.

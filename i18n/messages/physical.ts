@@ -130,7 +130,23 @@ export const physicalMessages = {
   "physical.error.sourceChanged": "Datele sursei sau planul s-au schimbat. Reîncarcă și verifică înainte de confirmare.",
   "physical.recovery.open": "Reia aceeași problemă fizică",
   "physical.recovery.confirm": "Confirm că este aceeași problemă fizică din {number}, nu un defect nou. Selectez explicit bucățile originale afectate.",
-  "physical.recovery.unavailable": "Contextul incidentului original nu este confirmat. Reîncarcă înainte de a raporta aceeași problemă."
+  "physical.recovery.unavailable": "Contextul incidentului original nu este confirmat. Reîncarcă înainte de a raporta aceeași problemă.",
+  "physical.evidence.missing": "Bucata {piece}: lipsesc dovezi verificate pentru etapele: {stages}. Ambalarea rămâne blocată.",
+  "physical.evidence.uncertain": "Declarate incerte: {stages}.",
+  "physical.evidence.open": "Verifică dovezile istorice",
+  "physical.evidence.title": "Dovezi istorice pentru bucata {piece}",
+  "physical.evidence.intro": "Bucata a fost identificată după croire. Alege pentru fiecare etapă numai dovada pe care ai verificat-o. Nimic nu se completează automat și nimeni nu primește puncte de producție.",
+  "physical.evidence.skip": "Nu verific acum",
+  "physical.evidence.activity": "Finalizare înregistrată: {employee} · {at}",
+  "physical.evidence.physical": "Inspecție fizică a bucății",
+  "physical.evidence.uncertainOption": "Incert — rămâne blocată",
+  "physical.evidence.note": "Ce dovezi ai verificat (minim 10 caractere)",
+  "physical.evidence.submit": "Înregistrează dovezile verificate",
+  "physical.error.reconciliationStage": "Etapa aleasă nu poate primi dovezi istorice pentru această bucată. Reîncarcă planul.",
+  "physical.error.reconciliationEvidence": "Evenimentul ales nu dovedește această etapă pentru această bucată.",
+  "physical.error.reconciliationRecorded": "Etapa are deja dovezi verificate. Reîncarcă starea salvată.",
+  "physical.error.reconciliationUnavailable": "Verificarea dovezilor istorice nu este încă disponibilă pe server.",
+  "physical.error.planBlockedByException": "Comanda are o problemă de calitate deschisă. Confirmă planul după ce comanda revine la etapa ei (primirea confirmată)."
 } as const;
 
 export const physicalEN = {
@@ -264,7 +280,23 @@ export const physicalEN = {
   "physical.error.sourceChanged": "Source facts or the plan changed. Reload and verify before confirming.",
   "physical.recovery.open": "Recover the same physical incident",
   "physical.recovery.confirm": "I confirm this is the same physical incident as {number}, not a new defect. I explicitly select the original affected pieces.",
-  "physical.recovery.unavailable": "Original incident context is unconfirmed. Reload before reporting the same incident."
+  "physical.recovery.unavailable": "Original incident context is unconfirmed. Reload before reporting the same incident.",
+  "physical.evidence.missing": "Piece {piece}: verified evidence is missing for the stages: {stages}. Packing stays blocked.",
+  "physical.evidence.uncertain": "Declared uncertain: {stages}.",
+  "physical.evidence.open": "Verify historical evidence",
+  "physical.evidence.title": "Historical evidence for piece {piece}",
+  "physical.evidence.intro": "This piece was identified after cutting. For each stage choose only the evidence you verified. Nothing is completed automatically and nobody receives production credit.",
+  "physical.evidence.skip": "Not verified now",
+  "physical.evidence.activity": "Recorded completion: {employee} · {at}",
+  "physical.evidence.physical": "Physical inspection of the piece",
+  "physical.evidence.uncertainOption": "Uncertain — stays blocked",
+  "physical.evidence.note": "Which evidence you verified (at least 10 characters)",
+  "physical.evidence.submit": "Record the verified evidence",
+  "physical.error.reconciliationStage": "The chosen stage cannot receive historical evidence for this piece. Reload the plan.",
+  "physical.error.reconciliationEvidence": "The chosen event does not prove this stage for this piece.",
+  "physical.error.reconciliationRecorded": "The stage already has verified evidence. Reload the saved state.",
+  "physical.error.reconciliationUnavailable": "Historical evidence verification is not available on the server yet.",
+  "physical.error.planBlockedByException": "The order has an open quality problem. Confirm the plan after the order is back at its stage (receipt confirmed)."
 } as const;
 
 export const physicalTR = {
@@ -398,7 +430,23 @@ export const physicalTR = {
   "physical.error.sourceChanged": "Kaynak bilgileri veya plan değişti. Onaylamadan önce yenile ve doğrula.",
   "physical.recovery.open": "Aynı fiziksel olayın kurtarmasını başlat",
   "physical.recovery.confirm": "Bunun {number} ile aynı fiziksel olay olduğunu, yeni kusur olmadığını onaylıyorum. Etkilenen asıl parçaları açıkça seçiyorum.",
-  "physical.recovery.unavailable": "Asıl olay bilgisi doğrulanmadı. Aynı olayı raporlamadan önce yenile."
+  "physical.recovery.unavailable": "Asıl olay bilgisi doğrulanmadı. Aynı olayı raporlamadan önce yenile.",
+  "physical.evidence.missing": "Parça {piece}: şu aşamalar için doğrulanmış kanıt eksik: {stages}. Paketleme bloke kalır.",
+  "physical.evidence.uncertain": "Belirsiz olarak bildirildi: {stages}.",
+  "physical.evidence.open": "Geçmiş kanıtları doğrula",
+  "physical.evidence.title": "Parça {piece} için geçmiş kanıtlar",
+  "physical.evidence.intro": "Bu parça kesimden sonra tanımlandı. Her aşama için yalnız doğruladığın kanıtı seç. Hiçbir şey otomatik tamamlanmaz, kimse üretim puanı almaz.",
+  "physical.evidence.skip": "Şimdi doğrulamıyorum",
+  "physical.evidence.activity": "Kayıtlı tamamlama: {employee} · {at}",
+  "physical.evidence.physical": "Parçanın fiziksel kontrolü",
+  "physical.evidence.uncertainOption": "Belirsiz — bloke kalır",
+  "physical.evidence.note": "Hangi kanıtları doğruladın (en az 10 karakter)",
+  "physical.evidence.submit": "Doğrulanan kanıtları kaydet",
+  "physical.error.reconciliationStage": "Seçilen aşama bu parça için geçmiş kanıt alamaz. Planı yenile.",
+  "physical.error.reconciliationEvidence": "Seçilen olay bu parça için bu aşamayı kanıtlamaz.",
+  "physical.error.reconciliationRecorded": "Aşamanın zaten doğrulanmış kanıtı var. Kayıtlı durumu yenile.",
+  "physical.error.reconciliationUnavailable": "Geçmiş kanıt doğrulaması sunucuda henüz yok.",
+  "physical.error.planBlockedByException": "Siparişte açık bir kalite sorunu var. Sipariş kendi aşamasına döndükten sonra (teslim onaylandıktan sonra) planı onayla."
 } as const;
 
 export const physicalSI = {
@@ -532,5 +580,21 @@ export const physicalSI = {
   "physical.error.sourceChanged": "මූලාශ්‍ර තොරතුරු හෝ සැලැස්ම වෙනස් විය. තහවුරු කිරීමට පෙර පූරණය කර පරීක්ෂා කරන්න.",
   "physical.recovery.open": "එම භෞතික සිදුවීම නැවත සකසන්න",
   "physical.recovery.confirm": "{number} හි එම භෞතික සිදුවීම බවත් නව දෝෂයක් නොවන බවත් තහවුරු කරමි. මුලින් බලපෑ කැබලි පැහැදිලිව තෝරමි.",
-  "physical.recovery.unavailable": "මුල් සිදුවීමේ තොරතුරු තහවුරු කර නැත. එම සිදුවීම වාර්තා කිරීමට පෙර නැවත පූරණය කරන්න."
+  "physical.recovery.unavailable": "මුල් සිදුවීමේ තොරතුරු තහවුරු කර නැත. එම සිදුවීම වාර්තා කිරීමට පෙර නැවත පූරණය කරන්න.",
+  "physical.evidence.missing": "කැබැල්ල {piece}: මෙම අදියර සඳහා තහවුරු කළ සාක්ෂි නැත: {stages}. ඇසුරුම් කිරීම අවහිර වේ.",
+  "physical.evidence.uncertain": "අවිනිශ්චිත ලෙස ප්‍රකාශිත: {stages}.",
+  "physical.evidence.open": "ඓතිහාසික සාක්ෂි තහවුරු කරන්න",
+  "physical.evidence.title": "කැබැල්ල {piece} සඳහා ඓතිහාසික සාක්ෂි",
+  "physical.evidence.intro": "මෙම කැබැල්ල කැපීමෙන් පසු හඳුනා ගන්නා ලදී. සෑම අදියරකටම ඔබ තහවුරු කළ සාක්ෂිය පමණක් තෝරන්න. කිසිවක් ස්වයංක්‍රීයව සම්පූර්ණ නොවේ.",
+  "physical.evidence.skip": "දැන් තහවුරු නොකරමි",
+  "physical.evidence.activity": "වාර්තාගත සම්පූර්ණ කිරීම: {employee} · {at}",
+  "physical.evidence.physical": "කැබැල්ලේ භෞතික පරීක්ෂාව",
+  "physical.evidence.uncertainOption": "අවිනිශ්චිත — අවහිරව පවතී",
+  "physical.evidence.note": "ඔබ තහවුරු කළ සාක්ෂි (අවම අකුරු 10)",
+  "physical.evidence.submit": "තහවුරු කළ සාක්ෂි සටහන් කරන්න",
+  "physical.error.reconciliationStage": "තෝරාගත් අදියරට මෙම කැබැල්ල සඳහා ඓතිහාසික සාක්ෂි ලබා දිය නොහැක. සැලැස්ම නැවත පූරණය කරන්න.",
+  "physical.error.reconciliationEvidence": "තෝරාගත් සිදුවීම මෙම කැබැල්ල සඳහා මෙම අදියර ඔප්පු නොකරයි.",
+  "physical.error.reconciliationRecorded": "අදියරට දැනටමත් තහවුරු කළ සාක්ෂි ඇත. සුරකින ලද තත්ත්වය නැවත පූරණය කරන්න.",
+  "physical.error.reconciliationUnavailable": "ඓතිහාසික සාක්ෂි තහවුරු කිරීම සේවාදායකයේ තවම නැත.",
+  "physical.error.planBlockedByException": "ඇණවුමේ විවෘත ගුණාත්මක ගැටලුවක් ඇත. ඇණවුම එහි අදියරට ආපසු පැමිණි පසු සැලැස්ම තහවුරු කරන්න."
 } as const;

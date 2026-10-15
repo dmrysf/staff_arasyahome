@@ -780,7 +780,7 @@ function createRequest(apiBaseUrl: string, options: ProductionServicesOptions, o
             : response.status === 503
               ? "SERVICE_UNAVAILABLE"
               : "SERVER_ERROR";
-    const error = new StaffServiceError(backendErrorCodes[backendCode] ?? fallback, undefined, /^(PLAN_|SOURCE_PLAN_|PIECE_OUTCOME|UNIT_RETIRED|ORDER_PIECES_|ORDER_ROUTE_|CUSTODY_|MATERIAL_|EXACT_PIECES_|CUTTING_NOT_)/.test(backendCode) || /\/manufacturing-plan|^\/production-units/.test(path) ? { ...details, backendCode, httpStatus: response.status } : details);
+    const error = new StaffServiceError(backendErrorCodes[backendCode] ?? fallback, undefined, /^(PLAN_|SOURCE_PLAN_|PIECE_OUTCOME|UNIT_RETIRED|ORDER_PIECES_|ORDER_ROUTE_|CUSTODY_|MATERIAL_|EXACT_PIECES_|CUTTING_NOT_|RECONCILIATION_)/.test(backendCode) || /\/manufacturing-plan|^\/production-units/.test(path) ? { ...details, backendCode, httpStatus: response.status } : details);
     // Access changed centrally (temporary password, application access removed): the app re-reads the session.
     if (["PASSWORD_CHANGE_REQUIRED", "APPLICATION_ACCESS_DENIED"].includes(error.code) && path !== "/auth/session" && path !== "/auth/password") onSessionExpired(error);
     if (["SESSION_EXPIRED", "NO_SESSION", "ACCOUNT_INACTIVE"].includes(error.code) && path !== "/auth/login" && path !== "/auth/session") {
@@ -1020,6 +1020,7 @@ export function createProductionServices(apiBaseUrl: string, options: Production
     plan: (id, signal) => http.request(`/orders/${encodeURIComponent(id)}/manufacturing-plan`, { signal }, mapManufacturingPlan),
     confirmPlan: (id, lineId, input, key) => http.request(`/orders/${encodeURIComponent(id)}/manufacturing-plan/lines/${encodeURIComponent(lineId)}/confirm`, { method: "POST", body: JSON.stringify(input), headers: { "Idempotency-Key": key } }, mapManufacturingPlan),
     history: (id, signal) => http.request(`/production-units/${encodeURIComponent(id)}/history`, { signal }, mapPhysicalHistory),
+    reconcileRoute: (id, input, key) => http.request(`/production-units/${encodeURIComponent(id)}/route-evidence`, { method: "POST", body: JSON.stringify(input), headers: { "Idempotency-Key": key } }, mapManufacturingPlan),
     locations: signal => http.request("/production-locations", { signal }, value => value as { locations: { id: string; label: string }[] }),
     custody: (id, input, key) => http.request(`/production-units/${encodeURIComponent(id)}/custody`, { method: "POST", body: JSON.stringify(input), headers: { "Idempotency-Key": key } }),
     reunite: (input, key) => http.request("/production-units/reunite", { method: "POST", body: JSON.stringify(input), headers: { "Idempotency-Key": key } }),

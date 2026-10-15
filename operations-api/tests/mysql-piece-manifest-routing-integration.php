@@ -20,6 +20,9 @@ declare(strict_types=1);
 //   M8  source re-sync: no duplicate pieces, stable identities, a quantity change requires a new confirmation
 //   M9  concurrency: two confirmations of the same plan revision, two material records of the same piece
 //   M10 migration re-run, rollback guard and disabling the features with pieces still on tracks
+//   M12 historical order confirmed after cutting: ORDER_ROUTE_INCOMPLETE until verified per-piece evidence (030),
+//       nothing synthesized, uncertain stages keep blocking, route-audit classes, 030 rollback guard and re-run
+//   M13 employee KPI: track and piece work reported apart from commercial completions, no credit for not applicable
 
 use Arasya\Operations\Application\Container;
 use Arasya\Operations\Database\Connection;
@@ -524,6 +527,9 @@ $ok($review($iuliana, $x7['id'], ['decision' => 'accept', 'reasonKey' => 'materi
 $check((int) $one("SELECT COUNT(*) FROM production_quality_events WHERE order_uuid = ? AND event_type = 'fault_detected'", [$m7['uuid']]) === 1, 'detection credited once');
 $ok($sendReturn($iuliana, $x7['id']), 'return to the cutter');
 $ok($restore($iuliana, $x7['id'], $m7['qr'], 'Retrimis din greșeală', ['cancelReturn' => true]), 'the return is withdrawn (the incident)');
+$beforeEarly7 = $state($m7);
+$error($confirm($iuliana, $m7, $m7['items'][0], ['expectedRevision' => 0, 'productType' => 'draperii', 'pieceCount' => 2, 'note' => 'Prea devreme']), 409, 'PLAN_BLOCKED_BY_EXCEPTION', 'EX-000001: no plan while the order waits at the supervisor stage (its ledger would start there)');
+$check($state($m7) === $beforeEarly7 && (int) $one('SELECT COUNT(*) FROM production_work_units WHERE order_uuid = ?', [$m7['uuid']]) === 0, 'EX-000001: the refused confirmation materializes nothing');
 $ok($receive($kadyrova, $x7['id'], $m7['qr']), 'the worker receives the order back');
 $check($one('SELECT status FROM production_exceptions WHERE exception_uuid = ?', [$x7['id']]) === 'restored' && $state($m7)['stage'] === 'ironing', 'the earlier request is preserved as restored');
 $ok($confirm($iuliana, $m7, $m7['items'][0], ['expectedRevision' => 0, 'productType' => 'draperii', 'pieceCount' => 2, 'note' => 'Două bucăți, confirmat fizic']), 'the supervisor confirms the two physical pieces');
@@ -698,5 +704,99 @@ try {
 } finally {
     $pdo->exec('RENAME TABLE roi35_hidden_custody TO production_unit_custody');
 }
+
+// ==== M12. Historical order: plan confirmed after cutting, verified evidence, nothing synthesized =================
+// Flags off, no plan: the order went through cutting and stages 3-7 at order level only (the legacy behaviour).
+$m12 = $trendyol('N', [$line('Draperie istorică', 'D-120', 1, 5.0, 'drapery'), $line('Perdea istorică', 'P-120', 1, 2.0, 'curtain')]);
+$cut($murat, $m12);
+$bring($m12, 'ironing', $staffBy);
+$eventOf12 = array_column($rows("SELECT event_id, from_stage_id FROM order_activity_events WHERE order_uuid = ? AND action = 'stage_completed' ORDER BY production_version_after", [$m12['uuid']]), 'event_id', 'from_stage_id');
+$ok($confirm($iuliana, $m12, $m12['items'][0], ['expectedRevision' => 0, 'productType' => 'draperii', 'pieceCount' => 2, 'note' => 'Două bucăți, confirmat la călcare']), 'J. draperii plan confirmed at stage 8 of a historical order');
+$ok($confirm($iuliana, $m12, $m12['items'][1], ['expectedRevision' => 0, 'productType' => 'perdea', 'pieceCount' => 1, 'note' => 'O bucată, confirmat la călcare']), 'J. perdea plan confirmed at stage 8');
+$lines12 = $planOf($iuliana, $m12)['lines'];
+[$h1, $h2] = [$lines12[0]['pieces'][0], $lines12[0]['pieces'][1]];
+$hp = $lines12[1]['pieces'][0];
+$drapPre = ['material-preparation', 'workshop-receiving', 'labeling', 'material-straightening', 'bottom-hem', 'side-hem'];
+$check($h1['routeEvidence']['ledgerStartStageId'] === 'ironing' && $h1['routeEvidence']['missingStages'] === $drapPre && count($h1['routeEvidence']['candidates']) === 6, 'J. the plan view shows the pre-ledger gap and the order-level completions as candidates: ' . json_encode($h1['routeEvidence']));
+$check($hp['routeEvidence']['missingStages'] === ['material-preparation', 'workshop-receiving', 'labeling', 'material-straightening'], 'J. a PERDEA piece needs no evidence for stages 6-7');
+$bring($m12, 'packing', $staffBy);
+$error($post($finisher, $m12['path'] . '/claim', ['expectedVersion' => (int) $state($m12)['version']]), 409, 'ORDER_ROUTE_INCOMPLETE', 'J. a historical order without per-piece evidence cannot be packed');
+$logBefore12 = (int) $one('SELECT COUNT(*) FROM production_unit_stage_log WHERE order_uuid = ?', [$m12['uuid']]);
+$activityBefore12 = (int) $one('SELECT COUNT(*) FROM order_activity_events WHERE order_uuid = ?', [$m12['uuid']]);
+$stateBefore12 = $state($m12);
+$fromActivity = static fn (array $stages): array => array_map(static fn (string $stage): array => ['stageId' => $stage, 'evidence' => 'order_activity', 'activityEventId' => $eventOf12[$stage]], $stages);
+$reconcile = static fn (array $who, string $unit, array $body, ?string $idem = null, bool $dashboard = false): array => $dashboard ? $dash($who, 'POST', "/production-units/{$unit}/route-evidence", $body, $idem) : $post($who, "/production-units/{$unit}/route-evidence", $body, $idem);
+$error($reconcile($finisher, $h1['id'], ['stages' => $fromActivity(['material-preparation']), 'note' => 'Am văzut fișa de croială']), 403, 'RECONCILIATION_NOT_ALLOWED', 'J. a stage worker cannot verify historical evidence');
+$error($reconcile($iuliana, $h1['id'], ['stages' => [['stageId' => 'ironing', 'evidence' => 'physical_inspection']], 'note' => 'Călcat, verificat fizic']), 422, 'RECONCILIATION_STAGE_INVALID', 'J. the ledger start stage itself cannot be reconciled');
+$error($reconcile($iuliana, $h1['id'], ['stages' => [['stageId' => 'height', 'evidence' => 'physical_inspection']], 'note' => 'Etapă ulterioară, verificat']), 422, 'RECONCILIATION_STAGE_INVALID', 'J. a stage after the ledger start cannot be reconciled');
+$error($reconcile($iuliana, $hp['id'], ['stages' => [['stageId' => 'bottom-hem', 'evidence' => 'physical_inspection']], 'note' => 'Tiv de jos verificat fizic']), 422, 'RECONCILIATION_STAGE_INVALID', 'J. a stage not applicable to PERDEA is never reconciled as work');
+$error($reconcile($iuliana, $h1['id'], ['stages' => [['stageId' => 'material-preparation', 'evidence' => 'order_activity', 'activityEventId' => $eventOf12['labeling']]], 'note' => 'Eveniment greșit ales']), 422, 'RECONCILIATION_EVIDENCE_INVALID', 'J. evidence must be the completion of that very stage');
+$error($reconcile($iuliana, $h1['id'], ['stages' => $fromActivity(['material-preparation']), 'note' => 'scurt']), 422, 'COMMENT_REQUIRED', 'J. the reviewed evidence is described');
+$error($reconcile($iuliana, $h1['id'], ['stages' => [['stageId' => 'labeling', 'evidence' => 'order_activity']], 'note' => 'Fără eveniment de referință']), 400, 'INVALID_REQUEST', 'J. order_activity evidence names its event');
+$k12 = $key('reconcile');
+$r12 = $ok($reconcile($iuliana, $h1['id'], ['stages' => $fromActivity($drapPre), 'note' => 'Fișa de producție și finalizările din sistem verificate pentru bucata 1'], $k12), 'J. the supervisor records verified evidence for piece 1', 201);
+$check($ok($reconcile($iuliana, $h1['id'], ['stages' => $fromActivity($drapPre), 'note' => 'Fișa de producție și finalizările din sistem verificate pentru bucata 1'], $k12), 'replay', 201) === $r12, 'J. a retried verification (lost answer) replays the committed result');
+$error($reconcile($iuliana, $h1['id'], ['stages' => $fromActivity(['labeling']), 'note' => 'Altă cerere cu aceeași cheie'], $k12), 409, 'IDEMPOTENCY_CONFLICT', 'J. a changed request never reuses an old idempotency key');
+$check((int) $one('SELECT COUNT(*) FROM production_route_reconciliations WHERE unit_uuid = ?', [$h1['id']]) === 1, 'J. one verification session for the retried command');
+$ok($reconcile($iuliana, $h2['id'], ['stages' => $fromActivity(['material-preparation', 'workshop-receiving', 'material-straightening', 'bottom-hem', 'side-hem']), 'uncertainStages' => ['labeling'], 'note' => 'Eticheta bucății 2 nu poate fi confirmată din documente']), 'J. piece 2: one stage stays uncertain', 201);
+$ok($reconcile($iuliana, $hp['id'], ['stages' => $fromActivity(['material-preparation', 'workshop-receiving', 'labeling', 'material-straightening']), 'note' => 'Perdea verificată fizic și în istoricul comenzii']), 'J. the PERDEA piece is verified on its own route', 201);
+$p12after = $planOf($iuliana, $m12)['lines'][0]['pieces'][1]['routeEvidence'];
+$check($p12after['missingStages'] === ['labeling'] && $p12after['uncertainStages'] === ['labeling'], 'J. the uncertain stage is visible and still missing: ' . json_encode($p12after));
+$error($post($finisher, $m12['path'] . '/claim', ['expectedVersion' => (int) $state($m12)['version']]), 409, 'ORDER_ROUTE_INCOMPLETE', 'J. an uncertain stage keeps the order blocked');
+$error($reconcile($iuliana, $h2['id'], ['stages' => $fromActivity(['material-preparation']), 'note' => 'A doua oară aceeași etapă']), 409, 'RECONCILIATION_STAGE_RECORDED', 'J. a stage is reconciled once per piece and cycle');
+$ok($reconcile($denisa, $h2['id'], ['stages' => [['stageId' => 'labeling', 'evidence' => 'physical_inspection', 'activityEventId' => null]], 'note' => 'Eticheta verificată fizic pe bucata 2 de manager'], null, true), 'J. the operations manager verifies the uncertain stage physically (Dashboard)', 201);
+$check((int) $one('SELECT COUNT(*) FROM production_unit_stage_log WHERE order_uuid = ?', [$m12['uuid']]) === $logBefore12 && (int) $one('SELECT COUNT(*) FROM order_activity_events WHERE order_uuid = ?', [$m12['uuid']]) === $activityBefore12, 'J. no completion is synthesized and the original history is unchanged');
+$check($state($m12) === $stateBefore12, 'J. verification moves nothing');
+$check((int) $one("SELECT COUNT(*) FROM iam_audit_events WHERE action = 'production.route.reconciled' AND target_id = ?", [$m12['id']]) === 4, 'J. every verification is audited with its verifier');
+$audit12 = $cli('partial-rework.php', 'route-audit', '--details=1');
+$byOrder12 = array_column($audit12['json']['orders'] ?? [], null, 'order');
+$check($audit12['code'] === 0 && ($byOrder12[$m12['id']]['class'] ?? null) === 'requires_stage_evidence' && $byOrder12[$m12['id']]['evidenceAvailable'] === true, 'J. route-audit classifies the historical order: ' . substr($audit12['out'] . $audit12['err'], 0, 300));
+$check(($byOrder12[$m7['id']]['class'] ?? null) === 'unresolved_exception', 'J. route-audit reports the order with an open exception first');
+$m12b = $trendyol('O', [$line('Draperie nouă', 'D-121', 1, 3.0, 'drapery')]);
+$check(array_column(json_decode($cli('partial-rework.php', 'route-audit', '--details=1')['out'], true)['orders'], 'class', 'order')[$m12b['id']] === 'requires_plan_confirmation', 'J. a new order before cutting needs only its plan');
+$ok($confirm($iuliana, $m12b, $m12b['items'][0], ['expectedRevision' => 0, 'productType' => 'draperii', 'pieceCount' => 2, 'note' => 'Două bucăți înainte de croire']), 'plan before cutting');
+$check(array_column(json_decode($cli('partial-rework.php', 'route-audit', '--details=1')['out'], true)['orders'], 'class', 'order')[$m12b['id']] === 'safe_identity_materialization', 'J. confirmed before cutting: safe identity materialization');
+$claim($finisher, $m12);
+$advance($finisher, $m12);
+$check($state($m12)['stage'] === 'delivery', 'J/K. packing is possible once every piece has its own or verified evidence');
+$check($cli('check-rollback.php', '2.32.0')['code'] === 0 && $cli('check-rollback.php', '2.31.0')['code'] === 3, 'J. reconciliation evidence is per-piece state for the rollback guard');
+$originalChecksum30 = (string) $one("SELECT checksum FROM schema_migrations WHERE migration_name = '030_production_route_reconciliation.sql'");
+try {
+    $pdo->exec("UPDATE schema_migrations SET checksum = REPEAT('0', 64) WHERE migration_name = '030_production_route_reconciliation.sql'");
+    $check($cli('check-rollback.php', '2.32.0')['code'] === 1, 'J. an unknown 030 refuses rollback');
+} finally {
+    $pdo->prepare("UPDATE schema_migrations SET checksum = ? WHERE migration_name = '030_production_route_reconciliation.sql'")->execute([$originalChecksum30]);
+}
+$tables12 = (int) $one('SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE()');
+(new SqlFileRunner($pdo))->run($migrations . '/030_production_route_reconciliation.sql');
+$check((int) $one('SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE()') === $tables12 && (int) $one('SELECT COUNT(*) FROM production_route_reconciliation_stages WHERE order_uuid = ?', [$m12['uuid']]) === 16, 'J. migration 030 re-runs without change');
+
+// ==== M13. Employee KPI: track and piece work apart from commercial completions ===================================
+// The test database may hold employees of earlier suites (CI shares it): read every page, then check this suite's people.
+$employees13 = [];
+$cursor13 = null;
+do {
+    $page13 = $ok($dashGet($root, '/management/analytics/employees', ['period' => 'month', 'limit' => '100'] + ($cursor13 === null ? [] : ['cursor' => $cursor13])), 'analytics employees');
+    foreach ($page13['items'] as $item13) $employees13[$item13['id']] = $item13;
+    $cursor13 = $page13['nextCursor'] ?? null;
+} while ($cursor13 !== null);
+$check(array_diff(array_values($uuids), array_keys($employees13)) === [], 'KPI: every employee of this suite is reported');
+$muratRow = $employees13[$uuids['murat']];
+$commercialCuts = (int) $one("SELECT COUNT(*) FROM order_activity_events WHERE employee_uuid = ? AND action = 'stage_completed' AND from_stage_id = 'material-preparation'", [$uuids['murat']]);
+$check(($muratRow['stageCompletions']['material-preparation'] ?? 0) === $commercialCuts, 'KPI: commercial cutting completions are only order-level completions (rework is not new commercial production)');
+$check(($muratRow['trackStageCompletions']['material-preparation']['rework'] ?? 0) >= 1 && $muratRow['pieceWork']['rework'] >= 1, 'KPI: the cutter is credited with the authorized re-cutting as rework work: ' . json_encode([$muratRow['trackStageCompletions'], $muratRow['pieceWork']]));
+$trackTotal = 0;
+foreach (array_values($uuids) as $id) {
+    $row13 = $employees13[$id];
+    $logged = (int) $one("SELECT COUNT(*) FROM production_unit_stage_log WHERE employee_uuid = ? AND outcome = 'completed'", [$id]);
+    $check($row13['pieceWork']['order'] + $row13['pieceWork']['route'] + $row13['pieceWork']['rework'] === $logged, "KPI: piece work of {$id} equals its own per-piece completions");
+    foreach ($row13['trackStageCompletions'] as $kinds) $trackTotal += array_sum($kinds);
+}
+$marks13 = implode(',', array_fill(0, count($uuids), '?'));
+$check($trackTotal === (int) $one("SELECT COUNT(*) FROM production_track_events WHERE action = 'stage_completed' AND employee_uuid IN ({$marks13})", array_values($uuids)), 'KPI: every track completion is attributed exactly once');
+$check((int) $one("SELECT COUNT(*) FROM production_unit_stage_log WHERE outcome = 'not_applicable' AND employee_uuid IS NOT NULL") === 0 && ($employees13[$uuids['hemmer']]['pieceWork']['byStage']['bottom-hem']['route'] ?? 0) === 0, 'KPI: a stage not applicable to PERDEA gives nobody credit');
+$check($muratRow['faultLines'] === (int) $one("SELECT COALESCE(SUM(line_count), 0) FROM production_quality_events WHERE employee_uuid = ? AND event_type = 'cutting_fault'", [$uuids['murat']]), 'KPI: receiving or repairing a defect adds no fault to the cutter');
+$departments13 = $ok($dashGet($root, '/management/analytics/departments', ['period' => 'month', 'limit' => '100']), 'analytics departments')['items'];
+$check(array_sum(array_map(static fn (array $d): int => $d['pieceWork']['rework'], $departments13)) === (int) $one("SELECT COUNT(*) FROM production_unit_stage_log l LEFT JOIN production_tracks t ON t.track_uuid = l.carrier_track_uuid WHERE l.outcome = 'completed' AND (l.rework_cycle > 1 OR t.origin_exception_uuid IS NOT NULL)"), 'KPI: department rework totals equal every recorded rework piece completion');
 
 fwrite(STDOUT, "OK MySQL piece manifest and routing integration ({$checks} checks)\n");

@@ -30,3 +30,21 @@ test("ambiguous network result allows only committed recovery; terminal packing 
   assert.equal(isAmbiguous(new StaffServiceError("ORDER_CHANGED")), false);
   assert.match(physicalError(new StaffServiceError("ORDER_CHANGED", undefined, { backendCode: "ORDER_ROUTE_INCOMPLETE" })), /toate bucățile/);
 });
+const evidenceLine = (routeEvidence: unknown) => ({ orderId: "source:synthetic", lines: [{ itemId: "i", name: "n", sourcePlanHash: "a".repeat(64), planKnown: true, typeVerified: true, staleAfterSourceChange: false,
+  commercialQuantity: 1, lineMeters: null, lineMeasurements: { width: null, height: null, unit: null }, route: [], notApplicableStages: [], proposal: { evidence: [] },
+  plan: { revision: 1, typeLocked: false, productType: "draperii", pieceCount: 2, materialTotal: null, pieces: [] }, pieces: [{ id: "u", index: 1, count: 2, trackId: null, routeEvidence }] }] });
+test("historical route evidence from API 2.33.0 is validated; an older API without it still maps", () => {
+  const evidence = { reworkCycle: 1, ledgerStartStageId: "ironing", preLedgerStages: ["material-preparation"], reconciledStages: [], missingStages: ["material-preparation"], uncertainStages: [],
+    candidates: [{ stageId: "material-preparation", activityEventId: "e", employee: "Synthetic Cutter", at: "2026-10-14T10:00:00.000Z" }] };
+  assert.deepEqual(mapManufacturingPlan(evidenceLine(evidence)).lines[0].pieces[0].routeEvidence, evidence);
+  assert.equal(mapManufacturingPlan(evidenceLine(undefined)).lines[0].pieces[0].routeEvidence, undefined);
+  assert.throws(() => mapManufacturingPlan(evidenceLine({ ...evidence, missingStages: "material-preparation" })));
+  assert.throws(() => mapManufacturingPlan(evidenceLine({ ...evidence, candidates: [{ stageId: "material-preparation" }] })));
+});
+test("every historical evidence refusal has a specific Romanian message", () => {
+  for (const code of ["PLAN_BLOCKED_BY_EXCEPTION", "RECONCILIATION_STAGE_INVALID", "RECONCILIATION_EVIDENCE_INVALID", "RECONCILIATION_STAGE_RECORDED", "RECONCILIATION_UNAVAILABLE", "RECONCILIATION_NOT_ALLOWED"]) {
+    const message = physicalError(new StaffServiceError("ORDER_CHANGED", undefined, { backendCode: code }));
+    assert.doesNotMatch(message, /Ceva nu a funcționat|Operațiune neconfirmată/, code);
+  }
+  assert.match(physicalError(new StaffServiceError("ORDER_CHANGED", undefined, { backendCode: "RECONCILIATION_STAGE_RECORDED" })), /dovezi verificate/);
+});

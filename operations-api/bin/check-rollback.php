@@ -25,7 +25,14 @@ try {
     if (!is_string($migration) || !hash_equals(hash_file('sha256', dirname(__DIR__) . '/database/migrations/029_production_manifest_routing.sql'), $migration)) {
         throw new RuntimeException('Current migration could not be verified.');
     }
+    // Migration 030 (verified historical stage evidence) is optional for the guard, but when it is recorded it must be the
+    // known file, and its evidence counts as per-piece state.
+    $reconciliation = $pdo->query("SELECT checksum FROM schema_migrations WHERE migration_name = '030_production_route_reconciliation.sql'")->fetchColumn();
+    if (is_string($reconciliation) && (!isset($tables['production_route_reconciliations']) || !hash_equals(hash_file('sha256', dirname(__DIR__) . '/database/migrations/030_production_route_reconciliation.sql'), $reconciliation))) {
+        throw new RuntimeException('Current migration could not be verified.');
+    }
     $state = [];
+    if (isset($tables['production_route_reconciliations'])) $state['production_route_reconciliations'] = (int) $pdo->query('SELECT COUNT(*) FROM production_route_reconciliations')->fetchColumn();
     if (isset($tables['production_tracks'])) $state['activeTracks'] = (int) $pdo->query("SELECT COUNT(*) FROM production_tracks WHERE status = 'active'")->fetchColumn();
     foreach (['production_work_units', 'production_unit_replacements', 'production_line_plan_heads', 'production_route_decisions', 'production_unit_verifications', 'production_material_records', 'production_unit_custody'] as $table) {
         if (isset($tables[$table])) $state[$table] = (int) $pdo->query("SELECT COUNT(*) FROM {$table}")->fetchColumn();

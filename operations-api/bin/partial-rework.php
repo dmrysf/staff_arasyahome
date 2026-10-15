@@ -15,6 +15,7 @@ declare(strict_types=1);
 //   php bin/partial-rework.php cohort-list --feature=partial_rework|piece_routing
 //   php bin/partial-rework.php backfill --operator=<name> [--limit=<orders>] [--dry-run=1]
 //   php bin/partial-rework.php rollback-check
+//   php bin/partial-rework.php route-audit [--limit=<orders>] [--details=1]
 //
 // Enable globally only after API 2.32.0, Staff and Dashboard are all live, the database backup was restored once in a
 // test and the pilot cohort was verified. A pilot cohort names orders by their global id; nothing is hardcoded.
@@ -28,6 +29,11 @@ declare(strict_types=1);
 // rollback-check exits 3 when an API older than 2.32.0 must NOT be activated: active tracks (pieces away from their
 // order), pieces that were replaced, or confirmed plans whose pieces differ from the commercial quantity exist, which an
 // older API would silently ignore. Exit 0 means no per-piece state would be lost by such a rollback.
+//
+// route-audit is read-only (RouteAudit): it classifies every open order for the per-piece model (unresolved exception,
+// conflicting data, requires verified historical stage evidence, requires plan confirmation, safe identity
+// materialization) and reports which earlier stages have an order-level completion a verifier could review. It works
+// before and after migrations 028/029/030 and changes nothing. --details=1 adds the per-order rows.
 //
 // Exit codes: 0 done; 1 failed; 2 invalid invocation (nothing read or changed); 3 rollback unsafe. Messages never echo an
 // argument value.
@@ -47,9 +53,10 @@ $commands = [
     'cohort-list' => [['feature'], []],
     'backfill' => [['operator'], ['limit', 'dry-run']],
     'rollback-check' => [[], []],
+    'route-audit' => [[], ['limit', 'details']],
 ];
 $refuse = static function (string $message): never {
-    fwrite(STDERR, "Refused: {$message}\nUsage: php bin/partial-rework.php status|enable|disable|routing-enable|routing-disable|cohort-add|cohort-remove|cohort-list|backfill|rollback-check [--name=value ...]\n");
+    fwrite(STDERR, "Refused: {$message}\nUsage: php bin/partial-rework.php status|enable|disable|routing-enable|routing-disable|cohort-add|cohort-remove|cohort-list|backfill|rollback-check|route-audit [--name=value ...]\n");
     exit(2);
 };
 $arguments = array_slice($argv, 1);
@@ -84,6 +91,9 @@ if (isset($options['feature']) && !in_array($options['feature'], ['partial_rewor
 }
 if (isset($options['dry-run']) && !in_array($options['dry-run'], ['0', '1'], true)) {
     $refuse('--dry-run must be 0 or 1.');
+}
+if (isset($options['details']) && !in_array($options['details'], ['0', '1'], true)) {
+    $refuse('--details must be 0 or 1.');
 }
 $limit = isset($options['limit']) ? (ctype_digit($options['limit']) && (int) $options['limit'] > 0 ? (int) $options['limit'] : $refuse('--limit must be a positive integer.')) : 500;
 $operator = mb_substr(trim($options['operator'] ?? 'operator'), 0, 80);
@@ -160,6 +170,18 @@ try {
             }
         }
         $print(['dryRun' => $dryRun, 'more' => count($orders) === $limit] + $report + $units->inventory());
+        exit(0);
+    }
+    if ($command === 'route-audit') {
+        // Read-only: a database-enforced read-only transaction, rolled back.
+        $pdo->exec('SET TRANSACTION READ ONLY');
+        $pdo->beginTransaction();
+        $audit = (new \Arasya\Operations\Production\RouteAudit($pdo))->run(isset($options['limit']) ? $limit : 5000);
+        $pdo->rollBack();
+        if (($options['details'] ?? '0') !== '1') {
+            unset($audit['orders']);
+        }
+        $print($audit);
         exit(0);
     }
     if ($command === 'rollback-check') {

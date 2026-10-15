@@ -67,7 +67,19 @@ final readonly class ReportData
         }
         $s=$this->pdo->prepare("SELECT employee_uuid,order_uuid,from_stage_id,action FROM order_activity_events FORCE INDEX (idx_analytics_activity_period) WHERE action IN ('stage_completed','production_completed','production_submitted') AND occurred_at>=? AND occurred_at<?");
         $s->execute([$from,$to]); $stageCompletions=$s->fetchAll(PDO::FETCH_ASSOC);
+        // Independent production-track work (migration 028/029): completions of a rework or route track and the physical
+        // pieces each completion carried. Kept apart from the commercial order-level completions above, so rework is never
+        // counted as new commercial production and a stage recorded as not applicable never appears (no employee, no row).
+        $trackCompletions=[]; $pieceCompletions=[];
+        try {
+            $s=$this->pdo->prepare("SELECT e.employee_uuid,e.order_uuid,e.from_stage_id,CASE WHEN t.origin_exception_uuid IS NOT NULL OR e.rework_cycle>1 THEN 'rework' ELSE 'route' END kind FROM production_track_events e JOIN production_tracks t ON t.track_uuid=e.track_uuid WHERE e.action='stage_completed' AND e.occurred_at>=? AND e.occurred_at<?");
+            $s->execute([$from,$to]); $trackCompletions=$s->fetchAll(PDO::FETCH_ASSOC);
+            $s=$this->pdo->prepare("SELECT l.employee_uuid,l.order_uuid,l.stage_id,CASE WHEN l.rework_cycle>1 OR t.origin_exception_uuid IS NOT NULL THEN 'rework' WHEN l.carrier_track_uuid IS NOT NULL THEN 'route' ELSE 'order' END kind,COUNT(*) pieces FROM production_unit_stage_log l LEFT JOIN production_tracks t ON t.track_uuid=l.carrier_track_uuid WHERE l.outcome='completed' AND l.occurred_at>=? AND l.occurred_at<? GROUP BY l.employee_uuid,l.order_uuid,l.stage_id,kind");
+            $s->execute([$from,$to]); $pieceCompletions=$s->fetchAll(PDO::FETCH_ASSOC);
+        } catch (\PDOException $error) {
+            if ((int)($error->errorInfo[1]??0)!==1146) throw $error;
+        }
         $coverage=$this->pdo->query('SELECT (SELECT COUNT(*) FROM operational_orders) total_orders,(SELECT COUNT(*) FROM analytics_order_projection) projected_orders')->fetch(PDO::FETCH_ASSOC);
-        return compact('orders','intervals','transfers','exceptions','decisions','quality','cancellations','employees','eligibility','captured','coverage','stageCompletions','transferDecisionTypes','sourceNames','pools');
+        return compact('orders','intervals','transfers','exceptions','decisions','quality','cancellations','employees','eligibility','captured','coverage','stageCompletions','trackCompletions','pieceCompletions','transferDecisionTypes','sourceNames','pools');
     }
 }
