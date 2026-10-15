@@ -144,6 +144,8 @@ export const trErrors: { readonly [K in keyof typeof roErrors]: string } = {
   "error.SELF_REVIEW_DENIED.message": "Kendi bildirdiğin bir sorunu kontrol edemezsin.",
   "error.RESPONSIBLE_UNAVAILABLE.title": "Kesimci müsait değil",
   "error.RESPONSIBLE_UNAVAILABLE.message": "Siparişi teslim eden kesimci ürünü şu anda alamıyor. Müsait bir kesimci seç.",
+  "error.RETURN_CANCEL_CONFIRMATION_REQUIRED.title": "Kesime gönderimin iptalini onayla",
+  "error.RETURN_CANCEL_CONFIRMATION_REQUIRED.message": "Ürün kesime gönderildi ve kesimcinin teslim almasını bekliyor. Terziliğe geri vermeden önce kesime gönderimi iptal ettiğini işaretle.",
   "error.RECEIVER_NOT_ALLOWED.title": "Sorumlu kesimci müsait",
   "error.RECEIVER_NOT_ALLOWED.message": "Ürün, siparişi kesen kesimciye teslim edilir.",
   "error.RESTORE_RECIPIENT_UNAVAILABLE.title": "Çalışan siparişi alamıyor",

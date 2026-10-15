@@ -633,6 +633,50 @@ foreach ([
 $analyticsFault = $rows("SELECT unmeasured_line_count FROM production_quality_events WHERE employee_uuid = ? AND unmeasured_line_count > 0", [$uuids['cuttera']]);
 $check(count($analyticsFault) === 1, 'the responsible cutter has exactly one fact with unknown meterage');
 
+// ==== Scenario 10 (EX-000001 incident): a pending return is never withdrawn by accident; recovery path ==========
+// A multi-product order, one product defective. The supervisor sends the return to cutting; the cutter is not
+// there yet. Handing the product back to tailoring now cancels the return and must be an explicit choice.
+$v = $order('V', 'outletperdele');
+$bring($v, $cutterA, 'ironing');
+$xv = $ok($report($tailor, $v, [$v['items'][0]], 'material-defect', null), 'stage-8 report of one product of three', 201)['id'];
+$ok($review($iuliana, $xv, ['decision' => 'accept', 'reasonKey' => 'material-defect', 'qrToken' => $v['qr']]), 'accepted into custody');
+$scope = $ok($get($iuliana, "/production-exceptions/{$xv}"), 'supervisor detail')['orderScope'];
+$check($scope === ['orderLineCount' => 3, 'orderQuantity' => 5, 'affectedLineCount' => 1, 'affectedQuantity' => 2, 'wholeOrderMoves' => true], 'the detail states that the whole order (3 products, 5 pieces) moves, not only the affected one: ' . json_encode($scope));
+$ok($sendReturn($iuliana, $xv, ['comment' => 'Fir tras']), 'return to cutting sent');
+$cutterOrder = $ok($get($cutterA, $v['path']), 'the cutter scans the order (generic order view)');
+$check(($cutterOrder['productionQuality']['openException']['actions']['canAcknowledge'] ?? null) === true && $cutterOrder['productionQuality']['openException']['id'] === $xv, 'a generic scan by the addressed cutter exposes the actionable receipt of this exact request');
+$tailorOrder = $ok($get($tailor, $v['path']), 'the detector views the order');
+$check(($tailorOrder['productionQuality']['openException']['actions']['canAcknowledge'] ?? null) === false, 'nobody else gets the receipt action');
+$check($decisions($xv) === 0, 'a generic scan or view creates no manager decision');
+$error($restore($iuliana, $xv, $v['qr'], 'Fir tras'), 422, 'RETURN_CANCEL_CONFIRMATION_REQUIRED', 'withdrawing a pending return to cutting needs the explicit confirmation');
+$check($exVersion($xv) === 3 && (string) $one('SELECT status FROM production_exceptions WHERE exception_uuid = ?', [$xv]) === 'awaiting_acknowledgment', 'the refused attempt changed nothing');
+$error($post($iuliana, "/production-exceptions/{$xv}/restore", ['expectedVersion' => $exVersion($xv), 'qrToken' => $v['qr'], 'comment' => 'Fir tras', 'cancelReturn' => 'yes']), 400, 'INVALID_REQUEST', 'only the literal true confirms');
+$cursorV = $cursor($denisa);
+$cancelled = $ok($post($iuliana, "/production-exceptions/{$xv}/restore", ['expectedVersion' => $exVersion($xv), 'qrToken' => $v['qr'], 'comment' => 'Nu mai trimitem la tăiere', 'cancelReturn' => true]), 'the supervisor deliberately withdraws the return');
+$check($cancelled['status'] === 'awaiting_restore_receipt' && $blocked($v, $xv) && $decisions($xv) === 0, 'withdrawn: handed back to tailoring, still blocked, no decision');
+$withdrawal = json_decode((string) $one("SELECT metadata_json FROM production_exception_events WHERE exception_uuid = ? AND action = 'restore_requested'", [$xv]), true);
+$check(($withdrawal['returnCancelled'] ?? null) === true && $withdrawal['cancelledReceiver'] === $cutterA['employeeUuid'] && $withdrawal['statusBefore'] === 'awaiting_acknowledgment', 'the history records that the pending return was withdrawn and from whom');
+$check(in_array('exception.resolved', $liveTypes($denisa, $cursorV), true), 'the managers learn the waiting return is gone');
+$error($ack($cutterA, $xv, $v['qr'], ['responsibility' => 'disputed', 'comment' => 'material']), 409, 'EXCEPTION_STATE_INVALID', 'the cutter can no longer receive a withdrawn return');
+// Recovery path (as proposed for EX-000001): the worker receives it back, reports again, and the return to cutting
+// runs through the receipt and one manager decision; then normal forward movement resumes without approval.
+$ok($receive($tailor, $xv, $v['qr']), 'the addressed worker receives the product back');
+$check($state($v)['stage'] === 'ironing' && $state($v)['owner'] === $tailor['employeeUuid'] && $state($v)['exception'] === null, 'back at stage 8, owned by the worker, unblocked');
+$xv2 = $ok($report($tailor, $v, [$v['items'][0]], 'material-defect', null), 'a new report of the same product', 201)['id'];
+$ok($review($iuliana, $xv2, ['decision' => 'accept', 'reasonKey' => 'material-defect', 'qrToken' => $v['qr']]), 'accepted again');
+$ok($sendReturn($iuliana, $xv2), 'return to cutting sent again');
+$received2 = $ok($ack($cutterA, $xv2, $v['qr'], ['responsibility' => 'disputed', 'comment' => 'Defect de material']), 'the cutter receives it inside the request (QR)');
+$check($received2['status'] === 'awaiting_approval' && $decisions($xv2) === 1, 'exactly one pending manager decision');
+$ack2 = $post($cutterA, "/production-exceptions/{$xv2}/acknowledge", ['expectedVersion' => 3, 'confirmed' => true, 'qrToken' => $v['qr'], 'responsibility' => 'disputed', 'comment' => 'Defect de material']);
+$check($ack2['status'] === 409 && $decisions($xv2) === 1, 'a repeated scan with a stale version opens no second decision');
+$error($decide($denisa, $xv2, ['decision' => 'approve', 'attribution' => 'cutter']), 422, 'ATTRIBUTION_NOT_ALLOWED', 'a material defect is never attributed to the cutter');
+$ok($decide($denisa, $xv2, ['decision' => 'approve', 'attribution' => 'none']), 'an independent manager approves');
+$check($state($v)['stage'] === 'material-preparation' && $state($v)['owner'] === $cutterA['employeeUuid'] && $state($v)['exception'] === null, 'stage 2, owned by the cutter who received it');
+$check((int) $one('SELECT COUNT(*) FROM operational_order_items WHERE order_uuid = ?', [$v['uuid']]) === 3, 'documented limitation: the whole order (all 3 products) is at stage 2; products are not routed separately');
+$check(in_array($v['id'], array_column($ok($get($cutterA, '/orders/mine'), 'cutter work')['items'] ?? $ok($get($cutterA, '/orders/mine'), 'cutter work'), 'id'), true), 'the rework is in the cutter\'s own work list');
+$advance($cutterA, $v);
+$check($state($v)['stage'] === 'workshop-receiving' && $state($v)['owner'] === null, 'after re-cutting the order moves forward to stage 3 normally, without an approval');
+
 // ---- Invariants --------------------------------------------------------------------------------------------------
 $check((int) $one("SELECT COUNT(*) FROM production_exception_decisions d JOIN production_exceptions x ON x.exception_uuid = d.exception_uuid WHERE x.exception_type = 'tailoring_defect' AND x.acknowledged_at IS NULL") === 0, 'no manager decision exists for any case before physical receipt at stage 3');
 $check((int) $one("SELECT COUNT(*) FROM production_quality_events q JOIN production_exceptions x ON x.exception_uuid = q.exception_uuid WHERE x.status = 'dismissed'") === 0, 'dismissed reports never count');

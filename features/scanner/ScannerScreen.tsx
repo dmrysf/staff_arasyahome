@@ -20,6 +20,8 @@ import { AppIcon } from "../../components/icons/AppIcon";
 import { getNextStage, getStageById } from "../../domain/productionWorkflow";
 import { canUseCuttingIntake, cuttingIntakeCopy, type CuttingApi } from "../../domain/cutting";
 import { QrCapture } from "../exceptions/QrCapture";
+import { scannerExceptionPrompt } from "../../domain/faults";
+import { faultReasonName } from "../../domain/stageNames";
 
 type TorchCapabilities = MediaTrackCapabilities & { torch?: boolean };
 type TorchConstraintSet = MediaTrackConstraintSet & { torch?: boolean };
@@ -312,7 +314,7 @@ export function ScannerScreen({ service, cutting, employee, workflow, mode, navi
         {state.status === "taking" && <div className="resolving-card" role="status" aria-busy="true" data-testid="cutting-intake-progress"><span className="inline-spinner" /><strong>{t("scanner.taking")}</strong><small>{t("scanner.takingNote")}</small></div>}
       </div>
 
-      {state.status === "review" && reviewItem && <section className="bottom-sheet review-sheet"><ReviewContent order={state.order} item={reviewItem} workflow={workflow} />{state.order.employeeAllowedAction && <button className="button button-primary button-large" type="button" onClick={() => dispatch({ type: "OPEN_CONFIRMATION" })}>{orderActionLabels[state.order.employeeAllowedAction.id]}<AppIcon name="arrow" size={20} /></button>}<button className="button button-secondary" type="button" onClick={() => navigate(`/orders/${encodeURIComponent(state.order.id)}`)}>{t("scanner.details")}</button><button className="button button-link" type="button" onClick={reset}>{t("scanner.scanOtherCode")}</button></section>}
+      {state.status === "review" && reviewItem && <section className="bottom-sheet review-sheet"><ExceptionPrompt order={state.order} navigate={navigate} /><ReviewContent order={state.order} item={reviewItem} workflow={workflow} />{state.order.employeeAllowedAction && <button className="button button-primary button-large" type="button" onClick={() => dispatch({ type: "OPEN_CONFIRMATION" })}>{orderActionLabels[state.order.employeeAllowedAction.id]}<AppIcon name="arrow" size={20} /></button>}<button className="button button-secondary" type="button" onClick={() => navigate(`/orders/${encodeURIComponent(state.order.id)}`)}>{t("scanner.details")}</button><button className="button button-link" type="button" onClick={reset}>{t("scanner.scanOtherCode")}</button></section>}
       {state.status === "review" && !reviewItem && <section className="bottom-sheet error-sheet"><ErrorState error={new ServiceError("ORDER_PRODUCTS_UNAVAILABLE")} compact onAction={reset} /></section>}
 
       {pending && pendingAction && <section className="confirmation-layer" role="dialog" aria-modal="true" aria-labelledby="confirmation-title"><div className="confirmation-card"><span className="state-icon confirm-icon" aria-hidden="true"><AppIcon name="arrow" size={24} /></span><p className="eyebrow">{t("common.confirmationRequired")}</p><h2 id="confirmation-title">{orderActionConfirmation[pendingAction.id].title}</h2><p>{t("orderAction.orderNote", { number: pending.orderNumber, note: orderActionConfirmation[pendingAction.id].note })}</p>
@@ -343,4 +345,20 @@ export function ScannerScreen({ service, cutting, employee, workflow, mode, navi
       }} /><button className="button button-link" type="button" disabled={busy} onClick={() => navigate("/")}>{t("scanner.backHomeButton")}</button></section>}
     </main>
   );
+}
+
+/** An open production exception on the scanned order: the employee it addresses is guided to the request's screen. */
+function ExceptionPrompt({ order, navigate }: { order: StaffOrder; navigate: (path: string) => void }) {
+  const { t } = useI18n();
+  const prompt = scannerExceptionPrompt(order);
+  const open = order.productionQuality?.openException;
+  if (!prompt || !open) return null;
+  const text = { receipt: t("scanner.exception.receipt"), restoreReceipt: t("scanner.exception.restoreReceipt"), supervisor: t("scanner.exception.supervisor"), blocked: t("scanner.exception.blocked") }[prompt.kind];
+  return <div className="order-notice order-notice-warning scanner-exception" role="alert" data-testid="scanner-exception" data-kind={prompt.kind}>
+    <strong>{text}</strong>
+    {prompt.kind !== "blocked" && <>
+      <small>{open.number} · {faultReasonName(open.reason.key, open.reason.label)} · {t("common.products", { count: open.lineCount })}</small>
+      <button className="button button-primary" type="button" onClick={() => navigate(`/exceptions/${encodeURIComponent(prompt.exceptionId)}`)}>{t("scanner.exception.open")}</button>
+    </>}
+  </div>;
 }

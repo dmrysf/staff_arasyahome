@@ -144,6 +144,8 @@ export const enErrors: { readonly [K in keyof typeof roErrors]: string } = {
   "error.SELF_REVIEW_DENIED.message": "You cannot review a problem you reported yourself.",
   "error.RESPONSIBLE_UNAVAILABLE.title": "The cutter is not available",
   "error.RESPONSIBLE_UNAVAILABLE.message": "The cutter who handed over the order cannot receive the product now. Choose an available cutter.",
+  "error.RETURN_CANCEL_CONFIRMATION_REQUIRED.title": "Confirm cancelling the return to cutting",
+  "error.RETURN_CANCEL_CONFIRMATION_REQUIRED.message": "The product was sent to cutting and is waiting for the cutter to receive it. Tick that you cancel the return to cutting before handing it back to tailoring.",
   "error.RECEIVER_NOT_ALLOWED.title": "The responsible cutter is available",
   "error.RECEIVER_NOT_ALLOWED.message": "The product goes to the cutter who worked on the order.",
   "error.RESTORE_RECIPIENT_UNAVAILABLE.title": "The employee cannot receive the order",

@@ -92,3 +92,20 @@ export function liveMessage(type: string, orderNumber?: string, revisionNumber?:
 export function nextLiveNotice(current: LiveEvent | null, event: LiveEvent): LiveEvent | null {
   return liveMessage(event.type, event.orderNumber, event.revisionNumber) === null ? current : event;
 }
+
+/**
+ * What a scanned order's open production exception asks of the signed-in employee. The server decides every flag;
+ * a generic scan never acts on the exception, it only guides the employee to the request's own screen, where the
+ * receipt still needs the explicit confirmation and a fresh QR scan. Uninvolved employees only learn the order is blocked.
+ */
+export type ScannerExceptionPrompt = { kind: "receipt" | "restoreReceipt" | "supervisor" | "blocked"; exceptionId: string };
+export function scannerExceptionPrompt(order: Pick<StaffOrder, "productionQuality">): ScannerExceptionPrompt | null {
+  const open = order.productionQuality?.openException;
+  if (!open) return null;
+  const actions = open.actions;
+  const kind = actions?.canAcknowledge ? "receipt"
+    : actions?.canConfirmRestore ? "restoreReceipt"
+      : actions && (actions.canReview || actions.canRequestReturn || actions.canRestore || actions.canAskManagersAgain) ? "supervisor"
+        : "blocked";
+  return { kind, exceptionId: open.id };
+}

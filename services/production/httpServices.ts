@@ -112,6 +112,7 @@ const backendErrorCodes: Partial<Record<string, ServiceErrorCode>> = {
   SUPERVISOR_REQUIRED: "SUPERVISOR_REQUIRED",
   SELF_REVIEW_DENIED: "SELF_REVIEW_DENIED",
   RESPONSIBLE_UNAVAILABLE: "RESPONSIBLE_UNAVAILABLE",
+  RETURN_CANCEL_CONFIRMATION_REQUIRED: "RETURN_CANCEL_CONFIRMATION_REQUIRED",
   RECEIVER_NOT_ALLOWED: "RECEIVER_NOT_ALLOWED",
   RESTORE_RECIPIENT_UNAVAILABLE: "RESTORE_RECIPIENT_UNAVAILABLE",
   RECIPIENT_NOT_ALLOWED: "RECIPIENT_NOT_ALLOWED",
@@ -461,6 +462,11 @@ function mapDecision(value: unknown): FaultDecision {
 }
 
 /** Strict mapping of a cutting fault request; meters stay exact decimal strings. */
+function mapOrderScope(value: unknown): NonNullable<FaultException["orderScope"]> {
+  const raw = objectValue(value);
+  return { orderLineCount: nonNegativeInteger(raw.orderLineCount), orderQuantity: nonNegativeInteger(raw.orderQuantity), affectedLineCount: nonNegativeInteger(raw.affectedLineCount),
+    affectedQuantity: nonNegativeInteger(raw.affectedQuantity), wholeOrderMoves: raw.wholeOrderMoves === true };
+}
 export function mapFaultException(value: unknown): FaultException {
   const raw = objectValue(value);
   const order = objectValue(raw.order), reason = objectValue(raw.reason), actions = raw.actions == null ? null : objectValue(raw.actions);
@@ -498,6 +504,7 @@ export function mapFaultException(value: unknown): FaultException {
     restoreRequestedAt: nullableTimestamp(raw.restoreRequestedAt),
     restoreReceivedAt: nullableTimestamp(raw.restoreReceivedAt),
     cancelledByRoot: raw.cancelledByRoot === true,
+    ...(raw.orderScope == null ? {} : { orderScope: mapOrderScope(raw.orderScope) }),
     role: raw.role == null ? null : oneOf(raw.role, ["responsible", "detector", "receiver", "recipient", "supervisor"] as const),
     // Absent flags (an older API) are false: the screen never offers an action the server did not grant.
     actions: {
@@ -821,7 +828,7 @@ export function createProductionServices(apiBaseUrl: string, options: Production
       body: JSON.stringify({ expectedVersion: input.expectedVersion, ...(input.receiverEmployeeId ? { receiverEmployeeId: input.receiverEmployeeId } : {}), ...(input.comment ? { comment: input.comment } : {}) }) }, mapFaultException),
     restoreRecipients: (id, requestOptions) => http.request(`/production-exceptions/${encodeURIComponent(id)}/restore-recipients`, { signal: requestOptions?.signal }, mapReceivers),
     restore: (id, input) => http.request(`/production-exceptions/${encodeURIComponent(id)}/restore`, { method: "POST", headers: { "Idempotency-Key": input.idempotencyKey },
-      body: JSON.stringify({ expectedVersion: input.expectedVersion, qrToken: input.qrToken, comment: input.comment, ...(input.recipientEmployeeId ? { recipientEmployeeId: input.recipientEmployeeId } : {}) }) }, mapFaultException),
+      body: JSON.stringify({ expectedVersion: input.expectedVersion, qrToken: input.qrToken, comment: input.comment, ...(input.recipientEmployeeId ? { recipientEmployeeId: input.recipientEmployeeId } : {}), ...(input.cancelReturn ? { cancelReturn: true } : {}) }) }, mapFaultException),
     receiveRestore: (id, input) => http.request(`/production-exceptions/${encodeURIComponent(id)}/receive`, { method: "POST", headers: { "Idempotency-Key": input.idempotencyKey },
       body: JSON.stringify({ expectedVersion: input.expectedVersion, confirmed: true, qrToken: input.qrToken, ...(input.comment ? { comment: input.comment } : {}) }) }, mapFaultException),
     addNote: (id, input) => http.request(`/production-exceptions/${encodeURIComponent(id)}/notes`, { method: "POST", headers: { "Idempotency-Key": input.idempotencyKey },

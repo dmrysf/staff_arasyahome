@@ -195,3 +195,22 @@ php bin/retire-employee.php --employee=<replacement-uuid> --username=vasiloaia.i
   - An identity holding an active responsibility is refused until that responsibility is revoked in Dashboard.
 
 After reconciliation, appoint the original UUID as the supervisor.
+
+
+## Return to cutting: receipt guidance and deliberate withdrawal (API 2.30.2, Staff 2.25.2)
+
+Incident EX-000001 (2026-10-14):
+- The supervisor sent the return to cutting at 12:33Z.
+- The addressed cutter was not signed in, and no receipt was ever attempted.
+- At 12:55Z the supervisor used "Predă înapoi la croitorie", which is allowed while the return waits for the cutter. That withdrew the return and addressed the product back to the worker (`awaiting_restore_receipt`).
+- At 13:25Z the cutter scanned the label in the general scanner. That scan never acknowledges anything, so no manager decision was opened.
+
+Changes:
+- **Staff scanner:** when the scanned order has an open exception, the review sheet tells the employee what the request needs. If the request addresses them, a button opens the request screen. The receipt itself still needs the explicit confirmation and a QR scan inside the request (`/acknowledge`). An uninvolved employee only learns that the order is blocked.
+- **Supervisor, while the return waits for the cutter:** a notice names the cutter and says the manager is asked only after the cutter's scan. The restore section becomes "Anulează trimiterea la tăiere" and requires a ticked confirmation.
+- **API:** `POST /production-exceptions/{id}/restore` from `awaiting_acknowledgment` requires `cancelReturn: true`; otherwise it answers 422 `RETURN_CANCEL_CONFIRMATION_REQUIRED`. The event records `returnCancelled` and the withdrawn receiver.
+- **Scope:** exception details carry `orderScope`, and Staff warns that the whole order moves on approval. See `docs/item-level-rework-design.md`.
+
+Deploy order:
+1. API 2.30.2 first. Old Staff cannot withdraw a pending return until Staff is updated: it gets a clear 422, and nothing changes.
+2. Then Staff 2.25.2. New Staff sends `cancelReturn`, which API 2.30.1 would refuse with 400 INVALID_REQUEST.

@@ -796,9 +796,15 @@ final readonly class CuttingFaultService
         $reference = QrReference::parsePayload($token) ?? throw new ApiException(422, 'INVALID_QR', 'The scanned code is not an Arasya order code.');
         $comment = $this->comment($input['comment'] ?? null, true);
         $recipientId = $this->optionalEmployeeId($input['recipientEmployeeId'] ?? null, 'recipientEmployeeId');
+        // Restoring while the cutting employee has not yet received the product withdraws the return to cutting
+        // (no manager decision will follow). That must be a deliberate choice, never a side effect of the screen.
+        $cancelReturn = $input['cancelReturn'] ?? null;
+        if ($cancelReturn !== null && $cancelReturn !== true) {
+            throw new ApiException(400, 'INVALID_REQUEST', 'cancelReturn must be true when present.');
+        }
         $hash = IdempotencyStore::hash('defect.restore', $exceptionUuid, $recipientId === null ? [$expected, $reference->value, $comment] : [$expected, $reference->value, $comment, $recipientId]);
 
-        return $this->transaction(function () use ($actor, $exceptionUuid, $expected, $reference, $comment, $recipientId, $key, $hash, $requestId): array {
+        return $this->transaction(function () use ($actor, $exceptionUuid, $expected, $reference, $comment, $recipientId, $cancelReturn, $key, $hash, $requestId): array {
             [$order, $exception] = $this->lockException($exceptionUuid);
             $replay = $this->idempotency->replay($actor->employeeUuid, $key, 'defect.restore', $exceptionUuid, $hash);
             if ($replay !== null) {
@@ -806,6 +812,9 @@ final readonly class CuttingFaultService
             }
             $this->requireSupervisor($actor, $exception);
             $this->assertStatus($exception, ['in_supervisor_custody', 'awaiting_acknowledgment', 'return_rejected', 'awaiting_restore_receipt'], $expected);
+            if ($exception['status'] === 'awaiting_acknowledgment' && $cancelReturn !== true) {
+                throw new ApiException(422, 'RETURN_CANCEL_CONFIRMATION_REQUIRED', 'Produsul este trimis la tăiere și așteaptă primirea. Confirmă că anulezi trimiterea la tăiere înainte de a-l preda înapoi la croitorie.');
+            }
             if ($exception['status'] === 'awaiting_restore_receipt' && $exception['cancelled_by_employee_uuid'] !== null) {
                 // A root recovery is under way; only root addresses it again.
                 throw new ApiException(409, 'EXCEPTION_STATE_INVALID', 'The request is not in a state that allows this action.', ['status' => $exception['status']]);
@@ -825,7 +834,7 @@ final readonly class CuttingFaultService
                 'comment' => $comment, 'qrVerified' => true, 'statusBefore' => $exception['status'], 'targetStage' => $exception['detected_stage_id'],
                 'recipient' => $recipient, 'originalOwner' => $exception['detected_owner_employee_uuid'], 'substitute' => $recipient !== $exception['detected_owner_employee_uuid'],
                 'previousRecipient' => $previousRecipient, 'physicalCustodian' => ['before' => $previousCustodian, 'after' => $actor->employeeUuid], 'orderBlocked' => true,
-            ], $requestId, $now);
+            ] + ($exception['status'] === 'awaiting_acknowledgment' ? ['returnCancelled' => true, 'cancelledReceiver' => $exception['receiver_employee_uuid']] : []), $requestId, $now);
             $payload = $this->livePayload($exceptionUuid, $order, 'awaiting_restore_receipt', $version);
             $this->live->toEmployee($recipient, 'exception.restore_receipt_required', $payload, $now);
             $extra = [$actor->employeeUuid, ...($exception['return_requested_at'] !== null ? [(string) $exception['responsible_employee_uuid']] : []), ...(is_string($previousRecipient) ? [$previousRecipient] : [])];
