@@ -32,6 +32,7 @@ const actions: Record<ServiceErrorCode, ErrorActionKey> = {
   INVALID_STAGE_TRANSITION: "reload",
   IDEMPOTENCY_CONFLICT: "reload",
   ORDER_UNAVAILABLE: "scanAnother",
+  ORDER_PRODUCTION_STOPPED: "reload",
   ORDER_PRODUCTS_UNAVAILABLE: "scanAgain",
   ORDER_CHANGED: "reload",
   AUTOMATIC_SCAN_UNAVAILABLE: "enterOrderCode",
