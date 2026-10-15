@@ -247,7 +247,9 @@ The current release's `bin/check-rollback.php <targetVersion>` is read-only and 
 (including 030 route evidence; a recorded 030 must match its file checksum),
 recorded plans/routes/replacements, material/custody evidence, enabled features or active cohorts exist. Missing tables,
 an absent or mismatched 029 checksum and unknown database state refuse rollback.
-`cpanel-rollback-api.sh` invokes the CURRENT release guard before changing either pointer to an older target, including dry-run.
+`cpanel-rollback-api.sh` invokes the CURRENT release guard before changing either pointer to any target whose version is
+below the current release's version, including dry-run. (Before API 2.34.0 publication it skipped the guard for targets
+>= 2.32.0, so a 2.32.x/2.33.x target was never checked against the 2.34.0 floor for open route-policy-v2 orders.)
 Do not use an old package's rollback launcher; it cannot enforce this guard. Keep migration tables and histories.
 `partial-rework.php rollback-check` supplies an additional operator inventory; it is not a substitute for the guarded launcher.
 

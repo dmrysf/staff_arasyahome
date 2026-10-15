@@ -55,6 +55,21 @@ HOME="$test_home" /bin/bash "$release_a/scripts/cpanel-rollback-api.sh" --previo
 HOME="$test_home" /bin/bash "$release_b/scripts/cpanel-rollback-api.sh" --previous >/dev/null
 [[ "$(tr -d '[:space:]' < "$api_root/active-release")" == "$sha_a" ]] || fail 'API --previous did not return to A.'
 
+# An older retained release (here 2.33.0) is a downgrade: the CURRENT release's per-piece guard must run and, when it
+# cannot verify the database (no reachable DB in this harness), refuse before either pointer is written. Earlier
+# scripts skipped the guard for any target >= 2.32.0, which let 2.32.x/2.33.x re-route open policy-v2 orders.
+sha_e="$(printf 'e%.0s' {1..40})"; release_e="$workspace/release-e"
+/bin/bash operations-api/tests/create-release-fixture.sh "$release_e" "$sha_e"
+current_version="$(php -r 'require $argv[1]."/bootstrap.php"; echo Arasya\Operations\Http\HealthController::VERSION;' "$release_e")"
+php -r 'foreach (array_slice($argv, 3) as $f) file_put_contents($f, str_replace($argv[1], $argv[2], file_get_contents($f)));' \
+  "$current_version" "2.33.0" "$release_e/release.json" "$release_e/src/Http/HealthController.php" "$release_e/scripts/validate-release.sh"
+/bin/bash "$release_e/scripts/generate-sha256s.sh" "$release_e"
+/bin/bash "$release_e/scripts/validate-release.sh" "$release_e" >/dev/null || fail 'Older 2.33.0 fixture is invalid.'
+cp -R "$release_e" "$api_root/releases/$sha_e"
+if HOME="$test_home" /bin/bash "$release_a/scripts/cpanel-rollback-api.sh" "$sha_e" >/dev/null 2>&1; then fail 'Downgrade to 2.33.0 skipped the current release rollback guard.'; fi
+[[ "$(tr -d '[:space:]' < "$api_root/active-release")" == "$sha_a" ]] || fail 'Refused downgrade changed active release.'
+[[ "$(tr -d '[:space:]' < "$api_root/previous-release")" == "$sha_b" ]] || fail 'Refused downgrade changed previous release.'
+
 printf '\ncorrupt\n' >> "$api_root/releases/$sha_b/bootstrap.php"
 if HOME="$test_home" /bin/bash "$release_b/scripts/cpanel-rollback-api.sh" "$sha_b" >/dev/null 2>&1; then fail 'Rollback accepted corrupt release B.'; fi
 [[ "$(tr -d '[:space:]' < "$api_root/active-release")" == "$sha_a" ]] || fail 'Corrupt rollback changed active release.'
