@@ -92,7 +92,7 @@ jobs:
       - name: Test API release validator
         run: /bin/bash operations-api/tests/release-validation.sh
 
-      - name: Build real API 2.34.0 publish package and validate deploy dry-run
+      - name: Build real API publish package and validate deploy dry-run
         run: /bin/bash operations-api/tests/release-package.sh
 
       - name: Test two-target cPanel deployment
@@ -399,22 +399,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           release_dir="$RUNNER_TEMP/operations-api-release-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          mkdir -p "$release_dir/config" "$release_dir/scripts"
-          cp operations-api/bootstrap.php "$release_dir/bootstrap.php"
-          cp operations-api/.htaccess "$release_dir/.htaccess"
-          cp operations-api/.cpanel.yml "$release_dir/.cpanel.yml"
-          cp operations-api/README.md "$release_dir/README.md"
-          cp -R operations-api/public operations-api/src operations-api/database operations-api/bin "$release_dir/"
-          cp operations-api/config/config.example.php "$release_dir/config/config.example.php"
-          cp operations-api/config/config.production.example.php "$release_dir/config/config.production.example.php"
-          cp operations-api/config/secrets.example.json "$release_dir/config/secrets.example.json"
-          cp operations-api/scripts/*.sh "$release_dir/scripts/"
-          chmod +x "$release_dir/scripts/"*.sh
-          printf '{\n  "sourceCommit": "%s",\n  "builtAt": "%s",\n  "version": "2.34.0"\n}\n' "$GITHUB_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$release_dir/release.json"
-          php -r '$r=json_decode(file_get_contents($argv[1]), true, flags: JSON_THROW_ON_ERROR); if (($r["sourceCommit"] ?? null) !== getenv("GITHUB_SHA") || ($r["version"] ?? null) !== "2.32.0") { throw new RuntimeException("API release metadata does not match source."); }' "$release_dir/release.json"
-          grep -Fq "public const VERSION = '2.34.0';" "$release_dir/src/Http/HealthController.php"
-          /bin/bash "$release_dir/scripts/generate-sha256s.sh" "$release_dir"
-          ARASYA_RELEASE_STRICT=1 /bin/bash "$release_dir/scripts/validate-release.sh" "$release_dir"
+          /bin/bash operations-api/build/package-release.sh "$release_dir" "$GITHUB_SHA"
 
       - name: Publish isolated api-deploy branch
         shell: bash

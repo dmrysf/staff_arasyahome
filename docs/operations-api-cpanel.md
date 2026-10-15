@@ -12,7 +12,7 @@ $HOME/arasya-operations-api/bin/maintenance-active.sh
 $HOME/arasya-config/secrets.json          externally managed private config
 ```
 
-The generated `api-deploy` branch is dependency-free and checksummed. Its `.cpanel.yml` invokes `ARASYA_API_ROOT_PATH="$HOME/arasya-operations-api" ARASYA_API_PUBLIC_PATH="$HOME/api.arasyahome.ro" /bin/bash ./scripts/cpanel-deploy-api.sh`. cPanel does not run Node, Composer, migrations, seeds, or employee creation.
+The generated `api-deploy` branch is dependency-free and checksummed. It is built by `operations-api/build/package-release.sh`, which the main publish job and the PR package test (`tests/release-package.sh`) both run; `release.json.version` is taken from `HealthController::VERSION`. Its `.cpanel.yml` invokes `ARASYA_API_ROOT_PATH="$HOME/arasya-operations-api" ARASYA_API_PUBLIC_PATH="$HOME/api.arasyahome.ro" /bin/bash ./scripts/cpanel-deploy-api.sh`. cPanel does not run Node, Composer, migrations, seeds, or employee creation.
 
 The deploy validates commands, package checksums, structure, and `release.json.sourceCommit` before mutation. It copies to a temporary direct child of `releases/`, validates again, atomically renames to the source SHA, installs the three public bootstrap files with temp+rename, installs the stable maintenance wrapper, saves the prior pointer, and replaces `active-release` last. It never touches Staff or `$HOME/arasya-config`.
 

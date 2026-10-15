@@ -26,8 +26,12 @@ api_validate_packaged_release "$resolved_target"
 # A target's checker cannot know newer schema semantics. Failed/unknown DB access refuses the rollback.
 target_version="$(php -r '$r=json_decode(file_get_contents($argv[1]),true,32,JSON_THROW_ON_ERROR); echo $r["version"] ?? "";' "$resolved_target/release.json")"
 [[ "$target_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || api_fail "Rollback target version is invalid."
-if ! php -r 'exit(version_compare($argv[1], "2.32.0", ">=") ? 0 : 1);' "$target_version"; then
-  current_release="$releases_root/$current"
+current_release="$releases_root/$current"
+current_version="$(php -r '$r=json_decode(file_get_contents($argv[1]),true,32,JSON_THROW_ON_ERROR); echo $r["version"] ?? "";' "$current_release/release.json" 2>/dev/null || true)"
+[[ "$current_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || api_fail "Current release version is unavailable."
+# Every downgrade is checked by the current release. Its checker knows the floor each recorded state needs (2.32.0 for
+# per-piece state, 2.34.0 while an open order follows route policy version 2); a fixed threshold here would skip it.
+if php -r 'exit(version_compare($argv[1], $argv[2], "<") ? 0 : 1);' "$target_version" "$current_version"; then
   [[ -f "$current_release/bin/check-rollback.php" ]] || api_fail "Current release has no per-piece rollback guard."
   php "$current_release/bin/check-rollback.php" "$target_version" || api_fail "Rollback would hide per-piece production state."
 fi
