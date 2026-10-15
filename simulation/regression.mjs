@@ -12,7 +12,7 @@ const selectedSuite = process.argv[5];
 if (selectedSuite && ![...suites, "mysql-integration.php"].includes(selectedSuite)) throw new Error("Only a suite in the selected fixed profile may run.");
 const out = path.join(runtime, "reports"); mkdirSync(out, { recursive: true });
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("ARASYA_")));
-const report = { profile, sourceCommit: spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim(), apiVersion: "2.30.0", staffVersion: "2.25.0", date: new Date().toISOString(), results: [] };
+const report = { profile, sourceCommit: spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim(), apiVersion: /public const VERSION = '([0-9.]+)';/.exec(readFileSync(path.join(root, "operations-api", "src", "Http", "HealthController.php"), "utf8"))?.[1] ?? null, staffVersion: JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")).version, date: new Date().toISOString(), results: [] };
 for (const suite of selectedSuite ? [selectedSuite] : suites) {
   const id = randomBytes(6).toString("hex");
   const setupEnv = { ...env, ARASYA_SIMULATION_EMPTY: "true" };

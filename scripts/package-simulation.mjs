@@ -47,7 +47,11 @@ const tree = git(root, "status", "--porcelain");
 const dashboardCommit = git(dashboardRoot, "rev-parse", "HEAD");
 const dashboardTree = git(dashboardRoot, "status", "--porcelain");
 const dashboardVersion = JSON.parse(readFileSync(path.join(dashboardRoot, "package.json"), "utf8")).version;
-const release = { environment: "simulation", sourceCommit: commit, workingTreeClean: tree === "", apiVersion: "2.30.0", staffVersion: "2.25.0", dashboardCommit, dashboardWorkingTreeClean: dashboardTree === "", dashboardVersion, ...ORIGINS };
+// The versions are read from the packaged sources (never hardcoded), so a rebase onto a newer main stays consistent.
+const apiVersion = /public const VERSION = '([0-9]+\.[0-9]+\.[0-9]+)';/.exec(readFileSync(path.join(root, "operations-api", "src", "Http", "HealthController.php"), "utf8"))?.[1];
+if (!apiVersion) throw new Error("API version not found in HealthController.php");
+const staffVersion = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")).version;
+const release = { environment: "simulation", sourceCommit: commit, workingTreeClean: tree === "", apiVersion, staffVersion, dashboardCommit, dashboardWorkingTreeClean: dashboardTree === "", dashboardVersion, ...ORIGINS };
 writeFileSync(path.join(out, "release.json"), JSON.stringify(release, null, 2));
 writeFileSync(path.join(out, "dashboard", "release.json"), JSON.stringify({ environment: "simulation", sourceCommit: commit, dashboardCommit, dashboardVersion, apiOrigin: ORIGINS.apiOrigin }, null, 2));
 const files = [];
