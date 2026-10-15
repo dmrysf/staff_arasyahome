@@ -79,7 +79,7 @@ try {
     $pdo->exec("DELETE FROM schema_migrations WHERE migration_name = '023_source_scoped_stage_authorization.sql'");
     $pdo->exec('DROP TABLE IF EXISTS production_line_checks');
     $pdo->exec('DROP TABLE IF EXISTS production_line_events');
-    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name = '028_production_line_readiness.sql'");
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name = '032_production_line_readiness.sql'");
     $pdo->exec('DROP TABLE IF EXISTS api_rate_limit_buckets');
     $pdo->exec('DROP TABLE IF EXISTS order_operation_idempotency');
     $pdo->exec('DROP TABLE IF EXISTS order_activity_events');
@@ -143,7 +143,7 @@ try {
     $expected[] = '025_source_payment_gate.sql';
     $expected[] = '026_trendyol_product_identity.sql';
     if (!$localeApplied) $expected[] = '027_employee_staff_locale.sql';
-    $expected[] = '028_production_line_readiness.sql';
+    $expected[] = '032_production_line_readiness.sql';
     if ($applied !== $expected) {
         throw new RuntimeException('An existing 001 schema did not apply exactly the pending migrations in order: ' . implode(', ', $applied));
     }
