@@ -1,9 +1,26 @@
 <?php
 declare(strict_types=1);
+/** Restore a pre-034 disposable test fixture (no cancellation synchronization). This is NOT a deployment/rollback mechanism. */
+function restorePreCancellationSyncTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='034_order_cancellation_sync.sql'")->fetchColumn()) return;
+    foreach(['order_cancellation_discrepancies','order_cancellation_sync_attempts','order_cancellation_sync_operations'] as $table) $pdo->exec("DROP TABLE IF EXISTS {$table}");
+    $flags = "'cancellation_sync_trendyol','cancellation_sync_trendhome','cancellation_sync_outletperdele'";
+    if($pdo->query("SHOW TABLES LIKE 'production_feature_flag_events'")->fetchColumn()!==false) $pdo->exec("DELETE FROM production_feature_flag_events WHERE feature_key IN ({$flags})");
+    $pdo->exec("DELETE FROM production_feature_flags WHERE flag_key IN ({$flags})");
+    $pdo->exec("DELETE rp FROM role_permissions rp INNER JOIN permissions p ON p.permission_id = rp.permission_id WHERE p.permission_key = 'production.cancellation.sync'");
+    $pdo->exec("DELETE FROM permissions WHERE permission_key = 'production.cancellation.sync'");
+    $pdo->exec('ALTER TABLE order_cancellation_controls DROP CONSTRAINT chk_order_cancellation_controls_generation');
+    $pdo->exec('ALTER TABLE order_cancellation_controls DROP COLUMN hold_generation');
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='034_order_cancellation_sync.sql'");
+}
+
 /** Restore a pre-033 disposable test fixture (no cancellation control). This is NOT a deployment/rollback mechanism. */
 function restorePreCancellationControlTestSchema(PDO $pdo): void
 {
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    restorePreCancellationSyncTestSchema($pdo);
     if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='033_order_cancellation_control.sql'")->fetchColumn()) return;
     foreach(['order_cancellation_events','order_cancellation_controls'] as $table) $pdo->exec("DROP TABLE IF EXISTS {$table}");
     $pdo->exec("DELETE rp FROM role_permissions rp INNER JOIN permissions p ON p.permission_id = rp.permission_id WHERE p.permission_key IN ('production.cancellation.manage','production.cancellation.release')");

@@ -772,7 +772,7 @@ $list = $ok($dashGet($root, '/management/orders', ['state' => 'stopped', 'limit'
 $check(array_unique(array_column(array_column($list['items'], 'production'), 'state')) === ['stopped'] && in_array($e['id'], array_column($list['items'], 'globalOrderId'), true), 'C10 the stopped filter lists exactly stopped orders');
 $error($cancellationView($denisa, $e), 403, 'UNAUTHORIZED_ACTION', 'C10 the cancellation view needs orders.view_all');
 $view = $ok($cancellationView($keeper, $e), 'C10 the cancellation view');
-$check($view['capabilities'] === ['stop' => true, 'recordPhysical' => true, 'release' => false] && $view['cancellation']['category'] === 'reactivated_awaiting_release'
+$check($view['capabilities'] === ['stop' => true, 'recordPhysical' => true, 'release' => false, 'sync' => false] && $view['cancellation']['category'] === 'reactivated_awaiting_release'
     && $view['cancellation']['nextAction'] === 'physical_reconciliation' && array_column($view['events'], 'sequence') === array_values(array_map('intval', array_column($rows('SELECT event_seq FROM order_cancellation_events WHERE order_uuid = ? ORDER BY event_seq', [$e['uuid']]), 'event_seq'))), 'C10 an ordered audit trail with the next action');
 $check(!str_contains(json_encode($view), 'Str. ') && !str_contains(json_encode($staffView($worker, $e)), 'cancellation_note'), 'C10 no customer data in the views');
 

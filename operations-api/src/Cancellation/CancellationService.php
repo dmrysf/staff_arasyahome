@@ -48,6 +48,7 @@ final readonly class CancellationService
         private AuthorizationService $authorization,
         private IdempotencyStore $idempotency,
         private Clock $clock,
+        private ?Sync\CancellationSyncService $sync = null,
     ) {
     }
 
@@ -120,7 +121,7 @@ final readonly class CancellationService
                 $this->audit($actor, 'production.cancellation.released', $order, ['reason' => $reason, 'stage' => $order['production_stage_id'], 'remaining' => $remaining], $requestId, $now);
             });
         } catch (ApiException $error) {
-            if (in_array($error->errorCode, ['RELEASE_SOURCE_CANCELLED', 'RELEASE_PHYSICAL_UNVERIFIED', 'RELEASE_DOCUMENT_NOT_READY', 'RELEASE_NOT_APPLICABLE', 'RELEASE_REFUSED'], true)) {
+            if (in_array($error->errorCode, ['RELEASE_SYNC_OPEN', 'RELEASE_SOURCE_CANCELLED', 'RELEASE_PHYSICAL_UNVERIFIED', 'RELEASE_DOCUMENT_NOT_READY', 'RELEASE_NOT_APPLICABLE', 'RELEASE_REFUSED'], true)) {
                 $this->recordRefusal($actor, $globalId, $error->errorCode, $requestId, $key);
             }
             throw $error;
@@ -196,7 +197,13 @@ final readonly class CancellationService
                 WHERE c.order_uuid = ?');
             $statement->execute([$order['order_uuid']]);
             $row = $statement->fetch(PDO::FETCH_ASSOC);
-            $control = is_array($row) ? CancellationView::management($row, $order) : null;
+            $syncReady = $this->sync !== null && Sync\SyncSchema::ready($this->pdo);
+            $control = is_array($row) ? CancellationView::management($row, $order, $syncReady && $this->control()->syncOpen((string) $order['order_uuid'])) : null;
+            if ($control !== null && $syncReady) {
+                // API 2.36.0: the outbound request of the current stop, its attempts and the actor's allowed actions.
+                $control['sync'] = $this->sync->orderView($actor, $order, $row);
+                $control['source']['outbound'] = $control['sync']['operation']['state'] ?? 'not_sent';
+            }
         }
         $events = $this->pdo->prepare('SELECT x.event_seq, x.event_uuid, x.event_type, x.control_version, x.actor_employee_uuid, e.display_name AS actor_name, x.source_event_ref,
                 x.production_stage_id, x.production_version, x.details_json, x.occurred_at
@@ -230,6 +237,7 @@ final readonly class CancellationService
                 'stop' => $this->authorization->can($actor, self::MANAGE),
                 'recordPhysical' => $this->authorization->can($actor, self::MANAGE),
                 'release' => $this->authorization->can($actor, self::RELEASE),
+                'sync' => $this->authorization->can($actor, Sync\CancellationSyncService::PERMISSION),
             ],
         ];
     }

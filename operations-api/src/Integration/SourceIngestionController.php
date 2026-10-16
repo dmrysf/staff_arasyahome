@@ -35,6 +35,7 @@ final readonly class SourceIngestionController
         private ?\Arasya\Operations\Document\DocumentService $documents = null,
         private ?\Arasya\Operations\Document\DocumentRenderer $renderer = null,
         private ?SourceTrackingQueries $tracking = null,
+        private ?\Arasya\Operations\Cancellation\Sync\CancellationSyncService $cancellations = null,
     ) {
     }
 
@@ -96,6 +97,8 @@ final readonly class SourceIngestionController
             'trackingAuthorityMode' => $source->trackingAuthorityMode->value,
             // Present means this server accepts the optional order.payment facts in schema 1.
             'paymentGateMode' => $source->paymentGateMode->value,
+            // API 2.36.0: `enabled` only while both outbound gates are open for this source; the connector pulls nothing otherwise.
+            'cancellationSyncMode' => $this->cancellations?->sourceMode($source->key) ?? 'disabled',
             'contract' => [
                 'schemaVersion' => 1,
                 'workflowId' => $workflow['id'],
@@ -210,6 +213,39 @@ final readonly class SourceIngestionController
             'trackingAuthorityMode' => $source->trackingAuthorityMode->value,
             'orders' => $tracking->forOrders($source, $ids),
         ], 200, ['Cache-Control' => 'no-store']);
+    }
+
+    /**
+     * Outbound cancellations waiting for this source's connector (API 2.36.0): {"sentAt": "..."}. Empty unless the
+     * server switch and the source's cancellation flag are both enabled. Only the source's own operations are listed.
+     */
+    public function orderCancellations(Request $request, string $sourceKey): Response
+    {
+        $source = $this->authorize($request, $sourceKey);
+        if (!$source->canIngest()) {
+            throw new ApiException(403, 'SOURCE_NOT_ACTIVE', 'This source is not active for order ingestion.');
+        }
+        $input = $request->json(1024);
+        if (array_keys($input) !== ['sentAt'] || !is_string($input['sentAt'])) {
+            throw new ApiException(422, 'SOURCE_PAYLOAD_INVALID', 'Cancellation pull payload is invalid.');
+        }
+        $cancellations = $this->cancellations ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Cancellation synchronization is not ready.');
+        return Response::json($cancellations->pull($source->key, $request->requestId), 200, ['Cache-Control' => 'no-store']);
+    }
+
+    /**
+     * The connector's result for one of its own pulled cancellations (API 2.36.0):
+     * {"operationId", "outcome": cancelled|already_cancelled|rejected_paid|rejected_status|not_found, "sourceStatus"?}.
+     * A report is never a confirmation: the shop's next signed order event with availability `cancelled` confirms.
+     */
+    public function orderCancellationResult(Request $request, string $sourceKey): Response
+    {
+        $source = $this->authorize($request, $sourceKey);
+        if (!$source->canIngest()) {
+            throw new ApiException(403, 'SOURCE_NOT_ACTIVE', 'This source is not active for order ingestion.');
+        }
+        $cancellations = $this->cancellations ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Cancellation synchronization is not ready.');
+        return Response::json($cancellations->report($source->key, $request->json(2048), $request->requestId), 200, ['Cache-Control' => 'no-store']);
     }
 
     /** @return list<string> */

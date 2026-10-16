@@ -1,0 +1,735 @@
+<?php
+
+declare(strict_types=1);
+
+// Multi-channel cancellation synchronization (migration 034, API 2.36.0) against a dedicated MySQL/MariaDB test database,
+// end to end through the HTTP kernel, the signed source routes, the Trendyol fixture transport (never the real API), the
+// outbound worker with an injected clock and the operator CLI. Every order is synthetic; every assertion reads committed
+// rows or the fixture's recorded write calls.
+//
+//   S0  migration 034: additive, flags created disabled, permission granted to nobody, generations start at 1
+//   S1  gates: server switch and provider flags, both required; B2B and unconfigured providers go to manual review
+//   S2  Trendyol: status read, unsupplied notice with every line, confirmation only by a status read or the inbound sync
+//   S3  Trendyol lost answers: uncertain, never resent before a status read, accepted-then-lost confirmed without a resend
+//   S4  Trendyol failures: 429 backoff, 5xx uncertain, 401 failed, 4xx rejected, status not cancellable, unknown package,
+//       attempt budget, provider unreachable
+//   S5  worker crash (expired lease), concurrent workers (one notice only), inbound confirmation during the HTTP call
+//   S6  WooCommerce (source pull): pickup, cross-site isolation, report, duplicate and conflicting reports, paid order,
+//       inbound confirmation, withdraw before / after pickup, pickup timeout, heartbeat mode, signatures
+//   S7  authorization, CSRF, idempotency, stale versions, revoked roles
+//   S8  release blocked while an operation is open; generations after a release; no reuse of an old operation
+//   S9  3 sources x 14 stages: synchronization never moves production, never changes history, QR or documents
+//   S10 reconciliation: dry run changes nothing, apply records and resolves, auto-confirmation, Fresh Start boundary
+//   S11 operator CLI and rollback preflight
+//   S12 mutation scope: the synchronization code writes only its own tables; no secret is stored
+
+use Arasya\Operations\Application\Container;
+use Arasya\Operations\Cancellation\Sync\CancellationSyncWorker;
+use Arasya\Operations\Cancellation\Sync\ProviderRegistry;
+use Arasya\Operations\Cancellation\Sync\TrendyolCancellationProvider;
+use Arasya\Operations\Config\Config;
+use Arasya\Operations\Config\TrendyolCredentials;
+use Arasya\Operations\Database\Connection;
+use Arasya\Operations\Database\MigrationRunner;
+use Arasya\Operations\Database\SqlFileRunner;
+use Arasya\Operations\Iam\RootBootstrapService;
+use Arasya\Operations\Integration\Trendyol\FixtureTrendyolTransport;
+use Arasya\Operations\Integration\Trendyol\TrendyolCancellationApi;
+use Arasya\Operations\Integration\Trendyol\TrendyolClient;
+use Arasya\Operations\Integration\Trendyol\TrendyolIntakeStore;
+use Arasya\Operations\Integration\Trendyol\TrendyolPackage;
+use Arasya\Operations\Integration\Trendyol\TrendyolTransport;
+use Arasya\Operations\Order\OperationalOrderItem;
+use Arasya\Operations\Order\SourceOrderSnapshot;
+use Arasya\Operations\Support\Clock;
+use Arasya\Operations\Support\Uuid;
+use Arasya\Operations\Tests\OperationsTestSupport as T;
+
+require dirname(__DIR__) . '/bootstrap.php';
+require __DIR__ . '/OperationsTestSupport.php';
+
+$dbName = T::requireTestDatabase();
+if ($dbName === null) {
+    fwrite(STDOUT, "SKIP MySQL cancellation synchronization integration: ARASYA_TEST_DB_NAME is not configured.\n");
+    exit(0);
+}
+const DASHBOARD = 'http://127.0.0.1:4174';
+$suffix = bin2hex(random_bytes(4));
+$fixtureFile = sys_get_temp_dir() . "/arasya-cancellation-sync-{$suffix}.json";
+file_put_contents($fixtureFile, json_encode(['packages' => [], 'putCalls' => []], JSON_THROW_ON_ERROR));
+register_shutdown_function(static fn () => @unlink($fixtureFile));
+$baseConfig = T::config($dbName, [T::ORIGIN, DASHBOARD]);
+$config = new Config(...[...(array) $baseConfig, 'trendyolFixtureFile' => $fixtureFile, 'cancellationSync' => 'enabled']);
+$offConfig = new Config(...[...(array) $baseConfig, 'trendyolFixtureFile' => $fixtureFile]);
+$pdo = Connection::create($config);
+$migrations = dirname(__DIR__) . '/database/migrations';
+(new MigrationRunner($pdo))->migrate($migrations);
+$seeds = glob(dirname(__DIR__) . '/database/seeds/*.sql') ?: [];
+sort($seeds, SORT_STRING);
+foreach ($seeds as $seed) {
+    (new SqlFileRunner($pdo))->run($seed);
+}
+$pdo->exec('DELETE FROM system_root_identity');
+$pdo->exec("UPDATE production_feature_flags SET enabled = 0 WHERE flag_key IN ('partial_rework', 'piece_routing', 'perdea_assisted_checkpoints', 'cancellation_sync_trendyol', 'cancellation_sync_trendhome', 'cancellation_sync_outletperdele')");
+$pdo->exec("UPDATE trendyol_intake_state SET status = 'inactive', baseline_at = NULL WHERE state_id = 1");
+
+$checks = 0;
+$check = static function (bool $condition, string $label) use (&$checks): void { $checks++; if (!$condition) throw new RuntimeException("FAIL {$label}"); };
+$ok = static function (array $r, string $label, int $status = 200) use ($check): array { $check($r['status'] === $status, $label . ' HTTP ' . $r['status'] . ' ' . json_encode($r['body'])); return $r['body'] ?? []; };
+$error = static function (array $r, int $status, string $code, string $label) use ($check): array { $check($r['status'] === $status && ($r['body']['error']['code'] ?? '') === $code, "{$label}: expected {$status} {$code}, got {$r['status']} " . json_encode($r['body'])); return $r['body'] ?? []; };
+$one = static function (string $sql, array $params = []) use ($pdo): mixed { $s = $pdo->prepare($sql); $s->execute($params); return $s->fetchColumn(); };
+$rows = static function (string $sql, array $params = []) use ($pdo): array { $s = $pdo->prepare($sql); $s->execute($params); return $s->fetchAll(PDO::FETCH_ASSOC); };
+
+$container = new Container($config, $pdo);
+$kernel = $container->kernel();
+$offKernel = (new Container($offConfig, $pdo))->kernel();
+$clock = $container->clock();
+$password = 'cancellation sync passphrase 2026';
+$rootName = "sync.root.{$suffix}";
+$temporary = (new RootBootstrapService($pdo, $container->passwordHasher(), $clock))->bootstrap('test-cancellation-sync-root', $rootName);
+$first = T::login($kernel, $rootName, $temporary);
+$ok(T::call($kernel, 'POST', '/auth/password', ['currentPassword' => $temporary, 'newPassword' => 'Cancellation sync root passphrase 2026!'], ['x-csrf-token' => $first['csrf']], $first['cookie']), 'root password');
+$root = T::login($kernel, $rootName, 'Cancellation sync root passphrase 2026!');
+$keys = 0;
+$key = static function (string $label) use (&$keys, $suffix): string { $keys++; return sprintf('cs-%s-%s-%05d', $label, $suffix, $keys); };
+$dash = static fn (array $who, string $method, string $path, ?array $body = null, ?string $idem = null): array => T::call($kernel, $method, $path, $body, ['origin' => DASHBOARD, 'x-csrf-token' => $who['csrf'], 'idempotency-key' => $idem ?? 'cs-any-' . bin2hex(random_bytes(10))], $who['cookie']);
+$dashGet = static fn (array $who, string $path, array $query = []): array => T::call($kernel, 'GET', $path, null, ['origin' => DASHBOARD], $who['cookie'], $query);
+$post = static fn (array $who, string $path, array $body, ?string $idem = null): array => T::call($kernel, 'POST', $path, $body, ['x-csrf-token' => $who['csrf'], 'idempotency-key' => $idem ?? 'cs-any-' . bin2hex(random_bytes(10))], $who['cookie']);
+$get = static fn (array $who, string $path, array $query = []): array => T::call($kernel, 'GET', $path, null, [], $who['cookie'], $query);
+$roleIds = [];
+foreach ($ok($dashGet($root, '/management/roles'), 'roles')['items'] as $role) $roleIds[$role['key']] = (int) $role['id'];
+$rootUuid = (string) $one('SELECT employee_uuid FROM system_root_identity');
+
+// ---- S0. Migration 034 ----------------------------------------------------------------------------------------------
+$check((string) $one("SELECT checksum FROM schema_migrations WHERE migration_name = '034_order_cancellation_sync.sql'") === hash_file('sha256', $migrations . '/034_order_cancellation_sync.sql'), 'S0 034 recorded with its checksum');
+$check((int) $one("SELECT COUNT(*) FROM permissions WHERE permission_key = 'production.cancellation.sync' AND role_grantable = 1") === 1, 'S0 the sync permission exists, role-grantable');
+// Roles created by a person (this suite creates its own below; a shared CI database may hold earlier runs') are excluded:
+// no seeded role and no role created by a migration ever receives the permission.
+$check((int) $one("SELECT COUNT(*) FROM role_permissions rp JOIN permissions p ON p.permission_id = rp.permission_id JOIN roles r ON r.role_id = rp.role_id
+    WHERE p.permission_key = 'production.cancellation.sync' AND r.name NOT LIKE 'Sincronizare anulare test %' AND r.name NOT LIKE 'Simulare anulare %'") === 0, 'S0 no role receives the sync permission automatically');
+foreach (ProviderRegistry::FLAGS as $flagKey) {
+    $check($one('SELECT enabled FROM production_feature_flags WHERE flag_key = ?', [$flagKey]) !== false, "S0 flag {$flagKey} exists");
+}
+$check((string) $one("SELECT COLUMN_DEFAULT FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'order_cancellation_controls' AND COLUMN_NAME = 'hold_generation'") === '1'
+    && (int) $one('SELECT COUNT(*) FROM order_cancellation_controls WHERE hold_generation < 1') === 0, 'S0 control rows start at generation 1 (existing rows receive the default)');
+$tablesBefore = (int) $one('SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE()');
+$check((new MigrationRunner($pdo))->migrate($migrations) === [] && (int) $one('SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE()') === $tablesBefore, 'S0 recorded once, nothing re-applied');
+$canonical = ['waiting', 'material-preparation', 'workshop-receiving', 'labeling', 'material-straightening', 'bottom-hem', 'side-hem', 'ironing', 'height', 'header-tape', 'sewing-finishing', 'quality-control', 'packing', 'delivery'];
+$stagesNow = static fn (): array => array_column($rows("SELECT ps.stage_id FROM production_stages ps JOIN production_workflows pw ON pw.workflow_id = ps.workflow_id WHERE pw.workflow_key = 'curtain-production' AND pw.status = 'active' AND ps.status = 'active' ORDER BY ps.ordinal"), 'stage_id');
+$check($stagesNow() === $canonical, 'S0 the canonical 14-stage workflow is unchanged');
+
+// ---- Identities -----------------------------------------------------------------------------------------------------
+$uuids = [];
+$identity = static function (string $name, string $display, array $stages, array $apps = ['staff'], array $roles = []) use ($container, $dash, $root, $ok, $password, $suffix, $kernel, &$uuids): array {
+    $employee = $container->employeeAdmin()->create($display, "{$name}.{$suffix}", null, 'pregatire-material', 'employee', $password, $stages, 'test-cancellation-sync');
+    $uuids[$name] = $employee->employeeUuid;
+    $ok($dash($root, 'PUT', "/management/employees/{$employee->employeeUuid}/applications", ['applications' => $apps]), "{$name} applications");
+    if ($roles !== []) $ok($dash($root, 'PUT', "/management/employees/{$employee->employeeUuid}/roles", ['roleIds' => $roles]), "{$name} roles");
+    return T::login($kernel, "{$name}.{$suffix}", $password) + ['employeeUuid' => $employee->employeeUuid, 'name' => $display];
+};
+$waiter = $identity('waiter', 'Sync Waiting Desk', ['waiting']);
+$cutter = $identity('cutter', 'Sync Cutter', ['material-preparation']);
+$worker = $identity('worker', 'Sync Line Worker', array_slice($canonical, 2));
+$syncRole = (int) $ok($dash($root, 'POST', '/management/roles', ['name' => "Sincronizare anulare test {$suffix}", 'description' => null, 'authorityRank' => 200,
+    'permissions' => ['orders.view_all', 'production.cancellation.manage', 'production.cancellation.sync']]), 'sync role', 201)['role']['id'];
+$stopRole = (int) $ok($dash($root, 'POST', '/management/roles', ['name' => "Oprire fără sincronizare test {$suffix}", 'description' => null, 'authorityRank' => 200,
+    'permissions' => ['orders.view_all', 'production.cancellation.manage']]), 'stop role', 201)['role']['id'];
+$releaseRole = (int) $ok($dash($root, 'POST', '/management/roles', ['name' => "Reluare test sync {$suffix}", 'description' => null, 'authorityRank' => 200,
+    'permissions' => ['orders.view_all', 'production.cancellation.release']]), 'release role', 201)['role']['id'];
+$syncer = $identity('syncer', 'Sync Manager', [], ['dashboard'], [$syncRole]);
+$syncer2 = $identity('syncer2', 'Sync Manager Two', [], ['dashboard'], [$syncRole]);
+$keeper = $identity('keeper', 'Sync Stop Keeper', [], ['dashboard'], [$stopRole]);
+$releaser = $identity('releaser', 'Sync Releaser', [], ['dashboard'], [$releaseRole]);
+$manager = $identity('manager', 'Sync Operations Manager', [], ['dashboard'], [$roleIds['operations-manager']]);
+
+// ---- Fixture, clock, worker -----------------------------------------------------------------------------------------
+$fx = static fn (): array => json_decode((string) file_get_contents($fixtureFile), true, 64, JSON_THROW_ON_ERROR);
+$fxWrite = static fn (array $fixture): int => (int) file_put_contents($fixtureFile, json_encode($fixture, JSON_THROW_ON_ERROR));
+$fxPut = static function (?array $script) use ($fx, $fxWrite): void { $f = $fx(); unset($f['put']); if ($script !== null) $f['put'] = $script; $fxWrite($f); };
+$fxGet = static function (array $patch) use ($fx, $fxWrite): void { $f = $fx(); unset($f['fail'], $f['status'], $f['body']); $fxWrite($f + $patch); };
+$fxPackage = static function (int $packageId) use ($fx): ?array { foreach ($fx()['packages'] as $p) if ($p['shipmentPackageId'] === $packageId) return $p; return null; };
+$fxStatus = static function (int $packageId, string $status) use ($fx, $fxWrite): void {
+    $f = $fx();
+    foreach ($f['packages'] as $i => $p) if ($p['shipmentPackageId'] === $packageId) { $f['packages'][$i]['status'] = $status; $f['packages'][$i]['lastModifiedDate'] += 1000; }
+    $fxWrite($f);
+};
+$fxRemove = static function (int $packageId) use ($fx, $fxWrite): void { $f = $fx(); $f['packages'] = array_values(array_filter($f['packages'], static fn (array $p): bool => $p['shipmentPackageId'] !== $packageId)); $fxWrite($f); };
+$puts = static fn (int $packageId): array => array_values(array_filter($fx()['putCalls'] ?? [], static fn (array $c): bool => str_contains($c['url'], "/shipment-packages/{$packageId}/")));
+$wclock = new class implements Clock {
+    public int $offset = 0;
+    public function now(): DateTimeImmutable { return (new DateTimeImmutable('now', new DateTimeZone('UTC')))->modify("+{$this->offset} seconds"); }
+};
+// One worker run at real time + $offset seconds (absolute, never accumulated).
+$run = static function (int $offset = 0, ?ProviderRegistry $registry = null) use ($wclock, $pdo, $container): array {
+    $wclock->offset = $offset;
+    return (new CancellationSyncWorker($pdo, $wclock, $registry ?? $container->cancellationProviders()))->run(100);
+};
+$flag = static function (string $source, bool $enabled) use ($pdo): void {
+    $pdo->prepare('UPDATE production_feature_flags SET enabled = ? WHERE flag_key = ?')->execute([$enabled ? 1 : 0, ProviderRegistry::FLAGS[$source]]);
+};
+
+// ---- Orders and helpers ---------------------------------------------------------------------------------------------
+$events = [];
+$base = time() - 3 * 3600;
+$tick = static function (string $id) use (&$events, $base): string { $events[$id] = ($events[$id] ?? 0) + 1; return gmdate('Y-m-d\TH:i:s\Z', $base + $events[$id] * 7); };
+$orderInfo = static function (string $id, string $source) use ($one, $rows): array {
+    $uuid = (string) $one('SELECT order_uuid FROM operational_orders WHERE global_order_id = ?', [$id]);
+    return ['id' => $id, 'uuid' => $uuid, 'source' => $source, 'path' => '/orders/' . rawurlencode($id),
+        'qr' => 'ARASYA:Q1:' . (string) $one("SELECT qr_reference FROM order_qr_references WHERE order_uuid = ? AND status = 'active'", [$uuid])];
+};
+$wooItems = [];
+$woo = static function (string $source, string $tag, string $stage = 'waiting') use ($kernel, $ok, $tick, $orderInfo, $suffix, &$wooItems): array {
+    $number = "CS{$tag}{$suffix}";
+    $id = "{$source}:{$number}";
+    $lineBase = crc32($tag . $source) % 100000 * 10;
+    $wooItems[$id] = [['id' => $lineBase + 1, 'line' => 1, 'name' => 'Draperie Velvet', 'sku' => 'DV-302', 'color' => 'Bej', 'width' => 300, 'height' => 260, 'unit' => 'cm', 'meters' => 8.4, 'quantity' => 1]];
+    $ok(T::ingest($kernel, $source, T::sourceOrder($number, "cs-{$tag}-{$suffix}-1", $tick($id), T::stage($stage), 'processing', 'active', $wooItems[$id], $number)), "ingest {$tag}");
+    return $orderInfo($id, $source) + ['number' => $number];
+};
+$wooEvent = static function (array $o, string $availability, string $status, ?string $eventId = null, ?\Arasya\Operations\Http\ApiKernel $via = null) use ($kernel, $tick, &$wooItems): array {
+    return T::ingest($via ?? $kernel, $o['source'], T::sourceOrder($o['number'], $eventId ?? 'cs-' . bin2hex(random_bytes(6)), $tick($o['id']), null, $status, $availability, $wooItems[$o['id']], $o['number']));
+};
+$packages = [];
+$trendyol = static function (string $tag, ?int $orderDate = null) use ($container, $pdo, $orderInfo, $suffix, $rootUuid, $fx, $fxWrite, &$packages): array {
+    $number = "119CS{$tag}{$suffix}";
+    $now = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+    $items = [
+        new OperationalOrderItem(Uuid::v4(), "tys-{$tag}-1", 1, 'Draperie blackout', 'TY-1', null, 'Gri', 250.0, 260.0, 'cm', 6.0, 1, ['notes' => null, 'productionNotes' => null, 'marketplaceTitle' => 'Draperie', 'barcode' => null]),
+        new OperationalOrderItem(Uuid::v4(), "tys-{$tag}-2", 2, 'Draperie blackout B', 'TY-2', null, 'Gri', 150.0, 260.0, 'cm', 4.0, 2, ['notes' => null, 'productionNotes' => null, 'marketplaceTitle' => 'Draperie', 'barcode' => null]),
+    ];
+    $pdo->beginTransaction();
+    $uuid = $container->projectionWriter()->createInternal(new SourceOrderSnapshot('trendyol', "pkg-cs{$tag}-{$suffix}", "approval-cs{$tag}-{$suffix}", 1, $now, $number, 'waiting', 'Created', 'Created', null, 'in_progress', $now, $items), []);
+    $packageId = random_int(10_000_000, 99_999_999);
+    $modified = (int) floor(microtime(true) * 1000) - 600_000;
+    $package = ['shipmentPackageId' => $packageId, 'orderNumber' => $number, 'lastModifiedDate' => $modified, 'status' => 'Created', 'orderDate' => $orderDate ?? $modified - 1000,
+        'lines' => [['lineId' => $packageId * 10 + 1, 'productName' => 'Draperie blackout', 'quantity' => 1], ['lineId' => $packageId * 10 + 2, 'productName' => 'Draperie blackout B', 'quantity' => 2]]];
+    $pdo->prepare("INSERT INTO trendyol_packages (package_id, order_number, intake_status, marketplace_status, marketplace_modified_ms, order_date_ms, lines_hash, version, first_seen_at, last_seen_at, released_order_uuid, released_by_employee_uuid, released_at)
+        VALUES (?, ?, 'released', 'Created', ?, ?, ?, 1, ?, ?, ?, ?, ?)")->execute([$packageId, $number, $modified, $package['orderDate'], TrendyolPackage::fromApi($package)->linesHash(), $now->format('Y-m-d H:i:s.u'), $now->format('Y-m-d H:i:s.u'), $uuid, $rootUuid, $now->format('Y-m-d H:i:s.u')]);
+    $pdo->commit();
+    $f = $fx();
+    $f['packages'][] = $package;
+    $fxWrite($f);
+    $id = (string) $pdo->query('SELECT global_order_id FROM operational_orders WHERE order_uuid = ' . $pdo->quote($uuid))->fetchColumn();
+    $packages[$id] = $package;
+    return $orderInfo($id, 'trendyol') + ['number' => $number, 'package' => $packageId];
+};
+$store = new TrendyolIntakeStore($pdo, $container->projectionWriter(), $clock);
+// The Trendyol intake reading the package (the inbound marketplace synchronization) with the fixture's current status.
+$marketplace = static function (array $o, ?string $status = null) use ($store, $fxPackage, &$packages): string {
+    $package = $fxPackage($o['package']) ?? $packages[$o['id']];
+    if ($status !== null) $package['status'] = $status;
+    $package['lastModifiedDate'] = max($package['lastModifiedDate'], ($packages[$o['id']]['lastModifiedDate'] ?? 0) + 1000);
+    $packages[$o['id']] = $package;
+    return $store->record(TrendyolPackage::fromApi($package), 0);
+};
+$state = static fn (array $o): array => $rows('SELECT production_stage_id AS stage, production_owner_employee_uuid AS owner, production_version AS version, production_completed_at AS completed,
+    operational_status AS availability, cancellation_state AS cancellation, production_stopped_at AS stopped, document_status AS document FROM operational_orders WHERE order_uuid = ?', [$o['uuid']])[0];
+$control = static fn (array $o): ?array => $rows('SELECT * FROM order_cancellation_controls WHERE order_uuid = ?', [$o['uuid']])[0] ?? null;
+$op = static fn (array $o): ?array => $rows('SELECT * FROM order_cancellation_sync_operations WHERE order_uuid = ? ORDER BY hold_generation DESC LIMIT 1', [$o['uuid']])[0] ?? null;
+$ops = static fn (array $o): array => $rows('SELECT * FROM order_cancellation_sync_operations WHERE order_uuid = ? ORDER BY hold_generation', [$o['uuid']]);
+$trail = static fn (array $operation): array => array_map(static fn (array $r): string => "{$r['kind']}:{$r['outcome']}", $rows('SELECT kind, outcome FROM order_cancellation_sync_attempts WHERE operation_uuid = ? ORDER BY attempt_seq', [$operation['operation_uuid']]));
+$eventTypes = static fn (array $o): array => array_column($rows('SELECT event_type FROM order_cancellation_events WHERE order_uuid = ? ORDER BY event_seq', [$o['uuid']]), 'event_type');
+$history = static fn (array $o): array => $rows('SELECT action, from_stage_id, to_stage_id, employee_uuid, production_version_before FROM order_activity_events WHERE order_uuid = ? ORDER BY production_version_after, occurred_at', [$o['uuid']]);
+$qrRows = static fn (array $o): array => $rows('SELECT qr_reference, status FROM order_qr_references WHERE order_uuid = ? ORDER BY created_at', [$o['uuid']]);
+$claim = static function (array $who, array $o) use ($post, $ok, $state, $pdo, $key): array {
+    return $ok($post($who, $o['path'] . '/claim', T::cuttingClaim($pdo, $o['id'], $who['employeeUuid'], (int) $state($o)['version']), $key('claim')), "claim {$o['id']} at " . $state($o)['stage']);
+};
+$advance = static fn (array $who, array $o): array => $ok($post($who, $o['path'] . '/transition', ['expectedVersion' => (int) $state($o)['version']], $key('move')), "transition {$o['id']} at " . $state($o)['stage']);
+$stageWorker = static fn (string $stage): array => match ($stage) { 'waiting' => $waiter, 'material-preparation' => $cutter, default => $worker };
+$intake = static function (array $o) use ($post, $cutter, $pdo, $key): array {
+    $count = (new \Arasya\Operations\Cutting\CuttingLifecycle($pdo))->ownedCount($cutter['employeeUuid']);
+    return $post($cutter, '/cutting/intake', ['qrToken' => $o['qr']] + ($count > 0 ? ['confirmedMultiple' => true, 'ownedCount' => $count] : []), $key('intake'));
+};
+$bring = static function (array $o, string $target, bool $claimed = true) use ($claim, $advance, $state, $check, $stageWorker, $intake, $ok): void {
+    for ($guard = 0; ; $guard++) {
+        $current = $state($o);
+        if ($current['stage'] === $target) {
+            if ($claimed && $current['owner'] === null) $claim($stageWorker($target), $o);
+            return;
+        }
+        if ($current['stage'] === 'waiting' && $o['source'] === 'trendyol') {
+            $ok($intake($o), 'Trendyol cutting intake');
+        } else {
+            if ($current['owner'] === null) $claim($stageWorker($current['stage']), $o);
+            $advance($stageWorker($current['stage']), $o);
+        }
+        $check($guard < 20, 'bring terminates');
+    }
+};
+$cancellationPath = static fn (array $o): string => '/management/orders/' . rawurlencode($o['id']) . '/cancellation';
+$stop = static fn (array $who, array $o, bool $request = true): array => $dash($who, 'POST', $cancellationPath($o) . '/stop', ['reason' => 'Clientul a cerut anularea comenzii.', 'requestSourceCancellation' => $request]);
+$send = static fn (array $who, array $o, array $body = [], ?string $idem = null): array => $dash($who, 'POST', $cancellationPath($o) . '/sync', $body + ['expectedVersion' => (int) ($control($o)['version'] ?? 1)], $idem);
+$opAction = static fn (array $who, array $operation, string $action, array $body = [], ?string $idem = null): array => $dash($who, 'POST', "/management/cancellation-sync/operations/{$operation['operation_uuid']}/{$action}", $body + ['expectedVersion' => (int) $operation['version']], $idem);
+$release = static fn (array $who, array $o): array => $dash($who, 'POST', $cancellationPath($o) . '/release', ['expectedVersion' => (int) ($control($o)['version'] ?? 0), 'reason' => 'Clientul a confirmat comanda din nou.']);
+$view = static fn (array $who, array $o): array => $ok($dashGet($who, $cancellationPath($o)), "cancellation view {$o['id']}");
+$staffView = static fn (array $who, array $o): array => $ok($get($who, $o['path']), "Staff view {$o['id']}");
+$sourceCall = static fn (string $source, string $route, array $payload, ?string $secret = null, ?\Arasya\Operations\Http\ApiKernel $via = null): array => T::ingest($via ?? $kernel, $source, $payload, $secret, null, $route);
+$pull = static fn (string $source, ?\Arasya\Operations\Http\ApiKernel $via = null): array => $sourceCall($source, 'orders/cancellations', ['sentAt' => gmdate('Y-m-d\TH:i:s\Z')], null, $via);
+$report = static fn (string $source, array $operation, string $outcome, ?string $status = null): array => $sourceCall($source, 'orders/cancellations/result', ['operationId' => $operation['operation_uuid'], 'outcome' => $outcome] + ($status === null ? [] : ['sourceStatus' => $status]));
+$stopped = static fn (array $r): bool => $r['status'] === 409 && in_array($r['body']['error']['code'] ?? '', ['ORDER_PRODUCTION_STOPPED', 'ORDER_UNAVAILABLE'], true);
+
+// ---- S1. Gates ------------------------------------------------------------------------------------------------------
+$g1 = $trendyol('gate1');
+$ok($stop($syncer, $g1), 'S1 local stop with a source request');
+$check($control($g1)['source_request_status'] === 'pending' && (int) $control($g1)['hold_generation'] === 1, 'S1 the request is pending, generation 1');
+$error($send($syncer, $g1, ['reasonCode' => 500]), 409, 'CANCELLATION_SYNC_DISABLED', 'S1 flag off: Trendyol cannot be sent');
+$check($op($g1) === null, 'S1 nothing was queued');
+$flag('trendyol', true);
+$offDash = static fn (array $who, string $path, array $body): array => T::call($offKernel, 'POST', $path, $body, ['origin' => DASHBOARD, 'x-csrf-token' => $who['csrf'], 'idempotency-key' => 'cs-off-' . bin2hex(random_bytes(10))], $who['cookie']);
+$error($offDash($syncer, $cancellationPath($g1) . '/sync', ['expectedVersion' => (int) $control($g1)['version'], 'reasonCode' => 500]), 409, 'CANCELLATION_SYNC_DISABLED', 'S1 server switch off with the flag on: refused');
+$offWorker = (new CancellationSyncWorker($pdo, $wclock, (new Container($offConfig, $pdo))->cancellationProviders()));
+$view1 = $view($syncer, $g1);
+$check($view1['cancellation']['sync']['provider']['mechanism'] === 'api' && $view1['cancellation']['sync']['provider']['active'] === true && $view1['cancellation']['sync']['actions']['send'] === true
+    && $view1['cancellation']['sync']['provider']['endpoint'] === 'PUT /integration/order/sellers/{sellerId}/shipment-packages/{packageId}/items/unsupplied', 'S1 the capability is shown with both gates open');
+$error($send($syncer, $g1, []), 422, 'REASON_REQUIRED', 'S1 a Trendyol reason is never chosen automatically');
+$error($send($syncer, $g1, ['reasonCode' => 499]), 422, 'VALIDATION_FAILED', 'S1 only documented reasons');
+$error($send($syncer, $g1, ['reasonCode' => '500']), 422, 'VALIDATION_FAILED', 'S1 the reason is an integer');
+$sent = $ok($send($syncer, $g1, ['reasonCode' => 500, 'note' => 'Stoc epuizat la furnizor.']), 'S1 sent with both gates open');
+$check($sent['state'] === 'queued' && $sent['mechanism'] === 'api' && $sent['reasonCode'] === '500' && $sent['generation'] === 1, 'S1 queued once: ' . json_encode($sent));
+$flag('trendyol', false);
+$check($run()['processed'] === 0 && $puts($g1['package']) === [] && $op($g1)['state'] === 'queued', 'S1 flag turned off: the worker contacts nothing');
+$flag('trendyol', true);
+$wclock->offset = 0;
+$offWorker->run();
+$check($puts($g1['package']) === [] && $op($g1)['state'] === 'queued', 'S1 server switch off: the worker contacts nothing');
+$check(in_array('source_cancellation_requested', $eventTypes($g1), true), 'S1 the request is in the stop audit');
+// B2B has no supported outbound call: manual review at once, whatever the gates say.
+$pdo->exec("UPDATE production_feature_flags SET enabled = 0 WHERE flag_key LIKE 'cancellation\\_sync\\_%'");
+$b2bNumber = "B2BCS{$suffix}";
+$pdo->beginTransaction();
+$b2bUuid = $container->projectionWriter()->createInternal(new SourceOrderSnapshot('b2b', "b2b-cs-{$suffix}", "b2b-ev-{$suffix}", 1, new DateTimeImmutable('now', new DateTimeZone('UTC')), $b2bNumber, 'waiting', 'confirmed', 'Confirmed', null, 'in_progress', new DateTimeImmutable('now', new DateTimeZone('UTC')),
+    [new OperationalOrderItem(Uuid::v4(), 'b2b-1', 1, 'Draperie proiect', 'B2B-1', null, 'Alb', 200.0, 250.0, 'cm', 5.0, 1, ['notes' => null, 'productionNotes' => null])]), []);
+$pdo->commit();
+$b2b = $orderInfo((string) $one('SELECT global_order_id FROM operational_orders WHERE order_uuid = ?', [$b2bUuid]), 'b2b');
+$ok($stop($syncer, $b2b), 'S1 B2B local stop');
+$b2bSent = $ok($send($syncer, $b2b), 'S1 B2B request recorded');
+$check($b2bSent['state'] === 'manual_review' && $b2bSent['mechanism'] === 'manual' && $b2bSent['lastError'] === 'B2B_OUTBOUND_NOT_AVAILABLE', 'S1 B2B: manual review, never shown as sent');
+$check($view($syncer, $b2b)['cancellation']['sync']['provider']['outbound'] === 'manual', 'S1 B2B capability: manual');
+$flag('trendyol', true);
+
+// ---- S2. Trendyol happy path --------------------------------------------------------------------------------------
+$check($run()['processed'] >= 1, 'S2 the worker processes the queued operation');
+$o2 = $op($g1);
+$calls = $puts($g1['package']);
+$check(count($calls) === 1 && $calls[0]['body'] === ['lines' => [['lineId' => $g1['package'] * 10 + 1, 'quantity' => 1], ['lineId' => $g1['package'] * 10 + 2, 'quantity' => 2]], 'reasonId' => 500]
+    && $calls[0]['storeFrontCode'] === 'RO' && $calls[0]['url'] === "/integration/order/sellers/1000001/shipment-packages/{$g1['package']}/items/unsupplied", 'S2 one notice naming every line with its full quantity: ' . json_encode($calls));
+$check($o2['state'] === 'awaiting_confirmation' && (int) $o2['attempt_count'] === 1 && $o2['provider_result'] === 'accepted' && $o2['confirmed_at'] === null, 'S2 accepted is not confirmed');
+$check($trail($o2) === ['create:created', 'status_read:leased', 'submit:accepted'], 'S2 trail: read before the send ' . json_encode($trail($o2)));
+$check($state($g1)['availability'] === 'in_progress' && $control($g1)['source_status'] !== 'cancelled', 'S2 Arasya still does not claim the marketplace cancelled it');
+$run(0);
+$check(count($puts($g1['package'])) === 1 && $op($g1)['state'] === 'awaiting_confirmation', 'S2 not due yet: no read, no resend');
+$run(130);
+$o2 = $op($g1);
+$check($o2['state'] === 'confirmed' && $o2['confirmed_by'] === 'status_read' && $o2['provider_status'] === 'Cancelled' && count($puts($g1['package'])) === 1, 'S2 confirmed by reading the package: ' . json_encode($o2));
+$check($view($syncer, $g1)['cancellation']['sync']['operation']['staffState'] === 'confirmed', 'S2 Dashboard shows confirmed');
+$marketplace($g1);
+$check($control($g1)['source_status'] === 'cancelled' && $control($g1)['source_request_status'] === 'confirmed' && $state($g1)['availability'] === 'unavailable' && $op($g1)['state'] === 'confirmed', 'S2 the inbound sync then records the marketplace cancellation');
+$run(400);
+$check(count($puts($g1['package'])) === 1, 'S2 nothing is ever sent again');
+$error($release($releaser, $g1), 409, 'RELEASE_SOURCE_CANCELLED', 'S2 a cancelled order is never released');
+
+// ---- S3. Lost answers -----------------------------------------------------------------------------------------------
+// Accepted, then the answer is lost: uncertain; the next read finds it cancelled; no second notice.
+$g3 = $trendyol('lost1');
+$ok($stop($syncer, $g3), 'S3 stop');
+$ok($send($syncer, $g3, ['reasonCode' => 501]), 'S3 sent');
+$fxPut(['status' => 200, 'applyStatus' => 'Cancelled', 'failAfterApply' => true]);
+$run(0);
+$check($op($g3)['state'] === 'uncertain' && $op($g3)['last_error_code'] === 'TRENDYOL_ANSWER_LOST' && count($puts($g3['package'])) === 1, 'S3 a lost answer is uncertain');
+$run(60);
+$check($op($g3)['state'] === 'uncertain' && count($puts($g3['package'])) === 1, 'S3 inside the consistency window nothing happens');
+$fxPut(null);
+$run(330);
+$check($op($g3)['state'] === 'confirmed' && $op($g3)['confirmed_by'] === 'status_read' && count($puts($g3['package'])) === 1, 'S3 the read confirms it: never sent twice');
+// Lost before Trendyol acted: uncertain, read shows open, one more consistency window, then exactly one resend.
+$g4 = $trendyol('lost2');
+$ok($stop($syncer, $g4), 'S3 stop 2');
+$ok($send($syncer, $g4, ['reasonCode' => 504]), 'S3 sent 2');
+$fxPut(['fail' => true]);
+$run(0);
+$check($op($g4)['state'] === 'uncertain' && count($puts($g4['package'])) === 1 && $fxPackage($g4['package'])['status'] === 'Created', 'S3 lost without effect: uncertain');
+$fxPut(null);
+$run(330);
+$check($op($g4)['state'] === 'retry_scheduled' && $op($g4)['last_error_code'] === 'UNCERTAIN_NOT_APPLIED' && count($puts($g4['package'])) === 1, 'S3 read open: wait once more, still no resend');
+$run(660);
+$check($op($g4)['state'] === 'awaiting_confirmation' && count($puts($g4['package'])) === 2 && (int) $op($g4)['attempt_count'] === 2, 'S3 then one resend');
+$t4 = $trail($op($g4));
+$reads = 0;
+foreach ($t4 as $i => $step) {
+    if (str_starts_with($step, 'submit:')) {
+        $check($i > 0 && str_starts_with($t4[$i - 1], 'status_read:'), 'S3 every send directly follows a status read: ' . json_encode($t4));
+    }
+}
+$run(800);
+$check($op($g4)['state'] === 'confirmed', 'S3 confirmed after the resend');
+
+// ---- S4. Failures ---------------------------------------------------------------------------------------------------
+$failCase = static function (string $tag, array $script, string $expectState, ?string $expectError, string $label) use ($trendyol, $stop, $send, $ok, $syncer, $fxPut, $run, $op, $check, $puts): array {
+    $o = $trendyol($tag);
+    $ok($stop($syncer, $o), "{$label} stop");
+    $ok($send($syncer, $o, ['reasonCode' => 500]), "{$label} sent");
+    $fxPut($script);
+    $run(0);
+    $fxPut(null);
+    $check($op($o)['state'] === $expectState && $op($o)['last_error_code'] === $expectError && count($puts($o['package'])) === 1, "{$label}: " . json_encode($op($o)));
+    return $o;
+};
+$r429 = $failCase('f429', ['status' => 429], 'retry_scheduled', 'TRENDYOL_RATE_LIMITED', 'S4 429 is retried later');
+$next = strtotime($op($r429)['next_attempt_at'] . ' UTC') - time();
+$check($next >= 40 && $next <= 80, 'S4 first backoff is about one minute (jitter): ' . $next);
+$run(100);
+$check($op($r429)['state'] === 'awaiting_confirmation' && count($puts($r429['package'])) === 2, 'S4 the retry after the backoff is accepted');
+$failCase('f500', ['status' => 503, 'applyStatus' => null], 'uncertain', 'TRENDYOL_SERVER_ERROR', 'S4 5xx is uncertain (Trendyol may have acted)');
+$r401 = $failCase('f401', ['status' => 401, 'applyStatus' => null], 'failed', 'TRENDYOL_AUTH_FAILED', 'S4 401 is a permanent authorization failure');
+$r400 = $failCase('f400', ['status' => 400, 'applyStatus' => null], 'rejected', 'TRENDYOL_REJECTED_400', 'S4 400 is a refusal');
+$run(4000);
+$check(count($puts($r401['package'])) === 1 && count($puts($r400['package'])) === 1, 'S4 failed and rejected operations are never resent by the worker');
+// Not cancellable / not found: refused before anything is sent.
+$ship = $trendyol('ship');
+$ok($stop($syncer, $ship), 'S4 shipped stop');
+$ok($send($syncer, $ship, ['reasonCode' => 500]), 'S4 shipped sent');
+$fxStatus($ship['package'], 'Shipped');
+$run(0);
+$check($op($ship)['state'] === 'rejected' && $op($ship)['last_error_code'] === 'TRENDYOL_STATUS_NOT_CANCELLABLE' && $puts($ship['package']) === [], 'S4 a shipped package is never sent');
+$gone = $trendyol('gone');
+$ok($stop($syncer, $gone), 'S4 unknown stop');
+$ok($send($syncer, $gone, ['reasonCode' => 500]), 'S4 unknown sent');
+$fxRemove($gone['package']);
+$run(0);
+$check($op($gone)['state'] === 'rejected' && $op($gone)['last_error_code'] === 'TRENDYOL_PACKAGE_NOT_FOUND' && $puts($gone['package']) === [], 'S4 an unknown package is never sent');
+// Attempt budget: six rate-limited sends, then a person decides.
+$budget = $trendyol('budget');
+$ok($stop($syncer, $budget), 'S4 budget stop');
+$ok($send($syncer, $budget, ['reasonCode' => 500]), 'S4 budget sent');
+$fxPut(['status' => 429]);
+for ($i = 0, $at = 0; $i < 8; $i++, $at += 4000) $run($at);
+$fxPut(null);
+$check($op($budget)['state'] === 'manual_review' && $op($budget)['last_error_code'] === 'ATTEMPTS_EXHAUSTED' && count($puts($budget['package'])) === 6, 'S4 at most six sends, then manual review: ' . count($puts($budget['package'])));
+$check($view($syncer, $budget)['cancellation']['sync']['operation']['staffState'] === 'attention', 'S4 Dashboard: needs attention');
+// The status read itself failing: retried, never sent blind; six hours of failures go to a person.
+$dark = $trendyol('dark');
+$ok($stop($syncer, $dark), 'S4 unreachable stop');
+$ok($send($syncer, $dark, ['reasonCode' => 500]), 'S4 unreachable sent');
+$fxGet(['fail' => true]);
+$run(0);
+$check($op($dark)['state'] === 'queued' || $op($dark)['state'] === 'retry_scheduled', 'S4 a failed read: retried later ' . $op($dark)['state']);
+$check($puts($dark['package']) === [], 'S4 never sent without a successful read');
+$run(7 * 3600);
+$fxGet([]);
+$check($op($dark)['state'] === 'manual_review' && $op($dark)['last_error_code'] === 'PROVIDER_UNREACHABLE' && $puts($dark['package']) === [], 'S4 six hours unreachable: manual review');
+$fxGet(['status' => 401]);
+$authRead = $trendyol('authread');
+$ok($stop($syncer, $authRead), 'S4 auth read stop');
+$ok($send($syncer, $authRead, ['reasonCode' => 500]), 'S4 auth read sent');
+$run(0);
+$fxGet([]);
+$check($op($authRead)['state'] === 'failed' && $op($authRead)['last_error_code'] === 'TRENDYOL_AUTH_FAILED' && $puts($authRead['package']) === [], 'S4 refused credentials on the read: failed, nothing sent');
+
+// ---- S5. Crash, concurrency, inbound during the call ----------------------------------------------------------------
+// A worker that died while holding the lease: recovered as uncertain (it may have sent), then read before anything else.
+$crash = $trendyol('crash');
+$ok($stop($syncer, $crash), 'S5 crash stop');
+$ok($send($syncer, $crash, ['reasonCode' => 500]), 'S5 crash sent');
+$past = gmdate('Y-m-d H:i:s', time() - 600);
+$pdo->prepare("UPDATE order_cancellation_sync_operations SET state = 'processing', lease_owner = 'worker-dead', lease_expires_at = ?, version = version + 1 WHERE order_uuid = ?")->execute([$past, $crash['uuid']]);
+$fxStatus($crash['package'], 'Cancelled'); // the dead worker's notice had reached Trendyol
+$summary = $run(0);
+$check($summary['recovered'] >= 1 && in_array('lease_recovery:lease_expired', $trail($op($crash)), true), 'S5 the expired lease is recovered');
+$check($op($crash)['state'] === 'confirmed' && $puts($crash['package']) === [], 'S5 the read after recovery confirms; no second notice');
+// Four workers at once on one due operation: exactly one notice.
+$race = $trendyol('race');
+$ok($stop($syncer, $race), 'S5 race stop');
+$ok($send($syncer, $race, ['reasonCode' => 500]), 'S5 race sent');
+$start = (string) (microtime(true) + 0.7);
+$procs = [];
+$procPipes = [];
+for ($i = 0; $i < 4; $i++) {
+    $procs[] = proc_open([PHP_BINARY, __DIR__ . '/fixtures/cancellation-sync-worker.php', $dbName, $start, $fixtureFile, '0'], [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+    fclose($pipes[0]);
+    $procPipes[] = $pipes;
+}
+$outputs = [];
+foreach ($procs as $i => $process) {
+    $outputs[] = (string) stream_get_contents($procPipes[$i][1]) . (string) stream_get_contents($procPipes[$i][2]);
+    fclose($procPipes[$i][1]);
+    fclose($procPipes[$i][2]);
+    proc_close($process);
+}
+$check(count($puts($race['package'])) === 1 && $op($race)['state'] === 'awaiting_confirmation', 'S5 four concurrent workers: one notice ' . json_encode($outputs));
+// The inbound cancellation arrives while the worker is inside the HTTP call: the worker holds no transaction, the inbound
+// confirmation commits, and the worker's late answer is recorded without changing the state.
+$hooked = $trendyol('hook');
+$ok($stop($syncer, $hooked), 'S5 hook stop');
+$ok($send($syncer, $hooked, ['reasonCode' => 500]), 'S5 hook sent');
+$hookTransport = new class ($fixtureFile, $marketplace, $hooked) implements TrendyolTransport {
+    private FixtureTrendyolTransport $inner;
+    public function __construct(string $file, private Closure $marketplace, private array $order) { $this->inner = new FixtureTrendyolTransport($file); }
+    public function get(string $url, array $headers): array { return $this->inner->get($url, $headers); }
+    public function put(string $url, array $headers, string $body): array
+    {
+        $answer = $this->inner->put($url, $headers, $body);
+        ($this->marketplace)($this->order); // the intake synchronization runs in parallel and sees the cancellation
+        return $answer;
+    }
+};
+$credentials = TrendyolCredentials::fromValues('1000001', 'fixture', 'fixture', '');
+$hookRegistry = new ProviderRegistry($pdo, $config, new TrendyolCancellationProvider(new TrendyolClient($credentials, $hookTransport), new TrendyolCancellationApi($credentials, $hookTransport, 'RO')));
+$run(0, $hookRegistry);
+$hookOp = $op($hooked);
+$check($hookOp['state'] === 'confirmed' && $hookOp['confirmed_by'] === 'inbound_event' && in_array('submit:late_accepted', $trail($hookOp), true) && count($puts($hooked['package'])) === 1, 'S5 inbound confirmation during the call wins; the late answer is kept as evidence: ' . json_encode($trail($hookOp)));
+
+// ---- S6. WooCommerce (source pull) ----------------------------------------------------------------------------------
+$heartbeat = static fn (string $source, ?\Arasya\Operations\Http\ApiKernel $via = null): string => (string) ($sourceCall($source, 'heartbeat', ['sentAt' => gmdate('Y-m-d\TH:i:s\Z')], null, $via)['body']['cancellationSyncMode'] ?? '');
+$check($heartbeat('trendhome') === 'disabled', 'S6 heartbeat: disabled while the flag is off');
+$w1 = $woo('trendhome', 'w1');
+$ok($stop($syncer, $w1), 'S6 stop');
+$error($send($syncer, $w1), 409, 'CANCELLATION_SYNC_DISABLED', 'S6 flag off: not handed over');
+$check($ok($pull('trendhome'), 'S6 pull with the flag off')['operations'] === [], 'S6 the connector receives nothing while disabled');
+$flag('trendhome', true);
+$check($heartbeat('trendhome') === 'enabled' && $heartbeat('trendhome', $offKernel) === 'disabled' && $heartbeat('outletperdele') === 'disabled', 'S6 heartbeat: enabled only with both gates for this source');
+$w1Sent = $ok($send($syncer, $w1), 'S6 handed to the connector');
+$check($w1Sent['state'] === 'awaiting_pickup' && $w1Sent['mechanism'] === 'source_pull' && $w1Sent['reasonCode'] === null, 'S6 awaiting pickup');
+$check($ok($pull('trendhome', $offKernel), 'S6 pull with the server switch off')['operations'] === [], 'S6 server switch off: nothing handed over');
+$check($ok($pull('outletperdele'), 'S6 the other site pulls')['operations'] === [], 'S6 another site never sees it');
+$pulled = $ok($pull('trendhome'), 'S6 pull');
+$mine = array_values(array_filter($pulled['operations'], static fn (array $item): bool => $item['operationId'] === $op($w1)['operation_uuid']));
+$check(count($mine) === 1 && $mine[0]['orderId'] === $w1['number'] && array_keys($mine[0]) === ['operationId', 'orderId', 'requestedAt'], 'S6 the connector receives the shop order id only: ' . json_encode($mine));
+$check($op($w1)['last_pulled_at'] !== null && in_array('pickup:picked_up', $trail($op($w1)), true), 'S6 pickup recorded');
+$error($opAction($syncer, $op($w1), 'withdraw', ['reason' => 'Clientul s-a răzgândit.']), 409, 'CANCELLATION_SYNC_NOT_WITHDRAWABLE', 'S6 after pickup it cannot be withdrawn');
+$error($sourceCall('trendhome', 'orders/cancellations', ['sentAt' => 'x'], 'wrong-secret-0123456789abcdef0123456789'), 401, 'SOURCE_SIGNATURE_INVALID', 'S6 an unsigned pull is refused');
+$error($report('outletperdele', $op($w1), 'cancelled'), 404, 'CANCELLATION_SYNC_NOT_FOUND', 'S6 another site cannot report it (indistinguishable from missing)');
+$error($sourceCall('trendhome', 'orders/cancellations/result', ['operationId' => $op($w1)['operation_uuid'], 'outcome' => 'refunded']), 422, 'SOURCE_PAYLOAD_INVALID', 'S6 unknown outcomes are refused');
+$error($sourceCall('trendhome', 'orders/cancellations/result', ['operationId' => $op($w1)['operation_uuid'], 'outcome' => 'cancelled', 'customer' => 'x']), 422, 'SOURCE_PAYLOAD_INVALID', 'S6 extra fields are refused');
+$reported = $ok($report('trendhome', $op($w1), 'cancelled', 'cancelled'), 'S6 report');
+$check($reported['state'] === 'awaiting_confirmation' && $op($w1)['confirmed_at'] === null, 'S6 a report is not a confirmation');
+$staffStop = $staffView($waiter, $w1)['productionStop'] ?? [];
+$check(($staffStop['sync'] ?? null) === 'awaiting_confirmation' && !isset($staffStop['operation']) && !str_contains(json_encode($staffStop), $op($w1)['operation_uuid']), 'S6 Staff: awaiting confirmation, no operation details');
+$check($ok($report('trendhome', $op($w1), 'cancelled', 'cancelled'), 'S6 duplicate report')['state'] === 'awaiting_confirmation' && in_array('report:duplicate_report', $trail($op($w1)), true), 'S6 a repeated report changes nothing');
+$error($report('trendhome', $op($w1), 'rejected_paid'), 409, 'CANCELLATION_SYNC_CONFLICT', 'S6 a conflicting report is refused and kept as evidence');
+$ok($wooEvent($w1, 'cancelled', 'cancelled'), 'S6 the shop event arrives');
+$check($op($w1)['state'] === 'confirmed' && $op($w1)['confirmed_by'] === 'inbound_event' && $control($w1)['source_request_status'] === 'confirmed', 'S6 confirmed by the inbound event');
+$check(($staffView($waiter, $w1)['productionStop']['sync'] ?? null) === 'confirmed', 'S6 Staff: confirmed');
+$check($ok($report('trendhome', $op($w1), 'already_cancelled'), 'S6 report after confirmation')['state'] === 'confirmed', 'S6 a late report after confirmation is harmless');
+// Paid order: the connector refuses; a person decides and closes it (never a refund).
+$w2 = $woo('trendhome', 'w2paid');
+$ok($stop($syncer, $w2), 'S6 paid stop');
+$ok($send($syncer, $w2), 'S6 paid handed over');
+$ok($pull('trendhome'), 'S6 paid pull');
+$check($ok($report('trendhome', $op($w2), 'rejected_paid'), 'S6 paid refused by the shop')['state'] === 'manual_review' && $op($w2)['last_error_code'] === 'PAID_ORDER_REQUIRES_PERSON', 'S6 a paid order needs a person');
+$error($release($releaser, $w2), 409, 'RELEASE_SYNC_OPEN', 'S6 no release while it waits for a person');
+$error($opAction($syncer, $op($w2), 'close', ['note' => 'scurt']), 422, 'VALIDATION_FAILED', 'S6 closing needs a note');
+$closed = $ok($opAction($syncer, $op($w2), 'close', ['note' => 'Anulat manual în magazin după verificarea plății.']), 'S6 closed by a person');
+$check($closed['state'] === 'closed' && $closed['confirmedAt'] === null && $op($w2)['closed_by_employee_uuid'] === $syncer['employeeUuid'], 'S6 closed, never shown as confirmed');
+// Withdraw before pickup.
+$w3 = $woo('outletperdele', 'w3');
+$flag('outletperdele', true);
+$ok($stop($syncer, $w3), 'S6 withdraw stop');
+$ok($send($syncer, $w3), 'S6 withdraw handed over');
+$withdrawn = $ok($opAction($syncer, $op($w3), 'withdraw', ['reason' => 'Clientul a revenit asupra anulării.']), 'S6 withdrawn before pickup');
+$check($withdrawn['state'] === 'withdrawn' && $ok($pull('outletperdele'), 'S6 pull after withdraw')['operations'] === [], 'S6 a withdrawn request is never handed over');
+// Pickup timeout: 24 hours without pickup goes to a person.
+$w4 = $woo('outletperdele', 'w4');
+$ok($stop($syncer, $w4), 'S6 timeout stop');
+$ok($send($syncer, $w4), 'S6 timeout handed over');
+$run(25 * 3600);
+$check($op($w4)['state'] === 'manual_review' && $op($w4)['last_error_code'] === 'PICKUP_TIMEOUT', 'S6 no pickup for a day: manual review');
+// The connector's shop no longer has the order: failed; a retry hands it over again.
+$w5 = $woo('outletperdele', 'w5');
+$ok($stop($syncer, $w5), 'S6 not found stop');
+$ok($send($syncer, $w5), 'S6 not found handed over');
+$ok($pull('outletperdele'), 'S6 not found pull');
+$check($ok($report('outletperdele', $op($w5), 'not_found'), 'S6 not found report')['state'] === 'failed', 'S6 not found: failed');
+$retried = $ok($opAction($syncer, $op($w5), 'retry'), 'S6 retry');
+$check($retried['state'] === 'awaiting_pickup' && $op($w5)['last_pulled_at'] === null && in_array('retry:handed_to_source', $trail($op($w5)), true), 'S6 a retry hands it over again, same operation');
+$check(count($ops($w5)) === 1, 'S6 a retry never creates a second logical cancellation');
+
+// ---- S7. Authorization, idempotency, versions --------------------------------------------------------------------
+$a = $woo('trendhome', 'auth');
+$ok($stop($keeper, $a), 'S7 stop by a keeper');
+$error($send($keeper, $a), 403, 'UNAUTHORIZED_ACTION', 'S7 the stop permission is not the sync permission');
+$error($send($manager, $a), 403, 'UNAUTHORIZED_ACTION', 'S7 an operations manager without the permission is refused');
+$error($post($worker, $cancellationPath($a) . '/sync', ['expectedVersion' => 1]), 403, 'APPLICATION_ACCESS_DENIED', 'S7 a Staff worker is refused');
+$noCsrf = T::call($kernel, 'POST', $cancellationPath($a) . '/sync', ['expectedVersion' => 1], ['origin' => DASHBOARD, 'idempotency-key' => $key('csrf')], $syncer['cookie']);
+$check($noCsrf['status'] === 403, 'S7 CSRF is required');
+$error($send($syncer, $a, ['expectedVersion' => 99]), 409, 'CANCELLATION_CHANGED', 'S7 a stale stop version is refused');
+$error($send($syncer, $a, [], 'short'), 400, 'INVALID_IDEMPOTENCY_KEY', 'S7 an idempotency key is required');
+$idem = $key('send');
+$firstSend = $ok($send($syncer, $a, [], $idem), 'S7 send');
+$check($ok($send($syncer, $a, [], $idem), 'S7 replay') == $firstSend && count($ops($a)) === 1, 'S7 a replay returns the committed result, one operation');
+$error($send($syncer, $a, ['note' => 'alt corp'], $idem), 409, 'IDEMPOTENCY_CONFLICT', 'S7 the same key with another body is refused');
+$error($send($syncer, $a), 409, 'CANCELLATION_SYNC_EXISTS', 'S7 a second send for the same stop is refused');
+$error($opAction($syncer, $op($a), 'retry', ['expectedVersion' => 99]), 409, 'CANCELLATION_SYNC_CHANGED', 'S7 a stale operation version is refused');
+$error($opAction($keeper, $op($a), 'withdraw', ['reason' => 'Fără drept de sincronizare.']), 403, 'UNAUTHORIZED_ACTION', 'S7 withdraw needs the permission');
+$error($dash($syncer, 'POST', '/management/cancellation-sync/operations/00000000-0000-4000-8000-000000000000/retry', ['expectedVersion' => 1]), 404, 'CANCELLATION_SYNC_NOT_FOUND', 'S7 unknown operation');
+// A role removed while the screen was open decides nothing.
+$a2 = $woo('trendhome', 'auth2');
+$ok($stop($syncer, $a2), 'S7 stop 2');
+$ok($dash($root, 'PUT', "/management/employees/{$syncer2['employeeUuid']}/roles", ['roleIds' => []]), 'S7 the second manager loses the role');
+$error($send($syncer2, $a2), 403, 'UNAUTHORIZED_ACTION', 'S7 revoked authority is refused');
+$check($op($a2) === null, 'S7 nothing was created');
+$check(($view($releaser, $a2)['capabilities']['sync'] ?? null) === false && $view($syncer, $a2)['capabilities']['sync'] === true, 'S7 capabilities follow the permission');
+
+// ---- S8. Release while open, generations ---------------------------------------------------------------------------
+$gen = $woo('trendhome', 'gen');
+$ok($stop($syncer, $gen), 'S8 stop');
+$ok($send($syncer, $gen), 'S8 handed over');
+$check($view($releaser, $gen)['cancellation']['release']['refusal'] === 'sync_open', 'S8 the Dashboard says why a release is impossible');
+$error($release($releaser, $gen), 409, 'RELEASE_SYNC_OPEN', 'S8 no release while the request is open');
+$check($eventTypes($gen)[count($eventTypes($gen)) - 1] === 'release_refused', 'S8 the refusal is audited');
+$ok($opAction($syncer, $op($gen), 'withdraw', ['reason' => 'Clientul păstrează comanda.']), 'S8 withdrawn');
+$ok($release($releaser, $gen), 'S8 released after the withdrawal');
+$check($state($gen)['cancellation'] === 'released' && (int) $control($gen)['hold_generation'] === 1, 'S8 released');
+$ok($stop($syncer, $gen), 'S8 stopped again');
+$check((int) $control($gen)['hold_generation'] === 2 && $control($gen)['source_request_status'] === 'pending', 'S8 a new stop is a new generation');
+$check($view($syncer, $gen)['cancellation']['sync']['operation'] === null && $view($syncer, $gen)['cancellation']['sync']['actions']['send'] === true, 'S8 the old operation does not belong to the new stop');
+$second = $ok($send($syncer, $gen), 'S8 sent for generation 2');
+$check($second['generation'] === 2 && count($ops($gen)) === 2 && $ops($gen)[0]['state'] === 'withdrawn', 'S8 one operation per generation, the old one untouched');
+$foreign = $ok($pull('outletperdele'), 'S8 the other site pulls with its own gates open');
+$check($foreign['enabled'] === true && !in_array($second['id'], array_column($foreign['operations'], 'operationId'), true) && $op($gen)['last_pulled_at'] === null, 'S8 another site never receives (or marks picked up) this site\'s request');
+$pulledIds = array_column($ok($pull('trendhome'), 'S8 pull')['operations'], 'operationId');
+$check(in_array($second['id'], $pulledIds, true) && !in_array($ops($gen)[0]['operation_uuid'], $pulledIds, true), 'S8 only the current generation is handed over');
+// A reactivation at the source never releases, and never withdraws a request by itself.
+$ok($wooEvent($gen, 'cancelled', 'cancelled'), 'S8 cancelled at the shop');
+$ok($wooEvent($gen, 'active', 'processing'), 'S8 reactivated at the shop');
+$check($state($gen)['cancellation'] === 'held' && $op($gen)['state'] === 'confirmed', 'S8 the reactivation keeps the stop; the confirmation stands');
+
+// ---- S9. 3 sources x 14 stages ----------------------------------------------------------------------------------------
+$flag('trendyol', true);
+$flag('trendhome', true);
+$flag('outletperdele', true);
+$matrix = 0;
+foreach (['trendhome', 'outletperdele', 'trendyol'] as $source) {
+    foreach ($canonical as $ordinal => $stage) {
+        $tag = 'm' . substr($source, 0, 2) . ($ordinal + 1);
+        $o = $source === 'trendyol' ? $trendyol($tag) : $woo($source, $tag, $stage);
+        $bring($o, $stage, $stage !== 'waiting');
+        $label = "S9 {$source} {$stage}";
+        $before = $state($o);
+        $historyBefore = $history($o);
+        $qrBefore = $qrRows($o);
+        $ok($stop($syncer, $o), "{$label} stop");
+        $stopVersion = (int) $control($o)['version'];
+        $ok($send($syncer, $o, $source === 'trendyol' ? ['reasonCode' => 506] : []), "{$label} sent");
+        if ($source === 'trendyol') {
+            $run(0);
+            $check(count($puts($o['package'])) === 1, "{$label}: one notice");
+            $run(200);
+            $marketplace($o);
+        } else {
+            $ok($pull($source), "{$label} pull");
+            $ok($report($source, $op($o), 'cancelled'), "{$label} report");
+            $ok($wooEvent($o, 'cancelled', 'cancelled'), "{$label} shop event");
+        }
+        $after = $state($o);
+        $check($op($o)['state'] === 'confirmed', "{$label}: confirmed " . $op($o)['state']);
+        $check($after['stage'] === $stage && $after['owner'] === $before['owner'] && (int) $after['version'] === (int) $before['version'] && $after['completed'] === null, "{$label}: stage, owner and production version untouched");
+        $check($history($o) === $historyBefore && $qrRows($o) === $qrBefore && $after['document'] === $before['document'], "{$label}: history, QR and document untouched");
+        $check($after['cancellation'] === 'held' && $after['availability'] === 'unavailable' && $control($o)['source_request_status'] === 'confirmed' && (int) $control($o)['version'] > $stopVersion, "{$label}: stopped, cancelled at the source, request confirmed");
+        if ($before['owner'] !== null) {
+            $check($stopped($post($stageWorker($stage), $o['path'] . '/transition', ['expectedVersion' => (int) $after['version']])), "{$label}: the owner cannot continue");
+            $check(($staffView($stageWorker($stage), $o)['productionStop']['sync'] ?? null) === 'confirmed', "{$label}: Staff shows the confirmed cancellation");
+        }
+        $matrix++;
+    }
+}
+$check($matrix === 42 && $stagesNow() === $canonical, 'S9 42 positions; the workflow is unchanged');
+// Completed production, then a cancellation request: the completion is kept, nothing reopens.
+$done = $woo('trendhome', 'done', 'delivery');
+$bring($done, 'delivery');
+$advance($worker, $done);
+$completedAt = $state($done)['completed'];
+$ok($stop($syncer, $done), 'S9 stop after completion');
+$ok($send($syncer, $done), 'S9 sent after completion');
+$ok($pull('trendhome'), 'S9 completed pull');
+$ok($report('trendhome', $op($done), 'rejected_status', 'completed'), 'S9 the shop refuses (already completed)');
+$check($op($done)['state'] === 'rejected' && $state($done)['completed'] === $completedAt && $state($done)['stage'] === 'delivery', 'S9 refused; completion kept, no backward transition');
+
+// ---- S10. Reconciliation ---------------------------------------------------------------------------------------------
+$discrepancies = static fn (): int => (int) $one('SELECT COUNT(*) FROM order_cancellation_discrepancies');
+$before = $discrepancies();
+$dry = $ok($dash($syncer, 'POST', '/management/cancellation-sync/reconcile', []), 'S10 dry run');
+$check($dry['dryRun'] === true && $discrepancies() === $before, 'S10 a dry run writes nothing');
+// Only this suite's orders (a shared CI database also holds other suites' stops).
+$kinds = array_count_values(array_column(array_filter($dry['findings'], static fn (array $f): bool => str_contains((string) $f['orderNumber'], $suffix)), 'kind'));
+$check(($kinds['operation_manual_review'] ?? 0) >= 2 && ($kinds['operation_refused_still_stopped'] ?? 0) >= 2 && ($kinds['local_stop_without_request'] ?? 0) === 0, 'S10 findings: ' . json_encode($kinds));
+$check(!str_contains(json_encode($dry), 'Draperie') && !str_contains(json_encode($dry), 'fixture'), 'S10 no customer data or credentials in findings');
+$error($dash($keeper, 'POST', '/management/cancellation-sync/reconcile', []), 403, 'UNAUTHORIZED_ACTION', 'S10 a dry run needs the sync permission');
+// An inconsistency only a reconciliation fixes: the source cancellation is stored but the operation is still open.
+$inc = $woo('trendhome', 'inc');
+$ok($stop($syncer, $inc), 'S10 stop');
+$ok($send($syncer, $inc), 'S10 handed over');
+$pdo->prepare("UPDATE order_cancellation_controls SET source_status = 'cancelled' WHERE order_uuid = ?")->execute([$inc['uuid']]); // test fixture of an earlier inconsistency
+$reconciler = $container->cancellationReconciler();
+$applied = $reconciler->apply('test-operator');
+$check($applied['autoConfirmed'] >= 1 && $op($inc)['state'] === 'confirmed' && $op($inc)['confirmed_by'] === 'inbound_event' && in_array('inbound:reconciled', $trail($op($inc)), true), 'S10 apply confirms from the stored source evidence');
+$recorded = $discrepancies();
+$check($recorded > 0 && (int) $one("SELECT COUNT(*) FROM order_cancellation_discrepancies WHERE state = 'open' AND kind = 'source_cancelled_operation_open'") === 0, 'S10 findings recorded; the auto-confirmed one is not open');
+$reconciler->apply('test-operator');
+$check($discrepancies() === $recorded, 'S10 a second apply duplicates nothing');
+$manual = $op($budget);
+$ok($opAction($syncer, $manual, 'close', ['note' => 'Verificat manual în Trendyol Seller Center.']), 'S10 a person closes the exhausted one');
+$reconciler->apply('test-operator');
+$check((int) $one("SELECT COUNT(*) FROM order_cancellation_discrepancies WHERE operation_uuid = ? AND state = 'resolved'", [$manual['operation_uuid']]) === 1, 'S10 a fixed finding is resolved');
+$overview = $ok($dashGet($syncer, '/management/cancellation-sync'), 'S10 overview');
+$check($overview['ready'] === true && count($overview['providers']) === 4 && isset($overview['operations']['trendyol']['confirmed']) && $overview['discrepancies'] !== [], 'S10 overview: providers, states, open findings');
+// Trendyol Fresh Start boundary: an order from before the intake baseline is never sent and is marked in findings.
+$baselineMs = (int) floor(microtime(true) * 1000) - 3_600_000;
+$pdo->prepare("UPDATE trendyol_intake_state SET baseline_at = ?, status = 'paused' WHERE state_id = 1")->execute([gmdate('Y-m-d H:i:s', intdiv($baselineMs, 1000))]);
+$old = $trendyol('old', $baselineMs - 86_400_000);
+$ok($stop($syncer, $old), 'S10 pre-baseline stop');
+$error($send($syncer, $old, ['reasonCode' => 500]), 409, 'TRENDYOL_BEFORE_BASELINE', 'S10 a pre-baseline Trendyol order is never re-cancelled');
+$fresh = $trendyol('fresh', $baselineMs + 60_000);
+$ok($stop($syncer, $fresh), 'S10 post-baseline stop');
+$ok($send($syncer, $fresh, ['reasonCode' => 500]), 'S10 a post-baseline order can be sent');
+$findings = $reconciler->scan();
+$oldFinding = array_values(array_filter($findings, static fn (array $f): bool => $f['orderUuid'] === $old['uuid']));
+$check($oldFinding !== [] && $oldFinding[0]['kind'] === 'request_without_operation' && $oldFinding[0]['beforeBaseline'] === true, 'S10 the pre-baseline order is listed, marked before the baseline');
+$pdo->exec("UPDATE trendyol_intake_state SET status = 'inactive', baseline_at = NULL WHERE state_id = 1");
+
+// ---- S11. Operator CLI and rollback preflight --------------------------------------------------------------------------
+$env = ['HOME' => (string) getenv('HOME'), 'ARASYA_APP_ENV' => 'test', 'ARASYA_APP_SECRET' => str_repeat('t', 32), 'ARASYA_ALLOWED_ORIGINS' => T::ORIGIN,
+    'ARASYA_DB_HOST' => $config->dbHost, 'ARASYA_DB_PORT' => (string) $config->dbPort, 'ARASYA_DB_NAME' => $dbName, 'ARASYA_DB_USER' => $config->dbUser, 'ARASYA_DB_PASSWORD' => $config->dbPassword];
+$cli = static function (string $script, string ...$arguments) use ($env): array {
+    $process = proc_open([PHP_BINARY, dirname(__DIR__) . '/bin/' . $script, ...$arguments], [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, null, $env);
+    fclose($pipes[0]);
+    $out = (string) stream_get_contents($pipes[1]);
+    $err = (string) stream_get_contents($pipes[2]);
+    fclose($pipes[1]);
+    fclose($pipes[2]);
+    return ['code' => proc_close($process), 'json' => json_decode($out, true), 'out' => $out, 'err' => $err];
+};
+$status = $cli('cancellation-sync.php', 'status');
+$check($status['code'] === 0 && $status['json']['serverSwitch'] === 'disabled' && count($status['json']['providers']) === 4, 'S11 status (the CLI environment has the switch off) ' . $status['err']);
+$runCli = $cli('cancellation-sync.php', 'run');
+$check($runCli['code'] === 0 && $runCli['json']['processed'] === 0, 'S11 run with the switch off contacts nothing');
+$check($cli('cancellation-sync.php', 'enable', '--source=trendyol', '--operator=Test Operator', '--reason=Activare aprobată de proprietar.', '--confirm=yes')['code'] === 2, 'S11 enable without the phrase is refused');
+$check($cli('cancellation-sync.php', 'enable', '--source=b2b', '--operator=Test Operator', '--reason=Activare aprobată de proprietar.', '--confirm=ENABLE-CANCELLATION-SYNC')['code'] === 2, 'S11 B2B has no flag');
+$flag('trendhome', false);
+$enabledEvents = (int) $one("SELECT COUNT(*) FROM production_feature_flag_events WHERE feature_key = 'cancellation_sync_trendhome' AND action = 'enabled'");
+$enabled = $cli('cancellation-sync.php', 'enable', '--source=trendhome', '--operator=Test Operator', '--reason=Activare aprobată de proprietar.', '--confirm=ENABLE-CANCELLATION-SYNC');
+$check($enabled['code'] === 0 && $enabled['json']['changed'] === true && $enabled['json']['active'] === false && (int) $one("SELECT enabled FROM production_feature_flags WHERE flag_key = 'cancellation_sync_trendhome'") === 1
+    && (int) $one("SELECT COUNT(*) FROM production_feature_flag_events WHERE feature_key = 'cancellation_sync_trendhome' AND action = 'enabled'") === $enabledEvents + 1, 'S11 enabled with an audit row; still inactive without the server switch');
+$disabled = $cli('cancellation-sync.php', 'disable', '--source=trendhome', '--operator=Test Operator', '--reason=Oprire de test după verificare.');
+$check($disabled['code'] === 0 && (int) $one("SELECT enabled FROM production_feature_flags WHERE flag_key = 'cancellation_sync_trendhome'") === 0, 'S11 disabled');
+$dryCli = $cli('cancellation-sync.php', 'reconcile', '--dry-run=1');
+$check($dryCli['code'] === 0 && $dryCli['json']['dryRun'] === true, 'S11 reconcile dry run');
+$check($cli('cancellation-sync.php', 'reconcile', '--dry-run=0')['code'] === 2, 'S11 recording needs an operator');
+$rollback = $cli('check-rollback.php', '2.35.0');
+$check($rollback['code'] === 3 && $rollback['json']['requiredFloor'] === '2.36.0' && $rollback['json']['state']['openCancellationSyncOperations'] > 0, 'S11 rollback below 2.36.0 is refused while an operation is open');
+$check($cli('check-rollback.php', '2.36.0')['code'] === 0, 'S11 the current API is a safe target');
+
+// ---- S12. Mutation scope and secrets ----------------------------------------------------------------------------------
+$writes = [];
+foreach (glob(dirname(__DIR__) . '/src/Cancellation/Sync/*.php') ?: [] as $file) {
+    preg_match_all('/\b(?:INSERT\s+(?:IGNORE\s+)?INTO|UPDATE|DELETE\s+FROM)\s+([a-z_]+)/i', (string) file_get_contents($file), $m);
+    foreach ($m[1] as $table) $writes[strtolower($table)] = true;
+}
+ksort($writes);
+$check(array_keys($writes) === ['order_cancellation_discrepancies', 'order_cancellation_sync_attempts', 'order_cancellation_sync_operations'], 'S12 the synchronization writes only its own tables (the stop itself goes through CancellationControl): ' . json_encode(array_keys($writes)));
+$stored = json_encode($rows('SELECT * FROM order_cancellation_sync_attempts')) . json_encode($rows('SELECT * FROM order_cancellation_sync_operations')) . json_encode($rows('SELECT * FROM order_cancellation_discrepancies'));
+$check(!str_contains($stored, base64_encode('fixture:fixture')) && !str_contains($stored, 'Authorization') && !str_contains($stored, 'Draperie'), 'S12 no credentials or product/customer data are stored');
+$check((int) $one("SELECT COUNT(*) FROM order_cancellation_sync_operations WHERE state = 'confirmed' AND confirmed_by IS NULL") === 0, 'S12 every confirmation names its evidence');
+$check((int) $one('SELECT COUNT(*) FROM (SELECT order_uuid FROM order_cancellation_sync_operations WHERE open_order_uuid IS NOT NULL GROUP BY order_uuid HAVING COUNT(*) > 1) x') === 0, 'S12 at most one open operation per order');
+$check((int) $one("SELECT COUNT(*) FROM order_cancellation_sync_operations x JOIN operational_orders o ON o.order_uuid = x.order_uuid WHERE x.open_order_uuid IS NOT NULL AND o.cancellation_state <> 'held'") === 0, 'S12 no released order has an open operation');
+
+fwrite(STDOUT, "PASS MySQL cancellation synchronization integration ({$checks} checks)\n");

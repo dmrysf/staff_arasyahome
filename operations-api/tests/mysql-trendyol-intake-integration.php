@@ -75,6 +75,7 @@ $transport = new class implements TrendyolTransport {
     /** @var list<array{status: int, body: string}> */
     public array $responses = [];
     public function get(string $url, array $headers): array { $this->calls[] = ['url' => $url, 'headers' => $headers]; return array_shift($this->responses) ?? ['status' => 200, 'body' => '{"content":[],"totalPages":0,"totalElements":0}']; }
+    public function put(string $url, array $headers, string $body): array { throw new LogicException('The intake never writes to Trendyol.'); }
 };
 $credentials = TrendyolCredentials::fromValues('123456', 'fixture-key', 'fixture-secret', '');
 $container = new Container($config, $pdo);

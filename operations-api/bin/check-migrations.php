@@ -157,4 +157,23 @@ if (preg_match('/ON (DELETE|UPDATE) (CASCADE|SET NULL)|DROP |DELETE FROM|TRUNCAT
     || preg_match_all('/ALTER TABLE ([a-z_]+)/', $cancellationStatements, $cancellationAlters) !== 1 || $cancellationAlters[1] !== ['operational_orders']) {
     throw new RuntimeException('Migration 033 must stay additive and must not grant roles or rewrite rows.');
 }
+// Cancellation synchronization (034): additive, grants nothing, creates every provider flag disabled; the only ALTER adds
+// the stop generation to the control rows.
+$syncSchema = (string) file_get_contents($root . '/database/migrations/034_order_cancellation_sync.sql');
+foreach (['order_cancellation_sync_operations', 'order_cancellation_sync_attempts', 'order_cancellation_discrepancies'] as $table) {
+    if (preg_match('/CREATE TABLE IF NOT EXISTS\s+' . $table . '\b/', $syncSchema) !== 1) {
+        throw new RuntimeException("Migration 034 is missing table: {$table}");
+    }
+}
+foreach (['UNIQUE KEY uq_order_cancellation_sync_generation (order_uuid, hold_generation)', 'UNIQUE KEY uq_order_cancellation_sync_open (open_order_uuid)',
+    "('cancellation_sync_trendyol', 0,", "('cancellation_sync_trendhome', 0,", "('cancellation_sync_outletperdele', 0,", "('production.cancellation.sync'"] as $required) {
+    if (!str_contains($syncSchema, $required)) {
+        throw new RuntimeException("Migration 034 is missing: {$required}");
+    }
+}
+$syncStatements = preg_replace(['/^--.*$/m', '/ON (UPDATE|DELETE) RESTRICT/', '/ON DUPLICATE KEY UPDATE/'], '', $syncSchema) ?? '';
+if (preg_match('/ON (DELETE|UPDATE) (CASCADE|SET NULL)|DROP |DELETE FROM|TRUNCATE|\bUPDATE |role_permissions|employee_role_assignments|, 1, NULL/i', $syncStatements) === 1
+    || preg_match_all('/ALTER TABLE ([a-z_]+)/', $syncStatements, $syncAlters) !== 1 || $syncAlters[1] !== ['order_cancellation_controls']) {
+    throw new RuntimeException('Migration 034 must stay additive, create its flags disabled and must not grant roles or rewrite rows.');
+}
 fwrite(STDOUT, 'Migration sanity checks passed for ' . count($files) . " file(s).\n");

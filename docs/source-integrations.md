@@ -4,7 +4,7 @@ All external commerce data enters Arasya Operations first. Staff never contacts 
 
 ## Inbound-only rule
 
-Operations source connectors are inbound-only unless an explicit, separately reviewed outbound integration is implemented. Arasya production transitions do not mutate WooCommerce order statuses, and `operations-api/tests/inbound-only-guard.php` enforces this in CI. See [production-control.md](production-control.md).
+Operations source connectors are inbound-only unless an explicit, separately reviewed outbound integration is implemented. Arasya production transitions do not mutate WooCommerce order statuses, and `operations-api/tests/inbound-only-guard.php` enforces this in CI. The one reviewed outbound integration is the [cancellation synchronization](order-cancellation-sync.md) (API 2.36.0): the Trendyol unsupplied notice, and WooCommerce cancellation requests that the shop's own connector pulls; both are off by default. See [production-control.md](production-control.md).
 
 ## Projection rules
 

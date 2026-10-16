@@ -46,6 +46,8 @@ final class CancellationView
             'phase' => (string) $row['stop_phase'],
             'physical' => (string) $row['stop_physical'],
             'since' => self::iso((string) $row['production_stopped_at']),
+            // API 2.36.0: awaiting_confirmation | attention | confirmed, or null without an outbound request (never details).
+            'sync' => Sync\SyncState::staffView(isset($row['stop_sync']) ? (string) $row['stop_sync'] : null),
             'canContinue' => false,
             'managementAttention' => true,
         ];
@@ -88,10 +90,10 @@ final class CancellationView
      * @param array<string, mixed> $control @param array<string, mixed> $order locked or read order columns
      * @return array<string, mixed>
      */
-    public static function management(array $control, array $order): array
+    public static function management(array $control, array $order, bool $syncOpen = false): array
     {
         $person = static fn (?string $id, ?string $name): ?array => $id === null ? null : ['id' => $id, 'displayName' => $name ?? $id];
-        $refusal = CancellationControl::releaseRefusal($order, $control);
+        $refusal = CancellationControl::releaseRefusal($order, $control, $syncOpen);
         return [
             'state' => $control['hold_status'] === CancellationControl::HELD ? 'stopped' : 'released',
             'category' => self::category($control),
@@ -108,7 +110,7 @@ final class CancellationView
                 'evidenceAt' => self::isoOrNull($control['source_evidence_at']),
                 'request' => (string) $control['source_request_status'],
                 'requestedAt' => self::isoOrNull($control['source_requested_at']),
-                // Phase 1 never writes to a source: a pending request is recorded only.
+                // Without the synchronization (before 034) a pending request is recorded only; with it, the operation state.
                 'outbound' => 'not_sent',
             ],
             'atStop' => [

@@ -73,6 +73,12 @@ final class OperationsTestSupport
         $in = $orderUuids === null ? null : implode(',', array_map([$pdo, 'quote'], $orderUuids));
         $where = static fn (string $column): string => $in === null ? '' : " WHERE {$column} IN ({$in})";
         // Migration 033 rows reference the orders; a test that deletes its orders removes their cancellation control first.
+        if ($pdo->query("SHOW TABLES LIKE 'order_cancellation_sync_operations'")->fetchColumn() !== false) {
+            // Migration 034 rows reference the orders as well.
+            $pdo->exec('DELETE FROM order_cancellation_discrepancies' . $where('order_uuid'));
+            $pdo->exec('DELETE FROM order_cancellation_sync_attempts' . $where('order_uuid'));
+            $pdo->exec('DELETE FROM order_cancellation_sync_operations' . $where('order_uuid'));
+        }
         if ($pdo->query("SHOW TABLES LIKE 'order_cancellation_controls'")->fetchColumn() !== false) {
             $pdo->exec('DELETE FROM order_cancellation_events' . $where('order_uuid'));
             $pdo->exec('DELETE FROM order_cancellation_controls' . $where('order_uuid'));

@@ -172,4 +172,6 @@ No integration code is written for a new site.
 - Root approval, pairing and self-service secret issuance. The protocol (source key plus per-source secret) stays the same when these are added.
 - The YD SOFT WordPress client, outbox, retries and credentials (Milestone 2).
 - Source-scoped QR/document endpoints. The QR/document engine is unchanged.
-- Any outbound WooCommerce write. Sources stay inbound-only (`tests/inbound-only-guard.php`).
+- Any outbound WooCommerce write from Arasya. Sources stay inbound-only (`tests/inbound-only-guard.php`). Since API 2.36.0 a
+  shop's connector may pull cancellation requests (`orders/cancellations`, `orders/cancellations/result`); the shop changes
+  its own order, never Arasya. See [cancellation synchronization](order-cancellation-sync.md).

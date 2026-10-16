@@ -221,6 +221,10 @@ summary.
 
 ## Phase 2 contracts (prepared, not implemented)
 
+Implemented by [cancellation synchronization](order-cancellation-sync.md) (API 2.36.0, migration 034). The outbound
+queue is a separate table (`order_cancellation_sync_operations`), so `chk_order_cancellation_controls_request` is unchanged,
+and `source.outbound` reports the operation state. The notes below describe the Phase 1 preparation.
+
 - `source_request_status = 'pending'` with `source_requested_at` and the requesting person is the outbound queue a
   reviewed integration may read. A `confirmed` status already arrives through the existing inbound paths and is
   idempotent.
