@@ -746,6 +746,16 @@ $check($op($r7)['state'] === 'manual_review' && $evidence($r7)['status'] === 'ok
 $ok($opAction($syncer, $op($r7), 'retry', ['providerCheck' => $attest()]), 'R7 retry with evidence and a statement');
 $run(7 * 3600 + 200);
 $check(count($puts($r7['package'])) === 2 && $op($r7)['state'] === 'awaiting_confirmation', 'R7 one authorized notice');
+// Scenario A: a cancellation that arrives from Trendyol (customer or marketplace) stops production and records the
+// external status; it never creates an outbound request, and nothing is sent to Trendyol.
+$inboundOnly = $trendyol('inboundonly');
+$fxStatus($inboundOnly['package'], 'Cancelled');
+$marketplace($inboundOnly);
+$run(7 * 3600 + 300);
+$check($state($inboundOnly)['cancellation'] === 'held' && $control($inboundOnly)['source_status'] === 'cancelled' && $op($inboundOnly) === null && $puts($inboundOnly['package']) === []
+    && $view($syncer, $inboundOnly)['cancellation']['sync']['required'] === false && $view($syncer, $inboundOnly)['cancellation']['sync']['actions']['send'] === false,
+    'A an inbound Trendyol cancellation stops production and never produces an unsupplied notice ' . json_encode([$state($inboundOnly)['cancellation'], $control($inboundOnly)['source_status'] ?? null]));
+$error($send($syncer, $inboundOnly, ['reasonCode' => 500]), 409, 'SOURCE_ALREADY_CANCELLED', 'A no notice can be requested for an order the marketplace already cancelled');
 // A manual close is never shown as a confirmation.
 $rc = $unresolved('rclose');
 $ok($opAction($syncer, $op($rc), 'close', ['note' => 'Rezolvat manual în Seller Panel de manager.']), 'close after manual handling');
