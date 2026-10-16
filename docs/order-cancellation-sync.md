@@ -208,11 +208,22 @@ Error codes: `CANCELLATION_SYNC_DISABLED`, `CANCELLATION_SYNC_EXISTS`, `CANCELLA
 4. Trendyol: set `ARASYA_TRENDYOL_STORE_FRONT_CODE` (Romania's code as Trendyol states it for the account; not assumed
    here), then `ARASYA_CANCELLATION_SYNC=enabled`, then
    `php bin/cancellation-sync.php enable --source=trendyol --operator=<name> --reason=<text> --confirm=ENABLE-CANCELLATION-SYNC`,
-   then schedule `php bin/cancellation-sync.php run` every minute. Validate first with one synthetic or owner-approved
-   order; never with a real customer order during development.
+   then schedule the worker through the stable launcher that every deploy installs (never `php` from cron's PATH: on
+   the cPanel host that is the CGI binary; the launcher runs `/usr/local/bin/php` against the active release and accepts
+   only `run` or `reconcile --dry-run=1`). Validate first with one synthetic or owner-approved order; never with a real
+   customer order during development.
+
+   ```cron
+   * * * * * /bin/bash "$HOME/arasya-operations-api/bin/cancellation-sync-active.sh" run >> "$HOME/arasya-cancellation-sync.log" 2>&1
+   23 * * * * /bin/bash "$HOME/arasya-operations-api/bin/cancellation-sync-active.sh" reconcile --dry-run=1 >> "$HOME/arasya-cancellation-sync.log" 2>&1
+   ```
+
+   Overlapping runs are safe (leases); the log holds counts and codes only. Confirm `/usr/local/bin/php -v` on the host
+   before installing the entries (verified for the existing launchers, not re-checked in this phase).
 5. WooCommerce: enable `--source=trendhome` / `--source=outletperdele` on the server, deploy YD SOFT 2.11.0, and set the
    site's local switch `yd_arasya_cancellation_sync` to `1`.
-6. Schedule `reconcile --dry-run=1` and review; record with `--dry-run=0` only after review.
+6. Review the scheduled `reconcile --dry-run=1` output; record with `--dry-run=0 --operator=<name>` (manual command,
+   never scheduled) only after review.
 
 Disabling: `disable --source=<source>` or `ARASYA_CANCELLATION_SYNC=disabled` stops new calls at the next lease; open
 operations stay open (a release still waits for them) until a person withdraws or closes them.

@@ -101,6 +101,7 @@ for file in \
   scripts/generate-sha256s.sh \
   scripts/maintenance-active.sh \
   scripts/trendyol-intake-active.sh \
+  scripts/cancellation-sync-active.sh \
   scripts/validate-release.sh \
   release.json \
   SHA256SUMS; do
