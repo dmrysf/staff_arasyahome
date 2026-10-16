@@ -23,6 +23,9 @@
 --        open_order_uuid makes at most one operation per order open at a time (NULL once terminal).
 --        lease_owner / lease_expires_at give one worker exclusive ownership; an expired lease is recovered.
 --   order_cancellation_sync_attempts     (append-only history of every submit, status read, pickup and report)
+--        evidence_json  what a person's decision rested on: for a retry after a possibly delivered notice, the
+--                       server's own status read it relied on and the person's statement about their check in the
+--                       channel (an attestation, never a provider confirmation)
 --   order_cancellation_discrepancies     (reconciliation findings, one open row per fingerprint)
 --   permission production.cancellation.sync  (send, retry, withdraw, close, reconcile); granted to no role
 --   production_feature_flags cancellation_sync_trendyol / _trendhome / _outletperdele, created disabled
@@ -96,12 +99,13 @@ CREATE TABLE IF NOT EXISTS order_cancellation_sync_attempts (
     actor_employee_uuid CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,
     actor_system VARCHAR(40) CHARACTER SET ascii COLLATE ascii_bin NULL,
     correlation_id VARCHAR(100) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    evidence_json JSON NULL,
     occurred_at DATETIME(6) NOT NULL,
     PRIMARY KEY (attempt_seq),
     KEY idx_order_cancellation_sync_attempts_operation (operation_uuid, attempt_seq),
     CONSTRAINT fk_order_cancellation_sync_attempts_operation FOREIGN KEY (operation_uuid) REFERENCES order_cancellation_sync_operations (operation_uuid) ON UPDATE RESTRICT ON DELETE RESTRICT,
     CONSTRAINT fk_order_cancellation_sync_attempts_actor FOREIGN KEY (actor_employee_uuid) REFERENCES employees (employee_uuid) ON UPDATE RESTRICT ON DELETE RESTRICT,
-    CONSTRAINT chk_order_cancellation_sync_attempts_kind CHECK (kind IN ('create', 'submit', 'status_read', 'pickup', 'report', 'inbound', 'lease_recovery', 'retry', 'withdraw', 'close', 'expire'))
+    CONSTRAINT chk_order_cancellation_sync_attempts_kind CHECK (kind IN ('create', 'submit', 'status_read', 'pickup', 'report', 'inbound', 'lease_recovery', 'retry', 'recheck', 'withdraw', 'close', 'expire'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS order_cancellation_discrepancies (

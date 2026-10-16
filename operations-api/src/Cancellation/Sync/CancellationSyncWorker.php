@@ -30,6 +30,10 @@ use Throwable;
  * is still open after UNCERTAIN_OBSERVATION_SECONDS, the operation goes to manual review (UNCERTAIN_OUTCOME_UNRESOLVED) and a
  * person decides, after checking the Seller Panel, whether to retry. Production stays stopped meanwhile.
  *
+ * The worker does not trust the state alone either: before any send it checks that nothing can have been delivered yet,
+ * or that a person's retry after a provider check was recorded after the last possible delivery
+ * (SyncOperations::sendAuthorized). Otherwise it sends nothing and hands the operation to a person (PROVIDER_CHECK_REQUIRED).
+ *
  * Source-pull providers (WooCommerce) are never contacted: their connector pulls. With the server switch or a provider flag
  * off, step 3 does nothing for that provider; inbound confirmations still arrive through the ordinary synchronization.
  */
@@ -98,20 +102,26 @@ final class CancellationSyncWorker
             $read = new ProviderResult('transient', null, 'PROVIDER_READ_FAILED');
         }
         $submitted = null;
+        $unauthorized = false;
         if ($read->outcome === 'open' && in_array($prior, [SyncState::QUEUED, SyncState::RETRY_SCHEDULED], true) && (int) $operation['attempt_count'] < SyncOperations::MAX_SUBMITS) {
-            try {
-                $submitted = $provider->submit($operation);
-            } catch (Throwable) {
-                $submitted = new ProviderResult('uncertain', null, 'PROVIDER_SUBMIT_FAILED');
+            if (!$operations->sendAuthorized((string) $operation['operation_uuid'])) {
+                // An earlier notice may have reached the provider and no person's retry after a provider check followed it.
+                $unauthorized = true;
+            } else {
+                try {
+                    $submitted = $provider->submit($operation);
+                } catch (Throwable) {
+                    $submitted = new ProviderResult('uncertain', null, 'PROVIDER_SUBMIT_FAILED');
+                }
             }
         }
-        return $this->record($operation, $prior, $read, $submitted, $operations);
+        return $this->record($operation, $prior, $read, $submitted, $operations, $unauthorized);
     }
 
     /** @param array<string, mixed> $leased */
-    private function record(array $leased, string $prior, ProviderResult $read, ?ProviderResult $submitted, SyncOperations $operations): string
+    private function record(array $leased, string $prior, ProviderResult $read, ?ProviderResult $submitted, SyncOperations $operations, bool $unauthorized = false): string
     {
-        return $this->transaction(function () use ($leased, $prior, $read, $submitted, $operations): string {
+        return $this->transaction(function () use ($leased, $prior, $read, $submitted, $operations, $unauthorized): string {
             $this->pdo->prepare('SELECT order_uuid FROM operational_orders WHERE order_uuid = ? FOR UPDATE')->execute([$leased['order_uuid']]);
             $operation = $operations->byId((string) $leased['operation_uuid']);
             if ($operation === null) {
@@ -124,7 +134,9 @@ final class CancellationSyncWorker
                 $operations->note($operation, $submitted === null ? 'status_read' : 'submit', 'late_' . ($submitted?->outcome ?? $read->outcome), $submitted?->errorCode ?? $read->errorCode, null, $this->owner, null, $read->providerStatus);
                 return 'late';
             }
-            [$to, $changes, $kind, $outcome, $error, $http] = $this->decide($operation, $prior, $read, $submitted, $operations);
+            [$to, $changes, $kind, $outcome, $error, $http] = $unauthorized
+                ? [SyncState::MANUAL_REVIEW, ['next_attempt_at' => null, 'provider_status' => $read->providerStatus], 'status_read', 'still_open', 'PROVIDER_CHECK_REQUIRED', null]
+                : $this->decide($operation, $prior, $read, $submitted, $operations);
             $operations->transition($operation, $to, $changes, $attempt + ['kind' => $kind, 'outcome' => $outcome, 'error' => $error, 'http' => $http]);
             return $to;
         });

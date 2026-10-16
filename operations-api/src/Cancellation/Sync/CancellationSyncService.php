@@ -27,7 +27,11 @@ use Throwable;
  *   send      create the one operation of the current stop: Trendyol (api) needs one of Trendyol's reasons; a WooCommerce
  *             source (source_pull) is handed to its connector; a channel without a supported call goes to manual review
  *   retry     a failed, rejected or manual-review operation, or a scheduled retry, is due again now (never an uncertain one:
- *             the worker reads the provider status first)
+ *             the worker reads the provider status first). Once an earlier notice may have reached the provider, a retry
+ *             needs both the server's own evidence (a status read that found the package open after the observation
+ *             window, at most an hour old) and the person's signed statement of their check in the channel (time and
+ *             note); the statement is recorded as an attestation, never as a provider confirmation
+ *   recheck   one more read-only status read of a possibly delivered operation in manual review (never a send)
  *   withdraw  an operation that never reached the provider (queued, scheduled, or not yet picked up by the connector)
  *   close     a manual-review operation a person handled outside Arasya (this is not a confirmation)
  * Source connector (signed source routes, YD SOFT):
@@ -80,6 +84,7 @@ final readonly class CancellationSyncService
             'actions' => [
                 'send' => $can && $sendable && $held && $control['source_status'] !== 'cancelled' && $operation === null && $open === null,
                 'retry' => $can && $operation !== null && in_array($operation['state'], [SyncState::FAILED, SyncState::REJECTED, SyncState::MANUAL_REVIEW, SyncState::RETRY_SCHEDULED], true) && $held,
+                'recheck' => $can && $operation !== null && $this->recheckable($operation) && $held,
                 'withdraw' => $can && $operation !== null && self::withdrawable($operation),
                 'close' => $can && $operation !== null && $operation['state'] === SyncState::MANUAL_REVIEW,
             ],
@@ -89,10 +94,11 @@ final readonly class CancellationSyncService
     /** @param array<string, mixed> $operation @return array<string, mixed> */
     public function operationView(array $operation): array
     {
-        $attempts = $this->pdo->prepare('SELECT a.attempt_seq, a.kind, a.state_before, a.state_after, a.outcome, a.http_status, a.error_code, a.provider_status, a.actor_system, a.occurred_at,
+        $attempts = $this->pdo->prepare('SELECT a.attempt_seq, a.kind, a.state_before, a.state_after, a.outcome, a.http_status, a.error_code, a.provider_status, a.actor_system, a.evidence_json, a.occurred_at,
                 e.employee_uuid, e.display_name FROM order_cancellation_sync_attempts a LEFT JOIN employees e ON e.employee_uuid = a.actor_employee_uuid
             WHERE a.operation_uuid = ? ORDER BY a.attempt_seq DESC LIMIT 50');
         $attempts->execute([$operation['operation_uuid']]);
+        $evidence = $operation['mechanism'] === 'api' ? (new SyncOperations($this->pdo, $this->clock))->providerEvidence((string) $operation['operation_uuid']) : ['status' => 'not_required'];
         return [
             'id' => (string) $operation['operation_uuid'],
             'state' => (string) $operation['state'],
@@ -110,8 +116,12 @@ final readonly class CancellationSyncService
             'confirmedBy' => $operation['confirmed_by'] === null ? null : (string) $operation['confirmed_by'],
             'lastError' => $operation['last_error_code'] === null ? null : (string) $operation['last_error_code'],
             'lastErrorAt' => CancellationView::isoOrNull($operation['last_error_at']),
-            // A retry must carry providerChecked: true (an earlier notice may already have reached the channel).
-            'providerCheckRequired' => (new SyncOperations($this->pdo, $this->clock))->wasUncertain((string) $operation['operation_uuid']),
+            // An earlier notice may already have reached the channel: a retry needs the server's evidence and a person's check.
+            'providerCheckRequired' => $evidence['status'] !== 'not_required',
+            'providerEvidence' => $evidence['status'] === 'not_required' ? null : [
+                'status' => $evidence['status'], 'readAt' => CancellationView::isoOrNull($evidence['readAt']), 'providerStatus' => $evidence['providerStatus'],
+                'maxAgeSeconds' => SyncOperations::RETRY_EVIDENCE_MAX_AGE_SECONDS, 'observationSeconds' => SyncOperations::UNCERTAIN_OBSERVATION_SECONDS,
+            ],
             'createdAt' => CancellationView::iso((string) $operation['created_at']),
             'version' => (int) $operation['version'],
             'history' => array_map(static fn (array $row): array => [
@@ -119,6 +129,7 @@ final readonly class CancellationSyncService
                 'outcome' => (string) $row['outcome'], 'httpStatus' => $row['http_status'] === null ? null : (int) $row['http_status'],
                 'error' => $row['error_code'] === null ? null : (string) $row['error_code'], 'providerStatus' => $row['provider_status'] === null ? null : (string) $row['provider_status'],
                 'actor' => $row['employee_uuid'] === null ? ($row['actor_system'] === null ? null : ['system' => (string) $row['actor_system']]) : ['id' => (string) $row['employee_uuid'], 'displayName' => (string) $row['display_name']],
+                'evidence' => $row['evidence_json'] === null ? null : self::evidenceView((string) $row['evidence_json']),
                 'occurredAt' => CancellationView::iso((string) $row['occurred_at']),
             ], $attempts->fetchAll(PDO::FETCH_ASSOC)),
         ];
@@ -209,26 +220,65 @@ final readonly class CancellationSyncService
             if ($other !== null && $other['operation_uuid'] !== $operation['operation_uuid']) {
                 throw new ApiException(409, 'CANCELLATION_SYNC_OPEN', 'O altă cerere către sursă este deschisă.');
             }
-            // Once a notice may have reached the channel (lost answer, 5xx, crashed worker), the provider documents no idempotency
-            // and no request lookup: a second notice is allowed only when the person states they checked the channel itself.
-            $possiblyDelivered = $operations->wasUncertain((string) $operation['operation_uuid']);
-            if ($possiblyDelivered && ($input['providerChecked'] ?? null) !== true) {
-                throw new ApiException(409, 'CANCELLATION_SYNC_PROVIDER_CHECK_REQUIRED', 'Rezultatul trimiterii anterioare este necunoscut. Verifică întâi comanda în platforma canalului și confirmă verificarea.');
+            // Once a notice may have reached the channel (accepted or lost answer, 5xx, crashed worker), the provider documents no
+            // idempotency and no request lookup. A second notice then needs two things the client alone cannot supply:
+            //   1. the server's own evidence: its last status read since the possible delivery found the package open, after
+            //      the observation window, and is at most RETRY_EVIDENCE_MAX_AGE_SECONDS old (a recheck refreshes it);
+            //   2. the person's statement of their own check in the channel: when they checked and what they saw (an
+            //      attestation recorded with their identity, never shown as a provider confirmation).
+            // A rescheduled retry (already retry_scheduled) only brings an authorized round forward and authorizes nothing new;
+            // the worker independently refuses to send after a possible delivery without such a retry (sendAuthorized).
+            $evidence = null;
+            $possiblyDelivered = $operation['mechanism'] === 'api' && $operations->possiblyDelivered((string) $operation['operation_uuid']);
+            if ($possiblyDelivered && $operation['state'] !== SyncState::RETRY_SCHEDULED) {
+                $check = $this->providerCheck($input['providerCheck'] ?? null, $operations);
+                $server = $operations->providerEvidence((string) $operation['operation_uuid']);
+                if ($server['status'] !== 'ok') {
+                    throw new ApiException(409, 'CANCELLATION_SYNC_PROVIDER_EVIDENCE_REQUIRED', match ($server['status']) {
+                        'stale', 'missing', 'unknown' => 'Arasya nu are o citire recentă a stării din canal. Cere o recitire a stării înainte de a reîncerca.',
+                        'observing' => 'Fereastra de observare după trimiterea anterioară nu s-a încheiat. Așteaptă rezultatul.',
+                        default => 'Ultima citire a canalului arată că o nouă notificare nu este posibilă sau necesară.',
+                    }, ['evidence' => $server['status']]);
+                }
+                $evidence = ['attestation' => $check + ['employeeId' => $actor->employeeUuid], 'serverRead' => ['attemptSeq' => $server['attemptSeq'], 'readAt' => CancellationView::isoOrNull($server['readAt']),
+                    'providerStatus' => $server['providerStatus']], 'deliveryAttemptSeq' => $server['deliverySeq']];
             }
-            $attempt = ['kind' => 'retry', 'outcome' => $possiblyDelivered ? 'retry_after_provider_check' : 'retry_requested', 'actor' => $actor->employeeUuid, 'correlation' => $requestId];
+            $attempt = ['kind' => 'retry', 'outcome' => $evidence !== null ? 'retry_after_provider_check' : ($possiblyDelivered ? 'retry_rescheduled' : 'retry_requested'),
+                'actor' => $actor->employeeUuid, 'correlation' => $requestId, 'evidence' => $evidence];
             if ($operation['state'] !== SyncState::RETRY_SCHEDULED) {
                 // A new round: the attempt budget starts again, the history keeps every earlier attempt.
                 $operation = $operations->transition($operation, SyncState::RETRY_SCHEDULED, ['next_attempt_at' => $operations->now(), 'attempt_count' => 0], $attempt);
             } else {
                 $this->pdo->prepare('UPDATE order_cancellation_sync_operations SET next_attempt_at = ?, version = version + 1, updated_at = ? WHERE operation_uuid = ? AND version = ?')
                     ->execute([$operations->now(), $operations->now(), $operation['operation_uuid'], $operation['version']]);
-                $operations->note($operation, 'retry', $attempt['outcome'], null, $actor->employeeUuid, null, $requestId);
+                $operations->note($operation, 'retry', $attempt['outcome'], null, $actor->employeeUuid, null, $requestId, null, $evidence);
                 $operation = $operations->byId((string) $operation['operation_uuid']) ?? $operation;
             }
             if ($operation['mechanism'] === 'source_pull') {
                 $operation = $operations->transition($operation, SyncState::AWAITING_PICKUP, ['next_attempt_at' => null, 'last_pulled_at' => null], ['kind' => 'retry', 'outcome' => 'handed_to_source', 'actor' => $actor->employeeUuid, 'correlation' => $requestId]);
             }
             return $operation;
+        });
+    }
+
+    /**
+     * A person asks for one more status read of a possibly delivered operation in manual review (stale or missing
+     * evidence, or to see whether the channel has acted meanwhile). The operation becomes `uncertain` and is due now: the
+     * worker only reads it (it never sends from `uncertain`) and confirms, keeps it in manual review with fresh evidence,
+     * or records what the channel now shows.
+     * @param array<string, mixed> $input @return array<string, mixed>
+     */
+    public function recheck(EmployeeIdentity $actor, string $operationId, array $input, string $key, string $requestId): array
+    {
+        return $this->operationCommand($actor, 'recheck', $operationId, $input, $key, $requestId, function (EmployeeIdentity $actor, array $order, array $operation, SyncOperations $operations) use ($requestId): array {
+            if (!$this->recheckable($operation)) {
+                throw new ApiException(409, 'CANCELLATION_SYNC_RECHECK_NOT_ELIGIBLE', 'Recitirea stării este posibilă doar pentru o operație în verificare manuală, după o trimitere posibil ajunsă la canal.', ['state' => $operation['state']]);
+            }
+            if (!$this->providers->active((string) $operation['source_key'])) {
+                throw new ApiException(409, 'CANCELLATION_SYNC_DISABLED', 'Sincronizarea anulării cu această sursă nu este activată.');
+            }
+            return $operations->transition($operation, SyncState::UNCERTAIN, ['next_attempt_at' => $operations->now()],
+                ['kind' => 'recheck', 'outcome' => 'recheck_requested', 'actor' => $actor->employeeUuid, 'correlation' => $requestId]);
         });
     }
 
@@ -361,6 +411,52 @@ final readonly class CancellationSyncService
     }
 
     /** @param array<string, mixed> $operation */
+    private function recheckable(array $operation): bool
+    {
+        return $operation['state'] === SyncState::MANUAL_REVIEW && $operation['mechanism'] === 'api'
+            && (new SyncOperations($this->pdo, $this->clock))->possiblyDelivered((string) $operation['operation_uuid']);
+    }
+
+    /**
+     * The person's statement of their own check in the channel: {checkedAt: ISO 8601 with offset, note: 10-1000 characters}.
+     * checkedAt is at most PROVIDER_CHECK_MAX_AGE_SECONDS old and not in the future (two minutes of clock skew).
+     * @return array{checkedAt: string, note: string}
+     */
+    private function providerCheck(mixed $value, SyncOperations $operations): array
+    {
+        if ($value === null) {
+            throw new ApiException(409, 'CANCELLATION_SYNC_PROVIDER_CHECK_REQUIRED', 'Rezultatul trimiterii anterioare este necunoscut. Verifică întâi comanda în platforma canalului și descrie ce ai văzut.');
+        }
+        if (!is_array($value) || array_diff(array_keys($value), ['checkedAt', 'note']) !== [] || !is_string($value['checkedAt'] ?? null)
+            || preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{2}:\d{2})$/D', $value['checkedAt']) !== 1) {
+            throw new ApiException(422, 'VALIDATION_FAILED', 'providerCheck needs checkedAt (ISO 8601 with offset) and note.', ['field' => 'providerCheck']);
+        }
+        $note = self::text($value['note'] ?? null, 10, 'providerCheck.note');
+        try {
+            $checkedAt = (new \DateTimeImmutable($value['checkedAt']))->setTimezone(new \DateTimeZone('UTC'));
+        } catch (\Exception) {
+            throw new ApiException(422, 'VALIDATION_FAILED', 'providerCheck.checkedAt is not a valid time.', ['field' => 'providerCheck.checkedAt']);
+        }
+        $now = $this->clock->now()->getTimestamp();
+        if ($checkedAt->getTimestamp() > $now + 120 || $checkedAt->getTimestamp() < $now - SyncOperations::PROVIDER_CHECK_MAX_AGE_SECONDS) {
+            throw new ApiException(409, 'CANCELLATION_SYNC_PROVIDER_CHECK_STALE', 'Verificarea în canal trebuie făcută cu cel mult 30 de minute înainte de reîncercare.', ['field' => 'providerCheck.checkedAt']);
+        }
+        return ['checkedAt' => $checkedAt->format('Y-m-d\TH:i:s\Z'), 'note' => $note];
+    }
+
+    /** @return array<string, mixed>|null */
+    private static function evidenceView(string $json): ?array
+    {
+        $evidence = json_decode($json, true);
+        if (!is_array($evidence)) {
+            return null;
+        }
+        // The attestation is shown as what it is: a person's statement. The employee is already the attempt's actor.
+        unset($evidence['attestation']['employeeId']);
+        return $evidence;
+    }
+
+    /** @param array<string, mixed> $operation */
     public static function withdrawable(array $operation): bool
     {
         return in_array($operation['state'], [SyncState::QUEUED, SyncState::RETRY_SCHEDULED], true)
@@ -410,7 +506,12 @@ final readonly class CancellationSyncService
                 throw new ApiException(409, 'CANCELLATION_SYNC_CHANGED', 'Operația de sincronizare s-a schimbat. Reîncarcă.');
             }
             $operation = $write($fresh, $order, $operation, $operations);
-            $this->audit($fresh, 'production.cancellation.sync_' . $action, $order, ['operation' => $operationId, 'state' => $operation['state']], $requestId);
+            // The audit names the recorded outcome and, for a retry after a possible delivery, the evidence it rested on.
+            $last = $this->pdo->prepare('SELECT outcome, evidence_json FROM order_cancellation_sync_attempts WHERE operation_uuid = ? ORDER BY attempt_seq DESC LIMIT 1');
+            $last->execute([$operationId]);
+            $recorded = $last->fetch(PDO::FETCH_ASSOC) ?: [];
+            $this->audit($fresh, 'production.cancellation.sync_' . $action, $order, ['operation' => $operationId, 'state' => $operation['state'], 'outcome' => $recorded['outcome'] ?? null]
+                + (isset($recorded['evidence_json']) ? ['evidence' => json_decode((string) $recorded['evidence_json'], true)] : []), $requestId);
             $response = $this->operationView($operation);
             $this->idempotency->store($fresh->employeeUuid, $key, 'cancellation.sync.' . $action, $operationId, $hash, $response, $operations->now());
             return $response;

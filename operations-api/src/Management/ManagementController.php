@@ -142,10 +142,13 @@ final readonly class ManagementController
         if ($method === 'POST' && preg_match('#^/orders/([^/]{1,600})/cancellation/sync$#D', $path, $m) === 1) {
             return Response::json($this->service($this->cancellationSync)->send($actor, rawurldecode($m[1]), $this->body($request, ['expectedVersion', 'reasonCode', 'note'], ['expectedVersion']), $key, $id));
         }
-        if ($method === 'POST' && preg_match('#^/cancellation-sync/operations/([0-9a-f-]{36})/(retry|withdraw|close)$#D', $path, $m) === 1) {
+        if ($method === 'POST' && preg_match('#^/cancellation-sync/operations/([0-9a-f-]{36})/(retry|recheck|withdraw|close)$#D', $path, $m) === 1) {
             $sync = $this->service($this->cancellationSync);
             return Response::json(match ($m[2]) {
-                'retry' => $sync->retry($actor, $m[1], $this->body($request, ['expectedVersion', 'providerChecked'], ['expectedVersion']), $key, $id),
+                // providerChecked (a bare boolean of Dashboard 0.16.0 before the evidence rule) is accepted as a field and ignored:
+                // such a client gets CANCELLATION_SYNC_PROVIDER_CHECK_REQUIRED instead of a generic invalid request.
+                'retry' => $sync->retry($actor, $m[1], $this->body($request, ['expectedVersion', 'providerCheck', 'providerChecked'], ['expectedVersion']), $key, $id),
+                'recheck' => $sync->recheck($actor, $m[1], $this->body($request, ['expectedVersion'], ['expectedVersion']), $key, $id),
                 'withdraw' => $sync->withdraw($actor, $m[1], $this->body($request, ['expectedVersion', 'reason'], ['expectedVersion', 'reason']), $key, $id),
                 default => $sync->close($actor, $m[1], $this->body($request, ['expectedVersion', 'note'], ['expectedVersion', 'note']), $key, $id),
             });

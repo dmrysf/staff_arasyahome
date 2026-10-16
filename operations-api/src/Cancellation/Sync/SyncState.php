@@ -13,7 +13,8 @@ namespace Arasya\Operations\Cancellation\Sync;
  *   AWAITING_PROVIDER_CONFIRMATION   awaiting_confirmation (accepted or reported, not yet seen cancelled)
  *   CONFIRMED                        confirmed (the provider itself shows the order cancelled)
  *   REJECTED_BY_PROVIDER             rejected
- *   TEMPORARY_FAILURE                retry_scheduled; uncertain (the answer was lost: never retried before a status read)
+ *   TEMPORARY_FAILURE                retry_scheduled; uncertain (the answer was lost: observed by status reads only, never
+ *                                    sent again by the worker)
  *   PERMANENT_FAILURE                failed
  *   MANUAL_REVIEW_REQUIRED           manual_review (also: the provider has no supported call)
  *   (not in the brief)               withdrawn (cancelled before it reached the provider), closed (a person closed it)
@@ -46,7 +47,8 @@ final class SyncState
         self::AWAITING_CONFIRMATION => [self::PROCESSING, self::CONFIRMED, self::MANUAL_REVIEW],
         self::RETRY_SCHEDULED => [self::PROCESSING, self::WITHDRAWN, self::CONFIRMED, self::MANUAL_REVIEW, self::AWAITING_PICKUP],
         self::UNCERTAIN => [self::PROCESSING, self::CONFIRMED, self::MANUAL_REVIEW],
-        self::MANUAL_REVIEW => [self::RETRY_SCHEDULED, self::CLOSED, self::CONFIRMED],
+        // manual_review -> uncertain is a person's read-only recheck of a possibly delivered notice (one more status read).
+        self::MANUAL_REVIEW => [self::RETRY_SCHEDULED, self::CLOSED, self::CONFIRMED, self::UNCERTAIN],
         self::REJECTED => [self::RETRY_SCHEDULED, self::CONFIRMED],
         self::FAILED => [self::RETRY_SCHEDULED, self::CONFIRMED],
         self::CONFIRMED => [],

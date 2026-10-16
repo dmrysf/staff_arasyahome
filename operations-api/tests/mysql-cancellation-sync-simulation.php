@@ -24,12 +24,19 @@ declare(strict_types=1);
 //   I9  the attempt history explains every state (an unbroken chain ending at the current state); it only grows
 //   I10 nothing but an authorized release lifts a stop (reactivation, reports, confirmations, reconciliation never do)
 //   I11 another site's report is indistinguishable from a missing operation
-//   I12 after an unknown outcome (lost answer, 5xx, crashed worker) no notice is sent again without a person's retry
-//   I13 such a retry is accepted only when the person states they checked the channel (providerChecked: true)
+//   I12 after a possible delivery (accepted or lost answer, 5xx, crashed worker) no notice is sent again without a
+//       person's retry after a provider check recorded after that delivery
+//   I13 such a retry rests on the server's own open status read after the observation window and on a dated statement
+//       of the person's check; a bare flag, a missing statement or missing server evidence is always refused
+//   I14 a read-only recheck never sends
+//
+// The unknown-outcome drill reaches the unsafe-retry path on purpose and often: a lost answer, the observation window,
+// then a legacy flag, a statement without evidence and an attested retry, each with its expected answer.
 
 use Arasya\Operations\Application\Container;
 use Arasya\Operations\Cancellation\Sync\CancellationSyncWorker;
 use Arasya\Operations\Cancellation\Sync\ProviderRegistry;
+use Arasya\Operations\Cancellation\Sync\SyncOperations;
 use Arasya\Operations\Config\Config;
 use Arasya\Operations\Database\Connection;
 use Arasya\Operations\Database\MigrationRunner;
@@ -217,26 +224,42 @@ $invariants = static function () use ($rows, $one, $check, &$orders, $state, $co
                 }
             }
             // I9
-            $trail = $rows('SELECT kind, state_before, state_after, outcome FROM order_cancellation_sync_attempts WHERE operation_uuid = ? ORDER BY attempt_seq', [$operation['operation_uuid']]);
+            $trail = $rows('SELECT attempt_seq, kind, state_before, state_after, outcome, evidence_json, occurred_at FROM order_cancellation_sync_attempts WHERE operation_uuid = ? ORDER BY attempt_seq', [$operation['operation_uuid']]);
             $check(($attemptCounts[$operation['operation_uuid']] ?? 0) <= count($trail), 'I9 the attempt history shrank');
             $attemptCounts[$operation['operation_uuid']] = count($trail);
             $expected = 'queued';
             $unknown = false;
-            $everUnknown = false;
+            $delivery = null;
+            $recheck = false;
             foreach ($trail as $index => $attempt) {
-                // I12: after an unknown outcome (a lost answer, a 5xx, a crashed worker) only a person's retry allows another notice.
-                if ($attempt['kind'] === 'submit') {
-                    $check(!$unknown, 'I12 a notice was sent again after an unknown outcome without a person\'s retry');
+                // I12: after a possible delivery only a person's retry after a provider check allows another notice.
+                if ($attempt['kind'] === 'submit' && !str_starts_with($attempt['outcome'], 'late_')) {
+                    $check(!$unknown, 'I12 a notice was sent again after a possible delivery without a person\'s checked retry');
+                    // I14: the read that follows a recheck never leads to a send.
+                    $check(!$recheck, 'I14 a recheck led to a notice');
                 }
-                if (($attempt['kind'] === 'submit' && in_array($attempt['outcome'], ['uncertain', 'late_uncertain'], true)) || $attempt['kind'] === 'lease_recovery') {
-                    $unknown = true;
-                    $everUnknown = true;
+                if ($attempt['kind'] === 'recheck') {
+                    $recheck = true;
                 } elseif ($attempt['kind'] === 'retry') {
-                    // I13: once an earlier notice may have reached the channel, a person's retry is accepted only with a stated channel check.
-                    if (in_array($attempt['outcome'], ['retry_requested', 'retry_after_provider_check'], true)) {
-                        $check(!$everUnknown || $attempt['outcome'] === 'retry_after_provider_check', 'I13 a retry after an unknown outcome is not recorded as made after a channel check');
+                    $recheck = false;
+                }
+                if (($attempt['kind'] === 'submit' && in_array($attempt['outcome'], ['accepted', 'uncertain', 'late_accepted', 'late_uncertain'], true)) || $attempt['kind'] === 'lease_recovery') {
+                    $unknown = true;
+                    $delivery = $attempt;
+                } elseif ($attempt['kind'] === 'retry') {
+                    // I13: after a possible delivery a retry that authorizes a send names the person's statement and the server's
+                    // own open read after the observation window; anything else authorizes nothing.
+                    if ($delivery !== null) {
+                        $check(in_array($attempt['outcome'], ['retry_after_provider_check', 'retry_rescheduled'], true), 'I13 a retry after a possible delivery without a provider check: ' . $attempt['outcome']);
                     }
-                    $unknown = false;
+                    if ($attempt['outcome'] === 'retry_after_provider_check') {
+                        $evidence = json_decode((string) $attempt['evidence_json'], true);
+                        $read = is_array($evidence) ? ($rows('SELECT outcome, occurred_at FROM order_cancellation_sync_attempts WHERE attempt_seq = ?', [(int) ($evidence['serverRead']['attemptSeq'] ?? 0)])[0] ?? null) : null;
+                        $check($delivery !== null && is_array($evidence) && mb_strlen((string) ($evidence['attestation']['note'] ?? '')) >= 10 && is_string($evidence['attestation']['checkedAt'] ?? null)
+                            && $read !== null && in_array($read['outcome'], ['still_open', 'attempts_exhausted'], true) && (int) $evidence['serverRead']['attemptSeq'] > (int) $delivery['attempt_seq']
+                            && strtotime($read['occurred_at'] . ' UTC') >= strtotime($delivery['occurred_at'] . ' UTC') + SyncOperations::UNCERTAIN_OBSERVATION_SECONDS, 'I13 a checked retry without its evidence: ' . json_encode([$evidence, $read]));
+                        $unknown = false;
+                    }
                 }
                 if ($index === 0) {
                     $check($attempt['kind'] === 'create', 'I9 history starts with the creation');
@@ -283,6 +306,12 @@ $invariants = static function () use ($rows, $one, $check, &$orders, $state, $co
 // ---- Scenario ---------------------------------------------------------------------------------------------------------
 $counts = [];
 $i13 = [];
+$drills = [];
+$retryBody = static fn (string $variant): array => match ($variant) {
+    'statement' => ['providerCheck' => ['checkedAt' => gmdate('Y-m-d\TH:i:s\Z', time() - 30), 'note' => 'Simulare: verificat în Seller Panel, pachet activ.']],
+    'flag' => ['providerChecked' => true],
+    default => [],
+};
 for ($step = 1; $step <= $steps; $step++) {
     $id = $pick($ids);
     $o = &$orders[$id];
@@ -291,9 +320,13 @@ for ($step = 1; $step <= $steps; $step++) {
     // The action depends on where the chosen order is, so every phase of an operation is exercised often.
     $action = $pick(match (true) {
         $c === null || $c['hold_status'] === 'released' => ['stop', 'stop', 'stop', 'stop', 'inbound_cancel', 'reactivate', 'run', 'gate', 'script', 'pull'],
-        $cur === null && $c['source_status'] !== 'cancelled' => ['send', 'send', 'send', 'send', 'send', 'release', 'physical', 'run', 'reactivate', 'stale', 'inbound_cancel'],
+        $cur === null && $c['source_status'] !== 'cancelled' => ['send', 'send', 'send', 'send', 'send', 'release', 'physical', 'run', 'reactivate', 'stale', 'inbound_cancel']
+            + ($o['source'] === 'trendyol' ? [11 => 'drill', 12 => 'drill', 13 => 'drill', 14 => 'drill'] : []),
         $cur === null => ['release', 'physical', 'reactivate', 'reactivate', 'run', 'stale', 'stop'],
-        default => ['run', 'run', 'run', 'run', 'pull', 'pull', 'pull', 'inbound_cancel', 'inbound_cancel', 'withdraw', 'retry', 'retry', 'close', 'release', 'physical', 'crash', 'foreign', 'stale', 'script', 'script', 'gate', 'reactivate', 'send'],
+        // A Trendyol operation waiting to be sent: often drive it through a lost answer and the person's decisions.
+        $cur['mechanism'] === 'api' && in_array($cur['state'], ['queued', 'retry_scheduled'], true) => ['drill', 'drill', 'drill', 'run', 'run', 'withdraw', 'retry', 'crash', 'script', 'gate', 'inbound_cancel', 'release'],
+        $cur['state'] === 'manual_review' => ['retry', 'retry', 'retry', 'recheck', 'recheck', 'close', 'run', 'inbound_cancel', 'release', 'reactivate'],
+        default => ['run', 'run', 'run', 'run', 'pull', 'pull', 'pull', 'inbound_cancel', 'inbound_cancel', 'withdraw', 'retry', 'retry', 'close', 'release', 'physical', 'crash', 'foreign', 'stale', 'script', 'script', 'gate', 'reactivate', 'send', 'recheck'],
     });
     $counts[$action] = ($counts[$action] ?? 0) + 1;
     switch ($action) {
@@ -361,14 +394,74 @@ for ($step = 1; $step <= $steps; $step++) {
             }
             break;
         case 'retry':
-            // Half of the retries state the channel check; after an unknown outcome the others must be refused.
+            // A third of the retries carry a dated statement, a third the legacy bare flag, a third nothing. After a possible
+            // delivery only a statement backed by the server's own evidence may be accepted.
             if ($cur !== null) {
-                $stated = $chance(50);
-                $wasUncertain = $rows("SELECT 1 FROM order_cancellation_sync_attempts WHERE operation_uuid = ? AND state_after = 'uncertain' LIMIT 1", [$cur['operation_uuid']]) !== [];
-                $r = $dash($manager, 'POST', "/management/cancellation-sync/operations/{$cur['operation_uuid']}/retry", ['expectedVersion' => (int) $cur['version']] + ($stated ? ['providerChecked' => true] : []));
-                // I13: after an unknown outcome a retry without the stated channel check is always refused.
-                $check(!$wasUncertain || $stated || $r['status'] !== 200, 'I13 a retry after an unknown outcome was accepted without a stated channel check');
-                $i13[$wasUncertain && !$stated ? 'refused' : 'other'] = ($i13[$wasUncertain && !$stated ? 'refused' : 'other'] ?? 0) + 1;
+                $variant = $pick(['statement', 'flag', 'none']);
+                $delivered = (int) $one("SELECT COUNT(*) FROM order_cancellation_sync_attempts WHERE operation_uuid = ? AND ((kind = 'submit' AND outcome IN ('accepted', 'uncertain', 'late_accepted', 'late_uncertain')) OR kind = 'lease_recovery')", [$cur['operation_uuid']]) > 0;
+                $retriesBefore = (int) $one("SELECT COUNT(*) FROM order_cancellation_sync_attempts WHERE operation_uuid = ? AND kind = 'retry'", [$cur['operation_uuid']]);
+                $r = $dash($manager, 'POST', "/management/cancellation-sync/operations/{$cur['operation_uuid']}/retry", ['expectedVersion' => (int) $cur['version']] + $retryBody($variant));
+                $gated = $delivered && $cur['mechanism'] === 'api' && $cur['state'] !== 'retry_scheduled';
+                // I13: a bare flag or nothing after a possible delivery is always refused, and changes nothing.
+                if ($gated && $variant !== 'statement') {
+                    $check($r['status'] === 409 && in_array($r['body']['error']['code'] ?? '', ['CANCELLATION_SYNC_PROVIDER_CHECK_REQUIRED', 'CANCELLATION_SYNC_RETRY_NOT_ELIGIBLE', 'CANCELLATION_SYNC_STALE', 'SOURCE_ALREADY_CANCELLED', 'CANCELLATION_SYNC_DISABLED'], true)
+                        && (int) $one("SELECT COUNT(*) FROM order_cancellation_sync_attempts WHERE operation_uuid = ? AND kind = 'retry'", [$cur['operation_uuid']]) === $retriesBefore, 'I13 an unchecked retry after a possible delivery was accepted: ' . json_encode($r['body']));
+                }
+                $tally = $gated ? $variant . ':' . ($r['status'] === 200 ? 'accepted' : ($r['body']['error']['code'] ?? $r['status'])) : 'ungated:' . $r['status'];
+                $i13[$tally] = ($i13[$tally] ?? 0) + 1;
+            }
+            break;
+        case 'recheck':
+            if ($cur !== null) {
+                $putsBefore = isset($o['package']) ? $putsFor($o['package']) : 0;
+                $r = $dash($manager, 'POST', "/management/cancellation-sync/operations/{$cur['operation_uuid']}/recheck", ['expectedVersion' => (int) $cur['version']]);
+                if ($r['status'] === 200) {
+                    $runWorker(30);
+                    // I14: the recheck read sends nothing.
+                    $check(!isset($o['package']) || $putsFor($o['package']) === $putsBefore, 'I14 a recheck sent a notice');
+                }
+                $i13['recheck:' . $r['status']] = ($i13['recheck:' . $r['status']] ?? 0) + 1;
+            }
+            break;
+        case 'drill':
+            // The unknown-outcome drill: a lost answer, the observation window, then every kind of retry decision.
+            if ($o['source'] === 'trendyol' && $gates['trendyol'] && $cur === null && $c !== null && $c['hold_status'] === 'held' && $c['source_status'] !== 'cancelled') {
+                $dash($manager, 'POST', $path($o) . '/sync', ['expectedVersion' => (int) $c['version'], 'reasonCode' => $pick([500, 501, 504, 506])]);
+                $cur = $current($o['uuid']);
+            }
+            if ($cur !== null && $cur['mechanism'] === 'api' && in_array($cur['state'], ['queued', 'retry_scheduled'], true) && $gates['trendyol']) {
+                $f = $fx();
+                $f['put'] = ['fail' => true];
+                unset($f['fail'], $f['status']);
+                $fxWrite($f);
+                $putsBefore = $putsFor($o['package']);
+                $runWorker(30);
+                $f = $fx(); // re-read: the run appended its write calls
+                unset($f['put']);
+                $fxWrite($f);
+                $after = $current($o['uuid']);
+                if ($after === null || $after['state'] !== 'uncertain') {
+                    $drills['not_sent'] = ($drills['not_sent'] ?? 0) + 1;
+                    break;
+                }
+                $runWorker(SyncOperations::UNCERTAIN_OBSERVATION_SECONDS + 200);
+                $after = $current($o['uuid']);
+                if ($after === null || $after['state'] !== 'manual_review' || $after['last_error_code'] !== 'UNCERTAIN_OUTCOME_UNRESOLVED') {
+                    $drills['resolved_otherwise'] = ($drills['resolved_otherwise'] ?? 0) + 1;
+                    break;
+                }
+                $check($putsFor($o['package']) === $putsBefore + 1, 'I12 the drill: a lost answer was sent again before any decision');
+                foreach (['none', 'flag'] as $variant) {
+                    $r = $dash($manager, 'POST', "/management/cancellation-sync/operations/{$after['operation_uuid']}/retry", ['expectedVersion' => (int) $after['version']] + $retryBody($variant));
+                    $check($r['status'] === 409 && ($r['body']['error']['code'] ?? '') === 'CANCELLATION_SYNC_PROVIDER_CHECK_REQUIRED' && $current($o['uuid'])['version'] === $after['version'], "I13 the drill: a retry with {$variant} was not refused: " . json_encode($r['body']));
+                }
+                $r = $dash($manager, 'POST', "/management/cancellation-sync/operations/{$after['operation_uuid']}/retry", ['expectedVersion' => (int) $after['version']] + $retryBody('statement'));
+                $check($r['status'] === 200 && ($r['body']['state'] ?? '') === 'retry_scheduled', 'I13 the drill: an attested retry with fresh server evidence was refused: ' . json_encode($r['body']));
+                $drills['attested_retry'] = ($drills['attested_retry'] ?? 0) + 1;
+                if ($chance(50)) {
+                    $runWorker(30);
+                    $check($putsFor($o['package']) <= $putsBefore + 2, 'I12 the drill: more than one notice after one attested retry');
+                }
             }
             break;
         case 'close':
@@ -458,5 +551,7 @@ $summary = [];
 foreach ($rows("SELECT state, COUNT(*) AS n FROM order_cancellation_sync_operations WHERE order_uuid IN ({$mineSql}) GROUP BY state ORDER BY state") as $row) $summary[$row['state']] = (int) $row['n'];
 $findings = $container->cancellationReconciler()->scan();
 $check(array_filter($findings, static fn (array $f): bool => $f['kind'] === 'released_with_open_operation') === [], 'the reconciliation finds no released order with an open operation');
+// The unsafe-retry path must have been reached on purpose, not left to chance.
+$check($steps < 300 || ($drills['attested_retry'] ?? 0) > 0, 'the unknown-outcome drill never reached the person\'s decision: ' . json_encode($drills));
 ksort($counts);
-fwrite(STDOUT, 'PASS cancellation synchronization simulation (seed ' . $seed . ", {$steps} steps, {$checks} checks) operations " . json_encode($summary) . ' actions ' . json_encode($counts) . ' retries ' . json_encode($i13) . "\n");
+fwrite(STDOUT, 'PASS cancellation synchronization simulation (seed ' . $seed . ", {$steps} steps, {$checks} checks) operations " . json_encode($summary) . ' actions ' . json_encode($counts) . ' retries ' . json_encode($i13) . ' drills ' . json_encode($drills) . "\n");

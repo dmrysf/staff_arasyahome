@@ -13,6 +13,9 @@ declare(strict_types=1);
 //   S3  Trendyol lost answers: uncertain, never resent by the worker, observed then manual review; a person-approved retry
 //   S3b unknown outcomes: delayed/stale status, four workers on an uncertain operation, inbound confirmation meanwhile,
 //       split or shipped after the unknown outcome, crash after a possible send
+//   S3c retry-safety matrix R1-R16: server evidence + a person's attestation before any second notice, the worker's own
+//       guard, read-only rechecks, stale evidence, forged and legacy flags, concurrent managers, old idempotency keys,
+//       duplicate cron runs, racing workers on an authorized retry, external changes between check and send
 //   S4  Trendyol failures: 429 backoff, 5xx uncertain, 401 failed, 4xx rejected, status not cancellable, unknown package,
 //       attempt budget, provider unreachable
 //   S5  worker crash (expired lease), concurrent workers (one notice only), inbound confirmation during the HTTP call
@@ -28,6 +31,7 @@ declare(strict_types=1);
 use Arasya\Operations\Application\Container;
 use Arasya\Operations\Cancellation\Sync\CancellationSyncWorker;
 use Arasya\Operations\Cancellation\Sync\ProviderRegistry;
+use Arasya\Operations\Cancellation\Sync\SyncOperations;
 use Arasya\Operations\Cancellation\Sync\TrendyolCancellationProvider;
 use Arasya\Operations\Config\Config;
 use Arasya\Operations\Config\TrendyolCredentials;
@@ -364,9 +368,11 @@ $error($release($releaser, $g4), 409, 'RELEASE_SYNC_OPEN', 'S3 production cannot
 // A person checked the Seller Panel and retries: the worker reads first, then sends once.
 $check($view($syncer, $g4)['cancellation']['sync']['operation']['providerCheckRequired'] === true, 'S3 the view states that a retry needs a check in the channel');
 $error($opAction($syncer, $op($g4), 'retry'), 409, 'CANCELLATION_SYNC_PROVIDER_CHECK_REQUIRED', 'S3 a retry after an unknown outcome without a stated channel check is refused');
-$error($opAction($syncer, $op($g4), 'retry', ['providerChecked' => 'yes']), 409, 'CANCELLATION_SYNC_PROVIDER_CHECK_REQUIRED', 'S3 only a boolean true counts as the stated check');
+$error($opAction($syncer, $op($g4), 'retry', ['providerChecked' => true]), 409, 'CANCELLATION_SYNC_PROVIDER_CHECK_REQUIRED', 'S3 a bare providerChecked flag is not evidence of a check');
 $check($op($g4)['state'] === 'manual_review' && count($puts($g4['package'])) === 1, 'S3 a refused retry changes nothing');
-$ok($opAction($syncer, $op($g4), 'retry', ['providerChecked' => true]), 'S3 person retries after review');
+$attest = static fn (int $ago = 60, string $note = 'Seller Panel: pachetul este încă activ, fără notificare de nelivrare.', int $now = 0): array => ['checkedAt' => gmdate('Y-m-d\TH:i:s\Z', ($now ?: time()) - $ago), 'note' => $note];
+$check($view($syncer, $g4)['cancellation']['sync']['operation']['providerEvidence']['status'] === 'ok', 'S3 the server has its own open read after the observation window');
+$ok($opAction($syncer, $op($g4), 'retry', ['providerCheck' => $attest()]), 'S3 person retries after review');
 $run(5100);
 $check($op($g4)['state'] === 'awaiting_confirmation' && count($puts($g4['package'])) === 2, 'S3 the person-approved retry is read, then sent once');
 $t4 = $trail($op($g4));
@@ -457,6 +463,293 @@ $run(1000);
 $check($op($crashOpen)['state'] === 'uncertain' && $puts($crashOpen['package']) === [], 'S3b recovered lease: still never sent');
 $run(2000);
 $check($op($crashOpen)['state'] === 'manual_review' && $op($crashOpen)['last_error_code'] === 'UNCERTAIN_OUTCOME_UNRESOLVED' && $puts($crashOpen['package']) === [], 'S3b recovered lease: manual review after the window');
+$error($opAction($syncer, $op($crashOpen), 'retry'), 409, 'CANCELLATION_SYNC_PROVIDER_CHECK_REQUIRED', 'S3b a recovered lease counts as a possible delivery: a retry needs a provider check');
+
+// ---- S3c. Retry-safety matrix (final hardening, 2026-10-16) -------------------------------------------------------------
+// Every row is one transition of the unknown-outcome state machine, run end to end with the real worker, service and
+// fixture transport. A second notice after a possible delivery needs (1) the server's own open status read after the
+// observation window, at most an hour old, and (2) a person's dated statement of their check in the channel; the worker
+// independently refuses to send without such a retry after the last possible delivery.
+$evidence = static fn (array $o): ?array => $view($syncer, $o)['cancellation']['sync']['operation']['providerEvidence'];
+$retryRows = static fn (array $o): array => $rows("SELECT outcome, evidence_json FROM order_cancellation_sync_attempts WHERE operation_uuid = ? AND kind = 'retry' ORDER BY attempt_seq", [$op($o)['operation_uuid']]);
+$unresolved = static function (string $tag, int $at = 0) use ($trendyol, $ok, $stop, $send, $syncer, $fxPut, $run, $op, $check, $puts): array {
+    $o = $trendyol($tag);
+    $ok($stop($syncer, $o), "{$tag} stop");
+    $ok($send($syncer, $o, ['reasonCode' => 500]), "{$tag} sent");
+    $fxPut(['fail' => true]);
+    $run($at);
+    $fxPut(null);
+    $run($at + 2000);
+    $check($op($o)['state'] === 'manual_review' && $op($o)['last_error_code'] === 'UNCERTAIN_OUTCOME_UNRESOLVED' && count($puts($o['package'])) === 1, "{$tag}: unresolved after the observation window " . json_encode($op($o)));
+    return $o;
+};
+$race = static function (int $offset, int $workers = 4) use ($dbName, $fixtureFile): array {
+    $start = (string) (microtime(true) + 0.7);
+    $procs = [];
+    $pipesOf = [];
+    for ($i = 0; $i < $workers; $i++) {
+        $procs[] = proc_open([PHP_BINARY, __DIR__ . '/fixtures/cancellation-sync-worker.php', $dbName, $start, $fixtureFile, (string) $offset], [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+        fclose($pipes[0]);
+        $pipesOf[] = $pipes;
+    }
+    $outputs = [];
+    foreach ($procs as $i => $process) {
+        $outputs[] = (string) stream_get_contents($pipesOf[$i][1]) . (string) stream_get_contents($pipesOf[$i][2]);
+        fclose($pipesOf[$i][1]);
+        fclose($pipesOf[$i][2]);
+        proc_close($process);
+    }
+    return $outputs;
+};
+// The HTTP kernel runs on the system clock. Stale evidence needs a later "now": the same service class with a later clock.
+$laterService = static function (int $offset) use ($pdo, $container): \Arasya\Operations\Cancellation\Sync\CancellationSyncService {
+    $later = new class ($offset) implements Clock {
+        public function __construct(private int $offset) {}
+        public function now(): DateTimeImmutable { return (new DateTimeImmutable('now', new DateTimeZone('UTC')))->modify("+{$this->offset} seconds"); }
+    };
+    return new \Arasya\Operations\Cancellation\Sync\CancellationSyncService($pdo, new \Arasya\Operations\Authorization\AuthorizationService(), new \Arasya\Operations\Quality\IdempotencyStore($pdo), $later, $container->cancellationProviders());
+};
+$syncerIdentity = (new \Arasya\Operations\Employee\PdoEmployeeRepository($pdo))->findByUuid($syncer['employeeUuid']);
+$apiError = static function (callable $call): ?string { try { $call(); return null; } catch (\Arasya\Operations\Http\ApiException $e) { return $e->errorCode; } };
+
+// R1 first request succeeds: one notice, accepted is not confirmed, the status read confirms.
+$r1 = $trendyol('r1ok');
+$ok($stop($syncer, $r1), 'R1 stop');
+$ok($send($syncer, $r1, ['reasonCode' => 500]), 'R1 sent');
+$check($view($syncer, $r1)['cancellation']['sync']['operation']['providerCheckRequired'] === false, 'R1 nothing sent yet: no provider check needed');
+$run(0);
+$check($op($r1)['state'] === 'awaiting_confirmation' && $op($r1)['confirmed_at'] === null && count($puts($r1['package'])) === 1, 'R1 accepted, awaiting confirmation, one notice');
+$check($view($syncer, $r1)['cancellation']['sync']['operation']['providerCheckRequired'] === true, 'R1 once accepted, any later retry would need a provider check');
+$run(130);
+$check($op($r1)['state'] === 'confirmed' && $op($r1)['confirmed_by'] === 'status_read' && count($puts($r1['package'])) === 1, 'R1 confirmed by the status read, one notice');
+
+// R2 first request definitively refused (4xx): nothing can have been delivered, a retry needs no check and is read first.
+$r2 = $trendyol('r2refused');
+$ok($stop($syncer, $r2), 'R2 stop');
+$ok($send($syncer, $r2, ['reasonCode' => 500]), 'R2 sent');
+$fxPut(['status' => 400, 'applyStatus' => null]);
+$run(0);
+$fxPut(null);
+$check($op($r2)['state'] === 'rejected' && count($puts($r2['package'])) === 1 && $view($syncer, $r2)['cancellation']['sync']['operation']['providerCheckRequired'] === false, 'R2 refused: rejected, no possible delivery');
+$error($opAction($syncer, $op($r2), 'recheck'), 409, 'CANCELLATION_SYNC_RECHECK_NOT_ELIGIBLE', 'R2 no recheck without a possible delivery');
+$run(300);
+$check(count($puts($r2['package'])) === 1, 'R2 the worker never resends a refusal');
+$ok($opAction($syncer, $op($r2), 'retry'), 'R2 retry of a refusal without a check');
+$run(400);
+$check(count($puts($r2['package'])) === 2 && $op($r2)['state'] === 'awaiting_confirmation' && str_starts_with(implode(',', array_slice($trail($op($r2)), -2)), 'status_read:leased,submit:accepted'), 'R2 the retry is read, then sent once');
+
+// R3 the request fails in transit (rate limit before any effect, or a broken connection that may or may not have reached
+// Trendyol). 429 is retried automatically; a broken connection is uncertain even when the package shows nothing.
+$r3 = $trendyol('r3transit');
+$ok($stop($syncer, $r3), 'R3 stop');
+$ok($send($syncer, $r3, ['reasonCode' => 500]), 'R3 sent');
+$fxPut(['status' => 429]);
+$run(0);
+$check($op($r3)['state'] === 'retry_scheduled' && $view($syncer, $r3)['cancellation']['sync']['operation']['providerCheckRequired'] === false, 'R3 a 429 is not a possible delivery');
+$fxPut(['fail' => true]);
+$run(200);
+$fxPut(null);
+$check($op($r3)['state'] === 'uncertain' && $fxPackage($r3['package'])['status'] === 'Created' && count($puts($r3['package'])) === 2, 'R3 a broken connection is uncertain although Trendyol shows nothing');
+$check(!in_array($control($r3)['source_request_status'], ['confirmed', 'failed'], true) && $op($r3)['confirmed_at'] === null, 'R3 a timeout is neither a success nor a failure: ' . $control($r3)['source_request_status']);
+$run(560);
+$check($op($r3)['state'] === 'uncertain' && count($puts($r3['package'])) === 2 && $op($r3)['last_error_code'] === 'UNCERTAIN_STILL_OPEN', 'R3 an open read after the timeout never resends');
+
+// R4 / R15 the write succeeded but its answer was lost: uncertain, the read confirms, exactly one notice.
+$r4 = $trendyol('r4lost');
+$ok($stop($syncer, $r4), 'R4 stop');
+$ok($send($syncer, $r4, ['reasonCode' => 500]), 'R4 sent');
+$fxPut(['status' => 200, 'applyStatus' => 'Cancelled', 'failAfterApply' => true]);
+$run(0);
+$fxPut(null);
+$check($op($r4)['state'] === 'uncertain' && $op($r4)['confirmed_at'] === null, 'R4 applied but answer lost: uncertain, not confirmed');
+$run(330);
+$check($op($r4)['state'] === 'confirmed' && count($puts($r4['package'])) === 1, 'R4 the read confirms the lost success; one notice');
+
+// R5 the provider confirms only after a while (delayed status): open reads keep it uncertain, the later read confirms.
+$r5 = $trendyol('r5delayed');
+$ok($stop($syncer, $r5), 'R5 stop');
+$ok($send($syncer, $r5, ['reasonCode' => 500]), 'R5 sent');
+$fxPut(['status' => 200, 'applyStatus' => null, 'failAfterApply' => true]);
+$run(0);
+$fxPut(null);
+$run(330);
+$check($op($r5)['state'] === 'uncertain' && count($puts($r5['package'])) === 1, 'R5 still open inside the window: uncertain');
+$fxStatus($r5['package'], 'Cancelled');
+$run(660);
+$check($op($r5)['state'] === 'confirmed' && count($puts($r5['package'])) === 1, 'R5 the delayed status confirms; one notice');
+
+// R6 the provider still shows the package open after the window: manual review with the server's evidence.
+$r6 = $unresolved('r6open');
+$check($evidence($r6)['status'] === 'ok' && $evidence($r6)['providerStatus'] === 'Created', 'R6 the server evidence: open after the observation window ' . json_encode($evidence($r6)));
+$check($view($syncer, $r6)['cancellation']['sync']['actions']['recheck'] === true && $view($syncer, $r6)['cancellation']['sync']['actions']['retry'] === true, 'R6 retry and recheck are offered');
+
+// R10 an old client (bare flag) and R11 forged or malformed statements: refused, nothing changes.
+$before6 = $op($r6);
+$error($opAction($syncer, $op($r6), 'retry', ['providerChecked' => true]), 409, 'CANCELLATION_SYNC_PROVIDER_CHECK_REQUIRED', 'R10 an old client\'s bare flag is refused');
+$error($opAction($syncer, $op($r6), 'retry', ['providerCheck' => true]), 422, 'VALIDATION_FAILED', 'R11 a boolean in place of the statement is refused');
+$error($opAction($syncer, $op($r6), 'retry', ['providerCheck' => ['note' => 'Am verificat în panou.']]), 422, 'VALIDATION_FAILED', 'R11 a statement without its time is refused');
+$error($opAction($syncer, $op($r6), 'retry', ['providerCheck' => $attest(60, 'ok')]), 422, 'VALIDATION_FAILED', 'R11 a statement without a real note is refused');
+$error($opAction($syncer, $op($r6), 'retry', ['providerCheck' => $attest(7200)]), 409, 'CANCELLATION_SYNC_PROVIDER_CHECK_STALE', 'R11 a check two hours old is refused');
+$error($opAction($syncer, $op($r6), 'retry', ['providerCheck' => $attest(-3600)]), 409, 'CANCELLATION_SYNC_PROVIDER_CHECK_STALE', 'R11 a check in the future is refused');
+$error($opAction($syncer, $op($r6), 'retry', ['providerCheck' => $attest() + ['providerStatus' => 'Cancelled']]), 422, 'VALIDATION_FAILED', 'R11 extra claims are refused');
+$error($opAction($keeper, $op($r6), 'retry', ['providerCheck' => $attest()]), 403, 'UNAUTHORIZED_ACTION', 'R11 a manager without the sync permission cannot retry');
+$check($op($r6) == $before6 && $retryRows($r6) === [] && count($puts($r6['package'])) === 1, 'R10/R11 refused retries change nothing');
+
+// R9 two managers act on the same screen: the second decision is refused (optimistic version), one retry only.
+$body6 = ['expectedVersion' => (int) $before6['version'], 'providerCheck' => $attest()];
+$key6 = $key('r6retry');
+$ok($dash($syncer, 'POST', "/management/cancellation-sync/operations/{$before6['operation_uuid']}/retry", $body6, $key6), 'R8 the first manager retries with evidence and a statement');
+$error($opAction($syncer2, $before6, 'close', ['note' => 'Rezolvat manual în Seller Panel.']), 409, 'CANCELLATION_SYNC_CHANGED', 'R9 a second manager\'s close on the old screen is refused');
+$error($opAction($syncer2, $before6, 'retry', ['providerCheck' => $attest()]), 409, 'CANCELLATION_SYNC_CHANGED', 'R9 a second manager\'s retry on the old screen is refused');
+$rr6 = $retryRows($r6);
+$check(count($rr6) === 1 && $rr6[0]['outcome'] === 'retry_after_provider_check' && $op($r6)['state'] === 'retry_scheduled', 'R9 exactly one retry recorded');
+// R8 the recorded decision: the person's statement and the server read it rested on, labelled as an attestation.
+$ev6 = json_decode((string) $rr6[0]['evidence_json'], true);
+$check(($ev6['attestation']['note'] ?? '') === $body6['providerCheck']['note'] && ($ev6['attestation']['employeeId'] ?? '') === $syncer['employeeUuid'] && ($ev6['serverRead']['providerStatus'] ?? '') === 'Created'
+    && is_int($ev6['serverRead']['attemptSeq'] ?? null) && is_int($ev6['deliveryAttemptSeq'] ?? null) && $ev6['serverRead']['attemptSeq'] > $ev6['deliveryAttemptSeq'], 'R8 the retry records the attestation and the server read: ' . json_encode($ev6));
+$audit6 = json_decode((string) $one("SELECT metadata_json FROM iam_audit_events WHERE action = 'production.cancellation.sync_retry' AND actor_employee_uuid = ? ORDER BY created_at DESC LIMIT 1", [$syncer['employeeUuid']]), true);
+$check(($audit6['outcome'] ?? '') === 'retry_after_provider_check' && ($audit6['evidence']['attestation']['checkedAt'] ?? '') === $body6['providerCheck']['checkedAt'], 'R8 the audit names the attestation: ' . json_encode($audit6));
+$check($op($r6)['confirmed_at'] === null && $op($r6)['state'] !== 'confirmed', 'R8 a person\'s statement is never a confirmation');
+// Old idempotency key: the same request again is answered from the record, nothing new happens.
+$replay6 = $dash($syncer, 'POST', "/management/cancellation-sync/operations/{$before6['operation_uuid']}/retry", $body6, $key6);
+$check($replay6['status'] === 200 && count($retryRows($r6)) === 1, 'R8 the same idempotency key replays without a second retry');
+// R14 four workers race on the authorized retry: exactly one more notice.
+$outputs6 = $race(2100);
+$check(count($puts($r6['package'])) === 2 && $op($r6)['state'] === 'awaiting_confirmation', 'R14 four racing workers on an authorized retry: one notice ' . json_encode($outputs6));
+$t6 = $trail($op($r6));
+$check(array_slice($t6, -3) === ['retry:retry_after_provider_check', 'status_read:leased', 'submit:accepted'], 'R8 read before the authorized send: ' . json_encode($t6));
+$replay6b = $dash($syncer, 'POST', "/management/cancellation-sync/operations/{$before6['operation_uuid']}/retry", $body6, $key6);
+$run(2200);
+$check($replay6b['status'] === 200 && count($puts($r6['package'])) === 2 && count($retryRows($r6)) === 1, 'R8 an old key after the round authorizes nothing new');
+
+// R13 the cron runs twice: one notice.
+$r13 = $trendyol('r13cron');
+$ok($stop($syncer, $r13), 'R13 stop');
+$ok($send($syncer, $r13, ['reasonCode' => 500]), 'R13 sent');
+$fxPut(['status' => 200, 'applyStatus' => null]);
+$run(0);
+$run(0);
+$fxPut(null);
+$check(count($puts($r13['package'])) === 1 && $op($r13)['state'] === 'awaiting_confirmation', 'R13 two runs of the same schedule: one notice');
+
+// R15 the authorized resend loses its answer again: the old statement does not authorize a third notice.
+$r15 = $unresolved('r15again');
+$ok($opAction($syncer, $op($r15), 'retry', ['providerCheck' => $attest()]), 'R15 authorized retry');
+$fxPut(['fail' => true]);
+$run(2100);
+$fxPut(null);
+$check($op($r15)['state'] === 'uncertain' && count($puts($r15['package'])) === 2, 'R15 the resend is uncertain again');
+$run(4200);
+$check($op($r15)['state'] === 'manual_review' && count($puts($r15['package'])) === 2, 'R15 observed again, then manual review; no third notice');
+// R11 forged state in the database (bypassing the API): the worker's own guard sends nothing.
+$cur15 = $op($r15);
+$pdo->prepare("UPDATE order_cancellation_sync_operations SET state = 'retry_scheduled', next_attempt_at = UTC_TIMESTAMP(6), version = version + 1 WHERE operation_uuid = ?")->execute([$cur15['operation_uuid']]);
+$pdo->prepare("INSERT INTO order_cancellation_sync_attempts (operation_uuid, order_uuid, kind, state_before, state_after, outcome, actor_system, occurred_at) VALUES (?, ?, 'retry', 'manual_review', 'retry_scheduled', 'retry_requested', 'forged', UTC_TIMESTAMP(6))")
+    ->execute([$cur15['operation_uuid'], $r15['uuid']]);
+$run(4300);
+$check($op($r15)['state'] === 'manual_review' && $op($r15)['last_error_code'] === 'PROVIDER_CHECK_REQUIRED' && count($puts($r15['package'])) === 2, 'R11 a forged retry state is refused by the worker: no notice ' . json_encode($op($r15)));
+
+// R16 the package changes between the person's check and the send: the worker's read decides, nothing is sent.
+foreach (['Shipped' => 'manual_review', 'Cancelled' => 'confirmed'] as $status => $expect) {
+    $r16 = $unresolved('r16' . strtolower($status));
+    $ok($opAction($syncer, $op($r16), 'retry', ['providerCheck' => $attest()]), "R16 {$status}: authorized retry");
+    $fxStatus($r16['package'], $status);
+    $run(2100);
+    $check($op($r16)['state'] === $expect && count($puts($r16['package'])) === 1, "R16 package {$status} after the check: {$expect}, no notice " . json_encode($op($r16)));
+}
+// R11 a statement against server evidence that rules a notice out (the package shipped after the unknown outcome).
+$r11 = $trendyol('r11shipped');
+$ok($stop($syncer, $r11), 'R11 shipped stop');
+$ok($send($syncer, $r11, ['reasonCode' => 500]), 'R11 shipped sent');
+$fxPut(['fail' => true]);
+$run(0);
+$fxPut(null);
+$fxStatus($r11['package'], 'Shipped');
+$run(400);
+$check($op($r11)['state'] === 'manual_review' && $evidence($r11)['status'] === 'not_open', 'R11 the server read rules a notice out');
+$error($opAction($syncer, $op($r11), 'retry', ['providerCheck' => $attest()]), 409, 'CANCELLATION_SYNC_PROVIDER_EVIDENCE_REQUIRED', 'R11 a statement cannot override the server read');
+
+// R11 a forged retry state right after a lost answer: the worker refuses, and its open read inside the observation window
+// is not evidence for a person's retry either.
+$r11b = $trendyol('r11bwindow');
+$ok($stop($syncer, $r11b), 'R11b stop');
+$ok($send($syncer, $r11b, ['reasonCode' => 500]), 'R11b sent');
+$fxPut(['fail' => true]);
+$run(0);
+$fxPut(null);
+$cur11b = $op($r11b);
+$pdo->prepare("UPDATE order_cancellation_sync_operations SET state = 'retry_scheduled', next_attempt_at = UTC_TIMESTAMP(6), version = version + 1 WHERE operation_uuid = ?")->execute([$cur11b['operation_uuid']]);
+$run(100);
+$check($op($r11b)['state'] === 'manual_review' && $op($r11b)['last_error_code'] === 'PROVIDER_CHECK_REQUIRED' && count($puts($r11b['package'])) === 1 && $evidence($r11b)['status'] === 'observing', 'R11b forged at once: no notice, evidence still observing ' . json_encode($evidence($r11b)));
+$error($opAction($syncer, $op($r11b), 'retry', ['providerCheck' => $attest()]), 409, 'CANCELLATION_SYNC_PROVIDER_EVIDENCE_REQUIRED', 'R11b a read inside the observation window is not evidence');
+// An operation of an earlier stop is never retried: refused 4xx, production released, the old operation stays closed.
+$oldGen = $trendyol('oldgeneration');
+$ok($stop($syncer, $oldGen), 'old generation stop');
+$ok($send($syncer, $oldGen, ['reasonCode' => 500]), 'old generation sent');
+$fxPut(['status' => 400, 'applyStatus' => null]);
+$run(0);
+$fxPut(null);
+$oldOp = $op($oldGen);
+$check($oldOp['state'] === 'rejected', 'old generation: refused by Trendyol');
+$ok($release($releaser, $oldGen), 'old generation: production released');
+$error($opAction($syncer, $oldOp, 'retry'), 409, 'CANCELLATION_SYNC_STALE', 'an operation of a released stop cannot be retried');
+$ok($stop($syncer, $oldGen), 'old generation: stopped again');
+$error($opAction($syncer, $op($oldGen), 'retry'), 409, 'CANCELLATION_SYNC_STALE', 'an operation of an earlier stop cannot be retried under a new stop');
+$run(300);
+$check(count($puts($oldGen['package'])) === 1 && $op($oldGen)['state'] === 'rejected', 'the old operation sends nothing');
+
+// R12 the server's evidence is stale: refused until a read-only recheck produces a new read; the recheck sends nothing.
+$r12 = $unresolved('r12stale');
+$later = $laterService(2000 + SyncOperations::RETRY_EVIDENCE_MAX_AGE_SECONDS + 100);
+$laterNow = time() + 2000 + SyncOperations::RETRY_EVIDENCE_MAX_AGE_SECONDS + 100;
+$stale = $apiError(fn () => $later->retry($syncerIdentity, $op($r12)['operation_uuid'], ['expectedVersion' => (int) $op($r12)['version'], 'providerCheck' => $attest(60, 'Seller Panel: pachetul este încă activ.', $laterNow)], $key('r12a'), 'r12a'));
+$check($stale === 'CANCELLATION_SYNC_PROVIDER_EVIDENCE_REQUIRED', 'R12 an hour-old server read does not support a retry: ' . var_export($stale, true));
+$later->recheck($syncerIdentity, $op($r12)['operation_uuid'], ['expectedVersion' => (int) $op($r12)['version']], $key('r12b'), 'r12b');
+$check($op($r12)['state'] === 'uncertain' && count($puts($r12['package'])) === 1, 'R12 the recheck only schedules a read');
+$run(2000 + SyncOperations::RETRY_EVIDENCE_MAX_AGE_SECONDS + 150);
+$check($op($r12)['state'] === 'manual_review' && count($puts($r12['package'])) === 1 && array_slice($trail($op($r12)), -1) === ['status_read:still_open'], 'R12 the recheck read the package, sent nothing');
+$fresh12 = $later->retry($syncerIdentity, $op($r12)['operation_uuid'], ['expectedVersion' => (int) $op($r12)['version'], 'providerCheck' => $attest(60, 'Seller Panel: pachetul este încă activ.', $laterNow)], $key('r12c'), 'r12c');
+$check($fresh12['state'] === 'retry_scheduled', 'R12 with a fresh read the retry is accepted');
+
+// R1b an accepted notice that never shows cancelled (six hours): a person decides, and a second notice needs the same
+// evidence and statement as after a lost answer (an accepted notice may still be processed).
+$r1b = $trendyol('r1baccepted');
+$ok($stop($syncer, $r1b), 'R1b stop');
+$ok($send($syncer, $r1b, ['reasonCode' => 500]), 'R1b sent');
+$fxPut(['status' => 200, 'applyStatus' => null]);
+$run(0);
+$fxPut(null);
+$run(SyncOperations::CONFIRMATION_TIMEOUT_SECONDS + 100);
+$check($op($r1b)['state'] === 'manual_review' && $op($r1b)['last_error_code'] === 'AWAITING_CONFIRMATION_TIMEOUT' && $evidence($r1b)['status'] === 'ok', 'R1b accepted, never confirmed: manual review with evidence');
+$error($opAction($syncer, $op($r1b), 'retry'), 409, 'CANCELLATION_SYNC_PROVIDER_CHECK_REQUIRED', 'R1b a second notice after an accepted one needs a provider check');
+$ok($opAction($syncer, $op($r1b), 'retry', ['providerCheck' => $attest()]), 'R1b checked retry');
+$run(SyncOperations::CONFIRMATION_TIMEOUT_SECONDS + 200);
+$check(count($puts($r1b['package'])) === 2, 'R1b one more notice after the checked retry');
+
+// R7 the provider cannot be read after the unknown outcome: the server has no evidence; a recheck later produces it.
+$r7 = $trendyol('r7dark');
+$ok($stop($syncer, $r7), 'R7 stop');
+$ok($send($syncer, $r7, ['reasonCode' => 500]), 'R7 sent');
+$fxPut(['fail' => true]);
+$run(0);
+$fxPut(null);
+$fxGet(['fail' => true]);
+$run(400);
+$check($op($r7)['state'] === 'uncertain' && count($puts($r7['package'])) === 1, 'R7 unreadable: still uncertain, nothing sent');
+$run(7 * 3600);
+$fxGet([]);
+$check($op($r7)['state'] === 'manual_review' && $op($r7)['last_error_code'] === 'PROVIDER_UNREACHABLE' && $evidence($r7)['status'] === 'unknown', 'R7 six hours unreadable: manual review, the server has no evidence ' . json_encode($evidence($r7)));
+$error($opAction($syncer, $op($r7), 'retry', ['providerCheck' => $attest()]), 409, 'CANCELLATION_SYNC_PROVIDER_EVIDENCE_REQUIRED', 'R7 a statement alone cannot replace the server read');
+$ok($opAction($syncer, $op($r7), 'recheck'), 'R7 recheck');
+$run(7 * 3600 + 100);
+$check($op($r7)['state'] === 'manual_review' && $evidence($r7)['status'] === 'ok' && count($puts($r7['package'])) === 1, 'R7 the recheck read gives the evidence, no notice');
+$ok($opAction($syncer, $op($r7), 'retry', ['providerCheck' => $attest()]), 'R7 retry with evidence and a statement');
+$run(7 * 3600 + 200);
+$check(count($puts($r7['package'])) === 2 && $op($r7)['state'] === 'awaiting_confirmation', 'R7 one authorized notice');
+// A manual close is never shown as a confirmation.
+$rc = $unresolved('rclose');
+$ok($opAction($syncer, $op($rc), 'close', ['note' => 'Rezolvat manual în Seller Panel de manager.']), 'close after manual handling');
+$check($op($rc)['state'] === 'closed' && $op($rc)['confirmed_at'] === null && $view($syncer, $rc)['cancellation']['sync']['operation']['staffState'] === null && $control($rc)['source_status'] !== 'cancelled', 'a person\'s close is not a confirmation');
 
 // ---- S4. Failures ---------------------------------------------------------------------------------------------------
 $failCase = static function (string $tag, array $script, string $expectState, ?string $expectError, string $label) use ($trendyol, $stop, $send, $ok, $syncer, $fxPut, $run, $op, $check, $puts): array {

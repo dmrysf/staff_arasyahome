@@ -86,10 +86,47 @@ safe, so the worker never sends an `uncertain` operation again:
 - a recovered lease counts as possibly dispatched (`dispatched_at` is set), so a crash is treated like a lost answer.
 
 Only a person's retry puts it back to `retry_scheduled`, and even then the worker reads first and sends only if the
-package is still open. Once an operation has been `uncertain`, the server refuses a retry with
-`409 CANCELLATION_SYNC_PROVIDER_CHECK_REQUIRED` unless the request carries `providerChecked: true` (the person states
-they checked the package in the Seller Panel); the operation view exposes `providerCheckRequired`, the Dashboard shows a
-warning and a confirmation checkbox, and the attempt is recorded as `retry_after_provider_check`. Production stays stopped throughout, and a release is refused while the operation is open.
+package is still open. Production stays stopped throughout, and a release is refused while the operation is open.
+
+### Second notice after a possible delivery (evidence rule, final hardening 2026-10-16)
+
+A notice may have reached Trendyol after any of: an accepted answer (`submit:accepted`), a lost answer or 5xx
+(`submit:uncertain`), a late answer recorded after a lease recovery (`late_accepted`, `late_uncertain`) or a recovered
+lease (`lease_recovery`). After the last such attempt (`SyncOperations::lastDelivery`) a client-supplied flag proves
+nothing, so a second notice needs two independent things and is checked by two independent guards:
+
+1. Server evidence (`SyncOperations::providerEvidence`): the last completed status read of the operation after that
+   delivery is the server's own read, found the package open, was made at least `UNCERTAIN_OBSERVATION_SECONDS` (30 min)
+   after the delivery and is at most `RETRY_EVIDENCE_MAX_AGE_SECONDS` (1 h) old. Otherwise the retry is refused with
+   `409 CANCELLATION_SYNC_PROVIDER_EVIDENCE_REQUIRED` (`details.evidence`: `missing`, `unknown`, `not_open`, `observing`,
+   `stale`). A person's statement can never replace it.
+2. The person's statement, `providerCheck: {checkedAt, note}`: when they checked the package in the Seller Panel (ISO
+   8601 with offset, at most 30 minutes old, not in the future) and what they saw (10–1000 characters). Missing:
+   `409 CANCELLATION_SYNC_PROVIDER_CHECK_REQUIRED`; malformed: `422 VALIDATION_FAILED`; too old or in the future:
+   `409 CANCELLATION_SYNC_PROVIDER_CHECK_STALE`. The legacy `providerChecked: true` (Dashboard 0.16.0 before this rule) is
+   accepted as a field and ignored, so such a client gets `CANCELLATION_SYNC_PROVIDER_CHECK_REQUIRED`.
+
+The accepted retry is recorded as `retry_after_provider_check` with `evidence_json` = {attestation {checkedAt, note,
+employeeId}, serverRead {attemptSeq, readAt, providerStatus}, deliveryAttemptSeq}; the same evidence goes into the IAM
+audit event. The statement is shown everywhere as the person's attestation, never as a provider confirmation. Only a
+status read showing `Cancelled`/`UnSupplied` or the inbound synchronization confirms anything.
+
+Independently, the worker refuses to send after a possible delivery unless a `retry_after_provider_check` attempt was
+recorded after it (`SyncOperations::sendAuthorized`). A state changed by any other means (a bug, a manual database
+update) therefore sends nothing: the operation goes to manual review with `PROVIDER_CHECK_REQUIRED`. One checked retry
+authorizes one round: if its notice is accepted or lost again, that is a new delivery and the next notice needs a new
+checked retry. A rescheduled retry of an operation already in `retry_scheduled` (`retry_rescheduled`) only brings the
+authorized round forward.
+
+`recheck` (`POST .../operations/{id}/recheck`, manual review after a possible delivery, both gates open) asks for one
+more read-only status read: the operation becomes `uncertain` and is due at once; the worker never sends from `uncertain`.
+The read confirms, records the new status, or returns the operation to manual review with fresh evidence. It is the way
+to refresh `stale`, `missing` or `unknown` evidence.
+
+Concurrent managers: every decision carries `expectedVersion` and runs under the order and actor row locks, so a second
+decision made on the same screen (retry, close) is refused with `CANCELLATION_SYNC_CHANGED`; the same idempotency key
+replays the recorded answer and authorizes nothing new. What cannot be closed: between the worker's last read and its
+PUT a package can still change at Trendyol (no conditional write is documented); the next read records the result.
 
 ## State model (migration 034)
 
@@ -167,7 +204,8 @@ Management (Dashboard, CSRF, `Idempotency-Key`, the actor's authority re-read un
 |---|---|---|---|
 | `GET` | `/management/orders/{id}/cancellation` | `orders.view_all` | adds `cancellation.sync` {provider, operation with history, required, actions} and `capabilities.sync` |
 | `POST` | `/management/orders/{id}/cancellation/sync` | `production.cancellation.sync` | `{expectedVersion, reasonCode? (Trendyol 500–506, required there), note?}` |
-| `POST` | `/management/cancellation-sync/operations/{id}/retry` | same | `{expectedVersion, providerChecked?}` (failed, rejected, manual review, scheduled; never uncertain; `providerChecked: true` required once the operation has been uncertain) |
+| `POST` | `/management/cancellation-sync/operations/{id}/retry` | same | `{expectedVersion, providerCheck?: {checkedAt, note}}` (failed, rejected, manual review, scheduled; never uncertain; after a possible delivery the statement and the server's evidence are required, see the evidence rule) |
+| `POST` | `/management/cancellation-sync/operations/{id}/recheck` | same | `{expectedVersion}` (manual review after a possible delivery; one read-only status read, never a send) |
 | `POST` | `/management/cancellation-sync/operations/{id}/withdraw` | same | `{expectedVersion, reason}` (only before it reached the channel) |
 | `POST` | `/management/cancellation-sync/operations/{id}/close` | same | `{expectedVersion, note}` (manual review only) |
 | `GET` | `/management/cancellation-sync` | `orders.view_all` | providers, operations by state, recorded findings |
@@ -180,7 +218,8 @@ Another source's operation answers 404 exactly like a missing one. The heartbeat
 Error codes: `CANCELLATION_SYNC_DISABLED`, `CANCELLATION_SYNC_EXISTS`, `CANCELLATION_SYNC_OPEN`, `CANCELLATION_SYNC_STALE`,
 `CANCELLATION_SYNC_CHANGED`, `CANCELLATION_SYNC_STATE`, `CANCELLATION_SYNC_RETRY_NOT_ELIGIBLE`,
 `CANCELLATION_SYNC_NOT_WITHDRAWABLE`, `CANCELLATION_SYNC_NOT_FOUND`, `CANCELLATION_SYNC_CONFLICT`, `REASON_REQUIRED`,
-`SOURCE_ALREADY_CANCELLED`, `TRENDYOL_BEFORE_BASELINE`, `RELEASE_SYNC_OPEN`.
+`SOURCE_ALREADY_CANCELLED`, `TRENDYOL_BEFORE_BASELINE`, `RELEASE_SYNC_OPEN`, `CANCELLATION_SYNC_PROVIDER_CHECK_REQUIRED`,
+`CANCELLATION_SYNC_PROVIDER_EVIDENCE_REQUIRED`, `CANCELLATION_SYNC_PROVIDER_CHECK_STALE`, `CANCELLATION_SYNC_RECHECK_NOT_ELIGIBLE`.
 
 ## Staff and Dashboard
 
@@ -191,7 +230,13 @@ Error codes: `CANCELLATION_SYNC_DISABLED`, `CANCELLATION_SYNC_EXISTS`, `CANCELLA
 - **Dashboard 0.16.0:** the cancellation card gains "Anulare la canalul de vânzare" (mechanism, gates, confirmation,
   what is not supported, state with an explanation, reason, attempts, next attempt, last problem, history; send with a
   Trendyol reason that is never preselected, retry, withdraw, close) and the production overview gains the
-  synchronization card (channels, operations by state, recorded findings, dry run). ro and tr.
+  synchronization card (channels, operations by state, recorded findings, dry run). ro and tr. For Trendyol the section
+  is titled and worded as the seller's unsupplied declaration requested by Arasya (pending, accepted but unconfirmed,
+  uncertain, confirmed by Trendyol's status read, manual review), never as a customer cancellation; a cancellation that
+  arrives from the marketplace is shown separately in the stop facts. After a possible delivery the card shows the
+  server's last read ("Ultima citire Arasya la canal"), offers the read-only recheck when the server allows it, and the
+  retry dialog asks for the dated Seller Panel statement only when the server's evidence is fresh; the history shows each
+  statement as the person's attestation.
 
 ## Security
 
@@ -255,8 +300,12 @@ worker contacts nobody while the switch or the flag is off.
 
 - `tests/mysql-cancellation-sync-integration.php` (MySQL 8.4 and MariaDB 10.11): S0 migration; S1 gates and manual
   providers; S2 Trendyol read–send–confirm; S3 lost answers (never resent by the worker; observation, manual review, a
-  person-approved retry that must state the channel check); S3b unknown outcomes (delayed or stale status, four workers on an uncertain operation, inbound
-  confirmation meanwhile, split or shipped afterwards, crash after a possible send); S4 429 / 5xx / 401 / 4xx / not cancellable / unknown package /
+  person-approved retry with the server's evidence and a dated statement); S3b unknown outcomes (delayed or stale status, four workers on an uncertain operation, inbound
+  confirmation meanwhile, split or shipped afterwards, crash after a possible send); S3c the retry-safety matrix R1–R16
+  (success, definite refusal, failure in transit, lost success, delayed confirmation, still open, unreadable, the
+  person's review, concurrent managers, old clients, forged flags and forged database state, stale evidence and the
+  read-only recheck, duplicate cron runs, racing workers on an authorized retry, a lost answer of the authorized resend,
+  external changes between the check and the send, an operation of an earlier stop); S4 429 / 5xx / 401 / 4xx / not cancellable / unknown package /
   attempt budget / unreachable reads; S5 crashed worker, four concurrent workers (one notice), inbound confirmation during
   the HTTP call; S6 WooCommerce pull, cross-site isolation, reports, paid order, withdraw, timeout, heartbeat, signatures;
   S7 authorization, CSRF, idempotency, versions, revoked roles; S8 release blocked, generations; S9 3 sources × 14 stages
@@ -270,9 +319,14 @@ worker contacts nobody while the switch or the flag is off.
   confirmed. Every piece, track, defect, label, plan, custody, checkpoint, history and QR row of each order is compared
   byte for byte before and after every synchronization step.
 - `tests/mysql-cancellation-sync-simulation.php`: a seeded adversarial simulation (`ARASYA_SIM_SEED`, `ARASYA_SIM_STEPS`)
-  over 24 synthetic orders with invariants I1–I13 checked after every step (see the file header); I12: after an unknown
-  outcome no notice is sent again without a person's retry; I13: such a retry is accepted only with a stated channel
-  check.
+  over 24 synthetic orders with invariants I1–I14 checked after every step (see the file header); I12: after a possible
+  delivery no notice is sent again without a person's checked retry recorded after it; I13: such a retry names the
+  person's statement and the server's open read after the observation window, and a bare flag or nothing is refused;
+  I14: a recheck never sends. The unknown-outcome drill drives Trendyol operations through a lost answer and the
+  observation window on purpose, then tries a retry with nothing, with the legacy flag and with a statement.
+- Mutation check (final hardening): each critical guard of the retry path was removed in a disposable copy and the
+  integration suite and the simulation were run; see the pull request for the table. Every guard whose removal changes
+  behaviour is detected by a deterministic test; two removals are equivalent (a second guard enforces the same rule).
 - `tests/inbound-only-guard.php`: the reviewed exception and its self-tests.
 - Staff `tests/order-cancellation.test.ts`, Dashboard `tests/cancellation.test.tsx`, Dashboard real-API E2E
   `e2e/zzzzzzzzz-cancellation-real-api.spec.ts`; YD SOFT `tests/cancellation/run.php`.
