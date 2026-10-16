@@ -4,7 +4,8 @@ declare(strict_types=1);
 
 // Creates the synthetic orders of the tailoring supervision E2E spec in the already prepared E2E database
 // (run by that spec, after the earlier suites): cut by one cutter and carried through tailoring by one tailor
-// to stage 7 (side-hem), stage 5 (material-straightening) and stage 3, all through the real API commands.
+// to stage 7 (side-hem), stage 5 (material-straightening), stage 3 and stage 8 (ironing, the EX-000001 shape of the
+// universal scanner spec), all through the real API commands.
 // Prints the order ids and their QR payloads as JSON. Refuses any database that is not an E2E test database.
 
 use Arasya\Operations\Application\Container;
@@ -35,7 +36,7 @@ $step = static function (string $user, string $id, string $action) use ($kernel,
     }
 };
 $out = ['orders' => [], 'qr' => []];
-foreach (['stage7' => ['75001', 'trendhome', 'side-hem'], 'stage5' => ['75002', 'outletperdele', 'material-straightening'], 'stage3' => ['75003', 'trendhome', 'workshop-receiving']] as $label => [$number, $source, $target]) {
+foreach (['stage7' => ['75001', 'trendhome', 'side-hem'], 'stage5' => ['75002', 'outletperdele', 'material-straightening'], 'stage3' => ['75003', 'trendhome', 'workshop-receiving'], 'stage8' => ['75004', 'trendhome', 'ironing']] as $label => [$number, $source, $target]) {
     $lines = [];
     foreach ([[1, 'Voal Alb', 5], [2, 'Draperie Gri', 7]] as [$n, $name, $meters]) {
         $lines[] = ['id' => (int) $number * 10 + $n, 'line' => $n, 'name' => $name, 'sku' => "SV-{$n}", 'color' => 'Gri', 'width' => 300, 'height' => 260, 'unit' => 'cm', 'meters' => $meters, 'quantity' => 1];

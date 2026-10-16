@@ -307,6 +307,62 @@ final readonly class CuttingFaultService
         });
     }
 
+    /**
+     * The open requests a scanned production code concerns, as the scanning employee sees them (role and granted
+     * actions), for the universal Staff scanner (API 2.34.1). Read-only: nothing is recorded and the scan is no
+     * evidence here; every action sends the code again and verifyQr() checks it inside its own transaction.
+     *
+     * Only requests the employee is involved in are returned, by the same rule as GET /production-exceptions/{id}
+     * (supervisor of the source, detector, receiver, restore recipient, or the responsible cutter once a return was
+     * sent). A piece label returns only the requests that name that piece (verifyQr accepts nothing else). A code
+     * that is not an active order QR or an active piece label returns nothing, so the ordinary order lookup answers
+     * with its own refusal (superseded, revoked, unknown).
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function scanned(EmployeeIdentity $actor, mixed $token): array
+    {
+        if (!is_string($token) || $token === '' || strlen($token) > 128) {
+            throw new ApiException(400, 'INVALID_REQUEST', 'Request fields are invalid.');
+        }
+        $orderUuid = null;
+        $unitUuid = null;
+        $reference = QrReference::parsePayload($token);
+        if ($reference !== null) {
+            $qr = $this->pdo->prepare('SELECT order_uuid, status, expires_at FROM order_qr_references WHERE qr_reference = ?');
+            $qr->execute([$reference->value]);
+            $row = $qr->fetch(PDO::FETCH_ASSOC);
+            if (is_array($row) && $row['status'] === 'active' && ($row['expires_at'] === null || (string) $row['expires_at'] > $this->now())) {
+                $orderUuid = (string) $row['order_uuid'];
+            }
+        } else {
+            $label = \Arasya\Operations\Order\UnitLabelReference::parsePayload($token);
+            $resolved = $label === null ? null : $this->units()->resolveLabel($label);
+            if ($resolved !== null && $resolved['status'] === 'active') {
+                $orderUuid = (string) $resolved['orderUuid'];
+                $unitUuid = (string) $resolved['unitUuid'];
+            }
+        }
+        if ($orderUuid === null) {
+            return [];
+        }
+        $open = "'" . implode("', '", ExceptionQueries::OPEN_STATUSES) . "'";
+        $statement = $this->pdo->prepare("SELECT x.* FROM production_exceptions x WHERE x.order_uuid = ? AND x.status IN ({$open})"
+            . ($unitUuid === null ? '' : ' AND EXISTS (SELECT 1 FROM production_exception_units u WHERE u.exception_uuid = x.exception_uuid AND u.unit_uuid = ?)')
+            . ' ORDER BY x.reported_at, x.exception_number');
+        $statement->execute($unitUuid === null ? [$orderUuid] : [$orderUuid, $unitUuid]);
+        $items = [];
+        foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $tailoring = $row['exception_type'] === self::TYPE_TAILORING;
+            $supervises = $tailoring && $this->supervisors()->supervises($actor, (string) $row['source_key']);
+            $responsible = $row['responsible_employee_uuid'] === $actor->employeeUuid && (!$tailoring || $row['return_requested_at'] !== null);
+            if ($supervises || $responsible || in_array($actor->employeeUuid, [$row['detector_employee_uuid'], $row['receiver_employee_uuid'], $row['restore_recipient_employee_uuid']], true)) {
+                $items[] = $this->queries->detail((string) $row['exception_uuid'], $actor->employeeUuid, false, $supervises);
+            }
+        }
+        return $items;
+    }
+
     /** @param array<string, mixed> $input @return array<string, mixed> */
     public function acknowledge(EmployeeIdentity $actor, string $exceptionId, array $input, string $key, string $requestId): array
     {
