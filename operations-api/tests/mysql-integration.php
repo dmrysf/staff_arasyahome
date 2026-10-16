@@ -141,6 +141,7 @@ try {
     $expected[] = '030_production_route_reconciliation.sql';
     $expected[] = '031_production_assisted_checkpoints.sql';
     $expected[] = '033_order_cancellation_control.sql';
+    $expected[] = '034_order_cancellation_sync.sql';
     if ($applied !== $expected) {
         throw new RuntimeException('An existing 001 schema did not apply exactly the pending migrations in order: ' . implode(', ', $applied));
     }

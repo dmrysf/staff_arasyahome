@@ -43,6 +43,14 @@ try {
     if (is_string($cancellation) && (!isset($tables['order_cancellation_controls']) || !hash_equals(hash_file('sha256', dirname(__DIR__) . '/database/migrations/033_order_cancellation_control.sql'), $cancellation))) {
         throw new RuntimeException('Current migration could not be verified.');
     }
+    // Migration 034 (cancellation synchronization) likewise. An API older than 2.36.0 would release a stop while a
+    // cancellation request may still be acted on by the sales channel: refused while any operation is open.
+    $sync = $pdo->query("SELECT checksum FROM schema_migrations WHERE migration_name = '034_order_cancellation_sync.sql'")->fetchColumn();
+    if (is_string($sync) && (!isset($tables['order_cancellation_sync_operations']) || !hash_equals(hash_file('sha256', dirname(__DIR__) . '/database/migrations/034_order_cancellation_sync.sql'), $sync))) {
+        throw new RuntimeException('Current migration could not be verified.');
+    }
+    $syncOpen = isset($tables['order_cancellation_sync_operations'])
+        ? (int) $pdo->query('SELECT COUNT(*) FROM order_cancellation_sync_operations WHERE open_order_uuid IS NOT NULL')->fetchColumn() : 0;
     $stoppedOpen = isset($tables['order_cancellation_controls'])
         ? (int) $pdo->query("SELECT COUNT(*) FROM operational_orders WHERE cancellation_state = 'held' AND production_completed_at IS NULL")->fetchColumn() : 0;
     $state = [];
@@ -56,9 +64,9 @@ try {
     }
     if (isset($tables['production_feature_flags'])) $state['enabledFeatures'] = (int) $pdo->query('SELECT COUNT(*) FROM production_feature_flags WHERE enabled = 1')->fetchColumn();
     if (isset($tables['production_pilot_cohort'])) $state['activeCohort'] = (int) $pdo->query("SELECT COUNT(*) FROM production_pilot_cohort WHERE status = 'active'")->fetchColumn();
-    $floor = $stoppedOpen > 0 ? '2.35.0' : ($assistedOpen > 0 ? '2.34.0' : (array_sum($state) > 0 ? '2.32.0' : null));
+    $floor = $syncOpen > 0 ? '2.36.0' : ($stoppedOpen > 0 ? '2.35.0' : ($assistedOpen > 0 ? '2.34.0' : (array_sum($state) > 0 ? '2.32.0' : null)));
     $safe = $floor === null || version_compare($argv[1], $floor, '>=');
-    fwrite(STDOUT, json_encode(['safe' => $safe, 'targetVersion' => $argv[1], 'requiredFloor' => $floor, 'state' => $state + ['openOrdersWithAssistedCheckpoints' => $assistedOpen, 'openStoppedOrders' => $stoppedOpen]], JSON_THROW_ON_ERROR) . "\n");
+    fwrite(STDOUT, json_encode(['safe' => $safe, 'targetVersion' => $argv[1], 'requiredFloor' => $floor, 'state' => $state + ['openOrdersWithAssistedCheckpoints' => $assistedOpen, 'openStoppedOrders' => $stoppedOpen, 'openCancellationSyncOperations' => $syncOpen]], JSON_THROW_ON_ERROR) . "\n");
     exit($safe ? 0 : 3);
 } catch (Throwable) {
     fwrite(STDERR, "Rollback refused: current database state could not be verified.\n");

@@ -360,6 +360,8 @@ export function mapProductionStop(value: unknown): import("../../domain/models")
     since: timestampValue(raw.since),
     canContinue: false,
     managementAttention: raw.managementAttention,
+    // API 2.36.0; absent before it (then no request was ever sent).
+    sync: raw.sync == null ? null : oneOf(raw.sync, ["awaiting_confirmation", "attention", "confirmed"] as const),
   };
 }
 

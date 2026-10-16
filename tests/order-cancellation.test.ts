@@ -17,7 +17,7 @@ const base = {
 };
 const stop = {
   state: "stopped", reason: "source_cancelled", origin: "source", sourceStatus: "cancelled", sourceRequest: "not_requested",
-  phase: "in_progress", physical: "pending", since: "2026-10-16T07:55:00.000Z", canContinue: false, managementAttention: true,
+  phase: "in_progress", physical: "pending", since: "2026-10-16T07:55:00.000Z", canContinue: false, managementAttention: true, sync: null,
 };
 
 test("a stopped order is mapped strictly: the stop, no action, a known blocked reason", () => {
@@ -72,6 +72,30 @@ test("the stop notice states the source, the stage and the physical check in Rom
   assert.equal(renderToStaticMarkup(createElement(ProductionStopNotice, { order: mapProductionOrder(base) })), "");
   // The generic blocked-reason line is not repeated under the strong notice.
   assert.doesNotMatch(renderToStaticMarkup(createElement(OrderNotices, { order })), /anulată la sursă/);
+});
+
+test("API 2.36.0: the cancellation sent to the sales channel is shown without details; older APIs omit it", () => {
+  const older: Record<string, unknown> = { ...stop };
+  delete older.sync;
+  assert.equal(mapProductionStop(older).sync, null, "an API before 2.36.0 has no sync field");
+  for (const sync of ["awaiting_confirmation", "attention", "confirmed"] as const) {
+    assert.equal(mapProductionStop({ ...stop, sync }).sync, sync);
+  }
+  for (const bad of ["sent", "uncertain", 1, true]) {
+    assert.throws(() => mapProductionStop({ ...stop, sync: bad }), StaffServiceError, `unknown sync ${String(bad)} fails closed`);
+  }
+  const local = { ...stop, reason: "manager_stop", origin: "local", sourceStatus: "not_reported", sourceRequest: "pending" };
+  const render = (value: Record<string, unknown>) => renderToStaticMarkup(createElement(ProductionStopNotice, { order: mapProductionOrder({ ...base, status: "in_progress", employeeActionBlockedReason: "production_stopped", productionStop: value }) }));
+  const awaiting = render({ ...local, sync: "awaiting_confirmation" });
+  assert.match(awaiting, /Anulare în curs de confirmare la canalul de vânzare/);
+  assert.doesNotMatch(awaiting, /nu este încă confirmată/, "the generic pending line is replaced, not repeated");
+  assert.match(awaiting, /Nu poți continua producția acestei comenzi/, "production stays stopped");
+  assert.match(render({ ...local, sync: "attention" }), /Sincronizare nereușită/);
+  assert.match(render({ ...local, sync: "confirmed", sourceStatus: "cancelled" }), /Anularea a fost confirmată de canalul de vânzare/);
+  assert.match(render({ ...local, sync: null }), /Anularea la sursă a fost cerută și nu este încă confirmată/);
+  for (const html of [awaiting, render({ ...local, sync: "attention" })]) {
+    assert.doesNotMatch(html, /Trendyol|WooCommerce|unsupplied|500|operation/i, "no provider internals reach the worker");
+  }
 });
 
 test("no manufacturing action is offered on a stopped order", () => {

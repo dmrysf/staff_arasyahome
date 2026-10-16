@@ -123,6 +123,11 @@ export type ProductionStopView = {
   since: string;
   canContinue: false;
   managementAttention: boolean;
+  /**
+   * API 2.36.0: the outbound cancellation of this stop, without details: waiting for the sales channel, needing a person,
+   * or confirmed by the channel. null without a request (and from an API before 2.36.0, which omits it).
+   */
+  sync: "awaiting_confirmation" | "attention" | "confirmed" | null;
 };
 
 /** One physical piece of an order line ("Bucata 1/2"); trackId is set while the piece travels apart, in rework. */

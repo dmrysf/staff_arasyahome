@@ -49,6 +49,35 @@ final readonly class CancellationControl
      */
     public function onSourceAvailability(string $orderUuid, bool $cancelled, bool $wasUnavailable, array $evidence): void
     {
+        $this->applySourceAvailability($orderUuid, $cancelled, $wasUnavailable, $evidence);
+        if ($cancelled) {
+            // API 2.36.0: the provider's own cancellation is the confirmation of an outbound request of this stop.
+            $this->confirmSync($orderUuid, isset($evidence['eventRef']) ? (string) $evidence['eventRef'] : null);
+        }
+    }
+
+    /**
+     * Marks a commercial cancellation at the source as requested (API 2.36.0, sending it through a provider). Nothing is
+     * sent here; the caller creates the outbound operation in the same transaction.
+     */
+    public function requestSource(string $orderUuid, string $actorUuid, string $requestId, string $key, string $mechanism): void
+    {
+        $order = $this->order($orderUuid);
+        $control = $order['cancellation_state'] === null ? null : $this->control($orderUuid);
+        if ($control === null || $control['hold_status'] !== self::HELD) {
+            throw new ApiException(409, 'CANCELLATION_NOT_HELD', 'Producția acestei comenzi nu este oprită.');
+        }
+        if ($control['source_request_status'] === 'pending') {
+            return;
+        }
+        $now = $this->now();
+        $this->update($order, $control, ['source_request_status' => 'pending', 'source_requested_at' => $now, 'source_requested_by_employee_uuid' => $actorUuid], $now);
+        $this->event($order, (int) $control['version'] + 1, 'source_cancellation_requested', $actorUuid, null, ['outbound' => $mechanism], $requestId, $key, $now);
+    }
+
+    /** @param array<string, mixed> $evidence */
+    private function applySourceAvailability(string $orderUuid, bool $cancelled, bool $wasUnavailable, array $evidence): void
+    {
         $order = $this->order($orderUuid);
         $control = $order['cancellation_state'] === null ? null : $this->control($orderUuid);
         $now = $this->now();
@@ -168,10 +197,13 @@ final readonly class CancellationControl
      * Why a release is refused right now, or null when every prerequisite holds. The order row is locked.
      * @param array<string, mixed> $order @param array<string, mixed> $control
      */
-    public static function releaseRefusal(array $order, array $control): ?string
+    public static function releaseRefusal(array $order, array $control, bool $syncOpen = false): ?string
     {
         return match (true) {
             $control['hold_status'] !== self::HELD => 'not_held',
+            // API 2.36.0: while a cancellation request may still reach (or be acted on by) the sales channel, production
+            // never resumes; the operation must end first (confirmed, rejected, withdrawn or closed by a person).
+            $syncOpen => 'sync_open',
             $control['production_phase'] === 'completed' || $order['production_completed_at'] !== null => 'production_completed',
             $control['physical_outcome'] === 'left_factory' => 'left_factory',
             $order['operational_status'] === 'unavailable' || $control['source_status'] === 'cancelled' => 'source_cancelled',
@@ -192,7 +224,7 @@ final readonly class CancellationControl
         if ((int) $control['version'] !== $expectedVersion) {
             throw new ApiException(409, 'CANCELLATION_CHANGED', 'Starea opririi s-a schimbat. Reîncarcă înainte de a continua.');
         }
-        $refusal = self::releaseRefusal($order, $control);
+        $refusal = self::releaseRefusal($order, $control, $this->syncOpen($orderUuid));
         if ($refusal !== null) {
             throw self::refused($refusal);
         }
@@ -238,6 +270,7 @@ final readonly class CancellationControl
             'left_factory' => new ApiException(409, 'RELEASE_NOT_APPLICABLE', 'Produsul a plecat din fabrică; producția nu poate fi reluată.'),
             'source_cancelled' => new ApiException(409, 'RELEASE_SOURCE_CANCELLED', 'Sursa raportează în continuare comanda ca anulată. Producția nu poate fi reluată.'),
             'physical_unverified' => new ApiException(409, 'RELEASE_PHYSICAL_UNVERIFIED', 'Verifică și înregistrează mai întâi starea fizică a produsului.'),
+            'sync_open' => new ApiException(409, 'RELEASE_SYNC_OPEN', 'O cerere de anulare către sursă este încă deschisă. Așteaptă rezultatul sau închide-o înainte de reluare.'),
             'document_not_ready' => new ApiException(409, 'RELEASE_DOCUMENT_NOT_READY', 'Documentul de producție nu este activ. Finalizează revizia înainte de reluare.'),
             default => new ApiException(409, 'RELEASE_REFUSED', 'Reluarea producției nu este posibilă acum.'),
         };
@@ -303,6 +336,10 @@ final readonly class CancellationControl
                 ->execute([$orderUuid, ...array_values($row), $now, $now]);
             $version = 1;
         } else {
+            // A stop after a release is a new generation: an outbound operation of the earlier stop never applies to it.
+            if (array_key_exists('hold_generation', $control)) {
+                $row['hold_generation'] = (int) $control['hold_generation'] + 1;
+            }
             $this->writeControl($orderUuid, $row, (int) $control['version'], $now);
             $version = (int) $control['version'] + 1;
         }
@@ -394,6 +431,26 @@ final readonly class CancellationControl
     private static function cut(mixed $value, int $length): ?string
     {
         return is_string($value) && $value !== '' ? mb_substr($value, 0, $length) : null;
+    }
+
+    /** Whether an outbound cancellation operation of this order is open (migration 034; none before it). */
+    public function syncOpen(string $orderUuid): bool
+    {
+        if (!Sync\SyncSchema::ready($this->pdo)) {
+            return false;
+        }
+        return (new Sync\SyncOperations($this->pdo, $this->clock))->openFor($orderUuid) !== null;
+    }
+
+    private function confirmSync(string $orderUuid, ?string $ref): void
+    {
+        if (!Sync\SyncSchema::ready($this->pdo)) {
+            return;
+        }
+        $generation = (int) $this->scalar('SELECT hold_generation FROM order_cancellation_controls WHERE order_uuid = ? FOR UPDATE', [$orderUuid]);
+        if ($generation > 0) {
+            (new Sync\SyncOperations($this->pdo, $this->clock))->confirmFromInbound($orderUuid, $generation, $ref);
+        }
     }
 
     private function now(): string

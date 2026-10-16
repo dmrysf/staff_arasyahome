@@ -50,6 +50,8 @@ final readonly class ManagementController
         private ?\Arasya\Operations\Document\RevisionApproverPolicy $documentApprovers = null,
         private ?\Arasya\Operations\Document\DocumentScopePolicy $documentScopes = null,
         private ?\Arasya\Operations\Cancellation\CancellationService $cancellations = null,
+        private ?\Arasya\Operations\Cancellation\Sync\CancellationSyncService $cancellationSync = null,
+        private ?\Arasya\Operations\Cancellation\Sync\CancellationReconciler $cancellationReconciler = null,
     ) {
     }
 
@@ -82,6 +84,7 @@ final readonly class ManagementController
                 preg_match('#^/orders/([^/]{1,600})$#D', $path, $m) === 1 => $this->orderControl()->detail($actor, rawurldecode($m[1])),
                 preg_match('#^/orders/([^/]{1,600})/eligible-owners$#D', $path, $m) === 1 => $this->ownership()->eligibleOwners($actor, rawurldecode($m[1])),
                 preg_match('#^/orders/([^/]{1,600})/cancellation$#D', $path, $m) === 1 => $this->service($this->cancellations)->view($actor, rawurldecode($m[1])),
+                $path === '/cancellation-sync' => $this->service($this->cancellationReconciler)->overview($actor, $this->filters($request, ['state'])),
                 $path === '/applications' => $this->management->applications($actor),
                 $path === '/permissions' => $this->management->permissions($actor),
                 $path === '/roles' => $this->management->listRoles($actor),
@@ -132,6 +135,27 @@ final readonly class ManagementController
                 'physical' => $cancellations->physical($actor, $orderId, $this->body($request, ['expectedVersion', 'outcome', 'note', 'qrToken'], ['expectedVersion', 'outcome', 'note']), $key, $id),
                 default => $cancellations->release($actor, $orderId, $this->body($request, ['expectedVersion', 'reason'], ['expectedVersion', 'reason']), $key, $id),
             });
+        }
+
+        // Cancellation synchronization (API 2.36.0): hand a stop's cancellation to its sales channel, and the person's
+        // decisions on an operation. Nothing here contacts a provider; only the worker does, behind both gates.
+        if ($method === 'POST' && preg_match('#^/orders/([^/]{1,600})/cancellation/sync$#D', $path, $m) === 1) {
+            return Response::json($this->service($this->cancellationSync)->send($actor, rawurldecode($m[1]), $this->body($request, ['expectedVersion', 'reasonCode', 'note'], ['expectedVersion']), $key, $id));
+        }
+        if ($method === 'POST' && preg_match('#^/cancellation-sync/operations/([0-9a-f-]{36})/(retry|recheck|withdraw|close)$#D', $path, $m) === 1) {
+            $sync = $this->service($this->cancellationSync);
+            return Response::json(match ($m[2]) {
+                // providerChecked (a bare boolean of Dashboard 0.16.0 before the evidence rule) is accepted as a field and ignored:
+                // such a client gets CANCELLATION_SYNC_PROVIDER_CHECK_REQUIRED instead of a generic invalid request.
+                'retry' => $sync->retry($actor, $m[1], $this->body($request, ['expectedVersion', 'providerCheck', 'providerChecked'], ['expectedVersion']), $key, $id),
+                'recheck' => $sync->recheck($actor, $m[1], $this->body($request, ['expectedVersion'], ['expectedVersion']), $key, $id),
+                'withdraw' => $sync->withdraw($actor, $m[1], $this->body($request, ['expectedVersion', 'reason'], ['expectedVersion', 'reason']), $key, $id),
+                default => $sync->close($actor, $m[1], $this->body($request, ['expectedVersion', 'note'], ['expectedVersion', 'note']), $key, $id),
+            });
+        }
+        if ($method === 'POST' && $path === '/cancellation-sync/reconcile') {
+            // Dry run only from the Dashboard: findings are listed, nothing is changed or recorded.
+            return Response::json($this->service($this->cancellationReconciler)->dryRun($actor));
         }
 
         // Supervisor owner interventions: exactly two operations, never a stage or any other field.
@@ -223,6 +247,7 @@ final readonly class ManagementController
             'revokeDocuments' => $actor->isRoot,
             'manageCancellations' => in_array(\Arasya\Operations\Cancellation\CancellationService::MANAGE, $actor->permissions, true) && $actor->hasApplication('dashboard'),
             'releaseCancellations' => in_array(\Arasya\Operations\Cancellation\CancellationService::RELEASE, $actor->permissions, true) && $actor->hasApplication('dashboard'),
+            'syncCancellations' => in_array(\Arasya\Operations\Cancellation\Sync\CancellationSyncService::PERMISSION, $actor->permissions, true) && $actor->hasApplication('dashboard'),
         ];
     }
 

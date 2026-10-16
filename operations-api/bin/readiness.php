@@ -146,6 +146,25 @@ try {
     $report('FAIL', 'production_cancellation_schema');
 }
 
+// Cancellation synchronization (034, API 2.36.0): schema, permission, every provider flag present, the server switch, and
+// the operations needing a person. Nothing is sent or changed here.
+try {
+    $syncSchema = (int) $pdo->query("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN ('order_cancellation_sync_operations', 'order_cancellation_sync_attempts', 'order_cancellation_discrepancies')")->fetchColumn()
+        + (int) $pdo->query("SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'order_cancellation_controls' AND COLUMN_NAME = 'hold_generation'")->fetchColumn();
+    $report($syncSchema === 4 ? 'OK' : 'FAIL', 'cancellation_sync_schema');
+    if ($syncSchema === 4) {
+        $flags = (int) $pdo->query("SELECT COUNT(*) FROM production_feature_flags WHERE flag_key IN ('cancellation_sync_trendyol', 'cancellation_sync_trendhome', 'cancellation_sync_outletperdele')")->fetchColumn();
+        $report($flags === 3 ? 'OK' : 'FAIL', 'cancellation_sync_flags');
+        $permission = (int) $pdo->query("SELECT COUNT(*) FROM permissions WHERE permission_key = 'production.cancellation.sync' AND role_grantable = 1")->fetchColumn();
+        $report($permission === 1 ? 'OK' : 'FAIL', 'cancellation_sync_permission');
+        $report('OK', 'cancellation_sync_switch_' . ($config->cancellationSyncEnabled() ? 'enabled' : 'disabled'));
+        $attention = (int) $pdo->query("SELECT COUNT(*) FROM order_cancellation_sync_operations WHERE state IN ('manual_review', 'uncertain')")->fetchColumn();
+        $report($attention === 0 ? 'OK' : 'WARN', 'cancellation_sync_attention');
+    }
+} catch (Throwable) {
+    $report('FAIL', 'cancellation_sync_schema');
+}
+
 foreach (['https://staff.arasyahome.ro', 'https://dashboard.arasyahome.ro', 'https://b2b.arasyahome.ro'] as $origin) {
     if ($config->isProduction()) {
         $report(in_array($origin, $config->allowedOrigins, true) ? 'OK' : 'WARN', 'cors_origin_' . parse_url($origin, PHP_URL_HOST));

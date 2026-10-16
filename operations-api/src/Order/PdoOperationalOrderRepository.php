@@ -227,6 +227,19 @@ final readonly class PdoOperationalOrderRepository implements OperationalOrderRe
             // Before migrations 028/029 nothing gates packing beyond the order itself.
         }
 
+        // API 2.36.0: the outbound cancellation state of the current stop, only for stopped orders (none before 034).
+        $syncByOrder = [];
+        $stopped = array_values(array_map(static fn (array $row): string => (string) $row['order_uuid'], array_filter($rows, static fn (array $row): bool => ($row['stop_origin'] ?? null) !== null)));
+        if ($stopped !== [] && \Arasya\Operations\Cancellation\Sync\SyncSchema::ready($this->pdo)) {
+            $marks = implode(',', array_fill(0, count($stopped), '?'));
+            $sync = $this->pdo->prepare("SELECT x.order_uuid, x.state FROM order_cancellation_sync_operations x JOIN order_cancellation_controls c ON c.order_uuid = x.order_uuid AND c.hold_generation = x.hold_generation
+                WHERE x.order_uuid IN ({$marks})");
+            $sync->execute($stopped);
+            foreach ($sync->fetchAll(PDO::FETCH_ASSOC) as $item) {
+                $syncByOrder[(string) $item['order_uuid']] = (string) $item['state'];
+            }
+        }
+
         $orders = [];
         foreach ($rows as $row) {
             $relation = null;
@@ -271,7 +284,7 @@ final readonly class PdoOperationalOrderRepository implements OperationalOrderRe
                 $row['payment_reversed_at'] === null ? null : (string) $row['payment_reversed_at'],
                 $tracksByOrder[(string) $row['order_uuid']] ?? [],
                 $gate[(string) $row['order_uuid']] ?? null,
-                \Arasya\Operations\Cancellation\CancellationView::staff($row),
+                \Arasya\Operations\Cancellation\CancellationView::staff($row + ['stop_sync' => $syncByOrder[(string) $row['order_uuid']] ?? null]),
             );
         }
         return $orders;

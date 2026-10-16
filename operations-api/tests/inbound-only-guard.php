@@ -2,10 +2,16 @@
 
 declare(strict_types=1);
 
-// Source integrations are inbound-only. This guard fails the build if Operations gains any way to
-// write back to a commerce source (HTTP clients, sockets, non-GET Trendyol calls) or if the
-// WooCommerce connector gains any order mutation. A deliberate outbound integration must be a
-// separately reviewed milestone that updates this guard explicitly.
+// Source integrations are inbound-only, with exactly one reviewed exception. This guard fails the build if Operations
+// gains any way to write back to a commerce source (HTTP clients, sockets, Trendyol calls other than the two below) or
+// if the WooCommerce connector gains any order mutation. A deliberate outbound integration must be a separately
+// reviewed milestone that updates this guard explicitly.
+//
+// Reviewed exception (API 2.36.0, Phase 2 cancellation synchronization): the Trendyol "unsupplied" notice
+//   PUT /integration/order/sellers/{sellerId}/shipment-packages/{packageId}/items/unsupplied
+// built only by TrendyolCancellationApi, sent only through TrendyolTransport::put(), and refused by
+// StreamTrendyolTransport for every other path. WooCommerce stays inbound-only here: a shop's own connector (YD SOFT,
+// a separate repository) pulls a cancellation request through a signed source route; Operations never calls a shop.
 
 $root = dirname(__DIR__, 2);
 $failures = [];
@@ -49,25 +55,50 @@ foreach ($phpFiles($root . '/operations-api/src') as $file) {
 }
 $transportSource = (string) file_get_contents($transport);
 $checks++;
-if (preg_match_all("/'method'\s*=>\s*'([A-Z]+)'/", $transportSource, $methods) < 1 || array_unique($methods[1]) !== ['GET']) {
-    $fail('StreamTrendyolTransport must only issue GET requests.');
+if (preg_match_all("/\\\$this->send\('([A-Z]+)'/", $transportSource, $methods) < 1 || array_values(array_unique($methods[1])) !== ['GET', 'PUT']) {
+    $fail('StreamTrendyolTransport must only issue GET requests and the one reviewed PUT.');
+}
+$checks++;
+if (!str_contains($transportSource, "preg_match('#/integration/order/sellers/[0-9]+/shipment-packages/[0-9]+/items/unsupplied\$#D'")
+    || preg_match('/public function put\(.*?\{(.*?)return \$this->send\(\'PUT\'/s', $transportSource, $put) !== 1 || !str_contains($put[1], 'throw new RuntimeException')) {
+    $fail('StreamTrendyolTransport::put() must refuse every path except the Trendyol unsupplied notice before sending.');
 }
 $interface = (string) file_get_contents($root . '/operations-api/src/Integration/Trendyol/TrendyolTransport.php');
 $checks++;
-if (preg_match_all('/public function (\w+)\s*\(/', $interface, $functions) !== 1 || $functions[1] !== ['get']) {
-    $fail('TrendyolTransport must expose only get().');
+if (preg_match_all('/public function (\w+)\s*\(/', $interface, $functions) !== 2 || $functions[1] !== ['get', 'put']) {
+    $fail('TrendyolTransport must expose only get() and the reviewed put().');
 }
-// Every Trendyol URL the code can build is the read-only Order V2 package listing: no status update, shipment,
-// tracking number, invoice, cancellation, split or claim endpoint exists anywhere in the Operations API.
+// put() is called only by the reviewed cancellation client (and transports / test doubles implementing it).
+$putCallers = [];
+foreach ($phpFiles($root . '/operations-api/src') as $file) {
+    if (preg_match('/->put\s*\(/', (string) file_get_contents($file)) === 1) {
+        $putCallers[] = substr($file, strlen($root) + 1);
+    }
+}
+$checks++;
+if ($putCallers !== ['operations-api/src/Integration/Trendyol/TrendyolCancellationApi.php']) {
+    $fail('Only TrendyolCancellationApi may call TrendyolTransport::put(): ' . implode(', ', $putCallers));
+}
+// Every Trendyol URL the code can build is the read-only Order V2 package listing, except the reviewed unsupplied notice
+// in the files listed here: no status update, shipment, tracking number, invoice, split or claim endpoint exists anywhere.
+$unsupplied = [
+    'operations-api/src/Integration/Trendyol/TrendyolCancellationApi.php' => ['/integration/order/sellers/{sellerId}/shipment-packages/{packageId}/items/unsupplied', '/integration/order/sellers/%s/shipment-packages/%d/items/unsupplied'],
+    'operations-api/src/Integration/Trendyol/StreamTrendyolTransport.php' => ['/integration/order/sellers/'],
+    'operations-api/src/Integration/Trendyol/FixtureTrendyolTransport.php' => [],
+    'operations-api/src/Cancellation/Sync/TrendyolCancellationProvider.php' => ['/integration/order/sellers/{sellerId}/shipment-packages/{packageId}/items/unsupplied'],
+];
 foreach (new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root . '/operations-api/src', FilesystemIterator::SKIP_DOTS)) as $file) {
     $source = (string) file_get_contents($file->getPathname());
+    $relative = substr($file->getPathname(), strlen($root) + 1);
+    $allowed = ['/integration/order/sellers/%s/v2/orders', ...($unsupplied[$relative] ?? [])];
     $checks++;
-    if (preg_match_all('#/integration/[A-Za-z0-9/{}%_.-]+#', $source, $paths) > 0 && array_unique($paths[0]) !== ['/integration/order/sellers/%s/v2/orders']) {
-        $fail(substr($file->getPathname(), strlen($root) + 1) . ' builds a Trendyol path other than the read-only Order V2 listing: ' . implode(', ', array_unique($paths[0])));
+    if (preg_match_all('#/integration/[A-Za-z0-9/{}%_.-]+#', $source, $paths) > 0 && array_diff(array_unique($paths[0]), $allowed) !== []) {
+        $fail($relative . ' builds a Trendyol path other than the read-only Order V2 listing and the reviewed unsupplied notice: ' . implode(', ', array_unique($paths[0])));
     }
     $checks++;
-    if (preg_match('#shipment-packages|update-tracking|send-invoice|invoice-link|/claims|split-shipment#i', $source) === 1) {
-        $fail(substr($file->getPathname(), strlen($root) + 1) . ' references a Trendyol write endpoint.');
+    if (preg_match('#update-tracking|send-invoice|invoice-link|/claims|split-shipment|update-package|/shipment-packages/[^/\s\'"]*/(?!items/unsupplied)#i', $source) === 1
+        || (!array_key_exists($relative, $unsupplied) && preg_match('#shipment-packages#i', $source) === 1)) {
+        $fail($relative . ' references a Trendyol write endpoint.');
     }
 }
 
@@ -124,6 +155,14 @@ $selfTest = [
     ['$client = new GuzzleHttp\\Client();', $forbiddenApi, true],
     ['$order->get_status(); $order->get_items();', $forbiddenConnector, false],
 ];
+// The reviewed exception must not widen: a different shipment-package write is still caught.
+foreach (["'/integration/order/sellers/%s/shipment-packages/%d/items/unsupplied'" => false, "'/integration/order/sellers/%s/shipment-packages/%d/update-package'" => true,
+    "'/integration/order/sellers/%s/shipment-packages/%d'" => false] as $snippet => $mustMatch) {
+    $checks++;
+    if ((preg_match('#update-tracking|send-invoice|invoice-link|/claims|split-shipment|update-package|/shipment-packages/[^/\s\'"]*/(?!items/unsupplied)#i', $snippet) === 1) !== $mustMatch) {
+        $fail("Guard self-test: the Trendyol write pattern misjudged {$snippet}");
+    }
+}
 foreach ($selfTest as [$snippet, $patterns, $mustMatch]) {
     $checks++;
     $matched = false;

@@ -62,6 +62,7 @@ final class ApplicationAccess
         'production.manage_authority' => self::DASHBOARD,
         'production.cancellation.manage' => self::DASHBOARD,
         'production.cancellation.release' => self::DASHBOARD,
+        'production.cancellation.sync' => self::DASHBOARD,
         'orders.lookup_exact' => self::DASHBOARD,
         'b2b.companies.view' => self::B2B,
         'b2b.companies.create' => self::B2B,
