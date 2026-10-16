@@ -87,7 +87,7 @@ jobs:
         run: php operations-api/tests/run.php && php operations-api/tests/order-calculator.php
 
       - name: Guard inbound-only source integrations
-        run: php operations-api/tests/inbound-only-guard.php
+        run: php operations-api/tests/inbound-only-guard.php && php operations-api/tests/trendyol-title-evidence.php
 
       - name: Test API release validator
         run: /bin/bash operations-api/tests/release-validation.sh

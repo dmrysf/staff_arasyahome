@@ -25,13 +25,13 @@ export function ManufacturingPanel({ orderId, service, revision, newKey, stageNa
     <button className="button button-secondary" type="button" onClick={() => { setSelected(null); setRefresh(v => v + 1); onChanged(); }}>{pt("physical.reincarca_starea_salvata")}</button>
     {error && <p role="alert">{error}</p>}
     {!plan && !error && <p role="status">{pt("physical.se_incarca_planul")}</p>}
-    {plan && !plan.allPlansKnown && <p className="order-notice notice notice-warning" role="note">{pt("physical.numar_de_bucati_neconfirmat_ambalarea_necesita_verificarea")}</p>}
+    {plan && !plan.allPlansKnown && <p className="order-notice" role="note">{pt("physical.numar_de_bucati_neconfirmat_ambalarea_necesita_verificarea")}</p>}
     {plan?.lines.map(line => <article key={line.itemId} className="piece-track card" data-testid="plan-line">
       <h3>{[line.code, line.color, line.name].filter(Boolean).join(" · ")}</h3>
       <dl className="fault-facts facts">
         <dt>{pt("physical.cantitate_comerciala")}</dt><dd>{line.commercialQuantity}</dd>
         <dt>{pt("physical.bucati_fizice")}</dt><dd>{line.planKnown ? line.plan.pieceCount : pt("physical.neconfirmat")}</dd>
-        <dt>{pt("physical.tip")}</dt><dd>{line.plan.productType === "unknown" ? pt("physical.necunoscut_necesita_verificare") : line.plan.productType.toUpperCase()}{!line.typeVerified ? " · neconfirmat" : ""}</dd>
+        <dt>{pt("physical.tip")}</dt><dd>{line.plan.productType === "unknown" ? pt("physical.necunoscut_necesita_verificare") : line.plan.productType.toUpperCase()}{!line.typeVerified ? ` · ${pt("physical.neconfirmat").toLocaleLowerCase()}` : ""}</dd>
         <dt>{pt("physical.masuri_sursa")}</dt><dd>{line.lineMeasurements.width ?? pt("physical.necunoscut")} × {line.lineMeasurements.height ?? pt("physical.necunoscut")} {line.lineMeasurements.unit ?? ""}</dd>
         <dt>{pt("physical.metraj_total_sursa")}</dt><dd>{line.lineMeters === null ? pt("physical.necunoscut") : `${line.lineMeters} m`}</dd>
         <dt>{pt("physical.etape_aplicabile")}</dt><dd>{line.route.map(stageName).join(" · ")}</dd>
@@ -43,7 +43,7 @@ export function ManufacturingPanel({ orderId, service, revision, newKey, stageNa
       {line.plan.pieces.map(piece => <p key={piece.index}>{pt("physical.bucata")}{piece.index}/{line.plan.pieceCount}: {piece.width ?? pt("physical.necunoscut")} × {piece.height ?? pt("physical.necunoscut")} {piece.unit ?? ""} · {(piece.fabricMeters ?? piece.fabric) == null ? pt("physical.metraj_necunoscut") : `${piece.fabricMeters ?? piece.fabric} m`}</p>)}
       {line.pieces.map(piece => <PiecePosition key={piece.id} label={`${pt("physical.bucata")}${piece.index}/${piece.count}`} unitId={piece.id} service={service} revision={revision + refresh} stageName={stageName} />)}
       {line.pieces.length === 0 && <p>{pt("physical.identitati_fizice_neconfirmate_lista_goala_nu_inseamna")}</p>}
-      {line.pieces.map(piece => piece.routeEvidence && piece.routeEvidence.missingStages.length > 0 && <div key={`evidence-${piece.id}`} className="order-notice notice notice-warning" role="note" data-testid="route-evidence-missing">
+      {line.pieces.map(piece => piece.routeEvidence && piece.routeEvidence.missingStages.length > 0 && <div key={`evidence-${piece.id}`} className="order-notice" role="note" data-testid="route-evidence-missing">
         <p>{pt("physical.evidence.missing", { piece: `${piece.index}/${piece.count}`, stages: piece.routeEvidence.missingStages.map(stageName).join(" · ") })}</p>
         {piece.routeEvidence.uncertainStages.length > 0 && <p>{pt("physical.evidence.uncertain", { stages: piece.routeEvidence.uncertainStages.map(stageName).join(" · ") })}</p>}
         {plan.canConfirm === true && service.reconcileRoute && <button className="button button-secondary" type="button" onClick={() => { setVerifying({ id: piece.id, label: `${piece.index}/${piece.count} · ${line.code ?? line.name}`, evidence: piece.routeEvidence as RouteEvidence }); setError(null); }}>{pt("physical.evidence.open")}</button>}

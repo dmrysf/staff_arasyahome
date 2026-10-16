@@ -69,3 +69,70 @@ One transaction then:
 Revision 2, with a new QR that supersedes the old one, then follows the ordinary path: a document operator requests
 it, another employee with an `approve` scope for `trendyol` approves it, and the operator generates it. Retries
 replay, and a second identical correction writes nothing. Migration 026 adds the event action.
+
+## Seller catalogue Romanian titles: evidence gate (API 2.34.2, status BLOCKED)
+
+**Request:** a newly imported Trendyol Romania package should take the exact Romanian product title the seller entered
+in the Trendyol catalogue, so nobody types it again. This is not translation. It is allowed only if Trendyol returns that
+title through a documented, read-only API that has been verified on a real product.
+
+**Why order lines can be English.** The Order V2 documentation requires a `storeFrontCode` header and documents no
+`Accept-Language` header. The Arasya order client sends neither header, so `lines[].productName` is whatever
+Trendyol returns by default.
+
+**Documented candidate source.** Trendyol's "Product Filter – Approved Product v2" is
+`GET /integration/product/sellers/{sellerId}/products/approved`:
+
+- It requires the `storeFrontCode` header.
+- It documents `Accept-Language`: `ro` for "Romanian filtering on the RO storefront", and `en` for English.
+- It filters by `barcode`/`barcodes` (up to 50).
+- It returns a content-level `title` with `variants[].barcode`, `stockCode`, `variantId`, `contentId` and `productMainId`.
+- It has no locale field, and the default language is not documented.
+
+The live check of 2026-10-13 found that the line `sku` equals the barcode, and that each seller code maps to exactly
+one title. That makes the barcode the candidate identity.
+
+**Not verified yet.** No real response has been read with this header pair, and the storefront code value is not
+confirmed. This is the same `storeFrontCode` the cancellation work needs; the owner has to provide it. The automatic
+import is therefore not built. No title is ever inferred, translated or copied from an earlier approval and then
+labelled as coming from the catalogue.
+
+**Evidence tool.** `bin/trendyol-title-evidence.php` is read-only: GET requests only, no database, no customer data,
+no credentials in its output.
+
+```bash
+php bin/trendyol-title-evidence.php --store-front=<CODE> --packages=<shipmentPackageId>[,...] [--json]
+php bin/trendyol-title-evidence.php --store-front=<CODE> --barcodes=<barcode>[,...] [--json]
+```
+
+For each line it prints the order title, the catalogue title with `Accept-Language: ro`, and the catalogue title
+with `en`. Each line gets one of three statuses:
+
+- `matched`: exactly one variant carries the barcode, and both languages return the same content and variant.
+- `ambiguous`: the barcode belongs to more than one content or variant.
+- `missing`: the barcode is absent in either language.
+
+Titles are compared byte for byte.
+
+**The gate passes when** at least one real package line meets all of these:
+
+- it is `matched`;
+- its Romanian title differs from the order title;
+- the owner confirms the Romanian title is the one entered in the Seller Panel.
+
+**If the gate fails** (the title is not returned, or it is not the seller's Romanian text), the requirement needs a
+Trendyol-supported source. Ask Trendyol integration support whether the approved-products title with
+`Accept-Language: ro` is the seller-entered RO listing title. Until then, the existing manual Romanian production
+title stays the only path.
+
+**Design once verified** (not implemented):
+
+- A migration records each package's first Arasya ingestion time, the activation boundary, and per-line title
+  provenance (source, barcode, contentId, variantId, retrieval time).
+- Only packages first ingested after the boundary use the catalogue title.
+- A feature switch is off by default.
+- Each line's barcode is resolved to exactly one variant in both languages. An ambiguous or unavailable title keeps
+  the package not ready for release and shows a retry; there is no English fallback.
+- The resolved title pre-fills preparation as "Denumire preluată din catalogul Trendyol".
+- Release freezes it as the item name; later catalogue edits never rewrite a released order.
+- Earlier packages stay legacy. No backfill.

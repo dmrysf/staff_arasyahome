@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -39,5 +39,20 @@ test("haptics follow only the scanner's own states, and every async primary butt
   assert.match(scanner, /state\.status === "success"\) navigator\.vibrate\?\.\(/);
   for (const file of ["features/auth/LoginScreen.tsx", "features/auth/ChangePasswordScreen.tsx", "features/orders/OrderActionPanel.tsx", "features/scanner/ScannerScreen.tsx", "features/exceptions/ReturnToCuttingPanel.tsx", "features/exceptions/ExceptionActions.tsx"]) {
     assert.match(readFileSync(path.join(root, file), "utf8"), /aria-busy=/, file);
+  }
+});
+
+test("a notice uses one layout model: the dot-style order notice is never combined with the icon-grid notice", () => {
+  // `.notice` is a 20px icon column + text grid that needs an in-flow icon; `.order-notice` draws its dot with an
+  // absolute ::before. Combined, the sentence becomes the grid item of the 20px column and wraps letter by letter
+  // (Staff manufacturing-plan warning on Android, 2026-10-16).
+  const files = ["app", "components", "features"].flatMap((dir) => readdirSync(path.join(root, dir), { recursive: true, encoding: "utf8" }).filter((file) => file.endsWith(".tsx")).map((file) => path.join(dir, file)));
+  for (const file of files) {
+    for (const match of readFileSync(path.join(root, file), "utf8").matchAll(/className=(?:"([^"]*)"|\{`([^`]*)`\})/g)) {
+      const classes = (match[1] ?? match[2] ?? "").split(/\s+/);
+      assert.ok(!(classes.includes("order-notice") && classes.includes("notice")), `${file}: "${match[0]}" mixes order-notice with notice`);
+      assert.ok(!classes.includes("notice-warning"), `${file}: notice-warning is not a style`);
+      if (classes.includes("notice")) assert.match(match.input!.slice(match.index!, match.index! + 400), /<AppIcon /, `${file}: a .notice needs its in-flow icon`);
+    }
   }
 });
