@@ -515,7 +515,27 @@ check($tySnapshot['customer']['phoneMasked'] === '07** *** ***' && !str_contains
 $tyRevision = $pdo->query("SELECT r.revision_uuid, r.snapshot_schema FROM production_document_revisions r JOIN operational_orders o ON o.order_uuid = r.order_uuid WHERE o.global_order_id = " . $pdo->quote($ty))->fetch(PDO::FETCH_ASSOC);
 check((int) $tyRevision['snapshot_schema'] === 2 && $tySnapshot['schema'] === 2, 'a new Trendyol revision is generated under layout contract 2');
 $tyTexts = implode("\n", array_column(ProductionTicketPdf::document($tySnapshot, ['number' => 1, 'status' => 'active', 'generatedAt' => '2026-10-06 07:12:00', 'qrPayload' => 'ARASYA:Q1:ABCDEFGHIJKLMNOPQRSTUVWXYZ'])->textLog(), 'text'));
-check(str_contains($tyTexts, '1 POZIȚIE · 2 PRODUSE COMANDATE') && str_contains($tyTexts, '2 produse comandate · dimensiuni necunoscute') && str_contains(str_replace("\n", ' ', $tyTexts), 'DOUĂ PRODUSE SEPARATE'), 'the stored Trendyol quantity 2 prints as two separate products; unknown size stays unknown');
+check(str_contains($tyTexts, '1 POZIȚIE · 2 PRODUSE COMANDATE') && str_contains($tyTexts, '2 PRODUSE COMANDATE · DIMENSIUNI NECONFIRMATE') && str_contains(str_replace("\n", ' ', $tyTexts), 'DOUĂ PRODUSE SEPARATE'), 'the stored Trendyol quantity 2 prints as two separate products; unknown size stays unknown');
+
+// A Trendyol order of 40 positions is never refused for its length: R1 prints over five pages, each with
+// the one order QR, and every position is on it.
+$bigPackage = 8800 + random_int(1, 99);
+$pdo->beginTransaction();
+$bigUuid = $container->projectionWriter()->createInternal(new \Arasya\Operations\Order\SourceOrderSnapshot('trendyol', (string) $bigPackage, 'approval-' . $bigPackage, 1, new DateTimeImmutable('now', new DateTimeZone('UTC')), '10930099', 'waiting', 'Created', 'Created', null, 'in_progress', null,
+    array_map(static fn (int $i): \Arasya\Operations\Order\OperationalOrderItem => new \Arasya\Operations\Order\OperationalOrderItem(\Arasya\Operations\Support\Uuid::v4(), (string) $i, $i, 'Draperie TEST ' . $i, 'TY-' . $i, null, 'Gri', 250.0, 260.0, 'cm', null, 1, ['kind' => 'drapery', 'notes' => null, 'productionNotes' => null]), range(1, 40))),
+    []);
+$pdo->commit();
+checkOk($post($online, $docPath('trendyol:' . $bigPackage, 'generate'), ['expectedDocumentVersion' => 0], $key('gen-ty-big'), T::ORIGIN), 'a Trendyol order of 40 positions gets its R1', 201);
+$bigRevision = $pdo->query("SELECT revision_uuid, snapshot_json, qr_reference FROM production_document_revisions WHERE status = 'active' AND order_uuid = " . $pdo->quote($bigUuid))->fetch(PDO::FETCH_ASSOC);
+$bigSnapshot = TicketSnapshot::fromJson((string) $bigRevision['snapshot_json']);
+$bigDocument = ProductionTicketPdf::document($bigSnapshot, ['number' => 1, 'status' => 'active', 'generatedAt' => '2026-10-06 07:12:00', 'qrPayload' => 'ARASYA:Q1:ABCDEFGHIJKLMNOPQRSTUVWXYZ']);
+$bigTexts = array_column($bigDocument->textLog(), 'text');
+check(ProductionTicketPdf::pageCount($bigSnapshot, ['number' => 1, 'status' => 'active', 'generatedAt' => '2026-10-06 07:12:00', 'qrPayload' => 'ARASYA:Q1:ABCDEFGHIJKLMNOPQRSTUVWXYZ']) === 5
+    && count($bigDocument->qrLog()) === 5 && count(array_unique(array_map(static fn (array $q): string => json_encode($q['matrix']), $bigDocument->qrLog()))) === 1
+    && array_diff(array_map(static fn (int $i): string => 'TY-' . $i, range(1, 40)), $bigTexts) === [], '40 positions: five pages, the same QR on each, every product code printed');
+check((int) $pdo->query("SELECT COUNT(*) FROM order_qr_references WHERE status = 'active' AND order_uuid = " . $pdo->quote($bigUuid))->fetchColumn() === 1, '40 positions: still exactly one active order QR');
+$rendered = (new Arasya\Operations\Document\DocumentRenderer($pdo))->render((string) $bigRevision['revision_uuid']);
+check(str_starts_with($rendered[0], '%PDF') && str_ends_with($rendered[1], '-R1.pdf'), '40 positions: the stored revision renders');
 
 // ---- Layout contract boundary: revisions printed before schema 2 never change or go stale by themselves --
 $revisionRow = static function (string $orderUuid, int $number) use ($pdo): array {
@@ -551,7 +571,7 @@ check(($ingest('84540', 3, $curtain(9.0), $delivery, 'on-hold')['body']['outcome
 check($order($oH)['document_status'] === 'stale', 'a printed change still makes the schema 1 revision stale');
 $requestH = checkOk($post($online, $docPath($oH, 'revision-requests'), ['expectedDocumentVersion' => (int) $order($oH)['document_version']], $key('req-84540'), T::ORIGIN), 'request on a schema 1 revision', 201)['request'];
 check($requestH['changes'] === [['field' => 'line.meters', 'line' => 1, 'before' => '8 m', 'after' => '9 m']], 'the diff from schema 1 shows only the printed change, never the layout contract ' . json_encode($requestH['changes']));
-check((int) $pdo->query('SELECT snapshot_schema FROM production_document_revision_requests WHERE request_uuid = ' . $pdo->quote($requestH['id']))->fetchColumn() === 2, 'a new request reviews the schema 2 document');
+check((int) $pdo->query('SELECT snapshot_schema FROM production_document_revision_requests WHERE request_uuid = ' . $pdo->quote($requestH['id']))->fetchColumn() === 1, 'a new Trendhome request stays in schema 1 (only Trendyol documents are issued in schema 2)');
 // A request opened under 2.34.1 (schema 1) stays decidable after the upgrade and generates what was reviewed.
 $asSchemaOne('production_document_revision_requests', 'request_uuid', $requestH['id'], $uuidH);
 check(($ingest('84540', 4, $curtain(9.0), $delivery, 'processing')['body']['outcome'] ?? null) === 'applied', 'a commerce-only change while the schema 1 request is open');
@@ -561,12 +581,38 @@ checkOk($post($online, $docPath($oH, 'generate'), ['expectedDocumentVersion' => 
 $r2H = $revisionRow($uuidH, 2);
 check($r2H['status'] === 'active' && (int) $r2H['snapshot_schema'] === 1 && TicketSnapshot::fromJson((string) $r2H['snapshot_json'])['schema'] === 1 && $revisionRow($uuidH, 1)['status'] === 'superseded', 'R2 is generated in the reviewed schema 1; R1 is superseded through the normal workflow');
 check(($ingest('84540', 5, $curtain(10.0), $delivery, 'processing')['body']['outcome'] ?? null) === 'applied' && $order($oH)['document_status'] === 'stale', 'a later printed change makes R2 stale');
-$requestH3 = checkOk($post($online, $docPath($oH, 'revision-requests'), ['expectedDocumentVersion' => (int) $order($oH)['document_version']], $key('req-84540-3'), T::ORIGIN), 'schema 2 request', 201)['request'];
-checkOk($decide($sinem, $requestH3['id'], 'approve', null, $key('approve-84540-3'), 1), 'schema 2 request approved');
+$requestH3 = checkOk($post($online, $docPath($oH, 'revision-requests'), ['expectedDocumentVersion' => (int) $order($oH)['document_version']], $key('req-84540-3'), T::ORIGIN), 'next Trendhome request', 201)['request'];
+checkOk($decide($sinem, $requestH3['id'], 'approve', null, $key('approve-84540-3'), 1), 'next Trendhome request approved');
 checkOk($post($online, $docPath($oH, 'generate'), ['expectedDocumentVersion' => (int) $order($oH)['document_version']], $key('gen-84540-r3'), T::ORIGIN), 'R3', 201);
 $r3H = $revisionRow($uuidH, 3);
-check($r3H['status'] === 'active' && (int) $r3H['snapshot_schema'] === 2 && $r3H['qr_reference'] !== $r2H['qr_reference'], 'R3 is generated under schema 2 with its own QR');
-check(($ingest('84540', 6, $curtain(10.0), $delivery, 'on-hold')['body']['outcome'] ?? null) === 'applied' && $order($oH)['document_status'] === 'active', 'a commerce-only change keeps the schema 2 revision active');
+check($r3H['status'] === 'active' && (int) $r3H['snapshot_schema'] === 1 && $r3H['qr_reference'] !== $r2H['qr_reference'], 'R3 of a Trendhome order stays in schema 1, with its own QR');
+check(($ingest('84540', 6, $curtain(10.0), $delivery, 'on-hold')['body']['outcome'] ?? null) === 'applied' && $order($oH)['document_status'] === 'active', 'a commerce-only change keeps the revision active');
+check((int) $pdo->query("SELECT COUNT(*) FROM production_document_revisions r JOIN operational_orders o ON o.order_uuid = r.order_uuid WHERE r.snapshot_schema >= 2 AND o.source_key <> 'trendyol'")->fetchColumn() === 0
+    && (int) $pdo->query("SELECT COUNT(*) FROM production_document_revision_requests q JOIN operational_orders o ON o.order_uuid = q.order_uuid WHERE q.snapshot_schema >= 2 AND o.source_key <> 'trendyol'")->fetchColumn() === 0, 'no Trendhome, OutletPerdele or B2B document or request is issued in schema 2');
+
+// The real upgrade path of a Trendyol order printed before 2.34.2 (like an existing R1): its schema 1 revision
+// keeps its layout and stays active on the upgrade; only a printed change makes it stale, and the next request
+// then reviews the new schema 2 layout through the normal workflow.
+$tyR1 = $revisionRow($tyUuid, 1);
+$asSchemaOne('production_document_revisions', 'revision_uuid', (string) $tyR1['revision_uuid'], $tyUuid);
+$tyHistorical = $revisionRow($tyUuid, 1);
+$legacyTexts = implode("\n", array_column(ProductionTicketPdf::document(TicketSnapshot::fromJson((string) $tyHistorical['snapshot_json']), ['number' => 1, 'status' => 'active', 'generatedAt' => '2026-10-06 07:12:00', 'qrPayload' => 'ARASYA:Q1:ABCDEFGHIJKLMNOPQRSTUVWXYZ'])->textLog(), 'text'));
+check(str_contains($legacyTexts, '1 linie') && str_contains($legacyTexts, 'CANTITATE') && !str_contains($legacyTexts, 'PRODUSE COMANDATE'), 'a schema 1 Trendyol revision keeps its original layout');
+$tyPdf = (new Arasya\Operations\Document\DocumentRenderer($pdo))->render((string) $tyHistorical['revision_uuid'])[0];
+$staleness = new Arasya\Operations\Document\DocumentStaleness($pdo, new Arasya\Operations\Support\SystemClock());
+$pdo->beginTransaction();
+$staleness->onContentChanged($tyUuid, 'test-ty-unchanged');
+$pdo->commit();
+check($revisionRow($tyUuid, 1) === $tyHistorical && $order($ty)['document_status'] === 'active'
+    && (new Arasya\Operations\Document\DocumentRenderer($pdo))->render((string) $tyHistorical['revision_uuid'])[0] === $tyPdf, 'an unchanged Trendyol order keeps its schema 1 R1 active and byte-identical after the upgrade');
+$pdo->beginTransaction();
+$pdo->prepare('UPDATE operational_order_items SET quantity = 3 WHERE order_uuid = ?')->execute([$tyUuid]);
+$staleness->onContentChanged($tyUuid, 'test-ty-quantity');
+$pdo->commit();
+check($order($ty)['document_status'] === 'stale', 'a printed Trendyol change (quantity 2 -> 3) makes the schema 1 R1 stale');
+$tyRequest = checkOk($post($online, $docPath($ty, 'revision-requests'), ['expectedDocumentVersion' => (int) $order($ty)['document_version']], $key('req-ty-2'), T::ORIGIN), 'request on the schema 1 Trendyol revision', 201)['request'];
+check($tyRequest['changes'] === [['field' => 'line.quantity', 'line' => 1, 'before' => '2', 'after' => '3']], 'the diff shows only the printed change, never the layout contract ' . json_encode($tyRequest['changes']));
+check((int) $pdo->query('SELECT snapshot_schema FROM production_document_revision_requests WHERE request_uuid = ' . $pdo->quote($tyRequest['id']))->fetchColumn() === 2, 'the next Trendyol request reviews the schema 2 layout');
 $rollbackGuard = static function (string $target) use ($dbName): array {
     $environment = ['HOME' => (string) getenv('HOME'), 'ARASYA_APP_ENV' => 'test', 'ARASYA_APP_SECRET' => str_repeat('t', 32), 'ARASYA_ALLOWED_ORIGINS' => T::ORIGIN,
         'ARASYA_DB_HOST' => (string) (getenv('ARASYA_TEST_DB_HOST') ?: '127.0.0.1'), 'ARASYA_DB_PORT' => (string) (getenv('ARASYA_TEST_DB_PORT') ?: '3306'),

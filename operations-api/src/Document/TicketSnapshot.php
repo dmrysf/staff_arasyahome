@@ -26,13 +26,22 @@ use RuntimeException;
  *
  * The schema is also the document's layout contract, frozen in the stored snapshot:
  * - 1: the original ticket layout. Revisions generated before schema 2 keep rendering exactly as printed.
+ *   Trendhome, OutletPerdele and B2B keep issuing schema 1: their ticket did not change.
  * - 2: the same printed data. Trendyol lines print the commercial quantity as separate ordered products,
- *   each with the variant's dimensions (ProductionTicketPdf). Every other source renders as in schema 1.
+ *   each with the variant's dimensions (ProductionTicketPdf). Only Trendyol documents are issued in it, so
+ *   only they tie a rollback to 2.34.2 or later.
  */
 final readonly class TicketSnapshot
 {
+    /** The newest layout contract. */
     public const SCHEMA = 2;
     public const SCHEMAS = [1, 2];
+
+    /** The schema a new document of a source is issued in: 2 for Trendyol (its new layout), 1 for every other source. */
+    public static function schemaFor(string $source): int
+    {
+        return $source === 'trendyol' ? self::SCHEMA : 1;
+    }
 
     public function __construct(private PDO $pdo)
     {
@@ -41,13 +50,13 @@ final readonly class TicketSnapshot
     /**
      * Builds the snapshot of an order. The caller holds the order row lock when the result is bound to
      * a revision, a request or a staleness decision. `$schema` is the schema of the revision or request the
-     * result is compared with; new documents use the current schema.
+     * result is compared with; null (a new document) uses the schema of the order's source (schemaFor).
      *
      * @return array<string, mixed>
      */
-    public function build(string $orderUuid, int $schema = self::SCHEMA): array
+    public function build(string $orderUuid, ?int $schema = null): array
     {
-        if (!in_array($schema, self::SCHEMAS, true)) {
+        if ($schema !== null && !in_array($schema, self::SCHEMAS, true)) {
             throw new RuntimeException('Unsupported document snapshot schema.');
         }
         $statement = $this->pdo->prepare('SELECT order_uuid, source_key, source_order_id, order_number, order_lookup_code, production_notes, production_context, document_context FROM operational_orders WHERE order_uuid = ?');
@@ -56,6 +65,7 @@ final readonly class TicketSnapshot
         if (!is_array($order)) {
             throw new RuntimeException('Canonical order is missing.');
         }
+        $schema ??= self::schemaFor((string) $order['source_key']);
         $items = $this->pdo->prepare('SELECT line_number, name, product_code, variant, color, width_value, height_value, measurement_unit, meters, quantity, production_context FROM operational_order_items WHERE order_uuid = ? ORDER BY line_number');
         $items->execute([$orderUuid]);
         $lines = [];

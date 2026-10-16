@@ -48,8 +48,9 @@ try {
     }
     if (isset($tables['production_feature_flags'])) $state['enabledFeatures'] = (int) $pdo->query('SELECT COUNT(*) FROM production_feature_flags WHERE enabled = 1')->fetchColumn();
     if (isset($tables['production_pilot_cohort'])) $state['activeCohort'] = (int) $pdo->query("SELECT COUNT(*) FROM production_pilot_cohort WHERE status = 'active'")->fetchColumn();
-    // Production ticket schema 2 (API 2.34.2): an older API compares every document in schema 1, so an open order whose
-    // revision or open request was generated in schema 2 would go stale (production blocked) on its next source event.
+    // Production ticket schema 2 (API 2.34.2, Trendyol documents only): an older API compares every document in schema 1,
+    // so an open order whose revision or open request was generated in schema 2 would go stale (production blocked) on
+    // its next source event.
     $schemaTwoOpen = (int) $pdo->query(
         'SELECT COUNT(*) FROM operational_orders o WHERE o.production_completed_at IS NULL AND (
             EXISTS (SELECT 1 FROM production_document_revisions r WHERE r.order_uuid = o.order_uuid AND r.snapshot_schema >= 2)

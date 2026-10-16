@@ -757,6 +757,11 @@ final readonly class DocumentService
     private function insertRevision(string $orderUuid, int $number, string $qrReference, ?string $requestUuid, ?string $actorUuid, string $now, ?array $snapshot = null, ?array $sourceActor = null): string
     {
         $snapshot ??= $this->snapshots->build($orderUuid);
+        // A revision is only issued when its ticket can be printed complete (any number of pages).
+        $layoutError = ProductionTicketPdf::layoutError($snapshot);
+        if ($layoutError !== null) {
+            throw new ApiException(422, 'DOCUMENT_LAYOUT_OVERFLOW', $layoutError);
+        }
         $uuid = Uuid::v4();
         // Source attribution columns exist from migration 020; employee-generated revisions keep the 2.16 insert.
         $statement = $this->pdo->prepare($sourceActor === null
