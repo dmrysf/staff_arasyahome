@@ -27,6 +27,9 @@ for file in \
   bin/sync-trendyol.php \
   bin/trendyol-intake.php \
   bin/trendyol-preview.php \
+  bin/trendyol-title-evidence.php \
+  src/Integration/Trendyol/TrendyolCatalogueClient.php \
+  src/Integration/Trendyol/TrendyolTitleEvidence.php \
   bin/cli-bootstrap.php \
   bin/factory-provision.php \
   database/reference/factory-onboarding.json \
@@ -108,7 +111,7 @@ for file in \
 done
 
 (cd -- "$release_root" && sha256sum -c SHA256SUMS >/dev/null) || fail "SHA256SUMS verification failed."
-php -r '$r=json_decode(file_get_contents($argv[1]), true, flags: JSON_THROW_ON_ERROR); require $argv[2]."/bootstrap.php"; if (!is_array($r) || preg_match("/^[0-9a-f]{40}$/", $r["sourceCommit"] ?? "") !== 1 || ($r["version"] ?? null) !== "2.34.1" || $r["version"] !== Arasya\Operations\Http\HealthController::VERSION) exit(2);' "$release_root/release.json" "$release_root" \
+php -r '$r=json_decode(file_get_contents($argv[1]), true, flags: JSON_THROW_ON_ERROR); require $argv[2]."/bootstrap.php"; if (!is_array($r) || preg_match("/^[0-9a-f]{40}$/", $r["sourceCommit"] ?? "") !== 1 || ($r["version"] ?? null) !== "2.34.2" || $r["version"] !== Arasya\Operations\Http\HealthController::VERSION) exit(2);' "$release_root/release.json" "$release_root" \
   || fail "release.json provenance/version is invalid."
 
 for directory in src database/migrations bin config; do
