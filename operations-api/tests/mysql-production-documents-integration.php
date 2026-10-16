@@ -512,6 +512,73 @@ checkOk($post($online, $docPath($ty, 'generate'), ['expectedDocumentVersion' => 
 $tySnapshot = json_decode((string) $pdo->query("SELECT r.snapshot_json FROM production_document_revisions r JOIN operational_orders o ON o.order_uuid = r.order_uuid WHERE o.global_order_id = " . $pdo->quote($ty))->fetchColumn(), true);
 check($tySnapshot['customer']['phoneMasked'] === '07** *** ***' && !str_contains(json_encode($tySnapshot), 'ignored@') && $tySnapshot['lines'][0]['options'] === [] && $tySnapshot['lines'][0]['meters'] === null, 'Trendyol: masked phone, no email, no invented options or meters');
 
+$tyRevision = $pdo->query("SELECT r.revision_uuid, r.snapshot_schema FROM production_document_revisions r JOIN operational_orders o ON o.order_uuid = r.order_uuid WHERE o.global_order_id = " . $pdo->quote($ty))->fetch(PDO::FETCH_ASSOC);
+check((int) $tyRevision['snapshot_schema'] === 2 && $tySnapshot['schema'] === 2, 'a new Trendyol revision is generated under layout contract 2');
+$tyTexts = implode("\n", array_column(ProductionTicketPdf::document($tySnapshot, ['number' => 1, 'status' => 'active', 'generatedAt' => '2026-10-06 07:12:00', 'qrPayload' => 'ARASYA:Q1:ABCDEFGHIJKLMNOPQRSTUVWXYZ'])->textLog(), 'text'));
+check(str_contains($tyTexts, '1 POZIȚIE · 2 PRODUSE COMANDATE') && str_contains($tyTexts, '2 produse comandate · dimensiuni necunoscute') && str_contains(str_replace("\n", ' ', $tyTexts), 'DOUĂ PRODUSE SEPARATE'), 'the stored Trendyol quantity 2 prints as two separate products; unknown size stays unknown');
+
+// ---- Layout contract boundary: revisions printed before schema 2 never change or go stale by themselves --
+$revisionRow = static function (string $orderUuid, int $number) use ($pdo): array {
+    $statement = $pdo->prepare('SELECT revision_uuid, status, snapshot_schema, fingerprint, snapshot_json, qr_reference, stale_at FROM production_document_revisions WHERE order_uuid = ? AND revision_number = ?');
+    $statement->execute([$orderUuid, $number]);
+    return $statement->fetch(PDO::FETCH_ASSOC);
+};
+$documentEvents = static fn (string $orderUuid): int => (int) $pdo->query('SELECT COUNT(*) FROM production_document_events WHERE order_uuid = ' . $pdo->quote($orderUuid))->fetchColumn();
+// A revision or request stored by 2.34.1 had schema 1: shaped here in the test database exactly as that release
+// stored it (the builder's schema 1 snapshot of the unchanged order, its fingerprint and schema).
+$asSchemaOne = static function (string $table, string $key, string $id, string $orderUuid) use ($pdo): void {
+    $snapshot = (new TicketSnapshot($pdo))->build($orderUuid, 1);
+    $statement = $pdo->prepare("UPDATE {$table} SET snapshot_schema = 1, snapshot_json = ?, fingerprint = ? WHERE {$key} = ?");
+    $statement->bindValue(1, TicketSnapshot::canonicalJson($snapshot));
+    $statement->bindValue(2, TicketSnapshot::fingerprint($snapshot), PDO::PARAM_LOB);
+    $statement->bindValue(3, $id);
+    $statement->execute();
+};
+check(($ingest('84540', 1, $curtain(8.0), $delivery)['body']['outcome'] ?? null) === 'applied', 'order 84540 ingested');
+$oH = 'trendhome:84540';
+$uuidH = (string) $order($oH)['order_uuid'];
+checkOk($post($online, $docPath($oH, 'generate'), ['expectedDocumentVersion' => 0], $key('gen-84540'), T::ORIGIN), 'order 84540 R1', 201);
+$asSchemaOne('production_document_revisions', 'revision_uuid', (string) $revisionRow($uuidH, 1)['revision_uuid'], $uuidH);
+$historical = $revisionRow($uuidH, 1);
+$historicalPdf = (new Arasya\Operations\Document\DocumentRenderer($pdo))->render((string) $historical['revision_uuid'])[0];
+$eventsBefore = $documentEvents($uuidH);
+check(($ingest('84540', 2, $curtain(8.0), $delivery, 'on-hold')['body']['outcome'] ?? null) === 'applied', 'a commerce-only change on an order with a schema 1 document');
+check($order($oH)['document_status'] === 'active', 'the schema 1 revision stays active: ' . $order($oH)['document_status']);
+check($revisionRow($uuidH, 1) === $historical, 'the schema 1 revision is untouched: same status, snapshot, fingerprint and QR, no stale mark');
+check($documentEvents($uuidH) === $eventsBefore, 'no document event for a commerce-only change: ' . $eventsBefore . ' -> ' . $documentEvents($uuidH));
+check((new Arasya\Operations\Document\DocumentRenderer($pdo))->render((string) $historical['revision_uuid'])[0] === $historicalPdf, 'the schema 1 revision renders the same bytes after the upgrade');
+check(($ingest('84540', 3, $curtain(9.0), $delivery, 'on-hold')['body']['outcome'] ?? null) === 'applied', 'customer changes 8 m to 9 m');
+check($order($oH)['document_status'] === 'stale', 'a printed change still makes the schema 1 revision stale');
+$requestH = checkOk($post($online, $docPath($oH, 'revision-requests'), ['expectedDocumentVersion' => (int) $order($oH)['document_version']], $key('req-84540'), T::ORIGIN), 'request on a schema 1 revision', 201)['request'];
+check($requestH['changes'] === [['field' => 'line.meters', 'line' => 1, 'before' => '8 m', 'after' => '9 m']], 'the diff from schema 1 shows only the printed change, never the layout contract ' . json_encode($requestH['changes']));
+check((int) $pdo->query('SELECT snapshot_schema FROM production_document_revision_requests WHERE request_uuid = ' . $pdo->quote($requestH['id']))->fetchColumn() === 2, 'a new request reviews the schema 2 document');
+// A request opened under 2.34.1 (schema 1) stays decidable after the upgrade and generates what was reviewed.
+$asSchemaOne('production_document_revision_requests', 'request_uuid', $requestH['id'], $uuidH);
+check(($ingest('84540', 4, $curtain(9.0), $delivery, 'processing')['body']['outcome'] ?? null) === 'applied', 'a commerce-only change while the schema 1 request is open');
+check($pdo->query('SELECT status FROM production_document_revision_requests WHERE request_uuid = ' . $pdo->quote($requestH['id']))->fetchColumn() === 'pending', 'the schema 1 request is compared in its own schema and is not superseded');
+checkOk($decide($sinem, $requestH['id'], 'approve', null, $key('approve-84540'), 1), 'the schema 1 request is approved after the upgrade');
+checkOk($post($online, $docPath($oH, 'generate'), ['expectedDocumentVersion' => (int) $order($oH)['document_version']], $key('gen-84540-r2'), T::ORIGIN), 'R2 from the schema 1 request', 201);
+$r2H = $revisionRow($uuidH, 2);
+check($r2H['status'] === 'active' && (int) $r2H['snapshot_schema'] === 1 && TicketSnapshot::fromJson((string) $r2H['snapshot_json'])['schema'] === 1 && $revisionRow($uuidH, 1)['status'] === 'superseded', 'R2 is generated in the reviewed schema 1; R1 is superseded through the normal workflow');
+check(($ingest('84540', 5, $curtain(10.0), $delivery, 'processing')['body']['outcome'] ?? null) === 'applied' && $order($oH)['document_status'] === 'stale', 'a later printed change makes R2 stale');
+$requestH3 = checkOk($post($online, $docPath($oH, 'revision-requests'), ['expectedDocumentVersion' => (int) $order($oH)['document_version']], $key('req-84540-3'), T::ORIGIN), 'schema 2 request', 201)['request'];
+checkOk($decide($sinem, $requestH3['id'], 'approve', null, $key('approve-84540-3'), 1), 'schema 2 request approved');
+checkOk($post($online, $docPath($oH, 'generate'), ['expectedDocumentVersion' => (int) $order($oH)['document_version']], $key('gen-84540-r3'), T::ORIGIN), 'R3', 201);
+$r3H = $revisionRow($uuidH, 3);
+check($r3H['status'] === 'active' && (int) $r3H['snapshot_schema'] === 2 && $r3H['qr_reference'] !== $r2H['qr_reference'], 'R3 is generated under schema 2 with its own QR');
+check(($ingest('84540', 6, $curtain(10.0), $delivery, 'on-hold')['body']['outcome'] ?? null) === 'applied' && $order($oH)['document_status'] === 'active', 'a commerce-only change keeps the schema 2 revision active');
+$rollbackGuard = static function (string $target) use ($dbName): array {
+    $environment = ['HOME' => (string) getenv('HOME'), 'ARASYA_APP_ENV' => 'test', 'ARASYA_APP_SECRET' => str_repeat('t', 32), 'ARASYA_ALLOWED_ORIGINS' => T::ORIGIN,
+        'ARASYA_DB_HOST' => (string) (getenv('ARASYA_TEST_DB_HOST') ?: '127.0.0.1'), 'ARASYA_DB_PORT' => (string) (getenv('ARASYA_TEST_DB_PORT') ?: '3306'),
+        'ARASYA_DB_NAME' => $dbName, 'ARASYA_DB_USER' => (string) getenv('ARASYA_TEST_DB_USER'), 'ARASYA_DB_PASSWORD' => (string) getenv('ARASYA_TEST_DB_PASSWORD')];
+    $process = proc_open([PHP_BINARY, dirname(__DIR__) . '/bin/check-rollback.php', $target], [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, null, $environment);
+    $out = (string) stream_get_contents($pipes[1]);
+    stream_get_contents($pipes[2]);
+    return ['code' => proc_close($process), 'json' => json_decode($out, true)];
+};
+$refused = $rollbackGuard('2.34.1');
+check($refused['code'] === 3 && $refused['json']['requiredFloor'] === '2.34.2' && $refused['json']['state']['openOrdersWithTicketSchema2'] > 0 && $rollbackGuard('2.34.2')['code'] === 0, 'rollback below 2.34.2 is refused while an open order has a schema 2 document (it would go stale on the next source event)');
+
 // ---- History, analytics, audit ----------------------------------------------------------------------
 $history = $documentView($sinem, $o1);
 $types = array_column($history['history'], 'type');

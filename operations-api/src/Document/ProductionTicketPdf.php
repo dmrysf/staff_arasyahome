@@ -13,12 +13,19 @@ use Arasya\Operations\B2B\ProjectLabels;
  * The canonical Arasya workshop production ticket (A4, Romanian only), for every source.
  *
  * It renders exactly one stored revision snapshot: every page comes from the same immutable data, so a
- * document can never mix two database states. The renderer is source-neutral; the source only selects
- * the visible stamp. It prints no prices, payment, balances or email, and the phone only masked.
+ * document can never mix two database states. The source selects the visible stamp and, from snapshot
+ * schema 2, the Trendyol quantity layout below. It prints no prices, payment, balances or email, and the
+ * phone only masked.
  *
  * Every page repeats the order number, source stamp, revision, the canonical QR and "Pagina X / Y", so
  * separated pages are never anonymous. Line blocks are never split across pages. Line schematics are
  * deterministic workshop drawings from the printed measurements only; nothing is inferred.
+ *
+ * The snapshot schema is the layout contract (TicketSnapshot): a schema 1 revision renders exactly as it
+ * was printed. From schema 2, a Trendyol line is a fixed-size variant bought `quantity` times, so it
+ * prints as `quantity` separate products of the variant's dimensions each: never a split of one product,
+ * never panels derived from quantity, measurements, variant text or options. Other sources keep their
+ * own meaning (explicit piece options, project panel layouts) and render as in schema 1.
  */
 final class ProductionTicketPdf
 {
@@ -27,6 +34,17 @@ final class ProductionTicketPdf
     private const MUTED = [0.36, 0.38, 0.43];
     private const GOLD = [0.62, 0.43, 0.15];
     private const KIND = ['curtain' => 'Perdea', 'drapery' => 'Draperie', 'other' => 'Alt produs'];
+    /** Ordered-product nouns: [noun, "one single <noun> divided"] (Romanian gender agreement). */
+    private const PRODUCT = [
+        'curtain' => ['PERDEA', 'O SINGURĂ PERDEA ÎMPĂRȚITĂ'],
+        'drapery' => ['DRAPERIE', 'O SINGURĂ DRAPERIE ÎMPĂRȚITĂ'],
+        'other' => ['PRODUS', 'UN SINGUR PRODUS ÎMPĂRȚIT'],
+    ];
+    private const NUMBER_WORDS = [2 => 'DOUĂ', 3 => 'TREI', 4 => 'PATRU', 5 => 'CINCI', 6 => 'ȘASE', 7 => 'ȘAPTE', 8 => 'OPT', 9 => 'NOUĂ', 10 => 'ZECE'];
+    /** Width of the per-product schematic of a Trendyol line. */
+    private const PRODUCT_SKETCH = 150.0;
+    /** Up to this many ordered products are drawn one by one; more are drawn once with a multiplier. */
+    private const DRAWN_PRODUCTS = 3;
 
     /**
      * @param array<string, mixed> $snapshot the stored revision snapshot
@@ -152,7 +170,15 @@ final class ProductionTicketPdf
             $y -= $height + 10;
         }
         $lines = self::sorted($snapshot['lines'] ?? []);
-        $pdf->text(self::LEFT, $y, 'PRODUSE DE EXECUTAT · ' . count($lines) . ' ' . (count($lines) === 1 ? 'linie' : 'linii') . self::totalMeters($lines), 'B', 9, 'left', self::MUTED);
+        $products = self::orderedProducts($snapshot);
+        if ($products) {
+            // Positions (order lines) and ordered products are counted separately and never confused.
+            $ordered = array_sum(array_map(static fn (array $line): int => (int) $line['quantity'], $lines));
+            $pdf->text(self::LEFT, $y, 'PRODUSE DE EXECUTAT · ' . self::count(count($lines), 'POZIȚIE', 'POZIȚII', 'DE') . ' · '
+                . self::count($ordered, 'PRODUS COMANDAT', 'PRODUSE COMANDATE', 'DE') . self::totalMeters($lines), 'B', 10.5);
+        } else {
+            $pdf->text(self::LEFT, $y, 'PRODUSE DE EXECUTAT · ' . count($lines) . ' ' . (count($lines) === 1 ? 'linie' : 'linii') . self::totalMeters($lines), 'B', 9, 'left', self::MUTED);
+        }
         $y -= 18;
 
         $hasProject = array_filter($lines, static fn (array $line): bool => ($line['project'] ?? null) !== null) !== [];
@@ -162,7 +188,7 @@ final class ProductionTicketPdf
             $project = $line['project'] ?? null;
             $groupKey = $project === null ? '' : ($project['zone']['id'] ?? '') . '|' . ($project['room']['id'] ?? '');
             $openingKey = $project === null ? '' : (string) ($project['opening']['id'] ?? '');
-            $block = self::blockHeight($pdf, $line, $width);
+            $block = $products ? self::productBlock($pdf, $line, $y, $width, false) : self::blockHeight($pdf, $line, $width);
             $header = ($groupKey !== $group ? 30 : 0) + ($project !== null && $openingKey !== $opening ? 22 : 0);
             if ($y - $block - $header < self::BOTTOM) {
                 $newPage();
@@ -183,7 +209,11 @@ final class ProductionTicketPdf
                 $y -= 22;
                 $opening = $openingKey;
             }
-            self::lineBlock($pdf, $line, $y, $width);
+            if ($products) {
+                self::productBlock($pdf, $line, $y, $width, true);
+            } else {
+                self::lineBlock($pdf, $line, $y, $width);
+            }
             $y -= $block + 10;
         }
         return [$pdf, $page];
@@ -340,6 +370,218 @@ final class ProductionTicketPdf
         if ($schematic) {
             self::schematic($pdf, $line, $right - 108, $y - 6, 100, $height - 20);
         }
+    }
+
+    /** Schema 2 Trendyol tickets: a line's quantity is a number of separate ordered products. @param array<string, mixed> $snapshot */
+    private static function orderedProducts(array $snapshot): bool
+    {
+        return (int) ($snapshot['schema'] ?? 1) >= 2 && ($snapshot['order']['source'] ?? null) === 'trendyol';
+    }
+
+    /**
+     * One Trendyol position: the ordered quantity in large type ("2 × DRAPERIE"), the dimensions of EACH
+     * product, and one rule line saying the products are separate. Only printed data is used: no panel
+     * split, no meters and no physical piece plan is derived from the quantity. Returns the block height;
+     * with `$draw` false nothing is drawn (pagination measures first).
+     *
+     * @param array<string, mixed> $line
+     */
+    private static function productBlock(PdfDocument $pdf, array $line, float $y, float $width, bool $draw): float
+    {
+        $height = $draw ? self::productBlock($pdf, $line, $y, $width, false) : 0.0;
+        $x = self::LEFT;
+        $right = $x + $width;
+        $sketch = self::hasSchematic($line);
+        $cx = $x + 62;
+        $contentRight = $sketch ? $right - self::PRODUCT_SKETCH - 18 : $right - 10;
+        $textWidth = $contentRight - $cx;
+        $quantity = (int) $line['quantity'];
+        [$noun, $single] = self::PRODUCT[$line['kind'] ?? ''] ?? self::PRODUCT['other'];
+        $unit = $line['unit'];
+        $dimensions = $line['width'] !== null && $line['height'] !== null
+            ? TicketSnapshot::measure($line['width'], null) . ' × ' . TicketSnapshot::measure($line['height'], $unit)
+            : null;
+        if ($draw) {
+            $pdf->strokeRect($x, $y - $height + 12, $width, $height, 1.1, 0.0);
+            $pdf->fillRect($x, $y - $height + 12, 50, $height, 0.92);
+            $label = '#' . $line['line'];
+            $pdf->text($x + 25 - $pdf->font('B')->textWidth($label, 18) / 2, $y - 20, $label, 'B', 18);
+            $pdf->text($x + 25 - $pdf->font('R')->textWidth('poziția', 7) / 2, $y - 32, 'poziția', 'R', 7, 'left', self::MUTED);
+            $kind = self::kindLabel($line);
+            $pdf->text($contentRight, $y - 8, $kind, 'B', 10, 'right', self::GOLD);
+            $pdf->text($cx, $y - 8, $pdf->fit($line['code'] ?? '—', $contentRight - $cx - $pdf->font('B')->textWidth($kind, 10) - 12, 'B', 13), 'B', 13);
+        }
+        $yy = $y - 22;
+        foreach (self::nameLines($pdf, $line, $textWidth) as $text) {
+            if ($draw) {
+                $pdf->text($cx, $yy, $text, 'R', 10);
+            }
+            $yy -= 12;
+        }
+
+        // Commercial quantity: the largest figure of the block, readable in black and white.
+        $top = $yy + 12 - 9;
+        $band = 52.0;
+        if ($draw) {
+            // White with a heavy black frame: no grey halftone behind the text on a black-and-white printer.
+            $pdf->strokeRect($cx, $top - $band, $textWidth, $band, 2.0, 0.0);
+            $figure = $quantity . ' ×';
+            $pdf->text($cx + 10, $top - 29, $figure, 'B', 25);
+            $pdf->text($cx + 16 + $pdf->font('B')->textWidth($figure, 25), $top - 29, $noun, 'B', 17);
+            $summary = self::count($quantity, 'produs comandat', 'produse comandate', 'de') . ' · '
+                . ($dimensions === null ? 'dimensiuni necunoscute' : $dimensions . ($quantity > 1 ? ' fiecare' : ''));
+            $size = 10.5;
+            while ($size > 8 && $pdf->font('B')->textWidth($summary, $size) > $textWidth - 20) {
+                $size -= 0.5;
+            }
+            $pdf->text($cx + 10, $top - 45, $summary, 'B', $size);
+        }
+        $top -= $band + 10;
+
+        // Dimensions of each product, never multiplied or divided by the quantity.
+        if ($draw) {
+            $pdf->text($cx, $top - 7, 'DIMENSIUNI PER PRODUS', 'B', 7.5, 'left', self::MUTED);
+        }
+        $top -= 12;
+        $values = [
+            ['LĂȚIME', TicketSnapshot::measure($line['width'], null), $unit],
+            ['ÎNĂLȚIME', TicketSnapshot::measure($line['height'], null), $unit],
+            ['METRI (LINIE)', TicketSnapshot::measure($line['meters'], null), 'm'],
+        ];
+        $boxWidth = $textWidth / 3;
+        $boxY = $top - 36;
+        foreach ($draw ? $values : [] as $i => [$caption, $value, $suffix]) {
+            $bx = $cx + $i * $boxWidth;
+            $last = $i === count($values) - 1;
+            $pdf->strokeRect($bx, $boxY, $boxWidth - ($last ? 0 : 8), 36, 0.7, 0.5);
+            $pdf->text($bx + 6, $boxY + 26, $caption, 'B', 7, 'left', self::MUTED);
+            $shown = $value ?? '—';
+            $room = $boxWidth - 20 - ($value !== null && $suffix !== null ? $pdf->font('R')->textWidth($suffix, 9) + 4 : 0);
+            $size = 17.0;
+            while ($size > 9 && $pdf->font('B')->textWidth($shown, $size) > $room) {
+                $size -= 0.5;
+            }
+            $pdf->text($bx + 6, $boxY + 7, $shown, 'B', $size);
+            if ($value !== null && $suffix !== null) {
+                $pdf->text($bx + 8 + $pdf->font('B')->textWidth($shown, $size), $boxY + 7, $suffix, 'R', 9, 'left', self::MUTED);
+            }
+        }
+        $yy = $boxY - 15;
+
+        // One rule line: the quantity is separate products, not a split of one product.
+        if ($quantity > 1) {
+            $count = self::NUMBER_WORDS[$quantity] ?? (string) $quantity;
+            $rule = $count . ($quantity >= 20 && ($quantity % 100 === 0 || $quantity % 100 >= 20) ? ' DE' : '') . ' PRODUSE SEPARATE — NU ' . $single . ' ÎN ' . $count . '.';
+            $ruleLines = $pdf->wrap($rule, $textWidth - 12, 'B', 10.5, 3);
+            if ($draw) {
+                $pdf->fillRect($cx, $yy - 13 * (count($ruleLines) - 1) - 4, 4, 13 * count($ruleLines) + 2, 0.0);
+            }
+            foreach ($ruleLines as $text) {
+                if ($draw) {
+                    $pdf->text($cx + 12, $yy, $text, 'B', 10.5);
+                }
+                $yy -= 14;
+            }
+        } else {
+            if ($draw) {
+                $pdf->text($cx, $yy, 'Un singur produs comandat. Comanda nu conține o împărțire în bucăți.', 'R', 9.5);
+            }
+            $yy -= 14;
+        }
+        if ($dimensions === null) {
+            if ($draw) {
+                $pdf->text($cx, $yy, 'Dimensiunile lipsesc la sursă — verifică înainte de croire. Nu se ghicesc.', 'B', 9.5);
+            }
+            $yy -= 14;
+        }
+        if ($line['options'] !== []) {
+            // Printed as source text only; a Trendyol option never becomes a panel split.
+            foreach ($pdf->wrap(TicketSnapshot::optionsText($line['options']) ?? '', $textWidth, 'B', 10, 4) as $text) {
+                if ($draw) {
+                    $pdf->text($cx, $yy, $text, 'B', 10);
+                }
+                $yy -= 13;
+            }
+        }
+        foreach (['notes' => 'NOTE', 'productionNotes' => 'NOTE DE PRODUCȚIE'] as $key => $caption) {
+            if ($line[$key] === null) {
+                continue;
+            }
+            if ($draw) {
+                $pdf->text($cx, $yy, $caption, 'B', 7.5, 'left', self::MUTED);
+            }
+            $yy -= 13;
+            foreach ($pdf->wrap($line[$key], $textWidth, 'R', 10, 6) as $text) {
+                if ($draw) {
+                    $pdf->text($cx, $yy, $text, $key === 'productionNotes' ? 'B' : 'R', 10);
+                }
+                $yy -= 13;
+            }
+        }
+        if ($draw && $sketch) {
+            self::productSketch($pdf, $line, $right - self::PRODUCT_SKETCH - 8, $y - 6, self::PRODUCT_SKETCH, $height - 20);
+        }
+        return max($y - $yy + 8, $sketch ? 128.0 : 0.0);
+    }
+
+    /**
+     * The ordered products side by side, each its own rectangle of the same finished size ("Produs 1",
+     * "Produs 2"), never one rectangle divided. More than DRAWN_PRODUCTS are drawn once with "× N".
+     *
+     * @param array<string, mixed> $line
+     */
+    private static function productSketch(PdfDocument $pdf, array $line, float $x, float $top, float $boxWidth, float $boxHeight): void
+    {
+        $quantity = max(1, (int) $line['quantity']);
+        $drawn = $quantity <= self::DRAWN_PRODUCTS ? $quantity : 1;
+        $caption = 'SCHIȚĂ · PRODUSE COMANDATE';
+        $pdf->text($x + $boxWidth / 2 - $pdf->font('B')->textWidth($caption, 6.5) / 2, $top, $caption, 'B', 6.5, 'left', self::MUTED);
+        $w = self::units((string) $line['width']);
+        $h = self::units((string) $line['height']);
+        $gap = 10.0;
+        $area = $drawn === $quantity ? $boxWidth : $boxWidth - 62;
+        $slot = ($area - $gap * ($drawn - 1)) / $drawn;
+        $rectTop = $top - 24;
+        $maxH = max(30.0, min($boxHeight - 48, 62.0));
+        $scale = min(($slot - 6) / $w, $maxH / $h);
+        $rw = max(10.0, $w * $scale);
+        $rh = max(10.0, $h * $scale);
+        $ry = $rectTop - $rh;
+        for ($i = 0; $i < $drawn; $i++) {
+            $sx = $x + $i * ($slot + $gap);
+            $rx = $sx + ($slot - $rw) / 2;
+            $pdf->fillRect($rx, $ry, $rw, $rh, 0.95);
+            $pdf->strokeRect($rx, $ry, $rw, $rh, 1.2, 0.0);
+            $label = $drawn === $quantity ? 'Produs ' . ($i + 1) : 'Fiecare produs';
+            $pdf->text($sx + $slot / 2 - $pdf->font('B')->textWidth($label, 7) / 2, $rectTop + 4, $label, 'B', 7);
+        }
+        if ($drawn !== $quantity) {
+            $multiplier = '× ' . $quantity;
+            $mx = $x + $area + 6;
+            $size = 20.0;
+            while ($size > 10 && $pdf->font('B')->textWidth($multiplier, $size) > 54) {
+                $size -= 1;
+            }
+            $pdf->text($mx, $ry + $rh / 2 + 2, $multiplier, 'B', $size);
+            $pdf->text($mx, $ry + $rh / 2 - 9, 'PRODUSE', 'B', 7);
+            $pdf->text($mx, $ry + $rh / 2 - 18, 'IDENTICE', 'B', 7);
+        }
+        $unit = $line['unit'] ?? '';
+        $each = TicketSnapshot::measure((string) $line['width'], null) . ' × ' . TicketSnapshot::measure((string) $line['height'], $unit === '' ? null : $unit) . ($quantity > 1 ? ' fiecare' : '');
+        $size = 8.0;
+        while ($size > 6.5 && $pdf->font('B')->textWidth($each, $size) > $boxWidth) {
+            $size -= 0.5;
+        }
+        $pdf->text($x + $boxWidth / 2 - $pdf->font('B')->textWidth($each, $size) / 2, $ry - 12, $each, 'B', $size);
+    }
+
+    /** "1 POZIȚIE", "3 POZIȚII", "20 DE POZIȚII": Romanian count agreement (de from 20, except 101–119 etc.). */
+    private static function count(int $number, string $one, string $many, string $of): string
+    {
+        if ($number === 1) {
+            return '1 ' . $one;
+        }
+        return $number . ' ' . ($number > 0 && ($number % 100 === 0 || $number % 100 >= 20) ? $of . ' ' : '') . $many;
     }
 
     /**

@@ -40,10 +40,11 @@ final readonly class DocumentStaleness
         if (!in_array($order['document_status'], ['active', 'stale', 'revoked'], true) || $order['production_completed_at'] !== null) {
             return;
         }
-        $snapshot = $this->snapshots->build($orderUuid);
-        $fingerprint = TicketSnapshot::fingerprint($snapshot);
         $now = $this->clock->now()->format('Y-m-d H:i:s.u');
         $revision = $this->store->latestRevision($orderUuid);
+        // Compared in the revision's own schema: a newer layout contract alone never makes a document stale.
+        $snapshot = $this->snapshots->build($orderUuid, (int) $revision['snapshot_schema']);
+        $fingerprint = TicketSnapshot::fingerprint($snapshot);
         if ($order['document_status'] === 'active' && !hash_equals((string) $revision['fingerprint'], $fingerprint)) {
             $old = TicketSnapshot::fromJson((string) $revision['snapshot_json']);
             $cuttingDone = $this->store->cuttingCompleted($orderUuid, (string) $order['production_stage_id']);
@@ -55,9 +56,12 @@ final readonly class DocumentStaleness
                 ['changes' => count(TicketSnapshot::diff($old, $snapshot)), 'stage' => $order['production_stage_id'], 'cuttingCompleted' => $cuttingDone], $requestId, $now);
             $this->store->notifyBlocked($order, $now);
         }
-        $open = $this->pdo->prepare('SELECT request_uuid, fingerprint, target_revision_number, requested_by_employee_uuid, status FROM production_document_revision_requests WHERE open_order_uuid = ? FOR UPDATE');
+        $open = $this->pdo->prepare('SELECT request_uuid, snapshot_schema, fingerprint, target_revision_number, requested_by_employee_uuid, status FROM production_document_revision_requests WHERE open_order_uuid = ? FOR UPDATE');
         $open->execute([$orderUuid]);
         $request = $open->fetch(PDO::FETCH_ASSOC);
+        if (is_array($request) && (int) $request['snapshot_schema'] !== (int) $revision['snapshot_schema']) {
+            $fingerprint = TicketSnapshot::fingerprint($this->snapshots->build($orderUuid, (int) $request['snapshot_schema']));
+        }
         if (is_array($request) && !hash_equals((string) $request['fingerprint'], $fingerprint)) {
             $this->pdo->prepare("UPDATE production_document_revision_requests SET status = 'superseded', open_order_uuid = NULL, version = version + 1, resolved_at = ?, resolution_note = 'Conținutul comenzii s-a schimbat din nou după cerere.' WHERE request_uuid = ?")
                 ->execute([$now, $request['request_uuid']]);

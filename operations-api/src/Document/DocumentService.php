@@ -232,7 +232,7 @@ final readonly class DocumentService
             $statement->bindValue(4, $target, PDO::PARAM_INT);
             $statement->bindValue(5, $previousUuid === false ? null : (string) $previousUuid);
             $statement->bindValue(6, $order['order_uuid']);
-            $statement->bindValue(7, TicketSnapshot::SCHEMA, PDO::PARAM_INT);
+            $statement->bindValue(7, (int) $snapshot['schema'], PDO::PARAM_INT);
             $statement->bindValue(8, $fingerprint, PDO::PARAM_LOB);
             $statement->bindValue(9, TicketSnapshot::canonicalJson($snapshot));
             $statement->bindValue(10, json_encode($diff, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
@@ -300,7 +300,7 @@ final readonly class DocumentService
             $orderUuid = (string) $order['order_uuid'];
             $target = (int) $request['target_revision_number'];
             if ($decision === 'approve') {
-                $current = TicketSnapshot::fingerprint($this->snapshots->build($orderUuid));
+                $current = TicketSnapshot::fingerprint($this->snapshots->build($orderUuid, (int) $request['snapshot_schema']));
                 if (!hash_equals((string) $request['fingerprint'], $current)) {
                     throw new ApiException(409, 'DOCUMENT_CONTENT_CHANGED', 'Conținutul comenzii s-a schimbat după cerere. Este necesară o nouă cerere de revizie.');
                 }
@@ -709,7 +709,8 @@ final readonly class DocumentService
         if (!is_array($request) || $request['status'] !== 'approved' || ($expectedRequest !== null && $request['request_uuid'] !== $expectedRequest)) {
             throw new ApiException(409, 'DOCUMENT_APPROVAL_REQUIRED', 'Revizia nouă necesită aprobare înainte de generare.');
         }
-        $snapshot = $this->snapshots->build($orderUuid);
+        // The revision is generated in the schema that was reviewed and approved.
+        $snapshot = $this->snapshots->build($orderUuid, (int) $request['snapshot_schema']);
         if (!hash_equals((string) $request['fingerprint'], TicketSnapshot::fingerprint($snapshot))) {
             throw new ApiException(409, 'DOCUMENT_CONTENT_CHANGED', 'Conținutul comenzii s-a schimbat după aprobare. Este necesară o nouă cerere de revizie.');
         }
@@ -769,7 +770,7 @@ final readonly class DocumentService
         $statement->bindValue(3, $number, PDO::PARAM_INT);
         $statement->bindValue(4, $orderUuid);
         $statement->bindValue(5, $qrReference);
-        $statement->bindValue(6, TicketSnapshot::SCHEMA, PDO::PARAM_INT);
+        $statement->bindValue(6, (int) $snapshot['schema'], PDO::PARAM_INT);
         $statement->bindValue(7, TicketSnapshot::fingerprint($snapshot), PDO::PARAM_LOB);
         $statement->bindValue(8, TicketSnapshot::canonicalJson($snapshot));
         $statement->bindValue(9, $requestUuid);

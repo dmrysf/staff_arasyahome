@@ -468,7 +468,9 @@ $departments9 = $ok($dashGet($root, '/management/analytics/departments', ['perio
 $check(array_sum(array_map(static fn (array $d): int => $d['assistedCheckpoints']['performed'], $departments9)) === (int) $one("SELECT COUNT(*) FROM production_assisted_checkpoints WHERE status = 'performed'"), '11.5 department totals equal the performed marks');
 
 // ==== A10. Rollback guard, operator CLI, route audit ==================================================================
-$check($cli('check-rollback.php', '2.33.0')['code'] === 3 && $cli('check-rollback.php', '2.34.0')['code'] === 0, '35. an API older than 2.34.0 is refused while an open order follows policy v2');
+// Open orders with a ticket schema 2 document (API 2.34.2) raise the rollback floor above the per-piece floors.
+$rollbackFloor = static fn (string $floor): string => ($cli('check-rollback.php', '0.0.0')['json']['state']['openOrdersWithTicketSchema2'] ?? 0) > 0 && version_compare($floor, '2.34.2', '<') ? '2.34.2' : $floor;
+$check($cli('check-rollback.php', '2.33.0')['code'] === 3 && $cli('check-rollback.php', $rollbackFloor('2.34.0'))['code'] === 0, '35. an API older than 2.34.0 is refused while an open order follows policy v2');
 $original31 = (string) $one("SELECT checksum FROM schema_migrations WHERE migration_name = '031_production_assisted_checkpoints.sql'");
 $pdo->exec("UPDATE schema_migrations SET checksum = REPEAT('0', 64) WHERE migration_name = '031_production_assisted_checkpoints.sql'");
 try {

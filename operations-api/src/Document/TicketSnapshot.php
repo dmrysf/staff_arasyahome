@@ -18,14 +18,21 @@ use RuntimeException;
  * never makes a printed document stale.
  *
  * Source-specific normalization happens before: ingestion (or the B2B handoff) freezes the printable
- * delivery identity into the order's document context. The renderer never branches on source.
+ * delivery identity into the order's document context. The snapshot itself is identical for every source.
  *
- * The fingerprint is SHA-256 of the canonical JSON of schema 1. A later schema adds a new builder
- * version; revisions keep the schema they were generated with, so old fingerprints stay comparable.
+ * The fingerprint is SHA-256 of the canonical JSON. A revision keeps the schema it was generated with,
+ * and every comparison with it builds the current order in that same schema, so a new schema never makes
+ * an unchanged document stale and old fingerprints stay comparable.
+ *
+ * The schema is also the document's layout contract, frozen in the stored snapshot:
+ * - 1: the original ticket layout. Revisions generated before schema 2 keep rendering exactly as printed.
+ * - 2: the same printed data. Trendyol lines print the commercial quantity as separate ordered products,
+ *   each with the variant's dimensions (ProductionTicketPdf). Every other source renders as in schema 1.
  */
 final readonly class TicketSnapshot
 {
-    public const SCHEMA = 1;
+    public const SCHEMA = 2;
+    public const SCHEMAS = [1, 2];
 
     public function __construct(private PDO $pdo)
     {
@@ -33,12 +40,16 @@ final readonly class TicketSnapshot
 
     /**
      * Builds the snapshot of an order. The caller holds the order row lock when the result is bound to
-     * a revision, a request or a staleness decision.
+     * a revision, a request or a staleness decision. `$schema` is the schema of the revision or request the
+     * result is compared with; new documents use the current schema.
      *
      * @return array<string, mixed>
      */
-    public function build(string $orderUuid): array
+    public function build(string $orderUuid, int $schema = self::SCHEMA): array
     {
+        if (!in_array($schema, self::SCHEMAS, true)) {
+            throw new RuntimeException('Unsupported document snapshot schema.');
+        }
         $statement = $this->pdo->prepare('SELECT order_uuid, source_key, source_order_id, order_number, order_lookup_code, production_notes, production_context, document_context FROM operational_orders WHERE order_uuid = ?');
         $statement->execute([$orderUuid]);
         $order = $statement->fetch(PDO::FETCH_ASSOC);
@@ -69,7 +80,7 @@ final readonly class TicketSnapshot
             ];
         }
         return [
-            'schema' => self::SCHEMA,
+            'schema' => $schema,
             'order' => [
                 'number' => (string) $order['order_number'],
                 'lookupCode' => (string) $order['order_lookup_code'],
