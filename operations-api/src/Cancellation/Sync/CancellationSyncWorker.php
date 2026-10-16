@@ -15,14 +15,20 @@ use Throwable;
  *
  * One run:
  *   1. recovers leases that expired (a crashed worker): the operation becomes `uncertain`, because the provider may have
- *      received the request; an uncertain operation is never sent again before a status read;
+ *      received the request; an uncertain operation is never sent again by the worker (see below);
  *   2. escalates waits that took too long (no confirmation after 6 hours, no connector pickup after 24 hours) to manual
  *      review;
  *   3. for each due operation of an `api` provider whose gates are open: leases it in a short transaction, reads the
  *      provider's status OUTSIDE any transaction, sends only if the order is still open and cancellable and the operation
- *      had never possibly reached the provider (or a consistency window passed after an uncertain answer), then records
+ *      is `queued` or `retry_scheduled` (never `uncertain` or `awaiting_confirmation`), then records
  *      the result in a second short transaction that first re-checks the lease. A result arriving after somebody else
  *      changed the operation (an inbound confirmation, a withdrawal) is recorded without changing the state.
+ *
+ * Uncertain outcomes are never replayed. Trendyol documents no idempotency, no request-status lookup and no consistency
+ * window, so a package that still reads open after a lost answer, a 5xx or a crash does not prove that the notice was not
+ * received. The worker keeps reading (every CONSISTENCY_WINDOW_SECONDS) and confirms when the package shows cancelled; if it
+ * is still open after UNCERTAIN_OBSERVATION_SECONDS, the operation goes to manual review (UNCERTAIN_OUTCOME_UNRESOLVED) and a
+ * person decides, after checking the Seller Panel, whether to retry. Production stays stopped meanwhile.
  *
  * Source-pull providers (WooCommerce) are never contacted: their connector pulls. With the server switch or a provider flag
  * off, step 3 does nothing for that provider; inbound confirmations still arrive through the ordinary synchronization.
@@ -142,7 +148,7 @@ final class CancellationSyncWorker
             case 'rejected':
             case 'not_cancellable':
                 // Refused before anything was sent; after a possible send the outcome needs a person.
-                $sentBefore = $operation['dispatched_at'] !== null;
+                $sentBefore = $operation['dispatched_at'] !== null || $prior === SyncState::UNCERTAIN;
                 return [$sentBefore ? SyncState::MANUAL_REVIEW : SyncState::REJECTED, ['next_attempt_at' => null, 'provider_status' => $read->providerStatus], 'status_read', $read->outcome, $read->errorCode, null];
             case 'transient':
                 if (strtotime((string) $operation['created_at'] . ' UTC') <= $this->clock->now()->getTimestamp() - SyncOperations::CONFIRMATION_TIMEOUT_SECONDS) {
@@ -159,8 +165,12 @@ final class CancellationSyncWorker
                 : [SyncState::AWAITING_CONFIRMATION, ['next_attempt_at' => $operations->at(120)], 'status_read', 'still_open', null, null];
         }
         if ($prior === SyncState::UNCERTAIN) {
-            // The lost answer may still be processed by the provider: wait a consistency window, read again, then send.
-            return [SyncState::RETRY_SCHEDULED, ['next_attempt_at' => $operations->at(SyncOperations::CONSISTENCY_WINDOW_SECONDS)], 'status_read', 'still_open', 'UNCERTAIN_NOT_APPLIED', null];
+            // Never sent again automatically: an open read does not prove the earlier notice was lost. Keep reading for the
+            // observation window (a delayed or stale status), then a person decides.
+            $since = strtotime((string) ($operation['dispatched_at'] ?? $operation['updated_at']) . ' UTC');
+            return $since <= $this->clock->now()->getTimestamp() - SyncOperations::UNCERTAIN_OBSERVATION_SECONDS
+                ? [SyncState::MANUAL_REVIEW, ['next_attempt_at' => null], 'status_read', 'still_open', 'UNCERTAIN_OUTCOME_UNRESOLVED', null]
+                : [SyncState::UNCERTAIN, ['next_attempt_at' => $operations->at(SyncOperations::CONSISTENCY_WINDOW_SECONDS)], 'status_read', 'still_open', 'UNCERTAIN_STILL_OPEN', null];
         }
         if ($submitted === null) {
             return [SyncState::MANUAL_REVIEW, ['next_attempt_at' => null], 'status_read', 'attempts_exhausted', 'ATTEMPTS_EXHAUSTED', null];
@@ -195,7 +205,9 @@ final class CancellationSyncWorker
                 if ($operation === null || $operation['state'] !== SyncState::PROCESSING || (string) $operation['lease_expires_at'] >= $operations->now()) {
                     return false;
                 }
-                $operations->transition($operation, SyncState::UNCERTAIN, ['next_attempt_at' => $operations->now()], ['kind' => 'lease_recovery', 'outcome' => 'lease_expired', 'error' => 'WORKER_LEASE_EXPIRED', 'system' => $this->owner]);
+                // The dead worker may have sent: from now on the operation counts as possibly dispatched.
+                $operations->transition($operation, SyncState::UNCERTAIN, ['next_attempt_at' => $operations->now(), 'dispatched_at' => $operation['dispatched_at'] ?? $operations->now()],
+                    ['kind' => 'lease_recovery', 'outcome' => 'lease_expired', 'error' => 'WORKER_LEASE_EXPIRED', 'system' => $this->owner]);
                 return true;
             });
         }

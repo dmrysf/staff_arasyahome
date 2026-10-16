@@ -131,6 +131,11 @@ try {
     }
     $flag = ProviderRegistry::FLAGS[$options['source']];
     $enabled = $command === 'enable';
+    if ($enabled && $options['source'] === 'trendyol' && !$providers->for('trendyol')->configured()) {
+        // The only outbound write: never armed without the seller credentials and the storefront code.
+        fwrite(STDERR, "Refused: Trendyol is not configured for outbound cancellation (Trendyol credentials and ARASYA_TRENDYOL_STORE_FRONT_CODE).\n");
+        exit(2);
+    }
     $operator = mb_substr(trim($options['operator']), 0, 100);
     $reason = mb_substr(trim($options['reason']), 0, 255);
     $now = $container->clock()->now()->format('Y-m-d H:i:s.u');

@@ -24,6 +24,7 @@ declare(strict_types=1);
 //   I9  the attempt history explains every state (an unbroken chain ending at the current state); it only grows
 //   I10 nothing but an authorized release lifts a stop (reactivation, reports, confirmations, reconciliation never do)
 //   I11 another site's report is indistinguishable from a missing operation
+//   I12 after an unknown outcome (lost answer, 5xx, crashed worker) no notice is sent again without a person's retry
 
 use Arasya\Operations\Application\Container;
 use Arasya\Operations\Cancellation\Sync\CancellationSyncWorker;
@@ -219,7 +220,17 @@ $invariants = static function () use ($rows, $one, $check, &$orders, $state, $co
             $check(($attemptCounts[$operation['operation_uuid']] ?? 0) <= count($trail), 'I9 the attempt history shrank');
             $attemptCounts[$operation['operation_uuid']] = count($trail);
             $expected = 'queued';
+            $unknown = false;
             foreach ($trail as $index => $attempt) {
+                // I12: after an unknown outcome (a lost answer, a 5xx, a crashed worker) only a person's retry allows another notice.
+                if ($attempt['kind'] === 'submit') {
+                    $check(!$unknown, 'I12 a notice was sent again after an unknown outcome without a person\'s retry');
+                }
+                if (($attempt['kind'] === 'submit' && in_array($attempt['outcome'], ['uncertain', 'late_uncertain'], true)) || $attempt['kind'] === 'lease_recovery') {
+                    $unknown = true;
+                } elseif ($attempt['kind'] === 'retry') {
+                    $unknown = false;
+                }
                 if ($index === 0) {
                     $check($attempt['kind'] === 'create', 'I9 history starts with the creation');
                     $expected = $attempt['state_after'];

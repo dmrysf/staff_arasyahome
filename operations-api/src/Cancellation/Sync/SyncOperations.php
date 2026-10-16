@@ -20,7 +20,14 @@ final readonly class SyncOperations
     public const MAX_SUBMITS = 6;
     public const CONFIRMATION_TIMEOUT_SECONDS = 6 * 3600;
     public const PICKUP_TIMEOUT_SECONDS = 24 * 3600;
+    /** Pause between two status reads of an uncertain operation (an answer that was lost, a 5xx, a crashed worker). */
     public const CONSISTENCY_WINDOW_SECONDS = 300;
+    /**
+     * How long an uncertain operation is observed (status reads only, never a send) before a person decides. Trendyol
+     * documents no idempotency, no request-status lookup and no consistency window for the unsupplied notice, so an
+     * open package after a lost answer does not prove the notice was not received.
+     */
+    public const UNCERTAIN_OBSERVATION_SECONDS = 1800;
     public const LEASE_SECONDS = 120;
 
     public function __construct(private PDO $pdo, private Clock $clock)

@@ -17,15 +17,18 @@ of a stopped order to its sales channel, and keeps the channel's answer and Aras
   report are recorded, never treated as a confirmation.
 - **At-least-once delivery with idempotent steps.** Nothing claims exactly-once. One logical cancellation per stop
   (`uq_order_cancellation_sync_generation`), at most one open per order (`uq_order_cancellation_sync_open`). A lost
-  answer is `uncertain` and is never resent before a status read.
+  answer, a 5xx or a crashed worker makes the operation `uncertain`, and the worker never sends it again: it reads until
+  the channel shows the cancellation or, after 30 minutes, hands the decision to a person (see "Unknown outcomes").
 - **No money is moved.** Arasya never starts, records or reports a refund, credit note, payment change, AWB or shipment
   change. A paid WooCommerce order is refused by the shop's connector and goes to a person.
 - **No transaction is held during HTTP.** The worker leases an operation in one short transaction, calls the provider
   outside any transaction, and records the result in a second transaction that first re-checks its lease.
 - **Trendyol Fresh Start boundary.** A Trendyol order from before the intake baseline (`trendyol_intake_state.baseline_at`)
   is never sent (`TRENDYOL_BEFORE_BASELINE`). Reconciliation lists such orders with `beforeBaseline: true` and never acts
-  on them. Note: the Phase 2 brief names 2026-10-14 11:30 Bucharest; the recorded live baseline is 2026-10-14 09:00Z
-  (12:00 Bucharest). The code uses the stored baseline, not either literal.
+  on them. The code uses the stored baseline (compared with the package `orderDate`, an epoch-millisecond UTC value),
+  never a literal. The recorded live baseline is 2026-10-14 09:00:00Z = 12:00 Europe/Bucharest (EEST, UTC+3). The Phase 2
+  brief still names 11:30; the owner's written instruction of 2026-10-14 08:40Z cancelled 11:30 and set 12:00 (see
+  "Fresh Start boundary" below).
 
 ## Providers
 
@@ -35,11 +38,56 @@ of a stopped order to its sales channel, and keeps the channel's answer and Aras
 | Trend Home, Outlet Perdele (WooCommerce) | `source_pull` | none from Arasya: the shop's YD SOFT connector pulls the request (`POST /integrations/sources/{key}/orders/cancellations`) and reports (`.../orders/cancellations/result`) | the shop's next signed order event with availability `cancelled` | paid orders, orders outside pending / on-hold / processing |
 | B2B | `manual` | none (no supported call yet) | an inbound cancellation | everything outbound |
 
-What Trendyol does not document (response codes, allowed statuses, idempotency) is not assumed: the worker always reads
-the package first, sends only for a new-order status (Created, Picking, Invoiced), maps 2xx to "awaiting confirmation",
-401/403 to a permanent authorization failure, 429 to a later retry, other 4xx to a refusal, and 5xx or a lost answer to
-`uncertain`. The Trendyol provider exists only with credentials and `ARASYA_TRENDYOL_STORE_FRONT_CODE`; without them
-Trendyol is a manual provider (`TRENDYOL_NOT_CONFIGURED`).
+### Trendyol contract (reviewed 2026-10-16 against developers.trendyol.com)
+
+Documented ("Cancel Package", v3.0, and "Tedarik Edememe Bildirimi (updatePackage)"):
+
+- `PUT {apigw}/integration/order/sellers/{sellerId}/shipment-packages/{packageId}/items/unsupplied`, header
+  `storeFrontCode`, body `{"lines": [{"lineId", "quantity"}], "reasonId"}` with the optional `shouldKeepPreviousStatus`
+  (default false; Arasya omits it).
+- Reasons 500 stock out, 501 faulty or damaged, 502 wrong price, 503 wrong image / barcode / quantity, 504 integration
+  error, 505 bulk purchase, 506 force majeure.
+- A notice for the whole package makes it `Cancelled`. A notice for some lines splits the package: the old
+  `shipmentPackageId` becomes `Cancelled` and a new package (new id and cargo tracking number) is created under the same
+  `orderNumber`. Arasya always names every line with its full quantity, so it never splits a package.
+- Results are seen through `getShipmentPackages` (Order V2 `GET .../v2/orders`, `shipmentPackageIds` filter) or webhooks.
+
+Business meaning: this is the **seller's declaration that it cannot supply** the package, not a customer-requested
+cancellation. Trendyol's API documentation does not describe its effect on the seller's performance metrics or penalties;
+the Dashboard says so before a person sends it, and the owner should confirm the account's rules with Trendyol.
+
+Not documented, therefore not assumed: the response codes and bodies, the package statuses that accept the call, any
+idempotency, duplicate handling, request-status lookup or consistency window. The worker therefore reads the package
+first, sends only for a new-order status (Created, Picking, Invoiced), maps 2xx to "awaiting confirmation", 401/403 to a
+permanent authorization failure, 429 to a later retry (standard HTTP semantics: the request was not processed; an
+assumption, not a Trendyol statement), other 4xx to a refusal, and 5xx or a lost answer to `uncertain`.
+
+Package identity: one Arasya production order is one released Trendyol shipment package
+(`trendyol_packages.released_order_uuid` is unique), and the notice names only that package's id. A customer order with
+several packages is several Arasya orders; cancelling one never names another package. A package that Trendyol split or
+removed reads `UnPacked` / not found and is never sent (after a possible send: manual review).
+
+Storefront code: the Trendyol provider exists only with credentials and `ARASYA_TRENDYOL_STORE_FRONT_CODE` (2–5 capital
+letters; a malformed value stops the process with the variable name only). Without them Trendyol is a manual provider
+(`TRENDYOL_NOT_CONFIGURED`), `status` shows it as not configured, and `enable --source=trendyol` is refused. The value is
+the account's storefront as Trendyol states it (Seller Panel integration information or the Trendyol integration
+support); it is not guessed. Never paste it, or any credential, into a ticket or log; set it in the server environment.
+
+### Unknown outcomes (retry safety)
+
+A failed connection, a 5xx or a worker that died after leasing does not prove that Trendyol did not act, and one later
+read that still shows the package open does not prove it either (the read may be stale or delayed, and Trendyol documents
+no consistency window). Without a documented idempotency key or request-status lookup a second notice is not provably
+safe, so the worker never sends an `uncertain` operation again:
+
+- it reads the package every 5 minutes; `Cancelled`/`UnSupplied` confirms (`status_read`);
+- a package that became not cancellable (shipped, split) goes to manual review;
+- still open after 30 minutes (`UNCERTAIN_OBSERVATION_SECONDS`): manual review with `UNCERTAIN_OUTCOME_UNRESOLVED`;
+- a recovered lease counts as possibly dispatched (`dispatched_at` is set), so a crash is treated like a lost answer.
+
+Only a person's retry (after checking the package in the Seller Panel; the Dashboard requires that confirmation for an
+unknown outcome) puts it back to `retry_scheduled`, and even then the worker reads first and sends only if the package is
+still open. Production stays stopped throughout, and a release is refused while the operation is open.
 
 ## State model (migration 034)
 
@@ -54,7 +102,7 @@ Trendyol is a manual provider (`TRENDYOL_NOT_CONFIGURED`).
 | `awaiting_pickup` | waiting for the shop's connector | yes |
 | `awaiting_confirmation` | accepted or reported; the channel does not show it cancelled yet | yes |
 | `retry_scheduled` | due again at `next_attempt_at` (1, 2, 4 … 32 min ±20 %, at most 1 h) | yes |
-| `uncertain` | the answer was lost; read before anything else | yes |
+| `uncertain` | the outcome is unknown (lost answer, 5xx, crashed worker); only read, never sent again by the worker | yes |
 | `manual_review` | a person must decide (refusal after a possible send, timeout, paid order, no supported call, attempts exhausted) | yes |
 | `confirmed` | the channel shows the order cancelled (`confirmed_by` `inbound_event` or `status_read`) | no |
 | `rejected` / `failed` | refused by the channel / not possible without intervention (for example credentials) | no |
@@ -79,10 +127,10 @@ package, and
 |---|---|---|
 | queued / retry_scheduled | open | send (at most 6 sends, then manual review) |
 | awaiting_confirmation | open | keep waiting (read every 2 min), manual review after 6 h |
-| uncertain | open | wait one more consistency window (5 min), then send |
+| uncertain | open | keep reading every 5 min (`UNCERTAIN_STILL_OPEN`); after 30 min manual review (`UNCERTAIN_OUTCOME_UNRESOLVED`); never send |
 | any | cancelled | confirmed (`status_read`) |
 | not sent before | not cancellable / not found | rejected |
-| possibly sent before | not cancellable / not found | manual review |
+| possibly sent before (incl. uncertain) | not cancellable / not found | manual review |
 | any | read failed | retry later; manual review after 6 h without a successful read |
 | any | 401/403 | failed |
 
@@ -171,17 +219,46 @@ operations stay open (a release still waits for them) until a person withdraws o
 
 Rollback: `bin/check-rollback.php` refuses an API older than 2.36.0 while any operation is open.
 
+Emergency disable never releases a stop: production stays stopped, open operations stay open and visible, and the
+worker contacts nobody while the switch or the flag is off.
+
+## Fresh Start boundary (decision record, 2026-10-16)
+
+- Stored and used: `trendyol_intake_state.baseline_at` = 2026-10-14 09:00:00Z (epoch 1791968400000 ms) = 12:00
+  Europe/Bucharest. Bucharest was on EEST (UTC+3) that day; daylight saving ends on 2026-10-25, so the conversion is exact.
+- Origin: the owner first set 11:30 (08:30Z); the owner's written instruction of 2026-10-14 08:40Z ("OLD CUTOFF 11:30 —
+  CANCELLED. NEW OFFICIAL CUTOFF 12:00:00 Europe/Bucharest") replaced it, and the baseline was moved forward at 08:40:23Z.
+  The Phase 2 brief's 11:30 predates that instruction.
+- Comparison: package `orderDate` (creation) against the baseline, in the intake (`TrendyolEligibility::classify`), the
+  work lists, the cancellation send (`TRENDYOL_BEFORE_BASELINE`) and reconciliation (`beforeBaseline`). WooCommerce has no
+  baseline (forward-only ingestion).
+- Affected interval: packages ordered 2026-10-14 08:30:00Z–08:59:59.999Z are historical under 12:00 and would have been
+  eligible under 11:30. At the re-baseline none had been stored or released; any ordered later in that window is in the
+  Trendyol "earlier" view, never in production, so the cancellation synchronization cannot reach it.
+- A correction (back to 11:30) would need the owner's new written decision, a read-only count of the packages in the
+  window, and a separate approved intake change; nothing here changes the stored baseline.
+
 ## Tests
 
 - `tests/mysql-cancellation-sync-integration.php` (MySQL 8.4 and MariaDB 10.11): S0 migration; S1 gates and manual
-  providers; S2 Trendyol read–send–confirm; S3 lost answers; S4 429 / 5xx / 401 / 4xx / not cancellable / unknown package /
+  providers; S2 Trendyol read–send–confirm; S3 lost answers (never resent by the worker; observation, manual review, a
+  person-approved retry); S3b unknown outcomes (delayed or stale status, four workers on an uncertain operation, inbound
+  confirmation meanwhile, split or shipped afterwards, crash after a possible send); S4 429 / 5xx / 401 / 4xx / not cancellable / unknown package /
   attempt budget / unreachable reads; S5 crashed worker, four concurrent workers (one notice), inbound confirmation during
   the HTTP call; S6 WooCommerce pull, cross-site isolation, reports, paid order, withdraw, timeout, heartbeat, signatures;
   S7 authorization, CSRF, idempotency, versions, revoked roles; S8 release blocked, generations; S9 3 sources × 14 stages
   (production, history, QR and document untouched); S10 reconciliation and the Fresh Start boundary; S11 CLI and rollback;
-  S12 mutation scope and secrets.
+  S12 mutation scope and secrets. S11 also covers the refused Trendyol activation without credentials or storefront code
+  and a malformed storefront code (variable name only, no trace, no secret prefix).
+- `tests/mysql-cancellation-sync-pieces-integration.php` (both engines): P1 two DRAPERII pieces, one defective awaiting
+  the manager's decision, Trendyol unknown outcome then marketplace confirmation; P2 PERDEA + DRAPERII under piece routing
+  (stage 6 plus a PERDEA track at ironing), Trendhome pull / report / signed event; P3 two pieces in packing, a paid
+  OutletPerdele order refused; P4 one piece through quality control, the other in rework at cutting, accepted and
+  confirmed. Every piece, track, defect, label, plan, custody, checkpoint, history and QR row of each order is compared
+  byte for byte before and after every synchronization step.
 - `tests/mysql-cancellation-sync-simulation.php`: a seeded adversarial simulation (`ARASYA_SIM_SEED`, `ARASYA_SIM_STEPS`)
-  over 24 synthetic orders with invariants I1–I11 checked after every step (see the file header).
+  over 24 synthetic orders with invariants I1–I12 checked after every step (see the file header); I12: after an unknown
+  outcome no notice is sent again without a person's retry.
 - `tests/inbound-only-guard.php`: the reviewed exception and its self-tests.
 - Staff `tests/order-cancellation.test.ts`, Dashboard `tests/cancellation.test.tsx`, Dashboard real-API E2E
   `e2e/zzzzzzzzz-cancellation-real-api.spec.ts`; YD SOFT `tests/cancellation/run.php`.

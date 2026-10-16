@@ -17,7 +17,7 @@ use Arasya\Operations\Config\TrendyolCredentials;
  * Trendyol documents the reason codes 500-506 and that the cancelled package becomes "Cancelled" (a partial notice
  * splits the package; this client always names every line with its full quantity, so nothing is split). It does not
  * document the response codes, the allowed package statuses or idempotency, so the caller treats an accepted answer
- * as "awaiting confirmation" only, confirms by reading the package again, and never repeats the call before such a read.
+ * as "awaiting confirmation" only, confirms by reading the package again, and never repeats a call whose outcome is unknown.
  *
  * It is reached only through TrendyolCancellationProvider, behind the ARASYA_CANCELLATION_SYNC server switch and the
  * disabled-by-default cancellation_sync_trendyol flag. Credentials never appear in an error or log.

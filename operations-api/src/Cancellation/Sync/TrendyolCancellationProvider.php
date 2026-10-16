@@ -19,8 +19,8 @@ use RuntimeException;
  *     Cancelled / UnSupplied is the only confirmation;
  *   - submit() is called only for a package in a new-order status (Created, Picking, Invoiced) and names every current
  *     line with its full quantity, so the package is never split;
- *   - an accepted answer means "awaiting confirmation"; a lost answer or a 5xx is uncertain and is never repeated before
- *     another status read;
+ *   - an accepted answer means "awaiting confirmation"; a lost answer or a 5xx is uncertain and is never repeated by the
+ *     worker: it is read again until it shows cancelled or, after the observation window, goes to manual review;
  *   - 401/403 is a permanent authorization failure; 429 is retried later; other 4xx are refusals.
  *
  * Refunds are Trendyol's own process after its cancellation; Arasya triggers none.

@@ -10,7 +10,9 @@ declare(strict_types=1);
 //   S0  migration 034: additive, flags created disabled, permission granted to nobody, generations start at 1
 //   S1  gates: server switch and provider flags, both required; B2B and unconfigured providers go to manual review
 //   S2  Trendyol: status read, unsupplied notice with every line, confirmation only by a status read or the inbound sync
-//   S3  Trendyol lost answers: uncertain, never resent before a status read, accepted-then-lost confirmed without a resend
+//   S3  Trendyol lost answers: uncertain, never resent by the worker, observed then manual review; a person-approved retry
+//   S3b unknown outcomes: delayed/stale status, four workers on an uncertain operation, inbound confirmation meanwhile,
+//       split or shipped after the unknown outcome, crash after a possible send
 //   S4  Trendyol failures: 429 backoff, 5xx uncertain, 401 failed, 4xx rejected, status not cancellable, unknown package,
 //       attempt budget, provider unreachable
 //   S5  worker crash (expired lease), concurrent workers (one notice only), inbound confirmation during the HTTP call
@@ -341,27 +343,116 @@ $check($op($g3)['state'] === 'uncertain' && count($puts($g3['package'])) === 1, 
 $fxPut(null);
 $run(330);
 $check($op($g3)['state'] === 'confirmed' && $op($g3)['confirmed_by'] === 'status_read' && count($puts($g3['package'])) === 1, 'S3 the read confirms it: never sent twice');
-// Lost before Trendyol acted: uncertain, read shows open, one more consistency window, then exactly one resend.
+// Lost before Trendyol acted: uncertain; open reads never cause a resend; after the observation window a person decides.
 $g4 = $trendyol('lost2');
 $ok($stop($syncer, $g4), 'S3 stop 2');
 $ok($send($syncer, $g4, ['reasonCode' => 504]), 'S3 sent 2');
 $fxPut(['fail' => true]);
 $run(0);
-$check($op($g4)['state'] === 'uncertain' && count($puts($g4['package'])) === 1 && $fxPackage($g4['package'])['status'] === 'Created', 'S3 lost without effect: uncertain');
+$check($op($g4)['state'] === 'uncertain' && count($puts($g4['package'])) === 1 && $fxPackage($g4['package'])['status'] === 'Created' && $op($g4)['dispatched_at'] !== null, 'S3 lost without effect: uncertain, counted as possibly dispatched');
 $fxPut(null);
-$run(330);
-$check($op($g4)['state'] === 'retry_scheduled' && $op($g4)['last_error_code'] === 'UNCERTAIN_NOT_APPLIED' && count($puts($g4['package'])) === 1, 'S3 read open: wait once more, still no resend');
-$run(660);
-$check($op($g4)['state'] === 'awaiting_confirmation' && count($puts($g4['package'])) === 2 && (int) $op($g4)['attempt_count'] === 2, 'S3 then one resend');
+foreach ([330, 660, 990, 1320, 1650] as $at) {
+    $run($at);
+    $check($op($g4)['state'] === 'uncertain' && $op($g4)['last_error_code'] === 'UNCERTAIN_STILL_OPEN' && count($puts($g4['package'])) === 1, "S3 read open at +{$at}s: still uncertain, never resent");
+}
+$run(2000);
+$check($op($g4)['state'] === 'manual_review' && $op($g4)['last_error_code'] === 'UNCERTAIN_OUTCOME_UNRESOLVED' && count($puts($g4['package'])) === 1, 'S3 after the observation window: manual review, still one notice');
+$run(5000);
+$check(count($puts($g4['package'])) === 1 && $op($g4)['state'] === 'manual_review', 'S3 the worker never resends an unresolved uncertain operation');
+$check($view($syncer, $g4)['cancellation']['sync']['operation']['staffState'] === 'attention', 'S3 Staff/Dashboard: needs attention');
+$error($release($releaser, $g4), 409, 'RELEASE_SYNC_OPEN', 'S3 production cannot be released while the outcome is unknown');
+// A person checked the Seller Panel and retries: the worker reads first, then sends once.
+$ok($opAction($syncer, $op($g4), 'retry'), 'S3 person retries after review');
+$run(5100);
+$check($op($g4)['state'] === 'awaiting_confirmation' && count($puts($g4['package'])) === 2, 'S3 the person-approved retry is read, then sent once');
 $t4 = $trail($op($g4));
-$reads = 0;
 foreach ($t4 as $i => $step) {
     if (str_starts_with($step, 'submit:')) {
         $check($i > 0 && str_starts_with($t4[$i - 1], 'status_read:'), 'S3 every send directly follows a status read: ' . json_encode($t4));
     }
 }
-$run(800);
-$check($op($g4)['state'] === 'confirmed', 'S3 confirmed after the resend');
+$check(in_array('retry:retry_requested', $t4, true) && array_search('retry:retry_requested', $t4, true) < array_search('submit:accepted', $t4, true), 'S3 the second send comes only after the person\'s retry: ' . json_encode($t4));
+$run(5300);
+$check($op($g4)['state'] === 'confirmed', 'S3 confirmed after the person-approved resend');
+
+// ---- S3b. Unknown outcomes (the retry-safety audit, 2026-10-16) ---------------------------------------------------------
+// Accepted, answer lost, and Trendyol's read shows the package open for a while (delayed or stale status): no resend; the
+// later read confirms.
+$late = $trendyol('lateread');
+$ok($stop($syncer, $late), 'S3b delayed stop');
+$ok($send($syncer, $late, ['reasonCode' => 500]), 'S3b delayed sent');
+$fxPut(['status' => 200, 'applyStatus' => null, 'failAfterApply' => true]);
+$run(0);
+$fxPut(null);
+$check($op($late)['state'] === 'uncertain' && count($puts($late['package'])) === 1, 'S3b accepted, answer lost, package still reads open: uncertain');
+$run(330);
+$run(660);
+$check($op($late)['state'] === 'uncertain' && count($puts($late['package'])) === 1, 'S3b stale open reads: never resent');
+$fxStatus($late['package'], 'Cancelled');
+$run(990);
+$check($op($late)['state'] === 'confirmed' && $op($late)['confirmed_by'] === 'status_read' && count($puts($late['package'])) === 1, 'S3b the delayed status confirms it: exactly one notice');
+// Four workers at once on a due uncertain operation: none of them sends.
+$quad = $trendyol('quaduncertain');
+$ok($stop($syncer, $quad), 'S3b race stop');
+$ok($send($syncer, $quad, ['reasonCode' => 500]), 'S3b race sent');
+$fxPut(['fail' => true]);
+$run(0);
+$fxPut(null);
+$check($op($quad)['state'] === 'uncertain' && count($puts($quad['package'])) === 1, 'S3b race: uncertain');
+$start = (string) (microtime(true) + 0.7);
+$procs = [];
+$procPipes = [];
+for ($i = 0; $i < 4; $i++) {
+    $procs[] = proc_open([PHP_BINARY, __DIR__ . '/fixtures/cancellation-sync-worker.php', $dbName, $start, $fixtureFile, '400'], [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+    fclose($pipes[0]);
+    $procPipes[] = $pipes;
+}
+$outputs = [];
+foreach ($procs as $i => $process) {
+    $outputs[] = (string) stream_get_contents($procPipes[$i][1]) . (string) stream_get_contents($procPipes[$i][2]);
+    fclose($procPipes[$i][1]);
+    fclose($procPipes[$i][2]);
+    proc_close($process);
+}
+$check(count($puts($quad['package'])) === 1 && $op($quad)['state'] === 'uncertain' && count(array_filter($trail($op($quad)), static fn (string $s): bool => $s === 'status_read:still_open')) === 1,
+    'S3b four concurrent workers on an uncertain operation: one read, no resend ' . json_encode($outputs));
+// The marketplace confirms (inbound sync) while the operation waits for its next read: confirmed, nothing sent.
+$inb = $trendyol('inbounduncertain');
+$ok($stop($syncer, $inb), 'S3b inbound stop');
+$ok($send($syncer, $inb, ['reasonCode' => 500]), 'S3b inbound sent');
+$fxPut(['fail' => true]);
+$run(0);
+$fxPut(null);
+$fxStatus($inb['package'], 'Cancelled');
+$marketplace($inb);
+$check($op($inb)['state'] === 'confirmed' && $op($inb)['confirmed_by'] === 'inbound_event', 'S3b inbound confirmation during the uncertainty: confirmed');
+$run(400);
+$check(count($puts($inb['package'])) === 1 && $op($inb)['state'] === 'confirmed', 'S3b nothing is sent after the inbound confirmation');
+// Conflicting status after an unknown outcome: split (UnPacked) or shipped — a person decides, never "rejected".
+foreach (['UnPacked' => 'split', 'Shipped' => 'shipped'] as $status => $tag) {
+    $c = $trendyol("conflict{$tag}");
+    $ok($stop($syncer, $c), "S3b {$tag} stop");
+    $ok($send($syncer, $c, ['reasonCode' => 500]), "S3b {$tag} sent");
+    $fxPut(['fail' => true]);
+    $run(0);
+    $fxPut(null);
+    $fxStatus($c['package'], $status);
+    $run(400);
+    $check($op($c)['state'] === 'manual_review' && $op($c)['last_error_code'] === 'TRENDYOL_STATUS_NOT_CANCELLABLE' && $op($c)['provider_status'] === $status && count($puts($c['package'])) === 1,
+        "S3b {$status} after an unknown outcome: manual review, no resend " . json_encode([$op($c)['state'], $op($c)['last_error_code']]));
+}
+// A worker crashed after it may have sent, and the package still reads open: no resend, manual review after the window.
+$crashOpen = $trendyol('crashopen');
+$ok($stop($syncer, $crashOpen), 'S3b crash-open stop');
+$ok($send($syncer, $crashOpen, ['reasonCode' => 500]), 'S3b crash-open sent');
+$pdo->prepare("UPDATE order_cancellation_sync_operations SET state = 'processing', lease_owner = 'worker-dead', lease_expires_at = ?, version = version + 1 WHERE order_uuid = ?")->execute([gmdate('Y-m-d H:i:s', time() - 600), $crashOpen['uuid']]);
+$run(0);
+$check($op($crashOpen)['state'] === 'uncertain' && $op($crashOpen)['dispatched_at'] !== null && $puts($crashOpen['package']) === [], 'S3b recovered lease: uncertain and possibly dispatched, read open, nothing sent');
+$run(400);
+$run(1000);
+$check($op($crashOpen)['state'] === 'uncertain' && $puts($crashOpen['package']) === [], 'S3b recovered lease: still never sent');
+$run(2000);
+$check($op($crashOpen)['state'] === 'manual_review' && $op($crashOpen)['last_error_code'] === 'UNCERTAIN_OUTCOME_UNRESOLVED' && $puts($crashOpen['package']) === [], 'S3b recovered lease: manual review after the window');
 
 // ---- S4. Failures ---------------------------------------------------------------------------------------------------
 $failCase = static function (string $tag, array $script, string $expectState, ?string $expectError, string $label) use ($trendyol, $stop, $send, $ok, $syncer, $fxPut, $run, $op, $check, $puts): array {
@@ -379,11 +470,12 @@ $next = strtotime($op($r429)['next_attempt_at'] . ' UTC') - time();
 $check($next >= 40 && $next <= 80, 'S4 first backoff is about one minute (jitter): ' . $next);
 $run(100);
 $check($op($r429)['state'] === 'awaiting_confirmation' && count($puts($r429['package'])) === 2, 'S4 the retry after the backoff is accepted');
-$failCase('f500', ['status' => 503, 'applyStatus' => null], 'uncertain', 'TRENDYOL_SERVER_ERROR', 'S4 5xx is uncertain (Trendyol may have acted)');
+$r500 = $failCase('f500', ['status' => 503, 'applyStatus' => null], 'uncertain', 'TRENDYOL_SERVER_ERROR', 'S4 5xx is uncertain (Trendyol may have acted)');
 $r401 = $failCase('f401', ['status' => 401, 'applyStatus' => null], 'failed', 'TRENDYOL_AUTH_FAILED', 'S4 401 is a permanent authorization failure');
 $r400 = $failCase('f400', ['status' => 400, 'applyStatus' => null], 'rejected', 'TRENDYOL_REJECTED_400', 'S4 400 is a refusal');
 $run(4000);
 $check(count($puts($r401['package'])) === 1 && count($puts($r400['package'])) === 1, 'S4 failed and rejected operations are never resent by the worker');
+$check(count($puts($r500['package'])) === 1 && $op($r500)['state'] === 'manual_review' && $op($r500)['last_error_code'] === 'UNCERTAIN_OUTCOME_UNRESOLVED', 'S4 a 5xx is never resent by the worker: manual review after the window');
 // Not cancellable / not found: refused before anything is sent.
 $ship = $trendyol('ship');
 $ok($stop($syncer, $ship), 'S4 shipped stop');
@@ -704,6 +796,18 @@ $runCli = $cli('cancellation-sync.php', 'run');
 $check($runCli['code'] === 0 && $runCli['json']['processed'] === 0, 'S11 run with the switch off contacts nothing');
 $check($cli('cancellation-sync.php', 'enable', '--source=trendyol', '--operator=Test Operator', '--reason=Activare aprobată de proprietar.', '--confirm=yes')['code'] === 2, 'S11 enable without the phrase is refused');
 $check($cli('cancellation-sync.php', 'enable', '--source=b2b', '--operator=Test Operator', '--reason=Activare aprobată de proprietar.', '--confirm=ENABLE-CANCELLATION-SYNC')['code'] === 2, 'S11 B2B has no flag');
+$trendyolFlag = (int) $one("SELECT enabled FROM production_feature_flags WHERE flag_key = 'cancellation_sync_trendyol'");
+$unconfigured = $cli('cancellation-sync.php', 'enable', '--source=trendyol', '--operator=Test Operator', '--reason=Activare aprobată de proprietar.', '--confirm=ENABLE-CANCELLATION-SYNC');
+$check($unconfigured['code'] === 2 && str_contains($unconfigured['err'], 'ARASYA_TRENDYOL_STORE_FRONT_CODE') && (int) $one("SELECT enabled FROM production_feature_flags WHERE flag_key = 'cancellation_sync_trendyol'") === $trendyolFlag,
+    'S11 Trendyol cannot be enabled without credentials and a storefront code; the flag is unchanged');
+$malformed = proc_open([PHP_BINARY, dirname(__DIR__) . '/bin/cancellation-sync.php', 'status'], [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $mPipes, null, $env + ['ARASYA_TRENDYOL_STORE_FRONT_CODE' => 'ro-guess1']);
+fclose($mPipes[0]);
+$mOut = (string) stream_get_contents($mPipes[1]) . (string) stream_get_contents($mPipes[2]);
+fclose($mPipes[1]);
+fclose($mPipes[2]);
+$check(proc_close($malformed) === 1 && !str_contains($mOut, 'ro-guess1') && str_contains($mOut, 'Refused: ARASYA_TRENDYOL_STORE_FRONT_CODE must be 2-5 capital letters.')
+    && !str_contains($mOut, 'Stack trace') && !str_contains($mOut, substr((string) $config->dbPassword, 0, 8)), 'S11 a malformed storefront code stops the CLI with the variable name only: no value, no trace, no secret prefix ' . $mOut);
+$check(($status['json']['providers'][array_search('trendyol', array_column($status['json']['providers'], 'source'), true)]['configured'] ?? null) === false, 'S11 status shows Trendyol as not configured');
 $flag('trendhome', false);
 $enabledEvents = (int) $one("SELECT COUNT(*) FROM production_feature_flag_events WHERE feature_key = 'cancellation_sync_trendhome' AND action = 'enabled'");
 $enabled = $cli('cancellation-sync.php', 'enable', '--source=trendhome', '--operator=Test Operator', '--reason=Activare aprobată de proprietar.', '--confirm=ENABLE-CANCELLATION-SYNC');
