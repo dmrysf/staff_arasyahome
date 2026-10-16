@@ -110,6 +110,8 @@ final readonly class CancellationSyncService
             'confirmedBy' => $operation['confirmed_by'] === null ? null : (string) $operation['confirmed_by'],
             'lastError' => $operation['last_error_code'] === null ? null : (string) $operation['last_error_code'],
             'lastErrorAt' => CancellationView::isoOrNull($operation['last_error_at']),
+            // A retry must carry providerChecked: true (an earlier notice may already have reached the channel).
+            'providerCheckRequired' => (new SyncOperations($this->pdo, $this->clock))->wasUncertain((string) $operation['operation_uuid']),
             'createdAt' => CancellationView::iso((string) $operation['created_at']),
             'version' => (int) $operation['version'],
             'history' => array_map(static fn (array $row): array => [
@@ -189,7 +191,7 @@ final readonly class CancellationSyncService
     /** @param array<string, mixed> $input @return array<string, mixed> */
     public function retry(EmployeeIdentity $actor, string $operationId, array $input, string $key, string $requestId): array
     {
-        return $this->operationCommand($actor, 'retry', $operationId, $input, $key, $requestId, function (EmployeeIdentity $actor, array $order, array $operation, SyncOperations $operations) use ($requestId): array {
+        return $this->operationCommand($actor, 'retry', $operationId, $input, $key, $requestId, function (EmployeeIdentity $actor, array $order, array $operation, SyncOperations $operations) use ($requestId, $input): array {
             $control = $this->control((string) $order['order_uuid']);
             if ($control === null || $control['hold_status'] !== CancellationControl::HELD || (int) $control['hold_generation'] !== (int) $operation['hold_generation']) {
                 throw new ApiException(409, 'CANCELLATION_SYNC_STALE', 'Operația aparține unei opriri care nu mai este în vigoare.');
@@ -207,14 +209,20 @@ final readonly class CancellationSyncService
             if ($other !== null && $other['operation_uuid'] !== $operation['operation_uuid']) {
                 throw new ApiException(409, 'CANCELLATION_SYNC_OPEN', 'O altă cerere către sursă este deschisă.');
             }
-            $attempt = ['kind' => 'retry', 'outcome' => 'retry_requested', 'actor' => $actor->employeeUuid, 'correlation' => $requestId];
+            // Once a notice may have reached the channel (lost answer, 5xx, crashed worker), the provider documents no idempotency
+            // and no request lookup: a second notice is allowed only when the person states they checked the channel itself.
+            $possiblyDelivered = $operations->wasUncertain((string) $operation['operation_uuid']);
+            if ($possiblyDelivered && ($input['providerChecked'] ?? null) !== true) {
+                throw new ApiException(409, 'CANCELLATION_SYNC_PROVIDER_CHECK_REQUIRED', 'Rezultatul trimiterii anterioare este necunoscut. Verifică întâi comanda în platforma canalului și confirmă verificarea.');
+            }
+            $attempt = ['kind' => 'retry', 'outcome' => $possiblyDelivered ? 'retry_after_provider_check' : 'retry_requested', 'actor' => $actor->employeeUuid, 'correlation' => $requestId];
             if ($operation['state'] !== SyncState::RETRY_SCHEDULED) {
                 // A new round: the attempt budget starts again, the history keeps every earlier attempt.
                 $operation = $operations->transition($operation, SyncState::RETRY_SCHEDULED, ['next_attempt_at' => $operations->now(), 'attempt_count' => 0], $attempt);
             } else {
                 $this->pdo->prepare('UPDATE order_cancellation_sync_operations SET next_attempt_at = ?, version = version + 1, updated_at = ? WHERE operation_uuid = ? AND version = ?')
                     ->execute([$operations->now(), $operations->now(), $operation['operation_uuid'], $operation['version']]);
-                $operations->note($operation, 'retry', 'retry_requested', null, $actor->employeeUuid, null, $requestId);
+                $operations->note($operation, 'retry', $attempt['outcome'], null, $actor->employeeUuid, null, $requestId);
                 $operation = $operations->byId((string) $operation['operation_uuid']) ?? $operation;
             }
             if ($operation['mechanism'] === 'source_pull') {

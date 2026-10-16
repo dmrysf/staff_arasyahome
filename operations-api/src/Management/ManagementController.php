@@ -145,7 +145,7 @@ final readonly class ManagementController
         if ($method === 'POST' && preg_match('#^/cancellation-sync/operations/([0-9a-f-]{36})/(retry|withdraw|close)$#D', $path, $m) === 1) {
             $sync = $this->service($this->cancellationSync);
             return Response::json(match ($m[2]) {
-                'retry' => $sync->retry($actor, $m[1], $this->body($request, ['expectedVersion'], ['expectedVersion']), $key, $id),
+                'retry' => $sync->retry($actor, $m[1], $this->body($request, ['expectedVersion', 'providerChecked'], ['expectedVersion']), $key, $id),
                 'withdraw' => $sync->withdraw($actor, $m[1], $this->body($request, ['expectedVersion', 'reason'], ['expectedVersion', 'reason']), $key, $id),
                 default => $sync->close($actor, $m[1], $this->body($request, ['expectedVersion', 'note'], ['expectedVersion', 'note']), $key, $id),
             });

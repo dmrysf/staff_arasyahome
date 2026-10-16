@@ -362,7 +362,11 @@ $check(count($puts($g4['package'])) === 1 && $op($g4)['state'] === 'manual_revie
 $check($view($syncer, $g4)['cancellation']['sync']['operation']['staffState'] === 'attention', 'S3 Staff/Dashboard: needs attention');
 $error($release($releaser, $g4), 409, 'RELEASE_SYNC_OPEN', 'S3 production cannot be released while the outcome is unknown');
 // A person checked the Seller Panel and retries: the worker reads first, then sends once.
-$ok($opAction($syncer, $op($g4), 'retry'), 'S3 person retries after review');
+$check($view($syncer, $g4)['cancellation']['sync']['operation']['providerCheckRequired'] === true, 'S3 the view states that a retry needs a check in the channel');
+$error($opAction($syncer, $op($g4), 'retry'), 409, 'CANCELLATION_SYNC_PROVIDER_CHECK_REQUIRED', 'S3 a retry after an unknown outcome without a stated channel check is refused');
+$error($opAction($syncer, $op($g4), 'retry', ['providerChecked' => 'yes']), 409, 'CANCELLATION_SYNC_PROVIDER_CHECK_REQUIRED', 'S3 only a boolean true counts as the stated check');
+$check($op($g4)['state'] === 'manual_review' && count($puts($g4['package'])) === 1, 'S3 a refused retry changes nothing');
+$ok($opAction($syncer, $op($g4), 'retry', ['providerChecked' => true]), 'S3 person retries after review');
 $run(5100);
 $check($op($g4)['state'] === 'awaiting_confirmation' && count($puts($g4['package'])) === 2, 'S3 the person-approved retry is read, then sent once');
 $t4 = $trail($op($g4));
@@ -371,7 +375,7 @@ foreach ($t4 as $i => $step) {
         $check($i > 0 && str_starts_with($t4[$i - 1], 'status_read:'), 'S3 every send directly follows a status read: ' . json_encode($t4));
     }
 }
-$check(in_array('retry:retry_requested', $t4, true) && array_search('retry:retry_requested', $t4, true) < array_search('submit:accepted', $t4, true), 'S3 the second send comes only after the person\'s retry: ' . json_encode($t4));
+$check(in_array('retry:retry_after_provider_check', $t4, true) && array_search('retry:retry_after_provider_check', $t4, true) < array_search('submit:accepted', $t4, true), 'S3 the second send comes only after the person\'s retry: ' . json_encode($t4));
 $run(5300);
 $check($op($g4)['state'] === 'confirmed', 'S3 confirmed after the person-approved resend');
 

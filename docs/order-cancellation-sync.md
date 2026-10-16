@@ -85,9 +85,11 @@ safe, so the worker never sends an `uncertain` operation again:
 - still open after 30 minutes (`UNCERTAIN_OBSERVATION_SECONDS`): manual review with `UNCERTAIN_OUTCOME_UNRESOLVED`;
 - a recovered lease counts as possibly dispatched (`dispatched_at` is set), so a crash is treated like a lost answer.
 
-Only a person's retry (after checking the package in the Seller Panel; the Dashboard requires that confirmation for an
-unknown outcome) puts it back to `retry_scheduled`, and even then the worker reads first and sends only if the package is
-still open. Production stays stopped throughout, and a release is refused while the operation is open.
+Only a person's retry puts it back to `retry_scheduled`, and even then the worker reads first and sends only if the
+package is still open. Once an operation has been `uncertain`, the server refuses a retry with
+`409 CANCELLATION_SYNC_PROVIDER_CHECK_REQUIRED` unless the request carries `providerChecked: true` (the person states
+they checked the package in the Seller Panel); the operation view exposes `providerCheckRequired`, the Dashboard shows a
+warning and a confirmation checkbox, and the attempt is recorded as `retry_after_provider_check`. Production stays stopped throughout, and a release is refused while the operation is open.
 
 ## State model (migration 034)
 
@@ -165,7 +167,7 @@ Management (Dashboard, CSRF, `Idempotency-Key`, the actor's authority re-read un
 |---|---|---|---|
 | `GET` | `/management/orders/{id}/cancellation` | `orders.view_all` | adds `cancellation.sync` {provider, operation with history, required, actions} and `capabilities.sync` |
 | `POST` | `/management/orders/{id}/cancellation/sync` | `production.cancellation.sync` | `{expectedVersion, reasonCode? (Trendyol 500–506, required there), note?}` |
-| `POST` | `/management/cancellation-sync/operations/{id}/retry` | same | `{expectedVersion}` (failed, rejected, manual review, scheduled; never uncertain) |
+| `POST` | `/management/cancellation-sync/operations/{id}/retry` | same | `{expectedVersion, providerChecked?}` (failed, rejected, manual review, scheduled; never uncertain; `providerChecked: true` required once the operation has been uncertain) |
 | `POST` | `/management/cancellation-sync/operations/{id}/withdraw` | same | `{expectedVersion, reason}` (only before it reached the channel) |
 | `POST` | `/management/cancellation-sync/operations/{id}/close` | same | `{expectedVersion, note}` (manual review only) |
 | `GET` | `/management/cancellation-sync` | `orders.view_all` | providers, operations by state, recorded findings |
@@ -253,7 +255,7 @@ worker contacts nobody while the switch or the flag is off.
 
 - `tests/mysql-cancellation-sync-integration.php` (MySQL 8.4 and MariaDB 10.11): S0 migration; S1 gates and manual
   providers; S2 Trendyol read–send–confirm; S3 lost answers (never resent by the worker; observation, manual review, a
-  person-approved retry); S3b unknown outcomes (delayed or stale status, four workers on an uncertain operation, inbound
+  person-approved retry that must state the channel check); S3b unknown outcomes (delayed or stale status, four workers on an uncertain operation, inbound
   confirmation meanwhile, split or shipped afterwards, crash after a possible send); S4 429 / 5xx / 401 / 4xx / not cancellable / unknown package /
   attempt budget / unreachable reads; S5 crashed worker, four concurrent workers (one notice), inbound confirmation during
   the HTTP call; S6 WooCommerce pull, cross-site isolation, reports, paid order, withdraw, timeout, heartbeat, signatures;
@@ -268,8 +270,9 @@ worker contacts nobody while the switch or the flag is off.
   confirmed. Every piece, track, defect, label, plan, custody, checkpoint, history and QR row of each order is compared
   byte for byte before and after every synchronization step.
 - `tests/mysql-cancellation-sync-simulation.php`: a seeded adversarial simulation (`ARASYA_SIM_SEED`, `ARASYA_SIM_STEPS`)
-  over 24 synthetic orders with invariants I1–I12 checked after every step (see the file header); I12: after an unknown
-  outcome no notice is sent again without a person's retry.
+  over 24 synthetic orders with invariants I1–I13 checked after every step (see the file header); I12: after an unknown
+  outcome no notice is sent again without a person's retry; I13: such a retry is accepted only with a stated channel
+  check.
 - `tests/inbound-only-guard.php`: the reviewed exception and its self-tests.
 - Staff `tests/order-cancellation.test.ts`, Dashboard `tests/cancellation.test.tsx`, Dashboard real-API E2E
   `e2e/zzzzzzzzz-cancellation-real-api.spec.ts`; YD SOFT `tests/cancellation/run.php`.

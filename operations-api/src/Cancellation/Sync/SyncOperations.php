@@ -152,6 +152,14 @@ final readonly class SyncOperations
         return $this->clock->now()->format('Y-m-d H:i:s.u');
     }
 
+    /** Whether the operation was ever in the uncertain state: an earlier notice may have reached the channel. */
+    public function wasUncertain(string $operationUuid): bool
+    {
+        $statement = $this->pdo->prepare("SELECT 1 FROM order_cancellation_sync_attempts WHERE operation_uuid = ? AND state_after = 'uncertain' LIMIT 1");
+        $statement->execute([$operationUuid]);
+        return $statement->fetchColumn() !== false;
+    }
+
     private function attempt(string $operationUuid, string $orderUuid, string $kind, string $before, string $after, string $outcome, ?int $http, ?string $error, ?string $providerStatus,
         ?string $actor, ?string $system, ?string $correlation, string $now): void
     {

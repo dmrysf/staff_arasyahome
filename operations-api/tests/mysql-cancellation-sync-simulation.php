@@ -25,6 +25,7 @@ declare(strict_types=1);
 //   I10 nothing but an authorized release lifts a stop (reactivation, reports, confirmations, reconciliation never do)
 //   I11 another site's report is indistinguishable from a missing operation
 //   I12 after an unknown outcome (lost answer, 5xx, crashed worker) no notice is sent again without a person's retry
+//   I13 such a retry is accepted only when the person states they checked the channel (providerChecked: true)
 
 use Arasya\Operations\Application\Container;
 use Arasya\Operations\Cancellation\Sync\CancellationSyncWorker;
@@ -221,6 +222,7 @@ $invariants = static function () use ($rows, $one, $check, &$orders, $state, $co
             $attemptCounts[$operation['operation_uuid']] = count($trail);
             $expected = 'queued';
             $unknown = false;
+            $everUnknown = false;
             foreach ($trail as $index => $attempt) {
                 // I12: after an unknown outcome (a lost answer, a 5xx, a crashed worker) only a person's retry allows another notice.
                 if ($attempt['kind'] === 'submit') {
@@ -228,7 +230,12 @@ $invariants = static function () use ($rows, $one, $check, &$orders, $state, $co
                 }
                 if (($attempt['kind'] === 'submit' && in_array($attempt['outcome'], ['uncertain', 'late_uncertain'], true)) || $attempt['kind'] === 'lease_recovery') {
                     $unknown = true;
+                    $everUnknown = true;
                 } elseif ($attempt['kind'] === 'retry') {
+                    // I13: once an earlier notice may have reached the channel, a person's retry is accepted only with a stated channel check.
+                    if (in_array($attempt['outcome'], ['retry_requested', 'retry_after_provider_check'], true)) {
+                        $check(!$everUnknown || $attempt['outcome'] === 'retry_after_provider_check', 'I13 a retry after an unknown outcome is not recorded as made after a channel check');
+                    }
                     $unknown = false;
                 }
                 if ($index === 0) {
@@ -275,6 +282,7 @@ $invariants = static function () use ($rows, $one, $check, &$orders, $state, $co
 
 // ---- Scenario ---------------------------------------------------------------------------------------------------------
 $counts = [];
+$i13 = [];
 for ($step = 1; $step <= $steps; $step++) {
     $id = $pick($ids);
     $o = &$orders[$id];
@@ -353,7 +361,15 @@ for ($step = 1; $step <= $steps; $step++) {
             }
             break;
         case 'retry':
-            if ($cur !== null) $dash($manager, 'POST', "/management/cancellation-sync/operations/{$cur['operation_uuid']}/retry", ['expectedVersion' => (int) $cur['version']]);
+            // Half of the retries state the channel check; after an unknown outcome the others must be refused.
+            if ($cur !== null) {
+                $stated = $chance(50);
+                $wasUncertain = $rows("SELECT 1 FROM order_cancellation_sync_attempts WHERE operation_uuid = ? AND state_after = 'uncertain' LIMIT 1", [$cur['operation_uuid']]) !== [];
+                $r = $dash($manager, 'POST', "/management/cancellation-sync/operations/{$cur['operation_uuid']}/retry", ['expectedVersion' => (int) $cur['version']] + ($stated ? ['providerChecked' => true] : []));
+                // I13: after an unknown outcome a retry without the stated channel check is always refused.
+                $check(!$wasUncertain || $stated || $r['status'] !== 200, 'I13 a retry after an unknown outcome was accepted without a stated channel check');
+                $i13[$wasUncertain && !$stated ? 'refused' : 'other'] = ($i13[$wasUncertain && !$stated ? 'refused' : 'other'] ?? 0) + 1;
+            }
             break;
         case 'close':
             if ($cur !== null) $dash($manager, 'POST', "/management/cancellation-sync/operations/{$cur['operation_uuid']}/close", ['expectedVersion' => (int) $cur['version'], 'note' => 'Simulare: rezolvat manual în canal.']);
@@ -443,4 +459,4 @@ foreach ($rows("SELECT state, COUNT(*) AS n FROM order_cancellation_sync_operati
 $findings = $container->cancellationReconciler()->scan();
 $check(array_filter($findings, static fn (array $f): bool => $f['kind'] === 'released_with_open_operation') === [], 'the reconciliation finds no released order with an open operation');
 ksort($counts);
-fwrite(STDOUT, 'PASS cancellation synchronization simulation (seed ' . $seed . ", {$steps} steps, {$checks} checks) operations " . json_encode($summary) . ' actions ' . json_encode($counts) . "\n");
+fwrite(STDOUT, 'PASS cancellation synchronization simulation (seed ' . $seed . ", {$steps} steps, {$checks} checks) operations " . json_encode($summary) . ' actions ' . json_encode($counts) . ' retries ' . json_encode($i13) . "\n");
