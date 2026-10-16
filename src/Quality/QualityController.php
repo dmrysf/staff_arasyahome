@@ -37,6 +37,7 @@ use PDO;
  *   POST /production-exceptions/{id}/restore         supervisor hands the product back to tailoring (QR); the order stays blocked
  *   POST /production-exceptions/{id}/receive         the addressed tailoring employee confirms receipt (QR); unblocks the order
  *   POST /production-exceptions/{id}/notes           additional information by anyone involved
+ *   POST /production-exceptions/scan                 the open requests a scanned code concerns, for the universal scanner (read-only)
  *
  * Live: GET /live/events?after=<sequence> answers text/event-stream with the events addressed to the
  * caller (and, for approvers, the approval queue events). Without `after` it only reports the current
@@ -44,6 +45,10 @@ use PDO;
  */
 final readonly class QualityController
 {
+    /** Same budget as the ordinary order lookup (60 scans a minute per employee). */
+    private const SCAN_LIMIT = 60;
+    private const SCAN_WINDOW_SECONDS = 60;
+
     public function __construct(
         private CuttingFaultService $faults,
         private ExceptionQueries $queries,
@@ -57,6 +62,7 @@ final readonly class QualityController
         private PDO $pdo,
         private Clock $clock,
         private ?\Arasya\Operations\Document\DocumentAudiences $documentAudiences = null,
+        private ?\Arasya\Operations\Security\ApiRateLimiter $rateLimiter = null,
     ) {
     }
 
@@ -121,6 +127,16 @@ final readonly class QualityController
                 return $this->json($this->queries->detail($m[1], $actor->employeeUuid, false, $supervises));
             }
             throw new ApiException(404, 'NOT_FOUND', 'API route was not found.');
+        }
+        if ($request->method === 'POST' && $path === '/scan') {
+            // A lookup, not a mutation: POST only so the scanned code never appears in a URL or an access log.
+            $actor = $this->mutationSession($request)->employee;
+            $this->authorization->requireApplication($actor, 'staff');
+            if ($this->rateLimiter !== null && !$this->rateLimiter->hit('exception-scan', $actor->employeeUuid, self::SCAN_LIMIT, self::SCAN_WINDOW_SECONDS)) {
+                throw new ApiException(429, 'RATE_LIMITED', 'Too many lookups. Try again shortly.');
+            }
+            $input = $this->body($request, ['token'], ['token']);
+            return $this->json(['items' => $this->faults->scanned($actor, $input['token'])]);
         }
         if ($request->method === 'POST' && preg_match('#^/([0-9a-f-]{36})/(acknowledge|rereview|review|return|restore|receive|notes)$#D', $path, $m) === 1) {
             $session = $this->mutationSession($request);
