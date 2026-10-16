@@ -101,6 +101,8 @@ Physical receipt is recorded apart from responsibility:
 
 ## Handing the product back to tailoring (two-party internal handover)
 
+Since Staff 2.26.1 every product-in-hand step of this flow is confirmed in the [universal scanner](universal-scanner.md) with the one scan of the label; the request screen opens the scanner for the request and has no camera of its own.
+
 The supervisor's scan alone never releases the order. The handover has two steps:
 
 1. **Hand back** (`POST /production-exceptions/{id}/restore`): the supervisor scans the label with the product in hand and gives a reason.

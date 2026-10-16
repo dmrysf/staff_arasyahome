@@ -681,6 +681,87 @@ $check(in_array($v['id'], array_column($ok($get($cutterA, '/orders/mine'), 'cutt
 $advance($cutterA, $v);
 $check($state($v)['stage'] === 'workshop-receiving' && $state($v)['owner'] === null, 'after re-cutting the order moves forward to stage 3 normally, without an approval');
 
+// ==== Scenario 12 (API 2.34.1): the universal scanner lookup, along the whole EX-000001-shaped sequence =============
+// POST /production-exceptions/scan answers which open requests a scanned code concerns for the scanning employee,
+// with the server-granted actions. It never writes; every action then sends the same code and is verified again.
+$w = $order('W', 'trendhome');
+$bring($w, $cutterA, 'ironing');
+$other = $order('WX', 'trendhome');
+$scan = static fn (array $who, mixed $token): array => $post($who, '/production-exceptions/scan', ['token' => $token]);
+$scanned = static function (array $who, string $token, string $label) use ($scan, $ok): array { return $ok($scan($who, $token), $label)['items']; };
+$granted = static fn (array $item): array => array_keys(array_filter($item['actions'], static fn ($value, $name): bool => $value === true && $name !== 'statesResponsibility' && $name !== 'canAddNote', ARRAY_FILTER_USE_BOTH));
+$footprint = static fn (): array => [
+    (int) $one('SELECT COUNT(*) FROM production_exception_events'), (int) $one('SELECT COUNT(*) FROM live_events'), (int) $one('SELECT COUNT(*) FROM iam_audit_events'),
+    (int) $one('SELECT COUNT(*) FROM production_exception_idempotency'), (int) $one('SELECT COUNT(*) FROM production_exception_decisions'),
+    (int) $one('SELECT COALESCE(SUM(version), 0) FROM production_exceptions'), (int) $one('SELECT COALESCE(SUM(production_version), 0) FROM operational_orders'),
+];
+$before = $footprint();
+$check($scanned($tailor, $w['qr'], 'scan without any request') === [], 'an order without an open request: nothing for the exception panel');
+$error($scan($tailor, 42), 400, 'INVALID_REQUEST', 'the token must be a string');
+$error($post($tailor, '/production-exceptions/scan', ['token' => $w['qr'], 'orderId' => $w['id']]), 400, 'INVALID_REQUEST', 'strict body: the client names no order');
+$check($scanned($tailor, 'ARASYA:Q1:' . str_repeat('A', 26), 'unknown code') === [] && $scanned($tailor, 'hello', 'not an Arasya code') === [], 'unknown or foreign codes return nothing (the order lookup gives the refusal)');
+$noCsrf = T::call($kernel, 'POST', '/production-exceptions/scan', ['token' => $w['qr']], ['idempotency-key' => 'x'], $tailor['cookie']);
+$check($noCsrf['status'] === 403, 'the lookup needs the CSRF token like every Staff POST: ' . $noCsrf['status']);
+$xw = $ok($report($tailor, $w, [$w['items'][0]], 'material-defect', 'Fir tras la călcat'), 'stage-8 (ironing) report', 201)['id'];
+$after = static fn (): array => $footprint();
+$base = $after();
+$asDetector = $scanned($tailor, $w['qr'], 'detector scans');
+$check(count($asDetector) === 1 && $asDetector[0]['id'] === $xw && $asDetector[0]['role'] === 'detector' && $granted($asDetector[0]) === [], 'the detector sees the request, without an action');
+$asSupervisor = $scanned($iuliana, $w['qr'], 'supervisor scans');
+$check(count($asSupervisor) === 1 && $asSupervisor[0]['role'] === 'supervisor' && $granted($asSupervisor[0]) === ['canReview'], 'the supervisor is offered the review: ' . json_encode($granted($asSupervisor[0])));
+$check(($asSupervisor[0]['lines'][0]['name'] ?? null) === 'Voal A' && ($asSupervisor[0]['detectedStage']['id'] ?? null) === 'ironing' && ($asSupervisor[0]['order']['id'] ?? null) === $w['id'], 'the scan answer names the order, the affected product and the detected stage');
+$check($scanned($cutterA, $w['qr'], 'cutter scans before any return') === [], 'the cutter is not involved before the supervisor sends a return');
+$check($scanned($tailor2, $w['qr'], 'uninvolved tailor scans') === [], 'an uninvolved employee learns nothing from the exception lookup');
+$check($scanned($iuliana, $other['qr'], 'supervisor scans another order') === [], 'another order\'s code never returns this request');
+$check($after() === $base, 'scanning wrote nothing (events, live, audit, idempotency, decisions, versions)');
+$ok($review($iuliana, $xw, ['decision' => 'accept', 'reasonKey' => 'material-defect', 'qrToken' => $w['qr']]), 'accepted into custody with the scanned code');
+$check($granted($scanned($iuliana, $w['qr'], 'supervisor in custody')[0]) === ['canRequestReturn', 'canRestore'], 'in custody: send to cutting or hand back');
+$ok($sendReturn($iuliana, $xw, ['comment' => 'Fir tras']), 'return to cutting sent');
+$asCutter = $scanned($cutterA, $w['qr'], 'cutter scans the sent return');
+$check(count($asCutter) === 1 && $granted($asCutter[0]) === ['canAcknowledge'] && $asCutter[0]['actions']['statesResponsibility'] === true, 'the addressed cutter is offered the receipt with the responsibility statement');
+$base = $after();
+$cancelledW = $ok($post($iuliana, "/production-exceptions/{$xw}/restore", ['expectedVersion' => $exVersion($xw), 'qrToken' => $w['qr'], 'comment' => 'Nu mai trimitem la tăiere', 'cancelReturn' => true]), 'the supervisor withdraws the return before the cutter received it');
+$check($cancelledW['status'] === 'awaiting_restore_receipt' && $blocked($w, $xw) && $decisions($xw) === 0, 'EX-000001 state: awaiting_restore_receipt at stage 3, no owner, no decision');
+$base = $after();
+$cutterNow = $scanned($cutterA, $w['qr'], 'cutter scans after the withdrawal');
+$check(array_merge(...array_map($granted, $cutterNow ?: [['actions' => []]])) === [], 'the cutter can no longer act on the withdrawn return: ' . json_encode($cutterNow === [] ? [] : $cutterNow[0]['actions']));
+$intake = $post($cutterA, '/cutting/intake', ['qrToken' => $w['qr']]);
+$check($intake['status'] === 409 && $after() === $base && $blocked($w, $xw), 'the cutter\'s generic intake changes nothing: ' . $intake['status'] . ' ' . json_encode($intake['body']['error']['code'] ?? null));
+$asRecipient = $scanned($tailor, $w['qr'], 'designated recipient scans');
+$check(count($asRecipient) === 1 && $asRecipient[0]['role'] !== null && $granted($asRecipient[0]) === ['canConfirmRestore'] && $asRecipient[0]['status'] === 'awaiting_restore_receipt', 'the designated tailoring worker is offered the physical receipt');
+$check(($asRecipient[0]['physicalCustodian']['displayName'] ?? null) === "VASILOAIA IULIANA {$suffix}" && ($asRecipient[0]['detectedStage']['id'] ?? null) === 'ironing', 'the receipt names the sender and the stage the order returns to');
+$check($granted($scanned($tailor2, $w['qr'], 'another tailor')[0] ?? ['actions' => []]) === [], 'another tailor is offered nothing');
+$check($after() === $base, 'the scans of the cutter, the recipient and another tailor wrote nothing');
+$error($receive($tailor2, $xw, $w['qr']), 403, 'EXCEPTION_NOT_ASSIGNED', 'only the designated recipient can confirm the receipt');
+$error($receive($tailor, $xw, $other['qr']), 422, 'QR_ORDER_MISMATCH', 'the receipt with another order\'s code is refused');
+$receiptBody = ['expectedVersion' => $exVersion($xw), 'confirmed' => true, 'qrToken' => $w['qr']];
+$received = $ok($post($tailor, "/production-exceptions/{$xw}/receive", $receiptBody, 'scanner-receipt-w-' . $suffix), 'the recipient confirms with the same scanned code');
+$replayed = $ok($post($tailor, "/production-exceptions/{$xw}/receive", $receiptBody, 'scanner-receipt-w-' . $suffix), 'a lost answer is replayed with the same key and body');
+$check($received['status'] === 'restored' && $replayed['version'] === $received['version'], 'receipt committed once, replay returns the same result');
+$check($state($w)['stage'] === 'ironing' && $state($w)['owner'] === $tailor['employeeUuid'] && $state($w)['exception'] === null, 'back at ironing, owned by the worker, unblocked');
+$check($scanned($tailor, $w['qr'], 'after the receipt') === [], 'no open request any more: the scanner falls back to ordinary production');
+$xw2 = $ok($report($tailor, $w, [$w['items'][0]], 'material-defect', 'Defectul persistă'), 'the defect persists: a new authorized report', 201)['id'];
+$ok($review($iuliana, $xw2, ['decision' => 'accept', 'reasonKey' => 'material-defect', 'qrToken' => $w['qr']]), 'accepted again');
+$ok($sendReturn($iuliana, $xw2), 'returned to cutting again');
+$check($granted($scanned($cutterA, $w['qr'], 'cutter scans the second return')[0]) === ['canAcknowledge'], 'the cutter is offered the receipt of the new request');
+$ackBody = ['expectedVersion' => $exVersion($xw2), 'confirmed' => true, 'qrToken' => $w['qr'], 'responsibility' => 'disputed', 'comment' => 'Defect de material'];
+$ackW = $ok($post($cutterA, "/production-exceptions/{$xw2}/acknowledge", $ackBody, 'scanner-acknowledge-w-' . $suffix), 'the cutter confirms the receipt with the one scanned code');
+$check($ackW['status'] === 'awaiting_approval' && $decisions($xw2) === 1, 'exactly one pending manager decision');
+$ok($post($cutterA, "/production-exceptions/{$xw2}/acknowledge", $ackBody, 'scanner-acknowledge-w-' . $suffix), 'a double tap replays with the same key and body');
+$check($decisions($xw2) === 1 && $state($w)['stage'] === 'workshop-receiving', 'still one decision; the order did not move before the manager');
+$check($granted($scanned($cutterA, $w['qr'], 'cutter scans again while pending')[0]) === [], 'while the manager decides the cutter is offered nothing');
+$pendingW = array_values(array_filter($ok($dashGet($denisa, '/management/production-exceptions', ['view' => 'pending']), 'manager queue')['items'], static fn (array $item): bool => $item['id'] === $xw2));
+$check(count($pendingW) === 1, 'the pending approval appears exactly once in the manager queue');
+$ok($decide($denisa, $xw2, ['decision' => 'approve', 'attribution' => 'none']), 'the manager approves (Dashboard API)');
+$check($state($w)['stage'] === 'material-preparation' && $state($w)['owner'] === $cutterA['employeeUuid'] && $state($w)['exception'] === null, 'the whole order returns to cutting, owned by the receiving cutter');
+$actions = array_column($rows('SELECT action FROM production_exception_events WHERE exception_uuid IN (?, ?) ORDER BY occurred_at', [$xw, $xw2]), 'action');
+$check(count(array_filter($actions, static fn (string $a): bool => $a === 'restore_received')) === 1 && count(array_filter($actions, static fn (string $a): bool => $a === 'acknowledged')) === 1, 'one restore receipt and one cutter receipt in the history: ' . json_encode($actions));
+for ($i = 0; $i < 70; $i++) {
+    $limited = $scan($tailor3, $w['qr']);
+    if ($limited['status'] === 429) break;
+}
+$check(($limited['status'] ?? 0) === 429 && ($limited['body']['error']['code'] ?? '') === 'RATE_LIMITED' && $i <= 60, 'the scan lookup has the order lookup budget (60 a minute): stopped after ' . $i);
+
 // ---- Invariants --------------------------------------------------------------------------------------------------
 $check((int) $one("SELECT COUNT(*) FROM production_exception_decisions d JOIN production_exceptions x ON x.exception_uuid = d.exception_uuid WHERE x.exception_type = 'tailoring_defect' AND x.acknowledged_at IS NULL") === 0, 'no manager decision exists for any case before physical receipt at stage 3');
 $check((int) $one("SELECT COUNT(*) FROM production_quality_events q JOIN production_exceptions x ON x.exception_uuid = q.exception_uuid WHERE x.status = 'dismissed'") === 0, 'dismissed reports never count');

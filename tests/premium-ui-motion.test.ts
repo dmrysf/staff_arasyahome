@@ -37,7 +37,7 @@ test("haptics follow only the scanner's own states, and every async primary butt
   const scanner = readFileSync(path.join(root, "features/scanner/ScannerScreen.tsx"), "utf8");
   assert.match(scanner, /state\.status === "decoded"\) navigator\.vibrate\?\.\(/);
   assert.match(scanner, /state\.status === "success"\) navigator\.vibrate\?\.\(/);
-  for (const file of ["features/auth/LoginScreen.tsx", "features/auth/ChangePasswordScreen.tsx", "features/orders/OrderActionPanel.tsx", "features/scanner/ScannerScreen.tsx", "features/exceptions/ReturnToCuttingPanel.tsx", "features/exceptions/ExceptionScreen.tsx"]) {
+  for (const file of ["features/auth/LoginScreen.tsx", "features/auth/ChangePasswordScreen.tsx", "features/orders/OrderActionPanel.tsx", "features/scanner/ScannerScreen.tsx", "features/exceptions/ReturnToCuttingPanel.tsx", "features/exceptions/ExceptionActions.tsx"]) {
     assert.match(readFileSync(path.join(root, file), "utf8"), /aria-busy=/, file);
   }
 });

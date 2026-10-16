@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { useI18n } from "../../i18n";
-import type { OrderService } from "../../services/contracts";
-import type { Employee, ProductionItem, ProductionWorkflow, StaffOrder } from "../../domain/models";
+import type { ExceptionService, OrderService } from "../../services/contracts";
+import type { Employee, FaultException, ProductionItem, ProductionWorkflow, StaffOrder } from "../../domain/models";
 import { StaffServiceError as ServiceError } from "../../domain/models";
 import { SourceBadge } from "../../components/SourceBadge";
 import { StageLabel } from "../../components/StageLabel";
@@ -19,8 +19,10 @@ import type { StaffRuntimeMode } from "../../src/runtimeConfig";
 import { AppIcon } from "../../components/icons/AppIcon";
 import { getNextStage, getStageById } from "../../domain/productionWorkflow";
 import { canUseCuttingIntake, cuttingIntakeCopy, type CuttingApi } from "../../domain/cutting";
+import { chooseScanned, faultStatusLabel, nextStepText, scannerExceptionPrompt } from "../../domain/faults";
+import { ExceptionScan, ExceptionScanDone } from "./ExceptionScan";
+// Only for a claim at cutting of an order found by its number (nothing was scanned yet): the label is read here, in the scanner.
 import { QrCapture } from "../exceptions/QrCapture";
-import { scannerExceptionPrompt } from "../../domain/faults";
 import { faultReasonName, stageName } from "../../domain/stageNames";
 import { isPieceLabel, pieceName, scanNeedsPieceChoice, trackPieces, trackStatusLabel } from "../../domain/pieces";
 
@@ -44,7 +46,16 @@ function ReviewContent({ order, item, workflow }: { order: StaffOrder; item: Pro
   );
 }
 
-export function ScannerScreen({ service, cutting, employee, workflow, mode, navigate, onSessionExpired }: { service: OrderService; cutting?: CuttingApi; employee?: Employee; workflow: ProductionWorkflow; mode: StaffRuntimeMode; navigate: (path: string) => void; onSessionExpired: () => void }) {
+/** A typed label code is the same evidence as a camera scan of it; anything else typed is only an order number lookup. */
+export const isProductionCode = (value: string): boolean => /^ARASYA:(Q1|U1):/i.test(value.trim());
+
+/**
+ * The universal scanner: one entry point for every production scan. A scanned code is first asked about open
+ * production exceptions that involve this employee (exception first), then, only when there is none, it takes the
+ * cutting intake of an eligible cutter, then the ordinary order verification. The scanned code stays in memory for the
+ * one action it was scanned for and is sent with it; the server verifies it again inside that action.
+ */
+export function ScannerScreen({ service, exceptions, cutting, employee, workflow, mode, contextExceptionId = null, navigate, onSessionExpired }: { service: OrderService; exceptions?: ExceptionService; cutting?: CuttingApi; employee?: Employee; workflow: ProductionWorkflow; mode: StaffRuntimeMode; /** The request whose action opened the scanner (`/scan?exception=`). */ contextExceptionId?: string | null; navigate: (path: string) => void; onSessionExpired: () => void }) {
   const { t } = useI18n();
   const [state, dispatch] = useReducer(scannerReducer, initialScannerState);
   const [manualOpen, setManualOpen] = useState(false);
@@ -108,21 +119,76 @@ export function ScannerScreen({ service, cutting, employee, workflow, mode, navi
     }
   }, [onSessionExpired, service]);
 
-  const resolveCode = useCallback(async (token: string, manual = false) => {
-    const normalized = token.trim();
-    if (!normalized || !duplicateGuard.accept(normalized)) return;
-    stopCamera();
-    dispatch({ type: "CODE_DETECTED", token: normalized });
+  /**
+   * Exception first: the open requests of this code that involve the employee, with the server's granted actions.
+   * Read-only. true when the scan is handled here (a request panel or an error); false continues the ordinary path.
+   * An API older than 2.34.1 has no lookup: only the request the employee explicitly opened is offered then, and its
+   * action still has the server verify that the code belongs to it.
+   */
+  const runCheck = useCallback(async (token: string): Promise<boolean> => {
+    if (!exceptions) return false;
+    try {
+      let items: FaultException[] | null = await exceptions.scan(token);
+      if (items === null && contextExceptionId) items = [await exceptions.get(contextExceptionId)];
+      const mismatch = Boolean(contextExceptionId) && items !== null && !items.some((item) => item.id === contextExceptionId);
+      if (items !== null && (items.length > 0 || mismatch)) {
+        dispatch({ type: "EXCEPTIONS_FOUND", items, chosenId: chooseScanned(items, contextExceptionId), mismatch });
+        return true;
+      }
+      dispatch({ type: "EXCEPTIONS_NONE" });
+      return false;
+    } catch (caught) {
+      const error = toServiceError(caught);
+      if (error.code === "SESSION_EXPIRED" || error.code === "NO_SESSION") onSessionExpired();
+      dispatch({ type: "CHECK_FAILED", error });
+      return true;
+    }
+  }, [contextExceptionId, exceptions, onSessionExpired]);
+
+  /** After the exception check found nothing: the cutting intake of an eligible cutter, otherwise the ordinary verification. */
+  const continueOrdinary = useCallback(async (token: string, scanned: boolean) => {
     // A piece label names one exact piece: it is resolved, never sent to the cutting intake of the whole order.
-    if (!manual && intakeEnabled && !isPieceLabel(normalized)) {
-      const attempt = { token: normalized, idempotencyKey: createIdempotencyKey() };
+    if (scanned && intakeEnabled && !isPieceLabel(token)) {
+      const attempt = { token, idempotencyKey: createIdempotencyKey() };
       dispatch({ type: "INTAKE_STARTED", attempt });
       await runIntakeRef.current(attempt);
       return;
     }
     dispatch({ type: "RESOLVE_STARTED" });
-    await resolveOrder(normalized, manual);
-  }, [duplicateGuard, intakeEnabled, resolveOrder, stopCamera]);
+    await resolveOrder(token, !scanned);
+  }, [intakeEnabled, resolveOrder]);
+
+  const resolveCode = useCallback(async (token: string, manual = false) => {
+    const normalized = token.trim();
+    if (!normalized || !duplicateGuard.accept(normalized)) return;
+    stopCamera();
+    const scanned = !manual || isProductionCode(normalized);
+    dispatch({ type: "CODE_DETECTED", token: normalized });
+    if (scanned && exceptions) {
+      dispatch({ type: "CHECK_STARTED" });
+      if (await runCheck(normalized)) return;
+    }
+    await continueOrdinary(normalized, scanned);
+  }, [continueOrdinary, duplicateGuard, exceptions, runCheck, stopCamera]);
+
+  async function retryCheck(token: string) {
+    dispatch({ type: "RETRY_CHECK" });
+    if (await runCheck(token)) return;
+    await continueOrdinary(token, true);
+  }
+
+  /** After a conflict the same code is asked again; the employee sees the current requests and confirms anew. */
+  async function refreshExceptions(token: string) {
+    if (!exceptions) return;
+    try {
+      let items = await exceptions.scan(token);
+      if (items === null && contextExceptionId) items = [await exceptions.get(contextExceptionId)];
+      dispatch({ type: "EXCEPTIONS_REFRESHED", items: items ?? [] });
+    } catch (caught) {
+      const error = toServiceError(caught);
+      if (error.code === "SESSION_EXPIRED" || error.code === "NO_SESSION") onSessionExpired();
+    }
+  }
 
   /**
    * One intake request at a time. Success is shown only from the committed server answer; a workload warning asks
@@ -294,7 +360,7 @@ export function ScannerScreen({ service, cutting, employee, workflow, mode, navi
     }
   }
 
-  const busy = state.status === "submitting" || state.status === "taking";
+  const busy = state.status === "submitting" || state.status === "taking" || state.status === "checking";
   const intakeProduct = state.status === "success" && state.intake ? getUsableProductionProducts(state.order).at(0) : undefined;
   const reviewItem = state.status === "review" ? getUsableProductionProducts(state.order).at(0) : undefined;
   const pending = state.status === "confirming" || state.status === "submitting" ? state.order : null;
@@ -305,18 +371,24 @@ export function ScannerScreen({ service, cutting, employee, workflow, mode, navi
 
   return (
     <main className="scanner-screen">
-      <div className={`camera-view${["review", "confirming", "submitting", "taking", "take_confirm", "success", "error"].includes(state.status) ? " camera-dimmed" : ""}`}>
+      <div className={`camera-view${["review", "confirming", "submitting", "taking", "take_confirm", "success", "error", "exception", "exception_done"].includes(state.status) ? " camera-dimmed" : ""}`}>
         <video ref={videoRef} muted playsInline aria-label={t("scanner.videoLabel")} />
         <div className="camera-fallback" aria-hidden="true" />
         <header className="scanner-toolbar"><button type="button" disabled={busy} onClick={() => { stopCamera(); navigate("/"); }} aria-label={t("scanner.backHome")}><AppIcon name="back" /></button><span>{t("scanner.title")}</span>{state.status === "scanning" && state.torchSupported ? <button type="button" className={state.torchOn ? "active" : ""} onClick={toggleTorch} aria-label={state.torchOn ? t("scanner.torchOff") : t("scanner.torchOn")}><AppIcon name="torch" /></button> : <span />}</header>
         <div className="scanner-target" data-state={state.status} aria-hidden="true"><i /><i /><i /><i /><span /></div>
-        <div className="scanner-instruction" aria-live="polite"><strong>{state.status === "requesting_permission" ? t("scanner.opening") : state.status === "scanning" ? t("scanner.align") : state.status === "decoded" || state.status === "resolving" ? t("scanner.readVerifying") : state.status === "taking" ? t("scanner.readTaking") : t("scanner.scanOrder")}</strong>{state.status === "scanning" && <span>{state.torchSupported ? t("scanner.autoTorch") : t("scanner.auto")}</span>}</div>
+        <div className="scanner-instruction" aria-live="polite"><strong>{state.status === "requesting_permission" ? t("scanner.opening") : state.status === "scanning" ? t("scanner.align") : state.status === "decoded" || state.status === "resolving" || state.status === "checking" ? t("scanner.readVerifying") : state.status === "taking" ? t("scanner.readTaking") : t("scanner.scanOrder")}</strong>{state.status === "scanning" && <span>{state.torchSupported ? t("scanner.autoTorch") : t("scanner.auto")}</span>}</div>
         {state.status === "scanning" && <div className="scanner-manual-switch"><button className="manual-link" type="button" onClick={() => { stopCamera(); dispatch({ type: "OPEN_MANUAL" }); setManualOpen(true); }}>{t("scanner.manualSwitch")}</button></div>}
         {state.status === "idle" && !manualOpen && <div className="camera-start"><button className="button button-primary button-large" type="button" onClick={startCamera}>{t("scanner.openCamera")}</button>{mode === "demo" && <button className="button button-demo" type="button" onClick={() => resolveCode("arasya:61833")}>{t("scanner.demo")}</button>}{mode === "preview" && <button className="button button-preview" type="button" onClick={() => resolveCode("arasya:61833")}>{t("scanner.simulate")}</button>}<button className="manual-link" type="button" onClick={() => setManualOpen(true)}>{t("scanner.manualEntry")}</button></div>}
-        {manualOpen && state.status === "idle" && <form className="manual-panel" onSubmit={(event) => { event.preventDefault(); void resolveCode(manualCode, true); }}><div className="sheet-handle" /><label className="field"><span>{t("scanner.manualLabel")}</span><input inputMode="text" autoComplete="off" autoCapitalize="characters" spellCheck={false} maxLength={128} value={manualCode} onChange={(event) => setManualCode(event.target.value)} placeholder={t("scanner.manualPlaceholder")} /></label><button className="button button-primary" type="submit" disabled={!manualCode.trim()}>{t("scanner.find")}</button><button className="button button-link" type="button" onClick={() => setManualOpen(false)}>{t("common.cancel")}</button></form>}
+        {manualOpen && state.status === "idle" && <form className="manual-panel" onSubmit={(event) => { event.preventDefault(); void resolveCode(manualCode, true); }}><div className="sheet-handle" /><label className="field"><span>{t("scanner.manualLabel")}</span><input inputMode="text" autoComplete="off" autoCapitalize="characters" spellCheck={false} maxLength={128} value={manualCode} onChange={(event) => setManualCode(event.target.value)} placeholder={t("scanner.manualPlaceholder")} /><small>{t("scan.manualHint")}</small></label><button className="button button-primary" type="submit" disabled={!manualCode.trim()}>{t("scanner.find")}</button><button className="button button-link" type="button" onClick={() => setManualOpen(false)}>{t("common.cancel")}</button></form>}
         {state.status === "resolving" && <div className="resolving-card" role="status"><span className="inline-spinner" /><strong>{t("scanner.verifying")}</strong><small>{t("scanner.dontClose")}</small></div>}
+        {state.status === "checking" && <div className="resolving-card" role="status" aria-busy="true" data-testid="scan-checking"><span className="inline-spinner" /><strong>{t("scan.checking")}</strong><small>{t("scanner.dontClose")}</small></div>}
         {state.status === "taking" && <div className="resolving-card" role="status" aria-busy="true" data-testid="cutting-intake-progress"><span className="inline-spinner" /><strong>{t("scanner.taking")}</strong><small>{t("scanner.takingNote")}</small></div>}
       </div>
+
+      {state.status === "exception" && exceptions && <ExceptionScan token={state.token} items={state.items} chosenId={state.chosenId} mismatch={state.mismatch} service={exceptions} navigate={navigate}
+        onChoose={(id) => dispatch({ type: "EXCEPTION_CHOSEN", id })} onCommitted={(fault) => { navigator.vibrate?.([30, 40, 30]); dispatch({ type: "EXCEPTION_COMMITTED", fault }); }}
+        onStale={() => void refreshExceptions(state.token)} onReset={reset} onSessionExpired={onSessionExpired} />}
+      {state.status === "exception_done" && <ExceptionScanDone fault={state.fault} orders={service} workflow={workflow} navigate={navigate} onReset={reset} />}
 
       {state.status === "review" && reviewItem && <section className="bottom-sheet review-sheet"><ExceptionPrompt order={state.order} navigate={navigate} /><PieceScan order={state.order} chosen={orderChosen === state.order.id} onChooseOrder={() => setOrderChosen(state.order.id)} navigate={navigate} /><ReviewContent order={state.order} item={reviewItem} workflow={workflow} />{state.order.employeeAllowedAction && !state.order.pieces?.requiresPieceOutcome && !state.order.pieces?.requiresDefectResolution && (!scanNeedsPieceChoice(state.order) || orderChosen === state.order.id) && !state.order.scannedPiece?.trackId && <button className="button button-primary button-large" type="button" onClick={() => dispatch({ type: "OPEN_CONFIRMATION" })}>{orderActionLabels[state.order.employeeAllowedAction.id]}<AppIcon name="arrow" size={20} /></button>}<button className="button button-secondary" type="button" onClick={() => navigate(`/orders/${encodeURIComponent(state.order.id)}`)}>{t("scanner.details")}</button><button className="button button-link" type="button" onClick={reset}>{t("scanner.scanOtherCode")}</button></section>}
       {state.status === "review" && !reviewItem && <section className="bottom-sheet error-sheet"><ErrorState error={new ServiceError("ORDER_PRODUCTS_UNAVAILABLE")} compact onAction={reset} /></section>}
@@ -344,6 +416,7 @@ export function ScannerScreen({ service, cutting, employee, workflow, mode, navi
         if (state.recovery === "login") onSessionExpired();
         else if (state.failedSubmission && isTransient(state.error)) retrySubmit();
         else if (state.failedIntake && isTransient(state.error)) { const attempt = state.failedIntake; dispatch({ type: "RETRY_INTAKE" }); void runIntake(attempt); }
+        else if (state.failedCheck !== undefined && isTransient(state.error)) void retryCheck(state.failedCheck);
         else if (state.recovery === "reload" && state.failedSubmission) void reloadOrder(state.failedSubmission.order.id);
         else { reset(); if (state.recovery === "manual") setManualOpen(true); }
       }} /><button className="button button-link" type="button" disabled={busy} onClick={() => navigate("/")}>{t("scanner.backHomeButton")}</button></section>}
@@ -387,8 +460,10 @@ function ExceptionPrompt({ order, navigate }: { order: StaffOrder; navigate: (pa
   if (!prompt) return null;
   const open = order.productionQuality?.openException?.id === prompt.exceptionId ? order.productionQuality.openException : null;
   const text = { receipt: t("scanner.exception.receipt"), restoreReceipt: t("scanner.exception.restoreReceipt"), supervisor: t("scanner.exception.supervisor"), blocked: t("scanner.exception.blocked") }[prompt.kind];
+  const next = prompt.kind === "blocked" && open ? nextStepText(open) : null;
   return <div className="order-notice order-notice-warning scanner-exception" role="alert" data-testid="scanner-exception" data-kind={prompt.kind}>
     <strong>{text}</strong>
+    {prompt.kind === "blocked" && open && <small data-testid="scanner-exception-next">{open.number} · {faultStatusLabel(open)}{next ? ` · ${next}` : ""}</small>}
     {prompt.kind !== "blocked" && <>
       <small>{open ? `${open.number} · ${faultReasonName(open.reason.key, open.reason.label)} · ${t("common.products", { count: open.lineCount })}` : `${prompt.number}${prompt.pieces !== null ? ` · ${t("piece.defective", { count: prompt.pieces })}` : ""}`}</small>
       <button className="button button-primary" type="button" onClick={() => navigate(`/exceptions/${encodeURIComponent(prompt.exceptionId)}`)}>{t("scanner.exception.open")}</button>

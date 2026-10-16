@@ -49,11 +49,16 @@ test("cutting fault: report at tailoring intake, live acknowledgment with QR, ma
   await expect(notice).toContainText(`Comanda #${fixture.exceptions.order} este trimisă la tăiere`, { timeout: 15_000 });
   await notice.getByRole("button", { name: "Deschide cererea" }).click();
   await expect(cutter.page.getByText("Tăiat de")).toBeVisible();
-  const ack = cutter.page.locator(".fault-action");
+  // The request screen has no camera of its own: its action opens the one scanner for this request.
+  await cutter.page.getByTestId("cutter-ack").getByRole("button", { name: "Deschide scanerul" }).click();
+  await cutter.page.getByRole("button", { name: "Introdu manual numărul / codul comenzii" }).click();
+  await cutter.page.getByLabel(/Număr \/ cod comandă/).fill(fixture.qr[fixture.exceptions.order]);
+  await cutter.page.getByRole("button", { name: "Caută comanda" }).click();
+  const ack = cutter.page.getByTestId("scan-exception").getByTestId("cutter-ack");
   await ack.getByRole("checkbox", { name: "Confirm că eroarea îmi aparține și refac lucrarea." }).check();
-  await ack.getByRole("button", { name: "Introdu codul de pe etichetă" }).click();
-  await ack.getByLabel(/Cod etichetă/).fill(fixture.qr[fixture.exceptions.order]);
-  await ack.getByRole("button", { name: "Verifică codul" }).click();
+  await ack.getByRole("button", { name: "Confirmă primirea la tăiere" }).click();
+  await expect(cutter.page.getByTestId("scan-exception-done-status")).toHaveText("Așteaptă aprobarea managerului");
+  await cutter.page.getByRole("button", { name: "Vezi cererea" }).click();
   await expect(cutter.page.getByText("Returnarea la tăiere așteaptă aprobarea managerului operațional.")).toBeVisible();
   // Stage 3 detector sees the new state live too.
   await expect(intake.page.getByText("Așteaptă aprobarea managerului").first()).toBeVisible({ timeout: 15_000 });

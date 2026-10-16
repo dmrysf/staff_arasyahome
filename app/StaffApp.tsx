@@ -151,8 +151,11 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
   const documentOrderId = parsedRoute.kind === "document-detail" && guardedRoute === parsedRoute.pathname ? parsedRoute.orderId : "";
   const trendyolPackageId = parsedRoute.kind === "trendyol-package" && guardedRoute === parsedRoute.pathname ? parsedRoute.packageId : "";
   let screen = <HomeScreen employee={session.employee} services={services} workflow={workflow} dashboardUrl={dashboardUrl} navigate={navigate} />;
-  if (guardedRoute === "/scan") screen = <ScannerScreen service={services.orders} cutting={services.cutting} employee={session.employee} workflow={workflow} mode={mode} navigate={navigate} onSessionExpired={() => expireSession(new StaffServiceError("SESSION_EXPIRED"))} />;
-  else if (guardedRoute === "/orders") screen = <OrdersScreen service={services.orders} workflow={workflow} navigate={navigate} />;
+  if (guardedRoute === "/scan") {
+    // A request's "open the scanner" passes only the request id; the scanned code itself never enters a URL.
+    const scanContext = new URLSearchParams(window.location.search).get("exception");
+    screen = <ScannerScreen key={scanContext ?? "scan"} service={services.orders} exceptions={services.exceptions} contextExceptionId={scanContext} cutting={services.cutting} employee={session.employee} workflow={workflow} mode={mode} navigate={navigate} onSessionExpired={() => expireSession(new StaffServiceError("SESSION_EXPIRED"))} />;
+  } else if (guardedRoute === "/orders") screen = <OrdersScreen service={services.orders} workflow={workflow} navigate={navigate} />;
   else if (orderId) screen = <OrderDetailScreen key={orderId} orderId={orderId} service={services.orders} exceptions={services.exceptions} cutting={services.cutting} documents={services.documents} productionQr={canManageAuthority(session.employee) ? services.productionQr : undefined} pieces={services.pieces} physical={services.physical} permissions={session.employee.permissions} workflow={workflow} navigate={navigate} onSessionExpired={() => expireSession(new StaffServiceError("SESSION_EXPIRED"))} />;
   else if (documentOrderId && services.documents) screen = <DocumentScreen key={documentOrderId} orderId={documentOrderId} service={services.documents} permissions={session.employee.permissions} navigate={navigate} />;
   else if (guardedRoute === "/problems") screen = <SupervisorScreen service={services.exceptions} navigate={navigate} />;

@@ -43,6 +43,16 @@ async function typeLabel(section: Locator, code: string) {
   await section.getByLabel(/Cod etichetă/).fill(code);
   await section.getByRole("button", { name: "Verifică codul" }).click();
 }
+/** A request's QR action opens the one scanner for that request; the code is typed there (the fake camera shows one fixed QR). */
+async function scanFor(page: Page, section: string, code: string): Promise<Locator> {
+  await page.getByTestId(section).getByRole("button", { name: "Deschide scanerul" }).click();
+  await page.getByRole("button", { name: "Introdu manual numărul / codul comenzii" }).click();
+  await page.getByLabel(/Număr \/ cod comandă/).fill(code);
+  await page.getByRole("button", { name: "Caută comanda" }).click();
+  const action = page.getByTestId("scan-exception").getByTestId(section);
+  await expect(action).toBeVisible();
+  return action;
+}
 /** The pieces of the order as the given employee sees them through the API (server truth after every UI step). */
 async function piecesAs(username: string, orderId: string) {
   const who = await api(username);
@@ -96,9 +106,11 @@ test("one defective curtain of two: report, custody, receipt, approval, re-cut a
   await go(chief.page, "/problems");
   await chief.page.getByRole("tab", { name: "De verificat" }).click();
   await chief.page.getByRole("button", { name: new RegExp(`Comanda #${number}`) }).click();
-  const review = chief.page.getByTestId("supervisor-review");
+  const review = await scanFor(chief.page, "supervisor-review", qr);
   await review.getByLabel("Motivul confirmat").selectOption({ label: "Defect material neobservat" });
-  await typeLabel(review, qr);
+  await review.getByRole("button", { name: "Confirmă problema și preia produsul" }).click();
+  await expect(chief.page.getByTestId("scan-exception-done-status")).toHaveText("În grija șefului de croitorie");
+  await chief.page.getByRole("button", { name: "Vezi cererea" }).click();
   await expect(chief.page.getByTestId("exception-status")).toHaveText("În grija șefului de croitorie");
   await expect(chief.page.getByTestId("partial-scope")).toContainText("Doar bucățile din această cerere se întorc la tăiere");
   await chief.page.getByTestId("piece-labels-open").click();
@@ -117,12 +129,16 @@ test("one defective curtain of two: report, custody, receipt, approval, re-cut a
   const notice = cutter.page.locator(".live-notice");
   await expect(notice).toContainText(`Comanda #${number}`, { timeout: 15_000 });
   await notice.getByRole("button", { name: "Deschide cererea" }).click();
-  const receipt = cutter.page.getByTestId("cutter-receipt");
   await expect(cutter.page.getByTestId("affected-pieces")).toContainText("Bucata 1/2");
+  // The piece label of the defective piece, scanned once in the one scanner, is the evidence of the receipt.
+  const receipt = await scanFor(cutter.page, "cutter-receipt", label);
+  await expect(cutter.page.getByTestId("scan-exception")).toContainText("Bucata 1/2");
   await receipt.getByRole("checkbox", { name: "Am primit produsul pentru verificare." }).check();
   await receipt.getByRole("radio", { name: /Contest responsabilitatea/ }).check();
   await receipt.getByLabel(/Comentariu/).fill("Defect de material, nu de tăiere");
-  await typeLabel(receipt, label);
+  await receipt.getByRole("button", { name: "Confirmă primirea la tăiere" }).click();
+  await expect(cutter.page.getByTestId("scan-exception-done-status")).toHaveText("Așteaptă aprobarea managerului");
+  await cutter.page.getByRole("button", { name: "Vezi cererea" }).click();
   await expect(cutter.page.getByTestId("exception-status")).toHaveText("Așteaptă aprobarea managerului");
   const pending = await (await manager.ctx.get("/management/production-exceptions?view=pending")).json();
   const item = pending.items.filter((entry: { order: { id: string } }) => entry.order.id === orderId);

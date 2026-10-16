@@ -145,7 +145,7 @@ const unused = () => Promise.reject(new StaffServiceError("SERVICE_UNAVAILABLE")
 const services = (extra: Partial<ServiceBundle> = {}): ServiceBundle => ({
   auth: {} as ServiceBundle["auth"], employee: {} as ServiceBundle["employee"], workflow: {} as ServiceBundle["workflow"], live: { subscribe: () => () => undefined },
   orders: { listMine: unused, getById: unused, lookup: unused, resolveQr: unused, claim: unused, confirmStageTransition: unused },
-  activity: { listMine: unused }, exceptions: { listMine: unused, get: unused, reasons: unused, report: unused, acknowledge: unused, rereview: unused, capabilities: unused, supervisorList: unused, receivers: unused, review: unused, sendReturn: unused, restoreRecipients: unused, restore: unused, receiveRestore: unused, addNote: unused },
+  activity: { listMine: unused }, exceptions: { listMine: unused, get: unused, scan: unused, reasons: unused, report: unused, acknowledge: unused, rereview: unused, capabilities: unused, supervisorList: unused, receivers: unused, review: unused, sendReturn: unused, restoreRecipients: unused, restore: unused, receiveRestore: unused, addNote: unused },
   workspace: { stageQueue: unused, stageSummary: unused }, management: { productionOverview: unused },
   trendyol: { overview: unused, activity: unused, list: unused, ignored: unused, detail: unused, prepareLine: unused, dismiss: unused, reopen: unused, release: unused, correctIdentity: unused },
   mode: "production", ...extra,

@@ -1,3 +1,5 @@
+Operations API **2.34.1** / Staff **2.26.1** make the bottom-bar Scan button the [universal production scanner](docs/universal-scanner.md): a scan first asks the read-only `POST /production-exceptions/scan` which open quality requests of that code involve the employee, and the server-granted step (supervisor acceptance, cutter receipt, hand-back, receipt back) is confirmed in the scanner with that one scan; request screens no longer capture a QR. No migration; deploy the API first.
+
 Operations API **2.31.0** / Staff **2.26.0** / Dashboard **0.14.0** add [per-piece rework](docs/per-piece-rework.md) (additive migration 028, activation flag `partial_rework` off by default): a worker reports exactly the defective pieces („Bucata 1/2”); only those pieces go to the supervisor, the cutter’s receipt, one manager approval and cutting, then repeat every stage from cutting onward on their own track, while the healthy pieces keep their stage. The order cannot be packed until every piece is back.
 
 # Arasya Staff

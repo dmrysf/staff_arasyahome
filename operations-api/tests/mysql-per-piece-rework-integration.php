@@ -308,6 +308,13 @@ $check($detail['supervisor']['displayName'] === 'VASILOAIA IULIANA' && $detail['
 $scanOrder = $ok($post($murat, '/orders/resolve-qr', ['token' => $o['qr']]), 'scan of the order QR');
 $check(!isset($scanOrder['scannedPiece']) && count($scanOrder['pieces']['tracks']) === 1, 'the order QR alone names no piece: the client must let the employee choose (fail closed)');
 $check((int) $one('SELECT COUNT(*) FROM production_exception_decisions WHERE exception_uuid = ?', [$x1]) === 0, 'no manager decision before the physical receipt');
+// Universal scanner lookup (API 2.34.1): the piece label names exactly this request for the addressed cutter, read-only.
+$byLabel = $ok($post($murat, '/production-exceptions/scan', ['token' => $labelA]), 'universal scanner: the cutter scans the piece label');
+$check(count($byLabel['items']) === 1 && $byLabel['items'][0]['id'] === $x1 && $byLabel['items'][0]['actions']['canAcknowledge'] === true && $byLabel['items'][0]['orderScope']['affectedQuantity'] === 1, 'the piece label returns the request of exactly this piece with the receipt');
+$byOrder = $ok($post($murat, '/production-exceptions/scan', ['token' => $o['qr']]), 'universal scanner: the cutter scans the order QR');
+$check(array_column($byOrder['items'], 'id') === [$x1], 'the order QR returns the open request of the order\'s piece track');
+$check($ok($post($tailor2, '/production-exceptions/scan', ['token' => $labelA]), 'uninvolved label scan')['items'] === [], 'an uninvolved employee gets nothing from the piece label');
+$check((int) $one('SELECT COUNT(*) FROM production_exception_decisions WHERE exception_uuid = ?', [$x1]) === 0 && $exVersion($x1) === 3, 'the lookups decided and changed nothing');
 
 // 10. Explicit physical receipt; the scan alone never acknowledged anything.
 $error($post($murat, "/production-exceptions/{$x1}/acknowledge", ['expectedVersion' => $exVersion($x1), 'confirmed' => false, 'qrToken' => $labelA, 'responsibility' => 'disputed', 'comment' => 'Defect de material'], $key('noconfirm')), 400, 'CONFIRMATION_REQUIRED', 'a scan without the explicit confirmation is refused');
