@@ -49,6 +49,11 @@ export interface ActivityService {
 export interface ExceptionService {
   listMine(options?: { signal?: AbortSignal }): Promise<FaultException[]>;
   get(id: string, options?: { signal?: AbortSignal }): Promise<FaultException>;
+  /**
+   * The universal scanner's first question (API 2.34.1): the open requests the scanned code concerns that involve the
+   * signed-in employee, with the server-granted actions. Read-only. null: the API predates the lookup.
+   */
+  scan(token: string, options?: { signal?: AbortSignal }): Promise<FaultException[] | null>;
   reasons(options?: { signal?: AbortSignal }): Promise<FaultReason[]>;
   /** Tailoring intake returns the order to cutting with the exact faulty lines. */
   /** units (API 2.31.0): the exact defective pieces, optionally on a piece track (expectedVersion is then the track's). */

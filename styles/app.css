@@ -459,6 +459,22 @@
 .piece-counts { margin: 10px 0 0; overflow-wrap: anywhere; }
 .piece-choice, .piece-scan { display: grid; gap: 8px; }
 .piece-choice .button, .piece-scan .button { white-space: normal; text-align: left; }
+/* Universal scanner: a scanned request with its granted action, in the same sheet (Staff 2.26.1). */
+.exception-scan-sheet { gap: 10px; align-content: start; }
+.exception-scan-sheet .intake-facts { width: 100%; margin: 0; }
+.exception-scan-sheet .fault-lines { margin: 0; padding: 0; list-style: none; }
+.exception-scan-sheet .fault-action { margin: 0; padding: var(--space-4) 0 0; border-top: 1px solid var(--color-border); }
+.exception-scan-sheet .fault-action .button { width: 100%; white-space: normal; }
+.exception-scan-sheet .review-heading { align-items: flex-start; gap: 10px; }
+.exception-scan-sheet .exception-status { flex-shrink: 1; min-width: 0; text-align: right; overflow-wrap: anywhere; }
+.scan-exception-lead { margin: 0; }
+.scan-exception-choice { display: grid; gap: 8px; }
+.scan-exception-choice .button { white-space: normal; text-align: left; }
+.scan-exception-footer { display: grid; gap: 6px; }
+.scan-prompt { display: grid; gap: 8px; }
+.scan-prompt p { margin: 0; }
+.scan-prompt .button { white-space: normal; }
+.scanner-exception small { display: block; overflow-wrap: anywhere; }
 
 /* Physical-plan forms remain usable on narrow phones and with long source evidence. */
 .manufacturing-panel, .manufacturing-panel article { min-width: 0; overflow-wrap: anywhere; }

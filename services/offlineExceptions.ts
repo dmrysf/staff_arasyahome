@@ -11,6 +11,7 @@ export function createUnavailableExceptionServices(): { exceptions: ExceptionSer
     exceptions: {
       listMine: async () => [],
       get: unavailable,
+      scan: async () => [],
       reasons: async () => [],
       report: unavailable,
       acknowledge: unavailable,

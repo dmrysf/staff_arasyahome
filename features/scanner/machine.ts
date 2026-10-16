@@ -1,4 +1,4 @@
-import type { OrderActionId, StaffOrder, StaffServiceError } from "../../domain/models";
+import type { FaultException, OrderActionId, StaffOrder, StaffServiceError } from "../../domain/models";
 import type { CuttingIntakeOutcome } from "../../domain/cutting";
 
 /** One cutting-intake request: the scanned label, its own idempotency key and the explicit workload confirmation. */
@@ -10,13 +10,17 @@ export type ScannerState =
   | { status: "scanning"; torchSupported: boolean; torchOn: boolean }
   | { status: "decoded"; token: string }
   | { status: "resolving"; token: string }
+  // Exception first: the open requests of the scanned code that involve this employee, before intake or claiming.
+  | { status: "checking"; token: string }
+  | { status: "exception"; token: string; items: FaultException[]; chosenId: string | null; mismatch: boolean }
+  | { status: "exception_done"; fault: FaultException }
   | { status: "taking"; attempt: IntakeAttempt }
   | { status: "take_confirm"; token: string; ownedCount: number; changed: boolean }
   | { status: "review"; order: StaffOrder }
   | { status: "confirming"; order: StaffOrder }
   | { status: "submitting"; order: StaffOrder; idempotencyKey: string; action: OrderActionId }
   | { status: "success"; order: StaffOrder; action: OrderActionId; intake?: CuttingIntakeOutcome }
-  | { status: "error"; error: StaffServiceError; recovery: "scan" | "manual" | "reload" | "login"; failedSubmission?: { order: StaffOrder; idempotencyKey: string; action: OrderActionId }; failedIntake?: IntakeAttempt };
+  | { status: "error"; error: StaffServiceError; recovery: "scan" | "manual" | "reload" | "login"; failedSubmission?: { order: StaffOrder; idempotencyKey: string; action: OrderActionId }; failedIntake?: IntakeAttempt; failedCheck?: string };
 
 export type ScannerEvent =
   | { type: "REQUEST_CAMERA" }
@@ -25,6 +29,14 @@ export type ScannerEvent =
   | { type: "TORCH_CHANGED"; enabled: boolean }
   | { type: "CODE_DETECTED"; token: string }
   | { type: "RESOLVE_STARTED" }
+  | { type: "CHECK_STARTED" }
+  | { type: "EXCEPTIONS_FOUND"; items: FaultException[]; chosenId: string | null; /** The scanner was opened for a request this code does not belong to. */ mismatch?: boolean }
+  | { type: "EXCEPTIONS_NONE" }
+  | { type: "CHECK_FAILED"; error: StaffServiceError }
+  | { type: "RETRY_CHECK" }
+  | { type: "EXCEPTION_CHOSEN"; id: string | null }
+  | { type: "EXCEPTIONS_REFRESHED"; items: FaultException[] }
+  | { type: "EXCEPTION_COMMITTED"; fault: FaultException }
   | { type: "ORDER_RESOLVED"; order: StaffOrder }
   | { type: "RESOLVE_FAILED"; error: StaffServiceError }
   | { type: "OPEN_CONFIRMATION" }
@@ -69,6 +81,26 @@ export function scannerReducer(state: ScannerState, event: ScannerEvent): Scanne
       return state.status === "scanning" || state.status === "idle" ? { status: "decoded", token: event.token } : state;
     case "RESOLVE_STARTED":
       return state.status === "decoded" ? { status: "resolving", token: state.token } : state;
+    // The exception lookup reads only. Nothing found returns to the decoded code, which then takes the ordinary path.
+    case "CHECK_STARTED":
+      return state.status === "decoded" ? { status: "checking", token: state.token } : state;
+    case "EXCEPTIONS_FOUND":
+      return state.status === "checking" && (event.items.length > 0 || event.mismatch === true) ? { status: "exception", token: state.token, items: event.items, chosenId: event.chosenId, mismatch: event.mismatch === true } : state;
+    case "EXCEPTIONS_NONE":
+      return state.status === "checking" ? { status: "decoded", token: state.token } : state;
+    case "CHECK_FAILED":
+      return state.status === "checking" ? { status: "error", error: event.error, recovery: recoveryFor(event.error), failedCheck: state.token } : state;
+    case "RETRY_CHECK":
+      return state.status === "error" && state.failedCheck !== undefined && isTransient(state.error) ? { status: "checking", token: state.failedCheck } : state;
+    case "EXCEPTION_CHOSEN":
+      return state.status === "exception" && (event.id === null || state.items.some((item) => item.id === event.id)) ? { ...state, chosenId: event.id } : state;
+    case "EXCEPTIONS_REFRESHED":
+      // A refreshed answer after a conflict: the same scanned code, the server's current requests. A request that is
+      // gone or no longer actionable shows as such; nothing is submitted again without a new confirmation.
+      if (state.status !== "exception") return state;
+      return { ...state, items: event.items, chosenId: event.items.some((item) => item.id === state.chosenId) ? state.chosenId : event.items.length === 1 ? event.items[0].id : null };
+    case "EXCEPTION_COMMITTED":
+      return state.status === "exception" ? { status: "exception_done", fault: event.fault } : state;
     case "ORDER_RESOLVED":
       return state.status === "resolving" ? { status: "review", order: event.order } : state;
     case "RESOLVE_FAILED":

@@ -52,7 +52,7 @@ test("the whole order moves on approval: the warning says so for several product
 });
 
 test("cancelling a pending return to cutting is a ticked, explicit choice with a Romanian explanation", () => {
-  const screen = readFileSync(path.join(root, "features/exceptions/ExceptionScreen.tsx"), "utf8");
+  const screen = readFileSync(path.join(root, "features/exceptions/ExceptionActions.tsx"), "utf8");
   assert.match(screen, /cancelsReturn && !confirmed/);
   assert.match(screen, /cancelReturn: true/);
   assert.match(ro["exc.restore.cancelBody"], /NU mai merge la tăiere/);

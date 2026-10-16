@@ -927,6 +927,15 @@ export function createProductionServices(apiBaseUrl: string, options: Production
   const exceptions: ExceptionService = {
     listMine: (requestOptions) => http.request("/production-exceptions/mine", { signal: requestOptions?.signal }, mapFaultList),
     get: (id, requestOptions) => http.request(`/production-exceptions/${encodeURIComponent(id)}`, { signal: requestOptions?.signal }, mapFaultException),
+    // POST keeps the scanned code out of URLs and access logs. An API older than 2.34.1 answers the route with 404.
+    scan: async (token, requestOptions) => {
+      const response = await http.send("/production-exceptions/scan", { method: "POST", body: JSON.stringify({ token }), signal: requestOptions?.signal });
+      if (response.status === 404) return null;
+      if (!response.ok) throw await http.errorFromResponse(response, "/production-exceptions/scan");
+      let payload: unknown;
+      try { payload = await response.json(); } catch { throw new StaffServiceError("SERVER_ERROR"); }
+      return mapFaultList(payload);
+    },
     reasons: (requestOptions) => http.request("/production-exceptions/reasons", { signal: requestOptions?.signal }, mapReasons),
     report: (orderId, input) => http.request(`/orders/${encodeURIComponent(orderId)}/fault-reports`, { method: "POST", headers: { "Idempotency-Key": input.idempotencyKey },
       // Exact pieces (API 2.31.0) when chosen; otherwise the lines, exactly as older APIs expect.

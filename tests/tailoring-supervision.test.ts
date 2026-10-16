@@ -76,7 +76,8 @@ test("receipt wording never implies admitting a fault; statuses and tabs are Rom
   assert.equal(getErrorPresentation(new StaffServiceError("SUPERVISOR_REQUIRED")).title, "Doar șeful de croitorie");
   const screen = readFileSync(path.join(root, "features/exceptions/ExceptionScreen.tsx"), "utf8");
   assert.match(screen, /t\("exc\.reportedToSupervisor"\)/);
-  assert.match(screen, /t\("exc\.receipt\.body"\)/);
+  const actions = readFileSync(path.join(root, "features/exceptions/ExceptionActions.tsx"), "utf8");
+  assert.match(actions, /t\("exc\.receipt\.body"\)/);
   assert.match(ro["exc.reportedToSupervisor"], /Problema a fost raportată șefului de croitorie\./);
   assert.match(ro["exc.receipt.body"], /Nu înseamnă că recunoști o greșeală/);
   assert.doesNotMatch(screen, /window\.location|localStorage/);
@@ -105,7 +106,7 @@ test("the two-party handover back to tailoring: only the addressed worker confir
   const screen = readFileSync(path.join(root, "features/exceptions/ExceptionScreen.tsx"), "utf8");
   assert.match(screen, /t\("exc\.restorePending"/);
   assert.match(ro["exc.restorePending"], /Comanda rămâne blocată până când/);
-  assert.match(screen, /service\.receiveRestore\(/);
+  assert.match(readFileSync(path.join(root, "features/exceptions/ExceptionActions.tsx"), "utf8"), /service\.receiveRestore\(/);
   assert.equal(getErrorPresentation(new StaffServiceError("RESTORE_RECIPIENT_UNAVAILABLE")).title, "Angajatul nu poate primi comanda");
 });
 

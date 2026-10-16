@@ -117,3 +117,41 @@ export function scannerExceptionPrompt(order: Pick<StaffOrder, "productionQualit
         : "blocked";
   return { kind, exceptionId: open.id, number: open.number, pieces: open.orderScope?.piecesRecorded ? open.orderScope.affectedQuantity : null };
 }
+
+/** Actions that need the product in hand: the scanned code of the universal scanner is their evidence. */
+export function needsScannedCode(fault: Pick<FaultException, "actions">): boolean {
+  const actions = fault.actions;
+  return actions.canReview || actions.canAcknowledge || actions.canRestore || actions.canConfirmRestore;
+}
+
+/** Whether the server granted the signed-in employee any step on this request now (notes alone are not a step). */
+export function hasMyStep(fault: FaultException): boolean {
+  return needsMyAction(fault) || fault.actions.canRestore;
+}
+
+/**
+ * Which request a scan acts on: the request the employee opened (when the code belongs to it), otherwise the single
+ * request with a step for them, otherwise the only request. Several actionable requests are never guessed: null asks.
+ */
+export function chooseScanned(items: readonly FaultException[], contextId: string | null): string | null {
+  if (contextId && items.some((item) => item.id === contextId)) return contextId;
+  const actionable = items.filter(hasMyStep);
+  if (actionable.length === 1) return actionable[0].id;
+  return actionable.length === 0 && items.length === 1 ? items[0].id : null;
+}
+
+/** The next step of an open request and who takes it, in the words of the active language; null once it is closed. */
+export function nextStepText(fault: Pick<FaultException, "status" | "type" | "receiver" | "responsible" | "restoreRecipient">): string | null {
+  const step = (() => {
+    switch (fault.status) {
+      case "awaiting_supervisor_review": return t("scan.next.supervisorReview");
+      case "in_supervisor_custody": return t("scan.next.supervisorDecision");
+      case "awaiting_acknowledgment": return t("scan.next.cutterReceipt", { name: (fault.receiver ?? fault.responsible).displayName });
+      case "awaiting_approval": return t("scan.next.managerApproval");
+      case "return_rejected": return t("scan.next.supervisorRestore");
+      case "awaiting_restore_receipt": return fault.restoreRecipient ? t("scan.next.restoreReceipt", { name: fault.restoreRecipient.displayName }) : t("scan.next.supervisorRestore");
+      default: return null;
+    }
+  })();
+  return step === null ? null : t("scan.next", { step });
+}

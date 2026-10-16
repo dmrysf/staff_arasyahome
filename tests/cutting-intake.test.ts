@@ -110,7 +110,10 @@ test("the intake client sends the label once with its key, maps the committed or
 test("the scanner wires the intake for eligible cutters only and shows the employee's own name", () => {
   const source = readFileSync(path.join(root, "features/scanner/ScannerScreen.tsx"), "utf8");
   assert.match(source, /intakeEnabled = Boolean\(cutting && employee && canUseCuttingIntake\(employee\)\)/);
-  assert.match(source, /if \(!manual && intakeEnabled && !isPieceLabel\(normalized\)\)/, "manual codes and piece labels keep the ordinary lookup");
+  assert.match(source, /if \(scanned && intakeEnabled && !isPieceLabel\(token\)\)/, "typed order numbers and piece labels keep the ordinary lookup");
+  assert.match(source, /const scanned = !manual \|\| isProductionCode\(normalized\)/, "only a scanned or typed label code is QR evidence");
+  // Exception first: the open requests of the code are asked before any intake or claim.
+  assert.ok(source.indexOf('dispatch({ type: "CHECK_STARTED" })') < source.indexOf("await continueOrdinary(normalized, scanned)"), "the exception lookup precedes the intake");
   assert.match(source, /employee\.displayName/);
   assert.match(readFileSync(path.join(root, "app/StaffApp.tsx"), "utf8"), /<ScannerScreen [^>]*employee=\{session\.employee\}/);
 });
