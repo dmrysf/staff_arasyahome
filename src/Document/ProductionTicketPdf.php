@@ -13,12 +13,16 @@ use Arasya\Operations\B2B\ProjectLabels;
  * The canonical Arasya workshop production ticket (A4, Romanian only), for every source.
  *
  * It renders exactly one stored revision snapshot: every page comes from the same immutable data, so a
- * document can never mix two database states. The renderer is source-neutral; the source only selects
- * the visible stamp. It prints no prices, payment, balances or email, and the phone only masked.
+ * document can never mix two database states. The source selects the visible stamp and, from snapshot
+ * schema 2, the one-page Trendyol layout (OrderedProductsTicket). It prints no prices, payment, balances
+ * or email, and the phone only masked.
  *
  * Every page repeats the order number, source stamp, revision, the canonical QR and "Pagina X / Y", so
  * separated pages are never anonymous. Line blocks are never split across pages. Line schematics are
  * deterministic workshop drawings from the printed measurements only; nothing is inferred.
+ *
+ * The snapshot schema is the layout contract (TicketSnapshot): a schema 1 revision renders exactly as it
+ * was printed, and every source other than Trendyol renders as schema 1 in schema 2 too.
  */
 final class ProductionTicketPdf
 {
@@ -65,12 +69,42 @@ final class ProductionTicketPdf
     }
 
     /**
+     * Why this snapshot cannot be printed as a complete document, or null when it can. The schema 2 Trendyol
+     * layout takes as many pages as the order needs, so this only reports a technical impossibility (a
+     * product name and drawing longer than a whole page); a revision is never generated from a broken ticket.
+     *
+     * @param array<string, mixed> $snapshot
+     */
+    public static function layoutError(array $snapshot): ?string
+    {
+        if (!self::orderedProducts($snapshot)) {
+            return null;
+        }
+        try {
+            OrderedProductsTicket::document($snapshot, ['number' => 99, 'status' => 'active', 'generatedAt' => '2026-01-01 00:00:00', 'qrPayload' => null, 'sourceDisplayName' => null]);
+            return null;
+        } catch (TicketLayoutOverflow $overflow) {
+            return $overflow->getMessage();
+        }
+    }
+
+    /** Schema 2 Trendyol tickets: a line's quantity is a number of separate ordered products. @param array<string, mixed> $snapshot */
+    public static function orderedProducts(array $snapshot): bool
+    {
+        return (int) ($snapshot['schema'] ?? 1) >= 2 && ($snapshot['order']['source'] ?? null) === 'trendyol';
+    }
+
+    /**
      * @param array<string, mixed> $snapshot
      * @param array<string, mixed> $revision
      * @return array{0: PdfDocument, 1: int}
      */
     private static function layout(array $snapshot, array $revision, int $total): array
     {
+        if (self::orderedProducts($snapshot)) {
+            $document = OrderedProductsTicket::document($snapshot, $revision);
+            return [$document, max(array_column($document->textLog(), 'page'))];
+        }
         $fonts = dirname(__DIR__) . '/B2B/Pdf/fonts/';
         $number = (string) $snapshot['order']['number'];
         $pdf = new PdfDocument([
@@ -351,12 +385,17 @@ final class ProductionTicketPdf
      */
     private static function nameLines(PdfDocument $pdf, array $line, float $textWidth): array
     {
+        return $pdf->wrap(self::nameText($line), $textWidth, 'R', 10, 3);
+    }
+
+    /** @internal Name, colour and variant of a line as one text (the variant once). @param array<string, mixed> $line */
+    public static function nameText(array $line): string
+    {
         $variant = $line['variant'];
         if ($variant !== null && $line['color'] !== null && preg_match('/^[^:,;]+:\s*(.+)$/uD', $variant, $m) === 1 && mb_strtolower(trim($m[1])) === mb_strtolower(trim((string) $line['color']))) {
             $variant = null;
         }
-        $text = implode('  ·  ', array_filter([$line['name'], $line['color'] === null ? null : 'Culoare: ' . $line['color'], $variant === null ? null : 'Variantă: ' . $variant]));
-        return $pdf->wrap($text, $textWidth, 'R', 10, 3);
+        return implode('  ·  ', array_filter([$line['name'], $line['color'] === null ? null : 'Culoare: ' . $line['color'], $variant === null ? null : 'Variantă: ' . $variant]));
     }
 
     /** The piece count an option states explicitly ("buc" = "2 buc."), else null. Nothing is inferred. @param array<string, mixed> $line */
@@ -409,8 +448,8 @@ final class ProductionTicketPdf
         }
     }
 
-    /** @param array<string, mixed> $line */
-    private static function hasSchematic(array $line): bool
+    /** @internal shared with OrderedProductsTicket. @param array<string, mixed> $line */
+    public static function hasSchematic(array $line): bool
     {
         return $line['width'] !== null && $line['height'] !== null && self::units((string) $line['width']) > 0 && self::units((string) $line['height']) > 0;
     }
@@ -424,8 +463,8 @@ final class ProductionTicketPdf
         return self::explicitPieces($line) ?? 1;
     }
 
-    /** @param array<string, mixed> $line */
-    private static function kindLabel(array $line): string
+    /** @internal shared with OrderedProductsTicket. @param array<string, mixed> $line */
+    public static function kindLabel(array $line): string
     {
         $types = ProjectLabels::TYPES['ro'];
         $project = $line['project'] ?? null;
@@ -466,8 +505,8 @@ final class ProductionTicketPdf
         return implode(' · ', $meta);
     }
 
-    /** @param list<array<string, mixed>> $lines */
-    private static function totalMeters(array $lines): string
+    /** @internal shared with OrderedProductsTicket. @param list<array<string, mixed>> $lines */
+    public static function totalMeters(array $lines): string
     {
         $units = 0;
         $known = false;
@@ -490,14 +529,15 @@ final class ProductionTicketPdf
         return (self::hasSchematic($line) ? $width - 116 : $width - 10) - 62 - 10;
     }
 
-    private static function units(string $decimal): int
+    /** @internal shared with OrderedProductsTicket */
+    public static function units(string $decimal): int
     {
         [$int, $fraction] = array_pad(explode('.', $decimal, 2), 2, '');
         return (int) $int * 1000 + (int) substr(str_pad($fraction, 3, '0'), 0, 3);
     }
 
-    /** Project lines in room order, others after, then by line number. @param list<array<string, mixed>> $lines @return list<array<string, mixed>> */
-    private static function sorted(array $lines): array
+    /** @internal Project lines in room order, others after, then by line number. @param list<array<string, mixed>> $lines @return list<array<string, mixed>> */
+    public static function sorted(array $lines): array
     {
         usort($lines, static fn (array $a, array $b): int => [($a['project'] ?? null) === null ? 1 : 0, $a['line']] <=> [($b['project'] ?? null) === null ? 1 : 0, $b['line']]);
         return $lines;
