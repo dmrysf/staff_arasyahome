@@ -119,6 +119,16 @@ final class PdfDocument
         $this->current .= sprintf("%.3F G %.2F w %.2F %.2F %.2F %.2F re S 0 G\n", $gray, $width, $x, $y, $w, $h);
     }
 
+    /** Fills a closed polygon (arrowheads, warning signs). @param list<array{0: float, 1: float}> $points */
+    public function fillPolygon(array $points, float $gray = 0.0): void
+    {
+        $path = '';
+        foreach ($points as $i => [$x, $y]) {
+            $path .= sprintf('%.2F %.2F %s ', $x, $y, $i === 0 ? 'm' : 'l');
+        }
+        $this->current .= sprintf("%.3F g %sh f 0 g\n", $gray, $path);
+    }
+
     /**
      * Draws a QR matrix (dark modules, row-major) as filled black rectangles with a white quiet zone of 4 modules.
      * $x/$y is the bottom-left corner of the whole symbol including the quiet zone; $size is its width in points.

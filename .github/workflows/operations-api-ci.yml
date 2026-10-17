@@ -84,7 +84,7 @@ jobs:
         run: php operations-api/bin/check-migrations.php
 
       - name: Run backend unit and security tests
-        run: php operations-api/tests/run.php && php operations-api/tests/order-calculator.php
+        run: php operations-api/tests/run.php && php operations-api/tests/order-calculator.php && php operations-api/tests/production-ticket-quantity.php
 
       - name: Guard inbound-only source integrations
         run: php operations-api/tests/inbound-only-guard.php

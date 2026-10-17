@@ -46,7 +46,13 @@ final readonly class DocumentRenderer
             'preview' => $preview,
         ];
         $filename = ProductionTicketPdf::filename($snapshot, $revision['number']);
-        return [ProductionTicketPdf::render($snapshot, $revision), $preview ? str_replace('.pdf', '-PREVIZUALIZARE.pdf', $filename) : $filename];
+        try {
+            $bytes = ProductionTicketPdf::render($snapshot, $revision);
+        } catch (TicketLayoutOverflow $overflow) {
+            // Never a partial ticket: the operator gets the reason instead of a document missing information.
+            throw new ApiException(422, 'DOCUMENT_LAYOUT_OVERFLOW', $overflow->getMessage());
+        }
+        return [$bytes, $preview ? str_replace('.pdf', '-PREVIZUALIZARE.pdf', $filename) : $filename];
     }
 
     /** Inline preview of a revision: nothing is recorded, the document has no QR. @param array{0: string, 1: string} $document */

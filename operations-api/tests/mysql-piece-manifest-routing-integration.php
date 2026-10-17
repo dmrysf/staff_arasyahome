@@ -690,7 +690,10 @@ $error($post($ironer, $m11['path'] . '/transition', ['expectedVersion' => (int) 
 $check($state($m11) === $before11 && (int) $one('SELECT COUNT(*) FROM production_unit_verifications v INNER JOIN production_work_units u ON u.unit_uuid = v.unit_uuid AND u.rework_cycle = v.rework_cycle WHERE v.order_uuid = ? AND u.status = \'active\' AND v.confirmed_at IS NULL', [$m11['uuid']]) === 2, 'failed completion rolls back stage, owner, version and both verifications');
 $advance($ironer, $m11, ['defectResolved' => true]);
 $check((int) $one('SELECT COUNT(*) FROM production_unit_verifications WHERE order_uuid = ? AND confirmed_at IS NOT NULL AND confirmed_by_employee_uuid = ? AND rework_cycle = 2', [$m11['uuid'], $uuids['ironer']]) === 2, 'both exact pieces confirmed by actual stage-8 actor in current cycle');
-$check($cli('check-rollback.php', '2.31.0')['code'] === 3 && $cli('check-rollback.php', '2.32.0')['code'] === 0, 'current-release rollback guard refuses an unaware API and permits the compatibility floor');
+// Open orders with a ticket schema 2 document (API 2.34.2) raise the rollback floor above the per-piece floors.
+$rollbackFloor = static fn (string $floor): string => ($cli('check-rollback.php', '0.0.0')['json']['state']['openOrdersWithTicketSchema2'] ?? 0) > 0 && version_compare($floor, '2.34.2', '<') ? '2.34.2' : $floor;
+$rollback = $cli('check-rollback.php', '2.31.0');
+$check($rollback['code'] === 3 && $rollback['json']['requiredFloor'] === $rollbackFloor('2.32.0') && $cli('check-rollback.php', $rollbackFloor('2.32.0'))['code'] === 0, 'current-release rollback guard refuses an unaware API and permits the compatibility floor');
 $originalChecksum = (string) $one("SELECT checksum FROM schema_migrations WHERE migration_name = '029_production_manifest_routing.sql'");
 try {
     $pdo->exec("UPDATE schema_migrations SET checksum = REPEAT('0', 64) WHERE migration_name = '029_production_manifest_routing.sql'");
@@ -759,7 +762,7 @@ $check(array_column(json_decode($cli('partial-rework.php', 'route-audit', '--det
 $claim($finisher, $m12);
 $advance($finisher, $m12);
 $check($state($m12)['stage'] === 'delivery', 'J/K. packing is possible once every piece has its own or verified evidence');
-$check($cli('check-rollback.php', '2.32.0')['code'] === 0 && $cli('check-rollback.php', '2.31.0')['code'] === 3, 'J. reconciliation evidence is per-piece state for the rollback guard');
+$check($cli('check-rollback.php', $rollbackFloor('2.32.0'))['code'] === 0 && $cli('check-rollback.php', '2.31.0')['code'] === 3, 'J. reconciliation evidence is per-piece state for the rollback guard');
 $originalChecksum30 = (string) $one("SELECT checksum FROM schema_migrations WHERE migration_name = '030_production_route_reconciliation.sql'");
 try {
     $pdo->exec("UPDATE schema_migrations SET checksum = REPEAT('0', 64) WHERE migration_name = '030_production_route_reconciliation.sql'");
