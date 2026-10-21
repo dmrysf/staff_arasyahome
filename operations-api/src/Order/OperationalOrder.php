@@ -48,6 +48,12 @@ final readonly class OperationalOrder
          * route_incomplete); null when nothing blocks it or the order is not at a gated stage.
          */
         public ?string $pieceGateReason = null,
+        /**
+         * API 2.37.0: the Confirmare workflow cohort decided when Arasya created the order (WorkflowCohort; null for
+         * every order created before) and the order's Confirmare decision (order_confirmations.status, or null).
+         */
+        public ?string $workflowCohort = null,
+        public ?string $confirmationStatus = null,
     ) {
     }
 

@@ -183,6 +183,10 @@ final readonly class ProductionAuthorityService
             if ((int) $order['production_version'] !== $expectedVersion) {
                 throw new ApiException(409, 'ORDER_CHANGED', 'The order changed. Reload it before continuing.');
             }
+            if ($target->id !== \Arasya\Operations\Order\OrderProjectionWriter::INITIAL_STAGE_ID) {
+                // A takeover to a later stage starts production: a Confirmare-cohort order waits for its approval.
+                ConfirmationGate::assertOpen($this->pdo, $orderUuid, \Arasya\Operations\Order\OrderProjectionWriter::INITIAL_STAGE_ID);
+            }
             $previous = (string) $order['production_stage_id'];
             if ($previous === CuttingLifecycle::STAGE) {
                 (new CuttingLifecycle($this->pdo))->requireNoTransfer($orderUuid);

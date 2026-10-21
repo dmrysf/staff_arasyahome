@@ -96,6 +96,9 @@ final readonly class SourceIngestionController
             'trackingAuthorityMode' => $source->trackingAuthorityMode->value,
             // Present means this server accepts the optional order.payment facts in schema 1.
             'paymentGateMode' => $source->paymentGateMode->value,
+            // Present means this server accepts the optional order.submission evidence in schema 1 (API 2.37.0). `active`
+            // with the source's activation instant: genuinely new orders submitted since then belong to Confirmare.
+            'confirmare' => $this->writer->confirmareState($sourceKey),
             'contract' => [
                 'schemaVersion' => 1,
                 'workflowId' => $workflow['id'],

@@ -183,6 +183,19 @@ try {
 } catch (Throwable) {
     $report('FAIL', 'source_registry');
 }
+// Confirmare cohort (API 2.37.0): the recorded activation is the truth; the configuration switch only permits recording
+// it. An active source whose switch is off, or an order whose cohort could not be decided, needs a person.
+try {
+    foreach (['trendhome', 'outletperdele'] as $key) {
+        $cohortState = \Arasya\Operations\Production\WorkflowCohort::heartbeatState($pdo, $key)['state'];
+        $definition = $sourceRegistry->find($key);
+        $report($cohortState === 'active' && !($definition?->confirmarePermitted ?? false) ? 'FAIL' : 'OK', "confirmare_{$key}_{$cohortState}" . ($definition?->confirmarePermitted ? '_permitted' : ''));
+    }
+    $undetermined = (int) $pdo->query("SELECT COUNT(*) FROM operational_orders WHERE workflow_cohort = 'undetermined' AND production_completed_at IS NULL AND operational_status <> 'unavailable'")->fetchColumn();
+    $report($undetermined === 0 ? 'OK' : 'WARN', 'confirmare_undetermined_orders');
+} catch (Throwable) {
+    $report('FAIL', 'confirmare_cohort_schema');
+}
 
 try {
     $releasePath = dirname(__DIR__) . '/release.json';

@@ -14,6 +14,7 @@ use Arasya\Operations\Support\Clock;
 use Arasya\Operations\Support\Uuid;
 use DateTimeImmutable;
 use Arasya\Operations\Production\ProductionQrLedger;
+use Arasya\Operations\Production\WorkflowCohort;
 use PDO;
 
 final readonly class OrderProjectionWriter
@@ -162,6 +163,7 @@ final readonly class OrderProjectionWriter
                         (new DocumentStaleness($this->pdo, $this->clock))->onContentChanged($orderUuid, $snapshot->sourceEventId);
                     }
                     $this->ensureQrReference($orderUuid, $globalId, $snapshot->sourceKey, $nowSql, $snapshot->sourceEventId);
+                    $this->recordSubmission($orderUuid, $snapshot);
                     $this->insertReceipt($snapshot, $globalId, $payloadHash, 'duplicate', $nowSql);
                     $this->touchSource($snapshot->sourceKey, $nowSql);
                     $this->pdo->commit();
@@ -268,11 +270,15 @@ final readonly class OrderProjectionWriter
 
                 $this->insertItems($newItems, $orderUuid, $nowSql);
                 $this->applyPayment($orderUuid, $snapshot, $stageId, $sourceChangedSql, $nowSql);
+                $this->recordSubmission($orderUuid, $snapshot);
                 // A printed field may have changed: an active production document becomes stale here,
                 // inside the same transaction, so production is blocked before the change is visible.
                 (new DocumentStaleness($this->pdo, $this->clock))->onContentChanged($orderUuid, $snapshot->sourceEventId);
 
             } else {
+                // A checkout draft is never a customer order and, while the source is active for Confirmare, an unpaid
+                // order is created only for that workflow. The workflow cohort is decided here, once (WorkflowCohort).
+                $cohort = $this->classifyNewOrder($snapshot);
                 // Insert new order. A source whose production authority is enforced hands every genuinely
                 // new order to Operations at the initial canonical stage; a source stage is never used then.
                 $authorityMode = $this->authorityModes?->modeFor($snapshot->sourceKey) ?? ProductionAuthorityMode::Legacy;
@@ -285,8 +291,9 @@ final readonly class OrderProjectionWriter
                         production_stage_id, production_authority, production_changed_at, source_commerce_status_code, source_commerce_status_label, 
                         production_notes, operational_status, freshness_status, source_schema_version, 
                         source_event_id, source_changed_at, last_source_seen_at, projected_at, 
-                        accepted_at, projection_hash, version, created_at, updated_at, document_context
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        accepted_at, projection_hash, version, created_at, updated_at, document_context,
+                        workflow_cohort, workflow_cohort_reason, workflow_cohort_at, source_submitted_at, source_submission_evidence
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ');
                 $stmt->execute([
                     $orderUuid,
@@ -314,12 +321,22 @@ final readonly class OrderProjectionWriter
                     $nowSql,
                     $nowSql,
                     $documentContext,
+                    $cohort['cohort'],
+                    $cohort['reason'],
+                    $nowSql,
+                    $snapshot->submission === null ? null : $snapshot->submission['submittedAt']->format('Y-m-d H:i:s.u'),
+                    $snapshot->submission['evidence'] ?? null,
                 ]);
 
                 $this->insertItems($snapshot->items, $orderUuid, $nowSql);
                 $this->applyPayment($orderUuid, $snapshot, $initialStage, $sourceChangedSql, $nowSql);
                 if ($operationsManaged) {
                     $this->recordNewOrderAuthority($orderUuid, $globalId, $snapshot->sourceKey, $nowSql);
+                }
+                if (WorkflowCohort::needsConfirmation($cohort['cohort'])) {
+                    // The pre-production Confirmare state of this order; only the Confirmare workflow ever decides it.
+                    $this->pdo->prepare("INSERT INTO order_confirmations (order_uuid, global_order_id, source_key, status, version, opened_at, updated_at) VALUES (?, ?, ?, 'pending', 1, ?, ?)")
+                        ->execute([$orderUuid, $globalId, $snapshot->sourceKey, $nowSql, $nowSql]);
                 }
             }
 
@@ -342,6 +359,48 @@ final readonly class OrderProjectionWriter
             }
             throw $e;
         }
+    }
+
+    /** WooCommerce statuses of an order that was not paid (yet): created in Arasya only for the Confirmare workflow. */
+    public const UNPAID_STATUSES = ['pending', 'on-hold'];
+    /** WooCommerce statuses that are never a submitted customer order (block checkout drafts, admin drafts). */
+    public const DRAFT_STATUSES = ['checkout-draft', 'auto-draft', 'draft'];
+
+    /**
+     * Decides the workflow cohort of an order Arasya is about to create (caller's transaction, order row locked).
+     * Refuses, before anything is written, a draft (never a customer order) and, while the source is active for
+     * Confirmare, an unpaid order outside the Confirmare cohort (an older order is never pulled into the new workflow).
+     * A source that is not active (never activated or suspended) keeps exactly its earlier behaviour. The source's
+     * activation is read under its source lock (WorkflowCohort::activation).
+     *
+     * @return array{cohort: string, reason: string}
+     */
+    private function classifyNewOrder(SourceOrderSnapshot $snapshot): array
+    {
+        $status = $snapshot->sourceCommerceStatusCode;
+        if ($status !== null && in_array($status, self::DRAFT_STATUSES, true)) {
+            throw new ApiException(422, 'SOURCE_ORDER_DRAFT', 'A draft is not a submitted order and is never created in Arasya.');
+        }
+        $cohort = WorkflowCohort::classify(WorkflowCohort::activation($this->pdo, $snapshot->sourceKey, true), $snapshot->submission, $this->clock->now());
+        $active = !in_array($cohort['reason'], [WorkflowCohort::REASON_NOT_ACTIVATED, WorkflowCohort::REASON_SUSPENDED], true);
+        if ($active && $status !== null && in_array($status, self::UNPAID_STATUSES, true) && $cohort['cohort'] !== WorkflowCohort::CONFIRMARE) {
+            throw new ApiException(409, 'SOURCE_INTAKE_NOT_ELIGIBLE', 'An unpaid order is received only for the Confirmare workflow of an activated source.', ['workflowCohort' => $cohort['cohort']]);
+        }
+        return $cohort;
+    }
+
+    /**
+     * Keeps the source's submission evidence of an order created without it (an order created before API 2.37.0 or
+     * before the source sent it), for diagnostics only: the stored evidence is never replaced and the workflow cohort
+     * is never decided again.
+     */
+    private function recordSubmission(string $orderUuid, SourceOrderSnapshot $snapshot): void
+    {
+        if ($snapshot->submission === null) {
+            return;
+        }
+        $this->pdo->prepare('UPDATE operational_orders SET source_submitted_at = ?, source_submission_evidence = ? WHERE order_uuid = ? AND source_submitted_at IS NULL')
+            ->execute([$snapshot->submission['submittedAt']->format('Y-m-d H:i:s.u'), $snapshot->submission['evidence'], $orderUuid]);
     }
 
     /**
@@ -490,6 +549,16 @@ final readonly class OrderProjectionWriter
             throw $error;
         }
         return $this->qrPayloadFor($globalOrderId) ?? throw new \RuntimeException('QR reference rotation failed.');
+    }
+
+    /**
+     * The Confirmare activation state of a source for its heartbeat (read-only).
+     *
+     * @return array{state: string, activatedAt: string|null}
+     */
+    public function confirmareState(string $sourceKey): array
+    {
+        return WorkflowCohort::heartbeatState($this->pdo, $sourceKey);
     }
 
     /** Records a signed heartbeat so source freshness recovers without an order event. */
