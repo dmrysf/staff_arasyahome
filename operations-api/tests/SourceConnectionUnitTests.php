@@ -591,7 +591,7 @@ test('migrations stay ordered through 036 and the canonical workflow keeps its 1
     expect(hash_file('sha256', dirname(__DIR__) . '/database/migrations/028_production_work_units.sql') === 'e147e1149628120a83d0f084273084c07e3e71b3989c394cb92d17cfb708ed91', 'the applied definition of 028 is never edited');    // 035 is additive and re-runnable: two CREATE TABLE IF NOT EXISTS, one guarded ALTER that only adds nullable cohort
     // columns, a key and checks to operational_orders; it never writes a row and never touches an existing order.
     $cohort = preg_replace(['/^\s*--.*$/m', '/ON (UPDATE|DELETE) RESTRICT/'], '', (string) file_get_contents(dirname(__DIR__) . '/database/migrations/035_workflow_cohort.sql'));
-    expect(preg_match('/\b(UPDATE|DELETE|DROP|TRUNCATE|RENAME|INSERT|MODIFY|CHANGE)\b/i', $cohort) === 0 && substr_count($cohort, 'CREATE TABLE IF NOT EXISTS') === 2
+    expect(preg_match('/\b(UPDATE|DELETE|DROP|TRUNCATE|RENAME|INSERT|MODIFY|CHANGE)\b/i', $cohort) === 0 && substr_count($cohort, 'CREATE TABLE IF NOT EXISTS') === 3
         && preg_match_all('/ALTER TABLE ([a-z_]+)/i', $cohort, $cohortAlters) === 1 && $cohortAlters[1] === ['operational_orders']
         && str_contains($cohort, "column_name = 'workflow_cohort'") && substr_count($cohort, 'ADD COLUMN') === 5 && str_contains($cohort, "'DO 0'"), '035 must only add its tables and nullable columns, guarded.');
     // 036 is additive and re-runnable too: four new tables and one guarded ALTER that adds nullable assignment columns to
@@ -720,13 +720,23 @@ test('heartbeat reports the source authority mode without changing the contract'
     expect($home->payload['qrAuthorityMode'] === 'legacy' && $outlet->payload['qrAuthorityMode'] === 'legacy', 'The heartbeat also reports the QR authority mode (legacy by default).');
     // API 2.37.0: the Confirmare activation comes from the recorded activation history only, never from configuration.
     expect($home->payload['confirmare'] === ['state' => 'inactive', 'activatedAt' => null], 'No recorded activation: inactive.');
-    $pdo->exec("INSERT INTO workflow_cohort_activations (source_key, action, effective_at, recorded_at) VALUES ('trendhome', 'activated', '2026-10-22 06:00:00.123456', '2026-10-22 06:00:00.123456')");
+    $pdo->exec("INSERT INTO workflow_cohort_activations (source_key, action, effective_at, recorded_at) VALUES ('trendhome', 'activated', '2026-09-01 01:00:00.123456', '2026-09-01 00:40:00.000000')");
     $home = $controller->heartbeat(sourceSignedRequest(['sentAt' => '2026-10-07T10:00:00Z'], SOURCE_TEST_TRENDHOME_SECRET), 'trendhome');
     $outlet = $controller->heartbeat(sourceSignedRequest(['sentAt' => '2026-10-07T10:00:00Z'], SOURCE_TEST_OUTLET_SECRET), 'outletperdele');
-    expect($home->payload['confirmare'] === ['state' => 'active', 'activatedAt' => '2026-10-22T06:00:00.123456Z'] && $outlet->payload['confirmare']['state'] === 'inactive', 'Activation is per source: ' . sourceJson($home));
-    $pdo->exec("INSERT INTO workflow_cohort_activations (source_key, action, effective_at, recorded_at) VALUES ('trendhome', 'suspended', '2026-10-22 07:00:00.000000', '2026-10-22 07:00:00.000000')");
+    expect($home->payload['confirmare'] === ['state' => 'active', 'activatedAt' => '2026-09-01T01:00:00.123456Z'] && $outlet->payload['confirmare']['state'] === 'inactive', 'Activation is per source: ' . sourceJson($home));
+    $pdo->exec("INSERT INTO workflow_cohort_activations (source_key, action, effective_at, recorded_at) VALUES ('trendhome', 'suspended', '2026-09-02 02:00:00.000000', '2026-09-02 02:00:00.000000')");
     $home = $controller->heartbeat(sourceSignedRequest(['sentAt' => '2026-10-07T10:00:00Z'], SOURCE_TEST_TRENDHOME_SECRET), 'trendhome');
-    expect($home->payload['confirmare'] === ['state' => 'suspended', 'activatedAt' => null], 'The latest row decides.');
+    expect($home->payload['confirmare'] === ['state' => 'suspended', 'activatedAt' => '2026-09-01T01:00:00.123456Z'], 'A suspension keeps the first activation instant (the protection instant): ' . sourceJson($home));
+    // A scheduled first activation is announced before its instant, so the source arms its fence in time.
+    $pdo->exec("INSERT INTO workflow_cohort_activations (source_key, action, effective_at, recorded_at) VALUES ('outletperdele', 'scheduled', '2099-01-01 00:00:00.000000', '2026-09-02 02:00:00.000000')");
+    $outlet = $controller->heartbeat(sourceSignedRequest(['sentAt' => '2026-10-07T10:00:00Z'], SOURCE_TEST_OUTLET_SECRET), 'outletperdele');
+    expect($outlet->payload['confirmare'] === ['state' => 'scheduled', 'activatedAt' => '2099-01-01T00:00:00.000000Z'], 'Scheduled: ' . sourceJson($outlet));
+    $pdo->exec("INSERT INTO workflow_cohort_activations (source_key, action, effective_at, recorded_at) VALUES ('outletperdele', 'cancelled', '2026-09-02 03:00:00.000000', '2026-09-02 03:00:00.000000')");
+    $outlet = $controller->heartbeat(sourceSignedRequest(['sentAt' => '2026-10-07T10:00:00Z'], SOURCE_TEST_OUTLET_SECRET), 'outletperdele');
+    expect($outlet->payload['confirmare'] === ['state' => 'inactive', 'activatedAt' => null], 'A cancelled schedule announces nothing.');
+    foreach ([['sentAt' => 'x', 'confirmareArmedAt' => '2026-10-22T01:00:00Z'], ['sentAt' => 'x', 'confirmareArmedAt' => null], ['sentAt' => 'x', 'confirmareArmedAt' => 5], ['sentAt' => 'x', 'confirmare' => 'active']] as $bad) {
+        sourceExpectApi('SOURCE_PAYLOAD_INVALID', 422, fn () => $controller->heartbeat(sourceSignedRequest($bad, SOURCE_TEST_TRENDHOME_SECRET), 'trendhome'));
+    }
 });
 
 test('signed order authority answers production facts only and rejects malformed requests without storage', function (): void {
@@ -760,7 +770,7 @@ test('Confirmare cohort: Bucharest cutover boundaries, activation instant, evide
     // The business transition date is 2026-10-22 00:00 in Bucharest (EEST, UTC+3; DST ends on 25 October).
     expect($w::cutover() == $at('2026-10-22 00:00:00') && $at('2026-10-22 00:00:00')->format('Y-m-d\TH:i:s\Z') === '2026-10-21T21:00:00Z');
     $now = $at('2026-10-23 12:00:00');
-    $active = static fn (string $local): array => ['action' => 'activated', 'effectiveAt' => $at($local)];
+    $active = static fn (string $local): DateTimeImmutable => $at($local);
     $submitted = static fn (string $local, string $kind = 'store_api'): array => ['submittedAt' => $at($local), 'evidence' => $kind];
     // Activated exactly at the business transition date: the three seconds around midnight.
     $midnight = $active('2026-10-22 00:00:00');
@@ -768,7 +778,7 @@ test('Confirmare cohort: Bucharest cutover boundaries, activation instant, evide
     expect($w::classify($midnight, $submitted('2026-10-22 00:00:00'), $now) === ['cohort' => 'confirmare', 'reason' => 'submitted_after_activation']);
     expect($w::classify($midnight, $submitted('2026-10-22 00:00:01'), $now) === ['cohort' => 'confirmare', 'reason' => 'submitted_after_activation']);
     // Microsecond precision at the activation instant.
-    $precise = ['action' => 'activated', 'effectiveAt' => new DateTimeImmutable('2026-10-22T06:00:00.500000Z')];
+    $precise = new DateTimeImmutable('2026-10-22T06:00:00.500000Z');
     expect($w::classify($precise, ['submittedAt' => new DateTimeImmutable('2026-10-22T06:00:00.499999Z'), 'evidence' => 'checkout'], $now)['cohort'] === 'legacy');
     expect($w::classify($precise, ['submittedAt' => new DateTimeImmutable('2026-10-22T06:00:00.500000Z'), 'evidence' => 'checkout'], $now)['cohort'] === 'confirmare');
     // The actual activation, not the business date, decides: an order created on 22 October before the activation stays legacy.
@@ -781,7 +791,9 @@ test('Confirmare cohort: Bucharest cutover boundaries, activation instant, evide
     expect($w::classify($midnight, $offsetEarly, $now)['cohort'] === 'confirmare' && $w::classify($active('2026-10-22 02:00:00'), $offsetEarly, $now)['cohort'] === 'legacy');
     // No activation, suspension, missing / unknown / future / inconsistent evidence.
     expect($w::classify(null, $submitted('2026-10-23 10:00:00'), $now) === ['cohort' => 'legacy', 'reason' => 'not_activated']);
-    expect($w::classify(['action' => 'suspended', 'effectiveAt' => $at('2026-10-23 08:00:00')], $submitted('2026-10-23 10:00:00'), $now) === ['cohort' => 'legacy', 'reason' => 'suspended']);
+    // Owner decision: the first activation instant decides for good; a later suspension or reactivation never makes an
+    // order submitted since then legacy (classify() only takes the first activation instant).
+    expect((new ReflectionMethod($w, 'classify'))->getParameters()[0]->getName() === 'firstActivatedAt');
     expect($w::classify($midnight, null, $now) === ['cohort' => 'undetermined', 'reason' => 'submission_evidence_missing']);
     expect($w::classify($midnight, $submitted('2026-10-23 10:00:00', 'guess'), $now) === ['cohort' => 'undetermined', 'reason' => 'submission_evidence_missing']);
     expect($w::classify($midnight, $submitted('2026-10-23 12:05:01'), $now) === ['cohort' => 'undetermined', 'reason' => 'submission_evidence_future']);
@@ -838,4 +850,61 @@ test('ARASYA_SOURCE_CONFIRMARE_<SOURCE> is loaded from the environment and the p
     expect(($config->sourceSettings['trendhome']['confirmare'] ?? null) === 'on' && SourceRegistry::fromConfig($config)->find('trendhome')?->confirmarePermitted === true);
     unset($env['ARASYA_SOURCE_CONFIRMARE_TRENDHOME']);
     expect(SourceRegistry::fromConfig(Config::fromEnvironment(new ConfigLoader($env)))->find('trendhome')?->confirmarePermitted === false, 'Absent: off.');
+});
+
+test('every per-source key Config reads survives ConfigLoader (regression: the payment gate key was silently dropped)', function (): void {
+    preg_match_all('/"(ARASYA_SOURCE_[A-Z_]+)_\{\$suffix\}"|\'(ARASYA_SOURCE_[A-Z_]+)_\' \. self::sourceEnvironmentSuffix/', (string) file_get_contents(dirname(__DIR__) . '/src/Config/Config.php'), $matches);
+    $prefixes = array_values(array_unique(array_filter([...$matches[1], ...$matches[2]])));
+    expect(count($prefixes) >= 11 && in_array('ARASYA_SOURCE_PAYMENT_GATE', $prefixes, true) && in_array('ARASYA_SOURCE_PAYMENT_GATE_VERIFIED', $prefixes, true), 'Config key scan found: ' . implode(',', $prefixes));
+    $env = ['HOME' => sys_get_temp_dir()];
+    foreach ($prefixes as $prefix) {
+        $env[$prefix . '_TRENDHOME'] = 'x';
+    }
+    $values = (new ConfigLoader($env))->load();
+    foreach ($prefixes as $prefix) {
+        expect(array_key_exists($prefix . '_TRENDHOME', $values), "ConfigLoader drops {$prefix}_<SOURCE>.");
+    }
+});
+
+test('ARASYA_SOURCE_PAYMENT_GATE_<SOURCE> is loaded, and a mode other than off needs its confirmation key', function (): void {
+    $base = ['HOME' => sys_get_temp_dir(), 'ARASYA_APP_ENV' => 'test', 'ARASYA_APP_SECRET' => str_repeat('t', 32), 'ARASYA_DB_NAME' => 'x', 'ARASYA_DB_USER' => 'x', 'ARASYA_DB_PASSWORD' => 'x', 'ARASYA_ALLOWED_ORIGINS' => 'http://127.0.0.1',
+        'ARASYA_SOURCE_SECRET_TRENDHOME' => SOURCE_TEST_TRENDHOME_SECRET, 'ARASYA_SOURCE_MODE_TRENDHOME' => 'active',
+        'ARASYA_SOURCE_SECRET_OUTLETPERDELE' => SOURCE_TEST_OUTLET_SECRET, 'ARASYA_SOURCE_MODE_OUTLETPERDELE' => 'active'];
+    $gate = static function (array $env, string $source = 'trendhome'): array {
+        $registry = SourceRegistry::fromConfig(Config::fromEnvironment(new ConfigLoader($env)));
+        return [$registry->find($source)?->paymentGateMode->value, in_array(['code' => 'payment_gate_unverified', 'sourceKey' => $source], $registry->issues(), true)];
+    };
+    expect($gate($base) === ['off', false], 'Absent: off, no issue.');
+    expect($gate([...$base, 'ARASYA_SOURCE_PAYMENT_GATE_TRENDHOME' => 'off']) === ['off', false]);
+    // Deploying the loader fix alone changes nothing: the value written before the fix stays inert and is reported.
+    expect($gate([...$base, 'ARASYA_SOURCE_PAYMENT_GATE_TRENDHOME' => 'enforce']) === ['off', true], 'Unconfirmed enforce runs as off and is reported.');
+    expect($gate([...$base, 'ARASYA_SOURCE_PAYMENT_GATE_TRENDHOME' => 'observe']) === ['off', true]);
+    expect($gate([...$base, 'ARASYA_SOURCE_PAYMENT_GATE_TRENDHOME' => 'enforce', 'ARASYA_SOURCE_PAYMENT_GATE_VERIFIED_TRENDHOME' => 'observe']) === ['off', true], 'A confirmation of another value is no confirmation.');
+    expect($gate([...$base, 'ARASYA_SOURCE_PAYMENT_GATE_TRENDHOME' => 'enforce', 'ARASYA_SOURCE_PAYMENT_GATE_VERIFIED_TRENDHOME' => 'enforce']) === ['enforce', false]);
+    expect($gate([...$base, 'ARASYA_SOURCE_PAYMENT_GATE_TRENDHOME' => 'observe', 'ARASYA_SOURCE_PAYMENT_GATE_VERIFIED_TRENDHOME' => 'observe']) === ['observe', false]);
+    expect($gate([...$base, 'ARASYA_SOURCE_PAYMENT_GATE_TRENDHOME' => 'Enforce ', 'ARASYA_SOURCE_PAYMENT_GATE_VERIFIED_TRENDHOME' => 'enforce']) === ['enforce', false]);
+    expect($gate([...$base, 'ARASYA_SOURCE_PAYMENT_GATE_TRENDHOME' => 'sometimes', 'ARASYA_SOURCE_PAYMENT_GATE_VERIFIED_TRENDHOME' => 'sometimes'])[0] === 'off', 'An unreadable value stays off.');
+    $two = [...$base, 'ARASYA_SOURCE_PAYMENT_GATE_TRENDHOME' => 'enforce', 'ARASYA_SOURCE_PAYMENT_GATE_VERIFIED_TRENDHOME' => 'enforce', 'ARASYA_SOURCE_PAYMENT_GATE_OUTLETPERDELE' => 'enforce'];
+    expect($gate($two) === ['enforce', false] && $gate($two, 'outletperdele') === ['off', true], 'Each source is confirmed separately.');
+
+    // The private secrets.json behaves exactly like the environment.
+    $home = sys_get_temp_dir() . '/arasya-gate-config-' . bin2hex(random_bytes(6));
+    mkdir($home . '/arasya-config', 0700, true);
+    try {
+        $file = static function (array $keys) use ($home): array {
+            file_put_contents($home . '/arasya-config/secrets.json', json_encode([
+                'ARASYA_APP_SECRET' => str_repeat('j', 32), 'DB_NAME' => 'db', 'DB_USER_NAME' => 'u', 'DB_USER_PASSWORD' => 'p', 'ARASYA_ALLOWED_ORIGINS' => ['https://staff.arasyahome.ro'],
+                'ARASYA_SOURCE_SECRET_TRENDHOME' => SOURCE_TEST_TRENDHOME_SECRET, 'ARASYA_SOURCE_MODE_TRENDHOME' => 'active', ...$keys,
+            ], JSON_THROW_ON_ERROR));
+            chmod($home . '/arasya-config/secrets.json', 0600);
+            $registry = SourceRegistry::fromConfig(Config::fromEnvironment(new ConfigLoader(['HOME' => $home])));
+            return [$registry->find('trendhome')?->paymentGateMode->value, in_array(['code' => 'payment_gate_unverified', 'sourceKey' => 'trendhome'], $registry->issues(), true)];
+        };
+        expect($file(['ARASYA_SOURCE_PAYMENT_GATE_TRENDHOME' => 'enforce']) === ['off', true]);
+        expect($file(['ARASYA_SOURCE_PAYMENT_GATE_TRENDHOME' => 'enforce', 'ARASYA_SOURCE_PAYMENT_GATE_VERIFIED_TRENDHOME' => 'enforce']) === ['enforce', false]);
+    } finally {
+        @unlink($home . '/arasya-config/secrets.json');
+        @rmdir($home . '/arasya-config');
+        @rmdir($home);
+    }
 });

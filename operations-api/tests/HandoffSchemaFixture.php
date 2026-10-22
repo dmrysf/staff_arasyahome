@@ -19,7 +19,7 @@ function restorePreWorkflowCohortTestSchema(PDO $pdo): void
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
     restorePreConfirmareOperationsTestSchema($pdo);
     if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='035_workflow_cohort.sql'")->fetchColumn()) return;
-    foreach(['order_confirmations','workflow_cohort_activations'] as $table) $pdo->exec("DROP TABLE IF EXISTS {$table}");
+    foreach(['order_confirmations','workflow_cohort_arming','workflow_cohort_activations'] as $table) $pdo->exec("DROP TABLE IF EXISTS {$table}");
     $pdo->exec('ALTER TABLE operational_orders DROP CONSTRAINT chk_operational_orders_workflow_cohort_complete, DROP CONSTRAINT chk_operational_orders_workflow_cohort,
         DROP KEY idx_operational_orders_cohort, DROP COLUMN source_submission_evidence, DROP COLUMN source_submitted_at, DROP COLUMN workflow_cohort_at,
         DROP COLUMN workflow_cohort_reason, DROP COLUMN workflow_cohort');

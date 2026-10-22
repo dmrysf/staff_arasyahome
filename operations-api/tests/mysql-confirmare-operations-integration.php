@@ -175,8 +175,14 @@ $ok($asRoot('PUT', "/management/employees/{$uuids['cosup']}/confirmare-scopes", 
 $check((int) $one('SELECT COUNT(*) FROM employee_confirmare_scopes') === 5, 'exactly the granted scopes exist');
 
 // ---- 2. Activation (test override of WORKFLOW_READY) and intake ----------------------------------------------------
-$activation($activatedAt)->activate($registry->find('trendhome'), 'Test Owner', 'operations test', 'co-test', true);
-$activation($activatedAt)->activate($registry->find('outletperdele'), 'Test Owner', 'operations test', 'co-test', true);
+// Two-phase first activation (Phase 1 rule): schedule, the source reports its armed fence, commit before the instant.
+$activateTwoPhase = static function (string $src) use ($activation, $activatedAt, $registry, $kernel, $iso): void {
+    $activation($activatedAt->modify('-20 minutes'))->schedule($registry->find($src), $activatedAt, 'Test Owner', 'operations test', 'co-test', true);
+    T::ingest($kernel, $src, ['sentAt' => gmdate('Y-m-d\TH:i:s\Z'), 'confirmareArmedAt' => $iso($activatedAt)], null, null, 'heartbeat');
+    $activation($activatedAt->modify('-1 minute'))->activate($registry->find($src), 'Test Owner', 'operations test', 'co-test', true);
+};
+$activateTwoPhase('trendhome');
+$activateTwoPhase('outletperdele');
 for ($n = 100; $n <= 122; $n++) {
     $ok($send('trendhome', $payload($id($n), 'processing', $submitted($after($n)), $n % 2 === 0 ? $cod('waiting') : $online)), "trendhome order {$n}");
 }

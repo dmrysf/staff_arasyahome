@@ -386,9 +386,11 @@ final readonly class OrderProjectionWriter
         if ($status !== null && in_array($status, self::DRAFT_STATUSES, true)) {
             throw new ApiException(422, 'SOURCE_ORDER_DRAFT', 'A draft is not a submitted order and is never created in Arasya.');
         }
-        $cohort = WorkflowCohort::classify(WorkflowCohort::activation($this->pdo, $snapshot->sourceKey, true), $snapshot->submission, $this->clock->now());
-        $active = !in_array($cohort['reason'], [WorkflowCohort::REASON_NOT_ACTIVATED, WorkflowCohort::REASON_SUSPENDED], true);
-        if ($active && $status !== null && in_array($status, self::UNPAID_STATUSES, true) && $cohort['cohort'] !== WorkflowCohort::CONFIRMARE) {
+        $cohort = WorkflowCohort::classify(WorkflowCohort::firstActivation($this->pdo, $snapshot->sourceKey, true), $snapshot->submission, $this->clock->now());
+        // Once a source was activated, an unpaid first event is received only for a Confirmare order. A suspension changes
+        // nothing here: an order submitted since the first activation stays Confirmare (held, closed), whenever it
+        // arrives; an older or unproven unpaid order is refused and sent again normally once it is processing.
+        if ($cohort['reason'] !== WorkflowCohort::REASON_NOT_ACTIVATED && $status !== null && in_array($status, self::UNPAID_STATUSES, true) && $cohort['cohort'] !== WorkflowCohort::CONFIRMARE) {
             throw new ApiException(409, 'SOURCE_INTAKE_NOT_ELIGIBLE', 'An unpaid order is received only for the Confirmare workflow of an activated source.', ['workflowCohort' => $cohort['cohort']]);
         }
         return $cohort;
@@ -563,11 +565,14 @@ final readonly class OrderProjectionWriter
      */
     public function confirmareState(string $sourceKey): array
     {
-        return WorkflowCohort::heartbeatState($this->pdo, $sourceKey);
+        return WorkflowCohort::heartbeatState($this->pdo, $sourceKey, $this->clock->now());
     }
 
-    /** Records a signed heartbeat so source freshness recovers without an order event. */
-    public function recordHeartbeat(string $sourceKey): void
+    /**
+     * Records a signed heartbeat so source freshness recovers without an order event, and the source's report of its
+     * armed local Confirmare fence when it sent one (workflow_cohort_arming; the latest report wins).
+     */
+    public function recordHeartbeat(string $sourceKey, ?\DateTimeImmutable $confirmareArmedAt = null): void
     {
         if ($sourceKey==='b2b') throw new ApiException(403,'INTERNAL_SOURCE_ONLY','B2B production is submitted through its authenticated commercial command.');
         $nowSql = $this->clock->now()->format('Y-m-d H:i:s.u');
@@ -575,6 +580,10 @@ final readonly class OrderProjectionWriter
         $stmt->execute([$nowSql, $nowSql, $sourceKey]);
         if ($stmt->rowCount() !== 1) {
             throw new ApiException(409, 'SOURCE_INACTIVE', 'The source is not registered or inactive.');
+        }
+        if ($confirmareArmedAt !== null) {
+            $this->pdo->prepare('INSERT INTO workflow_cohort_arming (source_key, armed_at, reported_at) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE armed_at = VALUES(armed_at), reported_at = VALUES(reported_at)')
+                ->execute([$sourceKey, $confirmareArmedAt->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s.u'), $nowSql]);
         }
     }
 

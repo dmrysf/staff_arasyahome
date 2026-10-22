@@ -121,6 +121,9 @@ final readonly class SourceRegistry
                 $issues[] = ['code' => 'invalid_payment_gate_mode', 'sourceKey' => $key];
                 $paymentGate = PaymentGateMode::Off;
             }
+            if (isset($settings['paymentGateUnverified'])) {
+                $issues[] = ['code' => 'payment_gate_unverified', 'sourceKey' => $key];
+            }
             // The Confirmare permission never makes a source unusable either. It needs every production authority of the
             // source in ENFORCE: a Confirmare order must be produced, documented and labelled by Arasya only.
             $confirmare = strtolower($settings['confirmare'] ?? 'off');
