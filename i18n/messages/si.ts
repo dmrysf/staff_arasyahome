@@ -1,4 +1,6 @@
 import { confirmareSI } from "./confirmare";
+import { confirmareShopSI } from "./confirmareShop";
+import { confirmareEditSI } from "./confirmareEdit";
 import { physicalSI } from "./physical";
 import type { Catalog } from "../types";
 import { siErrors } from "./si.errors";
@@ -12,6 +14,8 @@ export const si: Catalog = {
   ...physicalSI,
   ...siErrors,
   ...confirmareSI,
+  ...confirmareShopSI,
+  ...confirmareEditSI,
 
   // ---- common
   "common.back": "ආපසු",

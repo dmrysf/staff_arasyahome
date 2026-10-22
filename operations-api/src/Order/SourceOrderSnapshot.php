@@ -18,7 +18,9 @@ final readonly class SourceOrderSnapshot
      * @param string|null $pricingFingerprint `sha256:<hex>` of the source's prices (order.pricing, API 2.38.0), never an amount
      * @param string|null $dueDate the source's due date (order.dueDate, Y-m-d, API 2.38.0)
      * @param array{state: string, basis: string|null, pricingFingerprint: string|null}|null $financial
-     *        the source's Confirmare financial clearance (order.financial, API 2.38.0, no amounts); null when not stated
+     *        the source's Confirmare financial clearance (order.financial, API 2.38.0, no amounts; `attention` API 2.40.0); null when not stated
+     * @param bool|null $contactPhone whether the shop holds a callable customer telephone number (order.contact.phone,
+     *        API 2.40.0); null when not stated
      */
     public function __construct(
         public string $sourceKey,
@@ -40,6 +42,7 @@ final readonly class SourceOrderSnapshot
         public ?string $pricingFingerprint = null,
         public ?string $dueDate = null,
         public ?array $financial = null,
+        public ?bool $contactPhone = null,
     ) {
         // Centralize identity validation
         new GlobalOrderId($this->sourceKey, $this->sourceOrderId);

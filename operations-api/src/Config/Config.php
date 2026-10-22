@@ -59,6 +59,12 @@ final readonly class Config
          * FixtureTrendyolTransport. Refused in production, where only the real HTTPS API is ever called.
          */
         public ?string $trendyolFixtureFile = null,
+        /**
+         * Raw source access settings per source (API 2.40.0): mode, url and key (`<kid>:<key>`), validated by
+         * SourceAccessRegistry, which keeps a source with any invalid value off. Never dumped.
+         * @var array<string, array{mode: string, url: string, key: string}>
+         */
+        #[\SensitiveParameter] public array $sourceAccess = [],
     ) {
         if ($this->trendyolFixtureFile !== null && $this->isProduction()) {
             throw new RuntimeException('ARASYA_TRENDYOL_FIXTURE_FILE is not allowed in production.');
@@ -132,6 +138,7 @@ final readonly class Config
             sourceSettings: self::sourceSettings($values, $sourceKeys),
             trendyolIntake: self::value($values, 'ARASYA_TRENDYOL_INTAKE', 'disabled'),
             trendyolFixtureFile: self::value($values, 'ARASYA_TRENDYOL_FIXTURE_FILE', '') === '' ? null : self::value($values, 'ARASYA_TRENDYOL_FIXTURE_FILE', ''),
+            sourceAccess: self::sourceAccess($values, $sourceKeys),
         );
     }
 
@@ -161,6 +168,27 @@ final readonly class Config
             }
         }
         return $secrets;
+    }
+
+    /** @param array<string, string> $values @param list<string> $sourceKeys @return array<string, array{mode: string, url: string, key: string}> */
+    private static function sourceAccess(array $values, array $sourceKeys): array
+    {
+        $access = [];
+        foreach ($sourceKeys as $sourceKey) {
+            if (preg_match('/^[a-z0-9_-]{1,40}$/D', $sourceKey) !== 1) {
+                continue;
+            }
+            $suffix = self::sourceEnvironmentSuffix($sourceKey);
+            $mode = self::value($values, "ARASYA_SOURCE_ACCESS_{$suffix}", '');
+            if ($mode !== '') {
+                $access[$sourceKey] = [
+                    'mode' => $mode,
+                    'url' => self::value($values, "ARASYA_SOURCE_ACCESS_URL_{$suffix}", ''),
+                    'key' => self::value($values, "ARASYA_SOURCE_ACCESS_KEY_{$suffix}", ''),
+                ];
+            }
+        }
+        return $access;
     }
 
     /** @param array<string, string> $values @param list<string> $sourceKeys @return array<string, array<string, string>> */

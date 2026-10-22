@@ -21,9 +21,14 @@ use InvalidArgumentException;
 final class SourceOrderPayloadMapper
 {
     private const ROOT_KEYS = ['schemaVersion', 'eventId', 'changedAt', 'order', 'production'];
-    private const ORDER_KEYS = ['id', 'number', 'status', 'availability', 'notes', 'acceptedAt', 'items', 'delivery', 'payment', 'submission', 'pricing', 'dueDate', 'financial'];
-    /** Optional order facts this server accepts (heartbeat `orderFacts`, API 2.38.0). */
-    public const ORDER_FACTS = ['pricing', 'dueDate', 'financial'];
+    private const ORDER_KEYS = ['id', 'number', 'status', 'availability', 'notes', 'acceptedAt', 'items', 'delivery', 'payment', 'submission', 'pricing', 'dueDate', 'financial', 'contact'];
+    /**
+     * Optional order facts this server accepts (heartbeat `orderFacts`, API 2.38.0). API 2.40.0: `contact` (a callable
+     * telephone number exists) and `financialAttention` (order.financial.attention after a change of the total).
+     */
+    public const ORDER_FACTS = ['pricing', 'dueDate', 'financial', 'contact', 'financialAttention'];
+    /** Why a Confirmare order needs a financial decision after its total changed (order.financial.attention, API 2.40.0). */
+    public const FINANCIAL_ATTENTION = ['additional_payment_due', 'refund_due'];
     /** Confirmare financial clearance (order.financial, API 2.38.0): states and bases only, never an amount. */
     public const FINANCIAL_STATES = ['cleared', 'waiting', 'partial', 'unknown'];
     public const FINANCIAL_BASES = ['online_payment', 'zero_total', 'advance_collected'];
@@ -117,6 +122,7 @@ final class SourceOrderPayloadMapper
                 self::pricing($order['pricing'] ?? null),
                 self::dueDate($order['dueDate'] ?? null),
                 self::financial($order['financial'] ?? null),
+                self::contact($order['contact'] ?? null),
             );
         } catch (InvalidArgumentException) {
             throw self::invalid('order');
@@ -155,7 +161,7 @@ final class SourceOrderPayloadMapper
             return null;
         }
         $financial = self::object($value, 'order.financial');
-        self::allowKeys($financial, ['state', 'basis', 'pricingFingerprint'], ['state', 'basis', 'pricingFingerprint']);
+        self::allowKeys($financial, ['state', 'basis', 'pricingFingerprint', 'attention'], ['state', 'basis', 'pricingFingerprint']);
         $state = $financial['state'];
         $basis = $financial['basis'];
         $pricing = $financial['pricingFingerprint'];
@@ -168,7 +174,30 @@ final class SourceOrderPayloadMapper
         if ($pricing === null ? $state === 'cleared' : !is_string($pricing) || preg_match('/^sha256:[0-9a-f]{64}$/D', $pricing) !== 1) {
             throw self::invalid('order.financial.pricingFingerprint');
         }
-        return ['state' => $state, 'basis' => $basis, 'pricingFingerprint' => $pricing];
+        $attention = $financial['attention'] ?? null;
+        if ($attention !== null && (!in_array($attention, self::FINANCIAL_ATTENTION, true) || $state === 'cleared')) {
+            // A financial attention never clears: the shop states it only on a waiting, partial or unknown order.
+            throw self::invalid('order.financial.attention');
+        }
+        // The key joins the array only when stated, so the receipt hash of every earlier event stays the same.
+        return ['state' => $state, 'basis' => $basis, 'pricingFingerprint' => $pricing] + ($attention === null ? [] : ['attention' => $attention]);
+    }
+
+    /**
+     * Optional contact fact (API 2.40.0): {"phone": true|false}, whether the shop holds a callable customer telephone
+     * number on its real billing or delivery telephone field. A boolean only: the number never travels with an event.
+     */
+    private static function contact(mixed $value): ?bool
+    {
+        if ($value === null) {
+            return null;
+        }
+        $contact = self::object($value, 'order.contact');
+        self::allowKeys($contact, ['phone'], ['phone']);
+        if (!is_bool($contact['phone'])) {
+            throw self::invalid('order.contact.phone');
+        }
+        return $contact['phone'];
     }
 
     /** Optional due date (API 2.38.0): a calendar date, Y-m-d. Orders due earlier are confirmed first. */

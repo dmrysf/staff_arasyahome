@@ -31,13 +31,13 @@ const person = (overrides: Partial<Employee> = {}): Employee => ({
 const item = (overrides: Partial<ConfirmareItem> = {}): ConfirmareItem => ({
   globalOrderId: "trendhome:1001", orderNumber: "1001", sourceKey: "trendhome", status: "pending", version: 3, workflowCohort: "confirmare",
   openedAt: "2026-10-22T08:00:00.000000Z", submittedAt: "2026-10-22T07:59:00.000000Z", productionStageId: "waiting", commerceStatus: "processing", commerceClosed: false,
-  payment: { state: "online" }, financial: { state: "cleared", basis: "online_payment", open: true }, pricingAvailable: true, dueDate: null, productionCleared: false,
+  payment: { state: "online" }, financial: { state: "cleared", basis: "online_payment", open: true, attention: null }, pricingAvailable: true, dueDate: null, productionCleared: false,
   contact: null, assignment: { employeeId: ME, displayName: "Operator Test", at: "2026-10-22T08:01:00.000000Z", kind: "auto" }, decision: null, ...overrides,
 });
 const detail = (overrides: Partial<ConfirmareDetail> = {}): ConfirmareDetail => ({
   ...item(), review: { fingerprint: FP, lineIds: ["11", "12"], pricingAvailable: true, callRecorded: true, contactAvailable: true }, lines: [], contacts: [],
   customer: { visible: false, phoneAvailable: false }, source: { commerceStatusLabel: "Processing", changedAt: null, lastSeenAt: null, freshness: "fresh" },
-  production: { cleared: false, missing: ["approval"] }, events: [], ...overrides,
+  production: { cleared: false, missing: ["approval"] }, events: [], sourceAccess: { configured: false, read: false, edit: false, changePending: false, openEdits: [] }, ...overrides,
 });
 const contact = (outcome: "confirmed" | "no_answer" | "callback" | "needs_correction", current = true) => ({ outcome, at: "2026-10-22T09:00:00.000000Z", attempts: 1, current });
 
@@ -97,11 +97,11 @@ test("presentation groups come from the API facts; nothing is a new state and a 
     noAnswer: item({ contact: contact("no_answer") }),
     callback: item({ contact: contact("callback"), assignment: { employeeId: OTHER, displayName: "Coleg", at: "2026-10-22T08:00:00Z", kind: "auto" } }),
     correction: item({ contact: contact("needs_correction") }),
-    cod: item({ financial: { state: "waiting", basis: null, open: false } }),
-    approvedWaiting: item({ status: "approved", assignment: null, financial: { state: "partial", basis: null, open: false } }),
+    cod: item({ financial: { state: "waiting", basis: null, open: false, attention: null } }),
+    approvedWaiting: item({ status: "approved", assignment: null, financial: { state: "partial", basis: null, open: false, attention: null } }),
     approvedChanged: item({ status: "approved", assignment: null }),
     cleared: item({ status: "approved", assignment: null, productionCleared: true }),
-    rejected: item({ status: "rejected", assignment: null, financial: { state: "waiting", basis: null, open: false } }),
+    rejected: item({ status: "rejected", assignment: null, financial: { state: "waiting", basis: null, open: false, attention: null } }),
     closed: item({ commerceClosed: true }),
     noPrice: item({ pricingAvailable: false }),
   };
@@ -146,7 +146,7 @@ test("the next step keeps the server order: finish, call, callback, then ask the
 test("the final review lists exactly what is missing; payment is independent and never part of the approval", () => {
   const ready = { confirmedLineIds: ["11", "12"], priceReviewed: true };
   assert.deepEqual(approvalMissing(detail(), ready, true), []);
-  assert.deepEqual(approvalMissing(detail({ financial: { state: "waiting", basis: null, open: false } }), ready, true), [], "an approval is possible while the advance is still missing");
+  assert.deepEqual(approvalMissing(detail({ financial: { state: "waiting", basis: null, open: false, attention: null } }), ready, true), [], "an approval is possible while the advance is still missing");
   assert.deepEqual(approvalMissing(detail({ review: { fingerprint: FP, lineIds: ["11", "12"], pricingAvailable: true, callRecorded: false, contactAvailable: true } }), ready, true), ["call"], "no recorded confirmation, no approval");
   assert.deepEqual(approvalMissing(detail(), { confirmedLineIds: ["11"], priceReviewed: true }, true), ["lines"], "each current line must be ticked");
   assert.deepEqual(approvalMissing(detail(), { confirmedLineIds: ["11", "11", "99"], priceReviewed: true }, true), ["lines"], "duplicates or unknown lines never count");
@@ -191,6 +191,11 @@ test("strict mapping: no full telephone number survives, unknown outcomes and sh
   assert.equal(mapped.customer.phoneAvailable, false, "a full phone is never available through Arasya");
   assert.deepEqual(mapConfirmareDetail({ ...raw, customer: { visible: false, name: "Client" } }).customer, { visible: false, phoneAvailable: false }, "hidden means nothing is kept");
   assert.equal(mapConfirmareDetail({ ...raw, customer: { ...raw.customer, phoneMasked: "07** *** ***" } }).customer.visible, true);
+  // Phase 4B: the shop change state comes with the capabilities; an unknown state fails closed.
+  const open = { idempotencyKey: "a".repeat(36), state: "unknown", requestedAt: "2026-10-22T10:00:00Z", mine: true };
+  assert.deepEqual(mapConfirmareDetail({ ...raw, sourceAccess: { configured: true, read: true, edit: true, changePending: true, openEdits: [open] } }).sourceAccess, { configured: true, read: true, edit: true, changePending: true, openEdits: [open] });
+  assert.deepEqual(mapConfirmareDetail(raw).sourceAccess, { configured: false, read: false, edit: false, changePending: false, openEdits: [] }, "an older API: no shop access, nothing pending");
+  assert.throws(() => mapConfirmareDetail({ ...raw, sourceAccess: { configured: true, read: true, edit: true, changePending: true, openEdits: [{ ...open, state: "applied" }] } }));
   const failsClosed = (value: unknown) => assert.throws(() => mapConfirmareDetail(value), (error) => error instanceof StaffServiceError && error.code === "SERVER_ERROR");
   failsClosed({ ...raw, contacts: [{ ...raw.contacts[0], outcome: "cancelled" }] });
   failsClosed({ ...raw, review: { ...raw.review, fingerprint: "not-a-fingerprint" } });
@@ -279,5 +284,5 @@ test("home: an operator with a scope sees the Confirmare workspace and the hones
   assert.match(html, /data-testid="workspace-confirmare"/);
   assert.match(html, /Confirmare comenzi/);
   assert.match(html, /data-testid="cf-contact-dependency"/);
-  assert.match(html, /Telefonul complet al clientului nu este încă disponibil în Arasya/);
+  assert.match(html, /Arasya nu păstrează telefonul complet al clientului/);
 });

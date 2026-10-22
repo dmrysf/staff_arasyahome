@@ -143,6 +143,7 @@ try {
     $expected[] = '035_workflow_cohort.sql';
     $expected[] = '036_confirmare_operations.sql';
     $expected[] = '037_confirmare_contacts.sql';
+    $expected[] = '038_confirmare_source_access.sql';
     if ($applied !== $expected) {
         throw new RuntimeException('An existing 001 schema did not apply exactly the pending migrations in order: ' . implode(', ', $applied));
     }

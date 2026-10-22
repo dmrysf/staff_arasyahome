@@ -59,3 +59,50 @@
 @media (min-width: 1024px) {
   .confirmare-order .package-side { position: static; max-height: none; overflow: visible; }
 }
+
+/* The shop's own order (Staff 2.30.0, API 2.40.0): read on request, phones first, prices as the shop holds them. */
+.cf-shop { display: grid; gap: 12px; }
+.cf-shop-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.cf-shop-actions > .button { flex: 1 1 200px; }
+.cf-shop-view { display: grid; gap: 14px; min-width: 0; }
+.cf-shop-block { display: grid; gap: 8px; min-width: 0; }
+.cf-shop-block h3 { margin: 0; font-size: var(--text-md); }
+.cf-shop-phones { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.cf-shop-phones li { display: grid; gap: 4px; min-width: 0; }
+.cf-shop-label { color: var(--color-text-muted); font-size: var(--text-sm); }
+.cf-shop-call { width: 100%; justify-content: center; overflow-wrap: anywhere; }
+.cf-shop-lines { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.cf-shop-prices, .cf-shop-totals { display: grid; gap: 4px; margin: 0; }
+.cf-shop-prices > div, .cf-shop-totals > div { display: flex; justify-content: space-between; gap: 12px; min-width: 0; font-size: var(--text-sm); }
+.cf-shop-prices dt, .cf-shop-totals dt { color: var(--color-text-muted); overflow-wrap: anywhere; }
+.cf-shop-prices dd, .cf-shop-totals dd { margin: 0; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cf-shop-totals .cf-shop-grand { padding-top: 6px; border-top: 1px solid var(--color-border); font-size: var(--text-md); font-weight: var(--weight-semibold); }
+.cf-shop-totals .cf-shop-grand dt { color: var(--color-text); }
+.cf-shop-note { font-style: italic; }
+/* Phase 4B: controlled changes in the shop */
+.cf-edit { padding-top: 12px; border-top: 1px solid var(--color-border); }
+.cf-edit-lines, .cf-edit-diff, .cf-edit-open, .cf-edit-blockers { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.cf-edit-blockers { gap: 4px; padding-left: 18px; list-style: disc; }
+.cf-edit-line { display: grid; gap: 8px; min-width: 0; padding: 12px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface); }
+.cf-edit-line .line-name { margin: 0; overflow-wrap: anywhere; }
+.cf-edit-removed { opacity: 0.6; }
+.cf-edit-removed .line-name strong { text-decoration: line-through; }
+.cf-edit-fields { display: grid; gap: 10px; min-width: 0; }
+.cf-edit-add, .cf-edit-shipping { display: grid; gap: 8px; min-width: 0; margin: 0; padding: 12px; border: 1px solid var(--color-border); border-radius: var(--radius-md); }
+.cf-edit-add legend, .cf-edit-shipping legend { padding: 0 4px; font-weight: var(--weight-semibold); }
+.cf-edit-sku { display: grid; gap: 6px; min-width: 0; }
+.cf-edit-sku input { min-height: 44px; padding: 0 12px; border: 1.5px solid var(--color-border); border-radius: var(--radius-md); font: inherit; }
+.cf-edit-product { display: grid; gap: 8px; min-width: 0; padding: 12px; border-radius: var(--radius-md); background: var(--color-surface-muted, var(--color-surface)); }
+.cf-edit-preview { display: grid; gap: 10px; min-width: 0; padding: 12px; border: 1.5px solid var(--color-text); border-radius: var(--radius-md); }
+.cf-edit-preview h4 { margin: 0; font-size: var(--text-md); }
+.cf-edit-totals s { color: var(--color-text-muted); }
+.cf-edit-confirm { display: grid; gap: 10px; min-width: 0; }
+.cf-edit-confirm > .button { width: 100%; justify-content: center; }
+.cf-edit-open li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+@media (min-width: 720px) {
+  .cf-shop-call { width: auto; }
+  .cf-edit-fields { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+  .cf-edit-sku { grid-template-columns: minmax(0, 1fr) auto; align-items: end; }
+  .cf-edit-sku label { grid-column: 1 / -1; }
+  .cf-edit-confirm > .button { width: auto; justify-self: start; }
+}

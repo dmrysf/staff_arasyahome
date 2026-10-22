@@ -1,4 +1,6 @@
 import { confirmareRO } from "./confirmare";
+import { confirmareShopRO } from "./confirmareShop";
+import { confirmareEditRO } from "./confirmareEdit";
 import { physicalMessages } from "./physical";
 import { roErrors } from "./ro.errors";
 
@@ -12,6 +14,8 @@ export const ro = {
   ...physicalMessages,
   ...roErrors,
   ...confirmareRO,
+  ...confirmareShopRO,
+  ...confirmareEditRO,
 
   // ---- common ------------------------------------------------------------------------------------------------
   "common.back": "Înapoi",

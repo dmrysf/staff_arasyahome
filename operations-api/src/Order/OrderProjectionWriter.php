@@ -86,6 +86,10 @@ final readonly class OrderProjectionWriter
         if ($snapshot->financial !== null) {
             $hashData['financial'] = $snapshot->financial;
         }
+        // The contact fact (API 2.40.0) joins the hash only when stated, like the other facts.
+        if ($snapshot->contactPhone !== null) {
+            $hashData['contact'] = $snapshot->contactPhone;
+        }
         // The printable delivery identity is kept outside the receipt hash so existing source events keep
         // their hash; it is applied below and decides document staleness like any printed field.
         $documentContext = $snapshot->delivery === null ? null : json_encode($snapshot->delivery, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
@@ -417,8 +421,13 @@ final readonly class OrderProjectionWriter
      */
     private function applyCommercialFacts(string $orderUuid, SourceOrderSnapshot $snapshot): void
     {
-        $this->pdo->prepare('UPDATE operational_orders SET source_financial_state = ?, source_financial_basis = ?, source_financial_pricing = ? WHERE order_uuid = ?')
-            ->execute([$snapshot->financial['state'] ?? null, $snapshot->financial['basis'] ?? null, $snapshot->financial['pricingFingerprint'] ?? null, $orderUuid]);
+        $this->pdo->prepare('UPDATE operational_orders SET source_financial_state = ?, source_financial_basis = ?, source_financial_pricing = ?, source_financial_attention = ? WHERE order_uuid = ?')
+            ->execute([$snapshot->financial['state'] ?? null, $snapshot->financial['basis'] ?? null, $snapshot->financial['pricingFingerprint'] ?? null, $snapshot->financial['attention'] ?? null, $orderUuid]);
+        // Whether the shop holds a callable telephone number (API 2.40.0): stated facts replace the stored one; an event
+        // without it (an older shop connector) keeps it.
+        if ($snapshot->contactPhone !== null) {
+            $this->pdo->prepare('UPDATE operational_orders SET source_contact_phone = ? WHERE order_uuid = ?')->execute([$snapshot->contactPhone ? 1 : 0, $orderUuid]);
+        }
         if ($snapshot->pricingFingerprint !== null) {
             $this->pdo->prepare('UPDATE operational_orders SET source_pricing_fingerprint = ? WHERE order_uuid = ?')->execute([$snapshot->pricingFingerprint, $orderUuid]);
         }

@@ -16,7 +16,13 @@ use Arasya\Operations\Security\CsrfGuard;
 /**
  * Confirmare routes (cookie session; mutations need CSRF and an Idempotency-Key):
  *   GET  /confirmare/pool?view=mine|open|all|followup[&source=]
- *   GET  /confirmare/orders/{globalOrderId}
+ *   GET  /confirmare/orders/{globalOrderId}               (adds `sourceAccess` {configured, read, edit}, API 2.40.0)
+ *   GET  /confirmare/orders/{globalOrderId}/source        the shop's own order view (API 2.40.0, audited, no-store)
+ *   GET  /confirmare/orders/{globalOrderId}/source/catalog        what can be changed (Phase 4B, access `edit`)
+ *   POST /confirmare/orders/{globalOrderId}/source/product        {sku}: one product of the same shop by exact SKU
+ *   POST /confirmare/orders/{globalOrderId}/source/preview        {expectedVersion, operations}: computed by the shop, never saved
+ *   POST /confirmare/orders/{globalOrderId}/source/apply          {expectedVersion, operations, previewToken} + Idempotency-Key
+ *   POST /confirmare/orders/{globalOrderId}/source/reconcile      {idempotencyKey}: settles a change whose answer was lost
  *   POST /confirmare/next                                  {source?}
  *   POST /confirmare/orders/{globalOrderId}/claim          {expectedVersion}
  *   POST /confirmare/orders/{globalOrderId}/release        {expectedVersion}
@@ -42,8 +48,17 @@ final readonly class ConfirmareController
         'contact' => ['expectedVersion', 'outcome', 'reviewFingerprint'],
     ];
 
+    private const SOURCE_FIELDS = [
+        'product' => ['sku'],
+        'preview' => ['expectedVersion', 'operations'],
+        'apply' => ['expectedVersion', 'operations', 'previewToken'],
+        'reconcile' => ['idempotencyKey'],
+    ];
+
     public function __construct(
         private ConfirmareService $service,
+        private ConfirmareSourceAccess $sourceAccess,
+        private ConfirmareSourceEdits $sourceEdits,
         private AuthenticationService $auth,
         private CsrfGuard $csrf,
         private Config $config,
@@ -69,9 +84,37 @@ final readonly class ConfirmareController
             return $this->json($this->service->availability($actor));
         }
         if (preg_match('#^/confirmare/orders/([^/]{1,600})$#D', $path, $m) === 1 && $request->method === 'GET') {
-            return $this->json($this->service->detail($actor, rawurldecode($m[1])));
+            $detail = $this->service->detail($actor, rawurldecode($m[1]));
+            $capabilities = $this->sourceAccess->capabilities($actor, rawurldecode($m[1]));
+            return $this->json($detail + ['sourceAccess' => $capabilities + $this->sourceEdits->state($actor, rawurldecode($m[1]), $capabilities['read'])]);
+        }
+        if (preg_match('#^/confirmare/orders/([^/]{1,600})/source$#D', $path, $m) === 1) {
+            if ($request->method !== 'GET') {
+                throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
+            }
+            return $this->json($this->sourceAccess->read($actor, rawurldecode($m[1]), $request->requestId));
+        }
+        if (preg_match('#^/confirmare/orders/([^/]{1,600})/source/catalog$#D', $path, $m) === 1) {
+            if ($request->method !== 'GET') {
+                throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
+            }
+            return $this->json($this->sourceEdits->catalog($actor, rawurldecode($m[1]), $request->requestId));
         }
         $key = $request->header('idempotency-key') ?? '';
+        if (preg_match('#^/confirmare/orders/([^/]{1,600})/source/(product|preview|apply|reconcile)$#D', $path, $m) === 1) {
+            if ($request->method !== 'POST') {
+                throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
+            }
+            $this->csrf->requireValid($session->rawToken, $request->header('x-csrf-token'));
+            $globalId = rawurldecode($m[1]);
+            $input = $this->body($request, self::SOURCE_FIELDS[$m[2]], 12288);
+            return $this->json(match ($m[2]) {
+                'product' => $this->sourceEdits->product($actor, $globalId, $input['sku'] ?? null, $request->requestId),
+                'preview' => $this->sourceEdits->preview($actor, $globalId, $input['expectedVersion'] ?? null, $input['operations'] ?? null, $request->requestId),
+                'apply' => $this->sourceEdits->apply($actor, $globalId, $input['expectedVersion'] ?? null, $input['operations'] ?? null, $input['previewToken'] ?? null, $key, $request->requestId),
+                default => $this->sourceEdits->reconcile($actor, $globalId, $input['idempotencyKey'] ?? null, $request->requestId),
+            });
+        }
         if ($path === '/confirmare/next' && $request->method === 'POST') {
             $this->csrf->requireValid($session->rawToken, $request->header('x-csrf-token'));
             $input = $this->body($request, ['source']);
@@ -112,9 +155,9 @@ final readonly class ConfirmareController
     }
 
     /** @param list<string> $allowed @return array<string, mixed> */
-    private function body(Request $request, array $allowed): array
+    private function body(Request $request, array $allowed, int $maxBytes = 1024): array
     {
-        $input = $request->json(1024);
+        $input = $request->json($maxBytes);
         if (array_diff(array_keys($input), $allowed) !== []) {
             throw new ApiException(400, 'INVALID_REQUEST', 'Only ' . implode(', ', $allowed) . ' are accepted.');
         }
@@ -124,7 +167,7 @@ final readonly class ConfirmareController
     /** @param array<string, mixed> $payload */
     private function json(array $payload): Response
     {
-        return Response::json($payload, 200, ['Cache-Control' => 'private, no-store']);
+        return Response::json($payload, 200, ['Cache-Control' => 'private, no-store', 'Pragma' => 'no-cache']);
     }
 
     private function authenticate(Request $request): AuthenticatedSession

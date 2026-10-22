@@ -1,4 +1,6 @@
 import { confirmareTR } from "./confirmare";
+import { confirmareShopTR } from "./confirmareShop";
+import { confirmareEditTR } from "./confirmareEdit";
 import { physicalTR } from "./physical";
 import type { Catalog } from "../types";
 import { trErrors } from "./tr.errors";
@@ -11,6 +13,8 @@ export const tr: Catalog = {
   ...physicalTR,
   ...trErrors,
   ...confirmareTR,
+  ...confirmareShopTR,
+  ...confirmareEditTR,
 
   // ---- common
   "common.back": "Geri",
