@@ -112,7 +112,7 @@ foreach (['trendhome', 'outletperdele'] as $src) {
 }
 $heartbeat = T::ingest($kernel, 'trendhome', ['sentAt' => gmdate('Y-m-d\TH:i:s\Z')], null, null, 'heartbeat');
 $check(in_array('contact', $heartbeat['body']['orderFacts'] ?? [], true), 'the heartbeat announces the contact fact');
-$numberBase = 930000 + random_int(0, 8999) * 10;
+$numberBase = T::freeOrderBase($pdo, 930000, 959999, 100); // ids base+1..base+60; a block no earlier run used
 $id = static fn (int $n): string => (string) ($numberBase + $n);
 $th = static fn (int $n): string => 'trendhome:' . $id($n);
 $tick = 0;

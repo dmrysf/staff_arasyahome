@@ -168,7 +168,7 @@ $intake = static function (string $globalId) use ($call, $cutter, $qr, $one, &$u
 $generate = static fn (string $globalId): array => $call($docs, 'POST', '/production-documents/orders/' . rawurlencode($globalId) . '/generate', ['expectedDocumentVersion' => 0]);
 $stage = static fn (string $globalId): string => (string) $one('SELECT production_stage_id FROM operational_orders WHERE global_order_id = ?', [$globalId]);
 $activation = static fn (DateTimeImmutable $at): WorkflowCohortActivation => new WorkflowCohortActivation($pdo, new MutableClock($at));
-$base = 760000 + random_int(0, 8999) * 10;
+$base = T::freeOrderBase($pdo, 760000, 859999, 400); // ids base+1..base+305; a block no earlier run used
 $id = static fn (int $n): string => (string) ($base + $n);
 $th = static fn (int $n): string => 'trendhome:' . $id($n);
 $op = static fn (int $n): string => 'outletperdele:' . $id($n);
