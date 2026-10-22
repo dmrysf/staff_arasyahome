@@ -191,7 +191,7 @@ try {
     foreach (['trendhome', 'outletperdele'] as $key) {
         $cohortState = \Arasya\Operations\Production\WorkflowCohort::heartbeatState($pdo, $key)['state'];
         $definition = $sourceRegistry->find($key);
-        $report($cohortState === 'active' && !($definition?->confirmarePermitted ?? false) ? 'FAIL' : 'OK', "confirmare_{$key}_{$cohortState}" . ($definition?->confirmarePermitted ? '_permitted' : ''));
+        $report($cohortState !== 'inactive' && !($definition?->confirmarePermitted ?? false) ? 'FAIL' : 'OK', "confirmare_{$key}_{$cohortState}" . ($definition?->confirmarePermitted ? '_permitted' : ''));
     }
     $undetermined = (int) $pdo->query("SELECT COUNT(*) FROM operational_orders WHERE workflow_cohort = 'undetermined' AND production_completed_at IS NULL AND operational_status <> 'unavailable'")->fetchColumn();
     $report($undetermined === 0 ? 'OK' : 'WARN', 'confirmare_undetermined_orders');

@@ -6,11 +6,15 @@
 --
 -- Model
 --   workflow_cohort_activations
---        Append-only history of the Confirmare activation of each signed source: one row per activation or
---        suspension, recorded by the operator CLI (bin/workflow-cohort.php) with the server clock, never typed in.
---        The latest row of a source decides whether genuinely new orders of that source are classified into the
---        Confirmare cohort; `effective_at` of the latest `activated` row is the source's actual activation instant.
---        Empty after this migration: nothing is active.
+--        Append-only history of the Confirmare activation of each signed source, recorded by the operator CLI
+--        (bin/workflow-cohort.php) with the server clock: `scheduled` (a future first-activation instant), `cancelled`
+--        (an uncommitted schedule withdrawn), `activated` (the committed first activation at the scheduled instant, or a
+--        resumption) and `suspended`. The FIRST `activated` instant classifies: every order submitted at or after it is
+--        a Confirmare order for good; a suspension holds orders, it never hands them back. Empty after this migration.
+--   workflow_cohort_arming
+--        The latest signed report of each source that its local Confirmare fence is armed (heartbeat field
+--        confirmareArmedAt). A first activation is committed only after the source reported arming at or before the
+--        scheduled instant, so no order can fall into the legacy flow between the activation and the source's fence.
 --   operational_orders.workflow_cohort
 --        Decided once, when Arasya creates the canonical order, and never changed by a later source event:
 --          NULL          the order existed before this release (pre-cohort: its established handling continues)
@@ -37,8 +41,16 @@ CREATE TABLE IF NOT EXISTS workflow_cohort_activations (
     PRIMARY KEY (event_uuid),
     KEY idx_workflow_cohort_activations_source (source_key, effective_at),
     CONSTRAINT fk_workflow_cohort_activations_source FOREIGN KEY (source_key) REFERENCES order_sources (source_key) ON UPDATE RESTRICT ON DELETE RESTRICT,
-    CONSTRAINT chk_workflow_cohort_activations_action CHECK (action IN ('activated', 'suspended')),
+    CONSTRAINT chk_workflow_cohort_activations_action CHECK (action IN ('scheduled', 'cancelled', 'activated', 'suspended')),
     CONSTRAINT chk_workflow_cohort_activations_floor CHECK (effective_at >= '2026-10-21 21:00:00.000000')
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS workflow_cohort_arming (
+    source_key VARCHAR(40) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    armed_at DATETIME(6) NOT NULL,
+    reported_at DATETIME(6) NOT NULL,
+    PRIMARY KEY (source_key),
+    CONSTRAINT fk_workflow_cohort_arming_source FOREIGN KEY (source_key) REFERENCES order_sources (source_key) ON UPDATE RESTRICT ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 SET @arasya_035_cohort_missing = (SELECT COUNT(*) = 0 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'operational_orders' AND column_name = 'workflow_cohort');

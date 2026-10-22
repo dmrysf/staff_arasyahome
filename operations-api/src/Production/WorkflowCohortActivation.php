@@ -33,8 +33,125 @@ final readonly class WorkflowCohortActivation
     {
     }
 
-    /** @return array<string, mixed> */
+    /** A schedule leaves the sources at least this long to report their armed fence (heartbeat every 5 minutes). */
+    public const MIN_SCHEDULE_LEAD_SECONDS = 900;
+    /** The commit must happen at least this long before the scheduled instant. */
+    public const MIN_COMMIT_LEAD_SECONDS = 60;
+    /** The source's arming report must be this recent when the activation is committed. */
+    public const ARMING_REPORT_MAX_AGE_SECONDS = 900;
+
+    /**
+     * Step 1 of the first activation: schedule it for the future instant $at (server clock + at least 15 minutes, never
+     * before the business date). From now on every heartbeat reports `scheduled` with $at, and YD SOFT arms its local
+     * fence for $at. Nothing is classified by a schedule.
+     *
+     * @return array<string, mixed>
+     */
+    public function schedule(?SourceDefinition $source, DateTimeImmutable $at, string $actor, ?string $reason, string $requestId, bool $workflowReady = ConfirmationGate::WORKFLOW_READY): array
+    {
+        $this->requireActivatable($source, $workflowReady);
+        $at = $at->setTimezone(new DateTimeZone('UTC'));
+        return $this->record($source->key, WorkflowCohort::ACTION_SCHEDULED, $actor, $reason, $requestId, function (DateTimeImmutable $now) use ($source, $at): DateTimeImmutable {
+            if (WorkflowCohort::firstActivation($this->pdo, $source->key, true) !== null) {
+                throw new ApiException(409, 'CONFIRMARE_ALREADY_ACTIVATED', 'The source was already activated once; a suspended source is resumed, never scheduled again.');
+            }
+            if (WorkflowCohort::pendingSchedule($this->pdo, $source->key, true) !== null) {
+                throw new ApiException(409, 'CONFIRMARE_ALREADY_SCHEDULED', 'An activation is already scheduled; cancel it first.');
+            }
+            if ($at < WorkflowCohort::cutover() || $at->getTimestamp() < $now->getTimestamp() + self::MIN_SCHEDULE_LEAD_SECONDS) {
+                throw new ApiException(422, 'CONFIRMARE_SCHEDULE_TOO_SOON', 'Schedule the activation at least 15 minutes ahead and never before 2026-10-22 00:00 Europe/Bucharest.');
+            }
+            return $at;
+        });
+    }
+
+    /** Withdraws a schedule that was not committed yet. @return array<string, mixed> */
+    public function cancelSchedule(string $sourceKey, string $actor, string $reason, string $requestId): array
+    {
+        if (trim($reason) === '') {
+            throw new ApiException(422, 'REASON_REQUIRED', 'A cancellation needs a reason.');
+        }
+        return $this->record($sourceKey, WorkflowCohort::ACTION_CANCELLED, $actor, $reason, $requestId, function (DateTimeImmutable $now) use ($sourceKey): DateTimeImmutable {
+            if (WorkflowCohort::pendingSchedule($this->pdo, $sourceKey, true) === null) {
+                throw new ApiException(409, 'CONFIRMARE_NOT_SCHEDULED', 'No uncommitted activation is scheduled.');
+            }
+            return $now;
+        });
+    }
+
+    /**
+     * Step 2 of the first activation: commit the scheduled instant. Refused unless the source reported, after the
+     * schedule and recently, that its local fence is armed at or before the scheduled instant, and the instant is still
+     * at least a minute ahead. Every order submitted at or after the instant is then Confirmare, and the source already
+     * refuses legacy production for it locally: there is no unprotected window.
+     *
+     * @return array<string, mixed>
+     */
     public function activate(?SourceDefinition $source, string $actor, ?string $reason, string $requestId, bool $workflowReady = ConfirmationGate::WORKFLOW_READY): array
+    {
+        $this->requireActivatable($source, $workflowReady);
+        return $this->record($source->key, WorkflowCohort::ACTION_ACTIVATED, $actor, $reason, $requestId, function (DateTimeImmutable $now) use ($source): DateTimeImmutable {
+            if (WorkflowCohort::firstActivation($this->pdo, $source->key, true) !== null) {
+                throw new ApiException(409, 'CONFIRMARE_ALREADY_ACTIVATED', 'The source was already activated; use resume after a suspension.');
+            }
+            $at = WorkflowCohort::pendingSchedule($this->pdo, $source->key, true)
+                ?? throw new ApiException(409, 'CONFIRMARE_NOT_SCHEDULED', 'Schedule the activation first (two-phase activation).');
+            if ($at->getTimestamp() < $now->getTimestamp() + self::MIN_COMMIT_LEAD_SECONDS) {
+                throw new ApiException(409, 'CONFIRMARE_SCHEDULE_LAPSED', 'The scheduled instant is less than a minute away or past; cancel and schedule again.');
+            }
+            $arming = $this->armingOf($source->key, true);
+            $scheduledRecorded = $this->pdo->prepare("SELECT MAX(recorded_at) FROM workflow_cohort_activations WHERE source_key = ? AND action = 'scheduled'");
+            $scheduledRecorded->execute([$source->key]);
+            $since = new DateTimeImmutable((string) $scheduledRecorded->fetchColumn(), new DateTimeZone('UTC'));
+            if ($arming === null || $arming['armedAt'] > $at || $arming['reportedAt'] < $since || $arming['reportedAt']->getTimestamp() < $now->getTimestamp() - self::ARMING_REPORT_MAX_AGE_SECONDS) {
+                throw new ApiException(409, 'CONFIRMARE_SOURCE_NOT_ARMED', 'The source has not reported, since the schedule, a local Confirmare fence armed at or before the scheduled instant.');
+            }
+            return $at;
+        });
+    }
+
+    /** Holds the source's new orders (closed, not distributed). It never hands an order back to the legacy flow. @return array<string, mixed> */
+    public function suspend(string $sourceKey, string $actor, string $reason, string $requestId): array
+    {
+        if (trim($reason) === '') {
+            throw new ApiException(422, 'REASON_REQUIRED', 'A suspension needs a reason.');
+        }
+        return $this->record($sourceKey, WorkflowCohort::ACTION_SUSPENDED, $actor, $reason, $requestId, function (DateTimeImmutable $now) use ($sourceKey): DateTimeImmutable {
+            $latest = WorkflowCohort::activation($this->pdo, $sourceKey, true);
+            if ($latest === null || $latest['action'] !== WorkflowCohort::ACTION_ACTIVATED || WorkflowCohort::heartbeatState($this->pdo, $sourceKey, $now)['state'] !== WorkflowCohort::STATE_ACTIVE) {
+                throw new ApiException(409, 'CONFIRMARE_NOT_ACTIVE', 'The source is not active for Confirmare.');
+            }
+            return $now;
+        });
+    }
+
+    /** Ends a suspension. The first activation instant stays the protection instant. @return array<string, mixed> */
+    public function resume(?SourceDefinition $source, string $actor, ?string $reason, string $requestId, bool $workflowReady = ConfirmationGate::WORKFLOW_READY): array
+    {
+        $this->requireActivatable($source, $workflowReady);
+        return $this->record($source->key, WorkflowCohort::ACTION_ACTIVATED, $actor, $reason, $requestId, function (DateTimeImmutable $now) use ($source): DateTimeImmutable {
+            $latest = WorkflowCohort::activation($this->pdo, $source->key, true);
+            if ($latest === null || $latest['action'] !== WorkflowCohort::ACTION_SUSPENDED) {
+                throw new ApiException(409, 'CONFIRMARE_NOT_SUSPENDED', 'The source is not suspended.');
+            }
+            return $now;
+        });
+    }
+
+    /**
+     * The source's latest report of its local fence (signed heartbeat field confirmareArmedAt), or null.
+     *
+     * @return array{armedAt: DateTimeImmutable, reportedAt: DateTimeImmutable}|null
+     */
+    public function armingOf(string $sourceKey, bool $lock = false): ?array
+    {
+        $statement = $this->pdo->prepare('SELECT armed_at, reported_at FROM workflow_cohort_arming WHERE source_key = ?' . ($lock ? ' LOCK IN SHARE MODE' : ''));
+        $statement->execute([$sourceKey]);
+        $row = $statement->fetch(PDO::FETCH_ASSOC);
+        return is_array($row) ? ['armedAt' => new DateTimeImmutable((string) $row['armed_at'], new DateTimeZone('UTC')), 'reportedAt' => new DateTimeImmutable((string) $row['reported_at'], new DateTimeZone('UTC'))] : null;
+    }
+
+    private function requireActivatable(?SourceDefinition $source, bool $workflowReady): void
     {
         if (!$workflowReady) {
             throw new ApiException(409, 'CONFIRMARE_WORKFLOW_NOT_READY', 'The Confirmare workflow that approves orders is not available yet; activating a source would stop its production.');
@@ -45,30 +162,25 @@ final readonly class WorkflowCohortActivation
         if (!$source->canIngest()) {
             throw new ApiException(409, 'SOURCE_NOT_ACTIVE', 'The source is not enabled and active for order ingestion.');
         }
-        return $this->record($source->key, WorkflowCohort::ACTION_ACTIVATED, $actor, $reason, $requestId);
     }
 
-    /** @return array<string, mixed> */
-    public function suspend(string $sourceKey, string $actor, string $reason, string $requestId): array
-    {
-        if (trim($reason) === '') {
-            throw new ApiException(422, 'REASON_REQUIRED', 'A suspension needs a reason.');
-        }
-        return $this->record($sourceKey, WorkflowCohort::ACTION_SUSPENDED, $actor, $reason, $requestId);
-    }
-
-    /** @return array<string, mixed> */
-    private function record(string $sourceKey, string $action, string $actor, ?string $reason, string $requestId): array
+    /**
+     * Appends one history row with the server clock, under the source row lock. $check runs inside the transaction and
+     * returns the row's effective instant.
+     *
+     * @param callable(DateTimeImmutable): DateTimeImmutable $check
+     * @return array<string, mixed>
+     */
+    private function record(string $sourceKey, string $action, string $actor, ?string $reason, string $requestId, callable $check): array
     {
         $actor = trim($actor);
         if ($actor === '' || mb_strlen($actor) > 120 || preg_match('/[\x00-\x1F\x7F]/', $actor) === 1) {
             throw new ApiException(422, 'ACTOR_REQUIRED', 'Name the person who records the change (at most 120 characters).');
         }
         $reason = $reason === null || trim($reason) === '' ? null : mb_substr(trim($reason), 0, 200);
+        // The business date bounds the effective instant (schedule check and database CHECK), not the moment of recording:
+        // a first activation may be scheduled and committed ahead of time.
         $now = $this->clock->now()->setTimezone(new DateTimeZone('UTC'));
-        if ($now < WorkflowCohort::cutover()) {
-            throw new ApiException(409, 'CONFIRMARE_BEFORE_CUTOVER', 'No source can be activated before 2026-10-22 00:00 Europe/Bucharest.');
-        }
         $this->pdo->beginTransaction();
         try {
             $lock = $this->pdo->prepare("SELECT source_key FROM order_sources WHERE source_key = ? AND status = 'active' FOR UPDATE");
@@ -76,21 +188,10 @@ final readonly class WorkflowCohortActivation
             if ($lock->fetchColumn() === false) {
                 throw new ApiException(409, 'SOURCE_INACTIVE', 'The source is not registered or inactive.');
             }
-            $latest = WorkflowCohort::activation($this->pdo, $sourceKey, true);
-            $active = $latest !== null && $latest['action'] === WorkflowCohort::ACTION_ACTIVATED;
-            if ($action === WorkflowCohort::ACTION_ACTIVATED && $active) {
-                throw new ApiException(409, 'CONFIRMARE_ALREADY_ACTIVE', 'The source is already active for Confirmare.');
-            }
-            if ($action === WorkflowCohort::ACTION_SUSPENDED && !$active) {
-                throw new ApiException(409, 'CONFIRMARE_NOT_ACTIVE', 'The source is not active for Confirmare.');
-            }
-            if ($latest !== null && $now <= $latest['effectiveAt']) {
-                throw new ApiException(409, 'CONFIRMARE_CLOCK', 'The server clock is not after the latest recorded change.');
-            }
+            $effective = $check($now);
             $event = Uuid::v4();
-            $sql = $now->format('Y-m-d H:i:s.u');
             $this->pdo->prepare('INSERT INTO workflow_cohort_activations (event_uuid, source_key, action, effective_at, actor_label, reason, request_id, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-                ->execute([$event, $sourceKey, $action, $sql, $actor, $reason, $requestId, $sql]);
+                ->execute([$event, $sourceKey, $action, $effective->format('Y-m-d H:i:s.u'), $actor, $reason, $requestId, $now->format('Y-m-d H:i:s.u')]);
             $this->pdo->commit();
         } catch (\Throwable $error) {
             if ($this->pdo->inTransaction()) {
@@ -98,7 +199,7 @@ final readonly class WorkflowCohortActivation
             }
             throw $error;
         }
-        return ['sourceKey' => $sourceKey, 'action' => $action, 'effectiveAt' => $now->format('Y-m-d\TH:i:s.u\Z'), 'eventUuid' => $event];
+        return ['sourceKey' => $sourceKey, 'action' => $action, 'effectiveAt' => $effective->format('Y-m-d\TH:i:s.u\Z'), 'recordedAt' => $now->format('Y-m-d\TH:i:s.u\Z'), 'eventUuid' => $event];
     }
 
     /**
@@ -176,14 +277,19 @@ final readonly class WorkflowCohortActivation
             }
             $window[$history ? 'withProductionHistory' : 'withoutProductionHistory'][] = $entry;
         }
-        $active = $latest !== null && $latest['action'] === WorkflowCohort::ACTION_ACTIVATED;
+        $view = WorkflowCohort::heartbeatState($this->pdo, $sourceKey, $this->clock->now());
+        $everActivated = WorkflowCohort::firstActivation($this->pdo, $sourceKey) !== null;
+        $schedule = WorkflowCohort::pendingSchedule($this->pdo, $sourceKey);
+        $arming = $this->armingOf($sourceKey);
         return [
             'sourceKey' => $sourceKey,
             'businessCutover' => WorkflowCohort::BUSINESS_CUTOVER_UTC,
-            'state' => $latest === null ? 'inactive' : ($active ? 'active' : 'suspended'),
-            'activatedAt' => $active ? $latest['effectiveAt'] : null,
+            'state' => $view['state'],
+            'activatedAt' => $everActivated ? $view['activatedAt'] : null,
+            'scheduledAt' => $schedule === null ? null : $schedule->format('Y-m-d\TH:i:s.u\Z'),
+            'sourceArming' => $arming === null ? null : ['armedAt' => $arming['armedAt']->format('Y-m-d\TH:i:s.u\Z'), 'reportedAt' => $arming['reportedAt']->format('Y-m-d\TH:i:s.u\Z')],
             'permitted' => $source?->confirmarePermitted ?? false,
-            'configMismatch' => $active && !($source?->confirmarePermitted ?? false),
+            'configMismatch' => $everActivated && !($source?->confirmarePermitted ?? false),
             'workflowReady' => ConfirmationGate::WORKFLOW_READY,
             'history' => $events,
             'ordersByCohort' => $byCohort,

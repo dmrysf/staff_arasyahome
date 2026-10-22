@@ -20,10 +20,10 @@ Everything stays switched off. The Confirmare workflow that approves orders (Iri
 | Term | Value |
 |---|---|
 | Business transition date | 2026-10-22 00:00:00 Europe/Bucharest = `2026-10-21T21:00:00Z` (EEST, UTC+3) |
-| Actual activation | One instant per source. The operator CLI records it with the server clock, never typed in, and never earlier than the business date. |
-| Decisive instant | The source's **actual activation** |
+| Actual activation | One instant per source, set in two phases (see [Activation](#activation)) and never earlier than the business date. |
+| Decisive instant | The source's **first** actual activation |
 
-The latest `activated` row of the source has an instant A. Arasya then classifies each order it **creates** from the
+The source's first `activated` row has an instant A. Arasya then classifies each order it **creates** from the
 source's submission evidence T:
 
 | Evidence | Cohort | Reason |
@@ -31,13 +31,23 @@ source's submission evidence T:
 | T ≥ A | `confirmare` | `submitted_after_activation` |
 | T < A | `legacy` | `submitted_before_activation` |
 | Missing, unknown kind, T more than 5 min in the future, or a creation-date stand-in at or after A | `undetermined` (closed, reported) | `submission_evidence_*` |
-| The source was never activated, or is suspended | `legacy` | `not_activated` / `suspended` |
+| The source was never activated | `legacy` | `not_activated` |
 
 Comparisons use microsecond UTC instants. Source time zones never matter.
 
 An order the source submitted before its activation stays legacy, even when it was created on or after 22 October.
 This includes an order the established flow already received, documented or started. This follows the owner's
 final decision: the actual activation decides, not the fixed date.
+
+**Owner decision (2026-10-22): no way back to the legacy flow.**
+
+- After a source's first activation, an order submitted at or after A never goes to the legacy production flow.
+  This holds when the source is suspended, when the connection breaks, and when the source is resumed.
+- A suspension holds new orders safely: they stay Confirmare orders, closed and not distributed. It never hands
+  production back to the legacy flow.
+- A delayed event is classified by the order's original submission instant against the activation history, never by
+  its arrival time.
+- A recorded cohort never changes.
 
 ### What "submitted" means
 
@@ -115,12 +125,17 @@ Today the established flow receives an order when WooCommerce moves it to `proce
 Confirmare-cohort order is also received while it is unpaid (`pending`, `on-hold`), so it can be confirmed before a
 COD advance or a card payment.
 
-| First event | Activated source | Not activated or suspended |
+| First event | Activated once (active or suspended) | Never activated |
 |---|---|---|
 | `checkout-draft`, `auto-draft`, `draft` | `422 SOURCE_ORDER_DRAFT` | `422 SOURCE_ORDER_DRAFT` |
-| `pending` / `on-hold`, cohort `confirmare` | created, gated | n/a |
-| `pending` / `on-hold`, any other cohort | `409 SOURCE_INTAKE_NOT_ELIGIBLE`, nothing stored | created exactly as before |
-| `processing` (or later) | created; cohort decides the gate | created exactly as before (`legacy`) |
+| `pending` / `on-hold`, cohort `confirmare` (T ≥ A) | created, held closed | n/a |
+| `pending` / `on-hold`, any other cohort (T < A, or no proof) | `409 SOURCE_INTAKE_NOT_ELIGIBLE`, nothing stored | created exactly as before |
+| `processing` (or later) | created; the cohort decides the gate | created exactly as before (`legacy`) |
+
+- **Suspension.** A suspended source receives its new unpaid Confirmare orders like an active one. They are held,
+  never refused permanently.
+- **The only refusal.** Once a source has been activated, the only unpaid first event it refuses is one that is not
+  a Confirmare order. That order is sent again normally when it reaches `processing`.
 
 Further rules:
 
@@ -132,8 +147,11 @@ Further rules:
 
 ## Data (migration 035, additive, resumable)
 
-- `workflow_cohort_activations`: an append-only history (`activated` / `suspended`), one row per change, with the
-  server-clock instant, the actor label and the reason. A database CHECK forbids instants before the business date.
+- `workflow_cohort_activations`: an append-only history with the actions `scheduled`, `cancelled`, `activated` and
+  `suspended`. Each row holds its effective instant, the server-clock recording instant, the actor label and the
+  reason. A database CHECK forbids effective instants before the business date.
+- `workflow_cohort_arming`: the latest signed report of each source that its local fence is armed, as the heartbeat
+  field `confirmareArmedAt`.
 - `operational_orders`: nullable columns `workflow_cohort`, `workflow_cohort_reason`, `workflow_cohort_at`,
   `source_submitted_at`, `source_submission_evidence`. NULL means pre-cohort. The columns are added by one guarded
   ALTER, so a repeated or interrupted run is safe.
@@ -144,8 +162,19 @@ No existing row is rewritten.
 
 ## Contract additions (schema 1, optional, backward compatible)
 
-**Heartbeat.** The heartbeat adds `"confirmare": {"state": "inactive"|"active"|"suspended", "activatedAt": ISO-µs|null}`.
+**Heartbeat answer.** The heartbeat answer adds
+`"confirmare": {"state": "inactive"|"scheduled"|"active"|"suspended", "activatedAt": ISO-µs|null}`.
+
+| State | `activatedAt` |
+|---|---|
+| `scheduled` | The future instant. |
+| `active`, `suspended` | The **first** activation instant. |
+
 The value comes from the recorded history only. A source can never announce an activation itself.
+
+**Heartbeat request.** The heartbeat request may add `"confirmareArmedAt": ISO-µs`: the instant from which the source's
+local fence refuses legacy production. It is a report only, recorded in `workflow_cohort_arming`. It never activates
+anything.
 
 **Order.** The order adds `"submission": {"submittedAt": ISO-8601, "evidence": "checkout"|"store_api"|"admin"|"rest_api"|"observed"|"predates_recorder"}`.
 Both fields are required in the object, and unknown keys or kinds give `422 SOURCE_PAYLOAD_INVALID`.
@@ -167,31 +196,51 @@ Trend Home and Outlet Perdele are configured, activated and suspended independen
 ## Activation
 
 ```bash
-php bin/workflow-cohort.php --source=trendhome --status          # read-only
+php bin/workflow-cohort.php --source=trendhome --status          # read-only (state, schedule, the source's arming report)
 php bin/workflow-cohort.php --diagnose                           # read-only, both sources
-php bin/workflow-cohort.php --source=trendhome --activate --actor="Name" [--reason="..."]
+php bin/workflow-cohort.php --source=trendhome --schedule --at=2026-11-02T07:00:00Z --actor="Name" [--reason="..."]
+php bin/workflow-cohort.php --source=trendhome --activate --actor="Name"            # commits the scheduled instant
+php bin/workflow-cohort.php --source=trendhome --cancel   --actor="Name" --reason="..."
 php bin/workflow-cohort.php --source=trendhome --suspend  --actor="Name" --reason="..."
+php bin/workflow-cohort.php --source=trendhome --resume   --actor="Name" [--reason="..."]
 ```
 
-`--activate` is refused unless all of these hold:
+The first activation has two phases, so there is no unprotected window between the activation in Arasya and the
+source's local fence.
 
-- the Confirmare workflow exists (Phase 2);
-- the source is permitted and active for ingestion;
-- the business date has passed;
-- the source is not active already.
+1. **`--schedule --at=A`** records a future instant A. A must be at least 15 minutes ahead and never before the business
+   date. From then on every heartbeat answers `scheduled` with A. YD SOFT arms its local fence for A, before A, and
+   reports `confirmareArmedAt` with its next heartbeat. A schedule classifies nothing.
+2. **`--activate`** commits A. It is refused unless all of these hold:
+   - the source reported, after the schedule and within the last 15 minutes, a fence armed at or before A
+     (`CONFIRMARE_SOURCE_NOT_ARMED`);
+   - A is still at least one minute ahead (`CONFIRMARE_SCHEDULE_LAPSED`).
 
-`--suspend` makes new orders `legacy` (`suspended`) and keeps every existing Confirmare order closed. A later
-activation records a new instant.
+   From A on, every order submitted at or after A is a Confirmare order. The source already refuses legacy
+   production for it.
 
-Order of a future activation (Phase 2 or later, each step with its own approval):
+`--cancel` withdraws an uncommitted schedule.
+
+Every step is refused unless all of these hold:
+
+- the Confirmare workflow exists (`WORKFLOW_READY`);
+- the source is permitted and active for ingestion.
+
+`--suspend` holds new orders: they stay Confirmare orders, closed, and they are not distributed. Every existing
+Confirmare order stays closed. `--resume` ends the suspension, and the first instant A keeps protecting. A source is
+activated only once.
+
+Order of a future activation (each step with its own approval):
 
 1. Staff knows `confirmation_required` and `CONFIRMARE_NECESARA`.
 2. API 2.37+ and migration 035 are live.
-3. YD SOFT 2.12 is on both sites (the recorder runs before activation).
+3. YD SOFT 2.12 is on both sites. The recorder runs before activation.
 4. Set `ARASYA_SOURCE_CONFIRMARE_<SOURCE>=on`.
-5. Run `--activate`.
-6. Run "Testează conexiunea" on the site.
-7. Run `wp yd-arasya confirmare enable --yes` on the site.
+5. Run `--schedule --at=<A>`, at least 15 minutes ahead.
+6. Wait until `--status` shows the source's arming report at or before A.
+7. Run `--activate`, at least one minute before A.
+8. Optionally, on the site, run `wp yd-arasya confirmare enable --yes` for the unpaid intake. The site's legacy
+   production is already refused from A by the armed fence.
 
 ## Diagnosis (Objective F, read-only)
 
