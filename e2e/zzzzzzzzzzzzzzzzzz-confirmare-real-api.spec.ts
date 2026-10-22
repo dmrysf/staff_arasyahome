@@ -1,12 +1,13 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, request, test, type APIRequestContext, type Browser, type Page } from "@playwright/test";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
-// Confirmare Staff workspace (API 2.39.0, Staff 2.29.0) against the real Operations API, last of the suites (it
+// Confirmare Staff workspace (API 2.40.0, Staff 2.30.0) against the real Operations API, last of the suites (it
 // activates both shop sources in the disposable E2E database with the TEST override of WORKFLOW_READY). Covers the
-// operator's day (next step, queue, recorded calls, line and price review, approval), a shop change after the review,
+// operator's day (next step, queue, recorded calls, the shop's own order with the real telephone number and prices read
+// through source access from a loopback TEST shop, line and price review, approval), a shop change after the review,
 // a 409 after a supervisor's reassignment, the supervisor view, isolation of sources and channels, session expiry,
 // revoked access, a network interruption, layouts from 320 to 1920 px and WCAG 2.2 AA. Generic TEST people only.
 type Person = { username: string; name: string; id: string };
@@ -94,7 +95,7 @@ test("operator: next step, queue, recorded calls (never a cancellation), line an
   await expect(page.getByTestId("workspace-confirmare")).toBeVisible();
   await expect(page.getByTestId("cf-next-action")).toContainText(`#${number(F.orders.call)}`);
   await expect(page.getByTestId("cf-next-action")).toContainText("Sunați clientul");
-  await expect(page.getByTestId("cf-contact-dependency")).toContainText("nu este încă disponibil în Arasya");
+  await expect(page.getByTestId("cf-contact-dependency")).toContainText("Arasya nu păstrează telefonul complet");
   await capture(page, "home-operator-390");
 
   await page.getByTestId("cf-open-queue").click();
@@ -114,8 +115,9 @@ test("operator: next step, queue, recorded calls (never a cancellation), line an
   await expect(page.getByTestId("cf-order")).toBeVisible();
   await expect(page.getByTestId("cf-customer-facts")).toContainText("TEST Client Confirmare");
   await expect(page.getByTestId("cf-customer-facts")).toContainText("07** *** ***");
-  await expect(page.locator("body")).not.toContainText("0700000123");
-  await expect(page.getByTestId("cf-phone-unavailable")).toBeVisible();
+  await expect(page.locator("body"), "the full number is shown only on request").not.toContainText("0700000123");
+  await expect(page.getByTestId("cf-phone-in-shop")).toBeVisible();
+  await expect(page.getByTestId("cf-shop-load")).toBeVisible();
   await expect(page.getByTestId("cf-approve")).toBeDisabled();
   await expect(page.getByTestId("cf-checklist")).toContainText("Clientul a confirmat la telefon");
   await capture(page, "order-before-call-390");
@@ -136,6 +138,16 @@ test("operator: next step, queue, recorded calls (never a cancellation), line an
   await page.getByTestId("cf-line-confirm-2").check();
   await expect(page.getByTestId("cf-approve"), "no approval before the prices are reviewed").toBeDisabled();
   await page.getByTestId("cf-price-reviewed").check();
+  await expect(page.getByTestId("cf-approve"), "no approval before the shop order was read").toBeDisabled();
+  await expect(page.getByTestId("cf-checklist")).toContainText("Comanda din magazin a fost citită în Staff");
+  // The real number and the prices, read from the shop now (audited), never before.
+  await page.getByTestId("cf-shop-load").click();
+  await expect(page.getByTestId("cf-shop-view")).toBeVisible();
+  await expect(page.getByTestId("cf-shop-call-billing")).toHaveAttribute("href", "tel:0700000123");
+  await expect(page.getByTestId("cf-shop-in-sync")).toBeVisible();
+  await expect(page.getByTestId("cf-shop-total")).toContainText("719,00");
+  await expect(page.getByTestId("cf-shop-line-1")).toContainText("Manopera Rejansa Normal 6cm");
+  await capture(page, "order-shop-390");
   await expect(page.getByTestId("cf-approve")).toBeEnabled();
   await capture(page, "order-ready-390");
   await page.getByTestId("cf-approve").click();
@@ -163,6 +175,8 @@ test("a shop change after the review needs a fresh verification; a confirmed COD
   await page.getByTestId("cf-line-confirm-1").check();
   await page.getByTestId("cf-line-confirm-2").check();
   await page.getByTestId("cf-price-reviewed").check();
+  await page.getByTestId("cf-shop-load").click();
+  await expect(page.getByTestId("cf-shop-advance")).toContainText("Avans 30%");
   // The shop changes an option while the operator still looks at the old order.
   php([`--change=${number(F.orders.cod)}`]);
   await page.getByTestId("cf-approve").click();
@@ -173,11 +187,14 @@ test("a shop change after the review needs a fresh verification; a confirmed COD
   await expect(page.getByTestId("cf-price-reviewed")).not.toBeChecked();
   await expect(page.getByTestId("cf-approve")).toBeDisabled();
   await expect(page.getByTestId("cf-history")).toContainText("comanda s-a schimbat de atunci");
+  await expect(page.getByTestId("cf-shop-view"), "the old shop view is dropped with the old review").toHaveCount(0);
   await capture(page, "order-changed-in-shop-390");
   await recordCall(page, /^Confirmat/);
   await page.getByTestId("cf-line-confirm-1").check();
   await page.getByTestId("cf-line-confirm-2").check();
   await page.getByTestId("cf-price-reviewed").check();
+  await page.getByTestId("cf-shop-load").click();
+  await expect(page.getByTestId("cf-shop-in-sync")).toBeVisible();
   await page.getByTestId("cf-approve").click();
   await expect(page.getByRole("group", { name: /Aprobați comanda/ })).toContainText("producția rămâne blocată până când magazinul confirmă plata");
   await page.getByTestId("cf-approve-confirm").click();
@@ -197,6 +214,8 @@ test("409: a supervisor reassigns an order a colleague still has open; the colle
   const page = colleague.page;
   await page.goto(orderPath(F.orders.colleague));
   await expect(page.getByTestId("cf-record-call")).toBeVisible();
+  await page.getByTestId("cf-shop-load").click();
+  await expect(page.getByTestId("cf-shop-call-billing")).toBeVisible();
   const supervisor = await api(F.people.supervisor.username, F.password);
   const before = await detailOf(supervisor, F.orders.colleague);
   expect((await send(supervisor, "post", `/confirmare/orders/${encodeURIComponent(F.orders.colleague)}/reassign`, { expectedVersion: before.version, employeeId: F.people.operator.id })).status()).toBe(200);
@@ -206,6 +225,9 @@ test("409: a supervisor reassigns an order a colleague still has open; the colle
   await expect(page.getByTestId("cf-message")).toContainText("Comanda a fost modificată între timp");
   await expect(page.getByText(`Atribuită: ${F.people.operator.name}`).first()).toBeVisible();
   await expect(page.getByTestId("cf-record-call")).toHaveCount(0);
+  // The shop data goes with the access: the former assignee sees no telephone number any more.
+  await expect(page.getByTestId("cf-shop-not-yours")).toBeVisible();
+  await expect(page.locator("body")).not.toContainText("0700000123");
   const after = await detailOf(supervisor, F.orders.colleague);
   expect(after.events.some((event) => event.action === "approved")).toBe(false);
   expect(after.assignment?.employeeId).toBe(F.people.operator.id);
@@ -314,6 +336,110 @@ test("a network interruption keeps the last data; revoked access and an expired 
   await expect(page).toHaveURL(/\/login$/);
   await expect(page.getByText("Sesiunea a expirat. Autentifică-te din nou.")).toBeVisible();
   await op.context.close();
+});
+
+test("shop order: audited reads, never stored or logged in the browser, honest when the shop cannot answer", async ({ browser }) => {
+  test.skip(Boolean(F.skip), F.skip);
+  test.setTimeout(120_000);
+  const sup = await signIn(browser, F.people.supervisor.username);
+  const page = sup.page;
+  const consoleText: string[] = [];
+  page.on("console", (message) => consoleText.push(message.text()));
+  await page.goto(orderPath(F.orders.unassigned));
+  await page.getByTestId("cf-shop-load").click();
+  await expect(page.getByTestId("cf-shop-view")).toContainText("Citit ca supervizor");
+  await expect(page.getByTestId("cf-shop-call-billing")).toHaveAttribute("href", "tel:0700000123");
+  const stored = await page.evaluate(() => JSON.stringify({ local: { ...localStorage }, session: { ...sessionStorage }, url: location.href }));
+  expect(stored, "the telephone number never reaches browser storage or the URL").not.toContain("0700000123");
+  expect(consoleText.join("\n"), "nor the console").not.toContain("0700000123");
+  await page.getByTestId("cf-shop-hide").click();
+  await expect(page.locator("body")).not.toContainText("0700000123");
+  // The shop no longer knows the order: stated as such, nothing invented.
+  const shopFile = process.env.ARASYA_E2E_SHOP_FILE ?? "";
+  const shop = JSON.parse(readFileSync(shopFile, "utf8")) as { orders: Record<string, unknown> };
+  const kept = shop.orders[number(F.orders.unassigned)];
+  delete shop.orders[number(F.orders.unassigned)];
+  writeFileSync(shopFile, JSON.stringify(shop));
+  try {
+    await page.getByTestId("cf-shop-load").click();
+    await expect(page.getByTestId("cf-shop-unavailable")).toContainText("comanda nu a fost găsită în magazin");
+    await capture(page, "order-shop-unavailable-390");
+  } finally {
+    shop.orders[number(F.orders.unassigned)] = kept;
+    writeFileSync(shopFile, JSON.stringify(shop));
+  }
+  // A store without source access says so; nothing to read.
+  const outlet = await signIn(browser, F.people.outlet.username);
+  await outlet.page.goto(orderPath(F.orders.outlet));
+  await expect(outlet.page.getByTestId("cf-shop-off")).toBeVisible();
+  await expect(outlet.page.getByTestId("cf-phone-unavailable")).toBeVisible();
+  await outlet.context.close();
+  // Every read was audited server-side; the API answers no-store.
+  const who = await api(F.people.supervisor.username, F.password);
+  const read = await who.ctx.get(`/confirmare/orders/${encodeURIComponent(F.orders.unassigned)}/source`);
+  expect(read.status()).toBe(200);
+  expect(read.headers()["cache-control"]).toContain("no-store");
+  for (const width of [320, 768, 1440]) {
+    await page.setViewportSize({ width, height: width < 768 ? 844 : 1000 });
+    await page.getByTestId("cf-shop-load").click();
+    await expect(page.getByTestId("cf-shop-view")).toBeVisible();
+    await page.waitForTimeout(150);
+    expect(await overflow(page), `shop order at ${width}px`).toBeLessThanOrEqual(0);
+    await capture(page, `order-shop-${width}`);
+    await accessible(page, `shop order ${width}`);
+  }
+  expect(sup.errors).toEqual([]);
+  await sup.context.close();
+});
+
+test("shop edit (Phase 4B): the shop prices the change, one explicit save, the approval waits for the shop's update", async ({ browser }) => {
+  test.skip(Boolean(F.skip), F.skip);
+  test.setTimeout(120_000);
+  const sup = await signIn(browser, F.people.supervisor.username);
+  const page = sup.page;
+  await page.goto(orderPath(F.orders.unassigned));
+  await expect(page.getByTestId("cf-edit-start"), "the shop order is read first").toBeDisabled();
+  await page.getByTestId("cf-shop-load").click();
+  await expect(page.getByTestId("cf-shop-total")).toContainText("719,00");
+  await page.getByTestId("cf-edit-start").click();
+  const lineId = `${Number(number(F.orders.unassigned)) * 10 + 1}`;
+  const length = page.getByTestId(`cf-edit-${lineId}-lungimea`);
+  await expect(length).toHaveValue("3");
+  await expect(page.getByTestId("cf-edit-preview"), "nothing changed, nothing to calculate").toBeDisabled();
+  await length.fill("15");
+  await expect(page.getByTestId("cf-edit-preview"), "a value outside the shop's limits is never sent").toBeDisabled();
+  await length.fill("3,5");
+  await page.getByTestId("cf-edit-preview").click();
+  await expect(page.getByTestId("cf-edit-preview-view")).toBeVisible();
+  await expect(page.getByTestId("cf-edit-new-total")).toContainText("754,00");
+  await expect(page.getByTestId("cf-edit-impact-additional_payment_due")).toBeVisible();
+  await expect(page.getByTestId("cf-edit-apply"), "the save needs the customer's explicit agreement").toBeDisabled();
+  await capture(page, "order-edit-preview-390");
+  await accessible(page, "shop edit preview 390");
+  await page.getByTestId("cf-edit-confirm").check();
+  await page.getByTestId("cf-edit-apply").dblclick();
+  await expect(page.getByTestId("cf-edit-result")).toContainText("Modificarea a fost salvată în magazin");
+  await expect(page.getByTestId("cf-shop-view"), "the old shop prices are dropped").toHaveCount(0);
+  await expect(page.getByTestId("cf-edit-waiting")).toBeVisible();
+  await expect(page.getByTestId("cf-checklist")).toContainText("Modificarea din magazin este confirmată");
+  await capture(page, "order-edit-applied-390");
+  // Saved once (a double click is one edit), audited server-side; the approval waits for the shop's order update.
+  const who = await api(F.people.supervisor.username, F.password);
+  const detail = await (await who.ctx.get(`/confirmare/orders/${encodeURIComponent(F.orders.unassigned)}`)).json() as { sourceAccess: { changePending: boolean } };
+  expect(detail.sourceAccess.changePending).toBe(true);
+  const shop = JSON.parse(readFileSync(process.env.ARASYA_E2E_SHOP_FILE ?? "", "utf8")) as { edits: Record<string, { status: number }> };
+  expect(Object.values(shop.edits).filter((edit) => edit.status === 200), "one applied edit in the shop").toHaveLength(1);
+  const blocked = await send(who, "post", `/confirmare/orders/${encodeURIComponent(F.orders.unassigned)}/source/preview`, { expectedVersion: `sha256:${"0".repeat(64)}`, operations: [{ op: "update_line", lineId, fields: { lungimea: "4" } }] });
+  expect(blocked.status()).toBe(409);
+  expect((await blocked.json()).error.code).toBe("CONFIRMARE_SHOP_CHANGE_PENDING");
+  for (const width of [320, 1440]) {
+    await page.setViewportSize({ width, height: width < 768 ? 844 : 1000 });
+    await page.waitForTimeout(150);
+    expect(await overflow(page), `shop edit at ${width}px`).toBeLessThanOrEqual(0);
+    await capture(page, `order-edit-applied-${width}`);
+  }
+  expect(sup.errors).toEqual([]);
+  await sup.context.close();
 });
 
 test("layouts from 320 to 1920 px without horizontal scrolling, WCAG 2.2 AA and 44 px targets", async ({ browser }) => {

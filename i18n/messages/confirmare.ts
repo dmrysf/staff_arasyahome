@@ -49,7 +49,7 @@ export const confirmareRO = {
   "cf.customer.hidden": "Datele clientului sunt vizibile doar colegului căruia îi este atribuită comanda și supervizorului.",
   "cf.customer.name": "Destinatar",
   "cf.customer.phone": "Telefon (mascat)",
-  "cf.customer.phoneUnavailable": "Numărul complet de telefon nu este disponibil în Arasya. Accesul securizat la datele de contact din magazin este o etapă separată, încă neaprobată; până atunci numărul se ia din comanda din magazin.",
+  "cf.customer.phoneUnavailable": "Numărul complet de telefon nu este păstrat în Arasya și accesul la comanda din magazin nu este pornit pentru acest magazin: numărul se ia din comanda din magazin.",
   "cf.customer.title": "Client",
 
   "cf.done.approve": "Comanda a fost aprobată.",
@@ -111,7 +111,7 @@ export const confirmareRO = {
   "cf.history.title": "Istoric",
 
   "cf.home.allOrders": "Toate comenzile",
-  "cf.home.contactDependency": "Telefonul complet al clientului nu este încă disponibil în Arasya: îl găsiți în comanda din magazin. Accesul direct și securizat este o etapă viitoare, încă neaprobată.",
+  "cf.home.contactDependency": "Arasya nu păstrează telefonul complet al clientului. Unde accesul la magazin este pornit, îl vedeți în comandă, la „Comanda din magazin”, doar la cerere; altfel îl găsiți în comanda din magazin.",
   "cf.home.metrics": "Starea comenzilor de confirmat",
   "cf.home.mineEyebrow": "Coada mea",
   "cf.home.mineTitle": "Comenzile mele",
@@ -354,7 +354,7 @@ export const confirmareEN = {
   "cf.customer.hidden": "Customer details are visible only to the colleague the order is assigned to and to the supervisor.",
   "cf.customer.name": "Recipient",
   "cf.customer.phone": "Telephone (masked)",
-  "cf.customer.phoneUnavailable": "The full telephone number is not available in Arasya. Secure access to the shop's contact data is a separate step, not approved yet; until then the number is taken from the shop order.",
+  "cf.customer.phoneUnavailable": "Arasya does not keep the full telephone number and access to the shop order is not switched on for this shop: take the number from the shop order.",
   "cf.customer.title": "Customer",
 
   "cf.done.approve": "The order was approved.",
@@ -416,7 +416,7 @@ export const confirmareEN = {
   "cf.history.title": "History",
 
   "cf.home.allOrders": "All orders",
-  "cf.home.contactDependency": "The customer's full telephone number is not yet available in Arasya: find it in the shop order. Direct, secure access is a future step that is not approved yet.",
+  "cf.home.contactDependency": "Arasya does not keep the customer's full telephone number. Where shop access is switched on, you see it in the order under \"Shop order\", only on request; otherwise find it in the shop order.",
   "cf.home.metrics": "Orders to confirm",
   "cf.home.mineEyebrow": "My queue",
   "cf.home.mineTitle": "My orders",
@@ -659,7 +659,7 @@ export const confirmareTR = {
   "cf.customer.hidden": "Müşteri bilgilerini yalnızca siparişin atandığı çalışan ve süpervizör görür.",
   "cf.customer.name": "Alıcı",
   "cf.customer.phone": "Telefon (maskeli)",
-  "cf.customer.phoneUnavailable": "Tam telefon numarası Arasya'da yok. Mağazadaki iletişim bilgilerine güvenli erişim ayrı ve henüz onaylanmamış bir adımdır; o zamana kadar numara mağazadaki siparişten alınır.",
+  "cf.customer.phoneUnavailable": "Arasya tam telefon numarasını saklamaz ve bu mağaza için mağazadaki siparişe erişim açık değil: numara mağazadaki siparişten alınır.",
   "cf.customer.title": "Müşteri",
 
   "cf.done.approve": "Sipariş onaylandı.",
@@ -721,7 +721,7 @@ export const confirmareTR = {
   "cf.history.title": "Geçmiş",
 
   "cf.home.allOrders": "Tüm siparişler",
-  "cf.home.contactDependency": "Müşterinin tam telefon numarası henüz Arasya'da yok: mağazadaki siparişte bulabilirsiniz. Doğrudan ve güvenli erişim ileride, henüz onaylanmamış bir adımdır.",
+  "cf.home.contactDependency": "Arasya müşterinin tam telefon numarasını saklamaz. Mağaza erişimi açıksa numarayı siparişte, \"Mağazadaki sipariş\" bölümünde yalnızca istendiğinde görürsünüz; değilse mağazadaki siparişte bulursunuz.",
   "cf.home.metrics": "Onaylanacak siparişler",
   "cf.home.mineEyebrow": "Kuyruğum",
   "cf.home.mineTitle": "Siparişlerim",
@@ -964,7 +964,7 @@ export const confirmareSI = {
   "cf.customer.hidden": "පාරිභෝගික විස්තර පෙනෙන්නේ ඇණවුම පවරා ඇති සගයාට සහ අධීක්ෂකයාට පමණි.",
   "cf.customer.name": "ලබන්නා",
   "cf.customer.phone": "දුරකථනය (වසන ලද)",
-  "cf.customer.phoneUnavailable": "සම්පූර්ණ දුරකථන අංකය Arasya හි නැත. වෙළඳසැලේ සම්බන්ධතා දත්තවලට ආරක්ෂිත ප්‍රවේශය වෙනම, තවම අනුමත නොකළ පියවරකි; එතෙක් අංකය වෙළඳසැලේ ඇණවුමෙන් ගනු ලැබේ.",
+  "cf.customer.phoneUnavailable": "Arasya සම්පූර්ණ දුරකථන අංකය තබා නොගන්නා අතර මෙම වෙළඳසැල සඳහා වෙළඳසැලේ ඇණවුමට ප්‍රවේශය සක්‍රිය කර නැත: අංකය වෙළඳසැලේ ඇණවුමෙන් ගන්න.",
   "cf.customer.title": "පාරිභෝගිකයා",
 
   "cf.done.approve": "ඇණවුම අනුමත කරන ලදී.",
@@ -1026,7 +1026,7 @@ export const confirmareSI = {
   "cf.history.title": "ඉතිහාසය",
 
   "cf.home.allOrders": "සියලු ඇණවුම්",
-  "cf.home.contactDependency": "පාරිභෝගිකයාගේ සම්පූර්ණ දුරකථන අංකය තවම Arasya හි නැත: එය වෙළඳසැලේ ඇණවුමෙන් සොයා ගන්න. සෘජු, ආරක්ෂිත ප්‍රවේශය තවම අනුමත නොකළ අනාගත පියවරකි.",
+  "cf.home.contactDependency": "Arasya පාරිභෝගිකයාගේ සම්පූර්ණ දුරකථන අංකය තබා නොගනී. වෙළඳසැල් ප්‍රවේශය සක්‍රිය නම්, එය ඇණවුමේ \"වෙළඳසැලේ ඇණවුම\" හි ඉල්ලූ විට පමණක් දැකිය හැක; නැතහොත් වෙළඳසැලේ ඇණවුමෙන් සොයා ගන්න.",
   "cf.home.metrics": "තහවුරු කළ යුතු ඇණවුම්",
   "cf.home.mineEyebrow": "මගේ පෝලිම",
   "cf.home.mineTitle": "මගේ ඇණවුම්",

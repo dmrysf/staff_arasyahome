@@ -365,7 +365,7 @@ test('signed heartbeat reports mode and contract only, for validation and active
     $pdo->exec("CREATE TABLE workflow_cohort_activations (source_key TEXT NOT NULL, action TEXT NOT NULL, effective_at TEXT NOT NULL, recorded_at TEXT NOT NULL)");
     foreach (['trendhome' => [SOURCE_TEST_TRENDHOME_SECRET, 'active'], 'outletperdele' => [SOURCE_TEST_OUTLET_SECRET, 'validation']] as $key => [$secret, $mode]) {
         $response = $controller->heartbeat(sourceSignedRequest(['sentAt' => '2026-10-07T10:00:00Z'], $secret), $key);
-        expect($response->payload === ['ok' => true, 'sourceKey' => $key, 'mode' => $mode, 'productionAuthorityMode' => 'legacy', 'qrAuthorityMode' => 'legacy', 'documentAuthorityMode' => 'legacy', 'trackingAuthorityMode' => 'legacy', 'paymentGateMode' => 'off', 'confirmare' => ['state' => 'inactive', 'activatedAt' => null], 'orderFacts' => ['pricing', 'dueDate', 'financial'], 'contract' => ['schemaVersion' => 1, 'workflowId' => 'curtain-production', 'workflowVersion' => 1, 'stageCount' => 14]], 'Unexpected heartbeat: ' . sourceJson($response));
+        expect($response->payload === ['ok' => true, 'sourceKey' => $key, 'mode' => $mode, 'productionAuthorityMode' => 'legacy', 'qrAuthorityMode' => 'legacy', 'documentAuthorityMode' => 'legacy', 'trackingAuthorityMode' => 'legacy', 'paymentGateMode' => 'off', 'confirmare' => ['state' => 'inactive', 'activatedAt' => null], 'orderFacts' => ['pricing', 'dueDate', 'financial', 'contact', 'financialAttention'], 'contract' => ['schemaVersion' => 1, 'workflowId' => 'curtain-production', 'workflowVersion' => 1, 'stageCount' => 14]], 'Unexpected heartbeat: ' . sourceJson($response));
         expect(sourceResponseHasNoSecret($response));
     }
     $contacts = $pdo->query('SELECT COUNT(*) FROM order_sources WHERE last_contact_at IS NOT NULL')->fetchColumn();
@@ -547,10 +547,10 @@ test('expected API errors and validation are unchanged by the PDO diagnostics', 
     expect(!array_key_exists('exception', $warning) && !array_key_exists('sqlstate', $warning) && !array_key_exists('driver_code', $warning));
 });
 
-test('migrations stay ordered through 037 and the canonical workflow keeps its 14 stages', function (): void {
+test('migrations stay ordered through 038 and the canonical workflow keeps its 14 stages', function (): void {
     $migrations = array_map('basename', glob(dirname(__DIR__) . '/database/migrations/*.sql') ?: []);
     // 032-034 are reserved by open pull requests (line readiness, cancellation control and sync); 035 follows them.
-    expect(count($migrations) === 34 && $migrations[33] === '037_confirmare_contacts.sql' && $migrations[32] === '036_confirmare_operations.sql' && $migrations[31] === '035_workflow_cohort.sql' && $migrations[30] === '031_production_assisted_checkpoints.sql' && $migrations[29] === '030_production_route_reconciliation.sql' && $migrations[28] === '029_production_manifest_routing.sql' && $migrations[27] === '028_production_work_units.sql' && $migrations[23] === '024_tailoring_quality_supervision.sql' && $migrations[24] === '025_source_payment_gate.sql' && $migrations[25] === '026_trendyol_product_identity.sql' && $migrations[26] === '027_employee_staff_locale.sql' && str_starts_with($migrations[0], '001_') && str_starts_with($migrations[16], '017_') && $migrations[17] === '018_production_authority.sql' && $migrations[18] === '019_production_qr_authority.sql' && $migrations[19] === '020_production_document_authority.sql' && $migrations[20] === '021_document_scopes.sql' && $migrations[21] === '022_trendyol_intake.sql' && $migrations[22] === '023_source_scoped_stage_authorization.sql');
+    expect(count($migrations) === 35 && $migrations[34] === '038_confirmare_source_access.sql' && $migrations[33] === '037_confirmare_contacts.sql' && $migrations[32] === '036_confirmare_operations.sql' && $migrations[31] === '035_workflow_cohort.sql' && $migrations[30] === '031_production_assisted_checkpoints.sql' && $migrations[29] === '030_production_route_reconciliation.sql' && $migrations[28] === '029_production_manifest_routing.sql' && $migrations[27] === '028_production_work_units.sql' && $migrations[23] === '024_tailoring_quality_supervision.sql' && $migrations[24] === '025_source_payment_gate.sql' && $migrations[25] === '026_trendyol_product_identity.sql' && $migrations[26] === '027_employee_staff_locale.sql' && str_starts_with($migrations[0], '001_') && str_starts_with($migrations[16], '017_') && $migrations[17] === '018_production_authority.sql' && $migrations[18] === '019_production_qr_authority.sql' && $migrations[19] === '020_production_document_authority.sql' && $migrations[20] === '021_document_scopes.sql' && $migrations[21] === '022_trendyol_intake.sql' && $migrations[22] === '023_source_scoped_stage_authorization.sql');
     expect(count(CanonicalProductionWorkflowContract::STAGES) === 14);
     expect(array_keys(CanonicalProductionWorkflowContract::STAGES) === ['waiting', 'material-preparation', 'workshop-receiving', 'labeling', 'material-straightening', 'bottom-hem', 'side-hem', 'ironing', 'height', 'header-tape', 'sewing-finishing', 'quality-control', 'packing', 'delivery']);
     // 018 is additive: it never converts the authority of existing orders.
@@ -606,6 +606,13 @@ test('migrations stay ordered through 037 and the canonical workflow keeps its 1
     expect(preg_match('/\b(UPDATE|DELETE|DROP|TRUNCATE|RENAME|INSERT|MODIFY|CHANGE|ALTER)\b/i', $contacts) === 0 && substr_count($contacts, 'CREATE TABLE IF NOT EXISTS') === 1
         && str_contains($contacts, 'order_confirmation_contacts') && str_contains($contacts, "CHECK (outcome IN ('confirmed', 'no_answer', 'callback', 'needs_correction'))")
         && preg_match('/duration|recording|phone|email|note|comment|text/i', $contacts) === 0, '037 must only create the append-only contact table, without customer data or free text.');
+    // 038 adds two append-only audit tables and three nullable columns (guarded): no row written, nothing granted, no
+    // order touched, and no column that could hold a telephone number or an amount.
+    $access = preg_replace(['/^\s*--.*$/m', '/ON (UPDATE|DELETE) RESTRICT/'], '', (string) file_get_contents(dirname(__DIR__) . '/database/migrations/038_confirmare_source_access.sql'));
+    expect(preg_match('/\b(UPDATE|DELETE|DROP|TRUNCATE|RENAME|INSERT|MODIFY|CHANGE)\b/i', $access) === 0 && substr_count($access, 'CREATE TABLE IF NOT EXISTS') === 2
+        && preg_match_all('/ALTER TABLE ([a-z_]+)/i', $access, $accessAlters) === 1 && $accessAlters[1] === ['operational_orders'] && substr_count($access, 'ADD COLUMN') === 2
+        && str_contains($access, "column_name = 'source_contact_phone'") && substr_count($access, "'DO 0'") === 1
+        && preg_match('/phone_number|amount|price|total|email|address|body|payload/i', $access) === 0, '038 must only add its audit tables and the nullable contact and attention facts, guarded, without customer data.');
 });
 
 test('payment gate mode is per source, defaults to off and an unreadable value falls back to off', function (): void {

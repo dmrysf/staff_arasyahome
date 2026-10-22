@@ -134,7 +134,7 @@ foreach (['trendhome', 'outletperdele'] as $src) {
     T::ingest($kernel, $src, ['sentAt' => gmdate('Y-m-d\TH:i:s\Z'), 'confirmareArmedAt' => $iso($activatedAt)], null, null, 'heartbeat');
     $activation($activatedAt->modify('-1 minute'))->activate($registry->find($src), 'Test Owner', 'staff test', 'cs-test', true);
 }
-$base = 870000 + random_int(0, 8999) * 10;
+$base = T::freeOrderBase($pdo, 870000, 899999, 100); // ids base+1..base+80; a block no earlier run used
 $id = static fn (int $n): string => (string) ($base + $n);
 $th = static fn (int $n): string => 'trendhome:' . $id($n);
 $submitted = static fn (int $seconds): array => ['submittedAt' => $iso($activatedAt->modify("+{$seconds} seconds")), 'evidence' => 'checkout'];
@@ -147,7 +147,29 @@ $check($service->distribute()['assigned'] === 9, 'the server distributes (never 
 // ---- 3. The queue: no personal data, no legacy, no other channel, no other source ----------------------------------
 $poolA = $ok($get($opA, '/confirmare/pool', ['view' => 'mine']), 'pool A');
 $poolJson = json_encode($poolA, JSON_UNESCAPED_UNICODE);
-$check(!str_contains($poolJson, 'Popescu') && !str_contains($poolJson, '0744') && !str_contains($poolJson, 'Exemplu') && !str_contains($poolJson, 'Brașov'), 'the queue carries no customer data');
+// The customer's telephone number (0744123987) in any notation, whole or in part: a number of its own that starts with
+// the prefix (0744, +40 744, (0744) 123-987, also a partly masked "0744 *** 987") or ends in the subscriber digits
+// (…123987). Separators between
+// digits are dropped first, so spaced, dotted or dashed notations count too. A bare substring test for "0744" also
+// matched random fingerprint hex digits, UUIDs and microsecond timestamps; those are part of longer tokens and never stand
+// alone.
+$leaksPhone = static function (mixed $value) use (&$leaksPhone): bool {
+    if (is_array($value)) {
+        foreach ($value as $v) if ($leaksPhone($v)) return true;
+        return false;
+    }
+    if (!is_string($value) && !is_int($value)) return false;
+    // A UUID is an identifier, never a telephone number; its all-digit groups would otherwise join across the dashes.
+    $text = preg_replace('/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i', ' ', str_replace(['(', ')'], ' ', (string) $value));
+    $compact = preg_replace('/(?<=[0-9])[\s.\-\/]+(?=[0-9])/u', '', $text);
+    return preg_match('/(?<![0-9A-Za-z])(?:(?:\+?40|0)744[0-9]*|744[0-9]{3,})(?![0-9A-Za-z])/', $compact) === 1
+        || preg_match('/(?<![0-9A-Za-z])[0-9+]*123987(?![0-9A-Za-z])/', $compact) === 1;
+};
+$check($leaksPhone(['p' => '0744123987']) && $leaksPhone(['p' => '+40 744 123 987']) && $leaksPhone(['p' => '(0744) 123-987']) && $leaksPhone(['p' => 'tel. 0744.123.987'])
+    && $leaksPhone(['p' => '0744 123']) && $leaksPhone(['p' => '0744 *** 987']) && $leaksPhone(['p' => '*** 123987']) && $leaksPhone([['n' => 744123987]])
+    && !$leaksPhone(['fingerprint' => 'c90744123987ab' . str_repeat('0', 50), 'at' => '2026-10-22T11:05:50.744123Z', 'id' => '5d0e0744-1239-4870-a1b2-0744123987ff', 'masked' => '07** *** ***']),
+    'the telephone probe finds the number in any notation and ignores hex digits, timestamps and the masked form');
+$check(!str_contains($poolJson, 'Popescu') && !$leaksPhone($poolA) && !str_contains($poolJson, 'Exemplu') && !str_contains($poolJson, 'Brașov'), 'the queue carries no customer data');
 $check(array_filter($poolA['items'], static fn (array $i): bool => $i['sourceKey'] !== 'trendhome') === [], 'an operator\'s queue holds only their source');
 $supAll = $ok($get($sup, '/confirmare/pool', ['view' => 'all']), 'supervisor all');
 $supIds = array_column($supAll['items'], 'globalOrderId');

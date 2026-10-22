@@ -26,6 +26,7 @@ use Arasya\Operations\Tests\OperationsTestSupport as T;
 require dirname(__DIR__) . '/bootstrap.php';
 require __DIR__ . '/OperationsTestSupport.php';
 require __DIR__ . '/TestDoubles.php';
+require_once __DIR__ . '/HandoffSchemaFixture.php';
 
 $dbName = T::requireTestDatabase();
 if ($dbName === null) {
@@ -167,7 +168,7 @@ $intake = static function (string $globalId) use ($call, $cutter, $qr, $one, &$u
 $generate = static fn (string $globalId): array => $call($docs, 'POST', '/production-documents/orders/' . rawurlencode($globalId) . '/generate', ['expectedDocumentVersion' => 0]);
 $stage = static fn (string $globalId): string => (string) $one('SELECT production_stage_id FROM operational_orders WHERE global_order_id = ?', [$globalId]);
 $activation = static fn (DateTimeImmutable $at): WorkflowCohortActivation => new WorkflowCohortActivation($pdo, new MutableClock($at));
-$base = 760000 + random_int(0, 8999) * 10;
+$base = T::freeOrderBase($pdo, 760000, 859999, 400); // ids base+1..base+305; a block no earlier run used
 $id = static fn (int $n): string => (string) ($base + $n);
 $th = static fn (int $n): string => 'trendhome:' . $id($n);
 $op = static fn (int $n): string => 'outletperdele:' . $id($n);
@@ -232,7 +233,7 @@ $poolA = $ok($pool($opA), 'pool A');
 $check(count($poolA['items']) === 23 && !in_array($th(130), $idsOf($poolA), true) && array_filter($idsOf($poolA), static fn (string $g): bool => str_starts_with($g, 'outletperdele:')) === [], 'an operator sees the unassigned Confirmare orders of their source only (no undetermined, no other source)');
 $check(array_slice($idsOf($poolA), 0, 3) === [$th(121), $th(115), $th(100)] && $poolA['items'][0]['dueDate'] === '2026-10-30', 'the nearest due date first, then stable FIFO');
 $check($poolA['items'][2]['payment']['state'] === 'waiting' && $poolA['items'][3]['payment']['state'] === 'online' && $poolA['items'][0]['productionCleared'] === false, 'the payment state only, never an amount');
-$check($poolA['items'][2]['financial'] === ['state' => 'waiting', 'basis' => null, 'open' => false] && $poolA['items'][3]['financial'] === ['state' => 'cleared', 'basis' => 'online_payment', 'open' => true], 'the financial clearance state and basis only');
+$check($poolA['items'][2]['financial'] === ['state' => 'waiting', 'basis' => null, 'attention' => null, 'open' => false] && $poolA['items'][3]['financial'] === ['state' => 'cleared', 'basis' => 'online_payment', 'attention' => null, 'open' => true], 'the financial clearance state and basis only (API 2.40.0: and the attention, none here)');
 $check(!str_contains(json_encode($poolA), 'Ionescu') && !str_contains(json_encode($poolA), '0722999111') && !str_contains(json_encode($poolA), 'Str. Test'), 'the pool carries no customer data');
 $check($idsOf($ok($pool($opC), 'pool C')) === [$op(200), $op(201)], 'a Dashboard operator of the other source sees only that source');
 $supAll = $ok($pool($sup, 'all'), 'pool supervisor all');
@@ -335,7 +336,20 @@ $error($send('trendhome', $payload($finId, 'processing', null, $cod('confirmed',
 $finSend($cod('confirmed', 1), ['state' => 'unknown', 'basis' => null, 'pricingFingerprint' => null], ['price' => 'b']);
 $check(in_array('payment', $missingOf($fin), true), 'an unknown financial state stays closed');
 $error($intake($fin), 409, 'CONFIRMARE_NECESARA', 'and production never starts on it');
-$check($detail($sup, $fin)['financial'] === ['state' => 'unknown', 'basis' => null, 'open' => false] && !str_contains(json_encode($detail($sup, $fin)), '450'), 'the view shows the state and basis only');
+// The refused amount must not surface anywhere in the view: no "amount" key and no value holding 450 as a number of its
+// own (450, "450", "450.00", "450,00 lei"). A bare substring test also matched random fingerprint hex digits and
+// microsecond timestamps (about one run in twenty), so every scalar is checked as a token instead.
+$leaksAmount = static function (mixed $value, int|string|null $key = null) use (&$leaksAmount): bool {
+    if (is_string($key) && stripos($key, 'amount') !== false) return true;
+    if (is_array($value)) {
+        foreach ($value as $k => $v) if ($leaksAmount($v, $k)) return true;
+        return false;
+    }
+    return (is_int($value) || is_float($value)) ? (float) $value === 450.0 : (is_string($value) && preg_match('/(?<![0-9A-Za-z.])450(?:[.,][0-9]{1,2})?(?![0-9A-Za-z])/', $value) === 1);
+};
+$check($leaksAmount(['x' => 450]) && $leaksAmount(['total' => '450.00']) && $leaksAmount(['paidAmount' => null]) && $leaksAmount(['note' => 'avans 450,00 lei']) && !$leaksAmount(['fingerprint' => 'a4503f', 'at' => '2026-10-22T11:05:50.450123Z']), 'the amount probe finds an amount and ignores hex digits and timestamps');
+$finView = $detail($sup, $fin);
+$check($finView['financial'] === ['state' => 'unknown', 'basis' => null, 'attention' => null, 'open' => false] && !$leaksAmount($finView), 'the view shows the state and basis only');
 // Legacy orders keep the advance payment gate unchanged: the financial clearance is never read for them.
 $ok($send('trendhome', $payload($id(140), 'processing', $submitted($activatedAt->modify('-1 hour')), $online, ['financial' => ['state' => 'unknown', 'basis' => null, 'pricingFingerprint' => null]])), 'legacy order with an unknown financial clearance');
 $ok($generate($th(140)), 'a legacy online order still gets its document through the advance payment gate', 201);
@@ -611,6 +625,8 @@ $pdo->exec('DELETE FROM employee_confirmare_scopes');
 $pdo->exec('DELETE FROM confirmare_operator_state');
 $pdo->exec('UPDATE operational_orders SET workflow_cohort = NULL, workflow_cohort_reason = NULL, workflow_cohort_at = NULL WHERE workflow_cohort IS NOT NULL');
 // An interrupted 036 (tables created, the ALTER not applied) completes on the next run.
+// 038 builds on the 036 columns; take it off first and re-apply it after the 036 re-run.
+restorePreConfirmareSourceAccessTestSchema($pdo);
 $pdo->exec('ALTER TABLE order_confirmations DROP CONSTRAINT chk_order_confirmations_cleared, DROP FOREIGN KEY fk_order_confirmations_caller, DROP CONSTRAINT chk_order_confirmations_reason, DROP CONSTRAINT chk_order_confirmations_assigned_pending, DROP CONSTRAINT chk_order_confirmations_assignment,
     DROP FOREIGN KEY fk_order_confirmations_assignee, DROP KEY idx_order_confirmations_assignee, DROP COLUMN cleared_at, DROP COLUMN production_cleared, DROP COLUMN approved_review_fingerprint, DROP COLUMN confirmed_line_ids,
     DROP COLUMN call_confirmed_by_employee_uuid, DROP COLUMN call_confirmed_at, DROP COLUMN decision_reason_code, DROP COLUMN assignment_kind, DROP COLUMN assigned_at, DROP COLUMN assigned_employee_uuid');
@@ -618,6 +634,9 @@ $pdo->exec('ALTER TABLE operational_orders DROP CONSTRAINT chk_operational_order
     DROP CONSTRAINT chk_operational_orders_financial_state, DROP COLUMN source_financial_pricing, DROP COLUMN source_financial_basis, DROP COLUMN source_financial_state');
 $pdo->exec('ALTER TABLE operational_orders DROP CONSTRAINT chk_operational_orders_pricing_fingerprint, DROP COLUMN source_due_date, DROP COLUMN source_pricing_fingerprint');
 (new SqlFileRunner($pdo))->run(dirname(__DIR__) . '/database/migrations/036_confirmare_operations.sql');
+(new SqlFileRunner($pdo))->run(dirname(__DIR__) . '/database/migrations/038_confirmare_source_access.sql');
+$pdo->prepare('INSERT INTO schema_migrations (migration_name, checksum, applied_at) VALUES (:name, :checksum, UTC_TIMESTAMP(6))')
+    ->execute(['name' => '038_confirmare_source_access.sql', 'checksum' => hash_file('sha256', dirname(__DIR__) . '/database/migrations/038_confirmare_source_access.sql')]);
 $check((int) $one("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'order_confirmations' AND column_name IN ('assigned_employee_uuid', 'assigned_at', 'assignment_kind', 'decision_reason_code', 'call_confirmed_at', 'confirmed_line_ids', 'approved_review_fingerprint', 'production_cleared')") === 8
     && (int) $one("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'operational_orders' AND column_name IN ('source_pricing_fingerprint', 'source_due_date', 'source_financial_state', 'source_financial_basis', 'source_financial_pricing')") === 5, 'an interrupted 036 completes on the next run');
 

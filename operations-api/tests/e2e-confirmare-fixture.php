@@ -10,6 +10,9 @@ declare(strict_types=1);
 //
 //   php e2e-confirmare-fixture.php                 seed (once per run)
 //   php e2e-confirmare-fixture.php --change=<n>    the shop changes an option of order <n> (a new review is needed)
+//
+// API 2.40.0: the TEST shop (tests/e2e-source-shop.php) answers source access reads from ARASYA_E2E_SHOP_FILE, which
+// this fixture writes for the Trend Home orders (same pricing fingerprints as their events, an invented telephone).
 
 use Arasya\Operations\Application\Container;
 use Arasya\Operations\Database\Connection;
@@ -37,10 +40,12 @@ $kernel = $container->kernel();
 $password = 'e2e passphrase 2026';
 $now = new DateTimeImmutable('now', new DateTimeZone('UTC'));
 $iso = static fn (DateTimeImmutable $at): string => $at->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d\TH:i:s.u\Z');
-$order = static function (string $number, ?DateTimeImmutable $submitted, array $extra = []) use ($iso): array {
+$shopOrders = [];
+$order = static function (string $number, ?DateTimeImmutable $submitted, array $extra = []) use ($iso, &$shopOrders): array {
     static $tick = 0;
     $tick++;
-    $p = T::sourceOrder($number, "cf-e2e-{$number}-" . bin2hex(random_bytes(4)), $iso((new DateTimeImmutable('now', new DateTimeZone('UTC')))->modify('-60 seconds')->modify("+{$tick} milliseconds")), null, 'processing', 'active', [[
+    $changed = (new DateTimeImmutable('now', new DateTimeZone('UTC')))->modify('-60 seconds')->modify("+{$tick} milliseconds");
+    $p = T::sourceOrder($number, "cf-e2e-{$number}-" . bin2hex(random_bytes(4)), $iso($changed), null, 'processing', 'active', [[
         'id' => (int) $number * 10 + 1, 'line' => 1, 'name' => 'Draperie Velvet', 'sku' => 'DV-302', 'color' => 'Bej', 'variant' => 'Wave', 'width' => 300, 'height' => 260, 'unit' => 'cm', 'quantity' => 1,
         'options' => [['label' => 'Rejansă', 'value' => $extra['option'] ?? 'Inele']],
     ], [
@@ -52,6 +57,11 @@ $order = static function (string $number, ?DateTimeImmutable $submitted, array $
     if ($priced) {
         $p['order']['pricing'] = ['fingerprint' => $fingerprint];
     }
+    // The TEST shop's own view of the same order (source access): same prices, the invented full telephone number.
+    $shopOrders[$number] = ['id' => $number, 'number' => $number, 'phone' => '0700000123', 'pricing' => $priced ? $fingerprint : null, 'modifiedAt' => $changed->format('Y-m-d\TH:i:s\Z'),
+        'payment' => ($extra['payment'] ?? 'online') === 'online'
+            ? ['method' => 'netopiapayments', 'methodTitle' => 'Card online', 'cod' => false, 'paidRecorded' => true, 'financial' => ['state' => 'cleared', 'basis' => 'online_payment']]
+            : ['method' => 'cod', 'methodTitle' => 'Ramburs', 'cod' => true, 'paidRecorded' => false, 'financial' => ['state' => 'waiting', 'basis' => null], 'advance' => ['percentage' => 30, 'required' => '215.70', 'collected' => null]]];
     $online = ($extra['payment'] ?? 'online') === 'online';
     $p['order']['payment'] = $online ? ['method' => 'online', 'advanceStatus' => 'not_required', 'advanceRevision' => 0] : ['method' => 'cod', 'advanceStatus' => 'waiting', 'advanceRevision' => 0];
     $p['order']['financial'] = $online && $priced ? ['state' => 'cleared', 'basis' => 'online_payment', 'pricingFingerprint' => $fingerprint] : ['state' => $priced ? 'waiting' : 'unknown', 'basis' => null, 'pricingFingerprint' => $priced ? $fingerprint : null];
@@ -72,6 +82,20 @@ $ingest = static function (string $source, array $payload) use ($kernel): void {
     }
 };
 
+$writeShop = static function () use (&$shopOrders): void {
+    $file = (string) getenv('ARASYA_E2E_SHOP_FILE');
+    if ($file === '') {
+        return;
+    }
+    $existing = is_file($file) ? json_decode((string) file_get_contents($file), true) : [];
+    $orders = is_array($existing['orders'] ?? null) ? $existing['orders'] : [];
+    foreach ($shopOrders as $number => $shopOrder) {
+        if (str_starts_with((string) $number, '91')) {
+            $orders[(string) $number] = $shopOrder;
+        }
+    }
+    file_put_contents($file, json_encode(['orders' => $orders], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+};
 $change = null;
 foreach ($argv as $argument) {
     if (preg_match('/^--change=([0-9]{5})$/D', $argument, $m) === 1) {
@@ -84,6 +108,7 @@ if ($change !== null) {
     $submitted->execute(["{$source}:{$change}"]);
     $at = $submitted->fetchColumn();
     $ingest($source, $order($change, $at === false || $at === null ? null : new DateTimeImmutable((string) $at, new DateTimeZone('UTC')), ['option' => 'Rejansă creion', 'payment' => $change === '91002' ? 'cod' : 'online']));
+    $writeShop();
     echo json_encode(['changed' => "{$source}:{$change}"]), "\n";
     exit(0);
 }
@@ -151,6 +176,7 @@ foreach (['91001' => 'operator', '91002' => 'operator', '91003' => 'colleague', 
         $asRoot('POST', '/confirmare/orders/' . rawurlencode("trendhome:{$number}") . '/reassign', ['expectedVersion' => $version, 'employeeId' => $people[$role]['id']]);
     }
 }
+$writeShop();
 echo json_encode(['password' => $password, 'people' => $people, 'orders' => [
     'call' => 'trendhome:91001', 'cod' => 'trendhome:91002', 'colleague' => 'trendhome:91003', 'noPrice' => 'trendhome:91004', 'unassigned' => 'trendhome:91005',
     'outlet' => 'outletperdele:92001', 'legacy' => 'trendhome:91090', 'undetermined' => 'trendhome:91091',

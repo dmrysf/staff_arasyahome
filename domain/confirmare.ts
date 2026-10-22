@@ -1,9 +1,11 @@
 import type { Employee } from "./models";
 import { t, type MessageKey } from "../i18n";
+import type { ShopRead, SourceAccessCapabilities } from "./confirmareShop";
+import type { ConfirmareEditApi } from "./confirmareEdit";
 
 /**
- * Staff Confirmare workspace (API 2.39.0, Phase 3). New Trend Home and Outlet Perdele orders are confirmed with the
- * customer by telephone before production. Everything here is presentation of facts the server already decided:
+ * Staff Confirmare workspace (API 2.39.0, Phase 3; the shop's own order, API 2.40.0, Phase 4A). New Trend Home and
+ * Outlet Perdele orders are confirmed with the customer by telephone before production. Everything here is presentation of facts the server already decided:
  * who may see which source (Confirmare scopes), which order goes to whom (server distribution), whether production may
  * start (ConfirmationClearance). Staff never computes an assignment, never infers a call and never changes a payment.
  */
@@ -14,6 +16,8 @@ export type ConfirmareStatus = "pending" | "approved" | "rejected" | "cancelled"
 export const CONTACT_OUTCOMES = ["confirmed", "no_answer", "callback", "needs_correction"] as const;
 export type ContactOutcome = (typeof CONTACT_OUTCOMES)[number];
 export type FinancialState = "cleared" | "waiting" | "partial" | "unknown";
+export const FINANCIAL_ATTENTION = ["additional_payment_due", "refund_due"] as const;
+export type FinancialAttention = (typeof FINANCIAL_ATTENTION)[number];
 export const CLEARANCE_CONDITIONS = ["approval", "call", "lines", "price", "sync", "payment"] as const;
 export type ClearanceCondition = (typeof CLEARANCE_CONDITIONS)[number];
 export const REJECT_REASONS = ["customer_unreachable", "customer_cancelled", "order_details_wrong", "duplicate_order", "payment_problem", "other"] as const;
@@ -36,7 +40,8 @@ export type ConfirmareItem = {
   commerceStatus: string | null;
   commerceClosed: boolean;
   payment: { state: string };
-  financial: { state: FinancialState; basis: string | null; open: boolean };
+  /** `attention` (API 2.40.0): the total changed after a payment; a financial decision is needed (never clears). */
+  financial: { state: FinancialState; basis: string | null; open: boolean; attention: FinancialAttention | null };
   pricingAvailable: boolean;
   dueDate: string | null;
   productionCleared: boolean;
@@ -81,6 +86,8 @@ export type ConfirmareDetail = ConfirmareItem & {
   source: { commerceStatusLabel: string | null; changedAt: string | null; lastSeenAt: string | null; freshness: string | null };
   production: { cleared: boolean; missing: ClearanceCondition[] };
   events: ConfirmareEvent[];
+  /** API 2.40.0: whether the shop's own order can be read (and, in Phase 4B, changed) by the signed-in employee. */
+  sourceAccess: SourceAccessCapabilities;
 };
 
 export type ConfirmareOperator = { employeeId: string; displayName: string; sources: string[]; canWork: boolean; available: boolean; availableChangedAt: string | null; lastAssignedAt: string | null; open: number; oldestAssignedAt: string | null };
@@ -90,7 +97,7 @@ export type ConfirmareAvailability = { employeeId: string; available: boolean; c
 
 export type ApproveInput = { expectedVersion: number; customerCall: "confirmed"; confirmedLineIds: string[]; priceVerified: true; reviewFingerprint: string };
 
-export interface ConfirmareApi {
+export interface ConfirmareApi extends ConfirmareEditApi {
   pool(view: ConfirmareView, source: string | null, signal?: AbortSignal): Promise<ConfirmarePool>;
   detail(globalOrderId: string, signal?: AbortSignal): Promise<ConfirmareDetail>;
   next(source: string | null, idempotencyKey: string): Promise<ConfirmareItem | null>;
@@ -105,6 +112,8 @@ export interface ConfirmareApi {
   setAvailability(input: { available: boolean; employeeId?: string }, idempotencyKey: string): Promise<ConfirmareAvailability>;
   team(signal?: AbortSignal): Promise<ConfirmareTeam>;
   alerts(signal?: AbortSignal): Promise<{ items: ConfirmareAlert[]; inactivityMinutes: number }>;
+  /** API 2.40.0: the shop's own order (customer telephone numbers, prices), read now, audited, never cached. */
+  sourceOrder(globalOrderId: string, signal?: AbortSignal): Promise<ShopRead>;
 }
 
 // ---- Access (presentation only: every route checks the scopes again) -------------------------------------------
@@ -229,8 +238,13 @@ export function nextAction(items: readonly ConfirmareItem[], employeeUuid: strin
 
 // ---- The final review ----------------------------------------------------------------------------------------
 
-export type ApprovalDraft = { confirmedLineIds: readonly string[]; priceReviewed: boolean };
-export type ApprovalRequirement = "pending" | "eligible" | "decider" | "open" | "contact" | "call" | "lines" | "priceEvidence" | "priceReviewed";
+/**
+ * `shopReviewed` (API 2.40.0): what the shop panel shows now came from the shop with the prices Arasya holds (never
+ * carried across refreshes: the panel drops its read when the order changes). The server checks the same on its read
+ * audit; it is required only where the shop can be read.
+ */
+export type ApprovalDraft = { confirmedLineIds: readonly string[]; priceReviewed: boolean; shopReviewed?: boolean };
+export type ApprovalRequirement = "pending" | "eligible" | "decider" | "open" | "contact" | "call" | "lines" | "priceEvidence" | "shopSettled" | "shopReviewed" | "priceReviewed";
 
 /**
  * What still prevents the approval, in the order the operator works. Mirrors the server (which decides again on the
@@ -249,6 +263,9 @@ export function approvalMissing(detail: ConfirmareDetail, draft: ApprovalDraft, 
   const ticked = [...new Set(draft.confirmedLineIds)].filter((id) => wanted.includes(id)).sort();
   if (wanted.length === 0 || ticked.length !== wanted.length) missing.push("lines");
   if (!detail.review.pricingAvailable) missing.push("priceEvidence");
+  // Phase 4B: a change made in the shop through Staff is settled and its order update has reached Arasya.
+  if (detail.sourceAccess.changePending) missing.push("shopSettled");
+  if (detail.sourceAccess.configured && draft.shopReviewed !== true) missing.push("shopReviewed");
   if (!draft.priceReviewed) missing.push("priceReviewed");
   return missing;
 }
@@ -273,7 +290,7 @@ export function carryDraft(previous: { fingerprint: string; draft: ApprovalDraft
 
 /** The Confirmare refusal a response carried (backend code), for the screen's own explanation. */
 export function confirmareErrorKey(backendCode: string | undefined): MessageKey | null {
-  const known = ["CONFIRMARE_CHANGED", "CONFIRMARE_REVIEW_STALE", "CONFIRMARE_CALL_NOT_RECORDED", "CONFIRMARE_CONTACT_UNAVAILABLE", "CONFIRMARE_CALL_REQUIRED", "CONFIRMARE_PRICE_UNAVAILABLE", "CONFIRMARE_PRICE_NOT_VERIFIED", "CONFIRMARE_LINES_NOT_CONFIRMED", "CONFIRMARE_NOT_PENDING", "CONFIRMARE_NOT_ASSIGNED_TO_YOU", "CONFIRMARE_ASSIGNED_TO_OTHER", "CONFIRMARE_UNDETERMINED", "CONFIRMARE_ORDER_CLOSED", "CONFIRMARE_SCOPE_DENIED", "CONFIRMARE_NOT_FOUND", "CONFIRMARE_SOURCE_SUSPENDED", "CONFIRMARE_OPERATOR_INELIGIBLE", "CONFIRMARE_NOT_REOPENABLE", "IDEMPOTENCY_CONFLICT"];
+  const known = ["CONFIRMARE_CHANGED", "CONFIRMARE_REVIEW_STALE", "CONFIRMARE_CALL_NOT_RECORDED", "CONFIRMARE_CONTACT_UNAVAILABLE", "CONFIRMARE_CALL_REQUIRED", "CONFIRMARE_PRICE_UNAVAILABLE", "CONFIRMARE_PRICE_NOT_VERIFIED", "CONFIRMARE_LINES_NOT_CONFIRMED", "CONFIRMARE_NOT_PENDING", "CONFIRMARE_NOT_ASSIGNED_TO_YOU", "CONFIRMARE_ASSIGNED_TO_OTHER", "CONFIRMARE_UNDETERMINED", "CONFIRMARE_ORDER_CLOSED", "CONFIRMARE_SCOPE_DENIED", "CONFIRMARE_NOT_FOUND", "CONFIRMARE_SOURCE_SUSPENDED", "CONFIRMARE_OPERATOR_INELIGIBLE", "CONFIRMARE_NOT_REOPENABLE", "CONFIRMARE_SHOP_NOT_REVIEWED", "CONFIRMARE_SOURCE_ACCESS_DENIED", "CONFIRMARE_SOURCE_NOT_ELIGIBLE", "CONFIRMARE_AUDIT_UNAVAILABLE", "IDEMPOTENCY_CONFLICT", "CONFIRMARE_SHOP_CHANGE_PENDING", "CONFIRMARE_SOURCE_EDIT_DISABLED", "CONFIRMARE_EDIT_INVALID", "CONFIRMARE_EDIT_REFUSED", "CONFIRMARE_EDIT_NOT_FOUND", "CONFIRMARE_SOURCE_UNAVAILABLE"];
   return backendCode && known.includes(backendCode) ? `cf.error.${backendCode}` as MessageKey : null;
 }
 

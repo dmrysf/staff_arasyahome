@@ -12,7 +12,9 @@ import { isProductionAuthority, type AuthorityApi, type AuthorityChange, type Or
 import type { ActiveQr, ProductionQrApi, ProductionQrView, QrAuthority, QrAuthorityMode, QrRevision, QrRevisionState, QrRotationReason } from "../../domain/productionQr";
 import { createBrowserWorkflowCache, createUnavailableWorkflowCache, normalizeProductionApiBaseUrl, type WorkflowCache } from "./workflowCache";
 import { createProductionWorkflowService } from "./workflowService";
-import { CLEARANCE_CONDITIONS, CONTACT_OUTCOMES, type ConfirmareAlert, type ConfirmareApi, type ConfirmareAvailability, type ConfirmareContact, type ConfirmareCustomer, type ConfirmareDetail, type ConfirmareEvent, type ConfirmareItem, type ConfirmareLine, type ConfirmareOperator, type ConfirmarePool, type ConfirmareTeam, type FinancialState } from "../../domain/confirmare";
+import type { ShopLine, ShopOrderDetail, ShopPerson, ShopRead } from "../../domain/confirmareShop";
+import { EDIT_IMPACTS, type EditBlocker, type EditCatalog, type EditField, type EditLineSnapshot, type EditOutcome, type EditProduct, type EditResult, type EditTotals, type EditVariation, type OpenEdit } from "../../domain/confirmareEdit";
+import { CLEARANCE_CONDITIONS, CONTACT_OUTCOMES, FINANCIAL_ATTENTION, type ConfirmareAlert, type ConfirmareApi, type ConfirmareAvailability, type ConfirmareContact, type ConfirmareCustomer, type ConfirmareDetail, type ConfirmareEvent, type ConfirmareItem, type ConfirmareLine, type ConfirmareOperator, type ConfirmarePool, type ConfirmareTeam, type FinancialState } from "../../domain/confirmare";
 
 type FetchLike = typeof fetch;
 export type ProductionServicesOptions = {
@@ -1082,6 +1084,14 @@ export function createProductionServices(apiBaseUrl: string, options: Production
     setAvailability: (input, key) => http.request("/confirmare/availability", { method: "PUT", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapConfirmareAvailability),
     team: (signal) => http.request("/confirmare/team", { signal }, mapConfirmareTeam),
     alerts: (signal) => http.request("/confirmare/alerts", { signal }, (value) => { const raw = objectValue(value); return { items: itemsOf(raw).map(mapConfirmareAlert), inactivityMinutes: nonNegativeInteger(raw.inactivityMinutes) }; }),
+    // Customer data: never kept in the browser's HTTP cache (the server also answers no-store).
+    sourceOrder: (globalOrderId, signal) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/source`, { signal, cache: "no-store" }, mapShopRead),
+    // Phase 4B: controlled shop edits. Amounts come from the shop; nothing is cached or kept.
+    sourceCatalog: (globalOrderId, signal) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/source/catalog`, { signal, cache: "no-store" }, (value) => mapEditCatalog(objectValue(value).catalog)),
+    sourceProduct: (globalOrderId, sku) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/source/product`, { method: "POST", cache: "no-store", body: JSON.stringify({ sku }) }, (value) => mapEditProduct(objectValue(value).product)),
+    sourcePreview: (globalOrderId, input) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/source/preview`, { method: "POST", cache: "no-store", body: JSON.stringify(input) }, (value) => { const raw = objectValue(objectValue(value).preview); return { ...mapEditResult(raw), previewToken: hexToken(raw.previewToken) }; }),
+    sourceApply: (globalOrderId, input, key) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/source/apply`, { method: "POST", cache: "no-store", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapEditOutcome),
+    sourceReconcile: (globalOrderId, key) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/source/reconcile`, { method: "POST", cache: "no-store", body: JSON.stringify({ idempotencyKey: key }) }, mapEditOutcome),
   };
   return { physical, auth, employee, orders, activity, workflow, exceptions, live, cutting, documents, authority, productionQr, trendyol, workspace, management, pieces, confirmare, mode: "production" };
 }
@@ -1104,6 +1114,10 @@ export function confirmareErrorDetails(value: unknown): Record<string, unknown> 
   const out: Record<string, unknown> = {};
   if (typeof raw.currentVersion === "number" && Number.isInteger(raw.currentVersion)) out.currentVersion = raw.currentVersion;
   if (Array.isArray(raw.missing) && raw.missing.every((item) => typeof item === "string")) out.missing = raw.missing;
+  // Phase 4B: why the shop refused an edit, the shop's current order version and the blockers (codes only).
+  if (typeof raw.reason === "string" && /^[a-z_]{2,60}$/.test(raw.reason)) out.editReason = raw.reason;
+  if (typeof raw.version === "string" && /^sha256:[0-9a-f]{64}$/.test(raw.version)) out.editVersion = raw.version;
+  if (Array.isArray(raw.blockers)) { try { out.editBlockers = listOf(raw.blockers, 100, mapEditBlocker); } catch { out.editBlockers = []; } }
   return out;
 }
 
@@ -1127,7 +1141,7 @@ export function mapConfirmareItem(value: unknown): ConfirmareItem {
     commerceClosed: booleanValue(raw.commerceClosed),
     payment: { state: stringValue(objectValue(raw.payment).state) },
     // An older API (2.38) has no `open`: unknown reads as closed.
-    financial: { state: oneOf(financial.state, financialStates), basis: nullableString(financial.basis), open: financial.open === true },
+    financial: { state: oneOf(financial.state, financialStates), basis: nullableString(financial.basis), open: financial.open === true, attention: financial.attention == null ? null : oneOf(financial.attention, FINANCIAL_ATTENTION) },
     pricingAvailable: raw.pricingAvailable === true,
     dueDate: raw.dueDate == null ? null : stringValue(raw.dueDate),
     productionCleared: booleanValue(raw.productionCleared),
@@ -1187,6 +1201,169 @@ export function mapConfirmareDetail(value: unknown): ConfirmareDetail {
     source: { commerceStatusLabel: nullableString(source.commerceStatusLabel), changedAt: source.changedAt == null ? null : timestampValue(source.changedAt), lastSeenAt: source.lastSeenAt == null ? null : timestampValue(source.lastSeenAt), freshness: nullableString(source.freshness) },
     production: { cleared: booleanValue(production.cleared), missing: stringList(production.missing).map((condition) => oneOf(condition, CLEARANCE_CONDITIONS)) },
     events: Array.isArray(raw.events) ? raw.events.map(mapConfirmareEvent) : [],
+    // An older API (2.39) has no source access: nothing can be read from the shop.
+    sourceAccess: raw.sourceAccess == null ? { configured: false, read: false, edit: false, changePending: false, openEdits: [] } : (() => {
+      const access = objectValue(raw.sourceAccess);
+      return { configured: access.configured === true, read: access.read === true, edit: access.edit === true, changePending: access.changePending === true, openEdits: access.openEdits == null ? [] : listOf(access.openEdits, 20, mapOpenEdit) };
+    })(),
+  };
+}
+
+// ---- The shop's own order (API 2.40.0): strict; anything unexpected is refused, never half shown
+const MONEY = /^-?[0-9]{1,12}\.[0-9]{0,4}$/;
+const textValue = (value: unknown, max = 500): string => { if (typeof value !== "string" || value.length > max) throw new StaffServiceError("SERVER_ERROR"); return value; };
+const moneyValue = (value: unknown): string => { const text = textValue(value, 20); if (!MONEY.test(text)) throw new StaffServiceError("SERVER_ERROR"); return text; };
+const listOf = <T>(value: unknown, max: number, map: (entry: unknown) => T): T[] => { if (!Array.isArray(value) || value.length > max) throw new StaffServiceError("SERVER_ERROR"); return value.map(map); };
+const shopPerson = (value: unknown): ShopPerson => { const raw = objectValue(value); return { name: textValue(raw.name, 200), company: textValue(raw.company, 200), phone: textValue(raw.phone, 40), addressLines: listOf(raw.addressLines, 6, (line) => textValue(line, 300)) }; };
+const shopLine = (value: unknown): ShopLine => {
+  const raw = objectValue(value);
+  return {
+    id: textValue(raw.id, 20), line: positiveInteger(raw.line), productId: textValue(raw.productId, 20), variationId: textValue(raw.variationId, 20), name: textValue(raw.name, 300), sku: textValue(raw.sku, 100),
+    width: nullableNumber(raw.width), height: nullableNumber(raw.height), unit: raw.unit == null ? null : oneOf(raw.unit, ["m"] as const),
+    details: listOf(raw.details, 40, (entry) => { const detail = objectValue(entry); return { label: textValue(detail.label, 200), value: textValue(detail.value, 500) }; }),
+    quantity: nonNegativeNumber(raw.quantity), unitPrice: moneyValue(raw.unitPrice), subtotal: moneyValue(raw.subtotal), discount: moneyValue(raw.discount), tax: moneyValue(raw.tax), total: moneyValue(raw.total), calculator: booleanValue(raw.calculator),
+  };
+};
+export function mapShopOrderDetail(value: unknown): ShopOrderDetail {
+  const raw = objectValue(value);
+  const order = objectValue(raw.order);
+  const status = objectValue(order.status);
+  const contact = objectValue(raw.contact);
+  const totals = objectValue(raw.totals);
+  const payment = objectValue(raw.payment);
+  const financial = objectValue(payment.financial);
+  const advance = payment.advance == null ? null : objectValue(payment.advance);
+  return {
+    readAt: timestampValue(raw.readAt),
+    order: {
+      id: textValue(order.id, 20), number: textValue(order.number, 64), status: { code: textValue(status.code, 40), label: textValue(status.label, 100) },
+      createdAt: order.createdAt == null ? null : timestampValue(order.createdAt), modifiedAt: order.modifiedAt == null ? null : timestampValue(order.modifiedAt),
+      storage: oneOf(order.storage, ["hpos", "posts"] as const), currency: textValue(order.currency, 3), pricesIncludeTax: booleanValue(order.pricesIncludeTax),
+    },
+    version: textValue(raw.version, 71),
+    pricingFingerprint: raw.pricingFingerprint == null ? null : textValue(raw.pricingFingerprint, 71),
+    contact: { phoneAvailable: booleanValue(contact.phoneAvailable), billing: shopPerson(contact.billing), shipping: shopPerson(contact.shipping) },
+    lines: listOf(raw.lines, 200, shopLine),
+    fees: listOf(raw.fees, 20, (entry) => { const fee = objectValue(entry); return { name: textValue(fee.name, 200), total: moneyValue(fee.total), tax: moneyValue(fee.tax) }; }),
+    coupons: listOf(raw.coupons, 20, (entry) => { const coupon = objectValue(entry); return { code: textValue(coupon.code, 100), discount: moneyValue(coupon.discount), discountTax: moneyValue(coupon.discountTax) }; }),
+    shipping: listOf(raw.shipping, 20, (entry) => { const line = objectValue(entry); return { id: textValue(line.id, 20), methodId: textValue(line.methodId, 100), instanceId: textValue(line.instanceId, 20), title: textValue(line.title, 200), total: moneyValue(line.total), tax: moneyValue(line.tax) }; }),
+    totals: { subtotal: moneyValue(totals.subtotal), discount: moneyValue(totals.discount), discountTax: moneyValue(totals.discountTax), shipping: moneyValue(totals.shipping), shippingTax: moneyValue(totals.shippingTax), fees: moneyValue(totals.fees), tax: moneyValue(totals.tax), total: moneyValue(totals.total), refunded: moneyValue(totals.refunded) },
+    payment: {
+      method: textValue(payment.method, 100), methodTitle: textValue(payment.methodTitle, 200), cod: booleanValue(payment.cod), paidRecorded: booleanValue(payment.paidRecorded),
+      financial: { state: oneOf(financial.state, financialStates), basis: nullableString(financial.basis) },
+      advance: advance === null ? null : { percentage: nonNegativeNumber(advance.percentage), required: advance.required == null ? null : moneyValue(advance.required), collected: advance.collected == null ? null : moneyValue(advance.collected) },
+    },
+  };
+}
+// ---- Phase 4B: controlled shop edits (strict; anything unexpected is refused, never half shown)
+const EDIT_ID = /^[0-9]{1,20}$/;
+const editId = (value: unknown): string => { const text = textValue(value, 20); if (!EDIT_ID.test(text)) throw new StaffServiceError("SERVER_ERROR"); return text; };
+const editCode = (value: unknown): string => { const text = textValue(value, 60); if (!/^[a-z_]{2,60}$/.test(text)) throw new StaffServiceError("SERVER_ERROR"); return text; };
+const hexToken = (value: unknown): string => { const text = textValue(value, 64); if (!/^[0-9a-f]{64}$/.test(text)) throw new StaffServiceError("SERVER_ERROR"); return text; };
+const shopVersion = (value: unknown): string => { const text = textValue(value, 71); if (!/^sha256:[0-9a-f]{64}$/.test(text)) throw new StaffServiceError("SERVER_ERROR"); return text; };
+const finiteOrNull = (value: unknown): number | null => { if (value == null) return null; if (typeof value !== "number" || !Number.isFinite(value)) throw new StaffServiceError("SERVER_ERROR"); return value; };
+const integerOrNull = (value: unknown): number | null => { if (value == null) return null; if (typeof value !== "number" || !Number.isInteger(value)) throw new StaffServiceError("SERVER_ERROR"); return value; };
+function mapEditField(value: unknown): EditField {
+  const raw = objectValue(value);
+  return {
+    name: textValue(raw.name, 64), title: textValue(raw.title, 200), type: textValue(raw.type, 40), editable: booleanValue(raw.editable), required: booleanValue(raw.required),
+    min: finiteOrNull(raw.min), max: finiteOrNull(raw.max),
+    options: raw.options == null ? null : listOf(raw.options, 200, (entry) => { const option = objectValue(entry); return { value: textValue(option.value, 200), title: textValue(option.title, 300) }; }),
+    ...(raw.value === undefined ? {} : { value: raw.value === null ? null : textValue(raw.value, 200) }),
+  };
+}
+function mapEditVariation(value: unknown): EditVariation {
+  const raw = objectValue(value);
+  return { id: editId(raw.id), attributes: listOf(raw.attributes, 20, (entry) => { const attribute = objectValue(entry); return { label: textValue(attribute.label, 200), value: textValue(attribute.value, 200) }; }), inStock: booleanValue(raw.inStock), purchasable: booleanValue(raw.purchasable), stock: integerOrNull(raw.stock) };
+}
+export function mapEditCatalog(value: unknown): EditCatalog {
+  const raw = objectValue(value);
+  return {
+    version: shopVersion(raw.version), editable: booleanValue(raw.editable), reason: raw.reason == null ? null : editCode(raw.reason),
+    lines: listOf(raw.lines, 200, (entry) => {
+      const line = objectValue(entry);
+      return {
+        id: editId(line.id), productId: editId(line.productId), variationId: editId(line.variationId), name: textValue(line.name, 300), quantity: positiveInteger(line.quantity),
+        calculator: line.calculator == null ? null : { fields: listOf(objectValue(line.calculator).fields, 30, mapEditField) },
+        variations: listOf(line.variations, 200, mapEditVariation), editable: booleanValue(line.editable), reason: line.reason == null ? null : editCode(line.reason),
+      };
+    }),
+    shipping: listOf(raw.shipping, 20, (entry) => { const line = objectValue(entry); return { id: editId(line.id), method: textValue(line.method, 60), title: textValue(line.title, 200) }; }),
+    shippingOptions: listOf(raw.shippingOptions, 20, (entry) => { const option = objectValue(entry); return { method: textValue(option.method, 60), title: textValue(option.title, 200) }; }),
+  };
+}
+export function mapEditProduct(value: unknown): EditProduct {
+  const raw = objectValue(value);
+  const calculator = raw.calculator == null ? null : objectValue(raw.calculator);
+  return {
+    id: editId(raw.id), name: textValue(raw.name, 300), sku: textValue(raw.sku, 100), type: oneOf(raw.type, ["simple", "variable"] as const), purchasable: booleanValue(raw.purchasable),
+    inStock: booleanValue(raw.inStock), stock: integerOrNull(raw.stock), variations: listOf(raw.variations, 200, mapEditVariation),
+    calculator: calculator === null ? null : typeof calculator.unavailable === "string" ? { unavailable: editCode(calculator.unavailable) } : { fields: listOf(calculator.fields, 30, mapEditField) },
+  };
+}
+function mapEditBlocker(value: unknown): EditBlocker {
+  const raw = objectValue(value);
+  return {
+    code: editCode(raw.code),
+    ...(raw.productId == null ? {} : { productId: editId(raw.productId) }), ...(raw.method == null ? {} : { method: textValue(raw.method, 60) }),
+    ...(raw.coupon == null ? {} : { coupon: textValue(raw.coupon, 100) }), ...(raw.available == null ? {} : { available: nonNegativeInteger(raw.available) }), ...(raw.needed == null ? {} : { needed: nonNegativeInteger(raw.needed) }),
+  };
+}
+const editTotals = (value: unknown): EditTotals => {
+  const raw = objectValue(value);
+  return { subtotal: moneyValue(raw.subtotal), subtotalTax: moneyValue(raw.subtotalTax), discount: moneyValue(raw.discount), discountTax: moneyValue(raw.discountTax), shipping: moneyValue(raw.shipping), shippingTax: moneyValue(raw.shippingTax), fees: moneyValue(raw.fees), tax: moneyValue(raw.tax), total: moneyValue(raw.total) };
+};
+const editSnapshot = (value: unknown): EditLineSnapshot | null => {
+  if (value == null) return null;
+  const raw = objectValue(value);
+  let fields: Record<string, string> | null = null;
+  if (raw.fields != null) {
+    const entries = Array.isArray(raw.fields) && raw.fields.length === 0 ? {} : objectValue(raw.fields);
+    fields = Object.fromEntries(Object.entries(entries).slice(0, 30).map(([name, field]) => [textValue(name, 64), textValue(field, 200)]));
+  }
+  return { name: textValue(raw.name, 300), productId: editId(raw.productId), variationId: editId(raw.variationId), quantity: positiveInteger(raw.quantity), fields, subtotal: moneyValue(raw.subtotal), total: moneyValue(raw.total), tax: moneyValue(raw.tax) };
+};
+export function mapEditResult(value: unknown): EditResult {
+  const raw = objectValue(value);
+  const financial = objectValue(raw.financial);
+  return {
+    version: shopVersion(raw.version), applicable: booleanValue(raw.applicable), blockers: listOf(raw.blockers, 100, mapEditBlocker), before: editTotals(raw.before), after: editTotals(raw.after),
+    lines: listOf(raw.lines, 200, (entry) => { const line = objectValue(entry); return { lineId: textValue(line.lineId, 30), state: oneOf(line.state, ["added", "removed", "changed", "unchanged"] as const), before: editSnapshot(line.before), after: editSnapshot(line.after) }; }),
+    shipping: listOf(raw.shipping, 20, (entry) => { const line = objectValue(entry); return { id: editId(line.id), method: textValue(line.method, 60), before: moneyValue(line.before), after: moneyValue(line.after) }; }),
+    financial: { delta: moneyValue(financial.delta), impact: oneOf(financial.impact, EDIT_IMPACTS), cod: booleanValue(financial.cod) },
+  };
+}
+export function mapEditOutcome(value: unknown): EditOutcome {
+  const raw = objectValue(value);
+  const key = textValue(raw.idempotencyKey, 100);
+  if (raw.state === "applied") {
+    if (raw.result == null) return { state: "applied", idempotencyKey: key, result: null };
+    const result = objectValue(raw.result);
+    const money = objectValue(result.financialState);
+    return { state: "applied", idempotencyKey: key, result: {
+      ...mapEditResult(result), modifiedAt: timestampValue(result.modifiedAt),
+      financialState: { state: oneOf(money.state, financialStates), basis: nullableString(money.basis), attention: money.attention == null ? null : oneOf(money.attention, ["additional_payment_due", "refund_due"] as const) },
+    } };
+  }
+  return { state: oneOf(raw.state, ["pending", "unknown"] as const), idempotencyKey: key, reachable: typeof raw.reachable === "boolean" ? raw.reachable : null };
+}
+function mapOpenEdit(value: unknown): OpenEdit {
+  const raw = objectValue(value);
+  return { idempotencyKey: textValue(raw.idempotencyKey, 100), state: oneOf(raw.state, ["pending", "unknown"] as const), requestedAt: timestampValue(raw.requestedAt), mine: booleanValue(raw.mine) };
+}
+export function mapShopRead(value: unknown): ShopRead {
+  const raw = objectValue(value);
+  if (raw.available !== true) return { available: false, reason: textValue(raw.reason, 60) };
+  const freshness = objectValue(raw.freshness);
+  return {
+    available: true,
+    role: oneOf(raw.role, ["assignee", "supervisor"] as const),
+    detail: mapShopOrderDetail(raw.detail),
+    freshness: {
+      readAt: timestampValue(freshness.readAt), shopModifiedAt: freshness.shopModifiedAt == null ? null : timestampValue(freshness.shopModifiedAt),
+      arasyaChangedAt: freshness.arasyaChangedAt == null ? null : timestampValue(freshness.arasyaChangedAt),
+      pricingMatches: freshness.pricingMatches == null ? null : booleanValue(freshness.pricingMatches), inSync: booleanValue(freshness.inSync),
+    },
   };
 }
 

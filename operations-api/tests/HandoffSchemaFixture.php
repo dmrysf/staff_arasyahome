@@ -1,9 +1,21 @@
 <?php
 declare(strict_types=1);
+/** Restore a pre-038 disposable test fixture (no Confirmare source access). This is NOT a deployment/rollback mechanism. */
+function restorePreConfirmareSourceAccessTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='038_confirmare_source_access.sql'")->fetchColumn()) return;
+    $pdo->exec('DROP TABLE IF EXISTS order_confirmation_source_edits');
+    $pdo->exec('DROP TABLE IF EXISTS order_confirmation_source_reads');
+    $pdo->exec('ALTER TABLE operational_orders DROP CONSTRAINT chk_operational_orders_financial_attention, DROP CONSTRAINT chk_operational_orders_contact_phone, DROP COLUMN source_financial_attention, DROP COLUMN source_contact_phone');
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='038_confirmare_source_access.sql'");
+}
+
 /** Restore a pre-037 disposable test fixture (no Confirmare contact attempts). This is NOT a deployment/rollback mechanism. */
 function restorePreConfirmareContactsTestSchema(PDO $pdo): void
 {
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    restorePreConfirmareSourceAccessTestSchema($pdo);
     if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='037_confirmare_contacts.sql'")->fetchColumn()) return;
     $pdo->exec('DROP TABLE IF EXISTS order_confirmation_contacts');
     $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='037_confirmare_contacts.sql'");

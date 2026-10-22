@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useI18n, type MessageKey } from "../../i18n";
 import type { Employee, ProductionItem, StaffServiceError } from "../../domain/models";
 import {
@@ -6,6 +6,7 @@ import {
   RELOAD_CODES, requirementLabel, sourceLabel, supervisesSource,
   type ApprovalDraft, type ConfirmareApi, type ConfirmareDetail, type ConfirmareOperator, type ContactOutcome, type RejectReason,
 } from "../../domain/confirmare";
+import { shopConfirmsPrices, type ShopRead } from "../../domain/confirmareShop";
 import { formatMeasurements, formatMeters } from "../../domain/productFormat";
 import { createIdempotencyKey } from "../../services/idempotency";
 import { getErrorPresentation, toServiceError } from "../../services/errors";
@@ -14,6 +15,7 @@ import { Notice, StatusPill, type Tone } from "../../components/ui/StatusPill";
 import { AutoRefreshBar } from "../workspaces/DashboardParts";
 import { useAutoRefresh } from "../workspaces/useAutoRefresh";
 import { ItemStatusPill, dueDay, when } from "./ConfirmareParts";
+import { ConfirmareShopPanel } from "./ConfirmareShopPanel";
 
 type Message = { tone: Tone; text: string } | null;
 type Busy = "claim" | "release" | "contact" | "approve" | "reject" | "reassign" | "reopen" | null;
@@ -50,6 +52,9 @@ export function ConfirmareOrderScreen({ orderId, employee, service, navigate }: 
   const [busy, setBusy] = useState<Busy>(null);
   const [team, setTeam] = useState<ConfirmareOperator[] | null>(null);
   const [target, setTarget] = useState("");
+  // What the shop panel shows now (API 2.40.0): only a read showing the prices Arasya holds counts for the approval.
+  const [shopRead, setShopRead] = useState<ShopRead | null>(null);
+  const onShopRead = useCallback((value: ShopRead | null) => setShopRead(value), []);
   // One idempotency key per intent: a retried click (or a lost answer) replays the same command, never a second one.
   const intentKey = useRef<{ intent: string; key: string } | null>(null);
   const keyFor = (intent: string): string => {
@@ -90,7 +95,10 @@ export function ConfirmareOrderScreen({ orderId, employee, service, navigate }: 
 
   const setDraft = (patch: Partial<ApprovalDraft>) => setDraftValue({ ...draft, ...patch });
   const decider = canDecide(detail, employee);
-  const missing = approvalMissing(detail, draft, decider);
+  const missing = approvalMissing(detail, { ...draft, shopReviewed: shopConfirmsPrices(shopRead) }, decider);
+  const reviewItems = detail.sourceAccess.configured
+    ? (detail.sourceAccess.changePending ? (["contact", "call", "lines", "priceEvidence", "shopSettled", "shopReviewed", "priceReviewed"] as const) : (["contact", "call", "lines", "priceEvidence", "shopReviewed", "priceReviewed"] as const))
+    : (["contact", "call", "lines", "priceEvidence", "priceReviewed"] as const);
   const mine = detail.assignment?.employeeId === employee.employeeUuid;
   const pending = detail.status === "pending";
   const determined = detail.workflowCohort === "confirmare";
@@ -167,8 +175,12 @@ export function ConfirmareOrderScreen({ orderId, employee, service, navigate }: 
                 <div><dt>{t("cf.customer.phone")}</dt><dd className="mono">{detail.customer.phoneMasked ?? "—"}</dd></div>
               </dl>
               : <p className="dashboard-lead">{t("cf.customer.hidden")}</p>}
-            <Notice tone="warning" role="note" testId="cf-phone-unavailable">{t("cf.customer.phoneUnavailable")}</Notice>
+            {detail.sourceAccess.configured
+              ? <Notice tone="info" role="note" testId="cf-phone-in-shop">{t("cf.customer.phoneInShop")}</Notice>
+              : <Notice tone="warning" role="note" testId="cf-phone-unavailable">{t("cf.customer.phoneUnavailable")}</Notice>}
           </section>
+
+          <ConfirmareShopPanel detail={detail} service={service} onChange={onShopRead} onRefresh={view.refresh} />
 
           <section className="detail-section" aria-labelledby="cf-call">
             <div className="section-title"><h2 id="cf-call">{t("cf.call.title")}</h2>{detail.review.callRecorded && <StatusPill tone="success" icon="check">{t("cf.call.recorded")}</StatusPill>}</div>
@@ -215,7 +227,7 @@ export function ConfirmareOrderScreen({ orderId, employee, service, navigate }: 
 
           <section className="detail-section" aria-labelledby="cf-price">
             <div className="section-title"><h2 id="cf-price">{t("cf.price.title")}</h2></div>
-            <p className="dashboard-lead">{t("cf.price.lead")}</p>
+            <p className="dashboard-lead">{t(detail.sourceAccess.configured ? "cf.price.leadShop" : "cf.price.lead")}</p>
             {detail.review.pricingAvailable
               ? pending && <label className="check-field"><input type="checkbox" disabled={!decider} checked={draft.priceReviewed} onChange={(event) => setDraft({ priceReviewed: event.target.checked })} data-testid="cf-price-reviewed" /><span className="cf-check">{t("cf.price.reviewed")}<small>{t("cf.price.reviewedHint")}</small></span></label>
               : <Notice tone="danger" role="note" testId="cf-price-missing">{t("cf.price.missing")}</Notice>}
@@ -224,8 +236,8 @@ export function ConfirmareOrderScreen({ orderId, employee, service, navigate }: 
           {pending && <section className="detail-section cf-final" aria-labelledby="cf-final">
             <div className="section-title"><h2 id="cf-final">{t("cf.final.title")}</h2></div>
             <ul className="cf-checklist" data-testid="cf-checklist">
-              {(["contact", "call", "lines", "priceEvidence", "priceReviewed"] as const).map((requirement) => <li key={requirement} className={missing.includes(requirement) ? "is-missing" : "is-met"}><AppIcon name={missing.includes(requirement) ? "clock" : "check"} size={18} /><span>{requirementLabel(requirement)}</span></li>)}
-              {missing.filter((requirement) => !["contact", "call", "lines", "priceEvidence", "priceReviewed"].includes(requirement)).map((requirement) => <li key={requirement} className="is-missing"><AppIcon name="lock" size={18} /><span>{requirementLabel(requirement)}</span></li>)}
+              {reviewItems.map((requirement) => <li key={requirement} className={missing.includes(requirement) ? "is-missing" : "is-met"}><AppIcon name={missing.includes(requirement) ? "clock" : "check"} size={18} /><span>{requirementLabel(requirement)}</span></li>)}
+              {missing.filter((requirement) => !(reviewItems as readonly string[]).includes(requirement)).map((requirement) => <li key={requirement} className="is-missing"><AppIcon name="lock" size={18} /><span>{requirementLabel(requirement)}</span></li>)}
               <li className={detail.financial.open ? "is-met" : "is-separate"}><AppIcon name={detail.financial.open ? "check" : "lock"} size={18} /><span>{detail.financial.open ? t("cf.final.paymentMet") : t("cf.final.paymentSeparate")}</span></li>
             </ul>
             {!confirmApprove
@@ -249,6 +261,7 @@ export function ConfirmareOrderScreen({ orderId, employee, service, navigate }: 
             <div className="section-title"><h2 id="cf-money">{t("cf.money.title")}</h2></div>
             <StatusPill tone={financialTone} icon={detail.financial.open ? "check" : "lock"} testId="cf-financial">{t(`cf.financial.${detail.financial.open ? "open" : detail.financial.state}` as MessageKey)}</StatusPill>
             {detail.financial.basis && <p className="cf-line-facts">{t(`cf.basis.${detail.financial.basis}` as MessageKey)}</p>}
+            {detail.financial.attention && <Notice tone="danger" role="note" testId="cf-financial-attention">{t(`cf.financial.attention.${detail.financial.attention}` as MessageKey)}</Notice>}
             <p className="dashboard-footnote">{detail.financial.open ? t("cf.money.openNote") : t("cf.money.closedNote")}</p>
           </section>
 

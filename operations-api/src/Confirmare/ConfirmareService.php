@@ -7,6 +7,7 @@ namespace Arasya\Operations\Confirmare;
 use Arasya\Operations\Authorization\AuthorizationService;
 use Arasya\Operations\Employee\EmployeeIdentity;
 use Arasya\Operations\Http\ApiException;
+use Arasya\Operations\Integration\SourceAccess\SourceAccessRegistry;
 use Arasya\Operations\Order\GlobalOrderId;
 use Arasya\Operations\Production\PaymentGate;
 use Arasya\Operations\Production\WorkflowCohort;
@@ -81,6 +82,8 @@ final class ConfirmareService
         private readonly AuthorizationService $authorization,
         private readonly ConfirmareScopePolicy $scopes,
         private readonly Clock $clock,
+        /** API 2.40.0: shops with source access configured; their approvals need the approver's shop read. */
+        private readonly ?SourceAccessRegistry $sourceAccess = null,
     ) {
     }
 
@@ -379,6 +382,10 @@ final class ConfirmareService
             if (!$this->contactAvailable($orderUuid)) {
                 throw new ApiException(409, 'CONFIRMARE_CONTACT_UNAVAILABLE', 'The shop sent no telephone number for this customer; the order cannot be confirmed by telephone.');
             }
+            // API 2.40.0 (Phase 4B): a change made in the shop through Staff must be settled and its order update received.
+            if (ConfirmareSourceEdits::changePending($this->pdo, $orderUuid)) {
+                throw new ApiException(409, 'CONFIRMARE_SHOP_CHANGE_PENDING', 'A change of this order in the shop is not settled yet. Check it first.');
+            }
             $current = ConfirmationClearance::lineIds($this->pdo, $orderUuid);
             $sortedCurrent = $current;
             sort($sortedCurrent, SORT_STRING);
@@ -388,6 +395,12 @@ final class ConfirmareService
             $currentFingerprint = ConfirmationClearance::fingerprint($this->pdo, $orderUuid);
             if (!hash_equals($currentFingerprint, $fingerprint)) {
                 throw new ApiException(409, 'CONFIRMARE_REVIEW_STALE', 'The order changed in the shop since it was reviewed. Review it again.', ['reviewFingerprint' => $currentFingerprint]);
+            }
+            // API 2.40.0 (after the review check, so a changed order is reported as such first): where the shop's own
+            // order can be read in Staff, the approver must have read it with the prices Arasya holds now (no approval
+            // of prices nobody looked at).
+            if ($this->sourceAccess?->find((string) $order['source_key']) !== null && !ConfirmareSourceAccess::reviewedShop($this->pdo, $orderUuid, $actor->employeeUuid)) {
+                throw new ApiException(409, 'CONFIRMARE_SHOP_NOT_REVIEWED', 'Open the shop order in Staff (with its current prices) before approving.');
             }
             // API 2.39.0: the confirmed call is an attempt an operator recorded on this review (never inferred from the
             // approval itself, from opening the order or from a telephone link).
@@ -1137,7 +1150,7 @@ final class ConfirmareService
         return 'SELECT o.order_uuid, o.global_order_id, o.order_number, o.source_key, o.workflow_cohort, o.source_submitted_at, o.production_stage_id, o.source_commerce_status_code,
                        o.source_commerce_status_label, o.source_changed_at, o.last_source_seen_at, o.freshness_status, o.document_context,
                        o.operational_status, o.payment_method, o.advance_status, o.source_due_date, o.source_pricing_fingerprint, o.source_financial_state, o.source_financial_basis,
-                       o.source_financial_pricing, c.production_cleared,
+                       o.source_financial_pricing, o.source_financial_attention, o.source_contact_phone, c.production_cleared,
                        c.status, c.version, c.opened_at, c.decided_at, c.decision_reason_code, c.assigned_employee_uuid, c.assigned_at, c.assignment_kind,
                        ae.display_name AS assignee_name, de.display_name AS decider_name, c.decided_by_employee_uuid, c.call_confirmed_at,
                        k.outcome AS contact_outcome, k.recorded_at AS contact_at, k.review_fingerprint AS contact_review, k.confirmation_version AS contact_version, k.attempt_number AS contact_attempts,
@@ -1168,13 +1181,24 @@ final class ConfirmareService
         return $latest;
     }
 
-    /** Whether the shop sent a customer telephone number for the order (its masked form in the delivery context). */
+    /**
+     * Whether the shop holds a callable customer telephone number for the order. API 2.40.0: the shop's own fact
+     * (order.contact.phone, evaluated on its real billing and delivery telephone fields) decides whenever it was
+     * stated, also when it says no although a masked delivery phone exists. Only an order from an older shop connector
+     * that never stated it falls back to the masked phone of the delivery context.
+     */
     private function contactAvailable(string $orderUuid): bool
     {
-        $statement = $this->pdo->prepare('SELECT document_context FROM operational_orders WHERE order_uuid = ?');
+        $statement = $this->pdo->prepare('SELECT document_context, source_contact_phone FROM operational_orders WHERE order_uuid = ?');
         $statement->execute([$orderUuid]);
-        $raw = $statement->fetchColumn();
-        $context = is_string($raw) ? json_decode($raw, true) : null;
+        $row = $statement->fetch(PDO::FETCH_ASSOC);
+        if (!is_array($row)) {
+            return false;
+        }
+        if ($row['source_contact_phone'] !== null) {
+            return (int) $row['source_contact_phone'] === 1;
+        }
+        $context = is_string($row['document_context']) ? json_decode($row['document_context'], true) : null;
         return is_array($context) && is_string($context['phoneMasked'] ?? null) && $context['phoneMasked'] !== '';
     }
 
@@ -1303,7 +1327,8 @@ final class ConfirmareService
             // The advance payment gate state (legacy view) and the Confirmare financial clearance the source stated.
             'payment' => ['state' => PaymentGate::state($row['payment_method'], $row['advance_status'])],
             // `open` (API 2.39.0): the production financial condition holds now (ConfirmationClearance::financialOpen).
-            'financial' => ['state' => $row['source_financial_state'] ?? 'unknown', 'basis' => $row['source_financial_basis'], 'open' => ConfirmationClearance::financialOpen(
+            // `attention` (API 2.40.0): the total changed after a payment; a financial decision is needed (never clears).
+            'financial' => ['state' => $row['source_financial_state'] ?? 'unknown', 'basis' => $row['source_financial_basis'], 'attention' => $row['source_financial_attention'] ?? null, 'open' => ConfirmationClearance::financialOpen(
                 $row['source_financial_state'] === null ? null : (string) $row['source_financial_state'],
                 $row['source_financial_basis'] === null ? null : (string) $row['source_financial_basis'],
                 $row['source_financial_pricing'] === null ? null : (string) $row['source_financial_pricing'],

@@ -1,4 +1,6 @@
 import { confirmareEN } from "./confirmare";
+import { confirmareShopEN } from "./confirmareShop";
+import { confirmareEditEN } from "./confirmareEdit";
 import { physicalEN } from "./physical";
 import type { Catalog } from "../types";
 import { enErrors } from "./en.errors";
@@ -11,6 +13,8 @@ export const en: Catalog = {
   ...physicalEN,
   ...enErrors,
   ...confirmareEN,
+  ...confirmareShopEN,
+  ...confirmareEditEN,
 
   // ---- common
   "common.back": "Back",
