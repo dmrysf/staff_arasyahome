@@ -251,8 +251,9 @@ final readonly class OrderOwnershipService
                 throw new ApiException(409, 'PRODUCTION_AUTHORITY_SOURCE', 'Production of this order is still managed by its source. A manager must take it over first.');
             }
             if ($operation === self::OPERATION_REASSIGN && $order['production_stage_id'] === \Arasya\Operations\Order\OrderProjectionWriter::INITIAL_STAGE_ID) {
-                // Assigning a stage-1 order starts its production like a claim: the enforced advance gate applies to
-                // managers too. Releasing an owner never needs it.
+                // Assigning a stage-1 order starts its production like a claim: the Confirmare gate and the enforced
+                // advance gate apply to managers too. Releasing an owner never needs them.
+                \Arasya\Operations\Production\ConfirmationGate::assertOpen($this->pdo, $orderUuid, (string) $order['production_stage_id']);
                 \Arasya\Operations\Production\PaymentGate::assertOpen($this->authorityModes, $order);
             }
             if ($operation === self::OPERATION_REASSIGN) {

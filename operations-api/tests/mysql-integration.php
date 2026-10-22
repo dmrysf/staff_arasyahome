@@ -140,6 +140,7 @@ try {
     $expected[] = '029_production_manifest_routing.sql';
     $expected[] = '030_production_route_reconciliation.sql';
     $expected[] = '031_production_assisted_checkpoints.sql';
+    $expected[] = '035_workflow_cohort.sql';
     if ($applied !== $expected) {
         throw new RuntimeException('An existing 001 schema did not apply exactly the pending migrations in order: ' . implode(', ', $applied));
     }

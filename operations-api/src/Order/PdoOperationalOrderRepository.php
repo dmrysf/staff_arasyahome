@@ -17,7 +17,7 @@ final readonly class PdoOperationalOrderRepository implements OperationalOrderRe
             o.order_uuid, o.global_order_id, o.order_number, o.production_stage_id,
             o.source_commerce_status_code, o.source_commerce_status_label, o.production_notes,
             o.operational_status, o.version, o.production_version, o.production_owner_employee_uuid,
-            o.production_completed_at, o.open_exception_uuid, o.document_status, o.production_authority, o.payment_method, o.advance_status, o.payment_reversed_at, o.accepted_at, o.updated_at, o.source_changed_at, o.last_source_seen_at,o.production_context,
+            o.production_completed_at, o.open_exception_uuid, o.document_status, o.production_authority, o.payment_method, o.advance_status, o.payment_reversed_at, o.workflow_cohort, (SELECT c.status FROM order_confirmations c WHERE c.order_uuid = o.order_uuid) AS confirmation_status, o.accepted_at, o.updated_at, o.source_changed_at, o.last_source_seen_at,o.production_context,
             o.source_key,s.source_type,s.status AS source_status, s.last_contact_at AS source_last_contact_at,
             r.employee_uuid AS relation_employee_uuid, r.relation_type, r.status AS relation_status,
             r.started_at AS relation_started_at, r.last_action_at AS relation_last_action_at
@@ -268,6 +268,8 @@ final readonly class PdoOperationalOrderRepository implements OperationalOrderRe
                 $row['payment_reversed_at'] === null ? null : (string) $row['payment_reversed_at'],
                 $tracksByOrder[(string) $row['order_uuid']] ?? [],
                 $gate[(string) $row['order_uuid']] ?? null,
+                $row['workflow_cohort'] === null ? null : (string) $row['workflow_cohort'],
+                $row['confirmation_status'] === null ? null : (string) $row['confirmation_status'],
             );
         }
         return $orders;

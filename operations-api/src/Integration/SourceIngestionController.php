@@ -81,10 +81,17 @@ final readonly class SourceIngestionController
     {
         $source = $this->authorize($request, $sourceKey);
         $input = $request->json(1024);
-        if (array_keys($input) !== ['sentAt'] || !is_string($input['sentAt'])) {
+        // Optional confirmareArmedAt (API 2.37.0): the source states the instant from which its local Confirmare fence
+        // refuses legacy production. It is a report, never an activation: only the operator CLI activates a source.
+        $keys = array_keys($input);
+        sort($keys);
+        $armedAt = $input['confirmareArmedAt'] ?? null;
+        if (!in_array($keys, [['sentAt'], ['confirmareArmedAt', 'sentAt']], true) || !is_string($input['sentAt'])
+            || ($armedAt !== null && (!is_string($armedAt) || preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/D', $armedAt) !== 1))
+            || (array_key_exists('confirmareArmedAt', $input) && $armedAt === null)) {
             throw new ApiException(422, 'SOURCE_PAYLOAD_INVALID', 'Heartbeat payload is invalid.');
         }
-        $this->writer->recordHeartbeat($sourceKey);
+        $this->writer->recordHeartbeat($sourceKey, is_string($armedAt) ? new \DateTimeImmutable($armedAt) : null);
         $workflow = self::workflowSummary();
         return Response::json([
             'ok' => true,
@@ -96,6 +103,9 @@ final readonly class SourceIngestionController
             'trackingAuthorityMode' => $source->trackingAuthorityMode->value,
             // Present means this server accepts the optional order.payment facts in schema 1.
             'paymentGateMode' => $source->paymentGateMode->value,
+            // Present means this server accepts the optional order.submission evidence in schema 1 (API 2.37.0). `active`
+            // with the source's activation instant: genuinely new orders submitted since then belong to Confirmare.
+            'confirmare' => $this->writer->confirmareState($sourceKey),
             'contract' => [
                 'schemaVersion' => 1,
                 'workflowId' => $workflow['id'],

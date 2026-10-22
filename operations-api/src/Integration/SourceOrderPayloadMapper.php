@@ -21,7 +21,8 @@ use InvalidArgumentException;
 final class SourceOrderPayloadMapper
 {
     private const ROOT_KEYS = ['schemaVersion', 'eventId', 'changedAt', 'order', 'production'];
-    private const ORDER_KEYS = ['id', 'number', 'status', 'availability', 'notes', 'acceptedAt', 'items', 'delivery', 'payment'];
+    private const ORDER_KEYS = ['id', 'number', 'status', 'availability', 'notes', 'acceptedAt', 'items', 'delivery', 'payment', 'submission'];
+    private const SUBMISSION_KEYS = ['submittedAt', 'evidence'];
     private const PAYMENT_KEYS = ['method', 'advanceStatus', 'advanceRevision', 'advanceConfirmedAt'];
     private const MAX_ADVANCE_REVISION = 1000000;
     private const ITEM_KEYS = ['id', 'line', 'name', 'sku', 'variant', 'color', 'width', 'height', 'unit', 'meters', 'quantity', 'options'];
@@ -107,6 +108,7 @@ final class SourceOrderPayloadMapper
                 $items,
                 self::delivery($order['delivery'] ?? null),
                 self::payment($order['payment'] ?? null),
+                self::submission($order['submission'] ?? null),
             );
         } catch (InvalidArgumentException) {
             throw self::invalid('order');
@@ -168,6 +170,27 @@ final class SourceOrderPayloadMapper
             $confirmedAt = self::timestamp($payment['advanceConfirmedAt'], 'order.payment.advanceConfirmedAt');
         }
         return ['method' => $method, 'advanceStatus' => $status, 'advanceRevision' => $revision, 'advanceConfirmedAt' => $confirmedAt];
+    }
+
+    /**
+     * Optional submission evidence (schema 1 extension, sent only by sources that saw the heartbeat's `confirmare`
+     * state): {"submittedAt": ISO-8601 UTC, "evidence": one of WorkflowCohort::EVIDENCE_KINDS}. It is the first instant
+     * the source held the order in a submitted status, never a checkout draft's creation, an update or a payment.
+     * It decides the workflow cohort of a new canonical order once (WorkflowCohort) and is never printed.
+     *
+     * @return array{submittedAt: DateTimeImmutable, evidence: string}|null
+     */
+    private static function submission(mixed $value): ?array
+    {
+        if ($value === null) {
+            return null;
+        }
+        $submission = self::object($value, 'order.submission');
+        self::allowKeys($submission, self::SUBMISSION_KEYS, self::SUBMISSION_KEYS);
+        if (!in_array($submission['evidence'], \Arasya\Operations\Production\WorkflowCohort::EVIDENCE_KINDS, true)) {
+            throw self::invalid('order.submission.evidence');
+        }
+        return ['submittedAt' => self::timestamp($submission['submittedAt'], 'order.submission.submittedAt'), 'evidence' => $submission['evidence']];
     }
 
     /**

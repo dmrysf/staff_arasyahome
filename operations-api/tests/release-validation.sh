@@ -18,7 +18,7 @@ if /bin/bash "$release/scripts/validate-release.sh" "$release" >/dev/null 2>&1; 
 fi
 cp "$workspace/release.original" "$release/release.json"
 cp "$release/src/Http/HealthController.php" "$workspace/health.original"
-php -r '$p=$argv[1]; file_put_contents($p,str_replace("2.34.2","2.30.2",file_get_contents($p)));' "$release/src/Http/HealthController.php"
+php -r '$p=$argv[1]; file_put_contents($p,str_replace("2.37.0","2.30.2",file_get_contents($p)));' "$release/src/Http/HealthController.php"
 /bin/bash "$release/scripts/generate-sha256s.sh" "$release"
 if /bin/bash "$release/scripts/validate-release.sh" "$release" >/dev/null 2>&1; then
   printf 'Validator accepted metadata/runtime version mismatch with valid checksums.\n' >&2; exit 1
@@ -71,4 +71,4 @@ done
 /bin/bash "$release/scripts/generate-sha256s.sh" "$release"
 ARASYA_RELEASE_STRICT=1 /bin/bash "$release/scripts/validate-release.sh" "$release" >/dev/null
 
-printf 'PASS API 2.34.2 release validator enforces runtime version consistency, required factory components, sensitive-file policy, provenance and byte-level checksums.\n'
+printf 'PASS API 2.37.0 release validator enforces runtime version consistency, required factory components, sensitive-file policy, provenance and byte-level checksums.\n'

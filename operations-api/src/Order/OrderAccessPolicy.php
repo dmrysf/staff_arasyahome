@@ -7,6 +7,7 @@ namespace Arasya\Operations\Order;
 use Arasya\Operations\Authorization\AuthorizationService;
 use Arasya\Operations\Cutting\CuttingLifecycle;
 use Arasya\Operations\Employee\EmployeeIdentity;
+use Arasya\Operations\Production\ConfirmationGate;
 use Arasya\Operations\Production\PaymentGate;
 use Arasya\Operations\Production\ProductionAuthority;
 use Arasya\Operations\Production\ProductionAuthorityMode;
@@ -73,6 +74,15 @@ final readonly class OrderAccessPolicy
             && PaymentGate::blocksStart($this->authorityModes, $order->globalId->sourceKey, $order->paymentMethod, $order->advanceStatus);
     }
 
+    /**
+     * Whether the order waits for its Confirmare decision: every action that starts production (claim, stage
+     * completion, cutting intake) is refused for a Confirmare-cohort order at stage 1 until it is approved.
+     */
+    public function blocksConfirmationStart(OperationalOrder $order): bool
+    {
+        return ConfirmationGate::blocksStart($order->workflowCohort, $order->confirmationStatus, $order->productionStageId);
+    }
+
     /** Observe mode: a Staff claim of a source-managed order is allowed but recorded. */
     public function isSourceManagedUnderObservation(OperationalOrder $order): bool
     {
@@ -124,6 +134,9 @@ final readonly class OrderAccessPolicy
         }
         if ($order->isBlockedByDocument()) {
             return $this->blocked(\Arasya\Operations\Document\DocumentGuard::BLOCKED_REASON);
+        }
+        if ($this->blocksConfirmationStart($order)) {
+            return $this->blocked(ConfirmationGate::BLOCKED_REASON);
         }
         if ($this->blocksPaymentStart($order)) {
             return $this->blocked(PaymentGate::BLOCKED_REASON);
@@ -215,6 +228,9 @@ final readonly class OrderAccessPolicy
         }
         if ($order->isBlockedByDocument()) {
             return $this->blocked(\Arasya\Operations\Document\DocumentGuard::BLOCKED_REASON);
+        }
+        if ($this->blocksConfirmationStart($order)) {
+            return $this->blocked(ConfirmationGate::BLOCKED_REASON);
         }
         if ($this->blocksPaymentStart($order)) {
             return $this->blocked(PaymentGate::BLOCKED_REASON);

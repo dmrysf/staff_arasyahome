@@ -508,7 +508,7 @@ final readonly class DocumentService
     public function sourceStates(SourceDefinition $source, array $orderIds): array
     {
         $states = [];
-        $statement = $this->pdo->prepare('SELECT order_uuid, production_authority, production_completed_at, operational_status, document_status, document_version, payment_method, advance_status FROM operational_orders WHERE global_order_id = ?');
+        $statement = $this->pdo->prepare('SELECT order_uuid, production_authority, production_stage_id, production_completed_at, operational_status, document_status, document_version, payment_method, advance_status FROM operational_orders WHERE global_order_id = ?');
         foreach ($orderIds as $orderId) {
             $globalId = $source->key . ':' . $orderId;
             $statement->execute([$globalId]);
@@ -624,6 +624,7 @@ final readonly class DocumentService
             'documentAuthority' => $authority,
             'documentStatus' => (string) $order['document_status'],
             'issueAllowed' => $authority === 'arasya' && $source->documentAuthorityMode === DocumentAuthorityMode::Enforce && $order['document_status'] === 'none' && $open
+                && !\Arasya\Operations\Production\ConfirmationGate::isClosed($this->pdo, (string) $order['order_uuid'], (string) $order['production_stage_id'])
                 && !\Arasya\Operations\Production\PaymentGate::blocksStart($this->modes, $source->key, isset($order['payment_method']) ? (string) $order['payment_method'] : null, isset($order['advance_status']) ? (string) $order['advance_status'] : null),
             // Gate state for the source's operator (no amounts); absent while the source's gate is off.
             'paymentGate' => \Arasya\Operations\Production\PaymentGate::modeFor($this->modes, $source->key)->isVisible()
@@ -672,6 +673,9 @@ final readonly class DocumentService
         }
         // The first production document starts production: never while the source's enforced advance payment gate
         // is closed. Checked on the locked row, so a payment update committed meanwhile is the one that counts.
+        // A Confirmare-cohort order is closed until the Confirmare workflow approved it (checked first: confirmation
+        // precedes the advance). The same locked row, so a decision committed meanwhile is the one that counts.
+        \Arasya\Operations\Production\ConfirmationGate::assertOpen($this->pdo, (string) $order['order_uuid'], (string) $order['production_stage_id']);
         \Arasya\Operations\Production\PaymentGate::assertOpen($this->modes, $order);
         $orderUuid = (string) $order['order_uuid'];
         // Revision 1 binds the canonical QR reference the order already received at intake, so labels

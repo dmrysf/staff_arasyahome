@@ -121,6 +121,19 @@ final readonly class SourceRegistry
                 $issues[] = ['code' => 'invalid_payment_gate_mode', 'sourceKey' => $key];
                 $paymentGate = PaymentGateMode::Off;
             }
+            if (isset($settings['paymentGateUnverified'])) {
+                $issues[] = ['code' => 'payment_gate_unverified', 'sourceKey' => $key];
+            }
+            // The Confirmare permission never makes a source unusable either. It needs every production authority of the
+            // source in ENFORCE: a Confirmare order must be produced, documented and labelled by Arasya only.
+            $confirmare = strtolower($settings['confirmare'] ?? 'off');
+            if (!in_array($confirmare, ['off', 'on'], true)) {
+                $issues[] = ['code' => 'invalid_confirmare_mode', 'sourceKey' => $key];
+                $confirmare = 'off';
+            } elseif ($confirmare === 'on' && ($authority !== ProductionAuthorityMode::Enforce || $qrAuthority !== QrAuthorityMode::Enforce || $documentAuthority !== DocumentAuthorityMode::Enforce)) {
+                $issues[] = ['code' => 'confirmare_requires_authority_enforce', 'sourceKey' => $key];
+                $confirmare = 'off';
+            }
             $valid = true;
             foreach ([
                 'missing_secret' => !isset($config->sourceSecrets[$key]),
@@ -135,7 +148,7 @@ final readonly class SourceRegistry
                 }
             }
             if ($valid && $mode !== null && $enabled !== null) {
-                $sources[$key] = new SourceDefinition($key, $displayName, $type, $enabled, $mode, $authority, $qrAuthority, $documentAuthority, $trackingAuthority, $paymentGate);
+                $sources[$key] = new SourceDefinition($key, $displayName, $type, $enabled, $mode, $authority, $qrAuthority, $documentAuthority, $trackingAuthority, $paymentGate, $confirmare === 'on');
             }
         }
         return new self($sources, $issues);

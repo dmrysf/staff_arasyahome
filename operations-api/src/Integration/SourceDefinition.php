@@ -27,6 +27,12 @@ final readonly class SourceDefinition
         public DocumentAuthorityMode $documentAuthorityMode = DocumentAuthorityMode::Legacy,
         public TrackingAuthorityMode $trackingAuthorityMode = TrackingAuthorityMode::Legacy,
         public PaymentGateMode $paymentGateMode = PaymentGateMode::Off,
+        /**
+         * ARASYA_SOURCE_CONFIRMARE_<SOURCE> (API 2.37.0): `on` only permits the operator to record the source's Confirmare
+         * activation (bin/workflow-cohort.php). It never classifies an order by itself, and switching it off never
+         * deactivates a recorded activation (readiness reports the mismatch). Default and fallback: off.
+         */
+        public bool $confirmarePermitted = false,
     ) {
     }
 
