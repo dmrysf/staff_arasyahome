@@ -95,6 +95,26 @@ PREPARE arasya_036_facts_statement FROM @arasya_036_facts;
 EXECUTE arasya_036_facts_statement;
 DEALLOCATE PREPARE arasya_036_facts_statement;
 
+-- Confirmare financial clearance stated by the source (order.financial): states and bases only, never an amount.
+SET @arasya_036_financial_missing = (SELECT COUNT(*) = 0 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'operational_orders' AND column_name = 'source_financial_state');
+
+SET @arasya_036_financial = IF(@arasya_036_financial_missing,
+    'ALTER TABLE operational_orders
+        ADD COLUMN source_financial_state VARCHAR(10) CHARACTER SET ascii COLLATE ascii_bin NULL AFTER source_due_date,
+        ADD COLUMN source_financial_basis VARCHAR(20) CHARACTER SET ascii COLLATE ascii_bin NULL AFTER source_financial_state,
+        ADD COLUMN source_financial_pricing VARCHAR(71) CHARACTER SET ascii COLLATE ascii_bin NULL AFTER source_financial_basis,
+        ADD CONSTRAINT chk_operational_orders_financial_state CHECK (source_financial_state IS NULL OR source_financial_state IN (''cleared'', ''waiting'', ''partial'', ''unknown'')),
+        ADD CONSTRAINT chk_operational_orders_financial_basis CHECK (source_financial_basis IS NULL OR source_financial_basis IN (''online_payment'', ''zero_total'', ''advance_collected'')),
+        ADD CONSTRAINT chk_operational_orders_financial_pricing CHECK (source_financial_pricing IS NULL OR source_financial_pricing REGEXP ''^sha256:[0-9a-f]{64}$''),
+        ADD CONSTRAINT chk_operational_orders_financial_complete CHECK (
+            (source_financial_state IS NULL AND source_financial_basis IS NULL AND source_financial_pricing IS NULL)
+            OR (source_financial_state = ''cleared'' AND source_financial_basis IS NOT NULL AND source_financial_pricing IS NOT NULL)
+            OR (source_financial_state IN (''waiting'', ''partial'', ''unknown'') AND source_financial_basis IS NULL))',
+    'DO 0');
+PREPARE arasya_036_financial_statement FROM @arasya_036_financial;
+EXECUTE arasya_036_financial_statement;
+DEALLOCATE PREPARE arasya_036_financial_statement;
+
 CREATE TABLE IF NOT EXISTS confirmare_alerts (
     alert_uuid CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     order_uuid CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,

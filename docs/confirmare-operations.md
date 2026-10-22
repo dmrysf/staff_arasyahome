@@ -129,7 +129,7 @@ these hold. `ConfirmationClearance` stores the result as `order_confirmations.pr
 | lines | `confirmedLineIds` equals the order's current cart lines, every one of them. |
 | price | The shop sent its pricing fingerprint (`order.pricing`), and the operator verified the prices against the shop (`priceVerified: true`). |
 | sync | The review fingerprint is unchanged since the approval. It covers every line's identity, product, measurements and quantity, plus the pricing fingerprint. |
-| payment | The financial condition is met: an online payment the shop verified, or a COD order whose advance is confirmed or not required. This holds whatever the advance payment gate mode is. |
+| payment | The shop's financial clearance (`order.financial`) is `cleared` on the order's current total, with a basis that agrees with the advance payment facts. This holds whatever the advance payment gate mode is (owner rule 2026-10-22, see below). |
 
 How the clearance works:
 
@@ -137,6 +137,18 @@ How the clearance works:
   `production: {cleared, missing}`.
 - **When it is recomputed.** Under the order row lock, every decision and every source snapshot that changes the cart,
   the price or the payment recomputes the flag.
+- **The financial condition (owner rule 2026-10-22).** It applies only to Confirmare orders; legacy orders keep the
+  advance payment gate unchanged. Production stays closed unless the source states `cleared` with one of these bases:
+  - `online_payment`: a payment the shop verified (YD SOFT: a verified gateway with its own capture evidence);
+  - `advance_collected`: the real collections cover the 30 % advance of the CURRENT final total;
+  - `zero_total`: the final total, after taxes, discounts, coupons and shipping, is 0.
+
+  A disabled advance module is not an exemption: a COD order with a positive total keeps the 30 % advance, and the
+  legacy `not_required` status alone never clears. An advance exemption needs an authorized, reasoned, audited decision
+  that does not exist yet, so no exemption basis can be stated. The clearance must name the pricing fingerprint it was
+  evaluated on, and that fingerprint must equal the stored one: after a total change an old `cleared` or an old advance
+  confirmation never counts. A basis that contradicts the advance payment facts (an online basis on a COD order),
+  `waiting`, `partial`, `unknown`, or an event without the clearance keeps production closed.
 - **A later shop change** closes production again (`missing: ["sync"]`). A supervisor reopens the approval for a new
   review. A cleared approval is never reopened.
 - **Refusals** name what is missing: `409 CONFIRMARE_NECESARA {missing: [...]}`.
@@ -173,7 +185,7 @@ Reject reasons are codes only: `customer_unreachable`, `customer_cancelled`, `or
 
 ### Order facts contract (schema 1, optional, API 2.38.0)
 
-The heartbeat answers `"orderFacts": ["pricing", "dueDate"]`. A source sends these keys only to a server that
+The heartbeat answers `"orderFacts": ["pricing", "dueDate", "financial"]`. A source sends these keys only to a server that
 announced them.
 
 - **`order.pricing`: `{"fingerprint": "sha256:<64 hex>"}`.**
@@ -182,6 +194,11 @@ announced them.
 - **`order.dueDate`: `"YYYY-MM-DD"`.**
   - An impossible date is refused.
   - Both facts join the receipt hash only when present. Absence keeps the stored value.
+- **`order.financial`: `{"state", "basis", "pricingFingerprint"}`.**
+  - `state` is `cleared`, `waiting`, `partial` or `unknown`. `cleared` needs a `basis` (`online_payment`, `zero_total` or
+    `advance_collected`) and the `pricingFingerprint` the shop evaluated; every other state has `basis: null`.
+  - There is no `exemption` basis. Any other key, an amount included, is refused; database checks enforce the same.
+  - Every snapshot replaces it: a snapshot without it leaves the order financially unknown (closed).
 
 ## Concurrency
 

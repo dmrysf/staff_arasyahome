@@ -365,7 +365,7 @@ test('signed heartbeat reports mode and contract only, for validation and active
     $pdo->exec("CREATE TABLE workflow_cohort_activations (source_key TEXT NOT NULL, action TEXT NOT NULL, effective_at TEXT NOT NULL, recorded_at TEXT NOT NULL)");
     foreach (['trendhome' => [SOURCE_TEST_TRENDHOME_SECRET, 'active'], 'outletperdele' => [SOURCE_TEST_OUTLET_SECRET, 'validation']] as $key => [$secret, $mode]) {
         $response = $controller->heartbeat(sourceSignedRequest(['sentAt' => '2026-10-07T10:00:00Z'], $secret), $key);
-        expect($response->payload === ['ok' => true, 'sourceKey' => $key, 'mode' => $mode, 'productionAuthorityMode' => 'legacy', 'qrAuthorityMode' => 'legacy', 'documentAuthorityMode' => 'legacy', 'trackingAuthorityMode' => 'legacy', 'paymentGateMode' => 'off', 'confirmare' => ['state' => 'inactive', 'activatedAt' => null], 'orderFacts' => ['pricing', 'dueDate'], 'contract' => ['schemaVersion' => 1, 'workflowId' => 'curtain-production', 'workflowVersion' => 1, 'stageCount' => 14]], 'Unexpected heartbeat: ' . sourceJson($response));
+        expect($response->payload === ['ok' => true, 'sourceKey' => $key, 'mode' => $mode, 'productionAuthorityMode' => 'legacy', 'qrAuthorityMode' => 'legacy', 'documentAuthorityMode' => 'legacy', 'trackingAuthorityMode' => 'legacy', 'paymentGateMode' => 'off', 'confirmare' => ['state' => 'inactive', 'activatedAt' => null], 'orderFacts' => ['pricing', 'dueDate', 'financial'], 'contract' => ['schemaVersion' => 1, 'workflowId' => 'curtain-production', 'workflowVersion' => 1, 'stageCount' => 14]], 'Unexpected heartbeat: ' . sourceJson($response));
         expect(sourceResponseHasNoSecret($response));
     }
     $contacts = $pdo->query('SELECT COUNT(*) FROM order_sources WHERE last_contact_at IS NOT NULL')->fetchColumn();
@@ -594,12 +594,13 @@ test('migrations stay ordered through 036 and the canonical workflow keeps its 1
     expect(preg_match('/\b(UPDATE|DELETE|DROP|TRUNCATE|RENAME|INSERT|MODIFY|CHANGE)\b/i', $cohort) === 0 && substr_count($cohort, 'CREATE TABLE IF NOT EXISTS') === 3
         && preg_match_all('/ALTER TABLE ([a-z_]+)/i', $cohort, $cohortAlters) === 1 && $cohortAlters[1] === ['operational_orders']
         && str_contains($cohort, "column_name = 'workflow_cohort'") && substr_count($cohort, 'ADD COLUMN') === 5 && str_contains($cohort, "'DO 0'"), '035 must only add its tables and nullable columns, guarded.');
-    // 036 is additive and re-runnable too: four new tables and one guarded ALTER that adds nullable assignment columns to
-    // order_confirmations; no row is written, no scope is granted and no existing order or confirmation is touched.
+    // 036 is additive and re-runnable too: its new tables and three guarded ALTERs that add nullable columns (assignment and
+    // clearance to order_confirmations; source facts and the financial clearance to operational_orders); no row is written, no scope is granted and no existing order or confirmation is touched.
     $operations = preg_replace(['/^\s*--.*$/m', '/ON (UPDATE|DELETE) RESTRICT/'], '', (string) file_get_contents(dirname(__DIR__) . '/database/migrations/036_confirmare_operations.sql'));
     expect(preg_match('/\b(UPDATE|DELETE|DROP|TRUNCATE|RENAME|INSERT|MODIFY|CHANGE)\b/i', $operations) === 0 && substr_count($operations, 'CREATE TABLE IF NOT EXISTS') === 5
-        && preg_match_all('/ALTER TABLE ([a-z_]+)/i', $operations, $operationsAlters) === 2 && $operationsAlters[1] === ['order_confirmations', 'operational_orders']
-        && str_contains($operations, "column_name = 'assigned_employee_uuid'") && str_contains($operations, "column_name = 'source_pricing_fingerprint'") && substr_count($operations, 'ADD COLUMN') === 12 && substr_count($operations, "'DO 0'") === 2, '036 must only add its tables and nullable or defaulted columns, guarded.');
+        && preg_match_all('/ALTER TABLE ([a-z_]+)/i', $operations, $operationsAlters) === 3 && $operationsAlters[1] === ['order_confirmations', 'operational_orders', 'operational_orders']
+        && str_contains($operations, "column_name = 'assigned_employee_uuid'") && str_contains($operations, "column_name = 'source_pricing_fingerprint'") && str_contains($operations, "column_name = 'source_financial_state'")
+        && substr_count($operations, 'ADD COLUMN') === 15 && substr_count($operations, "'DO 0'") === 3, '036 must only add its tables and nullable or defaulted columns, guarded.');
 });
 
 test('payment gate mode is per source, defaults to off and an unreadable value falls back to off', function (): void {
@@ -808,9 +809,46 @@ test('Confirmare cohort: Bucharest cutover boundaries, activation instant, evide
     expect(!$g::blocksStart('confirmare', true, 'waiting') && $g::blocksStart('undetermined', true, 'waiting'));
     expect(!$g::blocksStart(null, null, 'waiting') && !$g::blocksStart('legacy', null, 'waiting') && !$g::blocksStart('confirmare', false, 'material-preparation'));
     $clearance = \Arasya\Operations\Confirmare\ConfirmationClearance::class;
-    expect($clearance::paymentOpen('online', 'not_required') && $clearance::paymentOpen('cod', 'confirmed') && $clearance::paymentOpen('cod', 'not_required'));
-    expect(!$clearance::paymentOpen('cod', 'waiting') && !$clearance::paymentOpen('cod', 'partial') && !$clearance::paymentOpen('unverified', 'waiting') && !$clearance::paymentOpen(null, null), 'The financial condition is closed whatever the payment gate mode.');
+    // Owner rule 2026-10-22: the source's financial clearance on the CURRENT total, whatever the payment gate mode.
+    $p1 = 'sha256:' . str_repeat('a', 64);
+    $p2 = 'sha256:' . str_repeat('b', 64);
+    expect($clearance::financialOpen('cleared', 'online_payment', $p1, $p1, 'online') && $clearance::financialOpen('cleared', 'advance_collected', $p1, $p1, 'cod') && $clearance::financialOpen('cleared', 'zero_total', $p1, $p1, 'cod'));
+    expect($clearance::financialOpen('cleared', 'advance_collected', $p1, $p1, null), 'Without advance payment facts the financial clearance decides alone.');
+    expect(!$clearance::financialOpen('waiting', null, $p1, $p1, 'cod') && !$clearance::financialOpen('partial', null, $p1, $p1, 'cod') && !$clearance::financialOpen('unknown', null, null, $p1, 'cod') && !$clearance::financialOpen(null, null, null, $p1, 'cod'), 'Waiting, partial, unknown or missing stays closed.');
+    expect(!$clearance::financialOpen('cleared', 'advance_collected', $p1, $p2, 'cod') && !$clearance::financialOpen('cleared', 'zero_total', $p1, null, 'cod'), 'A clearance evaluated on another total never carries over.');
+    expect(!$clearance::financialOpen('cleared', 'online_payment', $p1, $p1, 'cod') && !$clearance::financialOpen('cleared', 'online_payment', $p1, $p1, 'unverified') && !$clearance::financialOpen('cleared', 'zero_total', $p1, $p1, 'online'), 'An inconsistent basis stays closed.');
+    expect(!$clearance::financialOpen('cleared', 'exemption', $p1, $p1, 'cod') && !$clearance::financialOpen('cleared', null, $p1, $p1, 'cod'), 'No exemption basis exists.');
     expect($g::WORKFLOW_READY === false, 'Phase 1 cannot approve, so no source can be activated.');
+});
+
+test('Confirmare financial clearance is strict, optional and carries no amount', function (): void {
+    $mapper = \Arasya\Operations\Integration\SourceOrderPayloadMapper::class;
+    $base = ['schemaVersion' => 1, 'eventId' => 'wc-fin-1', 'changedAt' => '2026-10-22T10:00:00Z', 'order' => ['id' => '63600', 'number' => '63600', 'availability' => 'active', 'status' => ['code' => 'processing'], 'items' => [['id' => 1, 'line' => 1, 'name' => 'Draperie', 'quantity' => 1]]]];
+    expect($mapper::map('trendhome', $base)->financial === null, 'Absent clearance stays absent.');
+    $p = 'sha256:' . str_repeat('c', 64);
+    $with = static function (mixed $financial) use ($base): array { $b = $base; $b['order']['financial'] = $financial; return $b; };
+    foreach ([['cleared', 'online_payment', $p], ['cleared', 'zero_total', $p], ['cleared', 'advance_collected', $p], ['waiting', null, $p], ['partial', null, $p], ['unknown', null, null]] as [$state, $basis, $pricing]) {
+        expect($mapper::map('trendhome', $with(['state' => $state, 'basis' => $basis, 'pricingFingerprint' => $pricing]))->financial === ['state' => $state, 'basis' => $basis, 'pricingFingerprint' => $pricing], "{$state} is accepted.");
+    }
+    $refused = [
+        'an exemption basis' => ['state' => 'cleared', 'basis' => 'exemption', 'pricingFingerprint' => $p],
+        'cleared without a basis' => ['state' => 'cleared', 'basis' => null, 'pricingFingerprint' => $p],
+        'cleared without the evaluated pricing' => ['state' => 'cleared', 'basis' => 'zero_total', 'pricingFingerprint' => null],
+        'a basis on a waiting state' => ['state' => 'waiting', 'basis' => 'advance_collected', 'pricingFingerprint' => $p],
+        'an unknown state' => ['state' => 'not_required', 'basis' => null, 'pricingFingerprint' => $p],
+        'an amount' => ['state' => 'cleared', 'basis' => 'advance_collected', 'pricingFingerprint' => $p, 'amount' => 450],
+        'a missing key' => ['state' => 'waiting', 'pricingFingerprint' => $p],
+        'a malformed fingerprint' => ['state' => 'waiting', 'basis' => null, 'pricingFingerprint' => 'sha256:ABC'],
+        'a list' => ['cleared'],
+    ];
+    foreach ($refused as $label => $financial) {
+        try {
+            $mapper::map('trendhome', $with($financial));
+            expect(false, "Refuses {$label}.");
+        } catch (\Arasya\Operations\Http\ApiException $e) {
+            expect($e->status === 422 && $e->errorCode === 'SOURCE_PAYLOAD_INVALID', "Refuses {$label}.");
+        }
+    }
 });
 
 test('Confirmare submission evidence is strict, optional and never changes older payloads', function (): void {

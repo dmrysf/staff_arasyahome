@@ -103,6 +103,11 @@ $payload = static function (string $id, string $status, ?array $submission, ?arr
     unset($p['order']['notes']);
     if ($submission !== null) $p['order']['submission'] = $submission;
     if ($payment !== null) $p['order']['payment'] = $payment;
+    // API 2.38.0 order facts as YD SOFT 2.13 sends them: the pricing fingerprint and the financial clearance, which here
+    // follows the advance payment facts (online or a confirmed advance clears; anything else waits).
+    $p['order']['pricing'] = ['fingerprint' => $fingerprint = 'sha256:' . hash('sha256', "cf-price-{$id}")];
+    $cleared = $payment !== null && ($payment['method'] === 'online' || ($payment['method'] === 'cod' && $payment['advanceStatus'] === 'confirmed'));
+    $p['order']['financial'] = ['state' => $cleared ? 'cleared' : ($payment === null ? 'unknown' : 'waiting'), 'basis' => $cleared ? ($payment['method'] === 'online' ? 'online_payment' : 'advance_collected') : null, 'pricingFingerprint' => $fingerprint];
     return $p;
 };
 $submitted = static fn (DateTimeImmutable $at, string $kind = 'store_api'): array => ['submittedAt' => $iso($at), 'evidence' => $kind];

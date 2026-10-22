@@ -83,6 +83,9 @@ final readonly class OrderProjectionWriter
         if ($snapshot->dueDate !== null) {
             $hashData['due'] = $snapshot->dueDate;
         }
+        if ($snapshot->financial !== null) {
+            $hashData['financial'] = $snapshot->financial;
+        }
         // The printable delivery identity is kept outside the receipt hash so existing source events keep
         // their hash; it is applied below and decides document staleness like any printed field.
         $documentContext = $snapshot->delivery === null ? null : json_encode($snapshot->delivery, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
@@ -407,9 +410,15 @@ final readonly class OrderProjectionWriter
         return $cohort;
     }
 
-    /** Stores the source's pricing fingerprint and due date when stated; absence keeps the stored facts. */
+    /**
+     * Stores the source's pricing fingerprint and due date when stated; absence keeps the stored facts. The financial
+     * clearance is replaced by every snapshot: an event without it leaves the order financially unknown (closed), so an
+     * earlier `cleared` never outlives the order state it was evaluated on.
+     */
     private function applyCommercialFacts(string $orderUuid, SourceOrderSnapshot $snapshot): void
     {
+        $this->pdo->prepare('UPDATE operational_orders SET source_financial_state = ?, source_financial_basis = ?, source_financial_pricing = ? WHERE order_uuid = ?')
+            ->execute([$snapshot->financial['state'] ?? null, $snapshot->financial['basis'] ?? null, $snapshot->financial['pricingFingerprint'] ?? null, $orderUuid]);
         if ($snapshot->pricingFingerprint !== null) {
             $this->pdo->prepare('UPDATE operational_orders SET source_pricing_fingerprint = ? WHERE order_uuid = ?')->execute([$snapshot->pricingFingerprint, $orderUuid]);
         }

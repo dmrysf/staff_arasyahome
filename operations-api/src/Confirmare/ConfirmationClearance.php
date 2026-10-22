@@ -16,8 +16,18 @@ use PDO;
  * - price:     the source sent its pricing fingerprint (order.pricing) and the approval was given on it;
  * - sync:      the order Arasya holds now is the one that was reviewed: the review fingerprint (every line's identity,
  *              product, measurements and quantity, plus the pricing fingerprint) is unchanged since the approval;
- * - payment:   the financial condition is met, whatever the advance payment gate mode: an online payment the source
- *              verified, or a COD order whose advance is confirmed or not required. Unknown or waiting stays closed.
+ * - payment:   the financial condition is met, whatever the advance payment gate mode (owner rule 2026-10-22). The
+ *              source states it in order.financial, evaluated on the order's final total, and it holds only when ALL of:
+ *              - state `cleared` with a basis: `online_payment` (a payment the shop verified), `advance_collected` (the
+ *                real collections cover the 30 % advance of the CURRENT total) or `zero_total` (the final total, after
+ *                taxes, discounts, coupons and shipping, is 0). There is no exemption basis: an advance exemption needs an
+ *                authorized, reasoned, audited decision that does not exist yet, so it never clears;
+ *              - the clearance was evaluated on the order Arasya holds now: its pricing fingerprint equals the stored
+ *                one, so a changed total needs a new evaluation (an old `cleared` is never carried over);
+ *              - it agrees with the advance payment facts (order.payment) when those are stated: an online basis for an
+ *                online payment, a COD basis for a COD order. Anything inconsistent, unknown or missing stays closed.
+ *              The legacy `not_required` advance status alone never clears a Confirmare order (a disabled advance module
+ *              is not an exemption). Legacy orders keep the advance payment gate unchanged.
  *
  * The result is stored as order_confirmations.production_cleared and recomputed, under the order row lock, by every
  * decision and by every source snapshot that changes the order (cart, price, payment). ConfirmationGate reads only that
@@ -57,7 +67,8 @@ final class ConfirmationClearance
      */
     public static function missing(PDO $pdo, string $orderUuid): array
     {
-        $statement = $pdo->prepare('SELECT c.status, c.call_confirmed_at, c.confirmed_line_ids, c.approved_review_fingerprint, o.source_pricing_fingerprint, o.payment_method, o.advance_status
+        $statement = $pdo->prepare('SELECT c.status, c.call_confirmed_at, c.confirmed_line_ids, c.approved_review_fingerprint, o.source_pricing_fingerprint, o.payment_method,
+                o.source_financial_state, o.source_financial_basis, o.source_financial_pricing
             FROM order_confirmations c INNER JOIN operational_orders o ON o.order_uuid = c.order_uuid WHERE c.order_uuid = ?');
         $statement->execute([$orderUuid]);
         $row = $statement->fetch(PDO::FETCH_ASSOC);
@@ -82,7 +93,7 @@ final class ConfirmationClearance
         if ($row['approved_review_fingerprint'] === null || !hash_equals((string) $row['approved_review_fingerprint'], self::fingerprint($pdo, $orderUuid))) {
             $missing[] = 'sync';
         }
-        if (!self::paymentOpen($row['payment_method'] === null ? null : (string) $row['payment_method'], $row['advance_status'] === null ? null : (string) $row['advance_status'])) {
+        if (!self::financialOpen(self::text($row['source_financial_state']), self::text($row['source_financial_basis']), self::text($row['source_financial_pricing']), self::text($row['source_pricing_fingerprint']), self::text($row['payment_method']))) {
             $missing[] = 'payment';
         }
         return $missing;
@@ -105,10 +116,19 @@ final class ConfirmationClearance
         return $cleared;
     }
 
-    /** The financial condition of a Confirmare order, independent of the payment gate mode. */
-    public static function paymentOpen(?string $method, ?string $advanceStatus): bool
+    /** The financial condition of a Confirmare order, independent of the payment gate mode (see the class comment). */
+    public static function financialOpen(?string $state, ?string $basis, ?string $evaluatedPricing, ?string $currentPricing, ?string $paymentMethod): bool
     {
-        return $method === 'online' || ($method === 'cod' && in_array($advanceStatus, ['not_required', 'confirmed'], true));
+        $method = ['online_payment' => 'online', 'zero_total' => 'cod', 'advance_collected' => 'cod'][$basis ?? ''] ?? null;
+        return $state === 'cleared'
+            && $method !== null
+            && $evaluatedPricing !== null && $currentPricing !== null && hash_equals($currentPricing, $evaluatedPricing)
+            && ($paymentMethod === null || $paymentMethod === $method);
+    }
+
+    private static function text(mixed $value): ?string
+    {
+        return $value === null ? null : (string) $value;
     }
 
     /** @param list<mixed> $values @return list<string> */

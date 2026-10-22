@@ -131,7 +131,22 @@ $payload = static function (string $id, string $status, ?array $submission, ?arr
         'id' => 7002, 'line' => 2, 'name' => 'Draperie Bej', 'sku' => 'DR-BEJ', 'color' => 'Bej', 'width' => 2, 'height' => 2.6, 'unit' => 'm', 'quantity' => 1,
     ]]);
     // API 2.38.0 order facts: the shop's pricing fingerprint (never an amount) and an optional due date.
-    if (($extra['pricing'] ?? true) !== false) $p['order']['pricing'] = ['fingerprint' => 'sha256:' . hash('sha256', "price-{$id}-" . ($extra['price'] ?? 'a'))];
+    $priced = ($extra['pricing'] ?? true) !== false;
+    $fingerprint = 'sha256:' . hash('sha256', "price-{$id}-" . ($extra['price'] ?? 'a'));
+    if ($priced) $p['order']['pricing'] = ['fingerprint' => $fingerprint];
+    // The source's financial clearance (owner rule 2026-10-22), as YD SOFT evaluates it on the final total. By default it
+    // follows the advance payment facts; a legacy `not_required` (a disabled advance module) is waiting, never cleared.
+    $state = match (true) {
+        $payment === null => 'unknown',
+        $payment['method'] === 'online' => 'cleared',
+        $payment['method'] === 'cod' && $payment['advanceStatus'] === 'confirmed' => 'cleared',
+        $payment['method'] === 'cod' && $payment['advanceStatus'] === 'partial' => 'partial',
+        default => 'waiting',
+    };
+    $state = $state === 'cleared' && !$priced ? 'unknown' : $state;
+    $derived = ['state' => $state, 'basis' => $state === 'cleared' ? ($payment['method'] === 'online' ? 'online_payment' : 'advance_collected') : null, 'pricingFingerprint' => $priced ? $fingerprint : null];
+    $financial = array_key_exists('financial', $extra) ? $extra['financial'] : $derived;
+    if ($financial !== false) $p['order']['financial'] = $financial;
     if (isset($extra['due'])) $p['order']['dueDate'] = $extra['due'];
     unset($p['order']['notes']);
     $p['order']['delivery'] = ['name' => 'Ionescu Testclient', 'street' => 'Str. Test 1', 'city' => 'Cluj-Napoca', 'postalCode' => '400000', 'country' => 'RO', 'phone' => '0722999111'];
@@ -216,6 +231,7 @@ $poolA = $ok($pool($opA), 'pool A');
 $check(count($poolA['items']) === 23 && !in_array($th(130), $idsOf($poolA), true) && array_filter($idsOf($poolA), static fn (string $g): bool => str_starts_with($g, 'outletperdele:')) === [], 'an operator sees the unassigned Confirmare orders of their source only (no undetermined, no other source)');
 $check(array_slice($idsOf($poolA), 0, 3) === [$th(121), $th(115), $th(100)] && $poolA['items'][0]['dueDate'] === '2026-10-30', 'the nearest due date first, then stable FIFO');
 $check($poolA['items'][2]['payment']['state'] === 'waiting' && $poolA['items'][3]['payment']['state'] === 'online' && $poolA['items'][0]['productionCleared'] === false, 'the payment state only, never an amount');
+$check($poolA['items'][2]['financial'] === ['state' => 'waiting', 'basis' => null] && $poolA['items'][3]['financial'] === ['state' => 'cleared', 'basis' => 'online_payment'], 'the financial clearance state and basis only');
 $check(!str_contains(json_encode($poolA), 'Ionescu') && !str_contains(json_encode($poolA), '0722999111') && !str_contains(json_encode($poolA), 'Str. Test'), 'the pool carries no customer data');
 $check($idsOf($ok($pool($opC), 'pool C')) === [$op(200), $op(201)], 'a Dashboard operator of the other source sees only that source');
 $supAll = $ok($pool($sup, 'all'), 'pool supervisor all');
@@ -289,6 +305,36 @@ $check(($closedDoc['error']['details']['missing'] ?? null) === ['payment'], 'the
 $ok($send('trendhome', $payload(explode(':', $aOrder)[1], 'processing', null, $cod('confirmed'))), 'the advance is confirmed in the shop');
 $check($conf($aOrder)['production_cleared'] === 1 && $detail($sup, $aOrder)['production']['missing'] === [], 'the confirmed advance completes the clearance');
 $check($ok($intake($aOrder), 'intake after clearance')['outcome'] === 'started' && $stage($aOrder) === 'material-preparation', 'only now production starts');
+// Owner financial rules (2026-10-22): the source's financial clearance on the CURRENT total decides, whatever the gate mode.
+$fin = $pick($mineA, static fn (string $g): bool => $isCod($g) && $g !== $aOrder && ($conf($g)['status'] ?? '') === 'pending');
+$finId = explode(':', $fin)[1];
+$finPrice = static fn (string $price): string => 'sha256:' . hash('sha256', "price-{$finId}-{$price}");
+$missingOf = static fn (string $g): array => $detail($sup, $g)['production']['missing'];
+$finSend = static fn (array $payment, mixed $financial, array $extra = []): array => $ok($send('trendhome', $payload($finId, 'processing', null, $payment, ['financial' => $financial] + $extra)), 'financial event');
+$ok($act($opA, $fin, 'approve', $approveBody($opA, $fin)), 'approve a COD order without its advance');
+$finSend($cod('not_required'), ['state' => 'waiting', 'basis' => null, 'pricingFingerprint' => $finPrice('a')]);
+$check($missingOf($fin) === ['payment'], 'a disabled advance module is no exemption: a positive total keeps the 30 % advance');
+$finSend($cod('not_required'), ['state' => 'cleared', 'basis' => 'zero_total', 'pricingFingerprint' => $finPrice('a')]);
+$check($conf($fin)['production_cleared'] === 1 && $missingOf($fin) === [], 'a verified final total of 0 needs no advance');
+$finSend($cod('not_required'), ['state' => 'cleared', 'basis' => 'zero_total', 'pricingFingerprint' => $finPrice('old')]);
+$check($conf($fin)['production_cleared'] === 0 && $missingOf($fin) === ['payment'], 'a clearance evaluated on another total never carries over');
+$finSend($cod('confirmed', 1), ['state' => 'cleared', 'basis' => 'online_payment', 'pricingFingerprint' => $finPrice('a')]);
+$check($missingOf($fin) === ['payment'], 'an online basis for a COD order is inconsistent and stays closed');
+$finSend($cod('confirmed', 1), ['state' => 'cleared', 'basis' => 'advance_collected', 'pricingFingerprint' => $finPrice('a')]);
+$check($conf($fin)['production_cleared'] === 1, 'collections covering the advance of the current total clear it');
+$finSend($cod('confirmed', 1), false);
+$check($conf($fin)['production_cleared'] === 0 && $missingOf($fin) === ['payment'], 'an event without the clearance leaves the order financially unknown');
+$finSend($cod('confirmed', 1), ['state' => 'partial', 'basis' => null, 'pricingFingerprint' => $finPrice('b')], ['price' => 'b']);
+$check(in_array('payment', $missingOf($fin), true) && in_array('sync', $missingOf($fin), true), 'a higher total: the old advance confirmation no longer counts, and the order needs a new review');
+$error($send('trendhome', $payload($finId, 'processing', null, $cod('confirmed', 1), ['price' => 'b', 'financial' => ['state' => 'cleared', 'basis' => 'exemption', 'pricingFingerprint' => $finPrice('b')]])), 422, 'SOURCE_PAYLOAD_INVALID', 'no exemption can be stated until an audited exemption exists');
+$error($send('trendhome', $payload($finId, 'processing', null, $cod('confirmed', 1), ['price' => 'b', 'financial' => ['state' => 'cleared', 'basis' => 'advance_collected', 'pricingFingerprint' => $finPrice('b'), 'amount' => 450]])), 422, 'SOURCE_PAYLOAD_INVALID', 'no amount is accepted');
+$finSend($cod('confirmed', 1), ['state' => 'unknown', 'basis' => null, 'pricingFingerprint' => null], ['price' => 'b']);
+$check(in_array('payment', $missingOf($fin), true), 'an unknown financial state stays closed');
+$error($intake($fin), 409, 'CONFIRMARE_NECESARA', 'and production never starts on it');
+$check($detail($sup, $fin)['financial'] === ['state' => 'unknown', 'basis' => null] && !str_contains(json_encode($detail($sup, $fin)), '450'), 'the view shows the state and basis only');
+// Legacy orders keep the advance payment gate unchanged: the financial clearance is never read for them.
+$ok($send('trendhome', $payload($id(140), 'processing', $submitted($activatedAt->modify('-1 hour')), $online, ['financial' => ['state' => 'unknown', 'basis' => null, 'pricingFingerprint' => null]])), 'legacy order with an unknown financial clearance');
+$ok($generate($th(140)), 'a legacy online order still gets its document through the advance payment gate', 201);
 // An online order: cleared by the approval itself (every other condition holds).
 $online1 = $pick($mineA, static fn (string $g): bool => !$isCod($g) && $g !== $th(121) && $g !== $th(120));
 $ok($act($opA, $online1, 'approve', $approveBody($opA, $online1)), 'approve online order');
@@ -507,6 +553,9 @@ foreach ([
     "INSERT INTO employee_confirmare_scopes (employee_uuid, capability, source_key, granted_at, granted_by_employee_uuid) VALUES (" . $pdo->quote($uuids['coopa']) . ", 'approve', 'trendhome', UTC_TIMESTAMP(6), " . $pdo->quote($uuids['coopa']) . ')' => 'an unknown capability',
     "UPDATE order_confirmations SET production_cleared = 1, cleared_at = UTC_TIMESTAMP(6) WHERE global_order_id = " . $pdo->quote($rejectOrder) => 'a production clearance without an approval',
     "UPDATE operational_orders SET source_pricing_fingerprint = '1250 RON' WHERE global_order_id = " . $pdo->quote($aOrder) => 'an amount stored as a pricing fingerprint',
+    "UPDATE operational_orders SET source_financial_state = 'cleared', source_financial_basis = NULL WHERE global_order_id = " . $pdo->quote($aOrder) => 'a financial clearance without its basis',
+    "UPDATE operational_orders SET source_financial_state = 'cleared', source_financial_basis = 'exemption', source_financial_pricing = source_pricing_fingerprint WHERE global_order_id = " . $pdo->quote($aOrder) => 'an exemption basis',
+    "UPDATE operational_orders SET source_financial_pricing = '450.00' WHERE global_order_id = " . $pdo->quote($aOrder) => 'an amount stored as the evaluated pricing',
 ] as $sql => $label) {
     try { $pdo->exec($sql); $check(false, "the database refuses {$label}"); } catch (PDOException) { $check(true, "the database refuses {$label}"); }
 }
@@ -560,9 +609,11 @@ $pdo->exec('UPDATE operational_orders SET workflow_cohort = NULL, workflow_cohor
 $pdo->exec('ALTER TABLE order_confirmations DROP CONSTRAINT chk_order_confirmations_cleared, DROP FOREIGN KEY fk_order_confirmations_caller, DROP CONSTRAINT chk_order_confirmations_reason, DROP CONSTRAINT chk_order_confirmations_assigned_pending, DROP CONSTRAINT chk_order_confirmations_assignment,
     DROP FOREIGN KEY fk_order_confirmations_assignee, DROP KEY idx_order_confirmations_assignee, DROP COLUMN cleared_at, DROP COLUMN production_cleared, DROP COLUMN approved_review_fingerprint, DROP COLUMN confirmed_line_ids,
     DROP COLUMN call_confirmed_by_employee_uuid, DROP COLUMN call_confirmed_at, DROP COLUMN decision_reason_code, DROP COLUMN assignment_kind, DROP COLUMN assigned_at, DROP COLUMN assigned_employee_uuid');
+$pdo->exec('ALTER TABLE operational_orders DROP CONSTRAINT chk_operational_orders_financial_complete, DROP CONSTRAINT chk_operational_orders_financial_pricing, DROP CONSTRAINT chk_operational_orders_financial_basis,
+    DROP CONSTRAINT chk_operational_orders_financial_state, DROP COLUMN source_financial_pricing, DROP COLUMN source_financial_basis, DROP COLUMN source_financial_state');
 $pdo->exec('ALTER TABLE operational_orders DROP CONSTRAINT chk_operational_orders_pricing_fingerprint, DROP COLUMN source_due_date, DROP COLUMN source_pricing_fingerprint');
 (new SqlFileRunner($pdo))->run(dirname(__DIR__) . '/database/migrations/036_confirmare_operations.sql');
 $check((int) $one("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'order_confirmations' AND column_name IN ('assigned_employee_uuid', 'assigned_at', 'assignment_kind', 'decision_reason_code', 'call_confirmed_at', 'confirmed_line_ids', 'approved_review_fingerprint', 'production_cleared')") === 8
-    && (int) $one("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'operational_orders' AND column_name IN ('source_pricing_fingerprint', 'source_due_date')") === 2, 'an interrupted 036 completes on the next run');
+    && (int) $one("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'operational_orders' AND column_name IN ('source_pricing_fingerprint', 'source_due_date', 'source_financial_state', 'source_financial_basis', 'source_financial_pricing')") === 5, 'an interrupted 036 completes on the next run');
 
 fwrite(STDOUT, "PASS MySQL Confirmare operations integration: {$checks} checks (default deny, root-only audited scopes, pool per scope, availability, automatic and pull distribution, capacity, decisions with versions and idempotency, gate with the payment gate, undetermined and cancelled orders, reassign, reclaim, races, audit trail, CLIs, readiness, resumable migration).\n");

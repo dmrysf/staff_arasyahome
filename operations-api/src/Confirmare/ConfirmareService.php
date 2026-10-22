@@ -936,7 +936,7 @@ final class ConfirmareService
     private function selectSql(): string
     {
         return 'SELECT o.order_uuid, o.global_order_id, o.order_number, o.source_key, o.workflow_cohort, o.source_submitted_at, o.production_stage_id, o.source_commerce_status_code,
-                       o.operational_status, o.payment_method, o.advance_status, o.source_due_date, o.source_pricing_fingerprint, c.production_cleared,
+                       o.operational_status, o.payment_method, o.advance_status, o.source_due_date, o.source_pricing_fingerprint, o.source_financial_state, o.source_financial_basis, c.production_cleared,
                        c.status, c.version, c.opened_at, c.decided_at, c.decision_reason_code, c.assigned_employee_uuid, c.assigned_at, c.assignment_kind,
                        ae.display_name AS assignee_name, de.display_name AS decider_name, c.decided_by_employee_uuid
                 FROM order_confirmations c
@@ -960,7 +960,9 @@ final class ConfirmareService
             'productionStageId' => (string) $row['production_stage_id'],
             'commerceStatus' => $row['source_commerce_status_code'],
             'commerceClosed' => in_array((string) $row['source_commerce_status_code'], self::CLOSED_COMMERCE, true) || $row['operational_status'] === 'unavailable',
+            // The advance payment gate state (legacy view) and the Confirmare financial clearance the source stated.
             'payment' => ['state' => PaymentGate::state($row['payment_method'], $row['advance_status'])],
+            'financial' => ['state' => $row['source_financial_state'] ?? 'unknown', 'basis' => $row['source_financial_basis']],
             'dueDate' => $row['source_due_date'] === null ? null : (string) $row['source_due_date'],
             'productionCleared' => (int) $row['production_cleared'] === 1,
             'assignment' => $row['assigned_employee_uuid'] === null ? null : [
