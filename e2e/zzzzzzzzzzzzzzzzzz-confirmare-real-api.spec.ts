@@ -12,8 +12,10 @@ import path from "node:path";
 // revoked access, a network interruption, layouts from 320 to 1920 px and WCAG 2.2 AA. Generic TEST people only.
 // API 2.41.0 / Staff 2.31.0 (Phase 5): the money of an order read from the TEST shop, a bank transfer recorded by one
 // finance employee and verified by another (never by the recorder), nothing shown as done before the shop confirms.
+// API 2.42.0 / Staff 2.32.0 (Phase 6): the authorized shop employee hands the cleared order to production through the
+// central production document (revision 1, print, a reprint only with a reason); the cutting QR scan starts production.
 type Person = { username: string; name: string; id: string };
-type Fixture = { skip?: string; password: string; people: Record<"operator" | "colleague" | "outlet" | "supervisor" | "finrec" | "finapp", Person>; orders: Record<"call" | "cod" | "colleague" | "noPrice" | "unassigned" | "outlet" | "legacy" | "undetermined" | "finance", string> };
+type Fixture = { skip?: string; password: string; people: Record<"operator" | "colleague" | "outlet" | "supervisor" | "finrec" | "finapp" | "handoff", Person>; orders: Record<"call" | "cod" | "colleague" | "noPrice" | "unassigned" | "outlet" | "legacy" | "undetermined" | "finance", string> };
 const root = path.resolve(import.meta.dirname, "..");
 const base = JSON.parse(readFileSync(path.join(import.meta.dirname, ".real-api-fixture.json"), "utf8")) as { users: { ana: string }; password: string };
 const API = "http://127.0.0.1:8787";
@@ -202,7 +204,7 @@ test("a shop change after the review needs a fresh verification; a confirmed COD
   await page.getByTestId("cf-approve-confirm").click();
   await expect(page.getByTestId("cf-order-status")).toHaveText("În așteptarea plății");
   await expect(page.getByTestId("cf-financial")).toHaveText("Așteaptă plata");
-  await expect(page.getByRole("region", { name: "Producție" })).toContainText("Plata sau avansul confirmate de magazin");
+  await expect(page.getByRole("region", { name: "Producție", exact: true })).toContainText("Plata sau avansul confirmate de magazin");
   await page.goto("/confirmare?tab=payment");
   await expect(page.locator("#cf-tab-panel").getByTestId(`cf-row-${number(F.orders.cod)}`)).toContainText("În așteptarea plății");
   await capture(page, "queue-payment-390");
@@ -510,6 +512,56 @@ test("finance (Phase 5): the shop's money read on request, a transfer recorded b
   expect([403, 404]).toContain(refused.status());
   expect(approver.errors).toEqual([]);
   await approver.context.close();
+});
+
+test("handoff (Phase 6): a document employee without Confirmare scope generates and prints revision 1 once; a reprint needs a reason", async ({ browser }) => {
+  test.skip(Boolean(F.skip), F.skip);
+  test.setTimeout(90_000);
+  const shopApi = await api(F.people.handoff.username, F.password);
+  expect((await shopApi.ctx.get("/confirmare/pool?view=open")).status(), "no customer confirmation pool for a document employee").toBe(403);
+  const shop = await signIn(browser, F.people.handoff.username);
+  const page = shop.page;
+  await page.getByTestId("documents-open-handoff").click();
+  await expect(page).toHaveURL(/\/confirmare\/handoff$/);
+  await expect(page.getByTestId(`cf-handoff-row-${number(F.orders.call)}`)).toContainText("Gata pentru fișă");
+  await expect(page.getByTestId(`cf-handoff-row-${number(F.orders.cod)}`), "an order waiting for its advance is not handed over").toHaveCount(0);
+  await accessible(page, "handoff list");
+  await capture(page, "handoff-list-390");
+  await page.getByTestId(`cf-handoff-row-${number(F.orders.call)}`).click();
+  await expect(page).toHaveURL(new RegExp(`/documents/${encodeURIComponent(F.orders.call)}$`));
+  await page.getByRole("button", { name: "Generează documentul (REVIZIA 1)" }).dblclick();
+  await expect(page.getByRole("button", { name: "Tipărește REVIZIA 1" })).toBeVisible();
+  const first = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Tipărește REVIZIA 1" }).click();
+  expect((await first).suggestedFilename()).toMatch(/R1\.pdf$/);
+  const reprint = page.getByRole("button", { name: "Retipărește REVIZIA 1" });
+  await expect(reprint, "no reprint without a reason").toBeDisabled();
+  await page.getByTestId("document-reprint-reason").fill("Hârtie deteriorată la imprimantă");
+  await expect(reprint).toBeEnabled();
+  const second = page.waitForEvent("download");
+  await reprint.click();
+  await second;
+  await capture(page, "handoff-printed-390");
+  const documentView = await (await shopApi.ctx.get(`/production-documents/orders/${encodeURIComponent(F.orders.call)}`)).json() as { revisions: unknown[]; reprintReasonRequired: boolean };
+  expect(documentView.revisions, "a double click generates one revision").toHaveLength(1);
+  expect(documentView.reprintReasonRequired).toBe(true);
+  const refused = await send(shopApi, "post", `/production-documents/orders/${encodeURIComponent(F.orders.call)}/print`, { revisionNumber: 1 });
+  expect(refused.status(), "the API refuses a reprint without a reason").toBe(422);
+  await page.goto("/confirmare/handoff");
+  await expect(page.getByTestId(`cf-handoff-row-${number(F.orders.call)}`)).toContainText("Așteaptă tăierea");
+  await page.goto(orderPath(F.orders.call));
+  await expect(page.getByTestId("cf-order"), "a document employee never opens the Confirmare order").toHaveCount(0);
+  expect(shop.errors).toEqual([]);
+  await shop.context.close();
+  // The Confirmare supervisor sees the same handoff state on the order, and why the COD order is still closed.
+  const sup = await signIn(browser, F.people.supervisor.username);
+  await sup.page.goto(orderPath(F.orders.call));
+  await expect(sup.page.getByTestId("cf-handoff-state")).toHaveText("Așteaptă tăierea");
+  await sup.page.goto(orderPath(F.orders.cod));
+  await expect(sup.page.getByTestId("cf-handoff-state")).toHaveText("Blocată");
+  await expect(sup.page.getByTestId("cf-handoff-blockers")).toContainText("Plata sau avansul confirmate de magazin");
+  expect(sup.errors).toEqual([]);
+  await sup.context.close();
 });
 
 test("layouts from 320 to 1920 px without horizontal scrolling, WCAG 2.2 AA and 44 px targets", async ({ browser }) => {

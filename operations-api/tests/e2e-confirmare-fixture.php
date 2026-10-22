@@ -151,6 +151,18 @@ foreach ([
     $asRoot('PUT', "/management/employees/{$employee->employeeUuid}/finance-scopes", $scopes);
     $people[$role] = ['username' => $username, 'name' => $name, 'id' => $employee->employeeUuid];
 }
+// API 2.42.0 (Phase 6): the authorized shop employee who hands cleared orders to production: the production document
+// operator role and the Trend Home document scope, and NO Confirmare scope (never part of the customer confirmation pool
+// or of the automatic distribution).
+$documentRole = null;
+foreach ($asRoot('GET', '/management/roles')['items'] as $role) {
+    if ($role['key'] === 'production-documents-operator') $documentRole = (int) $role['id'];
+}
+$employee = $admin->create('Predare Productie', 'cf.handoff.e2e', null, 'pregatire-material', 'employee', $password, [], 'e2e');
+$asRoot('PUT', "/management/employees/{$employee->employeeUuid}/applications", ['applications' => ['staff']]);
+$asRoot('PUT', "/management/employees/{$employee->employeeUuid}/roles", ['roleIds' => [$documentRole ?? throw new RuntimeException('E2E: no document operator role')]]);
+$asRoot('PUT', "/management/employees/{$employee->employeeUuid}/document-scopes", ['operate' => ['trendhome'], 'approve' => []]);
+$people['handoff'] = ['username' => 'cf.handoff.e2e', 'name' => 'Predare Productie', 'id' => $employee->employeeUuid];
 
 $registry = SourceRegistry::fromConfig($config);
 $activatedAt = max($cutover->modify('+1 second'), $now->modify('-2 hours'));

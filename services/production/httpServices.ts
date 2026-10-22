@@ -15,7 +15,7 @@ import { createProductionWorkflowService } from "./workflowService";
 import type { ShopLine, ShopOrderDetail, ShopPerson, ShopRead } from "../../domain/confirmareShop";
 import { FINANCE_ACTIONS, FINANCE_NEXT, FINANCE_TASKS, type FinanceEntry, type FinanceOutcome, type FinanceQueue, type FinanceQueueItem, type FinanceRead, type FinanceSummary, type FinanceTask, type FinanceTimelineItem } from "../../domain/confirmareFinance";
 import { EDIT_IMPACTS, type EditBlocker, type EditCatalog, type EditField, type EditLineSnapshot, type EditOutcome, type EditProduct, type EditResult, type EditTotals, type EditVariation, type OpenEdit } from "../../domain/confirmareEdit";
-import { CLEARANCE_CONDITIONS, CONTACT_OUTCOMES, FINANCIAL_ATTENTION, type ConfirmareAlert, type ConfirmareApi, type ConfirmareAvailability, type ConfirmareContact, type ConfirmareCustomer, type ConfirmareDetail, type ConfirmareEvent, type ConfirmareItem, type ConfirmareLine, type ConfirmareOperator, type ConfirmarePool, type ConfirmareTeam, type FinancialState } from "../../domain/confirmare";
+import { CLEARANCE_CONDITIONS, CONTACT_OUTCOMES, DOCUMENT_STATES, FINANCIAL_ATTENTION, HANDOFF_BLOCKERS, HANDOFF_STATES, type ConfirmareAlert, type ConfirmareApi, type ConfirmareAvailability, type ConfirmareContact, type ConfirmareCustomer, type ConfirmareDetail, type ConfirmareEvent, type ConfirmareHandoff, type ConfirmareItem, type HandoffItem, type ConfirmareLine, type ConfirmareOperator, type ConfirmarePool, type ConfirmareTeam, type FinancialState } from "../../domain/confirmare";
 
 type FetchLike = typeof fetch;
 export type ProductionServicesOptions = {
@@ -136,6 +136,9 @@ const backendErrorCodes: Partial<Record<string, ServiceErrorCode>> = {
   RECEIVER_NOT_ELIGIBLE: "RECEIVER_NOT_ELIGIBLE",
   ORDER_BLOCKED_BY_DOCUMENT: "ORDER_BLOCKED_BY_DOCUMENT",
   AVANS_NEVALIDAT: "AVANS_NEVALIDAT",
+  CONFIRMARE_NECESARA: "CONFIRMARE_NECESARA",
+  CONFIRMARE_DOCUMENT_NECESAR: "CONFIRMARE_DOCUMENT_NECESAR",
+  DOCUMENT_REPRINT_REASON_REQUIRED: "DOCUMENT_REPRINT_REASON_REQUIRED",
   DOCUMENT_SUPERSEDED: "DOCUMENT_SUPERSEDED",
   DOCUMENT_REVOKED: "DOCUMENT_REVOKED",
   DOCUMENT_NOT_GENERATED: "DOCUMENT_NOT_GENERATED",
@@ -353,6 +356,8 @@ export function mapOrderDocument(value: unknown): OrderDocument {
       decidedBy: optionalString(request.decidedBy), decisionComment: optionalString(request.decisionComment), decidedAt: request.decidedAt == null ? null : timestampValue(request.decidedAt), resolutionNote: optionalString(request.resolutionNote),
     },
     revisions: raw.revisions.map(mapRevision),
+    // API 2.42.0: a Confirmare-cohort order needs a reason for every reprint; an older API never asks for one.
+    reprintReasonRequired: raw.reprintReasonRequired === true,
   };
 }
 
@@ -1081,6 +1086,7 @@ export function createProductionServices(apiBaseUrl: string, options: Production
   const command = <T>(path: string, input: unknown, key: string, map: (value: unknown) => T) => http.request(path, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, map);
   const confirmare: ConfirmareApi = {
     pool: (view, source, signal) => http.request(`/confirmare/pool?view=${view}${source ? `&source=${encodeURIComponent(source)}` : ""}`, { signal }, mapConfirmarePool),
+    handoffList: (source, signal) => http.request(`/confirmare/handoff${source ? `?source=${encodeURIComponent(source)}` : ""}`, { signal }, mapHandoffList),
     detail: (globalOrderId, signal) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}`, { signal }, mapConfirmareDetail),
     next: (source, key) => command("/confirmare/next", { source }, key, (value) => { const assigned = objectValue(value).assigned; return assigned == null ? null : mapConfirmareItem(assigned); }),
     claim: (globalOrderId, input, key) => command(confirmareOrder(globalOrderId, "claim"), input, key, mapConfirmareItem),
@@ -1168,6 +1174,32 @@ export function mapConfirmareItem(value: unknown): ConfirmareItem {
   };
 }
 
+/** API 2.42.0: the production handoff of an order; strict (codes only, never customer data). */
+export function mapConfirmareHandoff(value: unknown): ConfirmareHandoff {
+  const raw = objectValue(value);
+  const actions = objectValue(raw.actions);
+  const document = raw.document == null ? null : objectValue(raw.document);
+  return {
+    state: oneOf(raw.state, HANDOFF_STATES),
+    blockers: stringList(raw.blockers).map((blocker) => oneOf(blocker, HANDOFF_BLOCKERS)),
+    stageId: raw.stageId == null ? null : stringValue(raw.stageId),
+    document: document === null ? null : { status: oneOf(document.status, DOCUMENT_STATES), revision: document.revision == null ? null : positiveInteger(document.revision), prints: nonNegativeInteger(document.prints) },
+    actions: { generate: booleanValue(actions.generate), print: booleanValue(actions.print) },
+  };
+}
+
+/** API 2.42.0: the production handoff list; strict, identity and next step only. */
+export function mapHandoffList(value: unknown): HandoffItem[] {
+  return itemsOf(objectValue(value)).map((entry) => {
+    const raw = objectValue(entry);
+    return {
+      globalOrderId: stringValue(raw.globalOrderId), orderNumber: stringValue(raw.orderNumber), sourceKey: stringValue(raw.sourceKey),
+      dueDate: raw.dueDate == null ? null : stringValue(raw.dueDate), submittedAt: raw.submittedAt == null ? null : timestampValue(raw.submittedAt),
+      approvedAt: raw.approvedAt == null ? null : timestampValue(raw.approvedAt), step: oneOf(raw.step, ["ready", "print", "awaiting_cutting"] as const),
+    };
+  });
+}
+
 export function mapConfirmarePool(value: unknown): ConfirmarePool {
   const raw = objectValue(value);
   return { view: oneOf(raw.view, ["mine", "open", "all", "followup"] as const), items: itemsOf(raw).map(mapConfirmareItem), limit: positiveInteger(raw.limit), targetOpenPerOperator: positiveInteger(raw.targetOpenPerOperator) };
@@ -1218,6 +1250,8 @@ export function mapConfirmareDetail(value: unknown): ConfirmareDetail {
     source: { commerceStatusLabel: nullableString(source.commerceStatusLabel), changedAt: source.changedAt == null ? null : timestampValue(source.changedAt), lastSeenAt: source.lastSeenAt == null ? null : timestampValue(source.lastSeenAt), freshness: nullableString(source.freshness) },
     production: { cleared: booleanValue(production.cleared), missing: stringList(production.missing).map((condition) => oneOf(condition, CLEARANCE_CONDITIONS)) },
     events: Array.isArray(raw.events) ? raw.events.map(mapConfirmareEvent) : [],
+    // An older API (2.41) has no handoff state: the panel is not shown.
+    handoff: raw.handoff == null ? null : mapConfirmareHandoff(raw.handoff),
     // An older API (2.40) has no finance: nothing can be read or recorded.
     finance: raw.finance == null ? { configured: false, read: false, record: false, approve: false } : (() => {
       const finance = objectValue(raw.finance);

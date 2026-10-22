@@ -16,7 +16,8 @@ use PDO;
  * - lines:     every line of the cart was confirmed one by one (the confirmed line ids equal the current lines);
  * - price:     the source sent its pricing fingerprint (order.pricing) and the approval was given on it;
  * - sync:      the order Arasya holds now is the one that was reviewed: the review fingerprint (every line's identity,
- *              product, measurements and quantity, plus the pricing fingerprint) is unchanged since the approval;
+ *              product, measurements and quantity, plus the pricing fingerprint) is unchanged since the approval, and
+ *              (API 2.42.0) no shop change of the order is unsettled (ConfirmareSourceEdits::changePending);
  * - payment:   the financial condition is met, whatever the advance payment gate mode (owner rule 2026-10-22). The
  *              source states it in order.financial, evaluated on the order's final total, and it holds only when ALL of:
  *              - state `cleared` with a basis: `online_payment` (a payment the shop verified), `advance_collected` (the
@@ -114,7 +115,9 @@ final class ConfirmationClearance
         if ($row['source_pricing_fingerprint'] === null) {
             $missing[] = 'price';
         }
-        if ($row['approved_review_fingerprint'] === null || !hash_equals((string) $row['approved_review_fingerprint'], self::fingerprint($pdo, $orderUuid))) {
+        // API 2.42.0: an unsettled shop change (ConfirmareSourceEdits) means the order Arasya holds is not final yet.
+        if ($row['approved_review_fingerprint'] === null || !hash_equals((string) $row['approved_review_fingerprint'], self::fingerprint($pdo, $orderUuid))
+            || ConfirmareSourceEdits::changePending($pdo, $orderUuid)) {
             $missing[] = 'sync';
         }
         if (!self::financialOpen(self::text($row['source_financial_state']), self::text($row['source_financial_basis']), self::text($row['source_financial_pricing']), self::text($row['source_pricing_fingerprint']), self::text($row['payment_method']))

@@ -104,6 +104,10 @@ export type OrderActionBlockedReason =
   | "document_revision_pending"
   | "production_authority_source"
   | "payment_gate_closed"
+  /** API 2.37.0/2.38.0: a Confirmare-cohort order at stage 1 that is not cleared for production yet. */
+  | "confirmation_required"
+  /** API 2.42.0: a cleared Confirmare-cohort order at stage 1 without its first production document. */
+  | "confirmation_document_required"
   /** The order is at packing while some of its pieces are still in rework (API 2.31.0). */
   | "pieces_in_rework"
   /** PieceGate (API 2.32.0): a held piece, a piece apart on its route, an unconfirmed plan, missing pieces, an unfinished route or an unconfirmed defect resolution. */
@@ -415,6 +419,9 @@ export type ServiceErrorCode =
   | "RECEIVER_NOT_ELIGIBLE"
   | "ORDER_BLOCKED_BY_DOCUMENT"
   | "AVANS_NEVALIDAT"
+  | "CONFIRMARE_NECESARA"
+  | "CONFIRMARE_DOCUMENT_NECESAR"
+  | "DOCUMENT_REPRINT_REASON_REQUIRED"
   | "DOCUMENT_SUPERSEDED"
   | "DOCUMENT_REVOKED"
   | "DOCUMENT_NOT_GENERATED"

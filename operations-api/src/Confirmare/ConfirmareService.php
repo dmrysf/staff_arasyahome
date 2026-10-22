@@ -5,11 +5,15 @@ declare(strict_types=1);
 namespace Arasya\Operations\Confirmare;
 
 use Arasya\Operations\Authorization\AuthorizationService;
+use Arasya\Operations\Document\DocumentScopePolicy;
+use Arasya\Operations\Document\DocumentService;
 use Arasya\Operations\Employee\EmployeeIdentity;
 use Arasya\Operations\Http\ApiException;
 use Arasya\Operations\Integration\SourceAccess\SourceAccessRegistry;
 use Arasya\Operations\Order\GlobalOrderId;
+use Arasya\Operations\Production\ConfirmationGate;
 use Arasya\Operations\Production\PaymentGate;
+use Arasya\Operations\Production\ProductionAuthorityModes;
 use Arasya\Operations\Production\WorkflowCohort;
 use Arasya\Operations\Support\Clock;
 use Arasya\Operations\Support\Uuid;
@@ -38,6 +42,11 @@ use RuntimeException;
  * the financial condition (whatever the payment gate mode). Approving never confirms a payment; a payment never approves. Rejecting keeps the gate closed; nothing is cancelled in the
  * shop. An undetermined order (unknown submission instant) cannot be approved here. No source can be activated while
  * ConfirmationGate::WORKFLOW_READY is false, so in this release no order reaches this service outside tests.
+ *
+ * Handoff (API 2.42.0, Phase 6): the order detail carries its production handoff state (ConfirmareHandoff), and
+ * handoffList() lists the cleared orders at stage 1 for production document employees. The list needs no Confirmare
+ * scope (a document employee never joins the Confirmare distribution, which follows the `operate` scope only): it needs
+ * the document generate permission and lists only the sources of the actor's document `operate` scope.
  */
 final class ConfirmareService
 {
@@ -84,6 +93,8 @@ final class ConfirmareService
         private readonly Clock $clock,
         /** API 2.40.0: shops with source access configured; their approvals need the approver's shop read. */
         private readonly ?SourceAccessRegistry $sourceAccess = null,
+        /** API 2.42.0: the sources' enforced advance payment gates, for the handoff state. */
+        private readonly ?ProductionAuthorityModes $modes = null,
     ) {
     }
 
@@ -119,7 +130,7 @@ final class ConfirmareService
         $parameters = [];
         $where = match ($view) {
             'mine' => "c.status = 'pending' AND c.assigned_employee_uuid = ?",
-            'followup' => "c.status = 'approved' AND c.production_cleared = 0 AND (c.decided_by_employee_uuid = ? OR " . ConfirmareScopePolicy::condition($supervise, 'c.source_key', $parameters) . ')',
+            'followup' => "c.status = 'approved' AND COALESCE(" . ConfirmationGate::CLEARED_SQL . ", 0) = 0 AND (c.decided_by_employee_uuid = ? OR " . ConfirmareScopePolicy::condition($supervise, 'c.source_key', $parameters) . ')',
             'open' => "c.status = 'pending' AND ((" . ConfirmareScopePolicy::condition($operate, 'c.source_key', $parameters)
                 . " AND o.workflow_cohort = 'confirmare' AND (c.assigned_employee_uuid IS NULL OR c.assigned_employee_uuid = ?)) OR "
                 . ConfirmareScopePolicy::condition($supervise, 'c.source_key', $parameters) . ')',
@@ -201,6 +212,7 @@ final class ConfirmareService
                 'freshness' => $row['freshness_status'] === null ? null : (string) $row['freshness_status'],
             ],
             'production' => ['cleared' => (int) $row['production_cleared'] === 1, 'missing' => ConfirmationClearance::missing($this->pdo, $orderUuid)],
+            'handoff' => $this->handoff($actor, $orderUuid, (string) $row['source_key']),
             'events' => array_map(static fn (array $event): array => [
                 'action' => (string) $event['action'],
                 'actor' => $event['actor_kind'] === 'system' ? null : (string) $event['actor_name'],
@@ -1108,6 +1120,59 @@ final class ConfirmareService
         } catch (\PDOException) {
             return false;
         }
+    }
+
+    /** The production handoff state of an order for this viewer (API 2.42.0). @return array<string, mixed> */
+    private function handoff(EmployeeIdentity $actor, string $orderUuid, string $source): array
+    {
+        $scoped = (new DocumentScopePolicy($this->pdo))->allows($actor, DocumentScopePolicy::OPERATE, $source);
+        $active = $actor->isOperationallyActive() && !$actor->mustChangePassword;
+        $generate = $active && $scoped && $this->authorization->can($actor, DocumentService::GENERATE);
+        $print = $active && $scoped && ($generate || $this->authorization->can($actor, DocumentService::REPRINT));
+        return (new ConfirmareHandoff($this->pdo, $this->modes))->view($orderUuid, $generate, $print);
+    }
+
+    /**
+     * The production handoff list (API 2.42.0): approved Confirmare orders whose production is cleared now
+     * (ConfirmationGate::CLEARED_SQL), still at stage 1 and open, with no document or an active one, of the sources in the
+     * actor's production document `operate` scope. Who: an active identity with the document generate permission; no
+     * Confirmare scope is needed or used, so a document employee is never part of the Confirmare distribution. Each row is
+     * the order's identity and its next step only (`ready`, `print`, `awaiting_cutting`): no customer, assignee, call or
+     * money data.
+     *
+     * @return array{items: list<array<string, mixed>>, limit: int}
+     */
+    public function handoffList(EmployeeIdentity $actor, ?string $source): array
+    {
+        $this->requireActor($actor);
+        if (!$actor->isOperationallyActive() || $actor->mustChangePassword || !$this->authorization->can($actor, DocumentService::GENERATE)) {
+            throw new ApiException(403, 'UNAUTHORIZED_ACTION', 'Nu ai dreptul să generezi documente de producție.');
+        }
+        if ($source !== null && preg_match('/^[a-z0-9_-]{1,40}$/D', $source) !== 1) {
+            throw new ApiException(400, 'INVALID_REQUEST', 'source is invalid.');
+        }
+        $parameters = [];
+        $where = "c.status = 'approved' AND " . ConfirmationGate::CLEARED_SQL . " = 1 AND o.production_stage_id = 'waiting' AND o.operational_status <> 'unavailable'
+            AND o.production_completed_at IS NULL AND o.document_status IN ('none', 'active') AND "
+            . DocumentScopePolicy::condition((new DocumentScopePolicy($this->pdo))->sources($actor, DocumentScopePolicy::OPERATE), 'o.source_key', $parameters);
+        if ($source !== null) {
+            $where .= ' AND o.source_key = ?';
+            $parameters[] = $source;
+        }
+        $statement = $this->pdo->prepare("SELECT o.global_order_id, o.order_number, o.source_key, o.source_due_date, o.source_submitted_at, c.opened_at, c.decided_at, o.document_status,
+                (SELECT COUNT(*) FROM production_document_prints p WHERE p.revision_uuid = o.active_document_revision_uuid) AS prints
+            FROM order_confirmations c INNER JOIN operational_orders o ON o.order_uuid = c.order_uuid
+            WHERE {$where} ORDER BY " . self::PRIORITY_ORDER . ' LIMIT ' . self::POOL_LIMIT);
+        $statement->execute($parameters);
+        return ['items' => array_map(static fn (array $row): array => [
+            'globalOrderId' => (string) $row['global_order_id'],
+            'orderNumber' => (string) $row['order_number'],
+            'sourceKey' => (string) $row['source_key'],
+            'dueDate' => $row['source_due_date'] === null ? null : (string) $row['source_due_date'],
+            'submittedAt' => $row['source_submitted_at'] === null ? null : self::iso((string) $row['source_submitted_at']),
+            'approvedAt' => $row['decided_at'] === null ? null : self::iso((string) $row['decided_at']),
+            'step' => $row['document_status'] === 'none' ? 'ready' : ((int) $row['prints'] === 0 ? 'print' : 'awaiting_cutting'),
+        ], $statement->fetchAll(PDO::FETCH_ASSOC)), 'limit' => self::POOL_LIMIT];
     }
 
     private function requireActor(EmployeeIdentity $actor): void

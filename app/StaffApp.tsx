@@ -37,6 +37,7 @@ import { ConfirmareQueueScreen } from "../features/confirmare/ConfirmareQueueScr
 import { ConfirmareOrderScreen } from "../features/confirmare/ConfirmareOrderScreen";
 import { ConfirmareTeamScreen } from "../features/confirmare/ConfirmareTeamScreen";
 import { ConfirmareFinanceScreen } from "../features/confirmare/ConfirmareFinanceScreen";
+import { ConfirmareHandoffScreen } from "../features/confirmare/ConfirmareHandoffScreen";
 
 type StaffAppProps = { initialRoute: string; mode: StaffRuntimeMode; apiBaseUrl: string };
 
@@ -171,7 +172,8 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
   else if (guardedRoute === "/confirmare" && services.confirmare) screen = <ConfirmareQueueScreen employee={session.employee} service={services.confirmare} navigate={navigate} />;
   else if (guardedRoute === "/confirmare/team" && services.confirmare) screen = <ConfirmareTeamScreen employee={session.employee} service={services.confirmare} navigate={navigate} />;
   else if (guardedRoute === "/confirmare/finance" && services.confirmare) screen = <ConfirmareFinanceScreen employee={session.employee} service={services.confirmare} navigate={navigate} />;
-  else if (confirmareOrderId && services.confirmare) screen = <ConfirmareOrderScreen key={confirmareOrderId} orderId={confirmareOrderId} employee={session.employee} service={services.confirmare} navigate={navigate} />;
+  else if (guardedRoute === "/confirmare/handoff" && services.confirmare) screen = <ConfirmareHandoffScreen service={services.confirmare} navigate={navigate} />;
+  else if (confirmareOrderId && services.confirmare) screen = <ConfirmareOrderScreen key={confirmareOrderId} orderId={confirmareOrderId} employee={session.employee} service={services.confirmare} documents={services.documents} navigate={navigate} />;
   else if (guardedRoute === "/history") screen = <HistoryScreen service={services.activity} navigate={navigate} />;
   else if (guardedRoute === "/profile") screen = <ProfileScreen employee={session.employee} mode={services.mode} onLogout={logout} passwordChanged={passwordChanged} onChangePassword={() => { setPasswordChanged(false); setChangingPassword(true); }} />;
 

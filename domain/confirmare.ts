@@ -22,6 +22,23 @@ export const FINANCIAL_ATTENTION = ["additional_payment_due", "refund_due", "tra
 export type FinancialAttention = (typeof FINANCIAL_ATTENTION)[number];
 export const CLEARANCE_CONDITIONS = ["approval", "call", "lines", "price", "sync", "payment"] as const;
 export type ClearanceCondition = (typeof CLEARANCE_CONDITIONS)[number];
+/**
+ * API 2.42.0 (Phase 6): the production handoff of a cleared order (server ConfirmareHandoff). Confirmare is not a
+ * production stage: the order waits at stage 1 until the cutting QR scan of its first production document.
+ */
+export const HANDOFF_STATES = ["closed", "blocked", "ready", "print", "awaiting_cutting", "in_production"] as const;
+export type HandoffState = (typeof HANDOFF_STATES)[number];
+export const HANDOFF_BLOCKERS = [...CLEARANCE_CONDITIONS, "finance_action", "shop_change", "payment_gate", "exception", "document_blocked"] as const;
+export type HandoffBlocker = (typeof HANDOFF_BLOCKERS)[number];
+export const DOCUMENT_STATES = ["none", "active", "stale", "revoked"] as const;
+export type ConfirmareHandoff = {
+  state: HandoffState;
+  blockers: HandoffBlocker[];
+  stageId: string | null;
+  document: { status: (typeof DOCUMENT_STATES)[number]; revision: number | null; prints: number } | null;
+  /** What the signed-in employee may do here (the document commands check everything again). */
+  actions: { generate: boolean; print: boolean };
+};
 export const REJECT_REASONS = ["customer_unreachable", "customer_cancelled", "order_details_wrong", "duplicate_order", "payment_problem", "other"] as const;
 export type RejectReason = (typeof REJECT_REASONS)[number];
 
@@ -53,6 +70,9 @@ export type ConfirmareItem = {
 };
 
 export type ConfirmareView = "mine" | "open" | "all" | "followup";
+/** One row of the production handoff list (API 2.42.0): the order's identity and next step only. */
+export type HandoffStep = "ready" | "print" | "awaiting_cutting";
+export type HandoffItem = { globalOrderId: string; orderNumber: string; sourceKey: string; dueDate: string | null; submittedAt: string | null; approvedAt: string | null; step: HandoffStep };
 export type ConfirmarePool = { view: ConfirmareView; items: ConfirmareItem[]; limit: number; targetOpenPerOperator: number };
 
 export type ConfirmareLine = {
@@ -92,6 +112,8 @@ export type ConfirmareDetail = ConfirmareItem & {
   sourceAccess: SourceAccessCapabilities;
   /** API 2.41.0: whether the money of the order can be read, recorded or approved by the signed-in employee. */
   finance: FinanceCapabilities;
+  /** API 2.42.0: the production handoff; null from an older API. */
+  handoff: ConfirmareHandoff | null;
 };
 
 export type ConfirmareOperator = { employeeId: string; displayName: string; sources: string[]; canWork: boolean; available: boolean; availableChangedAt: string | null; lastAssignedAt: string | null; open: number; oldestAssignedAt: string | null };
@@ -103,6 +125,8 @@ export type ApproveInput = { expectedVersion: number; customerCall: "confirmed";
 
 export interface ConfirmareApi extends ConfirmareEditApi, ConfirmareFinanceApi {
   pool(view: ConfirmareView, source: string | null, signal?: AbortSignal): Promise<ConfirmarePool>;
+  /** API 2.42.0: the production handoff list (document generate permission; no Confirmare scope needed). */
+  handoffList(source: string | null, signal?: AbortSignal): Promise<HandoffItem[]>;
   detail(globalOrderId: string, signal?: AbortSignal): Promise<ConfirmareDetail>;
   next(source: string | null, idempotencyKey: string): Promise<ConfirmareItem | null>;
   claim(globalOrderId: string, input: { expectedVersion: number }, idempotencyKey: string): Promise<ConfirmareItem>;
@@ -142,6 +166,15 @@ export function canOpenConfirmareOrder(employee: Employee): boolean {
 
 /** The finance scopes, re-exported for the Confirmare screens. */
 export { canUseFinance, financeScopesOf };
+
+/**
+ * The production handoff list (API 2.42.0): the permission to generate production documents. No Confirmare scope is
+ * needed (a document employee is never part of the Confirmare distribution); the server limits the list to the sources
+ * of the employee's document scope.
+ */
+export function canHandOff(employee: Employee): boolean {
+  return employee.status === "active" && !employee.mustChangePassword && employee.applications.includes("staff") && employee.permissions.includes("production.documents.generate");
+}
 
 export function canSuperviseConfirmare(employee: Employee): boolean {
   return canUseConfirmare(employee) && confirmareScopesOf(employee).supervise.length > 0;
@@ -220,6 +253,8 @@ export const itemStatusLabel = (status: ItemStatus): string => t(`cf.status.${st
 export const contactOutcomeLabel = (outcome: ContactOutcome): string => t(`cf.outcome.${outcome}` as MessageKey);
 export const rejectReasonLabel = (reason: string): string => (REJECT_REASONS as readonly string[]).includes(reason) ? t(`cf.reject.${reason}` as MessageKey) : reason;
 export const conditionLabel = (condition: ClearanceCondition): string => t(`cf.condition.${condition}` as MessageKey);
+export const handoffStateLabel = (state: HandoffState): string => t(`cf.handoff.state.${state}` as MessageKey);
+export const handoffBlockerLabel = (blocker: HandoffBlocker): string => (CLEARANCE_CONDITIONS as readonly string[]).includes(blocker) ? conditionLabel(blocker as ClearanceCondition) : t(`cf.handoff.blocker.${blocker}` as MessageKey);
 export const sourceLabel = (source: string): string => source === "trendhome" ? "Trend Home" : source === "outletperdele" ? "Outlet Perdele" : source;
 
 // ---- The operator's next step ----------------------------------------------------------------------------------

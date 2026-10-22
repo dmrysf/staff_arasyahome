@@ -49,6 +49,8 @@ export type OrderDocument = {
   latestRevisionNumber: number | null;
   request: RevisionRequest | null;
   revisions: DocumentRevision[];
+  /** API 2.42.0: every reprint of this order needs a reason (Confirmare orders); the server refuses one without. */
+  reprintReasonRequired: boolean;
 };
 
 export type DocumentAttention = {

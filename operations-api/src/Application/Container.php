@@ -129,7 +129,7 @@ final class Container
     /** Confirmare operations (API 2.38.0): pool, distribution, decisions. Also used by bin/confirmare-distribute.php. */
     public function confirmareService(?AuthorizationService $authorization = null): \Arasya\Operations\Confirmare\ConfirmareService
     {
-        return new \Arasya\Operations\Confirmare\ConfirmareService($this->pdo, $authorization ?? new AuthorizationService(), new \Arasya\Operations\Confirmare\ConfirmareScopePolicy($this->pdo), $this->clock, \Arasya\Operations\Integration\SourceAccess\SourceAccessRegistry::fromConfig($this->config));
+        return new \Arasya\Operations\Confirmare\ConfirmareService($this->pdo, $authorization ?? new AuthorizationService(), new \Arasya\Operations\Confirmare\ConfirmareScopePolicy($this->pdo), $this->clock, \Arasya\Operations\Integration\SourceAccess\SourceAccessRegistry::fromConfig($this->config), $this->authorityModes());
     }
 
     /** Confirmare source access (API 2.40.0): the shop's own view of one order for its operator, signed, audited. */

@@ -83,6 +83,15 @@ final readonly class OrderAccessPolicy
         return ConfirmationGate::blocksStart($order->workflowCohort, $order->confirmationCleared, $order->productionStageId);
     }
 
+    /**
+     * API 2.42.0: a cleared Confirmare-cohort order at stage 1 still waits for its first production document; claims,
+     * stage completion and the cutting intake start production only from revision 1 (ConfirmationGate::needsDocument).
+     */
+    public function blocksConfirmationDocument(OperationalOrder $order): bool
+    {
+        return ConfirmationGate::needsDocument($order->workflowCohort, $order->documentStatus, $order->productionStageId);
+    }
+
     /** Observe mode: a Staff claim of a source-managed order is allowed but recorded. */
     public function isSourceManagedUnderObservation(OperationalOrder $order): bool
     {
@@ -140,6 +149,9 @@ final readonly class OrderAccessPolicy
         }
         if ($this->blocksPaymentStart($order)) {
             return $this->blocked(PaymentGate::BLOCKED_REASON);
+        }
+        if ($this->blocksConfirmationDocument($order)) {
+            return $this->blocked(ConfirmationGate::DOCUMENT_BLOCKED_REASON);
         }
         if ($workflow === null) {
             return $this->blocked('workflow_unavailable');
@@ -234,6 +246,9 @@ final readonly class OrderAccessPolicy
         }
         if ($this->blocksPaymentStart($order)) {
             return $this->blocked(PaymentGate::BLOCKED_REASON);
+        }
+        if ($this->blocksConfirmationDocument($order)) {
+            return $this->blocked(ConfirmationGate::DOCUMENT_BLOCKED_REASON);
         }
         // The handoff relies on cutting being the stage right after stage 1 of the active workflow.
         $ids = $workflow === null ? [] : array_map(static fn ($stage): string => $stage->id, $workflow->stages);

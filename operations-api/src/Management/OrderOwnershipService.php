@@ -253,7 +253,7 @@ final readonly class OrderOwnershipService
             if ($operation === self::OPERATION_REASSIGN && $order['production_stage_id'] === \Arasya\Operations\Order\OrderProjectionWriter::INITIAL_STAGE_ID) {
                 // Assigning a stage-1 order starts its production like a claim: the Confirmare gate and the enforced
                 // advance gate apply to managers too. Releasing an owner never needs them.
-                \Arasya\Operations\Production\ConfirmationGate::assertOpen($this->pdo, $orderUuid, (string) $order['production_stage_id']);
+                \Arasya\Operations\Production\ConfirmationGate::assertStartable($this->pdo, $orderUuid, (string) $order['production_stage_id']);
                 \Arasya\Operations\Production\PaymentGate::assertOpen($this->authorityModes, $order);
             }
             if ($operation === self::OPERATION_REASSIGN) {

@@ -17,6 +17,8 @@ import { useAutoRefresh } from "../workspaces/useAutoRefresh";
 import { ItemStatusPill, dueDay, when } from "./ConfirmareParts";
 import { ConfirmareShopPanel } from "./ConfirmareShopPanel";
 import { ConfirmareFinancePanel } from "./ConfirmareFinancePanel";
+import { ConfirmareHandoffPanel } from "./ConfirmareHandoffPanel";
+import type { DocumentApi } from "../../domain/documents";
 
 type Message = { tone: Tone; text: string } | null;
 type Busy = "claim" | "release" | "contact" | "approve" | "reject" | "reassign" | "reopen" | null;
@@ -36,7 +38,7 @@ const backendCode = (error: StaffServiceError): string | undefined => typeof err
  * the version and review fingerprint shown here; production additionally waits for the shop's financial clearance.
  * The screen refreshes every minute without losing ticks while the order is unchanged; a changed order drops them.
  */
-export function ConfirmareOrderScreen({ orderId, employee, service, navigate }: { orderId: string; employee: Employee; service: ConfirmareApi; navigate: (path: string) => void }) {
+export function ConfirmareOrderScreen({ orderId, employee, service, documents, navigate }: { orderId: string; employee: Employee; service: ConfirmareApi; /** API 2.42.0: the central production documents, for the handoff. */ documents?: DocumentApi; navigate: (path: string) => void }) {
   const { t } = useI18n();
   const load = useMemo(() => (signal: AbortSignal) => service.detail(orderId, signal), [service, orderId]);
   const view = useAutoRefresh(load, `confirmare-order|${orderId}`);
@@ -287,6 +289,8 @@ export function ConfirmareOrderScreen({ orderId, employee, service, navigate }: 
               ? <StatusPill tone="success" icon="check">{t("cf.production.cleared")}</StatusPill>
               : <ul className="cf-checklist">{detail.production.missing.map((condition) => <li key={condition} className="is-missing"><AppIcon name="lock" size={18} /><span>{conditionLabel(condition)}</span></li>)}</ul>}
           </section>}
+
+          <ConfirmareHandoffPanel detail={detail} documents={documents} permissions={employee.permissions} onChanged={view.refresh} />
 
           {(canRelease || (pending && decider) || canReopen || (supervisor && pending && determined)) && <section className="detail-section cf-actions" aria-labelledby="cf-actions">
             <div className="section-title"><h2 id="cf-actions">{t("cf.actions.title")}</h2></div>

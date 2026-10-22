@@ -16,6 +16,7 @@ import { StageWorkspace } from "../workspaces/StageWorkspace";
 import { TrendyolDashboard } from "../workspaces/TrendyolDashboard";
 import { ManagementWorkspace } from "../workspaces/ManagementWorkspace";
 import { ConfirmareWorkspace } from "../confirmare/ConfirmareWorkspace";
+import { canHandOff } from "../../domain/confirmare";
 
 type TodaySummary = ActivityPage["summary"];
 
@@ -95,6 +96,7 @@ export function HomeScreen({ employee, services, workflow, dashboardUrl, navigat
       </>}
 
       {current.kind === "documents" && services.documents && <div className="workspace-body" data-testid="workspace-documente">
+        {canHandOff(employee) && services.confirmare && <button type="button" className="button button-secondary dashboard-primary" onClick={() => navigate("/confirmare/handoff")} data-testid="documents-open-handoff"><AppIcon name="document" size={20} />{t("cf.handoff.list.open")}</button>}
         <DocumentsCard service={services.documents} navigate={navigate} />
         <DocumentLookup service={services.documents} navigate={navigate} />
       </div>}

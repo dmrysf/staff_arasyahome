@@ -1,6 +1,7 @@
 import { confirmareSI } from "./confirmare";
 import { confirmareShopSI } from "./confirmareShop";
 import { confirmareFinanceSI } from "./confirmareFinance";
+import { confirmareHandoffSI } from "./confirmareHandoff";
 import { confirmareEditSI } from "./confirmareEdit";
 import { physicalSI } from "./physical";
 import type { Catalog } from "../types";
@@ -17,6 +18,7 @@ export const si: Catalog = {
   ...confirmareSI,
   ...confirmareShopSI,
   ...confirmareFinanceSI,
+  ...confirmareHandoffSI,
   ...confirmareEditSI,
 
   // ---- common
@@ -274,6 +276,8 @@ export const si: Catalog = {
   "orderAction.blocked.document_revision_pending": "ලේඛනය අවහිරයි: ඇණවුමට ලේඛන සංශෝධනයක් සිදු වෙමින් පවතී. අනුමැතිය සහ නව ලේඛනය එනතුරු රැඳී සිටින්න.",
   "orderAction.blocked.production_authority_source": "මෙම ඇණවුමේ නිෂ්පාදනය තවම YD SOFT හි කළමනාකරණය වේ. කිසිවෙකු වැඩ කිරීමට පෙර කළමනාකරුවෙකු එය Arasya වෙත භාරගත යුතුය.",
   "orderAction.blocked.payment_gate_closed": "ඇණවුම නිෂ්පාදනයට ඇතුළු විය නොහැක. අවශ්‍ය අත්තිකාරම හෝ ඇණවුමේ ගෙවීම තහවුරු කර නැත.",
+  "orderAction.blocked.confirmation_required": "ඇණවුම නිෂ්පාදනයට ඇතුළු විය නොහැක. ඇණවුම පාරිභෝගිකයා සමඟ තහවුරු කර ගෙවීම සත්‍යාපනය කළ යුතුය (Confirmare).",
+  "orderAction.blocked.confirmation_document_required": "ඇණවුම තහවුරු කර ඇත, නමුත් නිෂ්පාදනයට ඇතුළු වන්නේ නිෂ්පාදන පත්‍රිකාව (සංශෝධනය 1) සමඟ පමණි. කැපීම පත්‍රිකාවේ QR කේතය ස්කෑන් කරයි.",
   "orderAction.blocked.pieces_in_rework": "ඇණවුම තවම ඇසුරුම් කළ නොහැක: එක් කෑල්ලක් නැවත සකස් කරමින් පවතී. සියලු කෑලි ඇසුරුම් අදියරට පැමිණි පසු ඇසුරුම් ආරම්භ වේ.",
   "orderAction.blocked.pieces_held": "කෑල්ලක් භෞතිකව රඳවා ඇති විට ඇණවුම ඉදිරියට යා නොහැක. රඳවීම නිදහස් කළ පසු එය ඉදිරියට යයි.",
   "orderAction.blocked.pieces_awaiting_reunion": "ඇණවුම තවම ඇසුරුම් කළ නොහැක: එක් කෑල්ලක් තමන්ගේම මාර්ගයේ ගමන් කරන අතර ඇණවුම හා නැවත එක් වී නැත.",
