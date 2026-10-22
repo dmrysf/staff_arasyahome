@@ -192,6 +192,11 @@ try {
         $cohortState = \Arasya\Operations\Production\WorkflowCohort::heartbeatState($pdo, $key)['state'];
         $definition = $sourceRegistry->find($key);
         $report($cohortState !== 'inactive' && !($definition?->confirmarePermitted ?? false) ? 'FAIL' : 'OK', "confirmare_{$key}_{$cohortState}" . ($definition?->confirmarePermitted ? '_permitted' : ''));
+        // Confirmare operations (API 2.38.0): an active source needs at least one person who can confirm its orders.
+        $operators = (int) $pdo->query("SELECT COUNT(*) FROM employee_confirmare_scopes s JOIN employees e ON e.employee_uuid = s.employee_uuid WHERE s.capability = 'operate' AND s.source_key = " . $pdo->quote($key) . ' AND ' . \Arasya\Operations\Confirmare\ConfirmareScopePolicy::workingIdentitySql('e'))->fetchColumn();
+        $waiting = (int) $pdo->query("SELECT COUNT(*) FROM order_confirmations WHERE status = 'pending' AND assigned_employee_uuid IS NULL AND source_key = " . $pdo->quote($key))->fetchColumn();
+        $report($cohortState !== 'inactive' && $operators === 0 ? 'FAIL' : 'OK', "confirmare_{$key}_operators_{$operators}");
+        $report($waiting === 0 ? 'OK' : 'WARN', "confirmare_{$key}_unassigned_{$waiting}");
     }
     $undetermined = (int) $pdo->query("SELECT COUNT(*) FROM operational_orders WHERE workflow_cohort = 'undetermined' AND production_completed_at IS NULL AND operational_status <> 'unavailable'")->fetchColumn();
     $report($undetermined === 0 ? 'OK' : 'WARN', 'confirmare_undetermined_orders');

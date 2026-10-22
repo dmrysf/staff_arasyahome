@@ -21,7 +21,12 @@ use InvalidArgumentException;
 final class SourceOrderPayloadMapper
 {
     private const ROOT_KEYS = ['schemaVersion', 'eventId', 'changedAt', 'order', 'production'];
-    private const ORDER_KEYS = ['id', 'number', 'status', 'availability', 'notes', 'acceptedAt', 'items', 'delivery', 'payment', 'submission'];
+    private const ORDER_KEYS = ['id', 'number', 'status', 'availability', 'notes', 'acceptedAt', 'items', 'delivery', 'payment', 'submission', 'pricing', 'dueDate', 'financial'];
+    /** Optional order facts this server accepts (heartbeat `orderFacts`, API 2.38.0). */
+    public const ORDER_FACTS = ['pricing', 'dueDate', 'financial'];
+    /** Confirmare financial clearance (order.financial, API 2.38.0): states and bases only, never an amount. */
+    public const FINANCIAL_STATES = ['cleared', 'waiting', 'partial', 'unknown'];
+    public const FINANCIAL_BASES = ['online_payment', 'zero_total', 'advance_collected'];
     private const SUBMISSION_KEYS = ['submittedAt', 'evidence'];
     private const PAYMENT_KEYS = ['method', 'advanceStatus', 'advanceRevision', 'advanceConfirmedAt'];
     private const MAX_ADVANCE_REVISION = 1000000;
@@ -109,10 +114,73 @@ final class SourceOrderPayloadMapper
                 self::delivery($order['delivery'] ?? null),
                 self::payment($order['payment'] ?? null),
                 self::submission($order['submission'] ?? null),
+                self::pricing($order['pricing'] ?? null),
+                self::dueDate($order['dueDate'] ?? null),
+                self::financial($order['financial'] ?? null),
             );
         } catch (InvalidArgumentException) {
             throw self::invalid('order');
         }
+    }
+
+    /**
+     * Optional pricing fingerprint (API 2.38.0): {"fingerprint": "sha256:<64 hex>"}. The source hashes its own currency,
+     * totals and line prices; no amount ever reaches Arasya. A Confirmare approval is bound to it.
+     */
+    private static function pricing(mixed $value): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+        $pricing = self::object($value, 'order.pricing');
+        self::allowKeys($pricing, ['fingerprint'], ['fingerprint']);
+        if (!is_string($pricing['fingerprint']) || preg_match('/^sha256:[0-9a-f]{64}$/D', $pricing['fingerprint']) !== 1) {
+            throw self::invalid('order.pricing.fingerprint');
+        }
+        return $pricing['fingerprint'];
+    }
+
+    /**
+     * Optional Confirmare financial clearance (API 2.38.0), evaluated by the source on the order's final total:
+     * {"state": "cleared"|"waiting"|"partial"|"unknown", "basis": "online_payment"|"zero_total"|"advance_collected"|null,
+     *  "pricingFingerprint": "sha256:<64 hex>"|null}. `cleared` needs a basis and the pricing fingerprint the source
+     * evaluated (so a later total change is detected); any other state has no basis. There is no exemption basis yet:
+     * an exemption would need an authorized, reasoned and audited decision, so it cannot be stated. No amount is accepted.
+     *
+     * @return array{state: string, basis: string|null, pricingFingerprint: string|null}|null
+     */
+    private static function financial(mixed $value): ?array
+    {
+        if ($value === null) {
+            return null;
+        }
+        $financial = self::object($value, 'order.financial');
+        self::allowKeys($financial, ['state', 'basis', 'pricingFingerprint'], ['state', 'basis', 'pricingFingerprint']);
+        $state = $financial['state'];
+        $basis = $financial['basis'];
+        $pricing = $financial['pricingFingerprint'];
+        if (!in_array($state, self::FINANCIAL_STATES, true)) {
+            throw self::invalid('order.financial.state');
+        }
+        if ($state === 'cleared' ? !in_array($basis, self::FINANCIAL_BASES, true) : $basis !== null) {
+            throw self::invalid('order.financial.basis');
+        }
+        if ($pricing === null ? $state === 'cleared' : !is_string($pricing) || preg_match('/^sha256:[0-9a-f]{64}$/D', $pricing) !== 1) {
+            throw self::invalid('order.financial.pricingFingerprint');
+        }
+        return ['state' => $state, 'basis' => $basis, 'pricingFingerprint' => $pricing];
+    }
+
+    /** Optional due date (API 2.38.0): a calendar date, Y-m-d. Orders due earlier are confirmed first. */
+    private static function dueDate(mixed $value): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+        if (!is_string($value) || preg_match('/^(\d{4})-(\d{2})-(\d{2})$/D', $value, $m) !== 1 || !checkdate((int) $m[2], (int) $m[3], (int) $m[1])) {
+            throw self::invalid('order.dueDate');
+        }
+        return $value;
     }
 
     /**

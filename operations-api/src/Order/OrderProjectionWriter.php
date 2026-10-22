@@ -76,6 +76,16 @@ final readonly class OrderProjectionWriter
                 'confirmed_at' => $snapshot->payment['advanceConfirmedAt']?->format('Y-m-d\TH:i:s.u\Z'),
             ];
         }
+        // Pricing and due date (API 2.38.0) join the hash only when stated, like the payment facts.
+        if ($snapshot->pricingFingerprint !== null) {
+            $hashData['pricing'] = $snapshot->pricingFingerprint;
+        }
+        if ($snapshot->dueDate !== null) {
+            $hashData['due'] = $snapshot->dueDate;
+        }
+        if ($snapshot->financial !== null) {
+            $hashData['financial'] = $snapshot->financial;
+        }
         // The printable delivery identity is kept outside the receipt hash so existing source events keep
         // their hash; it is applied below and decides document staleness like any printed field.
         $documentContext = $snapshot->delivery === null ? null : json_encode($snapshot->delivery, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
@@ -270,6 +280,7 @@ final readonly class OrderProjectionWriter
 
                 $this->insertItems($newItems, $orderUuid, $nowSql);
                 $this->applyPayment($orderUuid, $snapshot, $stageId, $sourceChangedSql, $nowSql);
+                $this->applyCommercialFacts($orderUuid, $snapshot);
                 $this->recordSubmission($orderUuid, $snapshot);
                 // A printed field may have changed: an active production document becomes stale here,
                 // inside the same transaction, so production is blocked before the change is visible.
@@ -330,6 +341,7 @@ final readonly class OrderProjectionWriter
 
                 $this->insertItems($snapshot->items, $orderUuid, $nowSql);
                 $this->applyPayment($orderUuid, $snapshot, $initialStage, $sourceChangedSql, $nowSql);
+                $this->applyCommercialFacts($orderUuid, $snapshot);
                 if ($operationsManaged) {
                     $this->recordNewOrderAuthority($orderUuid, $globalId, $snapshot->sourceKey, $nowSql);
                 }
@@ -337,6 +349,11 @@ final readonly class OrderProjectionWriter
                     // The pre-production Confirmare state of this order; only the Confirmare workflow ever decides it.
                     $this->pdo->prepare("INSERT INTO order_confirmations (order_uuid, global_order_id, source_key, status, version, opened_at, updated_at) VALUES (?, ?, ?, 'pending', 1, ?, ?)")
                         ->execute([$orderUuid, $globalId, $snapshot->sourceKey, $nowSql, $nowSql]);
+                    // Its audit trail starts here (API 2.38.0): version 1, opened by the system, no customer data.
+                    $this->pdo->prepare("INSERT INTO order_confirmation_events (event_uuid, order_uuid, global_order_id, source_key, action, actor_kind, actor_employee_uuid, previous_status, new_status,
+                            previous_assignee_uuid, new_assignee_uuid, reason_code, version_after, request_id, idempotency_key, occurred_at)
+                        VALUES (?, ?, ?, ?, 'opened', 'system', NULL, NULL, 'pending', NULL, NULL, ?, 1, NULL, NULL, ?)")
+                        ->execute([Uuid::v4(), $orderUuid, $globalId, $snapshot->sourceKey, $cohort['cohort'] === WorkflowCohort::UNDETERMINED ? 'undetermined' : null, $nowSql]);
                 }
             }
 
@@ -346,6 +363,8 @@ final readonly class OrderProjectionWriter
             if ($currentStage === $life::STAGE && (!$currentOrder || $currentOrder['production_stage_id'] !== $currentStage)) $life->fact($orderUuid, $currentOrder ? $productionVersion : 1, 'pool_entered', null, $nowSql);
             if ($snapshot->operationalStatus === 'unavailable') $life->fact($orderUuid, $currentOrder ? $productionVersion : 1, 'source_cancelled', null, $nowSql);
             if ($currentStage === $life::STAGE || $snapshot->operationalStatus === 'unavailable') (new \Arasya\Operations\Quality\LiveEvents($this->pdo))->cuttingChanged($nowSql);
+            // A changed cart, price or payment re-decides whether an approved Confirmare order may enter production.
+            \Arasya\Operations\Confirmare\ConfirmationClearance::refresh($this->pdo, $orderUuid, $nowSql);
             $this->insertReceipt($snapshot, $globalId, $payloadHash, 'applied', $nowSql);
             $this->touchSource($snapshot->sourceKey, $nowSql);
 
@@ -389,6 +408,23 @@ final readonly class OrderProjectionWriter
             throw new ApiException(409, 'SOURCE_INTAKE_NOT_ELIGIBLE', 'An unpaid order is received only for the Confirmare workflow of an activated source.', ['workflowCohort' => $cohort['cohort']]);
         }
         return $cohort;
+    }
+
+    /**
+     * Stores the source's pricing fingerprint and due date when stated; absence keeps the stored facts. The financial
+     * clearance is replaced by every snapshot: an event without it leaves the order financially unknown (closed), so an
+     * earlier `cleared` never outlives the order state it was evaluated on.
+     */
+    private function applyCommercialFacts(string $orderUuid, SourceOrderSnapshot $snapshot): void
+    {
+        $this->pdo->prepare('UPDATE operational_orders SET source_financial_state = ?, source_financial_basis = ?, source_financial_pricing = ? WHERE order_uuid = ?')
+            ->execute([$snapshot->financial['state'] ?? null, $snapshot->financial['basis'] ?? null, $snapshot->financial['pricingFingerprint'] ?? null, $orderUuid]);
+        if ($snapshot->pricingFingerprint !== null) {
+            $this->pdo->prepare('UPDATE operational_orders SET source_pricing_fingerprint = ? WHERE order_uuid = ?')->execute([$snapshot->pricingFingerprint, $orderUuid]);
+        }
+        if ($snapshot->dueDate !== null) {
+            $this->pdo->prepare('UPDATE operational_orders SET source_due_date = ? WHERE order_uuid = ?')->execute([$snapshot->dueDate, $orderUuid]);
+        }
     }
 
     /**

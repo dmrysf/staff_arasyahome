@@ -162,6 +162,13 @@ final readonly class WorkflowCohortActivation
         if (!$source->canIngest()) {
             throw new ApiException(409, 'SOURCE_NOT_ACTIVE', 'The source is not enabled and active for order ingestion.');
         }
+        // API 2.38.0: nobody could confirm the source's new orders, so they would all wait at stage 1.
+        $operators = $this->pdo->prepare("SELECT COUNT(*) FROM employee_confirmare_scopes s INNER JOIN employees e ON e.employee_uuid = s.employee_uuid WHERE s.capability = 'operate' AND s.source_key = ? AND "
+            . \Arasya\Operations\Confirmare\ConfirmareScopePolicy::workingIdentitySql('e'));
+        $operators->execute([$source->key]);
+        if ((int) $operators->fetchColumn() === 0) {
+            throw new ApiException(409, 'CONFIRMARE_NO_OPERATOR', 'Nobody can confirm orders of this source yet: grant a Confirmare operate scope to an active Staff or Dashboard identity first.');
+        }
     }
 
     /**

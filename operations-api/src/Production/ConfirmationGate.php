@@ -41,13 +41,17 @@ final class ConfirmationGate
     {
     }
 
-    /** Whether production may not start for an order in this cohort, confirmation state and stage. */
-    public static function blocksStart(?string $cohort, ?string $confirmationStatus, string $stageId): bool
+    /**
+     * Whether production may not start for an order in this cohort, production clearance and stage. API 2.38.0: only
+     * order_confirmations.production_cleared opens it (ConfirmationClearance: approval, customer call, every cart line,
+     * pricing fingerprint, unchanged review, payment); `approved` alone never does.
+     */
+    public static function blocksStart(?string $cohort, ?bool $cleared, string $stageId): bool
     {
         if ($stageId !== OrderProjectionWriter::INITIAL_STAGE_ID || !WorkflowCohort::needsConfirmation($cohort)) {
             return false;
         }
-        return $cohort === WorkflowCohort::UNDETERMINED || $confirmationStatus !== self::STATUS_APPROVED;
+        return $cohort === WorkflowCohort::UNDETERMINED || $cleared !== true;
     }
 
     /**
@@ -57,9 +61,11 @@ final class ConfirmationGate
      */
     public static function assertOpen(PDO $pdo, string $orderUuid, string $stageId): void
     {
-        $closed = self::closedCohort($pdo, $orderUuid, $stageId);
+        // A locking read: the decision row is read as committed now, never from an older snapshot of this transaction
+        // (API 2.38.0; a decision changes order_confirmations under the same order row lock).
+        $closed = self::closedCohort($pdo, $orderUuid, $stageId, true);
         if ($closed !== false) {
-            throw self::closed($closed);
+            throw self::closed($closed, \Arasya\Operations\Confirmare\ConfirmationClearance::missing($pdo, $orderUuid));
         }
     }
 
@@ -70,23 +76,24 @@ final class ConfirmationGate
     }
 
     /** The cohort of an order whose production start is closed, or false when it is open. */
-    private static function closedCohort(PDO $pdo, string $orderUuid, string $stageId): string|false
+    private static function closedCohort(PDO $pdo, string $orderUuid, string $stageId, bool $lock = false): string|false
     {
         if ($stageId !== OrderProjectionWriter::INITIAL_STAGE_ID) {
             return false;
         }
-        $statement = $pdo->prepare('SELECT o.workflow_cohort, c.status FROM operational_orders o LEFT JOIN order_confirmations c ON c.order_uuid = o.order_uuid WHERE o.order_uuid = ?');
+        $statement = $pdo->prepare('SELECT o.workflow_cohort, c.production_cleared FROM operational_orders o LEFT JOIN order_confirmations c ON c.order_uuid = o.order_uuid WHERE o.order_uuid = ?' . ($lock ? ' LOCK IN SHARE MODE' : ''));
         $statement->execute([$orderUuid]);
         $row = $statement->fetch(PDO::FETCH_ASSOC);
         if (!is_array($row) || $row['workflow_cohort'] === null) {
             return false;
         }
         $cohort = (string) $row['workflow_cohort'];
-        return self::blocksStart($cohort, $row['status'] === null ? null : (string) $row['status'], $stageId) ? $cohort : false;
+        return self::blocksStart($cohort, $row['production_cleared'] === null ? null : (int) $row['production_cleared'] === 1, $stageId) ? $cohort : false;
     }
 
-    public static function closed(?string $cohort): ApiException
+    /** @param list<string> $missing the clearance conditions not met (ConfirmationClearance::CONDITIONS) */
+    public static function closed(?string $cohort, array $missing = []): ApiException
     {
-        return new ApiException(409, self::ERROR_CODE, $cohort === WorkflowCohort::UNDETERMINED ? self::MESSAGE_UNDETERMINED : self::MESSAGE, ['workflowCohort' => $cohort ?? WorkflowCohort::CONFIRMARE]);
+        return new ApiException(409, self::ERROR_CODE, $cohort === WorkflowCohort::UNDETERMINED ? self::MESSAGE_UNDETERMINED : self::MESSAGE, ['workflowCohort' => $cohort ?? WorkflowCohort::CONFIRMARE] + ($missing === [] ? [] : ['missing' => $missing]));
     }
 }
