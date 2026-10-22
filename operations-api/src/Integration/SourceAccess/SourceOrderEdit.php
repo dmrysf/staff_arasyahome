@@ -228,7 +228,7 @@ final class SourceOrderEdit
             $out['financialState'] = [
                 'state' => self::choice($state['state'] ?? null, ['cleared', 'waiting', 'partial', 'unknown']),
                 'basis' => ($state['basis'] ?? null) === null ? null : self::choice($state['basis'], ['online_payment', 'zero_total', 'advance_collected']),
-                'attention' => ($state['attention'] ?? null) === null ? null : self::choice($state['attention'], ['additional_payment_due', 'refund_due']),
+                'attention' => ($state['attention'] ?? null) === null ? null : self::choice($state['attention'], \Arasya\Operations\Integration\SourceOrderPayloadMapper::FINANCIAL_ATTENTION),
             ];
         } else {
             $out['previewToken'] = self::pattern($data['previewToken'] ?? null, '/^[0-9a-f]{64}$/D');

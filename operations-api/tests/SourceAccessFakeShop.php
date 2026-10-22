@@ -19,6 +19,12 @@ use Closure;
  * Phase 4B: the edit routes (catalog, product, preview, apply, edit-status) with the shop's rules that matter to
  * Operations: the order version, the preview token, blockers, idempotency per employee and key, bound to the order. The
  * fake never prices anything like a shop: an edit moves the total by `editDelta`, a fixed TEST amount.
+ *
+ * Phase 5 (API 2.41.0): the finance routes (finance, finance-action, finance-status) with the shop's money rules that
+ * matter to Operations (YD SOFT 2.15.0 FinanceSummary/FinanceActions): a recorded transfer is not money received until
+ * another employee verifies it, the summary revision binds every action, bank references are unique across orders,
+ * a refund needs `productionComplete`, an acknowledged liability and the manual refunds switch. Fixture key `finance`:
+ * ['cod' => bool, 'total' => '650.00', 'paid' => '500.00' (online), 'collected' => '0.00' (COD), 'pricing' => 'sha256:…'].
  */
 final class SourceAccessFakeShop implements SourceAccessTransport
 {
@@ -42,6 +48,12 @@ final class SourceAccessFakeShop implements SourceAccessTransport
     public array $edits = [];
     /** @var array<string, array<string, mixed>> SKU => product */
     public array $products = [];
+    /** Phase 5 knobs: 'answer_lost' / 'crash' after an applied finance action; the shop's own switches. */
+    public ?string $afterFinance = null;
+    public bool $financeRecord = true;
+    public string $financeRefunds = 'manual';
+    /** @var array<string, array{order: string, hash: string, status: int, body: array<string, mixed>}> employee|key => stored answer */
+    public array $financeAnswers = [];
 
     /** @param array<string, array<string, mixed>> $orders orderId => fixture */
     public function __construct(
@@ -88,7 +100,7 @@ final class SourceAccessFakeShop implements SourceAccessTransport
         if ($this->during !== null) {
             ($this->during)($input);
         }
-        $routes = ['detail', 'catalog', 'product', 'preview', 'apply', 'edit-status'];
+        $routes = ['detail', 'catalog', 'product', 'preview', 'apply', 'edit-status', 'finance', 'finance-action', 'finance-status'];
         $action = substr($route, strlen('/yd-arasya/v1/confirmare/'));
         if (!str_starts_with($route, '/yd-arasya/v1/confirmare/') || !in_array($action, $routes, true) || !is_array($input)) {
             return $this->answer(400, ['error' => ['code' => 'invalid_request']], $nonce);
@@ -102,6 +114,13 @@ final class SourceAccessFakeShop implements SourceAccessTransport
         }
         if ($action === 'detail') {
             return $this->answer(200, self::detail($order, $now), $nonce);
+        }
+        if (str_starts_with($action, 'finance')) {
+            [$status, $payload] = $this->finance($action, (string) $order['id'], $input, $now);
+            if ($status === 0) {
+                throw new \Arasya\Operations\Integration\SourceAccess\SourceAccessException('SOURCE_UNREACHABLE');
+            }
+            return $this->answer($status, $payload, $nonce);
         }
         [$status, $payload] = $this->edit($action, (string) $order['id'], $input, $now);
         if ($status === 0) {
@@ -192,6 +211,221 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             return [500, ['error' => ['code' => 'internal_error']]];
         }
         return [200, $payload];
+    }
+
+    /**
+     * @param array<string, mixed> $input
+     * @return array{0: int, 1: array<string, mixed>}
+     */
+    private function finance(string $route, string $orderId, array $input, int $now): array
+    {
+        $employee = (string) ($input['actor']['employeeId'] ?? '');
+        $role = $input['actor']['role'] ?? null;
+        if ($route === 'finance') {
+            return in_array($role, ['finance', 'assignee', 'supervisor'], true) ? [200, $this->financeSummary($orderId, $now)] : [400, ['error' => ['code' => 'invalid_request']]];
+        }
+        if ($role !== 'finance') {
+            return [400, ['error' => ['code' => 'invalid_request']]];
+        }
+        if ($route === 'finance-status') {
+            $author = (string) ($input['actionEmployeeId'] ?? $employee);
+            $stored = $this->financeAnswers[$author . '|' . ($input['idempotencyKey'] ?? '')] ?? null;
+            if ($stored === null || $stored['order'] !== $orderId) {
+                return [200, ['state' => 'absent']];
+            }
+            return [200, ['state' => $stored['status'] === 200 ? 'applied' : 'rejected', 'status' => $stored['status'], 'result' => $stored['body']]];
+        }
+        if (!$this->financeRecord) {
+            return [409, ['error' => ['code' => 'finance_record_disabled']]];
+        }
+        $key = $employee . '|' . ($input['idempotencyKey'] ?? '');
+        $request = $input;
+        unset($request['requestId'], $request['actor']);
+        $hash = hash('sha256', (string) json_encode($request));
+        if (isset($this->financeAnswers[$key])) {
+            $stored = $this->financeAnswers[$key];
+            return $stored['hash'] === $hash && $stored['order'] === $orderId ? [$stored['status'], $stored['body']] : [409, ['error' => ['code' => 'idempotency_conflict']]];
+        }
+        $revision = $this->financeRevision($orderId);
+        $refuse = function (string $code, int $status = 409) use ($key, $orderId, $hash, $revision): array {
+            $this->financeAnswers[$key] = ['order' => $orderId, 'hash' => $hash, 'status' => $status, 'body' => ['error' => ['code' => $code], 'revision' => $revision]];
+            return [$status, ['error' => ['code' => $code], 'revision' => $revision]];
+        };
+        if (($input['expectedRevision'] ?? null) !== $revision) {
+            return $refuse('revision_changed');
+        }
+        $f = &$this->orders[$orderId]['finance'];
+        $f['entries'] ??= [];
+        $numbers = $this->financeNumbers($orderId);
+        $entryId = null;
+        $action = (string) ($input['action'] ?? '');
+        if ($action === 'submit_transfer' || $action === 'submit_refund') {
+            $kind = $action === 'submit_transfer' ? 'transfer_in' : 'refund_out';
+            $amount = (float) ($input['amount'] ?? 0);
+            if ($action === 'submit_refund') {
+                if (($input['productionComplete'] ?? null) !== true) {
+                    return $refuse('production_not_complete');
+                }
+                if ($this->financeRefunds !== 'manual') {
+                    return $refuse('refund_disabled');
+                }
+                if (!$numbers['acknowledged']) {
+                    return $refuse('liability_not_acknowledged');
+                }
+                if ($amount > $numbers['liability'] + 0.001) {
+                    return $refuse('amount_exceeds_liability');
+                }
+            } else {
+                if (($input['purpose'] ?? null) !== (($f['cod'] ?? false) ? 'advance' : 'additional_payment')) {
+                    return $refuse('purpose_not_allowed');
+                }
+                if ($amount > max(0, $numbers['total'] - $numbers['received']) + 0.001) {
+                    return $refuse('amount_exceeds_balance');
+                }
+            }
+            foreach ($f['entries'] as $entry) {
+                if ($entry['kind'] === $kind && $entry['state'] === 'submitted') {
+                    return $refuse($kind === 'transfer_in' ? 'transfer_pending' : 'refund_pending');
+                }
+            }
+            $normalized = preg_replace('/[^A-Z0-9]/', '', strtoupper((string) ($input['reference'] ?? '')));
+            foreach ($this->orders as $other) {
+                foreach ($other['finance']['entries'] ?? [] as $entry) {
+                    if ($entry['kind'] === $kind && $entry['state'] !== 'rejected' && preg_replace('/[^A-Z0-9]/', '', strtoupper($entry['reference'])) === $normalized) {
+                        return $refuse('duplicate_reference');
+                    }
+                }
+            }
+            $entryId = $this->nextEntryId();
+            $f['entries'][] = ['id' => $entryId, 'kind' => $kind, 'purpose' => $kind === 'refund_out' ? 'refund' : (string) $input['purpose'], 'amount' => number_format($amount, 2, '.', ''),
+                'reference' => (string) $input['reference'], 'valueDate' => (string) $input['valueDate'], 'state' => 'submitted', 'submittedBy' => $employee,
+                'submittedAt' => gmdate('Y-m-d\TH:i:s\Z', $now), 'decidedBy' => null, 'decidedAt' => null, 'decisionCode' => null];
+        } elseif ($action === 'decide_transfer' || $action === 'decide_refund') {
+            if ($action === 'decide_refund' && ($input['productionComplete'] ?? null) !== true) {
+                return $refuse('production_not_complete');
+            }
+            $index = null;
+            foreach ($f['entries'] as $i => $entry) {
+                if ($entry['id'] === ($input['entryId'] ?? null) && $entry['kind'] === ($action === 'decide_transfer' ? 'transfer_in' : 'refund_out')) {
+                    $index = $i;
+                }
+            }
+            if ($index === null) {
+                return $refuse('entry_not_found', 404);
+            }
+            if ($f['entries'][$index]['state'] !== 'submitted') {
+                return $refuse('entry_not_pending');
+            }
+            if ($f['entries'][$index]['submittedBy'] === $employee) {
+                return $refuse('same_employee', 403);
+            }
+            $verify = ($input['decision'] ?? null) === 'verify';
+            $f['entries'][$index] = array_merge($f['entries'][$index], ['state' => $verify ? 'verified' : 'rejected', 'decidedBy' => $employee, 'decidedAt' => gmdate('Y-m-d\TH:i:s\Z', $now), 'decisionCode' => $verify ? 'verified' : (string) ($input['reasonCode'] ?? 'other')]);
+            $entryId = $f['entries'][$index]['id'];
+        } elseif ($action === 'acknowledge_liability') {
+            if ($numbers['liability'] < 0.01) {
+                return $refuse('no_liability');
+            }
+            if ($numbers['acknowledged']) {
+                return $refuse('already_acknowledged');
+            }
+            $entryId = $this->nextEntryId();
+            $f['entries'][] = ['id' => $entryId, 'kind' => 'liability_ack', 'purpose' => 'liability', 'amount' => number_format($numbers['liability'], 2, '.', ''), 'reference' => '', 'valueDate' => null,
+                'state' => 'verified', 'submittedBy' => $employee, 'submittedAt' => gmdate('Y-m-d\TH:i:s\Z', $now), 'decidedBy' => $employee, 'decidedAt' => gmdate('Y-m-d\TH:i:s\Z', $now),
+                'decisionCode' => 'acknowledged', 'pricing' => (string) ($f['pricing'] ?? '')];
+        } else {
+            return $refuse('invalid_request', 400);
+        }
+        unset($f);
+        $payload = ['protocol' => 1, 'applied' => true, 'action' => $action, 'entryId' => $entryId, 'summary' => $this->financeSummary($orderId, $now)];
+        $this->financeAnswers[$key] = ['order' => $orderId, 'hash' => $hash, 'status' => 200, 'body' => $payload];
+        $after = $this->afterFinance;
+        $this->afterFinance = null;
+        if ($after === 'answer_lost') {
+            return [0, []];
+        }
+        if ($after === 'crash') {
+            return [500, ['error' => ['code' => 'internal_error']]];
+        }
+        return [200, $payload];
+    }
+
+    /** The money state of a fixture order, like ConfirmareFinancial (TEST amounts). @return array<string, mixed> */
+    public function financeNumbers(string $orderId): array
+    {
+        $f = $this->orders[$orderId]['finance'] ?? [];
+        $cod = (bool) ($f['cod'] ?? false);
+        $total = (float) ($f['total'] ?? '719.00');
+        $transfers = 0.0;
+        $advances = 0.0;
+        $refunds = 0.0;
+        $pendingTransfer = false;
+        $pendingRefund = false;
+        $ack = null;
+        foreach ($f['entries'] ?? [] as $entry) {
+            if ($entry['kind'] === 'transfer_in') {
+                $pendingTransfer = $pendingTransfer || $entry['state'] === 'submitted';
+                if ($entry['state'] === 'verified') {
+                    $entry['purpose'] === 'advance' ? $advances += (float) $entry['amount'] : $transfers += (float) $entry['amount'];
+                }
+            } elseif ($entry['kind'] === 'refund_out') {
+                $pendingRefund = $pendingRefund || $entry['state'] === 'submitted';
+                $refunds += $entry['state'] === 'verified' ? (float) $entry['amount'] : 0;
+            } elseif ($entry['kind'] === 'liability_ack') {
+                $ack = $entry;
+            }
+        }
+        $received = round($cod ? (float) ($f['collected'] ?? 0) + $advances - $refunds : (float) ($f['paid'] ?? $total) + $transfers - $refunds, 2);
+        $required = $cod ? round($total * 0.3, 2) : $total;
+        $liability = max(0, round($received - $total, 2));
+        $acknowledged = $liability > 0 && $ack !== null && ($ack['pricing'] ?? '') === (string) ($f['pricing'] ?? '') && (float) $ack['amount'] + 0.01 >= $liability;
+        $pricing = (string) ($f['pricing'] ?? '');
+        $state = match (true) {
+            $liability > 0 => $acknowledged ? ['cleared', $cod ? 'advance_collected' : 'online_payment', $pendingRefund ? 'refund_pending' : 'refund_liability'] : ['waiting', null, 'refund_due'],
+            !$cod && $total > $received + 0.001 => ['waiting', null, $pendingTransfer ? 'transfer_pending' : 'additional_payment_due'],
+            $cod && $received + 0.005 < $required => [$received > 0 ? 'partial' : 'waiting', null, $pendingTransfer ? 'transfer_pending' : null],
+            default => ['cleared', $cod ? 'advance_collected' : 'online_payment', null],
+        };
+        return ['cod' => $cod, 'total' => $total, 'received' => $received, 'required' => $required, 'transfers' => $transfers, 'refunded' => $refunds, 'liability' => $liability, 'acknowledged' => $acknowledged,
+            'state' => $state[0], 'basis' => $state[1], 'attention' => $state[2], 'pricing' => $pricing];
+    }
+
+    /** Entry ids continue across orders and requests (the E2E shop keeps its orders in a file between requests). */
+    private function nextEntryId(): string
+    {
+        $count = 0;
+        foreach ($this->orders as $order) {
+            $count += count($order['finance']['entries'] ?? []);
+        }
+        return sprintf('00000000-0000-4000-9000-%012d', $count + 1);
+    }
+
+    private function financeRevision(string $orderId): string
+    {
+        return 'sha256:' . hash('sha256', (string) json_encode($this->orders[$orderId]['finance'] ?? []));
+    }
+
+    /** The FinanceSummary shape YD SOFT 2.15.0 answers (TEST amounts). @return array<string, mixed> */
+    public function financeSummary(string $orderId, int $now): array
+    {
+        $o = $this->orders[$orderId];
+        $n = $this->financeNumbers($orderId);
+        $money = static fn (float $v): string => number_format($v, 2, '.', '');
+        $f = $o['finance'] ?? [];
+        return [
+            'protocol' => 1, 'readAt' => gmdate('Y-m-d\TH:i:s\Z', $now), 'revision' => $this->financeRevision($orderId), 'currency' => 'RON',
+            'order' => ['id' => (string) $o['id'], 'number' => (string) ($o['number'] ?? $o['id']), 'status' => 'processing', 'modifiedAt' => gmdate('Y-m-d\TH:i:s\Z', $now - 60),
+                'method' => $n['cod'] ? 'cod' : 'netopiapayments', 'methodTitle' => $n['cod'] ? 'Ramburs' : 'Card online', 'cod' => $n['cod']],
+            'totals' => ['current' => $money($n['total']), 'original' => $f['original'] ?? null, 'refunded' => $money($n['refunded'])],
+            'received' => ['online' => $n['cod'] ? null : $money((float) ($f['paid'] ?? $n['total'])), 'advance' => $n['cod'] ? $money((float) ($f['collected'] ?? 0) + ($n['received'] - (float) ($f['collected'] ?? 0) + $n['refunded'])) : null,
+                'transfers' => $money($n['transfers']), 'net' => $money($n['received'])],
+            'payment' => ['onlineVerified' => !$n['cod'], 'paidRecorded' => !$n['cod'], 'evidence' => $n['cod'] ? 'none' : 'netopia_ipn'],
+            'advance' => $n['cod'] ? ['percentage' => 30, 'required' => $money($n['required']), 'collected' => $money($n['received']), 'outstanding' => $money(max(0, $n['required'] - $n['received'])), 'onDelivery' => $money(max(0, $n['total'] - $n['received']))] : null,
+            'balance' => ['outstanding' => $n['cod'] ? null : $money(max(0, $n['total'] - $n['received'])), 'refundLiability' => $money($n['liability']), 'acknowledged' => $n['acknowledged']],
+            'financial' => ['state' => $n['state'], 'basis' => $n['basis'], 'attention' => $n['attention']],
+            'entries' => array_map(static fn (array $e): array => array_diff_key($e, ['pricing' => true]), $f['entries'] ?? []),
+            'capabilities' => ['record' => $this->financeRecord, 'refunds' => $this->financeRefunds, 'electronicRefund' => false],
+        ];
     }
 
     /** @param array<string, mixed> $body @return array{0: int, 1: array<string, mixed>} */

@@ -162,7 +162,9 @@ final class ConfirmareService
         $statement = $this->pdo->prepare($this->selectSql() . ' WHERE o.global_order_id = ?');
         $statement->execute([$this->globalId($globalOrderId)]);
         $row = $statement->fetch(PDO::FETCH_ASSOC);
-        if (!is_array($row) || !$this->scopes->sees($actor, (string) $row['source_key'])) {
+        // API 2.41.0: a finance employee of the source opens the order too (read-only: no customer data, no decision;
+        // every Confirmare command still checks the Confirmare scopes).
+        if (!is_array($row) || (!$this->scopes->sees($actor, (string) $row['source_key']) && !$this->financeViewer($actor, (string) $row['source_key']))) {
             throw new ApiException(404, 'CONFIRMARE_NOT_FOUND', 'No Confirmare order was found.');
         }
         $events = $this->pdo->prepare(
@@ -1096,6 +1098,15 @@ final class ConfirmareService
         }
         if ($confirmation['assigned_employee_uuid'] !== $actor->employeeUuid) {
             throw new ApiException(409, 'CONFIRMARE_NOT_ASSIGNED_TO_YOU', 'Take the order first; only its assigned colleague or a supervisor decides it.');
+        }
+    }
+
+    private function financeViewer(EmployeeIdentity $actor, string $sourceKey): bool
+    {
+        try {
+            return (new FinanceScopePolicy($this->pdo))->allows($actor, FinanceScopePolicy::VIEW, $sourceKey);
+        } catch (\PDOException) {
+            return false;
         }
     }
 

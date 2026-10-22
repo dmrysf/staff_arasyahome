@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState } from "react";
 import { useI18n } from "../../i18n";
 import type { Employee } from "../../domain/models";
-import { canSuperviseConfirmare, confirmareScopesOf, inTab, nextAction, type ConfirmareApi, type QueueTab } from "../../domain/confirmare";
+import { canSuperviseConfirmare, canUseConfirmare, canUseFinance, confirmareScopesOf, inTab, nextAction, type ConfirmareApi, type QueueTab } from "../../domain/confirmare";
 import { createIdempotencyKey } from "../../services/idempotency";
 import { getErrorPresentation, toServiceError } from "../../services/errors";
 import { AppIcon } from "../../components/icons/AppIcon";
@@ -19,6 +19,30 @@ const LIST_LIMIT = 6;
  * order" asks the server, which picks the order (due date first, then FIFO); the browser never chooses one.
  */
 export function ConfirmareWorkspace({ employee, service, navigate }: { employee: Employee; service: ConfirmareApi; navigate: (path: string) => void }) {
+  // API 2.41.0: a finance employee without a Confirmare scope works from the finance tasks only.
+  if (!canUseConfirmare(employee)) return <FinanceOnlyWorkspace navigate={navigate} />;
+  return <OperatorWorkspace employee={employee} service={service} navigate={navigate} />;
+}
+
+function FinanceOnlyWorkspace({ navigate }: { navigate: (path: string) => void }) {
+  const { t } = useI18n();
+  return (
+    <div className="workspace-body confirmare-workspace" data-testid="workspace-confirmare-finance">
+      <section className="next-action tone-attention" aria-labelledby="cf-finance-next">
+        <div className="next-action-copy">
+          <p className="eyebrow">{t("cf.fin.homeEyebrow")}</p>
+          <h2 id="cf-finance-next">{t("cf.fin.homeTitle")}</h2>
+          <p className="next-action-detail">{t("cf.fin.homeDetail")}</p>
+        </div>
+        <div className="next-action-actions">
+          <button type="button" className="button button-primary next-action-cta" onClick={() => navigate("/confirmare/finance")} data-testid="cf-open-finance">{t("cf.fin.open")}<AppIcon name="arrow" size={20} /></button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function OperatorWorkspace({ employee, service, navigate }: { employee: Employee; service: ConfirmareApi; navigate: (path: string) => void }) {
   const { t } = useI18n();
   const load = useMemo(() => confirmareQueueLoader(service, null), [service]);
   const queue = useAutoRefresh(load, "confirmare-home");
@@ -115,6 +139,7 @@ export function ConfirmareWorkspace({ employee, service, navigate }: { employee:
           <div className="dashboard-actions">
             <button type="button" className="button button-secondary" onClick={() => navigate("/confirmare")} data-testid="cf-open-queue"><AppIcon name="orders" size={20} />{t("cf.home.allOrders")}</button>
             {supervisor && <button type="button" className="button button-secondary" onClick={() => navigate("/confirmare/team")} data-testid="cf-open-team"><AppIcon name="team" size={20} />{t("cf.home.team")}</button>}
+            {canUseFinance(employee) && <button type="button" className="button button-secondary" onClick={() => navigate("/confirmare/finance")} data-testid="cf-open-finance"><AppIcon name="orders" size={20} />{t("cf.fin.open")}</button>}
           </div>
         </DashboardSection>
         <Notice tone="warning" role="note" testId="cf-contact-dependency">{t("cf.home.contactDependency")}</Notice>

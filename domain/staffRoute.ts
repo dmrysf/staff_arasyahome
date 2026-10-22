@@ -1,5 +1,5 @@
 export type StaffRoute =
-  | { kind: "home" | "login" | "scan" | "orders" | "history" | "profile" | "authority" | "trendyol" | "problems" | "confirmare" | "confirmare-team"; pathname: string }
+  | { kind: "home" | "login" | "scan" | "orders" | "history" | "profile" | "authority" | "trendyol" | "problems" | "confirmare" | "confirmare-team" | "confirmare-finance"; pathname: string }
   | { kind: "confirmare-order"; pathname: string; orderId: string }
   | { kind: "trendyol-package"; pathname: string; packageId: string }
   | { kind: "order-detail"; pathname: string; orderId: string }
@@ -7,7 +7,7 @@ export type StaffRoute =
   | { kind: "document-detail"; pathname: string; orderId: string }
   | { kind: "invalid"; pathname: "/" };
 
-const fixedRoutes = new Map<string, "home" | "login" | "scan" | "orders" | "history" | "profile" | "authority" | "trendyol" | "problems" | "confirmare" | "confirmare-team">([
+const fixedRoutes = new Map<string, "home" | "login" | "scan" | "orders" | "history" | "profile" | "authority" | "trendyol" | "problems" | "confirmare" | "confirmare-team" | "confirmare-finance">([
   ["/", "home"],
   ["/login", "login"],
   ["/scan", "scan"],
@@ -19,6 +19,7 @@ const fixedRoutes = new Map<string, "home" | "login" | "scan" | "orders" | "hist
   ["/problems", "problems"],
   ["/confirmare", "confirmare"],
   ["/confirmare/team", "confirmare-team"],
+  ["/confirmare/finance", "confirmare-finance"],
 ]);
 
 const ORDER_PREFIX = "/orders/";

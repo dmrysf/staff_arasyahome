@@ -170,7 +170,7 @@ final readonly class Config
         return $secrets;
     }
 
-    /** @param array<string, string> $values @param list<string> $sourceKeys @return array<string, array{mode: string, url: string, key: string}> */
+    /** @param array<string, string> $values @param list<string> $sourceKeys @return array<string, array{mode: string, url: string, key: string, finance: string}> */
     private static function sourceAccess(array $values, array $sourceKeys): array
     {
         $access = [];
@@ -185,6 +185,8 @@ final readonly class Config
                     'mode' => $mode,
                     'url' => self::value($values, "ARASYA_SOURCE_ACCESS_URL_{$suffix}", ''),
                     'key' => self::value($values, "ARASYA_SOURCE_ACCESS_KEY_{$suffix}", ''),
+                    // API 2.41.0 (Confirmare Phase 5): off (default) | read | record.
+                    'finance' => self::value($values, "ARASYA_SOURCE_FINANCE_{$suffix}", ''),
                 ];
             }
         }

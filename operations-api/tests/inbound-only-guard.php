@@ -12,7 +12,10 @@ declare(strict_types=1);
 // YD SOFT source access routes listed in SourceAccessClient::ROUTES, and only SourceAccessClient may
 // send through it. Every other rule below stays as it was. Phase 4B adds the controlled edit routes to
 // that list: Operations still never writes WooCommerce itself; it asks the shop's own YD SOFT adapter,
-// which applies one previewed edit under WooCommerce's rules (and refuses anything else).
+// which applies one previewed edit under WooCommerce's rules (and refuses anything else). Phase 5 (API 2.41.0)
+// adds the three finance routes: the shop's financial summary, one finance action (a bank transfer or bank
+// refund recorded and verified by two people, a liability acknowledged; never a gateway capture or refund)
+// and its stored answer.
 
 $root = dirname(__DIR__, 2);
 $failures = [];
@@ -37,8 +40,9 @@ $accessTransport = $root . '/operations-api/src/Integration/SourceAccess/StreamS
 $accessClient = $root . '/operations-api/src/Integration/SourceAccess/SourceAccessClient.php';
 /** The source access routes Operations may call (WordPress routes without /wp-json). Nothing else. */
 // Phase 4A: the order detail. Phase 4B: the edit catalog, one product by SKU, the edit preview, the edit and its stored
-// answer (reconciliation). No WooCommerce REST API, no listing, no search.
-$accessRoutes = ['/yd-arasya/v1/confirmare/detail', '/yd-arasya/v1/confirmare/catalog', '/yd-arasya/v1/confirmare/product', '/yd-arasya/v1/confirmare/preview', '/yd-arasya/v1/confirmare/apply', '/yd-arasya/v1/confirmare/edit-status'];
+// answer (reconciliation). Phase 5: the financial summary, a finance action and its stored answer. No WooCommerce REST
+// API, no listing, no search.
+$accessRoutes = ['/yd-arasya/v1/confirmare/detail', '/yd-arasya/v1/confirmare/catalog', '/yd-arasya/v1/confirmare/product', '/yd-arasya/v1/confirmare/preview', '/yd-arasya/v1/confirmare/apply', '/yd-arasya/v1/confirmare/edit-status', '/yd-arasya/v1/confirmare/finance', '/yd-arasya/v1/confirmare/finance-action', '/yd-arasya/v1/confirmare/finance-status'];
 $forbiddenApi = [
     '/\bcurl_(init|exec|multi_\w+|setopt)\s*\(/' => 'cURL client',
     '/\b(fsockopen|pfsockopen|stream_socket_client)\s*\(/' => 'raw socket client',

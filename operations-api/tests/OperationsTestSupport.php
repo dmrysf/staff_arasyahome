@@ -38,8 +38,9 @@ final class OperationsTestSupport
      * id; the database check also skips blocks used by earlier runs on a reused disposable database.
      *
      * Order id ranges (first..last): Confirmare operations 760000..859999, Confirmare Staff 870000..899999, payment gate
-     * 900000..929999, source access 930000..959999, source edit 960000..989999. Below them: Confirmare cohort
-     * (640000..730071, its own random base). 999999 stays unused (customer tracking: an unknown order).
+     * 900000..929999, source access 930000..959999, source edit 960000..989999, Confirmare finance 731000..759999.
+     * Below them: Confirmare cohort (640000..730071, its own random base). 999999 stays unused (customer tracking: an
+     * unknown order).
      */
     public static function freeOrderBase(PDO $pdo, int $first, int $last, int $span): int
     {

@@ -13,6 +13,7 @@ declare(strict_types=1);
 //
 // API 2.40.0: the TEST shop (tests/e2e-source-shop.php) answers source access reads from ARASYA_E2E_SHOP_FILE, which
 // this fixture writes for the Trend Home orders (same pricing fingerprints as their events, an invented telephone).
+// API 2.41.0: two finance people (record, approve) and the TEST money record of order 91005 (paid 500, now 650).
 
 use Arasya\Operations\Application\Container;
 use Arasya\Operations\Database\Connection;
@@ -140,6 +141,16 @@ foreach ([
     $asRoot('PUT', "/management/employees/{$employee->employeeUuid}/confirmare-scopes", $scopes);
     $people[$role] = ['username' => $username, 'name' => $name, 'id' => $employee->employeeUuid];
 }
+foreach ([
+    'finrec' => ['Finante Inregistrare', 'cf.finrec.e2e', ['view' => [], 'record' => ['trendhome'], 'approve' => []]],
+    'finapp' => ['Finante Aprobare', 'cf.finapp.e2e', ['view' => [], 'record' => [], 'approve' => ['trendhome']]],
+] as $role => [$name, $username, $scopes]) {
+    // Generic TEST people with finance scopes only (no Confirmare scope): money is a separate permission.
+    $employee = $admin->create($name, $username, null, 'pregatire-material', 'employee', $password, [], 'e2e');
+    $asRoot('PUT', "/management/employees/{$employee->employeeUuid}/applications", ['applications' => ['staff']]);
+    $asRoot('PUT', "/management/employees/{$employee->employeeUuid}/finance-scopes", $scopes);
+    $people[$role] = ['username' => $username, 'name' => $name, 'id' => $employee->employeeUuid];
+}
 
 $registry = SourceRegistry::fromConfig($config);
 $activatedAt = max($cutover->modify('+1 second'), $now->modify('-2 hours'));
@@ -161,6 +172,8 @@ $service = $container->confirmareService();
 $service->distribute();
 // After the run: one order waits unassigned, one legacy order and one with an unknown submission instant.
 $ingest('trendhome', $order('91005', $after(10)));
+// The TEST shop's money record of 91005: paid 500 by card, the total is now 650 (TEST amounts).
+$shopOrders['91005']['finance'] = ['cod' => false, 'total' => '650.00', 'paid' => '500.00', 'original' => '500.00', 'pricing' => $shopOrders['91005']['pricing']];
 $ingest('trendhome', $order('91090', $activatedAt->modify('-1 hour')));
 $ingest('trendhome', $order('91091', null));
 $assignee = static function (string $globalId) use ($pdo): ?string {
@@ -179,5 +192,5 @@ foreach (['91001' => 'operator', '91002' => 'operator', '91003' => 'colleague', 
 $writeShop();
 echo json_encode(['password' => $password, 'people' => $people, 'orders' => [
     'call' => 'trendhome:91001', 'cod' => 'trendhome:91002', 'colleague' => 'trendhome:91003', 'noPrice' => 'trendhome:91004', 'unassigned' => 'trendhome:91005',
-    'outlet' => 'outletperdele:92001', 'legacy' => 'trendhome:91090', 'undetermined' => 'trendhome:91091',
+    'outlet' => 'outletperdele:92001', 'legacy' => 'trendhome:91090', 'undetermined' => 'trendhome:91091', 'finance' => 'trendhome:91005',
 ], 'state' => ['91001' => $assignee('trendhome:91001'), '91003' => $assignee('trendhome:91003')]], JSON_UNESCAPED_UNICODE), "\n";

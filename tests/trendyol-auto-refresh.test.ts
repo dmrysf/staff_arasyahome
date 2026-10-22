@@ -321,8 +321,9 @@ test("automatic refresh is limited to the Trendyol and Confirmare screens; the p
   const users = ["features", "app", "components"].flatMap((dir) => listSources(path.join(root, dir))).filter((file) => /useAutoRefresh|createRefreshScheduler/.test(readFileSync(file, "utf8")));
   // Confirmare (Staff 2.29.0) refreshes its queue, team view and order every minute; its loaders only read
   // (tests/confirmare-workspace.test.ts) and the order screen keeps the operator's ticks while the order is unchanged.
+  // Staff 2.31.0: the finance task list reads task classes only (no amount; amounts are read per order on request).
   assert.deepEqual(users.map((file) => path.relative(root, file)).sort(), [
-    "features/confirmare/ConfirmareOrderScreen.tsx", "features/confirmare/ConfirmareQueueScreen.tsx", "features/confirmare/ConfirmareTeamScreen.tsx", "features/confirmare/ConfirmareWorkspace.tsx",
+    "features/confirmare/ConfirmareFinanceScreen.tsx", "features/confirmare/ConfirmareOrderScreen.tsx", "features/confirmare/ConfirmareQueueScreen.tsx", "features/confirmare/ConfirmareTeamScreen.tsx", "features/confirmare/ConfirmareWorkspace.tsx",
     "features/trendyol/TrendyolInboxScreen.tsx", "features/workspaces/TrendyolDashboard.tsx",
     "features/workspaces/refreshScheduler.ts", "features/workspaces/useAutoRefresh.ts",
   ]);

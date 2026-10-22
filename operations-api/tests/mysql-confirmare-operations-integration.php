@@ -625,7 +625,7 @@ $pdo->exec('DELETE FROM employee_confirmare_scopes');
 $pdo->exec('DELETE FROM confirmare_operator_state');
 $pdo->exec('UPDATE operational_orders SET workflow_cohort = NULL, workflow_cohort_reason = NULL, workflow_cohort_at = NULL WHERE workflow_cohort IS NOT NULL');
 // An interrupted 036 (tables created, the ALTER not applied) completes on the next run.
-// 038 builds on the 036 columns; take it off first and re-apply it after the 036 re-run.
+// 038 (and 039 on it) build on the 036 columns; take them off first and re-apply them after the 036 re-run.
 restorePreConfirmareSourceAccessTestSchema($pdo);
 $pdo->exec('ALTER TABLE order_confirmations DROP CONSTRAINT chk_order_confirmations_cleared, DROP FOREIGN KEY fk_order_confirmations_caller, DROP CONSTRAINT chk_order_confirmations_reason, DROP CONSTRAINT chk_order_confirmations_assigned_pending, DROP CONSTRAINT chk_order_confirmations_assignment,
     DROP FOREIGN KEY fk_order_confirmations_assignee, DROP KEY idx_order_confirmations_assignee, DROP COLUMN cleared_at, DROP COLUMN production_cleared, DROP COLUMN approved_review_fingerprint, DROP COLUMN confirmed_line_ids,
@@ -637,6 +637,10 @@ $pdo->exec('ALTER TABLE operational_orders DROP CONSTRAINT chk_operational_order
 (new SqlFileRunner($pdo))->run(dirname(__DIR__) . '/database/migrations/038_confirmare_source_access.sql');
 $pdo->prepare('INSERT INTO schema_migrations (migration_name, checksum, applied_at) VALUES (:name, :checksum, UTC_TIMESTAMP(6))')
     ->execute(['name' => '038_confirmare_source_access.sql', 'checksum' => hash_file('sha256', dirname(__DIR__) . '/database/migrations/038_confirmare_source_access.sql')]);
+// 039 builds on the 038 column (restorePreConfirmareSourceAccessTestSchema took it off first).
+(new SqlFileRunner($pdo))->run(dirname(__DIR__) . '/database/migrations/039_confirmare_finance.sql');
+$pdo->prepare('INSERT INTO schema_migrations (migration_name, checksum, applied_at) VALUES (:name, :checksum, UTC_TIMESTAMP(6))')
+    ->execute(['name' => '039_confirmare_finance.sql', 'checksum' => hash_file('sha256', dirname(__DIR__) . '/database/migrations/039_confirmare_finance.sql')]);
 $check((int) $one("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'order_confirmations' AND column_name IN ('assigned_employee_uuid', 'assigned_at', 'assignment_kind', 'decision_reason_code', 'call_confirmed_at', 'confirmed_line_ids', 'approved_review_fingerprint', 'production_cleared')") === 8
     && (int) $one("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'operational_orders' AND column_name IN ('source_pricing_fingerprint', 'source_due_date', 'source_financial_state', 'source_financial_basis', 'source_financial_pricing')") === 5, 'an interrupted 036 completes on the next run');
 

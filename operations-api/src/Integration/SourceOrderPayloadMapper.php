@@ -24,11 +24,20 @@ final class SourceOrderPayloadMapper
     private const ORDER_KEYS = ['id', 'number', 'status', 'availability', 'notes', 'acceptedAt', 'items', 'delivery', 'payment', 'submission', 'pricing', 'dueDate', 'financial', 'contact'];
     /**
      * Optional order facts this server accepts (heartbeat `orderFacts`, API 2.38.0). API 2.40.0: `contact` (a callable
-     * telephone number exists) and `financialAttention` (order.financial.attention after a change of the total).
+     * telephone number exists) and `financialAttention` (order.financial.attention after a change of the total). API
+     * 2.41.0: `financeTasks` (the Phase 5 attentions of the shop's finance record).
      */
-    public const ORDER_FACTS = ['pricing', 'dueDate', 'financial', 'contact', 'financialAttention'];
-    /** Why a Confirmare order needs a financial decision after its total changed (order.financial.attention, API 2.40.0). */
-    public const FINANCIAL_ATTENTION = ['additional_payment_due', 'refund_due'];
+    public const ORDER_FACTS = ['pricing', 'dueDate', 'financial', 'contact', 'financialAttention', 'financeTasks'];
+    /**
+     * Why a Confirmare order needs a financial decision (order.financial.attention, never an amount). With a closed state
+     * (waiting, partial, unknown): additional_payment_due and refund_due (API 2.40.0), transfer_pending (a recorded bank
+     * transfer waits for another employee's verification) and reconciliation_required (a shop refund the finance record
+     * does not explain), API 2.41.0. With `cleared` only: refund_liability (acknowledged on the current prices, refunded
+     * after the final manufacturing stage) and refund_pending (a bank refund waits for verification), API 2.41.0.
+     */
+    public const FINANCIAL_ATTENTION_OPEN = ['additional_payment_due', 'refund_due', 'transfer_pending', 'reconciliation_required'];
+    public const FINANCIAL_ATTENTION_CLEARED = ['refund_liability', 'refund_pending'];
+    public const FINANCIAL_ATTENTION = [...self::FINANCIAL_ATTENTION_OPEN, ...self::FINANCIAL_ATTENTION_CLEARED];
     /** Confirmare financial clearance (order.financial, API 2.38.0): states and bases only, never an amount. */
     public const FINANCIAL_STATES = ['cleared', 'waiting', 'partial', 'unknown'];
     public const FINANCIAL_BASES = ['online_payment', 'zero_total', 'advance_collected'];
@@ -175,8 +184,8 @@ final class SourceOrderPayloadMapper
             throw self::invalid('order.financial.pricingFingerprint');
         }
         $attention = $financial['attention'] ?? null;
-        if ($attention !== null && (!in_array($attention, self::FINANCIAL_ATTENTION, true) || $state === 'cleared')) {
-            // A financial attention never clears: the shop states it only on a waiting, partial or unknown order.
+        if ($attention !== null && !in_array($attention, $state === 'cleared' ? self::FINANCIAL_ATTENTION_CLEARED : self::FINANCIAL_ATTENTION_OPEN, true)) {
+            // An open attention never comes with `cleared`; an acknowledged refund liability only with `cleared`.
             throw self::invalid('order.financial.attention');
         }
         // The key joins the array only when stated, so the receipt hash of every earlier event stays the same.

@@ -22,7 +22,11 @@ final readonly class SourceAccessClient
     public const ROUTE_PREVIEW = '/yd-arasya/v1/confirmare/preview';
     public const ROUTE_APPLY = '/yd-arasya/v1/confirmare/apply';
     public const ROUTE_EDIT_STATUS = '/yd-arasya/v1/confirmare/edit-status';
-    public const ROUTES = [self::ROUTE_DETAIL, self::ROUTE_CATALOG, self::ROUTE_PRODUCT, self::ROUTE_PREVIEW, self::ROUTE_APPLY, self::ROUTE_EDIT_STATUS];
+    /** Confirmare finance (API 2.41.0, Phase 5): the financial summary, a finance action and its stored answer. */
+    public const ROUTE_FINANCE = '/yd-arasya/v1/confirmare/finance';
+    public const ROUTE_FINANCE_ACTION = '/yd-arasya/v1/confirmare/finance-action';
+    public const ROUTE_FINANCE_STATUS = '/yd-arasya/v1/confirmare/finance-status';
+    public const ROUTES = [self::ROUTE_DETAIL, self::ROUTE_CATALOG, self::ROUTE_PRODUCT, self::ROUTE_PREVIEW, self::ROUTE_APPLY, self::ROUTE_EDIT_STATUS, self::ROUTE_FINANCE, self::ROUTE_FINANCE_ACTION, self::ROUTE_FINANCE_STATUS];
 
     /** Shop error codes Operations understands (anything else is SOURCE_ERROR). */
     private const SOURCE_ERRORS = [

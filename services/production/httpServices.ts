@@ -13,6 +13,7 @@ import type { ActiveQr, ProductionQrApi, ProductionQrView, QrAuthority, QrAuthor
 import { createBrowserWorkflowCache, createUnavailableWorkflowCache, normalizeProductionApiBaseUrl, type WorkflowCache } from "./workflowCache";
 import { createProductionWorkflowService } from "./workflowService";
 import type { ShopLine, ShopOrderDetail, ShopPerson, ShopRead } from "../../domain/confirmareShop";
+import { FINANCE_ACTIONS, FINANCE_NEXT, FINANCE_TASKS, type FinanceEntry, type FinanceOutcome, type FinanceQueue, type FinanceQueueItem, type FinanceRead, type FinanceSummary, type FinanceTask, type FinanceTimelineItem } from "../../domain/confirmareFinance";
 import { EDIT_IMPACTS, type EditBlocker, type EditCatalog, type EditField, type EditLineSnapshot, type EditOutcome, type EditProduct, type EditResult, type EditTotals, type EditVariation, type OpenEdit } from "../../domain/confirmareEdit";
 import { CLEARANCE_CONDITIONS, CONTACT_OUTCOMES, FINANCIAL_ATTENTION, type ConfirmareAlert, type ConfirmareApi, type ConfirmareAvailability, type ConfirmareContact, type ConfirmareCustomer, type ConfirmareDetail, type ConfirmareEvent, type ConfirmareItem, type ConfirmareLine, type ConfirmareOperator, type ConfirmarePool, type ConfirmareTeam, type FinancialState } from "../../domain/confirmare";
 
@@ -221,7 +222,16 @@ export function mapProductionEmployee(value: unknown): Employee {
     // An older API (always "ro"), a missing or an unknown value all read as Romanian.
     locale: normalizeLocale(raw.locale),
     confirmareScopes: mapConfirmareScopes(raw.confirmareScopes),
+    financeScopes: mapFinanceScopes(raw.financeScopes),
   };
+}
+
+/** Optional (API 2.41.0); an older API or a malformed value grants no finance screen. */
+function mapFinanceScopes(value: unknown): { view: string[]; record: string[]; approve: string[] } {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return { view: [], record: [], approve: [] };
+  const raw = value as Record<string, unknown>;
+  const list = (entry: unknown): string[] => Array.isArray(entry) && entry.every((item) => typeof item === "string") ? entry as string[] : [];
+  return { view: list(raw.view), record: list(raw.record), approve: list(raw.approve) };
 }
 
 /** Optional (API 2.39.0); an older API or a malformed value grants no Confirmare screen. */
@@ -1092,6 +1102,11 @@ export function createProductionServices(apiBaseUrl: string, options: Production
     sourcePreview: (globalOrderId, input) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/source/preview`, { method: "POST", cache: "no-store", body: JSON.stringify(input) }, (value) => { const raw = objectValue(objectValue(value).preview); return { ...mapEditResult(raw), previewToken: hexToken(raw.previewToken) }; }),
     sourceApply: (globalOrderId, input, key) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/source/apply`, { method: "POST", cache: "no-store", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapEditOutcome),
     sourceReconcile: (globalOrderId, key) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/source/reconcile`, { method: "POST", cache: "no-store", body: JSON.stringify({ idempotencyKey: key }) }, mapEditOutcome),
+    // Confirmare finance (API 2.41.0): amounts are read when asked, never cached; actions need an Idempotency-Key.
+    financeRead: (globalOrderId, signal) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/finance`, { signal, cache: "no-store" }, mapFinanceRead),
+    financeAct: (globalOrderId, action, input, key) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/finance/${action.replace(/_/g, "-")}`, { method: "POST", cache: "no-store", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapFinanceOutcome),
+    financeReconcile: (globalOrderId, key) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/finance/reconcile`, { method: "POST", cache: "no-store", body: JSON.stringify({ idempotencyKey: key }) }, mapFinanceOutcome),
+    financeQueue: (task, source, signal) => http.request(`/confirmare/finance${task || source ? `?${new URLSearchParams({ ...(task ? { task } : {}), ...(source ? { source } : {}) }).toString()}` : ""}`, { signal, cache: "no-store" }, mapFinanceQueue),
   };
   return { physical, auth, employee, orders, activity, workflow, exceptions, live, cutting, documents, authority, productionQr, trendyol, workspace, management, pieces, confirmare, mode: "production" };
 }
@@ -1118,6 +1133,8 @@ export function confirmareErrorDetails(value: unknown): Record<string, unknown> 
   if (typeof raw.reason === "string" && /^[a-z_]{2,60}$/.test(raw.reason)) out.editReason = raw.reason;
   if (typeof raw.version === "string" && /^sha256:[0-9a-f]{64}$/.test(raw.version)) out.editVersion = raw.version;
   if (Array.isArray(raw.blockers)) { try { out.editBlockers = listOf(raw.blockers, 100, mapEditBlocker); } catch { out.editBlockers = []; } }
+  // Phase 5: the shop's current finance revision after a refused finance action (`reason` is editReason above).
+  if (typeof raw.revision === "string" && /^sha256:[0-9a-f]{64}$/.test(raw.revision)) out.financeRevision = raw.revision;
   return out;
 }
 
@@ -1201,6 +1218,11 @@ export function mapConfirmareDetail(value: unknown): ConfirmareDetail {
     source: { commerceStatusLabel: nullableString(source.commerceStatusLabel), changedAt: source.changedAt == null ? null : timestampValue(source.changedAt), lastSeenAt: source.lastSeenAt == null ? null : timestampValue(source.lastSeenAt), freshness: nullableString(source.freshness) },
     production: { cleared: booleanValue(production.cleared), missing: stringList(production.missing).map((condition) => oneOf(condition, CLEARANCE_CONDITIONS)) },
     events: Array.isArray(raw.events) ? raw.events.map(mapConfirmareEvent) : [],
+    // An older API (2.40) has no finance: nothing can be read or recorded.
+    finance: raw.finance == null ? { configured: false, read: false, record: false, approve: false } : (() => {
+      const finance = objectValue(raw.finance);
+      return { configured: finance.configured === true, read: finance.read === true, record: finance.record === true, approve: finance.approve === true };
+    })(),
     // An older API (2.39) has no source access: nothing can be read from the shop.
     sourceAccess: raw.sourceAccess == null ? { configured: false, read: false, edit: false, changePending: false, openEdits: [] } : (() => {
       const access = objectValue(raw.sourceAccess);
@@ -1364,6 +1386,99 @@ export function mapShopRead(value: unknown): ShopRead {
       arasyaChangedAt: freshness.arasyaChangedAt == null ? null : timestampValue(freshness.arasyaChangedAt),
       pricingMatches: freshness.pricingMatches == null ? null : booleanValue(freshness.pricingMatches), inSync: booleanValue(freshness.inSync),
     },
+  };
+}
+
+// ---- Confirmare finance (API 2.41.0): strict; anything unexpected is refused, never half shown
+const percentageValue = (value: unknown): number => { if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 100) throw new StaffServiceError("SERVER_ERROR"); return value; };
+const optionalMoney = (value: unknown): string | null => (value == null ? null : moneyValue(value));
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const uuidValue = (value: unknown): string => { const text = textValue(value, 36); if (!UUID.test(text)) throw new StaffServiceError("SERVER_ERROR"); return text; };
+const ATTENTIONS = ["additional_payment_due", "refund_due", "transfer_pending", "reconciliation_required", "refund_liability", "refund_pending"] as const;
+function mapFinanceEntry(value: unknown): FinanceEntry {
+  const raw = objectValue(value);
+  return {
+    id: uuidValue(raw.id), kind: oneOf(raw.kind, ["transfer_in", "refund_out", "liability_ack"] as const), purpose: oneOf(raw.purpose, ["advance", "additional_payment", "refund", "liability"] as const),
+    amount: moneyValue(raw.amount), reference: textValue(raw.reference, 64), valueDate: raw.valueDate == null ? null : textValue(raw.valueDate, 10), state: oneOf(raw.state, ["submitted", "verified", "rejected"] as const),
+    submittedBy: uuidValue(raw.submittedBy), submittedAt: timestampValue(raw.submittedAt), decidedBy: raw.decidedBy == null ? null : uuidValue(raw.decidedBy),
+    decidedAt: raw.decidedAt == null ? null : timestampValue(raw.decidedAt), decisionCode: raw.decisionCode == null ? null : textValue(raw.decisionCode, 40),
+  };
+}
+export function mapFinanceSummary(value: unknown): FinanceSummary {
+  const raw = objectValue(value);
+  const order = objectValue(raw.order);
+  const totals = objectValue(raw.totals);
+  const received = objectValue(raw.received);
+  const payment = objectValue(raw.payment);
+  const balance = objectValue(raw.balance);
+  const financial = objectValue(raw.financial);
+  const capabilities = objectValue(raw.capabilities);
+  const advance = raw.advance == null ? null : objectValue(raw.advance);
+  if (capabilities.electronicRefund !== false) throw new StaffServiceError("SERVER_ERROR");
+  return {
+    readAt: timestampValue(raw.readAt), revision: textValue(raw.revision, 71), currency: textValue(raw.currency, 3),
+    order: { id: textValue(order.id, 20), number: textValue(order.number, 64), status: textValue(order.status, 40), modifiedAt: order.modifiedAt == null ? null : timestampValue(order.modifiedAt), method: textValue(order.method, 100), methodTitle: textValue(order.methodTitle, 200), cod: booleanValue(order.cod) },
+    totals: { current: optionalMoney(totals.current), original: optionalMoney(totals.original), refunded: optionalMoney(totals.refunded) },
+    received: { online: optionalMoney(received.online), advance: optionalMoney(received.advance), transfers: optionalMoney(received.transfers), net: optionalMoney(received.net) },
+    payment: { onlineVerified: booleanValue(payment.onlineVerified), paidRecorded: booleanValue(payment.paidRecorded), evidence: oneOf(payment.evidence, ["netopia_ipn", "gateway", "none"] as const) },
+    advance: advance === null ? null : { percentage: percentageValue(advance.percentage), required: optionalMoney(advance.required), collected: optionalMoney(advance.collected), outstanding: optionalMoney(advance.outstanding), onDelivery: optionalMoney(advance.onDelivery) },
+    balance: { outstanding: optionalMoney(balance.outstanding), refundLiability: moneyValue(balance.refundLiability), acknowledged: booleanValue(balance.acknowledged) },
+    financial: { state: oneOf(financial.state, ["cleared", "waiting", "partial", "unknown"] as const), basis: nullableString(financial.basis), attention: financial.attention == null ? null : oneOf(financial.attention, ATTENTIONS) },
+    entries: listOf(raw.entries, 200, mapFinanceEntry),
+    capabilities: { record: booleanValue(capabilities.record), refunds: oneOf(capabilities.refunds, ["off", "manual"] as const), electronicRefund: false },
+  };
+}
+function mapFinanceTimeline(value: unknown): FinanceTimelineItem {
+  const raw = objectValue(value);
+  return {
+    employeeId: uuidValue(raw.employeeId), action: oneOf(raw.action, FINANCE_ACTIONS), decision: raw.decision == null ? null : oneOf(raw.decision, ["verify", "reject"] as const),
+    reasonCode: nullableString(raw.reasonCode), purpose: nullableString(raw.purpose), entryId: nullableString(raw.entryId), idempotencyKey: textValue(raw.idempotencyKey, 100),
+    state: oneOf(raw.state, ["pending", "applied", "rejected", "unknown"] as const), outcome: nullableString(raw.outcome), requestedAt: timestampValue(raw.requestedAt), completedAt: raw.completedAt == null ? null : timestampValue(raw.completedAt),
+  };
+}
+function mapFinanceView(raw: Record<string, unknown>) {
+  const production = objectValue(raw.production);
+  const employees = objectValue(raw.employees);
+  return {
+    summary: mapFinanceSummary(raw.summary),
+    production: { stageId: textValue(production.stageId, 100), handedOver: booleanValue(production.handedOver), refundEligible: booleanValue(production.refundEligible) },
+    allowedActions: listOf(raw.allowedActions, 5, (action) => oneOf(action, FINANCE_ACTIONS)),
+    nextAction: oneOf(raw.nextAction, FINANCE_NEXT),
+    actionOpen: booleanValue(raw.actionOpen),
+    timeline: listOf(raw.timeline, 200, mapFinanceTimeline),
+    employees: Object.fromEntries(Object.entries(employees).map(([id, name]) => [uuidValue(id), textValue(name, 200)])),
+    me: uuidValue(raw.me),
+  };
+}
+export function mapFinanceRead(value: unknown): FinanceRead {
+  const raw = objectValue(value);
+  if (raw.available !== true) return { available: false, reason: textValue(raw.reason, 60) };
+  return { available: true, role: oneOf(raw.role, ["finance", "assignee", "supervisor"] as const), ...mapFinanceView(raw) };
+}
+export function mapFinanceOutcome(value: unknown): FinanceOutcome {
+  const raw = objectValue(value);
+  const state = oneOf(raw.state, ["applied", "pending", "unknown"] as const);
+  if (state !== "applied") return { state, idempotencyKey: textValue(raw.idempotencyKey, 100), ...(typeof raw.reachable === "boolean" ? { reachable: raw.reachable } : {}) };
+  // The view after an applied action is optional (a replayed key answers with the entry only).
+  return { state, idempotencyKey: textValue(raw.idempotencyKey, 100), entryId: uuidValue(raw.entryId), ...(raw.summary == null ? {} : mapFinanceView(raw)) };
+}
+function mapFinanceQueueItem(value: unknown): FinanceQueueItem {
+  const raw = objectValue(value);
+  const financial = objectValue(raw.financial);
+  return {
+    globalOrderId: textValue(raw.globalOrderId, 200), source: textValue(raw.source, 40), orderNumber: textValue(raw.orderNumber, 64), task: oneOf(raw.task, FINANCE_TASKS),
+    financial: { state: nullableString(financial.state), basis: nullableString(financial.basis), attention: nullableString(financial.attention) },
+    paymentMethod: nullableString(raw.paymentMethod), stageId: textValue(raw.stageId, 100), confirmation: textValue(raw.confirmation, 20),
+    dueDate: raw.dueDate == null ? null : textValue(raw.dueDate, 10), sourceChangedAt: raw.sourceChangedAt == null ? null : timestampValue(raw.sourceChangedAt),
+  };
+}
+export function mapFinanceQueue(value: unknown): FinanceQueue {
+  const raw = objectValue(value);
+  const tasks = objectValue(raw.tasks);
+  return {
+    tasks: Object.fromEntries(FINANCE_TASKS.map((task) => [task, nonNegativeInteger(tasks[task])])) as Record<FinanceTask, number>,
+    orders: listOf(raw.orders, 500, mapFinanceQueueItem),
+    sources: stringList(raw.sources),
   };
 }
 

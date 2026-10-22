@@ -36,7 +36,7 @@ const detail = (overrides: Partial<ConfirmareDetail> = {}): ConfirmareDetail => 
   review: { fingerprint: FP, lineIds: ["12341"], pricingAvailable: true, callRecorded: true, contactAvailable: true }, lines: [], contacts: [],
   customer: { visible: true, name: "TEST", company: null, addressLines: [], phoneMasked: "07** *** ***", phoneAvailable: false },
   source: { commerceStatusLabel: "Pending payment", changedAt: null, lastSeenAt: null, freshness: "fresh" }, production: { cleared: false, missing: ["approval"] }, events: [],
-  sourceAccess: { configured: true, read: true, edit: false, changePending: false, openEdits: [] }, ...overrides,
+  sourceAccess: { configured: true, read: true, edit: false, changePending: false, openEdits: [] }, finance: { configured: false, read: false, record: false, approve: false }, ...overrides,
 });
 
 test("the shop read is mapped strictly: known fields only, anything malformed refuses the whole answer", () => {

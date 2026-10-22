@@ -14,6 +14,9 @@ use Arasya\Operations\Config\Config;
  *                                    called; no path, query, credentials or fragment)
  *   ARASYA_SOURCE_ACCESS_KEY_<SRC>   <kid>:<key>, the access key of the shop's keyring (`wp yd-arasya access key-add`),
  *                                    at least 32 printable bytes and never the source's event secret
+ *   ARASYA_SOURCE_FINANCE_<SRC>      off (default) | read | record (API 2.41.0, Confirmare Phase 5): the financial summary,
+ *                                    and with `record` the finance actions, through the same signed access; needs
+ *                                    source access read or edit. Any other value keeps the whole source `off`.
  *
  * A source with any invalid value stays `off` and is reported as an issue (code only, never the value): configuration
  * mistakes fail closed and never stop the API. Production only accepts HTTPS on the standard port; a non-production
@@ -22,6 +25,7 @@ use Arasya\Operations\Config\Config;
 final readonly class SourceAccessRegistry
 {
     public const MODES = ['off', SourceAccessTarget::MODE_READ, SourceAccessTarget::MODE_EDIT];
+    public const FINANCE_MODES = [SourceAccessTarget::FINANCE_OFF, SourceAccessTarget::FINANCE_READ, SourceAccessTarget::FINANCE_RECORD];
 
     /**
      * @param array<string, SourceAccessTarget> $targets
@@ -47,7 +51,8 @@ final readonly class SourceAccessRegistry
                 continue;
             }
             [$kid, $key] = explode(':', trim($raw['key'] ?? ''), 2);
-            $targets[$sourceKey] = new SourceAccessTarget($sourceKey, $mode, rtrim(trim($raw['url'] ?? ''), '/'), $kid, $key);
+            $finance = strtolower(trim($raw['finance'] ?? ''));
+            $targets[$sourceKey] = new SourceAccessTarget($sourceKey, $mode, rtrim(trim($raw['url'] ?? ''), '/'), $kid, $key, $finance === '' ? SourceAccessTarget::FINANCE_OFF : $finance);
         }
         return new self($targets, $issues);
     }
@@ -68,6 +73,10 @@ final readonly class SourceAccessRegistry
     {
         if (!in_array($mode, self::MODES, true)) {
             return 'invalid_mode';
+        }
+        $finance = strtolower(trim($raw['finance'] ?? ''));
+        if ($finance !== '' && !in_array($finance, self::FINANCE_MODES, true)) {
+            return 'invalid_finance_mode';
         }
         if (!isset($config->sourceSecrets[$sourceKey])) {
             return 'source_not_configured';

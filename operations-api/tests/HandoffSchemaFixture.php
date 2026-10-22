@@ -1,9 +1,23 @@
 <?php
 declare(strict_types=1);
+/** Restore a pre-039 disposable test fixture (no Confirmare finance). This is NOT a deployment/rollback mechanism. */
+function restorePreConfirmareFinanceTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='039_confirmare_finance.sql'")->fetchColumn()) return;
+    $pdo->exec('DROP TABLE IF EXISTS order_finance_actions');
+    $pdo->exec('DROP TABLE IF EXISTS order_finance_reads');
+    $pdo->exec('DROP TABLE IF EXISTS employee_finance_scopes');
+    $pdo->exec("UPDATE operational_orders SET source_financial_attention = NULL WHERE source_financial_attention NOT IN ('additional_payment_due', 'refund_due') OR source_financial_state = 'cleared'");
+    $pdo->exec("ALTER TABLE operational_orders DROP CONSTRAINT chk_operational_orders_finance_attention, ADD CONSTRAINT chk_operational_orders_financial_attention CHECK (source_financial_attention IS NULL OR (source_financial_attention IN ('additional_payment_due', 'refund_due') AND source_financial_state IN ('waiting', 'partial', 'unknown')))");
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='039_confirmare_finance.sql'");
+}
+
 /** Restore a pre-038 disposable test fixture (no Confirmare source access). This is NOT a deployment/rollback mechanism. */
 function restorePreConfirmareSourceAccessTestSchema(PDO $pdo): void
 {
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    restorePreConfirmareFinanceTestSchema($pdo);
     if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='038_confirmare_source_access.sql'")->fetchColumn()) return;
     $pdo->exec('DROP TABLE IF EXISTS order_confirmation_source_edits');
     $pdo->exec('DROP TABLE IF EXISTS order_confirmation_source_reads');
