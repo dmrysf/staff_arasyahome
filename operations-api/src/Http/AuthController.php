@@ -13,7 +13,9 @@ use Arasya\Operations\B2B\OrderAccess;
 use Arasya\Operations\B2B\ProductionAccess;
 use Arasya\Operations\B2B\ProjectAccess;
 use Arasya\Operations\Config\Config;
+use Arasya\Operations\Confirmare\ConfirmareScopePolicy;
 use Arasya\Operations\Authorization\AuthorizationService;
+use Arasya\Operations\Employee\EmployeeIdentity;
 use Arasya\Operations\Employee\EmployeeSerializer;
 use Arasya\Operations\Iam\ApplicationAccess;
 use Arasya\Operations\Security\CookiePolicy;
@@ -28,6 +30,7 @@ final readonly class AuthController
         private Config $config,
         private AuthorizationService $authorization,
         private RequestContext $context,
+        private ?ConfirmareScopePolicy $confirmareScopes = null,
     ) {
     }
 
@@ -93,7 +96,7 @@ final readonly class AuthController
     {
         $employee = $this->current($request)->employee;
         $this->authorization->require($employee, 'profile.view_self');
-        return Response::json(EmployeeSerializer::safe($employee));
+        return Response::json($this->employeePayload($employee));
     }
 
     /**
@@ -134,7 +137,7 @@ final readonly class AuthController
     private function payload(AuthResult $result): array
     {
         return [
-            'employee' => EmployeeSerializer::safe($result->employee),
+            'employee' => $this->employeePayload($result->employee),
             'expiresAt' => $result->expiresAt->format(DATE_ATOM),
             'csrfToken' => $result->csrfToken,
         ];
@@ -144,7 +147,7 @@ final readonly class AuthController
     private function sessionPayload(AuthenticatedSession $session): array
     {
         return [
-            'employee' => EmployeeSerializer::safe($session->employee),
+            'employee' => $this->employeePayload($session->employee),
             'expiresAt' => $session->session->expiresAt->format(DATE_ATOM),
             'csrfToken' => $session->csrfToken,
         ];
@@ -159,5 +162,25 @@ final readonly class AuthController
         if ($actual !== $keys) {
             throw new ApiException(400, 'INVALID_REQUEST', 'Request fields are invalid.');
         }
+    }
+
+    /**
+     * The safe employee view plus the Confirmare scopes (API 2.39.0), so Staff shows the Confirmare workspace only to
+     * people who hold one. Presentation only: every Confirmare route checks the scopes again. Root supervises every
+     * Confirmare source (break-glass, audited) and never operates. Before migration 036 nobody holds a scope.
+     *
+     * @return array<string, mixed>
+     */
+    private function employeePayload(EmployeeIdentity $employee): array
+    {
+        $scopes = ['operate' => [], 'supervise' => []];
+        if ($this->confirmareScopes !== null) {
+            try {
+                $scopes = $employee->isRoot ? ['operate' => [], 'supervise' => ['outletperdele', 'trendhome']] : $this->confirmareScopes->scopesOf($employee->employeeUuid);
+            } catch (\PDOException) {
+                $scopes = ['operate' => [], 'supervise' => []];
+            }
+        }
+        return EmployeeSerializer::safe($employee) + ['confirmareScopes' => $scopes];
     }
 }

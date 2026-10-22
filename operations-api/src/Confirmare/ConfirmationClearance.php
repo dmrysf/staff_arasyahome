@@ -11,7 +11,8 @@ use PDO;
  * first document, the first QR use and every production start stay closed until ALL of these hold:
  *
  * - approval:  the Confirmare decision is `approved`;
- * - call:      the operator recorded the confirmed telephone call with the customer;
+ * - call:      the operator recorded the confirmed telephone call with the customer (since API 2.39.0 the approval takes
+ *              it from the latest contact attempt, which must be `confirmed` on the current review);
  * - lines:     every line of the cart was confirmed one by one (the confirmed line ids equal the current lines);
  * - price:     the source sent its pricing fingerprint (order.pricing) and the approval was given on it;
  * - sync:      the order Arasya holds now is the one that was reviewed: the review fingerprint (every line's identity,
@@ -41,15 +42,34 @@ final class ConfirmationClearance
     {
     }
 
-    /** The review fingerprint of an order as Arasya holds it now (hex sha256). */
+    /**
+     * The review fingerprint of an order as Arasya holds it now (hex sha256): every line's identity, product,
+     * measurements, quantity and source options (production_context), the order's production notes and the pricing
+     * fingerprint. Since API 2.39.0 the options and notes are included: a changed option in the shop needs a new review.
+     */
     public static function fingerprint(PDO $pdo, string $orderUuid): string
     {
-        $items = $pdo->prepare('SELECT source_item_id, line_number, name, product_code, variant, color, width_value, height_value, measurement_unit, meters, quantity FROM operational_order_items WHERE order_uuid = ? ORDER BY line_number');
+        $items = $pdo->prepare('SELECT source_item_id, line_number, name, product_code, variant, color, width_value, height_value, measurement_unit, meters, quantity, production_context FROM operational_order_items WHERE order_uuid = ? ORDER BY line_number');
         $items->execute([$orderUuid]);
-        $pricing = $pdo->prepare('SELECT source_pricing_fingerprint FROM operational_orders WHERE order_uuid = ?');
-        $pricing->execute([$orderUuid]);
-        $data = ['lines' => array_map(static fn (array $row): array => array_map(static fn (mixed $v): ?string => $v === null ? null : (string) $v, $row), $items->fetchAll(PDO::FETCH_ASSOC)), 'pricing' => $pricing->fetchColumn() ?: null];
+        $order = $pdo->prepare('SELECT source_pricing_fingerprint, production_notes FROM operational_orders WHERE order_uuid = ?');
+        $order->execute([$orderUuid]);
+        $row = $order->fetch(PDO::FETCH_ASSOC) ?: ['source_pricing_fingerprint' => null, 'production_notes' => null];
+        $lines = array_map(static function (array $line): array {
+            $context = $line['production_context'] === null ? null : json_decode((string) $line['production_context'], true);
+            unset($line['production_context']);
+            return array_map(static fn (mixed $v): ?string => $v === null ? null : (string) $v, $line) + ['context' => is_array($context) ? self::canonical($context) : null];
+        }, $items->fetchAll(PDO::FETCH_ASSOC));
+        $data = ['lines' => $lines, 'pricing' => $row['source_pricing_fingerprint'] ?: null, 'notes' => $row['production_notes'] === null ? null : (string) $row['production_notes']];
         return hash('sha256', json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
+    }
+
+    /** Key-sorted copy, so MySQL (normalized JSON) and MariaDB (stored text) give the same fingerprint. @param array<mixed> $value @return array<mixed> */
+    private static function canonical(array $value): array
+    {
+        if (!array_is_list($value)) {
+            ksort($value, SORT_STRING);
+        }
+        return array_map(static fn (mixed $v): mixed => is_array($v) ? self::canonical($v) : $v, $value);
     }
 
     /** @return list<string> the current line ids of the order, by line number */

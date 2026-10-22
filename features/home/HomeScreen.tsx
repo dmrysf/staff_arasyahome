@@ -15,6 +15,7 @@ import { WorkspaceSwitcher } from "../workspaces/DashboardParts";
 import { StageWorkspace } from "../workspaces/StageWorkspace";
 import { TrendyolDashboard } from "../workspaces/TrendyolDashboard";
 import { ManagementWorkspace } from "../workspaces/ManagementWorkspace";
+import { ConfirmareWorkspace } from "../confirmare/ConfirmareWorkspace";
 
 type TodaySummary = ActivityPage["summary"];
 
@@ -59,7 +60,7 @@ function TodayWork({ service }: { service: ActivityService }) {
  */
 export function HomeScreen({ employee, services, workflow, dashboardUrl, navigate }: { employee: Employee; services: ServiceBundle; workflow: ProductionWorkflow; dashboardUrl: string | null; navigate: (path: string) => void }) {
   const { t } = useI18n();
-  const workspaces = useMemo(() => resolveWorkspaces(employee, { trendyol: Boolean(services.trendyol), documents: Boolean(services.documents), management: Boolean(services.management) }), [employee, services]);
+  const workspaces = useMemo(() => resolveWorkspaces(employee, { trendyol: Boolean(services.trendyol), documents: Boolean(services.documents), management: Boolean(services.management), confirmare: Boolean(services.confirmare) }), [employee, services]);
   const [chosen, setChosen] = useState<string | null>(() => readWorkspacePreference(employee.employeeUuid));
   const current = selectPrimaryWorkspace(workspaces, employee, chosen);
 
@@ -82,6 +83,8 @@ export function HomeScreen({ employee, services, workflow, dashboardUrl, navigat
       </header>
       <WorkspaceSwitcher workspaces={workspaces} current={current} onSelect={select} />
       <SupervisorCard service={services.exceptions} navigate={navigate} />
+
+      {current.kind === "confirmare" && services.confirmare && <ConfirmareWorkspace employee={employee} service={services.confirmare} navigate={navigate} />}
 
       {current.kind === "trendyol" && services.trendyol && <TrendyolDashboard employee={employee} service={services.trendyol} navigate={navigate} />}
 

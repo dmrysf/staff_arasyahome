@@ -1,3 +1,4 @@
+import { confirmareTR } from "./confirmare";
 import { physicalTR } from "./physical";
 import type { Catalog } from "../types";
 import { trErrors } from "./tr.errors";
@@ -9,6 +10,7 @@ import { trErrors } from "./tr.errors";
 export const tr: Catalog = {
   ...physicalTR,
   ...trErrors,
+  ...confirmareTR,
 
   // ---- common
   "common.back": "Geri",

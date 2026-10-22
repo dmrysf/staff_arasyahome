@@ -15,7 +15,7 @@ use Arasya\Operations\Security\CsrfGuard;
 
 /**
  * Confirmare routes (cookie session; mutations need CSRF and an Idempotency-Key):
- *   GET  /confirmare/pool?view=mine|open|all[&source=]
+ *   GET  /confirmare/pool?view=mine|open|all|followup[&source=]
  *   GET  /confirmare/orders/{globalOrderId}
  *   POST /confirmare/next                                  {source?}
  *   POST /confirmare/orders/{globalOrderId}/claim          {expectedVersion}
@@ -24,6 +24,8 @@ use Arasya\Operations\Security\CsrfGuard;
  *   POST /confirmare/orders/{globalOrderId}/approve        {expectedVersion, customerCall, confirmedLineIds, priceVerified, reviewFingerprint}
  *   POST /confirmare/orders/{globalOrderId}/reject         {expectedVersion, reasonCode}
  *   POST /confirmare/orders/{globalOrderId}/reopen         {expectedVersion}
+ *   POST /confirmare/orders/{globalOrderId}/contact        {expectedVersion, outcome, reviewFingerprint}   (API 2.39.0)
+ *   GET  /confirmare/team                                  (supervisors, API 2.39.0)
  *   GET  /confirmare/availability
  *   PUT  /confirmare/availability                          {available, employeeId?}
  *   GET  /confirmare/alerts                                (supervisors)
@@ -37,6 +39,7 @@ final readonly class ConfirmareController
         'approve' => ['expectedVersion', 'customerCall', 'confirmedLineIds', 'priceVerified', 'reviewFingerprint'],
         'reject' => ['expectedVersion', 'reasonCode'],
         'reopen' => ['expectedVersion'],
+        'contact' => ['expectedVersion', 'outcome', 'reviewFingerprint'],
     ];
 
     public function __construct(
@@ -58,6 +61,9 @@ final readonly class ConfirmareController
         }
         if ($path === '/confirmare/alerts' && $request->method === 'GET') {
             return $this->json($this->service->alerts($actor));
+        }
+        if ($path === '/confirmare/team' && $request->method === 'GET') {
+            return $this->json($this->service->team($actor));
         }
         if ($path === '/confirmare/availability' && $request->method === 'GET') {
             return $this->json($this->service->availability($actor));
@@ -84,7 +90,7 @@ final readonly class ConfirmareController
             }
             return $this->json($this->service->setAvailability($actor, $employeeId, $input['available'] ?? null, $key, $request->requestId));
         }
-        if (preg_match('#^/confirmare/orders/([^/]{1,600})/(claim|release|reassign|approve|reject|reopen)$#D', $path, $m) === 1) {
+        if (preg_match('#^/confirmare/orders/([^/]{1,600})/(claim|release|reassign|approve|reject|reopen|contact)$#D', $path, $m) === 1) {
             if ($request->method !== 'POST') {
                 throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
             }
@@ -98,6 +104,7 @@ final readonly class ConfirmareController
                 'reassign' => $this->service->reassign($actor, $globalId, $version, $input['employeeId'] ?? null, $key, $request->requestId),
                 'approve' => $this->service->approve($actor, $globalId, $version, array_diff_key($input, ['expectedVersion' => true]), $key, $request->requestId),
                 'reject' => $this->service->reject($actor, $globalId, $version, $input['reasonCode'] ?? null, $key, $request->requestId),
+                'contact' => $this->service->contact($actor, $globalId, $version, $input['outcome'] ?? null, $input['reviewFingerprint'] ?? null, $key, $request->requestId),
                 default => $this->service->reopen($actor, $globalId, $version, $key, $request->requestId),
             });
         }

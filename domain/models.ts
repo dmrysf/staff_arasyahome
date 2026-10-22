@@ -26,6 +26,12 @@ export type Employee = {
   avatar?: string;
   /** Staff interface language assigned to the account in central IAM (API 2.30.0); Romanian when none. */
   locale: Locale;
+  /**
+   * Order sources this person confirms (Confirmare scopes, API 2.39.0): `operate` receives and decides orders,
+   * `supervise` sees the whole source. Absent from older APIs (nothing shown). Presentation only: the server checks
+   * the scopes on every Confirmare route.
+   */
+  confirmareScopes?: Readonly<{ operate: readonly string[]; supervise: readonly string[] }>;
 };
 
 export type ProductionStage = {

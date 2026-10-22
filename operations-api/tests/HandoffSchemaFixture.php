@@ -1,9 +1,19 @@
 <?php
 declare(strict_types=1);
+/** Restore a pre-037 disposable test fixture (no Confirmare contact attempts). This is NOT a deployment/rollback mechanism. */
+function restorePreConfirmareContactsTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='037_confirmare_contacts.sql'")->fetchColumn()) return;
+    $pdo->exec('DROP TABLE IF EXISTS order_confirmation_contacts');
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='037_confirmare_contacts.sql'");
+}
+
 /** Restore a pre-036 disposable test fixture (no Confirmare operations). This is NOT a deployment/rollback mechanism. */
 function restorePreConfirmareOperationsTestSchema(PDO $pdo): void
 {
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    restorePreConfirmareContactsTestSchema($pdo);
     if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='036_confirmare_operations.sql'")->fetchColumn()) return;
     // The four 036 tables stay (identity reads such as the employee view use the scope table at every schema level the
     // suites restore; CREATE TABLE IF NOT EXISTS keeps a re-run idempotent). Only the ALTER of 035's table is undone.

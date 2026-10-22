@@ -59,6 +59,12 @@ final class ConfirmareService
         'other' => 'Alt motiv',
     ];
 
+    /**
+     * Outcomes of a recorded telephone contact attempt (API 2.39.0, order_confirmation_contacts). Codes only: no free
+     * text, no duration, no recording. Not answering is never a cancellation.
+     */
+    public const CONTACT_OUTCOMES = ['confirmed', 'no_answer', 'callback', 'needs_correction'];
+
     /** Shop states in which an order can no longer be approved for production. */
     public const CLOSED_COMMERCE = ['cancelled', 'refunded', 'failed', 'trash'];
 
@@ -84,15 +90,17 @@ final class ConfirmareService
      * The pool the actor works on.
      * - mine: pending orders assigned to the actor;
      * - open: pending orders the actor can take or holds (operate: unassigned or own; supervise: every pending order);
-     * - all:  supervise only, every order of the supervised sources, newest first.
+     * - all:  supervise only, every order of the supervised sources, newest first;
+     * - followup (API 2.39.0): approved orders whose production is not cleared yet (waiting for the advance, or changed
+     *   in the shop after the review): an operator's own approvals, every one of the supervised sources.
      *
      * @return array<string, mixed>
      */
     public function pool(EmployeeIdentity $actor, ?string $source, string $view): array
     {
         $this->requireActor($actor);
-        if (!in_array($view, ['mine', 'open', 'all'], true)) {
-            throw new ApiException(400, 'INVALID_REQUEST', 'view must be mine, open or all.');
+        if (!in_array($view, ['mine', 'open', 'all', 'followup'], true)) {
+            throw new ApiException(400, 'INVALID_REQUEST', 'view must be mine, open, all or followup.');
         }
         if ($source !== null && preg_match('/^[a-z0-9_-]{1,40}$/D', $source) !== 1) {
             throw new ApiException(400, 'INVALID_REQUEST', 'source is invalid.');
@@ -108,6 +116,7 @@ final class ConfirmareService
         $parameters = [];
         $where = match ($view) {
             'mine' => "c.status = 'pending' AND c.assigned_employee_uuid = ?",
+            'followup' => "c.status = 'approved' AND c.production_cleared = 0 AND (c.decided_by_employee_uuid = ? OR " . ConfirmareScopePolicy::condition($supervise, 'c.source_key', $parameters) . ')',
             'open' => "c.status = 'pending' AND ((" . ConfirmareScopePolicy::condition($operate, 'c.source_key', $parameters)
                 . " AND o.workflow_cohort = 'confirmare' AND (c.assigned_employee_uuid IS NULL OR c.assigned_employee_uuid = ?)) OR "
                 . ConfirmareScopePolicy::condition($supervise, 'c.source_key', $parameters) . ')',
@@ -115,6 +124,8 @@ final class ConfirmareService
         };
         if ($view === 'mine') {
             $parameters[] = $actor->employeeUuid;
+        } elseif ($view === 'followup') {
+            array_unshift($parameters, $actor->employeeUuid);
         } elseif ($view === 'open') {
             // The actor id belongs to the first condition; positional parameters are spliced after its sources.
             $operateCount = $operate === null ? 0 : count($operate);
@@ -162,22 +173,41 @@ final class ConfirmareService
         );
         $events->execute([(string) $row['order_uuid']]);
         $orderUuid = (string) $row['order_uuid'];
+        $fingerprint = ConfirmationClearance::fingerprint($this->pdo, $orderUuid);
         $review = [
-            'fingerprint' => ConfirmationClearance::fingerprint($this->pdo, $orderUuid),
+            'fingerprint' => $fingerprint,
             'lineIds' => ConfirmationClearance::lineIds($this->pdo, $orderUuid),
             'pricingAvailable' => $row['source_pricing_fingerprint'] !== null,
+            // API 2.39.0: the latest recorded contact attempt is `confirmed` on this review (approval needs it).
+            'callRecorded' => $this->recordedCall($orderUuid, $fingerprint) !== null,
+            // Whether the shop sent a telephone number for the customer (Arasya keeps only its masked form). Without
+            // one nobody can have confirmed the order on the telephone, so neither a confirmed call nor an approval.
+            'contactAvailable' => $this->contactAvailable($orderUuid),
         ];
-        return $this->present($row) + ['review' => $review, 'production' => ['cleared' => (int) $row['production_cleared'] === 1, 'missing' => ConfirmationClearance::missing($this->pdo, $orderUuid)], 'events' => array_map(static fn (array $event): array => [
-            'action' => (string) $event['action'],
-            'actor' => $event['actor_kind'] === 'system' ? null : (string) $event['actor_name'],
-            'previousStatus' => $event['previous_status'],
-            'status' => (string) $event['new_status'],
-            'previousAssignee' => $event['previous_assignee'],
-            'assignee' => $event['new_assignee'],
-            'reasonCode' => $event['reason_code'],
-            'version' => (int) $event['version_after'],
-            'at' => self::iso((string) $event['occurred_at']),
-        ], $events->fetchAll(PDO::FETCH_ASSOC))];
+        return $this->present($row) + [
+            'review' => $review,
+            'lines' => $this->lines($orderUuid),
+            'contacts' => $this->contacts($orderUuid, $fingerprint),
+            'customer' => $this->customer($actor, $row),
+            'source' => [
+                'commerceStatusLabel' => $row['source_commerce_status_label'] === null ? null : (string) $row['source_commerce_status_label'],
+                'changedAt' => $row['source_changed_at'] === null ? null : self::iso((string) $row['source_changed_at']),
+                'lastSeenAt' => $row['last_source_seen_at'] === null ? null : self::iso((string) $row['last_source_seen_at']),
+                'freshness' => $row['freshness_status'] === null ? null : (string) $row['freshness_status'],
+            ],
+            'production' => ['cleared' => (int) $row['production_cleared'] === 1, 'missing' => ConfirmationClearance::missing($this->pdo, $orderUuid)],
+            'events' => array_map(static fn (array $event): array => [
+                'action' => (string) $event['action'],
+                'actor' => $event['actor_kind'] === 'system' ? null : (string) $event['actor_name'],
+                'previousStatus' => $event['previous_status'],
+                'status' => (string) $event['new_status'],
+                'previousAssignee' => $event['previous_assignee'],
+                'assignee' => $event['new_assignee'],
+                'reasonCode' => $event['reason_code'],
+                'version' => (int) $event['version_after'],
+                'at' => self::iso((string) $event['occurred_at']),
+            ], $events->fetchAll(PDO::FETCH_ASSOC)),
+        ];
     }
 
     /** The actor's own availability and load. @return array<string, mixed> */
@@ -346,6 +376,9 @@ final class ConfirmareService
             if ($pricing->fetchColumn() === null) {
                 throw new ApiException(409, 'CONFIRMARE_PRICE_UNAVAILABLE', 'The shop has not sent its pricing fingerprint for this order yet; the price cannot be verified.');
             }
+            if (!$this->contactAvailable($orderUuid)) {
+                throw new ApiException(409, 'CONFIRMARE_CONTACT_UNAVAILABLE', 'The shop sent no telephone number for this customer; the order cannot be confirmed by telephone.');
+            }
             $current = ConfirmationClearance::lineIds($this->pdo, $orderUuid);
             $sortedCurrent = $current;
             sort($sortedCurrent, SORT_STRING);
@@ -356,10 +389,16 @@ final class ConfirmareService
             if (!hash_equals($currentFingerprint, $fingerprint)) {
                 throw new ApiException(409, 'CONFIRMARE_REVIEW_STALE', 'The order changed in the shop since it was reviewed. Review it again.', ['reviewFingerprint' => $currentFingerprint]);
             }
+            // API 2.39.0: the confirmed call is an attempt an operator recorded on this review (never inferred from the
+            // approval itself, from opening the order or from a telephone link).
+            $call = $this->recordedCall($orderUuid, $currentFingerprint);
+            if ($call === null) {
+                throw new ApiException(409, 'CONFIRMARE_CALL_NOT_RECORDED', 'Record the confirmed telephone call with the customer on the current order first.');
+            }
             $this->change($order, $confirmation, [
                 'status' => self::STATUS_APPROVED, 'decided_at' => $now, 'decided_by_employee_uuid' => $actor->employeeUuid, 'decision_reason_code' => null,
                 'assigned_employee_uuid' => null, 'assigned_at' => null, 'assignment_kind' => null,
-                'call_confirmed_at' => $now, 'call_confirmed_by_employee_uuid' => $actor->employeeUuid,
+                'call_confirmed_at' => $call['recorded_at'], 'call_confirmed_by_employee_uuid' => $call['employee_uuid'],
                 'confirmed_line_ids' => json_encode($lines, JSON_THROW_ON_ERROR), 'approved_review_fingerprint' => $fingerprint,
             ], $actor->employeeUuid, 'approved', null, $now, $requestId, $key);
             ConfirmationClearance::refresh($this->pdo, $orderUuid, $now);
@@ -402,6 +441,97 @@ final class ConfirmareService
                 'production_cleared' => 0, 'cleared_at' => null,
             ], $actor->employeeUuid, 'reopened', null, $now, $requestId, $key);
             return [];
+        });
+    }
+
+    /**
+     * Records one telephone contact attempt (API 2.39.0): what the operator says happened on the call, nothing else.
+     * Only the assignee or a supervisor of the source, on a pending Confirmare order still open in the shop, on the
+     * review the operator saw (`reviewFingerprint`) and the version they read. Append-only: it changes neither the
+     * confirmation version nor the assignment, and the approval later needs the latest attempt to be `confirmed` on the
+     * current review. The Idempotency-Key is unique per employee: a retried request answers with the same attempt.
+     *
+     * @return array<string, mixed>
+     */
+    public function contact(EmployeeIdentity $actor, string $globalOrderId, mixed $expectedVersion, mixed $outcome, mixed $reviewFingerprint, string $key, string $requestId): array
+    {
+        $this->requireActor($actor);
+        $this->requireKey($key);
+        if (!is_int($expectedVersion) || $expectedVersion < 1) {
+            throw new ApiException(400, 'INVALID_REQUEST', 'expectedVersion must be a positive integer.');
+        }
+        if (!is_string($outcome) || !in_array($outcome, self::CONTACT_OUTCOMES, true)) {
+            throw new ApiException(422, 'INVALID_OUTCOME', 'outcome must be one of: ' . implode(', ', self::CONTACT_OUTCOMES) . '.');
+        }
+        if (!is_string($reviewFingerprint) || preg_match('/^[0-9a-f]{64}$/D', $reviewFingerprint) !== 1) {
+            throw new ApiException(422, 'CONFIRMARE_REVIEW_REQUIRED', 'reviewFingerprint (the order the call was about) is required.');
+        }
+        $globalId = $this->globalId($globalOrderId);
+        $hash = $this->hash('contact', [$globalId, $expectedVersion, $outcome, $reviewFingerprint]);
+        return $this->retrying(function () use ($actor, $globalId, $expectedVersion, $outcome, $reviewFingerprint, $key, $hash, $requestId): array {
+            $this->pdo->beginTransaction();
+            try {
+                $order = $this->lockOrder($globalId);
+                $confirmation = $order === null ? null : $this->lockConfirmation((string) $order['order_uuid']);
+                if ($order === null || $confirmation === null || !$this->scopes->sees($actor, (string) $order['source_key'], true)) {
+                    throw new ApiException(404, 'CONFIRMARE_NOT_FOUND', 'No Confirmare order was found.');
+                }
+                $orderUuid = (string) $order['order_uuid'];
+                $replay = $this->pdo->prepare('SELECT * FROM order_confirmation_contacts WHERE employee_uuid = ? AND idempotency_key = ? FOR UPDATE');
+                $replay->execute([$actor->employeeUuid, $key]);
+                $previous = $replay->fetch(PDO::FETCH_ASSOC);
+                if (is_array($previous)) {
+                    if ($previous['order_uuid'] !== $orderUuid || !hash_equals((string) $previous['request_hash'], $hash)) {
+                        throw new ApiException(409, 'IDEMPOTENCY_CONFLICT', 'This idempotency key was already used for a different request.');
+                    }
+                    $this->pdo->rollBack();
+                    return ['contact' => $this->presentContact($previous, ConfirmationClearance::fingerprint($this->pdo, $orderUuid), $this->reopenedVersion($orderUuid)), 'item' => $this->current($orderUuid)];
+                }
+                if ((int) $confirmation['version'] !== $expectedVersion) {
+                    throw new ApiException(409, 'CONFIRMARE_CHANGED', 'The Confirmare state changed. Reload it before continuing.', ['currentVersion' => (int) $confirmation['version']]);
+                }
+                $this->requireDecider($actor, $order, $confirmation);
+                if ($order['workflow_cohort'] !== WorkflowCohort::CONFIRMARE) {
+                    throw new ApiException(409, 'CONFIRMARE_UNDETERMINED', 'The submission instant of this order is not known; a supervisor reviews it.');
+                }
+                if (in_array((string) $order['source_commerce_status_code'], self::CLOSED_COMMERCE, true) || $order['operational_status'] === 'unavailable') {
+                    throw new ApiException(409, 'CONFIRMARE_ORDER_CLOSED', 'The order is cancelled or no longer available in the shop.');
+                }
+                $current = ConfirmationClearance::fingerprint($this->pdo, $orderUuid);
+                if (!hash_equals($current, $reviewFingerprint)) {
+                    throw new ApiException(409, 'CONFIRMARE_REVIEW_STALE', 'The order changed in the shop since it was reviewed. Review it again.', ['reviewFingerprint' => $current]);
+                }
+                if ($outcome === 'confirmed' && !$this->contactAvailable($orderUuid)) {
+                    throw new ApiException(409, 'CONFIRMARE_CONTACT_UNAVAILABLE', 'The shop sent no telephone number for this customer; a confirmed call cannot be recorded.');
+                }
+                $attempt = $this->pdo->prepare('SELECT COALESCE(MAX(attempt_number), 0) + 1 FROM order_confirmation_contacts WHERE order_uuid = ?');
+                $attempt->execute([$orderUuid]);
+                $number = (int) $attempt->fetchColumn();
+                $now = $this->now();
+                $insert = $this->pdo->prepare('INSERT INTO order_confirmation_contacts (contact_uuid, order_uuid, global_order_id, source_key, attempt_number, outcome, employee_uuid, review_fingerprint,
+                        confirmation_version, request_id, idempotency_key, request_hash, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+                $insert->bindValue(1, Uuid::v4());
+                $insert->bindValue(2, $orderUuid);
+                $insert->bindValue(3, (string) $order['global_order_id']);
+                $insert->bindValue(4, (string) $order['source_key']);
+                $insert->bindValue(5, $number, PDO::PARAM_INT);
+                $insert->bindValue(6, $outcome);
+                $insert->bindValue(7, $actor->employeeUuid);
+                $insert->bindValue(8, $reviewFingerprint);
+                $insert->bindValue(9, $expectedVersion, PDO::PARAM_INT);
+                $insert->bindValue(10, mb_substr($requestId, 0, 100));
+                $insert->bindValue(11, $key);
+                $insert->bindValue(12, $hash, PDO::PARAM_LOB);
+                $insert->bindValue(13, $now);
+                $insert->execute();
+                $this->pdo->commit();
+                $row = $this->pdo->prepare('SELECT * FROM order_confirmation_contacts WHERE order_uuid = ? AND attempt_number = ?');
+                $row->execute([$orderUuid, $number]);
+                return ['contact' => $this->presentContact($row->fetch(PDO::FETCH_ASSOC) ?: throw new RuntimeException('Contact attempt disappeared.'), $current, $this->reopenedVersion($orderUuid)), 'item' => $this->current($orderUuid)];
+            } catch (\Throwable $error) {
+                $this->rollBack();
+                throw $error;
+            }
         });
     }
 
@@ -540,19 +670,88 @@ final class ConfirmareService
         }
         $parameters = [];
         $where = ConfirmareScopePolicy::condition($supervise, 'a.source_key', $parameters);
-        $statement = $this->pdo->prepare("SELECT a.global_order_id, a.source_key, a.kind, a.raised_at, a.confirmation_version, e.employee_uuid, e.display_name, c.assigned_at
+        $statement = $this->pdo->prepare("SELECT a.global_order_id, a.source_key, a.kind, a.raised_at, a.confirmation_version, e.employee_uuid, e.display_name, c.assigned_at, o.order_number,
+                (SELECT MAX(k.recorded_at) FROM order_confirmation_contacts k WHERE k.order_uuid = a.order_uuid) AS last_contact_at
             FROM confirmare_alerts a INNER JOIN employees e ON e.employee_uuid = a.employee_uuid INNER JOIN order_confirmations c ON c.order_uuid = a.order_uuid
+            INNER JOIN operational_orders o ON o.order_uuid = a.order_uuid
             WHERE a.resolved_at IS NULL AND {$where} ORDER BY a.raised_at, a.global_order_id LIMIT " . self::POOL_LIMIT);
         $statement->execute($parameters);
         return ['items' => array_map(static fn (array $row): array => [
             'globalOrderId' => (string) $row['global_order_id'],
+            'orderNumber' => (string) $row['order_number'],
             'sourceKey' => (string) $row['source_key'],
             'kind' => (string) $row['kind'],
             'raisedAt' => self::iso((string) $row['raised_at']),
             'assignee' => ['employeeId' => (string) $row['employee_uuid'], 'displayName' => (string) $row['display_name']],
             'assignedAt' => $row['assigned_at'] === null ? null : self::iso((string) $row['assigned_at']),
             'confirmationVersion' => (int) $row['confirmation_version'],
+            // A recorded call attempt is shown, never counted as progress: the alert rule itself is unchanged.
+            'lastContactAt' => $row['last_contact_at'] === null ? null : self::iso((string) $row['last_contact_at']),
         ], $statement->fetchAll(PDO::FETCH_ASSOC)), 'inactivityMinutes' => self::INACTIVITY_ALERT_MINUTES];
+    }
+
+    /**
+     * Supervisor view of the team (API 2.39.0): every identity holding `operate` for a supervised source, whether it
+     * can work now, its availability (leave) and its open assignments, plus what waits unassigned per source. Read-only.
+     * The distribution itself stays on the server (distribute, next); nothing here assigns.
+     *
+     * @return array<string, mixed>
+     */
+    public function team(EmployeeIdentity $actor): array
+    {
+        $this->requireActor($actor);
+        $supervise = $this->scopes->sources($actor, ConfirmareScopePolicy::SUPERVISE);
+        if ($supervise === []) {
+            throw new ApiException(403, 'CONFIRMARE_SCOPE_DENIED', 'Only a Confirmare supervisor sees the team.');
+        }
+        $parameters = [];
+        $where = ConfirmareScopePolicy::condition($supervise, 's.source_key', $parameters);
+        $statement = $this->pdo->prepare(
+            "SELECT e.employee_uuid, e.display_name, s.source_key, CASE WHEN " . ConfirmareScopePolicy::workingIdentitySql('e') . " THEN 1 ELSE 0 END AS can_work,
+                    COALESCE(st.available, 1) AS available, st.available_changed_at, st.last_assigned_at,
+                    (SELECT COUNT(*) FROM order_confirmations c WHERE c.assigned_employee_uuid = e.employee_uuid AND c.status = 'pending') AS open_count,
+                    (SELECT MIN(c.assigned_at) FROM order_confirmations c WHERE c.assigned_employee_uuid = e.employee_uuid AND c.status = 'pending') AS oldest_assigned_at
+             FROM employee_confirmare_scopes s
+             INNER JOIN employees e ON e.employee_uuid = s.employee_uuid
+             LEFT JOIN confirmare_operator_state st ON st.employee_uuid = e.employee_uuid
+             WHERE s.capability = 'operate' AND {$where}
+             ORDER BY e.display_name, e.employee_uuid, s.source_key",
+        );
+        $statement->execute($parameters);
+        $people = [];
+        foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $id = (string) $row['employee_uuid'];
+            $people[$id] ??= [
+                'employeeId' => $id,
+                'displayName' => (string) $row['display_name'],
+                'sources' => [],
+                'canWork' => (int) $row['can_work'] === 1,
+                'available' => (int) $row['available'] === 1,
+                'availableChangedAt' => $row['available_changed_at'] === null ? null : self::iso((string) $row['available_changed_at']),
+                'lastAssignedAt' => $row['last_assigned_at'] === null ? null : self::iso((string) $row['last_assigned_at']),
+                'open' => (int) $row['open_count'],
+                'oldestAssignedAt' => $row['oldest_assigned_at'] === null ? null : self::iso((string) $row['oldest_assigned_at']),
+            ];
+            $people[$id]['sources'][] = (string) $row['source_key'];
+        }
+        $waiting = [];
+        $undetermined = [];
+        foreach ($supervise ?? ['outletperdele', 'trendhome'] as $sourceKey) {
+            $count = $this->pdo->prepare("SELECT SUM(o.workflow_cohort = 'confirmare' AND c.assigned_employee_uuid IS NULL), SUM(o.workflow_cohort <> 'confirmare' OR o.workflow_cohort IS NULL)
+                FROM order_confirmations c INNER JOIN operational_orders o ON o.order_uuid = c.order_uuid WHERE c.status = 'pending' AND c.source_key = ?");
+            $count->execute([$sourceKey]);
+            [$unassigned, $unknown] = $count->fetch(PDO::FETCH_NUM) ?: [0, 0];
+            $waiting[$sourceKey] = (int) $unassigned;
+            $undetermined[$sourceKey] = (int) $unknown;
+        }
+        return [
+            'operators' => array_values($people),
+            'unassigned' => $waiting,
+            'undetermined' => $undetermined,
+            'held' => array_values(array_filter(array_keys($waiting), fn (string $sourceKey): bool => $this->held($sourceKey))),
+            'targetOpenPerOperator' => self::TARGET_OPEN_PER_OPERATOR,
+            'inactivityMinutes' => self::INACTIVITY_ALERT_MINUTES,
+        ];
     }
 
     // ---- Internals -------------------------------------------------------------------------------------------------
@@ -936,13 +1135,154 @@ final class ConfirmareService
     private function selectSql(): string
     {
         return 'SELECT o.order_uuid, o.global_order_id, o.order_number, o.source_key, o.workflow_cohort, o.source_submitted_at, o.production_stage_id, o.source_commerce_status_code,
-                       o.operational_status, o.payment_method, o.advance_status, o.source_due_date, o.source_pricing_fingerprint, o.source_financial_state, o.source_financial_basis, c.production_cleared,
+                       o.source_commerce_status_label, o.source_changed_at, o.last_source_seen_at, o.freshness_status, o.document_context,
+                       o.operational_status, o.payment_method, o.advance_status, o.source_due_date, o.source_pricing_fingerprint, o.source_financial_state, o.source_financial_basis,
+                       o.source_financial_pricing, c.production_cleared,
                        c.status, c.version, c.opened_at, c.decided_at, c.decision_reason_code, c.assigned_employee_uuid, c.assigned_at, c.assignment_kind,
-                       ae.display_name AS assignee_name, de.display_name AS decider_name, c.decided_by_employee_uuid
+                       ae.display_name AS assignee_name, de.display_name AS decider_name, c.decided_by_employee_uuid, c.call_confirmed_at,
+                       k.outcome AS contact_outcome, k.recorded_at AS contact_at, k.review_fingerprint AS contact_review, k.confirmation_version AS contact_version, k.attempt_number AS contact_attempts,
+                       (SELECT MAX(r.version_after) FROM order_confirmation_events r WHERE r.order_uuid = c.order_uuid AND r.action = \'reopened\') AS reopened_version
                 FROM order_confirmations c
                 INNER JOIN operational_orders o ON o.order_uuid = c.order_uuid
                 LEFT JOIN employees ae ON ae.employee_uuid = c.assigned_employee_uuid
-                LEFT JOIN employees de ON de.employee_uuid = c.decided_by_employee_uuid';
+                LEFT JOIN employees de ON de.employee_uuid = c.decided_by_employee_uuid
+                LEFT JOIN order_confirmation_contacts k ON k.order_uuid = c.order_uuid
+                    AND k.attempt_number = (SELECT MAX(km.attempt_number) FROM order_confirmation_contacts km WHERE km.order_uuid = c.order_uuid)';
+    }
+
+    /**
+     * The latest recorded contact attempt when it is `confirmed`, on the given (current) review and after the last
+     * reopening; null otherwise. The approval takes the call from it (API 2.39.0).
+     *
+     * @return array<string, mixed>|null
+     */
+    private function recordedCall(string $orderUuid, string $currentFingerprint): ?array
+    {
+        $statement = $this->pdo->prepare('SELECT outcome, employee_uuid, review_fingerprint, confirmation_version, recorded_at FROM order_confirmation_contacts WHERE order_uuid = ? ORDER BY attempt_number DESC LIMIT 1');
+        $statement->execute([$orderUuid]);
+        $latest = $statement->fetch(PDO::FETCH_ASSOC);
+        if (!is_array($latest) || $latest['outcome'] !== 'confirmed' || !hash_equals((string) $latest['review_fingerprint'], $currentFingerprint)
+            || (int) $latest['confirmation_version'] < $this->reopenedVersion($orderUuid)) {
+            return null;
+        }
+        return $latest;
+    }
+
+    /** Whether the shop sent a customer telephone number for the order (its masked form in the delivery context). */
+    private function contactAvailable(string $orderUuid): bool
+    {
+        $statement = $this->pdo->prepare('SELECT document_context FROM operational_orders WHERE order_uuid = ?');
+        $statement->execute([$orderUuid]);
+        $raw = $statement->fetchColumn();
+        $context = is_string($raw) ? json_decode($raw, true) : null;
+        return is_array($context) && is_string($context['phoneMasked'] ?? null) && $context['phoneMasked'] !== '';
+    }
+
+    /** The version a supervisor last reopened the order at (0: never). Contact attempts before it no longer count. */
+    private function reopenedVersion(string $orderUuid): int
+    {
+        $statement = $this->pdo->prepare("SELECT COALESCE(MAX(version_after), 0) FROM order_confirmation_events WHERE order_uuid = ? AND action = 'reopened'");
+        $statement->execute([$orderUuid]);
+        return (int) $statement->fetchColumn();
+    }
+
+    /** Every recorded contact attempt of the order, newest first (codes, names and times only). @return list<array<string, mixed>> */
+    private function contacts(string $orderUuid, string $currentFingerprint): array
+    {
+        $statement = $this->pdo->prepare('SELECT k.*, e.display_name FROM order_confirmation_contacts k INNER JOIN employees e ON e.employee_uuid = k.employee_uuid WHERE k.order_uuid = ? ORDER BY k.attempt_number DESC LIMIT 100');
+        $statement->execute([$orderUuid]);
+        $reopened = $this->reopenedVersion($orderUuid);
+        return array_map(fn (array $row): array => $this->presentContact($row, $currentFingerprint, $reopened), $statement->fetchAll(PDO::FETCH_ASSOC));
+    }
+
+    /** @param array<string, mixed> $row */
+    private function presentContact(array $row, string $currentFingerprint, int $reopenedVersion): array
+    {
+        $name = $row['display_name'] ?? null;
+        if ($name === null) {
+            $lookup = $this->pdo->prepare('SELECT display_name FROM employees WHERE employee_uuid = ?');
+            $lookup->execute([(string) $row['employee_uuid']]);
+            $name = $lookup->fetchColumn();
+        }
+        return [
+            'attempt' => (int) $row['attempt_number'],
+            'outcome' => (string) $row['outcome'],
+            'by' => $name === false || $name === null ? null : (string) $name,
+            'at' => self::iso((string) $row['recorded_at']),
+            // The attempt is about the order as Arasya holds it now, and after the last reopening.
+            'current' => hash_equals((string) $row['review_fingerprint'], $currentFingerprint) && (int) $row['confirmation_version'] >= $reopenedVersion,
+        ];
+    }
+
+    /**
+     * The current cart lines as the source sent them (no price: Arasya holds no amount). `confirmed` is true for the
+     * lines of the recorded approval. @return list<array<string, mixed>>
+     */
+    private function lines(string $orderUuid): array
+    {
+        $approved = $this->pdo->prepare("SELECT confirmed_line_ids FROM order_confirmations WHERE order_uuid = ? AND status = 'approved'");
+        $approved->execute([$orderUuid]);
+        $confirmedRaw = $approved->fetchColumn();
+        $confirmed = is_string($confirmedRaw) ? json_decode($confirmedRaw, true) : [];
+        $confirmed = is_array($confirmed) ? array_map('strval', $confirmed) : [];
+        $statement = $this->pdo->prepare('SELECT source_item_id, line_number, name, product_code, variant, color, width_value, height_value, measurement_unit, meters, quantity, production_context
+            FROM operational_order_items WHERE order_uuid = ? ORDER BY line_number');
+        $statement->execute([$orderUuid]);
+        $number = static fn (mixed $value): ?float => $value === null ? null : (float) $value;
+        return array_map(static function (array $row) use ($confirmed, $number): array {
+            $context = $row['production_context'] === null ? [] : json_decode((string) $row['production_context'], true);
+            $context = is_array($context) ? $context : [];
+            $options = [];
+            foreach ((array) ($context['options'] ?? []) as $option) {
+                if (is_array($option) && is_string($option['label'] ?? null) && is_string($option['value'] ?? null)) {
+                    $options[] = ['label' => $option['label'], 'value' => $option['value']];
+                }
+            }
+            return [
+                'lineId' => (string) $row['source_item_id'],
+                'lineNumber' => (int) $row['line_number'],
+                'name' => (string) $row['name'],
+                'productCode' => $row['product_code'] === null ? null : (string) $row['product_code'],
+                'variant' => $row['variant'] === null ? null : (string) $row['variant'],
+                'color' => $row['color'] === null ? null : (string) $row['color'],
+                'width' => $number($row['width_value']),
+                'height' => $number($row['height_value']),
+                'unit' => $row['measurement_unit'] === null ? null : (string) $row['measurement_unit'],
+                'meters' => $number($row['meters']),
+                'quantity' => (int) $row['quantity'],
+                'options' => $options,
+                'notes' => is_string($context['notes'] ?? null) ? $context['notes'] : null,
+                'confirmed' => in_array((string) $row['source_item_id'], $confirmed, true),
+            ];
+        }, $statement->fetchAll(PDO::FETCH_ASSOC));
+    }
+
+    /**
+     * The customer block of the detail. Only the assigned operator and a supervisor of the source see it, and only what
+     * Arasya already holds for the delivery documents: recipient, company, address lines and the MASKED phone. Arasya
+     * never stores the full telephone number (DeliveryContext), so `phoneAvailable` stays false: the full number needs
+     * the separately approved source contact access (Phase 4). The queue never carries any of this.
+     *
+     * @param array<string, mixed> $row
+     * @return array<string, mixed>
+     */
+    private function customer(EmployeeIdentity $actor, array $row): array
+    {
+        $assignee = $row['assigned_employee_uuid'] === null ? null : (string) $row['assigned_employee_uuid'];
+        $visible = $assignee === $actor->employeeUuid || $this->scopes->allows($actor, ConfirmareScopePolicy::SUPERVISE, (string) $row['source_key']);
+        if (!$visible) {
+            return ['visible' => false, 'phoneAvailable' => false];
+        }
+        $context = $row['document_context'] === null ? null : json_decode((string) $row['document_context'], true);
+        $context = is_array($context) ? $context : [];
+        return [
+            'visible' => true,
+            'name' => is_string($context['name'] ?? null) ? $context['name'] : null,
+            'company' => is_string($context['company'] ?? null) ? $context['company'] : null,
+            'addressLines' => array_values(array_filter((array) ($context['addressLines'] ?? []), 'is_string')),
+            'phoneMasked' => is_string($context['phoneMasked'] ?? null) ? $context['phoneMasked'] : null,
+            'phoneAvailable' => false,
+        ];
     }
 
     /** @param array<string, mixed> $row @return array<string, mixed> */
@@ -962,9 +1302,26 @@ final class ConfirmareService
             'commerceClosed' => in_array((string) $row['source_commerce_status_code'], self::CLOSED_COMMERCE, true) || $row['operational_status'] === 'unavailable',
             // The advance payment gate state (legacy view) and the Confirmare financial clearance the source stated.
             'payment' => ['state' => PaymentGate::state($row['payment_method'], $row['advance_status'])],
-            'financial' => ['state' => $row['source_financial_state'] ?? 'unknown', 'basis' => $row['source_financial_basis']],
+            // `open` (API 2.39.0): the production financial condition holds now (ConfirmationClearance::financialOpen).
+            'financial' => ['state' => $row['source_financial_state'] ?? 'unknown', 'basis' => $row['source_financial_basis'], 'open' => ConfirmationClearance::financialOpen(
+                $row['source_financial_state'] === null ? null : (string) $row['source_financial_state'],
+                $row['source_financial_basis'] === null ? null : (string) $row['source_financial_basis'],
+                $row['source_financial_pricing'] === null ? null : (string) $row['source_financial_pricing'],
+                $row['source_pricing_fingerprint'] === null ? null : (string) $row['source_pricing_fingerprint'],
+                $row['payment_method'] === null ? null : (string) $row['payment_method'],
+            )],
+            'pricingAvailable' => $row['source_pricing_fingerprint'] !== null,
             'dueDate' => $row['source_due_date'] === null ? null : (string) $row['source_due_date'],
             'productionCleared' => (int) $row['production_cleared'] === 1,
+            // The latest recorded contact attempt (API 2.39.0): outcome code and time only. `current`: about the order
+            // as Arasya holds it now and after the last reopening.
+            'contact' => $row['contact_outcome'] === null ? null : [
+                'outcome' => (string) $row['contact_outcome'],
+                'at' => self::iso((string) $row['contact_at']),
+                'attempts' => (int) $row['contact_attempts'],
+                'current' => (int) $row['contact_version'] >= (int) ($row['reopened_version'] ?? 0)
+                    && hash_equals((string) $row['contact_review'], ConfirmationClearance::fingerprint($this->pdo, (string) $row['order_uuid'])),
+            ],
             'assignment' => $row['assigned_employee_uuid'] === null ? null : [
                 'employeeId' => (string) $row['assigned_employee_uuid'],
                 'displayName' => (string) $row['assignee_name'],

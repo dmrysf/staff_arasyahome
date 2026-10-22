@@ -9,6 +9,7 @@ import "../app/globals.css";
 import "../styles/app.css";
 import "../styles/foundation.css";
 import "../styles/experiences.css";
+import "../styles/confirmare.css";
 import "../styles/motion.css";
 import "../styles/intro.css";
 
