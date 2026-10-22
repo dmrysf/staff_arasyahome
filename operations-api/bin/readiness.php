@@ -142,9 +142,11 @@ foreach ($sourceRegistry->all() as $definition) {
     $report('OK', 'source_qr_authority_' . $definition->key . '_' . $definition->qrAuthorityMode->value);
     $report('OK', 'source_document_authority_' . $definition->key . '_' . $definition->documentAuthorityMode->value);
     $report('OK', 'source_tracking_authority_' . $definition->key . '_' . $definition->trackingAuthorityMode->value);
+    $report('OK', 'source_payment_gate_' . $definition->key . '_' . $definition->paymentGateMode->value);
 }
 foreach ($sourceRegistry->issues() as $issue) {
-    $report('WARN', 'source_config_' . $issue['code'] . ($issue['sourceKey'] === null ? '' : '_' . $issue['sourceKey']));
+    // A configured but unconfirmed payment gate runs as OFF: a financial control is not what the operator wrote.
+    $report($issue['code'] === 'payment_gate_unverified' ? 'FAIL' : 'WARN', 'source_config_' . $issue['code'] . ($issue['sourceKey'] === null ? '' : '_' . $issue['sourceKey']));
 }
 $report($config->trendyol !== null ? 'OK' : 'WARN', 'trendyol_credentials');
 // Trendyol intake reads Trendyol only with credentials, the switch AND the database activation (never by default).

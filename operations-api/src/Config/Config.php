@@ -184,6 +184,15 @@ final readonly class Config
                 'paymentGate' => self::value($values, "ARASYA_SOURCE_PAYMENT_GATE_{$suffix}", ''),
                 'confirmare' => self::value($values, "ARASYA_SOURCE_CONFIRMARE_{$suffix}", ''),
             ], static fn (string $value): bool => $value !== '');
+            // The advance payment gate stops production. Before 2.37.1 the loader dropped its key, so every deployment
+            // ran with the gate OFF whatever the private file said. A value other than `off` is therefore honoured only
+            // when ARASYA_SOURCE_PAYMENT_GATE_VERIFIED_<SOURCE> repeats it: deploying the loader fix changes nothing until
+            // an operator confirms the reviewed value. An unconfirmed value runs as `off` and is reported (readiness FAIL).
+            $gate = strtolower(trim($settings[$sourceKey]['paymentGate'] ?? ''));
+            if ($gate !== '' && $gate !== 'off' && strtolower(trim(self::value($values, "ARASYA_SOURCE_PAYMENT_GATE_VERIFIED_{$suffix}", ''))) !== $gate) {
+                $settings[$sourceKey]['paymentGate'] = 'off';
+                $settings[$sourceKey]['paymentGateUnverified'] = $gate;
+            }
         }
         return $settings;
     }

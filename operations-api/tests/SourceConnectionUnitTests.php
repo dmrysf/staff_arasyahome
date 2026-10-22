@@ -833,3 +833,60 @@ test('ARASYA_SOURCE_CONFIRMARE_<SOURCE> is loaded from the environment and the p
     unset($env['ARASYA_SOURCE_CONFIRMARE_TRENDHOME']);
     expect(SourceRegistry::fromConfig(Config::fromEnvironment(new ConfigLoader($env)))->find('trendhome')?->confirmarePermitted === false, 'Absent: off.');
 });
+
+test('every per-source key Config reads survives ConfigLoader (regression: the payment gate key was silently dropped)', function (): void {
+    preg_match_all('/"(ARASYA_SOURCE_[A-Z_]+)_\{\$suffix\}"|\'(ARASYA_SOURCE_[A-Z_]+)_\' \. self::sourceEnvironmentSuffix/', (string) file_get_contents(dirname(__DIR__) . '/src/Config/Config.php'), $matches);
+    $prefixes = array_values(array_unique(array_filter([...$matches[1], ...$matches[2]])));
+    expect(count($prefixes) >= 11 && in_array('ARASYA_SOURCE_PAYMENT_GATE', $prefixes, true) && in_array('ARASYA_SOURCE_PAYMENT_GATE_VERIFIED', $prefixes, true), 'Config key scan found: ' . implode(',', $prefixes));
+    $env = ['HOME' => sys_get_temp_dir()];
+    foreach ($prefixes as $prefix) {
+        $env[$prefix . '_TRENDHOME'] = 'x';
+    }
+    $values = (new ConfigLoader($env))->load();
+    foreach ($prefixes as $prefix) {
+        expect(array_key_exists($prefix . '_TRENDHOME', $values), "ConfigLoader drops {$prefix}_<SOURCE>.");
+    }
+});
+
+test('ARASYA_SOURCE_PAYMENT_GATE_<SOURCE> is loaded, and a mode other than off needs its confirmation key', function (): void {
+    $base = ['HOME' => sys_get_temp_dir(), 'ARASYA_APP_ENV' => 'test', 'ARASYA_APP_SECRET' => str_repeat('t', 32), 'ARASYA_DB_NAME' => 'x', 'ARASYA_DB_USER' => 'x', 'ARASYA_DB_PASSWORD' => 'x', 'ARASYA_ALLOWED_ORIGINS' => 'http://127.0.0.1',
+        'ARASYA_SOURCE_SECRET_TRENDHOME' => SOURCE_TEST_TRENDHOME_SECRET, 'ARASYA_SOURCE_MODE_TRENDHOME' => 'active',
+        'ARASYA_SOURCE_SECRET_OUTLETPERDELE' => SOURCE_TEST_OUTLET_SECRET, 'ARASYA_SOURCE_MODE_OUTLETPERDELE' => 'active'];
+    $gate = static function (array $env, string $source = 'trendhome'): array {
+        $registry = SourceRegistry::fromConfig(Config::fromEnvironment(new ConfigLoader($env)));
+        return [$registry->find($source)?->paymentGateMode->value, in_array(['code' => 'payment_gate_unverified', 'sourceKey' => $source], $registry->issues(), true)];
+    };
+    expect($gate($base) === ['off', false], 'Absent: off, no issue.');
+    expect($gate([...$base, 'ARASYA_SOURCE_PAYMENT_GATE_TRENDHOME' => 'off']) === ['off', false]);
+    // Deploying the loader fix alone changes nothing: the value written before the fix stays inert and is reported.
+    expect($gate([...$base, 'ARASYA_SOURCE_PAYMENT_GATE_TRENDHOME' => 'enforce']) === ['off', true], 'Unconfirmed enforce runs as off and is reported.');
+    expect($gate([...$base, 'ARASYA_SOURCE_PAYMENT_GATE_TRENDHOME' => 'observe']) === ['off', true]);
+    expect($gate([...$base, 'ARASYA_SOURCE_PAYMENT_GATE_TRENDHOME' => 'enforce', 'ARASYA_SOURCE_PAYMENT_GATE_VERIFIED_TRENDHOME' => 'observe']) === ['off', true], 'A confirmation of another value is no confirmation.');
+    expect($gate([...$base, 'ARASYA_SOURCE_PAYMENT_GATE_TRENDHOME' => 'enforce', 'ARASYA_SOURCE_PAYMENT_GATE_VERIFIED_TRENDHOME' => 'enforce']) === ['enforce', false]);
+    expect($gate([...$base, 'ARASYA_SOURCE_PAYMENT_GATE_TRENDHOME' => 'observe', 'ARASYA_SOURCE_PAYMENT_GATE_VERIFIED_TRENDHOME' => 'observe']) === ['observe', false]);
+    expect($gate([...$base, 'ARASYA_SOURCE_PAYMENT_GATE_TRENDHOME' => 'Enforce ', 'ARASYA_SOURCE_PAYMENT_GATE_VERIFIED_TRENDHOME' => 'enforce']) === ['enforce', false]);
+    expect($gate([...$base, 'ARASYA_SOURCE_PAYMENT_GATE_TRENDHOME' => 'sometimes', 'ARASYA_SOURCE_PAYMENT_GATE_VERIFIED_TRENDHOME' => 'sometimes'])[0] === 'off', 'An unreadable value stays off.');
+    $two = [...$base, 'ARASYA_SOURCE_PAYMENT_GATE_TRENDHOME' => 'enforce', 'ARASYA_SOURCE_PAYMENT_GATE_VERIFIED_TRENDHOME' => 'enforce', 'ARASYA_SOURCE_PAYMENT_GATE_OUTLETPERDELE' => 'enforce'];
+    expect($gate($two) === ['enforce', false] && $gate($two, 'outletperdele') === ['off', true], 'Each source is confirmed separately.');
+
+    // The private secrets.json behaves exactly like the environment.
+    $home = sys_get_temp_dir() . '/arasya-gate-config-' . bin2hex(random_bytes(6));
+    mkdir($home . '/arasya-config', 0700, true);
+    try {
+        $file = static function (array $keys) use ($home): array {
+            file_put_contents($home . '/arasya-config/secrets.json', json_encode([
+                'ARASYA_APP_SECRET' => str_repeat('j', 32), 'DB_NAME' => 'db', 'DB_USER_NAME' => 'u', 'DB_USER_PASSWORD' => 'p', 'ARASYA_ALLOWED_ORIGINS' => ['https://staff.arasyahome.ro'],
+                'ARASYA_SOURCE_SECRET_TRENDHOME' => SOURCE_TEST_TRENDHOME_SECRET, 'ARASYA_SOURCE_MODE_TRENDHOME' => 'active', ...$keys,
+            ], JSON_THROW_ON_ERROR));
+            chmod($home . '/arasya-config/secrets.json', 0600);
+            $registry = SourceRegistry::fromConfig(Config::fromEnvironment(new ConfigLoader(['HOME' => $home])));
+            return [$registry->find('trendhome')?->paymentGateMode->value, in_array(['code' => 'payment_gate_unverified', 'sourceKey' => 'trendhome'], $registry->issues(), true)];
+        };
+        expect($file(['ARASYA_SOURCE_PAYMENT_GATE_TRENDHOME' => 'enforce']) === ['off', true]);
+        expect($file(['ARASYA_SOURCE_PAYMENT_GATE_TRENDHOME' => 'enforce', 'ARASYA_SOURCE_PAYMENT_GATE_VERIFIED_TRENDHOME' => 'enforce']) === ['enforce', false]);
+    } finally {
+        @unlink($home . '/arasya-config/secrets.json');
+        @rmdir($home . '/arasya-config');
+        @rmdir($home);
+    }
+});
