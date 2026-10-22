@@ -122,6 +122,12 @@ final class Container
         );
     }
 
+    /** Confirmare operations (API 2.38.0): pool, distribution, decisions. Also used by bin/confirmare-distribute.php. */
+    public function confirmareService(?AuthorizationService $authorization = null): \Arasya\Operations\Confirmare\ConfirmareService
+    {
+        return new \Arasya\Operations\Confirmare\ConfirmareService($this->pdo, $authorization ?? new AuthorizationService(), new \Arasya\Operations\Confirmare\ConfirmareScopePolicy($this->pdo), $this->clock);
+    }
+
     public function kernel(): ApiKernel
     {
         $context = new RequestContext();
@@ -233,6 +239,13 @@ final class Container
             ),
             new \Arasya\Operations\Production\PieceController(
                 new \Arasya\Operations\Production\PieceOperationsService($this->pdo, $authorization, $approvers, $idempotency, $this->clock, $workflows),
+                $this->authentication,
+                $csrf,
+                $this->config,
+                $context,
+            ),
+            new \Arasya\Operations\Confirmare\ConfirmareController(
+                $this->confirmareService($authorization),
                 $this->authentication,
                 $csrf,
                 $this->config,

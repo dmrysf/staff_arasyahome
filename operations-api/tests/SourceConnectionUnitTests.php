@@ -547,10 +547,10 @@ test('expected API errors and validation are unchanged by the PDO diagnostics', 
     expect(!array_key_exists('exception', $warning) && !array_key_exists('sqlstate', $warning) && !array_key_exists('driver_code', $warning));
 });
 
-test('migrations stay ordered through 035 and the canonical workflow keeps its 14 stages', function (): void {
+test('migrations stay ordered through 036 and the canonical workflow keeps its 14 stages', function (): void {
     $migrations = array_map('basename', glob(dirname(__DIR__) . '/database/migrations/*.sql') ?: []);
     // 032-034 are reserved by open pull requests (line readiness, cancellation control and sync); 035 follows them.
-    expect(count($migrations) === 32 && $migrations[31] === '035_workflow_cohort.sql' && $migrations[30] === '031_production_assisted_checkpoints.sql' && $migrations[29] === '030_production_route_reconciliation.sql' && $migrations[28] === '029_production_manifest_routing.sql' && $migrations[27] === '028_production_work_units.sql' && $migrations[23] === '024_tailoring_quality_supervision.sql' && $migrations[24] === '025_source_payment_gate.sql' && $migrations[25] === '026_trendyol_product_identity.sql' && $migrations[26] === '027_employee_staff_locale.sql' && str_starts_with($migrations[0], '001_') && str_starts_with($migrations[16], '017_') && $migrations[17] === '018_production_authority.sql' && $migrations[18] === '019_production_qr_authority.sql' && $migrations[19] === '020_production_document_authority.sql' && $migrations[20] === '021_document_scopes.sql' && $migrations[21] === '022_trendyol_intake.sql' && $migrations[22] === '023_source_scoped_stage_authorization.sql');
+    expect(count($migrations) === 33 && $migrations[32] === '036_confirmare_operations.sql' && $migrations[31] === '035_workflow_cohort.sql' && $migrations[30] === '031_production_assisted_checkpoints.sql' && $migrations[29] === '030_production_route_reconciliation.sql' && $migrations[28] === '029_production_manifest_routing.sql' && $migrations[27] === '028_production_work_units.sql' && $migrations[23] === '024_tailoring_quality_supervision.sql' && $migrations[24] === '025_source_payment_gate.sql' && $migrations[25] === '026_trendyol_product_identity.sql' && $migrations[26] === '027_employee_staff_locale.sql' && str_starts_with($migrations[0], '001_') && str_starts_with($migrations[16], '017_') && $migrations[17] === '018_production_authority.sql' && $migrations[18] === '019_production_qr_authority.sql' && $migrations[19] === '020_production_document_authority.sql' && $migrations[20] === '021_document_scopes.sql' && $migrations[21] === '022_trendyol_intake.sql' && $migrations[22] === '023_source_scoped_stage_authorization.sql');
     expect(count(CanonicalProductionWorkflowContract::STAGES) === 14);
     expect(array_keys(CanonicalProductionWorkflowContract::STAGES) === ['waiting', 'material-preparation', 'workshop-receiving', 'labeling', 'material-straightening', 'bottom-hem', 'side-hem', 'ironing', 'height', 'header-tape', 'sewing-finishing', 'quality-control', 'packing', 'delivery']);
     // 018 is additive: it never converts the authority of existing orders.
@@ -594,6 +594,12 @@ test('migrations stay ordered through 035 and the canonical workflow keeps its 1
     expect(preg_match('/\b(UPDATE|DELETE|DROP|TRUNCATE|RENAME|INSERT|MODIFY|CHANGE)\b/i', $cohort) === 0 && substr_count($cohort, 'CREATE TABLE IF NOT EXISTS') === 2
         && preg_match_all('/ALTER TABLE ([a-z_]+)/i', $cohort, $cohortAlters) === 1 && $cohortAlters[1] === ['operational_orders']
         && str_contains($cohort, "column_name = 'workflow_cohort'") && substr_count($cohort, 'ADD COLUMN') === 5 && str_contains($cohort, "'DO 0'"), '035 must only add its tables and nullable columns, guarded.');
+    // 036 is additive and re-runnable too: four new tables and one guarded ALTER that adds nullable assignment columns to
+    // order_confirmations; no row is written, no scope is granted and no existing order or confirmation is touched.
+    $operations = preg_replace(['/^\s*--.*$/m', '/ON (UPDATE|DELETE) RESTRICT/'], '', (string) file_get_contents(dirname(__DIR__) . '/database/migrations/036_confirmare_operations.sql'));
+    expect(preg_match('/\b(UPDATE|DELETE|DROP|TRUNCATE|RENAME|INSERT|MODIFY|CHANGE)\b/i', $operations) === 0 && substr_count($operations, 'CREATE TABLE IF NOT EXISTS') === 4
+        && preg_match_all('/ALTER TABLE ([a-z_]+)/i', $operations, $operationsAlters) === 1 && $operationsAlters[1] === ['order_confirmations']
+        && str_contains($operations, "column_name = 'assigned_employee_uuid'") && substr_count($operations, 'ADD COLUMN') === 4 && str_contains($operations, "'DO 0'"), '036 must only add its tables and nullable columns, guarded.');
 });
 
 test('payment gate mode is per source, defaults to off and an unreadable value falls back to off', function (): void {

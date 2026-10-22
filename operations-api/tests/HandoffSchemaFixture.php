@@ -1,9 +1,23 @@
 <?php
 declare(strict_types=1);
+/** Restore a pre-036 disposable test fixture (no Confirmare operations). This is NOT a deployment/rollback mechanism. */
+function restorePreConfirmareOperationsTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='036_confirmare_operations.sql'")->fetchColumn()) return;
+    // The four 036 tables stay (identity reads such as the employee view use the scope table at every schema level the
+    // suites restore; CREATE TABLE IF NOT EXISTS keeps a re-run idempotent). Only the ALTER of 035's table is undone.
+    $pdo->exec('DELETE FROM order_confirmation_idempotency');
+    $pdo->exec('ALTER TABLE order_confirmations DROP CONSTRAINT chk_order_confirmations_reason, DROP CONSTRAINT chk_order_confirmations_assigned_pending, DROP CONSTRAINT chk_order_confirmations_assignment,
+        DROP FOREIGN KEY fk_order_confirmations_assignee, DROP KEY idx_order_confirmations_assignee, DROP COLUMN decision_reason_code, DROP COLUMN assignment_kind, DROP COLUMN assigned_at, DROP COLUMN assigned_employee_uuid');
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='036_confirmare_operations.sql'");
+}
+
 /** Restore a pre-035 disposable test fixture (no Confirmare workflow cohort). This is NOT a deployment/rollback mechanism. */
 function restorePreWorkflowCohortTestSchema(PDO $pdo): void
 {
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    restorePreConfirmareOperationsTestSchema($pdo);
     if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='035_workflow_cohort.sql'")->fetchColumn()) return;
     foreach(['order_confirmations','workflow_cohort_activations'] as $table) $pdo->exec("DROP TABLE IF EXISTS {$table}");
     $pdo->exec('ALTER TABLE operational_orders DROP CONSTRAINT chk_operational_orders_workflow_cohort_complete, DROP CONSTRAINT chk_operational_orders_workflow_cohort,

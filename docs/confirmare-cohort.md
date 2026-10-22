@@ -12,7 +12,8 @@ Phase 1 builds three things:
 - the server-side gate;
 - the intake of unpaid orders.
 
-Everything stays switched off. The Confirmare workflow that approves orders (Irina's work) is Phase 2.
+Everything stays switched off. The server side of the Confirmare work (scopes, pool, distribution, decisions, audit) is
+Phase 2, API 2.38.0: see [`confirmare-operations.md`](confirmare-operations.md).
 **No source can be activated with this release** (see [Activation](#activation)).
 
 ## Cutover rule
@@ -175,8 +176,9 @@ php bin/workflow-cohort.php --source=trendhome --suspend  --actor="Name" --reaso
 
 `--activate` is refused unless all of these hold:
 
-- the Confirmare workflow exists (Phase 2);
+- the Confirmare workflow exists (`WORKFLOW_READY`, still false in 2.38.0);
 - the source is permitted and active for ingestion;
+- at least one identity holds the `operate` Confirmare scope for the source and can work now (2.38.0);
 - the business date has passed;
 - the source is not active already.
 

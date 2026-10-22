@@ -57,7 +57,9 @@ final class ConfirmationGate
      */
     public static function assertOpen(PDO $pdo, string $orderUuid, string $stageId): void
     {
-        $closed = self::closedCohort($pdo, $orderUuid, $stageId);
+        // A locking read: the decision row is read as committed now, never from an older snapshot of this transaction
+        // (API 2.38.0; a decision changes order_confirmations under the same order row lock).
+        $closed = self::closedCohort($pdo, $orderUuid, $stageId, true);
         if ($closed !== false) {
             throw self::closed($closed);
         }
@@ -70,12 +72,12 @@ final class ConfirmationGate
     }
 
     /** The cohort of an order whose production start is closed, or false when it is open. */
-    private static function closedCohort(PDO $pdo, string $orderUuid, string $stageId): string|false
+    private static function closedCohort(PDO $pdo, string $orderUuid, string $stageId, bool $lock = false): string|false
     {
         if ($stageId !== OrderProjectionWriter::INITIAL_STAGE_ID) {
             return false;
         }
-        $statement = $pdo->prepare('SELECT o.workflow_cohort, c.status FROM operational_orders o LEFT JOIN order_confirmations c ON c.order_uuid = o.order_uuid WHERE o.order_uuid = ?');
+        $statement = $pdo->prepare('SELECT o.workflow_cohort, c.status FROM operational_orders o LEFT JOIN order_confirmations c ON c.order_uuid = o.order_uuid WHERE o.order_uuid = ?' . ($lock ? ' LOCK IN SHARE MODE' : ''));
         $statement->execute([$orderUuid]);
         $row = $statement->fetch(PDO::FETCH_ASSOC);
         if (!is_array($row) || $row['workflow_cohort'] === null) {

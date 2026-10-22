@@ -45,6 +45,7 @@ final readonly class ApiKernel
         private ?\Arasya\Operations\Production\ProductionQrController $productionQr = null,
         private ?\Arasya\Operations\Trendyol\TrendyolWorkspaceController $trendyol = null,
         private ?\Arasya\Operations\Production\PieceController $pieces = null,
+        private ?\Arasya\Operations\Confirmare\ConfirmareController $confirmare = null,
     ) {
     }
 
@@ -120,6 +121,9 @@ final readonly class ApiKernel
         }
         if (str_starts_with($request->path, '/production-documents/')) {
             return ($this->documents ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Production documents are not ready.'))->handle($request);
+        }
+        if (str_starts_with($request->path, '/confirmare/')) {
+            return ($this->confirmare ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Confirmare is not ready.'))->handle($request);
         }
         if (str_starts_with($request->path, '/production-exceptions/')) {
             return $this->qualityController()->handle($request);

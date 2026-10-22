@@ -337,6 +337,11 @@ final readonly class OrderProjectionWriter
                     // The pre-production Confirmare state of this order; only the Confirmare workflow ever decides it.
                     $this->pdo->prepare("INSERT INTO order_confirmations (order_uuid, global_order_id, source_key, status, version, opened_at, updated_at) VALUES (?, ?, ?, 'pending', 1, ?, ?)")
                         ->execute([$orderUuid, $globalId, $snapshot->sourceKey, $nowSql, $nowSql]);
+                    // Its audit trail starts here (API 2.38.0): version 1, opened by the system, no customer data.
+                    $this->pdo->prepare("INSERT INTO order_confirmation_events (event_uuid, order_uuid, global_order_id, source_key, action, actor_kind, actor_employee_uuid, previous_status, new_status,
+                            previous_assignee_uuid, new_assignee_uuid, reason_code, version_after, request_id, idempotency_key, occurred_at)
+                        VALUES (?, ?, ?, ?, 'opened', 'system', NULL, NULL, 'pending', NULL, NULL, ?, 1, NULL, NULL, ?)")
+                        ->execute([Uuid::v4(), $orderUuid, $globalId, $snapshot->sourceKey, $cohort['cohort'] === WorkflowCohort::UNDETERMINED ? 'undetermined' : null, $nowSql]);
                 }
             }
 

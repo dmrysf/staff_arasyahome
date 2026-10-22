@@ -167,6 +167,9 @@ $preVersion = (int) $order($preId)['production_version'];
 // ---- Activation is refused in Phase 1 and without its prerequisites ------------------------------------------------
 $apiError(fn () => $activation($activatedAt)->activate($registry->find('trendhome'), 'Test Owner', null, 'cf-test'), 'CONFIRMARE_WORKFLOW_NOT_READY', 'Phase 1: the Confirmare workflow is not ready, so no source can be activated');
 $apiError(fn () => $activation($activatedAt)->activate($registry->find('outletperdele'), 'Test Owner', null, 'cf-test', true), 'CONFIRMARE_NOT_PERMITTED', 'a source without ARASYA_SOURCE_CONFIRMARE=on cannot be activated');
+// API 2.38.0: nobody may confirm the source's orders yet, so an activation would stop them all.
+$apiError(fn () => $activation($activatedAt)->activate($registry->find('trendhome'), 'Test Owner', null, 'cf-test', true), 'CONFIRMARE_NO_OPERATOR', 'no activation before somebody can confirm the source\'s orders');
+$ok($asRoot('PUT', "/management/employees/{$uuids['cfoperator']}/confirmare-scopes", ['operate' => ['trendhome'], 'supervise' => []]), 'a Confirmare operator for trendhome');
 $apiError(fn () => $activation(new DateTimeImmutable('2026-10-21T20:59:59.999999Z'))->activate($registry->find('trendhome'), 'Test Owner', null, 'cf-test', true), 'CONFIRMARE_BEFORE_CUTOVER', 'no activation before 2026-10-22 00:00 Bucharest');
 $apiError(fn () => $activation($activatedAt)->activate($registry->find('trendhome'), '', null, 'cf-test', true), 'ACTOR_REQUIRED', 'an activation names the person who records it');
 $apiError(fn () => $activation($activatedAt)->suspend('trendhome', 'Test Owner', 'nothing to suspend', 'cf-test'), 'CONFIRMARE_NOT_ACTIVE', 'nothing to suspend');
@@ -470,6 +473,7 @@ foreach ([
 
 // ---- Teardown (disposable shared test database only): later suites assert their own rollback floors ---------------
 $suiteOrders = array_column($pdo->query("SELECT order_uuid FROM operational_orders WHERE workflow_cohort IS NOT NULL")->fetchAll(PDO::FETCH_ASSOC), 'order_uuid');
+$pdo->exec('DELETE FROM order_confirmation_events');
 $pdo->exec('DELETE FROM order_confirmations');
 $pdo->exec('DELETE FROM workflow_cohort_activations');
 $pdo->exec("UPDATE operational_orders SET workflow_cohort = NULL, workflow_cohort_reason = NULL, workflow_cohort_at = NULL WHERE workflow_cohort IS NOT NULL");
