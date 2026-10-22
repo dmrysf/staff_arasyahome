@@ -10,8 +10,10 @@ import path from "node:path";
 // through source access from a loopback TEST shop, line and price review, approval), a shop change after the review,
 // a 409 after a supervisor's reassignment, the supervisor view, isolation of sources and channels, session expiry,
 // revoked access, a network interruption, layouts from 320 to 1920 px and WCAG 2.2 AA. Generic TEST people only.
+// API 2.41.0 / Staff 2.31.0 (Phase 5): the money of an order read from the TEST shop, a bank transfer recorded by one
+// finance employee and verified by another (never by the recorder), nothing shown as done before the shop confirms.
 type Person = { username: string; name: string; id: string };
-type Fixture = { skip?: string; password: string; people: Record<"operator" | "colleague" | "outlet" | "supervisor", Person>; orders: Record<"call" | "cod" | "colleague" | "noPrice" | "unassigned" | "outlet" | "legacy" | "undetermined", string> };
+type Fixture = { skip?: string; password: string; people: Record<"operator" | "colleague" | "outlet" | "supervisor" | "finrec" | "finapp", Person>; orders: Record<"call" | "cod" | "colleague" | "noPrice" | "unassigned" | "outlet" | "legacy" | "undetermined" | "finance", string> };
 const root = path.resolve(import.meta.dirname, "..");
 const base = JSON.parse(readFileSync(path.join(import.meta.dirname, ".real-api-fixture.json"), "utf8")) as { users: { ana: string }; password: string };
 const API = "http://127.0.0.1:8787";
@@ -440,6 +442,74 @@ test("shop edit (Phase 4B): the shop prices the change, one explicit save, the a
   }
   expect(sup.errors).toEqual([]);
   await sup.context.close();
+});
+
+test("finance (Phase 5): the shop's money read on request, a transfer recorded by one employee and verified by another", async ({ browser }) => {
+  test.skip(Boolean(F.skip), F.skip);
+  test.setTimeout(120_000);
+  const recorder = await signIn(browser, F.people.finrec.username);
+  let page = recorder.page;
+  await expect(page.getByTestId("workspace-confirmare-finance"), "a finance-only employee works from the finance tasks").toBeVisible();
+  await page.getByTestId("cf-open-finance").click();
+  await expect(page.getByTestId("cf-finance-queue")).toBeVisible();
+  await page.goto(orderPath(F.orders.finance));
+  await expect(page.getByTestId("cf-finance-load")).toBeVisible();
+  await expect(page.getByTestId("cf-finance-view"), "no amount before the employee asks").toHaveCount(0);
+  await expect(page.getByTestId("cf-customer-facts"), "finance never sees the customer's data").toHaveCount(0);
+  await page.getByTestId("cf-finance-load").click();
+  await expect(page.getByTestId("cf-finance-current")).toContainText("650,00");
+  await expect(page.getByTestId("cf-finance-original")).toContainText("500,00");
+  await expect(page.getByTestId("cf-finance-outstanding")).toContainText("150,00");
+  await expect(page.getByTestId("cf-finance-next")).toContainText("Plată suplimentară necesară");
+  await page.getByTestId("cf-finance-amount").fill("1.500");
+  await page.getByTestId("cf-finance-reference").fill("OP E2E 0001");
+  await page.getByTestId("cf-finance-prepare").click();
+  await expect(page.getByTestId("cf-finance-problem"), "an ambiguous amount is refused, never guessed").toBeVisible();
+  await page.getByTestId("cf-finance-amount").fill("150,00");
+  await page.getByTestId("cf-finance-prepare").click();
+  await expect(page.getByTestId("cf-finance-confirm")).toContainText("Nu este o plată primită");
+  await capture(page, "finance-confirm-390");
+  await accessible(page, "finance confirm 390");
+  await page.getByTestId("cf-finance-send").dblclick();
+  await expect(page.getByTestId("cf-finance-result")).toContainText("Magazinul a confirmat");
+  await expect(page.getByTestId("cf-finance-next")).toContainText("Transfer de verificat");
+  await expect(page.getByTestId("cf-finance-received"), "a recorded transfer is no money received").toContainText("500,00");
+  await expect(page.getByTestId("cf-finance-own-pending")).toBeVisible();
+  await expect(page.getByTestId("cf-finance-verify"), "the recorder is never offered the verification").toHaveCount(0);
+  const shop = JSON.parse(readFileSync(process.env.ARASYA_E2E_SHOP_FILE ?? "", "utf8")) as { orders: Record<string, { finance?: { entries?: { state: string }[] } }> };
+  expect(shop.orders[number(F.orders.finance)]?.finance?.entries?.filter((entry) => entry.state === "submitted"), "a double click is one record").toHaveLength(1);
+  expect(recorder.errors).toEqual([]);
+  await recorder.context.close();
+
+  const approver = await signIn(browser, F.people.finapp.username);
+  page = approver.page;
+  await page.goto(orderPath(F.orders.finance));
+  await page.getByTestId("cf-finance-load").click();
+  await expect(page.getByTestId("cf-finance-decide")).toContainText("OP E2E 0001");
+  await page.getByTestId("cf-finance-verify").click();
+  await expect(page.getByTestId("cf-finance-confirm")).toContainText("apare în extrasul de cont");
+  await page.getByTestId("cf-finance-send").click();
+  await expect(page.getByTestId("cf-finance-result")).toContainText("Magazinul a confirmat");
+  await expect(page.getByTestId("cf-finance-received")).toContainText("650,00");
+  await expect(page.getByTestId("cf-finance-outstanding")).toContainText("0,00");
+  await expect(page.getByTestId("cf-finance-next")).toContainText("Nicio decizie financiară necesară");
+  await expect(page.getByTestId("cf-finance-entry-verified")).toBeVisible();
+  await capture(page, "finance-verified-390");
+  await accessible(page, "finance verified 390");
+  for (const width of [320, 1440]) {
+    await page.setViewportSize({ width, height: width < 768 ? 844 : 1000 });
+    await page.waitForTimeout(150);
+    expect(await overflow(page), `finance at ${width}px`).toBeLessThanOrEqual(0);
+    await capture(page, `finance-verified-${width}`);
+  }
+  // The operator and a supervisor may read the money but never act; nothing of it is stored in the browser.
+  const storage = await page.evaluate(() => JSON.stringify({ local: { ...localStorage }, session: { ...sessionStorage } }));
+  expect(storage.includes("650") || storage.includes("OP E2E")).toBe(false);
+  const op = await api(F.people.operator.username, F.password);
+  const refused = await send(op, "post", `/confirmare/orders/${encodeURIComponent(F.orders.finance)}/finance/submit-transfer`, { expectedRevision: `sha256:${"0".repeat(64)}`, purpose: "additional_payment", amount: "1.00", reference: "OP E2E 0002", valueDate: "2026-10-22" });
+  expect([403, 404]).toContain(refused.status());
+  expect(approver.errors).toEqual([]);
+  await approver.context.close();
 });
 
 test("layouts from 320 to 1920 px without horizontal scrolling, WCAG 2.2 AA and 44 px targets", async ({ browser }) => {

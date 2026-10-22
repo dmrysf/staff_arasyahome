@@ -2,6 +2,7 @@ import type { Employee } from "./models";
 import { t, type MessageKey } from "../i18n";
 import type { ShopRead, SourceAccessCapabilities } from "./confirmareShop";
 import type { ConfirmareEditApi } from "./confirmareEdit";
+import { canUseFinance, financeScopesOf, type ConfirmareFinanceApi, type FinanceCapabilities } from "./confirmareFinance";
 
 /**
  * Staff Confirmare workspace (API 2.39.0, Phase 3; the shop's own order, API 2.40.0, Phase 4A). New Trend Home and
@@ -16,7 +17,8 @@ export type ConfirmareStatus = "pending" | "approved" | "rejected" | "cancelled"
 export const CONTACT_OUTCOMES = ["confirmed", "no_answer", "callback", "needs_correction"] as const;
 export type ContactOutcome = (typeof CONTACT_OUTCOMES)[number];
 export type FinancialState = "cleared" | "waiting" | "partial" | "unknown";
-export const FINANCIAL_ATTENTION = ["additional_payment_due", "refund_due"] as const;
+/** API 2.40.0: additional_payment_due, refund_due. API 2.41.0 (the shop's finance record): the other four. */
+export const FINANCIAL_ATTENTION = ["additional_payment_due", "refund_due", "transfer_pending", "reconciliation_required", "refund_liability", "refund_pending"] as const;
 export type FinancialAttention = (typeof FINANCIAL_ATTENTION)[number];
 export const CLEARANCE_CONDITIONS = ["approval", "call", "lines", "price", "sync", "payment"] as const;
 export type ClearanceCondition = (typeof CLEARANCE_CONDITIONS)[number];
@@ -88,6 +90,8 @@ export type ConfirmareDetail = ConfirmareItem & {
   events: ConfirmareEvent[];
   /** API 2.40.0: whether the shop's own order can be read (and, in Phase 4B, changed) by the signed-in employee. */
   sourceAccess: SourceAccessCapabilities;
+  /** API 2.41.0: whether the money of the order can be read, recorded or approved by the signed-in employee. */
+  finance: FinanceCapabilities;
 };
 
 export type ConfirmareOperator = { employeeId: string; displayName: string; sources: string[]; canWork: boolean; available: boolean; availableChangedAt: string | null; lastAssignedAt: string | null; open: number; oldestAssignedAt: string | null };
@@ -97,7 +101,7 @@ export type ConfirmareAvailability = { employeeId: string; available: boolean; c
 
 export type ApproveInput = { expectedVersion: number; customerCall: "confirmed"; confirmedLineIds: string[]; priceVerified: true; reviewFingerprint: string };
 
-export interface ConfirmareApi extends ConfirmareEditApi {
+export interface ConfirmareApi extends ConfirmareEditApi, ConfirmareFinanceApi {
   pool(view: ConfirmareView, source: string | null, signal?: AbortSignal): Promise<ConfirmarePool>;
   detail(globalOrderId: string, signal?: AbortSignal): Promise<ConfirmareDetail>;
   next(source: string | null, idempotencyKey: string): Promise<ConfirmareItem | null>;
@@ -130,6 +134,14 @@ export function canUseConfirmare(employee: Employee): boolean {
   const scopes = confirmareScopesOf(employee);
   return scopes.operate.length > 0 || scopes.supervise.length > 0;
 }
+
+/** Whether the employee may open a Confirmare order at all: a Confirmare scope, or a finance scope (read-only, API 2.41.0). */
+export function canOpenConfirmareOrder(employee: Employee): boolean {
+  return canUseConfirmare(employee) || canUseFinance(employee);
+}
+
+/** The finance scopes, re-exported for the Confirmare screens. */
+export { canUseFinance, financeScopesOf };
 
 export function canSuperviseConfirmare(employee: Employee): boolean {
   return canUseConfirmare(employee) && confirmareScopesOf(employee).supervise.length > 0;

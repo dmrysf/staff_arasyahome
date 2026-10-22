@@ -12,6 +12,7 @@ use Arasya\Operations\Integration\SourceAccess\SourceAccessException;
 use Arasya\Operations\Integration\SourceAccess\SourceAccessProtocol;
 use Arasya\Operations\Integration\SourceAccess\SourceAccessRegistry;
 use Arasya\Operations\Integration\SourceAccess\SourceAccessTarget;
+use Arasya\Operations\Integration\SourceAccess\SourceFinance;
 use Arasya\Operations\Integration\SourceAccess\SourceOrderDetail;
 use Arasya\Operations\Integration\SourceAccess\SourceOrderEdit;
 use Arasya\Operations\Integration\SourceAccess\StreamSourceAccessTransport;
@@ -91,6 +92,12 @@ foreach ([
 $check($registry('test', ['url' => 'http://127.0.0.1:8099'] + $good)->find('trendhome')?->baseUrl === 'http://127.0.0.1:8099', 'outside production a loopback test shop is allowed');
 $check(SourceAccessRegistry::fromConfig($config('production', ['unknownshop' => $good]))->issues()[0]['code'] === 'source_not_configured', 'only a configured signed source can have access');
 $check(!str_contains(json_encode($registry('production', ['key' => "th-2026-a:{$event}"] + $good)->issues()), $event), 'an issue never echoes a value');
+// API 2.41.0: the finance mode of a target (default off; an unknown value keeps the whole source off).
+$check($target->finance === 'off' && !$target->allowsFinanceRead() && !$target->allowsFinanceRecord(), 'finance is off unless configured');
+$check($registry('production', ['finance' => 'read'] + $good)->find('trendhome')?->allowsFinanceRead() === true && $registry('production', ['finance' => 'read'] + $good)->find('trendhome')?->allowsFinanceRecord() === false, 'finance read: the summary only');
+$check($registry('production', ['finance' => 'RECORD '] + $good)->find('trendhome')?->allowsFinanceRecord() === true, 'finance record (case and spaces normalized)');
+$check($registry('production', ['finance' => 'refund'] + $good)->find('trendhome') === null && $issue('production', ['finance' => 'refund'] + $good) === 'invalid_finance_mode', 'an unknown finance mode keeps the source off, reported by code');
+$check($registry('production', ['mode' => 'off', 'finance' => 'record'] + $good)->find('trendhome') === null, 'finance never works without source access');
 
 // ---- 3. Transport: SSRF guard (no network: every refusal happens before a connection) -------------------------------
 $resolver = static fn (array $map): Closure => static fn (string $host): array => $map[$host] ?? [];
@@ -226,6 +233,34 @@ $check($refusal['status'] === 409 && $refusal['body']['error']['code'] === 'vers
 $editShop->tamper = ['sign' => false, 'status' => 409];
 $throws(static fn () => $editClient->exchange($targetFor(), SourceAccessClient::ROUTE_PREVIEW, $base + ['expectedVersion' => 'x', 'operations' => $good]), 'SOURCE_RESPONSE_UNTRUSTED', 'an unsigned refusal is not trusted either');
 $throws(static fn () => $editClient->call($targetFor(), '/yd-arasya/v1/confirmare/refund', $base), 'SOURCE_ACCESS_NOT_CONFIGURED', 'a route outside the reviewed list is never called');
+
+// ---- 5b. Finance answers (API 2.41.0): strict, whole or nothing --------------------------------------------------------
+$financeShop = new SourceAccessFakeShop('trendhome', 'th-2026-a', $shopKey, ['123' => ['id' => '123', 'finance' => ['cod' => false, 'total' => '650.00', 'paid' => '500.00', 'original' => '500.00', 'pricing' => 'sha256:' . str_repeat('a', 64)]]], static fn (): int => 1790000000);
+$summary = $financeShop->financeSummary('123', 1790000000);
+$valid = SourceFinance::summary($summary, '123', '123');
+$check($valid['totals'] === ['current' => '650.00', 'original' => '500.00', 'refunded' => '0.00'] && $valid['balance']['outstanding'] === '150.00' && $valid['financial']['attention'] === 'additional_payment_due', 'a valid finance summary');
+$broken = static function (callable $change) use ($summary): array { $copy = $summary; $change($copy); return $copy; };
+foreach ([
+    'another order' => static function (array &$s): void { $s['order']['id'] = '124'; },
+    'an electronic refund offered' => static function (array &$s): void { $s['capabilities']['electronicRefund'] = true; },
+    'an amount as a number' => static function (array &$s): void { $s['totals']['current'] = 650.0; },
+    'an open attention with cleared' => static function (array &$s): void { $s['financial'] = ['state' => 'cleared', 'basis' => 'online_payment', 'attention' => 'transfer_pending']; },
+    'a cleared attention with waiting' => static function (array &$s): void { $s['financial']['attention'] = 'refund_liability'; },
+    'an unknown attention' => static function (array &$s): void { $s['financial']['attention'] = 'refund_now'; },
+    'a COD order without its advance' => static function (array &$s): void { $s['order']['cod'] = true; $s['advance'] = null; },
+    'a malformed revision' => static function (array &$s): void { $s['revision'] = 'v1'; },
+    'an entry with an unknown state' => static function (array &$s): void { $s['entries'] = [['id' => '00000000-0000-4000-9000-000000000001', 'kind' => 'transfer_in', 'purpose' => 'additional_payment', 'amount' => '1.00', 'reference' => 'OP 1', 'valueDate' => '2026-10-22', 'state' => 'paid', 'submittedBy' => '00000000-0000-4000-8000-000000000001', 'submittedAt' => '2026-10-22T10:00:00Z', 'decidedBy' => null, 'decidedAt' => null, 'decisionCode' => null]]; },
+] as $label => $change) {
+    $throws(static fn () => SourceFinance::summary($broken($change), '123', '123'), 'SOURCE_RESPONSE_INVALID', "a finance summary with {$label} is refused");
+}
+$check(SourceFinance::refusal(['error' => ['code' => 'revision_changed'], 'revision' => 'sha256:' . str_repeat('b', 64)]) === ['code' => 'revision_changed', 'revision' => 'sha256:' . str_repeat('b', 64)], 'a refusal with the current revision');
+$throws(static fn () => SourceFinance::refusal(['error' => ['code' => 'paid_anyway']]), 'SOURCE_ERROR', 'an unknown refusal code is a source error');
+$throws(static fn () => SourceFinance::applied(['protocol' => 1, 'applied' => true, 'action' => 'decide_transfer', 'entryId' => '00000000-0000-4000-9000-000000000001', 'summary' => $summary], 'submit_transfer', '123', '123'), 'SOURCE_RESPONSE_INVALID', 'an answer for another action is refused');
+$check(SourceFinance::status(['state' => 'absent']) === ['state' => 'absent'], 'an action the shop never received');
+$financeClient = new SourceAccessClient($financeShop, $clock);
+$financeTarget = new SourceAccessTarget('trendhome', 'read', 'https://trendhome.example', 'th-2026-a', $shopKey, 'record');
+$read = SourceFinance::summary($financeClient->call($financeTarget, SourceAccessClient::ROUTE_FINANCE, ['orderId' => '123', 'orderNumber' => '123', 'actor' => ['employeeId' => '00000000-0000-4000-8000-000000000001', 'role' => 'finance'], 'requestId' => 'req-fin-1']), '123', '123');
+$check($read['revision'] === $summary['revision'], 'the client reads a signed finance summary through the reviewed route');
 
 // ---- 6. Transport over a real loopback socket (test environment only): POST, no redirect, size and time bounds ----------
 $port = 18000 + random_int(0, 1999);

@@ -31,6 +31,7 @@ final readonly class AuthController
         private AuthorizationService $authorization,
         private RequestContext $context,
         private ?ConfirmareScopePolicy $confirmareScopes = null,
+        private ?\Arasya\Operations\Confirmare\FinanceScopePolicy $financeScopes = null,
     ) {
     }
 
@@ -181,6 +182,15 @@ final readonly class AuthController
                 $scopes = ['operate' => [], 'supervise' => []];
             }
         }
-        return EmployeeSerializer::safe($employee) + ['confirmareScopes' => $scopes];
+        // Confirmare finance scopes (API 2.41.0): explicit rows only, root included. Presentation only, like above.
+        $finance = ['view' => [], 'record' => [], 'approve' => []];
+        if ($this->financeScopes !== null) {
+            try {
+                $finance = $this->financeScopes->scopesOf($employee->employeeUuid);
+            } catch (\PDOException) {
+                $finance = ['view' => [], 'record' => [], 'approve' => []];
+            }
+        }
+        return EmployeeSerializer::safe($employee) + ['confirmareScopes' => $scopes, 'financeScopes' => $finance];
     }
 }

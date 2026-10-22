@@ -1,5 +1,5 @@
 import type { Employee } from "./models";
-import { canSuperviseConfirmare, canUseConfirmare } from "./confirmare";
+import { canOpenConfirmareOrder, canSuperviseConfirmare, canUseConfirmare, canUseFinance } from "./confirmare";
 
 export type StaffPermission =
   | "orders.scan"
@@ -29,6 +29,9 @@ export function canAccessRoute(employee: Employee, path: string) {
   if (path === "/trendyol" || path.startsWith("/trendyol/")) return employee.permissions.includes("trendyol.orders.view") && employee.applications.includes("staff");
   // Confirmare (API 2.39.0): only identities holding a Confirmare scope; the team view only for supervisors.
   if (path === "/confirmare/team") return canSuperviseConfirmare(employee);
+  // Confirmare finance (API 2.41.0): the finance tasks for finance scopes; an order also opens for them (read-only).
+  if (path === "/confirmare/finance") return canUseFinance(employee);
+  if (path.startsWith("/confirmare/orders/")) return canOpenConfirmareOrder(employee);
   if (path === "/confirmare" || path.startsWith("/confirmare/")) return canUseConfirmare(employee);
   // Production documents: channel employees with a document permission, without needing a stage.
   if (path.startsWith("/documents/")) return ["production.documents.generate", "production.documents.reprint", "production.documents.request_revision"].some((key) => employee.permissions.includes(key));

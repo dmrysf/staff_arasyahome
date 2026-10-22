@@ -32,6 +32,8 @@ export type Employee = {
    * the scopes on every Confirmare route.
    */
   confirmareScopes?: Readonly<{ operate: readonly string[]; supervise: readonly string[] }>;
+  /** Confirmare finance scopes (API 2.41.0): explicit per person, independent of the Confirmare scopes. */
+  financeScopes?: Readonly<{ view: readonly string[]; record: readonly string[]; approve: readonly string[] }>;
 };
 
 export type ProductionStage = {

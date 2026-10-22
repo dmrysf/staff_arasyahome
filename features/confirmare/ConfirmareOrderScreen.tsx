@@ -16,6 +16,7 @@ import { AutoRefreshBar } from "../workspaces/DashboardParts";
 import { useAutoRefresh } from "../workspaces/useAutoRefresh";
 import { ItemStatusPill, dueDay, when } from "./ConfirmareParts";
 import { ConfirmareShopPanel } from "./ConfirmareShopPanel";
+import { ConfirmareFinancePanel } from "./ConfirmareFinancePanel";
 
 type Message = { tone: Tone; text: string } | null;
 type Busy = "claim" | "release" | "contact" | "approve" | "reject" | "reassign" | "reopen" | null;
@@ -182,6 +183,9 @@ export function ConfirmareOrderScreen({ orderId, employee, service, navigate }: 
 
           <ConfirmareShopPanel detail={detail} service={service} onChange={onShopRead} onRefresh={view.refresh} />
 
+          {/* API 2.41.0: the money of the order, read from the shop when asked; finance actions for finance scopes only. */}
+          <ConfirmareFinancePanel detail={detail} service={service} />
+
           <section className="detail-section" aria-labelledby="cf-call">
             <div className="section-title"><h2 id="cf-call">{t("cf.call.title")}</h2>{detail.review.callRecorded && <StatusPill tone="success" icon="check">{t("cf.call.recorded")}</StatusPill>}</div>
             <p className="dashboard-lead">{t("cf.call.lead")}</p>
@@ -261,7 +265,7 @@ export function ConfirmareOrderScreen({ orderId, employee, service, navigate }: 
             <div className="section-title"><h2 id="cf-money">{t("cf.money.title")}</h2></div>
             <StatusPill tone={financialTone} icon={detail.financial.open ? "check" : "lock"} testId="cf-financial">{t(`cf.financial.${detail.financial.open ? "open" : detail.financial.state}` as MessageKey)}</StatusPill>
             {detail.financial.basis && <p className="cf-line-facts">{t(`cf.basis.${detail.financial.basis}` as MessageKey)}</p>}
-            {detail.financial.attention && <Notice tone="danger" role="note" testId="cf-financial-attention">{t(`cf.financial.attention.${detail.financial.attention}` as MessageKey)}</Notice>}
+            {detail.financial.attention && <Notice tone={detail.financial.state === "cleared" ? "info" : "danger"} role="note" testId="cf-financial-attention">{t(`cf.financial.attention.${detail.financial.attention}` as MessageKey)}</Notice>}
             <p className="dashboard-footnote">{detail.financial.open ? t("cf.money.openNote") : t("cf.money.closedNote")}</p>
           </section>
 

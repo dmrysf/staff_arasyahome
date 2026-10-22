@@ -12,6 +12,9 @@ final readonly class SourceAccessTarget
 {
     public const MODE_READ = 'read';
     public const MODE_EDIT = 'edit';
+    public const FINANCE_OFF = 'off';
+    public const FINANCE_READ = 'read';
+    public const FINANCE_RECORD = 'record';
 
     public function __construct(
         public string $sourceKey,
@@ -20,7 +23,19 @@ final readonly class SourceAccessTarget
         public string $baseUrl,
         public string $kid,
         #[\SensitiveParameter] private string $key,
+        /** Confirmare finance through this shop (API 2.41.0): off, read (the financial summary) or record (also actions). */
+        public string $finance = self::FINANCE_OFF,
     ) {
+    }
+
+    public function allowsFinanceRead(): bool
+    {
+        return $this->finance === self::FINANCE_READ || $this->finance === self::FINANCE_RECORD;
+    }
+
+    public function allowsFinanceRecord(): bool
+    {
+        return $this->finance === self::FINANCE_RECORD;
     }
 
     public function allowsEdit(): bool
@@ -36,6 +51,6 @@ final readonly class SourceAccessTarget
     /** @return array<string, string> */
     public function __debugInfo(): array
     {
-        return ['sourceKey' => $this->sourceKey, 'mode' => $this->mode, 'baseUrl' => $this->baseUrl, 'kid' => $this->kid];
+        return ['sourceKey' => $this->sourceKey, 'mode' => $this->mode, 'baseUrl' => $this->baseUrl, 'kid' => $this->kid, 'finance' => $this->finance];
     }
 }

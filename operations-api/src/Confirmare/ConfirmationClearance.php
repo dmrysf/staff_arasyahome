@@ -29,6 +29,10 @@ use PDO;
  *                online payment, a COD basis for a COD order. Anything inconsistent, unknown or missing stays closed.
  *              The legacy `not_required` advance status alone never clears a Confirmare order (a disabled advance module
  *              is not an exemption). Legacy orders keep the advance payment gate unchanged.
+ *              API 2.41.0 (Phase 5): the shop resolves a changed total with its finance record. An acknowledged refund
+ *              liability (`cleared` with attention refund_liability or refund_pending) holds: the refund follows the final
+ *              manufacturing stage. Every other attention comes with a closed state. While a finance action of the
+ *              order is pending or unknown in Arasya (ConfirmareFinance), the condition does not hold.
  *
  * The result is stored as order_confirmations.production_cleared and recomputed, under the order row lock, by every
  * decision and by every source snapshot that changes the order (cart, price, payment). ConfirmationGate reads only that
@@ -113,7 +117,8 @@ final class ConfirmationClearance
         if ($row['approved_review_fingerprint'] === null || !hash_equals((string) $row['approved_review_fingerprint'], self::fingerprint($pdo, $orderUuid))) {
             $missing[] = 'sync';
         }
-        if (!self::financialOpen(self::text($row['source_financial_state']), self::text($row['source_financial_basis']), self::text($row['source_financial_pricing']), self::text($row['source_pricing_fingerprint']), self::text($row['payment_method']))) {
+        if (!self::financialOpen(self::text($row['source_financial_state']), self::text($row['source_financial_basis']), self::text($row['source_financial_pricing']), self::text($row['source_pricing_fingerprint']), self::text($row['payment_method']))
+            || ConfirmareFinance::actionOpen($pdo, $orderUuid)) {
             $missing[] = 'payment';
         }
         return $missing;
