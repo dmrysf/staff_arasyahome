@@ -106,6 +106,8 @@ export type ServiceBundle = {
   workspace?: import("../domain/workspaces").WorkspaceApi;
   /** Read-only management production overview (Dashboard access + production.view); absent in preview and demo. */
   management?: import("../domain/workspaces").ManagementApi;
+  /** Confirmare workspace (API 2.39.0) for people holding a Confirmare scope; absent in preview and demo. */
+  confirmare?: import("../domain/confirmare").ConfirmareApi;
   auth: AuthService;
   employee: EmployeeService;
   orders: OrderService;

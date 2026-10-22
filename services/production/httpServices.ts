@@ -12,6 +12,7 @@ import { isProductionAuthority, type AuthorityApi, type AuthorityChange, type Or
 import type { ActiveQr, ProductionQrApi, ProductionQrView, QrAuthority, QrAuthorityMode, QrRevision, QrRevisionState, QrRotationReason } from "../../domain/productionQr";
 import { createBrowserWorkflowCache, createUnavailableWorkflowCache, normalizeProductionApiBaseUrl, type WorkflowCache } from "./workflowCache";
 import { createProductionWorkflowService } from "./workflowService";
+import { CLEARANCE_CONDITIONS, CONTACT_OUTCOMES, type ConfirmareAlert, type ConfirmareApi, type ConfirmareAvailability, type ConfirmareContact, type ConfirmareCustomer, type ConfirmareDetail, type ConfirmareEvent, type ConfirmareItem, type ConfirmareLine, type ConfirmareOperator, type ConfirmarePool, type ConfirmareTeam, type FinancialState } from "../../domain/confirmare";
 
 type FetchLike = typeof fetch;
 export type ProductionServicesOptions = {
@@ -217,7 +218,16 @@ export function mapProductionEmployee(value: unknown): Employee {
     mustChangePassword: booleanValue(raw.mustChangePassword),
     // An older API (always "ro"), a missing or an unknown value all read as Romanian.
     locale: normalizeLocale(raw.locale),
+    confirmareScopes: mapConfirmareScopes(raw.confirmareScopes),
   };
+}
+
+/** Optional (API 2.39.0); an older API or a malformed value grants no Confirmare screen. */
+function mapConfirmareScopes(value: unknown): { operate: string[]; supervise: string[] } {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return { operate: [], supervise: [] };
+  const raw = value as Record<string, unknown>;
+  const list = (entry: unknown): string[] => Array.isArray(entry) && entry.every((item) => typeof item === "string") ? entry as string[] : [];
+  return { operate: list(raw.operate), supervise: list(raw.supervise) };
 }
 
 export function mapProductionOrderItem(value: unknown): import("../../domain/models").ProductionItem {
@@ -774,9 +784,11 @@ function createRequest(apiBaseUrl: string, options: ProductionServicesOptions, o
   async function errorFromResponse(response: Response, path: string) {
     let backendCode = "";
     let details: Record<string, unknown> | undefined;
+    let errorDetails: unknown = null;
     try {
       const payload = objectValue(await response.json());
       const error = objectValue(payload.error);
+      errorDetails = error.details ?? null;
       backendCode = typeof error.code === "string" ? error.code : "";
       // Only the active revision number is kept from details (an old QR scan tells which revision to use).
       if (error.details && typeof error.details === "object" && typeof (error.details as Record<string, unknown>).activeRevisionNumber === "number") details = { activeRevisionNumber: (error.details as Record<string, unknown>).activeRevisionNumber };
@@ -795,7 +807,9 @@ function createRequest(apiBaseUrl: string, options: ProductionServicesOptions, o
             : response.status === 503
               ? "SERVICE_UNAVAILABLE"
               : "SERVER_ERROR";
-    const error = new StaffServiceError(backendErrorCodes[backendCode] ?? fallback, undefined, /^(PLAN_|SOURCE_PLAN_|PIECE_OUTCOME|UNIT_RETIRED|ORDER_PIECES_|ORDER_ROUTE_|CUSTODY_|MATERIAL_|EXACT_PIECES_|CUTTING_NOT_|RECONCILIATION_|ASSISTED_)/.test(backendCode) || /\/manufacturing-plan|^\/production-units/.test(path) ? { ...details, backendCode, httpStatus: response.status } : details);
+    // Confirmare refusals keep their code, the current version and the missing conditions, never anything else.
+    if (path.startsWith("/confirmare/")) details = { ...details, ...confirmareErrorDetails(errorDetails) };
+    const error = new StaffServiceError(backendErrorCodes[backendCode] ?? fallback, undefined, /^(PLAN_|SOURCE_PLAN_|PIECE_OUTCOME|UNIT_RETIRED|ORDER_PIECES_|ORDER_ROUTE_|CUSTODY_|MATERIAL_|EXACT_PIECES_|CUTTING_NOT_|RECONCILIATION_|ASSISTED_|CONFIRMARE_)/.test(backendCode) || /\/manufacturing-plan|^\/production-units|^\/confirmare\//.test(path) ? { ...details, backendCode, httpStatus: response.status } : details);
     // Access changed centrally (temporary password, application access removed): the app re-reads the session.
     if (["PASSWORD_CHANGE_REQUIRED", "APPLICATION_ACCESS_DENIED"].includes(error.code) && path !== "/auth/session" && path !== "/auth/password") onSessionExpired(error);
     if (["SESSION_EXPIRED", "NO_SESSION", "ACCOUNT_INACTIVE"].includes(error.code) && path !== "/auth/login" && path !== "/auth/session") {
@@ -1051,7 +1065,160 @@ export function createProductionServices(apiBaseUrl: string, options: Production
     reunite: (input, key) => http.request("/production-units/reunite", { method: "POST", body: JSON.stringify(input), headers: { "Idempotency-Key": key } }),
     material: (id, input, key) => http.request(`/production-units/${encodeURIComponent(id)}/material`, { method: "POST", body: JSON.stringify(input), headers: { "Idempotency-Key": key } }),
   };
-  return { physical, auth, employee, orders, activity, workflow, exceptions, live, cutting, documents, authority, productionQr, trendyol, workspace, management, pieces, mode: "production" };
+  const confirmareOrder = (globalOrderId: string, action: string) => `/confirmare/orders/${encodeURIComponent(globalOrderId)}/${action}`;
+  const command = <T>(path: string, input: unknown, key: string, map: (value: unknown) => T) => http.request(path, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, map);
+  const confirmare: ConfirmareApi = {
+    pool: (view, source, signal) => http.request(`/confirmare/pool?view=${view}${source ? `&source=${encodeURIComponent(source)}` : ""}`, { signal }, mapConfirmarePool),
+    detail: (globalOrderId, signal) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}`, { signal }, mapConfirmareDetail),
+    next: (source, key) => command("/confirmare/next", { source }, key, (value) => { const assigned = objectValue(value).assigned; return assigned == null ? null : mapConfirmareItem(assigned); }),
+    claim: (globalOrderId, input, key) => command(confirmareOrder(globalOrderId, "claim"), input, key, mapConfirmareItem),
+    release: (globalOrderId, input, key) => command(confirmareOrder(globalOrderId, "release"), input, key, mapConfirmareItem),
+    reassign: (globalOrderId, input, key) => command(confirmareOrder(globalOrderId, "reassign"), input, key, mapConfirmareItem),
+    reopen: (globalOrderId, input, key) => command(confirmareOrder(globalOrderId, "reopen"), input, key, mapConfirmareItem),
+    approve: (globalOrderId, input, key) => command(confirmareOrder(globalOrderId, "approve"), input, key, mapConfirmareItem),
+    reject: (globalOrderId, input, key) => command(confirmareOrder(globalOrderId, "reject"), input, key, mapConfirmareItem),
+    contact: (globalOrderId, input, key) => command(confirmareOrder(globalOrderId, "contact"), input, key, (value) => { const raw = objectValue(value); return { contact: mapConfirmareContact(raw.contact), item: mapConfirmareItem(raw.item) }; }),
+    availability: (signal) => http.request("/confirmare/availability", { signal }, mapConfirmareAvailability),
+    setAvailability: (input, key) => http.request("/confirmare/availability", { method: "PUT", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapConfirmareAvailability),
+    team: (signal) => http.request("/confirmare/team", { signal }, mapConfirmareTeam),
+    alerts: (signal) => http.request("/confirmare/alerts", { signal }, (value) => { const raw = objectValue(value); return { items: itemsOf(raw).map(mapConfirmareAlert), inactivityMinutes: nonNegativeInteger(raw.inactivityMinutes) }; }),
+  };
+  return { physical, auth, employee, orders, activity, workflow, exceptions, live, cutting, documents, authority, productionQr, trendyol, workspace, management, pieces, confirmare, mode: "production" };
+}
+
+// ---------------------------------------------------------------- Confirmare workspace (strict; unexpected shapes fail closed)
+const confirmareStatuses = ["pending", "approved", "rejected", "cancelled"] as const;
+const financialStates: readonly FinancialState[] = ["cleared", "waiting", "partial", "unknown"];
+const nullableString = (value: unknown): string | null => value === null || value === undefined ? null : stringValue(value);
+const nullableNumber = (value: unknown): number | null => {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "number" || !Number.isFinite(value)) throw new StaffServiceError("SERVER_ERROR");
+  return value;
+};
+const fingerprintValue = (value: unknown): string => { const text = stringValue(value); if (!/^[0-9a-f]{64}$/.test(text)) throw new StaffServiceError("SERVER_ERROR"); return text; };
+
+/** Only what a Confirmare screen needs from a refusal: the current version and the missing conditions. */
+export function confirmareErrorDetails(value: unknown): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return {};
+  const raw = value as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  if (typeof raw.currentVersion === "number" && Number.isInteger(raw.currentVersion)) out.currentVersion = raw.currentVersion;
+  if (Array.isArray(raw.missing) && raw.missing.every((item) => typeof item === "string")) out.missing = raw.missing;
+  return out;
+}
+
+export function mapConfirmareItem(value: unknown): ConfirmareItem {
+  const raw = objectValue(value);
+  const financial = objectValue(raw.financial);
+  const contact = raw.contact == null ? null : objectValue(raw.contact);
+  const assignment = raw.assignment == null ? null : objectValue(raw.assignment);
+  const decision = raw.decision == null ? null : objectValue(raw.decision);
+  return {
+    globalOrderId: stringValue(raw.globalOrderId),
+    orderNumber: stringValue(raw.orderNumber),
+    sourceKey: stringValue(raw.sourceKey),
+    status: oneOf(raw.status, confirmareStatuses),
+    version: positiveInteger(raw.version),
+    workflowCohort: stringValue(raw.workflowCohort),
+    openedAt: timestampValue(raw.openedAt),
+    submittedAt: raw.submittedAt == null ? null : timestampValue(raw.submittedAt),
+    productionStageId: stringValue(raw.productionStageId),
+    commerceStatus: nullableString(raw.commerceStatus),
+    commerceClosed: booleanValue(raw.commerceClosed),
+    payment: { state: stringValue(objectValue(raw.payment).state) },
+    // An older API (2.38) has no `open`: unknown reads as closed.
+    financial: { state: oneOf(financial.state, financialStates), basis: nullableString(financial.basis), open: financial.open === true },
+    pricingAvailable: raw.pricingAvailable === true,
+    dueDate: raw.dueDate == null ? null : stringValue(raw.dueDate),
+    productionCleared: booleanValue(raw.productionCleared),
+    contact: contact === null ? null : { outcome: oneOf(contact.outcome, CONTACT_OUTCOMES), at: timestampValue(contact.at), attempts: positiveInteger(contact.attempts), current: booleanValue(contact.current) },
+    assignment: assignment === null ? null : { employeeId: stringValue(assignment.employeeId), displayName: stringValue(assignment.displayName), at: timestampValue(assignment.at), kind: stringValue(assignment.kind) },
+    decision: decision === null ? null : { at: timestampValue(decision.at), by: nullableString(decision.by), reasonCode: nullableString(decision.reasonCode) },
+  };
+}
+
+export function mapConfirmarePool(value: unknown): ConfirmarePool {
+  const raw = objectValue(value);
+  return { view: oneOf(raw.view, ["mine", "open", "all", "followup"] as const), items: itemsOf(raw).map(mapConfirmareItem), limit: positiveInteger(raw.limit), targetOpenPerOperator: positiveInteger(raw.targetOpenPerOperator) };
+}
+
+function mapConfirmareLine(value: unknown): ConfirmareLine {
+  const raw = objectValue(value);
+  const options = Array.isArray(raw.options) ? raw.options.map((option) => { const entry = objectValue(option); return { label: stringValue(entry.label), value: stringValue(entry.value) }; }) : [];
+  return {
+    lineId: stringValue(raw.lineId), lineNumber: positiveInteger(raw.lineNumber), name: stringValue(raw.name),
+    productCode: nullableString(raw.productCode), variant: nullableString(raw.variant), color: nullableString(raw.color),
+    width: nullableNumber(raw.width), height: nullableNumber(raw.height), unit: nullableString(raw.unit), meters: nullableNumber(raw.meters),
+    quantity: positiveInteger(raw.quantity), options, notes: nullableString(raw.notes), confirmed: booleanValue(raw.confirmed),
+  };
+}
+
+export function mapConfirmareContact(value: unknown): ConfirmareContact {
+  const raw = objectValue(value);
+  return { attempt: positiveInteger(raw.attempt), outcome: oneOf(raw.outcome, CONTACT_OUTCOMES), by: nullableString(raw.by), at: timestampValue(raw.at), current: booleanValue(raw.current) };
+}
+
+function mapConfirmareEvent(value: unknown): ConfirmareEvent {
+  const raw = objectValue(value);
+  return { action: stringValue(raw.action), actor: nullableString(raw.actor), previousStatus: nullableString(raw.previousStatus), status: stringValue(raw.status), previousAssignee: nullableString(raw.previousAssignee), assignee: nullableString(raw.assignee), reasonCode: nullableString(raw.reasonCode), version: positiveInteger(raw.version), at: timestampValue(raw.at) };
+}
+
+/** The customer block: hidden unless the server says it is visible; a full telephone number is never accepted. */
+function mapConfirmareCustomer(value: unknown): ConfirmareCustomer {
+  const raw = value == null ? {} : objectValue(value);
+  if (raw.visible !== true) return { visible: false, phoneAvailable: false };
+  const phoneMasked = nullableString(raw.phoneMasked);
+  // Defence in depth: a masked phone keeps at most two digits; anything longer is treated as unavailable.
+  const safePhone = phoneMasked !== null && (phoneMasked.match(/[0-9]/g) ?? []).length <= 2 ? phoneMasked : null;
+  return { visible: true, name: nullableString(raw.name), company: nullableString(raw.company), addressLines: Array.isArray(raw.addressLines) ? raw.addressLines.map(stringValue) : [], phoneMasked: safePhone, phoneAvailable: false };
+}
+
+export function mapConfirmareDetail(value: unknown): ConfirmareDetail {
+  const raw = objectValue(value);
+  const review = objectValue(raw.review);
+  const source = raw.source == null ? {} : objectValue(raw.source);
+  const production = objectValue(raw.production);
+  return {
+    ...mapConfirmareItem(raw),
+    review: { fingerprint: fingerprintValue(review.fingerprint), lineIds: stringList(review.lineIds), pricingAvailable: booleanValue(review.pricingAvailable), callRecorded: review.callRecorded === true, contactAvailable: review.contactAvailable === true },
+    lines: Array.isArray(raw.lines) ? raw.lines.map(mapConfirmareLine) : [],
+    contacts: Array.isArray(raw.contacts) ? raw.contacts.map(mapConfirmareContact) : [],
+    customer: mapConfirmareCustomer(raw.customer),
+    source: { commerceStatusLabel: nullableString(source.commerceStatusLabel), changedAt: source.changedAt == null ? null : timestampValue(source.changedAt), lastSeenAt: source.lastSeenAt == null ? null : timestampValue(source.lastSeenAt), freshness: nullableString(source.freshness) },
+    production: { cleared: booleanValue(production.cleared), missing: stringList(production.missing).map((condition) => oneOf(condition, CLEARANCE_CONDITIONS)) },
+    events: Array.isArray(raw.events) ? raw.events.map(mapConfirmareEvent) : [],
+  };
+}
+
+function mapConfirmareOperator(value: unknown): ConfirmareOperator {
+  const raw = objectValue(value);
+  return {
+    employeeId: stringValue(raw.employeeId), displayName: stringValue(raw.displayName), sources: stringList(raw.sources), canWork: booleanValue(raw.canWork), available: booleanValue(raw.available),
+    availableChangedAt: raw.availableChangedAt == null ? null : timestampValue(raw.availableChangedAt), lastAssignedAt: raw.lastAssignedAt == null ? null : timestampValue(raw.lastAssignedAt),
+    open: nonNegativeInteger(raw.open), oldestAssignedAt: raw.oldestAssignedAt == null ? null : timestampValue(raw.oldestAssignedAt),
+  };
+}
+
+const countMap = (value: unknown): Record<string, number> => Object.fromEntries(Object.entries(objectValue(value)).map(([key, count]) => [key, nonNegativeInteger(count)]));
+
+export function mapConfirmareTeam(value: unknown): ConfirmareTeam {
+  const raw = objectValue(value);
+  return { operators: Array.isArray(raw.operators) ? raw.operators.map(mapConfirmareOperator) : [], unassigned: countMap(raw.unassigned), undetermined: countMap(raw.undetermined), held: stringList(raw.held), targetOpenPerOperator: positiveInteger(raw.targetOpenPerOperator), inactivityMinutes: positiveInteger(raw.inactivityMinutes) };
+}
+
+function mapConfirmareAlert(value: unknown): ConfirmareAlert {
+  const raw = objectValue(value);
+  const assignee = objectValue(raw.assignee);
+  return {
+    globalOrderId: stringValue(raw.globalOrderId), orderNumber: stringValue(raw.orderNumber), sourceKey: stringValue(raw.sourceKey), kind: stringValue(raw.kind), raisedAt: timestampValue(raw.raisedAt),
+    assignee: { employeeId: stringValue(assignee.employeeId), displayName: stringValue(assignee.displayName) }, assignedAt: raw.assignedAt == null ? null : timestampValue(raw.assignedAt),
+    confirmationVersion: positiveInteger(raw.confirmationVersion), lastContactAt: raw.lastContactAt == null ? null : timestampValue(raw.lastContactAt),
+  };
+}
+
+function mapConfirmareAvailability(value: unknown): ConfirmareAvailability {
+  const raw = objectValue(value);
+  return { employeeId: stringValue(raw.employeeId), available: booleanValue(raw.available), changedAt: raw.changedAt == null ? null : timestampValue(raw.changedAt), lastAssignedAt: raw.lastAssignedAt == null ? null : timestampValue(raw.lastAssignedAt), open: nonNegativeInteger(raw.open), targetOpen: positiveInteger(raw.targetOpen) };
 }
 
 // ---------------------------------------------------------------- Trendyol workspace (strict; unexpected shapes fail closed)

@@ -53,6 +53,7 @@ $one = static function (string $sql, array $params = []) use ($pdo): mixed { $s 
 $all = static function (string $sql, array $params = []) use ($pdo): array { $s = $pdo->prepare($sql); $s->execute($params); return $s->fetchAll(PDO::FETCH_ASSOC); };
 
 // Earlier suites on the shared disposable database may have left Confirmare state; this suite starts clean.
+$pdo->exec('DELETE FROM order_confirmation_contacts');
 $pdo->exec('DELETE FROM order_confirmation_idempotency');
 $pdo->exec('DELETE FROM confirmare_alerts');
 $pdo->exec('DELETE FROM order_confirmation_events');
@@ -231,7 +232,7 @@ $poolA = $ok($pool($opA), 'pool A');
 $check(count($poolA['items']) === 23 && !in_array($th(130), $idsOf($poolA), true) && array_filter($idsOf($poolA), static fn (string $g): bool => str_starts_with($g, 'outletperdele:')) === [], 'an operator sees the unassigned Confirmare orders of their source only (no undetermined, no other source)');
 $check(array_slice($idsOf($poolA), 0, 3) === [$th(121), $th(115), $th(100)] && $poolA['items'][0]['dueDate'] === '2026-10-30', 'the nearest due date first, then stable FIFO');
 $check($poolA['items'][2]['payment']['state'] === 'waiting' && $poolA['items'][3]['payment']['state'] === 'online' && $poolA['items'][0]['productionCleared'] === false, 'the payment state only, never an amount');
-$check($poolA['items'][2]['financial'] === ['state' => 'waiting', 'basis' => null] && $poolA['items'][3]['financial'] === ['state' => 'cleared', 'basis' => 'online_payment'], 'the financial clearance state and basis only');
+$check($poolA['items'][2]['financial'] === ['state' => 'waiting', 'basis' => null, 'open' => false] && $poolA['items'][3]['financial'] === ['state' => 'cleared', 'basis' => 'online_payment', 'open' => true], 'the financial clearance state and basis only');
 $check(!str_contains(json_encode($poolA), 'Ionescu') && !str_contains(json_encode($poolA), '0722999111') && !str_contains(json_encode($poolA), 'Str. Test'), 'the pool carries no customer data');
 $check($idsOf($ok($pool($opC), 'pool C')) === [$op(200), $op(201)], 'a Dashboard operator of the other source sees only that source');
 $supAll = $ok($pool($sup, 'all'), 'pool supervisor all');
@@ -267,8 +268,11 @@ $check($ok($call($opA, 'POST', '/confirmare/next', ['source' => 'trendhome']), '
 // ---- 5. Decisions: the production checklist, versions and idempotency -----------------------------------------------
 $mine = static fn (array $who): array => $idsOf($ok($pool($who, 'mine'), 'mine'));
 $detail = static fn (array $who, string $g): array => $ok(T::call($kernel, 'GET', '/confirmare/orders/' . rawurlencode($g), null, ['origin' => DASHBOARD_ORIGIN], $who['cookie']), 'detail');
-$checklist = static function (array $who, string $g) use ($detail): array {
+$checklist = static function (array $who, string $g) use ($detail, $act, $version): array {
     $review = $detail($who, $g)['review'];
+    // API 2.39.0: the approval needs the confirmed call recorded on this review; record it as the operator does (a
+    // refusal here, for example on a colleague's order, is asserted by the approval that follows).
+    $act($who, $g, 'contact', ['expectedVersion' => $version($g), 'outcome' => 'confirmed', 'reviewFingerprint' => $review['fingerprint']]);
     return ['customerCall' => 'confirmed', 'confirmedLineIds' => $review['lineIds'], 'priceVerified' => true, 'reviewFingerprint' => $review['fingerprint']];
 };
 $approveBody = static fn (array $who, string $g) => ['expectedVersion' => $version($g)] + $checklist($who, $g);
@@ -331,7 +335,7 @@ $error($send('trendhome', $payload($finId, 'processing', null, $cod('confirmed',
 $finSend($cod('confirmed', 1), ['state' => 'unknown', 'basis' => null, 'pricingFingerprint' => null], ['price' => 'b']);
 $check(in_array('payment', $missingOf($fin), true), 'an unknown financial state stays closed');
 $error($intake($fin), 409, 'CONFIRMARE_NECESARA', 'and production never starts on it');
-$check($detail($sup, $fin)['financial'] === ['state' => 'unknown', 'basis' => null] && !str_contains(json_encode($detail($sup, $fin)), '450'), 'the view shows the state and basis only');
+$check($detail($sup, $fin)['financial'] === ['state' => 'unknown', 'basis' => null, 'open' => false] && !str_contains(json_encode($detail($sup, $fin)), '450'), 'the view shows the state and basis only');
 // Legacy orders keep the advance payment gate unchanged: the financial clearance is never read for them.
 $ok($send('trendhome', $payload($id(140), 'processing', $submitted($activatedAt->modify('-1 hour')), $online, ['financial' => ['state' => 'unknown', 'basis' => null, 'pricingFingerprint' => null]])), 'legacy order with an unknown financial clearance');
 $ok($generate($th(140)), 'a legacy online order still gets its document through the advance payment gate', 201);
@@ -597,6 +601,7 @@ $check($activate['code'] === 3 && str_contains($activate['err'], 'CONFIRMARE_WOR
 // ---- 10. Resumable migration and teardown ---------------------------------------------------------------------------
 (new SqlFileRunner($pdo))->run(dirname(__DIR__) . '/database/migrations/036_confirmare_operations.sql');
 $check((int) $one("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'order_confirmations' AND column_name IN ('assigned_employee_uuid', 'assigned_at', 'assignment_kind', 'decision_reason_code', 'production_cleared')") === 5, 'a repeated 036 run changes nothing');
+$pdo->exec('DELETE FROM order_confirmation_contacts');
 $pdo->exec('DELETE FROM order_confirmation_idempotency');
 $pdo->exec('DELETE FROM confirmare_alerts');
 $pdo->exec('DELETE FROM order_confirmation_events');

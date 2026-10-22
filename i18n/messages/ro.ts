@@ -1,3 +1,4 @@
+import { confirmareRO } from "./confirmare";
 import { physicalMessages } from "./physical";
 import { roErrors } from "./ro.errors";
 
@@ -10,6 +11,7 @@ import { roErrors } from "./ro.errors";
 export const ro = {
   ...physicalMessages,
   ...roErrors,
+  ...confirmareRO,
 
   // ---- common ------------------------------------------------------------------------------------------------
   "common.back": "Înapoi",

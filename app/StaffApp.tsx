@@ -33,6 +33,9 @@ import { dashboardUrlFor } from "../domain/workspaces";
 import { LoginIntroStage, introPlaysHere, preloadIntroMap } from "../features/auth/LoginIntro";
 import { I18nProvider, normalizeLocale, readDeviceLocale, saveDeviceLocale, t, type Locale } from "../i18n";
 import { localizeWorkflow } from "../domain/stageNames";
+import { ConfirmareQueueScreen } from "../features/confirmare/ConfirmareQueueScreen";
+import { ConfirmareOrderScreen } from "../features/confirmare/ConfirmareOrderScreen";
+import { ConfirmareTeamScreen } from "../features/confirmare/ConfirmareTeamScreen";
 
 type StaffAppProps = { initialRoute: string; mode: StaffRuntimeMode; apiBaseUrl: string };
 
@@ -150,6 +153,7 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
   const exceptionId = parsedRoute.kind === "exception-detail" && guardedRoute === parsedRoute.pathname ? parsedRoute.exceptionId : "";
   const documentOrderId = parsedRoute.kind === "document-detail" && guardedRoute === parsedRoute.pathname ? parsedRoute.orderId : "";
   const trendyolPackageId = parsedRoute.kind === "trendyol-package" && guardedRoute === parsedRoute.pathname ? parsedRoute.packageId : "";
+  const confirmareOrderId = parsedRoute.kind === "confirmare-order" && guardedRoute === parsedRoute.pathname ? parsedRoute.orderId : "";
   let screen = <HomeScreen employee={session.employee} services={services} workflow={workflow} dashboardUrl={dashboardUrl} navigate={navigate} />;
   if (guardedRoute === "/scan") {
     // A request's "open the scanner" passes only the request id; the scanned code itself never enters a URL.
@@ -163,6 +167,9 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
   else if (guardedRoute === "/authority" && services.authority) screen = <AuthorityScreen service={services.authority} initialOrderId={new URLSearchParams(window.location.search).get("order") ?? undefined} navigate={navigate} />;
   else if (guardedRoute === "/trendyol" && services.trendyol) screen = <TrendyolInboxScreen service={services.trendyol} navigate={navigate} />;
   else if (trendyolPackageId && services.trendyol) screen = <TrendyolPackageScreen key={trendyolPackageId} packageId={trendyolPackageId} service={services.trendyol} navigate={navigate} />;
+  else if (guardedRoute === "/confirmare" && services.confirmare) screen = <ConfirmareQueueScreen employee={session.employee} service={services.confirmare} navigate={navigate} />;
+  else if (guardedRoute === "/confirmare/team" && services.confirmare) screen = <ConfirmareTeamScreen employee={session.employee} service={services.confirmare} navigate={navigate} />;
+  else if (confirmareOrderId && services.confirmare) screen = <ConfirmareOrderScreen key={confirmareOrderId} orderId={confirmareOrderId} employee={session.employee} service={services.confirmare} navigate={navigate} />;
   else if (guardedRoute === "/history") screen = <HistoryScreen service={services.activity} navigate={navigate} />;
   else if (guardedRoute === "/profile") screen = <ProfileScreen employee={session.employee} mode={services.mode} onLogout={logout} passwordChanged={passwordChanged} onChangePassword={() => { setPasswordChanged(false); setChangingPassword(true); }} />;
 

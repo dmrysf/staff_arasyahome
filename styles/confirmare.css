@@ -1,0 +1,61 @@
+/*
+ * Confirmare workspace (Staff 2.29.0). Built from the shared primitives (queue rows, sections, notices, check fields);
+ * this file only adds what the telephone confirmation needs. Phones first; the order screen splits from 1024 px.
+ */
+.cf-source { color: var(--color-text-subtle); font-size: var(--text-xs); font-weight: var(--weight-semibold); letter-spacing: var(--tracking-caps); text-transform: uppercase; }
+.cf-row.tone-warning::before, .cf-row.tone-danger::before { background: var(--color-warning); }
+.cf-row.tone-success::before { background: var(--color-success); }
+.cf-tabs { grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); }
+.cf-source-filter { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
+.cf-tab-hint { margin: -8px 0 0; color: var(--color-text-muted); font-size: var(--text-sm); line-height: var(--leading-normal); }
+
+.confirmare-order { display: grid; gap: var(--space-4); min-width: 0; }
+.confirmare-order .package-header .dashboard-refresh { margin-top: 10px; }
+.cf-next h2 { margin: 0; font-size: var(--text-lg); line-height: var(--leading-snug); }
+.cf-call-form { display: grid; gap: 10px; }
+.cf-outcomes { display: grid; gap: 8px; margin: 0; padding: 0; border: 0; min-width: 0; }
+.cf-outcomes legend { margin-bottom: 8px; padding: 0; font-size: var(--text-sm); font-weight: var(--weight-semibold); }
+.cf-outcomes .check-field, .cf-call-form > .check-field, .cf-line .check-field, .detail-section > .check-field { grid-template-columns: 24px minmax(0, 1fr); }
+.cf-call-form .button, .cf-final .button { width: 100%; }
+
+.cf-lines { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.cf-line { display: grid; gap: 10px; min-width: 0; padding: 12px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface-soft); }
+.cf-line.is-confirmed { border-color: var(--color-success-line); }
+.cf-line-head { display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: 10px; align-items: start; }
+.cf-line-copy { display: grid; gap: 3px; min-width: 0; overflow-wrap: anywhere; }
+.cf-line-copy .line-name { margin: 0; }
+.cf-line-facts { margin: 0; color: var(--color-text-muted); font-size: var(--text-sm); line-height: var(--leading-snug); overflow-wrap: anywhere; }
+
+.cf-checklist { display: grid; gap: 8px; margin: 0 0 14px; padding: 0; list-style: none; }
+.cf-checklist li { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 8px; align-items: start; font-size: var(--text-sm); line-height: var(--leading-snug); }
+.cf-checklist li.is-met > svg { color: var(--color-success); }
+.cf-checklist li.is-missing > svg { color: var(--color-warning); }
+.cf-checklist li.is-separate > svg { color: var(--color-danger); }
+.cf-checklist li.is-missing span { font-weight: var(--weight-semibold); }
+.cf-confirm { display: grid; gap: 10px; padding: 14px; border: 1.5px solid var(--color-text); border-radius: var(--radius-md); background: var(--color-surface); }
+.cf-confirm p { margin: 0; line-height: var(--leading-normal); }
+.cf-confirm-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.cf-confirm-actions > .button { flex: 1 1 160px; }
+.cf-actions { display: grid; gap: 12px; }
+.cf-actions > .button, .cf-actions .field .button { width: 100%; }
+
+.cf-team-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.cf-person { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; align-items: center; padding: 12px 14px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface-soft); }
+.cf-person-copy { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+.cf-person-copy small { color: var(--color-text-muted); font-size: var(--text-sm); }
+.cf-person > .button, .cf-person > .cf-confirm-actions { grid-column: 1 / -1; }
+
+@media (min-width: 720px) {
+  .cf-person { grid-template-columns: minmax(0, 1fr) auto auto; }
+  .cf-person > .button, .cf-person > .cf-confirm-actions { grid-column: auto; }
+}
+@media (max-width: 359px) {
+  .cf-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.cf-check { display: grid; gap: 2px; min-width: 0; font-weight: var(--weight-semibold); overflow-wrap: anywhere; }
+.cf-check small { color: var(--color-text-muted); font-weight: var(--weight-regular); }
+.segmented button[role="radio"][aria-checked="true"] { background: var(--color-text); color: var(--color-bg); box-shadow: var(--shadow-sm); }
+/* The order's side column flows with the page (no inner scroll area: every control stays reachable by keyboard). */
+@media (min-width: 1024px) {
+  .confirmare-order .package-side { position: static; max-height: none; overflow: visible; }
+}

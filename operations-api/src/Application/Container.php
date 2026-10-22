@@ -154,7 +154,7 @@ final class Container
         $documents = $this->documentService($authorization, $revisionApprovers, $documentQueries, $live, $idempotency, $iamAudit);
         $tracks = new \Arasya\Operations\Production\ReworkTrackService($this->pdo, $workflows, $authorization, $this->clock, $live, $authorityModes);
         return new ApiKernel(
-            new AuthController($this->authentication, $csrf, new CookiePolicy($this->config), $this->config, $authorization, $context),
+            new AuthController($this->authentication, $csrf, new CookiePolicy($this->config), $this->config, $authorization, $context, new \Arasya\Operations\Confirmare\ConfirmareScopePolicy($this->pdo)),
             new HealthController($this->pdo, $this->clock),
             new CorsPolicy($this->config->allowedOrigins),
             new StructuredLogger(),
