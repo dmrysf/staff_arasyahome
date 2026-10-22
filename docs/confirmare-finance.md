@@ -137,11 +137,25 @@ lists the tasks. A finance-only employee opens Confirmare orders read-only (no c
    audit evidence).
 6. **Electronic refunds** through Netopia or TBI: not built; a provider integration would be a separate, reviewed phase.
 
-## Migration 039 (additive, resumable)
+## Migration 039 (not purely additive, resumable)
 
-Three new tables; the 038 attention CHECK is replaced once by `chk_operational_orders_finance_attention` (the same two
-classes plus the four Phase 5 classes). Rollback floor: API 2.40.0 ignores the new tables; it would refuse an order event
-carrying a Phase 5 attention, but YD SOFT 2.15.0 sends those only to a server announcing `financeTasks`.
+- **Adds** three new tables: `employee_finance_scopes`, `order_finance_reads`, `order_finance_actions`. No row is
+  inserted, updated or deleted.
+- **Drops and replaces** a constraint: the 038 CHECK `chk_operational_orders_financial_attention` is dropped and
+  `chk_operational_orders_finance_attention` is added (the same two classes and states plus the four Phase 5 classes).
+  The new CHECK is a strict superset of the old one, so every existing row satisfies it.
+- **DDL lock:** MySQL and MariaDB validate a new CHECK against every row and may rebuild `operational_orders` (copy
+  algorithm). Writes to `operational_orders` wait until the statement ends; the duration grows with the table. Run it in
+  the deploy window and expect source connector writes to queue or retry for that moment.
+- **Short constraint gap:** DDL is not transactional. Between the DROP and the ADD the column has no CHECK for a moment.
+  The application validates the attention class itself (`SourceOrderPayloadMapper`), so nothing relies on the CHECK
+  alone in that moment.
+- **Re-run:** every step checks `information_schema.table_constraints` first. An interrupted run (old CHECK dropped, new
+  one not yet added) completes on the next run; a completed run changes nothing. `schema_migrations` records 039 only
+  after every statement succeeded. The file is checksummed: a database that already applied an earlier text of 039
+  (local or test databases only; 039 has never run live) refuses the changed file and must be recreated.
+- **Rollback floor:** API 2.40.0 ignores the new tables; it would refuse an order event carrying a Phase 5 attention,
+  but YD SOFT 2.15.0 sends those only to a server announcing `financeTasks`. The replaced CHECK stays (it is a superset).
 
 ## Integration with cancellation PRs #73/#74
 

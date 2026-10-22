@@ -1,4 +1,7 @@
--- Confirmare finance (API 2.41.0, Phase 5). Additive and resumable: three new tables and one widened CHECK. No order,
+-- Confirmare finance (API 2.41.0, Phase 5). NOT purely additive: it creates three new tables AND drops the 038 CHECK
+-- chk_operational_orders_financial_attention and replaces it with chk_operational_orders_finance_attention (see the
+-- end of this file for the DDL lock, the short constraint gap and the re-run behaviour). The new CHECK is a strict
+-- superset of the old one, so every existing row satisfies it. No order,
 -- confirmation, employee, role, permission, grant or scope row is created, changed or deleted, and nobody receives a
 -- finance scope: without a row nobody sees an amount or acts (default deny, root included). Finance stays off until
 -- ARASYA_SOURCE_FINANCE_<SRC> is set (and, in the shop, `wp yd-arasya access finance-mode`). A source still cannot be
@@ -99,8 +102,17 @@ CREATE TABLE IF NOT EXISTS order_finance_actions (
     CONSTRAINT chk_order_finance_actions_complete CHECK ((state IN ('pending', 'unknown') AND completed_at IS NULL) OR (state = 'rejected' AND completed_at IS NOT NULL AND outcome IS NOT NULL) OR (state = 'applied' AND completed_at IS NOT NULL AND outcome IS NOT NULL AND source_entry_id IS NOT NULL))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- The 038 attention CHECK allowed only additional_payment_due and refund_due (never with `cleared`). It is replaced
--- once by the Phase 5 rule; a database that already has the new constraint keeps it.
+-- The 038 attention CHECK allowed only additional_payment_due and refund_due (never with `cleared`). It is DROPPED and
+-- replaced once by the Phase 5 rule; a database that already has the new constraint keeps it.
+--   DDL lock: MySQL and MariaDB validate a new CHECK against every row and may rebuild operational_orders (copy
+--     algorithm): writes to operational_orders wait until the statement ends (duration grows with the table). Run it in
+--     the deploy window, with the source connectors' writes expected to queue or retry.
+--   Constraint gap: DDL is not transactional, so between the DROP and the ADD the column has no CHECK for a moment.
+--     The application validates the attention class itself (SourceOrderPayloadMapper), so nothing relies on the CHECK
+--     alone in that moment.
+--   Re-run: each step looks at information_schema first. An interrupted run (old dropped, new not yet added) completes
+--     on the next run; a completed run changes nothing. The migration is recorded in schema_migrations only after
+--     every statement succeeded.
 SET @arasya_039_attention_old = (SELECT COUNT(*) > 0 FROM information_schema.table_constraints WHERE constraint_schema = DATABASE() AND table_name = 'operational_orders' AND constraint_name = 'chk_operational_orders_financial_attention');
 SET @arasya_039_attention_new = (SELECT COUNT(*) = 0 FROM information_schema.table_constraints WHERE constraint_schema = DATABASE() AND table_name = 'operational_orders' AND constraint_name = 'chk_operational_orders_finance_attention');
 
