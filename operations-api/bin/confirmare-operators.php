@@ -25,7 +25,7 @@ $describe = static function (array $row) use ($pdo, $scopes): array {
     $apps->execute([$row['employee_uuid']]);
     $working = $pdo->prepare('SELECT COUNT(*) FROM employees e WHERE e.employee_uuid = ? AND ' . ConfirmareScopePolicy::workingIdentitySql('e'));
     $working->execute([$row['employee_uuid']]);
-    $state = $pdo->prepare('SELECT accepting FROM confirmare_operator_state WHERE employee_uuid = ?');
+    $state = $pdo->prepare('SELECT available FROM confirmare_operator_state WHERE employee_uuid = ?');
     $state->execute([$row['employee_uuid']]);
     $open = $pdo->prepare("SELECT COUNT(*) FROM order_confirmations WHERE assigned_employee_uuid = ? AND status = 'pending'");
     $open->execute([$row['employee_uuid']]);
@@ -38,7 +38,7 @@ $describe = static function (array $row) use ($pdo, $scopes): array {
         'applications' => $apps->fetchAll(PDO::FETCH_COLUMN),
         'canWorkNow' => (int) $working->fetchColumn() > 0,
         'confirmareScopes' => $scopes->scopesOf((string) $row['employee_uuid']),
-        'accepting' => (int) ($state->fetchColumn() ?: 0) === 1,
+        'available' => ($available = $state->fetchColumn()) === false || (int) $available === 1,
         'openAssignments' => (int) $open->fetchColumn(),
     ];
 };

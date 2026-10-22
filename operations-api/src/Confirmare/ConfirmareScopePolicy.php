@@ -97,8 +97,9 @@ final readonly class ConfirmareScopePolicy
     }
 
     /**
-     * Operators who may receive an automatic assignment of the source now: operate scope, able to work, accepting new
-     * orders. Ordered for a fair distribution: fewest open assignments, then the longest without one.
+     * Operators who may receive an automatic assignment of the source now: operate scope, able to work, not on leave
+     * (available by default, no opt-in). Ordered for a fair distribution: fewest open assignments, then the longest
+     * without one.
      *
      * @return list<array{employee_uuid: string, display_name: string, open: int, last_assigned_at: string|null}>
      */
@@ -109,8 +110,8 @@ final readonly class ConfirmareScopePolicy
                     (SELECT COUNT(*) FROM order_confirmations c WHERE c.assigned_employee_uuid = e.employee_uuid AND c.status = 'pending') AS open_count
              FROM employee_confirmare_scopes s
              INNER JOIN employees e ON e.employee_uuid = s.employee_uuid
-             INNER JOIN confirmare_operator_state st ON st.employee_uuid = e.employee_uuid AND st.accepting = 1
-             WHERE s.source_key = ? AND s.capability = 'operate' AND " . self::workingIdentitySql('e') . '
+             LEFT JOIN confirmare_operator_state st ON st.employee_uuid = e.employee_uuid
+             WHERE s.source_key = ? AND s.capability = 'operate' AND COALESCE(st.available, 1) = 1 AND " . self::workingIdentitySql('e') . '
              ORDER BY open_count, st.last_assigned_at IS NOT NULL, st.last_assigned_at, e.employee_uuid',
         );
         $statement->execute([$sourceKey]);

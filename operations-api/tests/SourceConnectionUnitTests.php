@@ -365,7 +365,7 @@ test('signed heartbeat reports mode and contract only, for validation and active
     $pdo->exec("CREATE TABLE workflow_cohort_activations (source_key TEXT NOT NULL, action TEXT NOT NULL, effective_at TEXT NOT NULL, recorded_at TEXT NOT NULL)");
     foreach (['trendhome' => [SOURCE_TEST_TRENDHOME_SECRET, 'active'], 'outletperdele' => [SOURCE_TEST_OUTLET_SECRET, 'validation']] as $key => [$secret, $mode]) {
         $response = $controller->heartbeat(sourceSignedRequest(['sentAt' => '2026-10-07T10:00:00Z'], $secret), $key);
-        expect($response->payload === ['ok' => true, 'sourceKey' => $key, 'mode' => $mode, 'productionAuthorityMode' => 'legacy', 'qrAuthorityMode' => 'legacy', 'documentAuthorityMode' => 'legacy', 'trackingAuthorityMode' => 'legacy', 'paymentGateMode' => 'off', 'confirmare' => ['state' => 'inactive', 'activatedAt' => null], 'contract' => ['schemaVersion' => 1, 'workflowId' => 'curtain-production', 'workflowVersion' => 1, 'stageCount' => 14]], 'Unexpected heartbeat: ' . sourceJson($response));
+        expect($response->payload === ['ok' => true, 'sourceKey' => $key, 'mode' => $mode, 'productionAuthorityMode' => 'legacy', 'qrAuthorityMode' => 'legacy', 'documentAuthorityMode' => 'legacy', 'trackingAuthorityMode' => 'legacy', 'paymentGateMode' => 'off', 'confirmare' => ['state' => 'inactive', 'activatedAt' => null], 'orderFacts' => ['pricing', 'dueDate'], 'contract' => ['schemaVersion' => 1, 'workflowId' => 'curtain-production', 'workflowVersion' => 1, 'stageCount' => 14]], 'Unexpected heartbeat: ' . sourceJson($response));
         expect(sourceResponseHasNoSecret($response));
     }
     $contacts = $pdo->query('SELECT COUNT(*) FROM order_sources WHERE last_contact_at IS NOT NULL')->fetchColumn();
@@ -597,9 +597,9 @@ test('migrations stay ordered through 036 and the canonical workflow keeps its 1
     // 036 is additive and re-runnable too: four new tables and one guarded ALTER that adds nullable assignment columns to
     // order_confirmations; no row is written, no scope is granted and no existing order or confirmation is touched.
     $operations = preg_replace(['/^\s*--.*$/m', '/ON (UPDATE|DELETE) RESTRICT/'], '', (string) file_get_contents(dirname(__DIR__) . '/database/migrations/036_confirmare_operations.sql'));
-    expect(preg_match('/\b(UPDATE|DELETE|DROP|TRUNCATE|RENAME|INSERT|MODIFY|CHANGE)\b/i', $operations) === 0 && substr_count($operations, 'CREATE TABLE IF NOT EXISTS') === 4
-        && preg_match_all('/ALTER TABLE ([a-z_]+)/i', $operations, $operationsAlters) === 1 && $operationsAlters[1] === ['order_confirmations']
-        && str_contains($operations, "column_name = 'assigned_employee_uuid'") && substr_count($operations, 'ADD COLUMN') === 4 && str_contains($operations, "'DO 0'"), '036 must only add its tables and nullable columns, guarded.');
+    expect(preg_match('/\b(UPDATE|DELETE|DROP|TRUNCATE|RENAME|INSERT|MODIFY|CHANGE)\b/i', $operations) === 0 && substr_count($operations, 'CREATE TABLE IF NOT EXISTS') === 5
+        && preg_match_all('/ALTER TABLE ([a-z_]+)/i', $operations, $operationsAlters) === 2 && $operationsAlters[1] === ['order_confirmations', 'operational_orders']
+        && str_contains($operations, "column_name = 'assigned_employee_uuid'") && str_contains($operations, "column_name = 'source_pricing_fingerprint'") && substr_count($operations, 'ADD COLUMN') === 12 && substr_count($operations, "'DO 0'") === 2, '036 must only add its tables and nullable or defaulted columns, guarded.');
 });
 
 test('payment gate mode is per source, defaults to off and an unreadable value falls back to off', function (): void {
@@ -803,9 +803,13 @@ test('Confirmare cohort: Bucharest cutover boundaries, activation instant, evide
 
     // The gate follows the persisted cohort and the stage only.
     $g = \Arasya\Operations\Production\ConfirmationGate::class;
-    expect($g::blocksStart('confirmare', 'pending', 'waiting') && $g::blocksStart('confirmare', null, 'waiting') && $g::blocksStart('confirmare', 'rejected', 'waiting'));
-    expect(!$g::blocksStart('confirmare', 'approved', 'waiting') && $g::blocksStart('undetermined', 'approved', 'waiting'));
-    expect(!$g::blocksStart(null, null, 'waiting') && !$g::blocksStart('legacy', null, 'waiting') && !$g::blocksStart('confirmare', 'pending', 'material-preparation'));
+    // API 2.38.0: the production clearance (approval, call, lines, price, sync, payment) opens it, never `approved` alone.
+    expect($g::blocksStart('confirmare', false, 'waiting') && $g::blocksStart('confirmare', null, 'waiting'));
+    expect(!$g::blocksStart('confirmare', true, 'waiting') && $g::blocksStart('undetermined', true, 'waiting'));
+    expect(!$g::blocksStart(null, null, 'waiting') && !$g::blocksStart('legacy', null, 'waiting') && !$g::blocksStart('confirmare', false, 'material-preparation'));
+    $clearance = \Arasya\Operations\Confirmare\ConfirmationClearance::class;
+    expect($clearance::paymentOpen('online', 'not_required') && $clearance::paymentOpen('cod', 'confirmed') && $clearance::paymentOpen('cod', 'not_required'));
+    expect(!$clearance::paymentOpen('cod', 'waiting') && !$clearance::paymentOpen('cod', 'partial') && !$clearance::paymentOpen('unverified', 'waiting') && !$clearance::paymentOpen(null, null), 'The financial condition is closed whatever the payment gate mode.');
     expect($g::WORKFLOW_READY === false, 'Phase 1 cannot approve, so no source can be activated.');
 });
 

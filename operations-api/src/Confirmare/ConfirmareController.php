@@ -21,11 +21,12 @@ use Arasya\Operations\Security\CsrfGuard;
  *   POST /confirmare/orders/{globalOrderId}/claim          {expectedVersion}
  *   POST /confirmare/orders/{globalOrderId}/release        {expectedVersion}
  *   POST /confirmare/orders/{globalOrderId}/reassign       {expectedVersion, employeeId}
- *   POST /confirmare/orders/{globalOrderId}/approve        {expectedVersion}
+ *   POST /confirmare/orders/{globalOrderId}/approve        {expectedVersion, customerCall, confirmedLineIds, priceVerified, reviewFingerprint}
  *   POST /confirmare/orders/{globalOrderId}/reject         {expectedVersion, reasonCode}
  *   POST /confirmare/orders/{globalOrderId}/reopen         {expectedVersion}
  *   GET  /confirmare/availability
- *   PUT  /confirmare/availability                          {accepting, employeeId?}
+ *   PUT  /confirmare/availability                          {available, employeeId?}
+ *   GET  /confirmare/alerts                                (supervisors)
  */
 final readonly class ConfirmareController
 {
@@ -33,7 +34,7 @@ final readonly class ConfirmareController
         'claim' => ['expectedVersion'],
         'release' => ['expectedVersion'],
         'reassign' => ['expectedVersion', 'employeeId'],
-        'approve' => ['expectedVersion'],
+        'approve' => ['expectedVersion', 'customerCall', 'confirmedLineIds', 'priceVerified', 'reviewFingerprint'],
         'reject' => ['expectedVersion', 'reasonCode'],
         'reopen' => ['expectedVersion'],
     ];
@@ -55,6 +56,9 @@ final readonly class ConfirmareController
         if ($request->method === 'GET' && $path === '/confirmare/pool') {
             return $this->json($this->service->pool($actor, $request->query('source'), $request->query('view', 'open') ?? 'open'));
         }
+        if ($path === '/confirmare/alerts' && $request->method === 'GET') {
+            return $this->json($this->service->alerts($actor));
+        }
         if ($path === '/confirmare/availability' && $request->method === 'GET') {
             return $this->json($this->service->availability($actor));
         }
@@ -73,12 +77,12 @@ final readonly class ConfirmareController
         }
         if ($path === '/confirmare/availability' && $request->method === 'PUT') {
             $this->csrf->requireValid($session->rawToken, $request->header('x-csrf-token'));
-            $input = $this->body($request, ['accepting', 'employeeId']);
+            $input = $this->body($request, ['available', 'employeeId']);
             $employeeId = $input['employeeId'] ?? null;
             if ($employeeId !== null && !is_string($employeeId)) {
                 throw new ApiException(400, 'INVALID_REQUEST', 'employeeId must be a string.');
             }
-            return $this->json($this->service->setAvailability($actor, $employeeId, $input['accepting'] ?? null, $key, $request->requestId));
+            return $this->json($this->service->setAvailability($actor, $employeeId, $input['available'] ?? null, $key, $request->requestId));
         }
         if (preg_match('#^/confirmare/orders/([^/]{1,600})/(claim|release|reassign|approve|reject|reopen)$#D', $path, $m) === 1) {
             if ($request->method !== 'POST') {
@@ -92,7 +96,7 @@ final readonly class ConfirmareController
                 'claim' => $this->service->claim($actor, $globalId, $version, $key, $request->requestId),
                 'release' => $this->service->release($actor, $globalId, $version, $key, $request->requestId),
                 'reassign' => $this->service->reassign($actor, $globalId, $version, $input['employeeId'] ?? null, $key, $request->requestId),
-                'approve' => $this->service->approve($actor, $globalId, $version, $key, $request->requestId),
+                'approve' => $this->service->approve($actor, $globalId, $version, array_diff_key($input, ['expectedVersion' => true]), $key, $request->requestId),
                 'reject' => $this->service->reject($actor, $globalId, $version, $input['reasonCode'] ?? null, $key, $request->requestId),
                 default => $this->service->reopen($actor, $globalId, $version, $key, $request->requestId),
             });

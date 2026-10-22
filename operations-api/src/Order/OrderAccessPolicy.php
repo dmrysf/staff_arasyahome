@@ -80,7 +80,7 @@ final readonly class OrderAccessPolicy
      */
     public function blocksConfirmationStart(OperationalOrder $order): bool
     {
-        return ConfirmationGate::blocksStart($order->workflowCohort, $order->confirmationStatus, $order->productionStageId);
+        return ConfirmationGate::blocksStart($order->workflowCohort, $order->confirmationCleared, $order->productionStageId);
     }
 
     /** Observe mode: a Staff claim of a source-managed order is allowed but recorded. */

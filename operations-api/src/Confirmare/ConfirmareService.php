@@ -32,14 +32,21 @@ use RuntimeException;
  * Audit. Every change writes one append-only order_confirmation_events row in the same transaction (unique per order
  * and version): actor, before/after status and assignee, an enumerated reason code. No customer data, no free text.
  *
- * Effect. Only `approved` opens the production gate; approving never confirms a payment (the advance payment gate
- * still applies) and a payment never approves an order. Rejecting keeps the gate closed; nothing is cancelled in the
+ * Effect. `approved` alone never opens production (owner rule): ConfirmationClearance also needs the confirmed customer
+ * call, every cart line confirmed, the source's pricing fingerprint the approval was given on, an unchanged review and
+ * the financial condition (whatever the payment gate mode). Approving never confirms a payment; a payment never approves. Rejecting keeps the gate closed; nothing is cancelled in the
  * shop. An undetermined order (unknown submission instant) cannot be approved here. No source can be activated while
  * ConfirmationGate::WORKFLOW_READY is false, so in this release no order reaches this service outside tests.
  */
 final class ConfirmareService
 {
-    public const MAX_OPEN_PER_OPERATOR = 10;
+    /**
+     * Balance target per operator, never a hard limit (owner rule: a strict cap must not block the queue). Distribution
+     * prefers operators below it; when every operator is at or above it, the least loaded still receives the order.
+     */
+    public const TARGET_OPEN_PER_OPERATOR = 10;
+    /** An assignment without any change for this long raises one supervisor alert; it is never reassigned for it. */
+    public const INACTIVITY_ALERT_MINUTES = 120;
     public const POOL_LIMIT = 200;
 
     /** Rejection reasons (codes stored, Romanian labels for the screens). */
@@ -55,6 +62,8 @@ final class ConfirmareService
     /** Shop states in which an order can no longer be approved for production. */
     public const CLOSED_COMMERCE = ['cancelled', 'refunded', 'failed', 'trash'];
 
+    /** Due date first (orders without one after), then stable FIFO. */
+    private const PRIORITY_ORDER = 'o.source_due_date IS NULL, o.source_due_date, c.opened_at, c.order_uuid';
     private const STATUS_PENDING = 'pending';
     private const STATUS_APPROVED = 'approved';
     private const STATUS_REJECTED = 'rejected';
@@ -118,7 +127,7 @@ final class ConfirmareService
             $where .= ' AND c.source_key = ?';
             $parameters[] = $source;
         }
-        $order = $view === 'all' ? 'c.updated_at DESC, c.order_uuid' : 'c.opened_at, c.order_uuid';
+        $order = $view === 'all' ? 'c.updated_at DESC, c.order_uuid' : self::PRIORITY_ORDER;
         $statement = $this->pdo->prepare($this->selectSql() . " WHERE {$where} ORDER BY {$order} LIMIT " . self::POOL_LIMIT);
         $statement->execute($parameters);
         $items = array_map(fn (array $row): array => $this->present($row), $statement->fetchAll(PDO::FETCH_ASSOC));
@@ -128,7 +137,7 @@ final class ConfirmareService
             'limit' => self::POOL_LIMIT,
             'capabilities' => ['operate' => $operate, 'supervise' => $supervise],
             'rejectReasons' => self::REJECT_REASONS,
-            'maxOpenPerOperator' => self::MAX_OPEN_PER_OPERATOR,
+            'targetOpenPerOperator' => self::TARGET_OPEN_PER_OPERATOR,
         ];
     }
 
@@ -152,7 +161,13 @@ final class ConfirmareService
              WHERE ev.order_uuid = ? ORDER BY ev.version_after',
         );
         $events->execute([(string) $row['order_uuid']]);
-        return $this->present($row) + ['events' => array_map(static fn (array $event): array => [
+        $orderUuid = (string) $row['order_uuid'];
+        $review = [
+            'fingerprint' => ConfirmationClearance::fingerprint($this->pdo, $orderUuid),
+            'lineIds' => ConfirmationClearance::lineIds($this->pdo, $orderUuid),
+            'pricingAvailable' => $row['source_pricing_fingerprint'] !== null,
+        ];
+        return $this->present($row) + ['review' => $review, 'production' => ['cleared' => (int) $row['production_cleared'] === 1, 'missing' => ConfirmationClearance::missing($this->pdo, $orderUuid)], 'events' => array_map(static fn (array $event): array => [
             'action' => (string) $event['action'],
             'actor' => $event['actor_kind'] === 'system' ? null : (string) $event['actor_name'],
             'previousStatus' => $event['previous_status'],
@@ -176,7 +191,8 @@ final class ConfirmareService
 
     /**
      * Pull distribution: assigns the oldest unassigned Confirmare order of the actor's operate sources (or of `source`)
-     * to the actor, within MAX_OPEN_PER_OPERATOR. Answers {assigned: null} when nothing is waiting.
+     * to the actor (due date first, then FIFO). No hard cap: the balance target only steers the automatic distribution.
+     * A suspended source holds its orders: nothing is handed out. Answers {assigned: null} when nothing is waiting.
      *
      * @return array<string, mixed>
      */
@@ -201,10 +217,13 @@ final class ConfirmareService
                 if ($actor->isRoot || $sources === [] || ($source !== null && !in_array($source, $sources, true))) {
                     throw new ApiException(403, 'CONFIRMARE_SCOPE_DENIED', 'You do not receive Confirmare orders of this source.');
                 }
-                $this->requireCapacity($actor->employeeUuid);
+                if ($source !== null && $this->held($source)) {
+                    throw new ApiException(409, 'CONFIRMARE_SOURCE_SUSPENDED', 'The source is suspended: its orders are held.');
+                }
+                $sources = array_values(array_filter($source === null ? $sources : [$source], fn (string $key): bool => !$this->held($key)));
                 $now = $this->now();
                 $assigned = null;
-                foreach ($this->candidates($source === null ? $sources : [$source]) as $orderUuid) {
+                foreach ($this->candidates($sources) as $orderUuid) {
                     $assigned = $this->assignLocked($orderUuid, $actor->employeeUuid, 'auto', $actor->employeeUuid, 'assigned', $now, $requestId, $key);
                     if ($assigned !== null) {
                         break;
@@ -238,7 +257,9 @@ final class ConfirmareService
             if ($confirmation['assigned_employee_uuid'] !== null) {
                 throw new ApiException(409, 'CONFIRMARE_ASSIGNED_TO_OTHER', 'Another colleague is confirming this order.');
             }
-            $this->requireCapacity($actor->employeeUuid);
+            if ($this->held((string) $order['source_key'])) {
+                throw new ApiException(409, 'CONFIRMARE_SOURCE_SUSPENDED', 'The source is suspended: its orders are held.');
+            }
             $this->assign($order, $confirmation, $actor->employeeUuid, 'claim', $actor->employeeUuid, 'claimed', $now, $requestId, $key);
             return [];
         });
@@ -284,10 +305,34 @@ final class ConfirmareService
         });
     }
 
-    /** @return array<string, mixed> */
-    public function approve(EmployeeIdentity $actor, string $globalOrderId, mixed $expectedVersion, string $key, string $requestId): array
+    /**
+     * Approval with its production checklist (owner rule). The body states the confirmed customer call
+     * (`customerCall: "confirmed"`), every confirmed cart line (`confirmedLineIds`: exactly the order's current lines),
+     * `priceVerified: true` against the shop, and the `reviewFingerprint` the operator saw (detail.review.fingerprint).
+     * The approval is bound to that review; ConfirmationClearance opens production only while it still matches and the
+     * financial condition is met.
+     *
+     * @param array<string, mixed> $checklist
+     * @return array<string, mixed>
+     */
+    public function approve(EmployeeIdentity $actor, string $globalOrderId, mixed $expectedVersion, array $checklist, string $key, string $requestId): array
     {
-        return $this->command($actor, 'approve', $globalOrderId, $expectedVersion, [], $key, $requestId, false, function (array $order, array $confirmation, string $now) use ($actor, $key, $requestId): array {
+        if (($checklist['customerCall'] ?? null) !== 'confirmed') {
+            throw new ApiException(422, 'CONFIRMARE_CALL_REQUIRED', 'Record the confirmed telephone call with the customer (customerCall: "confirmed").');
+        }
+        if (($checklist['priceVerified'] ?? null) !== true) {
+            throw new ApiException(422, 'CONFIRMARE_PRICE_NOT_VERIFIED', 'Verify the prices against the shop order first (priceVerified: true).');
+        }
+        $lines = $checklist['confirmedLineIds'] ?? null;
+        if (!is_array($lines) || !array_is_list($lines) || $lines === [] || count($lines) > 200 || array_filter($lines, static fn (mixed $v): bool => !is_string($v) || $v === '' || strlen($v) > 128) !== []) {
+            throw new ApiException(422, 'CONFIRMARE_LINES_NOT_CONFIRMED', 'Confirm every cart line (confirmedLineIds).');
+        }
+        $fingerprint = $checklist['reviewFingerprint'] ?? null;
+        if (!is_string($fingerprint) || preg_match('/^[0-9a-f]{64}$/D', $fingerprint) !== 1) {
+            throw new ApiException(422, 'CONFIRMARE_REVIEW_REQUIRED', 'reviewFingerprint (the review the decision is based on) is required.');
+        }
+        sort($lines, SORT_STRING);
+        return $this->command($actor, 'approve', $globalOrderId, $expectedVersion, [$lines, $fingerprint], $key, $requestId, false, function (array $order, array $confirmation, string $now) use ($actor, $lines, $fingerprint, $key, $requestId): array {
             $this->requireDecider($actor, $order, $confirmation);
             if ($order['workflow_cohort'] !== WorkflowCohort::CONFIRMARE) {
                 throw new ApiException(409, 'CONFIRMARE_UNDETERMINED', 'The submission instant of this order is not known; it cannot be approved for production here.');
@@ -295,10 +340,29 @@ final class ConfirmareService
             if (in_array((string) $order['source_commerce_status_code'], self::CLOSED_COMMERCE, true) || $order['operational_status'] === 'unavailable') {
                 throw new ApiException(409, 'CONFIRMARE_ORDER_CLOSED', 'The order is cancelled or no longer available in the shop; it cannot be approved.');
             }
+            $orderUuid = (string) $order['order_uuid'];
+            $pricing = $this->pdo->prepare('SELECT source_pricing_fingerprint FROM operational_orders WHERE order_uuid = ?');
+            $pricing->execute([$orderUuid]);
+            if ($pricing->fetchColumn() === null) {
+                throw new ApiException(409, 'CONFIRMARE_PRICE_UNAVAILABLE', 'The shop has not sent its pricing fingerprint for this order yet; the price cannot be verified.');
+            }
+            $current = ConfirmationClearance::lineIds($this->pdo, $orderUuid);
+            $sortedCurrent = $current;
+            sort($sortedCurrent, SORT_STRING);
+            if ($lines !== $sortedCurrent) {
+                throw new ApiException(409, 'CONFIRMARE_LINES_NOT_CONFIRMED', 'Every current cart line must be confirmed, and only those.', ['lineIds' => $current]);
+            }
+            $currentFingerprint = ConfirmationClearance::fingerprint($this->pdo, $orderUuid);
+            if (!hash_equals($currentFingerprint, $fingerprint)) {
+                throw new ApiException(409, 'CONFIRMARE_REVIEW_STALE', 'The order changed in the shop since it was reviewed. Review it again.', ['reviewFingerprint' => $currentFingerprint]);
+            }
             $this->change($order, $confirmation, [
                 'status' => self::STATUS_APPROVED, 'decided_at' => $now, 'decided_by_employee_uuid' => $actor->employeeUuid, 'decision_reason_code' => null,
                 'assigned_employee_uuid' => null, 'assigned_at' => null, 'assignment_kind' => null,
+                'call_confirmed_at' => $now, 'call_confirmed_by_employee_uuid' => $actor->employeeUuid,
+                'confirmed_line_ids' => json_encode($lines, JSON_THROW_ON_ERROR), 'approved_review_fingerprint' => $fingerprint,
             ], $actor->employeeUuid, 'approved', null, $now, $requestId, $key);
+            ConfirmationClearance::refresh($this->pdo, $orderUuid, $now);
             return [];
         });
     }
@@ -319,16 +383,23 @@ final class ConfirmareService
         });
     }
 
-    /** Supervisor: a rejected order returns to the pool (unassigned). An approval is never reopened here. @return array<string, mixed> */
+    /** Supervisor: a rejected order, or a stale approval (changed in the shop before production), returns to the pool. @return array<string, mixed> */
     public function reopen(EmployeeIdentity $actor, string $globalOrderId, mixed $expectedVersion, string $key, string $requestId): array
     {
         return $this->command($actor, 'reopen', $globalOrderId, $expectedVersion, [], $key, $requestId, false, function (array $order, array $confirmation, string $now) use ($actor, $key, $requestId): array {
             $this->requireSupervisor($actor, (string) $order['source_key']);
-            if ($confirmation['status'] !== self::STATUS_REJECTED) {
-                throw new ApiException(409, 'CONFIRMARE_NOT_REJECTED', 'Only a rejected order can be reopened.');
+            // A rejected order, or an approved one that lost its production clearance because the shop changed it after
+            // the review (it never started production), returns to the pool for a new review. A cleared approval never.
+            $staleApproval = $confirmation['status'] === self::STATUS_APPROVED && !ConfirmationClearance::refresh($this->pdo, (string) $order['order_uuid'], $now)
+                && $order['production_stage_id'] === \Arasya\Operations\Order\OrderProjectionWriter::INITIAL_STAGE_ID
+                && array_intersect(ConfirmationClearance::missing($this->pdo, (string) $order['order_uuid']), ['sync', 'lines', 'price']) !== [];
+            if ($confirmation['status'] !== self::STATUS_REJECTED && !$staleApproval) {
+                throw new ApiException(409, 'CONFIRMARE_NOT_REOPENABLE', 'Only a rejected order, or an approval the shop changed before production, can be reopened.');
             }
             $this->change($order, $confirmation, [
                 'status' => self::STATUS_PENDING, 'decided_at' => null, 'decided_by_employee_uuid' => null, 'decision_reason_code' => null,
+                'call_confirmed_at' => null, 'call_confirmed_by_employee_uuid' => null, 'confirmed_line_ids' => null, 'approved_review_fingerprint' => null,
+                'production_cleared' => 0, 'cleared_at' => null,
             ], $actor->employeeUuid, 'reopened', null, $now, $requestId, $key);
             return [];
         });
@@ -340,19 +411,19 @@ final class ConfirmareService
      *
      * @return array<string, mixed>
      */
-    public function setAvailability(EmployeeIdentity $actor, ?string $employeeId, mixed $accepting, string $key, string $requestId): array
+    public function setAvailability(EmployeeIdentity $actor, ?string $employeeId, mixed $available, string $key, string $requestId): array
     {
         $this->requireActor($actor);
         $this->requireKey($key);
-        if (!is_bool($accepting)) {
-            throw new ApiException(400, 'INVALID_REQUEST', 'accepting must be true or false.');
+        if (!is_bool($available)) {
+            throw new ApiException(400, 'INVALID_REQUEST', 'available must be true or false.');
         }
         $target = $employeeId ?? $actor->employeeUuid;
         if (preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/D', $target) !== 1) {
             throw new ApiException(400, 'INVALID_REQUEST', 'employeeId is invalid.');
         }
-        $hash = $this->hash('availability', [$target, $accepting]);
-        return $this->retrying(function () use ($actor, $target, $accepting, $key, $hash, $requestId): array {
+        $hash = $this->hash('availability', [$target, $available]);
+        $response = $this->retrying(function () use ($actor, $target, $available, $key, $hash, $requestId): array {
             $this->pdo->beginTransaction();
             try {
                 $this->lockOperator($target);
@@ -373,10 +444,10 @@ final class ConfirmareService
                     }
                 }
                 $now = $this->now();
-                $this->pdo->prepare('UPDATE confirmare_operator_state SET accepting = ?, accepting_changed_at = ?, accepting_changed_by_employee_uuid = ? WHERE employee_uuid = ?')
-                    ->execute([$accepting ? 1 : 0, $now, $actor->employeeUuid, $target]);
+                $this->pdo->prepare('UPDATE confirmare_operator_state SET available = ?, available_changed_at = ?, available_changed_by_employee_uuid = ? WHERE employee_uuid = ?')
+                    ->execute([$available ? 1 : 0, $now, $actor->employeeUuid, $target]);
                 $released = 0;
-                if (!$accepting) {
+                if (!$available) {
                     $released = $this->releaseAll($target, $actor->employeeUuid, 'operator_unavailable', $now, $requestId, $key);
                 }
                 $response = $this->availabilityOf($target) + ['released' => $released];
@@ -388,14 +459,26 @@ final class ConfirmareService
                 throw $error;
             }
         });
+        // Leave returns the operator's orders to the pool; they are redistributed to colleagues at once (controlled:
+        // the same fair, audited distribution as the cron run). A failure here only waits for the next run.
+        if ($available === false && ($response['released'] ?? 0) > 0) {
+            foreach ($response['sources']['operate'] ?? [] as $sourceKey) {
+                try {
+                    $this->distribute((string) $sourceKey);
+                } catch (\Throwable) {
+                }
+            }
+        }
+        return $response;
     }
 
     // ---- System distribution (bin/confirmare-distribute.php) -------------------------------------------------------
 
     /**
      * Returns to the pool every pending assignment whose assignee can no longer work on it (scope removed, account or
-     * department inactive, application removed), then assigns unassigned Confirmare orders to accepting operators,
-     * one at a time, fewest open assignments first, oldest order first, within MAX_OPEN_PER_OPERATOR. Each assignment
+     * department inactive, application removed), then assigns unassigned Confirmare orders to available operators (no
+     * opt-in: an active identity with `operate` is available until put on leave), one at a time, fewest open assignments
+     * first, due date first then FIFO, never blocked by the balance target. Suspended sources are held. Each assignment
      * is its own short transaction. `dryRun` reads only.
      *
      * @return array{released: int, assigned: int, waiting: array<string, int>, operators: array<string, int>}
@@ -404,19 +487,20 @@ final class ConfirmareService
     {
         $released = $dryRun ? count($this->ineligibleAssignments()) : $this->reclaim();
         $assigned = 0;
-        $sources = $this->waitingSources($source);
+        $held = [];
         while (!$dryRun && $assigned < $maxAssignments) {
             $progress = false;
             foreach ($this->waitingSources($source) as $sourceKey => $waiting) {
-                foreach ($this->scopes->distributionTargets($sourceKey) as $target) {
-                    if ($target['open'] >= self::MAX_OPEN_PER_OPERATOR) {
-                        continue;
-                    }
-                    if ($this->assignOne($sourceKey, $target['employee_uuid'])) {
-                        $assigned++;
-                        $progress = true;
-                    }
-                    break;
+                // A suspended source holds its orders: nothing is distributed until it is resumed.
+                if ($this->held($sourceKey)) {
+                    $held[$sourceKey] = true;
+                    continue;
+                }
+                // Least loaded first (below the balance target first, then overflow): the queue never blocks.
+                $target = $this->scopes->distributionTargets($sourceKey)[0] ?? null;
+                if ($target !== null && $this->assignOne($sourceKey, $target['employee_uuid'])) {
+                    $assigned++;
+                    $progress = true;
                 }
             }
             if (!$progress) {
@@ -424,10 +508,51 @@ final class ConfirmareService
             }
         }
         $operators = [];
-        foreach (array_keys($sources) as $sourceKey) {
-            $operators[$sourceKey] = count($this->scopes->distributionTargets($sourceKey));
+        $overTarget = 0;
+        foreach (['trendhome', 'outletperdele'] as $sourceKey) {
+            if ($source !== null && $sourceKey !== $source) {
+                continue;
+            }
+            $targets = $this->scopes->distributionTargets($sourceKey);
+            $operators[$sourceKey] = count($targets);
+            $overTarget += count(array_filter($targets, static fn (array $t): bool => $t['open'] > self::TARGET_OPEN_PER_OPERATOR));
+            if ($this->held($sourceKey)) {
+                $held[$sourceKey] = true;
+            }
         }
-        return ['released' => $released, 'assigned' => $assigned, 'waiting' => $this->waitingSources($source), 'operators' => $operators];
+        $alerts = $dryRun ? count($this->inactiveAssignments()) : $this->raiseAlerts();
+        return ['released' => $released, 'assigned' => $assigned, 'waiting' => $this->waitingSources($source), 'operators' => $operators,
+            'held' => array_keys($held), 'overTarget' => $overTarget, 'openAlerts' => $alerts];
+    }
+
+    /**
+     * Open supervisor alerts of the supervised sources: assignments without any change for INACTIVITY_ALERT_MINUTES.
+     * Inactivity alone never reassigns an order (owner rule); the supervisor decides.
+     *
+     * @return array<string, mixed>
+     */
+    public function alerts(EmployeeIdentity $actor): array
+    {
+        $this->requireActor($actor);
+        $supervise = $this->scopes->sources($actor, ConfirmareScopePolicy::SUPERVISE);
+        if ($supervise === []) {
+            throw new ApiException(403, 'CONFIRMARE_SCOPE_DENIED', 'Only a Confirmare supervisor sees the alerts.');
+        }
+        $parameters = [];
+        $where = ConfirmareScopePolicy::condition($supervise, 'a.source_key', $parameters);
+        $statement = $this->pdo->prepare("SELECT a.global_order_id, a.source_key, a.kind, a.raised_at, a.confirmation_version, e.employee_uuid, e.display_name, c.assigned_at
+            FROM confirmare_alerts a INNER JOIN employees e ON e.employee_uuid = a.employee_uuid INNER JOIN order_confirmations c ON c.order_uuid = a.order_uuid
+            WHERE a.resolved_at IS NULL AND {$where} ORDER BY a.raised_at, a.global_order_id LIMIT " . self::POOL_LIMIT);
+        $statement->execute($parameters);
+        return ['items' => array_map(static fn (array $row): array => [
+            'globalOrderId' => (string) $row['global_order_id'],
+            'sourceKey' => (string) $row['source_key'],
+            'kind' => (string) $row['kind'],
+            'raisedAt' => self::iso((string) $row['raised_at']),
+            'assignee' => ['employeeId' => (string) $row['employee_uuid'], 'displayName' => (string) $row['display_name']],
+            'assignedAt' => $row['assigned_at'] === null ? null : self::iso((string) $row['assigned_at']),
+            'confirmationVersion' => (int) $row['confirmation_version'],
+        ], $statement->fetchAll(PDO::FETCH_ASSOC)), 'inactivityMinutes' => self::INACTIVITY_ALERT_MINUTES];
     }
 
     // ---- Internals -------------------------------------------------------------------------------------------------
@@ -551,7 +676,7 @@ final class ConfirmareService
             $this->pdo->beginTransaction();
             try {
                 $state = $this->lockOperator($operatorUuid);
-                if ((int) $state['accepting'] !== 1 || $this->openCount($operatorUuid) >= self::MAX_OPEN_PER_OPERATOR) {
+                if ((int) $state['available'] !== 1) {
                     $this->pdo->rollBack();
                     return false;
                 }
@@ -634,6 +759,35 @@ final class ConfirmareService
         return $released;
     }
 
+    /** Whether the source is suspended (its orders are held, not distributed). */
+    private function held(string $sourceKey): bool
+    {
+        return \Arasya\Operations\Production\WorkflowCohort::heartbeatState($this->pdo, $sourceKey, $this->clock->now())['state'] === \Arasya\Operations\Production\WorkflowCohort::STATE_SUSPENDED;
+    }
+
+    /** @return list<array<string, mixed>> pending assignments without any change for INACTIVITY_ALERT_MINUTES */
+    private function inactiveAssignments(): array
+    {
+        $statement = $this->pdo->prepare("SELECT order_uuid, global_order_id, source_key, assigned_employee_uuid, version FROM order_confirmations
+            WHERE status = 'pending' AND assigned_employee_uuid IS NOT NULL AND updated_at < ? ORDER BY order_uuid");
+        $statement->execute([$this->clock->now()->setTimezone(new \DateTimeZone('UTC'))->modify('-' . self::INACTIVITY_ALERT_MINUTES . ' minutes')->format('Y-m-d H:i:s.u')]);
+        return $statement->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /** Resolves alerts whose assignment moved on, raises one alert per inactive assignment. @return int open alerts */
+    private function raiseAlerts(): int
+    {
+        $now = $this->now();
+        $this->pdo->prepare("UPDATE confirmare_alerts a INNER JOIN order_confirmations c ON c.order_uuid = a.order_uuid SET a.resolved_at = ?
+            WHERE a.resolved_at IS NULL AND (c.version <> a.confirmation_version OR c.status <> 'pending' OR c.assigned_employee_uuid IS NULL)")->execute([$now]);
+        $insert = $this->pdo->prepare('INSERT INTO confirmare_alerts (alert_uuid, order_uuid, global_order_id, source_key, kind, employee_uuid, confirmation_version, raised_at)
+            SELECT ?, ?, ?, ?, \'inactive_assignment\', ?, ?, ? FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM confirmare_alerts WHERE order_uuid = ? AND kind = \'inactive_assignment\' AND confirmation_version = ?)');
+        foreach ($this->inactiveAssignments() as $row) {
+            $insert->execute([Uuid::v4(), $row['order_uuid'], $row['global_order_id'], $row['source_key'], $row['assigned_employee_uuid'], (int) $row['version'], $now, $row['order_uuid'], (int) $row['version']]);
+        }
+        return (int) $this->pdo->query('SELECT COUNT(*) FROM confirmare_alerts WHERE resolved_at IS NULL')->fetchColumn();
+    }
+
     /** Oldest unassigned pending Confirmare orders of the sources (non-locking; each is re-checked under its locks). @param list<string> $sources @return list<string> */
     private function candidates(array $sources): array
     {
@@ -645,7 +799,7 @@ final class ConfirmareService
         $statement = $this->pdo->prepare(
             "SELECT c.order_uuid FROM order_confirmations c INNER JOIN operational_orders o ON o.order_uuid = c.order_uuid
              WHERE {$condition} AND c.status = 'pending' AND c.assigned_employee_uuid IS NULL AND o.workflow_cohort = 'confirmare'
-             ORDER BY c.opened_at, c.order_uuid LIMIT 5",
+             ORDER BY " . self::PRIORITY_ORDER . ' LIMIT 5',
         );
         $statement->execute($parameters);
         return array_map('strval', $statement->fetchAll(PDO::FETCH_COLUMN));
@@ -668,8 +822,8 @@ final class ConfirmareService
     /** Creates (when missing) and locks the operator's state row. @return array<string, mixed> */
     private function lockOperator(string $employeeUuid): array
     {
-        $this->pdo->prepare('INSERT INTO confirmare_operator_state (employee_uuid, accepting) VALUES (?, 0) ON DUPLICATE KEY UPDATE employee_uuid = employee_uuid')->execute([$employeeUuid]);
-        $statement = $this->pdo->prepare('SELECT employee_uuid, accepting, last_assigned_at FROM confirmare_operator_state WHERE employee_uuid = ? FOR UPDATE');
+        $this->pdo->prepare('INSERT INTO confirmare_operator_state (employee_uuid, available) VALUES (?, 1) ON DUPLICATE KEY UPDATE employee_uuid = employee_uuid')->execute([$employeeUuid]);
+        $statement = $this->pdo->prepare('SELECT employee_uuid, available, last_assigned_at FROM confirmare_operator_state WHERE employee_uuid = ? FOR UPDATE');
         $statement->execute([$employeeUuid]);
         return $statement->fetch(PDO::FETCH_ASSOC) ?: throw new RuntimeException('Operator state row is missing.');
     }
@@ -701,13 +855,6 @@ final class ConfirmareService
         $statement = $this->pdo->prepare("SELECT COUNT(*) FROM order_confirmations WHERE assigned_employee_uuid = ? AND status = 'pending'");
         $statement->execute([$employeeUuid]);
         return (int) $statement->fetchColumn();
-    }
-
-    private function requireCapacity(string $employeeUuid): void
-    {
-        if ($this->openCount($employeeUuid) >= self::MAX_OPEN_PER_OPERATOR) {
-            throw new ApiException(409, 'CONFIRMARE_CAPACITY_REACHED', 'Finish or release an order before taking another one.', ['maxOpen' => self::MAX_OPEN_PER_OPERATOR]);
-        }
     }
 
     /** @param array<string, mixed> $confirmation */
@@ -763,16 +910,16 @@ final class ConfirmareService
     /** @return array<string, mixed> */
     private function availabilityOf(string $employeeUuid): array
     {
-        $statement = $this->pdo->prepare('SELECT accepting, accepting_changed_at, last_assigned_at FROM confirmare_operator_state WHERE employee_uuid = ?');
+        $statement = $this->pdo->prepare('SELECT available, available_changed_at, last_assigned_at FROM confirmare_operator_state WHERE employee_uuid = ?');
         $statement->execute([$employeeUuid]);
-        $row = $statement->fetch(PDO::FETCH_ASSOC) ?: ['accepting' => 0, 'accepting_changed_at' => null, 'last_assigned_at' => null];
+        $row = $statement->fetch(PDO::FETCH_ASSOC) ?: ['available' => 1, 'available_changed_at' => null, 'last_assigned_at' => null];
         return [
             'employeeId' => $employeeUuid,
-            'accepting' => (int) $row['accepting'] === 1,
-            'changedAt' => $row['accepting_changed_at'] === null ? null : self::iso((string) $row['accepting_changed_at']),
+            'available' => (int) $row['available'] === 1,
+            'changedAt' => $row['available_changed_at'] === null ? null : self::iso((string) $row['available_changed_at']),
             'lastAssignedAt' => $row['last_assigned_at'] === null ? null : self::iso((string) $row['last_assigned_at']),
             'open' => $this->openCount($employeeUuid),
-            'maxOpen' => self::MAX_OPEN_PER_OPERATOR,
+            'targetOpen' => self::TARGET_OPEN_PER_OPERATOR,
             'sources' => $this->scopes->scopesOf($employeeUuid),
         ];
     }
@@ -789,7 +936,7 @@ final class ConfirmareService
     private function selectSql(): string
     {
         return 'SELECT o.order_uuid, o.global_order_id, o.order_number, o.source_key, o.workflow_cohort, o.source_submitted_at, o.production_stage_id, o.source_commerce_status_code,
-                       o.operational_status, o.payment_method, o.advance_status,
+                       o.operational_status, o.payment_method, o.advance_status, o.source_due_date, o.source_pricing_fingerprint, c.production_cleared,
                        c.status, c.version, c.opened_at, c.decided_at, c.decision_reason_code, c.assigned_employee_uuid, c.assigned_at, c.assignment_kind,
                        ae.display_name AS assignee_name, de.display_name AS decider_name, c.decided_by_employee_uuid
                 FROM order_confirmations c
@@ -814,6 +961,8 @@ final class ConfirmareService
             'commerceStatus' => $row['source_commerce_status_code'],
             'commerceClosed' => in_array((string) $row['source_commerce_status_code'], self::CLOSED_COMMERCE, true) || $row['operational_status'] === 'unavailable',
             'payment' => ['state' => PaymentGate::state($row['payment_method'], $row['advance_status'])],
+            'dueDate' => $row['source_due_date'] === null ? null : (string) $row['source_due_date'],
+            'productionCleared' => (int) $row['production_cleared'] === 1,
             'assignment' => $row['assigned_employee_uuid'] === null ? null : [
                 'employeeId' => (string) $row['assigned_employee_uuid'],
                 'displayName' => (string) $row['assignee_name'],

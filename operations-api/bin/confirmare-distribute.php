@@ -8,10 +8,11 @@ declare(strict_types=1);
 //   php bin/confirmare-distribute.php [--source=trendhome] [--dry-run]
 //
 // First returns to the pool every pending assignment whose assignee can no longer work on it (scope removed, account,
-// department or application inactive). Then assigns unassigned Confirmare orders, oldest first, to operators who hold
-// the source's `operate` scope and accept new orders, fewest open assignments first, at most
-// ConfirmareService::MAX_OPEN_PER_OPERATOR each. Every change is one short transaction with its own audit event.
-// --dry-run only reads. Prints counts only (no customer data, no names).
+// department or application inactive). Then assigns unassigned Confirmare orders, nearest due date first and then FIFO,
+// to available operators (no opt-in; leave excludes), the least loaded first: the balance target
+// ConfirmareService::TARGET_OPEN_PER_OPERATOR never blocks the queue. Suspended sources are held. Finally raises one
+// supervisor alert per assignment without progress (never a reassignment). Every change is one short transaction with
+// its own audit event. --dry-run only reads. Prints counts only (no customer data, no names).
 
 use Arasya\Operations\Integration\SourceRegistry;
 

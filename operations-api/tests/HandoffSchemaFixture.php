@@ -8,8 +8,11 @@ function restorePreConfirmareOperationsTestSchema(PDO $pdo): void
     // The four 036 tables stay (identity reads such as the employee view use the scope table at every schema level the
     // suites restore; CREATE TABLE IF NOT EXISTS keeps a re-run idempotent). Only the ALTER of 035's table is undone.
     $pdo->exec('DELETE FROM order_confirmation_idempotency');
-    $pdo->exec('ALTER TABLE order_confirmations DROP CONSTRAINT chk_order_confirmations_reason, DROP CONSTRAINT chk_order_confirmations_assigned_pending, DROP CONSTRAINT chk_order_confirmations_assignment,
-        DROP FOREIGN KEY fk_order_confirmations_assignee, DROP KEY idx_order_confirmations_assignee, DROP COLUMN decision_reason_code, DROP COLUMN assignment_kind, DROP COLUMN assigned_at, DROP COLUMN assigned_employee_uuid');
+    $pdo->exec('ALTER TABLE order_confirmations DROP CONSTRAINT chk_order_confirmations_cleared, DROP FOREIGN KEY fk_order_confirmations_caller, DROP CONSTRAINT chk_order_confirmations_reason, DROP CONSTRAINT chk_order_confirmations_assigned_pending, DROP CONSTRAINT chk_order_confirmations_assignment,
+        DROP FOREIGN KEY fk_order_confirmations_assignee, DROP KEY idx_order_confirmations_assignee, DROP COLUMN cleared_at, DROP COLUMN production_cleared, DROP COLUMN approved_review_fingerprint, DROP COLUMN confirmed_line_ids,
+        DROP COLUMN call_confirmed_by_employee_uuid, DROP COLUMN call_confirmed_at, DROP COLUMN decision_reason_code, DROP COLUMN assignment_kind, DROP COLUMN assigned_at, DROP COLUMN assigned_employee_uuid');
+    $pdo->exec('ALTER TABLE operational_orders DROP CONSTRAINT chk_operational_orders_pricing_fingerprint, DROP COLUMN source_due_date, DROP COLUMN source_pricing_fingerprint');
+    $pdo->exec('DELETE FROM confirmare_alerts');
     $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='036_confirmare_operations.sql'");
 }
 

@@ -106,6 +106,8 @@ final readonly class SourceIngestionController
             // Present means this server accepts the optional order.submission evidence in schema 1 (API 2.37.0). `active`
             // with the source's activation instant: genuinely new orders submitted since then belong to Confirmare.
             'confirmare' => $this->writer->confirmareState($sourceKey),
+            // Present means this server accepts these optional order facts (API 2.38.0); a source sends them only then.
+            'orderFacts' => \Arasya\Operations\Integration\SourceOrderPayloadMapper::ORDER_FACTS,
             'contract' => [
                 'schemaVersion' => 1,
                 'workflowId' => $workflow['id'],

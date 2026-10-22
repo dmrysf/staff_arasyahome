@@ -54,6 +54,8 @@ final readonly class OperationalOrder
          */
         public ?string $workflowCohort = null,
         public ?string $confirmationStatus = null,
+        /** API 2.38.0: order_confirmations.production_cleared (ConfirmationClearance), or null without a Confirmare row. */
+        public ?bool $confirmationCleared = null,
     ) {
     }
 

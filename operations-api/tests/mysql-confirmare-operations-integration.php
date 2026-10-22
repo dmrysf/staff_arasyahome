@@ -54,6 +54,7 @@ $all = static function (string $sql, array $params = []) use ($pdo): array { $s 
 
 // Earlier suites on the shared disposable database may have left Confirmare state; this suite starts clean.
 $pdo->exec('DELETE FROM order_confirmation_idempotency');
+$pdo->exec('DELETE FROM confirmare_alerts');
 $pdo->exec('DELETE FROM order_confirmation_events');
 $pdo->exec('DELETE FROM order_confirmations');
 $pdo->exec('DELETE FROM workflow_cohort_activations');
@@ -111,18 +112,27 @@ $call = static function (array $who, string $method, string $path, ?array $body 
 $pool = static fn (array $who, string $view = 'open', ?string $source = null): array => T::call($kernel, 'GET', '/confirmare/pool', null, ['origin' => DASHBOARD_ORIGIN], $who['cookie'], ['view' => $view] + ($source === null ? [] : ['source' => $source]));
 $act = static fn (array $who, string $globalId, string $action, array $body, ?string $key = null): array => $call($who, 'POST', '/confirmare/orders/' . rawurlencode($globalId) . '/' . $action, $body, $key);
 $version = static fn (string $globalId): int => (int) $one('SELECT version FROM order_confirmations WHERE global_order_id = ?', [$globalId]);
-$conf = static fn (string $globalId): array => $all('SELECT c.status, c.version, c.assigned_employee_uuid, c.assignment_kind, c.decision_reason_code, c.decided_by_employee_uuid FROM order_confirmations c WHERE c.global_order_id = ?', [$globalId])[0] ?? [];
+$conf = static function (string $globalId) use ($all): array {
+    $row = $all('SELECT c.status, c.version, c.assigned_employee_uuid, c.assignment_kind, c.decision_reason_code, c.decided_by_employee_uuid, c.production_cleared FROM order_confirmations c WHERE c.global_order_id = ?', [$globalId])[0] ?? [];
+    if ($row !== []) $row['production_cleared'] = (int) $row['production_cleared'];
+    return $row;
+};
 $events = static fn (string $globalId): array => $all('SELECT action, actor_kind, actor_employee_uuid, previous_status, new_status, previous_assignee_uuid, new_assignee_uuid, reason_code, version_after FROM order_confirmation_events WHERE global_order_id = ? ORDER BY version_after', [$globalId]);
 
 // ---- Fixtures ----------------------------------------------------------------------------------------------------
 $iso = static fn (DateTimeImmutable $at): string => $at->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d\TH:i:s.u\Z');
 $tick = 0;
-$payload = static function (string $id, string $status, ?array $submission, ?array $payment) use ($suffix, &$tick): array {
+$payload = static function (string $id, string $status, ?array $submission, ?array $payment, array $extra = []) use ($suffix, &$tick): array {
     $tick++;
     $p = T::sourceOrder($id, "co-{$id}-{$suffix}-{$tick}", gmdate('Y-m-d\TH:i:s', time() - 5000 + $tick) . '.' . sprintf('%06d', $tick) . 'Z', null, $status, 'active', [[
-        'id' => 7001, 'line' => 1, 'name' => 'Perdea Voal Alb', 'sku' => 'PV-ALB', 'color' => 'Alb', 'width' => 3, 'height' => 2.75, 'unit' => 'm', 'quantity' => 1,
+        'id' => 7001, 'line' => 1, 'name' => 'Perdea Voal Alb', 'sku' => 'PV-ALB', 'color' => 'Alb', 'width' => 3, 'height' => 2.75, 'unit' => 'm', 'quantity' => $extra['quantity'] ?? 1,
         'options' => [['label' => 'buc', 'value' => '2 buc.']],
+    ], [
+        'id' => 7002, 'line' => 2, 'name' => 'Draperie Bej', 'sku' => 'DR-BEJ', 'color' => 'Bej', 'width' => 2, 'height' => 2.6, 'unit' => 'm', 'quantity' => 1,
     ]]);
+    // API 2.38.0 order facts: the shop's pricing fingerprint (never an amount) and an optional due date.
+    if (($extra['pricing'] ?? true) !== false) $p['order']['pricing'] = ['fingerprint' => 'sha256:' . hash('sha256', "price-{$id}-" . ($extra['price'] ?? 'a'))];
+    if (isset($extra['due'])) $p['order']['dueDate'] = $extra['due'];
     unset($p['order']['notes']);
     $p['order']['delivery'] = ['name' => 'Ionescu Testclient', 'street' => 'Str. Test 1', 'city' => 'Cluj-Napoca', 'postalCode' => '400000', 'country' => 'RO', 'phone' => '0722999111'];
     if ($submission !== null) $p['order']['submission'] = $submission;
@@ -183,9 +193,13 @@ $activateTwoPhase = static function (string $src) use ($activation, $activatedAt
 };
 $activateTwoPhase('trendhome');
 $activateTwoPhase('outletperdele');
+$dueDates = [121 => '2026-10-30', 115 => '2026-11-03'];
 for ($n = 100; $n <= 122; $n++) {
-    $ok($send('trendhome', $payload($id($n), 'processing', $submitted($after($n)), $n % 2 === 0 ? $cod('waiting') : $online)), "trendhome order {$n}");
+    $ok($send('trendhome', $payload($id($n), 'processing', $submitted($after($n)), $n % 2 === 0 ? $cod('waiting') : $online, ['pricing' => $n !== 120] + (isset($dueDates[$n]) ? ['due' => $dueDates[$n]] : []))), "trendhome order {$n}");
 }
+$check($one('SELECT source_due_date FROM operational_orders WHERE global_order_id = ?', [$th(121)]) === '2026-10-30' && $one('SELECT source_pricing_fingerprint FROM operational_orders WHERE global_order_id = ?', [$th(120)]) === null, 'due date and pricing fingerprint are stored as sent');
+$error($send('trendhome', array_replace_recursive($payload($id(199), 'processing', $submitted($after(199)), $online), ['order' => ['pricing' => ['fingerprint' => '12.50 RON']]])), 422, 'SOURCE_PAYLOAD_INVALID', 'an amount is never accepted as a pricing fingerprint');
+$error($send('trendhome', array_replace_recursive($payload($id(199), 'processing', $submitted($after(199)), $online), ['order' => ['dueDate' => '2026-02-30']])), 422, 'SOURCE_PAYLOAD_INVALID', 'an impossible due date is refused');
 $ok($send('trendhome', $payload($id(130), 'processing', null, $online)), 'order without evidence');
 $ok($send('trendhome', $payload($id(140), 'processing', $submitted($activatedAt->modify('-1 hour')), $online)), 'order submitted before the activation');
 $ok($send('outletperdele', $payload($id(200), 'processing', $submitted($after(200)), $online)), 'outlet order 200');
@@ -200,7 +214,8 @@ $check($events($th(140)) === [] && $conf($th(140)) === [], 'an order submitted b
 $idsOf = static fn (array $body): array => array_column($body['items'] ?? [], 'globalOrderId');
 $poolA = $ok($pool($opA), 'pool A');
 $check(count($poolA['items']) === 23 && !in_array($th(130), $idsOf($poolA), true) && array_filter($idsOf($poolA), static fn (string $g): bool => str_starts_with($g, 'outletperdele:')) === [], 'an operator sees the unassigned Confirmare orders of their source only (no undetermined, no other source)');
-$check($poolA['items'][0]['globalOrderId'] === $th(100) && $poolA['items'][0]['payment']['state'] === 'waiting' && $poolA['items'][1]['payment']['state'] === 'online', 'oldest first, with the payment state only');
+$check(array_slice($idsOf($poolA), 0, 3) === [$th(121), $th(115), $th(100)] && $poolA['items'][0]['dueDate'] === '2026-10-30', 'the nearest due date first, then stable FIFO');
+$check($poolA['items'][2]['payment']['state'] === 'waiting' && $poolA['items'][3]['payment']['state'] === 'online' && $poolA['items'][0]['productionCleared'] === false, 'the payment state only, never an amount');
 $check(!str_contains(json_encode($poolA), 'Ionescu') && !str_contains(json_encode($poolA), '0722999111') && !str_contains(json_encode($poolA), 'Str. Test'), 'the pool carries no customer data');
 $check($idsOf($ok($pool($opC), 'pool C')) === [$op(200), $op(201)], 'a Dashboard operator of the other source sees only that source');
 $supAll = $ok($pool($sup, 'all'), 'pool supervisor all');
@@ -211,131 +226,169 @@ $error(T::call($kernel, 'GET', '/confirmare/orders/' . rawurlencode($op(200)), n
 $error($act($opA, $op(200), 'release', ['expectedVersion' => $version($op(200))]), 404, 'CONFIRMARE_NOT_FOUND', 'a command on another source\'s order finds nothing');
 $error($act($none, $th(100), 'release', ['expectedVersion' => $version($th(100))]), 404, 'CONFIRMARE_NOT_FOUND', 'without a scope a command finds nothing');
 
-// ---- 4. Availability and the automatic distribution ----------------------------------------------------------------
+// ---- 4. Distribution: no opt-in, fair, due date first, never blocked by the balance target --------------------------
+$load = static fn (string $name): int => (int) $one("SELECT COUNT(*) FROM order_confirmations WHERE assigned_employee_uuid = ? AND status = 'pending'", [$uuids[$name]]);
+$check($ok(T::call($kernel, 'GET', '/confirmare/availability', null, ['origin' => DASHBOARD_ORIGIN], $opA['cookie']), 'availability A')['available'] === true, 'an active identity with the operate scope is available without opting in (owner rule)');
+$error($call($none, 'PUT', '/confirmare/availability', ['available' => false]), 403, 'CONFIRMARE_SCOPE_DENIED', 'without a scope there is no availability to change');
+$error($call($opA, 'PUT', '/confirmare/availability', ['available' => false, 'employeeId' => $uuids['coopb']]), 403, 'CONFIRMARE_SCOPE_DENIED', 'an operator never changes a colleague\'s availability');
 $dry = $service->distribute(null, true);
-$check($dry['assigned'] === 0 && $dry['operators'] === ['outletperdele' => 0, 'trendhome' => 0] && (int) $one('SELECT COUNT(*) FROM order_confirmations WHERE assigned_employee_uuid IS NOT NULL') === 0, 'nobody accepts yet: nothing is assigned by default');
-$check($ok(T::call($kernel, 'GET', '/confirmare/availability', null, ['origin' => DASHBOARD_ORIGIN], $opA['cookie']), 'availability A')['accepting'] === false, 'an operator does not accept orders until they opt in');
-$ok($call($opA, 'PUT', '/confirmare/availability', ['accepting' => true]), 'A accepts');
-$error($call($none, 'PUT', '/confirmare/availability', ['accepting' => true]), 403, 'CONFIRMARE_SCOPE_DENIED', 'without a scope nobody accepts orders');
-$error($call($opA, 'PUT', '/confirmare/availability', ['accepting' => true, 'employeeId' => $uuids['coopb']]), 403, 'CONFIRMARE_SCOPE_DENIED', 'an operator never changes a colleague\'s availability');
-$ok($call($sup, 'PUT', '/confirmare/availability', ['accepting' => true, 'employeeId' => $uuids['coopb']]), 'supervisor sets B available');
-$ok($call($opC, 'PUT', '/confirmare/availability', ['accepting' => true]), 'C accepts');
+$check($dry['assigned'] === 0 && $dry['operators'] === ['trendhome' => 2, 'outletperdele' => 1] && (int) $one('SELECT COUNT(*) FROM order_confirmations WHERE assigned_employee_uuid IS NOT NULL') === 0, 'the dry run reads only: ' . json_encode($dry));
 $distribution = $service->distribute();
-$loadA = (int) $one("SELECT COUNT(*) FROM order_confirmations WHERE assigned_employee_uuid = ? AND status = 'pending'", [$uuids['coopa']]);
-$loadB = (int) $one("SELECT COUNT(*) FROM order_confirmations WHERE assigned_employee_uuid = ? AND status = 'pending'", [$uuids['coopb']]);
-$check($distribution['assigned'] === 22 && $loadA === ConfirmareService::MAX_OPEN_PER_OPERATOR && $loadB === ConfirmareService::MAX_OPEN_PER_OPERATOR && $distribution['waiting'] === ['trendhome' => 3], 'fair distribution up to the capacity of each operator: ' . json_encode($distribution));
+$check($distribution['assigned'] === 25 && $load('coopa') + $load('coopb') === 23 && abs($load('coopa') - $load('coopb')) <= 1 && $distribution['waiting'] === [] && $distribution['overTarget'] === 2,
+    'every order is distributed fairly, also beyond the balance target of ' . ConfirmareService::TARGET_OPEN_PER_OPERATOR . ' (the queue never blocks): ' . json_encode($distribution));
 $check($conf($op(200))['assigned_employee_uuid'] === $uuids['coopc'] && $conf($op(201))['assigned_employee_uuid'] === $uuids['coopc'], 'each source goes only to its own operators');
 $check($conf($th(130))['assigned_employee_uuid'] === null, 'an undetermined order is never distributed');
-$firstTwo = [$conf($th(100))['assigned_employee_uuid'], $conf($th(101))['assigned_employee_uuid']];
+$firstTwo = [$conf($th(121))['assigned_employee_uuid'], $conf($th(115))['assigned_employee_uuid']];
 sort($firstTwo);
 $expectedTwo = [$uuids['coopa'], $uuids['coopb']];
 sort($expectedTwo);
-$check($firstTwo === $expectedTwo, 'the two oldest orders go to two different operators (round robin by load)');
+$check($firstTwo === $expectedTwo, 'the two most urgent orders go to two different operators first');
 $assigned = $events($th(100));
 $check(count($assigned) === 2 && $assigned[1]['action'] === 'assigned' && $assigned[1]['actor_kind'] === 'system' && $assigned[1]['new_assignee_uuid'] !== null && (int) $assigned[1]['version_after'] === 2, 'an automatic assignment is a system event');
 $check($service->distribute()['assigned'] === 0, 'a second run assigns nothing more');
-$error($call($opA, 'POST', '/confirmare/next', ['source' => 'trendhome']), 409, 'CONFIRMARE_CAPACITY_REACHED', 'an operator at capacity takes nothing more');
-$mineA = $idsOf($ok($pool($opA, 'mine'), 'mine A'));
-$check(count($mineA) === ConfirmareService::MAX_OPEN_PER_OPERATOR, 'the operator\'s own list');
-$ofA = static fn (): array => array_values(array_filter($mineA, static fn (string $g): bool => true));
-$aOrder = $mineA[0];
-$bOrder = $idsOf($ok($pool($opB, 'mine'), 'mine B'))[0];
+$check($ok($call($opA, 'POST', '/confirmare/next', ['source' => 'trendhome']), 'next with nothing waiting')['assigned'] === null, 'next with nothing waiting assigns nothing (no hard cap refusal either)');
 
-// ---- 5. Decisions, versions and idempotency -----------------------------------------------------------------------
-$error($act($opA, $bOrder, 'approve', ['expectedVersion' => $version($bOrder)]), 409, 'CONFIRMARE_NOT_ASSIGNED_TO_YOU', 'an operator never decides a colleague\'s order');
-$error($act($opA, $aOrder, 'approve', ['expectedVersion' => $version($aOrder) - 1]), 409, 'CONFIRMARE_CHANGED', 'a decision on a stale view is refused');
-$error($act($opA, $aOrder, 'approve', ['expectedVersion' => $version($aOrder), 'note' => 'x']), 400, 'INVALID_REQUEST', 'no free text is accepted');
-$error($act($opA, $aOrder, 'approve', ['expectedVersion' => $version($aOrder)], 'short'), 400, 'INVALID_IDEMPOTENCY_KEY', 'a command needs an Idempotency-Key');
+// ---- 5. Decisions: the production checklist, versions and idempotency -----------------------------------------------
+$mine = static fn (array $who): array => $idsOf($ok($pool($who, 'mine'), 'mine'));
+$detail = static fn (array $who, string $g): array => $ok(T::call($kernel, 'GET', '/confirmare/orders/' . rawurlencode($g), null, ['origin' => DASHBOARD_ORIGIN], $who['cookie']), 'detail');
+$checklist = static function (array $who, string $g) use ($detail): array {
+    $review = $detail($who, $g)['review'];
+    return ['customerCall' => 'confirmed', 'confirmedLineIds' => $review['lineIds'], 'priceVerified' => true, 'reviewFingerprint' => $review['fingerprint']];
+};
+$approveBody = static fn (array $who, string $g) => ['expectedVersion' => $version($g)] + $checklist($who, $g);
+$pick = static function (array $orders, callable $test): string { foreach ($orders as $g) { if ($test($g)) return $g; } throw new RuntimeException('fixture: no order matches'); };
+$mineA = $mine($opA);
+$isCod = static fn (string $g): bool => (int) substr($g, -1) % 2 === 0 && $g !== $th(120);
+$aOrder = $pick($mineA, $isCod);
+$bOrder = $mine($opB)[0];
+$error($act($opA, $bOrder, 'approve', $approveBody($opA, $bOrder)), 409, 'CONFIRMARE_NOT_ASSIGNED_TO_YOU', 'an operator never decides a colleague\'s order');
+$body = $approveBody($opA, $aOrder);
+$error($act($opA, $aOrder, 'approve', ['expectedVersion' => $body['expectedVersion'] - 1] + $body), 409, 'CONFIRMARE_CHANGED', 'a decision on a stale view is refused');
+$error($act($opA, $aOrder, 'approve', ['customerCall' => 'not_called'] + $body), 422, 'CONFIRMARE_CALL_REQUIRED', 'no approval without the confirmed customer call');
+$error($act($opA, $aOrder, 'approve', ['priceVerified' => false] + $body), 422, 'CONFIRMARE_PRICE_NOT_VERIFIED', 'no approval without the price verified against the shop');
+$error($act($opA, $aOrder, 'approve', ['confirmedLineIds' => ['7001']] + $body), 409, 'CONFIRMARE_LINES_NOT_CONFIRMED', 'every cart line must be confirmed');
+$error($act($opA, $aOrder, 'approve', ['reviewFingerprint' => str_repeat('f', 64)] + $body), 409, 'CONFIRMARE_REVIEW_STALE', 'an approval is bound to the reviewed order');
+$error($act($opA, $aOrder, 'approve', $body + ['note' => 'x']), 400, 'INVALID_REQUEST', 'no free text is accepted');
+$error($act($opA, $aOrder, 'approve', $body, 'short'), 400, 'INVALID_IDEMPOTENCY_KEY', 'a command needs an Idempotency-Key');
 $error($intake($aOrder), 409, 'CONFIRMARE_NECESARA', 'before the decision production cannot start');
 $key = 'co-approve-' . bin2hex(random_bytes(8));
 $before = $version($aOrder);
-$approved = $ok($act($opA, $aOrder, 'approve', ['expectedVersion' => $before], $key), 'approve');
-$check($approved['status'] === 'approved' && $approved['version'] === $before + 1 && $approved['assignment'] === null && $approved['decision']['by'] === 'Test coopa', 'approved, unassigned, decided by the operator');
-$replayed = $ok($act($opA, $aOrder, 'approve', ['expectedVersion' => $before], $key), 'approve replay');
+$approved = $ok($act($opA, $aOrder, 'approve', $body, $key), 'approve');
+$check($approved['status'] === 'approved' && $approved['version'] === $before + 1 && $approved['assignment'] === null && $approved['decision']['by'] === 'Test coopa' && $approved['productionCleared'] === false, 'approved, but not cleared: the COD advance is still waiting');
+$replayed = $ok($act($opA, $aOrder, 'approve', $body, $key), 'approve replay');
 $check($replayed === $approved && count($events($aOrder)) === $before + 1, 'the same Idempotency-Key replays the answer and writes nothing');
 $error($act($opA, $aOrder, 'reject', ['expectedVersion' => $before, 'reasonCode' => 'other'], $key), 409, 'IDEMPOTENCY_CONFLICT', 'a key reused for another request is refused');
-$error($act($sup, $aOrder, 'approve', ['expectedVersion' => $version($aOrder)]), 409, 'CONFIRMARE_NOT_PENDING', 'a decided order is not decided again');
+$error($act($sup, $aOrder, 'approve', $approveBody($sup, $aOrder)), 409, 'CONFIRMARE_NOT_PENDING', 'a decided order is not decided again');
 $approvedEvent = $events($aOrder)[$before];
 $check($approvedEvent['action'] === 'approved' && $approvedEvent['previous_status'] === 'pending' && $approvedEvent['new_status'] === 'approved' && $approvedEvent['actor_employee_uuid'] === $uuids['coopa'] && $approvedEvent['previous_assignee_uuid'] === $uuids['coopa'] && $approvedEvent['new_assignee_uuid'] === null, 'the approval event names actor, before and after');
-// The approval opens the Confirmare gate only; the advance payment gate still applies (trendhome enforce).
-$aPayment = (string) $one('SELECT advance_status FROM operational_orders WHERE global_order_id = ?', [$aOrder]);
-if ($aPayment === 'waiting') {
-    $error($intake($aOrder), 409, 'AVANS_NEVALIDAT', 'approved but the COD advance is not confirmed: the payment gate still stops production');
-    $ok($send('trendhome', $payload(explode(':', $aOrder)[1], 'processing', null, $cod('confirmed'))), 'the advance is confirmed in the shop');
-}
-$check($ok($intake($aOrder), 'intake after approval')['outcome'] === 'started' && $stage($aOrder) === 'material-preparation', 'after the approval (and the advance) production starts');
-// An online order: the approval alone opens it; a payment alone never does.
-$online1 = null;
-for ($n = 101; $n <= 121; $n += 2) {
-    if (!in_array($th($n), array_slice($mineA, 0, 4), true) && ($conf($th($n))['status'] ?? '') === 'pending' && $conf($th($n))['assigned_employee_uuid'] !== null) { $online1 = $th($n); break; }
-}
-$check($online1 !== null, 'fixture: an assigned online order');
-$owner101 = $conf($online1)['assigned_employee_uuid'] === $uuids['coopa'] ? $opA : $opB;
-$error($intake($online1), 409, 'CONFIRMARE_NECESARA', 'a paid online order is not confirmed by its payment');
-$ok($act($owner101, $online1, 'approve', ['expectedVersion' => $version($online1)]), 'approve online order');
-$ok($generate($online1), 'document after approval', 201);
-$check((int) $one('SELECT COUNT(*) FROM production_document_revisions r JOIN operational_orders o ON o.order_uuid = r.order_uuid WHERE o.global_order_id = ?', [$online1]) === 1, 'the first production document is allowed after the approval');
+// `approved` alone never opens production (owner rule): the financial condition is missing.
+$check($detail($sup, $aOrder)['production'] === ['cleared' => false, 'missing' => ['payment']], 'the only missing condition is the payment: ' . json_encode($detail($sup, $aOrder)['production']));
+$error($intake($aOrder), 409, 'CONFIRMARE_NECESARA', 'an approved order with a waiting advance never starts production');
+$closedDoc = $error($generate($aOrder), 409, 'CONFIRMARE_NECESARA', 'nor gets its first production document');
+$check(($closedDoc['error']['details']['missing'] ?? null) === ['payment'], 'the refusal names what is missing');
+$ok($send('trendhome', $payload(explode(':', $aOrder)[1], 'processing', null, $cod('confirmed'))), 'the advance is confirmed in the shop');
+$check($conf($aOrder)['production_cleared'] === 1 && $detail($sup, $aOrder)['production']['missing'] === [], 'the confirmed advance completes the clearance');
+$check($ok($intake($aOrder), 'intake after clearance')['outcome'] === 'started' && $stage($aOrder) === 'material-preparation', 'only now production starts');
+// An online order: cleared by the approval itself (every other condition holds).
+$online1 = $pick($mineA, static fn (string $g): bool => !$isCod($g) && $g !== $th(121) && $g !== $th(120));
+$ok($act($opA, $online1, 'approve', $approveBody($opA, $online1)), 'approve online order');
+$ok($generate($online1), 'document after clearance', 201);
+$check((int) $one('SELECT COUNT(*) FROM production_document_revisions r JOIN operational_orders o ON o.order_uuid = r.order_uuid WHERE o.global_order_id = ?', [$online1]) === 1, 'the first production document is allowed once cleared');
+// Every condition counts on its own: a stored line confirmation that no longer covers the cart is not enough.
+$onlineUuid = (string) $one('SELECT order_uuid FROM operational_orders WHERE global_order_id = ?', [$online1]);
+$pdo->prepare("UPDATE order_confirmations SET confirmed_line_ids = '[\"7001\"]' WHERE order_uuid = ?")->execute([$onlineUuid]);
+$check(\Arasya\Operations\Confirmare\ConfirmationClearance::missing($pdo, $onlineUuid) === ['lines'], 'one unconfirmed cart line is enough to keep production closed');
+$pdo->prepare("UPDATE order_confirmations SET confirmed_line_ids = '[\"7001\",\"7002\"]' WHERE order_uuid = ?")->execute([$onlineUuid]);
+// No pricing fingerprint from the shop: the price cannot be verified, so no approval.
+$noPrice = $th(120);
+$noPriceOwner = $conf($noPrice)['assigned_employee_uuid'] === $uuids['coopa'] ? $opA : $opB;
+$error($act($noPriceOwner, $noPrice, 'approve', $approveBody($noPriceOwner, $noPrice)), 409, 'CONFIRMARE_PRICE_UNAVAILABLE', 'without the shop\'s pricing fingerprint nothing is approved');
+// The shop changes the cart after the approval: the clearance is lost until a new review.
+$changed = $pick($mineA, static fn (string $g): bool => !$isCod($g) && !in_array($g, [$online1, $th(121), $th(120)], true) && ($conf($g)['status'] ?? '') === 'pending');
+$ok($act($opA, $changed, 'approve', $approveBody($opA, $changed)), 'approve before the change');
+$check($conf($changed)['production_cleared'] === 1, 'cleared before the change');
+$ok($send('trendhome', $payload(explode(':', $changed)[1], 'processing', null, $online, ['quantity' => 2])), 'the shop changes a quantity');
+$check($conf($changed)['production_cleared'] === 0 && in_array('sync', $detail($sup, $changed)['production']['missing'], true), 'a changed cart closes production again (sync)');
+$error($intake($changed), 409, 'CONFIRMARE_NECESARA', 'a changed order never starts on an old approval');
+$ok($send('trendhome', $payload(explode(':', $changed)[1], 'processing', null, $online, ['quantity' => 2, 'price' => 'b'])), 'the shop changes the price too');
+$error($act($opA, $changed, 'reopen', ['expectedVersion' => $version($changed)]), 403, 'CONFIRMARE_SCOPE_DENIED', 'only a supervisor reopens');
+$reopenedApproval = $ok($act($sup, $changed, 'reopen', ['expectedVersion' => $version($changed)]), 'reopen a stale approval');
+$check($reopenedApproval['status'] === 'pending' && $reopenedApproval['decision'] === null && $conf($changed)['production_cleared'] === 0, 'a stale approval returns to the pool for a new review');
+$ok($act($sup, $changed, 'approve', $approveBody($sup, $changed)), 'approved again on the new review');
+$check($conf($changed)['production_cleared'] === 1, 'the new review clears it');
+$error($act($sup, $aOrder, 'reopen', ['expectedVersion' => $version($aOrder)]), 409, 'CONFIRMARE_NOT_REOPENABLE', 'a cleared approval is never reopened');
 // Reject: reason codes only; the gate stays closed; a supervisor may reopen.
-$rejectOrder = $mineA[1];
+$rejectOrder = $pick($mineA, static fn (string $g): bool => ($conf($g)['status'] ?? '') === 'pending' && $g !== $th(120));
 $error($act($opA, $rejectOrder, 'reject', ['expectedVersion' => $version($rejectOrder), 'reasonCode' => 'clientul nu raspunde']), 422, 'INVALID_REASON', 'a free-text reason is refused');
 $rejected = $ok($act($opA, $rejectOrder, 'reject', ['expectedVersion' => $version($rejectOrder), 'reasonCode' => 'customer_unreachable']), 'reject');
 $check($rejected['status'] === 'rejected' && $rejected['decision']['reasonCode'] === 'customer_unreachable', 'rejected with its code');
 $error($intake($rejectOrder), 409, 'CONFIRMARE_NECESARA', 'a rejected order never starts production');
 $error($generate($rejectOrder), 409, 'CONFIRMARE_NECESARA', 'a rejected order gets no production document');
-$error($act($opA, $rejectOrder, 'reopen', ['expectedVersion' => $version($rejectOrder)]), 403, 'CONFIRMARE_SCOPE_DENIED', 'only a supervisor reopens');
 $reopened = $ok($act($sup, $rejectOrder, 'reopen', ['expectedVersion' => $version($rejectOrder)]), 'reopen');
 $check($reopened['status'] === 'pending' && $reopened['assignment'] === null && $reopened['decision'] === null && $conf($rejectOrder)['decision_reason_code'] === null, 'a reopened order is pending and unassigned again');
-$error($act($sup, $aOrder, 'reopen', ['expectedVersion' => $version($aOrder)]), 409, 'CONFIRMARE_NOT_REJECTED', 'an approval is never reopened here');
 // Undetermined: visible to the supervisor, never approved here.
-$error($act($sup, $th(130), 'approve', ['expectedVersion' => $version($th(130))]), 409, 'CONFIRMARE_UNDETERMINED', 'an undetermined order cannot be approved');
+$error($act($sup, $th(130), 'approve', ['expectedVersion' => $version($th(130))] + $checklist($sup, $th(130))), 409, 'CONFIRMARE_UNDETERMINED', 'an undetermined order cannot be approved');
 $error($act($opA, $th(130), 'claim', ['expectedVersion' => $version($th(130))]), 409, 'CONFIRMARE_UNDETERMINED', 'nor claimed');
 // Cancelled in the shop while waiting: cannot be approved, can be rejected.
-$cancelOrder = $mineA[2];
+$cancelOrder = $pick($mine($opA), static fn (string $g): bool => $g !== $th(120));
+$cancelBody = $approveBody($opA, $cancelOrder);
 $ok($send('trendhome', $payload(explode(':', $cancelOrder)[1], 'cancelled', null, null)), 'the shop cancels the order');
-$error($act($opA, $cancelOrder, 'approve', ['expectedVersion' => $version($cancelOrder)]), 409, 'CONFIRMARE_ORDER_CLOSED', 'a cancelled order cannot be approved');
+$error($act($opA, $cancelOrder, 'approve', ['expectedVersion' => $version($cancelOrder)] + $cancelBody), 409, 'CONFIRMARE_ORDER_CLOSED', 'a cancelled order cannot be approved');
 $ok($act($opA, $cancelOrder, 'reject', ['expectedVersion' => $version($cancelOrder), 'reasonCode' => 'customer_cancelled']), 'reject the cancelled order');
 
-// ---- 6. Claim, release, reassign, availability and reclaim ---------------------------------------------------------
-$releaseOrder = $mineA[3];
+// ---- 6. Claim, release, reassign, leave, reclaim, alerts and suspension --------------------------------------------
+$releaseOrder = $pick($mine($opA), static fn (string $g): bool => $g !== $th(120));
 $released = $ok($act($opA, $releaseOrder, 'release', ['expectedVersion' => $version($releaseOrder)]), 'release');
 $check($released['assignment'] === null && end($events($releaseOrder))['action'] === 'released', 'released back to the pool');
-// B pulls until full (the released order is the oldest waiting one, so B fills up with others first or takes it).
-for ($i = 0; $i < ConfirmareService::MAX_OPEN_PER_OPERATOR && (int) $one("SELECT COUNT(*) FROM order_confirmations WHERE assigned_employee_uuid = ? AND status = 'pending'", [$uuids['coopb']]) < ConfirmareService::MAX_OPEN_PER_OPERATOR; $i++) {
-    $pulled = $ok($call($opB, 'POST', '/confirmare/next', ['source' => 'trendhome']), 'B pulls');
-    if (($pulled['assigned']['globalOrderId'] ?? null) === $releaseOrder) {
-        $ok($act($opB, $releaseOrder, 'release', ['expectedVersion' => $version($releaseOrder)]), 'B gives it back');
-    }
-}
-$check((int) $one("SELECT COUNT(*) FROM order_confirmations WHERE assigned_employee_uuid = ? AND status = 'pending'", [$uuids['coopb']]) === ConfirmareService::MAX_OPEN_PER_OPERATOR, 'B is at capacity');
-$error($act($opB, $releaseOrder, 'claim', ['expectedVersion' => $version($releaseOrder)]), 409, 'CONFIRMARE_CAPACITY_REACHED', 'a colleague at capacity cannot claim it');
-$claimed = $ok($act($opA, $releaseOrder, 'claim', ['expectedVersion' => $version($releaseOrder)]), 'claim');
-$check($claimed['assignment']['employeeId'] === $uuids['coopa'] && $claimed['assignment']['kind'] === 'claim', 'claimed');
-$error($act($opB, $releaseOrder, 'release', ['expectedVersion' => $version($releaseOrder)]), 409, 'CONFIRMARE_ASSIGNED_TO_OTHER', 'an operator never releases a colleague\'s order');
+$claimed = $ok($act($opB, $releaseOrder, 'claim', ['expectedVersion' => $version($releaseOrder)]), 'claim beyond the balance target');
+$check($claimed['assignment']['employeeId'] === $uuids['coopb'] && $claimed['assignment']['kind'] === 'claim' && $load('coopb') > ConfirmareService::TARGET_OPEN_PER_OPERATOR, 'a colleague above the balance target can still claim (no hard cap)');
+$error($act($opA, $releaseOrder, 'release', ['expectedVersion' => $version($releaseOrder)]), 409, 'CONFIRMARE_ASSIGNED_TO_OTHER', 'an operator never releases a colleague\'s order');
 $error($act($sup, $releaseOrder, 'reassign', ['expectedVersion' => $version($releaseOrder), 'employeeId' => $uuids['coopc']]), 409, 'CONFIRMARE_OPERATOR_INELIGIBLE', 'never reassigned to someone without the source');
-$error($act($opA, $releaseOrder, 'reassign', ['expectedVersion' => $version($releaseOrder), 'employeeId' => $uuids['coopb']]), 403, 'CONFIRMARE_SCOPE_DENIED', 'only a supervisor reassigns');
-$moved = $ok($act($sup, $releaseOrder, 'reassign', ['expectedVersion' => $version($releaseOrder), 'employeeId' => $uuids['coopb']]), 'reassign');
-$check($moved['assignment']['employeeId'] === $uuids['coopb'] && $moved['assignment']['kind'] === 'supervisor', 'a supervisor may reassign (capacity is the supervisor\'s call)');
-// Going unavailable returns the operator's orders to the pool at once.
-$openA = (int) $one("SELECT COUNT(*) FROM order_confirmations WHERE assigned_employee_uuid = ? AND status = 'pending'", [$uuids['coopa']]);
-$off = $ok($call($opA, 'PUT', '/confirmare/availability', ['accepting' => false]), 'A goes unavailable');
-$check($off['accepting'] === false && $off['released'] === $openA && $openA > 0 && (int) $one("SELECT COUNT(*) FROM order_confirmations WHERE assigned_employee_uuid = ? AND status = 'pending'", [$uuids['coopa']]) === 0, 'going unavailable releases every own order: ' . json_encode($off));
-$check((int) $one("SELECT COUNT(*) FROM order_confirmation_events WHERE action = 'released' AND reason_code = 'operator_unavailable' AND actor_employee_uuid = ?", [$uuids['coopa']]) === $openA, 'one audited release per order');
-// Scope removal: the next distribution run returns B's orders to the pool (system release), then nobody receives them.
-$openB = (int) $one("SELECT COUNT(*) FROM order_confirmations WHERE assigned_employee_uuid = ? AND status = 'pending'", [$uuids['coopb']]);
+$error($act($opA, $releaseOrder, 'reassign', ['expectedVersion' => $version($releaseOrder), 'employeeId' => $uuids['coopa']]), 403, 'CONFIRMARE_SCOPE_DENIED', 'only a supervisor reassigns');
+$moved = $ok($act($sup, $releaseOrder, 'reassign', ['expectedVersion' => $version($releaseOrder), 'employeeId' => $uuids['coopa']]), 'reassign');
+$check($moved['assignment']['employeeId'] === $uuids['coopa'] && $moved['assignment']['kind'] === 'supervisor', 'a supervisor reassigns');
+// Leave: the supervisor puts A on leave; A's orders go back to the pool and straight to B (controlled redistribution).
+$openA = $load('coopa');
+$loadBefore = $load('coopb');
+$waitingTrendhome = static fn (): int => (int) $one("SELECT COUNT(*) FROM order_confirmations c JOIN operational_orders o ON o.order_uuid = c.order_uuid WHERE c.source_key = 'trendhome' AND c.status = 'pending' AND c.assigned_employee_uuid IS NULL AND o.workflow_cohort = 'confirmare'");
+$alreadyWaiting = $waitingTrendhome();
+$leave = $ok($call($sup, 'PUT', '/confirmare/availability', ['available' => false, 'employeeId' => $uuids['coopa']]), 'A on leave');
+$check($leave['available'] === false && $leave['released'] === $openA && $openA > 0 && $load('coopa') === 0 && $load('coopb') === $loadBefore + $openA + $alreadyWaiting && $waitingTrendhome() === 0, 'leave releases every own order and redistributes it at once: ' . json_encode($leave));
+$check((int) $one("SELECT COUNT(*) FROM order_confirmation_events WHERE action = 'released' AND reason_code = 'operator_unavailable' AND actor_employee_uuid = ?", [$uuids['cosup']]) === $openA, 'one audited release per order, by the supervisor');
+$check($service->distribute('trendhome')['assigned'] === 0 && $load('coopa') === 0, 'nobody on leave receives orders');
+$ok($call($opA, 'PUT', '/confirmare/availability', ['available' => true]), 'A is back');
+// Scope removal: the next run returns B's orders to the pool and redistributes them to A.
+$openB = $load('coopb');
 $ok($asRoot('PUT', "/management/employees/{$uuids['coopb']}/confirmare-scopes", ['operate' => [], 'supervise' => []]), 'root removes B\'s scope');
 $reclaim = $service->distribute('trendhome');
-$check($reclaim['released'] === $openB && $reclaim['assigned'] === 0 && (int) $one("SELECT COUNT(*) FROM order_confirmations WHERE assigned_employee_uuid = ? AND status = 'pending'", [$uuids['coopb']]) === 0, 'a removed scope returns the orders to the pool: ' . json_encode($reclaim));
+$check($reclaim['released'] === $openB && $reclaim['assigned'] === $openB && $load('coopb') === 0 && $load('coopa') === $openB, 'a removed scope returns the orders to the pool, and they are redistributed: ' . json_encode($reclaim));
 $check((int) $one("SELECT COUNT(*) FROM order_confirmation_events WHERE action = 'released' AND actor_kind = 'system' AND reason_code = 'operator_unavailable'") === $openB, 'system releases are audited');
-// A deactivated account loses its orders the same way.
+// A deactivated account loses its orders the same way; without another operator they wait in the pool.
 $ok($asRoot('POST', "/management/employees/{$uuids['coopc']}/deactivate", null), 'deactivate C');
 $check($service->distribute('outletperdele')['released'] === 2 && $conf($op(200))['assigned_employee_uuid'] === null, 'an inactive account\'s orders return to the pool');
 $ok($asRoot('POST', "/management/employees/{$uuids['coopc']}/activate", null), 'reactivate C');
 $opC = $login('coopc', true);
-// Pull distribution.
 $ok($asRoot('PUT', "/management/employees/{$uuids['coopb']}/confirmare-scopes", ['operate' => ['trendhome'], 'supervise' => []]), 'root restores B');
-$next = $ok($call($opB, 'POST', '/confirmare/next', ['source' => 'trendhome']), 'next');
-$check(($next['assigned']['assignment']['kind'] ?? null) === 'auto' && $next['assigned']['assignment']['employeeId'] === $uuids['coopb'], 'next assigns the oldest waiting order to the caller');
-$error($call($opB, 'POST', '/confirmare/next', ['source' => 'outletperdele']), 403, 'CONFIRMARE_SCOPE_DENIED', 'next only within one\'s sources');
+// Inactivity raises one supervisor alert and never reassigns.
+$stale = $pick($mine($opA), static fn (string $g): bool => true);
+$pdo->prepare('UPDATE order_confirmations SET updated_at = ? WHERE global_order_id = ?')->execute([gmdate('Y-m-d H:i:s', time() - 3 * 3600), $stale]);
+$run = $service->distribute('trendhome');
+$check($run['openAlerts'] === 1 && $service->distribute('trendhome')['openAlerts'] === 1 && $conf($stale)['assigned_employee_uuid'] === $uuids['coopa'], 'one alert, raised once, and the order stays with its operator: ' . json_encode($run));
+$alerts = $ok(T::call($kernel, 'GET', '/confirmare/alerts', null, ['origin' => DASHBOARD_ORIGIN], $sup['cookie']), 'alerts');
+$check(count($alerts['items']) === 1 && $alerts['items'][0]['globalOrderId'] === $stale && $alerts['items'][0]['assignee']['employeeId'] === $uuids['coopa'] && $alerts['items'][0]['kind'] === 'inactive_assignment', 'the supervisor sees the alert');
+$error(T::call($kernel, 'GET', '/confirmare/alerts', null, ['origin' => DASHBOARD_ORIGIN], $opA['cookie']), 403, 'CONFIRMARE_SCOPE_DENIED', 'alerts are for supervisors');
+$ok($act($opA, $stale, 'release', ['expectedVersion' => $version($stale)]), 'the operator acts');
+$check($service->distribute('trendhome')['openAlerts'] === 0, 'an alert resolves once the assignment moves');
+// Suspension holds orders: nothing is distributed or handed out until the source is resumed.
+$nowTs = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+$activation($nowTs)->suspend('trendhome', 'Test Owner', 'hold test', 'co-test');
+$ok($send('trendhome', $payload($id(150), 'processing', $submitted($nowTs->modify('-5 seconds')), $online)), 'order while suspended');
+$check($one('SELECT workflow_cohort FROM operational_orders WHERE global_order_id = ?', [$th(150)]) === 'confirmare', 'an order submitted while suspended is held as a Confirmare order');
+$heldRun = $service->distribute('trendhome');
+$check($heldRun['held'] === ['trendhome'] && $conf($th(150))['assigned_employee_uuid'] === null, 'a suspended source is held: nothing is distributed');
+$error($call($opA, 'POST', '/confirmare/next', ['source' => 'trendhome']), 409, 'CONFIRMARE_SOURCE_SUSPENDED', 'nor handed out on request');
+$activation($nowTs->modify('+1 second'))->resume($registry->find('trendhome'), 'Test Owner', 'hold test over', 'co-test', true);
+$check($service->distribute('trendhome')['assigned'] >= 1 && $conf($th(150))['assigned_employee_uuid'] !== null, 'after the resumption the held order is distributed');
 
 // ---- 7. Races (separate processes) ---------------------------------------------------------------------------------
 $parallel = static function (array $jobs) use ($dbName): array {
@@ -367,10 +420,9 @@ $probe = $parallel([static fn (string $db): array => ['ok' => true]]);
 if ($probe === []) {
     echo "NOT RUN Confirmare races: pcntl is not available\n";
 } else {
+    for ($n = 160; $n < 166; $n++) $ok($send('trendhome', $payload($id($n), 'processing', $submitted($after($n)), $n % 2 === 0 ? $cod('confirmed') : $online)), "race order {$n}");
     // Two operators claim the same order at once: exactly one gets it.
-    $ok($call($opA, 'PUT', '/confirmare/availability', ['accepting' => true]), 'A accepts again');
-    $free = $all("SELECT c.global_order_id FROM order_confirmations c JOIN operational_orders o ON o.order_uuid = c.order_uuid WHERE c.source_key = 'trendhome' AND c.status = 'pending' AND c.assigned_employee_uuid IS NULL AND o.workflow_cohort = 'confirmare' ORDER BY c.opened_at LIMIT 3");
-    $raceOrder = (string) $free[0]['global_order_id'];
+    $raceOrder = $th(160);
     $v = $version($raceOrder);
     $results = $codes($parallel([
         $httpJob($opA, 'POST', '/confirmare/orders/' . rawurlencode($raceOrder) . '/claim', ['expectedVersion' => $v]),
@@ -380,37 +432,34 @@ if ($probe === []) {
     $check(count(array_keys($results, 'ok', true)) === 1 && array_diff($results, ['ok', 'CONFIRMARE_CHANGED', 'CONFIRMARE_ASSIGNED_TO_OTHER']) === [] && $version($raceOrder) === $v + 1, 'claim race: exactly one wins: ' . json_encode($results));
     // The assignee approves while a supervisor rejects: exactly one decision, one event.
     $assignee = $conf($raceOrder)['assigned_employee_uuid'] === $uuids['coopa'] ? $opA : $opB;
-    $v = $version($raceOrder);
+    $body = $approveBody($assignee, $raceOrder);
     $results = $codes($parallel([
-        $httpJob($assignee, 'POST', '/confirmare/orders/' . rawurlencode($raceOrder) . '/approve', ['expectedVersion' => $v]),
-        $httpJob($sup, 'POST', '/confirmare/orders/' . rawurlencode($raceOrder) . '/reject', ['expectedVersion' => $v, 'reasonCode' => 'duplicate_order']),
+        $httpJob($assignee, 'POST', '/confirmare/orders/' . rawurlencode($raceOrder) . '/approve', $body),
+        $httpJob($sup, 'POST', '/confirmare/orders/' . rawurlencode($raceOrder) . '/reject', ['expectedVersion' => $body['expectedVersion'], 'reasonCode' => 'duplicate_order']),
     ]));
     $decisions = (int) $one("SELECT COUNT(*) FROM order_confirmation_events WHERE global_order_id = ? AND action IN ('approved', 'rejected')", [$raceOrder]);
-    $check(count(array_keys($results, 'ok', true)) === 1 && $decisions === 1 && $version($raceOrder) === $v + 1 && in_array($conf($raceOrder)['status'], ['approved', 'rejected'], true), 'decision race: exactly one decision: ' . json_encode($results));
-    // Approval racing a cutting intake: production never starts while the order is still pending.
-    $raceOrder2 = (string) $free[1]['global_order_id'];
+    $check(count(array_keys($results, 'ok', true)) === 1 && $decisions === 1 && $version($raceOrder) === $body['expectedVersion'] + 1 && in_array($conf($raceOrder)['status'], ['approved', 'rejected'], true), 'decision race: exactly one decision: ' . json_encode($results));
+    // Approval racing a cutting intake: production never starts while the order is not cleared.
+    $raceOrder2 = $th(162);
     $ok($act($sup, $raceOrder2, 'reassign', ['expectedVersion' => $version($raceOrder2), 'employeeId' => $uuids['coopa']]), 'prepare intake race');
-    if ((string) $one('SELECT advance_status FROM operational_orders WHERE global_order_id = ?', [$raceOrder2]) === 'waiting') {
-        $ok($send('trendhome', $payload(explode(':', $raceOrder2)[1], 'processing', null, $cod('confirmed'))), 'advance confirmed for the intake race');
-    }
     $owned = (int) $one("SELECT COUNT(*) FROM operational_orders WHERE production_owner_employee_uuid = ? AND production_stage_id = 'material-preparation' AND production_completed_at IS NULL", [$uuids['cocutter']]);
     $results = $parallel([
-        $httpJob($opA, 'POST', '/confirmare/orders/' . rawurlencode($raceOrder2) . '/approve', ['expectedVersion' => $version($raceOrder2)]),
+        $httpJob($opA, 'POST', '/confirmare/orders/' . rawurlencode($raceOrder2) . '/approve', $approveBody($opA, $raceOrder2)),
         $httpJob($cutter, 'POST', '/cutting/intake', ['qrToken' => $qr($raceOrder2)] + ($owned > 0 ? ['confirmedMultiple' => true, 'ownedCount' => $owned] : [])),
     ]);
     $intakeResult = $results[1]['status'] === 200 ? 'started' : (string) $results[1]['code'];
-    $check($results[0]['status'] === 200 && $conf($raceOrder2)['status'] === 'approved'
-        && (($intakeResult === 'started' && $stage($raceOrder2) === 'material-preparation') || ($intakeResult === 'CONFIRMARE_NECESARA' && $stage($raceOrder2) === 'waiting')), 'approval vs intake: the intake either waited for the approval or was refused before it: ' . $intakeResult);
-    // The same operator pulls twice with one free slot: exactly one assignment.
-    $ok($call($sup, 'PUT', '/confirmare/availability', ['accepting' => false, 'employeeId' => $uuids['coopb']]), 'B unavailable for the next race');
-    $fill = ConfirmareService::MAX_OPEN_PER_OPERATOR - 1 - (int) $one("SELECT COUNT(*) FROM order_confirmations WHERE assigned_employee_uuid = ? AND status = 'pending'", [$uuids['coopa']]);
-    for ($i = 0; $i < $fill; $i++) $ok($call($opA, 'POST', '/confirmare/next', ['source' => 'trendhome']), 'fill A');
-    $waitingBefore = (int) $one("SELECT COUNT(*) FROM order_confirmations c JOIN operational_orders o ON o.order_uuid = c.order_uuid WHERE c.status = 'pending' AND c.assigned_employee_uuid IS NULL AND o.workflow_cohort = 'confirmare' AND c.source_key = 'trendhome'");
-    $results = $parallel(array_fill(0, 6, $httpJob($opA, 'POST', '/confirmare/next', ['source' => 'trendhome'])));
-    $loadA = (int) $one("SELECT COUNT(*) FROM order_confirmations WHERE assigned_employee_uuid = ? AND status = 'pending'", [$uuids['coopa']]);
-    $check($waitingBefore >= 1 && $loadA === ConfirmareService::MAX_OPEN_PER_OPERATOR && count(array_filter($results, static fn (array $r): bool => $r['status'] === 200 && ($r['body']['assigned'] ?? null) !== null)) === 1, 'next race: the capacity holds: ' . json_encode($codes($results)));
+    $check($results[0]['status'] === 200 && $conf($raceOrder2)['status'] === 'approved' && $conf($raceOrder2)['production_cleared'] === 1
+        && (($intakeResult === 'started' && $stage($raceOrder2) === 'material-preparation') || ($intakeResult === 'CONFIRMARE_NECESARA' && $stage($raceOrder2) === 'waiting')), 'approval vs intake: the intake either waited for the clearance or was refused before it: ' . $intakeResult);
+    // Two operators pull the last waiting order at once: one gets it, nobody gets it twice.
+    $service->distribute('trendhome');
+    $ok($act($sup, $th(163), 'release', ['expectedVersion' => $version($th(163))]), 'one order back to the pool');
+    $results = $parallel([
+        $httpJob($opA, 'POST', '/confirmare/next', ['source' => 'trendhome']),
+        $httpJob($opB, 'POST', '/confirmare/next', ['source' => 'trendhome']),
+    ]);
+    $got = array_values(array_filter(array_map(static fn (array $r): ?string => $r['status'] === 200 ? ($r['body']['assigned']['globalOrderId'] ?? null) : null, $results)));
+    $check($got === [$th(163)] && $conf($th(163))['assigned_employee_uuid'] !== null, 'next race: the order goes to exactly one operator: ' . json_encode($codes($results)));
     // Two distribution runs at once never assign an order twice.
-    $ok($call($sup, 'PUT', '/confirmare/availability', ['accepting' => true, 'employeeId' => $uuids['coopb']]), 'B available again');
     for ($n = 300; $n < 306; $n++) $ok($send('trendhome', $payload($id($n), 'processing', $submitted($after($n)), $online)), "race order {$n}");
     $distJob = static fn (): Closure => static function (string $db) use ($settings): array {
         usleep(20000);
@@ -420,23 +469,23 @@ if ($probe === []) {
     $runs = $parallel([$distJob(), $distJob()]);
     $doubles = (int) $one("SELECT COUNT(*) FROM (SELECT order_uuid, version_after FROM order_confirmation_events GROUP BY order_uuid, version_after HAVING COUNT(*) > 1) d");
     $fresh = array_values(array_filter($all("SELECT event_uuid, order_uuid FROM order_confirmation_events WHERE action = 'assigned' AND actor_kind = 'system'"), static fn (array $e): bool => !isset($known[$e['event_uuid']])));
-    $newEvents = count($fresh);
-    $newOrders = array_unique(array_column($fresh, 'order_uuid'));
-    $overCapacity = (int) $one("SELECT COUNT(*) FROM (SELECT assigned_employee_uuid FROM order_confirmations WHERE status = 'pending' AND assigned_employee_uuid IS NOT NULL GROUP BY assigned_employee_uuid HAVING COUNT(*) > " . ConfirmareService::MAX_OPEN_PER_OPERATOR . ') x');
-    $check($doubles === 0 && $newEvents === array_sum(array_column($runs, 'assigned')) && $newEvents === count($newOrders) && $overCapacity === 0, 'parallel distribution runs never assign one order twice nor exceed a capacity: ' . json_encode([$runs, $newEvents, count($newOrders)]));
+    $check($doubles === 0 && count($fresh) === array_sum(array_column($runs, 'assigned')) && count($fresh) === count(array_unique(array_column($fresh, 'order_uuid'))) && count($fresh) === 6, 'parallel distribution runs never assign one order twice: ' . json_encode([$runs, count($fresh)]));
 }
 
-// The production gate reads the decision as committed now, not from a snapshot its transaction took earlier.
-$gateOrder = (string) $one("SELECT c.global_order_id FROM order_confirmations c JOIN operational_orders o ON o.order_uuid = c.order_uuid WHERE c.status = 'pending' AND o.workflow_cohort = 'confirmare' AND c.source_key = 'trendhome' AND o.production_stage_id = 'waiting' ORDER BY c.opened_at LIMIT 1");
-$gateUuid = (string) $one('SELECT order_uuid FROM operational_orders WHERE global_order_id = ?', [$gateOrder]);
-$other = Connection::create($config);
-$other->beginTransaction();
-$other->query("SELECT status FROM order_confirmations WHERE order_uuid = " . $other->quote($gateUuid))->fetchAll();
-$ok($act($sup, $gateOrder, 'approve', ['expectedVersion' => $version($gateOrder)]), 'approve while another transaction holds an older snapshot');
-$opened = true;
-try { ConfirmationGate::assertOpen($other, $gateUuid, 'waiting'); } catch (ApiException) { $opened = false; }
-$other->rollBack();
-$check($opened, 'the gate sees the committed approval, never an older snapshot of its transaction');
+// The production gate reads the clearance as committed now, not from a snapshot its transaction took earlier.
+$gateOrder = $th(161);
+if (($conf($gateOrder)['status'] ?? '') === 'pending') {
+    $gateOwner = $conf($gateOrder)['assigned_employee_uuid'] === $uuids['coopa'] ? $opA : ($conf($gateOrder)['assigned_employee_uuid'] === $uuids['coopb'] ? $opB : $sup);
+    $gateUuid = (string) $one('SELECT order_uuid FROM operational_orders WHERE global_order_id = ?', [$gateOrder]);
+    $other = Connection::create($config);
+    $other->beginTransaction();
+    $other->query("SELECT production_cleared FROM order_confirmations WHERE order_uuid = " . $other->quote($gateUuid))->fetchAll();
+    $ok($act($sup, $gateOrder, 'approve', $approveBody($sup, $gateOrder)), 'approve while another transaction holds an older snapshot');
+    $opened = true;
+    try { ConfirmationGate::assertOpen($other, $gateUuid, 'waiting'); } catch (ApiException) { $opened = false; }
+    $other->rollBack();
+    $check($opened, 'the gate sees the committed clearance, never an older snapshot of its transaction');
+}
 
 // ---- 8. Audit trail, read model and invariants ---------------------------------------------------------------------
 $detail = $ok(T::call($kernel, 'GET', '/confirmare/orders/' . rawurlencode($aOrder), null, ['origin' => DASHBOARD_ORIGIN], $sup['cookie']), 'detail');
@@ -456,6 +505,8 @@ foreach ([
     "INSERT INTO order_confirmation_events (event_uuid, order_uuid, global_order_id, source_key, action, actor_kind, actor_employee_uuid, new_status, version_after, occurred_at) SELECT UUID(), order_uuid, global_order_id, source_key, 'approved', 'system', NULL, 'approved', 999, UTC_TIMESTAMP(6) FROM order_confirmations LIMIT 1" => 'a system approval',
     "INSERT INTO order_confirmation_events (event_uuid, order_uuid, global_order_id, source_key, action, actor_kind, actor_employee_uuid, new_status, version_after, occurred_at) SELECT UUID(), order_uuid, global_order_id, source_key, 'opened', 'system', NULL, 'pending', 1, UTC_TIMESTAMP(6) FROM order_confirmations WHERE global_order_id = " . $pdo->quote($aOrder) => 'a second event for one version',
     "INSERT INTO employee_confirmare_scopes (employee_uuid, capability, source_key, granted_at, granted_by_employee_uuid) VALUES (" . $pdo->quote($uuids['coopa']) . ", 'approve', 'trendhome', UTC_TIMESTAMP(6), " . $pdo->quote($uuids['coopa']) . ')' => 'an unknown capability',
+    "UPDATE order_confirmations SET production_cleared = 1, cleared_at = UTC_TIMESTAMP(6) WHERE global_order_id = " . $pdo->quote($rejectOrder) => 'a production clearance without an approval',
+    "UPDATE operational_orders SET source_pricing_fingerprint = '1250 RON' WHERE global_order_id = " . $pdo->quote($aOrder) => 'an amount stored as a pricing fingerprint',
 ] as $sql => $label) {
     try { $pdo->exec($sql); $check(false, "the database refuses {$label}"); } catch (PDOException) { $check(true, "the database refuses {$label}"); }
 }
@@ -496,8 +547,9 @@ $check($activate['code'] === 3 && str_contains($activate['err'], 'CONFIRMARE_WOR
 
 // ---- 10. Resumable migration and teardown ---------------------------------------------------------------------------
 (new SqlFileRunner($pdo))->run(dirname(__DIR__) . '/database/migrations/036_confirmare_operations.sql');
-$check((int) $one("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'order_confirmations' AND column_name IN ('assigned_employee_uuid', 'assigned_at', 'assignment_kind', 'decision_reason_code')") === 4, 'a repeated 036 run changes nothing');
+$check((int) $one("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'order_confirmations' AND column_name IN ('assigned_employee_uuid', 'assigned_at', 'assignment_kind', 'decision_reason_code', 'production_cleared')") === 5, 'a repeated 036 run changes nothing');
 $pdo->exec('DELETE FROM order_confirmation_idempotency');
+$pdo->exec('DELETE FROM confirmare_alerts');
 $pdo->exec('DELETE FROM order_confirmation_events');
 $pdo->exec('DELETE FROM order_confirmations');
 $pdo->exec('DELETE FROM workflow_cohort_activations');
@@ -505,9 +557,12 @@ $pdo->exec('DELETE FROM employee_confirmare_scopes');
 $pdo->exec('DELETE FROM confirmare_operator_state');
 $pdo->exec('UPDATE operational_orders SET workflow_cohort = NULL, workflow_cohort_reason = NULL, workflow_cohort_at = NULL WHERE workflow_cohort IS NOT NULL');
 // An interrupted 036 (tables created, the ALTER not applied) completes on the next run.
-$pdo->exec('ALTER TABLE order_confirmations DROP CONSTRAINT chk_order_confirmations_reason, DROP CONSTRAINT chk_order_confirmations_assigned_pending, DROP CONSTRAINT chk_order_confirmations_assignment,
-    DROP FOREIGN KEY fk_order_confirmations_assignee, DROP KEY idx_order_confirmations_assignee, DROP COLUMN decision_reason_code, DROP COLUMN assignment_kind, DROP COLUMN assigned_at, DROP COLUMN assigned_employee_uuid');
+$pdo->exec('ALTER TABLE order_confirmations DROP CONSTRAINT chk_order_confirmations_cleared, DROP FOREIGN KEY fk_order_confirmations_caller, DROP CONSTRAINT chk_order_confirmations_reason, DROP CONSTRAINT chk_order_confirmations_assigned_pending, DROP CONSTRAINT chk_order_confirmations_assignment,
+    DROP FOREIGN KEY fk_order_confirmations_assignee, DROP KEY idx_order_confirmations_assignee, DROP COLUMN cleared_at, DROP COLUMN production_cleared, DROP COLUMN approved_review_fingerprint, DROP COLUMN confirmed_line_ids,
+    DROP COLUMN call_confirmed_by_employee_uuid, DROP COLUMN call_confirmed_at, DROP COLUMN decision_reason_code, DROP COLUMN assignment_kind, DROP COLUMN assigned_at, DROP COLUMN assigned_employee_uuid');
+$pdo->exec('ALTER TABLE operational_orders DROP CONSTRAINT chk_operational_orders_pricing_fingerprint, DROP COLUMN source_due_date, DROP COLUMN source_pricing_fingerprint');
 (new SqlFileRunner($pdo))->run(dirname(__DIR__) . '/database/migrations/036_confirmare_operations.sql');
-$check((int) $one("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'order_confirmations' AND column_name IN ('assigned_employee_uuid', 'assigned_at', 'assignment_kind', 'decision_reason_code')") === 4, 'an interrupted 036 completes on the next run');
+$check((int) $one("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'order_confirmations' AND column_name IN ('assigned_employee_uuid', 'assigned_at', 'assignment_kind', 'decision_reason_code', 'call_confirmed_at', 'confirmed_line_ids', 'approved_review_fingerprint', 'production_cleared')") === 8
+    && (int) $one("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'operational_orders' AND column_name IN ('source_pricing_fingerprint', 'source_due_date')") === 2, 'an interrupted 036 completes on the next run');
 
 fwrite(STDOUT, "PASS MySQL Confirmare operations integration: {$checks} checks (default deny, root-only audited scopes, pool per scope, availability, automatic and pull distribution, capacity, decisions with versions and idempotency, gate with the payment gate, undetermined and cancelled orders, reassign, reclaim, races, audit trail, CLIs, readiness, resumable migration).\n");

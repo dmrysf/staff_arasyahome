@@ -128,9 +128,14 @@ $claim = static fn (string $globalId): array => $staff($waiter, 'POST', '/orders
 $assign = static fn (string $globalId): array => $asRoot('PUT', '/management/orders/' . rawurlencode($globalId) . '/owner', ['employeeId' => $uuids['cfwaiter'], 'expectedVersion' => (int) $one('SELECT production_version FROM operational_orders WHERE global_order_id = ?', [$globalId])]);
 $heartbeat = static fn (string $source, ?object $k = null): array => $ok(T::ingest($k ?? $kernel, $source, ['sentAt' => gmdate('Y-m-d\TH:i:s\Z')], null, null, 'heartbeat'), "{$source} heartbeat");
 $approve = static function (string $globalId) use ($pdo, $uuids): void {
-    // Phase 2 will record approvals through the Confirmare workflow; the test writes the stored decision directly to prove
-    // that this decision, and nothing else, opens the gate.
-    $pdo->prepare("UPDATE order_confirmations c JOIN operational_orders o ON o.order_uuid = c.order_uuid SET c.status = 'approved', c.decided_at = UTC_TIMESTAMP(6), c.decided_by_employee_uuid = ?, c.version = c.version + 1, c.updated_at = UTC_TIMESTAMP(6) WHERE o.global_order_id = ?")->execute([$uuids['cfoperator'], $globalId]);
+    // The Phase 2 workflow (ConfirmareService::approve) records a full review; this suite writes the same stored decision
+    // directly (with the shop's pricing fingerprint) to prove that the stored clearance, and nothing else, opens the gate.
+    $uuid = (string) $pdo->query('SELECT order_uuid FROM operational_orders WHERE global_order_id = ' . $pdo->quote($globalId))->fetchColumn();
+    $pdo->prepare("UPDATE operational_orders SET source_pricing_fingerprint = COALESCE(source_pricing_fingerprint, CONCAT('sha256:', SHA2(order_uuid, 256))) WHERE order_uuid = ?")->execute([$uuid]);
+    $pdo->prepare("UPDATE order_confirmations SET status = 'approved', decided_at = UTC_TIMESTAMP(6), decided_by_employee_uuid = ?, call_confirmed_at = UTC_TIMESTAMP(6), call_confirmed_by_employee_uuid = ?,
+        confirmed_line_ids = ?, approved_review_fingerprint = ?, version = version + 1, updated_at = UTC_TIMESTAMP(6) WHERE order_uuid = ?")
+        ->execute([$uuids['cfoperator'], $uuids['cfoperator'], json_encode(\Arasya\Operations\Confirmare\ConfirmationClearance::lineIds($pdo, $uuid)), \Arasya\Operations\Confirmare\ConfirmationClearance::fingerprint($pdo, $uuid), $uuid]);
+    \Arasya\Operations\Confirmare\ConfirmationClearance::refresh($pdo, $uuid, gmdate('Y-m-d H:i:s.000000'));
 };
 $activation = static fn (DateTimeImmutable $at): WorkflowCohortActivation => new WorkflowCohortActivation($pdo, new MutableClock($at));
 $base = 640000 + random_int(0, 8999) * 10;
@@ -324,7 +329,7 @@ $check($sourceStates('trendhome', [$twin])['orders'][0]['issueAllowed'] === true
 $check($ok($sourcePrint('trendhome', $twin), 'approved order prints')['document']['issued'] === true && $revisions($cfId) === 1, 'exactly one revision 1');
 $check($ok($intake($cfId), 'approved order enters cutting')['outcome'] === 'started' && $order($cfId)['production_stage_id'] === 'material-preparation', 'production starts once');
 $approve("trendhome:{$id(41)}");
-$error($intake("trendhome:{$id(41)}"), 409, 'AVANS_NEVALIDAT', 'an approved order still respects the advance payment gate');
+$error($intake("trendhome:{$id(41)}"), 409, 'CONFIRMARE_NECESARA', 'API 2.38.0: an approved order with an unconfirmed advance is not cleared for production (financial condition)');
 $approve("trendhome:{$id(44)}");
 $ok($claim("trendhome:{$id(44)}"), 'an approved, paid order can be claimed at stage 1');
 
