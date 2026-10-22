@@ -131,7 +131,7 @@ $approve = static function (string $globalId) use ($pdo, $uuids): void {
     // The Phase 2 workflow (ConfirmareService::approve) records a full review; this suite writes the same stored decision
     // directly (with the shop's pricing fingerprint) to prove that the stored clearance, and nothing else, opens the gate.
     $uuid = (string) $pdo->query('SELECT order_uuid FROM operational_orders WHERE global_order_id = ' . $pdo->quote($globalId))->fetchColumn();
-    $pdo->prepare("UPDATE operational_orders SET source_pricing_fingerprint = COALESCE(source_pricing_fingerprint, CONCAT('sha256:', SHA2(order_uuid, 256))) WHERE order_uuid = ?")->execute([$uuid]);
+    $pdo->prepare('UPDATE operational_orders SET source_pricing_fingerprint = ? WHERE order_uuid = ? AND source_pricing_fingerprint IS NULL')->execute(['sha256:' . hash('sha256', $uuid), $uuid]);
     $pdo->prepare("UPDATE order_confirmations SET status = 'approved', decided_at = UTC_TIMESTAMP(6), decided_by_employee_uuid = ?, call_confirmed_at = UTC_TIMESTAMP(6), call_confirmed_by_employee_uuid = ?,
         confirmed_line_ids = ?, approved_review_fingerprint = ?, version = version + 1, updated_at = UTC_TIMESTAMP(6) WHERE order_uuid = ?")
         ->execute([$uuids['cfoperator'], $uuids['cfoperator'], json_encode(\Arasya\Operations\Confirmare\ConfirmationClearance::lineIds($pdo, $uuid)), \Arasya\Operations\Confirmare\ConfirmationClearance::fingerprint($pdo, $uuid), $uuid]);
