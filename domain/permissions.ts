@@ -1,5 +1,5 @@
 import type { Employee } from "./models";
-import { canOpenConfirmareOrder, canSuperviseConfirmare, canUseConfirmare, canUseFinance } from "./confirmare";
+import { canHandOff, canOpenConfirmareOrder, canSuperviseConfirmare, canUseConfirmare, canUseFinance } from "./confirmare";
 
 export type StaffPermission =
   | "orders.scan"
@@ -31,6 +31,8 @@ export function canAccessRoute(employee: Employee, path: string) {
   if (path === "/confirmare/team") return canSuperviseConfirmare(employee);
   // Confirmare finance (API 2.41.0): the finance tasks for finance scopes; an order also opens for them (read-only).
   if (path === "/confirmare/finance") return canUseFinance(employee);
+  // Confirmare production handoff (API 2.42.0): a Confirmare scope and the document generate permission.
+  if (path === "/confirmare/handoff") return canHandOff(employee);
   if (path.startsWith("/confirmare/orders/")) return canOpenConfirmareOrder(employee);
   if (path === "/confirmare" || path.startsWith("/confirmare/")) return canUseConfirmare(employee);
   // Production documents: channel employees with a document permission, without needing a stage.

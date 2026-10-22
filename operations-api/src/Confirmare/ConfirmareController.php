@@ -16,6 +16,7 @@ use Arasya\Operations\Security\CsrfGuard;
 /**
  * Confirmare routes (cookie session; mutations need CSRF and an Idempotency-Key):
  *   GET  /confirmare/pool?view=mine|open|all|followup[&source=]
+ *   GET  /confirmare/handoff[?source=]                     production handoff list (API 2.42.0; document permission, no Confirmare scope)
  *   GET  /confirmare/orders/{globalOrderId}               (adds `sourceAccess` {configured, read, edit}, API 2.40.0)
  *   GET  /confirmare/orders/{globalOrderId}/source        the shop's own order view (API 2.40.0, audited, no-store)
  *   GET  /confirmare/orders/{globalOrderId}/source/catalog        what can be changed (Phase 4B, access `edit`)
@@ -79,6 +80,9 @@ final readonly class ConfirmareController
         $path = $request->path;
         if ($request->method === 'GET' && $path === '/confirmare/pool') {
             return $this->json($this->service->pool($actor, $request->query('source'), $request->query('view', 'open') ?? 'open'));
+        }
+        if ($path === '/confirmare/handoff' && $request->method === 'GET') {
+            return $this->json($this->service->handoffList($actor, $request->query('source')));
         }
         if ($path === '/confirmare/alerts' && $request->method === 'GET') {
             return $this->json($this->service->alerts($actor));

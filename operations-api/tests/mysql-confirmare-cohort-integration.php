@@ -336,7 +336,10 @@ $check($ok($intake($cfId), 'approved order enters cutting')['outcome'] === 'star
 $approve("trendhome:{$id(41)}");
 $error($intake("trendhome:{$id(41)}"), 409, 'CONFIRMARE_NECESARA', 'API 2.38.0: an approved order with an unconfirmed advance is not cleared for production (financial condition)');
 $approve("trendhome:{$id(44)}");
-$ok($claim("trendhome:{$id(44)}"), 'an approved, paid order can be claimed at stage 1');
+// API 2.42.0: a cleared Confirmare order leaves stage 1 only from its first production document.
+$error($claim("trendhome:{$id(44)}"), 409, 'CONFIRMARE_DOCUMENT_NECESAR', 'an approved, paid order without its document cannot be claimed at stage 1');
+$ok($generate("trendhome:{$id(44)}"), 'revision 1 of the cleared order', 201);
+$ok($claim("trendhome:{$id(44)}"), 'an approved, paid order with its document can be claimed at stage 1');
 
 // ---- Manager takeover cannot skip the confirmation (an order created under observe keeps source authority) -------
 $ok($send('trendhome', $payload($id(50), 'processing', $submitted($at(180)), $online), $observeKernel), 'Confirmare order created while production authority is observed');

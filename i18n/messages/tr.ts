@@ -1,6 +1,7 @@
 import { confirmareTR } from "./confirmare";
 import { confirmareShopTR } from "./confirmareShop";
 import { confirmareFinanceTR } from "./confirmareFinance";
+import { confirmareHandoffTR } from "./confirmareHandoff";
 import { confirmareEditTR } from "./confirmareEdit";
 import { physicalTR } from "./physical";
 import type { Catalog } from "../types";
@@ -16,6 +17,7 @@ export const tr: Catalog = {
   ...confirmareTR,
   ...confirmareShopTR,
   ...confirmareFinanceTR,
+  ...confirmareHandoffTR,
   ...confirmareEditTR,
 
   // ---- common
@@ -273,6 +275,8 @@ export const tr: Catalog = {
   "orderAction.blocked.document_revision_pending": "Belge engelli: siparişin devam eden bir belge revizyonu var. Onayı ve yeni belgeyi bekle.",
   "orderAction.blocked.production_authority_source": "Bu siparişin üretimi hâlâ YD SOFT'ta yönetiliyor. Üzerinde çalışmadan önce bir yönetici onu Arasya'ya almalı.",
   "orderAction.blocked.payment_gate_closed": "Sipariş üretime giremez. Gerekli kapora veya sipariş ödemesi onaylanmadı.",
+  "orderAction.blocked.confirmation_required": "Sipariş üretime giremez. Sipariş müşteriyle onaylanmalı ve ödemesi doğrulanmalı (Confirmare).",
+  "orderAction.blocked.confirmation_document_required": "Sipariş onaylandı ancak üretime yalnızca üretim fişiyle (revizyon 1) girer. Kesim fişin QR kodunu okutur.",
   "orderAction.blocked.pieces_in_rework": "Sipariş henüz paketlenemez: bir parça yeniden işlemede. Tüm parçalar paketlemeye ulaşınca paketleme başlar.",
   "orderAction.blocked.pieces_held": "Bir parça fiziksel olarak bekletilirken sipariş devam edemez. Bekletme kaldırılınca devam eder.",
   "orderAction.blocked.pieces_awaiting_reunion": "Sipariş henüz paketlenemez: bir parça kendi rotasında ve siparişle henüz birleşmedi.",

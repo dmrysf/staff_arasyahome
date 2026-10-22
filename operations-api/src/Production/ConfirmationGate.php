@@ -22,11 +22,31 @@ use PDO;
  * transaction on the order row it locked, so a stale screen can never pass it. Orders already past stage 1 are never
  * stopped or rewound by the gate. The Confirmare workflow that approves orders is not part of Phase 1
  * (WORKFLOW_READY), so a source cannot be activated yet (bin/workflow-cohort.php refuses).
+ *
+ * API 2.42.0 (Phase 6, production handoff): the stored clearance flag is refreshed by Confirmare decisions and source
+ * snapshots only, so the gate also reads, live, whether a finance action of the order is pending or unknown
+ * (ConfirmareFinance) or a shop change is not settled (ConfirmareSourceEdits). Either one closes production at once.
+ * And a Confirmare-cohort order leaves stage 1 only with its first production document (DOCUMENT_ERROR_CODE): the
+ * shop employee generates revision 1 once the order is cleared, the cutting QR scan of that document starts
+ * production. Generating revision 1 itself needs only assertOpen().
  */
 final class ConfirmationGate
 {
     public const BLOCKED_REASON = 'confirmation_required';
     public const ERROR_CODE = 'CONFIRMARE_NECESARA';
+    public const DOCUMENT_BLOCKED_REASON = 'confirmation_document_required';
+    public const DOCUMENT_ERROR_CODE = 'CONFIRMARE_DOCUMENT_NECESAR';
+
+    /**
+     * The effective clearance of the order aliased `o`, as one SQL expression: NULL without a Confirmare row, 1 only when
+     * order_confirmations.production_cleared is set, no finance action of the order is pending or unknown (the
+     * condition of ConfirmareFinance::actionOpen) and no shop change is unsettled (ConfirmareSourceEdits::changePending).
+     */
+    public const CLEARED_SQL = "(SELECT c.production_cleared = 1
+            AND NOT EXISTS (SELECT 1 FROM order_finance_actions fa WHERE fa.order_uuid = c.order_uuid AND fa.state IN ('pending', 'unknown'))
+            AND NOT EXISTS (SELECT 1 FROM order_confirmation_source_edits se WHERE se.order_uuid = c.order_uuid
+                AND (se.state IN ('pending', 'unknown') OR (se.state = 'applied' AND (o.source_changed_at IS NULL OR o.source_changed_at < se.source_modified_after))))
+        FROM order_confirmations c WHERE c.order_uuid = o.order_uuid)";
 
     /** Phase 1: nothing can approve an order yet, so no source may be activated (an activation would stop production). */
     public const WORKFLOW_READY = false;
@@ -36,6 +56,7 @@ final class ConfirmationGate
 
     private const MESSAGE = 'Comanda nu poate intra în producție. Comanda trebuie confirmată mai întâi cu clientul (Confirmare).';
     private const MESSAGE_UNDETERMINED = 'Comanda nu poate intra în producție. Momentul plasării comenzii nu a putut fi stabilit; comanda necesită verificare.';
+    private const MESSAGE_DOCUMENT = 'Comanda nu poate intra în producție fără fișa de producție. Fișa (revizia 1) se generează din Confirmare, apoi tăierea scanează codul QR al fișei.';
 
     private function __construct()
     {
@@ -69,6 +90,36 @@ final class ConfirmationGate
         }
     }
 
+    /**
+     * Whether a Confirmare-cohort order at stage 1 still lacks its first production document: production does not leave
+     * stage 1 before revision 1 exists and is usable (document_status `active`). Orders of every other cohort, orders
+     * past stage 1 and the generation of revision 1 itself are never affected.
+     */
+    public static function needsDocument(?string $cohort, string $documentStatus, string $stageId): bool
+    {
+        return $stageId === OrderProjectionWriter::INITIAL_STAGE_ID && WorkflowCohort::needsConfirmation($cohort) && $documentStatus !== 'active';
+    }
+
+    /**
+     * assertOpen() plus the first document of a Confirmare-cohort order, for a production start other than the document
+     * itself (a manager assignment at stage 1, a takeover to a later stage). The caller locked the order row.
+     */
+    public static function assertStartable(PDO $pdo, string $orderUuid, string $stageId): void
+    {
+        self::assertOpen($pdo, $orderUuid, $stageId);
+        $statement = $pdo->prepare('SELECT workflow_cohort, document_status FROM operational_orders WHERE order_uuid = ? LOCK IN SHARE MODE');
+        $statement->execute([$orderUuid]);
+        $row = $statement->fetch(PDO::FETCH_ASSOC);
+        if (is_array($row) && self::needsDocument($row['workflow_cohort'] === null ? null : (string) $row['workflow_cohort'], (string) $row['document_status'], $stageId)) {
+            throw self::documentRequired();
+        }
+    }
+
+    public static function documentRequired(): ApiException
+    {
+        return new ApiException(409, self::DOCUMENT_ERROR_CODE, self::MESSAGE_DOCUMENT);
+    }
+
     /** Whether production may not start for the stored order (read-only; the source document state uses it). */
     public static function isClosed(PDO $pdo, string $orderUuid, string $stageId): bool
     {
@@ -88,7 +139,29 @@ final class ConfirmationGate
             return false;
         }
         $cohort = (string) $row['workflow_cohort'];
-        return self::blocksStart($cohort, $row['production_cleared'] === null ? null : (int) $row['production_cleared'] === 1, $stageId) ? $cohort : false;
+        $cleared = $row['production_cleared'] === null ? null : (int) $row['production_cleared'] === 1;
+        if ($cleared === true && self::changePending($pdo, $orderUuid, $lock)) {
+            $cleared = false;
+        }
+        return self::blocksStart($cohort, $cleared, $stageId) ? $cohort : false;
+    }
+
+    /**
+     * Whether a finance action of the order is pending or unknown, or a shop change of it is not settled (API 2.42.0).
+     * Locking reads when the caller holds the order row: both are written under that same order row lock.
+     */
+    private static function changePending(PDO $pdo, string $orderUuid, bool $lock): bool
+    {
+        $suffix = $lock ? ' LOCK IN SHARE MODE' : '';
+        $finance = $pdo->prepare("SELECT 1 FROM order_finance_actions WHERE order_uuid = ? AND state IN ('pending', 'unknown') LIMIT 1" . $suffix);
+        $finance->execute([$orderUuid]);
+        if ($finance->fetchColumn() !== false) {
+            return true;
+        }
+        $edits = $pdo->prepare("SELECT 1 FROM order_confirmation_source_edits e INNER JOIN operational_orders o ON o.order_uuid = e.order_uuid
+            WHERE e.order_uuid = ? AND (e.state IN ('pending', 'unknown') OR (e.state = 'applied' AND (o.source_changed_at IS NULL OR o.source_changed_at < e.source_modified_after))) LIMIT 1" . $suffix);
+        $edits->execute([$orderUuid]);
+        return $edits->fetchColumn() !== false;
     }
 
     /** @param list<string> $missing the clearance conditions not met (ConfirmationClearance::CONDITIONS) */

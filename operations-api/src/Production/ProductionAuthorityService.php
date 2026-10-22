@@ -185,7 +185,7 @@ final readonly class ProductionAuthorityService
             }
             if ($target->id !== \Arasya\Operations\Order\OrderProjectionWriter::INITIAL_STAGE_ID) {
                 // A takeover to a later stage starts production: a Confirmare-cohort order waits for its approval.
-                ConfirmationGate::assertOpen($this->pdo, $orderUuid, \Arasya\Operations\Order\OrderProjectionWriter::INITIAL_STAGE_ID);
+                ConfirmationGate::assertStartable($this->pdo, $orderUuid, \Arasya\Operations\Order\OrderProjectionWriter::INITIAL_STAGE_ID);
             }
             $previous = (string) $order['production_stage_id'];
             if ($previous === CuttingLifecycle::STAGE) {

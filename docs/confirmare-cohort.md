@@ -274,7 +274,8 @@ state), rollback to 2.36/2.34 is unchanged. The 035 columns are nullable and old
 
 - Nothing approves an order yet. Activation is therefore impossible, by design.
 - Staff and Dashboard have no Confirmare screen. Staff (2.26.x) does not yet know the reason `confirmation_required`;
-  this is an activation prerequisite (see above).
+  this is an activation prerequisite (see above). Resolved in Staff 2.32.0 (API 2.42.0, docs/confirmare-handoff.md),
+  which also knows `confirmation_document_required` and `CONFIRMARE_DOCUMENT_NECESAR`.
 - No operator resolution for `undetermined` orders exists yet. They are only reported.
 - Pre-existing, unchanged: simultaneous first deliveries of the same new event can lose to an InnoDB deadlock
   (HTTP 500). Exactly one wins, nothing is half-written, and YD SOFT retries the loser, which then gets `duplicate`.

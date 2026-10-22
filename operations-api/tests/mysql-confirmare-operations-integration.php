@@ -309,6 +309,9 @@ $closedDoc = $error($generate($aOrder), 409, 'CONFIRMARE_NECESARA', 'nor gets it
 $check(($closedDoc['error']['details']['missing'] ?? null) === ['payment'], 'the refusal names what is missing');
 $ok($send('trendhome', $payload(explode(':', $aOrder)[1], 'processing', null, $cod('confirmed'))), 'the advance is confirmed in the shop');
 $check($conf($aOrder)['production_cleared'] === 1 && $detail($sup, $aOrder)['production']['missing'] === [], 'the confirmed advance completes the clearance');
+// API 2.42.0 (Phase 6): a cleared Confirmare order is handed to cutting through its first production document only.
+$error($intake($aOrder), 409, 'CONFIRMARE_DOCUMENT_NECESAR', 'a cleared order without its production document is not received by cutting');
+$ok($generate($aOrder), 'revision 1 after clearance', 201);
 $check($ok($intake($aOrder), 'intake after clearance')['outcome'] === 'started' && $stage($aOrder) === 'material-preparation', 'only now production starts');
 // Owner financial rules (2026-10-22): the source's financial clearance on the CURRENT total decides, whatever the gate mode.
 $fin = $pick($mineA, static fn (string $g): bool => $isCod($g) && $g !== $aOrder && ($conf($g)['status'] ?? '') === 'pending');
@@ -513,7 +516,7 @@ if ($probe === []) {
     ]);
     $intakeResult = $results[1]['status'] === 200 ? 'started' : (string) $results[1]['code'];
     $check($results[0]['status'] === 200 && $conf($raceOrder2)['status'] === 'approved' && $conf($raceOrder2)['production_cleared'] === 1
-        && (($intakeResult === 'started' && $stage($raceOrder2) === 'material-preparation') || ($intakeResult === 'CONFIRMARE_NECESARA' && $stage($raceOrder2) === 'waiting')), 'approval vs intake: the intake either waited for the clearance or was refused before it: ' . $intakeResult);
+        && in_array($intakeResult, ['CONFIRMARE_NECESARA', 'CONFIRMARE_DOCUMENT_NECESAR'], true) && $stage($raceOrder2) === 'waiting', 'approval vs intake: the intake was refused before the clearance, or after it for the missing production document (API 2.42.0): ' . $intakeResult);
     // Two operators pull the last waiting order at once: one gets it, nobody gets it twice.
     $service->distribute('trendhome');
     $ok($act($sup, $th(163), 'release', ['expectedVersion' => $version($th(163))]), 'one order back to the pool');
