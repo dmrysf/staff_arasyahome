@@ -336,7 +336,20 @@ $error($send('trendhome', $payload($finId, 'processing', null, $cod('confirmed',
 $finSend($cod('confirmed', 1), ['state' => 'unknown', 'basis' => null, 'pricingFingerprint' => null], ['price' => 'b']);
 $check(in_array('payment', $missingOf($fin), true), 'an unknown financial state stays closed');
 $error($intake($fin), 409, 'CONFIRMARE_NECESARA', 'and production never starts on it');
-$check($detail($sup, $fin)['financial'] === ['state' => 'unknown', 'basis' => null, 'attention' => null, 'open' => false] && !str_contains(json_encode($detail($sup, $fin)), '450'), 'the view shows the state and basis only');
+// The refused amount must not surface anywhere in the view: no "amount" key and no value holding 450 as a number of its
+// own (450, "450", "450.00", "450,00 lei"). A bare substring test also matched random fingerprint hex digits and
+// microsecond timestamps (about one run in twenty), so every scalar is checked as a token instead.
+$leaksAmount = static function (mixed $value, int|string|null $key = null) use (&$leaksAmount): bool {
+    if (is_string($key) && stripos($key, 'amount') !== false) return true;
+    if (is_array($value)) {
+        foreach ($value as $k => $v) if ($leaksAmount($v, $k)) return true;
+        return false;
+    }
+    return (is_int($value) || is_float($value)) ? (float) $value === 450.0 : (is_string($value) && preg_match('/(?<![0-9A-Za-z.])450(?:[.,][0-9]{1,2})?(?![0-9A-Za-z])/', $value) === 1);
+};
+$check($leaksAmount(['x' => 450]) && $leaksAmount(['total' => '450.00']) && $leaksAmount(['paidAmount' => null]) && $leaksAmount(['note' => 'avans 450,00 lei']) && !$leaksAmount(['fingerprint' => 'a4503f', 'at' => '2026-10-22T11:05:50.450123Z']), 'the amount probe finds an amount and ignores hex digits and timestamps');
+$finView = $detail($sup, $fin);
+$check($finView['financial'] === ['state' => 'unknown', 'basis' => null, 'attention' => null, 'open' => false] && !$leaksAmount($finView), 'the view shows the state and basis only');
 // Legacy orders keep the advance payment gate unchanged: the financial clearance is never read for them.
 $ok($send('trendhome', $payload($id(140), 'processing', $submitted($activatedAt->modify('-1 hour')), $online, ['financial' => ['state' => 'unknown', 'basis' => null, 'pricingFingerprint' => null]])), 'legacy order with an unknown financial clearance');
 $ok($generate($th(140)), 'a legacy online order still gets its document through the advance payment gate', 201);
