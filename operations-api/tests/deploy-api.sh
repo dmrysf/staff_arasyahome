@@ -40,6 +40,7 @@ HOME="$test_home" /bin/bash "$release_a/scripts/cpanel-deploy-api.sh" >/dev/null
 [[ -f "$api_root/current/legacy-sentinel.txt" ]] || fail 'Legacy current was modified.'
 [[ -x "$api_root/bin/maintenance-active.sh" ]] || fail 'Stable maintenance launcher is missing.'
 [[ -x "$api_root/bin/trendyol-intake-active.sh" ]] || fail 'Stable Trendyol intake launcher is missing.'
+[[ -x "$api_root/bin/cancellation-sync-active.sh" ]] || fail 'Stable cancellation worker launcher is missing.'
 [[ -f "$public_root/index.php" && -f "$public_root/RuntimeLocator.php" && -f "$public_root/.htaccess" ]] || fail 'Public bootstrap files are missing.'
 
 HOME="$test_home" /bin/bash "$release_b/scripts/cpanel-deploy-api.sh" >/dev/null

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Arasya\Operations\Order;
 
 use Arasya\Operations\Authorization\AuthorizationService;
+use Arasya\Operations\Cancellation\ProductionStop;
 use Arasya\Operations\Cutting\CuttingLifecycle;
 use Arasya\Operations\Employee\EmployeeIdentity;
 use Arasya\Operations\Production\PaymentGate;
@@ -29,6 +30,10 @@ use Arasya\Operations\Production\ProductionWorkflow;
  * Production authority: while the order's source enforces the authority split, an order that is still
  * managed by its source (production_authority = 'source') cannot be worked on in Staff at all; a manager
  * must take it over explicitly first. In legacy and observe modes nothing changes here.
+ *
+ * Cancellation (API 2.35.0): an effective production stop (OperationalOrder::isProductionStopped) blocks every action;
+ * the reason is order_unavailable while the source reports the cancellation (unchanged contract) and production_stopped
+ * otherwise. The order stays visible, read-only.
  *
  * Cutting intake (evaluateCuttingIntake) is the one narrow exception to the current-stage rule: an eligible
  * cutter who scans the active Arasya QR of a stage-1 order may receive it into cutting, because that cutter is
@@ -113,8 +118,13 @@ final readonly class OrderAccessPolicy
     /** @return array{action: string|null, blockedReason: string|null} */
     public function evaluate(EmployeeIdentity $employee, OperationalOrder $order, ?ProductionWorkflow $workflow): array
     {
+        // A source cancellation keeps its established reason; any other effective stop (API 2.35.0) freezes every
+        // manufacturing action before the remaining rules.
         if ($order->operationalStatus === 'unavailable') {
             return $this->blocked('order_unavailable');
+        }
+        if ($order->isProductionStopped()) {
+            return $this->blocked(ProductionStop::BLOCKED_REASON);
         }
         if ($order->isProductionCompleted()) {
             return $this->blocked('production_completed');
@@ -206,6 +216,9 @@ final readonly class OrderAccessPolicy
         }
         if ($order->operationalStatus === 'unavailable') {
             return $this->blocked('order_unavailable');
+        }
+        if ($order->isProductionStopped()) {
+            return $this->blocked(ProductionStop::BLOCKED_REASON);
         }
         if ($order->isProductionCompleted()) {
             return $this->blocked('production_completed');

@@ -234,7 +234,7 @@ $check((int) $one("SELECT enabled FROM production_feature_flags WHERE flag_key =
 $tables31 = (int) $one('SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE()');
 (new SqlFileRunner($pdo))->run($migrations . '/031_production_assisted_checkpoints.sql');
 $check((int) $one('SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE()') === $tables31 && (int) $one("SELECT COUNT(*) FROM production_feature_flags WHERE flag_key = 'perdea_assisted_checkpoints'") === 1, '35. migration 031 re-runs: no table or flag twice');
-foreach (['028_production_work_units.sql', '029_production_manifest_routing.sql', '030_production_route_reconciliation.sql', '031_production_assisted_checkpoints.sql'] as $file) {
+foreach (['028_production_work_units.sql', '029_production_manifest_routing.sql', '030_production_route_reconciliation.sql', '031_production_assisted_checkpoints.sql', '033_order_cancellation_control.sql'] as $file) {
     $check((string) $one('SELECT checksum FROM schema_migrations WHERE migration_name = ?', [$file]) === hash_file('sha256', $migrations . '/' . $file), "35. the recorded {$file} checksum equals the file");
 }
 $check($rows("SELECT migration_name FROM schema_migrations WHERE migration_name LIKE '028\\_%'") === [['migration_name' => '028_production_work_units.sql']], '35. exactly one migration uses the 028 prefix');

@@ -174,7 +174,7 @@ final class Container
                 $tracks,
             ),
             new ActivityController(new PdoActivityRepository($this->pdo), $this->authentication, $authorization, $this->config, $context, $this->clock),
-            new SourceIngestionController(new SourceSignatureVerifier($this->config->sourceSecrets), $this->projectionWriter(), $rateLimiter, $this->clock, SourceRegistry::fromConfig($this->config), new \Arasya\Operations\Integration\SourceAuthorityQueries($this->pdo), $this->productionQrService($authorization, $iamAudit), $this->documentService($authorization, audit: $iamAudit), new \Arasya\Operations\Document\DocumentRenderer($this->pdo), new \Arasya\Operations\Integration\SourceTrackingQueries($this->pdo)),
+            new SourceIngestionController(new SourceSignatureVerifier($this->config->sourceSecrets), $this->projectionWriter(), $rateLimiter, $this->clock, SourceRegistry::fromConfig($this->config), new \Arasya\Operations\Integration\SourceAuthorityQueries($this->pdo), $this->productionQrService($authorization, $iamAudit), $this->documentService($authorization, audit: $iamAudit), new \Arasya\Operations\Document\DocumentRenderer($this->pdo), new \Arasya\Operations\Integration\SourceTrackingQueries($this->pdo), $this->cancellationSyncService($authorization, $idempotency)),
             new ManagementController(
                 new ManagementService($this->pdo, $authorization, new IamAuditLogger($this->pdo), $this->passwords, $this->usernames, $this->clock, HealthController::VERSION),
                 $this->authentication,
@@ -193,6 +193,9 @@ final class Container
                 $analyticsPolicy,
                 $revisionApprovers,
                 $documentScopes,
+                new \Arasya\Operations\Cancellation\CancellationService($this->pdo, $authorization, $idempotency, $this->clock, $this->cancellationSyncService($authorization, $idempotency)),
+                $this->cancellationSyncService($authorization, $idempotency),
+                new \Arasya\Operations\Cancellation\Sync\CancellationReconciler($this->pdo, $this->clock, $this->cancellationProviders()),
             ),
             new CompanyController(
                 new CompanyQueries($this->pdo, $authorization),
@@ -349,6 +352,44 @@ final class Container
             );
         }
         return $this->config->trendyol === null ? null : new TrendyolClient($this->config->trendyol, new StreamTrendyolTransport());
+    }
+
+    /**
+     * Outbound cancellation providers (API 2.36.0). The Trendyol provider exists only with credentials and a storefront
+     * code (a test fixture outside production stands in for both); without them Trendyol is a manual provider. Nothing
+     * is sent unless ARASYA_CANCELLATION_SYNC=enabled and the provider's database flag is enabled as well.
+     */
+    public function cancellationProviders(): \Arasya\Operations\Cancellation\Sync\ProviderRegistry
+    {
+        $trendyol = null;
+        if ($this->config->trendyolFixtureFile !== null) {
+            $transport = new \Arasya\Operations\Integration\Trendyol\FixtureTrendyolTransport($this->config->trendyolFixtureFile);
+            $credentials = \Arasya\Operations\Config\TrendyolCredentials::fromValues('1000001', 'fixture', 'fixture', '') ?? throw new \LogicException('fixture credentials');
+            $trendyol = new \Arasya\Operations\Cancellation\Sync\TrendyolCancellationProvider(new TrendyolClient($credentials, $transport),
+                new \Arasya\Operations\Integration\Trendyol\TrendyolCancellationApi($credentials, $transport, $this->config->trendyolStoreFrontCode ?? 'RO'));
+        } elseif ($this->config->trendyol !== null && $this->config->trendyolStoreFrontCode !== null) {
+            $transport = new StreamTrendyolTransport();
+            $trendyol = new \Arasya\Operations\Cancellation\Sync\TrendyolCancellationProvider(new TrendyolClient($this->config->trendyol, $transport),
+                new \Arasya\Operations\Integration\Trendyol\TrendyolCancellationApi($this->config->trendyol, $transport, $this->config->trendyolStoreFrontCode));
+        }
+        return new \Arasya\Operations\Cancellation\Sync\ProviderRegistry($this->pdo, $this->config, $trendyol);
+    }
+
+    public function cancellationSyncService(?AuthorizationService $authorization = null, ?IdempotencyStore $idempotency = null): \Arasya\Operations\Cancellation\Sync\CancellationSyncService
+    {
+        return new \Arasya\Operations\Cancellation\Sync\CancellationSyncService($this->pdo, $authorization ?? new AuthorizationService(),
+            $idempotency ?? new IdempotencyStore($this->pdo), $this->clock, $this->cancellationProviders());
+    }
+
+    /** The outbound cancellation worker (operator CLI / cron); it contacts nothing while the gates are closed. */
+    public function cancellationSyncWorker(): \Arasya\Operations\Cancellation\Sync\CancellationSyncWorker
+    {
+        return new \Arasya\Operations\Cancellation\Sync\CancellationSyncWorker($this->pdo, $this->clock, $this->cancellationProviders());
+    }
+
+    public function cancellationReconciler(): \Arasya\Operations\Cancellation\Sync\CancellationReconciler
+    {
+        return new \Arasya\Operations\Cancellation\Sync\CancellationReconciler($this->pdo, $this->clock, $this->cancellationProviders());
     }
 
     /** The explicit Trendyol intake activation control (operator CLI). */

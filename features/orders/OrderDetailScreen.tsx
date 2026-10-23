@@ -16,6 +16,7 @@ import { StageLabel } from "../../components/StageLabel";
 import { ErrorState } from "../../components/ErrorState";
 import { LoadingState } from "../../components/ui/States";
 import { OrderNotices } from "../../components/OrderNotices";
+import { ProductionStopNotice } from "../../components/ProductionStopNotice";
 import { toServiceError } from "../../services/errors";
 import { requireProductionProducts } from "../../domain/orderValidation";
 import { AppIcon } from "../../components/icons/AppIcon";
@@ -77,6 +78,7 @@ export function OrderDetailScreen({ orderId, service, exceptions, cutting, docum
       <button className="back-link" type="button" onClick={() => navigate("/orders")}><AppIcon name="back" size={20} /> {t("orders.title")}</button>
       <section className="detail-hero"><div><SourceBadge source={order.source} /><h1>{t("common.orderWord")} <span className="order-id">#{order.orderNumber}</span></h1></div>{completed ? <span className="stage-label"><span>✓</span>{t("common.productionCompleted")}</span> : <StageLabel stage={getStageById(workflow, order.productionStageId)} />}</section>
       {order.productionAuthority && permissions.includes("production.manage_authority") && <p className={`order-notice ${order.productionAuthority === "operations" ? "order-notice-muted" : "order-notice-warning"}`} role="note" data-testid="production-authority">{authorityLabels[order.productionAuthority]}{order.productionAuthority === "source" && <> · <button type="button" className="link-button" onClick={() => navigate(`/authority?order=${encodeURIComponent(order.id)}`)}>{t("detail.takeOver")}</button></>}</p>}
+      <ProductionStopNotice order={order} />
       <BlockedDocument order={order} />
       <OrderNotices order={order} />
       {order.productionQuality && <QualityNotices order={order} navigate={navigate} />}

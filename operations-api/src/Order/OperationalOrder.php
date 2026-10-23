@@ -48,7 +48,20 @@ final readonly class OperationalOrder
          * route_incomplete); null when nothing blocks it or the order is not at a gated stage.
          */
         public ?string $pieceGateReason = null,
+        /**
+         * API 2.35.0: the effective production stop (CancellationView::staff), null while production is not stopped. A
+         * stopped order keeps its stage, owner and history; no manufacturing command is accepted until an authorized
+         * release (CancellationControl).
+         * @var array<string, mixed>|null
+         */
+        public ?array $productionStop = null,
     ) {
+    }
+
+    /** Production is frozen by a cancellation or a local stop (the shared guard is ProductionStop). */
+    public function isProductionStopped(): bool
+    {
+        return $this->productionStop !== null;
     }
 
     /** Whether some pieces are away from the order in rework (its stage is then not the stage of every piece). */

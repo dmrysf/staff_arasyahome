@@ -64,6 +64,8 @@ export const siErrors: { readonly [K in keyof typeof roErrors]: string } = {
   "error.IDEMPOTENCY_CONFLICT.message": "ඉල්ලීම ආරක්ෂිතව තහවුරු කළ නොහැකි විය. නැවත පූරණය කර නැවත උත්සාහ කරන්න.",
   "error.ORDER_UNAVAILABLE.title": "ඇණවුම ලබාගත නොහැක",
   "error.ORDER_UNAVAILABLE.message": "ඇණවුම අවලංගු කර ඇත, නැතහොත් තවදුරටත් සැකසිය නොහැක.",
+  "error.ORDER_PRODUCTION_STOPPED.title": "නිෂ්පාදනය නවතා ඇත",
+  "error.ORDER_PRODUCTION_STOPPED.message": "මෙම ඇණවුමේ නිෂ්පාදනය නවතා ඇත. ඔබට මෙම ඇණවුමේ නිෂ්පාදනය දිගටම කළ නොහැක.",
   "error.ORDER_PRODUCTS_UNAVAILABLE.title": "භාණ්ඩ නැත",
   "error.ORDER_PRODUCTS_UNAVAILABLE.message": "ඇණවුමේ නිෂ්පාදනයට සුදුසු භාණ්ඩ නැත.",
   "error.ORDER_CHANGED.title": "ඇණවුම වෙනස් වී ඇත",

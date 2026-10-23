@@ -104,7 +104,31 @@ export type OrderActionBlockedReason =
   | "plan_confirmation_required"
   | "pieces_incomplete"
   | "route_incomplete"
-  | "defect_unresolved";
+  | "defect_unresolved"
+  /** API 2.35.0: production is stopped inside Arasya (a local stop, or a source that reactivated the order before an authorized release). */
+  | "production_stopped";
+
+/**
+ * API 2.35.0: the effective production stop of an order (cancellation control), the same state the Dashboard shows.
+ * While present, no manufacturing action is offered and the server refuses every one; history stays readable.
+ */
+export type ProductionStopView = {
+  state: "stopped";
+  reason: "source_cancelled" | "marketplace_cancelled" | "manager_stop" | "legacy_source_cancellation";
+  origin: "source" | "local";
+  sourceStatus: "cancelled" | "reactivated" | "not_reported";
+  sourceRequest: "not_requested" | "pending" | "confirmed" | "withdrawn";
+  phase: "not_started" | "in_progress" | "completed";
+  physical: "not_required" | "pending" | "verified";
+  since: string;
+  canContinue: false;
+  managementAttention: boolean;
+  /**
+   * API 2.36.0: the outbound cancellation of this stop, without details: waiting for the sales channel, needing a person,
+   * or confirmed by the channel. null without a request (and from an API before 2.36.0, which omits it).
+   */
+  sync: "awaiting_confirmation" | "attention" | "confirmed" | null;
+};
 
 /** One physical piece of an order line ("Bucata 1/2"); trackId is set while the piece travels apart, in rework. */
 export type ProductionPiece = { id: string; itemId: string; index: number; count: number; lineNumber: number; trackId: string | null; reworkCycle: number; reviewRequired: boolean; productType?: string; fabricMeters?: string | null; replacementOf?: string | null };
@@ -195,6 +219,8 @@ export type StaffOrder = {
   pieces?: OrderPieces;
   /** The exact piece a scanned piece label (ARASYA:U1:) identified. */
   scannedPiece?: { unitId: string; trackId: string | null };
+  /** API 2.35.0: present only while production of the order is stopped. */
+  productionStop?: ProductionStopView;
 };
 
 export type FaultExceptionStatus = "awaiting_acknowledgment" | "awaiting_approval" | "approved" | "rejected" | "cancelled"
@@ -352,6 +378,7 @@ export type ServiceErrorCode =
   | "EXPIRED_QR"
   | "ORDER_NOT_FOUND"
   | "ORDER_UNAVAILABLE"
+  | "ORDER_PRODUCTION_STOPPED"
   | "ORDER_PRODUCTS_UNAVAILABLE"
   | "ORDER_CHANGED"
   | "ORDER_ALREADY_CLAIMED"

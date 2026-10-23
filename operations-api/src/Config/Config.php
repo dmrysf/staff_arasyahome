@@ -59,7 +59,18 @@ final readonly class Config
          * FixtureTrendyolTransport. Refused in production, where only the real HTTPS API is ever called.
          */
         public ?string $trendyolFixtureFile = null,
+        /**
+         * Server switch of the outbound cancellation synchronization (ARASYA_CANCELLATION_SYNC, API 2.36.0). Only the
+         * exact value `enabled` lets the worker contact a provider or hand a request to a source connector; the
+         * per-provider database flags must be enabled as well. Anything else is off (the default).
+         */
+        public string $cancellationSync = 'disabled',
+        /** Trendyol storeFrontCode header for the unsupplied notice (ARASYA_TRENDYOL_STORE_FRONT_CODE); null: not configured. */
+        public ?string $trendyolStoreFrontCode = null,
     ) {
+        if ($this->trendyolStoreFrontCode !== null && preg_match('/^[A-Z]{2,5}$/D', $this->trendyolStoreFrontCode) !== 1) {
+            throw new RuntimeException('ARASYA_TRENDYOL_STORE_FRONT_CODE must be 2-5 capital letters.');
+        }
         if ($this->trendyolFixtureFile !== null && $this->isProduction()) {
             throw new RuntimeException('ARASYA_TRENDYOL_FIXTURE_FILE is not allowed in production.');
         }
@@ -132,7 +143,15 @@ final readonly class Config
             sourceSettings: self::sourceSettings($values, $sourceKeys),
             trendyolIntake: self::value($values, 'ARASYA_TRENDYOL_INTAKE', 'disabled'),
             trendyolFixtureFile: self::value($values, 'ARASYA_TRENDYOL_FIXTURE_FILE', '') === '' ? null : self::value($values, 'ARASYA_TRENDYOL_FIXTURE_FILE', ''),
+            cancellationSync: self::value($values, 'ARASYA_CANCELLATION_SYNC', 'disabled'),
+            trendyolStoreFrontCode: self::value($values, 'ARASYA_TRENDYOL_STORE_FRONT_CODE', '') === '' ? null : self::value($values, 'ARASYA_TRENDYOL_STORE_FRONT_CODE', ''),
         );
+    }
+
+    /** Whether the server switch allows outbound cancellation synchronization at all (provider flags still apply). */
+    public function cancellationSyncEnabled(): bool
+    {
+        return $this->cancellationSync === 'enabled';
     }
 
     /** Whether the Trendyol intake switch is on (a database activation with a baseline is still required). */

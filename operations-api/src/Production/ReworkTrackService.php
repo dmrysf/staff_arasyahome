@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Arasya\Operations\Production;
 
 use Arasya\Operations\Authorization\AuthorizationService;
+use Arasya\Operations\Cancellation\ProductionStop;
 use Arasya\Operations\Cutting\CuttingLifecycle;
 use Arasya\Operations\Document\DocumentGuard;
 use Arasya\Operations\Employee\EmployeeIdentity;
@@ -205,6 +206,9 @@ final readonly class ReworkTrackService
         if (($order['operational_status'] ?? null) === 'unavailable') {
             return $blocked('order_unavailable');
         }
+        if (($order['production_stopped_at'] ?? null) !== null) {
+            return $blocked(ProductionStop::BLOCKED_REASON);
+        }
         if (($order['production_completed_at'] ?? null) !== null) {
             return $blocked('production_completed');
         }
@@ -320,7 +324,7 @@ final readonly class ReworkTrackService
             return [];
         }
         $statement = $this->pdo->prepare('SELECT order_uuid, global_order_id, order_number, source_key, operational_status, production_completed_at, document_status, production_authority,
-                production_stage_id, production_owner_employee_uuid, open_exception_uuid FROM operational_orders WHERE order_uuid IN (' . implode(',', array_fill(0, count($orderUuids), '?')) . ')');
+                production_stage_id, production_owner_employee_uuid, open_exception_uuid, production_stopped_at FROM operational_orders WHERE order_uuid IN (' . implode(',', array_fill(0, count($orderUuids), '?')) . ')');
         $statement->execute(array_values(array_unique($orderUuids)));
         return $statement->fetchAll(PDO::FETCH_ASSOC);
     }
@@ -336,7 +340,7 @@ final readonly class ReworkTrackService
         }
         try {
             $statement = $this->pdo->prepare("SELECT t.track_uuid, t.order_uuid, t.owner_employee_uuid FROM production_tracks t INNER JOIN operational_orders o ON o.order_uuid = t.order_uuid
-                 WHERE t.status = 'active' AND t.stage_id = ? AND o.operational_status <> 'unavailable' AND o.production_completed_at IS NULL"
+                 WHERE t.status = 'active' AND t.stage_id = ? AND o.operational_status <> 'unavailable' AND o.production_completed_at IS NULL AND o.production_stopped_at IS NULL"
                 . ($sources === null ? '' : ' AND o.source_key IN (' . implode(',', array_fill(0, count($sources), '?')) . ')') . ' ORDER BY t.changed_at, t.track_number LIMIT ' . max(1, min(250, $limit)));
             $statement->execute([$stageId, ...array_values($sources ?? [])]);
         } catch (PDOException) {
@@ -367,7 +371,7 @@ final readonly class ReworkTrackService
         }
         try {
             $statement = $this->pdo->prepare("SELECT t.stage_id, COUNT(*) AS total, COALESCE(SUM(t.owner_employee_uuid = ?), 0) AS mine FROM production_tracks t INNER JOIN operational_orders o ON o.order_uuid = t.order_uuid
-                 WHERE t.status = 'active' AND o.operational_status <> 'unavailable' AND o.production_completed_at IS NULL AND (" . implode(' OR ', $conditions) . ') GROUP BY t.stage_id');
+                 WHERE t.status = 'active' AND o.operational_status <> 'unavailable' AND o.production_completed_at IS NULL AND o.production_stopped_at IS NULL AND (" . implode(' OR ', $conditions) . ') GROUP BY t.stage_id');
             $statement->execute($parameters);
         } catch (PDOException) {
             return $counts;
@@ -412,6 +416,7 @@ final readonly class ReworkTrackService
     public static function blocked(string $reason): ApiException
     {
         return match ($reason) {
+            ProductionStop::BLOCKED_REASON => ProductionStop::blocked(),
             'claimed_by_other' => new ApiException(409, 'TRACK_ALREADY_CLAIMED', 'Another employee is working on this piece.'),
             'pieces_held' => new ApiException(409, 'ORDER_PIECES_HELD', 'Bucata este reținută fizic.'),
             'pieces_incomplete' => new ApiException(409, 'ORDER_PIECES_INCOMPLETE', 'Identitatea bucății trebuie verificată.'),
@@ -470,7 +475,7 @@ final readonly class ReworkTrackService
             try {
                 $orderUuid = $this->tracks()->orderOf($trackUuid) ?? throw new ApiException(404, 'TRACK_NOT_FOUND', 'The piece was not found.');
                 $lock = $this->pdo->prepare('SELECT order_uuid, global_order_id, order_number, source_key, operational_status, production_completed_at, document_status, production_authority,
-                        production_stage_id, production_owner_employee_uuid, open_exception_uuid, production_version FROM operational_orders WHERE order_uuid = ? FOR UPDATE');
+                        production_stage_id, production_owner_employee_uuid, open_exception_uuid, production_version, production_stopped_at FROM operational_orders WHERE order_uuid = ? FOR UPDATE');
                 $lock->execute([$orderUuid]);
                 $order = $lock->fetch(PDO::FETCH_ASSOC);
                 if (!is_array($order)) {
@@ -488,9 +493,20 @@ final readonly class ReworkTrackService
                 $track = $this->tracks()->lock($trackUuid) ?? throw new ApiException(404, 'TRACK_NOT_FOUND', 'The piece was not found.');
                 $replay = $this->replay($employee->employeeUuid, $key, $operation, $trackUuid, $hash);
                 if ($replay !== null) {
+                    $stopped = $order['production_stopped_at'] !== null;
                     $this->pdo->rollBack();
+                    // A committed result replays unchanged, but never shows a manufacturing action after a production stop.
+                    if ($stopped && isset($replay['pieces']['tracks']) && is_array($replay['pieces']['tracks'])) {
+                        foreach ($replay['pieces']['tracks'] as &$view) {
+                            $view['allowedAction'] = null;
+                            $view['blockedReason'] = $order['operational_status'] === 'unavailable' ? 'order_unavailable' : ProductionStop::BLOCKED_REASON;
+                        }
+                        unset($view);
+                    }
                     return $replay;
                 }
+                // The shared cancellation guard: a track never continues once its order's production is stopped.
+                ProductionStop::assertOpen($this->pdo, (string) $order['order_uuid']);
                 $now = $this->now();
                 $response = $operation_($employee, $order, $track, $now);
                 $this->store($employee->employeeUuid, $key, $operation, $trackUuid, $hash, $response, $now);

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Arasya\Operations\Order;
 
+use Arasya\Operations\Cancellation\CancellationControl;
 use Arasya\Operations\Document\DocumentStaleness;
 use Arasya\Operations\Http\ApiException;
 use Arasya\Operations\Production\PaymentGate;
@@ -131,7 +132,7 @@ final readonly class OrderProjectionWriter
             }
 
             // Lock order row
-            $stmt = $this->pdo->prepare('SELECT order_uuid, source_changed_at, projection_hash, version, production_version, production_stage_id, production_authority, operational_status, cutting_first_claimed_at, document_context FROM operational_orders WHERE global_order_id = ? FOR UPDATE');
+            $stmt = $this->pdo->prepare('SELECT order_uuid, source_changed_at, projection_hash, version, production_version, production_stage_id, production_authority, operational_status, cutting_first_claimed_at, document_context, source_reported_unavailable_at, cancellation_state FROM operational_orders WHERE global_order_id = ? FOR UPDATE');
             $stmt->execute([$globalId]);
             $currentOrder = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -172,8 +173,10 @@ final readonly class OrderProjectionWriter
                 $productionVersion = (int)$currentOrder['production_version'];
                 $stageId = (string)$currentOrder['production_stage_id'];
                 // Production belongs to Operations once an employee acted on the order. Before that an
-                // explicit source stage may only move the order forward; commerce status never moves it.
-                if ($sourceStageOrdinal !== null && $currentOrder['production_authority'] === 'source' && $snapshot->productionStageId !== $stageId) {
+                // explicit source stage may only move the order forward; commerce status never moves it. A cancelled
+                // or stopped order is never moved by its source (API 2.35.0).
+                $frozen = $snapshot->operationalStatus === 'unavailable' || $currentOrder['cancellation_state'] === CancellationControl::HELD;
+                if (!$frozen && $sourceStageOrdinal !== null && $currentOrder['production_authority'] === 'source' && $snapshot->productionStageId !== $stageId) {
                     $currentOrdinal = $this->activeStageOrdinal($stageId);
                     if ($currentOrdinal === null || $sourceStageOrdinal > $currentOrdinal) {
                         $stageId = (string) $snapshot->productionStageId;
@@ -194,7 +197,7 @@ final readonly class OrderProjectionWriter
                         source_commerce_status_label = ?,
                         production_notes = ?,
                         operational_status = ?,
-                        source_reported_unavailable_at = IF(?, ?, NULL),
+                        source_reported_unavailable_at = IF(?, COALESCE(source_reported_unavailable_at, ?), NULL),
                         freshness_status = ?,
                         source_schema_version = ?,
                         source_event_id = ?,
@@ -218,7 +221,9 @@ final readonly class OrderProjectionWriter
                     $snapshot->sourceCommerceStatusCode,
                     $snapshot->sourceCommerceStatusLabel,
                     $snapshot->productionNotes,
-                    $snapshot->operationalStatus === 'unavailable' && $currentOrder['cutting_first_claimed_at'] !== null ? $currentOrder['operational_status'] : $snapshot->operationalStatus,
+                    // The source's availability as reported. Whether production may continue is decided by the
+                    // cancellation control below, never by this column alone.
+                    $snapshot->operationalStatus,
                     $snapshot->operationalStatus === 'unavailable' ? 1 : 0,
                     $nowSql,
                     'fresh',
@@ -268,6 +273,12 @@ final readonly class OrderProjectionWriter
 
                 $this->insertItems($newItems, $orderUuid, $nowSql);
                 $this->applyPayment($orderUuid, $snapshot, $stageId, $sourceChangedSql, $nowSql);
+                // A reported cancellation stops production at whatever stage the order is, in this transaction; a later
+                // "active" never releases it (CancellationControl).
+                (new CancellationControl($this->pdo, $this->clock))->onSourceAvailability($orderUuid, $snapshot->operationalStatus === 'unavailable', $currentOrder['operational_status'] === 'unavailable', [
+                    'reason' => 'source_cancelled', 'statusCode' => $snapshot->sourceCommerceStatusCode, 'statusLabel' => $snapshot->sourceCommerceStatusLabel,
+                    'eventRef' => $snapshot->sourceEventId, 'sourceChangedAt' => $sourceChangedSql, 'previousReportedAt' => $currentOrder['source_reported_unavailable_at'],
+                ]);
                 // A printed field may have changed: an active production document becomes stale here,
                 // inside the same transaction, so production is blocked before the change is visible.
                 (new DocumentStaleness($this->pdo, $this->clock))->onContentChanged($orderUuid, $snapshot->sourceEventId);
@@ -285,8 +296,8 @@ final readonly class OrderProjectionWriter
                         production_stage_id, production_authority, production_changed_at, source_commerce_status_code, source_commerce_status_label, 
                         production_notes, operational_status, freshness_status, source_schema_version, 
                         source_event_id, source_changed_at, last_source_seen_at, projected_at, 
-                        accepted_at, projection_hash, version, created_at, updated_at, document_context
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        accepted_at, projection_hash, version, created_at, updated_at, document_context, source_reported_unavailable_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ');
                 $stmt->execute([
                     $orderUuid,
@@ -314,12 +325,20 @@ final readonly class OrderProjectionWriter
                     $nowSql,
                     $nowSql,
                     $documentContext,
+                    $snapshot->operationalStatus === 'unavailable' ? $nowSql : null,
                 ]);
 
                 $this->insertItems($snapshot->items, $orderUuid, $nowSql);
                 $this->applyPayment($orderUuid, $snapshot, $initialStage, $sourceChangedSql, $nowSql);
                 if ($operationsManaged) {
                     $this->recordNewOrderAuthority($orderUuid, $globalId, $snapshot->sourceKey, $nowSql);
+                }
+                if ($snapshot->operationalStatus === 'unavailable') {
+                    // First seen already cancelled: stopped before any work, so a later reactivation still needs a release.
+                    (new CancellationControl($this->pdo, $this->clock))->onSourceAvailability($orderUuid, true, false, [
+                        'reason' => 'source_cancelled', 'statusCode' => $snapshot->sourceCommerceStatusCode, 'statusLabel' => $snapshot->sourceCommerceStatusLabel,
+                        'eventRef' => $snapshot->sourceEventId, 'sourceChangedAt' => $sourceChangedSql,
+                    ]);
                 }
             }
 
@@ -423,17 +442,19 @@ final readonly class OrderProjectionWriter
     }
 
     /**
-     * Commerce status of an approved marketplace order (caller's transaction). A cancellation makes the order
-     * unavailable exactly like a source cancellation (an order already in cutting keeps its status and only
-     * records the report); any other status is shown as commerce data. Production stage, owner, items and the
-     * printed document are never changed here.
+     * Commerce status of an approved marketplace order (caller's transaction). A cancellation stops production exactly
+     * like a source cancellation, at whatever stage the order is (API 2.35.0: also after the first cutting claim); a
+     * later non-cancelled status is recorded as evidence and never releases the stop. Production stage, owner, items
+     * and the printed document are never changed here.
+     *
+     * @param string|null $eventRef the marketplace observation (package id and modification time), for the audit
      */
-    public function recordMarketplaceStatus(string $orderUuid, string $status, bool $cancelled): void
+    public function recordMarketplaceStatus(string $orderUuid, string $status, bool $cancelled, ?string $eventRef = null): void
     {
         if (!$this->pdo->inTransaction()) {
             throw new \LogicException('A marketplace status update requires the caller transaction.');
         }
-        $statement = $this->pdo->prepare('SELECT production_version, production_stage_id, operational_status, cutting_first_claimed_at FROM operational_orders WHERE order_uuid = ? FOR UPDATE');
+        $statement = $this->pdo->prepare('SELECT production_version, production_stage_id, operational_status, source_reported_unavailable_at FROM operational_orders WHERE order_uuid = ? FOR UPDATE');
         $statement->execute([$orderUuid]);
         $order = $statement->fetch(PDO::FETCH_ASSOC);
         if (!is_array($order)) {
@@ -441,11 +462,17 @@ final readonly class OrderProjectionWriter
         }
         $now = $this->clock->now()->format('Y-m-d H:i:s.u');
         $status = mb_substr($status, 0, 100);
-        $operational = $cancelled && $order['cutting_first_claimed_at'] === null ? 'unavailable' : (string) $order['operational_status'];
+        $wasUnavailable = $order['operational_status'] === 'unavailable';
+        // The marketplace availability as reported; production is governed by the cancellation control below.
+        $operational = $cancelled ? 'unavailable' : ($wasUnavailable ? 'in_progress' : (string) $order['operational_status']);
         $this->pdo->prepare('UPDATE operational_orders SET source_commerce_status_code = ?, source_commerce_status_label = ?, operational_status = ?,
                 source_reported_unavailable_at = IF(?, COALESCE(source_reported_unavailable_at, ?), source_reported_unavailable_at),
                 last_source_seen_at = ?, version = version + 1, updated_at = ? WHERE order_uuid = ?')
             ->execute([$status, $status, $operational, $cancelled ? 1 : 0, $now, $now, $now, $orderUuid]);
+        (new CancellationControl($this->pdo, $this->clock))->onSourceAvailability($orderUuid, $cancelled, $wasUnavailable, [
+            'reason' => 'marketplace_cancelled', 'statusCode' => $status, 'statusLabel' => $status, 'eventRef' => $eventRef,
+            'previousReportedAt' => $order['source_reported_unavailable_at'],
+        ]);
         if ($cancelled) {
             $life = new \Arasya\Operations\Cutting\CuttingLifecycle($this->pdo);
             $life->fact($orderUuid, (int) $order['production_version'], 'source_cancelled', null, $now);
