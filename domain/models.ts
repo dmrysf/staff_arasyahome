@@ -26,6 +26,14 @@ export type Employee = {
   avatar?: string;
   /** Staff interface language assigned to the account in central IAM (API 2.30.0); Romanian when none. */
   locale: Locale;
+  /**
+   * Order sources this person confirms (Confirmare scopes, API 2.39.0): `operate` receives and decides orders,
+   * `supervise` sees the whole source. Absent from older APIs (nothing shown). Presentation only: the server checks
+   * the scopes on every Confirmare route.
+   */
+  confirmareScopes?: Readonly<{ operate: readonly string[]; supervise: readonly string[] }>;
+  /** Confirmare finance scopes (API 2.41.0): explicit per person, independent of the Confirmare scopes. */
+  financeScopes?: Readonly<{ view: readonly string[]; record: readonly string[]; approve: readonly string[] }>;
 };
 
 export type ProductionStage = {
@@ -96,6 +104,10 @@ export type OrderActionBlockedReason =
   | "document_revision_pending"
   | "production_authority_source"
   | "payment_gate_closed"
+  /** API 2.37.0/2.38.0: a Confirmare-cohort order at stage 1 that is not cleared for production yet. */
+  | "confirmation_required"
+  /** API 2.42.0: a cleared Confirmare-cohort order at stage 1 without its first production document. */
+  | "confirmation_document_required"
   /** The order is at packing while some of its pieces are still in rework (API 2.31.0). */
   | "pieces_in_rework"
   /** PieceGate (API 2.32.0): a held piece, a piece apart on its route, an unconfirmed plan, missing pieces, an unfinished route or an unconfirmed defect resolution. */
@@ -434,6 +446,9 @@ export type ServiceErrorCode =
   | "RECEIVER_NOT_ELIGIBLE"
   | "ORDER_BLOCKED_BY_DOCUMENT"
   | "AVANS_NEVALIDAT"
+  | "CONFIRMARE_NECESARA"
+  | "CONFIRMARE_DOCUMENT_NECESAR"
+  | "DOCUMENT_REPRINT_REASON_REQUIRED"
   | "DOCUMENT_SUPERSEDED"
   | "DOCUMENT_REVOKED"
   | "DOCUMENT_NOT_GENERATED"

@@ -15,6 +15,8 @@ import { WorkspaceSwitcher } from "../workspaces/DashboardParts";
 import { StageWorkspace } from "../workspaces/StageWorkspace";
 import { TrendyolDashboard } from "../workspaces/TrendyolDashboard";
 import { ManagementWorkspace } from "../workspaces/ManagementWorkspace";
+import { ConfirmareWorkspace } from "../confirmare/ConfirmareWorkspace";
+import { canHandOff } from "../../domain/confirmare";
 
 type TodaySummary = ActivityPage["summary"];
 
@@ -59,7 +61,7 @@ function TodayWork({ service }: { service: ActivityService }) {
  */
 export function HomeScreen({ employee, services, workflow, dashboardUrl, navigate }: { employee: Employee; services: ServiceBundle; workflow: ProductionWorkflow; dashboardUrl: string | null; navigate: (path: string) => void }) {
   const { t } = useI18n();
-  const workspaces = useMemo(() => resolveWorkspaces(employee, { trendyol: Boolean(services.trendyol), documents: Boolean(services.documents), management: Boolean(services.management) }), [employee, services]);
+  const workspaces = useMemo(() => resolveWorkspaces(employee, { trendyol: Boolean(services.trendyol), documents: Boolean(services.documents), management: Boolean(services.management), confirmare: Boolean(services.confirmare) }), [employee, services]);
   const [chosen, setChosen] = useState<string | null>(() => readWorkspacePreference(employee.employeeUuid));
   const current = selectPrimaryWorkspace(workspaces, employee, chosen);
 
@@ -83,6 +85,8 @@ export function HomeScreen({ employee, services, workflow, dashboardUrl, navigat
       <WorkspaceSwitcher workspaces={workspaces} current={current} onSelect={select} />
       <SupervisorCard service={services.exceptions} navigate={navigate} />
 
+      {current.kind === "confirmare" && services.confirmare && <ConfirmareWorkspace employee={employee} service={services.confirmare} navigate={navigate} />}
+
       {current.kind === "trendyol" && services.trendyol && <TrendyolDashboard employee={employee} service={services.trendyol} navigate={navigate} />}
 
       {current.kind === "production" && <>
@@ -92,6 +96,7 @@ export function HomeScreen({ employee, services, workflow, dashboardUrl, navigat
       </>}
 
       {current.kind === "documents" && services.documents && <div className="workspace-body" data-testid="workspace-documente">
+        {canHandOff(employee) && services.confirmare && <button type="button" className="button button-secondary dashboard-primary" onClick={() => navigate("/confirmare/handoff")} data-testid="documents-open-handoff"><AppIcon name="document" size={20} />{t("cf.handoff.list.open")}</button>}
         <DocumentsCard service={services.documents} navigate={navigate} />
         <DocumentLookup service={services.documents} navigate={navigate} />
       </div>}

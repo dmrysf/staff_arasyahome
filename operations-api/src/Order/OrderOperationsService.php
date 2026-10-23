@@ -580,6 +580,8 @@ final readonly class OrderOperationsService
     private function blocked(string $reason, string $operation, ?OperationalOrder $order = null): ApiException
     {
         return match ($reason) {
+            \Arasya\Operations\Production\ConfirmationGate::BLOCKED_REASON => \Arasya\Operations\Production\ConfirmationGate::closed($order?->workflowCohort),
+            \Arasya\Operations\Production\ConfirmationGate::DOCUMENT_BLOCKED_REASON => \Arasya\Operations\Production\ConfirmationGate::documentRequired(),
             \Arasya\Operations\Production\PaymentGate::BLOCKED_REASON => \Arasya\Operations\Production\PaymentGate::closed(
                 \Arasya\Operations\Production\PaymentGate::state($order?->paymentMethod, $order?->advanceStatus),
             ),

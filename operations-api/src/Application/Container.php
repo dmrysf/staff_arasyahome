@@ -97,7 +97,11 @@ final class Container
     private readonly SystemClock $clock;
     private readonly AuthenticationService $authentication;
 
-    public function __construct(?Config $config = null, ?PDO $pdo = null)
+    /**
+     * @param \Arasya\Operations\Integration\SourceAccess\SourceAccessTransport|null $sourceAccessTransport test stand-in for the
+     *        shop; production always uses StreamSourceAccessTransport (loopback test shops only outside production)
+     */
+    public function __construct(?Config $config = null, ?PDO $pdo = null, private readonly ?\Arasya\Operations\Integration\SourceAccess\SourceAccessTransport $sourceAccessTransport = null)
     {
         $this->config = $config ?? Config::fromEnvironment();
         $this->pdo = $pdo ?? Connection::create($this->config);
@@ -119,6 +123,59 @@ final class Container
             $this->clock,
             $this->config->sessionTtlSeconds,
             $this->config->sessionTouchIntervalSeconds,
+        );
+    }
+
+    /** Confirmare operations (API 2.38.0): pool, distribution, decisions. Also used by bin/confirmare-distribute.php. */
+    public function confirmareService(?AuthorizationService $authorization = null): \Arasya\Operations\Confirmare\ConfirmareService
+    {
+        return new \Arasya\Operations\Confirmare\ConfirmareService($this->pdo, $authorization ?? new AuthorizationService(), new \Arasya\Operations\Confirmare\ConfirmareScopePolicy($this->pdo), $this->clock, \Arasya\Operations\Integration\SourceAccess\SourceAccessRegistry::fromConfig($this->config), $this->authorityModes());
+    }
+
+    /** Confirmare source access (API 2.40.0): the shop's own view of one order for its operator, signed, audited. */
+    public function confirmareSourceAccess(?AuthorizationService $authorization = null): \Arasya\Operations\Confirmare\ConfirmareSourceAccess
+    {
+        $transport = $this->sourceAccessTransport ?? new \Arasya\Operations\Integration\SourceAccess\StreamSourceAccessTransport(allowLoopback: !$this->config->isProduction());
+        return new \Arasya\Operations\Confirmare\ConfirmareSourceAccess(
+            $this->pdo,
+            $authorization ?? new AuthorizationService(),
+            new \Arasya\Operations\Confirmare\ConfirmareScopePolicy($this->pdo),
+            \Arasya\Operations\Integration\SourceAccess\SourceAccessRegistry::fromConfig($this->config),
+            new \Arasya\Operations\Integration\SourceAccess\SourceAccessClient($transport, $this->clock),
+            new PdoApiRateLimiter($this->pdo, $this->clock, $this->config->appSecret),
+            $this->clock,
+        );
+    }
+
+    /** Confirmare finance (API 2.41.0, Phase 5): the shop's money record of an order, two-person decisions, no amounts kept. */
+    public function confirmareFinance(?AuthorizationService $authorization = null): \Arasya\Operations\Confirmare\ConfirmareFinance
+    {
+        $transport = $this->sourceAccessTransport ?? new \Arasya\Operations\Integration\SourceAccess\StreamSourceAccessTransport(allowLoopback: !$this->config->isProduction());
+        return new \Arasya\Operations\Confirmare\ConfirmareFinance(
+            $this->pdo,
+            $authorization ?? new AuthorizationService(),
+            new \Arasya\Operations\Confirmare\FinanceScopePolicy($this->pdo),
+            new \Arasya\Operations\Confirmare\ConfirmareScopePolicy($this->pdo),
+            \Arasya\Operations\Integration\SourceAccess\SourceAccessRegistry::fromConfig($this->config),
+            new \Arasya\Operations\Integration\SourceAccess\SourceAccessClient($transport, $this->clock),
+            new PdoApiRateLimiter($this->pdo, $this->clock, $this->config->appSecret),
+            $this->clock,
+            // Request HMACs of the finance audit (an amount is low-entropy: a plain hash would reveal it).
+            hash_hmac('sha256', 'confirmare-finance-request', $this->config->appSecret),
+        );
+    }
+
+    /** Confirmare controlled shop edits (API 2.40.0, Phase 4B): preview and apply through the shop's own pricing. */
+    public function confirmareSourceEdits(?AuthorizationService $authorization = null): \Arasya\Operations\Confirmare\ConfirmareSourceEdits
+    {
+        $transport = $this->sourceAccessTransport ?? new \Arasya\Operations\Integration\SourceAccess\StreamSourceAccessTransport(allowLoopback: !$this->config->isProduction());
+        return new \Arasya\Operations\Confirmare\ConfirmareSourceEdits(
+            $this->pdo,
+            $this->confirmareSourceAccess($authorization),
+            \Arasya\Operations\Integration\SourceAccess\SourceAccessRegistry::fromConfig($this->config),
+            new \Arasya\Operations\Integration\SourceAccess\SourceAccessClient($transport, $this->clock),
+            new PdoApiRateLimiter($this->pdo, $this->clock, $this->config->appSecret),
+            $this->clock,
         );
     }
 
@@ -148,7 +205,7 @@ final class Container
         $documents = $this->documentService($authorization, $revisionApprovers, $documentQueries, $live, $idempotency, $iamAudit);
         $tracks = new \Arasya\Operations\Production\ReworkTrackService($this->pdo, $workflows, $authorization, $this->clock, $live, $authorityModes);
         return new ApiKernel(
-            new AuthController($this->authentication, $csrf, new CookiePolicy($this->config), $this->config, $authorization, $context),
+            new AuthController($this->authentication, $csrf, new CookiePolicy($this->config), $this->config, $authorization, $context, new \Arasya\Operations\Confirmare\ConfirmareScopePolicy($this->pdo), new \Arasya\Operations\Confirmare\FinanceScopePolicy($this->pdo)),
             new HealthController($this->pdo, $this->clock),
             new CorsPolicy($this->config->allowedOrigins),
             new StructuredLogger(),
@@ -236,6 +293,16 @@ final class Container
             ),
             new \Arasya\Operations\Production\PieceController(
                 new \Arasya\Operations\Production\PieceOperationsService($this->pdo, $authorization, $approvers, $idempotency, $this->clock, $workflows),
+                $this->authentication,
+                $csrf,
+                $this->config,
+                $context,
+            ),
+            new \Arasya\Operations\Confirmare\ConfirmareController(
+                $this->confirmareService($authorization),
+                $this->confirmareSourceAccess($authorization),
+                $this->confirmareSourceEdits($authorization),
+                $this->confirmareFinance($authorization),
                 $this->authentication,
                 $csrf,
                 $this->config,

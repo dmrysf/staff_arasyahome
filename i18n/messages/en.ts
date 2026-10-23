@@ -1,3 +1,8 @@
+import { confirmareEN } from "./confirmare";
+import { confirmareShopEN } from "./confirmareShop";
+import { confirmareFinanceEN } from "./confirmareFinance";
+import { confirmareHandoffEN } from "./confirmareHandoff";
+import { confirmareEditEN } from "./confirmareEdit";
 import { physicalEN } from "./physical";
 import type { Catalog } from "../types";
 import { enErrors } from "./en.errors";
@@ -9,6 +14,11 @@ import { enErrors } from "./en.errors";
 export const en: Catalog = {
   ...physicalEN,
   ...enErrors,
+  ...confirmareEN,
+  ...confirmareShopEN,
+  ...confirmareFinanceEN,
+  ...confirmareHandoffEN,
+  ...confirmareEditEN,
 
   // ---- common
   "common.back": "Back",
@@ -265,6 +275,8 @@ export const en: Catalog = {
   "orderAction.blocked.document_revision_pending": "Document blocked: the order has a document revision in progress. Wait for the approval and the new document.",
   "orderAction.blocked.production_authority_source": "Production of this order is still managed in YD SOFT. A manager must take it over in Arasya before anyone works on it.",
   "orderAction.blocked.payment_gate_closed": "The order cannot enter production. The required advance or the order payment has not been confirmed.",
+  "orderAction.blocked.confirmation_required": "The order cannot enter production. It must be confirmed with the customer and its payment verified (Confirmare).",
+  "orderAction.blocked.confirmation_document_required": "The order is confirmed but enters production only with its production ticket (revision 1). Cutting scans the ticket's QR code.",
   "orderAction.blocked.pieces_in_rework": "The order cannot be packed yet: a piece is still in rework. Packing starts once every piece reached packing.",
   "orderAction.blocked.pieces_held": "The order cannot continue while a piece is physically held. It continues once the hold is released.",
   "orderAction.blocked.pieces_awaiting_reunion": "The order cannot be packed yet: a piece is following its own route and has not rejoined the order.",

@@ -142,6 +142,11 @@ try {
     $expected[] = '031_production_assisted_checkpoints.sql';
     $expected[] = '033_order_cancellation_control.sql';
     $expected[] = '034_order_cancellation_sync.sql';
+    $expected[] = '035_workflow_cohort.sql';
+    $expected[] = '036_confirmare_operations.sql';
+    $expected[] = '037_confirmare_contacts.sql';
+    $expected[] = '038_confirmare_source_access.sql';
+    $expected[] = '039_confirmare_finance.sql';
     if ($applied !== $expected) {
         throw new RuntimeException('An existing 001 schema did not apply exactly the pending migrations in order: ' . implode(', ', $applied));
     }

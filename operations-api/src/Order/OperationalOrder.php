@@ -55,6 +55,14 @@ final readonly class OperationalOrder
          * @var array<string, mixed>|null
          */
         public ?array $productionStop = null,
+        /**
+         * API 2.37.0: the Confirmare workflow cohort decided when Arasya created the order (WorkflowCohort; null for
+         * every order created before) and the order's Confirmare decision (order_confirmations.status, or null).
+         */
+        public ?string $workflowCohort = null,
+        public ?string $confirmationStatus = null,
+        /** API 2.38.0: order_confirmations.production_cleared (ConfirmationClearance), or null without a Confirmare row. */
+        public ?bool $confirmationCleared = null,
     ) {
     }
 

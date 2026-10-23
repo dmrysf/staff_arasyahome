@@ -1,5 +1,6 @@
 import type { Employee, StaffOrder } from "./models";
 import { canUseTrendyolWorkspace } from "./trendyol";
+import { canOpenConfirmareOrder } from "./confirmare";
 import { t, type MessageKey } from "../i18n";
 
 /**
@@ -11,7 +12,7 @@ import { t, type MessageKey } from "../i18n";
  * the stages central IAM assigned to them. The department name shown in the header is the real IAM department;
  * the IAM department key is only a hint for which authorized workspace opens first.
  */
-export type WorkspaceKind = "trendyol" | "production" | "documents" | "management" | "general";
+export type WorkspaceKind = "confirmare" | "trendyol" | "production" | "documents" | "management" | "general";
 
 export type Workspace = {
   id: string;
@@ -58,26 +59,29 @@ export const stageGuides: Readonly<Record<string, { focus: string; checks: reado
 
 const DOCUMENT_PERMISSIONS = ["production.documents.generate", "production.documents.request_revision"];
 
-/** Presentation hint only: which already-authorized workspace opens first for an IAM department. */
-const departmentHints: Readonly<Record<string, string>> = Object.freeze({
-  "taiere": "taiere",
-  "pregatire-material": "taiere",
-  "croitorie": "croitorie",
-  "croitorie-dragon": "croitorie",
-  "vanzari-online": "trendyol",
-  "expediere-curierat": "ambalare",
-  "depozit": "ambalare",
-  "logistica-distributie": "livrare",
-  "operatiuni": "management",
-  "conducere": "management",
+/**
+ * Presentation hint only: which already-authorized workspace opens first for an IAM department, in order (the first
+ * one the employee holds wins). Online sales confirm new shop orders first, then Trendyol.
+ */
+const departmentHints: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  "taiere": ["taiere"],
+  "pregatire-material": ["taiere"],
+  "croitorie": ["croitorie"],
+  "croitorie-dragon": ["croitorie"],
+  "vanzari-online": ["confirmare", "trendyol"],
+  "expediere-curierat": ["ambalare"],
+  "depozit": ["ambalare"],
+  "logistica-distributie": ["livrare"],
+  "operatiuni": ["management"],
+  "conducere": ["management"],
 });
 
 /** A workspace without stages; its title and subtitle are read in the active language. */
-function fixedWorkspace(id: "trendyol" | "documente" | "management" | "general", kind: WorkspaceKind): Workspace {
+function fixedWorkspace(id: "confirmare" | "trendyol" | "documente" | "management" | "general", kind: WorkspaceKind): Workspace {
   return { id, kind, get label() { return t(`workspace.${id}.label`); }, get description() { return t(`workspace.${id}.description`); }, stageIds: [] };
 }
 
-export type WorkspaceAvailability = { trendyol: boolean; documents: boolean; management: boolean };
+export type WorkspaceAvailability = { trendyol: boolean; documents: boolean; management: boolean; confirmare?: boolean };
 
 export function canUseManagementWorkspace(employee: Employee): boolean {
   return employee.applications.includes("dashboard") && employee.permissions.includes("production.view");
@@ -90,6 +94,9 @@ export function canUseManagementWorkspace(employee: Employee): boolean {
 export function resolveWorkspaces(employee: Employee, available: WorkspaceAvailability): Workspace[] {
   if (employee.status !== "active" || !employee.applications.includes("staff") || employee.mustChangePassword) return [];
   const workspaces: Workspace[] = [];
+  if (available.confirmare && canOpenConfirmareOrder(employee)) {
+    workspaces.push(fixedWorkspace("confirmare", "confirmare"));
+  }
   if (available.trendyol && canUseTrendyolWorkspace(employee)) {
     workspaces.push(fixedWorkspace("trendyol", "trendyol"));
   }
@@ -120,7 +127,7 @@ export function selectPrimaryWorkspace(workspaces: readonly Workspace[], employe
   const byId = (id: string | null | undefined) => (id ? workspaces.find((workspace) => workspace.id === id) : undefined);
   return byId(preference)
     ?? byId("management")
-    ?? byId(departmentHints[employee.departmentKey ?? ""])
+    ?? (departmentHints[employee.departmentKey ?? ""] ?? []).map(byId).find((workspace) => workspace !== undefined)
     ?? workspaces[0];
 }
 

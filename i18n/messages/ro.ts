@@ -1,3 +1,8 @@
+import { confirmareRO } from "./confirmare";
+import { confirmareShopRO } from "./confirmareShop";
+import { confirmareFinanceRO } from "./confirmareFinance";
+import { confirmareHandoffRO } from "./confirmareHandoff";
+import { confirmareEditRO } from "./confirmareEdit";
 import { physicalMessages } from "./physical";
 import { roErrors } from "./ro.errors";
 
@@ -10,6 +15,11 @@ import { roErrors } from "./ro.errors";
 export const ro = {
   ...physicalMessages,
   ...roErrors,
+  ...confirmareRO,
+  ...confirmareShopRO,
+  ...confirmareFinanceRO,
+  ...confirmareHandoffRO,
+  ...confirmareEditRO,
 
   // ---- common ------------------------------------------------------------------------------------------------
   "common.back": "Înapoi",
@@ -266,6 +276,8 @@ export const ro = {
   "orderAction.blocked.document_revision_pending": "Document blocat: comanda are o revizie de document în curs. Așteaptă aprobarea și documentul nou.",
   "orderAction.blocked.production_authority_source": "Producția acestei comenzi este încă gestionată în YD SOFT. Un manager trebuie să o preia în Arasya înainte de a lucra la ea.",
   "orderAction.blocked.payment_gate_closed": "Comanda nu poate intra în producție. Avansul necesar sau plata comenzii nu a fost confirmată.",
+  "orderAction.blocked.confirmation_required": "Comanda nu poate intra în producție. Comanda trebuie confirmată cu clientul și plata verificată (Confirmare).",
+  "orderAction.blocked.confirmation_document_required": "Comanda este confirmată, dar intră în producție doar cu fișa de producție (revizia 1). Tăierea scanează codul QR al fișei.",
   "orderAction.blocked.pieces_in_rework": "Comanda nu poate fi ambalată încă: o bucată este în refacere. Ambalarea începe după ce toate bucățile ajung la ambalare.",
   "orderAction.blocked.pieces_held": "Comanda nu poate continua cât timp o bucată este reținută fizic. Continuă după eliberarea reținerii.",
   "orderAction.blocked.pieces_awaiting_reunion": "Comanda nu poate fi ambalată încă: o bucată își urmează traseul și nu s-a reunit cu comanda.",

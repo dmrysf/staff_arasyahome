@@ -72,9 +72,21 @@ try {
             EXISTS (SELECT 1 FROM production_document_revisions r WHERE r.order_uuid = o.order_uuid AND r.snapshot_schema >= 2)
             OR EXISTS (SELECT 1 FROM production_document_revision_requests q WHERE q.open_order_uuid = o.order_uuid AND q.snapshot_schema >= 2))',
     )->fetchColumn();
-    $floor = $syncOpen > 0 ? '2.36.0' : ($stoppedOpen > 0 ? '2.35.0' : ($schemaTwoOpen > 0 ? '2.34.2' : ($assistedOpen > 0 ? '2.34.0' : (array_sum($state) > 0 ? '2.32.0' : null))));
+    // Confirmare cohort (API 2.37.0): an older API ignores the cohort, so it would let an order waiting for its Confirmare
+    // decision (or for an operator resolution) start production. Any recorded activation counts too: an older API would
+    // keep receiving that source's orders without classifying them.
+    $cohortClosed = 0;
+    $activations = isset($tables['workflow_cohort_activations']) ? (int) $pdo->query('SELECT COUNT(*) FROM workflow_cohort_activations')->fetchColumn() : 0;
+    if (isset($tables['order_confirmations'])) {
+        $cohortClosed = (int) $pdo->query(
+            "SELECT COUNT(*) FROM operational_orders o LEFT JOIN order_confirmations c ON c.order_uuid = o.order_uuid
+             WHERE o.workflow_cohort IN ('confirmare', 'undetermined') AND o.production_completed_at IS NULL
+               AND (o.workflow_cohort = 'undetermined' OR c.status IS NULL OR c.status <> 'approved')",
+        )->fetchColumn();
+    }
+    $floor = ($cohortClosed > 0 || $activations > 0) ? '2.37.0' : ($syncOpen > 0 ? '2.36.0' : ($stoppedOpen > 0 ? '2.35.0' : ($schemaTwoOpen > 0 ? '2.34.2' : ($assistedOpen > 0 ? '2.34.0' : (array_sum($state) > 0 ? '2.32.0' : null)))));
     $safe = $floor === null || version_compare($argv[1], $floor, '>=');
-    fwrite(STDOUT, json_encode(['safe' => $safe, 'targetVersion' => $argv[1], 'requiredFloor' => $floor, 'state' => $state + ['openOrdersWithAssistedCheckpoints' => $assistedOpen, 'openOrdersWithTicketSchema2' => $schemaTwoOpen, 'openStoppedOrders' => $stoppedOpen, 'openCancellationSyncOperations' => $syncOpen]], JSON_THROW_ON_ERROR) . "\n");
+    fwrite(STDOUT, json_encode(['safe' => $safe, 'targetVersion' => $argv[1], 'requiredFloor' => $floor, 'state' => $state + ['openOrdersWithAssistedCheckpoints' => $assistedOpen, 'openOrdersWithTicketSchema2' => $schemaTwoOpen, 'ordersAwaitingConfirmare' => $cohortClosed, 'confirmareActivations' => $activations, 'openStoppedOrders' => $stoppedOpen, 'openCancellationSyncOperations' => $syncOpen]], JSON_THROW_ON_ERROR) . "\n");
     exit($safe ? 0 : 3);
 } catch (Throwable) {
     fwrite(STDERR, "Rollback refused: current database state could not be verified.\n");

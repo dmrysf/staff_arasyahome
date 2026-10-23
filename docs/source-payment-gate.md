@@ -78,6 +78,13 @@ order has reached `processing`.
 
 B2B and Trendyol are never gated (they have their own entry flows).
 
+**Confirmation key (API 2.37.1).** Before 2.37.1 the configuration loader dropped `ARASYA_SOURCE_PAYMENT_GATE_<SOURCE>`,
+so every deployment ran with the gate `off`, whatever the private file said. A value other than `off` is now honoured
+only when `ARASYA_SOURCE_PAYMENT_GATE_VERIFIED_<SOURCE>` repeats it. Deploying the fix therefore changes nothing; a
+value without its confirmation runs as `off` and `bin/readiness.php` reports `FAIL source_config_payment_gate_unverified_<source>`.
+Before writing the confirmation, review read-only: the configured value, `php bin/payment-gate-report.php` (the
+orders the gate would stop at stage 1) and the source's heartbeat (`payment_gate_mode` in YD SOFT).
+
 ## Enforced entry points (all server-side, on the locked order row)
 
 | Path | Check |

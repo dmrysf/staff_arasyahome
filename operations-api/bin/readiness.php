@@ -180,9 +180,11 @@ foreach ($sourceRegistry->all() as $definition) {
     $report('OK', 'source_qr_authority_' . $definition->key . '_' . $definition->qrAuthorityMode->value);
     $report('OK', 'source_document_authority_' . $definition->key . '_' . $definition->documentAuthorityMode->value);
     $report('OK', 'source_tracking_authority_' . $definition->key . '_' . $definition->trackingAuthorityMode->value);
+    $report('OK', 'source_payment_gate_' . $definition->key . '_' . $definition->paymentGateMode->value);
 }
 foreach ($sourceRegistry->issues() as $issue) {
-    $report('WARN', 'source_config_' . $issue['code'] . ($issue['sourceKey'] === null ? '' : '_' . $issue['sourceKey']));
+    // A configured but unconfirmed payment gate runs as OFF: a financial control is not what the operator wrote.
+    $report($issue['code'] === 'payment_gate_unverified' ? 'FAIL' : 'WARN', 'source_config_' . $issue['code'] . ($issue['sourceKey'] === null ? '' : '_' . $issue['sourceKey']));
 }
 $report($config->trendyol !== null ? 'OK' : 'WARN', 'trendyol_credentials');
 // Trendyol intake reads Trendyol only with credentials, the switch AND the database activation (never by default).
@@ -220,6 +222,24 @@ try {
     }
 } catch (Throwable) {
     $report('FAIL', 'source_registry');
+}
+// Confirmare cohort (API 2.37.0): the recorded activation is the truth; the configuration switch only permits recording
+// it. An active source whose switch is off, or an order whose cohort could not be decided, needs a person.
+try {
+    foreach (['trendhome', 'outletperdele'] as $key) {
+        $cohortState = \Arasya\Operations\Production\WorkflowCohort::heartbeatState($pdo, $key)['state'];
+        $definition = $sourceRegistry->find($key);
+        $report($cohortState !== 'inactive' && !($definition?->confirmarePermitted ?? false) ? 'FAIL' : 'OK', "confirmare_{$key}_{$cohortState}" . ($definition?->confirmarePermitted ? '_permitted' : ''));
+        // Confirmare operations (API 2.38.0): an active source needs at least one person who can confirm its orders.
+        $operators = (int) $pdo->query("SELECT COUNT(*) FROM employee_confirmare_scopes s JOIN employees e ON e.employee_uuid = s.employee_uuid WHERE s.capability = 'operate' AND s.source_key = " . $pdo->quote($key) . ' AND ' . \Arasya\Operations\Confirmare\ConfirmareScopePolicy::workingIdentitySql('e'))->fetchColumn();
+        $waiting = (int) $pdo->query("SELECT COUNT(*) FROM order_confirmations WHERE status = 'pending' AND assigned_employee_uuid IS NULL AND source_key = " . $pdo->quote($key))->fetchColumn();
+        $report($cohortState !== 'inactive' && $operators === 0 ? 'FAIL' : 'OK', "confirmare_{$key}_operators_{$operators}");
+        $report($waiting === 0 ? 'OK' : 'WARN', "confirmare_{$key}_unassigned_{$waiting}");
+    }
+    $undetermined = (int) $pdo->query("SELECT COUNT(*) FROM operational_orders WHERE workflow_cohort = 'undetermined' AND production_completed_at IS NULL AND operational_status <> 'unavailable'")->fetchColumn();
+    $report($undetermined === 0 ? 'OK' : 'WARN', 'confirmare_undetermined_orders');
+} catch (Throwable) {
+    $report('FAIL', 'confirmare_cohort_schema');
 }
 
 try {

@@ -67,6 +67,12 @@ final readonly class Config
         public string $cancellationSync = 'disabled',
         /** Trendyol storeFrontCode header for the unsupplied notice (ARASYA_TRENDYOL_STORE_FRONT_CODE); null: not configured. */
         public ?string $trendyolStoreFrontCode = null,
+        /**
+         * Raw source access settings per source (API 2.40.0): mode, url and key (`<kid>:<key>`), validated by
+         * SourceAccessRegistry, which keeps a source with any invalid value off. Never dumped.
+         * @var array<string, array{mode: string, url: string, key: string}>
+         */
+        #[\SensitiveParameter] public array $sourceAccess = [],
     ) {
         if ($this->trendyolStoreFrontCode !== null && preg_match('/^[A-Z]{2,5}$/D', $this->trendyolStoreFrontCode) !== 1) {
             throw new RuntimeException('ARASYA_TRENDYOL_STORE_FRONT_CODE must be 2-5 capital letters.');
@@ -145,6 +151,7 @@ final readonly class Config
             trendyolFixtureFile: self::value($values, 'ARASYA_TRENDYOL_FIXTURE_FILE', '') === '' ? null : self::value($values, 'ARASYA_TRENDYOL_FIXTURE_FILE', ''),
             cancellationSync: self::value($values, 'ARASYA_CANCELLATION_SYNC', 'disabled'),
             trendyolStoreFrontCode: self::value($values, 'ARASYA_TRENDYOL_STORE_FRONT_CODE', '') === '' ? null : self::value($values, 'ARASYA_TRENDYOL_STORE_FRONT_CODE', ''),
+            sourceAccess: self::sourceAccess($values, $sourceKeys),
         );
     }
 
@@ -182,6 +189,29 @@ final readonly class Config
         return $secrets;
     }
 
+    /** @param array<string, string> $values @param list<string> $sourceKeys @return array<string, array{mode: string, url: string, key: string, finance: string}> */
+    private static function sourceAccess(array $values, array $sourceKeys): array
+    {
+        $access = [];
+        foreach ($sourceKeys as $sourceKey) {
+            if (preg_match('/^[a-z0-9_-]{1,40}$/D', $sourceKey) !== 1) {
+                continue;
+            }
+            $suffix = self::sourceEnvironmentSuffix($sourceKey);
+            $mode = self::value($values, "ARASYA_SOURCE_ACCESS_{$suffix}", '');
+            if ($mode !== '') {
+                $access[$sourceKey] = [
+                    'mode' => $mode,
+                    'url' => self::value($values, "ARASYA_SOURCE_ACCESS_URL_{$suffix}", ''),
+                    'key' => self::value($values, "ARASYA_SOURCE_ACCESS_KEY_{$suffix}", ''),
+                    // API 2.41.0 (Confirmare Phase 5): off (default) | read | record.
+                    'finance' => self::value($values, "ARASYA_SOURCE_FINANCE_{$suffix}", ''),
+                ];
+            }
+        }
+        return $access;
+    }
+
     /** @param array<string, string> $values @param list<string> $sourceKeys @return array<string, array<string, string>> */
     private static function sourceSettings(array $values, array $sourceKeys): array
     {
@@ -201,7 +231,17 @@ final readonly class Config
                 'documentAuthority' => self::value($values, "ARASYA_SOURCE_DOCUMENT_AUTHORITY_{$suffix}", ''),
                 'trackingAuthority' => self::value($values, "ARASYA_SOURCE_TRACKING_AUTHORITY_{$suffix}", ''),
                 'paymentGate' => self::value($values, "ARASYA_SOURCE_PAYMENT_GATE_{$suffix}", ''),
+                'confirmare' => self::value($values, "ARASYA_SOURCE_CONFIRMARE_{$suffix}", ''),
             ], static fn (string $value): bool => $value !== '');
+            // The advance payment gate stops production. Before 2.37.1 the loader dropped its key, so every deployment
+            // ran with the gate OFF whatever the private file said. A value other than `off` is therefore honoured only
+            // when ARASYA_SOURCE_PAYMENT_GATE_VERIFIED_<SOURCE> repeats it: deploying the loader fix changes nothing until
+            // an operator confirms the reviewed value. An unconfirmed value runs as `off` and is reported (readiness FAIL).
+            $gate = strtolower(trim($settings[$sourceKey]['paymentGate'] ?? ''));
+            if ($gate !== '' && $gate !== 'off' && strtolower(trim(self::value($values, "ARASYA_SOURCE_PAYMENT_GATE_VERIFIED_{$suffix}", ''))) !== $gate) {
+                $settings[$sourceKey]['paymentGate'] = 'off';
+                $settings[$sourceKey]['paymentGateUnverified'] = $gate;
+            }
         }
         return $settings;
     }

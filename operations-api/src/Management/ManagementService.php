@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Arasya\Operations\Management;
 
 use Arasya\Operations\Authorization\AuthorizationService;
+use Arasya\Operations\Confirmare\ConfirmareScopePolicy;
+use Arasya\Operations\Confirmare\FinanceScopePolicy;
 use Arasya\Operations\Document\DocumentScopePolicy;
 use Arasya\Operations\Employee\EmployeeIdentity;
 use Arasya\Operations\Employee\StaffLocale;
@@ -203,6 +205,13 @@ final readonly class ManagementService
         // Root reaches every source; a stored scope would be meaningless for it.
         $summary['staffLocale'] = $this->staffLocaleOf((string) $summary['id']);
         $summary['documentScopes'] = $summary['isRoot'] ? null : (new DocumentScopePolicy($this->pdo))->scopesOf((string) $summary['id']);
+        $summary['confirmareScopes'] = $summary['isRoot'] ? null : (new ConfirmareScopePolicy($this->pdo))->scopesOf((string) $summary['id']);
+        // Confirmare finance scopes (API 2.41.0). Root holds none implicitly; before migration 039 nobody holds one.
+        try {
+            $summary['financeScopes'] = $summary['isRoot'] ? null : (new FinanceScopePolicy($this->pdo))->scopesOf((string) $summary['id']);
+        } catch (PDOException) {
+            $summary['financeScopes'] = null;
+        }
         // Granted stages narrowed to named sources (migration 023); a stage absent here reaches every source.
         $summary['stageSourceScopes'] = $summary['isRoot'] ? null : (object) $this->stageScopesOf((string) $summary['id']);
         // The grantable sources, for the root-only scope editor; nobody else can change a scope.
@@ -254,6 +263,100 @@ final readonly class ManagementService
             }
             $this->bumpAuthorization($target['employee_uuid'], $now);
             $this->audit->record($actor, 'employee.document_scopes_changed', 'employee', $target['employee_uuid'], $this->label($target), ['before' => $before, 'after' => $wanted], $requestId, $now);
+        });
+        return $this->getEmployee($actor, $employeeId);
+    }
+
+    /**
+     * Order sources an identity handles Confirmare money for (migration 039, API 2.41.0). Root only, like the Confirmare
+     * scopes, and independent of them: `view` reads the financial summary and the finance tasks, `record` also records a
+     * received bank transfer or a paid bank refund, `approve` also verifies what ANOTHER employee recorded and
+     * acknowledges a refund liability. Separating them is the owner's to decide per person; a Confirmare supervisor gets
+     * nothing from supervision. Never granted to root (the principal administrator grants, an employee handles money).
+     *
+     * @param array<string, mixed> $input {view: list<string>, record: list<string>, approve: list<string>}
+     * @return array<string, mixed>
+     */
+    public function setFinanceScopes(EmployeeIdentity $actor, string $employeeId, array $input, string $requestId): array
+    {
+        $this->authorization->requireApplication($actor, 'dashboard');
+        if (!$actor->isRoot) {
+            throw new ApiException(403, 'ROOT_ONLY', 'Only the principal administrator can change finance scopes.');
+        }
+        $wanted = [];
+        foreach (FinanceScopePolicy::CAPABILITIES as $capability) {
+            $sources = $this->stringList($input[$capability] ?? null, $capability);
+            sort($sources);
+            $wanted[$capability] = array_values(array_unique($sources));
+        }
+        $this->mutateEmployee($actor, $employeeId, function (array $target, string $now) use ($actor, $wanted, $requestId): void {
+            // Confirmare finance exists only for the signed WooCommerce sources: never B2B or Trendyol.
+            $known = $this->pdo->query("SELECT source_key FROM order_sources WHERE status = 'active' AND source_key NOT IN ('b2b', 'trendyol')")->fetchAll(PDO::FETCH_COLUMN);
+            foreach ($wanted as $sources) {
+                if (array_diff($sources, $known) !== []) {
+                    throw new ApiException(400, 'UNKNOWN_SOURCE', 'A finance scope names an unknown, inactive or non-shop order source.');
+                }
+            }
+            $before = (new FinanceScopePolicy($this->pdo))->scopesOf($target['employee_uuid']);
+            if ($before === $wanted) {
+                return;
+            }
+            $this->pdo->prepare('DELETE FROM employee_finance_scopes WHERE employee_uuid = :id')->execute(['id' => $target['employee_uuid']]);
+            $insert = $this->pdo->prepare('INSERT INTO employee_finance_scopes (employee_uuid, capability, source_key, granted_at, granted_by_employee_uuid) VALUES (:id, :capability, :source, :now, :actor)');
+            foreach ($wanted as $capability => $sources) {
+                foreach ($sources as $source) {
+                    $insert->execute(['id' => $target['employee_uuid'], 'capability' => $capability, 'source' => $source, 'now' => $now, 'actor' => $actor->employeeUuid]);
+                }
+            }
+            $this->bumpAuthorization($target['employee_uuid'], $now);
+            $this->audit->record($actor, 'employee.finance_scopes_changed', 'employee', $target['employee_uuid'], $this->label($target), ['before' => $before, 'after' => $wanted], $requestId, $now);
+        });
+        return $this->getEmployee($actor, $employeeId);
+    }
+
+    /**
+     * Order sources an identity confirms (migration 036, Confirmare). Root only, like document scopes: who calls the
+     * customers of a sales channel and decides whether an order may enter production is decided per person by root,
+     * never derived from a department, a title or a name. `operate` receives and decides assigned orders; `supervise`
+     * sees the whole pool, reassigns and decides any order. A scope grants no application. Removing a scope returns
+     * the person's pending assignments of that source to the pool at the next distribution run.
+     *
+     * @param array<string, mixed> $input {operate: list<string>, supervise: list<string>}
+     * @return array<string, mixed>
+     */
+    public function setConfirmareScopes(EmployeeIdentity $actor, string $employeeId, array $input, string $requestId): array
+    {
+        $this->authorization->requireApplication($actor, 'dashboard');
+        if (!$actor->isRoot) {
+            throw new ApiException(403, 'ROOT_ONLY', 'Only the principal administrator can change Confirmare scopes.');
+        }
+        $wanted = [];
+        foreach (ConfirmareScopePolicy::CAPABILITIES as $capability) {
+            $sources = $this->stringList($input[$capability] ?? null, $capability);
+            sort($sources);
+            $wanted[$capability] = array_values(array_unique($sources));
+        }
+        $this->mutateEmployee($actor, $employeeId, function (array $target, string $now) use ($actor, $wanted, $requestId): void {
+            // Confirmare exists only for the signed WooCommerce sources: never B2B or Trendyol, which have their own flows.
+            $known = $this->pdo->query("SELECT source_key FROM order_sources WHERE status = 'active' AND source_key NOT IN ('b2b', 'trendyol')")->fetchAll(PDO::FETCH_COLUMN);
+            foreach ($wanted as $sources) {
+                if (array_diff($sources, $known) !== []) {
+                    throw new ApiException(400, 'UNKNOWN_SOURCE', 'A Confirmare scope names an unknown, inactive or non-shop order source.');
+                }
+            }
+            $before = (new ConfirmareScopePolicy($this->pdo))->scopesOf($target['employee_uuid']);
+            if ($before === $wanted) {
+                return;
+            }
+            $this->pdo->prepare('DELETE FROM employee_confirmare_scopes WHERE employee_uuid = :id')->execute(['id' => $target['employee_uuid']]);
+            $insert = $this->pdo->prepare('INSERT INTO employee_confirmare_scopes (employee_uuid, capability, source_key, granted_at, granted_by_employee_uuid) VALUES (:id, :capability, :source, :now, :actor)');
+            foreach ($wanted as $capability => $sources) {
+                foreach ($sources as $source) {
+                    $insert->execute(['id' => $target['employee_uuid'], 'capability' => $capability, 'source' => $source, 'now' => $now, 'actor' => $actor->employeeUuid]);
+                }
+            }
+            $this->bumpAuthorization($target['employee_uuid'], $now);
+            $this->audit->record($actor, 'employee.confirmare_scopes_changed', 'employee', $target['employee_uuid'], $this->label($target), ['before' => $before, 'after' => $wanted], $requestId, $now);
         });
         return $this->getEmployee($actor, $employeeId);
     }

@@ -1,0 +1,381 @@
+<?php
+
+declare(strict_types=1);
+
+// Confirmare finance (migration 039, API 2.41.0, Phase 5) on a disposable database, through the HTTP kernel, with an
+// in-process TEST shop that speaks protocol v1 and keeps the money record like YD SOFT 2.15.0 (TEST amounts only).
+// Covers: root-only finance scopes separate from Confirmare (root and supervisors hold none implicitly), who reads the
+// summary (finance, assignee, supervisor; never another store, a scope-less identity or a legacy order), who acts (record
+// vs approve; never an operator or a supervisor), four eyes, the summary revision, idempotency, duplicate references,
+// lost answers and 5xx reconciled with the shop's stored answer, a request the shop never received, one action per order,
+// production closed while an action is unsettled, refunds only after the final manufacturing stage, the order event's
+// Phase 5 attentions, the finance queue, and the audit (codes and hashes only; no amount, reference or phone anywhere).
+
+use Arasya\Operations\Application\Container;
+use Arasya\Operations\Config\Config;
+use Arasya\Operations\Confirmare\ConfirmareFinance;
+use Arasya\Operations\Confirmare\ConfirmationClearance;
+use Arasya\Operations\Database\Connection;
+use Arasya\Operations\Database\MigrationRunner;
+use Arasya\Operations\Database\SqlFileRunner;
+use Arasya\Operations\Iam\RootBootstrapService;
+use Arasya\Operations\Integration\SourceRegistry;
+use Arasya\Operations\Production\ConfirmationGate;
+use Arasya\Operations\Production\WorkflowCohortActivation;
+use Arasya\Operations\Tests\MutableClock;
+use Arasya\Operations\Tests\OperationsTestSupport as T;
+use Arasya\Operations\Tests\SourceAccessFakeShop;
+
+require dirname(__DIR__) . '/bootstrap.php';
+require __DIR__ . '/OperationsTestSupport.php';
+require __DIR__ . '/TestDoubles.php';
+require __DIR__ . '/SourceAccessFakeShop.php';
+
+$dbName = T::requireTestDatabase();
+if ($dbName === null) {
+    fwrite(STDOUT, "SKIP MySQL Confirmare finance integration: ARASYA_TEST_DB_NAME is not configured.\n");
+    exit(0);
+}
+// Every server log line of this run goes to one file, scanned at the end for amounts, references and phone numbers.
+$logFile = tempnam(sys_get_temp_dir(), 'arasya-finance-log-');
+ini_set('log_errors', '1');
+ini_set('error_log', $logFile);
+
+const FIN_ORIGIN = 'http://127.0.0.1:4174';
+const FIN_KEY = 'trendhome-access-key-test-0123456789abcdef-fin';
+const FIN_PHONE = '0711444555';
+$checks = 0;
+$check = static function (bool $condition, string $label) use (&$checks): void { $checks++; if (!$condition) throw new RuntimeException("FAIL {$label}"); };
+$ok = static function (array $r, string $label, int $status = 200) use ($check): array { $check($r['status'] === $status, "{$label} HTTP {$r['status']} " . json_encode($r['body'])); return $r['body'] ?? []; };
+$error = static function (array $r, int $status, string $code, string $label) use ($check): array { $check($r['status'] === $status && ($r['body']['error']['code'] ?? '') === $code, "{$label}: expected {$status} {$code}, got {$r['status']} " . json_encode($r['body'])); return $r['body'] ?? []; };
+$refused = static function (array $r, string $reason, string $label) use ($check): array {
+    $check($r['status'] === 409 && ($r['body']['error']['code'] ?? '') === 'CONFIRMARE_FINANCE_REFUSED' && ($r['body']['error']['details']['reason'] ?? '') === $reason, "{$label}: expected refusal {$reason}, got {$r['status']} " . json_encode($r['body']));
+    return $r['body']['error']['details'] ?? [];
+};
+
+$full = ['mode' => 'active', 'authority' => 'enforce', 'qrAuthority' => 'enforce', 'documentAuthority' => 'enforce', 'confirmare' => 'on'];
+$base = T::config($dbName, [T::ORIGIN, FIN_ORIGIN], ['trendhome' => $full + ['paymentGate' => 'off'], 'outletperdele' => $full + ['paymentGate' => 'off']]);
+// Trend Home: finance `record`. Outlet Perdele: source access read, finance off.
+$config = new Config(...[...get_object_vars($base), 'sourceAccess' => [
+    'trendhome' => ['mode' => 'edit', 'url' => 'https://trendhome.example', 'key' => 'th-test:' . FIN_KEY, 'finance' => 'record'],
+    'outletperdele' => ['mode' => 'read', 'url' => 'https://outletperdele.example', 'key' => 'op-test:' . FIN_KEY . '-outlet', 'finance' => ''],
+]]);
+$pdo = Connection::create($config);
+(new MigrationRunner($pdo))->migrate(dirname(__DIR__) . '/database/migrations');
+foreach (glob(dirname(__DIR__) . '/database/seeds/*.sql') ?: [] as $seed) (new SqlFileRunner($pdo))->run($seed);
+$one = static function (string $sql, array $params = []) use ($pdo): mixed { $s = $pdo->prepare($sql); $s->execute($params); return $s->fetchColumn(); };
+$all = static function (string $sql, array $params = []) use ($pdo): array { $s = $pdo->prepare($sql); $s->execute($params); return $s->fetchAll(PDO::FETCH_ASSOC); };
+foreach (['order_finance_actions', 'order_finance_reads', 'employee_finance_scopes', 'order_confirmation_source_edits', 'order_confirmation_source_reads', 'order_confirmation_contacts', 'order_confirmation_idempotency', 'confirmare_alerts', 'order_confirmation_events', 'order_confirmations', 'workflow_cohort_activations', 'employee_confirmare_scopes', 'confirmare_operator_state'] as $table) {
+    $pdo->exec("DELETE FROM {$table}");
+}
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$pdo->exec('UPDATE operational_orders SET workflow_cohort = NULL, workflow_cohort_reason = NULL, workflow_cohort_at = NULL WHERE workflow_cohort IS NOT NULL');
+
+$shop = new SourceAccessFakeShop('trendhome', 'th-test', FIN_KEY);
+$container = new Container($config, $pdo, $shop);
+$kernel = $container->kernel();
+$service = $container->confirmareService();
+$registry = SourceRegistry::fromConfig($config);
+$suffix = substr(bin2hex(random_bytes(6)), 0, 10);
+$pdo->exec('DELETE FROM system_root_identity');
+$rootName = "fin.root.{$suffix}";
+$temporary = (new RootBootstrapService($pdo, $container->passwordHasher(), $container->clock()))->bootstrap('test-fin-root', $rootName);
+$first = T::login($kernel, $rootName, $temporary);
+$ok(T::call($kernel, 'POST', '/auth/password', ['currentPassword' => $temporary, 'newPassword' => 'Finance root passphrase 2026!'], ['x-csrf-token' => $first['csrf']], $first['cookie']), 'root password');
+$root = T::login($kernel, $rootName, 'Finance root passphrase 2026!');
+$asRoot = static fn (string $method, string $path, ?array $body = null): array => T::call($kernel, $method, $path, $body, ['x-csrf-token' => $root['csrf'], 'idempotency-key' => 'fin-root-' . bin2hex(random_bytes(10))], $root['cookie']);
+$password = 'finance test passphrase 2026';
+$uuids = [];
+foreach (['fop', 'fopo', 'fsup', 'fview', 'frec', 'fapp', 'fapp2', 'fout', 'fnone'] as $name) {
+    // Generic test identities: access only from the scopes granted below, never from a name.
+    $employee = $container->employeeAdmin()->create("Test {$name}", "{$name}.{$suffix}", null, 'pregatire-material', 'employee', $password, [], 'test-fin');
+    $uuids[$name] = $employee->employeeUuid;
+    $ok($asRoot('PUT', "/management/employees/{$employee->employeeUuid}/applications", ['applications' => ['staff']]), "{$name} applications");
+}
+foreach (['fop' => ['operate' => ['trendhome'], 'supervise' => []], 'fopo' => ['operate' => ['outletperdele'], 'supervise' => []], 'fsup' => ['operate' => [], 'supervise' => ['trendhome']]] as $name => $grant) {
+    $ok($asRoot('PUT', "/management/employees/{$uuids[$name]}/confirmare-scopes", $grant), "confirmare {$name}");
+}
+
+// ---- 1. Finance scopes: root-only, separate from Confirmare, nothing implicit ---------------------------------------
+$grants = ['fview' => ['view' => ['trendhome'], 'record' => [], 'approve' => []], 'frec' => ['view' => [], 'record' => ['trendhome'], 'approve' => []],
+    'fapp' => ['view' => [], 'record' => [], 'approve' => ['trendhome']], 'fapp2' => ['view' => [], 'record' => ['trendhome'], 'approve' => ['trendhome']], 'fout' => ['view' => [], 'record' => ['outletperdele'], 'approve' => ['outletperdele']]];
+foreach ($grants as $name => $grant) {
+    $employeeView = $ok($asRoot('PUT', "/management/employees/{$uuids[$name]}/finance-scopes", $grant), "finance {$name}");
+    $check($employeeView['financeScopes'] === $grant, "{$name}: the stored finance scopes");
+}
+$check((int) $one("SELECT COUNT(*) FROM iam_audit_events WHERE action = 'employee.finance_scopes_changed' AND target_id IN (?, ?, ?, ?, ?)", [$uuids['fview'], $uuids['frec'], $uuids['fapp'], $uuids['fapp2'], $uuids['fout']]) === 5, 'every finance scope change is in the IAM audit');
+$error($asRoot('PUT', "/management/employees/{$uuids['fnone']}/finance-scopes", ['view' => ['b2b'], 'record' => [], 'approve' => []]), 400, 'UNKNOWN_SOURCE', 'finance scopes exist for the shops only (never B2B or Trendyol)');
+$rootUuid = (string) $one('SELECT employee_uuid FROM system_root_identity LIMIT 1');
+$error($asRoot('PUT', "/management/employees/{$rootUuid}/finance-scopes", ['view' => ['trendhome'], 'record' => [], 'approve' => []]), 403, 'ROOT_PROTECTED', 'root never holds a finance scope');
+$login = static fn (string $name): array => T::login($kernel, "{$name}.{$suffix}", $password);
+$op = $login('fop');
+$sup = $login('fsup');
+$view = $login('fview');
+$rec = $login('frec');
+$app = $login('fapp');
+$app2 = $login('fapp2');
+$out = $login('fout');
+$none = $login('fnone');
+$me = static fn (array $who): array => T::call($kernel, 'GET', '/employees/me', null, [], $who['cookie'])['body'] ?? [];
+$check(($me($op)['financeScopes'] ?? null) === ['view' => [], 'record' => [], 'approve' => []] && ($me($rec)['financeScopes']['record'] ?? null) === ['trendhome'], 'the session shows the finance scopes (operators have none)');
+$error(T::call($kernel, 'PUT', "/management/employees/{$uuids['fnone']}/finance-scopes", ['view' => ['trendhome'], 'record' => [], 'approve' => []], ['x-csrf-token' => $app['csrf'], 'idempotency-key' => 'fin-self-grant-' . $suffix], $app['cookie']), 403, 'APPLICATION_ACCESS_DENIED', 'a finance approver cannot grant finance scopes');
+
+// ---- Fixtures: Confirmare orders of both stores, a legacy order -------------------------------------------------------
+$iso = static fn (DateTimeImmutable $at): string => $at->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d\TH:i:s.u\Z');
+$now = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+$cutover = \Arasya\Operations\Production\WorkflowCohort::cutover();
+if ($now < $cutover->modify('+10 minutes')) {
+    fwrite(STDOUT, "SKIP MySQL Confirmare finance integration: needs a clock after the Confirmare cutover.\n");
+    exit(0);
+}
+$check(ConfirmationGate::WORKFLOW_READY === false, 'Phase 5 keeps WORKFLOW_READY false');
+$activatedAt = max($cutover->modify('+1 second'), $now->modify('-2 hours'));
+foreach (['trendhome', 'outletperdele'] as $src) {
+    (new WorkflowCohortActivation($pdo, new MutableClock($activatedAt->modify('-20 minutes'))))->schedule($registry->find($src), $activatedAt, 'Test Owner', 'finance test', 'fin-test', true);
+    T::ingest($kernel, $src, ['sentAt' => gmdate('Y-m-d\TH:i:s\Z'), 'confirmareArmedAt' => $iso($activatedAt)], null, null, 'heartbeat');
+    (new WorkflowCohortActivation($pdo, new MutableClock($activatedAt->modify('-1 minute'))))->activate($registry->find($src), 'Test Owner', 'finance test', 'fin-test', true);
+}
+$heartbeat = T::ingest($kernel, 'trendhome', ['sentAt' => gmdate('Y-m-d\TH:i:s\Z')], null, null, 'heartbeat');
+$check(in_array('financeTasks', $heartbeat['body']['orderFacts'] ?? [], true), 'the heartbeat announces the financeTasks fact');
+$numberBase = T::freeOrderBase($pdo, 731000, 759999, 100); // ids base+1..base+60; a block no earlier run used
+$id = static fn (int $n): string => (string) ($numberBase + $n);
+$th = static fn (int $n): string => 'trendhome:' . $id($n);
+$tick = 0;
+$payload = static function (string $orderId, ?array $submission, array $financial, string $method = 'online') use ($suffix, &$tick): array {
+    $tick++;
+    $p = T::sourceOrder($orderId, "fin-{$orderId}-{$suffix}-{$tick}", gmdate('Y-m-d\TH:i:s', time() - 4000 + $tick) . 'Z', null, 'processing', 'active', [[
+        'id' => 9201, 'line' => 1, 'name' => 'Draperie Velvet', 'sku' => 'DV-302', 'width' => 3, 'height' => 2.6, 'unit' => 'm', 'quantity' => 1,
+    ]]);
+    unset($p['order']['notes']);
+    $p['order']['pricing'] = ['fingerprint' => $financial['pricingFingerprint']];
+    $p['order']['payment'] = $method === 'online' ? ['method' => 'online', 'advanceStatus' => 'not_required', 'advanceRevision' => 0] : ['method' => 'cod', 'advanceStatus' => 'waiting', 'advanceRevision' => 0];
+    $p['order']['financial'] = $financial;
+    $p['order']['delivery'] = ['name' => 'TEST Client Finante', 'street' => 'Str. Exemplu 13', 'city' => 'Sibiu', 'postalCode' => '550000', 'country' => 'RO', 'phone' => FIN_PHONE];
+    if ($submission !== null) $p['order']['submission'] = $submission;
+    return $p;
+};
+$pricing = static fn (int $n, string $v = 'a'): string => 'sha256:' . hash('sha256', "fin-price-{$n}-{$v}");
+$submitted = static fn (int $seconds): array => ['submittedAt' => $iso($activatedAt->modify("+{$seconds} seconds")), 'evidence' => 'checkout'];
+$waiting = static fn (int $n, ?string $attention, string $v = 'a', string $state = 'waiting', ?string $basis = null): array => ['state' => $state, 'basis' => $basis, 'pricingFingerprint' => $pricing($n, $v)] + ($attention === null ? [] : ['attention' => $attention]);
+foreach ([1, 2, 3, 5] as $n) $ok(T::ingest($kernel, 'trendhome', $payload($id($n), $submitted($n), $waiting($n, $n === 3 ? 'refund_due' : 'additional_payment_due'))), "trendhome order {$n}");
+$ok(T::ingest($kernel, 'trendhome', $payload($id(4), $submitted(4), $waiting(4, null), 'cod')), 'trendhome COD order');
+$ok(T::ingest($kernel, 'outletperdele', $payload($id(50), $submitted(50), $waiting(50, 'additional_payment_due'))), 'outlet order');
+$ok(T::ingest($kernel, 'trendhome', $payload($id(60), ['submittedAt' => $iso($activatedAt->modify('-1 hour')), 'evidence' => 'checkout'], $waiting(60, null, 'a', 'cleared', 'online_payment'))), 'legacy order');
+$check($service->distribute()['assigned'] >= 5, 'the server distributes the Confirmare orders (to the only Trend Home operator)');
+$finance = static fn (array $f): array => $f;
+$shop->orders[$id(1)] = ['id' => $id(1), 'phone' => FIN_PHONE, 'finance' => $finance(['cod' => false, 'total' => '650.00', 'paid' => '500.00', 'original' => '500.00', 'pricing' => $pricing(1)])];
+$shop->orders[$id(2)] = ['id' => $id(2), 'phone' => FIN_PHONE, 'finance' => $finance(['cod' => false, 'total' => '420.00', 'paid' => '300.00', 'pricing' => $pricing(2)])];
+$shop->orders[$id(3)] = ['id' => $id(3), 'phone' => FIN_PHONE, 'finance' => $finance(['cod' => false, 'total' => '700.00', 'paid' => '800.00', 'original' => '800.00', 'pricing' => $pricing(3)])];
+$shop->orders[$id(4)] = ['id' => $id(4), 'phone' => FIN_PHONE, 'finance' => $finance(['cod' => true, 'total' => '1000.00', 'collected' => '100.00', 'pricing' => $pricing(4)])];
+$shop->orders[$id(5)] = ['id' => $id(5), 'phone' => FIN_PHONE, 'finance' => $finance(['cod' => false, 'total' => '510.00', 'paid' => '450.00', 'pricing' => $pricing(5)])];
+$shop->orders[$id(60)] = ['id' => $id(60), 'eligible' => false];
+$outletOrder = 'outletperdele:' . $id(50);
+$get = static function (array $who, string $path) use ($kernel): array {
+    [$route, $query] = array_pad(explode('?', $path, 2), 2, '');
+    parse_str($query, $parameters);
+    return T::call($kernel, 'GET', $route, null, ['origin' => FIN_ORIGIN], $who['cookie'], $parameters);
+};
+$read = static fn (array $who, string $globalId): array => $get($who, '/confirmare/orders/' . rawurlencode($globalId) . '/finance');
+$act = static fn (array $who, string $globalId, string $action, array $body, ?string $key = null): array => T::call($kernel, 'POST', '/confirmare/orders/' . rawurlencode($globalId) . '/finance/' . $action, $body,
+    ['origin' => FIN_ORIGIN, 'x-csrf-token' => $who['csrf'], 'idempotency-key' => $key ?? 'fin-act-' . bin2hex(random_bytes(10))], $who['cookie']);
+$revision = static fn (string $orderId): string => 'sha256:' . hash('sha256', (string) json_encode($shop->orders[$orderId]['finance'] ?? []));
+$actions = static fn (string $globalId): array => $all('SELECT * FROM order_finance_actions WHERE global_order_id = ? ORDER BY requested_at, action_uuid', [$globalId]);
+$orderUuid = static fn (string $globalId): string => (string) $one('SELECT order_uuid FROM operational_orders WHERE global_order_id = ?', [$globalId]);
+$today = gmdate('Y-m-d');
+
+// ---- 2. Who reads the summary ---------------------------------------------------------------------------------------
+$detail = $ok($get($view, '/confirmare/orders/' . rawurlencode($th(1))), 'finance view sees the Confirmare detail of its source');
+$check($detail['finance'] === ['configured' => true, 'read' => true, 'record' => false, 'approve' => false], 'detail capabilities: view only');
+$check($ok($get($op, '/confirmare/orders/' . rawurlencode($th(1))), 'operator detail')['finance'] === ['configured' => true, 'read' => true, 'record' => false, 'approve' => false], 'the assignee may read the money, never act');
+$requests = count($shop->requests);
+$error($read($none, $th(1)), 404, 'CONFIRMARE_NOT_FOUND', 'without any scope nothing is visible');
+$error($read($out, $th(1)), 404, 'CONFIRMARE_NOT_FOUND', 'another store\'s finance employee does not even see it (wrong store)');
+$error($read($view, $th(60)), 404, 'CONFIRMARE_NOT_FOUND', 'a legacy order keeps its workflow: it is no Confirmare order, no finance read');
+$check(count($shop->requests) === $requests, 'refused reads never reach the shop');
+$s1 = $ok($read($view, $th(1)), 'finance read');
+$check($s1['available'] === true && $s1['role'] === 'finance' && $s1['summary']['totals']['current'] === '650.00' && $s1['summary']['totals']['original'] === '500.00' && $s1['summary']['received']['online'] === '500.00'
+    && $s1['summary']['balance']['outstanding'] === '150.00' && $s1['summary']['financial']['attention'] === 'additional_payment_due', 'the summary: new total, original total, payment kept, outstanding 150 (read from the shop now)');
+$check($s1['allowedActions'] === [] && $s1['nextAction'] === 'collect_additional_payment' && $s1['production']['refundEligible'] === false, 'a viewer may do nothing; the next step is named');
+$raw = T::call($kernel, 'GET', '/confirmare/orders/' . rawurlencode($th(1)) . '/finance', null, ['origin' => FIN_ORIGIN], $view['cookie']);
+$check(str_contains((string) json_encode($raw['body']), '"employees":{}'), 'the employee names are a JSON object even when empty (Staff maps them strictly)');
+$check(($shop->requests[count($shop->requests) - 1]['body']['actor'] ?? null) === ['employeeId' => $uuids['fview'], 'role' => 'finance'], 'the shop is told who asks, as finance');
+$sOp = $ok($read($op, $th(1)), 'assignee read');
+$check($sOp['role'] === 'assignee' && $sOp['allowedActions'] === [], 'the operator reads (to tell the customer) with no action');
+$check($ok($read($sup, $th(1)), 'supervisor read')['role'] === 'supervisor', 'a Confirmare supervisor reads as supervisor');
+$o50 = $ok($read($out, $outletOrder), 'outlet read');
+$check($o50 === ['available' => false, 'reason' => 'not_configured'], 'a store without finance answers not_configured');
+$readsRow = $all('SELECT access_role, finance_revision FROM order_finance_reads WHERE global_order_id = ? AND outcome = ? ORDER BY read_at, read_uuid', [$th(1), 'ok']);
+$check(array_column($readsRow, 'access_role') === ['finance', 'finance', 'assignee', 'supervisor'] && $readsRow[0]['finance_revision'] === $s1['summary']['revision'], 'every read is audited with its role and the summary revision (a hash): ' . json_encode($readsRow));
+
+// ---- 3. Who acts --------------------------------------------------------------------------------------------------
+$transfer = static fn (string $amount, string $reference, ?string $rev = null, string $purpose = 'additional_payment'): array => ['expectedRevision' => $rev ?? $revision($id(1)), 'purpose' => $purpose, 'amount' => $amount, 'reference' => $reference, 'valueDate' => $today];
+$requests = count($shop->requests);
+$error($act($view, $th(1), 'submit-transfer', $transfer('150.00', 'OP FIN 0001')), 403, 'CONFIRMARE_FINANCE_DENIED', 'a viewer cannot record money');
+$error($act($op, $th(1), 'submit-transfer', $transfer('150.00', 'OP FIN 0001')), 403, 'CONFIRMARE_FINANCE_DENIED', 'the operator (customer communication) cannot record money');
+$error($act($sup, $th(1), 'submit-transfer', $transfer('150.00', 'OP FIN 0001')), 403, 'CONFIRMARE_FINANCE_DENIED', 'a Confirmare supervisor cannot bypass finance');
+$error($act($app, $th(1), 'submit-transfer', $transfer('150.00', 'OP FIN 0001')), 403, 'CONFIRMARE_FINANCE_DENIED', 'approve alone does not record');
+$error($act($out, $th(1), 'submit-transfer', $transfer('150.00', 'OP FIN 0001')), 404, 'CONFIRMARE_NOT_FOUND', 'another store\'s finance employee cannot act');
+$error($act($rec, $outletOrder, 'submit-transfer', $transfer('150.00', 'OP FIN 0001')), 404, 'CONFIRMARE_NOT_FOUND', 'a finance employee of Trend Home cannot act on Outlet Perdele');
+$error($act($out, $outletOrder, 'submit-transfer', $transfer('150.00', 'OP FIN 0001')), 409, 'CONFIRMARE_FINANCE_DISABLED', 'a store without finance record refuses actions');
+foreach ([
+    'amount' => ['amount' => '1e3'], 'amount as a number' => ['amount' => 150], 'a negative amount' => ['amount' => '-5.00'], 'three decimals' => ['amount' => '1.005'],
+    'reference' => ['reference' => 'x'], 'valueDate' => ['valueDate' => '2026-02-30'], 'purpose' => ['purpose' => 'gift'], 'expectedRevision' => ['expectedRevision' => 'v1'],
+] as $label => $override) {
+    $error($act($rec, $th(1), 'submit-transfer', $override + $transfer('150.00', 'OP FIN 0001')), 422, 'CONFIRMARE_FINANCE_INVALID', "invalid {$label} never reaches the shop");
+}
+$error($act($rec, $th(1), 'submit-transfer', $transfer('150.00', 'OP FIN 0001') + ['verified' => true]), 400, 'INVALID_REQUEST', 'no field beyond the action\'s own (no "verified" flag exists)');
+$error($act($rec, $th(1), 'submit-transfer', $transfer('150.00', 'OP FIN 0001'), 'short'), 400, 'INVALID_IDEMPOTENCY_KEY', 'no action without an Idempotency-Key');
+$check(count($shop->requests) === $requests, 'refused actions never reach the shop');
+
+// ---- 4. A bank transfer: recorded (not money), four eyes, verified ---------------------------------------------------
+$stale = $refused($act($rec, $th(1), 'submit-transfer', $transfer('150.00', 'OP FIN 0001', 'sha256:' . str_repeat('0', 64))), 'revision_changed', 'a decision based on an old summary');
+$check($stale['revision'] === $revision($id(1)), 'the refusal names the shop\'s current revision');
+$key1 = "fin-transfer-{$suffix}-000001";
+$r1 = $ok($act($rec, $th(1), 'submit-transfer', $transfer('150.00', 'OP FIN 0001'), $key1), 'submit transfer');
+$entry1 = $r1['entryId'];
+$check($r1['state'] === 'applied' && $r1['summary']['financial']['attention'] === 'transfer_pending' && $r1['summary']['received']['net'] === '500.00' && $r1['nextAction'] === 'verify_transfer', 'recorded: transfer_pending, nothing received yet');
+$row = $actions($th(1))[1];
+$check($row['state'] === 'applied' && $row['action'] === 'submit_transfer' && $row['purpose'] === 'additional_payment' && $row['source_entry_id'] === $entry1 && $row['revision_after'] === $r1['summary']['revision'] && strlen((string) $row['request_hmac']) === 32, 'the action is audited by codes, the shop entry id, revisions and an HMAC');
+$replay = $ok($act($rec, $th(1), 'submit-transfer', $transfer('150.00', 'OP FIN 0001', $s1['summary']['revision']), $key1), 'replay');
+$check($replay === ['state' => 'applied', 'idempotencyKey' => $key1, 'entryId' => $entry1] && count($shop->orders[$id(1)]['finance']['entries']) === 1, 'a retried request (same key, same body) returns the recorded outcome; one entry');
+$error($act($rec, $th(1), 'submit-transfer', $transfer('15.00', 'OP FIN 0001', $s1['summary']['revision']), $key1), 409, 'IDEMPOTENCY_CONFLICT', 'the same key with another amount is refused');
+$requests = count($shop->requests);
+$decide = static fn (string $orderId, string $entry, string $decision = 'verify', ?string $reason = null): array => ['expectedRevision' => $revision($orderId), 'entryId' => $entry, 'decision' => $decision] + ($reason === null ? [] : ['reasonCode' => $reason]);
+$error($act($rec, $th(1), 'decide-transfer', $decide($id(1), $entry1)), 403, 'CONFIRMARE_FINANCE_DENIED', 'record alone never verifies');
+$error($act($app, $th(1), 'decide-transfer', $decide($id(1), $entry1, 'reject')), 422, 'CONFIRMARE_FINANCE_INVALID', 'a rejection needs its reason code');
+$error($act($app, $th(1), 'decide-transfer', $decide($id(1), $entry1) + ['reasonCode' => 'other']), 422, 'CONFIRMARE_FINANCE_INVALID', 'a verification carries no reason code');
+$check(count($shop->requests) === $requests, 'refused decisions never reach the shop');
+$readApprover = $ok($read($app, $th(1)), 'approver read');
+$check($readApprover['allowedActions'] === ['decide_transfer'] && ((array) $readApprover['employees'])[$uuids['frec']] === 'Test frec', 'the approver may verify the transfer another employee recorded (named in the timeline)');
+$readRecorder = $ok($read($app2, $th(1)), 'recorder-approver read');
+$check(in_array('decide_transfer', $readRecorder['allowedActions'], true), 'another approver may verify it too');
+$v1 = $ok($act($app, $th(1), 'decide-transfer', $decide($id(1), $entry1)), 'verify transfer');
+$check($v1['state'] === 'applied' && $v1['entryId'] === $entry1 && $v1['summary']['financial']['state'] === 'cleared' && $v1['summary']['received']['transfers'] === '150.00' && $v1['summary']['balance']['outstanding'] === '0.00', 'verified by another employee: received 650 of 650, cleared');
+$refused($act($app2, $th(1), 'decide-transfer', $decide($id(1), $entry1)), 'entry_not_pending', 'two approvers at once: the second decision is refused');
+
+// The same employee may hold record and approve, but never verifies their own record.
+$shop->orders[$id(2)]['finance']['total'] = '420.00';
+$r2 = $ok($act($app2, $th(2), 'submit-transfer', ['expectedRevision' => $revision($id(2)), 'purpose' => 'additional_payment', 'amount' => '120.00', 'reference' => 'OP FIN 0002', 'valueDate' => $today]), 'record by record+approve');
+$requests = count($shop->requests);
+$error($act($app2, $th(2), 'decide-transfer', $decide($id(2), $r2['entryId'])), 403, 'CONFIRMARE_FINANCE_SAME_EMPLOYEE', 'four eyes: the recorder never verifies (refused before the shop)');
+$check(count($shop->requests) === $requests, 'the four-eyes refusal never reaches the shop');
+$check(!in_array('decide_transfer', $ok($read($app2, $th(2)), 'own read')['allowedActions'], true), 'the recorder is not offered the verification');
+$ok($act($app, $th(2), 'decide-transfer', $decide($id(2), $r2['entryId'], 'reject', 'not_received')), 'reject: not on the statement');
+$check($shop->financeNumbers($id(2))['attention'] === 'additional_payment_due' && $actions($th(2))[1]['decision'] === 'reject' && $actions($th(2))[1]['reason_code'] === 'not_received', 'a rejected transfer (false evidence) is no money; audited with its reason code');
+$refused($act($rec, $th(2), 'submit-transfer', ['expectedRevision' => $revision($id(2)), 'purpose' => 'additional_payment', 'amount' => '120.00', 'reference' => 'op-fin-0001', 'valueDate' => $today]), 'duplicate_reference', 'the bank transfer of order 1 recorded again on order 2 (other spelling)');
+$refused($act($rec, $th(2), 'submit-transfer', ['expectedRevision' => $revision($id(2)), 'purpose' => 'additional_payment', 'amount' => '500.00', 'reference' => 'OP FIN 0003', 'valueDate' => $today]), 'amount_exceeds_balance', 'never more than what is owed');
+
+// ---- 5. COD: the advance on the current total --------------------------------------------------------------------
+$c4 = $ok($read($rec, $th(4)), 'COD read');
+$check($c4['summary']['advance']['required'] === '300.00' && $c4['summary']['advance']['outstanding'] === '200.00' && $c4['nextAction'] === 'collect_advance' && $c4['allowedActions'] === ['submit_transfer'], 'COD: 30 % of 1000, 100 collected, 200 outstanding');
+$refused($act($rec, $th(4), 'submit-transfer', ['expectedRevision' => $revision($id(4)), 'purpose' => 'additional_payment', 'amount' => '150.00', 'reference' => 'OP FIN 0004', 'valueDate' => $today]), 'purpose_not_allowed', 'a COD order takes an advance, not an additional payment');
+$r4 = $ok($act($rec, $th(4), 'submit-transfer', ['expectedRevision' => $revision($id(4)), 'purpose' => 'advance', 'amount' => '150.00', 'reference' => 'OP FIN 0004', 'valueDate' => $today]), 'advance transfer');
+$v4 = $ok($act($app, $th(4), 'decide-transfer', $decide($id(4), $r4['entryId'])), 'verify advance');
+$check($v4['summary']['financial']['state'] === 'partial' && $v4['summary']['advance']['outstanding'] === '50.00' && $v4['summary']['advance']['onDelivery'] === '750.00', 'a partial advance (250 of 300); the courier collects 750');
+
+// ---- 6. Lost answers, 5xx, a request never received, one action at a time ----------------------------------------
+$key5 = "fin-lost-{$suffix}-000001";
+$shop->afterFinance = 'answer_lost';
+$lost = $ok($act($rec, $th(5), 'submit-transfer', ['expectedRevision' => $revision($id(5)), 'purpose' => 'additional_payment', 'amount' => '60.00', 'reference' => 'OP FIN 0005', 'valueDate' => $today], $key5), 'lost answer');
+$check($lost === ['state' => 'unknown', 'idempotencyKey' => $key5] && $actions($th(5))[0]['state'] === 'unknown', 'the answer was lost: unknown, never guessed');
+$check(ConfirmareFinance::actionOpen($pdo, $orderUuid($th(5))) && in_array('payment', ConfirmationClearance::missing($pdo, $orderUuid($th(5))), true), 'an unsettled finance action keeps production closed');
+$error($act($app, $th(5), 'decide-transfer', $decide($id(5), '00000000-0000-4000-9000-000000000999')), 409, 'CONFIRMARE_FINANCE_ACTION_PENDING', 'one finance action per order at a time');
+$check($ok($read($app, $th(5)), 'read while unknown')['nextAction'] === 'reconcile_action', 'the summary says to reconcile first');
+$settled = $ok(T::call($kernel, 'POST', '/confirmare/orders/' . rawurlencode($th(5)) . '/finance/reconcile', ['idempotencyKey' => $key5], ['origin' => FIN_ORIGIN, 'x-csrf-token' => $rec['csrf'], 'idempotency-key' => 'fin-rec-' . $suffix . '-01'], $rec['cookie']), 'reconcile');
+$check($settled['state'] === 'applied' && $actions($th(5))[0]['state'] === 'applied' && count($shop->orders[$id(5)]['finance']['entries']) === 1, 'reconciled with the shop\'s stored answer: applied once, never replayed');
+$entry5 = $settled['entryId'];
+$shop->afterFinance = 'crash';
+$crash = $ok($act($app, $th(5), 'decide-transfer', $decide($id(5), $entry5), "fin-crash-{$suffix}-000001"), '5xx');
+$check($crash['state'] === 'unknown', 'a 5xx after the shop committed is unknown');
+$byOther = $ok(T::call($kernel, 'POST', '/confirmare/orders/' . rawurlencode($th(5)) . '/finance/reconcile', ['idempotencyKey' => "fin-crash-{$suffix}-000001"], ['origin' => FIN_ORIGIN, 'x-csrf-token' => $app2['csrf'], 'idempotency-key' => 'fin-rec-' . $suffix . '-02'], $app2['cookie']), 'reconcile by another approver');
+$check($byOther['state'] === 'applied' && $shop->financeNumbers($id(5))['state'] === 'cleared', 'another approver settles it with the shop\'s answer');
+$error(T::call($kernel, 'POST', '/confirmare/orders/' . rawurlencode($th(5)) . '/finance/reconcile', ['idempotencyKey' => "fin-crash-{$suffix}-000001"], ['origin' => FIN_ORIGIN, 'x-csrf-token' => $view['csrf'], 'idempotency-key' => 'fin-rec-' . $suffix . '-03'], $view['cookie']), 404, 'CONFIRMARE_FINANCE_ACTION_NOT_FOUND', 'a viewer cannot settle another employee\'s action');
+$shop->orders[$id(5)]['finance']['total'] = '600.00';
+$shop->fail = 'SOURCE_UNREACHABLE';
+$keyNever = "fin-never-{$suffix}-000001";
+$never = $ok($act($rec, $th(5), 'submit-transfer', ['expectedRevision' => $revision($id(5)), 'purpose' => 'additional_payment', 'amount' => '90.00', 'reference' => 'OP FIN 0006', 'valueDate' => $today], $keyNever), 'never received');
+$shop->fail = null;
+$check($never['state'] === 'unknown', 'a transport failure is unknown (the shop may or may not have run it)');
+$early = $ok(T::call($kernel, 'POST', '/confirmare/orders/' . rawurlencode($th(5)) . '/finance/reconcile', ['idempotencyKey' => $keyNever], ['origin' => FIN_ORIGIN, 'x-csrf-token' => $rec['csrf'], 'idempotency-key' => 'fin-rec-' . $suffix . '-04'], $rec['cookie']), 'early reconcile');
+$check($early === ['state' => 'unknown', 'idempotencyKey' => $keyNever, 'reachable' => true], 'absent at the shop but recent: still unknown (the shop may still be processing it)');
+$pdo->prepare('UPDATE order_finance_actions SET requested_at = DATE_SUB(requested_at, INTERVAL 5 MINUTE) WHERE idempotency_key = ?')->execute([$keyNever]);
+$refused(T::call($kernel, 'POST', '/confirmare/orders/' . rawurlencode($th(5)) . '/finance/reconcile', ['idempotencyKey' => $keyNever], ['origin' => FIN_ORIGIN, 'x-csrf-token' => $rec['csrf'], 'idempotency-key' => 'fin-rec-' . $suffix . '-05'], $rec['cookie']), 'not_received', 'absent after 120 s: the shop never received it');
+$byKey = static fn (string $key): array => $all('SELECT * FROM order_finance_actions WHERE idempotency_key = ?', [$key])[0] ?? [];
+$check(($byKey($keyNever)['state'] ?? null) === 'rejected' && ($byKey($keyNever)['outcome'] ?? null) === 'not_received' && !ConfirmareFinance::actionOpen($pdo, $orderUuid($th(5))), 'rejected as not received; the order is free again');
+$shop->fail = 'SOURCE_ACCESS_DENIED';
+$error($act($rec, $th(5), 'submit-transfer', ['expectedRevision' => $revision($id(5)), 'purpose' => 'additional_payment', 'amount' => '90.00', 'reference' => 'OP FIN 0007', 'valueDate' => $today]), 503, 'CONFIRMARE_SOURCE_UNAVAILABLE', 'the shop refused our key: nothing was sent');
+$shop->fail = null;
+$denied = $all("SELECT state, outcome FROM order_finance_actions WHERE global_order_id = ? AND outcome = 'source_access_denied'", [$th(5)]);
+$check(count($denied) === 1 && $denied[0]['state'] === 'rejected', 'audited as rejected, not unknown');
+
+// ---- 7. Price decrease: liability, acknowledgement, refund after the final manufacturing stage ---------------------
+$l3 = $ok($read($app, $th(3)), 'liability read');
+$check($l3['summary']['balance']['refundLiability'] === '100.00' && $l3['summary']['financial']['attention'] === 'refund_due' && $l3['allowedActions'] === ['acknowledge_liability'] && $l3['nextAction'] === 'acknowledge_refund', 'a paid order repriced down: refund liability 100, to acknowledge');
+$error($act($rec, $th(3), 'acknowledge-liability', ['expectedRevision' => $revision($id(3))]), 403, 'CONFIRMARE_FINANCE_DENIED', 'only an approver acknowledges a liability');
+$ack = $ok($act($app, $th(3), 'acknowledge-liability', ['expectedRevision' => $revision($id(3))]), 'acknowledge');
+$check($ack['summary']['financial'] === ['state' => 'cleared', 'basis' => 'online_payment', 'attention' => 'refund_liability'] && $ack['nextAction'] === 'refund_after_production', 'acknowledged: cleared with refund_liability; the refund waits for production');
+$ok(T::ingest($kernel, 'trendhome', $payload($id(3), $submitted(3), $waiting(3, 'refund_liability', 'a', 'cleared', 'online_payment'))), 'the order event of the acknowledged liability');
+$o3 = $orderUuid($th(3));
+$check($one('SELECT source_financial_attention FROM operational_orders WHERE order_uuid = ?', [$o3]) === 'refund_liability' && !in_array('payment', ConfirmationClearance::missing($pdo, $o3), true), 'production may start with an acknowledged refund liability (payment condition holds)');
+$pdo->prepare("INSERT INTO order_finance_actions (action_uuid, order_uuid, global_order_id, source_key, employee_uuid, action, idempotency_key, request_hmac, revision_before, state, requested_at)
+    VALUES (?, ?, ?, 'trendhome', ?, 'acknowledge_liability', ?, ?, ?, 'pending', UTC_TIMESTAMP(6))")->execute(['00000000-0000-4000-8000-' . substr(hash('sha256', $suffix), 0, 12), $o3, $th(3), $uuids['fapp'], "fin-open-{$suffix}-00001", random_bytes(32), 'sha256:' . str_repeat('1', 64)]);
+$check(in_array('payment', ConfirmationClearance::missing($pdo, $o3), true), 'a pending finance action closes the payment condition again');
+$pdo->prepare('DELETE FROM order_finance_actions WHERE idempotency_key = ?')->execute(["fin-open-{$suffix}-00001"]);
+$bad = T::ingest($kernel, 'trendhome', $payload($id(3), $submitted(3), $waiting(3, 'transfer_pending', 'a', 'cleared', 'online_payment')));
+$check($bad['status'] === 422 && $one('SELECT source_financial_attention FROM operational_orders WHERE order_uuid = ?', [$o3]) === 'refund_liability', 'an open attention never comes with cleared: the event is refused, the projection kept');
+$refund = static fn (string $amount, string $reference): array => ['expectedRevision' => $revision($id(3)), 'amount' => $amount, 'reference' => $reference, 'valueDate' => $today];
+$requests = count($shop->requests);
+foreach (['waiting' => 'in_progress', 'packing' => 'in_progress'] as $stage => $status) {
+    $pdo->prepare('UPDATE operational_orders SET production_stage_id = ?, operational_status = ? WHERE order_uuid = ?')->execute([$stage, $status, $o3]);
+    $error($act($rec, $th(3), 'submit-refund', $refund('100.00', 'RF FIN 0001')), 409, 'CONFIRMARE_FINANCE_REFUND_NOT_ELIGIBLE', "no refund at stage {$stage} (before the final manufacturing stage is complete)");
+}
+$check(count($shop->requests) === $requests, 'an ineligible refund never reaches the shop');
+$pdo->prepare("UPDATE operational_orders SET production_stage_id = 'delivery' WHERE order_uuid = ?")->execute([$o3]);
+$e3 = $ok($read($rec, $th(3)), 'eligible read');
+$check($e3['production']['refundEligible'] === true && $e3['allowedActions'] === ['submit_refund'] && $e3['nextAction'] === 'record_refund', 'stage 14 (courier handover independent): the refund may be recorded');
+$refused($act($rec, $th(3), 'submit-refund', $refund('150.00', 'RF FIN 0001')), 'amount_exceeds_liability', 'never more than the liability');
+$rf = $ok($act($rec, $th(3), 'submit-refund', $refund('100.00', 'RF FIN 0001')), 'record refund');
+$check($rf['summary']['financial']['attention'] === 'refund_pending' && $rf['summary']['totals']['refunded'] === '0.00', 'the bank refund is recorded: refund_pending, nothing refunded yet');
+$check(($shop->requests[count($shop->requests) - 1]['body']['productionComplete'] ?? null) === true, 'Arasya states the completed manufacturing to the shop');
+$error($act($rec, $th(3), 'decide-refund', ['expectedRevision' => $revision($id(3)), 'entryId' => $rf['entryId'], 'decision' => 'verify']), 403, 'CONFIRMARE_FINANCE_DENIED', 'the recorder cannot verify the refund');
+$vr = $ok($act($app2, $th(3), 'decide-refund', ['expectedRevision' => $revision($id(3)), 'entryId' => $rf['entryId'], 'decision' => 'verify']), 'verify refund');
+$check($vr['summary']['financial'] === ['state' => 'cleared', 'basis' => 'online_payment', 'attention' => null] && $vr['summary']['totals']['refunded'] === '100.00' && $vr['summary']['balance']['refundLiability'] === '0.00', 'verified: refunded 100, the liability settled');
+$pdo->prepare("UPDATE operational_orders SET operational_status = 'handed_over' WHERE order_uuid = ?")->execute([$o3]);
+$check(ConfirmareFinance::refundEligible('delivery', 'handed_over') && !ConfirmareFinance::refundEligible('packing', 'in_progress') && !ConfirmareFinance::refundEligible('delivery', 'unavailable')
+    && !ConfirmareFinance::refundEligible('delivery', 'in_progress', true), 'eligibility: stage 14 or handed over; never before, never a cancelled order (also one kept in production after cutting)');
+$pdo->prepare("UPDATE operational_orders SET operational_status = 'in_progress', source_reported_unavailable_at = UTC_TIMESTAMP(6) WHERE order_uuid = ?")->execute([$o3]);
+$check($ok($read($rec, $th(3)), 'cancelled read')['production']['refundEligible'] === false, 'an order the shop cancelled after cutting is never offered a refund');
+$pdo->prepare('UPDATE operational_orders SET source_reported_unavailable_at = NULL WHERE order_uuid = ?')->execute([$o3]);
+
+// ---- 8. The finance queue -------------------------------------------------------------------------------------------
+$q = $ok($get($view, '/confirmare/finance'), 'queue');
+$tasks = array_column($q['orders'], 'task', 'globalOrderId');
+$check(($tasks[$th(2)] ?? null) === 'additional_payment' && ($tasks[$th(4)] ?? null) === 'advance_waiting' && !isset($tasks[$th(60)]) && $q['sources'] === ['trendhome'], 'the queue: tasks from the money state the shop sent (classes only), never a legacy order');
+$check(!str_contains(json_encode($q), '650.00') && !str_contains(json_encode($q), 'OP FIN'), 'the queue carries no amount and no reference');
+$check($ok($get($view, '/confirmare/finance?task=additional_payment'), 'filtered queue')['orders'] !== [] && array_unique(array_column($ok($get($view, '/confirmare/finance?task=additional_payment'), 'filtered')['orders'], 'task')) === ['additional_payment'], 'one task at a time');
+$check($ok($get($op, '/confirmare/finance'), 'operator queue') === ['tasks' => array_fill_keys(ConfirmareFinance::TASKS, 0), 'orders' => [], 'sources' => []], 'without a finance scope the queue is empty');
+$check($ok($get($out, '/confirmare/finance?source=trendhome'), 'other store queue')['orders'] === [], 'another store\'s queue never lists Trend Home');
+$error($get($view, '/confirmare/finance?task=everything'), 422, 'CONFIRMARE_FINANCE_INVALID', 'unknown task');
+
+// ---- 9. No amount, reference or telephone number stored or logged ----------------------------------------------------
+$leak = static function (string $text): bool {
+    return preg_match('/(?<![0-9A-Za-z.])(?:650|150|120|100|60|90|800|700|1000|500|420|300|250|50)(?:[.,][0-9]{1,2})(?![0-9A-Za-z])/', $text) === 1
+        || preg_match('/OP[ -]?FIN|RF[ -]?FIN|0711\s?444\s?555|711444555/i', $text) === 1;
+};
+$check($leak('{"amount":"650.00"}') && $leak('ref OP FIN 0001') && $leak('tel 0711 444 555') && !$leak('2026-10-22 13:45:00.100000') && !$leak('sha256:' . hash('sha256', 'x')), 'the leak check finds amounts, references and the phone, and ignores timestamps and hashes');
+// Binary columns (HMACs, hashes) as hex, so every row can be scanned as text.
+$text = static fn (array $rows): array => array_map(static fn (array $row): array => array_map(static fn (mixed $v): mixed => is_string($v) && !mb_check_encoding($v, 'UTF-8') ? bin2hex($v) : $v, $row), $rows);
+$dump = json_encode([$text($all("SELECT * FROM order_finance_actions WHERE source_key = 'trendhome'")), $all("SELECT * FROM order_finance_reads WHERE source_key = 'trendhome'"), $all("SELECT * FROM iam_audit_events WHERE action = 'employee.finance_scopes_changed' AND target_id = ?", [$uuids['frec']]),
+    $text($all('SELECT * FROM operational_orders WHERE global_order_id IN (' . implode(', ', array_fill(0, 5, '?')) . ')', [$th(1), $th(2), $th(3), $th(4), $th(5)]))], JSON_THROW_ON_ERROR);
+$check(!$leak($dump), 'the finance tables, the IAM audit and the projection hold no amount, bank reference or telephone number');
+$log = (string) file_get_contents($logFile);
+$check(!$leak($log) && !str_contains($log, FIN_KEY), 'the server log holds no amount, reference, telephone number or key');
+@unlink($logFile);
+
+// Leave the shared disposable database as the next suites expect it: no Confirmare or finance state.
+foreach (['order_finance_actions', 'order_finance_reads', 'employee_finance_scopes', 'order_confirmation_source_edits', 'order_confirmation_source_reads', 'order_confirmation_contacts', 'order_confirmation_idempotency', 'confirmare_alerts', 'order_confirmation_events', 'order_confirmations', 'workflow_cohort_activations', 'employee_confirmare_scopes', 'confirmare_operator_state'] as $table) {
+    $pdo->exec("DELETE FROM {$table}");
+}
+$pdo->exec('UPDATE operational_orders SET workflow_cohort = NULL, workflow_cohort_reason = NULL, workflow_cohort_at = NULL WHERE workflow_cohort IS NOT NULL');
+
+fwrite(STDOUT, "PASS MySQL Confirmare finance integration: {$checks} checks (root-only finance scopes apart from Confirmare, readers and actors, four eyes, revision, idempotency, duplicate references, lost answers and 5xx reconciled, a request never received, one action per order, production closed while unsettled, liability acknowledgement, refunds only after manufacturing, Phase 5 attentions, the finance queue, no amount stored or logged).\n");
