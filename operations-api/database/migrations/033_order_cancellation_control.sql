@@ -1,7 +1,9 @@
 -- Authoritative production cancellation control (API 2.35.0, Phase 1 of the cancellation programme).
 --
 -- Additive. No existing row is rewritten, no history is reclassified and nothing is backfilled: an order that was
--- cancelled before this migration keeps exactly its stored facts. The legacy candidates (open orders whose source
+-- cancelled before this migration keeps exactly its stored facts. Every statement is resumable: tables use CREATE TABLE
+-- IF NOT EXISTS, the permissions are upserted, and the operational_orders columns are added by one guarded ALTER that
+-- runs only while the columns are missing, so an interrupted run can simply be repeated. The legacy candidates (open orders whose source
 -- reports a cancellation but which were never stopped) are listed read-only by `bin/cancellation-control.php audit`;
 -- placing a stop on them is a separate, explicitly approved operator command.
 --
@@ -37,14 +39,24 @@
 --        Created role-grantable and granted to no role. Root holds every permission; anyone else needs an explicit
 --        role assignment by a person.
 
-ALTER TABLE operational_orders
-    ADD COLUMN cancellation_state VARCHAR(20) CHARACTER SET ascii COLLATE ascii_bin NULL AFTER source_reported_unavailable_at,
-    ADD COLUMN production_stopped_at DATETIME(6) NULL AFTER cancellation_state,
-    ADD KEY idx_operational_orders_cancellation (cancellation_state, production_stopped_at),
-    ADD CONSTRAINT chk_operational_orders_cancellation CHECK (
-        (cancellation_state IS NULL AND production_stopped_at IS NULL)
-        OR (cancellation_state = 'held' AND production_stopped_at IS NOT NULL)
-        OR (cancellation_state = 'released' AND production_stopped_at IS NULL));
+SET @arasya_033_state_missing = (SELECT COUNT(*) = 0 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'operational_orders' AND column_name = 'cancellation_state');
+
+SET @arasya_033_alter = IF(@arasya_033_state_missing,
+    'ALTER TABLE operational_orders
+        ADD COLUMN cancellation_state VARCHAR(20) CHARACTER SET ascii COLLATE ascii_bin NULL AFTER source_reported_unavailable_at,
+        ADD COLUMN production_stopped_at DATETIME(6) NULL AFTER cancellation_state,
+        ADD KEY idx_operational_orders_cancellation (cancellation_state, production_stopped_at),
+        ADD CONSTRAINT chk_operational_orders_cancellation CHECK (
+            (cancellation_state IS NULL AND production_stopped_at IS NULL)
+            OR (cancellation_state = ''held'' AND production_stopped_at IS NOT NULL)
+            OR (cancellation_state = ''released'' AND production_stopped_at IS NULL))',
+    'DO 0');
+
+PREPARE arasya_033_statement FROM @arasya_033_alter;
+
+EXECUTE arasya_033_statement;
+
+DEALLOCATE PREPARE arasya_033_statement;
 
 CREATE TABLE IF NOT EXISTS order_cancellation_controls (
     order_uuid CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,

@@ -2,7 +2,9 @@
 --
 -- Additive. No existing row is rewritten. Everything that could send anything to a sales channel is created disabled:
 -- the three provider flags below, and the ARASYA_CANCELLATION_SYNC server switch, which defaults to `disabled`.
--- 032 stays reserved for the simulation pull request.
+-- 032 stays reserved for the simulation pull request. Every statement is resumable: tables use CREATE TABLE IF NOT
+-- EXISTS, the flags and the permission are inserted idempotently, and hold_generation is added by one guarded ALTER that
+-- runs only while the column is missing, so an interrupted run can simply be repeated.
 --
 -- Model (separate facts, never one boolean):
 --   order_cancellation_controls.hold_generation
@@ -30,9 +32,19 @@
 --   permission production.cancellation.sync  (send, retry, withdraw, close, reconcile); granted to no role
 --   production_feature_flags cancellation_sync_trendyol / _trendhome / _outletperdele, created disabled
 
-ALTER TABLE order_cancellation_controls
-    ADD COLUMN hold_generation INT UNSIGNED NOT NULL DEFAULT 1 AFTER version,
-    ADD CONSTRAINT chk_order_cancellation_controls_generation CHECK (hold_generation >= 1);
+SET @arasya_034_generation_missing = (SELECT COUNT(*) = 0 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'order_cancellation_controls' AND column_name = 'hold_generation');
+
+SET @arasya_034_alter = IF(@arasya_034_generation_missing,
+    'ALTER TABLE order_cancellation_controls
+        ADD COLUMN hold_generation INT UNSIGNED NOT NULL DEFAULT 1 AFTER version,
+        ADD CONSTRAINT chk_order_cancellation_controls_generation CHECK (hold_generation >= 1)',
+    'DO 0');
+
+PREPARE arasya_034_statement FROM @arasya_034_alter;
+
+EXECUTE arasya_034_statement;
+
+DEALLOCATE PREPARE arasya_034_statement;
 
 CREATE TABLE IF NOT EXISTS order_cancellation_sync_operations (
     operation_uuid CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
