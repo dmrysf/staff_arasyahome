@@ -262,13 +262,17 @@ legacy PDFs, and conflicts.
 
 ## Rollback
 
-`bin/check-rollback.php` requires API 2.37.0 or later while either of these exists:
+`bin/check-rollback.php` requires API 2.42.0 or later while either of these exists:
 
 - a recorded activation;
-- an open Confirmare or undetermined order without an approval.
+- an open Confirmare or undetermined order, approved or not.
 
-The reason: an older API ignores the cohort and would start such an order. Before any activation (the Phase 1
-state), rollback to 2.36/2.34 is unchanged. The 035 columns are nullable and older writers leave them NULL.
+The reason: an API older than 2.37.0 ignores the cohort and would start such an order. 2.37.x checks only the
+approval; the financial, contact and fingerprint clearance (2.38.0 to 2.41.0) and the first production document
+required before cutting (2.42.0) exist only in later releases, so an older API would start an approved order that is
+not cleared or has no production document. Before any activation (the Phase 1 state), rollback to 2.36/2.34 is
+unchanged. The 035 columns are nullable and older writers leave them NULL. The JSON reports both
+`ordersAwaitingConfirmare` (not approved) and `openConfirmareOrders` (all open Confirmare and undetermined orders).
 
 ## Known limitations (Phase 1)
 

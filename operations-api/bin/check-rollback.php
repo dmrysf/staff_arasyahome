@@ -72,10 +72,14 @@ try {
             EXISTS (SELECT 1 FROM production_document_revisions r WHERE r.order_uuid = o.order_uuid AND r.snapshot_schema >= 2)
             OR EXISTS (SELECT 1 FROM production_document_revision_requests q WHERE q.open_order_uuid = o.order_uuid AND q.snapshot_schema >= 2))',
     )->fetchColumn();
-    // Confirmare cohort (API 2.37.0): an older API ignores the cohort, so it would let an order waiting for its Confirmare
-    // decision (or for an operator resolution) start production. Any recorded activation counts too: an older API would
-    // keep receiving that source's orders without classifying them.
+    // Confirmare (API 2.37.0 to 2.42.0): an API older than 2.37.0 ignores the cohort, so it would let an order waiting for
+    // its Confirmare decision (or for an operator resolution) start production. 2.37.x only checks the approval: the
+    // financial, contact and fingerprint clearance (2.38.0 to 2.41.0) and the first production document required before
+    // cutting (2.42.0) exist only in later releases. So every open Confirmare or undetermined order, approved or not, and
+    // any recorded activation (an older API would keep receiving that source's orders without the full rules) require
+    // 2.42.0.
     $cohortClosed = 0;
+    $cohortOpen = 0;
     $activations = isset($tables['workflow_cohort_activations']) ? (int) $pdo->query('SELECT COUNT(*) FROM workflow_cohort_activations')->fetchColumn() : 0;
     if (isset($tables['order_confirmations'])) {
         $cohortClosed = (int) $pdo->query(
@@ -83,10 +87,13 @@ try {
              WHERE o.workflow_cohort IN ('confirmare', 'undetermined') AND o.production_completed_at IS NULL
                AND (o.workflow_cohort = 'undetermined' OR c.status IS NULL OR c.status <> 'approved')",
         )->fetchColumn();
+        $cohortOpen = (int) $pdo->query(
+            "SELECT COUNT(*) FROM operational_orders WHERE workflow_cohort IN ('confirmare', 'undetermined') AND production_completed_at IS NULL",
+        )->fetchColumn();
     }
-    $floor = ($cohortClosed > 0 || $activations > 0) ? '2.37.0' : ($syncOpen > 0 ? '2.36.0' : ($stoppedOpen > 0 ? '2.35.0' : ($schemaTwoOpen > 0 ? '2.34.2' : ($assistedOpen > 0 ? '2.34.0' : (array_sum($state) > 0 ? '2.32.0' : null)))));
+    $floor = ($cohortOpen > 0 || $activations > 0) ? '2.42.0' : ($syncOpen > 0 ? '2.36.0' : ($stoppedOpen > 0 ? '2.35.0' : ($schemaTwoOpen > 0 ? '2.34.2' : ($assistedOpen > 0 ? '2.34.0' : (array_sum($state) > 0 ? '2.32.0' : null)))));
     $safe = $floor === null || version_compare($argv[1], $floor, '>=');
-    fwrite(STDOUT, json_encode(['safe' => $safe, 'targetVersion' => $argv[1], 'requiredFloor' => $floor, 'state' => $state + ['openOrdersWithAssistedCheckpoints' => $assistedOpen, 'openOrdersWithTicketSchema2' => $schemaTwoOpen, 'ordersAwaitingConfirmare' => $cohortClosed, 'confirmareActivations' => $activations, 'openStoppedOrders' => $stoppedOpen, 'openCancellationSyncOperations' => $syncOpen]], JSON_THROW_ON_ERROR) . "\n");
+    fwrite(STDOUT, json_encode(['safe' => $safe, 'targetVersion' => $argv[1], 'requiredFloor' => $floor, 'state' => $state + ['openOrdersWithAssistedCheckpoints' => $assistedOpen, 'openOrdersWithTicketSchema2' => $schemaTwoOpen, 'ordersAwaitingConfirmare' => $cohortClosed, 'openConfirmareOrders' => $cohortOpen, 'confirmareActivations' => $activations, 'openStoppedOrders' => $stoppedOpen, 'openCancellationSyncOperations' => $syncOpen]], JSON_THROW_ON_ERROR) . "\n");
     exit($safe ? 0 : 3);
 } catch (Throwable) {
     fwrite(STDERR, "Rollback refused: current database state could not be verified.\n");

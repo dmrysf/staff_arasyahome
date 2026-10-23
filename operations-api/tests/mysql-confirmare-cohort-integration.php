@@ -509,8 +509,36 @@ $check($statusCli['code'] === 0 && ($statusCli['json']['state'] ?? null) === 'ac
 $usage = $cli('workflow-cohort.php', '--activate');
 $check($usage['code'] === 2, 'an activation without a source is a usage error');
 $floor = $cli('check-rollback.php', '2.36.0');
-$check($floor['code'] === 3 && ($floor['json']['requiredFloor'] ?? null) === '2.37.0' && ($floor['json']['state']['ordersAwaitingConfirmare'] ?? 0) > 0 && ($floor['json']['state']['confirmareActivations'] ?? 0) > 0, 'rollback below 2.37.0 is refused while Confirmare orders wait: ' . $floor['out'] . $floor['err']);
-$check($cli('check-rollback.php', '2.37.0')['code'] === 0, 'rollback to 2.37.0 itself is allowed');
+$check($floor['code'] === 3 && ($floor['json']['requiredFloor'] ?? null) === '2.42.0' && ($floor['json']['state']['ordersAwaitingConfirmare'] ?? 0) > 0 && ($floor['json']['state']['confirmareActivations'] ?? 0) > 0, 'rollback below 2.37.0 is refused while Confirmare orders wait: ' . $floor['out'] . $floor['err']);
+// 2.37.0 to 2.41.x lack part of the clearance or the R1 requirement before cutting: refused too (floor 2.42.0).
+foreach (['2.37.0', '2.38.0', '2.40.0', '2.41.0', '2.41.9'] as $older) {
+    $refused = $cli('check-rollback.php', $older);
+    $check($refused['code'] === 3 && ($refused['json']['safe'] ?? null) === false && ($refused['json']['requiredFloor'] ?? null) === '2.42.0', "rollback to {$older} is refused while Confirmare state exists: " . $refused['out'] . $refused['err']);
+}
+$check($cli('check-rollback.php', '2.42.0')['code'] === 0, 'rollback to 2.42.0 itself is allowed');
+// An approved open order alone (no order waiting, no activation) still requires 2.42.0: 2.37.x would cut it without its
+// clearance or R1. The other Confirmare state is set aside for this check and restored right after it.
+$approvedOrder = $one("SELECT o.order_uuid FROM operational_orders o JOIN order_confirmations c ON c.order_uuid = o.order_uuid WHERE o.workflow_cohort = 'confirmare' AND c.status = 'approved' AND o.production_completed_at IS NULL LIMIT 1");
+$check(is_string($approvedOrder), 'fixture: an approved open Confirmare order exists');
+$saved = [
+    'activations' => $pdo->query('SELECT * FROM workflow_cohort_activations')->fetchAll(PDO::FETCH_ASSOC),
+    'cohorts' => $pdo->query("SELECT order_uuid, workflow_cohort, workflow_cohort_reason, workflow_cohort_at FROM operational_orders WHERE workflow_cohort IS NOT NULL")->fetchAll(PDO::FETCH_ASSOC),
+];
+$pdo->exec('DELETE FROM workflow_cohort_activations');
+$keepOnly = $pdo->prepare("UPDATE operational_orders SET workflow_cohort = NULL, workflow_cohort_reason = NULL, workflow_cohort_at = NULL WHERE workflow_cohort IS NOT NULL AND order_uuid <> ?");
+$keepOnly->execute([$approvedOrder]);
+$approvedOnly = $cli('check-rollback.php', '2.41.0');
+$check($approvedOnly['code'] === 3 && ($approvedOnly['json']['requiredFloor'] ?? null) === '2.42.0' && ($approvedOnly['json']['state']['ordersAwaitingConfirmare'] ?? null) === 0
+    && ($approvedOnly['json']['state']['openConfirmareOrders'] ?? null) === 1 && ($approvedOnly['json']['state']['confirmareActivations'] ?? null) === 0,
+    'an approved open Confirmare order alone keeps the floor at 2.42.0: ' . $approvedOnly['out'] . $approvedOnly['err']);
+$restoreCohort = $pdo->prepare('UPDATE operational_orders SET workflow_cohort = ?, workflow_cohort_reason = ?, workflow_cohort_at = ? WHERE order_uuid = ?');
+foreach ($saved['cohorts'] as $row) {
+    $restoreCohort->execute([$row['workflow_cohort'], $row['workflow_cohort_reason'], $row['workflow_cohort_at'], $row['order_uuid']]);
+}
+foreach ($saved['activations'] as $row) {
+    $pdo->prepare('INSERT INTO workflow_cohort_activations (' . implode(', ', array_keys($row)) . ') VALUES (' . implode(', ', array_fill(0, count($row), '?')) . ')')->execute(array_values($row));
+}
+$check((int) $one('SELECT COUNT(*) FROM workflow_cohort_activations') === count($saved['activations']) && (int) $one('SELECT COUNT(*) FROM operational_orders WHERE workflow_cohort IS NOT NULL') === count($saved['cohorts']), 'fixture restored after the approved-only rollback check');
 
 // ---- Database constraints -----------------------------------------------------------------------------------------
 foreach ([
@@ -529,7 +557,7 @@ $pdo->exec('DELETE FROM order_confirmation_events');
 $pdo->exec('DELETE FROM order_confirmations');
 $pdo->exec('DELETE FROM workflow_cohort_activations');
 $pdo->exec("UPDATE operational_orders SET workflow_cohort = NULL, workflow_cohort_reason = NULL, workflow_cohort_at = NULL WHERE workflow_cohort IS NOT NULL");
-$check(($cli('check-rollback.php', '0.0.0')['json']['requiredFloor'] ?? null) !== '2.37.0' && count($suiteOrders) > 0, 'after the teardown no Confirmare state raises the rollback floor');
+$check(($cli('check-rollback.php', '0.0.0')['json']['requiredFloor'] ?? null) !== '2.42.0' && count($suiteOrders) > 0, 'after the teardown no Confirmare state raises the rollback floor');
 
 // An interrupted 035 (tables created, the ALTER not applied) completes on the next run; nothing else changes.
 $pdo->exec('ALTER TABLE operational_orders DROP CONSTRAINT chk_operational_orders_workflow_cohort_complete, DROP CONSTRAINT chk_operational_orders_workflow_cohort,
