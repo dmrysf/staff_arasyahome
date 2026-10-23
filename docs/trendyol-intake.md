@@ -72,8 +72,9 @@ Arasya.
    `waiting` it is visible only to employees holding both the `waiting` stage and `trendyol.orders.view`; from stage 2
    on it is ordinary production work.
 6. **After approval.** A later Trendyol status is shown as commerce status only and never moves production. A
-   cancellation (`Cancelled`, `UnSupplied`; never a return) makes the order unavailable exactly like a source cancellation (an order
-   already in cutting keeps its status and records the report). A content, delivery or split change after approval
+   cancellation (`Cancelled`, `UnSupplied`; never a return) makes the order unavailable and stops its production at
+   whatever stage it is, exactly like a source cancellation (API 2.35.0, [order cancellation control](order-cancellation-control.md));
+   a later status never releases the stop. A content, delivery or split change after approval
    is flagged (`changed_after_release`) for a person to check; the approved items and the printed document stay.
 
 ## Separation from Trendyol

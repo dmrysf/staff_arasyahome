@@ -45,6 +45,7 @@ final readonly class ApiKernel
         private ?\Arasya\Operations\Production\ProductionQrController $productionQr = null,
         private ?\Arasya\Operations\Trendyol\TrendyolWorkspaceController $trendyol = null,
         private ?\Arasya\Operations\Production\PieceController $pieces = null,
+        private ?\Arasya\Operations\Confirmare\ConfirmareController $confirmare = null,
     ) {
     }
 
@@ -121,6 +122,9 @@ final readonly class ApiKernel
         if (str_starts_with($request->path, '/production-documents/')) {
             return ($this->documents ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Production documents are not ready.'))->handle($request);
         }
+        if (str_starts_with($request->path, '/confirmare/')) {
+            return ($this->confirmare ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Confirmare is not ready.'))->handle($request);
+        }
         if (str_starts_with($request->path, '/production-exceptions/')) {
             return $this->qualityController()->handle($request);
         }
@@ -157,7 +161,7 @@ final readonly class ApiKernel
                 default => throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.'),
             };
         }
-        if ($request->method === 'POST' && preg_match('#^/integrations/sources/([a-z0-9_-]{1,40})/(orders|orders/validate|orders/authority|orders/qr|orders/documents|orders/document|orders/tracking|heartbeat)$#D', $request->path, $matches) === 1) {
+        if ($request->method === 'POST' && preg_match('#^/integrations/sources/([a-z0-9_-]{1,40})/(orders|orders/validate|orders/authority|orders/qr|orders/documents|orders/document|orders/tracking|orders/cancellations|orders/cancellations/result|heartbeat)$#D', $request->path, $matches) === 1) {
             $sources = $this->sources ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Source ingestion is not ready.');
             return match ($matches[2]) {
                 'orders' => $sources->ingestOrder($request, $matches[1]),
@@ -167,6 +171,8 @@ final readonly class ApiKernel
                 'orders/documents' => $sources->orderDocuments($request, $matches[1]),
                 'orders/document' => $sources->orderDocument($request, $matches[1]),
                 'orders/tracking' => $sources->orderTracking($request, $matches[1]),
+                'orders/cancellations' => $sources->orderCancellations($request, $matches[1]),
+                'orders/cancellations/result' => $sources->orderCancellationResult($request, $matches[1]),
                 default => $sources->heartbeat($request, $matches[1]),
             };
         }

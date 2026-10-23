@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 export type AppIconName =
   | "home" | "orders" | "scan" | "history" | "profile" | "back" | "torch" | "arrow" | "check" | "refresh"
   | "document" | "printer" | "eye" | "qr" | "ruler" | "width" | "height" | "package" | "alert" | "info"
-  | "lock" | "scissors" | "sync" | "spark" | "chevron" | "clock" | "layers";
+  | "lock" | "scissors" | "sync" | "spark" | "chevron" | "clock" | "layers" | "phone" | "team";
 
 const paths: Record<AppIconName, ReactNode> = {
   home: <><path d="M3.5 10.5 12 3l8.5 7.5" /><path d="M5.5 9.5V21h13V9.5M9.5 21v-6h5v6" /></>,
@@ -34,6 +34,8 @@ const paths: Record<AppIconName, ReactNode> = {
   chevron: <><path d="m9.5 6 6 6-6 6" /></>,
   clock: <><circle cx="12" cy="12" r="8.5" /><path d="M12 7.5V12h4" /></>,
   layers: <><path d="m12 3.5 8.5 4.5-8.5 4.5L3.5 8 12 3.5Z" /><path d="m3.5 12 8.5 4.5 8.5-4.5M3.5 16l8.5 4.5 8.5-4.5" /></>,
+  phone: <><path d="M6.5 3.5h3l1.5 4.5-2 1.5a11 11 0 0 0 5.5 5.5l1.5-2 4.5 1.5v3a2 2 0 0 1-2.2 2A16.5 16.5 0 0 1 4.5 5.7a2 2 0 0 1 2-2.2Z" /></>,
+  team: <><circle cx="9" cy="8" r="3" /><path d="M3.5 19.5a5.5 5.5 0 0 1 11 0" /><circle cx="17" cy="9" r="2.5" /><path d="M16 14.2a4.5 4.5 0 0 1 4.5 4.3" /></>,
 };
 
 export function AppIcon({ name, size = 22, className }: { name: AppIconName; size?: number; className?: string }) {

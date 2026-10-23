@@ -32,7 +32,7 @@ final readonly class CuttingService
     public function pool(EmployeeIdentity $actor): array
     {
         $this->requireCutter($actor);
-        $where = "o.production_stage_id = 'material-preparation' AND o.production_completed_at IS NULL AND o.operational_status <> 'unavailable' AND o.source_reported_unavailable_at IS NULL AND o.production_owner_employee_uuid IS NULL AND o.open_exception_uuid IS NULL AND o.document_status IN ('none', 'active') AND s.status = 'active'";
+        $where = "o.production_stage_id = 'material-preparation' AND o.production_completed_at IS NULL AND o.operational_status <> 'unavailable' AND o.source_reported_unavailable_at IS NULL AND o.production_stopped_at IS NULL AND o.production_owner_employee_uuid IS NULL AND o.open_exception_uuid IS NULL AND o.document_status IN ('none', 'active') AND s.status = 'active'";
         // A source-scoped cutting grant (migration 023) sees and counts only its own sources.
         $sources = $actor->sourcesAt(CuttingLifecycle::STAGE) ?? [];
         $scoped = $actor->sourcesAt(CuttingLifecycle::STAGE) !== null;
@@ -147,7 +147,7 @@ final readonly class CuttingService
             if ($action === 'cancel' && !$actor->isRoot) throw new ApiException(403, 'ROOT_REQUIRED', 'Root required.');
             if ((int) $transfer['version'] !== $expected) throw new ApiException(409, 'TRANSFER_CHANGED', 'Cererea s-a schimbat. Reîncarcă.');
             if (!in_array($transfer['status'], ['pending','approved','accepted'], true)) throw new ApiException(409, 'TRANSFER_ALREADY_RESOLVED', 'Cererea a fost deja soluționată.');
-            if ($action !== 'cancel') $this->assertOrder($order, $transfer['from_employee_uuid']);
+            if ($action !== 'cancel' && !($action === 'decision' && $decision === 'reject')) $this->assertOrder($order, $transfer['from_employee_uuid']);
             if ($action === 'decision') {
                 if ($transfer['status'] !== 'pending') throw new ApiException(409, 'TRANSFER_ALREADY_DECIDED', 'Alt manager a soluționat deja cererea.');
                 if (in_array($actor->employeeUuid, [$transfer['from_employee_uuid'], $transfer['to_employee_uuid']], true)) throw new ApiException(403, 'SELF_DECISION_DENIED', 'Nu poți decide propria cerere.');
@@ -246,6 +246,9 @@ final readonly class CuttingService
     }
     private function assertOrder(array $order, string $owner): void
     {
+        // API 2.35.0: a cutting transfer is a handoff of manufacturing work; none is requested, approved or completed
+        // while production is stopped (rejection and root recovery of a pending transfer stay possible).
+        if (($order['production_stopped_at'] ?? null) !== null) throw $order['operational_status'] === 'unavailable' ? new ApiException(409, 'ORDER_CHANGED', 'Comanda nu mai poate fi transferată.') : \Arasya\Operations\Cancellation\ProductionStop::blocked();
         if ($order['production_stage_id'] !== CuttingLifecycle::STAGE || $order['production_owner_employee_uuid'] !== $owner || $order['production_completed_at'] !== null || $order['operational_status'] === 'unavailable' || $order['open_exception_uuid'] !== null) throw new ApiException(409, 'ORDER_CHANGED', 'Comanda nu mai poate fi transferată.');
         \Arasya\Operations\Document\DocumentGuard::assertOpen($order);
     }

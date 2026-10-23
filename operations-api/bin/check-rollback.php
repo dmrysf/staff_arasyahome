@@ -37,6 +37,22 @@ try {
     if (is_string($assisted) && (!isset($tables['production_assisted_checkpoints']) || !hash_equals(hash_file('sha256', dirname(__DIR__) . '/database/migrations/031_production_assisted_checkpoints.sql'), $assisted))) {
         throw new RuntimeException('Current migration could not be verified.');
     }
+    // Migration 033 (cancellation control) likewise: optional, verified when recorded. An API older than 2.35.0 ignores
+    // production stops, so an open stopped order would become workable again: refused while any stop is in force.
+    $cancellation = $pdo->query("SELECT checksum FROM schema_migrations WHERE migration_name = '033_order_cancellation_control.sql'")->fetchColumn();
+    if (is_string($cancellation) && (!isset($tables['order_cancellation_controls']) || !hash_equals(hash_file('sha256', dirname(__DIR__) . '/database/migrations/033_order_cancellation_control.sql'), $cancellation))) {
+        throw new RuntimeException('Current migration could not be verified.');
+    }
+    // Migration 034 (cancellation synchronization) likewise. An API older than 2.36.0 would release a stop while a
+    // cancellation request may still be acted on by the sales channel: refused while any operation is open.
+    $sync = $pdo->query("SELECT checksum FROM schema_migrations WHERE migration_name = '034_order_cancellation_sync.sql'")->fetchColumn();
+    if (is_string($sync) && (!isset($tables['order_cancellation_sync_operations']) || !hash_equals(hash_file('sha256', dirname(__DIR__) . '/database/migrations/034_order_cancellation_sync.sql'), $sync))) {
+        throw new RuntimeException('Current migration could not be verified.');
+    }
+    $syncOpen = isset($tables['order_cancellation_sync_operations'])
+        ? (int) $pdo->query('SELECT COUNT(*) FROM order_cancellation_sync_operations WHERE open_order_uuid IS NOT NULL')->fetchColumn() : 0;
+    $stoppedOpen = isset($tables['order_cancellation_controls'])
+        ? (int) $pdo->query("SELECT COUNT(*) FROM operational_orders WHERE cancellation_state = 'held' AND production_completed_at IS NULL")->fetchColumn() : 0;
     $state = [];
     $assistedOpen = isset($tables['production_assisted_checkpoints'])
         ? (int) $pdo->query('SELECT COUNT(DISTINCT c.order_uuid) FROM production_assisted_checkpoints c INNER JOIN operational_orders o ON o.order_uuid = c.order_uuid WHERE o.production_completed_at IS NULL')->fetchColumn() : 0;
@@ -56,9 +72,28 @@ try {
             EXISTS (SELECT 1 FROM production_document_revisions r WHERE r.order_uuid = o.order_uuid AND r.snapshot_schema >= 2)
             OR EXISTS (SELECT 1 FROM production_document_revision_requests q WHERE q.open_order_uuid = o.order_uuid AND q.snapshot_schema >= 2))',
     )->fetchColumn();
-    $floor = $schemaTwoOpen > 0 ? '2.34.2' : ($assistedOpen > 0 ? '2.34.0' : (array_sum($state) > 0 ? '2.32.0' : null));
+    // Confirmare (API 2.37.0 to 2.42.0): an API older than 2.37.0 ignores the cohort, so it would let an order waiting for
+    // its Confirmare decision (or for an operator resolution) start production. 2.37.x only checks the approval: the
+    // financial, contact and fingerprint clearance (2.38.0 to 2.41.0) and the first production document required before
+    // cutting (2.42.0) exist only in later releases. So every open Confirmare or undetermined order, approved or not, and
+    // any recorded activation (an older API would keep receiving that source's orders without the full rules) require
+    // 2.42.0.
+    $cohortClosed = 0;
+    $cohortOpen = 0;
+    $activations = isset($tables['workflow_cohort_activations']) ? (int) $pdo->query('SELECT COUNT(*) FROM workflow_cohort_activations')->fetchColumn() : 0;
+    if (isset($tables['order_confirmations'])) {
+        $cohortClosed = (int) $pdo->query(
+            "SELECT COUNT(*) FROM operational_orders o LEFT JOIN order_confirmations c ON c.order_uuid = o.order_uuid
+             WHERE o.workflow_cohort IN ('confirmare', 'undetermined') AND o.production_completed_at IS NULL
+               AND (o.workflow_cohort = 'undetermined' OR c.status IS NULL OR c.status <> 'approved')",
+        )->fetchColumn();
+        $cohortOpen = (int) $pdo->query(
+            "SELECT COUNT(*) FROM operational_orders WHERE workflow_cohort IN ('confirmare', 'undetermined') AND production_completed_at IS NULL",
+        )->fetchColumn();
+    }
+    $floor = ($cohortOpen > 0 || $activations > 0) ? '2.42.0' : ($syncOpen > 0 ? '2.36.0' : ($stoppedOpen > 0 ? '2.35.0' : ($schemaTwoOpen > 0 ? '2.34.2' : ($assistedOpen > 0 ? '2.34.0' : (array_sum($state) > 0 ? '2.32.0' : null)))));
     $safe = $floor === null || version_compare($argv[1], $floor, '>=');
-    fwrite(STDOUT, json_encode(['safe' => $safe, 'targetVersion' => $argv[1], 'requiredFloor' => $floor, 'state' => $state + ['openOrdersWithAssistedCheckpoints' => $assistedOpen, 'openOrdersWithTicketSchema2' => $schemaTwoOpen]], JSON_THROW_ON_ERROR) . "\n");
+    fwrite(STDOUT, json_encode(['safe' => $safe, 'targetVersion' => $argv[1], 'requiredFloor' => $floor, 'state' => $state + ['openOrdersWithAssistedCheckpoints' => $assistedOpen, 'openOrdersWithTicketSchema2' => $schemaTwoOpen, 'ordersAwaitingConfirmare' => $cohortClosed, 'openConfirmareOrders' => $cohortOpen, 'confirmareActivations' => $activations, 'openStoppedOrders' => $stoppedOpen, 'openCancellationSyncOperations' => $syncOpen]], JSON_THROW_ON_ERROR) . "\n");
     exit($safe ? 0 : 3);
 } catch (Throwable) {
     fwrite(STDERR, "Rollback refused: current database state could not be verified.\n");

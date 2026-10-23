@@ -32,6 +32,33 @@ final class OperationsTestSupport
         return $name;
     }
 
+    /**
+     * A random base for numeric test order ids whose block [base, base + span) holds no order of any source yet. Each
+     * suite passes its own range, and the ranges never overlap, so suites sharing one CI database never share an order
+     * id; the database check also skips blocks used by earlier runs on a reused disposable database.
+     *
+     * Order id ranges (first..last): Confirmare operations 760000..859999, Confirmare Staff 870000..899999, payment gate
+     * 900000..929999, source access 930000..959999, source edit 960000..989999, Confirmare finance 731000..759999.
+     * Below them: Confirmare cohort (640000..730071, its own random base). 999999 stays unused (customer tracking: an
+     * unknown order).
+     */
+    public static function freeOrderBase(PDO $pdo, int $first, int $last, int $span): int
+    {
+        $blocks = intdiv($last - $first + 1, $span);
+        if ($blocks < 1) {
+            throw new RuntimeException("The test order range {$first}..{$last} is smaller than one block of {$span}.");
+        }
+        $used = $pdo->prepare("SELECT COUNT(*) FROM operational_orders WHERE source_order_id REGEXP '^[0-9]{1,18}$' AND CAST(source_order_id AS UNSIGNED) BETWEEN ? AND ?");
+        for ($attempt = 0; $attempt < 64; $attempt++) {
+            $base = $first + random_int(0, $blocks - 1) * $span;
+            $used->execute([$base, $base + $span - 1]);
+            if ((int) $used->fetchColumn() === 0) {
+                return $base;
+            }
+        }
+        throw new RuntimeException("No free test order block in {$first}..{$last}; recreate the disposable test database.");
+    }
+
     /** @param array<string, array<string, string>>|null $sourceSettings defaults to both test sources active */
     public static function config(string $dbName, array $origins = [self::ORIGIN], ?array $sourceSettings = null, ?array $sourceSecrets = null): Config
     {
@@ -69,9 +96,22 @@ final class OperationsTestSupport
     public static function clearPieces(PDO $pdo, ?array $orderUuids = null): void
     {
         if (!str_contains(strtolower((string) $pdo->query('SELECT DATABASE()')->fetchColumn()), 'test')) throw new \RuntimeException('Test database required.');
-        if ($pdo->query("SHOW TABLES LIKE 'production_tracks'")->fetchColumn() === false || $orderUuids === []) return;
+        if ($orderUuids === []) return;
         $in = $orderUuids === null ? null : implode(',', array_map([$pdo, 'quote'], $orderUuids));
         $where = static fn (string $column): string => $in === null ? '' : " WHERE {$column} IN ({$in})";
+        // Migration 033 rows reference the orders; a test that deletes its orders removes their cancellation control first.
+        if ($pdo->query("SHOW TABLES LIKE 'order_cancellation_sync_operations'")->fetchColumn() !== false) {
+            // Migration 034 rows reference the orders as well.
+            $pdo->exec('DELETE FROM order_cancellation_discrepancies' . $where('order_uuid'));
+            $pdo->exec('DELETE FROM order_cancellation_sync_attempts' . $where('order_uuid'));
+            $pdo->exec('DELETE FROM order_cancellation_sync_operations' . $where('order_uuid'));
+        }
+        if ($pdo->query("SHOW TABLES LIKE 'order_cancellation_controls'")->fetchColumn() !== false) {
+            $pdo->exec('DELETE FROM order_cancellation_events' . $where('order_uuid'));
+            $pdo->exec('DELETE FROM order_cancellation_controls' . $where('order_uuid'));
+            $pdo->exec('UPDATE operational_orders SET cancellation_state = NULL, production_stopped_at = NULL' . $where('order_uuid'));
+        }
+        if ($pdo->query("SHOW TABLES LIKE 'production_tracks'")->fetchColumn() === false) return;
         if ($pdo->query("SHOW TABLES LIKE 'production_line_plans'")->fetchColumn() !== false) {
             // Migration 029 rows first (they reference pieces, tracks and exceptions).
             $pdo->exec('UPDATE production_material_records SET corrects_record_uuid = NULL' . $where('order_uuid'));

@@ -102,7 +102,7 @@ $intake = static function (string $globalId, ?object $k = null) use ($staff, $cu
     $owned = (int) $one("SELECT COUNT(*) FROM operational_orders WHERE production_owner_employee_uuid = ? AND production_stage_id = 'material-preparation' AND production_completed_at IS NULL", [$uuids['gatecutter']]);
     return $staff($cutter, 'POST', '/cutting/intake', ['qrToken' => $qr($globalId)] + ($owned > 0 ? ['confirmedMultiple' => true, 'ownedCount' => $owned] : []), $k);
 };
-$base = 910000 + random_int(0, 8999) * 10;
+$base = T::freeOrderBase($pdo, 900000, 929999, 100); // a block of its own range no earlier run used
 $id = static fn (int $n): string => (string) ($base + $n);
 
 // ---- Heartbeat advertises the gate per source ------------------------------------------------------------------

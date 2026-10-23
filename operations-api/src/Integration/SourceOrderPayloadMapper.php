@@ -21,7 +21,27 @@ use InvalidArgumentException;
 final class SourceOrderPayloadMapper
 {
     private const ROOT_KEYS = ['schemaVersion', 'eventId', 'changedAt', 'order', 'production'];
-    private const ORDER_KEYS = ['id', 'number', 'status', 'availability', 'notes', 'acceptedAt', 'items', 'delivery', 'payment'];
+    private const ORDER_KEYS = ['id', 'number', 'status', 'availability', 'notes', 'acceptedAt', 'items', 'delivery', 'payment', 'submission', 'pricing', 'dueDate', 'financial', 'contact'];
+    /**
+     * Optional order facts this server accepts (heartbeat `orderFacts`, API 2.38.0). API 2.40.0: `contact` (a callable
+     * telephone number exists) and `financialAttention` (order.financial.attention after a change of the total). API
+     * 2.41.0: `financeTasks` (the Phase 5 attentions of the shop's finance record).
+     */
+    public const ORDER_FACTS = ['pricing', 'dueDate', 'financial', 'contact', 'financialAttention', 'financeTasks'];
+    /**
+     * Why a Confirmare order needs a financial decision (order.financial.attention, never an amount). With a closed state
+     * (waiting, partial, unknown): additional_payment_due and refund_due (API 2.40.0), transfer_pending (a recorded bank
+     * transfer waits for another employee's verification) and reconciliation_required (a shop refund the finance record
+     * does not explain), API 2.41.0. With `cleared` only: refund_liability (acknowledged on the current prices, refunded
+     * after the final manufacturing stage) and refund_pending (a bank refund waits for verification), API 2.41.0.
+     */
+    public const FINANCIAL_ATTENTION_OPEN = ['additional_payment_due', 'refund_due', 'transfer_pending', 'reconciliation_required'];
+    public const FINANCIAL_ATTENTION_CLEARED = ['refund_liability', 'refund_pending'];
+    public const FINANCIAL_ATTENTION = [...self::FINANCIAL_ATTENTION_OPEN, ...self::FINANCIAL_ATTENTION_CLEARED];
+    /** Confirmare financial clearance (order.financial, API 2.38.0): states and bases only, never an amount. */
+    public const FINANCIAL_STATES = ['cleared', 'waiting', 'partial', 'unknown'];
+    public const FINANCIAL_BASES = ['online_payment', 'zero_total', 'advance_collected'];
+    private const SUBMISSION_KEYS = ['submittedAt', 'evidence'];
     private const PAYMENT_KEYS = ['method', 'advanceStatus', 'advanceRevision', 'advanceConfirmedAt'];
     private const MAX_ADVANCE_REVISION = 1000000;
     private const ITEM_KEYS = ['id', 'line', 'name', 'sku', 'variant', 'color', 'width', 'height', 'unit', 'meters', 'quantity', 'options'];
@@ -107,10 +127,98 @@ final class SourceOrderPayloadMapper
                 $items,
                 self::delivery($order['delivery'] ?? null),
                 self::payment($order['payment'] ?? null),
+                self::submission($order['submission'] ?? null),
+                self::pricing($order['pricing'] ?? null),
+                self::dueDate($order['dueDate'] ?? null),
+                self::financial($order['financial'] ?? null),
+                self::contact($order['contact'] ?? null),
             );
         } catch (InvalidArgumentException) {
             throw self::invalid('order');
         }
+    }
+
+    /**
+     * Optional pricing fingerprint (API 2.38.0): {"fingerprint": "sha256:<64 hex>"}. The source hashes its own currency,
+     * totals and line prices; no amount ever reaches Arasya. A Confirmare approval is bound to it.
+     */
+    private static function pricing(mixed $value): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+        $pricing = self::object($value, 'order.pricing');
+        self::allowKeys($pricing, ['fingerprint'], ['fingerprint']);
+        if (!is_string($pricing['fingerprint']) || preg_match('/^sha256:[0-9a-f]{64}$/D', $pricing['fingerprint']) !== 1) {
+            throw self::invalid('order.pricing.fingerprint');
+        }
+        return $pricing['fingerprint'];
+    }
+
+    /**
+     * Optional Confirmare financial clearance (API 2.38.0), evaluated by the source on the order's final total:
+     * {"state": "cleared"|"waiting"|"partial"|"unknown", "basis": "online_payment"|"zero_total"|"advance_collected"|null,
+     *  "pricingFingerprint": "sha256:<64 hex>"|null}. `cleared` needs a basis and the pricing fingerprint the source
+     * evaluated (so a later total change is detected); any other state has no basis. There is no exemption basis yet:
+     * an exemption would need an authorized, reasoned and audited decision, so it cannot be stated. No amount is accepted.
+     *
+     * @return array{state: string, basis: string|null, pricingFingerprint: string|null}|null
+     */
+    private static function financial(mixed $value): ?array
+    {
+        if ($value === null) {
+            return null;
+        }
+        $financial = self::object($value, 'order.financial');
+        self::allowKeys($financial, ['state', 'basis', 'pricingFingerprint', 'attention'], ['state', 'basis', 'pricingFingerprint']);
+        $state = $financial['state'];
+        $basis = $financial['basis'];
+        $pricing = $financial['pricingFingerprint'];
+        if (!in_array($state, self::FINANCIAL_STATES, true)) {
+            throw self::invalid('order.financial.state');
+        }
+        if ($state === 'cleared' ? !in_array($basis, self::FINANCIAL_BASES, true) : $basis !== null) {
+            throw self::invalid('order.financial.basis');
+        }
+        if ($pricing === null ? $state === 'cleared' : !is_string($pricing) || preg_match('/^sha256:[0-9a-f]{64}$/D', $pricing) !== 1) {
+            throw self::invalid('order.financial.pricingFingerprint');
+        }
+        $attention = $financial['attention'] ?? null;
+        if ($attention !== null && !in_array($attention, $state === 'cleared' ? self::FINANCIAL_ATTENTION_CLEARED : self::FINANCIAL_ATTENTION_OPEN, true)) {
+            // An open attention never comes with `cleared`; an acknowledged refund liability only with `cleared`.
+            throw self::invalid('order.financial.attention');
+        }
+        // The key joins the array only when stated, so the receipt hash of every earlier event stays the same.
+        return ['state' => $state, 'basis' => $basis, 'pricingFingerprint' => $pricing] + ($attention === null ? [] : ['attention' => $attention]);
+    }
+
+    /**
+     * Optional contact fact (API 2.40.0): {"phone": true|false}, whether the shop holds a callable customer telephone
+     * number on its real billing or delivery telephone field. A boolean only: the number never travels with an event.
+     */
+    private static function contact(mixed $value): ?bool
+    {
+        if ($value === null) {
+            return null;
+        }
+        $contact = self::object($value, 'order.contact');
+        self::allowKeys($contact, ['phone'], ['phone']);
+        if (!is_bool($contact['phone'])) {
+            throw self::invalid('order.contact.phone');
+        }
+        return $contact['phone'];
+    }
+
+    /** Optional due date (API 2.38.0): a calendar date, Y-m-d. Orders due earlier are confirmed first. */
+    private static function dueDate(mixed $value): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+        if (!is_string($value) || preg_match('/^(\d{4})-(\d{2})-(\d{2})$/D', $value, $m) !== 1 || !checkdate((int) $m[2], (int) $m[3], (int) $m[1])) {
+            throw self::invalid('order.dueDate');
+        }
+        return $value;
     }
 
     /**
@@ -168,6 +276,27 @@ final class SourceOrderPayloadMapper
             $confirmedAt = self::timestamp($payment['advanceConfirmedAt'], 'order.payment.advanceConfirmedAt');
         }
         return ['method' => $method, 'advanceStatus' => $status, 'advanceRevision' => $revision, 'advanceConfirmedAt' => $confirmedAt];
+    }
+
+    /**
+     * Optional submission evidence (schema 1 extension, sent only by sources that saw the heartbeat's `confirmare`
+     * state): {"submittedAt": ISO-8601 UTC, "evidence": one of WorkflowCohort::EVIDENCE_KINDS}. It is the first instant
+     * the source held the order in a submitted status, never a checkout draft's creation, an update or a payment.
+     * It decides the workflow cohort of a new canonical order once (WorkflowCohort) and is never printed.
+     *
+     * @return array{submittedAt: DateTimeImmutable, evidence: string}|null
+     */
+    private static function submission(mixed $value): ?array
+    {
+        if ($value === null) {
+            return null;
+        }
+        $submission = self::object($value, 'order.submission');
+        self::allowKeys($submission, self::SUBMISSION_KEYS, self::SUBMISSION_KEYS);
+        if (!in_array($submission['evidence'], \Arasya\Operations\Production\WorkflowCohort::EVIDENCE_KINDS, true)) {
+            throw self::invalid('order.submission.evidence');
+        }
+        return ['submittedAt' => self::timestamp($submission['submittedAt'], 'order.submission.submittedAt'), 'evidence' => $submission['evidence']];
     }
 
     /**

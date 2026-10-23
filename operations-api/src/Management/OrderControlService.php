@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Arasya\Operations\Management;
 
 use Arasya\Operations\Authorization\AuthorizationService;
+use Arasya\Operations\Cancellation\CancellationSchema;
 use Arasya\Operations\Employee\EmployeeIdentity;
 use Arasya\Operations\Http\ApiException;
 use Arasya\Operations\Order\GlobalOrderId;
@@ -32,7 +33,7 @@ final readonly class OrderControlService
     public const PAGE_SIZES = [25, 50, 100];
     private const DEFAULT_LIMIT = 50;
     private const ACTIVITY_LIMIT = 500;
-    private const STATES = ['active', 'completed', 'cancelled'];
+    private const STATES = ['active', 'completed', 'cancelled', 'stopped'];
     private const ENTERED_AT = 'COALESCE(o.production_changed_at, o.created_at)';
     private const OWNER_IS_ROOT = 'EXISTS (SELECT 1 FROM system_root_identity sri WHERE sri.employee_uuid = o.production_owner_employee_uuid)';
     private const OWNER_ACTIVE = "(e.status = 'active' AND (od.status = 'active' OR " . self::OWNER_IS_ROOT . '))';
@@ -42,18 +43,32 @@ final readonly class OrderControlService
     private const OWNER_STAGE = 'EXISTS (SELECT 1 FROM employee_stage_access esa WHERE esa.employee_uuid = o.production_owner_employee_uuid AND esa.stage_id = o.production_stage_id
             AND (NOT EXISTS (SELECT 1 FROM employee_stage_source_scopes sc WHERE sc.employee_uuid = esa.employee_uuid AND sc.stage_id = esa.stage_id)
                  OR EXISTS (SELECT 1 FROM employee_stage_source_scopes sc WHERE sc.employee_uuid = esa.employee_uuid AND sc.stage_id = esa.stage_id AND sc.source_key = o.source_key)))';
+    /**
+     * Production state partition (API 2.35.0), one state per order:
+     *   completed  production completed (a later cancellation is shown in `production.stop`, the completion is kept)
+     *   cancelled  not completed and the source reports the order cancelled
+     *   stopped    not completed, stopped inside Arasya, source not cancelled (local stop, or reactivated awaiting release)
+     *   active     everything else: ordinary production
+     */
     private const ACTIVE_STATE = "o.production_completed_at IS NULL AND o.operational_status <> 'unavailable'";
     private const SUMMARY = 'SELECT o.order_uuid, o.global_order_id, o.order_number, o.source_key, s.display_name AS source_name,
             o.source_commerce_status_code, o.source_commerce_status_label, o.operational_status,
             o.production_stage_id, ps.display_name AS stage_label, ps.ordinal AS stage_ordinal,
             o.production_owner_employee_uuid, e.display_name AS owner_name, o.production_claimed_at,
-            o.production_changed_at, o.production_completed_at, o.created_at, o.accepted_at, o.open_exception_uuid,
+            o.production_changed_at, o.production_completed_at, o.created_at, o.accepted_at, o.open_exception_uuid, {STOP_COLUMNS},
             ' . self::OWNER_ACTIVE . ' AS owner_active, ' . self::OWNER_STAFF . ' AS owner_staff, ' . self::OWNER_STAGE . ' AS owner_stage
         FROM operational_orders o
         INNER JOIN order_sources s ON s.source_key = o.source_key
         INNER JOIN production_stages ps ON ps.stage_id = o.production_stage_id
         LEFT JOIN employees e ON e.employee_uuid = o.production_owner_employee_uuid
-        LEFT JOIN departments od ON od.department_id = e.department_id';
+        LEFT JOIN departments od ON od.department_id = e.department_id{STOP_JOIN}';
+    private const STOP_COLUMNS = 'o.production_stopped_at, o.cancellation_state,
+            c.hold_status AS stop_hold, c.origin AS stop_origin, c.source_status AS stop_source_status, c.source_request_status AS stop_request,
+            c.production_phase AS stop_phase, c.physical_status AS stop_physical, c.physical_outcome AS stop_physical_outcome, c.version AS stop_version,
+            c.held_at AS stop_held_at, c.released_at AS stop_released_at';
+    /** Before migration 033 (a partially migrated rehearsal or test database) no order can be stopped. */
+    private const NO_STOP_COLUMNS = 'NULL AS production_stopped_at, NULL AS cancellation_state, NULL AS stop_hold, NULL AS stop_origin, NULL AS stop_source_status,
+            NULL AS stop_request, NULL AS stop_phase, NULL AS stop_physical, NULL AS stop_physical_outcome, NULL AS stop_version, NULL AS stop_held_at, NULL AS stop_released_at';
 
     public function __construct(
         private PDO $pdo,
@@ -75,7 +90,7 @@ final readonly class OrderControlService
             $where[] = '(o.created_at < :cursor_at OR (o.created_at = :cursor_at_eq AND o.order_uuid < :cursor_id))';
             $params += ['cursor_at' => $cursor['at'], 'cursor_at_eq' => $cursor['at'], 'cursor_id' => $cursor['id']];
         }
-        $statement = $this->pdo->prepare(self::SUMMARY . ' WHERE ' . implode(' AND ', $where)
+        $statement = $this->pdo->prepare($this->summarySql() . ' WHERE ' . implode(' AND ', $where)
             . ' ORDER BY o.created_at DESC, o.order_uuid DESC LIMIT ' . ($limit + 1));
         $statement->execute($params);
         $rows = $statement->fetchAll(PDO::FETCH_ASSOC);
@@ -101,7 +116,7 @@ final readonly class OrderControlService
             FROM operational_orders o
             LEFT JOIN employees e ON e.employee_uuid = o.production_owner_employee_uuid
             LEFT JOIN departments od ON od.department_id = e.department_id
-            WHERE ' . self::ACTIVE_STATE)->fetch(PDO::FETCH_ASSOC) ?: [];
+            WHERE ' . $this->activeState())->fetch(PDO::FETCH_ASSOC) ?: [];
         return ['unassignedActive' => (int) ($row['unassigned'] ?? 0), 'ownerAttention' => (int) ($row['attention'] ?? 0)];
     }
 
@@ -114,7 +129,7 @@ final readonly class OrderControlService
         } catch (InvalidArgumentException) {
             throw new ApiException(404, 'ORDER_NOT_FOUND', 'Order was not found.');
         }
-        $statement = $this->pdo->prepare(self::SUMMARY . ' WHERE o.global_order_id = :global_id LIMIT 1');
+        $statement = $this->pdo->prepare($this->summarySql() . ' WHERE o.global_order_id = :global_id LIMIT 1');
         $statement->execute(['global_id' => $globalId]);
         $row = $statement->fetch(PDO::FETCH_ASSOC) ?: throw new ApiException(404, 'ORDER_NOT_FOUND', 'Order was not found.');
         $extra = $this->pdo->prepare('SELECT production_notes, source_changed_at, last_source_seen_at, production_version FROM operational_orders WHERE order_uuid = :id');
@@ -179,6 +194,18 @@ final readonly class OrderControlService
         return $detail;
     }
 
+    private function summarySql(): string
+    {
+        $ready = CancellationSchema::ready($this->pdo);
+        return strtr(self::SUMMARY, ['{STOP_COLUMNS}' => $ready ? self::STOP_COLUMNS : self::NO_STOP_COLUMNS,
+            '{STOP_JOIN}' => $ready ? "\n        LEFT JOIN order_cancellation_controls c ON c.order_uuid = o.order_uuid" : '']);
+    }
+
+    private function activeState(): string
+    {
+        return self::ACTIVE_STATE . (CancellationSchema::ready($this->pdo) ? ' AND o.production_stopped_at IS NULL' : '');
+    }
+
     private function requireAccess(EmployeeIdentity $actor): void
     {
         $this->authorization->requireApplication($actor, 'dashboard');
@@ -219,10 +246,11 @@ final readonly class OrderControlService
         };
         $where[] = match ($filters['state'] ?? '') {
             '' => '1 = 1',
-            'active' => self::ACTIVE_STATE,
+            'active' => $this->activeState(),
             'completed' => 'o.production_completed_at IS NOT NULL',
             'cancelled' => "o.production_completed_at IS NULL AND o.operational_status = 'unavailable'",
-            default => throw new ApiException(422, 'VALIDATION_FAILED', 'state must be active, completed or cancelled.'),
+            'stopped' => CancellationSchema::ready($this->pdo) ? "o.production_completed_at IS NULL AND o.operational_status <> 'unavailable' AND o.production_stopped_at IS NOT NULL" : '1 = 0',
+            default => throw new ApiException(422, 'VALIDATION_FAILED', 'state must be active, completed, cancelled or stopped.'),
         };
         return [$where, $params];
     }
@@ -249,7 +277,16 @@ final readonly class OrderControlService
     /** @param array<string, mixed> $row @return array<string, mixed> */
     private function summary(array $row): array
     {
-        $state = $row['production_completed_at'] !== null ? 'completed' : ($row['operational_status'] === 'unavailable' ? 'cancelled' : 'active');
+        $state = match (true) {
+            $row['production_completed_at'] !== null => 'completed',
+            $row['operational_status'] === 'unavailable' => 'cancelled',
+            $row['production_stopped_at'] !== null => 'stopped',
+            default => 'active',
+        };
+        $control = $row['stop_hold'] === null ? null : [
+            'hold_status' => $row['stop_hold'], 'origin' => $row['stop_origin'], 'source_status' => $row['stop_source_status'],
+            'source_request_status' => $row['stop_request'], 'production_phase' => $row['stop_phase'], 'physical_status' => $row['stop_physical'],
+        ];
         return [
             'globalOrderId' => (string) $row['global_order_id'],
             'orderNumber' => (string) $row['order_number'],
@@ -269,6 +306,16 @@ final readonly class OrderControlService
                 'stageEnteredAt' => $this->iso((string) ($row['production_changed_at'] ?? $row['created_at'])),
                 'completedAt' => $this->isoOrNull($row['production_completed_at']),
                 'attention' => $state === 'active' ? $this->attention($row) : null,
+                // The cancellation control (CancellationView), the same state Staff shows; null when the order never had one.
+                'stop' => $control === null ? null : [
+                    'state' => $row['stop_hold'] === 'held' ? 'stopped' : 'released',
+                    'category' => \Arasya\Operations\Cancellation\CancellationView::category($control),
+                    'nextAction' => \Arasya\Operations\Cancellation\CancellationView::nextAction($control),
+                    'physical' => (string) $row['stop_physical'],
+                    'version' => (int) $row['stop_version'],
+                    'heldAt' => $this->iso((string) $row['stop_held_at']),
+                    'releasedAt' => $this->isoOrNull($row['stop_released_at']),
+                ],
             ],
             'importedAt' => $this->iso((string) $row['created_at']),
             'acceptedAt' => $this->isoOrNull($row['accepted_at']),

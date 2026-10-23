@@ -1,3 +1,8 @@
+import { confirmareSI } from "./confirmare";
+import { confirmareShopSI } from "./confirmareShop";
+import { confirmareFinanceSI } from "./confirmareFinance";
+import { confirmareHandoffSI } from "./confirmareHandoff";
+import { confirmareEditSI } from "./confirmareEdit";
 import { physicalSI } from "./physical";
 import type { Catalog } from "../types";
 import { siErrors } from "./si.errors";
@@ -10,6 +15,11 @@ import { siErrors } from "./si.errors";
 export const si: Catalog = {
   ...physicalSI,
   ...siErrors,
+  ...confirmareSI,
+  ...confirmareShopSI,
+  ...confirmareFinanceSI,
+  ...confirmareHandoffSI,
+  ...confirmareEditSI,
 
   // ---- common
   "common.back": "ආපසු",
@@ -266,6 +276,8 @@ export const si: Catalog = {
   "orderAction.blocked.document_revision_pending": "ලේඛනය අවහිරයි: ඇණවුමට ලේඛන සංශෝධනයක් සිදු වෙමින් පවතී. අනුමැතිය සහ නව ලේඛනය එනතුරු රැඳී සිටින්න.",
   "orderAction.blocked.production_authority_source": "මෙම ඇණවුමේ නිෂ්පාදනය තවම YD SOFT හි කළමනාකරණය වේ. කිසිවෙකු වැඩ කිරීමට පෙර කළමනාකරුවෙකු එය Arasya වෙත භාරගත යුතුය.",
   "orderAction.blocked.payment_gate_closed": "ඇණවුම නිෂ්පාදනයට ඇතුළු විය නොහැක. අවශ්‍ය අත්තිකාරම හෝ ඇණවුමේ ගෙවීම තහවුරු කර නැත.",
+  "orderAction.blocked.confirmation_required": "ඇණවුම නිෂ්පාදනයට ඇතුළු විය නොහැක. ඇණවුම පාරිභෝගිකයා සමඟ තහවුරු කර ගෙවීම සත්‍යාපනය කළ යුතුය (Confirmare).",
+  "orderAction.blocked.confirmation_document_required": "ඇණවුම තහවුරු කර ඇත, නමුත් නිෂ්පාදනයට ඇතුළු වන්නේ නිෂ්පාදන පත්‍රිකාව (සංශෝධනය 1) සමඟ පමණි. කැපීම පත්‍රිකාවේ QR කේතය ස්කෑන් කරයි.",
   "orderAction.blocked.pieces_in_rework": "ඇණවුම තවම ඇසුරුම් කළ නොහැක: එක් කෑල්ලක් නැවත සකස් කරමින් පවතී. සියලු කෑලි ඇසුරුම් අදියරට පැමිණි පසු ඇසුරුම් ආරම්භ වේ.",
   "orderAction.blocked.pieces_held": "කෑල්ලක් භෞතිකව රඳවා ඇති විට ඇණවුම ඉදිරියට යා නොහැක. රඳවීම නිදහස් කළ පසු එය ඉදිරියට යයි.",
   "orderAction.blocked.pieces_awaiting_reunion": "ඇණවුම තවම ඇසුරුම් කළ නොහැක: එක් කෑල්ලක් තමන්ගේම මාර්ගයේ ගමන් කරන අතර ඇණවුම හා නැවත එක් වී නැත.",
@@ -273,6 +285,25 @@ export const si: Catalog = {
   "orderAction.blocked.pieces_incomplete": "කෑලි අඩුයි හෝ කෑල්ලක අනන්‍යතාවය පරීක්ෂා කළ යුතුය. ඇණවුම තවම ඉදිරියට යා නොහැක.",
   "orderAction.blocked.route_incomplete": "ඇණවුම තවම ඇසුරුම් කළ නොහැක: එක් කෑල්ලක් එහි මාර්ගයේ සියලු අදියර අවසන් කර නැත.",
   "orderAction.blocked.defect_unresolved": "ඇණවුම තවම ඇසුරුම් කළ නොහැක: දෝෂයක් විසඳූ බව තහවුරු කර නැත.",
+  "orderAction.blocked.production_stopped": "මෙම ඇණවුමේ නිෂ්පාදනය නවතා ඇත. ඔබට මෙම ඇණවුමේ නිෂ්පාදනය දිගටම කළ නොහැක.",
+  "stop.title.cancelled": "ඇණවුම අවලංගු කර ඇත",
+  "stop.title.stopped": "නිෂ්පාදනය නවතා ඇත",
+  "stop.title.review": "පරීක්ෂාව සඳහා ඇණවුම රඳවා ඇත",
+  "stop.body": "ඔබට මෙම ඇණවුමේ නිෂ්පාදනය දිගටම කළ නොහැක. ඉතිහාසය තවමත් බැලිය හැක.",
+  "stop.source.cancelled": "අවලංගු කිරීම මූලාශ්‍රය විසින් දන්වා ඇත.",
+  "stop.source.reactivated": "මූලාශ්‍රය ඇණවුම නැවත සක්‍රිය කළා. නිෂ්පාදනය නැවත ආරම්භ කිරීමට කළමනාකරණ අනුමැතිය අවශ්‍යයි.",
+  "stop.source.local": "නිෂ්පාදනය කළමනාකරණය විසින් නවතා ඇත.",
+  "stop.request.pending": "මූලාශ්‍රයේ අවලංගු කිරීම ඉල්ලා ඇති නමුත් තවම තහවුරු කර නැත.",
+  "stop.completed": "අවලංගු කිරීමට පෙර නිෂ්පාදනය අවසන් කර තිබුණා.",
+  "stop.physical.pending": "නිෂ්පාදනයේ භෞතික පරීක්ෂාවක් අවශ්‍යයි. එය තිබෙන තැනම තබා භාරකරුට දන්වන්න.",
+  "stop.physical.verified": "නිෂ්පාදනයේ භෞතික තත්ත්වය පරීක්ෂා කර ඇත.",
+  "stop.attention": "භාරකරු මෙම ඇණවුම පරීක්ෂා කළ යුතුයි.",
+  "stop.sync.awaiting": "අවලංගු කිරීම විකුණුම් නාලිකාවේ තහවුරු කිරීම බලාපොරොත්තුවෙන් පවතී.",
+  "stop.sync.attention": "සමමුහුර්තකරණය අසාර්ථකයි: කළමනාකාරිත්වය අවලංගු කිරීම පරීක්ෂා කරයි.",
+  "stop.sync.confirmed": "විකුණුම් නාලිකාව අවලංගු කිරීම තහවුරු කළේය.",
+  "stop.stage": "වත්මන් අදියර: {stage}",
+  "stop.since": "නවතා ඇත්තේ: {time}",
+  "stop.card": "නිෂ්පාදනය නවතා ඇත",
   "orderAction.orderNote": "ඇණවුම #{number}. {note}",
   "orderAction.qrCaptured": "QR ලේබලය කියවා ඇත · සේවාදායකය එය එකම ඇණවුම දැයි පරීක්ෂා කරයි.",
   "orderAction.checkingWork": "ඔබේ සක්‍රිය වැඩ පරීක්ෂා කරමින්…",

@@ -6,6 +6,22 @@ declare(strict_types=1);
 // write back to a commerce source (HTTP clients, sockets, non-GET Trendyol calls) or if the
 // WooCommerce connector gains any order mutation. A deliberate outbound integration must be a
 // separately reviewed milestone that updates this guard explicitly.
+//
+// The one reviewed exception (API 2.40.0, Confirmare Phase 4): Confirmare source access. Only
+// StreamSourceAccessTransport may open a stream, only POST, never following a redirect, only to the
+// YD SOFT source access routes listed in SourceAccessClient::ROUTES, and only SourceAccessClient may
+// send through it. Every other rule below stays as it was. Phase 4B adds the controlled edit routes to
+// that list: Operations still never writes WooCommerce itself; it asks the shop's own YD SOFT adapter,
+// which applies one previewed edit under WooCommerce's rules (and refuses anything else). Phase 5 (API 2.41.0)
+// adds the three finance routes: the shop's financial summary, one finance action (a bank transfer or bank
+// refund recorded and verified by two people, a liability acknowledged; never a gateway capture or refund)
+// and its stored answer.
+//
+// Second reviewed exception (API 2.36.0, cancellation synchronization): the Trendyol "unsupplied" notice
+//   PUT /integration/order/sellers/{sellerId}/shipment-packages/{packageId}/items/unsupplied
+// built only by TrendyolCancellationApi, sent only through TrendyolTransport::put(), and refused by
+// StreamTrendyolTransport for every other path. A shop's own connector (YD SOFT) pulls a cancellation request
+// through a signed source route; Operations never calls a shop for it.
 
 $root = dirname(__DIR__, 2);
 $failures = [];
@@ -26,6 +42,13 @@ $phpFiles = static function (string $directory): array {
 
 // ---- Operations API: no outbound HTTP except the read-only Trendyol GET transport ---------------
 $transport = $root . '/operations-api/src/Integration/Trendyol/StreamTrendyolTransport.php';
+$accessTransport = $root . '/operations-api/src/Integration/SourceAccess/StreamSourceAccessTransport.php';
+$accessClient = $root . '/operations-api/src/Integration/SourceAccess/SourceAccessClient.php';
+/** The source access routes Operations may call (WordPress routes without /wp-json). Nothing else. */
+// Phase 4A: the order detail. Phase 4B: the edit catalog, one product by SKU, the edit preview, the edit and its stored
+// answer (reconciliation). Phase 5: the financial summary, a finance action and its stored answer. No WooCommerce REST
+// API, no listing, no search.
+$accessRoutes = ['/yd-arasya/v1/confirmare/detail', '/yd-arasya/v1/confirmare/catalog', '/yd-arasya/v1/confirmare/product', '/yd-arasya/v1/confirmare/preview', '/yd-arasya/v1/confirmare/apply', '/yd-arasya/v1/confirmare/edit-status', '/yd-arasya/v1/confirmare/finance', '/yd-arasya/v1/confirmare/finance-action', '/yd-arasya/v1/confirmare/finance-status'];
 $forbiddenApi = [
     '/\bcurl_(init|exec|multi_\w+|setopt)\s*\(/' => 'cURL client',
     '/\b(fsockopen|pfsockopen|stream_socket_client)\s*\(/' => 'raw socket client',
@@ -43,31 +66,89 @@ foreach ($phpFiles($root . '/operations-api/src') as $file) {
         }
     }
     $checks++;
-    if ($file !== $transport && preg_match('/\bstream_context_create\s*\(|file_get_contents\s*\(\s*["\']https?:/', $source) === 1) {
-        $fail("{$relative} opens an outbound HTTP stream; only StreamTrendyolTransport may, and only with GET.");
+    if ($file !== $transport && $file !== $accessTransport && preg_match('/\bstream_context_create\s*\(|file_get_contents\s*\(\s*["\']https?:/', $source) === 1) {
+        $fail("{$relative} opens an outbound HTTP stream; only StreamTrendyolTransport (GET) and StreamSourceAccessTransport (source access POST) may.");
     }
+    // Source access routes and the transport's post() exist only in the client (and the transport itself).
+    $checks++;
+    if (!in_array($file, [$accessClient, $accessTransport], true) && preg_match('#/yd-arasya/v\d#', $source) === 1) {
+        $fail("{$relative} names a YD SOFT source access route; only SourceAccessClient may.");
+    }
+    $checks++;
+    if (!in_array($file, [$accessClient, $accessTransport], true) && preg_match('/SourceAccessTransport\b[^;]*->post\s*\(|->transport->post\s*\(/', $source) === 1) {
+        $fail("{$relative} sends through the source access transport; only SourceAccessClient may.");
+    }
+}
+
+// ---- The source access transport: POST only, no redirect, verified TLS, source access paths only --------
+$accessSource = (string) file_get_contents($accessTransport);
+$checks++;
+if (preg_match_all("/'method'\s*=>\s*'([A-Z]+)'/", $accessSource, $accessMethods) < 1 || array_unique($accessMethods[1]) !== ['POST']) {
+    $fail('StreamSourceAccessTransport must only issue POST requests.');
+}
+foreach (["'follow_location' => 0", "'max_redirects' => 0", "'verify_peer' => true", "'verify_peer_name' => true", "'allow_self_signed' => false", "'#^/wp-json/yd-arasya/v1/confirmare/[a-z-]{1,40}\$#D'"] as $required) {
+    $checks++;
+    if (!str_contains($accessSource, $required)) {
+        $fail("StreamSourceAccessTransport lost its safety setting {$required}.");
+    }
+}
+$accessInterface = (string) file_get_contents($root . '/operations-api/src/Integration/SourceAccess/SourceAccessTransport.php');
+$checks++;
+if (preg_match_all('/public function (\w+)\s*\(/', $accessInterface, $accessFunctions) !== 1 || $accessFunctions[1] !== ['post']) {
+    $fail('SourceAccessTransport must expose only post().');
+}
+$clientSource = (string) file_get_contents($accessClient);
+$checks++;
+preg_match_all("#'(/yd-arasya/v1/[^']*)'#", $clientSource, $clientRoutes);
+if (array_values(array_unique($clientRoutes[1])) !== $accessRoutes) {
+    $fail('SourceAccessClient names source access routes beyond the reviewed list: ' . implode(', ', array_unique($clientRoutes[1])));
 }
 $transportSource = (string) file_get_contents($transport);
 $checks++;
-if (preg_match_all("/'method'\s*=>\s*'([A-Z]+)'/", $transportSource, $methods) < 1 || array_unique($methods[1]) !== ['GET']) {
-    $fail('StreamTrendyolTransport must only issue GET requests.');
+if (preg_match_all("/\\\$this->send\('([A-Z]+)'/", $transportSource, $methods) < 1 || array_values(array_unique($methods[1])) !== ['GET', 'PUT']) {
+    $fail('StreamTrendyolTransport must only issue GET requests and the one reviewed PUT.');
+}
+$checks++;
+if (!str_contains($transportSource, "preg_match('#/integration/order/sellers/[0-9]+/shipment-packages/[0-9]+/items/unsupplied\$#D'")
+    || preg_match('/public function put\(.*?\{(.*?)return \$this->send\(\'PUT\'/s', $transportSource, $put) !== 1 || !str_contains($put[1], 'throw new RuntimeException')) {
+    $fail('StreamTrendyolTransport::put() must refuse every path except the Trendyol unsupplied notice before sending.');
 }
 $interface = (string) file_get_contents($root . '/operations-api/src/Integration/Trendyol/TrendyolTransport.php');
 $checks++;
-if (preg_match_all('/public function (\w+)\s*\(/', $interface, $functions) !== 1 || $functions[1] !== ['get']) {
-    $fail('TrendyolTransport must expose only get().');
+if (preg_match_all('/public function (\w+)\s*\(/', $interface, $functions) !== 2 || $functions[1] !== ['get', 'put']) {
+    $fail('TrendyolTransport must expose only get() and the reviewed put().');
 }
-// Every Trendyol URL the code can build is the read-only Order V2 package listing: no status update, shipment,
-// tracking number, invoice, cancellation, split or claim endpoint exists anywhere in the Operations API.
+// put() is called only by the reviewed cancellation client (and transports / test doubles implementing it).
+$putCallers = [];
+foreach ($phpFiles($root . '/operations-api/src') as $file) {
+    if (preg_match('/->put\s*\(/', (string) file_get_contents($file)) === 1) {
+        $putCallers[] = substr($file, strlen($root) + 1);
+    }
+}
+$checks++;
+if ($putCallers !== ['operations-api/src/Integration/Trendyol/TrendyolCancellationApi.php']) {
+    $fail('Only TrendyolCancellationApi may call TrendyolTransport::put(): ' . implode(', ', $putCallers));
+}
+// Every Trendyol URL the code can build is the read-only Order V2 package listing, except the reviewed unsupplied notice
+// in the files listed here: no status update, shipment, tracking number, invoice, split or claim endpoint exists anywhere.
+$unsupplied = [
+    'operations-api/src/Integration/Trendyol/TrendyolCancellationApi.php' => ['/integration/order/sellers/{sellerId}/shipment-packages/{packageId}/items/unsupplied', '/integration/order/sellers/%s/shipment-packages/%d/items/unsupplied'],
+    'operations-api/src/Integration/Trendyol/StreamTrendyolTransport.php' => ['/integration/order/sellers/'],
+    'operations-api/src/Integration/Trendyol/FixtureTrendyolTransport.php' => [],
+    'operations-api/src/Cancellation/Sync/TrendyolCancellationProvider.php' => ['/integration/order/sellers/{sellerId}/shipment-packages/{packageId}/items/unsupplied'],
+];
 foreach (new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root . '/operations-api/src', FilesystemIterator::SKIP_DOTS)) as $file) {
     $source = (string) file_get_contents($file->getPathname());
+    $relative = substr($file->getPathname(), strlen($root) + 1);
+    $allowed = ['/integration/order/sellers/%s/v2/orders', ...($unsupplied[$relative] ?? [])];
     $checks++;
-    if (preg_match_all('#/integration/[A-Za-z0-9/{}%_.-]+#', $source, $paths) > 0 && array_unique($paths[0]) !== ['/integration/order/sellers/%s/v2/orders']) {
-        $fail(substr($file->getPathname(), strlen($root) + 1) . ' builds a Trendyol path other than the read-only Order V2 listing: ' . implode(', ', array_unique($paths[0])));
+    if (preg_match_all('#/integration/[A-Za-z0-9/{}%_.-]+#', $source, $paths) > 0 && array_diff(array_unique($paths[0]), $allowed) !== []) {
+        $fail($relative . ' builds a Trendyol path other than the read-only Order V2 listing and the reviewed unsupplied notice: ' . implode(', ', array_unique($paths[0])));
     }
     $checks++;
-    if (preg_match('#shipment-packages|update-tracking|send-invoice|invoice-link|/claims|split-shipment#i', $source) === 1) {
-        $fail(substr($file->getPathname(), strlen($root) + 1) . ' references a Trendyol write endpoint.');
+    if (preg_match('#update-tracking|send-invoice|invoice-link|/claims|split-shipment|update-package|/shipment-packages/[^/\s\'"]*/(?!items/unsupplied)#i', $source) === 1
+        || (!array_key_exists($relative, $unsupplied) && preg_match('#shipment-packages#i', $source) === 1)) {
+        $fail($relative . ' references a Trendyol write endpoint.');
     }
 }
 
@@ -124,6 +205,14 @@ $selfTest = [
     ['$client = new GuzzleHttp\\Client();', $forbiddenApi, true],
     ['$order->get_status(); $order->get_items();', $forbiddenConnector, false],
 ];
+// The reviewed exception must not widen: a different shipment-package write is still caught.
+foreach (["'/integration/order/sellers/%s/shipment-packages/%d/items/unsupplied'" => false, "'/integration/order/sellers/%s/shipment-packages/%d/update-package'" => true,
+    "'/integration/order/sellers/%s/shipment-packages/%d'" => false] as $snippet => $mustMatch) {
+    $checks++;
+    if ((preg_match('#update-tracking|send-invoice|invoice-link|/claims|split-shipment|update-package|/shipment-packages/[^/\s\'"]*/(?!items/unsupplied)#i', $snippet) === 1) !== $mustMatch) {
+        $fail("Guard self-test: the Trendyol write pattern misjudged {$snippet}");
+    }
+}
 foreach ($selfTest as [$snippet, $patterns, $mustMatch]) {
     $checks++;
     $matched = false;
@@ -152,4 +241,4 @@ if ($failures !== []) {
     fwrite(STDERR, "FAIL inbound-only source integration guard:\n  - " . implode("\n  - ", $failures) . "\n");
     exit(1);
 }
-fwrite(STDOUT, "PASS inbound-only source integration guard ({$checks} checks): no source writeback path exists.\n");
+fwrite(STDOUT, "PASS inbound-only source integration guard ({$checks} checks): no source writeback path exists outside the reviewed source access routes.\n");

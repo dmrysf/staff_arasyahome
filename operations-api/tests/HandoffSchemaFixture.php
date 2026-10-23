@@ -1,9 +1,108 @@
 <?php
 declare(strict_types=1);
+/** Restore a pre-039 disposable test fixture (no Confirmare finance). This is NOT a deployment/rollback mechanism. */
+function restorePreConfirmareFinanceTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='039_confirmare_finance.sql'")->fetchColumn()) return;
+    $pdo->exec('DROP TABLE IF EXISTS order_finance_actions');
+    $pdo->exec('DROP TABLE IF EXISTS order_finance_reads');
+    $pdo->exec('DROP TABLE IF EXISTS employee_finance_scopes');
+    $pdo->exec("UPDATE operational_orders SET source_financial_attention = NULL WHERE source_financial_attention NOT IN ('additional_payment_due', 'refund_due') OR source_financial_state = 'cleared'");
+    $pdo->exec("ALTER TABLE operational_orders DROP CONSTRAINT chk_operational_orders_finance_attention, ADD CONSTRAINT chk_operational_orders_financial_attention CHECK (source_financial_attention IS NULL OR (source_financial_attention IN ('additional_payment_due', 'refund_due') AND source_financial_state IN ('waiting', 'partial', 'unknown')))");
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='039_confirmare_finance.sql'");
+}
+
+/** Restore a pre-038 disposable test fixture (no Confirmare source access). This is NOT a deployment/rollback mechanism. */
+function restorePreConfirmareSourceAccessTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    restorePreConfirmareFinanceTestSchema($pdo);
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='038_confirmare_source_access.sql'")->fetchColumn()) return;
+    $pdo->exec('DROP TABLE IF EXISTS order_confirmation_source_edits');
+    $pdo->exec('DROP TABLE IF EXISTS order_confirmation_source_reads');
+    $pdo->exec('ALTER TABLE operational_orders DROP CONSTRAINT chk_operational_orders_financial_attention, DROP CONSTRAINT chk_operational_orders_contact_phone, DROP COLUMN source_financial_attention, DROP COLUMN source_contact_phone');
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='038_confirmare_source_access.sql'");
+}
+
+/** Restore a pre-037 disposable test fixture (no Confirmare contact attempts). This is NOT a deployment/rollback mechanism. */
+function restorePreConfirmareContactsTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    restorePreConfirmareSourceAccessTestSchema($pdo);
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='037_confirmare_contacts.sql'")->fetchColumn()) return;
+    $pdo->exec('DROP TABLE IF EXISTS order_confirmation_contacts');
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='037_confirmare_contacts.sql'");
+}
+
+/** Restore a pre-036 disposable test fixture (no Confirmare operations). This is NOT a deployment/rollback mechanism. */
+function restorePreConfirmareOperationsTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    restorePreConfirmareContactsTestSchema($pdo);
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='036_confirmare_operations.sql'")->fetchColumn()) return;
+    // The four 036 tables stay (identity reads such as the employee view use the scope table at every schema level the
+    // suites restore; CREATE TABLE IF NOT EXISTS keeps a re-run idempotent). Only the ALTER of 035's table is undone.
+    $pdo->exec('DELETE FROM order_confirmation_idempotency');
+    $pdo->exec('ALTER TABLE order_confirmations DROP CONSTRAINT chk_order_confirmations_cleared, DROP FOREIGN KEY fk_order_confirmations_caller, DROP CONSTRAINT chk_order_confirmations_reason, DROP CONSTRAINT chk_order_confirmations_assigned_pending, DROP CONSTRAINT chk_order_confirmations_assignment,
+        DROP FOREIGN KEY fk_order_confirmations_assignee, DROP KEY idx_order_confirmations_assignee, DROP COLUMN cleared_at, DROP COLUMN production_cleared, DROP COLUMN approved_review_fingerprint, DROP COLUMN confirmed_line_ids,
+        DROP COLUMN call_confirmed_by_employee_uuid, DROP COLUMN call_confirmed_at, DROP COLUMN decision_reason_code, DROP COLUMN assignment_kind, DROP COLUMN assigned_at, DROP COLUMN assigned_employee_uuid');
+    $pdo->exec('ALTER TABLE operational_orders DROP CONSTRAINT chk_operational_orders_financial_complete, DROP CONSTRAINT chk_operational_orders_financial_pricing, DROP CONSTRAINT chk_operational_orders_financial_basis,
+        DROP CONSTRAINT chk_operational_orders_financial_state, DROP COLUMN source_financial_pricing, DROP COLUMN source_financial_basis, DROP COLUMN source_financial_state');
+    $pdo->exec('ALTER TABLE operational_orders DROP CONSTRAINT chk_operational_orders_pricing_fingerprint, DROP COLUMN source_due_date, DROP COLUMN source_pricing_fingerprint');
+    $pdo->exec('DELETE FROM confirmare_alerts');
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='036_confirmare_operations.sql'");
+}
+
+/** Restore a pre-035 disposable test fixture (no Confirmare workflow cohort). This is NOT a deployment/rollback mechanism. */
+function restorePreWorkflowCohortTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    restorePreConfirmareOperationsTestSchema($pdo);
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='035_workflow_cohort.sql'")->fetchColumn()) return;
+    foreach(['order_confirmations','workflow_cohort_arming','workflow_cohort_activations'] as $table) $pdo->exec("DROP TABLE IF EXISTS {$table}");
+    $pdo->exec('ALTER TABLE operational_orders DROP CONSTRAINT chk_operational_orders_workflow_cohort_complete, DROP CONSTRAINT chk_operational_orders_workflow_cohort,
+        DROP KEY idx_operational_orders_cohort, DROP COLUMN source_submission_evidence, DROP COLUMN source_submitted_at, DROP COLUMN workflow_cohort_at,
+        DROP COLUMN workflow_cohort_reason, DROP COLUMN workflow_cohort');
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='035_workflow_cohort.sql'");
+}
+
+/** Restore a pre-034 disposable test fixture (no cancellation synchronization). This is NOT a deployment/rollback mechanism. */
+function restorePreCancellationSyncTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    restorePreWorkflowCohortTestSchema($pdo);
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='034_order_cancellation_sync.sql'")->fetchColumn()) return;
+    foreach(['order_cancellation_discrepancies','order_cancellation_sync_attempts','order_cancellation_sync_operations'] as $table) $pdo->exec("DROP TABLE IF EXISTS {$table}");
+    $flags = "'cancellation_sync_trendyol','cancellation_sync_trendhome','cancellation_sync_outletperdele'";
+    if($pdo->query("SHOW TABLES LIKE 'production_feature_flag_events'")->fetchColumn()!==false) $pdo->exec("DELETE FROM production_feature_flag_events WHERE feature_key IN ({$flags})");
+    $pdo->exec("DELETE FROM production_feature_flags WHERE flag_key IN ({$flags})");
+    $pdo->exec("DELETE rp FROM role_permissions rp INNER JOIN permissions p ON p.permission_id = rp.permission_id WHERE p.permission_key = 'production.cancellation.sync'");
+    $pdo->exec("DELETE FROM permissions WHERE permission_key = 'production.cancellation.sync'");
+    $pdo->exec('ALTER TABLE order_cancellation_controls DROP CONSTRAINT chk_order_cancellation_controls_generation');
+    $pdo->exec('ALTER TABLE order_cancellation_controls DROP COLUMN hold_generation');
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='034_order_cancellation_sync.sql'");
+}
+
+/** Restore a pre-033 disposable test fixture (no cancellation control). This is NOT a deployment/rollback mechanism. */
+function restorePreCancellationControlTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    restorePreCancellationSyncTestSchema($pdo);
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='033_order_cancellation_control.sql'")->fetchColumn()) return;
+    foreach(['order_cancellation_events','order_cancellation_controls'] as $table) $pdo->exec("DROP TABLE IF EXISTS {$table}");
+    $pdo->exec("DELETE rp FROM role_permissions rp INNER JOIN permissions p ON p.permission_id = rp.permission_id WHERE p.permission_key IN ('production.cancellation.manage','production.cancellation.release')");
+    $pdo->exec("DELETE FROM permissions WHERE permission_key IN ('production.cancellation.manage','production.cancellation.release')");
+    $pdo->exec('ALTER TABLE operational_orders DROP CONSTRAINT chk_operational_orders_cancellation');
+    $pdo->exec('ALTER TABLE operational_orders DROP INDEX idx_operational_orders_cancellation, DROP COLUMN production_stopped_at, DROP COLUMN cancellation_state');
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='033_order_cancellation_control.sql'");
+}
+
 /** Restore a pre-029 disposable test fixture (no manufacturing manifest). This is NOT a deployment/rollback mechanism. */
 function restorePreManifestTestSchema(PDO $pdo): void
 {
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    restorePreCancellationControlTestSchema($pdo);
     if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='029_production_manifest_routing.sql'")->fetchColumn()) return;
     \Arasya\Operations\Tests\OperationsTestSupport::clearPieces($pdo);
     foreach(['production_assisted_checkpoint_events','production_assisted_checkpoints','production_route_reconciliation_stages','production_route_reconciliations','production_unit_verifications','production_feature_flag_events','production_pilot_cohort','production_exception_links','production_material_records','production_custody_events','production_unit_custody','production_locations',

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Arasya\Operations\Order;
 
+use Arasya\Operations\Cancellation\CancellationControl;
 use Arasya\Operations\Document\DocumentStaleness;
 use Arasya\Operations\Http\ApiException;
 use Arasya\Operations\Production\PaymentGate;
@@ -14,6 +15,7 @@ use Arasya\Operations\Support\Clock;
 use Arasya\Operations\Support\Uuid;
 use DateTimeImmutable;
 use Arasya\Operations\Production\ProductionQrLedger;
+use Arasya\Operations\Production\WorkflowCohort;
 use PDO;
 
 final readonly class OrderProjectionWriter
@@ -75,6 +77,20 @@ final readonly class OrderProjectionWriter
                 'confirmed_at' => $snapshot->payment['advanceConfirmedAt']?->format('Y-m-d\TH:i:s.u\Z'),
             ];
         }
+        // Pricing and due date (API 2.38.0) join the hash only when stated, like the payment facts.
+        if ($snapshot->pricingFingerprint !== null) {
+            $hashData['pricing'] = $snapshot->pricingFingerprint;
+        }
+        if ($snapshot->dueDate !== null) {
+            $hashData['due'] = $snapshot->dueDate;
+        }
+        if ($snapshot->financial !== null) {
+            $hashData['financial'] = $snapshot->financial;
+        }
+        // The contact fact (API 2.40.0) joins the hash only when stated, like the other facts.
+        if ($snapshot->contactPhone !== null) {
+            $hashData['contact'] = $snapshot->contactPhone;
+        }
         // The printable delivery identity is kept outside the receipt hash so existing source events keep
         // their hash; it is applied below and decides document staleness like any printed field.
         $documentContext = $snapshot->delivery === null ? null : json_encode($snapshot->delivery, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
@@ -131,7 +147,7 @@ final readonly class OrderProjectionWriter
             }
 
             // Lock order row
-            $stmt = $this->pdo->prepare('SELECT order_uuid, source_changed_at, projection_hash, version, production_version, production_stage_id, production_authority, operational_status, cutting_first_claimed_at, document_context FROM operational_orders WHERE global_order_id = ? FOR UPDATE');
+            $stmt = $this->pdo->prepare('SELECT order_uuid, source_changed_at, projection_hash, version, production_version, production_stage_id, production_authority, operational_status, cutting_first_claimed_at, document_context, source_reported_unavailable_at, cancellation_state FROM operational_orders WHERE global_order_id = ? FOR UPDATE');
             $stmt->execute([$globalId]);
             $currentOrder = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -162,6 +178,7 @@ final readonly class OrderProjectionWriter
                         (new DocumentStaleness($this->pdo, $this->clock))->onContentChanged($orderUuid, $snapshot->sourceEventId);
                     }
                     $this->ensureQrReference($orderUuid, $globalId, $snapshot->sourceKey, $nowSql, $snapshot->sourceEventId);
+                    $this->recordSubmission($orderUuid, $snapshot);
                     $this->insertReceipt($snapshot, $globalId, $payloadHash, 'duplicate', $nowSql);
                     $this->touchSource($snapshot->sourceKey, $nowSql);
                     $this->pdo->commit();
@@ -172,8 +189,10 @@ final readonly class OrderProjectionWriter
                 $productionVersion = (int)$currentOrder['production_version'];
                 $stageId = (string)$currentOrder['production_stage_id'];
                 // Production belongs to Operations once an employee acted on the order. Before that an
-                // explicit source stage may only move the order forward; commerce status never moves it.
-                if ($sourceStageOrdinal !== null && $currentOrder['production_authority'] === 'source' && $snapshot->productionStageId !== $stageId) {
+                // explicit source stage may only move the order forward; commerce status never moves it. A cancelled
+                // or stopped order is never moved by its source (API 2.35.0).
+                $frozen = $snapshot->operationalStatus === 'unavailable' || $currentOrder['cancellation_state'] === CancellationControl::HELD;
+                if (!$frozen && $sourceStageOrdinal !== null && $currentOrder['production_authority'] === 'source' && $snapshot->productionStageId !== $stageId) {
                     $currentOrdinal = $this->activeStageOrdinal($stageId);
                     if ($currentOrdinal === null || $sourceStageOrdinal > $currentOrdinal) {
                         $stageId = (string) $snapshot->productionStageId;
@@ -194,7 +213,7 @@ final readonly class OrderProjectionWriter
                         source_commerce_status_label = ?,
                         production_notes = ?,
                         operational_status = ?,
-                        source_reported_unavailable_at = IF(?, ?, NULL),
+                        source_reported_unavailable_at = IF(?, COALESCE(source_reported_unavailable_at, ?), NULL),
                         freshness_status = ?,
                         source_schema_version = ?,
                         source_event_id = ?,
@@ -218,7 +237,9 @@ final readonly class OrderProjectionWriter
                     $snapshot->sourceCommerceStatusCode,
                     $snapshot->sourceCommerceStatusLabel,
                     $snapshot->productionNotes,
-                    $snapshot->operationalStatus === 'unavailable' && $currentOrder['cutting_first_claimed_at'] !== null ? $currentOrder['operational_status'] : $snapshot->operationalStatus,
+                    // The source's availability as reported. Whether production may continue is decided by the
+                    // cancellation control below, never by this column alone.
+                    $snapshot->operationalStatus,
                     $snapshot->operationalStatus === 'unavailable' ? 1 : 0,
                     $nowSql,
                     'fresh',
@@ -268,11 +289,22 @@ final readonly class OrderProjectionWriter
 
                 $this->insertItems($newItems, $orderUuid, $nowSql);
                 $this->applyPayment($orderUuid, $snapshot, $stageId, $sourceChangedSql, $nowSql);
+                // A reported cancellation stops production at whatever stage the order is, in this transaction; a later
+                // "active" never releases it (CancellationControl).
+                (new CancellationControl($this->pdo, $this->clock))->onSourceAvailability($orderUuid, $snapshot->operationalStatus === 'unavailable', $currentOrder['operational_status'] === 'unavailable', [
+                    'reason' => 'source_cancelled', 'statusCode' => $snapshot->sourceCommerceStatusCode, 'statusLabel' => $snapshot->sourceCommerceStatusLabel,
+                    'eventRef' => $snapshot->sourceEventId, 'sourceChangedAt' => $sourceChangedSql, 'previousReportedAt' => $currentOrder['source_reported_unavailable_at'],
+                ]);
+                $this->applyCommercialFacts($orderUuid, $snapshot);
+                $this->recordSubmission($orderUuid, $snapshot);
                 // A printed field may have changed: an active production document becomes stale here,
                 // inside the same transaction, so production is blocked before the change is visible.
                 (new DocumentStaleness($this->pdo, $this->clock))->onContentChanged($orderUuid, $snapshot->sourceEventId);
 
             } else {
+                // A checkout draft is never a customer order and, while the source is active for Confirmare, an unpaid
+                // order is created only for that workflow. The workflow cohort is decided here, once (WorkflowCohort).
+                $cohort = $this->classifyNewOrder($snapshot);
                 // Insert new order. A source whose production authority is enforced hands every genuinely
                 // new order to Operations at the initial canonical stage; a source stage is never used then.
                 $authorityMode = $this->authorityModes?->modeFor($snapshot->sourceKey) ?? ProductionAuthorityMode::Legacy;
@@ -285,8 +317,9 @@ final readonly class OrderProjectionWriter
                         production_stage_id, production_authority, production_changed_at, source_commerce_status_code, source_commerce_status_label, 
                         production_notes, operational_status, freshness_status, source_schema_version, 
                         source_event_id, source_changed_at, last_source_seen_at, projected_at, 
-                        accepted_at, projection_hash, version, created_at, updated_at, document_context
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        accepted_at, projection_hash, version, created_at, updated_at, document_context, source_reported_unavailable_at,
+                        workflow_cohort, workflow_cohort_reason, workflow_cohort_at, source_submitted_at, source_submission_evidence
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ');
                 $stmt->execute([
                     $orderUuid,
@@ -314,12 +347,36 @@ final readonly class OrderProjectionWriter
                     $nowSql,
                     $nowSql,
                     $documentContext,
+                    $snapshot->operationalStatus === 'unavailable' ? $nowSql : null,
+                    $cohort['cohort'],
+                    $cohort['reason'],
+                    $nowSql,
+                    $snapshot->submission === null ? null : $snapshot->submission['submittedAt']->format('Y-m-d H:i:s.u'),
+                    $snapshot->submission['evidence'] ?? null,
                 ]);
 
                 $this->insertItems($snapshot->items, $orderUuid, $nowSql);
                 $this->applyPayment($orderUuid, $snapshot, $initialStage, $sourceChangedSql, $nowSql);
+                $this->applyCommercialFacts($orderUuid, $snapshot);
                 if ($operationsManaged) {
                     $this->recordNewOrderAuthority($orderUuid, $globalId, $snapshot->sourceKey, $nowSql);
+                }
+                if ($snapshot->operationalStatus === 'unavailable') {
+                    // First seen already cancelled: stopped before any work, so a later reactivation still needs a release.
+                    (new CancellationControl($this->pdo, $this->clock))->onSourceAvailability($orderUuid, true, false, [
+                        'reason' => 'source_cancelled', 'statusCode' => $snapshot->sourceCommerceStatusCode, 'statusLabel' => $snapshot->sourceCommerceStatusLabel,
+                        'eventRef' => $snapshot->sourceEventId, 'sourceChangedAt' => $sourceChangedSql,
+                    ]);
+                }
+                if (WorkflowCohort::needsConfirmation($cohort['cohort'])) {
+                    // The pre-production Confirmare state of this order; only the Confirmare workflow ever decides it.
+                    $this->pdo->prepare("INSERT INTO order_confirmations (order_uuid, global_order_id, source_key, status, version, opened_at, updated_at) VALUES (?, ?, ?, 'pending', 1, ?, ?)")
+                        ->execute([$orderUuid, $globalId, $snapshot->sourceKey, $nowSql, $nowSql]);
+                    // Its audit trail starts here (API 2.38.0): version 1, opened by the system, no customer data.
+                    $this->pdo->prepare("INSERT INTO order_confirmation_events (event_uuid, order_uuid, global_order_id, source_key, action, actor_kind, actor_employee_uuid, previous_status, new_status,
+                            previous_assignee_uuid, new_assignee_uuid, reason_code, version_after, request_id, idempotency_key, occurred_at)
+                        VALUES (?, ?, ?, ?, 'opened', 'system', NULL, NULL, 'pending', NULL, NULL, ?, 1, NULL, NULL, ?)")
+                        ->execute([Uuid::v4(), $orderUuid, $globalId, $snapshot->sourceKey, $cohort['cohort'] === WorkflowCohort::UNDETERMINED ? 'undetermined' : null, $nowSql]);
                 }
             }
 
@@ -329,6 +386,8 @@ final readonly class OrderProjectionWriter
             if ($currentStage === $life::STAGE && (!$currentOrder || $currentOrder['production_stage_id'] !== $currentStage)) $life->fact($orderUuid, $currentOrder ? $productionVersion : 1, 'pool_entered', null, $nowSql);
             if ($snapshot->operationalStatus === 'unavailable') $life->fact($orderUuid, $currentOrder ? $productionVersion : 1, 'source_cancelled', null, $nowSql);
             if ($currentStage === $life::STAGE || $snapshot->operationalStatus === 'unavailable') (new \Arasya\Operations\Quality\LiveEvents($this->pdo))->cuttingChanged($nowSql);
+            // A changed cart, price or payment re-decides whether an approved Confirmare order may enter production.
+            \Arasya\Operations\Confirmare\ConfirmationClearance::refresh($this->pdo, $orderUuid, $nowSql);
             $this->insertReceipt($snapshot, $globalId, $payloadHash, 'applied', $nowSql);
             $this->touchSource($snapshot->sourceKey, $nowSql);
 
@@ -342,6 +401,72 @@ final readonly class OrderProjectionWriter
             }
             throw $e;
         }
+    }
+
+    /** WooCommerce statuses of an order that was not paid (yet): created in Arasya only for the Confirmare workflow. */
+    public const UNPAID_STATUSES = ['pending', 'on-hold'];
+    /** WooCommerce statuses that are never a submitted customer order (block checkout drafts, admin drafts). */
+    public const DRAFT_STATUSES = ['checkout-draft', 'auto-draft', 'draft'];
+
+    /**
+     * Decides the workflow cohort of an order Arasya is about to create (caller's transaction, order row locked).
+     * Refuses, before anything is written, a draft (never a customer order) and, while the source is active for
+     * Confirmare, an unpaid order outside the Confirmare cohort (an older order is never pulled into the new workflow).
+     * A source that is not active (never activated or suspended) keeps exactly its earlier behaviour. The source's
+     * activation is read under its source lock (WorkflowCohort::activation).
+     *
+     * @return array{cohort: string, reason: string}
+     */
+    private function classifyNewOrder(SourceOrderSnapshot $snapshot): array
+    {
+        $status = $snapshot->sourceCommerceStatusCode;
+        if ($status !== null && in_array($status, self::DRAFT_STATUSES, true)) {
+            throw new ApiException(422, 'SOURCE_ORDER_DRAFT', 'A draft is not a submitted order and is never created in Arasya.');
+        }
+        $cohort = WorkflowCohort::classify(WorkflowCohort::firstActivation($this->pdo, $snapshot->sourceKey, true), $snapshot->submission, $this->clock->now());
+        // Once a source was activated, an unpaid first event is received only for a Confirmare order. A suspension changes
+        // nothing here: an order submitted since the first activation stays Confirmare (held, closed), whenever it
+        // arrives; an older or unproven unpaid order is refused and sent again normally once it is processing.
+        if ($cohort['reason'] !== WorkflowCohort::REASON_NOT_ACTIVATED && $status !== null && in_array($status, self::UNPAID_STATUSES, true) && $cohort['cohort'] !== WorkflowCohort::CONFIRMARE) {
+            throw new ApiException(409, 'SOURCE_INTAKE_NOT_ELIGIBLE', 'An unpaid order is received only for the Confirmare workflow of an activated source.', ['workflowCohort' => $cohort['cohort']]);
+        }
+        return $cohort;
+    }
+
+    /**
+     * Stores the source's pricing fingerprint and due date when stated; absence keeps the stored facts. The financial
+     * clearance is replaced by every snapshot: an event without it leaves the order financially unknown (closed), so an
+     * earlier `cleared` never outlives the order state it was evaluated on.
+     */
+    private function applyCommercialFacts(string $orderUuid, SourceOrderSnapshot $snapshot): void
+    {
+        $this->pdo->prepare('UPDATE operational_orders SET source_financial_state = ?, source_financial_basis = ?, source_financial_pricing = ?, source_financial_attention = ? WHERE order_uuid = ?')
+            ->execute([$snapshot->financial['state'] ?? null, $snapshot->financial['basis'] ?? null, $snapshot->financial['pricingFingerprint'] ?? null, $snapshot->financial['attention'] ?? null, $orderUuid]);
+        // Whether the shop holds a callable telephone number (API 2.40.0): stated facts replace the stored one; an event
+        // without it (an older shop connector) keeps it.
+        if ($snapshot->contactPhone !== null) {
+            $this->pdo->prepare('UPDATE operational_orders SET source_contact_phone = ? WHERE order_uuid = ?')->execute([$snapshot->contactPhone ? 1 : 0, $orderUuid]);
+        }
+        if ($snapshot->pricingFingerprint !== null) {
+            $this->pdo->prepare('UPDATE operational_orders SET source_pricing_fingerprint = ? WHERE order_uuid = ?')->execute([$snapshot->pricingFingerprint, $orderUuid]);
+        }
+        if ($snapshot->dueDate !== null) {
+            $this->pdo->prepare('UPDATE operational_orders SET source_due_date = ? WHERE order_uuid = ?')->execute([$snapshot->dueDate, $orderUuid]);
+        }
+    }
+
+    /**
+     * Keeps the source's submission evidence of an order created without it (an order created before API 2.37.0 or
+     * before the source sent it), for diagnostics only: the stored evidence is never replaced and the workflow cohort
+     * is never decided again.
+     */
+    private function recordSubmission(string $orderUuid, SourceOrderSnapshot $snapshot): void
+    {
+        if ($snapshot->submission === null) {
+            return;
+        }
+        $this->pdo->prepare('UPDATE operational_orders SET source_submitted_at = ?, source_submission_evidence = ? WHERE order_uuid = ? AND source_submitted_at IS NULL')
+            ->execute([$snapshot->submission['submittedAt']->format('Y-m-d H:i:s.u'), $snapshot->submission['evidence'], $orderUuid]);
     }
 
     /**
@@ -423,17 +548,19 @@ final readonly class OrderProjectionWriter
     }
 
     /**
-     * Commerce status of an approved marketplace order (caller's transaction). A cancellation makes the order
-     * unavailable exactly like a source cancellation (an order already in cutting keeps its status and only
-     * records the report); any other status is shown as commerce data. Production stage, owner, items and the
-     * printed document are never changed here.
+     * Commerce status of an approved marketplace order (caller's transaction). A cancellation stops production exactly
+     * like a source cancellation, at whatever stage the order is (API 2.35.0: also after the first cutting claim); a
+     * later non-cancelled status is recorded as evidence and never releases the stop. Production stage, owner, items
+     * and the printed document are never changed here.
+     *
+     * @param string|null $eventRef the marketplace observation (package id and modification time), for the audit
      */
-    public function recordMarketplaceStatus(string $orderUuid, string $status, bool $cancelled): void
+    public function recordMarketplaceStatus(string $orderUuid, string $status, bool $cancelled, ?string $eventRef = null): void
     {
         if (!$this->pdo->inTransaction()) {
             throw new \LogicException('A marketplace status update requires the caller transaction.');
         }
-        $statement = $this->pdo->prepare('SELECT production_version, production_stage_id, operational_status, cutting_first_claimed_at FROM operational_orders WHERE order_uuid = ? FOR UPDATE');
+        $statement = $this->pdo->prepare('SELECT production_version, production_stage_id, operational_status, source_reported_unavailable_at FROM operational_orders WHERE order_uuid = ? FOR UPDATE');
         $statement->execute([$orderUuid]);
         $order = $statement->fetch(PDO::FETCH_ASSOC);
         if (!is_array($order)) {
@@ -441,11 +568,17 @@ final readonly class OrderProjectionWriter
         }
         $now = $this->clock->now()->format('Y-m-d H:i:s.u');
         $status = mb_substr($status, 0, 100);
-        $operational = $cancelled && $order['cutting_first_claimed_at'] === null ? 'unavailable' : (string) $order['operational_status'];
+        $wasUnavailable = $order['operational_status'] === 'unavailable';
+        // The marketplace availability as reported; production is governed by the cancellation control below.
+        $operational = $cancelled ? 'unavailable' : ($wasUnavailable ? 'in_progress' : (string) $order['operational_status']);
         $this->pdo->prepare('UPDATE operational_orders SET source_commerce_status_code = ?, source_commerce_status_label = ?, operational_status = ?,
                 source_reported_unavailable_at = IF(?, COALESCE(source_reported_unavailable_at, ?), source_reported_unavailable_at),
                 last_source_seen_at = ?, version = version + 1, updated_at = ? WHERE order_uuid = ?')
             ->execute([$status, $status, $operational, $cancelled ? 1 : 0, $now, $now, $now, $orderUuid]);
+        (new CancellationControl($this->pdo, $this->clock))->onSourceAvailability($orderUuid, $cancelled, $wasUnavailable, [
+            'reason' => 'marketplace_cancelled', 'statusCode' => $status, 'statusLabel' => $status, 'eventRef' => $eventRef,
+            'previousReportedAt' => $order['source_reported_unavailable_at'],
+        ]);
         if ($cancelled) {
             $life = new \Arasya\Operations\Cutting\CuttingLifecycle($this->pdo);
             $life->fact($orderUuid, (int) $order['production_version'], 'source_cancelled', null, $now);
@@ -492,8 +625,21 @@ final readonly class OrderProjectionWriter
         return $this->qrPayloadFor($globalOrderId) ?? throw new \RuntimeException('QR reference rotation failed.');
     }
 
-    /** Records a signed heartbeat so source freshness recovers without an order event. */
-    public function recordHeartbeat(string $sourceKey): void
+    /**
+     * The Confirmare activation state of a source for its heartbeat (read-only).
+     *
+     * @return array{state: string, activatedAt: string|null}
+     */
+    public function confirmareState(string $sourceKey): array
+    {
+        return WorkflowCohort::heartbeatState($this->pdo, $sourceKey, $this->clock->now());
+    }
+
+    /**
+     * Records a signed heartbeat so source freshness recovers without an order event, and the source's report of its
+     * armed local Confirmare fence when it sent one (workflow_cohort_arming; the latest report wins).
+     */
+    public function recordHeartbeat(string $sourceKey, ?\DateTimeImmutable $confirmareArmedAt = null): void
     {
         if ($sourceKey==='b2b') throw new ApiException(403,'INTERNAL_SOURCE_ONLY','B2B production is submitted through its authenticated commercial command.');
         $nowSql = $this->clock->now()->format('Y-m-d H:i:s.u');
@@ -501,6 +647,10 @@ final readonly class OrderProjectionWriter
         $stmt->execute([$nowSql, $nowSql, $sourceKey]);
         if ($stmt->rowCount() !== 1) {
             throw new ApiException(409, 'SOURCE_INACTIVE', 'The source is not registered or inactive.');
+        }
+        if ($confirmareArmedAt !== null) {
+            $this->pdo->prepare('INSERT INTO workflow_cohort_arming (source_key, armed_at, reported_at) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE armed_at = VALUES(armed_at), reported_at = VALUES(reported_at)')
+                ->execute([$sourceKey, $confirmareArmedAt->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s.u'), $nowSql]);
         }
     }
 

@@ -387,6 +387,10 @@ test('Trendyol Order V2 packages parse without customer secrets and the client i
         public function __construct(private array $fixture)
         {
         }
+        public function put(string $url, array $headers, string $body): array
+        {
+            throw new LogicException('The Order V2 client never writes.');
+        }
         public function get(string $url, array $headers): array
         {
             $this->requests[] = [$url, $headers];

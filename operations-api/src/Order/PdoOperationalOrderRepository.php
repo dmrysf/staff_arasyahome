@@ -17,12 +17,15 @@ final readonly class PdoOperationalOrderRepository implements OperationalOrderRe
             o.order_uuid, o.global_order_id, o.order_number, o.production_stage_id,
             o.source_commerce_status_code, o.source_commerce_status_label, o.production_notes,
             o.operational_status, o.version, o.production_version, o.production_owner_employee_uuid,
-            o.production_completed_at, o.open_exception_uuid, o.document_status, o.production_authority, o.payment_method, o.advance_status, o.payment_reversed_at, o.accepted_at, o.updated_at, o.source_changed_at, o.last_source_seen_at,o.production_context,
+            o.production_completed_at, o.open_exception_uuid, o.document_status, o.production_authority, o.payment_method, o.advance_status, o.payment_reversed_at, o.workflow_cohort, (SELECT c.status FROM order_confirmations c WHERE c.order_uuid = o.order_uuid) AS confirmation_status, " . \Arasya\Operations\Production\ConfirmationGate::CLEARED_SQL . " AS confirmation_cleared, o.accepted_at, o.updated_at, o.source_changed_at, o.last_source_seen_at,o.production_context,
             o.source_key,s.source_type,s.status AS source_status, s.last_contact_at AS source_last_contact_at,
             r.employee_uuid AS relation_employee_uuid, r.relation_type, r.status AS relation_status,
-            r.started_at AS relation_started_at, r.last_action_at AS relation_last_action_at
+            r.started_at AS relation_started_at, r.last_action_at AS relation_last_action_at,
+            o.production_stopped_at, c.origin AS stop_origin, c.reason_code AS stop_reason, c.source_status AS stop_source_status,
+            c.source_request_status AS stop_request, c.production_phase AS stop_phase, c.physical_status AS stop_physical
         FROM operational_orders o
         INNER JOIN order_sources s ON s.source_key = o.source_key
+        LEFT JOIN order_cancellation_controls c ON c.order_uuid = o.order_uuid AND o.cancellation_state = 'held'
     ";
 
     public function __construct(
@@ -121,7 +124,7 @@ final readonly class PdoOperationalOrderRepository implements OperationalOrderRe
         // Served by idx_cutting_pool (production_stage_id, operational_status, production_completed_at, ...).
         $statement = $this->pdo->prepare(self::SELECT . "
             LEFT JOIN employee_order_relations r ON r.order_uuid = o.order_uuid AND r.employee_uuid = ? AND r.status = 'active'
-            WHERE o.production_stage_id = ? AND o.operational_status <> 'unavailable' AND o.production_completed_at IS NULL{$sourceSql}
+            WHERE o.production_stage_id = ? AND o.operational_status <> 'unavailable' AND o.production_completed_at IS NULL AND o.production_stopped_at IS NULL{$sourceSql}
             ORDER BY COALESCE(o.production_changed_at, o.created_at) ASC, o.order_uuid ASC
             LIMIT {$max}
         ");
@@ -155,7 +158,7 @@ final readonly class PdoOperationalOrderRepository implements OperationalOrderRe
             SELECT o.production_stage_id AS stage_id, COUNT(*) AS total,
                    COALESCE(SUM(o.production_owner_employee_uuid = ?), 0) AS mine
             FROM operational_orders o
-            WHERE (' . implode(' OR ', $conditions) . ") AND o.operational_status <> 'unavailable' AND o.production_completed_at IS NULL{$trendyol}
+            WHERE (' . implode(' OR ', $conditions) . ") AND o.operational_status <> 'unavailable' AND o.production_completed_at IS NULL AND o.production_stopped_at IS NULL{$trendyol}
             GROUP BY o.production_stage_id
         ");
         $statement->execute($parameters);
@@ -224,6 +227,19 @@ final readonly class PdoOperationalOrderRepository implements OperationalOrderRe
             // Before migrations 028/029 nothing gates packing beyond the order itself.
         }
 
+        // API 2.36.0: the outbound cancellation state of the current stop, only for stopped orders (none before 034).
+        $syncByOrder = [];
+        $stopped = array_values(array_map(static fn (array $row): string => (string) $row['order_uuid'], array_filter($rows, static fn (array $row): bool => ($row['stop_origin'] ?? null) !== null)));
+        if ($stopped !== [] && \Arasya\Operations\Cancellation\Sync\SyncSchema::ready($this->pdo)) {
+            $marks = implode(',', array_fill(0, count($stopped), '?'));
+            $sync = $this->pdo->prepare("SELECT x.order_uuid, x.state FROM order_cancellation_sync_operations x JOIN order_cancellation_controls c ON c.order_uuid = x.order_uuid AND c.hold_generation = x.hold_generation
+                WHERE x.order_uuid IN ({$marks})");
+            $sync->execute($stopped);
+            foreach ($sync->fetchAll(PDO::FETCH_ASSOC) as $item) {
+                $syncByOrder[(string) $item['order_uuid']] = (string) $item['state'];
+            }
+        }
+
         $orders = [];
         foreach ($rows as $row) {
             $relation = null;
@@ -268,6 +284,10 @@ final readonly class PdoOperationalOrderRepository implements OperationalOrderRe
                 $row['payment_reversed_at'] === null ? null : (string) $row['payment_reversed_at'],
                 $tracksByOrder[(string) $row['order_uuid']] ?? [],
                 $gate[(string) $row['order_uuid']] ?? null,
+                \Arasya\Operations\Cancellation\CancellationView::staff($row + ['stop_sync' => $syncByOrder[(string) $row['order_uuid']] ?? null]),
+                $row['workflow_cohort'] === null ? null : (string) $row['workflow_cohort'],
+                $row['confirmation_status'] === null ? null : (string) $row['confirmation_status'],
+                $row['confirmation_cleared'] === null ? null : (int) $row['confirmation_cleared'] === 1,
             );
         }
         return $orders;
