@@ -257,6 +257,43 @@ $error($act($who['iboth'], $g(1), 'issue'), 403, 'CONFIRMARE_INVOICE_DENIED', 't
 $check($docsMade(2) + $docsMade(3) + $docsMade(7) + $docsMade(8) === 0 && $th->requests !== [] && !in_array('/yd-arasya/v1/confirmare/invoice-action', array_column(array_slice($th->requests, 0), 'route'), true), 'none of these refusals ever reached the shop\'s action route');
 $refused($act($who['idoc'], $g(1), 'issue', [], null, 'sha256:' . str_repeat('a', 64)), 'revision_changed', 'an action on an old revision');
 
+// ---- 4b. Every issuable handoff state; the invoice scope grants no production power ------------------------------------
+// The handoff states after the approval: ready (no ticket), print (ticket generated, not printed), awaiting_cutting
+// (printed, waiting for the cutting scan), in_production (scanned). Issuing is allowed in each; it never generates or
+// prints a ticket, never scans, never moves the stage. The invoice scope adds no permission and no stage scope.
+$cutter = $container->employeeAdmin()->create('Test icut', "icut.{$suffix}", null, 'pregatire-material', 'employee', $password, ['material-preparation'], 'test-inv');
+$ok($asRoot('PUT', "/management/employees/{$cutter->employeeUuid}/applications", ['applications' => ['staff']]), 'icut applications');
+$ok($asRoot('PUT', "/management/employees/{$cutter->employeeUuid}/stage-scopes", ['stageId' => 'material-preparation', 'sources' => ['trendhome'], 'expectedSources' => null]), 'icut cutting scope');
+$who['icut'] = $login('icut');
+$a = $me($who['idoc']);
+$b = $me($who['iview']);
+$differs = array_keys(array_filter($a, static fn ($value, $key): bool => json_encode($b[$key] ?? null) !== json_encode($value), ARRAY_FILTER_USE_BOTH));
+$check(array_values(array_diff($differs, ['employeeUuid', 'username', 'displayName', 'authorizationVersion', 'invoiceScopes'])) === [], 'the invoice scope adds nothing else to the session (same permissions, stages and scopes as the same role without it): ' . json_encode($differs));
+$docPath = static fn (string $gid, string $action): string => '/production-documents/orders/' . rawurlencode($gid) . '/' . $action;
+$docVersion = static fn (string $gid): int => (int) $one('SELECT document_version FROM operational_orders WHERE global_order_id = ?', [$gid]);
+$qr = static fn (string $gid): string => 'ARASYA:Q1:' . (string) $one("SELECT q.qr_reference FROM order_qr_references q JOIN operational_orders o ON o.order_uuid = q.order_uuid WHERE o.global_order_id = ? AND q.status = 'active'", [$gid]);
+$production = static fn (string $gid): array => $all('SELECT production_stage_id, production_owner_employee_uuid, production_version, document_status, document_version FROM operational_orders WHERE global_order_id = ?', [$gid])[0];
+$tickets = static fn (string $gid): array => [(int) $one('SELECT COUNT(*) FROM production_document_revisions r JOIN operational_orders o ON o.order_uuid = r.order_uuid WHERE o.global_order_id = ?', [$gid]), (int) $one('SELECT COUNT(*) FROM production_document_prints p JOIN operational_orders o ON o.order_uuid = p.order_uuid WHERE o.global_order_id = ?', [$gid])];
+$issuable = static fn (string $gid): array => [$read($who['idoc'], $gid)['handoff']['state'], in_array('issue', $read($who['idoc'], $gid)['allowedActions'], true)];
+$check($issuable($g(11)) === ['ready', true], 'ready: issuing allowed');
+$generated = $ok($call($who['idoc'], 'POST', $docPath($g(11), 'generate'), ['expectedDocumentVersion' => $docVersion($g(11))]), 'ticket generated', 201);
+$check($issuable($g(11)) === ['print', true], 'print (ticket generated, not printed): issuing allowed');
+$ok($call($who['idoc'], 'POST', $docPath($g(11), 'print'), ['revisionNumber' => (int) ($generated['document']['revisionNumber'] ?? $generated['revisionNumber'] ?? 1)]), 'ticket printed');
+$check($issuable($g(11)) === ['awaiting_cutting', true], 'awaiting_cutting (printed, not scanned): issuing allowed');
+$before = $production($g(11));
+$ticketsBefore = $tickets($g(11));
+$ok($act($who['idoc'], $g(11), 'issue'), 'issue while awaiting the cutting scan');
+$check($production($g(11)) === $before && $tickets($g(11)) === $ticketsBefore && $before['production_stage_id'] === 'waiting', 'issuing moved no stage, made no ticket revision and no print');
+$scan = $call($who['idoc'], 'POST', '/cutting/intake', ['qrToken' => $qr($g(11))]);
+$check(in_array($scan['status'], [403, 404], true) && $production($g(11)) === $before, 'the invoice employee cannot scan the cutting QR (' . $scan['status'] . ' ' . ($scan['body']['error']['code'] ?? '') . '); the stage stays');
+$generated12 = $ok($call($who['idoc'], 'POST', $docPath($g(12), 'generate'), ['expectedDocumentVersion' => $docVersion($g(12))]), 'ticket 12 generated', 201);
+$ok($call($who['idoc'], 'POST', $docPath($g(12), 'print'), ['revisionNumber' => (int) ($generated12['document']['revisionNumber'] ?? $generated12['revisionNumber'] ?? 1)]), 'ticket 12 printed');
+$started = $ok($call($who['icut'], 'POST', '/cutting/intake', ['qrToken' => $qr($g(12))]), 'the cutter scans');
+$check(($started['outcome'] ?? null) === 'started' && $issuable($g(12)) === ['in_production', true], 'in_production (scanned by the cutter): issuing allowed');
+$before12 = $production($g(12));
+$ok($act($who['idoc'], $g(12), 'issue'), 'issue during production');
+$check($production($g(12)) === $before12 && $before12['production_stage_id'] === 'material-preparation' && $before12['production_owner_employee_uuid'] === $cutter->employeeUuid, 'issuing during production changes neither the stage nor its owner');
+
 // ---- 5. Issue once; replay; a new key; resend; re-issue -----------------------------------------------------------------
 $k1 = 'inv-issue-0001-' . $suffix;
 $rev1 = $read($who['idoc'], $g(1))['summary']['revision'];
@@ -365,4 +402,4 @@ foreach (['order_finance_actions', 'order_finance_reads', 'employee_finance_scop
 }
 $pdo->exec('UPDATE operational_orders SET workflow_cohort = NULL, workflow_cohort_reason = NULL, workflow_cohort_at = NULL, cancellation_state = NULL, production_stopped_at = NULL WHERE workflow_cohort IS NOT NULL OR cancellation_state IS NOT NULL');
 
-fwrite(STDOUT, "PASS MySQL Confirmare invoice integration: {$checks} checks (fail closed without the draft schema, root-only scopes, roles, the confirming operator never invoices, handoff gate, cancellation hold, finance action, revision, idempotency, one document, resend confirmation, re-issue statement, unknown outcome, lost answer, 5xx, never received, two employees at once, observe, no leak)\n");
+fwrite(STDOUT, "PASS MySQL Confirmare invoice integration: {$checks} checks (fail closed without the draft schema, root-only scopes, roles, the confirming operator never invoices, handoff gate in every issuable state, no production power, cancellation hold, finance action, revision, idempotency, one document, resend confirmation, re-issue statement, unknown outcome, lost answer, 5xx, never received, two employees at once, observe, no leak)\n");

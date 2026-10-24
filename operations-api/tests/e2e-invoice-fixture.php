@@ -59,6 +59,12 @@ foreach (['ro' => ['Facturare Fisa', 'inv.docs.e2e', 'ro'], 'tr' => ['Fatura Fis
     $call($root, 'PUT', "/management/employees/{$employee->employeeUuid}/staff-locale", ['locale' => $locale]);
     $people[$key] = ['username' => $username, 'name' => $name, 'id' => $employee->employeeUuid];
 }
+// A generic TEST finance employee with every finance scope of Trend Home and nothing else: reads the SmartBill state from
+// the finance flow, never issues or sends (finance is not an invoice permission).
+$finance = $container->employeeAdmin()->create('Finante Factura', 'inv.fin.e2e', null, 'pregatire-material', 'employee', $password, [], 'e2e');
+$call($root, 'PUT', "/management/employees/{$finance->employeeUuid}/applications", ['applications' => ['staff']]);
+$call($root, 'PUT', "/management/employees/{$finance->employeeUuid}/finance-scopes", ['view' => ['trendhome'], 'record' => ['trendhome'], 'approve' => ['trendhome']]);
+$people['fin'] = ['username' => 'inv.fin.e2e', 'name' => 'Finante Factura', 'id' => $finance->employeeUuid];
 
 // One approved, paid Confirmare order (TEST prices): ingested like YD SOFT sends it, approved by a Confirmare operator.
 $number = '91020';
