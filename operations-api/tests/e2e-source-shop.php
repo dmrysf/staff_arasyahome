@@ -40,6 +40,10 @@ try {
     $shop->products = is_array($fixture['products'] ?? null) ? $fixture['products'] : [];
     // Phase 5: the shop's stored answers of finance actions persist too (a lost answer is reconciled with them).
     $shop->financeAnswers = is_array($fixture['financeAnswers'] ?? null) ? $fixture['financeAnswers'] : [];
+    // API 2.43.0: the shop's stored invoice answers and the TEST SmartBill documents and e-mails persist too.
+    $shop->invoiceAnswers = is_array($fixture['invoiceAnswers'] ?? null) ? $fixture['invoiceAnswers'] : [];
+    $shop->smartbillDocuments = is_array($fixture['smartbillDocuments'] ?? null) ? $fixture['smartbillDocuments'] : [];
+    $shop->smartbillMails = is_array($fixture['smartbillMails'] ?? null) ? $fixture['smartbillMails'] : [];
     $headers = [];
     foreach ($_SERVER as $name => $value) {
         if (str_starts_with($name, 'HTTP_')) {
@@ -48,8 +52,10 @@ try {
     }
     $answer = $shop->handle(substr($path, strlen('/wp-json')), $headers, (string) file_get_contents('php://input'));
     file_put_contents($nonceFile, json_encode($shop->nonces));
-    if (is_array($fixture) && ($shop->orders !== ($fixture['orders'] ?? []) || $shop->edits !== ($fixture['edits'] ?? []) || $shop->financeAnswers !== ($fixture['financeAnswers'] ?? []))) {
-        file_put_contents($file, json_encode(['orders' => $shop->orders, 'edits' => $shop->edits, 'financeAnswers' => $shop->financeAnswers] + $fixture, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+    if (is_array($fixture) && ($shop->orders !== ($fixture['orders'] ?? []) || $shop->edits !== ($fixture['edits'] ?? []) || $shop->financeAnswers !== ($fixture['financeAnswers'] ?? [])
+        || $shop->invoiceAnswers !== ($fixture['invoiceAnswers'] ?? []) || $shop->smartbillDocuments !== ($fixture['smartbillDocuments'] ?? []))) {
+        file_put_contents($file, json_encode(['orders' => $shop->orders, 'edits' => $shop->edits, 'financeAnswers' => $shop->financeAnswers, 'invoiceAnswers' => $shop->invoiceAnswers,
+            'smartbillDocuments' => $shop->smartbillDocuments, 'smartbillMails' => $shop->smartbillMails] + $fixture, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
     }
 } finally {
     flock($lock, LOCK_UN);

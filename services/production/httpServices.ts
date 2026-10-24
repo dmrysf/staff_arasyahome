@@ -14,6 +14,7 @@ import { createBrowserWorkflowCache, createUnavailableWorkflowCache, normalizePr
 import { createProductionWorkflowService } from "./workflowService";
 import type { ShopLine, ShopOrderDetail, ShopPerson, ShopRead } from "../../domain/confirmareShop";
 import { FINANCE_ACTIONS, FINANCE_NEXT, FINANCE_TASKS, type FinanceEntry, type FinanceOutcome, type FinanceQueue, type FinanceQueueItem, type FinanceRead, type FinanceSummary, type FinanceTask, type FinanceTimelineItem } from "../../domain/confirmareFinance";
+import { INVOICE_ACTIONS, INVOICE_ROLES, type InvoiceActionKey, type InvoiceOutcome, type InvoiceRead, type InvoiceSummary, type InvoiceView } from "../../domain/confirmareInvoice";
 import { EDIT_IMPACTS, type EditBlocker, type EditCatalog, type EditField, type EditLineSnapshot, type EditOutcome, type EditProduct, type EditResult, type EditTotals, type EditVariation, type OpenEdit } from "../../domain/confirmareEdit";
 import { CLEARANCE_CONDITIONS, CONTACT_OUTCOMES, DOCUMENT_STATES, FINANCIAL_ATTENTION, HANDOFF_BLOCKERS, HANDOFF_STATES, type ConfirmareAlert, type ConfirmareApi, type ConfirmareAvailability, type ConfirmareContact, type ConfirmareCustomer, type ConfirmareDetail, type ConfirmareEvent, type ConfirmareHandoff, type ConfirmareItem, type HandoffItem, type ConfirmareLine, type ConfirmareOperator, type ConfirmarePool, type ConfirmareTeam, type FinancialState } from "../../domain/confirmare";
 
@@ -227,6 +228,7 @@ export function mapProductionEmployee(value: unknown): Employee {
     locale: normalizeLocale(raw.locale),
     confirmareScopes: mapConfirmareScopes(raw.confirmareScopes),
     financeScopes: mapFinanceScopes(raw.financeScopes),
+    invoiceScopes: mapInvoiceScopes(raw.invoiceScopes),
   };
 }
 
@@ -236,6 +238,14 @@ function mapFinanceScopes(value: unknown): { view: string[]; record: string[]; a
   const raw = value as Record<string, unknown>;
   const list = (entry: unknown): string[] => Array.isArray(entry) && entry.every((item) => typeof item === "string") ? entry as string[] : [];
   return { view: list(raw.view), record: list(raw.record), approve: list(raw.approve) };
+}
+
+/** Optional (API 2.43.0); an older API or a malformed value shows no invoice scope. */
+function mapInvoiceScopes(value: unknown): { issue: string[]; manage: string[] } {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return { issue: [], manage: [] };
+  const raw = value as Record<string, unknown>;
+  const list = (entry: unknown): string[] => Array.isArray(entry) && entry.every((item) => typeof item === "string") ? entry as string[] : [];
+  return { issue: list(raw.issue), manage: list(raw.manage) };
 }
 
 /** Optional (API 2.39.0); an older API or a malformed value grants no Confirmare screen. */
@@ -1135,6 +1145,10 @@ export function createProductionServices(apiBaseUrl: string, options: Production
     financeAct: (globalOrderId, action, input, key) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/finance/${action.replace(/_/g, "-")}`, { method: "POST", cache: "no-store", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapFinanceOutcome),
     financeReconcile: (globalOrderId, key) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/finance/reconcile`, { method: "POST", cache: "no-store", body: JSON.stringify({ idempotencyKey: key }) }, mapFinanceOutcome),
     financeQueue: (task, source, signal) => http.request(`/confirmare/finance${task || source ? `?${new URLSearchParams({ ...(task ? { task } : {}), ...(source ? { source } : {}) }).toString()}` : ""}`, { signal, cache: "no-store" }, mapFinanceQueue),
+    // SmartBill invoicing (API 2.43.0): the state is read when shown, never cached; actions need an Idempotency-Key.
+    invoiceRead: (globalOrderId, signal) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/invoice`, { signal, cache: "no-store" }, mapInvoiceRead),
+    invoiceAct: (globalOrderId, action, input, key) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/invoice/${action.replace(/_/g, "-")}`, { method: "POST", cache: "no-store", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapInvoiceOutcome),
+    invoiceReconcile: (globalOrderId, key) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/invoice/reconcile`, { method: "POST", cache: "no-store", body: JSON.stringify({ idempotencyKey: key }) }, mapInvoiceOutcome),
   };
   return { physical, auth, employee, orders, activity, workflow, exceptions, live, cutting, documents, authority, productionQr, trendyol, workspace, management, pieces, confirmare, mode: "production" };
 }
@@ -1161,6 +1175,8 @@ export function confirmareErrorDetails(value: unknown): Record<string, unknown> 
   if (typeof raw.reason === "string" && /^[a-z_]{2,60}$/.test(raw.reason)) out.editReason = raw.reason;
   if (typeof raw.version === "string" && /^sha256:[0-9a-f]{64}$/.test(raw.version)) out.editVersion = raw.version;
   if (Array.isArray(raw.blockers)) { try { out.editBlockers = listOf(raw.blockers, 100, mapEditBlocker); } catch { out.editBlockers = []; } }
+  // API 2.43.0: the invoice refusal codes (Arasya's or the shop's) behind a refused invoice action.
+  if (Array.isArray(raw.blockers) && raw.blockers.length <= 40 && raw.blockers.every((item) => typeof item === "string" && /^[a-z_]{2,60}$/.test(item))) out.invoiceBlockers = raw.blockers;
   // Phase 5: the shop's current finance revision after a refused finance action (`reason` is editReason above).
   if (typeof raw.revision === "string" && /^sha256:[0-9a-f]{64}$/.test(raw.revision)) out.financeRevision = raw.revision;
   return out;
@@ -1274,6 +1290,11 @@ export function mapConfirmareDetail(value: unknown): ConfirmareDetail {
     events: Array.isArray(raw.events) ? raw.events.map(mapConfirmareEvent) : [],
     // An older API (2.41) has no handoff state: the panel is not shown.
     handoff: raw.handoff == null ? null : mapConfirmareHandoff(raw.handoff),
+    // An older API (2.42) has no invoicing: nothing can be read or issued.
+    invoice: raw.invoice == null ? { configured: false, read: false, issue: false, manage: false } : (() => {
+      const invoice = objectValue(raw.invoice);
+      return { configured: invoice.configured === true, read: invoice.read === true, issue: invoice.issue === true, manage: invoice.manage === true };
+    })(),
     // An older API (2.40) has no finance: nothing can be read or recorded.
     finance: raw.finance == null ? { configured: false, read: false, record: false, approve: false } : (() => {
       const finance = objectValue(raw.finance);
@@ -1536,6 +1557,85 @@ export function mapFinanceQueue(value: unknown): FinanceQueue {
     orders: listOf(raw.orders, 500, mapFinanceQueueItem),
     sources: stringList(raw.sources),
   };
+}
+
+
+// ---- SmartBill invoicing (API 2.43.0): strict; anything unexpected is refused, never half shown
+const INVOICE_KEYS = ["issue", "sendMail", "reissue", "resolve"] as const;
+const invoiceCodes = (value: unknown): string[] => listOf(value, 40, (code) => { const text = textValue(code, 60); if (!/^[a-z_]{2,60}$/.test(text)) throw new StaffServiceError("SERVER_ERROR"); return text; });
+const invoiceUuid = (value: unknown): string | null => (value == null ? null : uuidValue(value));
+const invoiceText = (value: unknown, max: number): string | null => (value == null ? null : textValue(value, max));
+const invoiceInstant = (value: unknown): string | null => (value == null ? null : timestampValue(value));
+function invoiceLink(value: unknown): string | null {
+  if (value == null) return null;
+  const text = textValue(value, 1000);
+  let url: URL;
+  try { url = new URL(text); } catch { throw new StaffServiceError("SERVER_ERROR"); }
+  const host = url.hostname.toLowerCase();
+  if (url.protocol !== "https:" || url.username || url.password || url.port || (host !== "smartbill.ro" && !host.endsWith(".smartbill.ro"))) throw new StaffServiceError("SERVER_ERROR");
+  return url.toString();
+}
+function mapInvoiceSummary(value: unknown): InvoiceSummary {
+  const raw = objectValue(value);
+  const smartbill = objectValue(raw.smartbill);
+  const order = objectValue(raw.order);
+  const financial = objectValue(raw.financial);
+  const document = objectValue(raw.document);
+  const operation = objectValue(raw.operation);
+  const mail = objectValue(raw.mail);
+  const blockers = objectValue(raw.blockers);
+  return {
+    readAt: timestampValue(raw.readAt), revision: textValue(raw.revision, 71), mode: oneOf(raw.mode, ["observe", "enforce"] as const),
+    smartbill: { available: booleanValue(smartbill.available), reason: invoiceText(smartbill.reason, 60), documentType: oneOf(smartbill.documentType, ["invoice", "proforma"] as const), autoEmail: booleanValue(smartbill.autoEmail),
+      cashing: booleanValue(smartbill.cashing), draft: booleanValue(smartbill.draft), mailSupported: booleanValue(smartbill.mailSupported), autoIssue: booleanValue(smartbill.autoIssue) },
+    order: { id: textValue(order.id, 20), number: textValue(order.number, 64), status: textValue(order.status, 40), total: textValue(order.total, 20), currency: textValue(order.currency, 3), billingEmail: booleanValue(order.billingEmail) },
+    financial: { state: textValue(financial.state, 20), basis: invoiceText(financial.basis, 40), attention: invoiceText(financial.attention, 40), pending: booleanValue(financial.pending) },
+    document: {
+      exists: booleanValue(document.exists), type: document.type == null ? null : oneOf(document.type, ["invoice", "proforma"] as const), series: invoiceText(document.series, 40), number: invoiceText(document.number, 40),
+      status: document.status == null ? null : oneOf(document.status, ["final", "draft"] as const), conflict: booleanValue(document.conflict), through: document.through == null ? null : oneOf(document.through, ["arasya", "shop"] as const),
+      issuedAt: invoiceInstant(document.issuedAt), issuedBy: invoiceUuid(document.issuedBy), total: invoiceText(document.total, 20), currency: invoiceText(document.currency, 3),
+      outdated: document.outdated == null ? null : booleanValue(document.outdated), link: invoiceLink(document.link),
+    },
+    operation: { state: oneOf(operation.state, ["none", "in_flight", "issued", "unknown"] as const), kind: invoiceText(operation.kind, 20), startedAt: invoiceInstant(operation.startedAt), by: invoiceUuid(operation.by), error: invoiceText(operation.error, 40) },
+    mail: { state: oneOf(mail.state, ["none", "smartbill", "in_flight", "sent", "unknown", "failed"] as const), at: invoiceInstant(mail.at), by: invoiceUuid(mail.by), count: nonNegativeInteger(mail.count) },
+    history: listOf(raw.history, 50, (entry) => {
+      const item = objectValue(entry);
+      const reason = item.reason == null ? null : objectValue(item.reason);
+      return { kind: textValue(item.kind, 30), at: invoiceInstant(item.at), by: invoiceUuid(item.by), outcome: textValue(item.outcome, 20), reason: reason === null ? null : { code: textValue(reason.code, 30), note: textValue(reason.note, 300) },
+        series: invoiceText(item.series, 40), number: invoiceText(item.number, 40) };
+    }),
+    blockers: Object.fromEntries(INVOICE_KEYS.map((key) => [key, invoiceCodes(blockers[key])])) as Record<InvoiceActionKey, string[]>,
+  };
+}
+function mapInvoiceView(raw: Record<string, unknown>): InvoiceView {
+  const handoff = objectValue(raw.handoff);
+  const blockers = objectValue(raw.blockers);
+  return {
+    summary: mapInvoiceSummary(raw.summary),
+    handoff: { state: textValue(handoff.state, 30), blockers: invoiceCodes(handoff.blockers) },
+    blockers: Object.fromEntries(INVOICE_KEYS.map((key) => [key, invoiceCodes(blockers[key])])) as Record<InvoiceActionKey, string[]>,
+    allowedActions: listOf(raw.allowedActions, 4, (action) => oneOf(action, INVOICE_KEYS)),
+    actionOpen: booleanValue(raw.actionOpen),
+    timeline: listOf(raw.timeline, 200, (entry) => {
+      const item = objectValue(entry);
+      return { employeeId: uuidValue(item.employeeId), role: textValue(item.role, 12), action: oneOf(item.action, INVOICE_ACTIONS), reasonCode: invoiceText(item.reasonCode, 30), idempotencyKey: textValue(item.idempotencyKey, 100),
+        state: oneOf(item.state, ["pending", "applied", "rejected", "unknown"] as const), outcome: invoiceText(item.outcome, 40), result: invoiceText(item.result, 20), requestedAt: timestampValue(item.requestedAt), completedAt: invoiceInstant(item.completedAt) };
+    }),
+    employees: Object.fromEntries(Object.entries(objectValue(raw.employees)).map(([id, name]) => [id, textValue(name, 200)])),
+    me: uuidValue(raw.me),
+  };
+}
+export function mapInvoiceRead(value: unknown): InvoiceRead {
+  const raw = objectValue(value);
+  if (raw.available !== true) return { available: false, reason: textValue(raw.reason, 60) };
+  return { available: true, role: oneOf(raw.role, INVOICE_ROLES), ...mapInvoiceView(raw) };
+}
+export function mapInvoiceOutcome(value: unknown): InvoiceOutcome {
+  const raw = objectValue(value);
+  const state = oneOf(raw.state, ["applied", "pending", "unknown"] as const);
+  if (state !== "applied") return { state, idempotencyKey: textValue(raw.idempotencyKey, 100), ...(typeof raw.reachable === "boolean" ? { reachable: raw.reachable } : {}) };
+  // The view after an applied action is optional (a replayed key answers with the result only).
+  return { state, idempotencyKey: textValue(raw.idempotencyKey, 100), result: invoiceText(raw.result, 20), ...(raw.summary == null ? {} : mapInvoiceView(raw)) };
 }
 
 function mapConfirmareOperator(value: unknown): ConfirmareOperator {

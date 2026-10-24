@@ -1,6 +1,7 @@
 import { confirmareSI } from "./confirmare";
 import { confirmareShopSI } from "./confirmareShop";
 import { confirmareFinanceSI } from "./confirmareFinance";
+import { confirmareInvoiceSI } from "./confirmareInvoice";
 import { confirmareHandoffSI } from "./confirmareHandoff";
 import { confirmareEditSI } from "./confirmareEdit";
 import { physicalSI } from "./physical";
@@ -18,6 +19,7 @@ export const si: Catalog = {
   ...confirmareSI,
   ...confirmareShopSI,
   ...confirmareFinanceSI,
+  ...confirmareInvoiceSI,
   ...confirmareHandoffSI,
   ...confirmareEditSI,
 

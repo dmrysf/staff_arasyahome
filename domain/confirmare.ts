@@ -3,6 +3,7 @@ import { t, type MessageKey } from "../i18n";
 import type { ShopRead, SourceAccessCapabilities } from "./confirmareShop";
 import type { ConfirmareEditApi } from "./confirmareEdit";
 import { canUseFinance, financeScopesOf, type ConfirmareFinanceApi, type FinanceCapabilities } from "./confirmareFinance";
+import type { ConfirmareInvoiceApi, InvoiceCapabilities } from "./confirmareInvoice";
 
 /**
  * Staff Confirmare workspace (API 2.39.0, Phase 3; the shop's own order, API 2.40.0, Phase 4A). New Trend Home and
@@ -114,6 +115,8 @@ export type ConfirmareDetail = ConfirmareItem & {
   finance: FinanceCapabilities;
   /** API 2.42.0: the production handoff; null from an older API. */
   handoff: ConfirmareHandoff | null;
+  /** API 2.43.0: whether the order's SmartBill document can be read, issued or managed by the signed-in employee. */
+  invoice: InvoiceCapabilities;
 };
 
 export type ConfirmareOperator = { employeeId: string; displayName: string; sources: string[]; canWork: boolean; available: boolean; availableChangedAt: string | null; lastAssignedAt: string | null; open: number; oldestAssignedAt: string | null };
@@ -123,7 +126,7 @@ export type ConfirmareAvailability = { employeeId: string; available: boolean; c
 
 export type ApproveInput = { expectedVersion: number; customerCall: "confirmed"; confirmedLineIds: string[]; priceVerified: true; reviewFingerprint: string };
 
-export interface ConfirmareApi extends ConfirmareEditApi, ConfirmareFinanceApi {
+export interface ConfirmareApi extends ConfirmareEditApi, ConfirmareFinanceApi, ConfirmareInvoiceApi {
   pool(view: ConfirmareView, source: string | null, signal?: AbortSignal): Promise<ConfirmarePool>;
   /** API 2.42.0: the production handoff list (document generate permission; no Confirmare scope needed). */
   handoffList(source: string | null, signal?: AbortSignal): Promise<HandoffItem[]>;

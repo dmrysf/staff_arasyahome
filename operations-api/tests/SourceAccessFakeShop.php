@@ -25,6 +25,13 @@ use Closure;
  * another employee verifies it, the summary revision binds every action, bank references are unique across orders,
  * a refund needs `productionComplete`, an acknowledged liability and the manual refunds switch. Fixture key `finance`:
  * ['cod' => bool, 'total' => '650.00', 'paid' => '500.00' (online), 'collected' => '0.00' (COD), 'pricing' => 'sha256:…'].
+ *
+ * SmartBill invoicing (API 2.43.0): the invoice routes (invoice, invoice-action, invoice-status) with the shop's rules
+ * that matter to Operations (YD SOFT 2.17.0 InvoiceSummary/InvoiceActions/InvoicePolicy): one document per order, the
+ * summary revision, idempotency per employee and key, the money blockers, a resend confirmation, the manager's re-issue
+ * statement, an unknown outcome blocking a new document until a manager resolves it. Fixture key `invoice`:
+ * ['cleared' => bool, 'documentType' => 'invoice'|'proforma', 'autoEmail' => bool]. Knobs: `invoiceOutcome` of the next
+ * SmartBill call (created | unknown | refused), `afterInvoice` (answer_lost | crash).
  */
 final class SourceAccessFakeShop implements SourceAccessTransport
 {
@@ -54,6 +61,18 @@ final class SourceAccessFakeShop implements SourceAccessTransport
     public string $financeRefunds = 'manual';
     /** @var array<string, array{order: string, hash: string, status: int, body: array<string, mixed>}> employee|key => stored answer */
     public array $financeAnswers = [];
+    /** SmartBill knobs: the outcome of the next SmartBill call; 'answer_lost' / 'crash' after the shop ran an action. */
+    public string $invoiceOutcome = 'created';
+    public ?string $afterInvoice = null;
+    public bool $invoiceActions = true;
+    /** Overrides the SmartBill link of the next invoice states (a shop answering with a foreign link). */
+    public ?string $invoiceLinkOverride = null;
+    /** @var array<string, array{order: string, hash: string, status: int, body: array<string, mixed>}> employee|key => stored answer */
+    public array $invoiceAnswers = [];
+    /** Documents "made in SmartBill" by this TEST shop: orderId => count. */
+    public array $smartbillDocuments = [];
+    /** E-mails "sent by SmartBill" by this TEST shop: orderId => count. */
+    public array $smartbillMails = [];
 
     /** @param array<string, array<string, mixed>> $orders orderId => fixture */
     public function __construct(
@@ -100,7 +119,7 @@ final class SourceAccessFakeShop implements SourceAccessTransport
         if ($this->during !== null) {
             ($this->during)($input);
         }
-        $routes = ['detail', 'catalog', 'product', 'preview', 'apply', 'edit-status', 'finance', 'finance-action', 'finance-status'];
+        $routes = ['detail', 'catalog', 'product', 'preview', 'apply', 'edit-status', 'finance', 'finance-action', 'finance-status', 'invoice', 'invoice-action', 'invoice-status'];
         $action = substr($route, strlen('/yd-arasya/v1/confirmare/'));
         if (!str_starts_with($route, '/yd-arasya/v1/confirmare/') || !in_array($action, $routes, true) || !is_array($input)) {
             return $this->answer(400, ['error' => ['code' => 'invalid_request']], $nonce);
@@ -114,6 +133,13 @@ final class SourceAccessFakeShop implements SourceAccessTransport
         }
         if ($action === 'detail') {
             return $this->answer(200, self::detail($order, $now), $nonce);
+        }
+        if (str_starts_with($action, 'invoice')) {
+            [$status, $payload] = $this->invoice($action, (string) $order['id'], $input, $now);
+            if ($status === 0) {
+                throw new \Arasya\Operations\Integration\SourceAccess\SourceAccessException('SOURCE_UNREACHABLE');
+            }
+            return $this->answer($status, $payload, $nonce);
         }
         if (str_starts_with($action, 'finance')) {
             [$status, $payload] = $this->finance($action, (string) $order['id'], $input, $now);
@@ -425,6 +451,193 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             'financial' => ['state' => $n['state'], 'basis' => $n['basis'], 'attention' => $n['attention']],
             'entries' => array_map(static fn (array $e): array => array_diff_key($e, ['pricing' => true]), $f['entries'] ?? []),
             'capabilities' => ['record' => $this->financeRecord, 'refunds' => $this->financeRefunds, 'electronicRefund' => false],
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $input
+     * @return array{0: int, 1: array<string, mixed>}
+     */
+    private function invoice(string $route, string $orderId, array $input, int $now): array
+    {
+        $employee = (string) ($input['actor']['employeeId'] ?? '');
+        $role = $input['actor']['role'] ?? null;
+        $this->orders[$orderId]['invoice'] ??= [];
+        $i = &$this->orders[$orderId]['invoice'];
+        $i += ['cleared' => true, 'documentType' => 'invoice', 'autoEmail' => false, 'document' => null, 'op' => 'none', 'opKey' => null, 'mail' => 'none', 'mailCount' => 0, 'history' => []];
+        if ($route === 'invoice') {
+            return in_array($role, ['documents', 'manager', 'finance', 'viewer'], true) ? [200, $this->invoiceSummary($orderId, $now, (string) $role)] : [400, ['error' => ['code' => 'invalid_request']]];
+        }
+        if (!in_array($role, ['documents', 'manager'], true)) {
+            return [400, ['error' => ['code' => 'invalid_request']]];
+        }
+        if ($route === 'invoice-status') {
+            $author = (string) ($input['actionEmployeeId'] ?? $employee);
+            $stored = $this->invoiceAnswers[$author . '|' . ($input['idempotencyKey'] ?? '')] ?? null;
+            if ($stored === null || $stored['order'] !== $orderId) {
+                if ($i['opKey'] === $author . '|' . ($input['idempotencyKey'] ?? '')) {
+                    return [200, ['state' => $i['op'] === 'issued' ? 'applied' : 'unknown']];
+                }
+                return [200, ['state' => 'absent']];
+            }
+            $state = $stored['status'] === 200 ? 'applied' : ($stored['status'] === 202 ? 'unknown' : 'rejected');
+            return [200, ['state' => $state, 'status' => $stored['status'], 'result' => $stored['body']]];
+        }
+        if (!$this->invoiceActions) {
+            return [409, ['error' => ['code' => 'invoice_disabled']]];
+        }
+        $action = (string) ($input['action'] ?? '');
+        if (($action === 'reissue' || $action === 'resolve') && $role !== 'manager') {
+            return [400, ['error' => ['code' => 'invalid_request']]];
+        }
+        $key = $employee . '|' . ($input['idempotencyKey'] ?? '');
+        $request = $input;
+        unset($request['requestId'], $request['actor']);
+        $hash = hash('sha256', (string) json_encode($request));
+        if (isset($this->invoiceAnswers[$key])) {
+            $stored = $this->invoiceAnswers[$key];
+            return $stored['hash'] === $hash && $stored['order'] === $orderId ? [$stored['status'], $stored['body']] : [409, ['error' => ['code' => 'idempotency_conflict']]];
+        }
+        $revision = $this->invoiceRevision($orderId);
+        $keep = function (int $status, array $body) use ($key, $orderId, $hash): array {
+            $this->invoiceAnswers[$key] = ['order' => $orderId, 'hash' => $hash, 'status' => $status, 'body' => $body];
+            return [$status, $body];
+        };
+        $refuse = static fn (string $code, array $blockers = []) => $keep(409, ['error' => ['code' => $code], 'blockers' => $blockers === [] ? [$code] : $blockers, 'revision' => $revision]);
+        if (($input['expectedRevision'] ?? null) !== $revision) {
+            return $keep(409, ['error' => ['code' => 'revision_changed'], 'revision' => $revision]);
+        }
+        $blockers = $this->invoiceBlockers($orderId, $action);
+        if ($action === 'send_mail' && in_array($i['mail'], ['smartbill', 'sent', 'unknown'], true) && ($input['confirmResend'] ?? false) !== true) {
+            $blockers[] = 'resend_confirmation_required';
+        }
+        if ($action === 'reissue' && $i['documentType'] === 'invoice' && ($input['previousCancelled'] ?? false) !== true) {
+            $blockers[] = 'reissue_attestation_required';
+        }
+        if ($blockers !== []) {
+            return $refuse($blockers[0], $blockers);
+        }
+        if ($action === 'resolve') {
+            if (($input['target'] ?? '') === 'document') {
+                $i['op'] = ($input['resolution'] ?? '') === 'issued' ? 'issued' : ($i['document'] === null ? 'none' : 'issued');
+                if ($i['op'] === 'issued' && $i['document'] === null) {
+                    $i['document'] = ['series' => 'TST', 'number' => null];
+                }
+            } else {
+                $i['mail'] = ($input['resolution'] ?? '') === 'sent' ? 'sent' : 'failed';
+            }
+            $i['history'][] = ['kind' => 'resolve_' . ($input['target'] ?? ''), 'at' => $now, 'by' => $employee, 'outcome' => (string) ($input['resolution'] ?? '')];
+            return $this->invoiceAfter($keep(200, ['protocol' => 1, 'applied' => true, 'action' => 'resolve', 'result' => (string) $input['resolution'], 'summary' => $this->invoiceSummary($orderId, $now, (string) $role)]));
+        }
+        if ($action === 'send_mail') {
+            $i['mail'] = 'sent';
+            $i['mailCount']++;
+            $this->smartbillMails[$orderId] = ($this->smartbillMails[$orderId] ?? 0) + 1;
+            $i['history'][] = ['kind' => 'send_mail', 'at' => $now, 'by' => $employee, 'outcome' => 'sent'];
+            return $this->invoiceAfter($keep(200, ['protocol' => 1, 'applied' => true, 'action' => 'send_mail', 'result' => 'sent', 'summary' => $this->invoiceSummary($orderId, $now, (string) $role)]));
+        }
+        // issue or reissue: one SmartBill call.
+        $outcome = $this->invoiceOutcome;
+        $this->invoiceOutcome = 'created';
+        if ($outcome === 'refused') {
+            $i['history'][] = ['kind' => $action, 'at' => $now, 'by' => $employee, 'outcome' => 'refused'];
+            return $keep(409, ['error' => ['code' => 'smartbill_refused'], 'revision' => $this->invoiceRevision($orderId)]);
+        }
+        $this->smartbillDocuments[$orderId] = ($this->smartbillDocuments[$orderId] ?? 0) + 1;
+        if ($outcome === 'unknown') {
+            $i['op'] = 'unknown';
+            $i['opKey'] = $key;
+            $i['history'][] = ['kind' => $action, 'at' => $now, 'by' => $employee, 'outcome' => 'unknown'];
+            return $this->invoiceAfter($keep(202, ['protocol' => 1, 'applied' => false, 'action' => $action, 'result' => 'unknown', 'summary' => $this->invoiceSummary($orderId, $now, (string) $role)]));
+        }
+        // Numbers continue across requests (the HTTP shop keeps smartbillDocuments in its fixture file).
+        $i['document'] = ['series' => $i['documentType'] === 'proforma' ? 'PRF' : 'TST', 'number' => sprintf('%04d', array_sum($this->smartbillDocuments)), 'at' => $now, 'by' => $employee];
+        $i['op'] = 'issued';
+        $i['opKey'] = $key;
+        if ($i['autoEmail']) {
+            $i['mail'] = 'smartbill';
+        } else {
+            $i['mail'] = 'sent';
+            $this->smartbillMails[$orderId] = ($this->smartbillMails[$orderId] ?? 0) + 1;
+        }
+        $i['mailCount']++;
+        $i['history'][] = ['kind' => $action, 'at' => $now, 'by' => $employee, 'outcome' => 'issued'];
+        return $this->invoiceAfter($keep(200, ['protocol' => 1, 'applied' => true, 'action' => $action, 'result' => 'issued', 'summary' => $this->invoiceSummary($orderId, $now, (string) $role)]));
+    }
+
+    /** @param array{0: int, 1: array<string, mixed>} $answer @return array{0: int, 1: array<string, mixed>} */
+    private function invoiceAfter(array $answer): array
+    {
+        $after = $this->afterInvoice;
+        $this->afterInvoice = null;
+        return match ($after) {
+            'answer_lost' => [0, []],
+            'crash' => [500, ['error' => ['code' => 'internal_error']]],
+            default => $answer,
+        };
+    }
+
+    /** @return list<string> */
+    private function invoiceBlockers(string $orderId, string $action): array
+    {
+        $i = $this->orders[$orderId]['invoice'];
+        if ($action === 'resolve') {
+            return $i['op'] === 'unknown' || $i['mail'] === 'unknown' ? [] : ['nothing_to_resolve'];
+        }
+        $blockers = [];
+        if ($i['op'] === 'unknown') {
+            $blockers[] = 'operation_unknown';
+        }
+        if ($action === 'send_mail') {
+            return $i['document'] === null ? [...$blockers, 'document_missing'] : $blockers;
+        }
+        if ($action === 'issue' && $i['document'] !== null) {
+            $blockers[] = 'document_exists';
+        }
+        if ($action === 'reissue' && $i['document'] === null) {
+            $blockers[] = 'document_missing';
+        }
+        if (!$i['cleared']) {
+            $blockers[] = 'payment_not_cleared';
+        }
+        return $blockers;
+    }
+
+    private function invoiceRevision(string $orderId): string
+    {
+        $i = $this->orders[$orderId]['invoice'];
+        unset($i['history']);
+        return 'sha256:' . hash('sha256', (string) json_encode($i));
+    }
+
+    /** The InvoiceSummary shape YD SOFT 2.17.0 answers, with TEST data. @return array<string, mixed> */
+    public function invoiceSummary(string $orderId, int $now, string $role): array
+    {
+        $o = $this->orders[$orderId];
+        $i = $o['invoice'];
+        $doc = $i['document'];
+        $blockers = [];
+        foreach (['issue' => 'issue', 'sendMail' => 'send_mail', 'reissue' => 'reissue', 'resolve' => 'resolve'] as $name => $action) {
+            $blockers[$name] = $this->invoiceActions ? $this->invoiceBlockers($orderId, $action) : ['invoice_observe'];
+        }
+        return [
+            'protocol' => 1,
+            'readAt' => gmdate('Y-m-d\TH:i:s\Z', $now),
+            'revision' => $this->invoiceRevision($orderId),
+            'mode' => $this->invoiceActions ? 'enforce' : 'observe',
+            'smartbill' => ['available' => true, 'reason' => null, 'documentType' => $i['documentType'], 'autoEmail' => $i['autoEmail'], 'cashing' => false, 'draft' => false, 'mailSupported' => true, 'autoIssue' => false],
+            'order' => ['id' => (string) $o['id'], 'number' => (string) ($o['number'] ?? $o['id']), 'status' => 'processing', 'total' => '719.00', 'currency' => 'RON', 'billingEmail' => true],
+            'financial' => ['state' => $i['cleared'] ? 'cleared' : 'waiting', 'basis' => $i['cleared'] ? 'online_payment' : null, 'attention' => null, 'pending' => false],
+            'document' => [
+                'exists' => $doc !== null, 'type' => $doc === null ? null : $i['documentType'], 'series' => $doc['series'] ?? null, 'number' => $doc['number'] ?? null, 'status' => $doc === null ? null : 'final',
+                'conflict' => false, 'through' => $doc === null ? null : 'arasya', 'issuedAt' => isset($doc['at']) ? gmdate('Y-m-d\TH:i:s\Z', $doc['at']) : null, 'issuedBy' => $doc['by'] ?? null,
+                'total' => $doc === null ? null : '719.00', 'currency' => $doc === null ? null : 'RON', 'outdated' => $doc === null ? null : false,
+                'link' => $doc !== null && $doc['number'] !== null && in_array($role, ['documents', 'manager'], true) ? ($this->invoiceLinkOverride ?? 'https://cloud.smartbill.ro/core/factura/vizualizare/?serie=TST&numar=' . $doc['number']) : null,
+            ],
+            'operation' => ['state' => $i['op'], 'kind' => $i['op'] === 'none' ? null : 'issue', 'startedAt' => null, 'by' => null, 'error' => null],
+            'mail' => ['state' => $i['mail'], 'at' => null, 'by' => null, 'count' => $i['mailCount']],
+            'history' => array_map(static fn (array $h): array => ['kind' => $h['kind'], 'at' => gmdate('Y-m-d\TH:i:s\Z', $h['at']), 'by' => $h['by'], 'outcome' => $h['outcome'], 'reason' => null, 'series' => null, 'number' => null], array_reverse($i['history'])),
+            'blockers' => $blockers,
         ];
     }
 

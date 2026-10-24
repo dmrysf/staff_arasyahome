@@ -26,7 +26,12 @@ final readonly class SourceAccessClient
     public const ROUTE_FINANCE = '/yd-arasya/v1/confirmare/finance';
     public const ROUTE_FINANCE_ACTION = '/yd-arasya/v1/confirmare/finance-action';
     public const ROUTE_FINANCE_STATUS = '/yd-arasya/v1/confirmare/finance-status';
-    public const ROUTES = [self::ROUTE_DETAIL, self::ROUTE_CATALOG, self::ROUTE_PRODUCT, self::ROUTE_PREVIEW, self::ROUTE_APPLY, self::ROUTE_EDIT_STATUS, self::ROUTE_FINANCE, self::ROUTE_FINANCE_ACTION, self::ROUTE_FINANCE_STATUS];
+    /** SmartBill invoicing (API 2.43.0): the invoice state, an invoice action and its stored answer. */
+    public const ROUTE_INVOICE = '/yd-arasya/v1/confirmare/invoice';
+    public const ROUTE_INVOICE_ACTION = '/yd-arasya/v1/confirmare/invoice-action';
+    public const ROUTE_INVOICE_STATUS = '/yd-arasya/v1/confirmare/invoice-status';
+    public const ROUTES = [self::ROUTE_DETAIL, self::ROUTE_CATALOG, self::ROUTE_PRODUCT, self::ROUTE_PREVIEW, self::ROUTE_APPLY, self::ROUTE_EDIT_STATUS, self::ROUTE_FINANCE, self::ROUTE_FINANCE_ACTION, self::ROUTE_FINANCE_STATUS,
+        self::ROUTE_INVOICE, self::ROUTE_INVOICE_ACTION, self::ROUTE_INVOICE_STATUS];
 
     /** Shop error codes Operations understands (anything else is SOURCE_ERROR). */
     private const SOURCE_ERRORS = [

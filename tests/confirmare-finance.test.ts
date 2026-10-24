@@ -50,7 +50,7 @@ const detail = (overrides: Partial<ConfirmareDetail> = {}): ConfirmareDetail => 
   contact: null, assignment: null, decision: null,
   review: { fingerprint: "b".repeat(64), lineIds: ["12341"], pricingAvailable: true, callRecorded: true, contactAvailable: true }, lines: [], contacts: [],
   customer: { visible: false, phoneAvailable: false }, source: { commerceStatusLabel: "Processing", changedAt: null, lastSeenAt: null, freshness: "fresh" }, production: { cleared: false, missing: ["payment"] }, events: [],
-  sourceAccess: { configured: true, read: false, edit: false, changePending: false, openEdits: [] }, finance: { configured: true, read: true, record: false, approve: true }, handoff: null, ...overrides,
+  sourceAccess: { configured: true, read: false, edit: false, changePending: false, openEdits: [] }, invoice: { configured: false, read: false, issue: false, manage: false }, finance: { configured: true, read: true, record: false, approve: true }, handoff: null, ...overrides,
 });
 
 test("the finance summary is mapped strictly; an electronic refund is never accepted", () => {

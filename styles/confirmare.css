@@ -78,6 +78,10 @@
 .cf-shop-prices dd, .cf-shop-totals dd { margin: 0; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .cf-shop-totals .cf-shop-grand { padding-top: 6px; border-top: 1px solid var(--color-border); font-size: var(--text-md); font-weight: var(--weight-semibold); }
 .cf-shop-totals .cf-shop-grand dt { color: var(--color-text); }
+/* SmartBill section (Staff 2.33.0): its values are words (document, e-mail, last operation), not only amounts: they wrap. */
+.cf-invoice-view .cf-shop-totals dd { white-space: normal; overflow-wrap: anywhere; text-align: right; min-width: 0; }
+.cf-invoice-view .cf-shop-totals dt { flex: 0 0 auto; max-width: 45%; }
+.cf-invoice-view .cf-shop-actions { flex-wrap: wrap; }
 .cf-shop-note { font-style: italic; }
 /* Phase 4B: controlled changes in the shop */
 .cf-edit { padding-top: 12px; border-top: 1px solid var(--color-border); }

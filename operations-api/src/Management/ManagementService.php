@@ -7,6 +7,7 @@ namespace Arasya\Operations\Management;
 use Arasya\Operations\Authorization\AuthorizationService;
 use Arasya\Operations\Confirmare\ConfirmareScopePolicy;
 use Arasya\Operations\Confirmare\FinanceScopePolicy;
+use Arasya\Operations\Confirmare\InvoiceScopePolicy;
 use Arasya\Operations\Document\DocumentScopePolicy;
 use Arasya\Operations\Employee\EmployeeIdentity;
 use Arasya\Operations\Employee\StaffLocale;
@@ -212,6 +213,8 @@ final readonly class ManagementService
         } catch (PDOException) {
             $summary['financeScopes'] = null;
         }
+        // SmartBill invoice scopes (API 2.43.0, draft schema). Root holds none implicitly; without the schema nobody holds one.
+        $summary['invoiceScopes'] = $summary['isRoot'] ? null : (new InvoiceScopePolicy($this->pdo))->scopesOf((string) $summary['id']);
         // Granted stages narrowed to named sources (migration 023); a stage absent here reaches every source.
         $summary['stageSourceScopes'] = $summary['isRoot'] ? null : (object) $this->stageScopesOf((string) $summary['id']);
         // The grantable sources, for the root-only scope editor; nobody else can change a scope.
@@ -310,6 +313,55 @@ final readonly class ManagementService
             }
             $this->bumpAuthorization($target['employee_uuid'], $now);
             $this->audit->record($actor, 'employee.finance_scopes_changed', 'employee', $target['employee_uuid'], $this->label($target), ['before' => $before, 'after' => $wanted], $requestId, $now);
+        });
+        return $this->getEmployee($actor, $employeeId);
+    }
+
+    /**
+     * Order sources an identity handles SmartBill documents for (API 2.43.0, draft schema database/drafts/
+     * smartbill-invoicing.sql). Root only, like the finance scopes: `issue` issues and e-mails the first document (it acts
+     * only together with the production document permission and document `operate` scope of the same source), `manage`
+     * also re-issues and closes unknown outcomes. Root grants, holds none. Refused until the schema exists.
+     *
+     * @param array<string, mixed> $input {issue: list<string>, manage: list<string>}
+     * @return array<string, mixed>
+     */
+    public function setInvoiceScopes(EmployeeIdentity $actor, string $employeeId, array $input, string $requestId): array
+    {
+        $this->authorization->requireApplication($actor, 'dashboard');
+        if (!$actor->isRoot) {
+            throw new ApiException(403, 'ROOT_ONLY', 'Only the principal administrator can change invoice scopes.');
+        }
+        if (!(new InvoiceScopePolicy($this->pdo))->installed()) {
+            throw new ApiException(409, 'INVOICE_SCHEMA_MISSING', 'SmartBill invoicing is not installed on this server.');
+        }
+        $wanted = [];
+        foreach (InvoiceScopePolicy::CAPABILITIES as $capability) {
+            $sources = $this->stringList($input[$capability] ?? null, $capability);
+            sort($sources);
+            $wanted[$capability] = array_values(array_unique($sources));
+        }
+        $this->mutateEmployee($actor, $employeeId, function (array $target, string $now) use ($actor, $wanted, $requestId): void {
+            // SmartBill documents exist only for the signed WooCommerce sources: never B2B or Trendyol.
+            $known = $this->pdo->query("SELECT source_key FROM order_sources WHERE status = 'active' AND source_key NOT IN ('b2b', 'trendyol')")->fetchAll(PDO::FETCH_COLUMN);
+            foreach ($wanted as $sources) {
+                if (array_diff($sources, $known) !== []) {
+                    throw new ApiException(400, 'UNKNOWN_SOURCE', 'An invoice scope names an unknown, inactive or non-shop order source.');
+                }
+            }
+            $before = (new InvoiceScopePolicy($this->pdo))->scopesOf($target['employee_uuid']);
+            if ($before === $wanted) {
+                return;
+            }
+            $this->pdo->prepare('DELETE FROM employee_invoice_scopes WHERE employee_uuid = :id')->execute(['id' => $target['employee_uuid']]);
+            $insert = $this->pdo->prepare('INSERT INTO employee_invoice_scopes (employee_uuid, capability, source_key, granted_at, granted_by_employee_uuid) VALUES (:id, :capability, :source, :now, :actor)');
+            foreach ($wanted as $capability => $sources) {
+                foreach ($sources as $source) {
+                    $insert->execute(['id' => $target['employee_uuid'], 'capability' => $capability, 'source' => $source, 'now' => $now, 'actor' => $actor->employeeUuid]);
+                }
+            }
+            $this->bumpAuthorization($target['employee_uuid'], $now);
+            $this->audit->record($actor, 'employee.invoice_scopes_changed', 'employee', $target['employee_uuid'], $this->label($target), ['before' => $before, 'after' => $wanted], $requestId, $now);
         });
         return $this->getEmployee($actor, $employeeId);
     }

@@ -15,7 +15,8 @@ declare(strict_types=1);
 // which applies one previewed edit under WooCommerce's rules (and refuses anything else). Phase 5 (API 2.41.0)
 // adds the three finance routes: the shop's financial summary, one finance action (a bank transfer or bank
 // refund recorded and verified by two people, a liability acknowledged; never a gateway capture or refund)
-// and its stored answer.
+// and its stored answer. SmartBill invoicing (API 2.43.0) adds the three invoice routes: the invoice state, one
+// invoice action (issue, send, re-issue, resolve; the shop's own SmartBill plugin does the work) and its stored answer.
 //
 // Second reviewed exception (API 2.36.0, cancellation synchronization): the Trendyol "unsupplied" notice
 //   PUT /integration/order/sellers/{sellerId}/shipment-packages/{packageId}/items/unsupplied
@@ -48,7 +49,10 @@ $accessClient = $root . '/operations-api/src/Integration/SourceAccess/SourceAcce
 // Phase 4A: the order detail. Phase 4B: the edit catalog, one product by SKU, the edit preview, the edit and its stored
 // answer (reconciliation). Phase 5: the financial summary, a finance action and its stored answer. No WooCommerce REST
 // API, no listing, no search.
-$accessRoutes = ['/yd-arasya/v1/confirmare/detail', '/yd-arasya/v1/confirmare/catalog', '/yd-arasya/v1/confirmare/product', '/yd-arasya/v1/confirmare/preview', '/yd-arasya/v1/confirmare/apply', '/yd-arasya/v1/confirmare/edit-status', '/yd-arasya/v1/confirmare/finance', '/yd-arasya/v1/confirmare/finance-action', '/yd-arasya/v1/confirmare/finance-status'];
+$accessRoutes = ['/yd-arasya/v1/confirmare/detail', '/yd-arasya/v1/confirmare/catalog', '/yd-arasya/v1/confirmare/product', '/yd-arasya/v1/confirmare/preview', '/yd-arasya/v1/confirmare/apply', '/yd-arasya/v1/confirmare/edit-status', '/yd-arasya/v1/confirmare/finance', '/yd-arasya/v1/confirmare/finance-action', '/yd-arasya/v1/confirmare/finance-status',
+    // API 2.43.0 (reviewed with SmartBill invoicing): the invoice state, one invoice action and its stored answer, to the same
+    // configured shop through the same signed protocol; the shop's SmartBill plugin talks to SmartBill, never Operations.
+    '/yd-arasya/v1/confirmare/invoice', '/yd-arasya/v1/confirmare/invoice-action', '/yd-arasya/v1/confirmare/invoice-status'];
 $forbiddenApi = [
     '/\bcurl_(init|exec|multi_\w+|setopt)\s*\(/' => 'cURL client',
     '/\b(fsockopen|pfsockopen|stream_socket_client)\s*\(/' => 'raw socket client',

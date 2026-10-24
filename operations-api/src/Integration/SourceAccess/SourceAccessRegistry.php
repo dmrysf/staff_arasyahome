@@ -17,6 +17,9 @@ use Arasya\Operations\Config\Config;
  *   ARASYA_SOURCE_FINANCE_<SRC>      off (default) | read | record (API 2.41.0, Confirmare Phase 5): the financial summary,
  *                                    and with `record` the finance actions, through the same signed access; needs
  *                                    source access read or edit. Any other value keeps the whole source `off`.
+ *   ARASYA_SOURCE_INVOICE_<SRC>      off (default) | observe | enforce (API 2.43.0, SmartBill invoicing): the invoice
+ *                                    state, and with `enforce` the invoice actions, through the same signed access.
+ *                                    Any other value keeps the whole source `off`.
  *
  * A source with any invalid value stays `off` and is reported as an issue (code only, never the value): configuration
  * mistakes fail closed and never stop the API. Production only accepts HTTPS on the standard port; a non-production
@@ -26,6 +29,7 @@ final readonly class SourceAccessRegistry
 {
     public const MODES = ['off', SourceAccessTarget::MODE_READ, SourceAccessTarget::MODE_EDIT];
     public const FINANCE_MODES = [SourceAccessTarget::FINANCE_OFF, SourceAccessTarget::FINANCE_READ, SourceAccessTarget::FINANCE_RECORD];
+    public const INVOICE_MODES = [SourceAccessTarget::INVOICE_OFF, SourceAccessTarget::INVOICE_OBSERVE, SourceAccessTarget::INVOICE_ENFORCE];
 
     /**
      * @param array<string, SourceAccessTarget> $targets
@@ -52,7 +56,8 @@ final readonly class SourceAccessRegistry
             }
             [$kid, $key] = explode(':', trim($raw['key'] ?? ''), 2);
             $finance = strtolower(trim($raw['finance'] ?? ''));
-            $targets[$sourceKey] = new SourceAccessTarget($sourceKey, $mode, rtrim(trim($raw['url'] ?? ''), '/'), $kid, $key, $finance === '' ? SourceAccessTarget::FINANCE_OFF : $finance);
+            $invoice = strtolower(trim($raw['invoice'] ?? ''));
+            $targets[$sourceKey] = new SourceAccessTarget($sourceKey, $mode, rtrim(trim($raw['url'] ?? ''), '/'), $kid, $key, $finance === '' ? SourceAccessTarget::FINANCE_OFF : $finance, $invoice === '' ? SourceAccessTarget::INVOICE_OFF : $invoice);
         }
         return new self($targets, $issues);
     }
@@ -77,6 +82,10 @@ final readonly class SourceAccessRegistry
         $finance = strtolower(trim($raw['finance'] ?? ''));
         if ($finance !== '' && !in_array($finance, self::FINANCE_MODES, true)) {
             return 'invalid_finance_mode';
+        }
+        $invoice = strtolower(trim($raw['invoice'] ?? ''));
+        if ($invoice !== '' && !in_array($invoice, self::INVOICE_MODES, true)) {
+            return 'invalid_invoice_mode';
         }
         if (!isset($config->sourceSecrets[$sourceKey])) {
             return 'source_not_configured';

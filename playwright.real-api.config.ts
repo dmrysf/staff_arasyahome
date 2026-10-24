@@ -66,6 +66,8 @@ export default defineConfig({
         ARASYA_SOURCE_ACCESS_KEY_TRENDHOME: `th-e2e:${shopKey}`,
         // Confirmare finance (API 2.41.0) through the same TEST shop: summary and two-person actions.
         ARASYA_SOURCE_FINANCE_TRENDHOME: "record",
+        // SmartBill invoicing (API 2.43.0) through the same TEST shop (its SmartBill is simulated; nothing is ever issued).
+        ARASYA_SOURCE_INVOICE_TRENDHOME: "enforce",
       },
     },
     {

@@ -148,6 +148,25 @@ final class Container
     }
 
     /** Confirmare finance (API 2.41.0, Phase 5): the shop's money record of an order, two-person decisions, no amounts kept. */
+    /** SmartBill invoicing of Confirmare orders (API 2.43.0). */
+    public function confirmareInvoice(?AuthorizationService $authorization = null): \Arasya\Operations\Confirmare\ConfirmareInvoice
+    {
+        $transport = $this->sourceAccessTransport ?? new \Arasya\Operations\Integration\SourceAccess\StreamSourceAccessTransport(allowLoopback: !$this->config->isProduction());
+        return new \Arasya\Operations\Confirmare\ConfirmareInvoice(
+            $this->pdo,
+            $authorization ?? new AuthorizationService(),
+            new \Arasya\Operations\Confirmare\InvoiceScopePolicy($this->pdo),
+            new \Arasya\Operations\Confirmare\FinanceScopePolicy($this->pdo),
+            new \Arasya\Operations\Document\DocumentScopePolicy($this->pdo),
+            \Arasya\Operations\Integration\SourceAccess\SourceAccessRegistry::fromConfig($this->config),
+            new \Arasya\Operations\Integration\SourceAccess\SourceAccessClient($transport, $this->clock),
+            new PdoApiRateLimiter($this->pdo, $this->clock, $this->config->appSecret),
+            $this->clock,
+            hash_hmac('sha256', 'confirmare-invoice-request', $this->config->appSecret),
+            $this->authorityModes(),
+        );
+    }
+
     public function confirmareFinance(?AuthorizationService $authorization = null): \Arasya\Operations\Confirmare\ConfirmareFinance
     {
         $transport = $this->sourceAccessTransport ?? new \Arasya\Operations\Integration\SourceAccess\StreamSourceAccessTransport(allowLoopback: !$this->config->isProduction());
@@ -205,7 +224,7 @@ final class Container
         $documents = $this->documentService($authorization, $revisionApprovers, $documentQueries, $live, $idempotency, $iamAudit);
         $tracks = new \Arasya\Operations\Production\ReworkTrackService($this->pdo, $workflows, $authorization, $this->clock, $live, $authorityModes);
         return new ApiKernel(
-            new AuthController($this->authentication, $csrf, new CookiePolicy($this->config), $this->config, $authorization, $context, new \Arasya\Operations\Confirmare\ConfirmareScopePolicy($this->pdo), new \Arasya\Operations\Confirmare\FinanceScopePolicy($this->pdo)),
+            new AuthController($this->authentication, $csrf, new CookiePolicy($this->config), $this->config, $authorization, $context, new \Arasya\Operations\Confirmare\ConfirmareScopePolicy($this->pdo), new \Arasya\Operations\Confirmare\FinanceScopePolicy($this->pdo), new \Arasya\Operations\Confirmare\InvoiceScopePolicy($this->pdo)),
             new HealthController($this->pdo, $this->clock),
             new CorsPolicy($this->config->allowedOrigins),
             new StructuredLogger(),
@@ -303,6 +322,7 @@ final class Container
                 $this->confirmareSourceAccess($authorization),
                 $this->confirmareSourceEdits($authorization),
                 $this->confirmareFinance($authorization),
+                $this->confirmareInvoice($authorization),
                 $this->authentication,
                 $csrf,
                 $this->config,
