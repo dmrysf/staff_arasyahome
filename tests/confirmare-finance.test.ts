@@ -144,3 +144,21 @@ test("every finance text exists in every language", () => {
   for (const task of FINANCE_TASKS) assert.ok(keys.includes(`cf.fin.task.${task}`) && keys.includes(`cf.fin.taskHint.${task}`), task);
   for (const attention of ["transfer_pending", "reconciliation_required", "refund_liability", "refund_pending"]) assert.ok(keys.includes(`cf.financial.attention.${attention}`), attention);
 });
+
+test("YD SOFT 2.16 safety refusals: finance_open and order_cancelled explain why and who acts next", async () => {
+  const { confirmareErrorDetails } = await import("../services/production/httpServices");
+  const generic = refusalLabel(undefined);
+  const open = refusalLabel(confirmareErrorDetails({ reason: "finance_open", revision: `sha256:${"a".repeat(64)}` }).editReason as string);
+  const cancelled = refusalLabel(confirmareErrorDetails({ reason: "order_cancelled" }).editReason as string);
+  assert.notEqual(open, generic, "finance_open has its own explanation");
+  assert.notEqual(cancelled, generic, "order_cancelled has its own explanation");
+  assert.match(open, /nedecisă/, "why: an open transfer or refund");
+  assert.match(open, /altul decât cel care a înregistrat-o/, "who: a finance colleague other than the recorder decides the open record");
+  assert.match(open, /responsabilul financiar/, "otherwise: the finance manager");
+  assert.match(cancelled, /anulată în magazin/, "why: the shop cancelled the order");
+  assert.match(cancelled, /doar respins/, "what stays possible: rejecting a pending transfer");
+  assert.match(cancelled, /responsabilul financiar, care decide/, "who: the finance manager decides money that arrived anyway");
+  assert.match(cancelled, /nu înregistrați plata aici/, "what not to do: record the money here");
+  assert.doesNotMatch(`${open} ${cancelled}`, /rambursat|plătit cu succes|încasat/, "never reads as a payment or a refund");
+  for (const known of ["revision_changed", "transfer_pending", "production_not_complete"]) assert.notEqual(refusalLabel(known), generic, `${known} keeps its explanation`);
+});

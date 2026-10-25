@@ -111,3 +111,17 @@ test("ORDER_PRODUCTION_STOPPED is presented in Romanian with a reload action", (
   assert.match(presentation.message, /Nu poți continua producția acestei comenzi/);
   assert.ok(presentation.action.length > 0);
 });
+
+test("ORDER_PRODUCTION_STOPPED explains documents and who resumes production; Confirmare approve explains it too", async () => {
+  const { confirmareErrorKey, RELOAD_CODES } = await import("../domain/confirmare");
+  const { t } = await import("../i18n/translator");
+  const presentation = getErrorPresentation(new StaffServiceError("ORDER_PRODUCTION_STOPPED"));
+  assert.match(presentation.message, /documentele de producție nu se pot genera sau tipări/);
+  assert.match(presentation.message, /Doar conducerea poate relua producția/);
+  assert.doesNotMatch(presentation.message, /Lasă produsul/, "the physical instruction belongs to the physical stop notice only (documents and approvals may have no product yet)");
+  assert.match(t("stop.physical.pending"), /Păstrează produsul unde se află și anunță responsabilul/, "the physical stop notice keeps its instruction");
+  const key = confirmareErrorKey("ORDER_PRODUCTION_STOPPED");
+  assert.ok(key !== null && RELOAD_CODES.includes("ORDER_PRODUCTION_STOPPED"), "Confirmare approve on a stopped order has its own explanation and reloads");
+  assert.match(t(key), /nu se poate aproba/);
+  assert.equal(getErrorPresentation(new StaffServiceError("ORDER_UNAVAILABLE")).title, "Comanda nu este disponibilă", "the cancelled-order message is unchanged");
+});

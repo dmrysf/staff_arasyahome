@@ -65,7 +65,7 @@ export const trErrors: { readonly [K in keyof typeof roErrors]: string } = {
   "error.ORDER_UNAVAILABLE.title": "Sipariş kullanılamıyor",
   "error.ORDER_UNAVAILABLE.message": "Sipariş iptal edildi veya artık işlenemez.",
   "error.ORDER_PRODUCTION_STOPPED.title": "Üretim durduruldu",
-  "error.ORDER_PRODUCTION_STOPPED.message": "Bu siparişin üretimi durduruldu. Bu siparişin üretimine devam edemezsin.",
+  "error.ORDER_PRODUCTION_STOPPED.message": "Bu siparişin üretimi durduruldu. Bu siparişin üretimine devam edemezsin. Üretim belgeleri de oluşturulamaz veya yazdırılamaz. Üretimi yalnızca yönetim yeniden başlatabilir.",
   "error.ORDER_PRODUCTS_UNAVAILABLE.title": "Ürün yok",
   "error.ORDER_PRODUCTS_UNAVAILABLE.message": "Siparişte üretime uygun ürün yok.",
   "error.ORDER_CHANGED.title": "Sipariş değişti",

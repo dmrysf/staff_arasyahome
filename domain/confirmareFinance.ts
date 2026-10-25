@@ -144,7 +144,7 @@ export const nextTone: Readonly<Record<FinanceNext, "neutral" | "success" | "war
 };
 
 /** The shop refusal behind a finance error, in the employee's words (an unknown code reads as a generic refusal). */
-const REFUSALS = ["revision_changed", "duplicate_reference", "amount_exceeds_balance", "amount_exceeds_liability", "transfer_pending", "refund_pending", "same_employee", "entry_not_pending", "purpose_not_allowed", "advance_not_required", "payment_not_verified", "nothing_due", "reference_invalid", "value_date_invalid", "no_liability", "already_acknowledged", "liability_not_acknowledged", "refund_exceeds_order", "refund_disabled", "production_not_complete", "financial_unknown", "finance_record_disabled", "not_received", "order_busy"] as const;
+const REFUSALS = ["revision_changed", "duplicate_reference", "amount_exceeds_balance", "amount_exceeds_liability", "transfer_pending", "refund_pending", "same_employee", "entry_not_pending", "purpose_not_allowed", "advance_not_required", "payment_not_verified", "nothing_due", "reference_invalid", "value_date_invalid", "no_liability", "already_acknowledged", "liability_not_acknowledged", "refund_exceeds_order", "refund_disabled", "production_not_complete", "financial_unknown", "finance_record_disabled", "not_received", "order_busy", "finance_open", "order_cancelled"] as const;
 export function refusalLabel(reason: string | undefined): string {
   return t(`cf.fin.refusal.${reason && (REFUSALS as readonly string[]).includes(reason) ? reason : "other"}` as MessageKey);
 }

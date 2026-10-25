@@ -65,7 +65,7 @@ export const enErrors: { readonly [K in keyof typeof roErrors]: string } = {
   "error.ORDER_UNAVAILABLE.title": "Order not available",
   "error.ORDER_UNAVAILABLE.message": "The order was cancelled or can no longer be processed.",
   "error.ORDER_PRODUCTION_STOPPED.title": "Production is stopped",
-  "error.ORDER_PRODUCTION_STOPPED.message": "Production of this order is stopped. You cannot continue production of this order.",
+  "error.ORDER_PRODUCTION_STOPPED.message": "Production of this order is stopped. You cannot continue production of this order. Production documents cannot be generated or printed either. Only management can resume production.",
   "error.ORDER_PRODUCTS_UNAVAILABLE.title": "No products available",
   "error.ORDER_PRODUCTS_UNAVAILABLE.message": "The order has no products available for production.",
   "error.ORDER_CHANGED.title": "The order changed",
