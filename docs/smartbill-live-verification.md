@@ -154,7 +154,32 @@ creates, changes or sends anything. No credential, token, e-mail address or whol
 
 Both live in `yd-soft/docs/live-check/` (not part of the plugin package). They use no YD SOFT, SmartBill or WooCommerce
 class, so they work with any installed YD SOFT version. Each file is read from STDIN, so nothing is copied to the
-server, and plugins and themes are skipped (WP-CLI still loads must-use plugins, as every page view does). The `--exec`
+server. Each has two modes with the same checks; **run the database mode first** (security integration, 2026-10-25).
+
+**1. Database mode (first choice): WordPress is not loaded.**
+
+```
+ssh <host> 'cd <site> && php -d display_errors=stderr -- source=<trendhome|outletperdele> \
+  company=RO42340172_subsidiary_1 invoice-series=SMART proforma-series=ARS iban=RO79INGB0000999915112089 \
+  bic=INGBROBU "bank=ING BANK NV" free-shipping-min=600 advance-percent=30' < arasya-live-readonly.php
+
+ssh <host> 'cd <site> && php -d display_errors=stderr -- invoice-series=SMART proforma-series=ARS' \
+  < smartbill-series-readonly.php
+```
+
+- `wp-config.php` is parsed as PHP tokens and never executed: only literal `define()`s and `$table_prefix` are read. A
+  site that builds them at run time is refused (exit 2); use the WP-CLI mode there.
+- One database connection with `SET SESSION TRANSACTION READ ONLY` and every SELECT inside one `START TRANSACTION READ
+  ONLY` that is rolled back: MySQL and MariaDB refuse any write (error 1792).
+- No WordPress code, no plugin, no must-use plugin, no cron. A has no network. B makes the same one `GET /series` with
+  curl.
+- Proof (YD invoice smoke section 17b, local only): the database mode gives the same results as the WP-CLI mode on the
+  TEST shop; a write attempted inside its transaction is refused; a site without the YD 2.18/2.19 options is reported
+  (`yd_approved_company_and_series` FAIL, exit 1); the series check runs against a loopback test double; no secret
+  appears in any output.
+
+**2. WP-CLI mode (fallback):** plugins and themes are skipped (WP-CLI still loads must-use plugins, as every page view
+does). The `--exec`
 part switches WordPress' own cron spawn off for this one run: without it, a WP-CLI run spawns any due cron event like a
 page view does (WordPress 7.1 at the end of the run, older versions while loading). It writes the `doing_cron` transient
 and posts to `wp-cron.php`, which runs the due jobs with every plugin loaded.
@@ -194,7 +219,7 @@ Before either command, on each shop (read-only): `ls wp-content/mu-plugins`, `wp
   bootstrap included, was recorded with a cron event due: zero writes and the event untouched, while the same run
   without `--exec` writes `doing_cron`; no credential, authorization header or whole IBAN appears in any output.
   Mutations that add a write or print the token are caught.
-- Run A first. Run B only after A passed and after approving the one outbound call.
+- Run A first. Run B only after A passed and after approving the one outbound call. In both modes.
 
 After YD SOFT 2.19.0 is installed, `wp yd-arasya invoice live-check …` (same values, `--offline` skips SmartBill) does
 A and B in one command and also checks the approved values through YD SOFT's own classes. It runs with plugins loaded,

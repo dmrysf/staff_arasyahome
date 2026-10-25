@@ -2,7 +2,7 @@
 
 Status: built and tested locally only. Nothing is merged, deployed or switched on. The schema is migration 041
 (`operations-api/database/migrations/041_smartbill_invoicing.sql`, owner closure 2026-10-25; 040 stays reserved), applied
-only with the API deploy. Every switch defaults to off. `ConfirmationGate::WORKFLOW_READY` stays false. What SmartBill's
+only with the API deploy. Every switch defaults to off. `ConfirmationGate::WORKFLOW_READY` stayed false (until API 2.45.0; since then a source is activated only when its own readiness passes, see confirmare-cohort.md). What SmartBill's
 API can and cannot do, the manual SmartBill steps, the read-only live check and the controlled live test plan:
 [smartbill-live-verification.md](smartbill-live-verification.md).
 

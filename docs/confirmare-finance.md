@@ -1,6 +1,6 @@
 # Confirmare finance (API 2.41.0, migration 039, Staff 2.31.0, YD SOFT 2.15.0, Phase 5)
 
-Everything is off by default. Nothing can be activated: `ConfirmationGate::WORKFLOW_READY` stays `false`, no finance
+Everything is off by default. Nothing can be activated: `ConfirmationGate::WORKFLOW_READY` stayed `false` (until API 2.45.0; since then a source is activated only when its own readiness passes, see confirmare-cohort.md), no finance
 scope exists after the migration, `ARASYA_SOURCE_FINANCE_<SRC>` defaults to `off` and so do the shop switches
 (`wp yd-arasya access finance-mode`, `refunds`).
 

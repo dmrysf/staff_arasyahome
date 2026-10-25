@@ -189,7 +189,7 @@ unknown key. The evidence is not part of the projection hash. The `/orders` resp
 | Setting | Default | Effect |
 |---|---|---|
 | `ARASYA_SOURCE_CONFIRMARE_<SOURCE>` | `off` | `on` only permits recording an activation. It needs production, QR and document authority ENFORCE for that source; otherwise readiness gets the issue `confirmare_requires_authority_enforce` and the value stays `off`. It never classifies by itself. Switching it off never deactivates a recorded activation; readiness then FAILs (`confirmare_<source>_active`). |
-| `ConfirmationGate::WORKFLOW_READY` | `false` (code) | Phase 1: the activation is refused (`CONFIRMARE_WORKFLOW_NOT_READY`). Phase 2 sets it once the workflow can approve orders. |
+| `ConfirmationGate::WORKFLOW_READY` | `true` (code, API 2.45.0) | The release contains the workflow that approves and hands orders over. It no longer gates activation: each source passes its own readiness (`ConfirmareReadiness`, below). Until 2.45.0 it was `false` and every activation was refused (`CONFIRMARE_WORKFLOW_NOT_READY`). |
 | YD SOFT `yd_arasya_confirmare_mode` | `off` | The local fence and the unpaid intake. It can be enabled only after Arasya reports the source active. |
 
 Trend Home and Outlet Perdele are configured, activated and suspended independently.
@@ -199,6 +199,7 @@ Trend Home and Outlet Perdele are configured, activated and suspended independen
 ```bash
 php bin/workflow-cohort.php --source=trendhome --status          # read-only (state, schedule, the source's arming report)
 php bin/workflow-cohort.php --diagnose                           # read-only, both sources
+php bin/workflow-cohort.php --source=trendhome --readiness       # read-only: every readiness check (exit 0 ready, 1 not)
 php bin/workflow-cohort.php --source=trendhome --schedule --at=2026-11-02T07:00:00Z --actor="Name" [--reason="..."]
 php bin/workflow-cohort.php --source=trendhome --activate --actor="Name"            # commits the scheduled instant
 php bin/workflow-cohort.php --source=trendhome --cancel   --actor="Name" --reason="..."
@@ -222,11 +223,26 @@ source's local fence.
 
 `--cancel` withdraws an uncommitted schedule.
 
-Every step is refused unless all of these hold:
+Every step (schedule, activate, resume) is refused with `CONFIRMARE_NOT_READY`, naming the failed checks, unless the
+source's readiness passes (API 2.45.0, `Production\ConfirmareReadiness`, evaluated on the server):
 
-- the Confirmare workflow exists (`WORKFLOW_READY`, still false in 2.38.0);
-- the source is permitted and active for ingestion;
-- at least one identity holds the `operate` Confirmare scope for the source and can work now (2.38.0).
+| Check | Required | Why |
+|---|---|---|
+| `schema` | migrations 035 to 039 and 042 (and 041 when the source invoices through Arasya) | the workflow's own tables |
+| `permitted` | `ARASYA_SOURCE_CONFIRMARE_<SOURCE>=on` with production, QR and document authority ENFORCE | as before |
+| `ingesting` | the source is enabled and active for ingestion | as before |
+| `operators` | a working identity with the `operate` Confirmare scope | someone confirms the orders (2.38.0) |
+| `source_access` | `ARASYA_SOURCE_ACCESS_<SOURCE>` `read` or `edit` | the customer's real telephone number and the current prices exist only in the shop |
+| `finance` | `ARASYA_SOURCE_FINANCE_<SOURCE>=record` | an advance can be verified in Arasya |
+| `finance_four_eyes` | one working identity with `record` and ANOTHER with `approve` | a transfer is verified by a second person |
+| `documents` | a working identity with the document `operate` scope AND the production document permission | revision 1 can be generated after the approval |
+| `invoicing` | only when `ARASYA_SOURCE_INVOICE_<SOURCE>` is `observe` or `enforce`: migration 041 and an invoice `issue` or `manage` scope | the final invoice can be issued |
+| `connector` | the shop's signed readiness report (heartbeat `connectorReadiness`, table `source_connector_readiness`): at most 15 minutes old, YD SOFT 2.19.0 or later, access schema ready, its source access and finance modes at least Arasya's, and when Arasya invoices: the same invoice mode, SmartBill ready, and for `enforce` the accountant's written decision recorded in the shop | the shop's side, which only the shop knows |
+
+Reported only: `supervisors`, `controlled_edits` (needs `edit`), `staff_release` (not visible to the API: Staff is
+deployed right after the API). `$testOverride` exists for the integration suites only; neither the CLI nor any route can
+pass it. Trend Home can be activated while Outlet Perdele stays off: nothing in the readiness or the activation is
+shared between sources.
 
 `--suspend` holds new orders: they stay Confirmare orders, closed, and they are not distributed. Every existing
 Confirmare order stays closed. `--resume` ends the suspension, and the first instant A keeps protecting. A source is
