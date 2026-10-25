@@ -231,13 +231,16 @@ final class CancellationSyncWorker
         $now = $this->clock->now();
         $confirmBefore = $now->modify('-' . SyncOperations::CONFIRMATION_TIMEOUT_SECONDS . ' seconds')->format('Y-m-d H:i:s.u');
         $pickupBefore = $now->modify('-' . SyncOperations::PICKUP_TIMEOUT_SECONDS . ' seconds')->format('Y-m-d H:i:s.u');
-        // API operations escalate through their own status reads; these are the waits only a timeout can end.
-        $statement = $this->pdo->prepare("SELECT operation_uuid FROM order_cancellation_sync_operations
-            WHERE (mechanism = 'source_pull' AND state = 'awaiting_confirmation' AND dispatched_at < ?) OR (state = 'awaiting_pickup' AND created_at < ?)");
-        $statement->execute([$confirmBefore, $pickupBefore]);
+        // API operations escalate through their own status reads; these are the waits only a timeout can end. The pickup
+        // window starts when the operation was last handed to the source (SyncOperations::HANDED_OVER_AT), not at its
+        // creation: a retried operation would otherwise time out again before the shop could pick it up.
+        $statement = $this->pdo->prepare("SELECT o.operation_uuid, o.version FROM order_cancellation_sync_operations o
+            WHERE (o.mechanism = 'source_pull' AND o.state = 'awaiting_confirmation' AND o.dispatched_at < ?)
+               OR (o.state = 'awaiting_pickup' AND o.created_at < ? AND " . SyncOperations::HANDED_OVER_AT . ' < ?)');
+        $statement->execute([$confirmBefore, $pickupBefore, $pickupBefore]);
         $count = 0;
-        foreach ($statement->fetchAll(PDO::FETCH_COLUMN) as $operationUuid) {
-            $count += (int) $this->transaction(function () use ($operationUuid, $operations): bool {
+        foreach ($statement->fetchAll(PDO::FETCH_KEY_PAIR) as $operationUuid => $selectedVersion) {
+            $count += (int) $this->transaction(function () use ($operationUuid, $selectedVersion, $operations): bool {
                 $hint = $operations->byId((string) $operationUuid, false);
                 if ($hint === null) {
                     return false;
@@ -245,6 +248,11 @@ final class CancellationSyncWorker
                 $this->pdo->prepare('SELECT order_uuid FROM operational_orders WHERE order_uuid = ? FOR UPDATE')->execute([$hint['order_uuid']]);
                 $operation = $operations->byId((string) $operationUuid);
                 if ($operation === null || !in_array($operation['state'], [SyncState::AWAITING_CONFIRMATION, SyncState::AWAITING_PICKUP], true)) {
+                    return false;
+                }
+                // Changed since the selection (another worker's timeout and a person's retry in between): the next run
+                // decides again from the new state.
+                if ((int) $operation['version'] !== (int) $selectedVersion) {
                     return false;
                 }
                 $code = $operation['state'] === SyncState::AWAITING_PICKUP ? 'PICKUP_TIMEOUT' : 'AWAITING_CONFIRMATION_TIMEOUT';

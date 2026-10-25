@@ -932,6 +932,78 @@ $ok($stop($syncer, $w4), 'S6 timeout stop');
 $ok($send($syncer, $w4), 'S6 timeout handed over');
 $run(25 * 3600);
 $check($op($w4)['state'] === 'manual_review' && $op($w4)['last_error_code'] === 'PICKUP_TIMEOUT', 'S6 no pickup for a day: manual review');
+// ---- S6d. Pickup window after a retry (fixed clock) -------------------------------------------------------------------
+// The first 24 hours without pickup go to a person (above). A person's retry hands the same operation over again and
+// starts a new pickup window: the operation does not time out again at once, it is handed out once, its history and
+// identity stay, and only the next full day without a report times it out again. Timestamps are moved a day back, as if
+// the operation had been created yesterday (the HTTP routes run on the system clock).
+$timed4 = $op($w4);
+$created4 = $timed4['created_at'];
+$pdo->prepare('UPDATE order_cancellation_sync_operations SET created_at = DATE_SUB(created_at, INTERVAL 26 HOUR), updated_at = DATE_SUB(updated_at, INTERVAL 26 HOUR) WHERE operation_uuid = ?')->execute([$timed4['operation_uuid']]);
+$pdo->prepare('UPDATE order_cancellation_sync_attempts SET occurred_at = DATE_SUB(occurred_at, INTERVAL 26 HOUR) WHERE operation_uuid = ?')->execute([$timed4['operation_uuid']]); // test fixture: yesterday's history
+$timed4 = $op($w4);
+$trail4 = $trail($timed4);
+$check(end($trail4) === 'expire:timeout' && $timed4['last_error_code'] === 'PICKUP_TIMEOUT', 'S6d the first day without pickup ended in manual review: ' . json_encode($trail4));
+$error($opAction($keeper, $timed4, 'retry'), 403, 'UNAUTHORIZED_ACTION', 'S6d a manager without the sync permission cannot retry');
+$error($opAction($syncer, $timed4, 'retry', ['expectedVersion' => (int) $timed4['version'] - 1]), 409, 'CANCELLATION_SYNC_CHANGED', 'S6d a retry on an old version is refused');
+$check($op($w4)['version'] === $timed4['version'] && $trail($op($w4)) === $trail4, 'S6d refused retries change nothing');
+$retried4 = $ok($opAction($syncer, $timed4, 'retry'), 'S6d authorized retry');
+$error($opAction($syncer2, $timed4, 'retry'), 409, 'CANCELLATION_SYNC_CHANGED', 'S6d a second manager\'s retry on the same screen is refused (one retry)');
+$after4 = $op($w4);
+$check($retried4['state'] === 'awaiting_pickup' && $after4['operation_uuid'] === $timed4['operation_uuid'] && count($ops($w4)) === 1 && $after4['created_at'] === $timed4['created_at']
+    && $after4['requested_by_employee_uuid'] === $timed4['requested_by_employee_uuid'] && $after4['last_pulled_at'] === null, 'S6d the same operation is handed over again; identity and creation kept');
+$check($trail($after4) === [...$trail4, 'retry:retry_requested', 'retry:handed_to_source'], 'S6d the history keeps every attempt and adds the retry: ' . json_encode($trail($after4)));
+$run(0);
+$check($op($w4)['state'] === 'awaiting_pickup', 'S6d the retried operation is not timed out again at once (worker right after the retry): ' . $op($w4)['state']);
+$run(23 * 3600);
+$check($op($w4)['state'] === 'awaiting_pickup', 'S6d nor 23 hours after the retry');
+$pickupDelayed = static function (int $offset) use ($pdo, $wclock, $container, $w4): bool {
+    $wclock->offset = $offset;
+    $findings = (new \Arasya\Operations\Cancellation\Sync\CancellationReconciler($pdo, $wclock, $container->cancellationProviders()))->scan();
+    $wclock->offset = 0;
+    return array_filter($findings, static fn (array $f): bool => $f['orderUuid'] === $w4['uuid'] && $f['kind'] === 'operation_pickup_delayed') !== [];
+};
+$check(!$pickupDelayed(0) && $pickupDelayed(31 * 60), 'S6d the reconciliation counts the pickup delay from the retry, not from yesterday\'s creation');
+// The retry was two hours ago; the shop picks it up now. The pickup does not restart the window: 23 hours after the
+// pickup (25 after the retry) without a report it goes to a person again.
+$pdo->prepare("UPDATE order_cancellation_sync_attempts SET occurred_at = DATE_SUB(occurred_at, INTERVAL 2 HOUR) WHERE operation_uuid = ? AND kind = 'retry'")->execute([$after4['operation_uuid']]); // test fixture
+$picked4 = array_column($ok($pull('outletperdele'), 'S6d pull after the retry')['operations'], 'operationId');
+$check(count(array_keys($picked4, $after4['operation_uuid'], true)) === 1 && array_count_values($trail($op($w4)))['pickup:picked_up'] === 1, 'S6d handed out once; one pickup recorded');
+$repeat4 = array_column($ok($pull('outletperdele'), 'S6d repeated pull')['operations'], 'operationId');
+$check(count(array_keys($repeat4, $after4['operation_uuid'], true)) === 1 && array_count_values($trail($op($w4)))['pickup:picked_up'] === 1 && count($ops($w4)) === 1, 'S6d a repeated pull offers the same operation id, records no second pickup, creates nothing');
+$run(21 * 3600);
+$check($op($w4)['state'] === 'awaiting_pickup', 'S6d 24 hours after the retry have not passed yet');
+$run(23 * 3600);
+$final4 = $op($w4);
+$check($final4['state'] === 'manual_review' && $final4['last_error_code'] === 'PICKUP_TIMEOUT' && array_count_values($trail($final4))['expire:timeout'] === 2, 'S6d a full day after the retry without a report: a person again (the pickup did not extend the window)');
+$check($final4['operation_uuid'] === $timed4['operation_uuid'] && count($ops($w4)) === 1 && $final4['created_at'] === $timed4['created_at'], 'S6d still one operation');
+// Race: a worker selects the operation while another worker's timeout and a person's retry are committing. Under the
+// order lock it sees a changed operation and leaves it to the next run, so the fresh retry is not timed out.
+$retriedRace = $ok($opAction($syncer, $final4, 'retry'), 'S6d second retry');
+$pdo->prepare('UPDATE order_cancellation_sync_attempts SET occurred_at = DATE_SUB(occurred_at, INTERVAL 26 HOUR) WHERE operation_uuid = ?')->execute([$final4['operation_uuid']]); // test fixture: due again
+$pdoB = Connection::create($config);
+$opsB = new SyncOperations($pdoB, $clock);
+$pdoB->beginTransaction();
+$pdoB->prepare('SELECT order_uuid FROM operational_orders WHERE order_uuid = ? FOR UPDATE')->execute([$w4['uuid']]);
+$inB = $opsB->byId($final4['operation_uuid']);
+$inB = $opsB->transition($inB, 'manual_review', ['next_attempt_at' => null], ['kind' => 'expire', 'outcome' => 'timeout', 'error' => 'PICKUP_TIMEOUT', 'system' => 'test-other-worker']);
+$inB = $opsB->transition($inB, 'retry_scheduled', ['next_attempt_at' => $opsB->now(), 'attempt_count' => 0], ['kind' => 'retry', 'outcome' => 'retry_requested', 'actor' => $syncer['employeeUuid']]);
+$inB = $opsB->transition($inB, 'awaiting_pickup', ['next_attempt_at' => null, 'last_pulled_at' => null], ['kind' => 'retry', 'outcome' => 'handed_to_source', 'actor' => $syncer['employeeUuid']]);
+$raceWorker = proc_open([PHP_BINARY, __DIR__ . '/fixtures/cancellation-sync-worker.php', $dbName, (string) microtime(true), $fixtureFile, '0'], [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $racePipes);
+fclose($racePipes[0]);
+usleep(1_500_000); // the worker has selected the operation and waits for the order lock
+$waiting4 = (int) $one("SELECT COUNT(*) FROM information_schema.innodb_trx WHERE trx_state = 'LOCK WAIT'");
+$pdoB->commit();
+$raceOut = (string) stream_get_contents($racePipes[1]) . (string) stream_get_contents($racePipes[2]);
+fclose($racePipes[1]);
+fclose($racePipes[2]);
+proc_close($raceWorker);
+$raced4 = $op($w4);
+$check($waiting4 >= 1, 'S6d the worker was waiting for the order lock while the retry committed');
+$check($raced4['state'] === 'awaiting_pickup' && $raced4['version'] === $inB['version'] && array_count_values($trail($raced4))['expire:timeout'] === 3, 'S6d the worker did not time out the fresh retry it had selected before: ' . $raceOut . ' ' . json_encode(array_slice($trail($raced4), -4)));
+$run(0);
+$check($op($w4)['state'] === 'awaiting_pickup', 'S6d the next run keeps the fresh window');
+
 // The connector's shop no longer has the order: failed; a retry hands it over again.
 $w5 = $woo('outletperdele', 'w5');
 $ok($stop($syncer, $w5), 'S6 not found stop');

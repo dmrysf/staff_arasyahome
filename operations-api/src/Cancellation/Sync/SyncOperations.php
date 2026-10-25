@@ -37,6 +37,13 @@ final readonly class SyncOperations
      * Attempts after which a notice may have reached the provider: an accepted or lost answer (also when it arrived after
      * the lease was recovered) and a recovered lease (the dead worker may have sent).
      */
+    /**
+     * When the operation of row `o` was last handed to the source for pickup: its last move into awaiting_pickup (the
+     * creation or a person's retry), else its creation. The pickup timeout and the pickup delay count from here, so a
+     * retried operation gets a new window. A pickup note keeps the state and does not restart the window.
+     */
+    public const HANDED_OVER_AT = "COALESCE((SELECT MAX(a.occurred_at) FROM order_cancellation_sync_attempts a
+        WHERE a.operation_uuid = o.operation_uuid AND a.state_after = 'awaiting_pickup' AND a.state_before <> 'awaiting_pickup'), o.created_at)";
     private const DELIVERY = "((kind = 'submit' AND outcome IN ('accepted', 'uncertain', 'late_accepted', 'late_uncertain')) OR kind = 'lease_recovery')";
     /** Outcomes of a completed status read (a lease row is not a read). */
     private const READ_OUTCOMES = ['still_open', 'attempts_exhausted', 'cancelled', 'not_cancellable', 'rejected', 'transient', 'auth_failed', 'not_configured'];

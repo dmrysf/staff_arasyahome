@@ -169,9 +169,16 @@ PUT a package can still change at Trendyol (no conditional write is documented);
 
 ## Worker (`bin/cancellation-sync.php run`)
 
+**Pickup window.** The 24 h of `PICKUP_TIMEOUT` count from the last time the operation was handed to the connector: its
+creation or a person's retry (the last attempt that moved it into `awaiting_pickup`, `SyncOperations::HANDED_OVER_AT`).
+A retry after a timeout therefore gets a fresh window and is not timed out again by the next run; the connector's
+pickup does not restart it. The reconciler's `operation_pickup_delayed` (30 min without a pickup) counts from the same
+moment. A worker that selected an operation which then changed (another worker's timeout and a retry committed in
+between) leaves it to the next run.
+
 Each run: recover expired leases (as `uncertain`); escalate waits only a timeout can end (a connector report without the
-shop event after 6 h, no pickup after 24 h); then, for each due `api` operation whose gates are open: lease, read the
-package, and
+shop event after 6 h, no report 24 h after the operation was handed to the connector); then, for each due `api`
+operation whose gates are open: lease, read the package, and
 
 | Before | Read | Then |
 |---|---|---|

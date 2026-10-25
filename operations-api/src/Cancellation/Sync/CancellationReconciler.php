@@ -25,7 +25,8 @@ use Throwable;
  *   local_stop_without_request           stopped locally, no commercial cancellation was requested from the source
  *   request_without_operation            a cancellation was requested but never handed to a provider
  *   operation_lease_expired              a worker died while holding an operation (the next run recovers it)
- *   operation_pickup_delayed             the source connector has not picked the request up for 30 minutes
+ *   operation_pickup_delayed             the source connector has not picked the request up for 30 minutes since it
+ *                                        was handed over (created or retried)
  *   operation_uncertain                  the provider may have acted; the worker reads its status before anything else
  *   operation_manual_review              a person must decide (provider refused, timeout, paid order, no supported call)
  *   operation_refused_still_stopped      the provider refused or failed; production stays stopped until a person decides
@@ -185,7 +186,8 @@ final readonly class CancellationReconciler
             FROM order_cancellation_controls c JOIN operational_orders o ON o.order_uuid = c.order_uuid {$package} ORDER BY o.order_uuid LIMIT " . (self::LIMIT * 4));
         $operations = [];
         if ($ready) {
-            foreach ($this->rows('SELECT * FROM order_cancellation_sync_operations WHERE open_order_uuid IS NOT NULL OR state IN (\'confirmed\', \'rejected\', \'failed\') ORDER BY created_at') as $operation) {
+            foreach ($this->rows('SELECT o.*, ' . SyncOperations::HANDED_OVER_AT . ' AS handed_over_at FROM order_cancellation_sync_operations o
+                WHERE o.open_order_uuid IS NOT NULL OR o.state IN (\'confirmed\', \'rejected\', \'failed\') ORDER BY o.created_at') as $operation) {
                 $operations[(string) $operation['order_uuid']][(int) $operation['hold_generation']] = $operation;
             }
         }
@@ -217,7 +219,7 @@ final readonly class CancellationReconciler
                 $state = (string) $open['state'];
                 if ($state === SyncState::PROCESSING && $open['lease_expires_at'] !== null && strtotime((string) $open['lease_expires_at'] . ' UTC') < $now) {
                     $add('operation_lease_expired', 'medium', $row, (string) $open['operation_uuid'], 'worker_recovers', false);
-                } elseif ($state === SyncState::AWAITING_PICKUP && $open['last_pulled_at'] === null && strtotime((string) $open['created_at'] . ' UTC') < $now - self::PICKUP_DELAY_SECONDS) {
+                } elseif ($state === SyncState::AWAITING_PICKUP && $open['last_pulled_at'] === null && strtotime((string) $open['handed_over_at'] . ' UTC') < $now - self::PICKUP_DELAY_SECONDS) {
                     $add('operation_pickup_delayed', 'low', $row, (string) $open['operation_uuid'], 'check_source_connector', false);
                 } elseif ($state === SyncState::UNCERTAIN) {
                     $add('operation_uncertain', 'medium', $row, (string) $open['operation_uuid'], 'worker_status_read', false, ['error' => $open['last_error_code']]);
