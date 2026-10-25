@@ -3,6 +3,7 @@ import { confirmareShopSI } from "./confirmareShop";
 import { confirmareFinanceSI } from "./confirmareFinance";
 import { confirmareInvoiceSI } from "./confirmareInvoice";
 import { confirmareHandoffSI } from "./confirmareHandoff";
+import { confirmareOpsSI } from "./confirmareOps";
 import { confirmareEditSI } from "./confirmareEdit";
 import { physicalSI } from "./physical";
 import type { Catalog } from "../types";
@@ -21,6 +22,7 @@ export const si: Catalog = {
   ...confirmareFinanceSI,
   ...confirmareInvoiceSI,
   ...confirmareHandoffSI,
+  ...confirmareOpsSI,
   ...confirmareEditSI,
 
   // ---- common

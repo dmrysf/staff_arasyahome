@@ -3,6 +3,7 @@ import { confirmareShopRO } from "./confirmareShop";
 import { confirmareFinanceRO } from "./confirmareFinance";
 import { confirmareInvoiceRO } from "./confirmareInvoice";
 import { confirmareHandoffRO } from "./confirmareHandoff";
+import { confirmareOpsRO } from "./confirmareOps";
 import { confirmareEditRO } from "./confirmareEdit";
 import { physicalMessages } from "./physical";
 import { roErrors } from "./ro.errors";
@@ -21,6 +22,7 @@ export const ro = {
   ...confirmareFinanceRO,
   ...confirmareInvoiceRO,
   ...confirmareHandoffRO,
+  ...confirmareOpsRO,
   ...confirmareEditRO,
 
   // ---- common ------------------------------------------------------------------------------------------------

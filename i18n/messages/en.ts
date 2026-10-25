@@ -3,6 +3,7 @@ import { confirmareShopEN } from "./confirmareShop";
 import { confirmareFinanceEN } from "./confirmareFinance";
 import { confirmareInvoiceEN } from "./confirmareInvoice";
 import { confirmareHandoffEN } from "./confirmareHandoff";
+import { confirmareOpsEN } from "./confirmareOps";
 import { confirmareEditEN } from "./confirmareEdit";
 import { physicalEN } from "./physical";
 import type { Catalog } from "../types";
@@ -20,6 +21,7 @@ export const en: Catalog = {
   ...confirmareFinanceEN,
   ...confirmareInvoiceEN,
   ...confirmareHandoffEN,
+  ...confirmareOpsEN,
   ...confirmareEditEN,
 
   // ---- common

@@ -9,6 +9,7 @@ import { Notice } from "../../components/ui/StatusPill";
 import { ErrorState } from "../../components/ErrorState";
 import { AutoRefreshBar, DashboardSection, EmptyState, Metric, MetricGrid, NextActionSkeleton, QueueSkeleton, type MetricValue } from "../workspaces/DashboardParts";
 import { useAutoRefresh } from "../workspaces/useAutoRefresh";
+import { canUseShopTasks, canWatchHealth } from "../../domain/confirmareOps";
 import { ConfirmareRow, confirmareOrderPath, confirmareQueueLoader } from "./ConfirmareParts";
 
 const LIST_LIMIT = 6;
@@ -20,11 +21,20 @@ const LIST_LIMIT = 6;
  */
 export function ConfirmareWorkspace({ employee, service, navigate }: { employee: Employee; service: ConfirmareApi; navigate: (path: string) => void }) {
   // API 2.41.0: a finance employee without a Confirmare scope works from the finance tasks only.
-  if (!canUseConfirmare(employee)) return <FinanceOnlyWorkspace navigate={navigate} />;
+  if (!canUseConfirmare(employee)) return <FinanceOnlyWorkspace employee={employee} navigate={navigate} />;
   return <OperatorWorkspace employee={employee} service={service} navigate={navigate} />;
 }
 
-function FinanceOnlyWorkspace({ navigate }: { navigate: (path: string) => void }) {
+/** API 2.46.0: the AWB queue and the e-Factura follow-up of a shop employee. */
+export function ShopTaskButtons({ navigate }: { navigate: (path: string) => void }) {
+  const { t } = useI18n();
+  return <>
+    <button type="button" className="button button-secondary" onClick={() => navigate("/confirmare/awb")} data-testid="cf-open-awb"><AppIcon name="orders" size={20} />{t("cf.awbq.open")}</button>
+    <button type="button" className="button button-secondary" onClick={() => navigate("/confirmare/efactura")} data-testid="cf-open-efactura"><AppIcon name="document" size={20} />{t("cf.efactura.open")}</button>
+  </>;
+}
+
+function FinanceOnlyWorkspace({ employee, navigate }: { employee: Employee; navigate: (path: string) => void }) {
   const { t } = useI18n();
   return (
     <div className="workspace-body confirmare-workspace" data-testid="workspace-confirmare-finance">
@@ -36,6 +46,7 @@ function FinanceOnlyWorkspace({ navigate }: { navigate: (path: string) => void }
         </div>
         <div className="next-action-actions">
           <button type="button" className="button button-primary next-action-cta" onClick={() => navigate("/confirmare/finance")} data-testid="cf-open-finance">{t("cf.fin.open")}<AppIcon name="arrow" size={20} /></button>
+          {canWatchHealth(employee) && <button type="button" className="button button-secondary" onClick={() => navigate("/confirmare/health")} data-testid="cf-open-health">{t("cf.health.open")}</button>}
         </div>
       </section>
     </div>
@@ -141,6 +152,8 @@ function OperatorWorkspace({ employee, service, navigate }: { employee: Employee
             {supervisor && <button type="button" className="button button-secondary" onClick={() => navigate("/confirmare/team")} data-testid="cf-open-team"><AppIcon name="team" size={20} />{t("cf.home.team")}</button>}
             {canUseAdvanceQueue(employee) && <button type="button" className="button button-secondary" onClick={() => navigate("/confirmare/finance")} data-testid="cf-open-finance"><AppIcon name="orders" size={20} />{t(canUseFinance(employee) ? "cf.fin.open" : "cf.fin.openAdvances")}</button>}
             {canHandOff(employee) && <button type="button" className="button button-secondary" onClick={() => navigate("/confirmare/handoff")} data-testid="cf-open-handoff"><AppIcon name="document" size={20} />{t("cf.handoff.list.open")}</button>}
+            {canUseShopTasks(employee) && <ShopTaskButtons navigate={navigate} />}
+            {canWatchHealth(employee) && <button type="button" className="button button-secondary" onClick={() => navigate("/confirmare/health")} data-testid="cf-open-health"><AppIcon name="orders" size={20} />{t("cf.health.open")}</button>}
           </div>
         </DashboardSection>
         <Notice tone="warning" role="note" testId="cf-contact-dependency">{t("cf.home.contactDependency")}</Notice>

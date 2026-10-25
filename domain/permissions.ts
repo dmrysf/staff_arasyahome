@@ -1,5 +1,6 @@
 import type { Employee } from "./models";
 import { canHandOff, canOpenConfirmareOrder, canSuperviseConfirmare, canUseAdvanceQueue, canUseConfirmare } from "./confirmare";
+import { canUseShopTasks, canWatchHealth } from "./confirmareOps";
 
 export type StaffPermission =
   | "orders.scan"
@@ -33,6 +34,9 @@ export function canAccessRoute(employee: Employee, path: string) {
   if (path === "/confirmare/finance") return canUseAdvanceQueue(employee);
   // Confirmare production handoff (API 2.42.0): a Confirmare scope and the document generate permission.
   if (path === "/confirmare/handoff") return canHandOff(employee);
+  // API 2.46.0: the AWB queue and the e-Factura follow-up of the shop employees; the operating health of the watchers.
+  if (path === "/confirmare/awb" || path === "/confirmare/efactura") return canUseShopTasks(employee);
+  if (path === "/confirmare/health") return canWatchHealth(employee);
   if (path.startsWith("/confirmare/orders/")) return canOpenConfirmareOrder(employee);
   if (path === "/confirmare" || path.startsWith("/confirmare/")) return canUseConfirmare(employee);
   // Production documents: channel employees with a document permission, without needing a stage.

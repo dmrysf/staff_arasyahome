@@ -1,5 +1,5 @@
 export type StaffRoute =
-  | { kind: "home" | "login" | "scan" | "orders" | "history" | "profile" | "authority" | "trendyol" | "problems" | "confirmare" | "confirmare-team" | "confirmare-finance" | "confirmare-handoff"; pathname: string }
+  | { kind: "home" | "login" | "scan" | "orders" | "history" | "profile" | "authority" | "trendyol" | "problems" | "confirmare" | "confirmare-team" | "confirmare-finance" | "confirmare-handoff" | "confirmare-awb" | "confirmare-efactura" | "confirmare-health"; pathname: string }
   | { kind: "confirmare-order"; pathname: string; orderId: string }
   | { kind: "trendyol-package"; pathname: string; packageId: string }
   | { kind: "order-detail"; pathname: string; orderId: string }
@@ -7,7 +7,7 @@ export type StaffRoute =
   | { kind: "document-detail"; pathname: string; orderId: string }
   | { kind: "invalid"; pathname: "/" };
 
-const fixedRoutes = new Map<string, "home" | "login" | "scan" | "orders" | "history" | "profile" | "authority" | "trendyol" | "problems" | "confirmare" | "confirmare-team" | "confirmare-finance" | "confirmare-handoff">([
+const fixedRoutes = new Map<string, "home" | "login" | "scan" | "orders" | "history" | "profile" | "authority" | "trendyol" | "problems" | "confirmare" | "confirmare-team" | "confirmare-finance" | "confirmare-handoff" | "confirmare-awb" | "confirmare-efactura" | "confirmare-health">([
   ["/", "home"],
   ["/login", "login"],
   ["/scan", "scan"],
@@ -21,6 +21,9 @@ const fixedRoutes = new Map<string, "home" | "login" | "scan" | "orders" | "hist
   ["/confirmare/team", "confirmare-team"],
   ["/confirmare/finance", "confirmare-finance"],
   ["/confirmare/handoff", "confirmare-handoff"],
+  ["/confirmare/awb", "confirmare-awb"],
+  ["/confirmare/efactura", "confirmare-efactura"],
+  ["/confirmare/health", "confirmare-health"],
 ]);
 
 const ORDER_PREFIX = "/orders/";

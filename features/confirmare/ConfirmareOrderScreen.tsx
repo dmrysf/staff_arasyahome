@@ -19,6 +19,8 @@ import { ConfirmareShopPanel } from "./ConfirmareShopPanel";
 import { ConfirmareFinancePanel } from "./ConfirmareFinancePanel";
 import { ConfirmareInvoicePanel } from "./ConfirmareInvoicePanel";
 import { ConfirmareHandoffPanel } from "./ConfirmareHandoffPanel";
+import { ConfirmareCyclePanel } from "./ConfirmareCyclePanel";
+import { ConfirmareOperationsPanel } from "./ConfirmareOperationsPanel";
 import type { DocumentApi } from "../../domain/documents";
 
 type Message = { tone: Tone; text: string } | null;
@@ -56,6 +58,8 @@ export function ConfirmareOrderScreen({ orderId, employee, service, documents, n
   const [busy, setBusy] = useState<Busy>(null);
   const [team, setTeam] = useState<ConfirmareOperator[] | null>(null);
   const [target, setTarget] = useState("");
+  // API 2.46.0: the third unanswered call started the advance proforma cycle (issued unconfirmed, e-mailed by SmartBill).
+  const [cycleStarted, setCycleStarted] = useState(false);
   // What the shop panel shows now (API 2.40.0): only a read showing the prices Arasya holds counts for the approval.
   const [shopRead, setShopRead] = useState<ShopRead | null>(null);
   const onShopRead = useCallback((value: ShopRead | null) => setShopRead(value), []);
@@ -119,6 +123,7 @@ export function ConfirmareOrderScreen({ orderId, employee, service, documents, n
       intentKey.current = null;
       setMessage({ tone: "success", text: success });
       if (action === "contact") { setOutcome(null); setCallHappened(false); }
+      else setCycleStarted(false);
       if (action === "approve") setConfirmApprove(false);
       if (action === "reject") { setConfirmReject(false); setRejectReason(""); }
     } catch (caught) {
@@ -158,6 +163,7 @@ export function ConfirmareOrderScreen({ orderId, employee, service, documents, n
         <div className="package-main">
           {changedNotice && <Notice tone="warning" role="alert" testId="cf-changed">{t("cf.order.changedInShop")}</Notice>}
           {message && <Notice tone={message.tone} role={message.tone === "danger" ? "alert" : "status"} entering testId="cf-message">{message.text}</Notice>}
+          {cycleStarted && <Notice tone="info" role="status" entering testId="cf-cycle-started">{t("cf.cycle.started")}</Notice>}
           {view.error && <Notice tone="warning" role="status">{t("cf.order.staleView")}</Notice>}
           {!determined && <Notice tone="danger" role="note">{t("cf.order.undetermined")}</Notice>}
           {detail.commerceClosed && <Notice tone="danger" role="note">{t("cf.order.closedInShop")}</Notice>}
@@ -189,6 +195,10 @@ export function ConfirmareOrderScreen({ orderId, employee, service, documents, n
           {/* API 2.41.0: the money of the order, read from the shop when asked; finance actions for finance scopes only. */}
           <ConfirmareFinancePanel detail={detail} service={service} />
           <ConfirmareInvoicePanel key={detail.globalOrderId} globalOrderId={detail.globalOrderId} service={service} capabilities={detail.invoice} />
+          {/* API 2.46.0: reactivation of a cancelled order, the AWB from stage 12 and the NETOPIA full card refund (read from the shop). */}
+          {(detail.status !== "pending" || detail.commerceClosed) && <ConfirmareOperationsPanel key={`ops-${detail.globalOrderId}`} globalOrderId={detail.globalOrderId} service={service} onChanged={view.refresh} />}
+
+          <ConfirmareCyclePanel detail={detail} service={service} canRun={mine || supervisor} onChanged={view.refresh} />
 
           <section className="detail-section" aria-labelledby="cf-call">
             <div className="section-title"><h2 id="cf-call">{t("cf.call.title")}</h2>{detail.review.callRecorded && <StatusPill tone="success" icon="check">{t("cf.call.recorded")}</StatusPill>}</div>
@@ -196,7 +206,11 @@ export function ConfirmareOrderScreen({ orderId, employee, service, documents, n
             {canContact ? <form className="cf-call-form" onSubmit={(event) => {
               event.preventDefault();
               if (!outcome || !callHappened) return;
-              void run("contact", `contact|${detail.version}|${detail.review.fingerprint}|${outcome}`, (key) => service.contact(detail.globalOrderId, { expectedVersion: detail.version, outcome, reviewFingerprint: detail.review.fingerprint }, key), t("cf.done.contact", { outcome: contactOutcomeLabel(outcome) }));
+              void run("contact", `contact|${detail.version}|${detail.review.fingerprint}|${outcome}`, async (key) => {
+                const answer = await service.contact(detail.globalOrderId, { expectedVersion: detail.version, outcome, reviewFingerprint: detail.review.fingerprint }, key);
+                setCycleStarted(answer.proformaCycle?.started === true);
+                return answer;
+              }, t("cf.done.contact", { outcome: contactOutcomeLabel(outcome) }));
             }}>
               <fieldset className="cf-outcomes">
                 <legend>{t("cf.call.outcome")}</legend>

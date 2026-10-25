@@ -3,6 +3,7 @@ import { confirmareShopTR } from "./confirmareShop";
 import { confirmareFinanceTR } from "./confirmareFinance";
 import { confirmareInvoiceTR } from "./confirmareInvoice";
 import { confirmareHandoffTR } from "./confirmareHandoff";
+import { confirmareOpsTR } from "./confirmareOps";
 import { confirmareEditTR } from "./confirmareEdit";
 import { physicalTR } from "./physical";
 import type { Catalog } from "../types";
@@ -20,6 +21,7 @@ export const tr: Catalog = {
   ...confirmareFinanceTR,
   ...confirmareInvoiceTR,
   ...confirmareHandoffTR,
+  ...confirmareOpsTR,
   ...confirmareEditTR,
 
   // ---- common

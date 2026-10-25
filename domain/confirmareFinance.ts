@@ -33,7 +33,7 @@ export type FinanceEntry = {
   id: string; kind: "transfer_in" | "refund_out" | "liability_ack"; purpose: "advance" | "additional_payment" | "refund" | "liability";
   amount: string; reference: string; valueDate: string | null; state: "submitted" | "verified" | "rejected";
   submittedBy: string; submittedAt: string; decidedBy: string | null; decidedAt: string | null; decisionCode: string | null;
-  method: PaymentMethod; receipt: CashReceipt | null; collector: string | null; flags: ("overpayment" | "cancelled_proforma")[];
+  method: PaymentMethod; receipt: CashReceipt | null; collector: string | null; flags: ("overpayment" | "cancelled_proforma" | "card_full_refund")[];
 };
 export type FinanceSummary = {
   readAt: string; revision: string; currency: string;
@@ -201,9 +201,17 @@ export function financeErrorKey(backendCode: string | undefined): MessageKey | n
   return backendCode && known.includes(backendCode) ? `cf.fin.error.${backendCode}` as MessageKey : null;
 }
 
-/** The submitted entries another employee recorded (what this employee may verify), oldest first. */
+/**
+ * The submitted entries another employee recorded (what this employee may verify), oldest first. A NETOPIA full card
+ * refund (YD SOFT 2.20.0) is verified in the operations panel of the order, never through the finance refund decision.
+ */
 export function verifiableEntries(view: FinanceView, kind: "transfer_in" | "refund_out"): FinanceEntry[] {
-  return view.summary.entries.filter((entry) => entry.kind === kind && entry.state === "submitted" && entry.submittedBy !== view.me);
+  return view.summary.entries.filter((entry) => entry.kind === kind && entry.state === "submitted" && entry.submittedBy !== view.me && !entry.flags.includes("card_full_refund"));
+}
+
+/** The NETOPIA full card refunds recorded by another employee: what this finance approver verifies in the operations panel. */
+export function cardRefundEntries(view: FinanceView): FinanceEntry[] {
+  return view.summary.entries.filter((entry) => entry.kind === "refund_out" && entry.state === "submitted" && entry.submittedBy !== view.me && entry.flags.includes("card_full_refund"));
 }
 
 /** The submitted entries this employee recorded (waiting for another employee). */

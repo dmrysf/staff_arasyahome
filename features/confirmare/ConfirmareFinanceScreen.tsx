@@ -11,6 +11,7 @@ import { AutoRefreshBar, QueueSkeleton } from "../workspaces/DashboardParts";
 import { useAutoRefresh } from "../workspaces/useAutoRefresh";
 import { SourceFilter, confirmareOrderPath, dueDay, when } from "./ConfirmareParts";
 import { TransferExceptionsSection } from "./ConfirmareTransferExceptions";
+import { BankCheckSection } from "./ConfirmareBankCheck";
 
 /** Tasks that need a person now; the others are informative. */
 /** The advance groups (owner workflow): waiting, partial, paid, routed to the shop. */
@@ -56,6 +57,8 @@ export function ConfirmareFinanceScreen({ employee, service, navigate }: { emplo
         ? <EmptyPanel icon="orders" title={t("cf.fin.queueEmpty")}>{t("cf.fin.queueEmptyHint")}</EmptyPanel>
         : <ul className="queue-list" aria-label={task ? taskLabel(task) : t("cf.fin.allTasks")}>{rows.map((order) => <FinanceRow key={order.globalOrderId} order={order} navigate={navigate} />)}</ul>)}
       {data && data.orders.length >= 500 && <p className="dashboard-footnote">{t("cf.fin.queueLimit")}</p>}
+      {/* API 2.46.0: the bank check before an expired advance proforma is cancelled, and the open proforma cycles. */}
+      {(financeRole || operator.supervise.length > 0) && <BankCheckSection service={service} navigate={navigate} />}
       {financeRole && <TransferExceptionsSection employee={employee} service={service} />}
     </article>
   );

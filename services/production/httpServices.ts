@@ -16,6 +16,7 @@ import type { ShopLine, ShopOrderDetail, ShopPerson, ShopRead } from "../../doma
 import { CASH_RECEIPTS, EXCEPTION_REASONS, EXCEPTION_RESOLUTIONS, FINANCE_ACTIONS, PAYMENT_METHODS, FINANCE_NEXT, FINANCE_TASKS, type ExceptionOutcome, type FinanceEntry, type FinanceOutcome, type FinanceQueue, type FinanceQueueItem, type FinanceRead, type FinanceSummary, type FinanceTask, type FinanceTimelineItem, type TransferException, type TransferExceptionList } from "../../domain/confirmareFinance";
 import { CANCEL_REASONS, INVOICE_ACTIONS, INVOICE_ROLES, PROFORMA_ACTIONS, PROFORMA_KEYS, PROFORMA_ROUTE, type CodCheck, type ShippingCheck, type InvoiceDeadline, type MoneyPosition, type TotalAcceptance, type InvoiceActionKey, type InvoiceOutcome, type InvoiceRead, type InvoiceSummary, type InvoiceView, type ProformaActionKey, type ProformaSummary, type ShopAssignment, type ShopQueueItem } from "../../domain/confirmareInvoice";
 import { EDIT_IMPACTS, type EditBlocker, type EditCatalog, type EditField, type EditLineSnapshot, type EditOutcome, type EditProduct, type EditResult, type EditTotals, type EditVariation, type OpenEdit } from "../../domain/confirmareEdit";
+import { mapAwbQueue, mapBankCheck, mapBankChecks, mapContactCycle, mapCycleAttention, mapEfacturaQueue, mapEfacturaTask, mapHealth, mapOperationOutcome, mapOperationsState, mapOrderCycle, mapProformaCycle } from "../../domain/confirmareOps";
 import { CLEARANCE_CONDITIONS, CONTACT_OUTCOMES, DOCUMENT_STATES, FINANCIAL_ATTENTION, HANDOFF_BLOCKERS, HANDOFF_STATES, type ConfirmareAlert, type ConfirmareApi, type ConfirmareAvailability, type ConfirmareContact, type ConfirmareCustomer, type ConfirmareDetail, type ConfirmareEvent, type ConfirmareHandoff, type ConfirmareItem, type HandoffItem, type ConfirmareLine, type ConfirmareOperator, type ConfirmarePool, type ConfirmareTeam, type FinancialState } from "../../domain/confirmare";
 
 type FetchLike = typeof fetch;
@@ -1114,6 +1115,7 @@ export function createProductionServices(apiBaseUrl: string, options: Production
     reunite: (input, key) => http.request("/production-units/reunite", { method: "POST", body: JSON.stringify(input), headers: { "Idempotency-Key": key } }),
     material: (id, input, key) => http.request(`/production-units/${encodeURIComponent(id)}/material`, { method: "POST", body: JSON.stringify(input), headers: { "Idempotency-Key": key } }),
   };
+  const sourceQuery = (source: string | null) => (source ? `?${new URLSearchParams({ source }).toString()}` : "");
   const confirmareOrder = (globalOrderId: string, action: string) => `/confirmare/orders/${encodeURIComponent(globalOrderId)}/${action}`;
   const command = <T>(path: string, input: unknown, key: string, map: (value: unknown) => T) => http.request(path, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, map);
   const confirmare: ConfirmareApi = {
@@ -1127,7 +1129,7 @@ export function createProductionServices(apiBaseUrl: string, options: Production
     reopen: (globalOrderId, input, key) => command(confirmareOrder(globalOrderId, "reopen"), input, key, mapConfirmareItem),
     approve: (globalOrderId, input, key) => command(confirmareOrder(globalOrderId, "approve"), input, key, mapConfirmareItem),
     reject: (globalOrderId, input, key) => command(confirmareOrder(globalOrderId, "reject"), input, key, mapConfirmareItem),
-    contact: (globalOrderId, input, key) => command(confirmareOrder(globalOrderId, "contact"), input, key, (value) => { const raw = objectValue(value); return { contact: mapConfirmareContact(raw.contact), item: mapConfirmareItem(raw.item) }; }),
+    contact: (globalOrderId, input, key) => command(confirmareOrder(globalOrderId, "contact"), input, key, (value) => { const raw = objectValue(value); return { contact: mapConfirmareContact(raw.contact), item: mapConfirmareItem(raw.item), proformaCycle: mapContactCycle(raw.proformaCycle) }; }),
     availability: (signal) => http.request("/confirmare/availability", { signal }, mapConfirmareAvailability),
     setAvailability: (input, key) => http.request("/confirmare/availability", { method: "PUT", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapConfirmareAvailability),
     team: (signal) => http.request("/confirmare/team", { signal }, mapConfirmareTeam),
@@ -1158,6 +1160,23 @@ export function createProductionServices(apiBaseUrl: string, options: Production
     assignShop: (globalOrderId, input, key) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/shop-assignment`, { method: "POST", cache: "no-store", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, (value) => mapShopAssignment(objectValue(value).assignment)),
     verifyInvoiceQr: (globalOrderId, qrToken) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/invoice/qr`, { method: "POST", cache: "no-store", body: JSON.stringify({ qrToken }) }, (value) => { const raw = objectValue(value); if (raw.verified !== true) throw new StaffServiceError("SERVER_ERROR"); return { verified: true as const, validSeconds: nonNegativeInteger(raw.validSeconds) }; }),
     shopQueue: (signal) => http.request("/confirmare/shop-queue", { signal, cache: "no-store" }, (value) => listOf(objectValue(value).items, 200, mapShopQueueItem)),
+    // API 2.46.0: the proforma cycles, the bank checks, the shop operations (reactivation, AWB, card refund), e-Factura, health.
+    cycleAttention: (source, signal) => http.request(`/confirmare/cycles${sourceQuery(source)}`, { signal, cache: "no-store" }, mapCycleAttention),
+    bankChecks: (source, signal) => http.request(`/confirmare/finance/bank-checks${sourceQuery(source)}`, { signal, cache: "no-store" }, mapBankChecks),
+    recordBankCheck: (source, key) => http.request("/confirmare/finance/bank-check", { method: "POST", cache: "no-store", headers: { "Idempotency-Key": key }, body: JSON.stringify({ source }) }, (value) => mapBankCheck(objectValue(value).check)),
+    advanceCycle: (globalOrderId) => http.request(confirmareOrder(globalOrderId, "cycle/advance"), { method: "POST", cache: "no-store", body: "{}" }, (value) => mapProformaCycle(objectValue(value).proformaCycle)),
+    operations: (globalOrderId, signal) => http.request(confirmareOrder(globalOrderId, "operations"), { signal, cache: "no-store" }, mapOperationsState),
+    operate: (globalOrderId, path, input, key) => http.request(confirmareOrder(globalOrderId, path), { method: "POST", cache: "no-store", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapOperationOutcome),
+    operationsReconcile: (globalOrderId, key) => http.request(confirmareOrder(globalOrderId, "operations/reconcile"), { method: "POST", cache: "no-store", body: JSON.stringify({ idempotencyKey: key }) }, mapOperationOutcome),
+    async awbLabel(globalOrderId) {
+      const response = await http.send(confirmareOrder(globalOrderId, "awb/label"), { cache: "no-store" });
+      if (!response.ok) throw await http.errorFromResponse(response, "/confirmare/awb/label");
+      return response.blob();
+    },
+    awbQueue: (source, signal) => http.request(`/confirmare/awb-queue${sourceQuery(source)}`, { signal, cache: "no-store" }, mapAwbQueue),
+    efactura: (source, state, signal) => http.request(`/confirmare/efactura${source || state ? `?${new URLSearchParams({ ...(source ? { source } : {}), ...(state ? { state } : {}) }).toString()}` : ""}`, { signal, cache: "no-store" }, mapEfacturaQueue),
+    recordEfactura: (taskId, input) => http.request(`/confirmare/efactura/${encodeURIComponent(taskId)}`, { method: "POST", cache: "no-store", body: JSON.stringify(input) }, (value) => mapEfacturaTask(objectValue(value).task)),
+    health: (source, signal) => http.request(`/confirmare/health${sourceQuery(source)}`, { signal, cache: "no-store" }, mapHealth),
   };
   return { physical, auth, employee, orders, activity, workflow, exceptions, live, cutting, documents, authority, productionQr, trendyol, workspace, management, pieces, confirmare, mode: "production" };
 }
@@ -1297,6 +1316,8 @@ export function mapConfirmareDetail(value: unknown): ConfirmareDetail {
     source: { commerceStatusLabel: nullableString(source.commerceStatusLabel), changedAt: source.changedAt == null ? null : timestampValue(source.changedAt), lastSeenAt: source.lastSeenAt == null ? null : timestampValue(source.lastSeenAt), freshness: nullableString(source.freshness) },
     production: { cleared: booleanValue(production.cleared), missing: stringList(production.missing).map((condition) => oneOf(condition, CLEARANCE_CONDITIONS)) },
     events: Array.isArray(raw.events) ? raw.events.map(mapConfirmareEvent) : [],
+    // An older API (2.45) has no cycle: no counter and no timer are shown.
+    cycle: mapOrderCycle(raw.cycle),
     // An older API (2.41) has no handoff state: the panel is not shown.
     handoff: raw.handoff == null ? null : mapConfirmareHandoff(raw.handoff),
     // An older API (2.42) has no invoicing: nothing can be read or issued.
@@ -1490,7 +1511,7 @@ function mapFinanceEntry(value: unknown): FinanceEntry {
     decidedAt: raw.decidedAt == null ? null : timestampValue(raw.decidedAt), decisionCode: raw.decisionCode == null ? null : textValue(raw.decisionCode, 40),
     // API 2.45.0: how the money came, the cash document and collector, the explicit confirmations (absent: a bank transfer).
     method: raw.method == null ? "bank_transfer" : oneOf(raw.method, PAYMENT_METHODS), receipt: raw.receipt == null ? null : oneOf(raw.receipt, CASH_RECEIPTS),
-    collector: raw.collector == null ? null : textValue(raw.collector, 64), flags: raw.flags == null ? [] : listOf(raw.flags, 4, (flag) => oneOf(flag, ["overpayment", "cancelled_proforma"] as const)),
+    collector: raw.collector == null ? null : textValue(raw.collector, 64), flags: raw.flags == null ? [] : listOf(raw.flags, 4, (flag) => oneOf(flag, ["overpayment", "cancelled_proforma", "card_full_refund"] as const)),
   };
 }
 export function mapFinanceSummary(value: unknown): FinanceSummary {

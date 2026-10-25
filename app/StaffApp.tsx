@@ -38,6 +38,7 @@ import { ConfirmareOrderScreen } from "../features/confirmare/ConfirmareOrderScr
 import { ConfirmareTeamScreen } from "../features/confirmare/ConfirmareTeamScreen";
 import { ConfirmareFinanceScreen } from "../features/confirmare/ConfirmareFinanceScreen";
 import { ConfirmareHandoffScreen } from "../features/confirmare/ConfirmareHandoffScreen";
+import { ConfirmareAwbScreen, ConfirmareEfacturaScreen, ConfirmareHealthScreen } from "../features/confirmare/ConfirmareShopTasks";
 
 type StaffAppProps = { initialRoute: string; mode: StaffRuntimeMode; apiBaseUrl: string };
 
@@ -173,6 +174,9 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
   else if (guardedRoute === "/confirmare/team" && services.confirmare) screen = <ConfirmareTeamScreen employee={session.employee} service={services.confirmare} navigate={navigate} />;
   else if (guardedRoute === "/confirmare/finance" && services.confirmare) screen = <ConfirmareFinanceScreen employee={session.employee} service={services.confirmare} navigate={navigate} />;
   else if (guardedRoute === "/confirmare/handoff" && services.confirmare) screen = <ConfirmareHandoffScreen service={services.confirmare} navigate={navigate} />;
+  else if (guardedRoute === "/confirmare/awb" && services.confirmare) screen = <ConfirmareAwbScreen service={services.confirmare} navigate={navigate} />;
+  else if (guardedRoute === "/confirmare/efactura" && services.confirmare) screen = <ConfirmareEfacturaScreen service={services.confirmare} navigate={navigate} />;
+  else if (guardedRoute === "/confirmare/health" && services.confirmare) screen = <ConfirmareHealthScreen service={services.confirmare} navigate={navigate} />;
   else if (confirmareOrderId && services.confirmare) screen = <ConfirmareOrderScreen key={confirmareOrderId} orderId={confirmareOrderId} employee={session.employee} service={services.confirmare} documents={services.documents} navigate={navigate} />;
   else if (guardedRoute === "/history") screen = <HistoryScreen service={services.activity} navigate={navigate} />;
   else if (guardedRoute === "/profile") screen = <ProfileScreen employee={session.employee} mode={services.mode} onLogout={logout} passwordChanged={passwordChanged} onChangePassword={() => { setPasswordChanged(false); setChangingPassword(true); }} />;

@@ -151,3 +151,10 @@
 .cf-proforma-money { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid var(--color-border); border-radius: var(--radius-md); min-width: 0; }
 .cf-proforma-money h4 { margin: 0; font-size: var(--text-sm); }
 .cf-finance-confirm textarea { width: 100%; min-width: 0; box-sizing: border-box; font: inherit; }
+
+/* Staff 2.36.0: the operations, cycle and e-Factura blocks (one column, the same rhythm as the other panels). */
+.cf-ops-block, .cf-ops-form { display: grid; gap: 12px; }
+.cf-ops-block + .cf-ops-block { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--color-border); }
+.cf-ops-block > h3 { margin: 0; }
+.cf-efactura-task { display: grid; gap: 10px; padding: 12px 0; }
+.cf-efactura-task.is-overdue { border-left: 3px solid var(--color-danger); padding-left: 12px; }
