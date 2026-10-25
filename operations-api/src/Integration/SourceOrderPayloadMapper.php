@@ -27,7 +27,8 @@ final class SourceOrderPayloadMapper
      * telephone number exists) and `financialAttention` (order.financial.attention after a change of the total). API
      * 2.41.0: `financeTasks` (the Phase 5 attentions of the shop's finance record).
      */
-    public const ORDER_FACTS = ['pricing', 'dueDate', 'financial', 'contact', 'financialAttention', 'financeTasks'];
+    /** API 2.46.0: `paymentFinancing` (order.payment.financing: a TBI credit order keeps the established flow, owner K-12). */
+    public const ORDER_FACTS = ['pricing', 'dueDate', 'financial', 'contact', 'financialAttention', 'financeTasks', 'paymentFinancing'];
     /**
      * Why a Confirmare order needs a financial decision (order.financial.attention, never an amount). With a closed state
      * (waiting, partial, unknown): additional_payment_due and refund_due (API 2.40.0), transfer_pending (a recorded bank
@@ -42,7 +43,7 @@ final class SourceOrderPayloadMapper
     public const FINANCIAL_STATES = ['cleared', 'waiting', 'partial', 'unknown'];
     public const FINANCIAL_BASES = ['online_payment', 'zero_total', 'advance_collected'];
     private const SUBMISSION_KEYS = ['submittedAt', 'evidence'];
-    private const PAYMENT_KEYS = ['method', 'advanceStatus', 'advanceRevision', 'advanceConfirmedAt'];
+    private const PAYMENT_KEYS = ['method', 'advanceStatus', 'advanceRevision', 'advanceConfirmedAt', 'financing'];
     private const MAX_ADVANCE_REVISION = 1000000;
     private const ITEM_KEYS = ['id', 'line', 'name', 'sku', 'variant', 'color', 'width', 'height', 'unit', 'meters', 'quantity', 'options'];
     private const MAX_OPTIONS = 20;
@@ -275,7 +276,12 @@ final class SourceOrderPayloadMapper
             }
             $confirmedAt = self::timestamp($payment['advanceConfirmedAt'], 'order.payment.advanceConfirmedAt');
         }
-        return ['method' => $method, 'advanceStatus' => $status, 'advanceRevision' => $revision, 'advanceConfirmedAt' => $confirmedAt];
+        // API 2.46.0: a consumer credit order (TBI) states `financing: true`; only with an unverified payment.
+        $financing = $payment['financing'] ?? false;
+        if (!is_bool($financing) || ($financing && $method !== 'unverified')) {
+            throw self::invalid('order.payment.financing');
+        }
+        return ['method' => $method, 'advanceStatus' => $status, 'advanceRevision' => $revision, 'advanceConfirmedAt' => $confirmedAt] + ($financing ? ['financing' => true] : []);
     }
 
     /**

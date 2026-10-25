@@ -18,7 +18,7 @@ if /bin/bash "$release/scripts/validate-release.sh" "$release" >/dev/null 2>&1; 
 fi
 cp "$workspace/release.original" "$release/release.json"
 cp "$release/src/Http/HealthController.php" "$workspace/health.original"
-php -r '$p=$argv[1]; file_put_contents($p,str_replace("2.45.0","2.30.2",file_get_contents($p)));' "$release/src/Http/HealthController.php"
+php -r '$p=$argv[1]; file_put_contents($p,str_replace("2.46.0","2.30.2",file_get_contents($p)));' "$release/src/Http/HealthController.php"
 /bin/bash "$release/scripts/generate-sha256s.sh" "$release"
 if /bin/bash "$release/scripts/validate-release.sh" "$release" >/dev/null 2>&1; then
   printf 'Validator accepted metadata/runtime version mismatch with valid checksums.\n' >&2; exit 1

@@ -476,6 +476,49 @@ final class ConfirmareService
     }
 
     /**
+     * API 2.46.0 (owner K-07): a cancelled order the customer came back for is decided again: an approved or rejected
+     * Confirmare returns to `pending` (its approval, call and line confirmation no longer count), so the current
+     * products, measurements, prices and money are checked with the customer once more. Recorded as a reopening by the
+     * employee who reactivated it. A pending one is left as it is. @return bool whether it was reopened
+     */
+    public function reopenAfterReactivation(string $globalOrderId, string $employeeUuid, string $requestId, string $key): bool
+    {
+        $globalId = $this->globalId($globalOrderId);
+        return $this->retrying(function () use ($globalId, $employeeUuid, $requestId, $key): bool {
+            $this->pdo->beginTransaction();
+            try {
+                $order = $this->lockOrder($globalId);
+                $confirmation = $order === null ? null : $this->lockConfirmation((string) $order['order_uuid']);
+                if ($order === null || $confirmation === null) {
+                    $this->pdo->commit();
+                    return false;
+                }
+                $now = $this->now();
+                // The employee who took the customer back keeps the order (when they may operate it and nobody holds it).
+                $keeps = $confirmation['assigned_employee_uuid'] === null && $this->scopes->canWork($employeeUuid, ConfirmareScopePolicy::OPERATE, (string) $order['source_key']);
+                $assignment = $keeps ? ['assigned_employee_uuid' => $employeeUuid, 'assigned_at' => $now, 'assignment_kind' => 'claim'] : [];
+                if ($confirmation['status'] === self::STATUS_PENDING) {
+                    if ($assignment !== []) {
+                        $this->change($order, $confirmation, $assignment, $employeeUuid, 'claimed', 'reactivated', $now, $requestId, $key);
+                    }
+                    $this->pdo->commit();
+                    return false;
+                }
+                $this->change($order, $confirmation, [
+                    'status' => self::STATUS_PENDING, 'decided_at' => null, 'decided_by_employee_uuid' => null, 'decision_reason_code' => null,
+                    'call_confirmed_at' => null, 'call_confirmed_by_employee_uuid' => null, 'confirmed_line_ids' => null, 'approved_review_fingerprint' => null,
+                    'production_cleared' => 0, 'cleared_at' => null,
+                ] + $assignment, $employeeUuid, 'reopened', 'reactivated', $now, $requestId, $key);
+                $this->pdo->commit();
+                return true;
+            } catch (\Throwable $error) {
+                $this->rollBack();
+                throw $error;
+            }
+        });
+    }
+
+    /**
      * Records one telephone contact attempt (API 2.39.0): what the operator says happened on the call, nothing else.
      * Only the assignee or a supervisor of the source, on a pending Confirmare order still open in the shop, on the
      * review the operator saw (`reviewFingerprint`) and the version they read. Append-only: it changes neither the
@@ -531,6 +574,10 @@ final class ConfirmareService
                 $current = ConfirmationClearance::fingerprint($this->pdo, $orderUuid);
                 if (!hash_equals($current, $reviewFingerprint)) {
                     throw new ApiException(409, 'CONFIRMARE_REVIEW_STALE', 'The order changed in the shop since it was reviewed. Review it again.', ['reviewFingerprint' => $current]);
+                }
+                if ($outcome === 'no_answer') {
+                    // API 2.46.0 (owner master decisions): at most three unanswered calls per cycle, never two at once.
+                    ConfirmareCycles::assertNoAnswerAllowed($this->pdo, $orderUuid, $this->clock->now());
                 }
                 if ($outcome === 'confirmed' && !$this->contactAvailable($orderUuid)) {
                     throw new ApiException(409, 'CONFIRMARE_CONTACT_UNAVAILABLE', 'The shop sent no telephone number for this customer; a confirmed call cannot be recorded.');

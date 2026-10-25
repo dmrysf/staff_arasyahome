@@ -52,7 +52,7 @@ $floor = static function () use ($rollback): ?string { $r = $rollback('0.0.0')['
 
 // The suites before this one leave no Confirmare, finance or invoice state; other state may set a lower floor.
 $base = $floor();
-$check($base !== '2.45.0' && $base !== '2.42.0' && $base !== 'unverifiable', 'the shared test database starts without Confirmare, finance or invoice state: ' . var_export($base, true));
+$check($base !== '2.46.0' && $base !== '2.45.0' && $base !== '2.42.0' && $base !== 'unverifiable', 'the shared test database starts without Confirmare, finance or invoice state: ' . var_export($base, true));
 $check((string) $one("SELECT migration_name FROM schema_migrations WHERE migration_name = '041_smartbill_invoicing.sql'") !== '' && (string) $one("SELECT migration_name FROM schema_migrations WHERE migration_name = '042_confirmare_connector_readiness.sql'") !== '', 'migrations 041 and 042 are applied');
 
 // ---- 1. Applied, empty: an older release ignores the new tables ------------------------------------------------------------
@@ -135,6 +135,20 @@ $finance = $rollback('2.41.0');
 $check($finance['code'] === 3 && in_array($finance['json']['requiredFloor'], ['2.42.0'], true) && $finance['json']['state']['unsettledFinanceActions'] === 1, 'a pending finance verification: 2.41.0 refused, floor 2.42.0: ' . $finance['out']);
 $clear();
 $check($floor() === $base, 'back to the starting floor once the rows are gone');
+
+// ---- 4b. API 2.46.0 (migration 043): a running proforma timer or an open e-Factura task needs 2.46.0 ------------------------
+$cycleUuid = Uuid::v4();
+$pdo->prepare("INSERT INTO confirmare_proforma_cycles (cycle_uuid, order_uuid, active_order_uuid, global_order_id, source_key, cycle_number, origin, owner_employee_uuid, state, sent_at, expires_at, created_at, updated_at)
+    VALUES (?, ?, ?, ?, 'trendhome', 1, 'operator', ?, 'running', UTC_TIMESTAMP(6), DATE_ADD(UTC_TIMESTAMP(6), INTERVAL 120 HOUR), UTC_TIMESTAMP(6), UTC_TIMESTAMP(6))")->execute([$cycleUuid, $orderUuid, $orderUuid, $global, $employee]);
+$expect('a running advance proforma timer', '2.46.0', '2.45.0', 'openDualStoreWork');
+$pdo->prepare("UPDATE confirmare_proforma_cycles SET state = 'cancelled', active_order_uuid = NULL, closed_reason = 'proforma_expired', closed_at = UTC_TIMESTAMP(6) WHERE cycle_uuid = ?")->execute([$cycleUuid]);
+$pdo->prepare("INSERT INTO invoice_efactura_tasks (task_uuid, order_uuid, global_order_id, source_key, invoice_action_uuid, issuer_employee_uuid, issued_at, due_at, state, created_at)
+    VALUES (?, ?, ?, 'trendhome', ?, ?, UTC_TIMESTAMP(6), DATE_ADD(UTC_TIMESTAMP(6), INTERVAL 7 DAY), 'open', UTC_TIMESTAMP(6))")->execute([Uuid::v4(), $orderUuid, $global, Uuid::v4(), $employee]);
+$expect('an e-Factura follow-up still open', '2.46.0', '2.45.0', 'openDualStoreWork');
+$pdo->exec("UPDATE invoice_efactura_tasks SET state = 'accepted', recorded_at = UTC_TIMESTAMP(6), recorded_by_employee_uuid = issuer_employee_uuid, outcome_code = 'checked_accepted'");
+$check($floor() === $base, 'finished 043 history (a cancelled timer, an accepted e-Factura) adds no floor; the rows stay');
+$pdo->exec('DELETE FROM invoice_efactura_tasks');
+$pdo->exec('DELETE FROM confirmare_proforma_cycles');
 
 // ---- 5. Partial deployment: unverifiable states are refused (exit 1), never guessed ---------------------------------------
 $recorded041 = (string) $one("SELECT checksum FROM schema_migrations WHERE migration_name = '041_smartbill_invoicing.sql'");

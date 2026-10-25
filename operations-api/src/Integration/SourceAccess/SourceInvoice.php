@@ -26,9 +26,9 @@ final class SourceInvoice
     use ValidatesSourceAnswer;
 
     public const ACTIONS = ['issue', 'send_mail', 'reissue', 'resolve'];
-    public const PROFORMA_ACTIONS = ['proforma_issue', 'proforma_send_mail', 'proforma_check', 'proforma_resolve', 'proforma_cancel', 'total_accept', 'advance_accept'];
-    /** Why the operator cancels the advance proforma (2.19.0). */
-    public const CANCEL_REASONS = ['order_changed', 'customer_request', 'wrong_details', 'duplicate', 'other'];
+    public const PROFORMA_ACTIONS = ['proforma_issue', 'proforma_send_mail', 'proforma_check', 'proforma_resolve', 'proforma_cancel', 'total_accept', 'advance_accept', 'proforma_remind'];
+    /** Why the operator cancels the advance proforma (2.19.0); `expired_unpaid` is the cycle worker's own (2.20.0). */
+    public const CANCEL_REASONS = ['order_changed', 'customer_request', 'wrong_details', 'duplicate', 'other', 'expired_unpaid'];
     public const REASONS = ['order_changed', 'customer_data', 'wrong_document', 'other'];
     public const RESOLUTIONS = ['document' => ['not_issued', 'issued'], 'mail' => ['sent', 'not_sent']];
     /** A proforma's unknown outcome a manager may close (2.19.0 adds its cancellation in SmartBill). */
@@ -54,6 +54,8 @@ final class SourceInvoice
         // Owner business rules 2026-10-25: the explicit advance decision after a revision; the shipping against
         // WooCommerce's current configuration.
         'advance_decision_required', 'advance_decision_not_applicable', 'shipping_mismatch',
+        // YD SOFT 2.20.0 (owner master decisions 2026-10-25): the reminders of the advance proforma.
+        'proforma_not_sent', 'reminder_already_sent',
         // An action a shop of an older version does not know (never offered).
         'not_supported',
     ];
@@ -68,7 +70,7 @@ final class SourceInvoice
     public const PAYMENT_REFERENCE_PATTERN = '/^[A-Z]{2,4}[A-Z0-9]{1,20}$/D';
     public const OPERATION_STATES = ['none', 'in_flight', 'issued', 'unknown'];
     public const MAIL_STATES = ['none', 'smartbill', 'in_flight', 'sent', 'unknown', 'failed'];
-    public const RESULTS = ['issued', 'unknown', 'in_progress', 'sent', 'not_issued', 'not_sent', 'invoiced', 'not_invoiced', 'cancelled', 'not_cancelled', 'accepted', 'cancel_unknown'];
+    public const RESULTS = ['issued', 'unknown', 'in_progress', 'sent', 'not_issued', 'not_sent', 'invoiced', 'not_invoiced', 'cancelled', 'not_cancelled', 'accepted', 'cancel_unknown', 'reminded'];
     public const DEADLINE_LEVELS = ['none', 'notice', 'warning', 'critical', 'overdue'];
     public const COD_STATES = ['none', 'match', 'mismatch', 'delivered', 'unknown'];
     private const UUID = '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/D';
@@ -77,7 +79,7 @@ final class SourceInvoice
     private const PROFORMA_GROUPS = ['proformaIssue', 'proformaSendMail', 'proformaCheck', 'proformaResolve'];
     /** 2.19.0 groups: a 2.18.0 shop does not send them (`not_supported`). */
     private const PROFORMA_NEW_GROUPS = ['proformaCancel', 'totalAccept', 'advanceAccept'];
-    private const PROFORMA_HISTORY = ['proforma_issue', 'superseded', 'proforma_mail', 'check', 'proforma_resolve_document', 'proforma_resolve_mail', 'proforma_cancel', 'proforma_resolve_cancel'];
+    private const PROFORMA_HISTORY = ['proforma_issue', 'superseded', 'proforma_mail', 'check', 'proforma_resolve_document', 'proforma_resolve_mail', 'proforma_cancel', 'proforma_resolve_cancel', 'proforma_remind'];
     private const CHANGE_KINDS = ['added', 'removed', 'changed', 'shipping'];
 
     private function __construct()
@@ -214,6 +216,8 @@ final class SourceInvoice
                 'issuedAt' => self::optionalInstant($document['issuedAt'] ?? null),
                 'issuedBy' => ($document['issuedBy'] ?? null) === null ? null : self::pattern($document['issuedBy'], self::UUID),
                 'outdated' => self::bool($document['outdated'] ?? null),
+                // YD SOFT 2.20.0: issued after three unanswered calls, before any telephone confirmation.
+                'unconfirmed' => array_key_exists('unconfirmed', $document) ? self::bool($document['unconfirmed']) : false,
                 'link' => ($document['link'] ?? null) === null ? null : self::link($document['link']),
             ];
         }

@@ -424,6 +424,11 @@ final readonly class OrderProjectionWriter
             throw new ApiException(422, 'SOURCE_ORDER_DRAFT', 'A draft is not a submitted order and is never created in Arasya.');
         }
         $cohort = WorkflowCohort::classify(WorkflowCohort::firstActivation($this->pdo, $snapshot->sourceKey, true), $snapshot->submission, $this->clock->now());
+        if ($cohort['cohort'] === WorkflowCohort::CONFIRMARE && ($snapshot->payment['financing'] ?? false) === true) {
+            // Owner decision K-12 (2026-10-25): a TBI consumer credit order keeps the established flow; the TBI workflow is a
+            // later release. Recorded once, like every cohort.
+            $cohort = ['cohort' => WorkflowCohort::LEGACY, 'reason' => WorkflowCohort::REASON_FINANCING];
+        }
         // Once a source was activated, an unpaid first event is received only for a Confirmare order. A suspension changes
         // nothing here: an order submitted since the first activation stays Confirmare (held, closed), whenever it
         // arrives; an older or unproven unpaid order is refused and sent again normally once it is processing.

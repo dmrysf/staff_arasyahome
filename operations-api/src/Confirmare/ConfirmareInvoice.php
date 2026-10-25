@@ -111,6 +111,8 @@ final readonly class ConfirmareInvoice
         #[\SensitiveParameter] private string $hmacKey,
         private ?ProductionAuthorityModes $modes = null,
         private ?ConfirmareScopePolicy $confirmare = null,
+        private ?ConfirmareCycles $cycles = null,
+        private ?InvoiceEfactura $efactura = null,
     ) {
     }
 
@@ -283,6 +285,22 @@ final readonly class ConfirmareInvoice
     }
 
     /** Whether an invoice action of the order is not settled yet. */
+    /**
+     * API 2.46.0: a proforma step of the Confirmare cycle worker being sent to the shop right now (`pending`). An `unknown`
+     * step does not count: the shop's own journal refuses a new document while SmartBill's outcome is unknown, and a
+     * manager must be able to resolve it.
+     */
+    public static function cycleStepOpen(PDO $pdo, string $orderUuid): bool
+    {
+        try {
+            $statement = $pdo->prepare("SELECT 1 FROM confirmare_cycle_steps WHERE order_uuid = ? AND state = 'pending' LIMIT 1");
+            $statement->execute([$orderUuid]);
+            return $statement->fetchColumn() !== false;
+        } catch (PDOException) {
+            return false;
+        }
+    }
+
     public static function actionOpen(PDO $pdo, string $orderUuid): bool
     {
         try {
@@ -870,7 +888,8 @@ final readonly class ConfirmareInvoice
             return ['order_unavailable'];
         }
         $blockers = [];
-        if (self::actionOpen($this->pdo, $orderUuid)) {
+        if (self::actionOpen($this->pdo, $orderUuid) || ($action !== 'proforma_resolve' && self::cycleStepOpen($this->pdo, $orderUuid))) {
+            // A worker step in flight blocks the operator, never the manager who resolves an unknown outcome.
             $blockers[] = 'invoice_action_open';
         }
         if (in_array($action, ['proforma_resolve', 'proforma_check', 'proforma_cancel'], true)) {
@@ -1179,6 +1198,14 @@ final readonly class ConfirmareInvoice
             }
             // 202: the shop ran the action but SmartBill's outcome is unknown (the shop's journal blocks a new document).
             $this->complete($actionUuid, 'applied', $answer['status'] === 200 ? 'applied' : 'shop_unknown', $answered['result']);
+            if (in_array($action, ['issue', 'reissue'], true) && $answer['status'] === 200 && $answered['result'] === 'issued') {
+                // API 2.46.0 (owner K-04): the issuer follows the invoice's e-Factura (5 working days).
+                $this->efactura?->onInvoiceIssued($actionUuid, (string) $row['order_uuid'], (string) $row['global_order_id'], (string) $row['source_key'], $actor->employeeUuid);
+            }
+            if ($action === 'proforma_send_mail' && $answer['status'] === 200 && $answered['result'] === 'sent') {
+                // API 2.46.0: the proforma reached the customer, so its timer starts (reminders, 120 h expiry).
+                $this->cycles?->proformaSent((string) $row['order_uuid'], $actor->employeeUuid, $answered['summary']);
+            }
             $after = $this->row((string) $row['global_order_id']) ?? $row;
             return ['state' => 'applied', 'idempotencyKey' => $key, 'result' => $answered['result']] + $this->present($actor, $after, $target, $role, $answered['summary']);
         }

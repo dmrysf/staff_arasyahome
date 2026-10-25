@@ -58,6 +58,10 @@ final class WorkflowCohort
     public const REASON_EVIDENCE_MISSING = 'submission_evidence_missing';
     public const REASON_EVIDENCE_INCONSISTENT = 'submission_evidence_inconsistent';
     public const REASON_EVIDENCE_FUTURE = 'submission_evidence_future';
+    /** API 2.46.0 (owner K-12): a TBI consumer credit order stays in the established flow. */
+    public const REASON_FINANCING = 'financing_legacy';
+    /** API 2.46.0 (owner K-06): an order of 22 October or later taken into Confirmare by bin/confirmare-backfill.php. */
+    public const REASON_BACKFILL = 'backfill_22_october';
 
     public const ACTION_SCHEDULED = 'scheduled';
     public const ACTION_CANCELLED = 'cancelled';

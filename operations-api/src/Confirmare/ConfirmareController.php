@@ -52,6 +52,23 @@ use Arasya\Operations\Security\CsrfGuard;
  *   GET  /confirmare/shop-queue                            the orders routed to me (2.44.0)
  *   GET  /confirmare/finance/transfer-exceptions?source=   the shop's bank transfers that match no order (2.44.0, finance)
  *   POST /confirmare/finance/transfer-exceptions/{record|resolve}?source=  + Idempotency-Key (finance record / approve)
+ * API 2.46.0 (owner master decisions 2026-10-25, migration 043):
+ *   GET  /confirmare/cycles[?source=]                      open proforma cycles of the actor's shops (timers, waiting states)
+ *   GET  /confirmare/finance/bank-checks[?source=]         the latest bank checks and the proformas waiting for one
+ *   POST /confirmare/finance/bank-check                    {source, coversUntil?} + Idempotency-Key (finance record/approve)
+ *   POST /confirmare/orders/{globalOrderId}/cycle/advance  the order's proforma cycle now (its operator or a supervisor)
+ *   The third `no_answer` of a cycle answers `proformaCycle` (ConfirmareCycles::afterNoAnswer).
+ *   GET  /confirmare/orders/{globalOrderId}/operations     reactivation, AWB and card refund state (ConfirmareOperations)
+ *   POST /confirmare/orders/{globalOrderId}/reactivate     {reason, exceptionEntryId?} + Idempotency-Key
+ *   POST /confirmare/orders/{globalOrderId}/awb            {parcels, weightKg?, expectedCod} + Idempotency-Key (stage 12+)
+ *   GET  /confirmare/orders/{globalOrderId}/awb/label      the FAN Courier label (application/pdf)
+ *   POST /confirmare/orders/{globalOrderId}/awb/address    {step: task|done, reasonNote} + Idempotency-Key
+ *   POST /confirmare/orders/{globalOrderId}/card-refund[/record|/verify]  + Idempotency-Key (NETOPIA full refund)
+ *   POST /confirmare/orders/{globalOrderId}/operations/reconcile  {idempotencyKey}
+ *   GET  /confirmare/awb-queue[?source=]                   orders at stage 12+ waiting for their AWB (the routed employee)
+ *   GET  /confirmare/efactura[?source=&state=]             e-Factura follow-up of the invoices (issuer, invoice managers)
+ *   POST /confirmare/efactura/{taskId}                     {outcome, expectedVersion}
+ *   GET  /confirmare/health[?source=]                      operating counts per shop (supervisors, invoice managers, finance approvers, root)
  */
 final readonly class ConfirmareController
 {
@@ -79,6 +96,10 @@ final readonly class ConfirmareController
         private ConfirmareFinance $finance,
         private ConfirmareInvoice $invoice,
         private FinanceTransferExceptions $exceptions,
+        private ConfirmareCycles $cycles,
+        private ConfirmareOperations $operations,
+        private InvoiceEfactura $efactura,
+        private ConfirmareHealth $health,
         private AuthenticationService $auth,
         private CsrfGuard $csrf,
         private Config $config,
@@ -113,6 +134,72 @@ final readonly class ConfirmareController
             $this->csrf->requireValid($session->rawToken, $request->header('x-csrf-token'));
             return $this->json($this->exceptions->act($actor, $request->query('source'), $m[1] . '_exception', $request->json(1024), $request->header('idempotency-key') ?? '', $request->ipAddress, $request->userAgent, $request->requestId));
         }
+        if ($path === '/confirmare/health' && $request->method === 'GET') {
+            return $this->json($this->health->metrics($actor, $request->query('source')));
+        }
+        if ($path === '/confirmare/awb-queue' && $request->method === 'GET') {
+            return $this->json($this->operations->awbQueue($actor, $request->query('source')));
+        }
+        if ($path === '/confirmare/efactura' && $request->method === 'GET') {
+            return $this->json($this->efactura->queue($actor, $request->query('source'), $request->query('state')));
+        }
+        if (preg_match('#^/confirmare/efactura/([0-9a-f-]{36})$#D', $path, $m) === 1) {
+            if ($request->method !== 'POST') {
+                throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
+            }
+            $this->csrf->requireValid($session->rawToken, $request->header('x-csrf-token'));
+            return $this->json($this->efactura->record($actor, $m[1], $request->json(512)));
+        }
+        if (preg_match('#^/confirmare/orders/([^/]{1,600})/operations$#D', $path, $m) === 1 && $request->method === 'GET') {
+            return $this->json($this->operations->read($actor, rawurldecode($m[1]), $request->requestId));
+        }
+        if (preg_match('#^/confirmare/orders/([^/]{1,600})/awb/label$#D', $path, $m) === 1 && $request->method === 'GET') {
+            $pdf = $this->operations->label($actor, rawurldecode($m[1]), $request->requestId);
+            return Response::file($pdf, ['Content-Type' => 'application/pdf', 'Content-Disposition' => 'inline; filename="awb.pdf"', 'Cache-Control' => 'private, no-store', 'X-Content-Type-Options' => 'nosniff']);
+        }
+        if (preg_match('#^/confirmare/orders/([^/]{1,600})/(reactivate|awb|awb/address|card-refund|card-refund/record|card-refund/verify|operations/reconcile)$#D', $path, $m) === 1) {
+            if ($request->method !== 'POST') {
+                throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
+            }
+            $this->csrf->requireValid($session->rawToken, $request->header('x-csrf-token'));
+            $globalId = rawurldecode($m[1]);
+            // The one-click NETOPIA refund carries no field: an empty JSON object is its whole body.
+            $input = trim($request->body) === '{}' && $m[2] === 'card-refund' ? [] : $request->json(2048);
+            if ($m[2] === 'operations/reconcile') {
+                return $this->json($this->operations->reconcile($actor, $globalId, $input['idempotencyKey'] ?? null, $request->requestId));
+            }
+            if ($m[2] === 'awb/address') {
+                $step = $input['step'] ?? null;
+                if (!in_array($step, ['task', 'done'], true)) {
+                    throw new ApiException(422, 'VALIDATION_FAILED', 'step must be task or done.', ['field' => 'step']);
+                }
+                unset($input['step']);
+                return $this->json($this->operations->act($actor, $globalId, 'awb_address_' . $step, $input, $request->header('idempotency-key') ?? '', $request->requestId));
+            }
+            $kind = ['reactivate' => 'order_reactivate', 'awb' => 'awb_create', 'card-refund' => 'card_refund_full', 'card-refund/record' => 'card_refund_record', 'card-refund/verify' => 'card_refund_verify'][$m[2]];
+            return $this->json($this->operations->act($actor, $globalId, $kind, $input, $request->header('idempotency-key') ?? '', $request->requestId));
+        }
+        if ($path === '/confirmare/cycles' && $request->method === 'GET') {
+            return $this->json($this->cycles->attention($actor, $request->query('source')));
+        }
+        if ($path === '/confirmare/finance/bank-checks' && $request->method === 'GET') {
+            return $this->json($this->cycles->bankChecks($actor, $request->query('source')));
+        }
+        if ($path === '/confirmare/finance/bank-check') {
+            if ($request->method !== 'POST') {
+                throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
+            }
+            $this->csrf->requireValid($session->rawToken, $request->header('x-csrf-token'));
+            $input = $request->json(512);
+            return $this->json($this->cycles->recordBankCheck($actor, $input['source'] ?? null, $input, $request->header('idempotency-key') ?? '', $request->requestId));
+        }
+        if (preg_match('#^/confirmare/orders/([^/]{1,600})/cycle/advance$#D', $path, $m) === 1) {
+            if ($request->method !== 'POST') {
+                throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
+            }
+            $this->csrf->requireValid($session->rawToken, $request->header('x-csrf-token'));
+            return $this->json($this->cycles->advanceForActor($actor, rawurldecode($m[1]), $request->requestId));
+        }
         if ($path === '/confirmare/finance' && $request->method === 'GET') {
             return $this->json($this->finance->queue($actor, $request->query('task'), $request->query('source')));
         }
@@ -122,7 +209,7 @@ final readonly class ConfirmareController
         if (preg_match('#^/confirmare/orders/([^/]{1,600})$#D', $path, $m) === 1 && $request->method === 'GET') {
             $detail = $this->service->detail($actor, rawurldecode($m[1]));
             $capabilities = $this->sourceAccess->capabilities($actor, rawurldecode($m[1]));
-            return $this->json($detail + ['sourceAccess' => $capabilities + $this->sourceEdits->state($actor, rawurldecode($m[1]), $capabilities['read']), 'finance' => $this->finance->capabilities($actor, rawurldecode($m[1])), 'invoice' => $this->invoice->capabilities($actor, rawurldecode($m[1]))]);
+            return $this->json($detail + ['cycle' => $this->cycles->viewForActor($actor, rawurldecode($m[1])), 'sourceAccess' => $capabilities + $this->sourceEdits->state($actor, rawurldecode($m[1]), $capabilities['read']), 'finance' => $this->finance->capabilities($actor, rawurldecode($m[1])), 'invoice' => $this->invoice->capabilities($actor, rawurldecode($m[1]))]);
         }
         if (preg_match('#^/confirmare/orders/([^/]{1,600})/shop-employees$#D', $path, $m) === 1) {
             if ($request->method !== 'GET') {
@@ -258,11 +345,25 @@ final readonly class ConfirmareController
                 'reassign' => $this->service->reassign($actor, $globalId, $version, $input['employeeId'] ?? null, $key, $request->requestId),
                 'approve' => $this->service->approve($actor, $globalId, $version, array_diff_key($input, ['expectedVersion' => true]), $key, $request->requestId),
                 'reject' => $this->service->reject($actor, $globalId, $version, $input['reasonCode'] ?? null, $key, $request->requestId),
-                'contact' => $this->service->contact($actor, $globalId, $version, $input['outcome'] ?? null, $input['reviewFingerprint'] ?? null, $key, $request->requestId),
+                'contact' => $this->afterContact($actor, $this->service->contact($actor, $globalId, $version, $input['outcome'] ?? null, $input['reviewFingerprint'] ?? null, $key, $request->requestId), $globalId, $request->requestId),
                 default => $this->service->reopen($actor, $globalId, $version, $key, $request->requestId),
             });
         }
         throw new ApiException(404, 'NOT_FOUND', 'API route was not found.');
+    }
+
+    /**
+     * API 2.46.0: the third unanswered call of a cycle starts the advance proforma (never fails the recorded call).
+     *
+     * @param array<string, mixed> $answer
+     * @return array<string, mixed>
+     */
+    private function afterContact(\Arasya\Operations\Employee\EmployeeIdentity $actor, array $answer, string $globalId, string $requestId): array
+    {
+        if (($answer['contact']['outcome'] ?? null) !== 'no_answer') {
+            return $answer;
+        }
+        return $answer + ['proformaCycle' => $this->cycles->afterNoAnswerFor($actor, $globalId, $requestId)];
     }
 
     /** @param list<string> $allowed @return array<string, mixed> */

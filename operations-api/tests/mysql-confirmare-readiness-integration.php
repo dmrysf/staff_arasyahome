@@ -60,7 +60,7 @@ $pdo = Connection::create($config);
 (new MigrationRunner($pdo))->migrate(dirname(__DIR__) . '/database/migrations');
 foreach (glob(dirname(__DIR__) . '/database/seeds/*.sql') ?: [] as $seed) (new SqlFileRunner($pdo))->run($seed);
 $one = static function (string $sql, array $params = []) use ($pdo): mixed { $s = $pdo->prepare($sql); $s->execute($params); return $s->fetchColumn(); };
-foreach (['source_connector_readiness', 'order_invoice_qr_checks', 'order_shop_assignments', 'order_invoice_actions', 'order_invoice_reads', 'employee_invoice_scopes', 'order_finance_actions', 'order_finance_reads', 'employee_finance_scopes',
+foreach (['confirmare_cycle_steps', 'confirmare_proforma_cycles', 'confirmare_bank_checks', 'confirmare_reactivations', 'invoice_efactura_tasks', 'order_source_operations', 'source_connector_readiness', 'order_invoice_qr_checks', 'order_shop_assignments', 'order_invoice_actions', 'order_invoice_reads', 'employee_invoice_scopes', 'order_finance_actions', 'order_finance_reads', 'employee_finance_scopes',
     'order_confirmation_source_edits', 'order_confirmation_source_reads', 'order_confirmation_contacts', 'order_confirmation_idempotency', 'confirmare_alerts', 'order_confirmation_events', 'order_confirmations',
     'workflow_cohort_activations', 'workflow_cohort_arming', 'employee_confirmare_scopes', 'confirmare_operator_state'] as $table) {
     $pdo->exec("DELETE FROM {$table}");
@@ -246,7 +246,7 @@ $check($opSchedule['code'] === 3 && str_contains($opSchedule['err'], 'CONFIRMARE
 
 // Leave the shared disposable database as the next suites expect it: no Confirmare activation, readiness or scope state.
 // Every Confirmare, finance and invoice record too: a later suite deletes orders, and their events would block it.
-foreach (['source_connector_readiness', 'order_invoice_qr_checks', 'order_shop_assignments', 'order_invoice_actions', 'order_invoice_reads', 'employee_invoice_scopes', 'order_finance_actions', 'order_finance_reads', 'employee_finance_scopes',
+foreach (['confirmare_cycle_steps', 'confirmare_proforma_cycles', 'confirmare_bank_checks', 'confirmare_reactivations', 'invoice_efactura_tasks', 'order_source_operations', 'source_connector_readiness', 'order_invoice_qr_checks', 'order_shop_assignments', 'order_invoice_actions', 'order_invoice_reads', 'employee_invoice_scopes', 'order_finance_actions', 'order_finance_reads', 'employee_finance_scopes',
     'order_confirmation_source_edits', 'order_confirmation_source_reads', 'order_confirmation_contacts', 'order_confirmation_idempotency', 'confirmare_alerts', 'order_confirmation_events', 'order_confirmations',
     'workflow_cohort_activations', 'workflow_cohort_arming', 'employee_confirmare_scopes', 'confirmare_operator_state', 'employee_document_scopes'] as $table) {
     $pdo->exec("DELETE FROM {$table}");

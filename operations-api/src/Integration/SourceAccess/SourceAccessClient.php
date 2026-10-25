@@ -35,7 +35,10 @@ final readonly class SourceAccessClient
     /** YD SOFT 2.18.0: the shop's bank transfers that match no order (no order fields; finance only). */
     public const ROUTE_TRANSFER_EXCEPTIONS = '/yd-arasya/v1/confirmare/transfer-exceptions';
     public const ROUTE_TRANSFER_EXCEPTION_ACTION = '/yd-arasya/v1/confirmare/transfer-exception-action';
-    public const ROUTES = [self::ROUTE_DETAIL, self::ROUTE_CATALOG, self::ROUTE_PRODUCT, self::ROUTE_PREVIEW, self::ROUTE_APPLY, self::ROUTE_EDIT_STATUS, self::ROUTE_FINANCE, self::ROUTE_FINANCE_ACTION, self::ROUTE_FINANCE_STATUS,
+    /** YD SOFT 2.20.0 (API 2.46.0): reactivation, the FAN Courier AWB and the NETOPIA card refund (Operations). */
+    public const ROUTE_OPERATION = '/yd-arasya/v1/confirmare/operation';
+    public const ROUTE_OPERATION_STATUS = '/yd-arasya/v1/confirmare/operation-status';
+    public const ROUTES = [self::ROUTE_OPERATION, self::ROUTE_OPERATION_STATUS, self::ROUTE_DETAIL, self::ROUTE_CATALOG, self::ROUTE_PRODUCT, self::ROUTE_PREVIEW, self::ROUTE_APPLY, self::ROUTE_EDIT_STATUS, self::ROUTE_FINANCE, self::ROUTE_FINANCE_ACTION, self::ROUTE_FINANCE_STATUS,
         self::ROUTE_INVOICE, self::ROUTE_INVOICE_ACTION, self::ROUTE_INVOICE_STATUS, self::ROUTE_PROFORMA_ACTION, self::ROUTE_TRANSFER_EXCEPTIONS, self::ROUTE_TRANSFER_EXCEPTION_ACTION];
 
     /** Shop error codes Operations understands (anything else is SOURCE_ERROR). */

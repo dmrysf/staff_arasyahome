@@ -200,4 +200,16 @@ if (preg_match('/CREATE TABLE IF NOT EXISTS\s+source_connector_readiness\b/', $r
     || preg_match_all('/CREATE TABLE IF NOT EXISTS/', $readinessStatements) !== 1 || preg_match('/CREATE TABLE (?!IF NOT EXISTS)/', $readinessStatements) === 1) {
     throw new RuntimeException('Migration 042 must stay additive (one CREATE TABLE IF NOT EXISTS), grant nothing and write no row.');
 }
+// The dual-store operating workflow (043, API 2.46.0): six new tables only, nothing granted, no row, no other table altered.
+$dualSchema = (string) file_get_contents($root . '/database/migrations/043_confirmare_dual_store.sql');
+$dualStatements = preg_replace(['/^--.*$/m', '/ON (UPDATE|DELETE) RESTRICT/'], '', $dualSchema) ?? '';
+foreach (['confirmare_proforma_cycles', 'confirmare_cycle_steps', 'confirmare_bank_checks', 'confirmare_reactivations', 'invoice_efactura_tasks', 'order_source_operations'] as $table) {
+    if (preg_match('/CREATE TABLE IF NOT EXISTS\s+' . $table . '\b/', $dualSchema) !== 1) {
+        throw new RuntimeException("Migration 043 is missing table: {$table}");
+    }
+}
+if (preg_match('/ON (DELETE|UPDATE) (CASCADE|SET NULL)|DROP |DELETE FROM|TRUNCATE|\bUPDATE |\bINSERT |ALTER TABLE|role_permissions|employee_role_assignments/i', $dualStatements) === 1
+    || preg_match_all('/CREATE TABLE IF NOT EXISTS/', $dualStatements) !== 6 || preg_match('/CREATE TABLE (?!IF NOT EXISTS)/', $dualStatements) === 1) {
+    throw new RuntimeException('Migration 043 must stay additive (six CREATE TABLE IF NOT EXISTS), grant nothing and write no row.');
+}
 fwrite(STDOUT, 'Migration sanity checks passed for ' . count($files) . " file(s).\n");

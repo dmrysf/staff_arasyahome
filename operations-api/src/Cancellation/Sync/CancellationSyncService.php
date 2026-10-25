@@ -203,6 +203,67 @@ final readonly class CancellationSyncService
         });
     }
 
+    /**
+     * Owner master decision 2026-10-25 (K-05, API 2.46.0): an advance proforma still unpaid 120 hours after it was sent,
+     * with a bank check of its shop covering that instant, is cancelled in SmartBill by the Confirmare cycle worker
+     * (ConfirmareCycles), which then asks here for the order's cancellation in the shop. The trigger is a server rule, not
+     * a person's choice, so no production.cancellation.sync permission is read; the cycle's owner (the operator who
+     * started the proforma) is the recorded actor. The guards of `send` stay: an open finance entry refuses it (rule 2),
+     * an order the shop already cancelled needs no request, and the operation of the current stop is created once (a
+     * repeated call answers with the existing one).
+     *
+     * @return array{state: string, operation?: string, mechanism?: string}
+     */
+    public function requestForExpiredProforma(string $orderUuid, string $actorUuid, string $requestId, string $key): array
+    {
+        return $this->transactionWithRetry(function () use ($orderUuid, $actorUuid, $requestId, $key): array {
+            $order = $this->lockOrder($orderUuid);
+            if ($this->financeOpen($order)) {
+                return ['state' => 'finance_open'];
+            }
+            (new CancellationControl($this->pdo, $this->clock))->stopLocally($orderUuid, $actorUuid, 'Proforma de avans a expirat fără plată (120 de ore, verificare bancară înregistrată).', true, $requestId, $key);
+            $control = $this->control($orderUuid);
+            if ($control === null || $control['hold_status'] !== CancellationControl::HELD) {
+                return ['state' => 'not_held'];
+            }
+            if ($control['source_status'] === 'cancelled') {
+                return ['state' => 'source_cancelled'];
+            }
+            $operations = new SyncOperations($this->pdo, $this->clock);
+            $generation = (int) $control['hold_generation'];
+            $existing = $operations->forGeneration($orderUuid, $generation);
+            if ($existing !== null) {
+                return ['state' => 'requested', 'operation' => (string) $existing['operation_uuid'], 'mechanism' => (string) $existing['mechanism']];
+            }
+            if ($operations->openFor($orderUuid) !== null) {
+                return ['state' => 'sync_open'];
+            }
+            $source = (string) $order['source_key'];
+            $provider = $this->providers->for($source);
+            $external = $this->externalRef($order);
+            $mechanism = $provider->mechanism();
+            if ($mechanism !== 'manual' && ($external === null || !$this->providers->active($source))) {
+                $mechanism = 'manual';
+            }
+            [$state, $error] = match ($mechanism) {
+                'source_pull' => [SyncState::AWAITING_PICKUP, null],
+                'api' => [SyncState::MANUAL_REVIEW, 'REASON_REQUIRED'],
+                default => [SyncState::MANUAL_REVIEW, $provider instanceof ManualProvider ? $provider->reason() : ($external === null ? 'EXTERNAL_ORDER_UNKNOWN' : 'PROVIDER_UNSUPPORTED')],
+            };
+            if ($mechanism === 'api') {
+                $mechanism = 'manual';
+            }
+            (new CancellationControl($this->pdo, $this->clock))->requestSource($orderUuid, $actorUuid, $requestId, $key, $mechanism);
+            $operation = $operations->create($orderUuid, $generation, $source, $external ?? (string) $order['global_order_id'], $mechanism, $state, null,
+                'Proforma de avans expirată fără plată (Confirmare).', $actorUuid, $error, $requestId);
+            $actor = (new PdoEmployeeRepository($this->pdo))->findByUuid($actorUuid);
+            if ($actor !== null) {
+                $this->audit($actor, 'production.cancellation.sync_requested', $order, ['operation' => $operation['operation_uuid'], 'mechanism' => $mechanism, 'state' => $state, 'trigger' => 'proforma_expired'], $requestId);
+            }
+            return ['state' => 'requested', 'operation' => (string) $operation['operation_uuid'], 'mechanism' => $mechanism];
+        });
+    }
+
     /** @param array<string, mixed> $input @return array<string, mixed> */
     public function retry(EmployeeIdentity $actor, string $operationId, array $input, string $key, string $requestId): array
     {

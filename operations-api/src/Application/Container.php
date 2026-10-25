@@ -165,6 +165,42 @@ final class Container
             hash_hmac('sha256', 'confirmare-invoice-request', $this->config->appSecret),
             $this->authorityModes(),
             new \Arasya\Operations\Confirmare\ConfirmareScopePolicy($this->pdo),
+            $this->confirmareCycles(),
+            new \Arasya\Operations\Confirmare\InvoiceEfactura($this->pdo, $this->clock, new \Arasya\Operations\Confirmare\InvoiceScopePolicy($this->pdo)),
+        );
+    }
+
+    /** Reactivation, FAN Courier AWB and NETOPIA card refund relayed to the shop (API 2.46.0). */
+    public function confirmareOperations(?AuthorizationService $authorization = null): \Arasya\Operations\Confirmare\ConfirmareOperations
+    {
+        $transport = $this->sourceAccessTransport ?? new \Arasya\Operations\Integration\SourceAccess\StreamSourceAccessTransport(allowLoopback: !$this->config->isProduction());
+        return new \Arasya\Operations\Confirmare\ConfirmareOperations(
+            $this->pdo,
+            $this->clock,
+            \Arasya\Operations\Integration\SourceAccess\SourceAccessRegistry::fromConfig($this->config),
+            new \Arasya\Operations\Integration\SourceAccess\SourceAccessClient($transport, $this->clock),
+            new \Arasya\Operations\Confirmare\ConfirmareScopePolicy($this->pdo),
+            new \Arasya\Operations\Confirmare\FinanceScopePolicy($this->pdo),
+            new \Arasya\Operations\Confirmare\InvoiceScopePolicy($this->pdo),
+            new \Arasya\Operations\Document\DocumentScopePolicy($this->pdo),
+            $this->confirmareService($authorization),
+            hash_hmac('sha256', 'confirmare-operation-request', $this->config->appSecret),
+        );
+    }
+
+    /** The Confirmare operating cycle (API 2.46.0): calls, the proforma timer, bank checks; also bin/confirmare-cycles.php. */
+    public function confirmareCycles(): \Arasya\Operations\Confirmare\ConfirmareCycles
+    {
+        $transport = $this->sourceAccessTransport ?? new \Arasya\Operations\Integration\SourceAccess\StreamSourceAccessTransport(allowLoopback: !$this->config->isProduction());
+        return new \Arasya\Operations\Confirmare\ConfirmareCycles(
+            $this->pdo,
+            $this->clock,
+            \Arasya\Operations\Integration\SourceAccess\SourceAccessRegistry::fromConfig($this->config),
+            new \Arasya\Operations\Integration\SourceAccess\SourceAccessClient($transport, $this->clock),
+            new \Arasya\Operations\Confirmare\ConfirmareScopePolicy($this->pdo),
+            new \Arasya\Operations\Confirmare\FinanceScopePolicy($this->pdo),
+            new \Arasya\Operations\Confirmare\InvoiceScopePolicy($this->pdo),
+            $this->cancellationSyncService(),
         );
     }
 
@@ -341,6 +377,11 @@ final class Container
                 $this->confirmareFinance($authorization),
                 $this->confirmareInvoice($authorization),
                 $this->financeTransferExceptions($authorization),
+                $this->confirmareCycles(),
+                $this->confirmareOperations($authorization),
+                new \Arasya\Operations\Confirmare\InvoiceEfactura($this->pdo, $this->clock, new \Arasya\Operations\Confirmare\InvoiceScopePolicy($this->pdo)),
+                new \Arasya\Operations\Confirmare\ConfirmareHealth($this->pdo, $this->clock, new \Arasya\Operations\Confirmare\ConfirmareScopePolicy($this->pdo),
+                    new \Arasya\Operations\Confirmare\InvoiceScopePolicy($this->pdo), new \Arasya\Operations\Confirmare\FinanceScopePolicy($this->pdo)),
                 $this->authentication,
                 $csrf,
                 $this->config,

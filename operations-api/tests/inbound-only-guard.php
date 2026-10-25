@@ -57,7 +57,9 @@ $accessRoutes = ['/yd-arasya/v1/confirmare/detail', '/yd-arasya/v1/confirmare/ca
     '/yd-arasya/v1/confirmare/proforma-action',
     // API 2.44.0 (YD SOFT 2.18.0, bank transfer of the advance): the shop's record of bank transfers that match no order
     // (read, record, close by another employee); reviewed: no money moved, no order, refund or document changed.
-    '/yd-arasya/v1/confirmare/transfer-exceptions', '/yd-arasya/v1/confirmare/transfer-exception-action'];
+    '/yd-arasya/v1/confirmare/transfer-exceptions', '/yd-arasya/v1/confirmare/transfer-exception-action',
+    // API 2.46.0: reactivation, the FAN Courier AWB and the NETOPIA card refund, relayed to the shop (YD SOFT 2.20.0 Operations).
+    '/yd-arasya/v1/confirmare/operation', '/yd-arasya/v1/confirmare/operation-status'];
 $forbiddenApi = [
     '/\bcurl_(init|exec|multi_\w+|setopt)\s*\(/' => 'cURL client',
     '/\b(fsockopen|pfsockopen|stream_socket_client)\s*\(/' => 'raw socket client',

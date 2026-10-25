@@ -96,6 +96,10 @@ final class SourceAccessFakeShop implements SourceAccessTransport
     public array $smartbillCancels = [];
     /** Answer like a YD SOFT 2.18.0 shop: none of the 2.19.0 proforma fields or groups. */
     public bool $legacyProforma = false;
+    /** @var array<string, int> reminders sent through SmartBill per order (2.20.0) */
+    public array $smartbillReminders = [];
+    /** The next reminder's SmartBill outcome: sent | refused. */
+    public string $reminderOutcome = 'sent';
 
     /** @param array<string, array<string, mixed>> $orders orderId => fixture */
     public function __construct(
@@ -143,7 +147,7 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             ($this->during)($input);
         }
         $routes = ['detail', 'catalog', 'product', 'preview', 'apply', 'edit-status', 'finance', 'finance-action', 'finance-status', 'invoice', 'invoice-action', 'invoice-status', 'proforma-action',
-            'transfer-exceptions', 'transfer-exception-action'];
+            'transfer-exceptions', 'transfer-exception-action', 'operation', 'operation-status'];
         $action = substr($route, strlen('/yd-arasya/v1/confirmare/'));
         if (!str_starts_with($route, '/yd-arasya/v1/confirmare/') || !in_array($action, $routes, true) || !is_array($input)) {
             return $this->answer(400, ['error' => ['code' => 'invalid_request']], $nonce);
@@ -171,6 +175,13 @@ final class SourceAccessFakeShop implements SourceAccessTransport
         }
         if (str_starts_with($action, 'invoice') || $action === 'proforma-action') {
             [$status, $payload] = $action === 'proforma-action' ? $this->proforma((string) $order['id'], $input, $now) : $this->invoice($action, (string) $order['id'], $input, $now);
+            if ($status === 0) {
+                throw new \Arasya\Operations\Integration\SourceAccess\SourceAccessException('SOURCE_UNREACHABLE');
+            }
+            return $this->answer($status, $payload, $nonce);
+        }
+        if ($action === 'operation' || $action === 'operation-status') {
+            [$status, $payload] = $this->operation($action, (string) $order['id'], $input, $now);
             if ($status === 0) {
                 throw new \Arasya\Operations\Integration\SourceAccess\SourceAccessException('SOURCE_UNREACHABLE');
             }
@@ -714,7 +725,7 @@ final class SourceAccessFakeShop implements SourceAccessTransport
     private static function invoiceDefaults(): array
     {
         return ['cleared' => true, 'documentType' => 'invoice', 'autoEmail' => false, 'document' => null, 'op' => 'none', 'opKey' => null, 'mail' => 'none', 'mailCount' => 0, 'history' => [],
-            'cod' => false, 'proformaInvoiced' => false, 'pf' => ['document' => null, 'op' => 'none', 'opKey' => null, 'mail' => 'none', 'mailCount' => 0, 'invoiced' => null, 'history' => [], 'cancel' => null, 'cancelled' => []],
+            'cod' => false, 'proformaInvoiced' => false, 'pf' => ['document' => null, 'op' => 'none', 'opKey' => null, 'mail' => 'none', 'mailCount' => 0, 'invoiced' => null, 'history' => [], 'cancel' => null, 'cancelled' => [], 'reminders' => []],
             // 2.19.0: the customer accepted the total (true by default: the earlier scenarios), a partial verified advance, accepted.
             'totalAccepted' => true, 'partial' => false, 'advanceAccepted' => false];
     }
@@ -735,8 +746,8 @@ final class SourceAccessFakeShop implements SourceAccessTransport
         $p = &$i['pf'];
         $action = (string) ($input['action'] ?? '');
         $roles = ['proforma_issue' => ['operator', 'manager'], 'proforma_send_mail' => ['operator', 'manager'], 'proforma_check' => ['operator', 'documents', 'manager'], 'proforma_resolve' => ['manager'],
-            'proforma_cancel' => ['operator', 'manager'], 'total_accept' => ['operator', 'manager'], 'advance_accept' => ['operator', 'manager']];
-        $p += ['cancel' => null, 'cancelled' => []];
+            'proforma_cancel' => ['operator', 'manager'], 'total_accept' => ['operator', 'manager'], 'advance_accept' => ['operator', 'manager'], 'proforma_remind' => ['operator', 'manager']];
+        $p += ['cancel' => null, 'cancelled' => [], 'reminders' => []];
         if (!isset($roles[$action]) || !in_array($role, $roles[$action], true)) {
             return [400, ['error' => ['code' => 'invalid_request']]];
         }
@@ -760,6 +771,24 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             return $keep(409, ['error' => ['code' => 'revision_changed'], 'revision' => $revision]);
         }
         $blockers = $this->proformaBlockers($orderId, $action);
+        if ($action === 'proforma_issue' && ($input['unconfirmed'] ?? false) === true) {
+            // 2.20.0: after three unanswered calls the advance is a share of the order's current total (no acceptance yet).
+            $blockers = array_values(array_diff($blockers, ['total_not_accepted']));
+        }
+        if ($action === 'proforma_remind') {
+            $stage = (string) ($input['stage'] ?? '');
+            if ($p['document'] === null) {
+                $blockers[] = 'proforma_missing';
+            } elseif ($p['mail'] !== 'sent') {
+                $blockers[] = 'proforma_not_sent';
+            }
+            if (isset($p['reminders'][$stage])) {
+                $blockers[] = 'reminder_already_sent';
+            }
+            if ($i['cleared'] || ($i['partial'] ?? false) || ($i['verifying'] ?? false)) {
+                $blockers[] = 'advance_payment_received';
+            }
+        }
         if ($action === 'proforma_send_mail' && in_array($p['mail'], ['sent', 'unknown'], true) && ($input['confirmResend'] ?? false) !== true) {
             $blockers[] = 'resend_confirmation_required';
         }
@@ -782,6 +811,18 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             return $keep(409, ['error' => ['code' => $blockers[0]], 'blockers' => $blockers, 'revision' => $revision]);
         }
         $done = fn (int $status, string $result): array => $this->invoiceAfter($keep($status, ['protocol' => 1, 'applied' => $status === 200, 'action' => $action, 'result' => $result, 'summary' => $this->invoiceSummary($orderId, $now, $role)]));
+        if ($action === 'proforma_remind') {
+            $outcome = $this->reminderOutcome;
+            $this->reminderOutcome = 'sent';
+            if ($outcome === 'refused') {
+                $p['history'][] = ['kind' => 'proforma_remind', 'at' => $now, 'by' => $employee, 'outcome' => 'failed'];
+                return $keep(409, ['error' => ['code' => 'mail_refused'], 'revision' => $this->invoiceRevision($orderId)]);
+            }
+            $p['reminders'][(string) $input['stage']] = $now;
+            $this->smartbillReminders['pf:' . $orderId] = ($this->smartbillReminders['pf:' . $orderId] ?? 0) + 1;
+            $p['history'][] = ['kind' => 'proforma_remind', 'at' => $now, 'by' => $employee, 'outcome' => 'sent'];
+            return $done(200, 'reminded');
+        }
         if ($action === 'proforma_check') {
             $p['invoiced'] = (bool) $i['proformaInvoiced'];
             $p['history'][] = ['kind' => 'check', 'at' => $now, 'by' => $employee, 'outcome' => $p['invoiced'] ? 'invoiced' : 'not_invoiced'];
@@ -872,7 +913,8 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             $p['history'][] = ['kind' => 'proforma_issue', 'at' => $now, 'by' => $employee, 'outcome' => 'unknown'];
             return $done(202, 'unknown');
         }
-        $p['document'] = ['series' => 'PRF', 'number' => sprintf('%04d', array_sum($this->smartbillDocuments)), 'at' => $now, 'by' => $employee];
+        $p['document'] = ['series' => 'PRF', 'number' => sprintf('%04d', array_sum($this->smartbillDocuments)), 'at' => $now, 'by' => $employee, 'unconfirmed' => ($input['unconfirmed'] ?? false) === true];
+        $p['mail'] = 'none';
         $p['op'] = 'issued';
         $p['history'][] = ['kind' => 'proforma_issue', 'at' => $now, 'by' => $employee, 'outcome' => 'issued'];
         return $done(200, 'issued');
@@ -899,6 +941,9 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             if ($i['cleared'] || ($i['partial'] ?? false)) {
                 $codes[] = 'advance_payment_received';
             }
+            if ($i['verifying'] ?? false) {
+                $codes[] = 'payment_verifying';
+            }
             if ($i['document'] !== null) {
                 $codes[] = 'invoice_exists';
             }
@@ -907,6 +952,9 @@ final class SourceAccessFakeShop implements SourceAccessTransport
         $blockers = $p['op'] === 'unknown' ? ['operation_unknown'] : [];
         if ($p['cancel'] !== null) {
             $blockers[] = 'cancel_unknown';
+        }
+        if ($action === 'proforma_remind') {
+            return $blockers; // the reminder's own checks are in proforma() (document, e-mail, stage, money)
         }
         if ($action === 'proforma_check') {
             return $p['document'] === null ? [...$blockers, 'proforma_missing'] : $blockers;
@@ -950,7 +998,7 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             'revision' => $this->invoiceRevision($orderId),
             'mode' => $this->invoiceActions ? 'enforce' : 'observe',
             'smartbill' => ['available' => true, 'reason' => null, 'documentType' => $i['documentType'], 'autoEmail' => $i['autoEmail'], 'cashing' => false, 'draft' => false, 'mailSupported' => true, 'autoIssue' => false],
-            'order' => ['id' => (string) $o['id'], 'number' => (string) ($o['number'] ?? $o['id']), 'status' => 'processing', 'total' => '719.00', 'currency' => 'RON', 'billingEmail' => true],
+            'order' => ['id' => (string) $o['id'], 'number' => (string) ($o['number'] ?? $o['id']), 'status' => (string) ($o['shopStatus'] ?? 'processing'), 'total' => '719.00', 'currency' => 'RON', 'billingEmail' => true],
             'financial' => ['state' => $i['cleared'] ? 'cleared' : 'waiting', 'basis' => $i['cleared'] ? 'online_payment' : null, 'attention' => null, 'pending' => false],
             'document' => [
                 'exists' => $doc !== null, 'type' => $doc === null ? null : $i['documentType'], 'series' => $doc['series'] ?? null, 'number' => $doc['number'] ?? null, 'status' => $doc === null ? null : 'final',
@@ -1069,7 +1117,7 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             'transfer' => $amounts ? ['iban' => 'RO49AAAA1B31007593840000', 'bank' => 'Banca TEST', 'beneficiary' => 'TEST Trend Home SRL', 'reference' => 'TH' . $orderId] : null,
             'state' => $p['op'],
             'document' => $doc === null ? null : ['series' => $doc['series'], 'number' => $doc['number'], 'amount' => $amounts ? '215.70' : null, 'currency' => 'RON', 'reference' => 'TH' . $orderId,
-                'issuedAt' => gmdate('Y-m-d\TH:i:s\Z', $doc['at']), 'issuedBy' => $doc['by'], 'outdated' => false,
+                'issuedAt' => gmdate('Y-m-d\TH:i:s\Z', $doc['at']), 'issuedBy' => $doc['by'], 'outdated' => false, 'unconfirmed' => (bool) ($doc['unconfirmed'] ?? false),
                 'link' => in_array($role, ['operator', 'documents', 'manager'], true) ? 'https://cloud.smartbill.ro/core/proforma/vizualizare/?serie=PRF&numar=' . $doc['number'] : null],
             'mail' => ['state' => $p['mail'], 'at' => null, 'by' => null, 'count' => $p['mailCount']],
             'invoiced' => $p['invoiced'] === null ? null : ['invoiced' => $p['invoiced'], 'at' => gmdate('Y-m-d\TH:i:s\Z', $now)],
@@ -1094,6 +1142,182 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             'shipping' => ($i['shippingMismatch'] ?? false) ? ['state' => 'mismatch', 'code' => 'shipping_cost_mismatch', 'current' => $amounts ? '25.00' : null, 'expected' => $amounts ? '35.00' : null]
                 : ['state' => 'match', 'code' => null, 'current' => $amounts ? '25.00' : null, 'expected' => $amounts ? '25.00' : null],
         ]);
+    }
+
+    /** @var array<string, array<string, mixed>> operation answers by employee|key (YD SOFT 2.20.0 Operations) */
+    public array $operationAnswers = [];
+    /** Feature switches of the TEST shop's operations. */
+    public array $operationFeatures = ['reactivation' => 'enforce', 'awb' => 'enforce', 'cardRefunds' => 'manual'];
+    /** The next AWB outcome: created | refused | unknown (FAN Courier did not answer) | lost (created, answer lost). */
+    public string $awbOutcome = 'created';
+    /** @var array<string, int> AWBs FAN Courier made per order (TEST) */
+    public array $fanAwbs = [];
+
+    /**
+     * YD SOFT 2.20.0 Operations with TEST data: reactivation, the FAN Courier AWB (one per order, the collection is what
+     * is still owed), the NETOPIA card refund request, record and verification (four eyes).
+     *
+     * @param array<string, mixed> $input
+     * @return array{0: int, 1: array<string, mixed>}
+     */
+    private function operation(string $route, string $orderId, array $input, int $now): array
+    {
+        $employee = (string) ($input['actor']['employeeId'] ?? '');
+        $role = (string) ($input['actor']['role'] ?? '');
+        $this->orders[$orderId]['ops'] ??= [];
+        $o = &$this->orders[$orderId]['ops'];
+        $o += ['status' => 'processing', 'awb' => null, 'refunds' => [], 'reactivations' => [], 'address' => [], 'owed' => '503.30', 'net' => '215.70', 'netopia' => 0, 'exceptions' => [], 'ledger' => [], 'invoice' => true];
+        $key = $employee . '|' . ($input['idempotencyKey'] ?? '');
+        if ($route === 'operation-status') {
+            $stored = $this->operationAnswers[$key] ?? null;
+            if ($stored === null || $stored['order'] !== $orderId) {
+                return [200, ['protocol' => 1, 'state' => 'absent']];
+            }
+            return [200, ['protocol' => 1, 'state' => $stored['status'] === 200 ? 'applied' : ($stored['status'] === 202 ? 'unknown' : 'rejected'), 'status' => $stored['status'], 'result' => $stored['body']]];
+        }
+        $action = (string) ($input['action'] ?? '');
+        $roles = ['order_reactivate' => ['operator', 'manager'], 'awb_create' => ['documents', 'manager'], 'awb_label' => ['documents', 'manager'], 'awb_address_task' => ['documents', 'manager'],
+            'awb_address_done' => ['documents', 'manager'], 'card_refund_full' => ['operator', 'manager'], 'card_refund_record' => ['finance'], 'card_refund_verify' => ['finance'], 'operations_state' => ['operator', 'documents', 'manager', 'finance']];
+        if (!isset($roles[$action]) || !in_array($role, $roles[$action], true)) {
+            return [400, ['error' => ['code' => 'invalid_request']]];
+        }
+        $state = fn (): array => $this->operationState($orderId, $now);
+        if ($action === 'operations_state') {
+            return [200, $state()];
+        }
+        if ($action === 'awb_label') {
+            return $o['awb'] === null ? [409, ['error' => ['code' => 'awb_missing']]] : [200, ['protocol' => 1, 'awb' => $o['awb']['number'], 'pdf' => base64_encode('%PDF-1.4 TEST AWB LABEL ' . $o['awb']['number'])]];
+        }
+        $request = $input;
+        unset($request['requestId'], $request['actor']);
+        $hash = hash('sha256', (string) json_encode($request));
+        if (isset($this->operationAnswers[$key])) {
+            $stored = $this->operationAnswers[$key];
+            return $stored['hash'] === $hash && $stored['order'] === $orderId ? [$stored['status'], $stored['body']] : [409, ['error' => ['code' => 'idempotency_conflict']]];
+        }
+        $keep = function (int $status, array $body) use ($key, $orderId, $hash): array {
+            $this->operationAnswers[$key] = ['order' => $orderId, 'hash' => $hash, 'status' => $status, 'body' => $body];
+            return [$status, $body];
+        };
+        $refuse = fn (string $code): array => $keep(409, ['error' => ['code' => $code], 'blockers' => [$code], 'state' => $state()]);
+        $done = fn (string $result, int $status = 200): array => $keep($status, ['protocol' => 1, 'applied' => $status === 200, 'action' => $action, 'result' => $result, 'state' => $state()]);
+        $feature = ['order_reactivate' => 'reactivation', 'card_refund_full' => 'cardRefunds', 'card_refund_record' => 'cardRefunds', 'card_refund_verify' => 'cardRefunds'][$action] ?? 'awb';
+        if (($this->operationFeatures[$feature] ?? 'off') === 'off') {
+            return $keep(409, ['error' => ['code' => $feature === 'awb' ? 'awb_disabled' : ($feature === 'cardRefunds' ? 'card_refund_disabled' : 'reactivation_disabled')]]);
+        }
+        if ($action === 'order_reactivate') {
+            if ($o['status'] !== 'cancelled') {
+                return $refuse('order_not_cancelled');
+            }
+            if (isset($input['exceptionEntryId']) && !in_array($input['exceptionEntryId'], $o['exceptions'], true)) {
+                return $refuse('payment_not_found');
+            }
+            $o['status'] = 'on-hold';
+            $o['reactivations'][] = ['at' => $now, 'by' => $employee, 'reason' => (string) $input['reason'], 'exception' => $input['exceptionEntryId'] ?? null];
+            return $done('reactivated');
+        }
+        if ($action === 'awb_create') {
+            if (!$o['invoice']) {
+                return $refuse('invoice_missing');
+            }
+            if ($o['awb'] !== null) {
+                return $refuse('awb_exists');
+            }
+            if (($input['expectedCod'] ?? null) !== $o['owed']) {
+                return $refuse('cod_changed');
+            }
+            $outcome = $this->awbOutcome;
+            $this->awbOutcome = 'created';
+            if ($outcome === 'refused') {
+                return $keep(409, ['error' => ['code' => 'awb_refused'], 'blockers' => ['awb_refused'], 'state' => $state()]);
+            }
+            $this->fanAwbs[$orderId] = ($this->fanAwbs[$orderId] ?? 0) + 1;
+            if ($outcome === 'unknown') {
+                $o['awbUnknown'] = true;
+                return $done('unknown', 202);
+            }
+            $o['awb'] = ['number' => (string) (2150900000000 + array_sum($this->fanAwbs)), 'parcels' => (int) $input['parcels'], 'cod' => $o['owed'], 'at' => $now];
+            $answer = $done('created');
+            return $outcome === 'lost' ? [0, []] : $answer;
+        }
+        if ($action === 'awb_address_task' || $action === 'awb_address_done') {
+            if ($o['awb'] === null) {
+                return $refuse('awb_missing');
+            }
+            $open = $o['address'] !== [] && end($o['address'])['kind'] === 'task';
+            if ($action === 'awb_address_done' && !$open) {
+                return $refuse('address_task_missing');
+            }
+            if ($action === 'awb_address_task' && $open) {
+                return $refuse('address_task_open');
+            }
+            $o['address'][] = ['kind' => $action === 'awb_address_task' ? 'task' : 'done', 'at' => $now, 'by' => $employee];
+            return $done($action === 'awb_address_task' ? 'panel_required' : 'panel_declared');
+        }
+        if ($action === 'card_refund_full') {
+            if ($o['netopia'] < 1) {
+                return $refuse('card_payment_unverified');
+            }
+            foreach ($o['refunds'] as $r) {
+                if ($r['state'] === 'manual_required') {
+                    return $done('already_requested');
+                }
+            }
+            $o['refunds'][] = ['state' => 'manual_required', 'at' => $now, 'by' => $employee, 'amount' => $o['net'], 'transactions' => $o['netopia'], 'completedAt' => null, 'mailed' => false];
+            return $done('manual_required');
+        }
+        $open = null;
+        foreach ($o['refunds'] as $i => $r) {
+            if ($r['state'] === 'manual_required') {
+                $open = $i;
+            }
+        }
+        if ($open === null) {
+            return $refuse('refund_request_missing');
+        }
+        if ($action === 'card_refund_record') {
+            foreach ($o['ledger'] as $entry) {
+                if ($entry['state'] === 'submitted') {
+                    return $refuse('refund_pending');
+                }
+            }
+            $id = sprintf('00000000-0000-4000-8000-%012d', count($o['ledger']) + 1);
+            $o['ledger'][] = ['id' => $id, 'amount' => (string) $input['amount'], 'state' => 'submitted', 'by' => $employee];
+            return $keep(200, ['protocol' => 1, 'applied' => true, 'action' => $action, 'result' => 'refund_recorded', 'state' => $state(), 'entryId' => $id]);
+        }
+        foreach ($o['ledger'] as $i => $entry) {
+            if ($entry['id'] === ($input['entryId'] ?? null)) {
+                if ($entry['state'] !== 'submitted') {
+                    return $refuse('entry_not_pending');
+                }
+                if ($entry['by'] === $employee) {
+                    return $keep(403, ['error' => ['code' => 'same_employee']]);
+                }
+                $o['ledger'][$i]['state'] = ($input['decision'] ?? '') === 'verify' ? 'verified' : 'rejected';
+                if ($o['ledger'][$i]['state'] === 'verified') {
+                    $o['refunds'][$open]['state'] = 'completed';
+                    $o['refunds'][$open]['completedAt'] = $now;
+                    $o['refunds'][$open]['mailed'] = true;
+                    return $done('refund_verified');
+                }
+                return $done('refund_rejected');
+            }
+        }
+        return $refuse('entry_not_found');
+    }
+
+    /** @return array<string, mixed> */
+    private function operationState(string $orderId, int $now): array
+    {
+        $o = $this->orders[$orderId]['ops'];
+        $iso = static fn (int $t): string => gmdate('Y-m-d\TH:i:s\Z', $t);
+        return ['protocol' => 1, 'readAt' => $iso($now), 'features' => $this->operationFeatures, 'order' => ['status' => $o['status'], 'paymentMethod' => $o['netopia'] > 0 ? 'netopiapayments' : 'cod'],
+            'awb' => ['state' => $o['awb'] !== null ? 'created' : (($o['awbUnknown'] ?? false) ? 'unknown' : 'none'), 'number' => $o['awb']['number'] ?? null, 'createdAt' => isset($o['awb']) ? $iso($o['awb']['at']) : null,
+                'status' => null, 'delivered' => false, 'cod' => $o['owed'], 'codCheck' => ['state' => $o['awb'] !== null ? 'match' : 'none', 'awb' => $o['awb']['number'] ?? null, 'awbCod' => $o['awb']['cod'] ?? null, 'expected' => $o['owed'], 'status' => null],
+                'blockers' => $o['awb'] !== null ? ['awb_exists'] : [], 'address' => array_map(static fn (array $a): array => ['kind' => $a['kind'], 'at' => $iso($a['at']), 'by' => $a['by']], $o['address']), 'pickup' => 'not_tracked'],
+            'cardRefund' => ['available' => $o['netopia'] > 0, 'transactions' => $o['netopia'], 'requests' => array_map(static fn (array $r): array => ['state' => $r['state'], 'at' => $iso($r['at']), 'by' => $r['by'], 'amount' => $r['amount'], 'currency' => 'RON',
+                'transactions' => $r['transactions'], 'reason' => 'no_refund_api', 'completedAt' => $r['completedAt'] === null ? null : $iso($r['completedAt']), 'mailed' => $r['mailed']], $o['refunds'])],
+            'reactivations' => array_map(static fn (array $r): array => ['at' => $iso($r['at']), 'by' => $r['by'], 'reason' => $r['reason'], 'payment' => $r['exception'] !== null], $o['reactivations'])];
     }
 
     /** @param array<string, mixed> $body @return array{0: int, 1: array<string, mixed>} */
