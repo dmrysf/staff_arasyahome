@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Arasya\Operations\Document;
 
 use Arasya\Operations\Authorization\AuthorizationService;
+use Arasya\Operations\Cancellation\ProductionStop;
 use Arasya\Operations\Employee\EmployeeIdentity;
 use Arasya\Operations\Employee\EmployeeRepository;
 use Arasya\Operations\Http\ApiException;
@@ -134,6 +135,8 @@ final readonly class DocumentService
                 $this->requireScope($fresh, DocumentScopePolicy::OPERATE, $order);
             }
             $this->assertOpenOrder($order, 'generate');
+            // Owner rule 1 (production stop): no new production ticket (R1 or a later revision) while production is stopped.
+            ProductionStop::assertOpen($this->pdo, (string) $order['order_uuid']);
             if ((int) $order['document_version'] !== $expected) {
                 throw $this->changed();
             }
@@ -163,6 +166,7 @@ final readonly class DocumentService
         }
         $order = $this->store->lockOrderByUuid($orderUuid);
         if ($order['document_status'] === 'none') {
+            ProductionStop::assertOpen($this->pdo, $orderUuid);
             $this->createInitial($actor, $order, $this->now(), $requestId);
         }
     }
@@ -471,6 +475,9 @@ final readonly class DocumentService
             if (!$b2bViewerAuthority) {
                 $this->requireScope($fresh, DocumentScopePolicy::OPERATE, $order);
             }
+            // Owner rule 1 (production stop): no paper for the factory while production is stopped, neither a first print nor a
+            // reprint. Reading the document and its history stays available (read-only routes).
+            ProductionStop::assertOpen($this->pdo, (string) $order['order_uuid']);
             if ($kind === 'reprint' && $reason === null && self::reprintNeedsReason($order)) {
                 throw self::reprintReasonRequired();
             }
@@ -512,7 +519,7 @@ final readonly class DocumentService
     public function sourceStates(SourceDefinition $source, array $orderIds): array
     {
         $states = [];
-        $statement = $this->pdo->prepare('SELECT order_uuid, production_authority, production_stage_id, production_completed_at, operational_status, document_status, document_version, payment_method, advance_status FROM operational_orders WHERE global_order_id = ?');
+        $statement = $this->pdo->prepare('SELECT order_uuid, production_authority, production_stage_id, production_completed_at, operational_status, document_status, document_version, payment_method, advance_status, production_stopped_at FROM operational_orders WHERE global_order_id = ?');
         foreach ($orderIds as $orderId) {
             $globalId = $source->key . ':' . $orderId;
             $statement->execute([$globalId]);
@@ -557,6 +564,8 @@ final readonly class DocumentService
             if ($source->documentAuthorityMode !== DocumentAuthorityMode::Enforce) {
                 throw new ApiException(409, 'DOCUMENT_CUTOVER_INACTIVE', 'Autoritatea Arasya pentru fișa de producție nu este activă pentru această sursă.');
             }
+            // Owner rule 1 (production stop): the shop's print panel issues no R1 and prints no ticket while production is stopped.
+            ProductionStop::assertOpen($this->pdo, (string) $order['order_uuid']);
             $now = $this->now();
             $issued = false;
             $sourceActor = ['source' => $source->key, 'actor' => $actorLabel];
@@ -627,7 +636,7 @@ final readonly class DocumentService
             $row = $open->fetch(PDO::FETCH_ASSOC);
             $request = is_array($row) ? ['status' => (string) $row['status'], 'targetRevision' => (int) $row['target_revision_number']] : null;
         }
-        $open = $order['production_completed_at'] === null && $order['operational_status'] !== 'unavailable';
+        $open = $order['production_completed_at'] === null && $order['operational_status'] !== 'unavailable' && ($order['production_stopped_at'] ?? null) === null;
         return [
             'productionAuthority' => (string) $order['production_authority'],
             'documentAuthority' => $authority,

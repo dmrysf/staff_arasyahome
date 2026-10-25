@@ -31,6 +31,11 @@ export const confirmareHandoffRO = {
   "cf.handoff.list.title": "Predare în producție",
   "cf.handoff.list.description": "Comenzi confirmate și plătite, la etapa 1: fișa de generat, de tipărit sau care așteaptă scanarea la tăiere.",
   "cf.handoff.list.empty": "Nicio comandă de predat acum.",
+  "cf.handoff.mine.title": "Comenzi direcționate către mine",
+  "cf.handoff.mine.empty": "Nicio comandă direcționată către dumneavoastră.",
+  "cf.handoff.mine.by": "Direcționată de {name}, {time}",
+  "cf.handoff.mine.invoiced": "Factură emisă",
+  "cf.handoff.mine.pending": "De facturat",
 } as const;
 
 export const confirmareHandoffEN = {
@@ -62,6 +67,11 @@ export const confirmareHandoffEN = {
   "cf.handoff.list.title": "Handoff to production",
   "cf.handoff.list.description": "Confirmed, paid orders at stage 1: the ticket to generate, to print, or waiting for the cutting scan.",
   "cf.handoff.list.empty": "No order to hand over now.",
+  "cf.handoff.mine.title": "Orders routed to me",
+  "cf.handoff.mine.empty": "No order is routed to you.",
+  "cf.handoff.mine.by": "Routed by {name}, {time}",
+  "cf.handoff.mine.invoiced": "Invoice issued",
+  "cf.handoff.mine.pending": "To invoice",
 } as const;
 
 export const confirmareHandoffTR = {
@@ -93,6 +103,11 @@ export const confirmareHandoffTR = {
   "cf.handoff.list.title": "Üretime devir",
   "cf.handoff.list.description": "1. aşamadaki onaylı ve ödenmiş siparişler: oluşturulacak, yazdırılacak veya kesim okutmasını bekleyen fiş.",
   "cf.handoff.list.empty": "Şu anda devredilecek sipariş yok.",
+  "cf.handoff.mine.title": "Bana yönlendirilen siparişler",
+  "cf.handoff.mine.empty": "Size yönlendirilen sipariş yok.",
+  "cf.handoff.mine.by": "{name} yönlendirdi, {time}",
+  "cf.handoff.mine.invoiced": "Fatura kesildi",
+  "cf.handoff.mine.pending": "Faturalanacak",
 } as const;
 
 export const confirmareHandoffSI = {
@@ -124,4 +139,9 @@ export const confirmareHandoffSI = {
   "cf.handoff.list.title": "නිෂ්පාදනයට භාර දීම",
   "cf.handoff.list.description": "1 අදියරේ තහවුරු කළ, ගෙවූ ඇණවුම්: සෑදීමට, මුද්‍රණයට හෝ කැපීමේ ස්කෑන් බලාපොරොත්තුවෙන් ඇති පත්‍රිකාව.",
   "cf.handoff.list.empty": "දැන් භාර දීමට ඇණවුමක් නැත.",
+  "cf.handoff.mine.title": "මා වෙත යොමු කළ ඇණවුම්",
+  "cf.handoff.mine.empty": "ඔබ වෙත යොමු කළ ඇණවුමක් නැත.",
+  "cf.handoff.mine.by": "{name} යොමු කළා, {time}",
+  "cf.handoff.mine.invoiced": "ඉන්වොයිසිය නිකුත් විය",
+  "cf.handoff.mine.pending": "ඉන්වොයිස් කළ යුතුය",
 } as const;

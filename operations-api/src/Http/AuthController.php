@@ -32,6 +32,7 @@ final readonly class AuthController
         private RequestContext $context,
         private ?ConfirmareScopePolicy $confirmareScopes = null,
         private ?\Arasya\Operations\Confirmare\FinanceScopePolicy $financeScopes = null,
+        private ?\Arasya\Operations\Confirmare\InvoiceScopePolicy $invoiceScopes = null,
     ) {
     }
 
@@ -191,6 +192,9 @@ final readonly class AuthController
                 $finance = ['view' => [], 'record' => [], 'approve' => []];
             }
         }
-        return EmployeeSerializer::safe($employee) + ['confirmareScopes' => $scopes, 'financeScopes' => $finance];
+        // SmartBill invoice scopes (API 2.43.0): explicit rows only, root included. Presentation only: every invoice call
+        // checks the scope, the document permission and the order again.
+        $invoice = $this->invoiceScopes === null ? ['issue' => [], 'manage' => []] : $this->invoiceScopes->scopesOf($employee->employeeUuid);
+        return EmployeeSerializer::safe($employee) + ['confirmareScopes' => $scopes, 'financeScopes' => $finance, 'invoiceScopes' => $invoice];
     }
 }

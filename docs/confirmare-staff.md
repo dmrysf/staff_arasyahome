@@ -8,7 +8,7 @@ server side: scopes, pool, distribution, decisions and audit. Phase 3 adds the w
 - the recorded telephone contact attempts (migration 037);
 - the supervisor's team view.
 
-**Nothing can be activated with this release.** `ConfirmationGate::WORKFLOW_READY` stays `false`. In production
+**Nothing can be activated with this release.** `ConfirmationGate::WORKFLOW_READY` stayed `false` (until API 2.45.0; since then a source is activated only when its own readiness passes, see confirmare-cohort.md). In production
 the workspace stays empty and no order reaches these screens until a later, separately approved release switches it on.
 
 ## Who sees the workspace
@@ -184,7 +184,7 @@ switch.
 
 ## Not in this release
 
-- Activation (`WORKFLOW_READY` stays `false`) and any change to a production order.
+- Activation (`WORKFLOW_READY` stayed `false` until API 2.45.0; see confirmare-cohort.md) and any change to a production order.
 - The full phone number and prices in Staff (Phase 4 proposal above).
 - Editing the order, prices, payments or refunds; new stages; PDF or QR changes.
 - Legacy and undetermined order recovery (supervisors see them under „Necesită atenție”).

@@ -1,6 +1,7 @@
 import { confirmareRO } from "./confirmare";
 import { confirmareShopRO } from "./confirmareShop";
 import { confirmareFinanceRO } from "./confirmareFinance";
+import { confirmareInvoiceRO } from "./confirmareInvoice";
 import { confirmareHandoffRO } from "./confirmareHandoff";
 import { confirmareEditRO } from "./confirmareEdit";
 import { physicalMessages } from "./physical";
@@ -18,6 +19,7 @@ export const ro = {
   ...confirmareRO,
   ...confirmareShopRO,
   ...confirmareFinanceRO,
+  ...confirmareInvoiceRO,
   ...confirmareHandoffRO,
   ...confirmareEditRO,
 

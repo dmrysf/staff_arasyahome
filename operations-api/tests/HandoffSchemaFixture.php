@@ -1,9 +1,19 @@
 <?php
 declare(strict_types=1);
+/** Restore a pre-041 disposable test fixture (no SmartBill invoicing tables). This is NOT a deployment/rollback mechanism. */
+function restorePreSmartBillInvoicingTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='041_smartbill_invoicing.sql'")->fetchColumn()) return;
+    foreach(['order_invoice_qr_checks','order_shop_assignments','order_invoice_actions','order_invoice_reads','employee_invoice_scopes'] as $table) $pdo->exec('DROP TABLE IF EXISTS '.$table);
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='041_smartbill_invoicing.sql'");
+}
+
 /** Restore a pre-039 disposable test fixture (no Confirmare finance). This is NOT a deployment/rollback mechanism. */
 function restorePreConfirmareFinanceTestSchema(PDO $pdo): void
 {
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    restorePreSmartBillInvoicingTestSchema($pdo);
     if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='039_confirmare_finance.sql'")->fetchColumn()) return;
     $pdo->exec('DROP TABLE IF EXISTS order_finance_actions');
     $pdo->exec('DROP TABLE IF EXISTS order_finance_reads');

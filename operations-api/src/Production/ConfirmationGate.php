@@ -20,8 +20,9 @@ use PDO;
  * employee or by the source operator), a stage-1 claim or stage completion, the cutting QR intake, a manager
  * assignment at stage 1 and a manager takeover to a later stage. Every check runs inside the action's own
  * transaction on the order row it locked, so a stale screen can never pass it. Orders already past stage 1 are never
- * stopped or rewound by the gate. The Confirmare workflow that approves orders is not part of Phase 1
- * (WORKFLOW_READY), so a source cannot be activated yet (bin/workflow-cohort.php refuses).
+ * stopped or rewound by the gate. Phase 1 had no workflow that approves orders (WORKFLOW_READY was false and every
+ * activation was refused); since API 2.45.0 whether a source may be activated is decided per source by
+ * ConfirmareReadiness.
  *
  * API 2.42.0 (Phase 6, production handoff): the stored clearance flag is refreshed by Confirmare decisions and source
  * snapshots only, so the gate also reads, live, whether a finance action of the order is pending or unknown
@@ -48,8 +49,12 @@ final class ConfirmationGate
                 AND (se.state IN ('pending', 'unknown') OR (se.state = 'applied' AND (o.source_changed_at IS NULL OR o.source_changed_at < se.source_modified_after))))
         FROM order_confirmations c WHERE c.order_uuid = o.order_uuid)";
 
-    /** Phase 1: nothing can approve an order yet, so no source may be activated (an activation would stop production). */
-    public const WORKFLOW_READY = false;
+    /**
+     * Whether this release contains the workflow that approves Confirmare orders and hands them to production (approval
+     * since API 2.38.0, production handoff since 2.42.0). It no longer gates activation by itself: a source is activated
+     * only when its own ConfirmareReadiness passes (API 2.45.0), so one shop can run Confirmare while another stays off.
+     */
+    public const WORKFLOW_READY = true;
 
     public const STATUS_PENDING = 'pending';
     public const STATUS_APPROVED = 'approved';

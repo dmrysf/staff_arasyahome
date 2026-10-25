@@ -1,6 +1,6 @@
 # Confirmare production handoff (API 2.42.0, Staff 2.32.0, Phase 6, no migration)
 
-Nothing can be activated: `ConfirmationGate::WORKFLOW_READY` stays `false`, so no source has Confirmare orders outside
+Nothing can be activated: `ConfirmationGate::WORKFLOW_READY` stayed `false` (until API 2.45.0; since then a source is activated only when its own readiness passes, see confirmare-cohort.md), so no source has Confirmare orders outside
 tests. No feature flag, no migration, no YD SOFT change. Legacy, Trendyol and B2B orders keep their flow unchanged.
 
 ## The flow

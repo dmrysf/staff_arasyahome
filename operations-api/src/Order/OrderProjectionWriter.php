@@ -637,9 +637,12 @@ final readonly class OrderProjectionWriter
 
     /**
      * Records a signed heartbeat so source freshness recovers without an order event, and the source's report of its
-     * armed local Confirmare fence when it sent one (workflow_cohort_arming; the latest report wins).
+     * armed local Confirmare fence when it sent one (workflow_cohort_arming; the latest report wins) and, since API 2.45.0,
+     * its Confirmare readiness report (source_connector_readiness; the latest report wins).
+     *
+     * @param array{version: string, access: string, finance: string, invoice: string, schemaReady: bool, invoiceAttested: bool, smartbillReady: bool}|null $readiness
      */
-    public function recordHeartbeat(string $sourceKey, ?\DateTimeImmutable $confirmareArmedAt = null): void
+    public function recordHeartbeat(string $sourceKey, ?\DateTimeImmutable $confirmareArmedAt = null, ?array $readiness = null): void
     {
         if ($sourceKey==='b2b') throw new ApiException(403,'INTERNAL_SOURCE_ONLY','B2B production is submitted through its authenticated commercial command.');
         $nowSql = $this->clock->now()->format('Y-m-d H:i:s.u');
@@ -651,6 +654,12 @@ final readonly class OrderProjectionWriter
         if ($confirmareArmedAt !== null) {
             $this->pdo->prepare('INSERT INTO workflow_cohort_arming (source_key, armed_at, reported_at) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE armed_at = VALUES(armed_at), reported_at = VALUES(reported_at)')
                 ->execute([$sourceKey, $confirmareArmedAt->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s.u'), $nowSql]);
+        }
+        if ($readiness !== null) {
+            $this->pdo->prepare('INSERT INTO source_connector_readiness (source_key, connector_version, access_mode, finance_mode, invoice_mode, schema_ready, invoice_attested, smartbill_ready, reported_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE connector_version = VALUES(connector_version), access_mode = VALUES(access_mode), finance_mode = VALUES(finance_mode),
+                invoice_mode = VALUES(invoice_mode), schema_ready = VALUES(schema_ready), invoice_attested = VALUES(invoice_attested), smartbill_ready = VALUES(smartbill_ready), reported_at = VALUES(reported_at)')
+                ->execute([$sourceKey, $readiness['version'], $readiness['access'], $readiness['finance'], $readiness['invoice'], (int) $readiness['schemaReady'], (int) $readiness['invoiceAttested'], (int) $readiness['smartbillReady'], $nowSql]);
         }
     }
 

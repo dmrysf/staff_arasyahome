@@ -21,6 +21,17 @@ of a stopped order to its sales channel, and keeps the channel's answer and Aras
   the channel shows the cancellation or, after 30 minutes, hands the decision to a person (see "Unknown outcomes").
 - **No money is moved.** Arasya never starts, records or reports a refund, credit note, payment change, AWB or shipment
   change. A paid WooCommerce order is refused by the shop's connector and goes to a person.
+- **An open finance entry blocks the request (owner rule 2).** While the shop reports a bank transfer or a refund that is
+  recorded but not yet verified or rejected (`transfer_pending`, `refund_pending`), a money state it could not reconcile
+  (`reconciliation_required`), or while a finance action Arasya relayed has a pending or unknown answer
+  (`order_finance_actions`), no cancellation request is created or retried (`CANCELLATION_SYNC_FINANCE_OPEN`), and an
+  operation already waiting for the shop is not handed out by `orders/cancellations`: it stays `awaiting_pickup` and is
+  offered again once the entry is decided. An unverified transfer is not money received, but it must be decided first.
+  An operation held back for 24 hours times out like any operation the shop did not pick up (`manual_review`,
+  `PICKUP_TIMEOUT`); the request is not lost (the stop stays held, `source_request_status` stays `pending`) and a person
+  retries the same operation once the entry is decided (the retry is refused while it is open).
+  The shop's connector applies the same rule under its own finance lock (YD SOFT), because Arasya's copy of the
+  attention can be one order event behind.
 - **No transaction is held during HTTP.** The worker leases an operation in one short transaction, calls the provider
   outside any transaction, and records the result in a second transaction that first re-checks its lease.
 - **Trendyol Fresh Start boundary.** A Trendyol order from before the intake baseline (`trendyol_intake_state.baseline_at`)
@@ -158,9 +169,16 @@ PUT a package can still change at Trendyol (no conditional write is documented);
 
 ## Worker (`bin/cancellation-sync.php run`)
 
+**Pickup window.** The 24 h of `PICKUP_TIMEOUT` count from the last time the operation was handed to the connector: its
+creation or a person's retry (the last attempt that moved it into `awaiting_pickup`, `SyncOperations::HANDED_OVER_AT`).
+A retry after a timeout therefore gets a fresh window and is not timed out again by the next run; the connector's
+pickup does not restart it. The reconciler's `operation_pickup_delayed` (30 min without a pickup) counts from the same
+moment. A worker that selected an operation which then changed (another worker's timeout and a retry committed in
+between) leaves it to the next run.
+
 Each run: recover expired leases (as `uncertain`); escalate waits only a timeout can end (a connector report without the
-shop event after 6 h, no pickup after 24 h); then, for each due `api` operation whose gates are open: lease, read the
-package, and
+shop event after 6 h, no report 24 h after the operation was handed to the connector); then, for each due `api`
+operation whose gates are open: lease, read the package, and
 
 | Before | Read | Then |
 |---|---|---|
@@ -219,7 +237,8 @@ Error codes: `CANCELLATION_SYNC_DISABLED`, `CANCELLATION_SYNC_EXISTS`, `CANCELLA
 `CANCELLATION_SYNC_CHANGED`, `CANCELLATION_SYNC_STATE`, `CANCELLATION_SYNC_RETRY_NOT_ELIGIBLE`,
 `CANCELLATION_SYNC_NOT_WITHDRAWABLE`, `CANCELLATION_SYNC_NOT_FOUND`, `CANCELLATION_SYNC_CONFLICT`, `REASON_REQUIRED`,
 `SOURCE_ALREADY_CANCELLED`, `TRENDYOL_BEFORE_BASELINE`, `RELEASE_SYNC_OPEN`, `CANCELLATION_SYNC_PROVIDER_CHECK_REQUIRED`,
-`CANCELLATION_SYNC_PROVIDER_EVIDENCE_REQUIRED`, `CANCELLATION_SYNC_PROVIDER_CHECK_STALE`, `CANCELLATION_SYNC_RECHECK_NOT_ELIGIBLE`.
+`CANCELLATION_SYNC_PROVIDER_EVIDENCE_REQUIRED`, `CANCELLATION_SYNC_PROVIDER_CHECK_STALE`, `CANCELLATION_SYNC_RECHECK_NOT_ELIGIBLE`,
+`CANCELLATION_SYNC_FINANCE_OPEN`.
 
 ## Staff and Dashboard
 

@@ -13,6 +13,7 @@ use Arasya\Operations\Integration\SourceAccess\SourceAccessProtocol;
 use Arasya\Operations\Integration\SourceAccess\SourceAccessRegistry;
 use Arasya\Operations\Integration\SourceAccess\SourceAccessTarget;
 use Arasya\Operations\Integration\SourceAccess\SourceFinance;
+use Arasya\Operations\Integration\SourceAccess\SourceInvoice;
 use Arasya\Operations\Integration\SourceAccess\SourceOrderDetail;
 use Arasya\Operations\Integration\SourceAccess\SourceOrderEdit;
 use Arasya\Operations\Integration\SourceAccess\StreamSourceAccessTransport;
@@ -255,8 +256,132 @@ foreach ([
 }
 $check(SourceFinance::refusal(['error' => ['code' => 'revision_changed'], 'revision' => 'sha256:' . str_repeat('b', 64)]) === ['code' => 'revision_changed', 'revision' => 'sha256:' . str_repeat('b', 64)], 'a refusal with the current revision');
 $throws(static fn () => SourceFinance::refusal(['error' => ['code' => 'paid_anyway']]), 'SOURCE_ERROR', 'an unknown refusal code is a source error');
+// YD SOFT 2.16 safety refusals: valid only as a 409 answer to their own actions, a protocol violation anywhere else.
+$rev = 'sha256:' . str_repeat('c', 64);
+foreach (SourceFinance::ACTION_REFUSALS as $code => $actions) {
+    foreach ($actions as $own) {
+        $check(SourceFinance::refusal(['error' => ['code' => $code], 'revision' => $rev], $own, 409) === ['code' => $code, 'revision' => $rev], "{$code} is a refusal of {$own}");
+    }
+    foreach (array_diff(['submit_transfer', 'decide_transfer', 'submit_refund', 'decide_refund', 'acknowledge_liability'], $actions) as $other) {
+        $throws(static fn () => SourceFinance::refusal(['error' => ['code' => $code]], $other, 409), 'SOURCE_ERROR', "{$code} answered to {$other} is a source error");
+    }
+    foreach ([400, 403, 404, 410, 422, 423, 429] as $status) {
+        $throws(static fn () => SourceFinance::refusal(['error' => ['code' => $code]], $actions[0], $status), 'SOURCE_ERROR', "{$code} with HTTP {$status} is a source error");
+    }
+    $throws(static fn () => SourceFinance::refusal(['error' => ['code' => $code]]), 'SOURCE_ERROR', "{$code} without its action and status is a source error");
+    $throws(static fn () => SourceFinance::refusal(['error' => ['code' => $code]], $actions[0]), 'SOURCE_ERROR', "{$code} without its status is a source error");
+}
+$check(array_keys(SourceFinance::ACTION_REFUSALS) === ['finance_open', 'order_cancelled'] && array_diff(array_keys(SourceFinance::ACTION_REFUSALS), SourceFinance::REFUSALS) === [], 'the action-bound codes are exactly the two safety refusals, both known');
+foreach (array_diff(SourceFinance::REFUSALS, array_keys(SourceFinance::ACTION_REFUSALS)) as $code) {
+    $check(SourceFinance::refusal(['error' => ['code' => $code]]) === ['code' => $code, 'revision' => null] && SourceFinance::refusal(['error' => ['code' => $code]], 'submit_transfer', 422) === ['code' => $code, 'revision' => null], "{$code} keeps its meaning for any action and status (older shops)");
+}
 $throws(static fn () => SourceFinance::applied(['protocol' => 1, 'applied' => true, 'action' => 'decide_transfer', 'entryId' => '00000000-0000-4000-9000-000000000001', 'summary' => $summary], 'submit_transfer', '123', '123'), 'SOURCE_RESPONSE_INVALID', 'an answer for another action is refused');
 $check(SourceFinance::status(['state' => 'absent']) === ['state' => 'absent'], 'an action the shop never received');
+
+// ---- 5c. YD SOFT 2.18.0 (owner decision: the advance is paid by bank transfer): strict transfer details, advance state,
+// payment reference and the shop's record of unmatched transfers ---------------------------------------------------------
+$pfShop = new SourceAccessFakeShop('trendhome', 'th-2026-a', $shopKey, ['777' => ['id' => '777', 'number' => '777', 'invoice' => ['cleared' => false, 'documentType' => 'invoice', 'autoEmail' => false, 'document' => null, 'op' => 'none', 'opKey' => null, 'mail' => 'none', 'mailCount' => 0, 'history' => [],
+    'cod' => true, 'proformaInvoiced' => false, 'pf' => ['document' => ['series' => 'PRF', 'number' => '0007', 'at' => 1790000000, 'by' => '00000000-0000-4000-8000-0000000000a1'], 'op' => 'issued', 'opKey' => null, 'mail' => 'none', 'mailCount' => 0, 'invoiced' => null, 'history' => []]]]]);
+$invoiceState = $pfShop->invoiceSummary('777', 1790000000, 'operator');
+$pf = SourceInvoice::summary($invoiceState, '777', '777')['proforma'];
+$check($pf['transfer'] === ['iban' => 'RO49AAAA1B31007593840000', 'bank' => 'Banca TEST', 'beneficiary' => 'TEST Trend Home SRL', 'reference' => 'TH777', 'bic' => null] && $pf['document']['reference'] === 'TH777' && $pf['advance']['state'] === 'waiting' && $pf['advance']['verifying'] === false, 'the proforma transfer details and the advance state validate');
+$older = $invoiceState;
+unset($older['proforma']['transfer'], $older['proforma']['advance']['state'], $older['proforma']['advance']['verifying'], $older['proforma']['document']['reference']);
+foreach (['money', 'totalAcceptance', 'advanceAcceptance', 'lowAdvance', 'cancel', 'cancelled', 'superseded', 'deadline', 'cod'] as $field) {
+    unset($older['proforma'][$field]);
+}
+unset($older['proforma']['blockers']['proformaCancel'], $older['proforma']['blockers']['totalAccept'], $older['proforma']['blockers']['advanceAccept'], $older['eFactura']);
+$olderPf = SourceInvoice::summary($older, '777', '777')['proforma'];
+$check($olderPf['transfer'] === null && $olderPf['advance']['state'] === null && $olderPf['advance']['verifying'] === false, 'a shop before the bank transfer decision: no transfer details, no advance state');
+$check($olderPf['money'] === null && $olderPf['totalAcceptance'] === null && $olderPf['cancelled'] === [] && $olderPf['deadline'] === null && $olderPf['blockers']['proformaCancel'] === ['not_supported'] && $olderPf['blockers']['advanceAccept'] === ['not_supported']
+    && SourceInvoice::summary($older, '777', '777')['eFactura'] === null, 'a 2.18.0 shop (no master update fields): nothing invented, its new actions are not_supported');
+// ---- 5d. YD SOFT 2.19.0 (owner master update): the one money calculation, acceptances, cancellation, deadline, AWB -----
+$m = SourceInvoice::summary($invoiceState, '777', '777');
+$check($m['proforma']['money'] === ['currency' => 'RON', 'percentage' => 30.0, 'known' => true, 'total' => '719.00', 'advanceRequired' => '215.70', 'received' => '0.00', 'refunded' => '0.00', 'net' => '0.00', 'remaining' => '719.00', 'excess' => '0.00', 'advanceGap' => '215.70']
+    && $m['proforma']['totalAcceptance']['state'] === 'accepted' && $m['proforma']['deadline']['state'] === 'none' && $m['eFactura'] === ['state' => 'not_tracked'] && $m['proforma']['blockers']['proformaCancel'] === [], 'the master update fields validate (money adds up: owed 719.00, advance missing 215.70)');
+$position = ['currency' => 'RON', 'percentage' => 30, 'total' => '1000.00', 'advanceRequired' => '300.00', 'received' => '250.00', 'refunded' => '0.00', 'net' => '250.00', 'remaining' => '750.00', 'excess' => '0.00', 'advanceGap' => '50.00', 'known' => true];
+$check(SourceInvoice::moneyPosition($position)['remaining'] === '750.00' && SourceInvoice::moneyPosition(['received' => '1050.00', 'net' => '1050.00', 'remaining' => '0.00', 'excess' => '50.00', 'advanceGap' => '0.00'] + $position)['excess'] === '50.00', 'the owner\'s examples validate: 1000 / 250 owes 750; 1000 / 1050 owes 0 with 50 excess');
+foreach ([
+    'owed computed wrong (700 instead of 750)' => ['remaining' => '700.00'],
+    'a negative amount owed' => ['remaining' => '-50.00'],
+    'both owed and excess' => ['excess' => '10.00'],
+    'net not received minus refunded' => ['refunded' => '10.00'],
+    'the advance difference wrong' => ['advanceGap' => '0.00'],
+    'a percentage above 100' => ['percentage' => 130],
+] as $label => $change) {
+    $throws(static fn () => SourceInvoice::moneyPosition($change + $position), 'SOURCE_RESPONSE_INVALID', "a money calculation with {$label} is refused (never shown to an employee)");
+}
+foreach ([
+    'an unknown cancellation state' => static function (array &$s): void { $s['proforma']['cancel'] = ['state' => 'maybe', 'at' => null, 'by' => null, 'reason' => 'other']; },
+    'an unknown cancellation reason' => static function (array &$s): void { $s['proforma']['cancelled'] = [['series' => 'PRF', 'number' => '1', 'amount' => '1.00', 'currency' => 'RON', 'cancelledAt' => null, 'cancelledBy' => null, 'reason' => 'whim']]; },
+    'a deadline without a date' => static function (array &$s): void { $s['proforma']['deadline'] = ['state' => 'open', 'firstCollection' => '2026-10-24', 'deadline' => null, 'daysLeft' => 3, 'level' => 'warning']; },
+    'an unknown deadline level' => static function (array &$s): void { $s['proforma']['deadline'] = ['state' => 'open', 'firstCollection' => '2026-10-24', 'deadline' => '2026-11-15', 'daysLeft' => 3, 'level' => 'relaxed']; },
+    'an AWB state "fixed"' => static function (array &$s): void { $s['proforma']['cod'] = ['state' => 'fixed', 'awb' => null, 'awbCod' => null, 'expected' => null, 'status' => null]; },
+    'e-Factura "sent"' => static function (array &$s): void { $s['eFactura'] = ['state' => 'sent']; },
+    'an acceptance state "maybe"' => static function (array &$s): void { $s['proforma']['totalAcceptance']['state'] = 'maybe'; },
+    'a change of an unknown kind' => static function (array &$s): void { $s['proforma']['totalAcceptance']['changes'] = [['kind' => 'price_hack', 'name' => 'x']]; },
+    'an unknown action blocker' => static function (array &$s): void { $s['proforma']['blockers']['advanceAccept'] = ['because']; },
+    'a BIC that is not one' => static function (array &$s): void { $s['proforma']['transfer']['bic'] = 'ING BANK'; },
+    'advanceDecisionRequired as text' => static function (array &$s): void { $s['proforma']['totalAcceptance']['advanceDecisionRequired'] = 'yes'; },
+    'an unknown shipping state' => static function (array &$s): void { $s['proforma']['shipping'] = ['state' => 'fine', 'code' => null, 'current' => '25.00', 'expected' => '25.00']; },
+    'a shipping mismatch without its code' => static function (array &$s): void { $s['proforma']['shipping'] = ['state' => 'mismatch', 'code' => null, 'current' => '25.00', 'expected' => '35.00']; },
+    'an unknown shipping code' => static function (array &$s): void { $s['proforma']['shipping'] = ['state' => 'mismatch', 'code' => 'cheaper', 'current' => '25.00', 'expected' => null]; },
+    'a shipping match with a code' => static function (array &$s): void { $s['proforma']['shipping'] = ['state' => 'match', 'code' => 'shipping_cost_mismatch', 'current' => '25.00', 'expected' => '25.00']; },
+    'an advance acceptance of an unknown kind' => static function (array &$s): void { $s['proforma']['advanceAcceptance'] = ['at' => null, 'by' => null, 'required' => '215.70', 'received' => '200.00', 'reason' => null, 'low' => false, 'kind' => 'automatic']; },
+] as $label => $change) {
+    $copy = $invoiceState;
+    $change($copy);
+    $throws(static fn () => SourceInvoice::summary($copy, '777', '777'), 'SOURCE_RESPONSE_INVALID', "a state with {$label} is refused");
+}
+$kept = $invoiceState;
+$kept['proforma']['advanceAcceptance'] = ['at' => '2026-10-25T09:00:00Z', 'by' => '00000000-0000-4000-8000-0000000000a1', 'required' => '215.70', 'received' => '200.00', 'reason' => null, 'low' => false, 'kind' => 'kept'];
+$older = $invoiceState;
+$older['proforma']['advanceAcceptance'] = ['at' => '2026-10-25T09:00:00Z', 'by' => '00000000-0000-4000-8000-0000000000a1', 'required' => '215.70', 'received' => '200.00', 'reason' => null, 'low' => false];
+unset($older['proforma']['totalAcceptance']['advanceDecisionRequired'], $older['proforma']['shipping']);
+$check(SourceInvoice::summary($kept, '777', '777')['proforma']['advanceAcceptance']['kind'] === 'kept' && SourceInvoice::summary($older, '777', '777')['proforma']['advanceAcceptance']['kind'] === 'accepted'
+    && SourceInvoice::summary($older, '777', '777')['proforma']['totalAcceptance']['advanceDecisionRequired'] === null && SourceInvoice::summary($older, '777', '777')['proforma']['shipping'] === null,
+    'an advance kept after a revision validates; a summary without the new fields reads as an operator acceptance and no shipping check (owner business rule 2026-10-25)');
+$check(SourceInvoice::shipping(['state' => 'mismatch', 'code' => 'free_shipping_threshold_lost', 'current' => '0.00', 'expected' => null])['code'] === 'free_shipping_threshold_lost'
+    && SourceInvoice::shipping(['state' => 'unverifiable', 'code' => 'shipping_method_unsupported', 'current' => '19.99', 'expected' => null])['state'] === 'unverifiable'
+    && in_array('shipping_mismatch', SourceInvoice::CODES, true) && in_array('advance_decision_required', SourceInvoice::CODES, true), 'the shipping check states validate; the new refusal codes are known');
+$check(SourceInvoice::deadline(['state' => 'open', 'firstCollection' => '2026-10-24', 'deadline' => '2026-11-15', 'daysLeft' => -1, 'level' => 'overdue'])['level'] === 'overdue'
+    && SourceInvoice::cod(['state' => 'mismatch', 'awb' => '2345678', 'awbCod' => '750.00', 'expected' => '700.00', 'status' => 'AWB creat'])['state'] === 'mismatch', 'an overdue deadline and an AWB collecting the old amount validate (shown, never hidden)');
+foreach ([
+    'an IBAN with spaces' => static function (array &$s): void { $s['proforma']['transfer']['iban'] = 'RO49 AAAA 1B31 0075 9384 0000'; },
+    'an IBAN that is a link' => static function (array &$s): void { $s['proforma']['transfer']['iban'] = 'https://pay.example/RO49'; },
+    'a lower-case reference' => static function (array &$s): void { $s['proforma']['transfer']['reference'] = 'th777'; },
+    'a reference with words' => static function (array &$s): void { $s['proforma']['document']['reference'] = 'TH 777 PAY'; },
+    'an advance "settled"' => static function (array &$s): void { $s['proforma']['advance']['state'] = 'settled'; },
+    'verifying as text' => static function (array &$s): void { $s['proforma']['advance']['verifying'] = 'yes'; },
+    'a bank name with a control character' => static function (array &$s): void { $s['proforma']['transfer']['bank'] = "Banca\x07"; },
+] as $label => $change) {
+    $copy = $invoiceState;
+    $change($copy);
+    $throws(static fn () => SourceInvoice::summary($copy, '777', '777'), 'SOURCE_RESPONSE_INVALID', "a proforma with {$label} is refused");
+}
+$exception = ['id' => '00000000-0000-4000-9000-0000000000e1', 'amount' => '250.00', 'currency' => 'RON', 'reference' => 'OP EXC 1', 'valueDate' => '2026-10-24', 'reason' => 'unmatched', 'state' => 'open',
+    'submittedBy' => '00000000-0000-4000-8000-0000000000f1', 'submittedAt' => '2026-10-24T09:00:00Z', 'resolvedBy' => null, 'resolvedAt' => null, 'resolution' => null, 'order' => null];
+$listing = static fn (array $items): array => ['protocol' => 1, 'readAt' => '2026-10-24T09:00:00Z', 'available' => true, 'currency' => 'RON', 'exceptions' => $items];
+$check(SourceFinance::exceptions($listing([$exception]))['exceptions'][0]['state'] === 'open', 'an open unmatched transfer validates');
+$closed = ['state' => 'resolved', 'resolution' => 'recorded_on_order', 'resolvedBy' => '00000000-0000-4000-8000-0000000000f2', 'resolvedAt' => '2026-10-24T10:00:00Z', 'order' => ['id' => '777', 'number' => '777']] + $exception;
+$check(SourceFinance::exceptions($listing([$closed]))['exceptions'][0]['order'] === ['id' => '777', 'number' => '777'], 'a transfer closed on its order validates');
+foreach ([
+    'an open one with a resolution' => ['resolution' => 'returned_to_payer'] + $exception,
+    'a closed one without a resolution' => ['state' => 'resolved'] + $exception,
+    'recorded on no order' => ['order' => null] + $closed,
+    'an unknown reason' => ['reason' => 'gift'] + $exception,
+    'an amount as a number' => ['amount' => 250.0] + $exception,
+    'a reference with a quote' => ['reference' => "OP '1"] + $exception,
+] as $label => $item) {
+    $throws(static fn () => SourceFinance::exceptions($listing([$item])), 'SOURCE_RESPONSE_INVALID', "an exception {$label} is refused");
+}
+$throws(static fn () => SourceFinance::exceptionApplied(['protocol' => 1, 'applied' => true, 'action' => 'resolve_exception', 'entryId' => $exception['id'], 'listing' => $listing([$exception])], 'record_exception'), 'SOURCE_RESPONSE_INVALID', 'an answer for another exception action is refused');
+$financeWithProforma = $summary;
+$financeWithProforma['order']['cod'] = true;
+$financeWithProforma['advance'] = ['percentage' => 30, 'required' => '195.00', 'collected' => '0.00', 'outstanding' => '195.00', 'onDelivery' => '650.00', 'paymentReference' => 'TH123', 'proforma' => ['series' => 'PRF', 'number' => '0007', 'amount' => '195.00', 'currency' => 'RON', 'reference' => 'TH123']];
+$check(SourceFinance::summary($financeWithProforma, '123', '123')['advance']['paymentReference'] === 'TH123', 'the finance summary carries the payment reference and the proforma');
+$financeWithProforma['advance']['paymentReference'] = 'TH 123';
+$throws(static fn () => SourceFinance::summary($financeWithProforma, '123', '123'), 'SOURCE_RESPONSE_INVALID', 'a malformed payment reference is refused');
 $financeClient = new SourceAccessClient($financeShop, $clock);
 $financeTarget = new SourceAccessTarget('trendhome', 'read', 'https://trendhome.example', 'th-2026-a', $shopKey, 'record');
 $read = SourceFinance::summary($financeClient->call($financeTarget, SourceAccessClient::ROUTE_FINANCE, ['orderId' => '123', 'orderNumber' => '123', 'actor' => ['employeeId' => '00000000-0000-4000-8000-000000000001', 'role' => 'finance'], 'requestId' => 'req-fin-1']), '123', '123');

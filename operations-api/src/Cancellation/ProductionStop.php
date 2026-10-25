@@ -16,8 +16,10 @@ use PDO;
  * caller's transaction snapshot is older than the order lock. A stop committed first makes the command fail before
  * it writes anything; a command committed first is history, and the stop applies from the next command on.
  *
- * The guard does not replace any other gate (exceptions, documents, payment, piece gate). Read-only routes, the
- * document workflow, QR administration, physical custody records and the quality-case custody handovers stay
+ * The guard does not replace any other gate (exceptions, documents, payment, piece gate). Owner rule 1: it also refuses
+ * the Confirmare approval, the generation of a production ticket (R1 or a later revision, also from the shop's print
+ * panel) and every print or reprint of the ticket. Read-only routes (the document, its PDF and history), the revision
+ * request and decision, revoke, QR administration, physical custody records and the quality-case custody handovers stay
  * available; they never move production (see docs/order-cancellation-control.md, "Mutation inventory").
  */
 final class ProductionStop

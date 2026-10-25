@@ -37,7 +37,7 @@ const item = (overrides: Partial<ConfirmareItem> = {}): ConfirmareItem => ({
 const detail = (overrides: Partial<ConfirmareDetail> = {}): ConfirmareDetail => ({
   ...item(), review: { fingerprint: FP, lineIds: ["11", "12"], pricingAvailable: true, callRecorded: true, contactAvailable: true }, lines: [], contacts: [],
   customer: { visible: false, phoneAvailable: false }, source: { commerceStatusLabel: "Processing", changedAt: null, lastSeenAt: null, freshness: "fresh" },
-  production: { cleared: false, missing: ["approval"] }, events: [], sourceAccess: { configured: false, read: false, edit: false, changePending: false, openEdits: [] }, finance: { configured: false, read: false, record: false, approve: false }, handoff: null, ...overrides,
+  production: { cleared: false, missing: ["approval"] }, events: [], sourceAccess: { configured: false, read: false, edit: false, changePending: false, openEdits: [] }, invoice: { configured: false, read: false, issue: false, manage: false, proforma: false, route: false }, finance: { configured: false, read: false, record: false, approve: false }, handoff: null, ...overrides,
 });
 const contact = (outcome: "confirmed" | "no_answer" | "callback" | "needs_correction", current = true) => ({ outcome, at: "2026-10-22T09:00:00.000000Z", attempts: 1, current });
 

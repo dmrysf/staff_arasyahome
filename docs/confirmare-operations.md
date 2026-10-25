@@ -10,7 +10,7 @@ Confirmare and closes their production start. Phase 2 adds the server side of th
 - the audit trail.
 
 There is still no screen: Staff and Dashboard are unchanged. **No source can be activated with this release**:
-`ConfirmationGate::WORKFLOW_READY` stays `false`. In production no order reaches these routes until a later,
+`ConfirmationGate::WORKFLOW_READY` stayed `false` (until API 2.45.0; since then a source is activated only when its own readiness passes, see confirmare-cohort.md). In production no order reaches these routes until a later,
 separately approved release switches it on.
 
 ## Who may confirm (scopes)
@@ -255,7 +255,7 @@ There is no customer data and no free text in the events or in the stored idempo
 ## Not in this release
 
 - Any screen (Staff, Dashboard).
-- Switching on `WORKFLOW_READY`.
+- Switching on `WORKFLOW_READY` (done in API 2.45.0 together with the per-source readiness, see confirmare-cohort.md).
 - Resolving undetermined orders.
 - Revoking a cleared approval.
 - Notifications.

@@ -176,7 +176,7 @@ if ($now < $cutover->modify('+10 minutes')) {
     fwrite(STDOUT, "SKIP MySQL Confirmare handoff integration: needs a clock after the Confirmare cutover.\n");
     exit(0);
 }
-$check(ConfirmationGate::WORKFLOW_READY === false, 'Phase 6 keeps WORKFLOW_READY false');
+$check(T::activationNeedsReadiness($pdo, $registry->find('trendhome')), 'API 2.45.0: activation needs the source readiness (Phase 6)');
 $activatedAt = max($cutover->modify('+1 second'), $now->modify('-2 hours'));
 foreach (['trendhome', 'outletperdele'] as $src) {
     (new WorkflowCohortActivation($pdo, new MutableClock($activatedAt->modify('-20 minutes'))))->schedule($registry->find($src), $activatedAt, 'Test Owner', 'handoff test', 'ho-test', true);
@@ -426,6 +426,20 @@ $check(!$phone($dump), 'the handoff state, the document events, prints and audit
 $log = (string) file_get_contents($logFile);
 $check(!$phone($log), 'the server log holds no telephone number');
 @unlink($logFile);
+
+// ---- Owner rule 1: an order whose production is stopped is never approved; the call record stays possible ------------
+$ok(T::ingest($kernel, 'trendhome', $payload($id(70), 130)), 'rule 1: a Confirmare order');
+$ok(T::ingest($kernel, 'trendhome', $payload($id(70), 130, ['status' => 'cancelled', 'availability' => 'cancelled'])), 'rule 1: the shop cancels it');
+$ok(T::ingest($kernel, 'trendhome', $payload($id(70), 130)), 'rule 1: the shop reactivates it');
+$check((string) $one('SELECT cancellation_state FROM operational_orders WHERE global_order_id = ?', [$th(70)]) === 'held', 'rule 1: production stays stopped until a release');
+$service->distribute();
+$review70 = $detail($shopTh, $th(70))['review'];
+$ok($act($shopTh, $th(70), 'contact', ['expectedVersion' => $version($th(70)), 'outcome' => 'confirmed', 'reviewFingerprint' => $review70['fingerprint']]), 'rule 1: the call is recorded while stopped');
+$status70 = (string) $one('SELECT status FROM order_confirmations WHERE global_order_id = ?', [$th(70)]);
+$error($act($shopTh, $th(70), 'approve', ['expectedVersion' => $version($th(70)), 'customerCall' => 'confirmed', 'confirmedLineIds' => $review70['lineIds'], 'priceVerified' => true, 'reviewFingerprint' => $review70['fingerprint']]),
+    409, 'ORDER_PRODUCTION_STOPPED', 'rule 1: the approval is refused while production is stopped');
+$check((string) $one('SELECT status FROM order_confirmations WHERE global_order_id = ?', [$th(70)]) === $status70 && $revisions($th(70)) === 0, 'rule 1: the refused approval changed nothing and created no document');
+$check($detail($shopTh, $th(70))['review']['fingerprint'] === $review70['fingerprint'], 'rule 1: the order stays readable');
 
 // Leave the shared disposable database as the next suites expect it: no Confirmare or finance state.
 foreach (['order_finance_actions', 'order_finance_reads', 'employee_finance_scopes', 'order_confirmation_source_edits', 'order_confirmation_source_reads', 'order_confirmation_contacts', 'order_confirmation_idempotency', 'confirmare_alerts', 'order_confirmation_events', 'order_confirmations', 'workflow_cohort_activations', 'employee_confirmare_scopes', 'confirmare_operator_state'] as $table) {

@@ -181,8 +181,8 @@ $prepare = $activatedAt->modify('-20 minutes');
 $sched = static fn (DateTimeImmutable $clock, string $src, DateTimeImmutable $at, bool $ready = true): array => $activation($clock)->schedule($registry->find($src), $at, 'Test Owner', null, 'cf-test', $ready);
 $commit = static fn (DateTimeImmutable $clock, string $src, bool $ready = true): array => $activation($clock)->activate($registry->find($src), 'Test Owner', 'Phase 1 integration', 'cf-test', $ready);
 $armed = static fn (string $src, DateTimeImmutable $at): array => T::ingest($kernel, $src, ['sentAt' => gmdate('Y-m-d\TH:i:s\Z'), 'confirmareArmedAt' => $iso($at)], null, null, 'heartbeat');
-$apiError(fn () => $sched($prepare, 'trendhome', $activatedAt, false), 'CONFIRMARE_WORKFLOW_NOT_READY', 'Phase 1: the Confirmare workflow is not ready, so no source can be scheduled');
-$apiError(fn () => $commit($prepare, 'trendhome', false), 'CONFIRMARE_WORKFLOW_NOT_READY', 'nor activated');
+$apiError(fn () => $sched($prepare, 'trendhome', $activatedAt, false), 'CONFIRMARE_NOT_READY', 'API 2.45.0: without the source readiness no source can be scheduled');
+$apiError(fn () => $commit($prepare, 'trendhome', false), 'CONFIRMARE_NOT_READY', 'nor activated');
 $apiError(fn () => $sched($prepare, 'outletperdele', $activatedAt), 'CONFIRMARE_NOT_PERMITTED', 'a source without ARASYA_SOURCE_CONFIRMARE=on cannot be scheduled');
 // API 2.38.0: nobody may confirm the source's orders yet, so an activation would stop them all.
 $apiError(fn () => $sched($prepare, 'trendhome', $activatedAt), 'CONFIRMARE_NO_OPERATOR', 'no activation before somebody can confirm the source\'s orders');
@@ -297,7 +297,8 @@ $ok($send('trendhome', $payload($id(32), 'processing', $submitted($now->modify('
 $check($order("trendhome:{$id(32)}")['workflow_cohort_reason'] === 'submission_evidence_future', 'a source clock far ahead is not trusted');
 $ok($send('trendhome', $payload($id(33), 'processing', $submitted($at(30), 'predates_recorder'), $online)), 'a creation instant after the activation');
 $check($order("trendhome:{$id(33)}")['workflow_cohort_reason'] === 'submission_evidence_inconsistent', 'a creation-time stand-in after the activation is inconsistent');
-$ok($send('trendhome', $payload($id(34), 'processing', $submitted($activatedAt->modify('-3 days'), 'predates_recorder'), $online)), 'an old order first ingested after the activation');
+// Before the business date itself (not "3 days before the activation": that moved past the fixed date on 2026-10-24 21:00Z).
+$ok($send('trendhome', $payload($id(34), 'processing', $submitted($cutover->modify('-1 day'), 'predates_recorder'), $online)), 'an old order first ingested after the activation');
 $check($order("trendhome:{$id(34)}")['workflow_cohort'] === 'legacy' && $ok($intake("trendhome:{$id(34)}"), 'old order intake')['outcome'] === 'started', 'an order submitted before the activation and paid later stays legacy and keeps its flow');
 $error($send('trendhome', $payload($id(35), 'pending', $submitted($activatedAt->modify('-1 hour')), $cod('waiting'))), 409, 'SOURCE_INTAKE_NOT_ELIGIBLE', 'an older unpaid order is never pulled into Confirmare');
 
@@ -384,7 +385,7 @@ $error($intake("trendhome:{$id(60)}"), 409, 'CONFIRMARE_NECESARA', 'a suspension
 $error($intake("trendhome:{$id(70)}"), 409, 'CONFIRMARE_NECESARA', 'nor a held one');
 $check((int) $one('SELECT COUNT(*) FROM workflow_cohort_activations WHERE source_key = ?', ['trendhome']) === 5, 'the history is append-only (scheduled, cancelled, scheduled, activated, suspended)');
 $reactivatedAt = $at($window * 0.75);
-$apiError(fn () => $activation($reactivatedAt)->resume($registry->find('trendhome'), 'Test Owner', 'reactivated', 'cf-test', false), 'CONFIRMARE_WORKFLOW_NOT_READY', 'Phase 1 cannot resume either');
+$apiError(fn () => $activation($reactivatedAt)->resume($registry->find('trendhome'), 'Test Owner', 'reactivated', 'cf-test', false), 'CONFIRMARE_NOT_READY', 'nor resumed');
 $activation($reactivatedAt)->resume($registry->find('trendhome'), 'Test Owner', 'reactivated', 'cf-test', true);
 $check($heartbeat('trendhome')['confirmare'] === ['state' => 'active', 'activatedAt' => $iso($activatedAt)], 'after the resumption the first activation instant still protects');
 $ok($send('trendhome', $payload($id(72), 'processing', $submitted($reactivatedAt->modify('-10 seconds')), $online)), 'order between suspension and resumption');
@@ -473,7 +474,7 @@ $beforeDiagnosis = $checksum();
 $diagnosis = (new WorkflowCohortActivation($pdo, $container->clock()))->diagnose('trendhome', $registry->find('trendhome'));
 $check($checksum() === $beforeDiagnosis, 'the diagnosis writes nothing');
 $listed = static fn (array $entries): array => array_column($entries, 'globalOrderId');
-$check($diagnosis['state'] === 'active' && $diagnosis['activatedAt'] === $iso($activatedAt) && count($diagnosis['history']) === 6 && ($diagnosis['sourceArming']['armedAt'] ?? null) === $iso($activatedAt) && $diagnosis['workflowReady'] === false, 'state and history: ' . json_encode(array_intersect_key($diagnosis, array_flip(['state', 'activatedAt', 'history']))));
+$check($diagnosis['state'] === 'active' && $diagnosis['activatedAt'] === $iso($activatedAt) && count($diagnosis['history']) === 6 && ($diagnosis['sourceArming']['armedAt'] ?? null) === $iso($activatedAt) && $diagnosis['workflowReady'] === true && array_key_exists('readiness', $diagnosis), 'state and history: ' . json_encode(array_intersect_key($diagnosis, array_flip(['state', 'activatedAt', 'history']))));
 $check(in_array("trendhome:{$id(73)}", $listed($diagnosis['conflicts']), true), 'a Confirmare order with production history is a conflict for an operator');
 $check(in_array("trendhome:{$id(30)}", $listed($diagnosis['undetermined']), true) && in_array("trendhome:{$id(32)}", $listed($diagnosis['undetermined']), true), 'undetermined orders are listed');
 $check(in_array("trendhome:{$id(10)}", $listed($diagnosis['transitionWindow']['withProductionHistory']), true) && !in_array("trendhome:{$id(34)}", array_merge($listed($diagnosis['transitionWindow']['withProductionHistory']), $listed($diagnosis['transitionWindow']['withoutProductionHistory'])), true), 'a legacy order submitted after the business date and already in production is reported; one submitted before it is not');
@@ -500,9 +501,9 @@ $cli = static function (string $script, string ...$arguments) use ($cliEnvironme
 };
 $activationsBefore = (int) $one('SELECT COUNT(*) FROM workflow_cohort_activations');
 $refusedCli = $cli('workflow-cohort.php', '--source=trendhome', '--activate', '--actor=Test Owner');
-$check($refusedCli['code'] === 3 && str_contains($refusedCli['err'], 'CONFIRMARE_WORKFLOW_NOT_READY') && (int) $one('SELECT COUNT(*) FROM workflow_cohort_activations') === $activationsBefore, 'the operator CLI refuses every activation in Phase 1: ' . $refusedCli['err']);
+$check($refusedCli['code'] === 3 && str_contains($refusedCli['err'], 'CONFIRMARE_NOT_READY') && (int) $one('SELECT COUNT(*) FROM workflow_cohort_activations') === $activationsBefore, 'the operator CLI refuses the activation while the source readiness fails: ' . $refusedCli['err']);
 $scheduleCli = $cli('workflow-cohort.php', '--source=trendhome', '--schedule', '--at=2099-01-01T00:00:00Z', '--actor=Test Owner');
-$check($scheduleCli['code'] === 3 && str_contains($scheduleCli['err'], 'CONFIRMARE_WORKFLOW_NOT_READY'), 'the operator CLI refuses every schedule in this release: ' . $scheduleCli['err']);
+$check($scheduleCli['code'] === 3 && str_contains($scheduleCli['err'], 'CONFIRMARE_NOT_READY'), 'the operator CLI refuses a schedule while the source readiness fails: ' . $scheduleCli['err']);
 $check($cli('workflow-cohort.php', '--source=trendhome', '--schedule', '--at=tomorrow', '--actor=Test Owner')['code'] === 3, 'a schedule needs a strict UTC instant');
 $statusCli = $cli('workflow-cohort.php', '--source=trendhome', '--status');
 $check($statusCli['code'] === 0 && ($statusCli['json']['state'] ?? null) === 'active' && ($statusCli['json']['permitted'] ?? null) === true && !isset($statusCli['json']['conflicts']), 'the status is read-only JSON: ' . $statusCli['out']);

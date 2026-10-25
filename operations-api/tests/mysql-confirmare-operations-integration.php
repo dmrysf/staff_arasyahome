@@ -182,8 +182,8 @@ $activatedAt = max($cutover->modify('+1 second'), $now->modify('-2 hours'));
 $after = static fn (int $seconds): DateTimeImmutable => $activatedAt->modify("+{$seconds} seconds");
 
 // ---- 1. Default deny; scopes are root-only, audited and never derived from a name ---------------------------------
-$check(ConfirmationGate::WORKFLOW_READY === false, 'Phase 2 keeps WORKFLOW_READY false');
-$apiError(fn () => $activation($activatedAt)->activate($registry->find('trendhome'), 'Test Owner', null, 'co-test'), 'CONFIRMARE_WORKFLOW_NOT_READY', 'no source can be activated in this release');
+$check(T::activationNeedsReadiness($pdo, $registry->find('trendhome')), 'API 2.45.0: activation needs the source readiness (Phase 2)');
+$apiError(fn () => $activation($activatedAt)->activate($registry->find('trendhome'), 'Test Owner', null, 'co-test'), 'CONFIRMARE_NOT_READY', 'no source can be activated without its readiness');
 $apiError(fn () => $activation($activatedAt)->activate($registry->find('trendhome'), 'Test Owner', null, 'co-test', true), 'CONFIRMARE_NO_OPERATOR', 'not before somebody can confirm');
 $error($pool($opA), 403, 'CONFIRMARE_SCOPE_DENIED', 'no scope: no pool');
 $error($call($opA, 'POST', '/confirmare/next', ['source' => null]), 403, 'CONFIRMARE_SCOPE_DENIED', 'no scope: nothing to take');
@@ -201,7 +201,7 @@ $ok($asRoot('PUT', "/management/employees/{$uuids['coopc']}/confirmare-scopes", 
 $ok($asRoot('PUT', "/management/employees/{$uuids['cosup']}/confirmare-scopes", ['operate' => [], 'supervise' => ['outletperdele', 'trendhome']]), 'grant supervisor');
 $check((int) $one('SELECT COUNT(*) FROM employee_confirmare_scopes') === 5, 'exactly the granted scopes exist');
 
-// ---- 2. Activation (test override of WORKFLOW_READY) and intake ----------------------------------------------------
+// ---- 2. Activation (test override of the source readiness) and intake ----------------------------------------------------
 // Two-phase first activation (Phase 1 rule): schedule, the source reports its armed fence, commit before the instant.
 $activateTwoPhase = static function (string $src) use ($activation, $activatedAt, $registry, $kernel, $iso): void {
     $activation($activatedAt->modify('-20 minutes'))->schedule($registry->find($src), $activatedAt, 'Test Owner', 'operations test', 'co-test', true);
@@ -613,7 +613,7 @@ $check(str_contains($readiness['out'] . $readiness['err'], 'confirmare_trendhome
 $refused = $cli('workflow-cohort.php', '--source=trendhome', '--suspend', '--actor=Test Owner', '--reason=reset');
 $check($refused['code'] === 0, 'suspend works');
 $activate = $cli('workflow-cohort.php', '--source=trendhome', '--activate', '--actor=Test Owner');
-$check($activate['code'] === 3 && str_contains($activate['err'], 'CONFIRMARE_WORKFLOW_NOT_READY'), 'the operator CLI still refuses every activation: ' . $activate['err']);
+$check($activate['code'] === 3 && str_contains($activate['err'], 'CONFIRMARE_NOT_READY'), 'the operator CLI refuses the activation while the source readiness fails: ' . $activate['err']);
 
 // ---- 10. Resumable migration and teardown ---------------------------------------------------------------------------
 (new SqlFileRunner($pdo))->run(dirname(__DIR__) . '/database/migrations/036_confirmare_operations.sql');

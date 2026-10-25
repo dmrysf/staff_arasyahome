@@ -63,7 +63,7 @@ export const roErrors = {
   "error.ORDER_UNAVAILABLE.title": "Comanda nu este disponibilă",
   "error.ORDER_UNAVAILABLE.message": "Comanda a fost anulată sau nu mai poate fi procesată.",
   "error.ORDER_PRODUCTION_STOPPED.title": "Producția este oprită",
-  "error.ORDER_PRODUCTION_STOPPED.message": "Producția acestei comenzi este oprită. Nu poți continua producția acestei comenzi.",
+  "error.ORDER_PRODUCTION_STOPPED.message": "Producția acestei comenzi este oprită. Nu poți continua producția acestei comenzi. Nici documentele de producție nu se pot genera sau tipări. Doar conducerea poate relua producția.",
   "error.ORDER_PRODUCTS_UNAVAILABLE.title": "Produse indisponibile",
   "error.ORDER_PRODUCTS_UNAVAILABLE.message": "Comanda nu conține produse disponibile pentru producție.",
   "error.ORDER_CHANGED.title": "Comanda s-a modificat",

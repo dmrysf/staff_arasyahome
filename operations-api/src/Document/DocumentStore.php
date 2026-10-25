@@ -87,7 +87,7 @@ final readonly class DocumentStore
     {
         $statement = $this->pdo->prepare(
             'SELECT order_uuid, global_order_id, order_number, source_key, production_authority, production_stage_id, production_owner_employee_uuid, production_completed_at, operational_status,
-                    document_status, document_version, active_document_revision_uuid, payment_method, advance_status, workflow_cohort
+                    document_status, document_version, active_document_revision_uuid, payment_method, advance_status, workflow_cohort, production_stopped_at
              FROM operational_orders WHERE global_order_id = ? FOR UPDATE',
         );
         $statement->execute([$globalId]);

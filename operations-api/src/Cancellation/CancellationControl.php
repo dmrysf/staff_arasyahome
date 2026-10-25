@@ -208,7 +208,9 @@ final readonly class CancellationControl
             $control['physical_outcome'] === 'left_factory' => 'left_factory',
             $order['operational_status'] === 'unavailable' || $control['source_status'] === 'cancelled' => 'source_cancelled',
             $control['physical_status'] === 'pending' => 'physical_unverified',
-            \Arasya\Operations\Document\DocumentGuard::isBlocked((string) $order['document_status']) => 'document_not_ready',
+            // Owner rule 1: no revision is generated while production is stopped, so a stale or revoked document no longer
+            // blocks the release (it would never be released). The document gate keeps refusing every production action
+            // until the approved revision is generated after the release; `remaining.documentBlocked` tells the person.
             default => null,
         };
     }
@@ -232,6 +234,7 @@ final readonly class CancellationControl
         $remaining = [
             'openException' => $order['open_exception_uuid'] !== null,
             'activeTracks' => (int) $this->scalar("SELECT COUNT(*) FROM production_tracks WHERE order_uuid = ? AND status = 'active'", [$orderUuid]),
+            'documentBlocked' => \Arasya\Operations\Document\DocumentGuard::isBlocked((string) $order['document_status']),
         ];
         $lift = $this->pdo->prepare("UPDATE operational_orders SET cancellation_state = 'released', production_stopped_at = NULL, production_version = production_version + 1, version = version + 1, updated_at = ?
             WHERE order_uuid = ? AND cancellation_state = 'held'");

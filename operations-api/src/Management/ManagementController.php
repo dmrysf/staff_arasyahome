@@ -174,7 +174,7 @@ final readonly class ManagementController
         if ($method === 'POST' && $path === '/employees') {
             return Response::json($this->management->createEmployee($actor, $this->body($request, self::EMPLOYEE_CREATE_FIELDS, ['displayName', 'username', 'departmentId']), $id), 201);
         }
-        if (preg_match('#^/employees/([0-9a-f-]{36})(?:/(activate|deactivate|password-reset|applications|roles|stages|stage-scopes|manager|secondary-departments|document-scopes|confirmare-scopes|finance-scopes|staff-locale))?$#D', $path, $m) === 1) {
+        if (preg_match('#^/employees/([0-9a-f-]{36})(?:/(activate|deactivate|password-reset|applications|roles|stages|stage-scopes|manager|secondary-departments|document-scopes|confirmare-scopes|finance-scopes|invoice-scopes|staff-locale))?$#D', $path, $m) === 1) {
             $employeeId = $m[1];
             $action = $m[2] ?? '';
             return Response::json(match (true) {
@@ -190,6 +190,7 @@ final readonly class ManagementController
                 $method === 'PUT' && $action === 'document-scopes' => $this->management->setDocumentScopes($actor, $employeeId, $this->body($request, ['operate', 'approve'], ['operate', 'approve']), $id),
                 $method === 'PUT' && $action === 'confirmare-scopes' => $this->management->setConfirmareScopes($actor, $employeeId, $this->body($request, ['operate', 'supervise'], ['operate', 'supervise']), $id),
                 $method === 'PUT' && $action === 'finance-scopes' => $this->management->setFinanceScopes($actor, $employeeId, $this->body($request, ['view', 'record', 'approve'], ['view', 'record', 'approve']), $id),
+                $method === 'PUT' && $action === 'invoice-scopes' => $this->management->setInvoiceScopes($actor, $employeeId, $this->body($request, ['issue', 'manage'], ['issue', 'manage']), $id),
                 $method === 'PUT' && $action === 'staff-locale' => $this->management->setStaffLocale($actor, $employeeId, $this->body($request, ['locale'], ['locale'])['locale'], $id),
                 $method === 'PUT' && $action === 'manager' => $this->management->setManager($actor, $employeeId, $this->body($request, ['managerId'], ['managerId'])['managerId'], $id),
                 default => throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.'),

@@ -5,9 +5,11 @@ import { documentStatusLabels } from "../../domain/documents";
 import { AppIcon } from "../../components/icons/AppIcon";
 import { getErrorPresentation, toServiceError } from "../../services/errors";
 import { DocumentPanel } from "./DocumentPanel";
+import type { ConfirmareInvoiceApi } from "../../domain/confirmareInvoice";
+import { ConfirmareInvoicePanel } from "../confirmare/ConfirmareInvoicePanel";
 
 /** Document workflow of one order for channel employees (they need no production stage to use it). */
-export function DocumentScreen({ orderId, service, permissions, navigate }: { orderId: string; service: DocumentApi; permissions: readonly string[]; navigate: (path: string) => void }) {
+export function DocumentScreen({ orderId, service, permissions, navigate, invoices }: { orderId: string; service: DocumentApi; permissions: readonly string[]; navigate: (path: string) => void; invoices?: ConfirmareInvoiceApi }) {
   const { t } = useI18n();
   const [, setChanged] = useState(0);
   const [number, setNumber] = useState<string | null>(null);
@@ -16,7 +18,11 @@ export function DocumentScreen({ orderId, service, permissions, navigate }: { or
       <button className="back-link" type="button" onClick={() => navigate("/")}><AppIcon name="back" size={20} /> {t("common.home")}</button>
       <header className="document-screen-hero"><p className="eyebrow">{t("doc.eyebrow")}</p><h1>{t("common.orderWord")} <span className="order-id">{number === null ? "…" : `#${number.replace(/^#/, "")}`}</span></h1></header>
       <div className="document-layout">
-        <DocumentPanel orderId={orderId} service={service} permissions={permissions} onChanged={() => setChanged((value) => value + 1)} onLoaded={(document) => setNumber(document.order.number)} />
+        <div className="screen-stack">
+          <DocumentPanel orderId={orderId} service={service} permissions={permissions} onChanged={() => setChanged((value) => value + 1)} onLoaded={(document) => setNumber(document.order.number)} />
+          {/* SmartBill (API 2.43.0): shown only for a Confirmare order this employee may see; the same state as on the order detail. */}
+          {invoices && <ConfirmareInvoicePanel globalOrderId={orderId} service={invoices} />}
+        </div>
         <aside className="document-guide" aria-labelledby="document-guide-title">
           <h2 id="document-guide-title">{t("doc.guide.title")}</h2>
           <ol>

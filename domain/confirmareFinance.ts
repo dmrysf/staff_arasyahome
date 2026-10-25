@@ -1,4 +1,5 @@
 import { t, type MessageKey } from "../i18n";
+import type { CodCheck, InvoiceDeadline, MoneyPosition } from "./confirmareInvoice";
 import type { Employee } from "./models";
 
 /**
@@ -18,15 +19,21 @@ export const FINANCE_ACTIONS = ["submit_transfer", "decide_transfer", "acknowled
 export type FinanceAction = (typeof FINANCE_ACTIONS)[number];
 export const FINANCE_NEXT = ["reconcile_action", "reconcile_source", "source_unknown", "verify_transfer", "collect_additional_payment", "acknowledge_refund", "verify_refund", "refund_after_production", "record_refund", "collect_advance", "wait_online_payment", "none"] as const;
 export type FinanceNext = (typeof FINANCE_NEXT)[number];
-export const FINANCE_TASKS = ["reconciliation_required", "source_unavailable", "refund_processing", "transfer_verification", "refund_eligible", "refund_liability", "additional_payment", "advance_partial", "advance_waiting", "advance_verified"] as const;
+export const FINANCE_TASKS = ["reconciliation_required", "source_unavailable", "refund_processing", "transfer_verification", "refund_eligible", "refund_liability", "additional_payment", "advance_partial", "advance_waiting", "advance_verified", "advance_routed"] as const;
 export type FinanceTask = (typeof FINANCE_TASKS)[number];
 export const TRANSFER_REJECT_REASONS = ["not_received", "amount_mismatch", "wrong_order", "duplicate", "other"] as const;
 export type TransferRejectReason = (typeof TRANSFER_REJECT_REASONS)[number];
+/** API 2.45.0: how the money came (cash needs its fiscal receipt or chitanță number and who collected it). */
+export const PAYMENT_METHODS = ["bank_transfer", "cash_office", "cash_courier"] as const;
+export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
+export const CASH_RECEIPTS = ["bon_fiscal", "chitanta"] as const;
+export type CashReceipt = (typeof CASH_RECEIPTS)[number];
 
 export type FinanceEntry = {
   id: string; kind: "transfer_in" | "refund_out" | "liability_ack"; purpose: "advance" | "additional_payment" | "refund" | "liability";
   amount: string; reference: string; valueDate: string | null; state: "submitted" | "verified" | "rejected";
   submittedBy: string; submittedAt: string; decidedBy: string | null; decidedAt: string | null; decisionCode: string | null;
+  method: PaymentMethod; receipt: CashReceipt | null; collector: string | null; flags: ("overpayment" | "cancelled_proforma")[];
 };
 export type FinanceSummary = {
   readAt: string; revision: string; currency: string;
@@ -34,11 +41,21 @@ export type FinanceSummary = {
   totals: { current: string | null; original: string | null; refunded: string | null };
   received: { online: string | null; advance: string | null; transfers: string | null; net: string | null };
   payment: { onlineVerified: boolean; paidRecorded: boolean; evidence: "netopia_ipn" | "gateway" | "none" };
-  advance: { percentage: number; required: string | null; collected: string | null; outstanding: string | null; onDelivery: string | null } | null;
+  /** YD SOFT 2.18.0: the payment reference the customer writes in the transfer and the advance proforma, to find the order on the statement. */
+  advance: {
+    percentage: number; required: string | null; collected: string | null; outstanding: string | null; onDelivery: string | null;
+    paymentReference: string | null; proforma: { series: string; number: string; amount: string | null; currency: string | null; reference: string | null } | null;
+    /** API 2.45.0: the operator accepted a smaller verified advance; the last proforma was cancelled in SmartBill. */
+    accepted: boolean; proformaCancelled: boolean;
+  } | null;
   balance: { outstanding: string | null; refundLiability: string; acknowledged: boolean };
   financial: { state: "cleared" | "waiting" | "partial" | "unknown"; basis: string | null; attention: string | null };
   entries: FinanceEntry[];
   capabilities: { record: boolean; refunds: "off" | "manual"; electronicRefund: false };
+  /** API 2.45.0 (null from an older shop): the one money calculation, the invoicing deadline, the AWB's collection. */
+  position: MoneyPosition | null;
+  deadline: InvoiceDeadline | null;
+  cod: CodCheck | null;
 };
 export type FinanceTimelineItem = {
   employeeId: string; action: FinanceAction; decision: "verify" | "reject" | null; reasonCode: string | null; purpose: string | null; entryId: string | null;
@@ -61,18 +78,45 @@ export type FinanceOutcome =
 export type FinanceQueueItem = {
   globalOrderId: string; source: string; orderNumber: string; task: FinanceTask;
   financial: { state: string | null; basis: string | null; attention: string | null }; paymentMethod: string | null; stageId: string; confirmation: string; dueDate: string | null; sourceChangedAt: string | null;
+  /** A bank transfer recorded by one finance employee waits for the second: not money received yet. */
+  verifying: boolean;
 };
 export type FinanceQueue = { tasks: Record<FinanceTask, number>; orders: FinanceQueueItem[]; sources: string[] };
 
-export type TransferInput = { expectedRevision: string; purpose: "advance" | "additional_payment"; amount: string; reference: string; valueDate: string };
+export type TransferInput = {
+  expectedRevision: string; purpose: "advance" | "additional_payment"; amount: string; reference: string; valueDate: string;
+  method?: PaymentMethod; receipt?: CashReceipt; collector?: string; overpaymentConfirmed?: true; cancelledProforma?: "apply_to_order";
+};
 export type DecisionInput = { expectedRevision: string; entryId: string; decision: "verify" | "reject"; reasonCode?: TransferRejectReason };
 export type RefundInput = { expectedRevision: string; amount: string; reference: string; valueDate: string };
+
+/**
+ * The shop's bank transfers that match no order (API 2.44.0, YD SOFT 2.18.0): kept in the shop's finance record until
+ * ANOTHER finance employee closes it. Never money of an order; amounts are read from the shop when shown, never kept.
+ */
+export const EXCEPTION_REASONS = ["unmatched", "over_payment", "duplicate", "amount_mismatch", "other"] as const;
+export type ExceptionReason = (typeof EXCEPTION_REASONS)[number];
+export const EXCEPTION_RESOLUTIONS = ["recorded_on_order", "returned_to_payer", "not_customer_payment"] as const;
+export type ExceptionResolution = (typeof EXCEPTION_RESOLUTIONS)[number];
+export type TransferException = {
+  id: string; amount: string; currency: string; reference: string; valueDate: string | null; reason: ExceptionReason; state: "open" | "resolved";
+  submittedBy: string; submittedAt: string | null; resolvedBy: string | null; resolvedAt: string | null; resolution: ExceptionResolution | null;
+  order: { id: string; number: string | null } | null;
+};
+export type TransferExceptionList =
+  | { source: string; available: true; currency: string | null; exceptions: TransferException[]; capabilities: { record: boolean; approve: boolean } }
+  | { source: string; available: false; reason: string; exceptions: []; capabilities: { record: boolean; approve: boolean } };
+export type ExceptionRecordInput = { amount: string; currency: string; reference: string; valueDate: string; reason: ExceptionReason };
+export type ExceptionResolveInput = { entryId: string; resolution: ExceptionResolution; orderNumber?: string };
+export type ExceptionOutcome = ({ state: "applied"; entryId: string } & Extract<TransferExceptionList, { available: true }>) | { state: "unknown"; idempotencyKey: string };
 
 export interface ConfirmareFinanceApi {
   financeRead(globalOrderId: string, signal?: AbortSignal): Promise<FinanceRead>;
   financeAct(globalOrderId: string, action: FinanceAction, input: TransferInput | DecisionInput | RefundInput | { expectedRevision: string }, idempotencyKey: string): Promise<FinanceOutcome>;
   financeReconcile(globalOrderId: string, idempotencyKey: string): Promise<FinanceOutcome>;
   financeQueue(task: FinanceTask | null, source: string | null, signal?: AbortSignal): Promise<FinanceQueue>;
+  transferExceptions(source: string | null, signal?: AbortSignal): Promise<TransferExceptionList>;
+  transferExceptionAct(source: string, action: "record" | "resolve", input: ExceptionRecordInput | ExceptionResolveInput, idempotencyKey: string): Promise<ExceptionOutcome>;
 }
 
 /** Finance figures are hidden again after this long without a new read (money on a shared screen). */
@@ -136,6 +180,8 @@ export const attentionLabel = (attention: string): string => (["additional_payme
 export const entryLabel = (entry: Pick<FinanceEntry, "kind" | "purpose">): string => t(`cf.fin.entry.${entry.kind === "transfer_in" ? entry.purpose : entry.kind}` as MessageKey);
 export const entryStateLabel = (state: FinanceEntry["state"]): string => t(`cf.fin.entryState.${state}` as MessageKey);
 export const actionLabel = (action: FinanceAction): string => t(`cf.fin.action.${action}` as MessageKey);
+export const exceptionReasonLabel = (reason: ExceptionReason): string => t(`cf.fin.exc.reason.${reason}` as MessageKey);
+export const exceptionResolutionLabel = (resolution: ExceptionResolution): string => t(`cf.fin.exc.resolution.${resolution}` as MessageKey);
 export const rejectReasonLabel = (reason: string): string => ((TRANSFER_REJECT_REASONS as readonly string[]).includes(reason) ? t(`cf.fin.reject.${reason}` as MessageKey) : reason);
 
 export const nextTone: Readonly<Record<FinanceNext, "neutral" | "success" | "warning" | "danger" | "info">> = {
@@ -144,7 +190,7 @@ export const nextTone: Readonly<Record<FinanceNext, "neutral" | "success" | "war
 };
 
 /** The shop refusal behind a finance error, in the employee's words (an unknown code reads as a generic refusal). */
-const REFUSALS = ["revision_changed", "duplicate_reference", "amount_exceeds_balance", "amount_exceeds_liability", "transfer_pending", "refund_pending", "same_employee", "entry_not_pending", "purpose_not_allowed", "advance_not_required", "payment_not_verified", "nothing_due", "reference_invalid", "value_date_invalid", "no_liability", "already_acknowledged", "liability_not_acknowledged", "refund_exceeds_order", "refund_disabled", "production_not_complete", "financial_unknown", "finance_record_disabled", "not_received", "order_busy"] as const;
+const REFUSALS = ["cash_document_required", "proforma_cancelled", "transfer_not_recorded", "revision_changed", "duplicate_reference", "amount_exceeds_balance", "amount_exceeds_liability", "transfer_pending", "refund_pending", "same_employee", "entry_not_pending", "purpose_not_allowed", "advance_not_required", "payment_not_verified", "nothing_due", "reference_invalid", "value_date_invalid", "no_liability", "already_acknowledged", "liability_not_acknowledged", "refund_exceeds_order", "refund_disabled", "production_not_complete", "financial_unknown", "finance_record_disabled", "not_received", "order_busy", "finance_open", "order_cancelled"] as const;
 export function refusalLabel(reason: string | undefined): string {
   return t(`cf.fin.refusal.${reason && (REFUSALS as readonly string[]).includes(reason) ? reason : "other"}` as MessageKey);
 }

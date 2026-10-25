@@ -34,6 +34,8 @@ export type Employee = {
   confirmareScopes?: Readonly<{ operate: readonly string[]; supervise: readonly string[] }>;
   /** Confirmare finance scopes (API 2.41.0): explicit per person, independent of the Confirmare scopes. */
   financeScopes?: Readonly<{ view: readonly string[]; record: readonly string[]; approve: readonly string[] }>;
+  /** SmartBill invoice scopes (API 2.43.0): explicit per person. Presentation only: every invoice call is checked again. */
+  invoiceScopes?: Readonly<{ issue: readonly string[]; manage: readonly string[] }>;
 };
 
 export type ProductionStage = {

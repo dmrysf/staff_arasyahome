@@ -3,6 +3,7 @@ import { t, type MessageKey } from "../i18n";
 import type { ShopRead, SourceAccessCapabilities } from "./confirmareShop";
 import type { ConfirmareEditApi } from "./confirmareEdit";
 import { canUseFinance, financeScopesOf, type ConfirmareFinanceApi, type FinanceCapabilities } from "./confirmareFinance";
+import type { ConfirmareInvoiceApi, InvoiceCapabilities } from "./confirmareInvoice";
 
 /**
  * Staff Confirmare workspace (API 2.39.0, Phase 3; the shop's own order, API 2.40.0, Phase 4A). New Trend Home and
@@ -114,6 +115,8 @@ export type ConfirmareDetail = ConfirmareItem & {
   finance: FinanceCapabilities;
   /** API 2.42.0: the production handoff; null from an older API. */
   handoff: ConfirmareHandoff | null;
+  /** API 2.43.0: whether the order's SmartBill document can be read, issued or managed by the signed-in employee. */
+  invoice: InvoiceCapabilities;
 };
 
 export type ConfirmareOperator = { employeeId: string; displayName: string; sources: string[]; canWork: boolean; available: boolean; availableChangedAt: string | null; lastAssignedAt: string | null; open: number; oldestAssignedAt: string | null };
@@ -123,7 +126,7 @@ export type ConfirmareAvailability = { employeeId: string; available: boolean; c
 
 export type ApproveInput = { expectedVersion: number; customerCall: "confirmed"; confirmedLineIds: string[]; priceVerified: true; reviewFingerprint: string };
 
-export interface ConfirmareApi extends ConfirmareEditApi, ConfirmareFinanceApi {
+export interface ConfirmareApi extends ConfirmareEditApi, ConfirmareFinanceApi, ConfirmareInvoiceApi {
   pool(view: ConfirmareView, source: string | null, signal?: AbortSignal): Promise<ConfirmarePool>;
   /** API 2.42.0: the production handoff list (document generate permission; no Confirmare scope needed). */
   handoffList(source: string | null, signal?: AbortSignal): Promise<HandoffItem[]>;
@@ -162,6 +165,14 @@ export function canUseConfirmare(employee: Employee): boolean {
 /** Whether the employee may open a Confirmare order at all: a Confirmare scope, or a finance scope (read-only, API 2.41.0). */
 export function canOpenConfirmareOrder(employee: Employee): boolean {
   return canUseConfirmare(employee) || canUseFinance(employee);
+}
+
+/**
+ * The advance queue (API 2.44.0): finance employees see every finance task; a Confirmare operator or supervisor sees the
+ * advance tasks of their shops (waiting, partial, paid, routed to the shop). The server applies the same rule.
+ */
+export function canUseAdvanceQueue(employee: Employee): boolean {
+  return canUseFinance(employee) || canUseConfirmare(employee);
 }
 
 /** The finance scopes, re-exported for the Confirmare screens. */
@@ -337,9 +348,9 @@ export function carryDraft(previous: { fingerprint: string; draft: ApprovalDraft
 
 /** The Confirmare refusal a response carried (backend code), for the screen's own explanation. */
 export function confirmareErrorKey(backendCode: string | undefined): MessageKey | null {
-  const known = ["CONFIRMARE_CHANGED", "CONFIRMARE_REVIEW_STALE", "CONFIRMARE_CALL_NOT_RECORDED", "CONFIRMARE_CONTACT_UNAVAILABLE", "CONFIRMARE_CALL_REQUIRED", "CONFIRMARE_PRICE_UNAVAILABLE", "CONFIRMARE_PRICE_NOT_VERIFIED", "CONFIRMARE_LINES_NOT_CONFIRMED", "CONFIRMARE_NOT_PENDING", "CONFIRMARE_NOT_ASSIGNED_TO_YOU", "CONFIRMARE_ASSIGNED_TO_OTHER", "CONFIRMARE_UNDETERMINED", "CONFIRMARE_ORDER_CLOSED", "CONFIRMARE_SCOPE_DENIED", "CONFIRMARE_NOT_FOUND", "CONFIRMARE_SOURCE_SUSPENDED", "CONFIRMARE_OPERATOR_INELIGIBLE", "CONFIRMARE_NOT_REOPENABLE", "CONFIRMARE_SHOP_NOT_REVIEWED", "CONFIRMARE_SOURCE_ACCESS_DENIED", "CONFIRMARE_SOURCE_NOT_ELIGIBLE", "CONFIRMARE_AUDIT_UNAVAILABLE", "IDEMPOTENCY_CONFLICT", "CONFIRMARE_SHOP_CHANGE_PENDING", "CONFIRMARE_SOURCE_EDIT_DISABLED", "CONFIRMARE_EDIT_INVALID", "CONFIRMARE_EDIT_REFUSED", "CONFIRMARE_EDIT_NOT_FOUND", "CONFIRMARE_SOURCE_UNAVAILABLE"];
+  const known = ["CONFIRMARE_CHANGED", "CONFIRMARE_REVIEW_STALE", "CONFIRMARE_CALL_NOT_RECORDED", "CONFIRMARE_CONTACT_UNAVAILABLE", "CONFIRMARE_CALL_REQUIRED", "CONFIRMARE_PRICE_UNAVAILABLE", "CONFIRMARE_PRICE_NOT_VERIFIED", "CONFIRMARE_LINES_NOT_CONFIRMED", "CONFIRMARE_NOT_PENDING", "CONFIRMARE_NOT_ASSIGNED_TO_YOU", "CONFIRMARE_ASSIGNED_TO_OTHER", "CONFIRMARE_UNDETERMINED", "CONFIRMARE_ORDER_CLOSED", "CONFIRMARE_SCOPE_DENIED", "CONFIRMARE_NOT_FOUND", "CONFIRMARE_SOURCE_SUSPENDED", "CONFIRMARE_OPERATOR_INELIGIBLE", "CONFIRMARE_NOT_REOPENABLE", "CONFIRMARE_SHOP_NOT_REVIEWED", "CONFIRMARE_SOURCE_ACCESS_DENIED", "CONFIRMARE_SOURCE_NOT_ELIGIBLE", "CONFIRMARE_AUDIT_UNAVAILABLE", "IDEMPOTENCY_CONFLICT", "CONFIRMARE_SHOP_CHANGE_PENDING", "CONFIRMARE_SOURCE_EDIT_DISABLED", "CONFIRMARE_EDIT_INVALID", "CONFIRMARE_EDIT_REFUSED", "CONFIRMARE_EDIT_NOT_FOUND", "CONFIRMARE_SOURCE_UNAVAILABLE", "ORDER_PRODUCTION_STOPPED"];
   return backendCode && known.includes(backendCode) ? `cf.error.${backendCode}` as MessageKey : null;
 }
 
 /** Errors after which the screen reloads the order before anything else (a colleague or the shop changed it). */
-export const RELOAD_CODES: readonly string[] = ["CONFIRMARE_CHANGED", "CONFIRMARE_REVIEW_STALE", "CONFIRMARE_NOT_PENDING", "CONFIRMARE_NOT_ASSIGNED_TO_YOU", "CONFIRMARE_ASSIGNED_TO_OTHER", "CONFIRMARE_LINES_NOT_CONFIRMED", "CONFIRMARE_ORDER_CLOSED"];
+export const RELOAD_CODES: readonly string[] = ["CONFIRMARE_CHANGED", "CONFIRMARE_REVIEW_STALE", "CONFIRMARE_NOT_PENDING", "CONFIRMARE_NOT_ASSIGNED_TO_YOU", "CONFIRMARE_ASSIGNED_TO_OTHER", "CONFIRMARE_LINES_NOT_CONFIRMED", "CONFIRMARE_ORDER_CLOSED", "ORDER_PRODUCTION_STOPPED"];

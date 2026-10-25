@@ -7,7 +7,7 @@ account. Phase 4B lets the same operator change it (measurements, options, quant
 shop, a removed line, the shipping method) with the shop's own pricing, after a preview and an explicit confirmation.
 
 **Nothing is switched on by this release.** Source access is `off` by default on both sides, and
-`ConfirmationGate::WORKFLOW_READY` stays `false`.
+`ConfirmationGate::WORKFLOW_READY` stayed `false` (until API 2.45.0; since then a source is activated only when its own readiness passes, see confirmare-cohort.md).
 
 ## Architecture and trust boundaries
 

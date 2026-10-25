@@ -65,7 +65,7 @@ export const siErrors: { readonly [K in keyof typeof roErrors]: string } = {
   "error.ORDER_UNAVAILABLE.title": "ඇණවුම ලබාගත නොහැක",
   "error.ORDER_UNAVAILABLE.message": "ඇණවුම අවලංගු කර ඇත, නැතහොත් තවදුරටත් සැකසිය නොහැක.",
   "error.ORDER_PRODUCTION_STOPPED.title": "නිෂ්පාදනය නවතා ඇත",
-  "error.ORDER_PRODUCTION_STOPPED.message": "මෙම ඇණවුමේ නිෂ්පාදනය නවතා ඇත. ඔබට මෙම ඇණවුමේ නිෂ්පාදනය දිගටම කළ නොහැක.",
+  "error.ORDER_PRODUCTION_STOPPED.message": "මෙම ඇණවුමේ නිෂ්පාදනය නවතා ඇත. ඔබට මෙම ඇණවුමේ නිෂ්පාදනය දිගටම කළ නොහැක. නිෂ්පාදන ලේඛන ද සෑදීමට හෝ මුද්‍රණය කිරීමට නොහැක. නිෂ්පාදනය නැවත ආරම්භ කළ හැක්කේ කළමනාකාරිත්වයට පමණි.",
   "error.ORDER_PRODUCTS_UNAVAILABLE.title": "භාණ්ඩ නැත",
   "error.ORDER_PRODUCTS_UNAVAILABLE.message": "ඇණවුමේ නිෂ්පාදනයට සුදුසු භාණ්ඩ නැත.",
   "error.ORDER_CHANGED.title": "ඇණවුම වෙනස් වී ඇත",

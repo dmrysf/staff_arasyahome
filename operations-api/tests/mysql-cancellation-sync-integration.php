@@ -932,6 +932,78 @@ $ok($stop($syncer, $w4), 'S6 timeout stop');
 $ok($send($syncer, $w4), 'S6 timeout handed over');
 $run(25 * 3600);
 $check($op($w4)['state'] === 'manual_review' && $op($w4)['last_error_code'] === 'PICKUP_TIMEOUT', 'S6 no pickup for a day: manual review');
+// ---- S6d. Pickup window after a retry (fixed clock) -------------------------------------------------------------------
+// The first 24 hours without pickup go to a person (above). A person's retry hands the same operation over again and
+// starts a new pickup window: the operation does not time out again at once, it is handed out once, its history and
+// identity stay, and only the next full day without a report times it out again. Timestamps are moved a day back, as if
+// the operation had been created yesterday (the HTTP routes run on the system clock).
+$timed4 = $op($w4);
+$created4 = $timed4['created_at'];
+$pdo->prepare('UPDATE order_cancellation_sync_operations SET created_at = DATE_SUB(created_at, INTERVAL 26 HOUR), updated_at = DATE_SUB(updated_at, INTERVAL 26 HOUR) WHERE operation_uuid = ?')->execute([$timed4['operation_uuid']]);
+$pdo->prepare('UPDATE order_cancellation_sync_attempts SET occurred_at = DATE_SUB(occurred_at, INTERVAL 26 HOUR) WHERE operation_uuid = ?')->execute([$timed4['operation_uuid']]); // test fixture: yesterday's history
+$timed4 = $op($w4);
+$trail4 = $trail($timed4);
+$check(end($trail4) === 'expire:timeout' && $timed4['last_error_code'] === 'PICKUP_TIMEOUT', 'S6d the first day without pickup ended in manual review: ' . json_encode($trail4));
+$error($opAction($keeper, $timed4, 'retry'), 403, 'UNAUTHORIZED_ACTION', 'S6d a manager without the sync permission cannot retry');
+$error($opAction($syncer, $timed4, 'retry', ['expectedVersion' => (int) $timed4['version'] - 1]), 409, 'CANCELLATION_SYNC_CHANGED', 'S6d a retry on an old version is refused');
+$check($op($w4)['version'] === $timed4['version'] && $trail($op($w4)) === $trail4, 'S6d refused retries change nothing');
+$retried4 = $ok($opAction($syncer, $timed4, 'retry'), 'S6d authorized retry');
+$error($opAction($syncer2, $timed4, 'retry'), 409, 'CANCELLATION_SYNC_CHANGED', 'S6d a second manager\'s retry on the same screen is refused (one retry)');
+$after4 = $op($w4);
+$check($retried4['state'] === 'awaiting_pickup' && $after4['operation_uuid'] === $timed4['operation_uuid'] && count($ops($w4)) === 1 && $after4['created_at'] === $timed4['created_at']
+    && $after4['requested_by_employee_uuid'] === $timed4['requested_by_employee_uuid'] && $after4['last_pulled_at'] === null, 'S6d the same operation is handed over again; identity and creation kept');
+$check($trail($after4) === [...$trail4, 'retry:retry_requested', 'retry:handed_to_source'], 'S6d the history keeps every attempt and adds the retry: ' . json_encode($trail($after4)));
+$run(0);
+$check($op($w4)['state'] === 'awaiting_pickup', 'S6d the retried operation is not timed out again at once (worker right after the retry): ' . $op($w4)['state']);
+$run(23 * 3600);
+$check($op($w4)['state'] === 'awaiting_pickup', 'S6d nor 23 hours after the retry');
+$pickupDelayed = static function (int $offset) use ($pdo, $wclock, $container, $w4): bool {
+    $wclock->offset = $offset;
+    $findings = (new \Arasya\Operations\Cancellation\Sync\CancellationReconciler($pdo, $wclock, $container->cancellationProviders()))->scan();
+    $wclock->offset = 0;
+    return array_filter($findings, static fn (array $f): bool => $f['orderUuid'] === $w4['uuid'] && $f['kind'] === 'operation_pickup_delayed') !== [];
+};
+$check(!$pickupDelayed(0) && $pickupDelayed(31 * 60), 'S6d the reconciliation counts the pickup delay from the retry, not from yesterday\'s creation');
+// The retry was two hours ago; the shop picks it up now. The pickup does not restart the window: 23 hours after the
+// pickup (25 after the retry) without a report it goes to a person again.
+$pdo->prepare("UPDATE order_cancellation_sync_attempts SET occurred_at = DATE_SUB(occurred_at, INTERVAL 2 HOUR) WHERE operation_uuid = ? AND kind = 'retry'")->execute([$after4['operation_uuid']]); // test fixture
+$picked4 = array_column($ok($pull('outletperdele'), 'S6d pull after the retry')['operations'], 'operationId');
+$check(count(array_keys($picked4, $after4['operation_uuid'], true)) === 1 && array_count_values($trail($op($w4)))['pickup:picked_up'] === 1, 'S6d handed out once; one pickup recorded');
+$repeat4 = array_column($ok($pull('outletperdele'), 'S6d repeated pull')['operations'], 'operationId');
+$check(count(array_keys($repeat4, $after4['operation_uuid'], true)) === 1 && array_count_values($trail($op($w4)))['pickup:picked_up'] === 1 && count($ops($w4)) === 1, 'S6d a repeated pull offers the same operation id, records no second pickup, creates nothing');
+$run(21 * 3600);
+$check($op($w4)['state'] === 'awaiting_pickup', 'S6d 24 hours after the retry have not passed yet');
+$run(23 * 3600);
+$final4 = $op($w4);
+$check($final4['state'] === 'manual_review' && $final4['last_error_code'] === 'PICKUP_TIMEOUT' && array_count_values($trail($final4))['expire:timeout'] === 2, 'S6d a full day after the retry without a report: a person again (the pickup did not extend the window)');
+$check($final4['operation_uuid'] === $timed4['operation_uuid'] && count($ops($w4)) === 1 && $final4['created_at'] === $timed4['created_at'], 'S6d still one operation');
+// Race: a worker selects the operation while another worker's timeout and a person's retry are committing. Under the
+// order lock it sees a changed operation and leaves it to the next run, so the fresh retry is not timed out.
+$retriedRace = $ok($opAction($syncer, $final4, 'retry'), 'S6d second retry');
+$pdo->prepare('UPDATE order_cancellation_sync_attempts SET occurred_at = DATE_SUB(occurred_at, INTERVAL 26 HOUR) WHERE operation_uuid = ?')->execute([$final4['operation_uuid']]); // test fixture: due again
+$pdoB = Connection::create($config);
+$opsB = new SyncOperations($pdoB, $clock);
+$pdoB->beginTransaction();
+$pdoB->prepare('SELECT order_uuid FROM operational_orders WHERE order_uuid = ? FOR UPDATE')->execute([$w4['uuid']]);
+$inB = $opsB->byId($final4['operation_uuid']);
+$inB = $opsB->transition($inB, 'manual_review', ['next_attempt_at' => null], ['kind' => 'expire', 'outcome' => 'timeout', 'error' => 'PICKUP_TIMEOUT', 'system' => 'test-other-worker']);
+$inB = $opsB->transition($inB, 'retry_scheduled', ['next_attempt_at' => $opsB->now(), 'attempt_count' => 0], ['kind' => 'retry', 'outcome' => 'retry_requested', 'actor' => $syncer['employeeUuid']]);
+$inB = $opsB->transition($inB, 'awaiting_pickup', ['next_attempt_at' => null, 'last_pulled_at' => null], ['kind' => 'retry', 'outcome' => 'handed_to_source', 'actor' => $syncer['employeeUuid']]);
+$raceWorker = proc_open([PHP_BINARY, __DIR__ . '/fixtures/cancellation-sync-worker.php', $dbName, (string) microtime(true), $fixtureFile, '0'], [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $racePipes);
+fclose($racePipes[0]);
+usleep(1_500_000); // the worker has selected the operation and waits for the order lock
+$waiting4 = (int) $one("SELECT COUNT(*) FROM information_schema.innodb_trx WHERE trx_state = 'LOCK WAIT'");
+$pdoB->commit();
+$raceOut = (string) stream_get_contents($racePipes[1]) . (string) stream_get_contents($racePipes[2]);
+fclose($racePipes[1]);
+fclose($racePipes[2]);
+proc_close($raceWorker);
+$raced4 = $op($w4);
+$check($waiting4 >= 1, 'S6d the worker was waiting for the order lock while the retry committed');
+$check($raced4['state'] === 'awaiting_pickup' && $raced4['version'] === $inB['version'] && array_count_values($trail($raced4))['expire:timeout'] === 3, 'S6d the worker did not time out the fresh retry it had selected before: ' . $raceOut . ' ' . json_encode(array_slice($trail($raced4), -4)));
+$run(0);
+$check($op($w4)['state'] === 'awaiting_pickup', 'S6d the next run keeps the fresh window');
+
 // The connector's shop no longer has the order: failed; a retry hands it over again.
 $w5 = $woo('outletperdele', 'w5');
 $ok($stop($syncer, $w5), 'S6 not found stop');
@@ -941,6 +1013,99 @@ $check($ok($report('outletperdele', $op($w5), 'not_found'), 'S6 not found report
 $retried = $ok($opAction($syncer, $op($w5), 'retry'), 'S6 retry');
 $check($retried['state'] === 'awaiting_pickup' && $op($w5)['last_pulled_at'] === null && in_array('retry:handed_to_source', $trail($op($w5)), true), 'S6 a retry hands it over again, same operation');
 $check(count($ops($w5)) === 1, 'S6 a retry never creates a second logical cancellation');
+
+// ---- S6b. Owner rule 2: an open finance entry blocks the cancellation request ----------------------------------------
+// The shop's last reported attention (stored from its signed order event) and Arasya's own relayed finance actions.
+$attention = static function (array $o, ?string $value) use ($pdo): void {
+    $pdo->prepare('UPDATE operational_orders SET source_financial_attention = ? WHERE order_uuid = ?')->execute([$value, $o['uuid']]);
+};
+$financeAction = static function (array $o, string $state) use ($pdo, $syncer): string {
+    $uuid = Uuid::v4();
+    $done = $state === 'applied';
+    $pdo->prepare("INSERT INTO order_finance_actions (action_uuid, order_uuid, global_order_id, source_key, employee_uuid, action, purpose, source_entry_id, idempotency_key, request_hmac,
+        revision_before, state, outcome, requested_at, completed_at) VALUES (?, ?, ?, ?, ?, 'submit_transfer', 'advance', ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(6), ?)")
+        ->execute([$uuid, $o['uuid'], $o['id'], $o['source'], $syncer['employeeUuid'], $done ? Uuid::v4() : null, 'fin-' . bin2hex(random_bytes(8)), random_bytes(32),
+            'sha256:' . str_repeat('a', 64), $state, $done ? 'applied' : null, $done ? gmdate('Y-m-d H:i:s') : null]);
+    return $uuid;
+};
+$setAction = static function (string $uuid, string $state) use ($pdo): void {
+    $done = $state === 'applied';
+    $pdo->prepare('UPDATE order_finance_actions SET state = ?, outcome = ?, completed_at = ?, source_entry_id = ? WHERE action_uuid = ?')
+        ->execute([$state, $done ? 'applied' : null, $done ? gmdate('Y-m-d H:i:s') : null, $done ? Uuid::v4() : null, $uuid]);
+};
+$f1 = $woo('trendhome', 'fin1');
+$ok($stop($syncer, $f1), 'S6b stop');
+foreach (['transfer_pending', 'refund_pending', 'reconciliation_required'] as $open) {
+    $attention($f1, $open);
+    $error($send($syncer, $f1), 409, 'CANCELLATION_SYNC_FINANCE_OPEN', "S6b the shop reports {$open}: no request");
+}
+$fixedKey = 'cs-fin-same-key-' . bin2hex(random_bytes(4));
+$error($send($syncer, $f1, [], $fixedKey), 409, 'CANCELLATION_SYNC_FINANCE_OPEN', 'S6b refused with a fixed key');
+$error($send($syncer, $f1, [], $fixedKey), 409, 'CANCELLATION_SYNC_FINANCE_OPEN', 'S6b the same request again: the same refusal, nothing stored');
+$check($ops($f1) === [], 'S6b the refusals created no operation');
+$attention($f1, null);
+$pending = $financeAction($f1, 'pending');
+$error($send($syncer, $f1), 409, 'CANCELLATION_SYNC_FINANCE_OPEN', 'S6b a relayed finance action waiting for the shop blocks');
+$setAction($pending, 'unknown');
+$error($send($syncer, $f1), 409, 'CANCELLATION_SYNC_FINANCE_OPEN', 'S6b a relayed finance action with an unknown answer blocks');
+$setAction($pending, 'applied');
+$attention($f1, 'additional_payment_due');
+$f1Sent = $ok($send($syncer, $f1), 'S6b decided: the request is created (an amount still due is not an open entry)');
+$check($f1Sent['state'] === 'awaiting_pickup', 'S6b awaiting pickup');
+$f2 = $woo('trendhome', 'fin2');
+$ok($stop($syncer, $f2), 'S6b second order stop');
+$ok($send($syncer, $f2), 'S6b second order handed over');
+// A transfer is recorded in the shop after the hand-over: the operation is not handed to the shop until it is decided.
+$attention($f1, 'transfer_pending');
+$ids = array_column($ok($pull('trendhome'), 'S6b pull while the transfer is pending')['operations'], 'operationId');
+$check(!in_array($op($f1)['operation_uuid'], $ids, true) && in_array($op($f2)['operation_uuid'], $ids, true), 'S6b the open order is held back, the other order is handed out');
+$check($op($f1)['state'] === 'awaiting_pickup' && $op($f1)['last_pulled_at'] === null && !in_array('pickup:picked_up', $trail($op($f1)), true), 'S6b nothing was recorded for the held-back operation');
+$check(!in_array($op($f1)['operation_uuid'], array_column($ok($pull('trendhome'), 'S6b repeated pull')['operations'], 'operationId'), true), 'S6b a repeated pull still holds it back');
+$attention($f1, null);
+$check(in_array($op($f1)['operation_uuid'], array_column($ok($pull('trendhome'), 'S6b pull after the decision')['operations'], 'operationId'), true) && in_array('pickup:picked_up', $trail($op($f1)), true), 'S6b decided: handed out and recorded');
+$ok($report('trendhome', $op($f1), 'rejected_status', 'on-hold'), 'S6b the shop refuses');
+$attention($f1, 'refund_pending');
+$error($opAction($syncer, $op($f1), 'retry'), 409, 'CANCELLATION_SYNC_FINANCE_OPEN', 'S6b no retry while a refund is pending');
+$check($op($f1)['state'] === 'rejected', 'S6b the refused retry changed nothing');
+$attention($f1, null);
+$check($ok($opAction($syncer, $op($f1), 'retry'), 'S6b retry after the decision')['state'] === 'awaiting_pickup', 'S6b retried once the entry is decided');
+
+// ---- S6c. Owner rule 2: a request held back for an open finance entry, the 24 hour pickup timeout and its recovery ------
+// The request is never lost: the operation stays (awaiting_pickup, then manual_review PICKUP_TIMEOUT), the stop stays held
+// and source_request_status stays pending. A person retries once the entry is decided; the same operation is handed out
+// again, exactly once, and no second stop, operation or cancellation event appears.
+$f3 = $woo('trendhome', 'fin3');
+$ok($stop($syncer, $f3), 'S6c stop');
+$ok($send($syncer, $f3), 'S6c handed over');
+$attention($f3, 'transfer_pending');
+$check(!in_array($op($f3)['operation_uuid'], array_column($ok($pull('trendhome'), 'S6c pull while the transfer is pending')['operations'], 'operationId'), true), 'S6c held back');
+$events3 = $eventTypes($f3);
+$finance3 = (int) $one('SELECT COUNT(*) FROM order_finance_actions WHERE order_uuid = ?', [$f3['uuid']]);
+$run(25 * 3600);
+$timedOut = $op($f3);
+$check($timedOut['state'] === 'manual_review' && $timedOut['last_error_code'] === 'PICKUP_TIMEOUT' && $timedOut['last_pulled_at'] === null, 'S6c 24 hours without pickup: manual review PICKUP_TIMEOUT, never handed out');
+$check(count($ops($f3)) === 1 && $control($f3)['hold_status'] === 'held' && $control($f3)['source_request_status'] === 'pending', 'S6c the request is not lost: one operation, stop held, request pending');
+$check(!in_array($timedOut['operation_uuid'], array_column($ok($pull('trendhome'), 'S6c pull after the timeout')['operations'], 'operationId'), true), 'S6c a timed-out operation is not handed out by itself');
+$error($opAction($syncer, $op($f3), 'retry'), 409, 'CANCELLATION_SYNC_FINANCE_OPEN', 'S6c no retry while the transfer is pending');
+$check($op($f3)['state'] === 'manual_review' && $op($f3)['version'] === $timedOut['version'], 'S6c the refused retry changed nothing');
+$error($release($releaser, $f3), 409, 'RELEASE_SYNC_OPEN', 'S6c the open request still blocks a release');
+// The transfer is decided in the shop (verified or rejected): the attention clears with the next signed order event.
+$attention($f3, null);
+$retried3 = $ok($opAction($syncer, $op($f3), 'retry'), 'S6c retry after the decision');
+$check($retried3['state'] === 'awaiting_pickup' && $retried3['id'] === $timedOut['operation_uuid'], 'S6c the same operation is handed over again');
+$picked3 = array_column($ok($pull('trendhome'), 'S6c pull after the retry')['operations'], 'operationId');
+$check(count(array_keys($picked3, $timedOut['operation_uuid'], true)) === 1, 'S6c handed out once in the pull');
+// Delivery to the shop is at least once (a repeated pull offers the same operation id until the report); the pickup is
+// recorded once and a repeated report changes nothing.
+$ok($pull('trendhome'), 'S6c repeated pull');
+$check(count(array_keys($trail($op($f3)), 'pickup:picked_up', true)) === 1, 'S6c one pickup recorded (the held-back hand-over was never picked up)');
+$ok($report('trendhome', $op($f3), 'cancelled', 'cancelled'), 'S6c the shop cancels');
+$check($ok($report('trendhome', $op($f3), 'cancelled', 'cancelled'), 'S6c the same report again')['state'] === 'awaiting_confirmation' && in_array('report:duplicate_report', $trail($op($f3)), true), 'S6c a repeated report changes nothing');
+$ok($wooEvent($f3, 'cancelled', 'cancelled'), 'S6c the shop event arrives');
+$check($op($f3)['state'] === 'confirmed' && count($ops($f3)) === 1, 'S6c confirmed, still one operation');
+$after3 = $eventTypes($f3);
+$check(count(array_keys($after3, 'hold_applied', true)) === 1 && count(array_keys($events3, 'hold_applied', true)) === 1, 'S6c one stop for the whole history');
+$check((int) $one('SELECT COUNT(*) FROM order_finance_actions WHERE order_uuid = ?', [$f3['uuid']]) === $finance3, 'S6c the cancellation created no finance action');
 
 // ---- S7. Authorization, idempotency, versions --------------------------------------------------------------------
 $a = $woo('trendhome', 'auth');
