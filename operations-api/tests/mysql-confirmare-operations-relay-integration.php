@@ -256,6 +256,15 @@ $check($paid['result'] === 'reactivated' && $all("SELECT kind, payment_entry_id,
     ['kind' => 'ordinary', 'payment_entry_id' => null, 'state' => 'applied'], ['kind' => 'paid_exception', 'payment_entry_id' => 'bankexc9999', 'state' => 'rejected'], ['kind' => 'paid_exception', 'payment_entry_id' => 'bankexc0001', 'state' => 'applied']]
     || $check(false, 'reactivations: ' . json_encode($all("SELECT kind, payment_entry_id, state FROM confirmare_reactivations WHERE global_order_id = ? ORDER BY sequence_number", [$g(1)]))), 'every reactivation is recorded with its kind and the payment that justified it');
 
+// Production already started: never reactivated from Confirmare (a manager decides the factory's cancellation release).
+$pdo->prepare('UPDATE operational_orders SET production_stage_id = ? WHERE global_order_id = ?')->execute(['material-preparation', $g(1)]);
+$event(1, 'cancelled', 'cancelled');
+$th->orders[$id(1)]['ops']['status'] = 'cancelled';
+$started = $operate($who['cop'], $g(1), 'reactivate', ['reason' => 'customer_paid_late', 'exceptionEntryId' => 'bankexc0001']);
+$check($started['status'] === 409 && ($started['body']['error']['code'] ?? '') === 'CONFIRMARE_OPERATION_NOT_ALLOWED' && in_array('production_started', $started['body']['error']['details']['blockers'] ?? [], true),
+    'an order whose production started is never reactivated here: ' . json_encode($started['body']['error'] ?? null));
+$pdo->prepare('UPDATE operational_orders SET production_stage_id = ? WHERE global_order_id = ?')->execute([\Arasya\Operations\Order\OrderProjectionWriter::INITIAL_STAGE_ID, $g(1)]);
+
 // ---- 3. FAN Courier AWB: stage 12, the routed shop employee, the amount seen, one AWB ------------------------------------------
 $approve($who['cop'], $g(2));
 // TEST ONLY: production moved the order (the factory's own stages are tested elsewhere) and the operator routed it.
@@ -298,6 +307,21 @@ $error($operate($who['cdoc'], $g(2), 'awb/address', ['step' => 'done', 'reasonNo
 $ok($operate($who['cdoc'], $g(2), 'awb/address', ['step' => 'task', 'reasonNote' => 'Clientul s-a mutat: Str. Nouă 5']), 'urgent address change: FAN Courier panel task');
 $done = $ok($operate($who['cdoc'], $g(2), 'awb/address', ['step' => 'done', 'reasonNote' => 'Verificat în panoul FAN Courier']), 'the employee declares the change made in the panel');
 $check($done['result'] === 'panel_declared' && array_column($done['shop']['awb']['address'], 'kind') === ['task', 'done'] && $done['shop']['awb']['pickup'] === 'not_tracked', 'recorded as the employee\'s declaration, never as a carrier confirmation; pickup is a separate state');
+// A request that never reached the shop: unknown at first (its answer may still arrive), "not received" only after 4 minutes.
+$th->during = static function (array $input): void {
+    if (($input['action'] ?? null) === 'awb_address_task') {
+        throw new \Arasya\Operations\Integration\SourceAccess\SourceAccessException('SOURCE_UNREACHABLE');
+    }
+};
+$lostKey = 'ops-lost-' . bin2hex(random_bytes(8));
+$never = $ok($operate($who['cdoc'], $g(2), 'awb/address', ['step' => 'task', 'reasonNote' => 'Al doilea apel'], $lostKey), 'the request never reached the shop');
+$th->during = null;
+$soon = $ok($operate($who['cdoc'], $g(2), 'operations/reconcile', ['idempotencyKey' => $lostKey]), 'reconcile at once');
+$check($never['state'] === 'unknown' && $soon['state'] === 'unknown' && ($soon['reachable'] ?? null) === true, 'the shop has no answer yet: still unknown, never declared lost at once: ' . json_encode([$never, $soon]));
+$pdo->prepare('UPDATE order_source_operations SET requested_at = DATE_SUB(requested_at, INTERVAL 5 MINUTE) WHERE idempotency_key = ?')->execute([$lostKey]);
+$late = $operate($who['cdoc'], $g(2), 'operations/reconcile', ['idempotencyKey' => $lostKey]);
+$check($late['status'] === 409 && ($late['body']['error']['details']['reason'] ?? '') === 'not_received' && (string) $one('SELECT state FROM order_source_operations WHERE idempotency_key = ?', [$lostKey]) === 'rejected',
+    'after 4 minutes: closed as not received, nothing was done in the shop');
 $check(!str_contains(json_encode($all('SELECT kind, state, outcome, result, request_id FROM order_source_operations')), 'Str. Nou'), 'no address text is stored in Arasya');
 
 // ---- 4. NETOPIA full refund: one click, finance records, another employee verifies --------------------------------------------
@@ -389,6 +413,10 @@ $check(array_keys($health['sources']) === ['trendhome'] && is_int($th8['confirma
 $check(!str_contains(json_encode($health), $id(2)) && !str_contains(json_encode($health), OPS_PHONE), 'no order number or customer data in the health counts');
 $error($get($who['cop'], '/confirmare/health'), 403, 'CONFIRMARE_HEALTH_DENIED', 'an operator does not see the health counts');
 $check(array_keys($ok($get($root, '/confirmare/health'), 'root health')['sources']) === ['trendhome', 'outletperdele'], 'root sees both shops (break-glass)');
+$rootHealth = $ok($get($root, '/confirmare/health'), 'root health per shop');
+$pendingOf = static fn (string $s): int => (int) $one("SELECT COUNT(*) FROM order_confirmations c INNER JOIN operational_orders o ON o.order_uuid = c.order_uuid WHERE c.source_key = ? AND c.status = 'pending' AND o.operational_status <> 'unavailable'", [$s]);
+$check($rootHealth['sources']['trendhome']['confirmare']['pending'] === $pendingOf('trendhome') && $rootHealth['sources']['outletperdele']['confirmare']['pending'] === $pendingOf('outletperdele') && $pendingOf('outletperdele') !== $pendingOf('trendhome'),
+    'each shop counts only its own orders: ' . json_encode([$pendingOf('trendhome'), $pendingOf('outletperdele')]));
 
 // ---- Cleanup (later suites share the database in CI) ------------------------------------------------------------------------
 $clear();

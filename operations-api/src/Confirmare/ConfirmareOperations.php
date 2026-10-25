@@ -591,6 +591,8 @@ final class ConfirmareOperations
                     'state' => is_array($r) && in_array($r['state'] ?? null, ['manual_required', 'completed'], true) ? $r['state'] : 'unknown',
                     'at' => is_array($r) ? $instant($r['at'] ?? null) : null, 'amount' => is_array($r) ? $money($r['amount'] ?? null) : null,
                     'transactions' => is_array($r) && is_int($r['transactions'] ?? null) ? $r['transactions'] : 0,
+                    // YD SOFT 2.20.0: the card refunds finance verified for it (one per transaction; fewer = partly refunded).
+                    'verified' => is_array($r) && is_int($r['verified'] ?? null) ? max(0, $r['verified']) : 0,
                     'completedAt' => is_array($r) ? $instant($r['completedAt'] ?? null) : null, 'mailed' => is_array($r) && ($r['mailed'] ?? false) === true,
                 ], array_slice((array) ($refund['requests'] ?? []), -10))),
             ],

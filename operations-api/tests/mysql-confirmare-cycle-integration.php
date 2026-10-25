@@ -233,7 +233,12 @@ $run();
 $check($reminders(1) === 2 && $cycleOf($g(1))['reminder2_at'] !== null, 'the next run reads the shop\'s stored answer: settled, never sent twice');
 
 // ---- 4. The 120 h expiry waits for the bank check, then cancels once ------------------------------------------------------
-$age($g(1), 50);
+$c4 = $cycleOf($g(1));
+$check((new DateTimeImmutable((string) $c4['expires_at']))->getTimestamp() - (new DateTimeImmutable((string) $c4['sent_at']))->getTimestamp() === 120 * 3600, 'the proforma expires exactly 120 h after it was e-mailed');
+$age($g(1), 46);
+$run();
+$check($cycleOf($g(1))['state'] === 'running' && $cancels(1) === 0, 'at 119 h the proforma is still running: nothing waits, nothing is cancelled');
+$age($g(1), 4);
 $run();
 $check($cycleOf($g(1))['state'] === 'waiting_bank_check' && $cancels(1) === 0, 'expired, but no bank check covers the expiry: nothing is cancelled');
 $error($call($who['cfinview'], 'POST', '/confirmare/finance/bank-check', ['source' => 'trendhome']), 403, 'CONFIRMARE_FINANCE_DENIED', 'a finance viewer does not record the bank check');

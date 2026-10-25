@@ -718,6 +718,10 @@ final class SourceAccessFakeShop implements SourceAccessTransport
     {
         $i = $this->orders[$orderId]['invoice'];
         unset($i['history']);
+        // A fixture's proforma state without the later fields (cancel 2.19.0, reminders 2.20.0) is the same state.
+        if (is_array($i['pf'] ?? null)) {
+            $i['pf'] += ['cancel' => null, 'cancelled' => [], 'reminders' => []];
+        }
         return 'sha256:' . hash('sha256', (string) json_encode($i));
     }
 

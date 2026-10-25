@@ -26,7 +26,8 @@ final class SourceFinance
     public const METHODS = ['bank_transfer', 'cash_office', 'cash_courier'];
     /** The document of a cash collection (its number is the entry's reference). */
     public const RECEIPTS = ['bon_fiscal', 'chitanta'];
-    public const FLAGS = ['overpayment', 'cancelled_proforma'];
+    /** card_full_refund (YD SOFT 2.20.0): the NETOPIA full card refund recorded by finance, verified only through the operations route. */
+    public const FLAGS = ['overpayment', 'cancelled_proforma', 'card_full_refund'];
     public const COLLECTOR_PATTERN = '/^[\p{L}\p{M}][\p{L}\p{M} .\'-]{1,63}$/uD';
     public const REJECT_REASONS = ['not_received', 'amount_mismatch', 'wrong_order', 'duplicate', 'other'];
     /** Shop refusals of a finance action Operations understands (anything else is SOURCE_ERROR). */
