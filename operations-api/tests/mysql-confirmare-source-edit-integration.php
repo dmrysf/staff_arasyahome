@@ -107,7 +107,7 @@ if ($now < $cutover->modify('+10 minutes')) {
     fwrite(STDOUT, "SKIP MySQL Confirmare source edit integration: needs a clock after the Confirmare cutover.\n");
     exit(0);
 }
-$check(ConfirmationGate::WORKFLOW_READY === false, 'Phase 4 keeps WORKFLOW_READY false');
+$check(T::activationNeedsReadiness($pdo, $registry->find('trendhome')), 'API 2.45.0: activation needs the source readiness (Phase 4)');
 $activatedAt = max($cutover->modify('+1 second'), $now->modify('-2 hours'));
 foreach (['trendhome', 'outletperdele'] as $src) {
     (new WorkflowCohortActivation($pdo, new MutableClock($activatedAt->modify('-20 minutes'))))->schedule($registry->find($src), $activatedAt, 'Test Owner', 'source edit test', 'se-test', true);
@@ -345,7 +345,7 @@ $check(!str_contains($auditDump, '"754.00"') && !str_contains($auditDump, '"719.
 $projection = json_encode($all('SELECT * FROM operational_orders WHERE global_order_id LIKE ?', ['trendhome:' . substr($id(1), 0, 4) . '%']), JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE | JSON_THROW_ON_ERROR);
 // Exact JSON values: a DATETIME(6) such as 10:12:35.000000 is no amount.
 $check(!str_contains($projection, '"754.00"') && !str_contains($projection, '"35.00"') && !str_contains($projection, '"719.00"'), 'the order projection stores no amount of an edit');
-$check(\Arasya\Operations\Production\ConfirmationGate::WORKFLOW_READY === false, 'still no activation is possible');
+$check(T::activationNeedsReadiness($pdo, $registry->find('trendhome')), 'API 2.45.0: activation still needs the source readiness');
 $log = (string) file_get_contents($logFile);
 $check($log !== '' && str_contains($log, '/source/'), 'the run was logged');
 $check(!str_contains($log, '754.00') && !str_contains($log, '719.00') && !str_contains($log, SA_PHONE) && !str_contains($log, SA_KEY) && !str_contains($log, 'lungimea'), 'server logs hold no amount, telephone number, field or key');

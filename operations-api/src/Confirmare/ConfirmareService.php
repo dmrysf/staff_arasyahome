@@ -42,7 +42,7 @@ use RuntimeException;
  * call, every cart line confirmed, the source's pricing fingerprint the approval was given on, an unchanged review and
  * the financial condition (whatever the payment gate mode). Approving never confirms a payment; a payment never approves. Rejecting keeps the gate closed; nothing is cancelled in the
  * shop. An undetermined order (unknown submission instant) cannot be approved here. No source can be activated while
- * ConfirmationGate::WORKFLOW_READY is false, so in this release no order reaches this service outside tests.
+ * Orders reach this service only from a source whose Confirmare activation passed its readiness (ConfirmareReadiness).
  *
  * Handoff (API 2.42.0, Phase 6): the order detail carries its production handoff state (ConfirmareHandoff), and
  * handoffList() lists the cleared orders at stage 1 for production document employees. The list needs no Confirmare

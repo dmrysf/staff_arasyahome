@@ -192,4 +192,12 @@ if (preg_match('/ON (DELETE|UPDATE) (CASCADE|SET NULL)|DROP |DELETE FROM|TRUNCAT
     || preg_match_all('/CREATE TABLE IF NOT EXISTS/', $invoiceStatements) !== 5 || preg_match('/CREATE TABLE (?!IF NOT EXISTS)/', $invoiceStatements) === 1) {
     throw new RuntimeException('Migration 041 must stay additive (five CREATE TABLE IF NOT EXISTS), grant nothing and write no row.');
 }
+// Confirmare connector readiness (042, API 2.45.0): one new table only, nothing granted, no row, no other table altered.
+$readinessSchema = (string) file_get_contents($root . '/database/migrations/042_confirmare_connector_readiness.sql');
+$readinessStatements = preg_replace(['/^--.*$/m', '/ON (UPDATE|DELETE) RESTRICT/'], '', $readinessSchema) ?? '';
+if (preg_match('/CREATE TABLE IF NOT EXISTS\s+source_connector_readiness\b/', $readinessSchema) !== 1
+    || preg_match('/ON (DELETE|UPDATE) (CASCADE|SET NULL)|DROP |DELETE FROM|TRUNCATE|\bUPDATE |\bINSERT |ALTER TABLE|role_permissions|employee_role_assignments/i', $readinessStatements) === 1
+    || preg_match_all('/CREATE TABLE IF NOT EXISTS/', $readinessStatements) !== 1 || preg_match('/CREATE TABLE (?!IF NOT EXISTS)/', $readinessStatements) === 1) {
+    throw new RuntimeException('Migration 042 must stay additive (one CREATE TABLE IF NOT EXISTS), grant nothing and write no row.');
+}
 fwrite(STDOUT, 'Migration sanity checks passed for ' . count($files) . " file(s).\n");

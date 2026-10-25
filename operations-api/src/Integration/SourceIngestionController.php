@@ -84,7 +84,9 @@ final readonly class SourceIngestionController
         $input = $request->json(1024);
         // Optional confirmareArmedAt (API 2.37.0): the source states the instant from which its local Confirmare fence
         // refuses legacy production. It is a report, never an activation: only the operator CLI activates a source.
-        $keys = array_keys($input);
+        // Optional connectorReadiness (API 2.45.0, YD SOFT 2.19.0): the shop's own side of its Confirmare readiness (see
+        // Production\ConfirmareReadiness). A report only; it never activates or switches anything.
+        $keys = array_values(array_diff(array_keys($input), ['connectorReadiness']));
         sort($keys);
         $armedAt = $input['confirmareArmedAt'] ?? null;
         if (!in_array($keys, [['sentAt'], ['confirmareArmedAt', 'sentAt']], true) || !is_string($input['sentAt'])
@@ -92,7 +94,8 @@ final readonly class SourceIngestionController
             || (array_key_exists('confirmareArmedAt', $input) && $armedAt === null)) {
             throw new ApiException(422, 'SOURCE_PAYLOAD_INVALID', 'Heartbeat payload is invalid.');
         }
-        $this->writer->recordHeartbeat($sourceKey, is_string($armedAt) ? new \DateTimeImmutable($armedAt) : null);
+        $readiness = array_key_exists('connectorReadiness', $input) ? self::connectorReadiness($input['connectorReadiness']) : null;
+        $this->writer->recordHeartbeat($sourceKey, is_string($armedAt) ? new \DateTimeImmutable($armedAt) : null, $readiness);
         $workflow = self::workflowSummary();
         return Response::json([
             'ok' => true,
@@ -111,6 +114,8 @@ final readonly class SourceIngestionController
             'confirmare' => $this->writer->confirmareState($sourceKey),
             // Present means this server accepts these optional order facts (API 2.38.0); a source sends them only then.
             'orderFacts' => \Arasya\Operations\Integration\SourceOrderPayloadMapper::ORDER_FACTS,
+            // Present means this server accepts the optional heartbeat field connectorReadiness (API 2.45.0).
+            'connectorReadiness' => 1,
             'contract' => [
                 'schemaVersion' => 1,
                 'workflowId' => $workflow['id'],
@@ -118,6 +123,25 @@ final readonly class SourceIngestionController
                 'stageCount' => $workflow['stageCount'],
             ],
         ], 200, ['Cache-Control' => 'no-store']);
+    }
+
+    /**
+     * The shop's readiness report, strictly: exactly these keys and values, or 422 (nothing recorded).
+     *
+     * @return array{version: string, access: string, finance: string, invoice: string, schemaReady: bool, invoiceAttested: bool, smartbillReady: bool}
+     */
+    private static function connectorReadiness(mixed $value): array
+    {
+        $keys = is_array($value) ? array_keys($value) : [];
+        sort($keys);
+        if ($keys !== ['access', 'finance', 'invoice', 'invoiceAttested', 'schemaReady', 'smartbillReady', 'version']
+            || !is_string($value['version']) || preg_match('/^\d{1,3}\.\d{1,3}\.\d{1,3}$/D', $value['version']) !== 1
+            || !in_array($value['access'], ['off', 'read', 'edit'], true) || !in_array($value['finance'], ['off', 'read', 'record'], true)
+            || !in_array($value['invoice'], ['off', 'observe', 'enforce'], true)
+            || !is_bool($value['schemaReady']) || !is_bool($value['invoiceAttested']) || !is_bool($value['smartbillReady'])) {
+            throw new ApiException(422, 'SOURCE_PAYLOAD_INVALID', 'Heartbeat payload is invalid.');
+        }
+        return $value;
     }
 
     /**

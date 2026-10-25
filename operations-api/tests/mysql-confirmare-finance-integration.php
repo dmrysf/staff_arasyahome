@@ -128,7 +128,7 @@ if ($now < $cutover->modify('+10 minutes')) {
     fwrite(STDOUT, "SKIP MySQL Confirmare finance integration: needs a clock after the Confirmare cutover.\n");
     exit(0);
 }
-$check(ConfirmationGate::WORKFLOW_READY === false, 'Phase 5 keeps WORKFLOW_READY false');
+$check(T::activationNeedsReadiness($pdo, $registry->find('trendhome')), 'API 2.45.0: activation needs the source readiness (Phase 5)');
 $activatedAt = max($cutover->modify('+1 second'), $now->modify('-2 hours'));
 foreach (['trendhome', 'outletperdele'] as $src) {
     (new WorkflowCohortActivation($pdo, new MutableClock($activatedAt->modify('-20 minutes'))))->schedule($registry->find($src), $activatedAt, 'Test Owner', 'finance test', 'fin-test', true);

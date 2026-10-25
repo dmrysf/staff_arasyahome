@@ -128,7 +128,7 @@ if ($now < $cutover->modify('+10 minutes')) {
 }
 $activatedAt = max($cutover->modify('+1 second'), $now->modify('-2 hours'));
 $activation = static fn (DateTimeImmutable $at): WorkflowCohortActivation => new WorkflowCohortActivation($pdo, new MutableClock($at));
-$check(ConfirmationGate::WORKFLOW_READY === false, 'Phase 3 keeps WORKFLOW_READY false');
+$check(T::activationNeedsReadiness($pdo, $registry->find('trendhome')), 'API 2.45.0: activation needs the source readiness (Phase 3)');
 foreach (['trendhome', 'outletperdele'] as $src) {
     $activation($activatedAt->modify('-20 minutes'))->schedule($registry->find($src), $activatedAt, 'Test Owner', 'staff test', 'cs-test', true);
     T::ingest($kernel, $src, ['sentAt' => gmdate('Y-m-d\TH:i:s\Z'), 'confirmareArmedAt' => $iso($activatedAt)], null, null, 'heartbeat');
@@ -315,7 +315,7 @@ foreach (["UPDATE order_confirmation_contacts SET outcome = 'cancelled' LIMIT 1"
     try { $pdo->exec($sql); $refused = false; } catch (PDOException) { $refused = true; }
     $check($refused, "the database refuses {$label}");
 }
-$check(ConfirmationGate::WORKFLOW_READY === false, 'still no activation is possible');
+$check(T::activationNeedsReadiness($pdo, $registry->find('trendhome')), 'API 2.45.0: activation needs the source readiness (still no activation is possible)');
 
 // Leave the shared disposable database as the next suites expect it: no Confirmare state.
 foreach (['order_confirmation_contacts', 'order_confirmation_idempotency', 'confirmare_alerts', 'order_confirmation_events', 'order_confirmations', 'workflow_cohort_activations', 'employee_confirmare_scopes', 'confirmare_operator_state'] as $table) {

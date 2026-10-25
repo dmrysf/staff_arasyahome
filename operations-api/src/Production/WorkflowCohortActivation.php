@@ -18,18 +18,21 @@ use PDO;
  * activation instant, never typed in and never earlier than the business transition date. A suspension is another
  * row; nothing is ever updated or deleted, and no order is ever reclassified by either.
  *
- * Activation requires all of: the Confirmare workflow exists (ConfirmationGate::WORKFLOW_READY, false in Phase 1),
- * the source is permitted (ARASYA_SOURCE_CONFIRMARE_<SOURCE>=on, which needs production, QR and document authority
- * ENFORCE), the source is enabled and active for ingestion, the business transition date has passed and the source
- * is not active already. The insert locks the source's order_sources row first, the row every new-order ingestion
- * of that source locks before it classifies, so no order is classified against a half-recorded activation.
+ * Activation requires all of: the source's Confirmare readiness (ConfirmareReadiness, API 2.45.0: schema, permission
+ * ARASYA_SOURCE_CONFIRMARE_<SOURCE>=on with production, QR and document authority ENFORCE, ingestion, operators, source
+ * access, finance with four eyes, the production document, invoicing when the source invoices through Arasya, and the
+ * shop's own signed readiness report), the business transition date has passed and the source is not active already.
+ * Until 2.45.0 a release-wide switch (ConfirmationGate::WORKFLOW_READY) refused every activation instead. The insert
+ * locks the source's order_sources row first, the row every new-order ingestion of that source locks before it
+ * classifies, so no order is classified against a half-recorded activation.
  *
  * The diagnosis is read-only (a read-only transaction): it lists, by order number and global id only, the orders a
  * person has to look at and changes nothing.
  */
 final readonly class WorkflowCohortActivation
 {
-    public function __construct(private PDO $pdo, private Clock $clock)
+    /** $readiness null: no readiness can be evaluated, so every activation step is refused (fail closed). */
+    public function __construct(private PDO $pdo, private Clock $clock, private ?ConfirmareReadiness $readiness = null)
     {
     }
 
@@ -47,9 +50,9 @@ final readonly class WorkflowCohortActivation
      *
      * @return array<string, mixed>
      */
-    public function schedule(?SourceDefinition $source, DateTimeImmutable $at, string $actor, ?string $reason, string $requestId, bool $workflowReady = ConfirmationGate::WORKFLOW_READY): array
+    public function schedule(?SourceDefinition $source, DateTimeImmutable $at, string $actor, ?string $reason, string $requestId, bool $testOverride = false): array
     {
-        $this->requireActivatable($source, $workflowReady);
+        $this->requireActivatable($source, $testOverride);
         $at = $at->setTimezone(new DateTimeZone('UTC'));
         return $this->record($source->key, WorkflowCohort::ACTION_SCHEDULED, $actor, $reason, $requestId, function (DateTimeImmutable $now) use ($source, $at): DateTimeImmutable {
             if (WorkflowCohort::firstActivation($this->pdo, $source->key, true) !== null) {
@@ -87,9 +90,9 @@ final readonly class WorkflowCohortActivation
      *
      * @return array<string, mixed>
      */
-    public function activate(?SourceDefinition $source, string $actor, ?string $reason, string $requestId, bool $workflowReady = ConfirmationGate::WORKFLOW_READY): array
+    public function activate(?SourceDefinition $source, string $actor, ?string $reason, string $requestId, bool $testOverride = false): array
     {
-        $this->requireActivatable($source, $workflowReady);
+        $this->requireActivatable($source, $testOverride);
         return $this->record($source->key, WorkflowCohort::ACTION_ACTIVATED, $actor, $reason, $requestId, function (DateTimeImmutable $now) use ($source): DateTimeImmutable {
             if (WorkflowCohort::firstActivation($this->pdo, $source->key, true) !== null) {
                 throw new ApiException(409, 'CONFIRMARE_ALREADY_ACTIVATED', 'The source was already activated; use resume after a suspension.');
@@ -126,9 +129,9 @@ final readonly class WorkflowCohortActivation
     }
 
     /** Ends a suspension. The first activation instant stays the protection instant. @return array<string, mixed> */
-    public function resume(?SourceDefinition $source, string $actor, ?string $reason, string $requestId, bool $workflowReady = ConfirmationGate::WORKFLOW_READY): array
+    public function resume(?SourceDefinition $source, string $actor, ?string $reason, string $requestId, bool $testOverride = false): array
     {
-        $this->requireActivatable($source, $workflowReady);
+        $this->requireActivatable($source, $testOverride);
         return $this->record($source->key, WorkflowCohort::ACTION_ACTIVATED, $actor, $reason, $requestId, function (DateTimeImmutable $now) use ($source): DateTimeImmutable {
             $latest = WorkflowCohort::activation($this->pdo, $source->key, true);
             if ($latest === null || $latest['action'] !== WorkflowCohort::ACTION_SUSPENDED) {
@@ -151,10 +154,18 @@ final readonly class WorkflowCohortActivation
         return is_array($row) ? ['armedAt' => new DateTimeImmutable((string) $row['armed_at'], new DateTimeZone('UTC')), 'reportedAt' => new DateTimeImmutable((string) $row['reported_at'], new DateTimeZone('UTC'))] : null;
     }
 
-    private function requireActivatable(?SourceDefinition $source, bool $workflowReady): void
+    /**
+     * $testOverride (TEST ONLY, never passed by bin/workflow-cohort.php or any route) skips the readiness evaluation in the
+     * integration suites that build only part of a source's setup; the permission, ingestion and operator checks below
+     * always run.
+     */
+    private function requireActivatable(?SourceDefinition $source, bool $testOverride): void
     {
-        if (!$workflowReady) {
-            throw new ApiException(409, 'CONFIRMARE_WORKFLOW_NOT_READY', 'The Confirmare workflow that approves orders is not available yet; activating a source would stop its production.');
+        if (!$testOverride) {
+            if ($this->readiness === null) {
+                throw new ApiException(409, 'CONFIRMARE_NOT_READY', 'The Confirmare readiness of the source could not be evaluated.', ['failed' => ['readiness_unavailable']]);
+            }
+            $this->readiness->assertReady($source, $this->clock->now()->setTimezone(new DateTimeZone('UTC')));
         }
         if ($source === null || !$source->confirmarePermitted) {
             throw new ApiException(409, 'CONFIRMARE_NOT_PERMITTED', 'ARASYA_SOURCE_CONFIRMARE_<SOURCE> is not on, or the source does not enforce production, QR and document authority.');
@@ -298,6 +309,7 @@ final readonly class WorkflowCohortActivation
             'permitted' => $source?->confirmarePermitted ?? false,
             'configMismatch' => $everActivated && !($source?->confirmarePermitted ?? false),
             'workflowReady' => ConfirmationGate::WORKFLOW_READY,
+            'readiness' => $this->readiness?->evaluate($source, $this->clock->now()->setTimezone(new DateTimeZone('UTC'))),
             'history' => $events,
             'ordersByCohort' => $byCohort,
             'awaitingConfirmation' => $awaiting,

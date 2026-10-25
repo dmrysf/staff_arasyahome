@@ -241,6 +241,20 @@ final class OperationsTestSupport
         return $intents[$intentKey] = ['expectedVersion' => $version, 'qrToken' => 'ARASYA:Q1:' . $row['qr_reference'], 'confirmedMultiple' => $count > 0, 'ownedCount' => $count];
     }
 
+    /**
+     * API 2.45.0: an activation through the production path (no readiness service given, no TEST override) is refused fail
+     * closed with CONFIRMARE_NOT_READY. Nothing is recorded.
+     */
+    public static function activationNeedsReadiness(PDO $pdo, ?\Arasya\Operations\Integration\SourceDefinition $source): bool
+    {
+        try {
+            (new \Arasya\Operations\Production\WorkflowCohortActivation($pdo, new MutableClock(new \DateTimeImmutable('2030-01-01T00:00:00Z'))))->activate($source, 'Test Owner', null, 'readiness-test');
+            return false;
+        } catch (\Arasya\Operations\Http\ApiException $error) {
+            return $error->errorCode === 'CONFIRMARE_NOT_READY' && ($error->details['failed'] ?? null) === ['readiness_unavailable'];
+        }
+    }
+
     public static function kernel(Config $config): ApiKernel
     {
         return (new Container($config))->kernel();

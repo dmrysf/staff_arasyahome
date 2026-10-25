@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 // Confirmare Staff workspace E2E fixture (API 2.39.0), run by the Confirmare spec after every earlier suite, in the
 // already prepared E2E database. Generic test people (never a real employee's name) receive Confirmare scopes from root
-// through the API; both shop sources are activated with the TEST override of WORKFLOW_READY (refused outside tests:
+// through the API; both shop sources are activated with the TEST override of the source readiness (refused outside tests:
 // the production CLI has no such switch); orders arrive through the signed source contract exactly as YD SOFT sends
 // them. Prints usernames and order numbers as JSON. Refuses any database that is not an E2E test database.
 //
@@ -167,7 +167,7 @@ $people['handoff'] = ['username' => 'cf.handoff.e2e', 'name' => 'Predare Product
 $registry = SourceRegistry::fromConfig($config);
 $activatedAt = max($cutover->modify('+1 second'), $now->modify('-2 hours'));
 foreach (['trendhome', 'outletperdele'] as $source) {
-    // TEST override of WORKFLOW_READY (the last argument): the production CLI cannot pass it.
+    // TEST override of the source readiness (the last argument): the production CLI cannot pass it.
     (new WorkflowCohortActivation($pdo, new MutableClock($activatedAt->modify('-20 minutes'))))->schedule($registry->find($source), $activatedAt, 'E2E', 'e2e', 'cf-e2e', true);
     T::ingest($kernel, $source, ['sentAt' => gmdate('Y-m-d\TH:i:s\Z'), 'confirmareArmedAt' => $iso($activatedAt)], null, null, 'heartbeat');
     (new WorkflowCohortActivation($pdo, new MutableClock($activatedAt->modify('-1 minute'))))->activate($registry->find($source), 'E2E', 'e2e', 'cf-e2e', true);

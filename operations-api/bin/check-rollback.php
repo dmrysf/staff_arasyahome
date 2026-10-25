@@ -49,6 +49,38 @@ try {
     if (is_string($sync) && (!isset($tables['order_cancellation_sync_operations']) || !hash_equals(hash_file('sha256', dirname(__DIR__) . '/database/migrations/034_order_cancellation_sync.sql'), $sync))) {
         throw new RuntimeException('Current migration could not be verified.');
     }
+    // Migrations 041 (SmartBill invoicing) and 042 (Confirmare connector readiness), API 2.45.0, likewise: optional,
+    // verified when recorded (a partial deployment that applied one of them must have applied the known file).
+    foreach (['041_smartbill_invoicing.sql' => ['employee_invoice_scopes', 'order_invoice_reads', 'order_invoice_actions', 'order_shop_assignments', 'order_invoice_qr_checks'],
+        '042_confirmare_connector_readiness.sql' => ['source_connector_readiness']] as $file => $owned) {
+        $recorded = $pdo->query('SELECT checksum FROM schema_migrations WHERE migration_name = ' . $pdo->quote($file))->fetchColumn();
+        if (is_string($recorded) && (array_diff($owned, array_keys($tables)) !== [] || !hash_equals(hash_file('sha256', dirname(__DIR__) . '/database/migrations/' . $file), $recorded))) {
+            throw new RuntimeException('Current migration could not be verified.');
+        }
+    }
+    // SmartBill invoicing (API 2.45.0; 041 is its first migration, so no older release reads these tables). Only
+    // unfinished work needs 2.45.0, because only 2.45.0 can finish it:
+    // - an invoice or proforma action still pending or unknown (only 2.45.0 reconciles it with the shop's stored answer;
+    //   an older API would leave it open while the shop could act again);
+    // - an order routed to a shop employee for its final invoice (active assignment) that is not invoiced yet;
+    // - an order with advance proforma work (proforma, its cancellation, the customer's acceptance of the total, an accepted
+    //   smaller advance) and no final invoice issued through Arasya yet: only 2.45.0 has those decisions, the money check
+    //   that depends on them and the final invoice route.
+    // Empty tables and finished history (invoiced orders, settled actions) do not: older releases ignore the tables, and
+    // the rows stay (no rollback deletes them). SmartBill documents themselves live in SmartBill and the shop.
+    $invoiceUnsettled = 0;
+    $invoiceRouted = 0;
+    $invoiceOpenWork = 0;
+    if (isset($tables['order_invoice_actions'], $tables['order_shop_assignments'])) {
+        $invoiceUnsettled = (int) $pdo->query("SELECT COUNT(*) FROM order_invoice_actions WHERE state IN ('pending', 'unknown')")->fetchColumn();
+        $notInvoiced = "NOT EXISTS (SELECT 1 FROM order_invoice_actions i WHERE i.order_uuid = %s AND i.action IN ('issue', 'reissue') AND i.state = 'applied' AND i.result = 'issued')";
+        $invoiceRouted = (int) $pdo->query("SELECT COUNT(*) FROM order_shop_assignments a WHERE a.state = 'active' AND " . sprintf($notInvoiced, 'a.order_uuid'))->fetchColumn();
+        $invoiceOpenWork = (int) $pdo->query("SELECT COUNT(DISTINCT p.order_uuid) FROM order_invoice_actions p WHERE p.action IN ('proforma_issue', 'proforma_cancel', 'proforma_resolve', 'total_accept', 'advance_accept') AND p.state = 'applied' AND "
+            . sprintf($notInvoiced, 'p.order_uuid'))->fetchColumn();
+    }
+    // Confirmare finance (API 2.41.0): an action still pending or unknown closes production for its order; only 2.42.0
+    // reads that in the production gate (ConfirmationClearance), so it needs 2.42.0 like any open Confirmare order.
+    $financeUnsettled = isset($tables['order_finance_actions']) ? (int) $pdo->query("SELECT COUNT(*) FROM order_finance_actions WHERE state IN ('pending', 'unknown')")->fetchColumn() : 0;
     $syncOpen = isset($tables['order_cancellation_sync_operations'])
         ? (int) $pdo->query('SELECT COUNT(*) FROM order_cancellation_sync_operations WHERE open_order_uuid IS NOT NULL')->fetchColumn() : 0;
     $stoppedOpen = isset($tables['order_cancellation_controls'])
@@ -91,9 +123,10 @@ try {
             "SELECT COUNT(*) FROM operational_orders WHERE workflow_cohort IN ('confirmare', 'undetermined') AND production_completed_at IS NULL",
         )->fetchColumn();
     }
-    $floor = ($cohortOpen > 0 || $activations > 0) ? '2.42.0' : ($syncOpen > 0 ? '2.36.0' : ($stoppedOpen > 0 ? '2.35.0' : ($schemaTwoOpen > 0 ? '2.34.2' : ($assistedOpen > 0 ? '2.34.0' : (array_sum($state) > 0 ? '2.32.0' : null)))));
+    $floor = ($invoiceUnsettled > 0 || $invoiceRouted > 0 || $invoiceOpenWork > 0) ? '2.45.0' : (($cohortOpen > 0 || $activations > 0 || $financeUnsettled > 0) ? '2.42.0' : ($syncOpen > 0 ? '2.36.0' : ($stoppedOpen > 0 ? '2.35.0' : ($schemaTwoOpen > 0 ? '2.34.2' : ($assistedOpen > 0 ? '2.34.0' : (array_sum($state) > 0 ? '2.32.0' : null))))));
     $safe = $floor === null || version_compare($argv[1], $floor, '>=');
-    fwrite(STDOUT, json_encode(['safe' => $safe, 'targetVersion' => $argv[1], 'requiredFloor' => $floor, 'state' => $state + ['openOrdersWithAssistedCheckpoints' => $assistedOpen, 'openOrdersWithTicketSchema2' => $schemaTwoOpen, 'ordersAwaitingConfirmare' => $cohortClosed, 'openConfirmareOrders' => $cohortOpen, 'confirmareActivations' => $activations, 'openStoppedOrders' => $stoppedOpen, 'openCancellationSyncOperations' => $syncOpen]], JSON_THROW_ON_ERROR) . "\n");
+    fwrite(STDOUT, json_encode(['safe' => $safe, 'targetVersion' => $argv[1], 'requiredFloor' => $floor, 'state' => $state + ['openOrdersWithAssistedCheckpoints' => $assistedOpen, 'openOrdersWithTicketSchema2' => $schemaTwoOpen, 'ordersAwaitingConfirmare' => $cohortClosed, 'openConfirmareOrders' => $cohortOpen, 'confirmareActivations' => $activations, 'openStoppedOrders' => $stoppedOpen, 'openCancellationSyncOperations' => $syncOpen,
+        'unsettledInvoiceActions' => $invoiceUnsettled, 'ordersRoutedForInvoice' => $invoiceRouted, 'ordersWithOpenProformaWork' => $invoiceOpenWork, 'unsettledFinanceActions' => $financeUnsettled]], JSON_THROW_ON_ERROR) . "\n");
     exit($safe ? 0 : 3);
 } catch (Throwable) {
     fwrite(STDERR, "Rollback refused: current database state could not be verified.\n");
