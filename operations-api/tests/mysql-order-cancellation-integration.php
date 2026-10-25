@@ -593,7 +593,21 @@ $ok($physical($keeper, $d2, ['outcome' => 'secured', 'note' => 'Raft oprire', 'q
 $wooItems[$d2['id']][0]['meters'] = 9.1;
 $ok($wooEvent($d2, 'active', 'processing'), 'C8 content change at the source');
 $check($one('SELECT document_status FROM operational_orders WHERE order_uuid = ?', [$d2['uuid']]) !== 'active', 'C8 the document is stale');
-$error($release($releaser, $d2), 409, 'RELEASE_DOCUMENT_NOT_READY', 'C8 the release waits for the document revision');
+// Owner rule 1: no revision is generated while production is stopped, so the stale document no longer blocks the release
+// (the order would never be released). The document gate keeps every production action closed until the new revision.
+$docVersion = static fn (array $o): int => (int) $one('SELECT document_version FROM operational_orders WHERE order_uuid = ?', [$o['uuid']]);
+$request2 = $ok($post($root, $docPath($d2, 'revision-requests'), ['expectedDocumentVersion' => $docVersion($d2), 'comment' => 'Corectare lungime după oprire']), 'C8 a revision is requested while stopped', 201)['request'];
+$ok($dash($root, 'POST', "/production-documents/revision-requests/{$request2['id']}/decision", ['expectedVersion' => 1, 'decision' => 'approve']), 'C8 the revision is approved while stopped');
+$check($localStopped($post($root, $docPath($d2, 'generate'), ['expectedDocumentVersion' => $docVersion($d2), 'requestId' => $request2['id']])), 'C8 the approved revision (R2) is not generated while stopped');
+$check($revisions($d2) === 1, 'C8 the refused generation created no revision');
+$ok($release($releaser, $d2), 'C8 released although the document is stale');
+$check(json_decode((string) $one("SELECT details_json FROM order_cancellation_events WHERE order_uuid = ? AND event_type = 'release_approved' ORDER BY event_seq DESC LIMIT 1", [$d2['uuid']]), true)['remaining']['documentBlocked'] === true, 'C8 the release reports the stale document as remaining');
+$beforeGate = $state($d2);
+$gated = $post($worker, $d2['path'] . '/transition', ['expectedVersion' => (int) $beforeGate['version']]);
+$check($gated['status'] === 409 && !in_array($gated['body']['error']['code'] ?? '', STOP_CODES, true) && $state($d2)['stage'] === $beforeGate['stage'], 'C8 after the release the document gate still refuses production: ' . json_encode($gated['body']));
+$ok($post($root, $docPath($d2, 'generate'), ['expectedDocumentVersion' => $docVersion($d2), 'requestId' => $request2['id']]), 'C8 R2 is generated after the release', 201);
+$check($revisions($d2) === 2 && $one('SELECT document_status FROM operational_orders WHERE order_uuid = ?', [$d2['uuid']]) === 'active', 'C8 the new revision is active');
+$ok($post($worker, $d2['path'] . '/transition', ['expectedVersion' => (int) $state($d2)['version']]), 'C8 production resumes once the revision is active');
 
 // ---- C9. Races ----------------------------------------------------------------------------------------------------------
 $raceOutcome = static function (array $o, array $before, array $results, int $opIndex, string $label) use ($state, $check, $control, $one, $history): void {
@@ -822,5 +836,159 @@ $check($exStatus($xg3) === 'awaiting_approval', 'C12 the case waits, unchanged')
 $ok($marketplace($m, 'Picking') === 'updated' ? ['status' => 200, 'body' => []] : ['status' => 500, 'body' => []], 'C12 the mixed order is reactivated');
 $check($state($m)['availability'] === 'in_progress' && $state($m)['cancellation'] === 'held', 'C12 reactivated, still stopped');
 $check($localStopped($post($worker2, "/production-tracks/{$trackId}/complete", ['expectedVersion' => (int) $one('SELECT version FROM production_tracks WHERE track_uuid = ?', [$trackId])])), 'C12 the track is refused (ReworkTrackService)');
+
+// ---- C13. Owner rule 1: no ticket and no paper while production is stopped; reading stays available ----------------------
+$activeRevision = static fn (array $o): int => (int) $one('SELECT revision_number FROM production_document_revisions WHERE active_order_uuid = ?', [$o['uuid']]);
+$printCount = static fn (array $o): int => (int) $one('SELECT COUNT(*) FROM production_document_prints WHERE order_uuid = ?', [$o['uuid']]);
+$n1 = $woo('trendhome', 'rule1none', 'labeling');
+$n2 = $woo('outletperdele', 'rule1printed', 'labeling');
+$n3 = $woo('trendhome', 'rule1unprinted', 'labeling');
+$ok($post($root, $docPath($n2, 'generate'), ['expectedDocumentVersion' => $docVersion($n2)]), 'C13 R1 before the stop', 201);
+$ok($post($root, $docPath($n2, 'print'), ['revisionNumber' => $activeRevision($n2)]), 'C13 printed before the stop');
+$ok($post($root, $docPath($n3, 'generate'), ['expectedDocumentVersion' => $docVersion($n3)]), 'C13 R1 before the stop, never printed', 201);
+foreach ([$n1, $n2, $n3] as $n) {
+    $ok($stop($keeper, $n, ['reason' => 'Regula 1: verificarea documentelor.']), "C13 local stop {$n['id']}");
+}
+$before13 = [$revisions($n1), $revisions($n2), $revisions($n3), $printCount($n1), $printCount($n2), $printCount($n3)];
+$check($localStopped($post($root, $docPath($n1, 'generate'), ['expectedDocumentVersion' => $docVersion($n1)])), 'C13 R1 generation is refused while stopped');
+$check($localStopped($post($root, $docPath($n2, 'print'), ['revisionNumber' => $activeRevision($n2), 'reason' => 'Hârtie deteriorată'])), 'C13 a normal reprint is refused while stopped');
+$check($localStopped($post($root, $docPath($n3, 'print'), ['revisionNumber' => $activeRevision($n3)])), 'C13 the first print of an existing revision is refused while stopped');
+$check($before13 === [$revisions($n1), $revisions($n2), $revisions($n3), $printCount($n1), $printCount($n2), $printCount($n3)], 'C13 the refused commands wrote no revision and no print');
+$read13 = $ok($get($root, $docPath($n2)), 'C13 reading the document stays available while stopped');
+$check(($read13['activeRevision']['number'] ?? null) === 1, 'C13 the existing revision is shown read-only');
+$preview13 = $get($root, $docPath($n2) . '/revisions/1/preview');
+$check($preview13['status'] === 200, 'C13 the read-only preview stays available while stopped (HTTP ' . $preview13['status'] . ')');
+// After the release normal work resumes: R1 and the reprint are accepted again.
+$ok($physical($keeper, $n1, ['outcome' => 'secured', 'note' => 'Raft oprire, regula 1', 'qrToken' => $n1['qr']]), 'C13 n1 secured');
+$ok($release($releaser, $n1), 'C13 n1 released');
+$ok($post($root, $docPath($n1, 'generate'), ['expectedDocumentVersion' => $docVersion($n1)]), 'C13 R1 is generated after the release', 201);
+$ok($physical($keeper, $n2, ['outcome' => 'secured', 'note' => 'Raft oprire, regula 1', 'qrToken' => $n2['qr']]), 'C13 n2 secured');
+$ok($release($releaser, $n2), 'C13 n2 released');
+$ok($post($root, $docPath($n2, 'print'), ['revisionNumber' => $activeRevision($n2), 'reason' => 'Hârtie deteriorată']), 'C13 the reprint is accepted after the release');
+$check($printCount($n2) === 2 && $printCount($n3) === 0, 'C13 exactly the accepted prints were recorded');
+
+// ---- C14. Owner rule 1: a release never authorizes production by itself ---------------------------------------------------
+// A document made invalid while production was stopped (stale or revoked) keeps every production entry closed after the
+// release, each through its own path: the stage 1 claim, the cutting QR intake, a later stage claim, the stage completion,
+// the owner reassignment and the owner release. Only the new revision (generated after the release) reopens production.
+$docStatus = static fn (array $o): string => (string) $one('SELECT document_status FROM operational_orders WHERE order_uuid = ?', [$o['uuid']]);
+$byDocument = static fn (array $r): bool => $r['status'] === 409 && ($r['body']['error']['code'] ?? '') === 'ORDER_BLOCKED_BY_DOCUMENT';
+$currentQr = static fn (array $o): string => 'ARASYA:Q1:' . (string) $one("SELECT qr_reference FROM order_qr_references WHERE order_uuid = ? AND status = 'active'", [$o['uuid']]);
+$revoke = static fn (array $o): array => $container->documentService()->revoke($container->employeeRepository()->findByUuid($rootUuid), $o['id'], ['expectedDocumentVersion' => $docVersion($o), 'reason' => 'Regula 1: document invalid'], $key('revoke'), 'cx-revoke');
+$renew = static function (array $o, string $label) use ($ok, $post, $dash, $root, $docPath, $docVersion): string {
+    $request = $ok($post($root, $docPath($o, 'revision-requests'), ['expectedDocumentVersion' => $docVersion($o), 'comment' => 'Revizie după oprire']), "{$label} revision requested", 201)['request'];
+    $ok($dash($root, 'POST', "/production-documents/revision-requests/{$request['id']}/decision", ['expectedVersion' => 1, 'decision' => 'approve']), "{$label} revision approved");
+    return (string) $request['id'];
+};
+$secureIfNeeded = static function (array $o, string $label) use ($control, $ok, $physical, $keeper, $currentQr): void {
+    if ($control($o)['physical_status'] === 'pending') {
+        $ok($physical($keeper, $o, ['outcome' => 'secured', 'note' => 'Raft oprire, regula 1', 'qrToken' => $currentQr($o)]), "{$label} secured");
+    }
+};
+$e1 = $woo('trendhome', 'r1gatewait', 'waiting');
+$e2 = $woo('outletperdele', 'r1gatehem', 'side-hem');
+$bring($e2, 'side-hem');
+$e3 = $trendyol('r1gateintake');
+foreach ([$e1, $e2, $e3] as $e) {
+    $ok($post($root, $docPath($e, 'generate'), ['expectedDocumentVersion' => $docVersion($e)]), "C14 R1 {$e['id']}", 201);
+    $ok($stop($keeper, $e, ['reason' => 'Regula 1: verificarea documentului.']), "C14 stop {$e['id']}");
+    $secureIfNeeded($e, "C14 {$e['id']}");
+}
+$wooItems[$e1['id']][0]['meters'] = 6.1;
+$ok($wooEvent($e1, 'active', 'processing'), 'C14 e1 content change while stopped');
+$revoke($e2);
+$revoke($e3);
+$check($docStatus($e1) === 'stale' && $docStatus($e2) === 'revoked' && $docStatus($e3) === 'revoked', 'C14 the documents became invalid while stopped');
+$request1 = $renew($e1, 'C14 e1');
+$check($localStopped($post($root, $docPath($e1, 'generate'), ['expectedDocumentVersion' => $docVersion($e1), 'requestId' => $request1])), 'C14 the approved revision is not generated while stopped');
+foreach ([$e1, $e2, $e3] as $e) {
+    $released = $ok($release($releaser, $e), "C14 release {$e['id']}");
+    $check($state($e)['cancellation'] === 'released' && $state($e)['stopped'] === null, "C14 {$e['id']} is released");
+    $check(json_decode((string) $one("SELECT details_json FROM order_cancellation_events WHERE order_uuid = ? AND event_type = 'release_approved' ORDER BY event_seq DESC LIMIT 1", [$e['uuid']]), true)['remaining']['documentBlocked'] === true, "C14 {$e['id']} release reports the blocked document");
+}
+$before14 = [$state($e1), $state($e2), $state($e3)];
+$activity14 = [$activityCount($e1), $activityCount($e2), $activityCount($e3)];
+$check($byDocument($post($waiter, $e1['path'] . '/claim', T::cuttingClaim($pdo, $e1['id'], $waiter['employeeUuid'], (int) $state($e1)['version']))), 'C14 stage 1 claim is refused by the document gate');
+$view1 = $staffView($waiter, $e1);
+$check(!isset($view1['employeeAllowedAction']) && ($view1['employeeActionBlockedReason'] ?? null) === \Arasya\Operations\Document\DocumentGuard::BLOCKED_REASON, 'C14 Staff shows no action, only the document block: ' . json_encode([$view1['employeeAllowedAction'] ?? null, $view1['employeeActionBlockedReason'] ?? null]));
+$intake3 = $intake($cutter, $e3);
+$check($intake3['status'] === 410 && ($intake3['body']['error']['code'] ?? '') === 'DOCUMENT_REVOKED', 'C14 the cutting QR intake with the revoked QR is refused: ' . json_encode($intake3['body']['error'] ?? null));
+$check($byDocument($post($worker, $e2['path'] . '/transition', ['expectedVersion' => (int) $state($e2)['version']])), 'C14 the stage completion is refused by the document gate');
+$check($byDocument($dash($root, 'PUT', '/management/orders/' . rawurlencode($e2['id']) . '/owner', ['employeeId' => $worker2['employeeUuid'], 'expectedVersion' => (int) $state($e2)['version']])), 'C14 an owner reassignment is refused by the document gate');
+$check($byDocument($dash($root, 'POST', '/management/orders/' . rawurlencode($e2['id']) . '/release-owner', ['expectedVersion' => (int) $state($e2)['version']])), 'C14 an owner release is refused by the document gate');
+$check([$state($e1), $state($e2), $state($e3)] === $before14 && [$activityCount($e1), $activityCount($e2), $activityCount($e3)] === $activity14, 'C14 the refused entries moved nothing and recorded no activity');
+// The new revision reopens each path; the QR of the invalid revision stays refused.
+$ok($post($root, $docPath($e1, 'generate'), ['expectedDocumentVersion' => $docVersion($e1), 'requestId' => $request1]), 'C14 e1 R2 after the release', 201);
+$request2 = $renew($e2, 'C14 e2');
+$ok($post($root, $docPath($e2, 'generate'), ['expectedDocumentVersion' => $docVersion($e2), 'requestId' => $request2]), 'C14 e2 R2 after the release', 201);
+$request3 = $renew($e3, 'C14 e3');
+$ok($post($root, $docPath($e3, 'generate'), ['expectedDocumentVersion' => $docVersion($e3), 'requestId' => $request3]), 'C14 e3 R2 after the release', 201);
+$check($docStatus($e1) === 'active' && $docStatus($e2) === 'active' && $docStatus($e3) === 'active', 'C14 the new revisions are active');
+$old3 = $intake($cutter, $e3);
+$check($old3['status'] === 410 && $state($e3)['stage'] === 'waiting', 'C14 the old QR still cannot start cutting: ' . json_encode($old3['body']['error'] ?? null));
+$ok($post($cutter, '/cutting/intake', ['qrToken' => $currentQr($e3)] + (($n = (new \Arasya\Operations\Cutting\CuttingLifecycle($pdo))->ownedCount($cutter['employeeUuid'])) > 0 ? ['confirmedMultiple' => true, 'ownedCount' => $n] : []), $key('intake')), 'C14 cutting starts with the new revision QR');
+$check($state($e3)['stage'] === 'material-preparation', 'C14 e3 entered cutting');
+$claim($waiter, $e1);
+$ok($post($worker, $e2['path'] . '/transition', ['expectedVersion' => (int) $state($e2)['version']]), 'C14 e2 production resumes with the new revision');
+
+// ---- C15. Owner rule 1 races: release, R2 generation, a new stop and production at once ---------------------------------
+$releaseJob = static fn (array $o): array => $httpJob($releaser, '/management/orders/' . rawurlencode($o['id']) . '/cancellation/release', ['expectedVersion' => (int) $control($o)['version'], 'reason' => 'Clientul a confirmat comanda din nou.'], DASHBOARD);
+$generateJob = static fn (array $o, string $requestId): array => $httpJob($root, $docPath($o, 'generate'), ['expectedDocumentVersion' => $docVersion($o), 'requestId' => $requestId]);
+$releaseAt = static fn (array $o): ?string => ($v = $one("SELECT MAX(occurred_at) FROM order_cancellation_events WHERE order_uuid = ? AND event_type = 'release_approved'", [$o['uuid']])) === null ? null : (string) $v;
+$r2At = static fn (array $o): ?string => ($v = $one('SELECT generated_at FROM production_document_revisions WHERE order_uuid = ? AND revision_number = 2', [$o['uuid']])) === null ? null : (string) $v;
+// A stopped order with a stale document and an approved revision request, physically secured: ready for the release.
+$staleStopped = static function (string $tag, string $stage) use ($woo, $bring, $ok, $post, $root, $docPath, $docVersion, $stop, $keeper, $secureIfNeeded, &$wooItems, $wooEvent, $renew): array {
+    $o = $woo('trendhome', $tag, $stage);
+    $bring($o, $stage);
+    $ok($post($root, $docPath($o, 'generate'), ['expectedDocumentVersion' => $docVersion($o)]), "C15 {$tag} R1", 201);
+    $ok($stop($keeper, $o, ['reason' => 'Regula 1: cursă.']), "C15 {$tag} stop");
+    $secureIfNeeded($o, "C15 {$tag}");
+    $wooItems[$o['id']][0]['meters'] = 5.5;
+    $ok($wooEvent($o, 'active', 'processing'), "C15 {$tag} content change");
+    return $o + ['request' => $renew($o, "C15 {$tag}")];
+};
+// A: release versus the R2 generation. R2 exists only when the release committed first; the release never needs R2.
+for ($i = 0; $i < 3; $i++) {
+    $o = $staleStopped("rra{$i}", 'bottom-hem');
+    $results = $race([$releaseJob($o), $generateJob($o, $o['request'])]);
+    $check($results[0]['status'] === 200 && $state($o)['cancellation'] === 'released', "C15 A{$i}: the release commits " . json_encode($results));
+    $check($results[1]['status'] === 201
+        ? $revisions($o) === 2 && $docStatus($o) === 'active' && $r2At($o) >= $releaseAt($o)
+        : $revisions($o) === 1 && $docStatus($o) === 'stale' && $results[1]['error'] === 'ORDER_PRODUCTION_STOPPED', "C15 A{$i}: R2 only after the release " . json_encode($results));
+}
+// B: release versus the stage completion with the stale document: production never moves. The release raises the
+// production version, so a completion sent with the older version may also lose on ORDER_CHANGED; a fresh completion
+// after the release is refused by the document gate.
+for ($i = 0; $i < 2; $i++) {
+    $o = $staleStopped("rrb{$i}", 'bottom-hem');
+    $before = $state($o);
+    $results = $race([$releaseJob($o), $httpJob($worker, $o['path'] . '/transition', $transitionBody($o))]);
+    $check($results[0]['status'] === 200 && $results[1]['status'] === 409 && in_array($results[1]['error'], [...STOP_CODES, 'ORDER_BLOCKED_BY_DOCUMENT', 'ORDER_CHANGED'], true) && $state($o)['stage'] === $before['stage'], "C15 B{$i}: the transition is refused either way " . json_encode($results));
+    $check($byDocument($post($worker, $o['path'] . '/transition', ['expectedVersion' => (int) $state($o)['version']])) && $state($o)['stage'] === $before['stage'], "C15 B{$i}: after the release the document gate refuses the completion");
+}
+// C: R2 generation versus a new stop after the release: either the revision committed first (and the stop holds it), or
+// the generation is refused; production stays closed in both cases.
+for ($i = 0; $i < 2; $i++) {
+    $o = $staleStopped("rrc{$i}", 'bottom-hem');
+    $ok($release($releaser, $o), "C15 C{$i} released");
+    $results = $race([$httpJob($keeper, '/management/orders/' . rawurlencode($o['id']) . '/cancellation/stop', ['reason' => 'Regula 1: oprire nouă.'], DASHBOARD), $generateJob($o, $o['request'])]);
+    $check($results[0]['status'] === 200 && $state($o)['cancellation'] === 'held', "C15 C{$i}: the new stop commits " . json_encode($results));
+    $check($results[1]['status'] === 201 ? $revisions($o) === 2 : $revisions($o) === 1 && $results[1]['error'] === 'ORDER_PRODUCTION_STOPPED', "C15 C{$i}: deterministic generation " . json_encode($results));
+    $check($localStopped($post($worker, $o['path'] . '/transition', ['expectedVersion' => (int) $state($o)['version']])), "C15 C{$i}: production stays stopped");
+}
+// D: release versus the cutting QR intake with a revoked document: cutting never starts.
+for ($i = 0; $i < 2; $i++) {
+    $o = $trendyol("rrd{$i}");
+    $ok($post($root, $docPath($o, 'generate'), ['expectedDocumentVersion' => $docVersion($o)]), "C15 D{$i} R1", 201);
+    $ok($stop($keeper, $o, ['reason' => 'Regula 1: cursă la tăiere.']), "C15 D{$i} stop");
+    $revoke($o);
+    $results = $race([$releaseJob($o), $httpJob($cutter2, '/cutting/intake', $intakeBody($cutter2, $o))]);
+    $check($results[0]['status'] === 200 && in_array($results[1]['error'], [...STOP_CODES, 'DOCUMENT_REVOKED'], true) && $state($o)['stage'] === 'waiting', "C15 D{$i}: cutting does not start " . json_encode($results));
+}
+// E: two R2 generations at once after the release: exactly one revision.
+$o = $staleStopped('rre', 'bottom-hem');
+$ok($release($releaser, $o), 'C15 E released');
+$results = $race([$generateJob($o, $o['request']), $generateJob($o, $o['request'])]);
+$check(count(array_filter($results, static fn (array $r): bool => $r['status'] === 201)) === 1 && $revisions($o) === 2, 'C15 E: one revision from two generations ' . json_encode($results));
 
 fwrite(STDOUT, "PASS MySQL order cancellation integration ({$checks} checks).\n");

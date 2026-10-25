@@ -77,8 +77,12 @@ A release is refused, in this order, when:
 3. the product left the factory (`RELEASE_NOT_APPLICABLE`);
 4. the source still reports a cancellation (`RELEASE_SOURCE_CANCELLED`);
 5. the physical state is not verified (`RELEASE_PHYSICAL_UNVERIFIED`);
-6. the production document is stale or revoked (`RELEASE_DOCUMENT_NOT_READY`);
-7. the version is stale (`CANCELLATION_CHANGED`).
+6. the version is stale (`CANCELLATION_CHANGED`).
+
+Owner rule 1: no document revision is generated while production is stopped. A stale or revoked document therefore no
+longer refuses the release (`RELEASE_DOCUMENT_NOT_READY` is no longer returned): the order would otherwise never be
+released. The document gate is independent of the stop and keeps refusing every production action until the approved
+revision is generated after the release. The release answer reports it as `remaining.documentBlocked: true`.
 
 A release never moves a stage, never changes an owner and never closes an exception. Production resumes from the
 stage, owner, exception and piece state that physically exist. An open exception, a plan confirmation, the piece gate
@@ -114,7 +118,8 @@ and only then evaluates the guard.
 |---|---|---|
 | Manufacturing | Order claim and transition: stages 1–14, packing and final completion. QR cutting intake. Cutting transfer request, approval, acceptance and completion. Owner release and reassign. Rework and route track claim and complete. Manufacturing plan line confirmation. Quality: fault report, custody acceptance, return to cutting, manager approval of rework, new decision attempt. | Refused by `ProductionStop::assertOpen`. Order and track decisions report the stop. The conditional `UPDATE`s of claim, transition, intake and ownership also require `production_stopped_at IS NULL`. |
 | Physical safety | Cutter receipt of a returned piece (acknowledge). Supervisor handover back to tailoring (restore) and the tailor's receipt (receiveRestore). Piece custody, location and reunion records. Material records. | Allowed. They record where the product physically is. They never make the order workable: the stop refuses every later manufacturing command. A synthetic EX-000001-style receipt is covered by the suite. |
-| Administrative / audit | Manager rejection of a return. Notes. Root exception recovery (cancel). Production authority takeover and release. QR rotation and reconciliation. Document generation, revision request and decision, print and revoke. Route evidence. Informational PERDEA 6/7 marks. Feature cohorts. | Allowed. None of them moves production. Cancellation never creates a document revision and never rotates a QR. |
+| Production ticket and Confirmare (owner rule 1) | Confirmare approval. Document generation: revision 1 (Staff, the B2B and Trendyol handoffs, the shop's print panel) and every later revision. Print and reprint of the active revision (Staff, B2B viewer, the shop's print panel). | Refused by `ProductionStop::assertOpen` (`ORDER_PRODUCTION_STOPPED`, or `ORDER_UNAVAILABLE` when the source cancelled the order). The shop's document state reports `issueAllowed: false`. Reading the document, its PDF and its history stays available. After a release the commands work again. |
+| Administrative / audit | Manager rejection of a return. Notes. Root exception recovery (cancel). Production authority takeover and release. QR rotation and reconciliation. Document revision request and decision, and revoke. Route evidence. Informational PERDEA 6/7 marks. Feature cohorts. | Allowed. None of them moves production. Cancellation never creates a document revision and never rotates a QR. |
 | Cancellation resolution | Local stop, physical reconciliation, release | Management routes with explicit permissions (below) |
 | Read-only | Order views, queues, history, Dashboard views, QR resolution | Allowed. A stopped order is not a claimable task in any stage queue or in the cutting pool. Its owner still sees it under "my orders". Scanning its QR shows the stop. |
 

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Arasya\Operations\Confirmare;
 
 use Arasya\Operations\Authorization\AuthorizationService;
+use Arasya\Operations\Cancellation\ProductionStop;
 use Arasya\Operations\Document\DocumentScopePolicy;
 use Arasya\Operations\Document\DocumentService;
 use Arasya\Operations\Employee\EmployeeIdentity;
@@ -388,6 +389,9 @@ final class ConfirmareService
                 throw new ApiException(409, 'CONFIRMARE_ORDER_CLOSED', 'The order is cancelled or no longer available in the shop; it cannot be approved.');
             }
             $orderUuid = (string) $order['order_uuid'];
+            // Owner rule 1 (production stop): an order whose production is stopped is never approved for production; the stop is
+            // read with a locking read of the order row (the shared cancellation guard).
+            ProductionStop::assertOpen($this->pdo, $orderUuid);
             $pricing = $this->pdo->prepare('SELECT source_pricing_fingerprint FROM operational_orders WHERE order_uuid = ?');
             $pricing->execute([$orderUuid]);
             if ($pricing->fetchColumn() === null) {
