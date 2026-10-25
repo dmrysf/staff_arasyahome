@@ -57,6 +57,12 @@ final class SourceAccessFakeShop implements SourceAccessTransport
     public array $products = [];
     /** Phase 5 knobs: 'answer_lost' / 'crash' after an applied finance action; the shop's own switches. */
     public ?string $afterFinance = null;
+    /** YD SOFT 2.16 safety rules (owner rule 2, K-1): `finance_open` and `order_cancelled` refusals. Off = a 2.15 shop. */
+    public bool $safetyRules = false;
+    /** What happens to the answer of the next refusal after the shop stored it: 'answer_lost' or 'crash'. */
+    public ?string $afterRefusal = null;
+    /** The next finance action is answered with this refusal [code, status], stored like any refusal (protocol violations). */
+    public ?array $forceRefusal = null;
     public bool $financeRecord = true;
     public string $financeRefunds = 'manual';
     /** @var array<string, array{order: string, hash: string, status: int, body: array<string, mixed>}> employee|key => stored answer */
@@ -275,19 +281,51 @@ final class SourceAccessFakeShop implements SourceAccessTransport
         $revision = $this->financeRevision($orderId);
         $refuse = function (string $code, int $status = 409) use ($key, $orderId, $hash, $revision): array {
             $this->financeAnswers[$key] = ['order' => $orderId, 'hash' => $hash, 'status' => $status, 'body' => ['error' => ['code' => $code], 'revision' => $revision]];
+            $after = $this->afterRefusal;
+            $this->afterRefusal = null;
+            if ($after === 'answer_lost') {
+                return [0, []];
+            }
+            if ($after === 'crash') {
+                return [500, ['error' => ['code' => 'internal_error']]];
+            }
             return [$status, ['error' => ['code' => $code], 'revision' => $revision]];
         };
+        if ($this->forceRefusal !== null) {
+            [$forcedCode, $forcedStatus] = $this->forceRefusal;
+            $this->forceRefusal = null;
+            return $refuse($forcedCode, $forcedStatus);
+        }
         if (($input['expectedRevision'] ?? null) !== $revision) {
             return $refuse('revision_changed');
         }
+        $cancelled = ($this->orders[$orderId]['status'] ?? 'processing') === 'cancelled';
         $f = &$this->orders[$orderId]['finance'];
         $f['entries'] ??= [];
         $numbers = $this->financeNumbers($orderId);
+        $openOther = static function (array $entries, ?string $except) {
+            foreach ($entries as $entry) {
+                if ($entry['state'] === 'submitted' && in_array($entry['kind'], ['transfer_in', 'refund_out'], true) && $entry['id'] !== $except) {
+                    return true;
+                }
+            }
+            return false;
+        };
         $entryId = null;
         $action = (string) ($input['action'] ?? '');
         if ($action === 'submit_transfer' || $action === 'submit_refund') {
             $kind = $action === 'submit_transfer' ? 'transfer_in' : 'refund_out';
             $amount = (float) ($input['amount'] ?? 0);
+            if ($this->safetyRules && $action === 'submit_transfer' && $cancelled) {
+                return $refuse('order_cancelled');
+            }
+            if ($this->safetyRules && $action === 'submit_refund' && $openOther($f['entries'], null)) {
+                foreach ($f['entries'] as $entry) {
+                    if ($entry['kind'] === 'transfer_in' && $entry['state'] === 'submitted') {
+                        return $refuse('finance_open');
+                    }
+                }
+            }
             if ($action === 'submit_refund') {
                 if (($input['productionComplete'] ?? null) !== true) {
                     return $refuse('production_not_complete');
@@ -346,6 +384,12 @@ final class SourceAccessFakeShop implements SourceAccessTransport
                 return $refuse('same_employee', 403);
             }
             $verify = ($input['decision'] ?? null) === 'verify';
+            if ($this->safetyRules && $verify && $action === 'decide_transfer' && $cancelled) {
+                return $refuse('order_cancelled');
+            }
+            if ($this->safetyRules && $verify && $action === 'decide_refund' && $openOther($f['entries'], $f['entries'][$index]['id'])) {
+                return $refuse('finance_open');
+            }
             $f['entries'][$index] = array_merge($f['entries'][$index], ['state' => $verify ? 'verified' : 'rejected', 'decidedBy' => $employee, 'decidedAt' => gmdate('Y-m-d\TH:i:s\Z', $now), 'decisionCode' => $verify ? 'verified' : (string) ($input['reasonCode'] ?? 'other')]);
             $entryId = $f['entries'][$index]['id'];
         } elseif ($action === 'acknowledge_liability') {

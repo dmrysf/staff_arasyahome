@@ -639,7 +639,7 @@ final readonly class ConfirmareFinance
         }
         if ($answer['status'] >= 400 && $answer['status'] < 500) {
             try {
-                $refusal = SourceFinance::refusal($answer['body']);
+                $refusal = SourceFinance::refusal($answer['body'], $action, $answer['status']);
             } catch (SourceAccessException) {
                 $refusal = null;
             }

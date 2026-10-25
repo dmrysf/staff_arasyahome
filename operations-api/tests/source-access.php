@@ -255,6 +255,25 @@ foreach ([
 }
 $check(SourceFinance::refusal(['error' => ['code' => 'revision_changed'], 'revision' => 'sha256:' . str_repeat('b', 64)]) === ['code' => 'revision_changed', 'revision' => 'sha256:' . str_repeat('b', 64)], 'a refusal with the current revision');
 $throws(static fn () => SourceFinance::refusal(['error' => ['code' => 'paid_anyway']]), 'SOURCE_ERROR', 'an unknown refusal code is a source error');
+// YD SOFT 2.16 safety refusals: valid only as a 409 answer to their own actions, a protocol violation anywhere else.
+$rev = 'sha256:' . str_repeat('c', 64);
+foreach (SourceFinance::ACTION_REFUSALS as $code => $actions) {
+    foreach ($actions as $own) {
+        $check(SourceFinance::refusal(['error' => ['code' => $code], 'revision' => $rev], $own, 409) === ['code' => $code, 'revision' => $rev], "{$code} is a refusal of {$own}");
+    }
+    foreach (array_diff(['submit_transfer', 'decide_transfer', 'submit_refund', 'decide_refund', 'acknowledge_liability'], $actions) as $other) {
+        $throws(static fn () => SourceFinance::refusal(['error' => ['code' => $code]], $other, 409), 'SOURCE_ERROR', "{$code} answered to {$other} is a source error");
+    }
+    foreach ([400, 403, 404, 410, 422, 423, 429] as $status) {
+        $throws(static fn () => SourceFinance::refusal(['error' => ['code' => $code]], $actions[0], $status), 'SOURCE_ERROR', "{$code} with HTTP {$status} is a source error");
+    }
+    $throws(static fn () => SourceFinance::refusal(['error' => ['code' => $code]]), 'SOURCE_ERROR', "{$code} without its action and status is a source error");
+    $throws(static fn () => SourceFinance::refusal(['error' => ['code' => $code]], $actions[0]), 'SOURCE_ERROR', "{$code} without its status is a source error");
+}
+$check(array_keys(SourceFinance::ACTION_REFUSALS) === ['finance_open', 'order_cancelled'] && array_diff(array_keys(SourceFinance::ACTION_REFUSALS), SourceFinance::REFUSALS) === [], 'the action-bound codes are exactly the two safety refusals, both known');
+foreach (array_diff(SourceFinance::REFUSALS, array_keys(SourceFinance::ACTION_REFUSALS)) as $code) {
+    $check(SourceFinance::refusal(['error' => ['code' => $code]]) === ['code' => $code, 'revision' => null] && SourceFinance::refusal(['error' => ['code' => $code]], 'submit_transfer', 422) === ['code' => $code, 'revision' => null], "{$code} keeps its meaning for any action and status (older shops)");
+}
 $throws(static fn () => SourceFinance::applied(['protocol' => 1, 'applied' => true, 'action' => 'decide_transfer', 'entryId' => '00000000-0000-4000-9000-000000000001', 'summary' => $summary], 'submit_transfer', '123', '123'), 'SOURCE_RESPONSE_INVALID', 'an answer for another action is refused');
 $check(SourceFinance::status(['state' => 'absent']) === ['state' => 'absent'], 'an action the shop never received');
 $financeClient = new SourceAccessClient($financeShop, $clock);

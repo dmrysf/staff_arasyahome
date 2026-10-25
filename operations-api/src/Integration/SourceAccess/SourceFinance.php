@@ -25,7 +25,21 @@ final class SourceFinance
         'transfer_pending', 'refund_pending', 'purpose_not_allowed', 'advance_not_required', 'payment_not_verified', 'nothing_due', 'amount_exceeds_balance',
         'duplicate_reference', 'reference_invalid', 'value_date_invalid', 'entry_not_found', 'entry_not_pending', 'same_employee', 'advance_record_failed',
         'no_liability', 'already_acknowledged', 'liability_not_acknowledged', 'amount_exceeds_liability', 'refund_exceeds_order', 'refund_disabled',
-        'production_not_complete', 'refund_record_failed', 'internal_error',
+        'production_not_complete', 'refund_record_failed', 'internal_error', 'finance_open', 'order_cancelled',
+    ];
+    /**
+     * Refusals of the YD SOFT safety rules (owner rule 2 and K-1), valid only as a 409 answer to the actions that can
+     * produce them. Anywhere else they are a protocol violation (SOURCE_ERROR), never read as a decision:
+     * - finance_open: a transfer or a refund of the order is recorded and not decided yet; a new refund is not recorded
+     *   and a refund is not verified into WooCommerce until it is decided (the open entry reaches Arasya as the order's
+     *   transfer_pending / refund_pending attention);
+     * - order_cancelled: the shop cancelled the order; no new transfer is recorded and no transfer is verified as money
+     *   (a pending one can still be rejected).
+     * Both mean "nothing was recorded"; neither is a payment, a refund or a cancellation made by this action.
+     */
+    public const ACTION_REFUSALS = [
+        'finance_open' => ['submit_refund', 'decide_refund'],
+        'order_cancelled' => ['submit_transfer', 'decide_transfer'],
     ];
     private const ID = '/^[0-9]{1,20}$/D';
     private const UUID = '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/D';
@@ -148,16 +162,20 @@ final class SourceFinance
     }
 
     /**
-     * A signed refusal: its code (unknown codes are SOURCE_ERROR) and the current revision when the shop sent one.
+     * A signed refusal: its code (unknown codes are SOURCE_ERROR) and the current revision when the shop sent one. A code
+     * of ACTION_REFUSALS counts only for its own actions and HTTP 409 ($action and $status of the answer).
      *
      * @param array<string, mixed> $data
      * @return array{code: string, revision: ?string}
      */
-    public static function refusal(array $data): array
+    public static function refusal(array $data, ?string $action = null, ?int $status = null): array
     {
         $error = self::map($data['error'] ?? null);
         $code = $error['code'] ?? null;
         if (!is_string($code) || !in_array($code, self::REFUSALS, true)) {
+            throw new SourceAccessException('SOURCE_ERROR');
+        }
+        if (isset(self::ACTION_REFUSALS[$code]) && ($status !== 409 || !in_array($action, self::ACTION_REFUSALS[$code], true))) {
             throw new SourceAccessException('SOURCE_ERROR');
         }
         return ['code' => $code, 'revision' => isset($data['revision']) ? self::pattern($data['revision'], self::FINGERPRINT) : null];

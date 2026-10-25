@@ -9,7 +9,7 @@ declare(strict_types=1);
 // vs approve; never an operator or a supervisor), four eyes, the summary revision, idempotency, duplicate references,
 // lost answers and 5xx reconciled with the shop's stored answer, a request the shop never received, one action per order,
 // production closed while an action is unsettled, refunds only after the final manufacturing stage, the order event's
-// Phase 5 attentions, the finance queue, and the audit (codes and hashes only; no amount, reference or phone anywhere).
+// Phase 5 attentions, the YD SOFT 2.16 refusals finance_open and order_cancelled, the finance queue, and the audit (codes and hashes only; no amount, reference or phone anywhere).
 
 use Arasya\Operations\Application\Container;
 use Arasya\Operations\Config\Config;
@@ -347,6 +347,94 @@ $pdo->prepare("UPDATE operational_orders SET operational_status = 'in_progress',
 $check($ok($read($rec, $th(3)), 'cancelled read')['production']['refundEligible'] === false, 'an order the shop cancelled after cutting is never offered a refund');
 $pdo->prepare('UPDATE operational_orders SET source_reported_unavailable_at = NULL WHERE order_uuid = ?')->execute([$o3]);
 
+// ---- 7b. YD SOFT 2.16 safety refusals (owner rule 2, K-1): finance_open and order_cancelled ----------------------------
+// The shop refuses and records nothing. Arasya closes the action as rejected (never unknown, never applied), stores no
+// entry, opens nothing (production gate, cancellation) and replays the stored refusal for the same key. The codes count
+// only as a signed 409 answer to their own actions; anywhere else they are a protocol violation and stay unknown.
+// The per-minute shop request limit is tested on its own; this section starts from an empty bucket.
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$shop->safetyRules = true;
+foreach ([11, 12, 14, 15] as $n) $ok(T::ingest($kernel, 'trendhome', $payload($id($n), $submitted($n), $waiting($n, 'additional_payment_due'))), "safety order {$n}");
+$ok(T::ingest($kernel, 'trendhome', $payload($id(13), $submitted(13), $waiting(13, 'refund_due'))), 'safety order 13');
+$service->distribute();
+foreach ([11, 12, 14, 15] as $n) $shop->orders[$id($n)] = ['id' => $id($n), 'phone' => FIN_PHONE, 'finance' => $finance(['cod' => false, 'total' => '650.00', 'paid' => '500.00', 'pricing' => $pricing($n)])];
+$shop->orders[$id(13)] = ['id' => $id(13), 'phone' => FIN_PHONE, 'finance' => $finance(['cod' => false, 'total' => '700.00', 'paid' => '800.00', 'original' => '800.00', 'pricing' => $pricing(13)])];
+$stateOf = static fn (string $globalId): array => $all('SELECT operational_status, cancellation_state, production_stage_id, source_financial_attention FROM operational_orders WHERE global_order_id = ?', [$globalId])[0];
+$transferOf = static fn (int $n, string $reference): array => ['expectedRevision' => $revision($id($n)), 'purpose' => 'additional_payment', 'amount' => '40.00', 'reference' => $reference, 'valueDate' => $today];
+$reconcile = static fn (array $who, string $globalId, string $key, string $label): array => T::call($kernel, 'POST', '/confirmare/orders/' . rawurlencode($globalId) . '/finance/reconcile', ['idempotencyKey' => $key],
+    ['origin' => FIN_ORIGIN, 'x-csrf-token' => $who['csrf'], 'idempotency-key' => 'fin-rec-' . $label . '-' . $suffix], $who['cookie']);
+
+// order_cancelled on submit_transfer: rejected, nothing stored or opened; the same key replays without the shop.
+$shop->orders[$id(11)]['status'] = 'cancelled';
+$o11 = $orderUuid($th(11));
+$clearance11 = ConfirmationClearance::missing($pdo, $o11);
+$state11 = $stateOf($th(11));
+$key11 = "fin-safety-{$suffix}-000011";
+$body11 = $transferOf(11, 'OP SAFE 0011');
+$refused($act($rec, $th(11), 'submit-transfer', $body11, $key11), 'order_cancelled', 'K-1: no transfer on an order the shop cancelled');
+$row11 = $byKey($key11);
+$check(($row11['state'] ?? null) === 'rejected' && ($row11['outcome'] ?? null) === 'order_cancelled' && $row11['source_entry_id'] === null && $row11['completed_at'] !== null, 'K-1: closed as rejected (order_cancelled), no entry: never read as money');
+$check(!ConfirmareFinance::actionOpen($pdo, $o11) && ConfirmationClearance::missing($pdo, $o11) === $clearance11 && $stateOf($th(11)) === $state11, 'K-1: nothing opened: no pending action, production gate and order state unchanged (not a cancellation either)');
+$check(($shop->orders[$id(11)]['finance']['entries'] ?? []) === [], 'K-1: the shop recorded no entry');
+$requests = count($shop->requests);
+$refused($act($rec, $th(11), 'submit-transfer', $body11, $key11), 'order_cancelled', 'K-1: the same request again (same key)');
+$check(count($shop->requests) === $requests && count($actions($th(11))) === 1, 'K-1: the replay is answered from the record: no second request to the shop, no second action');
+$refused($act($rec, $th(11), 'submit-transfer', $transferOf(11, 'OP SAFE 0011')), 'order_cancelled', 'K-1: a new attempt (new key) is refused the same way');
+$check(count($actions($th(11))) === 2 && array_column($actions($th(11)), 'state') === ['rejected', 'rejected'] && ($shop->orders[$id(11)]['finance']['entries'] ?? []) === [], 'K-1: each attempt is one rejected audit row; no finance entry anywhere');
+// The answer of the refusal is lost: unknown for now, then settled as rejected from the shop's stored answer.
+$keyLost = "fin-safety-{$suffix}-000111";
+$shop->afterRefusal = 'answer_lost';
+$lost11 = $ok($act($rec, $th(11), 'submit-transfer', $transferOf(11, 'OP SAFE 0111'), $keyLost), 'K-1 lost refusal');
+$check($lost11['state'] === 'unknown' && ConfirmareFinance::actionOpen($pdo, $o11), 'a lost refusal is unknown at first (never guessed)');
+$refused($reconcile($rec, $th(11), $keyLost, '11a'), 'order_cancelled', 'reconciled with the stored refusal');
+$check(($byKey($keyLost)['state'] ?? null) === 'rejected' && ($byKey($keyLost)['outcome'] ?? null) === 'order_cancelled' && !ConfirmareFinance::actionOpen($pdo, $o11), 'the temporary unknown became rejected: the order is not blocked for good');
+$shop->afterRefusal = 'crash';
+$keyCrash = "fin-safety-{$suffix}-000112";
+$check($ok($act($rec, $th(11), 'submit-transfer', $transferOf(11, 'OP SAFE 0112'), $keyCrash), 'K-1 5xx after refusal')['state'] === 'unknown', 'a 5xx after the refusal is unknown');
+$refused($reconcile($app, $th(11), $keyCrash, '11b'), 'order_cancelled', 'another approver reconciles it');
+$check(($byKey($keyCrash)['state'] ?? null) === 'rejected' && !ConfirmareFinance::actionOpen($pdo, $o11), 'settled as rejected');
+
+// order_cancelled on decide_transfer: a transfer recorded before the cancellation is not verified; rejecting it works.
+$t12 = $ok($act($rec, $th(12), 'submit-transfer', $transferOf(12, 'OP SAFE 0012')), 'transfer while the order was active');
+$shop->orders[$id(12)]['status'] = 'cancelled';
+$refused($act($app, $th(12), 'decide-transfer', $decide($id(12), $t12['entryId'])), 'order_cancelled', 'K-1: the pending transfer is not verified as money after the cancellation');
+$check($shop->orders[$id(12)]['finance']['entries'][0]['state'] === 'submitted' && !ConfirmareFinance::actionOpen($pdo, $orderUuid($th(12))), 'K-1: the entry stays pending, the action is closed');
+$rejected12 = $ok($act($app, $th(12), 'decide-transfer', $decide($id(12), $t12['entryId'], 'reject', 'wrong_order')), 'K-1: rejecting stays possible');
+$check($rejected12['state'] === 'applied' && $shop->orders[$id(12)]['finance']['entries'][0]['state'] === 'rejected', 'K-1: rejected (never money)');
+
+// finance_open on submit_refund and decide_refund: a transfer of the order is still pending.
+$o13 = $orderUuid($th(13));
+$ok($act($app, $th(13), 'acknowledge-liability', ['expectedRevision' => $revision($id(13))]), 'liability acknowledged');
+$pdo->prepare("UPDATE operational_orders SET production_stage_id = 'delivery' WHERE order_uuid = ?")->execute([$o13]);
+$pendingTransfer = ['id' => '00000000-0000-4000-9000-000000001301', 'kind' => 'transfer_in', 'purpose' => 'additional_payment', 'amount' => '10.00', 'reference' => 'OP SAFE 1301', 'valueDate' => $today,
+    'state' => 'submitted', 'submittedBy' => $uuids['frec'], 'submittedAt' => gmdate('Y-m-d\TH:i:s\Z'), 'decidedBy' => null, 'decidedAt' => null, 'decisionCode' => null];
+$shop->orders[$id(13)]['finance']['entries'][] = $pendingTransfer;
+$refundOf = static fn (string $reference): array => ['expectedRevision' => $revision($id(13)), 'amount' => '100.00', 'reference' => $reference, 'valueDate' => $today];
+$refused($act($rec, $th(13), 'submit-refund', $refundOf('RF SAFE 1301')), 'finance_open', 'rule 2: no refund is recorded while a transfer is pending');
+$check(!ConfirmareFinance::actionOpen($pdo, $o13) && count($shop->orders[$id(13)]['finance']['entries']) === 2, 'rule 2: closed as rejected, the shop recorded nothing new');
+$ok(T::ingest($kernel, 'trendhome', $payload($id(13), $submitted(13), $waiting(13, 'transfer_pending'))), 'the shop reports the pending transfer');
+$check(in_array('payment', ConfirmationClearance::missing($pdo, $o13), true) && $one('SELECT source_financial_attention FROM operational_orders WHERE order_uuid = ?', [$o13]) === 'transfer_pending', 'rule 2: the open entry keeps the production gate closed (the shop\'s attention, not the refusal)');
+$shop->orders[$id(13)]['finance']['entries'] = array_values(array_filter($shop->orders[$id(13)]['finance']['entries'], static fn (array $e): bool => $e['id'] !== $pendingTransfer['id']));
+$rf13 = $ok($act($rec, $th(13), 'submit-refund', $refundOf('RF SAFE 1302')), 'refund recorded once the transfer is decided');
+$shop->orders[$id(13)]['finance']['entries'][] = $pendingTransfer;
+$refused($act($app, $th(13), 'decide-refund', ['expectedRevision' => $revision($id(13)), 'entryId' => $rf13['entryId'], 'decision' => 'verify']), 'finance_open', 'rule 2: the refund is not verified into WooCommerce while another entry is open');
+$check(!ConfirmareFinance::actionOpen($pdo, $o13) && $shop->financeNumbers($id(13))['refunded'] < 0.01, 'rule 2: nothing refunded, the action is closed');
+$ok($act($app, $th(13), 'decide-refund', ['expectedRevision' => $revision($id(13)), 'entryId' => $rf13['entryId'], 'decision' => 'reject', 'reasonCode' => 'other']), 'rule 2: rejecting the refund stays possible');
+
+// Protocol violations: the codes outside their actions or as another HTTP status, or an unsigned answer, are never a decision.
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$shop->forceRefusal = ['finance_open', 409];
+$keyWrong = "fin-safety-{$suffix}-000014";
+$check($ok($act($rec, $th(14), 'submit-transfer', $transferOf(14, 'OP SAFE 0014'), $keyWrong), 'finance_open on submit_transfer')['state'] === 'unknown', 'finance_open answered to a transfer is a protocol violation: unknown, never read as a decision');
+$check($ok($reconcile($rec, $th(14), $keyWrong, '14'), 'reconcile the violation')['state'] === 'unknown' && ConfirmareFinance::actionOpen($pdo, $orderUuid($th(14))), 'the violation stays unknown for a person (the gate stays closed)');
+$shop->forceRefusal = ['order_cancelled', 422];
+$check($ok($act($rec, $th(15), 'submit-transfer', $transferOf(15, 'OP SAFE 0015')), 'order_cancelled as 422')['state'] === 'unknown', 'order_cancelled with another status than 409 is a protocol violation');
+$pdo->prepare("UPDATE order_finance_actions SET state = 'rejected', outcome = 'test_cleanup', completed_at = UTC_TIMESTAMP(6) WHERE global_order_id = ? AND state = 'unknown'")->execute([$th(15)]);
+$shop->orders[$id(15)]['status'] = 'cancelled';
+$shop->tamper = ['sign' => false];
+$check($ok($act($rec, $th(15), 'submit-transfer', $transferOf(15, 'OP SAFE 0016')), 'unsigned order_cancelled')['state'] === 'unknown', 'an unsigned order_cancelled is not trusted: unknown');
+$shop->safetyRules = false;
+
 // ---- 8. The finance queue -------------------------------------------------------------------------------------------
 $q = $ok($get($view, '/confirmare/finance'), 'queue');
 $tasks = array_column($q['orders'], 'task', 'globalOrderId');
@@ -378,4 +466,4 @@ foreach (['order_finance_actions', 'order_finance_reads', 'employee_finance_scop
 }
 $pdo->exec('UPDATE operational_orders SET workflow_cohort = NULL, workflow_cohort_reason = NULL, workflow_cohort_at = NULL WHERE workflow_cohort IS NOT NULL');
 
-fwrite(STDOUT, "PASS MySQL Confirmare finance integration: {$checks} checks (root-only finance scopes apart from Confirmare, readers and actors, four eyes, revision, idempotency, duplicate references, lost answers and 5xx reconciled, a request never received, one action per order, production closed while unsettled, liability acknowledgement, refunds only after manufacturing, Phase 5 attentions, the finance queue, no amount stored or logged).\n");
+fwrite(STDOUT, "PASS MySQL Confirmare finance integration: {$checks} checks (root-only finance scopes apart from Confirmare, readers and actors, four eyes, revision, idempotency, duplicate references, lost answers and 5xx reconciled, a request never received, one action per order, production closed while unsettled, liability acknowledgement, refunds only after manufacturing, Phase 5 attentions, the YD SOFT 2.16 refusals finance_open and order_cancelled, the finance queue, no amount stored or logged).\n");

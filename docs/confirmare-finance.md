@@ -77,6 +77,17 @@ One action per order at a time (`409 CONFIRMARE_FINANCE_ACTION_PENDING`). A lost
 settled with the shop's stored answer of the same key (`/finance/reconcile`), never replayed; a request the shop never
 received is rejected after 120 s. While an action is pending or unknown, production cannot start for the order.
 
+**Safety refusals of YD SOFT 2.16 (owner rule 2 and K-1).** The shop refuses with a signed `409` and records nothing:
+`finance_open` on `submit_refund`/`decide_refund` while another transfer or refund of the order is recorded and not
+decided, and `order_cancelled` on `submit_transfer`/`decide_transfer` once the shop cancelled the order (a pending
+transfer can still be rejected). Operations closes the action as `rejected` with that outcome and answers
+`409 CONFIRMARE_FINANCE_REFUSED` (`details.reason`); the same key replays the stored refusal without a shop request.
+Neither code is a payment, a refund or a cancellation: no entry is stored, the production gate and the order state are
+unchanged (an open entry keeps the gate closed through the shop's `transfer_pending`/`refund_pending` attention). The
+codes count only as a `409` answer to those actions; with another action or HTTP status they are a protocol violation
+(`SOURCE_ERROR`), the action stays `unknown` for a person. An API without these codes reads them as `unknown` too, so
+API and YD SOFT 2.16 go live together (API first).
+
 **Refund eligibility:** the order reached stage 14 `delivery` (stage 13 `packing`, the final manufacturing stage, is
 complete) or was handed over. Courier handover, shipment and delivery are independent of it. A cancelled order
 (`operational_status = unavailable`) is never eligible (no refund policy for cancellations exists yet).
