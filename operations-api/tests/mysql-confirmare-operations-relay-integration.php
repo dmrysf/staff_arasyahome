@@ -186,10 +186,6 @@ $contact = static function (array $w, string $gid, string $outcome) use ($call, 
     $pdo->exec('DELETE FROM api_rate_limit_buckets');
     return $call($w, 'POST', '/confirmare/orders/' . rawurlencode($gid) . '/contact', ['expectedVersion' => $version($gid), 'outcome' => $outcome, 'reviewFingerprint' => $review['fingerprint']]);
 };
-// TEST ONLY: real calls are minutes apart; the recorded instant is moved back instead of waiting.
-$earlier = static function (string $gid, int $minutes) use ($pdo): void {
-    $pdo->prepare("UPDATE order_confirmation_contacts SET recorded_at = DATE_SUB(recorded_at, INTERVAL ? MINUTE) WHERE global_order_id = ?")->execute([$minutes, $gid]);
-};
 $orderUuid = static fn (string $gid): string => (string) $one('SELECT order_uuid FROM operational_orders WHERE global_order_id = ?', [$gid]);
 $cycleOf = static fn (string $gid): ?array => ($r = $all('SELECT * FROM confirmare_proforma_cycles WHERE global_order_id = ? ORDER BY cycle_number DESC LIMIT 1', [$gid])) === [] ? null : $r[0];
 // TEST ONLY: the timer is moved into the past instead of waiting days.
@@ -373,6 +369,13 @@ $check($ok($get($who['cdoc'], '/confirmare/efactura'), 'overdue')['overdue'] ===
 
 // ---- 6. The 22 October backfill ---------------------------------------------------------------------------------------------
 $backfill = new \Arasya\Operations\Confirmare\ConfirmareBackfill($pdo, $container->clock());
+// TEST ONLY: CI runs the suites on one shared database. The backfill acts on every order of a source, so the orders the
+// earlier suites left (no cohort, in the window) are parked under a reason the backfill never selects, and restored after.
+$parked = $all("SELECT order_uuid, workflow_cohort, workflow_cohort_reason, workflow_cohort_at FROM operational_orders o
+    WHERE o.source_key IN ('trendhome', 'outletperdele') AND NOT (CHAR_LENGTH(o.order_number) = ? AND o.order_number BETWEEN ? AND ?) AND NOT EXISTS (SELECT 1 FROM order_confirmations c WHERE c.order_uuid = o.order_uuid)
+      AND (o.workflow_cohort IS NULL OR (o.workflow_cohort = 'legacy' AND o.workflow_cohort_reason IN ('not_activated', 'submitted_before_activation', 'financing_legacy')))", [strlen($id(0)), $id(0), $id(99)]);
+$park = $pdo->prepare("UPDATE operational_orders SET workflow_cohort = 'legacy', workflow_cohort_reason = 'test_parked', workflow_cohort_at = UTC_TIMESTAMP(6) WHERE order_uuid = ?");
+foreach ($parked as $row) $park->execute([$row['order_uuid']]);
 $legacyAt = $cutover->modify('+1 hour');
 foreach ([60 => 'waiting', 61 => 'material-preparation', 62 => 'waiting'] as $n => $stageId) {
     $p = $payload($id($n), 0);
@@ -392,6 +395,49 @@ $check((string) $one('SELECT workflow_cohort FROM operational_orders WHERE globa
     'the order already in production keeps its stage in the established flow');
 $check($backfill->run('trendhome', true)['applied'] === 0, 'running it again changes nothing (idempotent)');
 $check($cycleOf($g(60)) === null, 'no proforma timer starts for a backfilled order');
+
+// The real go-live order of events: the orders of the window reached Arasya BEFORE API 2.46.0 (no cohort: migration 035 came
+// with this release) or after it and before the activation (`legacy`, not_activated), mostly from a shop connector that sent
+// neither payment facts nor submission evidence. TEST ONLY: those rows are made as such orders look after the migrations.
+$asBefore = static function (int $n, ?DateTimeImmutable $createdAt, ?string $method, bool $noCohort = true) use ($pdo, $g): void {
+    // Without payment facts the stored projection hash is the one of a snapshot without them (the hash covers stated facts).
+    $payment = $method === null ? "payment_method = NULL, advance_status = NULL, advance_revision = NULL, payment_synced_at = NULL, projection_hash = UNHEX(SHA2('old-connector', 256))" : 'payment_method = ?';
+    $pdo->prepare($noCohort
+        ? "UPDATE operational_orders SET workflow_cohort = NULL, workflow_cohort_reason = NULL, workflow_cohort_at = NULL, source_submitted_at = NULL, source_submission_evidence = NULL, {$payment}, created_at = COALESCE(?, created_at) WHERE global_order_id = ?"
+        : "UPDATE operational_orders SET workflow_cohort_reason = 'not_activated', {$payment}, created_at = COALESCE(?, created_at) WHERE global_order_id = ?")
+        ->execute([...($method === null ? [] : [$method]), $createdAt?->format('Y-m-d H:i:s.u'), $g($n)]);
+};
+foreach ([63, 64, 65, 66, 67] as $n) {
+    $p = $payload($id($n), 0);
+    $p['order']['submission'] = ['submittedAt' => $iso(min($legacyAt, $activatedAt->modify('-1 minute'))), 'evidence' => 'checkout'];
+    $ok(T::ingest($kernel, 'trendhome', $p), "order {$n} of the window");
+}
+$asBefore(63, $legacyAt, 'cod');                          // reached Arasya before the release, COD
+$asBefore(64, null, 'cod', false);                         // reached Arasya after the release, before the activation
+$asBefore(65, $legacyAt, null);                            // sent by the old connector: no payment facts
+$asBefore(66, $legacyAt, 'unverified');                    // a TBI credit or an unproven card payment: no cohort, no financing flag
+$asBefore(67, $cutover->modify('-1 hour'), 'cod');         // before 22 October 00:00 Bucharest: outside the window
+$dry2 = $backfill->run('trendhome', false);
+sort($dry2['orders']['taken']); // 63 and 64 share their instant: the order between them is the uuid's
+$check($dry2['counts']['taken'] === 2 && $dry2['orders']['taken'] === [$id(63), $id(64)] && $dry2['orders']['payment_unknown'] === [$id(65)] && $dry2['orders']['unverified_payment'] === [$id(66)]
+    && !in_array($id(67), array_merge(...array_values($dry2['orders'])), true) && $dry2['applied'] === 0,
+    'dry run of the real sequence: the order without a cohort and the not_activated order are taken; unknown and unverified payments are listed, never taken; an order before the window is not touched: ' . json_encode($dry2['orders']));
+$applied2 = $backfill->run('trendhome', true);
+$cohortOf = static fn (int $n): array => $all('SELECT workflow_cohort, workflow_cohort_reason FROM operational_orders WHERE global_order_id = ?', [$g($n)])[0];
+$check($applied2['applied'] === 2 && $cohortOf(63) === ['workflow_cohort' => 'confirmare', 'workflow_cohort_reason' => 'backfill_22_october'] && $cohortOf(64)['workflow_cohort'] === 'confirmare'
+    && (string) $one('SELECT status FROM order_confirmations WHERE global_order_id = ?', [$g(63)]) === 'pending',
+    'apply: both are Confirmare orders (pending), with the backfill reason');
+$check($cohortOf(65)['workflow_cohort'] === null && $cohortOf(66)['workflow_cohort'] === null && $cohortOf(67)['workflow_cohort'] === null
+    && $one('SELECT 1 FROM order_confirmations WHERE global_order_id IN (?, ?, ?)', [$g(65), $g(66), $g(67)]) === false, 'the unknown, the unverified and the earlier order are unchanged');
+$p = $payload($id(65), 0);
+$p['order']['submission'] = ['submittedAt' => $iso($legacyAt), 'evidence' => 'checkout'];
+$ok(T::ingest($kernel, 'trendhome', $p), 'the shop\'s backfill sends order 65 again with its payment facts (COD) and its submission instant');
+$third = $backfill->run('trendhome', true);
+$check($third['applied'] === 1 && $third['orders']['taken'] === [$id(65)] && $cohortOf(65)['workflow_cohort'] === 'confirmare' && $third['orders']['unverified_payment'] === [$id(66)],
+    'after the shop sent the facts, the order is taken; the unverified one stays listed: ' . json_encode($third['orders']));
+$check($backfill->run('trendhome', true)['applied'] === 0, 'running it again takes nothing twice');
+$unpark = $pdo->prepare('UPDATE operational_orders SET workflow_cohort = ?, workflow_cohort_reason = ?, workflow_cohort_at = ? WHERE order_uuid = ?');
+foreach ($parked as $row) $unpark->execute([$row['workflow_cohort'], $row['workflow_cohort_reason'], $row['workflow_cohort_at'], $row['order_uuid']]);
 
 // ---- 7. TBI keeps the established flow (owner K-12) ------------------------------------------------------------------------
 $p = $payload($id(70), 300);
