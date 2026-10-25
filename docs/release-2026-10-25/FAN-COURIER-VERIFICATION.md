@@ -73,8 +73,15 @@ carrier confirmation. The address itself is never stored in Arasya (tested: no a
 | API `mysql-confirmare-operations-relay-integration.php` | see TEST-MATRIX.md |
 | Mutations (stage 11 allowed, any shop employee, collection per parcel, old amount, second AWB, WordPress button not fenced, telephone not required) | see TEST-MATRIX.md |
 
-## 7. Not verified (external)
+## 7. Live state (2026-10-25 evening, LIVE-CHECK-2026-10-25.md §6)
 
-- Live FAN Courier credentials, `clientId`, services and the shops' `yd_awb_defaults` (service, payer, sizes).
-- A real AWB and label on a real order; the pickup order flow.
+- One FAN Courier client for both shops (K-13, compared by hash). Outlet Perdele configured from Trend Home's store;
+  login, services, branches, service options and the AWB report answer (read-only). No AWB made.
+- Trend Home's 53 `manual_review` attempts made no AWB at FAN (no attempt marker in 3 908 AWBs over 68 days); the orders
+  were shipped with AWBs made outside WordPress. The attempts stay `manual_review` (they block a WordPress AWB).
+- The pilot simulation now runs the owner's chain to the AWB: one AWB, 700 lei collected once for 2 parcels, label.
+
+## 8. Not verified (external)
+
+- A real AWB and label on a real order of each shop from Staff; the pickup order flow.
 - Whether the live `api.fancourier.ro` answers match v2.0 of May 2023 exactly.

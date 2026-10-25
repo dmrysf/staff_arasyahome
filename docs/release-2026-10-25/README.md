@@ -14,3 +14,5 @@
 | [DUAL-STORE-GO-LIVE-RUNBOOK.md](DUAL-STORE-GO-LIVE-RUNBOOK.md) | the go-live of both shops, step by step |
 | [PRODUCTION-HEALTH.md](PRODUCTION-HEALTH.md) | the health screen and what to do |
 | [OPEN-EXTERNAL-DEPENDENCIES.md](OPEN-EXTERNAL-DEPENDENCIES.md) | what could not be verified from here |
+| [LIVE-CHECK-2026-10-25.md](LIVE-CHECK-2026-10-25.md) | the live read-only check, backups, rehearsal, window orders, AWB matching |
+| [MANUAL-ZIP-DEPLOY.md](MANUAL-ZIP-DEPLOY.md) | installing YD SOFT 2.20.0 by hand while GitHub Actions is blocked |

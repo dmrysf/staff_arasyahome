@@ -51,7 +51,7 @@ Final tree: `release/dual-store` 6351ef9.
 
 | Set | Caught |
 |---|---|
-| API, new rules (three calls, 10-minute gap, cycle complete, 24 h / 72 h / 120 h, bank check before cancel, bank check covering the expiry, unconfirmed proforma, e-Factura 5 working days and holidays, second reactivation without money, reactivation after production start, reactivation not reopened, AWB before stage 12, AWB by any shop employee, refund without the approve scope, lost answer declared at once, backfill of started orders, TBI into Confirmare, card refund flag refused, health across shops) | **22 / 22** (18 at the first run; the 4 survivors led to 4 new tests, then caught) |
+| API, new rules (three calls, 10-minute gap (retired with the rule on 2026-10-25 evening), cycle complete, 24 h / 72 h / 120 h, bank check before cancel, bank check covering the expiry, unconfirmed proforma, e-Factura 5 working days and holidays, second reactivation without money, reactivation after production start, reactivation not reopened, AWB before stage 12, AWB by any shop employee, refund without the approve scope, lost answer declared at once, backfill of started orders, TBI into Confirmare, card refund flag refused, health across shops) | **22 / 22** (18 at the first run; the 4 survivors led to 4 new tests, then caught) |
 | Staff (card refund in the finance decision, verifying one's own record, shop tasks for everyone, PHP empty map, refusal reason ignored, refund flag refused, cycle run for anyone) | **7 / 7** |
 | YD SOFT (collection from the order total, AWB on an old amount, collection per parcel, second AWB, WordPress button not fenced, telephone not required, refund four eyes, refund written twice, second refund request, finance decision on a card refund, reminder twice, reminder before the e-mail, unconfirmed ignored, TBI fenced, SmartBill send error read as success) | **15 / 15** (13 at the first run; the 2 survivors led to 2 new smoke checks, then caught) |
 
@@ -68,7 +68,7 @@ The documentation commit after 39a9f16 changes only `docs/`.
 
 | Scenario | Covered by | Status |
 |---|---|---|
-| S1 Trend Home COD 1,000 / 300 proforma / two finance verifications / one SMART invoice / 700 COD / QR / stage 12 AWB | pilot simulation (2.45.0 scope) + invoice suite + relay §3 (AWB from stage 12, collection = what is owed) | parts in different suites; no single end-to-end run |
+| S1 Trend Home COD 1,000 / 300 proforma / two finance verifications / one SMART invoice / 700 COD / QR / stage 12 AWB | pilot simulation, S1 section (real WordPress + real API, one run) | **covered end to end** (§7) |
 | S2 Outlet Perdele 250 accepted, invoice 1,000, COD 750 | invoice suite (advance accept) + MoneyPosition unit tests | covered by parts |
 | S3 three calls → proforma → reminders → day-5 bank check → SmartBill cancel → shop cancellation | cycle suite §2–4 | covered |
 | S4 three calls → proforma → payment → no telephone confirmation → production blocked | cycle suite §2 (production stays closed) | covered |
@@ -85,3 +85,37 @@ The documentation commit after 39a9f16 changes only `docs/`.
 | S18 22 October backfill, no second invoice | relay §6, YD smoke §10 | covered |
 | S19 TBI unchanged | relay §7, YD smoke §9 | covered |
 | S20 an order event during the go-live | source ingestion suites (idempotent per event, outbox) | covered (unchanged code) |
+
+## 7. Update 2026-10-25 evening (after the live read-only check)
+
+Trees: staff `release/dual-store` 8929de4 (+ documentation), yd-soft `release/dual-store` 82eac7f. Changes: no waiting
+time between unanswered calls (owner decision); the 22 October backfill fixed for the real go-live sequence; the YD
+SOFT backfill walk sends known orders again; the owner's chain S1 added to the pilot simulation.
+
+| Run | Result |
+|---|---|
+| API CI replay, MySQL 8.4 (shared database, CI order) | **63 commands, 0 failed** |
+| API CI replay, MariaDB 10.11 | **54 commands, 0 failed** (a first run failed 11: the relay suite's backfill took orders other suites had left in the shared database, then aborted; fixed by parking them during §6 and an order-independent comparison; then 0 failed) |
+| `mysql-confirmare-cycle-integration.php` | **128 checks** |
+| `mysql-confirmare-operations-relay-integration.php` (incl. the real go-live sequence of the backfill) | **170 checks** |
+| Staff `pnpm verify` (tsc, ESLint, unit 313/313, security, build, verify-build, deploy test) | PASS |
+| YD SOFT unit suites, PHP 8.5 / 7.4 / 8.4 | PASS / PASS / PASS |
+| YD SOFT source smokes, PHP 8.5 / 7.4 / 8.4, HPOS + posts | **360 / 0** each |
+| YD SOFT invoice + operations smokes, PHP 8.5 / 7.4 / 8.4, HPOS + posts | **506 / 0** each |
+| Cross smoke | runs failed 0 |
+| Pilot simulation with S1 end to end: HPOS PHP 8.5, posts PHP 8.5, HPOS PHP 7.4 | **109 / 0** each |
+| Connector smoke | SMOKE PASSED |
+| Mutations of the new rules (MariaDB): backfill ignores orders without a cohort; ignores `not_activated`; takes an unknown payment; takes an unverified payment; uses only the receipt instant; `take` refuses an order without a cohort; a replayed call recorded again | **7 / 7** caught |
+| Migrations 033–043 on a restored copy of the live database; `check-rollback.php 2.34.2` | applied in 1 s; safe |
+| Restore test of the three live database dumps (local MariaDB 10.11) | 120/120, 161/161, 123/123 tables; counts equal to the live read |
+
+S1 in the pilot, step by step: the 1 000 lei COD order by checkout is a Confirmare order; confirmed call, approval,
+the customer's acceptance of 1 000 lei; ONE ARS proforma of 300.00; 300.00 recorded by one finance employee and
+verified by another; money 300 asked / 300 received / 700 remaining; production document, routing, QR scan; ONE SMART
+invoice of 1 000.00 (a second refused); the cutter's QR intake and every stage claimed and completed by its own employee,
+12 stages in order, none written by hand; at stage 12 the order is in the shop employee's AWB queue with 700.00 to
+collect; ONE FAN Courier AWB (2 parcels, 700 lei once, the customer's telephone), a second refused; the label printed.
+
+Not run again after these changes: the real-API browser E2E (72 tests; the Staff change is two texts and one error code
+list, covered by the unit tests) and the earlier mutation sets (the code they mutate did not change, except the retired
+10-minute gap).

@@ -14,21 +14,27 @@ override is controlled: only orders that have not started production are taken.
 | A | each shop (YD SOFT 2.20.0) | `wp yd-arasya backfill --since=2026-10-22 [--apply] [--limit=50] [--after=<order id>]` | read-only |
 | B | Operations API 2.46.0 | `php bin/confirmare-backfill.php --source=trendhome\|outletperdele [--apply] [--limit=500]` | read-only |
 
-**A — every order of the window reaches Arasya.** The shop walks its `processing` and `on-hold` orders created on or
-after the day (00:00 Europe/Bucharest) and queues the ones that never reached Arasya as normal signed snapshots
-(`confirmare_recovery`), deduplicated by the outbox. It changes nothing else: no status, total, document, payment or AWB.
-Output: counts and order ids only. A cursor (`--after`) lets a long walk continue; an order is never queued twice.
+**A — every order of the window reaches Arasya with today's facts.** The shop walks its `processing` and `on-hold`
+orders created on or after the day (00:00 Europe/Bucharest) and queues them as normal signed snapshots
+(`confirmare_recovery`), deduplicated by the outbox: the ones that never reached Arasya (`queued`) and the ones Arasya
+already has (`refreshed`), because an order last sent by YD SOFT 2.9.1 carries neither payment facts nor submission
+evidence and Arasya never guesses them. It changes nothing else: no status, total, document, payment or AWB. Output:
+counts and order ids only. A cursor (`--after`) lets a long walk continue; an order is never queued twice in one walk.
 
-**B — Arasya takes the ones still before production.** Runs after the source's Confirmare activation (before it, every
-order is legacy by rule and nothing is taken). For each order of the window recorded `legacy`
-(`submitted_before_activation`) and without a Confirmare row:
+**B — Arasya takes the ones still before production.** Runs after the source's Confirmare activation. Candidates are
+the orders of the window without a Confirmare row that are not Confirmare orders: without a cohort (they reached Arasya
+before API 2.46.0, whose migration 035 adds the cohort), `legacy` with `not_activated` (they arrived after the deploy and
+before the activation) or `legacy` with `submitted_before_activation` (a late event). The order's instant is the shop's
+submission evidence, else the instant Arasya first received it (orders arrive within minutes through the outbox).
 
 | Category | Condition | What happens |
 |---|---|---|
 | taken | still at the initial stage (`waiting`), no production ticket generated, not cancelled, not stopped, not completed | cohort `confirmare`, reason `backfill_22_october`; Confirmare `pending`, distributed like a new order; event `opened` by the system with reason `backfill` |
 | in_production | a later stage, or a production ticket already generated | unchanged: keeps its stage, owner and documents |
 | closed | cancelled, stopped for a cancellation, or completed | unchanged |
-| financing | a TBI consumer credit order (K-12) | unchanged |
+| financing | a TBI consumer credit order recorded as such (K-12) | unchanged |
+| payment_unknown | the shop has not sent the order's payment facts yet (step A not applied) | unchanged; apply step A, run again |
+| unverified_payment | the payment is `unverified`: a TBI credit of an order that has no cohort (its financing flag was never recorded) or a card payment without the gateway's evidence | unchanged, listed for a person to check; never guessed into Confirmare |
 
 Each order is one transaction under its row lock and is re-checked under the lock. Running it again takes nothing
 twice; a crash between orders is resumed by running it again. Output: counts and order numbers, never customer data or
@@ -66,6 +72,12 @@ query compares UTC instants (`source_submitted_at` is stored in UTC).
   and a cursor, never an order twice.
 - Mutation "backfill takes started orders" is caught (TEST-MATRIX.md).
 
-## 6. Not known
+## 6. The live window (read on 2026-10-25, LIVE-CHECK-2026-10-25.md §5)
 
-The number of live orders in the window per shop (no live read). Steps A and B print it before anything is applied.
+Trend Home 150 orders (133 to take: 99 COD, 34 NETOPIA with evidence; 1 closed; 16 cancelled or failed, never in
+Arasya); Outlet Perdele 66 (52 to take: 36 COD, 16 NETOPIA; 14 cancelled). None in production, no TBI. Before step A
+every one of them is `payment_unknown` in Arasya (measured on a restored copy). The 2.46.0 candidate query before this
+fix returned **0** of them (they have no cohort): fixed, with a test of the real go-live sequence in
+`mysql-confirmare-operations-relay-integration.php` §6 (an order without a cohort, a `not_activated` order, unknown and
+unverified payments, an order before the window, the shop's refresh, idempotence) and in the YD SOFT operations smoke
+§10 (an order Arasya already has is sent again).

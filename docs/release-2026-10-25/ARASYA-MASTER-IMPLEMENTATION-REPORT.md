@@ -29,7 +29,7 @@ classes, no tests).
 
 See BUSINESS-RULES-FINAL.md for the rule-by-rule mapping. In short:
 
-- **Calls and the advance proforma cycle** (3.3–3.5, K-05): three unanswered calls per cycle, 10 minutes apart; the
+- **Calls and the advance proforma cycle** (3.3–3.5, K-05): three unanswered calls per cycle, each recorded as its own real call (no waiting time, owner decision 2026-10-25 evening); the
   third issues the 30 % proforma "not confirmed by telephone" and e-mails it; reminders at 24 h and 72 h; at 120 h a
   cancellation only after a finance bank check covering the expiry, never with money in verification; SmartBill cancel
   and the order cancellation as two steps; a cron worker with a lock, row claims and deterministic keys.
@@ -68,6 +68,25 @@ YD SOFT 15/15. yd-soft GitHub Actions did not run (billing).
 
 The earlier binding rule "orders submitted before the source's Confirmare activation stay legacy" is overridden by
 K-06 through the controlled backfill (orders still before production only).
+
+## 6a. Update after the live read-only check (2026-10-25 evening)
+
+LIVE-CHECK-2026-10-25.md has the evidence. Server access works again from the owner's Mac (the earlier timeout was the
+network path, not the tool). Done: verified backups of the three databases and the shops' code with a restore test; the
+migrations 033–043 rehearsed on a restored copy of the live database (1 s, rollback check to 2.34.2 safe); the 216
+orders of the 22 October window classified; the 53 open AWB attempts of Trend Home matched against FAN Courier's own
+report (read-only); the shared FAN account configured on Outlet Perdele (credentials verified by read-only calls; no AWB
+made, `awb` not enforced); SmartBill Cloud series and VAT read; the owner's chain S1 run end to end in one pilot run.
+
+Two defects found and fixed:
+
+| Where | Defect | Fix |
+|---|---|---|
+| API `ConfirmareBackfill` + YD backfill walk | the 22 October backfill selected only `legacy` orders with a submission instant: every order that reached Arasya before API 2.46.0 (no cohort, migration 035 comes with this release) or between the deploy and the activation (`not_activated`) was never taken. On the live copy its candidate query (the 2.46.0 code before the fix) returns **0** rows; 185 orders are eligible after the fix and the shop step | candidates are orders without a cohort or `legacy` (`not_activated`, `submitted_before_activation`) in the window by submission instant, else first receipt; an order whose payment facts are unknown (`payment_unknown`) or `unverified` (TBI or a card payment without evidence) is listed, never taken; the shop's walk sends the orders Arasya already has again with today's payment facts and submission evidence |
+| Go-live order | `scripts/cpanel-deploy-api.sh` activates a release without migrating; API 2.46.0 ingestion needs 035 | the runbook runs the migrations from the staged release **before** the activation (2.34.2 is safe with them: `check-rollback.php 2.34.2` → safe) |
+
+Owner decision implemented: the 10-minute wait between two unanswered calls is removed; three real calls stay
+mandatory (one request = one call, a repeated request never records a second one).
 
 ## 7. Next steps (owner)
 

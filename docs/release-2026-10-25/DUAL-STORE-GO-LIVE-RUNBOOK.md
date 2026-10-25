@@ -4,9 +4,9 @@ Release: API 2.46.0 (migrations through 043), Staff 2.36.0, YD SOFT 2.20.0. Owne
 K-16 (fast). Both shops go live together; the steps below are ordered so that a shop never stops taking orders and no
 step can lose or duplicate an order, a payment or a document.
 
-**Status on 2026-10-25: NOT STARTED.** The servers were not reachable from the build machine (SSH to the three hosts
-times out: IP allowlist), yd-soft GitHub Actions is billing-blocked, and nothing was merged. Every step below needs a
-person with server access. "GO" for a step means its precondition was **verified**, not assumed.
+**Status on 2026-10-25 21:00 UTC: NOT STARTED, prepared.** Server access works from the owner's Mac. H3 and H4 are
+done (LIVE-CHECK-2026-10-25.md); H5 is partly done; H1, H2 (billing), H6 and the accountant's decisions are open.
+"GO" for a step means its precondition was **verified**, not assumed.
 
 ## 0. Hold points (all must be true before step 1)
 
@@ -21,8 +21,11 @@ person with server access. "GO" for a step means its precondition was **verified
 
 ## 1. API 2.46.0 (both shops keep taking orders)
 
-1. Deploy through the usual release path; `bin/migrate.php` applies the pending migrations (043 is additive: six empty
-   tables, no lock on existing tables).
+1. **Migrations first, then the code.** `scripts/cpanel-deploy-api.sh` activates the release without migrating, and the
+   2.46.0 ingestion writes columns of 035. So: put the 2.46.0 release on the server without activating it (or check it
+   out next to the active one), run its `php bin/migration-status.php`, then its `php bin/migrate.php` against the live
+   database while 2.34.2 is still active (033–043 are additive; `check-rollback.php 2.34.2` is safe with them: rehearsed
+   on a restored copy of the live database, 10 migrations in 1 s), then deploy and activate 2.46.0.
 2. Verify: `GET /health` shows 2.46.0; `php bin/migration-status.php` nothing pending; `php bin/readiness.php` passes.
 3. Order ingestion is unchanged: the shops' outbox keeps sending; anything sent during the deploy is retried by the
    shop (signed, idempotent per event).
@@ -67,7 +70,20 @@ Only after step 3 on **both** shops:
 
 ## 6. Backfill of 22 October (K-06)
 
-BACKFILL-22-OCTOBER.md: dry runs, then apply (shop step A, then API step B), per shop.
+BACKFILL-22-OCTOBER.md: dry runs, then apply (shop step A, then API step B), per shop. Step A must be applied before
+step B: without it every order that reached Arasya before 2.46.0 is `payment_unknown` (measured on the live copy) and
+nothing is taken.
+
+## 6a. FAN Courier before `awb enforce`
+
+- Outlet Perdele: the shared account is configured (2026-10-25; credentials, defaults, CurieRO compatibility on);
+  only read-only calls were made. Tell the Outlet Perdele staff that the WordPress AWB button works now, so that an
+  order's AWB is made in one place only.
+- Trend Home: 53 attempts stay `manual_review` (they block a WordPress AWB for those orders, so no second AWB can be
+  made there); 6 orders with several FAN AWBs and 5 with a collection that differs from the payment method are checked
+  in the FAN panel by a person (LIVE-CHECK-2026-10-25.md §5).
+- The first real AWB of each shop is the verification: a real order at stage 12, made from Staff, checked in the FAN
+  panel (collection, parcels, address) before `awb enforce` stays on.
 
 ## 7. First hours (both shops)
 
