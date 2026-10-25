@@ -15,8 +15,8 @@ const stateTone = (state: ProformaCycle["state"]): Tone =>
   state === "paid" ? "success" : state === "cancelled" || state === "cancel_unknown" ? "danger" : state === "closed" ? "neutral" : state === "waiting_bank_check" || state === "waiting_finance" ? "warning" : "info";
 
 /**
- * The call and advance proforma cycle of an order (API 2.46.0, owner rules 3.3–3.5 and K-05): three unanswered calls at
- * least 10 minutes apart, then the advance proforma is issued unconfirmed and e-mailed by SmartBill; reminders after 24
+ * The call and advance proforma cycle of an order (API 2.46.0, owner rules 3.3–3.5 and K-05): three unanswered calls, each
+ * recorded as its own real call, then the advance proforma is issued unconfirmed and e-mailed by SmartBill; reminders after 24
  * and 72 hours; after 120 hours without the advance, and only once a bank check covers the expiry, the proforma and the
  * order are cancelled. Every step is the server's (a worker runs them); the operator of the order or a supervisor may run
  * the next step now. Times are shown in Bucharest time.

@@ -32,8 +32,9 @@ use Throwable;
  * Telephone (order_confirmation_contacts, append-only since 2.39.0):
  * - at most three `no_answer` attempts count in one cycle; a fourth is refused (CONFIRMARE_CALL_CYCLE_COMPLETE). The
  *   cycle restarts after a supervisor's reopening or an applied reactivation (`callBoundary`);
- * - two `no_answer` records of the same order closer than MIN_CALL_GAP_SECONDS are refused (CONFIRMARE_CALL_TOO_SOON):
- *   one button can never record three calls that did not happen;
+ * - each `no_answer` is one request for one real call: the operator picks the outcome and confirms the call happened
+ *   for every call, and a repeated request (same idempotency key) returns the stored call instead of a second one. There
+ *   is no waiting time between two calls (owner decision 2026-10-25, the earlier 10-minute gap is removed);
  * - the third `no_answer` of a cycle starts a proforma cycle (`afterNoAnswer`): the operator's own request issues the
  *   30 % advance proforma in SmartBill (the shop marks it `unconfirmed`: the customer did not confirm the order) and sends
  *   it by e-mail. A proforma is never a confirmation: production still needs the confirmed call and the money
@@ -55,8 +56,6 @@ use Throwable;
 final class ConfirmareCycles
 {
     public const NO_ANSWER_PER_CYCLE = 3;
-    /** Technical double-click protection between two unanswered calls of one order (not a business waiting time). */
-    public const MIN_CALL_GAP_SECONDS = 600;
     public const REMINDER_1_HOURS = 24;
     public const REMINDER_2_HOURS = 72;
     public const EXPIRY_HOURS = 120;
@@ -132,17 +131,11 @@ final class ConfirmareCycles
     }
 
     /** Called by ConfirmareService::contact under the order row lock before an unanswered call is recorded. */
-    public static function assertNoAnswerAllowed(PDO $pdo, string $orderUuid, DateTimeImmutable $now): void
+    public static function assertNoAnswerAllowed(PDO $pdo, string $orderUuid): void
     {
         $state = self::callState($pdo, $orderUuid);
         if ($state['complete']) {
             throw new ApiException(409, 'CONFIRMARE_CALL_CYCLE_COMPLETE', 'Trei apeluri fără răspuns sunt deja înregistrate în acest ciclu.', ['noAnswer' => $state['noAnswer'], 'max' => self::NO_ANSWER_PER_CYCLE]);
-        }
-        if ($state['lastNoAnswerAt'] !== null) {
-            $last = new DateTimeImmutable($state['lastNoAnswerAt'], new DateTimeZone('UTC'));
-            if ($now->getTimestamp() - $last->getTimestamp() < self::MIN_CALL_GAP_SECONDS) {
-                throw new ApiException(409, 'CONFIRMARE_CALL_TOO_SOON', 'Apelul anterior fără răspuns a fost înregistrat acum câteva minute. Înregistrați fiecare apel real separat.', ['retryAfterSeconds' => self::MIN_CALL_GAP_SECONDS - ($now->getTimestamp() - $last->getTimestamp())]);
-            }
         }
     }
 

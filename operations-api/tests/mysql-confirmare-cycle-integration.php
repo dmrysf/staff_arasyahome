@@ -170,15 +170,12 @@ $call = static fn (array $w, string $method, string $path, ?array $body = null, 
 $get = static fn (array $w, string $path): array => T::call($kernel, 'GET', $path, null, ['origin' => T::ORIGIN], $w['cookie']);
 $version = static fn (string $gid): int => (int) $one('SELECT version FROM order_confirmations WHERE global_order_id = ?', [$gid]);
 $detail = static function (array $w, string $gid) use ($get, $ok, $pdo): array { $pdo->exec('DELETE FROM api_rate_limit_buckets'); return $ok($get($w, '/confirmare/orders/' . rawurlencode($gid)), "detail {$gid}"); };
-$contact = static function (array $w, string $gid, string $outcome) use ($call, $detail, $version, $pdo): array {
+$contact = static function (array $w, string $gid, string $outcome, ?string $key = null) use ($call, $detail, $version, $pdo): array {
     $review = $detail($w, $gid)['review'];
     $pdo->exec('DELETE FROM api_rate_limit_buckets');
-    return $call($w, 'POST', '/confirmare/orders/' . rawurlencode($gid) . '/contact', ['expectedVersion' => $version($gid), 'outcome' => $outcome, 'reviewFingerprint' => $review['fingerprint']]);
+    return $call($w, 'POST', '/confirmare/orders/' . rawurlencode($gid) . '/contact', ['expectedVersion' => $version($gid), 'outcome' => $outcome, 'reviewFingerprint' => $review['fingerprint']], $key);
 };
-// TEST ONLY: real calls are minutes apart; the recorded instant is moved back instead of waiting.
-$earlier = static function (string $gid, int $minutes) use ($pdo): void {
-    $pdo->prepare("UPDATE order_confirmation_contacts SET recorded_at = DATE_SUB(recorded_at, INTERVAL ? MINUTE) WHERE global_order_id = ?")->execute([$minutes, $gid]);
-};
+$noAnswers = static fn (string $gid): int => (int) $one("SELECT COUNT(*) FROM order_confirmation_contacts WHERE global_order_id = ? AND outcome = 'no_answer'", [$gid]);
 $orderUuid = static fn (string $gid): string => (string) $one('SELECT order_uuid FROM operational_orders WHERE global_order_id = ?', [$gid]);
 $cycleOf = static fn (string $gid): ?array => ($r = $all('SELECT * FROM confirmare_proforma_cycles WHERE global_order_id = ? ORDER BY cycle_number DESC LIMIT 1', [$gid])) === [] ? null : $r[0];
 // TEST ONLY: the timer is moved into the past instead of waiting days.
@@ -190,14 +187,14 @@ $reminders = static fn (int $n): int => $th->smartbillReminders['pf:' . $id($n)]
 $cancels = static fn (int $n): int => $th->smartbillCancels['pf:' . $id($n)] ?? 0;
 $proformas = static fn (int $n): int => $th->smartbillDocuments['pf:' . $id($n)] ?? 0;
 
-// ---- 2. Three unanswered calls, never faster than real calls ----------------------------------------------------------------
+// ---- 2. Three unanswered calls, each recorded as its own real call, with no waiting time between them -------------------
 $first = $ok($contact($who['cop'], $g(1), 'no_answer'), 'first unanswered call');
 $check(($first['proformaCycle']['state'] ?? null) === 'not_started' && ($first['proformaCycle']['reason'] ?? null) === 'calls_remaining', 'one unanswered call starts nothing: ' . json_encode($first['proformaCycle'] ?? null));
-$error($contact($who['cop'], $g(1), 'no_answer'), 409, 'CONFIRMARE_CALL_TOO_SOON', 'a second unanswered call seconds later is refused (a double click is never a second call)');
-$earlier($g(1), 11);
-$ok($contact($who['cop'], $g(1), 'no_answer'), 'second unanswered call, 11 minutes later');
+$replayKey = 'cyc-replay-' . bin2hex(random_bytes(6));
+$ok($contact($who['cop'], $g(1), 'no_answer', $replayKey), 'second unanswered call right after the first: no waiting time (owner decision 2026-10-25)');
+$ok($contact($who['cop'], $g(1), 'no_answer', $replayKey), 'the same request sent again (a double click)');
+$check($noAnswers($g(1)) === 2, 'a repeated request returns the stored call: one request is one call, never a second one');
 $check($cycleOf($g(1)) === null && $proformas(1) === 0, 'two unanswered calls: no proforma');
-$earlier($g(1), 11);
 $third = $ok($contact($who['cop'], $g(1), 'no_answer'), 'third unanswered call');
 $c1 = $cycleOf($g(1));
 $check(($third['proformaCycle']['state'] ?? null) === 'running' && $c1 !== null && $c1['origin'] === 'no_answer' && $c1['owner_employee_uuid'] === $uuids['cop'] && $c1['sent_at'] !== null,
@@ -211,7 +208,6 @@ $error($contact($who['cop'], $g(1), 'no_answer'), 409, 'CONFIRMARE_CALL_CYCLE_CO
 $d1 = $detail($who['cop'], $g(1));
 $check(($d1['cycle']['calls'] ?? null) === ['noAnswer' => 3, 'max' => 3, 'complete' => true, 'since' => null] && ($d1['cycle']['proforma']['state'] ?? null) === 'running' && $d1['production']['cleared'] === false,
     'the detail shows the call cycle and the running proforma; production stays closed (no confirmed call, no money): ' . json_encode($d1['cycle']['calls'] ?? null));
-$earlier($g(1), 11);
 $ok($contact($who['cop'], $g(1), 'callback'), 'the customer can still be reached later (callback is recorded)');
 $check((int) $one("SELECT COUNT(*) FROM order_confirmation_contacts WHERE global_order_id = ?", [$g(1)]) === 4, 'every attempt is one immutable row');
 
@@ -267,7 +263,7 @@ $check($cancels(1) === 1 && count($all('SELECT 1 FROM order_cancellation_sync_op
 
 // ---- 5. Money in verification or received: never cancelled ---------------------------------------------------------------
 foreach ([2, 3] as $n) {
-    $contact($who['cop'], $g($n), 'no_answer'); $earlier($g($n), 11); $contact($who['cop'], $g($n), 'no_answer'); $earlier($g($n), 11);
+    $contact($who['cop'], $g($n), 'no_answer'); $contact($who['cop'], $g($n), 'no_answer');
     $ok($contact($who['cop'], $g($n), 'no_answer'), "third call {$n}");
     $check($cycleOf($g($n))['state'] === 'running', "order {$n}: proforma cycle running");
 }
@@ -297,7 +293,7 @@ $run();
 $check($cycleOf($g(3))['state'] === 'cancelled' && $cancels(3) === 1, 'the transfer was rejected by finance (no money): the next run cancels with a new attempt');
 
 // ---- 6. An unknown cancellation waits for a manager ----------------------------------------------------------------------
-$contact($who['cop'], $g(4), 'no_answer'); $earlier($g(4), 11); $contact($who['cop'], $g(4), 'no_answer'); $earlier($g(4), 11);
+$contact($who['cop'], $g(4), 'no_answer'); $contact($who['cop'], $g(4), 'no_answer');
 $ok($contact($who['cop'], $g(4), 'no_answer'), 'third call 4');
 $age($g(4), 121);
 $th->proformaCancelOutcome = 'unknown';
@@ -312,12 +308,12 @@ $run();
 $check($cycleOf($g(4))['state'] === 'cancelled' && count($all('SELECT 1 FROM order_cancellation_sync_operations WHERE order_uuid = ?', [$orderUuid($g(4))])) === 1, 'after the manager\'s resolution the order\'s cancellation is requested');
 
 // ---- 7. A missed first reminder is skipped; a refused reminder is not repeated --------------------------------------------
-$contact($who['cop'], $g(5), 'no_answer'); $earlier($g(5), 11); $contact($who['cop'], $g(5), 'no_answer'); $earlier($g(5), 11);
+$contact($who['cop'], $g(5), 'no_answer'); $contact($who['cop'], $g(5), 'no_answer');
 $ok($contact($who['cop'], $g(5), 'no_answer'), 'third call 5');
 $age($g(5), 80);
 $run();
 $check($reminders(5) === 1 && (string) $one("SELECT state FROM confirmare_cycle_steps WHERE cycle_uuid = ? AND step = 'remind_1'", [$cycleOf($g(5))['cycle_uuid']]) === 'skipped', 'the worker was down past 72 h: only the second reminder is sent, the first is recorded as skipped');
-$contact($who['cop'], $g(6), 'no_answer'); $earlier($g(6), 11); $contact($who['cop'], $g(6), 'no_answer'); $earlier($g(6), 11);
+$contact($who['cop'], $g(6), 'no_answer'); $contact($who['cop'], $g(6), 'no_answer');
 $ok($contact($who['cop'], $g(6), 'no_answer'), 'third call 6');
 $age($g(6), 25);
 $th->reminderOutcome = 'refused';

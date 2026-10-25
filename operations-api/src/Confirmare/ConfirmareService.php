@@ -576,8 +576,8 @@ final class ConfirmareService
                     throw new ApiException(409, 'CONFIRMARE_REVIEW_STALE', 'The order changed in the shop since it was reviewed. Review it again.', ['reviewFingerprint' => $current]);
                 }
                 if ($outcome === 'no_answer') {
-                    // API 2.46.0 (owner master decisions): at most three unanswered calls per cycle, never two at once.
-                    ConfirmareCycles::assertNoAnswerAllowed($this->pdo, $orderUuid, $this->clock->now());
+                    // API 2.46.0 (owner master decisions): at most three unanswered calls per cycle, one record per request.
+                    ConfirmareCycles::assertNoAnswerAllowed($this->pdo, $orderUuid);
                 }
                 if ($outcome === 'confirmed' && !$this->contactAvailable($orderUuid)) {
                     throw new ApiException(409, 'CONFIRMARE_CONTACT_UNAVAILABLE', 'The shop sent no telephone number for this customer; a confirmed call cannot be recorded.');

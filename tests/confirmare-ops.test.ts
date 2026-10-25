@@ -130,7 +130,7 @@ test("every refusal and every dynamic text exists in all four languages", () => 
   assert.equal(opsErrorKey("CONFIRMARE_OPERATION_NOT_ALLOWED", "something_new"), "cf.ops.blocker.other");
   assert.equal(opsErrorKey("CONFIRMARE_CYCLE_BUSY", undefined), "cf.ops.error.CONFIRMARE_CYCLE_BUSY");
   assert.equal(opsErrorKey("SOMETHING_ELSE", undefined), null);
-  assert.equal(confirmareErrorKey("CONFIRMARE_CALL_TOO_SOON"), "cf.error.CONFIRMARE_CALL_TOO_SOON");
+  assert.equal(confirmareErrorKey("CONFIRMARE_CALL_TOO_SOON"), null, "the 10-minute gap between calls is removed (owner decision 2026-10-25)");
   assert.equal(confirmareErrorKey("CONFIRMARE_CALL_CYCLE_COMPLETE"), "cf.error.CONFIRMARE_CALL_CYCLE_COMPLETE");
   const keys = [
     ...OPS_BLOCKERS.map((code) => blockerKey(code)), "cf.ops.blocker.other",
