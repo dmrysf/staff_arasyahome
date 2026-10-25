@@ -12,6 +12,7 @@ import { getErrorPresentation, toServiceError } from "../../services/errors";
 import { AppIcon } from "../../components/icons/AppIcon";
 import { Notice, StatusPill } from "../../components/ui/StatusPill";
 import { when } from "./ConfirmareParts";
+import { InvoiceQrSection, ProformaSection, RoutingSection } from "./ConfirmareProformaSections";
 
 type Result = { tone: "success" | "warning" | "danger"; text: string; key?: string } | null;
 type Pending = { action: InvoiceAction; key: string };
@@ -26,6 +27,9 @@ type Pending = { action: InvoiceAction; key: string };
  * confirmed once, sent with an Idempotency-Key, and never shown as done before the shop confirmed it. A lost answer is
  * checked with the shop, never sent twice; an outcome SmartBill itself did not give is closed by a manager after checking
  * SmartBill. A document that already exists can always be viewed by the employees allowed to see it.
+ *
+ * API 2.44.0: the operator's advance proforma and the routing to a shop employee, and the shop employee's QR scan before
+ * the final invoice, in the same panel and the same state (ConfirmareProformaSections).
  */
 export function ConfirmareInvoicePanel({ globalOrderId, service, capabilities = null }: { globalOrderId: string; service: ConfirmareInvoiceApi; capabilities?: InvoiceCapabilities | null }) {
   const { t } = useI18n();
@@ -41,7 +45,7 @@ export function ConfirmareInvoicePanel({ globalOrderId, service, capabilities = 
   const failure = useCallback((caught: unknown): string => {
     const failed = toServiceError(caught);
     const code = typeof failed.details?.backendCode === "string" ? failed.details.backendCode : undefined;
-    if (code === "CONFIRMARE_INVOICE_REFUSED" || code === "CONFIRMARE_INVOICE_NOT_ALLOWED") {
+    if (code === "CONFIRMARE_INVOICE_REFUSED" || code === "CONFIRMARE_INVOICE_NOT_ALLOWED" || code === "CONFIRMARE_ROUTING_NOT_ALLOWED") {
       const blockers = Array.isArray(failed.details?.invoiceBlockers) ? failed.details.invoiceBlockers as string[] : [];
       const reason = typeof failed.details?.editReason === "string" ? failed.details.editReason : blockers[0];
       return t("inv.result.refused", { reason: invoiceBlockerLabel(reason) });
@@ -95,6 +99,23 @@ export function ConfirmareInvoicePanel({ globalOrderId, service, capabilities = 
     }
   }
 
+  /** A proforma, routing or QR step (API 2.44.0): the same busy state, result and refresh as an invoice action. */
+  function run(task: () => Promise<unknown>, success: string) {
+    setBusy(true); setResult(null);
+    void task().then((outcome) => {
+      const state = (outcome as { state?: unknown } | null)?.state;
+      const key = (outcome as { idempotencyKey?: unknown } | null)?.idempotencyKey;
+      if (state === "pending" || state === "unknown") setResult({ tone: "warning", text: t("inv.result.unknown"), key: typeof key === "string" ? key : undefined });
+      else if ((outcome as { result?: unknown } | null)?.result === "unknown") setResult({ tone: "warning", text: t("inv.result.shopUnknown") });
+      else setResult({ tone: "success", text: success });
+    }).catch((caught: unknown) => {
+      setResult({ tone: "danger", text: failure(caught) });
+    }).finally(() => {
+      setBusy(false);
+      announceInvoiceChange(globalOrderId);
+    });
+  }
+
   async function reconcile(key: string) {
     setBusy(true); setResult(null);
     try {
@@ -131,6 +152,9 @@ export function ConfirmareInvoicePanel({ globalOrderId, service, capabilities = 
         {result.key && <> <button type="button" className="button button-secondary" disabled={busy} onClick={() => { void reconcile(result.key!); }} data-testid="cf-invoice-reconcile-result">{t("inv.action.check")}</button></>}
       </Notice>}
       {read && !read.available && <Notice tone={read.reason === "not_configured" ? "info" : "warning"} role="status" testId="cf-invoice-unavailable">{read.reason === "not_configured" ? t("inv.notConfigured") : t("inv.unavailable", { reason: shopUnavailableLabel(read.reason) })}</Notice>}
+      {view && <ProformaSection globalOrderId={globalOrderId} view={view} service={service} busy={busy} run={run} />}
+      {view && <RoutingSection globalOrderId={globalOrderId} view={view} service={service} busy={busy} run={run} />}
+      {view && (view.role === "documents" || view.role === "manager") && <InvoiceQrSection globalOrderId={globalOrderId} view={view} service={service} busy={busy} run={run} />}
       {view && <InvoiceBody globalOrderId={globalOrderId} view={view} role={view.role} busy={busy} pending={pending} onPrepare={(action) => setPending({ action, key: createIdempotencyKey() })} onCancel={() => setPending(null)} onSend={(action, input, key) => { void send(action, input, key); }} onReconcile={(key) => { void reconcile(key); }} />}
     </section>
   );

@@ -167,6 +167,14 @@ export function canOpenConfirmareOrder(employee: Employee): boolean {
   return canUseConfirmare(employee) || canUseFinance(employee);
 }
 
+/**
+ * The advance queue (API 2.44.0): finance employees see every finance task; a Confirmare operator or supervisor sees the
+ * advance tasks of their shops (waiting, partial, paid, routed to the shop). The server applies the same rule.
+ */
+export function canUseAdvanceQueue(employee: Employee): boolean {
+  return canUseFinance(employee) || canUseConfirmare(employee);
+}
+
 /** The finance scopes, re-exported for the Confirmare screens. */
 export { canUseFinance, financeScopesOf };
 

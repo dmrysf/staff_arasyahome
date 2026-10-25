@@ -31,7 +31,7 @@ const detail = (overrides: Partial<ConfirmareDetail> = {}): ConfirmareDetail => 
   contact: null, assignment: null, decision: null,
   review: { fingerprint: "b".repeat(64), lineIds: ["12341"], pricingAvailable: true, callRecorded: true, contactAvailable: true }, lines: [], contacts: [],
   customer: { visible: false, phoneAvailable: false }, source: { commerceStatusLabel: "Processing", changedAt: null, lastSeenAt: null, freshness: "fresh" }, production: { cleared: true, missing: [] }, events: [],
-  sourceAccess: { configured: false, read: false, edit: false, changePending: false, openEdits: [] }, invoice: { configured: false, read: false, issue: false, manage: false }, finance: { configured: false, read: false, record: false, approve: false }, handoff: handoff(), ...overrides,
+  sourceAccess: { configured: false, read: false, edit: false, changePending: false, openEdits: [] }, invoice: { configured: false, read: false, issue: false, manage: false, proforma: false, route: false }, finance: { configured: false, read: false, record: false, approve: false }, handoff: handoff(), ...overrides,
 });
 const wire = (value: Record<string, unknown> = {}) => ({ state: "blocked", blockers: ["payment", "finance_action"], stageId: "waiting", document: { status: "active", revision: 1, prints: 2 }, actions: { generate: false, print: false }, ...value });
 

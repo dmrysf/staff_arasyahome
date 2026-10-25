@@ -2,9 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { useI18n, type MessageKey } from "../../i18n";
 import type { ConfirmareApi, ConfirmareDetail } from "../../domain/confirmare";
 import {
-  FINANCE_DATA_TTL_MS, TRANSFER_REJECT_REASONS, actionLabel, attentionLabel, entryLabel, entryStateLabel, financeErrorKey, formatFinanceMoney, nextLabel, nextTone,
+  CASH_RECEIPTS, FINANCE_DATA_TTL_MS, PAYMENT_METHODS, TRANSFER_REJECT_REASONS, actionLabel, attentionLabel, entryLabel, entryStateLabel, financeErrorKey, formatFinanceMoney, nextLabel, nextTone,
   normalizeAmount, ownPendingEntries, refusalLabel, rejectReasonLabel, validReference, verifiableEntries,
-  type DecisionInput, type FinanceAction, type FinanceEntry, type FinanceRead, type FinanceView, type RefundInput, type TransferInput, type TransferRejectReason,
+  type CashReceipt, type DecisionInput, type FinanceAction, type FinanceEntry, type FinanceRead, type FinanceView, type PaymentMethod, type RefundInput, type TransferInput, type TransferRejectReason,
 } from "../../domain/confirmareFinance";
 import { shopUnavailableLabel } from "../../domain/confirmareShop";
 import { createIdempotencyKey } from "../../services/idempotency";
@@ -26,6 +26,10 @@ type Pending = { action: FinanceAction; input: TransferInput | DecisionInput | R
  * employee verifies it against the bank statement), a refund only after the final manufacturing stage, never through a
  * payment provider. Every action is shown as a plain summary and confirmed once before it is sent; a lost answer is
  * checked with the shop (never sent twice), and nothing is shown as done before the shop confirmed it.
+ *
+ * API 2.45.0: the shop's one money calculation (what is still owed, an excess), the invoicing deadline and the AWB's
+ * collection; a cash advance with its fiscal receipt or chitanță and who collected it; more than what is owed only with an
+ * explicit confirmation (the excess is a finance exception); a payment for a cancelled proforma only by a finance decision.
  */
 export function ConfirmareFinancePanel({ detail, service }: { detail: ConfirmareDetail; service: ConfirmareApi }) {
   const { t } = useI18n();
@@ -188,12 +192,21 @@ function FinanceBody({ view, role, busy, pending, onPrepare, onConfirm, onCancel
             <div><dt>{t("cf.fin.advanceRequired", { percentage: summary.advance.percentage })}</dt><dd>{money(summary.advance.required)}</dd></div>
             <div><dt>{t("cf.fin.advanceOutstanding")}</dt><dd data-testid="cf-finance-advance-outstanding">{money(summary.advance.outstanding)}</dd></div>
             <div><dt>{t("cf.fin.onDelivery")}</dt><dd>{money(summary.advance.onDelivery)}</dd></div>
+            {summary.advance.paymentReference && <div><dt>{t("cf.fin.paymentReference")}</dt><dd translate="no" data-testid="cf-finance-payment-reference">{summary.advance.paymentReference}</dd></div>}
+            {summary.advance.proforma && <div><dt>{t("cf.fin.proforma")}</dt><dd data-testid="cf-finance-proforma">{`${summary.advance.proforma.series} ${summary.advance.proforma.number}`.trim()}{summary.advance.proforma.amount ? ` · ${money(summary.advance.proforma.amount)}` : ""}</dd></div>}
           </>}
           {summary.balance.outstanding !== null && <div><dt>{t("cf.fin.outstanding")}</dt><dd data-testid="cf-finance-outstanding">{money(summary.balance.outstanding)}</dd></div>}
+          {summary.position?.known && <div className="cf-shop-grand"><dt>{t("cf.fin.remaining")}</dt><dd data-testid="cf-finance-remaining">{money(summary.position.remaining)}</dd></div>}
+          {summary.position?.known && positive(summary.position.excess) && <div><dt>{t("cf.fin.excess")}</dt><dd data-testid="cf-finance-excess">{money(summary.position.excess)}</dd></div>}
           {positive(summary.balance.refundLiability) && <div><dt>{t("cf.fin.refundLiability")}</dt><dd data-testid="cf-finance-liability">{money(summary.balance.refundLiability)} · {t(summary.balance.acknowledged ? "cf.fin.acknowledged" : "cf.fin.notAcknowledged")}</dd></div>}
         </dl>
         <p className="cf-line-facts"><strong>{summary.order.methodTitle || summary.order.method || "—"}</strong> · {t(`cf.fin.evidence.${summary.payment.evidence}` as MessageKey)}</p>
-        <p className="cf-line-facts" data-testid="cf-finance-state">{t(`cf.financial.${summary.financial.state}` as MessageKey)}{summary.financial.attention ? ` · ${attentionLabel(summary.financial.attention)}` : ""}</p>
+        <p className="cf-line-facts" data-testid="cf-finance-state">{t(`cf.financial.${summary.financial.state}` as MessageKey)}{summary.financial.attention ? ` · ${attentionLabel(summary.financial.attention)}` : ""}{summary.advance?.accepted ? ` · ${t("cf.fin.advanceAccepted")}` : ""}</p>
+        {summary.deadline?.state === "open" && summary.deadline.level !== "none" && <Notice tone={summary.deadline.level === "notice" ? "warning" : "danger"} role="status" testId="cf-finance-deadline">
+          {summary.deadline.level === "overdue" ? t("inv.pf.deadline.overdueNote", { date: summary.deadline.deadline ?? "", first: summary.deadline.firstCollection ?? "" })
+            : t("inv.pf.deadline.notice", { date: summary.deadline.deadline ?? "", first: summary.deadline.firstCollection ?? "", days: String(summary.deadline.daysLeft ?? "") })}
+        </Notice>}
+        {summary.cod?.state === "mismatch" && <Notice tone="danger" role="alert" testId="cf-finance-cod-mismatch">{t("inv.pf.cod.mismatch", { awb: summary.cod.awb ?? "", awbCod: money(summary.cod.awbCod), expected: money(summary.cod.expected) })}</Notice>}
         {view.production.refundEligible ? null : positive(summary.balance.refundLiability) && <p className="dashboard-footnote">{t("cf.fin.refundAfterProduction")}</p>}
         <p className="dashboard-footnote">{t("cf.fin.noElectronicRefund")}</p>
       </div>
@@ -220,7 +233,7 @@ function FinanceBody({ view, role, busy, pending, onPrepare, onConfirm, onCancel
           ? <p className="dashboard-footnote">{t("cf.fin.noEntries")}</p>
           : <ul className="cf-finance-list" data-testid="cf-finance-entries">
             {summary.entries.map((entry) => <li key={entry.id} data-testid={`cf-finance-entry-${entry.state}`}>
-              <span><strong>{entryLabel(entry)}</strong> · {money(entry.amount)}{entry.reference ? ` · ${t("cf.fin.reference")}: ${entry.reference}` : ""}{entry.valueDate ? ` · ${entry.valueDate}` : ""}</span>
+              <span><strong>{entryLabel(entry)}</strong> · {money(entry.amount)}{entry.method !== "bank_transfer" ? ` · ${t(`cf.fin.method.${entry.method}` as MessageKey)}${entry.receipt ? `, ${t(`cf.fin.receipt.${entry.receipt}` as MessageKey)}` : ""}` : ""}{entry.reference ? ` · ${t(entry.method === "bank_transfer" ? "cf.fin.reference" : "cf.fin.receiptNumber")}: ${entry.reference}` : ""}{entry.valueDate ? ` · ${entry.valueDate}` : ""}{entry.collector ? ` · ${t("cf.fin.collectedBy", { name: entry.collector })}` : ""}{entry.flags.map((flag) => ` · ${t(`cf.fin.flag.${flag}` as MessageKey)}`).join("")}</span>
               <span className="dashboard-footnote">{entryStateLabel(entry.state)} · {t("cf.fin.by", { name: name(entry.submittedBy), time: when(entry.submittedAt) })}{entry.decidedBy && entry.kind !== "liability_ack" ? ` · ${t("cf.fin.decidedBy", { name: name(entry.decidedBy), time: when(entry.decidedAt) })}` : ""}{entry.state === "rejected" && entry.decisionCode ? ` · ${rejectReasonLabel(entry.decisionCode)}` : ""}</span>
             </li>)}
           </ul>}
@@ -240,8 +253,17 @@ function FinanceActions({ view, busy, allowed, money, name, onPrepare }: {
   const [valueDate, setValueDate] = useState(new Date().toISOString().slice(0, 10));
   const [reason, setReason] = useState<TransferRejectReason>("not_received");
   const [problem, setProblem] = useState<string | null>(null);
+  const [method, setMethod] = useState<PaymentMethod>("bank_transfer");
+  const [receipt, setReceipt] = useState<CashReceipt | "">("");
+  const [collector, setCollector] = useState("");
+  const [over, setOver] = useState(false);
+  const [applyCancelled, setApplyCancelled] = useState(false);
   const transfer = allowed("submit_transfer");
   const refund = allowed("submit_refund");
+  const remaining = summary.position?.known ? summary.position.remaining : null;
+  const cancelledProforma = summary.advance?.proformaCancelled === true;
+  const typed = normalizeAmount(amount);
+  const exceedsNow = transfer && typed !== null && remaining !== null && Number(typed) > Number(remaining);
   if (view.allowedActions.length === 0) return null;
 
   const evidence = (kind: "transfer" | "refund") => {
@@ -252,8 +274,19 @@ function FinanceActions({ view, busy, allowed, money, name, onPrepare }: {
     setProblem(null);
     if (kind === "transfer") {
       const purpose = summary.order.cod ? "advance" : "additional_payment";
-      onPrepare({ action: "submit_transfer", input: { expectedRevision: revision, purpose, amount: normalized, reference: reference.trim(), valueDate }, key: createIdempotencyKey(),
-        summary: t("cf.fin.confirmTransfer", { amount: money(normalized), reference: reference.trim(), date: valueDate, purpose: t(purpose === "advance" ? "cf.fin.entry.advance" : "cf.fin.entry.additional_payment") }) });
+      const cash = method !== "bank_transfer";
+      if (cash && (receipt === "" || collector.trim().length < 2)) { setProblem(t("cf.fin.invalidCash")); return; }
+      // The shop decides what is owed; the employee confirms an excess explicitly (it becomes a finance exception).
+      const exceeds = remaining !== null && Number(normalized) > Number(remaining);
+      if (exceeds && !over) { setProblem(t("cf.fin.overpaymentRequired")); return; }
+      if (cancelledProforma && !applyCancelled) { setProblem(t("cf.fin.cancelledProformaRequired")); return; }
+      const input: TransferInput = { expectedRevision: revision, purpose, amount: normalized, reference: reference.trim(), valueDate,
+        ...(cash ? { method, receipt: receipt as CashReceipt, collector: collector.trim() } : {}), ...(exceeds ? { overpaymentConfirmed: true as const } : {}),
+        ...(cancelledProforma ? { cancelledProforma: "apply_to_order" as const } : {}) };
+      const purposeText = t(purpose === "advance" ? "cf.fin.entry.advance" : "cf.fin.entry.additional_payment");
+      onPrepare({ action: "submit_transfer", input, key: createIdempotencyKey(),
+        summary: cash ? t("cf.fin.confirmCash", { amount: money(normalized), receipt: t(`cf.fin.receipt.${receipt as CashReceipt}` as MessageKey), reference: reference.trim(), collector: collector.trim(), date: valueDate, purpose: purposeText })
+          : t("cf.fin.confirmTransfer", { amount: money(normalized), reference: reference.trim(), date: valueDate, purpose: purposeText }) });
     } else {
       onPrepare({ action: "submit_refund", input: { expectedRevision: revision, amount: normalized, reference: reference.trim(), valueDate }, key: createIdempotencyKey(),
         summary: t("cf.fin.confirmRefund", { amount: money(normalized), reference: reference.trim(), date: valueDate }) });
@@ -293,8 +326,27 @@ function FinanceActions({ view, busy, allowed, money, name, onPrepare }: {
       </div>}
       {(transfer || refund) && <form className="cf-finance-form" onSubmit={(event) => { event.preventDefault(); evidence(transfer ? "transfer" : "refund"); }} data-testid={transfer ? "cf-finance-transfer-form" : "cf-finance-refund-form"}>
         <p>{t(transfer ? (summary.order.cod ? "cf.fin.transferAdvanceHint" : "cf.fin.transferHint") : "cf.fin.refundHint")}</p>
+        {transfer && summary.advance?.paymentReference && <p className="dashboard-footnote" data-testid="cf-finance-match-hint">{t("cf.fin.transferMatchHint", { reference: summary.advance.paymentReference })}</p>}
+        {transfer && cancelledProforma && <Notice tone="warning" role="status" testId="cf-finance-cancelled-proforma">{t("cf.fin.cancelledProformaNote")}</Notice>}
+        {transfer && summary.order.cod && <label>{t("cf.fin.method")}
+          <select value={method} onChange={(event) => setMethod(event.target.value as PaymentMethod)} data-testid="cf-finance-method">
+            {PAYMENT_METHODS.map((code) => <option key={code} value={code}>{t(`cf.fin.method.${code}` as MessageKey)}</option>)}
+          </select>
+        </label>}
+        {transfer && method !== "bank_transfer" && <>
+          <p className="dashboard-footnote">{t("cf.fin.cashHint")}</p>
+          <label>{t("cf.fin.receipt")}
+            <select value={receipt} onChange={(event) => setReceipt(event.target.value as CashReceipt | "")} data-testid="cf-finance-receipt">
+              <option value="">—</option>
+              {CASH_RECEIPTS.map((code) => <option key={code} value={code}>{t(`cf.fin.receipt.${code}` as MessageKey)}</option>)}
+            </select>
+          </label>
+          <label>{t("cf.fin.collector")}<input autoComplete="off" maxLength={64} value={collector} onChange={(event) => setCollector(event.target.value)} data-testid="cf-finance-collector" /></label>
+        </>}
         <label>{t("cf.fin.amount")}<input inputMode="decimal" autoComplete="off" value={amount} onChange={(event) => setAmount(event.target.value)} data-testid="cf-finance-amount" /></label>
-        <label>{t("cf.fin.reference")}<input autoComplete="off" maxLength={64} value={reference} onChange={(event) => setReference(event.target.value)} data-testid="cf-finance-reference" /></label>
+        <label>{t(transfer && method !== "bank_transfer" ? "cf.fin.receiptNumber" : "cf.fin.reference")}<input autoComplete="off" maxLength={64} value={reference} onChange={(event) => setReference(event.target.value)} data-testid="cf-finance-reference" /></label>
+        {exceedsNow && <label className="field-inline"><input type="checkbox" checked={over} onChange={(event) => setOver(event.target.checked)} data-testid="cf-finance-overpayment" /> {t("cf.fin.overpaymentCheck", { remaining: money(remaining) })}</label>}
+        {transfer && cancelledProforma && <label className="field-inline"><input type="checkbox" checked={applyCancelled} onChange={(event) => setApplyCancelled(event.target.checked)} data-testid="cf-finance-apply-cancelled" /> {t("cf.fin.cancelledProformaCheck")}</label>}
         <label>{t("cf.fin.valueDate")}<input type="date" value={valueDate} onChange={(event) => setValueDate(event.target.value)} data-testid="cf-finance-date" /></label>
         {problem && <Notice tone="danger" role="alert" testId="cf-finance-problem">{problem}</Notice>}
         <button type="submit" className="button button-primary" disabled={busy} data-testid="cf-finance-prepare">{t(transfer ? "cf.fin.recordTransfer" : "cf.fin.recordRefund")}</button>

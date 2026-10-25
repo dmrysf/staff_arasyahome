@@ -79,9 +79,9 @@
 .cf-shop-totals .cf-shop-grand { padding-top: 6px; border-top: 1px solid var(--color-border); font-size: var(--text-md); font-weight: var(--weight-semibold); }
 .cf-shop-totals .cf-shop-grand dt { color: var(--color-text); }
 /* SmartBill section (Staff 2.33.0): its values are words (document, e-mail, last operation), not only amounts: they wrap. */
-.cf-invoice-view .cf-shop-totals dd { white-space: normal; overflow-wrap: anywhere; text-align: right; min-width: 0; }
-.cf-invoice-view .cf-shop-totals dt { flex: 0 0 auto; max-width: 45%; }
-.cf-invoice-view .cf-shop-actions { flex-wrap: wrap; }
+.cf-invoice .cf-shop-totals dd { white-space: normal; overflow-wrap: anywhere; text-align: right; min-width: 0; }
+.cf-invoice .cf-shop-totals dt { flex: 0 0 auto; max-width: 45%; }
+.cf-invoice .cf-shop-actions { flex-wrap: wrap; }
 .cf-shop-note { font-style: italic; }
 /* Phase 4B: controlled changes in the shop */
 .cf-edit { padding-top: 12px; border-top: 1px solid var(--color-border); }
@@ -118,6 +118,10 @@
 .cf-finance-decision { display: grid; gap: 8px; min-width: 0; padding: 12px; border: 1.5px solid var(--color-text); border-radius: var(--radius-md); }
 .cf-finance-decision p { margin: 0; overflow-wrap: anywhere; }
 .cf-finance-decision select { min-height: 44px; margin-left: 6px; padding: 0 10px; border: 1.5px solid var(--color-border); border-radius: var(--radius-md); font: inherit; }
+/* The shop's unmatched bank transfers (Staff 2.34.0): every control keeps a 44 px target and wraps at 320 px. */
+.cf-exceptions .cf-shop-actions { flex-wrap: wrap; }
+.cf-exceptions select, .cf-exceptions .field-inline input { min-height: 44px; max-width: 100%; padding: 0 10px; border: 1.5px solid var(--color-border); border-radius: var(--radius-md); font: inherit; }
+.cf-exceptions .field-inline { flex-wrap: wrap; min-width: 0; }
 .cf-finance-form { display: grid; gap: 10px; min-width: 0; padding: 12px; border: 1px solid var(--color-border); border-radius: var(--radius-md); }
 .cf-finance-form p { margin: 0; }
 .cf-finance-form label { display: grid; gap: 6px; min-width: 0; font-size: var(--text-sm); }
@@ -130,3 +134,20 @@
   .cf-finance-form > p, .cf-finance-form > .notice { grid-column: 1 / -1; }
   .cf-finance-form > .button { width: auto; justify-self: start; grid-column: 1 / -1; }
 }
+/* API 2.44.0: the advance proforma, the routing and the invoice QR scan (44 px touch targets, no overflow at 320 px). */
+.cf-shop-block .field-inline { display: flex; align-items: center; gap: 10px; min-height: 44px; }
+.cf-shop-block .field-inline input[type="checkbox"] { width: 22px; height: 22px; flex: 0 0 auto; }
+.cf-shop-block select, .cf-invoice-qr input[type="text"] { min-height: 44px; max-width: 100%; padding: 0 10px; border: 1.5px solid var(--color-border); border-radius: var(--radius-md); font: inherit; }
+.cf-invoice-qr form { flex-wrap: wrap; }
+.cf-invoice-qr input[type="text"] { flex: 1 1 220px; min-width: 0; font-family: var(--font-mono, monospace); }
+#cf-routing-confirm label, [data-testid="cf-routing-confirm"] label { display: grid; gap: 6px; min-width: 0; }
+.cf-invoice p, .cf-invoice li span, .cf-invoice h3 { overflow-wrap: anywhere; min-width: 0; }
+/* The advance proforma's bank transfer details (Staff 2.34.0): read out to the customer, so the IBAN and the reference
+   stay legible (monospace, wrapped in groups at narrow widths). */
+.cf-proforma-transfer { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid var(--color-border); border-radius: var(--radius-md); min-width: 0; }
+.cf-proforma-transfer h4 { margin: 0; font-size: var(--text-sm); }
+.cf-proforma-transfer [translate="no"] { font-family: var(--font-mono, monospace); letter-spacing: 0.02em; }
+/* API 2.45.0: the order's money as the shop computes it, first on the operator's card. */
+.cf-proforma-money { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid var(--color-border); border-radius: var(--radius-md); min-width: 0; }
+.cf-proforma-money h4 { margin: 0; font-size: var(--text-sm); }
+.cf-finance-confirm textarea { width: 100%; min-width: 0; box-sizing: border-box; font: inherit; }

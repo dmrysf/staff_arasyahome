@@ -155,7 +155,7 @@ export function editReasonLabel(reason: string | null): string {
   return t(`cf.edit.reason.${reason !== null && (REFUSAL_REASONS as readonly string[]).includes(reason) ? reason : "other"}` as MessageKey);
 }
 
-const BLOCKERS = ["out_of_stock", "product_unavailable", "coupon_conditions", "shipping_method_unsupported", "shipping_rate_unavailable", "free_shipping_threshold_lost", "free_shipping_threshold_reached", "shipping_line_not_found"] as const;
+const BLOCKERS = ["out_of_stock", "product_unavailable", "coupon_conditions", "shipping_method_unsupported", "shipping_rate_unavailable", "free_shipping_threshold_lost", "free_shipping_threshold_reached", "free_shipping_unverifiable", "shipping_line_not_found"] as const;
 
 export function blockerLabel(blocker: EditBlocker): string {
   const known = (BLOCKERS as readonly string[]).includes(blocker.code);

@@ -13,8 +13,8 @@ import type { ActiveQr, ProductionQrApi, ProductionQrView, QrAuthority, QrAuthor
 import { createBrowserWorkflowCache, createUnavailableWorkflowCache, normalizeProductionApiBaseUrl, type WorkflowCache } from "./workflowCache";
 import { createProductionWorkflowService } from "./workflowService";
 import type { ShopLine, ShopOrderDetail, ShopPerson, ShopRead } from "../../domain/confirmareShop";
-import { FINANCE_ACTIONS, FINANCE_NEXT, FINANCE_TASKS, type FinanceEntry, type FinanceOutcome, type FinanceQueue, type FinanceQueueItem, type FinanceRead, type FinanceSummary, type FinanceTask, type FinanceTimelineItem } from "../../domain/confirmareFinance";
-import { INVOICE_ACTIONS, INVOICE_ROLES, type InvoiceActionKey, type InvoiceOutcome, type InvoiceRead, type InvoiceSummary, type InvoiceView } from "../../domain/confirmareInvoice";
+import { CASH_RECEIPTS, EXCEPTION_REASONS, EXCEPTION_RESOLUTIONS, FINANCE_ACTIONS, PAYMENT_METHODS, FINANCE_NEXT, FINANCE_TASKS, type ExceptionOutcome, type FinanceEntry, type FinanceOutcome, type FinanceQueue, type FinanceQueueItem, type FinanceRead, type FinanceSummary, type FinanceTask, type FinanceTimelineItem, type TransferException, type TransferExceptionList } from "../../domain/confirmareFinance";
+import { CANCEL_REASONS, INVOICE_ACTIONS, INVOICE_ROLES, PROFORMA_ACTIONS, PROFORMA_KEYS, PROFORMA_ROUTE, type CodCheck, type ShippingCheck, type InvoiceDeadline, type MoneyPosition, type TotalAcceptance, type InvoiceActionKey, type InvoiceOutcome, type InvoiceRead, type InvoiceSummary, type InvoiceView, type ProformaActionKey, type ProformaSummary, type ShopAssignment, type ShopQueueItem } from "../../domain/confirmareInvoice";
 import { EDIT_IMPACTS, type EditBlocker, type EditCatalog, type EditField, type EditLineSnapshot, type EditOutcome, type EditProduct, type EditResult, type EditTotals, type EditVariation, type OpenEdit } from "../../domain/confirmareEdit";
 import { CLEARANCE_CONDITIONS, CONTACT_OUTCOMES, DOCUMENT_STATES, FINANCIAL_ATTENTION, HANDOFF_BLOCKERS, HANDOFF_STATES, type ConfirmareAlert, type ConfirmareApi, type ConfirmareAvailability, type ConfirmareContact, type ConfirmareCustomer, type ConfirmareDetail, type ConfirmareEvent, type ConfirmareHandoff, type ConfirmareItem, type HandoffItem, type ConfirmareLine, type ConfirmareOperator, type ConfirmarePool, type ConfirmareTeam, type FinancialState } from "../../domain/confirmare";
 
@@ -1145,10 +1145,19 @@ export function createProductionServices(apiBaseUrl: string, options: Production
     financeAct: (globalOrderId, action, input, key) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/finance/${action.replace(/_/g, "-")}`, { method: "POST", cache: "no-store", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapFinanceOutcome),
     financeReconcile: (globalOrderId, key) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/finance/reconcile`, { method: "POST", cache: "no-store", body: JSON.stringify({ idempotencyKey: key }) }, mapFinanceOutcome),
     financeQueue: (task, source, signal) => http.request(`/confirmare/finance${task || source ? `?${new URLSearchParams({ ...(task ? { task } : {}), ...(source ? { source } : {}) }).toString()}` : ""}`, { signal, cache: "no-store" }, mapFinanceQueue),
+    // API 2.44.0: the shop's bank transfers that match no order (read from the shop when shown, never cached).
+    transferExceptions: (source, signal) => http.request(`/confirmare/finance/transfer-exceptions${source ? `?${new URLSearchParams({ source }).toString()}` : ""}`, { signal, cache: "no-store" }, mapTransferExceptionList),
+    transferExceptionAct: (source, action, input, key) => http.request(`/confirmare/finance/transfer-exceptions/${action}?${new URLSearchParams({ source }).toString()}`, { method: "POST", cache: "no-store", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapExceptionOutcome),
     // SmartBill invoicing (API 2.43.0): the state is read when shown, never cached; actions need an Idempotency-Key.
     invoiceRead: (globalOrderId, signal) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/invoice`, { signal, cache: "no-store" }, mapInvoiceRead),
     invoiceAct: (globalOrderId, action, input, key) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/invoice/${action.replace(/_/g, "-")}`, { method: "POST", cache: "no-store", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapInvoiceOutcome),
     invoiceReconcile: (globalOrderId, key) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/invoice/reconcile`, { method: "POST", cache: "no-store", body: JSON.stringify({ idempotencyKey: key }) }, mapInvoiceOutcome),
+    // API 2.44.0: the operator's advance proforma, the routing to a shop employee and the shop employee's QR scan.
+    proformaAct: (globalOrderId, action, input, key) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/proforma/${PROFORMA_ROUTE[action]}`, { method: "POST", cache: "no-store", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapInvoiceOutcome),
+    shopCandidates: (globalOrderId, signal) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/shop-employees`, { signal, cache: "no-store" }, (value) => listOf(objectValue(value).items, 200, (entry) => { const item = objectValue(entry); return { id: uuidValue(item.id), name: textValue(item.name, 200) }; })),
+    assignShop: (globalOrderId, input, key) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/shop-assignment`, { method: "POST", cache: "no-store", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, (value) => mapShopAssignment(objectValue(value).assignment)),
+    verifyInvoiceQr: (globalOrderId, qrToken) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/invoice/qr`, { method: "POST", cache: "no-store", body: JSON.stringify({ qrToken }) }, (value) => { const raw = objectValue(value); if (raw.verified !== true) throw new StaffServiceError("SERVER_ERROR"); return { verified: true as const, validSeconds: nonNegativeInteger(raw.validSeconds) }; }),
+    shopQueue: (signal) => http.request("/confirmare/shop-queue", { signal, cache: "no-store" }, (value) => listOf(objectValue(value).items, 200, mapShopQueueItem)),
   };
   return { physical, auth, employee, orders, activity, workflow, exceptions, live, cutting, documents, authority, productionQr, trendyol, workspace, management, pieces, confirmare, mode: "production" };
 }
@@ -1291,9 +1300,9 @@ export function mapConfirmareDetail(value: unknown): ConfirmareDetail {
     // An older API (2.41) has no handoff state: the panel is not shown.
     handoff: raw.handoff == null ? null : mapConfirmareHandoff(raw.handoff),
     // An older API (2.42) has no invoicing: nothing can be read or issued.
-    invoice: raw.invoice == null ? { configured: false, read: false, issue: false, manage: false } : (() => {
+    invoice: raw.invoice == null ? { configured: false, read: false, issue: false, manage: false, proforma: false, route: false } : (() => {
       const invoice = objectValue(raw.invoice);
-      return { configured: invoice.configured === true, read: invoice.read === true, issue: invoice.issue === true, manage: invoice.manage === true };
+      return { configured: invoice.configured === true, read: invoice.read === true, issue: invoice.issue === true, manage: invoice.manage === true, proforma: invoice.proforma === true, route: invoice.route === true };
     })(),
     // An older API (2.40) has no finance: nothing can be read or recorded.
     finance: raw.finance == null ? { configured: false, read: false, record: false, approve: false } : (() => {
@@ -1479,6 +1488,9 @@ function mapFinanceEntry(value: unknown): FinanceEntry {
     amount: moneyValue(raw.amount), reference: textValue(raw.reference, 64), valueDate: raw.valueDate == null ? null : textValue(raw.valueDate, 10), state: oneOf(raw.state, ["submitted", "verified", "rejected"] as const),
     submittedBy: uuidValue(raw.submittedBy), submittedAt: timestampValue(raw.submittedAt), decidedBy: raw.decidedBy == null ? null : uuidValue(raw.decidedBy),
     decidedAt: raw.decidedAt == null ? null : timestampValue(raw.decidedAt), decisionCode: raw.decisionCode == null ? null : textValue(raw.decisionCode, 40),
+    // API 2.45.0: how the money came, the cash document and collector, the explicit confirmations (absent: a bank transfer).
+    method: raw.method == null ? "bank_transfer" : oneOf(raw.method, PAYMENT_METHODS), receipt: raw.receipt == null ? null : oneOf(raw.receipt, CASH_RECEIPTS),
+    collector: raw.collector == null ? null : textValue(raw.collector, 64), flags: raw.flags == null ? [] : listOf(raw.flags, 4, (flag) => oneOf(flag, ["overpayment", "cancelled_proforma"] as const)),
   };
 }
 export function mapFinanceSummary(value: unknown): FinanceSummary {
@@ -1498,12 +1510,52 @@ export function mapFinanceSummary(value: unknown): FinanceSummary {
     totals: { current: optionalMoney(totals.current), original: optionalMoney(totals.original), refunded: optionalMoney(totals.refunded) },
     received: { online: optionalMoney(received.online), advance: optionalMoney(received.advance), transfers: optionalMoney(received.transfers), net: optionalMoney(received.net) },
     payment: { onlineVerified: booleanValue(payment.onlineVerified), paidRecorded: booleanValue(payment.paidRecorded), evidence: oneOf(payment.evidence, ["netopia_ipn", "gateway", "none"] as const) },
-    advance: advance === null ? null : { percentage: percentageValue(advance.percentage), required: optionalMoney(advance.required), collected: optionalMoney(advance.collected), outstanding: optionalMoney(advance.outstanding), onDelivery: optionalMoney(advance.onDelivery) },
+    advance: advance === null ? null : {
+      percentage: percentageValue(advance.percentage), required: optionalMoney(advance.required), collected: optionalMoney(advance.collected), outstanding: optionalMoney(advance.outstanding), onDelivery: optionalMoney(advance.onDelivery),
+      paymentReference: paymentReference(advance.paymentReference), proforma: advance.proforma == null ? null : mapFinanceProforma(advance.proforma),
+      accepted: advance.accepted == null ? false : booleanValue(advance.accepted), proformaCancelled: advance.proformaCancelled == null ? false : booleanValue(advance.proformaCancelled),
+    },
     balance: { outstanding: optionalMoney(balance.outstanding), refundLiability: moneyValue(balance.refundLiability), acknowledged: booleanValue(balance.acknowledged) },
     financial: { state: oneOf(financial.state, ["cleared", "waiting", "partial", "unknown"] as const), basis: nullableString(financial.basis), attention: financial.attention == null ? null : oneOf(financial.attention, ATTENTIONS) },
     entries: listOf(raw.entries, 200, mapFinanceEntry),
     capabilities: { record: booleanValue(capabilities.record), refunds: oneOf(capabilities.refunds, ["off", "manual"] as const), electronicRefund: false },
+    position: raw.position == null ? null : mapMoneyPosition(raw.position),
+    deadline: raw.deadline == null ? null : mapInvoiceDeadline(raw.deadline),
+    cod: raw.cod == null ? null : mapCodCheck(raw.cod),
   };
+}
+function mapFinanceProforma(value: unknown): NonNullable<NonNullable<FinanceSummary["advance"]>["proforma"]> {
+  const raw = objectValue(value);
+  const code = (text: unknown, min: number): string => { const v = textValue(text, 20); if (!new RegExp(`^[A-Za-z0-9-]{${min},20}$`).test(v)) throw new StaffServiceError("SERVER_ERROR"); return v; };
+  return { series: code(raw.series, 0), number: code(raw.number, 1), amount: optionalMoney(raw.amount), currency: raw.currency == null ? null : textValue(raw.currency, 3), reference: paymentReference(raw.reference) };
+}
+function mapTransferException(value: unknown): TransferException {
+  const raw = objectValue(value);
+  const order = raw.order == null ? null : objectValue(raw.order);
+  const state = oneOf(raw.state, ["open", "resolved"] as const);
+  const resolution = raw.resolution == null ? null : oneOf(raw.resolution, EXCEPTION_RESOLUTIONS);
+  if ((state === "open") !== (resolution === null)) throw new StaffServiceError("SERVER_ERROR");
+  return {
+    id: uuidValue(raw.id), amount: moneyValue(raw.amount), currency: textValue(raw.currency, 3), reference: textValue(raw.reference, 64), valueDate: raw.valueDate == null ? null : textValue(raw.valueDate, 10),
+    reason: oneOf(raw.reason, EXCEPTION_REASONS), state, submittedBy: uuidValue(raw.submittedBy), submittedAt: raw.submittedAt == null ? null : timestampValue(raw.submittedAt),
+    resolvedBy: raw.resolvedBy == null ? null : uuidValue(raw.resolvedBy), resolvedAt: raw.resolvedAt == null ? null : timestampValue(raw.resolvedAt), resolution,
+    order: order === null ? null : { id: textValue(order.id, 20), number: order.number == null ? null : textValue(order.number, 64) },
+  };
+}
+export function mapTransferExceptionList(value: unknown): TransferExceptionList {
+  const raw = objectValue(value);
+  const capabilities = objectValue(raw.capabilities);
+  const base = { source: textValue(raw.source, 40), capabilities: { record: booleanValue(capabilities.record), approve: booleanValue(capabilities.approve) } };
+  if (raw.available !== true) return { ...base, available: false, reason: textValue(raw.reason, 60), exceptions: [] };
+  return { ...base, available: true, currency: raw.currency == null ? null : textValue(raw.currency, 3), exceptions: listOf(raw.exceptions, 300, mapTransferException) };
+}
+export function mapExceptionOutcome(value: unknown): ExceptionOutcome {
+  const raw = objectValue(value);
+  if (raw.state === "unknown") return { state: "unknown", idempotencyKey: textValue(raw.idempotencyKey, 100) };
+  if (raw.state !== "applied") throw new StaffServiceError("SERVER_ERROR");
+  const list = mapTransferExceptionList({ ...raw, available: true });
+  if (!list.available) throw new StaffServiceError("SERVER_ERROR");
+  return { ...list, state: "applied", entryId: uuidValue(raw.entryId) };
 }
 function mapFinanceTimeline(value: unknown): FinanceTimelineItem {
   const raw = objectValue(value);
@@ -1547,6 +1599,7 @@ function mapFinanceQueueItem(value: unknown): FinanceQueueItem {
     financial: { state: nullableString(financial.state), basis: nullableString(financial.basis), attention: nullableString(financial.attention) },
     paymentMethod: nullableString(raw.paymentMethod), stageId: textValue(raw.stageId, 100), confirmation: textValue(raw.confirmation, 20),
     dueDate: raw.dueDate == null ? null : textValue(raw.dueDate, 10), sourceChangedAt: raw.sourceChangedAt == null ? null : timestampValue(raw.sourceChangedAt),
+    verifying: raw.verifying == null ? false : booleanValue(raw.verifying),
   };
 }
 export function mapFinanceQueue(value: unknown): FinanceQueue {
@@ -1605,11 +1658,164 @@ function mapInvoiceSummary(value: unknown): InvoiceSummary {
         series: invoiceText(item.series, 40), number: invoiceText(item.number, 40) };
     }),
     blockers: Object.fromEntries(INVOICE_KEYS.map((key) => [key, invoiceCodes(blockers[key])])) as Record<InvoiceActionKey, string[]>,
+    proforma: mapProformaSummary(raw.proforma),
+    // API 2.45.0: e-Factura is never tracked by the shop; nothing else is accepted.
+    eFactura: raw.eFactura == null ? null : { state: oneOf(objectValue(raw.eFactura).state, ["not_tracked"] as const) },
   };
+}
+function mapProformaSummary(value: unknown): ProformaSummary | null {
+  if (value == null) return null;
+  const raw = objectValue(value);
+  const advance = objectValue(raw.advance);
+  const mail = objectValue(raw.mail);
+  const blockers = objectValue(raw.blockers);
+  const money = (amount: unknown): string | null => (amount == null ? null : moneyText(amount));
+  const document = raw.document == null ? null : objectValue(raw.document);
+  const invoiced = raw.invoiced == null ? null : objectValue(raw.invoiced);
+  const transfer = raw.transfer == null ? null : objectValue(raw.transfer);
+  const percentage = advance.percentage == null ? null : Number(advance.percentage);
+  if (percentage !== null && (!Number.isFinite(percentage) || percentage < 0 || percentage > 100)) throw new StaffServiceError("SERVER_ERROR");
+  return {
+    advance: {
+      required: money(advance.required), received: money(advance.received), outstanding: money(advance.outstanding), percentage, cod: advance.cod == null ? null : booleanValue(advance.cod),
+      state: advance.state == null ? null : oneOf(advance.state, ["waiting", "partial", "paid"] as const), verifying: advance.verifying == null ? false : booleanValue(advance.verifying),
+      accepted: advance.accepted == null ? false : booleanValue(advance.accepted),
+    },
+    transfer: transfer === null ? null : {
+      iban: ibanValue(transfer.iban), bank: textValue(transfer.bank, 100), beneficiary: textValue(transfer.beneficiary, 100), reference: paymentReference(transfer.reference),
+      bic: transfer.bic == null ? null : bicValue(transfer.bic),
+    },
+    state: oneOf(raw.state, ["none", "in_flight", "issued", "unknown"] as const),
+    document: document === null ? null : {
+      series: invoiceText(document.series, 40), number: invoiceText(document.number, 40), amount: money(document.amount), currency: invoiceText(document.currency, 3), reference: paymentReference(document.reference),
+      issuedAt: invoiceInstant(document.issuedAt), issuedBy: invoiceUuid(document.issuedBy), outdated: booleanValue(document.outdated), link: invoiceLink(document.link),
+    },
+    mail: { state: oneOf(mail.state, ["none", "smartbill", "in_flight", "sent", "unknown", "failed"] as const), at: invoiceInstant(mail.at), by: invoiceUuid(mail.by), count: nonNegativeInteger(mail.count) },
+    invoiced: invoiced === null ? null : { invoiced: invoiced.invoiced == null ? null : booleanValue(invoiced.invoiced), at: invoiceInstant(invoiced.at) },
+    error: invoiceText(raw.error, 40),
+    history: listOf(raw.history, 50, (entry) => {
+      const item = objectValue(entry);
+      return { kind: textValue(item.kind, 40), at: invoiceInstant(item.at), by: invoiceUuid(item.by), outcome: textValue(item.outcome, 20), series: invoiceText(item.series, 40), number: invoiceText(item.number, 40),
+        reason: item.reason == null ? null : oneOf(item.reason, CANCEL_REASONS) };
+    }),
+    // A YD SOFT 2.18.0 shop sends no 2.45.0 groups: those actions are not supported.
+    blockers: Object.fromEntries(PROFORMA_KEYS.map((key) => [key, blockers[key] === undefined ? ["not_supported"] : invoiceCodes(blockers[key])])) as Record<ProformaActionKey, string[]>,
+    money: raw.money == null ? null : mapMoneyPosition(raw.money),
+    totalAcceptance: raw.totalAcceptance == null ? null : mapTotalAcceptance(raw.totalAcceptance),
+    advanceAcceptance: raw.advanceAcceptance == null ? null : (() => {
+      const a = objectValue(raw.advanceAcceptance);
+      return { at: invoiceInstant(a.at), by: invoiceUuid(a.by), required: money(a.required), received: money(a.received), reason: invoiceText(a.reason, 300), low: booleanValue(a.low),
+        kind: a.kind == null ? "accepted" as const : oneOf(a.kind, ["accepted", "kept"] as const) };
+    })(),
+    lowAdvance: raw.lowAdvance == null ? false : booleanValue(raw.lowAdvance),
+    cancel: raw.cancel == null ? null : (() => {
+      const c = objectValue(raw.cancel);
+      return { state: oneOf(c.state, ["in_flight", "unknown"] as const), at: invoiceInstant(c.at), by: invoiceUuid(c.by), reason: c.reason == null ? null : oneOf(c.reason, CANCEL_REASONS) };
+    })(),
+    cancelled: listOf(raw.cancelled ?? [], 50, (entry) => {
+      const c = objectValue(entry);
+      return { series: invoiceText(c.series, 40), number: invoiceText(c.number, 40), amount: money(c.amount), currency: invoiceText(c.currency, 3), cancelledAt: invoiceInstant(c.cancelledAt), cancelledBy: invoiceUuid(c.cancelledBy),
+        reason: c.reason == null ? null : oneOf(c.reason, CANCEL_REASONS) };
+    }),
+    superseded: listOf(raw.superseded ?? [], 50, (entry) => {
+      const c = objectValue(entry);
+      return { series: invoiceText(c.series, 40), number: invoiceText(c.number, 40), amount: money(c.amount), supersededAt: invoiceInstant(c.supersededAt) };
+    }),
+    deadline: raw.deadline == null ? null : mapInvoiceDeadline(raw.deadline),
+    cod: raw.cod == null ? null : mapCodCheck(raw.cod),
+    shipping: raw.shipping == null ? null : mapShippingCheck(raw.shipping),
+  };
+}
+/** The shop's one money calculation; refused when its own numbers do not add up (never shown half trusted). */
+export function mapMoneyPosition(value: unknown): MoneyPosition {
+  const raw = objectValue(value);
+  const money = (amount: unknown): string | null => (amount == null ? null : moneyText(amount));
+  const percentage = raw.percentage == null ? null : Number(raw.percentage);
+  if (percentage !== null && (!Number.isFinite(percentage) || percentage < 0 || percentage > 100)) throw new StaffServiceError("SERVER_ERROR");
+  const position: MoneyPosition = {
+    currency: textValue(raw.currency, 3), percentage, known: booleanValue(raw.known), total: money(raw.total), advanceRequired: money(raw.advanceRequired), received: money(raw.received),
+    refunded: money(raw.refunded), net: money(raw.net), remaining: money(raw.remaining), excess: money(raw.excess), advanceGap: money(raw.advanceGap),
+  };
+  if (position.known) {
+    const c = (text: string | null): number | null => (text === null ? null : Math.round(Number(text) * 100));
+    const [t, a, p, i, n, k, f, g] = [position.total, position.advanceRequired, position.received, position.refunded, position.net, position.remaining, position.excess, position.advanceGap].map(c);
+    if (t === null || p === null || i === null || n === null || k === null || f === null || n !== p - i || k !== Math.max(0, t - n) || f !== Math.max(0, n - t) || (a !== null && g !== Math.max(0, a - n))) {
+      throw new StaffServiceError("SERVER_ERROR");
+    }
+  }
+  return position;
+}
+function mapTotalAcceptance(value: unknown): TotalAcceptance {
+  const raw = objectValue(value);
+  return {
+    state: oneOf(raw.state, ["accepted", "required"] as const), at: invoiceInstant(raw.at), by: invoiceUuid(raw.by),
+    previousTotal: raw.previousTotal == null ? null : moneyText(raw.previousTotal), total: raw.total == null ? null : moneyText(raw.total),
+    changes: listOf(raw.changes, 40, (entry) => { const c = objectValue(entry); return { kind: oneOf(c.kind, ["added", "removed", "changed", "shipping"] as const), name: c.name === "" ? "" : textValue(c.name, 120) }; }),
+    note: invoiceText(raw.note, 300),
+    advanceDecisionRequired: raw.advanceDecisionRequired == null ? null : booleanValue(raw.advanceDecisionRequired),
+  };
+}
+const SHIPPING_CODES = ["shipping_cost_mismatch", "free_shipping_threshold_lost", "shipping_rate_unavailable", "shipping_method_unsupported", "free_shipping_unverifiable", "shipping_line_not_found", "shipping_check_failed"] as const;
+/** The shipping check; a mismatch or an unverifiable method always names its code. */
+export function mapShippingCheck(value: unknown): ShippingCheck {
+  const raw = objectValue(value);
+  const state = oneOf(raw.state, ["none", "match", "mismatch", "unverifiable"] as const);
+  const code = raw.code == null ? null : oneOf(raw.code, SHIPPING_CODES);
+  if ((state === "mismatch" || state === "unverifiable") !== (code !== null)) throw new StaffServiceError("SERVER_ERROR");
+  return { state, code, current: raw.current == null ? null : moneyText(raw.current), expected: raw.expected == null ? null : moneyText(raw.expected) };
+}
+export function mapInvoiceDeadline(value: unknown): InvoiceDeadline {
+  const raw = objectValue(value);
+  const date = (v: unknown): string | null => { if (v == null) return null; const text = textValue(v, 10); if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) throw new StaffServiceError("SERVER_ERROR"); return text; };
+  const days = raw.daysLeft == null ? null : Number(raw.daysLeft);
+  if (days !== null && (!Number.isInteger(days) || Math.abs(days) > 3660)) throw new StaffServiceError("SERVER_ERROR");
+  return { state: oneOf(raw.state, ["none", "open", "invoiced"] as const), firstCollection: date(raw.firstCollection), deadline: date(raw.deadline), daysLeft: days,
+    level: raw.level == null ? null : oneOf(raw.level, ["none", "notice", "warning", "critical", "overdue"] as const) };
+}
+export function mapCodCheck(value: unknown): CodCheck {
+  const raw = objectValue(value);
+  return { state: oneOf(raw.state, ["none", "match", "mismatch", "delivered", "unknown"] as const), awb: invoiceText(raw.awb, 100), awbCod: raw.awbCod == null ? null : moneyText(raw.awbCod),
+    expected: raw.expected == null ? null : moneyText(raw.expected), status: invoiceText(raw.status, 255) };
+}
+function bicValue(value: unknown): string {
+  const text = textValue(value, 11);
+  if (!/^[A-Z]{4}[A-Z]{2}[A-Z0-9]{2}([A-Z0-9]{3})?$/.test(text)) throw new StaffServiceError("SERVER_ERROR");
+  return text;
+}
+function ibanValue(value: unknown): string {
+  const text = textValue(value, 34);
+  if (!/^[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}$/.test(text)) throw new StaffServiceError("SERVER_ERROR");
+  return text;
+}
+/** The order's payment reference the customer writes in the transfer details (shop prefix and order number). */
+function paymentReference(value: unknown): string | null {
+  if (value == null) return null;
+  const text = textValue(value, 24);
+  if (!/^[A-Z]{2,4}[A-Z0-9]{1,20}$/.test(text)) throw new StaffServiceError("SERVER_ERROR");
+  return text;
+}
+function moneyText(value: unknown): string {
+  const text = textValue(value, 20);
+  if (!/^(0|[1-9][0-9]{0,11})\.[0-9]{2}$/.test(text)) throw new StaffServiceError("SERVER_ERROR");
+  return text;
+}
+function mapShopAssignment(value: unknown): ShopAssignment | null {
+  if (value == null) return null;
+  const raw = objectValue(value);
+  return { employeeId: uuidValue(raw.employeeId), assignedBy: uuidValue(raw.assignedBy), role: oneOf(raw.role, ["operator", "manager"] as const), assignedAt: timestampValue(raw.assignedAt) };
+}
+function mapShopQueueItem(value: unknown): ShopQueueItem {
+  const raw = objectValue(value);
+  return { globalOrderId: textValue(raw.globalOrderId, 200), source: textValue(raw.source, 40), orderNumber: textValue(raw.orderNumber, 64), assignedAt: timestampValue(raw.assignedAt),
+    assignedBy: raw.assignedBy === "" ? "" : textValue(raw.assignedBy, 200), handoff: textValue(raw.handoff, 30), invoiced: booleanValue(raw.invoiced) };
 }
 function mapInvoiceView(raw: Record<string, unknown>): InvoiceView {
   const handoff = objectValue(raw.handoff);
   const blockers = objectValue(raw.blockers);
+  const proforma = raw.proforma == null ? null : objectValue(raw.proforma);
+  const proformaBlockers = proforma === null ? {} : objectValue(proforma.blockers);
+  const routing = raw.routing == null ? null : objectValue(raw.routing);
+  const qr = raw.qr == null ? null : objectValue(raw.qr);
   return {
     summary: mapInvoiceSummary(raw.summary),
     handoff: { state: textValue(handoff.state, 30), blockers: invoiceCodes(handoff.blockers) },
@@ -1618,11 +1824,21 @@ function mapInvoiceView(raw: Record<string, unknown>): InvoiceView {
     actionOpen: booleanValue(raw.actionOpen),
     timeline: listOf(raw.timeline, 200, (entry) => {
       const item = objectValue(entry);
-      return { employeeId: uuidValue(item.employeeId), role: textValue(item.role, 12), action: oneOf(item.action, INVOICE_ACTIONS), reasonCode: invoiceText(item.reasonCode, 30), idempotencyKey: textValue(item.idempotencyKey, 100),
+      return { employeeId: uuidValue(item.employeeId), role: textValue(item.role, 12), action: oneOf(item.action, [...INVOICE_ACTIONS, ...PROFORMA_ACTIONS] as const), reasonCode: invoiceText(item.reasonCode, 30), idempotencyKey: textValue(item.idempotencyKey, 100),
         state: oneOf(item.state, ["pending", "applied", "rejected", "unknown"] as const), outcome: invoiceText(item.outcome, 40), result: invoiceText(item.result, 20), requestedAt: timestampValue(item.requestedAt), completedAt: invoiceInstant(item.completedAt) };
     }),
     employees: Object.fromEntries(Object.entries(objectValue(raw.employees)).map(([id, name]) => [id, textValue(name, 200)])),
     me: uuidValue(raw.me),
+    proforma: proforma === null ? null : {
+      // An API before 2.45.0 names no blockers of the newer actions: they are not supported there.
+      blockers: Object.fromEntries(PROFORMA_KEYS.map((key) => [key, proformaBlockers[key] === undefined ? ["not_supported"] : invoiceCodes(proformaBlockers[key])])) as Record<ProformaActionKey, string[]>,
+      allowedActions: listOf(proforma.allowedActions, PROFORMA_KEYS.length, (action) => oneOf(action, PROFORMA_KEYS)),
+      role: proforma.role == null ? null : oneOf(proforma.role, ["operator", "manager", "documents"] as const),
+    },
+    assignment: mapShopAssignment(raw.assignment),
+    routing: routing === null ? null : { allowed: booleanValue(routing.allowed), blockers: invoiceCodes(routing.blockers) },
+    // Older APIs (2.43.0) send no QR state: nothing was scanned.
+    qr: qr === null ? { verified: false, validSeconds: 0 } : { verified: booleanValue(qr.verified), validSeconds: nonNegativeInteger(qr.validSeconds) },
   };
 }
 export function mapInvoiceRead(value: unknown): InvoiceRead {

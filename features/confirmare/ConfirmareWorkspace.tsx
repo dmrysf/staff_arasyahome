@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState } from "react";
 import { useI18n } from "../../i18n";
 import type { Employee } from "../../domain/models";
-import { canHandOff, canSuperviseConfirmare, canUseConfirmare, canUseFinance, confirmareScopesOf, inTab, nextAction, type ConfirmareApi, type QueueTab } from "../../domain/confirmare";
+import { canHandOff, canSuperviseConfirmare, canUseAdvanceQueue, canUseConfirmare, canUseFinance, confirmareScopesOf, inTab, nextAction, type ConfirmareApi, type QueueTab } from "../../domain/confirmare";
 import { createIdempotencyKey } from "../../services/idempotency";
 import { getErrorPresentation, toServiceError } from "../../services/errors";
 import { AppIcon } from "../../components/icons/AppIcon";
@@ -139,7 +139,7 @@ function OperatorWorkspace({ employee, service, navigate }: { employee: Employee
           <div className="dashboard-actions">
             <button type="button" className="button button-secondary" onClick={() => navigate("/confirmare")} data-testid="cf-open-queue"><AppIcon name="orders" size={20} />{t("cf.home.allOrders")}</button>
             {supervisor && <button type="button" className="button button-secondary" onClick={() => navigate("/confirmare/team")} data-testid="cf-open-team"><AppIcon name="team" size={20} />{t("cf.home.team")}</button>}
-            {canUseFinance(employee) && <button type="button" className="button button-secondary" onClick={() => navigate("/confirmare/finance")} data-testid="cf-open-finance"><AppIcon name="orders" size={20} />{t("cf.fin.open")}</button>}
+            {canUseAdvanceQueue(employee) && <button type="button" className="button button-secondary" onClick={() => navigate("/confirmare/finance")} data-testid="cf-open-finance"><AppIcon name="orders" size={20} />{t(canUseFinance(employee) ? "cf.fin.open" : "cf.fin.openAdvances")}</button>}
             {canHandOff(employee) && <button type="button" className="button button-secondary" onClick={() => navigate("/confirmare/handoff")} data-testid="cf-open-handoff"><AppIcon name="document" size={20} />{t("cf.handoff.list.open")}</button>}
           </div>
         </DashboardSection>
