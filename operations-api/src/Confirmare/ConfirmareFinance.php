@@ -56,8 +56,10 @@ final readonly class ConfirmareFinance
     /** Finance tasks, most urgent first; every order is listed under its first matching task. */
     public const TASKS = [
         'reconciliation_required', 'source_unavailable', 'refund_processing', 'transfer_verification', 'refund_eligible',
-        'refund_liability', 'additional_payment', 'advance_partial', 'advance_waiting', 'advance_verified',
+        'refund_liability', 'additional_payment', 'advance_partial', 'advance_waiting', 'advance_verified', 'advance_routed',
     ];
+    /** The advance tasks a Confirmare operator also sees (API 2.44.0, read only): waiting, partial, paid, routed to the shop. */
+    public const ADVANCE_TASKS = ['advance_waiting', 'advance_partial', 'advance_verified', 'advance_routed'];
     private const KEY_PATTERN = '/^[A-Za-z0-9][A-Za-z0-9_-]{15,99}$/D';
     private const AMOUNT_PATTERN = '/^(0|[1-9][0-9]{0,8})(\.[0-9]{1,2})?$/D';
     private const REFERENCE_PATTERN = '/^[A-Za-z0-9][A-Za-z0-9 .\/-]{2,63}$/D';
@@ -66,7 +68,7 @@ final readonly class ConfirmareFinance
     private const NOT_SENT = ['SOURCE_ACCESS_NOT_CONFIGURED', 'SOURCE_ADDRESS_REFUSED', 'SOURCE_ACCESS_DENIED'];
     /** The fields each action takes besides expectedRevision. */
     private const FIELDS = [
-        'submit_transfer' => ['purpose', 'amount', 'reference', 'valueDate'],
+        'submit_transfer' => ['purpose', 'amount', 'reference', 'valueDate', 'method', 'receipt', 'collector', 'overpaymentConfirmed', 'cancelledProforma'],
         'decide_transfer' => ['entryId', 'decision', 'reasonCode'],
         'acknowledge_liability' => [],
         'submit_refund' => ['amount', 'reference', 'valueDate'],
@@ -271,7 +273,11 @@ final readonly class ConfirmareFinance
         if ($task !== null && !in_array($task, self::TASKS, true)) {
             throw new ApiException(422, 'CONFIRMARE_FINANCE_INVALID', 'Unknown finance task.', ['field' => 'task']);
         }
-        $sources = $this->finance->sources($actor, FinanceScopePolicy::VIEW);
+        $financeSources = $this->finance->sources($actor, FinanceScopePolicy::VIEW);
+        // API 2.44.0: a Confirmare operator or supervisor sees the advance tasks of their sources (never the other tasks).
+        $operatorSources = $actor->isRoot ? [] : array_values(array_unique([...($this->scopes->sources($actor, ConfirmareScopePolicy::OPERATE) ?? []), ...($this->scopes->sources($actor, ConfirmareScopePolicy::SUPERVISE) ?? [])]));
+        $sources = array_values(array_unique([...$financeSources, ...$operatorSources]));
+        sort($sources);
         if ($source !== null) {
             $sources = in_array($source, $sources, true) ? [$source] : [];
         }
@@ -281,7 +287,7 @@ final readonly class ConfirmareFinance
         }
         $parameters = [];
         $condition = ConfirmareScopePolicy::condition($sources, 'o.source_key', $parameters);
-        $statement = $this->pdo->prepare("SELECT o.global_order_id, o.source_key, o.order_number, o.payment_method, o.production_stage_id, o.operational_status, o.freshness_status, o.source_reported_unavailable_at,
+        $statement = $this->pdo->prepare("SELECT o.order_uuid, o.global_order_id, o.source_key, o.order_number, o.payment_method, o.production_stage_id, o.operational_status, o.freshness_status, o.source_reported_unavailable_at,
                 o.source_financial_state, o.source_financial_basis, o.source_financial_attention, o.source_due_date, o.source_changed_at, c.status AS confirmation_status,
                 (SELECT COUNT(*) FROM order_finance_actions a WHERE a.order_uuid = o.order_uuid AND a.state = 'unknown') AS unknown_actions,
                 (SELECT COUNT(*) FROM order_finance_actions a WHERE a.order_uuid = o.order_uuid AND a.state = 'pending' AND a.requested_at < ?) AS stale_actions
@@ -295,8 +301,18 @@ final readonly class ConfirmareFinance
         $orders = [];
         foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
             $category = self::task($row);
-            if ($category === null) {
+            $finance = in_array((string) $row['source_key'], $financeSources, true);
+            $verifying = $row['source_financial_attention'] === 'transfer_pending';
+            if (!$finance && $category === 'transfer_verification' && $row['payment_method'] === 'cod' && in_array($row['source_financial_state'], ['waiting', 'partial'], true)) {
+                // An operator keeps seeing the order while finance verifies a transfer: still waiting (or partial), marked.
+                $category = $row['source_financial_state'] === 'partial' ? 'advance_partial' : 'advance_waiting';
+            }
+            if ($category === null || (!$finance && !in_array($category, self::ADVANCE_TASKS, true))) {
                 continue;
+            }
+            $routed = $category === 'advance_verified' ? ConfirmareInvoice::assignee($this->pdo, (string) $row['order_uuid']) : null;
+            if ($routed !== null) {
+                $category = 'advance_routed';
             }
             $tasks[$category]++;
             if ($task !== null && $task !== $category) {
@@ -313,6 +329,9 @@ final readonly class ConfirmareFinance
                 'confirmation' => (string) $row['confirmation_status'],
                 'dueDate' => $row['source_due_date'] === null ? null : (string) $row['source_due_date'],
                 'sourceChangedAt' => $row['source_changed_at'] === null ? null : self::iso((string) $row['source_changed_at']),
+                'routed' => $routed !== null,
+                // A bank transfer recorded by one finance employee waits for the second (not money received yet).
+                'verifying' => $verifying,
             ];
         }
         return ['tasks' => $tasks, 'orders' => $orders, 'sources' => $sources];
@@ -385,9 +404,12 @@ final readonly class ConfirmareFinance
         $pending = static fn (string $kind): array => array_values(array_filter($summary['entries'], static fn (array $entry): bool => $entry['kind'] === $kind && $entry['state'] === 'submitted'));
         $othersPending = static fn (string $kind): bool => array_filter($pending($kind), static fn (array $entry): bool => $entry['submittedBy'] !== $actor->employeeUuid) !== [];
         $advanceOpen = $summary['order']['cod'] && in_array($state, ['waiting', 'partial'], true) && $summary['advance'] !== null && (float) ($summary['advance']['outstanding'] ?? 0) > 0;
+        // API 2.45.0: more money may come for a cash-on-delivery order after its advance (an accepted smaller advance
+        // completed later, a payment beyond the advance, an over-payment the employee confirms as such).
+        $codMoney = $summary['order']['cod'] && $state !== 'unknown' && in_array($attention, [null, 'refund_liability'], true) && $summary['position'] !== null;
         $refunds = $summary['capabilities']['refunds'] === 'manual';
         $actions = array_keys(array_filter([
-            'submit_transfer' => $record && $pending('transfer_in') === [] && ($attention === 'additional_payment_due' || ($advanceOpen && $attention === null)),
+            'submit_transfer' => $record && $pending('transfer_in') === [] && ($attention === 'additional_payment_due' || ($advanceOpen && $attention === null) || $codMoney),
             'decide_transfer' => $approve && $othersPending('transfer_in'),
             'acknowledge_liability' => $approve && $attention === 'refund_due',
             'submit_refund' => $record && $refunds && $eligible && $attention === 'refund_liability',
@@ -513,6 +535,39 @@ final readonly class ConfirmareFinance
                 throw $invalid('valueDate');
             }
             $fields += ['amount' => $amount, 'reference' => $reference, 'valueDate' => $date];
+        }
+        if ($action === 'submit_transfer') {
+            // API 2.45.0 (YD SOFT 2.19.0): cash with its document and collector; the explicit confirmations.
+            $method = $input['method'] ?? 'bank_transfer';
+            if (!in_array($method, SourceFinance::METHODS, true)) {
+                throw $invalid('method');
+            }
+            if ($method !== 'bank_transfer') {
+                if (!in_array($input['receipt'] ?? null, SourceFinance::RECEIPTS, true)) {
+                    throw $invalid('receipt');
+                }
+                $collector = is_string($input['collector'] ?? null) ? trim($input['collector']) : null;
+                if ($collector === null || !mb_check_encoding($collector, 'UTF-8') || preg_match(SourceFinance::COLLECTOR_PATTERN, $collector) !== 1) {
+                    throw $invalid('collector');
+                }
+                $fields += ['method' => $method, 'receipt' => $input['receipt'], 'collector' => $collector];
+            } elseif (array_key_exists('receipt', $input) || array_key_exists('collector', $input)) {
+                throw $invalid(array_key_exists('receipt', $input) ? 'receipt' : 'collector');
+            } elseif (array_key_exists('method', $input)) {
+                $fields['method'] = $method;
+            }
+            if (array_key_exists('overpaymentConfirmed', $input)) {
+                if ($input['overpaymentConfirmed'] !== true) {
+                    throw $invalid('overpaymentConfirmed');
+                }
+                $fields['overpaymentConfirmed'] = true;
+            }
+            if (array_key_exists('cancelledProforma', $input)) {
+                if ($input['cancelledProforma'] !== 'apply_to_order') {
+                    throw $invalid('cancelledProforma');
+                }
+                $fields['cancelledProforma'] = 'apply_to_order';
+            }
         }
         if (str_starts_with($action, 'decide_')) {
             $entry = $input['entryId'] ?? null;

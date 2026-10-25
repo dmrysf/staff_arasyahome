@@ -32,6 +32,11 @@ use Closure;
  * statement, an unknown outcome blocking a new document until a manager resolves it. Fixture key `invoice`:
  * ['cleared' => bool, 'documentType' => 'invoice'|'proforma', 'autoEmail' => bool]. Knobs: `invoiceOutcome` of the next
  * SmartBill call (created | unknown | refused), `afterInvoice` (answer_lost | crash).
+ * API 2.44.0 (YD SOFT 2.18.0): the operator's advance proforma (proforma-action, role operator; the proforma state in the
+ * invoice summary). Fixture key `invoice.cod` (a cash-on-delivery order waiting for its advance: required 215.70).
+ * Knobs: `proformaOutcome` (created | unknown | refused), `proformaMailOutcome` (sent | refused); `invoice.proformaInvoiced`
+ * makes SmartBill report the proforma invoiced (the final invoice is then refused, as the shop does). Proformas and their
+ * e-mails are counted in smartbillDocuments / smartbillMails under `pf:<orderId>`.
  */
 final class SourceAccessFakeShop implements SourceAccessTransport
 {
@@ -69,16 +74,28 @@ final class SourceAccessFakeShop implements SourceAccessTransport
     public array $financeAnswers = [];
     /** SmartBill knobs: the outcome of the next SmartBill call; 'answer_lost' / 'crash' after the shop ran an action. */
     public string $invoiceOutcome = 'created';
+    public string $proformaOutcome = 'created';
+    public string $proformaMailOutcome = 'sent';
+    /** API 2.45.0 (YD SOFT 2.19.0): the next SmartBill cancellation: cancelled | refused | unknown. */
+    public string $proformaCancelOutcome = 'cancelled';
     public ?string $afterInvoice = null;
     public bool $invoiceActions = true;
     /** Overrides the SmartBill link of the next invoice states (a shop answering with a foreign link). */
     public ?string $invoiceLinkOverride = null;
     /** @var array<string, array{order: string, hash: string, status: int, body: array<string, mixed>}> employee|key => stored answer */
     public array $invoiceAnswers = [];
+    /** YD SOFT 2.18.0: the shop's bank transfers that match no order (TransferExceptions), oldest first. */
+    public array $exceptions = [];
+    /** 'answer_lost' after the shop recorded an exception action. */
+    public ?string $afterException = null;
     /** Documents "made in SmartBill" by this TEST shop: orderId => count. */
     public array $smartbillDocuments = [];
     /** E-mails "sent by SmartBill" by this TEST shop: orderId => count. */
     public array $smartbillMails = [];
+    /** Cancellations "sent to SmartBill" by this TEST shop: orderId => count (2.19.0). */
+    public array $smartbillCancels = [];
+    /** Answer like a YD SOFT 2.18.0 shop: none of the 2.19.0 proforma fields or groups. */
+    public bool $legacyProforma = false;
 
     /** @param array<string, array<string, mixed>> $orders orderId => fixture */
     public function __construct(
@@ -125,10 +142,22 @@ final class SourceAccessFakeShop implements SourceAccessTransport
         if ($this->during !== null) {
             ($this->during)($input);
         }
-        $routes = ['detail', 'catalog', 'product', 'preview', 'apply', 'edit-status', 'finance', 'finance-action', 'finance-status', 'invoice', 'invoice-action', 'invoice-status'];
+        $routes = ['detail', 'catalog', 'product', 'preview', 'apply', 'edit-status', 'finance', 'finance-action', 'finance-status', 'invoice', 'invoice-action', 'invoice-status', 'proforma-action',
+            'transfer-exceptions', 'transfer-exception-action'];
         $action = substr($route, strlen('/yd-arasya/v1/confirmare/'));
         if (!str_starts_with($route, '/yd-arasya/v1/confirmare/') || !in_array($action, $routes, true) || !is_array($input)) {
             return $this->answer(400, ['error' => ['code' => 'invalid_request']], $nonce);
+        }
+        if (str_starts_with($action, 'transfer-exception')) {
+            // No order fields: the shop's own finance record (YD SOFT 2.18.0), finance only.
+            if (isset($input['orderId']) || ($input['actor']['role'] ?? null) !== 'finance') {
+                return $this->answer(400, ['error' => ['code' => 'invalid_request']], $nonce);
+            }
+            [$status, $payload] = $this->exception($action, $input, $now);
+            if ($status === 0) {
+                throw new \Arasya\Operations\Integration\SourceAccess\SourceAccessException('SOURCE_UNREACHABLE');
+            }
+            return $this->answer($status, $payload, $nonce);
         }
         $order = $this->orders[(string) ($input['orderId'] ?? '')] ?? null;
         if ($order === null || ($order['number'] ?? $order['id']) !== ($input['orderNumber'] ?? null)) {
@@ -140,8 +169,8 @@ final class SourceAccessFakeShop implements SourceAccessTransport
         if ($action === 'detail') {
             return $this->answer(200, self::detail($order, $now), $nonce);
         }
-        if (str_starts_with($action, 'invoice')) {
-            [$status, $payload] = $this->invoice($action, (string) $order['id'], $input, $now);
+        if (str_starts_with($action, 'invoice') || $action === 'proforma-action') {
+            [$status, $payload] = $action === 'proforma-action' ? $this->proforma((string) $order['id'], $input, $now) : $this->invoice($action, (string) $order['id'], $input, $now);
             if ($status === 0) {
                 throw new \Arasya\Operations\Integration\SourceAccess\SourceAccessException('SOURCE_UNREACHABLE');
             }
@@ -343,8 +372,16 @@ final class SourceAccessFakeShop implements SourceAccessTransport
                 if (($input['purpose'] ?? null) !== (($f['cod'] ?? false) ? 'advance' : 'additional_payment')) {
                     return $refuse('purpose_not_allowed');
                 }
-                if ($amount > max(0, $numbers['total'] - $numbers['received']) + 0.001) {
+                // YD SOFT 2.19.0: cash needs its document and collector; an excess only with the explicit confirmation;
+                // a payment for a cancelled proforma only with the finance decision.
+                if (($input['method'] ?? 'bank_transfer') !== 'bank_transfer' && (!isset($input['receipt'], $input['collector']))) {
+                    return $refuse('cash_document_required', 422);
+                }
+                if ($amount > max(0, $numbers['total'] - $numbers['received']) + 0.001 && ($input['overpaymentConfirmed'] ?? false) !== true) {
                     return $refuse('amount_exceeds_balance');
+                }
+                if (($f['proformaCancelled'] ?? false) && ($input['cancelledProforma'] ?? null) !== 'apply_to_order') {
+                    return $refuse('proforma_cancelled');
                 }
             }
             foreach ($f['entries'] as $entry) {
@@ -363,7 +400,9 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             $entryId = $this->nextEntryId();
             $f['entries'][] = ['id' => $entryId, 'kind' => $kind, 'purpose' => $kind === 'refund_out' ? 'refund' : (string) $input['purpose'], 'amount' => number_format($amount, 2, '.', ''),
                 'reference' => (string) $input['reference'], 'valueDate' => (string) $input['valueDate'], 'state' => 'submitted', 'submittedBy' => $employee,
-                'submittedAt' => gmdate('Y-m-d\TH:i:s\Z', $now), 'decidedBy' => null, 'decidedAt' => null, 'decisionCode' => null];
+                'submittedAt' => gmdate('Y-m-d\TH:i:s\Z', $now), 'decidedBy' => null, 'decidedAt' => null, 'decisionCode' => null,
+                'method' => (string) ($input['method'] ?? 'bank_transfer'), 'receipt' => $input['receipt'] ?? null, 'collector' => $input['collector'] ?? null,
+                'flags' => array_values(array_filter([($input['overpaymentConfirmed'] ?? false) === true ? 'overpayment' : null, isset($input['cancelledProforma']) ? 'cancelled_proforma' : null]))];
         } elseif ($action === 'decide_transfer' || $action === 'decide_refund') {
             if ($action === 'decide_refund' && ($input['productionComplete'] ?? null) !== true) {
                 return $refuse('production_not_complete');
@@ -490,12 +529,20 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             'received' => ['online' => $n['cod'] ? null : $money((float) ($f['paid'] ?? $n['total'])), 'advance' => $n['cod'] ? $money((float) ($f['collected'] ?? 0) + ($n['received'] - (float) ($f['collected'] ?? 0) + $n['refunded'])) : null,
                 'transfers' => $money($n['transfers']), 'net' => $money($n['received'])],
             'payment' => ['onlineVerified' => !$n['cod'], 'paidRecorded' => !$n['cod'], 'evidence' => $n['cod'] ? 'none' : 'netopia_ipn'],
-            'advance' => $n['cod'] ? ['percentage' => 30, 'required' => $money($n['required']), 'collected' => $money($n['received']), 'outstanding' => $money(max(0, $n['required'] - $n['received'])), 'onDelivery' => $money(max(0, $n['total'] - $n['received']))] : null,
+            'advance' => $n['cod'] ? ['percentage' => 30, 'required' => $money($n['required']), 'collected' => $money($n['received']), 'outstanding' => $money(max(0, $n['required'] - $n['received'])), 'onDelivery' => $money(max(0, $n['total'] - $n['received'])),
+                'paymentReference' => 'TH' . preg_replace('/[^A-Z0-9]/', '', strtoupper((string) ($o['number'] ?? $o['id']))), 'proforma' => isset($o['invoice']['pf']['document']) ? ['series' => (string) $o['invoice']['pf']['document']['series'], 'number' => (string) $o['invoice']['pf']['document']['number'], 'amount' => '215.70', 'currency' => 'RON', 'reference' => 'TH' . preg_replace('/[^A-Z0-9]/', '', strtoupper((string) ($o['number'] ?? $o['id'])))] : null] : null,
             'balance' => ['outstanding' => $n['cod'] ? null : $money(max(0, $n['total'] - $n['received'])), 'refundLiability' => $money($n['liability']), 'acknowledged' => $n['acknowledged']],
             'financial' => ['state' => $n['state'], 'basis' => $n['basis'], 'attention' => $n['attention']],
             'entries' => array_map(static fn (array $e): array => array_diff_key($e, ['pricing' => true]), $f['entries'] ?? []),
             'capabilities' => ['record' => $this->financeRecord, 'refunds' => $this->financeRefunds, 'electronicRefund' => false],
-        ];
+        ] + ($this->legacyProforma ? [] : [
+            // YD SOFT 2.19.0: the one money calculation (TEST numbers of this fake), no deadline, no AWB.
+            'position' => ['currency' => 'RON', 'percentage' => $n['cod'] ? 30 : null, 'total' => $money($n['total']), 'advanceRequired' => $n['cod'] ? $money($n['required']) : null,
+                'received' => $money($n['received'] + $n['refunded']), 'refunded' => $money($n['refunded']), 'net' => $money($n['received']), 'remaining' => $money(max(0, $n['total'] - $n['received'])),
+                'excess' => $money(max(0, $n['received'] - $n['total'])), 'advanceGap' => $n['cod'] ? $money(max(0, $n['required'] - $n['received'])) : null, 'known' => true],
+            'deadline' => ['state' => 'none', 'firstCollection' => null, 'deadline' => null, 'daysLeft' => null, 'level' => null],
+            'cod' => ['state' => 'none', 'awb' => null, 'awbCod' => null, 'expected' => null, 'status' => null],
+        ]);
     }
 
     /**
@@ -508,11 +555,11 @@ final class SourceAccessFakeShop implements SourceAccessTransport
         $role = $input['actor']['role'] ?? null;
         $this->orders[$orderId]['invoice'] ??= [];
         $i = &$this->orders[$orderId]['invoice'];
-        $i += ['cleared' => true, 'documentType' => 'invoice', 'autoEmail' => false, 'document' => null, 'op' => 'none', 'opKey' => null, 'mail' => 'none', 'mailCount' => 0, 'history' => []];
+        $i += self::invoiceDefaults();
         if ($route === 'invoice') {
-            return in_array($role, ['documents', 'manager', 'finance', 'viewer'], true) ? [200, $this->invoiceSummary($orderId, $now, (string) $role)] : [400, ['error' => ['code' => 'invalid_request']]];
+            return in_array($role, ['documents', 'manager', 'finance', 'viewer', 'operator'], true) ? [200, $this->invoiceSummary($orderId, $now, (string) $role)] : [400, ['error' => ['code' => 'invalid_request']]];
         }
-        if (!in_array($role, ['documents', 'manager'], true)) {
+        if (!in_array($role, $route === 'invoice-status' ? ['documents', 'manager', 'operator'] : ['documents', 'manager'], true)) {
             return [400, ['error' => ['code' => 'invalid_request']]];
         }
         if ($route === 'invoice-status') {
@@ -521,6 +568,9 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             if ($stored === null || $stored['order'] !== $orderId) {
                 if ($i['opKey'] === $author . '|' . ($input['idempotencyKey'] ?? '')) {
                     return [200, ['state' => $i['op'] === 'issued' ? 'applied' : 'unknown']];
+                }
+                if ($i['pf']['opKey'] === $author . '|' . ($input['idempotencyKey'] ?? '')) {
+                    return [200, ['state' => $i['pf']['op'] === 'issued' ? 'applied' : 'unknown']];
                 }
                 return [200, ['state' => 'absent']];
             }
@@ -638,11 +688,17 @@ final class SourceAccessFakeShop implements SourceAccessTransport
         if ($action === 'issue' && $i['document'] !== null) {
             $blockers[] = 'document_exists';
         }
+        if (in_array($action, ['issue', 'reissue'], true) && ($i['pf']['invoiced'] ?? null) === true) {
+            $blockers[] = 'proforma_invoiced';
+        }
         if ($action === 'reissue' && $i['document'] === null) {
             $blockers[] = 'document_missing';
         }
         if (!$i['cleared']) {
             $blockers[] = 'payment_not_cleared';
+        }
+        if (in_array($action, ['issue', 'reissue'], true) && ($i['shippingMismatch'] ?? false)) {
+            $blockers[] = 'shipping_mismatch';
         }
         return $blockers;
     }
@@ -652,6 +708,230 @@ final class SourceAccessFakeShop implements SourceAccessTransport
         $i = $this->orders[$orderId]['invoice'];
         unset($i['history']);
         return 'sha256:' . hash('sha256', (string) json_encode($i));
+    }
+
+    /** @return array<string, mixed> */
+    private static function invoiceDefaults(): array
+    {
+        return ['cleared' => true, 'documentType' => 'invoice', 'autoEmail' => false, 'document' => null, 'op' => 'none', 'opKey' => null, 'mail' => 'none', 'mailCount' => 0, 'history' => [],
+            'cod' => false, 'proformaInvoiced' => false, 'pf' => ['document' => null, 'op' => 'none', 'opKey' => null, 'mail' => 'none', 'mailCount' => 0, 'invoiced' => null, 'history' => [], 'cancel' => null, 'cancelled' => []],
+            // 2.19.0: the customer accepted the total (true by default: the earlier scenarios), a partial verified advance, accepted.
+            'totalAccepted' => true, 'partial' => false, 'advanceAccepted' => false];
+    }
+
+    /**
+     * The advance proforma (YD SOFT 2.18.0 ProformaActions), TEST rules that matter to Operations.
+     *
+     * @param array<string, mixed> $input
+     * @return array{0: int, 1: array<string, mixed>}
+     */
+    private function proforma(string $orderId, array $input, int $now): array
+    {
+        $employee = (string) ($input['actor']['employeeId'] ?? '');
+        $role = (string) ($input['actor']['role'] ?? '');
+        $this->orders[$orderId]['invoice'] ??= [];
+        $i = &$this->orders[$orderId]['invoice'];
+        $i += self::invoiceDefaults();
+        $p = &$i['pf'];
+        $action = (string) ($input['action'] ?? '');
+        $roles = ['proforma_issue' => ['operator', 'manager'], 'proforma_send_mail' => ['operator', 'manager'], 'proforma_check' => ['operator', 'documents', 'manager'], 'proforma_resolve' => ['manager'],
+            'proforma_cancel' => ['operator', 'manager'], 'total_accept' => ['operator', 'manager'], 'advance_accept' => ['operator', 'manager']];
+        $p += ['cancel' => null, 'cancelled' => []];
+        if (!isset($roles[$action]) || !in_array($role, $roles[$action], true)) {
+            return [400, ['error' => ['code' => 'invalid_request']]];
+        }
+        if (!$this->invoiceActions) {
+            return [409, ['error' => ['code' => 'invoice_disabled']]];
+        }
+        $key = $employee . '|' . ($input['idempotencyKey'] ?? '');
+        $request = $input;
+        unset($request['requestId'], $request['actor']);
+        $hash = hash('sha256', (string) json_encode($request));
+        if (isset($this->invoiceAnswers[$key])) {
+            $stored = $this->invoiceAnswers[$key];
+            return $stored['hash'] === $hash && $stored['order'] === $orderId ? [$stored['status'], $stored['body']] : [409, ['error' => ['code' => 'idempotency_conflict']]];
+        }
+        $revision = $this->invoiceRevision($orderId);
+        $keep = function (int $status, array $body) use ($key, $orderId, $hash): array {
+            $this->invoiceAnswers[$key] = ['order' => $orderId, 'hash' => $hash, 'status' => $status, 'body' => $body];
+            return [$status, $body];
+        };
+        if (($input['expectedRevision'] ?? null) !== $revision) {
+            return $keep(409, ['error' => ['code' => 'revision_changed'], 'revision' => $revision]);
+        }
+        $blockers = $this->proformaBlockers($orderId, $action);
+        if ($action === 'proforma_send_mail' && in_array($p['mail'], ['sent', 'unknown'], true) && ($input['confirmResend'] ?? false) !== true) {
+            $blockers[] = 'resend_confirmation_required';
+        }
+        if ($action === 'proforma_cancel' && $blockers === [] && ($input['confirmNoPayment'] ?? false) !== true) {
+            $blockers[] = 'no_payment_confirmation_required';
+        }
+        if ($action === 'total_accept' && $blockers === [] && ($input['declaration'] ?? false) !== true) {
+            $blockers[] = 'declaration_required';
+        }
+        if ($action === 'total_accept' && $blockers === []) {
+            // Owner business rule 2026-10-25: verified money below the new advance needs the operator's explicit decision.
+            $decision = $input['advanceDecision'] ?? null;
+            if (($i['advanceDecision'] ?? false) && $decision === null) {
+                $blockers[] = 'advance_decision_required';
+            } elseif (!($i['advanceDecision'] ?? false) && $decision !== null) {
+                $blockers[] = 'advance_decision_not_applicable';
+            }
+        }
+        if ($blockers !== []) {
+            return $keep(409, ['error' => ['code' => $blockers[0]], 'blockers' => $blockers, 'revision' => $revision]);
+        }
+        $done = fn (int $status, string $result): array => $this->invoiceAfter($keep($status, ['protocol' => 1, 'applied' => $status === 200, 'action' => $action, 'result' => $result, 'summary' => $this->invoiceSummary($orderId, $now, $role)]));
+        if ($action === 'proforma_check') {
+            $p['invoiced'] = (bool) $i['proformaInvoiced'];
+            $p['history'][] = ['kind' => 'check', 'at' => $now, 'by' => $employee, 'outcome' => $p['invoiced'] ? 'invoiced' : 'not_invoiced'];
+            return $done(200, $p['invoiced'] ? 'invoiced' : 'not_invoiced');
+        }
+        if ($action === 'total_accept') {
+            $i['totalAccepted'] = true;
+            // Owner business rule 2026-10-25: the money paid before a revision counts only when the operator accepts it.
+            if (($input['advanceDecision'] ?? null) === 'accept_received') {
+                $i['advanceAccepted'] = true;
+                $i['cleared'] = true;
+                $i['advanceKind'] = 'kept';
+            }
+            $i['advanceDecision'] = false;
+            return $done(200, 'accepted');
+        }
+        if ($action === 'advance_accept') {
+            $i['advanceAccepted'] = true;
+            $i['cleared'] = true;
+            return $done(200, 'accepted');
+        }
+        if ($action === 'proforma_cancel') {
+            $outcome = $this->proformaCancelOutcome;
+            $this->proformaCancelOutcome = 'cancelled';
+            $this->smartbillCancels['pf:' . $orderId] = ($this->smartbillCancels['pf:' . $orderId] ?? 0) + 1;
+            if ($outcome === 'refused') {
+                $p['history'][] = ['kind' => 'proforma_cancel', 'at' => $now, 'by' => $employee, 'outcome' => 'refused'];
+                return $keep(409, ['error' => ['code' => 'cancel_refused'], 'revision' => $this->invoiceRevision($orderId)]);
+            }
+            if ($outcome === 'unknown') {
+                $p['cancel'] = ['state' => 'unknown', 'at' => gmdate('Y-m-d\TH:i:s\Z', $now), 'by' => $employee, 'reason' => (string) $input['reasonCode']];
+                $p['history'][] = ['kind' => 'proforma_cancel', 'at' => $now, 'by' => $employee, 'outcome' => 'unknown'];
+                return $done(202, 'unknown');
+            }
+            $p['cancelled'][] = ['series' => $p['document']['series'], 'number' => $p['document']['number'], 'amount' => '215.70', 'currency' => 'RON', 'cancelledAt' => gmdate('Y-m-d\TH:i:s\Z', $now), 'cancelledBy' => $employee, 'reason' => (string) $input['reasonCode']];
+            $p['document'] = null;
+            $p['op'] = 'none';
+            $p['cancel'] = null;
+            $p['history'][] = ['kind' => 'proforma_cancel', 'at' => $now, 'by' => $employee, 'outcome' => 'cancelled'];
+            return $done(200, 'cancelled');
+        }
+        if ($action === 'proforma_resolve') {
+            if (($input['target'] ?? '') === 'cancel') {
+                if (($input['resolution'] ?? '') === 'cancelled' && $p['document'] !== null) {
+                    $p['cancelled'][] = ['series' => $p['document']['series'], 'number' => $p['document']['number'], 'amount' => '215.70', 'currency' => 'RON', 'cancelledAt' => gmdate('Y-m-d\TH:i:s\Z', $now), 'cancelledBy' => $employee, 'reason' => (string) ($p['cancel']['reason'] ?? 'other')];
+                    $p['document'] = null;
+                    $p['op'] = 'none';
+                }
+                $p['cancel'] = null;
+                $p['history'][] = ['kind' => 'proforma_resolve_cancel', 'at' => $now, 'by' => $employee, 'outcome' => (string) ($input['resolution'] ?? '')];
+                return $done(200, (string) $input['resolution']);
+            }
+            if (($input['target'] ?? '') === 'document') {
+                $p['op'] = ($input['resolution'] ?? '') === 'issued' ? 'issued' : ($p['document'] === null ? 'none' : 'issued');
+                if (($input['resolution'] ?? '') === 'issued') {
+                    $p['document'] = ['series' => (string) $input['series'], 'number' => (string) $input['number'], 'at' => $now, 'by' => $employee];
+                }
+            } else {
+                $p['mail'] = ($input['resolution'] ?? '') === 'sent' ? 'sent' : 'failed';
+            }
+            $p['history'][] = ['kind' => 'proforma_resolve_' . ($input['target'] ?? ''), 'at' => $now, 'by' => $employee, 'outcome' => (string) ($input['resolution'] ?? '')];
+            return $done(200, (string) $input['resolution']);
+        }
+        if ($action === 'proforma_send_mail') {
+            $outcome = $this->proformaMailOutcome;
+            $this->proformaMailOutcome = 'sent';
+            if ($outcome === 'refused') {
+                $p['mail'] = 'failed';
+                $p['history'][] = ['kind' => 'proforma_mail', 'at' => $now, 'by' => $employee, 'outcome' => 'failed'];
+                return $keep(409, ['error' => ['code' => 'mail_refused'], 'revision' => $this->invoiceRevision($orderId)]);
+            }
+            $p['mail'] = 'sent';
+            $p['mailCount']++;
+            $this->smartbillMails['pf:' . $orderId] = ($this->smartbillMails['pf:' . $orderId] ?? 0) + 1;
+            $p['history'][] = ['kind' => 'proforma_mail', 'at' => $now, 'by' => $employee, 'outcome' => 'sent'];
+            return $done(200, 'sent');
+        }
+        $outcome = $this->proformaOutcome;
+        $this->proformaOutcome = 'created';
+        if ($outcome === 'refused') {
+            $p['history'][] = ['kind' => 'proforma_issue', 'at' => $now, 'by' => $employee, 'outcome' => 'refused'];
+            return $keep(409, ['error' => ['code' => 'smartbill_refused'], 'revision' => $this->invoiceRevision($orderId)]);
+        }
+        $this->smartbillDocuments['pf:' . $orderId] = ($this->smartbillDocuments['pf:' . $orderId] ?? 0) + 1;
+        $p['opKey'] = $key;
+        if ($outcome === 'unknown') {
+            $p['op'] = 'unknown';
+            $p['history'][] = ['kind' => 'proforma_issue', 'at' => $now, 'by' => $employee, 'outcome' => 'unknown'];
+            return $done(202, 'unknown');
+        }
+        $p['document'] = ['series' => 'PRF', 'number' => sprintf('%04d', array_sum($this->smartbillDocuments)), 'at' => $now, 'by' => $employee];
+        $p['op'] = 'issued';
+        $p['history'][] = ['kind' => 'proforma_issue', 'at' => $now, 'by' => $employee, 'outcome' => 'issued'];
+        return $done(200, 'issued');
+    }
+
+    /** @return list<string> */
+    private function proformaBlockers(string $orderId, string $action): array
+    {
+        $i = $this->orders[$orderId]['invoice'];
+        $p = $i['pf'];
+        $p += ['cancel' => null, 'cancelled' => []];
+        if ($action === 'proforma_resolve') {
+            return $p['op'] === 'unknown' || $p['mail'] === 'unknown' || $p['cancel'] !== null ? [] : ['nothing_to_resolve'];
+        }
+        if ($action === 'total_accept') {
+            return ($i['totalAccepted'] ?? true) ? ['total_already_accepted'] : [];
+        }
+        if ($action === 'advance_accept') {
+            $codes = !$i['cod'] ? ['advance_not_required'] : (($i['advanceAccepted'] ?? false) ? ['advance_already_accepted'] : ($i['cleared'] ? ['advance_already_collected'] : (!($i['partial'] ?? false) ? ['advance_not_received'] : [])));
+            return ($i['totalAccepted'] ?? true) ? $codes : [...$codes, 'total_not_accepted'];
+        }
+        if ($action === 'proforma_cancel') {
+            $codes = $p['document'] === null ? ['proforma_missing'] : [];
+            if ($i['cleared'] || ($i['partial'] ?? false)) {
+                $codes[] = 'advance_payment_received';
+            }
+            if ($i['document'] !== null) {
+                $codes[] = 'invoice_exists';
+            }
+            return $codes;
+        }
+        $blockers = $p['op'] === 'unknown' ? ['operation_unknown'] : [];
+        if ($p['cancel'] !== null) {
+            $blockers[] = 'cancel_unknown';
+        }
+        if ($action === 'proforma_check') {
+            return $p['document'] === null ? [...$blockers, 'proforma_missing'] : $blockers;
+        }
+        if ($p['invoiced'] === true) {
+            $blockers[] = 'proforma_invoiced';
+        }
+        if ($action === 'proforma_send_mail') {
+            return $p['document'] === null ? [...$blockers, 'proforma_missing'] : $blockers;
+        }
+        if (!$i['cod']) {
+            $blockers[] = 'advance_not_required';
+        } elseif ($i['cleared']) {
+            $blockers[] = 'advance_already_collected';
+        }
+        if (!($i['totalAccepted'] ?? true)) {
+            $blockers[] = 'total_not_accepted';
+        }
+        if ($p['document'] !== null) {
+            $blockers[] = 'proforma_exists';
+        }
+        if ($i['shippingMismatch'] ?? false) {
+            $blockers[] = 'shipping_mismatch';
+        }
+        return $blockers;
     }
 
     /** The InvoiceSummary shape YD SOFT 2.17.0 answers, with TEST data. @return array<string, mixed> */
@@ -682,7 +962,138 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             'mail' => ['state' => $i['mail'], 'at' => null, 'by' => null, 'count' => $i['mailCount']],
             'history' => array_map(static fn (array $h): array => ['kind' => $h['kind'], 'at' => gmdate('Y-m-d\TH:i:s\Z', $h['at']), 'by' => $h['by'], 'outcome' => $h['outcome'], 'reason' => null, 'series' => null, 'number' => null], array_reverse($i['history'])),
             'blockers' => $blockers,
-        ];
+            'proforma' => $this->proformaSummary($orderId, $now, $role),
+        ] + ($this->legacyProforma ? [] : ['eFactura' => ['state' => 'not_tracked']]);
+    }
+
+    /**
+     * The shop's exception record (YD SOFT 2.18.0, TransferExceptions): list, record, resolve by ANOTHER employee.
+     *
+     * @param array<string, mixed> $input
+     * @return array{0: int, 1: array<string, mixed>}
+     */
+    private function exception(string $route, array $input, int $now): array
+    {
+        $listing = fn (): array => ['protocol' => 1, 'readAt' => gmdate('Y-m-d\TH:i:s\Z', $now), 'available' => true, 'currency' => 'RON', 'exceptions' => array_values($this->exceptions)];
+        if ($route === 'transfer-exceptions') {
+            return [200, $listing()];
+        }
+        $employee = (string) ($input['actor']['employeeId'] ?? '');
+        $key = 'exc|' . $employee . '|' . (string) ($input['idempotencyKey'] ?? '');
+        $request = $input;
+        unset($request['requestId'], $request['actor']);
+        $hash = hash('sha256', (string) json_encode($request));
+        if (isset($this->financeAnswers[$key])) {
+            $stored = $this->financeAnswers[$key];
+            return $stored['hash'] === $hash ? [$stored['status'], $stored['body']] : [409, ['error' => ['code' => 'idempotency_conflict']]];
+        }
+        $action = $input['action'] ?? null;
+        $refuse = function (int $status, string $code) use ($key, $hash): array {
+            $this->financeAnswers[$key] = ['order' => '0', 'hash' => $hash, 'status' => $status, 'body' => ['error' => ['code' => $code]]];
+            return [$status, ['error' => ['code' => $code]]];
+        };
+        $normal = static fn (string $reference): string => preg_replace('/[^A-Z0-9]/', '', strtoupper($reference));
+        if ($action === 'record_exception') {
+            foreach ($this->exceptions as $existing) {
+                if ($normal($existing['reference']) === $normal((string) $input['reference'])) {
+                    return $refuse(409, 'duplicate_reference');
+                }
+            }
+            $id = sprintf('%08x-0000-4000-8000-%012x', count($this->exceptions) + 1, $now);
+            $this->exceptions[$id] = ['id' => $id, 'amount' => number_format((float) $input['amount'], 2, '.', ''), 'currency' => (string) $input['currency'], 'reference' => (string) $input['reference'],
+                'valueDate' => (string) $input['valueDate'], 'reason' => (string) $input['reason'], 'state' => 'open', 'submittedBy' => $employee, 'submittedAt' => gmdate('Y-m-d\TH:i:s\Z', $now),
+                'resolvedBy' => null, 'resolvedAt' => null, 'resolution' => null, 'order' => null];
+        } elseif ($action === 'resolve_exception') {
+            $id = (string) ($input['entryId'] ?? '');
+            $entry = $this->exceptions[$id] ?? null;
+            if ($entry === null) {
+                return $refuse(404, 'entry_not_found');
+            }
+            if ($entry['state'] !== 'open') {
+                return $refuse(409, 'entry_not_pending');
+            }
+            if ($entry['submittedBy'] === $employee) {
+                return $refuse(403, 'same_employee');
+            }
+            $order = null;
+            if ($input['resolution'] === 'recorded_on_order') {
+                $orderId = (string) ($input['resolvedOrderId'] ?? '');
+                $found = false;
+                foreach ($this->orders[$orderId]['finance']['entries'] ?? [] as $transfer) {
+                    $found = $found || ($transfer['kind'] === 'transfer_in' && $transfer['state'] !== 'rejected' && $normal($transfer['reference']) === $normal($entry['reference']));
+                }
+                if (!$found) {
+                    return $refuse(409, 'transfer_not_recorded');
+                }
+                $order = ['id' => $orderId, 'number' => (string) ($this->orders[$orderId]['number'] ?? $orderId)];
+            }
+            $this->exceptions[$id] = array_merge($entry, ['state' => 'resolved', 'resolvedBy' => $employee, 'resolvedAt' => gmdate('Y-m-d\TH:i:s\Z', $now), 'resolution' => (string) $input['resolution'], 'order' => $order]);
+        } else {
+            return [400, ['error' => ['code' => 'invalid_request']]];
+        }
+        $body = ['protocol' => 1, 'applied' => true, 'action' => $action, 'entryId' => $id, 'listing' => $listing()];
+        $this->financeAnswers[$key] = ['order' => '0', 'hash' => $hash, 'status' => 200, 'body' => $body];
+        if ($this->afterException === 'answer_lost') {
+            $this->afterException = null;
+            return [0, []];
+        }
+        return [200, $body];
+    }
+
+    /** The proforma part YD SOFT 2.18.0 answers. @return array<string, mixed> */
+    private function proformaSummary(string $orderId, int $now, string $role): array
+    {
+        $i = $this->orders[$orderId]['invoice'];
+        $p = $i['pf'];
+        $doc = $p['document'];
+        $amounts = in_array($role, ['operator', 'documents', 'manager', 'finance'], true);
+        $blockers = [];
+        foreach (['proformaIssue' => 'proforma_issue', 'proformaSendMail' => 'proforma_send_mail', 'proformaCheck' => 'proforma_check', 'proformaResolve' => 'proforma_resolve',
+            'proformaCancel' => 'proforma_cancel', 'totalAccept' => 'total_accept', 'advanceAccept' => 'advance_accept'] as $name => $action) {
+            if ($this->legacyProforma && in_array($action, ['proforma_cancel', 'total_accept', 'advance_accept'], true)) {
+                continue; // a 2.18.0 shop does not send these groups
+            }
+            $blockers[$name] = $this->invoiceActions ? $this->proformaBlockers($orderId, $action) : ['invoice_observe'];
+        }
+        $p += ['cancel' => null, 'cancelled' => []];
+        $received = $i['cod'] ? (($i['partial'] ?? false) ? 20000 : ($i['cleared'] ? 21670 : 0)) : 71900;
+        $money = static fn (int $c): string => number_format($c / 100, 2, '.', '');
+        $legacy = $this->legacyProforma;
+        return [
+            'advance' => ['required' => $i['cod'] && $amounts ? '215.70' : null, 'received' => $i['cod'] && $amounts ? (($i['partial'] ?? false) ? '200.00' : ($i['cleared'] ? '216.70' : '0.00')) : null,
+                'outstanding' => $i['cod'] && $amounts ? (($i['partial'] ?? false) ? '15.70' : ($i['cleared'] ? '0.00' : '215.70')) : null, 'percentage' => $i['cod'] ? 30.0 : null, 'cod' => $i['cod'],
+                // From the money evidence only (2.18.0 bank transfer decision): never from the proforma. 2.19.0: a smaller
+                // advance the operator accepted stays `partial` (accepted: true).
+                'state' => $i['cod'] ? (($i['partial'] ?? false) ? 'partial' : ($i['cleared'] ? 'paid' : 'waiting')) : null, 'verifying' => (bool) ($i['verifying'] ?? false)]
+                + ($this->legacyProforma ? [] : ['accepted' => (bool) ($i['advanceAccepted'] ?? false)]),
+            'transfer' => $amounts ? ['iban' => 'RO49AAAA1B31007593840000', 'bank' => 'Banca TEST', 'beneficiary' => 'TEST Trend Home SRL', 'reference' => 'TH' . $orderId] : null,
+            'state' => $p['op'],
+            'document' => $doc === null ? null : ['series' => $doc['series'], 'number' => $doc['number'], 'amount' => $amounts ? '215.70' : null, 'currency' => 'RON', 'reference' => 'TH' . $orderId,
+                'issuedAt' => gmdate('Y-m-d\TH:i:s\Z', $doc['at']), 'issuedBy' => $doc['by'], 'outdated' => false,
+                'link' => in_array($role, ['operator', 'documents', 'manager'], true) ? 'https://cloud.smartbill.ro/core/proforma/vizualizare/?serie=PRF&numar=' . $doc['number'] : null],
+            'mail' => ['state' => $p['mail'], 'at' => null, 'by' => null, 'count' => $p['mailCount']],
+            'invoiced' => $p['invoiced'] === null ? null : ['invoiced' => $p['invoiced'], 'at' => gmdate('Y-m-d\TH:i:s\Z', $now)],
+            'error' => null,
+            'history' => array_map(static fn (array $h): array => ['kind' => $h['kind'], 'at' => gmdate('Y-m-d\TH:i:s\Z', $h['at']), 'by' => $h['by'], 'outcome' => $h['outcome'], 'series' => null, 'number' => null], array_reverse($p['history'])),
+            'blockers' => $blockers,
+        ] + ($legacy ? [] : [
+            // YD SOFT 2.19.0 (TEST data: total 719.00, advance 215.70).
+            'money' => $amounts ? ['currency' => 'RON', 'percentage' => $i['cod'] ? 30.0 : null, 'total' => '719.00', 'advanceRequired' => $i['cod'] ? '215.70' : null, 'received' => $money($received), 'refunded' => '0.00',
+                'net' => $money($received), 'remaining' => $money(max(0, 71900 - $received)), 'excess' => '0.00', 'advanceGap' => $i['cod'] ? $money(max(0, 21570 - $received)) : null, 'known' => true] : null,
+            'totalAcceptance' => ($i['totalAccepted'] ?? true)
+                ? ['state' => 'accepted', 'at' => gmdate('Y-m-d\TH:i:s\Z', $now), 'by' => '00000000-0000-4000-8000-0000000000a1', 'previousTotal' => $amounts ? '719.00' : null, 'total' => $amounts ? '719.00' : null, 'changes' => [], 'note' => null, 'advanceDecisionRequired' => null]
+                : ['state' => 'required', 'at' => null, 'by' => null, 'previousTotal' => $amounts ? '699.00' : null, 'total' => $amounts ? '719.00' : null, 'changes' => [['kind' => 'changed', 'name' => 'Draperie Velvet']], 'note' => null, 'advanceDecisionRequired' => (bool) ($i['advanceDecision'] ?? false)],
+            'advanceAcceptance' => ($i['advanceAccepted'] ?? false) ? ['at' => gmdate('Y-m-d\TH:i:s\Z', $now), 'by' => '00000000-0000-4000-8000-0000000000a1', 'required' => $amounts ? '215.70' : null, 'received' => $amounts ? '200.00' : null, 'reason' => null, 'low' => false, 'kind' => $i['advanceKind'] ?? 'accepted'] : null,
+            'lowAdvance' => false,
+            'cancel' => $p['cancel'],
+            'cancelled' => array_map(static fn (array $c): array => ['amount' => $amounts ? $c['amount'] : null] + $c, array_reverse($p['cancelled'])),
+            'superseded' => [],
+            'deadline' => $received > 0 && $i['cod'] ? ['state' => $i['document'] !== null ? 'invoiced' : 'open', 'firstCollection' => '2026-10-24', 'deadline' => '2026-11-15', 'daysLeft' => $i['document'] !== null ? null : 22, 'level' => $i['document'] !== null ? null : 'none']
+                : ['state' => 'none', 'firstCollection' => null, 'deadline' => null, 'daysLeft' => null, 'level' => null],
+            'cod' => $amounts ? ['state' => 'none', 'awb' => null, 'awbCod' => null, 'expected' => null, 'status' => null] : null,
+            'shipping' => ($i['shippingMismatch'] ?? false) ? ['state' => 'mismatch', 'code' => 'shipping_cost_mismatch', 'current' => $amounts ? '25.00' : null, 'expected' => $amounts ? '35.00' : null]
+                : ['state' => 'match', 'code' => null, 'current' => $amounts ? '25.00' : null, 'expected' => $amounts ? '25.00' : null],
+        ]);
     }
 
     /** @param array<string, mixed> $body @return array{0: int, 1: array<string, mixed>} */

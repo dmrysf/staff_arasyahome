@@ -213,7 +213,7 @@ final readonly class ManagementService
         } catch (PDOException) {
             $summary['financeScopes'] = null;
         }
-        // SmartBill invoice scopes (API 2.43.0, draft schema). Root holds none implicitly; without the schema nobody holds one.
+        // SmartBill invoice scopes (API 2.43.0, migration 041). Root holds none implicitly; without the schema nobody holds one.
         $summary['invoiceScopes'] = $summary['isRoot'] ? null : (new InvoiceScopePolicy($this->pdo))->scopesOf((string) $summary['id']);
         // Granted stages narrowed to named sources (migration 023); a stage absent here reaches every source.
         $summary['stageSourceScopes'] = $summary['isRoot'] ? null : (object) $this->stageScopesOf((string) $summary['id']);
@@ -318,8 +318,7 @@ final readonly class ManagementService
     }
 
     /**
-     * Order sources an identity handles SmartBill documents for (API 2.43.0, draft schema database/drafts/
-     * smartbill-invoicing.sql). Root only, like the finance scopes: `issue` issues and e-mails the first document (it acts
+     * Order sources an identity handles SmartBill documents for (API 2.43.0, migration 041). Root only, like the finance scopes: `issue` issues and e-mails the first document (it acts
      * only together with the production document permission and document `operate` scope of the same source), `manage`
      * also re-issues and closes unknown outcomes. Root grants, holds none. Refused until the schema exists.
      *

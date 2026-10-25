@@ -10,7 +10,7 @@ use PDOException;
 
 /**
  * Which order sources an identity handles SmartBill documents for (employee_invoice_scopes, API 2.43.0; the schema is
- * the DRAFT database/drafts/smartbill-invoicing.sql until the owner numbers it).
+ * migration 041, applied with the API deploy; before it runs the invoicing code fails closed).
  *
  * - issue:  issues the first document of a Confirmare order and sends it to the customer. It acts only together with
  *           the production document permission and the document `operate` scope of the same source (ConfirmareInvoice):
@@ -49,7 +49,7 @@ final readonly class InvoiceScopePolicy
         return in_array($sourceKey, $this->sources($actor, $capability, $lock), true);
     }
 
-    /** Whether the invoicing schema exists (the draft was applied). */
+    /** Whether the invoicing schema exists (migration 041 was applied). */
     public function installed(): bool
     {
         try {

@@ -45,6 +45,13 @@ use Arasya\Operations\Security\CsrfGuard;
  *   POST /confirmare/orders/{globalOrderId}/invoice/{issue|send-mail|reissue|resolve}
  *                                                          {expectedRevision, ...} + Idempotency-Key (invoice scopes)
  *   POST /confirmare/orders/{globalOrderId}/invoice/reconcile    {idempotencyKey}: settles an action whose answer was lost
+ *   POST /confirmare/orders/{globalOrderId}/invoice/qr    {qrToken}: the shop employee scanned the production QR (API 2.44.0)
+ *   POST /confirmare/orders/{globalOrderId}/proforma/{issue|send-mail|check|resolve|reconcile}  the advance proforma (2.44.0)
+ *   GET  /confirmare/orders/{globalOrderId}/shop-employees  who the order can be routed to (2.44.0)
+ *   POST /confirmare/orders/{globalOrderId}/shop-assignment {employeeId, expectedAssigneeId} + Idempotency-Key (2.44.0)
+ *   GET  /confirmare/shop-queue                            the orders routed to me (2.44.0)
+ *   GET  /confirmare/finance/transfer-exceptions?source=   the shop's bank transfers that match no order (2.44.0, finance)
+ *   POST /confirmare/finance/transfer-exceptions/{record|resolve}?source=  + Idempotency-Key (finance record / approve)
  */
 final readonly class ConfirmareController
 {
@@ -71,6 +78,7 @@ final readonly class ConfirmareController
         private ConfirmareSourceEdits $sourceEdits,
         private ConfirmareFinance $finance,
         private ConfirmareInvoice $invoice,
+        private FinanceTransferExceptions $exceptions,
         private AuthenticationService $auth,
         private CsrfGuard $csrf,
         private Config $config,
@@ -95,6 +103,16 @@ final readonly class ConfirmareController
         if ($path === '/confirmare/team' && $request->method === 'GET') {
             return $this->json($this->service->team($actor));
         }
+        if ($path === '/confirmare/finance/transfer-exceptions' && $request->method === 'GET') {
+            return $this->json($this->exceptions->list($actor, $request->query('source'), $request->ipAddress, $request->userAgent, $request->requestId));
+        }
+        if (preg_match('#^/confirmare/finance/transfer-exceptions/(record|resolve)$#D', $path, $m) === 1) {
+            if ($request->method !== 'POST') {
+                throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
+            }
+            $this->csrf->requireValid($session->rawToken, $request->header('x-csrf-token'));
+            return $this->json($this->exceptions->act($actor, $request->query('source'), $m[1] . '_exception', $request->json(1024), $request->header('idempotency-key') ?? '', $request->ipAddress, $request->userAgent, $request->requestId));
+        }
         if ($path === '/confirmare/finance' && $request->method === 'GET') {
             return $this->json($this->finance->queue($actor, $request->query('task'), $request->query('source')));
         }
@@ -105,6 +123,15 @@ final readonly class ConfirmareController
             $detail = $this->service->detail($actor, rawurldecode($m[1]));
             $capabilities = $this->sourceAccess->capabilities($actor, rawurldecode($m[1]));
             return $this->json($detail + ['sourceAccess' => $capabilities + $this->sourceEdits->state($actor, rawurldecode($m[1]), $capabilities['read']), 'finance' => $this->finance->capabilities($actor, rawurldecode($m[1])), 'invoice' => $this->invoice->capabilities($actor, rawurldecode($m[1]))]);
+        }
+        if (preg_match('#^/confirmare/orders/([^/]{1,600})/shop-employees$#D', $path, $m) === 1) {
+            if ($request->method !== 'GET') {
+                throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
+            }
+            return $this->json($this->invoice->shopCandidates($actor, rawurldecode($m[1])));
+        }
+        if ($path === '/confirmare/shop-queue' && $request->method === 'GET') {
+            return $this->json($this->invoice->shopQueue($actor));
         }
         if (preg_match('#^/confirmare/orders/([^/]{1,600})/finance$#D', $path, $m) === 1) {
             if ($request->method !== 'GET') {
@@ -143,6 +170,34 @@ final readonly class ConfirmareController
             }
             $input = $request->json(2048);
             return $this->json($this->finance->act($actor, $globalId, str_replace('-', '_', $m[2]), $input, $key, $request->requestId));
+        }
+        if (preg_match('#^/confirmare/orders/([^/]{1,600})/proforma/(issue|send-mail|check|resolve|reconcile|cancel|accept-total|accept-advance)$#D', $path, $m) === 1) {
+            if ($request->method !== 'POST') {
+                throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
+            }
+            $this->csrf->requireValid($session->rawToken, $request->header('x-csrf-token'));
+            $globalId = rawurldecode($m[1]);
+            if ($m[2] === 'reconcile') {
+                $input = $this->body($request, ['idempotencyKey']);
+                return $this->json($this->invoice->reconcile($actor, $globalId, $input['idempotencyKey'] ?? null, $request->requestId));
+            }
+            $input = $request->json(2048);
+            return $this->json($this->invoice->proforma($actor, $globalId, ConfirmareInvoice::PROFORMA_ROUTES[$m[2]], $input, $key, $request->requestId));
+        }
+        if (preg_match('#^/confirmare/orders/([^/]{1,600})/shop-assignment$#D', $path, $m) === 1) {
+            if ($request->method !== 'POST') {
+                throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
+            }
+            $this->csrf->requireValid($session->rawToken, $request->header('x-csrf-token'));
+            return $this->json($this->invoice->assignShop($actor, rawurldecode($m[1]), $request->json(1024), $key));
+        }
+        if (preg_match('#^/confirmare/orders/([^/]{1,600})/invoice/qr$#D', $path, $m) === 1) {
+            if ($request->method !== 'POST') {
+                throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
+            }
+            $this->csrf->requireValid($session->rawToken, $request->header('x-csrf-token'));
+            $input = $this->body($request, ['qrToken']);
+            return $this->json($this->invoice->verifyQr($actor, rawurldecode($m[1]), $input['qrToken'] ?? null, $request->requestId));
         }
         if (preg_match('#^/confirmare/orders/([^/]{1,600})/invoice/(issue|send-mail|reissue|resolve|reconcile)$#D', $path, $m) === 1) {
             if ($request->method !== 'POST') {

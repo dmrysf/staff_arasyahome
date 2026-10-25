@@ -176,4 +176,20 @@ if (preg_match('/ON (DELETE|UPDATE) (CASCADE|SET NULL)|DROP |DELETE FROM|TRUNCAT
     || preg_match_all('/ALTER TABLE ([a-z_]+)/', $syncStatements, $syncAlters) !== 1 || $syncAlters[1] !== ['order_cancellation_controls']) {
     throw new RuntimeException('Migration 034 must stay additive, create its flags disabled and must not grant roles or rewrite rows.');
 }
+// SmartBill invoicing (041, owner closure 2026-10-25; 040 stays reserved): five new tables only, nothing granted, no row
+// written or rewritten, no other table altered, no cascading key; running it again changes nothing.
+if (is_file($root . '/database/migrations/040_smartbill_invoicing.sql')) {
+    throw new RuntimeException('The SmartBill invoicing schema is migration 041; 040 is reserved.');
+}
+$invoiceSchema = (string) file_get_contents($root . '/database/migrations/041_smartbill_invoicing.sql');
+foreach (['employee_invoice_scopes', 'order_invoice_reads', 'order_invoice_actions', 'order_shop_assignments', 'order_invoice_qr_checks'] as $table) {
+    if (preg_match('/CREATE TABLE IF NOT EXISTS\s+' . $table . '\b/', $invoiceSchema) !== 1) {
+        throw new RuntimeException("Migration 041 is missing table: {$table}");
+    }
+}
+$invoiceStatements = preg_replace(['/^--.*$/m', '/ON (UPDATE|DELETE) RESTRICT/'], '', $invoiceSchema) ?? '';
+if (preg_match('/ON (DELETE|UPDATE) (CASCADE|SET NULL)|DROP |DELETE FROM|TRUNCATE|\bUPDATE |\bINSERT |ALTER TABLE|role_permissions|employee_role_assignments/i', $invoiceStatements) === 1
+    || preg_match_all('/CREATE TABLE IF NOT EXISTS/', $invoiceStatements) !== 5 || preg_match('/CREATE TABLE (?!IF NOT EXISTS)/', $invoiceStatements) === 1) {
+    throw new RuntimeException('Migration 041 must stay additive (five CREATE TABLE IF NOT EXISTS), grant nothing and write no row.');
+}
 fwrite(STDOUT, 'Migration sanity checks passed for ' . count($files) . " file(s).\n");

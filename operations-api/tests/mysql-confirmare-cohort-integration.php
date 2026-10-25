@@ -297,7 +297,8 @@ $ok($send('trendhome', $payload($id(32), 'processing', $submitted($now->modify('
 $check($order("trendhome:{$id(32)}")['workflow_cohort_reason'] === 'submission_evidence_future', 'a source clock far ahead is not trusted');
 $ok($send('trendhome', $payload($id(33), 'processing', $submitted($at(30), 'predates_recorder'), $online)), 'a creation instant after the activation');
 $check($order("trendhome:{$id(33)}")['workflow_cohort_reason'] === 'submission_evidence_inconsistent', 'a creation-time stand-in after the activation is inconsistent');
-$ok($send('trendhome', $payload($id(34), 'processing', $submitted($activatedAt->modify('-3 days'), 'predates_recorder'), $online)), 'an old order first ingested after the activation');
+// Before the business date itself (not "3 days before the activation": that moved past the fixed date on 2026-10-24 21:00Z).
+$ok($send('trendhome', $payload($id(34), 'processing', $submitted($cutover->modify('-1 day'), 'predates_recorder'), $online)), 'an old order first ingested after the activation');
 $check($order("trendhome:{$id(34)}")['workflow_cohort'] === 'legacy' && $ok($intake("trendhome:{$id(34)}"), 'old order intake')['outcome'] === 'started', 'an order submitted before the activation and paid later stays legacy and keeps its flow');
 $error($send('trendhome', $payload($id(35), 'pending', $submitted($activatedAt->modify('-1 hour')), $cod('waiting'))), 409, 'SOURCE_INTAKE_NOT_ELIGIBLE', 'an older unpaid order is never pulled into Confirmare');
 

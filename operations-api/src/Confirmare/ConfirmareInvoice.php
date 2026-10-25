@@ -15,6 +15,7 @@ use Arasya\Operations\Integration\SourceAccess\SourceAccessRegistry;
 use Arasya\Operations\Integration\SourceAccess\SourceAccessTarget;
 use Arasya\Operations\Integration\SourceAccess\SourceInvoice;
 use Arasya\Operations\Order\GlobalOrderId;
+use Arasya\Operations\Order\QrReference;
 use Arasya\Operations\Production\ProductionAuthorityModes;
 use Arasya\Operations\Security\ApiRateLimiter;
 use Arasya\Operations\Support\Clock;
@@ -48,6 +49,15 @@ use Throwable;
  *
  * One action per order at a time; a lost answer is reconciled with the shop's stored answer of the same Idempotency-Key.
  * An outcome the shop itself does not know (SmartBill did not answer) is never retried: a manager checks SmartBill.
+ *
+ * API 2.44.0 (owner workflow, final pre-production):
+ * - operator: the Confirmare operator of the order (its assignee with the `operate` scope of the source) or a Confirmare
+ *   supervisor of the source asks the shop for the ADVANCE PROFORMA of an approved cash-on-delivery order and sends it to
+ *   the customer (`/proforma/{issue|send-mail|check|resolve}`; resolve is a manager's). Never the final invoice.
+ * - routing: once the money is proven (ConfirmareFinancial `cleared`), the operator routes the order to ONE shop employee
+ *   of the order's shop who may issue invoices (`/shop-assignment`); one active assignment per order, audited.
+ * - the final invoice is issued only by that assigned employee (a manager is exempt from the assignment), after the
+ *   employee scanned the order's current production QR (`/invoice/qr`, valid 30 minutes for the active revision).
  */
 final readonly class ConfirmareInvoice
 {
@@ -60,6 +70,23 @@ final readonly class ConfirmareInvoice
     public const ROLE_VIEWER = 'viewer';
     /** Handoff states in which a document may be issued (the order is cleared for production). */
     public const ISSUABLE = ['ready', 'print', 'awaiting_cutting', 'in_production'];
+    public const ROLE_OPERATOR = 'operator';
+    /** How long a verified QR scan allows the final invoice (the same employee, the same active revision). */
+    public const QR_VALID_SECONDS = 1800;
+    private const PROFORMA_FIELDS = [
+        'proforma_issue' => ['replaceOutdated'],
+        'proforma_send_mail' => ['confirmResend'],
+        'proforma_check' => [],
+        'proforma_resolve' => ['target', 'resolution', 'series', 'number', 'reasonNote'],
+        // API 2.45.0 (YD SOFT 2.19.0): cancel in SmartBill, the customer's telephone acceptance, a smaller advance accepted.
+        'proforma_cancel' => ['reasonCode', 'reasonNote', 'confirmNoPayment'],
+        // The operator's explicit advance decision after a revision (owner business rule 2026-10-25).
+        'total_accept' => ['declaration', 'note', 'advanceDecision', 'confirmLow'],
+        'advance_accept' => ['reasonNote', 'confirmLow'],
+    ];
+    /** The Staff route segment of each proforma action (`/proforma/{segment}`). */
+    public const PROFORMA_ROUTES = ['issue' => 'proforma_issue', 'send-mail' => 'proforma_send_mail', 'check' => 'proforma_check', 'resolve' => 'proforma_resolve',
+        'cancel' => 'proforma_cancel', 'accept-total' => 'total_accept', 'accept-advance' => 'advance_accept'];
     private const KEY_PATTERN = '/^[A-Za-z0-9][A-Za-z0-9_-]{15,99}$/D';
     private const UUID_PATTERN = '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/D';
     /** Failures where the shop certainly did not run the action. */
@@ -83,6 +110,7 @@ final readonly class ConfirmareInvoice
         private Clock $clock,
         #[\SensitiveParameter] private string $hmacKey,
         private ?ProductionAuthorityModes $modes = null,
+        private ?ConfirmareScopePolicy $confirmare = null,
     ) {
     }
 
@@ -93,7 +121,7 @@ final readonly class ConfirmareInvoice
      */
     public function capabilities(EmployeeIdentity $actor, string $globalOrderId): array
     {
-        $none = ['configured' => false, 'read' => false, 'issue' => false, 'manage' => false];
+        $none = ['configured' => false, 'read' => false, 'issue' => false, 'manage' => false, 'proforma' => false, 'route' => false];
         try {
             $row = $this->row($this->globalId($globalOrderId));
             $target = $row === null ? null : $this->registry->find((string) $row['source_key']);
@@ -102,12 +130,15 @@ final readonly class ConfirmareInvoice
                 return ['configured' => $configured] + $none;
             }
             $role = $this->role($actor, $row);
+            $operator = $this->operatorRole($actor, $row);
             $actions = $target->allowsInvoiceActions();
             return [
                 'configured' => true,
-                'read' => $role !== null,
+                'read' => $role !== null || $operator !== null,
                 'issue' => $actions && in_array($role, [self::ROLE_DOCUMENTS, self::ROLE_MANAGER], true),
                 'manage' => $actions && $role === self::ROLE_MANAGER,
+                'proforma' => $actions && $operator !== null,
+                'route' => $operator !== null,
             ];
         } catch (ApiException|PDOException) {
             return $none;
@@ -131,7 +162,7 @@ final readonly class ConfirmareInvoice
         }
         // The permission again, after the shop answered: a revoked scope during the read wins.
         $after = $this->row($globalId);
-        if ($after === null || $this->role($actor, $after) !== $role) {
+        if ($after === null || $this->readerRole($actor, $after) !== $role) {
             $this->audit($row, $actor, $role, 'revoked_during_read', $requestId);
             throw new ApiException(403, 'CONFIRMARE_INVOICE_DENIED', 'Your access to this order changed while the shop was read.');
         }
@@ -188,7 +219,7 @@ final readonly class ConfirmareInvoice
             if ($lock->fetchColumn() === false || $this->role($actor, $row, true) !== $role) {
                 throw self::denied();
             }
-            $blockers = $this->blockers((string) $row['order_uuid'], $action);
+            $blockers = $this->blockers((string) $row['order_uuid'], $action, $actor, $role);
             if ($blockers !== []) {
                 throw new ApiException(409, 'CONFIRMARE_INVOICE_NOT_ALLOWED', 'The order cannot be invoiced now.', ['reason' => $blockers[0], 'blockers' => $blockers]);
             }
@@ -234,7 +265,7 @@ final readonly class ConfirmareInvoice
             throw new ApiException(422, 'CONFIRMARE_INVOICE_INVALID', 'idempotencyKey is required.', ['field' => 'idempotencyKey']);
         }
         ['row' => $row, 'role' => $role] = $this->context($actor, $globalOrderId);
-        if (!in_array($role, [self::ROLE_DOCUMENTS, self::ROLE_MANAGER], true)) {
+        if (!in_array($role, [self::ROLE_DOCUMENTS, self::ROLE_MANAGER], true) && $this->operatorRole($actor, $row) === null) {
             throw self::denied();
         }
         $statement = $this->pdo->prepare('SELECT * FROM order_invoice_actions WHERE order_uuid = ? AND idempotency_key = ? AND (employee_uuid = ? OR ?) ORDER BY requested_at LIMIT 1');
@@ -269,7 +300,7 @@ final readonly class ConfirmareInvoice
      *
      * @return list<string>
      */
-    private function blockers(string $orderUuid, string $action): array
+    private function blockers(string $orderUuid, string $action, ?EmployeeIdentity $actor = null, ?string $role = null): array
     {
         $statement = $this->pdo->prepare('SELECT o.cancellation_state, o.operational_status, o.source_reported_unavailable_at, c.status FROM operational_orders o INNER JOIN order_confirmations c ON c.order_uuid = o.order_uuid WHERE o.order_uuid = ?');
         $statement->execute([$orderUuid]);
@@ -305,7 +336,49 @@ final readonly class ConfirmareInvoice
         if (ConfirmareFinance::actionOpen($this->pdo, $orderUuid)) {
             $blockers[] = 'finance_action_open';
         }
+        if ($action === 'issue' && $actor !== null) {
+            // 2.44.0: the final invoice belongs to the shop employee the operator routed the order to (a manager is exempt),
+            // after that employee scanned the order's current production QR.
+            $assignee = self::assignee($this->pdo, $orderUuid);
+            if ($role !== self::ROLE_MANAGER) {
+                if ($assignee === null) {
+                    $blockers[] = 'not_assigned';
+                } elseif ($assignee !== $actor->employeeUuid) {
+                    $blockers[] = 'assigned_to_other';
+                }
+            }
+            if (!$this->qrVerified($orderUuid, $actor->employeeUuid)) {
+                $blockers[] = 'qr_not_verified';
+            }
+        }
         return array_values(array_unique($blockers));
+    }
+
+    /** The shop employee the order is routed to now (2.44.0), or null. Without the schema nobody is. */
+    public static function assignee(PDO $pdo, string $orderUuid): ?string
+    {
+        try {
+            $statement = $pdo->prepare("SELECT employee_uuid FROM order_shop_assignments WHERE active_order_uuid = ?");
+            $statement->execute([$orderUuid]);
+            $value = $statement->fetchColumn();
+            return $value === false ? null : (string) $value;
+        } catch (PDOException) {
+            return null;
+        }
+    }
+
+    /** Whether the employee scanned the order's current production QR recently (2.44.0). */
+    private function qrVerified(string $orderUuid, string $employeeUuid): bool
+    {
+        try {
+            $statement = $this->pdo->prepare("SELECT 1 FROM order_invoice_qr_checks q INNER JOIN operational_orders o ON o.order_uuid = q.order_uuid
+                WHERE q.order_uuid = ? AND q.employee_uuid = ? AND q.outcome = 'verified' AND q.revision_uuid = o.active_document_revision_uuid
+                  AND o.document_status = 'active' AND q.checked_at >= ? LIMIT 1");
+            $statement->execute([$orderUuid, $employeeUuid, $this->clock->now()->modify('-' . self::QR_VALID_SECONDS . ' seconds')->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s.u')]);
+            return $statement->fetchColumn() !== false;
+        } catch (PDOException) {
+            return false;
+        }
     }
 
     /**
@@ -324,7 +397,7 @@ final readonly class ConfirmareInvoice
         $confirmed = $this->confirmedBy($actor->employeeUuid, $orderUuid);
         $arasya = [];
         foreach (['issue' => 'issue', 'sendMail' => 'send_mail', 'reissue' => 'reissue', 'resolve' => 'resolve'] as $name => $action) {
-            $codes = $this->blockers($orderUuid, $action);
+            $codes = $this->blockers($orderUuid, $action, $actor, $role);
             if (!$actions) {
                 $codes[] = 'invoice_observe';
             } elseif (!$writer || (in_array($action, ['reissue', 'resolve'], true) && $role !== self::ROLE_MANAGER)) {
@@ -341,7 +414,12 @@ final readonly class ConfirmareInvoice
             }
         }
         $timeline = $this->timeline($orderUuid);
-        $names = array_filter([$summary['document']['issuedBy'], $summary['operation']['by'], $summary['mail']['by'], ...array_column($summary['history'], 'by'), ...array_column($timeline, 'employeeId')]);
+        $operator = $this->operatorRole($actor, $row);
+        $proforma = $this->proformaPresent($orderUuid, $operator, $actions, $summary['proforma'] ?? null);
+        $assignment = $this->assignment($orderUuid);
+        $names = array_filter([$summary['document']['issuedBy'], $summary['operation']['by'], $summary['mail']['by'], ...array_column($summary['history'], 'by'), ...array_column($timeline, 'employeeId'),
+            $summary['proforma']['document']['issuedBy'] ?? null, $summary['proforma']['mail']['by'] ?? null, ...array_column($summary['proforma']['history'] ?? [], 'by'),
+            $assignment['employeeId'] ?? null, $assignment['assignedBy'] ?? null]);
         return [
             'summary' => $summary,
             'handoff' => ['state' => $handoff['state'], 'blockers' => $handoff['blockers']],
@@ -349,6 +427,10 @@ final readonly class ConfirmareInvoice
             'allowedActions' => $allowed,
             'actionOpen' => self::actionOpen($this->pdo, $orderUuid),
             'timeline' => $timeline,
+            'proforma' => $proforma,
+            'assignment' => $assignment,
+            'routing' => $operator === null ? null : ['allowed' => $this->routeBlockers($orderUuid) === [], 'blockers' => $this->routeBlockers($orderUuid)],
+            'qr' => ['verified' => $this->qrVerified($orderUuid, $actor->employeeUuid), 'validSeconds' => self::QR_VALID_SECONDS],
             // A JSON object also when empty (an empty PHP array would encode as a list).
             'employees' => (object) $this->names(array_values(array_unique($names))),
             'me' => $actor->employeeUuid,
@@ -454,7 +536,7 @@ final readonly class ConfirmareInvoice
         $this->authorization->requireApplication($actor, $actor->hasApplication('staff') ? 'staff' : 'dashboard');
         $globalId = $this->globalId($globalOrderId);
         $row = $this->row($globalId);
-        $role = $row === null ? null : $this->role($actor, $row);
+        $role = $row === null ? null : ($this->role($actor, $row) ?? ($this->operatorRole($actor, $row) === self::ROLE_OPERATOR ? self::ROLE_OPERATOR : null));
         if ($row === null || $role === null) {
             throw new ApiException(404, 'CONFIRMARE_NOT_FOUND', 'No Confirmare order was found.');
         }
@@ -487,6 +569,543 @@ final readonly class ConfirmareInvoice
             return self::ROLE_VIEWER;
         }
         return null;
+    }
+
+    /**
+     * The operator's advance proforma action (API 2.44.0): issue, send-mail, check, resolve (manager). Recorded like an
+     * invoice action (order_invoice_actions, role `operator` or `manager`), relayed to the shop's proforma route.
+     *
+     * @param array<string, mixed> $input
+     * @return array<string, mixed>
+     */
+    public function proforma(EmployeeIdentity $actor, string $globalOrderId, string $action, array $input, string $key, string $requestId): array
+    {
+        if (preg_match(self::KEY_PATTERN, $key) !== 1) {
+            throw new ApiException(400, 'INVALID_IDEMPOTENCY_KEY', 'A valid Idempotency-Key header is required.');
+        }
+        if (!isset(self::PROFORMA_FIELDS[$action])) {
+            throw new ApiException(404, 'NOT_FOUND', 'API route was not found.');
+        }
+        $fields = $this->proformaFields($action, $input);
+        ['row' => $row, 'globalId' => $globalId] = $this->context($actor, $globalOrderId);
+        $role = $this->operatorRole($actor, $row);
+        if ($role === null && $action === 'proforma_check' && $this->role($actor, $row) === self::ROLE_DOCUMENTS) {
+            // The shop employee may ask SmartBill whether the proforma was invoiced (before the final invoice).
+            $role = self::ROLE_DOCUMENTS;
+        }
+        if ($role === null || ($action === 'proforma_resolve' && $role !== self::ROLE_MANAGER)) {
+            throw self::denied();
+        }
+        $target = $this->registry->find((string) $row['source_key']);
+        if ($target === null || !$target->allowsInvoiceActions() || !$this->invoices->installed()) {
+            throw new ApiException(409, 'CONFIRMARE_INVOICE_DISABLED', 'SmartBill invoicing is not enabled for this shop.');
+        }
+        $this->rateLimit($actor);
+        $hmac = hash_hmac('sha256', json_encode([$globalId, $action, $fields], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), $this->hmacKey, true);
+        $existing = $this->action($actor->employeeUuid, $key);
+        if ($existing !== null) {
+            if ($existing['order_uuid'] !== $row['order_uuid'] || !hash_equals((string) $existing['request_hmac'], $hmac)) {
+                throw new ApiException(409, 'IDEMPOTENCY_CONFLICT', 'This idempotency key was already used for a different request.');
+            }
+            return $this->settled($existing, $row, $target, $actor, $role, $requestId);
+        }
+        $actionUuid = Uuid::v4();
+        $this->pdo->beginTransaction();
+        try {
+            $lock = $this->pdo->prepare('SELECT order_uuid FROM operational_orders WHERE order_uuid = ? FOR UPDATE');
+            $lock->execute([(string) $row['order_uuid']]);
+            $now = $this->row($globalId);
+            $again = $now === null ? null : ($role === self::ROLE_DOCUMENTS ? ($this->role($actor, $now, true) === self::ROLE_DOCUMENTS ? self::ROLE_DOCUMENTS : null) : $this->operatorRole($actor, $now, true));
+            if ($lock->fetchColumn() === false || $again !== $role) {
+                throw self::denied();
+            }
+            $blockers = $this->proformaBlockers((string) $row['order_uuid'], $action, ($fields['advanceDecision'] ?? null) === 'accept_received');
+            if ($blockers !== []) {
+                throw new ApiException(409, 'CONFIRMARE_INVOICE_NOT_ALLOWED', 'The proforma action is not allowed now.', ['reason' => $blockers[0], 'blockers' => $blockers]);
+            }
+            $this->pdo->prepare('INSERT INTO order_invoice_actions (action_uuid, order_uuid, global_order_id, source_key, employee_uuid, access_role, action, reason_code, idempotency_key, request_hmac,
+                    revision_before, state, request_id, requested_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')->execute([
+                $actionUuid, (string) $row['order_uuid'], $globalId, (string) $row['source_key'], $actor->employeeUuid, $role, $action,
+                $action === 'proforma_cancel' ? $fields['reasonCode'] : null, $key, $hmac, $fields['expectedRevision'], 'pending', $this->requestId($requestId), $this->now(),
+            ]);
+            $this->pdo->commit();
+        } catch (Throwable $e) {
+            $this->pdo->rollBack();
+            if ($e instanceof ApiException) {
+                throw $e;
+            }
+            if ($e instanceof PDOException && $this->action($actor->employeeUuid, $key) !== null) {
+                throw new ApiException(409, 'IDEMPOTENCY_CONFLICT', 'This idempotency key is already in use.');
+            }
+            throw new ApiException(503, 'CONFIRMARE_AUDIT_UNAVAILABLE', 'The action could not be recorded, so it was not sent. Try again.');
+        }
+        $body = $this->payload($row, $actor, $role, $requestId) + ['action' => $action, 'idempotencyKey' => $key] + $fields;
+        try {
+            $answer = $this->client->exchange($target, SourceAccessClient::ROUTE_PROFORMA_ACTION, $body);
+        } catch (SourceAccessException $e) {
+            if (in_array($e->codeName, self::NOT_SENT, true)) {
+                $this->complete($actionUuid, 'rejected', strtolower($e->codeName));
+                throw self::unavailable($e);
+            }
+            $this->complete($actionUuid, 'unknown', null);
+            return ['state' => 'unknown', 'idempotencyKey' => $key];
+        }
+        return $this->conclude($actionUuid, $answer, $action, $row, $target, $actor, $role, $key);
+    }
+
+    /**
+     * Routes an order whose money is proven to one shop employee (API 2.44.0). `expectedAssigneeId` names the assignee
+     * the operator saw (null: none); another one in between refuses the request (two operators at once never both win).
+     *
+     * @param array<string, mixed> $input
+     * @return array<string, mixed>
+     */
+    public function assignShop(EmployeeIdentity $actor, string $globalOrderId, array $input, string $key): array
+    {
+        if (preg_match(self::KEY_PATTERN, $key) !== 1) {
+            throw new ApiException(400, 'INVALID_IDEMPOTENCY_KEY', 'A valid Idempotency-Key header is required.');
+        }
+        if (array_diff(array_keys($input), ['employeeId', 'expectedAssigneeId']) !== [] || !array_key_exists('expectedAssigneeId', $input)) {
+            throw new ApiException(400, 'INVALID_REQUEST', 'Only employeeId and expectedAssigneeId are accepted.');
+        }
+        $employeeId = $input['employeeId'] ?? null;
+        $expected = $input['expectedAssigneeId'];
+        if (!is_string($employeeId) || preg_match(self::UUID_PATTERN, $employeeId) !== 1 || ($expected !== null && (!is_string($expected) || preg_match(self::UUID_PATTERN, $expected) !== 1))) {
+            throw new ApiException(422, 'CONFIRMARE_ASSIGNMENT_INVALID', 'The shop employee is not valid.', ['field' => 'employeeId']);
+        }
+        ['row' => $row, 'globalId' => $globalId] = $this->context($actor, $globalOrderId);
+        $role = $this->operatorRole($actor, $row);
+        if ($role === null) {
+            throw self::denied();
+        }
+        $hmac = hash_hmac('sha256', json_encode([$globalId, 'assign', $employeeId, $expected], JSON_THROW_ON_ERROR), $this->hmacKey, true);
+        $orderUuid = (string) $row['order_uuid'];
+        $this->pdo->beginTransaction();
+        try {
+            $previous = $this->pdo->prepare('SELECT * FROM order_shop_assignments WHERE assigned_by_employee_uuid = ? AND idempotency_key = ?');
+            $previous->execute([$actor->employeeUuid, $key]);
+            $replayed = $previous->fetch(PDO::FETCH_ASSOC);
+            if (is_array($replayed)) {
+                $this->pdo->rollBack();
+                if ($replayed['order_uuid'] !== $orderUuid || !hash_equals((string) $replayed['request_hmac'], $hmac)) {
+                    throw new ApiException(409, 'IDEMPOTENCY_CONFLICT', 'This idempotency key was already used for a different request.');
+                }
+                return ['assignment' => $this->assignment($orderUuid), 'replayed' => true];
+            }
+            $lock = $this->pdo->prepare('SELECT order_uuid FROM operational_orders WHERE order_uuid = ? FOR UPDATE');
+            $lock->execute([$orderUuid]);
+            $now = $this->row($globalId);
+            if ($lock->fetchColumn() === false || $now === null || $this->operatorRole($actor, $now, true) !== $role) {
+                throw self::denied();
+            }
+            $blockers = $this->routeBlockers($orderUuid);
+            if ($blockers !== []) {
+                throw new ApiException(409, 'CONFIRMARE_ROUTING_NOT_ALLOWED', 'The order cannot be routed to the shop now.', ['reason' => $blockers[0], 'blockers' => $blockers]);
+            }
+            $current = $this->pdo->prepare('SELECT assignment_uuid, employee_uuid FROM order_shop_assignments WHERE active_order_uuid = ? FOR UPDATE');
+            $current->execute([$orderUuid]);
+            $active = $current->fetch(PDO::FETCH_ASSOC);
+            $activeEmployee = is_array($active) ? (string) $active['employee_uuid'] : null;
+            if ($activeEmployee !== $expected) {
+                throw new ApiException(409, 'CONFIRMARE_ASSIGNMENT_CHANGED', 'The order was routed by someone else in the meantime. Read it again.', ['assigneeId' => $activeEmployee]);
+            }
+            if ($activeEmployee === $employeeId) {
+                throw new ApiException(409, 'CONFIRMARE_ASSIGNMENT_UNCHANGED', 'The order is already routed to this employee.');
+            }
+            if (!$this->shopEligible($employeeId, (string) $row['source_key'], $orderUuid, true) || $employeeId === $actor->employeeUuid) {
+                throw new ApiException(422, 'CONFIRMARE_SHOP_EMPLOYEE_NOT_ELIGIBLE', 'This employee cannot receive the order: production tickets and SmartBill invoices of this shop are needed, and never the employee who confirmed the order.');
+            }
+            $at = $this->now();
+            if (is_array($active)) {
+                $this->pdo->prepare("UPDATE order_shop_assignments SET state = 'released', released_at = ?, released_by_employee_uuid = ?, release_reason = 'reassigned' WHERE assignment_uuid = ? AND state = 'active'")
+                    ->execute([$at, $actor->employeeUuid, (string) $active['assignment_uuid']]);
+            }
+            $this->pdo->prepare("INSERT INTO order_shop_assignments (assignment_uuid, order_uuid, global_order_id, source_key, employee_uuid, assigned_by_employee_uuid, assigned_role, idempotency_key, request_hmac, state, assigned_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)")->execute([Uuid::v4(), $orderUuid, $globalId, (string) $row['source_key'], $employeeId, $actor->employeeUuid, $role, $key, $hmac, $at]);
+            $this->pdo->commit();
+        } catch (Throwable $e) {
+            if ($this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            if ($e instanceof ApiException) {
+                throw $e;
+            }
+            if ($e instanceof PDOException) {
+                // A concurrent routing of the same order (the unique active row) or a reused key.
+                throw new ApiException(409, 'CONFIRMARE_ASSIGNMENT_CHANGED', 'The order was routed by someone else in the meantime. Read it again.');
+            }
+            throw new ApiException(503, 'CONFIRMARE_AUDIT_UNAVAILABLE', 'The routing could not be recorded. Try again.');
+        }
+        return ['assignment' => $this->assignment($orderUuid), 'replayed' => false];
+    }
+
+    /**
+     * The shop employees an order can be routed to (API 2.44.0): production tickets (document `operate` scope and the
+     * generate permission) and the invoice `issue` scope of the order's shop, active, never the employee who confirmed it.
+     *
+     * @return array{items: list<array{id: string, name: string}>}
+     */
+    public function shopCandidates(EmployeeIdentity $actor, string $globalOrderId): array
+    {
+        ['row' => $row] = $this->context($actor, $globalOrderId);
+        if ($this->operatorRole($actor, $row) === null) {
+            throw self::denied();
+        }
+        try {
+            $statement = $this->pdo->prepare("SELECT DISTINCT e.employee_uuid, e.display_name FROM employees e
+                INNER JOIN employee_invoice_scopes i ON i.employee_uuid = e.employee_uuid AND i.capability = 'issue' AND i.source_key = ?
+                WHERE e.employee_uuid <> ? ORDER BY e.display_name LIMIT 200");
+            $statement->execute([(string) $row['source_key'], $actor->employeeUuid]);
+            $rows = $statement->fetchAll(PDO::FETCH_ASSOC);
+        } catch (PDOException) {
+            return ['items' => []];
+        }
+        $items = [];
+        foreach ($rows as $candidate) {
+            if ($this->shopEligible((string) $candidate['employee_uuid'], (string) $row['source_key'], (string) $row['order_uuid'])) {
+                $items[] = ['id' => (string) $candidate['employee_uuid'], 'name' => (string) $candidate['display_name']];
+            }
+        }
+        return ['items' => $items];
+    }
+
+    /**
+     * The orders routed to the actor (API 2.44.0), newest first: what the shop employee works on. Database only.
+     *
+     * @return array{items: list<array<string, mixed>>}
+     */
+    public function shopQueue(EmployeeIdentity $actor): array
+    {
+        $this->authorization->requireApplication($actor, 'staff');
+        try {
+            $statement = $this->pdo->prepare("SELECT a.global_order_id, a.source_key, a.assigned_at, a.assigned_by_employee_uuid, o.order_number, o.order_uuid, b.display_name AS assigned_by_name
+                FROM order_shop_assignments a INNER JOIN operational_orders o ON o.order_uuid = a.order_uuid LEFT JOIN employees b ON b.employee_uuid = a.assigned_by_employee_uuid
+                WHERE a.employee_uuid = ? AND a.state = 'active' ORDER BY a.assigned_at DESC LIMIT 200");
+            $statement->execute([$actor->employeeUuid]);
+            $rows = $statement->fetchAll(PDO::FETCH_ASSOC);
+        } catch (PDOException) {
+            return ['items' => []];
+        }
+        $items = [];
+        foreach ($rows as $item) {
+            // The scope again: a revoked shop never shows its orders.
+            if (!$this->invoices->allows($actor, InvoiceScopePolicy::ISSUE, (string) $item['source_key']) && !$this->invoices->allows($actor, InvoiceScopePolicy::MANAGE, (string) $item['source_key'])) {
+                continue;
+            }
+            $handoff = (new ConfirmareHandoff($this->pdo, $this->modes))->view((string) $item['order_uuid'], false, false);
+            $items[] = [
+                'globalOrderId' => (string) $item['global_order_id'],
+                'source' => (string) $item['source_key'],
+                'orderNumber' => (string) $item['order_number'],
+                'assignedAt' => self::iso((string) $item['assigned_at']),
+                'assignedBy' => (string) ($item['assigned_by_name'] ?? ''),
+                'handoff' => $handoff['state'],
+                'invoiced' => $this->invoiceIssued((string) $item['order_uuid']),
+            ];
+        }
+        return ['items' => $items];
+    }
+
+    /**
+     * The shop employee scans the order's production QR before the final invoice (API 2.44.0). Only the current QR of the
+     * active production document of THIS order verifies; an unknown, foreign, revoked, expired or stale one is refused
+     * and recorded.
+     *
+     * @return array<string, mixed>
+     */
+    public function verifyQr(EmployeeIdentity $actor, string $globalOrderId, mixed $token, string $requestId): array
+    {
+        if (!is_string($token) || strlen($token) > 200) {
+            throw new ApiException(422, 'INVOICE_QR_INVALID', 'The scanned code is not an Arasya order code.', ['field' => 'qrToken']);
+        }
+        ['row' => $row, 'role' => $role] = $this->context($actor, $globalOrderId);
+        if (!in_array($role, [self::ROLE_DOCUMENTS, self::ROLE_MANAGER], true)) {
+            throw self::denied();
+        }
+        $this->rateLimit($actor);
+        $reference = QrReference::parsePayload($token);
+        if ($reference === null) {
+            throw new ApiException(422, 'INVOICE_QR_INVALID', 'The scanned code is not an Arasya order code.', ['field' => 'qrToken']);
+        }
+        $orderUuid = (string) $row['order_uuid'];
+        $statement = $this->pdo->prepare('SELECT q.order_uuid, q.status, q.expires_at, o.document_status, o.active_document_revision_uuid, r.qr_reference AS revision_qr
+            FROM order_qr_references q INNER JOIN operational_orders o ON o.order_uuid = q.order_uuid
+            LEFT JOIN production_document_revisions r ON r.revision_uuid = o.active_document_revision_uuid WHERE q.qr_reference = ?');
+        $statement->execute([$reference->value]);
+        $found = $statement->fetch(PDO::FETCH_ASSOC);
+        $outcome = match (true) {
+            !is_array($found) => 'unknown_qr',
+            $found['order_uuid'] !== $orderUuid => 'wrong_order',
+            $found['status'] !== 'active' || ($found['expires_at'] !== null && new \DateTimeImmutable((string) $found['expires_at'], new \DateTimeZone('UTC')) <= $this->clock->now()) => 'inactive_qr',
+            $found['document_status'] !== 'active' || $found['revision_qr'] !== $reference->value => 'stale_document',
+            default => 'verified',
+        };
+        $verified = $outcome === 'verified';
+        try {
+            $this->pdo->prepare('INSERT INTO order_invoice_qr_checks (check_uuid, order_uuid, global_order_id, source_key, employee_uuid, qr_reference, revision_uuid, outcome, request_id, checked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')->execute([
+                Uuid::v4(), $orderUuid, (string) $row['global_order_id'], (string) $row['source_key'], $actor->employeeUuid,
+                $verified ? $reference->value : null, $verified ? (string) $found['active_document_revision_uuid'] : null, $outcome, $this->requestId($requestId), $this->now(),
+            ]);
+        } catch (PDOException) {
+            throw new ApiException(503, 'CONFIRMARE_AUDIT_UNAVAILABLE', 'The scan could not be recorded. Try again.');
+        }
+        if (!$verified) {
+            // Never says which order a foreign code belongs to.
+            throw new ApiException(409, 'INVOICE_QR_REFUSED', 'This code is not the current production QR of this order.', ['reason' => $outcome]);
+        }
+        return ['verified' => true, 'validSeconds' => self::QR_VALID_SECONDS];
+    }
+
+    /**
+     * What Operations refuses now for a proforma action (codes; the shop adds its own).
+     *
+     * @return list<string>
+     */
+    private function proformaBlockers(string $orderUuid, string $action, bool $acceptsAdvance = false): array
+    {
+        $statement = $this->pdo->prepare('SELECT o.cancellation_state, o.operational_status, o.source_reported_unavailable_at, o.payment_method, c.status FROM operational_orders o INNER JOIN order_confirmations c ON c.order_uuid = o.order_uuid WHERE o.order_uuid = ?');
+        $statement->execute([$orderUuid]);
+        $order = $statement->fetch(PDO::FETCH_ASSOC);
+        if (!is_array($order)) {
+            return ['order_unavailable'];
+        }
+        $blockers = [];
+        if (self::actionOpen($this->pdo, $orderUuid)) {
+            $blockers[] = 'invoice_action_open';
+        }
+        if (in_array($action, ['proforma_resolve', 'proforma_check', 'proforma_cancel'], true)) {
+            // Cancelling the proforma is allowed during a cancellation hold too: the shop checks the money and SmartBill.
+            return $blockers;
+        }
+        if ($order['cancellation_state'] === 'held') {
+            $blockers[] = 'order_cancellation';
+        }
+        if ($order['operational_status'] === 'unavailable' || $order['source_reported_unavailable_at'] !== null) {
+            $blockers[] = 'order_unavailable';
+        }
+        if ($action === 'proforma_issue' || $action === 'advance_accept') {
+            // The customer accepted the advance on the telephone: the Confirmare approval (call, lines, price) is recorded.
+            if ($order['status'] !== 'approved') {
+                $blockers[] = 'confirmare_not_approved';
+            }
+            if ($order['payment_method'] !== 'cod') {
+                $blockers[] = 'advance_not_required';
+            }
+        }
+        if (($action === 'advance_accept' || $acceptsAdvance) && ConfirmareFinance::actionOpen($this->pdo, $orderUuid)) {
+            // A finance action not settled yet: the money it concerns is not known (also for the telephone acceptance that
+            // accepts the money received after a revision, owner business rule 2026-10-25).
+            $blockers[] = 'finance_action_open';
+        }
+        return array_values(array_unique($blockers));
+    }
+
+    /**
+     * Why the order cannot be routed to the shop now (codes): approved, money proven, the handoff not closed or blocked,
+     * no cancellation hold, no open finance action.
+     *
+     * @return list<string>
+     */
+    private function routeBlockers(string $orderUuid): array
+    {
+        $statement = $this->pdo->prepare('SELECT o.cancellation_state, o.operational_status, o.source_reported_unavailable_at, o.source_financial_state, c.status FROM operational_orders o INNER JOIN order_confirmations c ON c.order_uuid = o.order_uuid WHERE o.order_uuid = ?');
+        $statement->execute([$orderUuid]);
+        $order = $statement->fetch(PDO::FETCH_ASSOC);
+        if (!is_array($order)) {
+            return ['order_unavailable'];
+        }
+        $blockers = [];
+        if ($order['status'] !== 'approved') {
+            $blockers[] = 'confirmare_not_approved';
+        }
+        if ($order['source_financial_state'] !== 'cleared') {
+            // Only proven money: a verified online payment or a verified advance (never a proforma, an e-mail or a click).
+            $blockers[] = 'advance_not_verified';
+        }
+        if ($order['cancellation_state'] === 'held') {
+            $blockers[] = 'order_cancellation';
+        }
+        if ($order['operational_status'] === 'unavailable' || $order['source_reported_unavailable_at'] !== null) {
+            $blockers[] = 'order_unavailable';
+        }
+        $handoff = (new ConfirmareHandoff($this->pdo, $this->modes))->view($orderUuid, false, false);
+        if (!in_array($handoff['state'], self::ISSUABLE, true)) {
+            $blockers[] = 'handoff_not_ready';
+        }
+        if (ConfirmareFinance::actionOpen($this->pdo, $orderUuid)) {
+            $blockers[] = 'finance_action_open';
+        }
+        return array_values(array_unique($blockers));
+    }
+
+    /** @return array<string, mixed>|null the order's active shop assignment */
+    private function assignment(string $orderUuid): ?array
+    {
+        try {
+            $statement = $this->pdo->prepare('SELECT a.employee_uuid, a.assigned_by_employee_uuid, a.assigned_role, a.assigned_at FROM order_shop_assignments a WHERE a.active_order_uuid = ?');
+            $statement->execute([$orderUuid]);
+            $row = $statement->fetch(PDO::FETCH_ASSOC);
+        } catch (PDOException) {
+            return null;
+        }
+        return is_array($row) ? ['employeeId' => (string) $row['employee_uuid'], 'assignedBy' => (string) $row['assigned_by_employee_uuid'], 'role' => (string) $row['assigned_role'], 'assignedAt' => self::iso((string) $row['assigned_at'])] : null;
+    }
+
+    /** Whether an employee may receive a routed order of the source (and is not the one who confirmed it). */
+    private function shopEligible(string $employeeUuid, string $source, string $orderUuid, bool $lock = false): bool
+    {
+        $statement = $this->pdo->prepare('SELECT employee_uuid FROM employees WHERE employee_uuid = ?' . ($lock ? ' FOR UPDATE' : ''));
+        $statement->execute([$employeeUuid]);
+        if ($statement->fetchColumn() === false) {
+            return false;
+        }
+        try {
+            $employee = (new \Arasya\Operations\Employee\PdoEmployeeRepository($this->pdo))->findByUuid($employeeUuid);
+        } catch (Throwable) {
+            return false;
+        }
+        return $employee !== null && $employee->isOperationallyActive() && !$employee->mustChangePassword && $employee->hasApplication('staff')
+            && $this->role($employee, ['source_key' => $source], $lock) === self::ROLE_DOCUMENTS
+            && !$this->confirmedBy($employeeUuid, $orderUuid);
+    }
+
+    /** Whether Arasya recorded an applied final invoice of the order (the shop stays the authority). */
+    private function invoiceIssued(string $orderUuid): bool
+    {
+        $statement = $this->pdo->prepare("SELECT 1 FROM order_invoice_actions WHERE order_uuid = ? AND action IN ('issue', 'reissue') AND state = 'applied' AND result = 'issued' LIMIT 1");
+        $statement->execute([$orderUuid]);
+        return $statement->fetchColumn() !== false;
+    }
+
+    /**
+     * The proforma part shown to the actor: what this employee may do now, combined from Operations' and the shop's
+     * refusals. Null when the shop sends no proforma state (YD SOFT before 2.18.0).
+     *
+     * @param array<string, mixed>|null $shop
+     * @return array<string, mixed>|null
+     */
+    private function proformaPresent(string $orderUuid, ?string $operator, bool $actions, ?array $shop): ?array
+    {
+        if ($shop === null) {
+            return null;
+        }
+        $blockers = [];
+        $allowed = [];
+        foreach (['proformaIssue' => 'proforma_issue', 'proformaSendMail' => 'proforma_send_mail', 'proformaCheck' => 'proforma_check', 'proformaResolve' => 'proforma_resolve',
+            'proformaCancel' => 'proforma_cancel', 'totalAccept' => 'total_accept', 'advanceAccept' => 'advance_accept'] as $name => $action) {
+            $codes = $this->proformaBlockers($orderUuid, $action);
+            if (!$actions) {
+                $codes[] = 'invoice_observe';
+            } elseif ($operator === null || ($action === 'proforma_resolve' && $operator !== self::ROLE_MANAGER)) {
+                $codes[] = 'not_allowed_for_role';
+            }
+            $blockers[$name] = array_values(array_unique($codes));
+            if ($blockers[$name] === [] && ($shop['blockers'][$name] ?? ['missing']) === []) {
+                $allowed[] = $name;
+            }
+        }
+        return ['blockers' => $blockers, 'allowedActions' => $allowed, 'role' => $operator];
+    }
+
+    /**
+     * @param array<string, mixed> $input
+     * @return array<string, mixed>
+     */
+    private function proformaFields(string $action, array $input): array
+    {
+        $allowed = [...self::PROFORMA_FIELDS[$action], 'expectedRevision'];
+        if (array_diff(array_keys($input), $allowed) !== []) {
+            throw new ApiException(400, 'INVALID_REQUEST', 'Only ' . implode(', ', $allowed) . ' are accepted.');
+        }
+        $invalid = static fn (string $field): ApiException => new ApiException(422, 'CONFIRMARE_INVOICE_INVALID', 'The proforma action is not valid.', ['field' => $field]);
+        $revision = $input['expectedRevision'] ?? null;
+        if (!is_string($revision) || preg_match('/^sha256:[0-9a-f]{64}$/D', $revision) !== 1) {
+            throw $invalid('expectedRevision');
+        }
+        $fields = ['expectedRevision' => $revision];
+        foreach (['replaceOutdated', 'confirmResend', 'confirmNoPayment', 'declaration', 'confirmLow'] as $flag) {
+            if (array_key_exists($flag, $input)) {
+                if (!is_bool($input[$flag])) {
+                    throw $invalid($flag);
+                }
+                $fields[$flag] = $input[$flag];
+            }
+        }
+        foreach (['reasonNote', 'note'] as $text) {
+            if (array_key_exists($text, $input)) {
+                $note = $input[$text];
+                if (!is_string($note) || !mb_check_encoding($note, 'UTF-8') || mb_strlen($note) > 300 || preg_match('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', $note) === 1) {
+                    throw $invalid($text);
+                }
+                $fields[$text] = trim($note);
+            }
+        }
+        if (array_key_exists('advanceDecision', $input)) {
+            if (!in_array($input['advanceDecision'], SourceInvoice::ADVANCE_DECISIONS, true)) {
+                throw $invalid('advanceDecision');
+            }
+            $fields['advanceDecision'] = $input['advanceDecision'];
+        }
+        if ($action === 'proforma_cancel') {
+            if (!in_array($input['reasonCode'] ?? null, SourceInvoice::CANCEL_REASONS, true)) {
+                throw $invalid('reasonCode');
+            }
+            $fields['reasonCode'] = $input['reasonCode'];
+        }
+        if ($action === 'proforma_resolve') {
+            $target = $input['target'] ?? null;
+            if (!is_string($target) || !isset(SourceInvoice::PROFORMA_RESOLUTIONS[$target])) {
+                throw $invalid('target');
+            }
+            if (!in_array($input['resolution'] ?? null, SourceInvoice::PROFORMA_RESOLUTIONS[$target], true)) {
+                throw $invalid('resolution');
+            }
+            $fields += ['target' => $target, 'resolution' => $input['resolution']];
+            $named = $target === 'document' && $input['resolution'] === 'issued';
+            foreach (['series', 'number'] as $field) {
+                $value = $input[$field] ?? null;
+                if ($named ? (!is_string($value) || preg_match('/^[A-Za-z0-9-]{1,20}$/D', $value) !== 1) : $value !== null) {
+                    throw $invalid($field);
+                }
+                if ($named) {
+                    $fields[$field] = $value;
+                }
+            }
+        }
+        return $fields;
+    }
+
+    /**
+     * The Confirmare operator of the order for the proforma and the routing (API 2.44.0): `manager` (invoice `manage`
+     * scope of the source), `operator` (the order's Confirmare operator with the `operate` scope: the one it is assigned
+     * to, or the one who approved it; or a Confirmare supervisor of the source), or null.
+     *
+     * @param array<string, mixed> $row
+     */
+    private function operatorRole(EmployeeIdentity $actor, array $row, bool $lock = false): ?string
+    {
+        // Root administers identities; it never holds a fiscal or Confirmare duty (its unlimited scopes do not count here).
+        if ($actor->isRoot || !$actor->isOperationallyActive() || $actor->mustChangePassword || !$actor->hasApplication('staff')) {
+            return null;
+        }
+        $source = (string) $row['source_key'];
+        if ($this->invoices->allows($actor, InvoiceScopePolicy::MANAGE, $source, $lock)) {
+            return self::ROLE_MANAGER;
+        }
+        if ($this->confirmare === null) {
+            return null;
+        }
+        if ($this->confirmare->allows($actor, ConfirmareScopePolicy::SUPERVISE, $source, $lock)
+            || (in_array($actor->employeeUuid, [$row['assigned_employee_uuid'] ?? null, $row['decided_by_employee_uuid'] ?? null], true) && $this->confirmare->allows($actor, ConfirmareScopePolicy::OPERATE, $source, $lock))) {
+            return self::ROLE_OPERATOR;
+        }
+        return null;
+    }
+
+    /** @param array<string, mixed> $row the role an invoice read is recorded with */
+    private function readerRole(EmployeeIdentity $actor, array $row): ?string
+    {
+        return $this->role($actor, $row) ?? ($this->operatorRole($actor, $row) === self::ROLE_OPERATOR ? self::ROLE_OPERATOR : null);
     }
 
     /** Whether the employee approved the order in Confirmare or recorded the confirmed customer call. */
@@ -623,7 +1242,7 @@ final readonly class ConfirmareInvoice
     /** @return array<string, mixed>|null */
     private function row(string $globalId): ?array
     {
-        $statement = $this->pdo->prepare('SELECT o.order_uuid, o.global_order_id, o.source_key, o.source_order_id, o.order_number, o.workflow_cohort, c.status
+        $statement = $this->pdo->prepare('SELECT o.order_uuid, o.global_order_id, o.source_key, o.source_order_id, o.order_number, o.workflow_cohort, c.status, c.assigned_employee_uuid, c.decided_by_employee_uuid
             FROM order_confirmations c INNER JOIN operational_orders o ON o.order_uuid = c.order_uuid WHERE o.global_order_id = ?');
         $statement->execute([$globalId]);
         $row = $statement->fetch(PDO::FETCH_ASSOC);

@@ -441,9 +441,94 @@ $tasks = array_column($q['orders'], 'task', 'globalOrderId');
 $check(($tasks[$th(2)] ?? null) === 'additional_payment' && ($tasks[$th(4)] ?? null) === 'advance_waiting' && !isset($tasks[$th(60)]) && $q['sources'] === ['trendhome'], 'the queue: tasks from the money state the shop sent (classes only), never a legacy order');
 $check(!str_contains(json_encode($q), '650.00') && !str_contains(json_encode($q), 'OP FIN'), 'the queue carries no amount and no reference');
 $check($ok($get($view, '/confirmare/finance?task=additional_payment'), 'filtered queue')['orders'] !== [] && array_unique(array_column($ok($get($view, '/confirmare/finance?task=additional_payment'), 'filtered')['orders'], 'task')) === ['additional_payment'], 'one task at a time');
-$check($ok($get($op, '/confirmare/finance'), 'operator queue') === ['tasks' => array_fill_keys(ConfirmareFinance::TASKS, 0), 'orders' => [], 'sources' => []], 'without a finance scope the queue is empty');
+// API 2.44.0: a Confirmare operator without a finance scope sees the advance tasks of their shop only (read only).
+$oq = $ok($get($op, '/confirmare/finance'), 'operator queue');
+$otasks = array_column($oq['orders'], 'task', 'globalOrderId');
+$check(array_diff(array_unique(array_values($otasks)), ConfirmareFinance::ADVANCE_TASKS) === [] && ($otasks[$th(4)] ?? null) === 'advance_waiting' && !isset($otasks[$th(2)])
+    && array_sum(array_intersect_key($oq['tasks'], array_flip(array_diff(ConfirmareFinance::TASKS, ConfirmareFinance::ADVANCE_TASKS)))) === 0, 'without a finance scope an operator sees only the advance tasks (never additional payments, refunds or reconciliation): ' . json_encode($otasks));
 $check($ok($get($out, '/confirmare/finance?source=trendhome'), 'other store queue')['orders'] === [], 'another store\'s queue never lists Trend Home');
 $error($get($view, '/confirmare/finance?task=everything'), 422, 'CONFIRMARE_FINANCE_INVALID', 'unknown task');
+// API 2.44.0 (bank transfer of the advance): while finance verifies a transfer, the operator still sees the order as
+// waiting for (or partially paid) its advance, marked as in verification; finance sees the verification task.
+$ok(T::ingest($kernel, 'trendhome', $payload($id(4), $submitted(4), $waiting(4, 'transfer_pending', 'a', 'partial'), 'cod')), 'COD order: a transfer waits for the second finance employee');
+$oq2 = array_column($ok($get($op, '/confirmare/finance'), 'operator queue in verification')['orders'], null, 'globalOrderId');
+$fq2 = array_column($ok($get($view, '/confirmare/finance'), 'finance queue in verification')['orders'], null, 'globalOrderId');
+$check(($oq2[$th(4)]['task'] ?? null) === 'advance_partial' && ($oq2[$th(4)]['verifying'] ?? null) === true && ($fq2[$th(4)]['task'] ?? null) === 'transfer_verification' && ($fq2[$th(4)]['verifying'] ?? null) === true,
+    'a transfer in verification: the operator sees "partial, in verification" (never paid), finance sees the verification task');
+$ok(T::ingest($kernel, 'trendhome', $payload($id(4), $submitted(4), $waiting(4, null), 'cod')), 'COD order back to waiting');
+
+// ---- 8b. Bank transfers that match no order: the shop's exception record (API 2.44.0, YD SOFT 2.18.0) --------------------
+$xget = static fn (array $who, string $query = ''): array => $get($who, '/confirmare/finance/transfer-exceptions' . $query);
+$xact = static fn (array $who, string $action, array $body, ?string $key = null, string $source = 'trendhome'): array => T::call($kernel, 'POST', '/confirmare/finance/transfer-exceptions/' . $action, $body,
+    ['origin' => FIN_ORIGIN, 'x-csrf-token' => $who['csrf'], 'idempotency-key' => $key ?? 'fin-exc-' . bin2hex(random_bytes(10))], $who['cookie'], ['source' => $source]);
+$unmatched = ['amount' => '250.00', 'currency' => 'RON', 'reference' => 'OP FIN EXC 0001', 'valueDate' => $today, 'reason' => 'unmatched'];
+$l0 = $ok($xget($view), 'exception record, view');
+$check($l0['source'] === 'trendhome' && $l0['available'] === true && $l0['exceptions'] === [] && $l0['capabilities'] === ['record' => false, 'approve' => false], 'finance view reads the shop\'s exception record (its only shop picked), acts on nothing');
+$requests = count($shop->requests);
+$error($xact($view, 'record', $unmatched), 403, 'CONFIRMARE_FINANCE_DENIED', 'a viewer cannot record an exception');
+$error($xact($op, 'record', $unmatched), 403, 'CONFIRMARE_FINANCE_DENIED', 'the operator cannot record an exception');
+$check($xact($root, 'record', $unmatched)['status'] === 403, 'root holds no finance scope (403)');
+$error($xget($none), 403, 'CONFIRMARE_FINANCE_DENIED', 'without a finance scope the exception record is closed');
+$error($xact($rec, 'record', ['reason' => 'lost'] + $unmatched), 422, 'CONFIRMARE_FINANCE_INVALID', 'an unknown reason');
+$error($xact($rec, 'record', $unmatched + ['orderNumber' => '1']), 400, 'INVALID_REQUEST', 'no other field');
+$check(count($shop->requests) === $requests, 'refused exception actions never reach the shop');
+$xkey = "fin-exc-{$suffix}-000001";
+$x1 = $ok($xact($rec, 'record', $unmatched, $xkey), 'record exception');
+$check($x1['state'] === 'applied' && count($x1['exceptions']) === 1 && $x1['exceptions'][0]['state'] === 'open' && $x1['exceptions'][0]['amount'] === '250.00' && $x1['capabilities'] === ['record' => true, 'approve' => false]
+    && ($shop->requests[count($shop->requests) - 1]['body']['actor'] ?? null) === ['employeeId' => $uuids['frec'], 'role' => 'finance'] && !isset($shop->requests[count($shop->requests) - 1]['body']['orderId']), 'a transfer that matches no order is recorded in the shop\'s exception record (open), sent as finance without order fields');
+$check($ok($xact($rec, 'record', $unmatched, $xkey), 'replay')['entryId'] === $x1['entryId'] && count($shop->exceptions) === 1, 'a retried request (same key) answers the same entry');
+$refused($xact($app2, 'record', ['reference' => 'op-fin-exc-0001'] + $unmatched), 'duplicate_reference', 'the same bank reference twice (other spelling)');
+$error($xact($rec, 'resolve', ['entryId' => $x1['entryId'], 'resolution' => 'returned_to_payer']), 403, 'CONFIRMARE_FINANCE_DENIED', 'record alone never closes an exception');
+$error($xact($app, 'resolve', ['entryId' => $x1['entryId'], 'resolution' => 'recorded_on_order']), 422, 'CONFIRMARE_FINANCE_INVALID', 'recorded on an order names the order');
+$error($xact($app, 'resolve', ['entryId' => $x1['entryId'], 'resolution' => 'recorded_on_order', 'orderNumber' => $id(50)]), 422, 'CONFIRMARE_FINANCE_INVALID', 'an order of another shop is refused');
+$error($xact($app, 'resolve', ['entryId' => $x1['entryId'], 'resolution' => 'recorded_on_order', 'orderNumber' => $id(60)]), 422, 'CONFIRMARE_FINANCE_INVALID', 'an order outside Confirmare is refused');
+$refused($xact($app, 'resolve', ['entryId' => $x1['entryId'], 'resolution' => 'recorded_on_order', 'orderNumber' => $id(4)]), 'transfer_not_recorded', 'the order does not hold that transfer yet');
+$t4 = $ok($act($rec, $th(4), 'submit-transfer', ['expectedRevision' => $revision($id(4)), 'purpose' => 'advance', 'amount' => '40.00', 'reference' => 'OP FIN EXC 0001', 'valueDate' => $today]), 'the transfer recorded on its order');
+$x2 = $ok($xact($app, 'resolve', ['entryId' => $x1['entryId'], 'resolution' => 'recorded_on_order', 'orderNumber' => '#' . $id(4)]), 'resolve on order');
+$check($x2['exceptions'][0]['state'] === 'resolved' && $x2['exceptions'][0]['resolution'] === 'recorded_on_order' && $x2['exceptions'][0]['order']['id'] === $id(4) && $x2['exceptions'][0]['resolvedBy'] === $uuids['fapp']
+    && ($shop->requests[count($shop->requests) - 1]['body']['resolvedOrderId'] ?? null) === $id(4), 'another finance employee closes it once the order holds the transfer (the shop is given its own order id)');
+$ok($act($app, $th(4), 'decide-transfer', $decide($id(4), $t4['entryId'])), 'the transfer verified on the order');
+$x3 = $ok($xact($app2, 'record', ['amount' => '90.00', 'reference' => 'OP FIN EXC 0002', 'reason' => 'over_payment'] + $unmatched), 'record by record+approve');
+$refused($xact($app2, 'resolve', ['entryId' => $x3['entryId'], 'resolution' => 'returned_to_payer']), 'same_employee', 'four eyes: the shop refuses the employee who recorded it');
+$shop->afterException = 'answer_lost';
+$lkey = "fin-exc-{$suffix}-000002";
+$x4 = $ok($xact($app, 'resolve', ['entryId' => $x3['entryId'], 'resolution' => 'returned_to_payer'], $lkey), 'lost answer');
+$x5 = $ok($xact($app, 'resolve', ['entryId' => $x3['entryId'], 'resolution' => 'returned_to_payer'], $lkey), 'retry');
+$check($x4 === ['state' => 'unknown', 'idempotencyKey' => $lkey] && $x5['state'] === 'applied' && $x5['entryId'] === $x3['entryId'], 'a lost answer is unknown; the same key gets the shop\'s stored answer (never a second record)');
+$check($ok($xget($out, '?source=outletperdele'), 'outlet exceptions')['available'] === false && $ok($xget($out, '?source=outletperdele'), 'outlet')['reason'] === 'not_configured', 'a shop without finance: not configured');
+$error($xget($out, '?source=trendhome'), 403, 'CONFIRMARE_FINANCE_DENIED', 'another shop\'s finance employee never reads Trend Home\'s exceptions');
+$events = $all("SELECT event_type, metadata_json FROM auth_audit_events WHERE event_type LIKE 'CONFIRMARE_TRANSFER_EXCEPTION%' AND employee_uuid IN (?, ?, ?, ?) ORDER BY created_at", [$uuids['fview'], $uuids['frec'], $uuids['fapp'], $uuids['fapp2']]);
+$check(in_array('CONFIRMARE_TRANSFER_EXCEPTION_RECORD', array_column($events, 'event_type'), true) && in_array('CONFIRMARE_TRANSFER_EXCEPTION_RESOLVE', array_column($events, 'event_type'), true) && in_array('CONFIRMARE_TRANSFER_EXCEPTIONS_READ', array_column($events, 'event_type'), true),
+    'every exception read and action is audited (codes only): ' . count($events));
+
+// ---- 8c. API 2.45.0 (YD SOFT 2.19.0): cash with its document, more money after the advance, over-payment, a cancelled proforma --
+$c8 = $ok($read($rec, $th(4)), 'COD read 8c');
+$check(in_array('submit_transfer', $c8['allowedActions'], true) && $c8['summary']['position']['remaining'] === '710.00' && $c8['summary']['position']['advanceGap'] === '10.00' && $c8['summary']['financial']['state'] === 'partial',
+    'the one money calculation: 290 of 300 received, the advance misses 10.00, the customer owes 710.00');
+$cash = ['expectedRevision' => $revision($id(4)), 'purpose' => 'advance', 'amount' => '20.00', 'reference' => 'OP FIN CASH 0001', 'valueDate' => $today];
+$requests = count($shop->requests);
+$error($act($rec, $th(4), 'submit-transfer', $cash + ['method' => 'cash_office']), 422, 'CONFIRMARE_FINANCE_INVALID', 'cash without its fiscal receipt or chitanță is refused');
+$error($act($rec, $th(4), 'submit-transfer', $cash + ['method' => 'cash_courier', 'collector' => 'Ion Popescu']), 422, 'CONFIRMARE_FINANCE_INVALID', 'cash with its collector but no document is refused');
+$error($act($rec, $th(4), 'submit-transfer', $cash + ['method' => 'cash_courier', 'receipt' => 'factura', 'collector' => 'Ion Popescu']), 422, 'CONFIRMARE_FINANCE_INVALID', 'a cash document is a fiscal receipt or a chitanță');
+$error($act($rec, $th(4), 'submit-transfer', $cash + ['method' => 'cash_office', 'receipt' => 'bon_fiscal', 'collector' => '<script>']), 422, 'CONFIRMARE_FINANCE_INVALID', 'who collected the cash is a name');
+$error($act($rec, $th(4), 'submit-transfer', $cash + ['method' => 'cash_drawer', 'receipt' => 'bon_fiscal', 'collector' => 'Ion Popescu']), 422, 'CONFIRMARE_FINANCE_INVALID', 'an unknown method is refused');
+$error($act($rec, $th(4), 'submit-transfer', $cash + ['receipt' => 'bon_fiscal']), 422, 'CONFIRMARE_FINANCE_INVALID', 'a bank transfer names no cash document');
+$error($act($rec, $th(4), 'submit-transfer', $cash + ['overpaymentConfirmed' => false]), 422, 'CONFIRMARE_FINANCE_INVALID', 'the over-payment confirmation is true or absent');
+$error($act($rec, $th(4), 'submit-transfer', $cash + ['cancelledProforma' => 'ignore']), 422, 'CONFIRMARE_FINANCE_INVALID', 'the cancelled-proforma decision is apply_to_order or absent');
+$check(count($shop->requests) === $requests, 'refused finance actions never reach the shop');
+$shop->orders[$id(4)]['finance']['proformaCancelled'] = true;
+$refused($act($rec, $th(4), 'submit-transfer', ['expectedRevision' => $revision($id(4))] + $cash + ['method' => 'cash_office', 'receipt' => 'bon_fiscal', 'collector' => 'Ion Popescu']), 'proforma_cancelled', 'money for a cancelled proforma needs the finance decision');
+$cashed = $ok($act($rec, $th(4), 'submit-transfer', ['expectedRevision' => $revision($id(4))] + $cash + ['method' => 'cash_office', 'receipt' => 'bon_fiscal', 'collector' => 'Ion Popescu', 'cancelledProforma' => 'apply_to_order']), 'cash recorded with its document');
+$entryCash = array_values(array_filter($cashed['summary']['entries'], static fn (array $e): bool => $e['id'] === $cashed['entryId']))[0] ?? [];
+$check(($entryCash['method'] ?? null) === 'cash_office' && ($entryCash['receipt'] ?? null) === 'bon_fiscal' && ($entryCash['collector'] ?? null) === 'Ion Popescu' && ($entryCash['flags'] ?? null) === ['cancelled_proforma'], 'the entry names the method, the document, the collector and the finance decision');
+$shop->orders[$id(4)]['finance']['proformaCancelled'] = false;
+$vc = $ok($act($app, $th(4), 'decide-transfer', $decide($id(4), $cashed['entryId'])), 'cash verified by another employee');
+$check($vc['summary']['financial']['state'] === 'cleared' && $vc['summary']['position']['remaining'] === '690.00' && in_array('submit_transfer', $ok($read($rec, $th(4)), 'after the advance')['allowedActions'], true), 'the advance is complete (310 of 300); more money may still be recorded (owed 690.00)');
+$over = ['expectedRevision' => $revision($id(4)), 'purpose' => 'advance', 'amount' => '700.00', 'reference' => 'OP FIN OVER 0001', 'valueDate' => $today];
+$refused($act($rec, $th(4), 'submit-transfer', $over), 'amount_exceeds_balance', 'more than the customer owes, without the explicit confirmation');
+$o4 = $ok($act($rec, $th(4), 'submit-transfer', ['expectedRevision' => $revision($id(4))] + $over + ['overpaymentConfirmed' => true]), 'the over-payment recorded whole');
+$vo = $ok($act($app, $th(4), 'decide-transfer', $decide($id(4), $o4['entryId'])), 'over-payment verified');
+$check($vo['summary']['position']['remaining'] === '0.00' && $vo['summary']['position']['excess'] === '10.00' && $vo['summary']['financial']['attention'] === 'refund_due', '1010 on an order of 1000: owed 0.00 (never negative), excess 10.00 is a finance exception (refund_due)');
 
 // ---- 9. No amount, reference or telephone number stored or logged ----------------------------------------------------
 $leak = static function (string $text): bool {
@@ -453,7 +538,7 @@ $leak = static function (string $text): bool {
 $check($leak('{"amount":"650.00"}') && $leak('ref OP FIN 0001') && $leak('tel 0711 444 555') && !$leak('2026-10-22 13:45:00.100000') && !$leak('sha256:' . hash('sha256', 'x')), 'the leak check finds amounts, references and the phone, and ignores timestamps and hashes');
 // Binary columns (HMACs, hashes) as hex, so every row can be scanned as text.
 $text = static fn (array $rows): array => array_map(static fn (array $row): array => array_map(static fn (mixed $v): mixed => is_string($v) && !mb_check_encoding($v, 'UTF-8') ? bin2hex($v) : $v, $row), $rows);
-$dump = json_encode([$text($all("SELECT * FROM order_finance_actions WHERE source_key = 'trendhome'")), $all("SELECT * FROM order_finance_reads WHERE source_key = 'trendhome'"), $all("SELECT * FROM iam_audit_events WHERE action = 'employee.finance_scopes_changed' AND target_id = ?", [$uuids['frec']]),
+$dump = json_encode([$text($all("SELECT event_type, request_id, metadata_json FROM auth_audit_events WHERE event_type LIKE 'CONFIRMARE_TRANSFER_EXCEPTION%' AND employee_uuid IN (?, ?, ?, ?)", [$uuids['fview'], $uuids['frec'], $uuids['fapp'], $uuids['fapp2']])), $text($all("SELECT * FROM order_finance_actions WHERE source_key = 'trendhome'")), $all("SELECT * FROM order_finance_reads WHERE source_key = 'trendhome'"), $all("SELECT * FROM iam_audit_events WHERE action = 'employee.finance_scopes_changed' AND target_id = ?", [$uuids['frec']]),
     $text($all('SELECT * FROM operational_orders WHERE global_order_id IN (' . implode(', ', array_fill(0, 5, '?')) . ')', [$th(1), $th(2), $th(3), $th(4), $th(5)]))], JSON_THROW_ON_ERROR);
 $check(!$leak($dump), 'the finance tables, the IAM audit and the projection hold no amount, bank reference or telephone number');
 $log = (string) file_get_contents($logFile);
@@ -466,4 +551,4 @@ foreach (['order_finance_actions', 'order_finance_reads', 'employee_finance_scop
 }
 $pdo->exec('UPDATE operational_orders SET workflow_cohort = NULL, workflow_cohort_reason = NULL, workflow_cohort_at = NULL WHERE workflow_cohort IS NOT NULL');
 
-fwrite(STDOUT, "PASS MySQL Confirmare finance integration: {$checks} checks (root-only finance scopes apart from Confirmare, readers and actors, four eyes, revision, idempotency, duplicate references, lost answers and 5xx reconciled, a request never received, one action per order, production closed while unsettled, liability acknowledgement, refunds only after manufacturing, Phase 5 attentions, the YD SOFT 2.16 refusals finance_open and order_cancelled, the finance queue, no amount stored or logged).\n");
+fwrite(STDOUT, "PASS MySQL Confirmare finance integration: {$checks} checks (root-only finance scopes apart from Confirmare, readers and actors, four eyes, revision, idempotency, duplicate references, lost answers and 5xx reconciled, a request never received, one action per order, production closed while unsettled, liability acknowledgement, refunds only after manufacturing, Phase 5 attentions, the YD SOFT 2.16 refusals finance_open and order_cancelled, the finance queue, the operator's view of a transfer in verification, the shop's exception record of unmatched transfers, no amount stored or logged).\n");

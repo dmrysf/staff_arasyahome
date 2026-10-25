@@ -52,7 +52,12 @@ $accessClient = $root . '/operations-api/src/Integration/SourceAccess/SourceAcce
 $accessRoutes = ['/yd-arasya/v1/confirmare/detail', '/yd-arasya/v1/confirmare/catalog', '/yd-arasya/v1/confirmare/product', '/yd-arasya/v1/confirmare/preview', '/yd-arasya/v1/confirmare/apply', '/yd-arasya/v1/confirmare/edit-status', '/yd-arasya/v1/confirmare/finance', '/yd-arasya/v1/confirmare/finance-action', '/yd-arasya/v1/confirmare/finance-status',
     // API 2.43.0 (reviewed with SmartBill invoicing): the invoice state, one invoice action and its stored answer, to the same
     // configured shop through the same signed protocol; the shop's SmartBill plugin talks to SmartBill, never Operations.
-    '/yd-arasya/v1/confirmare/invoice', '/yd-arasya/v1/confirmare/invoice-action', '/yd-arasya/v1/confirmare/invoice-status'];
+    '/yd-arasya/v1/confirmare/invoice', '/yd-arasya/v1/confirmare/invoice-action', '/yd-arasya/v1/confirmare/invoice-status',
+    // API 2.44.0: the operator's advance proforma (reviewed: SmartBill proforma only, never a payment, refund or order change).
+    '/yd-arasya/v1/confirmare/proforma-action',
+    // API 2.44.0 (YD SOFT 2.18.0, bank transfer of the advance): the shop's record of bank transfers that match no order
+    // (read, record, close by another employee); reviewed: no money moved, no order, refund or document changed.
+    '/yd-arasya/v1/confirmare/transfer-exceptions', '/yd-arasya/v1/confirmare/transfer-exception-action'];
 $forbiddenApi = [
     '/\bcurl_(init|exec|multi_\w+|setopt)\s*\(/' => 'cURL client',
     '/\b(fsockopen|pfsockopen|stream_socket_client)\s*\(/' => 'raw socket client',

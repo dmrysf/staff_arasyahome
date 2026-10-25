@@ -164,6 +164,23 @@ final class Container
             $this->clock,
             hash_hmac('sha256', 'confirmare-invoice-request', $this->config->appSecret),
             $this->authorityModes(),
+            new \Arasya\Operations\Confirmare\ConfirmareScopePolicy($this->pdo),
+        );
+    }
+
+    /** The shop's bank transfers that match no order (API 2.44.0, YD SOFT 2.18.0). */
+    public function financeTransferExceptions(?AuthorizationService $authorization = null): \Arasya\Operations\Confirmare\FinanceTransferExceptions
+    {
+        $transport = $this->sourceAccessTransport ?? new \Arasya\Operations\Integration\SourceAccess\StreamSourceAccessTransport(allowLoopback: !$this->config->isProduction());
+        return new \Arasya\Operations\Confirmare\FinanceTransferExceptions(
+            $this->pdo,
+            $authorization ?? new AuthorizationService(),
+            new \Arasya\Operations\Confirmare\FinanceScopePolicy($this->pdo),
+            \Arasya\Operations\Integration\SourceAccess\SourceAccessRegistry::fromConfig($this->config),
+            new \Arasya\Operations\Integration\SourceAccess\SourceAccessClient($transport, $this->clock),
+            new PdoApiRateLimiter($this->pdo, $this->clock, $this->config->appSecret),
+            $this->audit,
+            $this->clock,
         );
     }
 
@@ -323,6 +340,7 @@ final class Container
                 $this->confirmareSourceEdits($authorization),
                 $this->confirmareFinance($authorization),
                 $this->confirmareInvoice($authorization),
+                $this->financeTransferExceptions($authorization),
                 $this->authentication,
                 $csrf,
                 $this->config,

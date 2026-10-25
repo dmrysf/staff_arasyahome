@@ -11,6 +11,10 @@ use Arasya\Operations\Integration\SourceOrderPayloadMapper;
  * the known fields. Anything malformed rejects the whole answer (SOURCE_RESPONSE_INVALID): an employee never decides on
  * half-trusted money figures. The summary is relayed to the browser once and never stored, logged or cached by Operations
  * (it holds amounts and bank references); only its revision hash and the entry ids are kept in the audit tables.
+ *
+ * API 2.45.0 (YD SOFT 2.19.0): the one money calculation (`position`), the invoicing deadline, the active AWB's collection,
+ * the operator's acceptance of a smaller advance, a cancelled proforma, and per entry how the money came (bank transfer or
+ * cash with its document and collector) and the finance employee's explicit confirmations. Absent from a 2.18.0 shop.
  */
 final class SourceFinance
 {
@@ -18,6 +22,12 @@ final class SourceFinance
 
     public const ACTIONS = ['submit_transfer', 'decide_transfer', 'acknowledge_liability', 'submit_refund', 'decide_refund'];
     public const PURPOSES = ['advance', 'additional_payment'];
+    /** How the money came (2.19.0): bank transfer, cash at the office or shop, cash collected by a driver at the customer. */
+    public const METHODS = ['bank_transfer', 'cash_office', 'cash_courier'];
+    /** The document of a cash collection (its number is the entry's reference). */
+    public const RECEIPTS = ['bon_fiscal', 'chitanta'];
+    public const FLAGS = ['overpayment', 'cancelled_proforma'];
+    public const COLLECTOR_PATTERN = '/^[\p{L}\p{M}][\p{L}\p{M} .\'-]{1,63}$/uD';
     public const REJECT_REASONS = ['not_received', 'amount_mismatch', 'wrong_order', 'duplicate', 'other'];
     /** Shop refusals of a finance action Operations understands (anything else is SOURCE_ERROR). */
     public const REFUSALS = [
@@ -26,6 +36,10 @@ final class SourceFinance
         'duplicate_reference', 'reference_invalid', 'value_date_invalid', 'entry_not_found', 'entry_not_pending', 'same_employee', 'advance_record_failed',
         'no_liability', 'already_acknowledged', 'liability_not_acknowledged', 'amount_exceeds_liability', 'refund_exceeds_order', 'refund_disabled',
         'production_not_complete', 'refund_record_failed', 'internal_error', 'finance_open', 'order_cancelled',
+        // YD SOFT 2.18.0: a bank transfer that matches no order (the shop's exception record).
+        'transfer_not_recorded',
+        // YD SOFT 2.19.0: a cash collection without its document; a payment for a cancelled proforma without a decision.
+        'cash_document_required', 'proforma_cancelled',
     ];
     /**
      * Refusals of the YD SOFT safety rules (owner rule 2 and K-1), valid only as a 409 answer to the actions that can
@@ -41,6 +55,12 @@ final class SourceFinance
         'finance_open' => ['submit_refund', 'decide_refund'],
         'order_cancelled' => ['submit_transfer', 'decide_transfer'],
     ];
+    /** YD SOFT 2.18.0: the shop's record of bank transfers that match no order (TransferExceptions). */
+    public const EXCEPTION_ACTIONS = ['record_exception', 'resolve_exception'];
+    public const EXCEPTION_REASONS = ['unmatched', 'over_payment', 'duplicate', 'amount_mismatch', 'other'];
+    public const EXCEPTION_RESOLUTIONS = ['recorded_on_order', 'returned_to_payer', 'not_customer_payment'];
+    private const BANK_REFERENCE = '/^[A-Za-z0-9][A-Za-z0-9 .\/-]{2,63}$/D';
+    private const MAX_EXCEPTIONS = 300;
     private const ID = '/^[0-9]{1,20}$/D';
     private const UUID = '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/D';
     private const MAX_ENTRIES = 200;
@@ -129,8 +149,17 @@ final class SourceFinance
                     'decidedBy' => ($entry['decidedBy'] ?? null) === null ? null : self::pattern($entry['decidedBy'], self::UUID),
                     'decidedAt' => self::optionalInstant($entry['decidedAt'] ?? null),
                     'decisionCode' => ($entry['decisionCode'] ?? null) === null ? null : self::pattern($entry['decisionCode'], '/^[a-z_]{2,40}$/D'),
+                    // 2.19.0 (a 2.18.0 shop: a bank transfer without confirmations).
+                    'method' => ($entry['method'] ?? null) === null ? 'bank_transfer' : self::choice($entry['method'], self::METHODS),
+                    'receipt' => ($entry['receipt'] ?? null) === null ? null : self::choice($entry['receipt'], self::RECEIPTS),
+                    'collector' => ($entry['collector'] ?? null) === null ? null : self::pattern($entry['collector'], self::COLLECTOR_PATTERN),
+                    'flags' => array_map(static fn (mixed $flag): string => self::choice($flag, self::FLAGS), self::flags($entry['flags'] ?? [])),
                 ];
             }),
+            // 2.19.0 (absent from a 2.18.0 shop).
+            'position' => ($data['position'] ?? null) === null ? null : SourceInvoice::moneyPosition(self::map($data['position'])),
+            'deadline' => ($data['deadline'] ?? null) === null ? null : SourceInvoice::deadline(self::map($data['deadline'])),
+            'cod' => ($data['cod'] ?? null) === null ? null : SourceInvoice::cod(self::map($data['cod'])),
             'capabilities' => [
                 'record' => self::bool($capabilities['record'] ?? null),
                 'refunds' => self::choice($capabilities['refunds'] ?? null, ['off', 'manual']),
@@ -159,6 +188,69 @@ final class SourceFinance
             'entryId' => self::pattern($data['entryId'] ?? null, self::UUID),
             'summary' => self::summary(self::map($data['summary'] ?? null), $sourceOrderId, $orderNumber),
         ];
+    }
+
+    /**
+     * The shop's bank transfers that match no order: every open one and the latest closed ones (2.18.0).
+     *
+     * @param array<string, mixed> $data
+     * @return array{available: bool, currency: ?string, exceptions: list<array<string, mixed>>}
+     */
+    public static function exceptions(array $data): array
+    {
+        if (($data['protocol'] ?? null) !== 1) {
+            throw self::invalid();
+        }
+        $available = self::bool($data['available'] ?? null);
+        $currency = $data['currency'] ?? null;
+        return [
+            'available' => $available,
+            'currency' => $currency === null || $currency === '' ? null : self::pattern($currency, '/^[A-Z]{3}$/D'),
+            'exceptions' => self::list($data['exceptions'] ?? null, self::MAX_EXCEPTIONS, static function (array $entry): array {
+                $resolution = $entry['resolution'] ?? null;
+                $order = $entry['order'] ?? null;
+                if ($order !== null) {
+                    $order = self::map($order);
+                    $order = [
+                        'id' => self::pattern($order['id'] ?? null, self::ID),
+                        'number' => ($order['number'] ?? null) === null ? null : self::text($order['number'], 64),
+                    ];
+                }
+                $state = self::choice($entry['state'] ?? null, ['open', 'resolved']);
+                $presented = [
+                    'id' => self::pattern($entry['id'] ?? null, self::UUID),
+                    'amount' => self::money($entry['amount'] ?? null),
+                    'currency' => self::pattern($entry['currency'] ?? null, '/^[A-Z]{3}$/D'),
+                    'reference' => self::pattern($entry['reference'] ?? null, self::BANK_REFERENCE),
+                    'valueDate' => ($entry['valueDate'] ?? null) === null ? null : self::pattern($entry['valueDate'], '/^\d{4}-\d{2}-\d{2}$/D'),
+                    'reason' => self::choice($entry['reason'] ?? null, self::EXCEPTION_REASONS),
+                    'state' => $state,
+                    'submittedBy' => self::pattern($entry['submittedBy'] ?? null, self::UUID),
+                    'submittedAt' => self::optionalInstant($entry['submittedAt'] ?? null),
+                    'resolvedBy' => ($entry['resolvedBy'] ?? null) === null ? null : self::pattern($entry['resolvedBy'], self::UUID),
+                    'resolvedAt' => self::optionalInstant($entry['resolvedAt'] ?? null),
+                    'resolution' => $resolution === null ? null : self::choice($resolution, self::EXCEPTION_RESOLUTIONS),
+                    'order' => $order,
+                ];
+                // An open exception has no resolution; a closed one always has one (and an order only when recorded on it).
+                if (($state === 'open') !== ($presented['resolution'] === null) || ($presented['resolution'] === 'recorded_on_order') !== ($order !== null)) {
+                    throw self::invalid();
+                }
+                return $presented;
+            }),
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     * @return array{entryId: string, listing: array<string, mixed>}
+     */
+    public static function exceptionApplied(array $data, string $action): array
+    {
+        if (($data['protocol'] ?? null) !== 1 || ($data['applied'] ?? null) !== true || ($data['action'] ?? null) !== $action) {
+            throw self::invalid();
+        }
+        return ['entryId' => self::pattern($data['entryId'] ?? null, self::UUID), 'listing' => self::exceptions(self::map($data['listing'] ?? null))];
     }
 
     /**
@@ -214,6 +306,36 @@ final class SourceFinance
             'collected' => self::optionalMoney($advance['collected'] ?? null),
             'outstanding' => self::optionalMoney($advance['outstanding'] ?? null),
             'onDelivery' => self::optionalMoney($advance['onDelivery'] ?? null),
+            // YD SOFT 2.18.0: the payment reference and the advance proforma, to find the order on the bank statement.
+            'paymentReference' => ($advance['paymentReference'] ?? null) === null ? null : self::pattern($advance['paymentReference'], SourceInvoice::PAYMENT_REFERENCE_PATTERN),
+            'proforma' => ($advance['proforma'] ?? null) === null ? null : self::proforma(self::map($advance['proforma'])),
+            // 2.19.0: the operator accepted a smaller verified advance; the last proforma was cancelled.
+            'accepted' => array_key_exists('accepted', $advance) ? self::bool($advance['accepted']) : false,
+            'proformaCancelled' => array_key_exists('proformaCancelled', $advance) ? self::bool($advance['proformaCancelled']) : false,
+        ];
+    }
+
+    /** @return list<mixed> */
+    private static function flags(mixed $value): array
+    {
+        if (!is_array($value) || !array_is_list($value) || count($value) > 4) {
+            throw self::invalid();
+        }
+        return $value;
+    }
+
+    /**
+     * @param array<string, mixed> $proforma
+     * @return array{series: string, number: string, amount: string|null, currency: string|null, reference: string|null}
+     */
+    private static function proforma(array $proforma): array
+    {
+        return [
+            'series' => self::pattern($proforma['series'] ?? null, '/^[A-Za-z0-9-]{0,20}$/D'),
+            'number' => self::pattern($proforma['number'] ?? null, '/^[A-Za-z0-9-]{1,20}$/D'),
+            'amount' => self::optionalMoney($proforma['amount'] ?? null),
+            'currency' => ($proforma['currency'] ?? null) === null ? null : self::pattern($proforma['currency'], '/^[A-Z]{3}$/D'),
+            'reference' => ($proforma['reference'] ?? null) === null ? null : self::pattern($proforma['reference'], SourceInvoice::PAYMENT_REFERENCE_PATTERN),
         ];
     }
 

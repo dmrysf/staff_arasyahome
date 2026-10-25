@@ -44,6 +44,8 @@ try {
     $shop->invoiceAnswers = is_array($fixture['invoiceAnswers'] ?? null) ? $fixture['invoiceAnswers'] : [];
     $shop->smartbillDocuments = is_array($fixture['smartbillDocuments'] ?? null) ? $fixture['smartbillDocuments'] : [];
     $shop->smartbillMails = is_array($fixture['smartbillMails'] ?? null) ? $fixture['smartbillMails'] : [];
+    // API 2.44.0 (YD SOFT 2.18.0): the shop's record of bank transfers that match no order persists too.
+    $shop->exceptions = is_array($fixture['exceptions'] ?? null) ? $fixture['exceptions'] : [];
     $headers = [];
     foreach ($_SERVER as $name => $value) {
         if (str_starts_with($name, 'HTTP_')) {
@@ -53,9 +55,9 @@ try {
     $answer = $shop->handle(substr($path, strlen('/wp-json')), $headers, (string) file_get_contents('php://input'));
     file_put_contents($nonceFile, json_encode($shop->nonces));
     if (is_array($fixture) && ($shop->orders !== ($fixture['orders'] ?? []) || $shop->edits !== ($fixture['edits'] ?? []) || $shop->financeAnswers !== ($fixture['financeAnswers'] ?? [])
-        || $shop->invoiceAnswers !== ($fixture['invoiceAnswers'] ?? []) || $shop->smartbillDocuments !== ($fixture['smartbillDocuments'] ?? []))) {
+        || $shop->invoiceAnswers !== ($fixture['invoiceAnswers'] ?? []) || $shop->smartbillDocuments !== ($fixture['smartbillDocuments'] ?? []) || $shop->exceptions !== ($fixture['exceptions'] ?? []))) {
         file_put_contents($file, json_encode(['orders' => $shop->orders, 'edits' => $shop->edits, 'financeAnswers' => $shop->financeAnswers, 'invoiceAnswers' => $shop->invoiceAnswers,
-            'smartbillDocuments' => $shop->smartbillDocuments, 'smartbillMails' => $shop->smartbillMails] + $fixture, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+            'smartbillDocuments' => $shop->smartbillDocuments, 'smartbillMails' => $shop->smartbillMails, 'exceptions' => $shop->exceptions] + $fixture, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
     }
 } finally {
     flock($lock, LOCK_UN);
