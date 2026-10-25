@@ -7,6 +7,7 @@ namespace Arasya\Operations\Cancellation\Sync;
 use Arasya\Operations\Authorization\AuthorizationService;
 use Arasya\Operations\Cancellation\CancellationControl;
 use Arasya\Operations\Cancellation\CancellationView;
+use Arasya\Operations\Confirmare\ConfirmareFinance;
 use Arasya\Operations\Employee\EmployeeIdentity;
 use Arasya\Operations\Employee\PdoEmployeeRepository;
 use Arasya\Operations\Http\ApiException;
@@ -48,6 +49,8 @@ final readonly class CancellationSyncService
     private const MAX_ATTEMPTS = 3;
     private const RETRYABLE = [1205, 1213];
     private const PULL_LIMIT = 20;
+    /** The shop's financial attentions that mean a finance entry is not decided yet, or the money state is not known. */
+    private const FINANCE_OPEN_ATTENTIONS = ['transfer_pending', 'refund_pending', 'reconciliation_required'];
 
     public function __construct(
         private PDO $pdo,
@@ -161,6 +164,7 @@ final readonly class CancellationSyncService
             if ($control['source_status'] === 'cancelled') {
                 throw new ApiException(409, 'SOURCE_ALREADY_CANCELLED', 'Sursa a anulat deja comanda; nu este necesară nicio cerere.');
             }
+            $this->assertFinanceClosed($order);
             $operations = new SyncOperations($this->pdo, $this->clock);
             $generation = (int) $control['hold_generation'];
             if ($operations->forGeneration((string) $order['order_uuid'], $generation) !== null) {
@@ -210,6 +214,7 @@ final readonly class CancellationSyncService
             if ($control['source_status'] === 'cancelled') {
                 throw new ApiException(409, 'SOURCE_ALREADY_CANCELLED', 'Sursa a anulat deja comanda; nu este necesară nicio reîncercare.');
             }
+            $this->assertFinanceClosed($order);
             if (!in_array($operation['state'], [SyncState::FAILED, SyncState::REJECTED, SyncState::MANUAL_REVIEW, SyncState::RETRY_SCHEDULED], true)) {
                 throw new ApiException(409, 'CANCELLATION_SYNC_RETRY_NOT_ELIGIBLE', 'Această operație nu poate fi reîncercată acum.', ['state' => $operation['state']]);
             }
@@ -327,9 +332,14 @@ final readonly class CancellationSyncService
                 if ($hint === null) {
                     return null;
                 }
-                $this->lockOrder((string) $hint['order_uuid']);
+                $order = $this->lockOrder((string) $hint['order_uuid']);
                 $operation = $operations->byId((string) $operationUuid);
                 if ($operation === null || $operation['state'] !== SyncState::AWAITING_PICKUP || $operation['source_key'] !== $sourceKey) {
+                    return null;
+                }
+                // Owner rule 2: while a finance entry of the order is open, the shop is not asked to cancel. The operation
+                // stays awaiting_pickup (not handed out, nothing recorded) and is offered again once the entry is decided.
+                if ($this->financeOpen($order)) {
                     return null;
                 }
                 if ($operation['last_pulled_at'] === null) {
@@ -557,11 +567,33 @@ final readonly class CancellationSyncService
     /** @return array<string, mixed> the locked canonical order row */
     private function lockOrder(string $orderUuid): array
     {
-        $statement = $this->pdo->prepare('SELECT order_uuid, global_order_id, order_number, source_key, source_order_id, operational_status, production_stage_id, production_completed_at, cancellation_state
-            FROM operational_orders WHERE order_uuid = ? FOR UPDATE');
+        $statement = $this->pdo->prepare('SELECT order_uuid, global_order_id, order_number, source_key, source_order_id, operational_status, production_stage_id, production_completed_at, cancellation_state,
+                source_financial_attention FROM operational_orders WHERE order_uuid = ? FOR UPDATE');
         $statement->execute([$orderUuid]);
         $row = $statement->fetch(PDO::FETCH_ASSOC);
         return is_array($row) ? $row : throw new ApiException(404, 'ORDER_NOT_FOUND', 'Comanda nu a fost găsită.');
+    }
+
+    /**
+     * Owner rule 2: an open finance entry of the order (a bank transfer or a refund recorded and not yet verified or
+     * rejected in the shop, a finance action Arasya relayed whose answer is pending or unknown, or a money state the shop
+     * could not reconcile) blocks the cancellation request to the shop. An unverified transfer is not money received,
+     * but cancelling the order while it is open could leave real money on a cancelled order. Caller holds the order row
+     * lock (the finance relay takes the same lock before it records an action).
+     * @param array<string, mixed> $order
+     */
+    private function financeOpen(array $order): bool
+    {
+        return ConfirmareFinance::actionOpen($this->pdo, (string) $order['order_uuid'])
+            || in_array($order['source_financial_attention'] ?? null, self::FINANCE_OPEN_ATTENTIONS, true);
+    }
+
+    /** @param array<string, mixed> $order */
+    private function assertFinanceClosed(array $order): void
+    {
+        if ($this->financeOpen($order)) {
+            throw new ApiException(409, 'CANCELLATION_SYNC_FINANCE_OPEN', 'O operațiune financiară a comenzii este deschisă (un transfer sau o rambursare neverificată, ori un răspuns necunoscut). Cererea de anulare către magazin se trimite după verificarea, respingerea sau reconcilierea ei.');
+        }
     }
 
     /** @return array<string, mixed>|null */
