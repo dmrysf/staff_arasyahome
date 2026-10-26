@@ -166,6 +166,9 @@ $check($failed('trendhome') === [], 'a newer connector with every check: ready')
 $ok($heartbeat('trendhome', $report()), 'good report');
 $check($failed('trendhome') === [] && $readiness->evaluate($registry->find('trendhome'), $now)['ready'] === true, 'every required check passes: ready');
 $check(($detail('controlled_edits')['detail']['possible'] ?? null) === true && $detail('staff_release')['ok'] === null, 'reported only: controlled edits and the Staff release');
+$auto = $detail('advance_proforma_automatic');
+$check($auto['ok'] === null && is_bool($auto['detail']['automatic'] ?? null) && (($auto['detail']['automatic'] === true) === (array_key_exists('reason', $auto['detail']) && $auto['detail']['reason'] === null)),
+    'reported only: whether the third unanswered call sends the advance proforma by itself, and why not: ' . json_encode($auto['detail'] ?? null));
 $check($readiness->evaluate($registry->find('trendhome'), $now->modify('+16 minutes'))['failed'] === ['connector'], 'a report older than 15 minutes is stale');
 $pdo->exec("DELETE FROM schema_migrations WHERE migration_name = '042_confirmare_connector_readiness.sql'"); // TEST ONLY: as before 042 ran
 $check($failed('trendhome') === ['schema', 'connector'], 'without migration 042 recorded: schema and connector fail');
@@ -177,6 +180,11 @@ $check($failed('trendhome') === [], 'restored');
 $noInvoice = new Config(...[...get_object_vars($base), 'sourceAccess' => ['trendhome' => ['invoice' => 'off'] + $access['trendhome']]]);
 $ok($heartbeat('trendhome', $report(['invoice' => 'off', 'smartbillReady' => false, 'invoiceAttested' => false])), 'report invoice off');
 $check($failed('trendhome', $readinessOf($noInvoice)) === [], 'invoice off on both sides: invoicing and SmartBill are not required');
+$offAuto = array_values(array_filter($readinessOf($noInvoice)->evaluate($registry->find('trendhome'), new DateTimeImmutable('now', new DateTimeZone('UTC')))['checks'], static fn (array $c): bool => $c['check'] === 'advance_proforma_automatic'))[0] ?? [];
+$check(($offAuto['detail']['automatic'] ?? null) === false && ($offAuto['detail']['reason'] ?? null) === 'invoice_not_enforced',
+    'invoice off: the report says plainly that no advance proforma is sent automatically (invoice_not_enforced)');
+$check(str_contains((string) ($offAuto['detail']['effect'] ?? ''), 'no advance proforma is issued or e-mailed') && ($offAuto['detail']['enforceOnlyAfter'] ?? null) === ['smartbill_real_document_test', 'proforma_bank_settings', 'accountant_approval', 'efactura_spv_check'],
+    'invoice off: the effect on new Confirmare orders and the manual checks before invoice enforce are written out');
 $check(in_array('connector', $failed('trendhome'), true), 'the same report fails while Arasya invoices (enforce)');
 $noAccess = new Config(...[...get_object_vars($base), 'sourceAccess' => []]);
 $check(array_intersect(['source_access', 'finance'], $failed('trendhome', $readinessOf($noAccess))) === ['source_access', 'finance'], 'without source access: the operator cannot open the shop order, finance cannot verify');

@@ -105,9 +105,22 @@ final readonly class ConfirmareReadiness
             ? array_values(array_unique([...$this->working('employee_invoice_scopes', 'issue', $key), ...$this->working('employee_invoice_scopes', 'manage', $key)]))
             : [];
         $add('invoicing', $invoicing ? $issuers !== [] && in_array(self::INVOICE_MIGRATION, $applied, true) : true, ['mode' => $target?->invoice ?? 'off', 'issuers' => count($issuers)]);
+        // Owner 2026-10-26 (reported only): whether the third unanswered call sends the 30 % advance proforma by itself. It
+        // does only with invoice `enforce` and migration 043 (and the cycle worker's cron, which the API cannot see);
+        // otherwise nothing is issued or e-mailed to the customer and the operator follows the order up by hand.
+        $cycleSchema = in_array('043_confirmare_dual_store.sql', $applied, true);
+        $automatic = $target !== null && $target->allowsInvoiceActions() && $cycleSchema;
+        $add('advance_proforma_automatic', null, ['automatic' => $automatic,
+            'reason' => $automatic ? null : ($target === null || !$target->allowsInvoiceActions() ? 'invoice_not_enforced' : 'cycle_schema_missing'),
+            'effect' => $automatic
+                ? 'After the third unanswered call the advance proforma is issued in SmartBill and e-mailed to the customer by the cycle worker.'
+                : 'New Confirmare orders are confirmed by telephone as usual, but after the third unanswered call no advance proforma is issued or e-mailed: the order stays with its operator, who follows it up by hand. Arasya issues no SmartBill document for this shop.',
+            // Owner 2026-10-26: invoice `enforce` is a separate step after go-live, never part of the code installation.
+            'enforceOnlyAfter' => ['smartbill_real_document_test', 'proforma_bank_settings', 'accountant_approval', 'efactura_spv_check'],
+            'worker' => 'php bin/confirmare-cycles.php every 5 minutes (cron; not visible to the API)']);
         [$connectorOk, $connector] = $this->connector($key, $target, $now, in_array('042_confirmare_connector_readiness.sql', $applied, true));
         $add('connector', $connectorOk, $connector);
-        $add('staff_release', null, 'not visible to the API: Staff 2.35.0 is deployed right after the API (deployment step)');
+        $add('staff_release', null, 'not visible to the API: Staff 2.36.0 is deployed right after the API (deployment step)');
 
         $failed = array_values(array_map(static fn (array $c): string => $c['check'], array_filter($checks, static fn (array $c): bool => $c['ok'] === false)));
         return ['sourceKey' => $key, 'ready' => $source !== null && $failed === [], 'failed' => $failed, 'checks' => $checks];
