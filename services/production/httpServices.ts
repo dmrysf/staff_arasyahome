@@ -14,7 +14,7 @@ import { createBrowserWorkflowCache, createUnavailableWorkflowCache, normalizePr
 import { createProductionWorkflowService } from "./workflowService";
 import type { ShopLine, ShopOrderDetail, ShopPerson, ShopRead } from "../../domain/confirmareShop";
 import { CASH_RECEIPTS, EXCEPTION_REASONS, EXCEPTION_RESOLUTIONS, FINANCE_ACTIONS, PAYMENT_METHODS, FINANCE_NEXT, FINANCE_TASKS, type ExceptionOutcome, type FinanceEntry, type FinanceOutcome, type FinanceQueue, type FinanceQueueItem, type FinanceRead, type FinanceSummary, type FinanceTask, type FinanceTimelineItem, type TransferException, type TransferExceptionList } from "../../domain/confirmareFinance";
-import { CANCEL_REASONS, INVOICE_ACTIONS, INVOICE_ROLES, PROFORMA_ACTIONS, PROFORMA_KEYS, PROFORMA_ROUTE, type CodCheck, type ShippingCheck, type InvoiceDeadline, type MoneyPosition, type TotalAcceptance, type InvoiceActionKey, type InvoiceOutcome, type InvoiceRead, type InvoiceSummary, type InvoiceView, type ProformaActionKey, type ProformaSummary, type ShopAssignment, type ShopQueueItem } from "../../domain/confirmareInvoice";
+import { CANCEL_REASONS, INVOICE_ACTIONS, INVOICE_ROLES, PAYMENT_STATES, PROFORMA_ACTIONS, PROFORMA_KEYS, PROFORMA_ROUTE, type CodCheck, type ShippingCheck, type InvoiceDeadline, type MoneyPosition, type TotalAcceptance, type InvoiceActionKey, type InvoiceOutcome, type InvoicePaymentRead, type InvoiceRead, type InvoiceSummary, type InvoiceView, type ProformaActionKey, type ProformaSummary, type ShopAssignment, type ShopQueueItem } from "../../domain/confirmareInvoice";
 import { EDIT_IMPACTS, type EditBlocker, type EditCatalog, type EditField, type EditLineSnapshot, type EditOutcome, type EditProduct, type EditResult, type EditTotals, type EditVariation, type OpenEdit } from "../../domain/confirmareEdit";
 import { mapAwbQueue, mapBankCheck, mapBankChecks, mapContactCycle, mapCycleAttention, mapEfacturaQueue, mapEfacturaTask, mapHealth, mapOperationOutcome, mapOperationsState, mapOrderCycle, mapProformaCycle } from "../../domain/confirmareOps";
 import { CLEARANCE_CONDITIONS, CONTACT_OUTCOMES, DOCUMENT_STATES, FINANCIAL_ATTENTION, HANDOFF_BLOCKERS, HANDOFF_STATES, type ConfirmareAlert, type ConfirmareApi, type ConfirmareAvailability, type ConfirmareContact, type ConfirmareCustomer, type ConfirmareDetail, type ConfirmareEvent, type ConfirmareHandoff, type ConfirmareItem, type HandoffItem, type ConfirmareLine, type ConfirmareOperator, type ConfirmarePool, type ConfirmareTeam, type FinancialState } from "../../domain/confirmare";
@@ -1154,6 +1154,8 @@ export function createProductionServices(apiBaseUrl: string, options: Production
     invoiceRead: (globalOrderId, signal) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/invoice`, { signal, cache: "no-store" }, mapInvoiceRead),
     invoiceAct: (globalOrderId, action, input, key) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/invoice/${action.replace(/_/g, "-")}`, { method: "POST", cache: "no-store", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapInvoiceOutcome),
     invoiceReconcile: (globalOrderId, key) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/invoice/reconcile`, { method: "POST", cache: "no-store", body: JSON.stringify({ idempotencyKey: key }) }, mapInvoiceOutcome),
+    // API 2.47.0: SmartBill's paid/unpaid amounts of the final invoice next to Arasya's verified money (read-only, never cached).
+    invoicePayment: (globalOrderId, signal) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/invoice/payment`, { signal, cache: "no-store" }, mapInvoicePaymentRead),
     // API 2.44.0: the operator's advance proforma, the routing to a shop employee and the shop employee's QR scan.
     proformaAct: (globalOrderId, action, input, key) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/proforma/${PROFORMA_ROUTE[action]}`, { method: "POST", cache: "no-store", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapInvoiceOutcome),
     shopCandidates: (globalOrderId, signal) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/shop-employees`, { signal, cache: "no-store" }, (value) => listOf(objectValue(value).items, 200, (entry) => { const item = objectValue(entry); return { id: uuidValue(item.id), name: textValue(item.name, 200) }; })),
@@ -1867,6 +1869,31 @@ export function mapInvoiceRead(value: unknown): InvoiceRead {
   const raw = objectValue(value);
   if (raw.available !== true) return { available: false, reason: textValue(raw.reason, 60) };
   return { available: true, role: oneOf(raw.role, INVOICE_ROLES), ...mapInvoiceView(raw) };
+}
+const PAYMENT_SEVERITIES = ["ok", "pending", "attention", "unknown"] as const;
+const paymentAmount = (value: unknown): string => { const text = textValue(value, 20); if (!/^-?\d{1,10}\.\d{2}$/.test(text)) throw new StaffServiceError("SERVER_ERROR"); return text; };
+export function mapInvoicePaymentRead(value: unknown): InvoicePaymentRead {
+  const raw = objectValue(value);
+  if (raw.available !== true) return { available: false, reason: textValue(raw.reason, 60) };
+  const p = objectValue(raw.payment);
+  const amounts = <K extends string>(entry: unknown, keys: readonly K[]): Record<K, string> | null => {
+    if (entry == null) return null;
+    const object = objectValue(entry);
+    return Object.fromEntries(keys.map((key) => [key, paymentAmount(object[key])])) as Record<K, string>;
+  };
+  const invoice = p.invoice == null ? null : objectValue(p.invoice);
+  return {
+    available: true,
+    role: oneOf(raw.role, INVOICE_ROLES),
+    payment: {
+      state: oneOf(p.state, PAYMENT_STATES), severity: oneOf(p.severity, PAYMENT_SEVERITIES), code: p.code == null ? null : textValue(p.code, 60),
+      currency: textValue(p.currency, 3), checkedAt: timestampValue(p.checkedAt),
+      invoice: invoice === null ? null : { series: invoice.series == null ? null : textValue(invoice.series, 20), number: invoice.number == null ? null : textValue(invoice.number, 20) },
+      smartbill: amounts(p.smartbill, ["total", "paid", "unpaid"] as const),
+      arasya: amounts(p.arasya, ["total", "verified", "remaining", "excess"] as const),
+      retryAfter: typeof p.retryAfter === "number" && Number.isInteger(p.retryAfter) ? p.retryAfter : null,
+    },
+  };
 }
 export function mapInvoiceOutcome(value: unknown): InvoiceOutcome {
   const raw = objectValue(value);

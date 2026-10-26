@@ -1,5 +1,10 @@
 # Backfill of the orders from 22 October 2026 (owner decision K-06)
 
+> **Superseded on 2026-10-26 (owner's latest decision): no backfill is applied.** Orders submitted before the
+> Confirmare activation of a shop stay in the legacy workflow (WordPress and the existing production), with their
+> current cohort. `--apply` is never run in either step; the commands below remain read-only tools. The Confirmare
+> workflow covers only orders submitted from the activation instant on. See REMEDIATION-2026-10-26.md.
+
 Rule: the orders of both shops submitted on or after **2026-10-22 00:00 Europe/Bucharest** (2026-10-21 21:00 UTC, summer
 time) enter the new workflow. Their documents and payments are kept. No mass cancellation and no back-dated e-mail is
 made because an old proforma is old.

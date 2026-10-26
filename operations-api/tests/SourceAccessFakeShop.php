@@ -80,6 +80,10 @@ final class SourceAccessFakeShop implements SourceAccessTransport
     public string $proformaCancelOutcome = 'cancelled';
     public ?string $afterInvoice = null;
     public bool $invoiceActions = true;
+    /** @var array<string, mixed>|null YD SOFT 2.21.0: the next invoice-payment answer (null: no final invoice yet). */
+    public ?array $invoicePayment = null;
+    public int $invoicePaymentReads = 0;
+
     /** Overrides the SmartBill link of the next invoice states (a shop answering with a foreign link). */
     public ?string $invoiceLinkOverride = null;
     /** @var array<string, array{order: string, hash: string, status: int, body: array<string, mixed>}> employee|key => stored answer */
@@ -150,7 +154,7 @@ final class SourceAccessFakeShop implements SourceAccessTransport
         if ($this->during !== null) {
             ($this->during)($input);
         }
-        $routes = ['detail', 'catalog', 'product', 'preview', 'apply', 'edit-status', 'finance', 'finance-action', 'finance-status', 'invoice', 'invoice-action', 'invoice-status', 'proforma-action',
+        $routes = ['detail', 'catalog', 'product', 'preview', 'apply', 'edit-status', 'finance', 'finance-action', 'finance-status', 'invoice', 'invoice-action', 'invoice-status', 'invoice-payment', 'proforma-action',
             'transfer-exceptions', 'transfer-exception-action', 'operation', 'operation-status'];
         $action = substr($route, strlen('/yd-arasya/v1/confirmare/'));
         if (!str_starts_with($route, '/yd-arasya/v1/confirmare/') || !in_array($action, $routes, true) || !is_array($input)) {
@@ -573,6 +577,14 @@ final class SourceAccessFakeShop implements SourceAccessTransport
         $i += self::invoiceDefaults();
         if ($route === 'invoice') {
             return in_array($role, ['documents', 'manager', 'finance', 'viewer', 'operator'], true) ? [200, $this->invoiceSummary($orderId, $now, (string) $role)] : [400, ['error' => ['code' => 'invalid_request']]];
+        }
+        if ($route === 'invoice-payment') {
+            // YD SOFT 2.21.0: the read-only SmartBill payment reconciliation (answer set by the test in $invoicePayment).
+            if (!in_array($role, ['documents', 'manager', 'finance'], true)) {
+                return [400, ['error' => ['code' => 'invalid_request']]];
+            }
+            $this->invoicePaymentReads++;
+            return [200, $this->invoicePayment ?? ['state' => 'no_invoice', 'severity' => 'ok', 'code' => null, 'checkedAt' => gmdate('Y-m-d\TH:i:s\Z', $now), 'currency' => 'RON', 'arasya' => null, 'smartbill' => null, 'invoice' => null]];
         }
         if (!in_array($role, $route === 'invoice-status' ? ['documents', 'manager', 'operator'] : ['documents', 'manager'], true)) {
             return [400, ['error' => ['code' => 'invalid_request']]];

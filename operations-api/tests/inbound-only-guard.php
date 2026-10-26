@@ -53,6 +53,9 @@ $accessRoutes = ['/yd-arasya/v1/confirmare/detail', '/yd-arasya/v1/confirmare/ca
     // API 2.43.0 (reviewed with SmartBill invoicing): the invoice state, one invoice action and its stored answer, to the same
     // configured shop through the same signed protocol; the shop's SmartBill plugin talks to SmartBill, never Operations.
     '/yd-arasya/v1/confirmare/invoice', '/yd-arasya/v1/confirmare/invoice-action', '/yd-arasya/v1/confirmare/invoice-status',
+    // API 2.47.0 (YD SOFT 2.21.0, owner remediation 2026-10-26): the read-only SmartBill payment reconciliation of the final
+    // invoice; reviewed: the shop reads `GET invoice/paymentstatus` only, never a payment, collection or document.
+    '/yd-arasya/v1/confirmare/invoice-payment',
     // API 2.44.0: the operator's advance proforma (reviewed: SmartBill proforma only, never a payment, refund or order change).
     '/yd-arasya/v1/confirmare/proforma-action',
     // API 2.44.0 (YD SOFT 2.18.0, bank transfer of the advance): the shop's record of bank transfers that match no order

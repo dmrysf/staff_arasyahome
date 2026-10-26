@@ -70,9 +70,8 @@ Only after step 3 on **both** shops:
 
 ## 6. Backfill of 22 October (K-06)
 
-BACKFILL-22-OCTOBER.md: dry runs, then apply (shop step A, then API step B), per shop. Step A must be applied before
-step B: without it every order that reached Arasya before 2.46.0 is `payment_unknown` (measured on the live copy) and
-nothing is taken.
+**Not applied (owner decision 2026-10-26).** Orders submitted before the activation stay in the legacy workflow; no
+`--apply` of either step is run. The dry runs may still be read for information (BACKFILL-22-OCTOBER.md).
 
 ## 6a. FAN Courier before `awb enforce`
 
