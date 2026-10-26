@@ -60,7 +60,11 @@ test("the bank check button and the task filter stay readable from 320 px to 144
       await expect(page.getByTestId("cf-bank")).toBeVisible();
       expect(await overflow(page), `${width} px: page overflow`).toBeLessThanOrEqual(0);
 
-      for (const source of ["trendhome", "outletperdele"]) {
+      // API 2.46.1: the bank check is offered only while the shop's finance is `record`; Outlet Perdele has no source
+      // access in this fixture (finance switched off), so its row offers no button at all.
+      await expect(page.getByTestId("cf-bank-outletperdele")).toBeVisible();
+      await expect(page.getByTestId("cf-bank-record-outletperdele")).toHaveCount(0);
+      for (const source of ["trendhome"]) {
         const button = page.getByTestId(`cf-bank-record-${source}`);
         await expect(button).toBeVisible();
         const row = await page.getByTestId(`cf-bank-${source}`).boundingBox();
