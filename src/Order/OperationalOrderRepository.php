@@ -29,21 +29,23 @@ interface OperationalOrderRepository
      * Open orders (not completed, not unavailable) currently at one production stage, longest waiting first,
      * with only the given employee's relation attached. Read-only and bounded by $max; the caller decides visibility.
      * $sources limits the orders to those commerce sources (a source-scoped stage grant); null reads every source.
+     * $flow (owner 2026-10-26) is null for every order, or WorkflowCohort::FLOWS (`current`, `legacy`).
      *
      * @param list<string>|null $sources
      * @return list<OperationalOrder>
      */
-    public function listOpenAtStage(string $employeeUuid, string $stageId, int $max, ?array $sources = null): array;
+    public function listOpenAtStage(string $employeeUuid, string $stageId, int $max, ?array $sources = null, ?string $flow = null): array;
 
     /**
      * Open-order counts per stage for the given stages: total and owned by the employee. Trendyol orders at the
      * initial stage are counted only when $includeTrendyolIntake is true (the same rule as OrderAccessPolicy::canView).
      * $sourcesByStage restricts a stage to the listed sources (a source-scoped grant); a stage absent there is
-     * counted for every source.
+     * counted for every source. `legacy` (owner 2026-10-26) is how many of `total` are Trend Home / Outlet Perdele
+     * orders of the established WordPress-managed flow (WorkflowCohort::LEGACY_SHOP_SQL), `mineLegacy` the same of `mine`.
      *
      * @param list<string> $stageIds
      * @param array<string, list<string>> $sourcesByStage
-     * @return array<string, array{total: int, mine: int}>
+     * @return array<string, array{total: int, mine: int, legacy: int, mineLegacy: int}>
      */
     public function countOpenByStage(string $employeeUuid, array $stageIds, bool $includeTrendyolIntake, array $sourcesByStage = []): array;
 }

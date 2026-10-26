@@ -16,6 +16,7 @@ use Arasya\Operations\Http\Response;
 use Arasya\Operations\Production\ProductionQrLedger;
 use Arasya\Operations\Production\ProductionWorkflow;
 use Arasya\Operations\Production\ProductionWorkflowService;
+use Arasya\Operations\Production\WorkflowCohort;
 use Arasya\Operations\Quality\ExceptionQueries;
 use Arasya\Operations\Security\ApiRateLimiter;
 use Arasya\Operations\Security\CsrfGuard;
@@ -76,16 +77,23 @@ final readonly class OperationalOrderController
      * Read-only queue of one production stage for the Staff department dashboards. The stage must be one of the
      * employee's allowed stages, a source-scoped grant reads only its sources; every order passes OrderAccessPolicy::canView (so Trendyol orders at the initial
      * stage stay limited to Trendyol personnel) and carries the same action evaluation as the order screen.
-     * Nothing is claimed or changed here.
+     * Nothing is claimed or changed here. `flow` (owner 2026-10-26, optional): `current` leaves out, `legacy` shows only,
+     * the Trend Home / Outlet Perdele orders of the established WordPress-managed flow (WorkflowCohort::LEGACY_SHOP_SQL);
+     * `legacyTotal` always says how many of those are at the stage (outside `counts`, whose buckets add up to the orders read).
      */
     public function stageQueue(Request $request): Response
     {
         $employee = $this->authenticate($request)->employee;
         $this->authorization->require($employee, 'orders.view_mine');
         $stageId = $this->allowedStage($employee, $request->query('stage') ?? '');
+        $flow = $request->query('flow');
+        $flow = $flow === null || $flow === '' ? null : $flow;
+        if ($flow !== null && !in_array($flow, WorkflowCohort::FLOWS, true)) {
+            throw new ApiException(422, 'VALIDATION_FAILED', 'Unknown flow filter.');
+        }
         $workflow = $this->workflowOrNull();
         // A source-scoped grant is applied in the query itself, so other sources never reach the scan window.
-        $rows = $this->repository->listOpenAtStage($employee->employeeUuid, $stageId, self::STAGE_QUEUE_SCAN + 1, $employee->sourcesAt($stageId));
+        $rows = $this->repository->listOpenAtStage($employee->employeeUuid, $stageId, self::STAGE_QUEUE_SCAN + 1, $employee->sourcesAt($stageId), $flow);
         $complete = count($rows) <= self::STAGE_QUEUE_SCAN;
         $buckets = ['mine' => [], 'available' => [], 'blocked' => [], 'claimedByOthers' => []];
         foreach (array_slice($rows, 0, self::STAGE_QUEUE_SCAN) as $order) {
@@ -101,13 +109,20 @@ final readonly class OperationalOrderController
             };
             $buckets[$bucket][] = [$order, $decision];
         }
-        $total = $this->repository->countOpenByStage($employee->employeeUuid, [$stageId], $this->authorization->can($employee, OrderAccessPolicy::TRENDYOL_VIEW), $employee->stageSourceScopes)[$stageId]['total'] ?? 0;
+        $stageCounts = $this->repository->countOpenByStage($employee->employeeUuid, [$stageId], $this->authorization->can($employee, OrderAccessPolicy::TRENDYOL_VIEW), $employee->stageSourceScopes)[$stageId] ?? ['total' => 0, 'legacy' => 0];
+        $total = match ($flow) {
+            'current' => $stageCounts['total'] - $stageCounts['legacy'],
+            'legacy' => $stageCounts['legacy'],
+            default => $stageCounts['total'],
+        };
         $items = array_slice(array_merge(...array_values($buckets)), 0, self::STAGE_QUEUE_ITEMS);
         $pieces = $this->piecesOf(array_map(static fn (array $entry): OperationalOrder => $entry[0], $items), $employee, $workflow);
         return Response::json([
             'stageId' => $stageId,
             'counts' => ['total' => $total] + array_map('count', $buckets),
             'countsComplete' => $complete,
+            'flow' => $flow,
+            'legacyTotal' => $stageCounts['legacy'],
             'items' => array_map(fn (array $entry): array => $this->serializer->serializeOrder($entry[0], $entry[1], pieces: $pieces[$entry[0]->orderUuid] ?? null), $items),
         ] + $this->trackQueue($employee, $stageId, $workflow), 200, ['Cache-Control' => 'private, no-store']);
     }
@@ -124,8 +139,10 @@ final readonly class OperationalOrderController
         // Pieces in rework are separate work at their own stage, counted apart so an order is never counted twice.
         $rework = $this->tracks?->countByStage($employee->employeeUuid, $ordered, $employee->stageSourceScopes) ?? [];
         return Response::json([
+            // legacyTotal / legacyMine (owner 2026-10-26): how many of total / mine are WordPress-managed shop orders.
             'stages' => array_map(static fn (string $id): array => ['stageId' => $id, 'total' => $counts[$id]['total'] ?? 0, 'mine' => $counts[$id]['mine'] ?? 0,
-                'reworkTotal' => $rework[$id]['total'] ?? 0, 'reworkMine' => $rework[$id]['mine'] ?? 0], $ordered),
+                'reworkTotal' => $rework[$id]['total'] ?? 0, 'reworkMine' => $rework[$id]['mine'] ?? 0,
+                'legacyTotal' => $counts[$id]['legacy'] ?? 0, 'legacyMine' => $counts[$id]['mineLegacy'] ?? 0], $ordered),
         ], 200, ['Cache-Control' => 'private, no-store']);
     }
 

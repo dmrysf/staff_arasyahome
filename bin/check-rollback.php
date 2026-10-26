@@ -37,6 +37,55 @@ try {
     if (is_string($assisted) && (!isset($tables['production_assisted_checkpoints']) || !hash_equals(hash_file('sha256', dirname(__DIR__) . '/database/migrations/031_production_assisted_checkpoints.sql'), $assisted))) {
         throw new RuntimeException('Current migration could not be verified.');
     }
+    // Migration 033 (cancellation control) likewise: optional, verified when recorded. An API older than 2.35.0 ignores
+    // production stops, so an open stopped order would become workable again: refused while any stop is in force.
+    $cancellation = $pdo->query("SELECT checksum FROM schema_migrations WHERE migration_name = '033_order_cancellation_control.sql'")->fetchColumn();
+    if (is_string($cancellation) && (!isset($tables['order_cancellation_controls']) || !hash_equals(hash_file('sha256', dirname(__DIR__) . '/database/migrations/033_order_cancellation_control.sql'), $cancellation))) {
+        throw new RuntimeException('Current migration could not be verified.');
+    }
+    // Migration 034 (cancellation synchronization) likewise. An API older than 2.36.0 would release a stop while a
+    // cancellation request may still be acted on by the sales channel: refused while any operation is open.
+    $sync = $pdo->query("SELECT checksum FROM schema_migrations WHERE migration_name = '034_order_cancellation_sync.sql'")->fetchColumn();
+    if (is_string($sync) && (!isset($tables['order_cancellation_sync_operations']) || !hash_equals(hash_file('sha256', dirname(__DIR__) . '/database/migrations/034_order_cancellation_sync.sql'), $sync))) {
+        throw new RuntimeException('Current migration could not be verified.');
+    }
+    // Migrations 041 (SmartBill invoicing) and 042 (Confirmare connector readiness), API 2.45.0, likewise: optional,
+    // verified when recorded (a partial deployment that applied one of them must have applied the known file).
+    foreach (['041_smartbill_invoicing.sql' => ['employee_invoice_scopes', 'order_invoice_reads', 'order_invoice_actions', 'order_shop_assignments', 'order_invoice_qr_checks'],
+        '042_confirmare_connector_readiness.sql' => ['source_connector_readiness'],
+        '043_confirmare_dual_store.sql' => ['confirmare_proforma_cycles', 'confirmare_cycle_steps', 'confirmare_bank_checks', 'confirmare_reactivations', 'invoice_efactura_tasks', 'order_source_operations']] as $file => $owned) {
+        $recorded = $pdo->query('SELECT checksum FROM schema_migrations WHERE migration_name = ' . $pdo->quote($file))->fetchColumn();
+        if (is_string($recorded) && (array_diff($owned, array_keys($tables)) !== [] || !hash_equals(hash_file('sha256', dirname(__DIR__) . '/database/migrations/' . $file), $recorded))) {
+            throw new RuntimeException('Current migration could not be verified.');
+        }
+    }
+    // SmartBill invoicing (API 2.45.0; 041 is its first migration, so no older release reads these tables). Only
+    // unfinished work needs 2.45.0, because only 2.45.0 can finish it:
+    // - an invoice or proforma action still pending or unknown (only 2.45.0 reconciles it with the shop's stored answer;
+    //   an older API would leave it open while the shop could act again);
+    // - an order routed to a shop employee for its final invoice (active assignment) that is not invoiced yet;
+    // - an order with advance proforma work (proforma, its cancellation, the customer's acceptance of the total, an accepted
+    //   smaller advance) and no final invoice issued through Arasya yet: only 2.45.0 has those decisions, the money check
+    //   that depends on them and the final invoice route.
+    // Empty tables and finished history (invoiced orders, settled actions) do not: older releases ignore the tables, and
+    // the rows stay (no rollback deletes them). SmartBill documents themselves live in SmartBill and the shop.
+    $invoiceUnsettled = 0;
+    $invoiceRouted = 0;
+    $invoiceOpenWork = 0;
+    if (isset($tables['order_invoice_actions'], $tables['order_shop_assignments'])) {
+        $invoiceUnsettled = (int) $pdo->query("SELECT COUNT(*) FROM order_invoice_actions WHERE state IN ('pending', 'unknown')")->fetchColumn();
+        $notInvoiced = "NOT EXISTS (SELECT 1 FROM order_invoice_actions i WHERE i.order_uuid = %s AND i.action IN ('issue', 'reissue') AND i.state = 'applied' AND i.result = 'issued')";
+        $invoiceRouted = (int) $pdo->query("SELECT COUNT(*) FROM order_shop_assignments a WHERE a.state = 'active' AND " . sprintf($notInvoiced, 'a.order_uuid'))->fetchColumn();
+        $invoiceOpenWork = (int) $pdo->query("SELECT COUNT(DISTINCT p.order_uuid) FROM order_invoice_actions p WHERE p.action IN ('proforma_issue', 'proforma_cancel', 'proforma_resolve', 'total_accept', 'advance_accept') AND p.state = 'applied' AND "
+            . sprintf($notInvoiced, 'p.order_uuid'))->fetchColumn();
+    }
+    // Confirmare finance (API 2.41.0): an action still pending or unknown closes production for its order; only 2.42.0
+    // reads that in the production gate (ConfirmationClearance), so it needs 2.42.0 like any open Confirmare order.
+    $financeUnsettled = isset($tables['order_finance_actions']) ? (int) $pdo->query("SELECT COUNT(*) FROM order_finance_actions WHERE state IN ('pending', 'unknown')")->fetchColumn() : 0;
+    $syncOpen = isset($tables['order_cancellation_sync_operations'])
+        ? (int) $pdo->query('SELECT COUNT(*) FROM order_cancellation_sync_operations WHERE open_order_uuid IS NOT NULL')->fetchColumn() : 0;
+    $stoppedOpen = isset($tables['order_cancellation_controls'])
+        ? (int) $pdo->query("SELECT COUNT(*) FROM operational_orders WHERE cancellation_state = 'held' AND production_completed_at IS NULL")->fetchColumn() : 0;
     $state = [];
     $assistedOpen = isset($tables['production_assisted_checkpoints'])
         ? (int) $pdo->query('SELECT COUNT(DISTINCT c.order_uuid) FROM production_assisted_checkpoints c INNER JOIN operational_orders o ON o.order_uuid = c.order_uuid WHERE o.production_completed_at IS NULL')->fetchColumn() : 0;
@@ -56,9 +105,41 @@ try {
             EXISTS (SELECT 1 FROM production_document_revisions r WHERE r.order_uuid = o.order_uuid AND r.snapshot_schema >= 2)
             OR EXISTS (SELECT 1 FROM production_document_revision_requests q WHERE q.open_order_uuid = o.order_uuid AND q.snapshot_schema >= 2))',
     )->fetchColumn();
-    $floor = $schemaTwoOpen > 0 ? '2.34.2' : ($assistedOpen > 0 ? '2.34.0' : (array_sum($state) > 0 ? '2.32.0' : null));
+    // Confirmare (API 2.37.0 to 2.42.0): an API older than 2.37.0 ignores the cohort, so it would let an order waiting for
+    // its Confirmare decision (or for an operator resolution) start production. 2.37.x only checks the approval: the
+    // financial, contact and fingerprint clearance (2.38.0 to 2.41.0) and the first production document required before
+    // cutting (2.42.0) exist only in later releases. So every open Confirmare or undetermined order, approved or not, and
+    // any recorded activation (an older API would keep receiving that source's orders without the full rules) require
+    // 2.42.0.
+    $cohortClosed = 0;
+    $cohortOpen = 0;
+    $activations = isset($tables['workflow_cohort_activations']) ? (int) $pdo->query('SELECT COUNT(*) FROM workflow_cohort_activations')->fetchColumn() : 0;
+    if (isset($tables['order_confirmations'])) {
+        $cohortClosed = (int) $pdo->query(
+            "SELECT COUNT(*) FROM operational_orders o LEFT JOIN order_confirmations c ON c.order_uuid = o.order_uuid
+             WHERE o.workflow_cohort IN ('confirmare', 'undetermined') AND o.production_completed_at IS NULL
+               AND (o.workflow_cohort = 'undetermined' OR c.status IS NULL OR c.status <> 'approved')",
+        )->fetchColumn();
+        $cohortOpen = (int) $pdo->query(
+            "SELECT COUNT(*) FROM operational_orders WHERE workflow_cohort IN ('confirmare', 'undetermined') AND production_completed_at IS NULL",
+        )->fetchColumn();
+    }
+    // The dual-store workflow (API 2.46.0, migration 043): a running proforma timer, a worker step or a relayed operation
+    // still pending or unknown, a reactivation not settled, or an e-Factura task still open needs 2.46.0: an older API
+    // would neither finish them nor know that the order's proforma may be cancelled by a timer. Finished history does
+    // not (the rows stay; nothing is deleted by a rollback).
+    $dualOpen = 0;
+    if (isset($tables['confirmare_proforma_cycles'], $tables['confirmare_cycle_steps'], $tables['order_source_operations'], $tables['confirmare_reactivations'], $tables['invoice_efactura_tasks'])) {
+        $dualOpen = (int) $pdo->query("SELECT (SELECT COUNT(*) FROM confirmare_proforma_cycles WHERE active_order_uuid IS NOT NULL)
+            + (SELECT COUNT(*) FROM confirmare_cycle_steps WHERE state IN ('pending', 'unknown'))
+            + (SELECT COUNT(*) FROM order_source_operations WHERE state IN ('pending', 'unknown'))
+            + (SELECT COUNT(*) FROM confirmare_reactivations WHERE state IN ('pending', 'unknown'))
+            + (SELECT COUNT(*) FROM invoice_efactura_tasks WHERE state IN ('open', 'sent', 'rejected'))")->fetchColumn();
+    }
+    $floor = $dualOpen > 0 ? '2.46.0' : (($invoiceUnsettled > 0 || $invoiceRouted > 0 || $invoiceOpenWork > 0) ? '2.45.0' : (($cohortOpen > 0 || $activations > 0 || $financeUnsettled > 0) ? '2.42.0' : ($syncOpen > 0 ? '2.36.0' : ($stoppedOpen > 0 ? '2.35.0' : ($schemaTwoOpen > 0 ? '2.34.2' : ($assistedOpen > 0 ? '2.34.0' : (array_sum($state) > 0 ? '2.32.0' : null)))))));
     $safe = $floor === null || version_compare($argv[1], $floor, '>=');
-    fwrite(STDOUT, json_encode(['safe' => $safe, 'targetVersion' => $argv[1], 'requiredFloor' => $floor, 'state' => $state + ['openOrdersWithAssistedCheckpoints' => $assistedOpen, 'openOrdersWithTicketSchema2' => $schemaTwoOpen]], JSON_THROW_ON_ERROR) . "\n");
+    fwrite(STDOUT, json_encode(['safe' => $safe, 'targetVersion' => $argv[1], 'requiredFloor' => $floor, 'state' => $state + ['openOrdersWithAssistedCheckpoints' => $assistedOpen, 'openOrdersWithTicketSchema2' => $schemaTwoOpen, 'ordersAwaitingConfirmare' => $cohortClosed, 'openConfirmareOrders' => $cohortOpen, 'confirmareActivations' => $activations, 'openStoppedOrders' => $stoppedOpen, 'openCancellationSyncOperations' => $syncOpen,
+        'unsettledInvoiceActions' => $invoiceUnsettled, 'ordersRoutedForInvoice' => $invoiceRouted, 'ordersWithOpenProformaWork' => $invoiceOpenWork, 'unsettledFinanceActions' => $financeUnsettled, 'openDualStoreWork' => $dualOpen]], JSON_THROW_ON_ERROR) . "\n");
     exit($safe ? 0 : 3);
 } catch (Throwable) {
     fwrite(STDERR, "Rollback refused: current database state could not be verified.\n");

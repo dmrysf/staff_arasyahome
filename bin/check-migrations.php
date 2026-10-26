@@ -138,4 +138,78 @@ if (preg_match('/ON (DELETE|UPDATE) (CASCADE|SET NULL)|DROP |DELETE FROM|TRUNCAT
     || preg_match_all('/ALTER TABLE ([a-z_]+)/', $manifestStatements, $manifestAlters) !== 1 || $manifestAlters[1] !== ['production_tracks']) {
     throw new RuntimeException('Migration 029 must stay additive, re-runnable and must not grant roles.');
 }
+// Cancellation control (033): additive, grants nothing, never rewrites an order row; the only ALTER adds the two stop
+// projection columns to operational_orders; one control row per order and one audit row per source event and type.
+$cancellationSchema = (string) file_get_contents($root . '/database/migrations/033_order_cancellation_control.sql');
+foreach (['order_cancellation_controls', 'order_cancellation_events'] as $table) {
+    if (preg_match('/CREATE TABLE IF NOT EXISTS\s+' . $table . '\b/', $cancellationSchema) !== 1) {
+        throw new RuntimeException("Migration 033 is missing table: {$table}");
+    }
+}
+foreach (['PRIMARY KEY (order_uuid)', 'UNIQUE KEY uq_order_cancellation_events_source (order_uuid, event_type, source_event_ref)', 'CONSTRAINT chk_operational_orders_cancellation CHECK',
+    "CHECK (hold_status IN ('held', 'released'))", "('production.cancellation.manage'", "('production.cancellation.release'"] as $required) {
+    if (!str_contains($cancellationSchema, $required)) {
+        throw new RuntimeException("Cancellation control invariant is missing: {$required}");
+    }
+}
+$cancellationStatements = preg_replace(['/^--.*$/m', '/ON (UPDATE|DELETE) RESTRICT/', '/ON DUPLICATE KEY UPDATE/'], '', $cancellationSchema) ?? '';
+if (preg_match('/ON (DELETE|UPDATE) (CASCADE|SET NULL)|DROP |DELETE FROM|TRUNCATE|\bUPDATE |role_permissions|employee_role_assignments/i', $cancellationStatements) === 1
+    || preg_match_all('/ALTER TABLE ([a-z_]+)/', $cancellationStatements, $cancellationAlters) !== 1 || $cancellationAlters[1] !== ['operational_orders']) {
+    throw new RuntimeException('Migration 033 must stay additive and must not grant roles or rewrite rows.');
+}
+// Cancellation synchronization (034): additive, grants nothing, creates every provider flag disabled; the only ALTER adds
+// the stop generation to the control rows.
+$syncSchema = (string) file_get_contents($root . '/database/migrations/034_order_cancellation_sync.sql');
+foreach (['order_cancellation_sync_operations', 'order_cancellation_sync_attempts', 'order_cancellation_discrepancies'] as $table) {
+    if (preg_match('/CREATE TABLE IF NOT EXISTS\s+' . $table . '\b/', $syncSchema) !== 1) {
+        throw new RuntimeException("Migration 034 is missing table: {$table}");
+    }
+}
+foreach (['UNIQUE KEY uq_order_cancellation_sync_generation (order_uuid, hold_generation)', 'UNIQUE KEY uq_order_cancellation_sync_open (open_order_uuid)',
+    "('cancellation_sync_trendyol', 0,", "('cancellation_sync_trendhome', 0,", "('cancellation_sync_outletperdele', 0,", "('production.cancellation.sync'"] as $required) {
+    if (!str_contains($syncSchema, $required)) {
+        throw new RuntimeException("Migration 034 is missing: {$required}");
+    }
+}
+$syncStatements = preg_replace(['/^--.*$/m', '/ON (UPDATE|DELETE) RESTRICT/', '/ON DUPLICATE KEY UPDATE/'], '', $syncSchema) ?? '';
+if (preg_match('/ON (DELETE|UPDATE) (CASCADE|SET NULL)|DROP |DELETE FROM|TRUNCATE|\bUPDATE |role_permissions|employee_role_assignments|, 1, NULL/i', $syncStatements) === 1
+    || preg_match_all('/ALTER TABLE ([a-z_]+)/', $syncStatements, $syncAlters) !== 1 || $syncAlters[1] !== ['order_cancellation_controls']) {
+    throw new RuntimeException('Migration 034 must stay additive, create its flags disabled and must not grant roles or rewrite rows.');
+}
+// SmartBill invoicing (041, owner closure 2026-10-25; 040 stays reserved): five new tables only, nothing granted, no row
+// written or rewritten, no other table altered, no cascading key; running it again changes nothing.
+if (is_file($root . '/database/migrations/040_smartbill_invoicing.sql')) {
+    throw new RuntimeException('The SmartBill invoicing schema is migration 041; 040 is reserved.');
+}
+$invoiceSchema = (string) file_get_contents($root . '/database/migrations/041_smartbill_invoicing.sql');
+foreach (['employee_invoice_scopes', 'order_invoice_reads', 'order_invoice_actions', 'order_shop_assignments', 'order_invoice_qr_checks'] as $table) {
+    if (preg_match('/CREATE TABLE IF NOT EXISTS\s+' . $table . '\b/', $invoiceSchema) !== 1) {
+        throw new RuntimeException("Migration 041 is missing table: {$table}");
+    }
+}
+$invoiceStatements = preg_replace(['/^--.*$/m', '/ON (UPDATE|DELETE) RESTRICT/'], '', $invoiceSchema) ?? '';
+if (preg_match('/ON (DELETE|UPDATE) (CASCADE|SET NULL)|DROP |DELETE FROM|TRUNCATE|\bUPDATE |\bINSERT |ALTER TABLE|role_permissions|employee_role_assignments/i', $invoiceStatements) === 1
+    || preg_match_all('/CREATE TABLE IF NOT EXISTS/', $invoiceStatements) !== 5 || preg_match('/CREATE TABLE (?!IF NOT EXISTS)/', $invoiceStatements) === 1) {
+    throw new RuntimeException('Migration 041 must stay additive (five CREATE TABLE IF NOT EXISTS), grant nothing and write no row.');
+}
+// Confirmare connector readiness (042, API 2.45.0): one new table only, nothing granted, no row, no other table altered.
+$readinessSchema = (string) file_get_contents($root . '/database/migrations/042_confirmare_connector_readiness.sql');
+$readinessStatements = preg_replace(['/^--.*$/m', '/ON (UPDATE|DELETE) RESTRICT/'], '', $readinessSchema) ?? '';
+if (preg_match('/CREATE TABLE IF NOT EXISTS\s+source_connector_readiness\b/', $readinessSchema) !== 1
+    || preg_match('/ON (DELETE|UPDATE) (CASCADE|SET NULL)|DROP |DELETE FROM|TRUNCATE|\bUPDATE |\bINSERT |ALTER TABLE|role_permissions|employee_role_assignments/i', $readinessStatements) === 1
+    || preg_match_all('/CREATE TABLE IF NOT EXISTS/', $readinessStatements) !== 1 || preg_match('/CREATE TABLE (?!IF NOT EXISTS)/', $readinessStatements) === 1) {
+    throw new RuntimeException('Migration 042 must stay additive (one CREATE TABLE IF NOT EXISTS), grant nothing and write no row.');
+}
+// The dual-store operating workflow (043, API 2.46.0): six new tables only, nothing granted, no row, no other table altered.
+$dualSchema = (string) file_get_contents($root . '/database/migrations/043_confirmare_dual_store.sql');
+$dualStatements = preg_replace(['/^--.*$/m', '/ON (UPDATE|DELETE) RESTRICT/'], '', $dualSchema) ?? '';
+foreach (['confirmare_proforma_cycles', 'confirmare_cycle_steps', 'confirmare_bank_checks', 'confirmare_reactivations', 'invoice_efactura_tasks', 'order_source_operations'] as $table) {
+    if (preg_match('/CREATE TABLE IF NOT EXISTS\s+' . $table . '\b/', $dualSchema) !== 1) {
+        throw new RuntimeException("Migration 043 is missing table: {$table}");
+    }
+}
+if (preg_match('/ON (DELETE|UPDATE) (CASCADE|SET NULL)|DROP |DELETE FROM|TRUNCATE|\bUPDATE |\bINSERT |ALTER TABLE|role_permissions|employee_role_assignments/i', $dualStatements) === 1
+    || preg_match_all('/CREATE TABLE IF NOT EXISTS/', $dualStatements) !== 6 || preg_match('/CREATE TABLE (?!IF NOT EXISTS)/', $dualStatements) === 1) {
+    throw new RuntimeException('Migration 043 must stay additive (six CREATE TABLE IF NOT EXISTS), grant nothing and write no row.');
+}
 fwrite(STDOUT, 'Migration sanity checks passed for ' . count($files) . " file(s).\n");

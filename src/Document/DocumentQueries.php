@@ -64,7 +64,7 @@ final readonly class DocumentQueries
     {
         $statement = $this->pdo->prepare(
             'SELECT o.order_uuid, o.global_order_id, o.order_number, o.source_key, o.production_stage_id, o.production_completed_at, o.operational_status,
-                    o.document_status, o.document_version, o.production_owner_employee_uuid, ps.display_name AS stage_label, owner.display_name AS owner_name
+                    o.document_status, o.document_version, o.production_owner_employee_uuid, o.workflow_cohort, ps.display_name AS stage_label, owner.display_name AS owner_name
              FROM operational_orders o
              LEFT JOIN production_stages ps ON ps.stage_id = o.production_stage_id
              LEFT JOIN employees owner ON owner.employee_uuid = o.production_owner_employee_uuid
@@ -135,6 +135,8 @@ final readonly class DocumentQueries
             'latestRevisionNumber' => $list[0]['number'] ?? null,
             'request' => is_string($latestRequest) ? $this->requestDetail($latestRequest) : null,
             'revisions' => $list,
+            // API 2.42.0: every reprint of a Confirmare-cohort order needs a reason (DocumentService::recordPrint).
+            'reprintReasonRequired' => \Arasya\Operations\Production\WorkflowCohort::needsConfirmation($order['workflow_cohort'] === null ? null : (string) $order['workflow_cohort']),
         ];
         if ($withHistory) {
             $result += $this->history($orderUuid, $afterEvent);

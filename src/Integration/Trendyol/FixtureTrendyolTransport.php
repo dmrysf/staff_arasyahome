@@ -17,6 +17,39 @@ final readonly class FixtureTrendyolTransport implements TrendyolTransport
     {
     }
 
+    /**
+     * The unsupplied notice (test only). The fixture's "put" object scripts the answer: {"status": 200,
+     * "applyStatus": "Cancelled", "failAfterApply": false, "fail": false}. applyStatus changes the package as Trendyol
+     * would; failAfterApply then loses the answer (a timeout after acceptance); fail loses it without any change.
+     * Every call is appended to "putCalls" ({url, body}) so a test can count real write attempts.
+     */
+    public function put(string $url, array $headers, string $body): array
+    {
+        $fixture = json_decode((string) @file_get_contents($this->file), true);
+        if (!is_array($fixture)) {
+            throw new RuntimeException('TRENDYOL_REQUEST_FAILED');
+        }
+        $script = is_array($fixture['put'] ?? null) ? $fixture['put'] : ['status' => 200, 'applyStatus' => 'Cancelled'];
+        $fixture['putCalls'][] = ['url' => (string) parse_url($url, PHP_URL_PATH), 'body' => json_decode($body, true), 'storeFrontCode' => $headers['storeFrontCode'] ?? null];
+        if (($script['fail'] ?? false) === true) {
+            file_put_contents($this->file, json_encode($fixture, JSON_THROW_ON_ERROR));
+            throw new RuntimeException('TRENDYOL_REQUEST_FAILED');
+        }
+        if (isset($script['applyStatus']) && preg_match('#/shipment-packages/([0-9]+)/items/unsupplied$#', $url, $match) === 1) {
+            foreach ($fixture['packages'] ?? [] as $index => $package) {
+                if ((string) ($package['shipmentPackageId'] ?? '') === $match[1]) {
+                    $fixture['packages'][$index]['status'] = (string) $script['applyStatus'];
+                    $fixture['packages'][$index]['lastModifiedDate'] = (int) ($package['lastModifiedDate'] ?? 0) + 1000;
+                }
+            }
+        }
+        file_put_contents($this->file, json_encode($fixture, JSON_THROW_ON_ERROR));
+        if (($script['failAfterApply'] ?? false) === true) {
+            throw new RuntimeException('TRENDYOL_REQUEST_FAILED');
+        }
+        return ['status' => (int) ($script['status'] ?? 200), 'body' => (string) ($script['body'] ?? '')];
+    }
+
     public function get(string $url, array $headers): array
     {
         $fixture = json_decode((string) @file_get_contents($this->file), true);

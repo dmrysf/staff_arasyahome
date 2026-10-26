@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Arasya\Operations\Order;
 
 use Arasya\Operations\Audit\AuditLogger;
+use Arasya\Operations\Cancellation\ProductionStop;
 use Arasya\Operations\Employee\EmployeeIdentity;
 use Arasya\Operations\Employee\PdoEmployeeRepository;
 use Arasya\Operations\Cutting\CuttingLifecycle;
@@ -178,19 +179,24 @@ final readonly class OrderOperationsService
 
             $replay = $this->replay($employee->employeeUuid, $idempotencyKey, $operation, $orderUuid, $requestHash);
             if ($replay !== null) {
+                // A response committed before a production stop is replayed as committed, but never presents the
+                // manufacturing action as still allowed (ProductionStop::overlayOrder).
+                $stop = $this->currentStop($employee, $orderId, $orderUuid);
                 $this->pdo->rollBack();
                 // A stored response carries order details: it is replayed only while the employee still reaches the
                 // order's source.
                 if (!$employee->reachesSource((string) $locked['source_key'])) {
                     throw new ApiException(404, 'ORDER_NOT_FOUND', 'Order not found.');
                 }
-                return $replay;
+                return ProductionStop::overlayOrder($replay, $stop);
             }
 
             $order = $this->orders->findByGlobalId($employee->employeeUuid, $orderId->toString());
             if ($order === null || !$this->policy->canView($employee, $order)) {
                 throw new ApiException(404, 'ORDER_NOT_FOUND', 'Order not found.');
             }
+            // The shared cancellation guard, on the locked row: a stop committed while this request waited applies here.
+            ProductionStop::assertOpen($this->pdo, $orderUuid);
             if ($order->productionVersion !== $expectedVersion) {
                 throw new ApiException(409, 'ORDER_CHANGED', 'The order changed. Reload it before continuing.');
             }
@@ -266,12 +272,19 @@ final readonly class OrderOperationsService
 
             $replay = $this->replay($employee->employeeUuid, $idempotencyKey, self::OPERATION_CLAIM, $orderUuid, $requestHash);
             if ($replay !== null) {
+                $stop = $this->currentStop($employee, $orderId, $orderUuid);
                 $this->pdo->rollBack();
+                if ($stop !== null && isset($replay['order']) && is_array($replay['order'])) {
+                    $replay['order'] = ProductionStop::overlayOrder($replay['order'], $stop);
+                }
                 return $replay;
             }
 
             $order = $this->orders->findByGlobalId($employee->employeeUuid, $orderId->toString()) ?? throw new ApiException(404, 'ORDER_NOT_FOUND', 'Order not found.');
             $decision = $this->policy->evaluateCuttingIntake($employee, $order, $workflow);
+            if ($decision['action'] !== null) {
+                ProductionStop::assertOpen($this->pdo, $orderUuid);
+            }
             if ($decision['action'] === null) throw $this->intakeBlocked((string) $decision['blockedReason'], $order);
             $now = $this->clock->now()->format('Y-m-d H:i:s.u');
             if ($decision['action'] === OrderAccessPolicy::ACTION_ALREADY_MINE) {
@@ -326,7 +339,7 @@ final readonly class OrderOperationsService
         $update = $this->pdo->prepare(
             "UPDATE operational_orders
              SET production_stage_id = ?, production_changed_at = ?, production_version = production_version + 1, version = version + 1, updated_at = ?
-             WHERE order_uuid = ? AND production_version = ? AND production_stage_id = ? AND production_owner_employee_uuid IS NULL AND production_completed_at IS NULL AND open_exception_uuid IS NULL AND document_status IN ('none', 'active')",
+             WHERE order_uuid = ? AND production_version = ? AND production_stage_id = ? AND production_owner_employee_uuid IS NULL AND production_completed_at IS NULL AND open_exception_uuid IS NULL AND document_status IN ('none', 'active') AND production_stopped_at IS NULL",
         );
         $update->execute([$to->id, $now, $now, $order->orderUuid, $version, $from->id]);
         if ($update->rowCount() !== 1) {
@@ -363,7 +376,7 @@ final readonly class OrderOperationsService
             "UPDATE operational_orders
              SET production_owner_employee_uuid = ?, production_claimed_at = ?, production_authority = 'operations',
                  production_version = production_version + 1, version = version + 1, updated_at = ?
-             WHERE order_uuid = ? AND production_version = ? AND production_owner_employee_uuid IS NULL AND production_completed_at IS NULL AND open_exception_uuid IS NULL AND document_status IN ('none', 'active')",
+             WHERE order_uuid = ? AND production_version = ? AND production_owner_employee_uuid IS NULL AND production_completed_at IS NULL AND open_exception_uuid IS NULL AND document_status IN ('none', 'active') AND production_stopped_at IS NULL",
         );
         $update->execute([$employee->employeeUuid, $now, $now, $order->orderUuid, $expectedVersion]);
         if ($update->rowCount() !== 1) {
@@ -406,7 +419,7 @@ final readonly class OrderOperationsService
                 'UPDATE operational_orders
                  SET production_completed_at = ?, production_owner_employee_uuid = NULL, production_claimed_at = NULL, production_changed_at = ?,
                      production_version = production_version + 1, version = version + 1, updated_at = ?
-                 WHERE order_uuid = ? AND production_version = ? AND production_owner_employee_uuid = ? AND production_stage_id = ? AND production_completed_at IS NULL AND open_exception_uuid IS NULL AND document_status IN (\'none\', \'active\')',
+                 WHERE order_uuid = ? AND production_version = ? AND production_owner_employee_uuid = ? AND production_stage_id = ? AND production_completed_at IS NULL AND open_exception_uuid IS NULL AND document_status IN (\'none\', \'active\') AND production_stopped_at IS NULL',
             );
             $update->execute([$now, $now, $now, $order->orderUuid, $expectedVersion, $employee->employeeUuid, $current->id]);
             $relation = 'completed';
@@ -416,7 +429,7 @@ final readonly class OrderOperationsService
                 'UPDATE operational_orders
                  SET production_stage_id = ?, production_owner_employee_uuid = NULL, production_claimed_at = NULL, production_changed_at = ?,
                      production_version = production_version + 1, version = version + 1, updated_at = ?
-                 WHERE order_uuid = ? AND production_version = ? AND production_owner_employee_uuid = ? AND production_stage_id = ? AND production_completed_at IS NULL AND open_exception_uuid IS NULL AND document_status IN (\'none\', \'active\')',
+                 WHERE order_uuid = ? AND production_version = ? AND production_owner_employee_uuid = ? AND production_stage_id = ? AND production_completed_at IS NULL AND open_exception_uuid IS NULL AND document_status IN (\'none\', \'active\') AND production_stopped_at IS NULL',
             );
             $update->execute([$next->id, $now, $now, $order->orderUuid, $expectedVersion, $employee->employeeUuid, $current->id]);
             $relation = 'handover_out';
@@ -554,13 +567,26 @@ final readonly class OrderOperationsService
         return $this->serializer->serializeOrder($order, $this->policy->evaluate($employee, $order, $workflow), $this->quality?->orderQuality($order->orderUuid, $order->openExceptionUuid, $employee->employeeUuid), $this->documents?->summary($order->orderUuid), $pieces);
     }
 
+    /** The current Staff stop view of the locked order, or null when production is not stopped. @return array<string, mixed>|null */
+    private function currentStop(EmployeeIdentity $employee, GlobalOrderId $orderId, string $orderUuid): ?array
+    {
+        if (!ProductionStop::isStopped($this->pdo, $orderUuid)) {
+            return null;
+        }
+        return $this->orders->findByGlobalId($employee->employeeUuid, $orderId->toString())?->productionStop
+            ?? ['state' => 'stopped', 'canContinue' => false, 'managementAttention' => true];
+    }
+
     private function blocked(string $reason, string $operation, ?OperationalOrder $order = null): ApiException
     {
         return match ($reason) {
+            \Arasya\Operations\Production\ConfirmationGate::BLOCKED_REASON => \Arasya\Operations\Production\ConfirmationGate::closed($order?->workflowCohort),
+            \Arasya\Operations\Production\ConfirmationGate::DOCUMENT_BLOCKED_REASON => \Arasya\Operations\Production\ConfirmationGate::documentRequired(),
             \Arasya\Operations\Production\PaymentGate::BLOCKED_REASON => \Arasya\Operations\Production\PaymentGate::closed(
                 \Arasya\Operations\Production\PaymentGate::state($order?->paymentMethod, $order?->advanceStatus),
             ),
             'claimed_by_other' => new ApiException(409, 'ORDER_ALREADY_CLAIMED', 'Another employee is working on this order.'),
+            ProductionStop::BLOCKED_REASON => ProductionStop::blocked(),
             OrderAccessPolicy::BLOCKED_AUTHORITY_SOURCE => new ApiException(409, 'PRODUCTION_AUTHORITY_SOURCE', 'Production of this order is still managed by its source. A manager must take it over first.'),
             'order_unavailable' => new ApiException(409, 'ORDER_UNAVAILABLE', 'The order is not available for production.'),
             'production_completed' => new ApiException(409, 'INVALID_STAGE_TRANSITION', 'Production is already completed.'),

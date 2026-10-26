@@ -38,6 +38,10 @@ use Throwable;
  *   history               lineage, labels, per-piece stage ledger, custody and material of one piece (audit)
  *   route evidence        verified historical evidence for the stages of a piece before its ledger started (030)
  *
+ * Production stop (API 2.35.0): plan confirmation authorizes manufacturing and is refused while the order is stopped.
+ * Custody, location, reunion, material and route-evidence records describe physical facts and history; they stay
+ * possible on a stopped order and never move it.
+ *
  * Every command runs in one transaction that locks the order row first, then the employee row, re-reads the employee's
  * authority, replays a committed result for the same idempotency key, checks the expected version and writes the
  * audit rows before commit.
@@ -90,6 +94,8 @@ final readonly class PieceOperationsService
             if ($order['production_completed_at'] !== null) {
                 throw new ApiException(409, 'PRODUCTION_COMPLETED', 'Producția este deja finalizată.');
             }
+            // API 2.35.0: a confirmed plan authorizes manufacturing of its pieces; never while production is stopped.
+            \Arasya\Operations\Cancellation\ProductionStop::assertOpen($this->pdo, (string) $order['order_uuid']);
             // While an order-level quality exception is open, the order may sit at the supervisor's stage instead of its
             // real progress. Pieces materialized then would start their ledger at that stage, and stages the order already
             // passed could never be verified. Confirm once the order is back at its stage (receipt confirmed).

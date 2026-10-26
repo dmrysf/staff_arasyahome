@@ -97,7 +97,11 @@ final class Container
     private readonly SystemClock $clock;
     private readonly AuthenticationService $authentication;
 
-    public function __construct(?Config $config = null, ?PDO $pdo = null)
+    /**
+     * @param \Arasya\Operations\Integration\SourceAccess\SourceAccessTransport|null $sourceAccessTransport test stand-in for the
+     *        shop; production always uses StreamSourceAccessTransport (loopback test shops only outside production)
+     */
+    public function __construct(?Config $config = null, ?PDO $pdo = null, private readonly ?\Arasya\Operations\Integration\SourceAccess\SourceAccessTransport $sourceAccessTransport = null)
     {
         $this->config = $config ?? Config::fromEnvironment();
         $this->pdo = $pdo ?? Connection::create($this->config);
@@ -119,6 +123,131 @@ final class Container
             $this->clock,
             $this->config->sessionTtlSeconds,
             $this->config->sessionTouchIntervalSeconds,
+        );
+    }
+
+    /** Confirmare operations (API 2.38.0): pool, distribution, decisions. Also used by bin/confirmare-distribute.php. */
+    public function confirmareService(?AuthorizationService $authorization = null): \Arasya\Operations\Confirmare\ConfirmareService
+    {
+        return new \Arasya\Operations\Confirmare\ConfirmareService($this->pdo, $authorization ?? new AuthorizationService(), new \Arasya\Operations\Confirmare\ConfirmareScopePolicy($this->pdo), $this->clock, \Arasya\Operations\Integration\SourceAccess\SourceAccessRegistry::fromConfig($this->config), $this->authorityModes());
+    }
+
+    /** Confirmare source access (API 2.40.0): the shop's own view of one order for its operator, signed, audited. */
+    public function confirmareSourceAccess(?AuthorizationService $authorization = null): \Arasya\Operations\Confirmare\ConfirmareSourceAccess
+    {
+        $transport = $this->sourceAccessTransport ?? new \Arasya\Operations\Integration\SourceAccess\StreamSourceAccessTransport(allowLoopback: !$this->config->isProduction());
+        return new \Arasya\Operations\Confirmare\ConfirmareSourceAccess(
+            $this->pdo,
+            $authorization ?? new AuthorizationService(),
+            new \Arasya\Operations\Confirmare\ConfirmareScopePolicy($this->pdo),
+            \Arasya\Operations\Integration\SourceAccess\SourceAccessRegistry::fromConfig($this->config),
+            new \Arasya\Operations\Integration\SourceAccess\SourceAccessClient($transport, $this->clock),
+            new PdoApiRateLimiter($this->pdo, $this->clock, $this->config->appSecret),
+            $this->clock,
+        );
+    }
+
+    /** Confirmare finance (API 2.41.0, Phase 5): the shop's money record of an order, two-person decisions, no amounts kept. */
+    /** SmartBill invoicing of Confirmare orders (API 2.43.0). */
+    public function confirmareInvoice(?AuthorizationService $authorization = null): \Arasya\Operations\Confirmare\ConfirmareInvoice
+    {
+        $transport = $this->sourceAccessTransport ?? new \Arasya\Operations\Integration\SourceAccess\StreamSourceAccessTransport(allowLoopback: !$this->config->isProduction());
+        return new \Arasya\Operations\Confirmare\ConfirmareInvoice(
+            $this->pdo,
+            $authorization ?? new AuthorizationService(),
+            new \Arasya\Operations\Confirmare\InvoiceScopePolicy($this->pdo),
+            new \Arasya\Operations\Confirmare\FinanceScopePolicy($this->pdo),
+            new \Arasya\Operations\Document\DocumentScopePolicy($this->pdo),
+            \Arasya\Operations\Integration\SourceAccess\SourceAccessRegistry::fromConfig($this->config),
+            new \Arasya\Operations\Integration\SourceAccess\SourceAccessClient($transport, $this->clock),
+            new PdoApiRateLimiter($this->pdo, $this->clock, $this->config->appSecret),
+            $this->clock,
+            hash_hmac('sha256', 'confirmare-invoice-request', $this->config->appSecret),
+            $this->authorityModes(),
+            new \Arasya\Operations\Confirmare\ConfirmareScopePolicy($this->pdo),
+            $this->confirmareCycles(),
+            new \Arasya\Operations\Confirmare\InvoiceEfactura($this->pdo, $this->clock, new \Arasya\Operations\Confirmare\InvoiceScopePolicy($this->pdo)),
+        );
+    }
+
+    /** Reactivation, FAN Courier AWB and NETOPIA card refund relayed to the shop (API 2.46.0). */
+    public function confirmareOperations(?AuthorizationService $authorization = null): \Arasya\Operations\Confirmare\ConfirmareOperations
+    {
+        $transport = $this->sourceAccessTransport ?? new \Arasya\Operations\Integration\SourceAccess\StreamSourceAccessTransport(allowLoopback: !$this->config->isProduction());
+        return new \Arasya\Operations\Confirmare\ConfirmareOperations(
+            $this->pdo,
+            $this->clock,
+            \Arasya\Operations\Integration\SourceAccess\SourceAccessRegistry::fromConfig($this->config),
+            new \Arasya\Operations\Integration\SourceAccess\SourceAccessClient($transport, $this->clock),
+            new \Arasya\Operations\Confirmare\ConfirmareScopePolicy($this->pdo),
+            new \Arasya\Operations\Confirmare\FinanceScopePolicy($this->pdo),
+            new \Arasya\Operations\Confirmare\InvoiceScopePolicy($this->pdo),
+            new \Arasya\Operations\Document\DocumentScopePolicy($this->pdo),
+            $this->confirmareService($authorization),
+            hash_hmac('sha256', 'confirmare-operation-request', $this->config->appSecret),
+        );
+    }
+
+    /** The Confirmare operating cycle (API 2.46.0): calls, the proforma timer, bank checks; also bin/confirmare-cycles.php. */
+    public function confirmareCycles(): \Arasya\Operations\Confirmare\ConfirmareCycles
+    {
+        $transport = $this->sourceAccessTransport ?? new \Arasya\Operations\Integration\SourceAccess\StreamSourceAccessTransport(allowLoopback: !$this->config->isProduction());
+        return new \Arasya\Operations\Confirmare\ConfirmareCycles(
+            $this->pdo,
+            $this->clock,
+            \Arasya\Operations\Integration\SourceAccess\SourceAccessRegistry::fromConfig($this->config),
+            new \Arasya\Operations\Integration\SourceAccess\SourceAccessClient($transport, $this->clock),
+            new \Arasya\Operations\Confirmare\ConfirmareScopePolicy($this->pdo),
+            new \Arasya\Operations\Confirmare\FinanceScopePolicy($this->pdo),
+            new \Arasya\Operations\Confirmare\InvoiceScopePolicy($this->pdo),
+            $this->cancellationSyncService(),
+        );
+    }
+
+    /** The shop's bank transfers that match no order (API 2.44.0, YD SOFT 2.18.0). */
+    public function financeTransferExceptions(?AuthorizationService $authorization = null): \Arasya\Operations\Confirmare\FinanceTransferExceptions
+    {
+        $transport = $this->sourceAccessTransport ?? new \Arasya\Operations\Integration\SourceAccess\StreamSourceAccessTransport(allowLoopback: !$this->config->isProduction());
+        return new \Arasya\Operations\Confirmare\FinanceTransferExceptions(
+            $this->pdo,
+            $authorization ?? new AuthorizationService(),
+            new \Arasya\Operations\Confirmare\FinanceScopePolicy($this->pdo),
+            \Arasya\Operations\Integration\SourceAccess\SourceAccessRegistry::fromConfig($this->config),
+            new \Arasya\Operations\Integration\SourceAccess\SourceAccessClient($transport, $this->clock),
+            new PdoApiRateLimiter($this->pdo, $this->clock, $this->config->appSecret),
+            $this->audit,
+            $this->clock,
+        );
+    }
+
+    public function confirmareFinance(?AuthorizationService $authorization = null): \Arasya\Operations\Confirmare\ConfirmareFinance
+    {
+        $transport = $this->sourceAccessTransport ?? new \Arasya\Operations\Integration\SourceAccess\StreamSourceAccessTransport(allowLoopback: !$this->config->isProduction());
+        return new \Arasya\Operations\Confirmare\ConfirmareFinance(
+            $this->pdo,
+            $authorization ?? new AuthorizationService(),
+            new \Arasya\Operations\Confirmare\FinanceScopePolicy($this->pdo),
+            new \Arasya\Operations\Confirmare\ConfirmareScopePolicy($this->pdo),
+            \Arasya\Operations\Integration\SourceAccess\SourceAccessRegistry::fromConfig($this->config),
+            new \Arasya\Operations\Integration\SourceAccess\SourceAccessClient($transport, $this->clock),
+            new PdoApiRateLimiter($this->pdo, $this->clock, $this->config->appSecret),
+            $this->clock,
+            // Request HMACs of the finance audit (an amount is low-entropy: a plain hash would reveal it).
+            hash_hmac('sha256', 'confirmare-finance-request', $this->config->appSecret),
+        );
+    }
+
+    /** Confirmare controlled shop edits (API 2.40.0, Phase 4B): preview and apply through the shop's own pricing. */
+    public function confirmareSourceEdits(?AuthorizationService $authorization = null): \Arasya\Operations\Confirmare\ConfirmareSourceEdits
+    {
+        $transport = $this->sourceAccessTransport ?? new \Arasya\Operations\Integration\SourceAccess\StreamSourceAccessTransport(allowLoopback: !$this->config->isProduction());
+        return new \Arasya\Operations\Confirmare\ConfirmareSourceEdits(
+            $this->pdo,
+            $this->confirmareSourceAccess($authorization),
+            \Arasya\Operations\Integration\SourceAccess\SourceAccessRegistry::fromConfig($this->config),
+            new \Arasya\Operations\Integration\SourceAccess\SourceAccessClient($transport, $this->clock),
+            new PdoApiRateLimiter($this->pdo, $this->clock, $this->config->appSecret),
+            $this->clock,
         );
     }
 
@@ -148,7 +277,7 @@ final class Container
         $documents = $this->documentService($authorization, $revisionApprovers, $documentQueries, $live, $idempotency, $iamAudit);
         $tracks = new \Arasya\Operations\Production\ReworkTrackService($this->pdo, $workflows, $authorization, $this->clock, $live, $authorityModes);
         return new ApiKernel(
-            new AuthController($this->authentication, $csrf, new CookiePolicy($this->config), $this->config, $authorization, $context),
+            new AuthController($this->authentication, $csrf, new CookiePolicy($this->config), $this->config, $authorization, $context, new \Arasya\Operations\Confirmare\ConfirmareScopePolicy($this->pdo), new \Arasya\Operations\Confirmare\FinanceScopePolicy($this->pdo), new \Arasya\Operations\Confirmare\InvoiceScopePolicy($this->pdo)),
             new HealthController($this->pdo, $this->clock),
             new CorsPolicy($this->config->allowedOrigins),
             new StructuredLogger(),
@@ -174,7 +303,7 @@ final class Container
                 $tracks,
             ),
             new ActivityController(new PdoActivityRepository($this->pdo), $this->authentication, $authorization, $this->config, $context, $this->clock),
-            new SourceIngestionController(new SourceSignatureVerifier($this->config->sourceSecrets), $this->projectionWriter(), $rateLimiter, $this->clock, SourceRegistry::fromConfig($this->config), new \Arasya\Operations\Integration\SourceAuthorityQueries($this->pdo), $this->productionQrService($authorization, $iamAudit), $this->documentService($authorization, audit: $iamAudit), new \Arasya\Operations\Document\DocumentRenderer($this->pdo), new \Arasya\Operations\Integration\SourceTrackingQueries($this->pdo)),
+            new SourceIngestionController(new SourceSignatureVerifier($this->config->sourceSecrets), $this->projectionWriter(), $rateLimiter, $this->clock, SourceRegistry::fromConfig($this->config), new \Arasya\Operations\Integration\SourceAuthorityQueries($this->pdo), $this->productionQrService($authorization, $iamAudit), $this->documentService($authorization, audit: $iamAudit), new \Arasya\Operations\Document\DocumentRenderer($this->pdo), new \Arasya\Operations\Integration\SourceTrackingQueries($this->pdo), $this->cancellationSyncService($authorization, $idempotency)),
             new ManagementController(
                 new ManagementService($this->pdo, $authorization, new IamAuditLogger($this->pdo), $this->passwords, $this->usernames, $this->clock, HealthController::VERSION),
                 $this->authentication,
@@ -193,6 +322,9 @@ final class Container
                 $analyticsPolicy,
                 $revisionApprovers,
                 $documentScopes,
+                new \Arasya\Operations\Cancellation\CancellationService($this->pdo, $authorization, $idempotency, $this->clock, $this->cancellationSyncService($authorization, $idempotency)),
+                $this->cancellationSyncService($authorization, $idempotency),
+                new \Arasya\Operations\Cancellation\Sync\CancellationReconciler($this->pdo, $this->clock, $this->cancellationProviders()),
             ),
             new CompanyController(
                 new CompanyQueries($this->pdo, $authorization),
@@ -233,6 +365,23 @@ final class Container
             ),
             new \Arasya\Operations\Production\PieceController(
                 new \Arasya\Operations\Production\PieceOperationsService($this->pdo, $authorization, $approvers, $idempotency, $this->clock, $workflows),
+                $this->authentication,
+                $csrf,
+                $this->config,
+                $context,
+            ),
+            new \Arasya\Operations\Confirmare\ConfirmareController(
+                $this->confirmareService($authorization),
+                $this->confirmareSourceAccess($authorization),
+                $this->confirmareSourceEdits($authorization),
+                $this->confirmareFinance($authorization),
+                $this->confirmareInvoice($authorization),
+                $this->financeTransferExceptions($authorization),
+                $this->confirmareCycles(),
+                $this->confirmareOperations($authorization),
+                new \Arasya\Operations\Confirmare\InvoiceEfactura($this->pdo, $this->clock, new \Arasya\Operations\Confirmare\InvoiceScopePolicy($this->pdo)),
+                new \Arasya\Operations\Confirmare\ConfirmareHealth($this->pdo, $this->clock, new \Arasya\Operations\Confirmare\ConfirmareScopePolicy($this->pdo),
+                    new \Arasya\Operations\Confirmare\InvoiceScopePolicy($this->pdo), new \Arasya\Operations\Confirmare\FinanceScopePolicy($this->pdo)),
                 $this->authentication,
                 $csrf,
                 $this->config,
@@ -349,6 +498,44 @@ final class Container
             );
         }
         return $this->config->trendyol === null ? null : new TrendyolClient($this->config->trendyol, new StreamTrendyolTransport());
+    }
+
+    /**
+     * Outbound cancellation providers (API 2.36.0). The Trendyol provider exists only with credentials and a storefront
+     * code (a test fixture outside production stands in for both); without them Trendyol is a manual provider. Nothing
+     * is sent unless ARASYA_CANCELLATION_SYNC=enabled and the provider's database flag is enabled as well.
+     */
+    public function cancellationProviders(): \Arasya\Operations\Cancellation\Sync\ProviderRegistry
+    {
+        $trendyol = null;
+        if ($this->config->trendyolFixtureFile !== null) {
+            $transport = new \Arasya\Operations\Integration\Trendyol\FixtureTrendyolTransport($this->config->trendyolFixtureFile);
+            $credentials = \Arasya\Operations\Config\TrendyolCredentials::fromValues('1000001', 'fixture', 'fixture', '') ?? throw new \LogicException('fixture credentials');
+            $trendyol = new \Arasya\Operations\Cancellation\Sync\TrendyolCancellationProvider(new TrendyolClient($credentials, $transport),
+                new \Arasya\Operations\Integration\Trendyol\TrendyolCancellationApi($credentials, $transport, $this->config->trendyolStoreFrontCode ?? 'RO'));
+        } elseif ($this->config->trendyol !== null && $this->config->trendyolStoreFrontCode !== null) {
+            $transport = new StreamTrendyolTransport();
+            $trendyol = new \Arasya\Operations\Cancellation\Sync\TrendyolCancellationProvider(new TrendyolClient($this->config->trendyol, $transport),
+                new \Arasya\Operations\Integration\Trendyol\TrendyolCancellationApi($this->config->trendyol, $transport, $this->config->trendyolStoreFrontCode));
+        }
+        return new \Arasya\Operations\Cancellation\Sync\ProviderRegistry($this->pdo, $this->config, $trendyol);
+    }
+
+    public function cancellationSyncService(?AuthorizationService $authorization = null, ?IdempotencyStore $idempotency = null): \Arasya\Operations\Cancellation\Sync\CancellationSyncService
+    {
+        return new \Arasya\Operations\Cancellation\Sync\CancellationSyncService($this->pdo, $authorization ?? new AuthorizationService(),
+            $idempotency ?? new IdempotencyStore($this->pdo), $this->clock, $this->cancellationProviders());
+    }
+
+    /** The outbound cancellation worker (operator CLI / cron); it contacts nothing while the gates are closed. */
+    public function cancellationSyncWorker(): \Arasya\Operations\Cancellation\Sync\CancellationSyncWorker
+    {
+        return new \Arasya\Operations\Cancellation\Sync\CancellationSyncWorker($this->pdo, $this->clock, $this->cancellationProviders());
+    }
+
+    public function cancellationReconciler(): \Arasya\Operations\Cancellation\Sync\CancellationReconciler
+    {
+        return new \Arasya\Operations\Cancellation\Sync\CancellationReconciler($this->pdo, $this->clock, $this->cancellationProviders());
     }
 
     /** The explicit Trendyol intake activation control (operator CLI). */
