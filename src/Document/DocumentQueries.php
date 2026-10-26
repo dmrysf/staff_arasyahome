@@ -279,7 +279,9 @@ final readonly class DocumentQueries
     /**
      * Requester worklist: orders whose document needs attention (stale or revoked) and approved requests
      * waiting for generation, limited to the given order sources (null: every source). Bounded and served
-     * by the document status index.
+     * by the document status index. API 2.46.1: only orders a document can still be made for (the rule of
+     * DocumentService::assertOpenOrder): a completed or unavailable (cancelled) order is no work, and its rows
+     * stay exactly as they are.
      *
      * @param list<string>|null $sources
      * @return list<array<string, mixed>>
@@ -295,7 +297,7 @@ final readonly class DocumentQueries
              LEFT JOIN production_document_revisions r ON r.revision_uuid = o.active_document_revision_uuid
              LEFT JOIN production_document_revision_requests q ON q.open_order_uuid = o.order_uuid
              LEFT JOIN employees req ON req.employee_uuid = q.requested_by_employee_uuid
-             WHERE o.document_status IN ('stale', 'revoked') AND {$scope}
+             WHERE o.document_status IN ('stale', 'revoked') AND o.production_completed_at IS NULL AND o.operational_status <> 'unavailable' AND {$scope}
              ORDER BY o.updated_at DESC, o.order_uuid DESC LIMIT " . self::QUEUE_LIMIT,
         );
         $statement->execute($parameters);
