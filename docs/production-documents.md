@@ -265,7 +265,7 @@ Nothing commits in between, so an old and a new QR can never both act for produc
 | GET | `/production-documents/orders/{globalOrderId}` | Document users, approvers, root |
 | POST | `…/generate`, `…/print`, `…/revision-requests` | Generate, reprint or request permission |
 | POST | `…/revoke` | Root |
-| GET | `/production-documents/attention`, `/production-documents/lookup?number=` | Requesters |
+| GET | `/production-documents/attention`, `/production-documents/lookup?number=` | Requesters (API 2.46.1: the worklist lists only orders a document can still be made for; a completed or cancelled order is left out and keeps its rows) |
 | GET | `/production-documents/revision-requests?view=pending\|history`, `…/{id}` | Approvers (requesters: their own request) |
 | POST | `…/revision-requests/{id}/decision`, `…/cancel` | Approver; requester or root |
 | POST | `/b2b/orders/{id}/production-sheet.pdf` | B2B production view (submitters generate revision 1 if missing) |

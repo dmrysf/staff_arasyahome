@@ -287,7 +287,7 @@ final class ConfirmareCycles
         if (preg_match('/^[A-Za-z0-9][A-Za-z0-9_-]{15,99}$/D', $key) !== 1) {
             throw new ApiException(400, 'INVALID_IDEMPOTENCY_KEY', 'A valid Idempotency-Key header is required.');
         }
-        if (!is_string($source) || $this->registry->find($source) === null) {
+        if (!is_string($source) || !in_array($source, ['trendhome', 'outletperdele'], true)) {
             throw new ApiException(400, 'UNKNOWN_SOURCE', 'source must be trendhome or outletperdele.');
         }
         if (array_diff(array_keys($input), ['source', 'coversUntil']) !== []) {
@@ -295,6 +295,11 @@ final class ConfirmareCycles
         }
         if (!$this->financeRecorder($actor, $source)) {
             throw new ApiException(403, 'CONFIRMARE_FINANCE_DENIED', 'Only a finance employee of this shop records the bank check.');
+        }
+        // API 2.46.1: a bank check is a finance declaration of the shop. While finance is switched off for the shop (no
+        // source access, or finance not `record`) it is refused before anything is written, and nobody is offered it.
+        if (!$this->financeRecordEnabled($source)) {
+            throw new ApiException(409, 'CONFIRMARE_FINANCE_DISABLED', 'Finance actions are not enabled for this shop.');
         }
         $now = $this->clock->now()->setTimezone(new DateTimeZone('UTC'));
         $covers = $now;
@@ -343,7 +348,7 @@ final class ConfirmareCycles
             'items' => array_map(fn (array $row): array => $this->presentCheck($row), $checks->fetchAll(PDO::FETCH_ASSOC)),
             'waiting' => array_map('intval', $waiting->fetchAll(PDO::FETCH_KEY_PAIR)),
             'sources' => $sources,
-            'canRecord' => array_values(array_filter($sources, fn (string $s): bool => $this->financeRecorder($actor, $s))),
+            'canRecord' => array_values(array_filter($sources, fn (string $s): bool => $this->financeRecorder($actor, $s) && $this->financeRecordEnabled($s))),
         ];
     }
 
@@ -1053,6 +1058,11 @@ final class ConfirmareCycles
     {
         return !$actor->isRoot && $actor->isOperationallyActive() && !$actor->mustChangePassword && $actor->hasApplication('staff')
             && ($this->finance->allows($actor, FinanceScopePolicy::RECORD, $source) || $this->finance->allows($actor, FinanceScopePolicy::APPROVE, $source));
+    }
+
+    private function financeRecordEnabled(string $source): bool
+    {
+        return $this->registry->find($source)?->allowsFinanceRecord() === true;
     }
 
     private function financeViewer(EmployeeIdentity $actor, string $source): bool
