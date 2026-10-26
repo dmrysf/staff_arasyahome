@@ -195,6 +195,15 @@ export function refusalLabel(reason: string | undefined): string {
   return t(`cf.fin.refusal.${reason && (REFUSALS as readonly string[]).includes(reason) ? reason : "other"}` as MessageKey);
 }
 
+/**
+ * Why the shop's register of unmatched transfers is not shown (Staff 2.36.1). `not_configured` is the server's answer
+ * while finance is switched off for the shop (it never calls the shop then): that is the expected state before the
+ * activation, not a fault. Any other reason is a read that failed now.
+ */
+export function exceptionUnavailableKey(reason: string): MessageKey {
+  return reason === "not_configured" ? "cf.fin.exc.notConfigured" : "cf.fin.exc.unavailable";
+}
+
 /** The Confirmare finance error a response carried (backend code), or null. */
 export function financeErrorKey(backendCode: string | undefined): MessageKey | null {
   const known = ["CONFIRMARE_FINANCE_DENIED", "CONFIRMARE_FINANCE_SAME_EMPLOYEE", "CONFIRMARE_FINANCE_DISABLED", "CONFIRMARE_FINANCE_INVALID", "CONFIRMARE_FINANCE_ACTION_PENDING", "CONFIRMARE_FINANCE_REFUND_NOT_ELIGIBLE", "CONFIRMARE_FINANCE_ACTION_NOT_FOUND", "CONFIRMARE_SOURCE_UNAVAILABLE", "CONFIRMARE_AUDIT_UNAVAILABLE", "IDEMPOTENCY_CONFLICT", "CONFIRMARE_NOT_FOUND"];
