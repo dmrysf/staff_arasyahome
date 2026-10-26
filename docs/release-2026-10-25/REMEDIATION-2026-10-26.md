@@ -13,6 +13,12 @@ Release: API 2.47.0, Staff 2.37.0, YD SOFT 2.21.0 (no migration; 41 applied, unc
 | `wp yd-arasya invoice proforma-bank` | set: company `RO42340172__subsidiary_1`, SMART, ARS, ING BANK NV, IBAN RO79…2089, BIC INGBROBU, beneficiary ARASYA HOME DESIGN S.R.L., prefix TH | same account, prefix OP | `arasya-live-readonly.php` (database mode): `yd_approved_company_and_series` PASS, `yd_approved_bank` PASS on both; `smartbill-series-readonly.php`: `f:SMART`, `p:ARS`, HTTP 200 |
 | Shipping | unchanged: zone Romania, flat rate 15.97 net (19.32 with VAT), free shipping from 600 lei, only free shipping offered above 600 | **owner decision 2026-10-26: GLS cancelled, the same FAN rules as Trend Home.** Zone methods flat rate 15.97 and free shipping 600 switched on, `enable_mygls_shipping` and `enable_mygls_print` off, CurieRO FAN settings copied from Trend Home (same FAN account, AWB observation `outletperdele.ro`), the child theme hides the paid rate when free shipping applies (the same filter as Trend Home) | Store API cart simulation without an order: 539 lei → 19.32 flat; 928 lei → free only; `free_shipping_threshold` and `shipping_methods_verifiable` PASS |
 
+**Carrier (owner decision 2026-10-26, final):** FAN Courier is the only carrier of both shops; GLS is never used again.
+Older Outlet Perdele orders whose delivery line says GLS ship with FAN Courier like every other order, with their own
+amounts: no order total or shipping charge changes and no new transport fee reaches a customer (YD SOFT 2.21.0: a line the
+customer paid nothing for is free transport, so the sender pays FAN Courier; the collection is the order's own
+cash-on-delivery amount). An order that already has a GLS AWB never gets a FAN Courier AWB too (DuplicateGuard).
+
 Sources of the bank details: the owner's brief of 2026-10-24 (read in SmartBill Cloud), the reviewed docs since API 2.45.0,
 the IBAN check digits, and ANAF's public register for CUI 42340172 (ARASYA HOME DESIGN S.R.L., VAT payer, **no TVA la
 încasare**, registered in RO e-Factura, active). No live WordPress setting names another account for the company:
