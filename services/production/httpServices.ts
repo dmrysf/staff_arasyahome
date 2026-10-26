@@ -1887,7 +1887,7 @@ export function mapInvoicePaymentRead(value: unknown): InvoicePaymentRead {
     role: oneOf(raw.role, INVOICE_ROLES),
     payment: {
       state: oneOf(p.state, PAYMENT_STATES), severity: oneOf(p.severity, PAYMENT_SEVERITIES), code: p.code == null ? null : textValue(p.code, 60),
-      currency: textValue(p.currency, 3), checkedAt: timestampValue(p.checkedAt),
+      currency: textValue(p.currency, 3), checkedAt: timestampValue(p.checkedAt), cached: p.cached === true,
       invoice: invoice === null ? null : { series: invoice.series == null ? null : textValue(invoice.series, 20), number: invoice.number == null ? null : textValue(invoice.number, 20) },
       smartbill: amounts(p.smartbill, ["total", "paid", "unpaid"] as const),
       arasya: amounts(p.arasya, ["total", "verified", "remaining", "excess"] as const),

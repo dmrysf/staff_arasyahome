@@ -201,7 +201,8 @@ export function InvoicePaymentSection({ globalOrderId, load }: { globalOrderId: 
           <div><dt>{t("inv.pay.verified")}</dt><dd>{money(payment.arasya.verified)}</dd></div>
           <div className="cf-shop-grand"><dt>{t("inv.pay.remaining")}</dt><dd data-testid="cf-invoice-payment-remaining">{money(payment.arasya.remaining)}</dd></div>
         </dl>}
-        <p className="dashboard-footnote">{t("inv.pay.checkedAt", { time: when(payment.checkedAt) })}</p>
+        {payment.arasya && payment.arasya.excess !== "0.00" && <Notice tone="danger" role="alert" testId="cf-invoice-payment-excess">{t("inv.pay.excess", { excess: money(payment.arasya.excess) })}</Notice>}
+        <p className="dashboard-footnote" data-testid="cf-invoice-payment-checked">{t(payment.cached ? "inv.pay.cached" : "inv.pay.checkedAt", { time: when(payment.checkedAt) })}</p>
       </>}
     </div>
   );

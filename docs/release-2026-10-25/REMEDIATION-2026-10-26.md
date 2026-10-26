@@ -29,14 +29,20 @@ restore the four options and the two zone method flags from the backup, and the 
   - `PaymentReconciliation` + route `POST …/confirmare/invoice-payment` (roles documents, manager, finance; invoice mode
     observe or enforce): reads SmartBill's `GET invoice/paymentstatus` through the plugin's own client and compares it
     with MoneyPosition. States: `no_invoice`, `nothing_to_associate`, `matched`, `settled`, `association_pending`,
-    `paid_beyond_verified`, `invoice_total_differs`, `smartbill_inconsistent`, `unknown`. Read-only; a successful answer
-    is cached 30 s per invoice to keep SmartBill's rate limit.
+    `paid_not_verified`, `paid_beyond_verified`, `invoice_total_differs`, `smartbill_inconsistent`, `unknown`.
+    Only money Arasya verified counts: `settled` needs SmartBill fully paid **and** Arasya's whole total verified. SmartBill
+    fully paid while Arasya still waits for money (for example 300 verified, 700 owed) is `paid_not_verified` (attention),
+    never `settled`: an early courier collection, a double or a wrong association. A verified courier collection or
+    another verified payment is part of Arasya's verified money, so the state becomes `settled` once it is verified.
+    A successful SmartBill answer is kept 30 s per invoice (SmartBill's rate limit); an answer from that copy carries the
+    time of the real SmartBill read (`checkedAt`) and `cached: true`, and Staff says it is not a new check.
   - `wp yd-arasya invoice reconcile <order-id>…` (read-only, JSON).
   - `wp yd-arasya access prepare-schema --yes`: creates the empty source access tables without switching a mode on, so
     the connector reports `schemaReady` before the activation.
   - `invoice proforma-bank`: other bank details replace stored ones only with `--replace` (audited with both masked IBANs).
 - **API 2.47.0**: `GET /confirmare/orders/{id}/invoice/payment` (documents, manager, finance; audited by state only,
-  amounts never stored); `invoice.payment` capability; readiness `staff_release` no longer names a Staff version.
+  amounts never stored); `invoice.payment` capability; readiness `staff_release` no longer names a Staff version;
+  each state must come with its one severity and `cached` must be a boolean, otherwise the shop answer is refused.
 - **Staff 2.37.0**: "Încasarea în SmartBill" in the invoice panel: a button reads the state; `association_pending` tells
   the finance employee exactly what to associate, with which invoice, and what the courier still collects.
 
@@ -50,7 +56,25 @@ SmartBill as well, so creating it from Arasya could collect the advance twice. A
 3. The finance employee associates the verified advance with that invoice in SmartBill Cloud, on the channel the
    accountant fixed (step 0: bank transactions, or Emitere › Încasare), never "Încasează tot", never another invoice.
 4. In Staff, "Verifică plata în SmartBill" must show `matched` (paid = verified money, unpaid = the courier collection).
-   `association_pending` means step 3 is not done; `paid_beyond_verified` means a double or wrong association.
+   `association_pending` means step 3 is not done; `paid_beyond_verified` means a double or wrong association, or a
+   courier collection recorded before it was verified; `paid_not_verified` means SmartBill shows the invoice fully paid
+   while Arasya has not verified the rest: verify the courier collection in Arasya first, never treat the order as
+   collected before that.
+5. After the courier collection is verified in Arasya, the state is `settled`. When Arasya verified more than the total,
+   `settled` carries the code `verified_beyond_total` and Staff shows the excess as a finance exception (refund).
+
+### What the reconciliation writes
+
+- **No financial or order record changes.** The reconciliation never creates, changes or deletes a payment, a
+  collection, a proforma, an invoice, an order, an order status or an e-mail, in WordPress, in SmartBill or in Arasya.
+  Every SmartBill call is `GET invoice/paymentstatus`.
+- **Technical writes only:**
+  - the shop keeps SmartBill's answer 30 s in a WordPress transient (`yd_arasya_paystatus_<hash>`, in `wp_options` or
+    the object cache) with the time of the read;
+  - the shop's access layer writes its usual audit row of the signed request (who, which route, when);
+  - Arasya writes one row in `order_invoice_reads` per read (employee, role, order, outcome `payment_<state>`, request
+    id), never an amount;
+  - the API's rate limit counters, as for every request.
 
 ## 4. Readiness on 2026-10-26 (both shops)
 

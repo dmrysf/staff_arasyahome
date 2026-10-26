@@ -552,15 +552,17 @@ final class SourceInvoice
     }
 
     /** States of the SmartBill payment reconciliation (YD SOFT 2.21.0, PaymentReconciliation). */
-    public const PAYMENT_STATES = ['no_invoice', 'nothing_to_associate', 'matched', 'settled', 'association_pending', 'paid_beyond_verified', 'invoice_total_differs', 'smartbill_inconsistent', 'unknown'];
+    public const PAYMENT_STATES = ['no_invoice', 'nothing_to_associate', 'matched', 'settled', 'association_pending', 'paid_not_verified', 'paid_beyond_verified', 'invoice_total_differs', 'smartbill_inconsistent', 'unknown'];
     private const PAYMENT_SEVERITY = ['no_invoice' => 'ok', 'nothing_to_associate' => 'ok', 'matched' => 'ok', 'settled' => 'ok', 'association_pending' => 'pending',
-        'paid_beyond_verified' => 'attention', 'invoice_total_differs' => 'attention', 'smartbill_inconsistent' => 'attention', 'unknown' => 'unknown'];
+        'paid_not_verified' => 'attention', 'paid_beyond_verified' => 'attention', 'invoice_total_differs' => 'attention', 'smartbill_inconsistent' => 'attention', 'unknown' => 'unknown'];
     private const AMOUNT = '/^-?[0-9]{1,10}\.[0-9]{2}$/D';
 
     /**
      * The shop's read-only SmartBill payment reconciliation of the final invoice (API 2.47.0): SmartBill's total, paid and
      * unpaid amounts next to Arasya's verified money and what the customer still owes. Amounts pass through to the
-     * employee; Operations stores none of them.
+     * employee; Operations stores none of them. `checkedAt` is the time the shop actually read SmartBill and `cached`
+     * says the shop answered from its 30 s copy of that read (never shown as a new check). `settled` comes only when
+     * Arasya verified the whole total; SmartBill fully paid with money still owed in Arasya is `paid_not_verified`.
      *
      * @param array<string, mixed> $data
      * @return array<string, mixed>
@@ -597,12 +599,16 @@ final class SourceInvoice
             throw self::invalid();
         }
         $smartbill = $amounts($data['smartbill'] ?? null, ['total', 'paid', 'unpaid']);
-        if ($smartbill === null && in_array($state, ['matched', 'settled', 'association_pending', 'paid_beyond_verified', 'invoice_total_differs', 'smartbill_inconsistent', 'nothing_to_associate'], true)) {
+        if ($smartbill === null && in_array($state, ['matched', 'settled', 'association_pending', 'paid_not_verified', 'paid_beyond_verified', 'invoice_total_differs', 'smartbill_inconsistent', 'nothing_to_associate'], true)) {
             throw self::invalid();
         }
         $currency = $data['currency'] ?? null;
         $checkedAt = $data['checkedAt'] ?? null;
         if (!is_string($currency) || preg_match('/^[A-Z]{3}$/D', $currency) !== 1 || !is_string($checkedAt) || preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/D', $checkedAt) !== 1) {
+            throw self::invalid();
+        }
+        $cached = $data['cached'] ?? false;
+        if (!is_bool($cached)) {
             throw self::invalid();
         }
         $retry = $data['retryAfter'] ?? null;
@@ -612,6 +618,7 @@ final class SourceInvoice
             'code' => $code,
             'currency' => $currency,
             'checkedAt' => $checkedAt,
+            'cached' => $cached,
             'invoice' => $invoice === null ? null : ['series' => $invoice['series'], 'number' => $invoice['number']],
             'smartbill' => $smartbill,
             'arasya' => $amounts($data['arasya'] ?? null, ['total', 'verified', 'remaining', 'excess']),

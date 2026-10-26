@@ -44,3 +44,35 @@ test("every payment state has a sentence in every Staff language", () => {
     }
   }
 });
+
+// Owner remediation 2026-10-26: SmartBill fully paid while Arasya still waits for money is attention, never settled; the
+// shop's 30 s copy of a SmartBill read keeps the time of that read.
+test("SmartBill fully paid with money still owed in Arasya is read as paid_not_verified (attention)", () => {
+  const read = mapInvoicePaymentRead({ ...answer, payment: { ...answer.payment, state: "paid_not_verified", severity: "attention", code: "smartbill_paid_arasya_owed", smartbill: { total: "1000.00", paid: "1000.00", unpaid: "0.00" } } });
+  assert.equal(read.available, true);
+  if (!read.available) return;
+  assert.equal(read.payment.state, "paid_not_verified");
+  assert.equal(read.payment.severity, "attention");
+  assert.equal(read.payment.arasya?.remaining, "700.00");
+});
+
+test("a cached answer is marked cached and keeps the SmartBill read time; a missing flag is a fresh read", () => {
+  const cached = mapInvoicePaymentRead({ ...answer, payment: { ...answer.payment, cached: true, checkedAt: "2026-10-26T19:59:40Z" } });
+  const fresh = mapInvoicePaymentRead(answer);
+  const odd = mapInvoicePaymentRead({ ...answer, payment: { ...answer.payment, cached: "yes" } });
+  assert.ok(cached.available && fresh.available && odd.available);
+  if (!cached.available || !fresh.available || !odd.available) return;
+  assert.equal(cached.payment.cached, true);
+  assert.equal(cached.payment.checkedAt, "2026-10-26T19:59:40Z");
+  assert.equal(fresh.payment.cached, false);
+  assert.equal(odd.payment.cached, false);
+});
+
+test("the cached and excess sentences exist in every Staff language", () => {
+  for (const [locale, catalog] of Object.entries(CATALOGS)) {
+    for (const key of ["inv.pay.cached", "inv.pay.excess"]) {
+      const text = (catalog as unknown as Record<string, unknown>)[key];
+      assert.ok(typeof text === "string" && text.includes(key === "inv.pay.cached" ? "{time}" : "{excess}"), `${locale}: ${key}`);
+    }
+  }
+});

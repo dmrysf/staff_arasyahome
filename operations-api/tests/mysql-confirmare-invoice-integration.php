@@ -657,13 +657,30 @@ $ok($payment($who['idoc'], $g(1)), 'the document employee reads it');
 $error($payment($who['iview'], $g(1)), 403, 'CONFIRMARE_INVOICE_DENIED', 'a document viewer without an invoice scope cannot read it');
 $error($payment($who['isup'], $g(1)), 403, 'CONFIRMARE_INVOICE_DENIED', 'a Confirmare supervisor alone cannot read it');
 $error($payment($who['imgrop'], $g(1)), 404, 'CONFIRMARE_NOT_FOUND', 'the Outlet Perdele invoice manager cannot read a Trend Home order');
+// Owner remediation 2026-10-26: SmartBill fully paid while Arasya still waits for 700 is attention, never settled; a cached
+// answer keeps the time of the real SmartBill read.
+$th->invoicePayment = ['state' => 'paid_not_verified', 'severity' => 'attention', 'code' => 'smartbill_paid_arasya_owed', 'checkedAt' => '2026-10-26T19:59:40Z', 'cached' => true, 'currency' => 'RON',
+    'invoice' => ['series' => 'SMART', 'number' => '0042'], 'smartbill' => ['total' => '1000.00', 'paid' => '1000.00', 'unpaid' => '0.00'], 'arasya' => ['total' => '1000.00', 'verified' => '300.00', 'remaining' => '700.00', 'excess' => '0.00']];
+$pnv = $ok($payment($who['ifin'], $g(1)), 'SmartBill fully paid, Arasya still owed');
+$check($pnv['available'] === true && $pnv['payment']['state'] === 'paid_not_verified' && $pnv['payment']['severity'] === 'attention' && $pnv['payment']['cached'] === true && $pnv['payment']['checkedAt'] === '2026-10-26T19:59:40Z',
+    'SmartBill 1 000 paid while Arasya verified 300: attention (paid_not_verified), the cached answer keeps its SmartBill read time: ' . json_encode($pnv['payment']));
+$check($pf['payment']['cached'] === false, 'an answer without `cached` is a fresh read (cached false)');
+foreach ([['settled', 'attention'], ['paid_not_verified', 'ok']] as [$st, $sv]) {
+    $th->invoicePayment = ['state' => $st, 'severity' => $sv] + $th->invoicePayment;
+    $r = $ok($payment($who['ifin'], $g(1)), "{$st} with severity {$sv}");
+    $check($r['available'] === false && $r['reason'] === 'source_response_invalid', "a shop answer {$st}/{$sv} is refused (each state has one severity)");
+}
+$th->invoicePayment = ['state' => 'association_pending', 'severity' => 'pending', 'cached' => 'yes'] + $th->invoicePayment;
+$r = $ok($payment($who['ifin'], $g(1)), 'cached not a boolean');
+$check($r['available'] === false && $r['reason'] === 'source_response_invalid', 'a shop answer whose `cached` is not a boolean is refused');
 $th->invoicePayment = ['state' => 'matched', 'severity' => 'attention', 'code' => null, 'checkedAt' => '2026-10-26T20:00:00Z', 'currency' => 'RON', 'invoice' => null, 'smartbill' => ['total' => '1000.00', 'paid' => '300.00', 'unpaid' => '700.00'], 'arasya' => null];
 $bad = $ok($payment($who['ifin'], $g(1)), 'a malformed shop answer');
 $check($bad['available'] === false && $bad['reason'] === 'source_response_invalid', 'a shop answer whose severity does not fit its state is refused (never shown as a state): ' . json_encode($bad));
 $th->invoicePayment = null;
 $none = $ok($payment($who['ifin'], $g(1)), 'no final invoice');
 $check($none['payment']['state'] === 'no_invoice' && $none['payment']['smartbill'] === null, 'no final invoice yet: no_invoice');
-$check((int) $one("SELECT COUNT(*) FROM order_invoice_reads WHERE outcome = 'payment_association_pending'") === 3 && (int) $one("SELECT COUNT(*) FROM order_invoice_reads WHERE outcome = 'payment_no_invoice'") === 1, 'every payment read is audited with its state only');
+$check((int) $one("SELECT COUNT(*) FROM order_invoice_reads WHERE outcome = 'payment_association_pending'") === 3 && (int) $one("SELECT COUNT(*) FROM order_invoice_reads WHERE outcome = 'payment_no_invoice'") === 1
+    && (int) $one("SELECT COUNT(*) FROM order_invoice_reads WHERE outcome = 'payment_paid_not_verified'") === 1, 'every payment read is audited with its state only');
 $error(T::call($kernel, 'POST', '/confirmare/orders/' . rawurlencode($g(1)) . '/invoice/payment', [], ['origin' => T::ORIGIN, 'x-csrf-token' => $who['ifin']['csrf'], 'idempotency-key' => 'inv-pay-post-0001'], $who['ifin']['cookie']), 405, 'METHOD_NOT_ALLOWED', 'the payment state is read-only (GET only)');
 
 // ---- 9. No link, number, amount or customer data in the audit or the log ----------------------------------------------------
