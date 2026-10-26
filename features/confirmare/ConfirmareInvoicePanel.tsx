@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useI18n, type MessageKey } from "../../i18n";
 import { sourceLabel } from "../../domain/confirmare";
 import { formatFinanceMoney } from "../../domain/confirmareFinance";
@@ -158,7 +158,7 @@ export function ConfirmareInvoicePanel({ globalOrderId, service, capabilities = 
       {view && <InvoiceBody globalOrderId={globalOrderId} view={view} role={view.role} busy={busy} pending={pending} onPrepare={(action) => setPending({ action, key: createIdempotencyKey() })} onCancel={() => setPending(null)} onSend={(action, input, key) => { void send(action, input, key); }} onReconcile={(key) => { void reconcile(key); }} />}
       {view && service.invoicePayment && capabilities?.payment !== false && (view.role === "documents" || view.role === "manager" || view.role === "finance")
         && view.summary.document.exists && view.summary.document.type !== "proforma"
-        && <InvoicePaymentSection globalOrderId={globalOrderId} load={(signal) => service.invoicePayment!(globalOrderId, signal)} />}
+        && <InvoicePaymentSection key={`${globalOrderId}|${view.summary.revision}|${view.summary.document.series ?? ""}|${view.summary.document.number ?? ""}`} globalOrderId={globalOrderId} load={(signal) => service.invoicePayment!(globalOrderId, signal)} />}
     </section>
   );
 }
@@ -173,9 +173,19 @@ export function InvoicePaymentSection({ globalOrderId, load }: { globalOrderId: 
   const [read, setRead] = useState<InvoicePaymentRead | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // One read at a time; a read still running when the order or its invoice changes (a new key) or the panel closes is
+  // cancelled, so another order's or an older invoice's payment is never shown here.
+  const running = useRef<AbortController | null>(null);
+  useEffect(() => () => running.current?.abort(), []);
   function check() {
+    running.current?.abort();
+    const controller = new AbortController();
+    running.current = controller;
     setBusy(true); setError(null);
-    load().then(setRead).catch((caught: unknown) => { setRead(null); setError(getErrorPresentation(toServiceError(caught)).message); }).finally(() => setBusy(false));
+    load(controller.signal)
+      .then((value) => { if (!controller.signal.aborted) setRead(value); })
+      .catch((caught: unknown) => { if (controller.signal.aborted) return; setRead(null); setError(getErrorPresentation(toServiceError(caught)).message); })
+      .finally(() => { if (!controller.signal.aborted) setBusy(false); });
   }
   const payment = read?.available ? read.payment : null;
   const money = (value: string | undefined) => (value === undefined || payment === null ? "—" : formatFinanceMoney(value, payment.currency));
@@ -201,7 +211,7 @@ export function InvoicePaymentSection({ globalOrderId, load }: { globalOrderId: 
           <div><dt>{t("inv.pay.verified")}</dt><dd>{money(payment.arasya.verified)}</dd></div>
           <div className="cf-shop-grand"><dt>{t("inv.pay.remaining")}</dt><dd data-testid="cf-invoice-payment-remaining">{money(payment.arasya.remaining)}</dd></div>
         </dl>}
-        {payment.arasya && payment.arasya.excess !== "0.00" && <Notice tone="danger" role="alert" testId="cf-invoice-payment-excess">{t("inv.pay.excess", { excess: money(payment.arasya.excess) })}</Notice>}
+        {payment.arasya && Number(payment.arasya.excess) > 0 && <Notice tone="danger" role="alert" testId="cf-invoice-payment-excess">{t("inv.pay.excess", { excess: money(payment.arasya.excess) })}</Notice>}
         <p className="dashboard-footnote" data-testid="cf-invoice-payment-checked">{t(payment.cached ? "inv.pay.cached" : "inv.pay.checkedAt", { time: when(payment.checkedAt) })}</p>
       </>}
     </div>

@@ -670,7 +670,10 @@ foreach ([['settled', 'attention'], ['paid_not_verified', 'ok']] as [$st, $sv]) 
     $r = $ok($payment($who['ifin'], $g(1)), "{$st} with severity {$sv}");
     $check($r['available'] === false && $r['reason'] === 'source_response_invalid', "a shop answer {$st}/{$sv} is refused (each state has one severity)");
 }
-$th->invoicePayment = ['state' => 'association_pending', 'severity' => 'pending', 'cached' => 'yes'] + $th->invoicePayment;
+$th->invoicePayment = ['state' => 'settled', 'severity' => 'ok', 'cached' => false, 'arasya' => null] + $th->invoicePayment;
+$r = $ok($payment($who['ifin'], $g(1)), 'settled without Arasya amounts');
+$check($r['available'] === false && $r['reason'] === 'source_response_invalid', 'a compared state without Arasya\'s verified money is refused (settled never without proof)');
+$th->invoicePayment = ['state' => 'association_pending', 'severity' => 'pending', 'cached' => 'yes', 'arasya' => ['total' => '1000.00', 'verified' => '300.00', 'remaining' => '700.00', 'excess' => '0.00']] + $th->invoicePayment;
 $r = $ok($payment($who['ifin'], $g(1)), 'cached not a boolean');
 $check($r['available'] === false && $r['reason'] === 'source_response_invalid', 'a shop answer whose `cached` is not a boolean is refused');
 $th->invoicePayment = ['state' => 'matched', 'severity' => 'attention', 'code' => null, 'checkedAt' => '2026-10-26T20:00:00Z', 'currency' => 'RON', 'invoice' => null, 'smartbill' => ['total' => '1000.00', 'paid' => '300.00', 'unpaid' => '700.00'], 'arasya' => null];

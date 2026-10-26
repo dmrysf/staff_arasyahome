@@ -76,3 +76,10 @@ test("the cached and excess sentences exist in every Staff language", () => {
     }
   }
 });
+
+// Review of PR #95: the client refuses what the API refuses (a state with another severity, a currency that is not ISO).
+test("a state with another severity or a malformed currency is refused by the client too", () => {
+  assert.throws(() => mapInvoicePaymentRead({ ...answer, payment: { ...answer.payment, state: "settled", severity: "attention" } }));
+  assert.throws(() => mapInvoicePaymentRead({ ...answer, payment: { ...answer.payment, state: "paid_not_verified", severity: "ok" } }));
+  assert.throws(() => mapInvoicePaymentRead({ ...answer, payment: { ...answer.payment, currency: "ro" } }));
+});

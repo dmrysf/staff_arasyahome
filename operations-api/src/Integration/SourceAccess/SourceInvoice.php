@@ -602,6 +602,11 @@ final class SourceInvoice
         if ($smartbill === null && in_array($state, ['matched', 'settled', 'association_pending', 'paid_not_verified', 'paid_beyond_verified', 'invoice_total_differs', 'smartbill_inconsistent', 'nothing_to_associate'], true)) {
             throw self::invalid();
         }
+        // Every compared state needs Arasya's side too: `settled` without Arasya's verified money would prove nothing.
+        $arasya = $amounts($data['arasya'] ?? null, ['total', 'verified', 'remaining', 'excess']);
+        if ($arasya === null && in_array($state, ['matched', 'settled', 'association_pending', 'paid_not_verified', 'paid_beyond_verified', 'invoice_total_differs', 'smartbill_inconsistent', 'nothing_to_associate'], true)) {
+            throw self::invalid();
+        }
         $currency = $data['currency'] ?? null;
         $checkedAt = $data['checkedAt'] ?? null;
         if (!is_string($currency) || preg_match('/^[A-Z]{3}$/D', $currency) !== 1 || !is_string($checkedAt) || preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/D', $checkedAt) !== 1) {
@@ -621,7 +626,7 @@ final class SourceInvoice
             'cached' => $cached,
             'invoice' => $invoice === null ? null : ['series' => $invoice['series'], 'number' => $invoice['number']],
             'smartbill' => $smartbill,
-            'arasya' => $amounts($data['arasya'] ?? null, ['total', 'verified', 'remaining', 'excess']),
+            'arasya' => $arasya,
             'retryAfter' => is_int($retry) && $retry >= 1 && $retry <= 3600 ? $retry : null,
         ];
     }

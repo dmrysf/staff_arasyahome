@@ -1871,6 +1871,11 @@ export function mapInvoiceRead(value: unknown): InvoiceRead {
   return { available: true, role: oneOf(raw.role, INVOICE_ROLES), ...mapInvoiceView(raw) };
 }
 const PAYMENT_SEVERITIES = ["ok", "pending", "attention", "unknown"] as const;
+/** Each state has one severity (the API enforces the same pairs); a mismatched answer is refused, never shown. */
+const PAYMENT_SEVERITY: Record<(typeof PAYMENT_STATES)[number], (typeof PAYMENT_SEVERITIES)[number]> = {
+  no_invoice: "ok", nothing_to_associate: "ok", matched: "ok", settled: "ok", association_pending: "pending",
+  paid_not_verified: "attention", paid_beyond_verified: "attention", invoice_total_differs: "attention", smartbill_inconsistent: "attention", unknown: "unknown",
+};
 const paymentAmount = (value: unknown): string => { const text = textValue(value, 20); if (!/^-?\d{1,10}\.\d{2}$/.test(text)) throw new StaffServiceError("SERVER_ERROR"); return text; };
 export function mapInvoicePaymentRead(value: unknown): InvoicePaymentRead {
   const raw = objectValue(value);
@@ -1882,12 +1887,16 @@ export function mapInvoicePaymentRead(value: unknown): InvoicePaymentRead {
     return Object.fromEntries(keys.map((key) => [key, paymentAmount(object[key])])) as Record<K, string>;
   };
   const invoice = p.invoice == null ? null : objectValue(p.invoice);
+  const state = oneOf(p.state, PAYMENT_STATES);
+  const severity = oneOf(p.severity, PAYMENT_SEVERITIES);
+  if (severity !== PAYMENT_SEVERITY[state]) throw new Error("payment severity does not fit its state");
+  if (typeof p.currency !== "string" || !/^[A-Z]{3}$/.test(p.currency)) throw new Error("payment currency invalid");
   return {
     available: true,
     role: oneOf(raw.role, INVOICE_ROLES),
     payment: {
-      state: oneOf(p.state, PAYMENT_STATES), severity: oneOf(p.severity, PAYMENT_SEVERITIES), code: p.code == null ? null : textValue(p.code, 60),
-      currency: textValue(p.currency, 3), checkedAt: timestampValue(p.checkedAt), cached: p.cached === true,
+      state, severity, code: p.code == null ? null : textValue(p.code, 60),
+      currency: p.currency, checkedAt: timestampValue(p.checkedAt), cached: p.cached === true,
       invoice: invoice === null ? null : { series: invoice.series == null ? null : textValue(invoice.series, 20), number: invoice.number == null ? null : textValue(invoice.number, 20) },
       smartbill: amounts(p.smartbill, ["total", "paid", "unpaid"] as const),
       arasya: amounts(p.arasya, ["total", "verified", "remaining", "excess"] as const),
