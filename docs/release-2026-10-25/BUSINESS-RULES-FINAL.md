@@ -71,7 +71,7 @@ Arasya records the result), **EXTERNAL** (needs a live system or a document this
 |---|---|---|
 | Operator | Confirmare `operate` scope of the shop | calls, proforma cycle "run now" (own order), reactivation (own order) |
 | Supervisor | Confirmare `supervise` | the same on every order of the shop; health screen |
-| Finance (record / approve) | finance scopes | bank check (record or approve), card refund record (record), card refund verify (approve, never the recorder) |
+| Finance (record / approve) | finance scopes | bank check (record or approve; API 2.46.1: only while the shop's finance is `record`, otherwise `409 CONFIRMARE_FINANCE_DISABLED` and not offered), card refund record (record), card refund verify (approve, never the recorder) |
 | Operator with finance `approve` | both scopes | the one-click NETOPIA full refund of their order |
 | Shop employee | invoice `issue` + document `operate` + routed to the order | AWB, label, address task, e-Factura of their invoices |
 | Invoice manager | invoice `manage` | AWB and e-Factura of the whole shop; health screen |
