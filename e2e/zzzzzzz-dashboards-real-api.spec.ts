@@ -47,8 +47,10 @@ test("cutting employee: the cutting dashboard with real counts, no claim on open
   await expect(page.getByTestId("workspace-taiere")).toBeVisible();
   await expect(page.getByRole("navigation", { name: "Spațiile mele de lucru" })).toHaveCount(0);
   await expect(metricValue(page, "metric-total")).toHaveText(/^\d+$/);
-  const queue = await page.evaluate(async (url) => (await fetch(url, { credentials: "include" })).json(), `${API}/orders/stage-queue?stage=material-preparation`);
+  // Staff opens a stage on the new system (owner 2026-10-26): the WordPress-managed shop orders are counted apart.
+  const queue = await page.evaluate(async (url) => (await fetch(url, { credentials: "include" })).json(), `${API}/orders/stage-queue?stage=material-preparation&flow=current`);
   await expect(metricValue(page, "metric-total")).toHaveText(String(queue.counts.total));
+  if (queue.legacyTotal > 0) await expect(page.getByTestId("stage-flow-hidden")).toContainText(String(queue.legacyTotal));
   await expect(metricValue(page, "metric-mine")).toHaveText(new RegExp(`^${queue.counts.mine}\\+?$`));
   await expect(page.getByText("Comenzi disponibile", { exact: false }).first()).toBeVisible();
   await expect(page.getByText("Trendyol")).toHaveCount(0);
