@@ -62,7 +62,7 @@ export function BankCheckSection({ service, navigate }: { service: ConfirmareApi
         {data.checks.sources.map((source) => {
           const last = data.checks.items.find((check) => check.source === source) ?? null;
           const waiting = data.checks.waiting[source] ?? 0;
-          return <li key={source} className={waiting > 0 ? "is-missing" : "is-met"} data-testid={`cf-bank-${source}`}>
+          return <li key={source} className={`cf-check-action ${waiting > 0 ? "is-missing" : "is-met"}`} data-testid={`cf-bank-${source}`}>
             <AppIcon name={waiting > 0 ? "clock" : "check"} size={18} />
             <span><strong>{sourceLabel(source)}</strong> · {last ? t("cf.bank.last", { time: when(last.coversUntil), name: last.by ?? "—" }) : t("cf.bank.never")}{waiting > 0 ? ` · ${t("cf.bank.waiting", { count: waiting })}` : ""}</span>
             {data.checks.canRecord.includes(source) && (confirm === source

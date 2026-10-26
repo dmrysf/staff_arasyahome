@@ -6,6 +6,21 @@
 .cf-row.tone-warning::before, .cf-row.tone-danger::before { background: var(--color-warning); }
 .cf-row.tone-success::before { background: var(--color-success); }
 .cf-tabs { grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); }
+/* The finance task filter (up to twelve tasks, Staff 2.36.1): one row that scrolls sideways inside itself with every task
+   on one readable line, instead of a grid squeezing twelve labels into the card width. The page itself never scrolls
+   sideways. */
+.segmented.cf-task-strip { display: flex; overflow-x: auto; overscroll-behavior-x: contain; scroll-snap-type: x proximity; scrollbar-width: thin; }
+/* Scroll shadows: an edge darkens only while more tasks hide past it (the covers move with the content, the shadows stay). */
+.segmented.cf-task-strip {
+  --cf-strip-edge: color-mix(in srgb, var(--color-text) 16%, transparent);
+  background:
+    linear-gradient(to right, var(--color-surface-soft) 40%, transparent) left center / 28px 100% no-repeat local,
+    linear-gradient(to left, var(--color-surface-soft) 40%, transparent) right center / 28px 100% no-repeat local,
+    linear-gradient(to right, var(--cf-strip-edge), transparent) left center / 14px 100% no-repeat scroll,
+    linear-gradient(to left, var(--cf-strip-edge), transparent) right center / 14px 100% no-repeat scroll,
+    var(--color-surface-soft);
+}
+.segmented.cf-task-strip button { flex: 0 0 auto; white-space: nowrap; padding: 0 12px; scroll-snap-align: start; }
 .cf-source-filter { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
 .cf-tab-hint { margin: -8px 0 0; color: var(--color-text-muted); font-size: var(--text-sm); line-height: var(--leading-normal); }
 
@@ -32,6 +47,11 @@
 .cf-checklist li.is-missing > svg { color: var(--color-warning); }
 .cf-checklist li.is-separate > svg { color: var(--color-danger); }
 .cf-checklist li.is-missing span { font-weight: var(--weight-semibold); }
+/* A checklist row with its own action (the bank check, Staff 2.36.1). The plain row has two columns (icon, text), so a
+   button became a third grid item in the 20 px icon column and broke one word per line. On a phone the button takes the
+   full width under the text; from 720 px it sits in its own column at its natural width. */
+.cf-checklist li.cf-check-action { align-items: center; }
+.cf-checklist li.cf-check-action > .button, .cf-checklist li.cf-check-action > .cf-confirm-actions { grid-column: 1 / -1; }
 .cf-confirm { display: grid; gap: 10px; padding: 14px; border: 1.5px solid var(--color-text); border-radius: var(--radius-md); background: var(--color-surface); }
 .cf-confirm p { margin: 0; line-height: var(--leading-normal); }
 .cf-confirm-actions { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -48,6 +68,9 @@
 @media (min-width: 720px) {
   .cf-person { grid-template-columns: minmax(0, 1fr) auto auto; }
   .cf-person > .button, .cf-person > .cf-confirm-actions { grid-column: auto; }
+  .cf-checklist li.cf-check-action { grid-template-columns: 20px minmax(0, 1fr) auto; }
+  .cf-checklist li.cf-check-action > .button, .cf-checklist li.cf-check-action > .cf-confirm-actions { grid-column: auto; }
+  .cf-checklist li.cf-check-action .button { white-space: nowrap; }
 }
 @media (max-width: 359px) {
   .cf-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }

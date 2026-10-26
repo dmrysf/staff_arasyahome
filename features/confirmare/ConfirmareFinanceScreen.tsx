@@ -46,9 +46,9 @@ export function ConfirmareFinanceScreen({ employee, service, navigate }: { emplo
       <PageHeader title={t("cf.fin.queueTitle")} description={t("cf.fin.queueDescription")} />
       <AutoRefreshBar onRefresh={queue.refresh} busy={queue.busy} refreshing={queue.refreshing} updatedAt={queue.updatedAt} stale={data !== null && queue.error !== null} stopped={queue.stopped} testId="cf-finance-refresh" />
       <SourceFilter sources={sources} value={source} onChange={setSource} />
-      <div className="segmented cf-tabs" role="tablist" aria-label={t("cf.fin.tasks")}>
+      <div className="segmented cf-tabs cf-task-strip" role="tablist" aria-label={t("cf.fin.tasks")} data-testid="cf-finance-tasks">
         <button type="button" role="tab" aria-selected={task === null} onClick={() => setTask(null)}>{t("cf.fin.allTasks")}{data && <span>{data.orders.length}</span>}</button>
-        {visible.map((id) => <button key={id} type="button" role="tab" aria-selected={task === id} onClick={() => setTask(id)} data-testid={`cf-finance-task-${id}`}>{taskLabel(id)}{data && <span>{data.tasks[id]}</span>}</button>)}
+        {visible.map((id) => <button key={id} type="button" role="tab" aria-selected={task === id} onClick={(event) => { setTask(id); event.currentTarget.scrollIntoView({ block: "nearest", inline: "nearest" }); }} data-testid={`cf-finance-task-${id}`}>{taskLabel(id)}{data && <span>{data.tasks[id]}</span>}</button>)}
       </div>
       {task && <p className="cf-tab-hint">{t(`cf.fin.taskHint.${task}` as MessageKey)}</p>}
       {message && <p className="order-notice order-notice-muted" role="alert">{message}</p>}

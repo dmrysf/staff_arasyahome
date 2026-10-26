@@ -3,7 +3,7 @@ import { useI18n } from "../../i18n";
 import type { Employee } from "../../domain/models";
 import { sourceLabel, type ConfirmareApi } from "../../domain/confirmare";
 import {
-  EXCEPTION_REASONS, EXCEPTION_RESOLUTIONS, exceptionReasonLabel, exceptionResolutionLabel, financeErrorKey, financeScopesOf, formatFinanceMoney, normalizeAmount, refusalLabel, validReference,
+  EXCEPTION_REASONS, EXCEPTION_RESOLUTIONS, exceptionReasonLabel, exceptionUnavailableKey, exceptionResolutionLabel, financeErrorKey, financeScopesOf, formatFinanceMoney, normalizeAmount, refusalLabel, validReference,
   type ExceptionReason, type ExceptionRecordInput, type ExceptionResolution, type ExceptionResolveInput, type TransferException, type TransferExceptionList,
 } from "../../domain/confirmareFinance";
 import { getErrorPresentation, toServiceError } from "../../services/errors";
@@ -86,7 +86,7 @@ export function TransferExceptionsSection({ employee, service }: { employee: Emp
         <Notice tone="warning" role="alert">{t("cf.fin.exc.unknown")}</Notice>
         <button type="button" className="button button-primary" disabled={busy} onClick={() => void send(unknown)} data-testid="cf-exc-retry">{busy ? t("common.processing") : t("cf.fin.exc.retry")}</button>
       </div>}
-      {list && !list.available && <p className="dashboard-footnote" data-testid="cf-exc-unavailable">{t("cf.fin.exc.unavailable")}</p>}
+      {list && !list.available && <p className="dashboard-footnote" data-testid="cf-exc-unavailable" data-reason={list.reason}>{t(exceptionUnavailableKey(list.reason))}</p>}
       {list?.available && (list.exceptions.length === 0
         ? <p className="dashboard-footnote" data-testid="cf-exc-empty">{t("cf.fin.exc.empty")}</p>
         : <ul className="cf-finance-list" data-testid="cf-exc-list">{list.exceptions.map((item) => (
