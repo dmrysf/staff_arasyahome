@@ -1259,6 +1259,11 @@ export const si: Catalog = {
   "stageWs.empty": "මෙම අදියරේ ඇණවුම් නැත",
   "stageWs.autoUpdate": "ඇණවුමක් මෙහි පැමිණි විට ලැයිස්තුව ස්වයංක්‍රීයව යාවත්කාලීන වේ.",
   "stageWs.firstShown": "පළමු ඇණවුම් {count} පෙන්වයි: මුලින් ඔබේ ඒවා, පසුව ලබාගත හැකි ඒවා, පැරණිතම සිට.",
+  "stageWs.flow.label": "පෙන්වන ඇණවුම්",
+  "stageWs.flow.current": "නව පද්ධතිය",
+  "stageWs.flow.legacy": "පැරණි, WordPress ({count})",
+  "stageWs.flow.all": "සියල්ල",
+  "stageWs.flow.hidden": "පැරණි Trend Home / Outlet Perdele ඇණවුම් {count}ක් WordPress හි කළමනාකරණය වන අතර මෙහි ගණන් නොකෙරේ.",
   "stageWs.stageOf": "අදියර {total} න් {ordinal}",
   "stageWs.sourceScope": "මෙම අදියරේදී ඔබ වැඩ කරන්නේ මෙම මූලාශ්‍රවල ඇණවුම්වල පමණි: {sources}.",
   "stageWs.metrics": "{stage} අදියරේ තත්ත්වය",
@@ -1308,4 +1313,5 @@ export const si: Catalog = {
   "mgmt.col.unassigned": "භාර නොගත්",
   "mgmt.col.oldest": "පැරණිතම",
   "mgmt.footnote": "ඇණවුම්, සේවකයන් සහ ව්‍යතිරේක පිළිබඳ විස්තර Dashboard යෙදුමේ පවතී.",
+  "mgmt.legacyNote": "WordPress හි කළමනාකරණය වන පැරණි Trend Home / Outlet Perdele ඇණවුම් {count} ඇතුළත් නොවේ ({waiting} බලා සිටී).",
 };

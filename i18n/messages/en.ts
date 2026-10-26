@@ -1258,6 +1258,11 @@ export const en: Catalog = {
   "stageWs.empty": "There are no orders at this stage",
   "stageWs.autoUpdate": "The list updates automatically when an order arrives here.",
   "stageWs.firstShown": "The first {count} orders are shown: yours first, then the available ones, oldest first.",
+  "stageWs.flow.label": "Orders shown",
+  "stageWs.flow.current": "New system",
+  "stageWs.flow.legacy": "Older, WordPress ({count})",
+  "stageWs.flow.all": "All",
+  "stageWs.flow.hidden": "{count} older Trend Home / Outlet Perdele orders are handled in WordPress and are not counted here.",
   "stageWs.stageOf": "Stage {ordinal} of {total}",
   "stageWs.sourceScope": "At this stage you work only on orders from: {sources}.",
   "stageWs.metrics": "Status of the {stage} stage",
@@ -1307,4 +1312,5 @@ export const en: Catalog = {
   "mgmt.col.unassigned": "Not taken",
   "mgmt.col.oldest": "Oldest",
   "mgmt.footnote": "Details by order, employee and exception stay in the Dashboard app.",
+  "mgmt.legacyNote": "Excludes {count} older Trend Home / Outlet Perdele orders handled in WordPress ({waiting} waiting).",
 };

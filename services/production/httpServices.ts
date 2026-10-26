@@ -1093,10 +1093,10 @@ export function createProductionServices(apiBaseUrl: string, options: Production
     correctIdentity: (packageId, input, key) => http.request(`${trendyolPackage(packageId)}/correct-identity`, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapTrendyolDetail),
   };
   const workspace: WorkspaceApi = {
-    stageQueue: (stageId, signal) => http.request(`/orders/stage-queue?stage=${encodeURIComponent(stageId)}`, { signal }, mapStageQueue),
+    stageQueue: (stageId, signal, flow) => http.request(`/orders/stage-queue?stage=${encodeURIComponent(stageId)}${flow ? `&flow=${flow}` : ""}`, { signal }, mapStageQueue),
     stageSummary: (signal) => http.request("/orders/stage-summary", { signal }, mapStageSummary),
   };
-  const management: ManagementApi = { productionOverview: (signal) => http.request("/management/production-overview", { signal }, mapProductionOverview) };
+  const management: ManagementApi = { productionOverview: (signal, flow) => http.request(`/management/production-overview${flow ? `?flow=${flow}` : ""}`, { signal }, mapProductionOverview) };
   const pieces: import("../../domain/pieces").PieceApi = {
     claim: (trackId, input) => http.request(`/production-tracks/${encodeURIComponent(trackId)}/claim`, { method: "POST", headers: { "Idempotency-Key": input.idempotencyKey },
       body: JSON.stringify({ expectedVersion: input.expectedVersion, qrToken: input.qrToken }) }, mapPieceActionResult),
@@ -1950,6 +1950,7 @@ export function mapStageQueue(value: unknown): StageQueue {
   return {
     stageId: stringValue(raw.stageId),
     counts: { total: nonNegativeInteger(counts.total), mine: nonNegativeInteger(counts.mine), available: nonNegativeInteger(counts.available), blocked: nonNegativeInteger(counts.blocked), claimedByOthers: nonNegativeInteger(counts.claimedByOthers) },
+    legacyTotal: raw.legacyTotal == null ? 0 : nonNegativeInteger(raw.legacyTotal),
     countsComplete: raw.countsComplete,
     items: raw.items.map(mapProductionOrder),
     // Pieces in rework at this stage (API 2.31.0): each entry names the track and carries its order.
@@ -1960,7 +1961,8 @@ export function mapStageSummary(value: unknown): StageSummary {
   const raw = objectValue(value);
   if (!Array.isArray(raw.stages)) throw new StaffServiceError("SERVER_ERROR");
   return raw.stages.map((item) => { const stage = objectValue(item); return { stageId: stringValue(stage.stageId), total: nonNegativeInteger(stage.total), mine: nonNegativeInteger(stage.mine),
-    reworkTotal: stage.reworkTotal == null ? 0 : nonNegativeInteger(stage.reworkTotal), reworkMine: stage.reworkMine == null ? 0 : nonNegativeInteger(stage.reworkMine) }; });
+    reworkTotal: stage.reworkTotal == null ? 0 : nonNegativeInteger(stage.reworkTotal), reworkMine: stage.reworkMine == null ? 0 : nonNegativeInteger(stage.reworkMine),
+    legacyTotal: stage.legacyTotal == null ? 0 : nonNegativeInteger(stage.legacyTotal), legacyMine: stage.legacyMine == null ? 0 : nonNegativeInteger(stage.legacyMine) }; });
 }
 export function mapProductionOverview(value: unknown): ProductionOverview {
   const raw = objectValue(value);
@@ -1973,6 +1975,7 @@ export function mapProductionOverview(value: unknown): ProductionOverview {
       const stage = objectValue(item);
       return { id: stringValue(stage.id), label: stringValue(stage.label), ordinal: positiveInteger(stage.ordinal), active: nonNegativeInteger(stage.active), unassigned: nonNegativeInteger(stage.unassigned), oldestEnteredAt: nullableTimestamp(stage.oldestEnteredAt) };
     }),
+    legacy: raw.legacy == null ? null : (({ active, waiting }) => ({ active: nonNegativeInteger(active), waiting: nonNegativeInteger(waiting) }))(objectValue(raw.legacy)),
   };
 }
 export function mapTrendyolOverview(value: unknown): TrendyolOverview {

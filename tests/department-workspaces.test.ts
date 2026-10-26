@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { Employee, StaffOrder } from "../domain/models";
 import { CANONICAL_CURTAIN_WORKFLOW_V1_STRUCTURE } from "../domain/canonicalProductionWorkflow";
 import { canUseManagementWorkspace, dashboardUrlFor, firstName, productionDepartments, readWorkspacePreference, resolveWorkspaces, saveWorkspacePreference, selectPrimaryWorkspace, stageGuides } from "../domain/workspaces";
-import { mapProductionOverview, mapStageQueue, mapStageSummary, mapTrendyolActivity } from "../services/production/httpServices";
+import { createProductionServices, mapProductionOverview, mapStageQueue, mapStageSummary, mapTrendyolActivity } from "../services/production/httpServices";
 import { queueStateOf } from "../features/workspaces/StageWorkspace";
 import { connectionCopy, lastRunFailed, linesToComplete } from "../features/workspaces/TrendyolDashboard";
 import { formatMetric } from "../features/workspaces/DashboardParts";
@@ -101,8 +101,12 @@ test("stage queue, summary, activity and overview answers are mapped strictly", 
   for (const bad of [{}, { stageId: "height", counts: { total: -1 }, countsComplete: true, items: [] }, { stageId: "height", counts: { total: 1, mine: 0, available: 0, blocked: 0, claimedByOthers: 0 }, countsComplete: "yes", items: [] }]) {
     assert.throws(() => mapStageQueue(bad), (error) => error instanceof StaffServiceError && error.code === "SERVER_ERROR");
   }
-  assert.deepEqual(mapStageSummary({ stages: [{ stageId: "height", total: 2, mine: 1 }] }), [{ stageId: "height", total: 2, mine: 1, reworkTotal: 0, reworkMine: 0 }], "an older API counts no rework");
-  assert.deepEqual(mapStageSummary({ stages: [{ stageId: "height", total: 2, mine: 1, reworkTotal: 1, reworkMine: 1 }] }), [{ stageId: "height", total: 2, mine: 1, reworkTotal: 1, reworkMine: 1 }]);
+  assert.deepEqual(mapStageSummary({ stages: [{ stageId: "height", total: 2, mine: 1 }] }), [{ stageId: "height", total: 2, mine: 1, reworkTotal: 0, reworkMine: 0, legacyTotal: 0, legacyMine: 0 }], "an older API counts no rework and no legacy orders");
+  assert.deepEqual(mapStageSummary({ stages: [{ stageId: "height", total: 2, mine: 1, reworkTotal: 1, reworkMine: 1, legacyTotal: 1, legacyMine: 0 }] }), [{ stageId: "height", total: 2, mine: 1, reworkTotal: 1, reworkMine: 1, legacyTotal: 1, legacyMine: 0 }]);
+  // Owner 2026-10-26: legacy (WordPress-managed shop) orders are counted apart; an older API sends none.
+  assert.equal(queue.legacyTotal, 0, "an older API counts no legacy orders");
+  assert.equal(mapStageQueue({ stageId: "waiting", counts: { total: 2, mine: 0, available: 2, blocked: 0, claimedByOthers: 0 }, countsComplete: true, items: [], legacyTotal: 837 }).legacyTotal, 837);
+  assert.throws(() => mapStageQueue({ stageId: "waiting", counts: { total: 2, mine: 0, available: 2, blocked: 0, claimedByOthers: 0 }, countsComplete: true, items: [], legacyTotal: -1 }));
   assert.deepEqual(queue.trackItems, [], "an older API has no pieces in rework");
   assert.throws(() => mapStageSummary({ stages: [{ stageId: "height", total: 1.5, mine: 0 }] }));
   const activity = mapTrendyolActivity({ today: { linesPrepared: 2, released: 1, dismissed: 0, reopened: 0 }, recent: [{ action: "released", packageId: "3318470214", orderNumber: "10847291463", at: "2026-10-10T08:00:00Z" }] });
@@ -110,6 +114,8 @@ test("stage queue, summary, activity and overview answers are mapped strictly", 
   assert.throws(() => mapTrendyolActivity({ today: { linesPrepared: 0, released: 0, dismissed: 0, reopened: 0 }, recent: [{ action: "deleted", packageId: null, orderNumber: null, at: null }] }));
   const overview = mapProductionOverview({ generatedAt: "2026-10-10T08:00:00Z", summary: { active: 4, waiting: 1, inWork: 3, unassigned: 2, completedToday: 0 }, stages: [{ id: "waiting", label: "În așteptare", ordinal: 1, active: 1, unassigned: 1, oldestEnteredAt: null }] });
   assert.equal(overview.summary.active, 4);
+  assert.equal(overview.legacy, null, "an older API sends no legacy count");
+  assert.deepEqual(mapProductionOverview({ generatedAt: "2026-10-10T08:00:00Z", summary: { active: 1, waiting: 0, inWork: 1, unassigned: 0, completedToday: 0 }, stages: [], legacy: { active: 837, waiting: 821 } }).legacy, { active: 837, waiting: 821 });
   assert.throws(() => mapProductionOverview({ generatedAt: "2026-10-10T08:00:00Z", summary: {}, stages: [] }));
 });
 
@@ -199,4 +205,23 @@ test("source-scoped stage grants: the session mapping is strict and the stage da
   const stageHtml = render(person({ allowedStageIds: ["waiting"], stageSourceScopes: { waiting: ["trendyol", "b2b"] } }));
   assert.match(stageHtml, /Lucrezi la această etapă doar pe comenzile din: Trendyol, B2B\./);
   assert.ok(!render(person({ allowedStageIds: ["waiting"] })).includes("stage-source-scope"), "an unscoped grant shows no restriction");
+});
+
+test("HTTP: the flow filter (owner 2026-10-26) is sent only when chosen; without it every order is read as before", async () => {
+  const paths: string[] = [];
+  const queueBody = { stageId: "waiting", counts: { total: 1, mine: 0, available: 1, blocked: 0, claimedByOthers: 0 }, countsComplete: true, items: [], legacyTotal: 837 };
+  const overviewBody = { generatedAt: "2026-10-26T08:00:00Z", summary: { active: 1, waiting: 1, inWork: 0, unassigned: 1, completedToday: 0 }, stages: [], legacy: { active: 837, waiting: 821 } };
+  const fetchImpl = (async (url: string) => {
+    const parsed = new URL(url);
+    paths.push(parsed.pathname + parsed.search);
+    return new Response(JSON.stringify(parsed.pathname.startsWith("/management") ? overviewBody : queueBody), { status: 200, headers: { "Content-Type": "application/json" } });
+  }) as typeof fetch;
+  const services = createProductionServices("https://api.arasyahome.ro", { fetchImpl, isOnline: () => true });
+  assert.equal((await services.workspace!.stageQueue("waiting")).legacyTotal, 837);
+  await services.workspace!.stageQueue("waiting", undefined, "current");
+  await services.workspace!.stageQueue("waiting", undefined, "legacy");
+  assert.deepEqual((await services.management!.productionOverview(undefined, "current")).legacy, { active: 837, waiting: 821 });
+  await services.management!.productionOverview();
+  assert.deepEqual(paths, ["/orders/stage-queue?stage=waiting", "/orders/stage-queue?stage=waiting&flow=current", "/orders/stage-queue?stage=waiting&flow=legacy",
+    "/management/production-overview?flow=current", "/management/production-overview"]);
 });

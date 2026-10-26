@@ -130,6 +130,44 @@ final class WorkflowCohort
     }
 
     /**
+     * Owner 2026-10-26 (statistics only): a Trend Home or Outlet Perdele order of the established WordPress-managed flow,
+     * i.e. imported before migration 035 (NULL) or classified `legacy`. Arasya does not close these orders when the shop
+     * completes them, so production counts can show them apart (`flow`). Trendyol and B2B orders are never legacy here.
+     * Read filter only: nothing is changed or reclassified. SQL over `operational_orders o`.
+     */
+    public const LEGACY_SHOP_SQL = "(o.source_key IN ('trendhome', 'outletperdele') AND (o.workflow_cohort IS NULL OR o.workflow_cohort = 'legacy'))";
+    /** `current`: every order except LEGACY_SHOP_SQL (new Confirmare shop orders, Trendyol, B2B); `legacy`: only those. */
+    public const FLOWS = ['current', 'legacy'];
+
+    /** @var \WeakMap<PDO, bool>|null */
+    private static ?\WeakMap $cohortColumn = null;
+
+    /**
+     * LEGACY_SHOP_SQL, or, on a schema before migration 035 (no cohort column: every shop order is of the established flow),
+     * every Trend Home / Outlet Perdele order. The read-only views keep answering on a partially migrated database.
+     * One cached lookup per connection.
+     */
+    public static function legacyShopSql(PDO $pdo): string
+    {
+        self::$cohortColumn ??= new \WeakMap();
+        if (!isset(self::$cohortColumn[$pdo])) {
+            self::$cohortColumn[$pdo] = $pdo->query("SHOW COLUMNS FROM operational_orders LIKE 'workflow_cohort'")->fetchColumn() !== false;
+        }
+        return self::$cohortColumn[$pdo] ? self::LEGACY_SHOP_SQL : "(o.source_key IN ('trendhome', 'outletperdele'))";
+    }
+
+    /** The SQL condition appended to a WHERE clause for a validated flow filter; '' for no filter (every order). */
+    public static function flowSql(?string $flow, string $legacySql = self::LEGACY_SHOP_SQL): string
+    {
+        return match ($flow) {
+            null, '' => '',
+            'current' => ' AND NOT ' . $legacySql,
+            'legacy' => ' AND ' . $legacySql,
+            default => throw new \InvalidArgumentException('Unknown flow filter.'),
+        };
+    }
+
+    /**
      * The latest committed activation or suspension row of a source, or null (schedules are not part of it). With $lock the caller's transaction first locks the source's
      * order_sources row, the same row an activation locks before it inserts, so an activation is either fully before
      * or fully after this read. Ingestion already updates that row before it commits (last contact), so the lock adds

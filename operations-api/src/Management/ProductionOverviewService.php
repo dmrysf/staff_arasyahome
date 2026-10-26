@@ -11,6 +11,7 @@ use Arasya\Operations\Employee\EmployeeIdentity;
 use Arasya\Operations\Http\ApiException;
 use Arasya\Operations\Order\OrderFreshness;
 use Arasya\Operations\Production\CanonicalProductionWorkflowContract;
+use Arasya\Operations\Production\WorkflowCohort;
 use Arasya\Operations\Support\Clock;
 use DateTimeImmutable;
 use DateTimeZone;
@@ -44,6 +45,11 @@ use PDO;
  *   employee_work      approved rework or pieces on their own route still need production work
  *   plan_review        a manufacturing plan, piece identity or route evidence needs an authorized review (PieceGate)
  * PERDEA auxiliary-work status (stages 6-7, route policy version 2) is information only and never appears as a blocker.
+ *
+ * Flow filter (owner 2026-10-26, read-only): `flow=current` leaves out the Trend Home / Outlet Perdele orders of the
+ * established WordPress-managed flow (WorkflowCohort::LEGACY_SHOP_SQL), `flow=legacy` shows only them, no filter shows
+ * every order as before. It narrows every order section; source health and activity stay unfiltered. `legacy` always
+ * counts those orders (active, waiting) within the source filter.
  */
 final readonly class ProductionOverviewService
 {
@@ -75,14 +81,21 @@ final readonly class ProductionOverviewService
         if ($source !== '' && !in_array($source, array_column($sources, 'source_key'), true)) {
             throw new ApiException(422, 'VALIDATION_FAILED', 'Unknown source filter.');
         }
-        $scope = $source === '' ? '' : ' AND o.source_key = :source';
+        $flow = $filters['flow'] ?? '';
+        if ($flow !== '' && !in_array($flow, WorkflowCohort::FLOWS, true)) {
+            throw new ApiException(422, 'VALIDATION_FAILED', 'Unknown flow filter.');
+        }
+        $sourceScope = $source === '' ? '' : ' AND o.source_key = :source';
+        $legacySql = WorkflowCohort::legacyShopSql($this->pdo);
+        $scope = $sourceScope . WorkflowCohort::flowSql($flow, $legacySql);
         $params = $source === '' ? [] : ['source' => $source];
         $now = $this->clock->now();
 
         return [
             'generatedAt' => $this->iso($now),
             'timezone' => self::TIMEZONE,
-            'filters' => ['source' => $source === '' ? null : $source],
+            'filters' => ['source' => $source === '' ? null : $source, 'flow' => $flow === '' ? null : $flow],
+            'legacy' => $this->legacy($legacySql, $sourceScope, $params),
             'summary' => $this->summary($now, $scope, $params),
             'stages' => $this->stages($scope, $params),
             'oldestOrders' => $this->authorization->can($actor, 'orders.view_all') ? $this->oldestOrders($scope, $params) : null,
@@ -118,6 +131,21 @@ final readonly class ProductionOverviewService
             'unassigned' => (int) $row['unassigned'],
             'completedToday' => (int) $completed->fetchColumn(),
         ];
+    }
+
+    /**
+     * Owner 2026-10-26: active Trend Home / Outlet Perdele orders of the established WordPress-managed flow
+     * (WorkflowCohort::LEGACY_SHOP_SQL) within the source filter, whatever the flow filter, so a view without them
+     * still says how many it leaves out. Read-only.
+     * @param array<string, string> $params @return array{active: int, waiting: int}
+     */
+    private function legacy(string $legacySql, string $sourceScope, array $params): array
+    {
+        $statement = $this->pdo->prepare('SELECT COUNT(*) AS active, COALESCE(SUM(o.production_stage_id = :waiting), 0) AS waiting
+             FROM operational_orders o WHERE ' . $this->active() . ' AND ' . $legacySql . $sourceScope);
+        $statement->execute(['waiting' => 'waiting'] + $params);
+        $row = $statement->fetch(PDO::FETCH_ASSOC);
+        return ['active' => (int) $row['active'], 'waiting' => (int) $row['waiting']];
     }
 
     /** One grouped query for all stages; stages without orders report zero. @param array<string, string> $params @return list<array<string, mixed>> */

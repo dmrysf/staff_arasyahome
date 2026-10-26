@@ -221,6 +221,33 @@ check($service->overview($rootIdentity, [])['summary']['completedToday'] === 1, 
 $pdo->exec("UPDATE operational_orders SET production_completed_at = '2026-10-25 22:00:00.000000' WHERE order_number = '81006'");
 check($service->overview($rootIdentity, [])['summary']['completedToday'] === 0, 'local midnight under winter time ends the DST day');
 
+// ---- Flow filter (owner 2026-10-26): WordPress-managed shop orders apart; Trendyol is never legacy ----------
+// Unactivated shops classify every order `legacy`; 81003/81004 play new Confirmare orders, 81005 a pre-035 order (NULL),
+// and 81002 a Trendyol order (no cohort), which must count as current. Restored afterwards.
+$cohorts = $pdo->query("SELECT order_number, source_key, workflow_cohort, workflow_cohort_reason, workflow_cohort_at FROM operational_orders WHERE order_number IN ('81001', '81002', '81003', '81004', '81005')")->fetchAll(PDO::FETCH_UNIQUE | PDO::FETCH_ASSOC);
+check(array_values(array_unique(array_column($cohorts, 'workflow_cohort'))) === ['legacy'], 'orders of an unactivated shop are legacy: ' . json_encode(array_column($cohorts, 'workflow_cohort')));
+$pdo->prepare("UPDATE operational_orders SET production_completed_at = ? WHERE order_number = '81006'")->execute([gmdate('Y-m-d H:i:s') . '.000000']); // completed today again (real clock)
+$pdo->exec("UPDATE operational_orders SET workflow_cohort = 'confirmare' WHERE order_number IN ('81003', '81004')");
+$pdo->exec("UPDATE operational_orders SET workflow_cohort = NULL, workflow_cohort_reason = NULL, workflow_cohort_at = NULL WHERE order_number = '81005'");
+$pdo->exec("UPDATE operational_orders SET source_key = 'trendyol', workflow_cohort = NULL, workflow_cohort_reason = NULL, workflow_cohort_at = NULL WHERE order_number = '81002'");
+$all = checkOk($get($root, '/management/production-overview'), 'overview without a flow filter');
+check($all['filters']['flow'] === null && $all['summary'] === $overview['summary'] && $all['legacy'] === ['active' => 2, 'waiting' => 1], 'no flow filter keeps every order and counts the legacy ones apart: ' . json_encode([$all['summary'], $all['legacy']]));
+$current = checkOk($get($root, '/management/production-overview', ['flow' => 'current']), 'current flow');
+check($current['filters']['flow'] === 'current' && $current['summary'] === ['active' => 3, 'waiting' => 1, 'inWork' => 2, 'unassigned' => 2, 'completedToday' => 0] && $current['legacy'] === $all['legacy'], 'current flow: new shop orders and Trendyol only: ' . json_encode($current['summary']));
+check(array_column($current['oldestOrders'], 'orderNumber') === ['81004', '81002', '81003'], 'current flow narrows the order rows: ' . json_encode(array_column($current['oldestOrders'], 'orderNumber')));
+$currentStages = array_combine(array_column($current['stages'], 'id'), array_column($current['stages'], 'active'));
+check($currentStages['waiting'] === 1 && $currentStages['labeling'] === 2 && $currentStages['sewing-finishing'] === 0, 'current flow stage counts: ' . json_encode(array_filter($currentStages)));
+$legacyFlow = checkOk($get($root, '/management/production-overview', ['flow' => 'legacy']), 'legacy flow');
+check($legacyFlow['summary']['active'] === 2 && $legacyFlow['summary']['waiting'] === 1 && $legacyFlow['summary']['completedToday'] === 1 && array_column($legacyFlow['oldestOrders'], 'orderNumber') === ['81001', '81005'], 'legacy flow: only WordPress-managed shop orders, never Trendyol');
+check(count($legacyFlow['sources']) === 4 && $legacyFlow['activity'] === $all['activity'], 'source health and activity stay unfiltered');
+$scoped = checkOk($get($root, '/management/production-overview', ['source' => 'outletperdele', 'flow' => 'current']), 'source and flow together');
+check($scoped['summary']['active'] === 1 && $scoped['legacy'] === ['active' => 1, 'waiting' => 0], 'the legacy count follows the source filter: ' . json_encode([$scoped['summary'], $scoped['legacy']]));
+checkError($get($root, '/management/production-overview', ['flow' => 'old']), 422, 'VALIDATION_FAILED', 'unknown flow filters are rejected');
+$restore = $pdo->prepare('UPDATE operational_orders SET source_key = ?, workflow_cohort = ?, workflow_cohort_reason = ?, workflow_cohort_at = ? WHERE order_number = ?');
+foreach ($cohorts as $number => $row) {
+    $restore->execute([$row['source_key'], $row['workflow_cohort'], $row['workflow_cohort_reason'], $row['workflow_cohort_at'], (string) $number]);
+}
+
 // ---- No writes ------------------------------------------------------------------------------------
 $before = $pdo->query('SELECT SUM(version), SUM(production_version), COUNT(*) FROM operational_orders')->fetch(PDO::FETCH_NUM);
 $auditBefore = (int) $pdo->query('SELECT COUNT(*) FROM iam_audit_events')->fetchColumn();

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Arasya\Operations\Order;
 
 use Arasya\Operations\Http\ApiException;
+use Arasya\Operations\Production\WorkflowCohort;
 use Arasya\Operations\Support\Clock;
 use DateTimeImmutable;
 use DateTimeZone;
@@ -114,13 +115,13 @@ final readonly class PdoOperationalOrderRepository implements OperationalOrderRe
         return $this->hydrate($statement->fetchAll(PDO::FETCH_ASSOC));
     }
 
-    public function listOpenAtStage(string $employeeUuid, string $stageId, int $max, ?array $sources = null): array
+    public function listOpenAtStage(string $employeeUuid, string $stageId, int $max, ?array $sources = null, ?string $flow = null): array
     {
         $max = max(1, min(250, $max));
         if ($sources === []) {
             return [];
         }
-        $sourceSql = $sources === null ? '' : ' AND o.source_key IN (' . implode(',', array_fill(0, count($sources), '?')) . ')';
+        $sourceSql = ($sources === null ? '' : ' AND o.source_key IN (' . implode(',', array_fill(0, count($sources), '?')) . ')') . WorkflowCohort::flowSql($flow, WorkflowCohort::legacyShopSql($this->pdo));
         // Served by idx_cutting_pool (production_stage_id, operational_status, production_completed_at, ...).
         $statement = $this->pdo->prepare(self::SELECT . "
             LEFT JOIN employee_order_relations r ON r.order_uuid = o.order_uuid AND r.employee_uuid = ? AND r.status = 'active'
@@ -138,10 +139,10 @@ final readonly class PdoOperationalOrderRepository implements OperationalOrderRe
         if ($stageIds === []) {
             return [];
         }
-        $counts = array_fill_keys($stageIds, ['total' => 0, 'mine' => 0]);
+        $counts = array_fill_keys($stageIds, ['total' => 0, 'mine' => 0, 'legacy' => 0, 'mineLegacy' => 0]);
         // One condition per stage: the stage, narrowed to its granted sources when the grant is source-scoped.
         $conditions = [];
-        $parameters = [$employeeUuid];
+        $parameters = [$employeeUuid, $employeeUuid];
         foreach ($stageIds as $stageId) {
             $sources = $sourcesByStage[$stageId] ?? null;
             if ($sources === []) {
@@ -154,16 +155,19 @@ final readonly class PdoOperationalOrderRepository implements OperationalOrderRe
             return $counts;
         }
         $trendyol = $includeTrendyolIntake ? '' : " AND NOT (o.source_key = 'trendyol' AND o.production_stage_id = 'waiting')";
+        $legacySql = WorkflowCohort::legacyShopSql($this->pdo);
         $statement = $this->pdo->prepare('
             SELECT o.production_stage_id AS stage_id, COUNT(*) AS total,
-                   COALESCE(SUM(o.production_owner_employee_uuid = ?), 0) AS mine
+                   COALESCE(SUM(o.production_owner_employee_uuid = ?), 0) AS mine,
+                   COALESCE(SUM(' . $legacySql . '), 0) AS legacy,
+                   COALESCE(SUM(o.production_owner_employee_uuid = ? AND ' . $legacySql . '), 0) AS mine_legacy
             FROM operational_orders o
             WHERE (' . implode(' OR ', $conditions) . ") AND o.operational_status <> 'unavailable' AND o.production_completed_at IS NULL AND o.production_stopped_at IS NULL{$trendyol}
             GROUP BY o.production_stage_id
         ");
         $statement->execute($parameters);
         foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
-            $counts[(string) $row['stage_id']] = ['total' => (int) $row['total'], 'mine' => (int) $row['mine']];
+            $counts[(string) $row['stage_id']] = ['total' => (int) $row['total'], 'mine' => (int) $row['mine'], 'legacy' => (int) $row['legacy'], 'mineLegacy' => (int) $row['mine_legacy']];
         }
         return $counts;
     }

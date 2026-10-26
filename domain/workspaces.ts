@@ -161,10 +161,20 @@ export function firstName(displayName: string): string {
   return displayName.trim().split(/\s+/)[0] || displayName;
 }
 
+/**
+ * Owner 2026-10-26 (read filter only): `current` leaves out the older Trend Home / Outlet Perdele orders that WordPress
+ * still manages (the server decides which: API WorkflowCohort::LEGACY_SHOP_SQL), `legacy` shows only those, null shows
+ * every order. Trendyol and B2B orders are never legacy.
+ */
+export type OrderFlow = "current" | "legacy";
+
 /** Server-evaluated stage queue of one stage (GET /orders/stage-queue). */
 export type StageQueue = {
   stageId: string;
+  /** `total` follows the flow filter. */
   counts: { total: number; mine: number; available: number; blocked: number; claimedByOthers: number };
+  /** Every legacy order at the stage (OrderFlow), whatever the filter; 0 from older APIs. */
+  legacyTotal: number;
   /** False when the stage holds more open orders than one request reads; the bucket counts are then partial. */
   countsComplete: boolean;
   items: StaffOrder[];
@@ -172,11 +182,14 @@ export type StageQueue = {
   trackItems: { trackId: string; order: StaffOrder }[];
 };
 
-/** reworkTotal / reworkMine: pieces in rework at the stage, counted apart from orders (API 2.31.0; 0 from older APIs). */
-export type StageSummary = { stageId: string; total: number; mine: number; reworkTotal: number; reworkMine: number }[];
+/**
+ * reworkTotal / reworkMine: pieces in rework at the stage, counted apart from orders (API 2.31.0; 0 from older APIs).
+ * legacyTotal / legacyMine: how many of total / mine are legacy orders (OrderFlow; 0 from older APIs).
+ */
+export type StageSummary = { stageId: string; total: number; mine: number; reworkTotal: number; reworkMine: number; legacyTotal: number; legacyMine: number }[];
 
 export type WorkspaceApi = {
-  stageQueue(stageId: string, signal?: AbortSignal): Promise<StageQueue>;
+  stageQueue(stageId: string, signal?: AbortSignal, flow?: OrderFlow): Promise<StageQueue>;
   stageSummary(signal?: AbortSignal): Promise<StageSummary>;
 };
 
@@ -185,9 +198,11 @@ export type ProductionOverview = {
   generatedAt: string;
   summary: { active: number; waiting: number; inWork: number; unassigned: number; completedToday: number };
   stages: { id: string; label: string; ordinal: number; active: number; unassigned: number; oldestEnteredAt: string | null }[];
+  /** Active legacy orders (OrderFlow), whatever the flow filter; null from older APIs. */
+  legacy: { active: number; waiting: number } | null;
 };
 
-export type ManagementApi = { productionOverview(signal?: AbortSignal): Promise<ProductionOverview> };
+export type ManagementApi = { productionOverview(signal?: AbortSignal, flow?: OrderFlow): Promise<ProductionOverview> };
 
 /** Dashboard application link derived from the API host (api.example → dashboard.example); none otherwise. */
 export function dashboardUrlFor(apiBaseUrl: string): string | null {

@@ -1259,6 +1259,11 @@ export const ro = {
   "stageWs.empty": "Nu există comenzi la această etapă",
   "stageWs.autoUpdate": "Lista se actualizează automat când o comandă ajunge aici.",
   "stageWs.firstShown": "Sunt afișate primele {count} comenzi: întâi ale tale, apoi cele disponibile, de la cea mai veche.",
+  "stageWs.flow.label": "Comenzi afișate",
+  "stageWs.flow.current": "Sistemul nou",
+  "stageWs.flow.legacy": "Vechi, WordPress ({count})",
+  "stageWs.flow.all": "Toate",
+  "stageWs.flow.hidden": "{count} comenzi vechi Trend Home / Outlet Perdele sunt gestionate în WordPress și nu sunt numărate aici.",
   "stageWs.stageOf": "Etapa {ordinal} din {total}",
   "stageWs.sourceScope": "Lucrezi la această etapă doar pe comenzile din: {sources}.",
   "stageWs.metrics": "Situația etapei {stage}",
@@ -1308,4 +1313,5 @@ export const ro = {
   "mgmt.col.unassigned": "Nepreluate",
   "mgmt.col.oldest": "Cea mai veche",
   "mgmt.footnote": "Detaliile pe comenzi, angajați și excepții rămân în aplicația Dashboard.",
+  "mgmt.legacyNote": "Fără cele {count} comenzi vechi Trend Home / Outlet Perdele gestionate în WordPress ({waiting} în așteptare).",
 } as const;

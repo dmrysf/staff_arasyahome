@@ -1,7 +1,7 @@
 import { useCallback, useState } from "react";
 import { liveLabels, useI18n } from "../../i18n";
 import type { Employee, ProductionWorkflow, StaffOrder } from "../../domain/models";
-import { stageGuides, stageSources, type StageQueue, type StageSummary, type Workspace, type WorkspaceApi } from "../../domain/workspaces";
+import { stageGuides, stageSources, type OrderFlow, type StageQueue, type StageSummary, type Workspace, type WorkspaceApi } from "../../domain/workspaces";
 import { getStageById } from "../../domain/productionWorkflow";
 import { orderActionBlockedCopy } from "../../domain/orderActions";
 import { hasPermission } from "../../domain/permissions";
@@ -17,6 +17,9 @@ import { useDashboardData } from "./useDashboardData";
 import { pieceName, trackPieces, trackStatusLabel } from "../../domain/pieces";
 
 const CUTTING_STAGE = "material-preparation";
+/** Owner 2026-10-26: which orders the stage shows; older WordPress-managed shop orders are apart by default (read filter only). */
+type FlowChoice = OrderFlow | "all";
+const FLOW_CHOICES: readonly FlowChoice[] = ["current", "legacy", "all"];
 
 type QueueState = "mine" | "available" | "claimedByOthers" | "blocked";
 
@@ -80,11 +83,12 @@ export function StageWorkspace({ workspace, employee, workflow, api, cutting, na
   const { t } = useI18n();
   const { revision } = useLive();
   const [selected, setSelected] = useState(workspace.stageIds[0] ?? "");
+  const [flow, setFlow] = useState<FlowChoice>("current");
   const stageId = workspace.stageIds.includes(selected) ? selected : workspace.stageIds[0] ?? "";
   const stage = getStageById(workflow, stageId);
-  const loadQueue = useCallback((signal: AbortSignal): Promise<StageQueue> => api!.stageQueue(stageId, signal), [api, stageId]);
+  const loadQueue = useCallback((signal: AbortSignal): Promise<StageQueue> => api!.stageQueue(stageId, signal, flow === "all" ? undefined : flow), [api, stageId, flow]);
   const loadSummary = useCallback((signal: AbortSignal): Promise<StageSummary> => api!.stageSummary(signal), [api]);
-  const queue = useDashboardData(api ? loadQueue : null, `${workspace.id}/${stageId}`, revision);
+  const queue = useDashboardData(api ? loadQueue : null, `${workspace.id}/${stageId}/${flow}`, revision);
   const summary = useDashboardData(api && workspace.stageIds.length > 1 ? loadSummary : null, workspace.id, revision);
   const guide = stageGuides[stageId];
   const scopedSources = stageSources(employee, stageId);
@@ -93,7 +97,8 @@ export function StageWorkspace({ workspace, employee, workflow, api, cutting, na
   const partial = queue.data ? !queue.data.countsComplete : false;
   const cuttingTools = stageId === CUTTING_STAGE && Boolean(cutting) && !employee.isRoot;
   const items = queue.data?.items.filter((order) => !cuttingTools || queueStateOf(order) !== "available") ?? [];
-  const totals = new Map(summary.data?.map((entry) => [entry.stageId, entry.total]) ?? []);
+  const totals = new Map(summary.data?.map((entry) => [entry.stageId, flow === "current" ? entry.total - entry.legacyTotal : flow === "legacy" ? entry.legacyTotal : entry.total]) ?? []);
+  const legacy = queue.data?.legacyTotal ?? 0;
 
   const profile = stageProfile(workspace.id);
   const canScan = hasPermission(employee, "orders.scan");
@@ -119,6 +124,11 @@ export function StageWorkspace({ workspace, employee, workflow, api, cutting, na
 
         {api && queue.data && (
           <DashboardSection labelledBy={`queue-${stageId}`} eyebrow={stage?.label} title={cuttingTools ? t("stageWs.mineAndBlocked") : t("stageWs.atStage")}>
+            {(legacy > 0 || flow !== "current") && <div className="range-scroll" role="group" aria-label={t("stageWs.flow.label")} data-testid="stage-flow">
+              {FLOW_CHOICES.map((choice) => <button key={choice} type="button" className={choice === flow ? "active" : ""} aria-pressed={choice === flow} onClick={() => setFlow(choice)} data-testid={`stage-flow-${choice}`}>
+                {choice === "legacy" ? t("stageWs.flow.legacy", { count: legacy }) : t(`stageWs.flow.${choice}`)}</button>)}
+            </div>}
+            {flow === "current" && legacy > 0 && <p className="dashboard-footnote" data-testid="stage-flow-hidden">{t("stageWs.flow.hidden", { count: legacy })}</p>}
             {items.length === 0
               ? <EmptyState title={cuttingTools ? t("stageWs.emptyCutting") : t("stageWs.empty")}>{t("stageWs.autoUpdate")}</EmptyState>
               : <ul className="queue-list">{items.map((order) => <QueueRow key={order.id} order={order} detail={profile.detail} navigate={navigate} />)}</ul>}

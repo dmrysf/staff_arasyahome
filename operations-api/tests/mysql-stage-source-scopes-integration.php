@@ -176,7 +176,7 @@ $waitingQueue = $status($get($tyonly, '/orders/stage-queue', ['stage' => 'waitin
 $trendyolWaiting = (int) $one("SELECT COUNT(*) FROM operational_orders WHERE production_stage_id = 'waiting' AND source_key = 'trendyol' AND production_completed_at IS NULL AND operational_status <> 'unavailable'");
 $check(array_diff($queueSources($waitingQueue), ['trendyol']) === [] && $waitingQueue['counts']['total'] === $trendyolWaiting, 'the queue and its total count only Trendyol orders');
 $summary = $status($get($tyonly, '/orders/stage-summary'), 200, 'Trendyol-only summary');
-$check($summary['stages'] === [['stageId' => 'waiting', 'total' => $trendyolWaiting, 'mine' => 0, 'reworkTotal' => 0, 'reworkMine' => 0]], 'the summary counts no other source');
+$check($summary['stages'] === [['stageId' => 'waiting', 'total' => $trendyolWaiting, 'mine' => 0, 'reworkTotal' => 0, 'reworkMine' => 0, 'legacyTotal' => 0, 'legacyMine' => 0]], 'the summary counts no other source (a Trendyol order is never legacy)');
 $denied = [];
 foreach (['SW1', 'OW1', 'BW1'] as $tag) {
     $path = '/orders/' . rawurlencode($orders[$tag]);
@@ -228,6 +228,35 @@ $check($queueSources($mixedQueue) === ['b2b'] && $mixedQueue['counts']['total'] 
 $check($sees($mixed, $orders['SM1']) && $sees($mixed, $orders['OM1']) && $status($get($mixed, '/orders/stage-queue', ['stage' => 'material-preparation']), 200, 'mixed cutting queue')['counts']['total'] === $openAt('material-preparation'), 'the unscoped cutting grant of the same employee keeps every source');
 $status($send($mixed, 'POST', '/orders/' . rawurlencode($orders['BW1']) . '/claim', ['expectedVersion' => $version($orders['BW1'])]), 200, 'mixed employee claims B2B at waiting');
 $error($send($mixed, 'POST', '/orders/' . rawurlencode($orders['SW2']) . '/claim', ['expectedVersion' => $version($orders['SW2'])]), 404, 'ORDER_NOT_FOUND', 'mixed employee cannot claim Trendhome at waiting');
+
+// ---- Flow filter (owner 2026-10-26): WordPress-managed shop orders apart; B2B and Trendyol are never legacy ----------
+// Unactivated shops classify their orders `legacy`; OM1 plays a new Confirmare order for these reads and is restored after.
+$om1Cohort = $pdo->query("SELECT workflow_cohort FROM operational_orders WHERE global_order_id = " . $pdo->quote($orders['OM1']))->fetchColumn();
+$check($om1Cohort === 'legacy', 'an order of an unactivated shop is legacy');
+$pdo->prepare("UPDATE operational_orders SET workflow_cohort = 'confirmare' WHERE global_order_id = ?")->execute([$orders['OM1']]);
+$legacyAt = static fn (string $stage, ?array $sources = null): int => (int) $one("SELECT COUNT(*) FROM operational_orders WHERE production_stage_id = ? AND production_completed_at IS NULL AND production_stopped_at IS NULL AND operational_status <> 'unavailable'
+    AND source_key IN ('trendhome', 'outletperdele') AND (workflow_cohort IS NULL OR workflow_cohort = 'legacy')" . ($sources === null ? '' : ' AND source_key IN (' . implode(',', array_fill(0, count($sources), '?')) . ')'), [$stage, ...($sources ?? [])]);
+$cutAll = $status($get($mixed, '/orders/stage-queue', ['stage' => 'material-preparation']), 200, 'cutting queue without a flow');
+$cutCurrent = $status($get($mixed, '/orders/stage-queue', ['stage' => 'material-preparation', 'flow' => 'current']), 200, 'cutting queue, current flow');
+$cutLegacyFlow = $status($get($mixed, '/orders/stage-queue', ['stage' => 'material-preparation', 'flow' => 'legacy']), 200, 'cutting queue, legacy flow');
+$cutLegacyCount = $legacyAt('material-preparation');
+$check($cutAll['flow'] === null && $cutAll['counts']['total'] === $openAt('material-preparation') && $cutAll['legacyTotal'] === $cutLegacyCount && $cutLegacyCount >= 1, 'no flow keeps every order and counts the legacy ones: ' . json_encode([$cutAll['counts'], $cutAll['legacyTotal']]));
+$currentIds = array_column($cutCurrent['items'], 'id');
+$check($cutCurrent['flow'] === 'current' && $cutCurrent['counts']['total'] === $cutAll['counts']['total'] - $cutLegacyCount && $cutCurrent['legacyTotal'] === $cutLegacyCount
+    && in_array($orders['OM1'], $currentIds, true) && !in_array($orders['SM1'], $currentIds, true), 'the current flow lists new shop orders and leaves out legacy ones: ' . json_encode($cutCurrent['counts']));
+$legacyIds = array_column($cutLegacyFlow['items'], 'id');
+$check($cutLegacyFlow['counts']['total'] === $cutLegacyCount && in_array($orders['SM1'], $legacyIds, true) && !in_array($orders['OM1'], $legacyIds, true)
+    && array_diff($queueSources($cutLegacyFlow), ['trendhome', 'outletperdele']) === [], 'the legacy flow lists only WordPress-managed shop orders');
+$b2bCurrent = $status($get($mixed, '/orders/stage-queue', ['stage' => 'waiting', 'flow' => 'current']), 200, 'B2B waiting queue, current flow');
+$b2bLegacy = $status($get($mixed, '/orders/stage-queue', ['stage' => 'waiting', 'flow' => 'legacy']), 200, 'B2B waiting queue, legacy flow');
+$check(in_array($orders['BW1'], array_column($b2bCurrent['items'], 'id'), true) && $b2bCurrent['legacyTotal'] === 0 && $b2bLegacy['items'] === [] && $b2bLegacy['counts']['total'] === 0, 'a B2B order is never legacy');
+$tyLegacy = $status($get($tyonly, '/orders/stage-queue', ['stage' => 'waiting', 'flow' => 'legacy']), 200, 'Trendyol waiting queue, legacy flow');
+$tyCurrent = $status($get($tyonly, '/orders/stage-queue', ['stage' => 'waiting', 'flow' => 'current']), 200, 'Trendyol waiting queue, current flow');
+$check($tyLegacy['items'] === [] && $tyLegacy['counts']['total'] === 0 && $tyCurrent['legacyTotal'] === 0 && $tyCurrent['counts']['total'] === $status($get($tyonly, '/orders/stage-queue', ['stage' => 'waiting']), 200, 'Trendyol waiting queue')['counts']['total'], 'Trendyol counts are unchanged by the flow filter');
+$error($get($mixed, '/orders/stage-queue', ['stage' => 'material-preparation', 'flow' => 'old']), 422, 'VALIDATION_FAILED', 'an unknown flow is refused');
+$mixedSummary = array_column($status($get($mixed, '/orders/stage-summary'), 200, 'mixed stage summary')['stages'], null, 'stageId');
+$check($mixedSummary['material-preparation']['legacyTotal'] === $cutLegacyCount && $mixedSummary['material-preparation']['total'] === $cutAll['counts']['total'] && $mixedSummary['waiting']['legacyTotal'] === 0 && $mixedSummary['waiting']['legacyMine'] === 0, 'the stage summary counts the legacy orders apart: ' . json_encode($mixedSummary));
+$pdo->prepare("UPDATE operational_orders SET workflow_cohort = ? WHERE global_order_id = ?")->execute([$om1Cohort, $orders['OM1']]);
 
 // ---- Cutting: pool, claim with the original QR, transfers ----------------------------------------------------------
 $cutScoped = $login('cutscoped');

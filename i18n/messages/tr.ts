@@ -1258,6 +1258,11 @@ export const tr: Catalog = {
   "stageWs.empty": "Bu aşamada sipariş yok",
   "stageWs.autoUpdate": "Bir sipariş buraya geldiğinde liste otomatik güncellenir.",
   "stageWs.firstShown": "İlk {count} sipariş gösteriliyor: önce seninkiler, sonra müsait olanlar, en eskiden başlayarak.",
+  "stageWs.flow.label": "Gösterilen siparişler",
+  "stageWs.flow.current": "Yeni sistem",
+  "stageWs.flow.legacy": "Eski, WordPress ({count})",
+  "stageWs.flow.all": "Tümü",
+  "stageWs.flow.hidden": "{count} eski Trend Home / Outlet Perdele siparişi WordPress'te yönetiliyor ve burada sayılmıyor.",
   "stageWs.stageOf": "Aşama {ordinal} / {total}",
   "stageWs.sourceScope": "Bu aşamada yalnızca şu kaynakların siparişlerinde çalışırsın: {sources}.",
   "stageWs.metrics": "{stage} aşamasının durumu",
@@ -1307,4 +1312,5 @@ export const tr: Catalog = {
   "mgmt.col.unassigned": "Üstlenilmemiş",
   "mgmt.col.oldest": "En eski",
   "mgmt.footnote": "Sipariş, çalışan ve istisna ayrıntıları Dashboard uygulamasında kalır.",
+  "mgmt.legacyNote": "WordPress'te yönetilen {count} eski Trend Home / Outlet Perdele siparişi dahil değil ({waiting} bekliyor).",
 };

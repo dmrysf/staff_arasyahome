@@ -78,7 +78,7 @@ final readonly class ManagementController
                 $path === '/production-settings' => $this->service($this->settings)->view($actor),
                 $path === '/dashboard' => $this->management->overview($actor),
                 $path === '/system' => $this->management->system($actor),
-                $path === '/production-overview' => ($this->production ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Production overview is not ready.'))->overview($actor, $this->filters($request, ['source'])),
+                $path === '/production-overview' => ($this->production ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Production overview is not ready.'))->overview($actor, $this->filters($request, ['source', 'flow'])),
                 $path === '/employees' => $this->management->listEmployees($actor, $this->filters($request, ['search', 'status', 'departmentId', 'application', 'roleId', 'cursor', 'limit'])),
                 $path === '/orders' => $this->orderControl()->list($actor, $this->filters($request, ['search', 'source', 'stage', 'commerceStatus', 'ownerId', 'assignment', 'state', 'cursor', 'limit'])),
                 preg_match('#^/orders/([^/]{1,600})$#D', $path, $m) === 1 => $this->orderControl()->detail($actor, rawurldecode($m[1])),
