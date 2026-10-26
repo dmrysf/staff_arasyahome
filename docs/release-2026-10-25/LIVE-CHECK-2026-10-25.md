@@ -132,7 +132,7 @@ publish it to both shops' updaters. Do not re-run old release jobs; release only
 | SmartBill 3.4.10 connected, company `RO42340172__subsidiary_1` (two underscores; the same company on both shops) | PASS | PASS |
 | Final document an invoice, invoice series SMART | PASS | PASS |
 | Plugin's own paths off: automatic issue statuses none, e-mail, cashing and draft off, no payment link, RON | PASS | PASS |
-| **Proforma series in the plugin (`estimate_series`)** | **FAIL (empty)** | **FAIL (empty)** |
+| Proforma series in the plugin (`estimate_series`) | PASS: ARS (set 2026-10-26 09:09Z with the owner's approval; only this key changed) | PASS: ARS (same) |
 | YD approved company, series, bank (`invoice proforma-bank`) | FAIL: not set (YD 2.9.1 has none; set after 2.20.0) | same |
 | Free shipping 600 lei | PASS | FAIL: Outlet ships with `mygls`; WooCommerce free shipping and flat rate are off. ShippingCheck reports `unverifiable` and never refuses |
 | Advance 30 %, HPOS, source enforce, auto-updates off | PASS | PASS |
@@ -146,7 +146,7 @@ publish it to both shops' updaters. Do not re-run old release jobs; release only
 **Today's invoicing.** No automatic issue on status. Documents are issued with the order page button in WordPress: 194 (Trend Home) and 102 (Outlet Perdele) in 30 days.
 
 **Before invoicing through Arasya, on both shops:**
-1. Set the plugin's proforma series to **ARS** (SmartBill plugin settings). Without it, 2.20.0 refuses every proforma (`proforma_series_missing`).
+1. DONE 2026-10-26 09:09Z (owner-approved, only `estimate_series` changed, both shops): the plugin's proforma series is **ARS**. Without it, 2.20.0 refuses every proforma (`proforma_series_missing`).
 2. After the 2.20.0 install, run `wp yd-arasya invoice proforma-bank … --company=RO42340172__subsidiary_1 --invoice-series=SMART --bic=INGBROBU`. The docs carried a one-underscore value, now corrected. A wrong value refuses every document; it never makes a wrong one.
 
 **People (Arasya, live).** There are 26 active employees: 2 management, 13 tailoring, 4 cutting, 2 operations, 1 warehouse, 2 finance and 2 online sales.
