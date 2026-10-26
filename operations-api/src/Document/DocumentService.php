@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Arasya\Operations\Document;
 
 use Arasya\Operations\Authorization\AuthorizationService;
+use Arasya\Operations\Cancellation\ProductionStop;
 use Arasya\Operations\Employee\EmployeeIdentity;
 use Arasya\Operations\Employee\EmployeeRepository;
 use Arasya\Operations\Http\ApiException;
@@ -134,6 +135,8 @@ final readonly class DocumentService
                 $this->requireScope($fresh, DocumentScopePolicy::OPERATE, $order);
             }
             $this->assertOpenOrder($order, 'generate');
+            // Owner rule 1 (production stop): no new production ticket (R1 or a later revision) while production is stopped.
+            ProductionStop::assertOpen($this->pdo, (string) $order['order_uuid']);
             if ((int) $order['document_version'] !== $expected) {
                 throw $this->changed();
             }
@@ -163,6 +166,7 @@ final readonly class DocumentService
         }
         $order = $this->store->lockOrderByUuid($orderUuid);
         if ($order['document_status'] === 'none') {
+            ProductionStop::assertOpen($this->pdo, $orderUuid);
             $this->createInitial($actor, $order, $this->now(), $requestId);
         }
     }
@@ -427,7 +431,8 @@ final readonly class DocumentService
 
     /**
      * Records a print or a reprint of the active revision and returns what to render. A reprint keeps
-     * the revision number and the QR; it never creates a revision.
+     * the revision number and the QR; it never creates a revision. API 2.42.0: every reprint of a Confirmare-cohort
+     * order needs a reason (DOCUMENT_REPRINT_REASON_REQUIRED); other orders keep the optional reason.
      *
      * @param array<string, mixed> $input {revisionNumber: int, reason?: string}
      * @return array{revisionUuid: string, printNumber: int}
@@ -470,6 +475,12 @@ final readonly class DocumentService
             if (!$b2bViewerAuthority) {
                 $this->requireScope($fresh, DocumentScopePolicy::OPERATE, $order);
             }
+            // Owner rule 1 (production stop): no paper for the factory while production is stopped, neither a first print nor a
+            // reprint. Reading the document and its history stays available (read-only routes).
+            ProductionStop::assertOpen($this->pdo, (string) $order['order_uuid']);
+            if ($kind === 'reprint' && $reason === null && self::reprintNeedsReason($order)) {
+                throw self::reprintReasonRequired();
+            }
             $now = $this->now();
             $this->pdo->prepare('INSERT INTO production_document_prints (print_uuid, revision_uuid, order_uuid, print_number, print_kind, reason, printed_by_employee_uuid, printed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
                 ->execute([Uuid::v4(), $active['revision_uuid'], $order['order_uuid'], $number, $kind, $reason, $fresh->employeeUuid, $now]);
@@ -508,7 +519,7 @@ final readonly class DocumentService
     public function sourceStates(SourceDefinition $source, array $orderIds): array
     {
         $states = [];
-        $statement = $this->pdo->prepare('SELECT order_uuid, production_authority, production_completed_at, operational_status, document_status, document_version, payment_method, advance_status FROM operational_orders WHERE global_order_id = ?');
+        $statement = $this->pdo->prepare('SELECT order_uuid, production_authority, production_stage_id, production_completed_at, operational_status, document_status, document_version, payment_method, advance_status, production_stopped_at FROM operational_orders WHERE global_order_id = ?');
         foreach ($orderIds as $orderId) {
             $globalId = $source->key . ':' . $orderId;
             $statement->execute([$globalId]);
@@ -533,7 +544,7 @@ final readonly class DocumentService
      */
     public function sourcePrint(SourceDefinition $source, array $input, string $requestId): array
     {
-        if (array_diff(array_keys($input), ['orderId', 'issue', 'revisionNumber', 'actor']) !== [] || !is_string($input['orderId'] ?? null) || preg_match('/^[1-9][0-9]{0,19}$/D', $input['orderId']) !== 1
+        if (array_diff(array_keys($input), ['orderId', 'issue', 'revisionNumber', 'actor', 'reason']) !== [] || !is_string($input['orderId'] ?? null) || preg_match('/^[1-9][0-9]{0,19}$/D', $input['orderId']) !== 1
             || !is_bool($input['issue'] ?? null) || (($input['revisionNumber'] ?? null) !== null && (!is_int($input['revisionNumber']) || $input['revisionNumber'] < 1))
             || !is_array($input['actor'] ?? null) || array_keys($input['actor']) !== ['id', 'name'] || !is_int($input['actor']['id']) || $input['actor']['id'] < 1 || !is_string($input['actor']['name'])) {
             throw new ApiException(422, 'SOURCE_PAYLOAD_INVALID', 'orderId, issue, revisionNumber and actor are required.');
@@ -542,8 +553,10 @@ final readonly class DocumentService
         $actorLabel = mb_substr('#' . $input['actor']['id'] . ($actorName === '' ? '' : ' ' . $actorName), 0, 120);
         $globalId = $source->key . ':' . $input['orderId'];
         $expectedRevision = $input['revisionNumber'] ?? null;
+        // API 2.42.0: optional reprint reason (required for a reprint of a Confirmare-cohort order).
+        $reason = $this->text($input['reason'] ?? null, false, 500);
 
-        return $this->transaction(function () use ($source, $globalId, $input, $expectedRevision, $actorLabel, $requestId): array {
+        return $this->transaction(function () use ($source, $globalId, $input, $expectedRevision, $actorLabel, $requestId, $reason): array {
             $order = $this->store->lockOrder($globalId);
             if (self::documentAuthorityOf($this->modes, $source->key, (string) $order['production_authority']) !== 'arasya') {
                 throw new ApiException(409, 'DOCUMENT_AUTHORITY_SOURCE', 'Fișa de producție a acestei comenzi rămâne în sursa ei; Arasya nu o emite.');
@@ -551,6 +564,8 @@ final readonly class DocumentService
             if ($source->documentAuthorityMode !== DocumentAuthorityMode::Enforce) {
                 throw new ApiException(409, 'DOCUMENT_CUTOVER_INACTIVE', 'Autoritatea Arasya pentru fișa de producție nu este activă pentru această sursă.');
             }
+            // Owner rule 1 (production stop): the shop's print panel issues no R1 and prints no ticket while production is stopped.
+            ProductionStop::assertOpen($this->pdo, (string) $order['order_uuid']);
             $now = $this->now();
             $issued = false;
             $sourceActor = ['source' => $source->key, 'actor' => $actorLabel];
@@ -581,10 +596,13 @@ final readonly class DocumentService
             $count->execute([$active['revision_uuid']]);
             $number = (int) $count->fetchColumn() + 1;
             $kind = $number === 1 ? 'print' : 'reprint';
-            $this->pdo->prepare('INSERT INTO production_document_prints (print_uuid, revision_uuid, order_uuid, print_number, print_kind, reason, printed_by_employee_uuid, printed_by_source_key, printed_by_source_actor, printed_at) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?)')
-                ->execute([Uuid::v4(), $active['revision_uuid'], $order['order_uuid'], $number, $kind, $source->key, $actorLabel, $now]);
+            if ($kind === 'reprint' && $reason === null && self::reprintNeedsReason($order)) {
+                throw self::reprintReasonRequired();
+            }
+            $this->pdo->prepare('INSERT INTO production_document_prints (print_uuid, revision_uuid, order_uuid, print_number, print_kind, reason, printed_by_employee_uuid, printed_by_source_key, printed_by_source_actor, printed_at) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)')
+                ->execute([Uuid::v4(), $active['revision_uuid'], $order['order_uuid'], $number, $kind, $kind === 'reprint' ? $reason : null, $source->key, $actorLabel, $now]);
             $this->store->event((string) $order['order_uuid'], $kind === 'print' ? 'printed' : 'reprinted', (int) $active['revision_number'], (string) $active['revision_uuid'], null, null,
-                ['printNumber' => $number] + $sourceActor, $requestId, $now);
+                ['printNumber' => $number] + ($kind === 'reprint' && $reason !== null ? ['reason' => $reason] : []) + $sourceActor, $requestId, $now);
             return ['orderId' => (string) $input['orderId'], 'state' => $this->sourceState($source, $order), 'revisionUuid' => (string) $active['revision_uuid'], 'printNumber' => $number, 'issued' => $issued];
         });
     }
@@ -618,12 +636,13 @@ final readonly class DocumentService
             $row = $open->fetch(PDO::FETCH_ASSOC);
             $request = is_array($row) ? ['status' => (string) $row['status'], 'targetRevision' => (int) $row['target_revision_number']] : null;
         }
-        $open = $order['production_completed_at'] === null && $order['operational_status'] !== 'unavailable';
+        $open = $order['production_completed_at'] === null && $order['operational_status'] !== 'unavailable' && ($order['production_stopped_at'] ?? null) === null;
         return [
             'productionAuthority' => (string) $order['production_authority'],
             'documentAuthority' => $authority,
             'documentStatus' => (string) $order['document_status'],
             'issueAllowed' => $authority === 'arasya' && $source->documentAuthorityMode === DocumentAuthorityMode::Enforce && $order['document_status'] === 'none' && $open
+                && !\Arasya\Operations\Production\ConfirmationGate::isClosed($this->pdo, (string) $order['order_uuid'], (string) $order['production_stage_id'])
                 && !\Arasya\Operations\Production\PaymentGate::blocksStart($this->modes, $source->key, isset($order['payment_method']) ? (string) $order['payment_method'] : null, isset($order['advance_status']) ? (string) $order['advance_status'] : null),
             // Gate state for the source's operator (no amounts); absent while the source's gate is off.
             'paymentGate' => \Arasya\Operations\Production\PaymentGate::modeFor($this->modes, $source->key)->isVisible()
@@ -672,6 +691,9 @@ final readonly class DocumentService
         }
         // The first production document starts production: never while the source's enforced advance payment gate
         // is closed. Checked on the locked row, so a payment update committed meanwhile is the one that counts.
+        // A Confirmare-cohort order is closed until the Confirmare workflow approved it (checked first: confirmation
+        // precedes the advance). The same locked row, so a decision committed meanwhile is the one that counts.
+        \Arasya\Operations\Production\ConfirmationGate::assertOpen($this->pdo, (string) $order['order_uuid'], (string) $order['production_stage_id']);
         \Arasya\Operations\Production\PaymentGate::assertOpen($this->modes, $order);
         $orderUuid = (string) $order['order_uuid'];
         // Revision 1 binds the canonical QR reference the order already received at intake, so labels
@@ -703,6 +725,9 @@ final readonly class DocumentService
     private function createRevision(EmployeeIdentity $actor, array $order, ?string $expectedRequest, string $now, string $requestId): void
     {
         $orderUuid = (string) $order['order_uuid'];
+        // API 2.42.0: a Confirmare-cohort order still at stage 1 gets a new printable ticket only once its changed content
+        // was reviewed and cleared again (the gate never applies past stage 1 or to other cohorts).
+        \Arasya\Operations\Production\ConfirmationGate::assertOpen($this->pdo, $orderUuid, (string) $order['production_stage_id']);
         $statement = $this->pdo->prepare('SELECT * FROM production_document_revision_requests WHERE open_order_uuid = ? FOR UPDATE');
         $statement->execute([$orderUuid]);
         $request = $statement->fetch(PDO::FETCH_ASSOC);
@@ -794,6 +819,17 @@ final readonly class DocumentService
 
 
 
+
+    /** Whether a reprint of this locked order needs a reason: a Confirmare (or undetermined) cohort order, API 2.42.0. @param array<string, mixed> $order */
+    private static function reprintNeedsReason(array $order): bool
+    {
+        return \Arasya\Operations\Production\WorkflowCohort::needsConfirmation(isset($order['workflow_cohort']) ? (string) $order['workflow_cohort'] : null);
+    }
+
+    private static function reprintReasonRequired(): ApiException
+    {
+        return new ApiException(422, 'DOCUMENT_REPRINT_REASON_REQUIRED', 'Retipărirea fișei de producție necesită un motiv (de exemplu: hârtie pierdută sau deteriorată).');
+    }
 
     /** @param array<string, mixed> $order */
     private function assertOpenOrder(array $order, string $operation): void

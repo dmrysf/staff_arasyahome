@@ -5,11 +5,13 @@ declare(strict_types=1);
 namespace Arasya\Operations\Management;
 
 use Arasya\Operations\Authorization\AuthorizationService;
+use Arasya\Operations\Cancellation\CancellationSchema;
 use Arasya\Operations\Config\Config;
 use Arasya\Operations\Employee\EmployeeIdentity;
 use Arasya\Operations\Http\ApiException;
 use Arasya\Operations\Order\OrderFreshness;
 use Arasya\Operations\Production\CanonicalProductionWorkflowContract;
+use Arasya\Operations\Production\WorkflowCohort;
 use Arasya\Operations\Support\Clock;
 use DateTimeImmutable;
 use DateTimeZone;
@@ -20,8 +22,10 @@ use PDO;
  * operational projection; nothing is cached, sampled or estimated.
  *
  * Definitions (shared with the Dashboard and its tests):
- * - active order: production not completed (production_completed_at IS NULL) and not withdrawn by its
- *   source (operational_status <> 'unavailable', i.e. not cancelled);
+ * - active order: production not completed (production_completed_at IS NULL), not withdrawn by its
+ *   source (operational_status <> 'unavailable', i.e. not cancelled) and not stopped inside Arasya
+ *   (production_stopped_at IS NULL, API 2.35.0). A stopped or cancelled order is never counted as active
+ *   production, and a completion is never erased by a later cancellation (completedToday keeps it);
  * - waiting: active and currently at the first canonical stage, `waiting`;
  * - in work: active and past `waiting`;
  * - unassigned: active with no current production owner. Every canonical stage is claimed before it can
@@ -41,13 +45,21 @@ use PDO;
  *   employee_work      approved rework or pieces on their own route still need production work
  *   plan_review        a manufacturing plan, piece identity or route evidence needs an authorized review (PieceGate)
  * PERDEA auxiliary-work status (stages 6-7, route policy version 2) is information only and never appears as a blocker.
+ *
+ * Flow filter (owner 2026-10-26, read-only): `flow=current` leaves out the Trend Home / Outlet Perdele orders of the
+ * established WordPress-managed flow (WorkflowCohort::LEGACY_SHOP_SQL), `flow=legacy` shows only them, no filter shows
+ * every order as before. It narrows every order section; source health and activity stay unfiltered. `legacy` always
+ * counts those orders (active, waiting) within the source filter.
  */
 final readonly class ProductionOverviewService
 {
     public const TIMEZONE = 'Europe/Bucharest';
     private const OLDEST_LIMIT = 10;
     private const ACTIVITY_LIMIT = 12;
-    private const ACTIVE = "o.production_completed_at IS NULL AND o.operational_status <> 'unavailable'";
+    private const ACTIVE_BASE = "o.production_completed_at IS NULL AND o.operational_status <> 'unavailable'";
+    private const NOT_STOPPED = ' AND o.production_stopped_at IS NULL';
+    private const CANCELLATION_ITEMS = 50;
+    private const RELEASED_RECENT_DAYS = 7;
     private const ENTERED_AT = 'COALESCE(o.production_changed_at, o.created_at)';
 
     public function __construct(
@@ -69,14 +81,21 @@ final readonly class ProductionOverviewService
         if ($source !== '' && !in_array($source, array_column($sources, 'source_key'), true)) {
             throw new ApiException(422, 'VALIDATION_FAILED', 'Unknown source filter.');
         }
-        $scope = $source === '' ? '' : ' AND o.source_key = :source';
+        $flow = $filters['flow'] ?? '';
+        if ($flow !== '' && !in_array($flow, WorkflowCohort::FLOWS, true)) {
+            throw new ApiException(422, 'VALIDATION_FAILED', 'Unknown flow filter.');
+        }
+        $sourceScope = $source === '' ? '' : ' AND o.source_key = :source';
+        $legacySql = WorkflowCohort::legacyShopSql($this->pdo);
+        $scope = $sourceScope . WorkflowCohort::flowSql($flow, $legacySql);
         $params = $source === '' ? [] : ['source' => $source];
         $now = $this->clock->now();
 
         return [
             'generatedAt' => $this->iso($now),
             'timezone' => self::TIMEZONE,
-            'filters' => ['source' => $source === '' ? null : $source],
+            'filters' => ['source' => $source === '' ? null : $source, 'flow' => $flow === '' ? null : $flow],
+            'legacy' => $this->legacy($legacySql, $sourceScope, $params),
             'summary' => $this->summary($now, $scope, $params),
             'stages' => $this->stages($scope, $params),
             'oldestOrders' => $this->authorization->can($actor, 'orders.view_all') ? $this->oldestOrders($scope, $params) : null,
@@ -84,6 +103,7 @@ final readonly class ProductionOverviewService
             'sources' => $this->authorization->can($actor, 'sources.view') ? $this->sources($sources, $now) : null,
             'blockers' => $this->authorization->can($actor, 'orders.view_all') ? $this->blockers($scope, $params) : null,
             'perdeaInformation' => $this->authorization->can($actor, 'orders.view_all') ? $this->perdeaInformation($scope, $params) : null,
+            'cancellations' => $this->authorization->can($actor, 'orders.view_all') && CancellationSchema::ready($this->pdo) ? $this->cancellations($scope, $params, $now) : null,
         ];
     }
 
@@ -95,7 +115,7 @@ final readonly class ProductionOverviewService
                     COALESCE(SUM(o.production_stage_id = :waiting_a), 0) AS waiting,
                     COALESCE(SUM(o.production_stage_id <> :waiting_b), 0) AS in_work,
                     COALESCE(SUM(o.production_owner_employee_uuid IS NULL), 0) AS unassigned
-             FROM operational_orders o WHERE ' . self::ACTIVE . $scope,
+             FROM operational_orders o WHERE ' . $this->active() . $scope,
         );
         $statement->execute(['waiting_a' => 'waiting', 'waiting_b' => 'waiting'] + $params);
         $row = $statement->fetch(PDO::FETCH_ASSOC);
@@ -113,6 +133,21 @@ final readonly class ProductionOverviewService
         ];
     }
 
+    /**
+     * Owner 2026-10-26: active Trend Home / Outlet Perdele orders of the established WordPress-managed flow
+     * (WorkflowCohort::LEGACY_SHOP_SQL) within the source filter, whatever the flow filter, so a view without them
+     * still says how many it leaves out. Read-only.
+     * @param array<string, string> $params @return array{active: int, waiting: int}
+     */
+    private function legacy(string $legacySql, string $sourceScope, array $params): array
+    {
+        $statement = $this->pdo->prepare('SELECT COUNT(*) AS active, COALESCE(SUM(o.production_stage_id = :waiting), 0) AS waiting
+             FROM operational_orders o WHERE ' . $this->active() . ' AND ' . $legacySql . $sourceScope);
+        $statement->execute(['waiting' => 'waiting'] + $params);
+        $row = $statement->fetch(PDO::FETCH_ASSOC);
+        return ['active' => (int) $row['active'], 'waiting' => (int) $row['waiting']];
+    }
+
     /** One grouped query for all stages; stages without orders report zero. @param array<string, string> $params @return list<array<string, mixed>> */
     private function stages(string $scope, array $params): array
     {
@@ -126,7 +161,7 @@ final readonly class ProductionOverviewService
         $counts = $this->pdo->prepare(
             'SELECT o.production_stage_id AS stage_id, COUNT(*) AS active, COALESCE(SUM(o.production_owner_employee_uuid IS NULL), 0) AS unassigned,
                     MIN(' . self::ENTERED_AT . ') AS oldest_entered_at
-             FROM operational_orders o WHERE ' . self::ACTIVE . $scope . ' GROUP BY o.production_stage_id',
+             FROM operational_orders o WHERE ' . $this->active() . $scope . ' GROUP BY o.production_stage_id',
         );
         $counts->execute($params);
         $byStage = [];
@@ -159,7 +194,7 @@ final readonly class ProductionOverviewService
              INNER JOIN order_sources s ON s.source_key = o.source_key
              INNER JOIN production_stages ps ON ps.stage_id = o.production_stage_id
              LEFT JOIN employees e ON e.employee_uuid = o.production_owner_employee_uuid
-             WHERE ' . self::ACTIVE . $scope . '
+             WHERE ' . $this->active() . $scope . '
              ORDER BY entered_at ASC, o.order_uuid ASC
              LIMIT ' . self::OLDEST_LIMIT,
         );
@@ -198,7 +233,7 @@ final readonly class ProductionOverviewService
     {
         $orders = $this->pdo->prepare('SELECT o.order_uuid, o.global_order_id, o.order_number, o.source_key, s.display_name AS source_name, o.production_stage_id, ps.display_name AS stage_label, ' . self::ENTERED_AT . ' AS entered_at
              FROM operational_orders o INNER JOIN order_sources s ON s.source_key = o.source_key INNER JOIN production_stages ps ON ps.stage_id = o.production_stage_id
-             WHERE ' . self::ACTIVE . $scope);
+             WHERE ' . $this->active() . $scope);
         $orders->execute($params);
         $byUuid = [];
         foreach ($orders->fetchAll(PDO::FETCH_ASSOC) as $row) $byUuid[(string) $row['order_uuid']] = $row;
@@ -249,10 +284,63 @@ final readonly class ProductionOverviewService
         return ['counts' => $counts, 'items' => array_slice($items, 0, self::BLOCKER_LIMIT), 'more' => count($items) > self::BLOCKER_LIMIT];
     }
 
+    /** Active production: not completed, not cancelled by the source and, once migration 033 exists, not stopped. */
+    private function active(): string
+    {
+        return self::ACTIVE_BASE . (CancellationSchema::ready($this->pdo) ? self::NOT_STOPPED : '');
+    }
+
+    /**
+     * Cancellation control (API 2.35.0): every stopped order and the releases of the last seven days, one category per
+     * order (CancellationView), with the party that acts next. Counts cover every row; the list is bounded.
+     * @param array<string, string> $params @return array<string, mixed>
+     */
+    private function cancellations(string $scope, array $params, DateTimeImmutable $now): array
+    {
+        $statement = $this->pdo->prepare('SELECT c.order_uuid, c.hold_status, c.origin, c.reason_code, c.source_status, c.source_request_status, c.production_phase, c.physical_status,
+                c.physical_outcome, c.held_at, c.released_at, c.version, o.global_order_id, o.order_number, o.source_key, s.display_name AS source_name,
+                o.production_stage_id, ps.display_name AS stage_label, o.production_completed_at
+             FROM order_cancellation_controls c
+             INNER JOIN operational_orders o ON o.order_uuid = c.order_uuid
+             INNER JOIN order_sources s ON s.source_key = o.source_key
+             INNER JOIN production_stages ps ON ps.stage_id = o.production_stage_id
+             WHERE (c.hold_status = :held OR c.released_at >= :released_since)' . $scope . '
+             ORDER BY c.held_at DESC, c.order_uuid DESC');
+        $statement->execute(['held' => 'held', 'released_since' => $now->modify('-' . self::RELEASED_RECENT_DAYS . ' days')->format('Y-m-d H:i:s.u')] + $params);
+        $rows = $statement->fetchAll(PDO::FETCH_ASSOC);
+        $counts = array_fill_keys(\Arasya\Operations\Cancellation\CancellationView::CATEGORIES, 0);
+        $actions = ['physical_reconciliation' => 0, 'source_confirmation' => 0, 'release_decision' => 0];
+        $items = [];
+        foreach ($rows as $row) {
+            $category = \Arasya\Operations\Cancellation\CancellationView::category($row);
+            $next = \Arasya\Operations\Cancellation\CancellationView::nextAction($row);
+            $counts[$category]++;
+            if (isset($actions[$next])) $actions[$next]++;
+            $items[] = [
+                'globalOrderId' => (string) $row['global_order_id'], 'orderNumber' => (string) $row['order_number'],
+                'source' => ['key' => (string) $row['source_key'], 'name' => (string) $row['source_name']],
+                'stage' => ['id' => (string) $row['production_stage_id'], 'label' => (string) $row['stage_label']],
+                'category' => $category, 'nextAction' => $next, 'origin' => (string) $row['origin'], 'reason' => (string) $row['reason_code'],
+                'physical' => (string) $row['physical_status'], 'physicalOutcome' => $row['physical_outcome'] === null ? null : (string) $row['physical_outcome'],
+                'productionCompleted' => $row['production_completed_at'] !== null,
+                'heldAt' => $this->isoSql((string) $row['held_at']), 'releasedAt' => $row['released_at'] === null ? null : $this->isoSql((string) $row['released_at']),
+            ];
+        }
+        return [
+            'counts' => $counts,
+            'stopped' => count($rows) - $counts['released'],
+            'physicalPending' => count(array_filter($rows, static fn (array $row): bool => $row['hold_status'] === 'held' && $row['physical_status'] === 'pending')),
+            'nextActions' => $actions,
+            'items' => array_slice($items, 0, self::CANCELLATION_ITEMS),
+            'more' => count($items) > self::CANCELLATION_ITEMS,
+            'releasedWindowDays' => self::RELEASED_RECENT_DAYS,
+        ];
+    }
+
     /** Informational PERDEA auxiliary-work status of active orders (route policy version 2); never a blocker. @param array<string, string> $params @return array<string, mixed> */
     private function perdeaInformation(string $scope, array $params): array
     {
-        $orders = $this->pdo->prepare('SELECT o.order_uuid FROM operational_orders o WHERE ' . self::ACTIVE . $scope);
+        $orders = $this->pdo->prepare('SELECT o.order_uuid FROM operational_orders o WHERE ' . $this->active() . $scope);
         $orders->execute($params);
         return ['informational' => true] + (new \Arasya\Operations\Production\AssistedCheckpoints($this->pdo))->overview(array_column($orders->fetchAll(PDO::FETCH_ASSOC), 'order_uuid'), 50);
     }
@@ -296,7 +384,7 @@ final readonly class ProductionOverviewService
     private function sources(array $sources, DateTimeImmutable $now): array
     {
         $active = [];
-        foreach ($this->pdo->query('SELECT o.source_key, COUNT(*) FROM operational_orders o WHERE ' . self::ACTIVE . ' GROUP BY o.source_key')->fetchAll(PDO::FETCH_NUM) as [$key, $count]) {
+        foreach ($this->pdo->query('SELECT o.source_key, COUNT(*) FROM operational_orders o WHERE ' . $this->active() . ' GROUP BY o.source_key')->fetchAll(PDO::FETCH_NUM) as [$key, $count]) {
             $active[(string) $key] = (int) $count;
         }
         return array_map(function (array $row) use ($now, $active): array {

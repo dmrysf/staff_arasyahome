@@ -64,9 +64,9 @@ the server's full code set. No sound or optimistic mutation. Live retries conver
 with an additional visible safety refresh; state keys detect schedule transitions without writes.
 Stage IDs and historical snapshots remain unchanged; current labels are Tăiere / Primire Croitorie.
 
-Source cancellation before first cutting claim removes availability without approval. After
-cutting starts it records the inbound commercial fact without silently deleting ownership or
-resetting production. There is no outbound integration. Root cancels stale transfer intent
+Source cancellation removes availability without approval. Since API 2.35.0 it also stops
+production at every stage, including after the first cutting claim, without deleting ownership or
+resetting production (see [order cancellation control](order-cancellation-control.md)). There is no outbound integration. Root cancels stale transfer intent
 with a mandatory audited reason; this does not silently reassign or delete historical facts.
 
 ## Manual rollout and rollback

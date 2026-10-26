@@ -80,12 +80,15 @@ The body is `{ "sentAt": "<ISO-8601>" }`. Validation and active sources may send
 }
 ```
 
+Since API 2.29.0 the heartbeat also states the per-source authority modes and `paymentGateMode`; since API 2.37.0 it states `confirmare: {state, activatedAt}` from the recorded Confirmare activation history (see [confirmare-cohort.md](confirmare-cohort.md)). Older connectors ignore keys they do not know.
+
 The response never contains secrets, configuration values, paths or database details.
 
 ## Payload contract (schemaVersion 1, unchanged)
 
 - Root: `schemaVersion`, `eventId`, `changedAt`, `order`, optional `production`.
-- Order: `id`, `number`, `status`, `availability`, `notes`, `acceptedAt`, `items`, `delivery`.
+- Order: `id`, `number`, `status`, `availability`, `notes`, `acceptedAt`, `items`, `delivery`, optional `payment` ([payment gate](source-payment-gate.md)), optional `submission` (API 2.37.0, [Confirmare cohort](confirmare-cohort.md): `{submittedAt, evidence}`, sent only after the heartbeat carried `confirmare`).
+- Creating an order from a draft status (`checkout-draft`, `auto-draft`, `draft`) is refused with `422 SOURCE_ORDER_DRAFT`. While a source is active for Confirmare, an unpaid first event (`pending`, `on-hold`) outside the Confirmare cohort is refused with `409 SOURCE_INTAKE_NOT_ELIGIBLE` and nothing is stored; otherwise behaviour is unchanged.
 - Item: `id`, `line`, `name`, `sku`, `variant`, `color`, `width`, `height`, `unit`, `meters`, `quantity`, `options`.
 - See [source-integrations.md](source-integrations.md) and [production-documents.md](production-documents.md) for field rules.
 - **Email is not part of the contract.** An `email` inside `order.delivery` is rejected. The phone is masked at ingestion (`DeliveryContext`).
@@ -172,4 +175,6 @@ No integration code is written for a new site.
 - Root approval, pairing and self-service secret issuance. The protocol (source key plus per-source secret) stays the same when these are added.
 - The YD SOFT WordPress client, outbox, retries and credentials (Milestone 2).
 - Source-scoped QR/document endpoints. The QR/document engine is unchanged.
-- Any outbound WooCommerce write. Sources stay inbound-only (`tests/inbound-only-guard.php`).
+- Any outbound WooCommerce write from Arasya. Sources stay inbound-only (`tests/inbound-only-guard.php`). Since API 2.36.0 a
+  shop's connector may pull cancellation requests (`orders/cancellations`, `orders/cancellations/result`); the shop changes
+  its own order, never Arasya. See [cancellation synchronization](order-cancellation-sync.md).

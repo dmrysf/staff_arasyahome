@@ -33,6 +33,12 @@ import { dashboardUrlFor } from "../domain/workspaces";
 import { LoginIntroStage, introPlaysHere, preloadIntroMap } from "../features/auth/LoginIntro";
 import { I18nProvider, normalizeLocale, readDeviceLocale, saveDeviceLocale, t, type Locale } from "../i18n";
 import { localizeWorkflow } from "../domain/stageNames";
+import { ConfirmareQueueScreen } from "../features/confirmare/ConfirmareQueueScreen";
+import { ConfirmareOrderScreen } from "../features/confirmare/ConfirmareOrderScreen";
+import { ConfirmareTeamScreen } from "../features/confirmare/ConfirmareTeamScreen";
+import { ConfirmareFinanceScreen } from "../features/confirmare/ConfirmareFinanceScreen";
+import { ConfirmareHandoffScreen } from "../features/confirmare/ConfirmareHandoffScreen";
+import { ConfirmareAwbScreen, ConfirmareEfacturaScreen, ConfirmareHealthScreen } from "../features/confirmare/ConfirmareShopTasks";
 
 type StaffAppProps = { initialRoute: string; mode: StaffRuntimeMode; apiBaseUrl: string };
 
@@ -150,6 +156,7 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
   const exceptionId = parsedRoute.kind === "exception-detail" && guardedRoute === parsedRoute.pathname ? parsedRoute.exceptionId : "";
   const documentOrderId = parsedRoute.kind === "document-detail" && guardedRoute === parsedRoute.pathname ? parsedRoute.orderId : "";
   const trendyolPackageId = parsedRoute.kind === "trendyol-package" && guardedRoute === parsedRoute.pathname ? parsedRoute.packageId : "";
+  const confirmareOrderId = parsedRoute.kind === "confirmare-order" && guardedRoute === parsedRoute.pathname ? parsedRoute.orderId : "";
   let screen = <HomeScreen employee={session.employee} services={services} workflow={workflow} dashboardUrl={dashboardUrl} navigate={navigate} />;
   if (guardedRoute === "/scan") {
     // A request's "open the scanner" passes only the request id; the scanned code itself never enters a URL.
@@ -157,12 +164,20 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
     screen = <ScannerScreen key={scanContext ?? "scan"} service={services.orders} exceptions={services.exceptions} contextExceptionId={scanContext} cutting={services.cutting} employee={session.employee} workflow={workflow} mode={mode} navigate={navigate} onSessionExpired={() => expireSession(new StaffServiceError("SESSION_EXPIRED"))} />;
   } else if (guardedRoute === "/orders") screen = <OrdersScreen service={services.orders} workflow={workflow} navigate={navigate} />;
   else if (orderId) screen = <OrderDetailScreen key={orderId} orderId={orderId} service={services.orders} exceptions={services.exceptions} cutting={services.cutting} documents={services.documents} productionQr={canManageAuthority(session.employee) ? services.productionQr : undefined} pieces={services.pieces} physical={services.physical} permissions={session.employee.permissions} workflow={workflow} navigate={navigate} onSessionExpired={() => expireSession(new StaffServiceError("SESSION_EXPIRED"))} />;
-  else if (documentOrderId && services.documents) screen = <DocumentScreen key={documentOrderId} orderId={documentOrderId} service={services.documents} permissions={session.employee.permissions} navigate={navigate} />;
+  else if (documentOrderId && services.documents) screen = <DocumentScreen key={documentOrderId} orderId={documentOrderId} service={services.documents} permissions={session.employee.permissions} navigate={navigate} invoices={services.confirmare ?? undefined} />;
   else if (guardedRoute === "/problems") screen = <SupervisorScreen service={services.exceptions} navigate={navigate} />;
   else if (exceptionId) screen = <ExceptionScreen key={exceptionId} exceptionId={exceptionId} service={services.exceptions} pieces={services.pieces} navigate={navigate} onSessionExpired={() => expireSession(new StaffServiceError("SESSION_EXPIRED"))} />;
   else if (guardedRoute === "/authority" && services.authority) screen = <AuthorityScreen service={services.authority} initialOrderId={new URLSearchParams(window.location.search).get("order") ?? undefined} navigate={navigate} />;
   else if (guardedRoute === "/trendyol" && services.trendyol) screen = <TrendyolInboxScreen service={services.trendyol} navigate={navigate} />;
   else if (trendyolPackageId && services.trendyol) screen = <TrendyolPackageScreen key={trendyolPackageId} packageId={trendyolPackageId} service={services.trendyol} navigate={navigate} />;
+  else if (guardedRoute === "/confirmare" && services.confirmare) screen = <ConfirmareQueueScreen employee={session.employee} service={services.confirmare} navigate={navigate} />;
+  else if (guardedRoute === "/confirmare/team" && services.confirmare) screen = <ConfirmareTeamScreen employee={session.employee} service={services.confirmare} navigate={navigate} />;
+  else if (guardedRoute === "/confirmare/finance" && services.confirmare) screen = <ConfirmareFinanceScreen employee={session.employee} service={services.confirmare} navigate={navigate} />;
+  else if (guardedRoute === "/confirmare/handoff" && services.confirmare) screen = <ConfirmareHandoffScreen service={services.confirmare} navigate={navigate} />;
+  else if (guardedRoute === "/confirmare/awb" && services.confirmare) screen = <ConfirmareAwbScreen service={services.confirmare} navigate={navigate} />;
+  else if (guardedRoute === "/confirmare/efactura" && services.confirmare) screen = <ConfirmareEfacturaScreen service={services.confirmare} navigate={navigate} />;
+  else if (guardedRoute === "/confirmare/health" && services.confirmare) screen = <ConfirmareHealthScreen service={services.confirmare} navigate={navigate} />;
+  else if (confirmareOrderId && services.confirmare) screen = <ConfirmareOrderScreen key={confirmareOrderId} orderId={confirmareOrderId} employee={session.employee} service={services.confirmare} documents={services.documents} navigate={navigate} />;
   else if (guardedRoute === "/history") screen = <HistoryScreen service={services.activity} navigate={navigate} />;
   else if (guardedRoute === "/profile") screen = <ProfileScreen employee={session.employee} mode={services.mode} onLogout={logout} passwordChanged={passwordChanged} onChangePassword={() => { setPasswordChanged(false); setChangingPassword(true); }} />;
 

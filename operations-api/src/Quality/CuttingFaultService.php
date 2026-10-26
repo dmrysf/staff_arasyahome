@@ -39,6 +39,12 @@ use Throwable;
  *   cancel (root only, recovery for a request that can no longer progress; a supervised case whose product
  *     already left its owner is never released by cancellation, see cancel())
  *
+ * Commercial cancellation (API 2.35.0) is a different thing: it never cancels, approves or dismisses an exception.
+ * While an order's production is stopped, the commands that would send work back into production (report, approval,
+ * return to cutting, custody acceptance, a new decision attempt) are refused by the shared guard; the physical
+ * receipts and the handover back to tailoring (acknowledge, restore, receiveRestore), rejections, notes and root
+ * recovery stay possible, so the product always has a recorded holder.
+ *
  * Every command locks the order row first and then the exception row, replays a committed result
  * for the same actor idempotency key, checks expected versions and writes append-only events
  * before commit. History is never rewritten: the only state that moves backwards is the current
@@ -1056,7 +1062,7 @@ final readonly class CuttingFaultService
                 // A root recovery is under way; only root addresses it again.
                 throw new ApiException(409, 'EXCEPTION_STATE_INVALID', 'The request is not in a state that allows this action.', ['status' => $exception['status']]);
             }
-            $this->assertOrderOpenForProduction($order);
+            $this->assertOrderOpenForCustody($order);
             $this->assertHeldAtCustodyStage($carrier, $exceptionUuid);
             $now = $this->now();
             $this->verifyQr($order, $exception, $reference, $now);
@@ -1117,7 +1123,7 @@ final readonly class CuttingFaultService
                 throw new ApiException(403, 'EXCEPTION_NOT_ASSIGNED', 'This request is not addressed to you.');
             }
             $this->assertStatus($exception, ['awaiting_restore_receipt'], $expected);
-            $this->assertOrderOpenForProduction($order);
+            $this->assertOrderOpenForCustody($order);
             $this->assertHeldAtCustodyStage($carrier, $exceptionUuid);
             $now = $this->now();
             $this->verifyQr($order, $exception, $reference, $now);
@@ -1502,7 +1508,7 @@ final readonly class CuttingFaultService
     {
         $statement = $this->pdo->prepare(
             'SELECT order_uuid, global_order_id, source_key, order_number, production_stage_id, production_owner_employee_uuid, production_completed_at,
-                    operational_status, production_version, open_exception_uuid, document_status
+                    operational_status, production_version, open_exception_uuid, document_status, production_stopped_at
              FROM operational_orders WHERE global_order_id = ? FOR UPDATE',
         );
         $statement->execute([$globalId]);
@@ -1652,8 +1658,26 @@ final readonly class CuttingFaultService
         if ($order['production_completed_at'] !== null) {
             throw new ApiException(409, 'PRODUCTION_COMPLETED', 'Production is already completed.');
         }
+        // API 2.35.0: the shared cancellation guard. A report, a return to cutting, an approval of rework, a custody
+        // acceptance or a new decision attempt would send work back into production; none of them runs while stopped.
+        \Arasya\Operations\Cancellation\ProductionStop::assertOpen($this->pdo, (string) $order['order_uuid']);
         if ($order['operational_status'] === 'unavailable') {
             throw new ApiException(409, 'ORDER_UNAVAILABLE', 'The order is not available for production.');
+        }
+        \Arasya\Operations\Document\DocumentGuard::assertOpen($order);
+    }
+
+    /**
+     * The two-party handover of a product back to the tailoring employee (restore, receiveRestore) records where the
+     * physical product is. It stays possible while production is stopped or the source cancelled the order, so a
+     * cancelled product is never left without a recorded holder; it never makes the stopped order workable (the
+     * production stop still refuses every manufacturing command afterwards).
+     * @param array<string, mixed> $order
+     */
+    private function assertOrderOpenForCustody(array $order): void
+    {
+        if ($order['production_completed_at'] !== null) {
+            throw new ApiException(409, 'PRODUCTION_COMPLETED', 'Production is already completed.');
         }
         \Arasya\Operations\Document\DocumentGuard::assertOpen($order);
     }

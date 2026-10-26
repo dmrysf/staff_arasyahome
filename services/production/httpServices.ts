@@ -12,6 +12,12 @@ import { isProductionAuthority, type AuthorityApi, type AuthorityChange, type Or
 import type { ActiveQr, ProductionQrApi, ProductionQrView, QrAuthority, QrAuthorityMode, QrRevision, QrRevisionState, QrRotationReason } from "../../domain/productionQr";
 import { createBrowserWorkflowCache, createUnavailableWorkflowCache, normalizeProductionApiBaseUrl, type WorkflowCache } from "./workflowCache";
 import { createProductionWorkflowService } from "./workflowService";
+import type { ShopLine, ShopOrderDetail, ShopPerson, ShopRead } from "../../domain/confirmareShop";
+import { CASH_RECEIPTS, EXCEPTION_REASONS, EXCEPTION_RESOLUTIONS, FINANCE_ACTIONS, PAYMENT_METHODS, FINANCE_NEXT, FINANCE_TASKS, type ExceptionOutcome, type FinanceEntry, type FinanceOutcome, type FinanceQueue, type FinanceQueueItem, type FinanceRead, type FinanceSummary, type FinanceTask, type FinanceTimelineItem, type TransferException, type TransferExceptionList } from "../../domain/confirmareFinance";
+import { CANCEL_REASONS, INVOICE_ACTIONS, INVOICE_ROLES, PROFORMA_ACTIONS, PROFORMA_KEYS, PROFORMA_ROUTE, type CodCheck, type ShippingCheck, type InvoiceDeadline, type MoneyPosition, type TotalAcceptance, type InvoiceActionKey, type InvoiceOutcome, type InvoiceRead, type InvoiceSummary, type InvoiceView, type ProformaActionKey, type ProformaSummary, type ShopAssignment, type ShopQueueItem } from "../../domain/confirmareInvoice";
+import { EDIT_IMPACTS, type EditBlocker, type EditCatalog, type EditField, type EditLineSnapshot, type EditOutcome, type EditProduct, type EditResult, type EditTotals, type EditVariation, type OpenEdit } from "../../domain/confirmareEdit";
+import { mapAwbQueue, mapBankCheck, mapBankChecks, mapContactCycle, mapCycleAttention, mapEfacturaQueue, mapEfacturaTask, mapHealth, mapOperationOutcome, mapOperationsState, mapOrderCycle, mapProformaCycle } from "../../domain/confirmareOps";
+import { CLEARANCE_CONDITIONS, CONTACT_OUTCOMES, DOCUMENT_STATES, FINANCIAL_ATTENTION, HANDOFF_BLOCKERS, HANDOFF_STATES, type ConfirmareAlert, type ConfirmareApi, type ConfirmareAvailability, type ConfirmareContact, type ConfirmareCustomer, type ConfirmareDetail, type ConfirmareEvent, type ConfirmareHandoff, type ConfirmareItem, type HandoffItem, type ConfirmareLine, type ConfirmareOperator, type ConfirmarePool, type ConfirmareTeam, type FinancialState } from "../../domain/confirmare";
 
 type FetchLike = typeof fetch;
 export type ProductionServicesOptions = {
@@ -79,6 +85,7 @@ const backendErrorCodes: Partial<Record<string, ServiceErrorCode>> = {
   ORDER_CHANGED: "ORDER_CHANGED",
   ORDER_NOT_FOUND: "ORDER_NOT_FOUND",
   ORDER_UNAVAILABLE: "ORDER_UNAVAILABLE",
+  ORDER_PRODUCTION_STOPPED: "ORDER_PRODUCTION_STOPPED",
   ORDER_ALREADY_CLAIMED: "ORDER_ALREADY_CLAIMED",
   ORDER_AMBIGUOUS: "ORDER_AMBIGUOUS",
   INVALID_LOOKUP_CODE: "INVALID_ORDER_CODE",
@@ -132,6 +139,9 @@ const backendErrorCodes: Partial<Record<string, ServiceErrorCode>> = {
   RECEIVER_NOT_ELIGIBLE: "RECEIVER_NOT_ELIGIBLE",
   ORDER_BLOCKED_BY_DOCUMENT: "ORDER_BLOCKED_BY_DOCUMENT",
   AVANS_NEVALIDAT: "AVANS_NEVALIDAT",
+  CONFIRMARE_NECESARA: "CONFIRMARE_NECESARA",
+  CONFIRMARE_DOCUMENT_NECESAR: "CONFIRMARE_DOCUMENT_NECESAR",
+  DOCUMENT_REPRINT_REASON_REQUIRED: "DOCUMENT_REPRINT_REASON_REQUIRED",
   DOCUMENT_SUPERSEDED: "DOCUMENT_SUPERSEDED",
   DOCUMENT_REVOKED: "DOCUMENT_REVOKED",
   DOCUMENT_NOT_GENERATED: "DOCUMENT_NOT_GENERATED",
@@ -217,7 +227,34 @@ export function mapProductionEmployee(value: unknown): Employee {
     mustChangePassword: booleanValue(raw.mustChangePassword),
     // An older API (always "ro"), a missing or an unknown value all read as Romanian.
     locale: normalizeLocale(raw.locale),
+    confirmareScopes: mapConfirmareScopes(raw.confirmareScopes),
+    financeScopes: mapFinanceScopes(raw.financeScopes),
+    invoiceScopes: mapInvoiceScopes(raw.invoiceScopes),
   };
+}
+
+/** Optional (API 2.41.0); an older API or a malformed value grants no finance screen. */
+function mapFinanceScopes(value: unknown): { view: string[]; record: string[]; approve: string[] } {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return { view: [], record: [], approve: [] };
+  const raw = value as Record<string, unknown>;
+  const list = (entry: unknown): string[] => Array.isArray(entry) && entry.every((item) => typeof item === "string") ? entry as string[] : [];
+  return { view: list(raw.view), record: list(raw.record), approve: list(raw.approve) };
+}
+
+/** Optional (API 2.43.0); an older API or a malformed value shows no invoice scope. */
+function mapInvoiceScopes(value: unknown): { issue: string[]; manage: string[] } {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return { issue: [], manage: [] };
+  const raw = value as Record<string, unknown>;
+  const list = (entry: unknown): string[] => Array.isArray(entry) && entry.every((item) => typeof item === "string") ? entry as string[] : [];
+  return { issue: list(raw.issue), manage: list(raw.manage) };
+}
+
+/** Optional (API 2.39.0); an older API or a malformed value grants no Confirmare screen. */
+function mapConfirmareScopes(value: unknown): { operate: string[]; supervise: string[] } {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return { operate: [], supervise: [] };
+  const raw = value as Record<string, unknown>;
+  const list = (entry: unknown): string[] => Array.isArray(entry) && entry.every((item) => typeof item === "string") ? entry as string[] : [];
+  return { operate: list(raw.operate), supervise: list(raw.supervise) };
 }
 
 export function mapProductionOrderItem(value: unknown): import("../../domain/models").ProductionItem {
@@ -331,6 +368,8 @@ export function mapOrderDocument(value: unknown): OrderDocument {
       decidedBy: optionalString(request.decidedBy), decisionComment: optionalString(request.decisionComment), decidedAt: request.decidedAt == null ? null : timestampValue(request.decidedAt), resolutionNote: optionalString(request.resolutionNote),
     },
     revisions: raw.revisions.map(mapRevision),
+    // API 2.42.0: a Confirmare-cohort order needs a reason for every reprint; an older API never asks for one.
+    reprintReasonRequired: raw.reprintReasonRequired === true,
   };
 }
 
@@ -341,6 +380,26 @@ export function mapDocumentAttention(value: unknown): DocumentAttention {
     orderId: stringValue(raw.orderId), orderNumber: stringValue(raw.orderNumber), documentStatus: oneOf(raw.documentStatus, documentStatuses),
     revisionNumber: raw.revisionNumber == null ? null : positiveInteger(raw.revisionNumber),
     request: request === null ? null : { id: stringValue(request.id), status: oneOf(request.status, requestStatuses), targetRevision: positiveInteger(request.targetRevision), requestedBy: stringValue(request.requestedBy) },
+  };
+}
+
+/** API 2.35.0: the effective production stop. Every field is a closed server enumeration; anything else is a server error. */
+export function mapProductionStop(value: unknown): import("../../domain/models").ProductionStopView {
+  const raw = objectValue(value);
+  if (raw.state !== "stopped" || raw.canContinue !== false || typeof raw.managementAttention !== "boolean") throw new StaffServiceError("SERVER_ERROR");
+  return {
+    state: "stopped",
+    reason: oneOf(raw.reason, ["source_cancelled", "marketplace_cancelled", "manager_stop", "legacy_source_cancellation"] as const),
+    origin: oneOf(raw.origin, ["source", "local"] as const),
+    sourceStatus: oneOf(raw.sourceStatus, ["cancelled", "reactivated", "not_reported"] as const),
+    sourceRequest: oneOf(raw.sourceRequest, ["not_requested", "pending", "confirmed", "withdrawn"] as const),
+    phase: oneOf(raw.phase, ["not_started", "in_progress", "completed"] as const),
+    physical: oneOf(raw.physical, ["not_required", "pending", "verified"] as const),
+    since: timestampValue(raw.since),
+    canContinue: false,
+    managementAttention: raw.managementAttention,
+    // API 2.36.0; absent before it (then no request was ever sent).
+    sync: raw.sync == null ? null : oneOf(raw.sync, ["awaiting_confirmation", "attention", "confirmed"] as const),
   };
 }
 
@@ -432,6 +491,7 @@ export function mapProductionOrder(value: unknown): import("../../domain/models"
   }
 
   if (raw.pieces != null) order.pieces = mapOrderPieces(raw.pieces);
+  if (raw.productionStop != null) order.productionStop = mapProductionStop(raw.productionStop);
   if (raw.scannedPiece != null) {
     const scanned = objectValue(raw.scannedPiece);
     order.scannedPiece = { unitId: stringValue(scanned.unitId), trackId: scanned.trackId == null ? null : stringValue(scanned.trackId) };
@@ -774,9 +834,11 @@ function createRequest(apiBaseUrl: string, options: ProductionServicesOptions, o
   async function errorFromResponse(response: Response, path: string) {
     let backendCode = "";
     let details: Record<string, unknown> | undefined;
+    let errorDetails: unknown = null;
     try {
       const payload = objectValue(await response.json());
       const error = objectValue(payload.error);
+      errorDetails = error.details ?? null;
       backendCode = typeof error.code === "string" ? error.code : "";
       // Only the active revision number is kept from details (an old QR scan tells which revision to use).
       if (error.details && typeof error.details === "object" && typeof (error.details as Record<string, unknown>).activeRevisionNumber === "number") details = { activeRevisionNumber: (error.details as Record<string, unknown>).activeRevisionNumber };
@@ -795,7 +857,9 @@ function createRequest(apiBaseUrl: string, options: ProductionServicesOptions, o
             : response.status === 503
               ? "SERVICE_UNAVAILABLE"
               : "SERVER_ERROR";
-    const error = new StaffServiceError(backendErrorCodes[backendCode] ?? fallback, undefined, /^(PLAN_|SOURCE_PLAN_|PIECE_OUTCOME|UNIT_RETIRED|ORDER_PIECES_|ORDER_ROUTE_|CUSTODY_|MATERIAL_|EXACT_PIECES_|CUTTING_NOT_|RECONCILIATION_|ASSISTED_)/.test(backendCode) || /\/manufacturing-plan|^\/production-units/.test(path) ? { ...details, backendCode, httpStatus: response.status } : details);
+    // Confirmare refusals keep their code, the current version and the missing conditions, never anything else.
+    if (path.startsWith("/confirmare/")) details = { ...details, ...confirmareErrorDetails(errorDetails) };
+    const error = new StaffServiceError(backendErrorCodes[backendCode] ?? fallback, undefined, /^(PLAN_|SOURCE_PLAN_|PIECE_OUTCOME|UNIT_RETIRED|ORDER_PIECES_|ORDER_ROUTE_|CUSTODY_|MATERIAL_|EXACT_PIECES_|CUTTING_NOT_|RECONCILIATION_|ASSISTED_|CONFIRMARE_)/.test(backendCode) || /\/manufacturing-plan|^\/production-units|^\/confirmare\//.test(path) ? { ...details, backendCode, httpStatus: response.status } : details);
     // Access changed centrally (temporary password, application access removed): the app re-reads the session.
     if (["PASSWORD_CHANGE_REQUIRED", "APPLICATION_ACCESS_DENIED"].includes(error.code) && path !== "/auth/session" && path !== "/auth/password") onSessionExpired(error);
     if (["SESSION_EXPIRED", "NO_SESSION", "ACCOUNT_INACTIVE"].includes(error.code) && path !== "/auth/login" && path !== "/auth/session") {
@@ -1029,10 +1093,10 @@ export function createProductionServices(apiBaseUrl: string, options: Production
     correctIdentity: (packageId, input, key) => http.request(`${trendyolPackage(packageId)}/correct-identity`, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapTrendyolDetail),
   };
   const workspace: WorkspaceApi = {
-    stageQueue: (stageId, signal) => http.request(`/orders/stage-queue?stage=${encodeURIComponent(stageId)}`, { signal }, mapStageQueue),
+    stageQueue: (stageId, signal, flow) => http.request(`/orders/stage-queue?stage=${encodeURIComponent(stageId)}${flow ? `&flow=${flow}` : ""}`, { signal }, mapStageQueue),
     stageSummary: (signal) => http.request("/orders/stage-summary", { signal }, mapStageSummary),
   };
-  const management: ManagementApi = { productionOverview: (signal) => http.request("/management/production-overview", { signal }, mapProductionOverview) };
+  const management: ManagementApi = { productionOverview: (signal, flow) => http.request(`/management/production-overview${flow ? `?flow=${flow}` : ""}`, { signal }, mapProductionOverview) };
   const pieces: import("../../domain/pieces").PieceApi = {
     claim: (trackId, input) => http.request(`/production-tracks/${encodeURIComponent(trackId)}/claim`, { method: "POST", headers: { "Idempotency-Key": input.idempotencyKey },
       body: JSON.stringify({ expectedVersion: input.expectedVersion, qrToken: input.qrToken }) }, mapPieceActionResult),
@@ -1051,7 +1115,796 @@ export function createProductionServices(apiBaseUrl: string, options: Production
     reunite: (input, key) => http.request("/production-units/reunite", { method: "POST", body: JSON.stringify(input), headers: { "Idempotency-Key": key } }),
     material: (id, input, key) => http.request(`/production-units/${encodeURIComponent(id)}/material`, { method: "POST", body: JSON.stringify(input), headers: { "Idempotency-Key": key } }),
   };
-  return { physical, auth, employee, orders, activity, workflow, exceptions, live, cutting, documents, authority, productionQr, trendyol, workspace, management, pieces, mode: "production" };
+  const sourceQuery = (source: string | null) => (source ? `?${new URLSearchParams({ source }).toString()}` : "");
+  const confirmareOrder = (globalOrderId: string, action: string) => `/confirmare/orders/${encodeURIComponent(globalOrderId)}/${action}`;
+  const command = <T>(path: string, input: unknown, key: string, map: (value: unknown) => T) => http.request(path, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, map);
+  const confirmare: ConfirmareApi = {
+    pool: (view, source, signal) => http.request(`/confirmare/pool?view=${view}${source ? `&source=${encodeURIComponent(source)}` : ""}`, { signal }, mapConfirmarePool),
+    handoffList: (source, signal) => http.request(`/confirmare/handoff${source ? `?source=${encodeURIComponent(source)}` : ""}`, { signal }, mapHandoffList),
+    detail: (globalOrderId, signal) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}`, { signal }, mapConfirmareDetail),
+    next: (source, key) => command("/confirmare/next", { source }, key, (value) => { const assigned = objectValue(value).assigned; return assigned == null ? null : mapConfirmareItem(assigned); }),
+    claim: (globalOrderId, input, key) => command(confirmareOrder(globalOrderId, "claim"), input, key, mapConfirmareItem),
+    release: (globalOrderId, input, key) => command(confirmareOrder(globalOrderId, "release"), input, key, mapConfirmareItem),
+    reassign: (globalOrderId, input, key) => command(confirmareOrder(globalOrderId, "reassign"), input, key, mapConfirmareItem),
+    reopen: (globalOrderId, input, key) => command(confirmareOrder(globalOrderId, "reopen"), input, key, mapConfirmareItem),
+    approve: (globalOrderId, input, key) => command(confirmareOrder(globalOrderId, "approve"), input, key, mapConfirmareItem),
+    reject: (globalOrderId, input, key) => command(confirmareOrder(globalOrderId, "reject"), input, key, mapConfirmareItem),
+    contact: (globalOrderId, input, key) => command(confirmareOrder(globalOrderId, "contact"), input, key, (value) => { const raw = objectValue(value); return { contact: mapConfirmareContact(raw.contact), item: mapConfirmareItem(raw.item), proformaCycle: mapContactCycle(raw.proformaCycle) }; }),
+    availability: (signal) => http.request("/confirmare/availability", { signal }, mapConfirmareAvailability),
+    setAvailability: (input, key) => http.request("/confirmare/availability", { method: "PUT", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapConfirmareAvailability),
+    team: (signal) => http.request("/confirmare/team", { signal }, mapConfirmareTeam),
+    alerts: (signal) => http.request("/confirmare/alerts", { signal }, (value) => { const raw = objectValue(value); return { items: itemsOf(raw).map(mapConfirmareAlert), inactivityMinutes: nonNegativeInteger(raw.inactivityMinutes) }; }),
+    // Customer data: never kept in the browser's HTTP cache (the server also answers no-store).
+    sourceOrder: (globalOrderId, signal) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/source`, { signal, cache: "no-store" }, mapShopRead),
+    // Phase 4B: controlled shop edits. Amounts come from the shop; nothing is cached or kept.
+    sourceCatalog: (globalOrderId, signal) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/source/catalog`, { signal, cache: "no-store" }, (value) => mapEditCatalog(objectValue(value).catalog)),
+    sourceProduct: (globalOrderId, sku) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/source/product`, { method: "POST", cache: "no-store", body: JSON.stringify({ sku }) }, (value) => mapEditProduct(objectValue(value).product)),
+    sourcePreview: (globalOrderId, input) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/source/preview`, { method: "POST", cache: "no-store", body: JSON.stringify(input) }, (value) => { const raw = objectValue(objectValue(value).preview); return { ...mapEditResult(raw), previewToken: hexToken(raw.previewToken) }; }),
+    sourceApply: (globalOrderId, input, key) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/source/apply`, { method: "POST", cache: "no-store", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapEditOutcome),
+    sourceReconcile: (globalOrderId, key) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/source/reconcile`, { method: "POST", cache: "no-store", body: JSON.stringify({ idempotencyKey: key }) }, mapEditOutcome),
+    // Confirmare finance (API 2.41.0): amounts are read when asked, never cached; actions need an Idempotency-Key.
+    financeRead: (globalOrderId, signal) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/finance`, { signal, cache: "no-store" }, mapFinanceRead),
+    financeAct: (globalOrderId, action, input, key) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/finance/${action.replace(/_/g, "-")}`, { method: "POST", cache: "no-store", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapFinanceOutcome),
+    financeReconcile: (globalOrderId, key) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/finance/reconcile`, { method: "POST", cache: "no-store", body: JSON.stringify({ idempotencyKey: key }) }, mapFinanceOutcome),
+    financeQueue: (task, source, signal) => http.request(`/confirmare/finance${task || source ? `?${new URLSearchParams({ ...(task ? { task } : {}), ...(source ? { source } : {}) }).toString()}` : ""}`, { signal, cache: "no-store" }, mapFinanceQueue),
+    // API 2.44.0: the shop's bank transfers that match no order (read from the shop when shown, never cached).
+    transferExceptions: (source, signal) => http.request(`/confirmare/finance/transfer-exceptions${source ? `?${new URLSearchParams({ source }).toString()}` : ""}`, { signal, cache: "no-store" }, mapTransferExceptionList),
+    transferExceptionAct: (source, action, input, key) => http.request(`/confirmare/finance/transfer-exceptions/${action}?${new URLSearchParams({ source }).toString()}`, { method: "POST", cache: "no-store", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapExceptionOutcome),
+    // SmartBill invoicing (API 2.43.0): the state is read when shown, never cached; actions need an Idempotency-Key.
+    invoiceRead: (globalOrderId, signal) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/invoice`, { signal, cache: "no-store" }, mapInvoiceRead),
+    invoiceAct: (globalOrderId, action, input, key) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/invoice/${action.replace(/_/g, "-")}`, { method: "POST", cache: "no-store", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapInvoiceOutcome),
+    invoiceReconcile: (globalOrderId, key) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/invoice/reconcile`, { method: "POST", cache: "no-store", body: JSON.stringify({ idempotencyKey: key }) }, mapInvoiceOutcome),
+    // API 2.44.0: the operator's advance proforma, the routing to a shop employee and the shop employee's QR scan.
+    proformaAct: (globalOrderId, action, input, key) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/proforma/${PROFORMA_ROUTE[action]}`, { method: "POST", cache: "no-store", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapInvoiceOutcome),
+    shopCandidates: (globalOrderId, signal) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/shop-employees`, { signal, cache: "no-store" }, (value) => listOf(objectValue(value).items, 200, (entry) => { const item = objectValue(entry); return { id: uuidValue(item.id), name: textValue(item.name, 200) }; })),
+    assignShop: (globalOrderId, input, key) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/shop-assignment`, { method: "POST", cache: "no-store", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, (value) => mapShopAssignment(objectValue(value).assignment)),
+    verifyInvoiceQr: (globalOrderId, qrToken) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/invoice/qr`, { method: "POST", cache: "no-store", body: JSON.stringify({ qrToken }) }, (value) => { const raw = objectValue(value); if (raw.verified !== true) throw new StaffServiceError("SERVER_ERROR"); return { verified: true as const, validSeconds: nonNegativeInteger(raw.validSeconds) }; }),
+    shopQueue: (signal) => http.request("/confirmare/shop-queue", { signal, cache: "no-store" }, (value) => listOf(objectValue(value).items, 200, mapShopQueueItem)),
+    // API 2.46.0: the proforma cycles, the bank checks, the shop operations (reactivation, AWB, card refund), e-Factura, health.
+    cycleAttention: (source, signal) => http.request(`/confirmare/cycles${sourceQuery(source)}`, { signal, cache: "no-store" }, mapCycleAttention),
+    bankChecks: (source, signal) => http.request(`/confirmare/finance/bank-checks${sourceQuery(source)}`, { signal, cache: "no-store" }, mapBankChecks),
+    recordBankCheck: (source, key) => http.request("/confirmare/finance/bank-check", { method: "POST", cache: "no-store", headers: { "Idempotency-Key": key }, body: JSON.stringify({ source }) }, (value) => mapBankCheck(objectValue(value).check)),
+    advanceCycle: (globalOrderId) => http.request(confirmareOrder(globalOrderId, "cycle/advance"), { method: "POST", cache: "no-store", body: "{}" }, (value) => mapProformaCycle(objectValue(value).proformaCycle)),
+    retryCycle: (globalOrderId) => http.request(confirmareOrder(globalOrderId, "cycle/retry"), { method: "POST", cache: "no-store", body: "{}" }, (value) => mapProformaCycle(objectValue(value).proformaCycle)),
+    operations: (globalOrderId, signal) => http.request(confirmareOrder(globalOrderId, "operations"), { signal, cache: "no-store" }, mapOperationsState),
+    operate: (globalOrderId, path, input, key) => http.request(confirmareOrder(globalOrderId, path), { method: "POST", cache: "no-store", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapOperationOutcome),
+    operationsReconcile: (globalOrderId, key) => http.request(confirmareOrder(globalOrderId, "operations/reconcile"), { method: "POST", cache: "no-store", body: JSON.stringify({ idempotencyKey: key }) }, mapOperationOutcome),
+    async awbLabel(globalOrderId) {
+      const response = await http.send(confirmareOrder(globalOrderId, "awb/label"), { cache: "no-store" });
+      if (!response.ok) throw await http.errorFromResponse(response, "/confirmare/awb/label");
+      return response.blob();
+    },
+    awbQueue: (source, signal) => http.request(`/confirmare/awb-queue${sourceQuery(source)}`, { signal, cache: "no-store" }, mapAwbQueue),
+    efactura: (source, state, signal) => http.request(`/confirmare/efactura${source || state ? `?${new URLSearchParams({ ...(source ? { source } : {}), ...(state ? { state } : {}) }).toString()}` : ""}`, { signal, cache: "no-store" }, mapEfacturaQueue),
+    recordEfactura: (taskId, input) => http.request(`/confirmare/efactura/${encodeURIComponent(taskId)}`, { method: "POST", cache: "no-store", body: JSON.stringify(input) }, (value) => mapEfacturaTask(objectValue(value).task)),
+    health: (source, signal) => http.request(`/confirmare/health${sourceQuery(source)}`, { signal, cache: "no-store" }, mapHealth),
+  };
+  return { physical, auth, employee, orders, activity, workflow, exceptions, live, cutting, documents, authority, productionQr, trendyol, workspace, management, pieces, confirmare, mode: "production" };
+}
+
+// ---------------------------------------------------------------- Confirmare workspace (strict; unexpected shapes fail closed)
+const confirmareStatuses = ["pending", "approved", "rejected", "cancelled"] as const;
+const financialStates: readonly FinancialState[] = ["cleared", "waiting", "partial", "unknown"];
+const nullableString = (value: unknown): string | null => value === null || value === undefined ? null : stringValue(value);
+const nullableNumber = (value: unknown): number | null => {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "number" || !Number.isFinite(value)) throw new StaffServiceError("SERVER_ERROR");
+  return value;
+};
+const fingerprintValue = (value: unknown): string => { const text = stringValue(value); if (!/^[0-9a-f]{64}$/.test(text)) throw new StaffServiceError("SERVER_ERROR"); return text; };
+
+/** Only what a Confirmare screen needs from a refusal: the current version and the missing conditions. */
+export function confirmareErrorDetails(value: unknown): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return {};
+  const raw = value as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  if (typeof raw.currentVersion === "number" && Number.isInteger(raw.currentVersion)) out.currentVersion = raw.currentVersion;
+  if (Array.isArray(raw.missing) && raw.missing.every((item) => typeof item === "string")) out.missing = raw.missing;
+  // Phase 4B: why the shop refused an edit, the shop's current order version and the blockers (codes only).
+  if (typeof raw.reason === "string" && /^[a-z_]{2,60}$/.test(raw.reason)) out.editReason = raw.reason;
+  if (typeof raw.version === "string" && /^sha256:[0-9a-f]{64}$/.test(raw.version)) out.editVersion = raw.version;
+  if (Array.isArray(raw.blockers)) { try { out.editBlockers = listOf(raw.blockers, 100, mapEditBlocker); } catch { out.editBlockers = []; } }
+  // API 2.43.0: the invoice refusal codes (Arasya's or the shop's) behind a refused invoice action.
+  if (Array.isArray(raw.blockers) && raw.blockers.length <= 40 && raw.blockers.every((item) => typeof item === "string" && /^[a-z_]{2,60}$/.test(item))) out.invoiceBlockers = raw.blockers;
+  // Phase 5: the shop's current finance revision after a refused finance action (`reason` is editReason above).
+  if (typeof raw.revision === "string" && /^sha256:[0-9a-f]{64}$/.test(raw.revision)) out.financeRevision = raw.revision;
+  return out;
+}
+
+export function mapConfirmareItem(value: unknown): ConfirmareItem {
+  const raw = objectValue(value);
+  const financial = objectValue(raw.financial);
+  const contact = raw.contact == null ? null : objectValue(raw.contact);
+  const assignment = raw.assignment == null ? null : objectValue(raw.assignment);
+  const decision = raw.decision == null ? null : objectValue(raw.decision);
+  return {
+    globalOrderId: stringValue(raw.globalOrderId),
+    orderNumber: stringValue(raw.orderNumber),
+    sourceKey: stringValue(raw.sourceKey),
+    status: oneOf(raw.status, confirmareStatuses),
+    version: positiveInteger(raw.version),
+    workflowCohort: stringValue(raw.workflowCohort),
+    openedAt: timestampValue(raw.openedAt),
+    submittedAt: raw.submittedAt == null ? null : timestampValue(raw.submittedAt),
+    productionStageId: stringValue(raw.productionStageId),
+    commerceStatus: nullableString(raw.commerceStatus),
+    commerceClosed: booleanValue(raw.commerceClosed),
+    payment: { state: stringValue(objectValue(raw.payment).state) },
+    // An older API (2.38) has no `open`: unknown reads as closed.
+    financial: { state: oneOf(financial.state, financialStates), basis: nullableString(financial.basis), open: financial.open === true, attention: financial.attention == null ? null : oneOf(financial.attention, FINANCIAL_ATTENTION) },
+    pricingAvailable: raw.pricingAvailable === true,
+    dueDate: raw.dueDate == null ? null : stringValue(raw.dueDate),
+    productionCleared: booleanValue(raw.productionCleared),
+    contact: contact === null ? null : { outcome: oneOf(contact.outcome, CONTACT_OUTCOMES), at: timestampValue(contact.at), attempts: positiveInteger(contact.attempts), current: booleanValue(contact.current) },
+    assignment: assignment === null ? null : { employeeId: stringValue(assignment.employeeId), displayName: stringValue(assignment.displayName), at: timestampValue(assignment.at), kind: stringValue(assignment.kind) },
+    decision: decision === null ? null : { at: timestampValue(decision.at), by: nullableString(decision.by), reasonCode: nullableString(decision.reasonCode) },
+  };
+}
+
+/** API 2.42.0: the production handoff of an order; strict (codes only, never customer data). */
+export function mapConfirmareHandoff(value: unknown): ConfirmareHandoff {
+  const raw = objectValue(value);
+  const actions = objectValue(raw.actions);
+  const document = raw.document == null ? null : objectValue(raw.document);
+  return {
+    state: oneOf(raw.state, HANDOFF_STATES),
+    blockers: stringList(raw.blockers).map((blocker) => oneOf(blocker, HANDOFF_BLOCKERS)),
+    stageId: raw.stageId == null ? null : stringValue(raw.stageId),
+    document: document === null ? null : { status: oneOf(document.status, DOCUMENT_STATES), revision: document.revision == null ? null : positiveInteger(document.revision), prints: nonNegativeInteger(document.prints) },
+    actions: { generate: booleanValue(actions.generate), print: booleanValue(actions.print) },
+  };
+}
+
+/** API 2.42.0: the production handoff list; strict, identity and next step only. */
+export function mapHandoffList(value: unknown): HandoffItem[] {
+  return itemsOf(objectValue(value)).map((entry) => {
+    const raw = objectValue(entry);
+    return {
+      globalOrderId: stringValue(raw.globalOrderId), orderNumber: stringValue(raw.orderNumber), sourceKey: stringValue(raw.sourceKey),
+      dueDate: raw.dueDate == null ? null : stringValue(raw.dueDate), submittedAt: raw.submittedAt == null ? null : timestampValue(raw.submittedAt),
+      approvedAt: raw.approvedAt == null ? null : timestampValue(raw.approvedAt), step: oneOf(raw.step, ["ready", "print", "awaiting_cutting"] as const),
+    };
+  });
+}
+
+export function mapConfirmarePool(value: unknown): ConfirmarePool {
+  const raw = objectValue(value);
+  return { view: oneOf(raw.view, ["mine", "open", "all", "followup"] as const), items: itemsOf(raw).map(mapConfirmareItem), limit: positiveInteger(raw.limit), targetOpenPerOperator: positiveInteger(raw.targetOpenPerOperator) };
+}
+
+function mapConfirmareLine(value: unknown): ConfirmareLine {
+  const raw = objectValue(value);
+  const options = Array.isArray(raw.options) ? raw.options.map((option) => { const entry = objectValue(option); return { label: stringValue(entry.label), value: stringValue(entry.value) }; }) : [];
+  return {
+    lineId: stringValue(raw.lineId), lineNumber: positiveInteger(raw.lineNumber), name: stringValue(raw.name),
+    productCode: nullableString(raw.productCode), variant: nullableString(raw.variant), color: nullableString(raw.color),
+    width: nullableNumber(raw.width), height: nullableNumber(raw.height), unit: nullableString(raw.unit), meters: nullableNumber(raw.meters),
+    quantity: positiveInteger(raw.quantity), options, notes: nullableString(raw.notes), confirmed: booleanValue(raw.confirmed),
+  };
+}
+
+export function mapConfirmareContact(value: unknown): ConfirmareContact {
+  const raw = objectValue(value);
+  return { attempt: positiveInteger(raw.attempt), outcome: oneOf(raw.outcome, CONTACT_OUTCOMES), by: nullableString(raw.by), at: timestampValue(raw.at), current: booleanValue(raw.current) };
+}
+
+function mapConfirmareEvent(value: unknown): ConfirmareEvent {
+  const raw = objectValue(value);
+  return { action: stringValue(raw.action), actor: nullableString(raw.actor), previousStatus: nullableString(raw.previousStatus), status: stringValue(raw.status), previousAssignee: nullableString(raw.previousAssignee), assignee: nullableString(raw.assignee), reasonCode: nullableString(raw.reasonCode), version: positiveInteger(raw.version), at: timestampValue(raw.at) };
+}
+
+/** The customer block: hidden unless the server says it is visible; a full telephone number is never accepted. */
+function mapConfirmareCustomer(value: unknown): ConfirmareCustomer {
+  const raw = value == null ? {} : objectValue(value);
+  if (raw.visible !== true) return { visible: false, phoneAvailable: false };
+  const phoneMasked = nullableString(raw.phoneMasked);
+  // Defence in depth: a masked phone keeps at most two digits; anything longer is treated as unavailable.
+  const safePhone = phoneMasked !== null && (phoneMasked.match(/[0-9]/g) ?? []).length <= 2 ? phoneMasked : null;
+  return { visible: true, name: nullableString(raw.name), company: nullableString(raw.company), addressLines: Array.isArray(raw.addressLines) ? raw.addressLines.map(stringValue) : [], phoneMasked: safePhone, phoneAvailable: false };
+}
+
+export function mapConfirmareDetail(value: unknown): ConfirmareDetail {
+  const raw = objectValue(value);
+  const review = objectValue(raw.review);
+  const source = raw.source == null ? {} : objectValue(raw.source);
+  const production = objectValue(raw.production);
+  return {
+    ...mapConfirmareItem(raw),
+    review: { fingerprint: fingerprintValue(review.fingerprint), lineIds: stringList(review.lineIds), pricingAvailable: booleanValue(review.pricingAvailable), callRecorded: review.callRecorded === true, contactAvailable: review.contactAvailable === true },
+    lines: Array.isArray(raw.lines) ? raw.lines.map(mapConfirmareLine) : [],
+    contacts: Array.isArray(raw.contacts) ? raw.contacts.map(mapConfirmareContact) : [],
+    customer: mapConfirmareCustomer(raw.customer),
+    source: { commerceStatusLabel: nullableString(source.commerceStatusLabel), changedAt: source.changedAt == null ? null : timestampValue(source.changedAt), lastSeenAt: source.lastSeenAt == null ? null : timestampValue(source.lastSeenAt), freshness: nullableString(source.freshness) },
+    production: { cleared: booleanValue(production.cleared), missing: stringList(production.missing).map((condition) => oneOf(condition, CLEARANCE_CONDITIONS)) },
+    events: Array.isArray(raw.events) ? raw.events.map(mapConfirmareEvent) : [],
+    // An older API (2.45) has no cycle: no counter and no timer are shown.
+    cycle: mapOrderCycle(raw.cycle),
+    // An older API (2.41) has no handoff state: the panel is not shown.
+    handoff: raw.handoff == null ? null : mapConfirmareHandoff(raw.handoff),
+    // An older API (2.42) has no invoicing: nothing can be read or issued.
+    invoice: raw.invoice == null ? { configured: false, read: false, issue: false, manage: false, proforma: false, route: false } : (() => {
+      const invoice = objectValue(raw.invoice);
+      return { configured: invoice.configured === true, read: invoice.read === true, issue: invoice.issue === true, manage: invoice.manage === true, proforma: invoice.proforma === true, route: invoice.route === true };
+    })(),
+    // An older API (2.40) has no finance: nothing can be read or recorded.
+    finance: raw.finance == null ? { configured: false, read: false, record: false, approve: false } : (() => {
+      const finance = objectValue(raw.finance);
+      return { configured: finance.configured === true, read: finance.read === true, record: finance.record === true, approve: finance.approve === true };
+    })(),
+    // An older API (2.39) has no source access: nothing can be read from the shop.
+    sourceAccess: raw.sourceAccess == null ? { configured: false, read: false, edit: false, changePending: false, openEdits: [] } : (() => {
+      const access = objectValue(raw.sourceAccess);
+      return { configured: access.configured === true, read: access.read === true, edit: access.edit === true, changePending: access.changePending === true, openEdits: access.openEdits == null ? [] : listOf(access.openEdits, 20, mapOpenEdit) };
+    })(),
+  };
+}
+
+// ---- The shop's own order (API 2.40.0): strict; anything unexpected is refused, never half shown
+const MONEY = /^-?[0-9]{1,12}\.[0-9]{0,4}$/;
+const textValue = (value: unknown, max = 500): string => { if (typeof value !== "string" || value.length > max) throw new StaffServiceError("SERVER_ERROR"); return value; };
+const moneyValue = (value: unknown): string => { const text = textValue(value, 20); if (!MONEY.test(text)) throw new StaffServiceError("SERVER_ERROR"); return text; };
+const listOf = <T>(value: unknown, max: number, map: (entry: unknown) => T): T[] => { if (!Array.isArray(value) || value.length > max) throw new StaffServiceError("SERVER_ERROR"); return value.map(map); };
+const shopPerson = (value: unknown): ShopPerson => { const raw = objectValue(value); return { name: textValue(raw.name, 200), company: textValue(raw.company, 200), phone: textValue(raw.phone, 40), addressLines: listOf(raw.addressLines, 6, (line) => textValue(line, 300)) }; };
+const shopLine = (value: unknown): ShopLine => {
+  const raw = objectValue(value);
+  return {
+    id: textValue(raw.id, 20), line: positiveInteger(raw.line), productId: textValue(raw.productId, 20), variationId: textValue(raw.variationId, 20), name: textValue(raw.name, 300), sku: textValue(raw.sku, 100),
+    width: nullableNumber(raw.width), height: nullableNumber(raw.height), unit: raw.unit == null ? null : oneOf(raw.unit, ["m"] as const),
+    details: listOf(raw.details, 40, (entry) => { const detail = objectValue(entry); return { label: textValue(detail.label, 200), value: textValue(detail.value, 500) }; }),
+    quantity: nonNegativeNumber(raw.quantity), unitPrice: moneyValue(raw.unitPrice), subtotal: moneyValue(raw.subtotal), discount: moneyValue(raw.discount), tax: moneyValue(raw.tax), total: moneyValue(raw.total), calculator: booleanValue(raw.calculator),
+  };
+};
+export function mapShopOrderDetail(value: unknown): ShopOrderDetail {
+  const raw = objectValue(value);
+  const order = objectValue(raw.order);
+  const status = objectValue(order.status);
+  const contact = objectValue(raw.contact);
+  const totals = objectValue(raw.totals);
+  const payment = objectValue(raw.payment);
+  const financial = objectValue(payment.financial);
+  const advance = payment.advance == null ? null : objectValue(payment.advance);
+  return {
+    readAt: timestampValue(raw.readAt),
+    order: {
+      id: textValue(order.id, 20), number: textValue(order.number, 64), status: { code: textValue(status.code, 40), label: textValue(status.label, 100) },
+      createdAt: order.createdAt == null ? null : timestampValue(order.createdAt), modifiedAt: order.modifiedAt == null ? null : timestampValue(order.modifiedAt),
+      storage: oneOf(order.storage, ["hpos", "posts"] as const), currency: textValue(order.currency, 3), pricesIncludeTax: booleanValue(order.pricesIncludeTax),
+    },
+    version: textValue(raw.version, 71),
+    pricingFingerprint: raw.pricingFingerprint == null ? null : textValue(raw.pricingFingerprint, 71),
+    contact: { phoneAvailable: booleanValue(contact.phoneAvailable), billing: shopPerson(contact.billing), shipping: shopPerson(contact.shipping) },
+    lines: listOf(raw.lines, 200, shopLine),
+    fees: listOf(raw.fees, 20, (entry) => { const fee = objectValue(entry); return { name: textValue(fee.name, 200), total: moneyValue(fee.total), tax: moneyValue(fee.tax) }; }),
+    coupons: listOf(raw.coupons, 20, (entry) => { const coupon = objectValue(entry); return { code: textValue(coupon.code, 100), discount: moneyValue(coupon.discount), discountTax: moneyValue(coupon.discountTax) }; }),
+    shipping: listOf(raw.shipping, 20, (entry) => { const line = objectValue(entry); return { id: textValue(line.id, 20), methodId: textValue(line.methodId, 100), instanceId: textValue(line.instanceId, 20), title: textValue(line.title, 200), total: moneyValue(line.total), tax: moneyValue(line.tax) }; }),
+    totals: { subtotal: moneyValue(totals.subtotal), discount: moneyValue(totals.discount), discountTax: moneyValue(totals.discountTax), shipping: moneyValue(totals.shipping), shippingTax: moneyValue(totals.shippingTax), fees: moneyValue(totals.fees), tax: moneyValue(totals.tax), total: moneyValue(totals.total), refunded: moneyValue(totals.refunded) },
+    payment: {
+      method: textValue(payment.method, 100), methodTitle: textValue(payment.methodTitle, 200), cod: booleanValue(payment.cod), paidRecorded: booleanValue(payment.paidRecorded),
+      financial: { state: oneOf(financial.state, financialStates), basis: nullableString(financial.basis) },
+      advance: advance === null ? null : { percentage: nonNegativeNumber(advance.percentage), required: advance.required == null ? null : moneyValue(advance.required), collected: advance.collected == null ? null : moneyValue(advance.collected) },
+    },
+  };
+}
+// ---- Phase 4B: controlled shop edits (strict; anything unexpected is refused, never half shown)
+const EDIT_ID = /^[0-9]{1,20}$/;
+const editId = (value: unknown): string => { const text = textValue(value, 20); if (!EDIT_ID.test(text)) throw new StaffServiceError("SERVER_ERROR"); return text; };
+const editCode = (value: unknown): string => { const text = textValue(value, 60); if (!/^[a-z_]{2,60}$/.test(text)) throw new StaffServiceError("SERVER_ERROR"); return text; };
+const hexToken = (value: unknown): string => { const text = textValue(value, 64); if (!/^[0-9a-f]{64}$/.test(text)) throw new StaffServiceError("SERVER_ERROR"); return text; };
+const shopVersion = (value: unknown): string => { const text = textValue(value, 71); if (!/^sha256:[0-9a-f]{64}$/.test(text)) throw new StaffServiceError("SERVER_ERROR"); return text; };
+const finiteOrNull = (value: unknown): number | null => { if (value == null) return null; if (typeof value !== "number" || !Number.isFinite(value)) throw new StaffServiceError("SERVER_ERROR"); return value; };
+const integerOrNull = (value: unknown): number | null => { if (value == null) return null; if (typeof value !== "number" || !Number.isInteger(value)) throw new StaffServiceError("SERVER_ERROR"); return value; };
+function mapEditField(value: unknown): EditField {
+  const raw = objectValue(value);
+  return {
+    name: textValue(raw.name, 64), title: textValue(raw.title, 200), type: textValue(raw.type, 40), editable: booleanValue(raw.editable), required: booleanValue(raw.required),
+    min: finiteOrNull(raw.min), max: finiteOrNull(raw.max),
+    options: raw.options == null ? null : listOf(raw.options, 200, (entry) => { const option = objectValue(entry); return { value: textValue(option.value, 200), title: textValue(option.title, 300) }; }),
+    ...(raw.value === undefined ? {} : { value: raw.value === null ? null : textValue(raw.value, 200) }),
+  };
+}
+function mapEditVariation(value: unknown): EditVariation {
+  const raw = objectValue(value);
+  return { id: editId(raw.id), attributes: listOf(raw.attributes, 20, (entry) => { const attribute = objectValue(entry); return { label: textValue(attribute.label, 200), value: textValue(attribute.value, 200) }; }), inStock: booleanValue(raw.inStock), purchasable: booleanValue(raw.purchasable), stock: integerOrNull(raw.stock) };
+}
+export function mapEditCatalog(value: unknown): EditCatalog {
+  const raw = objectValue(value);
+  return {
+    version: shopVersion(raw.version), editable: booleanValue(raw.editable), reason: raw.reason == null ? null : editCode(raw.reason),
+    lines: listOf(raw.lines, 200, (entry) => {
+      const line = objectValue(entry);
+      return {
+        id: editId(line.id), productId: editId(line.productId), variationId: editId(line.variationId), name: textValue(line.name, 300), quantity: positiveInteger(line.quantity),
+        calculator: line.calculator == null ? null : { fields: listOf(objectValue(line.calculator).fields, 30, mapEditField) },
+        variations: listOf(line.variations, 200, mapEditVariation), editable: booleanValue(line.editable), reason: line.reason == null ? null : editCode(line.reason),
+      };
+    }),
+    shipping: listOf(raw.shipping, 20, (entry) => { const line = objectValue(entry); return { id: editId(line.id), method: textValue(line.method, 60), title: textValue(line.title, 200) }; }),
+    shippingOptions: listOf(raw.shippingOptions, 20, (entry) => { const option = objectValue(entry); return { method: textValue(option.method, 60), title: textValue(option.title, 200) }; }),
+  };
+}
+export function mapEditProduct(value: unknown): EditProduct {
+  const raw = objectValue(value);
+  const calculator = raw.calculator == null ? null : objectValue(raw.calculator);
+  return {
+    id: editId(raw.id), name: textValue(raw.name, 300), sku: textValue(raw.sku, 100), type: oneOf(raw.type, ["simple", "variable"] as const), purchasable: booleanValue(raw.purchasable),
+    inStock: booleanValue(raw.inStock), stock: integerOrNull(raw.stock), variations: listOf(raw.variations, 200, mapEditVariation),
+    calculator: calculator === null ? null : typeof calculator.unavailable === "string" ? { unavailable: editCode(calculator.unavailable) } : { fields: listOf(calculator.fields, 30, mapEditField) },
+  };
+}
+function mapEditBlocker(value: unknown): EditBlocker {
+  const raw = objectValue(value);
+  return {
+    code: editCode(raw.code),
+    ...(raw.productId == null ? {} : { productId: editId(raw.productId) }), ...(raw.method == null ? {} : { method: textValue(raw.method, 60) }),
+    ...(raw.coupon == null ? {} : { coupon: textValue(raw.coupon, 100) }), ...(raw.available == null ? {} : { available: nonNegativeInteger(raw.available) }), ...(raw.needed == null ? {} : { needed: nonNegativeInteger(raw.needed) }),
+  };
+}
+const editTotals = (value: unknown): EditTotals => {
+  const raw = objectValue(value);
+  return { subtotal: moneyValue(raw.subtotal), subtotalTax: moneyValue(raw.subtotalTax), discount: moneyValue(raw.discount), discountTax: moneyValue(raw.discountTax), shipping: moneyValue(raw.shipping), shippingTax: moneyValue(raw.shippingTax), fees: moneyValue(raw.fees), tax: moneyValue(raw.tax), total: moneyValue(raw.total) };
+};
+const editSnapshot = (value: unknown): EditLineSnapshot | null => {
+  if (value == null) return null;
+  const raw = objectValue(value);
+  let fields: Record<string, string> | null = null;
+  if (raw.fields != null) {
+    const entries = Array.isArray(raw.fields) && raw.fields.length === 0 ? {} : objectValue(raw.fields);
+    fields = Object.fromEntries(Object.entries(entries).slice(0, 30).map(([name, field]) => [textValue(name, 64), textValue(field, 200)]));
+  }
+  return { name: textValue(raw.name, 300), productId: editId(raw.productId), variationId: editId(raw.variationId), quantity: positiveInteger(raw.quantity), fields, subtotal: moneyValue(raw.subtotal), total: moneyValue(raw.total), tax: moneyValue(raw.tax) };
+};
+export function mapEditResult(value: unknown): EditResult {
+  const raw = objectValue(value);
+  const financial = objectValue(raw.financial);
+  return {
+    version: shopVersion(raw.version), applicable: booleanValue(raw.applicable), blockers: listOf(raw.blockers, 100, mapEditBlocker), before: editTotals(raw.before), after: editTotals(raw.after),
+    lines: listOf(raw.lines, 200, (entry) => { const line = objectValue(entry); return { lineId: textValue(line.lineId, 30), state: oneOf(line.state, ["added", "removed", "changed", "unchanged"] as const), before: editSnapshot(line.before), after: editSnapshot(line.after) }; }),
+    shipping: listOf(raw.shipping, 20, (entry) => { const line = objectValue(entry); return { id: editId(line.id), method: textValue(line.method, 60), before: moneyValue(line.before), after: moneyValue(line.after) }; }),
+    financial: { delta: moneyValue(financial.delta), impact: oneOf(financial.impact, EDIT_IMPACTS), cod: booleanValue(financial.cod) },
+  };
+}
+export function mapEditOutcome(value: unknown): EditOutcome {
+  const raw = objectValue(value);
+  const key = textValue(raw.idempotencyKey, 100);
+  if (raw.state === "applied") {
+    if (raw.result == null) return { state: "applied", idempotencyKey: key, result: null };
+    const result = objectValue(raw.result);
+    const money = objectValue(result.financialState);
+    return { state: "applied", idempotencyKey: key, result: {
+      ...mapEditResult(result), modifiedAt: timestampValue(result.modifiedAt),
+      financialState: { state: oneOf(money.state, financialStates), basis: nullableString(money.basis), attention: money.attention == null ? null : oneOf(money.attention, ["additional_payment_due", "refund_due"] as const) },
+    } };
+  }
+  return { state: oneOf(raw.state, ["pending", "unknown"] as const), idempotencyKey: key, reachable: typeof raw.reachable === "boolean" ? raw.reachable : null };
+}
+function mapOpenEdit(value: unknown): OpenEdit {
+  const raw = objectValue(value);
+  return { idempotencyKey: textValue(raw.idempotencyKey, 100), state: oneOf(raw.state, ["pending", "unknown"] as const), requestedAt: timestampValue(raw.requestedAt), mine: booleanValue(raw.mine) };
+}
+export function mapShopRead(value: unknown): ShopRead {
+  const raw = objectValue(value);
+  if (raw.available !== true) return { available: false, reason: textValue(raw.reason, 60) };
+  const freshness = objectValue(raw.freshness);
+  return {
+    available: true,
+    role: oneOf(raw.role, ["assignee", "supervisor"] as const),
+    detail: mapShopOrderDetail(raw.detail),
+    freshness: {
+      readAt: timestampValue(freshness.readAt), shopModifiedAt: freshness.shopModifiedAt == null ? null : timestampValue(freshness.shopModifiedAt),
+      arasyaChangedAt: freshness.arasyaChangedAt == null ? null : timestampValue(freshness.arasyaChangedAt),
+      pricingMatches: freshness.pricingMatches == null ? null : booleanValue(freshness.pricingMatches), inSync: booleanValue(freshness.inSync),
+    },
+  };
+}
+
+// ---- Confirmare finance (API 2.41.0): strict; anything unexpected is refused, never half shown
+const percentageValue = (value: unknown): number => { if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 100) throw new StaffServiceError("SERVER_ERROR"); return value; };
+const optionalMoney = (value: unknown): string | null => (value == null ? null : moneyValue(value));
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const uuidValue = (value: unknown): string => { const text = textValue(value, 36); if (!UUID.test(text)) throw new StaffServiceError("SERVER_ERROR"); return text; };
+const ATTENTIONS = ["additional_payment_due", "refund_due", "transfer_pending", "reconciliation_required", "refund_liability", "refund_pending"] as const;
+function mapFinanceEntry(value: unknown): FinanceEntry {
+  const raw = objectValue(value);
+  return {
+    id: uuidValue(raw.id), kind: oneOf(raw.kind, ["transfer_in", "refund_out", "liability_ack"] as const), purpose: oneOf(raw.purpose, ["advance", "additional_payment", "refund", "liability"] as const),
+    amount: moneyValue(raw.amount), reference: textValue(raw.reference, 64), valueDate: raw.valueDate == null ? null : textValue(raw.valueDate, 10), state: oneOf(raw.state, ["submitted", "verified", "rejected"] as const),
+    submittedBy: uuidValue(raw.submittedBy), submittedAt: timestampValue(raw.submittedAt), decidedBy: raw.decidedBy == null ? null : uuidValue(raw.decidedBy),
+    decidedAt: raw.decidedAt == null ? null : timestampValue(raw.decidedAt), decisionCode: raw.decisionCode == null ? null : textValue(raw.decisionCode, 40),
+    // API 2.45.0: how the money came, the cash document and collector, the explicit confirmations (absent: a bank transfer).
+    method: raw.method == null ? "bank_transfer" : oneOf(raw.method, PAYMENT_METHODS), receipt: raw.receipt == null ? null : oneOf(raw.receipt, CASH_RECEIPTS),
+    collector: raw.collector == null ? null : textValue(raw.collector, 64), flags: raw.flags == null ? [] : listOf(raw.flags, 4, (flag) => oneOf(flag, ["overpayment", "cancelled_proforma", "card_full_refund"] as const)),
+  };
+}
+export function mapFinanceSummary(value: unknown): FinanceSummary {
+  const raw = objectValue(value);
+  const order = objectValue(raw.order);
+  const totals = objectValue(raw.totals);
+  const received = objectValue(raw.received);
+  const payment = objectValue(raw.payment);
+  const balance = objectValue(raw.balance);
+  const financial = objectValue(raw.financial);
+  const capabilities = objectValue(raw.capabilities);
+  const advance = raw.advance == null ? null : objectValue(raw.advance);
+  if (capabilities.electronicRefund !== false) throw new StaffServiceError("SERVER_ERROR");
+  return {
+    readAt: timestampValue(raw.readAt), revision: textValue(raw.revision, 71), currency: textValue(raw.currency, 3),
+    order: { id: textValue(order.id, 20), number: textValue(order.number, 64), status: textValue(order.status, 40), modifiedAt: order.modifiedAt == null ? null : timestampValue(order.modifiedAt), method: textValue(order.method, 100), methodTitle: textValue(order.methodTitle, 200), cod: booleanValue(order.cod) },
+    totals: { current: optionalMoney(totals.current), original: optionalMoney(totals.original), refunded: optionalMoney(totals.refunded) },
+    received: { online: optionalMoney(received.online), advance: optionalMoney(received.advance), transfers: optionalMoney(received.transfers), net: optionalMoney(received.net) },
+    payment: { onlineVerified: booleanValue(payment.onlineVerified), paidRecorded: booleanValue(payment.paidRecorded), evidence: oneOf(payment.evidence, ["netopia_ipn", "gateway", "none"] as const) },
+    advance: advance === null ? null : {
+      percentage: percentageValue(advance.percentage), required: optionalMoney(advance.required), collected: optionalMoney(advance.collected), outstanding: optionalMoney(advance.outstanding), onDelivery: optionalMoney(advance.onDelivery),
+      paymentReference: paymentReference(advance.paymentReference), proforma: advance.proforma == null ? null : mapFinanceProforma(advance.proforma),
+      accepted: advance.accepted == null ? false : booleanValue(advance.accepted), proformaCancelled: advance.proformaCancelled == null ? false : booleanValue(advance.proformaCancelled),
+    },
+    balance: { outstanding: optionalMoney(balance.outstanding), refundLiability: moneyValue(balance.refundLiability), acknowledged: booleanValue(balance.acknowledged) },
+    financial: { state: oneOf(financial.state, ["cleared", "waiting", "partial", "unknown"] as const), basis: nullableString(financial.basis), attention: financial.attention == null ? null : oneOf(financial.attention, ATTENTIONS) },
+    entries: listOf(raw.entries, 200, mapFinanceEntry),
+    capabilities: { record: booleanValue(capabilities.record), refunds: oneOf(capabilities.refunds, ["off", "manual"] as const), electronicRefund: false },
+    position: raw.position == null ? null : mapMoneyPosition(raw.position),
+    deadline: raw.deadline == null ? null : mapInvoiceDeadline(raw.deadline),
+    cod: raw.cod == null ? null : mapCodCheck(raw.cod),
+  };
+}
+function mapFinanceProforma(value: unknown): NonNullable<NonNullable<FinanceSummary["advance"]>["proforma"]> {
+  const raw = objectValue(value);
+  const code = (text: unknown, min: number): string => { const v = textValue(text, 20); if (!new RegExp(`^[A-Za-z0-9-]{${min},20}$`).test(v)) throw new StaffServiceError("SERVER_ERROR"); return v; };
+  return { series: code(raw.series, 0), number: code(raw.number, 1), amount: optionalMoney(raw.amount), currency: raw.currency == null ? null : textValue(raw.currency, 3), reference: paymentReference(raw.reference) };
+}
+function mapTransferException(value: unknown): TransferException {
+  const raw = objectValue(value);
+  const order = raw.order == null ? null : objectValue(raw.order);
+  const state = oneOf(raw.state, ["open", "resolved"] as const);
+  const resolution = raw.resolution == null ? null : oneOf(raw.resolution, EXCEPTION_RESOLUTIONS);
+  if ((state === "open") !== (resolution === null)) throw new StaffServiceError("SERVER_ERROR");
+  return {
+    id: uuidValue(raw.id), amount: moneyValue(raw.amount), currency: textValue(raw.currency, 3), reference: textValue(raw.reference, 64), valueDate: raw.valueDate == null ? null : textValue(raw.valueDate, 10),
+    reason: oneOf(raw.reason, EXCEPTION_REASONS), state, submittedBy: uuidValue(raw.submittedBy), submittedAt: raw.submittedAt == null ? null : timestampValue(raw.submittedAt),
+    resolvedBy: raw.resolvedBy == null ? null : uuidValue(raw.resolvedBy), resolvedAt: raw.resolvedAt == null ? null : timestampValue(raw.resolvedAt), resolution,
+    order: order === null ? null : { id: textValue(order.id, 20), number: order.number == null ? null : textValue(order.number, 64) },
+  };
+}
+export function mapTransferExceptionList(value: unknown): TransferExceptionList {
+  const raw = objectValue(value);
+  const capabilities = objectValue(raw.capabilities);
+  const base = { source: textValue(raw.source, 40), capabilities: { record: booleanValue(capabilities.record), approve: booleanValue(capabilities.approve) } };
+  if (raw.available !== true) return { ...base, available: false, reason: textValue(raw.reason, 60), exceptions: [] };
+  return { ...base, available: true, currency: raw.currency == null ? null : textValue(raw.currency, 3), exceptions: listOf(raw.exceptions, 300, mapTransferException) };
+}
+export function mapExceptionOutcome(value: unknown): ExceptionOutcome {
+  const raw = objectValue(value);
+  if (raw.state === "unknown") return { state: "unknown", idempotencyKey: textValue(raw.idempotencyKey, 100) };
+  if (raw.state !== "applied") throw new StaffServiceError("SERVER_ERROR");
+  const list = mapTransferExceptionList({ ...raw, available: true });
+  if (!list.available) throw new StaffServiceError("SERVER_ERROR");
+  return { ...list, state: "applied", entryId: uuidValue(raw.entryId) };
+}
+function mapFinanceTimeline(value: unknown): FinanceTimelineItem {
+  const raw = objectValue(value);
+  return {
+    employeeId: uuidValue(raw.employeeId), action: oneOf(raw.action, FINANCE_ACTIONS), decision: raw.decision == null ? null : oneOf(raw.decision, ["verify", "reject"] as const),
+    reasonCode: nullableString(raw.reasonCode), purpose: nullableString(raw.purpose), entryId: nullableString(raw.entryId), idempotencyKey: textValue(raw.idempotencyKey, 100),
+    state: oneOf(raw.state, ["pending", "applied", "rejected", "unknown"] as const), outcome: nullableString(raw.outcome), requestedAt: timestampValue(raw.requestedAt), completedAt: raw.completedAt == null ? null : timestampValue(raw.completedAt),
+  };
+}
+function mapFinanceView(raw: Record<string, unknown>) {
+  const production = objectValue(raw.production);
+  const employees = objectValue(raw.employees);
+  return {
+    summary: mapFinanceSummary(raw.summary),
+    production: { stageId: textValue(production.stageId, 100), handedOver: booleanValue(production.handedOver), refundEligible: booleanValue(production.refundEligible) },
+    allowedActions: listOf(raw.allowedActions, 5, (action) => oneOf(action, FINANCE_ACTIONS)),
+    nextAction: oneOf(raw.nextAction, FINANCE_NEXT),
+    actionOpen: booleanValue(raw.actionOpen),
+    timeline: listOf(raw.timeline, 200, mapFinanceTimeline),
+    employees: Object.fromEntries(Object.entries(employees).map(([id, name]) => [uuidValue(id), textValue(name, 200)])),
+    me: uuidValue(raw.me),
+  };
+}
+export function mapFinanceRead(value: unknown): FinanceRead {
+  const raw = objectValue(value);
+  if (raw.available !== true) return { available: false, reason: textValue(raw.reason, 60) };
+  return { available: true, role: oneOf(raw.role, ["finance", "assignee", "supervisor"] as const), ...mapFinanceView(raw) };
+}
+export function mapFinanceOutcome(value: unknown): FinanceOutcome {
+  const raw = objectValue(value);
+  const state = oneOf(raw.state, ["applied", "pending", "unknown"] as const);
+  if (state !== "applied") return { state, idempotencyKey: textValue(raw.idempotencyKey, 100), ...(typeof raw.reachable === "boolean" ? { reachable: raw.reachable } : {}) };
+  // The view after an applied action is optional (a replayed key answers with the entry only).
+  return { state, idempotencyKey: textValue(raw.idempotencyKey, 100), entryId: uuidValue(raw.entryId), ...(raw.summary == null ? {} : mapFinanceView(raw)) };
+}
+function mapFinanceQueueItem(value: unknown): FinanceQueueItem {
+  const raw = objectValue(value);
+  const financial = objectValue(raw.financial);
+  return {
+    globalOrderId: textValue(raw.globalOrderId, 200), source: textValue(raw.source, 40), orderNumber: textValue(raw.orderNumber, 64), task: oneOf(raw.task, FINANCE_TASKS),
+    financial: { state: nullableString(financial.state), basis: nullableString(financial.basis), attention: nullableString(financial.attention) },
+    paymentMethod: nullableString(raw.paymentMethod), stageId: textValue(raw.stageId, 100), confirmation: textValue(raw.confirmation, 20),
+    dueDate: raw.dueDate == null ? null : textValue(raw.dueDate, 10), sourceChangedAt: raw.sourceChangedAt == null ? null : timestampValue(raw.sourceChangedAt),
+    verifying: raw.verifying == null ? false : booleanValue(raw.verifying),
+  };
+}
+export function mapFinanceQueue(value: unknown): FinanceQueue {
+  const raw = objectValue(value);
+  const tasks = objectValue(raw.tasks);
+  return {
+    tasks: Object.fromEntries(FINANCE_TASKS.map((task) => [task, nonNegativeInteger(tasks[task])])) as Record<FinanceTask, number>,
+    orders: listOf(raw.orders, 500, mapFinanceQueueItem),
+    sources: stringList(raw.sources),
+  };
+}
+
+
+// ---- SmartBill invoicing (API 2.43.0): strict; anything unexpected is refused, never half shown
+const INVOICE_KEYS = ["issue", "sendMail", "reissue", "resolve"] as const;
+const invoiceCodes = (value: unknown): string[] => listOf(value, 40, (code) => { const text = textValue(code, 60); if (!/^[a-z_]{2,60}$/.test(text)) throw new StaffServiceError("SERVER_ERROR"); return text; });
+const invoiceUuid = (value: unknown): string | null => (value == null ? null : uuidValue(value));
+const invoiceText = (value: unknown, max: number): string | null => (value == null ? null : textValue(value, max));
+const invoiceInstant = (value: unknown): string | null => (value == null ? null : timestampValue(value));
+function invoiceLink(value: unknown): string | null {
+  if (value == null) return null;
+  const text = textValue(value, 1000);
+  let url: URL;
+  try { url = new URL(text); } catch { throw new StaffServiceError("SERVER_ERROR"); }
+  const host = url.hostname.toLowerCase();
+  if (url.protocol !== "https:" || url.username || url.password || url.port || (host !== "smartbill.ro" && !host.endsWith(".smartbill.ro"))) throw new StaffServiceError("SERVER_ERROR");
+  return url.toString();
+}
+function mapInvoiceSummary(value: unknown): InvoiceSummary {
+  const raw = objectValue(value);
+  const smartbill = objectValue(raw.smartbill);
+  const order = objectValue(raw.order);
+  const financial = objectValue(raw.financial);
+  const document = objectValue(raw.document);
+  const operation = objectValue(raw.operation);
+  const mail = objectValue(raw.mail);
+  const blockers = objectValue(raw.blockers);
+  return {
+    readAt: timestampValue(raw.readAt), revision: textValue(raw.revision, 71), mode: oneOf(raw.mode, ["observe", "enforce"] as const),
+    smartbill: { available: booleanValue(smartbill.available), reason: invoiceText(smartbill.reason, 60), documentType: oneOf(smartbill.documentType, ["invoice", "proforma"] as const), autoEmail: booleanValue(smartbill.autoEmail),
+      cashing: booleanValue(smartbill.cashing), draft: booleanValue(smartbill.draft), mailSupported: booleanValue(smartbill.mailSupported), autoIssue: booleanValue(smartbill.autoIssue) },
+    order: { id: textValue(order.id, 20), number: textValue(order.number, 64), status: textValue(order.status, 40), total: textValue(order.total, 20), currency: textValue(order.currency, 3), billingEmail: booleanValue(order.billingEmail) },
+    financial: { state: textValue(financial.state, 20), basis: invoiceText(financial.basis, 40), attention: invoiceText(financial.attention, 40), pending: booleanValue(financial.pending) },
+    document: {
+      exists: booleanValue(document.exists), type: document.type == null ? null : oneOf(document.type, ["invoice", "proforma"] as const), series: invoiceText(document.series, 40), number: invoiceText(document.number, 40),
+      status: document.status == null ? null : oneOf(document.status, ["final", "draft"] as const), conflict: booleanValue(document.conflict), through: document.through == null ? null : oneOf(document.through, ["arasya", "shop"] as const),
+      issuedAt: invoiceInstant(document.issuedAt), issuedBy: invoiceUuid(document.issuedBy), total: invoiceText(document.total, 20), currency: invoiceText(document.currency, 3),
+      outdated: document.outdated == null ? null : booleanValue(document.outdated), link: invoiceLink(document.link),
+    },
+    operation: { state: oneOf(operation.state, ["none", "in_flight", "issued", "unknown"] as const), kind: invoiceText(operation.kind, 20), startedAt: invoiceInstant(operation.startedAt), by: invoiceUuid(operation.by), error: invoiceText(operation.error, 40) },
+    mail: { state: oneOf(mail.state, ["none", "smartbill", "in_flight", "sent", "unknown", "failed"] as const), at: invoiceInstant(mail.at), by: invoiceUuid(mail.by), count: nonNegativeInteger(mail.count) },
+    history: listOf(raw.history, 50, (entry) => {
+      const item = objectValue(entry);
+      const reason = item.reason == null ? null : objectValue(item.reason);
+      return { kind: textValue(item.kind, 30), at: invoiceInstant(item.at), by: invoiceUuid(item.by), outcome: textValue(item.outcome, 20), reason: reason === null ? null : { code: textValue(reason.code, 30), note: textValue(reason.note, 300) },
+        series: invoiceText(item.series, 40), number: invoiceText(item.number, 40) };
+    }),
+    blockers: Object.fromEntries(INVOICE_KEYS.map((key) => [key, invoiceCodes(blockers[key])])) as Record<InvoiceActionKey, string[]>,
+    proforma: mapProformaSummary(raw.proforma),
+    // API 2.45.0: e-Factura is never tracked by the shop; nothing else is accepted.
+    eFactura: raw.eFactura == null ? null : { state: oneOf(objectValue(raw.eFactura).state, ["not_tracked"] as const) },
+  };
+}
+function mapProformaSummary(value: unknown): ProformaSummary | null {
+  if (value == null) return null;
+  const raw = objectValue(value);
+  const advance = objectValue(raw.advance);
+  const mail = objectValue(raw.mail);
+  const blockers = objectValue(raw.blockers);
+  const money = (amount: unknown): string | null => (amount == null ? null : moneyText(amount));
+  const document = raw.document == null ? null : objectValue(raw.document);
+  const invoiced = raw.invoiced == null ? null : objectValue(raw.invoiced);
+  const transfer = raw.transfer == null ? null : objectValue(raw.transfer);
+  const percentage = advance.percentage == null ? null : Number(advance.percentage);
+  if (percentage !== null && (!Number.isFinite(percentage) || percentage < 0 || percentage > 100)) throw new StaffServiceError("SERVER_ERROR");
+  return {
+    advance: {
+      required: money(advance.required), received: money(advance.received), outstanding: money(advance.outstanding), percentage, cod: advance.cod == null ? null : booleanValue(advance.cod),
+      state: advance.state == null ? null : oneOf(advance.state, ["waiting", "partial", "paid"] as const), verifying: advance.verifying == null ? false : booleanValue(advance.verifying),
+      accepted: advance.accepted == null ? false : booleanValue(advance.accepted),
+    },
+    transfer: transfer === null ? null : {
+      iban: ibanValue(transfer.iban), bank: textValue(transfer.bank, 100), beneficiary: textValue(transfer.beneficiary, 100), reference: paymentReference(transfer.reference),
+      bic: transfer.bic == null ? null : bicValue(transfer.bic),
+    },
+    state: oneOf(raw.state, ["none", "in_flight", "issued", "unknown"] as const),
+    document: document === null ? null : {
+      series: invoiceText(document.series, 40), number: invoiceText(document.number, 40), amount: money(document.amount), currency: invoiceText(document.currency, 3), reference: paymentReference(document.reference),
+      issuedAt: invoiceInstant(document.issuedAt), issuedBy: invoiceUuid(document.issuedBy), outdated: booleanValue(document.outdated), link: invoiceLink(document.link),
+    },
+    mail: { state: oneOf(mail.state, ["none", "smartbill", "in_flight", "sent", "unknown", "failed"] as const), at: invoiceInstant(mail.at), by: invoiceUuid(mail.by), count: nonNegativeInteger(mail.count) },
+    invoiced: invoiced === null ? null : { invoiced: invoiced.invoiced == null ? null : booleanValue(invoiced.invoiced), at: invoiceInstant(invoiced.at) },
+    error: invoiceText(raw.error, 40),
+    history: listOf(raw.history, 50, (entry) => {
+      const item = objectValue(entry);
+      return { kind: textValue(item.kind, 40), at: invoiceInstant(item.at), by: invoiceUuid(item.by), outcome: textValue(item.outcome, 20), series: invoiceText(item.series, 40), number: invoiceText(item.number, 40),
+        reason: item.reason == null ? null : oneOf(item.reason, CANCEL_REASONS) };
+    }),
+    // A YD SOFT 2.18.0 shop sends no 2.45.0 groups: those actions are not supported.
+    blockers: Object.fromEntries(PROFORMA_KEYS.map((key) => [key, blockers[key] === undefined ? ["not_supported"] : invoiceCodes(blockers[key])])) as Record<ProformaActionKey, string[]>,
+    money: raw.money == null ? null : mapMoneyPosition(raw.money),
+    totalAcceptance: raw.totalAcceptance == null ? null : mapTotalAcceptance(raw.totalAcceptance),
+    advanceAcceptance: raw.advanceAcceptance == null ? null : (() => {
+      const a = objectValue(raw.advanceAcceptance);
+      return { at: invoiceInstant(a.at), by: invoiceUuid(a.by), required: money(a.required), received: money(a.received), reason: invoiceText(a.reason, 300), low: booleanValue(a.low),
+        kind: a.kind == null ? "accepted" as const : oneOf(a.kind, ["accepted", "kept"] as const) };
+    })(),
+    lowAdvance: raw.lowAdvance == null ? false : booleanValue(raw.lowAdvance),
+    cancel: raw.cancel == null ? null : (() => {
+      const c = objectValue(raw.cancel);
+      return { state: oneOf(c.state, ["in_flight", "unknown"] as const), at: invoiceInstant(c.at), by: invoiceUuid(c.by), reason: c.reason == null ? null : oneOf(c.reason, CANCEL_REASONS) };
+    })(),
+    cancelled: listOf(raw.cancelled ?? [], 50, (entry) => {
+      const c = objectValue(entry);
+      return { series: invoiceText(c.series, 40), number: invoiceText(c.number, 40), amount: money(c.amount), currency: invoiceText(c.currency, 3), cancelledAt: invoiceInstant(c.cancelledAt), cancelledBy: invoiceUuid(c.cancelledBy),
+        reason: c.reason == null ? null : oneOf(c.reason, CANCEL_REASONS) };
+    }),
+    superseded: listOf(raw.superseded ?? [], 50, (entry) => {
+      const c = objectValue(entry);
+      return { series: invoiceText(c.series, 40), number: invoiceText(c.number, 40), amount: money(c.amount), supersededAt: invoiceInstant(c.supersededAt) };
+    }),
+    deadline: raw.deadline == null ? null : mapInvoiceDeadline(raw.deadline),
+    cod: raw.cod == null ? null : mapCodCheck(raw.cod),
+    shipping: raw.shipping == null ? null : mapShippingCheck(raw.shipping),
+  };
+}
+/** The shop's one money calculation; refused when its own numbers do not add up (never shown half trusted). */
+export function mapMoneyPosition(value: unknown): MoneyPosition {
+  const raw = objectValue(value);
+  const money = (amount: unknown): string | null => (amount == null ? null : moneyText(amount));
+  const percentage = raw.percentage == null ? null : Number(raw.percentage);
+  if (percentage !== null && (!Number.isFinite(percentage) || percentage < 0 || percentage > 100)) throw new StaffServiceError("SERVER_ERROR");
+  const position: MoneyPosition = {
+    currency: textValue(raw.currency, 3), percentage, known: booleanValue(raw.known), total: money(raw.total), advanceRequired: money(raw.advanceRequired), received: money(raw.received),
+    refunded: money(raw.refunded), net: money(raw.net), remaining: money(raw.remaining), excess: money(raw.excess), advanceGap: money(raw.advanceGap),
+  };
+  if (position.known) {
+    const c = (text: string | null): number | null => (text === null ? null : Math.round(Number(text) * 100));
+    const [t, a, p, i, n, k, f, g] = [position.total, position.advanceRequired, position.received, position.refunded, position.net, position.remaining, position.excess, position.advanceGap].map(c);
+    if (t === null || p === null || i === null || n === null || k === null || f === null || n !== p - i || k !== Math.max(0, t - n) || f !== Math.max(0, n - t) || (a !== null && g !== Math.max(0, a - n))) {
+      throw new StaffServiceError("SERVER_ERROR");
+    }
+  }
+  return position;
+}
+function mapTotalAcceptance(value: unknown): TotalAcceptance {
+  const raw = objectValue(value);
+  return {
+    state: oneOf(raw.state, ["accepted", "required"] as const), at: invoiceInstant(raw.at), by: invoiceUuid(raw.by),
+    previousTotal: raw.previousTotal == null ? null : moneyText(raw.previousTotal), total: raw.total == null ? null : moneyText(raw.total),
+    changes: listOf(raw.changes, 40, (entry) => { const c = objectValue(entry); return { kind: oneOf(c.kind, ["added", "removed", "changed", "shipping"] as const), name: c.name === "" ? "" : textValue(c.name, 120) }; }),
+    note: invoiceText(raw.note, 300),
+    advanceDecisionRequired: raw.advanceDecisionRequired == null ? null : booleanValue(raw.advanceDecisionRequired),
+  };
+}
+const SHIPPING_CODES = ["shipping_cost_mismatch", "free_shipping_threshold_lost", "shipping_rate_unavailable", "shipping_method_unsupported", "free_shipping_unverifiable", "shipping_line_not_found", "shipping_check_failed"] as const;
+/** The shipping check; a mismatch or an unverifiable method always names its code. */
+export function mapShippingCheck(value: unknown): ShippingCheck {
+  const raw = objectValue(value);
+  const state = oneOf(raw.state, ["none", "match", "mismatch", "unverifiable"] as const);
+  const code = raw.code == null ? null : oneOf(raw.code, SHIPPING_CODES);
+  if ((state === "mismatch" || state === "unverifiable") !== (code !== null)) throw new StaffServiceError("SERVER_ERROR");
+  return { state, code, current: raw.current == null ? null : moneyText(raw.current), expected: raw.expected == null ? null : moneyText(raw.expected) };
+}
+export function mapInvoiceDeadline(value: unknown): InvoiceDeadline {
+  const raw = objectValue(value);
+  const date = (v: unknown): string | null => { if (v == null) return null; const text = textValue(v, 10); if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) throw new StaffServiceError("SERVER_ERROR"); return text; };
+  const days = raw.daysLeft == null ? null : Number(raw.daysLeft);
+  if (days !== null && (!Number.isInteger(days) || Math.abs(days) > 3660)) throw new StaffServiceError("SERVER_ERROR");
+  return { state: oneOf(raw.state, ["none", "open", "invoiced"] as const), firstCollection: date(raw.firstCollection), deadline: date(raw.deadline), daysLeft: days,
+    level: raw.level == null ? null : oneOf(raw.level, ["none", "notice", "warning", "critical", "overdue"] as const) };
+}
+export function mapCodCheck(value: unknown): CodCheck {
+  const raw = objectValue(value);
+  return { state: oneOf(raw.state, ["none", "match", "mismatch", "delivered", "unknown"] as const), awb: invoiceText(raw.awb, 100), awbCod: raw.awbCod == null ? null : moneyText(raw.awbCod),
+    expected: raw.expected == null ? null : moneyText(raw.expected), status: invoiceText(raw.status, 255) };
+}
+function bicValue(value: unknown): string {
+  const text = textValue(value, 11);
+  if (!/^[A-Z]{4}[A-Z]{2}[A-Z0-9]{2}([A-Z0-9]{3})?$/.test(text)) throw new StaffServiceError("SERVER_ERROR");
+  return text;
+}
+function ibanValue(value: unknown): string {
+  const text = textValue(value, 34);
+  if (!/^[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}$/.test(text)) throw new StaffServiceError("SERVER_ERROR");
+  return text;
+}
+/** The order's payment reference the customer writes in the transfer details (shop prefix and order number). */
+function paymentReference(value: unknown): string | null {
+  if (value == null) return null;
+  const text = textValue(value, 24);
+  if (!/^[A-Z]{2,4}[A-Z0-9]{1,20}$/.test(text)) throw new StaffServiceError("SERVER_ERROR");
+  return text;
+}
+function moneyText(value: unknown): string {
+  const text = textValue(value, 20);
+  if (!/^(0|[1-9][0-9]{0,11})\.[0-9]{2}$/.test(text)) throw new StaffServiceError("SERVER_ERROR");
+  return text;
+}
+function mapShopAssignment(value: unknown): ShopAssignment | null {
+  if (value == null) return null;
+  const raw = objectValue(value);
+  return { employeeId: uuidValue(raw.employeeId), assignedBy: uuidValue(raw.assignedBy), role: oneOf(raw.role, ["operator", "manager"] as const), assignedAt: timestampValue(raw.assignedAt) };
+}
+function mapShopQueueItem(value: unknown): ShopQueueItem {
+  const raw = objectValue(value);
+  return { globalOrderId: textValue(raw.globalOrderId, 200), source: textValue(raw.source, 40), orderNumber: textValue(raw.orderNumber, 64), assignedAt: timestampValue(raw.assignedAt),
+    assignedBy: raw.assignedBy === "" ? "" : textValue(raw.assignedBy, 200), handoff: textValue(raw.handoff, 30), invoiced: booleanValue(raw.invoiced) };
+}
+function mapInvoiceView(raw: Record<string, unknown>): InvoiceView {
+  const handoff = objectValue(raw.handoff);
+  const blockers = objectValue(raw.blockers);
+  const proforma = raw.proforma == null ? null : objectValue(raw.proforma);
+  const proformaBlockers = proforma === null ? {} : objectValue(proforma.blockers);
+  const routing = raw.routing == null ? null : objectValue(raw.routing);
+  const qr = raw.qr == null ? null : objectValue(raw.qr);
+  return {
+    summary: mapInvoiceSummary(raw.summary),
+    handoff: { state: textValue(handoff.state, 30), blockers: invoiceCodes(handoff.blockers) },
+    blockers: Object.fromEntries(INVOICE_KEYS.map((key) => [key, invoiceCodes(blockers[key])])) as Record<InvoiceActionKey, string[]>,
+    allowedActions: listOf(raw.allowedActions, 4, (action) => oneOf(action, INVOICE_KEYS)),
+    actionOpen: booleanValue(raw.actionOpen),
+    timeline: listOf(raw.timeline, 200, (entry) => {
+      const item = objectValue(entry);
+      return { employeeId: uuidValue(item.employeeId), role: textValue(item.role, 12), action: oneOf(item.action, [...INVOICE_ACTIONS, ...PROFORMA_ACTIONS] as const), reasonCode: invoiceText(item.reasonCode, 30), idempotencyKey: textValue(item.idempotencyKey, 100),
+        state: oneOf(item.state, ["pending", "applied", "rejected", "unknown"] as const), outcome: invoiceText(item.outcome, 40), result: invoiceText(item.result, 20), requestedAt: timestampValue(item.requestedAt), completedAt: invoiceInstant(item.completedAt) };
+    }),
+    employees: Object.fromEntries(Object.entries(objectValue(raw.employees)).map(([id, name]) => [id, textValue(name, 200)])),
+    me: uuidValue(raw.me),
+    proforma: proforma === null ? null : {
+      // An API before 2.45.0 names no blockers of the newer actions: they are not supported there.
+      blockers: Object.fromEntries(PROFORMA_KEYS.map((key) => [key, proformaBlockers[key] === undefined ? ["not_supported"] : invoiceCodes(proformaBlockers[key])])) as Record<ProformaActionKey, string[]>,
+      allowedActions: listOf(proforma.allowedActions, PROFORMA_KEYS.length, (action) => oneOf(action, PROFORMA_KEYS)),
+      role: proforma.role == null ? null : oneOf(proforma.role, ["operator", "manager", "documents"] as const),
+    },
+    assignment: mapShopAssignment(raw.assignment),
+    routing: routing === null ? null : { allowed: booleanValue(routing.allowed), blockers: invoiceCodes(routing.blockers) },
+    // Older APIs (2.43.0) send no QR state: nothing was scanned.
+    qr: qr === null ? { verified: false, validSeconds: 0 } : { verified: booleanValue(qr.verified), validSeconds: nonNegativeInteger(qr.validSeconds) },
+  };
+}
+export function mapInvoiceRead(value: unknown): InvoiceRead {
+  const raw = objectValue(value);
+  if (raw.available !== true) return { available: false, reason: textValue(raw.reason, 60) };
+  return { available: true, role: oneOf(raw.role, INVOICE_ROLES), ...mapInvoiceView(raw) };
+}
+export function mapInvoiceOutcome(value: unknown): InvoiceOutcome {
+  const raw = objectValue(value);
+  const state = oneOf(raw.state, ["applied", "pending", "unknown"] as const);
+  if (state !== "applied") return { state, idempotencyKey: textValue(raw.idempotencyKey, 100), ...(typeof raw.reachable === "boolean" ? { reachable: raw.reachable } : {}) };
+  // The view after an applied action is optional (a replayed key answers with the result only).
+  return { state, idempotencyKey: textValue(raw.idempotencyKey, 100), result: invoiceText(raw.result, 20), ...(raw.summary == null ? {} : mapInvoiceView(raw)) };
+}
+
+function mapConfirmareOperator(value: unknown): ConfirmareOperator {
+  const raw = objectValue(value);
+  return {
+    employeeId: stringValue(raw.employeeId), displayName: stringValue(raw.displayName), sources: stringList(raw.sources), canWork: booleanValue(raw.canWork), available: booleanValue(raw.available),
+    availableChangedAt: raw.availableChangedAt == null ? null : timestampValue(raw.availableChangedAt), lastAssignedAt: raw.lastAssignedAt == null ? null : timestampValue(raw.lastAssignedAt),
+    open: nonNegativeInteger(raw.open), oldestAssignedAt: raw.oldestAssignedAt == null ? null : timestampValue(raw.oldestAssignedAt),
+  };
+}
+
+const countMap = (value: unknown): Record<string, number> => Object.fromEntries(Object.entries(objectValue(value)).map(([key, count]) => [key, nonNegativeInteger(count)]));
+
+export function mapConfirmareTeam(value: unknown): ConfirmareTeam {
+  const raw = objectValue(value);
+  return { operators: Array.isArray(raw.operators) ? raw.operators.map(mapConfirmareOperator) : [], unassigned: countMap(raw.unassigned), undetermined: countMap(raw.undetermined), held: stringList(raw.held), targetOpenPerOperator: positiveInteger(raw.targetOpenPerOperator), inactivityMinutes: positiveInteger(raw.inactivityMinutes) };
+}
+
+function mapConfirmareAlert(value: unknown): ConfirmareAlert {
+  const raw = objectValue(value);
+  const assignee = objectValue(raw.assignee);
+  return {
+    globalOrderId: stringValue(raw.globalOrderId), orderNumber: stringValue(raw.orderNumber), sourceKey: stringValue(raw.sourceKey), kind: stringValue(raw.kind), raisedAt: timestampValue(raw.raisedAt),
+    assignee: { employeeId: stringValue(assignee.employeeId), displayName: stringValue(assignee.displayName) }, assignedAt: raw.assignedAt == null ? null : timestampValue(raw.assignedAt),
+    confirmationVersion: positiveInteger(raw.confirmationVersion), lastContactAt: raw.lastContactAt == null ? null : timestampValue(raw.lastContactAt),
+  };
+}
+
+function mapConfirmareAvailability(value: unknown): ConfirmareAvailability {
+  const raw = objectValue(value);
+  return { employeeId: stringValue(raw.employeeId), available: booleanValue(raw.available), changedAt: raw.changedAt == null ? null : timestampValue(raw.changedAt), lastAssignedAt: raw.lastAssignedAt == null ? null : timestampValue(raw.lastAssignedAt), open: nonNegativeInteger(raw.open), targetOpen: positiveInteger(raw.targetOpen) };
 }
 
 // ---------------------------------------------------------------- Trendyol workspace (strict; unexpected shapes fail closed)
@@ -1097,6 +1950,7 @@ export function mapStageQueue(value: unknown): StageQueue {
   return {
     stageId: stringValue(raw.stageId),
     counts: { total: nonNegativeInteger(counts.total), mine: nonNegativeInteger(counts.mine), available: nonNegativeInteger(counts.available), blocked: nonNegativeInteger(counts.blocked), claimedByOthers: nonNegativeInteger(counts.claimedByOthers) },
+    legacyTotal: raw.legacyTotal == null ? 0 : nonNegativeInteger(raw.legacyTotal),
     countsComplete: raw.countsComplete,
     items: raw.items.map(mapProductionOrder),
     // Pieces in rework at this stage (API 2.31.0): each entry names the track and carries its order.
@@ -1107,7 +1961,8 @@ export function mapStageSummary(value: unknown): StageSummary {
   const raw = objectValue(value);
   if (!Array.isArray(raw.stages)) throw new StaffServiceError("SERVER_ERROR");
   return raw.stages.map((item) => { const stage = objectValue(item); return { stageId: stringValue(stage.stageId), total: nonNegativeInteger(stage.total), mine: nonNegativeInteger(stage.mine),
-    reworkTotal: stage.reworkTotal == null ? 0 : nonNegativeInteger(stage.reworkTotal), reworkMine: stage.reworkMine == null ? 0 : nonNegativeInteger(stage.reworkMine) }; });
+    reworkTotal: stage.reworkTotal == null ? 0 : nonNegativeInteger(stage.reworkTotal), reworkMine: stage.reworkMine == null ? 0 : nonNegativeInteger(stage.reworkMine),
+    legacyTotal: stage.legacyTotal == null ? 0 : nonNegativeInteger(stage.legacyTotal), legacyMine: stage.legacyMine == null ? 0 : nonNegativeInteger(stage.legacyMine) }; });
 }
 export function mapProductionOverview(value: unknown): ProductionOverview {
   const raw = objectValue(value);
@@ -1120,6 +1975,7 @@ export function mapProductionOverview(value: unknown): ProductionOverview {
       const stage = objectValue(item);
       return { id: stringValue(stage.id), label: stringValue(stage.label), ordinal: positiveInteger(stage.ordinal), active: nonNegativeInteger(stage.active), unassigned: nonNegativeInteger(stage.unassigned), oldestEnteredAt: nullableTimestamp(stage.oldestEnteredAt) };
     }),
+    legacy: raw.legacy == null ? null : (({ active, waiting }) => ({ active: nonNegativeInteger(active), waiting: nonNegativeInteger(waiting) }))(objectValue(raw.legacy)),
   };
 }
 export function mapTrendyolOverview(value: unknown): TrendyolOverview {

@@ -96,6 +96,8 @@ chmod 0755 "$stable_bin/maintenance-active.sh"
 # Installed only as a stable path for a future, separately authorized cron entry; no deploy installs a cron.
 api_atomic_copy_file "$target_release/scripts/trendyol-intake-active.sh" "$stable_bin/trendyol-intake-active.sh"
 chmod 0755 "$stable_bin/trendyol-intake-active.sh"
+api_atomic_copy_file "$target_release/scripts/cancellation-sync-active.sh" "$stable_bin/cancellation-sync-active.sh"
+chmod 0755 "$stable_bin/cancellation-sync-active.sh"
 
 if [[ -n "$old_active" ]]; then api_write_pointer "$previous_pointer" "$old_active"; fi
 api_write_pointer "$active_pointer" "$source_commit"

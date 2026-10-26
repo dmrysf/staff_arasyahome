@@ -1,3 +1,10 @@
+import { confirmareTR } from "./confirmare";
+import { confirmareShopTR } from "./confirmareShop";
+import { confirmareFinanceTR } from "./confirmareFinance";
+import { confirmareInvoiceTR } from "./confirmareInvoice";
+import { confirmareHandoffTR } from "./confirmareHandoff";
+import { confirmareOpsTR } from "./confirmareOps";
+import { confirmareEditTR } from "./confirmareEdit";
 import { physicalTR } from "./physical";
 import type { Catalog } from "../types";
 import { trErrors } from "./tr.errors";
@@ -9,6 +16,13 @@ import { trErrors } from "./tr.errors";
 export const tr: Catalog = {
   ...physicalTR,
   ...trErrors,
+  ...confirmareTR,
+  ...confirmareShopTR,
+  ...confirmareFinanceTR,
+  ...confirmareInvoiceTR,
+  ...confirmareHandoffTR,
+  ...confirmareOpsTR,
+  ...confirmareEditTR,
 
   // ---- common
   "common.back": "Geri",
@@ -265,6 +279,8 @@ export const tr: Catalog = {
   "orderAction.blocked.document_revision_pending": "Belge engelli: siparişin devam eden bir belge revizyonu var. Onayı ve yeni belgeyi bekle.",
   "orderAction.blocked.production_authority_source": "Bu siparişin üretimi hâlâ YD SOFT'ta yönetiliyor. Üzerinde çalışmadan önce bir yönetici onu Arasya'ya almalı.",
   "orderAction.blocked.payment_gate_closed": "Sipariş üretime giremez. Gerekli kapora veya sipariş ödemesi onaylanmadı.",
+  "orderAction.blocked.confirmation_required": "Sipariş üretime giremez. Sipariş müşteriyle onaylanmalı ve ödemesi doğrulanmalı (Confirmare).",
+  "orderAction.blocked.confirmation_document_required": "Sipariş onaylandı ancak üretime yalnızca üretim fişiyle (revizyon 1) girer. Kesim fişin QR kodunu okutur.",
   "orderAction.blocked.pieces_in_rework": "Sipariş henüz paketlenemez: bir parça yeniden işlemede. Tüm parçalar paketlemeye ulaşınca paketleme başlar.",
   "orderAction.blocked.pieces_held": "Bir parça fiziksel olarak bekletilirken sipariş devam edemez. Bekletme kaldırılınca devam eder.",
   "orderAction.blocked.pieces_awaiting_reunion": "Sipariş henüz paketlenemez: bir parça kendi rotasında ve siparişle henüz birleşmedi.",
@@ -272,6 +288,25 @@ export const tr: Catalog = {
   "orderAction.blocked.pieces_incomplete": "Eksik parça var veya bir parçanın kimliği doğrulanmalı. Sipariş henüz devam edemez.",
   "orderAction.blocked.route_incomplete": "Sipariş henüz paketlenemez: bir parça rotasındaki tüm aşamaları bitirmedi.",
   "orderAction.blocked.defect_unresolved": "Sipariş henüz paketlenemez: bir hatanın giderildiği onaylanmadı.",
+  "orderAction.blocked.production_stopped": "Bu siparişin üretimi durduruldu. Bu siparişin üretimine devam edemezsin.",
+  "stop.title.cancelled": "Sipariş iptal edildi",
+  "stop.title.stopped": "Üretim durduruldu",
+  "stop.title.review": "Sipariş kontrol için bekletiliyor",
+  "stop.body": "Bu siparişin üretimine devam edemezsin. Geçmiş kayıtları görüntülenebilir.",
+  "stop.source.cancelled": "İptal, kaynak tarafından bildirildi.",
+  "stop.source.reactivated": "Kaynak siparişi yeniden etkinleştirdi. Üretime devam etmek için yönetim onayı gerekir.",
+  "stop.source.local": "Üretim yönetim tarafından durduruldu.",
+  "stop.request.pending": "Kaynakta iptal talep edildi, henüz onaylanmadı.",
+  "stop.completed": "Üretim, iptalden önce tamamlanmıştı.",
+  "stop.physical.pending": "Ürünün fiziksel kontrolü gerekiyor. Ürünü olduğu yerde bırak ve sorumluya haber ver.",
+  "stop.physical.verified": "Ürünün fiziksel durumu kontrol edildi.",
+  "stop.attention": "Sorumlunun bu siparişi kontrol etmesi gerekiyor.",
+  "stop.sync.awaiting": "İptal, satış kanalında onay bekliyor.",
+  "stop.sync.attention": "Senkronizasyon başarısız: yönetim iptali kontrol ediyor.",
+  "stop.sync.confirmed": "İptal, satış kanalı tarafından onaylandı.",
+  "stop.stage": "Mevcut aşama: {stage}",
+  "stop.since": "Durdurulma: {time}",
+  "stop.card": "Üretim durduruldu",
   "orderAction.orderNote": "Sipariş #{number}. {note}",
   "orderAction.qrCaptured": "QR etiketi okundu · sunucu aynı siparişi kontrol ediyor.",
   "orderAction.checkingWork": "Devam eden işlerin kontrol ediliyor…",
@@ -1223,6 +1258,11 @@ export const tr: Catalog = {
   "stageWs.empty": "Bu aşamada sipariş yok",
   "stageWs.autoUpdate": "Bir sipariş buraya geldiğinde liste otomatik güncellenir.",
   "stageWs.firstShown": "İlk {count} sipariş gösteriliyor: önce seninkiler, sonra müsait olanlar, en eskiden başlayarak.",
+  "stageWs.flow.label": "Gösterilen siparişler",
+  "stageWs.flow.current": "Yeni sistem",
+  "stageWs.flow.legacy": "Eski, WordPress ({count})",
+  "stageWs.flow.all": "Tümü",
+  "stageWs.flow.hidden": "{count} eski Trend Home / Outlet Perdele siparişi WordPress'te yönetiliyor ve burada sayılmıyor.",
   "stageWs.stageOf": "Aşama {ordinal} / {total}",
   "stageWs.sourceScope": "Bu aşamada yalnızca şu kaynakların siparişlerinde çalışırsın: {sources}.",
   "stageWs.metrics": "{stage} aşamasının durumu",
@@ -1272,4 +1312,5 @@ export const tr: Catalog = {
   "mgmt.col.unassigned": "Üstlenilmemiş",
   "mgmt.col.oldest": "En eski",
   "mgmt.footnote": "Sipariş, çalışan ve istisna ayrıntıları Dashboard uygulamasında kalır.",
+  "mgmt.legacyNote": "WordPress'te yönetilen {count} eski Trend Home / Outlet Perdele siparişi dahil değil ({waiting} bekliyor).",
 };

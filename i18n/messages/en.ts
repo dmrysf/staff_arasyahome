@@ -1,3 +1,10 @@
+import { confirmareEN } from "./confirmare";
+import { confirmareShopEN } from "./confirmareShop";
+import { confirmareFinanceEN } from "./confirmareFinance";
+import { confirmareInvoiceEN } from "./confirmareInvoice";
+import { confirmareHandoffEN } from "./confirmareHandoff";
+import { confirmareOpsEN } from "./confirmareOps";
+import { confirmareEditEN } from "./confirmareEdit";
 import { physicalEN } from "./physical";
 import type { Catalog } from "../types";
 import { enErrors } from "./en.errors";
@@ -9,6 +16,13 @@ import { enErrors } from "./en.errors";
 export const en: Catalog = {
   ...physicalEN,
   ...enErrors,
+  ...confirmareEN,
+  ...confirmareShopEN,
+  ...confirmareFinanceEN,
+  ...confirmareInvoiceEN,
+  ...confirmareHandoffEN,
+  ...confirmareOpsEN,
+  ...confirmareEditEN,
 
   // ---- common
   "common.back": "Back",
@@ -265,6 +279,8 @@ export const en: Catalog = {
   "orderAction.blocked.document_revision_pending": "Document blocked: the order has a document revision in progress. Wait for the approval and the new document.",
   "orderAction.blocked.production_authority_source": "Production of this order is still managed in YD SOFT. A manager must take it over in Arasya before anyone works on it.",
   "orderAction.blocked.payment_gate_closed": "The order cannot enter production. The required advance or the order payment has not been confirmed.",
+  "orderAction.blocked.confirmation_required": "The order cannot enter production. It must be confirmed with the customer and its payment verified (Confirmare).",
+  "orderAction.blocked.confirmation_document_required": "The order is confirmed but enters production only with its production ticket (revision 1). Cutting scans the ticket's QR code.",
   "orderAction.blocked.pieces_in_rework": "The order cannot be packed yet: a piece is still in rework. Packing starts once every piece reached packing.",
   "orderAction.blocked.pieces_held": "The order cannot continue while a piece is physically held. It continues once the hold is released.",
   "orderAction.blocked.pieces_awaiting_reunion": "The order cannot be packed yet: a piece is following its own route and has not rejoined the order.",
@@ -272,6 +288,25 @@ export const en: Catalog = {
   "orderAction.blocked.pieces_incomplete": "Pieces are missing or a piece needs an identity review. The order cannot continue yet.",
   "orderAction.blocked.route_incomplete": "The order cannot be packed yet: a piece has not finished every stage of its route.",
   "orderAction.blocked.defect_unresolved": "The order cannot be packed yet: the resolution of a defect has not been confirmed.",
+  "orderAction.blocked.production_stopped": "Production of this order is stopped. You cannot continue production of this order.",
+  "stop.title.cancelled": "Order cancelled",
+  "stop.title.stopped": "Production is stopped",
+  "stop.title.review": "Order held for review",
+  "stop.body": "You cannot continue production of this order. Its history stays available.",
+  "stop.source.cancelled": "The cancellation was reported by the source.",
+  "stop.source.reactivated": "The source reactivated the order. Resuming production needs management approval.",
+  "stop.source.local": "Production was stopped by management.",
+  "stop.request.pending": "A cancellation at the source was requested and is not confirmed yet.",
+  "stop.completed": "Production had already been completed before the cancellation.",
+  "stop.physical.pending": "The product needs a physical check. Leave it where it is and tell the person in charge.",
+  "stop.physical.verified": "The physical state of the product was checked.",
+  "stop.attention": "The person in charge must check this order.",
+  "stop.sync.awaiting": "Cancellation awaiting confirmation from the sales channel.",
+  "stop.sync.attention": "Synchronization failed: management is checking the cancellation.",
+  "stop.sync.confirmed": "The sales channel confirmed the cancellation.",
+  "stop.stage": "Current stage: {stage}",
+  "stop.since": "Stopped since {time}",
+  "stop.card": "Production is stopped",
   "orderAction.orderNote": "Order #{number}. {note}",
   "orderAction.qrCaptured": "QR label captured · the server checks it is the same order.",
   "orderAction.checkingWork": "Checking your active jobs…",
@@ -1223,6 +1258,11 @@ export const en: Catalog = {
   "stageWs.empty": "There are no orders at this stage",
   "stageWs.autoUpdate": "The list updates automatically when an order arrives here.",
   "stageWs.firstShown": "The first {count} orders are shown: yours first, then the available ones, oldest first.",
+  "stageWs.flow.label": "Orders shown",
+  "stageWs.flow.current": "New system",
+  "stageWs.flow.legacy": "Older, WordPress ({count})",
+  "stageWs.flow.all": "All",
+  "stageWs.flow.hidden": "{count} older Trend Home / Outlet Perdele orders are handled in WordPress and are not counted here.",
   "stageWs.stageOf": "Stage {ordinal} of {total}",
   "stageWs.sourceScope": "At this stage you work only on orders from: {sources}.",
   "stageWs.metrics": "Status of the {stage} stage",
@@ -1272,4 +1312,5 @@ export const en: Catalog = {
   "mgmt.col.unassigned": "Not taken",
   "mgmt.col.oldest": "Oldest",
   "mgmt.footnote": "Details by order, employee and exception stay in the Dashboard app.",
+  "mgmt.legacyNote": "Excludes {count} older Trend Home / Outlet Perdele orders handled in WordPress ({waiting} waiting).",
 };

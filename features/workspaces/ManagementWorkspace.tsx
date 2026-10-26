@@ -18,7 +18,8 @@ const since = { format: (value: Date): string => formatDate(value, { dateStyle: 
 export function ManagementWorkspace({ employee, api, dashboardUrl, navigate }: { employee: Employee; api: ManagementApi; dashboardUrl: string | null; navigate: (path: string) => void }) {
   const { t } = useI18n();
   const { revision } = useLive();
-  const load = useCallback((signal: AbortSignal): Promise<ProductionOverview> => api.productionOverview(signal), [api]);
+  // Owner 2026-10-26: the numbers are the new system's; older WordPress-managed shop orders are only counted apart.
+  const load = useCallback((signal: AbortSignal): Promise<ProductionOverview> => api.productionOverview(signal, "current"), [api]);
   const overview = useDashboardData(load, "management", revision);
   const data = overview.data;
   const metric = (value: number | undefined): MetricValue => data ? value ?? "unavailable" : overview.error ? "unavailable" : "loading";
@@ -34,6 +35,7 @@ export function ManagementWorkspace({ employee, api, dashboardUrl, navigate }: {
           <Metric label={t("mgmt.unassigned")} value={metric(data?.summary.unassigned)} />
           <Metric label={t("mgmt.completedToday")} value={metric(data?.summary.completedToday)} tone="success" />
         </MetricGrid>
+        {data?.legacy && data.legacy.active > 0 && <p className="dashboard-footnote" data-testid="mgmt-legacy">{t("mgmt.legacyNote", { count: data.legacy.active, waiting: data.legacy.waiting })}</p>}
         {overview.error && <ErrorState error={overview.error} compact onAction={overview.refresh} />}
         <div className="dashboard-actions">
           {dashboardUrl && <a className="button button-secondary" href={dashboardUrl} target="_blank" rel="noreferrer">{t("mgmt.openDashboard")}</a>}

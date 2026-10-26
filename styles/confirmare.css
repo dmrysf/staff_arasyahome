@@ -1,0 +1,160 @@
+/*
+ * Confirmare workspace (Staff 2.29.0). Built from the shared primitives (queue rows, sections, notices, check fields);
+ * this file only adds what the telephone confirmation needs. Phones first; the order screen splits from 1024 px.
+ */
+.cf-source { color: var(--color-text-subtle); font-size: var(--text-xs); font-weight: var(--weight-semibold); letter-spacing: var(--tracking-caps); text-transform: uppercase; }
+.cf-row.tone-warning::before, .cf-row.tone-danger::before { background: var(--color-warning); }
+.cf-row.tone-success::before { background: var(--color-success); }
+.cf-tabs { grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); }
+.cf-source-filter { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
+.cf-tab-hint { margin: -8px 0 0; color: var(--color-text-muted); font-size: var(--text-sm); line-height: var(--leading-normal); }
+
+.confirmare-order { display: grid; gap: var(--space-4); min-width: 0; }
+.confirmare-order .package-header .dashboard-refresh { margin-top: 10px; }
+.cf-next h2 { margin: 0; font-size: var(--text-lg); line-height: var(--leading-snug); }
+.cf-call-form { display: grid; gap: 10px; }
+.cf-outcomes { display: grid; gap: 8px; margin: 0; padding: 0; border: 0; min-width: 0; }
+.cf-outcomes legend { margin-bottom: 8px; padding: 0; font-size: var(--text-sm); font-weight: var(--weight-semibold); }
+.cf-outcomes .check-field, .cf-call-form > .check-field, .cf-line .check-field, .detail-section > .check-field { grid-template-columns: 24px minmax(0, 1fr); }
+.cf-call-form .button, .cf-final .button { width: 100%; }
+
+.cf-lines { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.cf-line { display: grid; gap: 10px; min-width: 0; padding: 12px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface-soft); }
+.cf-line.is-confirmed { border-color: var(--color-success-line); }
+.cf-line-head { display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: 10px; align-items: start; }
+.cf-line-copy { display: grid; gap: 3px; min-width: 0; overflow-wrap: anywhere; }
+.cf-line-copy .line-name { margin: 0; }
+.cf-line-facts { margin: 0; color: var(--color-text-muted); font-size: var(--text-sm); line-height: var(--leading-snug); overflow-wrap: anywhere; }
+
+.cf-checklist { display: grid; gap: 8px; margin: 0 0 14px; padding: 0; list-style: none; }
+.cf-checklist li { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 8px; align-items: start; font-size: var(--text-sm); line-height: var(--leading-snug); }
+.cf-checklist li.is-met > svg { color: var(--color-success); }
+.cf-checklist li.is-missing > svg { color: var(--color-warning); }
+.cf-checklist li.is-separate > svg { color: var(--color-danger); }
+.cf-checklist li.is-missing span { font-weight: var(--weight-semibold); }
+.cf-confirm { display: grid; gap: 10px; padding: 14px; border: 1.5px solid var(--color-text); border-radius: var(--radius-md); background: var(--color-surface); }
+.cf-confirm p { margin: 0; line-height: var(--leading-normal); }
+.cf-confirm-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.cf-confirm-actions > .button { flex: 1 1 160px; }
+.cf-actions { display: grid; gap: 12px; }
+.cf-actions > .button, .cf-actions .field .button { width: 100%; }
+
+.cf-team-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.cf-person { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; align-items: center; padding: 12px 14px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface-soft); }
+.cf-person-copy { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+.cf-person-copy small { color: var(--color-text-muted); font-size: var(--text-sm); }
+.cf-person > .button, .cf-person > .cf-confirm-actions { grid-column: 1 / -1; }
+
+@media (min-width: 720px) {
+  .cf-person { grid-template-columns: minmax(0, 1fr) auto auto; }
+  .cf-person > .button, .cf-person > .cf-confirm-actions { grid-column: auto; }
+}
+@media (max-width: 359px) {
+  .cf-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.cf-check { display: grid; gap: 2px; min-width: 0; font-weight: var(--weight-semibold); overflow-wrap: anywhere; }
+.cf-check small { color: var(--color-text-muted); font-weight: var(--weight-regular); }
+.segmented button[role="radio"][aria-checked="true"] { background: var(--color-text); color: var(--color-bg); box-shadow: var(--shadow-sm); }
+/* The order's side column flows with the page (no inner scroll area: every control stays reachable by keyboard). */
+@media (min-width: 1024px) {
+  .confirmare-order .package-side { position: static; max-height: none; overflow: visible; }
+}
+
+/* The shop's own order (Staff 2.30.0, API 2.40.0): read on request, phones first, prices as the shop holds them. */
+.cf-shop { display: grid; gap: 12px; }
+.cf-shop-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.cf-shop-actions > .button { flex: 1 1 200px; }
+.cf-shop-view { display: grid; gap: 14px; min-width: 0; }
+.cf-shop-block { display: grid; gap: 8px; min-width: 0; }
+.cf-shop-block h3 { margin: 0; font-size: var(--text-md); }
+.cf-shop-phones { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.cf-shop-phones li { display: grid; gap: 4px; min-width: 0; }
+.cf-shop-label { color: var(--color-text-muted); font-size: var(--text-sm); }
+.cf-shop-call { width: 100%; justify-content: center; overflow-wrap: anywhere; }
+.cf-shop-lines { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.cf-shop-prices, .cf-shop-totals { display: grid; gap: 4px; margin: 0; }
+.cf-shop-prices > div, .cf-shop-totals > div { display: flex; justify-content: space-between; gap: 12px; min-width: 0; font-size: var(--text-sm); }
+.cf-shop-prices dt, .cf-shop-totals dt { color: var(--color-text-muted); overflow-wrap: anywhere; }
+.cf-shop-prices dd, .cf-shop-totals dd { margin: 0; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cf-shop-totals .cf-shop-grand { padding-top: 6px; border-top: 1px solid var(--color-border); font-size: var(--text-md); font-weight: var(--weight-semibold); }
+.cf-shop-totals .cf-shop-grand dt { color: var(--color-text); }
+/* SmartBill section (Staff 2.33.0): its values are words (document, e-mail, last operation), not only amounts: they wrap. */
+.cf-invoice .cf-shop-totals dd { white-space: normal; overflow-wrap: anywhere; text-align: right; min-width: 0; }
+.cf-invoice .cf-shop-totals dt { flex: 0 0 auto; max-width: 45%; }
+.cf-invoice .cf-shop-actions { flex-wrap: wrap; }
+.cf-shop-note { font-style: italic; }
+/* Phase 4B: controlled changes in the shop */
+.cf-edit { padding-top: 12px; border-top: 1px solid var(--color-border); }
+.cf-edit-lines, .cf-edit-diff, .cf-edit-open, .cf-edit-blockers { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.cf-edit-blockers { gap: 4px; padding-left: 18px; list-style: disc; }
+.cf-edit-line { display: grid; gap: 8px; min-width: 0; padding: 12px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface); }
+.cf-edit-line .line-name { margin: 0; overflow-wrap: anywhere; }
+.cf-edit-removed { opacity: 0.6; }
+.cf-edit-removed .line-name strong { text-decoration: line-through; }
+.cf-edit-fields { display: grid; gap: 10px; min-width: 0; }
+.cf-edit-add, .cf-edit-shipping { display: grid; gap: 8px; min-width: 0; margin: 0; padding: 12px; border: 1px solid var(--color-border); border-radius: var(--radius-md); }
+.cf-edit-add legend, .cf-edit-shipping legend { padding: 0 4px; font-weight: var(--weight-semibold); }
+.cf-edit-sku { display: grid; gap: 6px; min-width: 0; }
+.cf-edit-sku input { min-height: 44px; padding: 0 12px; border: 1.5px solid var(--color-border); border-radius: var(--radius-md); font: inherit; }
+.cf-edit-product { display: grid; gap: 8px; min-width: 0; padding: 12px; border-radius: var(--radius-md); background: var(--color-surface-muted, var(--color-surface)); }
+.cf-edit-preview { display: grid; gap: 10px; min-width: 0; padding: 12px; border: 1.5px solid var(--color-text); border-radius: var(--radius-md); }
+.cf-edit-preview h4 { margin: 0; font-size: var(--text-md); }
+.cf-edit-totals s { color: var(--color-text-muted); }
+.cf-edit-confirm { display: grid; gap: 10px; min-width: 0; }
+.cf-edit-confirm > .button { width: 100%; justify-content: center; }
+.cf-edit-open li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+@media (min-width: 720px) {
+  .cf-shop-call { width: auto; }
+  .cf-edit-fields { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+  .cf-edit-sku { grid-template-columns: minmax(0, 1fr) auto; align-items: end; }
+  .cf-edit-sku label { grid-column: 1 / -1; }
+  .cf-edit-confirm > .button { width: auto; justify-self: start; }
+}
+/* Confirmare finance (Staff 2.31.0, API 2.41.0): the shop's money, read on request; two people for every record. */
+.cf-finance { display: grid; gap: 12px; }
+.cf-finance-view { display: grid; gap: 14px; min-width: 0; }
+.cf-finance-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.cf-finance-list li { display: grid; gap: 2px; min-width: 0; padding: 10px 12px; border: 1px solid var(--color-border); border-radius: var(--radius-md); overflow-wrap: anywhere; font-size: var(--text-sm); }
+.cf-finance-decision { display: grid; gap: 8px; min-width: 0; padding: 12px; border: 1.5px solid var(--color-text); border-radius: var(--radius-md); }
+.cf-finance-decision p { margin: 0; overflow-wrap: anywhere; }
+.cf-finance-decision select { min-height: 44px; margin-left: 6px; padding: 0 10px; border: 1.5px solid var(--color-border); border-radius: var(--radius-md); font: inherit; }
+/* The shop's unmatched bank transfers (Staff 2.34.0): every control keeps a 44 px target and wraps at 320 px. */
+.cf-exceptions .cf-shop-actions { flex-wrap: wrap; }
+.cf-exceptions select, .cf-exceptions .field-inline input { min-height: 44px; max-width: 100%; padding: 0 10px; border: 1.5px solid var(--color-border); border-radius: var(--radius-md); font: inherit; }
+.cf-exceptions .field-inline { flex-wrap: wrap; min-width: 0; }
+.cf-finance-form { display: grid; gap: 10px; min-width: 0; padding: 12px; border: 1px solid var(--color-border); border-radius: var(--radius-md); }
+.cf-finance-form p { margin: 0; }
+.cf-finance-form label { display: grid; gap: 6px; min-width: 0; font-size: var(--text-sm); }
+.cf-finance-form input { min-height: 44px; padding: 0 12px; border: 1.5px solid var(--color-border); border-radius: var(--radius-md); font: inherit; font-variant-numeric: tabular-nums; }
+.cf-finance-form > .button { width: 100%; justify-content: center; }
+.cf-finance-confirm { padding: 12px; border: 1.5px solid var(--color-text); border-radius: var(--radius-md); }
+.cf-finance-confirm p { margin: 0; overflow-wrap: anywhere; }
+@media (min-width: 720px) {
+  .cf-finance-form { grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: end; }
+  .cf-finance-form > p, .cf-finance-form > .notice { grid-column: 1 / -1; }
+  .cf-finance-form > .button { width: auto; justify-self: start; grid-column: 1 / -1; }
+}
+/* API 2.44.0: the advance proforma, the routing and the invoice QR scan (44 px touch targets, no overflow at 320 px). */
+.cf-shop-block .field-inline { display: flex; align-items: center; gap: 10px; min-height: 44px; }
+.cf-shop-block .field-inline input[type="checkbox"] { width: 22px; height: 22px; flex: 0 0 auto; }
+.cf-shop-block select, .cf-invoice-qr input[type="text"] { min-height: 44px; max-width: 100%; padding: 0 10px; border: 1.5px solid var(--color-border); border-radius: var(--radius-md); font: inherit; }
+.cf-invoice-qr form { flex-wrap: wrap; }
+.cf-invoice-qr input[type="text"] { flex: 1 1 220px; min-width: 0; font-family: var(--font-mono, monospace); }
+#cf-routing-confirm label, [data-testid="cf-routing-confirm"] label { display: grid; gap: 6px; min-width: 0; }
+.cf-invoice p, .cf-invoice li span, .cf-invoice h3 { overflow-wrap: anywhere; min-width: 0; }
+/* The advance proforma's bank transfer details (Staff 2.34.0): read out to the customer, so the IBAN and the reference
+   stay legible (monospace, wrapped in groups at narrow widths). */
+.cf-proforma-transfer { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid var(--color-border); border-radius: var(--radius-md); min-width: 0; }
+.cf-proforma-transfer h4 { margin: 0; font-size: var(--text-sm); }
+.cf-proforma-transfer [translate="no"] { font-family: var(--font-mono, monospace); letter-spacing: 0.02em; }
+/* API 2.45.0: the order's money as the shop computes it, first on the operator's card. */
+.cf-proforma-money { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid var(--color-border); border-radius: var(--radius-md); min-width: 0; }
+.cf-proforma-money h4 { margin: 0; font-size: var(--text-sm); }
+.cf-finance-confirm textarea { width: 100%; min-width: 0; box-sizing: border-box; font: inherit; }
+
+/* Staff 2.36.0: the operations, cycle and e-Factura blocks (one column, the same rhythm as the other panels). */
+.cf-ops-block, .cf-ops-form { display: grid; gap: 12px; }
+.cf-ops-block + .cf-ops-block { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--color-border); }
+.cf-ops-block > h3 { margin: 0; }
+.cf-efactura-task { display: grid; gap: 10px; padding: 12px 0; }
+.cf-efactura-task.is-overdue { border-left: 3px solid var(--color-danger); padding-left: 12px; }

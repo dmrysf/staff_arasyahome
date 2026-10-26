@@ -63,6 +63,27 @@ rm -f "$record"
 env -i HOME="$workspace" PATH="$workspace/no-php:/usr/bin:/bin" ARASYA_PHP_CLI="$workspace/php-cli" /bin/bash "$api_root/bin/trendyol-intake-active.sh" >/dev/null || fail 'the Trendyol launcher failed with a valid PHP CLI'
 [[ "$(sed -n 1p "$record")" == "$(cd "$api_root/releases/$sha" && pwd -P)/bin/sync-trendyol.php" && "$(wc -l < "$record" | tr -d ' ')" == 1 ]] || fail "the Trendyol launcher did not run the active sync command: $(cat "$record")"
 
+# The cancellation worker launcher resolves the active release the same way, runs only bin/cancellation-sync.php and
+# accepts only the two schedulable commands.
+cancel_source="operations-api/scripts/cancellation-sync-active.sh"
+grep -q 'php_cli="${ARASYA_PHP_CLI:-/usr/local/bin/php}"' "$cancel_source" || fail 'the cancellation launcher default PHP CLI is not /usr/local/bin/php'
+if grep -nE '(^|[^_"$])exec php([[:space:]]|$)' "$cancel_source"; then fail 'the cancellation launcher executes `php` from PATH'; fi
+cp "$cancel_source" "$api_root/bin/cancellation-sync-active.sh"
+printf '<?php\n' > "$api_root/releases/$sha/bin/cancellation-sync.php"
+for allowed in "run" "reconcile --dry-run=1"; do
+  rm -f "$record"
+  # shellcheck disable=SC2086
+  env -i HOME="$workspace" PATH="$workspace/no-php:/usr/bin:/bin" ARASYA_PHP_CLI="$workspace/php-cli" /bin/bash "$api_root/bin/cancellation-sync-active.sh" $allowed >/dev/null || fail "the cancellation launcher refused '$allowed'"
+  [[ "$(sed -n 1p "$record")" == "$(cd "$api_root/releases/$sha" && pwd -P)/bin/cancellation-sync.php" ]] || fail "the cancellation launcher did not run the active worker: $(cat "$record")"
+done
+for refused in "" "enable --source=trendyol --confirm=ENABLE-CANCELLATION-SYNC" "disable --source=trendyol" "reconcile --dry-run=0 --operator=x" "run --limit=1"; do
+  rm -f "$record"
+  # shellcheck disable=SC2086
+  if env -i HOME="$workspace" PATH="$workspace/no-php:/usr/bin:/bin" ARASYA_PHP_CLI="$workspace/php-cli" /bin/bash "$api_root/bin/cancellation-sync-active.sh" $refused >/dev/null 2>&1; then fail "the cancellation launcher accepted '$refused'"; fi
+  [[ ! -e "$record" ]] || fail "the cancellation launcher ran PHP for '$refused'"
+done
+if output="$(env -i HOME="$workspace" PATH="$workspace/no-php:/usr/bin:/bin" ARASYA_PHP_CLI=php /bin/bash "$api_root/bin/cancellation-sync-active.sh" run 2>&1)"; then fail 'the cancellation launcher accepted a relative PHP CLI'; fi
+
 # maintenance.php itself: invalid arguments are rejected before any database access, and a non-CLI SAPI refuses
 # without a PHP fatal error.
 php_bin="$(command -v php)"

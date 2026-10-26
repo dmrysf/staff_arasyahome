@@ -49,6 +49,9 @@ final readonly class ManagementController
         private ?\Arasya\Operations\Analytics\AnalyticsPolicy $analytics = null,
         private ?\Arasya\Operations\Document\RevisionApproverPolicy $documentApprovers = null,
         private ?\Arasya\Operations\Document\DocumentScopePolicy $documentScopes = null,
+        private ?\Arasya\Operations\Cancellation\CancellationService $cancellations = null,
+        private ?\Arasya\Operations\Cancellation\Sync\CancellationSyncService $cancellationSync = null,
+        private ?\Arasya\Operations\Cancellation\Sync\CancellationReconciler $cancellationReconciler = null,
     ) {
     }
 
@@ -75,11 +78,13 @@ final readonly class ManagementController
                 $path === '/production-settings' => $this->service($this->settings)->view($actor),
                 $path === '/dashboard' => $this->management->overview($actor),
                 $path === '/system' => $this->management->system($actor),
-                $path === '/production-overview' => ($this->production ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Production overview is not ready.'))->overview($actor, $this->filters($request, ['source'])),
+                $path === '/production-overview' => ($this->production ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Production overview is not ready.'))->overview($actor, $this->filters($request, ['source', 'flow'])),
                 $path === '/employees' => $this->management->listEmployees($actor, $this->filters($request, ['search', 'status', 'departmentId', 'application', 'roleId', 'cursor', 'limit'])),
                 $path === '/orders' => $this->orderControl()->list($actor, $this->filters($request, ['search', 'source', 'stage', 'commerceStatus', 'ownerId', 'assignment', 'state', 'cursor', 'limit'])),
                 preg_match('#^/orders/([^/]{1,600})$#D', $path, $m) === 1 => $this->orderControl()->detail($actor, rawurldecode($m[1])),
                 preg_match('#^/orders/([^/]{1,600})/eligible-owners$#D', $path, $m) === 1 => $this->ownership()->eligibleOwners($actor, rawurldecode($m[1])),
+                preg_match('#^/orders/([^/]{1,600})/cancellation$#D', $path, $m) === 1 => $this->service($this->cancellations)->view($actor, rawurldecode($m[1])),
+                $path === '/cancellation-sync' => $this->service($this->cancellationReconciler)->overview($actor, $this->filters($request, ['state'])),
                 $path === '/applications' => $this->management->applications($actor),
                 $path === '/permissions' => $this->management->permissions($actor),
                 $path === '/roles' => $this->management->listRoles($actor),
@@ -120,6 +125,39 @@ final readonly class ManagementController
             return Response::json($this->service($this->settings)->renameStage($actor, $m[1], $this->body($request, ['label'], ['label']), $key, $id));
         }
 
+        // Cancellation control (API 2.35.0): a local stop, the physical reconciliation and the authorized release. None
+        // of them changes a stage or an owner, and none sends anything to a source.
+        if ($method === 'POST' && preg_match('#^/orders/([^/]{1,600})/cancellation/(stop|physical|release)$#D', $path, $m) === 1) {
+            $cancellations = $this->service($this->cancellations);
+            $orderId = rawurldecode($m[1]);
+            return Response::json(match ($m[2]) {
+                'stop' => $cancellations->stop($actor, $orderId, $this->body($request, ['reason', 'requestSourceCancellation'], ['reason']), $key, $id),
+                'physical' => $cancellations->physical($actor, $orderId, $this->body($request, ['expectedVersion', 'outcome', 'note', 'qrToken'], ['expectedVersion', 'outcome', 'note']), $key, $id),
+                default => $cancellations->release($actor, $orderId, $this->body($request, ['expectedVersion', 'reason'], ['expectedVersion', 'reason']), $key, $id),
+            });
+        }
+
+        // Cancellation synchronization (API 2.36.0): hand a stop's cancellation to its sales channel, and the person's
+        // decisions on an operation. Nothing here contacts a provider; only the worker does, behind both gates.
+        if ($method === 'POST' && preg_match('#^/orders/([^/]{1,600})/cancellation/sync$#D', $path, $m) === 1) {
+            return Response::json($this->service($this->cancellationSync)->send($actor, rawurldecode($m[1]), $this->body($request, ['expectedVersion', 'reasonCode', 'note'], ['expectedVersion']), $key, $id));
+        }
+        if ($method === 'POST' && preg_match('#^/cancellation-sync/operations/([0-9a-f-]{36})/(retry|recheck|withdraw|close)$#D', $path, $m) === 1) {
+            $sync = $this->service($this->cancellationSync);
+            return Response::json(match ($m[2]) {
+                // providerChecked (a bare boolean of Dashboard 0.16.0 before the evidence rule) is accepted as a field and ignored:
+                // such a client gets CANCELLATION_SYNC_PROVIDER_CHECK_REQUIRED instead of a generic invalid request.
+                'retry' => $sync->retry($actor, $m[1], $this->body($request, ['expectedVersion', 'providerCheck', 'providerChecked'], ['expectedVersion']), $key, $id),
+                'recheck' => $sync->recheck($actor, $m[1], $this->body($request, ['expectedVersion'], ['expectedVersion']), $key, $id),
+                'withdraw' => $sync->withdraw($actor, $m[1], $this->body($request, ['expectedVersion', 'reason'], ['expectedVersion', 'reason']), $key, $id),
+                default => $sync->close($actor, $m[1], $this->body($request, ['expectedVersion', 'note'], ['expectedVersion', 'note']), $key, $id),
+            });
+        }
+        if ($method === 'POST' && $path === '/cancellation-sync/reconcile') {
+            // Dry run only from the Dashboard: findings are listed, nothing is changed or recorded.
+            return Response::json($this->service($this->cancellationReconciler)->dryRun($actor));
+        }
+
         // Supervisor owner interventions: exactly two operations, never a stage or any other field.
         if (preg_match('#^/orders/([^/]{1,600})/(release-owner|owner)$#D', $path, $m) === 1) {
             $orderId = rawurldecode($m[1]);
@@ -136,7 +174,7 @@ final readonly class ManagementController
         if ($method === 'POST' && $path === '/employees') {
             return Response::json($this->management->createEmployee($actor, $this->body($request, self::EMPLOYEE_CREATE_FIELDS, ['displayName', 'username', 'departmentId']), $id), 201);
         }
-        if (preg_match('#^/employees/([0-9a-f-]{36})(?:/(activate|deactivate|password-reset|applications|roles|stages|stage-scopes|manager|secondary-departments|document-scopes|staff-locale))?$#D', $path, $m) === 1) {
+        if (preg_match('#^/employees/([0-9a-f-]{36})(?:/(activate|deactivate|password-reset|applications|roles|stages|stage-scopes|manager|secondary-departments|document-scopes|confirmare-scopes|finance-scopes|invoice-scopes|staff-locale))?$#D', $path, $m) === 1) {
             $employeeId = $m[1];
             $action = $m[2] ?? '';
             return Response::json(match (true) {
@@ -150,6 +188,9 @@ final readonly class ManagementController
                 $method === 'PUT' && $action === 'secondary-departments' => $this->management->setSecondaryDepartments($actor, $employeeId, $this->body($request, ['departmentIds'], ['departmentIds'])['departmentIds'], $id),
                 $method === 'PUT' && $action === 'stage-scopes' => $this->management->setStageScope($actor, $employeeId, $this->body($request, ['stageId', 'sources', 'expectedSources', 'confirmWidening'], ['stageId', 'sources', 'expectedSources']), $id),
                 $method === 'PUT' && $action === 'document-scopes' => $this->management->setDocumentScopes($actor, $employeeId, $this->body($request, ['operate', 'approve'], ['operate', 'approve']), $id),
+                $method === 'PUT' && $action === 'confirmare-scopes' => $this->management->setConfirmareScopes($actor, $employeeId, $this->body($request, ['operate', 'supervise'], ['operate', 'supervise']), $id),
+                $method === 'PUT' && $action === 'finance-scopes' => $this->management->setFinanceScopes($actor, $employeeId, $this->body($request, ['view', 'record', 'approve'], ['view', 'record', 'approve']), $id),
+                $method === 'PUT' && $action === 'invoice-scopes' => $this->management->setInvoiceScopes($actor, $employeeId, $this->body($request, ['issue', 'manage'], ['issue', 'manage']), $id),
                 $method === 'PUT' && $action === 'staff-locale' => $this->management->setStaffLocale($actor, $employeeId, $this->body($request, ['locale'], ['locale'])['locale'], $id),
                 $method === 'PUT' && $action === 'manager' => $this->management->setManager($actor, $employeeId, $this->body($request, ['managerId'], ['managerId'])['managerId'], $id),
                 default => throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.'),
@@ -207,6 +248,9 @@ final readonly class ManagementController
             'documentRevisionViaBackup' => $documentVia === \Arasya\Operations\Document\RevisionApproverPolicy::VIA_BACKUP,
             'viewDocumentHistory' => $actor->isRoot || $documentVia !== null || in_array(\Arasya\Operations\Document\DocumentService::HISTORY, $actor->permissions, true),
             'revokeDocuments' => $actor->isRoot,
+            'manageCancellations' => in_array(\Arasya\Operations\Cancellation\CancellationService::MANAGE, $actor->permissions, true) && $actor->hasApplication('dashboard'),
+            'releaseCancellations' => in_array(\Arasya\Operations\Cancellation\CancellationService::RELEASE, $actor->permissions, true) && $actor->hasApplication('dashboard'),
+            'syncCancellations' => in_array(\Arasya\Operations\Cancellation\Sync\CancellationSyncService::PERMISSION, $actor->permissions, true) && $actor->hasApplication('dashboard'),
         ];
     }
 

@@ -119,8 +119,9 @@ $cancel = $order('cancel');
 $ok(T::ingest($kernel, 'trendhome', T::sourceOrder($cancel['sourceId'], 'cancel-' . $suffix, gmdate('Y-m-d\TH:i:s\Z'), null, 'cancelled', 'cancelled')), 'source cancellation before cutting');
 $check(!in_array($cancel['id'], array_column($ok($get($b, '/cutting/pool'), 'fresh pool')['items'], 'id'), true), 'cancelled unclaimed order absent');
 $ok(T::ingest($kernel, 'trendhome', T::sourceOrder($other['sourceId'], 'cancel-started-' . $suffix, gmdate('Y-m-d\TH:i:s\Z'), null, 'cancelled', 'cancelled')), 'source cancellation after start');
-$s = $pdo->prepare('SELECT production_owner_employee_uuid, operational_status, production_stage_id FROM operational_orders WHERE order_uuid = ?'); $s->execute([$other['uuid']]); $preserved = $s->fetch(PDO::FETCH_ASSOC);
-$check($preserved['production_owner_employee_uuid'] === $a['employeeUuid'] && $preserved['operational_status'] !== 'unavailable' && $preserved['production_stage_id'] === 'material-preparation', 'started cancellation retains canonical owner and production');
+$s = $pdo->prepare('SELECT production_owner_employee_uuid, operational_status, production_stage_id, cancellation_state FROM operational_orders WHERE order_uuid = ?'); $s->execute([$other['uuid']]); $preserved = $s->fetch(PDO::FETCH_ASSOC);
+// API 2.35.0: the source availability is stored as reported and the cancellation control stops production; owner and stage stay.
+$check($preserved['production_owner_employee_uuid'] === $a['employeeUuid'] && $preserved['operational_status'] === 'unavailable' && $preserved['cancellation_state'] === 'held' && $preserved['production_stage_id'] === 'material-preparation', 'started cancellation retains canonical owner and stage and stops production');
 
 // Real processes / independent connections: same-order claim, different-order actor count,
 // decision, acceptance, verification and one-time pairing races.

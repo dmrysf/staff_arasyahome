@@ -3,7 +3,12 @@ import path from "node:path";
 
 const apiPort = 8787;
 const webPort = 4174;
+const shopPort = 8796;
 const root = import.meta.dirname;
+// Confirmare source access (API 2.40.0): a loopback TEST shop (operations-api/tests/e2e-source-shop.php) answers from a
+// fixture file the Confirmare fixture writes; the test API signs its reads with this TEST key. Never a real shop.
+const shopKey = "e2e-shop-access-key-0123456789abcdef-test";
+process.env.ARASYA_E2E_SHOP_FILE ??= path.join(root, "e2e", ".runtime", "source-shop.json");
 
 /**
  * Real Operations API + MySQL + Chromium. Never points at production: the PHP built-in
@@ -54,7 +59,23 @@ export default defineConfig({
         // Approval verifies a Trendyol package with a GET; the test API answers from the fixture written by
         // operations-api/tests/e2e-fixture.php (refused in production).
         ARASYA_TRENDYOL_FIXTURE_FILE: path.join(root, "e2e", ".runtime", "trendyol-fixture.json"),
+        // Trend Home reads (and, Phase 4B, edits) its orders through the TEST shop; Outlet Perdele stays off.
+        ARASYA_SOURCE_SECRET_TRENDHOME: "trendhome-integration-secret-0123456789abcdef",
+        ARASYA_SOURCE_ACCESS_TRENDHOME: "edit",
+        ARASYA_SOURCE_ACCESS_URL_TRENDHOME: `http://127.0.0.1:${shopPort}`,
+        ARASYA_SOURCE_ACCESS_KEY_TRENDHOME: `th-e2e:${shopKey}`,
+        // Confirmare finance (API 2.41.0) through the same TEST shop: summary and two-person actions.
+        ARASYA_SOURCE_FINANCE_TRENDHOME: "record",
+        // SmartBill invoicing (API 2.43.0) through the same TEST shop (its SmartBill is simulated; nothing is ever issued).
+        ARASYA_SOURCE_INVOICE_TRENDHOME: "enforce",
       },
+    },
+    {
+      command: `php -S 127.0.0.1:${shopPort} operations-api/tests/e2e-source-shop.php`,
+      url: `http://127.0.0.1:${shopPort}/health`,
+      reuseExistingServer: false,
+      timeout: 30_000,
+      env: { ARASYA_E2E_SHOP_FILE: process.env.ARASYA_E2E_SHOP_FILE, ARASYA_E2E_SHOP_KEY: shopKey },
     },
     {
       command: `pnpm exec vite preview --mode e2e --host 127.0.0.1 --port ${webPort} --strictPort`,

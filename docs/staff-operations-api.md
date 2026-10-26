@@ -11,8 +11,8 @@ The Operations API is the only authority for Arasya production state. Staff read
 | `GET` | `/orders/lookup?code=` | `orders.scan` | Exact manual lookup (rate limited) |
 | `POST` | `/orders/resolve-qr` | `orders.scan` | Resolve a printed QR payload `{ "token": "ARASYA:Q1:…" }` (CSRF, rate limited) |
 | `POST` | `/cutting/intake` | `orders.scan` + cutting eligibility | One-scan cutting intake `{ "qrToken": "ARASYA:Q1:…", "confirmedMultiple"?, "ownedCount"? }`: a stage-1 order moves to cutting and is claimed by the scanning cutter in one transaction (API 2.27.0; CSRF, idempotency, rate limited; see [cutting QR intake](cutting-qr-intake.md)) |
-| `GET` | `/orders/stage-queue?stage={stageId}` | `orders.view_mine` + the stage in `allowedStageIds` | Read-only queue of one allowed stage for the department dashboards (API 2.25.0; see [department dashboards](department-dashboards.md)) |
-| `GET` | `/orders/stage-summary` | `orders.view_mine` | Open-order totals per allowed stage |
+| `GET` | `/orders/stage-queue?stage={stageId}[&flow=current\|legacy]` | `orders.view_mine` + the stage in `allowedStageIds` | Read-only queue of one allowed stage for the department dashboards (API 2.25.0; see [department dashboards](department-dashboards.md)). `flow` (API 2.46.0, read filter only) leaves out (`current`) or shows only (`legacy`) the Trend Home / Outlet Perdele orders of the established WordPress-managed flow; `legacyTotal` always counts those at the stage. Staff opens on `current` and offers the other views only when the stage holds such orders |
+| `GET` | `/orders/stage-summary` | `orders.view_mine` | Open-order totals per allowed stage; `legacyTotal` / `legacyMine` say how many of `total` / `mine` are WordPress-managed shop orders (API 2.46.0) |
 | `POST` | `/orders/{globalOrderId}/claim` | `orders.claim` | Claim the order at its current stage |
 | `POST` | `/orders/{globalOrderId}/transition` | `orders.advance_stage` | Complete the current stage; the server chooses the next stage |
 | `GET` | `/activity/mine?range=today\|7days\|month\|custom&from=&to=&cursor=` | `history.view_mine` | Persisted activity and summary for the employee |

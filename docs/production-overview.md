@@ -21,6 +21,8 @@ Root holds every permission. The seeded supervisor, department manager, operatio
 
 `source` (optional) limits summary, stages, oldest orders and activity to one registered source key. An unknown key returns `422 VALIDATION_FAILED`. Source health always lists every registered source.
 
+`flow` (optional, owner 2026-10-26, read filter only) separates the Trend Home / Outlet Perdele orders of the established WordPress-managed flow: orders imported before migration 035 (no cohort) or classified `legacy`. Arasya does not close these orders when the shop completes them in WooCommerce, so they would otherwise inflate the active and waiting counts. `flow=current` leaves them out (new Confirmare orders, Trendyol and B2B stay in), `flow=legacy` shows only them, no `flow` shows every order as before. It narrows summary, stages, oldest orders, blockers, PERDEA information and cancellations; source health and activity stay unfiltered. An unknown value returns `422 VALIDATION_FAILED`. `legacy` (`{active, waiting}`) always counts those orders within the source filter, whatever the flow filter, so a view without them says how many it leaves out. Trendyol and B2B orders are never legacy. Nothing is changed or reclassified. The Dashboard and the Staff management workspace open on `flow=current`.
+
 ## Definitions
 
 - **Active order**: `production_completed_at IS NULL` and `operational_status <> 'unavailable'` (a source-cancelled order is not active).
@@ -49,7 +51,8 @@ Root holds every permission. The seeded supervisor, department manager, operatio
 {
   "generatedAt": "2026-10-04T14:30:00.000Z",
   "timezone": "Europe/Bucharest",
-  "filters": { "source": null },
+  "filters": { "source": null, "flow": null },
+  "legacy": { "active": 0, "waiting": 0 },
   "summary": { "active": 5, "waiting": 2, "inWork": 3, "unassigned": 4, "completedToday": 1 },
   "stages": [{ "id": "waiting", "label": "În așteptare", "ordinal": 1, "active": 2, "unassigned": 2, "oldestEnteredAt": "…" }],
   "oldestOrders": [{ "globalOrderId": "trendhome:81004", "orderNumber": "81004", "source": { "key": "trendhome", "name": "Trendhome" },

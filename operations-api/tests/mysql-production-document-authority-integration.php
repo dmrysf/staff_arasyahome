@@ -189,7 +189,7 @@ restorePreDocumentAuthorityTestSchema($pdo);
 $historyBefore = $pdo->query('SELECT revision_uuid, order_uuid, revision_number, status, qr_reference, generated_by_employee_uuid, generated_at FROM production_document_revisions ORDER BY revision_uuid')->fetchAll(PDO::FETCH_ASSOC);
 $qrBefore = $pdo->query('SELECT qr_reference, status FROM order_qr_references ORDER BY qr_reference')->fetchAll(PDO::FETCH_ASSOC);
 $ordersBefore = $pdo->query('SELECT global_order_id, production_authority, production_stage_id, production_version, document_status, document_version FROM operational_orders ORDER BY global_order_id')->fetchAll(PDO::FETCH_ASSOC);
-check((new MigrationRunner($pdo))->migrate($migrations) === ['020_production_document_authority.sql', '021_document_scopes.sql', '022_trendyol_intake.sql', '024_tailoring_quality_supervision.sql','025_source_payment_gate.sql','026_trendyol_product_identity.sql','028_production_work_units.sql','029_production_manifest_routing.sql', '030_production_route_reconciliation.sql', '031_production_assisted_checkpoints.sql'], '019 -> 020 official additive upgrade');
+check((new MigrationRunner($pdo))->migrate($migrations) === ['020_production_document_authority.sql', '021_document_scopes.sql', '022_trendyol_intake.sql', '024_tailoring_quality_supervision.sql','025_source_payment_gate.sql','026_trendyol_product_identity.sql','028_production_work_units.sql','029_production_manifest_routing.sql', '030_production_route_reconciliation.sql', '031_production_assisted_checkpoints.sql', '033_order_cancellation_control.sql', '034_order_cancellation_sync.sql', '035_workflow_cohort.sql', '036_confirmare_operations.sql', '037_confirmare_contacts.sql','038_confirmare_source_access.sql','039_confirmare_finance.sql', '041_smartbill_invoicing.sql'], '019 -> 020 official additive upgrade');
 check((new MigrationRunner($pdo))->migrate($migrations) === [], '020 recorded exactly once');
 $scopeDocuments();
 check($pdo->query('SELECT revision_uuid, order_uuid, revision_number, status, qr_reference, generated_by_employee_uuid, generated_at FROM production_document_revisions ORDER BY revision_uuid')->fetchAll(PDO::FETCH_ASSOC) === $historyBefore, '020 rewrites no document revision');
@@ -336,6 +336,25 @@ check(checkOk($states($qrObserveKernel, 'trendhome', ['7302']), 'qr observe')['d
 check(($ingest($kernel, 'trendhome', '7401', "th-7401-a-{$suffix}", 300, 'cancelled', 'cancelled')['body']['outcome'] ?? null) === 'applied', 'a cancelled order');
 checkError($sourcePrint($kernel, 'trendhome', ['orderId' => '7401']), 409, 'ORDER_UNAVAILABLE', 'no document is issued for an unavailable order');
 check(checkOk($states($kernel, 'trendhome', ['7401']), 'cancelled state')['orders'][0]['issueAllowed'] === false, 'an unavailable order is not issuable');
+
+// ---- Owner rule 1: while production is stopped the shop's print panel issues no R1 and prints no ticket ---------------
+$prints = static fn (string $globalId): int => $count('SELECT COUNT(*) FROM production_document_prints p JOIN operational_orders o ON o.order_uuid = p.order_uuid WHERE o.global_order_id = ?', [$globalId]);
+$held = static fn (string $globalId): ?string => ($r = $pdo->query('SELECT cancellation_state FROM operational_orders WHERE global_order_id = ' . $pdo->quote($globalId))->fetchColumn()) === false ? null : $r;
+check(($ingest($kernel, 'trendhome', '7501', "th-7501-a-{$suffix}", 900)['body']['outcome'] ?? null) === 'applied', 'rule 1: an order in production');
+check(checkOk($sourcePrint($kernel, 'trendhome', ['orderId' => '7501']), 'rule 1: R1 issued and printed before the stop')['document']['printNumber'] === 1, 'rule 1: printed once before the stop');
+check(($ingest($kernel, 'trendhome', '7501', "th-7501-b-{$suffix}", 600, 'cancelled', 'cancelled')['body']['outcome'] ?? null) === 'applied' && $held('trendhome:7501') === 'held', 'rule 1: the shop cancels: production is stopped');
+checkError($sourcePrint($kernel, 'trendhome', ['orderId' => '7501', 'reason' => 'Hârtie pierdută']), 409, 'ORDER_UNAVAILABLE', 'rule 1: no reprint while the shop reports the order cancelled');
+check(($ingest($kernel, 'trendhome', '7501', "th-7501-c-{$suffix}", 300)['body']['outcome'] ?? null) === 'applied' && $held('trendhome:7501') === 'held', 'rule 1: the shop reactivates it: the stop stays until a release');
+checkError($sourcePrint($kernel, 'trendhome', ['orderId' => '7501', 'reason' => 'Hârtie pierdută']), 409, 'ORDER_PRODUCTION_STOPPED', 'rule 1: no reprint while production is stopped');
+check($prints('trendhome:7501') === 1 && count($revisions('trendhome:7501')) === 1, 'rule 1: the refused reprints recorded nothing');
+$view = checkOk($call($operator, 'GET', $docPath('trendhome:7501')), 'rule 1: reading the document stays available');
+check(($view['activeRevision']['number'] ?? null) === 1, 'rule 1: the existing revision is still shown read-only');
+check(($ingest($kernel, 'trendhome', '7502', "th-7502-a-{$suffix}", 900)['body']['outcome'] ?? null) === 'applied', 'rule 1: an order without a document');
+$ingest($kernel, 'trendhome', '7502', "th-7502-b-{$suffix}", 600, 'cancelled', 'cancelled');
+$ingest($kernel, 'trendhome', '7502', "th-7502-c-{$suffix}", 300);
+check($held('trendhome:7502') === 'held' && checkOk($states($kernel, 'trendhome', ['7502']), 'stopped state')['orders'][0]['issueAllowed'] === false, 'rule 1: a stopped order is not issuable (issueAllowed false)');
+checkError($sourcePrint($kernel, 'trendhome', ['orderId' => '7502']), 409, 'ORDER_PRODUCTION_STOPPED', 'rule 1: the shop cannot issue R1 while production is stopped');
+check($revisions('trendhome:7502') === [] && $prints('trendhome:7502') === 0, 'rule 1: no revision and no print were created');
 
 $cleanup();
 fwrite(STDOUT, "PASS MySQL production document authority integration: {$checks} checks.\n");

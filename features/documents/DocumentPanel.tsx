@@ -57,7 +57,7 @@ async function openPreview(load: () => Promise<Blob>, filename: string) {
  * the active revision (same QR), request a new revision when the order changed, wait for the approval
  * and generate the approved revision. Every step is server-confirmed; live events refresh the panel.
  */
-export function DocumentPanel({ orderId, service, permissions, onChanged, onLoaded }: { orderId: string; service: DocumentApi; permissions: readonly string[]; onChanged: () => void; onLoaded?: (document: OrderDocument) => void }) {
+export function DocumentPanel({ orderId, service, permissions, onChanged, onLoaded, onPrinted }: { orderId: string; service: DocumentApi; permissions: readonly string[]; onChanged: () => void; onLoaded?: (document: OrderDocument) => void; /** After a recorded print or reprint (the Confirmare handoff state follows it). */ onPrinted?: () => void }) {
   useI18n();
   const [document_, setDocument] = useState<OrderDocument | null>(null);
   const [error, setError] = useState<StaffServiceError | null>(null);
@@ -88,6 +88,7 @@ export function DocumentPanel({ orderId, service, permissions, onChanged, onLoad
         saveBlob(result, filename ?? "document.pdf");
         setReason("");
         setReload((value) => value + 1);
+        onPrinted?.();
       } else {
         setDocument(result);
         setComment("");
@@ -114,6 +115,8 @@ export function DocumentPanel({ orderId, service, permissions, onChanged, onLoad
   }
   const active = document_.activeRevision;
   const request = document_.request;
+  const reprint = Boolean(active && active.prints > 0);
+  const reasonMissing = reprint && document_.reprintReasonRequired && reason.trim() === "";
   const tone = statusTones[document_.status] ?? "neutral";
   return (
     <section className={`detail-section document-panel document-${document_.status}`} aria-labelledby="document-title" data-testid="document-panel">
@@ -144,8 +147,8 @@ export function DocumentPanel({ orderId, service, permissions, onChanged, onLoad
           <p>{t("doc.printBody")}</p>
           <p className="print-count" data-testid="document-print-count">{active ? printCount(active.prints) : ""}</p>
         </div>
-        <button className="button button-primary button-large" type="button" disabled={busy} aria-busy={busy || undefined} onClick={() => void run(`print-${step.revision}-${reason}`, (key) => service.print(orderId, { revisionNumber: step.revision, reason: reason.trim() || null }, key), documentFilename(document_.order.number, step.revision))}><span>{active && active.prints > 0 ? t("doc.reprint", { number: step.revision }) : t("doc.print", { number: step.revision })}</span><AppIcon name="printer" size={22} /></button>
-        {active && active.prints > 0 && <label className="field">{t("doc.reprintReason")}<input value={reason} maxLength={500} onChange={(event) => setReason(event.target.value)} placeholder={t("doc.reprintPlaceholder")} /></label>}
+        <button className="button button-primary button-large" type="button" disabled={busy || reasonMissing} aria-busy={busy || undefined} onClick={() => void run(`print-${step.revision}-${reason}`, (key) => service.print(orderId, { revisionNumber: step.revision, reason: reason.trim() || null }, key), documentFilename(document_.order.number, step.revision))}><span>{active && active.prints > 0 ? t("doc.reprint", { number: step.revision }) : t("doc.print", { number: step.revision })}</span><AppIcon name="printer" size={22} /></button>
+        {reprint && <label className="field">{document_.reprintReasonRequired ? t("doc.reprintReasonRequired") : t("doc.reprintReason")}<input value={reason} maxLength={500} required={document_.reprintReasonRequired} aria-required={document_.reprintReasonRequired || undefined} onChange={(event) => setReason(event.target.value)} placeholder={t("doc.reprintPlaceholder")} data-testid="document-reprint-reason" /></label>}
         <p className="document-hint">{t("doc.reprintHint")}</p>
       </div>}
 

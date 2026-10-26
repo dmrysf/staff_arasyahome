@@ -70,7 +70,7 @@ test("translations are real translations: no Romanian left in Turkish, English o
 test("Sinhala is real Sinhala Unicode (NFC, no replacement characters, not transliterated Latin)", () => {
   const sinhala = /[඀-෿]/;
   // Strings made only of brand names, codes or placeholders carry no Sinhala word by design.
-  const noWords = new Set<MessageKey>(["login.demoBadge", "common.quote", "orderAction.orderNote", "ty.package.arasyaStatus", "ty.package.trendyolStatus", "ty.inbox.packageLine", "qr.codeLabel", "ydsoft.checking"]);
+  const noWords = new Set<MessageKey>(["login.demoBadge", "common.quote", "orderAction.orderNote", "ty.package.arasyaStatus", "ty.package.trendyolStatus", "ty.inbox.packageLine", "qr.codeLabel", "ydsoft.checking", "inv.qr.placeholder", "inv.pf.transfer.iban", "inv.pf.transfer.bic"]);
   let sinhalaTexts = 0;
   for (const key of keys) {
     for (const text of texts(CATALOGS.si[key])) {
