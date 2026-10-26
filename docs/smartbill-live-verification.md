@@ -160,7 +160,7 @@ server. Each has two modes with the same checks; **run the database mode first**
 
 ```
 ssh <host> 'cd <site> && php -d display_errors=stderr -- source=<trendhome|outletperdele> \
-  company=RO42340172_subsidiary_1 invoice-series=SMART proforma-series=ARS iban=RO79INGB0000999915112089 \
+  company=RO42340172__subsidiary_1 invoice-series=SMART proforma-series=ARS iban=RO79INGB0000999915112089 \
   bic=INGBROBU "bank=ING BANK NV" free-shipping-min=600 advance-percent=30' < arasya-live-readonly.php
 
 ssh <host> 'cd <site> && php -d display_errors=stderr -- invoice-series=SMART proforma-series=ARS' \
@@ -186,7 +186,7 @@ and posts to `wp-cron.php`, which runs the due jobs with every plugin loaded.
 
 ```
 ssh <host> 'cd <site> && wp --exec="defined(\"DISABLE_WP_CRON\") || define(\"DISABLE_WP_CRON\", true);" \
-  eval-file - --skip-plugins --skip-themes source=<trendhome|outletperdele> company=RO42340172_subsidiary_1 \
+  eval-file - --skip-plugins --skip-themes source=<trendhome|outletperdele> company=RO42340172__subsidiary_1 \
   invoice-series=SMART proforma-series=ARS iban=RO79INGB0000999915112089 bic=INGBROBU "bank=ING BANK NV" \
   free-shipping-min=600 advance-percent=30' < arasya-live-readonly.php
 

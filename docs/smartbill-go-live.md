@@ -76,7 +76,7 @@ READ ONLY session and transaction). Results are written next to each line. Nothi
 | L2 | YD SOFT not on automatic updates | PASS | PASS | A `yd_soft_auto_update_off` |
 | L3 | HPOS on or off, sync with posts | recorded (INFO), then fixed as `hpos=` | same | A `hpos` |
 | L4 | Source key, delivery mode, authority modes, Confirmare mode, cancellation sync, last connection | `trendhome`, ingestion, authorities enforce, Confirmare absent | `outletperdele`, same | A `arasya_source` |
-| L5 | SmartBill company in the plugin, credentials present | `RO42340172_subsidiary_1` (to confirm per shop) | to confirm | A `company_in_plugin`, `smartbill_connected` |
+| L5 | SmartBill company in the plugin, credentials present | `RO42340172__subsidiary_1` (to confirm per shop) | to confirm | A `company_in_plugin`, `smartbill_connected` |
 | L6 | Final document type, SMART and ARS in the plugin | invoice, SMART, ARS | same (to confirm) | A |
 | L7 | Plugin paths that act alone: automatic e-mail, cashing, draft, automatic issue statuses, payment link, currency | all off, RON | same | A `plugin_settings_kept` |
 | L8 | SMART (`f`) and ARS (`p`) exist in the SmartBill company | both | both | B (one GET, separate approval) |

@@ -197,7 +197,7 @@ whole order; the courier collects only what is still owed. Every amount is compu
   owed now. A mismatch (a payment after the AWB, a new price) is shown and written in the finance note; the AWB is never
   cancelled or re-created automatically; a delivered AWB is never compared again.
 - **SmartBill company and series**: `wp yd-arasya invoice proforma-bank` now also takes `--company=<vat_code>` (the
-  approved SmartBill company, e.g. the value `RO42340172_subsidiary_1` seen in the plugin settings, to be confirmed per
+  approved SmartBill company, e.g. the value `RO42340172__subsidiary_1` seen in the plugin settings, to be confirmed per
   site), `--invoice-series=SMART` and `--bic=INGBROBU`. A plugin connected to another company or set to another invoice
   series refuses the proforma and the final invoice (`smartbill_company_not_approved`, `invoice_series_not_approved`).
   The proforma names ONLY the advance account ("Plata avansului se face numai prin transfer bancar in contul IBAN …;

@@ -328,7 +328,7 @@ $ok($asRoot('PUT', "/management/employees/{$uuids['cappr']}/confirmare-scopes", 
 $pdo->prepare('UPDATE order_confirmations SET assigned_employee_uuid = ? WHERE global_order_id = ?')->execute([$uuids['cappr'], $g(3)]);
 $who['cappr'] = T::login($kernel, "cappr.{$suffix}", $password);
 $refundKey = 'ops-refund-' . bin2hex(random_bytes(10));
-$req = $ok($operate($who['cappr'], $g(3), 'card-refund', [], $refundKey), 'one click: "Rambursează integral prin NETOPIA"');
+$req = $ok($operate($who['cappr'], $g(3), 'card-refund', [], $refundKey), 'one click: "Cere rambursarea integrală (manual, în panoul NETOPIA)"');
 $check($req['result'] === 'manual_required' && $req['shop']['cardRefund']['requests'][0]['amount'] === '719.00' && $req['shop']['cardRefund']['requests'][0]['transactions'] === 2,
     'NETOPIA has no refund API: a manual task for the whole 719.00 over both card transactions');
 $twice = $ok($operate($who['cappr'], $g(3), 'card-refund'), 'a second click');
