@@ -125,6 +125,8 @@ const HEALTH_FIELDS: readonly { key: string; path: readonly string[]; tone: "neu
   { key: "neverCalled", path: ["confirmare", "neverCalled"], tone: "warning" },
   { key: "undetermined", path: ["confirmare", "undetermined"], tone: "warning", alert: true },
   { key: "proformaCycleErrors", path: ["proformaCycleErrors"], tone: "warning", alert: true },
+  { key: "proformaUnknownOverdue", path: ["proformaUnknownOverdue"], tone: "warning", alert: true },
+  { key: "proformaFailed7d", path: ["proformaFailed7d"], tone: "warning", alert: true },
   { key: "financeActionsOpen", path: ["financeActionsOpen"], tone: "warning" },
   { key: "invoiceActionsUnknown", path: ["invoiceActionsUnknown"], tone: "warning", alert: true },
   { key: "routedNotInvoiced", path: ["routedNotInvoiced"], tone: "action" },

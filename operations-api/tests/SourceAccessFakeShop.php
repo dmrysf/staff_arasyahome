@@ -100,6 +100,10 @@ final class SourceAccessFakeShop implements SourceAccessTransport
     public array $smartbillReminders = [];
     /** The next reminder's SmartBill outcome: sent | refused. */
     public string $reminderOutcome = 'sent';
+    /** R3 (2026-10-26): how many of the next proforma issues / e-mails SmartBill answers 429 (Retry-After 45 s). */
+    public int $proformaRateLimits = 0;
+    public int $mailRateLimits = 0;
+    public int $rateLimitRetryAfter = 45;
 
     /** @param array<string, array<string, mixed>> $orders orderId => fixture */
     public function __construct(
@@ -891,6 +895,12 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             return $done(200, (string) $input['resolution']);
         }
         if ($action === 'proforma_send_mail') {
+            if ($this->mailRateLimits > 0) {
+                $this->mailRateLimits--;
+                $p['mail'] = 'failed';
+                $p['history'][] = ['kind' => 'proforma_mail', 'at' => $now, 'by' => $employee, 'outcome' => 'failed'];
+                return $keep(409, ['error' => ['code' => 'mail_rate_limited'], 'revision' => $this->invoiceRevision($orderId), 'retryAfter' => $this->rateLimitRetryAfter]);
+            }
             $outcome = $this->proformaMailOutcome;
             $this->proformaMailOutcome = 'sent';
             if ($outcome === 'refused') {
@@ -903,6 +913,11 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             $this->smartbillMails['pf:' . $orderId] = ($this->smartbillMails['pf:' . $orderId] ?? 0) + 1;
             $p['history'][] = ['kind' => 'proforma_mail', 'at' => $now, 'by' => $employee, 'outcome' => 'sent'];
             return $done(200, 'sent');
+        }
+        if ($this->proformaRateLimits > 0) {
+            $this->proformaRateLimits--;
+            $p['history'][] = ['kind' => 'proforma_issue', 'at' => $now, 'by' => $employee, 'outcome' => 'refused'];
+            return $keep(409, ['error' => ['code' => 'smartbill_rate_limited'], 'revision' => $this->invoiceRevision($orderId), 'retryAfter' => $this->rateLimitRetryAfter]);
         }
         $outcome = $this->proformaOutcome;
         $this->proformaOutcome = 'created';

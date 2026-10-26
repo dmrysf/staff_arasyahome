@@ -362,6 +362,94 @@ $columns = array_column($all("SELECT column_name AS c FROM information_schema.co
 $check(array_intersect($columns, ['amount', 'series', 'number', 'iban', 'email', 'phone', 'customer_name']) === [], 'no amount, document number, bank account or customer field is stored');
 $check(!str_contains((string) file_get_contents($logFile), CYC_PHONE), 'the telephone number never reaches the log');
 
+// ---- 11. R1-R5 (2026-10-26): 429 Retry-After, retry after a definite refusal, unknown overdue, failed cycles ----------------
+foreach ([11, 12, 13, 14, 15] as $n) {
+    $ok(T::ingest($kernel, 'trendhome', $payload($id($n), 200 + $n)), "trendhome order {$n}");
+    $th->orders[$id($n)] = ['id' => $id($n), 'number' => $id($n), 'eligible' => true, 'phone' => CYC_PHONE, 'pricing' => 'sha256:' . hash('sha256', 'cyc-price-' . $id($n)),
+        'invoice' => ['cleared' => false, 'cod' => true, 'totalAccepted' => false]];
+}
+$service->distribute();
+$three = static function (int $n) use ($contact, $who, $g): void { $contact($who['cop'], $g($n), 'no_answer'); $contact($who['cop'], $g($n), 'no_answer'); $contact($who['cop'], $g($n), 'no_answer'); };
+$retry = static fn (array $w, int $n): array => $call($w, 'POST', '/confirmare/orders/' . rawurlencode($g($n)) . '/cycle/retry');
+// TEST ONLY: the Retry-After wait passes (the stored instant moves back; nothing waits).
+$waited = static function (int $n) use ($pdo, $g): void { $pdo->prepare('UPDATE confirmare_proforma_cycles SET updated_at = DATE_SUB(updated_at, INTERVAL 301 SECOND) WHERE global_order_id = ? AND active_order_uuid IS NOT NULL')->execute([$g($n)]); };
+// R3: SmartBill answers 429 once: nothing was made, the step waits Retry-After, then succeeds under a new key.
+$th->proformaRateLimits = 1;
+$three(11);
+$c = $cycleOf($g(11));
+$check($c['state'] === 'issue_pending' && $c['last_error'] === 'rate_limited' && $proformas(11) === 0, 'R3: a 429 on the issue (Retry-After 45 s): nothing made, the cycle waits 300 s: ' . json_encode([$c['state'], $c['last_error']]));
+$check(($detail($who['cop'], $g(11))['cycle']['proforma']['lastError'] ?? null) === 'rate_limited', 'R3: Staff is shown rate_limited');
+$run();
+$check($cycleOf($g(11))['state'] === 'issue_pending' && $proformas(11) === 0, 'R3: before Retry-After nothing is sent to SmartBill');
+$waited(11);
+$run();
+$c = $cycleOf($g(11));
+$check($c['state'] === 'running' && $proformas(11) === 1 && ($th->smartbillMails['pf:' . $id(11)] ?? 0) === 1 && $c['last_error'] === null, 'R3: after Retry-After the issue is asked again: ONE proforma, ONE e-mail, the timer runs');
+// R3: at most three retries, then the cycle closes as rate-limited (never an endless loop).
+$th->proformaRateLimits = 4;
+$three(12);
+foreach ([1, 2, 3] as $_) { $waited(12); $run(); }
+$c = $cycleOf($g(12));
+$check($c['state'] === 'closed' && $c['closed_reason'] === 'smartbill_rate_limited' && $proformas(12) === 0 && $th->proformaRateLimits === 0, 'R3: four 429 answers: three retries, then closed as smartbill_rate_limited, nothing made: ' . json_encode([$c['state'], $c['closed_reason'], $c['attempts']]));
+// R1: the operator starts it again: no new call, the shop's proforma is read first, ONE proforma.
+$error($retry($who['cout'], 12), 404, 'CONFIRMARE_NOT_FOUND', 'R1: another shop\'s operator cannot start it again');
+$error($retry($who['cfinview'], 12), 404, 'CONFIRMARE_NOT_FOUND', 'R1: a finance viewer cannot start it again');
+$again = $ok($retry($who['cop'], 12), 'R1: the operator starts the advance proforma again');
+$c = $cycleOf($g(12));
+$check(($again['proformaCycle']['cycle'] ?? null) === 2 && $c['state'] === 'running' && $proformas(12) === 1 && $noAnswers($g(12)) === 3 && $c['owner_employee_uuid'] === $uuids['cop'],
+    'R1: the retry issues ONE unconfirmed proforma and e-mails it, without a new call; the cycle row names who retried: ' . json_encode($again['proformaCycle'] ?? null));
+$retryIssue = array_values(array_filter($th->requests, static fn (array $r): bool => ($r['body']['action'] ?? null) === 'proforma_issue' && ($r['body']['orderId'] ?? null) === $id(12)));
+$check(($retryIssue[array_key_last($retryIssue)]['body']['unconfirmed'] ?? null) === true, 'R1: the retried proforma is still marked unconfirmed (no telephone confirmation)');
+$error($retry($who['cop'], 12), 409, 'CONFIRMARE_CYCLE_RETRY_REFUSED', 'R1: a second retry while one runs is refused (double click)');
+// R1: three cycles per call set at most.
+$th->proformaOutcome = 'refused';
+$three(13);
+$th->proformaOutcome = 'refused';
+$ok($retry($who['csup'], 13), 'R1: a supervisor may start it again (refused again)');
+$th->proformaOutcome = 'refused';
+$ok($retry($who['cop'], 13), 'R1: third cycle (refused again)');
+$limit = $error($retry($who['cop'], 13), 409, 'CONFIRMARE_CYCLE_RETRY_REFUSED', 'R1: a fourth cycle for the same three calls is refused');
+$check(($limit['error']['details']['reason'] ?? null) === 'retry_limit' && $proformas(13) === 0, 'R1: the refusal says retry_limit; nothing was made in SmartBill');
+// R2: the proforma exists, the e-mail was refused: the retry re-sends the SAME proforma.
+$th->proformaMailOutcome = 'refused';
+$three(14);
+$c = $cycleOf($g(14));
+$check($c['state'] === 'closed' && $c['closed_reason'] === 'mail_refused' && $proformas(14) === 1 && ($th->smartbillMails['pf:' . $id(14)] ?? 0) === 0, 'R2: one proforma, the e-mail refused: closed as mail_refused, no timer');
+$ok($retry($who['cop'], 14), 'R2: the operator starts it again');
+$c = $cycleOf($g(14));
+$check($c['state'] === 'running' && $proformas(14) === 1 && ($th->smartbillMails['pf:' . $id(14)] ?? 0) === 1, 'R2: the SAME proforma is e-mailed (no second document); the timer runs');
+// R2/R3: an e-mail rate-limited once is sent again after Retry-After.
+// R4: an unknown issue is never retried; it is counted overdue for a manager after 30 minutes.
+$th->proformaOutcome = 'unknown';
+$three(15);
+$check($cycleOf($g(15))['last_error'] === 'issue_unknown' && $proformas(15) === 1, 'R4: the issue outcome is unknown (SmartBill may have made it)');
+$unknownRetry = $error($retry($who['cop'], 15), 409, 'CONFIRMARE_CYCLE_RETRY_REFUSED', 'R4: an unknown outcome cannot be started again');
+$check(($unknownRetry['error']['details']['reason'] ?? null) === 'cycle_exists', 'R4: the open unknown cycle stays the only one (cycle_exists)');
+$run();
+$check($proformas(15) === 1, 'R4: the worker never asks SmartBill again for an unknown issue');
+$health = static fn (): array => $ok(T::call($kernel, 'GET', '/confirmare/health', null, ['origin' => T::ORIGIN], $who['csup']['cookie'], ['source' => 'trendhome']), 'supervisor health');
+$h = $health();
+$check(($h['sources']['trendhome']['proformaUnknownOverdue'] ?? null) === 0, 'R4: a fresh unknown outcome is not overdue yet');
+$pdo->prepare('UPDATE confirmare_proforma_cycles SET updated_at = DATE_SUB(updated_at, INTERVAL 31 MINUTE) WHERE global_order_id = ?')->execute([$g(15)]);
+$h = $health();
+$check(($h['sources']['trendhome']['proformaUnknownOverdue'] ?? null) === 1, 'R4: after 30 minutes the supervisor\'s health counts it overdue: ' . json_encode($h['sources']['trendhome']['proformaUnknownOverdue'] ?? null));
+// R5: cycles closed by a refusal in the last 7 days are counted even though nothing is open.
+$byReason = $h['sources']['trendhome']['proformaFailed7dByReason'] ?? null;
+$check(($h['sources']['trendhome']['proformaFailed7d'] ?? null) === 5 && $byReason == ['mail_refused' => 1, 'smartbill_rate_limited' => 1, 'smartbill_refused' => 3],
+    'R5: 5 failed cycles in 7 days by reason (rate-limited 1, refused 3, e-mail refused 1): ' . json_encode([$h['sources']['trendhome']['proformaFailed7d'] ?? null, $byReason]));
+// Nothing is retried that is not a definite refusal: a paid or cancelled cycle.
+$error($retry($who['cop'], 2), 409, 'CONFIRMARE_CYCLE_RETRY_REFUSED', 'R1: a paid order is never started again');
+// R3: a Retry-After longer than the wait is not retried automatically.
+$ok(T::ingest($kernel, 'trendhome', $payload($id(16), 216)), 'trendhome order 16');
+$th->orders[$id(16)] = ['id' => $id(16), 'number' => $id(16), 'eligible' => true, 'phone' => CYC_PHONE, 'pricing' => 'sha256:' . hash('sha256', 'cyc-price-' . $id(16)), 'invoice' => ['cleared' => false, 'cod' => true, 'totalAccepted' => false]];
+$service->distribute();
+$th->proformaRateLimits = 1;
+$th->rateLimitRetryAfter = 900;
+$three(16);
+$c = $cycleOf($g(16));
+$check($c['state'] === 'closed' && $c['closed_reason'] === 'smartbill_rate_limited' && $proformas(16) === 0, 'R3: Retry-After 900 s (longer than the 300 s wait): no automatic retry, closed as rate-limited');
+$th->rateLimitRetryAfter = 45;
+
 // ---- Cleanup (later suites share the database in CI) ------------------------------------------------------------------------
 $clear();
 fwrite(STDOUT, "MySQL Confirmare cycle integration: {$checks} checks passed.\n");

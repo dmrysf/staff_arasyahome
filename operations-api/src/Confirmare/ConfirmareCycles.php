@@ -60,6 +60,24 @@ final class ConfirmareCycles
     public const REMINDER_2_HOURS = 72;
     public const EXPIRY_HOURS = 120;
     public const CLAIM_SECONDS = 300;
+    /**
+     * R3 (2026-10-26): a step SmartBill rate-limited (429) is tried again at most this many times, each after a fixed wait
+     * that is never shorter than SmartBill's Retry-After: a Retry-After longer than the wait is not retried automatically
+     * (the cycle closes as rate-limited; its operator may start it again). The wait is not stored (migration 043 keeps
+     * `last_error` a plain code): it runs from the cycle's `updated_at`.
+     */
+    public const RATE_LIMIT_RETRIES = 3;
+    public const RATE_LIMIT_WAIT_SECONDS = 300;
+    /** R1 (2026-10-26): cycles one set of three unanswered calls may start (the first one and its retries). */
+    public const CYCLES_PER_CALL_SET = 3;
+    /**
+     * R1/R2 (2026-10-26): why a closed cycle may be started again by its operator or a supervisor once the cause is fixed. Every
+     * one is a DEFINITE answer (SmartBill or the shop refused before anything was made, or the e-mail was refused): the retry
+     * reads the shop's proforma first, re-sends an existing proforma instead of issuing another, and stops on any unknown
+     * outcome. Paid, cancelled, expired, replaced, missing or unknown cycles are never retried.
+     */
+    public const RETRYABLE_CLOSED = ['smartbill_refused', 'smartbill_precheck', 'smartbill_rate_limited', 'mail_refused', 'mail_rate_limited',
+        'proforma_bank_missing', 'proforma_series_missing', 'proforma_series_not_approved', 'smartbill_company_not_approved', 'billing_email_invalid'];
     public const TABLES = ['confirmare_proforma_cycles', 'confirmare_cycle_steps', 'confirmare_bank_checks', 'confirmare_reactivations', 'invoice_efactura_tasks', 'order_source_operations'];
     public const OPEN_STATES = ['issue_pending', 'mail_pending', 'running', 'waiting_bank_check', 'waiting_finance', 'cancel_pending', 'cancel_unknown', 'order_cancel_pending'];
     /** Shop refusals that mean money exists or is being checked: the cycle waits for finance, never cancels. */
@@ -393,6 +411,11 @@ final class ConfirmareCycles
             $this->update($cycle, ['last_error' => 'invoice_disabled', 'attempts' => (int) $cycle['attempts'] + 1]);
             return false;
         }
+        // R3 (2026-10-26): SmartBill asked to wait (429): nothing is sent to it before the wait is over.
+        if ($cycle['last_error'] === 'rate_limited'
+            && (new DateTimeImmutable((string) $cycle['updated_at'], new DateTimeZone('UTC')))->modify('+' . self::RATE_LIMIT_WAIT_SECONDS . ' seconds') > $this->clock->now()) {
+            return false;
+        }
         if ($cycle['state'] === 'order_cancel_pending') {
             return $this->requestOrderCancel($cycle, $requestId);
         }
@@ -616,6 +639,16 @@ final class ConfirmareCycles
                 $refusal = null;
             }
             if ($refusal !== null) {
+                if (in_array($refusal['code'], ['smartbill_rate_limited', 'mail_rate_limited'], true) && (int) $cycle['attempts'] < self::RATE_LIMIT_RETRIES
+                    && (int) ($refusal['retryAfter'] ?? 60) <= self::RATE_LIMIT_WAIT_SECONDS) {
+                    // R3 (2026-10-26): SmartBill answered 429 to exactly one call (the shop counts the calls; more than one or no
+                    // answer is `unknown`, never this code): nothing was made or sent. The same step is asked again under a
+                    // new key after the wait, at most RATE_LIMIT_RETRIES times; then the cycle closes as rate-limited and
+                    // its operator may start it again (retryForActor).
+                    $this->forgetStep($cycleUuid, $step);
+                    $this->update($cycle, ['last_error' => 'rate_limited', 'attempts' => (int) $cycle['attempts'] + 1]);
+                    return false;
+                }
                 if (in_array($refusal['code'], ['revision_changed', 'order_busy', 'operation_in_progress'], true)) {
                     // Nothing ran: the step is tried again on the next pass, under a new key.
                     $this->forgetStep($cycleUuid, $step);
@@ -745,6 +778,63 @@ final class ConfirmareCycles
             throw new ApiException(409, 'CONFIRMARE_CYCLE_BUSY', 'The proforma cycle is being processed right now. Reload in a moment.');
         }
         return ['proformaCycle' => $this->present($after)];
+    }
+
+    /**
+     * R1/R2 (2026-10-26): starts the advance proforma again after a cycle of the current call set closed with a DEFINITE refusal
+     * (RETRYABLE_CLOSED), once the cause was fixed: no new telephone call is recorded and no fourth call is needed. Its
+     * operator or a supervisor; the order must still qualify exactly as after the third call (noAnswerBlocker). The new
+     * cycle starts at `issue_pending`, whose first move reads the shop's proforma: an existing proforma is e-mailed again
+     * (never a second one), an unknown or in-flight one stops the cycle (issue_unknown). At most CYCLES_PER_CALL_SET cycles
+     * per call set. The new cycle row is the audit record: origin `no_answer` (the same three calls; migration 043 allows
+     * no other origin), a higher cycle number in the same call set, owner = who started it again, created_at.
+     *
+     * @return array<string, mixed>
+     */
+    public function retryForActor(EmployeeIdentity $actor, string $globalOrderId, string $requestId): array
+    {
+        $this->requireInstalled();
+        $found = $this->orderByGlobal($this->globalId($globalOrderId));
+        if ($found === null || !$this->confirmare->sees($actor, (string) $found['source_key'])) {
+            throw new ApiException(404, 'CONFIRMARE_NOT_FOUND', 'No Confirmare order was found.');
+        }
+        if (!$this->operates($actor, $found)) {
+            throw new ApiException(403, 'CONFIRMARE_DENIED', 'Only the operator of this order or a supervisor runs its proforma cycle.');
+        }
+        $orderUuid = (string) $found['order_uuid'];
+        $refuse = static fn (string $reason): ApiException => new ApiException(409, 'CONFIRMARE_CYCLE_RETRY_REFUSED', 'The advance proforma cannot be started again now: ' . $reason . '.', ['reason' => $reason]);
+        $this->pdo->beginTransaction();
+        try {
+            $order = $this->lockOrder($orderUuid);
+            $reason = $order === null ? 'order_unavailable' : $this->noAnswerBlocker($actor, $order);
+            if ($reason !== null) {
+                throw $refuse($reason);
+            }
+            if (!self::callState($this->pdo, $orderUuid)['complete']) {
+                throw $refuse('calls_remaining');
+            }
+            $boundary = self::callBoundary($this->pdo, $orderUuid);
+            $statement = $this->pdo->prepare('SELECT state, closed_reason FROM confirmare_proforma_cycles WHERE order_uuid = ?' . ($boundary === null ? '' : ' AND created_at > ?') . ' ORDER BY cycle_number DESC');
+            $statement->execute($boundary === null ? [$orderUuid] : [$orderUuid, $boundary]);
+            $cycles = $statement->fetchAll(PDO::FETCH_ASSOC);
+            $last = $cycles[0] ?? null;
+            if ($last === null || $last['state'] !== 'closed' || !in_array((string) $last['closed_reason'], self::RETRYABLE_CLOSED, true)) {
+                throw $refuse('nothing_to_retry');
+            }
+            if (count($cycles) >= self::CYCLES_PER_CALL_SET) {
+                throw $refuse('retry_limit');
+            }
+            $cycle = $this->createCycle($order, 'no_answer', $actor->employeeUuid, 'issue_pending', null, null);
+            $this->pdo->commit();
+        } catch (Throwable $error) {
+            $this->rollBack();
+            if ($error instanceof PDOException) {
+                // Another request started a cycle first (unique active cycle): nothing is started twice.
+                throw $refuse('cycle_exists');
+            }
+            throw $error;
+        }
+        return ['proformaCycle' => $this->present($this->advance((string) $cycle['cycle_uuid'], $requestId) ?? $cycle)];
     }
 
     /** @return array<string, mixed>|null */

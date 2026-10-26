@@ -57,6 +57,7 @@ use Arasya\Operations\Security\CsrfGuard;
  *   GET  /confirmare/finance/bank-checks[?source=]         the latest bank checks and the proformas waiting for one
  *   POST /confirmare/finance/bank-check                    {source, coversUntil?} + Idempotency-Key (finance record/approve)
  *   POST /confirmare/orders/{globalOrderId}/cycle/advance  the order's proforma cycle now (its operator or a supervisor)
+ *   POST /confirmare/orders/{globalOrderId}/cycle/retry    start the advance proforma again after a definite refusal (R1, 2026-10-26)
  *   The third `no_answer` of a cycle answers `proformaCycle` (ConfirmareCycles::afterNoAnswer).
  *   GET  /confirmare/orders/{globalOrderId}/operations     reactivation, AWB and card refund state (ConfirmareOperations)
  *   POST /confirmare/orders/{globalOrderId}/reactivate     {reason, exceptionEntryId?} + Idempotency-Key
@@ -192,6 +193,13 @@ final readonly class ConfirmareController
             $this->csrf->requireValid($session->rawToken, $request->header('x-csrf-token'));
             $input = $request->json(512);
             return $this->json($this->cycles->recordBankCheck($actor, $input['source'] ?? null, $input, $request->header('idempotency-key') ?? '', $request->requestId));
+        }
+        if (preg_match('#^/confirmare/orders/([^/]{1,600})/cycle/retry$#D', $path, $m) === 1) {
+            if ($request->method !== 'POST') {
+                throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
+            }
+            $this->csrf->requireValid($session->rawToken, $request->header('x-csrf-token'));
+            return $this->json($this->cycles->retryForActor($actor, rawurldecode($m[1]), $request->requestId));
         }
         if (preg_match('#^/confirmare/orders/([^/]{1,600})/cycle/advance$#D', $path, $m) === 1) {
             if ($request->method !== 'POST') {

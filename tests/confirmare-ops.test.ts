@@ -195,6 +195,10 @@ test("HTTP: the operations routes, one Idempotency-Key per command, the shop ref
   answers.push(json(200, { proformaCycle: cycleRaw.proforma }));
   assert.equal((await api.advanceCycle("trendhome:1001")).state, "waiting_bank_check");
   assert.equal(calls.at(-1)!.path, "/confirmare/orders/trendhome%3A1001/cycle/advance");
+  answers.push(json(200, { proformaCycle: { ...cycleRaw.proforma, cycle: 2, state: "mail_pending", lastError: "rate_limited" } }));
+  const retried = await api.retryCycle("trendhome:1001");
+  assert.equal(calls.at(-1)!.path, "/confirmare/orders/trendhome%3A1001/cycle/retry");
+  assert.deepEqual([retried.cycle, retried.state, retried.lastError], [2, "mail_pending", "rate_limited"], "R1/R3: a started-again cycle and the rate-limit wait are read");
   answers.push(json(200, { contact: { attempt: 3, outcome: "no_answer", by: "Op", at: "2026-10-22T09:00:00Z", current: true }, item: {
     globalOrderId: "trendhome:1001", orderNumber: "1001", sourceKey: "trendhome", status: "pending", version: 4, workflowCohort: "confirmare", openedAt: "2026-10-22T08:00:00Z", submittedAt: null, productionStageId: "waiting",
     commerceStatus: "pending", commerceClosed: false, payment: { state: "cod" }, financial: { state: "waiting", basis: null, open: false, attention: null }, pricingAvailable: true, dueDate: null, productionCleared: false,

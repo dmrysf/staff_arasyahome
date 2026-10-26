@@ -41,6 +41,8 @@ final class SourceInvoice
         'php_incompatible', 'billing_email_invalid', 'finance_unavailable', 'payment_not_cleared', 'zero_total_unsupported', 'finance_attention',
         'finance_pending', 'cashing_mismatch', 'nothing_to_resolve', 'resend_confirmation_required', 'reason_required', 'reissue_attestation_required',
         'smartbill_refused', 'smartbill_precheck', 'mail_refused',
+        // R3 (2026-10-26): SmartBill answered 429 to one call: nothing was made or sent; the shop names the wait (retryAfter).
+        'smartbill_rate_limited', 'mail_rate_limited',
         // 2.18.0: the final document must be an invoice; the advance proforma.
         'final_document_not_invoice', 'proforma_operation_unknown', 'proforma_invoiced', 'proforma_status_unknown', 'proforma_series_missing',
         'advance_not_required', 'advance_already_collected', 'proforma_exists', 'proforma_missing', 'proforma_outdated', 'replace_confirmation_required',
@@ -525,6 +527,8 @@ final class SourceInvoice
             'code' => $code,
             'blockers' => array_map(static fn (mixed $blocker): string => self::choice($blocker, self::CODES), $blockers),
             'revision' => isset($data['revision']) ? self::pattern($data['revision'], self::FINGERPRINT) : null,
+            // R3 (2026-10-26): seconds SmartBill asked to wait (Retry-After), only with a rate-limit refusal.
+            'retryAfter' => is_int($data['retryAfter'] ?? null) && $data['retryAfter'] >= 1 && $data['retryAfter'] <= 3600 ? $data['retryAfter'] : null,
         ];
     }
 

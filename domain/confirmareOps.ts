@@ -10,6 +10,13 @@ import { financeScopesOf } from "./confirmareFinance";
  * server's; what is shown here is presentation only, and every answer is read strictly (anything unexpected is refused).
  */
 
+/**
+ * R1/R2 (2026-10-26): why a closed proforma cycle may be started again (API ConfirmareCycles::RETRYABLE_CLOSED). Each is a
+ * definite refusal; the `mail_*` ones mean the proforma exists and only its e-mail is sent again.
+ */
+export const RETRYABLE_CLOSED = ["smartbill_refused", "smartbill_precheck", "smartbill_rate_limited", "mail_refused", "mail_rate_limited",
+  "proforma_bank_missing", "proforma_series_missing", "proforma_series_not_approved", "smartbill_company_not_approved", "billing_email_invalid"] as const;
+
 export const CYCLE_STATES = ["issue_pending", "mail_pending", "running", "waiting_bank_check", "waiting_finance", "cancel_pending", "cancel_unknown", "order_cancel_pending", "paid", "cancelled", "closed"] as const;
 export type CycleState = (typeof CYCLE_STATES)[number];
 export const EFACTURA_STATES = ["open", "sent", "accepted", "rejected", "resolved"] as const;
@@ -58,6 +65,8 @@ export interface ConfirmareOpsApi {
   bankChecks(source: string | null, signal?: AbortSignal): Promise<BankChecks>;
   recordBankCheck(source: string, idempotencyKey: string): Promise<BankCheck>;
   advanceCycle(globalOrderId: string): Promise<ProformaCycle>;
+  /** R1/R2 (2026-10-26): start the advance proforma again after a definite refusal; the server reads the shop's proforma first. */
+  retryCycle(globalOrderId: string): Promise<ProformaCycle>;
   operations(globalOrderId: string, signal?: AbortSignal): Promise<OperationsState>;
   operate(globalOrderId: string, path: OperationPath, input: Record<string, unknown>, idempotencyKey: string): Promise<OperationOutcome>;
   operationsReconcile(globalOrderId: string, idempotencyKey: string): Promise<OperationOutcome>;
@@ -240,7 +249,7 @@ export const OPS_BLOCKERS = [
 export const blockerKey = (code: string): MessageKey => ((OPS_BLOCKERS as readonly string[]).includes(code) ? `cf.ops.blocker.${code}` : "cf.ops.blocker.other") as MessageKey;
 
 const OPS_ERRORS = [
-  "CONFIRMARE_OPERATION_DENIED", "CONFIRMARE_OPERATION_DISABLED", "CONFIRMARE_OPERATION_NOT_FOUND", "CONFIRMARE_AWB_LABEL_UNAVAILABLE", "CONFIRMARE_CYCLE_NONE", "CONFIRMARE_CYCLE_BUSY",
+  "CONFIRMARE_OPERATION_DENIED", "CONFIRMARE_OPERATION_DISABLED", "CONFIRMARE_OPERATION_NOT_FOUND", "CONFIRMARE_AWB_LABEL_UNAVAILABLE", "CONFIRMARE_CYCLE_NONE", "CONFIRMARE_CYCLE_BUSY", "CONFIRMARE_CYCLE_RETRY_REFUSED",
   "CONFIRMARE_CYCLE_SCHEMA_MISSING", "CONFIRMARE_DENIED", "CONFIRMARE_FINANCE_DENIED", "CONFIRMARE_HEALTH_DENIED", "EFACTURA_TASK_CHANGED", "EFACTURA_TRANSITION_REFUSED", "EFACTURA_TASK_NOT_FOUND",
   "CONFIRMARE_SOURCE_UNAVAILABLE", "CONFIRMARE_AUDIT_UNAVAILABLE", "IDEMPOTENCY_CONFLICT", "CONFIRMARE_NOT_FOUND", "VALIDATION_FAILED",
 ] as const;

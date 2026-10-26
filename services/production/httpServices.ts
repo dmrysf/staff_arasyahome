@@ -1165,6 +1165,7 @@ export function createProductionServices(apiBaseUrl: string, options: Production
     bankChecks: (source, signal) => http.request(`/confirmare/finance/bank-checks${sourceQuery(source)}`, { signal, cache: "no-store" }, mapBankChecks),
     recordBankCheck: (source, key) => http.request("/confirmare/finance/bank-check", { method: "POST", cache: "no-store", headers: { "Idempotency-Key": key }, body: JSON.stringify({ source }) }, (value) => mapBankCheck(objectValue(value).check)),
     advanceCycle: (globalOrderId) => http.request(confirmareOrder(globalOrderId, "cycle/advance"), { method: "POST", cache: "no-store", body: "{}" }, (value) => mapProformaCycle(objectValue(value).proformaCycle)),
+    retryCycle: (globalOrderId) => http.request(confirmareOrder(globalOrderId, "cycle/retry"), { method: "POST", cache: "no-store", body: "{}" }, (value) => mapProformaCycle(objectValue(value).proformaCycle)),
     operations: (globalOrderId, signal) => http.request(confirmareOrder(globalOrderId, "operations"), { signal, cache: "no-store" }, mapOperationsState),
     operate: (globalOrderId, path, input, key) => http.request(confirmareOrder(globalOrderId, path), { method: "POST", cache: "no-store", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapOperationOutcome),
     operationsReconcile: (globalOrderId, key) => http.request(confirmareOrder(globalOrderId, "operations/reconcile"), { method: "POST", cache: "no-store", body: JSON.stringify({ idempotencyKey: key }) }, mapOperationOutcome),

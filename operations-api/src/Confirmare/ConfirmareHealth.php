@@ -23,6 +23,8 @@ use PDOException;
 final readonly class ConfirmareHealth
 {
     public const SOURCES = ['trendhome', 'outletperdele'];
+    /** R4 (2026-10-26): an unknown SmartBill outcome older than this is counted as overdue for a manager. */
+    public const UNKNOWN_ATTENTION_MINUTES = 30;
 
     public function __construct(
         private PDO $pdo,
@@ -56,6 +58,16 @@ final readonly class ConfirmareHealth
                 ],
                 'proformaCycles' => $this->grouped("SELECT state, COUNT(*) FROM confirmare_proforma_cycles WHERE source_key = ? AND active_order_uuid IS NOT NULL GROUP BY state", [$s]),
                 'proformaCycleErrors' => $this->count('SELECT COUNT(*) FROM confirmare_proforma_cycles WHERE source_key = ? AND active_order_uuid IS NOT NULL AND last_error IS NOT NULL', [$s]),
+                // R4 (2026-10-26): an open cycle whose SmartBill outcome is unknown for more than 30 minutes: a manager checks
+                // SmartBill and resolves it (the worker never sends it again).
+                'proformaUnknownOverdue' => $this->count("SELECT COUNT(*) FROM confirmare_proforma_cycles WHERE source_key = ? AND active_order_uuid IS NOT NULL
+                    AND (state = 'cancel_unknown' OR last_error IN ('issue_unknown', 'mail_unknown', 'step_unknown', 'answer_unreadable')) AND updated_at < ?",
+                    [$s, $now->modify('-' . self::UNKNOWN_ATTENTION_MINUTES . ' minutes')->format('Y-m-d H:i:s.u')]),
+                // R5 (2026-10-26): cycles closed by a refusal in the last 7 days (no longer open, so not in the counts above).
+                'proformaFailed7d' => ($failed7d = $this->grouped("SELECT closed_reason, COUNT(*) FROM confirmare_proforma_cycles WHERE source_key = ? AND active_order_uuid IS NULL AND state = 'closed'
+                    AND closed_at >= ? AND closed_reason IN (" . implode(', ', array_fill(0, count(ConfirmareCycles::RETRYABLE_CLOSED), '?')) . ') GROUP BY closed_reason',
+                    [$s, $now->modify('-7 days')->format('Y-m-d H:i:s.u'), ...ConfirmareCycles::RETRYABLE_CLOSED])) === null ? null : array_sum($failed7d),
+                'proformaFailed7dByReason' => $failed7d,
                 'lastBankCheck' => $this->iso($this->value('SELECT MAX(covers_until) FROM confirmare_bank_checks WHERE source_key = ?', [$s])),
                 'financeActionsOpen' => $this->count("SELECT COUNT(*) FROM order_finance_actions WHERE source_key = ? AND state IN ('pending', 'unknown')", [$s]),
                 'invoiceActionsUnknown' => $this->count("SELECT COUNT(*) FROM order_invoice_actions WHERE source_key = ? AND state = 'unknown'", [$s]),
