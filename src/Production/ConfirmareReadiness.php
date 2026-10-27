@@ -120,7 +120,8 @@ final readonly class ConfirmareReadiness
             'worker' => 'php bin/confirmare-cycles.php every 5 minutes (cron; not visible to the API)']);
         [$connectorOk, $connector] = $this->connector($key, $target, $now, in_array('042_confirmare_connector_readiness.sql', $applied, true));
         $add('connector', $connectorOk, $connector);
-        $add('staff_release', null, 'not visible to the API: Staff 2.36.0 is deployed right after the API (deployment step)');
+        // API 2.47.0: no Staff version is written here (it went stale with every Staff release); the API cannot see Staff.
+        $add('staff_release', null, 'not visible to the API: compare https://staff.arasyahome.ro/release.json with the release plan (deployment step)');
 
         $failed = array_values(array_map(static fn (array $c): string => $c['check'], array_filter($checks, static fn (array $c): bool => $c['ok'] === false)));
         return ['sourceKey' => $key, 'ready' => $source !== null && $failed === [], 'failed' => $failed, 'checks' => $checks];
