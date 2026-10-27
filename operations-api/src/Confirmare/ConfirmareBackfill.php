@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace Arasya\Operations\Confirmare;
 
+use Arasya\Operations\Integration\SourceAccess\SourceAccessClient;
+use Arasya\Operations\Integration\SourceAccess\SourceAccessException;
+use Arasya\Operations\Integration\SourceAccess\SourceAccessRegistry;
 use Arasya\Operations\Order\OrderProjectionWriter;
 use Arasya\Operations\Production\WorkflowCohort;
 use Arasya\Operations\Support\Clock;
@@ -38,26 +41,49 @@ use Throwable;
  *                 recorded, or a card payment without the gateway's evidence): unchanged, established flow, listed for
  *                 a person to check. Never guessed into Confirmare.
  *
+ * API 2.48.0 (owner decision 2026-10-27, YD SOFT 2.22.0): the shop takes part in every adoption, so an order is never a
+ * Confirmare order in Arasya while the shop still treats it as an order of the established flow. For an order Arasya
+ * would take, the shop is asked first, signed with the source access key (SourceAccessClient::ROUTE_ADOPT, role
+ * `backfill`): in a dry run it only answers whether it would adopt the order; with --apply it checks the order again and
+ * records the adoption (its Confirmare fence then protects the order like a new Confirmare order). Arasya takes the order
+ * only after the shop's signed `adopted`, inside the transaction that holds the order's row lock:
+ * - shop_refused:     the shop's own checks refused it (its window, status, payment, an existing SmartBill document or
+ *                     AWB, a refund or finance record): unchanged on both sides, the reasons listed;
+ * - shop_unavailable: no source access for the shop, or no trusted answer: unchanged in Arasya. When the shop recorded
+ *                     the adoption and the answer was lost, running the backfill again finds the order adopted (the shop
+ *                     answers an adopted order with its record) and takes it; until then the shop only protects it more.
+ * The window may end earlier than the activation (`until`, the owner's 27 October 00:00 Europe/Bucharest); the shop
+ * applies its own fixed window as well. Without a shop client (the 2.46.0 constructor) nothing is ever taken.
+ *
  * Read-only by default (`--apply` writes). Idempotent: an order taken once has its Confirmare row and is never selected
  * again; a crash between orders is resumed by running it again. Each order is one transaction under its row lock, and
  * the order is re-checked under that lock.
  */
 final readonly class ConfirmareBackfill
 {
-    public const CATEGORIES = ['taken', 'in_production', 'closed', 'financing', 'payment_unknown', 'unverified_payment'];
+    public const CATEGORIES = ['taken', 'in_production', 'closed', 'financing', 'payment_unknown', 'unverified_payment', 'shop_refused', 'shop_unavailable'];
 
-    public function __construct(private PDO $pdo, private Clock $clock)
-    {
+    public function __construct(
+        private PDO $pdo,
+        private Clock $clock,
+        private ?SourceAccessRegistry $registry = null,
+        private ?SourceAccessClient $client = null,
+        /** The employee the shop records as the actor of the adoption (the operator who runs the backfill). */
+        private ?string $actorEmployeeUuid = null,
+        /** Pause between two shop requests (the shop's source access accepts 240 requests a minute, shared with Staff). */
+        private int $paceMicroseconds = 0,
+    ) {
     }
 
-    /** @return array{source: string, window: array{from: string, to: ?string}, counts: array<string, int>, applied: int, orders: array<string, list<string>>} */
-    public function run(string $source, bool $apply, int $limit = 500): array
+    /** @return array{source: string, window: array{from: string, to: ?string}, counts: array<string, int>, applied: int, orders: array<string, list<string>>, refusals: array<string, list<string>>} */
+    public function run(string $source, bool $apply, int $limit = 500, ?DateTimeImmutable $until = null): array
     {
         $activation = WorkflowCohort::firstActivation($this->pdo, $source);
         $from = WorkflowCohort::cutover();
-        $out = ['source' => $source, 'window' => ['from' => $from->format('Y-m-d\TH:i:s\Z'), 'to' => $activation?->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d\TH:i:s\Z')],
-            'counts' => array_fill_keys(self::CATEGORIES, 0), 'applied' => 0, 'orders' => array_fill_keys(self::CATEGORIES, [])];
-        if ($activation === null) {
+        $to = $activation === null ? null : ($until !== null && $until < $activation ? $until : $activation);
+        $out = ['source' => $source, 'window' => ['from' => $from->format('Y-m-d\TH:i:s\Z'), 'to' => $to?->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d\TH:i:s\Z')],
+            'counts' => array_fill_keys(self::CATEGORIES, 0), 'applied' => 0, 'orders' => array_fill_keys(self::CATEGORIES, []), 'refusals' => []];
+        if ($to === null) {
             // Not activated: every order is still legacy by rule; nothing to take.
             return $out;
         }
@@ -65,14 +91,18 @@ final readonly class ConfirmareBackfill
             WHERE o.source_key = ? AND c.order_uuid IS NULL AND (o.workflow_cohort IS NULL OR (o.workflow_cohort = 'legacy' AND o.workflow_cohort_reason IN (?, ?, ?)))
               AND COALESCE(o.source_submitted_at, o.created_at) >= ? AND COALESCE(o.source_submitted_at, o.created_at) < ?
             ORDER BY COALESCE(o.source_submitted_at, o.created_at), o.order_uuid LIMIT " . max(1, min(5000, $limit)));
-        $statement->execute([$source, WorkflowCohort::REASON_NOT_ACTIVATED, WorkflowCohort::REASON_BEFORE_ACTIVATION, WorkflowCohort::REASON_FINANCING, $from->format('Y-m-d H:i:s.u'), $activation->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s.u')]);
+        $statement->execute([$source, WorkflowCohort::REASON_NOT_ACTIVATED, WorkflowCohort::REASON_BEFORE_ACTIVATION, WorkflowCohort::REASON_FINANCING, $from->format('Y-m-d H:i:s.u'), $to->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s.u')]);
         foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $candidate) {
-            $category = $apply ? $this->take((string) $candidate['order_uuid']) : $this->category($this->order((string) $candidate['order_uuid'], false));
+            $reasons = [];
+            $category = $apply ? $this->take((string) $candidate['order_uuid'], $reasons) : $this->preview((string) $candidate['order_uuid'], $reasons);
             if ($category === null) {
                 continue;
             }
             $out['counts'][$category]++;
             $out['orders'][$category][] = (string) $candidate['order_number'];
+            if ($reasons !== []) {
+                $out['refusals'][(string) $candidate['order_number']] = $reasons;
+            }
             if ($apply && $category === 'taken') {
                 $out['applied']++;
             }
@@ -80,8 +110,19 @@ final readonly class ConfirmareBackfill
         return $out;
     }
 
+    /** Dry run: Arasya's category and, for an order Arasya would take, the shop's answer (nothing written anywhere). */
+    private function preview(string $orderUuid, array &$reasons): ?string
+    {
+        $order = $this->order($orderUuid, false);
+        $category = $this->category($order);
+        if ($category !== 'taken' || $order === null) {
+            return $category;
+        }
+        return $this->askShop($order, true, $reasons);
+    }
+
     /** One order, under its row lock. @return string|null the category, null when it was taken meanwhile */
-    private function take(string $orderUuid): ?string
+    private function take(string $orderUuid, array &$reasons): ?string
     {
         $this->pdo->beginTransaction();
         try {
@@ -91,6 +132,10 @@ final readonly class ConfirmareBackfill
                 return null;
             }
             $category = $this->category($order);
+            if ($category === 'taken') {
+                // The shop adopts first (protection before exposure); Arasya takes the order only on its signed `adopted`.
+                $category = $this->askShop($order, false, $reasons);
+            }
             if ($category !== 'taken') {
                 $this->pdo->rollBack();
                 return $category;
@@ -102,8 +147,8 @@ final readonly class ConfirmareBackfill
                 ->execute([$orderUuid, $order['global_order_id'], $order['source_key'], $now, $now]);
             $this->pdo->prepare("INSERT INTO order_confirmation_events (event_uuid, order_uuid, global_order_id, source_key, action, actor_kind, actor_employee_uuid, previous_status, new_status,
                     previous_assignee_uuid, new_assignee_uuid, reason_code, version_after, request_id, idempotency_key, occurred_at)
-                VALUES (?, ?, ?, ?, 'opened', 'system', NULL, NULL, 'pending', NULL, NULL, 'backfill', 1, NULL, NULL, ?)")
-                ->execute([Uuid::v4(), $orderUuid, $order['global_order_id'], $order['source_key'], $now]);
+                VALUES (?, ?, ?, ?, 'opened', 'system', NULL, NULL, 'pending', NULL, NULL, 'backfill', 1, ?, NULL, ?)")
+                ->execute([Uuid::v4(), $orderUuid, $order['global_order_id'], $order['source_key'], $order['adoption_request_id'] ?? null, $now]);
             ConfirmationClearance::refresh($this->pdo, $orderUuid, $now);
             $this->pdo->commit();
             return 'taken';
@@ -113,6 +158,57 @@ final readonly class ConfirmareBackfill
             }
             throw $error;
         }
+    }
+
+    /**
+     * The shop's signed answer for an order Arasya would take: `taken` when it adopts (or, in a dry run, would adopt) it.
+     *
+     * @param array<string, mixed> $order
+     * @param list<string> $reasons the shop's reasons of a refusal (filled)
+     */
+    private function askShop(array &$order, bool $dryRun, array &$reasons): string
+    {
+        $target = $this->registry?->find((string) $order['source_key']);
+        if ($target === null || $this->client === null || $this->actorEmployeeUuid === null || preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/D', $this->actorEmployeeUuid) !== 1) {
+            $reasons = ['source_access_not_configured'];
+            return 'shop_unavailable';
+        }
+        if ($this->paceMicroseconds > 0) {
+            usleep($this->paceMicroseconds);
+        }
+        $requestId = 'backfill:' . substr(str_replace('-', '', Uuid::v4()), 0, 24);
+        try {
+            ['status' => $status, 'body' => $body] = $this->client->exchange($target, SourceAccessClient::ROUTE_ADOPT, [
+                'orderId' => (string) $order['source_order_id'],
+                'orderNumber' => (string) $order['order_number'],
+                'actor' => ['employeeId' => $this->actorEmployeeUuid, 'role' => 'backfill'],
+                'requestId' => $requestId,
+                'globalOrderId' => (string) $order['global_order_id'],
+                'dryRun' => $dryRun,
+            ]);
+        } catch (SourceAccessException $e) {
+            $reasons = [strtolower($e->codeName)];
+            return 'shop_unavailable';
+        }
+        $list = static fn (mixed $value): array => is_array($value) && array_is_list($value) ? array_values(array_filter($value, static fn (mixed $r): bool => is_string($r) && preg_match('/^[a-z_]{1,40}$/D', $r) === 1)) : [];
+        if ($status === 409 && ($body['error']['code'] ?? null) === 'not_adoptable') {
+            $reasons = $list($body['error']['reasons'] ?? null) ?: ['not_adoptable'];
+            return 'shop_refused';
+        }
+        if ($status !== 200 || ($body['globalOrderId'] ?? null) !== $order['global_order_id'] || ($body['dryRun'] ?? null) !== $dryRun || !is_bool($body['adoptable'] ?? null) || !is_bool($body['adopted'] ?? null)) {
+            $reasons = [$status === 200 ? 'answer_invalid' : 'shop_' . (is_string($body['error']['code'] ?? null) ? preg_replace('/[^a-z_]/', '', $body['error']['code']) : 'error')];
+            return 'shop_unavailable';
+        }
+        if (!$body['adoptable']) {
+            $reasons = $list($body['reasons'] ?? null) ?: ['not_adoptable'];
+            return 'shop_refused';
+        }
+        if (!$dryRun && $body['adopted'] !== true) {
+            $reasons = ['answer_invalid'];
+            return 'shop_unavailable';
+        }
+        $order['adoption_request_id'] = $requestId;
+        return 'taken';
     }
 
     /** @param array<string, mixed>|null $order */
@@ -142,7 +238,7 @@ final readonly class ConfirmareBackfill
     /** @return array<string, mixed>|null */
     private function order(string $orderUuid, bool $lock): ?array
     {
-        $statement = $this->pdo->prepare('SELECT o.order_uuid, o.global_order_id, o.source_key, o.workflow_cohort, o.workflow_cohort_reason, o.operational_status, o.cancellation_state, o.production_completed_at,
+        $statement = $this->pdo->prepare('SELECT o.order_uuid, o.global_order_id, o.source_key, o.source_order_id, o.order_number, o.workflow_cohort, o.workflow_cohort_reason, o.operational_status, o.cancellation_state, o.production_completed_at,
                 o.production_stage_id, o.document_status, o.payment_method, (SELECT c.order_uuid FROM order_confirmations c WHERE c.order_uuid = o.order_uuid) AS confirmation
             FROM operational_orders o WHERE o.order_uuid = ?' . ($lock ? ' FOR UPDATE' : ''));
         $statement->execute([$orderUuid]);

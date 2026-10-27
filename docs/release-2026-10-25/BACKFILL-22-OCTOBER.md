@@ -1,5 +1,15 @@
 # Backfill of the orders from 22 October 2026 (owner decision K-06)
 
+> **Reinstated on 2026-10-27 (owner decision, option 1), API 2.48.0 + YD SOFT 2.22.0.** The orders submitted from
+> 22 October 00:00 until 27 October 00:00 Europe/Bucharest that are safe join the normal Confirmare workflow. The shop
+> takes part in every adoption (signed `POST .../confirmare/adopt`, its own checks: window, status, TBI, unverified
+> payment, an existing SmartBill document or AWB, a refund or finance record); Arasya takes an order only after the
+> shop's signed `adopted`. Commands:
+> `wp yd-arasya backfill --since=2026-10-22 [--apply]` on each shop, then
+> `php bin/confirmare-backfill.php --source=<src> --actor=<employee uuid> --until=2026-10-27 [--apply]`. New categories:
+> `shop_refused` (with the shop's reasons) and `shop_unavailable`. See YD SOFT `docs/arasya-connector.md`, "Adoption of
+> the 22–26 October orders". The note below is kept for the record.
+
 > **Superseded on 2026-10-26 (owner's latest decision): no backfill is applied.** Orders submitted before the
 > Confirmare activation of a shop stay in the legacy workflow (WordPress and the existing production), with their
 > current cohort. `--apply` is never run in either step; the commands below remain read-only tools. The Confirmare

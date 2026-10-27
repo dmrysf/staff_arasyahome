@@ -37,6 +37,11 @@ use Closure;
  * Knobs: `proformaOutcome` (created | unknown | refused), `proformaMailOutcome` (sent | refused); `invoice.proformaInvoiced`
  * makes SmartBill report the proforma invoiced (the final invoice is then refused, as the shop does). Proformas and their
  * e-mails are counted in smartbillDocuments / smartbillMails under `pf:<orderId>`.
+ *
+ * API 2.48.0 (YD SOFT 2.22.0): the adoption route (adopt, role `backfill`) of an order of 22–26 October, which is not a
+ * Confirmare order yet (so it is answered whatever `eligible` says). Fixture keys: `adoptReasons` (the shop's refusal
+ * reasons, default none), `adopted` (recorded). An adoption makes the order `eligible`. Knob `afterAdopt`
+ * ('answer_lost': the shop records the adoption, then the answer never arrives). Adoptions are counted in `adoptions`.
  */
 final class SourceAccessFakeShop implements SourceAccessTransport
 {
@@ -108,6 +113,10 @@ final class SourceAccessFakeShop implements SourceAccessTransport
     public int $proformaRateLimits = 0;
     public int $mailRateLimits = 0;
     public int $rateLimitRetryAfter = 45;
+    /** API 2.48.0: 'answer_lost' after the shop recorded an adoption. */
+    public ?string $afterAdopt = null;
+    /** @var array<string, int> adoptions recorded by this TEST shop: orderId => count */
+    public array $adoptions = [];
 
     /** @param array<string, array<string, mixed>> $orders orderId => fixture */
     public function __construct(
@@ -155,7 +164,7 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             ($this->during)($input);
         }
         $routes = ['detail', 'catalog', 'product', 'preview', 'apply', 'edit-status', 'finance', 'finance-action', 'finance-status', 'invoice', 'invoice-action', 'invoice-status', 'invoice-payment', 'proforma-action',
-            'transfer-exceptions', 'transfer-exception-action', 'operation', 'operation-status'];
+            'transfer-exceptions', 'transfer-exception-action', 'operation', 'operation-status', 'adopt'];
         $action = substr($route, strlen('/yd-arasya/v1/confirmare/'));
         if (!str_starts_with($route, '/yd-arasya/v1/confirmare/') || !in_array($action, $routes, true) || !is_array($input)) {
             return $this->answer(400, ['error' => ['code' => 'invalid_request']], $nonce);
@@ -174,6 +183,13 @@ final class SourceAccessFakeShop implements SourceAccessTransport
         $order = $this->orders[(string) ($input['orderId'] ?? '')] ?? null;
         if ($order === null || ($order['number'] ?? $order['id']) !== ($input['orderNumber'] ?? null)) {
             return $this->answer(404, ['error' => ['code' => 'order_not_found']], $nonce);
+        }
+        if ($action === 'adopt') {
+            [$status, $payload] = $this->adopt((string) $order['id'], $input, $now);
+            if ($status === 0) {
+                throw new \Arasya\Operations\Integration\SourceAccess\SourceAccessException('SOURCE_UNREACHABLE');
+            }
+            return $this->answer($status, $payload, $nonce);
         }
         if (($order['eligible'] ?? true) !== true) {
             return $this->answer(403, ['error' => ['code' => 'order_not_eligible']], $nonce);
@@ -208,6 +224,39 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             throw new \Arasya\Operations\Integration\SourceAccess\SourceAccessException('SOURCE_UNREACHABLE');
         }
         return $this->answer($status, $payload, $nonce);
+    }
+
+    /**
+     * The shop's adoption of an order of 22–26 October (YD SOFT 2.22.0 Adoption): its own reasons, a dry run, idempotent.
+     *
+     * @param array<string, mixed> $input
+     * @return array{0: int, 1: array<string, mixed>}
+     */
+    private function adopt(string $orderId, array $input, int $now): array
+    {
+        $order = &$this->orders[$orderId];
+        $global = $this->sourceKey . ':' . ($order['number'] ?? $order['id']);
+        $dry = $input['dryRun'] ?? null;
+        if (!is_bool($dry) || ($input['globalOrderId'] ?? null) !== $global || ($input['actor']['role'] ?? null) !== 'backfill' || array_diff(array_keys($input), ['orderId', 'orderNumber', 'actor', 'requestId', 'globalOrderId', 'dryRun']) !== []) {
+            return [400, ['error' => ['code' => 'invalid_request']]];
+        }
+        $adopted = ($order['adopted'] ?? false) === true;
+        $reasons = $adopted ? [] : array_values($order['adoptReasons'] ?? []);
+        if (!$dry && $reasons !== []) {
+            return [409, ['error' => ['code' => 'not_adoptable', 'reasons' => $reasons]]];
+        }
+        if (!$dry && !$adopted) {
+            $order['adopted'] = true;
+            $order['eligible'] = true;
+            $order['adoptedAt'] = gmdate('Y-m-d\TH:i:s', $now) . '.000000Z';
+            $this->adoptions[$orderId] = ($this->adoptions[$orderId] ?? 0) + 1;
+            if ($this->afterAdopt === 'answer_lost') {
+                $this->afterAdopt = null;
+                return [0, []];
+            }
+            $adopted = true;
+        }
+        return [200, ['protocol' => 1, 'globalOrderId' => $global, 'dryRun' => $dry, 'adoptable' => $reasons === [], 'reasons' => $reasons, 'adopted' => $adopted, 'adoptedAt' => $adopted ? $order['adoptedAt'] : null]];
     }
 
     /**
