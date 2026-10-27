@@ -8,6 +8,8 @@ import { useLive } from "../../app/liveContext";
 import { ErrorState } from "../../components/ErrorState";
 import { DashboardSection, Metric, MetricGrid, RefreshButton, type MetricValue } from "./DashboardParts";
 import { useDashboardData } from "./useDashboardData";
+import { useGuide } from "../guide/ContextualHelp";
+import { guideChrome, managementTerms } from "../../i18n/messages/guide";
 
 const since = { format: (value: Date): string => formatDate(value, { dateStyle: "short", timeStyle: "short", timeZone: "Europe/Bucharest" }) };
 
@@ -23,23 +25,27 @@ export function ManagementWorkspace({ employee, api, dashboardUrl, navigate }: {
   const overview = useDashboardData(load, "management", revision);
   const data = overview.data;
   const metric = (value: number | undefined): MetricValue => data ? value ?? "unavailable" : overview.error ? "unavailable" : "loading";
+  // What each number counts, in the guide language (the server's definitions, ProductionOverviewService).
+  const guide = useGuide();
+  const hint = (key: keyof typeof managementTerms) => guide ? { hint: managementTerms[key][guide.lang], hintLang: guide.lang } : {};
 
   return (
     <div className="workspace-body" data-testid="workspace-management">
       <DashboardSection labelledBy="management-summary" eyebrow={t("mgmt.eyebrow")} title={t("mgmt.title")}
         action={<RefreshButton onRefresh={overview.refresh} busy={overview.busy} updatedAt={overview.updatedAt} />}>
         <MetricGrid label={t("mgmt.metrics")}>
-          <Metric label={t("mgmt.active")} value={metric(data?.summary.active)} />
-          <Metric label={t("mgmt.waiting")} value={metric(data?.summary.waiting)} tone="warning" />
-          <Metric label={t("mgmt.inWork")} value={metric(data?.summary.inWork)} tone="action" />
-          <Metric label={t("mgmt.unassigned")} value={metric(data?.summary.unassigned)} />
-          <Metric label={t("mgmt.completedToday")} value={metric(data?.summary.completedToday)} tone="success" />
+          <Metric label={t("mgmt.active")} value={metric(data?.summary.active)} {...hint("active")} />
+          <Metric label={t("mgmt.waiting")} value={metric(data?.summary.waiting)} tone="warning" {...hint("waiting")} />
+          <Metric label={t("mgmt.inWork")} value={metric(data?.summary.inWork)} tone="action" {...hint("inWork")} />
+          <Metric label={t("mgmt.unassigned")} value={metric(data?.summary.unassigned)} {...hint("unassigned")} />
+          <Metric label={t("mgmt.completedToday")} value={metric(data?.summary.completedToday)} tone="success" {...hint("completedToday")} />
         </MetricGrid>
         {data?.legacy && data.legacy.active > 0 && <p className="dashboard-footnote" data-testid="mgmt-legacy">{t("mgmt.legacyNote", { count: data.legacy.active, waiting: data.legacy.waiting })}</p>}
         {overview.error && <ErrorState error={overview.error} compact onAction={overview.refresh} />}
         <div className="dashboard-actions">
           {dashboardUrl && <a className="button button-secondary" href={dashboardUrl} target="_blank" rel="noreferrer">{t("mgmt.openDashboard")}</a>}
           {canManageAuthority(employee) && <button type="button" className="button button-secondary" onClick={() => navigate("/authority")}>{t("mgmt.authority")}</button>}
+          {guide?.guide && <button type="button" className="button button-ghost" onClick={guide.open} aria-haspopup="dialog" lang={guide.lang} data-testid="mgmt-guide">{guideChrome.metricsHelp[guide.lang]}</button>}
         </div>
       </DashboardSection>
 
