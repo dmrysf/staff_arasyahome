@@ -45,6 +45,8 @@ use Arasya\Operations\Security\CsrfGuard;
  *   POST /confirmare/orders/{globalOrderId}/invoice/{issue|send-mail|reissue|resolve}
  *                                                          {expectedRevision, ...} + Idempotency-Key (invoice scopes)
  *   POST /confirmare/orders/{globalOrderId}/invoice/reconcile    {idempotencyKey}: settles an action whose answer was lost
+ *   GET  /confirmare/orders/{globalOrderId}/invoice/payment      SmartBill's paid/unpaid amounts of the final invoice next to
+ *                                                          Arasya's verified money (API 2.47.0, read-only, audited)
  *   POST /confirmare/orders/{globalOrderId}/invoice/qr    {qrToken}: the shop employee scanned the production QR (API 2.44.0)
  *   POST /confirmare/orders/{globalOrderId}/proforma/{issue|send-mail|check|resolve|reconcile}  the advance proforma (2.44.0)
  *   GET  /confirmare/orders/{globalOrderId}/shop-employees  who the order can be routed to (2.44.0)
@@ -239,6 +241,12 @@ final readonly class ConfirmareController
                 throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
             }
             return $this->json($this->invoice->read($actor, rawurldecode($m[1]), $request->requestId));
+        }
+        if (preg_match('#^/confirmare/orders/([^/]{1,600})/invoice/payment$#D', $path, $m) === 1) {
+            if ($request->method !== 'GET') {
+                throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
+            }
+            return $this->json($this->invoice->payment($actor, rawurldecode($m[1]), $request->requestId));
         }
         if (preg_match('#^/confirmare/orders/([^/]{1,600})/source$#D', $path, $m) === 1) {
             if ($request->method !== 'GET') {

@@ -30,6 +30,8 @@ final readonly class SourceAccessClient
     public const ROUTE_INVOICE = '/yd-arasya/v1/confirmare/invoice';
     public const ROUTE_INVOICE_ACTION = '/yd-arasya/v1/confirmare/invoice-action';
     public const ROUTE_INVOICE_STATUS = '/yd-arasya/v1/confirmare/invoice-status';
+    /** YD SOFT 2.21.0 (API 2.47.0): what SmartBill knows about the payment of the final invoice (read-only). */
+    public const ROUTE_INVOICE_PAYMENT = '/yd-arasya/v1/confirmare/invoice-payment';
     /** The operator's advance proforma (API 2.44.0, YD SOFT 2.18.0). */
     public const ROUTE_PROFORMA_ACTION = '/yd-arasya/v1/confirmare/proforma-action';
     /** YD SOFT 2.18.0: the shop's bank transfers that match no order (no order fields; finance only). */
@@ -39,7 +41,7 @@ final readonly class SourceAccessClient
     public const ROUTE_OPERATION = '/yd-arasya/v1/confirmare/operation';
     public const ROUTE_OPERATION_STATUS = '/yd-arasya/v1/confirmare/operation-status';
     public const ROUTES = [self::ROUTE_OPERATION, self::ROUTE_OPERATION_STATUS, self::ROUTE_DETAIL, self::ROUTE_CATALOG, self::ROUTE_PRODUCT, self::ROUTE_PREVIEW, self::ROUTE_APPLY, self::ROUTE_EDIT_STATUS, self::ROUTE_FINANCE, self::ROUTE_FINANCE_ACTION, self::ROUTE_FINANCE_STATUS,
-        self::ROUTE_INVOICE, self::ROUTE_INVOICE_ACTION, self::ROUTE_INVOICE_STATUS, self::ROUTE_PROFORMA_ACTION, self::ROUTE_TRANSFER_EXCEPTIONS, self::ROUTE_TRANSFER_EXCEPTION_ACTION];
+        self::ROUTE_INVOICE, self::ROUTE_INVOICE_ACTION, self::ROUTE_INVOICE_STATUS, self::ROUTE_INVOICE_PAYMENT, self::ROUTE_PROFORMA_ACTION, self::ROUTE_TRANSFER_EXCEPTIONS, self::ROUTE_TRANSFER_EXCEPTION_ACTION];
 
     /** Shop error codes Operations understands (anything else is SOURCE_ERROR). */
     private const SOURCE_ERRORS = [

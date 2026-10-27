@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useI18n, type MessageKey } from "../../i18n";
 import { sourceLabel } from "../../domain/confirmare";
 import { formatFinanceMoney } from "../../domain/confirmareFinance";
 import {
   INVOICE_REASONS, announceInvoiceChange, blockersOf, documentTypeLabel, historyLabel, invoiceBlockerLabel, invoiceErrorKey, mailStateLabel, onInvoiceChange, operationStateLabel, reasonLabel,
-  type ConfirmareInvoiceApi, type InvoiceAction, type InvoiceActionKey, type InvoiceCapabilities, type InvoiceReason, type InvoiceRead, type InvoiceView, type IssueInput, type MailInput, type ReissueInput, type ResolveInput,
+  type ConfirmareInvoiceApi, type InvoiceAction, type InvoiceActionKey, type InvoiceCapabilities, type InvoicePaymentRead, type InvoiceReason, type InvoiceRead, type InvoiceView, type IssueInput, type MailInput, type ReissueInput, type ResolveInput,
 } from "../../domain/confirmareInvoice";
 import { shopUnavailableLabel } from "../../domain/confirmareShop";
 import { createIdempotencyKey } from "../../services/idempotency";
@@ -156,7 +156,65 @@ export function ConfirmareInvoicePanel({ globalOrderId, service, capabilities = 
       {view && <RoutingSection globalOrderId={globalOrderId} view={view} service={service} busy={busy} run={run} />}
       {view && (view.role === "documents" || view.role === "manager") && <InvoiceQrSection globalOrderId={globalOrderId} view={view} service={service} busy={busy} run={run} />}
       {view && <InvoiceBody globalOrderId={globalOrderId} view={view} role={view.role} busy={busy} pending={pending} onPrepare={(action) => setPending({ action, key: createIdempotencyKey() })} onCancel={() => setPending(null)} onSend={(action, input, key) => { void send(action, input, key); }} onReconcile={(key) => { void reconcile(key); }} />}
+      {view && service.invoicePayment && capabilities?.payment !== false && (view.role === "documents" || view.role === "manager" || view.role === "finance")
+        && view.summary.document.exists && view.summary.document.type !== "proforma"
+        && <InvoicePaymentSection key={`${globalOrderId}|${view.summary.revision}|${view.summary.document.series ?? ""}|${view.summary.document.number ?? ""}`} globalOrderId={globalOrderId} load={(signal) => service.invoicePayment!(globalOrderId, signal)} />}
     </section>
+  );
+}
+
+/**
+ * API 2.47.0 (owner remediation 2026-10-26): what SmartBill knows about the payment of the final invoice next to the money
+ * Arasya verified. Read only when the employee asks (one SmartBill call); Arasya never records a payment in SmartBill, so
+ * an advance not yet associated in SmartBill Cloud is shown as a task still to do, never as done.
+ */
+export function InvoicePaymentSection({ globalOrderId, load }: { globalOrderId: string; load: (signal?: AbortSignal) => Promise<InvoicePaymentRead> }) {
+  const { t } = useI18n();
+  const [read, setRead] = useState<InvoicePaymentRead | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // One read at a time; a read still running when the order or its invoice changes (a new key) or the panel closes is
+  // cancelled, so another order's or an older invoice's payment is never shown here.
+  const running = useRef<AbortController | null>(null);
+  useEffect(() => () => running.current?.abort(), []);
+  function check() {
+    running.current?.abort();
+    const controller = new AbortController();
+    running.current = controller;
+    setBusy(true); setError(null);
+    load(controller.signal)
+      .then((value) => { if (!controller.signal.aborted) setRead(value); })
+      .catch((caught: unknown) => { if (controller.signal.aborted) return; setRead(null); setError(getErrorPresentation(toServiceError(caught)).message); })
+      .finally(() => { if (!controller.signal.aborted) setBusy(false); });
+  }
+  const payment = read?.available ? read.payment : null;
+  const money = (value: string | undefined) => (value === undefined || payment === null ? "—" : formatFinanceMoney(value, payment.currency));
+  const tone = payment === null ? "info" : payment.severity === "ok" ? "success" : payment.severity === "pending" ? "warning" : payment.severity === "attention" ? "danger" : "warning";
+  const invoice = payment?.invoice ? `${payment.invoice.series ?? ""} ${payment.invoice.number ?? ""}`.trim() : "";
+  return (
+    <div className="cf-shop-block" data-testid="cf-invoice-payment" aria-busy={busy}>
+      <h3 id={`cf-invoice-payment-${globalOrderId}`}>{t("inv.pay.title")}</h3>
+      <p className="dashboard-footnote">{t("inv.pay.lead")}</p>
+      <div className="cf-shop-actions">
+        <button type="button" className="button button-secondary" disabled={busy} onClick={check} data-testid="cf-invoice-payment-check"><AppIcon name="refresh" size={18} /> {busy ? t("inv.loading") : t("inv.pay.check")}</button>
+      </div>
+      {error && <Notice tone="danger" role="alert" testId="cf-invoice-payment-error">{error}</Notice>}
+      {read && !read.available && <Notice tone="warning" role="status" testId="cf-invoice-payment-unavailable">{read.reason === "not_configured" ? t("inv.notConfigured") : t("inv.unavailable", { reason: shopUnavailableLabel(read.reason) })}</Notice>}
+      {payment && <>
+        <Notice tone={tone} role={payment.severity === "attention" ? "alert" : "status"} testId="cf-invoice-payment-state">
+          {t(`inv.pay.state.${payment.state}` as MessageKey, { invoice, verified: money(payment.arasya?.verified), remaining: money(payment.arasya?.remaining), paid: money(payment.smartbill?.paid), unpaid: money(payment.smartbill?.unpaid), total: money(payment.smartbill?.total), orderTotal: money(payment.arasya?.total) })}
+        </Notice>
+        {payment.smartbill && payment.arasya && <dl className="cf-shop-totals" data-testid="cf-invoice-payment-facts">
+          <div><dt>{t("inv.pay.sbTotal")}</dt><dd>{money(payment.smartbill.total)}</dd></div>
+          <div><dt>{t("inv.pay.sbPaid")}</dt><dd data-testid="cf-invoice-payment-paid">{money(payment.smartbill.paid)}</dd></div>
+          <div><dt>{t("inv.pay.sbUnpaid")}</dt><dd data-testid="cf-invoice-payment-unpaid">{money(payment.smartbill.unpaid)}</dd></div>
+          <div><dt>{t("inv.pay.verified")}</dt><dd>{money(payment.arasya.verified)}</dd></div>
+          <div className="cf-shop-grand"><dt>{t("inv.pay.remaining")}</dt><dd data-testid="cf-invoice-payment-remaining">{money(payment.arasya.remaining)}</dd></div>
+        </dl>}
+        {payment.arasya && Number(payment.arasya.excess) > 0 && <Notice tone="danger" role="alert" testId="cf-invoice-payment-excess">{t("inv.pay.excess", { excess: money(payment.arasya.excess) })}</Notice>}
+        <p className="dashboard-footnote" data-testid="cf-invoice-payment-checked">{t(payment.cached ? "inv.pay.cached" : "inv.pay.checkedAt", { time: when(payment.checkedAt) })}</p>
+      </>}
+    </div>
   );
 }
 

@@ -25,7 +25,25 @@ export const INVOICE_ROLES = ["documents", "manager", "finance", "viewer", "oper
 export type InvoiceRole = (typeof INVOICE_ROLES)[number];
 
 /** Detail capabilities: whether invoicing runs for the shop and what the signed-in employee may do (the server checks again). */
-export type InvoiceCapabilities = { configured: boolean; read: boolean; issue: boolean; manage: boolean; proforma: boolean; route: boolean };
+export type InvoiceCapabilities = { configured: boolean; read: boolean; issue: boolean; manage: boolean; proforma: boolean; route: boolean; payment?: boolean };
+
+/**
+ * API 2.47.0 (YD SOFT 2.21.0, owner remediation 2026-10-26): what SmartBill knows about the payment of the final invoice,
+ * next to the money Arasya verified. Read-only everywhere: Arasya never records a payment in SmartBill. `association_pending`
+ * means the finance employee still has to associate the verified money with this invoice in SmartBill Cloud. `settled` only
+ * when Arasya verified the whole total; SmartBill fully paid with money still owed in Arasya is `paid_not_verified`.
+ * `checkedAt` is the time of the real SmartBill read; `cached` marks the shop's 30 s copy of that read.
+ */
+export const PAYMENT_STATES = ["no_invoice", "nothing_to_associate", "matched", "settled", "association_pending", "paid_not_verified", "paid_beyond_verified", "invoice_total_differs", "smartbill_inconsistent", "unknown"] as const;
+export type PaymentState = (typeof PAYMENT_STATES)[number];
+export type InvoicePayment = {
+  state: PaymentState; severity: "ok" | "pending" | "attention" | "unknown"; code: string | null; currency: string; checkedAt: string; cached: boolean;
+  invoice: { series: string | null; number: string | null } | null;
+  smartbill: { total: string; paid: string; unpaid: string } | null;
+  arasya: { total: string; verified: string; remaining: string; excess: string } | null;
+  retryAfter: number | null;
+};
+export type InvoicePaymentRead = { available: true; role: InvoiceRole; payment: InvoicePayment } | { available: false; reason: string };
 
 export const PROFORMA_ACTIONS = ["proforma_issue", "proforma_send_mail", "proforma_check", "proforma_resolve", "proforma_cancel", "total_accept", "advance_accept"] as const;
 export type ProformaAction = (typeof PROFORMA_ACTIONS)[number];
@@ -152,6 +170,8 @@ export interface ConfirmareInvoiceApi {
   assignShop(globalOrderId: string, input: { employeeId: string; expectedAssigneeId: string | null }, idempotencyKey: string): Promise<ShopAssignment | null>;
   verifyInvoiceQr(globalOrderId: string, qrToken: string): Promise<{ verified: true; validSeconds: number }>;
   shopQueue(signal?: AbortSignal): Promise<ShopQueueItem[]>;
+  /** API 2.47.0: the read-only SmartBill payment reconciliation (absent in an older or simulated service). */
+  invoicePayment?(globalOrderId: string, signal?: AbortSignal): Promise<InvoicePaymentRead>;
 }
 
 /** Every refusal of a proforma action: Arasya's first, then the shop's (codes). */

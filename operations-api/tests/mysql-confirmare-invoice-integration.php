@@ -271,7 +271,7 @@ $v = $read($who['iview'], $g(1));
 $f = $read($who['ifin'], $g(1));
 $m = $read($who['imgr'], $g(1));
 $check($v['role'] === 'viewer' && $v['allowedActions'] === [] && in_array('not_allowed_for_role', $v['blockers']['issue'], true) && $f['role'] === 'finance' && $f['allowedActions'] === [] && $m['role'] === 'manager', 'a ticket employee without the scope reads as viewer, finance as finance (both read only), the manager as manager');
-$check(($detail($who['iop'], $g(1))['invoice'] ?? null) === ['configured' => true, 'read' => true, 'issue' => true, 'manage' => false, 'proforma' => true, 'route' => true], 'the detail shows the invoice capabilities (presentation only): ' . json_encode($detail($who['iop'], $g(1))['invoice'] ?? null));
+$check(($detail($who['iop'], $g(1))['invoice'] ?? null) === ['configured' => true, 'read' => true, 'issue' => true, 'manage' => false, 'proforma' => true, 'route' => true, 'payment' => true], 'the detail shows the invoice capabilities (presentation only): ' . json_encode($detail($who['iop'], $g(1))['invoice'] ?? null));
 $error($invoice($who['inodocs'], $g(1)), 404, 'CONFIRMARE_NOT_FOUND', 'the issue scope without the production document permission reaches nothing');
 $sup = $read($who['isup'], $g(1));
 $check($sup['role'] === 'operator' && $sup['allowedActions'] === [] && $sup['summary']['document']['link'] === null && in_array('not_allowed_for_role', $sup['blockers']['issue'], true), 'API 2.44.0: a Confirmare supervisor reads the state as operator (for the proforma and the routing), never issues the final invoice, no invoice link');
@@ -642,6 +642,49 @@ $o = $read($who['iout'], $g(50, 'outletperdele'));
 $check($o['summary']['mode'] === 'observe' && $o['allowedActions'] === [] && in_array('invoice_observe', $o['blockers']['issue'], true), 'Outlet Perdele in observe: the state is readable, no action');
 $error($act($who['iout'], $g(50, 'outletperdele'), 'issue'), 409, 'CONFIRMARE_INVOICE_DISABLED', 'observe: an action is refused before the shop is asked');
 $check(($op->smartbillDocuments[$id(50)] ?? 0) === 0 && $docsMade(50) === 0, 'nothing made in either shop');
+
+// ---- 8b. API 2.47.0: the read-only SmartBill payment reconciliation of the final invoice -------------------------------------
+$payment = static function (array $w, string $gid) use ($get, $pdo): array { $pdo->exec('DELETE FROM api_rate_limit_buckets'); return $get($w, '/confirmare/orders/' . rawurlencode($gid) . '/invoice/payment'); };
+$th->invoicePayment = ['state' => 'association_pending', 'severity' => 'pending', 'code' => 'advance_not_associated', 'checkedAt' => '2026-10-26T20:00:00Z', 'currency' => 'RON',
+    'invoice' => ['series' => 'SMART', 'number' => '0042'], 'smartbill' => ['total' => '1000.00', 'paid' => '0.00', 'unpaid' => '1000.00'], 'arasya' => ['total' => '1000.00', 'verified' => '300.00', 'remaining' => '700.00', 'excess' => '0.00']];
+$reads0 = $th->invoicePaymentReads;
+$pf = $ok($payment($who['ifin'], $g(1)), 'finance reads the SmartBill payment state');
+$check($pf['available'] === true && $pf['role'] === 'finance' && $pf['payment']['state'] === 'association_pending' && $pf['payment']['smartbill']['unpaid'] === '1000.00' && $pf['payment']['arasya']['remaining'] === '700.00' && $th->invoicePaymentReads === $reads0 + 1,
+    'finance: SmartBill shows 1 000 unpaid, Arasya verified 300: association pending (both amounts shown, nothing stored)');
+$check(($detail($who['isup'], $g(1))['invoice']['payment'] ?? null) === false, 'capabilities: no payment reconciliation for a Confirmare supervisor alone (the document employee has it, see above)');
+$ok($payment($who['imgr'], $g(1)), 'the invoice manager reads it');
+$ok($payment($who['idoc'], $g(1)), 'the document employee reads it');
+$error($payment($who['iview'], $g(1)), 403, 'CONFIRMARE_INVOICE_DENIED', 'a document viewer without an invoice scope cannot read it');
+$error($payment($who['isup'], $g(1)), 403, 'CONFIRMARE_INVOICE_DENIED', 'a Confirmare supervisor alone cannot read it');
+$error($payment($who['imgrop'], $g(1)), 404, 'CONFIRMARE_NOT_FOUND', 'the Outlet Perdele invoice manager cannot read a Trend Home order');
+// Owner remediation 2026-10-26: SmartBill fully paid while Arasya still waits for 700 is attention, never settled; a cached
+// answer keeps the time of the real SmartBill read.
+$th->invoicePayment = ['state' => 'paid_not_verified', 'severity' => 'attention', 'code' => 'smartbill_paid_arasya_owed', 'checkedAt' => '2026-10-26T19:59:40Z', 'cached' => true, 'currency' => 'RON',
+    'invoice' => ['series' => 'SMART', 'number' => '0042'], 'smartbill' => ['total' => '1000.00', 'paid' => '1000.00', 'unpaid' => '0.00'], 'arasya' => ['total' => '1000.00', 'verified' => '300.00', 'remaining' => '700.00', 'excess' => '0.00']];
+$pnv = $ok($payment($who['ifin'], $g(1)), 'SmartBill fully paid, Arasya still owed');
+$check($pnv['available'] === true && $pnv['payment']['state'] === 'paid_not_verified' && $pnv['payment']['severity'] === 'attention' && $pnv['payment']['cached'] === true && $pnv['payment']['checkedAt'] === '2026-10-26T19:59:40Z',
+    'SmartBill 1 000 paid while Arasya verified 300: attention (paid_not_verified), the cached answer keeps its SmartBill read time: ' . json_encode($pnv['payment']));
+$check($pf['payment']['cached'] === false, 'an answer without `cached` is a fresh read (cached false)');
+foreach ([['settled', 'attention'], ['paid_not_verified', 'ok']] as [$st, $sv]) {
+    $th->invoicePayment = ['state' => $st, 'severity' => $sv] + $th->invoicePayment;
+    $r = $ok($payment($who['ifin'], $g(1)), "{$st} with severity {$sv}");
+    $check($r['available'] === false && $r['reason'] === 'source_response_invalid', "a shop answer {$st}/{$sv} is refused (each state has one severity)");
+}
+$th->invoicePayment = ['state' => 'settled', 'severity' => 'ok', 'cached' => false, 'arasya' => null] + $th->invoicePayment;
+$r = $ok($payment($who['ifin'], $g(1)), 'settled without Arasya amounts');
+$check($r['available'] === false && $r['reason'] === 'source_response_invalid', 'a compared state without Arasya\'s verified money is refused (settled never without proof)');
+$th->invoicePayment = ['state' => 'association_pending', 'severity' => 'pending', 'cached' => 'yes', 'arasya' => ['total' => '1000.00', 'verified' => '300.00', 'remaining' => '700.00', 'excess' => '0.00']] + $th->invoicePayment;
+$r = $ok($payment($who['ifin'], $g(1)), 'cached not a boolean');
+$check($r['available'] === false && $r['reason'] === 'source_response_invalid', 'a shop answer whose `cached` is not a boolean is refused');
+$th->invoicePayment = ['state' => 'matched', 'severity' => 'attention', 'code' => null, 'checkedAt' => '2026-10-26T20:00:00Z', 'currency' => 'RON', 'invoice' => null, 'smartbill' => ['total' => '1000.00', 'paid' => '300.00', 'unpaid' => '700.00'], 'arasya' => null];
+$bad = $ok($payment($who['ifin'], $g(1)), 'a malformed shop answer');
+$check($bad['available'] === false && $bad['reason'] === 'source_response_invalid', 'a shop answer whose severity does not fit its state is refused (never shown as a state): ' . json_encode($bad));
+$th->invoicePayment = null;
+$none = $ok($payment($who['ifin'], $g(1)), 'no final invoice');
+$check($none['payment']['state'] === 'no_invoice' && $none['payment']['smartbill'] === null, 'no final invoice yet: no_invoice');
+$check((int) $one("SELECT COUNT(*) FROM order_invoice_reads WHERE outcome = 'payment_association_pending'") === 3 && (int) $one("SELECT COUNT(*) FROM order_invoice_reads WHERE outcome = 'payment_no_invoice'") === 1
+    && (int) $one("SELECT COUNT(*) FROM order_invoice_reads WHERE outcome = 'payment_paid_not_verified'") === 1, 'every payment read is audited with its state only');
+$error(T::call($kernel, 'POST', '/confirmare/orders/' . rawurlencode($g(1)) . '/invoice/payment', [], ['origin' => T::ORIGIN, 'x-csrf-token' => $who['ifin']['csrf'], 'idempotency-key' => 'inv-pay-post-0001'], $who['ifin']['cookie']), 405, 'METHOD_NOT_ALLOWED', 'the payment state is read-only (GET only)');
 
 // ---- 9. No link, number, amount or customer data in the audit or the log ----------------------------------------------------
 $dump = json_encode([$all('SELECT * FROM order_invoice_actions'), $all('SELECT * FROM order_invoice_reads'), $all("SELECT action, metadata_json FROM iam_audit_events WHERE action = 'employee.invoice_scopes_changed'")], JSON_INVALID_UTF8_SUBSTITUTE | JSON_UNESCAPED_UNICODE);

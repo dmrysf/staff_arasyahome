@@ -8,7 +8,8 @@
 | [SMARTBILL-VERIFICATION.md](SMARTBILL-VERIFICATION.md) | SmartBill calls, answers and limits |
 | [NETOPIA-REFUND-VERIFICATION.md](NETOPIA-REFUND-VERIFICATION.md) | why the full refund is a manual task, and its checks |
 | [FAN-COURIER-VERIFICATION.md](FAN-COURIER-VERIFICATION.md) | FAN Courier API v2.0, the AWB module audit, the Staff AWB |
-| [BACKFILL-22-OCTOBER.md](BACKFILL-22-OCTOBER.md) | taking the orders from 22 October into the new workflow |
+| [BACKFILL-22-OCTOBER.md](BACKFILL-22-OCTOBER.md) | taking the orders from 22 October into the new workflow (superseded 2026-10-26: not applied) |
+| [REMEDIATION-2026-10-26.md](REMEDIATION-2026-10-26.md) | after the SmartBill audit: live configuration, payment reconciliation, readiness, activation sequence |
 | [MIGRATION-AND-ROLLBACK.md](MIGRATION-AND-ROLLBACK.md) | migration 043, compatibility, rollback floors |
 | [TEST-MATRIX.md](TEST-MATRIX.md) | every suite that ran, with its result |
 | [DUAL-STORE-GO-LIVE-RUNBOOK.md](DUAL-STORE-GO-LIVE-RUNBOOK.md) | the go-live of both shops, step by step |

@@ -71,6 +71,8 @@ final readonly class ConfirmareInvoice
     /** Handoff states in which a document may be issued (the order is cleared for production). */
     public const ISSUABLE = ['ready', 'print', 'awaiting_cutting', 'in_production'];
     public const ROLE_OPERATOR = 'operator';
+    /** API 2.47.0: who may read the SmartBill payment reconciliation (the finance employee associates the money). */
+    public const PAYMENT_ROLES = [self::ROLE_DOCUMENTS, self::ROLE_MANAGER, self::ROLE_FINANCE];
     /** How long a verified QR scan allows the final invoice (the same employee, the same active revision). */
     public const QR_VALID_SECONDS = 1800;
     private const PROFORMA_FIELDS = [
@@ -123,7 +125,7 @@ final readonly class ConfirmareInvoice
      */
     public function capabilities(EmployeeIdentity $actor, string $globalOrderId): array
     {
-        $none = ['configured' => false, 'read' => false, 'issue' => false, 'manage' => false, 'proforma' => false, 'route' => false];
+        $none = ['configured' => false, 'read' => false, 'issue' => false, 'manage' => false, 'proforma' => false, 'route' => false, 'payment' => false];
         try {
             $row = $this->row($this->globalId($globalOrderId));
             $target = $row === null ? null : $this->registry->find((string) $row['source_key']);
@@ -141,6 +143,8 @@ final readonly class ConfirmareInvoice
                 'manage' => $actions && $role === self::ROLE_MANAGER,
                 'proforma' => $actions && $operator !== null,
                 'route' => $operator !== null,
+                // API 2.47.0: the SmartBill payment reconciliation of the final invoice (read-only).
+                'payment' => in_array($role, self::PAYMENT_ROLES, true),
             ];
         } catch (ApiException|PDOException) {
             return $none;
@@ -172,6 +176,42 @@ final readonly class ConfirmareInvoice
             throw new ApiException(503, 'CONFIRMARE_AUDIT_UNAVAILABLE', 'The read could not be recorded, so nothing is shown. Try again.');
         }
         return ['available' => true, 'role' => $role] + $this->present($actor, $after, $target, $role, $summary);
+    }
+
+    /**
+     * What SmartBill knows about the payment of the order's final invoice, next to the money Arasya verified (API 2.47.0,
+     * YD SOFT 2.21.0; owner remediation 2026-10-26). Read-only in the shop and in SmartBill (one `GET
+     * invoice/paymentstatus`); audited like a read. Arasya never writes a payment to SmartBill: `association_pending`
+     * tells the finance employee to associate the verified money with this invoice in SmartBill Cloud.
+     *
+     * @return array<string, mixed>
+     */
+    public function payment(EmployeeIdentity $actor, string $globalOrderId, string $requestId): array
+    {
+        ['row' => $row, 'role' => $role, 'globalId' => $globalId] = $this->context($actor, $globalOrderId);
+        if (!in_array($role, self::PAYMENT_ROLES, true)) {
+            throw self::denied();
+        }
+        $target = $this->registry->find((string) $row['source_key']);
+        if ($target === null || !$target->allowsInvoiceRead() || !$this->invoices->installed()) {
+            return ['available' => false, 'reason' => 'not_configured'];
+        }
+        $this->rateLimit($actor);
+        try {
+            $payment = SourceInvoice::payment($this->client->call($target, SourceAccessClient::ROUTE_INVOICE_PAYMENT, $this->payload($row, $actor, $role, $requestId)));
+        } catch (SourceAccessException $e) {
+            $this->audit($row, $actor, $role, 'payment_' . strtolower($e->codeName), $requestId);
+            return ['available' => false, 'reason' => strtolower($e->codeName)];
+        }
+        $after = $this->row($globalId);
+        if ($after === null || $this->role($actor, $after) !== $role) {
+            $this->audit($row, $actor, $role, 'revoked_during_read', $requestId);
+            throw new ApiException(403, 'CONFIRMARE_INVOICE_DENIED', 'Your access to this order changed while the shop was read.');
+        }
+        if (!$this->audit($row, $actor, $role, 'payment_' . $payment['state'], $requestId)) {
+            throw new ApiException(503, 'CONFIRMARE_AUDIT_UNAVAILABLE', 'The read could not be recorded, so nothing is shown. Try again.');
+        }
+        return ['available' => true, 'role' => $role, 'payment' => $payment];
     }
 
     /**
