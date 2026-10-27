@@ -92,7 +92,8 @@ $check((int) $one('SELECT COUNT(*) FROM confirmare_proforma_cycles') === 0 && (i
 
 $th = new SourceAccessFakeShop('trendhome', 'th-test', OPS_KEY);
 $op = new SourceAccessFakeShop('outletperdele', 'op-test', OPS_KEY . '-outlet');
-$container = new Container($config, $pdo, new OpsTestShops(['https://trendhome.example' => $th, 'https://outletperdele.example' => $op]));
+$opsShops = new OpsTestShops(['https://trendhome.example' => $th, 'https://outletperdele.example' => $op]);
+$container = new Container($config, $pdo, $opsShops);
 $kernel = $container->kernel();
 $service = $container->confirmareService();
 $cycles = $container->confirmareCycles();
@@ -368,7 +369,11 @@ $pdo->prepare('UPDATE invoice_efactura_tasks SET issued_at = DATE_SUB(UTC_TIMEST
 $check($ok($get($who['cdoc'], '/confirmare/efactura'), 'overdue')['overdue'] === 1, 'an open task past its due instant is overdue');
 
 // ---- 6. The 22 October backfill ---------------------------------------------------------------------------------------------
-$backfill = new \Arasya\Operations\Confirmare\ConfirmareBackfill($pdo, $container->clock());
+// API 2.48.0: the shop adopts every order Arasya takes (YD SOFT 2.22.0), signed with its source access key.
+$backfill = new \Arasya\Operations\Confirmare\ConfirmareBackfill($pdo, $container->clock(), \Arasya\Operations\Integration\SourceAccess\SourceAccessRegistry::fromConfig($config),
+    new \Arasya\Operations\Integration\SourceAccess\SourceAccessClient($opsShops, $container->clock()), $uuids['csup']);
+$shopOrder = static function (int $n, array $extra = []) use ($th, $id): void { $th->orders[$id($n)] = ['id' => $id($n), 'number' => $id($n), 'eligible' => false, 'phone' => OPS_PHONE] + $extra; };
+foreach ([...range(60, 67), ...range(80, 83)] as $n) $shopOrder($n);
 // TEST ONLY: CI runs the suites on one shared database. The backfill acts on every order of a source, so the orders the
 // earlier suites left (no cohort, in the window) are parked under a reason the backfill never selects, and restored after.
 $parked = $all("SELECT order_uuid, workflow_cohort, workflow_cohort_reason, workflow_cohort_at FROM operational_orders o
@@ -395,6 +400,13 @@ $check((string) $one('SELECT workflow_cohort FROM operational_orders WHERE globa
     'the order already in production keeps its stage in the established flow');
 $check($backfill->run('trendhome', true)['applied'] === 0, 'running it again changes nothing (idempotent)');
 $check($cycleOf($g(60)) === null, 'no proforma timer starts for a backfilled order');
+$check(($th->adoptions[$id(60)] ?? 0) === 1 && $th->orders[$id(60)]['eligible'] === true && !isset($th->adoptions[$id(61)]) && !isset($th->adoptions[$id(62)]),
+    'API 2.48.0: the shop adopted the taken order once (it is now a Confirmare order of the shop); the order in production and the cancelled one were never sent to the shop');
+$adoptRequests = array_values(array_filter($th->requests, static fn (array $r): bool => $r['route'] === '/yd-arasya/v1/confirmare/adopt'));
+$check(count($adoptRequests) === 2 && $adoptRequests[0]['body']['dryRun'] === true && $adoptRequests[1]['body']['dryRun'] === false && $adoptRequests[1]['body']['actor'] === ['employeeId' => $uuids['csup'], 'role' => 'backfill']
+    && $adoptRequests[1]['body']['globalOrderId'] === $g(60) && $adoptRequests[1]['body']['orderId'] === $id(60),
+    'the dry run only asked the shop (dryRun), the apply adopted with the backfill actor, the shop order id and the Arasya identity');
+$check((string) $one("SELECT request_id FROM order_confirmation_events WHERE global_order_id = ? AND action = 'opened'", [$g(60)]) === $adoptRequests[1]['body']['requestId'], 'the Confirmare opening names the shop adoption request (audit across both sides)');
 
 // The real go-live order of events: the orders of the window reached Arasya BEFORE API 2.46.0 (no cohort: migration 035 came
 // with this release) or after it and before the activation (`legacy`, not_activated), mostly from a shop connector that sent
@@ -436,6 +448,44 @@ $third = $backfill->run('trendhome', true);
 $check($third['applied'] === 1 && $third['orders']['taken'] === [$id(65)] && $cohortOf(65)['workflow_cohort'] === 'confirmare' && $third['orders']['unverified_payment'] === [$id(66)],
     'after the shop sent the facts, the order is taken; the unverified one stays listed: ' . json_encode($third['orders']));
 $check($backfill->run('trendhome', true)['applied'] === 0, 'running it again takes nothing twice');
+
+// ---- 6b. API 2.48.0 (owner decision 2026-10-27): the shop's part, the window end, distribution, shop isolation ---------------
+$windowOrder = static function (int $n, DateTimeImmutable $at) use ($payload, $iso, $ok, $kernel, $id): void {
+    $p = $payload($id($n), 0);
+    $p['order']['submission'] = ['submittedAt' => $iso($at), 'evidence' => 'checkout'];
+    $ok(T::ingest($kernel, 'trendhome', $p), "order {$n} of the window");
+};
+$inWindow = min($legacyAt, $activatedAt->modify('-1 minute'));
+foreach ([80, 81, 82] as $n) $windowOrder($n, $inWindow);
+$shopOrder(80, ['adoptReasons' => ['document_exists', 'awb_exists']]);
+$op->orders[$id(82)] = ['id' => $id(82), 'number' => $id(82), 'eligible' => false, 'phone' => OPS_PHONE];   // the same number in the other shop
+$noShop = (new \Arasya\Operations\Confirmare\ConfirmareBackfill($pdo, $container->clock()))->run('trendhome', true);
+$check($noShop['applied'] === 0 && in_array($id(80), $noShop['orders']['shop_unavailable'], true) && $noShop['refusals'][$id(80)] === ['source_access_not_configured'] && $cohortOf(80)['workflow_cohort'] !== 'confirmare',
+    'without the shop (no source access client) nothing is taken: an order is never Confirmare in Arasya alone');
+$th->afterAdopt = 'answer_lost';
+$lost = $backfill->run('trendhome', true);
+$check($lost['refusals'][$id(80)] === ['document_exists', 'awb_exists'] && in_array($id(80), $lost['orders']['shop_refused'], true) && $cohortOf(80)['workflow_cohort'] !== 'confirmare' && !isset($th->adoptions[$id(80)]),
+    'the shop refuses an order with a SmartBill document or an AWB: unchanged on both sides, its reasons listed');
+$lostOne = array_values(array_intersect([$id(81), $id(82)], $lost['orders']['shop_unavailable']));
+$check(count($lostOne) === 1 && ($th->adoptions[$lostOne[0]] ?? 0) === 1 && $one('SELECT 1 FROM order_confirmations WHERE global_order_id = ?', ['trendhome:' . $lostOne[0]]) === false,
+    'the shop adopted an order and its answer was lost: Arasya did not take it (the shop only protects it more meanwhile)');
+$again = $backfill->run('trendhome', true);
+$check(in_array($lostOne[0], $again['orders']['taken'], true) && ($th->adoptions[$lostOne[0]] ?? 0) === 1 && (string) $one('SELECT status FROM order_confirmations WHERE global_order_id = ?', ['trendhome:' . $lostOne[0]]) === 'pending',
+    'running it again: the shop answers the adopted order with its record (no second adoption) and Arasya takes it');
+$check($op->adoptions === [] && !in_array('/yd-arasya/v1/confirmare/adopt', array_column($op->requests, 'route'), true) && $th->orders[$id(82)]['adopted'] === true && ($op->orders[$id(82)]['adopted'] ?? false) === false,
+    'the same order number in the other shop is never asked or adopted (the request goes to the order\'s own shop only)');
+$windowOrder(83, $activatedAt->modify('-30 seconds'));
+$until = $activatedAt->modify('-1 minute');
+$early = $backfill->run('trendhome', false, 500, $until);
+$check(!in_array($id(83), array_merge(...array_values($early['orders'])), true) && $early['window']['to'] === $until->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d\TH:i:s\Z'),
+    'the window ends at --until (the owner\'s 27 October 00:00) when that is before the activation: a later order is not even read');
+$check(in_array($id(83), $backfill->run('trendhome', false)['orders']['taken'], true) && !isset($th->adoptions[$id(83)]), 'without --until it would be taken (dry run: nothing written, nothing adopted)');
+$pdo->prepare('UPDATE order_confirmations SET assigned_employee_uuid = NULL WHERE global_order_id IN (?, ?)')->execute([$g(60), $g(63)]);
+$service->distribute();
+$assignee = static fn (int $n): string => (string) $one('SELECT assigned_employee_uuid FROM order_confirmations WHERE global_order_id = ?', [$g($n)]);
+$operatorsTh = array_column($all("SELECT employee_uuid FROM employee_confirmare_scopes WHERE source_key = 'trendhome' AND capability = 'operate'"), 'employee_uuid');
+$check($assignee(60) !== '' && $assignee(63) !== '' && in_array($assignee(60), $operatorsTh, true) && in_array($assignee(63), $operatorsTh, true),
+    'the normal distribution gives the backfilled orders to the shop\'s operators, like any new order: ' . json_encode([$assignee(60), $assignee(63), $operatorsTh]));
 $unpark = $pdo->prepare('UPDATE operational_orders SET workflow_cohort = ?, workflow_cohort_reason = ?, workflow_cohort_at = ? WHERE order_uuid = ?');
 foreach ($parked as $row) $unpark->execute([$row['workflow_cohort'], $row['workflow_cohort_reason'], $row['workflow_cohort_at'], $row['order_uuid']]);
 

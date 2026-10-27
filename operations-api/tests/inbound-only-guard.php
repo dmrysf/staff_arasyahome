@@ -62,7 +62,10 @@ $accessRoutes = ['/yd-arasya/v1/confirmare/detail', '/yd-arasya/v1/confirmare/ca
     // (read, record, close by another employee); reviewed: no money moved, no order, refund or document changed.
     '/yd-arasya/v1/confirmare/transfer-exceptions', '/yd-arasya/v1/confirmare/transfer-exception-action',
     // API 2.46.0: reactivation, the FAN Courier AWB and the NETOPIA card refund, relayed to the shop (YD SOFT 2.20.0 Operations).
-    '/yd-arasya/v1/confirmare/operation', '/yd-arasya/v1/confirmare/operation-status'];
+    '/yd-arasya/v1/confirmare/operation', '/yd-arasya/v1/confirmare/operation-status',
+    // API 2.48.0 (YD SOFT 2.22.0): the adoption of an order of 22–26 October by the backfill; reviewed: the shop checks the order
+    // and writes only its adoption record (and the advance requirement every Confirmare COD order has), never an order change.
+    '/yd-arasya/v1/confirmare/adopt'];
 $forbiddenApi = [
     '/\bcurl_(init|exec|multi_\w+|setopt)\s*\(/' => 'cURL client',
     '/\b(fsockopen|pfsockopen|stream_socket_client)\s*\(/' => 'raw socket client',
