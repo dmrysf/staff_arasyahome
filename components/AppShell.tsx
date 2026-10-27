@@ -7,6 +7,7 @@ import type { StaffRuntimeMode } from "../src/runtimeConfig";
 import { YDSoftConnectionStatus } from "./status/YDSoftConnectionStatus";
 import { BottomNavigation } from "./navigation/BottomNavigation";
 import { ArasyaLogo } from "./brand/BrandLogo";
+import { GuideBoundary, GuideButton } from "../features/guide/ContextualHelp";
 
 export const initialsOf = (name: string): string => name.split(" ").filter(Boolean).map((part) => part[0]).join("").slice(0, 2).toUpperCase();
 
@@ -30,6 +31,7 @@ export function AppShell({ employee, route, mode, navigate, children, immersive 
           <div className="header-actions">
             <YDSoftConnectionStatus />
             {mode === "preview" && <span className="preview-indicator">Preview</span>}
+            <GuideBoundary><GuideButton /></GuideBoundary>
             <button className="profile-control" type="button" onClick={() => navigate("/profile")} aria-label={t("shell.profileOf", { name: employee.displayName })}>
               <span>{initialsOf(employee.displayName)}</span>
             </button>

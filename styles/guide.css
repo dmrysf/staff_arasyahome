@@ -1,0 +1,78 @@
+/*
+ * Contextual employee guide (Staff 2.38.0). A quiet header control, a bottom sheet on phones and a side panel from
+ * 768 px, and one closable card on the home screen. Tokens only; the guide never covers the bottom navigation while
+ * closed and never animates more than opacity and transform.
+ */
+.guide-control { display: inline-flex; align-items: center; justify-content: center; gap: 6px; flex: 0 0 auto; min-width: var(--control-md); height: var(--control-md); padding: 0 12px; border: 1px solid var(--color-border-strong); border-radius: var(--radius-pill); background: var(--color-surface); color: var(--color-text); font-size: var(--text-sm); font-weight: var(--weight-semibold); white-space: nowrap; transition: transform var(--motion-press) var(--ease-out), border-color var(--motion-fast) ease; }
+.guide-control:active { transform: scale(.96); }
+.guide-control:focus-visible, .guide-close:focus-visible, .guide-lang button:focus-visible, .guide-details > summary:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+@media (hover: hover) { .guide-control:hover { border-color: var(--color-text); } }
+@media (max-width: 559px) { .guide-control { padding: 0; } .guide-control-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; } }
+/* Phones up to 419 px: the connection pill keeps its dot (the label stays for screen readers) so the header fits. */
+@media (max-width: 419px) {
+  .header-actions:has(.guide-control) .system-status { width: 32px; padding: 0; justify-content: center; }
+  .header-actions:has(.guide-control) .system-status-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+}
+
+/* The sheet: native modal dialog (focus stays inside, Escape closes, the page behind is inert). */
+.guide-dialog { position: fixed; inset: auto 0 0 0; width: 100%; max-width: none; height: auto; max-height: min(88dvh, 100%); margin: 0; padding: 0; border: 0; background: transparent; color: var(--color-text); overflow: visible; }
+.guide-dialog::backdrop { background: var(--color-scrim); }
+.guide-dialog[open] .guide-panel { animation: guide-sheet-in var(--motion-standard) var(--ease-out); }
+.guide-panel { display: grid; gap: var(--space-4); max-height: min(88dvh, 100vh); overflow-y: auto; overscroll-behavior: contain; padding: var(--space-5) max(var(--space-4), var(--safe-right)) calc(var(--space-6) + var(--safe-bottom)) max(var(--space-4), var(--safe-left)); border-top: 1px solid var(--color-border); border-radius: var(--radius-xl) var(--radius-xl) 0 0; background: var(--color-surface); box-shadow: var(--shadow-sheet); }
+@keyframes guide-sheet-in { from { opacity: .4; transform: translateY(24px); } }
+@media (min-width: 768px) {
+  .guide-dialog { inset: 0 0 0 auto; width: min(460px, 100vw); height: 100dvh; max-height: 100dvh; }
+  .guide-panel { height: 100dvh; max-height: 100dvh; align-content: start; padding: var(--space-6); border-top: 0; border-left: 1px solid var(--color-border); border-radius: var(--radius-xl) 0 0 var(--radius-xl); box-shadow: var(--shadow-md); }
+  @keyframes guide-sheet-in { from { opacity: .4; transform: translateX(24px); } }
+}
+
+.guide-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); }
+.guide-head > div { min-width: 0; }
+.guide-head h2 { margin: 2px 0 0; font-size: var(--text-xl); font-weight: var(--weight-bold); letter-spacing: -.01em; line-height: var(--leading-tight); overflow-wrap: anywhere; }
+.guide-close { display: grid; place-items: center; flex: 0 0 auto; width: var(--control-md); height: var(--control-md); padding: 0; border: 1px solid var(--color-border-strong); border-radius: 50%; background: var(--color-surface); color: var(--color-text); font-size: var(--text-xl); line-height: 1; }
+
+.guide-lang { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; padding: 4px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface-soft); }
+.guide-lang button { min-height: var(--control-md); border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--color-text); font-size: var(--text-md); font-weight: var(--weight-semibold); }
+.guide-lang button[aria-pressed="true"] { background: var(--color-text); color: var(--color-bg); box-shadow: var(--shadow-sm); }
+.guide-lang-note, .guide-footnote { margin: 0; color: var(--color-text-subtle); font-size: var(--text-xs); line-height: var(--leading-normal); }
+.guide-lang-note { margin-top: calc(var(--space-2) * -1); }
+
+.guide-block { display: grid; gap: var(--space-2); }
+.guide-block h3 { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--color-text-muted); font-size: var(--text-xs); font-weight: var(--weight-bold); letter-spacing: .06em; text-transform: uppercase; }
+.guide-block p { margin: 0; font-size: var(--text-md); line-height: var(--leading-normal); }
+.guide-list { display: grid; gap: var(--space-2); margin: 0; padding-left: 1.25rem; font-size: var(--text-md); line-height: var(--leading-normal); }
+.guide-list li { padding-left: 2px; overflow-wrap: anywhere; }
+ol.guide-list li::marker { font-weight: var(--weight-bold); }
+.guide-caution { padding: var(--space-3) var(--space-4); border: 1px solid var(--color-warning-line); border-radius: var(--radius-md); background: var(--color-warning-soft); color: var(--color-warning-text); }
+.guide-caution h3 > svg { color: var(--color-warning); }
+
+.guide-details { border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface-soft); }
+.guide-details > summary { display: flex; align-items: center; min-height: var(--control-md); padding: 0 var(--space-4); border-radius: var(--radius-md); font-size: var(--text-sm); font-weight: var(--weight-semibold); cursor: pointer; list-style: none; }
+.guide-details > summary::-webkit-details-marker { display: none; }
+.guide-details > summary::after { content: "+"; margin-left: auto; font-size: var(--text-lg); font-weight: var(--weight-regular); }
+.guide-details[open] > summary::after { content: "−"; }
+.guide-details > :not(summary) { margin: 0 var(--space-4) var(--space-4); }
+.guide-details > p { font-size: var(--text-sm); line-height: var(--leading-normal); }
+
+.guide-flow { display: flex; flex-wrap: wrap; gap: 6px; padding: 0; list-style: none; counter-reset: guide-flow; }
+.guide-flow li { display: inline-flex; align-items: center; min-height: 30px; padding: 0 10px; border: 1px solid var(--color-border); border-radius: var(--radius-pill); background: var(--color-surface); color: var(--color-text-muted); font-size: var(--text-xs); font-weight: var(--weight-medium); counter-increment: guide-flow; }
+.guide-flow li::before { content: counter(guide-flow) "."; margin-right: 4px; color: var(--color-text-subtle); }
+.guide-flow li.is-own { border-color: var(--color-accent-line); background: var(--color-text); color: var(--color-bg); font-weight: var(--weight-semibold); }
+.guide-flow li.is-own::before, .guide-flow li.is-own small { color: inherit; }
+
+.guide-terms { display: grid; gap: var(--space-2); margin: 0; }
+.guide-terms > div { display: grid; gap: 2px; padding: var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-surface-soft); }
+.guide-terms dt { font-size: var(--text-sm); font-weight: var(--weight-bold); }
+.guide-terms dd { margin: 0; color: var(--color-text-muted); font-size: var(--text-sm); line-height: var(--leading-snug); }
+
+/* Home: the open workspace in two lines. */
+.guide-card { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-3) var(--space-4); padding: var(--space-4); border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-surface-soft); }
+.guide-card-copy { flex: 1 1 260px; min-width: 0; }
+.guide-card-copy h2 { margin: 2px 0 4px; font-size: var(--text-md); font-weight: var(--weight-bold); }
+.guide-card-copy p:last-child { margin: 0; color: var(--color-text-muted); font-size: var(--text-sm); line-height: var(--leading-snug); }
+.guide-card-actions { display: flex; align-items: center; gap: var(--space-2); }
+.guide-card-show { justify-self: start; display: inline-flex; align-items: center; gap: 6px; font-size: var(--text-sm); }
+
+@media (prefers-reduced-motion: reduce) {
+  .guide-dialog[open] .guide-panel { animation: none; }
+}

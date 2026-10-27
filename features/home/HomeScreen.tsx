@@ -19,6 +19,7 @@ import { ConfirmareWorkspace } from "../confirmare/ConfirmareWorkspace";
 import { canHandOff } from "../../domain/confirmare";
 import { canUseShopTasks } from "../../domain/confirmareOps";
 import { ShopTaskButtons } from "../confirmare/ConfirmareWorkspace";
+import { GuideBoundary, GuideHomeCard, useGuideWorkspace } from "../guide/ContextualHelp";
 
 type TodaySummary = ActivityPage["summary"];
 
@@ -66,6 +67,7 @@ export function HomeScreen({ employee, services, workflow, dashboardUrl, navigat
   const workspaces = useMemo(() => resolveWorkspaces(employee, { trendyol: Boolean(services.trendyol), documents: Boolean(services.documents), management: Boolean(services.management), confirmare: Boolean(services.confirmare) }), [employee, services]);
   const [chosen, setChosen] = useState<string | null>(() => readWorkspacePreference(employee.employeeUuid));
   const current = selectPrimaryWorkspace(workspaces, employee, chosen);
+  useGuideWorkspace(current);
 
   const select = (workspace: Workspace) => {
     setChosen(workspace.id);
@@ -85,6 +87,7 @@ export function HomeScreen({ employee, services, workflow, dashboardUrl, navigat
         <p className="workspace-title" data-testid="workspace-title"><span>{t("home.workspace")}</span><strong>{current.label}</strong></p>
       </header>
       <WorkspaceSwitcher workspaces={workspaces} current={current} onSelect={select} />
+      <GuideBoundary><GuideHomeCard /></GuideBoundary>
       <SupervisorCard service={services.exceptions} navigate={navigate} />
 
       {current.kind === "confirmare" && services.confirmare && <ConfirmareWorkspace employee={employee} service={services.confirmare} navigate={navigate} />}

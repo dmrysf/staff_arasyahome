@@ -39,6 +39,7 @@ import { ConfirmareTeamScreen } from "../features/confirmare/ConfirmareTeamScree
 import { ConfirmareFinanceScreen } from "../features/confirmare/ConfirmareFinanceScreen";
 import { ConfirmareHandoffScreen } from "../features/confirmare/ConfirmareHandoffScreen";
 import { ConfirmareAwbScreen, ConfirmareEfacturaScreen, ConfirmareHealthScreen } from "../features/confirmare/ConfirmareShopTasks";
+import { GuideProvider } from "../features/guide/ContextualHelp";
 
 type StaffAppProps = { initialRoute: string; mode: StaffRuntimeMode; apiBaseUrl: string };
 
@@ -112,6 +113,8 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
   const parsedRoute = parseStaffRoute(route.split(/[?#]/, 1)[0]);
   const sessionRoute = routeForSession(parsedRoute.pathname, Boolean(session));
   const guardedRoute = session && !canAccessRoute(session.employee, sessionRoute) ? "/" : sessionRoute;
+  // The guide explains the screen actually shown (a refused route shows the home screen).
+  const guideRoute = useMemo(() => parseStaffRoute(guardedRoute), [guardedRoute]);
   const staffReady = Boolean(session && !session.employee.mustChangePassword && session.employee.applications.includes("staff"));
   const workflowLifecycle = useProductionWorkflow({ authenticated: staffReady, route: guardedRoute, service: services.workflow });
 
@@ -182,7 +185,9 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
   else if (guardedRoute === "/profile") screen = <ProfileScreen employee={session.employee} mode={services.mode} onLogout={logout} passwordChanged={passwordChanged} onChangePassword={() => { setPasswordChanged(false); setChangingPassword(true); }} />;
 
   return <LiveProvider service={services.live} enabled={staffReady}>
-    <AppShell employee={session.employee} route={guardedRoute} mode={mode} navigate={navigate} immersive={immersive}>{screen}</AppShell>
+    <GuideProvider key={session.employee.employeeUuid} employee={session.employee} route={guideRoute} dashboardLink={Boolean(dashboardUrl)}>
+      <AppShell employee={session.employee} route={guardedRoute} mode={mode} navigate={navigate} immersive={immersive}>{screen}</AppShell>
+    </GuideProvider>
     <LiveNotice navigate={navigate} />
   </LiveProvider>;
   }
