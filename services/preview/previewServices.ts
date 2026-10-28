@@ -101,6 +101,12 @@ export function createPreviewServices(options: PreviewServicesOptions = {}): Ser
       if (!current) throw new StaffServiceError("SESSION_EXPIRED");
       return current;
     },
+    async changeLocale(locale) {
+      const current = await auth.getSession();
+      if (!current || !memorySession) throw new StaffServiceError("SESSION_EXPIRED");
+      memorySession = { ...memorySession, employee: { ...memorySession.employee, locale } };
+      return clone(memorySession);
+    },
     onSessionExpired() { return () => undefined; },
   };
 

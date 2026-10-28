@@ -182,7 +182,7 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
   else if (guardedRoute === "/confirmare/health" && services.confirmare) screen = <ConfirmareHealthScreen service={services.confirmare} navigate={navigate} />;
   else if (confirmareOrderId && services.confirmare) screen = <ConfirmareOrderScreen key={confirmareOrderId} orderId={confirmareOrderId} employee={session.employee} service={services.confirmare} documents={services.documents} navigate={navigate} />;
   else if (guardedRoute === "/history") screen = <HistoryScreen service={services.activity} navigate={navigate} />;
-  else if (guardedRoute === "/profile") screen = <ProfileScreen employee={session.employee} mode={services.mode} onLogout={logout} passwordChanged={passwordChanged} onChangePassword={() => { setPasswordChanged(false); setChangingPassword(true); }} />;
+  else if (guardedRoute === "/profile") screen = <ProfileScreen employee={session.employee} mode={services.mode} onLogout={logout} passwordChanged={passwordChanged} onChangePassword={() => { setPasswordChanged(false); setChangingPassword(true); }} onChangeLocale={async (locale) => { setSession(await services.auth.changeLocale(locale)); }} />;
 
   return <LiveProvider service={services.live} enabled={staffReady}>
     <GuideProvider key={session.employee.employeeUuid} employee={session.employee} route={guideRoute} dashboardLink={Boolean(dashboardUrl)}>

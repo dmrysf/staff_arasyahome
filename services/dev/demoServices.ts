@@ -39,6 +39,11 @@ export function createDemoServices(): ServiceBundle {
       memorySession = { ...memorySession, employee: { ...memorySession.employee, mustChangePassword: false } };
       return clone(memorySession);
     },
+    async changeLocale(locale) {
+      if (!memorySession) throw new StaffServiceError("SESSION_EXPIRED");
+      memorySession = { ...memorySession, employee: { ...memorySession.employee, locale } };
+      return clone(memorySession);
+    },
     onSessionExpired() { return () => undefined; },
   };
 
