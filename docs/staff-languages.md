@@ -14,6 +14,11 @@ the device, the browser language, the country or the IP address.
 - The language is presentation only. It is not a permission: setting it does not change the authorization
   version, sessions, roles, stages, applications, password or account status.
 - It changes only through the audited IAM path (`employee.staff_locale_changed`, before and after):
+  - (API 2.49.0, Staff 2.39.0, owner decision 2026-10-28) the employee's own choice on the Profile screen:
+    `PUT /auth/locale` with `{"locale": "ro|tr|en|si"}`, CSRF required, Staff application access required, the
+    session's own account only (no target field). Audited with the employee as actor and `"self": true`; choosing
+    the language already in effect (NULL reads as `ro`) writes nothing. The answer is the same session with the new
+    `employee.locale`, so Staff switches at once; no session is revoked;
   - `PUT /management/employees/{id}/staff-locale` with `{"locale": "tr"}` (or `null` for the default),
     permission `employees.update`, with the usual root protection and authority-rank rules;
   - `bin/set-employee-locale.php` for named people, as the root identity:
@@ -38,6 +43,8 @@ the device, the browser language, the country or the IP address.
   server or an account, and signing out returns to it, so one employee's language never stays on a shared phone.
 - Production stages, IAM departments and roles, problem reasons and transfer reasons are named by their codes;
   an unknown code shows the server's own text. Stage ids, their order and every request payload are unchanged.
+- Profile: the account language with Română / Türkçe / English / සිංහල buttons (Staff 2.39.0). A choice is saved on
+  the account and applies on every device of the employee; the guide keeps its own RO/TR choice.
 - Order data is never translated: product names, codes, barcodes, sizes, units, colors, notes, numbers, PDFs, QR
   references and history snapshots are shown exactly as stored. Measurement values keep the production sheet format.
 - The cutting TV board (`/cutting-board`) is a paired device without an employee account and stays Romanian.
@@ -51,5 +58,9 @@ the device, the browser language, the country or the IP address.
 4. Deploy Staff 2.25.0 once.
 5. Run `bin/set-employee-locale.php` without `--apply`, check the plan, then run it with `--apply`.
 6. Employees reload Staff (or sign in again) to pick up their language.
+
+Self-service (API 2.49.0, Staff 2.39.0), no migration: deploy API first, then Staff. Staff 2.39.0 on API 2.48.0
+shows the buttons but the change answers 404 and the profile shows "could not change the language"; nothing is
+written.
 
 Rollback: Staff and API roll back independently; the column can stay (older code ignores it).

@@ -191,3 +191,47 @@ test("English account on a desktop, and the forced password change in the accoun
   expect(phone.errors).toEqual([]);
   await phone.context.close();
 });
+
+test("own language on the Profile screen: Romanian to Turkish and back, on every device of the account", async ({ browser }) => {
+  test.setTimeout(90_000);
+  const phone = await open(browser, 360);
+  const { page } = phone;
+  await signIn(page, fixture.users.ana);
+  await expect(page.getByRole("heading", { name: /^Bună, Ana!$/ })).toBeVisible();
+  await page.goto("/profile");
+  const languages = page.getByRole("group", { name: "Limba aplicației" });
+  await expect(languages.getByRole("button", { name: "Română" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByText("Alege limba aplicației. Se aplică pe toate dispozitivele tale.")).toBeVisible();
+  await fits(page, "profile-languages-ro-360");
+  await accessible(page, "profile-languages-ro");
+
+  // One tap: the whole interface follows at once, and the request names only the language.
+  const sent: string[] = [];
+  page.on("request", (request) => { if (request.url().endsWith("/auth/locale")) sent.push(`${request.method()} ${request.postData() ?? ""}`); });
+  await languages.getByRole("button", { name: "Türkçe" }).click();
+  const turkish = page.getByRole("group", { name: "Uygulama dili" });
+  await expect(turkish.getByRole("button", { name: "Türkçe" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByTestId("profile-language")).toContainText("Türkçe");
+  expect(await page.evaluate(() => document.documentElement.lang)).toBe("tr");
+  await expect(page.getByRole("navigation", { name: "Ana menü" }).getByText("Siparişler")).toBeVisible();
+  expect(sent).toEqual(['PUT {"locale":"tr"}']);
+  await fits(page, "profile-languages-tr-360");
+  await accessible(page, "profile-languages-tr");
+
+  // The choice belongs to the account: a reload and a second device start in Turkish.
+  await page.reload();
+  await expect(page.getByTestId("profile-language")).toContainText("Türkçe");
+  const desktop = await open(browser, 1280, 860);
+  await signIn(desktop.page, fixture.users.ana);
+  await expect(desktop.page.getByRole("heading", { name: /^Merhaba, Ana!$/ })).toBeVisible();
+  await desktop.context.close();
+
+  // Back to Romanian, so the account ends as it began.
+  await page.getByRole("group", { name: "Uygulama dili" }).getByRole("button", { name: "Română" }).click();
+  await expect(page.getByRole("group", { name: "Limba aplicației" }).getByRole("button", { name: "Română" })).toHaveAttribute("aria-pressed", "true");
+  expect(await page.evaluate(() => document.documentElement.lang)).toBe("ro");
+  await signOut(page, "Ieși din cont");
+  await expect(page.getByRole("heading", { name: "Bine ai revenit." })).toBeVisible();
+  expect(phone.errors).toEqual([]);
+  await phone.context.close();
+});

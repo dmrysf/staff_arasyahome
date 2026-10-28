@@ -208,6 +208,7 @@
 .profile-panel strong { font-size: var(--text-sm); text-align: right; overflow-wrap: anywhere; }
 .security-note { display: flex; gap: 12px; padding: var(--space-4); border: 1px solid var(--color-border); border-radius: var(--radius-md); }
 .profile-language-note { margin: calc(var(--space-2) * -1) 0 0; color: var(--color-text-subtle); font-size: var(--text-xs); }
+.profile-languages { margin: 0; }
 .security-note > span { color: var(--color-success); }
 .security-note strong { font-size: var(--text-sm); }
 .security-note p { margin: 4px 0 0; color: var(--color-text-muted); font-size: var(--text-xs); line-height: var(--leading-normal); }

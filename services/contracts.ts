@@ -10,6 +10,8 @@ export interface AuthService {
   refreshSession(): Promise<Session>;
   /** Replaces the password (also the forced first-login change); the server issues a fresh session. */
   changePassword(input: { currentPassword: string; newPassword: string }): Promise<Session>;
+  /** The employee chooses the Staff language of their own account (API 2.49.0); the same session, with the new locale. */
+  changeLocale(locale: import("../i18n").Locale): Promise<Session>;
   onSessionExpired(handler: (error: import("../domain/models").StaffServiceError) => void): () => void;
 }
 

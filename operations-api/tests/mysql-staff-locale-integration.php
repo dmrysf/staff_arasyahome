@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 // Staff interface language per identity (migration 027) against a dedicated MySQL/MariaDB test database: the default
 // is Romanian; the language follows the account into every session (login, session read, refresh, a second device);
-// only the audited IAM path changes it; it grants nothing and leaves authorization, sessions and passwords untouched;
+// only the audited IAM path or the employee's own choice (PUT /auth/locale) changes it; it grants nothing and leaves authorization, sessions and passwords untouched;
 // the CLI refuses a UUID/username mismatch before anything is written; and API code reads Romanian before 027 runs.
 
 use Arasya\Operations\Application\Container;
@@ -127,6 +127,50 @@ try {
     $check(true, 'the database refuses an unsupported language');
 }
 
+// ---- Self-service (API 2.49.0): the employee chooses the language of their own account ------------------------
+$self = T::login($kernel, "turkish.{$suffix}", $password);
+$asSelf = static fn (?array $body, ?string $csrf = null): array => T::call($kernel, 'PUT', '/auth/locale', $body, ['x-csrf-token' => $csrf ?? $self['csrf']], $self['cookie']);
+$selfAudit = static fn (): int => (int) $one("SELECT COUNT(*) FROM iam_audit_events WHERE action = 'employee.staff_locale_changed' AND target_id = ?", [$turkish]);
+$before->execute([$turkish, $sinhala, $english, $other]);
+$snapshot = $before->fetchAll(PDO::FETCH_ASSOC);
+$stagesBefore = $stageRows();
+$rolesBefore = $roleRows();
+$appsBefore = $appRows();
+$liveSessions = (int) $one('SELECT COUNT(*) FROM auth_sessions WHERE employee_uuid = ? AND revoked_at IS NULL', [$turkish]);
+$auditsBefore = $selfAudit();
+$switched = $asSelf(['locale' => 'ro']);
+$check($switched['status'] === 200 && $switched['body']['employee']['locale'] === 'ro' && ($switched['body']['csrfToken'] ?? '') === $self['csrf'], 'the employee switches their own account to Romanian and keeps the session');
+$check($one('SELECT staff_locale FROM employees WHERE employee_uuid = ?', [$turkish]) === 'ro', 'the own choice is stored');
+$row = $pdo->prepare("SELECT actor_employee_uuid, actor_type, metadata_json FROM iam_audit_events WHERE action = 'employee.staff_locale_changed' AND target_id = ? ORDER BY created_at DESC, event_id DESC LIMIT 1");
+$row->execute([$turkish]);
+$event = $row->fetch(PDO::FETCH_ASSOC);
+$check($selfAudit() === $auditsBefore + 1 && $event['actor_employee_uuid'] === $turkish && $event['actor_type'] === 'employee' && json_decode((string) $event['metadata_json'], true) == ['staffLocale' => ['before' => 'tr', 'after' => 'ro'], 'self' => true], 'the own change is audited with the employee as actor');
+$check(T::call($kernel, 'GET', '/auth/session', null, [], $self['cookie'])['body']['employee']['locale'] === 'ro', 'the next session read follows the own choice');
+$back = $asSelf(['locale' => 'tr']);
+$check($back['status'] === 200 && $back['body']['employee']['locale'] === 'tr' && $selfAudit() === $auditsBefore + 2, 'the employee switches back to Turkish');
+$check($asSelf(['locale' => 'tr'])['status'] === 200 && $selfAudit() === $auditsBefore + 2, 'choosing the language in effect writes and audits nothing');
+$plain = T::login($kernel, "other.{$suffix}", $password);
+$check(T::call($kernel, 'PUT', '/auth/locale', ['locale' => 'si'], ['x-csrf-token' => $plain['csrf']], $plain['cookie'])['status'] === 200 && T::call($kernel, 'PUT', '/auth/locale', ['locale' => 'ro'], ['x-csrf-token' => $plain['csrf']], $plain['cookie'])['status'] === 200, 'another employee switches between languages too');
+$check($one('SELECT staff_locale FROM employees WHERE employee_uuid = ?', [$other]) === 'ro', 'choosing Romanian after another language stores ro');
+$check(T::call($kernel, 'PUT', '/auth/locale', ['locale' => 'ro'], ['x-csrf-token' => $plain['csrf']], $plain['cookie'])['status'] === 200 && (int) $one("SELECT COUNT(*) FROM iam_audit_events WHERE action = 'employee.staff_locale_changed' AND target_id = ?", [$other]) === 2, 'the repeated choice writes nothing');
+$pdo->prepare('UPDATE employees SET staff_locale = NULL WHERE employee_uuid = ?')->execute([$other]);
+$check(T::call($kernel, 'PUT', '/auth/locale', ['locale' => 'ro'], ['x-csrf-token' => $plain['csrf']], $plain['cookie'])['status'] === 200 && $one('SELECT staff_locale FROM employees WHERE employee_uuid = ?', [$other]) === null, 'Romanian over the NULL default keeps NULL');
+foreach (['de', 'TR', 'tr-TR', '', 7, true, null] as $invalid) {
+    $check($asSelf(['locale' => $invalid])['status'] === 422, 'an unsupported own language is refused: ' . json_encode($invalid));
+}
+$check($asSelf(['locale' => 'ro', 'employeeId' => $other])['status'] === 400 && $asSelf(['language' => 'ro'])['status'] === 400, 'unknown fields are refused (no other target)');
+$check($asSelf(['locale' => 'ro'], 'wrong-csrf')['status'] === 403, 'the CSRF token is required');
+$check(T::call($kernel, 'PUT', '/auth/locale', ['locale' => 'ro'], [], null)['status'] === 401, 'no session, no change');
+$check($one('SELECT staff_locale FROM employees WHERE employee_uuid = ?', [$turkish]) === 'tr', 'refused calls wrote nothing');
+$before->execute([$turkish, $sinhala, $english, $other]);
+$check($before->fetchAll(PDO::FETCH_ASSOC) === $snapshot, 'own language: authorization version, password, status, role and department are unchanged');
+$check($stageRows() === $stagesBefore && $roleRows() === $rolesBefore && $appRows() === $appsBefore, 'own language: stages, roles and applications are unchanged');
+$check((int) $one('SELECT COUNT(*) FROM auth_sessions WHERE employee_uuid = ? AND revoked_at IS NULL', [$turkish]) === $liveSessions, 'own language: no session was revoked');
+$dashboardOnly = $container->employeeAdmin()->create("DASH {$suffix}", "dash.{$suffix}", null, 'pregatire-material', 'employee', $password, $stages, 'test-locale')->employeeUuid;
+$check($asRoot('PUT', "/management/employees/{$dashboardOnly}/applications", ['applications' => ['dashboard']])['status'] === 200, 'dash: Dashboard access only');
+$dash = T::login($kernel, "dash.{$suffix}", $password);
+$check(T::call($kernel, 'PUT', '/auth/locale', ['locale' => 'tr'], ['x-csrf-token' => $dash['csrf']], $dash['cookie'])['status'] === 403 && $one('SELECT staff_locale FROM employees WHERE employee_uuid = ?', [$dashboardOnly]) === null, 'an identity without Staff access cannot set a Staff language');
+
 // ---- CLI: read-only plan, exact UUID+username match, one audited transaction -----------------------------------
 $cli = static function (array $arguments) use ($dbName): array {
     // The CLI reads its configuration like production does; here it is pointed at the test database only.
@@ -154,7 +198,7 @@ $check($applied['code'] === 0 && $applied['out']['applied'] === true && $applied
 $check((int) $one("SELECT COUNT(*) FROM iam_audit_events WHERE action = 'employee.staff_locale_changed' AND target_id = ? AND actor_type = 'root'", [$other]) === 1, 'the CLI change is audited as root');
 $check(!str_contains(json_encode($applied['out']), 'password'), 'the CLI output carries no secret');
 $again = $cli(["--assign={$other},other.{$suffix},si", '--apply']);
-$check($again['code'] === 0 && $again['out']['plan'][0]['change'] === false && (int) $one("SELECT COUNT(*) FROM iam_audit_events WHERE action = 'employee.staff_locale_changed' AND target_id = ?", [$other]) === 1, 'a repeated CLI run changes and audits nothing');
+$check($again['code'] === 0 && $again['out']['plan'][0]['change'] === false && (int) $one("SELECT COUNT(*) FROM iam_audit_events WHERE action = 'employee.staff_locale_changed' AND target_id = ? AND actor_type = 'root'", [$other]) === 1, 'a repeated CLI run changes and audits nothing');
 $check($cli(['--assign=not-a-uuid,x,tr'])['err'] === 'LOCALE_INVALID_OPTIONS', 'malformed options are refused');
 $check($cli(["--assign={$other},other.{$suffix},de"])['err'] === 'LOCALE_INVALID_OPTIONS', 'an unsupported CLI language is refused');
 

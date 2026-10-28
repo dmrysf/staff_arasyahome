@@ -68,6 +68,7 @@ final readonly class ApiKernel
                 'GET /auth/session' => $this->auth->session($request),
                 'POST /auth/refresh' => $this->auth->refresh($request),
                 'POST /auth/password' => $this->auth->changePassword($request),
+                'PUT /auth/locale' => $this->auth->changeLocale($request),
                 'GET /employees/me' => $this->auth->employee($request),
                 'GET /b2b/access' => $this->auth->b2bAccess($request),
                 'GET /production/workflow' => $this->workflow?->show($request) ?? throw new ApiException(503, 'WORKFLOW_UNAVAILABLE', 'Production workflow is not ready.'),

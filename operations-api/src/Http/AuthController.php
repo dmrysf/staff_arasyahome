@@ -33,6 +33,7 @@ final readonly class AuthController
         private ?ConfirmareScopePolicy $confirmareScopes = null,
         private ?\Arasya\Operations\Confirmare\FinanceScopePolicy $financeScopes = null,
         private ?\Arasya\Operations\Confirmare\InvoiceScopePolicy $invoiceScopes = null,
+        private ?\Arasya\Operations\Employee\OwnStaffLocale $ownLocale = null,
     ) {
     }
 
@@ -92,6 +93,24 @@ final readonly class AuthController
         }
         $result = $this->auth->changePassword($current, $input['currentPassword'], $input['newPassword'], $request->ipAddress, $request->userAgent, $request->requestId);
         return Response::json($this->payload($result), 200, ['Set-Cookie' => $this->cookies->session($result->rawToken, $result->expiresAt)]);
+    }
+
+    /**
+     * The employee chooses the Staff language of their own account (API 2.49.0). Presentation only: the session stays,
+     * and the answer is the same session view with the new `employee.locale`.
+     */
+    public function changeLocale(Request $request): Response
+    {
+        $current = $this->current($request);
+        $this->csrf->requireValid($current->rawToken, $request->header('x-csrf-token'));
+        $this->authorization->requireApplication($current->employee, ApplicationAccess::STAFF);
+        $input = $request->json();
+        $this->requireKeys($input, ['locale']);
+        if ($this->ownLocale === null) {
+            throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'The language cannot be changed right now.');
+        }
+        $this->ownLocale->change($current->employee, $input['locale'], $request->requestId);
+        return Response::json($this->sessionPayload($this->current($request)));
     }
 
     public function employee(Request $request): Response

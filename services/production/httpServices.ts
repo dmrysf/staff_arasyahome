@@ -948,6 +948,11 @@ export function createProductionServices(apiBaseUrl: string, options: Production
       http.setCsrf(payload.csrfToken);
       return { employee: payload.employee, expiresAt: payload.expiresAt };
     },
+    async changeLocale(locale) {
+      const payload = await http.request("/auth/locale", { method: "PUT", body: JSON.stringify({ locale }) }, mapProductionSession);
+      http.setCsrf(payload.csrfToken);
+      return { employee: payload.employee, expiresAt: payload.expiresAt };
+    },
     async refreshSession() {
       const payload = await http.request("/auth/refresh", { method: "POST" }, mapProductionSession);
       http.setCsrf(payload.csrfToken);
