@@ -181,3 +181,87 @@
 .cf-ops-block > h3 { margin: 0; }
 .cf-efactura-task { display: grid; gap: 10px; padding: 12px 0; }
 .cf-efactura-task.is-overdue { border-left: 3px solid var(--color-danger); padding-left: 12px; }
+
+/*
+ * The guided order (Staff 2.40.0): five steps, one open task. A comfortable reading width on large screens; the
+ * progress row keeps five markers on a phone (labels wrap, never scroll). Every state has words, not only a colour.
+ */
+.cfw-order { width: 100%; max-width: 860px; margin-inline: auto; }
+.cfw-progress { display: grid; gap: 10px; min-width: 0; padding: 14px 12px 12px; border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-surface); }
+.cfw-progress .eyebrow { margin: 0; }
+.cfw-steps .task-step-copy small.cfw-step-state { display: block; font-size: var(--text-2xs); }
+.cfw-step.is-waiting .task-step-marker { border-color: var(--color-warning-line); background: var(--color-warning-soft); color: var(--color-warning-text); }
+.cfw-step.is-attention { color: var(--color-danger-text); }
+.cfw-step.is-attention .task-step-marker { border-color: var(--color-danger-line); background: var(--color-danger-soft); color: var(--color-danger-text); }
+.cfw-step.is-locked, .cfw-step.is-skipped { color: var(--color-text-subtle); }
+.cfw-step.is-skipped .task-step-marker { border-style: dashed; }
+.cfw-flow { display: grid; gap: var(--space-3); min-width: 0; }
+.cfw-card { display: grid; gap: 12px; min-width: 0; padding: 12px 16px; border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-surface); }
+.cfw-card.is-locked, .cfw-card.is-skipped { background: var(--color-surface-soft); color: var(--color-text-muted); }
+.cfw-card.is-active { gap: 16px; padding: 18px 16px 20px; border-color: var(--color-accent-line); box-shadow: var(--shadow-sm); }
+.cfw-card.is-active.is-waiting { border-color: var(--color-warning-line); }
+.cfw-card.is-active.is-attention { border-color: var(--color-danger-line); }
+.cfw-card-head { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; gap: 10px; align-items: center; min-width: 0; }
+.cfw-card-number { width: 32px; height: 32px; display: grid; place-items: center; border: 1.5px solid var(--color-border-strong); border-radius: 11px; font-size: var(--text-xs); font-weight: var(--weight-bold); font-variant-numeric: tabular-nums; }
+.cfw-card.is-done .cfw-card-number { border-color: var(--color-success-line); background: var(--color-success-soft); color: var(--color-success-text); }
+.cfw-card.is-active .cfw-card-number { border-color: var(--color-accent); background: var(--color-accent); color: var(--color-accent-contrast); }
+.cfw-card-title { margin: 0; min-width: 0; font-size: var(--text-md); font-weight: var(--weight-semibold); line-height: var(--leading-snug); overflow-wrap: anywhere; }
+.cfw-card-summary { margin: 0 0 0 42px; color: var(--color-text-muted); font-size: var(--text-sm); line-height: var(--leading-normal); }
+.cfw-brief { display: grid; gap: 6px; min-width: 0; }
+.cfw-task-title { margin: 0; font-size: var(--text-xl); line-height: var(--leading-tight); }
+.cfw-task-title:focus { outline: none; }
+.cfw-task-title:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 4px; }
+.cfw-task-lead { margin: 0; color: var(--color-text-muted); font-size: var(--text-md); line-height: var(--leading-normal); }
+.cfw-owner { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 2px 0 0; font-size: var(--text-sm); }
+.cfw-can-act { color: var(--color-accent-text); font-weight: var(--weight-semibold); }
+.cfw-cannot-act { color: var(--color-text-muted); }
+.cfw-subtasks { display: grid; gap: 4px; margin: 0; padding: 10px 12px; border-radius: var(--radius-md); background: var(--color-surface-soft); list-style: none; }
+.cfw-subtask { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 8px; align-items: center; min-height: 44px; color: var(--color-text-muted); font-size: var(--text-sm); }
+.cfw-subtask > small { color: var(--color-text-subtle); font-size: var(--text-2xs); }
+.cfw-subtask.is-done { color: var(--color-success-text); }
+.cfw-subtask.is-current, .cfw-subtask.is-shown { color: var(--color-text); font-weight: var(--weight-semibold); }
+.cfw-subtask.is-blocked { color: var(--color-danger-text); }
+.cfw-subtask.is-waiting { color: var(--color-warning-text); }
+.cfw-subtask-open { min-height: 44px; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.cfw-task-body { display: grid; gap: 14px; min-width: 0; }
+.cfw-task-body > .detail-section { margin: 0; padding: 0; border: 0; box-shadow: none; background: none; }
+.cfw-block { display: grid; gap: 10px; min-width: 0; }
+.cfw-block h4 { margin: 0; font-size: var(--text-sm); }
+.cfw-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.cfw-actions .button { flex: 1 1 220px; }
+.cfw-product { display: grid; gap: 12px; min-width: 0; }
+.cfw-product-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.cfw-product-head .eyebrow { margin: 0; }
+.cfw-product-card { padding: 16px; background: var(--color-surface); }
+.cfw-product-card .line-name { font-size: var(--text-md); }
+.cfw-product-nav { display: flex; justify-content: space-between; gap: 10px; }
+.cfw-summary { display: grid; gap: 0; margin: 0; border: 1px solid var(--color-border); border-radius: var(--radius-md); }
+.cfw-summary > div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; padding: 10px 12px; }
+.cfw-summary > div + div { border-top: 1px solid var(--color-border); }
+.cfw-summary dt { color: var(--color-text-muted); font-size: var(--text-sm); }
+.cfw-summary dd { margin: 0; font-weight: var(--weight-semibold); }
+.cfw-verification { display: grid; gap: 8px; }
+.cfw-next-fix { margin: 0; color: var(--color-warning-text); font-weight: var(--weight-semibold); }
+.cfw-all-met { margin: 0; color: var(--color-success-text); font-weight: var(--weight-semibold); }
+.cfw-money { margin: 0; }
+.cfw-background { display: grid; gap: 4px; padding: 10px 14px; border: 1px dashed var(--color-info-line); border-radius: var(--radius-md); background: var(--color-info-soft); color: var(--color-info-text); font-size: var(--text-sm); }
+.cfw-background p { display: flex; gap: 8px; align-items: center; margin: 0; }
+.cfw-disclosure { min-width: 0; padding: 0 16px; border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-surface); }
+.cfw-disclosure > summary { display: flex; align-items: center; min-height: 48px; font-weight: var(--weight-semibold); cursor: pointer; }
+.cfw-disclosure[open] { padding-bottom: 16px; }
+.cfw-disclosure[open] > *:not(summary) + * { margin-top: 12px; }
+.cfw-verification .cfw-disclosure { padding: 0 12px; border-radius: var(--radius-md); }
+.cfw-more-body { display: grid; gap: var(--space-3); min-width: 0; }
+.cfw-more-body > .detail-section, .cfw-more-body > .cfw-block { margin: 0; }
+.cfw-other .field, .cfw-supervisor .field, .cf-actions .field { display: grid; gap: 8px; }
+@media (max-width: 420px) {
+  .cfw-progress { padding-inline: 6px; }
+  .cfw-steps .task-step-copy strong { font-size: 0.62rem; }
+  .cfw-steps .task-step-copy small.cfw-step-state { display: none; }
+  .cfw-card-head { grid-template-columns: 32px minmax(0, 1fr); }
+  .cfw-card-head > .status-pill { grid-column: 2; justify-self: start; }
+  .cfw-card-summary { margin-left: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cfw-card, .cfw-step .task-step-marker { transition: none; }
+}

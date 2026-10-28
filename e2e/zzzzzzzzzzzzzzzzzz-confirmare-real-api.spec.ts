@@ -69,6 +69,22 @@ async function accessible(page: Page, screen: string) {
   expect(small, `${screen}: touch targets under 44 px`).toEqual([]);
 }
 
+/** Staff 2.40.0: the guided order. The open step and its task, as the screen states them. */
+async function at(page: Page, step: string, task: string, state = "active") {
+  await expect(page.getByTestId(`cfw-step-${step}`)).toHaveAttribute("data-state", state);
+  await expect(page.getByTestId("cfw-task")).toHaveAttribute("data-task", task);
+}
+async function openMore(page: Page) {
+  if (await page.getByTestId("cfw-more").getAttribute("open") === null) await page.getByTestId("cfw-more-open").click();
+}
+/** Every product, one by one, checked with the customer (the screen moves to the next by itself). */
+async function checkProducts(page: Page, count: number) {
+  for (let index = 1; index <= count; index += 1) {
+    await expect(page.getByTestId("cfw-product-of")).toContainText(`Produsul ${index} din ${count}`);
+    await page.getByTestId("cfw-product-check").click();
+  }
+}
+
 async function recordCall(page: Page, outcome: RegExp, keyboard = false) {
   const radio = page.getByRole("radio", { name: outcome });
   const happened = page.getByTestId("cf-call-happened");
@@ -117,17 +133,41 @@ test("operator: next step, queue, recorded calls (never a cancellation), line an
 
   await list.getByTestId(`cf-row-${number(F.orders.call)}`).click();
   await expect(page.getByTestId("cf-order")).toBeVisible();
+  // One step open, one task: the customer's telephone first. Later steps are closed, nothing is approvable yet.
+  await expect(page.getByTestId("cfw-progress-of")).toHaveText("Pasul 2 din 5");
+  await at(page, "contact", "customer");
+  await expect(page.getByTestId("cfw-step-take")).toHaveAttribute("data-state", "done");
+  await expect(page.getByTestId("cfw-step-final")).toHaveAttribute("data-state", "locked");
+  await expect(page.getByTestId("cfw-step-payment"), "the verified online payment is a fact already").toHaveAttribute("data-state", "done");
   await expect(page.getByTestId("cf-customer-facts")).toContainText("TEST Client Confirmare");
   await expect(page.getByTestId("cf-customer-facts")).toContainText("07** *** ***");
   await expect(page.locator("body"), "the full number is shown only on request").not.toContainText("0700000123");
   await expect(page.getByTestId("cf-phone-in-shop")).toBeVisible();
-  await expect(page.getByTestId("cf-shop-load")).toBeVisible();
-  await expect(page.getByTestId("cf-approve")).toBeDisabled();
-  await expect(page.getByTestId("cf-checklist")).toContainText("Clientul a confirmat la telefon");
+  await expect(page.getByTestId("cf-approve"), "no approval form before the call").toHaveCount(0);
+  await expect(page.getByTestId("cf-record-call"), "only the current task's form is open").toHaveCount(0);
+  await expect(page.getByTestId("cf-history"), "the history waits in the additional details").toHaveCount(0);
   await capture(page, "order-before-call-390");
+  await accessible(page, "order customer 390");
+  // Opening, reloading and looking at the details change nothing on the server (no call, no event, no new version).
+  const watcher = await api(F.people.supervisor.username, F.password);
+  const untouched = await detailOf(watcher, F.orders.call);
+  await page.reload();
+  await at(page, "contact", "customer");
+  await openMore(page);
+  await page.getByTestId("cfw-more-open").click();
+  const still = await detailOf(watcher, F.orders.call);
+  expect(still.version, "navigation never changes the order").toBe(untouched.version);
+  expect(still.events).toEqual(untouched.events);
+  // The real number, read from the shop now (audited), never before; reading moves on to the call by itself.
+  await page.getByTestId("cf-shop-load").click();
+  await expect(page.getByTestId("cf-shop-call-billing")).toHaveAttribute("href", "tel:0700000123");
+  await at(page, "contact", "call");
+  await expect(page.getByTestId("cf-message"), "a read records no call").toHaveCount(0);
 
   await recordCall(page, /^Nu răspunde/);
   await expect(page.getByTestId("cf-order-status")).toHaveText("Nu răspunde");
+  await at(page, "contact", "callAgain");
+  await openMore(page);
   await expect(page.getByTestId("cf-history")).toContainText("Apel: Nu răspunde");
   await page.getByRole("button", { name: "Înapoi la Confirmare" }).click();
   await page.getByRole("tab", { name: /De reapelat/ }).click();
@@ -135,30 +175,51 @@ test("operator: next step, queue, recorded calls (never a cancellation), line an
   await list.getByTestId(`cf-row-${number(F.orders.call)}`).click();
 
   // The customer confirms on the second call; recorded with the keyboard only.
+  await at(page, "contact", "callAgain");
   await recordCall(page, /^Confirmat/, true);
   await expect(page.getByTestId("cf-order-status")).toHaveText("Confirmat");
-  await page.getByTestId("cf-line-confirm-1").check();
-  await expect(page.getByTestId("cf-approve")).toBeDisabled();
-  await page.getByTestId("cf-line-confirm-2").check();
-  await expect(page.getByTestId("cf-approve"), "no approval before the prices are reviewed").toBeDisabled();
-  await page.getByTestId("cf-price-reviewed").check();
-  await expect(page.getByTestId("cf-approve"), "no approval before the shop order was read").toBeDisabled();
-  await expect(page.getByTestId("cf-checklist")).toContainText("Comanda din magazin a fost citită în Staff");
-  // The real number and the prices, read from the shop now (audited), never before.
+  // The products one by one; the review moves on by itself and only then opens the final review.
+  await at(page, "contact", "products");
+  await page.getByTestId("cfw-product-check").click();
+  await expect(page.getByTestId("cfw-product-of")).toContainText("Produsul 2 din 2");
+  // A reload keeps what the server recorded (the call) and never pretends the unsent product checks were saved.
+  await page.reload();
+  await at(page, "contact", "products");
+  await expect(page.getByTestId("cfw-sub-call")).toHaveAttribute("data-state", "done");
+  await expect(page.getByTestId("cf-lines-progress")).toHaveText("0 din 2 confirmate");
+  await expect(page.getByTestId("cfw-sub-call")).toHaveAttribute("data-state", "done");
+  await expect(page.getByTestId("cfw-product-1")).toContainText("Draperie Velvet");
+  await capture(page, "order-product-390");
+  await accessible(page, "order product 390");
+  await checkProducts(page, 2);
+  await at(page, "final", "price");
+  await expect(page.getByTestId("cfw-step-contact")).toHaveAttribute("data-state", "done");
+  await expect(page.getByTestId("cf-approve"), "no approval before the prices are reviewed").toHaveCount(0);
+  // The prices, read from the shop now (audited), never before.
   await page.getByTestId("cf-shop-load").click();
   await expect(page.getByTestId("cf-shop-view")).toBeVisible();
-  await expect(page.getByTestId("cf-shop-call-billing")).toHaveAttribute("href", "tel:0700000123");
   await expect(page.getByTestId("cf-shop-in-sync")).toBeVisible();
   await expect(page.getByTestId("cf-shop-total")).toContainText("719,00");
-  await expect(page.getByTestId("cf-shop-line-1")).toContainText("Manopera Rejansa Normal 6cm");
   await capture(page, "order-shop-390");
+  await page.getByTestId("cf-price-reviewed").click(); // ticking moves on to the approval by itself
+  await at(page, "final", "approve");
+  await expect(page.getByTestId("cfw-verification-state")).toHaveText("Toate verificările sunt îndeplinite.");
+  await page.getByTestId("cfw-verification-open").click();
+  await expect(page.getByTestId("cf-checklist")).toContainText("Comanda din magazin a fost citită în Staff");
+  await expect(page.getByTestId("cfw-final-total")).toContainText("719,00");
   await expect(page.getByTestId("cf-approve")).toBeEnabled();
   await capture(page, "order-ready-390");
+  await accessible(page, "order approve 390");
   await page.getByTestId("cf-approve").click();
   await expect(page.getByText(`Aprobați comanda #${number(F.orders.call)}?`)).toBeVisible();
   await page.getByTestId("cf-approve-confirm").dblclick();
   await expect(page.getByTestId("cf-message")).toContainText("Comanda a fost aprobată.");
   await expect(page.getByTestId("cf-order-status")).toHaveText("Aprobată pentru producție");
+  // The approval is step 3; the money (step 4) was a separate fact; the handoff is the operator's last step.
+  await expect(page.getByTestId("cfw-step-final")).toHaveAttribute("data-state", "done");
+  await expect(page.getByTestId("cfw-step-final-summary")).toContainText("aceasta nu confirmă plata");
+  await expect(page.getByTestId("cfw-progress-of")).toHaveText("Pasul 5 din 5");
+  await openMore(page);
   await expect(page.getByTestId("cf-lines-progress")).toHaveText("2 din 2 confirmate");
   const supervisor = await api(F.people.supervisor.username, F.password);
   const approved = await detailOf(supervisor, F.orders.call);
@@ -175,35 +236,49 @@ test("a shop change after the review needs a fresh verification; a confirmed COD
   const page = op.page;
   await page.goto(orderPath(F.orders.cod));
   await expect(page.getByTestId("cf-order")).toBeVisible();
+  await expect(page.getByTestId("cfw-step-payment"), "a COD order's money is not proven").toHaveAttribute("data-state", "locked");
+  await page.getByTestId("cf-shop-load").click();
   await recordCall(page, /^Confirmat/);
-  await page.getByTestId("cf-line-confirm-1").check();
-  await page.getByTestId("cf-line-confirm-2").check();
-  await page.getByTestId("cf-price-reviewed").check();
+  await checkProducts(page, 2);
   await page.getByTestId("cf-shop-load").click();
   await expect(page.getByTestId("cf-shop-advance")).toContainText("Avans 30%");
+  await page.getByTestId("cf-price-reviewed").click(); // ticking moves on to the approval by itself
+  await at(page, "final", "approve");
   // The shop changes an option while the operator still looks at the old order.
   php([`--change=${number(F.orders.cod)}`]);
   await page.getByTestId("cf-approve").click();
   await page.getByTestId("cf-approve-confirm").click();
   await expect(page.getByTestId("cf-message")).toContainText("Comanda s-a schimbat în magazin");
   await expect(page.getByTestId("cf-changed")).toBeVisible();
-  await expect(page.getByTestId("cf-line-confirm-1")).not.toBeChecked();
-  await expect(page.getByTestId("cf-price-reviewed")).not.toBeChecked();
-  await expect(page.getByTestId("cf-approve")).toBeDisabled();
-  await expect(page.getByTestId("cf-history")).toContainText("comanda s-a schimbat de atunci");
+  // The review reopens where it is invalid now: the call of the old order no longer counts, the ticks are gone.
+  await at(page, "contact", "callAgain");
+  await expect(page.getByTestId("cfw-step-final")).toHaveAttribute("data-state", "locked");
+  await expect(page.getByTestId("cf-approve")).toHaveCount(0);
   await expect(page.getByTestId("cf-shop-view"), "the old shop view is dropped with the old review").toHaveCount(0);
+  await openMore(page);
+  await expect(page.getByTestId("cf-history")).toContainText("comanda s-a schimbat de atunci");
+  await expect(page.getByTestId("cf-line-1")).toContainText("Neconfirmat");
   await capture(page, "order-changed-in-shop-390");
+  await page.getByTestId("cfw-more-open").click();
   await recordCall(page, /^Confirmat/);
-  await page.getByTestId("cf-line-confirm-1").check();
-  await page.getByTestId("cf-line-confirm-2").check();
-  await page.getByTestId("cf-price-reviewed").check();
+  await at(page, "contact", "products");
+  await expect(page.getByTestId("cf-lines-progress")).toHaveText("0 din 2 confirmate");
+  await checkProducts(page, 2);
   await page.getByTestId("cf-shop-load").click();
   await expect(page.getByTestId("cf-shop-in-sync")).toBeVisible();
+  await page.getByTestId("cf-price-reviewed").click(); // ticking moves on to the approval by itself
   await page.getByTestId("cf-approve").click();
   await expect(page.getByRole("group", { name: /Aprobați comanda/ })).toContainText("producția rămâne blocată până când magazinul confirmă plata");
   await page.getByTestId("cf-approve-confirm").click();
   await expect(page.getByTestId("cf-order-status")).toHaveText("În așteptarea plății");
+  // Approved is not paid: step 4 is open and waits; the handoff stays closed.
+  await expect(page.getByTestId("cfw-step-final")).toHaveAttribute("data-state", "done");
+  await expect(page.getByTestId("cfw-step-payment")).not.toHaveAttribute("data-state", "done");
+  await expect(page.getByTestId("cfw-step-handoff")).toHaveAttribute("data-state", "locked");
   await expect(page.getByTestId("cf-financial")).toHaveText("Așteaptă plata");
+  await capture(page, "order-payment-390");
+  await accessible(page, "order payment 390");
+  await openMore(page);
   await expect(page.getByRole("region", { name: "Producție", exact: true })).toContainText("Plata sau avansul confirmate de magazin");
   await page.goto("/confirmare?tab=payment");
   await expect(page.locator("#cf-tab-panel").getByTestId(`cf-row-${number(F.orders.cod)}`)).toContainText("În așteptarea plății");
@@ -217,9 +292,9 @@ test("409: a supervisor reassigns an order a colleague still has open; the colle
   const colleague = await signIn(browser, F.people.colleague.username);
   const page = colleague.page;
   await page.goto(orderPath(F.orders.colleague));
-  await expect(page.getByTestId("cf-record-call")).toBeVisible();
   await page.getByTestId("cf-shop-load").click();
   await expect(page.getByTestId("cf-shop-call-billing")).toBeVisible();
+  await expect(page.getByTestId("cf-record-call")).toBeVisible();
   const supervisor = await api(F.people.supervisor.username, F.password);
   const before = await detailOf(supervisor, F.orders.colleague);
   expect((await send(supervisor, "post", `/confirmare/orders/${encodeURIComponent(F.orders.colleague)}/reassign`, { expectedVersion: before.version, employeeId: F.people.operator.id })).status()).toBe(200);
@@ -229,7 +304,10 @@ test("409: a supervisor reassigns an order a colleague still has open; the colle
   await expect(page.getByTestId("cf-message")).toContainText("Comanda a fost modificată între timp");
   await expect(page.getByText(`Atribuită: ${F.people.operator.name}`).first()).toBeVisible();
   await expect(page.getByTestId("cf-record-call")).toHaveCount(0);
+  await at(page, "take", "colleague", "waiting");
+  await expect(page.getByTestId("cfw-owner")).toContainText(F.people.operator.name);
   // The shop data goes with the access: the former assignee sees no telephone number any more.
+  await openMore(page);
   await expect(page.getByTestId("cf-shop-not-yours")).toBeVisible();
   await expect(page.locator("body")).not.toContainText("0700000123");
   const after = await detailOf(supervisor, F.orders.colleague);
@@ -267,14 +345,16 @@ test("supervisor: team, leave with redistribution, alerts and attention; no bypa
 
   // No price evidence: even a supervisor cannot approve.
   await page.goto(orderPath(F.orders.noPrice));
-  await expect(page.getByTestId("cf-price-missing")).toBeVisible();
-  await expect(page.getByTestId("cf-approve")).toBeDisabled();
-  await expect(page.getByTestId("cf-checklist")).toContainText("Magazinul a trimis amprenta prețurilor");
+  await expect(page.getByTestId("cf-price-missing"), "said from the start, not only at the final review").toBeVisible();
+  await expect(page.getByTestId("cf-approve")).toHaveCount(0);
+  await expect(page.getByTestId("cfw-supervisor")).toBeVisible();
   // Unknown submission instant: visible to the supervisor, never approvable, never recorded as a call.
   await page.goto(orderPath(F.orders.undetermined));
-  await expect(page.getByText("Momentul plasării comenzii nu este cunoscut").first()).toBeVisible();
+  await at(page, "take", "undetermined", "attention");
+  await expect(page.getByTestId("cfw-task-title")).toHaveText("Comandă în afara fluxului Confirmare");
+  await expect(page.getByTestId("cfw-step-contact")).toHaveAttribute("data-state", "locked");
   await expect(page.getByTestId("cf-record-call")).toHaveCount(0);
-  await expect(page.getByTestId("cf-approve")).toBeDisabled();
+  await expect(page.getByTestId("cf-approve")).toHaveCount(0);
   expect(sup.errors).toEqual([]);
   await sup.context.close();
 });
@@ -402,9 +482,13 @@ test("shop edit (Phase 4B): the shop prices the change, one explicit save, the a
   const sup = await signIn(browser, F.people.supervisor.username);
   const page = sup.page;
   await page.goto(orderPath(F.orders.unassigned));
-  await expect(page.getByTestId("cf-edit-start"), "the shop order is read first").toBeDisabled();
+  await expect(page.getByTestId("cf-edit-start"), "no editor until the customer asks for a change").toHaveCount(0);
   await page.getByTestId("cf-shop-load").click();
-  await expect(page.getByTestId("cf-shop-total")).toContainText("719,00");
+  await at(page, "contact", "call");
+  // During the call the customer asks for another length: the change opens in the same step.
+  await page.getByTestId("cfw-open-correction").click();
+  await expect(page.getByTestId("cfw-task")).toHaveAttribute("data-task", "correction");
+  await expect(page.getByTestId("cf-shop-total"), "the same shop read, now with its prices").toContainText("719,00");
   await page.getByTestId("cf-edit-start").click();
   const lineId = `${Number(number(F.orders.unassigned)) * 10 + 1}`;
   const length = page.getByTestId(`cf-edit-${lineId}-lungimea`);
@@ -425,7 +509,9 @@ test("shop edit (Phase 4B): the shop prices the change, one explicit save, the a
   await expect(page.getByTestId("cf-edit-result")).toContainText("Modificarea a fost salvată în magazin");
   await expect(page.getByTestId("cf-shop-view"), "the old shop prices are dropped").toHaveCount(0);
   await expect(page.getByTestId("cf-edit-waiting")).toBeVisible();
-  await expect(page.getByTestId("cf-checklist")).toContainText("Modificarea din magazin este confirmată");
+  // Saved in the shop is not settled: the step waits for the shop's order update before anything else.
+  await at(page, "contact", "shopUpdate", "waiting");
+  await expect(page.getByTestId("cfw-owner")).toContainText("Magazinul");
   await capture(page, "order-edit-applied-390");
   // Saved once (a double click is one edit), audited server-side; the approval waits for the shop's order update.
   const who = await api(F.people.supervisor.username, F.password);
@@ -557,7 +643,12 @@ test("handoff (Phase 6): a document employee without Confirmare scope generates 
   const sup = await signIn(browser, F.people.supervisor.username);
   await sup.page.goto(orderPath(F.orders.call));
   await expect(sup.page.getByTestId("cf-handoff-state")).toHaveText("Așteaptă tăierea");
+  // In production is not "handed over": the order was never routed to a shop employee, so step 5 stays open (honestly).
+  await at(sup.page, "handoff", "routing");
+  await expect(sup.page.getByTestId("cf-routing")).toBeVisible();
+  await expect(sup.page.getByTestId("cfw-step-payment")).toHaveAttribute("data-state", "done");
   await sup.page.goto(orderPath(F.orders.cod));
+  await openMore(sup.page);
   await expect(sup.page.getByTestId("cf-handoff-state")).toHaveText("Blocată");
   await expect(sup.page.getByTestId("cf-handoff-blockers")).toContainText("Plata sau avansul confirmate de magazin");
   expect(sup.errors).toEqual([]);
@@ -569,7 +660,7 @@ test("layouts from 320 to 1920 px without horizontal scrolling, WCAG 2.2 AA and 
   test.setTimeout(240_000);
   const sup = await signIn(browser, F.people.supervisor.username);
   const page = sup.page;
-  for (const width of [320, 360, 390, 768, 1024, 1440, 1920]) {
+  for (const width of [320, 360, 375, 390, 768, 1024, 1440, 1920]) {
     await page.setViewportSize({ width, height: width < 768 ? 844 : 1000 });
     for (const [name, url, ready] of [["home", "/", "workspace-confirmare"], ["queue", "/confirmare?tab=attention", "cf-queue"], ["order", orderPath(F.orders.cod), "cf-order"], ["team", "/confirmare/team", "cf-team"]] as const) {
       await page.goto(url);
