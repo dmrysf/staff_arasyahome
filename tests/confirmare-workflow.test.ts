@@ -43,7 +43,7 @@ const none = { confirmedLineIds: [], priceReviewed: false };
 const resolve = (d: ConfirmareDetail, over: Partial<WorkflowInput> = {}): ConfirmareWorkflow => resolveWorkflow({ detail: d, employeeId: ME, operates: true, supervises: false, draft: none, shop: "none", invoice: { kind: "unknown" }, ...over });
 const states = (w: ConfirmareWorkflow) => Object.fromEntries(w.steps.map((step) => [step.id, step.state]));
 const sub = (w: ConfirmareWorkflow, id: string) => w.steps.flatMap((step) => step.subtasks).find((entry) => entry.id === id)?.state;
-const invoiceRead = (over: Partial<Extract<InvoiceFact, { kind: "read" }>> = {}): InvoiceFact => ({ kind: "read", proforma: "none", advance: "waiting", verifying: false, canIssueProforma: true, routing: { allowed: false, assigned: false }, ...over });
+const invoiceRead = (over: Partial<Extract<InvoiceFact, { kind: "read" }>> = {}): InvoiceFact => ({ kind: "read", proforma: "none", advance: "waiting", verifying: false, canIssueProforma: true, routing: { allowed: false, assigned: false }, assigned: over.routing?.assigned ?? false, ...over });
 /** The confirmed, approved order (the call and the lines are server facts now). */
 const approved = (over: Partial<ConfirmareDetail> = {}) => detail({
   status: "approved", review: { ...detail().review, callRecorded: true }, contacts: [contact("confirmed")], lines: [1, 2, 3].map((n) => ({ ...line(n), confirmed: true })),
@@ -110,6 +110,41 @@ test("scenario 02: COD — approval is not payment; the proforma, the finance wa
   assert.equal(states(w).payment, "done");
   assert.equal(w.steps.find((step) => step.id === "payment")!.summary, "cfw.summary.payment.advance_collected");
   assert.equal(w.task, "routing");
+});
+
+test("step 5: 'Comanda a fost predată' only on a server record of the handover; released is not handed over", () => {
+  // Owner review 2026-10-29: approved, money proven, released for production, no SmartBill read or route right for this
+  // employee, no verified downstream assignment, the production handoff still `ready`.
+  const ready = (invoice: ConfirmareDetail["invoice"]) => approved({
+    ...paid, productionCleared: true, production: { cleared: true, missing: [] }, invoice,
+    handoff: { state: "ready", blockers: [], stageId: "cutting", document: null, actions: { generate: false, print: false } },
+  });
+  const noRead = { configured: true, read: false, issue: false, manage: false, proforma: false, route: false };
+  for (const [name, d, fact] of [
+    ["no SmartBill read or route right", ready(noRead), invoiceFact(ready(noRead), null)],
+    ["no SmartBill for the shop", ready({ ...noRead, configured: false }), invoiceFact(ready({ ...noRead, configured: false }), null)],
+    ["read without route, nobody routed", ready({ ...noRead, read: true }), invoiceRead({ proforma: "na", advance: null, routing: null })],
+  ] as const) {
+    const w = resolve(d, { invoice: fact, operates: true });
+    assert.equal(w.task, "awaitingHandoff", name);
+    assert.notEqual(w.task, "handedOver", `${name}: no false "handed over"`);
+    assert.equal(states(w).handoff, "waiting", `${name}: step 5 is not done`);
+    assert.equal(w.steps.find((step) => step.id === "handoff")!.summary, null);
+    assert.notEqual(sub(w, "production"), "done");
+    assert.equal(w.canAct, false);
+  }
+  assert.ok(!CATALOGS.ro["cfw.task.awaitingHandoff.title"].includes("predată"), "the title never claims a handover");
+  // A routing the server recorded proves the handover, whoever reads it (even without the route right).
+  const routed = resolve(ready({ ...noRead, read: true }), { invoice: invoiceRead({ proforma: "na", advance: null, routing: null, assigned: true }) });
+  assert.equal(routed.task, "handedOver");
+  assert.equal(states(routed).handoff, "done");
+  // The cutting scan is the other proof: in production, said as such (never "handed over").
+  const cutting = approved({ ...paid, productionCleared: true, production: { cleared: true, missing: [] }, invoice: noRead, handoff: { state: "in_production", blockers: [], stageId: "cutting", document: null, actions: { generate: false, print: false } } });
+  const w = resolve(cutting, { invoice: invoiceFact(cutting, null) });
+  assert.equal(w.task, "inProduction");
+  assert.equal(w.steps.find((step) => step.id === "handoff")!.summary, "cfw.summary.inProduction");
+  // An unanswered SmartBill read never completes the step either.
+  assert.equal(resolve(ready({ ...noRead, read: true }), { invoice: { kind: "unavailable" } }).task, "awaitingHandoff");
 });
 
 test("scenario 03: three products are reviewed one by one; approval needs every current line", () => {
@@ -293,7 +328,7 @@ test("the shop and SmartBill reads map strictly; nothing unread counts", () => {
   assert.deepEqual(invoiceFact(detail({ invoice: { ...d.invoice, read: false } }), null), { kind: "none" });
   assert.deepEqual(invoiceFact(d, null), { kind: "unknown" });
   const view = { available: true, summary: { proforma: { advance: { cod: true, state: "waiting", verifying: true }, state: "issued" } }, proforma: { allowedActions: [] }, routing: null, assignment: null } as unknown as InvoiceRead;
-  assert.deepEqual(invoiceFact(d, view), { kind: "read", proforma: "issued", advance: "waiting", verifying: true, canIssueProforma: false, routing: null });
+  assert.deepEqual(invoiceFact(d, view), { kind: "read", proforma: "issued", advance: "waiting", verifying: true, canIssueProforma: false, assigned: false, routing: null });
   assert.deepEqual(invoiceFact(d, { available: false, reason: "source_unreachable" }), { kind: "unavailable" }, "an unanswered read is not a fact");
   assert.deepEqual(invoiceFact(d, { available: false, reason: "not_configured" }), { kind: "none" });
   const cleared = approved({ ...paid, production: { cleared: true, missing: [] }, productionCleared: true });
@@ -374,7 +409,7 @@ test("every guided text exists in the four languages", () => {
   const keys = Object.keys(CATALOGS.ro).filter((key) => key.startsWith("cfw.")) as MessageKey[];
   assert.ok(keys.length > 120, `guided keys: ${keys.length}`);
   for (const locale of SUPPORTED_LOCALES) for (const key of keys) assert.ok(String(CATALOGS[locale][key]).trim().length > 0, `${locale}: ${key}`);
-  const tasks = ["claim", "colleague", "unassigned", "undetermined", "closedInShop", "rejected", "observe", "customer", "call", "callAgain", "noContact", "correction", "correctionWaiting", "shopUpdate", "editUnknown", "products", "price", "pricesDiffer", "shopUnavailable", "priceEvidence", "approve", "proforma", "proformaUnknown", "financeWaiting", "partial", "onlineWaiting", "financeAttention", "reverify", "routing", "routingWaiting", "handedOver"];
+  const tasks = ["claim", "colleague", "unassigned", "undetermined", "closedInShop", "rejected", "observe", "customer", "call", "callAgain", "noContact", "correction", "correctionWaiting", "shopUpdate", "editUnknown", "products", "price", "pricesDiffer", "shopUnavailable", "priceEvidence", "approve", "proforma", "proformaUnknown", "financeWaiting", "partial", "onlineWaiting", "financeAttention", "reverify", "routing", "routingWaiting", "handedOver", "awaitingHandoff", "inProduction"];
   for (const task of tasks) for (const part of ["title", "lead"]) assert.ok(keys.includes(`cfw.task.${task}.${part}` as MessageKey), `${task}.${part}`);
   assert.equal(CATALOGS.ro["cfw.step.take"], "Preluarea comenzii");
   assert.equal(CATALOGS.ro["cfw.step.contact"], "Verificarea cu clientul");
