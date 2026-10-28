@@ -64,7 +64,9 @@ server. A step is `done` only when its fact exists:
   - Without that record the step shows "Eliberată pentru producție, predarea nu este confirmată" (`awaitingHandoff`,
     waiting). This covers no SmartBill read or route right for the employee, no SmartBill for the shop, or an
     unanswered read.
-  - When the cutting scan has happened, the step shows "Comanda a intrat în producție" (`inProduction`).
+  - Order of proof: (1) the cutting scan (`handoff.state = in_production`) gives `inProduction` ("Comanda a intrat în
+    producție"), even when a routing is also recorded; (2) the recorded routing gives `handedOver`; (3) a routing the
+    employee can do now gives `routing`; (4) otherwise the step waits.
   - "Comanda a fost predată" is never shown without the routing record (Staff 2.40.1, owner review 2026-10-29).
 
 Step 4 is read on its own. A verified online payment shows as done while step 2 is still open. The approval never

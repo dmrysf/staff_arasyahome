@@ -143,6 +143,23 @@ test("step 5: 'Comanda a fost predată' only on a server record of the handover;
   const w = resolve(cutting, { invoice: invoiceFact(cutting, null) });
   assert.equal(w.task, "inProduction");
   assert.equal(w.steps.find((step) => step.id === "handoff")!.summary, "cfw.summary.inProduction");
+  // Owner review of PR #102: in production wins over a recorded routing (the strongest proof comes first).
+  const both = approved({ ...paid, productionCleared: true, production: { cleared: true, missing: [] }, invoice: { ...noRead, read: true, route: true }, handoff: { state: "in_production", blockers: [], stageId: "cutting", document: null, actions: { generate: false, print: false } } });
+  for (const fact of [invoiceRead({ proforma: "na", advance: null, routing: { allowed: false, assigned: true } }), invoiceRead({ proforma: "na", advance: null, routing: null, assigned: true })]) {
+    const inProduction = resolve(both, { invoice: fact });
+    assert.equal(inProduction.task, "inProduction", "in production, even when a routing is also recorded");
+    assert.equal(states(inProduction).handoff, "done");
+    assert.equal(inProduction.steps.find((step) => step.id === "handoff")!.summary, "cfw.summary.inProduction");
+    assert.equal(sub(inProduction, "routing"), "done", "the recorded routing still shows as done");
+    assert.equal(sub(inProduction, "production"), "done");
+  }
+  // A routable order already in production is never sent back to the routing task; unknown reads change nothing.
+  assert.equal(resolve(both, { invoice: invoiceRead({ proforma: "na", advance: null, routing: { allowed: true, assigned: false } }) }).task, "inProduction");
+  assert.equal(resolve(both, { invoice: { kind: "unknown" } }).task, "inProduction");
+  // Before production a recorded routing is the handover; its production subtask still waits.
+  const routedReady = resolve(ready({ ...noRead, read: true, route: true }), { invoice: invoiceRead({ proforma: "na", advance: null, routing: { allowed: false, assigned: true } }) });
+  assert.equal(routedReady.task, "handedOver");
+  assert.equal(sub(routedReady, "production"), "waiting");
   // An unanswered SmartBill read never completes the step either.
   assert.equal(resolve(ready({ ...noRead, read: true }), { invoice: { kind: "unavailable" } }).task, "awaitingHandoff");
 });

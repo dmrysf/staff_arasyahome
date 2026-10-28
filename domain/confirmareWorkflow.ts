@@ -237,23 +237,28 @@ export function resolveWorkflow(input: WorkflowInput): ConfirmareWorkflow {
   // ---- step 5: the handoff (approved and the money proven) --------------------------------------------------
   const handoff = (task: WorkflowTask, owner: WorkflowOwner, canAct: boolean, state: WorkflowStepState, clearance: WorkflowSubtaskState, routing: WorkflowSubtaskState, production: WorkflowSubtaskState) =>
     build("handoff", task, owner, canAct, approvedSteps(paymentStep("done"), { id: "handoff", state, subtasks: [{ id: "clearance", state: clearance }, { id: "routing", state: routing }, { id: "production", state: production }], summary: state !== "done" ? null : task === "inProduction" ? "cfw.summary.inProduction" : "cfw.summary.handoff" }));
-  const productionState: WorkflowSubtaskState = detail.handoff?.state === "in_production" ? "done" : "waiting";
+  const productionState: WorkflowSubtaskState = "waiting";
   if (!detail.productionCleared) {
     if (detail.production.missing.some((condition) => (REVERIFY as readonly string[]).includes(condition))) return handoff("reverify", "supervisor", supervises, "attention", "blocked", "todo", "todo");
     return handoff("routingWaiting", "nobody", false, "waiting", "waiting", "todo", "todo");
   }
-  // "Handed over" only on a server record of the routing to a shop employee; nothing else proves a handover.
+  // 1. The cutting scan is the strongest proof: in production, whether or not a routing is also recorded.
+  if (detail.handoff?.state === "in_production") {
+    const routed: WorkflowSubtaskState = invoice.kind === "read" && invoice.assigned ? "done" : invoice.kind === "read" || invoice.kind === "unavailable" ? "todo" : "skipped";
+    return handoff("inProduction", "nobody", false, "done", "done", routed, "done");
+  }
+  // 2. "Handed over" only on a server record of the routing to a shop employee; nothing else proves a handover.
   if (invoice.kind === "read" && invoice.assigned) return handoff("handedOver", "shopEmployee", false, "done", "done", "done", productionState);
+  // 3. The routing the employee can do now, or why it waits.
   if (invoice.kind === "read" && invoice.routing !== null) {
     if (invoice.routing.allowed) return handoff("routing", "you", true, "active", "done", "current", "todo");
     return handoff("routingWaiting", "nobody", false, "waiting", "done", "waiting", "todo");
   }
   if (invoice.kind === "unknown" && detail.invoice.route) return handoff("routing", "you", true, "active", "done", "current", "todo");
   if (invoice.kind === "unavailable" && detail.invoice.route) return handoff("routingWaiting", "nobody", false, "waiting", "done", "blocked", "todo");
-  // No routing this screen can see (no SmartBill read for this employee, no SmartBill for the shop, or no route right):
-  // released for production, but no handover is proven. The cutting scan (in production) is the only other proof.
+  // 4. No routing this screen can see (no SmartBill read for this employee, no SmartBill for the shop, or no route
+  // right): released for production, but no handover is proven.
   const routingSeen: WorkflowSubtaskState = invoice.kind === "read" || invoice.kind === "unavailable" ? "waiting" : "skipped";
-  if (detail.handoff?.state === "in_production") return handoff("inProduction", "nobody", false, "done", "done", routingSeen === "waiting" ? "todo" : "skipped", "done");
   return handoff("awaitingHandoff", "shopEmployee", false, "waiting", "done", routingSeen, "waiting");
 }
 
