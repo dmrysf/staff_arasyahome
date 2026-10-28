@@ -102,7 +102,7 @@ test("telephone links are safe and numbers are listed once; amounts are shown in
 
 test("the panel: nothing customer-related before an explicit read; honest states without access", () => {
   const service = { sourceOrder: () => Promise.resolve(mapShopRead(readOk)) } as never;
-  const render = (d: ConfirmareDetail) => renderToStaticMarkup(createElement(ConfirmareShopPanel, { detail: d, service, onChange: () => undefined, onRefresh: () => undefined }));
+  const render = (d: ConfirmareDetail) => renderToStaticMarkup(createElement(ConfirmareShopPanel, { detail: d, service, shop: { read: null, busy: false, error: null, expired: false, load: () => undefined, hide: () => undefined }, onRefresh: () => undefined }));
   const closed = render(detail());
   assert.ok(closed.includes("cf-shop-load") && !closed.includes("0711") && !closed.includes("403"), "no customer data until the operator asks");
   assert.ok(render(detail({ sourceAccess: { configured: false, read: false, edit: false, changePending: false, openEdits: [] } })).includes("cf-shop-off"), "a shop without access says so");

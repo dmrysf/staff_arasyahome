@@ -31,7 +31,13 @@ type Pending = { action: InvoiceAction; key: string };
  * API 2.44.0: the operator's advance proforma and the routing to a shop employee, and the shop employee's QR scan before
  * the final invoice, in the same panel and the same state (ConfirmareProformaSections).
  */
-export function ConfirmareInvoicePanel({ globalOrderId, service, capabilities = null }: { globalOrderId: string; service: ConfirmareInvoiceApi; capabilities?: InvoiceCapabilities | null }) {
+export function ConfirmareInvoicePanel({ globalOrderId, service, capabilities = null, focus = "all", onView }: {
+  globalOrderId: string; service: ConfirmareInvoiceApi; capabilities?: InvoiceCapabilities | null;
+  /** Staff 2.40.0: the guided order shows only the operator's part of the task (the proforma, or the routing). */
+  focus?: "all" | "proforma" | "routing";
+  /** Staff 2.40.0: what this panel read (null while reading), for the guided order (a read only; never a reason to act). */
+  onView?: (read: InvoiceRead | null) => void;
+}) {
   const { t } = useI18n();
   const [read, setRead] = useState<InvoiceRead | null>(null);
   const [hidden, setHidden] = useState(false);
@@ -74,6 +80,8 @@ export function ConfirmareInvoicePanel({ globalOrderId, service, capabilities = 
     }).finally(() => { if (!controller.signal.aborted) setBusy(false); });
     return () => controller.abort();
   }, [visible, service, globalOrderId, known, failure, tick]);
+
+  useEffect(() => { onView?.(busy ? null : read); }, [busy, read, onView]);
 
   // One state on every screen: another panel of this order (this tab or another) acted.
   useEffect(() => onInvoiceChange((id) => { if (id === globalOrderId) reload(); }), [globalOrderId, reload]);
@@ -141,7 +149,7 @@ export function ConfirmareInvoicePanel({ globalOrderId, service, capabilities = 
           {document?.exists ? `${document.series ?? ""} ${document.number ?? ""}`.trim() || operationStateLabel("issued") : operationStateLabel(view.summary.operation.state)}
         </StatusPill>}
       </div>
-      <p className="dashboard-lead">{t("inv.lead")}</p>
+      {focus === "all" && <p className="dashboard-lead">{t("inv.lead")}</p>}
       <div className="cf-shop-actions">
         <button type="button" className="button button-secondary" disabled={busy} onClick={reload} data-testid="cf-invoice-refresh"><AppIcon name="refresh" size={18} /> {busy ? t("inv.loading") : t("inv.refresh")}</button>
       </div>
@@ -152,11 +160,11 @@ export function ConfirmareInvoicePanel({ globalOrderId, service, capabilities = 
         {result.key && <> <button type="button" className="button button-secondary" disabled={busy} onClick={() => { void reconcile(result.key!); }} data-testid="cf-invoice-reconcile-result">{t("inv.action.check")}</button></>}
       </Notice>}
       {read && !read.available && <Notice tone={read.reason === "not_configured" ? "info" : "warning"} role="status" testId="cf-invoice-unavailable">{read.reason === "not_configured" ? t("inv.notConfigured") : t("inv.unavailable", { reason: shopUnavailableLabel(read.reason) })}</Notice>}
-      {view && <ProformaSection globalOrderId={globalOrderId} view={view} service={service} busy={busy} run={run} />}
-      {view && <RoutingSection globalOrderId={globalOrderId} view={view} service={service} busy={busy} run={run} />}
-      {view && (view.role === "documents" || view.role === "manager") && <InvoiceQrSection globalOrderId={globalOrderId} view={view} service={service} busy={busy} run={run} />}
-      {view && <InvoiceBody globalOrderId={globalOrderId} view={view} role={view.role} busy={busy} pending={pending} onPrepare={(action) => setPending({ action, key: createIdempotencyKey() })} onCancel={() => setPending(null)} onSend={(action, input, key) => { void send(action, input, key); }} onReconcile={(key) => { void reconcile(key); }} />}
-      {view && service.invoicePayment && capabilities?.payment !== false && (view.role === "documents" || view.role === "manager" || view.role === "finance")
+      {view && focus !== "routing" && <ProformaSection globalOrderId={globalOrderId} view={view} service={service} busy={busy} run={run} />}
+      {view && focus !== "proforma" && <RoutingSection globalOrderId={globalOrderId} view={view} service={service} busy={busy} run={run} />}
+      {view && focus === "all" && (view.role === "documents" || view.role === "manager") && <InvoiceQrSection globalOrderId={globalOrderId} view={view} service={service} busy={busy} run={run} />}
+      {view && focus === "all" && <InvoiceBody globalOrderId={globalOrderId} view={view} role={view.role} busy={busy} pending={pending} onPrepare={(action) => setPending({ action, key: createIdempotencyKey() })} onCancel={() => setPending(null)} onSend={(action, input, key) => { void send(action, input, key); }} onReconcile={(key) => { void reconcile(key); }} />}
+      {view && focus === "all" && service.invoicePayment && capabilities?.payment !== false && (view.role === "documents" || view.role === "manager" || view.role === "finance")
         && view.summary.document.exists && view.summary.document.type !== "proforma"
         && <InvoicePaymentSection key={`${globalOrderId}|${view.summary.revision}|${view.summary.document.series ?? ""}|${view.summary.document.number ?? ""}`} globalOrderId={globalOrderId} load={(signal) => service.invoicePayment!(globalOrderId, signal)} />}
     </section>

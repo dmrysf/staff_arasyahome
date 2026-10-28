@@ -5,6 +5,7 @@ import { confirmareInvoiceTR } from "./confirmareInvoice";
 import { confirmareHandoffTR } from "./confirmareHandoff";
 import { confirmareOpsTR } from "./confirmareOps";
 import { confirmareEditTR } from "./confirmareEdit";
+import { confirmareWorkflowTR } from "./confirmareWorkflow";
 import { physicalTR } from "./physical";
 import type { Catalog } from "../types";
 import { trErrors } from "./tr.errors";
@@ -23,6 +24,7 @@ export const tr: Catalog = {
   ...confirmareHandoffTR,
   ...confirmareOpsTR,
   ...confirmareEditTR,
+  ...confirmareWorkflowTR,
 
   // ---- common
   "common.back": "Geri",

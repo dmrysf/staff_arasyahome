@@ -5,6 +5,7 @@ import { confirmareInvoiceRO } from "./confirmareInvoice";
 import { confirmareHandoffRO } from "./confirmareHandoff";
 import { confirmareOpsRO } from "./confirmareOps";
 import { confirmareEditRO } from "./confirmareEdit";
+import { confirmareWorkflowRO } from "./confirmareWorkflow";
 import { physicalMessages } from "./physical";
 import { roErrors } from "./ro.errors";
 
@@ -24,6 +25,7 @@ export const ro = {
   ...confirmareHandoffRO,
   ...confirmareOpsRO,
   ...confirmareEditRO,
+  ...confirmareWorkflowRO,
 
   // ---- common ------------------------------------------------------------------------------------------------
   "common.back": "Înapoi",

@@ -5,6 +5,7 @@ import { confirmareInvoiceEN } from "./confirmareInvoice";
 import { confirmareHandoffEN } from "./confirmareHandoff";
 import { confirmareOpsEN } from "./confirmareOps";
 import { confirmareEditEN } from "./confirmareEdit";
+import { confirmareWorkflowEN } from "./confirmareWorkflow";
 import { physicalEN } from "./physical";
 import type { Catalog } from "../types";
 import { enErrors } from "./en.errors";
@@ -23,6 +24,7 @@ export const en: Catalog = {
   ...confirmareHandoffEN,
   ...confirmareOpsEN,
   ...confirmareEditEN,
+  ...confirmareWorkflowEN,
 
   // ---- common
   "common.back": "Back",

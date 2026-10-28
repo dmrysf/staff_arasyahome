@@ -152,7 +152,10 @@ test("the Confirmare operator issues and sends the advance proforma; never the f
   await expect(proforma).toBeVisible();
   await expect(page.getByTestId("cf-proforma-outstanding")).toContainText(/215,70/);
   await expect(page.getByTestId("cf-invoice-issue")).toHaveCount(0);
-  await expect(page.getByTestId("cf-routing-blockers")).toContainText("Avansul nu este încă plătit și verificat.");
+  // Staff 2.40.0 guided order: step 4 (the advance) is open; the routing of step 5 is closed until the money is proven.
+  await expect(page.getByTestId("cfw-step-payment")).toHaveAttribute("data-state", "active");
+  await expect(page.getByTestId("cfw-step-handoff")).toHaveAttribute("data-state", "locked");
+  await expect(page.getByTestId("cf-routing-open"), "no routing before the advance is verified").toHaveCount(0);
   await page.getByTestId("cf-proforma-issue").click();
   await expect(page.getByTestId("cf-proforma-confirm-text")).toContainText("#91021");
   await expect(page.getByTestId("cf-proforma-send")).toBeDisabled();
@@ -253,13 +256,18 @@ test("the paid advance appears in the advance groups and the operator routes it 
   await expect(page.getByTestId("cf-finance-task-advance_verified")).toContainText("Avans plătit");
   await expect(page.getByTestId("cf-finance-row-91022")).toBeVisible();
   await page.getByTestId("cf-finance-row-91022").click();
-  await expect(page.getByTestId("cf-proforma-paid")).toContainText("Avans plătit");
+  // Staff 2.40.0 guided order: the verified advance closes step 4; step 5 opens with the routing.
+  await expect(page.getByTestId("cfw-step-payment")).toHaveAttribute("data-state", "done");
+  await expect(page.getByTestId("cfw-step-payment-summary")).toContainText("Avans încasat și verificat.");
+  await expect(page.getByTestId("cfw-task")).toHaveAttribute("data-task", "routing");
   await page.getByTestId("cf-routing-open").click();
   await page.getByTestId("cf-routing-employee").selectOption({ label: F.people.ro.name });
   await accessible(page, "operator routing");
   await page.getByTestId("cf-routing-send").click();
   await expect(page.getByTestId("cf-invoice-result")).toContainText("Comanda a fost direcționată către magazin.");
   await expect(page.getByTestId("cf-routing-state")).toContainText(F.people.ro.name);
+  await expect(page.getByTestId("cfw-task"), "the operator's work ends with the routing").toHaveAttribute("data-task", "handedOver");
+  await expect(page.getByTestId("cfw-task-title")).toHaveText("Comanda a fost predată");
   await page.goto("/confirmare/finance");
   await page.getByTestId("cf-finance-task-advance_routed").click();
   await expect(page.getByTestId("cf-finance-task-advance_routed")).toContainText("Direcționate către magazin");
