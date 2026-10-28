@@ -100,6 +100,11 @@ export const confirmareWorkflowRO = {
   "cfw.task.handedOver.title": "Comanda a fost predată",
   "cfw.task.handedOver.lead": "Partea dumneavoastră este gata. Fișa de producție și tăierea sunt treaba colegilor; comanda nu este încă fabricată, expediată sau livrată.",
 
+  "cfw.task.awaitingHandoff.title": "Eliberată pentru producție, predarea nu este confirmată",
+  "cfw.task.awaitingHandoff.lead": "Confirmarea și plata sunt gata. Arasya nu are încă o predare a comenzii către un coleg; fișa de producție și tăierea urmează. Comanda nu este încă fabricată sau livrată.",
+  "cfw.task.inProduction.title": "Comanda a intrat în producție",
+  "cfw.task.inProduction.lead": "Fișa a fost scanată la tăiere. Comanda nu este încă fabricată, expediată sau livrată.",
+
   "cfw.owner.label": "Cine acționează",
   "cfw.owner.you": "Dumneavoastră",
   "cfw.owner.colleague": "Un coleg",
@@ -122,6 +127,7 @@ export const confirmareWorkflowRO = {
   "cfw.summary.payment.zero_total": "Total final 0: nu este nimic de plătit.",
   "cfw.summary.payment.open": "Condiția financiară este îndeplinită.",
   "cfw.summary.handoff": "Comanda a fost predată.",
+  "cfw.summary.inProduction": "Comanda a intrat în producție (scanată la tăiere).",
   "cfw.summary.show": "Vezi rezumatul",
 
   "cfw.bg.title": "În paralel",
@@ -259,6 +265,11 @@ export const confirmareWorkflowEN = {
   "cfw.task.handedOver.title": "The order was handed over",
   "cfw.task.handedOver.lead": "Your part is done. The production ticket and cutting are your colleagues' work; the order is not yet made, shipped or delivered.",
 
+  "cfw.task.awaitingHandoff.title": "Released for production, handover not confirmed",
+  "cfw.task.awaitingHandoff.lead": "The confirmation and the payment are done. Arasya has no handover of the order to a colleague yet; the production ticket and cutting come next. The order is not yet made or delivered.",
+  "cfw.task.inProduction.title": "The order entered production",
+  "cfw.task.inProduction.lead": "The ticket was scanned at cutting. The order is not yet made, shipped or delivered.",
+
   "cfw.owner.label": "Who acts",
   "cfw.owner.you": "You",
   "cfw.owner.colleague": "A colleague",
@@ -281,6 +292,7 @@ export const confirmareWorkflowEN = {
   "cfw.summary.payment.zero_total": "Final total 0: nothing to pay.",
   "cfw.summary.payment.open": "The financial condition is met.",
   "cfw.summary.handoff": "The order was handed over.",
+  "cfw.summary.inProduction": "The order entered production (scanned at cutting).",
   "cfw.summary.show": "Show the summary",
 
   "cfw.bg.title": "Alongside",
@@ -418,6 +430,11 @@ export const confirmareWorkflowTR = {
   "cfw.task.handedOver.title": "Sipariş teslim edildi",
   "cfw.task.handedOver.lead": "Sizin kısmınız bitti. Üretim fişi ve kesim arkadaşlarınızın işi; sipariş henüz üretilmedi, gönderilmedi veya teslim edilmedi.",
 
+  "cfw.task.awaitingHandoff.title": "Üretime serbest, teslim doğrulanmadı",
+  "cfw.task.awaitingHandoff.lead": "Onay ve ödeme tamam. Arasya'da siparişin bir arkadaşa teslim kaydı henüz yok; sırada üretim fişi ve kesim var. Sipariş henüz üretilmedi veya teslim edilmedi.",
+  "cfw.task.inProduction.title": "Sipariş üretime girdi",
+  "cfw.task.inProduction.lead": "Fiş kesimde tarandı. Sipariş henüz üretilmedi, gönderilmedi veya teslim edilmedi.",
+
   "cfw.owner.label": "Kim işlem yapacak",
   "cfw.owner.you": "Siz",
   "cfw.owner.colleague": "Bir arkadaş",
@@ -440,6 +457,7 @@ export const confirmareWorkflowTR = {
   "cfw.summary.payment.zero_total": "Nihai toplam 0: ödenecek bir şey yok.",
   "cfw.summary.payment.open": "Finansal koşul sağlandı.",
   "cfw.summary.handoff": "Sipariş teslim edildi.",
+  "cfw.summary.inProduction": "Sipariş üretime girdi (kesimde tarandı).",
   "cfw.summary.show": "Özeti göster",
 
   "cfw.bg.title": "Paralelde",
@@ -577,6 +595,11 @@ export const confirmareWorkflowSI = {
   "cfw.task.handedOver.title": "ඇණවුම භාර දුන්නා",
   "cfw.task.handedOver.lead": "ඔබේ කොටස අවසන්. නිෂ්පාදන පත්‍රය සහ කැපීම සගයන්ගේ කාර්යයයි; ඇණවුම තවම නිෂ්පාදනය, යැවීම හෝ බෙදාහැරීම කර නැත.",
 
+  "cfw.task.awaitingHandoff.title": "නිෂ්පාදනයට නිදහස් කළා, භාර දීම තහවුරු නැත",
+  "cfw.task.awaitingHandoff.lead": "තහවුරු කිරීම සහ ගෙවීම අවසන්. ඇණවුම සගයෙකුට භාර දුන් සටහනක් Arasya හි තවම නැත; ඊළඟට නිෂ්පාදන පත්‍රය සහ කැපීම. ඇණවුම තවම නිෂ්පාදනය හෝ බෙදාහැරීම කර නැත.",
+  "cfw.task.inProduction.title": "ඇණවුම නිෂ්පාදනයට ඇතුළු විය",
+  "cfw.task.inProduction.lead": "පත්‍රය කැපීමේදී ස්කෑන් කළා. ඇණවුම තවම නිෂ්පාදනය, යැවීම හෝ බෙදාහැරීම කර නැත.",
+
   "cfw.owner.label": "ක්‍රියා කරන්නේ කවුද",
   "cfw.owner.you": "ඔබ",
   "cfw.owner.colleague": "සගයෙක්",
@@ -599,6 +622,7 @@ export const confirmareWorkflowSI = {
   "cfw.summary.payment.zero_total": "අවසාන මුළු මුදල 0: ගෙවීමට කිසිවක් නැත.",
   "cfw.summary.payment.open": "මූල්‍ය කොන්දේසිය සපුරා ඇත.",
   "cfw.summary.handoff": "ඇණවුම භාර දුන්නා.",
+  "cfw.summary.inProduction": "ඇණවුම නිෂ්පාදනයට ඇතුළු විය (කැපීමේදී ස්කෑන් කළා).",
   "cfw.summary.show": "සාරාංශය පෙන්වන්න",
 
   "cfw.bg.title": "සමාන්තරව",

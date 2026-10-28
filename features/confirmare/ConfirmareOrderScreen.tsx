@@ -381,10 +381,12 @@ export function ConfirmareOrderScreen({ orderId, employee, service, documents, n
       case "routing":
       case "routingWaiting":
       case "handedOver":
+      case "awaitingHandoff":
+      case "inProduction":
         return <>
           {operatorInvoice && invoicePanel("routing")}
           {handoffInTask && handoffPanel}
-          {task === "handedOver" && <div className="cfw-actions"><button type="button" className="button button-secondary" onClick={() => navigate("/confirmare")} data-testid="cfw-back-to-queue"><AppIcon name="back" size={18} /> {t("cfw.done.queue")}</button></div>}
+          {(task === "handedOver" || task === "awaitingHandoff" || task === "inProduction") && <div className="cfw-actions"><button type="button" className="button button-secondary" onClick={() => navigate("/confirmare")} data-testid="cfw-back-to-queue"><AppIcon name="back" size={18} /> {t("cfw.done.queue")}</button></div>}
         </>;
       default:
         return null;

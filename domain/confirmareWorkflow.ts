@@ -38,7 +38,7 @@ export type WorkflowTask =
   | "customer" | "call" | "callAgain" | "noContact" | "correction" | "correctionWaiting" | "shopUpdate" | "editUnknown" | "products"
   | "price" | "pricesDiffer" | "shopUnavailable" | "priceEvidence" | "approve"
   | "proforma" | "proformaUnknown" | "financeWaiting" | "partial" | "onlineWaiting" | "financeAttention"
-  | "reverify" | "routing" | "routingWaiting" | "handedOver";
+  | "reverify" | "routing" | "routingWaiting" | "handedOver" | "awaitingHandoff" | "inProduction";
 
 /** Who must act for the active task. `you`: the signed-in employee. */
 export type WorkflowOwner = "you" | "colleague" | "supervisor" | "finance" | "shop" | "customer" | "shopEmployee" | "nobody";
@@ -80,7 +80,12 @@ export type InvoiceFact =
   | { kind: "unknown" }
   | { kind: "none" }
   | { kind: "unavailable" }
-  | { kind: "read"; proforma: "none" | "in_flight" | "issued" | "unknown" | "na"; advance: "waiting" | "partial" | "paid" | null; verifying: boolean; canIssueProforma: boolean; routing: { allowed: boolean; assigned: boolean } | null };
+  | {
+    kind: "read"; proforma: "none" | "in_flight" | "issued" | "unknown" | "na"; advance: "waiting" | "partial" | "paid" | null; verifying: boolean; canIssueProforma: boolean;
+    /** Whether the server holds the routing of the order to a shop employee (a server record; visible to every reader). */
+    assigned: boolean;
+    routing: { allowed: boolean; assigned: boolean } | null;
+  };
 export function invoiceFact(detail: ConfirmareDetail, read: InvoiceRead | null): InvoiceFact {
   if (!detail.invoice.configured || !detail.invoice.read) return { kind: "none" };
   if (read === null) return { kind: "unknown" };
@@ -94,6 +99,7 @@ export function invoiceFact(detail: ConfirmareDetail, read: InvoiceRead | null):
     advance: cod ? proforma.advance.state : null,
     verifying: cod && proforma.advance.verifying,
     canIssueProforma: view.proforma?.allowedActions.includes("proformaIssue") ?? false,
+    assigned: view.assignment !== null,
     routing: view.routing === null ? null : { allowed: view.routing.allowed, assigned: view.assignment !== null },
   };
 }
@@ -230,21 +236,30 @@ export function resolveWorkflow(input: WorkflowInput): ConfirmareWorkflow {
 
   // ---- step 5: the handoff (approved and the money proven) --------------------------------------------------
   const handoff = (task: WorkflowTask, owner: WorkflowOwner, canAct: boolean, state: WorkflowStepState, clearance: WorkflowSubtaskState, routing: WorkflowSubtaskState, production: WorkflowSubtaskState) =>
-    build("handoff", task, owner, canAct, approvedSteps(paymentStep("done"), { id: "handoff", state, subtasks: [{ id: "clearance", state: clearance }, { id: "routing", state: routing }, { id: "production", state: production }], summary: state === "done" ? "cfw.summary.handoff" : null }));
-  const productionState: WorkflowSubtaskState = detail.handoff?.state === "in_production" ? "done" : "waiting";
+    build("handoff", task, owner, canAct, approvedSteps(paymentStep("done"), { id: "handoff", state, subtasks: [{ id: "clearance", state: clearance }, { id: "routing", state: routing }, { id: "production", state: production }], summary: state !== "done" ? null : task === "inProduction" ? "cfw.summary.inProduction" : "cfw.summary.handoff" }));
+  const productionState: WorkflowSubtaskState = "waiting";
   if (!detail.productionCleared) {
     if (detail.production.missing.some((condition) => (REVERIFY as readonly string[]).includes(condition))) return handoff("reverify", "supervisor", supervises, "attention", "blocked", "todo", "todo");
     return handoff("routingWaiting", "nobody", false, "waiting", "waiting", "todo", "todo");
   }
+  // 1. The cutting scan is the strongest proof: in production, whether or not a routing is also recorded.
+  if (detail.handoff?.state === "in_production") {
+    const routed: WorkflowSubtaskState = invoice.kind === "read" && invoice.assigned ? "done" : invoice.kind === "read" || invoice.kind === "unavailable" ? "todo" : "skipped";
+    return handoff("inProduction", "nobody", false, "done", "done", routed, "done");
+  }
+  // 2. "Handed over" only on a server record of the routing to a shop employee; nothing else proves a handover.
+  if (invoice.kind === "read" && invoice.assigned) return handoff("handedOver", "shopEmployee", false, "done", "done", "done", productionState);
+  // 3. The routing the employee can do now, or why it waits.
   if (invoice.kind === "read" && invoice.routing !== null) {
-    if (invoice.routing.assigned) return handoff("handedOver", "shopEmployee", false, "done", "done", "done", productionState);
     if (invoice.routing.allowed) return handoff("routing", "you", true, "active", "done", "current", "todo");
     return handoff("routingWaiting", "nobody", false, "waiting", "done", "waiting", "todo");
   }
   if (invoice.kind === "unknown" && detail.invoice.route) return handoff("routing", "you", true, "active", "done", "current", "todo");
   if (invoice.kind === "unavailable" && detail.invoice.route) return handoff("routingWaiting", "nobody", false, "waiting", "done", "blocked", "todo");
-  // No routing for this employee or this shop: production documents are the documents team's work.
-  return handoff("handedOver", "shopEmployee", false, "done", "done", "skipped", productionState);
+  // 4. No routing this screen can see (no SmartBill read for this employee, no SmartBill for the shop, or no route
+  // right): released for production, but no handover is proven.
+  const routingSeen: WorkflowSubtaskState = invoice.kind === "read" || invoice.kind === "unavailable" ? "waiting" : "skipped";
+  return handoff("awaitingHandoff", "shopEmployee", false, "waiting", "done", routingSeen, "waiting");
 }
 
 /** The step a task belongs to never changes; this is the heading the screen focuses when the active step changes. */

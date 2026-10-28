@@ -1,4 +1,4 @@
-# Guided Confirmare order (Staff 2.40.0)
+# Guided Confirmare order (Staff 2.40.0, 2.40.1)
 
 Staff only. No API change, no migration, no feature flag, no permission change. Every command is the same endpoint
 with the same body, idempotency key and server checks as in Staff 2.39.0.
@@ -60,7 +60,14 @@ server. A step is `done` only when its fact exists:
 - **Steps 1–2:** the assignment and the recorded `confirmed` call on the current fingerprint.
 - **Step 3:** the server status `approved`.
 - **Step 4:** `financial.open`.
-- **Step 5:** the clearance plus a SmartBill routing assignment, or no routing for this employee or shop.
+- **Step 5:** the clearance plus the server's record of the routing to a shop employee (any reader sees it).
+  - Without that record the step shows "Eliberată pentru producție, predarea nu este confirmată" (`awaitingHandoff`,
+    waiting). This covers no SmartBill read or route right for the employee, no SmartBill for the shop, or an
+    unanswered read.
+  - Order of proof: (1) the cutting scan (`handoff.state = in_production`) gives `inProduction` ("Comanda a intrat în
+    producție"), even when a routing is also recorded; (2) the recorded routing gives `handedOver`; (3) a routing the
+    employee can do now gives `routing`; (4) otherwise the step waits.
+  - "Comanda a fost predată" is never shown without the routing record (Staff 2.40.1, owner review 2026-10-29).
 
 Step 4 is read on its own. A verified online payment shows as done while step 2 is still open. The approval never
 marks step 4: an approved COD order opens step 4 and waits.
