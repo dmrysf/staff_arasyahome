@@ -120,7 +120,7 @@ foreach (['91040' => '0940', '91041' => '0941', '91042' => '0942'] as $number =>
 // Owner decision 2026-10-29: every order submitted from 22.10.2026 00:00 Bucharest is covered, whatever its workflow.
 // 91043: a COD order submitted on 23.10.2026 (before this TEST shop's Confirmare activation: legacy, the old workflow;
 // the TEST shop reads it for finance only and never records its payment). 91044: submitted on 21.10.2026 23:59:59
-// Bucharest (outside the scope). Neither is moved into Confirmare.
+// Bucharest and accepted in Arasya before 22.10 too (outside the scope). Neither is moved into Confirmare.
 foreach (['91043' => ['2026-10-23T08:00:00.000000Z', '0943', true], '91044' => ['2026-10-21T20:59:59.000000Z', '0944', false]] as $number => [$submittedAt, $proformaNumber, $covered]) {
     $number = (string) $number;
     $shop = is_file($file) ? (json_decode((string) file_get_contents($file), true) ?: []) : [];
@@ -137,6 +137,10 @@ foreach (['91043' => ['2026-10-23T08:00:00.000000Z', '0943', true], '91044' => [
     $ingest = T::ingest($kernel, 'trendhome', $p);
     if ($ingest['status'] !== 200) {
         throw new RuntimeException("E2E finance requests ingestion failed: " . json_encode($ingest['body']));
+    }
+    if (!$covered) {
+        // TEST ONLY: 91044 also reached Arasya before the boundary (the scope counts the shop date OR the Arasya acceptance).
+        $pdo->prepare('UPDATE operational_orders SET created_at = ? WHERE global_order_id = ?')->execute(['2026-10-21 20:59:59.500000', 'trendhome:' . $number]);
     }
     $shop['financeVerification'] = 'four_eyes';
     $shop['orders'][$number] = ['id' => $number, 'number' => $number, 'eligible' => false, 'legacyFinance' => $covered, 'phone' => '0700000456', 'pricing' => $pricing, 'modifiedAt' => $now->format('Y-m-d\TH:i:s\Z'),
