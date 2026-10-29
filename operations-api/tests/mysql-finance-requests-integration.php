@@ -557,6 +557,9 @@ $cases = [
     65 => ['2026-10-24T08:00:00.000000Z', ['financial' => ['state' => 'cleared', 'basis' => 'advance_collected']]], 66 => ['2026-10-25T09:00:00.000000Z', ['status' => 'cancelled']],
     67 => ['2026-10-26T09:00:00.000000Z', ['status' => 'completed']], 68 => [$iso($activatedAt->modify('+300 seconds')), ['cod' => false, 'payment' => ['method' => 'unverified', 'advanceStatus' => 'waiting', 'advanceRevision' => 0, 'financing' => true]]],
     69 => ['2026-10-26T11:00:00.000000Z', []],
+    // Owner 2026-10-29 (final): the shop date OR the Arasya acceptance. 80: submitted 20.10, first accepted in Arasya
+    // 22.10 (an older order reaching Arasya later); 81: no submission evidence, accepted in Arasya 23.10.
+    80 => ['2026-10-20T08:00:00.000000Z', []], 81 => ['none', []],
 ];
 foreach ($cases as $n => [$submitted, $over]) {
     if ($n !== 60) {
@@ -564,12 +567,17 @@ foreach ($cases as $n => [$submitted, $over]) {
     }
     $th->orders[$id($n)] = $n === 69 ? $shopOrder($id($n), true, '0969') : $legacyShop($id($n), ($over['cod'] ?? true), sprintf('09%02d', $n));
 }
+// The first acceptance in Arasya (TEST ONLY: the projection writes `created_at` at the ingest; here it is set to the
+// dates of the matrix). 62 and 63 reached Arasya before the boundary; 80 and 81 after it.
+foreach ([62 => '2026-10-21 20:59:59.999999', 63 => '2026-10-20 10:00:00.000000', 80 => '2026-10-21 21:00:00.000000', 81 => '2026-10-23 09:00:00.000000'] as $n => $acceptedAt) {
+    $pdo->prepare('UPDATE operational_orders SET created_at = ? WHERE global_order_id = ?')->execute([$acceptedAt, $g($n)]);
+}
 $op->financeVerification = 'four_eyes'; // a YD SOFT 2.23.0 shop (it states the ledger of each order)
 foreach ([71 => '2026-10-21T21:00:00.000000Z', 72 => '2026-10-28T12:00:00.000000Z'] as $n => $submitted) {
     $ok(T::ingest($kernel, 'outletperdele', $at($id($n), $submitted)), "outlet scope order {$n}");
     $op->orders[$id($n)] = $legacyShop($id($n), true, sprintf('09%02d', $n));
 }
-$cohorts = array_column($all('SELECT global_order_id, workflow_cohort, workflow_cohort_reason FROM operational_orders WHERE global_order_id IN (' . implode(', ', array_fill(0, 12, '?')) . ')',
+$cohorts = array_column($all('SELECT global_order_id, workflow_cohort, workflow_cohort_reason FROM operational_orders WHERE global_order_id IN (' . implode(', ', array_fill(0, count($cases) + 2, '?')) . ')',
     [...array_map(static fn (int $n): string => $g($n), array_keys($cases)), $g(71, 'outletperdele'), $g(72, 'outletperdele')]), null, 'global_order_id');
 $check($cohorts[$g(61)]['workflow_cohort'] === 'legacy' && $cohorts[$g(62)]['workflow_cohort'] === 'legacy' && $cohorts[$g(64)]['workflow_cohort'] === 'legacy' && $cohorts[$g(60)]['workflow_cohort'] === 'legacy'
     && $cohorts[$g(63)]['workflow_cohort'] === 'undetermined' && $cohorts[$g(68)]['workflow_cohort_reason'] === 'financing_legacy', 'the TEST orders keep their cohorts: legacy, undetermined, TBI (nothing moved into Confirmare)');
@@ -578,6 +586,10 @@ $v62 = $ok($view($who['rop'], $g(62)), 'operator view of 21.10 23:59:59');
 $check($v62['scope'] === 'before_scope' && $v62['canRequest'] === false && $v62['request'] === null && $v62['ledger'] === 'manual', '21.10.2026 23:59:59 Bucharest: outside the scope, nothing to ask (its old workflow)');
 $error($ask($who['rop'], $g(62)), 409, 'FINANCE_REQUEST_OUT_OF_SCOPE', '21.10.2026 23:59:59 Bucharest: no finance task');
 $error($ask($who['rop'], $g(63)), 409, 'FINANCE_REQUEST_SCOPE_UNDETERMINED', 'no submission evidence: never counted in or out silently (manual review)');
+$v80 = $ok($view($who['rop'], $g(80)), 'operator view of an order of 20.10 accepted in Arasya on 22.10');
+$v81 = $ok($view($who['rop'], $g(81)), 'operator view of an order without evidence accepted in Arasya on 23.10');
+$check($v80['scope'] === 'in_scope' && $v80['canRequest'] === true && $v81['scope'] === 'in_scope' && $v81['canRequest'] === true,
+    'the first acceptance in Arasya at or after 22.10.2026 00:00 Bucharest covers the order too (submitted 20.10, or without evidence)');
 $v61 = $ok($view($who['rop'], $g(61)), 'operator view of 22.10 00:00');
 $check($v61['scope'] === 'in_scope' && $v61['canRequest'] === true && $v61['ledger'] === 'manual', '22.10.2026 00:00 Bucharest: covered (the boundary is inclusive)');
 $a61 = $ok($ask($who['rop'], $g(61)), '22.10 00:00 legacy request');
@@ -659,6 +671,7 @@ $ok(T::ingest($kernel, 'trendhome', $payload($id(73), 200, true, ['state' => 'wa
 $ok(T::ingest($kernel, 'trendhome', $payload($id(74), 210, true, ['state' => 'waiting', 'attention' => 'transfer_pending'])), 'a pending transfer without an Arasya record');
 $ok(T::ingest($kernel, 'trendhome', $payload($id(75), 220, true, ['state' => 'partial', 'attention' => 'additional_payment_due'])), 'an additional payment due');
 $ok(T::ingest($kernel, 'trendhome', $at($id(76), '2026-10-21T20:00:00.000000Z', ['financial' => ['state' => 'partial', 'attention' => 'additional_payment_due']])), 'an exception of an order of 21.10');
+$pdo->prepare('UPDATE operational_orders SET created_at = ? WHERE global_order_id = ?')->execute(['2026-10-21 20:00:05.000000', $g(76)]); // TEST ONLY: accepted in Arasya on 21.10 too
 $error($get($who['fsup'], $orderPath($g(73), '/finance')), 404, 'CONFIRMARE_NOT_FOUND', 'before the inventory nobody reaches the pending transfer through a scope alone (approve reaches nothing)');
 $error($get($f, $orderPath($g(75), '/finance')), 404, 'CONFIRMARE_NOT_FOUND', 'nor an additional payment through record alone');
 $tasksBefore = (int) $one('SELECT COUNT(*) FROM finance_verification_requests');
@@ -694,6 +707,37 @@ $check($cleared['resolved'] === 1 && $requestRow((string) $ex['request_uuid'])['
 $report = $inventory->report(['trendhome', 'outletperdele']);
 $check($report['trendhome']['beforeScope'] >= 2 && $report['trendhome']['undetermined'] >= 1 && $report['trendhome']['cohort']['legacy'] >= 5 && $report['trendhome']['financing'] === 1
     && $report['outletperdele']['inScope'] >= 3, 'the read-only reconciliation counts the covered orders by scope, cohort and money state');
+
+// ---- 15. Owner decision 2026-10-29 (final): the single policy live. A transfer recorded under four eyes (order 8, by fin,
+// before fin held `verify`) is concluded by the employee who recorded it: once, never recorded again, marked as single.
+$th->financeVerification = 'single';
+$ok($asRoot('PUT', "/management/employees/{$uuids['fin']}/finance-scopes", ['view' => ['outletperdele', 'trendhome'], 'record' => ['outletperdele', 'trendhome'], 'approve' => [], 'verify' => ['outletperdele', 'trendhome']]), 'fin: view, record, verify');
+$f = $who['fin'] = $login('fin');
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$row8 = $requestRow($rid(8));
+$check($row8['state'] === 'checking' && $row8['recorded_by_employee_uuid'] === $uuids['fin'] && $row8['assigned_employee_uuid'] === $uuids['fin'] && $row8['policy'] === 'four_eyes'
+    && count($th->orders[$id(8)]['finance']['entries']) === 1 && $th->orders[$id(8)]['finance']['entries'][0]['state'] === 'submitted', 'order 8: one transfer recorded by fin, waiting under four eyes');
+$t8 = $ok($task($f, $rid(8)), 'task 8 while Operations is four eyes');
+$check($t8['allowed']['secondCheck'] === false, 'Operations four eyes: the recorder never concludes it');
+$error($cmd($f, $rid(8), 'second-check', ['expectedVersion' => (int) $row8['version'], 'expectedRevision' => $t8['live']['revision'], 'decision' => 'verify']), 403, 'CONFIRMARE_FINANCE_SAME_EMPLOYEE', 'four eyes: refused');
+$box8 = $ok($inbox($f, $kernelSingle), 'inbox under the single policy');
+$check((array_column($box8['items'], 'kind', 'id')[$rid(8)] ?? null) === 'second_check', 'single policy: the recorder sees the transfer to conclude in their own inbox');
+$t8 = $ok($task($f, $rid(8), $kernelSingle), 'task 8 under the single policy');
+$check($t8['allowed']['secondCheck'] === true && $t8['singleVerification'] === true && $t8['live']['policy'] === 'single', 'the recorder holding verify may conclude it');
+$requests = count($th->requests);
+$v8 = $ok($cmd($f, $rid(8), 'second-check', ['expectedVersion' => (int) $row8['version'], 'expectedRevision' => $t8['live']['revision'], 'decision' => 'verify'], "fvr-single-8-{$suffix}", $kernelSingle), 'concluded alone');
+$again8 = $ok($cmd($f, $rid(8), 'second-check', ['expectedVersion' => (int) $row8['version'], 'expectedRevision' => $t8['live']['revision'], 'decision' => 'verify'], "fvr-single-8-{$suffix}", $kernelSingle), 'the same click again');
+$e8 = $th->orders[$id(8)]['finance']['entries'];
+$sent8 = array_values(array_filter(array_slice($th->requests, $requests), static fn (array $r): bool => str_ends_with($r['route'], '/finance-action')));
+$check($v8['request']['state'] === 'verified' && $v8['request']['outcome'] === 'verified_full' && $again8['request']['state'] === 'verified' && count($e8) === 1 && $e8[0]['state'] === 'verified'
+    && $e8[0]['submittedBy'] === $uuids['fin'] && $e8[0]['decidedBy'] === $uuids['fin'] && in_array('single_verification', $e8[0]['flags'], true)
+    && count($sent8) === 1 && ($sent8[0]['body']['action'] ?? null) === 'decide_transfer' && ($sent8[0]['body']['singleVerification'] ?? null) === true,
+    'the existing transfer is verified once (no second recording, a retry sends nothing), marked as a single verification');
+$row8 = $requestRow($rid(8));
+$check($row8['policy'] === 'single' && $row8['decided_by_employee_uuid'] === $uuids['fin'] && $row8['open_order_uuid'] === null
+    && (string) $one("SELECT action FROM finance_verification_request_events WHERE request_uuid = ? ORDER BY version_after DESC LIMIT 1", [$rid(8)]) === 'verified_single',
+    'audited: decided by the recorder under the single policy (event verified_single)');
+$error($cmd($who['fsup'], $rid(8), 'second-check', ['expectedVersion' => (int) $row8['version'], 'expectedRevision' => $t8['live']['revision'], 'decision' => 'verify'], null, $kernelSingle), 404, 'FINANCE_REQUEST_NOT_FOUND', 'nobody else confirms it afterwards');
 
 // Leave the shared disposable database as the next suites expect it: no Confirmare, finance, request or invoice state.
 foreach (['finance_verification_request_events', 'finance_verification_requests', 'employee_finance_supervision', 'confirmare_cycle_steps', 'confirmare_proforma_cycles', 'confirmare_bank_checks', 'confirmare_reactivations',

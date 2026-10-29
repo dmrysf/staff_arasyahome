@@ -224,3 +224,10 @@ test("owner 2026-10-29: finance records the real smaller amount, never 'not rece
   assert.ok(CATALOGS.ro["fr.form.partial"].includes("nu marcați „Plata nu a fost primită”") && CATALOGS.ro["fr.form.partial"].includes("{gap}"));
   assert.ok(CATALOGS.ro["fr.step.verifiedPartial"].includes("acceptați avansul primit sau solicitați diferența"));
 });
+
+test("owner 2026-10-29 (final): under the single policy the employee who recorded a transfer concludes it, named as such", () => {
+  for (const locale of ["ro", "tr", "en", "si"] as const) {
+    for (const key of ["fr.action.verifyRecorded", "fr.confirm.verifyRecorded", "fr.event.verified_single"] as const) assert.ok(String(CATALOGS[locale][key] ?? "").length > 5, `${locale} ${key}`);
+  }
+  assert.ok(CATALOGS.ro["fr.confirm.verifyRecorded"].includes("fără al doilea control"));
+});

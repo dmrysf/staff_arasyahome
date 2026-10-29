@@ -540,8 +540,13 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             if ($f['entries'][$index]['state'] !== 'submitted') {
                 return $refuse('entry_not_pending');
             }
-            if ($f['entries'][$index]['submittedBy'] === $employee) {
+            $alone = $f['entries'][$index]['submittedBy'] === $employee;
+            if ($alone && (($input['singleVerification'] ?? false) !== true || $action !== 'decide_transfer')) {
                 return $refuse('same_employee', 403);
+            }
+            if ($alone && $this->financeVerification !== 'single') {
+                // YD SOFT 2.23.0: the recorder concludes a transfer only under the shop's single policy.
+                return $refuse('single_verification_disabled');
             }
             $verify = ($input['decision'] ?? null) === 'verify';
             if ($this->safetyRules && $verify && $action === 'decide_transfer' && $cancelled) {
@@ -551,6 +556,9 @@ final class SourceAccessFakeShop implements SourceAccessTransport
                 return $refuse('finance_open');
             }
             $f['entries'][$index] = array_merge($f['entries'][$index], ['state' => $verify ? 'verified' : 'rejected', 'decidedBy' => $employee, 'decidedAt' => gmdate('Y-m-d\TH:i:s\Z', $now), 'decisionCode' => $verify ? 'verified' : (string) ($input['reasonCode'] ?? 'other')]);
+            if ($alone) {
+                $f['entries'][$index]['flags'] = array_values(array_unique([...($f['entries'][$index]['flags'] ?? []), 'single_verification']));
+            }
             $entryId = $f['entries'][$index]['id'];
         } elseif ($action === 'acknowledge_liability') {
             if ($numbers['liability'] < 0.01) {

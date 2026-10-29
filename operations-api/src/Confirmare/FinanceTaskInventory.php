@@ -59,7 +59,7 @@ final readonly class FinanceTaskInventory
                 return (int) $statement->fetchColumn();
             };
             $group = function (string $expression, string $where = '') use ($source, $from): array {
-                $statement = $this->pdo->prepare("SELECT {$expression} AS k, COUNT(*) AS n FROM operational_orders o WHERE o.source_key = ? AND o.source_submitted_at >= ? {$where} GROUP BY k ORDER BY k");
+                $statement = $this->pdo->prepare("SELECT {$expression} AS k, COUNT(*) AS n FROM operational_orders o WHERE o.source_key = ? AND " . FinanceTaskScope::SQL_INSTANT . " >= ? {$where} GROUP BY k ORDER BY k");
                 $statement->execute([$source, $from]);
                 $rows = [];
                 foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
@@ -67,16 +67,17 @@ final readonly class FinanceTaskInventory
                 }
                 return $rows;
             };
-            $in = 'o.source_key = ? AND o.source_submitted_at >= ?';
+            $in = 'o.source_key = ? AND ' . FinanceTaskScope::SQL_INSTANT . ' >= ?';
             $report[$source] = [
                 'orders' => $one('SELECT COUNT(*) FROM operational_orders o WHERE o.source_key = ?'),
                 'inScope' => $one("SELECT COUNT(*) FROM operational_orders o WHERE {$in}", [$from]),
-                'beforeScope' => $one('SELECT COUNT(*) FROM operational_orders o WHERE o.source_key = ? AND o.source_submitted_at < ?', [$from]),
-                // No submission evidence: never counted in or out silently.
-                'undetermined' => $one('SELECT COUNT(*) FROM operational_orders o WHERE o.source_key = ? AND o.source_submitted_at IS NULL AND o.created_at >= ?', [$from]),
-                'undeterminedBeforeAcceptance' => $one('SELECT COUNT(*) FROM operational_orders o WHERE o.source_key = ? AND o.source_submitted_at IS NULL AND o.created_at < ?', [$from]),
-                // Submitted before the boundary, first accepted in Arasya at or after it: reported apart, workflow unchanged.
+                'beforeScope' => $one('SELECT COUNT(*) FROM operational_orders o WHERE o.source_key = ? AND o.source_submitted_at < ? AND o.created_at < ?', [$from, $from]),
+                // No submission evidence and accepted in Arasya before the boundary: never counted in or out silently.
+                'undetermined' => $one('SELECT COUNT(*) FROM operational_orders o WHERE o.source_key = ? AND o.source_submitted_at IS NULL AND o.created_at < ?', [$from]),
+                // Covered by the Arasya acceptance only (an older order, or one without submission evidence, that reached
+                // Arasya at or after the boundary): in scope, workflow unchanged.
                 'olderArrivedLater' => $one('SELECT COUNT(*) FROM operational_orders o WHERE o.source_key = ? AND o.source_submitted_at < ? AND o.created_at >= ?', [$from, $from]),
+                'withoutEvidenceArrivedLater' => $one('SELECT COUNT(*) FROM operational_orders o WHERE o.source_key = ? AND o.source_submitted_at IS NULL AND o.created_at >= ?', [$from]),
                 'cohort' => $group("COALESCE(o.workflow_cohort, 'NULL')"),
                 'cohortReason' => $group("CONCAT(COALESCE(o.workflow_cohort, 'NULL'), '/', COALESCE(o.workflow_cohort_reason, 'NULL'))"),
                 'submissionEvidence' => $group("COALESCE(o.source_submission_evidence, 'NULL')"),
@@ -122,7 +123,7 @@ final readonly class FinanceTaskInventory
         $condition = ConfirmareScopePolicy::condition($sources, 'o.source_key', $parameters);
 
         // 1. Transfers recorded through Arasya and waiting for their second employee.
-        $statement = $this->pdo->prepare("SELECT a.order_uuid, a.source_entry_id, a.employee_uuid, o.global_order_id, o.source_key, o.order_number, o.source_submitted_at, o.source_financial_attention
+        $statement = $this->pdo->prepare("SELECT a.order_uuid, a.source_entry_id, a.employee_uuid, o.global_order_id, o.source_key, o.order_number, o.source_submitted_at, o.created_at, o.source_financial_attention
             FROM order_finance_actions a INNER JOIN operational_orders o ON o.order_uuid = a.order_uuid
             WHERE {$condition} AND a.action = 'submit_transfer' AND a.state = 'applied' AND a.source_entry_id IS NOT NULL
               AND NOT EXISTS (SELECT 1 FROM order_finance_actions d WHERE d.order_uuid = a.order_uuid AND d.action = 'decide_transfer' AND d.state = 'applied' AND d.source_entry_id = a.source_entry_id)
@@ -148,7 +149,7 @@ final readonly class FinanceTaskInventory
 
         // 2. Exceptional money states and card refunds to verify.
         $exceptional = array_values(array_diff(FinanceTaskAccess::EXCEPTIONAL_ATTENTION, ['transfer_pending']));
-        $statement = $this->pdo->prepare("SELECT o.order_uuid, o.global_order_id, o.source_key, o.order_number, o.source_submitted_at, o.workflow_cohort, o.source_financial_attention
+        $statement = $this->pdo->prepare("SELECT o.order_uuid, o.global_order_id, o.source_key, o.order_number, o.source_submitted_at, o.created_at, o.workflow_cohort, o.source_financial_attention
             FROM operational_orders o WHERE {$condition} AND (o.source_financial_attention IS NOT NULL
                OR EXISTS (SELECT 1 FROM order_source_operations r WHERE r.order_uuid = o.order_uuid AND r.kind = 'card_refund_full' AND r.state = 'applied'))
             ORDER BY o.source_changed_at, o.order_uuid LIMIT " . self::LIMIT);
@@ -283,13 +284,13 @@ final readonly class FinanceTaskInventory
     {
         return ['purpose' => $purpose, 'taskCode' => $code, 'orderUuid' => (string) $row['order_uuid'], 'globalOrderId' => (string) $row['global_order_id'],
             'source' => (string) $row['source_key'], 'orderNumber' => (string) $row['order_number'],
-            'scope' => FinanceTaskScope::of($row['source_submitted_at'] === null ? null : (string) $row['source_submitted_at'])];
+            'scope' => FinanceTaskScope::ofRow($row)];
     }
 
     /** @param array<string, mixed> $row why no task may be created for this order now, or null */
     private function blocked(array $row): ?string
     {
-        $scope = FinanceTaskScope::of($row['source_submitted_at'] === null ? null : (string) $row['source_submitted_at']);
+        $scope = FinanceTaskScope::ofRow($row);
         if ($scope === FinanceTaskScope::BEFORE_SCOPE) {
             return 'out_of_scope';
         }

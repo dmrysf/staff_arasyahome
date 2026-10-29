@@ -166,6 +166,8 @@ export function FinanceTaskScreen({ requestId, service, navigate }: { requestId:
     if (pending.kind === "second_reject" && live.available) void send(`sr|${request.version}|${pending.reason}`, (key) => service.secondCheck(request.id, { ...base, expectedRevision: live.revision, decision: "reject", reasonCode: pending.reason }, key));
   };
   const recorded = live.available ? live.transfers.filter((entry) => entry.state === "submitted") : [];
+  // Owner 2026-10-29, single policy: the employee who recorded the transfer concludes it (no second person).
+  const alone = task.allowed.secondCheck && task.singleVerification && recorded.some((entry) => entry.submittedBy.id === task.me);
 
   return (
     <article className="screen-stack confirmare-screen fr-task" data-testid="fr-task" data-state={request.state}>
@@ -212,13 +214,13 @@ export function FinanceTaskScreen({ requestId, service, navigate }: { requestId:
           {task.allowed.notReceived && <button type="button" className="button button-secondary" disabled={busy} onClick={() => setMode("not_received")} data-testid="fr-mode-not-received">{t("fr.action.notReceived")}</button>}
           {task.allowed.clarify && <button type="button" className="button button-secondary" disabled={busy} onClick={() => setMode("needs_clarification")} data-testid="fr-mode-clarify">{t("fr.action.clarify")}</button>}
           {task.allowed.secondCheck && <>
-            <button type="button" className="button button-primary" disabled={busy} onClick={() => setPending({ kind: "second_verify" })} data-testid="fr-second-verify">{t("fr.action.secondVerify")}</button>
+            <button type="button" className="button button-primary" disabled={busy} onClick={() => setPending({ kind: "second_verify" })} data-testid="fr-second-verify">{t(alone ? "fr.action.verifyRecorded" : "fr.action.secondVerify")}</button>
             <button type="button" className="button button-secondary" disabled={busy} onClick={() => setMode("second_reject")} data-testid="fr-mode-second-reject">{t("fr.action.secondReject")}</button>
           </>}
           {task.allowed.reconcile && <button type="button" className="button button-primary" disabled={busy} onClick={() => void send(`reconcile|${request.version}`, () => service.reconcileTask(request.id))} data-testid="fr-reconcile">{t("fr.action.reconcile")}</button>}
         </div>}
         {task.allowed.secondCheck && recorded.length > 0 && <p className="dashboard-lead" data-testid="fr-second-hint">{t("fr.action.secondHint")}</p>}
-        {request.kind === "awaiting_second_check" && <Notice tone="info" role="note" testId="fr-awaiting-second">{t("fr.task.awaitingSecond")}</Notice>}
+        {request.kind === "awaiting_second_check" && !task.allowed.secondCheck && <Notice tone="info" role="note" testId="fr-awaiting-second">{t("fr.task.awaitingSecond")}</Notice>}
         {!task.allowed.verify && !task.allowed.notReceived && !task.allowed.clarify && !task.allowed.secondCheck && !task.allowed.reconcile && !task.allowed.start
           && <p className="dashboard-lead" data-testid="fr-no-action">{t(request.category === "done" ? "fr.task.closed" : "fr.task.nothingNow")}</p>}
 
@@ -230,7 +232,7 @@ export function FinanceTaskScreen({ requestId, service, navigate }: { requestId:
 
         {pending && <div className="cf-confirm" role="group" aria-labelledby="fr-confirm-title" data-testid="fr-confirm">
           <p className="eyebrow" id="fr-confirm-title">{t("fr.confirm.title")}</p>
-          <p data-testid="fr-confirm-text">{confirmText(pending, live.available ? live.currency : "RON", task.singleVerification, request.ledger === "manual", t, live.available ? live.advance?.remaining ?? null : null)}</p>
+          <p data-testid="fr-confirm-text">{pending.kind === "second_verify" && alone ? t("fr.confirm.verifyRecorded") : confirmText(pending, live.available ? live.currency : "RON", task.singleVerification, request.ledger === "manual", t, live.available ? live.advance?.remaining ?? null : null)}</p>
           <div className="cfw-actions">
             <button type="button" className="button button-primary" disabled={busy} onClick={confirm} data-testid="fr-confirm-send">{busy ? t("common.sending") : t("fr.confirm.send")}</button>
             <button type="button" className="button button-secondary" disabled={busy} onClick={() => setPending(null)} data-testid="fr-confirm-back">{t("fr.confirm.back")}</button>

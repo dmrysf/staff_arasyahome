@@ -489,8 +489,16 @@ final readonly class FinanceVerificationRequests
         }
         $this->requireStaff($actor);
         $request = $this->reachable($actor, $requestUuid);
-        if ($request['state'] !== 'checking' || $request['policy'] !== 'four_eyes' || $request['source_entry_id'] === null || $request['recorded_by_employee_uuid'] === $actor->employeeUuid
-            || $request['checker_employee_uuid'] !== $actor->employeeUuid || !$this->finance->allows($actor, FinanceScopePolicy::APPROVE, (string) $request['source_key'])) {
+        $sent = $this->pdo->prepare('SELECT 1 FROM order_finance_actions WHERE employee_uuid = ? AND idempotency_key = ? AND order_uuid = ?');
+        $sent->execute([$actor->employeeUuid, $key, (string) $request['order_uuid']]);
+        if ($sent->fetchColumn() !== false) {
+            // The same decision again (a double click, a lost answer): the stored state, nothing is sent twice.
+            return $this->afterDecision($actor, $request, $requestId);
+        }
+        // Owner 2026-10-29: under the single policy the employee who recorded the transfer (holding `verify`) concludes it.
+        $alone = $this->concludesAlone($actor, $request);
+        if (!$alone && ($request['state'] !== 'checking' || $request['policy'] !== 'four_eyes' || $request['source_entry_id'] === null || $request['recorded_by_employee_uuid'] === $actor->employeeUuid
+            || $request['checker_employee_uuid'] !== $actor->employeeUuid || !$this->finance->allows($actor, FinanceScopePolicy::APPROVE, (string) $request['source_key']))) {
             if ($request['recorded_by_employee_uuid'] === $actor->employeeUuid) {
                 throw new ApiException(403, 'CONFIRMARE_FINANCE_SAME_EMPLOYEE', 'Another employee must verify what you recorded.');
             }
@@ -498,7 +506,8 @@ final readonly class FinanceVerificationRequests
         }
         $this->requireVersion($request, $input['expectedVersion'] ?? null);
         $fields = ['expectedRevision' => $input['expectedRevision'] ?? null, 'entryId' => (string) $request['source_entry_id'], 'decision' => $decision]
-            + ($decision === 'reject' ? ['reasonCode' => self::SHOP_REJECT[(string) $input['reasonCode']]] : []);
+            + ($decision === 'reject' ? ['reasonCode' => self::SHOP_REJECT[(string) $input['reasonCode']]] : [])
+            + ($alone ? ['singleVerification' => true] : []);
         $answer = $this->money->act($actor, (string) $request['global_order_id'], 'decide_transfer', $fields, $key, $requestId);
         if (($answer['state'] ?? null) !== 'applied') {
             $this->markUnknown((string) $request['request_uuid'], $actor->employeeUuid, $requestId);
@@ -712,8 +721,11 @@ final readonly class FinanceVerificationRequests
                     // The task's named approver stays (an exception task names one); never the recorder.
                     'checker_employee_uuid' => $request['checker_employee_uuid'] !== null && $request['checker_employee_uuid'] !== $actorUuid ? $request['checker_employee_uuid'] : self::leastLoadedChecker($pdo, (string) $request['source_key'], $actorUuid),
                     'event' => 'recorded_for_second_check'],
-                $decision === 'verify' => ['state' => 'verified', 'outcome' => $outcome, 'decided_by_employee_uuid' => $actorUuid, 'decided_at' => $now, 'reason_code' => null, 'event' => 'second_check_verified'],
-                default => ['state' => 'not_received', 'outcome' => 'not_received', 'decided_by_employee_uuid' => $actorUuid, 'decided_at' => $now, 'reason_code' => $reasonCode, 'event' => 'second_check_rejected'],
+                $decision === 'verify' => ['state' => 'verified', 'outcome' => $outcome, 'decided_by_employee_uuid' => $actorUuid, 'decided_at' => $now, 'reason_code' => null,
+                    // The recorder concluding alone (single policy) is named as such, never as a second employee.
+                    'policy' => $request['recorded_by_employee_uuid'] === $actorUuid ? 'single' : $request['policy'], 'event' => $request['recorded_by_employee_uuid'] === $actorUuid ? 'verified_single' : 'second_check_verified'],
+                default => ['state' => 'not_received', 'outcome' => 'not_received', 'decided_by_employee_uuid' => $actorUuid, 'decided_at' => $now, 'reason_code' => $reasonCode,
+                    'policy' => $request['recorded_by_employee_uuid'] === $actorUuid ? 'single' : $request['policy'], 'event' => 'second_check_rejected'],
             };
             $event = $set['event'];
             unset($set['event']);
@@ -798,7 +810,7 @@ final readonly class FinanceVerificationRequests
         ];
         // Verified by finance, but the shop's money state has not reached Arasya yet: keep asking, a little slower.
         $syncing = $state === 'verified' && $request['outcome'] === 'verified_full' && !$financial['open'];
-        $scope = FinanceTaskScope::of($row['source_submitted_at'] === null ? null : (string) $row['source_submitted_at']);
+        $scope = FinanceTaskScope::ofRow($row);
         $requestable = $scope === FinanceTaskScope::IN_SCOPE && !$row['closed'];
         return [
             'request' => $request === null ? null : [
@@ -827,13 +839,30 @@ final readonly class FinanceVerificationRequests
         ];
     }
 
+    /**
+     * Whether the actor concludes this recorded transfer alone (owner decision 2026-10-29, single policy): the task is theirs,
+     * they recorded it, they hold `verify`, and Operations allows single verification for the source (the shop checks its
+     * own policy again). Four eyes stays the default everywhere else.
+     *
+     * @param array<string, mixed> $request
+     */
+    private function concludesAlone(EmployeeIdentity $actor, array $request): bool
+    {
+        if ($request['state'] !== 'checking' || $request['source_entry_id'] === null || $request['recorded_by_employee_uuid'] !== $actor->employeeUuid
+            || $request['assigned_employee_uuid'] !== $actor->employeeUuid || !$this->finance->allows($actor, FinanceScopePolicy::VERIFY, (string) $request['source_key'])) {
+            return false;
+        }
+        $target = $this->registry->find((string) $request['source_key']);
+        return $target !== null && $target->allowsSingleVerification();
+    }
+
     /** @param array<string, mixed> $row a request with order_number @return array<string, mixed> the inbox item */
     private function item(array $row, EmployeeIdentity $actor): array
     {
         $secondCheck = $row['state'] === 'checking' && $row['policy'] === 'four_eyes' && $row['source_entry_id'] !== null;
         $mine = $row['assigned_employee_uuid'] === $actor->employeeUuid;
         $kind = match (true) {
-            $secondCheck && $row['checker_employee_uuid'] === $actor->employeeUuid => 'second_check',
+            $secondCheck && ($row['checker_employee_uuid'] === $actor->employeeUuid || $this->concludesAlone($actor, $row)) => 'second_check',
             $secondCheck => 'awaiting_second_check',
             $row['purpose'] === 'exception' => 'exception',
             default => 'verify',
@@ -1007,8 +1036,9 @@ final readonly class FinanceVerificationRequests
             'verify' => $decidable && $available && $canMoney && ($live['financial']['attention'] ?? null) === null,
             'notReceived' => $advance && $mine && $clean && in_array($request['state'], ['assigned', 'checking', 'exception'], true),
             'clarify' => $advance && $mine && $clean && in_array($request['state'], ['assigned', 'checking', 'exception'], true),
-            'secondCheck' => $request['state'] === 'checking' && $request['policy'] === 'four_eyes' && $request['source_entry_id'] !== null && $request['checker_employee_uuid'] === $actor->employeeUuid
-                && $request['recorded_by_employee_uuid'] !== $actor->employeeUuid && $this->finance->allows($actor, FinanceScopePolicy::APPROVE, $source) && ($live['available'] ?? false) === true,
+            'secondCheck' => (($request['state'] === 'checking' && $request['policy'] === 'four_eyes' && $request['source_entry_id'] !== null && $request['checker_employee_uuid'] === $actor->employeeUuid
+                && $request['recorded_by_employee_uuid'] !== $actor->employeeUuid && $this->finance->allows($actor, FinanceScopePolicy::APPROVE, $source))
+                || ($this->concludesAlone($actor, $request) && ($live['policy'] ?? 'four_eyes') === 'single')) && ($live['available'] ?? false) === true,
             'reconcile' => $request['state'] === 'exception' && $request['finance_idempotency_key'] !== null,
         ], 'me' => $actor->employeeUuid, 'singleVerification' => $single && $target !== null];
     }
@@ -1319,7 +1349,7 @@ final readonly class FinanceVerificationRequests
     /** @param array<string, mixed> $row */
     private function requireRequestable(array $row): void
     {
-        $scope = FinanceTaskScope::of($row['source_submitted_at'] === null ? null : (string) $row['source_submitted_at']);
+        $scope = FinanceTaskScope::ofRow($row);
         if ($scope === FinanceTaskScope::BEFORE_SCOPE) {
             throw new ApiException(409, 'FINANCE_REQUEST_OUT_OF_SCOPE', 'The order was submitted before 22 October 2026: it keeps its existing workflow.');
         }
@@ -1509,7 +1539,7 @@ final readonly class FinanceVerificationRequests
     {
         // Any order of a source (API 2.50.0): an order outside Confirmare has no confirmation row and keeps its workflow.
         $statement = $this->pdo->prepare("SELECT o.order_uuid, o.global_order_id, o.source_key, o.source_order_id, o.order_number, o.workflow_cohort, o.payment_method, o.operational_status, o.source_reported_unavailable_at,
-                o.source_financial_state, o.source_financial_basis, o.source_financial_attention, o.source_financial_pricing, o.source_pricing_fingerprint, o.source_submitted_at, o.source_commerce_status_code,
+                o.source_financial_state, o.source_financial_basis, o.source_financial_attention, o.source_financial_pricing, o.source_pricing_fingerprint, o.source_submitted_at, o.created_at, o.source_commerce_status_code,
                 o.cancellation_state, o.workflow_cohort_reason, c.status, c.assigned_employee_uuid, c.decided_by_employee_uuid
             FROM operational_orders o LEFT JOIN order_confirmations c ON c.order_uuid = o.order_uuid WHERE {$where}");
         $statement->execute([$value]);

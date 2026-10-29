@@ -75,7 +75,8 @@ final readonly class ConfirmareFinance
     /** The fields each action takes besides expectedRevision. */
     private const FIELDS = [
         'submit_transfer' => ['purpose', 'amount', 'reference', 'valueDate', 'method', 'receipt', 'collector', 'overpaymentConfirmed', 'cancelledProforma'],
-        'decide_transfer' => ['entryId', 'decision', 'reasonCode'],
+        // API 2.50.0 (owner 2026-10-29): `singleVerification: true` under the single policy, the recorder concludes a transfer.
+        'decide_transfer' => ['entryId', 'decision', 'reasonCode', 'singleVerification'],
         'acknowledge_liability' => [],
         'submit_refund' => ['amount', 'reference', 'valueDate'],
         'decide_refund' => ['entryId', 'decision', 'reasonCode'],
@@ -171,9 +172,10 @@ final readonly class ConfirmareFinance
             throw new ApiException(404, 'NOT_FOUND', 'API route was not found.');
         }
         $fields = $this->fields($action, $input);
+        $single = ($fields['singleVerification'] ?? false) === true;
         $capability = match (true) {
             str_starts_with($action, 'submit_') => FinanceScopePolicy::RECORD,
-            $action === 'verify_transfer' => FinanceScopePolicy::VERIFY,
+            $action === 'verify_transfer' || $single => FinanceScopePolicy::VERIFY,
             default => FinanceScopePolicy::APPROVE,
         };
         ['row' => $row, 'role' => $role, 'globalId' => $globalId] = $this->context($actor, $globalOrderId, $capability);
@@ -184,7 +186,7 @@ final readonly class ConfirmareFinance
         if ($target === null || !$target->allowsFinanceRecord()) {
             throw new ApiException(409, 'CONFIRMARE_FINANCE_DISABLED', 'Finance actions are not enabled for this shop.');
         }
-        if ($action === 'verify_transfer' && !$target->allowsSingleVerification()) {
+        if (($action === 'verify_transfer' || $single) && !$target->allowsSingleVerification()) {
             // The financial policy of the source is four eyes (the default): nobody verifies alone.
             throw new ApiException(409, 'CONFIRMARE_FINANCE_POLICY_FOUR_EYES', 'This shop needs a second employee to verify a bank transfer.');
         }
@@ -197,7 +199,7 @@ final readonly class ConfirmareFinance
             }
             return $this->settled($existing, $row, $target, $actor, $requestId);
         }
-        if (isset($fields['entryId']) && $this->recordedBy((string) $row['order_uuid'], (string) $fields['entryId']) === $actor->employeeUuid) {
+        if (isset($fields['entryId']) && !$single && $this->recordedBy((string) $row['order_uuid'], (string) $fields['entryId']) === $actor->employeeUuid) {
             // Four eyes (the shop checks it again on its own record).
             throw new ApiException(403, 'CONFIRMARE_FINANCE_SAME_EMPLOYEE', 'Another employee must verify what you recorded.');
         }
@@ -538,6 +540,12 @@ final readonly class ConfirmareFinance
             throw $invalid('expectedRevision');
         }
         $fields = ['expectedRevision' => $revision];
+        if (array_key_exists('singleVerification', $input)) {
+            if ($input['singleVerification'] !== true) {
+                throw $invalid('singleVerification');
+            }
+            $fields['singleVerification'] = true;
+        }
         if ($action === 'verify_transfer') {
             // API 2.50.0: a bank transfer found on the statement, for the advance proforma it names (bank transfer only).
             if (($input['purpose'] ?? null) !== 'advance') {

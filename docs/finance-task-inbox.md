@@ -7,12 +7,13 @@ policy that is off everywhere.
 
 ## Scope (owner decision 2026-10-29)
 
-Every Trend Home and Outlet Perdele order first submitted at or after **2026-10-22 00:00 Europe/Bucharest
-(2026-10-21T21:00:00Z, inclusive)** is covered, whatever its workflow cohort (`confirmare`, `legacy`, `NULL`,
-`undetermined`) and whenever it reached Arasya (`FinanceTaskScope`). The date is the shop's first real submission
-(`operational_orders.source_submitted_at` and its evidence kind), never the last change, a proforma date or the last
-synchronisation; the first acceptance in Arasya (`created_at`) is reported apart. An order without submission evidence
-is `undetermined`: never counted in or out silently, no task created for it (manual review). Covering an order never
+Every Trend Home and Outlet Perdele order whose first submission in the shop **or** first acceptance in Arasya is at or
+after **2026-10-22 00:00 Europe/Bucharest (2026-10-21T21:00:00Z, inclusive)** is covered, whatever its workflow cohort
+(`confirmare`, `legacy`, `NULL`, `undetermined`) (`FinanceTaskScope`, final owner decision 2026-10-29). The shop date is
+the first real submission (`operational_orders.source_submitted_at` and its evidence kind), the Arasya date the first
+acceptance (`created_at`); never the last change, a proforma date or the last synchronisation. An older order that
+reached Arasya at or after the boundary is covered. An order without submission evidence that Arasya accepted before the
+boundary is `undetermined`: never counted in or out silently, no task created for it (manual review). Covering an order never
 creates a task by itself: a task exists only when an operator asks for one or the task inventory points one at an
 existing finance record.
 
@@ -124,10 +125,15 @@ shop records and verifies the transfer in one step (`verify_transfer`, flag `sin
 recorder and decider). Otherwise the request uses `four_eyes`: the shop records the transfer (`submit_transfer`) and a
 second employee with `approve` verifies it; nothing is money received before that.
 
-**Sign-off required before `single` is switched on anywhere:** the owner and the accountant approve the policy in
-writing. Today there is no trusted bank evidence feed (only manual statements and the bank-check records), so the
-two-person rule remains the production safeguard. Switching `single` on is a financial-policy change, not a deployment
-step.
+**Owner decision 2026-10-29 (final):** `single` is approved for production on both shops: Cristina holds
+`view + record + verify`, Zelal observes only (supervision, no `approve`). Switching it is still a separate, audited
+activation step on both layers, never part of a deployment.
+
+A transfer recorded under four eyes before the switch (`submit_transfer`, waiting for its second employee) is concluded by
+the employee who recorded it, once: the second-check task is theirs, `POST .../second-check {decision}` sends
+`decide_transfer` with `singleVerification: true` (needs `verify`, both switches `single`); the shop verifies the SAME
+entry (never a new recording) and flags it `single_verification`; the request is closed with policy `single` and the event
+`verified_single`. A retried click with the same Idempotency-Key answers the stored state.
 
 ## Operator side (Staff step 4)
 
