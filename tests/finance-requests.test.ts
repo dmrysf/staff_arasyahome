@@ -215,3 +215,12 @@ test("the advance of an order outside Confirmare opens by its global id only, fo
   assert.equal(parseStaffRoute("/confirmare/finance/legacy/b2b%3A1").kind, "invalid");
   assert.equal(parseStaffRoute("/confirmare/finance/legacy/trendhome%3A1%2F2").kind, "invalid");
 });
+
+test("owner 2026-10-29: finance records the real smaller amount, never 'not received'; the operator decides on the difference", () => {
+  for (const locale of ["ro", "tr", "en", "si"] as const) {
+    for (const key of ["fr.form.partial", "fr.form.overRemaining", "fr.confirm.partial"] as const) assert.ok(String(CATALOGS[locale][key] ?? "").includes("{remaining}"), `${locale} ${key}`);
+    assert.ok(String(CATALOGS[locale]["fr.step.verifiedPartial"]).includes("{at}"), `${locale} fr.step.verifiedPartial`);
+  }
+  assert.ok(CATALOGS.ro["fr.form.partial"].includes("nu marcați „Plata nu a fost primită”") && CATALOGS.ro["fr.form.partial"].includes("{gap}"));
+  assert.ok(CATALOGS.ro["fr.step.verifiedPartial"].includes("acceptați avansul primit sau solicitați diferența"));
+});

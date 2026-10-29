@@ -1742,6 +1742,10 @@ function mapProformaSummary(value: unknown): ProformaSummary | null {
         kind: a.kind == null ? "accepted" as const : oneOf(a.kind, ["accepted", "kept"] as const) };
     })(),
     lowAdvance: raw.lowAdvance == null ? false : booleanValue(raw.lowAdvance),
+    differenceRequest: raw.differenceRequest == null ? null : (() => {
+      const d = objectValue(raw.differenceRequest);
+      return { at: invoiceInstant(d.at), by: invoiceUuid(d.by), required: money(d.required), received: money(d.received), gap: money(d.gap), remaining: money(d.remaining), reason: invoiceText(d.reason, 300) };
+    })(),
     cancel: raw.cancel == null ? null : (() => {
       const c = objectValue(raw.cancel);
       return { state: oneOf(c.state, ["in_flight", "unknown"] as const), at: invoiceInstant(c.at), by: invoiceUuid(c.by), reason: c.reason == null ? null : oneOf(c.reason, CANCEL_REASONS) };
@@ -1809,7 +1813,7 @@ export function mapInvoiceDeadline(value: unknown): InvoiceDeadline {
 export function mapCodCheck(value: unknown): CodCheck {
   const raw = objectValue(value);
   return { state: oneOf(raw.state, ["none", "match", "mismatch", "delivered", "unknown"] as const), awb: invoiceText(raw.awb, 100), awbCod: raw.awbCod == null ? null : moneyText(raw.awbCod),
-    expected: raw.expected == null ? null : moneyText(raw.expected), status: invoiceText(raw.status, 255) };
+    expected: raw.expected == null ? null : moneyText(raw.expected), status: invoiceText(raw.status, 255), corrected: raw.corrected == null ? false : booleanValue(raw.corrected) };
 }
 function bicValue(value: unknown): string {
   const text = textValue(value, 11);

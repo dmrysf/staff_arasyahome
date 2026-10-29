@@ -45,18 +45,18 @@ export type InvoicePayment = {
 };
 export type InvoicePaymentRead = { available: true; role: InvoiceRole; payment: InvoicePayment } | { available: false; reason: string };
 
-export const PROFORMA_ACTIONS = ["proforma_issue", "proforma_send_mail", "proforma_check", "proforma_resolve", "proforma_cancel", "total_accept", "advance_accept"] as const;
+export const PROFORMA_ACTIONS = ["proforma_issue", "proforma_send_mail", "proforma_check", "proforma_resolve", "proforma_cancel", "total_accept", "advance_accept", "advance_difference"] as const;
 export type ProformaAction = (typeof PROFORMA_ACTIONS)[number];
-export const PROFORMA_KEYS = ["proformaIssue", "proformaSendMail", "proformaCheck", "proformaResolve", "proformaCancel", "totalAccept", "advanceAccept"] as const;
+export const PROFORMA_KEYS = ["proformaIssue", "proformaSendMail", "proformaCheck", "proformaResolve", "proformaCancel", "totalAccept", "advanceAccept", "advanceDifference"] as const;
 export type ProformaActionKey = (typeof PROFORMA_KEYS)[number];
 export const proformaKey = (action: ProformaAction): ProformaActionKey => ({
   proforma_issue: "proformaIssue", proforma_send_mail: "proformaSendMail", proforma_check: "proformaCheck", proforma_resolve: "proformaResolve",
-  proforma_cancel: "proformaCancel", total_accept: "totalAccept", advance_accept: "advanceAccept",
+  proforma_cancel: "proformaCancel", total_accept: "totalAccept", advance_accept: "advanceAccept", advance_difference: "advanceDifference",
 } as const)[action];
 /** The Staff route segment of each proforma action (`/proforma/{segment}`). */
 export const PROFORMA_ROUTE: Record<ProformaAction, string> = {
   proforma_issue: "issue", proforma_send_mail: "send-mail", proforma_check: "check", proforma_resolve: "resolve",
-  proforma_cancel: "cancel", total_accept: "accept-total", advance_accept: "accept-advance",
+  proforma_cancel: "cancel", total_accept: "accept-total", advance_accept: "accept-advance", advance_difference: "request-difference",
 };
 export const CANCEL_REASONS = ["order_changed", "customer_request", "wrong_details", "duplicate", "other"] as const;
 export type CancelReason = (typeof CANCEL_REASONS)[number];
@@ -66,7 +66,8 @@ export type MoneyPosition = {
   total: string | null; advanceRequired: string | null; received: string | null; refunded: string | null; net: string | null; remaining: string | null; excess: string | null; advanceGap: string | null;
 };
 export type InvoiceDeadline = { state: "none" | "open" | "invoiced"; firstCollection: string | null; deadline: string | null; daysLeft: number | null; level: "none" | "notice" | "warning" | "critical" | "overdue" | null };
-export type CodCheck = { state: "none" | "match" | "mismatch" | "delivered" | "unknown"; awb: string | null; awbCod: string | null; expected: string | null; status: string | null };
+/** `corrected` (YD SOFT 2.23.0): the AWB amount compared is an employee's statement of a correction in the FAN Courier panel. */
+export type CodCheck = { state: "none" | "match" | "mismatch" | "delivered" | "unknown"; awb: string | null; awbCod: string | null; expected: string | null; status: string | null; corrected: boolean };
 export type TotalAcceptance = { state: "accepted" | "required"; at: string | null; by: string | null; previousTotal: string | null; total: string | null; changes: { kind: "added" | "removed" | "changed" | "shipping"; name: string }[]; note: string | null;
   /** Owner business rule 2026-10-25: verified money is above zero but below the new standard advance, so accepting this
    *  total needs the operator's explicit advance decision; null when accepted or unknown. */
@@ -94,6 +95,9 @@ export type ProformaSummary = {
   /** kind `kept`: the money paid before a revision, explicitly accepted with the new total; `accepted`: a later acceptance. */
   advanceAcceptance: { at: string | null; by: string | null; required: string | null; received: string | null; reason: string | null; low: boolean; kind: "accepted" | "kept" } | null;
   lowAdvance: boolean;
+  /** API 2.50.0 (YD SOFT 2.23.0): the operator asked the customer for the missing advance; it holds while the prices and the
+   *  verified money are the same (null otherwise, or from an older shop). The order keeps waiting on the same proforma. */
+  differenceRequest: { at: string | null; by: string | null; required: string | null; received: string | null; gap: string | null; remaining: string | null; reason: string | null } | null;
   cancel: { state: "in_flight" | "unknown"; at: string | null; by: string | null; reason: string | null } | null;
   cancelled: { series: string | null; number: string | null; amount: string | null; currency: string | null; cancelledAt: string | null; cancelledBy: string | null; reason: string | null }[];
   superseded: { series: string | null; number: string | null; amount: string | null; supersededAt: string | null }[];
@@ -200,7 +204,7 @@ const BLOCKERS = [
   "replace_confirmation_required",
   // API 2.45.0 / YD SOFT 2.19.0
   "total_not_accepted", "total_already_accepted", "declaration_required", "commercial_record_damaged", "financial_unknown", "advance_not_received",
-  "advance_already_accepted", "payment_verifying", "low_advance_confirmation_required", "cancel_unknown", "advance_payment_received", "invoice_exists",
+  "advance_already_accepted", "difference_already_requested", "payment_verifying", "low_advance_confirmation_required", "cancel_unknown", "advance_payment_received", "invoice_exists",
   "no_payment_confirmation_required", "proforma_check_unknown", "cancel_refused", "smartbill_company_not_approved", "invoice_series_not_approved", "not_supported",
   "proforma_bank_missing", "proforma_series_not_approved", "payment_reference_invalid",
   // Owner business rules 2026-10-25

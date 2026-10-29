@@ -191,6 +191,27 @@ test("master update: the operator reads the money, accepts a smaller advance, ca
       await expect(page.getByTestId("cf-money-advance")).toContainText("Avans parțial");
       await expect(page.getByTestId("cf-money-invoice")).toContainText("Nefacturată");
       await expect(page.getByTestId("cf-money-deadline")).toContainText("2026-11-15");
+      // Owner 2026-10-29: the decision of a smaller verified advance, with its four amounts and two plain choices.
+      await expect(page.getByTestId("cf-advance-decision")).toBeVisible();
+      await expect(page.getByTestId("cf-advance-decision")).toContainText("Avans încasat și verificat");
+      await expect(page.getByTestId("cf-advance-decision")).toContainText("Rest de plată la livrare");
+      await expect(page.getByTestId("cf-advance-required")).toContainText("215,70");
+      await expect(page.getByTestId("cf-advance-received")).toContainText("200,00");
+      await expect(page.getByTestId("cf-advance-gap")).toContainText("15,70");
+      await expect(page.getByTestId("cf-advance-remaining")).toContainText("519,00");
+      await expect(page.getByTestId("cf-proforma-accept-advance")).toHaveText("Acceptă avansul primit și continuă comanda");
+      await page.getByTestId("cf-advance-request-difference").click();
+      await expect(page.getByTestId("cf-proforma-confirm-text")).toContainText("nu se emite o proformă nouă");
+      await expect(page.getByTestId("cf-proforma-confirm-text")).toContainText("15,70");
+      await accessible(page, "request difference confirm");
+      expect(await overflow(page), "320 px: request difference overflow").toBeLessThanOrEqual(0);
+      await page.getByTestId("cf-proforma-send").click();
+      await expect(page.getByTestId("cf-invoice-result")).toContainText("Diferența de avans a fost solicitată. Comanda așteaptă plata.");
+      await expect(page.getByTestId("cf-advance-difference-requested")).toContainText("15,70");
+      await expect(page.getByTestId("cf-advance-request-difference")).toHaveCount(0);
+      await expect(page.getByTestId("cf-money-remaining")).toContainText("519,00");
+      await page.screenshot({ path: path.join(SHOTS, "operator-request-difference-320.png"), fullPage: true });
+      // The customer then agrees to pay the rest on delivery: the operator accepts the advance received.
       await page.getByTestId("cf-proforma-accept-advance").click();
       await expect(page.getByTestId("cf-proforma-confirm-text")).toContainText("Dacă acceptați suma primită, comanda poate continua.");
       await expect(page.getByTestId("cf-proforma-confirm-text")).toContainText("519,00");

@@ -38,7 +38,7 @@ export interface BankCheck { source: string; coversUntil: string; recordedAt: st
 export interface BankChecks { items: BankCheck[]; waiting: Record<string, number>; sources: string[]; canRecord: string[] }
 export interface ShopAwb {
   state: "none" | "created" | "unknown"; number: string | null; createdAt: string | null; delivered: boolean; cod: string | null;
-  codCheck: { state: string; awbCod: string | null; expected: string | null } | null; blockers: string[]; address: { kind: "task" | "done"; at: string | null }[]; pickup: "not_tracked";
+  codCheck: { state: string; awbCod: string | null; expected: string | null; corrected: boolean } | null; blockers: string[]; address: { kind: "task" | "done"; at: string | null }[]; pickup: "not_tracked";
 }
 export interface ShopCardRefund { available: boolean; transactions: number; requests: { state: "manual_required" | "completed" | "unknown"; at: string | null; amount: string | null; transactions: number; verified: number; completedAt: string | null; mailed: boolean }[] }
 export interface ShopOperations { features: { reactivation?: string; awb?: string; cardRefunds?: string }; orderStatus: string | null; awb: ShopAwb; cardRefund: ShopCardRefund }
@@ -58,7 +58,7 @@ export interface HealthMetrics { generatedAt: string; sources: Record<string, He
 /** What a recorded "no answer" did to the proforma cycle (API 2.46.0): started (the cycle state) or why not. */
 export interface ContactCycle { started: boolean; state: string | null; reason: string | null }
 
-export type OperationPath = "reactivate" | "awb" | "awb/address" | "card-refund" | "card-refund/record" | "card-refund/verify";
+export type OperationPath = "reactivate" | "awb" | "awb/address" | "awb/cod-corrected" | "card-refund" | "card-refund/record" | "card-refund/verify";
 
 export interface ConfirmareOpsApi {
   cycleAttention(source: string | null, signal?: AbortSignal): Promise<CycleAttentionItem[]>;
@@ -173,7 +173,7 @@ export function mapShopOperations(value: unknown): ShopOperations {
     orderStatus: optStr(raw.orderStatus, 30),
     awb: {
       state: oneOf(awb.state, ["none", "created", "unknown"] as const), number: optStr(awb.number, 20), createdAt: instant(awb.createdAt), delivered: bool(awb.delivered), cod: money(awb.cod),
-      codCheck: check === null ? null : { state: str(check.state, 20), awbCod: money(check.awbCod), expected: money(check.expected) },
+      codCheck: check === null ? null : { state: str(check.state, 20), awbCod: money(check.awbCod), expected: money(check.expected), corrected: check.corrected == null ? false : bool(check.corrected) },
       blockers: list(awb.blockers, 30, (entry) => code(entry) ?? fail()), address: list(awb.address, 10, (entry) => { const a = obj(entry); return { kind: oneOf(a.kind, ["task", "done"] as const), at: instant(a.at) }; }),
       pickup: "not_tracked",
     },
@@ -241,7 +241,7 @@ export function mapContactCycle(value: unknown): ContactCycle | null {
 export const OPS_BLOCKERS = [
   "stage_not_ready", "confirmare_not_approved", "order_cancellation", "operation_open", "production_started", "order_not_cancelled", "payment_required", "finance_scope_required",
   "finance_action_open", "order_unavailable", "reactivation_disabled", "awb_disabled", "card_refund_disabled", "order_refunded", "order_closed", "invoice_missing", "payment_verifying",
-  "finance_attention", "address_incomplete", "phone_missing", "shipping_mismatch", "awb_exists", "awb_unavailable", "cod_changed", "awb_refused", "awb_missing", "label_unavailable",
+  "finance_attention", "address_incomplete", "phone_missing", "shipping_mismatch", "awb_exists", "awb_unavailable", "cod_changed", "cod_mismatch", "cod_not_mismatched", "awb_refused", "awb_missing", "label_unavailable",
   "address_task_missing", "address_task_open", "not_card_payment", "card_payment_unverified", "nothing_to_refund", "refund_request_missing", "refund_pending", "finance_open",
   "amount_exceeds_received", "duplicate_reference", "entry_not_found", "entry_not_pending", "same_employee", "refund_record_failed", "not_received", "order_busy", "finance_unavailable",
 ] as const;
@@ -249,7 +249,7 @@ export const OPS_BLOCKERS = [
 export const blockerKey = (code: string): MessageKey => ((OPS_BLOCKERS as readonly string[]).includes(code) ? `cf.ops.blocker.${code}` : "cf.ops.blocker.other") as MessageKey;
 
 const OPS_ERRORS = [
-  "CONFIRMARE_OPERATION_DENIED", "CONFIRMARE_OPERATION_DISABLED", "CONFIRMARE_OPERATION_NOT_FOUND", "CONFIRMARE_AWB_LABEL_UNAVAILABLE", "CONFIRMARE_CYCLE_NONE", "CONFIRMARE_CYCLE_BUSY", "CONFIRMARE_CYCLE_RETRY_REFUSED",
+  "CONFIRMARE_OPERATION_DENIED", "CONFIRMARE_OPERATION_DISABLED", "CONFIRMARE_OPERATION_NOT_FOUND", "CONFIRMARE_AWB_LABEL_UNAVAILABLE", "CONFIRMARE_AWB_COD_MISMATCH", "CONFIRMARE_CYCLE_NONE", "CONFIRMARE_CYCLE_BUSY", "CONFIRMARE_CYCLE_RETRY_REFUSED",
   "CONFIRMARE_CYCLE_SCHEMA_MISSING", "CONFIRMARE_DENIED", "CONFIRMARE_FINANCE_DENIED", "CONFIRMARE_HEALTH_DENIED", "EFACTURA_TASK_CHANGED", "EFACTURA_TRANSITION_REFUSED", "EFACTURA_TASK_NOT_FOUND",
   "CONFIRMARE_SOURCE_UNAVAILABLE", "CONFIRMARE_AUDIT_UNAVAILABLE", "IDEMPOTENCY_CONFLICT", "CONFIRMARE_NOT_FOUND", "VALIDATION_FAILED",
 ] as const;

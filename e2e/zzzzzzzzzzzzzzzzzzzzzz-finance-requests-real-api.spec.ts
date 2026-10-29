@@ -73,6 +73,13 @@ test("the finance employee sees only the task: no customer, no order screen; rec
     await expect(page.getByTestId("fr-task")).toHaveAttribute("data-state", "checking");
     await expect(page.getByTestId("fr-start")).toHaveCount(0);
     await page.getByTestId("fr-mode-verified").click();
+    // Owner 2026-10-29: a smaller amount on the statement is recorded as it is (never "not received"); the rest is named.
+    await expect(page.getByTestId("fr-remaining")).toContainText("215,70");
+    await page.getByTestId("fr-amount").fill("190,00");
+    await expect(page.getByTestId("fr-partial-notice")).toContainText("25,70");
+    await expect(page.getByTestId("fr-partial-notice")).toContainText("Plata nu a fost primită");
+    await page.getByTestId("fr-amount").fill("215,70");
+    await expect(page.getByTestId("fr-partial-notice")).toHaveCount(0);
     // A different payment reference is refused in the browser (a clarification, never a guess).
     await page.getByTestId("fr-amount").fill("215,70");
     await page.getByTestId("fr-bank-reference").fill("BT E2E 0001");

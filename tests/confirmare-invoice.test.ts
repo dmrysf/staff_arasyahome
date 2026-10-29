@@ -244,6 +244,38 @@ test("the operator reads the order's money first: total, advance asked and recei
   assert.ok(CATALOGS.ro["inv.pf.confirm.advance"].includes("Dacă acceptați suma primită, comanda poate continua"));
 });
 
+test("owner 2026-10-29: a smaller verified advance shows asked, collected and verified, difference, rest on delivery, and two plain choices", () => {
+  const decisionShop = masterShop({ blockers: { ...pfNone, proformaCancel: [], totalAccept: ["total_already_accepted"], advanceAccept: [], advanceDifference: [] } });
+  const view = panelHtml(masterRead(decisionShop, ["advanceAccept", "advanceDifference"]));
+  const html = proformaHtml(view);
+  for (const [id, text] of [["cf-advance-required", "300,00"], ["cf-advance-received", "250,00"], ["cf-advance-gap", "50,00"], ["cf-advance-remaining", "750,00"]] as const) {
+    assert.ok(new RegExp(`data-testid="${id}">[^<]*${text}`).test(html), `${id} shows ${text}`);
+  }
+  for (const label of ["Avans solicitat", "Avans încasat și verificat", "Diferență de avans", "Rest de plată la livrare", "Acceptă avansul primit și continuă comanda", "Solicită diferența de avans"]) {
+    assert.ok(html.includes(label), label);
+  }
+  assert.equal(html.split('data-testid="cf-proforma-accept-advance"').length - 1, 1, "one accept button (in the decision), never two");
+  assert.ok(html.includes('data-testid="cf-advance-request-difference"') && !html.includes('data-testid="cf-proforma-partial"'), "the difference request is offered; the plain partial note gives way to the decision");
+  const verifying = proformaHtml(panelHtml(masterRead(masterShop({}, { verifying: true }), [])));
+  assert.ok(verifying.includes('data-testid="cf-advance-verifying"') && !verifying.includes('data-testid="cf-advance-request-difference"') && !verifying.includes('data-testid="cf-proforma-accept-advance"'), "a payment in verification: no decision yet");
+  const asked = panelHtml(masterRead(masterShop({ differenceRequest: { at: "2026-10-29T09:00:00Z", by: OP, required: "300.00", received: "250.00", gap: "50.00", remaining: "750.00", reason: null } }), ["advanceAccept"]));
+  assert.deepEqual(asked.summary.proforma?.differenceRequest, { at: "2026-10-29T09:00:00Z", by: OP, required: "300.00", received: "250.00", gap: "50.00", remaining: "750.00", reason: null });
+  const askedHtml = proformaHtml(asked);
+  assert.ok(askedHtml.includes('data-testid="cf-advance-difference-requested"') && askedHtml.includes("50,00") && askedHtml.includes('data-testid="cf-proforma-accept-advance"') && !askedHtml.includes('data-testid="cf-advance-request-difference"'),
+    "the difference asked: the order waits; accepting stays possible, asking again is not offered");
+  const older = panelHtml(masterRead(masterShop(), ["advanceAccept"]));
+  assert.ok(older.summary.proforma?.differenceRequest === null && older.summary.proforma?.blockers.advanceDifference[0] === "not_supported", "a shop before YD SOFT 2.23.0: the request is not supported");
+  const accepted = proformaHtml(panelHtml(masterRead(masterShop({ advanceAcceptance: { at: "2026-10-29T09:00:00Z", by: OP, required: "300.00", received: "250.00", reason: null, low: false, kind: "accepted" } }, { accepted: true }), [])));
+  assert.ok(!accepted.includes('data-testid="cf-advance-decision"'), "accepted: no decision any more");
+  assert.throws(() => mapInvoiceRead(masterRead(masterShop({ differenceRequest: { at: null, by: OP, required: "300.00", received: "250.00", gap: "50", remaining: "750.00", reason: null } }), [])), Error, "a malformed difference");
+  assert.equal(invoiceBlockerLabel("difference_already_requested"), CATALOGS.ro["inv.blocker.difference_already_requested"]);
+  for (const locale of ["ro", "tr", "en", "si"] as const) {
+    for (const key of ["inv.pf.partial.title", "inv.pf.partial.lead", "inv.pf.partial.required", "inv.pf.partial.received", "inv.pf.partial.gap", "inv.pf.partial.remaining", "inv.pf.partial.accept", "inv.pf.partial.difference",
+      "inv.pf.partial.verifying", "inv.pf.partial.requested", "inv.pf.confirm.difference", "inv.pf.done.difference", "inv.blocker.difference_already_requested"] as const) assert.ok((CATALOGS[locale][key] ?? "").length > 5, `${locale} ${key}`);
+  }
+  assert.ok(CATALOGS.ro["inv.pf.confirm.difference"].includes("nu se emite o proformă nouă"), "asking for the difference makes no document and sends no e-mail");
+});
+
 test("owner business rule: after a revision the money paid counts only with the operator's explicit decision; a wrong shipping amount blocks", () => {
   const decide = proformaHtml(panelHtml(masterRead(masterShop({ totalAcceptance: { state: "required", at: null, by: null, previousTotal: "1000.00", total: "1100.00", changes: [{ kind: "changed", name: "Draperie" }], note: null, advanceDecisionRequired: true } }), ["totalAccept"])));
   assert.ok(decide.includes('data-testid="cf-proforma-total-decision"') && decide.includes("250,00") && decide.includes("300,00") && decide.includes("50,00") && !decide.includes("rămâne valabil"),

@@ -222,7 +222,7 @@ export function FinanceTaskScreen({ requestId, service, navigate }: { requestId:
         {!task.allowed.verify && !task.allowed.notReceived && !task.allowed.clarify && !task.allowed.secondCheck && !task.allowed.reconcile && !task.allowed.start
           && <p className="dashboard-lead" data-testid="fr-no-action">{t(request.category === "done" ? "fr.task.closed" : "fr.task.nothingNow")}</p>}
 
-        {mode === "verified" && !pending && live.available && <VerifyForm currency={live.currency} reference={live.paymentReference} single={task.singleVerification} busy={busy}
+        {mode === "verified" && !pending && live.available && <VerifyForm currency={live.currency} reference={live.paymentReference} remaining={live.advance?.remaining ?? null} single={task.singleVerification} busy={busy}
           onCancel={() => setMode(null)} onReady={(input) => setPending({ kind: "verified", input })} />}
         {(mode === "not_received" || mode === "second_reject") && !pending && <ReasonForm reasons={NOT_RECEIVED_REASONS} busy={busy} onCancel={() => setMode(null)}
           onReady={(reason) => setPending(mode === "second_reject" ? { kind: "second_reject", reason: reason as NotReceivedReason } : { kind: "not_received", reason: reason as NotReceivedReason })} />}
@@ -230,7 +230,7 @@ export function FinanceTaskScreen({ requestId, service, navigate }: { requestId:
 
         {pending && <div className="cf-confirm" role="group" aria-labelledby="fr-confirm-title" data-testid="fr-confirm">
           <p className="eyebrow" id="fr-confirm-title">{t("fr.confirm.title")}</p>
-          <p data-testid="fr-confirm-text">{confirmText(pending, live.available ? live.currency : "RON", task.singleVerification, request.ledger === "manual", t)}</p>
+          <p data-testid="fr-confirm-text">{confirmText(pending, live.available ? live.currency : "RON", task.singleVerification, request.ledger === "manual", t, live.available ? live.advance?.remaining ?? null : null)}</p>
           <div className="cfw-actions">
             <button type="button" className="button button-primary" disabled={busy} onClick={confirm} data-testid="fr-confirm-send">{busy ? t("common.sending") : t("fr.confirm.send")}</button>
             <button type="button" className="button button-secondary" disabled={busy} onClick={() => setPending(null)} data-testid="fr-confirm-back">{t("fr.confirm.back")}</button>
@@ -241,9 +241,17 @@ export function FinanceTaskScreen({ requestId, service, navigate }: { requestId:
   );
 }
 
-function confirmText(pending: Pending, currency: string, single: boolean, manual: boolean, t: ReturnType<typeof useI18n>["t"]): string {
+/** Whole bani of a decimal amount ("190.00" -> 19000), for comparing the statement with the advance left. */
+const bani = (amount: string): number => Math.round(Number(amount) * 100);
+
+function confirmText(pending: Pending, currency: string, single: boolean, manual: boolean, t: ReturnType<typeof useI18n>["t"], remaining: string | null = null): string {
   switch (pending.kind) {
-    case "verified": return t(manual ? "fr.confirm.verifiedManual" : single ? "fr.confirm.verifiedSingle" : "fr.confirm.verifiedFourEyes", { amount: formatFinanceMoney(pending.input.amount, currency), reference: pending.input.reference, date: pending.input.valueDate });
+    case "verified": {
+      const text = t(manual ? "fr.confirm.verifiedManual" : single ? "fr.confirm.verifiedSingle" : "fr.confirm.verifiedFourEyes", { amount: formatFinanceMoney(pending.input.amount, currency), reference: pending.input.reference, date: pending.input.valueDate });
+      // Owner 2026-10-29: a smaller amount is recorded as it is; the operator decides on the difference.
+      return remaining !== null && bani(pending.input.amount) < bani(remaining)
+        ? `${text} ${t("fr.confirm.partial", { remaining: formatFinanceMoney(remaining, currency), gap: formatFinanceMoney(((bani(remaining) - bani(pending.input.amount)) / 100).toFixed(2), currency) })}` : text;
+    }
     case "not_received": return t("fr.confirm.notReceived", { reason: reasonLabel(pending.reason) });
     case "needs_clarification": return t("fr.confirm.clarify", { reason: reasonLabel(pending.reason) });
     case "second_verify": return t("fr.confirm.secondVerify");
@@ -251,7 +259,7 @@ function confirmText(pending: Pending, currency: string, single: boolean, manual
   }
 }
 
-function VerifyForm({ currency, reference, single, busy, onCancel, onReady }: { currency: string; reference: string | null; single: boolean; busy: boolean; onCancel: () => void; onReady: (input: { amount: string; reference: string; valueDate: string; paymentReference: string; currency: string }) => void }) {
+function VerifyForm({ currency, reference, remaining, single, busy, onCancel, onReady }: { currency: string; reference: string | null; remaining: string | null; single: boolean; busy: boolean; onCancel: () => void; onReady: (input: { amount: string; reference: string; valueDate: string; paymentReference: string; currency: string }) => void }) {
   const { t } = useI18n();
   const [amount, setAmount] = useState("");
   const [bankReference, setBankReference] = useState("");
@@ -259,10 +267,13 @@ function VerifyForm({ currency, reference, single, busy, onCancel, onReady }: { 
   const [paymentReference, setPaymentReference] = useState("");
   const [statement, setStatement] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  const typed = normalizeAmount(amount);
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const normalized = normalizeAmount(amount);
     if (!normalized) return setProblem(t("fr.form.amountInvalid"));
+    // More than the advance left is never recorded through a task (the shop refuses it too): a clarification.
+    if (remaining !== null && bani(normalized) > bani(remaining)) return setProblem(t("fr.form.overRemaining", { amount: formatFinanceMoney(normalized, currency), remaining: formatFinanceMoney(remaining, currency) }));
     if (!validReference(bankReference)) return setProblem(t("fr.form.referenceInvalid"));
     if (!/^\d{4}-\d{2}-\d{2}$/.test(valueDate)) return setProblem(t("fr.form.dateInvalid"));
     const typed = paymentReference.trim().toUpperCase();
@@ -277,6 +288,8 @@ function VerifyForm({ currency, reference, single, busy, onCancel, onReady }: { 
     <form className="cf-form fr-form" onSubmit={submit} data-testid="fr-verify-form" noValidate>
       <p className="dashboard-lead">{t(single ? "fr.form.leadSingle" : "fr.form.leadFourEyes")}</p>
       <label className="field"><span>{t("fr.form.amount", { currency })}</span><input inputMode="decimal" autoComplete="off" value={amount} onChange={(event) => setAmount(event.target.value)} data-testid="fr-amount" /></label>
+      {typed && remaining !== null && bani(typed) > 0 && bani(typed) < bani(remaining) && <Notice tone="info" role="status" testId="fr-partial-notice">{t("fr.form.partial", {
+        amount: formatFinanceMoney(typed, currency), remaining: formatFinanceMoney(remaining, currency), gap: formatFinanceMoney(((bani(remaining) - bani(typed)) / 100).toFixed(2), currency) })}</Notice>}
       <label className="field"><span>{t("fr.form.bankReference")}</span><input autoComplete="off" maxLength={64} value={bankReference} onChange={(event) => setBankReference(event.target.value)} data-testid="fr-bank-reference" /></label>
       <label className="field"><span>{t("fr.form.valueDate")}</span><input type="date" value={valueDate} onChange={(event) => setValueDate(event.target.value)} data-testid="fr-value-date" /></label>
       <label className="field"><span>{t("fr.form.paymentReference")}</span><input autoComplete="off" maxLength={64} value={paymentReference} onChange={(event) => setPaymentReference(event.target.value)} data-testid="fr-statement-reference" /></label>

@@ -50,6 +50,8 @@ export function ConfirmareOperationsPanel({ globalOrderId, service, mode = "orde
   const [weight, setWeight] = useState("");
   const [codSeen, setCodSeen] = useState(false);
   const [addressNote, setAddressNote] = useState("");
+  const [codNote, setCodNote] = useState("");
+  const [codFixed, setCodFixed] = useState(false);
   const [refund, setRefund] = useState({ amount: "", reference: "", valueDate: today() });
   const [entries, setEntries] = useState<FinanceEntry[] | null>(null);
   const keys = useRef(new Map<string, string>());
@@ -113,6 +115,7 @@ export function ConfirmareOperationsPanel({ globalOrderId, service, mode = "orde
       setResult({ tone: "success", text: success(outcome) });
       if (path === "awb") setCodSeen(false);
       if (path === "awb/address") setAddressNote("");
+      if (path === "awb/cod-corrected") { setCodFixed(false); setCodNote(""); }
       if (path === "reactivate") { setReason(""); setExceptionEntryId(""); }
       return;
     }
@@ -168,7 +171,8 @@ export function ConfirmareOperationsPanel({ globalOrderId, service, mode = "orde
   const parcelCount = Number(parcels);
   const parcelsValid = /^[1-9][0-9]?$/.test(parcels) && parcelCount <= 20;
   const weightValid = weight === "" || /^[0-9]{1,3}([.,][0-9]{1,2})?$/.test(weight);
-  const awbBlockers = awb ? awb.blockers.filter((code) => code !== "awb_exists") : [];
+  const awbBlockers = awb ? awb.blockers.filter((code) => code !== "awb_exists" && code !== "cod_mismatch") : [];
+  const codMismatch = awb !== null && !awb.delivered && awb.codCheck?.state === "mismatch";
   const canCreateAwb = state.allowed.awb && awb !== null && awb.state === "none" && awbBlockers.length === 0 && awb.cod !== null;
   const refundAmount = normalizeAmount(refund.amount);
 
@@ -191,6 +195,18 @@ export function ConfirmareOperationsPanel({ globalOrderId, service, mode = "orde
         {!state.awbStage && awb.state === "none" && <Notice tone="info" role="note" testId="cf-ops-awb-stage">{t("cf.ops.awb.stage")}</Notice>}
         {awb.cod !== null && <p className="cf-line-facts" data-testid="cf-ops-awb-cod">{t("cf.ops.awb.cod", { amount: formatFinanceMoney(awb.cod, currency) })}</p>}
         {awb.codCheck && awb.codCheck.state === "mismatch" && <Notice tone="danger" role="alert" testId="cf-ops-awb-mismatch">{t("cf.ops.awb.mismatch", { awb: formatFinanceMoney(awb.codCheck.awbCod, currency), expected: formatFinanceMoney(awb.codCheck.expected, currency) })}</Notice>}
+        {awb.codCheck && awb.codCheck.state === "match" && awb.codCheck.corrected && <p className="dashboard-footnote" data-testid="cf-ops-awb-corrected">{t("cf.ops.awb.corrected")}</p>}
+        {/* API 2.50.0: the label stops while the AWB collects another amount; the employee states the FAN Courier correction. */}
+        {codMismatch && state.allowed.awb && awb.codCheck?.expected && <div className="field cf-ops-address" data-testid="cf-ops-cod-fix">
+          <Notice tone="warning" role="note">{t("cf.ops.awb.labelBlocked")}</Notice>
+          <label htmlFor={`cf-awb-cod-note-${mode}`}>{t("cf.ops.cod.note")}</label>
+          <input id={`cf-awb-cod-note-${mode}`} value={codNote} maxLength={200} onChange={(event) => setCodNote(event.target.value)} data-testid="cf-awb-cod-note" />
+          <label className="check-field"><input type="checkbox" checked={codFixed} onChange={(event) => setCodFixed(event.target.checked)} data-testid="cf-awb-cod-fixed" /><span className="cf-check">{t("cf.ops.cod.check", { amount: formatFinanceMoney(awb.codCheck.expected, currency) })}</span></label>
+          <div className="cf-confirm-actions">
+            <button type="button" className="button button-primary" disabled={busy !== null || !codFixed || codNote.trim().length < 3} data-testid="cf-awb-cod-confirm"
+              onClick={() => { const amount = awb.codCheck?.expected; if (!amount) return; void operate("awb/cod-corrected", `cod|${amount}|${codNote.trim()}`, { amount, reasonNote: codNote.trim() }, () => t("cf.ops.cod.done")); }}>{t("cf.ops.cod.confirm")}</button>
+          </div>
+        </div>}
         {awb.state === "unknown" && <Notice tone="danger" role="note">{t("cf.ops.awb.unknownHint")}</Notice>}
         {awbBlockers.length > 0 && awb.state === "none" && <ul className="cf-checklist" data-testid="cf-ops-awb-blockers">{awbBlockers.map((code) => <li key={code} className="is-missing"><AppIcon name="lock" size={18} /><span>{t(blockerKey(code))}</span></li>)}</ul>}
         {canCreateAwb && <form className="cf-ops-form" onSubmit={(event) => {
@@ -205,7 +221,7 @@ export function ConfirmareOperationsPanel({ globalOrderId, service, mode = "orde
           <button type="submit" className="button button-primary" disabled={busy !== null || !parcelsValid || !weightValid || !codSeen} data-testid="cf-awb-create">{busy === "awb" ? t("common.sending") : t("cf.ops.awb.create")}</button>
         </form>}
         {awb.state === "created" && state.allowed.awb && <div className="cf-confirm-actions">
-          <button type="button" className="button button-secondary" disabled={busy !== null} onClick={() => { void label(); }} data-testid="cf-awb-label"><AppIcon name="document" size={18} />{busy === "label" ? t("common.loading") : t("cf.ops.awb.label")}</button>
+          <button type="button" className="button button-secondary" disabled={busy !== null || codMismatch} onClick={() => { void label(); }} data-testid="cf-awb-label"><AppIcon name="document" size={18} />{busy === "label" ? t("common.loading") : t("cf.ops.awb.label")}</button>
         </div>}
         {awb.state === "created" && state.allowed.awb && !awb.delivered && <div className="field cf-ops-address">
           <label htmlFor={`cf-awb-address-${mode}`}>{t("cf.ops.address.note")}</label>
