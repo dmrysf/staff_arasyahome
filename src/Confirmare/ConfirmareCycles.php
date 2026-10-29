@@ -856,7 +856,8 @@ final class ConfirmareCycles
     {
         $this->requireInstalled();
         $sources = array_values(array_filter(['trendhome', 'outletperdele'], fn (string $s): bool => ($source === null || $source === $s)
-            && ($this->confirmare->sees($actor, $s) || $this->financeViewer($actor, $s))));
+            // API 2.50.0: the list of a shop's proforma cycles names its orders: Confirmare scopes only, never finance.
+            && $this->confirmare->sees($actor, $s)));
         if ($sources === []) {
             return ['items' => [], 'sources' => []];
         }

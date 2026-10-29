@@ -213,6 +213,8 @@ final readonly class ManagementService
         } catch (PDOException) {
             $summary['financeScopes'] = null;
         }
+        // API 2.50.0: whom this identity supervises in finance (observation only) and who could be supervised.
+        $summary['financeSupervision'] = $summary['isRoot'] ? null : $this->financeSupervisionOf((string) $summary['id']);
         // SmartBill invoice scopes (API 2.43.0, migration 041). Root holds none implicitly; without the schema nobody holds one.
         $summary['invoiceScopes'] = $summary['isRoot'] ? null : (new InvoiceScopePolicy($this->pdo))->scopesOf((string) $summary['id']);
         // Granted stages narrowed to named sources (migration 023); a stage absent here reaches every source.
@@ -288,6 +290,10 @@ final readonly class ManagementService
         }
         $wanted = [];
         foreach (FinanceScopePolicy::CAPABILITIES as $capability) {
+            if ($capability === FinanceScopePolicy::VERIFY && !array_key_exists($capability, $input)) {
+                // API 2.50.0: a Dashboard older than `verify` sends three lists; the stored verify rows stay as they are.
+                continue;
+            }
             $sources = $this->stringList($input[$capability] ?? null, $capability);
             sort($sources);
             $wanted[$capability] = array_values(array_unique($sources));
@@ -301,6 +307,8 @@ final readonly class ManagementService
                 }
             }
             $before = (new FinanceScopePolicy($this->pdo))->scopesOf($target['employee_uuid']);
+            $wanted += [FinanceScopePolicy::VERIFY => $before[FinanceScopePolicy::VERIFY]];
+            $wanted = array_merge(array_flip(FinanceScopePolicy::CAPABILITIES), $wanted);
             if ($before === $wanted) {
                 return;
             }
@@ -313,6 +321,56 @@ final readonly class ManagementService
             }
             $this->bumpAuthorization($target['employee_uuid'], $now);
             $this->audit->record($actor, 'employee.finance_scopes_changed', 'employee', $target['employee_uuid'], $this->label($target), ['before' => $before, 'after' => $wanted], $requestId, $now);
+        });
+        return $this->getEmployee($actor, $employeeId);
+    }
+
+    /**
+     * The finance employees this identity supervises (API 2.50.0, migration 044). Root only, audited, replaces the whole
+     * list. Observation only: the supervisor sees the finance verification requests of these employees and their
+     * decisions, and never acts through supervision. Nobody supervises themselves or root; a supervised employee needs
+     * a finance scope (otherwise there is nothing to observe).
+     *
+     * @param array<string, mixed> $input {employeeIds: list<string>}
+     * @return array<string, mixed>
+     */
+    public function setFinanceSupervision(EmployeeIdentity $actor, string $employeeId, array $input, string $requestId): array
+    {
+        $this->authorization->requireApplication($actor, 'dashboard');
+        if (!$actor->isRoot) {
+            throw new ApiException(403, 'ROOT_ONLY', 'Only the principal administrator can change finance supervision.');
+        }
+        $wanted = $this->stringList($input['employeeIds'] ?? null, 'employeeIds');
+        foreach ($wanted as $id) {
+            $this->validUuid($id);
+        }
+        sort($wanted);
+        $this->mutateEmployee($actor, $employeeId, function (array $target, string $now) use ($actor, $wanted, $requestId): void {
+            $supervisor = (string) $target['employee_uuid'];
+            if (in_array($supervisor, $wanted, true)) {
+                throw new ApiException(400, 'VALIDATION_FAILED', 'Nobody supervises themselves.');
+            }
+            if ($wanted !== []) {
+                $marks = implode(', ', array_fill(0, count($wanted), '?'));
+                $eligible = $this->pdo->prepare("SELECT DISTINCT s.employee_uuid FROM employee_finance_scopes s INNER JOIN employees e ON e.employee_uuid = s.employee_uuid
+                    WHERE s.employee_uuid IN ({$marks}) AND s.employee_uuid NOT IN (SELECT employee_uuid FROM system_root_identity)");
+                $eligible->execute($wanted);
+                if (count($eligible->fetchAll(PDO::FETCH_COLUMN)) !== count($wanted)) {
+                    throw new ApiException(400, 'VALIDATION_FAILED', 'Every supervised employee must hold a finance scope.');
+                }
+            }
+            $policy = new FinanceScopePolicy($this->pdo);
+            $before = $policy->supervised($supervisor);
+            if ($before === $wanted) {
+                return;
+            }
+            $this->pdo->prepare('DELETE FROM employee_finance_supervision WHERE supervisor_employee_uuid = :id')->execute(['id' => $supervisor]);
+            $insert = $this->pdo->prepare('INSERT INTO employee_finance_supervision (supervisor_employee_uuid, employee_uuid, granted_at, granted_by_employee_uuid) VALUES (:supervisor, :employee, :now, :actor)');
+            foreach ($wanted as $employee) {
+                $insert->execute(['supervisor' => $supervisor, 'employee' => $employee, 'now' => $now, 'actor' => $actor->employeeUuid]);
+            }
+            $this->bumpAuthorization($supervisor, $now);
+            $this->audit->record($actor, 'employee.finance_supervision_changed', 'employee', $supervisor, $this->label($target), ['before' => $before, 'after' => $wanted], $requestId, $now);
         });
         return $this->getEmployee($actor, $employeeId);
     }
@@ -1623,6 +1681,22 @@ final readonly class ManagementService
     }
 
     /** @return list<string> */
+/** @return array{employeeIds: list<string>, candidates: list<array{id: string, displayName: string}>}|null */
+    private function financeSupervisionOf(string $employeeUuid): ?array
+    {
+        try {
+            $candidates = $this->pdo->prepare('SELECT DISTINCT e.employee_uuid, e.display_name FROM employee_finance_scopes s INNER JOIN employees e ON e.employee_uuid = s.employee_uuid
+                WHERE e.employee_uuid <> ? ORDER BY e.display_name, e.employee_uuid');
+            $candidates->execute([$employeeUuid]);
+            return [
+                'employeeIds' => (new FinanceScopePolicy($this->pdo))->supervised($employeeUuid),
+                'candidates' => array_map(static fn (array $row): array => ['id' => (string) $row['employee_uuid'], 'displayName' => (string) $row['display_name']], $candidates->fetchAll(PDO::FETCH_ASSOC)),
+            ];
+        } catch (PDOException) {
+            return null;
+        }
+    }
+
     private function stringList(mixed $value, string $field): array
     {
         if (!is_array($value) || !array_is_list($value) || count($value) > 100) {

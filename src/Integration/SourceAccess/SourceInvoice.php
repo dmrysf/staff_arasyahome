@@ -26,7 +26,7 @@ final class SourceInvoice
     use ValidatesSourceAnswer;
 
     public const ACTIONS = ['issue', 'send_mail', 'reissue', 'resolve'];
-    public const PROFORMA_ACTIONS = ['proforma_issue', 'proforma_send_mail', 'proforma_check', 'proforma_resolve', 'proforma_cancel', 'total_accept', 'advance_accept', 'proforma_remind'];
+    public const PROFORMA_ACTIONS = ['proforma_issue', 'proforma_send_mail', 'proforma_check', 'proforma_resolve', 'proforma_cancel', 'total_accept', 'advance_accept', 'proforma_remind', 'advance_difference'];
     /** Why the operator cancels the advance proforma (2.19.0); `expired_unpaid` is the cycle worker's own (2.20.0). */
     public const CANCEL_REASONS = ['order_changed', 'customer_request', 'wrong_details', 'duplicate', 'other', 'expired_unpaid'];
     public const REASONS = ['order_changed', 'customer_data', 'wrong_document', 'other'];
@@ -58,6 +58,8 @@ final class SourceInvoice
         'advance_decision_required', 'advance_decision_not_applicable', 'shipping_mismatch',
         // YD SOFT 2.20.0 (owner master decisions 2026-10-25): the reminders of the advance proforma.
         'proforma_not_sent', 'reminder_already_sent',
+        // YD SOFT 2.23.0 (owner 2026-10-29): the operator asks for the missing advance; the AWB's collection differs.
+        'difference_already_requested',
         // An action a shop of an older version does not know (never offered).
         'not_supported',
     ];
@@ -72,7 +74,7 @@ final class SourceInvoice
     public const PAYMENT_REFERENCE_PATTERN = '/^[A-Z]{2,4}[A-Z0-9]{1,20}$/D';
     public const OPERATION_STATES = ['none', 'in_flight', 'issued', 'unknown'];
     public const MAIL_STATES = ['none', 'smartbill', 'in_flight', 'sent', 'unknown', 'failed'];
-    public const RESULTS = ['issued', 'unknown', 'in_progress', 'sent', 'not_issued', 'not_sent', 'invoiced', 'not_invoiced', 'cancelled', 'not_cancelled', 'accepted', 'cancel_unknown', 'reminded'];
+    public const RESULTS = ['issued', 'unknown', 'in_progress', 'sent', 'not_issued', 'not_sent', 'invoiced', 'not_invoiced', 'cancelled', 'not_cancelled', 'accepted', 'cancel_unknown', 'reminded', 'requested'];
     public const DEADLINE_LEVELS = ['none', 'notice', 'warning', 'critical', 'overdue'];
     public const COD_STATES = ['none', 'match', 'mismatch', 'delivered', 'unknown'];
     private const UUID = '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/D';
@@ -81,6 +83,8 @@ final class SourceInvoice
     private const PROFORMA_GROUPS = ['proformaIssue', 'proformaSendMail', 'proformaCheck', 'proformaResolve'];
     /** 2.19.0 groups: a 2.18.0 shop does not send them (`not_supported`). */
     private const PROFORMA_NEW_GROUPS = ['proformaCancel', 'totalAccept', 'advanceAccept'];
+    /** YD SOFT 2.23.0 group: an older shop does not send it (`not_supported`). */
+    private const PROFORMA_DIFFERENCE_GROUPS = ['advanceDifference'];
     private const PROFORMA_HISTORY = ['proforma_issue', 'superseded', 'proforma_mail', 'check', 'proforma_resolve_document', 'proforma_resolve_mail', 'proforma_cancel', 'proforma_resolve_cancel', 'proforma_remind'];
     private const CHANGE_KINDS = ['added', 'removed', 'changed', 'shipping'];
 
@@ -274,11 +278,14 @@ final class SourceInvoice
                 'number' => self::optionalText($entry['number'] ?? null, 40),
                 'reason' => ($entry['reason'] ?? null) === null ? null : self::choice($entry['reason'], self::CANCEL_REASONS),
             ]),
-            'blockers' => self::groups(self::map($proforma['blockers'] ?? null), self::PROFORMA_GROUPS) + self::newGroups(self::map($proforma['blockers'] ?? null)),
+            'blockers' => self::groups(self::map($proforma['blockers'] ?? null), self::PROFORMA_GROUPS) + self::newGroups(self::map($proforma['blockers'] ?? null), self::PROFORMA_NEW_GROUPS)
+                + self::newGroups(self::map($proforma['blockers'] ?? null), self::PROFORMA_DIFFERENCE_GROUPS),
             // 2.19.0 (absent from a 2.18.0 shop).
             'money' => ($proforma['money'] ?? null) === null ? null : self::moneyPosition(self::map($proforma['money'])),
             'totalAcceptance' => ($proforma['totalAcceptance'] ?? null) === null ? null : self::totalAcceptance(self::map($proforma['totalAcceptance'])),
             'advanceAcceptance' => ($proforma['advanceAcceptance'] ?? null) === null ? null : self::advanceAcceptance(self::map($proforma['advanceAcceptance'])),
+            // YD SOFT 2.23.0: the operator asked for the missing advance (while it holds); absent from an older shop.
+            'differenceRequest' => ($proforma['differenceRequest'] ?? null) === null ? null : self::differenceRequest(self::map($proforma['differenceRequest'])),
             'lowAdvance' => array_key_exists('lowAdvance', $proforma) ? self::bool($proforma['lowAdvance']) : false,
             'cancel' => ($proforma['cancel'] ?? null) === null ? null : self::cancelState(self::map($proforma['cancel'])),
             'cancelled' => self::list($proforma['cancelled'] ?? [], 50, static fn (array $entry): array => [
@@ -330,10 +337,11 @@ final class SourceInvoice
      * @param array<string, mixed> $blockers
      * @return array<string, list<string>>
      */
-    private static function newGroups(array $blockers): array
+    /** @param list<string> $names */
+    private static function newGroups(array $blockers, array $names): array
     {
         $groups = [];
-        foreach (self::PROFORMA_NEW_GROUPS as $group) {
+        foreach ($names as $group) {
             $groups[$group] = array_key_exists($group, $blockers) ? self::groups($blockers, [$group])[$group] : ['not_supported'];
         }
         return $groups;
@@ -393,6 +401,23 @@ final class SourceInvoice
             // Owner business rule 2026-10-25: whether accepting this total needs the operator's explicit advance decision
             // (verified money above zero but below the standard advance of the new total).
             'advanceDecisionRequired' => ($value['advanceDecisionRequired'] ?? null) === null ? null : self::bool($value['advanceDecisionRequired']),
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $value
+     * @return array<string, mixed>
+     */
+    private static function differenceRequest(array $value): array
+    {
+        return [
+            'at' => self::optionalInstant($value['at'] ?? null),
+            'by' => ($value['by'] ?? null) === null ? null : self::pattern($value['by'], self::UUID),
+            'required' => ($value['required'] ?? null) === null ? null : self::money($value['required']),
+            'received' => ($value['received'] ?? null) === null ? null : self::money($value['received']),
+            'gap' => ($value['gap'] ?? null) === null ? null : self::money($value['gap']),
+            'remaining' => ($value['remaining'] ?? null) === null ? null : self::money($value['remaining']),
+            'reason' => ($value['reason'] ?? null) === null ? null : self::text($value['reason'], 300),
         ];
     }
 
@@ -469,6 +494,8 @@ final class SourceInvoice
             'awbCod' => ($value['awbCod'] ?? null) === null ? null : self::money($value['awbCod']),
             'expected' => ($value['expected'] ?? null) === null ? null : self::money($value['expected']),
             'status' => ($value['status'] ?? null) === null ? null : self::text($value['status'], 255),
+            // YD SOFT 2.23.0: the amount compared is an employee's statement of a correction in the FAN Courier panel.
+            'corrected' => array_key_exists('corrected', $value) ? self::bool($value['corrected']) : false,
         ];
     }
 
