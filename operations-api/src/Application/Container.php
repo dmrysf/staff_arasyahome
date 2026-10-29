@@ -237,6 +237,25 @@ final class Container
         );
     }
 
+    /** Finance verification requests (API 2.50.0, migration 044): the explicit finance task of an advance payment. */
+    public function financeVerificationRequests(?AuthorizationService $authorization = null): \Arasya\Operations\Confirmare\FinanceVerificationRequests
+    {
+        $transport = $this->sourceAccessTransport ?? new \Arasya\Operations\Integration\SourceAccess\StreamSourceAccessTransport(allowLoopback: !$this->config->isProduction());
+        return new \Arasya\Operations\Confirmare\FinanceVerificationRequests(
+            $this->pdo,
+            $authorization ?? new AuthorizationService(),
+            new \Arasya\Operations\Confirmare\FinanceScopePolicy($this->pdo),
+            new \Arasya\Operations\Confirmare\ConfirmareScopePolicy($this->pdo),
+            $this->confirmareFinance($authorization),
+            \Arasya\Operations\Integration\SourceAccess\SourceAccessRegistry::fromConfig($this->config),
+            new \Arasya\Operations\Integration\SourceAccess\SourceAccessClient($transport, $this->clock),
+            new PdoApiRateLimiter($this->pdo, $this->clock, $this->config->appSecret),
+            $this->clock,
+            // The HMAC of the bank evidence of a decision (amounts and references are low-entropy).
+            hash_hmac('sha256', 'finance-verification-evidence', $this->config->appSecret),
+        );
+    }
+
     /** Confirmare controlled shop edits (API 2.40.0, Phase 4B): preview and apply through the shop's own pricing. */
     public function confirmareSourceEdits(?AuthorizationService $authorization = null): \Arasya\Operations\Confirmare\ConfirmareSourceEdits
     {
@@ -379,6 +398,7 @@ final class Container
                 $this->financeTransferExceptions($authorization),
                 $this->confirmareCycles(),
                 $this->confirmareOperations($authorization),
+                $this->financeVerificationRequests($authorization),
                 new \Arasya\Operations\Confirmare\InvoiceEfactura($this->pdo, $this->clock, new \Arasya\Operations\Confirmare\InvoiceScopePolicy($this->pdo)),
                 new \Arasya\Operations\Confirmare\ConfirmareHealth($this->pdo, $this->clock, new \Arasya\Operations\Confirmare\ConfirmareScopePolicy($this->pdo),
                     new \Arasya\Operations\Confirmare\InvoiceScopePolicy($this->pdo), new \Arasya\Operations\Confirmare\FinanceScopePolicy($this->pdo)),

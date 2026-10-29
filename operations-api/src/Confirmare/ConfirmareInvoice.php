@@ -620,7 +620,10 @@ final readonly class ConfirmareInvoice
         if ($this->invoices->allows($actor, InvoiceScopePolicy::ISSUE, $source, $lock) && $documents && $generate) {
             return self::ROLE_DOCUMENTS;
         }
-        if ($this->finance->allows($actor, FinanceScopePolicy::VIEW, $source)) {
+        // API 2.50.0: a finance scope reads the document only of an order it reaches through a finance task (a row
+        // without an order, such as an assignee check by source, never takes the finance role).
+        $order = (string) ($row['order_uuid'] ?? '');
+        if ($order !== '' && FinanceTaskAccess::reaches($this->pdo, $this->finance, $actor, $order, $source)) {
             return self::ROLE_FINANCE;
         }
         if ($documents && ($generate || $this->authorization->can($actor, DocumentService::REPRINT))) {

@@ -75,6 +75,8 @@ final class SourceAccessFakeShop implements SourceAccessTransport
     public ?array $forceRefusal = null;
     public bool $financeRecord = true;
     public string $financeRefunds = 'manual';
+    /** YD SOFT 2.23.0: who completes a bank verification (four_eyes | single); null answers like an older shop (absent). */
+    public ?string $financeVerification = null;
     /** @var array<string, array{order: string, hash: string, status: int, body: array<string, mixed>}> employee|key => stored answer */
     public array $financeAnswers = [];
     /** SmartBill knobs: the outcome of the next SmartBill call; 'answer_lost' / 'crash' after the shop ran an action. */
@@ -471,6 +473,53 @@ final class SourceAccessFakeShop implements SourceAccessTransport
                 'submittedAt' => gmdate('Y-m-d\TH:i:s\Z', $now), 'decidedBy' => null, 'decidedAt' => null, 'decisionCode' => null,
                 'method' => (string) ($input['method'] ?? 'bank_transfer'), 'receipt' => $input['receipt'] ?? null, 'collector' => $input['collector'] ?? null,
                 'flags' => array_values(array_filter([($input['overpaymentConfirmed'] ?? false) === true ? 'overpayment' : null, isset($input['cancelledProforma']) ? 'cancelled_proforma' : null]))];
+        } elseif ($action === 'verify_transfer') {
+            // YD SOFT 2.23.0: one employee records and verifies a bank transfer of the advance (policy `single` only).
+            if ($this->financeVerification !== 'single') {
+                return $refuse('single_verification_disabled');
+            }
+            if (($input['bankStatementConfirmed'] ?? null) !== true || ($input['purpose'] ?? null) !== 'advance') {
+                return $refuse(($input['bankStatementConfirmed'] ?? null) !== true ? 'bank_statement_required' : 'purpose_not_allowed', 422);
+            }
+            if ($this->safetyRules && $cancelled) {
+                return $refuse('order_cancelled');
+            }
+            if (!($f['cod'] ?? false)) {
+                return $refuse('purpose_not_allowed');
+            }
+            $proforma = $this->orders[$orderId]['invoice']['pf']['document'] ?? null;
+            if ($proforma === null || ($f['proformaCancelled'] ?? false)) {
+                return $refuse('proforma_missing');
+            }
+            if (($input['currency'] ?? null) !== 'RON') {
+                return $refuse('currency_mismatch', 422);
+            }
+            $expected = 'TH' . preg_replace('/[^A-Z0-9]/', '', strtoupper((string) ($this->orders[$orderId]['number'] ?? $this->orders[$orderId]['id'])));
+            if (($input['paymentReference'] ?? null) !== $expected) {
+                return $refuse('payment_reference_mismatch', 422);
+            }
+            foreach ($f['entries'] as $entry) {
+                if ($entry['kind'] === 'transfer_in' && $entry['state'] === 'submitted') {
+                    return $refuse('transfer_pending');
+                }
+            }
+            $amount = (float) ($input['amount'] ?? 0);
+            if ($amount > max(0, $numbers['total'] - $numbers['received']) + 0.001) {
+                return $refuse('amount_exceeds_balance');
+            }
+            $normalized = preg_replace('/[^A-Z0-9]/', '', strtoupper((string) ($input['reference'] ?? '')));
+            foreach ($this->orders as $other) {
+                foreach ($other['finance']['entries'] ?? [] as $entry) {
+                    if ($entry['kind'] === 'transfer_in' && $entry['state'] !== 'rejected' && preg_replace('/[^A-Z0-9]/', '', strtoupper($entry['reference'])) === $normalized) {
+                        return $refuse('duplicate_reference');
+                    }
+                }
+            }
+            $entryId = $this->nextEntryId();
+            $at = gmdate('Y-m-d\TH:i:s\Z', $now);
+            $f['entries'][] = ['id' => $entryId, 'kind' => 'transfer_in', 'purpose' => 'advance', 'amount' => number_format($amount, 2, '.', ''), 'reference' => (string) $input['reference'], 'valueDate' => (string) $input['valueDate'],
+                'state' => 'verified', 'submittedBy' => $employee, 'submittedAt' => $at, 'decidedBy' => $employee, 'decidedAt' => $at, 'decisionCode' => 'verified',
+                'method' => 'bank_transfer', 'receipt' => null, 'collector' => null, 'flags' => ['single_verification']];
         } elseif ($action === 'decide_transfer' || $action === 'decide_refund') {
             if ($action === 'decide_refund' && ($input['productionComplete'] ?? null) !== true) {
                 return $refuse('production_not_complete');
@@ -598,11 +647,12 @@ final class SourceAccessFakeShop implements SourceAccessTransport
                 'transfers' => $money($n['transfers']), 'net' => $money($n['received'])],
             'payment' => ['onlineVerified' => !$n['cod'], 'paidRecorded' => !$n['cod'], 'evidence' => $n['cod'] ? 'none' : 'netopia_ipn'],
             'advance' => $n['cod'] ? ['percentage' => 30, 'required' => $money($n['required']), 'collected' => $money($n['received']), 'outstanding' => $money(max(0, $n['required'] - $n['received'])), 'onDelivery' => $money(max(0, $n['total'] - $n['received'])),
-                'paymentReference' => 'TH' . preg_replace('/[^A-Z0-9]/', '', strtoupper((string) ($o['number'] ?? $o['id']))), 'proforma' => isset($o['invoice']['pf']['document']) ? ['series' => (string) $o['invoice']['pf']['document']['series'], 'number' => (string) $o['invoice']['pf']['document']['number'], 'amount' => '215.70', 'currency' => 'RON', 'reference' => 'TH' . preg_replace('/[^A-Z0-9]/', '', strtoupper((string) ($o['number'] ?? $o['id'])))] : null] : null,
+                'paymentReference' => 'TH' . preg_replace('/[^A-Z0-9]/', '', strtoupper((string) ($o['number'] ?? $o['id']))), 'proforma' => isset($o['invoice']['pf']['document']) ? ['series' => (string) $o['invoice']['pf']['document']['series'], 'number' => (string) $o['invoice']['pf']['document']['number'], 'amount' => '215.70', 'currency' => 'RON', 'reference' => 'TH' . preg_replace('/[^A-Z0-9]/', '', strtoupper((string) ($o['number'] ?? $o['id'])))] : null]
+                + ($this->legacyProforma ? [] : ['proformaCancelled' => (bool) ($f['proformaCancelled'] ?? false)]) : null,
             'balance' => ['outstanding' => $n['cod'] ? null : $money(max(0, $n['total'] - $n['received'])), 'refundLiability' => $money($n['liability']), 'acknowledged' => $n['acknowledged']],
             'financial' => ['state' => $n['state'], 'basis' => $n['basis'], 'attention' => $n['attention']],
             'entries' => array_map(static fn (array $e): array => array_diff_key($e, ['pricing' => true]), $f['entries'] ?? []),
-            'capabilities' => ['record' => $this->financeRecord, 'refunds' => $this->financeRefunds, 'electronicRefund' => false],
+            'capabilities' => ['record' => $this->financeRecord, 'refunds' => $this->financeRefunds, 'electronicRefund' => false] + ($this->financeVerification === null ? [] : ['verification' => $this->financeVerification]),
         ] + ($this->legacyProforma ? [] : [
             // YD SOFT 2.19.0: the one money calculation (TEST numbers of this fake), no deadline, no AWB.
             'position' => ['currency' => 'RON', 'percentage' => $n['cod'] ? 30 : null, 'total' => $money($n['total']), 'advanceRequired' => $n['cod'] ? $money($n['required']) : null,

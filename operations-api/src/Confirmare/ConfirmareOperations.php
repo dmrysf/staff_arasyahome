@@ -364,7 +364,7 @@ final class ConfirmareOperations
                 // Owner K-07: after the first reactivation only real money proves the customer's intent.
                 if (!isset($input['exceptionEntryId'])) {
                     $codes[] = 'payment_required';
-                } elseif (!$this->financeViewer($actor, (string) $row['source_key'])) {
+                } elseif (!$this->hasFinanceScope($actor, (string) $row['source_key'])) {
                     $codes[] = 'finance_scope_required';
                 }
             }
@@ -437,11 +437,11 @@ final class ConfirmareOperations
     private function sees(EmployeeIdentity $actor, array $row): bool
     {
         $source = (string) $row['source_key'];
-        return $this->confirmare->sees($actor, $source) || $this->financeViewer($actor, $source)
+        return $this->confirmare->sees($actor, $source) || $this->financeViewer($actor, $row)
             || $this->invoices->allows($actor, InvoiceScopePolicy::ISSUE, $source) || $this->invoices->allows($actor, InvoiceScopePolicy::MANAGE, $source);
     }
 
-    private function financeViewer(EmployeeIdentity $actor, string $source): bool
+    private function hasFinanceScope(EmployeeIdentity $actor, string $source): bool
     {
         foreach (FinanceScopePolicy::CAPABILITIES as $capability) {
             if ($this->finance->allows($actor, $capability, $source)) {
@@ -449,6 +449,12 @@ final class ConfirmareOperations
             }
         }
         return false;
+    }
+
+    /** API 2.50.0: a finance scope reaches the order's operations only through a finance task of it (FinanceTaskAccess). */
+    private function financeViewer(EmployeeIdentity $actor, array $row): bool
+    {
+        return FinanceTaskAccess::reaches($this->pdo, $this->finance, $actor, (string) $row['order_uuid'], (string) $row['source_key']);
     }
 
     // ---- Relay ------------------------------------------------------------------------------------------------------------

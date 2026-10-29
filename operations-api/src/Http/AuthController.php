@@ -203,17 +203,20 @@ final readonly class AuthController
             }
         }
         // Confirmare finance scopes (API 2.41.0): explicit rows only, root included. Presentation only, like above.
-        $finance = ['view' => [], 'record' => [], 'approve' => []];
+        $finance = ['view' => [], 'record' => [], 'approve' => [], 'verify' => []];
+        $supervises = false;
         if ($this->financeScopes !== null) {
             try {
                 $finance = $this->financeScopes->scopesOf($employee->employeeUuid);
             } catch (\PDOException) {
-                $finance = ['view' => [], 'record' => [], 'approve' => []];
+                $finance = ['view' => [], 'record' => [], 'approve' => [], 'verify' => []];
             }
+            // API 2.50.0: whether the employee observes finance employees (the oversight screen); never an action.
+            $supervises = !$employee->isRoot && $this->financeScopes->supervised($employee->employeeUuid) !== [];
         }
         // SmartBill invoice scopes (API 2.43.0): explicit rows only, root included. Presentation only: every invoice call
         // checks the scope, the document permission and the order again.
         $invoice = $this->invoiceScopes === null ? ['issue' => [], 'manage' => []] : $this->invoiceScopes->scopesOf($employee->employeeUuid);
-        return EmployeeSerializer::safe($employee) + ['confirmareScopes' => $scopes, 'financeScopes' => $finance, 'invoiceScopes' => $invoice];
+        return EmployeeSerializer::safe($employee) + ['confirmareScopes' => $scopes, 'financeScopes' => $finance, 'financeSupervisor' => $supervises, 'invoiceScopes' => $invoice];
     }
 }

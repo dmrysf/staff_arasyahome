@@ -72,6 +72,15 @@ use Arasya\Operations\Security\CsrfGuard;
  *   GET  /confirmare/efactura[?source=&state=]             e-Factura follow-up of the invoices (issuer, invoice managers)
  *   POST /confirmare/efactura/{taskId}                     {outcome, expectedVersion}
  *   GET  /confirmare/health[?source=]                      operating counts per shop (supervisors, invoice managers, finance approvers, root)
+ * API 2.50.0 (finance verification requests, migration 044; FinanceVerificationRequests):
+ *   GET  /confirmare/orders/{globalOrderId}/finance-request             the order's request for its operators (a cheap poll)
+ *   POST /confirmare/orders/{globalOrderId}/finance-request             {purpose: advance} + Idempotency-Key (operator)
+ *   POST /confirmare/orders/{globalOrderId}/finance-request/{resubmit|cancel}  {expectedVersion, reasonCode?} + Idempotency-Key
+ *   GET  /confirmare/finance/requests                      the finance employee's own tasks (inbox)
+ *   GET  /confirmare/finance/requests/{requestId}          one task, minimized (audited, no-store)
+ *   POST /confirmare/finance/requests/{requestId}/{start|decide|second-check|reconcile}  + Idempotency-Key
+ *   GET  /confirmare/finance/oversight[?employee=&source=&state=&from=&to=]  the supervised employees' requests (read only)
+ *   GET  /confirmare/finance/oversight/{requestId}         one of them: its audit trail and the order's bank transfers
  */
 final readonly class ConfirmareController
 {
@@ -101,6 +110,7 @@ final readonly class ConfirmareController
         private FinanceTransferExceptions $exceptions,
         private ConfirmareCycles $cycles,
         private ConfirmareOperations $operations,
+        private FinanceVerificationRequests $requests,
         private InvoiceEfactura $efactura,
         private ConfirmareHealth $health,
         private AuthenticationService $auth,
@@ -210,6 +220,62 @@ final readonly class ConfirmareController
             $this->csrf->requireValid($session->rawToken, $request->header('x-csrf-token'));
             return $this->json($this->cycles->advanceForActor($actor, rawurldecode($m[1]), $request->requestId));
         }
+        if ($path === '/confirmare/finance/requests' && $request->method === 'GET') {
+            return $this->json($this->requests->inbox($actor));
+        }
+        if (preg_match('#^/confirmare/finance/requests/([0-9a-f-]{36})$#D', $path, $m) === 1) {
+            if ($request->method !== 'GET') {
+                throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
+            }
+            return $this->json($this->requests->task($actor, $m[1], $request->requestId));
+        }
+        if (preg_match('#^/confirmare/finance/requests/([0-9a-f-]{36})/(start|decide|second-check|reconcile)$#D', $path, $m) === 1) {
+            if ($request->method !== 'POST') {
+                throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
+            }
+            $this->csrf->requireValid($session->rawToken, $request->header('x-csrf-token'));
+            $key = $request->header('idempotency-key') ?? '';
+            if ($m[2] === 'reconcile') {
+                // No field: an empty JSON object is the whole body.
+                if (trim($request->body) !== '{}') {
+                    throw new ApiException(400, 'INVALID_REQUEST', 'The body must be an empty JSON object.');
+                }
+                return $this->json($this->requests->reconcile($actor, $m[1], $request->requestId));
+            }
+            $input = $request->json(2048);
+            return $this->json(match ($m[2]) {
+                'start' => $this->requests->start($actor, $m[1], $input, $key, $request->requestId),
+                'decide' => $this->requests->decide($actor, $m[1], $input, $key, $request->requestId),
+                default => $this->requests->secondCheck($actor, $m[1], $input, $key, $request->requestId),
+            });
+        }
+        if ($path === '/confirmare/finance/oversight' && $request->method === 'GET') {
+            return $this->json($this->requests->oversight($actor, ['employee' => $request->query('employee'), 'source' => $request->query('source'), 'state' => $request->query('state'),
+                'from' => $request->query('from'), 'to' => $request->query('to')]));
+        }
+        if (preg_match('#^/confirmare/finance/oversight/([0-9a-f-]{36})$#D', $path, $m) === 1) {
+            if ($request->method !== 'GET') {
+                throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
+            }
+            return $this->json($this->requests->oversightDetail($actor, $m[1], $request->requestId));
+        }
+        if (preg_match('#^/confirmare/orders/([^/]{1,600})/finance-request(?:/(resubmit|cancel))?$#D', $path, $m) === 1) {
+            $globalId = rawurldecode($m[1]);
+            if ($request->method === 'GET' && !isset($m[2])) {
+                return $this->json($this->requests->forOrder($actor, $globalId));
+            }
+            if ($request->method !== 'POST') {
+                throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
+            }
+            $this->csrf->requireValid($session->rawToken, $request->header('x-csrf-token'));
+            $key = $request->header('idempotency-key') ?? '';
+            $input = $request->json(1024);
+            return $this->json(match ($m[2] ?? '') {
+                'resubmit' => $this->requests->resubmit($actor, $globalId, $input, $key, $request->requestId),
+                'cancel' => $this->requests->cancel($actor, $globalId, $input, $key, $request->requestId),
+                default => $this->requests->request($actor, $globalId, $input, $key, $request->requestId),
+            });
+        }
         if ($path === '/confirmare/finance' && $request->method === 'GET') {
             return $this->json($this->finance->queue($actor, $request->query('task'), $request->query('source')));
         }
@@ -219,7 +285,8 @@ final readonly class ConfirmareController
         if (preg_match('#^/confirmare/orders/([^/]{1,600})$#D', $path, $m) === 1 && $request->method === 'GET') {
             $detail = $this->service->detail($actor, rawurldecode($m[1]));
             $capabilities = $this->sourceAccess->capabilities($actor, rawurldecode($m[1]));
-            return $this->json($detail + ['cycle' => $this->cycles->viewForActor($actor, rawurldecode($m[1])), 'sourceAccess' => $capabilities + $this->sourceEdits->state($actor, rawurldecode($m[1]), $capabilities['read']), 'finance' => $this->finance->capabilities($actor, rawurldecode($m[1])), 'invoice' => $this->invoice->capabilities($actor, rawurldecode($m[1]))]);
+            return $this->json($detail + ['cycle' => $this->cycles->viewForActor($actor, rawurldecode($m[1])), 'sourceAccess' => $capabilities + $this->sourceEdits->state($actor, rawurldecode($m[1]), $capabilities['read']), 'finance' => $this->finance->capabilities($actor, rawurldecode($m[1])), 'invoice' => $this->invoice->capabilities($actor, rawurldecode($m[1])),
+                'financeRequest' => $this->financeRequest($actor, rawurldecode($m[1]))]);
         }
         if (preg_match('#^/confirmare/orders/([^/]{1,600})/shop-employees$#D', $path, $m) === 1) {
             if ($request->method !== 'GET') {
@@ -380,6 +447,16 @@ final readonly class ConfirmareController
             return $answer;
         }
         return $answer + ['proformaCycle' => $this->cycles->afterNoAnswerFor($actor, $globalId, $requestId)];
+    }
+
+    /** @return array<string, mixed>|null the order's finance verification request for its operators (API 2.50.0; never throws) */
+    private function financeRequest(\Arasya\Operations\Employee\EmployeeIdentity $actor, string $globalId): ?array
+    {
+        try {
+            return $this->requests->forOrder($actor, $globalId);
+        } catch (ApiException|\PDOException) {
+            return null;
+        }
     }
 
     /** @param list<string> $allowed @return array<string, mixed> */

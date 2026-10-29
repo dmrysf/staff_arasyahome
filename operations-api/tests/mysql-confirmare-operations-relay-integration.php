@@ -229,7 +229,8 @@ $event(1, 'cancelled', 'cancelled');
 $th->orders[$id(1)]['ops'] = ['status' => 'cancelled', 'exceptions' => ['bankexc0001']];
 $check((string) $one('SELECT cancellation_state FROM operational_orders WHERE global_order_id = ?', [$g(1)]) === 'held', 'the shop cancelled the order: production is held');
 $error($operate($who['cout'], $g(1), 'reactivate', ['reason' => 'customer_returned']), 404, 'CONFIRMARE_NOT_FOUND', 'another shop\'s operator never reaches it');
-$error($operate($who['cfinview'], $g(1), 'reactivate', ['reason' => 'customer_returned']), 403, 'CONFIRMARE_OPERATION_DENIED', 'finance alone does not reactivate');
+// API 2.50.0: a finance scope reaches an order only through a finance task, so a viewer without one never sees it.
+$error($operate($who['cfinview'], $g(1), 'reactivate', ['reason' => 'customer_returned']), 404, 'CONFIRMARE_NOT_FOUND', 'finance alone does not reactivate (no finance task: not found)');
 $error($operate($who['cop'], $g(1), 'reactivate', ['reason' => 'because']), 422, 'VALIDATION_FAILED', 'the reason is one of the two codes');
 $first = $ok($operate($who['cop'], $g(1), 'reactivate', ['reason' => 'customer_returned']), 'the customer came back: first reactivation');
 $check($first['state'] === 'applied' && $first['result'] === 'reactivated' && $th->orders[$id(1)]['ops']['status'] === 'on-hold', 'the shop put the order back on hold');

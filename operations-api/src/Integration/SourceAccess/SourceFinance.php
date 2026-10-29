@@ -20,14 +20,17 @@ final class SourceFinance
 {
     use ValidatesSourceAnswer;
 
-    public const ACTIONS = ['submit_transfer', 'decide_transfer', 'acknowledge_liability', 'submit_refund', 'decide_refund'];
+    /** verify_transfer (YD SOFT 2.23.0, API 2.50.0): one employee records and verifies a bank transfer, policy `single` only. */
+    public const ACTIONS = ['submit_transfer', 'decide_transfer', 'acknowledge_liability', 'submit_refund', 'decide_refund', 'verify_transfer'];
+    /** Who completes a bank verification in the shop (YD SOFT 2.23.0; absent from older shops: four_eyes). */
+    public const VERIFICATION_POLICIES = ['four_eyes', 'single'];
     public const PURPOSES = ['advance', 'additional_payment'];
     /** How the money came (2.19.0): bank transfer, cash at the office or shop, cash collected by a driver at the customer. */
     public const METHODS = ['bank_transfer', 'cash_office', 'cash_courier'];
     /** The document of a cash collection (its number is the entry's reference). */
     public const RECEIPTS = ['bon_fiscal', 'chitanta'];
     /** card_full_refund (YD SOFT 2.20.0): the NETOPIA full card refund recorded by finance, verified only through the operations route. */
-    public const FLAGS = ['overpayment', 'cancelled_proforma', 'card_full_refund'];
+    public const FLAGS = ['overpayment', 'cancelled_proforma', 'card_full_refund', 'single_verification'];
     public const COLLECTOR_PATTERN = '/^[\p{L}\p{M}][\p{L}\p{M} .\'-]{1,63}$/uD';
     public const REJECT_REASONS = ['not_received', 'amount_mismatch', 'wrong_order', 'duplicate', 'other'];
     /** Shop refusals of a finance action Operations understands (anything else is SOURCE_ERROR). */
@@ -41,6 +44,9 @@ final class SourceFinance
         'transfer_not_recorded',
         // YD SOFT 2.19.0: a cash collection without its document; a payment for a cancelled proforma without a decision.
         'cash_document_required', 'proforma_cancelled',
+        // YD SOFT 2.23.0 (verify_transfer): the shop's policy is four eyes; the statement's payment reference is not the
+        // order's; another currency than the order's; no statement confirmation; no advance proforma to verify against.
+        'single_verification_disabled', 'payment_reference_mismatch', 'currency_mismatch', 'bank_statement_required', 'proforma_missing',
     ];
     /**
      * Refusals of the YD SOFT safety rules (owner rule 2 and K-1), valid only as a 409 answer to the actions that can
@@ -54,7 +60,7 @@ final class SourceFinance
      */
     public const ACTION_REFUSALS = [
         'finance_open' => ['submit_refund', 'decide_refund'],
-        'order_cancelled' => ['submit_transfer', 'decide_transfer'],
+        'order_cancelled' => ['submit_transfer', 'decide_transfer', 'verify_transfer'],
     ];
     /** YD SOFT 2.18.0: the shop's record of bank transfers that match no order (TransferExceptions). */
     public const EXCEPTION_ACTIONS = ['record_exception', 'resolve_exception'];
@@ -165,6 +171,8 @@ final class SourceFinance
                 'record' => self::bool($capabilities['record'] ?? null),
                 'refunds' => self::choice($capabilities['refunds'] ?? null, ['off', 'manual']),
                 'electronicRefund' => self::bool($capabilities['electronicRefund'] ?? null),
+                // YD SOFT 2.23.0 (absent from an older shop: four eyes).
+                'verification' => ($capabilities['verification'] ?? null) === null ? 'four_eyes' : self::choice($capabilities['verification'], self::VERIFICATION_POLICIES),
             ],
         ];
         if ($summary['capabilities']['electronicRefund'] !== false || ($cod && $advance === null)) {

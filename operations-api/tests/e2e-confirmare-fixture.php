@@ -66,6 +66,10 @@ $order = static function (string $number, ?DateTimeImmutable $submitted, array $
     $online = ($extra['payment'] ?? 'online') === 'online';
     $p['order']['payment'] = $online ? ['method' => 'online', 'advanceStatus' => 'not_required', 'advanceRevision' => 0] : ['method' => 'cod', 'advanceStatus' => 'waiting', 'advanceRevision' => 0];
     $p['order']['financial'] = $online && $priced ? ['state' => 'cleared', 'basis' => 'online_payment', 'pricingFingerprint' => $fingerprint] : ['state' => $priced ? 'waiting' : 'unknown', 'basis' => null, 'pricingFingerprint' => $priced ? $fingerprint : null];
+    if (isset($extra['financial'])) {
+        // API 2.50.0: the money state the shop sends with the order (a finance scope reaches the order only through it).
+        $p['order']['financial'] = $extra['financial'] + ['pricingFingerprint' => $fingerprint];
+    }
     if (isset($extra['due'])) {
         $p['order']['dueDate'] = $extra['due'];
     }
@@ -183,7 +187,8 @@ $service = $container->confirmareService();
 // The server distributes (never the browser): two operators of Trend Home, one of Outlet Perdele.
 $service->distribute();
 // After the run: one order waits unassigned, one legacy order and one with an unknown submission instant.
-$ingest('trendhome', $order('91005', $after(10)));
+// The shop reports the raised total as an additional payment due (the event YD SOFT sends; finance work on its own).
+$ingest('trendhome', $order('91005', $after(10), ['financial' => ['state' => 'waiting', 'basis' => null, 'attention' => 'additional_payment_due']]));
 // The TEST shop's money record of 91005: paid 500 by card, the total is now 650 (TEST amounts).
 $shopOrders['91005']['finance'] = ['cod' => false, 'total' => '650.00', 'paid' => '500.00', 'original' => '500.00', 'pricing' => $shopOrders['91005']['pricing']];
 $ingest('trendhome', $order('91090', $activatedAt->modify('-1 hour')));

@@ -40,6 +40,8 @@ try {
     $shop->products = is_array($fixture['products'] ?? null) ? $fixture['products'] : [];
     // Phase 5: the shop's stored answers of finance actions persist too (a lost answer is reconciled with them).
     $shop->financeAnswers = is_array($fixture['financeAnswers'] ?? null) ? $fixture['financeAnswers'] : [];
+    // API 2.50.0 (YD SOFT 2.23.0): the shop's verification policy, a fixture switch (never changed by a request).
+    $shop->financeVerification = is_string($fixture['financeVerification'] ?? null) ? $fixture['financeVerification'] : null;
     // API 2.43.0: the shop's stored invoice answers and the TEST SmartBill documents and e-mails persist too.
     $shop->invoiceAnswers = is_array($fixture['invoiceAnswers'] ?? null) ? $fixture['invoiceAnswers'] : [];
     $shop->smartbillDocuments = is_array($fixture['smartbillDocuments'] ?? null) ? $fixture['smartbillDocuments'] : [];

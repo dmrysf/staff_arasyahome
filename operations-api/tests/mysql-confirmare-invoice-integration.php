@@ -82,7 +82,7 @@ $all = static function (string $sql, array $params = []) use ($pdo): array { $s 
 // Migration 041's tables stay (schema_migrations records them); between suites only their rows are removed.
 $clearInvoice = static function () use ($pdo): void { foreach (['confirmare_cycle_steps', 'confirmare_proforma_cycles', 'confirmare_bank_checks', 'confirmare_reactivations', 'invoice_efactura_tasks', 'order_source_operations', 'order_invoice_qr_checks', 'order_shop_assignments', 'order_invoice_actions', 'order_invoice_reads', 'employee_invoice_scopes'] as $table) $pdo->exec("DELETE FROM {$table}"); };
 $clearInvoice();
-foreach (['order_finance_actions', 'order_finance_reads', 'employee_finance_scopes', 'order_confirmation_source_edits', 'order_confirmation_source_reads', 'order_confirmation_contacts', 'order_confirmation_idempotency', 'confirmare_alerts', 'order_confirmation_events', 'order_confirmations', 'workflow_cohort_activations', 'employee_confirmare_scopes', 'confirmare_operator_state'] as $table) {
+foreach (['finance_verification_request_events', 'finance_verification_requests', 'employee_finance_supervision', 'order_finance_actions', 'order_finance_reads', 'employee_finance_scopes', 'order_confirmation_source_edits', 'order_confirmation_source_reads', 'order_confirmation_contacts', 'order_confirmation_idempotency', 'confirmare_alerts', 'order_confirmation_events', 'order_confirmations', 'workflow_cohort_activations', 'employee_confirmare_scopes', 'confirmare_operator_state'] as $table) {
     $pdo->exec("DELETE FROM {$table}");
 }
 $pdo->exec('DELETE FROM api_rate_limit_buckets');
@@ -268,6 +268,16 @@ $prepare($g(1));
 $r = $read($who['idoc'], $g(1));
 $check($r['handoff']['state'] === 'awaiting_cutting' && in_array('issue', $r['allowedActions'], true) && $r['assignment']['employeeId'] === $uuids['idoc'] && $r['qr']['verified'] === true, 'ticket printed, routed to this employee, QR scanned: issuing allowed: ' . json_encode($r['allowedActions']));
 $v = $read($who['iview'], $g(1));
+// API 2.50.0: a finance scope reads an order's SmartBill state only through a finance task of the order.
+$error($invoice($who['ifin'], $g(1)), 404, 'CONFIRMARE_NOT_FOUND', 'a finance scope without a task of the order: not found');
+// TEST fixture: earlier finance verification requests decided by `ifin` (closed) give it a task of orders 1, 8, 13 and 14.
+foreach ([1, 8, 13, 14] as $n) {
+    $orderUuidN = (string) $one('SELECT order_uuid FROM operational_orders WHERE global_order_id = ?', [$g($n)]);
+    $pdo->prepare("INSERT INTO finance_verification_requests (request_uuid, order_uuid, global_order_id, source_key, purpose, state, version, open_order_uuid, assigned_employee_uuid, assigned_at, requested_by_employee_uuid, requested_at,
+            request_idempotency_key, proforma_number, outcome, decided_by_employee_uuid, decided_at, updated_at)
+        VALUES (?, ?, ?, 'trendhome', 'advance', 'not_received', 1, NULL, ?, UTC_TIMESTAMP(6), ?, UTC_TIMESTAMP(6), ?, 'TEST1', 'not_received', ?, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6))")
+        ->execute([Uuid::v4(), $orderUuidN, $g($n), $uuids['ifin'], $uuids['iop'], "inv-fixture-{$n}-{$suffix}", $uuids['ifin']]);
+}
 $f = $read($who['ifin'], $g(1));
 $m = $read($who['imgr'], $g(1));
 $check($v['role'] === 'viewer' && $v['allowedActions'] === [] && in_array('not_allowed_for_role', $v['blockers']['issue'], true) && $f['role'] === 'finance' && $f['allowedActions'] === [] && $m['role'] === 'manager', 'a ticket employee without the scope reads as viewer, finance as finance (both read only), the manager as manager');
@@ -407,7 +417,7 @@ $paid = $payload($id(13), 200, ['payment' => 'cod']);
 $paid['order']['financial'] = ['state' => 'cleared', 'basis' => 'advance_collected', 'pricingFingerprint' => $paid['order']['pricing']['fingerprint']];
 $ok(T::ingest($kernel, 'trendhome', $paid), 'the shop reports the verified advance');
 $th->orders[$id(13)]['invoice']['cleared'] = true;
-$check($tasksOf($queue('iop'), $g(13)) === ['advance_verified'] && $tasksOf($queue('ifin'), $g(13)) === ['advance_verified'], 'paid: the operator and finance see "Avans plătit"');
+$check($tasksOf($queue('iop'), $g(13)) === ['advance_verified'] && $tasksOf($queue('ifin'), $g(13)) === [], 'paid: the operator sees "Avans plătit"; API 2.50.0: the finance queue lists no advance');
 $check($read($who['iop'], $g(13))['summary']['proforma']['advance']['state'] === 'paid' && $read($who['iop'], $g(13))['routing']['allowed'] === true, 'the operator sees the advance paid without confirming anything and may route the order');
 $error($route($g(13), 'ifin'), 422, 'CONFIRMARE_SHOP_EMPLOYEE_NOT_ELIGIBLE', 'finance is not a shop employee for invoices');
 $error($route($g(13), 'iout'), 422, 'CONFIRMARE_SHOP_EMPLOYEE_NOT_ELIGIBLE', 'another shop\'s employee never receives it');
@@ -694,7 +704,7 @@ $check(preg_match('/0744\s?666\s?777|744666777|smartbill\.ro/', (string) file_ge
 
 // Leave the shared disposable database as the next suites expect it: no Confirmare, finance or invoice state (041's tables stay).
 $clearInvoice();
-foreach (['order_finance_actions', 'order_finance_reads', 'employee_finance_scopes', 'order_confirmation_source_edits', 'order_confirmation_source_reads', 'order_confirmation_contacts', 'order_confirmation_idempotency', 'confirmare_alerts', 'order_confirmation_events', 'order_confirmations', 'workflow_cohort_activations', 'employee_confirmare_scopes', 'confirmare_operator_state'] as $table) {
+foreach (['finance_verification_request_events', 'finance_verification_requests', 'employee_finance_supervision', 'order_finance_actions', 'order_finance_reads', 'employee_finance_scopes', 'order_confirmation_source_edits', 'order_confirmation_source_reads', 'order_confirmation_contacts', 'order_confirmation_idempotency', 'confirmare_alerts', 'order_confirmation_events', 'order_confirmations', 'workflow_cohort_activations', 'employee_confirmare_scopes', 'confirmare_operator_state'] as $table) {
     $pdo->exec("DELETE FROM {$table}");
 }
 $pdo->exec('UPDATE operational_orders SET workflow_cohort = NULL, workflow_cohort_reason = NULL, workflow_cohort_at = NULL, cancellation_state = NULL, production_stopped_at = NULL WHERE workflow_cohort IS NOT NULL OR cancellation_state IS NOT NULL');
