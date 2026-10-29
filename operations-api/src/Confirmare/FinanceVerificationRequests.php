@@ -25,35 +25,55 @@ use PDOException;
 use Throwable;
 
 /**
- * Finance verification requests (API 2.50.0, migration 044): the explicit finance task of one order's advance payment.
+ * Finance tasks (API 2.50.0, migration 044): the explicit finance work of one order, assigned to one finance employee.
  *
  *   operator -> request -> assigned finance employee -> verified | not_received | needs_clarification -> operator
  *
- * - An operator of the order (its assignee or the employee who approved it, with Confirmare `operate`, or a supervisor
- *   of the source) asks for a verification once the order is approved and its advance proforma exists. The request is
- *   assigned to one finance employee of the source (the least loaded who holds `record` or `verify`; `verify` first
- *   under the `single` policy). An order has at most one open request; asking again returns the open one.
- * - The finance employee sees only the requests assigned to them (inbox), opens one (a minimized view: the proforma,
- *   the advance, the money already verified, the bank account the proforma names and the bank transfers of the order;
- *   never the customer, the products or the order's history) and decides with an explicit confirmation:
+ * - Scope (owner decision 2026-10-29, FinanceTaskScope): every Trend Home and Outlet Perdele order first submitted at
+ *   or after 2026-10-22 00:00 Europe/Bucharest, whatever its workflow cohort. Covering an order never means a task for
+ *   it: a task exists only when an operator asks for one or the task inventory points one at an existing finance record.
+ * - An operator of the order asks for a verification of its advance proforma: in Confirmare the order's assignee or the
+ *   employee who approved it (Confirmare `operate`), or a supervisor of the source, once the order is approved; for an
+ *   order outside Confirmare (legacy, NULL, undetermined: no Confirmare assignee exists) an operator or supervisor of the
+ *   source. The task goes to one finance employee of the source (the least loaded who holds `record` or `verify`;
+ *   `verify` first under the `single` policy). An order has at most one open task; asking again returns the open one.
+ * - The finance employee sees only the tasks assigned to them (inbox), opens one (a minimized view read from the shop
+ *   now: the proforma, the advance, the money already verified, the bank account the proforma names (masked) and the
+ *   bank transfers of the order; never the customer, the products or the order's history) and decides with an explicit
+ *   confirmation:
  *     verified:  the bank transfer found on the statement (amount, bank reference, value date, the payment reference
- *                the statement shows, the currency). Under the `single` policy (Operations and the shop both `single`,
- *                the employee holds `verify`) the shop records and verifies it in one step (`verify_transfer`). Under
- *                `four_eyes` (the default) the shop records it (`submit_transfer`) and the request waits for a second
- *                employee with `approve` (second check); nothing is money received before that.
+ *                the statement shows, the currency).
+ *                - `shop` ledger (a Confirmare order): under the `single` policy (Operations and the shop both
+ *                  `single`, the employee holds `verify`) the shop records and verifies it in one step
+ *                  (`verify_transfer`); under `four_eyes` (the default) the shop records it (`submit_transfer`) and the
+ *                  task waits for its named second employee with `approve` (`checker_employee_uuid`, never the
+ *                  recorder); nothing is money received before that.
+ *                - `manual` ledger (an order outside Confirmare): the shop's finance record is not written for it and
+ *                  the order is never moved into Confirmare. The task ends in `requires_manual_review`: the payment
+ *                  was found on the statement, the old workflow records it; the advance is NOT marked as received.
  *     not_received / needs_clarification: codes only, nothing is sent to the shop.
- * - A finance supervisor observes the requests of the employees they supervise (oversight); supervision never acts.
+ * - Second checks of transfers recorded outside a task and exceptional money states become tasks of a named employee
+ *   through FinanceTaskInventory (dry-run first; never from a guess).
+ * - A finance supervisor observes the tasks of the employees they supervise (oversight); supervision never acts.
  *
  * Every command names the version it saw and carries an Idempotency-Key. The money actions go through ConfirmareFinance
  * (its order lock, revision check, idempotency, reconciliation and production block); their applied answers settle the
- * request (onFinanceApplied, also when the same entry is decided from the order's finance panel). A lost answer leaves
- * the request in `exception` (`outcome_unknown`) until it is reconciled with the shop's stored answer: never verified on
- * a guess. Nothing here issues a document, creates an AWB, starts production or changes the Confirmare approval.
+ * task (onFinanceApplied, also when the same entry is decided from the order's finance panel). A lost answer leaves
+ * the task in `exception` (`outcome_unknown`) until it is reconciled with the shop's stored answer: never verified on
+ * a guess. Nothing here issues a document, creates an AWB, starts production, changes the Confirmare approval, moves an
+ * order between workflows or reopens a closed order.
  */
 final readonly class FinanceVerificationRequests
 {
-    public const STATES = ['requested', 'assigned', 'checking', 'verified', 'not_received', 'needs_clarification', 'exception', 'cancelled'];
+    public const STATES = ['requested', 'assigned', 'checking', 'verified', 'not_received', 'needs_clarification', 'exception', 'cancelled', 'requires_manual_review', 'resolved'];
     public const OPEN_STATES = ['requested', 'assigned', 'checking', 'needs_clarification', 'exception'];
+    public const CLOSED_STATES = ['verified', 'not_received', 'cancelled', 'requires_manual_review', 'resolved'];
+    public const PURPOSES = ['advance', 'second_check', 'exception'];
+    /** The shop's finance record holds the transfer (Confirmare), or the order keeps its old workflow (manual). */
+    public const LEDGER_SHOP = 'shop';
+    public const LEDGER_MANUAL = 'manual';
+    /** Commercial states of the shop in which an order is closed: no new finance task, nothing reopened. */
+    private const CLOSED_COMMERCE = ['cancelled', 'refunded', 'failed', 'completed', 'trash'];
     public const NOT_RECEIVED_REASONS = ['not_found', 'amount_mismatch', 'wrong_reference', 'duplicate'];
     public const CLARIFICATION_REASONS = ['reference_missing', 'amount_unclear', 'payer_unclear', 'other'];
     public const CANCEL_REASONS = ['customer_withdrew', 'already_settled', 'requested_by_mistake'];
@@ -131,8 +151,10 @@ final readonly class FinanceVerificationRequests
             return $this->operatorView($actor, $row) + ['created' => false];
         }
         $this->requireRequestable($row);
+        $ledger = self::ledgerOf($row);
         $target = $this->registry->find((string) $row['source_key']);
-        if ($target === null || !$target->allowsFinanceRecord()) {
+        // A Confirmare order's transfer is recorded in the shop (record); an older order's task only reads the shop.
+        if ($target === null || ($ledger === self::LEDGER_SHOP ? !$target->allowsFinanceRecord() : !$target->allowsFinanceRead())) {
             throw new ApiException(409, 'CONFIRMARE_FINANCE_DISABLED', 'Finance actions are not enabled for this shop.');
         }
         $this->rateLimit($actor);
@@ -142,15 +164,22 @@ final readonly class FinanceVerificationRequests
         if ($summary === null) {
             throw new ApiException(503, 'CONFIRMARE_SOURCE_UNAVAILABLE', 'The shop could not be asked. Nothing was sent to finance.');
         }
+        if (($summary['capabilities']['ledger'] ?? self::LEDGER_SHOP) !== $ledger) {
+            // Arasya and the shop disagree on where this order's payments are recorded: a person looks at it first.
+            throw new ApiException(409, 'FINANCE_REQUEST_LEDGER_MISMATCH', 'The shop and Arasya disagree on this order\'s workflow. Nothing was sent to finance.');
+        }
         $advance = $summary['advance'];
         $proforma = $advance['proforma'] ?? null;
         if (!$summary['order']['cod'] || $advance === null || $proforma === null || ($advance['proformaCancelled'] ?? false)) {
             throw new ApiException(409, 'FINANCE_REQUEST_NO_PROFORMA', 'The order has no valid advance proforma to verify a payment against.');
         }
-        if ($summary['financial']['state'] === 'unknown' || $summary['financial']['attention'] !== null) {
+        if ($summary['financial']['attention'] !== null || ($ledger === self::LEDGER_SHOP && $summary['financial']['state'] === 'unknown')) {
             throw new ApiException(409, 'FINANCE_REQUEST_ATTENTION', 'The money of the order needs another finance decision first.', ['attention' => $summary['financial']['attention']]);
         }
-        if ((float) ($advance['outstanding'] ?? 0) <= 0) {
+        // An older order's money state may be unknown to the shop (its old workflow kept no advance record): finance
+        // looks for the payment, but nothing is ever assumed received. A covered advance is never verified again.
+        $outstanding = $advance['outstanding'] ?? null;
+        if ($summary['financial']['state'] === 'cleared' || ($ledger === self::LEDGER_SHOP ? (float) ($outstanding ?? 0) <= 0 : ($outstanding !== null && (float) $outstanding <= 0))) {
             throw new ApiException(409, 'FINANCE_REQUEST_NOTHING_DUE', 'The advance is already covered.');
         }
         $now = $this->now();
@@ -163,14 +192,14 @@ final readonly class FinanceVerificationRequests
                 $this->pdo->rollBack();
                 return $this->operatorView($actor, $row) + ['created' => false];
             }
-            $policy = $target->allowsSingleVerification() && ($summary['capabilities']['verification'] ?? 'four_eyes') === 'single' ? 'single' : 'four_eyes';
+            $policy = $ledger === self::LEDGER_SHOP && $target->allowsSingleVerification() && ($summary['capabilities']['verification'] ?? 'four_eyes') === 'single' ? 'single' : 'four_eyes';
             $assignee = $this->leastLoaded((string) $row['source_key'], $policy);
             $state = $assignee === null ? 'requested' : 'assigned';
             $this->pdo->prepare('INSERT INTO finance_verification_requests (request_uuid, order_uuid, global_order_id, source_key, purpose, state, version, open_order_uuid, assigned_employee_uuid, assigned_at,
-                    requested_by_employee_uuid, requested_at, request_idempotency_key, proforma_series, proforma_number, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)')->execute([
+                    requested_by_employee_uuid, requested_at, request_idempotency_key, ledger, proforma_series, proforma_number, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')->execute([
                 $uuid, (string) $row['order_uuid'], (string) $row['global_order_id'], (string) $row['source_key'], 'advance', $state, (string) $row['order_uuid'], $assignee, $assignee === null ? null : $now,
-                $actor->employeeUuid, $now, $key, $proforma['series'] === '' ? null : $proforma['series'], $proforma['number'], $now,
+                $actor->employeeUuid, $now, $key, $ledger, $proforma['series'] === '' ? null : $proforma['series'], $proforma['number'], $now,
             ]);
             $this->event($uuid, 1, 'requested', $actor->employeeUuid, null, $state, $assignee, null, null, null, $key, $requestId, $now);
             $this->pdo->commit();
@@ -232,8 +261,8 @@ final readonly class FinanceVerificationRequests
     // ---- Finance employee -------------------------------------------------------------------------------------------
 
     /**
-     * The finance employee's own tasks: the requests assigned to them, the second checks waiting for them (four eyes)
-     * and the bank transfers recorded before 2.50.0 that wait for a decision. Nothing else of any order.
+     * The finance employee's own tasks: the tasks assigned to them and the second checks they are the named checker of
+     * (four eyes). Nothing else of any order, whatever the employee's scopes.
      *
      * @return array<string, mixed>
      */
@@ -247,19 +276,13 @@ final readonly class FinanceVerificationRequests
         }
         $this->rebalance($scopes);
         $since = $this->sql($this->clock->now()->modify('-' . self::DONE_DAYS . ' days'));
-        $approve = $scopes[FinanceScopePolicy::APPROVE];
-        $parameters = [$actor->employeeUuid, $since, $actor->employeeUuid, $since];
-        $second = '0 = 1';
-        if ($approve !== []) {
-            $sourceParameters = [];
-            $second = "(r.state IN ('checking', 'exception') AND r.policy = 'four_eyes' AND r.source_entry_id IS NOT NULL AND r.recorded_by_employee_uuid <> ? AND "
-                . ConfirmareScopePolicy::condition($approve, 'r.source_key', $sourceParameters) . ')';
-            array_push($parameters, $actor->employeeUuid, ...$sourceParameters);
-        }
+        // Only what is assigned to this employee by name: their tasks, what they decided, the second checks they are the
+        // named checker of. A scope alone lists nothing of the source.
         $statement = $this->pdo->prepare("SELECT r.*, o.order_number FROM finance_verification_requests r INNER JOIN operational_orders o ON o.order_uuid = r.order_uuid
-            WHERE (r.assigned_employee_uuid = ? AND (r.open_order_uuid IS NOT NULL OR r.updated_at >= ?)) OR (r.decided_by_employee_uuid = ? AND r.updated_at >= ?) OR {$second}
+            WHERE (r.assigned_employee_uuid = ? AND (r.open_order_uuid IS NOT NULL OR r.updated_at >= ?)) OR (r.decided_by_employee_uuid = ? AND r.updated_at >= ?)
+               OR (r.checker_employee_uuid = ? AND (r.open_order_uuid IS NOT NULL OR r.updated_at >= ?))
             ORDER BY r.requested_at, r.request_uuid LIMIT " . self::LIMIT);
-        $statement->execute($parameters);
+        $statement->execute([$actor->employeeUuid, $since, $actor->employeeUuid, $since, $actor->employeeUuid, $since]);
         $items = [];
         $counts = ['todo' => 0, 'clarification' => 0, 'done' => 0];
         foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
@@ -270,23 +293,7 @@ final readonly class FinanceVerificationRequests
             $counts[$item['category']]++;
             $items[] = $item;
         }
-        // Bank transfers recorded before the requests existed and still waiting for a second employee (four eyes).
-        $legacy = [];
-        if ($approve !== []) {
-            $legacyParameters = [];
-            $condition = ConfirmareScopePolicy::condition($approve, 'o.source_key', $legacyParameters);
-            $legacyStatement = $this->pdo->prepare("SELECT o.global_order_id, o.order_number, o.source_key, o.source_changed_at FROM operational_orders o
-                WHERE o.workflow_cohort = 'confirmare' AND o.source_financial_attention = 'transfer_pending' AND {$condition}
-                  AND NOT EXISTS (SELECT 1 FROM finance_verification_requests r WHERE r.order_uuid = o.order_uuid AND r.open_order_uuid IS NOT NULL)
-                ORDER BY o.source_changed_at, o.global_order_id LIMIT 50");
-            $legacyStatement->execute($legacyParameters);
-            foreach ($legacyStatement->fetchAll(PDO::FETCH_ASSOC) as $row) {
-                $legacy[] = ['globalOrderId' => (string) $row['global_order_id'], 'source' => (string) $row['source_key'], 'orderNumber' => (string) $row['order_number'],
-                    'changedAt' => $row['source_changed_at'] === null ? null : self::iso((string) $row['source_changed_at'])];
-                $counts['todo']++;
-            }
-        }
-        return ['items' => $items, 'legacySecondChecks' => $legacy, 'counts' => $counts, 'sources' => $sources, 'limit' => self::LIMIT];
+        return ['items' => $items, 'counts' => $counts, 'sources' => $sources, 'limit' => self::LIMIT];
     }
 
     /**
@@ -341,7 +348,7 @@ final readonly class FinanceVerificationRequests
                 if (!in_array($input['reasonCode'] ?? null, $reasons, true)) {
                     throw new ApiException(422, 'FINANCE_REQUEST_INVALID', 'reasonCode is not valid.', ['field' => 'reasonCode']);
                 }
-                if (!in_array($request['state'], ['assigned', 'checking', 'exception'], true) || $request['assigned_employee_uuid'] !== $actor->employeeUuid
+                if ($request['purpose'] !== 'advance' || !in_array($request['state'], ['assigned', 'checking', 'exception'], true) || $request['assigned_employee_uuid'] !== $actor->employeeUuid
                     || $request['source_entry_id'] !== null || $request['finance_idempotency_key'] !== null) {
                     // A transfer recorded in the shop is decided by the second check; an unknown answer is reconciled.
                     throw self::stateError($request);
@@ -370,15 +377,19 @@ final readonly class FinanceVerificationRequests
             }
             return $this->afterDecision($actor, $request, $requestId);
         }
-        if (!in_array($request['state'], ['assigned', 'checking'], true) || $request['assigned_employee_uuid'] !== $actor->employeeUuid
+        if ($request['purpose'] !== 'advance' || !in_array($request['state'], ['assigned', 'checking'], true) || $request['assigned_employee_uuid'] !== $actor->employeeUuid
             || $request['source_entry_id'] !== null || $request['finance_idempotency_key'] !== null) {
             throw self::stateError($request);
         }
         $this->requireVersion($request, $input['expectedVersion'] ?? null);
         $row = $this->orderByUuid((string) $request['order_uuid']);
         $target = $row === null ? null : $this->registry->find((string) $row['source_key']);
-        if ($row === null || $target === null || !$target->allowsFinanceRecord()) {
+        $manual = $request['ledger'] === self::LEDGER_MANUAL;
+        if ($row === null || $target === null || ($manual ? !$target->allowsFinanceRead() : !$target->allowsFinanceRecord())) {
             throw new ApiException(409, 'CONFIRMARE_FINANCE_DISABLED', 'Finance actions are not enabled for this shop.');
+        }
+        if ($row['closed']) {
+            throw new ApiException(409, 'FINANCE_REQUEST_ORDER_CLOSED', 'The order was cancelled or closed in the shop.');
         }
         $this->rateLimit($actor);
         // The shop's money now: the proforma must be the requested one, the currency and the payment reference its own.
@@ -399,6 +410,22 @@ final readonly class FinanceVerificationRequests
         $expectedReference = $proforma['reference'] ?? $summary['advance']['paymentReference'] ?? null;
         if ($expectedReference === null || !hash_equals((string) $expectedReference, $evidence['paymentReference'])) {
             throw new ApiException(422, 'FINANCE_REQUEST_PAYMENT_REFERENCE', 'The payment reference on the statement is not the one of this proforma. Ask for a clarification.', ['field' => 'paymentReference']);
+        }
+        if ($manual) {
+            // An order outside Confirmare: the shop's finance record is not written and the order is not moved. The
+            // payment found on the statement is handed to the old workflow; it is never money received here.
+            if (!$this->finance->allows($actor, FinanceScopePolicy::RECORD, (string) $row['source_key'])) {
+                throw new ApiException(403, 'CONFIRMARE_FINANCE_DENIED', 'You have no finance permission for this action on this order.');
+            }
+            $hmac = hash_hmac('sha256', json_encode([$request['request_uuid'], $evidence['amount'], $evidence['reference'], $evidence['valueDate'], $evidence['paymentReference'], $evidence['currency']], JSON_THROW_ON_ERROR), $this->hmacKey);
+            $this->command($actor, $request, ['expectedVersion' => $input['expectedVersion']], $key, function (array $locked, string $now) use ($actor, $hmac, $key, $requestId): void {
+                if ($locked['state'] !== 'assigned' && $locked['state'] !== 'checking') {
+                    throw self::stateError($locked);
+                }
+                $this->transition($locked, 'requires_manual_review', 'found_manual_review', $actor->employeeUuid, 'found_manual', 'legacy_workflow', $key, $requestId, $now,
+                    ['outcome' => 'found_manual', 'reason_code' => 'legacy_workflow', 'decided_by_employee_uuid' => $actor->employeeUuid, 'decided_at' => $now, 'evidence_hmac' => $hmac]);
+            });
+            return $this->afterDecision($actor, $this->requestRow((string) $request['request_uuid']) ?? $request, $requestId);
         }
         $single = $target->allowsSingleVerification() && ($summary['capabilities']['verification'] ?? 'four_eyes') === 'single'
             && $this->finance->allows($actor, FinanceScopePolicy::VERIFY, (string) $row['source_key']);
@@ -463,7 +490,7 @@ final readonly class FinanceVerificationRequests
         $this->requireStaff($actor);
         $request = $this->reachable($actor, $requestUuid);
         if ($request['state'] !== 'checking' || $request['policy'] !== 'four_eyes' || $request['source_entry_id'] === null || $request['recorded_by_employee_uuid'] === $actor->employeeUuid
-            || !$this->finance->allows($actor, FinanceScopePolicy::APPROVE, (string) $request['source_key'])) {
+            || $request['checker_employee_uuid'] !== $actor->employeeUuid || !$this->finance->allows($actor, FinanceScopePolicy::APPROVE, (string) $request['source_key'])) {
             if ($request['recorded_by_employee_uuid'] === $actor->employeeUuid) {
                 throw new ApiException(403, 'CONFIRMARE_FINANCE_SAME_EMPLOYEE', 'Another employee must verify what you recorded.');
             }
@@ -540,15 +567,15 @@ final readonly class FinanceVerificationRequests
         }
         $parameters = [];
         $people = ConfirmareScopePolicy::condition($supervised, 'r.assigned_employee_uuid', $parameters) . ' OR ' . ConfirmareScopePolicy::condition($supervised, 'r.decided_by_employee_uuid', $parameters)
-            . ' OR ' . ConfirmareScopePolicy::condition($supervised, 'r.recorded_by_employee_uuid', $parameters);
+            . ' OR ' . ConfirmareScopePolicy::condition($supervised, 'r.recorded_by_employee_uuid', $parameters) . ' OR ' . ConfirmareScopePolicy::condition($supervised, 'r.checker_employee_uuid', $parameters);
         $where = "({$people})";
         $employee = $filters['employee'] ?? null;
         if ($employee !== null) {
             if (!in_array($employee, $supervised, true)) {
                 throw new ApiException(403, 'FINANCE_OVERSIGHT_DENIED', 'You do not supervise this employee.');
             }
-            $where .= ' AND (r.assigned_employee_uuid = ? OR r.decided_by_employee_uuid = ? OR r.recorded_by_employee_uuid = ?)';
-            array_push($parameters, $employee, $employee, $employee);
+            $where .= ' AND (r.assigned_employee_uuid = ? OR r.decided_by_employee_uuid = ? OR r.recorded_by_employee_uuid = ? OR r.checker_employee_uuid = ?)';
+            array_push($parameters, $employee, $employee, $employee, $employee);
         }
         $source = $filters['source'] ?? null;
         if ($source !== null) {
@@ -558,7 +585,7 @@ final readonly class FinanceVerificationRequests
             $where .= ' AND r.source_key = ?';
             $parameters[] = $source;
         }
-        $groups = ['pending' => ['requested', 'assigned'], 'checking' => ['checking'], 'verified' => ['verified'], 'not_received' => ['not_received'], 'attention' => ['exception', 'needs_clarification']];
+        $groups = ['pending' => ['requested', 'assigned'], 'checking' => ['checking'], 'verified' => ['verified'], 'not_received' => ['not_received'], 'attention' => ['exception', 'needs_clarification', 'requires_manual_review']];
         $state = $filters['state'] ?? null;
         if ($state !== null) {
             if (!isset($groups[$state])) {
@@ -607,7 +634,7 @@ final readonly class FinanceVerificationRequests
         $this->requireStaff($actor);
         $supervised = $this->finance->supervised($actor->employeeUuid);
         $request = preg_match(self::UUID_PATTERN, $requestUuid) === 1 ? $this->requestRow($requestUuid) : null;
-        if ($actor->isRoot || $request === null || array_intersect($supervised, array_filter([$request['assigned_employee_uuid'], $request['decided_by_employee_uuid'], $request['recorded_by_employee_uuid']])) === []) {
+        if ($actor->isRoot || $request === null || array_intersect($supervised, array_filter([$request['assigned_employee_uuid'], $request['decided_by_employee_uuid'], $request['recorded_by_employee_uuid'], $request['checker_employee_uuid']])) === []) {
             throw new ApiException(404, 'FINANCE_REQUEST_NOT_FOUND', 'No such finance request was found.');
         }
         $row = $this->orderByUuid((string) $request['order_uuid']);
@@ -660,6 +687,19 @@ final readonly class FinanceVerificationRequests
                 : $pdo->prepare("SELECT * FROM finance_verification_requests WHERE order_uuid = ? AND finance_idempotency_key = ? AND state IN ('checking', 'exception') FOR UPDATE");
             $statement->execute([$orderUuid, $action === 'decide_transfer' ? $entryId : $key]);
             $request = $statement->fetch(PDO::FETCH_ASSOC);
+            if (!is_array($request) && $action === 'submit_transfer') {
+                // Recorded outside an advance task (an exception task's money panel): the order's open task carries its
+                // second check, or a second-check task is opened for it, so the transfer is never left without a named
+                // second employee.
+                $open = $pdo->prepare("SELECT * FROM finance_verification_requests WHERE open_order_uuid = ? AND source_entry_id IS NULL AND finance_idempotency_key IS NULL FOR UPDATE");
+                $open->execute([$orderUuid]);
+                $request = $open->fetch(PDO::FETCH_ASSOC);
+                $busy = $pdo->prepare('SELECT 1 FROM finance_verification_requests WHERE open_order_uuid = ?');
+                $busy->execute([$orderUuid]);
+                if (!is_array($request) && $busy->fetchColumn() === false) {
+                    self::openSecondCheck($pdo, $orderUuid, $entryId, $actorUuid, $now, $requestId);
+                }
+            }
             if (!is_array($request)) {
                 $pdo->commit();
                 return;
@@ -667,20 +707,24 @@ final readonly class FinanceVerificationRequests
             $outcome = $financialState === 'cleared' ? 'verified_full' : 'verified_partial';
             $set = match (true) {
                 $action === 'verify_transfer' => ['state' => 'verified', 'outcome' => $outcome, 'source_entry_id' => $entryId, 'recorded_by_employee_uuid' => $actorUuid, 'decided_by_employee_uuid' => $actorUuid, 'decided_at' => $now, 'policy' => 'single', 'reason_code' => null, 'event' => 'verified'],
-                $action === 'submit_transfer' => ['state' => 'checking', 'source_entry_id' => $entryId, 'recorded_by_employee_uuid' => $actorUuid, 'policy' => 'four_eyes', 'reason_code' => null, 'event' => 'recorded_for_second_check'],
+                $action === 'submit_transfer' => ['state' => 'checking', 'source_entry_id' => $entryId, 'recorded_by_employee_uuid' => $actorUuid, 'policy' => 'four_eyes', 'reason_code' => null,
+                    'assigned_employee_uuid' => $request['assigned_employee_uuid'] ?? $actorUuid,
+                    // The task's named approver stays (an exception task names one); never the recorder.
+                    'checker_employee_uuid' => $request['checker_employee_uuid'] !== null && $request['checker_employee_uuid'] !== $actorUuid ? $request['checker_employee_uuid'] : self::leastLoadedChecker($pdo, (string) $request['source_key'], $actorUuid),
+                    'event' => 'recorded_for_second_check'],
                 $decision === 'verify' => ['state' => 'verified', 'outcome' => $outcome, 'decided_by_employee_uuid' => $actorUuid, 'decided_at' => $now, 'reason_code' => null, 'event' => 'second_check_verified'],
                 default => ['state' => 'not_received', 'outcome' => 'not_received', 'decided_by_employee_uuid' => $actorUuid, 'decided_at' => $now, 'reason_code' => $reasonCode, 'event' => 'second_check_rejected'],
             };
             $event = $set['event'];
             unset($set['event']);
-            $set['open_order_uuid'] = in_array($set['state'], ['verified', 'not_received'], true) ? null : (string) $request['order_uuid'];
+            $set['open_order_uuid'] = in_array($set['state'], self::CLOSED_STATES, true) ? null : (string) $request['order_uuid'];
             $set['version'] = (int) $request['version'] + 1;
             $set['updated_at'] = $now;
             $columns = implode(', ', array_map(static fn (string $column): string => "{$column} = ?", array_keys($set)));
             $pdo->prepare("UPDATE finance_verification_requests SET {$columns} WHERE request_uuid = ?")->execute([...array_values($set), (string) $request['request_uuid']]);
             $pdo->prepare('INSERT INTO finance_verification_request_events (event_uuid, request_uuid, version_after, action, actor_employee_uuid, previous_state, new_state, assigned_employee_uuid, outcome, reason_code, policy, idempotency_key, request_id, occurred_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)')->execute([
-                Uuid::v4(), (string) $request['request_uuid'], $set['version'], $event, $actorUuid, (string) $request['state'], $set['state'], $request['assigned_employee_uuid'], $set['outcome'] ?? null, $set['reason_code'] ?? null,
+                Uuid::v4(), (string) $request['request_uuid'], $set['version'], $event, $actorUuid, (string) $request['state'], $set['state'], $set['assigned_employee_uuid'] ?? $request['assigned_employee_uuid'], $set['outcome'] ?? null, $set['reason_code'] ?? null,
                 $set['policy'] ?? $request['policy'], self::cleanRequestId($requestId), $now,
             ]);
             $pdo->commit();
@@ -690,6 +734,47 @@ final readonly class FinanceVerificationRequests
                 $pdo->rollBack();
             }
         }
+    }
+
+    /**
+     * Opens the second-check task of a transfer recorded outside any task (the caller holds the transaction): assigned to
+     * its recorder, checked by the least loaded other employee with `approve`. Idempotent per shop entry.
+     */
+    public static function openSecondCheck(PDO $pdo, string $orderUuid, string $entryId, string $recorderUuid, string $now, string $requestId, ?string $actorUuid = null, string $action = 'second_check_opened'): ?string
+    {
+        $order = $pdo->prepare('SELECT global_order_id, source_key FROM operational_orders WHERE order_uuid = ?');
+        $order->execute([$orderUuid]);
+        $row = $order->fetch(PDO::FETCH_ASSOC);
+        if (!is_array($row)) {
+            return null;
+        }
+        $uuid = Uuid::v4();
+        $checker = self::leastLoadedChecker($pdo, (string) $row['source_key'], $recorderUuid);
+        $inserted = $pdo->prepare("INSERT IGNORE INTO finance_verification_requests (request_uuid, order_uuid, global_order_id, source_key, purpose, state, version, open_order_uuid, assigned_employee_uuid, assigned_at,
+                requested_by_employee_uuid, requested_at, request_idempotency_key, inventory_key, task_code, ledger, policy, recorded_by_employee_uuid, checker_employee_uuid, source_entry_id, updated_at)
+            VALUES (?, ?, ?, ?, 'second_check', 'checking', 1, ?, ?, ?, NULL, ?, NULL, ?, 'transfer_pending', 'shop', 'four_eyes', ?, ?, ?, ?)");
+        $inserted->execute([$uuid, $orderUuid, (string) $row['global_order_id'], (string) $row['source_key'], $orderUuid, $recorderUuid, $now, $now, 'second_check:' . $entryId, $recorderUuid, $checker, $entryId, $now]);
+        if ($inserted->rowCount() !== 1) {
+            return null;
+        }
+        $pdo->prepare('INSERT INTO finance_verification_request_events (event_uuid, request_uuid, version_after, action, actor_employee_uuid, previous_state, new_state, assigned_employee_uuid, outcome, reason_code, policy, idempotency_key, request_id, occurred_at)
+            VALUES (?, ?, 1, ?, ?, NULL, ?, ?, NULL, ?, ?, NULL, ?, ?)')->execute([Uuid::v4(), $uuid, $action, $actorUuid, 'checking', $recorderUuid, 'transfer_pending', 'four_eyes', self::cleanRequestId($requestId), $now]);
+        return $uuid;
+    }
+
+    /** The least loaded active employee holding `approve` on the source who is not the recorder, or null. */
+    public static function leastLoadedChecker(PDO $pdo, string $source, ?string $recorderUuid): ?string
+    {
+        $statement = $pdo->prepare("SELECT s.employee_uuid,
+                (SELECT COUNT(*) FROM finance_verification_requests r WHERE r.checker_employee_uuid = s.employee_uuid AND r.open_order_uuid IS NOT NULL) AS open_checks
+            FROM employee_finance_scopes s INNER JOIN employees e ON e.employee_uuid = s.employee_uuid
+            INNER JOIN employee_application_access a ON a.employee_uuid = e.employee_uuid AND a.application_key = 'staff'
+            WHERE s.source_key = ? AND s.capability = 'approve' AND e.status = 'active' AND e.must_change_password = 0 AND s.employee_uuid <> ?
+              AND e.employee_uuid NOT IN (SELECT employee_uuid FROM system_root_identity)
+            ORDER BY open_checks, s.employee_uuid LIMIT 1");
+        $statement->execute([$source, $recorderUuid ?? '']);
+        $value = $statement->fetchColumn();
+        return is_string($value) ? $value : null;
     }
 
     // ---- Views ------------------------------------------------------------------------------------------------------
@@ -713,6 +798,8 @@ final readonly class FinanceVerificationRequests
         ];
         // Verified by finance, but the shop's money state has not reached Arasya yet: keep asking, a little slower.
         $syncing = $state === 'verified' && $request['outcome'] === 'verified_full' && !$financial['open'];
+        $scope = FinanceTaskScope::of($row['source_submitted_at'] === null ? null : (string) $row['source_submitted_at']);
+        $requestable = $scope === FinanceTaskScope::IN_SCOPE && !$row['closed'];
         return [
             'request' => $request === null ? null : [
                 'id' => (string) $request['request_uuid'],
@@ -720,17 +807,22 @@ final readonly class FinanceVerificationRequests
                 'version' => (int) $request['version'],
                 'outcome' => $request['outcome'],
                 'reasonCode' => $request['reason_code'],
+                'purpose' => (string) $request['purpose'],
+                'ledger' => (string) $request['ledger'],
                 'awaitingSecondCheck' => $request['state'] === 'checking' && $request['source_entry_id'] !== null && $request['policy'] === 'four_eyes',
                 'assignee' => $request['assigned_employee_uuid'] === null ? null : ($this->names([(string) $request['assigned_employee_uuid']])[(string) $request['assigned_employee_uuid']] ?? null),
-                'proforma' => ['series' => $request['proforma_series'], 'number' => (string) $request['proforma_number']],
+                'proforma' => self::proformaOf($request),
                 'requestedAt' => self::iso((string) $request['requested_at']),
                 'updatedAt' => self::iso((string) $request['updated_at']),
                 'decidedAt' => $request['decided_at'] === null ? null : self::iso((string) $request['decided_at']),
             ],
             'financial' => $financial,
-            'canRequest' => $state === null || in_array($state, ['verified', 'not_received', 'cancelled'], true),
-            'canResubmit' => $state === 'needs_clarification',
-            'canCancel' => in_array($state, ['requested', 'assigned', 'needs_clarification'], true) && $request['finance_idempotency_key'] === null && $request['source_entry_id'] === null,
+            // Covered orders only (FinanceTaskScope); the ledger says whether the shop's finance record holds the payment.
+            'scope' => $scope,
+            'ledger' => self::ledgerOf($row),
+            'canRequest' => $requestable && ($state === null || in_array($state, self::CLOSED_STATES, true)),
+            'canResubmit' => $state === 'needs_clarification' && $request['purpose'] === 'advance',
+            'canCancel' => in_array($state, ['requested', 'assigned', 'needs_clarification'], true) && $request['purpose'] === 'advance' && $request['finance_idempotency_key'] === null && $request['source_entry_id'] === null,
             'pollSeconds' => $pending || $syncing ? ($state === 'checking' || $syncing ? self::POLL_ACTIVE_SECONDS : self::POLL_WAITING_SECONDS) : null,
         ];
     }
@@ -741,12 +833,13 @@ final readonly class FinanceVerificationRequests
         $secondCheck = $row['state'] === 'checking' && $row['policy'] === 'four_eyes' && $row['source_entry_id'] !== null;
         $mine = $row['assigned_employee_uuid'] === $actor->employeeUuid;
         $kind = match (true) {
-            $secondCheck && $row['recorded_by_employee_uuid'] !== $actor->employeeUuid => 'second_check',
+            $secondCheck && $row['checker_employee_uuid'] === $actor->employeeUuid => 'second_check',
             $secondCheck => 'awaiting_second_check',
+            $row['purpose'] === 'exception' => 'exception',
             default => 'verify',
         };
         $category = match (true) {
-            in_array($row['state'], ['verified', 'not_received', 'cancelled'], true) => 'done',
+            in_array($row['state'], self::CLOSED_STATES, true) => 'done',
             $row['state'] === 'needs_clarification' => 'clarification',
             default => 'todo',
         };
@@ -754,7 +847,10 @@ final readonly class FinanceVerificationRequests
             'id' => (string) $row['request_uuid'],
             'source' => (string) $row['source_key'],
             'orderNumber' => (string) $row['order_number'],
-            'proforma' => ['series' => $row['proforma_series'], 'number' => (string) $row['proforma_number']],
+            'purpose' => (string) $row['purpose'],
+            'taskCode' => $row['task_code'],
+            'ledger' => (string) $row['ledger'],
+            'proforma' => self::proformaOf($row),
             'state' => (string) $row['state'],
             'version' => (int) $row['version'],
             'category' => $category,
@@ -772,19 +868,23 @@ final readonly class FinanceVerificationRequests
     /** @param array<string, mixed> $row a request with order_number @return array<string, mixed> */
     private function oversightItem(array $row): array
     {
-        $names = $this->names(array_values(array_filter([$row['assigned_employee_uuid'], $row['decided_by_employee_uuid'], $row['recorded_by_employee_uuid']], 'is_string')));
+        $names = $this->names(array_values(array_filter([$row['assigned_employee_uuid'], $row['decided_by_employee_uuid'], $row['recorded_by_employee_uuid'], $row['checker_employee_uuid']], 'is_string')));
         $person = static fn (?string $id): ?array => $id === null ? null : ['id' => $id, 'displayName' => $names[$id] ?? ''];
         return [
             'id' => (string) $row['request_uuid'],
             'source' => (string) $row['source_key'],
             'orderNumber' => (string) $row['order_number'],
-            'proforma' => ['series' => $row['proforma_series'], 'number' => (string) $row['proforma_number']],
+            'purpose' => (string) $row['purpose'],
+            'taskCode' => $row['task_code'],
+            'ledger' => (string) $row['ledger'],
+            'proforma' => self::proformaOf($row),
             'state' => (string) $row['state'],
             'outcome' => $row['outcome'],
             'reasonCode' => $row['reason_code'],
             'policy' => $row['policy'],
             'assignee' => $person($row['assigned_employee_uuid']),
             'recordedBy' => $person($row['recorded_by_employee_uuid']),
+            'checker' => $person($row['checker_employee_uuid']),
             'decidedBy' => $person($row['decided_by_employee_uuid']),
             'requestedAt' => self::iso((string) $row['requested_at']),
             'updatedAt' => self::iso((string) $row['updated_at']),
@@ -835,7 +935,8 @@ final readonly class FinanceVerificationRequests
             'readAt' => $summary['readAt'],
             'currency' => $summary['currency'],
             'proforma' => $proforma === null ? null : ['series' => $proforma['series'], 'number' => $proforma['number'], 'amount' => $proforma['amount'], 'currency' => $proforma['currency']],
-            'proformaChanged' => $proforma === null || $proforma['number'] !== $request['proforma_number'] || ($proforma['series'] === '' ? null : $proforma['series']) !== $request['proforma_series'] || ($advance['proformaCancelled'] ?? false),
+            'proformaChanged' => $request['proforma_number'] !== null && ($proforma === null || $proforma['number'] !== $request['proforma_number'] || ($proforma['series'] === '' ? null : $proforma['series']) !== $request['proforma_series'] || ($advance['proformaCancelled'] ?? false)),
+            'ledger' => (string) $request['ledger'],
             'advance' => $advance === null ? null : [
                 'percentage' => $advance['percentage'],
                 'required' => $advance['required'],
@@ -894,16 +995,19 @@ final readonly class FinanceVerificationRequests
         $source = (string) $request['source_key'];
         $mine = $request['assigned_employee_uuid'] === $actor->employeeUuid;
         $clean = $request['source_entry_id'] === null && $request['finance_idempotency_key'] === null;
-        $available = ($live['available'] ?? false) === true && ($live['recordEnabled'] ?? false) === true && !($live['proformaChanged'] ?? true);
-        $single = ($live['policy'] ?? 'four_eyes') === 'single' && $this->finance->allows($actor, FinanceScopePolicy::VERIFY, $source);
+        $manual = $request['ledger'] === self::LEDGER_MANUAL;
+        $advance = $request['purpose'] === 'advance';
+        // A manual-ledger task only reads the shop; a shop-ledger task needs the shop's finance record open for it.
+        $available = ($live['available'] ?? false) === true && ($manual || ($live['recordEnabled'] ?? false) === true) && !($live['proformaChanged'] ?? true);
+        $single = !$manual && ($live['policy'] ?? 'four_eyes') === 'single' && $this->finance->allows($actor, FinanceScopePolicy::VERIFY, $source);
         $canMoney = $single || $this->finance->allows($actor, FinanceScopePolicy::RECORD, $source);
-        $decidable = $mine && $clean && in_array($request['state'], ['assigned', 'checking'], true);
+        $decidable = $advance && $mine && $clean && in_array($request['state'], ['assigned', 'checking'], true);
         return ['allowed' => [
-            'start' => $mine && $request['state'] === 'assigned',
+            'start' => $advance && $mine && $request['state'] === 'assigned',
             'verify' => $decidable && $available && $canMoney && ($live['financial']['attention'] ?? null) === null,
-            'notReceived' => $mine && $clean && in_array($request['state'], ['assigned', 'checking', 'exception'], true),
-            'clarify' => $mine && $clean && in_array($request['state'], ['assigned', 'checking', 'exception'], true),
-            'secondCheck' => $request['state'] === 'checking' && $request['policy'] === 'four_eyes' && $request['source_entry_id'] !== null
+            'notReceived' => $advance && $mine && $clean && in_array($request['state'], ['assigned', 'checking', 'exception'], true),
+            'clarify' => $advance && $mine && $clean && in_array($request['state'], ['assigned', 'checking', 'exception'], true),
+            'secondCheck' => $request['state'] === 'checking' && $request['policy'] === 'four_eyes' && $request['source_entry_id'] !== null && $request['checker_employee_uuid'] === $actor->employeeUuid
                 && $request['recorded_by_employee_uuid'] !== $actor->employeeUuid && $this->finance->allows($actor, FinanceScopePolicy::APPROVE, $source) && ($live['available'] ?? false) === true,
             'reconcile' => $request['state'] === 'exception' && $request['finance_idempotency_key'] !== null,
         ], 'me' => $actor->employeeUuid, 'singleVerification' => $single && $target !== null];
@@ -1018,7 +1122,7 @@ final readonly class FinanceVerificationRequests
      */
     private function transition(array $request, string $state, string $action, ?string $actorUuid, ?string $outcome, ?string $reasonCode, ?string $key, string $requestId, string $now, array $extra = [], ?string $policy = null): void
     {
-        $set = ['state' => $state, 'version' => (int) $request['version'] + 1, 'updated_at' => $now, 'open_order_uuid' => in_array($state, ['verified', 'not_received', 'cancelled'], true) ? null : (string) $request['order_uuid']] + $extra;
+        $set = ['state' => $state, 'version' => (int) $request['version'] + 1, 'updated_at' => $now, 'open_order_uuid' => in_array($state, self::CLOSED_STATES, true) ? null : (string) $request['order_uuid']] + $extra;
         if ($state === 'requested') {
             $set['assigned_employee_uuid'] = null;
             $set['assigned_at'] = null;
@@ -1053,13 +1157,14 @@ final readonly class FinanceVerificationRequests
      */
     private function rebalance(array $scopes): void
     {
+        $this->rebalanceChecks($scopes[FinanceScopePolicy::APPROVE]);
         $sources = array_values(array_unique([...$scopes[FinanceScopePolicy::RECORD], ...$scopes[FinanceScopePolicy::VERIFY]]));
         if ($sources === []) {
             return;
         }
         $parameters = [];
         $condition = ConfirmareScopePolicy::condition($sources, 'source_key', $parameters);
-        $statement = $this->pdo->prepare("SELECT request_uuid, assigned_employee_uuid, source_key FROM finance_verification_requests WHERE state IN ('requested', 'assigned') AND {$condition} LIMIT 100");
+        $statement = $this->pdo->prepare("SELECT request_uuid, assigned_employee_uuid, source_key FROM finance_verification_requests WHERE state IN ('requested', 'assigned') AND purpose IN ('advance', 'exception') AND {$condition} LIMIT 100");
         $statement->execute($parameters);
         foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $candidate) {
             if ($candidate['assigned_employee_uuid'] !== null && $this->eligible((string) $candidate['assigned_employee_uuid'], (string) $candidate['source_key'])) {
@@ -1084,10 +1189,61 @@ final readonly class FinanceVerificationRequests
         }
     }
 
-    /** The least loaded eligible finance employee of the source (verify first under `single`), or null. */
+    /**
+     * Second checks without a named checker who can still do them (none was eligible, or the checker lost `approve` or
+     * the account) get the least loaded other employee with `approve`. Audited as system events.
+     *
+     * @param list<string> $sources the actor's approve sources
+     */
+    private function rebalanceChecks(array $sources): void
+    {
+        if ($sources === []) {
+            return;
+        }
+        $parameters = [];
+        $condition = ConfirmareScopePolicy::condition($sources, 'source_key', $parameters);
+        $statement = $this->pdo->prepare("SELECT request_uuid, checker_employee_uuid, recorded_by_employee_uuid, assigned_employee_uuid, source_key FROM finance_verification_requests
+            WHERE ((state IN ('checking', 'exception') AND policy = 'four_eyes' AND source_entry_id IS NOT NULL) OR (purpose = 'exception' AND open_order_uuid IS NOT NULL)) AND {$condition} LIMIT 100");
+        $statement->execute($parameters);
+        foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $candidate) {
+            if ($candidate['checker_employee_uuid'] !== null && $this->checks((string) $candidate['checker_employee_uuid'], (string) $candidate['source_key'])) {
+                continue;
+            }
+            try {
+                $this->locked((string) $candidate['request_uuid'], function (array $locked): void {
+                    if ($locked['checker_employee_uuid'] !== null && $this->checks((string) $locked['checker_employee_uuid'], (string) $locked['source_key'])) {
+                        return;
+                    }
+                    $checker = self::leastLoadedChecker($this->pdo, (string) $locked['source_key'], $locked['recorded_by_employee_uuid'] === null ? ($locked['assigned_employee_uuid'] === null ? null : (string) $locked['assigned_employee_uuid']) : (string) $locked['recorded_by_employee_uuid']);
+                    if ($checker === $locked['checker_employee_uuid']) {
+                        return;
+                    }
+                    $this->transition($locked, (string) $locked['state'], $checker === null ? 'checker_unassigned' : 'checker_assigned', null, null, null, null, 'system', $this->now(), ['checker_employee_uuid' => $checker]);
+                });
+            } catch (ApiException) {
+                continue;
+            }
+        }
+    }
+
+    private function checks(string $employeeUuid, string $source): bool
+    {
+        $statement = $this->pdo->prepare("SELECT 1 FROM employee_finance_scopes s INNER JOIN employees e ON e.employee_uuid = s.employee_uuid
+            INNER JOIN employee_application_access a ON a.employee_uuid = e.employee_uuid AND a.application_key = 'staff'
+            WHERE s.employee_uuid = ? AND s.source_key = ? AND s.capability = 'approve' AND e.status = 'active' AND e.must_change_password = 0 LIMIT 1");
+        $statement->execute([$employeeUuid, $source]);
+        return $statement->fetchColumn() !== false;
+    }
+
     private function leastLoaded(string $source, string $policy): ?string
     {
-        $statement = $this->pdo->prepare("SELECT s.employee_uuid, MAX(s.capability = 'verify') AS verifies,
+        return self::leastLoadedFinance($this->pdo, $source, $policy);
+    }
+
+    /** The least loaded eligible finance employee of the source (verify first under `single`), or null. */
+    public static function leastLoadedFinance(PDO $pdo, string $source, string $policy): ?string
+    {
+        $statement = $pdo->prepare("SELECT s.employee_uuid, MAX(s.capability = 'verify') AS verifies,
                 (SELECT COUNT(*) FROM finance_verification_requests r WHERE r.assigned_employee_uuid = s.employee_uuid AND r.open_order_uuid IS NOT NULL) AS open_requests
             FROM employee_finance_scopes s INNER JOIN employees e ON e.employee_uuid = s.employee_uuid
             INNER JOIN employee_application_access a ON a.employee_uuid = e.employee_uuid AND a.application_key = 'staff'
@@ -1116,8 +1272,9 @@ final readonly class FinanceVerificationRequests
     // ---- Access -------------------------------------------------------------------------------------------------------
 
     /**
-     * The request, if this finance employee reaches it now: assigned to them, recorded or decided by them, or waiting for
-     * their second check. Anything else is "not found" (an unassigned or another employee's id reveals nothing).
+     * The task, if this finance employee reaches it now: assigned to them, recorded or decided by them, or waiting for the
+     * second check they are the named checker of. Anything else is "not found" (an unassigned or another employee's id,
+     * or a guessed order, reveals nothing).
      *
      * @return array<string, mixed>
      */
@@ -1129,7 +1286,7 @@ final readonly class FinanceVerificationRequests
             $request['assigned_employee_uuid'] === $actor->employeeUuid
             || $request['recorded_by_employee_uuid'] === $actor->employeeUuid
             || $request['decided_by_employee_uuid'] === $actor->employeeUuid
-            || (in_array($request['state'], ['checking', 'exception'], true) && $request['policy'] === 'four_eyes' && $request['source_entry_id'] !== null
+            || ($request['open_order_uuid'] !== null && $request['checker_employee_uuid'] === $actor->employeeUuid
                 && $request['recorded_by_employee_uuid'] !== $actor->employeeUuid && $this->finance->allows($actor, FinanceScopePolicy::APPROVE, $source)));
         if (!$reaches) {
             throw new ApiException(404, 'FINANCE_REQUEST_NOT_FOUND', 'No such finance request was found.');
@@ -1137,35 +1294,74 @@ final readonly class FinanceVerificationRequests
         return $request;
     }
 
-    /** @param array<string, mixed> $row whether the actor operates the order (assignee or approver with operate, or a supervisor) */
+    /**
+     * Whether the actor operates the order's finance request: in Confirmare its assignee or approver with `operate`, or a
+     * supervisor of the source; outside Confirmare (legacy, NULL, undetermined: there is no Confirmare assignee) an
+     * operator or supervisor of the source. Never root, never a finance scope.
+     *
+     * @param array<string, mixed> $row
+     */
     private function operates(EmployeeIdentity $actor, array $row): bool
     {
-        if ($actor->isRoot || $row['workflow_cohort'] !== 'confirmare') {
+        if ($actor->isRoot) {
             return false;
         }
         $source = (string) $row['source_key'];
-        return $this->scopes->allows($actor, ConfirmareScopePolicy::SUPERVISE, $source)
-            || (in_array($actor->employeeUuid, [$row['assigned_employee_uuid'], $row['decided_by_employee_uuid']], true) && $this->scopes->allows($actor, ConfirmareScopePolicy::OPERATE, $source));
+        if ($this->scopes->allows($actor, ConfirmareScopePolicy::SUPERVISE, $source)) {
+            return true;
+        }
+        if ($row['workflow_cohort'] !== 'confirmare') {
+            return $this->scopes->allows($actor, ConfirmareScopePolicy::OPERATE, $source);
+        }
+        return in_array($actor->employeeUuid, [$row['assigned_employee_uuid'], $row['decided_by_employee_uuid']], true) && $this->scopes->allows($actor, ConfirmareScopePolicy::OPERATE, $source);
     }
 
     /** @param array<string, mixed> $row */
     private function requireRequestable(array $row): void
     {
-        if ($row['status'] !== 'approved') {
-            throw new ApiException(409, 'FINANCE_REQUEST_NOT_APPROVED', 'Finance verifies the advance of an approved order.');
+        $scope = FinanceTaskScope::of($row['source_submitted_at'] === null ? null : (string) $row['source_submitted_at']);
+        if ($scope === FinanceTaskScope::BEFORE_SCOPE) {
+            throw new ApiException(409, 'FINANCE_REQUEST_OUT_OF_SCOPE', 'The order was submitted before 22 October 2026: it keeps its existing workflow.');
         }
-        if ($row['payment_method'] !== 'cod') {
-            throw new ApiException(409, 'FINANCE_REQUEST_NOT_COD', 'Only a cash-on-delivery order pays an advance by bank transfer.');
+        if ($scope === FinanceTaskScope::UNDETERMINED) {
+            throw new ApiException(409, 'FINANCE_REQUEST_SCOPE_UNDETERMINED', 'The order has no submission evidence: it needs a manual review first.');
         }
-        if ($row['operational_status'] === 'unavailable' || $row['source_reported_unavailable_at'] !== null) {
+        if ($row['closed']) {
             throw new ApiException(409, 'FINANCE_REQUEST_ORDER_CLOSED', 'The order was cancelled or closed in the shop.');
+        }
+        if ($row['workflow_cohort_reason'] === 'financing_legacy') {
+            // A consumer credit (TBI) order keeps its financing flow (owner K-12): no advance to verify.
+            throw new ApiException(409, 'FINANCE_REQUEST_FINANCING', 'A consumer credit order keeps its financing flow.');
+        }
+        if ($row['workflow_cohort'] === 'confirmare') {
+            if ($row['status'] !== 'approved') {
+                throw new ApiException(409, 'FINANCE_REQUEST_NOT_APPROVED', 'Finance verifies the advance of an approved order.');
+            }
+            if ($row['payment_method'] !== 'cod') {
+                throw new ApiException(409, 'FINANCE_REQUEST_NOT_COD', 'Only a cash-on-delivery order pays an advance by bank transfer.');
+            }
+        } elseif ($row['payment_method'] === 'online') {
+            // An older order: its payment method may be unknown here; the shop's summary decides, an online one never.
+            throw new ApiException(409, 'FINANCE_REQUEST_NOT_COD', 'Only a cash-on-delivery order pays an advance by bank transfer.');
         }
         if ($row['source_financial_attention'] === 'transfer_pending') {
             throw new ApiException(409, 'FINANCE_REQUEST_TRANSFER_PENDING', 'A bank transfer of this order is already recorded and waits for its verification.');
         }
-        if (!in_array($row['source_financial_state'], ['waiting', 'partial'], true)) {
+        if ($row['workflow_cohort'] === 'confirmare' ? !in_array($row['source_financial_state'], ['waiting', 'partial'], true) : $row['source_financial_state'] === 'cleared') {
             throw new ApiException(409, 'FINANCE_REQUEST_NOTHING_DUE', 'The advance of this order is not waiting for a payment.');
         }
+    }
+
+    /** @param array<string, mixed> $row the order: a Confirmare order's money is recorded in the shop, any other one's manually */
+    private static function ledgerOf(array $row): string
+    {
+        return $row['workflow_cohort'] === 'confirmare' ? self::LEDGER_SHOP : self::LEDGER_MANUAL;
+    }
+
+    /** @param array<string, mixed> $row a task @return array{series: ?string, number: string}|null */
+    private static function proformaOf(array $row): ?array
+    {
+        return $row['proforma_number'] === null ? null : ['series' => $row['proforma_series'], 'number' => (string) $row['proforma_number']];
     }
 
     private function requireStaff(EmployeeIdentity $actor): void
@@ -1311,12 +1507,21 @@ final readonly class FinanceVerificationRequests
     /** @return array<string, mixed>|null */
     private function orderWhere(string $where, string $value): ?array
     {
+        // Any order of a source (API 2.50.0): an order outside Confirmare has no confirmation row and keeps its workflow.
         $statement = $this->pdo->prepare("SELECT o.order_uuid, o.global_order_id, o.source_key, o.source_order_id, o.order_number, o.workflow_cohort, o.payment_method, o.operational_status, o.source_reported_unavailable_at,
-                o.source_financial_state, o.source_financial_basis, o.source_financial_attention, o.source_financial_pricing, o.source_pricing_fingerprint, c.status, c.assigned_employee_uuid, c.decided_by_employee_uuid
-            FROM operational_orders o INNER JOIN order_confirmations c ON c.order_uuid = o.order_uuid WHERE {$where}");
+                o.source_financial_state, o.source_financial_basis, o.source_financial_attention, o.source_financial_pricing, o.source_pricing_fingerprint, o.source_submitted_at, o.source_commerce_status_code,
+                o.cancellation_state, o.workflow_cohort_reason, c.status, c.assigned_employee_uuid, c.decided_by_employee_uuid
+            FROM operational_orders o LEFT JOIN order_confirmations c ON c.order_uuid = o.order_uuid WHERE {$where}");
         $statement->execute([$value]);
         $row = $statement->fetch(PDO::FETCH_ASSOC);
-        return is_array($row) ? $row : null;
+        if (!is_array($row)) {
+            return null;
+        }
+        // Closed for finance tasks: cancelled, unavailable, or finished in the shop (nothing is reopened).
+        $row['closed'] = $row['operational_status'] === 'unavailable' || $row['source_reported_unavailable_at'] !== null
+            || in_array($row['source_commerce_status_code'], self::CLOSED_COMMERCE, true) || $row['status'] === 'rejected'
+            || $row['cancellation_state'] === 'held';
+        return $row;
     }
 
     /** @return array<string, mixed>|null */

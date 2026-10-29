@@ -209,6 +209,8 @@ final readonly class Config
                     'invoice' => self::value($values, "ARASYA_SOURCE_INVOICE_{$suffix}", ''),
                     // API 2.50.0: four_eyes (default) | single.
                     'verification' => self::value($values, "ARASYA_SOURCE_FINANCE_VERIFICATION_{$suffix}", ''),
+                    // API 2.50.0: off (default) | auto: the minute's distribution also runs the finance task inventory.
+                    'tasks' => self::value($values, "ARASYA_SOURCE_FINANCE_TASKS_{$suffix}", ''),
                 ];
             }
         }

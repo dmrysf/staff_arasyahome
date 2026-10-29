@@ -207,6 +207,13 @@ foreach (['91001' => 'operator', '91002' => 'operator', '91003' => 'colleague', 
     }
 }
 $writeShop();
+// API 2.50.0: the additional payment of 91005 becomes a finance task of named employees through the task inventory (the
+// same command as production: dry run first, then apply); record or approve alone reaches no order.
+$tasks = $container->financeTaskInventory()->apply(['trendhome'], 'cf-e2e');
+$task = $pdo->query("SELECT request_uuid, assigned_employee_uuid, checker_employee_uuid FROM finance_verification_requests WHERE global_order_id = 'trendhome:91005' AND purpose = 'exception' AND open_order_uuid IS NOT NULL")->fetch(PDO::FETCH_ASSOC);
+if (!is_array($task) || $tasks['created'] < 1 || $task['assigned_employee_uuid'] !== $people['finrec']['id'] || $task['checker_employee_uuid'] !== $people['finapp']['id']) {
+    throw new RuntimeException('E2E: the inventory did not give 91005 to the finance recorder with the approver as checker: ' . json_encode([$tasks, $task]));
+}
 echo json_encode(['password' => $password, 'people' => $people, 'orders' => [
     'call' => 'trendhome:91001', 'cod' => 'trendhome:91002', 'colleague' => 'trendhome:91003', 'noPrice' => 'trendhome:91004', 'unassigned' => 'trendhome:91005',
     'outlet' => 'outletperdele:92001', 'legacy' => 'trendhome:91090', 'undetermined' => 'trendhome:91091', 'finance' => 'trendhome:91005',

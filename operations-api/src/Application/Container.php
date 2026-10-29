@@ -256,6 +256,12 @@ final class Container
         );
     }
 
+    /** The finance task inventory (API 2.50.0): existing finance work of covered orders as tasks of named employees. */
+    public function financeTaskInventory(): \Arasya\Operations\Confirmare\FinanceTaskInventory
+    {
+        return new \Arasya\Operations\Confirmare\FinanceTaskInventory($this->pdo, $this->clock);
+    }
+
     /** Confirmare controlled shop edits (API 2.40.0, Phase 4B): preview and apply through the shop's own pricing. */
     public function confirmareSourceEdits(?AuthorizationService $authorization = null): \Arasya\Operations\Confirmare\ConfirmareSourceEdits
     {

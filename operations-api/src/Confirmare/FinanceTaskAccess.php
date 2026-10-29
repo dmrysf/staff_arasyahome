@@ -9,19 +9,21 @@ use PDO;
 use PDOException;
 
 /**
- * Which orders a finance scope reaches (API 2.50.0). A finance scope of a source no longer opens every order of that
- * source: a finance employee reaches an order only through a finance task of it (default deny):
+ * Which orders a finance scope reaches (API 2.50.0). A finance scope of a source never opens the orders of that source:
+ * a finance employee reaches an order only through a finance task assigned to them (default deny), whatever the order's
+ * date or workflow cohort:
  *
- * - a finance verification request of the order assigned to them, or one they recorded or decided;
- * - a request waiting for its second check under the `four_eyes` policy, when they hold `approve` and did not record it;
- * - an exceptional money state the shop reported for the order (a transfer recorded and not decided, an additional
- *   payment, a refund liability or refund, a reconciliation), an unsettled finance action, or a card refund requested in
- *   Confirmare and not yet verified, when they hold `record` or `approve` on the source. These are the existing finance
- *   duties outside the request inbox.
+ * - a finance task of the order (advance verification, second check, exception) assigned to them, or one they recorded
+ *   or decided;
+ * - an open task they are the named checker of (`checker_employee_uuid`: the second employee of a recorded transfer, or
+ *   the approver of an exception task's refund or transfer), while they still hold `approve`;
+ * - a finance action of the order they sent themselves and whose answer is still pending or unknown (to reconcile it).
  *
- * A Confirmare scope, an invoice scope or a document scope keeps its own rules: a finance scope never widens them, and
- * holding several scopes never turns a finance scope back into a source-wide one. Finance supervision is not a reach: a
- * supervisor reads the requests of the employees they supervise through the oversight routes only, never an order.
+ * Holding `record` or `approve` alone reaches nothing: an exceptional money state, a transfer waiting for its second
+ * check or a card refund to verify becomes reachable only as a task assigned to a named employee (FinanceTaskInventory).
+ * A Confirmare scope, an invoice scope or a document scope keeps its own rules: a finance scope never widens them.
+ * Finance supervision is not a reach: a supervisor reads the tasks of the employees they supervise through the oversight
+ * routes only, never an order.
  */
 final class FinanceTaskAccess
 {
@@ -49,33 +51,35 @@ final class FinanceTaskAccess
         if (!$any) {
             return false;
         }
-        $works = in_array($sourceKey, $scopes[FinanceScopePolicy::RECORD], true) || in_array($sourceKey, $scopes[FinanceScopePolicy::APPROVE], true);
-        if (self::requestReaches($pdo, $actor, $orderUuid, in_array($sourceKey, $scopes[FinanceScopePolicy::APPROVE], true))) {
-            return true;
-        }
-        if (!$works) {
-            return false;
-        }
-        $statement = $pdo->prepare('SELECT source_financial_attention FROM operational_orders WHERE order_uuid = ? AND source_key = ?');
-        $statement->execute([$orderUuid, $sourceKey]);
-        $attention = $statement->fetchColumn();
-        if (is_string($attention) && in_array($attention, self::EXCEPTIONAL_ATTENTION, true)) {
+        if (self::taskReaches($pdo, $actor, $orderUuid, in_array($sourceKey, $scopes[FinanceScopePolicy::APPROVE], true))) {
             return true;
         }
         try {
-            $open = $pdo->prepare("SELECT 1 FROM order_finance_actions WHERE order_uuid = ? AND state IN ('pending', 'unknown') LIMIT 1");
-            $open->execute([$orderUuid]);
-            if ($open->fetchColumn() !== false) {
-                return true;
-            }
+            // Their own action whose answer is not settled yet: they reconcile it (never another employee's).
+            $own = $pdo->prepare("SELECT 1 FROM order_finance_actions WHERE order_uuid = ? AND employee_uuid = ? AND state IN ('pending', 'unknown') LIMIT 1");
+            $own->execute([$orderUuid, $actor->employeeUuid]);
+            return $own->fetchColumn() !== false;
         } catch (PDOException) {
             return false;
         }
-        return self::cardRefundOpen($pdo, $orderUuid);
+    }
+
+    private static function taskReaches(PDO $pdo, EmployeeIdentity $actor, string $orderUuid, bool $approver): bool
+    {
+        try {
+            $statement = $pdo->prepare("SELECT 1 FROM finance_verification_requests WHERE order_uuid = ?
+                AND (assigned_employee_uuid = ? OR recorded_by_employee_uuid = ? OR decided_by_employee_uuid = ?
+                     OR (? = 1 AND checker_employee_uuid = ? AND open_order_uuid IS NOT NULL)) LIMIT 1");
+            $statement->execute([$orderUuid, $actor->employeeUuid, $actor->employeeUuid, $actor->employeeUuid, $approver ? 1 : 0, $actor->employeeUuid]);
+            return $statement->fetchColumn() !== false;
+        } catch (PDOException) {
+            // Before migration 044 no task exists.
+            return false;
+        }
     }
 
     /** A full card refund an operator requested (manual in the provider's panel) that no finance employee verified since. */
-    private static function cardRefundOpen(PDO $pdo, string $orderUuid): bool
+    public static function cardRefundOpen(PDO $pdo, string $orderUuid): bool
     {
         try {
             $statement = $pdo->prepare("SELECT 1 FROM order_source_operations r WHERE r.order_uuid = ? AND r.kind = 'card_refund_full' AND r.state = 'applied'
@@ -86,20 +90,6 @@ final class FinanceTaskAccess
             return $statement->fetchColumn() !== false;
         } catch (PDOException) {
             // Before migration 043 no Confirmare operation exists.
-            return false;
-        }
-    }
-
-    private static function requestReaches(PDO $pdo, EmployeeIdentity $actor, string $orderUuid, bool $approver): bool
-    {
-        try {
-            $statement = $pdo->prepare("SELECT 1 FROM finance_verification_requests WHERE order_uuid = ?
-                AND (assigned_employee_uuid = ? OR recorded_by_employee_uuid = ? OR decided_by_employee_uuid = ?
-                     OR (? = 1 AND state = 'checking' AND policy = 'four_eyes' AND source_entry_id IS NOT NULL AND recorded_by_employee_uuid <> ?)) LIMIT 1");
-            $statement->execute([$orderUuid, $actor->employeeUuid, $actor->employeeUuid, $actor->employeeUuid, $approver ? 1 : 0, $actor->employeeUuid]);
-            return $statement->fetchColumn() !== false;
-        } catch (PDOException) {
-            // Before migration 044 no request exists.
             return false;
         }
     }

@@ -193,7 +193,9 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             }
             return $this->answer($status, $payload, $nonce);
         }
-        if (($order['eligible'] ?? true) !== true) {
+        // YD SOFT 2.23.0: an order outside Confirmare submitted from 22 October 2026 (`legacyFinance`) is readable by
+        // the finance summary route only; everything else keeps refusing it.
+        if (($order['eligible'] ?? true) !== true && !($action === 'finance' && ($order['legacyFinance'] ?? false) === true)) {
             return $this->answer(403, ['error' => ['code' => 'order_not_eligible']], $nonce);
         }
         if ($action === 'detail') {
@@ -652,7 +654,8 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             'balance' => ['outstanding' => $n['cod'] ? null : $money(max(0, $n['total'] - $n['received'])), 'refundLiability' => $money($n['liability']), 'acknowledged' => $n['acknowledged']],
             'financial' => ['state' => $n['state'], 'basis' => $n['basis'], 'attention' => $n['attention']],
             'entries' => array_map(static fn (array $e): array => array_diff_key($e, ['pricing' => true]), $f['entries'] ?? []),
-            'capabilities' => ['record' => $this->financeRecord, 'refunds' => $this->financeRefunds, 'electronicRefund' => false] + ($this->financeVerification === null ? [] : ['verification' => $this->financeVerification]),
+            'capabilities' => ['record' => $this->financeRecord && ($o['eligible'] ?? true) === true, 'refunds' => $this->financeRefunds, 'electronicRefund' => false] + ($this->financeVerification === null ? [] : ['verification' => $this->financeVerification])
+                + ($this->financeVerification === null ? [] : ['ledger' => ($o['eligible'] ?? true) === true ? 'shop' : 'manual']),
         ] + ($this->legacyProforma ? [] : [
             // YD SOFT 2.19.0: the one money calculation (TEST numbers of this fake), no deadline, no AWB.
             'position' => ['currency' => 'RON', 'percentage' => $n['cod'] ? 30 : null, 'total' => $money($n['total']), 'advanceRequired' => $n['cod'] ? $money($n['required']) : null,

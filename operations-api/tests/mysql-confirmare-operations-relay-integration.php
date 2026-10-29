@@ -72,6 +72,14 @@ $one = static function (string $sql, array $params = []) use ($pdo): mixed { $s 
 $all = static function (string $sql, array $params = []) use ($pdo): array { $s = $pdo->prepare($sql); $s->execute($params); return $s->fetchAll(PDO::FETCH_ASSOC); };
 $cycleTables = ['confirmare_cycle_steps', 'confirmare_proforma_cycles', 'confirmare_bank_checks', 'confirmare_reactivations', 'invoice_efactura_tasks', 'order_source_operations'];
 $clear = static function () use ($pdo, $cycleTables): void {
+    // API 2.50.0: finance tasks point at orders (the card refund task of section 4).
+    foreach (['finance_verification_request_events', 'finance_verification_requests', 'employee_finance_supervision'] as $table) {
+        try {
+            $pdo->exec("DELETE FROM {$table}");
+        } catch (PDOException) {
+            // Before migration 044.
+        }
+    }
     foreach ([...$cycleTables, 'order_cancellation_sync_attempts', 'order_cancellation_sync_operations', 'order_cancellation_events', 'order_cancellation_controls',
         'order_invoice_qr_checks', 'order_shop_assignments', 'order_invoice_actions', 'order_invoice_reads', 'employee_invoice_scopes',
         'order_finance_actions', 'order_finance_reads', 'employee_finance_scopes', 'order_confirmation_source_edits', 'order_confirmation_source_reads', 'order_confirmation_contacts',
@@ -336,6 +344,18 @@ $check($req['result'] === 'manual_required' && $req['shop']['cardRefund']['reque
 $twice = $ok($operate($who['cappr'], $g(3), 'card-refund'), 'a second click');
 $check($twice['result'] === 'already_requested' && count($th->orders[$id(3)]['ops']['refunds']) === 1, 'a second click creates nothing new');
 $error($operate($who['cappr'], $g(3), 'card-refund/record', ['amount' => '719.00', 'reference' => 'NTP-REF-1', 'valueDate' => '2026-10-25']), 403, 'CONFIRMARE_OPERATION_DENIED', 'the approver does not record (record scope)');
+// API 2.50.0: record or approve alone reaches no order; the requested card refund becomes a finance task of named
+// employees through the task inventory (assigned to a record holder, its approver named as checker).
+$error($operate($who['cfin'], $g(3), 'card-refund/record', ['amount' => '719.00', 'reference' => 'NTP-REF-1', 'valueDate' => '2026-10-25']), 404, 'CONFIRMARE_NOT_FOUND', 'before the task exists, finance does not reach the order');
+$inventoried = $container->financeTaskInventory()->apply(['trendhome'], 'relay-test');
+$refundTasks = $pdo->prepare("SELECT * FROM finance_verification_requests WHERE purpose = 'exception' AND task_code = 'card_refund_verify' AND global_order_id = ?");
+$refundTasks->execute([$g(3)]);
+$refundTask = $refundTasks->fetch(PDO::FETCH_ASSOC) ?: [];
+$check($inventoried['created'] >= 1 && in_array($refundTask['assigned_employee_uuid'] ?? null, [$uuids['cfin'], $uuids['cfin2']], true) && $refundTask['checker_employee_uuid'] !== null
+    && $refundTask['checker_employee_uuid'] !== $refundTask['assigned_employee_uuid'], 'the card refund is a task of a finance employee who records, with another named approver');
+// The inventory picks the least loaded employees; this TEST pins `cfin` as the recorder and `cfin2` (granted approve
+// below) as the named checker.
+$pdo->prepare('UPDATE finance_verification_requests SET assigned_employee_uuid = ?, checker_employee_uuid = ? WHERE request_uuid = ?')->execute([$uuids['cfin'], $uuids['cfin2'], $refundTask['request_uuid']]);
 $rec = $ok($operate($who['cfin'], $g(3), 'card-refund/record', ['amount' => '719.00', 'reference' => 'NTP-REF-1', 'valueDate' => '2026-10-25']), 'finance records the panel refund');
 $entry = $th->orders[$id(3)]['ops']['ledger'][0]['id'];
 $check($rec['result'] === 'refund_recorded', 'recorded, not yet refunded');

@@ -274,8 +274,8 @@ $error($invoice($who['ifin'], $g(1)), 404, 'CONFIRMARE_NOT_FOUND', 'a finance sc
 foreach ([1, 8, 13, 14] as $n) {
     $orderUuidN = (string) $one('SELECT order_uuid FROM operational_orders WHERE global_order_id = ?', [$g($n)]);
     $pdo->prepare("INSERT INTO finance_verification_requests (request_uuid, order_uuid, global_order_id, source_key, purpose, state, version, open_order_uuid, assigned_employee_uuid, assigned_at, requested_by_employee_uuid, requested_at,
-            request_idempotency_key, proforma_number, outcome, decided_by_employee_uuid, decided_at, updated_at)
-        VALUES (?, ?, ?, 'trendhome', 'advance', 'not_received', 1, NULL, ?, UTC_TIMESTAMP(6), ?, UTC_TIMESTAMP(6), ?, 'TEST1', 'not_received', ?, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6))")
+            request_idempotency_key, ledger, proforma_number, outcome, decided_by_employee_uuid, decided_at, updated_at)
+        VALUES (?, ?, ?, 'trendhome', 'advance', 'not_received', 1, NULL, ?, UTC_TIMESTAMP(6), ?, UTC_TIMESTAMP(6), ?, 'shop', 'TEST1', 'not_received', ?, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6))")
         ->execute([Uuid::v4(), $orderUuidN, $g($n), $uuids['ifin'], $uuids['iop'], "inv-fixture-{$n}-{$suffix}", $uuids['ifin']]);
 }
 $f = $read($who['ifin'], $g(1));

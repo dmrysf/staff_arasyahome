@@ -41,12 +41,11 @@ use Throwable;
  *           independent). Each action names the summary revision it was based on; the shop refuses it when anything
  *           changed (`revision_changed`). One action per order at a time; a lost answer is reconciled with the shop's
  *           stored answer of the same Idempotency-Key, never replayed blindly.
- * - queue:  the finance tasks of the employee's sources, derived from the money state the shop sends with every order
- *           event (classes, never amounts) and from the open actions. API 2.50.0: a finance scope lists only the
- *           exceptional tasks (FinanceTaskAccess); the advance a customer still owes is no longer finance work by itself:
- *           an operator asks for a verification (FinanceVerificationRequests). Operators keep their advance tasks.
- * - reach:  API 2.50.0: a finance scope reads or acts on an order only through a finance task of it (FinanceTaskAccess);
- *           any other order of the source answers 404 like an unknown one.
+ * - queue:  the advance tasks of a Confirmare operator's or supervisor's sources, derived from the money state the shop
+ *           sends with every order event (classes, never amounts). API 2.50.0: a finance scope lists nothing here (no
+ *           source-wide list of orders): its work is the tasks assigned to it (FinanceVerificationRequests inbox).
+ * - reach:  API 2.50.0: a finance scope reads or acts on an order only through a finance task assigned to the employee
+ *           (FinanceTaskAccess); any other order of the source answers 404 like an unknown one.
  *
  * While a finance action of an order is pending or unknown, production cannot start for it (ConfirmationClearance).
  */
@@ -290,10 +289,11 @@ final readonly class ConfirmareFinance
         if ($task !== null && !in_array($task, self::TASKS, true)) {
             throw new ApiException(422, 'CONFIRMARE_FINANCE_INVALID', 'Unknown finance task.', ['field' => 'task']);
         }
-        $financeSources = $this->finance->sources($actor, FinanceScopePolicy::VIEW);
+        // API 2.50.0: a finance scope lists no order of its sources (its tasks are assigned to it in the inbox).
+        $financeSources = [];
         // API 2.44.0: a Confirmare operator or supervisor sees the advance tasks of their sources (never the other tasks).
         $operatorSources = $actor->isRoot ? [] : array_values(array_unique([...($this->scopes->sources($actor, ConfirmareScopePolicy::OPERATE) ?? []), ...($this->scopes->sources($actor, ConfirmareScopePolicy::SUPERVISE) ?? [])]));
-        $sources = array_values(array_unique([...$financeSources, ...$operatorSources]));
+        $sources = $operatorSources;
         sort($sources);
         if ($source !== null) {
             $sources = in_array($source, $sources, true) ? [$source] : [];

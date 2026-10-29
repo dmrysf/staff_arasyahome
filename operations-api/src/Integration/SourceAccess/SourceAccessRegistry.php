@@ -21,6 +21,11 @@ use Arasya\Operations\Config\Config;
  *                                    verification. `single` lets an employee with the `verify` finance scope verify
  *                                    alone, and only while the shop reports the same policy. Owner and accountant
  *                                    sign-off first (docs/finance-task-inbox.md). Any other value keeps the source `off`.
+ *   ARASYA_SOURCE_FINANCE_TASKS_<SRC>  off (default) | auto (API 2.50.0): the Confirmare distribution (cron, every minute)
+ *                                    also runs the finance task inventory, which turns a transfer waiting for its second
+ *                                    check or an exceptional money state into a task assigned to a named employee, and
+ *                                    resolves it when the state clears. `off`: only `bin/finance-task-inventory.php`
+ *                                    (dry-run by default) does it. Any other value keeps the source `off`.
  *   ARASYA_SOURCE_INVOICE_<SRC>      off (default) | observe | enforce (API 2.43.0, SmartBill invoicing): the invoice
  *                                    state, and with `enforce` the invoice actions, through the same signed access.
  *                                    Any other value keeps the whole source `off`.
@@ -34,6 +39,7 @@ final readonly class SourceAccessRegistry
     public const MODES = ['off', SourceAccessTarget::MODE_READ, SourceAccessTarget::MODE_EDIT];
     public const FINANCE_MODES = [SourceAccessTarget::FINANCE_OFF, SourceAccessTarget::FINANCE_READ, SourceAccessTarget::FINANCE_RECORD];
     public const VERIFICATION_POLICIES = [SourceAccessTarget::VERIFICATION_FOUR_EYES, SourceAccessTarget::VERIFICATION_SINGLE];
+    public const TASK_MODES = [SourceAccessTarget::TASKS_OFF, SourceAccessTarget::TASKS_AUTO];
     public const INVOICE_MODES = [SourceAccessTarget::INVOICE_OFF, SourceAccessTarget::INVOICE_OBSERVE, SourceAccessTarget::INVOICE_ENFORCE];
 
     /**
@@ -63,8 +69,9 @@ final readonly class SourceAccessRegistry
             $finance = strtolower(trim($raw['finance'] ?? ''));
             $invoice = strtolower(trim($raw['invoice'] ?? ''));
             $verification = strtolower(trim($raw['verification'] ?? ''));
+            $tasks = strtolower(trim($raw['tasks'] ?? ''));
             $targets[$sourceKey] = new SourceAccessTarget($sourceKey, $mode, rtrim(trim($raw['url'] ?? ''), '/'), $kid, $key, $finance === '' ? SourceAccessTarget::FINANCE_OFF : $finance, $invoice === '' ? SourceAccessTarget::INVOICE_OFF : $invoice,
-                $verification === '' ? SourceAccessTarget::VERIFICATION_FOUR_EYES : $verification);
+                $verification === '' ? SourceAccessTarget::VERIFICATION_FOUR_EYES : $verification, $tasks === '' ? SourceAccessTarget::TASKS_OFF : $tasks);
         }
         return new self($targets, $issues);
     }
@@ -97,6 +104,10 @@ final readonly class SourceAccessRegistry
         $verification = strtolower(trim($raw['verification'] ?? ''));
         if ($verification !== '' && !in_array($verification, self::VERIFICATION_POLICIES, true)) {
             return 'invalid_finance_verification';
+        }
+        $tasks = strtolower(trim($raw['tasks'] ?? ''));
+        if ($tasks !== '' && !in_array($tasks, self::TASK_MODES, true)) {
+            return 'invalid_finance_tasks';
         }
         if (!isset($config->sourceSecrets[$sourceKey])) {
             return 'source_not_configured';

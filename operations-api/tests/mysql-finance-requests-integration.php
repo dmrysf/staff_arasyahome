@@ -255,7 +255,6 @@ $check(array_values(array_filter($columns, static fn (string $c): bool => preg_m
 $error($ask($who['rop'], $g(13)), 409, 'FINANCE_REQUEST_NO_PROFORMA', 'no advance proforma: nothing to verify against');
 $error($ask($who['rop'], $g(20)), 409, 'FINANCE_REQUEST_NOT_COD', 'an order already paid online needs no advance verification');
 $error($ask($who['rop'], $g(30)), 409, 'FINANCE_REQUEST_NOT_APPROVED', 'an order not approved yet');
-$error($ask($who['rop'], $g(60)), 404, 'CONFIRMARE_NOT_FOUND', 'a legacy order keeps its workflow');
 $error($ask($who['fin'], $g(2)), 404, 'CONFIRMARE_NOT_FOUND', 'a finance employee cannot create a request');
 $error($ask($who['rop2'], $g(2)), 404, 'CONFIRMARE_NOT_FOUND', 'another shop\'s operator cannot either');
 $error($call($who['rop'], 'POST', $orderPath($g(2), '/finance-request'), ['purpose' => 'refund']), 422, 'FINANCE_REQUEST_INVALID', 'only an advance');
@@ -283,12 +282,12 @@ $error($get($f, '/orders/' . rawurlencode($g(1))), 404, 'ORDER_NOT_FOUND', 'no p
 $box = $ok($inbox($f), 'inbox');
 $ids = array_column($box['items'], 'id');
 $mine = 14 + ($a50['request']['assignee'] === 'Test fin' ? 1 : 0);
-$check(in_array($r1, $ids, true) && count($ids) === $mine && $box['counts']['todo'] === $mine && $box['legacySecondChecks'] === [] && (int) $one('SELECT COUNT(*) FROM finance_verification_requests WHERE assigned_employee_uuid = ?', [$uuids['fin']]) === $mine,
+$check(in_array($r1, $ids, true) && count($ids) === $mine && $box['counts']['todo'] === $mine && !array_key_exists('legacySecondChecks', $box) && (int) $one('SELECT COUNT(*) FROM finance_verification_requests WHERE assigned_employee_uuid = ?', [$uuids['fin']]) === $mine,
     'the inbox: exactly the requests assigned to this employee');
 $noOrderData($box, 'inbox');
 $item = array_column($box['items'], null, 'id')[$r1];
-$check(array_keys($item) === ['id', 'source', 'orderNumber', 'proforma', 'state', 'version', 'category', 'kind', 'assignedToMe', 'outcome', 'reasonCode', 'policy', 'requestedAt', 'updatedAt', 'decidedAt']
-    && $item['kind'] === 'verify', 'an inbox card: source, order number, proforma, state, one action (no amount, no payment reference)');
+$check(array_keys($item) === ['id', 'source', 'orderNumber', 'purpose', 'taskCode', 'ledger', 'proforma', 'state', 'version', 'category', 'kind', 'assignedToMe', 'outcome', 'reasonCode', 'policy', 'requestedAt', 'updatedAt', 'decidedAt']
+    && $item['kind'] === 'verify' && $item['purpose'] === 'advance' && $item['ledger'] === 'shop', 'an inbox card: source, order number, proforma, state, one action (no amount, no payment reference)');
 $fake = '00000000-0000-4000-8000-00000000beef';
 $error($task($f, $fake), 404, 'FINANCE_REQUEST_NOT_FOUND', 'a guessed request id reveals nothing');
 $error($task($who['fout'], $r1), 404, 'FINANCE_REQUEST_NOT_FOUND', 'another source\'s finance employee cannot open it');
@@ -302,7 +301,7 @@ $check($t1['live']['available'] === true && $t1['live']['proforma']['number'] ==
     && $t1['live']['bank'] === ['beneficiary' => 'TEST Trend Home SRL', 'bank' => 'Banca TEST', 'ibanMasked' => 'RO49 •••• •••• 0000', 'bic' => null] && $t1['live']['policy'] === 'four_eyes' && $t1['live']['transfers'] === [] && $t1['live']['proformaChanged'] === false,
     'the task: proforma, advance (required, verified, remaining), the bank account the proforma names (IBAN masked), the policy, the bank transfers, read from the shop now');
 $check(!str_contains((string) json_encode($t1, JSON_UNESCAPED_UNICODE), 'RO49AAAA1B31007593840000'), 'the full IBAN never leaves the API');
-$check(array_keys($t1['live']) === ['available', 'revision', 'readAt', 'currency', 'proforma', 'proformaChanged', 'advance', 'paymentReference', 'bank', 'financial', 'policy', 'recordEnabled', 'transfers', 'settledElsewhere'], 'the task carries finance fields only');
+$check(array_keys($t1['live']) === ['available', 'revision', 'readAt', 'currency', 'proforma', 'proformaChanged', 'ledger', 'advance', 'paymentReference', 'bank', 'financial', 'policy', 'recordEnabled', 'transfers', 'settledElsewhere'], 'the task carries finance fields only');
 $check($t1['allowed'] === ['start' => true, 'verify' => true, 'notReceived' => true, 'clarify' => true, 'secondCheck' => false, 'reconcile' => false], 'the employee\'s actions: start, verify, not received, clarification');
 $check((int) $one("SELECT COUNT(*) FROM order_finance_reads WHERE employee_uuid = ? AND access_role = 'finance' AND outcome = 'ok'", [$uuids['fin']]) === 1, 'the task read is audited');
 $check($ok($get($f, $orderPath($g(1), '/finance')), 'the order finance summary of a task')['role'] === 'finance', 'a task\'s order: its finance summary is readable (finance fields only)');
@@ -516,6 +515,172 @@ $log = (string) file_get_contents($logFile);
 $check(!str_contains($log, 'BT FVR') && !str_contains($log, FVR_PHONE) && !str_contains($log, 'RO49AAAA'), 'nothing of the money or the customer reached the server log');
 unlink($logFile);
 
+// ---- 13. Scope (owner decision 2026-10-29): every order from 22.10.2026 00:00 Europe/Bucharest, whatever its cohort ----
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$at = static function (string $orderId, ?string $submitted, array $over = []) use ($payload): array {
+    $p = $payload($orderId, 0, $over['cod'] ?? true, $over['financial'] ?? []);
+    if ($submitted === null) {
+        unset($p['order']['submission']);
+    } else {
+        $p['order']['submission']['submittedAt'] = $submitted;
+    }
+    if (isset($over['status'])) {
+        $p['order']['status'] = ['code' => $over['status'], 'label' => ucfirst($over['status'])];
+    }
+    if (isset($over['payment'])) {
+        $p['order']['payment'] = $over['payment'];
+    }
+    return $p;
+};
+$legacyShop = static fn (string $orderId, bool $cod = true, ?string $proforma = '0900'): array => ['eligible' => false, 'legacyFinance' => true] + $shopOrder($orderId, $cod, $proforma);
+// 60: submitted an hour before this TEST shop's activation (the same day, after 22.10); 61: exactly 22.10.2026 00:00
+// Bucharest; 62: 21.10.2026 23:59:59.999999 Bucharest; 63: no submission evidence; 64: 23.10, reaching Arasya only now;
+// 65: 24.10, already paid; 66: 25.10, cancelled; 67: 26.10, completed; 68: a TBI credit order after the activation
+// (it keeps its financing flow); 69: 26.10, the shop says
+// it is a Confirmare order (disagreement); 71/72: Outlet Perdele 22.10 and 28.10.
+$cases = [
+    60 => [null, []], 61 => ['2026-10-21T21:00:00.000000Z', []], 62 => ['2026-10-21T20:59:59.999999Z', []], 63 => ['none', []], 64 => ['2026-10-23T07:30:00.000000Z', []],
+    65 => ['2026-10-24T08:00:00.000000Z', ['financial' => ['state' => 'cleared', 'basis' => 'advance_collected']]], 66 => ['2026-10-25T09:00:00.000000Z', ['status' => 'cancelled']],
+    67 => ['2026-10-26T09:00:00.000000Z', ['status' => 'completed']], 68 => [$iso($activatedAt->modify('+300 seconds')), ['cod' => false, 'payment' => ['method' => 'unverified', 'advanceStatus' => 'waiting', 'advanceRevision' => 0, 'financing' => true]]],
+    69 => ['2026-10-26T11:00:00.000000Z', []],
+];
+foreach ($cases as $n => [$submitted, $over]) {
+    if ($n !== 60) {
+        $ok(T::ingest($kernel, 'trendhome', $at($id($n), $submitted === 'none' ? null : $submitted, $over)), "scope order {$n}");
+    }
+    $th->orders[$id($n)] = $n === 69 ? $shopOrder($id($n), true, '0969') : $legacyShop($id($n), ($over['cod'] ?? true), sprintf('09%02d', $n));
+}
+$op->financeVerification = 'four_eyes'; // a YD SOFT 2.23.0 shop (it states the ledger of each order)
+foreach ([71 => '2026-10-21T21:00:00.000000Z', 72 => '2026-10-28T12:00:00.000000Z'] as $n => $submitted) {
+    $ok(T::ingest($kernel, 'outletperdele', $at($id($n), $submitted)), "outlet scope order {$n}");
+    $op->orders[$id($n)] = $legacyShop($id($n), true, sprintf('09%02d', $n));
+}
+$cohorts = array_column($all('SELECT global_order_id, workflow_cohort, workflow_cohort_reason FROM operational_orders WHERE global_order_id IN (' . implode(', ', array_fill(0, 12, '?')) . ')',
+    [...array_map(static fn (int $n): string => $g($n), array_keys($cases)), $g(71, 'outletperdele'), $g(72, 'outletperdele')]), null, 'global_order_id');
+$check($cohorts[$g(61)]['workflow_cohort'] === 'legacy' && $cohorts[$g(62)]['workflow_cohort'] === 'legacy' && $cohorts[$g(64)]['workflow_cohort'] === 'legacy' && $cohorts[$g(60)]['workflow_cohort'] === 'legacy'
+    && $cohorts[$g(63)]['workflow_cohort'] === 'undetermined' && $cohorts[$g(68)]['workflow_cohort_reason'] === 'financing_legacy', 'the TEST orders keep their cohorts: legacy, undetermined, TBI (nothing moved into Confirmare)');
+$confirmationRows = (int) $one('SELECT COUNT(*) FROM order_confirmations');
+$v62 = $ok($view($who['rop'], $g(62)), 'operator view of 21.10 23:59:59');
+$check($v62['scope'] === 'before_scope' && $v62['canRequest'] === false && $v62['request'] === null && $v62['ledger'] === 'manual', '21.10.2026 23:59:59 Bucharest: outside the scope, nothing to ask (its old workflow)');
+$error($ask($who['rop'], $g(62)), 409, 'FINANCE_REQUEST_OUT_OF_SCOPE', '21.10.2026 23:59:59 Bucharest: no finance task');
+$error($ask($who['rop'], $g(63)), 409, 'FINANCE_REQUEST_SCOPE_UNDETERMINED', 'no submission evidence: never counted in or out silently (manual review)');
+$v61 = $ok($view($who['rop'], $g(61)), 'operator view of 22.10 00:00');
+$check($v61['scope'] === 'in_scope' && $v61['canRequest'] === true && $v61['ledger'] === 'manual', '22.10.2026 00:00 Bucharest: covered (the boundary is inclusive)');
+$a61 = $ok($ask($who['rop'], $g(61)), '22.10 00:00 legacy request');
+$a60 = $ok($ask($who['rop'], $g(60)), 'a legacy order of the activation day');
+$a64 = $ok($ask($who['rop'], $g(64)), '23.10, reaching Arasya later');
+$a71 = $ok($ask($who['rop2'], $g(71, 'outletperdele')), 'Outlet Perdele 22.10 legacy');
+$a72 = $ok($ask($who['rop2'], $g(72, 'outletperdele')), 'Outlet Perdele 28.10 legacy');
+foreach ([$a61, $a60, $a64, $a71, $a72] as $answer) {
+    $check($answer['created'] === true && $answer['request']['ledger'] === 'manual' && $answer['request']['purpose'] === 'advance' && in_array($answer['request']['state'], ['assigned', 'requested'], true), 'a legacy order: a finance task on the manual ledger, the order not moved');
+}
+$check((int) $one('SELECT COUNT(*) FROM order_confirmations') === $confirmationRows, 'no legacy order was moved into Confirmare (no confirmation row created)');
+$error($ask($who['rop'], $g(65)), 409, 'FINANCE_REQUEST_NOTHING_DUE', 'an advance already verified is never verified again');
+$error($ask($who['rop'], $g(66)), 409, 'FINANCE_REQUEST_ORDER_CLOSED', 'a cancelled order is never reopened');
+$error($ask($who['rop'], $g(67)), 409, 'FINANCE_REQUEST_ORDER_CLOSED', 'a completed order keeps its commercial and production state');
+$error($ask($who['rop'], $g(68)), 409, 'FINANCE_REQUEST_FINANCING', 'a TBI credit order keeps its financing flow');
+$error($ask($who['rop'], $g(69)), 409, 'FINANCE_REQUEST_LEDGER_MISMATCH', 'Arasya and the shop disagree on the workflow: nothing is sent to finance');
+$error($ask($who['rop2'], $g(64)), 404, 'CONFIRMARE_NOT_FOUND', 'another shop\'s operator cannot ask');
+$error($ask($who['rdoc'], $g(64)), 404, 'CONFIRMARE_NOT_FOUND', 'a documents employee cannot ask');
+$error($ask($f, $g(64)), 404, 'CONFIRMARE_NOT_FOUND', 'a finance employee cannot create a task');
+// The finance employee: the task only, whatever the date; never the order.
+$f = $login('fin');
+$r64 = $a64['request']['id'];
+$box64 = $ok($inbox($f), 'inbox with legacy tasks');
+$item64 = array_column($box64['items'], null, 'id')[$r64] ?? null;
+$check($item64 !== null && $item64['ledger'] === 'manual' && $item64['orderNumber'] === $id(64) && count(array_filter($box64['items'], static fn (array $i): bool => in_array($i['orderNumber'], [$id(62), $id(63), $id(65), $id(66), $id(67), $id(68)], true))) === 0,
+    'the inbox shows the assigned legacy task, never the uncovered or task-less orders');
+$noOrderData($box64, 'inbox with legacy tasks');
+foreach ([62, 63, 65, 66, 67] as $n) {
+    $error($get($f, $orderPath($g($n), '/finance')), 404, 'CONFIRMARE_NOT_FOUND', "no finance detail of order {$n} without a task (whatever its date)");
+}
+$error($get($f, $orderPath($g(64), '/finance')), 404, 'CONFIRMARE_NOT_FOUND', 'a legacy order has no Confirmare money panel, even with a task');
+$error($get($f, $orderPath($g(64))), 404, 'CONFIRMARE_NOT_FOUND', 'no Confirmare order view of a legacy order either');
+$error($get($f, '/orders/' . rawurlencode($g(64))), 404, 'ORDER_NOT_FOUND', 'no production order view');
+$error($task($who['fout'], $r64), 404, 'FINANCE_REQUEST_NOT_FOUND', 'another employee\'s task: not found');
+$error($task($who['fsup'], $r64), 404, 'FINANCE_REQUEST_NOT_FOUND', 'an approver has no reach of a task that is not assigned to them');
+$t64 = $ok($task($f, $r64), 'legacy task');
+$noOrderData($t64, 'legacy task');
+$check($t64['live']['available'] === true && $t64['live']['ledger'] === 'manual' && $t64['live']['recordEnabled'] === false && $t64['allowed']['verify'] === true && $t64['allowed']['notReceived'] === true,
+    'the legacy task reads the shop now (minimized), nothing is recorded in the shop for it, the employee can decide');
+$shopBefore = count(array_filter($th->requests, static fn (array $r): bool => str_ends_with($r['route'], '/finance-action')));
+$key64 = "fvr-manual-{$suffix}-000064";
+$m64 = $ok($cmd($f, $r64, 'decide', $evidence($t64, '300.00', 'BT FVR 0064'), $key64), 'legacy payment found on the statement');
+$again64 = $ok($cmd($f, $r64, 'decide', $evidence($t64, '300.00', 'BT FVR 0064'), $key64), 'the same decision retried (lost answer)');
+$check($again64['request']['state'] === 'requires_manual_review' && (int) $one('SELECT version FROM finance_verification_requests WHERE request_uuid = ?', [$r64]) === (int) $m64['request']['version'], 'a retried decision changes nothing');
+$check(($ok($ask($who['rop2'], $g(72, 'outletperdele')), 'a second tab asks again')['created'] ?? null) === false, 'a second tab of a legacy order gets the open task (one open task per order)');
+$check($m64['request']['state'] === 'requires_manual_review' && $m64['request']['outcome'] === 'found_manual' && $m64['request']['category'] === 'done', 'found on the statement: manual review in the old workflow, never money received here');
+$check(count(array_filter($th->requests, static fn (array $r): bool => str_ends_with($r['route'], '/finance-action'))) === $shopBefore && ($th->orders[$id(64)]['finance']['entries'] ?? []) === [], 'nothing was written in the shop for the legacy order');
+$o64 = $ok($view($who['rop'], $g(64)), 'operator view of the manual review');
+$check($o64['request']['state'] === 'requires_manual_review' && $o64['financial']['open'] === false && $o64['pollSeconds'] === null, 'the operator sees the manual review; the payment condition is not met by it');
+$check($one('SELECT workflow_cohort FROM operational_orders WHERE global_order_id = ?', [$g(64)]) === 'legacy', 'the legacy order stays legacy');
+$t61 = $ok($task($f, $a61['request']['id']), 'legacy task 61');
+$n61 = $ok($cmd($f, $a61['request']['id'], 'decide', ['expectedVersion' => $t61['request']['version'], 'outcome' => 'not_received', 'reasonCode' => 'not_found']), 'legacy: not received');
+$check($n61['request']['state'] === 'not_received', 'a legacy task can end "not received"');
+$t60 = $ok($task($f, $a60['request']['id']), 'legacy task 60');
+$c60 = $ok($cmd($f, $a60['request']['id'], 'decide', ['expectedVersion' => $t60['request']['version'], 'outcome' => 'needs_clarification', 'reasonCode' => 'payer_unclear']), 'legacy: clarification');
+$check($c60['request']['state'] === 'needs_clarification' && $ok($view($who['rop'], $g(60)), 'operator 60')['canResubmit'] === true, 'a legacy task can go back to the operator');
+
+// ---- 14. Task inventory: existing finance work becomes tasks of named employees (dry run first) ----------------------
+$inventory = $container->financeTaskInventory();
+$ok($asRoot('PUT', "/management/employees/{$uuids['fsup']}/finance-supervision", ['employeeIds' => [$uuids['fin']]]), 'supervision again');
+$who['fsup'] = $login('fsup');
+// 73: a Confirmare order of 27.10 whose transfer was recorded before tasks existed (its task rows are removed here to
+// stand for the pre-2.50.0 state); 74: the shop waits on a transfer Arasya has no record of; 75: an additional payment
+// due; 76: an additional payment of an order submitted on 21.10.
+foreach ([73 => 200, 74 => 210, 75 => 220] as $n => $seconds) {
+    $ok(T::ingest($kernel, 'trendhome', $payload($id($n), $seconds)), "inventory order {$n}");
+    $th->orders[$id($n)] = $shopOrder($id($n), true, sprintf('09%02d', $n));
+}
+$service->distribute();
+$approve($who['rop'], $g(73));
+$a73 = $ok($ask($who['rop'], $g(73)), 'request 73');
+$t73 = $ok($task($f, $a73['request']['id']), 'task 73');
+$ok($cmd($f, $a73['request']['id'], 'decide', $evidence($t73, '300.00', 'BT FVR 0073')), 'transfer 73 recorded');
+$r73 = $requestRow($a73['request']['id']);
+$check($r73['state'] === 'checking' && $r73['checker_employee_uuid'] === $uuids['fsup'] && $r73['recorded_by_employee_uuid'] === $uuids['fin'], 'a recorded transfer names its second employee (never the recorder)');
+$pdo->prepare('DELETE FROM finance_verification_request_events WHERE request_uuid = ?')->execute([$r73['request_uuid']]);
+$pdo->prepare('DELETE FROM finance_verification_requests WHERE request_uuid = ?')->execute([$r73['request_uuid']]);
+$ok(T::ingest($kernel, 'trendhome', $payload($id(73), 200, true, ['state' => 'waiting', 'attention' => 'transfer_pending'])), 'the shop reports the transfer pending');
+$ok(T::ingest($kernel, 'trendhome', $payload($id(74), 210, true, ['state' => 'waiting', 'attention' => 'transfer_pending'])), 'a pending transfer without an Arasya record');
+$ok(T::ingest($kernel, 'trendhome', $payload($id(75), 220, true, ['state' => 'partial', 'attention' => 'additional_payment_due'])), 'an additional payment due');
+$ok(T::ingest($kernel, 'trendhome', $at($id(76), '2026-10-21T20:00:00.000000Z', ['financial' => ['state' => 'partial', 'attention' => 'additional_payment_due']])), 'an exception of an order of 21.10');
+$error($get($who['fsup'], $orderPath($g(73), '/finance')), 404, 'CONFIRMARE_NOT_FOUND', 'before the inventory nobody reaches the pending transfer through a scope alone (approve reaches nothing)');
+$error($get($f, $orderPath($g(75), '/finance')), 404, 'CONFIRMARE_NOT_FOUND', 'nor an additional payment through record alone');
+$tasksBefore = (int) $one('SELECT COUNT(*) FROM finance_verification_requests');
+$dry = $inventory->plan(['trendhome', 'outletperdele']);
+$check((int) $one('SELECT COUNT(*) FROM finance_verification_requests') === $tasksBefore, 'the dry run changes nothing');
+$planned = array_column(array_map(static fn (array $i): array => ['k' => $i['orderNumber'] . ':' . $i['purpose'] . ':' . $i['taskCode']], $dry['create']), 'k');
+$skipped = array_column(array_map(static fn (array $i): array => ['k' => $i['orderNumber'] . ':' . $i['reason']], $dry['skipped']), 'k');
+$check(in_array($id(73) . ':second_check:transfer_pending', $planned, true) && in_array($id(75) . ':exception:additional_payment_due', $planned, true)
+    && in_array($id(74) . ':evidence_missing', $skipped, true) && in_array($id(76) . ':out_of_scope', $skipped, true), 'the plan: the recorded transfer and the additional payment; the transfer without evidence and the 21.10 order are skipped with their reason');
+$applied = $inventory->apply(['trendhome', 'outletperdele'], 'test-1');
+$again = $inventory->apply(['trendhome', 'outletperdele'], 'test-2');
+$check($applied['created'] >= 2 && $again['created'] === 0, 'applied once; a second run creates nothing (idempotent)');
+$sc = $all("SELECT * FROM finance_verification_requests WHERE inventory_key LIKE 'second_check:%' AND order_uuid = (SELECT order_uuid FROM operational_orders WHERE global_order_id = ?)", [$g(73)])[0] ?? [];
+$check(($sc['purpose'] ?? '') === 'second_check' && $sc['state'] === 'checking' && $sc['assigned_employee_uuid'] === $uuids['fin'] && $sc['checker_employee_uuid'] === $uuids['fsup'] && $sc['recorded_by_employee_uuid'] === $uuids['fin'],
+    'the pending transfer: a second check assigned to its recorder, named checker another employee with approve');
+$check((int) $one("SELECT COUNT(*) FROM finance_verification_request_events WHERE request_uuid = ? AND action = 'inventoried' AND actor_employee_uuid IS NULL", [$sc['request_uuid']]) === 1, 'audited as a system inventory event');
+$check(count($th->orders[$id(73)]['finance']['entries']) === 1 && $th->orders[$id(73)]['finance']['entries'][0]['state'] === 'submitted', 'the shop\'s transfer is untouched (never recorded again, never decided by the inventory)');
+$zb = $ok($inbox($who['fsup']), 'checker inbox after the inventory');
+$check(in_array($sc['request_uuid'], array_column($zb['items'], 'id'), true) && array_column($zb['items'], 'kind', 'id')[$sc['request_uuid']] === 'second_check', 'the named checker sees the second check');
+$tz73 = $ok($task($who['fsup'], $sc['request_uuid']), 'inventoried second check');
+$z73 = $ok($cmd($who['fsup'], $sc['request_uuid'], 'second-check', ['expectedVersion' => (int) $sc['version'], 'expectedRevision' => $tz73['live']['revision'], 'decision' => 'verify']), 'second check of the old transfer');
+$check($z73['request']['state'] === 'verified', 'the old transfer is verified by its named second employee');
+$ex = $all("SELECT * FROM finance_verification_requests WHERE purpose = 'exception' AND order_uuid = (SELECT order_uuid FROM operational_orders WHERE global_order_id = ?)", [$g(75)])[0] ?? [];
+$check(($ex['task_code'] ?? '') === 'additional_payment_due' && $ex['assigned_employee_uuid'] === $uuids['fin'] && $ex['open_order_uuid'] !== null, 'the additional payment: an exception task of a named finance employee');
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$panel = $ok($get($f, $orderPath($g(75), '/finance')), 'the assigned employee opens the money panel of the exception');
+$noOrderData($panel, 'exception money panel');
+$check($ex['checker_employee_uuid'] === $uuids['fsup'] && $get($who['fsup'], $orderPath($g(75), '/finance'))['status'] === 200, 'its named approver (another employee with approve) reaches it for the second check');
+$error($get($who['fout'], $orderPath($g(75), '/finance')), 404, 'CONFIRMARE_NOT_FOUND', 'nobody else reaches it');
+$ok(T::ingest($kernel, 'trendhome', $payload($id(75), 220, true, ['state' => 'waiting'])), 'the additional payment cleared in the shop');
+$cleared = $inventory->apply(['trendhome'], 'test-3');
+$check($cleared['resolved'] === 1 && $requestRow((string) $ex['request_uuid'])['state'] === 'resolved' && $requestRow((string) $ex['request_uuid'])['open_order_uuid'] === null, 'a cleared exception is resolved by the system');
+$report = $inventory->report(['trendhome', 'outletperdele']);
+$check($report['trendhome']['beforeScope'] >= 2 && $report['trendhome']['undetermined'] >= 1 && $report['trendhome']['cohort']['legacy'] >= 5 && $report['trendhome']['financing'] === 1
+    && $report['outletperdele']['inScope'] >= 3, 'the read-only reconciliation counts the covered orders by scope, cohort and money state');
+
 // Leave the shared disposable database as the next suites expect it: no Confirmare, finance, request or invoice state.
 foreach (['finance_verification_request_events', 'finance_verification_requests', 'employee_finance_supervision', 'confirmare_cycle_steps', 'confirmare_proforma_cycles', 'confirmare_bank_checks', 'confirmare_reactivations',
     'invoice_efactura_tasks', 'order_source_operations', 'order_invoice_qr_checks', 'order_shop_assignments', 'order_invoice_actions', 'order_invoice_reads', 'employee_invoice_scopes',
@@ -526,4 +691,4 @@ foreach (['finance_verification_request_events', 'finance_verification_requests'
 $pdo->exec('DELETE FROM api_rate_limit_buckets');
 $pdo->exec('UPDATE operational_orders SET workflow_cohort = NULL, workflow_cohort_reason = NULL, workflow_cohort_at = NULL WHERE workflow_cohort IS NOT NULL');
 
-fwrite(STDOUT, "PASS MySQL finance requests integration: {$checks} checks (explicit requests, task-scoped finance access, no order data, four eyes and the single policy, bank evidence checks, missing payment, clarification, partial payment, amount mismatch, duplicate reference, two tabs, two employees, lost answer, unreadable shop, changed proforma and total, online and legacy orders, operator polling, read-only oversight, revoked scopes, refunds apart, nothing else changed).\n");
+fwrite(STDOUT, "PASS MySQL finance requests integration: {$checks} checks (explicit requests, task-scoped finance access, no order data, four eyes and the single policy, bank evidence checks, missing payment, clarification, partial payment, amount mismatch, duplicate reference, two tabs, two employees, lost answer, unreadable shop, changed proforma and total, online and legacy orders, operator polling, read-only oversight, revoked scopes, refunds apart, nothing else changed; the 22 October scope (21.10 23:59:59 / 22.10 00:00 Bucharest, no evidence, late arrival, paid, cancelled, completed, TBI, both shops), the manual ledger of orders outside Confirmare, task-only reach, named second checkers and the dry-run-first task inventory).\n");

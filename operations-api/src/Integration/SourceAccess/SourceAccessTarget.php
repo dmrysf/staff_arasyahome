@@ -20,6 +20,8 @@ final readonly class SourceAccessTarget
     public const INVOICE_ENFORCE = 'enforce';
     public const VERIFICATION_FOUR_EYES = 'four_eyes';
     public const VERIFICATION_SINGLE = 'single';
+    public const TASKS_OFF = 'off';
+    public const TASKS_AUTO = 'auto';
 
     public function __construct(
         public string $sourceKey,
@@ -38,6 +40,8 @@ final readonly class SourceAccessTarget
          * reports the same policy in its finance summary.
          */
         public string $verification = self::VERIFICATION_FOUR_EYES,
+        /** The finance task inventory on every distribution (API 2.50.0): off (default, the command only) or auto. */
+        public string $tasks = self::TASKS_OFF,
     ) {
     }
 
@@ -59,6 +63,11 @@ final readonly class SourceAccessTarget
     public function allowsFinanceRecord(): bool
     {
         return $this->finance === self::FINANCE_RECORD;
+    }
+
+    public function autoFinanceTasks(): bool
+    {
+        return $this->allowsFinanceRead() && $this->tasks === self::TASKS_AUTO;
     }
 
     public function allowsSingleVerification(): bool

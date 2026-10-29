@@ -173,6 +173,8 @@ final class SourceFinance
                 'electronicRefund' => self::bool($capabilities['electronicRefund'] ?? null),
                 // YD SOFT 2.23.0 (absent from an older shop: four eyes).
                 'verification' => ($capabilities['verification'] ?? null) === null ? 'four_eyes' : self::choice($capabilities['verification'], self::VERIFICATION_POLICIES),
+                // YD SOFT 2.23.0: where the order's payments are recorded (absent from an older shop: its finance record).
+                'ledger' => ($capabilities['ledger'] ?? null) === null ? 'shop' : self::choice($capabilities['ledger'], ['shop', 'manual']),
             ],
         ];
         if ($summary['capabilities']['electronicRefund'] !== false || ($cod && $advance === null)) {
