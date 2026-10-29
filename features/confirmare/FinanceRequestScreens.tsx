@@ -5,7 +5,7 @@ import { sourceLabel, type ConfirmareApi, type ConfirmareSource } from "../../do
 import { financeScopesOf, formatFinanceMoney, normalizeAmount, validReference } from "../../domain/confirmareFinance";
 import {
   CLARIFICATION_REASONS, INBOX_CATEGORIES, NOT_RECEIVED_REASONS, OVERSIGHT_GROUPS,
-  canOverseeFinance, canUseFinanceInbox, financeOrderPath, financeTaskPath, maskIban, oversightPath, policyLabel, proformaLabel, reasonLabel, requestErrorKey, stateLabel,
+  canOverseeFinance, canUseFinanceInbox, financeLegacyPath, financeOrderPath, financeTaskPath, validOrderNumber, maskIban, oversightPath, policyLabel, proformaLabel, reasonLabel, requestErrorKey, stateLabel, taskCodeLabel, taskOrderId,
   type ClarificationReason, type DecisionAnswer, type InboxCategory, type InboxItem, type NotReceivedReason, type OversightFilters, type OversightGroup, type RequestState, type Transfer,
 } from "../../domain/financeRequests";
 import { createIdempotencyKey } from "../../services/idempotency";
@@ -17,6 +17,7 @@ import { AutoRefreshBar, QueueSkeleton } from "../workspaces/DashboardParts";
 import { useAutoRefresh } from "../workspaces/useAutoRefresh";
 import { SourceFilter, when } from "./ConfirmareParts";
 import { ConfirmareFinancePanel } from "./ConfirmareFinancePanel";
+import { FinanceRequestCard } from "./FinanceRequestCard";
 
 /**
  * The finance employee's payment checks (Staff 2.41.0, API 2.50.0): only the requests assigned to them, a minimized
@@ -27,6 +28,7 @@ import { ConfirmareFinancePanel } from "./ConfirmareFinancePanel";
 const backendCode = (error: StaffServiceError): string | undefined => typeof error.details?.backendCode === "string" ? error.details.backendCode : undefined;
 const stateTone: Readonly<Record<RequestState, Tone>> = {
   requested: "neutral", assigned: "accent", checking: "warning", verified: "success", not_received: "danger", needs_clarification: "warning", exception: "danger", cancelled: "neutral",
+  requires_manual_review: "warning", resolved: "neutral",
 };
 const SOURCES: readonly ConfirmareSource[] = ["trendhome", "outletperdele"];
 
@@ -49,9 +51,6 @@ export function FinanceInboxScreen({ employee, service, navigate }: { employee: 
   const inbox = useAutoRefresh(load, "finance-inbox");
   const data = inbox.data;
   const items = data ? data.items.filter((item) => item.category === category) : null;
-  const legacy = data && category === "todo" ? data.legacySecondChecks : [];
-  const scopes = financeScopesOf(employee);
-  const exceptional = scopes.record.length + scopes.approve.length > 0;
 
   return (
     <article className="screen-stack confirmare-screen fr-inbox" data-testid="fr-inbox">
@@ -65,24 +64,12 @@ export function FinanceInboxScreen({ employee, service, navigate }: { employee: 
       </div>
       {inbox.error && (!data || inbox.stopped) && <p className="order-notice order-notice-muted" role="alert">{errorText(inbox.error)}</p>}
       {!data && !inbox.error && <QueueSkeleton />}
-      {items && items.length === 0 && legacy.length === 0 && <EmptyPanel icon="check" title={t(`fr.empty.${category}` as MessageKey)}>{t("fr.empty.hint")}</EmptyPanel>}
+      {items && items.length === 0 && <EmptyPanel icon="check" title={t(`fr.empty.${category}` as MessageKey)}>{t("fr.empty.hint")}</EmptyPanel>}
       {items && items.length > 0 && <ul className="queue-list fr-cards" aria-label={t(`fr.category.${category}` as MessageKey)}>
         {items.map((item) => <InboxCard key={item.id} item={item} navigate={navigate} />)}
       </ul>}
-      {legacy.length > 0 && <section className="detail-section" aria-labelledby="fr-legacy" data-testid="fr-legacy">
-        <h2 id="fr-legacy">{t("fr.legacy.title")}</h2>
-        <p className="dashboard-lead">{t("fr.legacy.lead")}</p>
-        <ul className="queue-list">{legacy.map((row) => <li key={row.globalOrderId}>
-          <button type="button" className="queue-row cf-row tone-warning" onClick={() => navigate(financeOrderPath(row.globalOrderId))} data-testid={`fr-legacy-${row.orderNumber}`}>
-            <span className="queue-row-main"><span className="queue-row-top"><strong className="order-id">#{row.orderNumber}</strong><span className="cf-source">{sourceLabel(row.source)}</span></span>
-              <small>{t("fr.legacy.recordedAt", { date: when(row.changedAt) })}</small></span>
-            <span className="queue-chip">{t("fr.kind.second_check")}</span><AppIcon name="chevron" size={18} />
-          </button>
-        </li>)}</ul>
-      </section>}
       {data && data.items.length >= data.limit && <p className="dashboard-footnote">{t("fr.inbox.limit")}</p>}
       <div className="dashboard-actions">
-        {exceptional && <button type="button" className="button button-secondary" onClick={() => navigate("/confirmare/finance")} data-testid="fr-open-exceptional"><AppIcon name="alert" size={20} />{t("fr.inbox.exceptional")}</button>}
         {canOverseeFinance(employee) && <button type="button" className="button button-secondary" onClick={() => navigate(oversightPath())} data-testid="fr-open-oversight"><AppIcon name="team" size={20} />{t("fr.oversight.open")}</button>}
       </div>
     </article>
@@ -91,7 +78,9 @@ export function FinanceInboxScreen({ employee, service, navigate }: { employee: 
 
 function InboxCard({ item, navigate }: { item: InboxItem; navigate: (path: string) => void }) {
   const { t } = useI18n();
-  const action = item.category !== "done" && (item.kind === "verify" || item.kind === "second_check");
+  const action = item.category !== "done" && (item.kind === "verify" || item.kind === "second_check" || item.kind === "exception");
+  // An exceptional money task is worked in the order's money panel (refund, additional payment, reconciliation).
+  const target = item.kind === "exception" && item.category !== "done" ? financeOrderPath(taskOrderId(item)) : financeTaskPath(item.id);
   return (
     <li>
       <article className={`fr-card tone-${item.category === "done" ? "neutral" : "warning"}`} data-testid={`fr-card-${item.orderNumber}`}>
@@ -101,12 +90,14 @@ function InboxCard({ item, navigate }: { item: InboxItem; navigate: (path: strin
           <StatusPill tone={stateTone[item.state]} testId={`fr-card-state-${item.orderNumber}`}>{item.kind === "verify" ? stateLabel(item.state) : t(`fr.kind.${item.kind}` as MessageKey)}</StatusPill>
         </div>
         <dl className="authority-facts fr-facts">
-          <div><dt>{t("fr.fact.proforma")}</dt><dd className="mono">{proformaLabel(item.proforma)}</dd></div>
+          {item.proforma && <div><dt>{t("fr.fact.proforma")}</dt><dd className="mono">{proformaLabel(item.proforma)}</dd></div>}
+          {item.taskCode && <div><dt>{t("fr.fact.task")}</dt><dd>{taskCodeLabel(item.taskCode)}</dd></div>}
           <div><dt>{t("fr.fact.requestedAt")}</dt><dd>{when(item.requestedAt)}</dd></div>
+          {item.ledger === "manual" && <div><dt>{t("fr.fact.workflow")}</dt><dd data-testid={`fr-card-manual-${item.orderNumber}`}>{t("fr.ledger.manual")}</dd></div>}
           {item.reasonCode && <div><dt>{t("fr.fact.reason")}</dt><dd>{reasonLabel(item.reasonCode)}</dd></div>}
         </dl>
-        <button type="button" className={`button ${action ? "button-primary" : "button-secondary"}`} onClick={() => navigate(financeTaskPath(item.id))} data-testid={`fr-open-${item.orderNumber}`}>
-          {action ? t(item.kind === "second_check" ? "fr.card.secondCheck" : "fr.card.verify") : t("fr.card.open")}<AppIcon name="arrow" size={18} />
+        <button type="button" className={`button ${action ? "button-primary" : "button-secondary"}`} onClick={() => navigate(target)} data-testid={`fr-open-${item.orderNumber}`}>
+          {action ? t(item.kind === "second_check" ? "fr.card.secondCheck" : item.kind === "exception" ? "fr.card.exception" : "fr.card.verify") : t("fr.card.open")}<AppIcon name="arrow" size={18} />
         </button>
       </article>
     </li>
@@ -184,6 +175,9 @@ export function FinanceTaskScreen({ requestId, service, navigate }: { requestId:
 
       {receipt && <Receipt answer={receipt} onBack={() => navigate("/confirmare/finance/requests")} />}
       {error && <Notice tone="danger" role="alert" testId="fr-task-error">{error}</Notice>}
+      {request.ledger === "manual" && <Notice tone="info" role="note" testId="fr-task-manual">{t("fr.task.manualLedger")}</Notice>}
+      {request.purpose === "exception" && <Notice tone="warning" role="note" testId="fr-task-exception">{t("fr.task.exception", { task: taskCodeLabel(request.taskCode) })}
+        {request.category !== "done" && <button type="button" className="button button-link" onClick={() => navigate(financeOrderPath(taskOrderId(request)))} data-testid="fr-open-panel">{t("fr.card.exception")}</button>}</Notice>}
 
       <section className="detail-section" aria-labelledby="fr-task-money" data-testid="fr-task-money">
         <h2 id="fr-task-money">{t("fr.task.money")}</h2>
@@ -236,7 +230,7 @@ export function FinanceTaskScreen({ requestId, service, navigate }: { requestId:
 
         {pending && <div className="cf-confirm" role="group" aria-labelledby="fr-confirm-title" data-testid="fr-confirm">
           <p className="eyebrow" id="fr-confirm-title">{t("fr.confirm.title")}</p>
-          <p data-testid="fr-confirm-text">{confirmText(pending, live.available ? live.currency : "RON", task.singleVerification, t)}</p>
+          <p data-testid="fr-confirm-text">{confirmText(pending, live.available ? live.currency : "RON", task.singleVerification, request.ledger === "manual", t)}</p>
           <div className="cfw-actions">
             <button type="button" className="button button-primary" disabled={busy} onClick={confirm} data-testid="fr-confirm-send">{busy ? t("common.sending") : t("fr.confirm.send")}</button>
             <button type="button" className="button button-secondary" disabled={busy} onClick={() => setPending(null)} data-testid="fr-confirm-back">{t("fr.confirm.back")}</button>
@@ -247,9 +241,9 @@ export function FinanceTaskScreen({ requestId, service, navigate }: { requestId:
   );
 }
 
-function confirmText(pending: Pending, currency: string, single: boolean, t: ReturnType<typeof useI18n>["t"]): string {
+function confirmText(pending: Pending, currency: string, single: boolean, manual: boolean, t: ReturnType<typeof useI18n>["t"]): string {
   switch (pending.kind) {
-    case "verified": return t(single ? "fr.confirm.verifiedSingle" : "fr.confirm.verifiedFourEyes", { amount: formatFinanceMoney(pending.input.amount, currency), reference: pending.input.reference, date: pending.input.valueDate });
+    case "verified": return t(manual ? "fr.confirm.verifiedManual" : single ? "fr.confirm.verifiedSingle" : "fr.confirm.verifiedFourEyes", { amount: formatFinanceMoney(pending.input.amount, currency), reference: pending.input.reference, date: pending.input.valueDate });
     case "not_received": return t("fr.confirm.notReceived", { reason: reasonLabel(pending.reason) });
     case "needs_clarification": return t("fr.confirm.clarify", { reason: reasonLabel(pending.reason) });
     case "second_verify": return t("fr.confirm.secondVerify");
@@ -317,6 +311,7 @@ function Receipt({ answer, onBack }: { answer: DecisionAnswer; onBack: () => voi
   const { t } = useI18n();
   const receipt = answer.receipt;
   const key: MessageKey = receipt.unknown ? "fr.receipt.unknown"
+    : receipt.state === "requires_manual_review" ? "fr.receipt.manualReview"
     : receipt.state === "verified" ? (receipt.outcome === "verified_partial" ? "fr.receipt.verifiedPartial" : "fr.receipt.verified")
       : receipt.awaitingSecondCheck ? "fr.receipt.awaitingSecond"
         : receipt.state === "not_received" ? "fr.receipt.notReceived"
@@ -325,7 +320,7 @@ function Receipt({ answer, onBack }: { answer: DecisionAnswer; onBack: () => voi
   return (
     <section className="detail-section fr-receipt" aria-labelledby="fr-receipt-title" data-testid="fr-receipt" data-state={receipt.state}>
       <p className="eyebrow" id="fr-receipt-title">{t("fr.receipt.title")}</p>
-      <Notice tone={receipt.unknown ? "warning" : receipt.state === "not_received" ? "danger" : "success"} role="status">{t(key, { order: answer.request.orderNumber })}</Notice>
+      <Notice tone={receipt.unknown || receipt.state === "requires_manual_review" ? "warning" : receipt.state === "not_received" ? "danger" : "success"} role="status">{t(key, { order: answer.request.orderNumber })}</Notice>
       <dl className="authority-facts fr-facts">
         <div><dt>{t("fr.fact.state")}</dt><dd>{stateLabel(receipt.state)}</dd></div>
         {receipt.reasonCode && <div><dt>{t("fr.fact.reason")}</dt><dd>{reasonLabel(receipt.reasonCode)}</dd></div>}
@@ -394,6 +389,8 @@ export function FinanceOversightScreen({ service, navigate }: { service: Confirm
               <span className="queue-row-top"><strong className="order-id">#{item.orderNumber}</strong><span className="cf-source">{sourceLabel(item.source)}</span></span>
               <small>{proformaLabel(item.proforma)} · {policyLabel(item.policy)}</small>
               <small>{t("fr.oversight.people", { assignee: item.assignee?.displayName ?? "—", recorder: item.recordedBy?.displayName ?? "—", decider: item.decidedBy?.displayName ?? "—" })} · {when(item.updatedAt)}</small>
+              {item.checker && <small>{t("fr.oversight.checker", { name: item.checker.displayName })}</small>}
+              {item.taskCode && <small>{taskCodeLabel(item.taskCode)}</small>}
             </span>
             <span className="queue-chip">{stateLabel(item.state)}</span><AppIcon name="chevron" size={18} />
           </button>
@@ -420,6 +417,9 @@ export function FinanceOversightDetailScreen({ requestId, service, navigate }: {
           <div><dt>{t("fr.fact.policy")}</dt><dd>{policyLabel(data.request.policy)}</dd></div>
           <div><dt>{t("fr.fact.assignee")}</dt><dd>{data.request.assignee?.displayName ?? "—"}</dd></div>
           <div><dt>{t("fr.fact.recordedBy")}</dt><dd>{data.request.recordedBy?.displayName ?? "—"}</dd></div>
+          {data.request.checker && <div><dt>{t("fr.fact.checker")}</dt><dd>{data.request.checker.displayName}</dd></div>}
+          {data.request.taskCode && <div><dt>{t("fr.fact.task")}</dt><dd>{taskCodeLabel(data.request.taskCode)}</dd></div>}
+          {data.request.ledger === "manual" && <div><dt>{t("fr.fact.workflow")}</dt><dd>{t("fr.ledger.manual")}</dd></div>}
           <div><dt>{t("fr.fact.decidedBy")}</dt><dd>{data.request.decidedBy?.displayName ?? "—"}</dd></div>
           {data.request.reasonCode && <div><dt>{t("fr.fact.reason")}</dt><dd>{reasonLabel(data.request.reasonCode)}</dd></div>}
         </dl>
@@ -448,5 +448,51 @@ export function FinanceOrderScreen({ globalOrderId, employee, service, navigate 
       <PageHeader eyebrow={sourceLabel(source)} title={t("fr.order.title", { order: globalOrderId.slice(source.length + 1) })} description={t("fr.order.lead")} />
       <ConfirmareFinancePanel detail={{ globalOrderId, finance }} service={service} />
     </article>
+  );
+}
+
+// ---- The advance of an order outside Confirmare (operator) --------------------------------------------------------
+
+/**
+ * An order of the old workflow (legacy, before Confirmare) submitted from 22 October 2026: the operator sends its advance
+ * to finance from here, by the order's number. The screen shows the request only (never the order's customer, products
+ * or prices); finance never records its payment in the shop (manual review in the old workflow).
+ */
+export function FinanceLegacyScreen({ globalOrderId, service, navigate }: { globalOrderId: string; service: ConfirmareApi; navigate: (path: string) => void }) {
+  const { t } = useI18n();
+  const [source, number] = [globalOrderId.split(":")[0] ?? "", globalOrderId.split(":").slice(1).join(":")];
+  return (
+    <article className="screen-stack confirmare-screen fr-legacy-order" data-testid="fr-legacy-order">
+      <button className="back-link" type="button" onClick={() => navigate("/")}><AppIcon name="back" size={20} /> {t("common.home")}</button>
+      <PageHeader eyebrow={sourceLabel(source)} title={t("fr.legacyOrder.title", { order: number })} description={t("fr.legacyOrder.lead")} />
+      <FinanceRequestCard globalOrderId={globalOrderId} service={service} canOperate onSettled={() => undefined} />
+    </article>
+  );
+}
+
+/** The operator opens an order of the old workflow by its number (no list of orders). */
+export function LegacyOrderLookup({ sources, navigate }: { sources: readonly ConfirmareSource[]; navigate: (path: string) => void }) {
+  const { t } = useI18n();
+  const [source, setSource] = useState<ConfirmareSource>(sources[0] ?? "trendhome");
+  const [number, setNumber] = useState("");
+  const [problem, setProblem] = useState(false);
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    const typed = number.trim();
+    if (!validOrderNumber(typed)) return setProblem(true);
+    navigate(financeLegacyPath(`${source}:${typed}`));
+  };
+  return (
+    <form className="cf-form fr-legacy-lookup" onSubmit={submit} data-testid="fr-legacy-lookup">
+      <p className="eyebrow">{t("fr.legacyOrder.lookupTitle")}</p>
+      <small>{t("fr.legacyOrder.lookupLead")}</small>
+      {sources.length > 1 && <label className="field"><span>{t("fr.legacyOrder.shop")}</span>
+        <select value={source} onChange={(event) => setSource(event.target.value as ConfirmareSource)} data-testid="fr-legacy-source">
+          {sources.map((value) => <option key={value} value={value}>{sourceLabel(value)}</option>)}
+        </select></label>}
+      <label className="field"><span>{t("fr.legacyOrder.number")}</span><input inputMode="numeric" autoComplete="off" maxLength={128} value={number} onChange={(event) => { setNumber(event.target.value); setProblem(false); }} data-testid="fr-legacy-number" /></label>
+      {problem && <p className="field-error" role="alert">{t("fr.legacyOrder.invalid")}</p>}
+      <button type="submit" className="button button-secondary" data-testid="fr-legacy-open">{t("fr.legacyOrder.open")}</button>
+    </form>
   );
 }

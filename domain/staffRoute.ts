@@ -3,6 +3,7 @@ export type StaffRoute =
   | { kind: "confirmare-order"; pathname: string; orderId: string }
   | { kind: "finance-task" | "finance-oversight-detail"; pathname: string; requestId: string }
   | { kind: "finance-order"; pathname: string; orderId: string }
+  | { kind: "finance-legacy"; pathname: string; orderId: string }
   | { kind: "trendyol-package"; pathname: string; packageId: string }
   | { kind: "order-detail"; pathname: string; orderId: string }
   | { kind: "exception-detail"; pathname: string; exceptionId: string }
@@ -33,6 +34,7 @@ const fixedRoutes = new Map<string, "home" | "login" | "scan" | "orders" | "hist
 const ORDER_PREFIX = "/orders/";
 const CONFIRMARE_ORDER_PREFIX = "/confirmare/orders/";
 const FINANCE_ORDER_PREFIX = "/confirmare/finance/orders/";
+const FINANCE_LEGACY_PREFIX = "/confirmare/finance/legacy/";
 const DOCUMENT_PREFIX = "/documents/";
 const MAX_ENCODED_ORDER_ID_LENGTH = 768;
 const MAX_ORDER_ID_LENGTH = 256;
@@ -63,6 +65,11 @@ export function parseStaffRoute(pathname: string): StaffRoute {
   if (pathname.startsWith(FINANCE_ORDER_PREFIX)) {
     const id = decodeOrderId(pathname.slice(FINANCE_ORDER_PREFIX.length));
     return id !== null && /^(trendhome|outletperdele):[A-Za-z0-9._-]{1,128}$/.test(id) ? { kind: "finance-order", pathname, orderId: id } : { kind: "invalid", pathname: "/" };
+  }
+  if (pathname.startsWith(FINANCE_LEGACY_PREFIX)) {
+    // Staff 2.41.0: the advance of an order outside Confirmare, by its global id only.
+    const id = decodeOrderId(pathname.slice(FINANCE_LEGACY_PREFIX.length));
+    return id !== null && /^(trendhome|outletperdele):[A-Za-z0-9._-]{1,128}$/.test(id) ? { kind: "finance-legacy", pathname, orderId: id } : { kind: "invalid", pathname: "/" };
   }
   if (pathname.startsWith(CONFIRMARE_ORDER_PREFIX)) {
     // A Confirmare order: its global id (source:number) only; never customer data in the address bar.

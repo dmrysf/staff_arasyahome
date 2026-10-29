@@ -10,7 +10,7 @@ import path from "node:path";
 // decided); a third goes back to the operator for a clarification. TEST people, TEST orders, TEST amounts only.
 type Person = { username: string; name: string; id: string };
 type Order = { order: string; number: string; reference: string };
-type Fixture = { password: string; people: { rec: Person; app: Person; sup: Person }; operator: string; order: string; number: string; reference: string; notReceived: Order; clarify: Order; customer: string; phone: string };
+type Fixture = { password: string; people: { rec: Person; app: Person; sup: Person }; operator: string; order: string; number: string; reference: string; notReceived: Order; clarify: Order; legacy: Order; before: Order; customer: string; phone: string };
 const root = path.resolve(import.meta.dirname, "..");
 let F: Fixture;
 
@@ -274,4 +274,68 @@ test("clarification, in a real browser: finance asks, the operator answers, the 
     await expect(again.page.getByTestId(`fr-card-${order.number}`)).toBeVisible();
     expect(again.errors).toEqual([]);
   } finally { await again.context.close(); }
+});
+
+test("an order of 23.10.2026 outside Confirmare (old date): the operator sends it by number, finance checks it, nothing is recorded as money (manual review)", async ({ browser }) => {
+  const order = F.legacy;
+  const op = await signIn(browser, F.operator);
+  try {
+    // 21.10.2026 23:59:59 Bucharest: outside the scope, no request offered.
+    await op.page.getByTestId("fr-legacy-number").fill(F.before.number);
+    await op.page.getByTestId("fr-legacy-open").click();
+    await expect(op.page.getByTestId("fr-legacy-order")).toBeVisible();
+    await expect(op.page.getByTestId("fr-step-scope")).toBeVisible();
+    await expect(op.page.getByTestId("fr-step-request")).toHaveCount(0);
+    await noCustomer(op.page);
+    // 23.10.2026, the old workflow: covered, manual ledger.
+    await op.page.goto("/");
+    await op.page.getByTestId("fr-legacy-number").fill(order.number);
+    await op.page.getByTestId("fr-legacy-open").click();
+    const card = op.page.getByTestId("fr-step");
+    await expect(card).toHaveAttribute("data-phase", "none");
+    await expect(op.page.getByTestId("fr-step-manual")).toBeVisible();
+    await noCustomer(op.page);
+    await op.page.getByTestId("fr-step-request").click();
+    await op.page.getByTestId("fr-step-confirm-send").click();
+    await expect(card).toHaveAttribute("data-phase", "assigned");
+    await expect(op.page.getByTestId("fr-step-message")).toContainText(F.people.rec.name);
+    expect(op.errors).toEqual([]);
+  } finally { await op.context.close(); }
+
+  const fin = await signIn(browser, F.people.rec.username);
+  try {
+    await fin.page.goto("/confirmare/finance/requests");
+    await expect(fin.page.getByTestId(`fr-card-${order.number}`)).toBeVisible();
+    await expect(fin.page.getByTestId(`fr-card-manual-${order.number}`)).toBeVisible();
+    await expect(fin.page.getByTestId(`fr-card-${F.before.number}`)).toHaveCount(0);
+    await fin.page.getByTestId(`fr-open-${order.number}`).click();
+    await expect(fin.page.getByTestId("fr-task-manual")).toBeVisible();
+    await expect(fin.page.getByTestId("fr-payment-reference")).toHaveText(order.reference);
+    await noCustomer(fin.page);
+    await fin.page.getByTestId("fr-mode-verified").click();
+    await fin.page.getByTestId("fr-amount").fill("215,70");
+    await fin.page.getByTestId("fr-bank-reference").fill("BT E2E 0043");
+    await fin.page.getByTestId("fr-value-date").fill(new Date().toISOString().slice(0, 10));
+    await fin.page.getByTestId("fr-statement-reference").fill(order.reference);
+    await fin.page.getByTestId("fr-statement").check();
+    await fin.page.getByTestId("fr-verify-next").click();
+    await expect(fin.page.getByTestId("fr-confirm-text")).toContainText("fluxul vechi");
+    await fin.page.getByTestId("fr-confirm-send").click();
+    await expect(fin.page.getByTestId("fr-receipt")).toHaveAttribute("data-state", "requires_manual_review");
+    // The order of 21.10 (no task) never appears to finance; the API refuses it (covered by the API integration suite).
+    await fin.page.goto("/confirmare/finance/requests");
+    await fin.page.getByTestId("fr-category-done").click();
+    await expect(fin.page.getByTestId(`fr-card-${order.number}`)).toBeVisible();
+    await expect(fin.page.getByTestId(`fr-card-${F.before.number}`)).toHaveCount(0);
+    expect(fin.errors).toEqual([]);
+  } finally { await fin.context.close(); }
+
+  const back = await signIn(browser, F.operator);
+  try {
+    await back.page.goto(`/confirmare/finance/legacy/${encodeURIComponent(order.order)}`);
+    await expect(back.page.getByTestId("fr-step")).toHaveAttribute("data-phase", "manualReview");
+    await expect(back.page.getByTestId("fr-step-verified")).toHaveCount(0);
+    await expect(back.page.getByTestId("fr-step-request")).toHaveCount(0);
+    expect(back.errors).toEqual([]);
+  } finally { await back.context.close(); }
 });

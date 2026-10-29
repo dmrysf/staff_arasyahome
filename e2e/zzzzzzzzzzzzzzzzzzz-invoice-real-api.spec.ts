@@ -115,8 +115,9 @@ test("a second e-mail is confirmed first; two open tabs show the same state", as
 test("API 2.50.0: a finance scope without a finance task of the order reads no SmartBill state and never issues or sends", async ({ browser }) => {
   const { context, page, errors } = await signIn(browser, F.people.fin.username);
   await expect(page.getByTestId("workspace-confirmare-finance")).toBeVisible();
-  await page.getByTestId("cf-open-finance").click();
-  await expect(page.getByTestId("cf-finance-queue")).toBeVisible();
+  await page.getByTestId("fr-open-inbox").click();
+  await expect(page.getByTestId("fr-inbox")).toBeVisible();
+  await expect(page.getByTestId(`fr-card-${F.order.split(":")[1]}`)).toHaveCount(0);
   // The paid order is no finance task: the Confirmare order stays closed (the route falls back to Home).
   await page.goto(`/confirmare/orders/${encodeURIComponent(F.order)}`);
   await expect(page.getByTestId("cf-order")).toHaveCount(0);

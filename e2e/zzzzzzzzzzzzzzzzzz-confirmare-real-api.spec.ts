@@ -540,10 +540,12 @@ test("finance (Phase 5): the shop's money read on request, a transfer recorded b
   const recorder = await signIn(browser, F.people.finrec.username);
   let page = recorder.page;
   await expect(page.getByTestId("workspace-confirmare-finance"), "a finance-only employee works from the finance tasks").toBeVisible();
-  await page.getByTestId("cf-open-finance").click();
-  await expect(page.getByTestId("cf-finance-queue")).toBeVisible();
-  // The additional payment of the order is an exceptional finance task: its row opens the money panel only.
-  await page.getByTestId(`cf-finance-row-${number(F.orders.finance)}`).click();
+  // API 2.50.0: the finance employee works the tasks assigned to them by name (no shop-wide list); the additional
+  // payment of the order is an exception task whose card opens the money panel only.
+  await page.getByTestId("fr-open-inbox").click();
+  await expect(page.getByTestId("fr-inbox")).toBeVisible();
+  await expect(page.getByTestId(`fr-card-${number(F.orders.finance)}`)).toContainText("Plată suplimentară datorată");
+  await page.getByTestId(`fr-open-${number(F.orders.finance)}`).click();
   await expect(page).toHaveURL(new RegExp(`/confirmare/finance/orders/`));
   await expect(page.getByTestId("fr-order")).toBeVisible();
   await expect(page.getByTestId("cf-finance-load")).toBeVisible();

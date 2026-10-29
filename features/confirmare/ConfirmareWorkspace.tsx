@@ -12,6 +12,7 @@ import { useAutoRefresh } from "../workspaces/useAutoRefresh";
 import { canUseShopTasks, canWatchHealth } from "../../domain/confirmareOps";
 import { ConfirmareRow, confirmareOrderPath, confirmareQueueLoader } from "./ConfirmareParts";
 import { canOverseeFinance, canUseFinanceInbox, oversightPath } from "../../domain/financeRequests";
+import { LegacyOrderLookup } from "./FinanceRequestScreens";
 
 const LIST_LIMIT = 6;
 
@@ -54,7 +55,6 @@ function FinanceOnlyWorkspace({ employee, navigate }: { employee: Employee; navi
         </div>
         <div className="next-action-actions">
           <button type="button" className="button button-primary next-action-cta" onClick={() => navigate(primary)} data-testid={inbox ? "fr-open-inbox" : oversees ? "fr-open-oversight" : "cf-open-finance"}>{t(inbox ? "fr.home.open" : oversees ? "fr.oversight.open" : "cf.fin.open")}<AppIcon name="arrow" size={20} /></button>
-          {inbox && canUseFinance(employee) && <button type="button" className="button button-secondary" onClick={() => navigate("/confirmare/finance")} data-testid="cf-open-finance">{t("fr.inbox.exceptional")}</button>}
           {inbox && oversees && <button type="button" className="button button-secondary" onClick={() => navigate(oversightPath())} data-testid="fr-open-oversight">{t("fr.oversight.open")}</button>}
           {canWatchHealth(employee) && <button type="button" className="button button-secondary" onClick={() => navigate("/confirmare/health")} data-testid="cf-open-health">{t("cf.health.open")}</button>}
         </div>
@@ -168,6 +168,7 @@ function OperatorWorkspace({ employee, service, navigate }: { employee: Employee
             {canWatchHealth(employee) && <button type="button" className="button button-secondary" onClick={() => navigate("/confirmare/health")} data-testid="cf-open-health"><AppIcon name="orders" size={20} />{t("cf.health.open")}</button>}
           </div>
         </DashboardSection>
+        <LegacyOrderLookup sources={[...new Set([...confirmareScopesOf(employee).operate, ...confirmareScopesOf(employee).supervise])]} navigate={navigate} />
         <Notice tone="warning" role="note" testId="cf-contact-dependency">{t("cf.home.contactDependency")}</Notice>
       </div>
     </div>

@@ -39,6 +39,7 @@ export function canAccessRoute(employee: Employee, path: string) {
   if (path === "/confirmare/finance/requests" || path.startsWith("/confirmare/finance/requests/")) return canUseFinanceInbox(employee);
   if (path === "/confirmare/finance/oversight" || path.startsWith("/confirmare/finance/oversight/")) return canOverseeFinance(employee);
   if (path.startsWith("/confirmare/finance/orders/")) return canUseFinanceInbox(employee) || canUseFinance(employee);
+  if (path.startsWith("/confirmare/finance/legacy/")) return canUseConfirmare(employee);
   // Confirmare production handoff (API 2.42.0): a Confirmare scope and the document generate permission.
   if (path === "/confirmare/handoff") return canHandOff(employee);
   // API 2.46.0: the AWB queue and the e-Factura follow-up of the shop employees; the operating health of the watchers.

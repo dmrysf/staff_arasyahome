@@ -11,15 +11,18 @@ import { when } from "./ConfirmareParts";
 const backendCode = (error: StaffServiceError): string | undefined => typeof error.details?.backendCode === "string" ? error.details.backendCode : undefined;
 const phaseTone: Readonly<Record<RequestPhase, Tone>> = {
   none: "neutral", waitingAssignment: "warning", assigned: "warning", checking: "warning", secondCheck: "warning", verified: "success", verifiedPartial: "warning",
-  notReceived: "danger", clarification: "danger", exception: "danger", cancelled: "neutral",
+  notReceived: "danger", clarification: "danger", exception: "danger", cancelled: "neutral", manualReview: "warning", resolved: "neutral",
 };
 
 /**
  * Step 4 (Plata și avansul), Staff 2.41.0: the operator sends the advance payment to finance and sees the answer. The
  * screen asks the server again while finance works on it (5 s while checking, 10 s while waiting, the server's hint),
  * only while the tab is visible and for at most 30 minutes without a change; it never sends a command by itself.
+ * `onlyManual` (an order outside Confirmare, shown on the production order screen): the card appears only for a covered
+ * order (submitted from 22 October 2026) of the manual ledger and stays silent otherwise (no Confirmare scope, an older
+ * order, a Confirmare order that has its own step 4).
  */
-export function FinanceRequestCard({ globalOrderId, service, canOperate, onSettled }: { globalOrderId: string; service: ConfirmareApi; canOperate: boolean; onSettled: () => void }) {
+export function FinanceRequestCard({ globalOrderId, service, canOperate, onSettled, onlyManual = false }: { globalOrderId: string; service: ConfirmareApi; canOperate: boolean; onSettled: () => void; onlyManual?: boolean }) {
   const { t } = useI18n();
   const [view, setView] = useState<OrderFinanceRequest | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -96,6 +99,7 @@ export function FinanceRequestCard({ globalOrderId, service, canOperate, onSettl
     } finally { setBusy(false); }
   }
 
+  if (onlyManual && (!view || view.ledger !== "manual" || (view.scope !== "in_scope" && !view.request))) return null;
   if (!view) return error ? <Notice tone="warning" role="status" testId="fr-step-error">{error}</Notice> : null;
   const phase = requestPhase(view);
   const request = view.request;
@@ -109,6 +113,8 @@ export function FinanceRequestCard({ globalOrderId, service, canOperate, onSettl
       </p>}
       <p className="dashboard-lead" data-testid="fr-step-message">{t(`fr.step.${phase}` as MessageKey, { name: request?.assignee ?? "—", reason: reasonLabel(request?.reasonCode ?? null), at: when(request?.decidedAt ?? request?.updatedAt ?? null) })}</p>
       {phase === "verified" && <Notice tone="success" role="status" testId="fr-step-verified">{t("fr.step.verifiedBanner")}</Notice>}
+      {view.ledger === "manual" && <Notice tone="info" role="note" testId="fr-step-manual">{t("fr.step.manualLedger")}</Notice>}
+      {view.scope !== "in_scope" && <Notice tone="warning" role="note" testId="fr-step-scope">{t(view.scope === "before_scope" ? "fr.step.beforeScope" : "fr.step.undetermined")}</Notice>}
       {stopped && <p className="dashboard-footnote" data-testid="fr-step-stopped">{t("fr.step.stopped")} <button type="button" className="button button-link" onClick={() => { changedAt.current = Date.now(); setStopped(false); void read(); }}>{t("fr.step.askAgain")}</button></p>}
       {error && <Notice tone="danger" role="alert" testId="fr-step-error">{error}</Notice>}
 

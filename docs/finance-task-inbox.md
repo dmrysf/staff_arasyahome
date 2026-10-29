@@ -1,8 +1,25 @@
 # Finance task inbox (API 2.50.0, migration 044, Staff 2.41.0, Dashboard 0.16.0, YD SOFT 2.23.0)
 
-The finance employee works only the payment checks assigned to them. A finance scope no longer opens every order of a
-shop: it reaches an order only through a finance task (default deny). The two-person rule for recorded bank transfers
-stays the production default; single-person verification exists behind a policy that is off everywhere.
+The finance employee works only the finance tasks assigned to them by name. A finance scope no longer opens any order of
+a shop: it reaches an order only through a finance task (default deny); `record` or `approve` alone reaches nothing. The
+two-person rule for recorded bank transfers stays the production default; single-person verification exists behind a
+policy that is off everywhere.
+
+## Scope (owner decision 2026-10-29)
+
+Every Trend Home and Outlet Perdele order first submitted at or after **2026-10-22 00:00 Europe/Bucharest
+(2026-10-21T21:00:00Z, inclusive)** is covered, whatever its workflow cohort (`confirmare`, `legacy`, `NULL`,
+`undetermined`) and whenever it reached Arasya (`FinanceTaskScope`). The date is the shop's first real submission
+(`operational_orders.source_submitted_at` and its evidence kind), never the last change, a proforma date or the last
+synchronisation; the first acceptance in Arasya (`created_at`) is reported apart. An order without submission evidence
+is `undetermined`: never counted in or out silently, no task created for it (manual review). Covering an order never
+creates a task by itself: a task exists only when an operator asks for one or the task inventory points one at an
+existing finance record.
+
+An order outside Confirmare keeps its workflow: it is never moved into Confirmare for finance. YD SOFT 2.23.0 lets
+Arasya **read** its financial summary for a task (route `finance` only; every write, status and invoice route keeps
+refusing it with `order_not_eligible`). Its task uses the `manual` ledger: a payment found on the statement ends the task
+in `requires_manual_review` (the old workflow records it); it is never money received in Arasya.
 
 Nothing here issues a document, creates an AWB, starts production, changes the Confirmare approval or sends anything to a
 customer.
@@ -11,8 +28,8 @@ customer.
 
 | Who | Grant | Sees | Does |
 | --- | --- | --- | --- |
-| Confirmare operator (assignee or approver of the order, or a supervisor of the shop) | Confirmare `operate` / `supervise` | step 4 "Plata și avansul" of their order and the request's state | sends the advance to finance, answers a clarification, withdraws a request |
-| Finance employee | finance `record` (or `verify`) on the shop | "Verificări de plată": the requests assigned to them, the second checks waiting for them, the transfers recorded before 2.50.0 that wait for a second employee | starts a check, confirms the payment, says it was not received, asks for a clarification, does a second check (`approve`), reconciles a lost answer |
+| Confirmare operator (assignee or approver of the order, or a supervisor of the shop) | Confirmare `operate` / `supervise` | step 4 "Plata și avansul" of their order and the request's state; for an order outside Confirmare, the screen "Avansul unei comenzi din fluxul vechi" opened by the order number (any operator or supervisor of the shop: such an order has no Confirmare assignee) | sends the advance to finance, answers a clarification, withdraws a request |
+| Finance employee | finance `record` (or `verify`) on the shop | "Verificări de plată": the tasks assigned to them by name (advance checks, exception tasks), and the second checks they are the named checker of | starts a check, confirms the payment, says it was not received, asks for a clarification, does a second check (`approve`), works an exception task in the order's money panel, reconciles a lost answer |
 | Finance supervisor | `employee_finance_supervision` (root only, Dashboard "Supraveghere contabilitate") | "Activitatea contabilității": the requests of the employees they supervise, who recorded and who decided, the audit trail and the order's bank transfers | nothing (read only) |
 | Finance `view` only | finance `view` | nothing new (no tasks) | nothing |
 
@@ -27,28 +44,52 @@ transfers in the shop.
 
 A finance scope reaches an order only when one of these holds:
 
-1. a finance verification request of the order is assigned to the employee, or they recorded or decided it;
-2. a request of the order waits for its second check under `four_eyes`, the employee holds `approve` and did not record it;
-3. with `record` or `approve` on the shop: an exceptional money state the shop reported (`transfer_pending`, `refund_due`,
-   `refund_liability`, `refund_pending`, `additional_payment_due`, `reconciliation_required`), an unsettled finance action
-   of the order, or a full card refund requested in Confirmare and not yet verified.
+1. a finance task of the order is assigned to the employee, or they recorded or decided it;
+2. an open task of the order names the employee as its checker (`checker_employee_uuid`: the second employee of a recorded
+   transfer, or the approver of an exception task) and they still hold `approve`;
+3. a finance action of the order they sent themselves is still pending or unknown (they reconcile it).
 
-The ordinary wait for a COD advance is **not** finance work on its own: it becomes a task only when an operator sends it.
-The Confirmare order detail (`GET /confirmare/orders/{id}`) is no longer open to a finance scope; an exceptional task is
-worked in Staff's finance-only money panel (`/confirmare/finance/orders/{globalOrderId}`), which reads
-`GET /confirmare/orders/{id}/finance` only.
+Holding `record` or `approve` alone reaches nothing, on any date. The old finance queue (`GET /confirmare/finance`) lists
+no order to a finance scope any more (operators keep their advance tasks). The ordinary wait for a COD advance is
+**not** finance work on its own: it becomes a task only when an operator sends it. The Confirmare order detail
+(`GET /confirmare/orders/{id}`) is not open to a finance scope; an exception task is worked in Staff's finance-only money
+panel (`/confirmare/finance/orders/{globalOrderId}`), which reads `GET /confirmare/orders/{id}/finance` only.
+
+## Task inventory (`bin/finance-task-inventory.php`, dry run first)
+
+Existing open finance work becomes tasks of named employees, from real records only:
+
+- `second_check`: a transfer recorded in the shop through Arasya (`order_finance_actions` `submit_transfer`, applied, with
+  its shop entry id) that no second employee decided and that the shop still reports `transfer_pending`. Assigned to its
+  recorder; the least loaded other employee with `approve` is named its checker. The transfer is never recorded again and
+  never decided by the inventory.
+- `exception`: an exceptional money state of a Confirmare order (`refund_due`, `refund_liability`, `refund_pending`,
+  `additional_payment_due`, `reconciliation_required`) or a full card refund requested and not verified. Assigned to the
+  least loaded employee with `record`, its approver named as checker; resolved by the system when the state clears.
+- Skipped with a reason, for a manual review: `evidence_missing` (the shop waits on a transfer Arasya has no record of),
+  `out_of_scope`, `scope_undetermined`, `outside_confirmare` (a money attention of an order outside Confirmare),
+  `open_task_exists`, `shop_not_waiting`.
+
+`php bin/finance-task-inventory.php --report` prints the read-only reconciliation of the covered orders (scope, cohort,
+evidence, payment method, money state, closed and completed orders, TBI, open actions, transfers awaiting a second
+check, open tasks) and the plan. `--apply --yes` creates the planned tasks; applying it on production is a separate owner
+authorization. `ARASYA_SOURCE_FINANCE_TASKS_<SRC>=auto` (default `off`) makes the minute's Confirmare distribution run it
+too. A transfer recorded from an exception task's money panel gets its named checker at once (`onFinanceApplied`).
 
 ## Lifecycle
 
 ```
 operator ─request─▶ requested ─(an eligible finance employee)─▶ assigned ─start─▶ checking
 checking ─verified (single)───────────────────────────────▶ verified
-checking ─verified (four_eyes: submit_transfer)─▶ checking + recorded ─second check verify─▶ verified
+checking ─verified (four_eyes: submit_transfer)─▶ checking + recorded + named checker ─second check verify─▶ verified
+checking ─verified (manual ledger: an order outside Confirmare)─▶ requires_manual_review (nothing written in the shop)
                                                                        └─second check reject─▶ not_received
 assigned/checking/exception ─not_received─▶ not_received
 assigned/checking/exception ─needs_clarification─▶ needs_clarification ─operator resubmits─▶ assigned
 requested/assigned/needs_clarification ─operator withdraws─▶ cancelled
 a lost shop answer ─▶ exception (outcome_unknown) ─reconcile with the shop's stored answer─▶ verified / checking
+inventory ─▶ second_check (checking, assigned to the recorder, named checker) ─second check─▶ verified / not_received
+inventory ─▶ exception (assigned, named checker) ─money panel actions─▶ … ─state clears─▶ resolved (system)
 ```
 
 - One open request per order (`open_order_uuid` unique). Asking again, a second tab or another operator returns the open
@@ -100,9 +141,10 @@ read; it never sends a command and never asks the shop.
 
 ## Data and audit
 
-- `finance_verification_requests` (minimized): the request, its state and version, the assignee, recorder and decider,
-  the policy, the shop entry id, an HMAC of the evidence (never the evidence itself) and the proforma's series and
-  number (to notice a cancelled or replaced proforma). No amount, currency, payment reference, IBAN, bank transaction,
+- `finance_verification_requests` (minimized): the task, its purpose (`advance`, `second_check`, `exception`), task code,
+  ledger (`shop`, `manual`), state and version, the assignee, recorder, named checker and decider, the policy, the shop
+  entry id, an HMAC of the evidence (never the evidence itself) and the proforma's series and number (to notice a
+  cancelled or replaced proforma). No amount, currency, payment reference, IBAN, bank transaction,
   customer or product is stored: "Operations stores no amount" holds. Finance data comes from an authorized read of the
   shop at the moment it is shown or decided.
 - `finance_verification_request_events`: append-only, one row per version (codes, ids and instants only).
@@ -119,11 +161,14 @@ the stored `verify` rows when `verify` is absent).
 
 ## Tests
 
-- API: `tests/mysql-finance-requests-integration.php` (MySQL and MariaDB), the adapted finance, invoice and relay suites.
+- API: `tests/mysql-finance-requests-integration.php` (MySQL and MariaDB: the 22 October scope matrix with 21.10 23:59:59
+  and 22.10 00:00 Bucharest, no evidence, late arrival, paid, cancelled, completed, TBI, both shops, the manual ledger,
+  task-only reach, named checkers, the inventory), the adapted finance, invoice and relay suites.
 - Staff: `tests/finance-requests.test.ts` (mapping, polling bounds, phases, access, routes, privacy of the screens).
 - Browser, against the real API: `e2e/zzzzzzzzzzzzzzzzzzzzzz-finance-requests-real-api.spec.ts` (four-eyes verification,
   not received, clarification and resubmission, read-only oversight, and the operator's polling measured in the
   browser: 10 s waiting, 5 s checking, none while hidden, none once decided).
 - Dashboard: `tests/ui.test.tsx`, `tests/api-client.test.ts` (verify column, supervision card, client).
-- YD SOFT: `tests/finance/run.php` (settings and source checks), `tests/wp-smoke/finance.php` section 3b (single
-  verification on a throwaway WordPress, offline).
+- YD SOFT: `tests/finance/run.php` (settings, source checks, the 22 October boundary), `tests/wp-smoke/finance.php`
+  sections 3b (single verification) and 6 (an order of 21.10 23:59:59 is neither read nor written; a covered order outside
+  Confirmare is read only and changed in nothing), on a throwaway WordPress, offline.

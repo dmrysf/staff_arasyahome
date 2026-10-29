@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
   POLL_LIMIT_MS, canOverseeFinance, canUseFinanceInbox, financeOrderPath, mapDecisionAnswer, mapFinanceTask, mapInbox, mapOrderFinanceRequest, mapOversight, mapOversightDetail,
-  maskIban, nextPollMs, proformaLabel, requestErrorKey, requestPhase, type OrderFinanceRequest,
+  maskIban, mapInboxItem, nextPollMs, proformaLabel, requestErrorKey, requestPhase, taskCodeLabel, taskOrderId, type OrderFinanceRequest,
 } from "../domain/financeRequests";
 import { canAccessRoute } from "../domain/permissions";
 import { parseStaffRoute } from "../domain/staffRoute";
@@ -27,22 +27,22 @@ function employee(patch: Partial<Employee>): Employee {
 
 const operatorView = (state: string | null, extra: Record<string, unknown> = {}) => ({
   request: state === null ? null : {
-    id: REQ, state, version: 2, outcome: null, reasonCode: null, awaitingSecondCheck: false, assignee: "Test Fin", proforma: { series: "TEST", number: "0001" },
+    id: REQ, state, version: 2, outcome: null, reasonCode: null, purpose: "advance", ledger: "shop", awaitingSecondCheck: false, assignee: "Test Fin", proforma: { series: "TEST", number: "0001" },
     requestedAt: "2026-10-29T08:00:00Z", updatedAt: "2026-10-29T08:01:00Z", decidedAt: null, ...extra,
   },
-  financial: { state: "waiting", attention: null, open: false }, canRequest: state === null, canResubmit: state === "needs_clarification", canCancel: state === "assigned",
+  financial: { state: "waiting", attention: null, open: false }, scope: "in_scope", ledger: "shop", canRequest: state === null, canResubmit: state === "needs_clarification", canCancel: state === "assigned",
   pollSeconds: state === "checking" ? 5 : state === "assigned" ? 10 : null,
 });
 
 const item = (patch: Record<string, unknown> = {}) => ({
-  id: REQ, source: "trendhome", orderNumber: "9001", proforma: { series: "TEST", number: "0001" },
+  id: REQ, source: "trendhome", orderNumber: "9001", purpose: "advance", taskCode: null, ledger: "shop", proforma: { series: "TEST", number: "0001" },
   state: "assigned", version: 2, category: "todo", kind: "verify", assignedToMe: true, outcome: null, reasonCode: null, policy: null,
   requestedAt: "2026-10-29T08:00:00Z", updatedAt: "2026-10-29T08:01:00Z", decidedAt: null, ...patch,
 });
 
 const live = {
   available: true, revision: `sha256:${"b".repeat(64)}`, readAt: "2026-10-29T08:02:00Z", currency: "RON",
-  proforma: { series: "TEST", number: "0001", amount: "300.00", currency: "RON" }, proformaChanged: false,
+  proforma: { series: "TEST", number: "0001", amount: "300.00", currency: "RON" }, proformaChanged: false, ledger: "shop",
   advance: { percentage: 30, required: "300.00", verified: "0.00", remaining: "300.00", accepted: false }, paymentReference: "TH9001",
   bank: { beneficiary: "TEST SRL", bank: "TEST BANK", ibanMasked: "RO49 •••• •••• 0000", bic: null },
   financial: { state: "waiting", attention: null }, policy: "four_eyes", recordEnabled: true,
@@ -94,13 +94,13 @@ test("each request state has one operator phase; a recorded four-eyes transfer r
 
 test("the inbox, the task, the receipt and the oversight are mapped strictly", () => {
   const inbox = mapInbox({ items: [item(), item({ id: "00000000-0000-4000-8000-0000000000a2", category: "done", state: "verified", outcome: "verified_full", policy: "four_eyes" })],
-    legacySecondChecks: [{ globalOrderId: "outletperdele:5001", source: "outletperdele", orderNumber: "5001", changedAt: "2026-10-28T13:43:00Z" }], counts: { todo: 2, clarification: 0, done: 1 }, sources: ["trendhome", "outletperdele"], limit: 300 });
+    counts: { todo: 2, clarification: 0, done: 1 }, sources: ["trendhome", "outletperdele"], limit: 300 });
   assert.equal(inbox.items.length, 2);
   assert.equal(inbox.counts.todo, 2);
-  const leaked = mapInbox({ items: [item({ amount: "300.00", currency: "RON", paymentReference: "TH9001" })], legacySecondChecks: [], counts: { todo: 1, clarification: 0, done: 0 }, sources: [], limit: 300 });
+  const leaked = mapInbox({ items: [item({ amount: "300.00", currency: "RON", paymentReference: "TH9001" })], counts: { todo: 1, clarification: 0, done: 0 }, sources: [], limit: 300 });
   assert.deepEqual(Object.keys(leaked.items[0] ?? {}).filter((key) => /amount|currency|reference|iban/i.test(key)), [], "an inbox card keeps no money field, even if one is sent");
-  assert.throws(() => mapInbox({ items: [item({ category: "archived" })], legacySecondChecks: [], counts: { todo: 0, clarification: 0, done: 0 }, sources: [], limit: 300 }));
-  assert.throws(() => mapInbox({ items: [item({ id: "not-a-uuid" })], legacySecondChecks: [], counts: { todo: 0, clarification: 0, done: 0 }, sources: [], limit: 300 }));
+  assert.throws(() => mapInbox({ items: [item({ category: "archived" })], counts: { todo: 0, clarification: 0, done: 0 }, sources: [], limit: 300 }));
+  assert.throws(() => mapInbox({ items: [item({ id: "not-a-uuid" })], counts: { todo: 0, clarification: 0, done: 0 }, sources: [], limit: 300 }));
   const task = mapFinanceTask({ request: item(), live, allowed: { start: true, verify: true, notReceived: true, clarify: true, secondCheck: false, reconcile: false }, me: ME, singleVerification: false });
   assert.equal(task.live.available && task.live.transfers[0]?.state, "submitted");
   assert.equal(mapFinanceTask({ request: item(), live: { available: false, reason: "source_unavailable" }, allowed: { start: false, verify: false, notReceived: true, clarify: true, secondCheck: false, reconcile: false }, me: ME, singleVerification: false }).live.available, false);
@@ -108,7 +108,7 @@ test("the inbox, the task, the receipt and the oversight are mapped strictly", (
   const answer = mapDecisionAnswer({ request: item({ state: "checking" }), receipt: { state: "checking", outcome: null, reasonCode: null, policy: "four_eyes", awaitingSecondCheck: true, unknown: false, at: "2026-10-29T08:03:00Z" } });
   assert.equal(answer.receipt.awaitingSecondCheck, true);
   const person = { id: OTHER, displayName: "Test Rec" };
-  const over = { ...item(), assignee: person, recordedBy: person, decidedBy: null };
+  const over = { ...item(), assignee: person, recordedBy: person, checker: null, decidedBy: null };
   delete (over as Record<string, unknown>).category; delete (over as Record<string, unknown>).kind; delete (over as Record<string, unknown>).assignedToMe; delete (over as Record<string, unknown>).version;
   const oversight = mapOversight({ items: [over], counts: { pending: 1, checking: 0, verified: 0, not_received: 0, attention: 0 }, employees: [person], limit: 300 });
   assert.equal(oversight.items[0]?.recordedBy?.displayName, "Test Rec");
@@ -174,4 +174,44 @@ test("the finance screens show no customer, product or order history, and refres
   assert.ok(/data-testid="fr-confirm-send"/.test(screens) && /data-testid="fr-step-confirm-send"/.test(card));
   assert.ok(!/setTimeout\([^)]*request(Finance|Task)/.test(card), "the poll never sends a command");
   assert.match(card, /visibilitychange/);
+});
+
+test("22 October 2026 scope: the operator's view says whether an order is covered and where its payment is recorded", () => {
+  const legacy = mapOrderFinanceRequest({ ...operatorView(null), scope: "before_scope", ledger: "manual", canRequest: false });
+  assert.equal(legacy.scope, "before_scope");
+  assert.equal(legacy.ledger, "manual");
+  assert.throws(() => mapOrderFinanceRequest({ ...operatorView(null), scope: "everything" }), "an unknown scope is refused");
+  assert.throws(() => mapOrderFinanceRequest({ ...operatorView(null), ledger: "bank" }), "an unknown ledger is refused");
+  const manual = mapOrderFinanceRequest(operatorView("requires_manual_review", { ledger: "manual", outcome: "found_manual" }));
+  assert.equal(requestPhase(manual), "manualReview", "a payment found for an order of the old workflow is a manual review, never verified");
+  assert.equal(requestPhase(mapOrderFinanceRequest(operatorView("resolved", { purpose: "exception", proforma: null }))), "resolved");
+});
+
+test("exception and second-check tasks: no proforma, a task code, the money panel of the order", () => {
+  const exception = mapInboxItem(item({ purpose: "exception", taskCode: "additional_payment_due", proforma: null, kind: "exception" }));
+  assert.equal(exception.proforma, null);
+  assert.equal(proformaLabel(exception.proforma), "—");
+  assert.equal(taskOrderId(exception), "trendhome:9001");
+  assert.equal(taskCodeLabel("additional_payment_due"), CATALOGS.ro["fr.taskCode.additional_payment_due" as MessageKey]);
+  assert.equal(taskCodeLabel("<b>"), "", "an unknown code is never shown as text");
+  assert.throws(() => mapInboxItem(item({ purpose: "refund" })), "an unknown purpose is refused");
+  assert.equal(mapInboxItem(item({ ledger: "manual" })).ledger, "manual");
+  assert.equal(requestErrorKey("FINANCE_REQUEST_OUT_OF_SCOPE"), "fr.error.FINANCE_REQUEST_OUT_OF_SCOPE");
+  assert.equal(requestErrorKey("FINANCE_REQUEST_LEDGER_MISMATCH"), "fr.error.FINANCE_REQUEST_LEDGER_MISMATCH");
+});
+
+test("no shop-wide finance list: the inbox and the workspace link only the tasks assigned to the employee", () => {
+  const screens = readFileSync(path.join(root, "features/confirmare/FinanceRequestScreens.tsx"), "utf8");
+  const workspace = readFileSync(path.join(root, "features/confirmare/ConfirmareWorkspace.tsx"), "utf8");
+  assert.ok(!screens.includes("legacySecondChecks") && !screens.includes("fr-open-exceptional"), "no list of the shop's pending transfers in the inbox");
+  assert.ok(!/inbox && canUseFinance\(employee\) && <button[^>]*\/confirmare\/finance"/.test(workspace), "the finance-only workspace links no shop-wide finance queue");
+  const card = readFileSync(path.join(root, "features/confirmare/FinanceRequestCard.tsx"), "utf8");
+  assert.match(card, /onlyManual && \(!view \|\| view\.ledger !== "manual" \|\| \(view\.scope !== "in_scope" && !view\.request\)\)\) return null/);
+});
+
+test("the advance of an order outside Confirmare opens by its global id only, for Confirmare operators", () => {
+  const route = parseStaffRoute("/confirmare/finance/legacy/trendhome%3A64459");
+  assert.equal(route.kind, "finance-legacy");
+  assert.equal(parseStaffRoute("/confirmare/finance/legacy/b2b%3A1").kind, "invalid");
+  assert.equal(parseStaffRoute("/confirmare/finance/legacy/trendhome%3A1%2F2").kind, "invalid");
 });
