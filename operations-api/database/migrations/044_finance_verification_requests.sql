@@ -1,10 +1,12 @@
 -- Migration 044 (API 2.50.0): explicit finance verification requests, finance supervision and the `verify` finance scope.
 --
 -- Additive: three new tables, no row, no grant (the task inventory that points existing finance records at tasks is a
--- separate, dry-run-first command, never part of the migration). Two CHECKs are replaced to accept one more value each: the capability
--- of employee_finance_scopes (`verify`) and the action of order_finance_actions (`verify_transfer`). Both tables hold few
--- rows (a short DDL lock); each swap is guarded by information_schema like 039, so a re-run or an interrupted run
--- completes and a completed run changes nothing. No row is read, written or rewritten. Applied by bin/migrate.php with the API deploy, never by hand.
+-- separate, dry-run-first command, never part of the migration). Four CHECKs are replaced to accept one more value each: the
+-- capability of employee_finance_scopes (`verify`), the action of order_finance_actions (`verify_transfer`), the action of
+-- order_invoice_actions (`advance_difference`, the operator asks for the missing advance) and the kind of
+-- order_source_operations (`awb_cod_corrected`, the employee states the cash on delivery corrected in FAN Courier). The
+-- tables hold few rows (a short DDL lock); each swap is guarded by information_schema like 039, so a re-run or an
+-- interrupted run completes and a completed run changes nothing. No row is read, written or rewritten. Applied by bin/migrate.php with the API deploy, never by hand.
 -- Rollback: older API versions never read these tables and never meet a `verify` row unless root granted one; they are
 -- left in place (no DROP), and bin/check-rollback.php keeps the floor at 2.50.0 while a request is open.
 --
@@ -175,3 +177,41 @@ SET @arasya_044_action_add = IF(@arasya_044_action_new,
 PREPARE arasya_044_action_add_statement FROM @arasya_044_action_add;
 EXECUTE arasya_044_action_add_statement;
 DEALLOCATE PREPARE arasya_044_action_add_statement;
+
+-- The 041 action CHECK of order_invoice_actions is replaced once to also accept `advance_difference` (owner 2026-10-29: the
+-- operator asks the customer for the missing advance; recorded in the shop, the action audited here without any amount).
+SET @arasya_044_invoice_old = (SELECT COUNT(*) > 0 FROM information_schema.table_constraints WHERE constraint_schema = DATABASE() AND table_name = 'order_invoice_actions' AND constraint_name = 'chk_order_invoice_actions_action');
+SET @arasya_044_invoice_new = (SELECT COUNT(*) = 0 FROM information_schema.table_constraints WHERE constraint_schema = DATABASE() AND table_name = 'order_invoice_actions' AND constraint_name = 'chk_order_invoice_actions_action_044');
+
+SET @arasya_044_invoice_drop = IF(@arasya_044_invoice_old,
+    'ALTER TABLE order_invoice_actions DROP CONSTRAINT chk_order_invoice_actions_action',
+    'DO 0');
+PREPARE arasya_044_invoice_drop_statement FROM @arasya_044_invoice_drop;
+EXECUTE arasya_044_invoice_drop_statement;
+DEALLOCATE PREPARE arasya_044_invoice_drop_statement;
+
+SET @arasya_044_invoice_add = IF(@arasya_044_invoice_new,
+    'ALTER TABLE order_invoice_actions ADD CONSTRAINT chk_order_invoice_actions_action_044 CHECK (action IN (''issue'', ''send_mail'', ''reissue'', ''resolve'', ''proforma_issue'', ''proforma_send_mail'', ''proforma_check'', ''proforma_resolve'', ''proforma_cancel'', ''total_accept'', ''advance_accept'', ''advance_difference''))',
+    'DO 0');
+PREPARE arasya_044_invoice_add_statement FROM @arasya_044_invoice_add;
+EXECUTE arasya_044_invoice_add_statement;
+DEALLOCATE PREPARE arasya_044_invoice_add_statement;
+
+-- The 043 kind CHECK of order_source_operations is replaced once to also accept `awb_cod_corrected` (owner 2026-10-29: the
+-- AWB label stops while its cash on delivery differs from what is owed; the employee states the FAN Courier correction).
+SET @arasya_044_operation_old = (SELECT COUNT(*) > 0 FROM information_schema.table_constraints WHERE constraint_schema = DATABASE() AND table_name = 'order_source_operations' AND constraint_name = 'chk_order_source_operations_kind');
+SET @arasya_044_operation_new = (SELECT COUNT(*) = 0 FROM information_schema.table_constraints WHERE constraint_schema = DATABASE() AND table_name = 'order_source_operations' AND constraint_name = 'chk_order_source_operations_kind_044');
+
+SET @arasya_044_operation_drop = IF(@arasya_044_operation_old,
+    'ALTER TABLE order_source_operations DROP CONSTRAINT chk_order_source_operations_kind',
+    'DO 0');
+PREPARE arasya_044_operation_drop_statement FROM @arasya_044_operation_drop;
+EXECUTE arasya_044_operation_drop_statement;
+DEALLOCATE PREPARE arasya_044_operation_drop_statement;
+
+SET @arasya_044_operation_add = IF(@arasya_044_operation_new,
+    'ALTER TABLE order_source_operations ADD CONSTRAINT chk_order_source_operations_kind_044 CHECK (kind IN (''order_reactivate'', ''awb_create'', ''awb_address_task'', ''awb_address_done'', ''awb_cod_corrected'', ''card_refund_full'', ''card_refund_record'', ''card_refund_verify''))',
+    'DO 0');
+PREPARE arasya_044_operation_add_statement FROM @arasya_044_operation_add;
+EXECUTE arasya_044_operation_add_statement;
+DEALLOCATE PREPARE arasya_044_operation_add_statement;

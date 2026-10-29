@@ -434,6 +434,20 @@ $d10 = $ok($cmd($f, $rid(10), 'decide', $evidence($t10, '100.00', 'BT FVR 0010')
 $check($d10['request']['outcome'] === 'verified_partial' && $th->financeNumbers($id(10))['state'] === 'partial', 'a partial payment is verified as partial, never as the full advance');
 $o10 = $ok($view($who['rop'], $g(10)), 'operator view of a partial payment');
 $check($o10['request']['outcome'] === 'verified_partial' && $o10['financial']['open'] === false && $o10['pollSeconds'] === null, 'the operator sees a partial advance (the 30 % rule still holds)');
+// Owner 2026-10-29: 190.00 of a 200.00 advance under four eyes (here 285.00 of 300.00). The employee records the REAL amount
+// of the statement (never "not received" because it is smaller); it counts only after the second employee verified it.
+$t15 = $ok($task($f, $rid(15)), 'task 15 (four eyes)');
+$d15 = $ok($cmd($f, $rid(15), 'decide', $evidence($t15, '285.00', 'BT FVR 0015')), 'the smaller amount found on the statement');
+$o15 = $ok($view($who['rop'], $g(15)), 'operator view while the second check waits');
+$check($d15['request']['kind'] === 'awaiting_second_check' && $th->orders[$id(15)]['finance']['entries'][0]['amount'] === '285.00' && $th->financeNumbers($id(15))['state'] === 'waiting'
+    && $o15['request']['awaitingSecondCheck'] === true && $o15['request']['outcome'] === null && $o15['financial']['open'] === false,
+    'recorded as 285.00 (the real amount), not money yet: the operator sees it in verification, never as received');
+$z15 = $ok($task($who['fsup'], $rid(15)), 'second check of the smaller amount');
+$v15 = $ok($cmd($who['fsup'], $rid(15), 'second-check', ['expectedVersion' => $requestRow($rid(15))['version'], 'expectedRevision' => $z15['live']['revision'], 'decision' => 'verify']), 'verified by the second employee');
+$o15 = $ok($view($who['rop'], $g(15)), 'operator view of the verified smaller advance');
+$check($z15['live']['transfers'][0]['amount'] === '285.00' && $v15['request']['outcome'] === 'verified_partial' && $th->financeNumbers($id(15))['state'] === 'partial'
+    && $o15['request']['outcome'] === 'verified_partial' && $o15['financial']['open'] === false && $o15['canRequest'] === true,
+    'four eyes: verified as partial (285.00 of 300.00); the order waits for the operator\'s decision (accept it, or ask for the 15.00 and request finance again)');
 // Amount mismatch and duplicate reference: refused by the shop, nothing recorded, the request stays checking.
 $t11 = $ok($task($f, $rid(11), $kernelSingle), 'task 11');
 $error($cmd($f, $rid(11), 'decide', $evidence($t11, '2000.00', 'BT FVR 0011'), null, $kernelSingle), 409, 'CONFIRMARE_FINANCE_REFUSED', 'more than the order costs: refused by the shop');

@@ -139,6 +139,39 @@ money state is on its way, 10 s while waiting; Staff clamps the hint to 5–10 s
 at all once decided, and never after 30 minutes without a change (the employee can ask again). The poll is a database
 read; it never sends a command and never asks the shop.
 
+## Advance received short (owner decision 2026-10-29)
+
+The customer may pay less than the advance asked (200.00 asked, 190.00 on the statement). No new money calculation was
+written; the existing mechanisms carry it:
+
+1. Finance records the REAL amount of the statement (`submit_transfer`, or `verify_transfer` under `single`). The task
+   screen compares it with the advance left: a smaller amount shows "record exactly the amount on the statement: do not
+   mark 'Payment not received'" and the difference; a larger one is refused in the browser (and by the shop) and needs a
+   clarification. The amount is never rounded up to the advance asked.
+2. Under `four_eyes` (default) the transfer is not money until the second employee verifies it (the shop's finance record,
+   `DepositService`). The task then closes as `verified_partial`.
+3. The operator's advance proforma section shows, from the shop's one money calculation (`MoneyPosition`): "Avans
+   solicitat" (A), "Avans încasat și verificat" (N), "Diferență de avans" (G = A − N) and "Rest de plată la livrare"
+   (K = T − N), with two choices:
+   - "Acceptă avansul primit și continuă comanda": the existing `advance_accept` (a reason and a low-advance confirmation
+     below half). Order total, invoice total and money received stay as they are; the difference stays inside K, so it is
+     collected on delivery once. Production still opens only through the payment and production gates.
+   - "Solicită diferența de avans": `advance_difference` (YD SOFT 2.23.0, route `POST
+     /confirmare/orders/{id}/proforma/request-difference`), recorded in the shop only (who, when, amounts, prices). The order
+     keeps waiting; the current proforma stays the document the customer pays (same payment reference); no document is
+     issued and no e-mail is sent. Once paid, the operator sends a new finance request. A new proforma is needed only after
+     a price change, through the existing rules (`total_accept` with `request_difference`, then `proforma_issue` for the
+     missing advance only). The operator may still accept the amount received later.
+4. What the courier collects is always WooCommerce's single net balance K (`Operations::cod_for`). An AWB made before a
+   payment was verified collects the old amount: `CodCheck` names the mismatch, the label (`awb_label`) is refused with
+   `cod_mismatch` (API `CONFIRMARE_AWB_COD_MISMATCH`), and the AWB is never changed or re-created silently. The employee
+   corrects the cash on delivery in the FAN Courier panel and states the new amount (`awb_cod_corrected`, route `POST
+   /confirmare/orders/{id}/awb/cod-corrected`, `{amount, reasonNote}`; the amount must be what is owed now). The statement
+   is recorded (who, when) and shown as such, never as a FAN Courier confirmation; a later payment is a mismatch again.
+
+Migration 044 widens the action CHECK of `order_invoice_actions` (`advance_difference`) and the kind CHECK of
+`order_source_operations` (`awb_cod_corrected`); both are audited without any amount.
+
 ## Data and audit
 
 - `finance_verification_requests` (minimized): the task, its purpose (`advance`, `second_check`, `exception`), task code,
@@ -154,7 +187,7 @@ read; it never sends a command and never asks the shop.
 ## Rollback
 
 `bin/check-rollback.php` sets the floor to 2.50.0 while a request is open (`openFinanceRequests`). Close or withdraw the
-open requests (or let them settle) before rolling back below 2.50.0. Migration 044 adds tables and widens two CHECK
+open requests (or let them settle) before rolling back below 2.50.0. Migration 044 adds tables and widens four CHECK
 constraints; it changes no existing row. An older Staff keeps working against API 2.50.0 except that a finance-only
 employee no longer opens Confirmare orders (by design); an older Dashboard keeps the three finance columns (the API keeps
 the stored `verify` rows when `verify` is absent).
@@ -164,7 +197,13 @@ the stored `verify` rows when `verify` is absent).
 - API: `tests/mysql-finance-requests-integration.php` (MySQL and MariaDB: the 22 October scope matrix with 21.10 23:59:59
   and 22.10 00:00 Bucharest, no evidence, late arrival, paid, cancelled, completed, TBI, both shops, the manual ledger,
   task-only reach, named checkers, the inventory), the adapted finance, invoice and relay suites.
-- Staff: `tests/finance-requests.test.ts` (mapping, polling bounds, phases, access, routes, privacy of the screens).
+- Staff: `tests/finance-requests.test.ts` (mapping, polling bounds, phases, access, routes, privacy of the screens),
+  `tests/confirmare-invoice.test.ts` (the operator's decision on a smaller advance), `tests/confirmare-ops.test.ts` (the
+  AWB collecting another amount).
+- Advance received short: API `mysql-finance-requests-integration.php` (285.00 of 300.00 under four eyes),
+  `mysql-confirmare-invoice-integration.php` (request the difference), `mysql-confirmare-operations-relay-integration.php`
+  (label refused on a mismatch, the stated correction); YD SOFT `tests/money/run.php` (122.50/122.00, 200/190, full, zero,
+  1.00, the difference paid later), `tests/wp-smoke/invoice.php` 12j and `tests/wp-smoke/operations.php` 6b.
 - Browser, against the real API: `e2e/zzzzzzzzzzzzzzzzzzzzzz-finance-requests-real-api.spec.ts` (four-eyes verification,
   not received, clarification and resubmission, read-only oversight, and the operator's polling measured in the
   browser: 10 s waiting, 5 s checking, none while hidden, none once decided).

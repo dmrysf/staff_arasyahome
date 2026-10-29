@@ -66,6 +66,8 @@ use Arasya\Operations\Security\CsrfGuard;
  *   POST /confirmare/orders/{globalOrderId}/awb            {parcels, weightKg?, expectedCod} + Idempotency-Key (stage 12+)
  *   GET  /confirmare/orders/{globalOrderId}/awb/label      the FAN Courier label (application/pdf)
  *   POST /confirmare/orders/{globalOrderId}/awb/address    {step: task|done, reasonNote} + Idempotency-Key
+ *   POST /confirmare/orders/{globalOrderId}/awb/cod-corrected  {amount, reasonNote} + Idempotency-Key (API 2.50.0: the cash on
+ *        delivery corrected in the FAN Courier panel, stated by the employee; the label is refused while it differs)
  *   POST /confirmare/orders/{globalOrderId}/card-refund[/record|/verify]  + Idempotency-Key (NETOPIA full refund)
  *   POST /confirmare/orders/{globalOrderId}/operations/reconcile  {idempotencyKey}
  *   GET  /confirmare/awb-queue[?source=]                   orders at stage 12+ waiting for their AWB (the routed employee)
@@ -170,7 +172,7 @@ final readonly class ConfirmareController
             $pdf = $this->operations->label($actor, rawurldecode($m[1]), $request->requestId);
             return Response::file($pdf, ['Content-Type' => 'application/pdf', 'Content-Disposition' => 'inline; filename="awb.pdf"', 'Cache-Control' => 'private, no-store', 'X-Content-Type-Options' => 'nosniff']);
         }
-        if (preg_match('#^/confirmare/orders/([^/]{1,600})/(reactivate|awb|awb/address|card-refund|card-refund/record|card-refund/verify|operations/reconcile)$#D', $path, $m) === 1) {
+        if (preg_match('#^/confirmare/orders/([^/]{1,600})/(reactivate|awb|awb/address|awb/cod-corrected|card-refund|card-refund/record|card-refund/verify|operations/reconcile)$#D', $path, $m) === 1) {
             if ($request->method !== 'POST') {
                 throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
             }
@@ -189,7 +191,7 @@ final readonly class ConfirmareController
                 unset($input['step']);
                 return $this->json($this->operations->act($actor, $globalId, 'awb_address_' . $step, $input, $request->header('idempotency-key') ?? '', $request->requestId));
             }
-            $kind = ['reactivate' => 'order_reactivate', 'awb' => 'awb_create', 'card-refund' => 'card_refund_full', 'card-refund/record' => 'card_refund_record', 'card-refund/verify' => 'card_refund_verify'][$m[2]];
+            $kind = ['reactivate' => 'order_reactivate', 'awb' => 'awb_create', 'awb/cod-corrected' => 'awb_cod_corrected', 'card-refund' => 'card_refund_full', 'card-refund/record' => 'card_refund_record', 'card-refund/verify' => 'card_refund_verify'][$m[2]];
             return $this->json($this->operations->act($actor, $globalId, $kind, $input, $request->header('idempotency-key') ?? '', $request->requestId));
         }
         if ($path === '/confirmare/cycles' && $request->method === 'GET') {
@@ -341,7 +343,7 @@ final readonly class ConfirmareController
             $input = $request->json(2048);
             return $this->json($this->finance->act($actor, $globalId, str_replace('-', '_', $m[2]), $input, $key, $request->requestId));
         }
-        if (preg_match('#^/confirmare/orders/([^/]{1,600})/proforma/(issue|send-mail|check|resolve|reconcile|cancel|accept-total|accept-advance)$#D', $path, $m) === 1) {
+        if (preg_match('#^/confirmare/orders/([^/]{1,600})/proforma/(issue|send-mail|check|resolve|reconcile|cancel|accept-total|accept-advance|request-difference)$#D', $path, $m) === 1) {
             if ($request->method !== 'POST') {
                 throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
             }

@@ -144,6 +144,10 @@ $check((new MigrationRunner($pdo))->migrate(dirname(__DIR__) . '/database/migrat
 $check((int) $one("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name IN ('" . implode("', '", $invoiceTables) . "')") === 5, 'migration 041 creates its five tables');
 (new SqlFileRunner($pdo))->run(dirname(__DIR__) . '/database/migrations/041_smartbill_invoicing.sql');
 $check((int) $one("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name IN ('" . implode("', '", $invoiceTables) . "')") === 5 && (int) $one('SELECT COUNT(*) FROM employee_invoice_scopes') === 0, 'running 041 again changes nothing (CREATE TABLE IF NOT EXISTS); nobody holds an invoice scope');
+// TEST ONLY: the tables were recreated as 041 made them; 044 (guarded, re-runnable) widens their action CHECK again.
+(new SqlFileRunner($pdo))->run(dirname(__DIR__) . '/database/migrations/044_finance_verification_requests.sql');
+$check((int) $one("SELECT COUNT(*) FROM information_schema.table_constraints WHERE constraint_schema = DATABASE() AND table_name = 'order_invoice_actions' AND constraint_name = 'chk_order_invoice_actions_action_044'") === 1
+    && (int) $one("SELECT COUNT(*) FROM information_schema.table_constraints WHERE constraint_schema = DATABASE() AND table_name = 'order_invoice_actions' AND constraint_name = 'chk_order_invoice_actions_action'") === 0, 'migration 044 replaces the action CHECK once (advance_difference); running it again changes nothing');
 $check(!is_file(dirname(__DIR__) . '/database/migrations/040_smartbill_invoicing.sql') && !is_dir(dirname(__DIR__) . '/database/drafts'), 'the schema is 041, never 040; the draft is gone (one source)');
 
 // ---- 2. Invoice scopes: root-only, separate from documents, finance and Confirmare --------------------------------------
@@ -516,6 +520,20 @@ $v14 = $read($who['iop'], $g(14));
 $check($v14['summary']['proforma']['money']['net'] === '200.00' && $v14['summary']['proforma']['money']['advanceGap'] === '15.70' && $v14['summary']['proforma']['money']['remaining'] === '519.00' && in_array('advanceAccept', $v14['proforma']['allowedActions'], true), '200.00 of 215.70 received: the operator sees the difference 15.70 and what is owed (519.00)');
 $error($proforma('ifin', $g(14), 'accept-advance'), 403, 'CONFIRMARE_INVOICE_DENIED', 'finance never accepts an advance commercially');
 $error($proforma('iop', $g(14), 'accept-advance', ['confirmLow' => 'da']), 422, 'CONFIRMARE_INVOICE_INVALID', 'the low-advance confirmation is a boolean');
+// API 2.50.0 (YD SOFT 2.23.0, owner 2026-10-29): "Solicită diferența de avans" instead of accepting the smaller advance.
+$error($proforma('ifin', $g(14), 'request-difference'), 403, 'CONFIRMARE_INVOICE_DENIED', 'finance never asks the customer for the difference');
+$error($proforma('iop', $g(14), 'request-difference', ['amount' => '15.70']), 400, 'INVALID_REQUEST', 'no amount is sent: the shop computes the difference itself');
+$rd = $ok($proforma('iop', $g(14), 'request-difference', ['reasonNote' => 'Clientul trimite diferența.']), 'the operator asks for the difference');
+$rd14 = $read($who['iop'], $g(14));
+$check($rd['result'] === 'requested' && $rd14['summary']['proforma']['differenceRequest']['gap'] === '15.70' && $rd14['summary']['proforma']['differenceRequest']['remaining'] === '519.00' && $rd14['summary']['proforma']['advanceAcceptance'] === null
+    && $rd14['summary']['financial']['state'] !== 'cleared' && in_array('advanceAccept', $rd14['proforma']['allowedActions'], true) && !in_array('advanceDifference', $rd14['proforma']['allowedActions'], true)
+    && (string) $one("SELECT access_role FROM order_invoice_actions WHERE global_order_id = ? AND action = 'advance_difference' AND state = 'applied'", [$g(14)]) === 'operator',
+    'the difference asked: recorded in the shop and audited here without any amount; the order keeps waiting; accepting stays possible');
+$refused($proforma('iop', $g(14), 'request-difference'), 'difference_already_requested', 'asked once');
+$th->olderProforma = true;
+$o14 = $read($who['iop'], $g(14));
+$check($o14['summary']['proforma']['blockers']['advanceDifference'] === ['not_supported'] && $o14['summary']['proforma']['differenceRequest'] === null && !in_array('advanceDifference', $o14['proforma']['allowedActions'], true), 'a shop before YD SOFT 2.23.0: the request is not offered (not_supported)');
+$th->olderProforma = false;
 $aa = $ok($proforma('iop', $g(14), 'accept-advance', ['reasonNote' => 'Restul la livrare.']), 'the operator accepts the advance received');
 $check($aa['result'] === 'accepted' && $aa['summary']['proforma']['advanceAcceptance']['received'] === '200.00' && (string) $one("SELECT access_role FROM order_invoice_actions WHERE global_order_id = ? AND action = 'advance_accept' AND state = 'applied'", [$g(14)]) === 'operator', 'accepted and audited (role operator, no amount stored in Arasya)');
 $refused($proforma('iop', $g(14), 'accept-advance'), 'advance_already_accepted', 'accepted once');

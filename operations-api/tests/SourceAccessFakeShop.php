@@ -107,6 +107,8 @@ final class SourceAccessFakeShop implements SourceAccessTransport
     public array $smartbillCancels = [];
     /** Answer like a YD SOFT 2.18.0 shop: none of the 2.19.0 proforma fields or groups. */
     public bool $legacyProforma = false;
+    /** A shop before YD SOFT 2.23.0: no `advanceDifference` blockers and no `differenceRequest`. */
+    public bool $olderProforma = false;
     /** @var array<string, int> reminders sent through SmartBill per order (2.20.0) */
     public array $smartbillReminders = [];
     /** The next reminder's SmartBill outcome: sent | refused. */
@@ -868,7 +870,8 @@ final class SourceAccessFakeShop implements SourceAccessTransport
         $p = &$i['pf'];
         $action = (string) ($input['action'] ?? '');
         $roles = ['proforma_issue' => ['operator', 'manager'], 'proforma_send_mail' => ['operator', 'manager'], 'proforma_check' => ['operator', 'documents', 'manager'], 'proforma_resolve' => ['manager'],
-            'proforma_cancel' => ['operator', 'manager'], 'total_accept' => ['operator', 'manager'], 'advance_accept' => ['operator', 'manager'], 'proforma_remind' => ['operator', 'manager']];
+            'proforma_cancel' => ['operator', 'manager'], 'total_accept' => ['operator', 'manager'], 'advance_accept' => ['operator', 'manager'], 'proforma_remind' => ['operator', 'manager'],
+            'advance_difference' => ['operator', 'manager']];
         $p += ['cancel' => null, 'cancelled' => [], 'reminders' => []];
         if (!isset($roles[$action]) || !in_array($role, $roles[$action], true)) {
             return [400, ['error' => ['code' => 'invalid_request']]];
@@ -964,7 +967,13 @@ final class SourceAccessFakeShop implements SourceAccessTransport
         if ($action === 'advance_accept') {
             $i['advanceAccepted'] = true;
             $i['cleared'] = true;
+            $i['differenceRequested'] = false;
             return $done(200, 'accepted');
+        }
+        if ($action === 'advance_difference') {
+            // YD SOFT 2.23.0: recorded only; the order keeps waiting for the advance on the same proforma.
+            $i['differenceRequested'] = true;
+            return $done(200, 'requested');
         }
         if ($action === 'proforma_cancel') {
             $outcome = $this->proformaCancelOutcome;
@@ -1065,8 +1074,11 @@ final class SourceAccessFakeShop implements SourceAccessTransport
         if ($action === 'total_accept') {
             return ($i['totalAccepted'] ?? true) ? ['total_already_accepted'] : [];
         }
-        if ($action === 'advance_accept') {
+        if ($action === 'advance_accept' || $action === 'advance_difference') {
             $codes = !$i['cod'] ? ['advance_not_required'] : (($i['advanceAccepted'] ?? false) ? ['advance_already_accepted'] : ($i['cleared'] ? ['advance_already_collected'] : (!($i['partial'] ?? false) ? ['advance_not_received'] : [])));
+            if ($action === 'advance_difference' && $codes === [] && ($i['differenceRequested'] ?? false)) {
+                $codes[] = 'difference_already_requested';
+            }
             return ($i['totalAccepted'] ?? true) ? $codes : [...$codes, 'total_not_accepted'];
         }
         if ($action === 'proforma_cancel') {
@@ -1230,9 +1242,12 @@ final class SourceAccessFakeShop implements SourceAccessTransport
         $amounts = in_array($role, ['operator', 'documents', 'manager', 'finance'], true);
         $blockers = [];
         foreach (['proformaIssue' => 'proforma_issue', 'proformaSendMail' => 'proforma_send_mail', 'proformaCheck' => 'proforma_check', 'proformaResolve' => 'proforma_resolve',
-            'proformaCancel' => 'proforma_cancel', 'totalAccept' => 'total_accept', 'advanceAccept' => 'advance_accept'] as $name => $action) {
-            if ($this->legacyProforma && in_array($action, ['proforma_cancel', 'total_accept', 'advance_accept'], true)) {
+            'proformaCancel' => 'proforma_cancel', 'totalAccept' => 'total_accept', 'advanceAccept' => 'advance_accept', 'advanceDifference' => 'advance_difference'] as $name => $action) {
+            if ($this->legacyProforma && in_array($action, ['proforma_cancel', 'total_accept', 'advance_accept', 'advance_difference'], true)) {
                 continue; // a 2.18.0 shop does not send these groups
+            }
+            if ($this->olderProforma && $action === 'advance_difference') {
+                continue; // a shop before YD SOFT 2.23.0 does not send it
             }
             $blockers[$name] = $this->invoiceActions ? $this->proformaBlockers($orderId, $action) : ['invoice_observe'];
         }
@@ -1266,6 +1281,11 @@ final class SourceAccessFakeShop implements SourceAccessTransport
                 : ['state' => 'required', 'at' => null, 'by' => null, 'previousTotal' => $amounts ? '699.00' : null, 'total' => $amounts ? '719.00' : null, 'changes' => [['kind' => 'changed', 'name' => 'Draperie Velvet']], 'note' => null, 'advanceDecisionRequired' => (bool) ($i['advanceDecision'] ?? false)],
             'advanceAcceptance' => ($i['advanceAccepted'] ?? false) ? ['at' => gmdate('Y-m-d\TH:i:s\Z', $now), 'by' => '00000000-0000-4000-8000-0000000000a1', 'required' => $amounts ? '215.70' : null, 'received' => $amounts ? '200.00' : null, 'reason' => null, 'low' => false, 'kind' => $i['advanceKind'] ?? 'accepted'] : null,
             'lowAdvance' => false,
+        ] + ($this->olderProforma ? [] : [
+            // YD SOFT 2.23.0: the operator asked for the missing advance (TEST data: 200.00 of 215.70 received).
+            'differenceRequest' => ($i['differenceRequested'] ?? false) && ($i['partial'] ?? false) && !$i['cleared'] ? ['at' => gmdate('Y-m-d\TH:i:s\Z', $now), 'by' => '00000000-0000-4000-8000-0000000000a1',
+                'required' => $amounts ? '215.70' : null, 'received' => $amounts ? '200.00' : null, 'gap' => $amounts ? '15.70' : null, 'remaining' => $amounts ? '519.00' : null, 'reason' => null] : null,
+        ]) + [
             'cancel' => $p['cancel'],
             'cancelled' => array_map(static fn (array $c): array => ['amount' => $amounts ? $c['amount'] : null] + $c, array_reverse($p['cancelled'])),
             'superseded' => [],
@@ -1310,7 +1330,7 @@ final class SourceAccessFakeShop implements SourceAccessTransport
         }
         $action = (string) ($input['action'] ?? '');
         $roles = ['order_reactivate' => ['operator', 'manager'], 'awb_create' => ['documents', 'manager'], 'awb_label' => ['documents', 'manager'], 'awb_address_task' => ['documents', 'manager'],
-            'awb_address_done' => ['documents', 'manager'], 'card_refund_full' => ['operator', 'manager'], 'card_refund_record' => ['finance'], 'card_refund_verify' => ['finance'], 'operations_state' => ['operator', 'documents', 'manager', 'finance']];
+            'awb_address_done' => ['documents', 'manager'], 'awb_cod_corrected' => ['documents', 'manager'], 'card_refund_full' => ['operator', 'manager'], 'card_refund_record' => ['finance'], 'card_refund_verify' => ['finance'], 'operations_state' => ['operator', 'documents', 'manager', 'finance']];
         if (!isset($roles[$action]) || !in_array($role, $roles[$action], true)) {
             return [400, ['error' => ['code' => 'invalid_request']]];
         }
@@ -1319,6 +1339,10 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             return [200, $state()];
         }
         if ($action === 'awb_label') {
+            if ($o['awb'] !== null && $o['awb']['cod'] !== $o['owed']) {
+                // YD SOFT 2.23.0: the AWB collects another amount than what is owed now: no label.
+                return [409, ['error' => ['code' => 'cod_mismatch']]];
+            }
             return $o['awb'] === null ? [409, ['error' => ['code' => 'awb_missing']]] : [200, ['protocol' => 1, 'awb' => $o['awb']['number'], 'pdf' => base64_encode('%PDF-1.4 TEST AWB LABEL ' . $o['awb']['number'])]];
         }
         $request = $input;
@@ -1387,6 +1411,20 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             $o['address'][] = ['kind' => $action === 'awb_address_task' ? 'task' : 'done', 'at' => $now, 'by' => $employee];
             return $done($action === 'awb_address_task' ? 'panel_required' : 'panel_declared');
         }
+        if ($action === 'awb_cod_corrected') {
+            if ($o['awb'] === null) {
+                return $refuse('awb_missing');
+            }
+            if ($o['awb']['cod'] === $o['owed']) {
+                return $refuse('cod_not_mismatched');
+            }
+            if (($input['amount'] ?? null) !== $o['owed']) {
+                return $refuse('cod_changed');
+            }
+            $o['awb']['cod'] = $o['owed'];
+            $o['awb']['corrected'] = true;
+            return $done('panel_declared');
+        }
         if ($action === 'card_refund_full') {
             if ($o['netopia'] < 1) {
                 return $refuse('card_payment_unverified');
@@ -1446,8 +1484,9 @@ final class SourceAccessFakeShop implements SourceAccessTransport
         $iso = static fn (int $t): string => gmdate('Y-m-d\TH:i:s\Z', $t);
         return ['protocol' => 1, 'readAt' => $iso($now), 'features' => $this->operationFeatures, 'order' => ['status' => $o['status'], 'paymentMethod' => $o['netopia'] > 0 ? 'netopiapayments' : 'cod'],
             'awb' => ['state' => $o['awb'] !== null ? 'created' : (($o['awbUnknown'] ?? false) ? 'unknown' : 'none'), 'number' => $o['awb']['number'] ?? null, 'createdAt' => isset($o['awb']) ? $iso($o['awb']['at']) : null,
-                'status' => null, 'delivered' => false, 'cod' => $o['owed'], 'codCheck' => ['state' => $o['awb'] !== null ? 'match' : 'none', 'awb' => $o['awb']['number'] ?? null, 'awbCod' => $o['awb']['cod'] ?? null, 'expected' => $o['owed'], 'status' => null],
-                'blockers' => $o['awb'] !== null ? ['awb_exists'] : [], 'address' => array_map(static fn (array $a): array => ['kind' => $a['kind'], 'at' => $iso($a['at']), 'by' => $a['by']], $o['address']), 'pickup' => 'not_tracked'],
+                'status' => null, 'delivered' => false, 'cod' => $o['owed'], 'codCheck' => ['state' => $o['awb'] !== null ? ($o['awb']['cod'] === $o['owed'] ? 'match' : 'mismatch') : 'none', 'awb' => $o['awb']['number'] ?? null, 'awbCod' => $o['awb']['cod'] ?? null, 'expected' => $o['owed'], 'status' => null,
+                    'corrected' => (bool) ($o['awb']['corrected'] ?? false)],
+                'blockers' => $o['awb'] !== null ? ($o['awb']['cod'] === $o['owed'] ? ['awb_exists'] : ['awb_exists', 'cod_mismatch']) : [], 'address' => array_map(static fn (array $a): array => ['kind' => $a['kind'], 'at' => $iso($a['at']), 'by' => $a['by']], $o['address']), 'pickup' => 'not_tracked'],
             'cardRefund' => ['available' => $o['netopia'] > 0, 'transactions' => $o['netopia'], 'requests' => array_map(static fn (array $r): array => ['state' => $r['state'], 'at' => $iso($r['at']), 'by' => $r['by'], 'amount' => $r['amount'], 'currency' => 'RON',
                 'transactions' => $r['transactions'], 'reason' => 'no_refund_api', 'completedAt' => $r['completedAt'] === null ? null : $iso($r['completedAt']), 'mailed' => $r['mailed']], $o['refunds'])],
             'reactivations' => array_map(static fn (array $r): array => ['at' => $iso($r['at']), 'by' => $r['by'], 'reason' => $r['reason'], 'payment' => $r['exception'] !== null], $o['reactivations'])];

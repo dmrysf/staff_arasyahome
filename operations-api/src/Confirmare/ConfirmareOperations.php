@@ -42,7 +42,7 @@ use Throwable;
  */
 final class ConfirmareOperations
 {
-    public const KINDS = ['order_reactivate', 'awb_create', 'awb_address_task', 'awb_address_done', 'card_refund_full', 'card_refund_record', 'card_refund_verify'];
+    public const KINDS = ['order_reactivate', 'awb_create', 'awb_address_task', 'awb_address_done', 'awb_cod_corrected', 'card_refund_full', 'card_refund_record', 'card_refund_verify'];
     /** Production stages from which the AWB may be made (stage 12 Control calitate, 13 Împachetare, 14 Livrare). */
     public const AWB_STAGES = ['quality-control', 'packing', 'delivery'];
     public const REACTIVATION_REASONS = ['customer_returned', 'customer_paid_late'];
@@ -51,6 +51,8 @@ final class ConfirmareOperations
         'awb_create' => ['parcels', 'weightKg', 'expectedCod'],
         'awb_address_task' => ['reasonNote'],
         'awb_address_done' => ['reasonNote'],
+        // API 2.50.0 (YD SOFT 2.23.0): the employee states the cash on delivery corrected in the FAN Courier panel.
+        'awb_cod_corrected' => ['amount', 'reasonNote'],
         'card_refund_full' => [],
         'card_refund_record' => ['amount', 'reference', 'valueDate'],
         'card_refund_verify' => ['entryId', 'decision'],
@@ -60,7 +62,7 @@ final class ConfirmareOperations
     /** Every refusal code the shop may name (anything else is SOURCE_ERROR). */
     public const CODES = ['invalid_request', 'order_busy', 'internal_error', 'reactivation_disabled', 'awb_disabled', 'card_refund_disabled', 'order_not_cancelled', 'order_refunded',
         'payment_not_found', 'order_closed', 'invoice_missing', 'finance_unavailable', 'payment_verifying', 'finance_attention', 'address_incomplete', 'phone_missing',
-        'shipping_mismatch', 'awb_exists', 'awb_unavailable', 'cod_changed', 'awb_refused', 'awb_missing', 'label_unavailable', 'address_task_missing', 'address_task_open',
+        'shipping_mismatch', 'awb_exists', 'awb_unavailable', 'cod_changed', 'cod_mismatch', 'cod_not_mismatched', 'awb_refused', 'awb_missing', 'label_unavailable', 'address_task_missing', 'address_task_open',
         'not_card_payment', 'card_payment_unverified', 'nothing_to_refund', 'refund_request_missing', 'refund_pending', 'finance_open', 'amount_exceeds_received',
         'duplicate_reference', 'entry_not_found', 'entry_not_pending', 'same_employee', 'refund_record_failed', 'idempotency_conflict'];
     public const RESULTS = ['reactivated', 'created', 'unknown', 'panel_required', 'panel_declared', 'manual_required', 'already_requested', 'refund_recorded', 'refund_verified', 'refund_rejected'];
@@ -128,6 +130,10 @@ final class ConfirmareOperations
             $answer = $this->client->exchange($target, SourceAccessClient::ROUTE_OPERATION, $this->payload($row, $actor->employeeUuid, $role, $requestId) + ['action' => 'awb_label']);
         } catch (SourceAccessException $e) {
             throw new ApiException(503, 'CONFIRMARE_SOURCE_UNAVAILABLE', 'The shop could not be asked.', ['reason' => strtolower($e->codeName)]);
+        }
+        if ($answer['status'] === 409 && ($answer['body']['error']['code'] ?? null) === 'cod_mismatch') {
+            // YD SOFT 2.23.0: the AWB's cash on delivery differs from what the customer owes now; the parcel does not leave.
+            throw new ApiException(409, 'CONFIRMARE_AWB_COD_MISMATCH', 'The AWB collects another amount than the customer owes now. Correct it in FAN Courier first.');
         }
         $pdf = $answer['status'] === 200 && is_string($answer['body']['pdf'] ?? null) ? base64_decode($answer['body']['pdf'], true) : false;
         if (!is_string($pdf) || !str_starts_with($pdf, '%PDF')) {
@@ -330,7 +336,7 @@ final class ConfirmareOperations
         if ($row['workflow_cohort'] !== WorkflowCohort::CONFIRMARE) {
             $codes[] = 'not_confirmare';
         }
-        if (in_array($kind, ['awb_create', 'awb_address_task', 'awb_address_done'], true)) {
+        if (in_array($kind, ['awb_create', 'awb_address_task', 'awb_address_done', 'awb_cod_corrected'], true)) {
             if (!in_array((string) $row['production_stage_id'], self::AWB_STAGES, true)) {
                 // Stage 11 or earlier: the order is not ready for the courier.
                 $codes[] = 'stage_not_ready';
@@ -584,7 +590,7 @@ final class ConfirmareOperations
                 'delivered' => ($awb['delivered'] ?? false) === true,
                 'cod' => $money($awb['cod'] ?? null),
                 'codCheck' => $codeCheck === null ? null : ['state' => in_array($codeCheck['state'] ?? null, ['none', 'match', 'mismatch', 'delivered', 'unknown'], true) ? $codeCheck['state'] : 'unknown',
-                    'awbCod' => $money($codeCheck['awbCod'] ?? null), 'expected' => $money($codeCheck['expected'] ?? null)],
+                    'awbCod' => $money($codeCheck['awbCod'] ?? null), 'expected' => $money($codeCheck['expected'] ?? null), 'corrected' => ($codeCheck['corrected'] ?? false) === true],
                 'blockers' => array_values(array_filter((array) ($awb['blockers'] ?? []), static fn (mixed $b): bool => is_string($b) && in_array($b, self::CODES, true))),
                 'address' => array_values(array_map(static fn (mixed $a): array => ['kind' => is_array($a) && ($a['kind'] ?? '') === 'done' ? 'done' : 'task', 'at' => is_array($a) ? $instant($a['at'] ?? null) : null],
                     array_slice((array) ($awb['address'] ?? []), -10))),

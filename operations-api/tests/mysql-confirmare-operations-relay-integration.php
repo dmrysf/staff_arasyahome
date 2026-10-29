@@ -309,6 +309,23 @@ $pdo->exec('DELETE FROM api_rate_limit_buckets');
 $label = T::call($kernel, 'GET', '/confirmare/orders/' . rawurlencode($g(2)) . '/awb/label', null, ['origin' => T::ORIGIN], $who['cdoc']['cookie']);
 $check($label['status'] === 200 && str_starts_with((string) $label['raw'], '%PDF') && ($label['headers']['Content-Type'] ?? '') === 'application/pdf' && ($label['headers']['Cache-Control'] ?? '') === 'private, no-store', 'the AWB label is served as a PDF to the shop employee, never cached');
 $error(T::call($kernel, 'GET', '/confirmare/orders/' . rawurlencode($g(2)) . '/awb/label', null, ['origin' => T::ORIGIN], $who['cop']['cookie']), 403, 'CONFIRMARE_OPERATION_DENIED', 'the operator does not print the AWB');
+// API 2.50.0 (YD SOFT 2.23.0, owner 2026-10-29): 10.00 verified after the AWB. The label stops while the AWB collects another
+// amount than what is owed; the employee corrects it in the FAN Courier panel and states the new amount.
+$th->orders[$id(2)]['ops']['owed'] = '493.30';
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$mismatch = $ok($get($who['cdoc'], '/confirmare/orders/' . rawurlencode($g(2)) . '/operations'), 'operations after a payment verified after the AWB');
+$check(($mismatch['shop']['awb']['codCheck']['state'] ?? null) === 'mismatch' && $mismatch['shop']['awb']['codCheck']['awbCod'] === '503.30' && $mismatch['shop']['awb']['codCheck']['expected'] === '493.30' && in_array('cod_mismatch', $mismatch['shop']['awb']['blockers'], true),
+    'the AWB collects 503.30, the customer owes 493.30: shown as a mismatch');
+$error(T::call($kernel, 'GET', '/confirmare/orders/' . rawurlencode($g(2)) . '/awb/label', null, ['origin' => T::ORIGIN], $who['cdoc']['cookie']), 409, 'CONFIRMARE_AWB_COD_MISMATCH', 'no label while the collection differs: the parcel does not leave with the old amount');
+$error($operate($who['cop'], $g(2), 'awb/cod-corrected', ['amount' => '493.30', 'reasonNote' => 'Corectat']), 403, 'CONFIRMARE_OPERATION_DENIED', 'the operator does not state an AWB correction');
+$error($operate($who['cdoc'], $g(2), 'awb/cod-corrected', ['amount' => '493.30', 'reasonNote' => 'Corectat', 'awb' => 'x']), 400, 'INVALID_REQUEST', 'only the amount and the reason');
+$refusedOp($operate($who['cdoc'], $g(2), 'awb/cod-corrected', ['amount' => '503.30', 'reasonNote' => 'Corectat']), 'cod_changed', 'a correction to another amount than what is owed now is refused', 'CONFIRMARE_OPERATION_REFUSED');
+$fixed = $ok($operate($who['cdoc'], $g(2), 'awb/cod-corrected', ['amount' => '493.30', 'reasonNote' => 'Ramburs corectat în panoul FAN Courier']), 'the employee states the corrected collection');
+$check($fixed['result'] === 'panel_declared' && $fixed['shop']['awb']['codCheck']['state'] === 'match' && $fixed['shop']['awb']['codCheck']['corrected'] === true && ($th->fanAwbs[$id(2)] ?? 0) === 1
+    && (string) $one("SELECT access_role FROM order_source_operations WHERE global_order_id = ? AND kind = 'awb_cod_corrected' AND state = 'applied'", [$g(2)]) === 'documents',
+    'the collection matches again (the employee\'s statement, no second AWB), audited without any amount');
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$check(T::call($kernel, 'GET', '/confirmare/orders/' . rawurlencode($g(2)) . '/awb/label', null, ['origin' => T::ORIGIN], $who['cdoc']['cookie'])['status'] === 200, 'the label is given again');
 $error($operate($who['cdoc'], $g(2), 'awb/address', ['step' => 'done', 'reasonNote' => 'Adresa schimbată']), 409, 'CONFIRMARE_OPERATION_REFUSED', 'no declaration without the task');
 $ok($operate($who['cdoc'], $g(2), 'awb/address', ['step' => 'task', 'reasonNote' => 'Clientul s-a mutat: Str. Nouă 5']), 'urgent address change: FAN Courier panel task');
 $done = $ok($operate($who['cdoc'], $g(2), 'awb/address', ['step' => 'done', 'reasonNote' => 'Verificat în panoul FAN Courier']), 'the employee declares the change made in the panel');
