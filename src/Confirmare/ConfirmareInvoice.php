@@ -56,8 +56,9 @@ use Throwable;
  *   the customer (`/proforma/{issue|send-mail|check|resolve}`; resolve is a manager's). Never the final invoice.
  * - routing: once the money is proven (ConfirmareFinancial `cleared`), the operator routes the order to ONE shop employee
  *   of the order's shop who may issue invoices (`/shop-assignment`); one active assignment per order, audited.
- * - the final invoice is issued only by that assigned employee (a manager is exempt from the assignment), after the
- *   employee scanned the order's current production QR (`/invoice/qr`, valid 30 minutes for the active revision).
+ * - the final invoice is issued only by that assigned employee (a manager is exempt from the assignment), once the
+ *   order's production ticket is active. API 2.50.1 (owner decision 2026-10-29): no QR scan is required any more (the
+ *   staff work at a computer); `/invoice/qr` still records a scan when one is made, it no longer blocks the invoice.
  */
 final readonly class ConfirmareInvoice
 {
@@ -363,7 +364,7 @@ final readonly class ConfirmareInvoice
      */
     private function blockers(string $orderUuid, string $action, ?EmployeeIdentity $actor = null, ?string $role = null): array
     {
-        $statement = $this->pdo->prepare('SELECT o.cancellation_state, o.operational_status, o.source_reported_unavailable_at, c.status FROM operational_orders o INNER JOIN order_confirmations c ON c.order_uuid = o.order_uuid WHERE o.order_uuid = ?');
+        $statement = $this->pdo->prepare('SELECT o.cancellation_state, o.operational_status, o.source_reported_unavailable_at, o.document_status, c.status FROM operational_orders o INNER JOIN order_confirmations c ON c.order_uuid = o.order_uuid WHERE o.order_uuid = ?');
         $statement->execute([$orderUuid]);
         $order = $statement->fetch(PDO::FETCH_ASSOC);
         if (!is_array($order)) {
@@ -398,8 +399,8 @@ final readonly class ConfirmareInvoice
             $blockers[] = 'finance_action_open';
         }
         if ($action === 'issue' && $actor !== null) {
-            // 2.44.0: the final invoice belongs to the shop employee the operator routed the order to (a manager is exempt),
-            // after that employee scanned the order's current production QR.
+            // 2.44.0: the final invoice belongs to the shop employee the operator routed the order to (a manager is exempt).
+            // 2.50.1: once the production ticket exists (active); the QR scan that used to prove it is no longer asked.
             $assignee = self::assignee($this->pdo, $orderUuid);
             if ($role !== self::ROLE_MANAGER) {
                 if ($assignee === null) {
@@ -408,8 +409,8 @@ final readonly class ConfirmareInvoice
                     $blockers[] = 'assigned_to_other';
                 }
             }
-            if (!$this->qrVerified($orderUuid, $actor->employeeUuid)) {
-                $blockers[] = 'qr_not_verified';
+            if ($order['document_status'] !== 'active') {
+                $blockers[] = 'ticket_missing';
             }
         }
         return array_values(array_unique($blockers));
