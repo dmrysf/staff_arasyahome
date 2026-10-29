@@ -150,6 +150,7 @@ try {
     $expected[] = '041_smartbill_invoicing.sql';
     $expected[] = '042_confirmare_connector_readiness.sql';
     $expected[] = '043_confirmare_dual_store.sql';
+    $expected[] = '044_finance_verification_requests.sql';
     if ($applied !== $expected) {
         throw new RuntimeException('An existing 001 schema did not apply exactly the pending migrations in order: ' . implode(', ', $applied));
     }

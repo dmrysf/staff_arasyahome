@@ -25,6 +25,8 @@ const php = (args: string[] = []) => execFileSync("php", [path.join(root, "opera
 let F: Fixture;
 const number = (globalId: string) => globalId.split(":")[1];
 const orderPath = (globalId: string) => `/confirmare/orders/${encodeURIComponent(globalId)}`;
+// Staff 2.41.0 (API 2.50.0): a finance scope works an exceptional money task in the finance-only money panel, never the Confirmare order.
+const financeOrderPath = (globalId: string) => `/confirmare/finance/orders/${encodeURIComponent(globalId)}`;
 const overflow = (page: Page) => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
 const capture = async (page: Page, name: string) => { mkdirSync(SHOTS, { recursive: true }); await page.screenshot({ path: path.join(SHOTS, `${name}.png`), fullPage: true }); };
 
@@ -538,9 +540,14 @@ test("finance (Phase 5): the shop's money read on request, a transfer recorded b
   const recorder = await signIn(browser, F.people.finrec.username);
   let page = recorder.page;
   await expect(page.getByTestId("workspace-confirmare-finance"), "a finance-only employee works from the finance tasks").toBeVisible();
-  await page.getByTestId("cf-open-finance").click();
-  await expect(page.getByTestId("cf-finance-queue")).toBeVisible();
-  await page.goto(orderPath(F.orders.finance));
+  // API 2.50.0: the finance employee works the tasks assigned to them by name (no shop-wide list); the additional
+  // payment of the order is an exception task whose card opens the money panel only.
+  await page.getByTestId("fr-open-inbox").click();
+  await expect(page.getByTestId("fr-inbox")).toBeVisible();
+  await expect(page.getByTestId(`fr-card-${number(F.orders.finance)}`)).toContainText("Plată suplimentară datorată");
+  await page.getByTestId(`fr-open-${number(F.orders.finance)}`).click();
+  await expect(page).toHaveURL(new RegExp(`/confirmare/finance/orders/`));
+  await expect(page.getByTestId("fr-order")).toBeVisible();
   await expect(page.getByTestId("cf-finance-load")).toBeVisible();
   await expect(page.getByTestId("cf-finance-view"), "no amount before the employee asks").toHaveCount(0);
   await expect(page.getByTestId("cf-customer-facts"), "finance never sees the customer's data").toHaveCount(0);
@@ -571,7 +578,10 @@ test("finance (Phase 5): the shop's money read on request, a transfer recorded b
 
   const approver = await signIn(browser, F.people.finapp.username);
   page = approver.page;
+  // The Confirmare order stays closed to a finance scope (the route falls back to Home).
   await page.goto(orderPath(F.orders.finance));
+  await expect(page.getByTestId("cf-order")).toHaveCount(0);
+  await page.goto(financeOrderPath(F.orders.finance));
   await page.getByTestId("cf-finance-load").click();
   await expect(page.getByTestId("cf-finance-decide")).toContainText("OP E2E 0001");
   await page.getByTestId("cf-finance-verify").click();

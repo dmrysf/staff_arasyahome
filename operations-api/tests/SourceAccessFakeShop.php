@@ -75,6 +75,8 @@ final class SourceAccessFakeShop implements SourceAccessTransport
     public ?array $forceRefusal = null;
     public bool $financeRecord = true;
     public string $financeRefunds = 'manual';
+    /** YD SOFT 2.23.0: who completes a bank verification (four_eyes | single); null answers like an older shop (absent). */
+    public ?string $financeVerification = null;
     /** @var array<string, array{order: string, hash: string, status: int, body: array<string, mixed>}> employee|key => stored answer */
     public array $financeAnswers = [];
     /** SmartBill knobs: the outcome of the next SmartBill call; 'answer_lost' / 'crash' after the shop ran an action. */
@@ -105,6 +107,8 @@ final class SourceAccessFakeShop implements SourceAccessTransport
     public array $smartbillCancels = [];
     /** Answer like a YD SOFT 2.18.0 shop: none of the 2.19.0 proforma fields or groups. */
     public bool $legacyProforma = false;
+    /** A shop before YD SOFT 2.23.0: no `advanceDifference` blockers and no `differenceRequest`. */
+    public bool $olderProforma = false;
     /** @var array<string, int> reminders sent through SmartBill per order (2.20.0) */
     public array $smartbillReminders = [];
     /** The next reminder's SmartBill outcome: sent | refused. */
@@ -191,7 +195,9 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             }
             return $this->answer($status, $payload, $nonce);
         }
-        if (($order['eligible'] ?? true) !== true) {
+        // YD SOFT 2.23.0: an order outside Confirmare submitted from 22 October 2026 (`legacyFinance`) is readable by
+        // the finance summary route only; everything else keeps refusing it.
+        if (($order['eligible'] ?? true) !== true && !($action === 'finance' && ($order['legacyFinance'] ?? false) === true)) {
             return $this->answer(403, ['error' => ['code' => 'order_not_eligible']], $nonce);
         }
         if ($action === 'detail') {
@@ -471,6 +477,53 @@ final class SourceAccessFakeShop implements SourceAccessTransport
                 'submittedAt' => gmdate('Y-m-d\TH:i:s\Z', $now), 'decidedBy' => null, 'decidedAt' => null, 'decisionCode' => null,
                 'method' => (string) ($input['method'] ?? 'bank_transfer'), 'receipt' => $input['receipt'] ?? null, 'collector' => $input['collector'] ?? null,
                 'flags' => array_values(array_filter([($input['overpaymentConfirmed'] ?? false) === true ? 'overpayment' : null, isset($input['cancelledProforma']) ? 'cancelled_proforma' : null]))];
+        } elseif ($action === 'verify_transfer') {
+            // YD SOFT 2.23.0: one employee records and verifies a bank transfer of the advance (policy `single` only).
+            if ($this->financeVerification !== 'single') {
+                return $refuse('single_verification_disabled');
+            }
+            if (($input['bankStatementConfirmed'] ?? null) !== true || ($input['purpose'] ?? null) !== 'advance') {
+                return $refuse(($input['bankStatementConfirmed'] ?? null) !== true ? 'bank_statement_required' : 'purpose_not_allowed', 422);
+            }
+            if ($this->safetyRules && $cancelled) {
+                return $refuse('order_cancelled');
+            }
+            if (!($f['cod'] ?? false)) {
+                return $refuse('purpose_not_allowed');
+            }
+            $proforma = $this->orders[$orderId]['invoice']['pf']['document'] ?? null;
+            if ($proforma === null || ($f['proformaCancelled'] ?? false)) {
+                return $refuse('proforma_missing');
+            }
+            if (($input['currency'] ?? null) !== 'RON') {
+                return $refuse('currency_mismatch', 422);
+            }
+            $expected = 'TH' . preg_replace('/[^A-Z0-9]/', '', strtoupper((string) ($this->orders[$orderId]['number'] ?? $this->orders[$orderId]['id'])));
+            if (($input['paymentReference'] ?? null) !== $expected) {
+                return $refuse('payment_reference_mismatch', 422);
+            }
+            foreach ($f['entries'] as $entry) {
+                if ($entry['kind'] === 'transfer_in' && $entry['state'] === 'submitted') {
+                    return $refuse('transfer_pending');
+                }
+            }
+            $amount = (float) ($input['amount'] ?? 0);
+            if ($amount > max(0, $numbers['total'] - $numbers['received']) + 0.001) {
+                return $refuse('amount_exceeds_balance');
+            }
+            $normalized = preg_replace('/[^A-Z0-9]/', '', strtoupper((string) ($input['reference'] ?? '')));
+            foreach ($this->orders as $other) {
+                foreach ($other['finance']['entries'] ?? [] as $entry) {
+                    if ($entry['kind'] === 'transfer_in' && $entry['state'] !== 'rejected' && preg_replace('/[^A-Z0-9]/', '', strtoupper($entry['reference'])) === $normalized) {
+                        return $refuse('duplicate_reference');
+                    }
+                }
+            }
+            $entryId = $this->nextEntryId();
+            $at = gmdate('Y-m-d\TH:i:s\Z', $now);
+            $f['entries'][] = ['id' => $entryId, 'kind' => 'transfer_in', 'purpose' => 'advance', 'amount' => number_format($amount, 2, '.', ''), 'reference' => (string) $input['reference'], 'valueDate' => (string) $input['valueDate'],
+                'state' => 'verified', 'submittedBy' => $employee, 'submittedAt' => $at, 'decidedBy' => $employee, 'decidedAt' => $at, 'decisionCode' => 'verified',
+                'method' => 'bank_transfer', 'receipt' => null, 'collector' => null, 'flags' => ['single_verification']];
         } elseif ($action === 'decide_transfer' || $action === 'decide_refund') {
             if ($action === 'decide_refund' && ($input['productionComplete'] ?? null) !== true) {
                 return $refuse('production_not_complete');
@@ -487,8 +540,13 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             if ($f['entries'][$index]['state'] !== 'submitted') {
                 return $refuse('entry_not_pending');
             }
-            if ($f['entries'][$index]['submittedBy'] === $employee) {
+            $alone = $f['entries'][$index]['submittedBy'] === $employee;
+            if ($alone && (($input['singleVerification'] ?? false) !== true || $action !== 'decide_transfer')) {
                 return $refuse('same_employee', 403);
+            }
+            if ($alone && $this->financeVerification !== 'single') {
+                // YD SOFT 2.23.0: the recorder concludes a transfer only under the shop's single policy.
+                return $refuse('single_verification_disabled');
             }
             $verify = ($input['decision'] ?? null) === 'verify';
             if ($this->safetyRules && $verify && $action === 'decide_transfer' && $cancelled) {
@@ -498,6 +556,9 @@ final class SourceAccessFakeShop implements SourceAccessTransport
                 return $refuse('finance_open');
             }
             $f['entries'][$index] = array_merge($f['entries'][$index], ['state' => $verify ? 'verified' : 'rejected', 'decidedBy' => $employee, 'decidedAt' => gmdate('Y-m-d\TH:i:s\Z', $now), 'decisionCode' => $verify ? 'verified' : (string) ($input['reasonCode'] ?? 'other')]);
+            if ($alone) {
+                $f['entries'][$index]['flags'] = array_values(array_unique([...($f['entries'][$index]['flags'] ?? []), 'single_verification']));
+            }
             $entryId = $f['entries'][$index]['id'];
         } elseif ($action === 'acknowledge_liability') {
             if ($numbers['liability'] < 0.01) {
@@ -598,11 +659,13 @@ final class SourceAccessFakeShop implements SourceAccessTransport
                 'transfers' => $money($n['transfers']), 'net' => $money($n['received'])],
             'payment' => ['onlineVerified' => !$n['cod'], 'paidRecorded' => !$n['cod'], 'evidence' => $n['cod'] ? 'none' : 'netopia_ipn'],
             'advance' => $n['cod'] ? ['percentage' => 30, 'required' => $money($n['required']), 'collected' => $money($n['received']), 'outstanding' => $money(max(0, $n['required'] - $n['received'])), 'onDelivery' => $money(max(0, $n['total'] - $n['received'])),
-                'paymentReference' => 'TH' . preg_replace('/[^A-Z0-9]/', '', strtoupper((string) ($o['number'] ?? $o['id']))), 'proforma' => isset($o['invoice']['pf']['document']) ? ['series' => (string) $o['invoice']['pf']['document']['series'], 'number' => (string) $o['invoice']['pf']['document']['number'], 'amount' => '215.70', 'currency' => 'RON', 'reference' => 'TH' . preg_replace('/[^A-Z0-9]/', '', strtoupper((string) ($o['number'] ?? $o['id'])))] : null] : null,
+                'paymentReference' => 'TH' . preg_replace('/[^A-Z0-9]/', '', strtoupper((string) ($o['number'] ?? $o['id']))), 'proforma' => isset($o['invoice']['pf']['document']) ? ['series' => (string) $o['invoice']['pf']['document']['series'], 'number' => (string) $o['invoice']['pf']['document']['number'], 'amount' => '215.70', 'currency' => 'RON', 'reference' => 'TH' . preg_replace('/[^A-Z0-9]/', '', strtoupper((string) ($o['number'] ?? $o['id'])))] : null]
+                + ($this->legacyProforma ? [] : ['proformaCancelled' => (bool) ($f['proformaCancelled'] ?? false)]) : null,
             'balance' => ['outstanding' => $n['cod'] ? null : $money(max(0, $n['total'] - $n['received'])), 'refundLiability' => $money($n['liability']), 'acknowledged' => $n['acknowledged']],
             'financial' => ['state' => $n['state'], 'basis' => $n['basis'], 'attention' => $n['attention']],
             'entries' => array_map(static fn (array $e): array => array_diff_key($e, ['pricing' => true]), $f['entries'] ?? []),
-            'capabilities' => ['record' => $this->financeRecord, 'refunds' => $this->financeRefunds, 'electronicRefund' => false],
+            'capabilities' => ['record' => $this->financeRecord && ($o['eligible'] ?? true) === true, 'refunds' => $this->financeRefunds, 'electronicRefund' => false] + ($this->financeVerification === null ? [] : ['verification' => $this->financeVerification])
+                + ($this->financeVerification === null ? [] : ['ledger' => ($o['eligible'] ?? true) === true ? 'shop' : 'manual']),
         ] + ($this->legacyProforma ? [] : [
             // YD SOFT 2.19.0: the one money calculation (TEST numbers of this fake), no deadline, no AWB.
             'position' => ['currency' => 'RON', 'percentage' => $n['cod'] ? 30 : null, 'total' => $money($n['total']), 'advanceRequired' => $n['cod'] ? $money($n['required']) : null,
@@ -815,7 +878,8 @@ final class SourceAccessFakeShop implements SourceAccessTransport
         $p = &$i['pf'];
         $action = (string) ($input['action'] ?? '');
         $roles = ['proforma_issue' => ['operator', 'manager'], 'proforma_send_mail' => ['operator', 'manager'], 'proforma_check' => ['operator', 'documents', 'manager'], 'proforma_resolve' => ['manager'],
-            'proforma_cancel' => ['operator', 'manager'], 'total_accept' => ['operator', 'manager'], 'advance_accept' => ['operator', 'manager'], 'proforma_remind' => ['operator', 'manager']];
+            'proforma_cancel' => ['operator', 'manager'], 'total_accept' => ['operator', 'manager'], 'advance_accept' => ['operator', 'manager'], 'proforma_remind' => ['operator', 'manager'],
+            'advance_difference' => ['operator', 'manager']];
         $p += ['cancel' => null, 'cancelled' => [], 'reminders' => []];
         if (!isset($roles[$action]) || !in_array($role, $roles[$action], true)) {
             return [400, ['error' => ['code' => 'invalid_request']]];
@@ -911,7 +975,13 @@ final class SourceAccessFakeShop implements SourceAccessTransport
         if ($action === 'advance_accept') {
             $i['advanceAccepted'] = true;
             $i['cleared'] = true;
+            $i['differenceRequested'] = false;
             return $done(200, 'accepted');
+        }
+        if ($action === 'advance_difference') {
+            // YD SOFT 2.23.0: recorded only; the order keeps waiting for the advance on the same proforma.
+            $i['differenceRequested'] = true;
+            return $done(200, 'requested');
         }
         if ($action === 'proforma_cancel') {
             $outcome = $this->proformaCancelOutcome;
@@ -1012,8 +1082,11 @@ final class SourceAccessFakeShop implements SourceAccessTransport
         if ($action === 'total_accept') {
             return ($i['totalAccepted'] ?? true) ? ['total_already_accepted'] : [];
         }
-        if ($action === 'advance_accept') {
+        if ($action === 'advance_accept' || $action === 'advance_difference') {
             $codes = !$i['cod'] ? ['advance_not_required'] : (($i['advanceAccepted'] ?? false) ? ['advance_already_accepted'] : ($i['cleared'] ? ['advance_already_collected'] : (!($i['partial'] ?? false) ? ['advance_not_received'] : [])));
+            if ($action === 'advance_difference' && $codes === [] && ($i['differenceRequested'] ?? false)) {
+                $codes[] = 'difference_already_requested';
+            }
             return ($i['totalAccepted'] ?? true) ? $codes : [...$codes, 'total_not_accepted'];
         }
         if ($action === 'proforma_cancel') {
@@ -1177,9 +1250,12 @@ final class SourceAccessFakeShop implements SourceAccessTransport
         $amounts = in_array($role, ['operator', 'documents', 'manager', 'finance'], true);
         $blockers = [];
         foreach (['proformaIssue' => 'proforma_issue', 'proformaSendMail' => 'proforma_send_mail', 'proformaCheck' => 'proforma_check', 'proformaResolve' => 'proforma_resolve',
-            'proformaCancel' => 'proforma_cancel', 'totalAccept' => 'total_accept', 'advanceAccept' => 'advance_accept'] as $name => $action) {
-            if ($this->legacyProforma && in_array($action, ['proforma_cancel', 'total_accept', 'advance_accept'], true)) {
+            'proformaCancel' => 'proforma_cancel', 'totalAccept' => 'total_accept', 'advanceAccept' => 'advance_accept', 'advanceDifference' => 'advance_difference'] as $name => $action) {
+            if ($this->legacyProforma && in_array($action, ['proforma_cancel', 'total_accept', 'advance_accept', 'advance_difference'], true)) {
                 continue; // a 2.18.0 shop does not send these groups
+            }
+            if ($this->olderProforma && $action === 'advance_difference') {
+                continue; // a shop before YD SOFT 2.23.0 does not send it
             }
             $blockers[$name] = $this->invoiceActions ? $this->proformaBlockers($orderId, $action) : ['invoice_observe'];
         }
@@ -1213,6 +1289,11 @@ final class SourceAccessFakeShop implements SourceAccessTransport
                 : ['state' => 'required', 'at' => null, 'by' => null, 'previousTotal' => $amounts ? '699.00' : null, 'total' => $amounts ? '719.00' : null, 'changes' => [['kind' => 'changed', 'name' => 'Draperie Velvet']], 'note' => null, 'advanceDecisionRequired' => (bool) ($i['advanceDecision'] ?? false)],
             'advanceAcceptance' => ($i['advanceAccepted'] ?? false) ? ['at' => gmdate('Y-m-d\TH:i:s\Z', $now), 'by' => '00000000-0000-4000-8000-0000000000a1', 'required' => $amounts ? '215.70' : null, 'received' => $amounts ? '200.00' : null, 'reason' => null, 'low' => false, 'kind' => $i['advanceKind'] ?? 'accepted'] : null,
             'lowAdvance' => false,
+        ] + ($this->olderProforma ? [] : [
+            // YD SOFT 2.23.0: the operator asked for the missing advance (TEST data: 200.00 of 215.70 received).
+            'differenceRequest' => ($i['differenceRequested'] ?? false) && ($i['partial'] ?? false) && !$i['cleared'] ? ['at' => gmdate('Y-m-d\TH:i:s\Z', $now), 'by' => '00000000-0000-4000-8000-0000000000a1',
+                'required' => $amounts ? '215.70' : null, 'received' => $amounts ? '200.00' : null, 'gap' => $amounts ? '15.70' : null, 'remaining' => $amounts ? '519.00' : null, 'reason' => null] : null,
+        ]) + [
             'cancel' => $p['cancel'],
             'cancelled' => array_map(static fn (array $c): array => ['amount' => $amounts ? $c['amount'] : null] + $c, array_reverse($p['cancelled'])),
             'superseded' => [],
@@ -1257,7 +1338,7 @@ final class SourceAccessFakeShop implements SourceAccessTransport
         }
         $action = (string) ($input['action'] ?? '');
         $roles = ['order_reactivate' => ['operator', 'manager'], 'awb_create' => ['documents', 'manager'], 'awb_label' => ['documents', 'manager'], 'awb_address_task' => ['documents', 'manager'],
-            'awb_address_done' => ['documents', 'manager'], 'card_refund_full' => ['operator', 'manager'], 'card_refund_record' => ['finance'], 'card_refund_verify' => ['finance'], 'operations_state' => ['operator', 'documents', 'manager', 'finance']];
+            'awb_address_done' => ['documents', 'manager'], 'awb_cod_corrected' => ['documents', 'manager'], 'card_refund_full' => ['operator', 'manager'], 'card_refund_record' => ['finance'], 'card_refund_verify' => ['finance'], 'operations_state' => ['operator', 'documents', 'manager', 'finance']];
         if (!isset($roles[$action]) || !in_array($role, $roles[$action], true)) {
             return [400, ['error' => ['code' => 'invalid_request']]];
         }
@@ -1266,6 +1347,10 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             return [200, $state()];
         }
         if ($action === 'awb_label') {
+            if ($o['awb'] !== null && $o['awb']['cod'] !== $o['owed']) {
+                // YD SOFT 2.23.0: the AWB collects another amount than what is owed now: no label.
+                return [409, ['error' => ['code' => 'cod_mismatch']]];
+            }
             return $o['awb'] === null ? [409, ['error' => ['code' => 'awb_missing']]] : [200, ['protocol' => 1, 'awb' => $o['awb']['number'], 'pdf' => base64_encode('%PDF-1.4 TEST AWB LABEL ' . $o['awb']['number'])]];
         }
         $request = $input;
@@ -1334,6 +1419,20 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             $o['address'][] = ['kind' => $action === 'awb_address_task' ? 'task' : 'done', 'at' => $now, 'by' => $employee];
             return $done($action === 'awb_address_task' ? 'panel_required' : 'panel_declared');
         }
+        if ($action === 'awb_cod_corrected') {
+            if ($o['awb'] === null) {
+                return $refuse('awb_missing');
+            }
+            if ($o['awb']['cod'] === $o['owed']) {
+                return $refuse('cod_not_mismatched');
+            }
+            if (($input['amount'] ?? null) !== $o['owed']) {
+                return $refuse('cod_changed');
+            }
+            $o['awb']['cod'] = $o['owed'];
+            $o['awb']['corrected'] = true;
+            return $done('panel_declared');
+        }
         if ($action === 'card_refund_full') {
             if ($o['netopia'] < 1) {
                 return $refuse('card_payment_unverified');
@@ -1393,8 +1492,9 @@ final class SourceAccessFakeShop implements SourceAccessTransport
         $iso = static fn (int $t): string => gmdate('Y-m-d\TH:i:s\Z', $t);
         return ['protocol' => 1, 'readAt' => $iso($now), 'features' => $this->operationFeatures, 'order' => ['status' => $o['status'], 'paymentMethod' => $o['netopia'] > 0 ? 'netopiapayments' : 'cod'],
             'awb' => ['state' => $o['awb'] !== null ? 'created' : (($o['awbUnknown'] ?? false) ? 'unknown' : 'none'), 'number' => $o['awb']['number'] ?? null, 'createdAt' => isset($o['awb']) ? $iso($o['awb']['at']) : null,
-                'status' => null, 'delivered' => false, 'cod' => $o['owed'], 'codCheck' => ['state' => $o['awb'] !== null ? 'match' : 'none', 'awb' => $o['awb']['number'] ?? null, 'awbCod' => $o['awb']['cod'] ?? null, 'expected' => $o['owed'], 'status' => null],
-                'blockers' => $o['awb'] !== null ? ['awb_exists'] : [], 'address' => array_map(static fn (array $a): array => ['kind' => $a['kind'], 'at' => $iso($a['at']), 'by' => $a['by']], $o['address']), 'pickup' => 'not_tracked'],
+                'status' => null, 'delivered' => false, 'cod' => $o['owed'], 'codCheck' => ['state' => $o['awb'] !== null ? ($o['awb']['cod'] === $o['owed'] ? 'match' : 'mismatch') : 'none', 'awb' => $o['awb']['number'] ?? null, 'awbCod' => $o['awb']['cod'] ?? null, 'expected' => $o['owed'], 'status' => null,
+                    'corrected' => (bool) ($o['awb']['corrected'] ?? false)],
+                'blockers' => $o['awb'] !== null ? ($o['awb']['cod'] === $o['owed'] ? ['awb_exists'] : ['awb_exists', 'cod_mismatch']) : [], 'address' => array_map(static fn (array $a): array => ['kind' => $a['kind'], 'at' => $iso($a['at']), 'by' => $a['by']], $o['address']), 'pickup' => 'not_tracked'],
             'cardRefund' => ['available' => $o['netopia'] > 0, 'transactions' => $o['netopia'], 'requests' => array_map(static fn (array $r): array => ['state' => $r['state'], 'at' => $iso($r['at']), 'by' => $r['by'], 'amount' => $r['amount'], 'currency' => 'RON',
                 'transactions' => $r['transactions'], 'reason' => 'no_refund_api', 'completedAt' => $r['completedAt'] === null ? null : $iso($r['completedAt']), 'mailed' => $r['mailed']], $o['refunds'])],
             'reactivations' => array_map(static fn (array $r): array => ['at' => $iso($r['at']), 'by' => $r['by'], 'reason' => $r['reason'], 'payment' => $r['exception'] !== null], $o['reactivations'])];

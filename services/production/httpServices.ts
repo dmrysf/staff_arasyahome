@@ -4,6 +4,7 @@ import { normalizeLocale } from "../../i18n/locales";
 import { isOrderActionBlockedReason, isOrderActionId, orderActionLabels } from "../../domain/orderActions";
 import type { ActivityService, AuthService, EmployeeService, ExceptionService, LiveService, OrderService, ServiceBundle, Session } from "../contracts";
 import { startLiveClient } from "./liveClient";
+import { financeRequestsHttp } from "../../domain/financeRequests";
 import type { DocumentApi, DocumentAttention, DocumentRevision, OrderDocument, OrderDocumentSummary } from "../../domain/documents";
 import type { TrendyolActivity, TrendyolApi, TrendyolCapabilities, TrendyolIgnoredPackage, TrendyolIntakeStatus, TrendyolLine, TrendyolLineKind, TrendyolOverview, TrendyolPackageDetail, TrendyolPackageSummary } from "../../domain/trendyol";
 import { marketplaceClassOf, marketplaceStatusLabels } from "../../domain/trendyol";
@@ -229,16 +230,18 @@ export function mapProductionEmployee(value: unknown): Employee {
     locale: normalizeLocale(raw.locale),
     confirmareScopes: mapConfirmareScopes(raw.confirmareScopes),
     financeScopes: mapFinanceScopes(raw.financeScopes),
+    financeSupervisor: raw.financeSupervisor === true,
     invoiceScopes: mapInvoiceScopes(raw.invoiceScopes),
   };
 }
 
 /** Optional (API 2.41.0); an older API or a malformed value grants no finance screen. */
-function mapFinanceScopes(value: unknown): { view: string[]; record: string[]; approve: string[] } {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return { view: [], record: [], approve: [] };
+function mapFinanceScopes(value: unknown): { view: string[]; record: string[]; approve: string[]; verify: string[] } {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return { view: [], record: [], approve: [], verify: [] };
   const raw = value as Record<string, unknown>;
   const list = (entry: unknown): string[] => Array.isArray(entry) && entry.every((item) => typeof item === "string") ? entry as string[] : [];
-  return { view: list(raw.view), record: list(raw.record), approve: list(raw.approve) };
+  // API 2.50.0: `verify` (single-person verification, off by policy until the owner and the accountant sign it off).
+  return { view: list(raw.view), record: list(raw.record), approve: list(raw.approve), verify: list(raw.verify) };
 }
 
 /** Optional (API 2.43.0); an older API or a malformed value shows no invoice scope. */
@@ -1124,6 +1127,8 @@ export function createProductionServices(apiBaseUrl: string, options: Production
   const confirmareOrder = (globalOrderId: string, action: string) => `/confirmare/orders/${encodeURIComponent(globalOrderId)}/${action}`;
   const command = <T>(path: string, input: unknown, key: string, map: (value: unknown) => T) => http.request(path, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, map);
   const confirmare: ConfirmareApi = {
+    // API 2.50.0: the finance verification requests (operator, finance employee, supervisor).
+    ...financeRequestsHttp(http),
     pool: (view, source, signal) => http.request(`/confirmare/pool?view=${view}${source ? `&source=${encodeURIComponent(source)}` : ""}`, { signal }, mapConfirmarePool),
     handoffList: (source, signal) => http.request(`/confirmare/handoff${source ? `?source=${encodeURIComponent(source)}` : ""}`, { signal }, mapHandoffList),
     detail: (globalOrderId, signal) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}`, { signal }, mapConfirmareDetail),
@@ -1737,6 +1742,10 @@ function mapProformaSummary(value: unknown): ProformaSummary | null {
         kind: a.kind == null ? "accepted" as const : oneOf(a.kind, ["accepted", "kept"] as const) };
     })(),
     lowAdvance: raw.lowAdvance == null ? false : booleanValue(raw.lowAdvance),
+    differenceRequest: raw.differenceRequest == null ? null : (() => {
+      const d = objectValue(raw.differenceRequest);
+      return { at: invoiceInstant(d.at), by: invoiceUuid(d.by), required: money(d.required), received: money(d.received), gap: money(d.gap), remaining: money(d.remaining), reason: invoiceText(d.reason, 300) };
+    })(),
     cancel: raw.cancel == null ? null : (() => {
       const c = objectValue(raw.cancel);
       return { state: oneOf(c.state, ["in_flight", "unknown"] as const), at: invoiceInstant(c.at), by: invoiceUuid(c.by), reason: c.reason == null ? null : oneOf(c.reason, CANCEL_REASONS) };
@@ -1804,7 +1813,7 @@ export function mapInvoiceDeadline(value: unknown): InvoiceDeadline {
 export function mapCodCheck(value: unknown): CodCheck {
   const raw = objectValue(value);
   return { state: oneOf(raw.state, ["none", "match", "mismatch", "delivered", "unknown"] as const), awb: invoiceText(raw.awb, 100), awbCod: raw.awbCod == null ? null : moneyText(raw.awbCod),
-    expected: raw.expected == null ? null : moneyText(raw.expected), status: invoiceText(raw.status, 255) };
+    expected: raw.expected == null ? null : moneyText(raw.expected), status: invoiceText(raw.status, 255), corrected: raw.corrected == null ? false : booleanValue(raw.corrected) };
 }
 function bicValue(value: unknown): string {
   const text = textValue(value, 11);

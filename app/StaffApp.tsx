@@ -16,6 +16,7 @@ import type { StaffRuntimeMode } from "../src/runtimeConfig";
 import { StaffServiceError } from "../domain/models";
 import { toServiceError } from "../services/errors";
 import { canAccessRoute } from "../domain/permissions";
+import { canUseConfirmare } from "../domain/confirmare";
 import { shouldEndLocalSessionAfterLogout } from "../features/auth/logoutPolicy";
 import { useProductionWorkflow } from "./useProductionWorkflow";
 import { parseStaffRoute } from "../domain/staffRoute";
@@ -37,6 +38,7 @@ import { ConfirmareQueueScreen } from "../features/confirmare/ConfirmareQueueScr
 import { ConfirmareOrderScreen } from "../features/confirmare/ConfirmareOrderScreen";
 import { ConfirmareTeamScreen } from "../features/confirmare/ConfirmareTeamScreen";
 import { ConfirmareFinanceScreen } from "../features/confirmare/ConfirmareFinanceScreen";
+import { FinanceInboxScreen, FinanceLegacyScreen, FinanceOrderScreen, FinanceOversightDetailScreen, FinanceOversightScreen, FinanceTaskScreen } from "../features/confirmare/FinanceRequestScreens";
 import { ConfirmareHandoffScreen } from "../features/confirmare/ConfirmareHandoffScreen";
 import { ConfirmareAwbScreen, ConfirmareEfacturaScreen, ConfirmareHealthScreen } from "../features/confirmare/ConfirmareShopTasks";
 import { GuideProvider } from "../features/guide/ContextualHelp";
@@ -160,13 +162,16 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
   const documentOrderId = parsedRoute.kind === "document-detail" && guardedRoute === parsedRoute.pathname ? parsedRoute.orderId : "";
   const trendyolPackageId = parsedRoute.kind === "trendyol-package" && guardedRoute === parsedRoute.pathname ? parsedRoute.packageId : "";
   const confirmareOrderId = parsedRoute.kind === "confirmare-order" && guardedRoute === parsedRoute.pathname ? parsedRoute.orderId : "";
+  const financeRequestId = (parsedRoute.kind === "finance-task" || parsedRoute.kind === "finance-oversight-detail") && guardedRoute === parsedRoute.pathname ? parsedRoute.requestId : "";
+  const financeOrderId = parsedRoute.kind === "finance-order" && guardedRoute === parsedRoute.pathname ? parsedRoute.orderId : "";
+  const financeLegacyId = parsedRoute.kind === "finance-legacy" && guardedRoute === parsedRoute.pathname ? parsedRoute.orderId : "";
   let screen = <HomeScreen employee={session.employee} services={services} workflow={workflow} dashboardUrl={dashboardUrl} navigate={navigate} />;
   if (guardedRoute === "/scan") {
     // A request's "open the scanner" passes only the request id; the scanned code itself never enters a URL.
     const scanContext = new URLSearchParams(window.location.search).get("exception");
     screen = <ScannerScreen key={scanContext ?? "scan"} service={services.orders} exceptions={services.exceptions} contextExceptionId={scanContext} cutting={services.cutting} employee={session.employee} workflow={workflow} mode={mode} navigate={navigate} onSessionExpired={() => expireSession(new StaffServiceError("SESSION_EXPIRED"))} />;
   } else if (guardedRoute === "/orders") screen = <OrdersScreen service={services.orders} workflow={workflow} navigate={navigate} />;
-  else if (orderId) screen = <OrderDetailScreen key={orderId} orderId={orderId} service={services.orders} exceptions={services.exceptions} cutting={services.cutting} documents={services.documents} productionQr={canManageAuthority(session.employee) ? services.productionQr : undefined} pieces={services.pieces} physical={services.physical} permissions={session.employee.permissions} workflow={workflow} navigate={navigate} onSessionExpired={() => expireSession(new StaffServiceError("SESSION_EXPIRED"))} />;
+  else if (orderId) screen = <OrderDetailScreen key={orderId} orderId={orderId} service={services.orders} exceptions={services.exceptions} cutting={services.cutting} documents={services.documents} productionQr={canManageAuthority(session.employee) ? services.productionQr : undefined} pieces={services.pieces} physical={services.physical} financeRequests={services.confirmare && canUseConfirmare(session.employee) ? services.confirmare : undefined} permissions={session.employee.permissions} workflow={workflow} navigate={navigate} onSessionExpired={() => expireSession(new StaffServiceError("SESSION_EXPIRED"))} />;
   else if (documentOrderId && services.documents) screen = <DocumentScreen key={documentOrderId} orderId={documentOrderId} service={services.documents} permissions={session.employee.permissions} navigate={navigate} invoices={services.confirmare ?? undefined} />;
   else if (guardedRoute === "/problems") screen = <SupervisorScreen service={services.exceptions} navigate={navigate} />;
   else if (exceptionId) screen = <ExceptionScreen key={exceptionId} exceptionId={exceptionId} service={services.exceptions} pieces={services.pieces} navigate={navigate} onSessionExpired={() => expireSession(new StaffServiceError("SESSION_EXPIRED"))} />;
@@ -176,6 +181,12 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
   else if (guardedRoute === "/confirmare" && services.confirmare) screen = <ConfirmareQueueScreen employee={session.employee} service={services.confirmare} navigate={navigate} />;
   else if (guardedRoute === "/confirmare/team" && services.confirmare) screen = <ConfirmareTeamScreen employee={session.employee} service={services.confirmare} navigate={navigate} />;
   else if (guardedRoute === "/confirmare/finance" && services.confirmare) screen = <ConfirmareFinanceScreen employee={session.employee} service={services.confirmare} navigate={navigate} />;
+  else if (guardedRoute === "/confirmare/finance/requests" && services.confirmare) screen = <FinanceInboxScreen employee={session.employee} service={services.confirmare} navigate={navigate} />;
+  else if (guardedRoute === "/confirmare/finance/oversight" && services.confirmare) screen = <FinanceOversightScreen service={services.confirmare} navigate={navigate} />;
+  else if (financeRequestId && parsedRoute.kind === "finance-task" && services.confirmare) screen = <FinanceTaskScreen key={financeRequestId} requestId={financeRequestId} service={services.confirmare} navigate={navigate} />;
+  else if (financeRequestId && parsedRoute.kind === "finance-oversight-detail" && services.confirmare) screen = <FinanceOversightDetailScreen key={financeRequestId} requestId={financeRequestId} service={services.confirmare} navigate={navigate} />;
+  else if (financeLegacyId && services.confirmare) screen = <FinanceLegacyScreen key={financeLegacyId} globalOrderId={financeLegacyId} service={services.confirmare} navigate={navigate} />;
+  else if (financeOrderId && services.confirmare) screen = <FinanceOrderScreen key={financeOrderId} globalOrderId={financeOrderId} employee={session.employee} service={services.confirmare} navigate={navigate} />;
   else if (guardedRoute === "/confirmare/handoff" && services.confirmare) screen = <ConfirmareHandoffScreen service={services.confirmare} navigate={navigate} />;
   else if (guardedRoute === "/confirmare/awb" && services.confirmare) screen = <ConfirmareAwbScreen service={services.confirmare} navigate={navigate} />;
   else if (guardedRoute === "/confirmare/efactura" && services.confirmare) screen = <ConfirmareEfacturaScreen service={services.confirmare} navigate={navigate} />;

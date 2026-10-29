@@ -18,6 +18,10 @@ final readonly class SourceAccessTarget
     public const INVOICE_OFF = 'off';
     public const INVOICE_OBSERVE = 'observe';
     public const INVOICE_ENFORCE = 'enforce';
+    public const VERIFICATION_FOUR_EYES = 'four_eyes';
+    public const VERIFICATION_SINGLE = 'single';
+    public const TASKS_OFF = 'off';
+    public const TASKS_AUTO = 'auto';
 
     public function __construct(
         public string $sourceKey,
@@ -30,6 +34,14 @@ final readonly class SourceAccessTarget
         public string $finance = self::FINANCE_OFF,
         /** SmartBill invoicing through this shop (API 2.43.0): off, observe (the state only) or enforce (also actions). */
         public string $invoice = self::INVOICE_OFF,
+        /**
+         * The financial policy of a bank verification (API 2.50.0): four_eyes (default; one employee records, another
+         * verifies) or single (an employee with the `verify` scope verifies alone). `single` acts only when the shop
+         * reports the same policy in its finance summary.
+         */
+        public string $verification = self::VERIFICATION_FOUR_EYES,
+        /** The finance task inventory on every distribution (API 2.50.0): off (default, the command only) or auto. */
+        public string $tasks = self::TASKS_OFF,
     ) {
     }
 
@@ -53,6 +65,16 @@ final readonly class SourceAccessTarget
         return $this->finance === self::FINANCE_RECORD;
     }
 
+    public function autoFinanceTasks(): bool
+    {
+        return $this->allowsFinanceRead() && $this->tasks === self::TASKS_AUTO;
+    }
+
+    public function allowsSingleVerification(): bool
+    {
+        return $this->allowsFinanceRecord() && $this->verification === self::VERIFICATION_SINGLE;
+    }
+
     public function allowsEdit(): bool
     {
         return $this->mode === self::MODE_EDIT;
@@ -66,6 +88,6 @@ final readonly class SourceAccessTarget
     /** @return array<string, string> */
     public function __debugInfo(): array
     {
-        return ['sourceKey' => $this->sourceKey, 'mode' => $this->mode, 'baseUrl' => $this->baseUrl, 'kid' => $this->kid, 'finance' => $this->finance, 'invoice' => $this->invoice];
+        return ['sourceKey' => $this->sourceKey, 'mode' => $this->mode, 'baseUrl' => $this->baseUrl, 'kid' => $this->kid, 'finance' => $this->finance, 'invoice' => $this->invoice, 'verification' => $this->verification];
     }
 }

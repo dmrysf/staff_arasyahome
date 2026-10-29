@@ -13,7 +13,13 @@ use PDO;
  * - view:    reads the financial summary (amounts read from the shop at that moment) and the finance queue;
  * - record:  also records a received bank transfer or a bank refund already paid out. A record is never money
  *            received: it waits for another employee's verification;
- * - approve: also verifies or rejects what ANOTHER employee recorded, and acknowledges a refund liability.
+ * - approve: also verifies or rejects what ANOTHER employee recorded, and acknowledges a refund liability;
+ * - verify:  (API 2.50.0, migration 044) completes the bank verification of a finance verification request assigned to
+ *            them alone. It acts only where the source's financial policy is `single` in Operations and in the shop
+ *            (FinanceVerificationRequests); under `four_eyes` (the default) it grants nothing beyond `view`.
+ *
+ * Finance supervision (employee_finance_supervision, migration 044) is a separate, explicit relation: a supervisor
+ * observes the requests of the employees they supervise and never acts through it.
  *
  * Separate from customer communication (Confirmare `operate`) and from Confirmare supervision: neither grants a finance
  * capability, so a supervisor never verifies money through supervision. Without a row nothing is visible or possible
@@ -26,7 +32,8 @@ final readonly class FinanceScopePolicy
     public const VIEW = 'view';
     public const RECORD = 'record';
     public const APPROVE = 'approve';
-    public const CAPABILITIES = [self::VIEW, self::RECORD, self::APPROVE];
+    public const VERIFY = 'verify';
+    public const CAPABILITIES = [self::VIEW, self::RECORD, self::APPROVE, self::VERIFY];
 
     public function __construct(private PDO $pdo)
     {
@@ -47,15 +54,27 @@ final readonly class FinanceScopePolicy
         return in_array($sourceKey, $this->sources($actor, $capability, $lock), true);
     }
 
-    /** @return array{view: list<string>, record: list<string>, approve: list<string>} the stored rows, by capability */
+    /** @return array{view: list<string>, record: list<string>, approve: list<string>, verify: list<string>} the stored rows, by capability */
     public function scopesOf(string $employeeUuid): array
     {
         $statement = $this->pdo->prepare('SELECT capability, source_key FROM employee_finance_scopes WHERE employee_uuid = ? ORDER BY capability, source_key');
         $statement->execute([$employeeUuid]);
-        $scopes = [self::VIEW => [], self::RECORD => [], self::APPROVE => []];
+        $scopes = [self::VIEW => [], self::RECORD => [], self::APPROVE => [], self::VERIFY => []];
         foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
             $scopes[(string) $row['capability']][] = (string) $row['source_key'];
         }
         return $scopes;
+    }
+
+    /** @return list<string> the employees this supervisor observes (empty before migration 044) */
+    public function supervised(string $supervisorUuid): array
+    {
+        try {
+            $statement = $this->pdo->prepare('SELECT employee_uuid FROM employee_finance_supervision WHERE supervisor_employee_uuid = ? ORDER BY employee_uuid');
+            $statement->execute([$supervisorUuid]);
+            return array_map('strval', $statement->fetchAll(PDO::FETCH_COLUMN));
+        } catch (\PDOException) {
+            return [];
+        }
     }
 }

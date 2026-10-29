@@ -212,4 +212,25 @@ if (preg_match('/ON (DELETE|UPDATE) (CASCADE|SET NULL)|DROP |DELETE FROM|TRUNCAT
     || preg_match_all('/CREATE TABLE IF NOT EXISTS/', $dualStatements) !== 6 || preg_match('/CREATE TABLE (?!IF NOT EXISTS)/', $dualStatements) === 1) {
     throw new RuntimeException('Migration 043 must stay additive (six CREATE TABLE IF NOT EXISTS), grant nothing and write no row.');
 }
+// Finance verification requests (044, API 2.50.0): three new tables, no row, no grant; the only change to an existing table
+// are the guarded swaps of the employee_finance_scopes capability CHECK (+ verify), the order_finance_actions action
+// CHECK (+ verify_transfer), the order_invoice_actions action CHECK (+ advance_difference) and the order_source_operations
+// kind CHECK (+ awb_cod_corrected).
+$requestSchema = (string) file_get_contents($root . '/database/migrations/044_finance_verification_requests.sql');
+$requestStatements = preg_replace(['/^--.*$/m', '/ON (UPDATE|DELETE) RESTRICT/'], '', $requestSchema) ?? '';
+foreach (['employee_finance_supervision', 'finance_verification_requests', 'finance_verification_request_events'] as $table) {
+    if (preg_match('/CREATE TABLE IF NOT EXISTS\s+' . $table . '\b/', $requestSchema) !== 1) {
+        throw new RuntimeException("Migration 044 is missing table: {$table}");
+    }
+}
+$requestOther = preg_replace('/ALTER TABLE (employee_finance_scopes (DROP CONSTRAINT chk_employee_finance_scopes_capability|ADD CONSTRAINT chk_employee_finance_scopes_capability_044 CHECK)|order_finance_actions (DROP CONSTRAINT chk_order_finance_actions_action|ADD CONSTRAINT chk_order_finance_actions_action_044 CHECK)|order_invoice_actions (DROP CONSTRAINT chk_order_invoice_actions_action|ADD CONSTRAINT chk_order_invoice_actions_action_044 CHECK)|order_source_operations (DROP CONSTRAINT chk_order_source_operations_kind|ADD CONSTRAINT chk_order_source_operations_kind_044 CHECK))/', '', $requestStatements) ?? '';
+if (preg_match('/ON (DELETE|UPDATE) (CASCADE|SET NULL)|DROP TABLE|DELETE FROM|TRUNCATE|\bUPDATE |\bINSERT |ALTER TABLE|role_permissions|employee_role_assignments/i', $requestOther) === 1
+    || preg_match_all('/CREATE TABLE IF NOT EXISTS/', $requestStatements) !== 3 || preg_match('/CREATE TABLE (?!IF NOT EXISTS)/', $requestStatements) === 1
+    || !str_contains($requestSchema, 'UNIQUE KEY uq_finance_verification_requests_open (open_order_uuid)')
+    || !str_contains($requestSchema, "CHECK (capability IN (''view'', ''record'', ''approve'', ''verify''))")
+    || !str_contains($requestSchema, "''decide_refund'', ''verify_transfer''))")
+    || !str_contains($requestSchema, "''total_accept'', ''advance_accept'', ''advance_difference''))")
+    || !str_contains($requestSchema, "''awb_address_done'', ''awb_cod_corrected'', ''card_refund_full''")) {
+    throw new RuntimeException('Migration 044 must stay additive (three CREATE TABLE IF NOT EXISTS and the capability CHECK swap), grant nothing and write no row.');
+}
 fwrite(STDOUT, 'Migration sanity checks passed for ' . count($files) . " file(s).\n");

@@ -85,10 +85,13 @@ final readonly class ConfirmareInvoice
         // The operator's explicit advance decision after a revision (owner business rule 2026-10-25).
         'total_accept' => ['declaration', 'note', 'advanceDecision', 'confirmLow'],
         'advance_accept' => ['reasonNote', 'confirmLow'],
+        // API 2.50.0 (YD SOFT 2.23.0, owner 2026-10-29): "Solicită diferența de avans", recorded only (the order waits).
+        'advance_difference' => ['reasonNote'],
     ];
     /** The Staff route segment of each proforma action (`/proforma/{segment}`). */
     public const PROFORMA_ROUTES = ['issue' => 'proforma_issue', 'send-mail' => 'proforma_send_mail', 'check' => 'proforma_check', 'resolve' => 'proforma_resolve',
-        'cancel' => 'proforma_cancel', 'accept-total' => 'total_accept', 'accept-advance' => 'advance_accept'];
+        'cancel' => 'proforma_cancel', 'accept-total' => 'total_accept', 'accept-advance' => 'advance_accept',
+        'request-difference' => 'advance_difference'];
     private const KEY_PATTERN = '/^[A-Za-z0-9][A-Za-z0-9_-]{15,99}$/D';
     private const UUID_PATTERN = '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/D';
     /** Failures where the shop certainly did not run the action. */
@@ -620,7 +623,10 @@ final readonly class ConfirmareInvoice
         if ($this->invoices->allows($actor, InvoiceScopePolicy::ISSUE, $source, $lock) && $documents && $generate) {
             return self::ROLE_DOCUMENTS;
         }
-        if ($this->finance->allows($actor, FinanceScopePolicy::VIEW, $source)) {
+        // API 2.50.0: a finance scope reads the document only of an order it reaches through a finance task (a row
+        // without an order, such as an assignee check by source, never takes the finance role).
+        $order = (string) ($row['order_uuid'] ?? '');
+        if ($order !== '' && FinanceTaskAccess::reaches($this->pdo, $this->finance, $actor, $order, $source)) {
             return self::ROLE_FINANCE;
         }
         if ($documents && ($generate || $this->authorization->can($actor, DocumentService::REPRINT))) {
@@ -942,7 +948,7 @@ final readonly class ConfirmareInvoice
         if ($order['operational_status'] === 'unavailable' || $order['source_reported_unavailable_at'] !== null) {
             $blockers[] = 'order_unavailable';
         }
-        if ($action === 'proforma_issue' || $action === 'advance_accept') {
+        if ($action === 'proforma_issue' || $action === 'advance_accept' || $action === 'advance_difference') {
             // The customer accepted the advance on the telephone: the Confirmare approval (call, lines, price) is recorded.
             if ($order['status'] !== 'approved') {
                 $blockers[] = 'confirmare_not_approved';
@@ -951,7 +957,7 @@ final readonly class ConfirmareInvoice
                 $blockers[] = 'advance_not_required';
             }
         }
-        if (($action === 'advance_accept' || $acceptsAdvance) && ConfirmareFinance::actionOpen($this->pdo, $orderUuid)) {
+        if (($action === 'advance_accept' || $action === 'advance_difference' || $acceptsAdvance) && ConfirmareFinance::actionOpen($this->pdo, $orderUuid)) {
             // A finance action not settled yet: the money it concerns is not known (also for the telephone acceptance that
             // accepts the money received after a revision, owner business rule 2026-10-25).
             $blockers[] = 'finance_action_open';
@@ -1051,7 +1057,7 @@ final readonly class ConfirmareInvoice
         $blockers = [];
         $allowed = [];
         foreach (['proformaIssue' => 'proforma_issue', 'proformaSendMail' => 'proforma_send_mail', 'proformaCheck' => 'proforma_check', 'proformaResolve' => 'proforma_resolve',
-            'proformaCancel' => 'proforma_cancel', 'totalAccept' => 'total_accept', 'advanceAccept' => 'advance_accept'] as $name => $action) {
+            'proformaCancel' => 'proforma_cancel', 'totalAccept' => 'total_accept', 'advanceAccept' => 'advance_accept', 'advanceDifference' => 'advance_difference'] as $name => $action) {
             $codes = $this->proformaBlockers($orderUuid, $action);
             if (!$actions) {
                 $codes[] = 'invoice_observe';

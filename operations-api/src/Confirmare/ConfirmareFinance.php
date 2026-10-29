@@ -12,6 +12,7 @@ use Arasya\Operations\Integration\SourceAccess\SourceAccessException;
 use Arasya\Operations\Integration\SourceAccess\SourceAccessRegistry;
 use Arasya\Operations\Integration\SourceAccess\SourceAccessTarget;
 use Arasya\Operations\Integration\SourceAccess\SourceFinance;
+use Arasya\Operations\Integration\SourceAccess\SourceInvoice;
 use Arasya\Operations\Order\GlobalOrderId;
 use Arasya\Operations\Security\ApiRateLimiter;
 use Arasya\Operations\Support\Clock;
@@ -40,8 +41,11 @@ use Throwable;
  *           independent). Each action names the summary revision it was based on; the shop refuses it when anything
  *           changed (`revision_changed`). One action per order at a time; a lost answer is reconciled with the shop's
  *           stored answer of the same Idempotency-Key, never replayed blindly.
- * - queue:  the finance tasks of the employee's sources, derived from the money state the shop sends with every order
- *           event (classes, never amounts) and from the open actions.
+ * - queue:  the advance tasks of a Confirmare operator's or supervisor's sources, derived from the money state the shop
+ *           sends with every order event (classes, never amounts). API 2.50.0: a finance scope lists nothing here (no
+ *           source-wide list of orders): its work is the tasks assigned to it (FinanceVerificationRequests inbox).
+ * - reach:  API 2.50.0: a finance scope reads or acts on an order only through a finance task assigned to the employee
+ *           (FinanceTaskAccess); any other order of the source answers 404 like an unknown one.
  *
  * While a finance action of an order is pending or unknown, production cannot start for it (ConfirmationClearance).
  */
@@ -58,6 +62,8 @@ final readonly class ConfirmareFinance
         'reconciliation_required', 'source_unavailable', 'refund_processing', 'transfer_verification', 'refund_eligible',
         'refund_liability', 'additional_payment', 'advance_partial', 'advance_waiting', 'advance_verified', 'advance_routed',
     ];
+    /** The tasks a finance scope lists (API 2.50.0): exceptional money states only (FinanceTaskAccess::EXCEPTIONAL_ATTENTION). */
+    public const EXCEPTION_TASKS = ['reconciliation_required', 'refund_processing', 'transfer_verification', 'refund_eligible', 'refund_liability', 'additional_payment'];
     /** The advance tasks a Confirmare operator also sees (API 2.44.0, read only): waiting, partial, paid, routed to the shop. */
     public const ADVANCE_TASKS = ['advance_waiting', 'advance_partial', 'advance_verified', 'advance_routed'];
     private const KEY_PATTERN = '/^[A-Za-z0-9][A-Za-z0-9_-]{15,99}$/D';
@@ -69,10 +75,13 @@ final readonly class ConfirmareFinance
     /** The fields each action takes besides expectedRevision. */
     private const FIELDS = [
         'submit_transfer' => ['purpose', 'amount', 'reference', 'valueDate', 'method', 'receipt', 'collector', 'overpaymentConfirmed', 'cancelledProforma'],
-        'decide_transfer' => ['entryId', 'decision', 'reasonCode'],
+        // API 2.50.0 (owner 2026-10-29): `singleVerification: true` under the single policy, the recorder concludes a transfer.
+        'decide_transfer' => ['entryId', 'decision', 'reasonCode', 'singleVerification'],
         'acknowledge_liability' => [],
         'submit_refund' => ['amount', 'reference', 'valueDate'],
         'decide_refund' => ['entryId', 'decision', 'reasonCode'],
+        // API 2.50.0: only through a finance verification request (FinanceVerificationRequests), never a route of its own.
+        'verify_transfer' => ['purpose', 'amount', 'reference', 'valueDate', 'paymentReference', 'currency', 'bankStatementConfirmed'],
     ];
 
     public function __construct(
@@ -163,7 +172,12 @@ final readonly class ConfirmareFinance
             throw new ApiException(404, 'NOT_FOUND', 'API route was not found.');
         }
         $fields = $this->fields($action, $input);
-        $capability = str_starts_with($action, 'submit_') ? FinanceScopePolicy::RECORD : FinanceScopePolicy::APPROVE;
+        $single = ($fields['singleVerification'] ?? false) === true;
+        $capability = match (true) {
+            str_starts_with($action, 'submit_') => FinanceScopePolicy::RECORD,
+            $action === 'verify_transfer' || $single => FinanceScopePolicy::VERIFY,
+            default => FinanceScopePolicy::APPROVE,
+        };
         ['row' => $row, 'role' => $role, 'globalId' => $globalId] = $this->context($actor, $globalOrderId, $capability);
         if ($role !== self::ROLE_FINANCE) {
             throw self::denied();
@@ -171,6 +185,10 @@ final readonly class ConfirmareFinance
         $target = $this->registry->find((string) $row['source_key']);
         if ($target === null || !$target->allowsFinanceRecord()) {
             throw new ApiException(409, 'CONFIRMARE_FINANCE_DISABLED', 'Finance actions are not enabled for this shop.');
+        }
+        if (($action === 'verify_transfer' || $single) && !$target->allowsSingleVerification()) {
+            // The financial policy of the source is four eyes (the default): nobody verifies alone.
+            throw new ApiException(409, 'CONFIRMARE_FINANCE_POLICY_FOUR_EYES', 'This shop needs a second employee to verify a bank transfer.');
         }
         $this->rateLimit($actor);
         $hmac = hash_hmac('sha256', json_encode([$globalId, $action, $fields], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES), $this->hmacKey, true);
@@ -181,7 +199,7 @@ final readonly class ConfirmareFinance
             }
             return $this->settled($existing, $row, $target, $actor, $requestId);
         }
-        if (isset($fields['entryId']) && $this->recordedBy((string) $row['order_uuid'], (string) $fields['entryId']) === $actor->employeeUuid) {
+        if (isset($fields['entryId']) && !$single && $this->recordedBy((string) $row['order_uuid'], (string) $fields['entryId']) === $actor->employeeUuid) {
             // Four eyes (the shop checks it again on its own record).
             throw new ApiException(403, 'CONFIRMARE_FINANCE_SAME_EMPLOYEE', 'Another employee must verify what you recorded.');
         }
@@ -273,10 +291,11 @@ final readonly class ConfirmareFinance
         if ($task !== null && !in_array($task, self::TASKS, true)) {
             throw new ApiException(422, 'CONFIRMARE_FINANCE_INVALID', 'Unknown finance task.', ['field' => 'task']);
         }
-        $financeSources = $this->finance->sources($actor, FinanceScopePolicy::VIEW);
+        // API 2.50.0: a finance scope lists no order of its sources (its tasks are assigned to it in the inbox).
+        $financeSources = [];
         // API 2.44.0: a Confirmare operator or supervisor sees the advance tasks of their sources (never the other tasks).
         $operatorSources = $actor->isRoot ? [] : array_values(array_unique([...($this->scopes->sources($actor, ConfirmareScopePolicy::OPERATE) ?? []), ...($this->scopes->sources($actor, ConfirmareScopePolicy::SUPERVISE) ?? [])]));
-        $sources = array_values(array_unique([...$financeSources, ...$operatorSources]));
+        $sources = $operatorSources;
         sort($sources);
         if ($source !== null) {
             $sources = in_array($source, $sources, true) ? [$source] : [];
@@ -302,12 +321,18 @@ final readonly class ConfirmareFinance
         foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
             $category = self::task($row);
             $finance = in_array((string) $row['source_key'], $financeSources, true);
+            if ($finance && !in_array($category, self::EXCEPTION_TASKS, true)) {
+                // API 2.50.0: a finance scope lists the exceptional tasks only. The advance still owed and an
+                // unreadable shop are no finance work by themselves: the operator asks for a verification.
+                $finance = false;
+            }
             $verifying = $row['source_financial_attention'] === 'transfer_pending';
             if (!$finance && $category === 'transfer_verification' && $row['payment_method'] === 'cod' && in_array($row['source_financial_state'], ['waiting', 'partial'], true)) {
                 // An operator keeps seeing the order while finance verifies a transfer: still waiting (or partial), marked.
                 $category = $row['source_financial_state'] === 'partial' ? 'advance_partial' : 'advance_waiting';
             }
-            if ($category === null || (!$finance && !in_array($category, self::ADVANCE_TASKS, true))) {
+            $operator = in_array((string) $row['source_key'], $operatorSources, true);
+            if ($category === null || (!$finance && (!$operator || !in_array($category, self::ADVANCE_TASKS, true)))) {
                 continue;
             }
             $routed = $category === 'advance_verified' ? ConfirmareInvoice::assignee($this->pdo, (string) $row['order_uuid']) : null;
@@ -515,7 +540,30 @@ final readonly class ConfirmareFinance
             throw $invalid('expectedRevision');
         }
         $fields = ['expectedRevision' => $revision];
-        if (in_array($action, ['submit_transfer', 'submit_refund'], true)) {
+        if (array_key_exists('singleVerification', $input)) {
+            if ($input['singleVerification'] !== true) {
+                throw $invalid('singleVerification');
+            }
+            $fields['singleVerification'] = true;
+        }
+        if ($action === 'verify_transfer') {
+            // API 2.50.0: a bank transfer found on the statement, for the advance proforma it names (bank transfer only).
+            if (($input['purpose'] ?? null) !== 'advance') {
+                throw $invalid('purpose');
+            }
+            if (($input['bankStatementConfirmed'] ?? null) !== true) {
+                throw $invalid('bankStatementConfirmed');
+            }
+            $paymentReference = is_string($input['paymentReference'] ?? null) ? trim($input['paymentReference']) : null;
+            if ($paymentReference === null || preg_match(SourceInvoice::PAYMENT_REFERENCE_PATTERN, $paymentReference) !== 1) {
+                throw $invalid('paymentReference');
+            }
+            if (!is_string($input['currency'] ?? null) || preg_match('/^[A-Z]{3}$/D', $input['currency']) !== 1) {
+                throw $invalid('currency');
+            }
+            $fields += ['purpose' => 'advance', 'paymentReference' => $paymentReference, 'currency' => $input['currency'], 'bankStatementConfirmed' => true];
+        }
+        if (in_array($action, ['submit_transfer', 'submit_refund', 'verify_transfer'], true)) {
             if ($action === 'submit_transfer') {
                 if (!in_array($input['purpose'] ?? null, SourceFinance::PURPOSES, true)) {
                     throw $invalid('purpose');
@@ -602,14 +650,16 @@ final readonly class ConfirmareFinance
         $globalId = $this->globalId($globalOrderId);
         $row = $this->row($globalId);
         $source = $row === null ? null : (string) $row['source_key'];
-        if ($row === null || (!$this->finance->allows($actor, FinanceScopePolicy::VIEW, $source) && !$this->scopes->sees($actor, $source))) {
+        // API 2.50.0: a finance scope reaches the order only through a finance task of it; otherwise it is not found.
+        $reaches = $row !== null && $this->reaches($actor, $row);
+        if ($row === null || (!$reaches && !$this->scopes->sees($actor, $source))) {
             throw new ApiException(404, 'CONFIRMARE_NOT_FOUND', 'No Confirmare order was found.');
         }
         if ($row['workflow_cohort'] !== 'confirmare') {
             // Older orders keep their existing workflow; their money is never handled through Confirmare.
             throw new ApiException(409, 'CONFIRMARE_SOURCE_NOT_ELIGIBLE', 'This order is not part of the Confirmare workflow.');
         }
-        $role = $this->finance->allows($actor, $capability, $source) ? self::ROLE_FINANCE : ($capability === FinanceScopePolicy::VIEW ? $this->role($actor, $row) : null);
+        $role = $reaches && $this->finance->allows($actor, $capability, $source) ? self::ROLE_FINANCE : ($capability === FinanceScopePolicy::VIEW ? $this->role($actor, $row) : null);
         if ($role === null) {
             throw self::denied();
         }
@@ -620,7 +670,7 @@ final readonly class ConfirmareFinance
     private function role(EmployeeIdentity $actor, array $row): ?string
     {
         $source = (string) $row['source_key'];
-        if ($this->finance->allows($actor, FinanceScopePolicy::VIEW, $source)) {
+        if ($this->reaches($actor, $row)) {
             return self::ROLE_FINANCE;
         }
         if ($this->scopes->allows($actor, ConfirmareScopePolicy::SUPERVISE, $source)) {
@@ -689,6 +739,12 @@ final readonly class ConfirmareFinance
                 return ['state' => 'unknown', 'idempotencyKey' => $key];
             }
             $this->complete($actionUuid, 'applied', 'applied', $applied['entryId'], $applied['summary']['revision']);
+            // API 2.50.0: the finance verification request this action belongs to follows the shop's answer.
+            $recorded = $this->pdo->prepare('SELECT employee_uuid, decision, reason_code FROM order_finance_actions WHERE action_uuid = ?');
+            $recorded->execute([$actionUuid]);
+            $author = $recorded->fetch(PDO::FETCH_ASSOC) ?: ['employee_uuid' => $actor->employeeUuid, 'decision' => null, 'reason_code' => null];
+            FinanceVerificationRequests::onFinanceApplied($this->pdo, $this->clock, (string) $row['order_uuid'], $action, $key, (string) $author['employee_uuid'], $applied['entryId'],
+                $author['decision'] === null ? null : (string) $author['decision'], $author['reason_code'] === null ? null : (string) $author['reason_code'], (string) $applied['summary']['financial']['state'], 'finance-action');
             $after = $this->row((string) $row['global_order_id']) ?? $row;
             return ['state' => 'applied', 'idempotencyKey' => $key, 'entryId' => $applied['entryId']] + $this->present($actor, $after, $target, $applied['summary']);
         }
@@ -758,6 +814,12 @@ final readonly class ConfirmareFinance
             'actor' => ['employeeId' => $actor->employeeUuid, 'role' => $role],
             'requestId' => $this->requestId($requestId),
         ];
+    }
+
+    /** @param array<string, mixed> $row whether a finance scope of the actor reaches this order (FinanceTaskAccess) */
+    private function reaches(EmployeeIdentity $actor, array $row): bool
+    {
+        return FinanceTaskAccess::reaches($this->pdo, $this->finance, $actor, (string) $row['order_uuid'], (string) $row['source_key']);
     }
 
     /** @return array<string, mixed>|null */

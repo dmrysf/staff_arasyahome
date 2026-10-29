@@ -62,6 +62,9 @@ export function ProformaSection({ globalOrderId, view, service, busy, run }: { g
   const decide = acceptance?.state === "required" && acceptance.advanceDecisionRequired === true;
   const acceptsLow = decide && decision === "accept_received" && low;
   const shipping = proforma.shipping;
+  // Owner 2026-10-29: finance verified less than the advance asked; the operator accepts it or asks for the difference.
+  const partialDecision = proforma.advance.state === "partial" && !proforma.advance.accepted && position !== null && position.known && acceptance?.state !== "required";
+  const difference = proforma.differenceRequest;
   const confirm = () => {
     if (!pending) return;
     const { action, key } = pending;
@@ -71,12 +74,14 @@ export function ProformaSection({ globalOrderId, view, service, busy, run }: { g
       : action === "proforma_send_mail" ? { expectedRevision: revision, ...(resend ? { confirmResend: true } : {}) }
       : action === "total_accept" ? { expectedRevision: revision, declaration: checked, ...(trimmed ? { note: trimmed } : {}), ...(decide && decision ? { advanceDecision: decision } : {}), ...(acceptsLow ? { confirmLow: lowConfirmed } : {}) }
       : action === "advance_accept" ? { expectedRevision: revision, ...(low ? { confirmLow: checked } : {}), ...(trimmed ? { reasonNote: trimmed } : {}) }
+      : action === "advance_difference" ? { expectedRevision: revision, ...(trimmed ? { reasonNote: trimmed } : {}) }
       : action === "proforma_cancel" ? { expectedRevision: revision, reasonCode: reason, confirmNoPayment: checked, ...(trimmed ? { reasonNote: trimmed } : {}) }
       : { expectedRevision: revision };
     setPending(null);
     const done: Record<ProformaAction, MessageKey> = {
       proforma_issue: "inv.pf.done.issue", proforma_send_mail: "inv.pf.done.mail", proforma_check: "inv.pf.done.check", proforma_resolve: "inv.pf.done.resolve",
       proforma_cancel: "inv.pf.done.cancel", total_accept: "inv.pf.done.total", advance_accept: "inv.pf.done.advance",
+      advance_difference: "inv.pf.done.difference",
     };
     run(() => service.proformaAct(globalOrderId, action, input, key), t(done[action]));
   };
@@ -85,6 +90,7 @@ export function ProformaSection({ globalOrderId, view, service, busy, run }: { g
     : pending.action === "proforma_send_mail" ? t(resend ? "inv.pf.confirm.resend" : "inv.pf.confirm.mail", { count: proforma.mail.count })
     : pending.action === "total_accept" ? t("inv.pf.confirm.total", { total: money(acceptance?.total ?? position?.total ?? view.summary.order.total), number: view.summary.order.number })
     : pending.action === "advance_accept" ? t("inv.pf.confirm.advance", { received: money(position?.net), required: money(position?.advanceRequired), remaining: money(position?.remaining) })
+    : pending.action === "advance_difference" ? t("inv.pf.confirm.difference", { received: money(position?.net), required: money(position?.advanceRequired), gap: money(position?.advanceGap) })
     : pending.action === "proforma_cancel" ? t("inv.pf.confirm.cancel", { document: documentName })
     : t("inv.pf.confirm.check");
   // What the confirmation needs before it can be sent (the shop checks every rule again).
@@ -138,7 +144,24 @@ export function ProformaSection({ globalOrderId, view, service, busy, run }: { g
         received: money(proforma.advanceAcceptance.received), required: money(proforma.advanceAcceptance.required),
       })}</Notice>}
       {!paid && proforma.advance.verifying && <Notice tone="info" role="status" testId="cf-proforma-verifying">{t("inv.pf.verifying")}</Notice>}
-      {!paid && proforma.advance.state === "partial" && <Notice tone="warning" role="status" testId="cf-proforma-partial">{t("inv.pf.partial")}</Notice>}
+      {!paid && proforma.advance.state === "partial" && !partialDecision && <Notice tone="warning" role="status" testId="cf-proforma-partial">{t("inv.pf.partial")}</Notice>}
+      {partialDecision && <div className="cf-shop-block cf-advance-decision" role="group" aria-labelledby="cf-advance-decision-title" data-testid="cf-advance-decision">
+        <h4 id="cf-advance-decision-title">{t("inv.pf.partial.title")}</h4>
+        <p className="dashboard-footnote">{t("inv.pf.partial.lead")}</p>
+        <dl className="cf-shop-totals">
+          <div><dt>{t("inv.pf.partial.required")}</dt><dd data-testid="cf-advance-required">{money(position.advanceRequired)}</dd></div>
+          <div><dt>{t("inv.pf.partial.received")}</dt><dd data-testid="cf-advance-received">{money(position.net)}</dd></div>
+          <div><dt>{t("inv.pf.partial.gap")}</dt><dd data-testid="cf-advance-gap">{money(position.advanceGap)}</dd></div>
+          <div className="cf-shop-grand"><dt>{t("inv.pf.partial.remaining")}</dt><dd data-testid="cf-advance-remaining">{money(position.remaining)}</dd></div>
+        </dl>
+        {proforma.advance.verifying && <Notice tone="info" role="status" testId="cf-advance-verifying">{t("inv.pf.partial.verifying")}</Notice>}
+        {difference && <Notice tone="warning" role="status" testId="cf-advance-difference-requested">{t("inv.pf.partial.requested", {
+          gap: money(difference.gap), name: difference.by ? view.employees[difference.by] ?? t("inv.otherEmployee") : "—", time: when(difference.at) })}</Notice>}
+        {!pending && view.proforma?.role && (allowed("advanceAccept") || allowed("advanceDifference")) && <div className="cf-shop-actions">
+          {allowed("advanceAccept") && <button type="button" className="button button-primary" disabled={busy} onClick={() => prepare("advance_accept")} data-testid="cf-proforma-accept-advance">{t("inv.pf.partial.accept")}</button>}
+          {allowed("advanceDifference") && <button type="button" className="button button-secondary" disabled={busy} onClick={() => prepare("advance_difference")} data-testid="cf-advance-request-difference">{t("inv.pf.partial.difference")}</button>}
+        </div>}
+      </div>}
       {proforma.invoiced?.invoiced === true && <Notice tone="danger" role="alert" testId="cf-proforma-invoiced">{t("inv.pf.invoicedNote")}</Notice>}
       {proforma.state === "unknown" && <Notice tone="danger" role="alert" testId="cf-proforma-unknown">{t("inv.pf.unknownNote")}</Notice>}
       {outdated && <Notice tone="warning" role="status" testId="cf-proforma-outdated">{t("inv.pf.outdatedNote")}</Notice>}
@@ -182,7 +205,7 @@ export function ProformaSection({ globalOrderId, view, service, busy, run }: { g
             <label className="field-inline"><input type="radio" name="cf-proforma-decision" checked={decision === "request_difference"} onChange={() => setDecision("request_difference")} data-testid="cf-proforma-decision-difference" /> {t("inv.pf.decision.difference", { gap: money(position?.advanceGap) })}</label>
             {acceptsLow && <label className="field-inline"><input type="checkbox" checked={lowConfirmed} onChange={(event) => setLowConfirmed(event.target.checked)} data-testid="cf-proforma-decision-low" /> {t("inv.pf.decision.low")}</label>}
           </fieldset>}
-          {["total_accept", "advance_accept", "proforma_cancel"].includes(pending.action) && <label>{(pending.action === "advance_accept" && low) || (pending.action === "total_accept" && acceptsLow) ? t("inv.pf.field.reason") : pending.action === "advance_accept" ? t("inv.pf.field.reasonOptional") : t("inv.pf.field.note")}
+          {["total_accept", "advance_accept", "advance_difference", "proforma_cancel"].includes(pending.action) && <label>{(pending.action === "advance_accept" && low) || (pending.action === "total_accept" && acceptsLow) ? t("inv.pf.field.reason") : pending.action === "advance_accept" || pending.action === "advance_difference" ? t("inv.pf.field.reasonOptional") : t("inv.pf.field.note")}
             <textarea rows={2} maxLength={300} value={note} onChange={(event) => setNote(event.target.value)} data-testid="cf-proforma-note" />
           </label>}
           <div className="cf-shop-actions">
@@ -193,7 +216,7 @@ export function ProformaSection({ globalOrderId, view, service, busy, run }: { g
         : view.proforma?.role && <div className="cf-shop-actions" data-testid="cf-proforma-actions">
           {allowed("totalAccept") && <button type="button" className="button button-primary" disabled={busy} onClick={() => prepare("total_accept")} data-testid="cf-proforma-accept-total">{t("inv.pf.action.acceptTotal")}</button>}
           {allowed("proformaIssue") && <button type="button" className="button button-primary" disabled={busy} onClick={() => prepare("proforma_issue")} data-testid="cf-proforma-issue">{t(document ? "inv.pf.action.replace" : "inv.pf.action.issue")}</button>}
-          {allowed("advanceAccept") && <button type="button" className="button button-primary" disabled={busy} onClick={() => prepare("advance_accept")} data-testid="cf-proforma-accept-advance">{t("inv.pf.action.acceptAdvance")}</button>}
+          {allowed("advanceAccept") && !partialDecision && <button type="button" className="button button-primary" disabled={busy} onClick={() => prepare("advance_accept")} data-testid="cf-proforma-accept-advance">{t("inv.pf.action.acceptAdvance")}</button>}
           {allowed("proformaSendMail") && <button type="button" className="button button-secondary" disabled={busy} onClick={() => prepare("proforma_send_mail")} data-testid="cf-proforma-send-mail">{t("inv.pf.action.mail")}</button>}
           {allowed("proformaCheck") && <button type="button" className="button button-secondary" disabled={busy} onClick={() => prepare("proforma_check")} data-testid="cf-proforma-check">{t("inv.pf.action.check")}</button>}
           {allowed("proformaCancel") && <button type="button" className="button button-secondary" disabled={busy} onClick={() => prepare("proforma_cancel")} data-testid="cf-proforma-annul">{t("inv.pf.action.cancel")}</button>}

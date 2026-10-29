@@ -1,6 +1,6 @@
 import type { Employee, StaffOrder } from "./models";
 import { canUseTrendyolWorkspace } from "./trendyol";
-import { canOpenConfirmareOrder } from "./confirmare";
+import { hasConfirmareWorkspace } from "./confirmare";
 import { t, type MessageKey } from "../i18n";
 
 /**
@@ -94,7 +94,7 @@ export function canUseManagementWorkspace(employee: Employee): boolean {
 export function resolveWorkspaces(employee: Employee, available: WorkspaceAvailability): Workspace[] {
   if (employee.status !== "active" || !employee.applications.includes("staff") || employee.mustChangePassword) return [];
   const workspaces: Workspace[] = [];
-  if (available.confirmare && canOpenConfirmareOrder(employee)) {
+  if (available.confirmare && hasConfirmareWorkspace(employee)) {
     workspaces.push(fixedWorkspace("confirmare", "confirmare"));
   }
   if (available.trendyol && canUseTrendyolWorkspace(employee)) {

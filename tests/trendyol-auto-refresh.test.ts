@@ -324,8 +324,10 @@ test("automatic refresh is limited to the Trendyol and Confirmare screens; the p
   // Staff 2.31.0: the finance task list reads task classes only (no amount; amounts are read per order on request).
   // Staff 2.36.0: the bank checks and open proforma cycles, the AWB queue, the e-Factura follow-up and the health counts
   // only read (their loaders call bankChecks, cycleAttention, awbQueue, efactura and health; every action is a click).
+  // Staff 2.41.0: the payment checks, one task and the oversight only read (financeInbox, financeTask, financeOversight);
+  // every decision is an explicit click with a confirmation.
   assert.deepEqual(users.map((file) => path.relative(root, file)).sort(), [
-    "features/confirmare/ConfirmareBankCheck.tsx", "features/confirmare/ConfirmareFinanceScreen.tsx", "features/confirmare/ConfirmareHandoffScreen.tsx", "features/confirmare/ConfirmareOrderScreen.tsx", "features/confirmare/ConfirmareQueueScreen.tsx", "features/confirmare/ConfirmareShopTasks.tsx", "features/confirmare/ConfirmareTeamScreen.tsx", "features/confirmare/ConfirmareWorkspace.tsx",
+    "features/confirmare/ConfirmareBankCheck.tsx", "features/confirmare/ConfirmareFinanceScreen.tsx", "features/confirmare/ConfirmareHandoffScreen.tsx", "features/confirmare/ConfirmareOrderScreen.tsx", "features/confirmare/ConfirmareQueueScreen.tsx", "features/confirmare/ConfirmareShopTasks.tsx", "features/confirmare/ConfirmareTeamScreen.tsx", "features/confirmare/ConfirmareWorkspace.tsx", "features/confirmare/FinanceRequestScreens.tsx",
     "features/trendyol/TrendyolInboxScreen.tsx", "features/workspaces/TrendyolDashboard.tsx",
     "features/workspaces/refreshScheduler.ts", "features/workspaces/useAutoRefresh.ts",
   ]);

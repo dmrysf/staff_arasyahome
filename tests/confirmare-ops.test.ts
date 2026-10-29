@@ -206,3 +206,24 @@ test("HTTP: the operations routes, one Idempotency-Key per command, the shop ref
   const call = await api.contact("trendhome:1001", { expectedVersion: 3, outcome: "no_answer", reviewFingerprint: "b".repeat(64) }, "key-0123456789abcdef");
   assert.deepEqual(call.proformaCycle, { started: true, state: "running", reason: null }, "the third unanswered call says the proforma cycle started");
 });
+
+test("owner 2026-10-29: the AWB collecting another amount stops the label until the employee states the FAN Courier correction", () => {
+  const awb = { ...shop.awb, state: "created", number: "2150900000001", cod: "493.30", blockers: ["awb_exists", "cod_mismatch"] };
+  const mismatch = mapOperationsState({ ...operations, shop: { ...shop, awb: { ...awb, codCheck: { state: "mismatch", awb: "2150900000001", awbCod: "503.30", expected: "493.30", status: null, corrected: false } } } });
+  assert.deepEqual(mismatch.shop?.awb.codCheck, { state: "mismatch", awbCod: "503.30", expected: "493.30", corrected: false });
+  assert.ok(mismatch.shop?.awb.blockers.includes("cod_mismatch"));
+  const fixed = mapOperationsState({ ...operations, shop: { ...shop, awb: { ...awb, blockers: ["awb_exists"], codCheck: { state: "match", awb: "2150900000001", awbCod: "493.30", expected: "493.30", status: null, corrected: true } } } });
+  assert.equal(fixed.shop?.awb.codCheck?.corrected, true, "the amount compared is the employee's statement");
+  const older = mapOperationsState({ ...operations, shop: { ...shop, awb: { ...awb, blockers: ["awb_exists"], codCheck: { state: "match", awb: "2150900000001", awbCod: "493.30", expected: "493.30", status: null } } } });
+  assert.equal(older.shop?.awb.codCheck?.corrected, false, "an older shop states nothing");
+  assert.throws(() => mapOperationsState({ ...operations, shop: { ...shop, awb: { ...awb, codCheck: { state: "match", awbCod: "493.30", expected: "493.30", corrected: "da" } } } }), "corrected is a boolean");
+  assert.equal(blockerKey("cod_mismatch"), "cf.ops.blocker.cod_mismatch");
+  assert.equal(blockerKey("cod_not_mismatched"), "cf.ops.blocker.cod_not_mismatched");
+  assert.equal(opsErrorKey("CONFIRMARE_AWB_COD_MISMATCH", undefined), "cf.ops.error.CONFIRMARE_AWB_COD_MISMATCH");
+  for (const locale of ["ro", "tr", "en", "si"] as const) {
+    for (const key of ["cf.ops.awb.corrected", "cf.ops.awb.labelBlocked", "cf.ops.cod.note", "cf.ops.cod.check", "cf.ops.cod.confirm", "cf.ops.cod.done", "cf.ops.blocker.cod_mismatch", "cf.ops.blocker.cod_not_mismatched", "cf.ops.error.CONFIRMARE_AWB_COD_MISMATCH"] as const) {
+      assert.ok(String(CATALOGS[locale][key] ?? "").length > 5, `${locale} ${key}`);
+    }
+  }
+  assert.ok(CATALOGS.ro["cf.ops.cod.check"].includes("{amount}") && CATALOGS.ro["cf.ops.awb.corrected"].includes("nu confirmarea FAN Courier"));
+});

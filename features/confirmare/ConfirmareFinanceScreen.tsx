@@ -10,6 +10,7 @@ import { EmptyPanel, PageHeader } from "../../components/ui/States";
 import { AutoRefreshBar, QueueSkeleton } from "../workspaces/DashboardParts";
 import { useAutoRefresh } from "../workspaces/useAutoRefresh";
 import { SourceFilter, confirmareOrderPath, dueDay, when } from "./ConfirmareParts";
+import { financeOrderPath } from "../../domain/financeRequests";
 import { TransferExceptionsSection } from "./ConfirmareTransferExceptions";
 import { BankCheckSection } from "./ConfirmareBankCheck";
 
@@ -55,7 +56,7 @@ export function ConfirmareFinanceScreen({ employee, service, navigate }: { emplo
       {!rows && !message && <QueueSkeleton />}
       {rows && (rows.length === 0
         ? <EmptyPanel icon="orders" title={t("cf.fin.queueEmpty")}>{t("cf.fin.queueEmptyHint")}</EmptyPanel>
-        : <ul className="queue-list" aria-label={task ? taskLabel(task) : t("cf.fin.allTasks")}>{rows.map((order) => <FinanceRow key={order.globalOrderId} order={order} navigate={navigate} />)}</ul>)}
+        : <ul className="queue-list" aria-label={task ? taskLabel(task) : t("cf.fin.allTasks")}>{rows.map((order) => <FinanceRow key={order.globalOrderId} order={order} navigate={navigate} operator={(operator.operate as readonly string[]).includes(order.source) || (operator.supervise as readonly string[]).includes(order.source)} />)}</ul>)}
       {data && data.orders.length >= 500 && <p className="dashboard-footnote">{t("cf.fin.queueLimit")}</p>}
       {/* API 2.46.0: the bank check before an expired advance proforma is cancelled, and the open proforma cycles. */}
       {(financeRole || operator.supervise.length > 0) && <BankCheckSection service={service} navigate={navigate} />}
@@ -64,12 +65,12 @@ export function ConfirmareFinanceScreen({ employee, service, navigate }: { emplo
   );
 }
 
-function FinanceRow({ order, navigate }: { order: FinanceQueueItem; navigate: (path: string) => void }) {
+function FinanceRow({ order, navigate, operator }: { order: FinanceQueueItem; navigate: (path: string) => void; operator: boolean }) {
   const { t } = useI18n();
   const urgent = URGENT.includes(order.task);
   return (
     <li>
-      <button type="button" className={`queue-row cf-row tone-${urgent ? "warning" : "neutral"}`} onClick={() => navigate(confirmareOrderPath(order.globalOrderId))} data-testid={`cf-finance-row-${order.orderNumber}`}>
+      <button type="button" className={`queue-row cf-row tone-${urgent ? "warning" : "neutral"}`} onClick={() => navigate(operator ? confirmareOrderPath(order.globalOrderId) : financeOrderPath(order.globalOrderId))} data-testid={`cf-finance-row-${order.orderNumber}`}>
         <span className="queue-row-main">
           <span className="queue-row-top">
             <strong className="order-id">#{order.orderNumber}</strong>

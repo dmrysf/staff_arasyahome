@@ -66,6 +66,10 @@ $order = static function (string $number, ?DateTimeImmutable $submitted, array $
     $online = ($extra['payment'] ?? 'online') === 'online';
     $p['order']['payment'] = $online ? ['method' => 'online', 'advanceStatus' => 'not_required', 'advanceRevision' => 0] : ['method' => 'cod', 'advanceStatus' => 'waiting', 'advanceRevision' => 0];
     $p['order']['financial'] = $online && $priced ? ['state' => 'cleared', 'basis' => 'online_payment', 'pricingFingerprint' => $fingerprint] : ['state' => $priced ? 'waiting' : 'unknown', 'basis' => null, 'pricingFingerprint' => $priced ? $fingerprint : null];
+    if (isset($extra['financial'])) {
+        // API 2.50.0: the money state the shop sends with the order (a finance scope reaches the order only through it).
+        $p['order']['financial'] = $extra['financial'] + ['pricingFingerprint' => $fingerprint];
+    }
     if (isset($extra['due'])) {
         $p['order']['dueDate'] = $extra['due'];
     }
@@ -183,7 +187,8 @@ $service = $container->confirmareService();
 // The server distributes (never the browser): two operators of Trend Home, one of Outlet Perdele.
 $service->distribute();
 // After the run: one order waits unassigned, one legacy order and one with an unknown submission instant.
-$ingest('trendhome', $order('91005', $after(10)));
+// The shop reports the raised total as an additional payment due (the event YD SOFT sends; finance work on its own).
+$ingest('trendhome', $order('91005', $after(10), ['financial' => ['state' => 'waiting', 'basis' => null, 'attention' => 'additional_payment_due']]));
 // The TEST shop's money record of 91005: paid 500 by card, the total is now 650 (TEST amounts).
 $shopOrders['91005']['finance'] = ['cod' => false, 'total' => '650.00', 'paid' => '500.00', 'original' => '500.00', 'pricing' => $shopOrders['91005']['pricing']];
 $ingest('trendhome', $order('91090', $activatedAt->modify('-1 hour')));
@@ -202,6 +207,13 @@ foreach (['91001' => 'operator', '91002' => 'operator', '91003' => 'colleague', 
     }
 }
 $writeShop();
+// API 2.50.0: the additional payment of 91005 becomes a finance task of named employees through the task inventory (the
+// same command as production: dry run first, then apply); record or approve alone reaches no order.
+$tasks = $container->financeTaskInventory()->apply(['trendhome'], 'cf-e2e');
+$task = $pdo->query("SELECT request_uuid, assigned_employee_uuid, checker_employee_uuid FROM finance_verification_requests WHERE global_order_id = 'trendhome:91005' AND purpose = 'exception' AND open_order_uuid IS NOT NULL")->fetch(PDO::FETCH_ASSOC);
+if (!is_array($task) || $tasks['created'] < 1 || $task['assigned_employee_uuid'] !== $people['finrec']['id'] || $task['checker_employee_uuid'] !== $people['finapp']['id']) {
+    throw new RuntimeException('E2E: the inventory did not give 91005 to the finance recorder with the approver as checker: ' . json_encode([$tasks, $task]));
+}
 echo json_encode(['password' => $password, 'people' => $people, 'orders' => [
     'call' => 'trendhome:91001', 'cod' => 'trendhome:91002', 'colleague' => 'trendhome:91003', 'noPrice' => 'trendhome:91004', 'unassigned' => 'trendhome:91005',
     'outlet' => 'outletperdele:92001', 'legacy' => 'trendhome:91090', 'undetermined' => 'trendhome:91091', 'finance' => 'trendhome:91005',

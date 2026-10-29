@@ -1,4 +1,6 @@
 import { latestProductionView } from "../../domain/orderReads";
+import type { ConfirmareApi } from "../../domain/confirmare";
+import { FinanceRequestCard } from "../confirmare/FinanceRequestCard";
 import { physicalText as pt } from "../../i18n/physical";
 import { PhysicalOperations } from "./PhysicalOperations";
 import { ManufacturingPanel } from "../../components/ManufacturingPanel";
@@ -37,7 +39,7 @@ import { AssistedCheckpointsPanel } from "./AssistedCheckpointsPanel";
 import type { PieceApi } from "../../domain/pieces";
 
 
-export function OrderDetailScreen({ orderId, service, exceptions, cutting, documents, productionQr, pieces, physical, permissions, workflow, navigate, onSessionExpired }: { orderId: string; service: OrderService; exceptions: ExceptionService; cutting?: CuttingApi; documents?: DocumentApi; /** Only passed for managers who may inspect QR authority. */ productionQr?: ProductionQrApi; /** Work on pieces in rework (API 2.31.0). */ pieces?: PieceApi; physical?: import("../../domain/physical").StaffPhysicalApi; permissions: readonly string[]; workflow: ProductionWorkflow; navigate: (path: string) => void; onSessionExpired: () => void }) {
+export function OrderDetailScreen({ orderId, service, exceptions, cutting, documents, productionQr, pieces, physical, financeRequests, permissions, workflow, navigate, onSessionExpired }: { orderId: string; service: OrderService; exceptions: ExceptionService; cutting?: CuttingApi; documents?: DocumentApi; /** Only passed for managers who may inspect QR authority. */ productionQr?: ProductionQrApi; /** Work on pieces in rework (API 2.31.0). */ pieces?: PieceApi; physical?: import("../../domain/physical").StaffPhysicalApi; /** Staff 2.41.0: a Confirmare operator or supervisor sends the advance of an order outside Confirmare (from 22 October 2026) to finance. */ financeRequests?: ConfirmareApi; permissions: readonly string[]; workflow: ProductionWorkflow; navigate: (path: string) => void; onSessionExpired: () => void }) {
   useI18n();
   const [order, setOrder] = useState<StaffOrder | null>(null);
   const [error, setError] = useState<StaffServiceError | null>(null);
@@ -107,6 +109,7 @@ export function OrderDetailScreen({ orderId, service, exceptions, cutting, docum
         {item.productionContext!.productionNotes && <p>{item.productionContext!.productionNotes}</p>}
       </section>)}
       {order.sourceCommerceStatus && <p className="commerce-status">{order.source === 'b2b' ? t("detail.commerceB2b") : t("detail.commerceShop")}: <b>{order.sourceCommerceStatus.label}</b> <small>{t("detail.commerceNote")}</small></p>}
+      {financeRequests && (order.source === "trendhome" || order.source === "outletperdele") && <FinanceRequestCard globalOrderId={orderId} service={financeRequests} canOperate onSettled={() => setReloadKey((value) => value + 1)} onlyManual />}
       <section className="detail-section"><p className="eyebrow">{t("detail.involvement")}</p><div className="mini-timeline"><span /><div><strong>{order.employeeRelation ? getEmployeeRelationLabel(order) : t("detail.notInvolved")}</strong>{order.employeeRelation && <time dateTime={getEmployeeRelationTime(order)}>{formatDate(getEmployeeRelationTime(order), { day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" })}</time>}</div></div></section>
     </article>
   );

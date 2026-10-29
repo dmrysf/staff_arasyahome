@@ -72,6 +72,14 @@ $one = static function (string $sql, array $params = []) use ($pdo): mixed { $s 
 $all = static function (string $sql, array $params = []) use ($pdo): array { $s = $pdo->prepare($sql); $s->execute($params); return $s->fetchAll(PDO::FETCH_ASSOC); };
 $cycleTables = ['confirmare_cycle_steps', 'confirmare_proforma_cycles', 'confirmare_bank_checks', 'confirmare_reactivations', 'invoice_efactura_tasks', 'order_source_operations'];
 $clear = static function () use ($pdo, $cycleTables): void {
+    // API 2.50.0: finance tasks point at orders (the card refund task of section 4).
+    foreach (['finance_verification_request_events', 'finance_verification_requests', 'employee_finance_supervision'] as $table) {
+        try {
+            $pdo->exec("DELETE FROM {$table}");
+        } catch (PDOException) {
+            // Before migration 044.
+        }
+    }
     foreach ([...$cycleTables, 'order_cancellation_sync_attempts', 'order_cancellation_sync_operations', 'order_cancellation_events', 'order_cancellation_controls',
         'order_invoice_qr_checks', 'order_shop_assignments', 'order_invoice_actions', 'order_invoice_reads', 'employee_invoice_scopes',
         'order_finance_actions', 'order_finance_reads', 'employee_finance_scopes', 'order_confirmation_source_edits', 'order_confirmation_source_reads', 'order_confirmation_contacts',
@@ -229,7 +237,8 @@ $event(1, 'cancelled', 'cancelled');
 $th->orders[$id(1)]['ops'] = ['status' => 'cancelled', 'exceptions' => ['bankexc0001']];
 $check((string) $one('SELECT cancellation_state FROM operational_orders WHERE global_order_id = ?', [$g(1)]) === 'held', 'the shop cancelled the order: production is held');
 $error($operate($who['cout'], $g(1), 'reactivate', ['reason' => 'customer_returned']), 404, 'CONFIRMARE_NOT_FOUND', 'another shop\'s operator never reaches it');
-$error($operate($who['cfinview'], $g(1), 'reactivate', ['reason' => 'customer_returned']), 403, 'CONFIRMARE_OPERATION_DENIED', 'finance alone does not reactivate');
+// API 2.50.0: a finance scope reaches an order only through a finance task, so a viewer without one never sees it.
+$error($operate($who['cfinview'], $g(1), 'reactivate', ['reason' => 'customer_returned']), 404, 'CONFIRMARE_NOT_FOUND', 'finance alone does not reactivate (no finance task: not found)');
 $error($operate($who['cop'], $g(1), 'reactivate', ['reason' => 'because']), 422, 'VALIDATION_FAILED', 'the reason is one of the two codes');
 $first = $ok($operate($who['cop'], $g(1), 'reactivate', ['reason' => 'customer_returned']), 'the customer came back: first reactivation');
 $check($first['state'] === 'applied' && $first['result'] === 'reactivated' && $th->orders[$id(1)]['ops']['status'] === 'on-hold', 'the shop put the order back on hold');
@@ -300,6 +309,23 @@ $pdo->exec('DELETE FROM api_rate_limit_buckets');
 $label = T::call($kernel, 'GET', '/confirmare/orders/' . rawurlencode($g(2)) . '/awb/label', null, ['origin' => T::ORIGIN], $who['cdoc']['cookie']);
 $check($label['status'] === 200 && str_starts_with((string) $label['raw'], '%PDF') && ($label['headers']['Content-Type'] ?? '') === 'application/pdf' && ($label['headers']['Cache-Control'] ?? '') === 'private, no-store', 'the AWB label is served as a PDF to the shop employee, never cached');
 $error(T::call($kernel, 'GET', '/confirmare/orders/' . rawurlencode($g(2)) . '/awb/label', null, ['origin' => T::ORIGIN], $who['cop']['cookie']), 403, 'CONFIRMARE_OPERATION_DENIED', 'the operator does not print the AWB');
+// API 2.50.0 (YD SOFT 2.23.0, owner 2026-10-29): 10.00 verified after the AWB. The label stops while the AWB collects another
+// amount than what is owed; the employee corrects it in the FAN Courier panel and states the new amount.
+$th->orders[$id(2)]['ops']['owed'] = '493.30';
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$mismatch = $ok($get($who['cdoc'], '/confirmare/orders/' . rawurlencode($g(2)) . '/operations'), 'operations after a payment verified after the AWB');
+$check(($mismatch['shop']['awb']['codCheck']['state'] ?? null) === 'mismatch' && $mismatch['shop']['awb']['codCheck']['awbCod'] === '503.30' && $mismatch['shop']['awb']['codCheck']['expected'] === '493.30' && in_array('cod_mismatch', $mismatch['shop']['awb']['blockers'], true),
+    'the AWB collects 503.30, the customer owes 493.30: shown as a mismatch');
+$error(T::call($kernel, 'GET', '/confirmare/orders/' . rawurlencode($g(2)) . '/awb/label', null, ['origin' => T::ORIGIN], $who['cdoc']['cookie']), 409, 'CONFIRMARE_AWB_COD_MISMATCH', 'no label while the collection differs: the parcel does not leave with the old amount');
+$error($operate($who['cop'], $g(2), 'awb/cod-corrected', ['amount' => '493.30', 'reasonNote' => 'Corectat']), 403, 'CONFIRMARE_OPERATION_DENIED', 'the operator does not state an AWB correction');
+$error($operate($who['cdoc'], $g(2), 'awb/cod-corrected', ['amount' => '493.30', 'reasonNote' => 'Corectat', 'awb' => 'x']), 400, 'INVALID_REQUEST', 'only the amount and the reason');
+$refusedOp($operate($who['cdoc'], $g(2), 'awb/cod-corrected', ['amount' => '503.30', 'reasonNote' => 'Corectat']), 'cod_changed', 'a correction to another amount than what is owed now is refused', 'CONFIRMARE_OPERATION_REFUSED');
+$fixed = $ok($operate($who['cdoc'], $g(2), 'awb/cod-corrected', ['amount' => '493.30', 'reasonNote' => 'Ramburs corectat în panoul FAN Courier']), 'the employee states the corrected collection');
+$check($fixed['result'] === 'panel_declared' && $fixed['shop']['awb']['codCheck']['state'] === 'match' && $fixed['shop']['awb']['codCheck']['corrected'] === true && ($th->fanAwbs[$id(2)] ?? 0) === 1
+    && (string) $one("SELECT access_role FROM order_source_operations WHERE global_order_id = ? AND kind = 'awb_cod_corrected' AND state = 'applied'", [$g(2)]) === 'documents',
+    'the collection matches again (the employee\'s statement, no second AWB), audited without any amount');
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$check(T::call($kernel, 'GET', '/confirmare/orders/' . rawurlencode($g(2)) . '/awb/label', null, ['origin' => T::ORIGIN], $who['cdoc']['cookie'])['status'] === 200, 'the label is given again');
 $error($operate($who['cdoc'], $g(2), 'awb/address', ['step' => 'done', 'reasonNote' => 'Adresa schimbată']), 409, 'CONFIRMARE_OPERATION_REFUSED', 'no declaration without the task');
 $ok($operate($who['cdoc'], $g(2), 'awb/address', ['step' => 'task', 'reasonNote' => 'Clientul s-a mutat: Str. Nouă 5']), 'urgent address change: FAN Courier panel task');
 $done = $ok($operate($who['cdoc'], $g(2), 'awb/address', ['step' => 'done', 'reasonNote' => 'Verificat în panoul FAN Courier']), 'the employee declares the change made in the panel');
@@ -335,6 +361,18 @@ $check($req['result'] === 'manual_required' && $req['shop']['cardRefund']['reque
 $twice = $ok($operate($who['cappr'], $g(3), 'card-refund'), 'a second click');
 $check($twice['result'] === 'already_requested' && count($th->orders[$id(3)]['ops']['refunds']) === 1, 'a second click creates nothing new');
 $error($operate($who['cappr'], $g(3), 'card-refund/record', ['amount' => '719.00', 'reference' => 'NTP-REF-1', 'valueDate' => '2026-10-25']), 403, 'CONFIRMARE_OPERATION_DENIED', 'the approver does not record (record scope)');
+// API 2.50.0: record or approve alone reaches no order; the requested card refund becomes a finance task of named
+// employees through the task inventory (assigned to a record holder, its approver named as checker).
+$error($operate($who['cfin'], $g(3), 'card-refund/record', ['amount' => '719.00', 'reference' => 'NTP-REF-1', 'valueDate' => '2026-10-25']), 404, 'CONFIRMARE_NOT_FOUND', 'before the task exists, finance does not reach the order');
+$inventoried = $container->financeTaskInventory()->apply(['trendhome'], 'relay-test');
+$refundTasks = $pdo->prepare("SELECT * FROM finance_verification_requests WHERE purpose = 'exception' AND task_code = 'card_refund_verify' AND global_order_id = ?");
+$refundTasks->execute([$g(3)]);
+$refundTask = $refundTasks->fetch(PDO::FETCH_ASSOC) ?: [];
+$check($inventoried['created'] >= 1 && in_array($refundTask['assigned_employee_uuid'] ?? null, [$uuids['cfin'], $uuids['cfin2']], true) && $refundTask['checker_employee_uuid'] !== null
+    && $refundTask['checker_employee_uuid'] !== $refundTask['assigned_employee_uuid'], 'the card refund is a task of a finance employee who records, with another named approver');
+// The inventory picks the least loaded employees; this TEST pins `cfin` as the recorder and `cfin2` (granted approve
+// below) as the named checker.
+$pdo->prepare('UPDATE finance_verification_requests SET assigned_employee_uuid = ?, checker_employee_uuid = ? WHERE request_uuid = ?')->execute([$uuids['cfin'], $uuids['cfin2'], $refundTask['request_uuid']]);
 $rec = $ok($operate($who['cfin'], $g(3), 'card-refund/record', ['amount' => '719.00', 'reference' => 'NTP-REF-1', 'valueDate' => '2026-10-25']), 'finance records the panel refund');
 $entry = $th->orders[$id(3)]['ops']['ledger'][0]['id'];
 $check($rec['result'] === 'refund_recorded', 'recorded, not yet refunded');
