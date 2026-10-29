@@ -12,7 +12,7 @@ import { getErrorPresentation, toServiceError } from "../../services/errors";
 import { AppIcon } from "../../components/icons/AppIcon";
 import { Notice, StatusPill } from "../../components/ui/StatusPill";
 import { when } from "./ConfirmareParts";
-import { InvoiceQrSection, ProformaSection, RoutingSection } from "./ConfirmareProformaSections";
+import { ProformaSection, RoutingSection } from "./ConfirmareProformaSections";
 
 type Result = { tone: "success" | "warning" | "danger"; text: string; key?: string } | null;
 type Pending = { action: InvoiceAction; key: string };
@@ -162,7 +162,6 @@ export function ConfirmareInvoicePanel({ globalOrderId, service, capabilities = 
       {read && !read.available && <Notice tone={read.reason === "not_configured" ? "info" : "warning"} role="status" testId="cf-invoice-unavailable">{read.reason === "not_configured" ? t("inv.notConfigured") : t("inv.unavailable", { reason: shopUnavailableLabel(read.reason) })}</Notice>}
       {view && focus !== "routing" && <ProformaSection globalOrderId={globalOrderId} view={view} service={service} busy={busy} run={run} />}
       {view && focus !== "proforma" && <RoutingSection globalOrderId={globalOrderId} view={view} service={service} busy={busy} run={run} />}
-      {view && focus === "all" && (view.role === "documents" || view.role === "manager") && <InvoiceQrSection globalOrderId={globalOrderId} view={view} service={service} busy={busy} run={run} />}
       {view && focus === "all" && <InvoiceBody globalOrderId={globalOrderId} view={view} role={view.role} busy={busy} pending={pending} onPrepare={(action) => setPending({ action, key: createIdempotencyKey() })} onCancel={() => setPending(null)} onSend={(action, input, key) => { void send(action, input, key); }} onReconcile={(key) => { void reconcile(key); }} />}
       {view && focus === "all" && service.invoicePayment && capabilities?.payment !== false && (view.role === "documents" || view.role === "manager" || view.role === "finance")
         && view.summary.document.exists && view.summary.document.type !== "proforma"

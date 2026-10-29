@@ -298,34 +298,3 @@ export function RoutingSection({ globalOrderId, view, service, busy, run }: { gl
     </div>
   );
 }
-
-/**
- * The shop employee scans the order's production QR before the final invoice (API 2.44.0). A hand scanner types into the
- * field like a keyboard; the server checks that it is the current QR of THIS order. The scan alone issues nothing.
- */
-export function InvoiceQrSection({ globalOrderId, view, service, busy, run }: { globalOrderId: string; view: InvoiceView; service: ConfirmareInvoiceApi; busy: boolean; run: Run }) {
-  const { t } = useI18n();
-  const [token, setToken] = useState("");
-  if (view.summary.document.exists) return null;
-  return (
-    <div className="cf-shop-block" data-testid="cf-invoice-qr">
-      <h3>{t("inv.qr.title")}</h3>
-      {view.qr.verified
-        ? <p data-testid="cf-invoice-qr-state"><AppIcon name="check" size={18} /> {t("inv.qr.verified", { minutes: Math.round(view.qr.validSeconds / 60) })}</p>
-        : <>
-          <p className="dashboard-footnote">{t("inv.qr.lead")}</p>
-          <form className="cf-shop-actions" onSubmit={(event) => {
-            event.preventDefault();
-            const value = token.trim();
-            if (!value) return;
-            setToken("");
-            run(() => service.verifyInvoiceQr(globalOrderId, value), t("inv.qr.done"));
-          }}>
-            <label className="visually-hidden" htmlFor={`cf-invoice-qr-${globalOrderId}`}>{t("inv.qr.label")}</label>
-            <input id={`cf-invoice-qr-${globalOrderId}`} type="text" inputMode="text" autoComplete="off" spellCheck={false} maxLength={200} value={token} onChange={(event) => setToken(event.target.value)} placeholder={t("inv.qr.placeholder")} data-testid="cf-invoice-qr-input" />
-            <button type="submit" className="button button-primary" disabled={busy || token.trim() === ""} data-testid="cf-invoice-qr-send">{t("inv.qr.action")}</button>
-          </form>
-        </>}
-    </div>
-  );
-}

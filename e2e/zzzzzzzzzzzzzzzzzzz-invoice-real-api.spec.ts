@@ -68,15 +68,10 @@ test("the production ticket employee issues the SmartBill invoice once, confirme
   await expect(panel.getByRole("heading", { name: "Facturare SmartBill" })).toBeVisible();
   await expect(page.getByTestId("cf-invoice-document")).toContainText("Nu există încă un document SmartBill");
   await expect(page.getByTestId("cf-invoice-amount")).toContainText(/\d/);
-  // The ticket's QR first (a hand scanner types it); before that there is no invoice action.
-  await expect(page.getByTestId("cf-invoice-issue")).toHaveCount(0);
-  await expect(page.getByTestId("cf-invoice-blockers")).toContainText("Scanați mai întâi QR-ul fișei de producție");
-  await page.getByTestId("cf-invoice-qr-input").fill("ARASYA:Q1:" + "A".repeat(26));
-  await page.getByTestId("cf-invoice-qr-send").click();
-  await expect(page.getByTestId("cf-invoice-result")).toContainText("nu este QR-ul actual");
-  await page.getByTestId("cf-invoice-qr-input").fill(F.qr);
-  await page.getByTestId("cf-invoice-qr-send").click();
-  await expect(page.getByTestId("cf-invoice-qr-state")).toContainText("QR verificat");
+  // API 2.50.1 / Staff 2.41.1 (owner decision 2026-10-29): no QR scan before the invoice; the screen has no QR field.
+  await expect(page.getByTestId("cf-invoice-qr")).toHaveCount(0);
+  await expect(page.getByTestId("cf-invoice-qr-input")).toHaveCount(0);
+  await expect(panel.getByText("QR", { exact: false })).toHaveCount(0);
   const issue = page.getByTestId("cf-invoice-issue");
   await expect(issue).toHaveText("Emite factura SmartBill");
   await issue.click();
