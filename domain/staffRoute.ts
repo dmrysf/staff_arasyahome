@@ -1,13 +1,15 @@
 export type StaffRoute =
-  | { kind: "home" | "login" | "scan" | "orders" | "history" | "profile" | "authority" | "trendyol" | "problems" | "confirmare" | "confirmare-team" | "confirmare-finance" | "confirmare-handoff" | "confirmare-awb" | "confirmare-efactura" | "confirmare-health"; pathname: string }
+  | { kind: "home" | "login" | "scan" | "orders" | "history" | "profile" | "authority" | "trendyol" | "problems" | "confirmare" | "confirmare-team" | "confirmare-finance" | "confirmare-handoff" | "confirmare-awb" | "confirmare-efactura" | "confirmare-health" | "finance-inbox" | "finance-oversight"; pathname: string }
   | { kind: "confirmare-order"; pathname: string; orderId: string }
+  | { kind: "finance-task" | "finance-oversight-detail"; pathname: string; requestId: string }
+  | { kind: "finance-order"; pathname: string; orderId: string }
   | { kind: "trendyol-package"; pathname: string; packageId: string }
   | { kind: "order-detail"; pathname: string; orderId: string }
   | { kind: "exception-detail"; pathname: string; exceptionId: string }
   | { kind: "document-detail"; pathname: string; orderId: string }
   | { kind: "invalid"; pathname: "/" };
 
-const fixedRoutes = new Map<string, "home" | "login" | "scan" | "orders" | "history" | "profile" | "authority" | "trendyol" | "problems" | "confirmare" | "confirmare-team" | "confirmare-finance" | "confirmare-handoff" | "confirmare-awb" | "confirmare-efactura" | "confirmare-health">([
+const fixedRoutes = new Map<string, "home" | "login" | "scan" | "orders" | "history" | "profile" | "authority" | "trendyol" | "problems" | "confirmare" | "confirmare-team" | "confirmare-finance" | "confirmare-handoff" | "confirmare-awb" | "confirmare-efactura" | "confirmare-health" | "finance-inbox" | "finance-oversight">([
   ["/", "home"],
   ["/login", "login"],
   ["/scan", "scan"],
@@ -24,10 +26,13 @@ const fixedRoutes = new Map<string, "home" | "login" | "scan" | "orders" | "hist
   ["/confirmare/awb", "confirmare-awb"],
   ["/confirmare/efactura", "confirmare-efactura"],
   ["/confirmare/health", "confirmare-health"],
+  ["/confirmare/finance/requests", "finance-inbox"],
+  ["/confirmare/finance/oversight", "finance-oversight"],
 ]);
 
 const ORDER_PREFIX = "/orders/";
 const CONFIRMARE_ORDER_PREFIX = "/confirmare/orders/";
+const FINANCE_ORDER_PREFIX = "/confirmare/finance/orders/";
 const DOCUMENT_PREFIX = "/documents/";
 const MAX_ENCODED_ORDER_ID_LENGTH = 768;
 const MAX_ORDER_ID_LENGTH = 256;
@@ -52,6 +57,13 @@ export function parseStaffRoute(pathname: string): StaffRoute {
   if (trendyol) return { kind: "trendyol-package", pathname, packageId: trendyol[1] };
   const exception = /^\/exceptions\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/.exec(pathname);
   if (exception) return { kind: "exception-detail", pathname, exceptionId: exception[1] };
+  // Staff 2.41.0: a finance task or an oversight entry by its request id; an exceptional finance task by its order's global id.
+  const financeRequest = /^\/confirmare\/finance\/(requests|oversight)\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/.exec(pathname);
+  if (financeRequest) return { kind: financeRequest[1] === "requests" ? "finance-task" : "finance-oversight-detail", pathname, requestId: financeRequest[2] };
+  if (pathname.startsWith(FINANCE_ORDER_PREFIX)) {
+    const id = decodeOrderId(pathname.slice(FINANCE_ORDER_PREFIX.length));
+    return id !== null && /^(trendhome|outletperdele):[A-Za-z0-9._-]{1,128}$/.test(id) ? { kind: "finance-order", pathname, orderId: id } : { kind: "invalid", pathname: "/" };
+  }
   if (pathname.startsWith(CONFIRMARE_ORDER_PREFIX)) {
     // A Confirmare order: its global id (source:number) only; never customer data in the address bar.
     const id = decodeOrderId(pathname.slice(CONFIRMARE_ORDER_PREFIX.length));

@@ -37,6 +37,7 @@ import { ConfirmareQueueScreen } from "../features/confirmare/ConfirmareQueueScr
 import { ConfirmareOrderScreen } from "../features/confirmare/ConfirmareOrderScreen";
 import { ConfirmareTeamScreen } from "../features/confirmare/ConfirmareTeamScreen";
 import { ConfirmareFinanceScreen } from "../features/confirmare/ConfirmareFinanceScreen";
+import { FinanceInboxScreen, FinanceOrderScreen, FinanceOversightDetailScreen, FinanceOversightScreen, FinanceTaskScreen } from "../features/confirmare/FinanceRequestScreens";
 import { ConfirmareHandoffScreen } from "../features/confirmare/ConfirmareHandoffScreen";
 import { ConfirmareAwbScreen, ConfirmareEfacturaScreen, ConfirmareHealthScreen } from "../features/confirmare/ConfirmareShopTasks";
 import { GuideProvider } from "../features/guide/ContextualHelp";
@@ -160,6 +161,8 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
   const documentOrderId = parsedRoute.kind === "document-detail" && guardedRoute === parsedRoute.pathname ? parsedRoute.orderId : "";
   const trendyolPackageId = parsedRoute.kind === "trendyol-package" && guardedRoute === parsedRoute.pathname ? parsedRoute.packageId : "";
   const confirmareOrderId = parsedRoute.kind === "confirmare-order" && guardedRoute === parsedRoute.pathname ? parsedRoute.orderId : "";
+  const financeRequestId = (parsedRoute.kind === "finance-task" || parsedRoute.kind === "finance-oversight-detail") && guardedRoute === parsedRoute.pathname ? parsedRoute.requestId : "";
+  const financeOrderId = parsedRoute.kind === "finance-order" && guardedRoute === parsedRoute.pathname ? parsedRoute.orderId : "";
   let screen = <HomeScreen employee={session.employee} services={services} workflow={workflow} dashboardUrl={dashboardUrl} navigate={navigate} />;
   if (guardedRoute === "/scan") {
     // A request's "open the scanner" passes only the request id; the scanned code itself never enters a URL.
@@ -176,6 +179,11 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
   else if (guardedRoute === "/confirmare" && services.confirmare) screen = <ConfirmareQueueScreen employee={session.employee} service={services.confirmare} navigate={navigate} />;
   else if (guardedRoute === "/confirmare/team" && services.confirmare) screen = <ConfirmareTeamScreen employee={session.employee} service={services.confirmare} navigate={navigate} />;
   else if (guardedRoute === "/confirmare/finance" && services.confirmare) screen = <ConfirmareFinanceScreen employee={session.employee} service={services.confirmare} navigate={navigate} />;
+  else if (guardedRoute === "/confirmare/finance/requests" && services.confirmare) screen = <FinanceInboxScreen employee={session.employee} service={services.confirmare} navigate={navigate} />;
+  else if (guardedRoute === "/confirmare/finance/oversight" && services.confirmare) screen = <FinanceOversightScreen service={services.confirmare} navigate={navigate} />;
+  else if (financeRequestId && parsedRoute.kind === "finance-task" && services.confirmare) screen = <FinanceTaskScreen key={financeRequestId} requestId={financeRequestId} service={services.confirmare} navigate={navigate} />;
+  else if (financeRequestId && parsedRoute.kind === "finance-oversight-detail" && services.confirmare) screen = <FinanceOversightDetailScreen key={financeRequestId} requestId={financeRequestId} service={services.confirmare} navigate={navigate} />;
+  else if (financeOrderId && services.confirmare) screen = <FinanceOrderScreen key={financeOrderId} globalOrderId={financeOrderId} employee={session.employee} service={services.confirmare} navigate={navigate} />;
   else if (guardedRoute === "/confirmare/handoff" && services.confirmare) screen = <ConfirmareHandoffScreen service={services.confirmare} navigate={navigate} />;
   else if (guardedRoute === "/confirmare/awb" && services.confirmare) screen = <ConfirmareAwbScreen service={services.confirmare} navigate={navigate} />;
   else if (guardedRoute === "/confirmare/efactura" && services.confirmare) screen = <ConfirmareEfacturaScreen service={services.confirmare} navigate={navigate} />;

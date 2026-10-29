@@ -83,9 +83,12 @@ test("finance scopes: separate from Confirmare, routes follow them, an older API
   const finance = employee({ financeScopes: { view: [], record: [], approve: ["trendhome"] } });
   assert.equal(canUseFinance(finance), true);
   assert.equal(canUseConfirmare(finance), false, "a finance scope is no Confirmare scope");
-  assert.equal(canOpenConfirmareOrder(finance), true);
+  // API 2.50.0: a finance scope reaches an order only through a finance task, never the Confirmare order screen.
+  assert.equal(canOpenConfirmareOrder(finance), false);
   assert.equal(canAccessRoute(finance, "/confirmare/finance"), true);
-  assert.equal(canAccessRoute(finance, "/confirmare/orders/trendhome%3A1234"), true);
+  assert.equal(canAccessRoute(finance, "/confirmare/orders/trendhome%3A1234"), false);
+  assert.equal(canAccessRoute(finance, "/confirmare/finance/requests"), true, "the payment checks");
+  assert.equal(canAccessRoute(finance, "/confirmare/finance/orders/trendhome%3A1234"), true, "the money panel of an exceptional task");
   assert.equal(canAccessRoute(finance, "/confirmare"), false, "the operator queue stays with Confirmare scopes");
   assert.equal(canAccessRoute(finance, "/confirmare/team"), false);
   const operator = employee({ confirmareScopes: { operate: ["trendhome"], supervise: [] } });

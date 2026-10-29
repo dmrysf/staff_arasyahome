@@ -5,6 +5,7 @@ import type { ConfirmareEditApi } from "./confirmareEdit";
 import { canUseFinance, financeScopesOf, type ConfirmareFinanceApi, type FinanceCapabilities } from "./confirmareFinance";
 import type { ConfirmareInvoiceApi, InvoiceCapabilities } from "./confirmareInvoice";
 import type { ConfirmareOpsApi, ContactCycle, OrderCycle } from "./confirmareOps";
+import { canOverseeFinance, type FinanceRequestsApi } from "./financeRequests";
 
 /**
  * Staff Confirmare workspace (API 2.39.0, Phase 3; the shop's own order, API 2.40.0, Phase 4A). New Trend Home and
@@ -129,7 +130,7 @@ export type ConfirmareAvailability = { employeeId: string; available: boolean; c
 
 export type ApproveInput = { expectedVersion: number; customerCall: "confirmed"; confirmedLineIds: string[]; priceVerified: true; reviewFingerprint: string };
 
-export interface ConfirmareApi extends ConfirmareEditApi, ConfirmareFinanceApi, ConfirmareInvoiceApi, ConfirmareOpsApi {
+export interface ConfirmareApi extends ConfirmareEditApi, ConfirmareFinanceApi, ConfirmareInvoiceApi, ConfirmareOpsApi, FinanceRequestsApi {
   pool(view: ConfirmareView, source: string | null, signal?: AbortSignal): Promise<ConfirmarePool>;
   /** API 2.42.0: the production handoff list (document generate permission; no Confirmare scope needed). */
   handoffList(source: string | null, signal?: AbortSignal): Promise<HandoffItem[]>;
@@ -165,9 +166,17 @@ export function canUseConfirmare(employee: Employee): boolean {
   return scopes.operate.length > 0 || scopes.supervise.length > 0;
 }
 
-/** Whether the employee may open a Confirmare order at all: a Confirmare scope, or a finance scope (read-only, API 2.41.0). */
+/**
+ * Whether the employee may open a Confirmare order at all: a Confirmare scope only. Since API 2.50.0 a finance scope
+ * reaches an order only through a finance task (the payment checks, or the money panel of an exceptional task).
+ */
 export function canOpenConfirmareOrder(employee: Employee): boolean {
-  return canUseConfirmare(employee) || canUseFinance(employee);
+  return canUseConfirmare(employee);
+}
+
+/** The Confirmare workspace on Home: operators, finance employees and finance supervisors (each sees only their own part). */
+export function hasConfirmareWorkspace(employee: Employee): boolean {
+  return canUseConfirmare(employee) || canUseFinance(employee) || canOverseeFinance(employee);
 }
 
 /**

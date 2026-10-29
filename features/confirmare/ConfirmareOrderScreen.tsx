@@ -19,6 +19,7 @@ import { ItemStatusPill, dueDay, when } from "./ConfirmareParts";
 import { ConfirmareShopPanel, ShopContact, ShopPayment, ShopReadControls, ShopSync, ShopTotals, useShopRead } from "./ConfirmareShopPanel";
 import { ConfirmareShopEditor } from "./ConfirmareShopEditor";
 import { ConfirmareFinancePanel } from "./ConfirmareFinancePanel";
+import { FinanceRequestCard } from "./FinanceRequestCard";
 import { ConfirmareInvoicePanel } from "./ConfirmareInvoicePanel";
 import { ConfirmareHandoffPanel } from "./ConfirmareHandoffPanel";
 import { ConfirmareCyclePanel } from "./ConfirmareCyclePanel";
@@ -376,6 +377,9 @@ export function ConfirmareOrderScreen({ orderId, employee, service, documents, n
           <p className="cfw-money" data-testid="cfw-money"><StatusPill tone={detail.financial.state === "unknown" ? "danger" : "warning"} icon="lock" testId="cf-financial">{t(`cf.financial.${detail.financial.state}` as MessageKey)}</StatusPill></p>
           {detail.financial.attention && <Notice tone="danger" role="note" testId="cf-financial-attention">{t(`cf.financial.attention.${detail.financial.attention}` as MessageKey)}</Notice>}
           {operatorInvoice && invoicePanel("proforma")}
+          {/* Staff 2.41.0: the advance payment goes to finance as an explicit request; its answer comes back here. */}
+          {(task === "partial" || task === "financeWaiting" || task === "financeAttention") && (operatesSource(employee, detail.sourceKey) || supervisor)
+            && <FinanceRequestCard globalOrderId={detail.globalOrderId} service={service} canOperate onSettled={view.refresh} />}
           {cycleInTask && cyclePanel}
         </>;
       case "routing":

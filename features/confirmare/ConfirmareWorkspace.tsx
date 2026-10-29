@@ -11,6 +11,7 @@ import { AutoRefreshBar, DashboardSection, EmptyState, Metric, MetricGrid, NextA
 import { useAutoRefresh } from "../workspaces/useAutoRefresh";
 import { canUseShopTasks, canWatchHealth } from "../../domain/confirmareOps";
 import { ConfirmareRow, confirmareOrderPath, confirmareQueueLoader } from "./ConfirmareParts";
+import { canOverseeFinance, canUseFinanceInbox, oversightPath } from "../../domain/financeRequests";
 
 const LIST_LIMIT = 6;
 
@@ -34,18 +35,27 @@ export function ShopTaskButtons({ navigate }: { navigate: (path: string) => void
   </>;
 }
 
+/**
+ * Staff 2.41.0: a finance employee starts from their own payment checks (Verificări de plată); the other finance tasks
+ * and the supervisor's oversight are one click away. Nothing of the orders is listed here.
+ */
 function FinanceOnlyWorkspace({ employee, navigate }: { employee: Employee; navigate: (path: string) => void }) {
   const { t } = useI18n();
+  const inbox = canUseFinanceInbox(employee);
+  const oversees = canOverseeFinance(employee);
+  const primary = inbox ? "/confirmare/finance/requests" : oversees ? oversightPath() : "/confirmare/finance";
   return (
     <div className="workspace-body confirmare-workspace" data-testid="workspace-confirmare-finance">
       <section className="next-action tone-attention" aria-labelledby="cf-finance-next">
         <div className="next-action-copy">
           <p className="eyebrow">{t("cf.fin.homeEyebrow")}</p>
-          <h2 id="cf-finance-next">{t("cf.fin.homeTitle")}</h2>
-          <p className="next-action-detail">{t("cf.fin.homeDetail")}</p>
+          <h2 id="cf-finance-next">{t(inbox ? "fr.home.title" : oversees ? "fr.oversight.title" : "cf.fin.homeTitle")}</h2>
+          <p className="next-action-detail">{t(inbox ? "fr.home.detail" : oversees ? "fr.oversight.lead" : "cf.fin.homeDetail")}</p>
         </div>
         <div className="next-action-actions">
-          <button type="button" className="button button-primary next-action-cta" onClick={() => navigate("/confirmare/finance")} data-testid="cf-open-finance">{t("cf.fin.open")}<AppIcon name="arrow" size={20} /></button>
+          <button type="button" className="button button-primary next-action-cta" onClick={() => navigate(primary)} data-testid={inbox ? "fr-open-inbox" : oversees ? "fr-open-oversight" : "cf-open-finance"}>{t(inbox ? "fr.home.open" : oversees ? "fr.oversight.open" : "cf.fin.open")}<AppIcon name="arrow" size={20} /></button>
+          {inbox && canUseFinance(employee) && <button type="button" className="button button-secondary" onClick={() => navigate("/confirmare/finance")} data-testid="cf-open-finance">{t("fr.inbox.exceptional")}</button>}
+          {inbox && oversees && <button type="button" className="button button-secondary" onClick={() => navigate(oversightPath())} data-testid="fr-open-oversight">{t("fr.oversight.open")}</button>}
           {canWatchHealth(employee) && <button type="button" className="button button-secondary" onClick={() => navigate("/confirmare/health")} data-testid="cf-open-health">{t("cf.health.open")}</button>}
         </div>
       </section>
@@ -150,6 +160,8 @@ function OperatorWorkspace({ employee, service, navigate }: { employee: Employee
           <div className="dashboard-actions">
             <button type="button" className="button button-secondary" onClick={() => navigate("/confirmare")} data-testid="cf-open-queue"><AppIcon name="orders" size={20} />{t("cf.home.allOrders")}</button>
             {supervisor && <button type="button" className="button button-secondary" onClick={() => navigate("/confirmare/team")} data-testid="cf-open-team"><AppIcon name="team" size={20} />{t("cf.home.team")}</button>}
+            {canUseFinanceInbox(employee) && <button type="button" className="button button-secondary" onClick={() => navigate("/confirmare/finance/requests")} data-testid="fr-open-inbox"><AppIcon name="check" size={20} />{t("fr.home.open")}</button>}
+            {canOverseeFinance(employee) && <button type="button" className="button button-secondary" onClick={() => navigate(oversightPath())} data-testid="fr-open-oversight"><AppIcon name="team" size={20} />{t("fr.oversight.open")}</button>}
             {canUseAdvanceQueue(employee) && <button type="button" className="button button-secondary" onClick={() => navigate("/confirmare/finance")} data-testid="cf-open-finance"><AppIcon name="orders" size={20} />{t(canUseFinance(employee) ? "cf.fin.open" : "cf.fin.openAdvances")}</button>}
             {canHandOff(employee) && <button type="button" className="button button-secondary" onClick={() => navigate("/confirmare/handoff")} data-testid="cf-open-handoff"><AppIcon name="document" size={20} />{t("cf.handoff.list.open")}</button>}
             {canUseShopTasks(employee) && <ShopTaskButtons navigate={navigate} />}

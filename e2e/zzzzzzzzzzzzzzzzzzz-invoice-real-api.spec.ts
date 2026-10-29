@@ -112,35 +112,29 @@ test("a second e-mail is confirmed first; two open tabs show the same state", as
   await context.close();
 });
 
-test("the finance flow shows the same SmartBill state read only; finance never issues or sends", async ({ browser }) => {
+test("API 2.50.0: a finance scope without a finance task of the order reads no SmartBill state and never issues or sends", async ({ browser }) => {
   const { context, page, errors } = await signIn(browser, F.people.fin.username);
   await expect(page.getByTestId("workspace-confirmare-finance")).toBeVisible();
   await page.getByTestId("cf-open-finance").click();
   await expect(page.getByTestId("cf-finance-queue")).toBeVisible();
+  // The paid order is no finance task: the Confirmare order stays closed (the route falls back to Home).
   await page.goto(`/confirmare/orders/${encodeURIComponent(F.order)}`);
-  // The SmartBill section sits right after the order's finance section.
-  await expect(page.locator("[data-testid=cf-finance] ~ [data-testid=cf-invoice]")).toBeVisible();
-  await expect(page.getByTestId("cf-invoice-document")).toContainText("TST");
-  await expect(page.getByTestId("cf-invoice-mail")).toContainText("2 trimiteri");
-  await expect(page.getByTestId("cf-invoice-readonly")).toBeVisible();
-  for (const id of ["cf-invoice-actions", "cf-invoice-issue", "cf-invoice-send-mail", "cf-invoice-reissue", "cf-invoice-resolve", "cf-invoice-view-link"]) {
-    await expect(page.getByTestId(id), `finance: no ${id}`).toHaveCount(0);
-  }
-  await accessible(page, "finance");
+  await expect(page.getByTestId("cf-order")).toHaveCount(0);
+  await expect(page.getByTestId("cf-invoice")).toHaveCount(0);
   expect(errors).toEqual([]);
   await context.close();
-  // The server refuses too: a finance scope is not an invoice permission.
+  // The server refuses too: no finance task of the order, nothing of it is found (no existence leak).
   const api = await request.newContext({ baseURL: apiOrigin, extraHTTPHeaders: { Origin: webOrigin } });
   const csrf = (await (await api.post("/auth/login", { data: { username: F.people.fin.username, password: F.password } })).json()).csrfToken as string;
-  const state = await (await api.get(`/confirmare/orders/${encodeURIComponent(F.order)}/invoice`)).json();
-  expect(state.role).toBe("finance");
-  expect(state.allowedActions).toEqual([]);
-  // Each request is well formed (the input checks pass), so only the permission can refuse it.
+  const read = await api.get(`/confirmare/orders/${encodeURIComponent(F.order)}/invoice`);
+  expect(read.status()).toBe(404);
+  const state = { summary: { revision: `sha256:${"0".repeat(64)}` } };
+  // Each request is well formed (the input checks pass), so only the reach can refuse it.
   const bodies: Record<string, Record<string, unknown>> = { issue: {}, "send-mail": { confirmResend: true }, reissue: { reasonCode: "order_changed", previousCancelled: true }, resolve: { target: "mail", resolution: "sent" } };
   for (const [action, fields] of Object.entries(bodies)) {
     const refused = await api.post(`/confirmare/orders/${encodeURIComponent(F.order)}/invoice/${action}`, { headers: { "X-CSRF-Token": csrf, "Idempotency-Key": `inv-e2e-fin-${action}-${Date.now()}` }, data: { expectedRevision: state.summary.revision, ...fields } });
-    expect(refused.status(), `finance ${action}`).toBe(403);
-    expect(((await refused.json()) as { error?: { code?: string } }).error?.code, `finance ${action}`).toBe("CONFIRMARE_INVOICE_DENIED");
+    expect(refused.status(), `finance ${action}`).toBe(404);
+    expect(((await refused.json()) as { error?: { code?: string } }).error?.code, `finance ${action}`).toBe("CONFIRMARE_NOT_FOUND");
   }
   await api.dispose();
 });

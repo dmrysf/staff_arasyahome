@@ -31,7 +31,8 @@ type Pending = { action: FinanceAction; input: TransferInput | DecisionInput | R
  * collection; a cash advance with its fiscal receipt or chitanță and who collected it; more than what is owed only with an
  * explicit confirmation (the excess is a finance exception); a payment for a cancelled proforma only by a finance decision.
  */
-export function ConfirmareFinancePanel({ detail, service }: { detail: ConfirmareDetail; service: ConfirmareApi }) {
+/** The order's id and finance capabilities are all the panel reads of the order (Staff 2.41.0: also opened without the Confirmare detail). */
+export function ConfirmareFinancePanel({ detail, service }: { detail: Pick<ConfirmareDetail, "globalOrderId" | "finance">; service: ConfirmareApi }) {
   const { t } = useI18n();
   const [read, setRead] = useState<FinanceRead | null>(null);
   const [busy, setBusy] = useState(false);
