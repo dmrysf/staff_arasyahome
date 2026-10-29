@@ -343,3 +343,11 @@ test("a money calculation that does not add up, a deadline or a cancellation tha
   assert.throws(() => mapInvoiceRead({ ...sent, summary: { ...sent.summary, eFactura: { state: "sent" } } }), Error, "e-Factura is never shown as sent");
   assert.deepEqual((mapInvoiceRead({ ...sent, summary: { ...sent.summary, eFactura: { state: "not_tracked" } } }) as InvoiceView).summary.eFactura, { state: "not_tracked" });
 });
+
+test("API 2.50.1 / Staff 2.41.1 (owner 2026-10-29): no QR scan before the invoice; the production ticket is still required", async () => {
+  const sections = await import("../features/confirmare/ConfirmareProformaSections");
+  assert.equal("InvoiceQrSection" in sections, false, "the QR field, its button and its notes are gone from the invoice screen");
+  assert.equal(invoiceBlockerLabel("ticket_missing"), CATALOGS.ro["inv.blocker.ticket_missing"]);
+  for (const locale of ["ro", "tr", "en", "si"] as const) assert.ok(String(CATALOGS[locale]["inv.blocker.ticket_missing"] ?? "").length > 10, `${locale} ticket_missing`);
+  assert.ok(!/QR/i.test(CATALOGS.ro["inv.blocker.ticket_missing"]), "the new refusal never asks for a scan");
+});

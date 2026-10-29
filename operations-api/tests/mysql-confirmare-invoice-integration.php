@@ -261,16 +261,16 @@ $prepare = static function (string $gid, string $to = 'idoc') use ($ticket, $rou
     if ($assignee($gid) !== $uuids[$to]) {
         $ok($route($gid, $to), "route {$gid} to {$to}");
     }
-    $ok($scanQr($gid, $to), "QR scan {$gid} by {$to}");
+    // API 2.50.1 (owner decision 2026-10-29): no QR scan before the invoice.
 };
 
 // ---- 3. Who reads the state --------------------------------------------------------------------------------------------
 $r = $read($who['idoc'], $g(1));
 $check($r['available'] === true && $r['role'] === 'documents' && $r['summary']['document']['exists'] === false && $r['handoff']['state'] === 'ready' && !in_array('issue', $r['allowedActions'], true)
-    && array_slice($r['blockers']['issue'], -2) === ['not_assigned', 'qr_not_verified'], 'the production ticket employee with the issue scope: documents role, the order is ready; no invoice before the routing and the QR scan: ' . json_encode($r['blockers']['issue']));
+    && array_slice($r['blockers']['issue'], -2) === ['not_assigned', 'ticket_missing'] && !in_array('qr_not_verified', $r['blockers']['issue'], true), 'the production ticket employee with the issue scope: documents role, the order is ready; no invoice before the routing and the production ticket (no QR scan asked): ' . json_encode($r['blockers']['issue']));
 $prepare($g(1));
 $r = $read($who['idoc'], $g(1));
-$check($r['handoff']['state'] === 'awaiting_cutting' && in_array('issue', $r['allowedActions'], true) && $r['assignment']['employeeId'] === $uuids['idoc'] && $r['qr']['verified'] === true, 'ticket printed, routed to this employee, QR scanned: issuing allowed: ' . json_encode($r['allowedActions']));
+$check($r['handoff']['state'] === 'awaiting_cutting' && in_array('issue', $r['allowedActions'], true) && $r['assignment']['employeeId'] === $uuids['idoc'] && $r['qr']['verified'] === false, 'ticket printed, routed to this employee, no QR scanned: issuing allowed: ' . json_encode($r['allowedActions']));
 $v = $read($who['iview'], $g(1));
 // API 2.50.0: a finance scope reads an order's SmartBill state only through a finance task of the order.
 $error($invoice($who['ifin'], $g(1)), 404, 'CONFIRMARE_NOT_FOUND', 'a finance scope without a task of the order: not found');
@@ -331,22 +331,28 @@ $issuable = static fn (string $gid): array => [$read($who['idoc'], $gid)['handof
 $check($issuable($g(11)) === ['ready', false], 'ready (no production ticket, so no QR to scan): no invoice yet');
 $generated = $ok($call($who['idoc'], 'POST', $docPath($g(11), 'generate'), ['expectedDocumentVersion' => $docVersion($g(11))]), 'ticket generated', 201);
 $ok($route($g(11)), 'routed to the shop employee');
-$check($issuable($g(11)) === ['print', false], 'print (ticket generated, routed): still no invoice before the QR scan');
+$check($issuable($g(11)) === ['print', true], 'API 2.50.1: print (ticket generated, routed): the invoice is allowed without any QR scan');
+// Owner 2026-10-29 (like OP 60348: the advance verified, no gap, an active ticket): the routed employee issues without a
+// scan; every other rule stays: another invoice employee is refused, so is an employee without the invoice scope.
+$other11 = $read($who['idoc2'], $g(11));
+$check(!in_array('issue', $other11['allowedActions'], true) && in_array('assigned_to_other', $other11['blockers']['issue'], true), 'another invoice employee of the shop: refused (assigned_to_other), QR or not');
+$refused($act($who['idoc2'], $g(11), 'issue'), 'assigned_to_other', 'the order is routed to someone else', 'CONFIRMARE_INVOICE_NOT_ALLOWED');
+$error($act($who['iview'], $g(11), 'issue'), 403, 'CONFIRMARE_INVOICE_DENIED', 'a ticket viewer without the invoice scope never issues');
 $error($scanQr($g(11), 'idoc', 'ARASYA:Q1:' . str_repeat('A', 26)), 409, 'INVOICE_QR_REFUSED', 'an unknown code is refused');
 $error($scanQr($g(11), 'idoc', $qr($g(1))), 409, 'INVOICE_QR_REFUSED', 'the QR of another order is refused (never says which)');
 $error($scanQr($g(11), 'idoc', 'not a code'), 422, 'INVOICE_QR_INVALID', 'a malformed code is refused');
 $error($scanQr($g(11), 'iview'), 403, 'CONFIRMARE_INVOICE_DENIED', 'a ticket viewer without the invoice scope does not scan for the invoice');
 $check(array_column($all("SELECT outcome FROM order_invoice_qr_checks q JOIN operational_orders o ON o.order_uuid = q.order_uuid WHERE o.global_order_id = ? ORDER BY checked_at", [$g(11)]), 'outcome') === ['unknown_qr', 'wrong_order'], 'refused scans are recorded with their reason');
-$ok($scanQr($g(11)), 'the QR of this order');
-$check($issuable($g(11)) === ['print', true], 'print + routed + QR scanned: issuing allowed');
+$ok($scanQr($g(11)), 'a scan of the QR of this order is still recorded (never required)');
+$check($issuable($g(11)) === ['print', true], 'print + routed: issuing allowed (with or without a scan)');
 $ok($call($who['idoc'], 'POST', $docPath($g(11), 'print'), ['revisionNumber' => (int) ($generated['document']['revisionNumber'] ?? $generated['revisionNumber'] ?? 1)]), 'ticket printed');
 $check($issuable($g(11)) === ['awaiting_cutting', true], 'awaiting_cutting (printed, not scanned at cutting): issuing allowed');
 $pdo->prepare('UPDATE order_invoice_qr_checks SET checked_at = DATE_SUB(checked_at, INTERVAL 31 MINUTE) WHERE order_uuid = (SELECT order_uuid FROM operational_orders WHERE global_order_id = ?)')->execute([$g(11)]);
-$check($issuable($g(11)) === ['awaiting_cutting', false] && in_array('qr_not_verified', $read($who['idoc'], $g(11))['blockers']['issue'], true), 'a scan older than 30 minutes no longer counts');
+$check($issuable($g(11)) === ['awaiting_cutting', true] && !in_array('qr_not_verified', $read($who['idoc'], $g(11))['blockers']['issue'], true), 'an old scan changes nothing: the QR is not part of the invoice rule');
 $pdo->prepare("UPDATE operational_orders SET document_status = 'stale' WHERE global_order_id = ?")->execute([$g(11)]);
 $error($scanQr($g(11)), 409, 'INVOICE_QR_REFUSED', 'the QR of a stale production document is refused');
+$check($issuable($g(11))[1] === false && in_array('ticket_missing', $read($who['idoc'], $g(11))['blockers']['issue'], true), 'a stale production ticket: no invoice (ticket_missing)');
 $pdo->prepare("UPDATE operational_orders SET document_status = 'active' WHERE global_order_id = ?")->execute([$g(11)]);
-$ok($scanQr($g(11)), 'scanned again');
 $before = $production($g(11));
 $ticketsBefore = $tickets($g(11));
 $ok($act($who['idoc'], $g(11), 'issue'), 'issue while awaiting the cutting scan');
@@ -357,7 +363,7 @@ $generated12 = $ok($call($who['idoc'], 'POST', $docPath($g(12), 'generate'), ['e
 $ok($call($who['idoc'], 'POST', $docPath($g(12), 'print'), ['revisionNumber' => (int) ($generated12['document']['revisionNumber'] ?? $generated12['revisionNumber'] ?? 1)]), 'ticket 12 printed');
 $ok($route($g(12)), 'ticket 12 routed');
 $started = $ok($call($who['icut'], 'POST', '/cutting/intake', ['qrToken' => $qr($g(12))]), 'the cutter scans');
-$ok($scanQr($g(12)), 'the shop employee scans the same QR for the invoice');
+$ok($scanQr($g(12)), 'the shop employee may still scan the same QR (recorded, not required)');
 $check(($started['outcome'] ?? null) === 'started' && $issuable($g(12)) === ['in_production', true], 'in_production (scanned by the cutter): issuing allowed');
 $before12 = $production($g(12));
 $ok($act($who['idoc'], $g(12), 'issue'), 'issue during production');

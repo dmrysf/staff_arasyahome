@@ -199,7 +199,7 @@ const BLOCKERS = [
   "payment_not_cleared", "zero_total_unsupported", "finance_attention", "finance_pending", "cashing_mismatch", "nothing_to_resolve", "resend_confirmation_required", "reason_required",
   "reissue_attestation_required", "smartbill_refused", "smartbill_precheck", "mail_refused", "revision_changed", "order_busy", "not_received", "invoice_disabled",
   // API 2.44.0 / YD SOFT 2.18.0
-  "not_assigned", "assigned_to_other", "qr_not_verified", "advance_not_verified", "final_document_not_invoice", "proforma_operation_unknown", "proforma_invoiced",
+  "not_assigned", "assigned_to_other", "qr_not_verified", "ticket_missing", "advance_not_verified", "final_document_not_invoice", "proforma_operation_unknown", "proforma_invoiced",
   "proforma_status_unknown", "proforma_series_missing", "advance_not_required", "advance_already_collected", "proforma_exists", "proforma_missing", "proforma_outdated",
   "replace_confirmation_required",
   // API 2.45.0 / YD SOFT 2.19.0
