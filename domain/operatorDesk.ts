@@ -1,9 +1,10 @@
 import type { Employee } from "./models";
-import { inTab, sourceLabel, type ConfirmareItem, type ConfirmareLine, type QueueTab } from "./confirmare";
+import { canUseConfirmare, inTab, sourceLabel, type ConfirmareItem, type ConfirmareLine, type QueueTab } from "./confirmare";
 import { canUseFinance } from "./confirmareFinance";
 import { canOverseeFinance } from "./financeRequests";
 import { advanceStatusKey, proformaStatusKey, type InvoiceRead, type MoneyPosition } from "./confirmareInvoice";
 import type { ShopLine, ShopRead } from "./confirmareShop";
+import type { Workspace } from "./workspaces";
 import type { MessageKey } from "../i18n";
 
 /**
@@ -142,4 +143,20 @@ export function usesProductionScanner(employee: Employee): boolean {
   const office = (employee.confirmareScopes?.operate.length ?? 0) + (employee.confirmareScopes?.supervise.length ?? 0) > 0 || canUseFinance(employee) || canOverseeFinance(employee);
   if (!office) return true;
   return employee.allowedStageIds.length > 0 || DOCUMENT_PERMISSIONS.some((key) => employee.permissions.includes(key));
+}
+
+// ---- Home ----------------------------------------------------------------------------------------------------------
+
+/**
+ * Staff 2.42.1: the home of a Confirmare operator or supervisor whose opening workspace is Confirmare is the operator
+ * desk itself (`/` shows the desk, its own address is `/confirmare`), so the old home and the desk are never two
+ * experiences. A finance-only employee keeps the finance home; every other workspace keeps its own home.
+ */
+export function opensOperatorDesk(employee: Employee, workspace: Workspace | null): boolean {
+  return workspace?.kind === "confirmare" && canUseConfirmare(employee);
+}
+
+/** Routes that belong to the desk's home: the desk, an order on it and the Confirmare screens opened from it. */
+export function isDeskRoute(route: string): boolean {
+  return route === "/" || route === "/confirmare" || route.startsWith("/confirmare/");
 }

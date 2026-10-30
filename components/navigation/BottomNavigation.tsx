@@ -4,7 +4,7 @@ import { PrimaryScanButton } from "./PrimaryScanButton";
 import { ArasyaLogo } from "../brand/BrandLogo";
 import type { Employee } from "../../domain/models";
 import { hasPermission, type StaffPermission } from "../../domain/permissions";
-import { usesProductionScanner } from "../../domain/operatorDesk";
+import { isDeskRoute, usesProductionScanner } from "../../domain/operatorDesk";
 
 // Labels are read in the active language when the bar renders.
 export const bottomNavigationItems = [
@@ -17,14 +17,19 @@ export const bottomNavigationItems = [
 /**
  * Main navigation: a docked bar on phones (QR action in the thumb zone, centered) and a sidebar on desktop.
  * Items the employee is not authorized for are not rendered; on phones an empty slot keeps the QR action centered.
+ *
+ * Staff 2.42.1: when the home is the operator desk (`deskHome`), "Acasă" stays lit on every desk screen, and an
+ * employee without a production stage has no production order list ("Comenzi"): their orders are the desk's queue.
  */
-export function BottomNavigation({ employee, route, navigate }: { employee: Employee; route: string; navigate: (path: string) => void }) {
+export function BottomNavigation({ employee, route, navigate, deskHome = false }: { employee: Employee; route: string; navigate: (path: string) => void; deskHome?: boolean }) {
   useI18n();
   const [home, orders, history, profile] = bottomNavigationItems;
-  const renderItem = (item: (typeof bottomNavigationItems)[number]) => item.permission && !hasPermission(employee, item.permission)
+  const hidden = (item: (typeof bottomNavigationItems)[number]) => (item.permission !== null && !hasPermission(employee, item.permission)) || (deskHome && item === orders && employee.allowedStageIds.length === 0);
+  const current = (item: (typeof bottomNavigationItems)[number]) => route === item.path || (deskHome && item === home && isDeskRoute(route));
+  const renderItem = (item: (typeof bottomNavigationItems)[number]) => hidden(item)
     ? <span key={item.path} className="nav-permission-space" aria-hidden="true" />
     : (
-    <button key={item.path} className={`nav-item nav-${item.icon}${route === item.path ? " active" : ""}`} type="button" onClick={() => navigate(item.path)} aria-current={route === item.path ? "page" : undefined}>
+    <button key={item.path} className={`nav-item nav-${item.icon}${current(item) ? " active" : ""}`} type="button" onClick={() => navigate(item.path)} aria-current={current(item) ? "page" : undefined}>
       <AppIcon name={item.icon} />
       <small>{item.label}</small>
     </button>

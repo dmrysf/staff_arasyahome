@@ -287,7 +287,8 @@ test("an order of 23.10.2026 outside Confirmare (old date): the operator sends i
   const order = F.legacy;
   const op = await signIn(browser, F.operator);
   try {
-    // 21.10.2026 23:59:59 Bucharest: outside the scope, no request offered.
+    // 21.10.2026 23:59:59 Bucharest: outside the scope, no request offered. Staff 2.42.1: the lookup sits on the desk.
+    await op.page.getByTestId("cf-desk-legacy").locator("summary").click();
     await op.page.getByTestId("fr-legacy-number").fill(F.before.number);
     await op.page.getByTestId("fr-legacy-open").click();
     await expect(op.page.getByTestId("fr-legacy-order")).toBeVisible();
@@ -296,6 +297,7 @@ test("an order of 23.10.2026 outside Confirmare (old date): the operator sends i
     await noCustomer(op.page);
     // 23.10.2026, the old workflow: covered, manual ledger.
     await op.page.goto("/");
+    await op.page.getByTestId("cf-desk-legacy").locator("summary").click();
     await op.page.getByTestId("fr-legacy-number").fill(order.number);
     await op.page.getByTestId("fr-legacy-open").click();
     const card = op.page.getByTestId("fr-step");

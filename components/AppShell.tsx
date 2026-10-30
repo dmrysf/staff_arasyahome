@@ -15,13 +15,13 @@ export const initialsOf = (name: string): string => name.split(" ").filter(Boole
  * App frame. Phones and tablets: a compact header and the docked bottom navigation with the central QR action.
  * From 1024 px the same navigation becomes a sidebar and the content uses the screen width.
  */
-export function AppShell({ employee, route, mode, navigate, children, immersive = false }: { employee: Employee; route: string; mode: StaffRuntimeMode; navigate: (path: string) => void; children: ReactNode; immersive?: boolean }) {
+export function AppShell({ employee, route, mode, navigate, children, immersive = false, deskHome = false }: { employee: Employee; route: string; mode: StaffRuntimeMode; navigate: (path: string) => void; children: ReactNode; immersive?: boolean; deskHome?: boolean }) {
   const { t } = useI18n();
   if (immersive) return <>{children}</>;
   return (
     <div className="app-shell">
       <a className="skip-link" href="#content">{t("shell.skip")}</a>
-      <BottomNavigation employee={employee} route={route} navigate={navigate} />
+      <BottomNavigation employee={employee} route={route} navigate={navigate} deskHome={deskHome} />
       <div className="app-main">
         <header className="app-header">
           <button className="app-brand" type="button" onClick={() => navigate("/")} aria-label={t("shell.homeLabel")}>

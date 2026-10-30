@@ -325,12 +325,15 @@ body:has(.cf-desk), .app-shell:has(.cf-desk) { background: var(--color-bg); }
   .cf-desk-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (min-width: 1100px) {
-  .cf-desk-body { grid-template-columns: minmax(260px, 300px) minmax(0, 1fr); align-items: start; }
+  .cf-desk-body { grid-template-columns: minmax(280px, 320px) minmax(0, 1fr); align-items: start; }
   .cf-desk-queue { position: sticky; top: var(--space-4); max-height: calc(100dvh - 2 * var(--space-4)); overflow: auto; overscroll-behavior: contain; }
   .cf-desk .cf-desk-order .cfw-order > .back-link { display: none; }
   /* The work panel takes the queue's room while it is open (the order keeps its width). */
   .cf-desk-body:has(.cfo-grid.has-panel) { grid-template-columns: minmax(0, 1fr); }
   .cf-desk-body:has(.cfo-grid.has-panel) .cf-desk-queue { display: none; }
+}
+@media (min-width: 1600px) {
+  .cf-desk-body { grid-template-columns: minmax(320px, 360px) minmax(0, 1fr); }
 }
 @media (max-width: 640px) {
   .cf-desk-top { grid-template-columns: minmax(0, 1fr); }
@@ -440,3 +443,17 @@ body:has(.cf-desk), .app-shell:has(.cf-desk) { background: var(--color-bg); }
   .cfo-grid { grid-template-columns: minmax(0, 1fr) minmax(300px, 360px); }
   .cfo-grid.has-panel { grid-template-columns: minmax(0, 1fr) minmax(400px, 480px); }
 }
+
+/* Staff 2.42.1: the desk is the operator's home — workspace switcher, other work and the legacy lookup. */
+.cf-desk-switcher .workspace-switcher { margin: 0; }
+/* The other work sits beside "Preia următoarea comandă" (secondary first, the primary action last). */
+.cf-desk-tools { display: contents; }
+.cf-desk-tools .button { min-height: var(--control-md); padding: 0 14px; font-size: var(--text-sm); }
+/* The queue's refresh line: the time in words, the button as an icon (its accessible name stays). */
+.cf-desk-queue .refresh-button { min-width: var(--control-md); min-height: var(--control-md); justify-content: center; }
+.cf-desk-queue .refresh-button-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.cf-desk-legacy { border-top: 1px solid var(--color-border); padding-top: var(--space-3); }
+.cf-desk-legacy summary { cursor: pointer; color: var(--color-text-muted); font-size: var(--text-sm); font-weight: var(--weight-semibold); }
+.cf-desk-legacy summary:focus-visible { outline: 3px solid var(--color-focus-ring); outline-offset: 2px; border-radius: var(--radius-sm); }
+.cf-desk-legacy .fr-legacy-lookup { margin-top: var(--space-3); }
+.cf-desk-note { margin: 0; color: var(--color-text-subtle); font-size: var(--text-xs); line-height: var(--leading-normal, 1.5); }

@@ -15,6 +15,7 @@ import { parseStaffRoute } from "../domain/staffRoute";
 import { resolveWorkspaces, selectPrimaryWorkspace } from "../domain/workspaces";
 import { confirmareErrorDetails, createProductionServices, mapConfirmareDetail, mapConfirmareItem, mapProductionEmployee } from "../services/production/httpServices";
 import { confirmareQueueLoader } from "../features/confirmare/ConfirmareParts";
+import { OperatorDesk } from "../features/confirmare/OperatorDesk";
 import { HomeScreen } from "../features/home/HomeScreen";
 import { CATALOGS, type MessageKey } from "../i18n";
 import type { ServiceBundle } from "../services/contracts";
@@ -276,13 +277,16 @@ test("Romanian statuses and every Confirmare text exist in all four languages", 
   for (const locale of ["tr", "en", "si"] as const) for (const key of keys) assert.ok((CATALOGS[locale] as Record<string, unknown>)[key], `${locale}: ${key as MessageKey}`);
 });
 
-test("home: an operator with a scope sees the Confirmare workspace and the honest contact-data dependency", () => {
+test("home: an operator's Confirmare home is the operator desk, which keeps the honest contact-data dependency", () => {
   const pending = new Promise<never>(() => undefined);
   const confirmare = new Proxy({}, { get: () => () => pending }) as never;
   const services = { mode: "production", confirmare, exceptions: { supervisorList: () => pending, capabilities: () => pending, listMine: () => pending } } as unknown as ServiceBundle;
+  // Staff 2.42.1: StaffApp opens the desk on `/`; the home screen no longer has an operator workspace of its own.
   const html = renderToStaticMarkup(createElement(HomeScreen, { employee: person(), services, workflow: { id: "w", name: "w", version: 1, stages: [] }, dashboardUrl: null, navigate: () => undefined }));
-  assert.match(html, /data-testid="workspace-confirmare"/);
-  assert.match(html, /Confirmare comenzi/);
-  assert.match(html, /data-testid="cf-contact-dependency"/);
-  assert.match(html, /Arasya nu păstrează telefonul complet al clientului/);
+  assert.doesNotMatch(html, /data-testid="workspace-confirmare"/);
+  assert.doesNotMatch(html, /cf-next-action|cf-metric-mine/);
+  const desk = renderToStaticMarkup(createElement(OperatorDesk, { employee: person(), service: confirmare, orderId: null, navigate: () => undefined }));
+  assert.match(desk, /data-testid="cf-queue"/);
+  assert.match(desk, /data-testid="cf-contact-dependency"/);
+  assert.match(desk, /Arasya nu păstrează telefonul complet al clientului/);
 });

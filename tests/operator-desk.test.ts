@@ -8,7 +8,9 @@ import type { Employee } from "../domain/models";
 import type { ConfirmareDetail, ConfirmareItem, ConfirmareLine } from "../domain/confirmare";
 import type { InvoiceRead, ProformaSummary } from "../domain/confirmareInvoice";
 import type { ShopLine, ShopRead } from "../domain/confirmareShop";
-import { deskCounts, extraShopDetails, moneyGlance, pairShopLines, searchQueue, sortQueue, usesProductionScanner } from "../domain/operatorDesk";
+import { deskCounts, extraShopDetails, isDeskRoute, moneyGlance, opensOperatorDesk, pairShopLines, searchQueue, sortQueue, usesProductionScanner } from "../domain/operatorDesk";
+import { resolveWorkspaces, selectPrimaryWorkspace } from "../domain/workspaces";
+import { OperatorDesk } from "../features/confirmare/OperatorDesk";
 import { canAccessRoute } from "../domain/permissions";
 import { mapShopRead } from "../services/production/httpServices";
 import { OrderProducts } from "../features/confirmare/OrderProducts";
@@ -188,4 +190,75 @@ test("the desk only reads: no command from an effect, nothing stored in the brow
   const desk = readFileSync(path.join(root, "features/confirmare/OperatorDesk.tsx"), "utf8");
   assert.match(desk, /useAutoRefresh\(load, `confirmare-desk\|/);
   assert.match(desk, /onChanged=\{queue\.refresh\}/, "after a command in the order the queue reads again (no manual refresh needed)");
+});
+
+// ---- Staff 2.42.1: the desk is the operator's home ----------------------------------------------------------------
+
+const ALL = { trendyol: true, documents: true, management: true, confirmare: true };
+const home = (employee: Employee, preference: string | null = null) => selectPrimaryWorkspace(resolveWorkspaces(employee, ALL), employee, preference);
+
+test("the desk is the home of a Confirmare operator only; finance-only, production, documents and management homes stay", () => {
+  const operator = person({ departmentKey: "vanzari-online" } as Partial<Employee>);
+  assert.equal(opensOperatorDesk(operator, home(operator)), true, "the operator (IANCU IULIANA's shape) opens the desk");
+  const supervisor = person({ confirmareScopes: { operate: [], supervise: ["trendhome"] } });
+  assert.equal(opensOperatorDesk(supervisor, home(supervisor)), true, "a Confirmare supervisor opens the desk too");
+  const finance = person({ confirmareScopes: { operate: [], supervise: [] }, financeScopes: { view: ["trendhome"], record: ["trendhome"], approve: [] } } as Partial<Employee>);
+  assert.equal(home(finance)?.kind, "confirmare");
+  assert.equal(opensOperatorDesk(finance, home(finance)), false, "a finance-only employee keeps the finance home");
+  const cutter = person({ confirmareScopes: undefined, allowedStageIds: ["material-preparation"] });
+  assert.equal(opensOperatorDesk(cutter, home(cutter)), false);
+  const documents = person({ confirmareScopes: undefined, permissions: ["profile.view_self", "orders.scan", "production.documents.generate"] });
+  assert.equal(opensOperatorDesk(documents, home(documents)), false, "production documents keep their home");
+  const root = person({ role: "root", applications: ["staff", "dashboard"], permissions: ["profile.view_self", "orders.view_mine", "production.view"], confirmareScopes: { operate: [], supervise: ["trendhome", "outletperdele"] }, departmentKey: "conducere" } as Partial<Employee>);
+  assert.equal(home(root)?.kind, "management", "root opens the management overview");
+  assert.equal(opensOperatorDesk(root, home(root)), false);
+  assert.equal(opensOperatorDesk(root, home(root, "confirmare")), true, "root's own Confirmare choice opens the desk");
+  const both = person({ allowedStageIds: ["packing"], departmentKey: "expediere-curierat" } as Partial<Employee>);
+  assert.equal(home(both)?.kind, "production", "an operator who also packs keeps the department's first workspace");
+  assert.equal(opensOperatorDesk(both, home(both)), false);
+});
+
+test("menu: on the desk home \"Acasă\" stays lit on every desk screen; no production list without a stage", () => {
+  const operator = person({ permissions: ["profile.view_self", "orders.scan", "orders.view_mine", "history.view_mine"] });
+  for (const route of ["/", "/confirmare", "/confirmare/orders/trendhome%3A1001", "/confirmare/finance"]) {
+    assert.equal(isDeskRoute(route), true, route);
+    const html = render(createElement(BottomNavigation, { employee: operator, route, navigate: () => undefined, deskHome: true }));
+    assert.match(html, /class="nav-item nav-home active"/, route);
+  }
+  assert.equal(isDeskRoute("/orders"), false);
+  assert.equal(isDeskRoute("/confirmarex"), false);
+  const desk = render(createElement(BottomNavigation, { employee: operator, route: "/confirmare", navigate: () => undefined, deskHome: true }));
+  assert.doesNotMatch(desk, /nav-orders/, "the production order list is not the operator's work");
+  assert.match(desk, /nav-history/);
+  assert.match(desk, /nav-profile/);
+  const packer = render(createElement(BottomNavigation, { employee: person({ allowedStageIds: ["packing"] }), route: "/confirmare", navigate: () => undefined, deskHome: true }));
+  assert.match(packer, /nav-orders/, "an operator with a production stage keeps the production list");
+  const production = render(createElement(BottomNavigation, { employee: person({ confirmareScopes: undefined, allowedStageIds: ["packing"] }), route: "/confirmare", navigate: () => undefined }));
+  assert.match(production, /nav-orders/);
+  assert.doesNotMatch(production, /nav-item nav-home active/, "without the desk home nothing changes");
+});
+
+test("the desk carries the old home's links (each for its own employee), the legacy lookup and the workspace switcher", () => {
+  const pending = new Promise<never>(() => undefined);
+  const service = new Proxy({}, { get: () => () => pending }) as never;
+  const desk = (employee: Employee, extra: Record<string, unknown> = {}) => render(createElement(OperatorDesk, { employee, service, orderId: null, navigate: () => undefined, ...extra }));
+  const operator = desk(person());
+  assert.match(operator, /data-testid="cf-open-finance"/, "the operator's advance tasks");
+  assert.doesNotMatch(operator, /fr-open-inbox|fr-open-oversight|cf-open-handoff|cf-open-awb|cf-open-health/);
+  assert.match(operator, /data-testid="cf-desk-legacy"/);
+  assert.match(operator, /data-testid="fr-legacy-lookup"/);
+  assert.doesNotMatch(operator, /workspace-switcher/, "one workspace, no switcher");
+  const shop = desk(person({ invoiceScopes: { issue: ["trendhome"], manage: [] }, permissions: ["profile.view_self", "production.documents.generate"] } as Partial<Employee>));
+  assert.match(shop, /data-testid="cf-open-awb"/);
+  assert.match(shop, /data-testid="cf-open-efactura"/);
+  assert.match(shop, /data-testid="cf-open-handoff"/);
+  const workspaces = resolveWorkspaces(person({ allowedStageIds: ["packing"] }), ALL);
+  const switcher = desk(person({ allowedStageIds: ["packing"] }), { workspaces, onWorkspace: () => undefined });
+  assert.match(switcher, /class="workspace-switcher"/);
+  assert.match(switcher, /aria-pressed="true"><strong>Confirmare/);
+  // The old operator home is gone: nothing renders it any more.
+  const workspace = readFileSync(path.join(root, "features/confirmare/ConfirmareWorkspace.tsx"), "utf8");
+  assert.doesNotMatch(workspace, /OperatorWorkspace|useAutoRefresh|cf-next-action/);
+  const app = readFileSync(path.join(root, "app/StaffApp.tsx"), "utf8");
+  assert.match(app, /if \(guardedRoute === "\/" && deskHome && services\.confirmare\) screen = desk\(services\.confirmare, null\);/);
 });

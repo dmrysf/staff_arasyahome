@@ -6,7 +6,7 @@ import { LoginScreen } from "../features/auth/LoginScreen";
 import { ChangePasswordScreen } from "../features/auth/ChangePasswordScreen";
 import { NoStaffAccessScreen } from "../features/auth/NoStaffAccessScreen";
 import { routeForSession } from "../features/auth/routeProtection";
-import { HomeScreen } from "../features/home/HomeScreen";
+import { HomeScreen, homeWorkspace, workspaceAvailability } from "../features/home/HomeScreen";
 import { ScannerScreen } from "../features/scanner/ScannerScreen";
 import { OrdersScreen } from "../features/orders/OrdersScreen";
 import { OrderDetailScreen } from "../features/orders/OrderDetailScreen";
@@ -16,8 +16,8 @@ import type { StaffRuntimeMode } from "../src/runtimeConfig";
 import { StaffServiceError } from "../domain/models";
 import { toServiceError } from "../services/errors";
 import { canAccessRoute } from "../domain/permissions";
-import { usesProductionScanner } from "../domain/operatorDesk";
-import { canUseConfirmare } from "../domain/confirmare";
+import { opensOperatorDesk, usesProductionScanner } from "../domain/operatorDesk";
+import { canUseConfirmare, type ConfirmareApi } from "../domain/confirmare";
 import { shouldEndLocalSessionAfterLogout } from "../features/auth/logoutPolicy";
 import { useProductionWorkflow } from "./useProductionWorkflow";
 import { parseStaffRoute } from "../domain/staffRoute";
@@ -31,7 +31,7 @@ import { AuthorityScreen } from "../features/authority/AuthorityScreen";
 import { canManageAuthority } from "../domain/authority";
 import { TrendyolInboxScreen } from "../features/trendyol/TrendyolInboxScreen";
 import { TrendyolPackageScreen } from "../features/trendyol/TrendyolPackageScreen";
-import { dashboardUrlFor } from "../domain/workspaces";
+import { dashboardUrlFor, resolveWorkspaces, saveWorkspacePreference, type Workspace } from "../domain/workspaces";
 import { LoginIntroStage, introPlaysHere, preloadIntroMap } from "../features/auth/LoginIntro";
 import { I18nProvider, normalizeLocale, readDeviceLocale, saveDeviceLocale, t, type Locale } from "../i18n";
 import { localizeWorkflow } from "../domain/stageNames";
@@ -115,8 +115,11 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
   const parsedRoute = parseStaffRoute(route.split(/[?#]/, 1)[0]);
   const sessionRoute = routeForSession(parsedRoute.pathname, Boolean(session));
   const guardedRoute = session && !canAccessRoute(session.employee, sessionRoute) ? "/" : sessionRoute;
+  // Staff 2.42.1: a Confirmare operator's home is the operator desk (read on every render: the saved workspace choice
+  // may have changed).
+  const deskHome = Boolean(session && services.confirmare && opensOperatorDesk(session.employee, homeWorkspace(session.employee, services)));
   // The guide explains the screen actually shown (a refused route shows the home screen).
-  const guideRoute = useMemo(() => parseStaffRoute(guardedRoute), [guardedRoute]);
+  const guideRoute = useMemo(() => parseStaffRoute(guardedRoute === "/" && deskHome ? "/confirmare" : guardedRoute), [guardedRoute, deskHome]);
   const staffReady = Boolean(session && !session.employee.mustChangePassword && session.employee.applications.includes("staff"));
   const workflowLifecycle = useProductionWorkflow({ authenticated: staffReady, route: guardedRoute, service: services.workflow });
 
@@ -165,8 +168,12 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
   const financeRequestId = (parsedRoute.kind === "finance-task" || parsedRoute.kind === "finance-oversight-detail") && guardedRoute === parsedRoute.pathname ? parsedRoute.requestId : "";
   const financeOrderId = parsedRoute.kind === "finance-order" && guardedRoute === parsedRoute.pathname ? parsedRoute.orderId : "";
   const financeLegacyId = parsedRoute.kind === "finance-legacy" && guardedRoute === parsedRoute.pathname ? parsedRoute.orderId : "";
+  const workspaces = resolveWorkspaces(session.employee, workspaceAvailability(services));
+  const chooseWorkspace = (workspace: Workspace) => { saveWorkspacePreference(session.employee.employeeUuid, workspace.id); navigate("/"); };
+  const desk = (service: ConfirmareApi, deskOrderId: string | null) => <OperatorDesk employee={session.employee} service={service} documents={services.documents} orderId={deskOrderId} navigate={navigate} workspaces={workspaces} onWorkspace={chooseWorkspace} />;
   let screen = <HomeScreen employee={session.employee} services={services} workflow={workflow} dashboardUrl={dashboardUrl} navigate={navigate} />;
-  if (guardedRoute === "/scan") {
+  if (guardedRoute === "/" && deskHome && services.confirmare) screen = desk(services.confirmare, null);
+  else if (guardedRoute === "/scan") {
     // A request's "open the scanner" passes only the request id; the scanned code itself never enters a URL.
     const scanContext = new URLSearchParams(window.location.search).get("exception");
     screen = <ScannerScreen key={scanContext ?? "scan"} service={services.orders} exceptions={services.exceptions} contextExceptionId={scanContext} cutting={services.cutting} employee={session.employee} workflow={workflow} mode={mode} navigate={navigate} onSessionExpired={() => expireSession(new StaffServiceError("SESSION_EXPIRED"))} />;
@@ -179,7 +186,7 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
   else if (guardedRoute === "/trendyol" && services.trendyol) screen = <TrendyolInboxScreen service={services.trendyol} navigate={navigate} />;
   else if (trendyolPackageId && services.trendyol) screen = <TrendyolPackageScreen key={trendyolPackageId} packageId={trendyolPackageId} service={services.trendyol} navigate={navigate} />;
   // Staff 2.42.0: the operator desk; the queue and an opened order are one screen (same element, so its filters stay).
-  else if (guardedRoute === "/confirmare" && services.confirmare) screen = <OperatorDesk employee={session.employee} service={services.confirmare} documents={services.documents} orderId={null} navigate={navigate} />;
+  else if (guardedRoute === "/confirmare" && services.confirmare) screen = desk(services.confirmare, null);
   else if (guardedRoute === "/confirmare/team" && services.confirmare) screen = <ConfirmareTeamScreen employee={session.employee} service={services.confirmare} navigate={navigate} />;
   else if (guardedRoute === "/confirmare/finance" && services.confirmare) screen = <ConfirmareFinanceScreen employee={session.employee} service={services.confirmare} navigate={navigate} />;
   else if (guardedRoute === "/confirmare/finance/requests" && services.confirmare) screen = <FinanceInboxScreen employee={session.employee} service={services.confirmare} navigate={navigate} />;
@@ -192,13 +199,13 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
   else if (guardedRoute === "/confirmare/awb" && services.confirmare) screen = <ConfirmareAwbScreen service={services.confirmare} navigate={navigate} />;
   else if (guardedRoute === "/confirmare/efactura" && services.confirmare) screen = <ConfirmareEfacturaScreen service={services.confirmare} navigate={navigate} />;
   else if (guardedRoute === "/confirmare/health" && services.confirmare) screen = <ConfirmareHealthScreen service={services.confirmare} navigate={navigate} />;
-  else if (confirmareOrderId && services.confirmare) screen = <OperatorDesk employee={session.employee} service={services.confirmare} documents={services.documents} orderId={confirmareOrderId} navigate={navigate} />;
+  else if (confirmareOrderId && services.confirmare) screen = desk(services.confirmare, confirmareOrderId);
   else if (guardedRoute === "/history") screen = <HistoryScreen service={services.activity} navigate={navigate} />;
   else if (guardedRoute === "/profile") screen = <ProfileScreen employee={session.employee} mode={services.mode} onLogout={logout} passwordChanged={passwordChanged} onChangePassword={() => { setPasswordChanged(false); setChangingPassword(true); }} onChangeLocale={async (locale) => { setSession(await services.auth.changeLocale(locale)); }} />;
 
   return <LiveProvider service={services.live} enabled={staffReady}>
     <GuideProvider key={session.employee.employeeUuid} employee={session.employee} route={guideRoute} dashboardLink={Boolean(dashboardUrl)}>
-      <AppShell employee={session.employee} route={guardedRoute} mode={mode} navigate={navigate} immersive={immersive}>{screen}</AppShell>
+      <AppShell employee={session.employee} route={guardedRoute} deskHome={deskHome} mode={mode} navigate={navigate} immersive={immersive}>{screen}</AppShell>
     </GuideProvider>
     <LiveNotice navigate={navigate} />
   </LiveProvider>;
