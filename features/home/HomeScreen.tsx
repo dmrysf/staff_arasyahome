@@ -7,9 +7,9 @@ import { ExceptionsCard } from "../exceptions/ExceptionsCard";
 import { SupervisorCard } from "../exceptions/SupervisorScreen";
 import { DocumentsCard } from "../documents/DocumentsCard";
 import { DocumentLookup } from "../documents/DocumentScreen";
-import { usesProductionScanner } from "../../domain/operatorDesk";
+import { opensOperatorDesk, usesProductionScanner } from "../../domain/operatorDesk";
 import { canManageAuthority } from "../../domain/authority";
-import { firstName, readWorkspacePreference, resolveWorkspaces, saveWorkspacePreference, selectPrimaryWorkspace, type Workspace } from "../../domain/workspaces";
+import { firstName, readWorkspacePreference, resolveWorkspaces, saveWorkspacePreference, selectPrimaryWorkspace, type Workspace, type WorkspaceAvailability } from "../../domain/workspaces";
 import { AppIcon } from "../../components/icons/AppIcon";
 import { WorkspaceSwitcher } from "../workspaces/DashboardParts";
 import { StageWorkspace } from "../workspaces/StageWorkspace";
@@ -57,6 +57,16 @@ function TodayWork({ service }: { service: ActivityService }) {
   );
 }
 
+/** Which optional workspaces this runtime can open (preview and demo have no Trendyol, document or management API). */
+export function workspaceAvailability(services: ServiceBundle): WorkspaceAvailability {
+  return { trendyol: Boolean(services.trendyol), documents: Boolean(services.documents), management: Boolean(services.management), confirmare: Boolean(services.confirmare) };
+}
+
+/** The workspace `/` opens for this employee: the saved choice while still authorized, else the deterministic first. */
+export function homeWorkspace(employee: Employee, services: ServiceBundle): Workspace | null {
+  return selectPrimaryWorkspace(resolveWorkspaces(employee, workspaceAvailability(services)), employee, readWorkspacePreference(employee.employeeUuid));
+}
+
 /**
  * Department-aware home. It resolves the workspaces the employee is already authorized for (central IAM data from
  * the session) and opens one deterministically; a saved choice is honoured only while still authorized. Each
@@ -64,7 +74,7 @@ function TodayWork({ service }: { service: ActivityService }) {
  */
 export function HomeScreen({ employee, services, workflow, dashboardUrl, navigate }: { employee: Employee; services: ServiceBundle; workflow: ProductionWorkflow; dashboardUrl: string | null; navigate: (path: string) => void }) {
   const { t } = useI18n();
-  const workspaces = useMemo(() => resolveWorkspaces(employee, { trendyol: Boolean(services.trendyol), documents: Boolean(services.documents), management: Boolean(services.management), confirmare: Boolean(services.confirmare) }), [employee, services]);
+  const workspaces = useMemo(() => resolveWorkspaces(employee, workspaceAvailability(services)), [employee, services]);
   const [chosen, setChosen] = useState<string | null>(() => readWorkspacePreference(employee.employeeUuid));
   const current = selectPrimaryWorkspace(workspaces, employee, chosen);
   useGuideWorkspace(current);
@@ -72,6 +82,8 @@ export function HomeScreen({ employee, services, workflow, dashboardUrl, navigat
   const select = (workspace: Workspace) => {
     setChosen(workspace.id);
     saveWorkspacePreference(employee.employeeUuid, workspace.id);
+    // A Confirmare operator's Confirmare home is the operator desk.
+    if (services.confirmare && opensOperatorDesk(employee, workspace)) navigate("/confirmare");
   };
 
   if (!current) return null;
@@ -90,7 +102,7 @@ export function HomeScreen({ employee, services, workflow, dashboardUrl, navigat
       <GuideBoundary><GuideHomeCard /></GuideBoundary>
       <SupervisorCard service={services.exceptions} navigate={navigate} />
 
-      {current.kind === "confirmare" && services.confirmare && <ConfirmareWorkspace employee={employee} service={services.confirmare} navigate={navigate} />}
+      {current.kind === "confirmare" && services.confirmare && <ConfirmareWorkspace employee={employee} navigate={navigate} />}
 
       {current.kind === "trendyol" && services.trendyol && <TrendyolDashboard employee={employee} service={services.trendyol} navigate={navigate} />}
 

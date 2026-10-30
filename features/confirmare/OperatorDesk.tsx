@@ -1,18 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { formatDate, useI18n, type MessageKey } from "../../i18n";
 import type { Employee } from "../../domain/models";
-import { QUEUE_TABS, canSuperviseConfirmare, confirmareScopesOf, confirmareSources, inTab, itemStatus, itemStatusLabel, itemStatusTone, sourceLabel, type ConfirmareApi, type ConfirmareItem, type QueueTab } from "../../domain/confirmare";
+import { QUEUE_TABS, canHandOff, canSuperviseConfirmare, canUseAdvanceQueue, canUseFinance, confirmareScopesOf, confirmareSources, inTab, itemStatus, itemStatusLabel, itemStatusTone, sourceLabel, type ConfirmareApi, type ConfirmareItem, type QueueTab } from "../../domain/confirmare";
 import { DESK_METRICS, DESK_SORTS, deskCounts, searchQueue, sortQueue, type DeskMetric, type DeskSort } from "../../domain/operatorDesk";
 import type { DocumentApi } from "../../domain/documents";
+import type { Workspace } from "../../domain/workspaces";
+import { canUseShopTasks, canWatchHealth } from "../../domain/confirmareOps";
+import { canOverseeFinance, canUseFinanceInbox, oversightPath } from "../../domain/financeRequests";
 import { createIdempotencyKey } from "../../services/idempotency";
 import { getErrorPresentation, toServiceError } from "../../services/errors";
 import { AppIcon } from "../../components/icons/AppIcon";
 import { Notice } from "../../components/ui/StatusPill";
 import { EmptyPanel } from "../../components/ui/States";
-import { AutoRefreshBar, QueueSkeleton } from "../workspaces/DashboardParts";
+import { AutoRefreshBar, QueueSkeleton, WorkspaceSwitcher } from "../workspaces/DashboardParts";
 import { useAutoRefresh } from "../workspaces/useAutoRefresh";
 import { SourceFilter, confirmareOrderPath, confirmareQueueLoader, dueDay, when } from "./ConfirmareParts";
 import { ConfirmareOrderScreen } from "./ConfirmareOrderScreen";
+import { ShopTaskButtons } from "./ConfirmareWorkspace";
+import { LegacyOrderLookup } from "./FinanceRequestScreens";
 
 const SEARCH_DELAY_MS = 200;
 
@@ -50,8 +55,12 @@ function filterQuery(filters: Filters): string {
  * keeps its filter, sort, search and scroll while orders are opened. Opening an order is a navigation
  * (`/confirmare/orders/{id}`), so the browser's back and forward work as everywhere else. Reads only: the queue never
  * claims, approves or changes a payment; "Preia următoarea comandă" asks the server, which picks the order.
+ *
+ * Staff 2.42.1: the desk is also the operator's home (`/`), so it carries what the old Confirmare home linked to (the
+ * finance, hand-off, shop and health screens, the legacy order lookup) and, for an employee with several workspaces,
+ * the workspace switcher.
  */
-export function OperatorDesk({ employee, service, documents, orderId, navigate }: { employee: Employee; service: ConfirmareApi; documents?: DocumentApi; orderId: string | null; navigate: (path: string) => void }) {
+export function OperatorDesk({ employee, service, documents, orderId, navigate, workspaces = [], onWorkspace }: { employee: Employee; service: ConfirmareApi; documents?: DocumentApi; orderId: string | null; navigate: (path: string) => void; workspaces?: readonly Workspace[]; onWorkspace?: (workspace: Workspace) => void }) {
   const { t } = useI18n();
   const initial = useMemo(() => readFilters(employee), [employee]);
   const [filters, setFilters] = useState<Filters>(initial);
@@ -67,6 +76,8 @@ export function OperatorDesk({ employee, service, documents, orderId, navigate }
   const [message, setMessage] = useState<string | null>(null);
   const takeKey = useRef<string | null>(null);
   const listRef = useRef<HTMLUListElement | null>(null);
+  const deskWorkspace = workspaces.find((workspace) => workspace.kind === "confirmare");
+  const sources = confirmareSources(employee);
 
   // The address keeps the filters; the order part of the path is the navigation's.
   useEffect(() => {
@@ -125,6 +136,7 @@ export function OperatorDesk({ employee, service, documents, orderId, navigate }
 
   return (
     <div className={`cf-desk${orderId ? " has-order" : ""}`} data-testid="cf-queue">
+      {deskWorkspace && onWorkspace && workspaces.length > 1 && <div className="cf-desk-switcher"><WorkspaceSwitcher workspaces={workspaces} current={deskWorkspace} onSelect={onWorkspace} /></div>}
       <header className="cf-desk-top">
         <div className="cf-desk-title">
           <p className="eyebrow">{t("desk.eyebrow")}</p>
@@ -132,6 +144,7 @@ export function OperatorDesk({ employee, service, documents, orderId, navigate }
           <p className="cf-desk-date">{formatDate(new Date().toISOString(), { weekday: "long", day: "numeric", month: "long", timeZone: "Europe/Bucharest" })}</p>
         </div>
         <div className="cf-desk-top-actions">
+          <DeskTools employee={employee} navigate={navigate} />
           {operates && <button type="button" className="button button-primary" disabled={taking} onClick={() => { void takeNext(); }} data-testid="cf-take-next">{taking ? t("common.processing") : t("cf.next.take")}<AppIcon name="arrow" size={18} /></button>}
           {supervisor && <button type="button" className="button button-secondary" onClick={() => navigate("/confirmare/team")} data-testid="cf-open-team"><AppIcon name="team" size={18} />{t("cf.home.team")}</button>}
         </div>
@@ -156,7 +169,7 @@ export function OperatorDesk({ employee, service, documents, orderId, navigate }
             <label htmlFor="cf-desk-search" className="visually-hidden">{t("desk.search.label")}</label>
             <input id="cf-desk-search" type="search" value={typed} maxLength={60} autoComplete="off" placeholder={t("desk.search.placeholder")} onChange={(event) => setTyped(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") { setTyped(""); setFilters((current) => ({ ...current, query: "" })); } }} data-testid="cf-desk-search" />
           </div>
-          <SourceFilter sources={confirmareSources(employee)} value={filters.source} onChange={(source) => setFilters((current) => ({ ...current, source }))} />
+          <SourceFilter sources={sources} value={filters.source} onChange={(source) => setFilters((current) => ({ ...current, source }))} />
           <div className="cf-desk-filters">
             <label className="visually-hidden" htmlFor="cf-desk-tab">{t("cf.queue.tabs")}</label>
             <select id="cf-desk-tab" value={filters.tab} disabled={searching} onChange={(event) => setFilters((current) => ({ ...current, tab: event.target.value as QueueTab }))} data-testid="cf-desk-tab">
@@ -179,6 +192,11 @@ export function OperatorDesk({ employee, service, documents, orderId, navigate }
           </div>
           {data && data.items.length >= 200 && <p className="dashboard-footnote">{t("cf.queue.limit")}</p>}
           <AutoRefreshBar onRefresh={queue.refresh} busy={queue.busy} refreshing={queue.refreshing} updatedAt={queue.updatedAt} stale={data !== null && queue.error !== null} stopped={queue.stopped} testId="cf-queue-refresh" />
+          <details className="cf-desk-legacy" data-testid="cf-desk-legacy">
+            <summary>{t("fr.legacyOrder.lookupTitle")}</summary>
+            <LegacyOrderLookup sources={sources} navigate={navigate} />
+          </details>
+          <p className="cf-desk-note" data-testid="cf-contact-dependency">{t("cf.home.contactDependency")}</p>
         </section>
 
         <section className="cf-desk-order" aria-label={t("desk.order.region")}>
@@ -189,6 +207,21 @@ export function OperatorDesk({ employee, service, documents, orderId, navigate }
       </div>
     </div>
   );
+}
+
+/** The Confirmare screens the old operator home linked to, each shown only to the employee it is for. */
+function DeskTools({ employee, navigate }: { employee: Employee; navigate: (path: string) => void }) {
+  const { t } = useI18n();
+  const tools = [
+    canUseFinanceInbox(employee) && <button key="inbox" type="button" className="button button-secondary" onClick={() => navigate("/confirmare/finance/requests")} data-testid="fr-open-inbox"><AppIcon name="check" size={18} />{t("fr.home.open")}</button>,
+    canOverseeFinance(employee) && <button key="oversight" type="button" className="button button-secondary" onClick={() => navigate(oversightPath())} data-testid="fr-open-oversight"><AppIcon name="team" size={18} />{t("fr.oversight.open")}</button>,
+    canUseAdvanceQueue(employee) && <button key="finance" type="button" className="button button-secondary" onClick={() => navigate("/confirmare/finance")} data-testid="cf-open-finance"><AppIcon name="orders" size={18} />{t(canUseFinance(employee) ? "cf.fin.open" : "cf.fin.openAdvances")}</button>,
+    canHandOff(employee) && <button key="handoff" type="button" className="button button-secondary" onClick={() => navigate("/confirmare/handoff")} data-testid="cf-open-handoff"><AppIcon name="document" size={18} />{t("cf.handoff.list.open")}</button>,
+    canUseShopTasks(employee) && <ShopTaskButtons key="shop" navigate={navigate} />,
+    canWatchHealth(employee) && <button key="health" type="button" className="button button-secondary" onClick={() => navigate("/confirmare/health")} data-testid="cf-open-health"><AppIcon name="orders" size={18} />{t("cf.health.open")}</button>,
+  ].filter(Boolean);
+  if (tools.length === 0) return null;
+  return <nav className="cf-desk-tools" aria-label={t("desk.tools.label")} data-testid="cf-desk-tools">{tools}</nav>;
 }
 
 /** One queue row: identity and state only (the queue never carries customer data). Colour always comes with words. */

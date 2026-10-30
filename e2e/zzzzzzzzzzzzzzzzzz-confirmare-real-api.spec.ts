@@ -51,7 +51,8 @@ async function signIn(browser: Browser, username: string, width = 390, height = 
   await page.getByLabel("Nume utilizator").fill(username);
   await page.getByLabel("Parolă").fill(F?.password ?? base.password);
   await page.getByRole("button", { name: /Autentificare/ }).click();
-  await expect(page.getByRole("heading", { name: /^Bună,/ })).toBeVisible();
+  // Staff 2.42.1: a Confirmare operator or supervisor lands on the operator desk; everyone else on the greeting home.
+  await expect(page.getByRole("heading", { name: /^Bună,/ }).or(page.getByTestId("cf-queue"))).toBeVisible();
   return { context, page, errors };
 }
 
@@ -124,14 +125,13 @@ test("operator: next step, queue, recorded calls (never a cancellation), line an
   test.setTimeout(120_000);
   const op = await signIn(browser, F.people.operator.username);
   const page = op.page;
-  await expect(page.getByTestId("workspace-confirmare")).toBeVisible();
-  await expect(page.getByTestId("cf-next-action")).toContainText(`#${number(F.orders.call)}`);
-  await expect(page.getByTestId("cf-next-action")).toContainText("Sunați clientul");
+  // Staff 2.42.1: the operator's home is the desk itself (no second Confirmare home, no menu search).
+  await expect(page.getByTestId("cf-queue")).toBeVisible();
+  await expect(page).toHaveURL(/\/confirmare$/);
+  await expect(page.getByTestId("workspace-confirmare")).toHaveCount(0);
   await expect(page.getByTestId("cf-contact-dependency")).toContainText("Arasya nu păstrează telefonul complet");
   await capture(page, "home-operator-390");
 
-  await page.getByTestId("cf-open-queue").click();
-  await expect(page).toHaveURL(/\/confirmare$/);
   const list = page.locator("#cf-tab-panel");
   await expect(list.getByTestId(`cf-row-${number(F.orders.call)}`)).toBeVisible();
   await expect(list.getByTestId(`cf-row-${number(F.orders.cod)}`)).toBeVisible();
@@ -341,7 +341,7 @@ test("supervisor: team, leave with redistribution, alerts and attention; no bypa
   test.setTimeout(90_000);
   const sup = await signIn(browser, F.people.supervisor.username, 1440, 900);
   const page = sup.page;
-  await expect(page.getByTestId("workspace-confirmare")).toBeVisible();
+  await expect(page.getByTestId("cf-queue")).toBeVisible();
   await expect(page.getByTestId("cf-open-team")).toBeVisible();
   await capture(page, "home-supervisor-1440");
   await page.getByTestId("cf-open-team").click();
@@ -402,7 +402,7 @@ test("isolation: another shop, legacy orders and people without a scope never re
   await supervisor.context.close();
 
   const unrelated = await signIn(browser, base.users.ana);
-  await expect(unrelated.page.getByTestId("workspace-confirmare")).toHaveCount(0);
+  await expect(unrelated.page.getByTestId("cf-queue")).toHaveCount(0);
   await unrelated.page.goto("/confirmare");
   await expect(unrelated.page).toHaveURL(/\/confirmare$/);
   await expect(unrelated.page.getByTestId("cf-queue")).toHaveCount(0);
@@ -504,6 +504,14 @@ test("shop edit (Phase 4B): the shop prices the change, one explicit save, the a
   await expect(page.getByTestId("cf-edit-start"), "no editor until the customer asks for a change").toHaveCount(0);
   await page.getByTestId("cf-shop-load").click();
   await at(page, "contact", "call");
+  // Staff 2.42.1: the desk with the shop's pictures, at desktop widths.
+  for (const [width, height] of [[1440, 900], [1920, 1080]] as const) {
+    await page.setViewportSize({ width, height });
+    await expect(page.getByTestId("cfo-product-photo-1")).toBeVisible();
+    expect(await overflow(page), `desk photos at ${width}px`).toBeLessThanOrEqual(0);
+    await capture(page, `desk-photos-${width}`);
+  }
+  await page.setViewportSize({ width: 390, height: 844 });
   // During the call the customer asks for another length: the change opens in the same step.
   await page.getByTestId("cfw-open-correction").click();
   await expect(page.getByTestId("cfw-task")).toHaveAttribute("data-task", "correction");
@@ -523,6 +531,13 @@ test("shop edit (Phase 4B): the shop prices the change, one explicit save, the a
   await page.getByTestId("cfo-open-panel").click();
   await expect(page.getByTestId("cfo-edit-panel")).toBeVisible();
   await expect(length, "the typed length survives closing the panel").toHaveValue(/^3[.,]5$/);
+  for (const [width, height] of [[1440, 900], [1920, 1080]] as const) {
+    await page.setViewportSize({ width, height });
+    await expect(page.getByTestId("cfo-edit-panel")).toBeVisible();
+    expect(await overflow(page), `desk panel at ${width}px`).toBeLessThanOrEqual(0);
+    await capture(page, `desk-panel-${width}`);
+  }
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.getByTestId("cf-edit-preview").click();
   await expect(page.getByTestId("cf-edit-preview-view")).toBeVisible();
   await expect(page.getByTestId("cf-edit-new-total")).toContainText("754,00");
@@ -689,6 +704,69 @@ test("handoff (Phase 6): a document employee without Confirmare scope generates 
   await sup.context.close();
 });
 
+test("home (Staff 2.42.1): the operator lands on the desk; reload, back, forward, a direct link and the menu stay on it", async ({ browser }) => {
+  test.skip(Boolean(F.skip), F.skip);
+  test.setTimeout(120_000);
+  const op = await signIn(browser, F.people.operator.username, 1440, 900);
+  const page = op.page;
+  await expect(page).toHaveURL(/\/confirmare$/);
+  await expect(page.getByTestId("cf-queue")).toBeVisible();
+  for (const metric of ["mine", "callback", "correction", "payment"]) await expect(page.getByTestId(`cf-metric-${metric}`)).toBeVisible();
+  await expect(page.getByTestId("workspace-confirmare")).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: /^Bună,/ })).toHaveCount(0);
+  const nav = page.getByRole("navigation", { name: "Navigare principală" });
+  await expect(nav.locator(".nav-home")).toHaveAttribute("aria-current", "page");
+  await expect(nav.locator(".nav-orders"), "no production order list for an operator without a stage").toHaveCount(0);
+  await expect(nav.locator(".primary-scan-nav"), "no QR scanner for the office operator").toHaveCount(0);
+  await capture(page, "desk-home-1440");
+
+  // The address is the desk's: a reload stays on it.
+  await page.reload();
+  await expect(page.getByTestId("cf-queue")).toBeVisible();
+  await expect(page).toHaveURL(/\/confirmare$/);
+
+  // An order opens on the desk; reload, back and forward behave as everywhere else.
+  await page.goto(orderPath(F.orders.call));
+  await expect(page.getByTestId("cf-order")).toBeVisible();
+  await expect(page.getByTestId("cf-queue")).toBeVisible();
+  await expect(nav.locator(".nav-home")).toHaveAttribute("aria-current", "page");
+  await capture(page, "desk-order-1440");
+  await page.reload();
+  await expect(page.getByTestId("cf-order")).toBeVisible();
+  const other = page.locator("button.cf-desk-row:not(.is-selected)").first();
+  const otherNumber = (await other.getAttribute("data-testid"))?.replace("cf-row-", "") ?? "";
+  await other.click();
+  await expect(page).toHaveURL(new RegExp(`%3A${otherNumber}$`));
+  await expect(page.getByTestId("cf-order")).toBeVisible();
+  await page.goBack();
+  await expect(page).toHaveURL(new RegExp(`${encodeURIComponent(F.orders.call)}$`));
+  await expect(page.getByTestId("cf-order")).toBeVisible();
+  await page.goForward();
+  await expect(page).toHaveURL(new RegExp(`%3A${otherNumber}$`));
+  await expect(page.getByTestId("cf-order")).toBeVisible();
+
+  // "Acasă" returns to the desk itself (no second home).
+  await nav.locator(".nav-home").click();
+  await expect(page.getByTestId("cf-desk-placeholder")).toBeVisible();
+  await expect(page.getByTestId("workspace-confirmare")).toHaveCount(0);
+
+  // The same desk at 390 and 1920 px, the queue and an order.
+  for (const [width, height] of [[390, 844], [1920, 1080]] as const) {
+    await page.setViewportSize({ width, height });
+    await page.goto("/");
+    await expect(page.getByTestId("cf-queue")).toBeVisible();
+    await expect(page).toHaveURL(/\/confirmare$/);
+    expect(await overflow(page), `desk home at ${width}px`).toBeLessThanOrEqual(0);
+    await capture(page, `desk-home-${width}`);
+    await page.goto(orderPath(F.orders.call));
+    await expect(page.getByTestId("cf-order")).toBeVisible();
+    expect(await overflow(page), `desk order at ${width}px`).toBeLessThanOrEqual(0);
+    await capture(page, `desk-order-${width}`);
+  }
+  expect(op.errors).toEqual([]);
+  await op.context.close();
+});
+
 test("layouts from 320 to 1920 px without horizontal scrolling, WCAG 2.2 AA and 44 px targets", async ({ browser }) => {
   test.skip(Boolean(F.skip), F.skip);
   test.setTimeout(240_000);
@@ -696,7 +774,7 @@ test("layouts from 320 to 1920 px without horizontal scrolling, WCAG 2.2 AA and 
   const page = sup.page;
   for (const width of [320, 360, 375, 390, 768, 1024, 1440, 1920]) {
     await page.setViewportSize({ width, height: width < 768 ? 844 : 1000 });
-    for (const [name, url, ready] of [["home", "/", "workspace-confirmare"], ["queue", "/confirmare?tab=attention", "cf-queue"], ["order", orderPath(F.orders.cod), "cf-order"], ["team", "/confirmare/team", "cf-team"]] as const) {
+    for (const [name, url, ready] of [["home", "/", "cf-queue"], ["queue", "/confirmare?tab=attention", "cf-queue"], ["order", orderPath(F.orders.cod), "cf-order"], ["team", "/confirmare/team", "cf-team"]] as const) {
       await page.goto(url);
       await expect(page.getByTestId(ready)).toBeVisible();
       await page.waitForTimeout(150);
