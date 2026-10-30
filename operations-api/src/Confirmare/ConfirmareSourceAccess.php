@@ -113,7 +113,7 @@ final readonly class ConfirmareSourceAccess
                 'actor' => ['employeeId' => $actor->employeeUuid, 'role' => $role],
                 'requestId' => $this->requestId($requestId),
             ]);
-            $detail = SourceOrderDetail::from($raw, (string) $row['source_order_id'], (string) $row['order_number']);
+            $detail = SourceOrderDetail::from($raw, (string) $row['source_order_id'], (string) $row['order_number'], parse_url($target->baseUrl, PHP_URL_HOST) ?: null);
         } catch (SourceAccessException $e) {
             $this->audit($row, $actor, $role, strtolower($e->codeName), $requestId);
             return ['available' => false, 'reason' => strtolower($e->codeName)];

@@ -3,6 +3,7 @@ import { canHandOff, canOpenConfirmareOrder, canSuperviseConfirmare, canUseAdvan
 import { canUseShopTasks, canWatchHealth } from "./confirmareOps";
 import { canUseFinance } from "./confirmareFinance";
 import { canOverseeFinance, canUseFinanceInbox } from "./financeRequests";
+import { usesProductionScanner } from "./operatorDesk";
 
 export type StaffPermission =
   | "orders.scan"
@@ -26,6 +27,8 @@ export function permissionForRoute(path: string): StaffPermission | null {
 }
 
 export function canAccessRoute(employee: Employee, path: string) {
+  // Staff 2.42.0: the office operator (Confirmare or finance only) has no QR scanner; production roles keep it.
+  if (path === "/scan") return usesProductionScanner(employee);
   // Production authority takeover: managers holding the permission together with Dashboard access.
   if (path === "/authority") return employee.permissions.includes("production.manage_authority") && employee.applications.includes("dashboard");
   // Trendyol workspace: only explicitly authorized Trendyol personnel (Staff access plus the Trendyol view permission).

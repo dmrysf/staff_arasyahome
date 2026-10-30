@@ -14,7 +14,8 @@ import { AppIcon } from "../../components/icons/AppIcon";
 
 const tabs: readonly MyOrdersView[] = ["in_progress", "recent", "handed_over"];
 
-export function OrdersScreen({ service, workflow, navigate }: { service: OrderService; workflow: ProductionWorkflow; navigate: (path: string) => void }) {
+/** `scanner` (Staff 2.42.0): false for an office operator, whose empty list then offers no QR scan. */
+export function OrdersScreen({ service, workflow, navigate, scanner = true }: { service: OrderService; workflow: ProductionWorkflow; navigate: (path: string) => void; scanner?: boolean }) {
   const { t } = useI18n();
   const [orders, setOrders] = useState<StaffOrder[]>([]);
   const [nextCursor, setNextCursor] = useState<string | undefined>();
@@ -59,7 +60,7 @@ export function OrdersScreen({ service, workflow, navigate }: { service: OrderSe
       <div className="segmented" role="tablist" aria-label={t("orders.filter")}>{tabs.map((item) => <button key={item} role="tab" aria-selected={tab === item} onClick={() => setTab(item)}>{t(`orders.tab.${item}`)}<span>{orders.filter((order) => matchesMyOrdersView(order, item)).length}</span></button>)}</div>
       {error ? <ErrorState error={error} onAction={() => { setError(null); setLoading(true); service.listMine({ limit: 50 }).then(page => { setOrders(page.items); setNextCursor(page.nextCursor); }).catch((caught) => setError(toServiceError(caught))).finally(() => setLoading(false)); }} /> : <div className="order-list" aria-live="polite">
         {loading ? <LoadingState label={t("orders.loading")} /> : visible.map((order) => <OrderCard key={order.id} order={order} workflow={workflow} onOpen={() => navigate(`/orders/${encodeURIComponent(order.id)}`)} />)}
-        {!loading && visible.length === 0 && <EmptyPanel icon="scan" title={tab === "in_progress" ? t("orders.emptyActive") : t("orders.emptyOther")} action={<button className="button button-primary" type="button" onClick={() => navigate("/scan")}><span>{t("orders.scanOne")}</span><AppIcon name="arrow" size={19} /></button>}>{t("orders.emptyHint")}</EmptyPanel>}
+        {!loading && visible.length === 0 && <EmptyPanel icon="scan" title={tab === "in_progress" ? t("orders.emptyActive") : t("orders.emptyOther")} action={scanner ? <button className="button button-primary" type="button" onClick={() => navigate("/scan")}><span>{t("orders.scanOne")}</span><AppIcon name="arrow" size={19} /></button> : undefined}>{scanner ? t("orders.emptyHint") : null}</EmptyPanel>}
         {!loading && nextCursor && (
           <div className="load-more-container">
             {loadMoreError && <div className="load-more-error">{t("orders.loadMoreFailed")} {getErrorPresentation(loadMoreError).message}</div>}

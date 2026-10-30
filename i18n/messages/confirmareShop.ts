@@ -5,7 +5,7 @@
  */
 export const confirmareShopRO = {
   "cf.shop.title": "Comanda din magazin",
-  "cf.shop.lead": "Telefonul clientului și prețurile vin direct din magazin, doar când le cereți. Fiecare citire este înregistrată; nimic nu rămâne salvat în Staff.",
+  "cf.shop.lead": "Telefonul clientului, prețurile și fotografiile vin direct din magazin când deschideți comanda atribuită dvs. Fiecare citire este înregistrată; nimic nu rămâne salvat în Staff, iar datele se ascund după 10 minute.",
   "cf.shop.show": "Afișează comanda din magazin",
   "cf.shop.refresh": "Citește din nou din magazin",
   "cf.shop.hide": "Ascunde datele",
@@ -71,7 +71,7 @@ export const confirmareShopRO = {
 
 export const confirmareShopEN = {
   "cf.shop.title": "Shop order",
-  "cf.shop.lead": "The customer's telephone number and the prices come straight from the shop, only when you ask. Every read is recorded; nothing stays saved in Staff.",
+  "cf.shop.lead": "The customer's telephone number, the prices and the pictures come straight from the shop when you open an order assigned to you. Every read is recorded; nothing stays saved in Staff, and the data is hidden after 10 minutes.",
   "cf.shop.show": "Show the shop order",
   "cf.shop.refresh": "Read the shop again",
   "cf.shop.hide": "Hide the data",
@@ -137,7 +137,7 @@ export const confirmareShopEN = {
 
 export const confirmareShopTR = {
   "cf.shop.title": "Mağazadaki sipariş",
-  "cf.shop.lead": "Müşterinin telefonu ve fiyatlar, yalnızca siz istediğinizde doğrudan mağazadan gelir. Her okuma kaydedilir; Staff'ta hiçbir şey saklanmaz.",
+  "cf.shop.lead": "Müşterinin telefonu, fiyatlar ve fotoğraflar, size atanan siparişi açtığınızda doğrudan mağazadan gelir. Her okuma kaydedilir; Staff'ta hiçbir şey saklanmaz ve veriler 10 dakika sonra gizlenir.",
   "cf.shop.show": "Mağazadaki siparişi göster",
   "cf.shop.refresh": "Mağazadan yeniden oku",
   "cf.shop.hide": "Verileri gizle",
@@ -203,7 +203,7 @@ export const confirmareShopTR = {
 
 export const confirmareShopSI = {
   "cf.shop.title": "වෙළඳසැලේ ඇණවුම",
-  "cf.shop.lead": "පාරිභෝගිකයාගේ දුරකථන අංකය සහ මිල ගණන් ඔබ ඉල්ලන විට පමණක් වෙළඳසැලෙන් කෙලින්ම පැමිණේ. සෑම කියවීමක්ම සටහන් වේ; Staff තුළ කිසිවක් ගබඩා නොවේ.",
+  "cf.shop.lead": "ඔබට පවරා ඇති ඇණවුම විවෘත කළ විට පාරිභෝගිකයාගේ දුරකථන අංකය, මිල ගණන් සහ ඡායාරූප වෙළඳසැලෙන් කෙලින්ම පැමිණේ. සෑම කියවීමක්ම සටහන් වේ; Staff තුළ කිසිවක් ගබඩා නොවන අතර විනාඩි 10කට පසු දත්ත සැඟවේ.",
   "cf.shop.show": "වෙළඳසැලේ ඇණවුම පෙන්වන්න",
   "cf.shop.refresh": "වෙළඳසැලෙන් නැවත කියවන්න",
   "cf.shop.hide": "දත්ත සඟවන්න",

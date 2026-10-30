@@ -35,7 +35,7 @@ test("the finance task filter is one sideways-scrolling row of one-line tasks; t
   assert.match(css, /\.segmented\.cf-task-strip \{ display: flex; overflow-x: auto;/);
   assert.match(css, /\.segmented\.cf-task-strip button \{ flex: 0 0 auto; white-space: nowrap;/);
   // Only the finance filter changes: the other Confirmare tab rows keep the grid.
-  for (const file of ["ConfirmareQueueScreen.tsx", "ConfirmareTransferExceptions.tsx", "ConfirmareShopTasks.tsx"]) assert.doesNotMatch(source(file), /cf-task-strip/, file);
+  for (const file of ["OperatorDesk.tsx", "ConfirmareTransferExceptions.tsx", "ConfirmareShopTasks.tsx"]) assert.doesNotMatch(source(file), /cf-task-strip/, file);
 });
 
 test("switched-off finance is named as such, a failed read stays a failure, in every Staff language", () => {

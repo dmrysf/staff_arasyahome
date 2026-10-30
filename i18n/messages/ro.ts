@@ -7,6 +7,7 @@ import { confirmareHandoffRO } from "./confirmareHandoff";
 import { confirmareOpsRO } from "./confirmareOps";
 import { confirmareEditRO } from "./confirmareEdit";
 import { confirmareWorkflowRO } from "./confirmareWorkflow";
+import { operatorDeskRO } from "./operatorDesk";
 import { physicalMessages } from "./physical";
 import { roErrors } from "./ro.errors";
 
@@ -28,6 +29,7 @@ export const ro = {
   ...confirmareOpsRO,
   ...confirmareEditRO,
   ...confirmareWorkflowRO,
+  ...operatorDeskRO,
 
   // ---- common ------------------------------------------------------------------------------------------------
   "common.back": "Înapoi",

@@ -4,6 +4,7 @@ import { PrimaryScanButton } from "./PrimaryScanButton";
 import { ArasyaLogo } from "../brand/BrandLogo";
 import type { Employee } from "../../domain/models";
 import { hasPermission, type StaffPermission } from "../../domain/permissions";
+import { usesProductionScanner } from "../../domain/operatorDesk";
 
 // Labels are read in the active language when the bar renders.
 export const bottomNavigationItems = [
@@ -37,7 +38,7 @@ export function BottomNavigation({ employee, route, navigate }: { employee: Empl
       <span className="scan-nav-space" aria-hidden="true" />
       {renderItem(history)}
       {renderItem(profile)}
-      {hasPermission(employee, "orders.scan") && <PrimaryScanButton active={route === "/scan"} onSelect={() => navigate("/scan")} />}
+      {usesProductionScanner(employee) && <PrimaryScanButton active={route === "/scan"} onSelect={() => navigate("/scan")} />}
     </nav>
   );
 }

@@ -267,3 +267,49 @@
   --shadow-accent: 0 8px 22px rgba(238, 123, 99, .28);
   --shadow-lift: 0 10px 22px rgba(0, 0, 0, .4);
 }
+
+/*
+ * Operator desk (Staff 2.42.0, owner design brief 2026-10-30): the Confirmare desk is a calm off-white workspace with a
+ * petrol accent, white cards and soft shadows. Scoped to the screens that show the desk; the rest of Staff keeps its
+ * white and black look. Text, accent and focus keep WCAG AA on every desk surface (checked in the unit tests).
+ */
+:root:not([data-theme="dark"]) .app-shell:has(.cf-desk) {
+  --color-bg: #f7f9fb;
+  --color-bg-tint: #f7f9fb;
+  --color-surface: #ffffff;
+  --color-surface-soft: #f2f5f7;
+  --color-surface-raised: #edf2f5;
+  --color-fill: rgba(22, 125, 137, .05);
+  --color-fill-strong: rgba(22, 125, 137, .1);
+  --color-border: #e5ebef;
+  --color-border-strong: #c7d3da;
+  --color-text: #22313d;
+  --color-text-muted: #45545f;
+  --color-text-subtle: #5b6b77;
+  --color-accent: #167d89;
+  --color-accent-hover: #126c77;
+  --color-accent-pressed: #0f5c65;
+  --color-accent-contrast: #ffffff;
+  --color-accent-soft: #e9f5f6;
+  --color-accent-line: #8bc4ca;
+  --color-accent-text: #0f5c65;
+  --color-info: #167d89;
+  --color-info-soft: #eef6f7;
+  --color-info-line: #a9d3d8;
+  --color-info-text: #0f5c65;
+  --color-focus: rgba(22, 125, 137, .7);
+  --color-focus-ring: rgba(22, 125, 137, .2);
+  --shadow-sm: 0 1px 2px rgba(16, 42, 54, .05);
+  --shadow-desk: 0 1px 2px rgba(16, 42, 54, .04), 0 8px 24px rgba(16, 42, 54, .05);
+}
+:root[data-theme="dark"] .app-shell:has(.cf-desk) {
+  --color-accent: #5cb8c3;
+  --color-accent-hover: #72c4ce;
+  --color-accent-pressed: #4aa8b3;
+  --color-accent-contrast: #06262a;
+  --color-accent-soft: rgba(92, 184, 195, .12);
+  --color-accent-line: rgba(92, 184, 195, .42);
+  --color-accent-text: #93d3db;
+  --color-focus: rgba(92, 184, 195, .65);
+  --shadow-desk: 0 1px 0 rgba(255, 255, 255, .03) inset, 0 1px 2px rgba(0, 0, 0, .3);
+}
