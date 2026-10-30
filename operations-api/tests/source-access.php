@@ -190,6 +190,33 @@ $bad = $raw;
 $bad['payment']['financial']['state'] = 'paid';
 $invalid($bad, 'an unknown financial state is refused');
 
+// API 2.51.0: the line picture, only https on the shop's own host; an older shop sends none.
+$check(array_key_exists('image', $normalized['lines'][0]) && $normalized['lines'][0]['image'] === null, 'a line without a picture (an older shop) has image null');
+$pictured = static function (mixed $image, ?string $host = 'www.trendhome.ro') use ($raw): mixed {
+    $data = $raw;
+    $data['lines'][0]['image'] = $image;
+    return SourceOrderDetail::from($data, '1234', '1234', $host)['lines'][0]['image'];
+};
+$good = ['url' => 'https://www.trendhome.ro/wp-content/uploads/2026/10/draperie-gri-600x600.jpg', 'width' => 600, 'height' => 600, 'kind' => 'variation'];
+$check($pictured($good) === $good, 'a variation picture on the shop host is relayed as it is');
+$check($pictured(['url' => 'https://cdn.trendhome.ro/a.jpg'] + $good) !== null && $pictured(['url' => 'https://trendhome.ro/a.jpg'] + $good) !== null, 'the shop domain and its subdomains qualify');
+foreach ([
+    'another host' => 'https://evil.example/a.jpg',
+    'a look-alike host' => 'https://trendhome.ro.evil.example/a.jpg',
+    'a suffix host' => 'https://eviltrendhome.ro/a.jpg',
+    'plain http' => 'http://www.trendhome.ro/a.jpg',
+    'credentials' => 'https://user:pw@www.trendhome.ro/a.jpg',
+    'a port' => 'https://www.trendhome.ro:8443/a.jpg',
+    'javascript' => 'javascript:alert(1)',
+    'a quote' => 'https://www.trendhome.ro/a".jpg',
+] as $label => $url) {
+    $check($pictured(['url' => $url] + $good) === null, "a picture address with {$label} is dropped (the order is still shown)");
+}
+$check($pictured($good, null) === null, 'without a known shop host no picture is relayed');
+$throws(static fn () => $pictured(['kind' => 'gallery'] + $good), 'SOURCE_RESPONSE_INVALID', 'an unknown picture kind is refused');
+$throws(static fn () => $pictured(['width' => '600'] + $good), 'SOURCE_RESPONSE_INVALID', 'a malformed picture size is refused');
+$throws(static fn () => $pictured('https://www.trendhome.ro/a.jpg'), 'SOURCE_RESPONSE_INVALID', 'a picture that is not an object is refused');
+
 // ---- 5b. Phase 4B: strict operations, edit answers, refusals ---------------------------------------------------------
 $invalidOps = static function (mixed $ops, string $label) use ($check): void {
     try {

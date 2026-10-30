@@ -8,7 +8,8 @@ import type { ConfirmareContact, ConfirmareDetail } from "../domain/confirmare";
 import type { InvoiceRead } from "../domain/confirmareInvoice";
 import type { ShopRead } from "../domain/confirmareShop";
 import { invoiceFact, resolveWorkflow, shopFact, STEP_SUBTASKS, WORKFLOW_STEPS, type ConfirmareWorkflow, type InvoiceFact, type ShopFact, type WorkflowInput } from "../domain/confirmareWorkflow";
-import { ProductReview, StepCard, StepProgress, SubtaskList, TaskBrief, VerificationDetails } from "../features/confirmare/ConfirmareGuided";
+import { StepCard, StepProgress, SubtaskList, TaskBrief, VerificationDetails } from "../features/confirmare/ConfirmareGuided";
+import { OrderProducts } from "../features/confirmare/OrderProducts";
 import { CATALOGS, I18nProvider, SUPPORTED_LOCALES, type Locale, type MessageKey } from "../i18n";
 
 // Staff 2.40.0: the guided Confirmare order. The five steps are a presentation of the server's facts: these tests build
@@ -393,20 +394,23 @@ test("subtasks: a reached one can be opened again, a future one cannot", () => {
   assert.doesNotMatch(locked, /<button/, "nothing of a future step can be opened");
 });
 
-test("the product review shows one product at a time and never approves the order", () => {
+test("Staff 2.42.0: every product is shown at once, each checked on its own; nothing approves the order", () => {
   const d = detail();
-  const html = render(createElement(ProductReview, { detail: d, checked: ["L1"], index: 1, onIndex: () => undefined, onCheck: () => undefined, onUncheck: () => undefined, onCorrect: () => undefined, disabled: false }));
-  assert.ok(html.includes("Produsul 2 din 3"));
-  assert.ok(html.includes("DRAPERIE TEST 2") && !html.includes("DRAPERIE TEST 1") && !html.includes("DRAPERIE TEST 3"));
+  const html = render(createElement(OrderProducts, { detail: d, shop: null, checked: ["L1"], canCheck: true, disabled: false, onCheck: () => undefined, onUncheck: () => undefined, onCorrect: () => undefined }));
+  assert.ok(html.includes("DRAPERIE TEST 1") && html.includes("DRAPERIE TEST 2") && html.includes("DRAPERIE TEST 3"), "all three products are on screen");
   assert.ok(html.includes("1 din 3 confirmate"));
-  assert.ok(html.includes("Verificat cu clientul, continuă") && html.includes("Clientul vrea o modificare"));
+  assert.ok(html.includes('data-testid="cfw-product-uncheck-1"') && html.includes('data-testid="cfw-product-check-2"') && html.includes('data-testid="cfw-product-check-3"'), "each product has its own check");
+  assert.ok(html.includes("Clientul vrea o modificare"));
+  assert.ok(html.includes("Fotografia apare după citirea din magazin"), "without a shop read the picture says why it is missing");
   assert.doesNotMatch(html, /cf-approve/);
+  const later = render(createElement(OrderProducts, { detail: d, shop: null, checked: [], canCheck: false, disabled: false, onCheck: () => undefined, onUncheck: () => undefined, onCorrect: () => undefined }));
+  assert.doesNotMatch(later, /cfw-product-check-/, "before the call reaches the products nothing can be checked");
   const details = render(createElement(VerificationDetails, { missing: ["lines", "priceReviewed"], items: ["call", "lines", "priceReviewed"] }));
   assert.ok(details.includes("Mai lipsește:") && details.includes("<details"), "the full checklist waits behind a disclosure");
 });
 
 test("moving between steps never sends anything: no command in an effect, no automatic financial action", () => {
-  const files = ["ConfirmareOrderScreen.tsx", "ConfirmareGuided.tsx", "ConfirmareShopPanel.tsx", "ConfirmareInvoicePanel.tsx"].map((file) => [file, readFileSync(path.join(root, "features/confirmare", file), "utf8")] as const);
+  const files = ["ConfirmareOrderScreen.tsx", "ConfirmareGuided.tsx", "ConfirmareShopPanel.tsx", "ConfirmareInvoicePanel.tsx", "OperatorDesk.tsx", "OrderProducts.tsx", "OrderSide.tsx"].map((file) => [file, readFileSync(path.join(root, "features/confirmare", file), "utf8")] as const);
   const commands = /\.(contact|approve|reject|claim|release|reassign|reopen|next|sourceApply|sourcePreview|financeAct|invoiceAct|proformaAct|assignShop|advanceCycle|retryCycle|operate)\(/;
   for (const [file, source] of files) {
     for (const effect of source.matchAll(/useEffect\(\(\) => \{?([^]*?)\}?, \[/g)) assert.doesNotMatch(effect[1], commands, `${file}: no command runs from an effect`);

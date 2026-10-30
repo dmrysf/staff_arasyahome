@@ -249,7 +249,7 @@ test("refresh reads only: the queue loader asks the pool and nothing else; no sc
   const data = await confirmareQueueLoader(api, null)(new AbortController().signal);
   assert.deepEqual(called, ["pool", "pool"]);
   assert.deepEqual(data.items.map((row) => row.globalOrderId), ["trendhome:open", "trendhome:followup"]);
-  const sources = ["ConfirmareParts.tsx", "ConfirmareWorkspace.tsx", "ConfirmareQueueScreen.tsx", "ConfirmareTeamScreen.tsx", "ConfirmareOrderScreen.tsx"].map((file) => [file, readFileSync(path.join(root, "features/confirmare", file), "utf8")] as const);
+  const sources = ["ConfirmareParts.tsx", "ConfirmareWorkspace.tsx", "OperatorDesk.tsx", "ConfirmareTeamScreen.tsx", "ConfirmareOrderScreen.tsx"].map((file) => [file, readFileSync(path.join(root, "features/confirmare", file), "utf8")] as const);
   for (const [file, source] of sources) {
     assert.doesNotMatch(source, /tel:|href=\{?["'`]tel/, `${file}: no telephone link that could be mistaken for a call`);
     for (const effect of source.matchAll(/useEffect\(\(\) => \{([^]*?)\}, \[/g)) {

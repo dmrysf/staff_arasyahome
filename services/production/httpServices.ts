@@ -13,7 +13,7 @@ import { isProductionAuthority, type AuthorityApi, type AuthorityChange, type Or
 import type { ActiveQr, ProductionQrApi, ProductionQrView, QrAuthority, QrAuthorityMode, QrRevision, QrRevisionState, QrRotationReason } from "../../domain/productionQr";
 import { createBrowserWorkflowCache, createUnavailableWorkflowCache, normalizeProductionApiBaseUrl, type WorkflowCache } from "./workflowCache";
 import { createProductionWorkflowService } from "./workflowService";
-import type { ShopLine, ShopOrderDetail, ShopPerson, ShopRead } from "../../domain/confirmareShop";
+import type { ShopLine, ShopLineImage, ShopOrderDetail, ShopPerson, ShopRead } from "../../domain/confirmareShop";
 import { CASH_RECEIPTS, EXCEPTION_REASONS, EXCEPTION_RESOLUTIONS, FINANCE_ACTIONS, PAYMENT_METHODS, FINANCE_NEXT, FINANCE_TASKS, type ExceptionOutcome, type FinanceEntry, type FinanceOutcome, type FinanceQueue, type FinanceQueueItem, type FinanceRead, type FinanceSummary, type FinanceTask, type FinanceTimelineItem, type TransferException, type TransferExceptionList } from "../../domain/confirmareFinance";
 import { CANCEL_REASONS, INVOICE_ACTIONS, INVOICE_ROLES, PAYMENT_STATES, PROFORMA_ACTIONS, PROFORMA_KEYS, PROFORMA_ROUTE, type CodCheck, type ShippingCheck, type InvoiceDeadline, type MoneyPosition, type TotalAcceptance, type InvoiceActionKey, type InvoiceOutcome, type InvoicePaymentRead, type InvoiceRead, type InvoiceSummary, type InvoiceView, type ProformaActionKey, type ProformaSummary, type ShopAssignment, type ShopQueueItem } from "../../domain/confirmareInvoice";
 import { EDIT_IMPACTS, type EditBlocker, type EditCatalog, type EditField, type EditLineSnapshot, type EditOutcome, type EditProduct, type EditResult, type EditTotals, type EditVariation, type OpenEdit } from "../../domain/confirmareEdit";
@@ -1357,6 +1357,16 @@ const textValue = (value: unknown, max = 500): string => { if (typeof value !== 
 const moneyValue = (value: unknown): string => { const text = textValue(value, 20); if (!MONEY.test(text)) throw new StaffServiceError("SERVER_ERROR"); return text; };
 const listOf = <T>(value: unknown, max: number, map: (entry: unknown) => T): T[] => { if (!Array.isArray(value) || value.length > max) throw new StaffServiceError("SERVER_ERROR"); return value.map(map); };
 const shopPerson = (value: unknown): ShopPerson => { const raw = objectValue(value); return { name: textValue(raw.name, 200), company: textValue(raw.company, 200), phone: textValue(raw.phone, 40), addressLines: listOf(raw.addressLines, 6, (line) => textValue(line, 300)) }; };
+/** API 2.51.0: the line picture, an https address only (the API already kept it to the shop's own host); null otherwise. */
+const shopImage = (value: unknown): ShopLineImage | null => {
+  if (value == null) return null;
+  const raw = objectValue(value);
+  const url = textValue(raw.url, 1000);
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { return null; }
+  if (parsed.protocol !== "https:" || parsed.username !== "" || parsed.password !== "") return null;
+  return { url: parsed.href, width: nonNegativeNumber(raw.width), height: nonNegativeNumber(raw.height), kind: oneOf(raw.kind, ["variation", "product"] as const) };
+};
 const shopLine = (value: unknown): ShopLine => {
   const raw = objectValue(value);
   return {
@@ -1364,6 +1374,7 @@ const shopLine = (value: unknown): ShopLine => {
     width: nullableNumber(raw.width), height: nullableNumber(raw.height), unit: raw.unit == null ? null : oneOf(raw.unit, ["m"] as const),
     details: listOf(raw.details, 40, (entry) => { const detail = objectValue(entry); return { label: textValue(detail.label, 200), value: textValue(detail.value, 500) }; }),
     quantity: nonNegativeNumber(raw.quantity), unitPrice: moneyValue(raw.unitPrice), subtotal: moneyValue(raw.subtotal), discount: moneyValue(raw.discount), tax: moneyValue(raw.tax), total: moneyValue(raw.total), calculator: booleanValue(raw.calculator),
+    image: shopImage(raw.image),
   };
 };
 export function mapShopOrderDetail(value: unknown): ShopOrderDetail {

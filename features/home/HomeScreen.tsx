@@ -7,7 +7,7 @@ import { ExceptionsCard } from "../exceptions/ExceptionsCard";
 import { SupervisorCard } from "../exceptions/SupervisorScreen";
 import { DocumentsCard } from "../documents/DocumentsCard";
 import { DocumentLookup } from "../documents/DocumentScreen";
-import { hasPermission } from "../../domain/permissions";
+import { usesProductionScanner } from "../../domain/operatorDesk";
 import { canManageAuthority } from "../../domain/authority";
 import { firstName, readWorkspacePreference, resolveWorkspaces, saveWorkspacePreference, selectPrimaryWorkspace, type Workspace } from "../../domain/workspaces";
 import { AppIcon } from "../../components/icons/AppIcon";
@@ -75,7 +75,7 @@ export function HomeScreen({ employee, services, workflow, dashboardUrl, navigat
   };
 
   if (!current) return null;
-  const scanner = hasPermission(employee, "orders.scan");
+  const scanner = usesProductionScanner(employee);
   return (
     <div className="dashboard-layout">
       <header className="dashboard-header">

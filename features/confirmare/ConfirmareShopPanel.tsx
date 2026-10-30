@@ -20,7 +20,7 @@ export type ShopReader = { read: ShopRead | null; busy: boolean; error: string |
  * SHOP_DATA_TTL_MS, when the order changes (another review), when the access ends (reassignment, revoked scope) and when
  * the screen closes. Staff 2.40.0: the order screen holds it, so the guided steps show parts of one read.
  */
-export function useShopRead(detail: ConfirmareDetail, service: ConfirmareApi): ShopReader {
+export function useShopRead(detail: ConfirmareDetail, service: ConfirmareApi, auto = false): ShopReader {
   const { t } = useI18n();
   const [read, setRead] = useState<ShopRead | null>(null);
   const [busy, setBusy] = useState(false);
@@ -67,6 +67,16 @@ export function useShopRead(detail: ConfirmareDetail, service: ConfirmareApi): S
       if (!controller.signal.aborted) setBusy(false);
     }
   }, [service, detail.globalOrderId, context, t]);
+
+  // Staff 2.42.0 (`auto`): the operator desk reads the shop once when an order the employee may read opens, and again
+  // after the order changed (a new review); an expired or hidden read is read again only on request.
+  const autoFor = useRef<string | null>(null);
+  const canRead = detail.sourceAccess.read && detail.globalOrderId !== "";
+  useEffect(() => {
+    if (!auto || !canRead || autoFor.current === context) return;
+    autoFor.current = context;
+    void load();
+  }, [auto, canRead, context, load]);
 
   const hide = useCallback(() => {
     if (timer.current) clearTimeout(timer.current);

@@ -16,6 +16,7 @@ import type { StaffRuntimeMode } from "../src/runtimeConfig";
 import { StaffServiceError } from "../domain/models";
 import { toServiceError } from "../services/errors";
 import { canAccessRoute } from "../domain/permissions";
+import { usesProductionScanner } from "../domain/operatorDesk";
 import { canUseConfirmare } from "../domain/confirmare";
 import { shouldEndLocalSessionAfterLogout } from "../features/auth/logoutPolicy";
 import { useProductionWorkflow } from "./useProductionWorkflow";
@@ -34,8 +35,7 @@ import { dashboardUrlFor } from "../domain/workspaces";
 import { LoginIntroStage, introPlaysHere, preloadIntroMap } from "../features/auth/LoginIntro";
 import { I18nProvider, normalizeLocale, readDeviceLocale, saveDeviceLocale, t, type Locale } from "../i18n";
 import { localizeWorkflow } from "../domain/stageNames";
-import { ConfirmareQueueScreen } from "../features/confirmare/ConfirmareQueueScreen";
-import { ConfirmareOrderScreen } from "../features/confirmare/ConfirmareOrderScreen";
+import { OperatorDesk } from "../features/confirmare/OperatorDesk";
 import { ConfirmareTeamScreen } from "../features/confirmare/ConfirmareTeamScreen";
 import { ConfirmareFinanceScreen } from "../features/confirmare/ConfirmareFinanceScreen";
 import { FinanceInboxScreen, FinanceLegacyScreen, FinanceOrderScreen, FinanceOversightDetailScreen, FinanceOversightScreen, FinanceTaskScreen } from "../features/confirmare/FinanceRequestScreens";
@@ -170,7 +170,7 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
     // A request's "open the scanner" passes only the request id; the scanned code itself never enters a URL.
     const scanContext = new URLSearchParams(window.location.search).get("exception");
     screen = <ScannerScreen key={scanContext ?? "scan"} service={services.orders} exceptions={services.exceptions} contextExceptionId={scanContext} cutting={services.cutting} employee={session.employee} workflow={workflow} mode={mode} navigate={navigate} onSessionExpired={() => expireSession(new StaffServiceError("SESSION_EXPIRED"))} />;
-  } else if (guardedRoute === "/orders") screen = <OrdersScreen service={services.orders} workflow={workflow} navigate={navigate} />;
+  } else if (guardedRoute === "/orders") screen = <OrdersScreen service={services.orders} workflow={workflow} navigate={navigate} scanner={usesProductionScanner(session.employee)} />;
   else if (orderId) screen = <OrderDetailScreen key={orderId} orderId={orderId} service={services.orders} exceptions={services.exceptions} cutting={services.cutting} documents={services.documents} productionQr={canManageAuthority(session.employee) ? services.productionQr : undefined} pieces={services.pieces} physical={services.physical} financeRequests={services.confirmare && canUseConfirmare(session.employee) ? services.confirmare : undefined} permissions={session.employee.permissions} workflow={workflow} navigate={navigate} onSessionExpired={() => expireSession(new StaffServiceError("SESSION_EXPIRED"))} />;
   else if (documentOrderId && services.documents) screen = <DocumentScreen key={documentOrderId} orderId={documentOrderId} service={services.documents} permissions={session.employee.permissions} navigate={navigate} invoices={services.confirmare ?? undefined} />;
   else if (guardedRoute === "/problems") screen = <SupervisorScreen service={services.exceptions} navigate={navigate} />;
@@ -178,7 +178,8 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
   else if (guardedRoute === "/authority" && services.authority) screen = <AuthorityScreen service={services.authority} initialOrderId={new URLSearchParams(window.location.search).get("order") ?? undefined} navigate={navigate} />;
   else if (guardedRoute === "/trendyol" && services.trendyol) screen = <TrendyolInboxScreen service={services.trendyol} navigate={navigate} />;
   else if (trendyolPackageId && services.trendyol) screen = <TrendyolPackageScreen key={trendyolPackageId} packageId={trendyolPackageId} service={services.trendyol} navigate={navigate} />;
-  else if (guardedRoute === "/confirmare" && services.confirmare) screen = <ConfirmareQueueScreen employee={session.employee} service={services.confirmare} navigate={navigate} />;
+  // Staff 2.42.0: the operator desk; the queue and an opened order are one screen (same element, so its filters stay).
+  else if (guardedRoute === "/confirmare" && services.confirmare) screen = <OperatorDesk employee={session.employee} service={services.confirmare} documents={services.documents} orderId={null} navigate={navigate} />;
   else if (guardedRoute === "/confirmare/team" && services.confirmare) screen = <ConfirmareTeamScreen employee={session.employee} service={services.confirmare} navigate={navigate} />;
   else if (guardedRoute === "/confirmare/finance" && services.confirmare) screen = <ConfirmareFinanceScreen employee={session.employee} service={services.confirmare} navigate={navigate} />;
   else if (guardedRoute === "/confirmare/finance/requests" && services.confirmare) screen = <FinanceInboxScreen employee={session.employee} service={services.confirmare} navigate={navigate} />;
@@ -191,7 +192,7 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
   else if (guardedRoute === "/confirmare/awb" && services.confirmare) screen = <ConfirmareAwbScreen service={services.confirmare} navigate={navigate} />;
   else if (guardedRoute === "/confirmare/efactura" && services.confirmare) screen = <ConfirmareEfacturaScreen service={services.confirmare} navigate={navigate} />;
   else if (guardedRoute === "/confirmare/health" && services.confirmare) screen = <ConfirmareHealthScreen service={services.confirmare} navigate={navigate} />;
-  else if (confirmareOrderId && services.confirmare) screen = <ConfirmareOrderScreen key={confirmareOrderId} orderId={confirmareOrderId} employee={session.employee} service={services.confirmare} documents={services.documents} navigate={navigate} />;
+  else if (confirmareOrderId && services.confirmare) screen = <OperatorDesk employee={session.employee} service={services.confirmare} documents={services.documents} orderId={confirmareOrderId} navigate={navigate} />;
   else if (guardedRoute === "/history") screen = <HistoryScreen service={services.activity} navigate={navigate} />;
   else if (guardedRoute === "/profile") screen = <ProfileScreen employee={session.employee} mode={services.mode} onLogout={logout} passwordChanged={passwordChanged} onChangePassword={() => { setPasswordChanged(false); setChangingPassword(true); }} onChangeLocale={async (locale) => { setSession(await services.auth.changeLocale(locale)); }} />;
 

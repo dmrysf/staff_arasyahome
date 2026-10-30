@@ -1582,11 +1582,14 @@ final class SourceAccessFakeShop implements SourceAccessTransport
                 'width' => 3.0, 'height' => 2.6, 'unit' => 'm',
                 'details' => [['label' => 'Lungimea (L)', 'value' => '3'], ['label' => 'Inaltime (H)', 'value' => '2.6'], ['label' => 'Manopera', 'value' => 'Manopera Rejansa Normal 6cm'], ['label' => 'buc', 'value' => '1 buc.']],
                 'quantity' => 1, 'unitPrice' => '420.00', 'subtotal' => '420.00', 'discount' => '0.00', 'tax' => '67.06', 'total' => '420.00', 'calculator' => true,
+                // API 2.51.0: a catalog picture on the shop's own host (the browser test serves it), and one that fails to load.
+                'image' => ['url' => 'https://127.0.0.1/wp-content/uploads/e2e/draperie-velvet.png', 'width' => 600, 'height' => 600, 'kind' => 'variation'],
             ], [
                 'id' => (string) ((int) $o['id'] * 10 + 2), 'line' => 2, 'productId' => '502', 'variationId' => '0', 'name' => 'Perdea Voal Alb', 'sku' => 'PV-ALB',
                 'width' => 4.0, 'height' => 2.5, 'unit' => 'm',
                 'details' => [['label' => 'Lungimea (L)', 'value' => '4'], ['label' => 'Inaltime (H)', 'value' => '2.5'], ['label' => 'buc', 'value' => '2 buc.']],
                 'quantity' => 2, 'unitPrice' => '150.00', 'subtotal' => '300.00', 'discount' => '30.00', 'tax' => '43.11', 'total' => '270.00', 'calculator' => true,
+                'image' => ['url' => 'https://127.0.0.1/wp-content/uploads/e2e/missing.png', 'width' => 600, 'height' => 600, 'kind' => 'product'],
             ]],
             'fees' => [],
             'coupons' => $o['coupons'] ?? [['code' => 'test10', 'discount' => '30.00', 'discountTax' => '4.79']],

@@ -9,6 +9,10 @@ namespace Arasya\Operations\Integration\SourceAccess;
  * shows. Anything unknown is dropped, anything malformed rejects the whole answer (SOURCE_RESPONSE_INVALID): the
  * operator never sees half-trusted data. The result is relayed to the browser once and never stored, logged or cached
  * by Operations (it holds the customer's telephone numbers and the order amounts).
+ *
+ * API 2.51.0: a line's catalog picture (YD SOFT 2.24.0) is relayed only as an https address on the shop's own host (or
+ * one of its subdomains); any other address is dropped to null so a picture can never point the operator's browser
+ * elsewhere. A missing `image` (an older shop) is null.
  */
 final class SourceOrderDetail
 {
@@ -26,7 +30,7 @@ final class SourceOrderDetail
      * @param array<string, mixed> $data
      * @return array<string, mixed>
      */
-    public static function from(array $data, string $sourceOrderId, string $orderNumber): array
+    public static function from(array $data, string $sourceOrderId, string $orderNumber, ?string $shopHost = null): array
     {
         if (($data['protocol'] ?? null) !== 1) {
             throw self::invalid();
@@ -60,7 +64,7 @@ final class SourceOrderDetail
                 'billing' => self::person($contact['billing'] ?? null),
                 'shipping' => self::person($contact['shipping'] ?? null),
             ],
-            'lines' => self::lines($data['lines'] ?? null),
+            'lines' => self::lines($data['lines'] ?? null, $shopHost),
             'fees' => self::list($data['fees'] ?? null, self::MAX_SMALL, static fn (array $fee): array => [
                 'name' => self::text($fee['name'] ?? null, 200),
                 'total' => self::money($fee['total'] ?? null),
@@ -95,9 +99,9 @@ final class SourceOrderDetail
     }
 
     /** @return list<array<string, mixed>> */
-    private static function lines(mixed $value): array
+    private static function lines(mixed $value, ?string $shopHost): array
     {
-        return self::list($value, self::MAX_LINES, static function (array $line): array {
+        return self::list($value, self::MAX_LINES, static function (array $line) use ($shopHost): array {
             $quantity = $line['quantity'] ?? null;
             if (!(is_int($quantity) || is_float($quantity)) || $quantity <= 0 || $quantity > 100000) {
                 throw self::invalid();
@@ -123,8 +127,35 @@ final class SourceOrderDetail
                 'tax' => self::money($line['tax'] ?? null),
                 'total' => self::money($line['total'] ?? null),
                 'calculator' => self::bool($line['calculator'] ?? null),
+                'image' => self::image($line['image'] ?? null, $shopHost),
             ];
         });
+    }
+
+    /** @return array{url: string, width: int, height: int, kind: string}|null */
+    private static function image(mixed $value, ?string $shopHost): ?array
+    {
+        if ($value === null) {
+            return null;
+        }
+        $image = self::map($value);
+        $url = self::text($image['url'] ?? null, 1000);
+        $width = $image['width'] ?? null;
+        $height = $image['height'] ?? null;
+        if (!is_int($width) || !is_int($height) || $width < 0 || $height < 0 || $width > 20000 || $height > 20000) {
+            throw self::invalid();
+        }
+        $kind = self::choice($image['kind'] ?? null, ['variation', 'product']);
+        $parts = parse_url($url);
+        $host = is_array($parts) ? strtolower((string) ($parts['host'] ?? '')) : '';
+        // The shop's domain without a leading "www.": the domain itself and its subdomains (www, a media host) qualify.
+        $domain = $shopHost === null ? '' : (string) preg_replace('/^www\./', '', strtolower($shopHost));
+        $onShop = $domain !== '' && ($host === $domain || str_ends_with($host, '.' . $domain));
+        if (!is_array($parts) || ($parts['scheme'] ?? '') !== 'https' || isset($parts['user']) || isset($parts['pass']) || isset($parts['port']) || !$onShop
+            || preg_match('/[\s"\'<>\\\\]/', $url) === 1) {
+            return null;
+        }
+        return ['url' => $url, 'width' => $width, 'height' => $height, 'kind' => $kind];
     }
 
     /** @return array<string, mixed> */

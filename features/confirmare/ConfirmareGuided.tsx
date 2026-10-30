@@ -3,8 +3,6 @@ import { useI18n, type MessageKey } from "../../i18n";
 import type { ApprovalRequirement, ConfirmareDetail } from "../../domain/confirmare";
 import { requirementLabel } from "../../domain/confirmare";
 import { WORKFLOW_STEPS, stepTitleKey, type ConfirmareWorkflow, type WorkflowStep, type WorkflowStepState, type WorkflowSubtaskId, type WorkflowSubtaskState } from "../../domain/confirmareWorkflow";
-import { formatMeasurements, formatMeters } from "../../domain/productFormat";
-import type { ProductionItem } from "../../domain/models";
 import { AppIcon, type AppIconName } from "../../components/icons/AppIcon";
 import { StatusPill, type Tone } from "../../components/ui/StatusPill";
 
@@ -17,14 +15,18 @@ const stepTone: Readonly<Record<WorkflowStepState, Tone>> = { done: "success", a
 const stepIcon: Readonly<Record<WorkflowStepState, AppIconName>> = { done: "check", active: "arrow", waiting: "clock", attention: "alert", locked: "lock", skipped: "info" };
 const subIcon: Readonly<Record<WorkflowSubtaskState, AppIconName>> = { done: "check", current: "arrow", todo: "clock", waiting: "clock", blocked: "lock", skipped: "info" };
 
-/** The five steps as one row of markers; each state has words, never only a colour or an icon. */
-export function StepProgress({ workflow }: { workflow: ConfirmareWorkflow }) {
+/**
+ * The five steps as one row of markers; each state has words, never only a colour or an icon. `compact` (Staff 2.42.0,
+ * the operator desk): only "Pasul n din 5" is shown, the markers stay for assistive technology (the step cards beside it
+ * show the same states).
+ */
+export function StepProgress({ workflow, compact = false }: { workflow: ConfirmareWorkflow; compact?: boolean }) {
   const { t } = useI18n();
   const index = WORKFLOW_STEPS.indexOf(workflow.active);
   return (
-    <nav className="cfw-progress" aria-label={t("cfw.progress.label")} data-testid="cfw-progress">
+    <nav className={`cfw-progress${compact ? " is-compact" : ""}`} aria-label={t("cfw.progress.label")} data-testid="cfw-progress">
       <p className="eyebrow" data-testid="cfw-progress-of">{t("cfw.progress.of", { current: index + 1, total: WORKFLOW_STEPS.length })}</p>
-      <ol className="task-steps cfw-steps" style={{ "--steps": WORKFLOW_STEPS.length } as CSSProperties}>
+      <ol className={`task-steps cfw-steps${compact ? " visually-hidden" : ""}`} style={{ "--steps": WORKFLOW_STEPS.length } as CSSProperties}>
         {workflow.steps.map((step, position) => (
           <li key={step.id} className={`task-step cfw-step is-${step.state === "active" ? "current" : step.state}`} aria-current={step.id === workflow.active ? "step" : undefined} data-state={step.state} data-testid={`cfw-progress-${step.id}`}>
             <span className="task-step-marker" aria-hidden="true">{step.state === "done" ? <AppIcon name="check" size={16} /> : step.state === "attention" ? <AppIcon name="alert" size={15} /> : step.state === "waiting" ? <AppIcon name="clock" size={15} /> : position + 1}</span>
@@ -122,68 +124,6 @@ export function BackgroundStrip({ workflow, detail }: { workflow: ConfirmareWork
         {item === "callCycle" ? t("cfw.bg.callCycle", { count: calls?.noAnswer ?? 0, max: calls?.max ?? 3 }) : t(`cfw.bg.${item}` as MessageKey)}
       </p>)}
     </aside>
-  );
-}
-
-const asProductionItem = (line: ConfirmareDetail["lines"][number]): ProductionItem => ({
-  id: line.lineId, name: line.name, quantity: line.quantity,
-  measurements: line.width === null && line.height === null ? undefined : { width: line.width ?? undefined, height: line.height ?? undefined, unit: line.unit === "mm" || line.unit === "cm" || line.unit === "m" ? line.unit : undefined },
-});
-
-/** One product of the order, as Arasya holds it (names, codes and sizes are never translated). */
-export function LineFacts({ line }: { line: ConfirmareDetail["lines"][number] }) {
-  const { t } = useI18n();
-  const measures = formatMeasurements(asProductionItem(line));
-  return (
-    <div className="cf-line-copy">
-      <p className="line-name"><strong>{line.name}</strong> <span className="line-quantity">× {line.quantity}</span></p>
-      <p className="cf-line-facts">{[line.productCode, line.variant, line.color].filter(Boolean).join(" · ") || "—"}</p>
-      {(measures || line.meters !== null) && <p className="cf-line-facts">{[measures, line.meters !== null ? formatMeters(line.meters) : null].filter(Boolean).join(" · ")}</p>}
-      {line.options.map((option) => <p key={`${option.label}:${option.value}`} className="cf-line-facts">{option.label}: {option.value}</p>)}
-      {line.notes && <p className="cf-line-facts">{t("cf.lines.notes")}: {line.notes}</p>}
-    </div>
-  );
-}
-
-/**
- * The products one by one: the operator checks the shown product with the customer and moves on. A check is the
- * operator's unsent review (component memory, dropped with a new review); it never confirms the whole order.
- */
-export function ProductReview({ detail, checked, index, onIndex, onCheck, onUncheck, onCorrect, disabled }: {
-  detail: ConfirmareDetail; checked: readonly string[]; index: number; onIndex: (index: number) => void;
-  onCheck: (lineId: string) => void; onUncheck: (lineId: string) => void; onCorrect: (() => void) | null; disabled: boolean;
-}) {
-  const { t } = useI18n();
-  const total = detail.lines.length;
-  const at = Math.min(Math.max(index, 0), Math.max(total - 1, 0));
-  const line = detail.lines[at];
-  if (!line) return null;
-  const done = checked.includes(line.lineId);
-  return (
-    <div className="cfw-product" data-testid="cfw-product">
-      <div className="cfw-product-head">
-        <p className="eyebrow" id="cfw-product-of" data-testid="cfw-product-of">{t("cfw.product.of", { index: at + 1, total })}</p>
-        <StatusPill tone={checked.filter((id) => detail.review.lineIds.includes(id)).length === total ? "success" : "neutral"} testId="cf-lines-progress">{t("cf.lines.progress", { confirmed: checked.filter((id) => detail.review.lineIds.includes(id)).length, total })}</StatusPill>
-      </div>
-      <div className={`cf-line cfw-product-card${done ? " is-confirmed" : ""}`} aria-labelledby="cfw-product-of" data-testid={`cfw-product-${line.lineNumber}`}>
-        <div className="cf-line-head">
-          <span className="line-number"><span className="visually-hidden">{t("cf.lines.line")} </span>{line.lineNumber}</span>
-          <LineFacts line={line} />
-        </div>
-        {done && <StatusPill tone="success" icon="check" testId="cfw-product-checked">{t("cfw.product.checked")}</StatusPill>}
-      </div>
-      <div className="cfw-actions">
-        {!done
-          ? <button type="button" className="button button-primary" disabled={disabled} onClick={() => onCheck(line.lineId)} data-testid="cfw-product-check">{t("cfw.product.check")}</button>
-          : <button type="button" className="button button-secondary" disabled={disabled} onClick={() => onUncheck(line.lineId)} data-testid="cfw-product-uncheck">{t("cfw.product.uncheck")}</button>}
-        {onCorrect && <button type="button" className="button button-secondary" disabled={disabled} onClick={onCorrect} data-testid="cfw-product-correct"><AppIcon name="ruler" size={18} /> {t("cfw.product.correct")}</button>}
-      </div>
-      {total > 1 && <div className="cfw-product-nav">
-        <button type="button" className="button button-ghost" disabled={at === 0} onClick={() => onIndex(at - 1)} data-testid="cfw-product-previous"><AppIcon name="back" size={18} /> {t("cfw.product.previous")}</button>
-        <button type="button" className="button button-ghost" disabled={at >= total - 1} onClick={() => onIndex(at + 1)} data-testid="cfw-product-next">{t("cfw.product.next")} <AppIcon name="arrow" size={18} /></button>
-      </div>}
-      <p className="dashboard-footnote">{t("cfw.product.draftNote")}</p>
-    </div>
   );
 }
 

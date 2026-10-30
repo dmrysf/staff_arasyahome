@@ -4,9 +4,12 @@ import type { ReactNode } from "react";
 export type AppIconName =
   | "home" | "orders" | "scan" | "history" | "profile" | "back" | "torch" | "arrow" | "check" | "refresh"
   | "document" | "printer" | "eye" | "qr" | "ruler" | "width" | "height" | "package" | "alert" | "info"
-  | "lock" | "scissors" | "sync" | "spark" | "chevron" | "clock" | "layers" | "phone" | "team";
+  | "lock" | "scissors" | "sync" | "spark" | "chevron" | "clock" | "layers" | "phone" | "team" | "search" | "close" | "image";
 
 const paths: Record<AppIconName, ReactNode> = {
+  search: <><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4.5 4.5" /></>,
+  close: <><path d="M6 6l12 12M18 6 6 18" /></>,
+  image: <><rect x="3.5" y="4.5" width="17" height="15" rx="2" /><circle cx="9" cy="10" r="1.6" /><path d="m4.5 18 5-5 3.5 3.5 2.5-2.5 4 4" /></>,
   home: <><path d="M3.5 10.5 12 3l8.5 7.5" /><path d="M5.5 9.5V21h13V9.5M9.5 21v-6h5v6" /></>,
   orders: <><path d="M6 4.5h12a2 2 0 0 1 2 2v13H4v-13a2 2 0 0 1 2-2Z" /><path d="M8 9h8M8 13h8M8 17h5" /></>,
   scan: <><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3" /><path d="M8 12h8" /></>,

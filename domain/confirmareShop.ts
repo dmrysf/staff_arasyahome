@@ -14,10 +14,14 @@ export type SourceAccessCapabilities = {
 
 export type ShopPerson = { name: string; company: string; phone: string; addressLines: string[] };
 export type ShopDetailEntry = { label: string; value: string };
+/** API 2.51.0 (YD SOFT 2.24.0): the catalog picture of a line, the variation's own or else the product's; live, display only. */
+export type ShopLineImage = { url: string; width: number; height: number; kind: "variation" | "product" };
 export type ShopLine = {
   id: string; line: number; productId: string; variationId: string; name: string; sku: string;
   width: number | null; height: number | null; unit: "m" | null; details: ShopDetailEntry[];
   quantity: number; unitPrice: string; subtotal: string; discount: string; tax: string; total: string; calculator: boolean;
+  /** Null: no picture, a deleted product, or an older shop. */
+  image: ShopLineImage | null;
 };
 export type ShopTotals = { subtotal: string; discount: string; discountTax: string; shipping: string; shippingTax: string; fees: string; tax: string; total: string; refunded: string };
 export type ShopOrderDetail = {

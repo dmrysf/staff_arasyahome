@@ -24,7 +24,9 @@ import { ConfirmareInvoicePanel } from "./ConfirmareInvoicePanel";
 import { ConfirmareHandoffPanel } from "./ConfirmareHandoffPanel";
 import { ConfirmareCyclePanel } from "./ConfirmareCyclePanel";
 import { ConfirmareOperationsPanel } from "./ConfirmareOperationsPanel";
-import { BackgroundStrip, LineFacts, ProductReview, StepCard, StepProgress, SubtaskList, TaskBrief, VerificationDetails } from "./ConfirmareGuided";
+import { BackgroundStrip, StepCard, StepProgress, SubtaskList, TaskBrief, VerificationDetails } from "./ConfirmareGuided";
+import { OrderProducts } from "./OrderProducts";
+import { OrderCustomerCard, OrderMoneyCard, SidePanel, useInvoiceGlance } from "./OrderSide";
 import type { DocumentApi } from "../../domain/documents";
 
 type Message = { tone: Tone; text: string } | null;
@@ -54,7 +56,11 @@ const EDIT_VIEWS: readonly WorkflowTask[] = ["correction", "editUnknown", "shopU
  * The screen refreshes every minute without losing ticks while the order is unchanged; a changed order drops them.
  * Moving between steps or subtasks never sends anything: every command is an explicit click.
  */
-export function ConfirmareOrderScreen({ orderId, employee, service, documents, navigate }: { orderId: string; employee: Employee; service: ConfirmareApi; /** API 2.42.0: the central production documents, for the handoff. */ documents?: DocumentApi; navigate: (path: string) => void }) {
+export function ConfirmareOrderScreen({ orderId, employee, service, documents, navigate, onChanged, backPath = "/confirmare" }: {
+  orderId: string; employee: Employee; service: ConfirmareApi; /** API 2.42.0: the central production documents, for the handoff. */ documents?: DocumentApi; navigate: (path: string) => void;
+  /** Staff 2.42.0: told after every command (the desk reads its queue again). */ onChanged?: () => void;
+  /** Staff 2.42.0: where "back" leads (the desk keeps its filters in it). */ backPath?: string;
+}) {
   const { t } = useI18n();
   const load = useMemo(() => (signal: AbortSignal) => service.detail(orderId, signal), [service, orderId]);
   const view = useAutoRefresh(load, `confirmare-order|${orderId}`);
@@ -75,10 +81,11 @@ export function ConfirmareOrderScreen({ orderId, employee, service, documents, n
   const [cycleStarted, setCycleStarted] = useState(false);
   // Staff 2.40.0: what the operator chose to look at (a reached subtask, a product), for the current task only.
   const [picked, setPicked] = useState<{ sub: WorkflowSubtaskId; at: string } | null>(null);
-  const [productAt, setProductAt] = useState<number | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   // The operator opened the shop change (it stays open through the save and the wait for the shop's update).
   const [editorOpen, setEditorOpen] = useState(false);
+  // Staff 2.42.0: the change panel the operator closed for this task (it opens again from the task).
+  const [panelClosedAt, setPanelClosedAt] = useState<string | null>(null);
   // The SmartBill state the payment or handoff task read (a read only; the server decides every action again).
   const [invoiceView, setInvoiceView] = useState<InvoiceRead | null>(null);
   const onInvoiceView = useCallback((value: InvoiceRead | null) => setInvoiceView(value), []);
@@ -95,13 +102,14 @@ export function ConfirmareOrderScreen({ orderId, employee, service, documents, n
   // says so. Adjusted while rendering (no effect), so a stale tick is never shown for even one frame.
   if (detail && detail.review.fingerprint !== seenFingerprint) {
     const next = carryDraft(seenFingerprint === null ? null : { fingerprint: seenFingerprint, draft }, detail);
-    if (next.reset) { setChangedNotice(true); setConfirmApprove(false); setProductAt(null); setEditorOpen(false); }
+    if (next.reset) { setChangedNotice(true); setConfirmApprove(false); setEditorOpen(false); }
     setDraftValue(next.draft);
     setSeenFingerprint(detail.review.fingerprint);
   }
 
   // The shop read of this order (held here so every step shows the same read; never stored).
-  const shop = useShopRead(detail ?? PLACEHOLDER, service);
+  // Staff 2.42.0: read automatically once the order opens for someone who may read it (pictures, prices, telephone).
+  const shop = useShopRead(detail ?? PLACEHOLDER, service, true);
 
   const supervisor = detail ? supervisesSource(employee, detail.sourceKey) : false;
   useEffect(() => {
@@ -116,6 +124,9 @@ export function ConfirmareOrderScreen({ orderId, employee, service, documents, n
     shop: shopFact(detail, shop.read), invoice: invoiceFact(detail, invoiceView),
   }) : null;
   const position = workflow ? `${workflow.active}|${workflow.task}` : "";
+  // The money card's SmartBill read; in steps 4 and 5 the payment panel reads it and reports it instead (one read).
+  const glanceEnabled = Boolean(detail && workflow && detail.invoice.configured && detail.invoice.read && workflow.active !== "payment" && workflow.active !== "handoff");
+  const glanceRead = useInvoiceGlance(detail, service, glanceEnabled);
 
   // A new step or task: say it once to assistive technology and move the focus to its title (never on the first load,
   // and never away from something the employee is using outside the task, such as the details or a supervisor form).
@@ -134,7 +145,7 @@ export function ConfirmareOrderScreen({ orderId, employee, service, documents, n
     const failed = view.error !== null;
     return (
       <article className="screen-stack confirmare-screen" aria-busy={!failed}>
-        <button className="back-link" type="button" onClick={() => navigate("/confirmare")}><AppIcon name="back" size={20} /> {t("cf.order.back")}</button>
+        <button className="back-link" type="button" onClick={() => navigate(backPath)}><AppIcon name="back" size={20} /> {t("cf.order.back")}</button>
         {failed && view.error
           ? <Notice tone="danger" role="alert">{confirmareErrorKey(backendCode(view.error)) ? t(confirmareErrorKey(backendCode(view.error))!) : getErrorPresentation(view.error).message}</Notice>
           : <div className="package-skeleton" aria-hidden="true"><span className="skeleton skeleton-line" style={{ width: "30%" }} /><span className="skeleton skeleton-title" /><span className="skeleton package-skeleton-block" /></div>}
@@ -204,18 +215,15 @@ export function ConfirmareOrderScreen({ orderId, employee, service, documents, n
     } finally {
       setBusy(null);
       view.refresh();
+      onChanged?.();
     }
   }
 
-  const checkLine = (lineId: string) => {
-    const confirmedLineIds = [...new Set([...draft.confirmedLineIds, lineId])];
-    setDraft({ confirmedLineIds });
-    // Move to the next product not yet checked, after the shown one first (the resolver moves on once all are checked).
-    const lines = detail.lines;
-    const from = lines.findIndex((line) => line.lineId === lineId);
-    const after = [...lines.slice(from + 1), ...lines.slice(0, from)].find((line) => !confirmedLineIds.includes(line.lineId));
-    setProductAt(after ? lines.indexOf(after) : null);
-  };
+  // One product at a time, never another one with it (the resolver moves on once every current line is checked).
+  const checkLine = (lineId: string) => setDraft({ confirmedLineIds: [...new Set([...draft.confirmedLineIds, lineId])] });
+  // The products can be checked once the call with the customer reached them (the same moment the guided order allowed).
+  const productsState = workflow.steps.find((step) => step.id === "contact")?.subtasks.find((subtask) => subtask.id === "products")?.state;
+  const canCheckProducts = decider && pending && (productsState === "current" || productsState === "done");
 
   // ---- the body of each task ----------------------------------------------------------------------------------
   const callForm = canContact && <form className="cf-call-form" aria-labelledby="cfw-task-title" onSubmit={(event) => {
@@ -262,12 +270,15 @@ export function ConfirmareOrderScreen({ orderId, employee, service, documents, n
     </div>}
   </div>;
 
-  // One editor in one place of the step (it keeps its result while the task moves from the correction to the wait).
+  // One editor in one place: the side panel (it keeps its result while the task moves from the correction to the wait).
+  const panelOpen = editorShown && panelClosedAt !== position;
+  const closePanel = () => { setPanelClosedAt(position); setPicked(null); };
   const editor = editorShown && (detail.sourceAccess.edit || detail.sourceAccess.changePending || detail.sourceAccess.openEdits.length > 0) && <ConfirmareShopEditor key="editor"
     detail={detail} service={service} currency={shop.read?.available ? shop.read.detail.order.currency : null}
     // The shop order changed: its prices on screen are old now (read again), and so is the order (reload).
-    onApplied={() => { shop.hide(); view.refresh(); }} />;
-  const correctButton = detail.sourceAccess.edit && decider && <button type="button" className="button button-secondary" disabled={busy !== null} onClick={() => openSub("correction")} data-testid="cfw-open-correction"><AppIcon name="ruler" size={18} /> {t("cfw.product.correct")}</button>;
+    onApplied={() => { shop.hide(); view.refresh(); onChanged?.(); }} />;
+  const correctButton = detail.sourceAccess.edit && decider && <button type="button" className="button button-secondary" disabled={busy !== null} onClick={() => { setPanelClosedAt(null); openSub("correction"); }} data-testid="cfw-open-correction"><AppIcon name="ruler" size={18} /> {t("cfw.product.correct")}</button>;
+  const reopenPanel = editorShown && !panelOpen && <button type="button" className="button button-secondary" onClick={() => setPanelClosedAt(null)} data-testid="cfo-open-panel"><AppIcon name="ruler" size={18} /> {t("cfo.panel.reopen")}</button>;
 
   const rejectForm = decider && <div className="field cf-reject">
     <label htmlFor="cf-reject-reason">{t("cf.actions.rejectReason")}</label>
@@ -329,11 +340,7 @@ export function ConfirmareOrderScreen({ orderId, employee, service, documents, n
       case "correctionWaiting":
         return <div className="cfw-actions"><button type="button" className="button button-secondary" onClick={() => openSub("call")} data-testid="cfw-record-other-call">{t("cfw.call.otherOutcome")}</button></div>;
       case "products":
-        return <>
-          <ProductReview detail={detail} checked={draft.confirmedLineIds} index={productAt ?? workflow.lineIndex} onIndex={setProductAt} disabled={busy !== null || !decider}
-            onCheck={checkLine} onUncheck={(lineId) => setDraft({ confirmedLineIds: draft.confirmedLineIds.filter((id) => id !== lineId) })}
-            onCorrect={detail.sourceAccess.edit ? () => openSub("correction") : null} />
-        </>;
+        return <p className="cfo-task-pointer" data-testid="cfo-products-pointer"><AppIcon name="arrow" size={16} /> <span>{t("cfo.products.pointer", { count: detail.lines.length })}</span></p>;
       case "price":
       case "pricesDiffer":
       case "shopUnavailable":
@@ -390,7 +397,7 @@ export function ConfirmareOrderScreen({ orderId, employee, service, documents, n
         return <>
           {operatorInvoice && invoicePanel("routing")}
           {handoffInTask && handoffPanel}
-          {(task === "handedOver" || task === "awaitingHandoff" || task === "inProduction") && <div className="cfw-actions"><button type="button" className="button button-secondary" onClick={() => navigate("/confirmare")} data-testid="cfw-back-to-queue"><AppIcon name="back" size={18} /> {t("cfw.done.queue")}</button></div>}
+          {(task === "handedOver" || task === "awaitingHandoff" || task === "inProduction") && <div className="cfw-actions"><button type="button" className="button button-secondary" onClick={() => navigate(backPath)} data-testid="cfw-back-to-queue"><AppIcon name="back" size={18} /> {t("cfw.done.queue")}</button></div>}
         </>;
       default:
         return null;
@@ -405,38 +412,49 @@ export function ConfirmareOrderScreen({ orderId, employee, service, documents, n
   const showOther = decider && (canRelease || workflow.task !== "closedInShop");
   const showSupervisor = supervisor && ((pending && determined) || canReopen);
 
+  const shopRead = shop.read?.available ? shop.read : null;
+  // The customer card beside the order, unless the active task shows the shop's contact itself (never twice on screen).
+  const contactInTask = shopInTask && (shownTask === "customer" || CALL_TASKS.includes(shownTask));
+  const placedAt = detail.submittedAt ?? detail.openedAt;
+  const inactiveSteps = workflow.steps.map((step, index) => ({ step, index })).filter(({ step }) => step.id !== workflow.active);
+
   return (
     <article className="confirmare-screen confirmare-order cfw-order" data-testid="cf-order">
-      <button className="back-link" type="button" onClick={() => navigate("/confirmare")}><AppIcon name="back" size={20} /> {t("cf.order.back")}</button>
-      <header className="package-header cfw-header">
-        <p className="eyebrow">{t("cf.order.eyebrow", { source: sourceLabel(detail.sourceKey) })}</p>
-        <h1>{t("common.orderWord")} <span className="order-id">#{detail.orderNumber}</span></h1>
-        <div className="package-pills">
-          <ItemStatusPill item={detail} testId="cf-order-status" />
-          <StatusPill icon="clock">{detail.dueDate ? t("cf.row.due", { date: dueDay(detail.dueDate) }) : t("cf.row.noDue")}</StatusPill>
-          <StatusPill icon="profile">{detail.assignment ? t("cf.order.assignedTo", { name: detail.assignment.displayName }) : t("cf.order.unassigned")}</StatusPill>
+      <button className="back-link" type="button" onClick={() => navigate(backPath)}><AppIcon name="back" size={20} /> {t("cf.order.back")}</button>
+      <header className="cfo-header cfw-header">
+        <div className="cfo-header-main">
+          <p className="eyebrow"><span className="cf-source" data-source={detail.sourceKey}>{sourceLabel(detail.sourceKey)}</span> · {t("cfo.header.placed", { date: when(placedAt) })}</p>
+          <h1>{t("common.orderWord")} <span className="order-id">#{detail.orderNumber}</span></h1>
+          <div className="package-pills">
+            <ItemStatusPill item={detail} testId="cf-order-status" />
+            <StatusPill icon="profile">{detail.assignment ? t("cf.order.assignedTo", { name: detail.assignment.displayName }) : t("cf.order.unassigned")}</StatusPill>
+            {detail.dueDate && <StatusPill icon="clock">{t("cf.row.due", { date: dueDay(detail.dueDate) })}</StatusPill>}
+            {detail.source.commerceStatusLabel && <StatusPill icon="sync">{t("cfo.header.shopStatus", { status: detail.source.commerceStatusLabel })}</StatusPill>}
+          </div>
         </div>
         <AutoRefreshBar onRefresh={view.refresh} busy={view.busy} refreshing={view.refreshing} updatedAt={view.updatedAt} stale={view.error !== null} stopped={view.stopped} testId="cf-order-refresh" />
       </header>
-
-      <StepProgress workflow={workflow} />
       <p className="visually-hidden" aria-live="polite" data-testid="cfw-announce">{announcement}</p>
 
-      <div className="cfw-flow">
-        {changedNotice && <Notice tone="warning" role="alert" testId="cf-changed">{t("cf.order.changedInShop")}</Notice>}
-        {view.error && <Notice tone="warning" role="status">{t("cf.order.staleView")}</Notice>}
-        <BackgroundStrip workflow={workflow} detail={detail} />
-        {pending && determined && !detail.review.pricingAvailable && workflow.task !== "priceEvidence" && <Notice tone="danger" role="note" testId="cf-price-missing">{t("cf.price.missing")}</Notice>}
+      <div className={`cfo-grid${panelOpen ? " has-panel" : ""}`}>
+        <div className="cfo-main cfw-flow">
+          {changedNotice && <Notice tone="warning" role="alert" testId="cf-changed">{t("cf.order.changedInShop")}</Notice>}
+          {view.error && <Notice tone="warning" role="status">{t("cf.order.staleView")}</Notice>}
+          <BackgroundStrip workflow={workflow} detail={detail} />
+          {pending && determined && !detail.review.pricingAvailable && workflow.task !== "priceEvidence" && <Notice tone="danger" role="note" testId="cf-price-missing">{t("cf.price.missing")}</Notice>}
 
-        {workflow.steps.map((step, index) => step.id === workflow.active
-          ? <StepCard key={step.id} step={step} number={index + 1} active>
+          {/* "Acum": the one task that needs someone now; the other steps wait in the order's progress beside it. */}
+          {workflow.steps.map((step, index) => step.id === workflow.active && <StepCard key={step.id} step={step} number={index + 1} active>
             <TaskBrief workflow={{ ...workflow, task: shownTask }} ownerName={ownerName} headingRef={headingRef} />
             <SubtaskList step={step} shown={shownSub} onPick={decider ? openSub : undefined} />
             {message && <Notice tone={message.tone} role={message.tone === "danger" ? "alert" : "status"} entering testId="cf-message">{message.text}</Notice>}
             {cycleStarted && <Notice tone="info" role="status" entering testId="cf-cycle-started">{t("cf.cycle.started")}</Notice>}
-            <div className="cfw-task-body" data-testid="cfw-task-body">{taskBody(shownTask)}{editor}{financeInTask && financePanel}{financeViewer && invoiceReadable && invoicePanel("all")}</div>
-          </StepCard>
-          : <StepCard key={step.id} step={step} number={index + 1} active={false} />)}
+            <div className="cfw-task-body" data-testid="cfw-task-body">{taskBody(shownTask)}{reopenPanel}{financeInTask && financePanel}{financeViewer && invoiceReadable && invoicePanel("all")}</div>
+          </StepCard>)}
+
+          <OrderProducts detail={detail} shop={shop.read} checked={draft.confirmedLineIds} canCheck={canCheckProducts} disabled={busy !== null}
+            onCheck={checkLine} onUncheck={(lineId) => setDraft({ confirmedLineIds: draft.confirmedLineIds.filter((id) => id !== lineId) })}
+            onCorrect={detail.sourceAccess.edit && workflow.active === "contact" ? () => { setPanelClosedAt(null); openSub("correction"); } : null} />
 
         {showOther && <details className="cfw-disclosure cfw-other" data-testid="cfw-other">
           <summary>{t("cfw.other.title")}</summary>
@@ -464,21 +482,6 @@ export function ConfirmareOrderScreen({ orderId, employee, service, documents, n
           {moreOpen && <div className="cfw-more-body">
             <p className="dashboard-footnote">{t("cfw.more.lead")}</p>
             {!customerInTask && customerFacts}
-            <section className="detail-section" aria-labelledby="cf-lines">
-              <div className="section-title"><h2 id="cf-lines">{t("cf.lines.title")}</h2>{workflow.task !== "products" && <StatusPill tone={(pending ? missing.includes("lines") : detail.lines.some((line) => !line.confirmed)) ? "neutral" : "success"} testId="cf-lines-progress">{t("cf.lines.progress", { confirmed: pending ? draft.confirmedLineIds.filter((id) => detail.review.lineIds.includes(id)).length : detail.lines.filter((line) => line.confirmed).length, total: detail.lines.length })}</StatusPill>}</div>
-              <ul className="cf-lines">
-                {detail.lines.map((line) => {
-                  const ticked = pending ? draft.confirmedLineIds.includes(line.lineId) : line.confirmed;
-                  return <li key={line.lineId} className={`cf-line${ticked ? " is-confirmed" : ""}`} data-testid={`cf-line-${line.lineNumber}`}>
-                    <div className="cf-line-head">
-                      <span className="line-number"><span className="visually-hidden">{t("cf.lines.line")} </span>{line.lineNumber}</span>
-                      <LineFacts line={line} />
-                    </div>
-                    <StatusPill tone={ticked ? "success" : "neutral"} icon={ticked ? "check" : "clock"}>{ticked ? t("cf.lines.confirmed") : t("cf.lines.notConfirmed")}</StatusPill>
-                  </li>;
-                })}
-              </ul>
-            </section>
             {!shopInTask && <ConfirmareShopPanel detail={detail} service={service} shop={shop} onRefresh={view.refresh} />}
             {!moneyInTask && <section className="detail-section" aria-labelledby="cf-money">
               <div className="section-title"><h2 id="cf-money">{t("cf.money.title")}</h2></div>
@@ -518,6 +521,21 @@ export function ConfirmareOrderScreen({ orderId, employee, service, documents, n
             </section>
           </div>}
         </details>
+        </div>
+
+        <aside className="cfo-side" aria-label={t("cfo.side.label")}>
+          {/* The change panel stays mounted while the change exists: closing it keeps what the operator typed. */}
+          {editorShown && <SidePanel open={panelOpen} title={t("cfo.panel.editTitle", { number: detail.orderNumber })} lead={t("cfo.panel.editLead", { source: sourceLabel(detail.sourceKey) })} onClose={closePanel} testId="cfo-edit-panel">{editor}</SidePanel>}
+          {!panelOpen && <>
+            {shopRead && !contactInTask && <OrderCustomerCard shop={shopRead} />}
+            <OrderMoneyCard detail={detail} shop={shop.read} invoice={invoiceView ?? glanceRead} />
+            <section className="cfo-card cfo-progress" aria-labelledby="cfo-progress-title">
+              <div className="cfo-card-head"><h2 id="cfo-progress-title">{t("cfo.progress.title")}</h2></div>
+              <StepProgress workflow={workflow} compact />
+              <div className="cfo-steps">{inactiveSteps.map(({ step, index }) => <StepCard key={step.id} step={step} number={index + 1} active={false} />)}</div>
+            </section>
+          </>}
+        </aside>
       </div>
       {/* The five steps, for the e2e and the guide: data only, never interactive. */}
       <span hidden data-testid="cfw-steps" data-active={workflow.active} data-task={workflow.task} data-steps={WORKFLOW_STEPS.map((id) => `${id}:${workflow.steps.find((step) => step.id === id)!.state}`).join(",")} />
