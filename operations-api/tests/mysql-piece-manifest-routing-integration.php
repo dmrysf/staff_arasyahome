@@ -691,7 +691,16 @@ $check($state($m11) === $before11 && (int) $one('SELECT COUNT(*) FROM production
 $advance($ironer, $m11, ['defectResolved' => true]);
 $check((int) $one('SELECT COUNT(*) FROM production_unit_verifications WHERE order_uuid = ? AND confirmed_at IS NOT NULL AND confirmed_by_employee_uuid = ? AND rework_cycle = 2', [$m11['uuid'], $uuids['ironer']]) === 2, 'both exact pieces confirmed by actual stage-8 actor in current cycle');
 // Open orders with a ticket schema 2 document (API 2.34.2) raise the rollback floor above the per-piece floors.
-$rollbackFloor = static fn (string $floor): string => ($cli('check-rollback.php', '0.0.0')['json']['state']['openOrdersWithTicketSchema2'] ?? 0) > 0 && version_compare($floor, '2.34.2', '<') ? '2.34.2' : $floor;
+$rollbackFloor = static function (string $floor) use ($cli): string {
+    // Ticket schema 3 (API 2.53.0, web shop documents) and schema 2 (API 2.34.2, Trendyol) raise it further.
+    $state = $cli('check-rollback.php', '0.0.0')['json']['state'] ?? [];
+    foreach (['openOrdersWithTicketSchema3' => '2.53.0', 'openOrdersWithTicketSchema2' => '2.34.2'] as $key => $version) {
+        if (($state[$key] ?? 0) > 0 && version_compare($floor, $version, '<')) {
+            return $version;
+        }
+    }
+    return $floor;
+};
 $rollback = $cli('check-rollback.php', '2.31.0');
 $check($rollback['code'] === 3 && $rollback['json']['requiredFloor'] === $rollbackFloor('2.32.0') && $cli('check-rollback.php', $rollbackFloor('2.32.0'))['code'] === 0, 'current-release rollback guard refuses an unaware API and permits the compatibility floor');
 $originalChecksum = (string) $one("SELECT checksum FROM schema_migrations WHERE migration_name = '029_production_manifest_routing.sql'");

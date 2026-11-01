@@ -106,6 +106,13 @@ try {
             EXISTS (SELECT 1 FROM production_document_revisions r WHERE r.order_uuid = o.order_uuid AND r.snapshot_schema >= 2)
             OR EXISTS (SELECT 1 FROM production_document_revision_requests q WHERE q.open_order_uuid = o.order_uuid AND q.snapshot_schema >= 2))',
     )->fetchColumn();
+    // Production ticket schema 3 (API 2.53.0, Trendhome and OutletPerdele documents only): an older API does not know the
+    // schema, so it could neither render such a revision nor compare it with the order on the next source event.
+    $schemaThreeOpen = (int) $pdo->query(
+        'SELECT COUNT(*) FROM operational_orders o WHERE o.production_completed_at IS NULL AND (
+            EXISTS (SELECT 1 FROM production_document_revisions r WHERE r.order_uuid = o.order_uuid AND r.snapshot_schema >= 3)
+            OR EXISTS (SELECT 1 FROM production_document_revision_requests q WHERE q.open_order_uuid = o.order_uuid AND q.snapshot_schema >= 3))',
+    )->fetchColumn();
     // Confirmare (API 2.37.0 to 2.42.0): an API older than 2.37.0 ignores the cohort, so it would let an order waiting for
     // its Confirmare decision (or for an operator resolution) start production. 2.37.x only checks the approval: the
     // financial, contact and fingerprint clearance (2.38.0 to 2.41.0) and the first production document required before
@@ -141,9 +148,9 @@ try {
     // settles (an older API would leave it without an inbox, and a lost decision unreconciled). Closed requests,
     // supervision rows and `verify` scope rows do not: older releases never read them (a `verify` row grants nothing there).
     $requestsOpen = isset($tables['finance_verification_requests']) ? (int) $pdo->query('SELECT COUNT(*) FROM finance_verification_requests WHERE open_order_uuid IS NOT NULL')->fetchColumn() : 0;
-    $floor = $requestsOpen > 0 ? '2.50.0' : ($dualOpen > 0 ? '2.46.0' : (($invoiceUnsettled > 0 || $invoiceRouted > 0 || $invoiceOpenWork > 0) ? '2.45.0' : (($cohortOpen > 0 || $activations > 0 || $financeUnsettled > 0) ? '2.42.0' : ($syncOpen > 0 ? '2.36.0' : ($stoppedOpen > 0 ? '2.35.0' : ($schemaTwoOpen > 0 ? '2.34.2' : ($assistedOpen > 0 ? '2.34.0' : (array_sum($state) > 0 ? '2.32.0' : null))))))));
+    $floor = $schemaThreeOpen > 0 ? '2.53.0' : ($requestsOpen > 0 ? '2.50.0' : ($dualOpen > 0 ? '2.46.0' : (($invoiceUnsettled > 0 || $invoiceRouted > 0 || $invoiceOpenWork > 0) ? '2.45.0' : (($cohortOpen > 0 || $activations > 0 || $financeUnsettled > 0) ? '2.42.0' : ($syncOpen > 0 ? '2.36.0' : ($stoppedOpen > 0 ? '2.35.0' : ($schemaTwoOpen > 0 ? '2.34.2' : ($assistedOpen > 0 ? '2.34.0' : (array_sum($state) > 0 ? '2.32.0' : null)))))))));
     $safe = $floor === null || version_compare($argv[1], $floor, '>=');
-    fwrite(STDOUT, json_encode(['safe' => $safe, 'targetVersion' => $argv[1], 'requiredFloor' => $floor, 'state' => $state + ['openOrdersWithAssistedCheckpoints' => $assistedOpen, 'openOrdersWithTicketSchema2' => $schemaTwoOpen, 'ordersAwaitingConfirmare' => $cohortClosed, 'openConfirmareOrders' => $cohortOpen, 'confirmareActivations' => $activations, 'openStoppedOrders' => $stoppedOpen, 'openCancellationSyncOperations' => $syncOpen,
+    fwrite(STDOUT, json_encode(['safe' => $safe, 'targetVersion' => $argv[1], 'requiredFloor' => $floor, 'state' => $state + ['openOrdersWithAssistedCheckpoints' => $assistedOpen, 'openOrdersWithTicketSchema2' => $schemaTwoOpen, 'openOrdersWithTicketSchema3' => $schemaThreeOpen, 'ordersAwaitingConfirmare' => $cohortClosed, 'openConfirmareOrders' => $cohortOpen, 'confirmareActivations' => $activations, 'openStoppedOrders' => $stoppedOpen, 'openCancellationSyncOperations' => $syncOpen,
         'unsettledInvoiceActions' => $invoiceUnsettled, 'ordersRoutedForInvoice' => $invoiceRouted, 'ordersWithOpenProformaWork' => $invoiceOpenWork, 'unsettledFinanceActions' => $financeUnsettled, 'openDualStoreWork' => $dualOpen, 'openFinanceRequests' => $requestsOpen]], JSON_THROW_ON_ERROR) . "\n");
     exit($safe ? 0 : 3);
 } catch (Throwable) {
