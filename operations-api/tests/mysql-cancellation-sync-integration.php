@@ -1291,8 +1291,10 @@ $dryCli = $cli('cancellation-sync.php', 'reconcile', '--dry-run=1');
 $check($dryCli['code'] === 0 && $dryCli['json']['dryRun'] === true, 'S11 reconcile dry run');
 $check($cli('cancellation-sync.php', 'reconcile', '--dry-run=0')['code'] === 2, 'S11 recording needs an operator');
 $rollback = $cli('check-rollback.php', '2.35.0');
-$check($rollback['code'] === 3 && $rollback['json']['requiredFloor'] === '2.36.0' && $rollback['json']['state']['openCancellationSyncOperations'] > 0, 'S11 rollback below 2.36.0 is refused while an operation is open');
-$check($cli('check-rollback.php', '2.36.0')['code'] === 0, 'S11 the current API is a safe target');
+// Ticket schema 3 (API 2.53.0, web shop documents of earlier suites) raises the floor above this one.
+$floorAbove = static fn (array $json, string $floor): string => ($json['state']['openOrdersWithTicketSchema3'] ?? 0) > 0 && version_compare($floor, '2.53.0', '<') ? '2.53.0' : $floor;
+$check($rollback['code'] === 3 && $rollback['json']['requiredFloor'] === $floorAbove($rollback['json'], '2.36.0') && $rollback['json']['state']['openCancellationSyncOperations'] > 0, 'S11 rollback below 2.36.0 is refused while an operation is open');
+$check($cli('check-rollback.php', $floorAbove($rollback['json'], '2.36.0'))['code'] === 0, 'S11 the current API is a safe target');
 
 // ---- S12. Mutation scope and secrets ----------------------------------------------------------------------------------
 $writes = [];

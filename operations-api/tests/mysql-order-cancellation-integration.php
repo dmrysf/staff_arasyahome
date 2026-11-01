@@ -771,8 +771,10 @@ $pdo->prepare("UPDATE operational_orders SET operational_status = 'unavailable',
 $ok($reactivate($lu), 'C10 legacy reactivation');
 $check($state($lu)['cancellation'] === 'held' && $control($lu)['reason_code'] === 'legacy_source_cancellation' && $control($lu)['source_status'] === 'reactivated', 'C10 a pre-033 cancellation reactivated at the source still needs a release');
 $rollback = $cli('check-rollback.php', '2.34.0');
-$check($rollback['code'] === 3 && $rollback['json']['requiredFloor'] === '2.35.0' && $rollback['json']['state']['openStoppedOrders'] > 0, 'C10 an API without the guard is refused while a stop is in force');
-$check($cli('check-rollback.php', '2.35.0')['code'] === 0, 'C10 the current API is a safe target');
+// Ticket schema 3 (API 2.53.0, web shop documents of earlier suites) raises the floor above this one.
+$floorAbove = static fn (array $json, string $floor): string => ($json['state']['openOrdersWithTicketSchema3'] ?? 0) > 0 && version_compare($floor, '2.53.0', '<') ? '2.53.0' : $floor;
+$check($rollback['code'] === 3 && $rollback['json']['requiredFloor'] === $floorAbove($rollback['json'], '2.35.0') && $rollback['json']['state']['openStoppedOrders'] > 0, 'C10 an API without the guard is refused while a stop is in force');
+$check($cli('check-rollback.php', $floorAbove($rollback['json'], '2.35.0'))['code'] === 0, 'C10 the current API is a safe target');
 // Dashboard overview: stopped orders are not active production and each order is counted once.
 $overview = $ok($dashGet($root, '/management/production-overview'), 'C10 overview');
 $stoppedOpen = (int) $one("SELECT COUNT(*) FROM operational_orders WHERE cancellation_state = 'held'");

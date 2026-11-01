@@ -14,15 +14,16 @@ use Arasya\Operations\B2B\ProjectLabels;
  *
  * It renders exactly one stored revision snapshot: every page comes from the same immutable data, so a
  * document can never mix two database states. The source selects the visible stamp and, from snapshot
- * schema 2, the one-page Trendyol layout (OrderedProductsTicket). It prints no prices, payment, balances
- * or email, and the phone only masked.
+ * schema 2, the Trendyol layout (OrderedProductsTicket), from schema 3 the web shop made-to-measure layout
+ * (WebShopTicket). It prints no prices, payment, balances or email, and the phone only masked.
  *
  * Every page repeats the order number, source stamp, revision, the canonical QR and "Pagina X / Y", so
  * separated pages are never anonymous. Line blocks are never split across pages. Line schematics are
  * deterministic workshop drawings from the printed measurements only; nothing is inferred.
  *
  * The snapshot schema is the layout contract (TicketSnapshot): a schema 1 revision renders exactly as it
- * was printed, and every source other than Trendyol renders as schema 1 in schema 2 too.
+ * was printed; a source without its own layout in a schema renders as schema 1 (B2B always, the web shops in
+ * schema 2).
  */
 final class ProductionTicketPdf
 {
@@ -77,11 +78,12 @@ final class ProductionTicketPdf
      */
     public static function layoutError(array $snapshot): ?string
     {
-        if (!self::orderedProducts($snapshot)) {
+        if (!self::orderedProducts($snapshot) && !self::webShop($snapshot)) {
             return null;
         }
         try {
-            OrderedProductsTicket::document($snapshot, ['number' => 99, 'status' => 'active', 'generatedAt' => '2026-01-01 00:00:00', 'qrPayload' => null, 'sourceDisplayName' => null]);
+            $revision = ['number' => 99, 'status' => 'active', 'generatedAt' => '2026-01-01 00:00:00', 'qrPayload' => null, 'sourceDisplayName' => null];
+            self::webShop($snapshot) ? WebShopTicket::document($snapshot, $revision) : OrderedProductsTicket::document($snapshot, $revision);
             return null;
         } catch (TicketLayoutOverflow $overflow) {
             return $overflow->getMessage();
@@ -94,6 +96,12 @@ final class ProductionTicketPdf
         return (int) ($snapshot['schema'] ?? 1) >= 2 && ($snapshot['order']['source'] ?? null) === 'trendyol';
     }
 
+    /** Schema 3 Trendhome and OutletPerdele tickets: the made-to-measure layout. @param array<string, mixed> $snapshot */
+    public static function webShop(array $snapshot): bool
+    {
+        return (int) ($snapshot['schema'] ?? 1) >= 3 && in_array($snapshot['order']['source'] ?? null, TicketSnapshot::WEB_SHOPS, true);
+    }
+
     /**
      * @param array<string, mixed> $snapshot
      * @param array<string, mixed> $revision
@@ -101,8 +109,8 @@ final class ProductionTicketPdf
      */
     private static function layout(array $snapshot, array $revision, int $total): array
     {
-        if (self::orderedProducts($snapshot)) {
-            $document = OrderedProductsTicket::document($snapshot, $revision);
+        if (self::orderedProducts($snapshot) || self::webShop($snapshot)) {
+            $document = self::webShop($snapshot) ? WebShopTicket::document($snapshot, $revision) : OrderedProductsTicket::document($snapshot, $revision);
             return [$document, max(array_column($document->textLog(), 'page'))];
         }
         $fonts = dirname(__DIR__) . '/B2B/Pdf/fonts/';

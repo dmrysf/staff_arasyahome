@@ -50,6 +50,14 @@ $rollback = static function (string $target) use ($cliEnvironment): array {
 };
 $floor = static function () use ($rollback): ?string { $r = $rollback('0.0.0')['json']; return is_array($r) && array_key_exists('requiredFloor', $r) ? $r['requiredFloor'] : 'unverifiable'; };
 
+// The suites before this one leave web shop documents in ticket schema 3 (floor 2.53.0, above every floor checked
+// here): they are set aside for this suite and restored at its end.
+$schemaThree = [
+    'revisions' => array_column($pdo->query('SELECT revision_uuid FROM production_document_revisions WHERE snapshot_schema = 3')->fetchAll(PDO::FETCH_ASSOC), 'revision_uuid'),
+    'requests' => array_column($pdo->query('SELECT request_uuid FROM production_document_revision_requests WHERE snapshot_schema = 3')->fetchAll(PDO::FETCH_ASSOC), 'request_uuid'),
+];
+$pdo->exec('UPDATE production_document_revisions SET snapshot_schema = 1 WHERE snapshot_schema = 3');
+$pdo->exec('UPDATE production_document_revision_requests SET snapshot_schema = 1 WHERE snapshot_schema = 3');
 // The suites before this one leave no Confirmare, finance or invoice state; other state may set a lower floor.
 $base = $floor();
 $check($base !== '2.46.0' && $base !== '2.45.0' && $base !== '2.42.0' && $base !== 'unverifiable', 'the shared test database starts without Confirmare, finance or invoice state: ' . var_export($base, true));
@@ -169,5 +177,14 @@ $check($floor() === $base, 'restored');
 
 // ---- 6. No customer data or amount in the answer ---------------------------------------------------------------------------
 $check(preg_match('/\d+\.\d{2}(?![.\d])|@|lei|RON|' . preg_quote($global, '/') . '/i', $after['out']) !== 1, 'the preflight prints counts and versions only (no amount, order or customer): ' . $after['out']);
+
+foreach ($schemaThree['revisions'] as $revisionUuid) {
+    $pdo->prepare('UPDATE production_document_revisions SET snapshot_schema = 3 WHERE revision_uuid = ?')->execute([$revisionUuid]);
+}
+foreach ($schemaThree['requests'] as $requestUuid) {
+    $pdo->prepare('UPDATE production_document_revision_requests SET snapshot_schema = 3 WHERE request_uuid = ?')->execute([$requestUuid]);
+}
+$check((int) $one('SELECT COUNT(*) FROM production_document_revisions WHERE snapshot_schema = 3') === count($schemaThree['revisions'])
+    && (int) $one('SELECT COUNT(*) FROM production_document_revision_requests WHERE snapshot_schema = 3') === count($schemaThree['requests']), 'the schema 3 documents are restored');
 
 fwrite(STDOUT, "PASS MySQL SmartBill rollback integration: {$checks} checks (applied and empty tables, advance proforma, telephone acceptance, accepted smaller advance, cancelled proforma, invoice actions pending and unknown, routing, finished history kept, finance verification pending, changed or missing migrations refused, API before its migrations, read-only, no customer data).\n");

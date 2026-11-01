@@ -571,7 +571,7 @@ check(($ingest('84540', 3, $curtain(9.0), $delivery, 'on-hold')['body']['outcome
 check($order($oH)['document_status'] === 'stale', 'a printed change still makes the schema 1 revision stale');
 $requestH = checkOk($post($online, $docPath($oH, 'revision-requests'), ['expectedDocumentVersion' => (int) $order($oH)['document_version']], $key('req-84540'), T::ORIGIN), 'request on a schema 1 revision', 201)['request'];
 check($requestH['changes'] === [['field' => 'line.meters', 'line' => 1, 'before' => '8 m', 'after' => '9 m']], 'the diff from schema 1 shows only the printed change, never the layout contract ' . json_encode($requestH['changes']));
-check((int) $pdo->query('SELECT snapshot_schema FROM production_document_revision_requests WHERE request_uuid = ' . $pdo->quote($requestH['id']))->fetchColumn() === 1, 'a new Trendhome request stays in schema 1 (only Trendyol documents are issued in schema 2)');
+check((int) $pdo->query('SELECT snapshot_schema FROM production_document_revision_requests WHERE request_uuid = ' . $pdo->quote($requestH['id']))->fetchColumn() === 3, 'a new Trendhome request reviews the made-to-measure layout (schema 3)');
 // A request opened under 2.34.1 (schema 1) stays decidable after the upgrade and generates what was reviewed.
 $asSchemaOne('production_document_revision_requests', 'request_uuid', $requestH['id'], $uuidH);
 check(($ingest('84540', 4, $curtain(9.0), $delivery, 'processing')['body']['outcome'] ?? null) === 'applied', 'a commerce-only change while the schema 1 request is open');
@@ -585,10 +585,14 @@ $requestH3 = checkOk($post($online, $docPath($oH, 'revision-requests'), ['expect
 checkOk($decide($sinem, $requestH3['id'], 'approve', null, $key('approve-84540-3'), 1), 'next Trendhome request approved');
 checkOk($post($online, $docPath($oH, 'generate'), ['expectedDocumentVersion' => (int) $order($oH)['document_version']], $key('gen-84540-r3'), T::ORIGIN), 'R3', 201);
 $r3H = $revisionRow($uuidH, 3);
-check($r3H['status'] === 'active' && (int) $r3H['snapshot_schema'] === 1 && $r3H['qr_reference'] !== $r2H['qr_reference'], 'R3 of a Trendhome order stays in schema 1, with its own QR');
+check($r3H['status'] === 'active' && (int) $r3H['snapshot_schema'] === 3 && TicketSnapshot::fromJson((string) $r3H['snapshot_json'])['schema'] === 3 && $r3H['qr_reference'] !== $r2H['qr_reference'], 'R3 of a Trendhome order is issued in schema 3, with its own QR');
+$r3Texts = implode(' ', array_column(ProductionTicketPdf::document(TicketSnapshot::fromJson((string) $r3H['snapshot_json']), ['number' => 3, 'status' => 'active', 'generatedAt' => '2026-10-06 07:12:00', 'qrPayload' => 'ARASYA:Q1:ABCDEFGHIJKLMNOPQRSTUVWXYZ'])->textLog(), 'text'));
+check(str_contains($r3Texts, 'PE MĂSURĂ') && !in_array('linia', explode(' ', $r3Texts), true), 'the schema 3 Trendhome revision prints the made-to-measure layout');
 check(($ingest('84540', 6, $curtain(10.0), $delivery, 'on-hold')['body']['outcome'] ?? null) === 'applied' && $order($oH)['document_status'] === 'active', 'a commerce-only change keeps the revision active');
-check((int) $pdo->query("SELECT COUNT(*) FROM production_document_revisions r JOIN operational_orders o ON o.order_uuid = r.order_uuid WHERE r.snapshot_schema >= 2 AND o.source_key <> 'trendyol'")->fetchColumn() === 0
-    && (int) $pdo->query("SELECT COUNT(*) FROM production_document_revision_requests q JOIN operational_orders o ON o.order_uuid = q.order_uuid WHERE q.snapshot_schema >= 2 AND o.source_key <> 'trendyol'")->fetchColumn() === 0, 'no Trendhome, OutletPerdele or B2B document or request is issued in schema 2');
+check((int) $pdo->query("SELECT COUNT(*) FROM production_document_revisions r JOIN operational_orders o ON o.order_uuid = r.order_uuid WHERE r.snapshot_schema = 2 AND o.source_key <> 'trendyol'")->fetchColumn() === 0
+    && (int) $pdo->query("SELECT COUNT(*) FROM production_document_revision_requests q JOIN operational_orders o ON o.order_uuid = q.order_uuid WHERE q.snapshot_schema = 2 AND o.source_key <> 'trendyol'")->fetchColumn() === 0, 'no Trendhome, OutletPerdele or B2B document or request is issued in schema 2');
+check((int) $pdo->query("SELECT COUNT(*) FROM production_document_revisions r JOIN operational_orders o ON o.order_uuid = r.order_uuid WHERE r.snapshot_schema = 3 AND o.source_key NOT IN ('trendhome', 'outletperdele')")->fetchColumn() === 0
+    && (int) $pdo->query("SELECT COUNT(*) FROM production_document_revision_requests q JOIN operational_orders o ON o.order_uuid = q.order_uuid WHERE q.snapshot_schema = 3 AND o.source_key NOT IN ('trendhome', 'outletperdele')")->fetchColumn() === 0, 'no Trendyol or B2B document or request is issued in schema 3');
 
 // The real upgrade path of a Trendyol order printed before 2.34.2 (like an existing R1): its schema 1 revision
 // keeps its layout and stays active on the upgrade; only a printed change makes it stale, and the next request
@@ -622,8 +626,9 @@ $rollbackGuard = static function (string $target) use ($dbName): array {
     stream_get_contents($pipes[2]);
     return ['code' => proc_close($process), 'json' => json_decode($out, true)];
 };
-$refused = $rollbackGuard('2.34.1');
-check($refused['code'] === 3 && $refused['json']['requiredFloor'] === '2.34.2' && $refused['json']['state']['openOrdersWithTicketSchema2'] > 0 && $rollbackGuard('2.34.2')['code'] === 0, 'rollback below 2.34.2 is refused while an open order has a schema 2 document (it would go stale on the next source event)');
+$refused = $rollbackGuard('2.52.0');
+check($refused['code'] === 3 && $refused['json']['requiredFloor'] === '2.53.0' && $refused['json']['state']['openOrdersWithTicketSchema3'] > 0 && $rollbackGuard('2.53.0')['code'] === 0, 'rollback below 2.53.0 is refused while an open order has a schema 3 document (an older API cannot render or compare it)');
+check($refused['json']['state']['openOrdersWithTicketSchema2'] > 0, 'the schema 2 Trendyol documents are still counted for the 2.34.2 floor');
 
 // ---- History, analytics, audit ----------------------------------------------------------------------
 $history = $documentView($sinem, $o1);

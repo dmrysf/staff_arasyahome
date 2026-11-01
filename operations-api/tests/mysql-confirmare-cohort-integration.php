@@ -509,6 +509,16 @@ $statusCli = $cli('workflow-cohort.php', '--source=trendhome', '--status');
 $check($statusCli['code'] === 0 && ($statusCli['json']['state'] ?? null) === 'active' && ($statusCli['json']['permitted'] ?? null) === true && !isset($statusCli['json']['conflicts']), 'the status is read-only JSON: ' . $statusCli['out']);
 $usage = $cli('workflow-cohort.php', '--activate');
 $check($usage['code'] === 2, 'an activation without a source is a usage error');
+// The R1 documents of the web shop orders here are in ticket schema 3 (API 2.53.0), whose own, higher floor would hide
+// the Confirmare floor: proven once, then set aside for the Confirmare floor checks and restored after them.
+$schemaThree = $cli('check-rollback.php', '2.52.0');
+$check($schemaThree['code'] === 3 && ($schemaThree['json']['requiredFloor'] ?? null) === '2.53.0' && ($schemaThree['json']['state']['openOrdersWithTicketSchema3'] ?? 0) > 0, 'the schema 3 documents of the web shop orders raise the floor to 2.53.0: ' . $schemaThree['out'] . $schemaThree['err']);
+$schemaThreeRows = [
+    'production_document_revisions' => array_column($pdo->query('SELECT revision_uuid FROM production_document_revisions WHERE snapshot_schema = 3')->fetchAll(PDO::FETCH_ASSOC), 'revision_uuid'),
+    'production_document_revision_requests' => array_column($pdo->query('SELECT request_uuid FROM production_document_revision_requests WHERE snapshot_schema = 3')->fetchAll(PDO::FETCH_ASSOC), 'request_uuid'),
+];
+$pdo->exec('UPDATE production_document_revisions SET snapshot_schema = 1 WHERE snapshot_schema = 3');
+$pdo->exec('UPDATE production_document_revision_requests SET snapshot_schema = 1 WHERE snapshot_schema = 3');
 $floor = $cli('check-rollback.php', '2.36.0');
 $check($floor['code'] === 3 && ($floor['json']['requiredFloor'] ?? null) === '2.42.0' && ($floor['json']['state']['ordersAwaitingConfirmare'] ?? 0) > 0 && ($floor['json']['state']['confirmareActivations'] ?? 0) > 0, 'rollback below 2.37.0 is refused while Confirmare orders wait: ' . $floor['out'] . $floor['err']);
 // 2.37.0 to 2.41.x lack part of the clearance or the R1 requirement before cutting: refused too (floor 2.42.0).
@@ -540,6 +550,13 @@ foreach ($saved['activations'] as $row) {
     $pdo->prepare('INSERT INTO workflow_cohort_activations (' . implode(', ', array_keys($row)) . ') VALUES (' . implode(', ', array_fill(0, count($row), '?')) . ')')->execute(array_values($row));
 }
 $check((int) $one('SELECT COUNT(*) FROM workflow_cohort_activations') === count($saved['activations']) && (int) $one('SELECT COUNT(*) FROM operational_orders WHERE workflow_cohort IS NOT NULL') === count($saved['cohorts']), 'fixture restored after the approved-only rollback check');
+foreach ($schemaThreeRows as $table => $ids) {
+    $key = $table === 'production_document_revisions' ? 'revision_uuid' : 'request_uuid';
+    foreach ($ids as $rowId) {
+        $pdo->prepare("UPDATE {$table} SET snapshot_schema = 3 WHERE {$key} = ?")->execute([$rowId]);
+    }
+}
+$check((int) $one('SELECT COUNT(*) FROM production_document_revisions WHERE snapshot_schema = 3') === count($schemaThreeRows['production_document_revisions']), 'the schema 3 documents are restored after the Confirmare floor checks');
 
 // ---- Database constraints -----------------------------------------------------------------------------------------
 foreach ([
