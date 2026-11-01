@@ -1,5 +1,5 @@
 import { mapAssistedCheckpoint, mapManufacturingPlan, mapPhysicalHistory } from "../../domain/physical";
-import { StaffServiceError, type ActivityAction, type ActivityEntry, type ActivityPage, type Employee, type FaultDecision, type FaultException, type FaultReason, type OrderQuality, type QualityCapabilities, type ServiceErrorCode } from "../../domain/models";
+import { StaffServiceError, type ActivityAction, type ActivityEntry, type OfficeActivityAction, type ActivityPage, type Employee, type FaultDecision, type FaultException, type FaultReason, type OrderQuality, type QualityCapabilities, type ServiceErrorCode } from "../../domain/models";
 import { normalizeLocale } from "../../i18n/locales";
 import { isOrderActionBlockedReason, isOrderActionId, orderActionLabels } from "../../domain/orderActions";
 import type { ActivityService, AuthService, EmployeeService, ExceptionService, LiveService, OrderService, ServiceBundle, Session } from "../contracts";
@@ -771,9 +771,29 @@ export function mapOrderPage(value: unknown): import("../../domain/models").Orde
 
 const activityActions = new Set<ActivityAction>(["claimed", "stage_completed", "production_completed"]);
 
+const OFFICE_ACTION = /^(contact|(confirmare|shop|invoice|finance|verification)\.[a-z_]{2,40})$/;
+
 export function mapActivityEntry(value: unknown): ActivityEntry {
   const raw = objectValue(value);
   const action = raw.action;
+  if (raw.kind === "office") {
+    // API 2.52.0: the employee's own office work; it names no production stage.
+    if (typeof action !== "string" || !OFFICE_ACTION.test(action)) throw new StaffServiceError("SERVER_ERROR");
+    const source = stringValue(raw.source);
+    const entry: ActivityEntry = {
+      id: stringValue(raw.id),
+      occurredAt: timestampValue(raw.occurredAt),
+      action: action as OfficeActivityAction,
+      orderId: stringValue(raw.orderId),
+      orderNumber: stringValue(raw.orderNumber),
+      source: ["trendhome", "outletperdele", "trendyol", "b2b", "marketplace"].includes(source) ? source as ActivityEntry["source"] : "unknown",
+      kind: "office",
+      fromStageId: "",
+      fromStageLabelSnapshot: "",
+    };
+    if (typeof raw.detail === "string" && /^[a-z_]{1,40}$/.test(raw.detail)) entry.detail = raw.detail;
+    return entry;
+  }
   if (typeof action !== "string" || !activityActions.has(action as ActivityAction)) throw new StaffServiceError("SERVER_ERROR");
   const source = stringValue(raw.source);
   const entry: ActivityEntry = {
@@ -806,7 +826,7 @@ export function mapActivityPage(value: unknown): ActivityPage {
   return {
     items: raw.items.map(mapActivityEntry),
     nextCursor: raw.nextCursor != null ? stringValue(raw.nextCursor) : undefined,
-    summary: { processed: count(summary.processed), meters: nonNegativeNumber(summary.meters), handedOver: count(summary.handedOver), inProgress: count(summary.inProgress) },
+    summary: { processed: count(summary.processed), meters: nonNegativeNumber(summary.meters), handedOver: count(summary.handedOver), inProgress: count(summary.inProgress), ...(summary.actions != null ? { actions: count(summary.actions) } : {}) },
   };
 }
 
@@ -982,7 +1002,8 @@ export function createProductionServices(apiBaseUrl: string, options: Production
   };
   const activity: ActivityService = {
     listMine: (input, requestOptions) => {
-      const query = new URLSearchParams({ range: input.range });
+      // API 2.52.0: the history also lists the employee's own office work.
+      const query = new URLSearchParams({ range: input.range, include: "office" });
       if (input.range === "custom") {
         if (!input.from || !input.to) return Promise.reject(new StaffServiceError("SERVER_ERROR"));
         query.set("from", input.from);

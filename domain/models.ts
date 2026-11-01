@@ -355,14 +355,22 @@ export type OrderPage = {
 };
 
 export type ActivityAction = "claimed" | "stage_completed" | "production_completed";
+/**
+ * API 2.52.0 / Staff 2.43.0: the employee's own office work in the history, e.g. `confirmare.approved`, `contact`,
+ * `invoice.issue`, `finance.verify_transfer`, `verification.requested`.
+ */
+export type OfficeActivityAction = "contact" | `${"confirmare" | "shop" | "invoice" | "finance" | "verification"}.${string}`;
 
 export type ActivityEntry = {
   id: string;
   occurredAt: string;
-  action: ActivityAction;
+  action: ActivityAction | OfficeActivityAction;
   orderId: string;
   orderNumber: string;
   source: OrderSource;
+  /** An office entry names no production stage (its stage fields are empty); `detail` is the call outcome or the decision. */
+  kind?: "office";
+  detail?: string;
   fromStageId: string;
   fromStageLabelSnapshot: string;
   toStageId?: string;
@@ -373,7 +381,7 @@ export type ActivityEntry = {
 export type ActivityPage = {
   items: ActivityEntry[];
   nextCursor?: string;
-  summary: { processed: number; meters: number; handedOver: number; inProgress: number };
+  summary: { processed: number; meters: number; handedOver: number; inProgress: number; actions?: number };
 };
 
 export type ServiceErrorCode =

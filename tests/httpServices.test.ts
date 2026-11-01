@@ -182,7 +182,7 @@ test("every production order method calls an existing Operations route with CSRF
     "GET /orders/trendhome%3A61833",
     "POST /orders/trendhome%3A61833/claim",
     "POST /orders/trendhome%3A61833/transition",
-    "GET /activity/mine?range=custom&from=2026-08-01&to=2026-08-19",
+    "GET /activity/mine?range=custom&include=office&from=2026-08-01&to=2026-08-19",
   ]);
   for (const call of calls.filter(({ init }) => init.method === "POST")) {
     assert.equal(new Headers(call.init.headers).get("X-CSRF-Token"), "csrf-1");

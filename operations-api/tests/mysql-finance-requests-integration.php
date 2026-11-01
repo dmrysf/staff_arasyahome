@@ -428,6 +428,11 @@ $check($row9['policy'] === 'single' && $row9['decided_by_employee_uuid'] === $uu
 $error($cmd($who['fsup'], $rid(9), 'second-check', ['expectedVersion' => $row9['version'], 'expectedRevision' => 'sha256:' . str_repeat('1', 64), 'decision' => 'verify'], null, $kernelSingle), 404, 'FINANCE_REQUEST_NOT_FOUND', 'no extra manager approval can be triggered on a verified request');
 $error($call($who['fsup'], 'POST', $orderPath($g(9), '/finance/decide-transfer'), ['expectedRevision' => 'sha256:' . str_repeat('1', 64), 'entryId' => $e9[0]['id'], 'decision' => 'verify'], null, $kernelSingle), 404, 'CONFIRMARE_NOT_FOUND', 'nor through the order\'s finance route');
 $check(!array_filter($ok($inbox($who['fsup'], $kernelSingle), 'supervisor inbox')['items'], static fn (array $i): bool => $i['id'] === $rid(9)), 'the routine verification never reaches the supervisor\'s inbox');
+// API 2.52.0: the Staff history of each employee shows their own part: the operator's request, the finance employee's verification.
+$historyOn = static fn (array $w, string $gid): array => array_column(array_filter($ok($get($w, '/activity/mine?range=today&include=office'), 'office history')['items'], static fn (array $i): bool => $i['orderId'] === $gid), 'action');
+$check($historyOn($f, $g(9)) === ['finance.verify_transfer'], 'the finance employee\'s history shows the single verification once (the task events are not repeated): ' . json_encode($historyOn($f, $g(9))));
+$check($historyOn($who['rop'], $g(1)) === ['verification.requested', 'confirmare.approved', 'contact'], 'the operator\'s history shows the call, the approval and the one verification they asked for (a second tab asks nothing new): ' . json_encode($historyOn($who['rop'], $g(1))));
+$check($historyOn($who['fsup'], $g(9)) === [], 'the observing supervisor did nothing on the order, so nothing is in their history');
 // Partial payment: 100 of 300.
 $t10 = $ok($task($f, $rid(10), $kernelSingle), 'task 10');
 $d10 = $ok($cmd($f, $rid(10), 'decide', $evidence($t10, '100.00', 'BT FVR 0010'), null, $kernelSingle), 'partial payment');

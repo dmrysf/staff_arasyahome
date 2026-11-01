@@ -305,6 +305,25 @@ $service->distribute('trendhome');
 $alert = array_values(array_filter($ok($get($sup, '/confirmare/alerts'), 'alerts')['items'], static fn (array $a): bool => $a['globalOrderId'] === $stale))[0] ?? null;
 $check($alert !== null && $alert['lastContactAt'] !== null && $alert['orderNumber'] === explode(':', $stale)[1], 'the inactivity alert still rises (rule unchanged) and shows the last recorded attempt');
 
+// ---- 8b. API 2.52.0: the Staff history (`/activity/mine?include=office`) lists each employee's own office work ------
+$history = static fn (array $who, array $query = []): array => $ok($get($who, '/activity/mine', $query + ['range' => 'today', 'include' => 'office']), 'office history');
+$aHistory = $history($opA);
+$aOnOrder = array_values(array_filter($aHistory['items'], static fn (array $i): bool => $i['orderId'] === $aOrder));
+$check(array_map(static fn (array $i): string => $i['action'] . ':' . ($i['detail'] ?? ''), $aOnOrder) === ['confirmare.approved:', 'contact:confirmed', 'contact:needs_correction', 'contact:confirmed', 'contact:callback', 'contact:no_answer'], 'the operator\'s history lists the approval and every recorded call (a double submission once), newest first: ' . json_encode(array_column($aOnOrder, 'action')));
+$check($aOnOrder[0]['kind'] === 'office' && $aOnOrder[0]['orderNumber'] === explode(':', $aOrder)[1] && $aOnOrder[0]['source'] === 'trendhome' && !isset($aOnOrder[0]['fromStageId']), 'an office entry names the order and the shop, and no production stage');
+$check(array_filter($aHistory['items'], static fn (array $i): bool => in_array($i['action'], ['confirmare.opened', 'confirmare.assigned', 'confirmare.released'], true)) === [], 'system events (opening, distribution) are not the employee\'s history');
+$check($aHistory['summary']['actions'] === count($aHistory['items']) && $aHistory['summary']['processed'] === count(array_unique(array_column($aHistory['items'], 'orderId'))), 'the summary counts the office actions and the distinct orders: ' . json_encode($aHistory['summary']));
+$supActions = array_column(array_filter($history($sup)['items'], static fn (array $i): bool => $i['orderId'] === $rOrder), 'action');
+// The order may also be the one moved in the concurrent reassignment above, so the reassignment can appear twice.
+$check(end($supActions) === 'confirmare.reopened' && array_unique(array_slice($supActions, 0, -1)) === ['confirmare.reassigned'], 'the supervisor sees the reopening and the reassignment they made, not the operator\'s call or rejection: ' . json_encode($supActions));
+$bActions = array_column(array_filter($history($opB)['items'], static fn (array $i): bool => $i['orderId'] === $rOrder), 'action');
+$check($bActions === ['confirmare.rejected', 'contact'], 'B sees their own call and rejection only: ' . json_encode($bActions));
+$plain = $ok($get($opA, '/activity/mine', ['range' => 'today']), 'production-only history');
+$check($plain['items'] === [] && !array_key_exists('actions', $plain['summary']), 'without include=office the history stays production only, as older Staff releases expect');
+$error($get($opA, '/activity/mine', ['range' => 'today', 'include' => 'all']), 400, 'INVALID_REQUEST', 'an unknown include is refused');
+$check($history($opA, ['range' => 'custom', 'from' => '2020-01-01', 'to' => '2020-01-02'])['items'] === [], 'the date range applies to office work too');
+$check($history($none)['items'] === [], 'an employee without office work has an empty history');
+
 // ---- 9. Append-only, no customer data in the contact table -------------------------------------------------------
 $source = (string) file_get_contents(dirname(__DIR__) . '/src/Confirmare/ConfirmareService.php');
 $check(preg_match('/(UPDATE|DELETE FROM)\s+order_confirmation_contacts/i', $source) === 0, 'no code path updates or deletes a contact attempt');
