@@ -30,17 +30,26 @@ use RuntimeException;
  * - 2: the same printed data. Trendyol lines print the commercial quantity as separate ordered products,
  *   each with the variant's dimensions (ProductionTicketPdf). Only Trendyol documents are issued in it, so
  *   only they tie a rollback to 2.34.2 or later.
+ * - 3: the same printed data. Trendhome and OutletPerdele print the made-to-measure layout (WebShopTicket): the
+ *   total width, the pieces it is sewn as with the width of each, the sewing, or a standard product's mark. Only
+ *   Trendhome and OutletPerdele documents are issued in it, so only they tie a rollback to 2.53.0 or later.
  */
 final readonly class TicketSnapshot
 {
     /** The newest layout contract. */
-    public const SCHEMA = 2;
-    public const SCHEMAS = [1, 2];
+    public const SCHEMA = 3;
+    public const SCHEMAS = [1, 2, 3];
+    /** The sources whose new documents use the made-to-measure layout of schema 3. */
+    public const WEB_SHOPS = ['trendhome', 'outletperdele'];
 
-    /** The schema a new document of a source is issued in: 2 for Trendyol (its new layout), 1 for every other source. */
+    /** The schema a new document of a source is issued in: 2 for Trendyol, 3 for the web shops, 1 for every other source. */
     public static function schemaFor(string $source): int
     {
-        return $source === 'trendyol' ? self::SCHEMA : 1;
+        return match (true) {
+            $source === 'trendyol' => 2,
+            in_array($source, self::WEB_SHOPS, true) => 3,
+            default => 1,
+        };
     }
 
     public function __construct(private PDO $pdo)

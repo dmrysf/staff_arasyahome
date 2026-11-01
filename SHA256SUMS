@@ -6,7 +6,7 @@ b874fd4bb9d5288d15a76645c3d9b3c880463696f8c3b95f17110f0d81ccdee3  ./.cpanel.yml
 8f4471e695b9b20b4a0140e790ccba4ae644a6cb8787031307981aa396479f70  ./bin/cancellation-sync.php
 c53137393d879c7548188f87745e52d6b31938c9c8a7c57caee1eea05667a396  ./bin/change-password.php
 a01df2c42b68d9a9c4e12ae1a738f9a260015bc73cd74d4abcdf25fadb438c2b  ./bin/check-migrations.php
-7bfe36e8bcbc3ff884373e518df1bd8a5b1419880e0e2369cc35bb0cee1ee9fe  ./bin/check-rollback.php
+ac85ec4f4308ea2319c8228fab11c115b5960b7b5143d8cb43ed4f162f9033ef  ./bin/check-rollback.php
 0197308477ef0830c4438af5ba138fada90d8fdc2e811a2a6ba8179924527fb4  ./bin/cli-bootstrap.php
 ec5815c87fb4c633da4c34d600b5ba73b2bebf38e153025a1c4a4d8e5c073aa6  ./bin/confirmare-backfill.php
 218cb5ccd6ed376c26c395bc7bf292b391ef59ebf6fd4c452aa016d013a9f55f  ./bin/confirmare-cycles.php
@@ -97,7 +97,7 @@ e3d5bd553859a3f0ade7ef0d41a29c8dab1eaaf486fb632bdb714b79e4c719aa  ./database/see
 a80d76fbdb4a0c8ac3533c3db5eb123a73ff6eb2c259927976d39dfeeb2f248b  ./public/.htaccess
 8302b6ec98573706b31b957a8f9ad9be8bf92a8b8bff02963c601650e7e8c420  ./public/RuntimeLocator.php
 edb234c39482536f0540e881da98cbdad6241af787f230295a79a4ae534e26be  ./public/index.php
-0d8eafb39bdf796e66971bed8ad452d1ea506dfe2735306a2689b9479ec27692  ./release.json
+0722097b86b01b894e21dcc787b4f7f4b3628478c58d960ff7ac31636d06528a  ./release.json
 3b42b0a0d462aa0ac0f368966a5703f6ecbbff9eea2bbbe47f269e9cd6ba03ea  ./scripts/api-release-common.sh
 b7f4bad56c6c8f39a9e72af6c8ea82d578beb50bf0e4f38d17c78a2e9f0f1637  ./scripts/cancellation-sync-active.sh
 19e2a5e07493b6f3b123d00b856231c4d8598cd7ac07dce398ef44bc5aafd532  ./scripts/cpanel-deploy-api.sh
@@ -105,7 +105,7 @@ bdbe9cb23b6d581c64eba4dc2b41fe93e503e327afb0c36dce38759631c2fabb  ./scripts/cpan
 ad963b363acfdc488f4b9638e31052d173e9b31437735990435acfd5c9e876ca  ./scripts/generate-sha256s.sh
 668b254a048e20b209aa886a91bb14682e1f60255fa8e329ec6b9a8e896c355c  ./scripts/maintenance-active.sh
 19135ebb1f6829810e78b5a2f4a8647b52e7f1cc73b8fce2f42b481bb700135a  ./scripts/trendyol-intake-active.sh
-69c5978c1cfe586ea086e3830bf8ae1a6b7c53d5ddf7733b81606c9d7fcb07a4  ./scripts/validate-release.sh
+5b84f47d21c0f547d04e230227a6134a85d8ddfbbd75e8cd7aa520c9a7bd32e7  ./scripts/validate-release.sh
 7f8042e24e1e6e02ee1a99ac82acaac281fdc759e419e18a6f89adbd2d891281  ./src/Activity/ActivityController.php
 fffaf9848b4f34b5f257895192f34d7a6ef959791a2e944ba3a981bd6bbb874e  ./src/Activity/ActivityRange.php
 8f4294de2d4e2e71697dfede970e5c2c11047d6af47bb6b7d83c5acae6172a0c  ./src/Activity/PdoActivityRepository.php
@@ -241,11 +241,12 @@ b62c7c90db800bedd889b250d5e7a3191becccdbe0647095df62a46939cac7f0  ./src/Document
 bfb3de41249b0569ff5f5f0d8c1a86557f5aaed1492809f1e3c6a4fe2f61a60a  ./src/Document/DocumentStaleness.php
 65b879d3fe01386c6912e12cbc6f29bfe1fbcb4368aa55507083ba214cca82f2  ./src/Document/DocumentStore.php
 ca3039ddf3c8900bfa82e840cb88f874b57d67c42f0d3413f593a0568b874c42  ./src/Document/OrderedProductsTicket.php
-ec512d31b6462671c59110463e7b7c12d38d58a4e45c05736f7d8efc49532e50  ./src/Document/ProductionTicketPdf.php
+58f6ae48cc5b8756ec9032b9fe1f5d54d638697d7d727edf089a9852accf31dc  ./src/Document/ProductionTicketPdf.php
 c955ede143fb4670e01e7765b92f7139eb090c56705650dc8e4bdda36efdfcaf  ./src/Document/RevisionApproverPolicy.php
 9e7d0926fc8de5155809b6508ec396ed468400ebb788962dbf6c03f37bb9064a  ./src/Document/SourceStamp.php
 fa1f3137c4dcb6494f44c036a205d14426be38b41f38c263edf0f987f55b67eb  ./src/Document/TicketLayoutOverflow.php
-0adcd902eef9ed7e9bca2d09ea0eb0e3ce3aeb72096290057f13be0fa3448128  ./src/Document/TicketSnapshot.php
+7eb92e75a84bcaa10cff13e09c9be4aec13172d8df7fa7071aadaacb95ac3bca  ./src/Document/TicketSnapshot.php
+43d479c49f38d3579ca080c2e2a6d9cfee59afe3543ea6dbcc75f44de5489047  ./src/Document/WebShopTicket.php
 11505e669f4098afe6b1805660ed3678c18af86b26c8838f9c935fcd3cfadc20  ./src/Employee/EmployeeAdminService.php
 bec7276c740d2ca9a39caa1dace04f49c8243eda7bfd9d62f86adcba4621b4be  ./src/Employee/EmployeeIdentity.php
 c19345e0bf4c0e108301a752d11fc1084d62d7f885b872a6bc757ffaabdb8049  ./src/Employee/EmployeeRepository.php
@@ -258,7 +259,7 @@ dab18c727f8af10b46a7b3ff81361a782ccccdd482ccc46cb40dbba649513e55  ./src/Http/Api
 12458e699e4c5b73cb92213d8e5000bf30fb19f26c988fd0efe519d0b2675da5  ./src/Http/ApiKernel.php
 eddb730a813f86e7c0bbc62010a36f7f80baf7fefeac5299491224f31afba9f2  ./src/Http/AuthController.php
 61ad3cbafb08e399aea7f0337595bff8d48be70d8a03c2c9069cb9cad38adc0c  ./src/Http/CorsPolicy.php
-09e3d3695bca889ea155acd86260b02b0d38dd847146249b73d55af04c46d5d1  ./src/Http/HealthController.php
+930b3a505af5f7eafd4d9e5599d513e5524ab0a0d91729bda8a6320195cd0236  ./src/Http/HealthController.php
 5135823a988e7ae06254297c5272a5ccb724e819a52c33217223c4299f286cb2  ./src/Http/ProductionWorkflowController.php
 57c77118c9f87c3b4475737e98d97bd7fcfaf456961cf637c7927d4eaad9ef32  ./src/Http/Request.php
 b49c2a94e90b750aeb5202e8ea263a42fd77fcc6442b3c2f46205cd5ab324688  ./src/Http/RequestContext.php
