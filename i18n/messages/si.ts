@@ -8,6 +8,7 @@ import { confirmareOpsSI } from "./confirmareOps";
 import { confirmareEditSI } from "./confirmareEdit";
 import { confirmareWorkflowSI } from "./confirmareWorkflow";
 import { operatorDeskSI } from "./operatorDesk";
+import { officeHistorySI } from "./officeHistory";
 import { physicalSI } from "./physical";
 import type { Catalog } from "../types";
 import { siErrors } from "./si.errors";
@@ -30,6 +31,7 @@ export const si: Catalog = {
   ...confirmareEditSI,
   ...confirmareWorkflowSI,
   ...operatorDeskSI,
+  ...officeHistorySI,
 
   // ---- common
   "common.back": "ආපසු",

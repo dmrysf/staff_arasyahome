@@ -244,6 +244,25 @@ test("operator: next step, queue, recorded calls (never a cancellation), line an
   const approved = await detailOf(supervisor, F.orders.call);
   expect(approved.events.filter((event) => event.action === "approved"), "a double click approves once").toHaveLength(1);
   await capture(page, "order-approved-390");
+  // Staff 2.43.0 (API 2.52.0): the operator's own work is in their history: the approval and every recorded call,
+  // named in Romanian, the row leading back to the Confirmare order; office numbers instead of production metres.
+  await page.goto("/history");
+  await expect(page.getByRole("heading", { name: "Istoric" })).toBeVisible();
+  await expect(page.getByText("Comenzile la care ați lucrat")).toBeVisible();
+  await expect(page.getByText("Metri predați")).toHaveCount(0);
+  const rows = page.getByTestId(`history-row-${number(F.orders.call)}`);
+  await expect(rows.first()).toContainText("Comandă aprobată");
+  await expect(rows.filter({ hasText: "Apel: clientul a confirmat" }).first()).toBeVisible();
+  await accessible(page, "history 390");
+  for (const [width, height] of [[390, 844], [1440, 900], [1920, 1080]] as const) {
+    await page.setViewportSize({ width, height });
+    expect(await overflow(page), `history at ${width}px`).toBeLessThanOrEqual(0);
+    await capture(page, `history-office-${width}`);
+  }
+  await page.setViewportSize({ width: 390, height: 844 });
+  await rows.first().click();
+  await expect(page).toHaveURL(new RegExp(`/confirmare/orders/${encodeURIComponent(F.orders.call)}$`));
+  await expect(page.getByTestId("cf-order-status")).toHaveText("Aprobată pentru producție");
   expect(op.errors).toEqual([]);
   await op.context.close();
 });

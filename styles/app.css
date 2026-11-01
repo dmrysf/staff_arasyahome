@@ -182,10 +182,12 @@
 .metrics-grid span { color: var(--color-text-muted); font-size: var(--text-xs); }
 .metrics-grid strong { font-size: var(--text-xl); line-height: 1; font-variant-numeric: tabular-nums; }
 .metrics-grid strong small { margin-left: 2px; color: var(--color-text-muted); font-size: var(--text-xs); }
+/* Staff 2.43.0: an office employee's history counts orders and actions only. */
+.metrics-grid-two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .history-list { padding-top: 4px; }
 .history-list h2 { margin: 0 0 8px; font-size: var(--text-md); font-weight: var(--weight-bold); }
 .history-row { width: 100%; min-height: 76px; display: grid; grid-template-columns: 44px 10px 1fr auto; align-items: center; gap: 10px; padding: 0 4px; border: 0; border-bottom: 1px solid var(--color-border); background: transparent; color: var(--color-text); text-align: left; transition: background-color var(--motion-fast) ease; }
-@media (hover: hover) { .history-row:hover { background: var(--color-surface-soft); } }
+@media (hover: hover) { .history-row:hover { background: var(--color-surface-soft); } .history-row-static:hover { background: transparent; } }
 .history-row > time { color: var(--color-text-muted); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
 .history-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-text); }
 .history-dot-claimed { background: var(--color-text-subtle); }

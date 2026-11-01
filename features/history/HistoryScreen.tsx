@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { formatDate, liveLabels, t, useI18n } from "../../i18n";
+import { formatDate, liveLabels, t, tKnown, useI18n } from "../../i18n";
 import { stageName } from "../../domain/stageNames";
-import type { ActivityEntry, ActivityPage } from "../../domain/models";
+import type { ActivityEntry, ActivityPage, Employee } from "../../domain/models";
 import type { StaffServiceError } from "../../domain/models";
 import type { ActivityService } from "../../services/contracts";
 import { SourceBadge } from "../../components/SourceBadge";
@@ -11,6 +11,8 @@ import { toServiceError } from "../../services/errors";
 import { AppIcon } from "../../components/icons/AppIcon";
 import { historyDate, HISTORY_TIME_ZONE } from "./historyDate";
 import { formatMeters } from "../../domain/productFormat";
+import { canOpenConfirmareOrder } from "../../domain/confirmare";
+import { confirmareOrderPath } from "../confirmare/ConfirmareParts";
 
 type Range = "today" | "7days" | "month" | "custom";
 const rangeLabels: Readonly<Record<Range, string>> = liveLabels("history.range.", ["today", "7days", "month", "custom"]);
@@ -25,6 +27,8 @@ export function validateCustomRange(from: string, to: string): string | null {
 }
 
 export function describeActivity(entry: ActivityEntry): string {
+  // Staff 2.43.0: office work by its action, made precise by the call outcome or the decision when the release knows it.
+  if (entry.kind === "office") return tKnown("history.office", entry.detail ? `${entry.action}.${entry.detail}` : null, tKnown("history.office", entry.action, t("history.office.other")));
   // Stage names by canonical id in the active language; the stored snapshot only for a stage this release does not know.
   const from = stageName(entry.fromStageId, entry.fromStageLabelSnapshot);
   if (entry.action === "claimed") return t("history.claimedAt", { stage: from });
@@ -35,8 +39,16 @@ export function describeActivity(entry: ActivityEntry): string {
 const time = { format: (value: Date): string => formatDate(value, { hour: "2-digit", minute: "2-digit", timeZone: HISTORY_TIME_ZONE }) };
 const day = { format: (value: Date): string => formatDate(value, { day: "numeric", month: "short", timeZone: HISTORY_TIME_ZONE }) };
 
-export function HistoryScreen({ service, navigate }: { service: ActivityService; navigate: (path: string) => void }) {
+/** Where a history row leads: a production entry to its order; an office entry to the Confirmare order for an operator, else nowhere. */
+export function historyTarget(entry: ActivityEntry, employee: Employee): string | null {
+  if (entry.kind !== "office") return `/orders/${encodeURIComponent(entry.orderId)}`;
+  return canOpenConfirmareOrder(employee) && /^(trendhome|outletperdele):/.test(entry.orderId) ? confirmareOrderPath(entry.orderId) : null;
+}
+
+export function HistoryScreen({ service, employee, navigate }: { service: ActivityService; employee: Employee; navigate: (path: string) => void }) {
   useI18n();
+  // Staff 2.43.0: an employee without a production stage (Confirmare, finance, the shops) sees orders and actions, not metres.
+  const production = employee.allowedStageIds.length > 0;
   const [range, setRange] = useState<Range>("today");
   const [customFrom, setCustomFrom] = useState(() => historyDate(-6));
   const [customTo, setCustomTo] = useState(() => historyDate());
@@ -68,14 +80,22 @@ export function HistoryScreen({ service, navigate }: { service: ActivityService;
 
   return (
     <div className="screen-stack">
-      <PageHeader title={t("history.title")} description={t("history.description")} />
+      <PageHeader title={t("history.title")} description={production ? t("history.description") : t("history.descriptionOffice")} />
       <div className="range-scroll" role="group" aria-label={t("history.rangeLabel")}>{(Object.keys(rangeLabels) as Range[]).map((item) => <button key={item} className={item === range ? "active" : ""} aria-pressed={item === range} type="button" onClick={() => { setError(null); setPage(null); setRange(item); }}>{rangeLabels[item]}</button>)}</div>
       {range === "custom" && <div className="date-range"><label>{t("history.from")}<input type="date" value={customFrom} max={customTo} onChange={(event) => { setPage(null); setCustomFrom(event.target.value); }} /></label><span>→</span><label>{t("history.to")}<input type="date" value={customTo} min={customFrom} max={historyDate()} onChange={(event) => { setPage(null); setCustomTo(event.target.value); }} /></label></div>}
       {customError ? <p className="order-notice" role="alert">{customError}</p> : error ? <ErrorState error={error} onAction={() => { setError(null); setPage(null); setReloadKey((value) => value + 1); }} /> : page ? <>
-        <section className="metrics-grid"><div><span>{t("history.metric.orders")}</span><strong>{page.summary.processed}</strong></div><div><span>{t("history.metric.meters")}</span><strong>{formatMeters(page.summary.meters).replace(" m", "")}<small>m</small></strong></div><div><span>{t("history.metric.handedOver")}</span><strong>{page.summary.handedOver}</strong></div><div><span>{t("history.metric.inProgress")}</span><strong>{page.summary.inProgress}</strong></div></section>
+        {production
+          ? <section className="metrics-grid"><div><span>{t("history.metric.orders")}</span><strong>{page.summary.processed}</strong></div><div><span>{t("history.metric.meters")}</span><strong>{formatMeters(page.summary.meters).replace(" m", "")}<small>m</small></strong></div><div><span>{t("history.metric.handedOver")}</span><strong>{page.summary.handedOver}</strong></div><div><span>{t("history.metric.inProgress")}</span><strong>{page.summary.inProgress}</strong></div></section>
+          : <section className="metrics-grid metrics-grid-two"><div><span>{t("history.metric.orders")}</span><strong>{page.summary.processed}</strong></div><div><span>{t("history.metric.actions")}</span><strong>{page.summary.actions ?? 0}</strong></div></section>}
         <section className="history-list"><h2>{t("history.timeline")}</h2>
           {page.items.length === 0 && <EmptyPanel icon="history" title={t("history.empty")}>{t("history.emptyHint")}</EmptyPanel>}
-          {page.items.map((entry) => <button className="history-row" type="button" key={entry.id} onClick={() => navigate(`/orders/${encodeURIComponent(entry.orderId)}`)}><time dateTime={entry.occurredAt}>{range === "today" ? time.format(new Date(entry.occurredAt)) : <>{day.format(new Date(entry.occurredAt))}<br />{time.format(new Date(entry.occurredAt))}</>}</time><span className={`history-dot history-dot-${entry.action}`} /><span className="history-copy"><span><b>#{entry.orderNumber}</b><SourceBadge source={entry.source} /></span><small>{describeActivity(entry)}</small></span><AppIcon name="arrow" size={18} /></button>)}
+          {page.items.map((entry) => {
+            const target = historyTarget(entry, employee);
+            const content = <><time dateTime={entry.occurredAt}>{range === "today" ? time.format(new Date(entry.occurredAt)) : <>{day.format(new Date(entry.occurredAt))}<br />{time.format(new Date(entry.occurredAt))}</>}</time><span className={`history-dot history-dot-${entry.kind === "office" ? "office" : entry.action}`} /><span className="history-copy"><span><b>#{entry.orderNumber}</b><SourceBadge source={entry.source} /></span><small>{describeActivity(entry)}</small></span></>;
+            return target
+              ? <button className="history-row" type="button" key={entry.id} data-testid={`history-row-${entry.orderNumber}`} onClick={() => navigate(target)}>{content}<AppIcon name="arrow" size={18} /></button>
+              : <div className="history-row history-row-static" key={entry.id} data-testid={`history-row-${entry.orderNumber}`}>{content}</div>;
+          })}
           {page.nextCursor && <button className="button button-secondary" type="button" disabled={loadingMore} onClick={loadMore}>{loadingMore ? t("common.loading") : t("common.loadMore")}</button>}
         </section>
       </> : <LoadingState label={t("history.loading")} />}

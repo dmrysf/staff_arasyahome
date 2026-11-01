@@ -15,7 +15,7 @@ use Arasya\Operations\Support\Clock;
 
 final readonly class ActivityController
 {
-    private const ALLOWED_QUERY = ['range', 'from', 'to', 'cursor'];
+    private const ALLOWED_QUERY = ['range', 'from', 'to', 'cursor', 'include'];
 
     public function __construct(
         private PdoActivityRepository $activity,
@@ -37,8 +37,14 @@ final readonly class ActivityController
                 throw new ApiException(400, 'INVALID_REQUEST', 'Unsupported activity query parameter.');
             }
         }
+        // API 2.52.0: `include=office` adds the employee's own office work; without it the history is production only,
+        // as older Staff releases expect.
+        $include = $request->query('include');
+        if ($include !== null && $include !== 'office') {
+            throw new ApiException(400, 'INVALID_REQUEST', 'Unsupported activity include.');
+        }
         $range = ActivityRange::resolve($request->query('range', 'today') ?? 'today', $request->query('from'), $request->query('to'), $this->clock->now());
-        $page = $this->activity->listForEmployee($session->employee->employeeUuid, $range, $request->query('cursor'));
+        $page = $this->activity->listForEmployee($session->employee->employeeUuid, $range, $request->query('cursor'), office: $include === 'office');
         return Response::json($page, 200, ['Cache-Control' => 'private, no-store']);
     }
 }
