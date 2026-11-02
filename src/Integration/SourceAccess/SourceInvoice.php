@@ -25,7 +25,7 @@ final class SourceInvoice
 {
     use ValidatesSourceAnswer;
 
-    public const ACTIONS = ['issue', 'send_mail', 'reissue', 'resolve'];
+    public const ACTIONS = ['issue', 'send_mail', 'reissue', 'resolve', 'delete'];
     public const PROFORMA_ACTIONS = ['proforma_issue', 'proforma_send_mail', 'proforma_check', 'proforma_resolve', 'proforma_cancel', 'total_accept', 'advance_accept', 'proforma_remind', 'advance_difference'];
     /** Why the operator cancels the advance proforma (2.19.0); `expired_unpaid` is the cycle worker's own (2.20.0). */
     public const CANCEL_REASONS = ['order_changed', 'customer_request', 'wrong_details', 'duplicate', 'other', 'expired_unpaid'];
@@ -60,6 +60,8 @@ final class SourceInvoice
         'proforma_not_sent', 'reminder_already_sent',
         // YD SOFT 2.23.0 (owner 2026-10-29): the operator asks for the missing advance; the AWB's collection differs.
         'difference_already_requested',
+        // YD SOFT 2.25.0 (owner 2026-11-02): the shop employee deletes the invoice (only the last number of its series).
+        'delete_confirmation_required', 'not_last_invoice', 'series_check_failed', 'document_unidentified',
         // An action a shop of an older version does not know (never offered).
         'not_supported',
     ];
@@ -74,12 +76,14 @@ final class SourceInvoice
     public const PAYMENT_REFERENCE_PATTERN = '/^[A-Z]{2,4}[A-Z0-9]{1,20}$/D';
     public const OPERATION_STATES = ['none', 'in_flight', 'issued', 'unknown'];
     public const MAIL_STATES = ['none', 'smartbill', 'in_flight', 'sent', 'unknown', 'failed'];
-    public const RESULTS = ['issued', 'unknown', 'in_progress', 'sent', 'not_issued', 'not_sent', 'invoiced', 'not_invoiced', 'cancelled', 'not_cancelled', 'accepted', 'cancel_unknown', 'reminded', 'requested'];
+    public const RESULTS = ['issued', 'unknown', 'in_progress', 'sent', 'not_issued', 'not_sent', 'invoiced', 'not_invoiced', 'cancelled', 'not_cancelled', 'accepted', 'cancel_unknown', 'reminded', 'requested', 'deleted'];
     public const DEADLINE_LEVELS = ['none', 'notice', 'warning', 'critical', 'overdue'];
     public const COD_STATES = ['none', 'match', 'mismatch', 'delivered', 'unknown'];
     private const UUID = '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/D';
     private const BLOCKER_GROUPS = ['issue', 'sendMail', 'reissue', 'resolve'];
-    private const HISTORY_KINDS = ['issue', 'reissue', 'superseded', 'send_mail', 'auto_mail', 'resolve_document', 'resolve_mail'];
+    /** YD SOFT 2.25.0 group: an older shop does not send it (`not_supported`). */
+    private const BLOCKER_DELETE_GROUPS = ['delete'];
+    private const HISTORY_KINDS = ['issue', 'reissue', 'superseded', 'send_mail', 'auto_mail', 'resolve_document', 'resolve_mail', 'delete'];
     private const PROFORMA_GROUPS = ['proformaIssue', 'proformaSendMail', 'proformaCheck', 'proformaResolve'];
     /** 2.19.0 groups: a 2.18.0 shop does not send them (`not_supported`). */
     private const PROFORMA_NEW_GROUPS = ['proformaCancel', 'totalAccept', 'advanceAccept'];
@@ -160,7 +164,7 @@ final class SourceInvoice
             ],
             'operation' => [
                 'state' => self::choice($operation['state'] ?? null, self::OPERATION_STATES),
-                'kind' => ($operation['kind'] ?? null) === null ? null : self::choice($operation['kind'], ['issue', 'reissue']),
+                'kind' => ($operation['kind'] ?? null) === null ? null : self::choice($operation['kind'], ['issue', 'reissue', 'delete']),
                 'startedAt' => self::optionalInstant($operation['startedAt'] ?? null),
                 'by' => ($operation['by'] ?? null) === null ? null : self::pattern($operation['by'], self::UUID),
                 'error' => ($operation['error'] ?? null) === null ? null : self::pattern($operation['error'], '/^[a-z_]{2,40}$/D'),
@@ -190,7 +194,7 @@ final class SourceInvoice
                     'number' => self::optionalText($entry['number'] ?? null, 40),
                 ];
             }),
-            'blockers' => self::groups($blockers, self::BLOCKER_GROUPS),
+            'blockers' => self::groups($blockers, self::BLOCKER_GROUPS) + self::newGroups($blockers, self::BLOCKER_DELETE_GROUPS),
             'proforma' => ($data['proforma'] ?? null) === null ? null : self::proforma(self::map($data['proforma'])),
             // 2.19.0: ANAF e-Factura is never tracked by the shop; only that statement is accepted.
             'eFactura' => array_key_exists('eFactura', $data) ? ['state' => self::choice(self::map($data['eFactura'])['state'] ?? null, ['not_tracked'])] : null,

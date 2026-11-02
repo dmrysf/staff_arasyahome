@@ -82,6 +82,35 @@ final class InvoiceEfactura
         }
     }
 
+    /**
+     * API 2.54.0 (owner 2026-11-02): the order's invoice was deleted in SmartBill, so its open follow-up ends (`resolved`,
+     * `invoice_deleted`, recorded by the employee who deleted it). Tasks an employee already recorded stay. Never throws.
+     */
+    public function onInvoiceDeleted(string $orderUuid, string $employeeUuid): void
+    {
+        if (!$this->installed()) {
+            return;
+        }
+        try {
+            $now = $this->clock->now()->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s.u');
+            $this->pdo->prepare("UPDATE invoice_efactura_tasks SET state = 'resolved', outcome_code = 'invoice_deleted', recorded_by_employee_uuid = ?, recorded_at = ?, version = version + 1
+                WHERE order_uuid = ? AND state = 'open'")->execute([$employeeUuid, $now, $orderUuid]);
+        } catch (PDOException) {
+            // The task stays open; an employee records it by hand.
+        }
+    }
+
+    /** Whether an employee recorded the e-Factura of the order's invoice as sent, accepted or rejected (API 2.54.0). */
+    public function recorded(string $orderUuid): bool
+    {
+        if (!$this->installed()) {
+            return false;
+        }
+        $statement = $this->pdo->prepare("SELECT 1 FROM invoice_efactura_tasks WHERE order_uuid = ? AND state IN ('sent', 'accepted', 'rejected') LIMIT 1");
+        $statement->execute([$orderUuid]);
+        return $statement->fetchColumn() !== false;
+    }
+
     /** @return array<string, mixed> the tasks of the actor (issuer) or of the managed shops */
     public function queue(EmployeeIdentity $actor, ?string $source, ?string $state): array
     {

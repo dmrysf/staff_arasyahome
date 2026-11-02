@@ -233,4 +233,14 @@ if (preg_match('/ON (DELETE|UPDATE) (CASCADE|SET NULL)|DROP TABLE|DELETE FROM|TR
     || !str_contains($requestSchema, "''awb_address_done'', ''awb_cod_corrected'', ''card_refund_full''")) {
     throw new RuntimeException('Migration 044 must stay additive (three CREATE TABLE IF NOT EXISTS and the capability CHECK swap), grant nothing and write no row.');
 }
+// Invoice deletion (045, API 2.54.0): no table, no row, no grant; only the guarded swaps of the order_invoice_actions action
+// CHECK (+ delete) and reason CHECK (a deletion carries a reason like a re-issue).
+$deleteSchema = (string) file_get_contents($root . '/database/migrations/045_invoice_delete.sql');
+$deleteStatements = preg_replace('/^--.*$/m', '', $deleteSchema) ?? '';
+$deleteOther = preg_replace('/ALTER TABLE order_invoice_actions (DROP CONSTRAINT chk_order_invoice_actions_action(_044)?|ADD CONSTRAINT chk_order_invoice_actions_action_045 CHECK|DROP CONSTRAINT chk_order_invoice_actions_reason|ADD CONSTRAINT chk_order_invoice_actions_reason_045 CHECK)/', '', $deleteStatements) ?? '';
+if (preg_match('/CREATE TABLE|DROP TABLE|DELETE FROM|TRUNCATE|\bUPDATE |\bINSERT |ALTER TABLE|role_permissions|employee_role_assignments/i', $deleteOther) === 1
+    || !str_contains($deleteSchema, "''advance_accept'', ''advance_difference'', ''delete''))")
+    || !str_contains($deleteSchema, "action IN (''reissue'', ''delete'') AND reason_code IN (''order_changed'', ''customer_data'', ''wrong_document'', ''other'')")) {
+    throw new RuntimeException('Migration 045 must only widen the invoice action and reason CHECKs, grant nothing and write no row.');
+}
 fwrite(STDOUT, 'Migration sanity checks passed for ' . count($files) . " file(s).\n");
