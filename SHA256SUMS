@@ -9,6 +9,7 @@ c3de03d2598256b63e03876fdc4f0b452f0e4283c971ed05948740f35ae4c5aa  ./bin/check-mi
 86de44fece27d2255b724fdb132708610dd22d82df0acd9997aab5767efb80bc  ./bin/check-rollback.php
 0197308477ef0830c4438af5ba138fada90d8fdc2e811a2a6ba8179924527fb4  ./bin/cli-bootstrap.php
 ec5815c87fb4c633da4c34d600b5ba73b2bebf38e153025a1c4a4d8e5c073aa6  ./bin/confirmare-backfill.php
+0cfcc270cedfb33e85db2cd040529d70793294298df376818e3a9c650c3b3dda  ./bin/confirmare-cutoff.php
 218cb5ccd6ed376c26c395bc7bf292b391ef59ebf6fd4c452aa016d013a9f55f  ./bin/confirmare-cycles.php
 e8c427a65a15152d97b44e4f75744b6172ef9d597ba7d9130cda72dc157fc057  ./bin/confirmare-distribute.php
 6c66e6da695fa3cc80e72f25503ae77a04ff4b04637bd75cb0933ed1e2104eb9  ./bin/confirmare-operators.php
@@ -98,7 +99,7 @@ e3d5bd553859a3f0ade7ef0d41a29c8dab1eaaf486fb632bdb714b79e4c719aa  ./database/see
 a80d76fbdb4a0c8ac3533c3db5eb123a73ff6eb2c259927976d39dfeeb2f248b  ./public/.htaccess
 8302b6ec98573706b31b957a8f9ad9be8bf92a8b8bff02963c601650e7e8c420  ./public/RuntimeLocator.php
 edb234c39482536f0540e881da98cbdad6241af787f230295a79a4ae534e26be  ./public/index.php
-14e9e18a36432b3c2452eac97b425a0fc3877f684607647004b2893190bf8fa8  ./release.json
+257c7ef4bcc04005d5c302b0b4d0ef41820da7cad98cf1112433a2e44f01dac7  ./release.json
 3b42b0a0d462aa0ac0f368966a5703f6ecbbff9eea2bbbe47f269e9cd6ba03ea  ./scripts/api-release-common.sh
 b7f4bad56c6c8f39a9e72af6c8ea82d578beb50bf0e4f38d17c78a2e9f0f1637  ./scripts/cancellation-sync-active.sh
 19e2a5e07493b6f3b123d00b856231c4d8598cd7ac07dce398ef44bc5aafd532  ./scripts/cpanel-deploy-api.sh
@@ -106,7 +107,7 @@ bdbe9cb23b6d581c64eba4dc2b41fe93e503e327afb0c36dce38759631c2fabb  ./scripts/cpan
 ad963b363acfdc488f4b9638e31052d173e9b31437735990435acfd5c9e876ca  ./scripts/generate-sha256s.sh
 668b254a048e20b209aa886a91bb14682e1f60255fa8e329ec6b9a8e896c355c  ./scripts/maintenance-active.sh
 19135ebb1f6829810e78b5a2f4a8647b52e7f1cc73b8fce2f42b481bb700135a  ./scripts/trendyol-intake-active.sh
-350801742f85db760b0b8728647c3fa74a57a073448bfac344c20f853b0281b8  ./scripts/validate-release.sh
+b892aa29b25e3399d7857888d964ca837fcf46e30b04a272103d4caddcda7b58  ./scripts/validate-release.sh
 7f8042e24e1e6e02ee1a99ac82acaac281fdc759e419e18a6f89adbd2d891281  ./src/Activity/ActivityController.php
 fffaf9848b4f34b5f257895192f34d7a6ef959791a2e944ba3a981bd6bbb874e  ./src/Activity/ActivityRange.php
 8f4294de2d4e2e71697dfede970e5c2c11047d6af47bb6b7d83c5acae6172a0c  ./src/Activity/PdoActivityRepository.php
@@ -200,6 +201,7 @@ c316e4dd933ec38dfea33fbc74b66ceefe9b496ddc96a0482c4a9a5bbe2d2d75  ./src/Config/C
 00eb3ce0c68ea60f81f7b9fc60390018e5d2cde3ad04e4f84267bc04704aca28  ./src/Config/TrendyolCredentials.php
 32e6822192d8ab5a91c05c79aadabe43a409d12eef1cd9c34cf4ef2afe5ca2f7  ./src/Confirmare/ConfirmareBackfill.php
 81963a65b761dee8db268cb8a838ac5cc556e58d3a71cd0df3c51486ce1909b1  ./src/Confirmare/ConfirmareController.php
+6969ac2272e911c5a525e78f08b8cc2cb906e3978720d55b7057efd8407eafe7  ./src/Confirmare/ConfirmareCutoff.php
 afff7841e2d986b6cebaabf84b9f45a55fded5e7e87d1b36cc55e1a01140a63f  ./src/Confirmare/ConfirmareCycles.php
 a9aadd1debc2a2c8228da3f445454319d51d717b7429be782e3014d86a861f5f  ./src/Confirmare/ConfirmareFinance.php
 8f7ee352784853a82332b420a8a62a805587b70d17a8a7cfffcc6046c8f41a7a  ./src/Confirmare/ConfirmareHandoff.php
@@ -260,7 +262,7 @@ dab18c727f8af10b46a7b3ff81361a782ccccdd482ccc46cb40dbba649513e55  ./src/Http/Api
 12458e699e4c5b73cb92213d8e5000bf30fb19f26c988fd0efe519d0b2675da5  ./src/Http/ApiKernel.php
 eddb730a813f86e7c0bbc62010a36f7f80baf7fefeac5299491224f31afba9f2  ./src/Http/AuthController.php
 61ad3cbafb08e399aea7f0337595bff8d48be70d8a03c2c9069cb9cad38adc0c  ./src/Http/CorsPolicy.php
-b8b1653f3427b2ee382aa324f3e336aadc61e15a16c34b72be06a91e8e0df9ea  ./src/Http/HealthController.php
+07d6646c8df4808d24b52256eb0ff94df2de3842e7938ca9359c90acc50e1a36  ./src/Http/HealthController.php
 5135823a988e7ae06254297c5272a5ccb724e819a52c33217223c4299f286cb2  ./src/Http/ProductionWorkflowController.php
 57c77118c9f87c3b4475737e98d97bd7fcfaf456961cf637c7927d4eaad9ef32  ./src/Http/Request.php
 b49c2a94e90b750aeb5202e8ea263a42fd77fcc6442b3c2f46205cd5ab324688  ./src/Http/RequestContext.php
@@ -376,7 +378,7 @@ f46be7456027077b69461c2f0220e78d570c47e7590ac2248bf13d45e499c09b  ./src/Producti
 51b1c366d3b42c8ff743e160896d90eb29aba2ec760cc00e1cdf3a7c68cdb155  ./src/Production/RouteReconciliation.php
 64a030ceb82752d2b6bb8c00329f244e322b1a7216c966a0c75cdcbbd66bb796  ./src/Production/TrackingAuthorityMode.php
 f71cbc591ced3edd92de0122469cae83e1390e3e48341639c7de66640523223c  ./src/Production/WorkUnits.php
-404f463abad8f9a5641ca07e06117ed2cd11e50714333a8716f719549cca4df8  ./src/Production/WorkflowCohort.php
+9e11592e8c055ed4d6bde0be66e4953eb06fbe1369c95e17ef08ec640c10e56e  ./src/Production/WorkflowCohort.php
 42877c09f88982c8611e31aa3422774f7d2acea6e141515a5aba89c9b5772a65  ./src/Production/WorkflowCohortActivation.php
 d78a38d3964e4b3e65c45c4c6213605ccb21cb0d5573f0c1d84c7bcb86884d01  ./src/Quality/ApproverPolicy.php
 b1931ebf26d30ee370dbfb07763f45156d8ac6c484296b37e0b0cadc5306b8fd  ./src/Quality/CuttingFaultService.php
