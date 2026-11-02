@@ -1304,6 +1304,7 @@ export const tr: Catalog = {
   "next.nothingDetail": "Bir sipariş buraya geldiğinde liste otomatik güncellenir.",
   "refresh.stopped": "Otomatik güncelleme durdu",
   "refresh.everyMinute": "Her dakika otomatik güncelleme",
+  "refresh.every15s": "15 saniyede bir otomatik güncelleme",
   "refresh.stale": "Veriler güncel olmayabilir",
   "mgmt.eyebrow": "Üretim · yalnızca okuma",
   "mgmt.title": "Genel bakış",

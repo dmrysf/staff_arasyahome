@@ -139,7 +139,7 @@ export const confirmareRO = {
   "cf.next.finishDetail": "Clientul a confirmat. Verificați produsele și prețurile, apoi aprobați.",
   "cf.next.finishEyebrow": "Confirmare în curs",
   "cf.next.finishTitle": "Finalizați confirmarea",
-  "cf.next.idleDetail": "Comenzile noi apar automat. Pagina se actualizează la fiecare minut.",
+  "cf.next.idleDetail": "Comenzile noi apar automat. Lista se actualizează la fiecare 15 secunde.",
   "cf.next.idleEyebrow": "Totul este la zi",
   "cf.next.idleTitle": "Nicio comandă de confirmat acum",
   "cf.next.open": "Deschide comanda",
@@ -172,7 +172,7 @@ export const confirmareRO = {
 
   "cf.queue.description": "Comenzile noi Trend Home și Outlet Perdele, confirmate telefonic înainte de producție.",
   "cf.queue.empty": "Nicio comandă aici",
-  "cf.queue.limit": "Sunt afișate primele 200 de comenzi.",
+  "cf.queue.limit": "{count} comenzi nu încap în listă. Rezolvați comenzile vechi sau anunțați administratorul.",
   "cf.queue.tabs": "Grupuri de comenzi",
   "cf.queue.title": "Confirmare comenzi",
 
@@ -412,7 +412,7 @@ export const confirmareEN = {
   "cf.next.finishDetail": "The customer confirmed. Check the products and prices, then approve.",
   "cf.next.finishEyebrow": "Confirmation in progress",
   "cf.next.finishTitle": "Finish the confirmation",
-  "cf.next.idleDetail": "New orders appear automatically. This page refreshes every minute.",
+  "cf.next.idleDetail": "New orders appear automatically. The list refreshes every 15 seconds.",
   "cf.next.idleEyebrow": "All up to date",
   "cf.next.idleTitle": "No order to confirm right now",
   "cf.next.open": "Open the order",
@@ -445,7 +445,7 @@ export const confirmareEN = {
 
   "cf.queue.description": "New Trend Home and Outlet Perdele orders, confirmed by telephone before production.",
   "cf.queue.empty": "No order here",
-  "cf.queue.limit": "The first 200 orders are shown.",
+  "cf.queue.limit": "{count} orders do not fit in the list. Finish older orders or tell the administrator.",
   "cf.queue.tabs": "Order groups",
   "cf.queue.title": "Order confirmation",
 
@@ -685,7 +685,7 @@ export const confirmareTR = {
   "cf.next.finishDetail": "Müşteri onayladı. Ürünleri ve fiyatları kontrol edin, sonra onaylayın.",
   "cf.next.finishEyebrow": "Onay sürüyor",
   "cf.next.finishTitle": "Onayı tamamlayın",
-  "cf.next.idleDetail": "Yeni siparişler otomatik görünür. Sayfa her dakika güncellenir.",
+  "cf.next.idleDetail": "Yeni siparişler otomatik görünür. Liste 15 saniyede bir güncellenir.",
   "cf.next.idleEyebrow": "Her şey güncel",
   "cf.next.idleTitle": "Şu anda onaylanacak sipariş yok",
   "cf.next.open": "Siparişi aç",
@@ -718,7 +718,7 @@ export const confirmareTR = {
 
   "cf.queue.description": "Üretimden önce telefonla onaylanan yeni Trend Home ve Outlet Perdele siparişleri.",
   "cf.queue.empty": "Burada sipariş yok",
-  "cf.queue.limit": "İlk 200 sipariş gösteriliyor.",
+  "cf.queue.limit": "{count} sipariş listeye sığmıyor. Eski siparişleri bitirin veya yöneticiye haber verin.",
   "cf.queue.tabs": "Sipariş grupları",
   "cf.queue.title": "Sipariş onayı",
 
@@ -958,7 +958,7 @@ export const confirmareSI = {
   "cf.next.finishDetail": "පාරිභෝගිකයා තහවුරු කළා. භාණ්ඩ සහ මිල පරීක්ෂා කර, පසුව අනුමත කරන්න.",
   "cf.next.finishEyebrow": "තහවුරු කිරීම සිදු වෙමින්",
   "cf.next.finishTitle": "තහවුරු කිරීම අවසන් කරන්න",
-  "cf.next.idleDetail": "නව ඇණවුම් ස්වයංක්‍රීයව පෙන්වයි. මෙම පිටුව සෑම මිනිත්තුවකම යාවත්කාලීන වේ.",
+  "cf.next.idleDetail": "නව ඇණවුම් ස්වයංක්‍රීයව පෙන්වයි. ලැයිස්තුව සෑම තත්පර 15කට වරක් යාවත්කාලීන වේ.",
   "cf.next.idleEyebrow": "සියල්ල යාවත්කාලීනයි",
   "cf.next.idleTitle": "දැන් තහවුරු කළ යුතු ඇණවුමක් නැත",
   "cf.next.open": "ඇණවුම විවෘත කරන්න",
@@ -991,7 +991,7 @@ export const confirmareSI = {
 
   "cf.queue.description": "නිෂ්පාදනයට පෙර දුරකථනයෙන් තහවුරු කරන නව Trend Home සහ Outlet Perdele ඇණවුම්.",
   "cf.queue.empty": "මෙහි ඇණවුමක් නැත",
-  "cf.queue.limit": "පළමු ඇණවුම් 200 පෙන්වයි.",
+  "cf.queue.limit": "ඇණවුම් {count} ලැයිස්තුවට ඇතුළත් නොවේ. පැරණි ඇණවුම් අවසන් කරන්න හෝ පරිපාලකට දන්වන්න.",
   "cf.queue.tabs": "ඇණවුම් කාණ්ඩ",
   "cf.queue.title": "ඇණවුම් තහවුරු කිරීම",
 

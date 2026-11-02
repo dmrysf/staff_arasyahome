@@ -76,7 +76,8 @@ export type ConfirmareView = "mine" | "open" | "all" | "followup";
 /** One row of the production handoff list (API 2.42.0): the order's identity and next step only. */
 export type HandoffStep = "ready" | "print" | "awaiting_cutting";
 export type HandoffItem = { globalOrderId: string; orderNumber: string; sourceKey: string; dueDate: string | null; submittedAt: string | null; approvedAt: string | null; step: HandoffStep };
-export type ConfirmarePool = { view: ConfirmareView; items: ConfirmareItem[]; limit: number; targetOpenPerOperator: number };
+/** `total` (API 2.54.1): every order of the view; more than `items` only when the server's ceiling was reached. */
+export type ConfirmarePool = { view: ConfirmareView; items: ConfirmareItem[]; limit: number; total: number; targetOpenPerOperator: number };
 
 export type ConfirmareLine = {
   lineId: string;

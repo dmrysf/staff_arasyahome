@@ -59,6 +59,13 @@ final class ConfirmareService
     /** An assignment without any change for this long raises one supervisor alert; it is never reassigned for it. */
     public const INACTIVITY_ALERT_MINUTES = 120;
     public const POOL_LIMIT = 200;
+    /**
+     * API 2.54.1: the rows of an operator's working views (mine, open, followup). Owner report 2026-11-02: one operator
+     * held 495 pending orders while these views returned the first 200 in priority order (oldest first), so every order
+     * received after 28 October never reached the desk. These views return the operator's whole queue; this ceiling only
+     * protects the server, and `total` tells the screen when it is reached.
+     */
+    public const QUEUE_LIMIT = 2000;
 
     /** Rejection reasons (codes stored, Romanian labels for the screens). */
     public const REJECT_REASONS = [
@@ -154,13 +161,21 @@ final class ConfirmareService
             $parameters[] = $source;
         }
         $order = $view === 'all' ? 'c.updated_at DESC, c.order_uuid' : self::PRIORITY_ORDER;
-        $statement = $this->pdo->prepare($this->selectSql() . " WHERE {$where} ORDER BY {$order} LIMIT " . self::POOL_LIMIT);
+        $limit = $view === 'all' ? self::POOL_LIMIT : self::QUEUE_LIMIT;
+        $statement = $this->pdo->prepare($this->selectSql() . " WHERE {$where} ORDER BY {$order} LIMIT " . $limit);
         $statement->execute($parameters);
         $items = array_map(fn (array $row): array => $this->present($row), $statement->fetchAll(PDO::FETCH_ASSOC));
+        $total = count($items);
+        if ($total >= $limit) {
+            $count = $this->pdo->prepare("SELECT COUNT(*) FROM order_confirmations c INNER JOIN operational_orders o ON o.order_uuid = c.order_uuid WHERE {$where}");
+            $count->execute($parameters);
+            $total = (int) $count->fetchColumn();
+        }
         return [
             'view' => $view,
             'items' => $items,
-            'limit' => self::POOL_LIMIT,
+            'limit' => $limit,
+            'total' => $total,
             'capabilities' => ['operate' => $operate, 'supervise' => $supervise],
             'rejectReasons' => self::REJECT_REASONS,
             'targetOpenPerOperator' => self::TARGET_OPEN_PER_OPERATOR,

@@ -1305,6 +1305,7 @@ export const ro = {
   "next.nothingDetail": "Lista se actualizează automat când o comandă ajunge aici.",
   "refresh.stopped": "Actualizare automată oprită",
   "refresh.everyMinute": "Actualizare automată la fiecare minut",
+  "refresh.every15s": "Actualizare automată la fiecare 15 secunde",
   "refresh.stale": "Datele pot fi neactualizate",
   "mgmt.eyebrow": "Producție · numai citire",
   "mgmt.title": "Privire de ansamblu",
