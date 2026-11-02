@@ -4,7 +4,7 @@ import { sourceLabel } from "../../domain/confirmare";
 import { formatFinanceMoney } from "../../domain/confirmareFinance";
 import {
   INVOICE_REASONS, announceInvoiceChange, blockersOf, documentTypeLabel, historyLabel, invoiceBlockerLabel, invoiceErrorKey, mailStateLabel, onInvoiceChange, operationStateLabel, reasonLabel,
-  type ConfirmareInvoiceApi, type InvoiceAction, type InvoiceActionKey, type InvoiceCapabilities, type InvoicePaymentRead, type InvoiceReason, type InvoiceRead, type InvoiceView, type IssueInput, type MailInput, type ReissueInput, type ResolveInput,
+  type ConfirmareInvoiceApi, type InvoiceAction, type InvoiceActionKey, type InvoiceCapabilities, type InvoicePaymentRead, type InvoiceReason, type InvoiceRead, type InvoiceView, type IssueInput, type MailInput, type ReissueInput, type ResolveInput, type DeleteInput,
 } from "../../domain/confirmareInvoice";
 import { shopUnavailableLabel } from "../../domain/confirmareShop";
 import { createIdempotencyKey } from "../../services/idempotency";
@@ -86,14 +86,14 @@ export function ConfirmareInvoicePanel({ globalOrderId, service, capabilities = 
   // One state on every screen: another panel of this order (this tab or another) acted.
   useEffect(() => onInvoiceChange((id) => { if (id === globalOrderId) reload(); }), [globalOrderId, reload]);
 
-  async function send(action: InvoiceAction, input: IssueInput | MailInput | ReissueInput | ResolveInput, key: string) {
+  async function send(action: InvoiceAction, input: IssueInput | MailInput | ReissueInput | ResolveInput | DeleteInput, key: string) {
     setBusy(true); setResult(null);
     try {
       const outcome = await service.invoiceAct(globalOrderId, action, input, key);
       setPending(null);
       if (outcome.state === "applied") {
         const unknown = outcome.result === "unknown" || outcome.result === "in_progress";
-        setResult(unknown ? { tone: "warning", text: t("inv.result.shopUnknown") } : { tone: "success", text: t(action === "send_mail" ? "inv.result.sent" : action === "resolve" ? "inv.result.resolved" : "inv.result.issued") });
+        setResult(unknown ? { tone: "warning", text: t("inv.result.shopUnknown") } : { tone: "success", text: t(action === "send_mail" ? "inv.result.sent" : action === "resolve" ? "inv.result.resolved" : action === "delete" ? "inv.result.deleted" : "inv.result.issued") });
       } else {
         // The answer was lost: the shop may or may not have acted. Check, never send again.
         setResult({ tone: "warning", text: t("inv.result.unknown"), key: outcome.idempotencyKey });
@@ -228,7 +228,7 @@ export function InvoicePaymentSection({ globalOrderId, load }: { globalOrderId: 
 /** The state and the actions (exported for the tests; the panel is the only user). */
 export function InvoiceBody({ globalOrderId, view, role, busy, pending, onPrepare, onCancel, onSend, onReconcile }: {
   globalOrderId: string; view: InvoiceView; role: string; busy: boolean; pending: Pending | null;
-  onPrepare: (action: InvoiceAction) => void; onCancel: () => void; onSend: (action: InvoiceAction, input: IssueInput | MailInput | ReissueInput | ResolveInput, key: string) => void; onReconcile: (key: string) => void;
+  onPrepare: (action: InvoiceAction) => void; onCancel: () => void; onSend: (action: InvoiceAction, input: IssueInput | MailInput | ReissueInput | ResolveInput | DeleteInput, key: string) => void; onReconcile: (key: string) => void;
 }) {
   const { t } = useI18n();
   const { summary } = view;
@@ -237,6 +237,8 @@ export function InvoiceBody({ globalOrderId, view, role, busy, pending, onPrepar
   const allowed = (key: InvoiceActionKey) => view.allowedActions.includes(key);
   const writer = role === "documents" || role === "manager";
   const issueBlockers = document.exists ? [] : blockersOf(view, "issue").filter((code) => code !== "not_allowed_for_role");
+  // Staff 2.44.0: why the invoice cannot be deleted now (an older shop that cannot delete says nothing).
+  const deleteBlockers = blockersOf(view, "delete").filter((code) => !["not_allowed_for_role", "not_supported", "document_missing"].includes(code));
   const open = view.timeline.filter((item) => item.state === "pending" || item.state === "unknown");
   const documentText = document.exists ? `${documentTypeLabel(document.type)} ${document.series ?? ""} ${document.number ?? ""}`.trim() : t("inv.noDocument");
   const shop = sourceLabel(globalOrderId.split(":")[0] ?? "");
@@ -282,7 +284,13 @@ export function InvoiceBody({ globalOrderId, view, role, busy, pending, onPrepar
           {allowed("sendMail") && <button type="button" className="button button-secondary" disabled={busy} onClick={() => onPrepare("send_mail")} data-testid="cf-invoice-send-mail">{t("inv.action.sendMail")}</button>}
           {allowed("reissue") && <button type="button" className="button button-secondary" disabled={busy} onClick={() => onPrepare("reissue")} data-testid="cf-invoice-reissue">{t("inv.action.reissue")}</button>}
           {allowed("resolve") && <button type="button" className="button button-secondary" disabled={busy} onClick={() => onPrepare("resolve")} data-testid="cf-invoice-resolve">{t("inv.action.resolve")}</button>}
+          {allowed("delete") && <button type="button" className="button button-danger-outline" disabled={busy} onClick={() => onPrepare("delete")} data-testid="cf-invoice-delete">{t("inv.action.delete")}</button>}
         </div>}
+
+      {writer && !pending && document.exists && !allowed("delete") && deleteBlockers.length > 0 && <div className="cf-shop-block" data-testid="cf-invoice-delete-blockers">
+        <p className="eyebrow">{t("inv.action.delete")}</p>
+        <ul className="cf-checklist">{deleteBlockers.map((code) => <li key={code} className="is-missing"><AppIcon name="lock" size={18} /><span>{invoiceBlockerLabel(code)}</span></li>)}</ul>
+      </div>}
 
       {writer && !pending && issueBlockers.length > 0 && <div className="cf-shop-block" data-testid="cf-invoice-blockers">
         <p className="eyebrow">{t("inv.blockersTitle")}</p>
@@ -303,7 +311,7 @@ export function InvoiceBody({ globalOrderId, view, role, busy, pending, onPrepar
 }
 
 function ConfirmStep({ view, shop, pending, busy, onCancel, onSend }: {
-  view: InvoiceView; shop: string; pending: Pending; busy: boolean; onCancel: () => void; onSend: (action: InvoiceAction, input: IssueInput | MailInput | ReissueInput | ResolveInput, key: string) => void;
+  view: InvoiceView; shop: string; pending: Pending; busy: boolean; onCancel: () => void; onSend: (action: InvoiceAction, input: IssueInput | MailInput | ReissueInput | ResolveInput | DeleteInput, key: string) => void;
 }) {
   const { t } = useI18n();
   const { summary } = view;
@@ -321,7 +329,7 @@ function ConfirmStep({ view, shop, pending, busy, onCancel, onSend }: {
 
   let text = "";
   let ready = true;
-  let input: IssueInput | MailInput | ReissueInput | ResolveInput = { expectedRevision: revision };
+  let input: IssueInput | MailInput | ReissueInput | ResolveInput | DeleteInput = { expectedRevision: revision };
   if (pending.action === "issue") {
     text = t("inv.confirm.issue", { type: documentTypeLabel(summary.smartbill.documentType), number: summary.order.number, amount, shop });
     ready = checked;
@@ -332,6 +340,10 @@ function ConfirmStep({ view, shop, pending, busy, onCancel, onSend }: {
     text = t("inv.confirm.reissue", { number: summary.order.number, document: documentName });
     ready = (!finalInvoice || checked) && (reason !== "other" || note.trim() !== "");
     input = { expectedRevision: revision, reasonCode: reason, ...(note.trim() ? { reasonNote: note.trim() } : {}), ...(finalInvoice ? { previousCancelled: checked } : {}) };
+  } else if (pending.action === "delete") {
+    text = t("inv.confirm.delete", { number: summary.order.number, document: documentName });
+    ready = checked && (reason !== "other" || note.trim() !== "");
+    input = { expectedRevision: revision, reasonCode: reason, ...(note.trim() ? { reasonNote: note.trim() } : {}), confirmDelete: checked };
   } else {
     text = t(unknownDocument ? "inv.confirm.resolveDocument" : "inv.confirm.resolveMail");
     ready = resolution !== "";
@@ -343,6 +355,14 @@ function ConfirmStep({ view, shop, pending, busy, onCancel, onSend }: {
       <h3 id="cf-invoice-confirm-title">{t("inv.confirm.title")}</h3>
       <p data-testid="cf-invoice-confirm-text">{text}</p>
       {pending.action === "issue" && <label className="field-inline"><input type="checkbox" checked={checked} onChange={(event) => setChecked(event.target.checked)} data-testid="cf-invoice-reviewed" /> {t("inv.confirm.reviewed")}</label>}
+      {pending.action === "delete" && <>
+        <label>{t("inv.confirm.reason")}
+          <select value={reason} onChange={(event) => setReason(event.target.value as InvoiceReason)} data-testid="cf-invoice-reason">
+            {INVOICE_REASONS.map((code) => <option key={code} value={code}>{reasonLabel(code)}</option>)}
+          </select>
+        </label>
+        <label className="field-inline"><input type="checkbox" checked={checked} onChange={(event) => setChecked(event.target.checked)} data-testid="cf-invoice-delete-confirm" /> {t("inv.confirm.deleteChecked")}</label>
+      </>}
       {pending.action === "reissue" && <>
         <label>{t("inv.confirm.reason")}
           <select value={reason} onChange={(event) => setReason(event.target.value as InvoiceReason)} data-testid="cf-invoice-reason">
@@ -357,7 +377,7 @@ function ConfirmStep({ view, shop, pending, busy, onCancel, onSend }: {
           <input type="radio" name="cf-invoice-resolution" value={value} checked={resolution === value} onChange={() => setResolution(value)} data-testid={`cf-invoice-resolution-${value}`} /> {t(`inv.resolve.${value}` as MessageKey)}
         </label>)}
       </fieldset>}
-      {(pending.action === "reissue" || pending.action === "resolve") && <label>{t("inv.confirm.note")}<textarea maxLength={300} rows={2} value={note} onChange={(event) => setNote(event.target.value)} data-testid="cf-invoice-note" /></label>}
+      {(pending.action === "reissue" || pending.action === "resolve" || pending.action === "delete") && <label>{t("inv.confirm.note")}<textarea maxLength={300} rows={2} value={note} onChange={(event) => setNote(event.target.value)} data-testid="cf-invoice-note" /></label>}
       <div className="cf-shop-actions">
         <button type="submit" className="button button-primary" disabled={busy || !ready} data-testid="cf-invoice-send">{busy ? t("common.processing") : t("inv.send")}</button>
         <button type="button" className="button button-secondary" disabled={busy} onClick={onCancel} data-testid="cf-invoice-cancel">{t("inv.cancel")}</button>

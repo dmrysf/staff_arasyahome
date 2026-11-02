@@ -42,7 +42,7 @@ use Arasya\Operations\Security\CsrfGuard;
  *                                                          {expectedRevision, ...} + Idempotency-Key (finance scopes)
  *   POST /confirmare/orders/{globalOrderId}/finance/reconcile    {idempotencyKey}: settles an action whose answer was lost
  *   GET  /confirmare/orders/{globalOrderId}/invoice        the shop's SmartBill document state (API 2.43.0, audited, no-store)
- *   POST /confirmare/orders/{globalOrderId}/invoice/{issue|send-mail|reissue|resolve}
+ *   POST /confirmare/orders/{globalOrderId}/invoice/{issue|send-mail|reissue|resolve|delete}
  *                                                          {expectedRevision, ...} + Idempotency-Key (invoice scopes)
  *   POST /confirmare/orders/{globalOrderId}/invoice/reconcile    {idempotencyKey}: settles an action whose answer was lost
  *   GET  /confirmare/orders/{globalOrderId}/invoice/payment      SmartBill's paid/unpaid amounts of the final invoice next to
@@ -371,7 +371,7 @@ final readonly class ConfirmareController
             $input = $this->body($request, ['qrToken']);
             return $this->json($this->invoice->verifyQr($actor, rawurldecode($m[1]), $input['qrToken'] ?? null, $request->requestId));
         }
-        if (preg_match('#^/confirmare/orders/([^/]{1,600})/invoice/(issue|send-mail|reissue|resolve|reconcile)$#D', $path, $m) === 1) {
+        if (preg_match('#^/confirmare/orders/([^/]{1,600})/invoice/(issue|send-mail|reissue|resolve|delete|reconcile)$#D', $path, $m) === 1) {
             if ($request->method !== 'POST') {
                 throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
             }

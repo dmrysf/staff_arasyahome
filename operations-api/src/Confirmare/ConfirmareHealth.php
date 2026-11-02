@@ -72,7 +72,7 @@ final readonly class ConfirmareHealth
                 'financeActionsOpen' => $this->count("SELECT COUNT(*) FROM order_finance_actions WHERE source_key = ? AND state IN ('pending', 'unknown')", [$s]),
                 'invoiceActionsUnknown' => $this->count("SELECT COUNT(*) FROM order_invoice_actions WHERE source_key = ? AND state = 'unknown'", [$s]),
                 'routedNotInvoiced' => $this->count("SELECT COUNT(*) FROM order_shop_assignments a WHERE a.source_key = ? AND a.state = 'active'
-                    AND NOT EXISTS (SELECT 1 FROM order_invoice_actions i WHERE i.order_uuid = a.order_uuid AND i.action IN ('issue', 'reissue') AND i.state = 'applied' AND i.result = 'issued')", [$s]),
+                    AND NOT EXISTS (SELECT 1 FROM order_invoice_actions i WHERE i.order_uuid = a.order_uuid AND " . ConfirmareInvoice::ISSUED_SQL . ')', [$s]),
                 'efactura' => [
                     'open' => $this->count("SELECT COUNT(*) FROM invoice_efactura_tasks WHERE source_key = ? AND state IN ('open', 'sent', 'rejected')", [$s]),
                     'overdue' => $this->count("SELECT COUNT(*) FROM invoice_efactura_tasks WHERE source_key = ? AND state IN ('open', 'rejected') AND due_at < ?", [$s, $now->format('Y-m-d H:i:s.u')]),

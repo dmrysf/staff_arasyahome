@@ -14,7 +14,7 @@ import { CATALOGS, type MessageKey } from "../i18n";
 const root = path.resolve(import.meta.dirname, "..");
 const ME = "00000000-0000-4000-8000-0000000000d1";
 const MGR = "00000000-0000-4000-8000-0000000000e1";
-const none = { issue: [], sendMail: [], reissue: [], resolve: [] };
+const none = { issue: [], sendMail: [], reissue: [], resolve: [], delete: [] };
 const summary = (overrides: Record<string, unknown> = {}) => ({
   readAt: "2026-10-24T10:00:00Z", revision: `sha256:${"c".repeat(64)}`, mode: "enforce",
   smartbill: { available: true, reason: null, documentType: "invoice", autoEmail: false, cashing: false, draft: false, mailSupported: true, autoIssue: false },
@@ -88,6 +88,29 @@ test("every action is confirmed once, with the order as it is; re-issue needs th
   assert.ok(resend.includes(CATALOGS.ro["inv.confirm.resend"].replace("{count}", "1")), "a second e-mail says how many were sent");
   const reissue = body(read("manager", ["reissue"], issued), { action: "reissue", key: "inv-key-000000000003" });
   assert.ok(reissue.includes("cf-invoice-previous-cancelled") && reissue.includes("cf-invoice-reason") && /disabled=""[^>]*data-testid="cf-invoice-send"/.test(reissue), "re-issue of an invoice: the statement first");
+});
+
+test("Staff 2.44.0: the routed shop employee deletes the invoice with a reason and an explicit confirmation", () => {
+  const offered = body(read("documents", ["sendMail", "delete"], issued));
+  assert.ok(offered.includes('data-testid="cf-invoice-delete"') && offered.includes(CATALOGS.ro["inv.action.delete"]), "the delete button is offered when the server allows it");
+  const confirm = body(read("documents", ["sendMail", "delete"], issued), { action: "delete", key: "inv-key-000000000009" });
+  assert.ok(confirm.includes("cf-invoice-delete-confirm") && confirm.includes("cf-invoice-reason") && confirm.includes("cf-invoice-note") && /disabled=""[^>]*data-testid="cf-invoice-send"/.test(confirm),
+    "the deletion needs a reason and the explicit confirmation before it can be sent");
+  assert.ok(confirm.includes("TST 0007") && confirm.includes("#1234"), "the confirmation names the invoice and the order");
+  const blocked = body(read("documents", ["sendMail"], issued, { ...none, delete: ["assigned_to_other"] }));
+  assert.ok(!blocked.includes('data-testid="cf-invoice-delete"') && blocked.includes("cf-invoice-delete-blockers") && blocked.includes(CATALOGS.ro["inv.blocker.assigned_to_other"]), "refused: no button, the reason in words");
+  const lastOnly = body(read("documents", ["sendMail"], { ...issued, blockers: { ...none, delete: ["not_last_invoice"] } }));
+  assert.ok(lastOnly.includes(CATALOGS.ro["inv.blocker.not_last_invoice"]), "SmartBill's rule (only the last invoice of a series) is explained");
+  const older = body(read("documents", ["sendMail"], { ...issued, blockers: { ...none, delete: ["not_supported"] } }));
+  assert.ok(!older.includes("cf-invoice-delete"), "an older shop that cannot delete shows nothing about it");
+  assert.equal(mapInvoiceRead(read("documents", ["issue", "sendMail", "reissue", "resolve", "delete"])).available, true);
+  assert.throws(() => mapInvoiceRead({ ...read("documents", []), blockers: { issue: [], sendMail: [], reissue: [], resolve: [] } }), Error, "the delete group is required from API 2.54.0");
+  for (const locale of ["ro", "tr", "en", "si"] as const) {
+    for (const key of ["inv.action.delete", "inv.confirm.delete", "inv.confirm.deleteChecked", "inv.result.deleted", "inv.history.delete", "inv.blocker.not_last_invoice", "inv.blocker.efactura_recorded"] as const) {
+      assert.ok(typeof CATALOGS[locale][key as MessageKey] === "string" && String(CATALOGS[locale][key as MessageKey]).length > 0, `${locale} ${key}`);
+    }
+  }
+  assert.equal(CATALOGS.ro["inv.blocker.series_check_failed"] === CATALOGS.ro["inv.blocker.other"], false);
 });
 
 test("the panel keeps nothing, never acts by itself and shows one state on every screen", () => {
