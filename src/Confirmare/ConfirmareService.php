@@ -138,7 +138,8 @@ final class ConfirmareService
         $parameters = [];
         $where = match ($view) {
             'mine' => "c.status = 'pending' AND c.assigned_employee_uuid = ?",
-            'followup' => "c.status = 'approved' AND COALESCE(" . ConfirmationGate::CLEARED_SQL . ", 0) = 0 AND (c.decided_by_employee_uuid = ? OR " . ConfirmareScopePolicy::condition($supervise, 'c.source_key', $parameters) . ')',
+            // API 2.56.0: an approved order the shop already finished or stopped is not followed up any more.
+            'followup' => "c.status = 'approved' AND COALESCE(" . ConfirmationGate::CLEARED_SQL . ", 0) = 0 AND COALESCE(o.source_commerce_status_code, '') NOT IN ('" . implode("', '", ConfirmareShopClosure::CLOSED_STATUSES) . "') AND (c.decided_by_employee_uuid = ? OR " . ConfirmareScopePolicy::condition($supervise, 'c.source_key', $parameters) . ')',
             'open' => "c.status = 'pending' AND ((" . ConfirmareScopePolicy::condition($operate, 'c.source_key', $parameters)
                 . " AND o.workflow_cohort = 'confirmare' AND (c.assigned_employee_uuid IS NULL OR c.assigned_employee_uuid = ?)) OR "
                 . ConfirmareScopePolicy::condition($supervise, 'c.source_key', $parameters) . ')',
@@ -709,6 +710,8 @@ final class ConfirmareService
      */
     public function distribute(?string $source = null, bool $dryRun = false, int $maxAssignments = 500): array
     {
+        // API 2.56.0 (owner 2026-11-02): orders finished or stopped in the shop leave the queue; reopened ones return.
+        $shop = (new ConfirmareShopClosure($this->pdo, $this->clock))->sweep($source, $dryRun);
         $released = $dryRun ? count($this->ineligibleAssignments()) : $this->reclaim();
         $assigned = 0;
         $held = [];
@@ -746,7 +749,7 @@ final class ConfirmareService
         }
         $alerts = $dryRun ? count($this->inactiveAssignments()) : $this->raiseAlerts();
         return ['released' => $released, 'assigned' => $assigned, 'waiting' => $this->waitingSources($source), 'operators' => $operators,
-            'held' => array_keys($held), 'overTarget' => $overTarget, 'openAlerts' => $alerts];
+            'held' => array_keys($held), 'overTarget' => $overTarget, 'openAlerts' => $alerts, 'shopClosed' => $shop['closed'], 'shopReopened' => $shop['reopened']];
     }
 
     /**
