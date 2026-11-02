@@ -350,6 +350,38 @@ $allPage = $ok($get($sup, '/confirmare/pool', ['view' => 'all']), 'supervisor al
 $allCount = (int) $one("SELECT COUNT(*) FROM order_confirmations WHERE source_key = 'trendhome'");
 $check(count($allPage['items']) === 200 && $allPage['limit'] === 200 && $allPage['total'] === $allCount && $allCount > 200 && in_array(end($bulk), array_column($allPage['items'], 'globalOrderId'), true), "all keeps its page of 200, newest first, and states the full count ({$allCount})");
 
+// ---- 8d. API 2.55.0: the 1 November cutoff (owner decision 2026-11-02) -------------------------------------------
+// Orders submitted before the cutoff that nobody worked leave Confirmare (legacy, withdrawn_before_cutoff); worked ones
+// and every order from the cutoff on stay. Here the cutoff falls inside the queued orders of 8c.
+$cutoffAt = $activatedAt->modify('+3105 seconds');
+$before = array_slice($bulk, 0, 104);
+$after = array_slice($bulk, 104);
+$cutoff = new \Arasya\Operations\Confirmare\ConfirmareCutoff($pdo, $container->clock());
+$snapshot = static fn (): string => md5(json_encode($all('SELECT o.global_order_id, o.workflow_cohort, o.workflow_cohort_reason, c.status, c.version, c.assigned_employee_uuid FROM operational_orders o JOIN order_confirmations c ON c.order_uuid = o.order_uuid ORDER BY o.global_order_id')) . $one('SELECT COUNT(*) FROM order_confirmation_events'));
+$state = $snapshot();
+$dry = $cutoff->run('trendhome', false, $cutoffAt);
+$check($snapshot() === $state, 'the dry run changes nothing');
+$keptStatus = $all("SELECT o.order_number, c.status FROM operational_orders o JOIN order_confirmations c ON c.order_uuid = o.order_uuid WHERE o.source_key = 'trendhome' AND o.workflow_cohort = 'confirmare' AND c.status <> 'pending' AND COALESCE(o.source_submitted_at, o.created_at) < ?", [$cutoffAt->format('Y-m-d H:i:s.u')]);
+$check($keptStatus !== [] && array_diff(array_column($keptStatus, 'order_number'), array_column($dry['kept'], 'order')) === [], 'approved and rejected orders before the cutoff are kept: ' . json_encode($dry['kept']));
+$check(array_diff(array_map(static fn (string $g): string => explode(':', $g)[1], $before), $dry['withdrawn']) === [] && array_intersect(array_map(static fn (string $g): string => explode(':', $g)[1], $after), $dry['withdrawn']) === [], 'every untouched order before the cutoff would leave, none after it');
+$check(!in_array(explode(':', $th(60))[1], array_merge($dry['withdrawn'], array_column($dry['kept'], 'order')), true), 'a legacy order is not touched');
+$applied = $cutoff->run('trendhome', true, $cutoffAt);
+$check($applied['withdrawn'] === $dry['withdrawn'] && $applied['kept'] === $dry['kept'], 'the apply does what the dry run said');
+$row = $all("SELECT o.workflow_cohort, o.workflow_cohort_reason, c.status, c.assigned_employee_uuid, c.decided_at FROM operational_orders o JOIN order_confirmations c ON c.order_uuid = o.order_uuid WHERE o.global_order_id = ?", [$before[0]])[0];
+$check($row['workflow_cohort'] === 'legacy' && $row['workflow_cohort_reason'] === 'withdrawn_before_cutoff' && $row['status'] === 'cancelled' && $row['assigned_employee_uuid'] === null && $row['decided_at'] !== null, 'a withdrawn order is legacy, its confirmation cancelled and unassigned: ' . json_encode($row));
+$event = $all("SELECT action, actor_kind, previous_status, new_status, reason_code, previous_assignee_uuid FROM order_confirmation_events WHERE global_order_id = ? ORDER BY version_after DESC LIMIT 1", [$before[0]])[0];
+$check($event === ['action' => 'released', 'actor_kind' => 'system', 'previous_status' => 'pending', 'new_status' => 'cancelled', 'reason_code' => 'withdrawn_before_cutoff', 'previous_assignee_uuid' => $uuids['csopa']], 'one system event records it: ' . json_encode($event));
+foreach ($dry['kept'] as $kept) $check((string) $one('SELECT c.status FROM order_confirmations c WHERE c.global_order_id = ?', ['trendhome:' . $kept['order']]) !== 'cancelled', "kept order {$kept['order']} unchanged");
+$mineCut = array_column($ok($get($opA, '/confirmare/pool', ['view' => 'mine']), 'mine after the cutoff')['items'], 'globalOrderId');
+$check(array_intersect($before, $mineCut) === [] && array_diff($after, $mineCut) === [], 'the operator\'s queue holds only orders from the cutoff on');
+$check($service->distribute('trendhome')['assigned'] === 0 && (int) $one("SELECT COUNT(*) FROM order_confirmations WHERE status = 'cancelled' AND assigned_employee_uuid IS NOT NULL") === 0, 'distribution never hands a withdrawn order out');
+$ok($send('trendhome', $payload(explode(':', $before[1])[1], $submitted(3002), ['price' => 'changed'])), 'a later shop update of a withdrawn order');
+$again = $all("SELECT o.workflow_cohort, c.status FROM operational_orders o JOIN order_confirmations c ON c.order_uuid = o.order_uuid WHERE o.global_order_id = ?", [$before[1]])[0];
+$check($again === ['workflow_cohort' => 'legacy', 'status' => 'cancelled'], 'a later shop update never brings it back: ' . json_encode($again));
+$check($ok($get($sup, '/confirmare/orders/' . rawurlencode($before[0])), 'supervisor detail of a withdrawn order')['status'] === 'cancelled', 'the supervisor still opens its history');
+$check($cutoff->run('trendhome', true, $cutoffAt)['counts']['withdrawn'] === 0, 'running it again withdraws nothing');
+$check(array_filter($history($opA)['items'], static fn (array $i): bool => in_array($i['orderId'], $before, true) && $i['action'] === 'confirmare.released') === [], 'the withdrawal is not in any employee\'s history');
+
 // ---- 9. Append-only, no customer data in the contact table -------------------------------------------------------
 $source = (string) file_get_contents(dirname(__DIR__) . '/src/Confirmare/ConfirmareService.php');
 $check(preg_match('/(UPDATE|DELETE FROM)\s+order_confirmation_contacts/i', $source) === 0, 'no code path updates or deletes a contact attempt');
