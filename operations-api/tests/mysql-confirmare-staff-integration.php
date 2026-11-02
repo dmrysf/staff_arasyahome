@@ -382,6 +382,34 @@ $check($ok($get($sup, '/confirmare/orders/' . rawurlencode($before[0])), 'superv
 $check($cutoff->run('trendhome', true, $cutoffAt)['counts']['withdrawn'] === 0, 'running it again withdraws nothing');
 $check(array_filter($history($opA)['items'], static fn (array $i): bool => in_array($i['orderId'], $before, true) && $i['action'] === 'confirmare.released') === [], 'the withdrawal is not in any employee\'s history');
 
+// ---- 8e. API 2.56.0: an order finished or stopped in the shop leaves the queue (owner decision 2026-11-02) ----------
+$confRow = static fn (string $g): array => $all("SELECT c.status, c.assigned_employee_uuid, o.workflow_cohort, o.source_commerce_status_code AS shop FROM order_confirmations c JOIN operational_orders o ON o.order_uuid = c.order_uuid WHERE c.global_order_id = ?", [$g])[0];
+$lastEvent = static fn (string $g): array => $all("SELECT action, actor_kind, previous_status, new_status, reason_code FROM order_confirmation_events WHERE global_order_id = ? ORDER BY version_after DESC LIMIT 1", [$g])[0];
+[$doneId, $stopId, $keepId] = [$after[0], $after[1], $after[2]];
+$check($confRow($doneId)['status'] === 'pending' && $confRow($doneId)['assigned_employee_uuid'] === $uuids['csopa'], 'before: the order waits for the operator');
+$ok($send('trendhome', $payload(explode(':', $doneId)[1], $submitted(3105), ['status' => 'completed'])), 'the shop completes an order by hand');
+$ok($send('trendhome', $payload(explode(':', $stopId)[1], $submitted(3106), ['status' => 'cancelled'])), 'the shop cancels an order');
+$ok($send('trendhome', $payload(explode(':', $before[2])[1], $submitted(3003), ['status' => 'completed'])), 'the shop completes a withdrawn order');
+$state = $snapshot();
+$dryClose = $service->distribute('trendhome', true);
+$check($snapshot() === $state && $dryClose['shopClosed'] === 2, 'a dry distribution only counts the two orders: ' . json_encode($dryClose));
+$run = $service->distribute('trendhome');
+$check($run['shopClosed'] === 2 && $run['shopReopened'] === 0, 'distribution closes the two orders closed in the shop: ' . json_encode($run));
+foreach ([$doneId => 'completed', $stopId => 'cancelled'] as $g => $shop) {
+    $check($confRow($g) === ['status' => 'cancelled', 'assigned_employee_uuid' => null, 'workflow_cohort' => 'confirmare', 'shop' => $shop], "{$shop} in the shop: out of the queue, unassigned, still a Confirmare order: " . json_encode($confRow($g)));
+    $check($lastEvent($g) === ['action' => 'released', 'actor_kind' => 'system', 'previous_status' => 'pending', 'new_status' => 'cancelled', 'reason_code' => 'shop_closed'], "{$shop}: one system event says why");
+}
+$check($confRow($keepId)['status'] === 'pending' && $confRow($before[2])['workflow_cohort'] === 'legacy' && $lastEvent($before[2])['reason_code'] === 'withdrawn_before_cutoff', 'an open order stays; a withdrawn order is not touched again');
+$mineClosed = array_column($ok($get($opA, '/confirmare/pool', ['view' => 'mine']), 'mine after shop closure')['items'], 'globalOrderId');
+$check(!in_array($doneId, $mineClosed, true) && !in_array($stopId, $mineClosed, true) && in_array($keepId, $mineClosed, true), 'the operator\'s queue drops them at once');
+$check(ConfirmationGate::isClosed($pdo, (string) $one('SELECT order_uuid FROM order_confirmations WHERE global_order_id = ?', [$doneId]), 'waiting'), 'production stays closed for it (never approved)');
+$check($service->distribute('trendhome')['shopClosed'] === 0, 'running again closes nothing new');
+$ok($send('trendhome', $payload(explode(':', $stopId)[1], $submitted(3106), ['status' => 'processing'])), 'the shop reopens the cancelled order');
+$back = $service->distribute('trendhome');
+$check($back['shopReopened'] === 1 && $confRow($stopId)['status'] === 'pending' && $confRow($stopId)['assigned_employee_uuid'] !== null, 'a reopened order returns to the queue and is handed out again: ' . json_encode($back));
+$check($all("SELECT action, reason_code FROM order_confirmation_events WHERE global_order_id = ? AND reason_code = 'shop_reopened'", [$stopId]) === [['action' => 'opened', 'reason_code' => 'shop_reopened']], 'one system event records the reopening');
+$check($confRow($doneId)['status'] === 'cancelled', 'the completed order stays out');
+
 // ---- 9. Append-only, no customer data in the contact table -------------------------------------------------------
 $source = (string) file_get_contents(dirname(__DIR__) . '/src/Confirmare/ConfirmareService.php');
 $check(preg_match('/(UPDATE|DELETE FROM)\s+order_confirmation_contacts/i', $source) === 0, 'no code path updates or deletes a contact attempt');

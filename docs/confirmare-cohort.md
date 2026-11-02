@@ -329,3 +329,20 @@ The shop side records the same orders. Run
 
 Rollback: there is none in the software. Nothing is deleted, the events and records stay, and no API floor is needed
 (older APIs read the same rows).
+
+## Orders closed in the shop leave the queue (API 2.56.0, owner decision 2026-11-02)
+
+Every distribution run (`bin/confirmare-distribute.php`, once a minute) applies `ConfirmareShopClosure`.
+
+- **Closing.** A pending Confirmare order is closed when its shop status is `completed`, `cancelled`, `refunded`,
+  `failed` or `trash`, or when Arasya holds it as unavailable:
+  - its confirmation becomes `cancelled`, with no assignee;
+  - its open alerts are resolved;
+  - one system `released` event is written with reason `shop_closed`.
+
+  It leaves the operator's queue. Production stays closed, because the order was never approved.
+- **In-flight actions.** An order with a shop action still pending or unknown waits until that action settles: a
+  finance, invoice, shop edit, shop operation, reactivation or proforma step.
+- **Reopening.** If the shop reopens the order, it returns to the queue unassigned (system `opened` event, reason
+  `shop_reopened`) and is handed out again.
+- **Follow-up view.** An approved order that is not cleared and that the shop finished or stopped no longer appears.
