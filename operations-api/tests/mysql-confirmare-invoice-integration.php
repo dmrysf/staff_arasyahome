@@ -144,10 +144,15 @@ $check((new MigrationRunner($pdo))->migrate(dirname(__DIR__) . '/database/migrat
 $check((int) $one("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name IN ('" . implode("', '", $invoiceTables) . "')") === 5, 'migration 041 creates its five tables');
 (new SqlFileRunner($pdo))->run(dirname(__DIR__) . '/database/migrations/041_smartbill_invoicing.sql');
 $check((int) $one("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name IN ('" . implode("', '", $invoiceTables) . "')") === 5 && (int) $one('SELECT COUNT(*) FROM employee_invoice_scopes') === 0, 'running 041 again changes nothing (CREATE TABLE IF NOT EXISTS); nobody holds an invoice scope');
-// TEST ONLY: the tables were recreated as 041 made them; 044 (guarded, re-runnable) widens their action CHECK again.
+// TEST ONLY: the tables were recreated as 041 made them; 044 and 045 (guarded, re-runnable) widen their CHECKs again.
 (new SqlFileRunner($pdo))->run(dirname(__DIR__) . '/database/migrations/044_finance_verification_requests.sql');
 $check((int) $one("SELECT COUNT(*) FROM information_schema.table_constraints WHERE constraint_schema = DATABASE() AND table_name = 'order_invoice_actions' AND constraint_name = 'chk_order_invoice_actions_action_044'") === 1
     && (int) $one("SELECT COUNT(*) FROM information_schema.table_constraints WHERE constraint_schema = DATABASE() AND table_name = 'order_invoice_actions' AND constraint_name = 'chk_order_invoice_actions_action'") === 0, 'migration 044 replaces the action CHECK once (advance_difference); running it again changes nothing');
+(new SqlFileRunner($pdo))->run(dirname(__DIR__) . '/database/migrations/045_invoice_delete.sql');
+(new SqlFileRunner($pdo))->run(dirname(__DIR__) . '/database/migrations/045_invoice_delete.sql');
+$check((int) $one("SELECT COUNT(*) FROM information_schema.table_constraints WHERE constraint_schema = DATABASE() AND table_name = 'order_invoice_actions' AND constraint_name IN ('chk_order_invoice_actions_action_045', 'chk_order_invoice_actions_reason_045')") === 2
+    && (int) $one("SELECT COUNT(*) FROM information_schema.table_constraints WHERE constraint_schema = DATABASE() AND table_name = 'order_invoice_actions' AND constraint_name IN ('chk_order_invoice_actions_action', 'chk_order_invoice_actions_action_044', 'chk_order_invoice_actions_reason')") === 0,
+    'migration 045 replaces the action and reason CHECKs once (delete); running it twice changes nothing');
 $check(!is_file(dirname(__DIR__) . '/database/migrations/040_smartbill_invoicing.sql') && !is_dir(dirname(__DIR__) . '/database/drafts'), 'the schema is 041, never 040; the draft is gone (one source)');
 
 // ---- 2. Invoice scopes: root-only, separate from documents, finance and Confirmare --------------------------------------
@@ -719,6 +724,38 @@ $check($none['payment']['state'] === 'no_invoice' && $none['payment']['smartbill
 $check((int) $one("SELECT COUNT(*) FROM order_invoice_reads WHERE outcome = 'payment_association_pending'") === 3 && (int) $one("SELECT COUNT(*) FROM order_invoice_reads WHERE outcome = 'payment_no_invoice'") === 1
     && (int) $one("SELECT COUNT(*) FROM order_invoice_reads WHERE outcome = 'payment_paid_not_verified'") === 1, 'every payment read is audited with its state only');
 $error(T::call($kernel, 'POST', '/confirmare/orders/' . rawurlencode($g(1)) . '/invoice/payment', [], ['origin' => T::ORIGIN, 'x-csrf-token' => $who['ifin']['csrf'], 'idempotency-key' => 'inv-pay-post-0001'], $who['ifin']['cookie']), 405, 'METHOD_NOT_ALLOWED', 'the payment state is read-only (GET only)');
+
+// ---- 8c. API 2.54.0 (YD SOFT 2.25.0, owner 2026-11-02): the routed shop employee deletes the order's invoice --------------
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$why = ['reasonCode' => 'wrong_document', 'confirmDelete' => true];
+$v9 = $read($who['idoc'], $g(9));
+$check(in_array('delete', $v9['allowedActions'], true) && $v9['summary']['blockers']['delete'] === [], 'the routed employee may delete the issued invoice: ' . json_encode($v9['blockers']['delete'] ?? null));
+$error($act($who['iview'], $g(9), 'delete', $why), 403, 'CONFIRMARE_INVOICE_DENIED', 'a document viewer without an invoice scope never deletes an invoice');
+$refused($act($who['iop'], $g(9), 'delete', $why), 'assigned_to_other', 'an employee with an invoice scope but not routed this order cannot delete it', 'CONFIRMARE_INVOICE_NOT_ALLOWED');
+$refused($act($who['idoc2'], $g(9), 'delete', $why), 'assigned_to_other', 'another shop employee: the order is routed to someone else', 'CONFIRMARE_INVOICE_NOT_ALLOWED');
+$error($act($who['idoc'], $g(9), 'delete', ['confirmDelete' => true]), 422, 'CONFIRMARE_INVOICE_INVALID', 'a deletion needs a reason code');
+$refused($act($who['idoc'], $g(9), 'delete', ['reasonCode' => 'wrong_document']), 'delete_confirmation_required', 'the shop refuses a deletion without the explicit confirmation');
+$task9 = static fn (): array => $all('SELECT t.state, t.outcome_code FROM invoice_efactura_tasks t JOIN operational_orders o ON o.order_uuid = t.order_uuid WHERE o.global_order_id = ? ORDER BY t.created_at', [$g(9)]);
+$check(array_column($task9(), 'state') === ['open'], 'the issued invoice has its open e-Factura follow-up: ' . json_encode($task9()));
+$pdo->prepare("UPDATE invoice_efactura_tasks t JOIN operational_orders o ON o.order_uuid = t.order_uuid SET t.state = 'sent', t.outcome_code = 'checked_sent', t.recorded_at = UTC_TIMESTAMP(6), t.recorded_by_employee_uuid = ? WHERE o.global_order_id = ?")->execute([$uuids['idoc'], $g(9)]);
+$refused($act($who['idoc'], $g(9), 'delete', $why), 'efactura_recorded', 'an invoice recorded as sent to e-Factura is never deleted', 'CONFIRMARE_INVOICE_NOT_ALLOWED');
+$pdo->prepare("UPDATE invoice_efactura_tasks t JOIN operational_orders o ON o.order_uuid = t.order_uuid SET t.state = 'open', t.outcome_code = NULL, t.recorded_at = NULL, t.recorded_by_employee_uuid = NULL WHERE o.global_order_id = ?")->execute([$g(9)]);
+$th->deleteOutcome = 'not_last';
+$refused($act($who['idoc'], $g(9), 'delete', $why), 'not_last_invoice', 'SmartBill deletes only the last invoice of its series');
+$check(($th->smartbillDeletes[$id(9)] ?? 0) === 0 && $read($who['idoc'], $g(9))['summary']['document']['exists'], 'nothing was deleted; the invoice stays');
+$d9 = $ok($act($who['idoc'], $g(9), 'delete', $why + ['reasonNote' => 'Factura emisă pe alt client (TEST).']), 'delete');
+$check($d9['state'] === 'applied' && $d9['result'] === 'deleted' && $d9['summary']['document']['exists'] === false && ($th->smartbillDeletes[$id(9)] ?? 0) === 1 && $d9['summary']['blockers']['issue'] === [] && $d9['blockers']['issue'] === [],
+    'deleted once in SmartBill; the order may be invoiced again');
+$check(array_column($task9(), 'outcome_code') === ['invoice_deleted'] && array_column($task9(), 'state') === ['resolved'], 'the e-Factura follow-up of the deleted invoice is closed (invoice_deleted)');
+$row9 = $all("SELECT action, state, reason_code, result, access_role FROM order_invoice_actions WHERE global_order_id = ? AND action = 'delete' AND state = 'applied'", [$g(9)]);
+$check(count($row9) === 1 && $row9[0]['reason_code'] === 'wrong_document' && $row9[0]['result'] === 'deleted' && $row9[0]['access_role'] === 'documents', 'the Arasya timeline records the deletion with its reason (migration 045)');
+$check(array_values(array_filter($ok($get($who['idoc'], '/confirmare/shop-queue'), 'queue')['items'] ?? [], static fn (array $i): bool => $i['globalOrderId'] === $g(9)))[0]['invoiced'] === false, 'the shop queue shows the order as not invoiced again');
+$i9b = $ok($act($who['idoc'], $g(9), 'issue'), 'issue after delete');
+$check($i9b['result'] === 'issued' && $docsMade(9) === 2 && array_column($task9(), 'state') === ['resolved', 'open'], 'a new invoice, with a new e-Factura follow-up');
+$th->invoiceDelete = false;
+$old9 = $read($who['idoc'], $g(9));
+$th->invoiceDelete = true;
+$check($old9['summary']['blockers']['delete'] === ['not_supported'] && !in_array('delete', $old9['allowedActions'], true), 'a shop before YD SOFT 2.25.0: the deletion is not offered (not_supported)');
 
 // ---- 9. No link, number, amount or customer data in the audit or the log ----------------------------------------------------
 $dump = json_encode([$all('SELECT * FROM order_invoice_actions'), $all('SELECT * FROM order_invoice_reads'), $all("SELECT action, metadata_json FROM iam_audit_events WHERE action = 'employee.invoice_scopes_changed'")], JSON_INVALID_UTF8_SUBSTITUTE | JSON_UNESCAPED_UNICODE);

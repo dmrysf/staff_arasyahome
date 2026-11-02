@@ -34,6 +34,7 @@ $config = new \Arasya\Operations\Config\Config(...[...get_object_vars($base), 's
 ]]);
 $pdo = Connection::create($config);
 (new SqlFileRunner($pdo))->run(dirname(__DIR__) . '/database/migrations/044_finance_verification_requests.sql'); // idempotent
+(new SqlFileRunner($pdo))->run(dirname(__DIR__) . '/database/migrations/045_invoice_delete.sql'); // idempotent, after 044
 $container = new Container($config, $pdo);
 $kernel = $container->kernel();
 $password = 'e2e passphrase 2026';

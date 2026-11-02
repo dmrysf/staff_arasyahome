@@ -109,6 +109,12 @@ final class SourceAccessFakeShop implements SourceAccessTransport
     public bool $legacyProforma = false;
     /** A shop before YD SOFT 2.23.0: no `advanceDifference` blockers and no `differenceRequest`. */
     public bool $olderProforma = false;
+    /** YD SOFT 2.25.0: the invoice deletion. False: a shop before it (no `delete` blockers, the action unknown). */
+    public bool $invoiceDelete = true;
+    /** The next deletion's SmartBill outcome: deleted | not_last (the series' next number says another invoice followed) | refused. */
+    public string $deleteOutcome = 'deleted';
+    /** Invoices "deleted in SmartBill" by this TEST shop: orderId => count. */
+    public array $smartbillDeletes = [];
     /** @var array<string, int> reminders sent through SmartBill per order (2.20.0) */
     public array $smartbillReminders = [];
     /** The next reminder's SmartBill outcome: sent | refused. */
@@ -720,6 +726,9 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             return [409, ['error' => ['code' => 'invoice_disabled']]];
         }
         $action = (string) ($input['action'] ?? '');
+        if ($action === 'delete' && !$this->invoiceDelete) {
+            return [400, ['error' => ['code' => 'invalid_request']]];
+        }
         if (($action === 'reissue' || $action === 'resolve') && $role !== 'manager') {
             return [400, ['error' => ['code' => 'invalid_request']]];
         }
@@ -747,8 +756,31 @@ final class SourceAccessFakeShop implements SourceAccessTransport
         if ($action === 'reissue' && $i['documentType'] === 'invoice' && ($input['previousCancelled'] ?? false) !== true) {
             $blockers[] = 'reissue_attestation_required';
         }
+        if ($action === 'delete' && ($input['confirmDelete'] ?? false) !== true) {
+            $blockers[] = 'delete_confirmation_required';
+        }
         if ($blockers !== []) {
             return $refuse($blockers[0], $blockers);
+        }
+        if ($action === 'delete') {
+            // YD SOFT 2.25.0: SmartBill deletes only the last invoice of its series (asked first), then the records go.
+            $outcome = $this->deleteOutcome;
+            $this->deleteOutcome = 'deleted';
+            if ($outcome === 'not_last') {
+                return $refuse('not_last_invoice');
+            }
+            if ($outcome === 'refused') {
+                $i['history'][] = ['kind' => 'delete', 'at' => $now, 'by' => $employee, 'outcome' => 'refused'];
+                return $keep(409, ['error' => ['code' => 'smartbill_refused'], 'revision' => $this->invoiceRevision($orderId)]);
+            }
+            $this->smartbillDeletes[$orderId] = ($this->smartbillDeletes[$orderId] ?? 0) + 1;
+            $i['document'] = null;
+            $i['op'] = 'none';
+            $i['opKey'] = null;
+            $i['mail'] = 'none';
+            $i['mailCount'] = 0;
+            $i['history'][] = ['kind' => 'delete', 'at' => $now, 'by' => $employee, 'outcome' => 'deleted'];
+            return $this->invoiceAfter($keep(200, ['protocol' => 1, 'applied' => true, 'action' => 'delete', 'result' => 'deleted', 'summary' => $this->invoiceSummary($orderId, $now, (string) $role)]));
         }
         if ($action === 'resolve') {
             if (($input['target'] ?? '') === 'document') {
@@ -822,6 +854,9 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             $blockers[] = 'operation_unknown';
         }
         if ($action === 'send_mail') {
+            return $i['document'] === null ? [...$blockers, 'document_missing'] : $blockers;
+        }
+        if ($action === 'delete') {
             return $i['document'] === null ? [...$blockers, 'document_missing'] : $blockers;
         }
         if ($action === 'issue' && $i['document'] !== null) {
@@ -1142,7 +1177,10 @@ final class SourceAccessFakeShop implements SourceAccessTransport
         $i = $o['invoice'];
         $doc = $i['document'];
         $blockers = [];
-        foreach (['issue' => 'issue', 'sendMail' => 'send_mail', 'reissue' => 'reissue', 'resolve' => 'resolve'] as $name => $action) {
+        foreach (['issue' => 'issue', 'sendMail' => 'send_mail', 'reissue' => 'reissue', 'resolve' => 'resolve', 'delete' => 'delete'] as $name => $action) {
+            if ($action === 'delete' && !$this->invoiceDelete) {
+                continue;
+            }
             $blockers[$name] = $this->invoiceActions ? $this->invoiceBlockers($orderId, $action) : ['invoice_observe'];
         }
         return [

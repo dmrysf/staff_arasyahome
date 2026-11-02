@@ -271,3 +271,25 @@ request without it never reaches the plugin.
 - `wp yd-arasya invoice live-check`: the read-only check of the live configuration (YD SOFT 2.19.0); for the version
   live today, `yd-soft/docs/live-check/` holds two reviewed read-only scripts run from STDIN with plugins skipped
   (live-verification §3).
+
+## Deleting the invoice (API 2.54.0, Staff 2.44.0, YD SOFT 2.25.0, migration 045)
+
+Owner decision 2026-11-02: the shop employee the order is routed to can delete the order's SmartBill invoice ("Șterge factura"). An invoice manager can delete it too. The automatic sending to e-Factura is off in SmartBill.
+
+- Route: `POST /confirmare/orders/{id}/invoice/delete` with an `Idempotency-Key`. The body is `{expectedRevision, reasonCode, reasonNote?, confirmDelete: true}`. The reason codes are the same as for a re-issue; `other` needs a note.
+- Arasya refuses the deletion in these cases:
+  - `not_assigned` or `assigned_to_other` (an invoice manager is exempt);
+  - `invoice_action_open`;
+  - `efactura_recorded`: an employee recorded the invoice's e-Factura as sent, accepted or rejected. Such an invoice is reversed (storno) in SmartBill and is never deleted.
+- The order's state does not matter: a cancelled order keeps its invoice until someone deletes it.
+- SmartBill deletes only the last invoice number of a series that was not sent to e-Factura. The shop therefore reads the series' next number first and refuses with `not_last_invoice` before it asks SmartBill to delete. If the series cannot be read, the refusal is `series_check_failed`. Both shops share the SMART series, so an invoice issued later in the other shop also blocks the deletion.
+- After SmartBill confirms the deletion:
+  - the plugin's records of the document are removed;
+  - the shop journal keeps the deletion (kind `delete`) with its reason;
+  - the open e-Factura follow-up of the order is closed (`resolved`, `invoice_deleted`);
+  - the shop queue shows the order as not invoiced;
+  - the order may be invoiced again.
+- If SmartBill's answer is lost, the outcome is unknown. A manager checks SmartBill and resolves it: `not_issued` means the invoice was deleted, `issued` means it stays.
+- Migration 045 only widens two CHECKs of `order_invoice_actions`: the action now accepts `delete`, and the reason code is accepted for a deletion. It creates no table and writes no row.
+- `bin/check-rollback.php` keeps the floor at 2.54.0 while a deletion is pending or unknown.
+- Deploy order: API 2.54.0 (with 045) and Staff 2.44.0 first, then YD SOFT 2.25.0. An older API does not read the shop's `delete` history.

@@ -15,10 +15,14 @@ import { t, type MessageKey } from "../i18n";
  * ("Confirmare telefonică a comenzii"), may accept a smaller VERIFIED advance ("Acceptă avansul primit") and cancels an
  * unpaid proforma IN SMARTBILL ("Anulează proforma"). The shop's one money calculation (total, advance asked and
  * received, difference, what is owed), the invoicing deadline and the AWB's collection are shown as the shop states them.
+ *
+ * API 2.54.0 / Staff 2.44.0 (YD SOFT 2.25.0, owner 2026-11-02): the routed shop employee deletes the order's invoice in
+ * SmartBill ("Șterge factura"), with a reason and an explicit confirmation; SmartBill deletes only the last invoice of a
+ * series not sent to e-Factura. Afterwards the order can be invoiced again.
  */
-export const INVOICE_ACTIONS = ["issue", "send_mail", "reissue", "resolve"] as const;
+export const INVOICE_ACTIONS = ["issue", "send_mail", "reissue", "resolve", "delete"] as const;
 export type InvoiceAction = (typeof INVOICE_ACTIONS)[number];
-export type InvoiceActionKey = "issue" | "sendMail" | "reissue" | "resolve";
+export type InvoiceActionKey = "issue" | "sendMail" | "reissue" | "resolve" | "delete";
 export const INVOICE_REASONS = ["order_changed", "customer_data", "wrong_document", "other"] as const;
 export type InvoiceReason = (typeof INVOICE_REASONS)[number];
 export const INVOICE_ROLES = ["documents", "manager", "finance", "viewer", "operator"] as const;
@@ -159,6 +163,7 @@ export type IssueInput = { expectedRevision: string };
 export type MailInput = { expectedRevision: string; confirmResend?: boolean };
 export type ReissueInput = { expectedRevision: string; reasonCode: InvoiceReason; reasonNote?: string; previousCancelled?: boolean };
 export type ResolveInput = { expectedRevision: string; target: "document" | "mail"; resolution: "not_issued" | "issued" | "sent" | "not_sent"; reasonNote?: string };
+export type DeleteInput = { expectedRevision: string; reasonCode: InvoiceReason; reasonNote?: string; confirmDelete: boolean };
 export type ProformaIssueInput = { expectedRevision: string; replaceOutdated?: boolean };
 export type ProformaResolveInput = { expectedRevision: string; target: "document" | "mail" | "cancel"; resolution: "not_issued" | "issued" | "sent" | "not_sent" | "cancelled" | "not_cancelled"; series?: string; number?: string; reasonNote?: string };
 export type ProformaCancelInput = { expectedRevision: string; reasonCode: CancelReason; reasonNote?: string; confirmNoPayment: boolean };
@@ -167,7 +172,7 @@ export type AdvanceAcceptInput = { expectedRevision: string; reasonNote?: string
 
 export interface ConfirmareInvoiceApi {
   invoiceRead(globalOrderId: string, signal?: AbortSignal): Promise<InvoiceRead>;
-  invoiceAct(globalOrderId: string, action: InvoiceAction, input: IssueInput | MailInput | ReissueInput | ResolveInput, idempotencyKey: string): Promise<InvoiceOutcome>;
+  invoiceAct(globalOrderId: string, action: InvoiceAction, input: IssueInput | MailInput | ReissueInput | ResolveInput | DeleteInput, idempotencyKey: string): Promise<InvoiceOutcome>;
   invoiceReconcile(globalOrderId: string, idempotencyKey: string): Promise<InvoiceOutcome>;
   proformaAct(globalOrderId: string, action: ProformaAction, input: ProformaIssueInput | MailInput | IssueInput | ProformaResolveInput | ProformaCancelInput | TotalAcceptInput | AdvanceAcceptInput, idempotencyKey: string): Promise<InvoiceOutcome>;
   shopCandidates(globalOrderId: string, signal?: AbortSignal): Promise<ShopCandidate[]>;
@@ -209,6 +214,8 @@ const BLOCKERS = [
   "proforma_bank_missing", "proforma_series_not_approved", "payment_reference_invalid",
   // Owner business rules 2026-10-25
   "advance_decision_required", "advance_decision_not_applicable", "shipping_mismatch",
+  // API 2.54.0 / YD SOFT 2.25.0: deleting the invoice
+  "delete_confirmation_required", "not_last_invoice", "series_check_failed", "document_unidentified", "efactura_recorded",
 ] as const;
 /** A blocker or refusal code in the employee's words (an unknown code reads as a generic refusal, never as the code). */
 export function invoiceBlockerLabel(code: string | undefined): string {
@@ -220,7 +227,7 @@ export const mailStateLabel = (state: InvoiceSummary["mail"]["state"]): string =
 export const operationStateLabel = (state: InvoiceSummary["operation"]["state"]): string => t(`inv.operation.${state}` as MessageKey);
 export const reasonLabel = (reason: string): string => ((INVOICE_REASONS as readonly string[]).includes(reason) ? t(`inv.reason.${reason}` as MessageKey) : reason);
 export function historyLabel(kind: string): string {
-  return ["issue", "reissue", "superseded", "send_mail", "auto_mail", "resolve_document", "resolve_mail", "proforma_issue", "proforma_mail", "check", "proforma_resolve_document", "proforma_resolve_mail",
+  return ["issue", "reissue", "delete", "superseded", "send_mail", "auto_mail", "resolve_document", "resolve_mail", "proforma_issue", "proforma_mail", "check", "proforma_resolve_document", "proforma_resolve_mail",
     "proforma_cancel", "proforma_resolve_cancel"].includes(kind) ? t(`inv.history.${kind}` as MessageKey) : kind;
 }
 export const cancelReasonLabel = (reason: string | null | undefined): string => (reason && (CANCEL_REASONS as readonly string[]).includes(reason) ? t(`inv.pf.cancelReason.${reason}` as MessageKey) : t("inv.pf.cancelReason.other"));

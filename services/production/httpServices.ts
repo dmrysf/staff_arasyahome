@@ -1680,7 +1680,7 @@ export function mapFinanceQueue(value: unknown): FinanceQueue {
 
 
 // ---- SmartBill invoicing (API 2.43.0): strict; anything unexpected is refused, never half shown
-const INVOICE_KEYS = ["issue", "sendMail", "reissue", "resolve"] as const;
+const INVOICE_KEYS = ["issue", "sendMail", "reissue", "resolve", "delete"] as const;
 const invoiceCodes = (value: unknown): string[] => listOf(value, 40, (code) => { const text = textValue(code, 60); if (!/^[a-z_]{2,60}$/.test(text)) throw new StaffServiceError("SERVER_ERROR"); return text; });
 const invoiceUuid = (value: unknown): string | null => (value == null ? null : uuidValue(value));
 const invoiceText = (value: unknown, max: number): string | null => (value == null ? null : textValue(value, max));
@@ -1890,7 +1890,7 @@ function mapInvoiceView(raw: Record<string, unknown>): InvoiceView {
     summary: mapInvoiceSummary(raw.summary),
     handoff: { state: textValue(handoff.state, 30), blockers: invoiceCodes(handoff.blockers) },
     blockers: Object.fromEntries(INVOICE_KEYS.map((key) => [key, invoiceCodes(blockers[key])])) as Record<InvoiceActionKey, string[]>,
-    allowedActions: listOf(raw.allowedActions, 4, (action) => oneOf(action, INVOICE_KEYS)),
+    allowedActions: listOf(raw.allowedActions, 5, (action) => oneOf(action, INVOICE_KEYS)),
     actionOpen: booleanValue(raw.actionOpen),
     timeline: listOf(raw.timeline, 200, (entry) => {
       const item = objectValue(entry);

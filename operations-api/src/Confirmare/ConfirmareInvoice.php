@@ -102,6 +102,8 @@ final readonly class ConfirmareInvoice
         'send_mail' => ['confirmResend'],
         'reissue' => ['reasonCode', 'reasonNote', 'previousCancelled'],
         'resolve' => ['target', 'resolution', 'reasonNote'],
+        // API 2.54.0 (YD SOFT 2.25.0, owner 2026-11-02): the routed shop employee deletes the order's SmartBill invoice.
+        'delete' => ['reasonCode', 'reasonNote', 'confirmDelete'],
     ];
 
     public function __construct(
@@ -377,6 +379,22 @@ final readonly class ConfirmareInvoice
         if ($action === 'resolve') {
             return $blockers;
         }
+        if ($action === 'delete') {
+            // API 2.54.0 (owner 2026-11-02): the routed shop employee deletes the order's invoice whatever the order's state
+            // (a cancelled order keeps its invoice until then); never one whose e-Factura an employee recorded as sent.
+            if ($actor !== null && $role !== self::ROLE_MANAGER) {
+                $assignee = self::assignee($this->pdo, $orderUuid);
+                if ($assignee === null) {
+                    $blockers[] = 'not_assigned';
+                } elseif ($assignee !== $actor->employeeUuid) {
+                    $blockers[] = 'assigned_to_other';
+                }
+            }
+            if ($this->efactura?->recorded($orderUuid) === true) {
+                $blockers[] = 'efactura_recorded';
+            }
+            return array_values(array_unique($blockers));
+        }
         if ($order['cancellation_state'] === 'held') {
             // A manager stopped production for a cancellation request: no document is issued or sent while it holds
             // (`released` resumed the order; a confirmed cancellation makes the order unavailable, below).
@@ -458,13 +476,13 @@ final readonly class ConfirmareInvoice
         $writer = $actions && in_array($role, [self::ROLE_DOCUMENTS, self::ROLE_MANAGER], true);
         $confirmed = $this->confirmedBy($actor->employeeUuid, $orderUuid);
         $arasya = [];
-        foreach (['issue' => 'issue', 'sendMail' => 'send_mail', 'reissue' => 'reissue', 'resolve' => 'resolve'] as $name => $action) {
+        foreach (['issue' => 'issue', 'sendMail' => 'send_mail', 'reissue' => 'reissue', 'resolve' => 'resolve', 'delete' => 'delete'] as $name => $action) {
             $codes = $this->blockers($orderUuid, $action, $actor, $role);
             if (!$actions) {
                 $codes[] = 'invoice_observe';
             } elseif (!$writer || (in_array($action, ['reissue', 'resolve'], true) && $role !== self::ROLE_MANAGER)) {
                 $codes[] = 'not_allowed_for_role';
-            } elseif ($confirmed && $action !== 'resolve') {
+            } elseif ($confirmed && !in_array($action, ['resolve', 'delete'], true)) {
                 $codes[] = 'same_employee';
             }
             $arasya[$name] = array_values(array_unique($codes));
@@ -554,7 +572,7 @@ final readonly class ConfirmareInvoice
             throw $invalid('expectedRevision');
         }
         $fields = ['expectedRevision' => $revision];
-        foreach (['confirmResend', 'previousCancelled'] as $flag) {
+        foreach (['confirmResend', 'previousCancelled', 'confirmDelete'] as $flag) {
             if (array_key_exists($flag, $input)) {
                 if (!is_bool($input[$flag])) {
                     throw $invalid($flag);
@@ -569,7 +587,7 @@ final readonly class ConfirmareInvoice
             }
             $fields['reasonNote'] = trim($note);
         }
-        if ($action === 'reissue') {
+        if ($action === 'reissue' || $action === 'delete') {
             if (!in_array($input['reasonCode'] ?? null, SourceInvoice::REASONS, true)) {
                 throw $invalid('reasonCode');
             }
@@ -1035,10 +1053,16 @@ final readonly class ConfirmareInvoice
             && !$this->confirmedBy($employeeUuid, $orderUuid);
     }
 
-    /** Whether Arasya recorded an applied final invoice of the order (the shop stays the authority). */
+    /**
+     * Whether Arasya recorded an applied final invoice of the order (the shop stays the authority). API 2.54.0: one deleted
+     * after it no longer counts.
+     */
+    public const ISSUED_SQL = "i.action IN ('issue', 'reissue') AND i.state = 'applied' AND i.result = 'issued' AND NOT EXISTS (SELECT 1 FROM order_invoice_actions d
+        WHERE d.order_uuid = i.order_uuid AND d.action = 'delete' AND d.state = 'applied' AND d.result = 'deleted' AND d.completed_at > i.completed_at)";
+
     private function invoiceIssued(string $orderUuid): bool
     {
-        $statement = $this->pdo->prepare("SELECT 1 FROM order_invoice_actions WHERE order_uuid = ? AND action IN ('issue', 'reissue') AND state = 'applied' AND result = 'issued' LIMIT 1");
+        $statement = $this->pdo->prepare('SELECT 1 FROM order_invoice_actions i WHERE i.order_uuid = ? AND ' . self::ISSUED_SQL . ' LIMIT 1');
         $statement->execute([$orderUuid]);
         return $statement->fetchColumn() !== false;
     }
@@ -1248,6 +1272,10 @@ final readonly class ConfirmareInvoice
             if (in_array($action, ['issue', 'reissue'], true) && $answer['status'] === 200 && $answered['result'] === 'issued') {
                 // API 2.46.0 (owner K-04): the issuer follows the invoice's e-Factura (5 working days).
                 $this->efactura?->onInvoiceIssued($actionUuid, (string) $row['order_uuid'], (string) $row['global_order_id'], (string) $row['source_key'], $actor->employeeUuid);
+            }
+            if ($action === 'delete' && $answer['status'] === 200 && $answered['result'] === 'deleted') {
+                // API 2.54.0: a deleted invoice has no e-Factura to follow any more.
+                $this->efactura?->onInvoiceDeleted((string) $row['order_uuid'], $actor->employeeUuid);
             }
             if ($action === 'proforma_send_mail' && $answer['status'] === 200 && $answered['result'] === 'sent') {
                 // API 2.46.0: the proforma reached the customer, so its timer starts (reminders, 120 h expiry).
