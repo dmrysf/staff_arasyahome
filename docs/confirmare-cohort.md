@@ -300,3 +300,32 @@ unchanged. The 035 columns are nullable and older writers leave them NULL. The J
 - Pre-existing, unchanged: simultaneous first deliveries of the same new event can lose to an InnoDB deadlock
   (HTTP 500). Exactly one wins, nothing is half-written, and YD SOFT retries the loser, which then gets `duplicate`.
   The same happens on main.
+
+## 1 November cutoff (API 2.55.0, YD SOFT 2.26.0, owner decision 2026-11-02)
+
+Only Trend Home and Outlet Perdele orders submitted on or after 2026-11-01 00:00 Europe/Bucharest
+(2026-10-31T22:00:00Z) are worked in Staff: operator, shop employee and production.
+
+`php bin/confirmare-cutoff.php --source=<shop> [--apply]` (`ConfirmareCutoff`) treats each older Confirmare order
+as follows.
+
+- **Withdrawn.** The order is still `pending`, at the initial stage, not cleared, and has no proforma cycle, invoice
+  action, finance action or request, shop routing, shop edit, shop operation, reactivation, e-Factura task or
+  production document. A recorded call alone does not keep it. What happens:
+  - its cohort becomes `legacy` with reason `withdrawn_before_cutoff`;
+  - its confirmation becomes `cancelled`, with no assignee;
+  - its open alerts are resolved;
+  - one system `released` event records the change.
+
+  The order leaves every Staff queue, and a later shop update never brings it back.
+- **Kept.** Every other older order stays as it is.
+
+The shop side records the same orders. Run
+`wp yd-arasya confirmare withdraw --orders-file=<numbers> --before=2026-10-31T22:00:00.000000Z [--apply]`
+(`ConfirmareFence::META_WITHDRAWN`). The shop then handles these orders as it did before the activation:
+- CurieRO AWB is allowed;
+- Staff source access is closed;
+- no advance is forced.
+
+Rollback: there is none in the software. Nothing is deleted, the events and records stay, and no API floor is needed
+(older APIs read the same rows).

@@ -62,6 +62,11 @@ final class WorkflowCohort
     public const REASON_FINANCING = 'financing_legacy';
     /** API 2.46.0 (owner K-06): an order of 22 October or later taken into Confirmare by bin/confirmare-backfill.php. */
     public const REASON_BACKFILL = 'backfill_22_october';
+    /**
+     * API 2.55.0 (owner decision 2026-11-02): a Confirmare order submitted before 2026-11-01 00:00 Europe/Bucharest that
+     * nobody had worked yet, returned to the established flow by bin/confirmare-cutoff.php (ConfirmareCutoff).
+     */
+    public const REASON_WITHDRAWN = 'withdrawn_before_cutoff';
 
     public const ACTION_SCHEDULED = 'scheduled';
     public const ACTION_CANCELLED = 'cancelled';
