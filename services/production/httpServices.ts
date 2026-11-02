@@ -1302,7 +1302,9 @@ export function mapHandoffList(value: unknown): HandoffItem[] {
 
 export function mapConfirmarePool(value: unknown): ConfirmarePool {
   const raw = objectValue(value);
-  return { view: oneOf(raw.view, ["mine", "open", "all", "followup"] as const), items: itemsOf(raw).map(mapConfirmareItem), limit: positiveInteger(raw.limit), targetOpenPerOperator: positiveInteger(raw.targetOpenPerOperator) };
+  const items = itemsOf(raw).map(mapConfirmareItem);
+  // An API before 2.54.1 sends no total: the rows it sent are all the screen knows of.
+  return { view: oneOf(raw.view, ["mine", "open", "all", "followup"] as const), items, limit: positiveInteger(raw.limit), total: raw.total === undefined ? items.length : nonNegativeInteger(raw.total), targetOpenPerOperator: positiveInteger(raw.targetOpenPerOperator) };
 }
 
 function mapConfirmareLine(value: unknown): ConfirmareLine {

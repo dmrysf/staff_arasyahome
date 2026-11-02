@@ -11,14 +11,16 @@ export const dueDay = (value: string | null): string => value ? formatDate(`${va
 export const confirmareOrderPath = (globalOrderId: string): string => `/confirmare/orders/${encodeURIComponent(globalOrderId)}`;
 
 /** The rows the operator works on: the pending orders (server priority order), then approvals still waiting. */
-export type ConfirmareQueueData = { items: ConfirmareItem[]; source: string | null };
+/** `hidden`: orders the server held back at its ceiling (open and follow-up views together); 0 when the whole queue came. */
+export type ConfirmareQueueData = { items: ConfirmareItem[]; source: string | null; hidden: number };
 
 export function confirmareQueueLoader(service: ConfirmareApi, source: string | null) {
   // Reads only: never claims, approves, cancels or changes a payment on refresh.
   return async (signal: AbortSignal): Promise<ConfirmareQueueData> => {
     const [open, followup] = await Promise.all([service.pool("open", source, signal), service.pool("followup", source, signal)]);
     const seen = new Set(open.items.map((item) => item.globalOrderId));
-    return { items: [...open.items, ...followup.items.filter((item) => !seen.has(item.globalOrderId))], source };
+    const hidden = Math.max(0, open.total - open.items.length) + Math.max(0, followup.total - followup.items.length);
+    return { items: [...open.items, ...followup.items.filter((item) => !seen.has(item.globalOrderId))], source, hidden };
   };
 }
 

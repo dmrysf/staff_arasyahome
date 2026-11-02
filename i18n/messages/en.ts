@@ -1304,6 +1304,7 @@ export const en: Catalog = {
   "next.nothingDetail": "The list updates automatically when an order arrives here.",
   "refresh.stopped": "Automatic update stopped",
   "refresh.everyMinute": "Automatic update every minute",
+  "refresh.every15s": "Automatic update every 15 seconds",
   "refresh.stale": "The data may be out of date",
   "mgmt.eyebrow": "Production · read only",
   "mgmt.title": "Overview",

@@ -13,9 +13,9 @@ import {
 import { canAccessRoute } from "../domain/permissions";
 import { parseStaffRoute } from "../domain/staffRoute";
 import { resolveWorkspaces, selectPrimaryWorkspace } from "../domain/workspaces";
-import { confirmareErrorDetails, createProductionServices, mapConfirmareDetail, mapConfirmareItem, mapProductionEmployee } from "../services/production/httpServices";
+import { confirmareErrorDetails, createProductionServices, mapConfirmareDetail, mapConfirmareItem, mapConfirmarePool, mapProductionEmployee } from "../services/production/httpServices";
 import { confirmareQueueLoader } from "../features/confirmare/ConfirmareParts";
-import { OperatorDesk } from "../features/confirmare/OperatorDesk";
+import { DESK_REFRESH_MS, OperatorDesk } from "../features/confirmare/OperatorDesk";
 import { HomeScreen } from "../features/home/HomeScreen";
 import { CATALOGS, type MessageKey } from "../i18n";
 import type { ServiceBundle } from "../services/contracts";
@@ -246,8 +246,9 @@ test("HTTP: an expired session or revoked access stops the work; a network outag
 
 test("refresh reads only: the queue loader asks the pool and nothing else; no screen records a call by itself", async () => {
   const called: string[] = [];
-  const api = new Proxy({}, { get: (_target, name: string) => (...args: unknown[]) => { called.push(name); return Promise.resolve(name === "pool" ? { view: args[0], items: [item({ globalOrderId: `trendhome:${String(args[0])}` })], limit: 200, targetOpenPerOperator: 10 } : null); } }) as never;
+  const api = new Proxy({}, { get: (_target, name: string) => (...args: unknown[]) => { called.push(name); return Promise.resolve(name === "pool" ? { view: args[0], items: [item({ globalOrderId: `trendhome:${String(args[0])}` })], limit: 2000, total: 1, targetOpenPerOperator: 10 } : null); } }) as never;
   const data = await confirmareQueueLoader(api, null)(new AbortController().signal);
+  assert.equal(data.hidden, 0, "the whole queue came");
   assert.deepEqual(called, ["pool", "pool"]);
   assert.deepEqual(data.items.map((row) => row.globalOrderId), ["trendhome:open", "trendhome:followup"]);
   const sources = ["ConfirmareParts.tsx", "ConfirmareWorkspace.tsx", "OperatorDesk.tsx", "ConfirmareTeamScreen.tsx", "ConfirmareOrderScreen.tsx"].map((file) => [file, readFileSync(path.join(root, "features/confirmare", file), "utf8")] as const);
@@ -289,4 +290,29 @@ test("home: an operator's Confirmare home is the operator desk, which keeps the 
   assert.match(desk, /data-testid="cf-queue"/);
   assert.match(desk, /data-testid="cf-contact-dependency"/);
   assert.match(desk, /Arasya nu păstrează telefonul complet al clientului/);
+});
+
+test("Staff 2.44.1: the desk shows every order of the queue, newest first, read every 15 seconds", async () => {
+  // Owner report 2026-11-02: 295 of 495 pending orders (everything after 28 October) never reached the desk.
+  const raw = { view: "open", items: [{ ...item(), workflowCohort: "confirmare" }], limit: 2000, targetOpenPerOperator: 10 };
+  assert.equal(mapConfirmarePool(raw).total, 1, "an API before 2.54.1 sends no total: the rows are the whole known queue");
+  assert.equal(mapConfirmarePool({ ...raw, total: 2400 }).total, 2400);
+  const pools: Record<string, { items: ConfirmareItem[]; total: number }> = {
+    open: { items: [item({ globalOrderId: "trendhome:1" }), item({ globalOrderId: "trendhome:2" })], total: 5 },
+    followup: { items: [item({ globalOrderId: "trendhome:3" })], total: 1 },
+  };
+  const api = { pool: (view: string) => Promise.resolve({ view, limit: 2, targetOpenPerOperator: 10, ...pools[view] }) } as never;
+  const data = await confirmareQueueLoader(api, null)(new AbortController().signal);
+  assert.equal(data.hidden, 3, "orders held back at the server ceiling are counted, never silently dropped");
+  const desk = readFileSync(path.join(root, "features/confirmare/OperatorDesk.tsx"), "utf8");
+  assert.match(desk, /const DEFAULT_SORT: DeskSort = "newest";/, "the desk opens newest first");
+  assert.match(desk, /sort as DeskSort : DEFAULT_SORT/);
+  assert.match(desk, /useAutoRefresh\(load, `confirmare-desk\|\$\{filters\.source \?\? "all"\}`, DESK_REFRESH_MS\)/, "the desk queue uses its own interval");
+  assert.equal(DESK_REFRESH_MS, 15_000);
+  assert.doesNotMatch(desk, /items\.length >= 200/, "no fixed 200-row assumption is left on the desk");
+  assert.match(desk, /data\.hidden > 0/);
+  for (const locale of ["ro", "en", "tr", "si"] as const) {
+    assert.match(String(CATALOGS[locale]["cf.queue.limit" as MessageKey]), /\{count\}/, `${locale}: the notice names how many orders are held back`);
+    assert.ok(CATALOGS[locale]["refresh.every15s" as MessageKey], `${locale}: the refresh bar says 15 seconds`);
+  }
 });

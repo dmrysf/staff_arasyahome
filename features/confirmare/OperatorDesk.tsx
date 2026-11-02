@@ -20,6 +20,12 @@ import { ShopTaskButtons } from "./ConfirmareWorkspace";
 import { LegacyOrderLookup } from "./FinanceRequestScreens";
 
 const SEARCH_DELAY_MS = 200;
+/**
+ * Staff 2.44.1 (owner 2026-11-02): an order the shop just received shows at once on top of the operator's list. The
+ * desk opens newest first and reads the queue every 15 seconds while visible (other screens keep the one minute).
+ */
+const DEFAULT_SORT: DeskSort = "newest";
+export const DESK_REFRESH_MS = 15_000;
 
 type Filters = { tab: QueueTab; source: string | null; sort: DeskSort; query: string };
 
@@ -33,7 +39,7 @@ function readFilters(employee: Employee): Filters {
   return {
     tab: (QUEUE_TABS as readonly string[]).includes(tab ?? "") ? tab as QueueTab : "mine",
     source: source && sources.includes(source) ? source : null,
-    sort: (DESK_SORTS as readonly string[]).includes(sort ?? "") ? sort as DeskSort : "priority",
+    sort: (DESK_SORTS as readonly string[]).includes(sort ?? "") ? sort as DeskSort : DEFAULT_SORT,
     query: (params.get("q") ?? "").slice(0, 60),
   };
 }
@@ -42,7 +48,7 @@ function filterQuery(filters: Filters): string {
   const params = new URLSearchParams();
   if (filters.tab !== "mine") params.set("tab", filters.tab);
   if (filters.source) params.set("source", filters.source);
-  if (filters.sort !== "priority") params.set("sort", filters.sort);
+  if (filters.sort !== DEFAULT_SORT) params.set("sort", filters.sort);
   if (filters.query.trim()) params.set("q", filters.query.trim());
   const query = params.toString();
   return query ? `?${query}` : "";
@@ -66,8 +72,8 @@ export function OperatorDesk({ employee, service, documents, orderId, navigate, 
   const [filters, setFilters] = useState<Filters>(initial);
   const [typed, setTyped] = useState(initial.query);
   const load = useMemo(() => confirmareQueueLoader(service, filters.source), [service, filters.source]);
-  // Every minute while visible, and again after every command in the order (a read only; it never claims or decides).
-  const queue = useAutoRefresh(load, `confirmare-desk|${filters.source ?? "all"}`);
+  // Every 15 seconds while visible, and again after every command in the order (a read only; it never claims or decides).
+  const queue = useAutoRefresh(load, `confirmare-desk|${filters.source ?? "all"}`, DESK_REFRESH_MS);
   const data = queue.data?.source === filters.source ? queue.data : null;
   const supervisor = canSuperviseConfirmare(employee);
   const operates = confirmareScopesOf(employee).operate.length > 0;
@@ -190,8 +196,8 @@ export function OperatorDesk({ employee, service, documents, orderId, navigate, 
                 {rows.map((item) => <DeskRow key={item.globalOrderId} item={item} employee={employee} selected={item.globalOrderId === orderId} onOpen={() => open(item)} />)}
               </ul>)}
           </div>
-          {data && data.items.length >= 200 && <p className="dashboard-footnote">{t("cf.queue.limit")}</p>}
-          <AutoRefreshBar onRefresh={queue.refresh} busy={queue.busy} refreshing={queue.refreshing} updatedAt={queue.updatedAt} stale={data !== null && queue.error !== null} stopped={queue.stopped} testId="cf-queue-refresh" />
+          {data && data.hidden > 0 && <p className="dashboard-footnote" data-testid="cf-queue-hidden">{t("cf.queue.limit", { count: data.hidden })}</p>}
+          <AutoRefreshBar onRefresh={queue.refresh} busy={queue.busy} refreshing={queue.refreshing} updatedAt={queue.updatedAt} stale={data !== null && queue.error !== null} stopped={queue.stopped} testId="cf-queue-refresh" every="refresh.every15s" />
           <details className="cf-desk-legacy" data-testid="cf-desk-legacy">
             <summary>{t("fr.legacyOrder.lookupTitle")}</summary>
             <LegacyOrderLookup sources={sources} navigate={navigate} />

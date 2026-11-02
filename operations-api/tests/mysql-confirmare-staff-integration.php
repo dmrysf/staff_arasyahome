@@ -324,6 +324,32 @@ $error($get($opA, '/activity/mine', ['range' => 'today', 'include' => 'all']), 4
 $check($history($opA, ['range' => 'custom', 'from' => '2020-01-01', 'to' => '2020-01-02'])['items'] === [], 'the date range applies to office work too');
 $check($history($none)['items'] === [], 'an employee without office work has an empty history');
 
+// ---- 8c. API 2.54.1: the operator's working views hold the whole queue (owner report 2026-11-02) ------------------
+// Live, one operator held 495 pending orders while `mine`/`open` returned the first 200 by priority (oldest first), so no
+// order received after 28 October reached the desk. Now these views return every pending order; only `all` (supervisor
+// history, newest first) keeps its page of 200 and states the full count in `total`.
+$bulkBase = T::freeOrderBase($pdo, 870000, 899999, 300);
+$bulk = [];
+for ($n = 1; $n <= 210; $n++) {
+    $bulkId = (string) ($bulkBase + $n);
+    $ok($send('trendhome', $payload($bulkId, $submitted(3000 + $n))), "queue order {$n}");
+    $bulk[] = 'trendhome:' . $bulkId;
+}
+$service->distribute('trendhome');
+// Every new order is the operator's, as on live where one operator holds all of them.
+$assign = $pdo->prepare('UPDATE order_confirmations SET assigned_employee_uuid = ? WHERE global_order_id = ? AND status = \'pending\'');
+foreach ($bulk as $globalId) $assign->execute([$uuids['csopa'], $globalId]);
+$pendingA = (int) $one("SELECT COUNT(*) FROM order_confirmations WHERE status = 'pending' AND assigned_employee_uuid = ?", [$uuids['csopa']]);
+$mineFull = $ok($get($opA, '/confirmare/pool', ['view' => 'mine']), 'mine with more than 200 orders');
+$mineIds = array_column($mineFull['items'], 'globalOrderId');
+$check($pendingA > 200 && count($mineIds) === $pendingA && $mineFull['total'] === $pendingA && $mineFull['limit'] === 2000, "mine returns every pending order of the operator ({$pendingA}), not the first 200: " . count($mineIds));
+$check(in_array(end($bulk), $mineIds, true) && array_diff($bulk, $mineIds) === [], 'the newest order is on the operator\'s screen');
+$openFull = $ok($get($opA, '/confirmare/pool', ['view' => 'open']), 'open with more than 200 orders');
+$check(array_diff($bulk, array_column($openFull['items'], 'globalOrderId')) === [] && $openFull['total'] === count($openFull['items']), 'open holds them too, with total = rows');
+$allPage = $ok($get($sup, '/confirmare/pool', ['view' => 'all']), 'supervisor all with more than 200 orders');
+$allCount = (int) $one("SELECT COUNT(*) FROM order_confirmations WHERE source_key = 'trendhome'");
+$check(count($allPage['items']) === 200 && $allPage['limit'] === 200 && $allPage['total'] === $allCount && $allCount > 200 && in_array(end($bulk), array_column($allPage['items'], 'globalOrderId'), true), "all keeps its page of 200, newest first, and states the full count ({$allCount})");
+
 // ---- 9. Append-only, no customer data in the contact table -------------------------------------------------------
 $source = (string) file_get_contents(dirname(__DIR__) . '/src/Confirmare/ConfirmareService.php');
 $check(preg_match('/(UPDATE|DELETE FROM)\s+order_confirmation_contacts/i', $source) === 0, 'no code path updates or deletes a contact attempt');

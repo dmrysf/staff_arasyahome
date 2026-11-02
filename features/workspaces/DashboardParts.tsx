@@ -59,13 +59,13 @@ export function RefreshButton({ onRefresh, busy, updatedAt }: { onRefresh: () =>
  * Operations API; it says nothing about when Arasya last synchronized with Trendyol (shown separately). A failed
  * background read keeps the last good data and says so once, quietly, instead of an alert every minute.
  */
-export function AutoRefreshBar({ onRefresh, busy, refreshing, updatedAt, stale, stopped, testId }: { onRefresh: () => void; busy: boolean; refreshing: boolean; updatedAt: number | null; stale: boolean; stopped: boolean; testId?: string }) {
+export function AutoRefreshBar({ onRefresh, busy, refreshing, updatedAt, stale, stopped, testId, every = "refresh.everyMinute" }: { onRefresh: () => void; busy: boolean; refreshing: boolean; updatedAt: number | null; stale: boolean; stopped: boolean; testId?: string; every?: "refresh.everyMinute" | "refresh.every15s" }) {
   const { t } = useI18n();
   return (
     <div className={`dashboard-refresh${stopped ? " is-stopped" : stale ? " is-stale" : refreshing || busy ? " is-refreshing" : ""}`} data-testid={testId}>
       <span className="refresh-pulse" aria-hidden="true" />
       <span className="refresh-copy">
-        <span>{stopped ? t("refresh.stopped") : t("refresh.everyMinute")}</span>
+        <span>{stopped ? t("refresh.stopped") : t(every)}</span>
         {updatedAt !== null && <span className="refresh-time">{t("common.lastUpdate", { time: clock.format(updatedAt) })}</span>}
         {refreshing && <span>{t("common.updating")}</span>}
         {stale && !busy && <span className="refresh-stale" role="status">{t("refresh.stale")}</span>}
