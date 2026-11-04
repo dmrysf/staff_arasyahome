@@ -28,13 +28,23 @@ final readonly class InvoiceScopePolicy
     public const MANAGE = 'manage';
     public const CAPABILITIES = [self::ISSUE, self::MANAGE];
 
-    public function __construct(private PDO $pdo)
+    /** $rootIntervention (API 2.57.0): see FinanceScopePolicy; only the root intervention desk's instance sets it. */
+    public function __construct(private PDO $pdo, private bool $rootIntervention = false)
     {
+    }
+
+    /** Whether this actor is the principal administrator acting through the root intervention desk. */
+    public function rootActs(EmployeeIdentity $actor): bool
+    {
+        return $this->rootIntervention && $actor->isRoot && $actor->isOperationallyActive() && !$actor->mustChangePassword;
     }
 
     /** @return list<string> the sources the capability reaches */
     public function sources(EmployeeIdentity $actor, string $capability, bool $lock = false): array
     {
+        if ($this->rootActs($actor)) {
+            return RootInterventionSources::of($this->pdo);
+        }
         try {
             $statement = $this->pdo->prepare('SELECT DISTINCT source_key FROM employee_invoice_scopes WHERE employee_uuid = ? AND capability = ? ORDER BY source_key' . ($lock ? ' LOCK IN SHARE MODE' : ''));
             $statement->execute([$actor->employeeUuid, $capability]);

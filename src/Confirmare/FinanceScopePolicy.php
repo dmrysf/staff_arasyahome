@@ -35,13 +35,27 @@ final readonly class FinanceScopePolicy
     public const VERIFY = 'verify';
     public const CAPABILITIES = [self::VIEW, self::RECORD, self::APPROVE, self::VERIFY];
 
-    public function __construct(private PDO $pdo)
+    /**
+     * $rootIntervention (API 2.57.0, owner decision 2026-11-04): only the instance the Dashboard root intervention desk is
+     * built with (Container::rootIntervention) lets the principal administrator act on the money of every shop source,
+     * recorded under the root identity. Every other instance keeps the default deny for root.
+     */
+    public function __construct(private PDO $pdo, private bool $rootIntervention = false)
     {
+    }
+
+    /** Whether this actor is the principal administrator acting through the root intervention desk. */
+    public function rootActs(EmployeeIdentity $actor): bool
+    {
+        return $this->rootIntervention && $actor->isRoot && $actor->isOperationallyActive() && !$actor->mustChangePassword;
     }
 
     /** @return list<string> the sources the capability reaches (record and approve also read) */
     public function sources(EmployeeIdentity $actor, string $capability, bool $lock = false): array
     {
+        if ($this->rootActs($actor)) {
+            return RootInterventionSources::of($this->pdo);
+        }
         $capabilities = $capability === self::VIEW ? self::CAPABILITIES : [$capability];
         $statement = $this->pdo->prepare('SELECT DISTINCT source_key FROM employee_finance_scopes WHERE employee_uuid = ? AND capability IN ('
             . implode(', ', array_fill(0, count($capabilities), '?')) . ') ORDER BY source_key' . ($lock ? ' LOCK IN SHARE MODE' : ''));

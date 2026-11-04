@@ -122,7 +122,7 @@ final class InvoiceEfactura
         }
         $managed = array_values(array_filter(['trendhome', 'outletperdele'], fn (string $s): bool => ($source === null || $source === $s) && $this->invoices->allows($actor, InvoiceScopePolicy::MANAGE, $s)));
         $issuer = array_values(array_filter(['trendhome', 'outletperdele'], fn (string $s): bool => ($source === null || $source === $s) && $this->invoices->allows($actor, InvoiceScopePolicy::ISSUE, $s)));
-        if (($managed === [] && $issuer === []) || $actor->isRoot) {
+        if (($managed === [] && $issuer === []) || ($actor->isRoot && !$this->invoices->rootActs($actor))) {
             return ['items' => [], 'overdue' => 0, 'managed' => []];
         }
         $where = [];
@@ -163,7 +163,7 @@ final class InvoiceEfactura
             $statement->execute([$taskUuid]);
             $task = $statement->fetch(PDO::FETCH_ASSOC);
             $source = is_array($task) ? (string) $task['source_key'] : '';
-            $mayRecord = is_array($task) && !$actor->isRoot && ($this->invoices->allows($actor, InvoiceScopePolicy::MANAGE, $source)
+            $mayRecord = is_array($task) && (!$actor->isRoot || $this->invoices->rootActs($actor)) && ($this->invoices->allows($actor, InvoiceScopePolicy::MANAGE, $source)
                 || ($task['issuer_employee_uuid'] === $actor->employeeUuid && $this->invoices->allows($actor, InvoiceScopePolicy::ISSUE, $source)));
             if (!$mayRecord) {
                 throw new ApiException(404, 'EFACTURA_TASK_NOT_FOUND', 'No such e-Factura task.');
