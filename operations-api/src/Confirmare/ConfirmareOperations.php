@@ -397,6 +397,11 @@ final class ConfirmareOperations
      */
     private function roles(EmployeeIdentity $actor, array $row): array
     {
+        if ($this->finance->rootActs($actor)) {
+            // API 2.57.0: the root intervention desk holds every operation role of the order (the shop still keeps four
+            // eyes on a card refund: root records it, another finance employee verifies it, or the reverse).
+            return ['reactivate' => 'operator', 'refund' => 'operator', 'awb' => 'manager', 'financeRecord' => 'finance', 'financeApprove' => 'finance', 'finance' => 'finance'];
+        }
         if ($actor->isRoot || !$actor->isOperationallyActive() || $actor->mustChangePassword || !$actor->hasApplication('staff')) {
             return [];
         }

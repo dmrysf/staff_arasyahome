@@ -683,6 +683,28 @@ final readonly class FinanceVerificationRequests
      * The request side of an applied finance action (ConfirmareFinance calls it after the shop applied one; reconcile
      * too). Idempotent: a request already settled is left alone; an action that belongs to no request changes nothing.
      */
+    /**
+     * API 2.57.0 (incident TH 64871, 2026-11-04): a new advance proforma issued for the order (a replacement after a
+     * changed total) moves its open advance request to that proforma. Before, the request stayed on the cancelled one and
+     * the finance employee could only answer "the proforma changed". Only a request nothing was recorded for yet
+     * (requested, assigned or waiting for a clarification) follows; its state and assignee are kept, its version rises
+     * (open screens reload) and one `proforma_replaced` event names the new document.
+     */
+    public static function onProformaReplaced(PDO $pdo, string $orderUuid, ?string $series, string $number, string $actorUuid, string $requestId, string $now): void
+    {
+        $series = $series === '' ? null : $series;
+        $statement = $pdo->prepare("SELECT request_uuid, version, state, assigned_employee_uuid FROM finance_verification_requests WHERE order_uuid = ? AND purpose = 'advance' AND open_order_uuid IS NOT NULL
+            AND finance_idempotency_key IS NULL AND source_entry_id IS NULL AND state IN ('requested', 'assigned', 'needs_clarification') AND NOT (proforma_number <=> ? AND proforma_series <=> ?) FOR UPDATE");
+        $statement->execute([$orderUuid, $number, $series]);
+        foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $request) {
+            $version = (int) $request['version'] + 1;
+            $pdo->prepare('UPDATE finance_verification_requests SET proforma_series = ?, proforma_number = ?, version = ?, updated_at = ? WHERE request_uuid = ? AND version = ?')
+                ->execute([$series, $number, $version, $now, $request['request_uuid'], (int) $request['version']]);
+            $pdo->prepare('INSERT INTO finance_verification_request_events (event_uuid, request_uuid, version_after, action, actor_employee_uuid, previous_state, new_state, assigned_employee_uuid, outcome, reason_code, policy, idempotency_key, request_id, occurred_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)')->execute([Uuid::v4(), $request['request_uuid'], $version, 'proforma_replaced', $actorUuid, $request['state'], $request['state'], $request['assigned_employee_uuid'], self::cleanRequestId($requestId), $now]);
+        }
+    }
+
     public static function onFinanceApplied(PDO $pdo, Clock $clock, string $orderUuid, string $action, string $key, string $actorUuid, string $entryId, ?string $decision, ?string $reasonCode, string $financialState, string $requestId): void
     {
         if (!in_array($action, ['verify_transfer', 'submit_transfer', 'decide_transfer'], true) || preg_match(self::UUID_PATTERN, $entryId) !== 1) {
@@ -1334,7 +1356,8 @@ final readonly class FinanceVerificationRequests
     private function operates(EmployeeIdentity $actor, array $row): bool
     {
         if ($actor->isRoot) {
-            return false;
+            // API 2.57.0: the root intervention desk withdraws or resends a request like a supervisor of the source.
+            return $this->finance->rootActs($actor);
         }
         $source = (string) $row['source_key'];
         if ($this->scopes->allows($actor, ConfirmareScopePolicy::SUPERVISE, $source)) {
