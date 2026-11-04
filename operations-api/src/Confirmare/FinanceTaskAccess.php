@@ -36,6 +36,10 @@ final class FinanceTaskAccess
 
     public static function reaches(PDO $pdo, FinanceScopePolicy $finance, EmployeeIdentity $actor, string $orderUuid, string $sourceKey): bool
     {
+        if ($finance->rootActs($actor)) {
+            // API 2.57.0: the principal administrator through the root intervention desk reaches every order of its sources.
+            return in_array($sourceKey, $finance->sources($actor, FinanceScopePolicy::VIEW), true);
+        }
         if ($actor->isRoot || !$actor->isOperationallyActive() || $actor->mustChangePassword) {
             return false;
         }

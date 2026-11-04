@@ -149,14 +149,14 @@ final class Container
 
     /** Confirmare finance (API 2.41.0, Phase 5): the shop's money record of an order, two-person decisions, no amounts kept. */
     /** SmartBill invoicing of Confirmare orders (API 2.43.0). */
-    public function confirmareInvoice(?AuthorizationService $authorization = null): \Arasya\Operations\Confirmare\ConfirmareInvoice
+    public function confirmareInvoice(?AuthorizationService $authorization = null, bool $rootIntervention = false): \Arasya\Operations\Confirmare\ConfirmareInvoice
     {
         $transport = $this->sourceAccessTransport ?? new \Arasya\Operations\Integration\SourceAccess\StreamSourceAccessTransport(allowLoopback: !$this->config->isProduction());
         return new \Arasya\Operations\Confirmare\ConfirmareInvoice(
             $this->pdo,
             $authorization ?? new AuthorizationService(),
-            new \Arasya\Operations\Confirmare\InvoiceScopePolicy($this->pdo),
-            new \Arasya\Operations\Confirmare\FinanceScopePolicy($this->pdo),
+            new \Arasya\Operations\Confirmare\InvoiceScopePolicy($this->pdo, $rootIntervention),
+            new \Arasya\Operations\Confirmare\FinanceScopePolicy($this->pdo, $rootIntervention),
             new \Arasya\Operations\Document\DocumentScopePolicy($this->pdo),
             \Arasya\Operations\Integration\SourceAccess\SourceAccessRegistry::fromConfig($this->config),
             new \Arasya\Operations\Integration\SourceAccess\SourceAccessClient($transport, $this->clock),
@@ -171,7 +171,7 @@ final class Container
     }
 
     /** Reactivation, FAN Courier AWB and NETOPIA card refund relayed to the shop (API 2.46.0). */
-    public function confirmareOperations(?AuthorizationService $authorization = null): \Arasya\Operations\Confirmare\ConfirmareOperations
+    public function confirmareOperations(?AuthorizationService $authorization = null, bool $rootIntervention = false): \Arasya\Operations\Confirmare\ConfirmareOperations
     {
         $transport = $this->sourceAccessTransport ?? new \Arasya\Operations\Integration\SourceAccess\StreamSourceAccessTransport(allowLoopback: !$this->config->isProduction());
         return new \Arasya\Operations\Confirmare\ConfirmareOperations(
@@ -180,8 +180,8 @@ final class Container
             \Arasya\Operations\Integration\SourceAccess\SourceAccessRegistry::fromConfig($this->config),
             new \Arasya\Operations\Integration\SourceAccess\SourceAccessClient($transport, $this->clock),
             new \Arasya\Operations\Confirmare\ConfirmareScopePolicy($this->pdo),
-            new \Arasya\Operations\Confirmare\FinanceScopePolicy($this->pdo),
-            new \Arasya\Operations\Confirmare\InvoiceScopePolicy($this->pdo),
+            new \Arasya\Operations\Confirmare\FinanceScopePolicy($this->pdo, $rootIntervention),
+            new \Arasya\Operations\Confirmare\InvoiceScopePolicy($this->pdo, $rootIntervention),
             new \Arasya\Operations\Document\DocumentScopePolicy($this->pdo),
             $this->confirmareService($authorization),
             hash_hmac('sha256', 'confirmare-operation-request', $this->config->appSecret),
@@ -220,13 +220,13 @@ final class Container
         );
     }
 
-    public function confirmareFinance(?AuthorizationService $authorization = null): \Arasya\Operations\Confirmare\ConfirmareFinance
+    public function confirmareFinance(?AuthorizationService $authorization = null, bool $rootIntervention = false): \Arasya\Operations\Confirmare\ConfirmareFinance
     {
         $transport = $this->sourceAccessTransport ?? new \Arasya\Operations\Integration\SourceAccess\StreamSourceAccessTransport(allowLoopback: !$this->config->isProduction());
         return new \Arasya\Operations\Confirmare\ConfirmareFinance(
             $this->pdo,
             $authorization ?? new AuthorizationService(),
-            new \Arasya\Operations\Confirmare\FinanceScopePolicy($this->pdo),
+            new \Arasya\Operations\Confirmare\FinanceScopePolicy($this->pdo, $rootIntervention),
             new \Arasya\Operations\Confirmare\ConfirmareScopePolicy($this->pdo),
             \Arasya\Operations\Integration\SourceAccess\SourceAccessRegistry::fromConfig($this->config),
             new \Arasya\Operations\Integration\SourceAccess\SourceAccessClient($transport, $this->clock),
@@ -238,15 +238,15 @@ final class Container
     }
 
     /** Finance verification requests (API 2.50.0, migration 044): the explicit finance task of an advance payment. */
-    public function financeVerificationRequests(?AuthorizationService $authorization = null): \Arasya\Operations\Confirmare\FinanceVerificationRequests
+    public function financeVerificationRequests(?AuthorizationService $authorization = null, bool $rootIntervention = false): \Arasya\Operations\Confirmare\FinanceVerificationRequests
     {
         $transport = $this->sourceAccessTransport ?? new \Arasya\Operations\Integration\SourceAccess\StreamSourceAccessTransport(allowLoopback: !$this->config->isProduction());
         return new \Arasya\Operations\Confirmare\FinanceVerificationRequests(
             $this->pdo,
             $authorization ?? new AuthorizationService(),
-            new \Arasya\Operations\Confirmare\FinanceScopePolicy($this->pdo),
+            new \Arasya\Operations\Confirmare\FinanceScopePolicy($this->pdo, $rootIntervention),
             new \Arasya\Operations\Confirmare\ConfirmareScopePolicy($this->pdo),
-            $this->confirmareFinance($authorization),
+            $this->confirmareFinance($authorization, $rootIntervention),
             \Arasya\Operations\Integration\SourceAccess\SourceAccessRegistry::fromConfig($this->config),
             new \Arasya\Operations\Integration\SourceAccess\SourceAccessClient($transport, $this->clock),
             new PdoApiRateLimiter($this->pdo, $this->clock, $this->config->appSecret),
@@ -413,6 +413,7 @@ final class Container
                 $this->config,
                 $context,
             ),
+            new \Arasya\Operations\Management\RootInterventionController($this->rootIntervention($authorization), $this->authentication, $csrf, $this->config, $context),
         );
     }
 
@@ -583,6 +584,29 @@ final class Container
     public function employeeAdmin(): EmployeeAdminService
     {
         return new EmployeeAdminService($this->employees, $this->sessions, $this->passwords, $this->usernames, $this->audit, $this->clock);
+    }
+
+    /**
+     * The root intervention desk (API 2.57.0, owner decision 2026-11-04): the principal administrator unblocks a Trend Home
+     * or Outlet Perdele order from the Dashboard through the same services Staff uses, under the root identity. Only these
+     * instances let root act on money, proformas and finance requests (rootIntervention); every Staff route keeps root out.
+     */
+    public function rootIntervention(?AuthorizationService $authorization = null): \Arasya\Operations\Management\RootInterventionService
+    {
+        return new \Arasya\Operations\Management\RootInterventionService(
+            $this->pdo,
+            $authorization ?? new AuthorizationService(),
+            $this->confirmareService($authorization),
+            $this->confirmareSourceAccess($authorization),
+            $this->confirmareInvoice($authorization, true),
+            $this->confirmareFinance($authorization, true),
+            $this->financeVerificationRequests($authorization, true),
+            new IamAuditLogger($this->pdo),
+            $this->clock,
+            $this->confirmareOperations($authorization, true),
+            $this->confirmareSourceEdits($authorization),
+            new \Arasya\Operations\Confirmare\InvoiceEfactura($this->pdo, $this->clock, new \Arasya\Operations\Confirmare\InvoiceScopePolicy($this->pdo, true)),
+        );
     }
 
     /** The official IAM service for server-side CLI tools (they act as the root identity). */

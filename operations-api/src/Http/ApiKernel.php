@@ -46,6 +46,7 @@ final readonly class ApiKernel
         private ?\Arasya\Operations\Trendyol\TrendyolWorkspaceController $trendyol = null,
         private ?\Arasya\Operations\Production\PieceController $pieces = null,
         private ?\Arasya\Operations\Confirmare\ConfirmareController $confirmare = null,
+        private ?\Arasya\Operations\Management\RootInterventionController $interventions = null,
     ) {
     }
 
@@ -128,6 +129,9 @@ final readonly class ApiKernel
         }
         if (str_starts_with($request->path, '/production-exceptions/')) {
             return $this->qualityController()->handle($request);
+        }
+        if ($request->path === '/management/interventions' || str_starts_with($request->path, '/management/interventions/')) {
+            return ($this->interventions ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'The intervention desk is not ready.'))->handle($request);
         }
         if (str_starts_with($request->path, '/management/')) {
             return ($this->management ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Management API is not ready.'))->handle($request);

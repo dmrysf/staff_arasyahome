@@ -1174,7 +1174,11 @@ final readonly class ConfirmareInvoice
      */
     private function operatorRole(EmployeeIdentity $actor, array $row, bool $lock = false): ?string
     {
-        // Root administers identities; it never holds a fiscal or Confirmare duty (its unlimited scopes do not count here).
+        // Root administers identities; it never holds a fiscal or Confirmare duty (its unlimited scopes do not count here),
+        // except through the root intervention desk (API 2.57.0), where it acts as the source's invoice manager.
+        if ($this->invoices->rootActs($actor)) {
+            return self::ROLE_MANAGER;
+        }
         if ($actor->isRoot || !$actor->isOperationallyActive() || $actor->mustChangePassword || !$actor->hasApplication('staff')) {
             return null;
         }
@@ -1276,6 +1280,11 @@ final readonly class ConfirmareInvoice
             if ($action === 'delete' && $answer['status'] === 200 && $answered['result'] === 'deleted') {
                 // API 2.54.0: a deleted invoice has no e-Factura to follow any more.
                 $this->efactura?->onInvoiceDeleted((string) $row['order_uuid'], $actor->employeeUuid);
+            }
+            $document = $answered['summary']['proforma']['document'] ?? null;
+            if ($action === 'proforma_issue' && $answer['status'] === 200 && $answered['result'] === 'issued' && is_array($document) && is_string($document['number'] ?? null) && $document['number'] !== '') {
+                // API 2.57.0: the order's open advance request follows the new proforma.
+                FinanceVerificationRequests::onProformaReplaced($this->pdo, (string) $row['order_uuid'], $document['series'] ?? null, $document['number'], $actor->employeeUuid, 'proforma-' . $actionUuid, $this->now());
             }
             if ($action === 'proforma_send_mail' && $answer['status'] === 200 && $answered['result'] === 'sent') {
                 // API 2.46.0: the proforma reached the customer, so its timer starts (reminders, 120 h expiry).
