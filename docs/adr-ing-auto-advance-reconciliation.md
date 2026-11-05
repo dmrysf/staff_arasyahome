@@ -158,12 +158,15 @@ missing; 200+150: 350 once; 1200: exception, 200 excess.
    latency, price) or ING corporate API, or an approved MT940 export routine.
 2. MT940 adapter unverified on a real ING Romania export (field 61 bank reference present and unique? field 86 holds the
    payer's remittance text?).
-3. Live configuration not inventoried in this session: whether each shop's `yd_arasya_proforma_bank` (the IBAN the
-   proforma PRINTS, set by `wp yd-arasya invoice proforma-bank`) already names ING. SmartBill's displayed bank does not
-   change it. Read-only check: `wp yd-arasya invoice status` (masked IBAN, BIC, prefix) on both shops.
+3. ~~Live configuration~~ checked read-only 2026-11-05 09:37Z (`wp yd-arasya invoice status`, masked): both shops'
+   proforma bank details name the SAME ING account (BIC `INGBROBU`, IBAN `RO**…2089`), proforma series `ARS`, SmartBill
+   company `RO42340172__subsidiary_1`, final series `SMART`; YD SOFT 2.26.0 on both; API 2.57.0 live. One ING statement
+   therefore carries both shops' credits: each shop's matcher considers only its own prefix and marks the other shop's
+   `foreign_shop`. When the shops switched from Libra to ING is not recorded in the setting; the cutover must be a
+   future instant anyway, and proformas issued before 2.27.0 carry no account hash.
 4. Payment reference is per order, not per proforma revision: a replaced proforma keeps the reference; the matcher
    therefore refuses replaced proformas (`proforma_replaced`) instead of guessing which document a transfer paid.
-5. Prefix uniqueness across shops must be confirmed live (TH vs OP).
+5. ~~Prefix uniqueness~~ confirmed live: Trend Home `TH`, Outlet Perdele `OP`.
 6. No persistent bank inbox yet (Phase 1: encrypted, restricted, retention defined, unique (account, transaction id)).
 7. The apply path (machine-verified settlement policy, `verified_by_kind = bank_automation`, commit-time re-check under
    lock, kill switch, reconciliation of unknown outcomes) is not written; it needs separate owner approval.
@@ -172,7 +175,7 @@ missing; 200+150: 350 once; 1200: exception, 200 excess.
 
 - **Phase 0 shadow code: GO for review** (draft PRs; tests below). Merging is still a separate owner decision; merging
   yd-soft master triggers its automatic release.
-- **Phase 1 shadow on live data: NO-GO** until blocker 1 or 2 is resolved and the live inventory (3, 5) is done.
-- **Automatic application (Phase 2): NO-GO.** Requires 1–7, owner approval of the machine policy, MySQL/MariaDB +
+- **Phase 1 shadow on live data: NO-GO** until blocker 1 or 2 is resolved (the live inventory, 3 and 5, is done).
+- **Automatic application (Phase 2): NO-GO.** Requires 1, 2, 4, 6 and 7, owner approval of the machine policy, MySQL/MariaDB +
   HPOS/posts + Staff E2E on the apply path, rollback plan and a pilot. Latency caveat: an MT940 export is as fresh as the
   person exporting it; an AISP feed is typically polled (minutes to hours, provider-dependent), not real time.
