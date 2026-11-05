@@ -38,7 +38,11 @@ final class SourceOrderEdit
         'calculator_time_dependent', 'calculator_unsupported_field', 'calculator_invalid_input', 'calculator_error', 'calculator_state_unknown',
         'version_changed', 'preview_stale', 'blocked', 'order_busy', 'idempotency_conflict', 'no_change', 'invalid_request',
         'access_disabled', 'rate_limited', 'order_not_found', 'order_not_eligible',
+        // API 2.60.0 / YD SOFT 2.28.0: coupons in an edit.
+        'coupon_not_found', 'coupon_already_applied', 'coupon_not_applied', 'coupon_not_removable',
     ];
+    public const MAX_COUPON_CODE = 100;
+    private const MAX_COUPONS = 100;
 
     private function __construct()
     {
@@ -60,6 +64,9 @@ final class SourceOrderEdit
             'add_line' => ['op', 'productId', 'variationId', 'quantity', 'fields'],
             'remove_line' => ['op', 'lineId'],
             'set_shipping' => ['op', 'shippingLineId', 'method'],
+            // API 2.60.0: an active WooCommerce coupon of the shop, or one an earlier Arasya edit applied (the shop decides).
+            'apply_coupon' => ['op', 'code'],
+            'remove_coupon' => ['op', 'code'],
         ];
         $seen = [];
         $out = [];
@@ -89,7 +96,13 @@ final class SourceOrderEdit
             if ($kind === 'set_shipping' && (!is_string($op['method'] ?? null) || preg_match(self::METHOD, $op['method']) !== 1)) {
                 throw new \InvalidArgumentException('operations');
             }
-            $target = isset($op['lineId']) ? 'line:' . $op['lineId'] : (isset($op['shippingLineId']) ? 'shipping:' . $op['shippingLineId'] : null);
+            if (in_array($kind, ['apply_coupon', 'remove_coupon'], true)) {
+                $code = $op['code'] ?? null;
+                if (!is_string($code) || trim($code) === '' || strlen($code) > self::MAX_COUPON_CODE || preg_match('/[\x00-\x1F\x7F]/', $code) === 1) {
+                    throw new \InvalidArgumentException('coupon');
+                }
+            }
+            $target = isset($op['lineId']) ? 'line:' . $op['lineId'] : (isset($op['shippingLineId']) ? 'shipping:' . $op['shippingLineId'] : (isset($op['code']) ? 'coupon:' . mb_strtolower(trim((string) $op['code'])) : null));
             if ($target !== null) {
                 if (isset($seen[$target])) {
                     throw new \InvalidArgumentException('operations');
@@ -111,7 +124,7 @@ final class SourceOrderEdit
     public static function auditCodes(array $operations): array
     {
         return array_map(static function (array $op): array {
-            $code = array_intersect_key($op, ['op' => true, 'lineId' => true, 'productId' => true, 'variationId' => true, 'quantity' => true, 'shippingLineId' => true, 'method' => true]);
+            $code = array_intersect_key($op, ['op' => true, 'lineId' => true, 'productId' => true, 'variationId' => true, 'quantity' => true, 'shippingLineId' => true, 'method' => true, 'code' => true]);
             if (isset($op['fields'])) {
                 $code['fields'] = array_keys($op['fields']);
             }
@@ -147,7 +160,44 @@ final class SourceOrderEdit
                 'method' => self::pattern($option['method'] ?? null, self::METHOD),
                 'title' => self::text($option['title'] ?? null, 200, true),
             ]),
+            // YD SOFT 2.28.0; an older shop sends none (null: Staff offers no coupon).
+            'coupons' => ($data['coupons'] ?? null) === null ? null : self::couponCatalog($data['coupons']),
         ];
+    }
+
+    /** @return array{applied: list<array<string, mixed>>, available: list<array<string, mixed>>, more: bool} */
+    private static function couponCatalog(mixed $value): array
+    {
+        $coupons = self::map($value);
+        return [
+            'applied' => self::list($coupons['applied'] ?? null, self::MAX_SMALL, static fn (array $coupon): array => [
+                'code' => self::text($coupon['code'] ?? null, self::MAX_COUPON_CODE),
+                'removable' => self::bool($coupon['removable'] ?? null),
+            ]),
+            'available' => self::list($coupons['available'] ?? null, self::MAX_COUPONS, static fn (array $coupon): array => [
+                'code' => self::text($coupon['code'] ?? null, self::MAX_COUPON_CODE),
+                'type' => self::choice($coupon['type'] ?? null, ['percent', 'fixed_cart', 'fixed_product', 'other']),
+                'amount' => self::money($coupon['amount'] ?? null),
+                'freeShipping' => self::bool($coupon['freeShipping'] ?? null),
+                'minimumAmount' => ($coupon['minimumAmount'] ?? null) === null ? null : self::money($coupon['minimumAmount']),
+                'expiresAt' => ($coupon['expiresAt'] ?? null) === null ? null : self::instant($coupon['expiresAt']),
+                'individualUse' => self::bool($coupon['individualUse'] ?? null),
+                'personal' => self::bool($coupon['personal'] ?? null),
+                'description' => self::text($coupon['description'] ?? null, 200, true),
+            ]),
+            'more' => self::bool($coupons['more'] ?? null),
+        ];
+    }
+
+    /** @return list<array{code: string, discount: string, discountTax: string, added: bool}> */
+    private static function couponLines(mixed $value): array
+    {
+        return self::list($value, self::MAX_SMALL, static fn (array $coupon): array => [
+            'code' => self::text($coupon['code'] ?? null, self::MAX_COUPON_CODE),
+            'discount' => self::money($coupon['discount'] ?? null),
+            'discountTax' => self::money($coupon['discountTax'] ?? null),
+            'added' => self::bool($coupon['added'] ?? null),
+        ]);
     }
 
     /** @param array<string, mixed> $data @return array<string, mixed> */
@@ -210,6 +260,11 @@ final class SourceOrderEdit
                 'before' => self::money($line['before'] ?? null),
                 'after' => self::money($line['after'] ?? null),
             ]),
+            // YD SOFT 2.28.0: the order's coupons before and after (an older shop sends none).
+            'coupons' => ($data['coupons'] ?? null) === null ? null : [
+                'before' => self::couponLines(self::map($data['coupons'])['before'] ?? null),
+                'after' => self::couponLines(self::map($data['coupons'])['after'] ?? null),
+            ],
             'financial' => [
                 'delta' => self::money($financial['delta'] ?? null),
                 'impact' => self::choice($financial['impact'] ?? null, self::IMPACTS),
@@ -333,6 +388,13 @@ final class SourceOrderEdit
             }
             if (isset($blocker['coupon'])) {
                 $out['coupon'] = self::text($blocker['coupon'], 100);
+            }
+            // WooCommerce's coupon error code (WC_Coupon::E_WC_COUPON_*), so Staff can say why a coupon does not apply.
+            if (isset($blocker['wooCode'])) {
+                if (!is_int($blocker['wooCode']) || $blocker['wooCode'] < 100 || $blocker['wooCode'] > 199) {
+                    throw self::invalid();
+                }
+                $out['wooCode'] = $blocker['wooCode'];
             }
             foreach (['available', 'needed'] as $key) {
                 if (isset($blocker[$key])) {
