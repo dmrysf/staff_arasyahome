@@ -473,6 +473,23 @@ $third = checkOk($staffGet($tailor, '/orders/' . rawurlencode($th12)), 'third ar
 check($third['arrivalNumber'] === 3 && $third['reworkCycles'] === 2 && $third['repeatedErrors'] === true, 'third arrival is flagged as repeated rework');
 $history = checkOk($get($denisa, '/management/order-lookup/' . rawurlencode($th12)), 'order history for managers');
 check(array_column($history['exceptions'], 'id') === [$x1, $x2] && $history['order']['reworkCycles'] === 2, 'managers see the complete exception chain of the order');
+// API 2.59.0: the same detail carries the full timeline (who moved the order through which stage, when).
+$timeline = $history['timeline']['items'];
+$thUuid = (string) $order($th12)['order_uuid'];
+$production = array_values(array_filter($timeline, static fn (array $e): bool => $e['kind'] === 'production'));
+check(count($production) === (int) $pdo->query('SELECT COUNT(*) FROM order_activity_events WHERE order_uuid = ' . $pdo->quote($thUuid))->fetchColumn() && $history['timeline']['truncated'] === false, 'every production activity event of the order is on the timeline');
+$atList = array_column($timeline, 'at');
+$sortedAt = $atList;
+sort($sortedAt, SORT_STRING);
+check($atList === $sortedAt, 'the timeline is chronological');
+$completions = array_values(array_filter($production, static fn (array $e): bool => $e['action'] === 'stage_completed'));
+check($completions !== [] && array_filter($completions, static fn (array $e): bool => $e['fromStage'] === null || $e['toStage'] === null || ($e['actor']['displayName'] ?? '') === '') === [], 'each stage completion names the employee and both stages');
+$exceptionEvents = array_values(array_filter($timeline, static fn (array $e): bool => $e['kind'] === 'exception'));
+$exceptionRows = (int) $pdo->query('SELECT COUNT(*) FROM production_exception_events x JOIN production_exceptions p ON p.exception_uuid = x.exception_uuid WHERE p.order_uuid = ' . $pdo->quote($thUuid))->fetchColumn();
+check(count($exceptionEvents) === $exceptionRows && in_array('rereview_requested', array_column($exceptionEvents, 'action'), true) && in_array('approved', array_column($exceptionEvents, 'action'), true), 'the exception chain (report, rejection, re-review, approval) is on the timeline: ' . json_encode(array_column($exceptionEvents, 'action')));
+check(count(array_unique(array_map(static fn (array $e): string => ((array) $e['detail'])['exception'], $exceptionEvents))) === 2, 'exception events carry the exception number of both cycles');
+check(array_filter($timeline, static fn (array $e): bool => $e['kind'] === 'intake') === [], 'a shop order has no Trendyol intake events');
+check(!str_contains(json_encode($history['timeline'], JSON_THROW_ON_ERROR), 'Am verificat din nou'), 'free-text comments are never on the timeline');
 check(array_column(checkOk($get($hikmet, '/management/production-exceptions', ['view' => 'mine']), 'Hikmet history')['items'], 'id') === [$x2], 'Hikmet sees his own decision history');
 // The normal forward flow continues unchanged after the exceptions.
 $step($tailor, $th12, 'transition', 'forward');
