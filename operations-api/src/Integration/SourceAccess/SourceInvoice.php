@@ -90,7 +90,8 @@ final class SourceInvoice
     /** YD SOFT 2.23.0 group: an older shop does not send it (`not_supported`). */
     private const PROFORMA_DIFFERENCE_GROUPS = ['advanceDifference'];
     private const PROFORMA_HISTORY = ['proforma_issue', 'superseded', 'proforma_mail', 'check', 'proforma_resolve_document', 'proforma_resolve_mail', 'proforma_cancel', 'proforma_resolve_cancel', 'proforma_remind'];
-    private const CHANGE_KINDS = ['added', 'removed', 'changed', 'shipping'];
+    /** API 2.60.0: YD SOFT 2.28.0 records the coupons an edit applied or removed. */
+    private const CHANGE_KINDS = ['added', 'removed', 'changed', 'shipping', 'coupon_added', 'coupon_removed'];
 
     private function __construct()
     {

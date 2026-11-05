@@ -72,7 +72,7 @@ export type MoneyPosition = {
 export type InvoiceDeadline = { state: "none" | "open" | "invoiced"; firstCollection: string | null; deadline: string | null; daysLeft: number | null; level: "none" | "notice" | "warning" | "critical" | "overdue" | null };
 /** `corrected` (YD SOFT 2.23.0): the AWB amount compared is an employee's statement of a correction in the FAN Courier panel. */
 export type CodCheck = { state: "none" | "match" | "mismatch" | "delivered" | "unknown"; awb: string | null; awbCod: string | null; expected: string | null; status: string | null; corrected: boolean };
-export type TotalAcceptance = { state: "accepted" | "required"; at: string | null; by: string | null; previousTotal: string | null; total: string | null; changes: { kind: "added" | "removed" | "changed" | "shipping"; name: string }[]; note: string | null;
+export type TotalAcceptance = { state: "accepted" | "required"; at: string | null; by: string | null; previousTotal: string | null; total: string | null; changes: { kind: "added" | "removed" | "changed" | "shipping" | "coupon_added" | "coupon_removed"; name: string }[]; note: string | null;
   /** Owner business rule 2026-10-25: verified money is above zero but below the new standard advance, so accepting this
    *  total needs the operator's explicit advance decision; null when accepted or unknown. */
   advanceDecisionRequired: boolean | null };

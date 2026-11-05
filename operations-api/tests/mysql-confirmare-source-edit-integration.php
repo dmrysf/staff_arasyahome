@@ -204,6 +204,10 @@ foreach ([
     [['op' => 'remove_line', 'lineId' => '1'], ['op' => 'update_line', 'lineId' => '1']],
     [['op' => 'add_line', 'productId' => '601']],
     [['op' => 'set_shipping', 'shippingLineId' => '9', 'method' => 'https://evil']],
+    // API 2.60.0: a coupon is named by its code only; the shop validates and prices it.
+    [['op' => 'apply_coupon', 'code' => 'toamna20', 'amount' => '20.00']],
+    [['op' => 'apply_coupon', 'code' => '']],
+    [['op' => 'apply_coupon', 'code' => 'toamna20'], ['op' => 'apply_coupon', 'code' => 'TOAMNA20']],
     [],
 ] as $i => $bad) {
     $error($post($opA, $th(1), 'preview', ['expectedVersion' => $version($id(1)), 'operations' => $bad]), 422, 'CONFIRMARE_EDIT_INVALID', "invalid operation set {$i} (no price override, ids, quantity 1..100, string values, one change per line)");
@@ -212,6 +216,10 @@ $error($post($opA, $th(1), 'preview', ['expectedVersion' => 'v1', 'operations' =
 $check(count($shop->requests) === $requestsBefore, 'invalid edits never reach the shop');
 $details = $refused($post($opA, $th(1), 'preview', ['expectedVersion' => 'sha256:' . str_repeat('0', 64), 'operations' => $ops(1, '3.5')]), 'version_changed', 'a preview on an old order version');
 $check($details['version'] === $version($id(1)), 'the refusal names the current shop version');
+$couponOps = [['op' => 'apply_coupon', 'code' => 'toamna20']];
+$couponPreview = $ok($post($opA, $th(1), 'preview', ['expectedVersion' => $version($id(1)), 'operations' => $couponOps]), 'coupon preview')['preview'];
+$forwarded = end($shop->requests);
+$check(is_string($couponPreview['previewToken']) && $couponPreview['coupons'] === null && ($forwarded['body']['operations'] ?? null) === $couponOps, 'API 2.60.0: a coupon operation reaches the shop exactly as sent (a shop without coupon answers shows none)');
 $preview = $ok($post($opA, $th(1), 'preview', ['expectedVersion' => $version($id(1)), 'operations' => $ops(1, '3.5')]), 'preview')['preview'];
 $check($preview['before']['total'] === '719.00' && $preview['after']['total'] === '754.00' && $preview['lines'][0]['state'] === 'changed' && $preview['financial']['impact'] === 'additional_payment_due'
     && preg_match('/^[0-9a-f]{64}$/', $preview['previewToken']) === 1, 'the preview: totals before and after, the changed line, the money impact and a token');

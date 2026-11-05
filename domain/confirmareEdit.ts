@@ -15,9 +15,17 @@ export type EditCatalogLine = {
   id: string; productId: string; variationId: string; name: string; quantity: number;
   calculator: { fields: EditField[] } | null; variations: EditVariation[]; editable: boolean; reason: string | null;
 };
+/** Staff 2.45.0 / YD SOFT 2.28.0: an active WooCommerce coupon of the shop the order could use (the shop validates it). */
+export type EditCouponOffer = {
+  code: string; type: "percent" | "fixed_cart" | "fixed_product" | "other"; amount: string; freeShipping: boolean; minimumAmount: string | null;
+  expiresAt: string | null; individualUse: boolean; personal: boolean; description: string;
+};
+export type EditCouponCatalog = { applied: { code: string; removable: boolean }[]; available: EditCouponOffer[]; more: boolean };
 export type EditCatalog = {
   version: string; editable: boolean; reason: string | null; lines: EditCatalogLine[];
   shipping: { id: string; method: string; title: string }[]; shippingOptions: { method: string; title: string }[];
+  /** Null from a shop older than YD SOFT 2.28.0 (no coupon can be applied there). */
+  coupons?: EditCouponCatalog | null;
 };
 export type EditProduct = {
   id: string; name: string; sku: string; type: "simple" | "variable"; purchasable: boolean; inStock: boolean; stock: number | null;
@@ -27,16 +35,20 @@ export type EditOperation =
   | { op: "update_line"; lineId: string; quantity?: number; variationId?: string; fields?: Record<string, string> }
   | { op: "add_line"; productId: string; variationId?: string; quantity: number; fields?: Record<string, string> }
   | { op: "remove_line"; lineId: string }
-  | { op: "set_shipping"; shippingLineId: string; method: string };
+  | { op: "set_shipping"; shippingLineId: string; method: string }
+  | { op: "apply_coupon"; code: string }
+  | { op: "remove_coupon"; code: string };
 export type EditTotals = { subtotal: string; subtotalTax: string; discount: string; discountTax: string; shipping: string; shippingTax: string; fees: string; tax: string; total: string };
 export type EditLineSnapshot = { name: string; productId: string; variationId: string; quantity: number; fields: Record<string, string> | null; subtotal: string; total: string; tax: string };
 export type EditLineDiff = { lineId: string; state: "added" | "removed" | "changed" | "unchanged"; before: EditLineSnapshot | null; after: EditLineSnapshot | null };
-export type EditBlocker = { code: string; productId?: string; method?: string; coupon?: string; available?: number; needed?: number };
+export type EditBlocker = { code: string; productId?: string; method?: string; coupon?: string; wooCode?: number; available?: number; needed?: number };
+export type EditCouponLine = { code: string; discount: string; discountTax: string; added: boolean };
 export const EDIT_IMPACTS = ["none", "additional_payment_due", "refund_due", "advance_due"] as const;
 export type EditImpact = typeof EDIT_IMPACTS[number];
 export type EditResult = {
   version: string; applicable: boolean; blockers: EditBlocker[]; before: EditTotals; after: EditTotals; lines: EditLineDiff[];
   shipping: { id: string; method: string; before: string; after: string }[]; financial: { delta: string; impact: EditImpact; cod: boolean };
+  coupons?: { before: EditCouponLine[]; after: EditCouponLine[] } | null;
 };
 export type EditPreview = EditResult & { previewToken: string };
 export type EditApplied = EditResult & { modifiedAt: string; financialState: { state: string; basis: string | null; attention: "additional_payment_due" | "refund_due" | null } };
@@ -57,9 +69,24 @@ export interface ConfirmareEditApi {
 /** What the operator changed (only differences from the shop's catalog become operations). */
 export type LineDraft = { quantity?: number; variationId?: string; fields?: Record<string, string>; remove?: boolean };
 export type AddedDraft = { key: string; product: EditProduct; variationId: string | null; quantity: number; fields: Record<string, string> };
-export type EditDraft = { lines: Record<string, LineDraft>; added: AddedDraft[]; shipping: Record<string, string> };
+export type EditDraft = { lines: Record<string, LineDraft>; added: AddedDraft[]; shipping: Record<string, string>; coupons?: { apply: string[]; remove: string[] } };
 
-export const emptyEditDraft = (): EditDraft => ({ lines: {}, added: [], shipping: {} });
+export const emptyEditDraft = (): EditDraft => ({ lines: {}, added: [], shipping: {}, coupons: { apply: [], remove: [] } });
+export const MAX_COUPON_CODE = 100;
+
+/** The same coupon code the shop compares (WooCommerce codes are case-insensitive). */
+export const sameCoupon = (a: string, b: string) => a.trim().toLocaleLowerCase("en") === b.trim().toLocaleLowerCase("en");
+
+/** A typed or chosen coupon added to the draft: refused when empty, too long, already applied or already chosen. */
+export function addDraftCoupon(catalog: EditCatalog, draft: EditDraft, raw: string): EditDraft | null {
+  const code = raw.trim();
+  const coupons = draft.coupons ?? { apply: [], remove: [] };
+  if (code === "" || code.length > MAX_COUPON_CODE || [...code].some((char) => char.charCodeAt(0) < 0x20 || char.charCodeAt(0) === 0x7f)) return null;
+  const applied = catalog.coupons?.applied ?? [];
+  if (applied.some((coupon) => sameCoupon(coupon.code, code) && !coupons.remove.some((removed) => sameCoupon(removed, coupon.code)))) return null;
+  if (coupons.apply.some((chosen) => sameCoupon(chosen, code))) return null;
+  return { ...draft, coupons: { apply: [...coupons.apply, code], remove: coupons.remove.filter((removed) => !sameCoupon(removed, code)) } };
+}
 export const MAX_EDIT_QUANTITY = 100;
 
 /** The operations for the shop: one per changed line, an added product, a changed shipping method. */
@@ -93,6 +120,9 @@ export function editOperations(catalog: EditCatalog, draft: EditDraft): EditOper
     const method = draft.shipping[line.id];
     if (method !== undefined && method !== line.method) ops.push({ op: "set_shipping", shippingLineId: line.id, method });
   }
+  // Staff 2.45.0: removed coupons first, then the applied ones (the shop processes them in that order anyway).
+  for (const code of draft.coupons?.remove ?? []) ops.push({ op: "remove_coupon", code });
+  for (const code of draft.coupons?.apply ?? []) ops.push({ op: "apply_coupon", code });
   return ops;
 }
 
@@ -148,6 +178,7 @@ const REFUSAL_REASONS = [
   "field_not_editable", "calculator_unavailable", "calculator_version_unsupported", "calculator_time_dependent", "calculator_unsupported_field",
   "calculator_invalid_input", "calculator_error", "calculator_state_unknown", "version_changed", "preview_stale", "blocked", "order_busy",
   "idempotency_conflict", "no_change", "not_received", "access_disabled", "rate_limited", "order_not_found", "order_not_eligible", "product_unavailable", "out_of_stock",
+  "coupon_not_found", "coupon_already_applied", "coupon_not_applied", "coupon_not_removable",
 ] as const;
 
 /** Why the shop refused (or cannot be asked), in the operator's words; an unknown reason reads as a generic refusal. */
@@ -155,12 +186,20 @@ export function editReasonLabel(reason: string | null): string {
   return t(`cf.edit.reason.${reason !== null && (REFUSAL_REASONS as readonly string[]).includes(reason) ? reason : "other"}` as MessageKey);
 }
 
-const BLOCKERS = ["out_of_stock", "product_unavailable", "coupon_conditions", "shipping_method_unsupported", "shipping_rate_unavailable", "free_shipping_threshold_lost", "free_shipping_threshold_reached", "free_shipping_unverifiable", "shipping_line_not_found"] as const;
+const BLOCKERS = ["out_of_stock", "product_unavailable", "coupon_conditions", "coupon_invalid", "coupon_individual_use", "shipping_method_unsupported", "shipping_rate_unavailable", "free_shipping_threshold_lost", "free_shipping_threshold_reached", "free_shipping_unverifiable", "shipping_line_not_found"] as const;
+
+/** WooCommerce's coupon error codes (WC_Coupon::E_WC_COUPON_*) Staff explains; any other reads as "not valid". */
+const WOO_COUPON_REASONS: Record<number, string> = { 102: "not_yours", 105: "not_exist", 106: "usage_limit", 107: "expired", 108: "min_spend", 109: "not_applicable", 110: "sale_items", 112: "max_spend", 113: "excluded_products", 114: "excluded_categories", 115: "usage_limit", 116: "usage_limit" };
+
+export function couponReason(wooCode: number | undefined): string {
+  return t(`cf.edit.couponWhy.${(wooCode !== undefined && WOO_COUPON_REASONS[wooCode]) || "other"}` as MessageKey);
+}
 
 export function blockerLabel(blocker: EditBlocker): string {
   const known = (BLOCKERS as readonly string[]).includes(blocker.code);
   return t(`cf.edit.blocker.${known ? blocker.code : "other"}` as MessageKey, {
     coupon: blocker.coupon ?? "", available: blocker.available ?? 0, needed: blocker.needed ?? 0, method: blocker.method ?? "", code: blocker.code,
+    why: couponReason(blocker.wooCode),
   });
 }
 
