@@ -22,7 +22,8 @@ use PDO;
  * wildcards, paging and empty queries return nothing. Lookups are rate limited per identity.
  *
  * The detail contains operational data only (source, number, stage, lines and meters, current owner,
- * production exception history). Operational orders carry no customer personal data.
+ * production exception history, and the full event timeline: who moved the order through which stage and when, see
+ * OrderTimeline). Operational orders carry no customer personal data.
  */
 final readonly class OrderLookupService
 {
@@ -130,6 +131,7 @@ final readonly class OrderLookupService
                 ], $items->fetchAll(PDO::FETCH_ASSOC)),
             ],
             'exceptions' => $this->exceptions->orderHistory((string) $row['order_uuid']),
+            'timeline' => (new OrderTimeline($this->pdo))->of((string) $row['order_uuid'], (string) $row['global_order_id'], (string) $row['source_key']),
         ];
     }
 
