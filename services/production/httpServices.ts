@@ -16,7 +16,7 @@ import { createProductionWorkflowService } from "./workflowService";
 import type { ShopLine, ShopLineImage, ShopOrderDetail, ShopPerson, ShopRead } from "../../domain/confirmareShop";
 import { CASH_RECEIPTS, EXCEPTION_REASONS, EXCEPTION_RESOLUTIONS, FINANCE_ACTIONS, PAYMENT_METHODS, FINANCE_NEXT, FINANCE_TASKS, type ExceptionOutcome, type FinanceEntry, type FinanceOutcome, type FinanceQueue, type FinanceQueueItem, type FinanceRead, type FinanceSummary, type FinanceTask, type FinanceTimelineItem, type TransferException, type TransferExceptionList } from "../../domain/confirmareFinance";
 import { CANCEL_REASONS, INVOICE_ACTIONS, INVOICE_ROLES, PAYMENT_STATES, PROFORMA_ACTIONS, PROFORMA_KEYS, PROFORMA_ROUTE, type CodCheck, type ShippingCheck, type InvoiceDeadline, type MoneyPosition, type TotalAcceptance, type InvoiceActionKey, type InvoiceOutcome, type InvoicePaymentRead, type InvoiceRead, type InvoiceSummary, type InvoiceView, type ProformaActionKey, type ProformaSummary, type ShopAssignment, type ShopQueueItem } from "../../domain/confirmareInvoice";
-import { EDIT_IMPACTS, type EditBlocker, type EditCatalog, type EditField, type EditLineSnapshot, type EditOutcome, type EditProduct, type EditResult, type EditTotals, type EditVariation, type OpenEdit } from "../../domain/confirmareEdit";
+import { EDIT_IMPACTS, type EditBlocker, type EditCatalog, type EditCouponCatalog, type EditCouponLine, type EditField, type EditLineSnapshot, type EditOutcome, type EditProduct, type EditResult, type EditTotals, type EditVariation, type OpenEdit } from "../../domain/confirmareEdit";
 import { mapAwbQueue, mapBankCheck, mapBankChecks, mapContactCycle, mapCycleAttention, mapEfacturaQueue, mapEfacturaTask, mapHealth, mapOperationOutcome, mapOperationsState, mapOrderCycle, mapProformaCycle } from "../../domain/confirmareOps";
 import { CLEARANCE_CONDITIONS, CONTACT_OUTCOMES, DOCUMENT_STATES, FINANCIAL_ATTENTION, HANDOFF_BLOCKERS, HANDOFF_STATES, type ConfirmareAlert, type ConfirmareApi, type ConfirmareAvailability, type ConfirmareContact, type ConfirmareCustomer, type ConfirmareDetail, type ConfirmareEvent, type ConfirmareHandoff, type ConfirmareItem, type HandoffItem, type ConfirmareLine, type ConfirmareOperator, type ConfirmarePool, type ConfirmareTeam, type FinancialState } from "../../domain/confirmare";
 
@@ -1466,8 +1466,28 @@ export function mapEditCatalog(value: unknown): EditCatalog {
     }),
     shipping: listOf(raw.shipping, 20, (entry) => { const line = objectValue(entry); return { id: editId(line.id), method: textValue(line.method, 60), title: textValue(line.title, 200) }; }),
     shippingOptions: listOf(raw.shippingOptions, 20, (entry) => { const option = objectValue(entry); return { method: textValue(option.method, 60), title: textValue(option.title, 200) }; }),
+    // Staff 2.45.0 (API 2.60.0, YD SOFT 2.28.0): the order's coupons and the shop's active coupons; null from an older shop.
+    coupons: raw.coupons == null ? null : mapEditCoupons(raw.coupons),
   };
 }
+const couponCode = (value: unknown): string => { const text = textValue(value, 100); if (text.trim() === "") throw new StaffServiceError("SERVER_ERROR"); return text; };
+function mapEditCoupons(value: unknown): EditCouponCatalog {
+  const raw = objectValue(value);
+  return {
+    applied: listOf(raw.applied, 20, (entry) => { const coupon = objectValue(entry); return { code: couponCode(coupon.code), removable: booleanValue(coupon.removable) }; }),
+    available: listOf(raw.available, 100, (entry) => {
+      const coupon = objectValue(entry);
+      return {
+        code: couponCode(coupon.code), type: oneOf(coupon.type, ["percent", "fixed_cart", "fixed_product", "other"] as const), amount: moneyValue(coupon.amount),
+        freeShipping: booleanValue(coupon.freeShipping), minimumAmount: coupon.minimumAmount == null ? null : moneyValue(coupon.minimumAmount),
+        expiresAt: coupon.expiresAt == null ? null : timestampValue(coupon.expiresAt), individualUse: booleanValue(coupon.individualUse), personal: booleanValue(coupon.personal),
+        description: textValue(coupon.description, 200),
+      };
+    }),
+    more: booleanValue(raw.more),
+  };
+}
+const editCouponLine = (value: unknown): EditCouponLine => { const raw = objectValue(value); return { code: couponCode(raw.code), discount: moneyValue(raw.discount), discountTax: moneyValue(raw.discountTax), added: booleanValue(raw.added) }; };
 export function mapEditProduct(value: unknown): EditProduct {
   const raw = objectValue(value);
   const calculator = raw.calculator == null ? null : objectValue(raw.calculator);
@@ -1483,6 +1503,7 @@ function mapEditBlocker(value: unknown): EditBlocker {
     code: editCode(raw.code),
     ...(raw.productId == null ? {} : { productId: editId(raw.productId) }), ...(raw.method == null ? {} : { method: textValue(raw.method, 60) }),
     ...(raw.coupon == null ? {} : { coupon: textValue(raw.coupon, 100) }), ...(raw.available == null ? {} : { available: nonNegativeInteger(raw.available) }), ...(raw.needed == null ? {} : { needed: nonNegativeInteger(raw.needed) }),
+    ...(typeof raw.wooCode === "number" && Number.isInteger(raw.wooCode) && raw.wooCode >= 100 && raw.wooCode <= 199 ? { wooCode: raw.wooCode } : {}),
   };
 }
 const editTotals = (value: unknown): EditTotals => {
@@ -1507,6 +1528,7 @@ export function mapEditResult(value: unknown): EditResult {
     lines: listOf(raw.lines, 200, (entry) => { const line = objectValue(entry); return { lineId: textValue(line.lineId, 30), state: oneOf(line.state, ["added", "removed", "changed", "unchanged"] as const), before: editSnapshot(line.before), after: editSnapshot(line.after) }; }),
     shipping: listOf(raw.shipping, 20, (entry) => { const line = objectValue(entry); return { id: editId(line.id), method: textValue(line.method, 60), before: moneyValue(line.before), after: moneyValue(line.after) }; }),
     financial: { delta: moneyValue(financial.delta), impact: oneOf(financial.impact, EDIT_IMPACTS), cod: booleanValue(financial.cod) },
+    coupons: raw.coupons == null ? null : (() => { const coupons = objectValue(raw.coupons); return { before: listOf(coupons.before, 20, editCouponLine), after: listOf(coupons.after, 20, editCouponLine) }; })(),
   };
 }
 export function mapEditOutcome(value: unknown): EditOutcome {
@@ -1822,7 +1844,7 @@ function mapTotalAcceptance(value: unknown): TotalAcceptance {
   return {
     state: oneOf(raw.state, ["accepted", "required"] as const), at: invoiceInstant(raw.at), by: invoiceUuid(raw.by),
     previousTotal: raw.previousTotal == null ? null : moneyText(raw.previousTotal), total: raw.total == null ? null : moneyText(raw.total),
-    changes: listOf(raw.changes, 40, (entry) => { const c = objectValue(entry); return { kind: oneOf(c.kind, ["added", "removed", "changed", "shipping"] as const), name: c.name === "" ? "" : textValue(c.name, 120) }; }),
+    changes: listOf(raw.changes, 40, (entry) => { const c = objectValue(entry); return { kind: oneOf(c.kind, ["added", "removed", "changed", "shipping", "coupon_added", "coupon_removed"] as const), name: c.name === "" ? "" : textValue(c.name, 120) }; }),
     note: invoiceText(raw.note, 300),
     advanceDecisionRequired: raw.advanceDecisionRequired == null ? null : booleanValue(raw.advanceDecisionRequired),
   };

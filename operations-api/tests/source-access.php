@@ -243,6 +243,46 @@ $check($catalog['lines'][0]['calculator']['fields'][1]['options'][1]['value'] ==
 $preview = $editClient->call($targetFor(), SourceAccessClient::ROUTE_PREVIEW, $base + ['expectedVersion' => 'sha256:' . hash('sha256', 'version-123'), 'operations' => $good]);
 $valid = SourceOrderEdit::result($preview, false);
 $check($valid['after']['total'] === '754.00' && $valid['previewToken'] === $preview['previewToken'], 'a preview validates');
+// API 2.60.0 / YD SOFT 2.28.0: the shop's own WooCommerce coupons in an edit (the shop validates and prices them).
+$coupons = [['op' => 'remove_coupon', 'code' => 'ARASYA5'], ['op' => 'apply_coupon', 'code' => 'Toamna 20']];
+$check(SourceOrderEdit::operations($coupons) === $coupons && SourceOrderEdit::operations(array_merge($good, $coupons)) === array_merge($good, $coupons), 'apply_coupon and remove_coupon are accepted as sent, also next to line changes');
+$check(SourceOrderEdit::auditCodes($coupons) === $coupons, 'the audit keeps the coupon code (no amount)');
+$invalidOps([['op' => 'apply_coupon']], 'a coupon operation names its code');
+$invalidOps([['op' => 'apply_coupon', 'code' => '  ']], 'an empty coupon code');
+$invalidOps([['op' => 'apply_coupon', 'code' => "x\ny"]], 'a coupon code with a control character');
+$invalidOps([['op' => 'apply_coupon', 'code' => str_repeat('a', 101)]], 'a coupon code longer than 100');
+$invalidOps([['op' => 'apply_coupon', 'code' => 12]], 'a coupon code that is not a string');
+$invalidOps([['op' => 'apply_coupon', 'code' => 'Toamna20', 'amount' => '20.00']], 'no coupon amount can be sent (the shop prices it)');
+$invalidOps([['op' => 'apply_coupon', 'code' => 'toamna20'], ['op' => 'remove_coupon', 'code' => 'TOAMNA20']], 'one operation per coupon (codes compared like WooCommerce, case-insensitive)');
+$couponCatalog = ['applied' => [['code' => 'setest10', 'removable' => false]], 'available' => [
+    ['code' => 'toamna20', 'type' => 'fixed_cart', 'amount' => '20.00', 'freeShipping' => false, 'minimumAmount' => '200.00', 'expiresAt' => '2026-11-30T21:59:59Z', 'individualUse' => false, 'personal' => false, 'description' => ''],
+    ['code' => 'vip10', 'type' => 'percent', 'amount' => '10.00', 'freeShipping' => true, 'minimumAmount' => null, 'expiresAt' => null, 'individualUse' => true, 'personal' => true, 'description' => 'Client VIP'],
+], 'more' => false];
+$rawCatalog = $editClient->call($targetFor(), SourceAccessClient::ROUTE_CATALOG, $base);
+$check(SourceOrderEdit::catalog($rawCatalog)['coupons'] === null, 'a shop older than YD SOFT 2.28.0 sends no coupons: none are offered');
+$check(SourceOrderEdit::catalog($rawCatalog + ['coupons' => $couponCatalog])['coupons'] === $couponCatalog, 'the coupon catalog validates as sent');
+foreach ([
+    'an unknown discount type' => static function (array &$c): void { $c['available'][0]['type'] = 'free_money'; },
+    'an amount that is not money' => static function (array &$c): void { $c['available'][0]['amount'] = 20; },
+    'a malformed expiry' => static function (array &$c): void { $c['available'][0]['expiresAt'] = 'tomorrow'; },
+    'an empty code' => static function (array &$c): void { $c['applied'][0]['code'] = ''; },
+    'removable as text' => static function (array &$c): void { $c['applied'][0]['removable'] = 'yes'; },
+    'more than 100 offers' => static function (array &$c): void { $c['available'] = array_fill(0, 101, $c['available'][0]); },
+] as $label => $change) {
+    $copy = $couponCatalog;
+    $change($copy);
+    $throws(static fn () => SourceOrderEdit::catalog($rawCatalog + ['coupons' => $copy]), 'SOURCE_RESPONSE_INVALID', "a coupon catalog with {$label} is rejected whole");
+}
+$rawPreview = $editClient->call($targetFor(), SourceAccessClient::ROUTE_PREVIEW, $base + ['expectedVersion' => 'sha256:' . hash('sha256', 'version-123'), 'operations' => $good]);
+$couponLines = ['before' => [['code' => 'setest10', 'discount' => '70.00', 'discountTax' => '12.15', 'added' => false]], 'after' => [['code' => 'setest10', 'discount' => '70.00', 'discountTax' => '12.15', 'added' => false], ['code' => 'toamna20', 'discount' => '16.53', 'discountTax' => '3.47', 'added' => true]]];
+$check(SourceOrderEdit::result($rawPreview, false)['coupons'] === null && SourceOrderEdit::result($rawPreview + ['coupons' => $couponLines], false)['coupons'] === $couponLines, 'the preview\'s coupons before and after validate (absent from an older shop)');
+$throws(static fn () => SourceOrderEdit::result($rawPreview + ['coupons' => ['before' => [], 'after' => [['code' => 'x', 'discount' => '1', 'discountTax' => '0.00', 'added' => true]]]], false), 'SOURCE_RESPONSE_INVALID', 'a coupon discount that is not money is rejected whole');
+$blocked = array_replace($rawPreview, ['applicable' => false, 'blockers' => [['code' => 'coupon_invalid', 'coupon' => 'toamna20', 'wooCode' => 107], ['code' => 'coupon_individual_use', 'coupon' => 'vip10']]]);
+$check(SourceOrderEdit::result($blocked, false)['blockers'] === [['code' => 'coupon_invalid', 'coupon' => 'toamna20', 'wooCode' => 107], ['code' => 'coupon_individual_use', 'coupon' => 'vip10']], 'coupon blockers carry the code and WooCommerce\'s reason');
+$throws(static fn () => SourceOrderEdit::result(array_replace($blocked, ['blockers' => [['code' => 'coupon_invalid', 'wooCode' => '107']]]), false), 'SOURCE_RESPONSE_INVALID', 'a WooCommerce reason that is not a coupon error code is rejected');
+foreach (['coupon_not_found', 'coupon_already_applied', 'coupon_not_applied', 'coupon_not_removable'] as $code) {
+    $check(SourceOrderEdit::refusal(['error' => ['code' => $code]])['code'] === $code, "the shop's refusal {$code} is relayed");
+}
 foreach ([
     'an applicable preview with blockers' => ['blockers' => [['code' => 'out_of_stock']]],
     'an amount that is not money' => ['after' => ['total' => '754'] + $preview['after']],

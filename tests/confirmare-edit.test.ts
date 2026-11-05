@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { approvalMissing, confirmareErrorKey, type ConfirmareDetail } from "../domain/confirmare";
-import { blockerLabel, draftProblems, editOperations, editReasonLabel, editRefusalOf, emptyEditDraft, normalizeFieldValue, productAddable, type EditCatalog, type EditProduct } from "../domain/confirmareEdit";
+import { addDraftCoupon, blockerLabel, couponReason, draftProblems, editOperations, editReasonLabel, editRefusalOf, emptyEditDraft, normalizeFieldValue, productAddable, type EditCatalog, type EditProduct } from "../domain/confirmareEdit";
 import { confirmareErrorDetails, mapEditCatalog, mapEditOutcome, mapEditProduct, mapEditResult } from "../services/production/httpServices";
-import { ConfirmareShopEditor } from "../features/confirmare/ConfirmareShopEditor";
+import { ConfirmareShopEditor, CouponDiff, CouponEditor } from "../features/confirmare/ConfirmareShopEditor";
 import { CATALOGS, type MessageKey } from "../i18n";
 
 // Confirmare: controlled changes of the order in its shop (Staff 2.30.0, API 2.40.0, Phase 4B).
@@ -148,4 +148,62 @@ test("every 4B message exists in all four catalogs and differs from Romanian whe
   }
   const sinhala = keys.filter((key) => !/[඀-෿]/.test(String(CATALOGS.si[key as MessageKey])));
   assert.deepEqual(sinhala, [], "every Sinhala message is written in Sinhala");
+});
+
+// ---- Staff 2.45.0 (API 2.60.0, YD SOFT 2.28.0): the shop's own WooCommerce coupons in an edit ----------------------------
+const couponCatalogRaw = {
+  applied: [{ code: "setest10", removable: false }, { code: "arasya5", removable: true }],
+  available: [
+    { code: "toamna20", type: "fixed_cart", amount: "20.00", freeShipping: false, minimumAmount: "200.00", expiresAt: "2026-11-30T21:59:59Z", individualUse: false, personal: false, description: "" },
+    { code: "vip10", type: "percent", amount: "10.00", freeShipping: true, minimumAmount: null, expiresAt: null, individualUse: true, personal: true, description: "Client VIP" },
+  ],
+  more: false,
+};
+const couponCatalog: EditCatalog = mapEditCatalog({ ...catalogRaw, coupons: couponCatalogRaw });
+
+test("coupons: the shop's active coupons become apply/remove operations, never an amount", () => {
+  assert.equal(catalog.coupons, null, "a shop older than YD SOFT 2.28.0 offers no coupon");
+  assert.equal(couponCatalog.coupons!.available[1]!.personal, true);
+  let draft = addDraftCoupon(couponCatalog, emptyEditDraft(), " Toamna20 ")!;
+  assert.deepEqual(draft.coupons, { apply: ["Toamna20"], remove: [] }, "the typed code is kept, trimmed");
+  assert.equal(addDraftCoupon(couponCatalog, draft, "TOAMNA20"), null, "the same coupon twice is refused (case-insensitive like WooCommerce)");
+  assert.equal(addDraftCoupon(couponCatalog, draft, "SETEST10"), null, "a coupon already on the order is refused");
+  assert.equal(addDraftCoupon(couponCatalog, draft, "   "), null, "an empty code is refused");
+  assert.equal(addDraftCoupon(couponCatalog, draft, "x".repeat(101)), null, "a code longer than 100 is refused");
+  draft = { ...draft, coupons: { apply: draft.coupons!.apply, remove: ["arasya5"] } };
+  assert.deepEqual(editOperations(couponCatalog, draft), [{ op: "remove_coupon", code: "arasya5" }, { op: "apply_coupon", code: "Toamna20" }], "removals first, then the applied coupons");
+  const reapply = addDraftCoupon(couponCatalog, draft, "ARASYA5")!;
+  assert.deepEqual(reapply.coupons, { apply: ["Toamna20", "ARASYA5"], remove: [] }, "applying a coupon chosen for removal cancels the removal");
+  assert.ok(!JSON.stringify(editOperations(couponCatalog, draft)).match(/amount|price|total/i), "no coupon operation carries an amount");
+  assert.throws(() => mapEditCatalog({ ...catalogRaw, coupons: { ...couponCatalogRaw, available: [{ ...couponCatalogRaw.available[0], type: "free_money" }] } }), "an unknown coupon type refuses the catalog");
+  assert.throws(() => mapEditCatalog({ ...catalogRaw, coupons: { ...couponCatalogRaw, applied: [{ code: "", removable: true }] } }), "an empty coupon code refuses the catalog");
+});
+
+test("coupons: the preview names the applied and removed coupons and why a coupon does not apply", () => {
+  const preview = mapEditResult({ ...resultRaw, coupons: { before: [{ code: "setest10", discount: "70.00", discountTax: "12.15", added: false }, { code: "arasya5", discount: "5.00", discountTax: "0.87", added: true }], after: [{ code: "setest10", discount: "70.00", discountTax: "12.15", added: false }, { code: "toamna20", discount: "16.53", discountTax: "3.47", added: true }] } });
+  assert.equal(preview.coupons!.after[1]!.code, "toamna20");
+  assert.equal(mapEditResult(resultRaw).coupons, null, "an older shop sends no coupons");
+  const html = renderToStaticMarkup(createElement(CouponDiff, { preview: { ...preview, previewToken: "f".repeat(64) }, money: (amount: string | null) => `${amount} lei` }));
+  assert.ok(html.includes("toamna20") && html.includes("16.53 lei") && html.includes("arasya5"), "applied (with the shop's discount) and removed coupons are listed");
+  assert.ok(!html.includes("setest10"), "an unchanged coupon is not repeated");
+  const expired = mapEditResult({ ...resultRaw, applicable: false, blockers: [{ code: "coupon_invalid", coupon: "toamna20", wooCode: 107 }, { code: "coupon_individual_use", coupon: "vip10" }] });
+  assert.equal(expired.blockers[0]!.wooCode, 107);
+  assert.notEqual(blockerLabel(expired.blockers[0]!), blockerLabel({ code: "other" }), "an invalid coupon has its own explanation");
+  assert.ok(blockerLabel(expired.blockers[0]!).includes("toamna20") && couponReason(107) !== couponReason(undefined), "the expiry reason is told apart from a generic refusal");
+  assert.equal(couponReason(116), couponReason(106), "every usage-limit code reads as the usage limit");
+  assert.ok(blockerLabel(expired.blockers[1]!).includes("vip10"));
+  for (const reason of ["coupon_not_found", "coupon_already_applied", "coupon_not_applied", "coupon_not_removable"]) assert.notEqual(editReasonLabel(reason), editReasonLabel(null), `${reason} has its own explanation`);
+});
+
+test("coupons: the editor lists the order's coupons, the shop's active ones and a code field", () => {
+  const render = (value: EditCatalog, draft = emptyEditDraft()) => renderToStaticMarkup(createElement(CouponEditor, { catalog: value, draft, money: (amount: string | null) => `${amount} lei`, onChange: () => undefined }));
+  const html = render(couponCatalog);
+  assert.ok(html.includes("cf-edit-coupons-applied") && html.includes("cf-edit-coupon-remove-arasya5") && !html.includes("cf-edit-coupon-remove-setest10"), "only a coupon an Arasya edit applied can be removed");
+  assert.ok(html.includes("cf-edit-coupon-offer") && html.includes("toamna20") && html.includes("vip10") && html.includes("cf-edit-coupon-code"), "active coupons to choose and a code to type");
+  assert.ok(html.includes("20.00 lei") && html.includes("200.00 lei"), "the offer shows its amount and minimum as the shop states them");
+  const chosen = render(couponCatalog, addDraftCoupon(couponCatalog, emptyEditDraft(), "toamna20")!);
+  assert.ok(chosen.includes("cf-edit-coupons-pending") && chosen.includes("cf-edit-coupon-drop-toamna20"), "a chosen coupon waits for the preview and can be dropped");
+  assert.ok(!chosen.includes('value="toamna20"'), "a chosen coupon is no longer offered");
+  assert.ok(render(catalog).includes("cf-edit-coupons-unsupported"), "an older shop: the operator is told coupons are not available yet");
+  assert.ok(render(mapEditCatalog({ ...catalogRaw, coupons: { applied: [], available: [], more: false } })).includes("cf-edit-coupons-none"), "no active coupon: a code can still be typed");
 });

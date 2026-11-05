@@ -3,8 +3,8 @@ import { useI18n, type MessageKey } from "../../i18n";
 import type { ConfirmareApi, ConfirmareDetail } from "../../domain/confirmare";
 import { confirmareErrorKey } from "../../domain/confirmare";
 import {
-  blockerLabel, draftProblems, editOperations, editReasonLabel, editRefusalOf, emptyEditDraft, normalizeFieldValue, productAddable, MAX_EDIT_QUANTITY,
-  type EditCatalog, type EditCatalogLine, type EditDraft, type EditField, type EditLineDiff, type EditOperation, type EditPreview, type EditProduct, type EditRefusal, type EditTotals,
+  addDraftCoupon, blockerLabel, draftProblems, editOperations, editReasonLabel, editRefusalOf, emptyEditDraft, normalizeFieldValue, productAddable, sameCoupon, MAX_COUPON_CODE, MAX_EDIT_QUANTITY,
+  type EditCatalog, type EditCatalogLine, type EditCouponOffer, type EditDraft, type EditField, type EditLineDiff, type EditOperation, type EditPreview, type EditProduct, type EditRefusal, type EditTotals,
 } from "../../domain/confirmareEdit";
 import { formatShopMoney } from "../../domain/confirmareShop";
 import { createIdempotencyKey } from "../../services/idempotency";
@@ -207,6 +207,8 @@ export function ConfirmareShopEditor({ detail, service, currency, onApplied }: {
           <p className="dashboard-footnote">{t("cf.edit.shippingHint")}</p>
         </fieldset>}
 
+        <CouponEditor catalog={catalog} draft={draft} money={money} onChange={setDraft} />
+
         {problems.includes("last_line") && <Notice tone="warning" role="alert">{t("cf.edit.reason.last_line")}</Notice>}
         <div className="cf-shop-actions">
           <button type="button" className="button button-primary" disabled={busy !== null || operations.length === 0 || problems.length > 0} onClick={() => { void runPreview(); }} data-testid="cf-edit-preview">
@@ -349,6 +351,7 @@ function PreviewView({ preview, catalog, money }: { preview: EditPreview; catalo
         {preview.lines.filter((line) => line.state !== "unchanged").map((line) => <DiffLine key={line.lineId} line={line} titles={titles} money={money} />)}
       </ul>
       {preview.shipping.filter((line) => line.before !== line.after).map((line) => <p key={line.id} className="cf-line-facts" data-testid="cf-edit-shipping-diff">{t("cf.edit.shippingChange", { before: money(line.before), after: money(line.after) })}</p>)}
+      <CouponDiff preview={preview} money={money} />
       <dl className="cf-shop-totals cf-edit-totals" data-testid="cf-edit-totals">
         {totals.map((key) => {
           // A discount reads as a deduction, like in the shop view.
@@ -387,4 +390,89 @@ function DiffLine({ line, titles, money }: { line: EditLineDiff; titles: Map<str
       <p className="cf-line-facts">{t("cf.edit.lineTotal")}: {before ? money(before.total) : "—"} → <strong>{after ? money(after.total) : "—"}</strong></p>
     </li>
   );
+}
+
+/** Staff 2.45.0: the coupons of the order, a coupon to apply (an active coupon of the shop, chosen or typed), a removal. */
+export function CouponEditor({ catalog, draft, money, onChange }: { catalog: EditCatalog; draft: EditDraft; money: (amount: string | null) => string; onChange: (draft: EditDraft) => void }) {
+  const { t } = useI18n();
+  const [code, setCode] = useState("");
+  const [invalid, setInvalid] = useState(false);
+  const coupons = catalog.coupons ?? null;
+  const chosen = draft.coupons ?? { apply: [], remove: [] };
+  if (coupons === null) {
+    return <fieldset className="cf-edit-coupons" data-testid="cf-edit-coupons"><legend>{t("cf.edit.couponTitle")}</legend><p className="dashboard-footnote" data-testid="cf-edit-coupons-unsupported">{t("cf.edit.couponUnsupported")}</p></fieldset>;
+  }
+  const add = (raw: string) => {
+    const next = addDraftCoupon(catalog, draft, raw);
+    setInvalid(next === null);
+    if (next) { onChange(next); setCode(""); }
+  };
+  const toggleRemove = (applied: string) => {
+    const removing = chosen.remove.some((entry) => sameCoupon(entry, applied));
+    onChange({ ...draft, coupons: { apply: chosen.apply, remove: removing ? chosen.remove.filter((entry) => !sameCoupon(entry, applied)) : [...chosen.remove, applied] } });
+  };
+  const offers = coupons.available.filter((offer) => !chosen.apply.some((entry) => sameCoupon(entry, offer.code)));
+  const describe = (offer: EditCouponOffer) => [
+    t(`cf.edit.couponOffer.${offer.type}` as MessageKey, { amount: offer.type === "percent" ? offer.amount.replace(/\.0+$/, "") : money(offer.amount) }),
+    offer.freeShipping ? t("cf.edit.couponFree") : null,
+    offer.minimumAmount ? t("cf.edit.couponMin", { amount: money(offer.minimumAmount) }) : null,
+    offer.expiresAt ? t("cf.edit.couponExpires", { date: offer.expiresAt.slice(0, 10) }) : null,
+    offer.individualUse ? t("cf.edit.couponIndividual") : null,
+    offer.personal ? t("cf.edit.couponPersonal") : null,
+  ].filter(Boolean).join(" · ");
+  return (
+    <fieldset className="cf-edit-coupons" data-testid="cf-edit-coupons">
+      <legend>{t("cf.edit.couponTitle")}</legend>
+      <p className="dashboard-footnote">{t("cf.edit.couponLead")}</p>
+      {coupons.applied.length > 0 && <ul className="cf-edit-lines" data-testid="cf-edit-coupons-applied">
+        {coupons.applied.map((applied) => {
+          const removing = chosen.remove.some((entry) => sameCoupon(entry, applied.code));
+          return <li key={applied.code} className={removing ? "cf-edit-line cf-edit-removed" : "cf-edit-line"}>
+            <p className="line-name"><strong className="mono">{applied.code}</strong> {!applied.removable && <span className="dashboard-footnote">{t("cf.edit.couponFromCheckout")}</span>} {removing && <StatusPill tone="danger">{t("cf.edit.couponWillRemove")}</StatusPill>}</p>
+            {applied.removable && <button type="button" className="button button-secondary" onClick={() => toggleRemove(applied.code)} data-testid={`cf-edit-coupon-remove-${applied.code}`}>{removing ? t("cf.edit.couponUndoRemove") : t("cf.edit.couponRemove")}</button>}
+          </li>;
+        })}
+      </ul>}
+      {chosen.apply.length > 0 && <ul className="cf-edit-lines" data-testid="cf-edit-coupons-pending">
+        {chosen.apply.map((entry) => <li key={entry} className="cf-edit-line">
+          <p className="line-name"><strong className="mono">{entry}</strong> <StatusPill tone="info">{t("cf.edit.couponPending")}</StatusPill></p>
+          <button type="button" className="button button-secondary" onClick={() => onChange({ ...draft, coupons: { apply: chosen.apply.filter((other) => other !== entry), remove: chosen.remove } })} data-testid={`cf-edit-coupon-drop-${entry}`}>{t("cf.edit.couponDrop")}</button>
+        </li>)}
+      </ul>}
+      {offers.length > 0
+        ? <div className="field">
+          <label htmlFor="cf-edit-coupon-offer">{t("cf.edit.couponChoose")}</label>
+          <select id="cf-edit-coupon-offer" value="" onChange={(event) => { if (event.target.value) add(event.target.value); }} data-testid="cf-edit-coupon-offer">
+            <option value="">{t("cf.edit.couponPick")}</option>
+            {offers.map((offer) => <option key={offer.code} value={offer.code}>{offer.code} — {describe(offer)}</option>)}
+          </select>
+        </div>
+        : <p className="dashboard-footnote" data-testid="cf-edit-coupons-none">{t("cf.edit.couponNone")}</p>}
+      {coupons.more && <p className="dashboard-footnote">{t("cf.edit.couponMore")}</p>}
+      <div className="cf-edit-sku">
+        <label htmlFor="cf-edit-coupon-code">{t("cf.edit.couponCode")}</label>
+        <input id="cf-edit-coupon-code" value={code} maxLength={MAX_COUPON_CODE} autoComplete="off" spellCheck={false} aria-invalid={invalid || undefined}
+          onChange={(event) => { setCode(event.target.value); setInvalid(false); }} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); add(code); } }} data-testid="cf-edit-coupon-code" />
+        <button type="button" className="button button-secondary" disabled={code.trim() === ""} onClick={() => add(code)} data-testid="cf-edit-coupon-add">{t("cf.edit.couponAdd")}</button>
+      </div>
+      {invalid && <p className="field-error" role="alert"><AppIcon name="alert" size={16} />{t("cf.edit.couponInvalidCode")}</p>}
+    </fieldset>
+  );
+}
+
+/** What the preview says about the coupons: applied (with the discount the shop computed), removed, changed. */
+export function CouponDiff({ preview, money }: { preview: EditPreview; money: (amount: string | null) => string }) {
+  const { t } = useI18n();
+  if (!preview.coupons) return null;
+  const { before, after } = preview.coupons;
+  const rows: { key: string; text: string }[] = [];
+  for (const coupon of after) {
+    const old = before.find((entry) => sameCoupon(entry.code, coupon.code));
+    if (!old) rows.push({ key: `a:${coupon.code}`, text: t("cf.edit.couponDiffAdded", { code: coupon.code, amount: money(coupon.discount) }) });
+    else if (old.discount !== coupon.discount) rows.push({ key: `c:${coupon.code}`, text: t("cf.edit.couponDiffChanged", { code: coupon.code, before: money(old.discount), after: money(coupon.discount) }) });
+  }
+  for (const coupon of before) {
+    if (!after.some((entry) => sameCoupon(entry.code, coupon.code))) rows.push({ key: `r:${coupon.code}`, text: t("cf.edit.couponDiffRemoved", { code: coupon.code }) });
+  }
+  return <>{rows.map((row) => <p key={row.key} className="cf-line-facts" data-testid="cf-edit-coupon-diff">{row.text}</p>)}</>;
 }

@@ -115,8 +115,8 @@
 .cf-edit-removed { opacity: 0.6; }
 .cf-edit-removed .line-name strong { text-decoration: line-through; }
 .cf-edit-fields { display: grid; gap: 10px; min-width: 0; }
-.cf-edit-add, .cf-edit-shipping { display: grid; gap: 8px; min-width: 0; margin: 0; padding: 12px; border: 1px solid var(--color-border); border-radius: var(--radius-md); }
-.cf-edit-add legend, .cf-edit-shipping legend { padding: 0 4px; font-weight: var(--weight-semibold); }
+.cf-edit-add, .cf-edit-shipping, .cf-edit-coupons { display: grid; gap: 8px; min-width: 0; margin: 0; padding: 12px; border: 1px solid var(--color-border); border-radius: var(--radius-md); }
+.cf-edit-add legend, .cf-edit-shipping legend, .cf-edit-coupons legend { padding: 0 4px; font-weight: var(--weight-semibold); }
 .cf-edit-sku { display: grid; gap: 6px; min-width: 0; }
 .cf-edit-sku input { min-height: 44px; padding: 0 12px; border: 1.5px solid var(--color-border); border-radius: var(--radius-md); font: inherit; }
 .cf-edit-product { display: grid; gap: 8px; min-width: 0; padding: 12px; border-radius: var(--radius-md); background: var(--color-surface-muted, var(--color-surface)); }
