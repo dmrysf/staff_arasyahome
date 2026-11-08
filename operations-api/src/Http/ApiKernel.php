@@ -105,7 +105,7 @@ final readonly class ApiKernel
 
     private function matchDynamicRoutes(Request $request): Response
     {
-        if ($request->path === '/finance/access' || $request->path === '/finance/b2b/accounts' || $request->path === '/finance/companies') {
+        if (str_starts_with($request->path, '/finance/')) {
             return ($this->finance ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Finance API is not ready.'))->handle($request);
         }
         if (str_starts_with($request->path,'/management/analytics/')) return ($this->analytics ?? throw new ApiException(503,'SERVICE_UNAVAILABLE','Analytics unavailable.'))->handle($request);

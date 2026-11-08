@@ -1026,7 +1026,7 @@ test('auth maintenance dry-run is inert and bounded cleanup preserves current re
     $now = new DateTimeImmutable('2026-08-19T12:00:00Z');
     $maintenance = new AuthMaintenance($pdo, 30, 30, 7, null, 1);
     $dryRun = $maintenance->run(true, $now);
-    expect($dryRun === ['sessions' => 2, 'login_attempts' => 1, 'rate_limit_buckets' => 1, 'audit_events' => null, 'idempotency_keys' => 1, 'api_rate_limit_buckets' => 1, 'b2b_idempotency_keys' => 1, 'b2b_order_idempotency_keys'=>1, 'b2b_account_idempotency_keys'=>1, 'b2b_project_idempotency_keys'=>1, 'exception_idempotency_keys' => 1, 'live_events' => 1]);
+    expect($dryRun === ['sessions' => 2, 'login_attempts' => 1, 'rate_limit_buckets' => 1, 'audit_events' => null, 'idempotency_keys' => 1, 'api_rate_limit_buckets' => 1, 'b2b_idempotency_keys' => 1, 'b2b_order_idempotency_keys'=>1, 'b2b_account_idempotency_keys'=>1, 'b2b_project_idempotency_keys'=>1, 'finance_idempotency_keys' => 0, 'exception_idempotency_keys' => 1, 'live_events' => 1]);
     expect((int) $pdo->query('SELECT COUNT(*) FROM auth_sessions')->fetchColumn() === 3);
     $deleted = $maintenance->run(false, $now);
     expect($deleted === $dryRun);

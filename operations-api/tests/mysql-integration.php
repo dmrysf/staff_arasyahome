@@ -153,6 +153,7 @@ try {
     $expected[] = '044_finance_verification_requests.sql';
     $expected[] = '045_invoice_delete.sql';
     $expected[] = '046_finance_application.sql';
+    $expected[] = '047_finance_company_onboarding.sql';
     if ($applied !== $expected) {
         throw new RuntimeException('An existing 001 schema did not apply exactly the pending migrations in order: ' . implode(', ', $applied));
     }

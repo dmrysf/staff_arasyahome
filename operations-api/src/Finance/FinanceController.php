@@ -7,165 +7,329 @@ namespace Arasya\Operations\Finance;
 use Arasya\Operations\Auth\AuthenticationService;
 use Arasya\Operations\Authorization\AuthorizationService;
 use Arasya\Operations\Config\Config;
-use Arasya\Operations\Employee\EmployeeIdentity;
+use Arasya\Operations\Finance\Account\OnboardingQueries;
+use Arasya\Operations\Finance\Account\OnboardingService;
+use Arasya\Operations\Finance\Company\CaseQueries;
+use Arasya\Operations\Finance\Company\CaseService;
+use Arasya\Operations\Finance\Credit\CreditService;
+use Arasya\Operations\Finance\Import\ImportService;
+use Arasya\Operations\Finance\Risk\RiskService;
 use Arasya\Operations\Http\ApiException;
 use Arasya\Operations\Http\Request;
 use Arasya\Operations\Http\RequestContext;
 use Arasya\Operations\Http\Response;
 use Arasya\Operations\Iam\ApplicationAccess;
+use Arasya\Operations\Security\ApiRateLimiter;
+use Arasya\Operations\Security\CsrfGuard;
 use PDO;
 
 /**
- * Finance-only, read-only facade over existing authoritative B2B tables.
- * Never uses b2b.access to authorize a Finance actor and never exposes payment commands.
- * This controller cannot be reached without an explicit Finance application grant.
+ * /finance/* routes. Every request: session, Finance application grant, finance.access, then the exact operation
+ * permission inside the service. Writes also need the exact origin (kernel), CSRF and an Idempotency-Key, and are
+ * rate limited per employee. Every response is Cache-Control: no-store. Staff and B2B rights never apply here.
  */
 final readonly class FinanceController
 {
+    private const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+
     public function __construct(
         private AuthenticationService $auth,
         private AuthorizationService $authorization,
         private Config $config,
         private RequestContext $context,
         private PDO $pdo,
+        private CsrfGuard $csrf,
+        private ApiRateLimiter $rateLimiter,
+        private ImportService $imports,
+        private CaseService $cases,
+        private CaseQueries $caseQueries,
+        private OnboardingService $onboarding,
+        private OnboardingQueries $onboardingQueries,
+        private RiskService $risk,
+        private CreditService $credit,
     ) {
     }
 
     public function handle(Request $request): Response
     {
-        if ($request->method !== 'GET') {
-            throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Finance routes are read only.');
-        }
-        $session = $this->auth->authenticate(
-            $request->cookie($this->config->cookieName()) ?? '',
-            $request->ipAddress,
-            $request->userAgent,
-            $request->requestId,
-        );
+        $session = $this->auth->authenticate($request->cookie($this->config->cookieName()) ?? '', $request->ipAddress, $request->userAgent, $request->requestId);
         $actor = $session->employee;
         $this->context->authenticatedAs($actor->employeeUuid);
-        $this->authorization->requireApplication($actor, ApplicationAccess::FINANCE);
-        $this->authorization->require($actor, 'finance.access');
+        FinanceAccess::gate($this->authorization, $actor);
+        $path = $request->path;
+        $q = $this->query($request);
 
-        if ($request->path === '/finance/access') {
-            if ($request->query !== []) {
-                throw new ApiException(400, 'INVALID_REQUEST', 'Unexpected filters.');
+        if ($request->method === 'GET') {
+            if (preg_match('#^/finance/imports/(' . self::UUID . ')/rejections\.csv$#D', $path, $m) === 1) {
+                    return Response::file($this->imports->rejectionsCsv($actor, $m[1]), ['Content-Type' => 'text/csv; charset=utf-8',
+                        'Content-Disposition' => 'attachment; filename="finance-import-' . substr($m[1], 0, 8) . '-review.csv"', 'Cache-Control' => 'no-store, private']);
             }
-            return $this->secure([
-                'application' => ApplicationAccess::FINANCE,
-                'employee' => [
-                    'displayName' => $actor->displayName,
-                    'username' => $actor->username,
-                ],
-                'authorizationVersion' => $actor->authorizationVersion,
-                'capabilities' => [
-                    'canViewAccounts' => $this->authorization->can($actor, 'finance.accounts.view'),
-                    'canViewCompanies' => $this->authorization->can($actor, 'finance.companies.view'),
-                ],
-            ]);
+            return $this->secure(match (true) {
+                $path === '/finance/access' => $this->access($actor, $q),
+                $path === '/finance/overview' => $this->caseQueries->summary($actor),
+                $path === '/finance/companies' => $this->companies($actor, $q),
+                $path === '/finance/company-search' => $this->companySearch($actor, $q),
+                $path === '/finance/b2b/accounts' => $this->accounts($actor, $q),
+                $path === '/finance/imports' => $this->imports->list($actor, $q),
+                (bool) preg_match('#^/finance/imports/(' . self::UUID . ')$#D', $path, $m) => $this->imports->detail($actor, $m[1]),
+                (bool) preg_match('#^/finance/imports/(' . self::UUID . ')/rows$#D', $path, $m) => $this->imports->rows($actor, $m[1], $q),
+                $path === '/finance/cases' => $this->caseQueries->list($actor, $q),
+                (bool) preg_match('#^/finance/cases/(' . self::UUID . ')$#D', $path, $m) => $this->caseQueries->detail($actor, $m[1]),
+                $path === '/finance/accounts' => $this->onboardingQueries->list($actor, $q),
+                (bool) preg_match('#^/finance/accounts/(' . self::UUID . ')$#D', $path, $m) => $this->onboardingQueries->detail($actor, $m[1]),
+                $path === '/finance/risk' => $this->risk->queue($actor, $q),
+                $path === '/finance/risk/policies' => $this->risk->policies($actor),
+                (bool) preg_match('#^/finance/risk/companies/(' . self::UUID . ')$#D', $path, $m) => $this->risk->view($actor, $m[1]),
+                $path === '/finance/credit' => $this->credit->queue($actor, $q),
+                (bool) preg_match('#^/finance/credit/companies/(' . self::UUID . ')$#D', $path, $m) => $this->credit->detail($actor, $m[1]),
+                (bool) preg_match('#^/finance/companies/(' . self::UUID . ')/credit-profile$#D', $path, $m) => $this->credit->profile($actor, $m[1]),
+                $path === '/finance/audit' => $this->audit($actor, $q),
+                default => throw new ApiException(404, 'NOT_FOUND', 'Finance route not found.'),
+            });
         }
-
-        $this->authorization->require($actor, match ($request->path) {
-            '/finance/b2b/accounts' => 'finance.accounts.view',
-            '/finance/companies' => 'finance.companies.view',
+        if ($request->method !== 'POST') {
+            throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed.');
+        }
+        $this->csrf->requireValid($session->rawToken, $request->header('x-csrf-token'));
+        if (!$this->rateLimiter->hit('finance-write', $actor->employeeUuid, 600, 60)) {
+            throw new ApiException(429, 'RATE_LIMITED', 'Too many Finance changes. Wait a moment.');
+        }
+        $key = $request->header('idempotency-key') ?? '';
+        $id = $request->requestId;
+        if ($path === '/finance/imports') {
+            return $this->secure($this->upload($request, $actor, $q, $key, $id), 201);
+        }
+        // A command without fields (for example the next analysis chunk) may send no body at all.
+        $body = $request->body === '' ? [] : $request->json(65_536);
+        $result = match (true) {
+            (bool) preg_match('#^/finance/imports/(' . self::UUID . ')/(mapping|analyze|confirm|cancel)$#D', $path, $m) => match ($m[2]) {
+                'mapping' => $this->imports->map($actor, $m[1], $body, $key, $id),
+                'analyze' => $this->imports->analyze($actor, $m[1], $body, $key, $id),
+                'confirm' => $this->imports->confirm($actor, $m[1], $body, $key, $id),
+                'cancel' => $this->imports->cancel($actor, $m[1], $body, $key, $id),
+            },
+            $path === '/finance/cases' => $this->cases->createManual($actor, $body, $key, $id),
+            $path === '/finance/cases/from-b2b' => $this->cases->sweepB2b($actor, $body, $key, $id),
+            (bool) preg_match('#^/finance/cases/(' . self::UUID . ')/duplicates/(' . self::UUID . ')/resolve$#D', $path, $m) => $this->cases->resolveDuplicate($actor, $m[1], $m[2], $body, $key, $id),
+            (bool) preg_match('#^/finance/cases/(' . self::UUID . ')/(claim|release|update|checklist|request-information|mark-duplicate|return|submit|approve|reject|reopen|link)$#D', $path, $m) => match ($m[2]) {
+                'claim' => $this->cases->claim($actor, $m[1], $body, $key, $id),
+                'release' => $this->cases->release($actor, $m[1], $body, $key, $id),
+                'update' => $this->cases->update($actor, $m[1], $body, $key, $id),
+                'checklist' => $this->cases->checklist($actor, $m[1], $body, $key, $id),
+                'request-information', 'return' => $this->cases->setAside($actor, $m[1], 'NEEDS_INFORMATION', $body, $key, $id),
+                'mark-duplicate' => $this->cases->setAside($actor, $m[1], 'SUSPECTED_DUPLICATE', $body, $key, $id),
+                'submit' => $this->cases->submit($actor, $m[1], $body, $key, $id),
+                'approve' => $this->cases->approve($actor, $m[1], $body, $key, $id),
+                'reject' => $this->cases->reject($actor, $m[1], $body, $key, $id),
+                'reopen' => $this->cases->reopen($actor, $m[1], $body, $key, $id),
+                'link' => $this->cases->linkCompany($actor, $m[1], $body, $key, $id),
+            },
+            $path === '/finance/accounts' => $this->onboarding->open($actor, $body, $key, $id),
+            (bool) preg_match('#^/finance/accounts/(' . self::UUID . ')/(draft|submit|verify|return|post|dispute|reopen|currency-issue|correct-currency)$#D', $path, $m) => match ($m[2]) {
+                'draft' => $this->onboarding->draft($actor, $m[1], $body, $key, $id),
+                'submit' => $this->onboarding->submit($actor, $m[1], $body, $key, $id),
+                'verify' => $this->onboarding->verify($actor, $m[1], $body, $key, $id),
+                'return' => $this->onboarding->returnProposal($actor, $m[1], $body, $key, $id),
+                'post' => $this->onboarding->post($actor, $m[1], $body, $key, $id),
+                'dispute' => $this->onboarding->dispute($actor, $m[1], $body, $key, $id),
+                'reopen' => $this->onboarding->reopen($actor, $m[1], $body, $key, $id),
+                'currency-issue' => $this->onboarding->resolveCurrencyIssue($actor, $m[1], $body, $key, $id),
+                'correct-currency' => $this->onboarding->correctCurrency($actor, $m[1], $body, $key, $id),
+            },
+            $path === '/finance/risk' => $this->risk->propose($actor, $body, $key, $id),
+            (bool) preg_match('#^/finance/risk/(' . self::UUID . ')/(approve|reject|suspend)$#D', $path, $m) => $this->risk->decide($actor, $m[1], $m[2], $body, $key, $id),
+            $path === '/finance/risk/policies' => $this->risk->createPolicy($actor, $body, $key, $id),
+            (bool) preg_match('#^/finance/risk/policies/(' . self::UUID . ')/(approve|retire)$#D', $path, $m) => $this->risk->decidePolicy($actor, $m[1], $m[2], $body, $key, $id),
+            $path === '/finance/credit' => $this->credit->propose($actor, $body, $key, $id),
+            (bool) preg_match('#^/finance/credit/(' . self::UUID . ')/(verify|approve|reject|suspend|reinstate|revoke)$#D', $path, $m) => $this->credit->decide($actor, $m[1], $m[2], $body, $key, $id),
+            $path === '/finance/credit/exceptions' => $this->credit->requestException($actor, $body, $key, $id),
+            (bool) preg_match('#^/finance/credit/exceptions/(' . self::UUID . ')/(approve|reject|withdraw)$#D', $path, $m) => $this->credit->decideException($actor, $m[1], $m[2], $body, $key, $id),
             default => throw new ApiException(404, 'NOT_FOUND', 'Finance route not found.'),
-        });
-
-        $limit = $this->filters($request);
-        if ($request->path === '/finance/b2b/accounts') {
-            return $this->secure($this->accounts($limit['size'], $limit['cursor']));
-        }
-        return $this->secure($this->companies($limit['size'], $limit['cursor']));
+        };
+        $status = (int) ($result['status'] ?? 200);
+        unset($result['status']);
+        return $this->secure($result, $status);
     }
 
-    /** @return array{size: int, cursor: string} */
-    private function filters(Request $request): array
+    /** @return array<string, mixed> */
+    private function upload(Request $request, \Arasya\Operations\Employee\EmployeeIdentity $actor, array $q, string $key, string $id): array
     {
-        if (array_diff(array_keys($request->query), ['limit', 'cursor']) !== []) {
+        $type = strtolower(trim(explode(';', $request->header('content-type') ?? '')[0]));
+        $format = match ($type) {
+            'text/csv', 'application/csv', 'text/plain' => 'csv',
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' => 'xlsx',
+            default => throw new ApiException(415, 'UNSUPPORTED_MEDIA_TYPE', 'Upload a CSV or XLSX file.'),
+        };
+        FinanceInput::only($q, ['source', 'encoding', 'name']);
+        $result = $this->imports->upload($actor, [
+            'body' => $request->body, 'format' => $format, 'fileName' => (string) ($q['name'] ?? 'import.' . $format),
+            'source' => (string) ($q['source'] ?? ($format === 'xlsx' ? 'XLSX' : 'CSV')), 'encoding' => (string) ($q['encoding'] ?? 'utf-8'),
+        ], $key, $id);
+        unset($result['status']);
+        return $result;
+    }
+
+    /** @return array<string, string> */
+    private function query(Request $request): array
+    {
+        $out = [];
+        foreach ($request->query as $name => $value) {
+            if (!is_string($name) || !is_string($value) || strlen($value) > 400) {
+                throw new ApiException(400, 'INVALID_REQUEST', 'Invalid filter.');
+            }
+            if ($value !== '') {
+                $out[$name] = $value;
+            }
+        }
+        return $out;
+    }
+
+    /** @return array<string, mixed> */
+    private function access(\Arasya\Operations\Employee\EmployeeIdentity $actor, array $q): array
+    {
+        if ($q !== []) {
             throw new ApiException(400, 'INVALID_REQUEST', 'Unexpected filters.');
         }
-        foreach ($request->query as $key => $value) {
-            if (!is_string($value)) {
-                throw new ApiException(400, 'INVALID_REQUEST', 'Invalid filter type.');
-            }
-        }
-        $size = $request->query('limit', '25');
-        if (!in_array($size, ['25', '50'], true)) {
-            throw new ApiException(422, 'VALIDATION_FAILED', 'Invalid page size.');
-        }
-        $cursor = $request->query('cursor', '') ?? '';
-        if ($cursor !== '' && preg_match('/^B2B-[0-9]{6,12}$/D', $cursor) !== 1) {
-            throw new ApiException(400, 'INVALID_CURSOR', 'Invalid cursor.');
-        }
-        return ['size' => (int) $size, 'cursor' => $cursor];
+        return [
+            'application' => ApplicationAccess::FINANCE,
+            'employee' => ['displayName' => $actor->displayName, 'username' => $actor->username],
+            'authorizationVersion' => $actor->authorizationVersion,
+            'capabilities' => FinanceAccess::capabilities($this->authorization, $actor),
+            'openingBalancePostingEnabled' => $this->config->financeOpeningBalancePostingEnabled(),
+        ];
     }
 
-    /** @return array<string,mixed> */
-    private function companies(int $size, string $cursor): array
+    /** Canonical B2B companies with their Finance state. Financial columns only for account viewers. */
+    private function companies(\Arasya\Operations\Employee\EmployeeIdentity $actor, array $q): array
     {
+        FinanceAccess::require($this->authorization, $actor, FinanceAccess::COMPANIES_VIEW);
+        [$size, $cursor] = $this->page($q);
         $statement = $this->pdo->prepare(
-            'SELECT company_uuid, company_code, legal_name, country_code, status
-             FROM b2b_companies WHERE company_code > :cursor
-             ORDER BY company_code LIMIT ' . ($size + 1)
+            "SELECT c.company_uuid, c.company_code, c.legal_name, c.country_code, c.status,
+                (SELECT f.status FROM finance_company_cases f WHERE f.company_uuid = c.company_uuid ORDER BY f.status = 'APPROVED' DESC, f.updated_at DESC LIMIT 1) AS verification,
+                o.status AS onboarding_status, o.account_currency, r.classification, l.amount AS limit_amount, l.currency_code AS limit_currency, l.status AS limit_status
+             FROM b2b_companies c
+             LEFT JOIN finance_account_onboardings o ON o.company_uuid = c.company_uuid
+             LEFT JOIN finance_risk_assessments r ON r.active_company_uuid = c.company_uuid
+             LEFT JOIN finance_credit_limits l ON l.active_company_uuid = c.company_uuid
+             WHERE c.company_code > :cursor ORDER BY c.company_code LIMIT " . ($size + 1)
         );
         $statement->execute(['cursor' => $cursor]);
         $rows = $statement->fetchAll(PDO::FETCH_ASSOC);
         $hasNext = count($rows) > $size;
-        if ($hasNext) {
-            array_pop($rows);
-        }
-        $nextCursor = $hasNext && $rows !== [] ? (string) $rows[count($rows) - 1]['company_code'] : null;
+        $rows = array_slice($rows, 0, $size);
+        $financial = FinanceAccess::can($this->authorization, $actor, FinanceAccess::ACCOUNTS_VIEW);
+        $credit = FinanceAccess::can($this->authorization, $actor, FinanceAccess::CREDIT_VIEW);
         return [
             'items' => array_map(static fn (array $r): array => [
-                'companyId' => (string) $r['company_uuid'],
-                'companyCode' => (string) $r['company_code'],
-                'legalName' => (string) $r['legal_name'],
-                'countryCode' => (string) $r['country_code'],
-                'companyStatus' => (string) $r['status'],
+                'companyId' => (string) $r['company_uuid'], 'companyCode' => (string) $r['company_code'], 'legalName' => (string) $r['legal_name'],
+                'countryCode' => (string) $r['country_code'], 'companyStatus' => (string) $r['status'],
+                'verificationStatus' => $r['verification'] === null ? 'NOT_STARTED' : ($r['verification'] === 'APPROVED' ? 'VERIFIED' : 'IN_PROGRESS'),
+                'accountCurrency' => $r['account_currency'],
+                'reconciliationStatus' => $financial ? ($r['onboarding_status'] ?? 'NOT_OPENED') : null,
+                'riskColor' => $credit ? ($r['classification'] ?? 'UNVERIFIED') : null,
+                'creditLimit' => $credit ? ($r['limit_status'] === null ? ['status' => 'NO_APPROVED_LIMIT'] : ['status' => $r['limit_status'], 'amount' => $r['limit_amount'], 'currency' => $r['limit_currency']]) : null,
             ], $rows),
-            'nextCursor' => $nextCursor,
+            'nextCursor' => $hasNext && $rows !== [] ? (string) $rows[count($rows) - 1]['company_code'] : null,
         ];
     }
 
-    /** @return array<string,mixed> */
-    private function accounts(int $size, string $cursor): array
+    private function companySearch(\Arasya\Operations\Employee\EmployeeIdentity $actor, array $q): array
     {
+        FinanceAccess::require($this->authorization, $actor, FinanceAccess::COMPANIES_VIEW);
+        FinanceInput::only($q, ['q']);
+        $term = trim((string) ($q['q'] ?? ''));
+        if (mb_strlen($term) < 2 || mb_strlen($term) > 120) {
+            FinanceInput::fail('q', 'invalid');
+        }
+        $s = $this->pdo->prepare('SELECT company_uuid, company_code, legal_name, country_code, tax_identifier, status FROM b2b_companies
+            WHERE legal_name LIKE ? OR company_code = ? OR tax_identifier_normalized = ? ORDER BY legal_name LIMIT 20');
+        $s->execute(['%' . str_replace(['\\', '%', '_'], ['\\\\', '\%', '\_'], $term) . '%', strtoupper($term), strtoupper((string) preg_replace('/^RO(?=\d)|[^A-Za-z0-9]+/i', '', $term))]);
+        return ['items' => array_map(static fn (array $r): array => ['companyId' => $r['company_uuid'], 'companyCode' => $r['company_code'], 'legalName' => $r['legal_name'],
+            'countryCode' => $r['country_code'], 'taxIdentifier' => $r['tax_identifier'], 'companyStatus' => $r['status']], $s->fetchAll(PDO::FETCH_ASSOC))];
+    }
+
+    /** Existing ledger-derived balances per currency (read-only, never combined). */
+    private function accounts(\Arasya\Operations\Employee\EmployeeIdentity $actor, array $q): array
+    {
+        FinanceAccess::require($this->authorization, $actor, FinanceAccess::ACCOUNTS_VIEW);
+        [$size, $cursor] = $this->page($q);
         $statement = $this->pdo->prepare(
             "SELECT c.company_uuid, c.company_code, c.legal_name, c.status,
-                COALESCE(SUM(CASE WHEN m.currency_code='RON' THEN
-                    CASE m.direction WHEN 'debit' THEN m.amount ELSE -m.amount END
-                    ELSE 0 END),0) AS ron,
-                COALESCE(SUM(CASE WHEN m.currency_code='EUR' THEN
-                    CASE m.direction WHEN 'debit' THEN m.amount ELSE -m.amount END
-                    ELSE 0 END),0) AS eur
-             FROM b2b_companies c
-             LEFT JOIN b2b_account_movements m ON m.company_uuid=c.company_uuid
-             WHERE c.company_code > :cursor
-             GROUP BY c.company_uuid,c.company_code,c.legal_name,c.status
+                COALESCE(SUM(CASE WHEN m.currency_code='RON' THEN CASE m.direction WHEN 'debit' THEN m.amount ELSE -m.amount END ELSE 0 END),0) AS ron,
+                COALESCE(SUM(CASE WHEN m.currency_code='EUR' THEN CASE m.direction WHEN 'debit' THEN m.amount ELSE -m.amount END ELSE 0 END),0) AS eur
+             FROM b2b_companies c LEFT JOIN b2b_account_movements m ON m.company_uuid=c.company_uuid
+             WHERE c.company_code > :cursor GROUP BY c.company_uuid,c.company_code,c.legal_name,c.status
              ORDER BY c.company_code LIMIT " . ($size + 1)
         );
         $statement->execute(['cursor' => $cursor]);
         $rows = $statement->fetchAll(PDO::FETCH_ASSOC);
         $hasNext = count($rows) > $size;
-        if ($hasNext) {
-            array_pop($rows);
-        }
-        $nextCursor = $hasNext && $rows !== [] ? (string) $rows[count($rows) - 1]['company_code'] : null;
+        $rows = array_slice($rows, 0, $size);
         return [
             'items' => array_map(static fn (array $r): array => [
-                'companyId' => (string) $r['company_uuid'],
-                'companyCode' => (string) $r['company_code'],
-                'legalName' => (string) $r['legal_name'],
-                'companyStatus' => (string) $r['status'],
-                'balances' => ['RON' => (string) $r['ron'], 'EUR' => (string) $r['eur']],
+                'companyId' => (string) $r['company_uuid'], 'companyCode' => (string) $r['company_code'], 'legalName' => (string) $r['legal_name'],
+                'companyStatus' => (string) $r['status'], 'balances' => ['RON' => (string) $r['ron'], 'EUR' => (string) $r['eur']],
             ], $rows),
-            'nextCursor' => $nextCursor,
+            'nextCursor' => $hasNext && $rows !== [] ? (string) $rows[count($rows) - 1]['company_code'] : null,
         ];
     }
 
-    /** @param array<string,mixed> $payload */
-    private function secure(array $payload): Response
+    private function audit(\Arasya\Operations\Employee\EmployeeIdentity $actor, array $q): array
     {
-        return Response::json($payload, 200, ['Cache-Control' => 'no-store, private']);
+        FinanceAccess::require($this->authorization, $actor, FinanceAccess::AUDIT_VIEW);
+        FinanceInput::only($q, ['entity', 'cursor']);
+        $where = [];
+        $params = [];
+        if (isset($q['entity'])) {
+            if (!in_array($q['entity'], ['import', 'case', 'onboarding', 'risk', 'policy', 'credit', 'exception'], true)) {
+                FinanceInput::fail('entity', 'invalid');
+            }
+            $where[] = 'a.entity_type = ?';
+            $params[] = $q['entity'];
+        }
+        if (isset($q['cursor'])) {
+            $decoded = base64_decode(strtr($q['cursor'], '-_', '+/'), true);
+            if (!is_string($decoded) || preg_match('/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{6})\|(' . self::UUID . ')$/D', $decoded, $m) !== 1) {
+                throw new ApiException(400, 'INVALID_CURSOR', 'Invalid cursor.');
+            }
+            $where[] = '(a.occurred_at < ? OR (a.occurred_at = ? AND a.event_id < ?))';
+            array_push($params, $m[1], $m[1], $m[2]);
+        }
+        $s = $this->pdo->prepare('SELECT a.*, e.display_name, b.company_code, b.legal_name FROM finance_activity_events a JOIN employees e ON e.employee_uuid = a.actor_employee_uuid
+            LEFT JOIN b2b_companies b ON b.company_uuid = a.company_uuid' . ($where === [] ? '' : ' WHERE ' . implode(' AND ', $where)) . ' ORDER BY a.occurred_at DESC, a.event_id DESC LIMIT 101');
+        $s->execute($params);
+        $rows = $s->fetchAll(PDO::FETCH_ASSOC);
+        $next = null;
+        if (count($rows) > 100) {
+            $next = rtrim(strtr(base64_encode($rows[99]['occurred_at'] . '|' . $rows[99]['event_id']), '+/', '-_'), '=');
+            $rows = array_slice($rows, 0, 100);
+        }
+        return ['items' => array_map(static fn (array $r): array => ['id' => $r['event_id'], 'entity' => $r['entity_type'], 'entityId' => $r['entity_uuid'], 'action' => $r['action'],
+            'companyCode' => $r['company_code'], 'companyName' => $r['legal_name'], 'actor' => $r['display_name'], 'versionBefore' => $r['version_before'] === null ? null : (int) $r['version_before'],
+            'versionAfter' => $r['version_after'] === null ? null : (int) $r['version_after'], 'reason' => $r['reason'],
+            'details' => $r['details_json'] === null ? null : json_decode((string) $r['details_json'], true), 'requestId' => $r['request_id'], 'at' => FinanceStore::iso($r['occurred_at'])], $rows),
+            'nextCursor' => $next];
+    }
+
+    /** @return array{0: int, 1: string} */
+    private function page(array $q): array
+    {
+        FinanceInput::only($q, ['limit', 'cursor']);
+        $size = $q['limit'] ?? '25';
+        if (!in_array($size, ['25', '50', '100'], true)) {
+            throw new ApiException(422, 'VALIDATION_FAILED', 'Invalid page size.');
+        }
+        $cursor = $q['cursor'] ?? '';
+        if ($cursor !== '' && preg_match('/^B2B-[0-9]{6,12}$/D', $cursor) !== 1) {
+            throw new ApiException(400, 'INVALID_CURSOR', 'Invalid cursor.');
+        }
+        return [(int) $size, $cursor];
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function secure(array $payload, int $status = 200): Response
+    {
+        return Response::json($payload, $status, ['Cache-Control' => 'no-store, private']);
     }
 }

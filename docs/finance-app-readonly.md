@@ -1,5 +1,8 @@
 # Finance application gate and read-only API (DRAFT — no deployment)
 
+> Finance V0.3 (migration 047) adds audited Finance writes on top of this gate; see `docs/finance-v0.3.md`. The safety
+> boundary below (no deployment, no grants, Staff untouched) still applies.
+
 ## Safety boundary
 The API code is proposed in a separate PR for review; no production migration, cPanel update, CORS change,
 employee application grant, role assignment or transfer of Staff finance tasks is authorized or performed.

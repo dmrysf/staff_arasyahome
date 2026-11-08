@@ -715,8 +715,11 @@ test('B2B commercial orders are isolated from production and their audit is inse
         if (!$file->isFile() || $file->getExtension() !== 'php') continue;
         $relative = substr($file->getPathname(), strlen($root) + 1);
         $source = (string) file_get_contents($file->getPathname());
-        if (!str_starts_with($relative, 'B2B/') && $relative !== 'Database/AuthMaintenance.php')
+        // Finance V0.3 reads one order only to bind a CEO exception record to it; it never writes commercial data.
+        if (!str_starts_with($relative, 'B2B/') && $relative !== 'Database/AuthMaintenance.php' && $relative !== 'Finance/Credit/CreditService.php')
             expect(preg_match('/\bb2b_order/', $source) !== 1, $relative . ' must not read commercial data');
+        if (str_starts_with($relative, 'Finance/'))
+            expect(preg_match('/\b(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+b2b_order/i', $source) !== 1, $relative . ' must not write commercial data');
     }
     $maintenance = (string) file_get_contents($root . '/Database/AuthMaintenance.php');
     preg_match_all('/b2b_order\w+/', $maintenance, $tables);
@@ -738,12 +741,20 @@ test('B2B company data remains isolated except an explicitly gated Finance read-
             $readers[] = $relative;
         }
         expect(preg_match('/\b(UPDATE|DELETE\s+FROM)\s+b2b_company_activity_events\b/i', $source) !== 1, "{$relative} must not change B2B activity");
-        if (!str_starts_with($relative, 'B2B/') && $relative !== 'Database/AuthMaintenance.php' && $relative !== 'Finance/FinanceController.php') {
+        if (!str_starts_with($relative, 'B2B/') && !str_starts_with($relative, 'Finance/') && $relative !== 'Database/AuthMaintenance.php') {
             expect(preg_match('/\bb2b_compan/', $source) !== 1, "{$relative} must not read B2B company data");
+        }
+        if (str_starts_with($relative, 'Finance/')) {
+            // Finance never edits or deletes a B2B company; only an approved verification case may create one (inactive).
+            expect(preg_match('/\b(UPDATE|DELETE\s+FROM)\s+b2b_compan/i', $source) !== 1, "{$relative} must not change B2B companies");
+            if ($relative !== 'Finance/Company/CaseService.php') expect(preg_match('/\bINSERT\s+INTO\s+b2b_compan/i', $source) !== 1, "{$relative} must not create B2B companies");
         }
     }
     sort($readers);
-    expect($readers === ['B2B/AccountCommands.php', 'B2B/AccountQueries.php', 'B2B/CompanyCommands.php', 'B2B/CompanyQueries.php', 'B2B/OrderCommands.php', 'B2B/OrderStore.php', 'B2B/ProductionAnalyticsIdentity.php', 'B2B/ProductionCommands.php', 'B2B/ProjectCommands.php', 'B2B/ProjectQueries.php', 'Database/AuthMaintenance.php', 'Finance/FinanceController.php']);
+    expect($readers === ['B2B/AccountCommands.php', 'B2B/AccountQueries.php', 'B2B/CompanyCommands.php', 'B2B/CompanyQueries.php', 'B2B/OrderCommands.php', 'B2B/OrderStore.php', 'B2B/ProductionAnalyticsIdentity.php', 'B2B/ProductionCommands.php', 'B2B/ProjectCommands.php', 'B2B/ProjectQueries.php', 'Database/AuthMaintenance.php',
+        'Finance/Account/OnboardingQueries.php', 'Finance/Account/OnboardingService.php', 'Finance/Company/CaseQueries.php', 'Finance/Company/CaseService.php', 'Finance/Company/DuplicateFinder.php', 'Finance/Credit/CreditService.php', 'Finance/FinanceController.php', 'Finance/Risk/RiskService.php']);
+    $canonical = (string) file_get_contents($root . '/Finance/Company/CaseService.php');
+    expect(str_contains($canonical, "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'inactive'"), 'A Finance-created canonical company starts inactive');
     $analyticsIdentity=(string)file_get_contents($root.'/B2B/ProductionAnalyticsIdentity.php');
     expect(preg_match('/\b(INSERT|UPDATE|DELETE|balance|currency|grand_total|email|phone|tax_identifier|b2b_account)\b/i',$analyticsIdentity)!==1,'Analytics identity adapter is read-only and contains no financial/contact query');
     $maintenance = (string) file_get_contents($root . '/Database/AuthMaintenance.php');
@@ -758,8 +769,12 @@ test('B2B current account ledger is insert-only, isolated from production and jo
         $relative = substr($file->getPathname(), strlen($root) + 1);
         $source = (string) file_get_contents($file->getPathname());
         expect(preg_match('/\b(UPDATE|DELETE\s+FROM)\s+b2b_account_(movements|allocations|allocation_releases|activity_events|movement_sequence)\b/i', $source) !== 1, "{$relative} must not change ledger rows");
-        if (!str_starts_with($relative, 'B2B/') && $relative !== 'Database/AuthMaintenance.php' && $relative !== 'Finance/FinanceController.php')
+        $financeLedgerReaders = ['Finance/FinanceController.php', 'Finance/Account/OnboardingService.php', 'Finance/Account/OnboardingQueries.php', 'Finance/Risk/RiskService.php', 'Finance/Credit/CreditService.php'];
+        if (!str_starts_with($relative, 'B2B/') && $relative !== 'Database/AuthMaintenance.php' && !in_array($relative, $financeLedgerReaders, true))
             expect(preg_match('/\bb2b_account_/', $source) !== 1, "{$relative} must not read current account data");
+        // Finance writes the ledger only through the insert-only AccountLedger primitives, never with its own SQL.
+        if (str_starts_with($relative, 'Finance/'))
+            expect(preg_match('/\bINSERT\s+INTO\s+b2b_account_/i', $source) !== 1, "{$relative} must post through AccountLedger");
     }
     foreach (glob($root . '/B2B/Account*.php') as $file) {
         $source = (string) file_get_contents($file);
@@ -776,31 +791,45 @@ test('B2B current account ledger is insert-only, isolated from production and jo
     expect(array_values(array_unique(array_filter($tables[0], static fn($n) => !str_ends_with($n, '_keys')))) === ['b2b_account_idempotency']);
 });
 
-test('Finance facade is GET-only, independently app-gated, and has no financial writes', function (): void {
-    $file = dirname(__DIR__) . '/src/Finance/FinanceController.php';
-    $source = (string) file_get_contents($file);
-    expect(str_contains($source, 'if ($request->method !== \'GET\')'), 'Finance API must be GET-only');
-    expect(str_contains($source, 'requireApplication($actor, ApplicationAccess::FINANCE)'), 'Finance needs own app grant');
-    expect(str_contains($source, 'require($actor, \'finance.access\')'), 'Finance needs application permission');
-    expect(str_contains($source, "'finance.accounts.view'") && str_contains($source, "'finance.companies.view'"));
-    expect(preg_match('/\\b(INSERT|UPDATE|DELETE|REPLACE|TRUNCATE)\\s+(INTO|FROM|TABLE)?\\s*b2b_/i', $source) !== 1, 'Finance must not write B2B tables');
-    expect(preg_match('/\\b(operational_orders|order_source_operations|order_finance_actions)\\b/i', $source) !== 1, 'Finance must not reach Staff finance tables');
+test('Finance API is independently app-gated, writes need CSRF and idempotency, and Staff finance stays untouched', function (): void {
+    $root = dirname(__DIR__) . '/src/Finance';
+    $controller = (string) file_get_contents($root . '/FinanceController.php');
+    $access = (string) file_get_contents($root . '/FinanceAccess.php');
+    $store = (string) file_get_contents($root . '/FinanceStore.php');
+    expect(str_contains($controller, 'FinanceAccess::gate($this->authorization, $actor);'), 'Every Finance route passes the Finance gate');
+    expect(str_contains($access, 'requireApplication($actor, ApplicationAccess::FINANCE)') && str_contains($access, "public const ACCESS = 'finance.access';"), 'Finance needs its own app grant and finance.access');
+    expect(str_contains($controller, '$this->csrf->requireValid($session->rawToken'), 'Finance writes need CSRF');
+    expect(str_contains($controller, "'Cache-Control' => 'no-store, private'"), 'Finance responses are never cached');
+    expect(str_contains($store, 'isValidIdempotencyKey') && str_contains($store, 'FinanceAccess::require($this->authorization, $actor, ...$permissions);'), 'Finance mutations are idempotent and re-authorized inside the transaction');
+    $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS));
+    foreach ($files as $file) {
+        if (!$file->isFile() || $file->getExtension() !== 'php') continue;
+        $source = (string) file_get_contents($file->getPathname());
+        $name = substr($file->getPathname(), strlen($root) + 1);
+        expect(preg_match('/\\b(operational_orders|order_source_operations|order_finance_actions|employee_finance_scopes|finance_verification_requests|employee_role_assignments|role_permissions|employee_application_access)\\b/i', $source) !== 1, "{$name} must not reach Staff finance or IAM grant tables");
+        expect(preg_match('/\\b(float|floatval)\\s*\\(|\\(float\\)/', $source) !== 1 || in_array($name, ['Risk/RiskService.php', 'Import/ImportNormalizer.php'], true), "{$name} must not use floats for money");
+    }
 
     $A = \Arasya\Operations\Iam\ApplicationAccess::class;
-    expect($A::baselineFor(['finance']) === ['finance.access', 'profile.view_self'], 'No implicit Finance read rights');
-    expect($A::PERMISSION_APPLICATION['finance.accounts.view'] === 'finance');
-    expect($A::PERMISSION_APPLICATION['finance.companies.view'] === 'finance');
+    expect($A::baselineFor(['finance']) === ['finance.access', 'profile.view_self'], 'No implicit Finance rights');
+    foreach (\Arasya\Operations\Finance\FinanceAccess::CAPABILITIES as $permission) {
+        expect(($A::PERMISSION_APPLICATION[$permission] ?? null) === 'finance', "{$permission} belongs to the Finance application");
+    }
 
-    $actor = static fn (array $applications): EmployeeIdentity => new EmployeeIdentity(
+    $actor = static fn (array $applications, array $permissions = ['staff.access', 'finance.access', 'finance.accounts.view', 'finance.companies.view']): EmployeeIdentity => new EmployeeIdentity(
         'f2c7a9a0-2f1b-4c55-9a7e-222222222222', null, 'fin', 'fin', 'hash', 'Finance Test',
         'contabilitate', 'Contabilitate', 'active', 'employee', 'active', 'active',
-        ['staff.access', 'finance.access', 'finance.accounts.view', 'finance.companies.view'], [], $applications,
+        $permissions, [], $applications,
     );
     $authorization = new AuthorizationService();
     expect(!$authorization->can($actor(['staff']), 'finance.accounts.view'), 'Staff cannot access Finance through a role');
     expectApi('APPLICATION_ACCESS_DENIED', fn () => $authorization->require($actor(['staff']), 'finance.accounts.view'));
     expect($authorization->can($actor(['finance']), 'finance.accounts.view'));
     expect($authorization->can($actor(['finance']), 'finance.companies.view'));
+    // B2B rights never open Finance, and a Finance operation permission without finance.access is useless.
+    expect(!\Arasya\Operations\Finance\FinanceAccess::can($authorization, $actor(['b2b', 'staff'], ['b2b.access', 'b2b.accounts.adjust', 'b2b.companies.update']), 'finance.companies.verify'));
+    expect(!\Arasya\Operations\Finance\FinanceAccess::can($authorization, $actor(['finance'], ['finance.companies.verify']), 'finance.companies.verify'));
+    expect(\Arasya\Operations\Finance\FinanceAccess::can($authorization, $actor(['finance'], ['finance.access', 'finance.companies.verify']), 'finance.companies.verify'));
 });
 
 test('B2B account money is exact integer cents from decimal strings only', function (): void {
