@@ -724,7 +724,7 @@ test('B2B commercial orders are isolated from production and their audit is inse
     expect(array_values(array_unique($tableNames)) === ['b2b_order_idempotency']);
 });
 
-test('B2B company data stays inside the B2B module and its activity is insert-only', function (): void {
+test('B2B company data remains isolated except an explicitly gated Finance read-only view', function (): void {
     $root = dirname(__DIR__) . '/src';
     $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS));
     $readers = [];
@@ -738,12 +738,12 @@ test('B2B company data stays inside the B2B module and its activity is insert-on
             $readers[] = $relative;
         }
         expect(preg_match('/\b(UPDATE|DELETE\s+FROM)\s+b2b_company_activity_events\b/i', $source) !== 1, "{$relative} must not change B2B activity");
-        if (!str_starts_with($relative, 'B2B/') && $relative !== 'Database/AuthMaintenance.php') {
+        if (!str_starts_with($relative, 'B2B/') && $relative !== 'Database/AuthMaintenance.php' && $relative !== 'Finance/FinanceController.php') {
             expect(preg_match('/\bb2b_compan/', $source) !== 1, "{$relative} must not read B2B company data");
         }
     }
     sort($readers);
-    expect($readers === ['B2B/AccountCommands.php', 'B2B/AccountQueries.php', 'B2B/CompanyCommands.php', 'B2B/CompanyQueries.php', 'B2B/OrderCommands.php', 'B2B/OrderStore.php', 'B2B/ProductionAnalyticsIdentity.php', 'B2B/ProductionCommands.php', 'B2B/ProjectCommands.php', 'B2B/ProjectQueries.php', 'Database/AuthMaintenance.php']);
+    expect($readers === ['B2B/AccountCommands.php', 'B2B/AccountQueries.php', 'B2B/CompanyCommands.php', 'B2B/CompanyQueries.php', 'B2B/OrderCommands.php', 'B2B/OrderStore.php', 'B2B/ProductionAnalyticsIdentity.php', 'B2B/ProductionCommands.php', 'B2B/ProjectCommands.php', 'B2B/ProjectQueries.php', 'Database/AuthMaintenance.php', 'Finance/FinanceController.php']);
     $analyticsIdentity=(string)file_get_contents($root.'/B2B/ProductionAnalyticsIdentity.php');
     expect(preg_match('/\b(INSERT|UPDATE|DELETE|balance|currency|grand_total|email|phone|tax_identifier|b2b_account)\b/i',$analyticsIdentity)!==1,'Analytics identity adapter is read-only and contains no financial/contact query');
     $maintenance = (string) file_get_contents($root . '/Database/AuthMaintenance.php');
@@ -758,7 +758,7 @@ test('B2B current account ledger is insert-only, isolated from production and jo
         $relative = substr($file->getPathname(), strlen($root) + 1);
         $source = (string) file_get_contents($file->getPathname());
         expect(preg_match('/\b(UPDATE|DELETE\s+FROM)\s+b2b_account_(movements|allocations|allocation_releases|activity_events|movement_sequence)\b/i', $source) !== 1, "{$relative} must not change ledger rows");
-        if (!str_starts_with($relative, 'B2B/') && $relative !== 'Database/AuthMaintenance.php')
+        if (!str_starts_with($relative, 'B2B/') && $relative !== 'Database/AuthMaintenance.php' && $relative !== 'Finance/FinanceController.php')
             expect(preg_match('/\bb2b_account_/', $source) !== 1, "{$relative} must not read current account data");
     }
     foreach (glob($root . '/B2B/Account*.php') as $file) {
@@ -774,6 +774,33 @@ test('B2B current account ledger is insert-only, isolated from production and jo
     $maintenance = (string) file_get_contents($root . '/Database/AuthMaintenance.php');
     preg_match_all('/b2b_account\w+/', $maintenance, $tables);
     expect(array_values(array_unique(array_filter($tables[0], static fn($n) => !str_ends_with($n, '_keys')))) === ['b2b_account_idempotency']);
+});
+
+test('Finance facade is GET-only, independently app-gated, and has no financial writes', function (): void {
+    $file = dirname(__DIR__) . '/src/Finance/FinanceController.php';
+    $source = (string) file_get_contents($file);
+    expect(str_contains($source, 'if ($request->method !== \'GET\')'), 'Finance API must be GET-only');
+    expect(str_contains($source, 'requireApplication($actor, ApplicationAccess::FINANCE)'), 'Finance needs own app grant');
+    expect(str_contains($source, 'require($actor, \'finance.access\')'), 'Finance needs application permission');
+    expect(str_contains($source, "'finance.accounts.view'") && str_contains($source, "'finance.companies.view'"));
+    expect(preg_match('/\\b(INSERT|UPDATE|DELETE|REPLACE|TRUNCATE)\\s+(INTO|FROM|TABLE)?\\s*b2b_/i', $source) !== 1, 'Finance must not write B2B tables');
+    expect(preg_match('/\\b(operational_orders|order_source_operations|order_finance_actions)\\b/i', $source) !== 1, 'Finance must not reach Staff finance tables');
+
+    $A = \Arasya\Operations\Iam\ApplicationAccess::class;
+    expect($A::baselineFor(['finance']) === ['finance.access', 'profile.view_self'], 'No implicit Finance read rights');
+    expect($A::PERMISSION_APPLICATION['finance.accounts.view'] === 'finance');
+    expect($A::PERMISSION_APPLICATION['finance.companies.view'] === 'finance');
+
+    $actor = static fn (array $applications): EmployeeIdentity => new EmployeeIdentity(
+        'f2c7a9a0-2f1b-4c55-9a7e-222222222222', null, 'fin', 'fin', 'hash', 'Finance Test',
+        'contabilitate', 'Contabilitate', 'active', 'employee', 'active', 'active',
+        ['staff.access', 'finance.access', 'finance.accounts.view', 'finance.companies.view'], [], $applications,
+    );
+    $authorization = new AuthorizationService();
+    expect(!$authorization->can($actor(['staff']), 'finance.accounts.view'), 'Staff cannot access Finance through a role');
+    expectApi('APPLICATION_ACCESS_DENIED', fn () => $authorization->require($actor(['staff']), 'finance.accounts.view'));
+    expect($authorization->can($actor(['finance']), 'finance.accounts.view'));
+    expect($authorization->can($actor(['finance']), 'finance.companies.view'));
 });
 
 test('B2B account money is exact integer cents from decimal strings only', function (): void {

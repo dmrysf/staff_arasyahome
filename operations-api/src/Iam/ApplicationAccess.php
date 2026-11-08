@@ -13,6 +13,7 @@ final class ApplicationAccess
     public const STAFF = 'staff';
     public const DASHBOARD = 'dashboard';
     public const B2B = 'b2b';
+    public const FINANCE = 'finance';
 
     /** @var array<string, list<string>> */
     public const BASELINE_PERMISSIONS = [
@@ -35,6 +36,10 @@ final class ApplicationAccess
         ],
         self::B2B => [
             'b2b.access',
+            'profile.view_self',
+        ],
+        self::FINANCE => [
+            'finance.access',
             'profile.view_self',
         ],
     ];
@@ -84,6 +89,8 @@ final class ApplicationAccess
         'b2b.projects.update' => self::B2B,
         'b2b.projects.archive' => self::B2B,
         'b2b.projects.convert' => self::B2B,
+        'finance.accounts.view' => self::FINANCE,
+        'finance.companies.view' => self::FINANCE,
     ];
 
     /** @param list<string> $applications @return list<string> */

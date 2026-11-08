@@ -414,6 +414,7 @@ final class Container
                 $context,
             ),
             new \Arasya\Operations\Management\RootInterventionController($this->rootIntervention($authorization), $this->authentication, $csrf, $this->config, $context),
+            new \Arasya\Operations\Finance\FinanceController($this->authentication, $authorization, $this->config, $context, $this->pdo),
         );
     }
 

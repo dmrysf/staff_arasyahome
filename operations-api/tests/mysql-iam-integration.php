@@ -170,7 +170,13 @@ $permissions = checkOk($get($root, '/management/permissions'), 'permission catal
 $catalogKeys = array_column($permissions['items'], 'key');
 check(in_array('employees.manage_roles', $catalogKeys, true) && in_array('staff.access', $catalogKeys, true), 'catalog contains management and application permissions');
 $applications = checkOk($get($root, '/management/applications'), 'applications');
-check(array_column($applications['items'], 'key') === ['staff', 'dashboard', 'b2b'], 'staff, dashboard and b2b are the registered applications');
+check(array_column($applications['items'], 'key') === ['staff', 'dashboard', 'b2b', 'finance'], 'Finance is a separate Central IAM application');
+// The integration database is reused across tests and root bootstrap may already have application rows.
+ // Assert the migration itself never assigns an employee or role; existing test fixtures are not production grants.
+ $financeMigrationSource = (string) file_get_contents(dirname(__DIR__) . '/database/migrations/046_finance_application.sql');
+ $financeMigrationSource = preg_replace('/--[^\\r\\n]*/', '', $financeMigrationSource) ?? '';
+ check(preg_match('/\\bINSERT\\s+INTO\\s+(employee_application_access|employee_role_assignments|role_permissions)\\b/i', $financeMigrationSource) !== 1,
+     'migration 046 adds only app/permission catalog entries and never grants to employees or roles');
 $roles = checkOk($get($root, '/management/roles'), 'roles');
 $roleId = static function (string $key) use ($roles): int {
     foreach ($roles['items'] as $role) {
@@ -209,7 +215,7 @@ $staffCreated = checkOk($create($root, 'worker', ['staff'], ['employee'], ['mate
 $workerId = $staffCreated['employee']['id'];
 checkError($create($root, 'worker', ['staff'], [], []), 409, 'USERNAME_TAKEN', 'duplicate usernames are rejected');
 checkError($create($root, 'ghost', ['staff'], [], ['not-a-stage']), 400, 'UNKNOWN_STAGE', 'Dashboard cannot invent a production stage');
-checkError($asDashboard($root, 'POST', '/management/employees', ['displayName' => 'Test X', 'username' => "x.{$suffix}", 'departmentId' => $departmentId, 'positionTitle' => null, 'managerId' => null, 'applications' => ['finance'], 'roleIds' => [], 'stageIds' => [], 'status' => 'active']), 400, 'UNKNOWN_APPLICATION', 'unregistered applications are rejected');
+checkError($asDashboard($root, 'POST', '/management/employees', ['displayName' => 'Test X', 'username' => "x.{$suffix}", 'departmentId' => $departmentId, 'positionTitle' => null, 'managerId' => null, 'applications' => ['unregistered_app'], 'roleIds' => [], 'stageIds' => [], 'status' => 'active']), 400, 'UNKNOWN_APPLICATION', 'unregistered applications are rejected');
 checkError($asDashboard($root, 'POST', '/management/employees', ['displayName' => 'Test X', 'username' => "y.{$suffix}", 'departmentId' => $departmentId, 'positionTitle' => null, 'managerId' => null, 'applications' => [], 'roleIds' => [], 'stageIds' => [], 'status' => 'active', 'isRoot' => true]), 400, 'INVALID_REQUEST', 'unknown privileged fields are rejected');
 
 $ceo = $loginAt("ceo.{$suffix}", $ceoCreated['temporaryPassword'], DASHBOARD_ORIGIN);
