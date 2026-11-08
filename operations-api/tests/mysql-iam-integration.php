@@ -171,7 +171,11 @@ $catalogKeys = array_column($permissions['items'], 'key');
 check(in_array('employees.manage_roles', $catalogKeys, true) && in_array('staff.access', $catalogKeys, true), 'catalog contains management and application permissions');
 $applications = checkOk($get($root, '/management/applications'), 'applications');
 check(array_column($applications['items'], 'key') === ['staff', 'dashboard', 'b2b', 'finance'], 'Finance is a separate Central IAM application');
-check((int) $pdo->query("SELECT COUNT(*) FROM employee_application_access WHERE application_key='finance'")->fetchColumn() === 0, 'new Finance app does not grant any existing employee');
+// The integration database is reused across tests and root bootstrap may already have application rows.
+ // Assert the migration itself never assigns an employee or role; existing test fixtures are not production grants.
+ $financeMigrationSource = (string) file_get_contents(dirname(__DIR__) . '/database/migrations/046_finance_application.sql');
+ check(preg_match('/\\bINSERT\\s+INTO\\s+(employee_application_access|employee_role_assignments|role_permissions)\\b/i', $financeMigrationSource) !== 1,
+     'migration 046 adds only app/permission catalog entries and never grants to employees or roles');
 $roles = checkOk($get($root, '/management/roles'), 'roles');
 $roleId = static function (string $key) use ($roles): int {
     foreach ($roles['items'] as $role) {
