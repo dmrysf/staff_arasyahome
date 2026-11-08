@@ -715,8 +715,8 @@ test('B2B commercial orders are isolated from production and their audit is inse
         if (!$file->isFile() || $file->getExtension() !== 'php') continue;
         $relative = substr($file->getPathname(), strlen($root) + 1);
         $source = (string) file_get_contents($file->getPathname());
-        // Finance V0.3 reads one order only to bind a CEO exception record to it; it never writes commercial data.
-        if (!str_starts_with($relative, 'B2B/') && $relative !== 'Database/AuthMaintenance.php' && $relative !== 'Finance/Credit/CreditService.php')
+        // Finance V0.3 reads one order only to bind a CEO exception record to it, and the review desk counts a linked company's orders; it never writes commercial data.
+        if (!str_starts_with($relative, 'B2B/') && $relative !== 'Database/AuthMaintenance.php' && $relative !== 'Finance/Credit/CreditService.php' && $relative !== 'Finance/Company/CaseQueries.php')
             expect(preg_match('/\bb2b_order/', $source) !== 1, $relative . ' must not read commercial data');
         if (str_starts_with($relative, 'Finance/'))
             expect(preg_match('/\b(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+b2b_order/i', $source) !== 1, $relative . ' must not write commercial data');
@@ -769,7 +769,7 @@ test('B2B current account ledger is insert-only, isolated from production and jo
         $relative = substr($file->getPathname(), strlen($root) + 1);
         $source = (string) file_get_contents($file->getPathname());
         expect(preg_match('/\b(UPDATE|DELETE\s+FROM)\s+b2b_account_(movements|allocations|allocation_releases|activity_events|movement_sequence)\b/i', $source) !== 1, "{$relative} must not change ledger rows");
-        $financeLedgerReaders = ['Finance/FinanceController.php', 'Finance/Account/OnboardingService.php', 'Finance/Account/OnboardingQueries.php', 'Finance/Risk/RiskService.php', 'Finance/Credit/CreditService.php'];
+        $financeLedgerReaders = ['Finance/FinanceController.php', 'Finance/Account/OnboardingService.php', 'Finance/Account/OnboardingQueries.php', 'Finance/Risk/RiskService.php', 'Finance/Credit/CreditService.php', 'Finance/Company/CaseQueries.php'];
         if (!str_starts_with($relative, 'B2B/') && $relative !== 'Database/AuthMaintenance.php' && !in_array($relative, $financeLedgerReaders, true))
             expect(preg_match('/\bb2b_account_/', $source) !== 1, "{$relative} must not read current account data");
         // Finance writes the ledger only through the insert-only AccountLedger primitives, never with its own SQL.

@@ -22,6 +22,7 @@ final class FinanceAccess
     public const COMPANIES_REVIEW = 'finance.companies.review';
     public const COMPANIES_VERIFY = 'finance.companies.verify';
     public const COMPANIES_RESOLVE_DUPLICATES = 'finance.companies.resolve_duplicates';
+    public const COMPANIES_SUPERVISE = 'finance.companies.supervise';
 
     public const ACCOUNTS_VIEW = 'finance.accounts.view';
     public const ACCOUNTS_RECONCILE = 'finance.accounts.reconcile';
@@ -40,6 +41,7 @@ final class FinanceAccess
     public const CREDIT_REVOKE = 'finance.credit.revoke';
 
     public const AUDIT_VIEW = 'finance.audit.view';
+    public const AUDIT_SENSITIVE = 'finance.audit.sensitive';
 
     /** Capability names returned to the client (the server still checks every request). */
     public const CAPABILITIES = [
@@ -48,6 +50,7 @@ final class FinanceAccess
         'canReviewCompanies' => self::COMPANIES_REVIEW,
         'canVerifyCompanies' => self::COMPANIES_VERIFY,
         'canResolveDuplicates' => self::COMPANIES_RESOLVE_DUPLICATES,
+        'canSuperviseCompanies' => self::COMPANIES_SUPERVISE,
         'canViewAccounts' => self::ACCOUNTS_VIEW,
         'canReconcileAccounts' => self::ACCOUNTS_RECONCILE,
         'canProposeOpeningBalance' => self::ACCOUNTS_PROPOSE,
@@ -62,6 +65,7 @@ final class FinanceAccess
         'canApproveCredit' => self::CREDIT_APPROVE,
         'canRevokeCredit' => self::CREDIT_REVOKE,
         'canViewAudit' => self::AUDIT_VIEW,
+        'canViewSensitiveAudit' => self::AUDIT_SENSITIVE,
     ];
 
     public static function gate(AuthorizationService $authorization, EmployeeIdentity $actor): void

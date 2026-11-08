@@ -25,7 +25,7 @@ final readonly class RiskService
     public const INDICATORS = ['outstanding', 'daysSinceOldestOpenReceivable', 'unallocatedPayments', 'creditUtilizationPercent', 'otherCurrencyBalance', 'reconciliationAgeDays'];
     private const RANK = ['YELLOW' => 1, 'RED' => 2];
 
-    public function __construct(private FinanceStore $store)
+    public function __construct(private FinanceStore $store, private DecisionAuthority $authority)
     {
     }
 
@@ -156,6 +156,9 @@ final readonly class RiskService
         $version = In::version($input);
         $reason = In::reason($input, 'reason', $decision !== 'approve');
         return $this->store->mutate($actor, 'risk_' . $decision . ':' . $id, $input, $key, [A::RISK_APPROVE], function (string $now) use ($actor, $id, $decision, $version, $reason, $key, $request): array {
+            if ($decision !== 'reject') {
+                $this->authority->require($actor);
+            }
             $a = $this->store->lock('finance_risk_assessments', 'assessment_uuid', $id, 'ASSESSMENT_NOT_FOUND', 'Risk assessment was not found.');
             FinanceStore::expectVersion($a, $version);
             $pdo = $this->store->pdo();

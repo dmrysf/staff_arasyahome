@@ -34,7 +34,7 @@ foreach($accountTables as $table)$pdo->exec('DROP TABLE IF EXISTS '.$table);
 $pdo->exec("DELETE rp FROM role_permissions rp JOIN permissions p ON p.permission_id=rp.permission_id WHERE p.permission_key LIKE 'b2b.accounts.%'");$pdo->exec("DELETE FROM permissions WHERE permission_key LIKE 'b2b.accounts.%'");$pdo->exec("DELETE FROM schema_migrations WHERE migration_name='011_b2b_current_account.sql'");
 $grants=$pdo->query('SELECT * FROM role_permissions ORDER BY role_id,permission_id')->fetchAll();
 $ordersBefore=$pdo->query('SELECT COUNT(*) FROM b2b_orders')->fetchColumn();
-check((new MigrationRunner($pdo))->migrate($dir)===['011_b2b_current_account.sql','047_finance_company_onboarding.sql'],'010→011 upgrade');
+check((new MigrationRunner($pdo))->migrate($dir)===['011_b2b_current_account.sql','047_finance_company_onboarding.sql','048_finance_verification_center.sql'],'010→011 upgrade');
 check((new MigrationRunner($pdo))->migrate($dir)===[],'011 recorded once');
 (new SqlFileRunner($pdo))->run($dir.'/011_b2b_current_account.sql');
 check($pdo->query('SELECT * FROM role_permissions ORDER BY role_id,permission_id')->fetchAll()===$grants,'011 grants nothing automatically');

@@ -83,7 +83,18 @@ final readonly class Config
          * Empty (the default) means no one can. Never inferred from a name, username or role.
          */
         public string $financeCeoEmployeeUuid = '',
+        /**
+         * Comma-separated employee UUIDs allowed to make an effective risk-colour or credit-limit change
+         * (ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS). Empty (the default) means no one, whatever role they hold.
+         * Provisioned only on the owner's explicit instruction; never inferred from a name, username or role.
+         */
+        public string $financeRiskLimitAuthorityUuids = '',
     ) {
+        foreach ($this->financeRiskLimitAuthorityList() as $uuid) {
+            if (preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/D', $uuid) !== 1) {
+                throw new RuntimeException('ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS must list employee UUIDs.');
+            }
+        }
         if ($this->financeCeoEmployeeUuid !== '' && preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/D', $this->financeCeoEmployeeUuid) !== 1) {
             throw new RuntimeException('ARASYA_FINANCE_CEO_EMPLOYEE_UUID must be an employee UUID.');
         }
@@ -167,6 +178,7 @@ final readonly class Config
             sourceAccess: self::sourceAccess($values, $sourceKeys),
             financeOpeningBalancePosting: self::value($values, 'ARASYA_FINANCE_OPENING_BALANCE_POSTING', 'disabled'),
             financeCeoEmployeeUuid: strtolower(self::value($values, 'ARASYA_FINANCE_CEO_EMPLOYEE_UUID', '')),
+            financeRiskLimitAuthorityUuids: strtolower(self::value($values, 'ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS', '')),
         );
     }
 
@@ -177,6 +189,12 @@ final readonly class Config
     }
 
     /** Whether verified Finance opening balances may be posted to the B2B ledger. */
+    /** @return list<string> */
+    public function financeRiskLimitAuthorityList(): array
+    {
+        return array_values(array_filter(array_map('trim', explode(',', $this->financeRiskLimitAuthorityUuids)), static fn (string $uuid): bool => $uuid !== ''));
+    }
+
     public function financeOpeningBalancePostingEnabled(): bool
     {
         return $this->financeOpeningBalancePosting === 'enabled';

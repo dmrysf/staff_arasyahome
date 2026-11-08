@@ -53,7 +53,7 @@ $appGrants = $pdo->query('SELECT * FROM employee_application_access ORDER BY emp
 check($pdo->query('SELECT * FROM role_permissions ORDER BY role_id, permission_id')->fetchAll() === $grants, '047 re-run grants no role anything');
 check($pdo->query('SELECT * FROM employee_application_access ORDER BY employee_uuid, application_key')->fetchAll() === $appGrants, '047 grants no application access');
 check((int) $pdo->query("SELECT COUNT(*) FROM schema_migrations WHERE migration_name = '047_finance_company_onboarding.sql'")->fetchColumn() === 1, '047 recorded once');
-check((int) $pdo->query("SELECT COUNT(*) FROM permissions WHERE permission_key LIKE 'finance.%' AND role_grantable = 1")->fetchColumn() === 19, '19 role-grantable Finance permissions (2 from 046, 17 from 047)');
+check((int) $pdo->query("SELECT COUNT(*) FROM permissions WHERE permission_key LIKE 'finance.%' AND role_grantable = 1")->fetchColumn() === 21, '21 role-grantable Finance permissions (2 from 046, 17 from 047, 2 from 048)');
 check((int) $pdo->query("SELECT role_grantable FROM permissions WHERE permission_key = 'finance.access'")->fetchColumn() === 0, 'finance.access stays an application grant');
 check((int) $pdo->query("SELECT COUNT(*) FROM finance_risk_policies")->fetchColumn() === 0, 'no risk threshold is seeded');
 check((int) $pdo->query("SELECT COUNT(*) FROM information_schema.REFERENTIAL_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME LIKE 'finance\\_%' AND TABLE_NAME NOT IN ('finance_verification_requests', 'finance_verification_request_events') AND (DELETE_RULE NOT IN ('RESTRICT', 'NO ACTION') OR UPDATE_RULE NOT IN ('RESTRICT', 'NO ACTION'))")->fetchColumn() === 0, 'no cascading Finance foreign keys');
@@ -76,8 +76,12 @@ $temporary = (new RootBootstrapService($pdo, $base->passwordHasher(), $base->clo
 $first = T::login($kernel, $rootUser, $temporary);
 ok(T::call($kernel, 'POST', '/auth/password', ['currentPassword' => $temporary, 'newPassword' => 'Finance root passphrase 2026!'], ['x-csrf-token' => $first['csrf']], $first['cookie']), 200, 'root password');
 $root = T::login($kernel, $rootUser, 'Finance root passphrase 2026!');
-$call = static fn (array $who, string $method, string $path, ?array $json = null, array $query = [], ?string $key = null, ?\Arasya\Operations\Http\ApiKernel $k = null): array
-    => T::call($k ?? $kernel, $method, $path, $json, $method === 'GET' ? [] : ['x-csrf-token' => $who['csrf'], 'idempotency-key' => $key ?? ('fin-test-' . bin2hex(random_bytes(10)))], $who['cookie'], $query);
+// V0.3.1: effective risk and limit decisions need a provisioned authority, so those routes run on the kernel that has one.
+$live = null;
+$call = static function (array $who, string $method, string $path, ?array $json = null, array $query = [], ?string $key = null, ?\Arasya\Operations\Http\ApiKernel $k = null) use (&$live, $kernel): array {
+    $k ??= preg_match('#^/finance/(risk/[0-9a-f-]{36}/(approve|suspend)|credit/[0-9a-f-]{36}/(approve|suspend|reinstate|revoke))$#D', $path) === 1 ? $live : $kernel;
+    return T::call($k, $method, $path, $json, $method === 'GET' ? [] : ['x-csrf-token' => $who['csrf'], 'idempotency-key' => $key ?? ('fin-test-' . bin2hex(random_bytes(10)))], $who['cookie'], $query);
+};
 $role = static function (string $name, array $permissions) use ($call, $root, $suffix): int {
     return (int) ok($call($root, 'POST', '/management/roles', ['name' => "{$name} {$suffix}", 'description' => null, 'authorityRank' => 200, 'permissions' => $permissions]), 201, "role {$name}")['role']['id'];
 };
@@ -109,7 +113,7 @@ $b2bOnly = $person('b2bonly', ['b2b'], ['b2b.companies.view', 'b2b.accounts.view
 $args = [];
 foreach ((new ReflectionClass(Config::class))->getConstructor()->getParameters() as $parameter) {
     $name = $parameter->getName();
-    $args[$name] = match ($name) { 'financeOpeningBalancePosting' => 'enabled', 'financeCeoEmployeeUuid' => $ceo['id'], default => $config->{$name} };
+    $args[$name] = match ($name) { 'financeOpeningBalancePosting' => 'enabled', 'financeCeoEmployeeUuid' => $ceo['id'], 'financeRiskLimitAuthorityUuids' => $riskApprover['id'] . ',' . $creditApprover['id'], default => $config->{$name} };
 }
 $live = (new Container(new Config(...$args), $pdo))->kernel();
 
@@ -269,7 +273,7 @@ check($page['nextCursor'] === null && count($page['items']) === 6, 'keyset page'
 $c1 = $case(1)['case_uuid'];
 $get = fn (array $who, string $id) => ok($call($who, 'GET', "/finance/cases/{$id}"), 200, 'case detail');
 $d = $get($reviewerA, $c1);
-check($d['actions'] === ['claim'] && $d['source']['line'] === 1 && $d['source']['cells'][0] === 'Alfa Textil SRL', 'source row and permitted actions');
+check($d['actions'] === ['comment', 'declare_conflict', 'request_supervision', 'claim'] && $d['source']['line'] === 1 && $d['source']['cells'][0] === 'Alfa Textil SRL', 'source row and permitted actions');
 check(!in_array('approve', $get($verifier, $c1)['actions'], true), 'no approve before submission');
 $v = $d['case']['version'];
 err($call($reviewerA, 'POST', "/finance/cases/{$c1}/approve", ['expectedVersion' => $v]), 403, 'UNAUTHORIZED_ACTION', 'reviewer cannot approve');

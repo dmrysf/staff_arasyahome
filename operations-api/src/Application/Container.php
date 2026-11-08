@@ -281,12 +281,13 @@ final class Container
         $store = new \Arasya\Operations\Finance\FinanceStore($this->pdo, $authorization, $this->clock);
         $cases = new \Arasya\Operations\Finance\Company\CaseService($store);
         $onboarding = new \Arasya\Operations\Finance\Account\OnboardingService($store, $this->config->financeOpeningBalancePostingEnabled());
-        $risk = new \Arasya\Operations\Finance\Risk\RiskService($store);
+        $authority = new \Arasya\Operations\Finance\Risk\DecisionAuthority($this->config->financeRiskLimitAuthorityList());
+        $risk = new \Arasya\Operations\Finance\Risk\RiskService($store, $authority);
         return new \Arasya\Operations\Finance\FinanceController(
             $this->authentication, $authorization, $this->config, $context, $this->pdo, $csrf, $rateLimiter,
-            new \Arasya\Operations\Finance\Import\ImportService($store, $cases), $cases, new \Arasya\Operations\Finance\Company\CaseQueries($store),
+            new \Arasya\Operations\Finance\Import\ImportService($store, $cases), $cases, new \Arasya\Operations\Finance\Company\CaseQueries($store, $cases),
             $onboarding, new \Arasya\Operations\Finance\Account\OnboardingQueries($store, $onboarding), $risk,
-            new \Arasya\Operations\Finance\Credit\CreditService($store, $risk, $this->config->financeCeoEmployeeUuid),
+            new \Arasya\Operations\Finance\Credit\CreditService($store, $risk, $this->config->financeCeoEmployeeUuid, $authority),
         );
     }
 

@@ -108,13 +108,19 @@ final readonly class OnboardingQueries
             'debit' => $r['declared_debit'], 'credit' => $r['declared_credit'], 'lastTransactionDate' => $r['last_transaction_date'], 'legacyCustomerCode' => $r['legacy_customer_code'],
             'caseStatus' => $r['status'], 'currencyMatches' => $r['declared_currency'] === null ? null : $r['declared_currency'] === $o['account_currency']], $s->fetchAll(PDO::FETCH_ASSOC));
         $auth = $this->store->authorization();
+        $overlap = $this->service->overlapView($o);
         $actions = [];
         $mine = $o['proposed_by_employee_uuid'] === $actor->employeeUuid;
         if (A::can($auth, $actor, A::ACCOUNTS_PROPOSE) && in_array($o['status'], ['NO_INFORMATION', 'AWAITING_RECONCILIATION', 'DISPUTED'], true)) {
             $actions[] = 'draft';
         }
         if (A::can($auth, $actor, A::ACCOUNTS_PROPOSE) && $o['status'] === 'AWAITING_RECONCILIATION' && $o['balance_kind'] !== null) {
-            $actions[] = 'submit';
+            if ($overlap['lines'] !== []) {
+                $actions[] = 'reconcile_overlap';
+            }
+            if (!in_array($overlap['state'], ['required', 'stale'], true)) {
+                $actions[] = 'submit';
+            }
         }
         if (A::can($auth, $actor, A::ACCOUNTS_VERIFY) && $o['status'] === 'SUBMITTED' && !$mine) {
             array_push($actions, 'verify', 'return');
@@ -149,7 +155,8 @@ final readonly class OnboardingQueries
                 'postedBy' => $o['posted_name'], 'postedAt' => FinanceStore::iso($o['posted_at']), 'postedMovementCode' => $o['movement_code'], 'cycle' => (int) $o['cycle_no'],
                 'version' => (int) $o['version'], 'proposedByMe' => $mine,
             ],
-            'ledger' => $this->service->ledgerView((string) $o['company_uuid'], (string) $o['account_currency'], $o['as_of_date']),
+            'ledger' => array_diff_key($this->service->ledgerView((string) $o['company_uuid'], (string) $o['account_currency'], $o['as_of_date']), ['fingerprint' => 1, 'otherCurrencyFingerprint' => 1]),
+            'overlap' => $overlap,
             'declared' => $declared,
             'evidence' => $this->store->evidenceOf('onboarding', $id),
             'history' => $this->store->history('onboarding', $id),
