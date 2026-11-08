@@ -779,14 +779,14 @@ test('B2B current account ledger is insert-only, isolated from production and jo
 test('Finance facade is GET-only, independently app-gated, and has no financial writes', function (): void {
     $file = dirname(__DIR__) . '/src/Finance/FinanceController.php';
     $source = (string) file_get_contents($file);
-    expect(str_contains($source, "if ($request->method !== 'GET')"), 'Finance API must be GET-only');
-    expect(str_contains($source, "requireApplication($actor, ApplicationAccess::FINANCE)"), 'Finance needs own app grant');
-    expect(str_contains($source, "require($actor, 'finance.access')"), 'Finance needs application permission');
+    expect(str_contains($source, 'if ($request->method !== \'GET\')'), 'Finance API must be GET-only');
+    expect(str_contains($source, 'requireApplication($actor, ApplicationAccess::FINANCE)'), 'Finance needs own app grant');
+    expect(str_contains($source, 'require($actor, \'finance.access\')'), 'Finance needs application permission');
     expect(str_contains($source, "'finance.accounts.view'") && str_contains($source, "'finance.companies.view'"));
     expect(preg_match('/\\b(INSERT|UPDATE|DELETE|REPLACE|TRUNCATE)\\s+(INTO|FROM|TABLE)?\\s*b2b_/i', $source) !== 1, 'Finance must not write B2B tables');
     expect(preg_match('/\\b(operational_orders|order_source_operations|order_finance_actions)\\b/i', $source) !== 1, 'Finance must not reach Staff finance tables');
 
-    $A = \\Arasya\\Operations\\Iam\\ApplicationAccess::class;
+    $A = \Arasya\Operations\Iam\ApplicationAccess::class;
     expect($A::baselineFor(['finance']) === ['finance.access', 'profile.view_self'], 'No implicit Finance read rights');
     expect($A::PERMISSION_APPLICATION['finance.accounts.view'] === 'finance');
     expect($A::PERMISSION_APPLICATION['finance.companies.view'] === 'finance');
