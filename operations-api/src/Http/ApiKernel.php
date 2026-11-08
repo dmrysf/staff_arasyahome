@@ -47,6 +47,7 @@ final readonly class ApiKernel
         private ?\Arasya\Operations\Production\PieceController $pieces = null,
         private ?\Arasya\Operations\Confirmare\ConfirmareController $confirmare = null,
         private ?\Arasya\Operations\Management\RootInterventionController $interventions = null,
+        private ?\Arasya\Operations\Finance\FinanceController $finance = null,
     ) {
     }
 
@@ -104,6 +105,9 @@ final readonly class ApiKernel
 
     private function matchDynamicRoutes(Request $request): Response
     {
+        if ($request->path === '/finance/access' || $request->path === '/finance/b2b/accounts' || $request->path === '/finance/companies') {
+            return ($this->finance ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Finance API is not ready.'))->handle($request);
+        }
         if (str_starts_with($request->path,'/management/analytics/')) return ($this->analytics ?? throw new ApiException(503,'SERVICE_UNAVAILABLE','Analytics unavailable.'))->handle($request);
         if (str_starts_with($request->path, '/cutting/') || str_starts_with($request->path, '/display/cutting/') || str_starts_with($request->path, '/management/cutting/')) return $this->cuttingController()->handle($request);
         if ($request->path === '/b2b/accounts' || str_starts_with($request->path, '/b2b/accounts/')) {
