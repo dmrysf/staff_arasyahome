@@ -174,6 +174,7 @@ check(array_column($applications['items'], 'key') === ['staff', 'dashboard', 'b2
 // The integration database is reused across tests and root bootstrap may already have application rows.
  // Assert the migration itself never assigns an employee or role; existing test fixtures are not production grants.
  $financeMigrationSource = (string) file_get_contents(dirname(__DIR__) . '/database/migrations/046_finance_application.sql');
+ $financeMigrationSource = preg_replace('/--[^\\r\\n]*/', '', $financeMigrationSource) ?? '';
  check(preg_match('/\\bINSERT\\s+INTO\\s+(employee_application_access|employee_role_assignments|role_permissions)\\b/i', $financeMigrationSource) !== 1,
      'migration 046 adds only app/permission catalog entries and never grants to employees or roles');
 $roles = checkOk($get($root, '/management/roles'), 'roles');
