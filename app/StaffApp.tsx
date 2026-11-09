@@ -42,6 +42,8 @@ import { FinanceInboxScreen, FinanceLegacyScreen, FinanceOrderScreen, FinanceOve
 import { ConfirmareHandoffScreen } from "../features/confirmare/ConfirmareHandoffScreen";
 import { ConfirmareAwbScreen, ConfirmareEfacturaScreen, ConfirmareHealthScreen } from "../features/confirmare/ConfirmareShopTasks";
 import { GuideProvider } from "../features/guide/ContextualHelp";
+import { AwbStationScreen } from "../features/awb/AwbStationScreen";
+import { canPrintAwb, isAwbStationOnly } from "../domain/awb";
 
 type StaffAppProps = { initialRoute: string; mode: StaffRuntimeMode; apiBaseUrl: string };
 
@@ -170,6 +172,13 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
   const financeLegacyId = parsedRoute.kind === "finance-legacy" && guardedRoute === parsedRoute.pathname ? parsedRoute.orderId : "";
   const workspaces = resolveWorkspaces(session.employee, workspaceAvailability(services));
   const chooseWorkspace = (workspace: Workspace) => { saveWorkspacePreference(session.employee.employeeUuid, workspace.id); navigate("/"); };
+  // Staff 2.47.0: the Trendyol AWB station is its own full screen, without the Staff navigation. A dedicated station
+  // account (AWB access and no other Staff work) always sees only the station; a named employee opens it from home.
+  const stationOnly = Boolean(services.awb) && isAwbStationOnly(session.employee, workspaces.filter((workspace) => workspace.kind !== "general").length);
+  if (services.awb && (stationOnly || guardedRoute === "/awb")) {
+    if (stationOnly && window.location.pathname !== "/awb") window.history.replaceState({}, "", "/awb");
+    return <AwbStationScreen key={session.employee.employeeUuid} service={services.awb} displayName={session.employee.displayName} canPrint={canPrintAwb(session.employee)} onLogout={logout} onBack={stationOnly ? undefined : () => navigate("/")} />;
+  }
   const desk = (service: ConfirmareApi, deskOrderId: string | null) => <OperatorDesk employee={session.employee} service={service} documents={services.documents} orderId={deskOrderId} navigate={navigate} workspaces={workspaces} onWorkspace={chooseWorkspace} />;
   let screen = <HomeScreen employee={session.employee} services={services} workflow={workflow} dashboardUrl={dashboardUrl} navigate={navigate} />;
   if (guardedRoute === "/" && deskHome && services.confirmare) screen = desk(services.confirmare, null);

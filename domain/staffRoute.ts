@@ -1,5 +1,5 @@
 export type StaffRoute =
-  | { kind: "home" | "login" | "scan" | "orders" | "history" | "profile" | "authority" | "trendyol" | "problems" | "confirmare" | "confirmare-team" | "confirmare-finance" | "confirmare-handoff" | "confirmare-awb" | "confirmare-efactura" | "confirmare-health" | "finance-inbox" | "finance-oversight"; pathname: string }
+  | { kind: "home" | "login" | "scan" | "orders" | "history" | "profile" | "authority" | "trendyol" | "problems" | "confirmare" | "confirmare-team" | "confirmare-finance" | "confirmare-handoff" | "confirmare-awb" | "confirmare-efactura" | "confirmare-health" | "finance-inbox" | "finance-oversight" | "awb"; pathname: string }
   | { kind: "confirmare-order"; pathname: string; orderId: string }
   | { kind: "finance-task" | "finance-oversight-detail"; pathname: string; requestId: string }
   | { kind: "finance-order"; pathname: string; orderId: string }
@@ -10,7 +10,7 @@ export type StaffRoute =
   | { kind: "document-detail"; pathname: string; orderId: string }
   | { kind: "invalid"; pathname: "/" };
 
-const fixedRoutes = new Map<string, "home" | "login" | "scan" | "orders" | "history" | "profile" | "authority" | "trendyol" | "problems" | "confirmare" | "confirmare-team" | "confirmare-finance" | "confirmare-handoff" | "confirmare-awb" | "confirmare-efactura" | "confirmare-health" | "finance-inbox" | "finance-oversight">([
+const fixedRoutes = new Map<string, "home" | "login" | "scan" | "orders" | "history" | "profile" | "authority" | "trendyol" | "problems" | "confirmare" | "confirmare-team" | "confirmare-finance" | "confirmare-handoff" | "confirmare-awb" | "confirmare-efactura" | "confirmare-health" | "finance-inbox" | "finance-oversight" | "awb">([
   ["/", "home"],
   ["/login", "login"],
   ["/scan", "scan"],
@@ -19,6 +19,7 @@ const fixedRoutes = new Map<string, "home" | "login" | "scan" | "orders" | "hist
   ["/profile", "profile"],
   ["/authority", "authority"],
   ["/trendyol", "trendyol"],
+  ["/awb", "awb"],
   ["/problems", "problems"],
   ["/confirmare", "confirmare"],
   ["/confirmare/team", "confirmare-team"],

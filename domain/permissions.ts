@@ -4,6 +4,7 @@ import { canUseShopTasks, canWatchHealth } from "./confirmareOps";
 import { canUseFinance } from "./confirmareFinance";
 import { canOverseeFinance, canUseFinanceInbox } from "./financeRequests";
 import { usesProductionScanner } from "./operatorDesk";
+import { canUseAwbStation } from "./awb";
 
 export type StaffPermission =
   | "orders.scan"
@@ -31,6 +32,8 @@ export function canAccessRoute(employee: Employee, path: string) {
   if (path === "/scan") return usesProductionScanner(employee);
   // Production authority takeover: managers holding the permission together with Dashboard access.
   if (path === "/authority") return employee.permissions.includes("production.manage_authority") && employee.applications.includes("dashboard");
+  // Staff 2.47.0: the Trendyol AWB print station, for AWB permission holders (the dedicated station account or a named employee).
+  if (path === "/awb") return canUseAwbStation(employee);
   // Trendyol workspace: only explicitly authorized Trendyol personnel (Staff access plus the Trendyol view permission).
   if (path === "/trendyol" || path.startsWith("/trendyol/")) return employee.permissions.includes("trendyol.orders.view") && employee.applications.includes("staff");
   // Confirmare (API 2.39.0): only identities holding a Confirmare scope; the team view only for supervisors.

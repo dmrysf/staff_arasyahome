@@ -57,7 +57,7 @@ final readonly class CorsPolicy
             'Access-Control-Allow-Credentials' => 'true',
             'Access-Control-Allow-Methods' => 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
             'Access-Control-Allow-Headers' => 'Content-Type, Idempotency-Key, If-None-Match, X-CSRF-Token, X-Request-ID',
-            'Access-Control-Expose-Headers' => 'ETag, X-Request-ID',
+            'Access-Control-Expose-Headers' => 'ETag, X-Request-ID, X-Arasya-Label-Retrieval, X-Arasya-Label-Parcel, X-Arasya-Label-Parcels',
             'Access-Control-Max-Age' => '600',
             'Vary' => 'Origin',
         ];

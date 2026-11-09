@@ -9,6 +9,7 @@ import { confirmareEditTR } from "./confirmareEdit";
 import { confirmareWorkflowTR } from "./confirmareWorkflow";
 import { operatorDeskTR } from "./operatorDesk";
 import { officeHistoryTR } from "./officeHistory";
+import { awbEntryTR } from "./awbEntry";
 import { physicalTR } from "./physical";
 import type { Catalog } from "../types";
 import { trErrors } from "./tr.errors";
@@ -31,6 +32,7 @@ export const tr: Catalog = {
   ...confirmareWorkflowTR,
   ...operatorDeskTR,
   ...officeHistoryTR,
+  ...awbEntryTR,
 
   // ---- common
   "common.back": "Geri",

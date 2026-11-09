@@ -56,6 +56,9 @@ final readonly class FixtureTrendyolTransport implements TrendyolTransport
         if (!is_array($fixture) || ($fixture['fail'] ?? false) === true) {
             throw new RuntimeException('TRENDYOL_REQUEST_FAILED');
         }
+        if (preg_match('#^/integration/sellers/[0-9]+/common-label/query$#D', (string) parse_url($url, PHP_URL_PATH)) === 1) {
+            return $this->label($fixture, $url, $headers);
+        }
         if (isset($fixture['status']) || isset($fixture['body'])) {
             return ['status' => (int) ($fixture['status'] ?? 200), 'body' => (string) ($fixture['body'] ?? '')];
         }
@@ -79,5 +82,30 @@ final readonly class FixtureTrendyolTransport implements TrendyolTransport
             'page' => $page,
             'size' => $size,
         ], JSON_THROW_ON_ERROR)];
+    }
+
+    /**
+     * The common label service (test only, API 2.65.0). "labels" maps a cargo tracking number to its scripted answer:
+     * {"status": 200, "data": [{"format": "PDF", "label": "https://cdn.dsmcdn.com/..."}]}, {"status": 400}, {"body": "raw"}
+     * or {"fail": true}; an unknown number answers 400 like Trendyol. "labelStatus" scripts every label answer at once.
+     * Every call is appended to "labelCalls" ({id, storeFrontCode}) so a test can count marketplace label reads.
+     *
+     * @param array<string, mixed> $fixture
+     * @param array<string, string> $headers
+     * @return array{status: int, body: string}
+     */
+    private function label(array $fixture, string $url, array $headers): array
+    {
+        parse_str((string) parse_url($url, PHP_URL_QUERY), $query);
+        $id = (string) ($query['id'] ?? '');
+        $fixture['labelCalls'][] = ['id' => $id, 'storeFrontCode' => $headers['storeFrontCode'] ?? null, 'authorized' => isset($headers['Authorization'])];
+        file_put_contents($this->file, json_encode($fixture, JSON_THROW_ON_ERROR));
+        $script = isset($fixture['labelStatus']) ? ['status' => (int) $fixture['labelStatus']] : ($fixture['labels'][$id] ?? ['status' => 400]);
+        if (!is_array($script) || ($script['fail'] ?? false) === true) {
+            throw new RuntimeException('TRENDYOL_REQUEST_FAILED');
+        }
+        $status = (int) ($script['status'] ?? 200);
+        $body = isset($script['body']) ? (string) $script['body'] : json_encode(['data' => $script['data'] ?? []], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        return ['status' => $status, 'body' => $status === 200 || isset($script['body']) ? $body : '{"errors":[{"message":"fixture"}]}'];
     }
 }
