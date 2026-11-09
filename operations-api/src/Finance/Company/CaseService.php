@@ -32,11 +32,19 @@ final readonly class CaseService
         'legacyCustomerCode' => ['legacy_customer_code', 64, false], 'notes' => ['notes', 2000, true],
     ];
 
+    /** A change to one of these, on a value already present, without a reason raises UNEXPLAINED_IDENTITY_CHANGE. */
+    private const IDENTITY_FIELDS = ['legalName', 'countryCode', 'taxIdentifier', 'vatNumber', 'registrationNumber'];
+
+    /** Case-editing actions: whoever performed one in the current review cycle cannot be the final verifier. */
+    private const EDITING_ACTIONS = ['case_updated', 'checklist_updated', 'case_claimed', 'company_linked', 'duplicate_linked', 'duplicate_kept_separate', 'duplicate_dismissed', 'flag_resolved'];
+
     private DuplicateFinder $finder;
+    private CaseFlags $flags;
 
     public function __construct(private FinanceStore $store)
     {
         $this->finder = new DuplicateFinder($store->pdo());
+        $this->flags = new CaseFlags($store->pdo());
     }
 
     // ---- creation -------------------------------------------------------------------------------------------
@@ -60,11 +68,12 @@ final readonly class CaseService
             }
         }
         $pdo->prepare('INSERT INTO finance_company_cases (case_uuid, case_number, case_code, origin, source_system, import_row_uuid, source_fingerprint, origin_company_uuid, company_uuid,
-                legal_name, commercial_name, name_key, country_code, tax_identifier, tax_normalized, vat_number, vat_normalized, registration_number, registration_normalized,
+                source_customer_name, source_customer_code, legal_name, commercial_name, name_key, country_code, tax_identifier, tax_normalized, vat_number, vat_normalized, registration_number, registration_normalized,
                 address_line, city, postal_code, county_region, contact_name, phone, phone_key, email, website, legacy_customer_code, declared_currency, declared_debit, declared_credit,
                 last_transaction_date, notes, status, checklist_json, field_meta_json, created_by_employee_uuid, created_at, updated_by_employee_uuid, updated_at, version)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \'IMPORTED\', ?, ?, ?, ?, ?, ?, 1)')
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \'IMPORTED\', ?, ?, ?, ?, ?, ?, 1)')
             ->execute([$id, $number, $code, $origin, $source, $importRow, $fingerprint, $originCompany, $originCompany,
+                $v['sourceCustomerName'] ?? null, $v['sourceCustomerCode'] ?? null,
                 $v['legalName'] ?? null, $v['commercialName'] ?? null, $v['nameKey'] ?? null, $v['countryCode'] ?? null, $v['taxIdentifier'] ?? null, $v['taxNormalized'] ?? null,
                 $v['vatNumber'] ?? null, $v['vatNormalized'] ?? null, $v['registrationNumber'] ?? null, $v['registrationNormalized'] ?? null,
                 $v['addressLine'] ?? null, $v['city'] ?? null, $v['postalCode'] ?? null, $v['countyRegion'] ?? null, $v['contactName'] ?? null, $v['phone'] ?? null, $v['phoneKey'] ?? null,
@@ -74,6 +83,10 @@ final readonly class CaseService
                 FinanceStore::json(CaseWorkflow::emptyChecklist()), FinanceStore::json((object) $meta), $actor->employeeUuid, $now, $actor->employeeUuid, $now]);
         $this->store->event('case', $id, $originCompany, $actor, 'case_created', null, 1, null, ['origin' => $origin, 'source' => $source], $request, $key, $now);
         $strongest = $this->refreshDuplicates($id, $v, $originCompany, $now);
+        foreach ($v['reviewFlags'] ?? [] as $flag) {
+            $this->flags->raise($id, (string) $flag, 'import', null, $now);
+        }
+        $this->flags->detectShared($id, $now);
         $complete = ($v['legalName'] ?? null) !== null && ($v['countryCode'] ?? null) !== null && ($v['taxNormalized'] ?? null) !== null;
         $status = in_array($strongest, ['exact', 'strong'], true) ? 'SUSPECTED_DUPLICATE' : ($complete ? 'NEEDS_REVIEW' : 'NEEDS_INFORMATION');
         CaseWorkflow::allow('IMPORTED', $status);
@@ -131,6 +144,7 @@ final readonly class CaseService
         return $this->store->mutate($actor, 'case_claim:' . $caseId, $input, $key, [A::COMPANIES_REVIEW], function (string $now) use ($actor, $caseId, $version, $key, $request): array {
             $case = $this->lockCase($caseId);
             FinanceStore::expectVersion($case, $version, 'CASE_CHANGED');
+            $this->assertNotRecused($case, $actor);
             if ($case['status'] === 'IN_REVIEW') {
                 throw new ApiException(409, 'CASE_ASSIGNED', 'The case is already being reviewed.', ['assignedTo' => $this->name($case['assigned_employee_uuid'])]);
             }
@@ -156,19 +170,26 @@ final readonly class CaseService
     /** Saves edited fields (draft). Changed identity fields reopen their checklist items and rerun duplicate detection. */
     public function update(EmployeeIdentity $actor, string $caseId, array $input, string $key, string $request): array
     {
-        In::only($input, ['expectedVersion', 'fields']);
+        In::only($input, ['expectedVersion', 'fields', 'reason', 'evidence']);
         $version = In::version($input);
+        $reason = In::reason($input, 'reason', false);
+        $evidence = In::evidence($input);
         $fields = $input['fields'] ?? null;
         if (!is_array($fields) || array_is_list($fields) && $fields !== []) {
             In::fail('fields', 'invalid');
         }
         In::only($fields, array_keys(self::FIELDS));
-        return $this->store->mutate($actor, 'case_update:' . $caseId, $input, $key, [A::COMPANIES_REVIEW], function (string $now) use ($actor, $caseId, $version, $fields, $key, $request): array {
+        return $this->store->mutate($actor, 'case_update:' . $caseId, $input, $key, [A::COMPANIES_REVIEW], function (string $now) use ($actor, $caseId, $version, $fields, $reason, $evidence, $key, $request): array {
             $case = $this->assigned($caseId, $actor, $version);
             $current = self::values($case);
             $next = self::candidate(array_merge(array_intersect_key($current, self::FIELDS), $fields), array_keys($fields));
-            if ($next['legalName'] === null && $next['commercialName'] === null) {
+            if ($next['legalName'] === null && $next['commercialName'] === null && $case['source_customer_name'] === null) {
                 In::fail('legalName', 'required');
+            }
+            // The imported label stays the identity key until a registered name exists; it is never rewritten.
+            $next['nameKey'] ??= $case['source_customer_name'] === null ? null : ImportNormalizer::nameKey((string) $case['source_customer_name']);
+            if ($case['source_customer_code'] !== null && array_key_exists('legacyCustomerCode', $fields) && $next['legacyCustomerCode'] !== $current['legacyCustomerCode']) {
+                throw new ApiException(409, 'SOURCE_CODE_IMMUTABLE', 'The imported customer code is source data and cannot be changed.');
             }
             $changed = [];
             foreach (array_keys(self::FIELDS) as $field) {
@@ -206,7 +227,17 @@ final readonly class CaseService
                 $columns['duplicate_review'] = $this->openStrong($caseId) ? 'open' : ($strongest === 'none' ? 'not_started' : 'resolved');
             }
             $this->set($case, $columns, $actor, $now);
-            $this->store->event('case', $caseId, $case['company_uuid'], $actor, 'case_updated', (int) $case['version'], (int) $case['version'] + 1, null, ['fields' => $changed, 'reopened' => array_keys($reopen)], $request, $key, $now);
+            $evidenceIds = $this->store->evidence('case', $caseId, $evidence, $actor, $now);
+            foreach ($changed as $field) {
+                $this->recordChange($caseId, $field, $current[$field] ?? null, $next[$field], (int) $case['version'] + 1, $reason, $evidenceIds, $actor, $request, $now);
+                if ($reason === null && ($current[$field] ?? null) !== null && in_array($field, self::IDENTITY_FIELDS, true)) {
+                    $this->flags->raise($caseId, CaseFlags::IDENTITY_CHANGE, 'detector', ['field' => $field], $now, true);
+                }
+            }
+            if (isset($reopen['duplicate_search'])) {
+                $this->flags->detectShared($caseId, $now);
+            }
+            $this->store->event('case', $caseId, $case['company_uuid'], $actor, 'case_updated', (int) $case['version'], (int) $case['version'] + 1, $reason, ['fields' => $changed, 'reopened' => array_keys($reopen), 'evidence' => count($evidenceIds)], $request, $key, $now);
             return ['status' => 200, 'caseId' => $caseId, 'version' => (int) $case['version'] + 1, 'changed' => $changed];
         });
     }
@@ -245,6 +276,9 @@ final readonly class CaseService
                 if ($state === 'done' && ($case['tax_normalized'] === null || $case['country_code'] === null)) {
                     throw new ApiException(409, 'FIELD_MISSING', 'A tax identifier and country are required to verify it.');
                 }
+                if ($state === 'done' && $case['country_code'] === 'RO' && !ImportNormalizer::validRomanianCui((string) $case['tax_normalized'])) {
+                    throw new ApiException(409, 'TAX_IDENTIFIER_INVALID', 'The Romanian tax identifier fails its control digit and cannot be marked verified.');
+                }
                 $columns['tax_status'] = match ($state) { 'done' => 'verified', 'pending' => 'pending', default => 'unverified' };
             }
             if ($item === 'duplicate_search' && $state === 'done') {
@@ -276,6 +310,8 @@ final readonly class CaseService
             FinanceStore::expectVersion($case, $version, 'CASE_CHANGED');
             if ($case['status'] === 'READY_FOR_SECOND_CHECK') {
                 A::require($this->store->authorization(), $actor, A::COMPANIES_VERIFY);
+                $this->assertNotRecused($case, $actor);
+                $this->requireSupervisorWhenNeeded($case, $actor);
                 $decision = 'returned';
             } else {
                 A::require($this->store->authorization(), $actor, A::COMPANIES_REVIEW);
@@ -305,6 +341,7 @@ final readonly class CaseService
         return $this->store->mutate($actor, 'case_duplicate:' . $caseId . ':' . $candidateId, $input, $key, [A::COMPANIES_RESOLVE_DUPLICATES], function (string $now) use ($actor, $caseId, $candidateId, $version, $decision, $reason, $evidence, $key, $request): array {
             $case = $this->lockCase($caseId);
             FinanceStore::expectVersion($case, $version, 'CASE_CHANGED');
+            $this->assertNotRecused($case, $actor);
             if ($case['status'] !== 'IN_REVIEW') {
                 throw new ApiException(409, 'CASE_NOT_IN_REVIEW', 'Duplicates are resolved while the case is in review.');
             }
@@ -343,6 +380,9 @@ final readonly class CaseService
             }
             $columns['duplicate_review'] = $this->openStrong($caseId) ? 'open' : 'resolved';
             $this->set($case, $columns, $actor, $now);
+            if (isset($columns['company_uuid']) && $columns['company_uuid'] !== $case['company_uuid']) {
+                $this->afterLink($case, (string) $columns['company_uuid'], $reason, $actor, $request, $now);
+            }
             $this->decision($caseId, $decision, (int) $case['version'] + 1, $actor, $reason, ['candidateId' => $candidateId, 'companyId' => $columns['company_uuid'] ?? null], $now);
             $this->store->event('case', $caseId, $columns['company_uuid'] ?? $case['company_uuid'], $actor, 'duplicate_' . $decision, (int) $case['version'], (int) $case['version'] + 1, $reason, ['strength' => $candidate['strength']], $request, $key, $now);
             return ['status' => 200, 'caseId' => $caseId, 'version' => (int) $case['version'] + 1];
@@ -360,6 +400,7 @@ final readonly class CaseService
         return $this->store->mutate($actor, 'case_link:' . $caseId, $input, $key, [A::COMPANIES_RESOLVE_DUPLICATES], function (string $now) use ($actor, $caseId, $version, $companyId, $reason, $evidence, $key, $request): array {
             $case = $this->lockCase($caseId);
             FinanceStore::expectVersion($case, $version, 'CASE_CHANGED');
+            $this->assertNotRecused($case, $actor);
             if ($case['status'] !== 'IN_REVIEW') {
                 throw new ApiException(409, 'CASE_NOT_IN_REVIEW', 'Link the company while the case is in review.');
             }
@@ -376,6 +417,9 @@ final readonly class CaseService
                 ->execute([Uuid::v4(), $caseId, $companyId, FinanceStore::json(['manual']), $actor->employeeUuid, $now, $reason, $now]);
             $this->store->evidence('case', $caseId, $evidence, $actor, $now);
             $this->set($case, ['company_uuid' => $companyId, 'duplicate_review' => $this->openStrong($caseId) ? 'open' : 'resolved'], $actor, $now);
+            if ($case['company_uuid'] !== $companyId) {
+                $this->afterLink($case, $companyId, $reason, $actor, $request, $now);
+            }
             $this->decision($caseId, 'linked', (int) $case['version'] + 1, $actor, $reason, ['companyId' => $companyId], $now);
             $this->store->event('case', $caseId, $companyId, $actor, 'company_linked', (int) $case['version'], (int) $case['version'] + 1, $reason, null, $request, $key, $now);
             return ['status' => 200, 'caseId' => $caseId, 'version' => (int) $case['version'] + 1];
@@ -399,6 +443,9 @@ final readonly class CaseService
             }
             if ($this->openStrong($caseId)) {
                 throw new ApiException(409, 'DUPLICATES_UNRESOLVED', 'Resolve the exact and strong duplicate candidates first.');
+            }
+            if ($this->flags->hasUnresolvedPassiveClaim($caseId)) {
+                throw new ApiException(409, 'PASSIVE_CLAIM_UNRESOLVED', 'The employee-reported passive claim has not been independently verified.');
             }
             CaseWorkflow::allow('IN_REVIEW', 'READY_FOR_SECOND_CHECK');
             $next = (int) $case['version'] + 1;
@@ -426,10 +473,16 @@ final readonly class CaseService
                 throw new ApiException(409, 'APPROVAL_STALE', 'The case changed after submission.');
             }
             $this->requireSecondPerson($case, $actor);
+            if ($this->flags->hasUnresolvedPassiveClaim($caseId)) {
+                throw new ApiException(409, 'PASSIVE_CLAIM_UNRESOLVED', 'The employee-reported passive claim has not been independently verified.');
+            }
             $companyId = $case['company_uuid'];
             $canonical = 'linked';
             if ($companyId === null) {
                 if ($case['tax_status'] === 'verified') {
+                    if ($case['country_code'] === 'RO' && !ImportNormalizer::validRomanianCui((string) $case['tax_normalized'])) {
+                        throw new ApiException(409, 'TAX_IDENTIFIER_INVALID', 'The Romanian tax identifier fails its control digit.');
+                    }
                     $companyId = $this->createCanonical($case, $actor, $now, $request, $key);
                     $canonical = 'created_inactive';
                 } else {
@@ -438,6 +491,9 @@ final readonly class CaseService
             }
             $next = (int) $case['version'] + 1;
             $this->set($case, ['status' => 'APPROVED', 'company_uuid' => $companyId, 'approved_by_employee_uuid' => $actor->employeeUuid, 'approved_at' => $now, 'approved_version' => $next, 'status_reason' => $reason], $actor, $now);
+            if ($companyId !== null) {
+                $this->flags->detectSameCompany((string) $companyId, $now);
+            }
             $this->decision($caseId, 'approved', $next, $actor, $reason, ['canonical' => $canonical, 'companyId' => $companyId], $now);
             $this->store->event('case', $caseId, $companyId, $actor, 'case_approved', (int) $case['version'], $next, $reason, ['canonical' => $canonical], $request, $key, $now);
             return ['status' => 200, 'caseId' => $caseId, 'version' => $next, 'companyId' => $companyId, 'canonical' => $canonical];
@@ -459,6 +515,8 @@ final readonly class CaseService
             if ($case['status'] === 'IN_REVIEW' && $case['assigned_employee_uuid'] !== $actor->employeeUuid) {
                 throw new ApiException(409, 'CASE_ASSIGNED', 'The case is being reviewed by someone else.');
             }
+            $this->assertNotRecused($case, $actor);
+            $this->requireSupervisorWhenNeeded($case, $actor);
             $next = (int) $case['version'] + 1;
             $this->set($case, ['status' => 'REJECTED', 'status_reason' => $reason, 'assigned_employee_uuid' => null], $actor, $now);
             $this->decision($caseId, 'rejected', $next, $actor, $reason, null, $now);
@@ -476,6 +534,8 @@ final readonly class CaseService
         return $this->store->mutate($actor, 'case_reopen:' . $caseId, $input, $key, [A::COMPANIES_VERIFY], function (string $now) use ($actor, $caseId, $version, $reason, $key, $request): array {
             $case = $this->lockCase($caseId);
             FinanceStore::expectVersion($case, $version, 'CASE_CHANGED');
+            $this->assertNotRecused($case, $actor);
+            $this->requireSupervisorWhenNeeded($case, $actor);
             CaseWorkflow::allow($case['status'], 'REOPENED');
             $next = (int) $case['version'] + 1;
             $this->set($case, ['status' => 'REOPENED', 'status_reason' => $reason, 'approved_by_employee_uuid' => null, 'approved_at' => null, 'approved_version' => null,
@@ -484,6 +544,153 @@ final readonly class CaseService
             $this->store->event('case', $caseId, $case['company_uuid'], $actor, 'case_reopened', (int) $case['version'], $next, $reason, ['from' => $case['status']], $request, $key, $now);
             return ['status' => 200, 'caseId' => $caseId, 'version' => $next];
         });
+    }
+
+    // ---- review flags, conflicts of interest, comments ---------------------------------------------------------
+
+    /**
+     * Records the outcome of reviewing one flag. The flag and the original source text stay on file; resolving a passive
+     * claim changes no company status, balance, risk colour or limit. A passive claim needs evidence.
+     */
+    public function resolveFlag(EmployeeIdentity $actor, string $caseId, string $flagId, array $input, string $key, string $request): array
+    {
+        In::only($input, ['expectedVersion', 'resolution', 'note', 'evidence']);
+        $version = In::version($input);
+        $note = (string) In::reason($input, 'note');
+        $evidence = In::evidence($input);
+        $resolution = (string) In::enum($input, 'resolution', [...CaseFlags::PASSIVE_OUTCOMES, ...CaseFlags::REVIEW_OUTCOMES]);
+        return $this->store->mutate($actor, 'case_flag:' . $caseId . ':' . $flagId, $input, $key, [A::COMPANIES_REVIEW], function (string $now) use ($actor, $caseId, $flagId, $version, $note, $evidence, $resolution, $key, $request): array {
+            $case = $this->assigned($caseId, $actor, $version);
+            $flag = $this->store->lock('finance_case_flags', 'flag_uuid', $flagId, 'FLAG_NOT_FOUND', 'Review flag was not found.');
+            if ($flag['case_uuid'] !== $caseId) {
+                throw new ApiException(404, 'FLAG_NOT_FOUND', 'Review flag was not found.');
+            }
+            $passive = $flag['flag_code'] === CaseFlags::PASSIVE_CLAIM;
+            if (!in_array($resolution, $passive ? CaseFlags::PASSIVE_OUTCOMES : CaseFlags::REVIEW_OUTCOMES, true)) {
+                In::fail('resolution', 'not_allowed_for_flag');
+            }
+            if ($passive && $evidence === [] && $resolution !== 'UNDETERMINED') {
+                In::fail('evidence', 'required_for_passive_claim');
+            }
+            $this->store->pdo()->prepare("UPDATE finance_case_flags SET status = 'resolved', resolution = ?, resolution_note = ?, resolved_by_employee_uuid = ?, resolved_at = ? WHERE flag_uuid = ?")
+                ->execute([$resolution, $note, $actor->employeeUuid, $now, $flagId]);
+            $this->store->evidence('case', $caseId, $evidence, $actor, $now);
+            $this->flags->refreshPriority($caseId);
+            $this->set($case, [], $actor, $now);
+            $this->store->event('case', $caseId, $case['company_uuid'], $actor, 'flag_resolved', (int) $case['version'], (int) $case['version'] + 1, $note, ['flag' => $flag['flag_code'], 'resolution' => $resolution, 'evidence' => count($evidence)], $request, $key, $now);
+            return ['status' => 200, 'caseId' => $caseId, 'version' => (int) $case['version'] + 1];
+        });
+    }
+
+    /**
+     * Routes a case to independent supervisory review. self_conflict: the actor steps away from the case.
+     * request_supervision: nobody steps away. recuse_other: a supervisor names another employee. Neutral precaution, not a finding.
+     */
+    public function supervision(EmployeeIdentity $actor, string $caseId, array $input, string $key, string $request): array
+    {
+        In::only($input, ['expectedVersion', 'declaration', 'reason', 'employeeId']);
+        $version = In::version($input);
+        $declaration = (string) In::enum($input, 'declaration', ['self_conflict', 'request_supervision', 'recuse_other']);
+        $reason = (string) In::reason($input);
+        $employee = $declaration === 'recuse_other' ? In::uuid($input, 'employeeId') : ($declaration === 'self_conflict' ? $actor->employeeUuid : null);
+        return $this->store->mutate($actor, 'case_supervision:' . $caseId, $input, $key, [], function (string $now) use ($actor, $caseId, $version, $declaration, $reason, $employee, $key, $request): array {
+            $auth = $this->store->authorization();
+            if ($declaration === 'recuse_other') {
+                A::require($auth, $actor, A::COMPANIES_SUPERVISE);
+            } elseif (!A::can($auth, $actor, A::COMPANIES_REVIEW) && !A::can($auth, $actor, A::COMPANIES_VERIFY) && !A::can($auth, $actor, A::COMPANIES_SUPERVISE)) {
+                A::require($auth, $actor, A::COMPANIES_REVIEW);
+            }
+            $case = $this->lockCase($caseId);
+            FinanceStore::expectVersion($case, $version, 'CASE_CHANGED');
+            if ($employee !== null) {
+                $s = $this->store->pdo()->prepare('SELECT employee_uuid FROM employees WHERE employee_uuid = ?');
+                $s->execute([$employee]);
+                if ($s->fetchColumn() === false) {
+                    throw new ApiException(404, 'EMPLOYEE_NOT_FOUND', 'Employee was not found.');
+                }
+                $this->store->pdo()->prepare('INSERT INTO finance_case_recusals (recusal_uuid, case_uuid, employee_uuid, reason, declared_by_employee_uuid, declared_at) VALUES (?, ?, ?, ?, ?, ?)
+                    ON DUPLICATE KEY UPDATE recusal_uuid = recusal_uuid')->execute([Uuid::v4(), $caseId, $employee, $reason, $actor->employeeUuid, $now]);
+            }
+            $columns = ['supervision_status' => 'required'];
+            if ($employee !== null && $case['status'] === 'IN_REVIEW' && $case['assigned_employee_uuid'] === $employee) {
+                $columns += ['status' => 'NEEDS_REVIEW', 'assigned_employee_uuid' => null];
+            }
+            $this->set($case, $columns, $actor, $now);
+            $this->store->event('case', $caseId, $case['company_uuid'], $actor, 'supervision_requested', (int) $case['version'], (int) $case['version'] + 1, null, ['declaration' => $declaration], $request, $key, $now);
+            return ['status' => 200, 'caseId' => $caseId, 'version' => (int) $case['version'] + 1];
+        });
+    }
+
+    public function comment(EmployeeIdentity $actor, string $caseId, array $input, string $key, string $request): array
+    {
+        In::only($input, ['body']);
+        $body = (string) In::text($input, 'body', 2000, true, true);
+        return $this->store->mutate($actor, 'case_comment:' . $caseId, $input, $key, [], function (string $now) use ($actor, $caseId, $body, $key, $request): array {
+            $auth = $this->store->authorization();
+            if (!A::can($auth, $actor, A::COMPANIES_REVIEW) && !A::can($auth, $actor, A::COMPANIES_VERIFY) && !A::can($auth, $actor, A::COMPANIES_SUPERVISE)) {
+                A::require($auth, $actor, A::COMPANIES_REVIEW);
+            }
+            $case = $this->store->lock('finance_company_cases', 'case_uuid', $caseId, 'CASE_NOT_FOUND', 'Verification case was not found.');
+            $id = Uuid::v4();
+            $this->store->pdo()->prepare('INSERT INTO finance_case_comments (comment_uuid, case_uuid, body, actor_employee_uuid, created_at) VALUES (?, ?, ?, ?, ?)')->execute([$id, $caseId, $body, $actor->employeeUuid, $now]);
+            $this->store->event('case', $caseId, $case['company_uuid'], $actor, 'comment_added', null, null, null, null, $request, $key, $now);
+            return ['status' => 201, 'commentId' => $id];
+        });
+    }
+
+    /** Has this employee edited the case in the current review cycle? Identity based, so switching roles changes nothing. */
+    public function editedThisCycle(string $caseId, string $employee): bool
+    {
+        $pdo = $this->store->pdo();
+        $s = $pdo->prepare("SELECT MAX(decided_at) FROM finance_case_decisions WHERE case_uuid = ? AND decision = 'reopened'");
+        $s->execute([$caseId]);
+        $since = $s->fetchColumn() ?: '1970-01-01 00:00:00';
+        $marks = implode(',', array_fill(0, count(self::EDITING_ACTIONS), '?'));
+        $s = $pdo->prepare("SELECT COUNT(*) FROM finance_activity_events WHERE entity_type = 'case' AND entity_uuid = ? AND actor_employee_uuid = ? AND action IN ({$marks}) AND occurred_at >= ?");
+        $s->execute([$caseId, $employee, ...self::EDITING_ACTIONS, $since]);
+        return (int) $s->fetchColumn() > 0;
+    }
+
+    public function isRecused(string $caseId, string $employee): bool
+    {
+        $s = $this->store->pdo()->prepare('SELECT COUNT(*) FROM finance_case_recusals WHERE case_uuid = ? AND employee_uuid = ?');
+        $s->execute([$caseId, $employee]);
+        return (int) $s->fetchColumn() > 0;
+    }
+
+    private function assertNotRecused(array $case, EmployeeIdentity $actor): void
+    {
+        if ($this->isRecused((string) $case['case_uuid'], $actor->employeeUuid)) {
+            throw new ApiException(403, 'CONFLICT_OF_INTEREST', 'You are recused from this case. It needs independent review.');
+        }
+    }
+
+    private function requireSupervisorWhenNeeded(array $case, EmployeeIdentity $actor): void
+    {
+        if ($case['supervision_status'] === 'required' && !A::can($this->store->authorization(), $actor, A::COMPANIES_SUPERVISE)) {
+            throw new ApiException(403, 'SUPERVISOR_REQUIRED', 'This case needs an independent supervisory reviewer.');
+        }
+    }
+
+    /** Old and new values go to the access-restricted history only. */
+    private function recordChange(string $caseId, string $field, mixed $old, mixed $new, int $version, ?string $reason, array $evidenceIds, EmployeeIdentity $actor, string $request, string $now): void
+    {
+        $this->store->pdo()->prepare('INSERT INTO finance_case_field_changes (change_uuid, case_uuid, field_name, old_value, new_value, case_version, reason, evidence_ids, actor_employee_uuid, request_id, changed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+            ->execute([Uuid::v4(), $caseId, $field, $old === null ? null : (string) $old, $new === null ? null : (string) $new, $version, $reason, $evidenceIds === [] ? null : FinanceStore::json($evidenceIds), $actor->employeeUuid, substr($request, 0, 100), $now]);
+    }
+
+    private function afterLink(array $case, string $companyId, ?string $reason, EmployeeIdentity $actor, string $request, string $now): void
+    {
+        $caseId = (string) $case['case_uuid'];
+        $this->recordChange($caseId, 'companyId', $case['company_uuid'], $companyId, (int) $case['version'] + 1, $reason, [], $actor, $request, $now);
+        $s = $this->store->pdo()->prepare('SELECT country_code, tax_identifier_normalized FROM b2b_companies WHERE company_uuid = ?');
+        $s->execute([$companyId]);
+        $company = $s->fetch(PDO::FETCH_ASSOC);
+        if ($company && (($case['country_code'] !== null && $case['country_code'] !== $company['country_code'])
+            || ($case['tax_normalized'] !== null && $case['tax_normalized'] !== $company['tax_identifier_normalized']))) {
+            $this->flags->raise($caseId, CaseFlags::CONFLICTING_SOURCE, 'detector', ['against' => 'canonical_company'], $now, true);
+        }
+        $this->flags->detectSameCompany($companyId, $now);
     }
 
     // ---- internals -----------------------------------------------------------------------------------------
@@ -501,6 +708,7 @@ final readonly class CaseService
             // The other open case learns about this one too, so neither reviewer can miss the pair.
             if ($m['caseId'] !== null && $m['strength'] !== 'weak') {
                 $upsert->execute([Uuid::v4(), $m['caseId'], null, $caseId, $m['strength'], FinanceStore::json($m['indicators']), $now]);
+                $pdo->prepare("UPDATE finance_company_cases SET duplicate_review = 'open' WHERE case_uuid = ? AND duplicate_review <> 'open' AND status NOT IN ('APPROVED', 'REJECTED')")->execute([$m['caseId']]);
             }
         }
         return DuplicateFinder::strongest($matches);
@@ -515,17 +723,12 @@ final readonly class CaseService
 
     private function requireSecondPerson(array $case, EmployeeIdentity $actor): void
     {
+        $this->assertNotRecused($case, $actor);
+        $this->requireSupervisorWhenNeeded($case, $actor);
         if ($case['submitted_by_employee_uuid'] === $actor->employeeUuid) {
             throw new ApiException(403, 'FOUR_EYES_REQUIRED', 'The person who submitted the case cannot be its final verifier.');
         }
-        $pdo = $this->store->pdo();
-        $s = $pdo->prepare("SELECT MAX(decided_at) FROM finance_case_decisions WHERE case_uuid = ? AND decision = 'reopened'");
-        $s->execute([$case['case_uuid']]);
-        $since = $s->fetchColumn() ?: '1970-01-01 00:00:00';
-        $s = $pdo->prepare("SELECT COUNT(*) FROM finance_activity_events WHERE entity_type = 'case' AND entity_uuid = ? AND actor_employee_uuid = ?
-            AND action IN ('case_updated', 'checklist_updated', 'case_claimed', 'company_linked') AND occurred_at >= ?");
-        $s->execute([$case['case_uuid'], $actor->employeeUuid, $since]);
-        if ((int) $s->fetchColumn() > 0) {
+        if ($this->editedThisCycle((string) $case['case_uuid'], $actor->employeeUuid)) {
             throw new ApiException(403, 'FOUR_EYES_REQUIRED', 'An employee who edited this case in the current review cycle cannot be its final verifier.');
         }
     }

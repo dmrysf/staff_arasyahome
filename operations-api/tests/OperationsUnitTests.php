@@ -715,8 +715,8 @@ test('B2B commercial orders are isolated from production and their audit is inse
         if (!$file->isFile() || $file->getExtension() !== 'php') continue;
         $relative = substr($file->getPathname(), strlen($root) + 1);
         $source = (string) file_get_contents($file->getPathname());
-        // Finance V0.3 reads one order only to bind a CEO exception record to it; it never writes commercial data.
-        if (!str_starts_with($relative, 'B2B/') && $relative !== 'Database/AuthMaintenance.php' && $relative !== 'Finance/Credit/CreditService.php')
+        // Finance V0.3 reads one order only to bind a CEO exception record to it, and the review desk counts a linked company's orders; it never writes commercial data.
+        if (!str_starts_with($relative, 'B2B/') && $relative !== 'Database/AuthMaintenance.php' && $relative !== 'Finance/Credit/CreditService.php' && $relative !== 'Finance/Company/CaseQueries.php')
             expect(preg_match('/\bb2b_order/', $source) !== 1, $relative . ' must not read commercial data');
         if (str_starts_with($relative, 'Finance/'))
             expect(preg_match('/\b(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+b2b_order/i', $source) !== 1, $relative . ' must not write commercial data');
@@ -769,7 +769,7 @@ test('B2B current account ledger is insert-only, isolated from production and jo
         $relative = substr($file->getPathname(), strlen($root) + 1);
         $source = (string) file_get_contents($file->getPathname());
         expect(preg_match('/\b(UPDATE|DELETE\s+FROM)\s+b2b_account_(movements|allocations|allocation_releases|activity_events|movement_sequence)\b/i', $source) !== 1, "{$relative} must not change ledger rows");
-        $financeLedgerReaders = ['Finance/FinanceController.php', 'Finance/Account/OnboardingService.php', 'Finance/Account/OnboardingQueries.php', 'Finance/Risk/RiskService.php', 'Finance/Credit/CreditService.php'];
+        $financeLedgerReaders = ['Finance/FinanceController.php', 'Finance/Account/OnboardingService.php', 'Finance/Account/OnboardingQueries.php', 'Finance/Risk/RiskService.php', 'Finance/Credit/CreditService.php', 'Finance/Company/CaseQueries.php'];
         if (!str_starts_with($relative, 'B2B/') && $relative !== 'Database/AuthMaintenance.php' && !in_array($relative, $financeLedgerReaders, true))
             expect(preg_match('/\bb2b_account_/', $source) !== 1, "{$relative} must not read current account data");
         // Finance writes the ledger only through the insert-only AccountLedger primitives, never with its own SQL.
@@ -988,4 +988,22 @@ test('Document scope conditions are default deny and never interpolate source ke
     expect(\Arasya\Operations\Document\DocumentScopePolicy::condition([], 'o.source_key', $parameters) === '1 = 0' && $parameters === ['x'], 'no scope: nothing');
     $condition = \Arasya\Operations\Document\DocumentScopePolicy::condition(["trendhome", "x' OR '1'='1"], 'o.source_key', $parameters);
     expect($condition === 'o.source_key IN (?, ?)' && $parameters === ['x', 'trendhome', "x' OR '1'='1"], 'sources are bound parameters');
+});
+
+test('Risk and limit decision authority ignores root, roles and permissions', function (): void {
+    $root = new EmployeeIdentity(
+        '00000000-0000-4000-8000-0000000000aa', null, 'root', 'root', 'hash', 'Root', 'management', 'Management', 'active',
+        'root', 'active', 'active', ['finance.risk.approve', 'finance.credit.approve', 'finance.credit.revoke'], [],
+        ['staff', 'finance', 'dashboard', 'b2b'], false, 1, true,
+    );
+    $empty = new \Arasya\Operations\Finance\Risk\DecisionAuthority([]);
+    expect($root->isRoot && !$empty->allows($root), 'empty allowlist denies root');
+    try {
+        $empty->require($root);
+        expect(false, 'root passed an empty allowlist');
+    } catch (\Arasya\Operations\Http\ApiException $e) {
+        expect($e->status === 403 && $e->errorCode === 'RISK_LIMIT_AUTHORITY_REQUIRED', 'root is refused with 403');
+    }
+    $other = new \Arasya\Operations\Finance\Risk\DecisionAuthority(['00000000-0000-4000-8000-0000000000bb']);
+    expect(!$other->allows($root), 'an allowlist naming someone else still denies root');
 });

@@ -108,6 +108,8 @@ final class ApplicationAccess
         'finance.credit.approve' => self::FINANCE,
         'finance.credit.revoke' => self::FINANCE,
         'finance.audit.view' => self::FINANCE,
+        'finance.companies.supervise' => self::FINANCE,
+        'finance.audit.sensitive' => self::FINANCE,
     ];
 
     /** @param list<string> $applications @return list<string> */
