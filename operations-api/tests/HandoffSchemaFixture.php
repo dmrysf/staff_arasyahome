@@ -1,9 +1,23 @@
 <?php
 declare(strict_types=1);
+/** Restore a pre-047 disposable test fixture (no Finance V0.3 company onboarding). This is NOT a deployment/rollback mechanism. */
+function restorePreFinanceOnboardingTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='047_finance_company_onboarding.sql'")->fetchColumn()) return;
+    foreach(['finance_credit_exceptions','finance_credit_limits','finance_risk_assessments','finance_risk_policies','finance_account_onboardings','finance_evidence_refs','finance_duplicate_candidates',
+        'finance_case_decisions','finance_company_cases','finance_case_number_sequence','finance_import_rows','finance_import_batches','finance_activity_events','finance_idempotency'] as $table) $pdo->exec('DROP TABLE IF EXISTS '.$table);
+    $keys="'finance.companies.import','finance.companies.review','finance.companies.verify','finance.companies.resolve_duplicates','finance.accounts.reconcile','finance.accounts.propose_opening_balance','finance.accounts.verify_opening_balance','finance.accounts.post_approved_opening_balance','finance.risk.view','finance.risk.propose','finance.risk.approve','finance.credit.view','finance.credit.propose','finance.credit.verify','finance.credit.approve','finance.credit.revoke','finance.audit.view'";
+    $pdo->exec("DELETE rp FROM role_permissions rp JOIN permissions p ON p.permission_id=rp.permission_id WHERE p.permission_key IN ({$keys})");
+    $pdo->exec("DELETE FROM permissions WHERE permission_key IN ({$keys})");
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='047_finance_company_onboarding.sql'");
+}
+
 /** Restore a pre-041 disposable test fixture (no SmartBill invoicing tables). This is NOT a deployment/rollback mechanism. */
 function restorePreSmartBillInvoicingTestSchema(PDO $pdo): void
 {
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    restorePreFinanceOnboardingTestSchema($pdo);
     if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='041_smartbill_invoicing.sql'")->fetchColumn()) return;
     foreach(['order_invoice_qr_checks','order_shop_assignments','order_invoice_actions','order_invoice_reads','employee_invoice_scopes'] as $table) $pdo->exec('DROP TABLE IF EXISTS '.$table);
     $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='041_smartbill_invoicing.sql'");

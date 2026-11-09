@@ -28,11 +28,13 @@ $config=T::config($db);$pdo=Connection::create($config);$dir=dirname(__DIR__).'/
 check(is_file($dir.'/011_b2b_current_account.sql'),'migration 011 exists');
 // ---- 010 -> 011 upgrade: additive, recorded once, re-runnable, no automatic grants ---------------------------
 $accountTables=['b2b_account_idempotency','b2b_account_activity_events','b2b_account_allocation_releases','b2b_account_allocations','b2b_account_movements','b2b_account_movement_sequence'];
+// Finance V0.3 (047) references the ledger; the pre-011 fixture removes it first and it is re-applied after 011.
+require __DIR__.'/HandoffSchemaFixture.php';restorePreFinanceOnboardingTestSchema($pdo);
 foreach($accountTables as $table)$pdo->exec('DROP TABLE IF EXISTS '.$table);
 $pdo->exec("DELETE rp FROM role_permissions rp JOIN permissions p ON p.permission_id=rp.permission_id WHERE p.permission_key LIKE 'b2b.accounts.%'");$pdo->exec("DELETE FROM permissions WHERE permission_key LIKE 'b2b.accounts.%'");$pdo->exec("DELETE FROM schema_migrations WHERE migration_name='011_b2b_current_account.sql'");
 $grants=$pdo->query('SELECT * FROM role_permissions ORDER BY role_id,permission_id')->fetchAll();
 $ordersBefore=$pdo->query('SELECT COUNT(*) FROM b2b_orders')->fetchColumn();
-check((new MigrationRunner($pdo))->migrate($dir)===['011_b2b_current_account.sql'],'010→011 upgrade');
+check((new MigrationRunner($pdo))->migrate($dir)===['011_b2b_current_account.sql','047_finance_company_onboarding.sql'],'010→011 upgrade');
 check((new MigrationRunner($pdo))->migrate($dir)===[],'011 recorded once');
 (new SqlFileRunner($pdo))->run($dir.'/011_b2b_current_account.sql');
 check($pdo->query('SELECT * FROM role_permissions ORDER BY role_id,permission_id')->fetchAll()===$grants,'011 grants nothing automatically');

@@ -73,7 +73,20 @@ final readonly class Config
          * @var array<string, array{mode: string, url: string, key: string}>
          */
         #[\SensitiveParameter] public array $sourceAccess = [],
+        /**
+         * Finance V0.3 opening-balance posting switch (ARASYA_FINANCE_OPENING_BALANCE_POSTING). Only the exact value
+         * `enabled` lets a verified opening balance be written to the B2B ledger. Anything else is off (the default).
+         */
+        public string $financeOpeningBalancePosting = 'disabled',
+        /**
+         * Employee UUID of the only person who may decide Finance CEO exceptions (ARASYA_FINANCE_CEO_EMPLOYEE_UUID).
+         * Empty (the default) means no one can. Never inferred from a name, username or role.
+         */
+        public string $financeCeoEmployeeUuid = '',
     ) {
+        if ($this->financeCeoEmployeeUuid !== '' && preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/D', $this->financeCeoEmployeeUuid) !== 1) {
+            throw new RuntimeException('ARASYA_FINANCE_CEO_EMPLOYEE_UUID must be an employee UUID.');
+        }
         if ($this->trendyolStoreFrontCode !== null && preg_match('/^[A-Z]{2,5}$/D', $this->trendyolStoreFrontCode) !== 1) {
             throw new RuntimeException('ARASYA_TRENDYOL_STORE_FRONT_CODE must be 2-5 capital letters.');
         }
@@ -152,6 +165,8 @@ final readonly class Config
             cancellationSync: self::value($values, 'ARASYA_CANCELLATION_SYNC', 'disabled'),
             trendyolStoreFrontCode: self::value($values, 'ARASYA_TRENDYOL_STORE_FRONT_CODE', '') === '' ? null : self::value($values, 'ARASYA_TRENDYOL_STORE_FRONT_CODE', ''),
             sourceAccess: self::sourceAccess($values, $sourceKeys),
+            financeOpeningBalancePosting: self::value($values, 'ARASYA_FINANCE_OPENING_BALANCE_POSTING', 'disabled'),
+            financeCeoEmployeeUuid: strtolower(self::value($values, 'ARASYA_FINANCE_CEO_EMPLOYEE_UUID', '')),
         );
     }
 
@@ -159,6 +174,12 @@ final readonly class Config
     public function cancellationSyncEnabled(): bool
     {
         return $this->cancellationSync === 'enabled';
+    }
+
+    /** Whether verified Finance opening balances may be posted to the B2B ledger. */
+    public function financeOpeningBalancePostingEnabled(): bool
+    {
+        return $this->financeOpeningBalancePosting === 'enabled';
     }
 
     /** Whether the Trendyol intake switch is on (a database activation with a baseline is still required). */
