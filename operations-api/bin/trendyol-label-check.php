@@ -9,10 +9,13 @@ declare(strict_types=1);
  * carrier and destination country it really ships with?
  *
  * On the API server, with the credentials the active API release already has, it:
- *   1. GETs the shipment packages of the last 13 days (Order V2, at most 3 pages);
+ *   1. GETs the shipment packages of the last 13 days, newest first (Order V2, at most 3 pages);
  *   2. groups them by carrier and destination country;
  *   3. for at most 2 packages per group (24 label calls in total) GETs common-label/query, without and with storeFrontCode;
  *   4. for the first label of each group, GETs the PDF from the Trendyol CDN into memory and reads only its structure.
+ *
+ * Two authorization refusals (401 or 403) in a row end the label calls: repeating them proves nothing. A 401 or 403 never
+ * means a carrier is unsupported; such a group is INCONCLUSIVE / AUTHORIZATION_UNVERIFIED.
  *
  * It can never change anything: GET is the only verb in this file, only https://apigw.trendyol.com and
  * https://cdn.dsmcdn.com are reachable, no redirect is followed, the label creation service is not called, no database
@@ -36,6 +39,37 @@ const CHECK_MAX_LABEL_CALLS = 24;
 const CHECK_MAX_PDF_BYTES = 5242880;
 const CHECK_CLOSED = ['Cancelled', 'UnSupplied', 'UnPacked', 'Returned', 'UnDeliveredAndReturned'];
 const CHECK_ACTIVE = ['Created', 'Picking', 'Invoiced', 'ReadyToShip'];
+/** Consecutive 401 or 403 answers from the label service that end the label calls. */
+const CHECK_AUTH_STOP_AFTER = 2;
+
+/** STDOUT does not exist when PHP reads the script from stdin (the SSH form), so output uses echo. */
+function check_out(string $text): void
+{
+    echo $text;
+}
+
+/**
+ * One row per package, newest order first (then latest change, then package id), so that the same answers always give the
+ * same order, whatever the pages returned and even if a package moved between two pages.
+ *
+ * @param list<mixed> $packages
+ * @return list<array<string, mixed>>
+ */
+function check_newest_first(array $packages): array
+{
+    $unique = [];
+    foreach ($packages as $raw) {
+        if (is_array($raw)) {
+            $id = $raw['shipmentPackageId'] ?? $raw['id'] ?? null;
+            $unique[is_int($id) || is_string($id) ? 'id:' . $id : 'row:' . count($unique)] = $raw;
+        }
+    }
+    $rows = array_values($unique);
+    $number = static fn (mixed $value): int => is_int($value) ? $value : 0;
+    usort($rows, static fn (array $a, array $b): int => [$number($b['orderDate'] ?? null), $number($b['lastModifiedDate'] ?? null), $number($b['shipmentPackageId'] ?? $b['id'] ?? null)]
+        <=> [$number($a['orderDate'] ?? null), $number($a['lastModifiedDate'] ?? null), $number($a['shipmentPackageId'] ?? $a['id'] ?? null)]);
+    return $rows;
+}
 
 /** The only network call of this file: GET, HTTPS, two hosts, no redirect, bounded. */
 function check_http_get(string $url, array $headers, int $maxBytes): array
@@ -131,6 +165,37 @@ function check_pdf_shape(string $bytes): array
 }
 
 /**
+ * SUPPORTED_PDF: a valid official PDF was retrieved. UNSUPPORTED: Trendyol answered an authorized request for an active
+ * package and offered no printable label. INCONCLUSIVE: anything else, always with its reason. A 401 or 403 is never
+ * evidence about a carrier, so `worksWith...` stays null until the service has really answered.
+ *
+ * @param list<array<string, mixed>> $rows
+ * @param array<string, mixed>|null $document
+ * @return array{verdict: string, reason: string|null, worksWithoutStoreFront: bool|null, worksWithStoreFront: bool|null, testedActivePackage: bool}
+ */
+function check_verdict(array $rows, ?array $document, bool $eligible, ?string $stoppedBy): array
+{
+    $has = static fn (callable $test): bool => array_filter($rows, $test) !== [];
+    $testedActive = $has(static fn (array $row): bool => in_array($row['packageStatus'], CHECK_ACTIVE, true));
+    $auth = $has(static fn (array $row): bool => $row['outcome'] === 'AUTHORIZATION_UNVERIFIED');
+    $answered = $has(static fn (array $row): bool => in_array($row['outcome'], ['LABEL', 'EMPTY'], true) || ($row['http'] ?? null) === 400);
+    $unclear = $has(static fn (array $row): bool => !in_array($row['outcome'], ['LABEL', 'EMPTY', 'AUTHORIZATION_UNVERIFIED'], true) && ($row['http'] ?? null) !== 400);
+    $works = static fn (bool $without): ?bool => !$answered ? null : $has(static fn (array $row): bool => $row['outcome'] === 'LABEL' && ($row['storeFrontHeader'] === 'none') === $without);
+    [$verdict, $reason] = match (true) {
+        $document !== null && ($document['validPdf'] ?? false) === true => ['SUPPORTED_PDF', null],
+        $rows === [] => ['INCONCLUSIVE', !$eligible ? 'NO_ELIGIBLE_PACKAGE' : ($stoppedBy !== null ? 'NOT_TESTED_AFTER_AUTHORIZATION_STOP' : 'NOT_TESTED_CALL_LIMIT')],
+        $auth => ['INCONCLUSIVE', 'AUTHORIZATION_UNVERIFIED'],
+        ($document['outcome'] ?? null) === 'HOST_NOT_ALLOWLISTED_NOT_DOWNLOADED' => ['INCONCLUSIVE', 'HOST_NOT_ALLOWLISTED'],
+        $document !== null => ['INCONCLUSIVE', 'PDF_NOT_CONFIRMED'],
+        $has(static fn (array $row): bool => $row['outcome'] === 'LABEL') => ['UNSUPPORTED', 'FORMAT_NOT_PDF'],
+        !$testedActive => ['INCONCLUSIVE', 'ONLY_FINISHED_PACKAGES_TESTED'],
+        $unclear => ['INCONCLUSIVE', 'SERVICE_OR_REQUEST_UNVERIFIED'],
+        default => ['UNSUPPORTED', 'NO_LABEL_FOR_ACTIVE_PACKAGE'],
+    };
+    return ['verdict' => $verdict, 'reason' => $reason, 'worksWithoutStoreFront' => $works(true), 'worksWithStoreFront' => $works(false), 'testedActivePackage' => $testedActive];
+}
+
+/**
  * @param callable(string, array, int): array $http
  * @param callable(int): void $pause
  */
@@ -138,8 +203,9 @@ function check_run(callable $http, string $base, string $sellerId, array $auth, 
 {
     $packages = [];
     $pages = 0;
+    $available = 0;
     for ($page = 0; $page < CHECK_MAX_PAGES; $page++) {
-        $query = http_build_query(['startDate' => $nowMs - CHECK_WINDOW_DAYS * 86400000, 'endDate' => $nowMs, 'page' => $page, 'size' => CHECK_PAGE_SIZE, 'orderByField' => 'PackageLastModifiedDate', 'orderByDirection' => 'ASC']);
+        $query = http_build_query(['startDate' => $nowMs - CHECK_WINDOW_DAYS * 86400000, 'endDate' => $nowMs, 'page' => $page, 'size' => CHECK_PAGE_SIZE, 'orderByField' => 'PackageLastModifiedDate', 'orderByDirection' => 'DESC']);
         $response = $http("{$base}/integration/order/sellers/" . rawurlencode($sellerId) . "/v2/orders?{$query}", $auth + ['Accept' => 'application/json'], 8388608);
         if ($response['status'] !== 200) {
             return ['outcome' => 'PACKAGE_LIST_FAILED', 'http' => $response['status']];
@@ -149,12 +215,14 @@ function check_run(callable $http, string $base, string $sellerId, array $auth, 
             return ['outcome' => 'PACKAGE_LIST_MALFORMED'];
         }
         $pages++;
+        $available = (int) ($decoded['totalPages'] ?? 0);
         array_push($packages, ...$decoded['content']);
-        if ($page + 1 >= (int) ($decoded['totalPages'] ?? 0)) {
+        if ($page + 1 >= $available) {
             break;
         }
         $pause(3);
     }
+    $packages = check_newest_first($packages);
 
     $groups = [];
     $candidates = [];
@@ -181,13 +249,15 @@ function check_run(callable $http, string $base, string $sellerId, array $auth, 
     $attempts = [];
     $documents = [];
     $calls = 0;
+    $refusedInARow = 0;
+    $stoppedBy = null;
     foreach ($candidates as $key => $sets) {
         [$provider, $country] = explode('|', $key);
         $sample = array_slice([...($sets['active'] ?? []), ...($sets['other'] ?? [])], 0, CHECK_SAMPLES_PER_GROUP);
         foreach ($sample as $package) {
             $seen = [];
             foreach (['none', $country] as $variant) {
-                if ($calls >= CHECK_MAX_LABEL_CALLS || ($variant !== 'none' && preg_match('/^[A-Z]{2}$/D', $variant) !== 1)) {
+                if ($stoppedBy !== null || $calls >= CHECK_MAX_LABEL_CALLS || ($variant !== 'none' && preg_match('/^[A-Z]{2}$/D', $variant) !== 1)) {
                     continue;
                 }
                 $calls++;
@@ -201,6 +271,14 @@ function check_run(callable $http, string $base, string $sellerId, array $auth, 
                     continue;
                 }
                 $row['http'] = $response['status'];
+                if ($response['status'] === 401 || $response['status'] === 403) {
+                    $attempts[] = $row + ['outcome' => 'AUTHORIZATION_UNVERIFIED', 'hint' => check_hint($response['body'])];
+                    if (++$refusedInARow >= CHECK_AUTH_STOP_AFTER) {
+                        $stoppedBy = 'AUTHORIZATION_UNVERIFIED';
+                    }
+                    continue;
+                }
+                $refusedInARow = 0;
                 $decoded = json_decode($response['body'], true);
                 $data = is_array($decoded) && is_array($decoded['data'] ?? null) ? $decoded['data'] : null;
                 if ($response['status'] !== 200 || $data === null) {
@@ -248,14 +326,9 @@ function check_run(callable $http, string $base, string $sellerId, array $auth, 
     $verdicts = [];
     foreach ($groups as $key => $group) {
         $rows = array_values(array_filter($attempts, static fn (array $row): bool => $row['provider'] === $group['provider'] && $row['country'] === $group['country']));
-        $document = $documents[$key] ?? null;
-        $printable = $document !== null && ($document['validPdf'] ?? false) === true;
-        $withoutHeader = (bool) array_filter($rows, static fn (array $row): bool => $row['storeFrontHeader'] === 'none' && $row['outcome'] === 'LABEL');
-        $testedActive = (bool) array_filter($rows, static fn (array $row): bool => in_array($row['packageStatus'], CHECK_ACTIVE, true));
-        $withHeader = (bool) array_filter($rows, static fn (array $row): bool => $row['storeFrontHeader'] !== 'none' && $row['outcome'] === 'LABEL');
-        $verdicts[] = ['provider' => $group['provider'], 'country' => $group['country'], 'verdict' => $rows === [] ? 'UNTESTED_NO_ELIGIBLE_PACKAGE' : ($printable ? 'SUPPORTED_PDF' : ($withoutHeader || $withHeader ? 'LABEL_ANSWERED_PDF_NOT_CONFIRMED' : ($testedActive ? 'NOT_SUPPORTED_NO_LABEL' : 'NO_LABEL_ONLY_FINISHED_PACKAGES_TESTED'))), 'worksWithoutStoreFront' => $withoutHeader, 'worksWithStoreFront' => $withHeader, 'testedActivePackage' => $testedActive];
+        $verdicts[] = ['provider' => $group['provider'], 'country' => $group['country']] + check_verdict($rows, $documents[$key] ?? null, isset($candidates[$key]), $stoppedBy);
     }
-    return ['outcome' => 'COMPLETED', 'windowDays' => CHECK_WINDOW_DAYS, 'listPages' => $pages, 'packages' => count($packages), 'labelCalls' => $calls, 'configuredStoreFront' => $configuredStoreFront,
+    return ['outcome' => 'COMPLETED', 'windowDays' => CHECK_WINDOW_DAYS, 'listPages' => $pages, 'packages' => count($packages), 'packagesTruncated' => $available > $pages, 'labelCalls' => $calls, 'stoppedBy' => $stoppedBy, 'configuredStoreFront' => $configuredStoreFront,
         'groups' => array_values($groups), 'verdicts' => $verdicts, 'attempts' => $attempts, 'documents' => array_values($documents)];
 }
 
@@ -267,7 +340,7 @@ if (PHP_SAPI !== 'cli') {
     exit(1);
 }
 if (PHP_VERSION_ID < 80200) {
-    fwrite(STDOUT, "PHP_TOO_OLD\n");
+    check_out("PHP_TOO_OLD\n");
     exit(1);
 }
 try {
@@ -279,7 +352,7 @@ try {
         $root = (string) getenv('HOME') . '/arasya-operations-api';
         $commit = trim((string) @file_get_contents("{$root}/active-release"));
         if (preg_match('/^[0-9a-f]{40}$/D', $commit) !== 1 || !is_file("{$root}/releases/{$commit}/bootstrap.php")) {
-            fwrite(STDOUT, "ACTIVE_RELEASE_NOT_FOUND\n");
+            check_out("ACTIVE_RELEASE_NOT_FOUND\n");
             exit(1);
         }
         require "{$root}/releases/{$commit}/bootstrap.php";
@@ -287,19 +360,19 @@ try {
     $config = \Arasya\Operations\Config\Config::fromEnvironment();
     $trendyol = $config->trendyol;
     if ($trendyol === null) {
-        fwrite(STDOUT, "TRENDYOL_NOT_CONFIGURED\n");
+        check_out("TRENDYOL_NOT_CONFIGURED\n");
         exit(1);
     }
     if (strtolower((string) parse_url($trendyol->baseUrl, PHP_URL_HOST)) !== CHECK_API_HOST) {
-        fwrite(STDOUT, "UNEXPECTED_API_HOST\n");
+        check_out("UNEXPECTED_API_HOST\n");
         exit(1);
     }
     $report = check_run('check_http_get', 'https://' . CHECK_API_HOST, $trendyol->sellerId, [
         'Authorization' => 'Basic ' . base64_encode($trendyol->apiKey . ':' . $trendyol->apiSecret),
         'User-Agent' => $trendyol->sellerId . ' - SelfIntegration',
     ], $config->trendyolStoreFrontCode ?? null, (int) (microtime(true) * 1000), static function (int $seconds): void { sleep($seconds); });
-    fwrite(STDOUT, json_encode(['activeRelease' => substr($commit, 0, 7)] + $report, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n");
+    check_out(json_encode(['activeRelease' => substr($commit, 0, 7)] + $report, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n");
 } catch (Throwable $error) {
-    fwrite(STDOUT, 'CHECK_FAILED ' . (preg_match('/^[A-Z_]+$/D', $error->getMessage()) === 1 ? $error->getMessage() : (new ReflectionClass($error))->getShortName()) . "\n");
+    check_out('CHECK_FAILED ' . (preg_match('/^[A-Z_]+$/D', $error->getMessage()) === 1 ? $error->getMessage() : (new ReflectionClass($error))->getShortName()) . "\n");
     exit(1);
 }

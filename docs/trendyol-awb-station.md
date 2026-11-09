@@ -156,7 +156,7 @@ Run it from a checkout. The script travels over stdin, works on the release alre
 ssh <host> '/usr/local/bin/php -d display_errors=0 --' < operations-api/bin/trendyol-label-check.php
 ```
 
-Calls: at most 3 package list pages, at most 24 label queries (2 packages per group, without and with `storeFrontCode`) and one PDF per group, with pauses. Allow about two minutes. It is safe to repeat.
+Calls: at most 3 package list pages (newest first), at most 24 label queries (2 packages per group, without and with `storeFrontCode`) and one PDF per group, with pauses. Two 401 or 403 answers in a row end the label calls, and the remaining groups are marked as not verified. It also runs as a file inside a deployed release. Allow about two minutes.
 
 `tests/trendyol-label-check.php` proves without a network that:
 
@@ -164,17 +164,20 @@ Calls: at most 3 package list pages, at most 24 label queries (2 packages per gr
 - only the package list, `common-label/query` and the CDN are requested; the label creation service, status, tracking and courier APIs do not exist in the file;
 - a cancelled package is never queried; a foreign host, a redirect or a ZPL answer is never downloaded;
 - no credential reaches the CDN; no database connection and no file write exist;
-- the report contains no credential, order number, package id, tracking number, URL or customer value.
+- the report contains no credential, order number, package id, tracking number, URL or customer value;
+- it really runs both as a file and over stdin, with `https` replaced in the child process so no network is possible;
+- a 401 or 403 is never reported as unsupported, and repeated refusals end the calls;
+- pages keep one fixed window, packages are read newest first, duplicates count once and two runs give the same order.
 
 The PDF of a real label is held in server memory for the time of the structure check. It is never printed, stored or read as text.
 
 ### Test table
 
-Every `verdict` comes from the `verdicts` list of the report. `FANEX` and the GR and BG rows are not in the official carrier table, so their result is unknown until this runs.
+Every `verdict` comes from the `verdicts` list of the report. `FANEX` and the GR and BG rows are not in the official carrier table.
 
 | # | Carrier | Destination | Package tested | GO condition | If it fails |
 |---|---|---|---|---|---|
-| 1 | FANCOURIER | RO | Active (`Picking` and similar) | `SUPPORTED_PDF` | NO-GO for the station |
+| 1 | FANCOURIER | RO | Active (`Picking` and similar) | `SUPPORTED_PDF` | NO-GO for the station, unless the account ships Romania only through another carrier |
 | 2 | FANCOURIER | RO | `Shipped` | A label, for reprints after shipping | Reprint limited to before shipping; document it |
 | 3 | FANEX | RO | Active | `SUPPORTED_PDF` | These packages stay in Seller Panel; the station shows a short refusal |
 | 4 | FANCOURIER or other | GR | Active | `SUPPORTED_PDF` | As row 3 |
@@ -194,10 +197,29 @@ Read together with each row:
 | `documents[].bytes` | The 5 MiB limit | Under 5 MiB |
 | `urlHasQuery`, `cacheControl` | Whether the link looks temporary | Informational; the station never stores a link |
 
-Verdict meaning:
+Verdicts:
 
-- `SUPPORTED_PDF`: a label was returned, downloaded and valid.
-- `LABEL_ANSWERED_PDF_NOT_CONFIRMED`: a label was returned but not a valid downloadable PDF. See `formats`, `hosts` and `documents[].outcome`.
-- `NOT_SUPPORTED_NO_LABEL`: an active package got no label.
-- `NO_LABEL_ONLY_FINISHED_PACKAGES_TESTED`: only shipped or delivered packages were available. Not conclusive.
-- `UNTESTED_NO_ELIGIBLE_PACKAGE`: no package with a tracking number in 13 days. Not conclusive.
+| Verdict | Meaning |
+|---|---|
+| `SUPPORTED_PDF` | An official label was returned, downloaded and valid. |
+| `UNSUPPORTED` | An authorized request for an active package got no printable label. Reason `NO_LABEL_FOR_ACTIVE_PACKAGE` or `FORMAT_NOT_PDF`. |
+| `INCONCLUSIVE` | Nothing can be concluded about the carrier. The `reason` says why. |
+
+`INCONCLUSIVE` reasons:
+
+| Reason | Meaning |
+|---|---|
+| `AUTHORIZATION_UNVERIFIED` | The label service answered 401 or 403. This concerns the credentials or the service access, never the carrier. `worksWith...StoreFront` stay `null`. |
+| `NOT_TESTED_AFTER_AUTHORIZATION_STOP` | The label calls had ended after repeated 401 or 403 answers. |
+| `NOT_TESTED_CALL_LIMIT` | The 24 call limit was reached first. |
+| `NO_ELIGIBLE_PACKAGE` | No open package with a tracking number in the pages read. |
+| `ONLY_FINISHED_PACKAGES_TESTED` | Only shipped or delivered packages were available. |
+| `HOST_NOT_ALLOWLISTED` | The label is on a host outside the reviewed list and was not downloaded. |
+| `PDF_NOT_CONFIRMED` | A label link was returned but no valid PDF was obtained. |
+| `SERVICE_OR_REQUEST_UNVERIFIED` | 404, 429, 5xx, a network failure or a malformed answer. |
+
+`packagesTruncated: true` means more pages existed than were read.
+
+### Result on 2026-11-09 (owner approved, before these report fixes)
+
+The package list answered 200. Every label query answered 401, with and without `storeFrontCode`, for active `FANEX/RO`, `FANCOURIER/GR` and `FANCOURIER/BG` packages. No label or PDF was obtained, so all groups are `INCONCLUSIVE / AUTHORIZATION_UNVERIFIED`. Label access for this seller and API key must be clarified with Trendyol before the check is repeated.
