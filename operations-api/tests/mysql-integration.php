@@ -156,7 +156,8 @@ try {
     $expected[] = '047_finance_company_onboarding.sql';
     $expected[] = '048_finance_verification_center.sql';
     $expected[] = '049_finance_owner_risk_limit_decisions.sql';
-    $expected[] = '050_b2b_order_types.sql','051_trendyol_awb_station.sql';
+    $expected[] = '050_b2b_order_types.sql';
+    $expected[] = '051_trendyol_awb_station.sql';
     if ($applied !== $expected) {
         throw new RuntimeException('An existing 001 schema did not apply exactly the pending migrations in order: ' . implode(', ', $applied));
     }

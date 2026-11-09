@@ -107,6 +107,13 @@ finance_config "{\"ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS\":\"$owner_uuid\"}"
 finance_config '{"ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS":"Mesut Yeman"}'; expect_refused 'allowlist with a name'
 finance_config "{\"ARASYA_FINANCE_CEO_EMPLOYEE_UUID\":\"$owner_uuid\"}"; expect_refused 'CEO employee set'
 finance_config '{"ARASYA_FINANCE_CONFIG_ACK":"0000"}{'; expect_refused 'unreadable private configuration'
+finance_config '{"ARASYA_B2B_FINANCE_GATE":"enforce"}'; expect_refused 'B2B finance gate enforce without a review'
+finance_config '{"ARASYA_B2B_FINANCE_GATE":"shadow"}'; expect_refused 'B2B finance gate shadow without a review'
+finance_config '{"ARASYA_B2B_FINANCE_GATE":"enforced"}'; expect_refused 'unrecognized B2B finance gate value'
+finance_config '{"ARASYA_B2B_FINANCE_RELEASE_GATE":"enforce"}'; expect_refused 'B2B finance release check without a review'
+finance_config '{"ARASYA_B2B_FINANCE_RELEASE_GATE":"Off"}'; expect_refused 'unrecognized B2B finance release check value'
+finance_config '{"ARASYA_B2B_FINANCE_GATE":"off","ARASYA_B2B_FINANCE_RELEASE_GATE":"off"}'
+HOME="$test_home" DRY_RUN=1 /bin/bash "$release_d/scripts/cpanel-deploy-api.sh" >/dev/null || fail 'Finance gate refused an explicit off configuration.'
 finance_config '{"ARASYA_FINANCE_OPENING_BALANCE_POSTING":"disabled","ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS":" , "}'
 HOME="$test_home" DRY_RUN=1 /bin/bash "$release_d/scripts/cpanel-deploy-api.sh" >/dev/null || fail 'Finance gate refused the default configuration.'
 # An authorized review records the fingerprint of the exact values; any later change makes it stale.

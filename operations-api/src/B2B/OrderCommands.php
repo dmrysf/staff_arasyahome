@@ -73,8 +73,22 @@ final readonly class OrderCommands
     {
         $this->authorize($actor,$action);
         $version=OrderInput::version($expectedVersion);
+        // A finance refusal rolls the finalization back; its decision is journaled afterwards, outside that transaction.
+        $refused=null;
+        try {
+            return $this->statusTransaction($actor,$id,$action,$version,$key,$request,$refused);
+        } catch(ApiException $e) {
+            if($refused!==null) FinanceGateJournal::recordRefusal($this->pdo,$id,$refused['company'],$refused['decision'],$actor,$request);
+            throw $e;
+        }
+    }
+
+    /** @param array{company: string, decision: array<string, mixed>}|null $refused */
+    private function statusTransaction(EmployeeIdentity $actor,string $id,string $action,int $version,string $key,string $request,?array &$refused): array
+    {
         return $this->transaction($actor,$action,$id,null,['expectedVersion'=>$version],$key,
-            function($company,$order,$now) use($actor,$action,$version,$id,$key,$request) {
+            function($company,$order,$now) use($actor,$action,$version,$id,$key,$request,&$refused) {
+                $refused=null;
                 if($action==='cancel') {
                     // The shared company/order locks serialize this check with explicit production submission.
                     $s=$this->pdo->prepare('SELECT 1 FROM b2b_production_handoffs WHERE b2b_order_uuid=? FOR UPDATE');
@@ -92,10 +106,16 @@ final readonly class OrderCommands
                     // Refresh identity snapshots at freeze time, then permanently stop commercial writes.
                     $this->store->save($id,$data,$snap,$actor,$now);
                     // Finance decision on the saved totals, under the company lock (FinanceGate). In enforce mode a
-                    // refusal throws here: the transaction rolls back with no status change and no receivable.
+                    // refusal throws here: the transaction rolls back with no status change and no receivable. An
+                    // invalid gate configuration throws 503 from decide(): it is never read as off.
                     $s=$this->pdo->prepare('SELECT * FROM b2b_orders WHERE order_uuid=?');
                     $s->execute([$id]);
                     $decision=$this->finance->decide((string)$company['company_uuid'],$s->fetch(PDO::FETCH_ASSOC),$now);
+                    if($decision['outcome']==='BLOCKED') {
+                        $refused=['company'=>(string)$company['company_uuid'],'decision'=>$decision];
+                        throw FinanceGate::refusal($decision);
+                    }
+                    FinanceGateJournal::record($this->pdo,$id,(string)$company['company_uuid'],$decision,$actor,$request);
                     $this->pdo->prepare("UPDATE b2b_orders SET status='finalized',finalized_at=?,finalized_by_employee_uuid=?,finalized_by_name=?,finance_decision=? WHERE order_uuid=?")
                         ->execute([$now,$actor->employeeUuid,$actor->displayName,OrderStore::json($decision),$id]);
                     // The finalized commercial obligation posts its receivable in the same transaction, under the same

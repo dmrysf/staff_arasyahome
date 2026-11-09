@@ -10,7 +10,8 @@ function restorePreB2BOrderTypesTestSchema(PDO $pdo): void
     $pdo->exec("DELETE FROM production_route_decisions WHERE reason='order_service_route'");
     $pdo->exec("ALTER TABLE production_route_decisions DROP CONSTRAINT chk_production_route_decisions_reason_050, ADD CONSTRAINT chk_production_route_decisions_reason CHECK (reason IN ('product_route_policy', 'classification_unverified', 'plan_unverified'))");
     $pdo->exec('ALTER TABLE operational_orders DROP CONSTRAINT chk_operational_orders_service_route, DROP COLUMN service_route');
-    $pdo->exec('ALTER TABLE b2b_production_handoffs DROP CONSTRAINT chk_b2b_production_handoffs_order_type, DROP COLUMN order_type');
+    $pdo->exec('DROP TABLE IF EXISTS b2b_finance_gate_decisions');
+    $pdo->exec('ALTER TABLE b2b_production_handoffs DROP CONSTRAINT chk_b2b_production_handoffs_order_type, DROP COLUMN order_type, DROP CONSTRAINT chk_b2b_production_handoffs_finance_decision, DROP COLUMN finance_decision');
     $pdo->exec('ALTER TABLE b2b_orders DROP CONSTRAINT chk_b2b_orders_order_type, DROP CONSTRAINT chk_b2b_orders_finance_decision, DROP COLUMN order_type, DROP COLUMN finance_decision');
     $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='050_b2b_order_types.sql'");
 }

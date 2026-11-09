@@ -47,6 +47,7 @@ for file in \
   database/migrations/050_b2b_order_types.sql \
   src/B2B/OrderType.php \
   src/B2B/FinanceGate.php \
+  src/B2B/FinanceGateJournal.php \
   src/Production/ServiceRoute.php \
   database/migrations/051_trendyol_awb_station.sql \
   src/Integration/Trendyol/TrendyolLabelClient.php \

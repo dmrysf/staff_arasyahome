@@ -91,9 +91,16 @@ final readonly class Config
         public string $financeRiskLimitAuthorityUuids = '',
         /**
          * Finance decision at B2B finalization (ARASYA_B2B_FINANCE_GATE, API 2.67.0): off (default), shadow or enforce.
-         * Any other value is off. Activation is an explicit live decision (FinanceConfigGuard blocks an unreviewed one).
+         * The value is kept exactly as configured. Any other value is a configuration failure that FinanceGate refuses
+         * with 503 on the gated B2B actions only; it is never read as off, and the rest of the API keeps working.
+         * Activation is an explicit live decision (FinanceConfigGuard blocks an unreviewed one).
          */
         public string $b2bFinanceGate = 'off',
+        /**
+         * Finance release check at B2B production submission (ARASYA_B2B_FINANCE_RELEASE_GATE): off, shadow or enforce.
+         * Empty (the default, key absent) inherits ARASYA_B2B_FINANCE_GATE. Any other value is refused like the gate.
+         */
+        public string $b2bFinanceReleaseGate = '',
     ) {
         foreach ($this->financeRiskLimitAuthorityList() as $uuid) {
             if (preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/D', $uuid) !== 1) {
@@ -185,6 +192,7 @@ final readonly class Config
             financeCeoEmployeeUuid: strtolower(self::value($values, 'ARASYA_FINANCE_CEO_EMPLOYEE_UUID', '')),
             financeRiskLimitAuthorityUuids: strtolower(self::value($values, 'ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS', '')),
             b2bFinanceGate: self::value($values, 'ARASYA_B2B_FINANCE_GATE', 'off'),
+            b2bFinanceReleaseGate: self::value($values, 'ARASYA_B2B_FINANCE_RELEASE_GATE', ''),
         );
     }
 
@@ -201,9 +209,16 @@ final readonly class Config
         return array_values(array_filter(array_map('trim', explode(',', $this->financeRiskLimitAuthorityUuids)), static fn (string $uuid): bool => $uuid !== ''));
     }
 
+    /** The configured finalization mode, unchanged. FinanceGate validates it; an unknown value is never read as off. */
     public function b2bFinanceGateMode(): string
     {
-        return in_array($this->b2bFinanceGate, ['off', 'shadow', 'enforce'], true) ? $this->b2bFinanceGate : 'off';
+        return $this->b2bFinanceGate;
+    }
+
+    /** The configured production submission mode, unchanged, or null when the key is absent (inherits the gate mode). */
+    public function b2bFinanceReleaseGateMode(): ?string
+    {
+        return $this->b2bFinanceReleaseGate === '' ? null : $this->b2bFinanceReleaseGate;
     }
 
     public function financeOpeningBalancePostingEnabled(): bool

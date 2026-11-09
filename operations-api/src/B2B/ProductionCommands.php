@@ -15,12 +15,17 @@ use PDO;
 use PDOException;
 use Throwable;
 
-/** Explicit handoff only; never updates a finalized aggregate or calls the financial ledger. */
+/**
+ * Explicit handoff only; never updates a finalized aggregate or calls the financial ledger. Before the canonical order
+ * exists, FinanceGate::recheck re-evaluates the finance decision under the company lock (release check): eligibility may
+ * have changed since finalization. A refusal leaves the order finalized and unsubmitted; an existing handoff is never
+ * re-evaluated, so an order already in production is never stopped by Finance.
+ */
 final readonly class ProductionCommands
 {
     public function __construct(private PDO $pdo,private AuthorizationService $auth,private Clock $clock,
         private ProductionWorkflowService $workflows,private OrderProjectionWriter $writer,
-        private ?\Arasya\Operations\Document\DocumentService $documents=null) {}
+        private ?\Arasya\Operations\Document\DocumentService $documents=null,private FinanceGate $finance=new FinanceGate()) {}
 
     public function submit(EmployeeIdentity $actor,string $id,int $version,string $key,string $request): array
     {
@@ -31,6 +36,7 @@ final readonly class ProductionCommands
         if($company===false) throw new ApiException(404,'ORDER_NOT_FOUND','Order was not found.');
         $hash=hash('sha256','production_submit|'.$id.'|'.OrderStore::json(['expectedVersion'=>$version]),true);
         for($attempt=1;;$attempt++) {
+            $refused=null;
             try {
                 $this->pdo->beginTransaction();
                 ProductionAccess::require($this->auth,$actor,ProductionAccess::SUBMIT);
@@ -48,6 +54,10 @@ final readonly class ProductionCommands
                 else {
                     if($order['status']!=='finalized') throw new ApiException(409,'PRODUCTION_NOT_ELIGIBLE','Only finalized commercial orders may enter production.');
                     if((int)$order['version']!==$version) throw new ApiException(409,'ORDER_CHANGED','Order changed. Reload before submitting.');
+                    // Release check (time of use). Under the company lock, before any production row is written.
+                    $release=$this->finance->recheck((string)$company,$order,$this->clock->now()->format('Y-m-d H:i:s.u'));
+                    if($release['outcome']==='BLOCKED') { $refused=$release; throw FinanceGate::refusal($release); }
+                    FinanceGateJournal::record($this->pdo,$id,(string)$company,$release,$actor,$request);
                     $store=new OrderStore($this->pdo);
                     $companyContext=ProductionInput::company(OrderStore::decode($order['company_snapshot']));
                     // Project-origin lines carry their frozen location (immutable trace rows written at conversion).
@@ -71,8 +81,8 @@ final readonly class ProductionCommands
                     $identity=ProductionDocumentIdentity::fromCommercialOrder($order);
                     if($identity!==null) $this->pdo->prepare('UPDATE operational_orders SET document_context=? WHERE order_uuid=?')
                         ->execute([json_encode($identity,JSON_THROW_ON_ERROR|JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES),$operational]);
-                    $this->pdo->prepare('INSERT INTO b2b_production_handoffs(b2b_order_uuid,operational_order_uuid,submitted_by_employee_uuid,submitted_by_name,submitted_at,request_id,idempotency_key,order_type)
-                        VALUES(?,?,?,?,?,?,?,?)')->execute([$id,$operational,$actor->employeeUuid,$actor->displayName,$sql,mb_substr($request,0,100),$key,$orderType]);
+                    $this->pdo->prepare('INSERT INTO b2b_production_handoffs(b2b_order_uuid,operational_order_uuid,submitted_by_employee_uuid,submitted_by_name,submitted_at,request_id,idempotency_key,order_type,finance_decision)
+                        VALUES(?,?,?,?,?,?,?,?,?)')->execute([$id,$operational,$actor->employeeUuid,$actor->displayName,$sql,mb_substr($request,0,100),$key,$orderType,OrderStore::json($release)]);
                     $this->pdo->prepare("INSERT INTO order_activity_events(event_id,employee_uuid,order_uuid,global_order_id,source_key,order_number_snapshot,action,
                         workflow_key,workflow_version,from_stage_id,from_stage_label_snapshot,production_version_before,production_version_after,request_id,idempotency_key,occurred_at)
                         VALUES(?,?,?,?,?,?,'production_submitted',?,?,?,?,0,1,?,?,?)")->execute([
@@ -89,6 +99,7 @@ final readonly class ProductionCommands
                 $this->pdo->commit();return $result;
             } catch(Throwable $e) {
                 if($this->pdo->inTransaction()) $this->pdo->rollBack();
+                if($refused!==null) FinanceGateJournal::recordRefusal($this->pdo,$id,(string)$company,$refused,$actor,$request);
                 if($e instanceof PDOException && $attempt<3 && in_array((int)($e->errorInfo[1]??0),[1062,1205,1213],true)) continue;
                 throw $e;
             }

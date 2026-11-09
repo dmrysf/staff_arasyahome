@@ -943,6 +943,82 @@ test('every global key Config reads survives ConfigLoader (regression: the Finan
     expect(($loaded['ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS'] ?? null) === $owners, 'the owner allowlist reaches Config unchanged');
 });
 
+test('the B2B finance gate refuses an unknown mode, decides on server data only and never rewrites its journal', function (): void {
+    $G = \Arasya\Operations\B2B\FinanceGate::class;
+    $profile = static fn (array $over = []): \Closure => static fn (string $company): array => array_replace(['verificationStatus' => 'VERIFIED', 'registeredCountry' => 'RO', 'accountCurrency' => 'RON',
+        'reconciliationStatus' => 'RECONCILED', 'riskColor' => 'GREEN', 'creditLimitStatus' => 'APPROVED', 'approvedCreditLimit' => '100.00', 'creditLimitCurrency' => 'RON', 'currentExposure' => '0.00',
+        'availableCredit' => '100.00', 'exposureBasis' => 'ledger_balance_only', 'creditPolicyVersion' => null, 'creditReviewRequired' => false, 'creditPurchaseEligibility' => 'ELIGIBLE', 'eligibilityBlockers' => []], $over);
+    $order = ['order_uuid' => '00000000-0000-4000-8000-00000000b001', 'order_type' => 'CUT_ONLY', 'currency_code' => 'RON', 'gross_total' => '77.35', 'finance_decision' => null];
+    $now = '2026-11-10 10:00:00.000000';
+    $code = static function (callable $work): ?string { try { $work(); return null; } catch (\Arasya\Operations\Http\ApiException $e) { return $e->status . ' ' . $e->errorCode; } };
+    // Off evaluates nothing and needs no Finance reader.
+    $off = new $G();
+    expect($off->mode() === 'off' && $off->releaseMode() === 'off' && $off->configured() && $off->decide('c', $order, $now)['outcome'] === 'NOT_EVALUATED' && $off->recheck('c', $order, $now)['outcome'] === 'NOT_EVALUATED');
+    // Every unknown value is a refusal on both phases, never off. An active mode without a Finance reader too.
+    foreach (['enforced', 'OFF', 'Enforce', 'on', 'true', '1', '', ' shadow', "enforce\n"] as $bad) {
+        $gate = new $G($bad, $profile());
+        expect(!$gate->configured() && $code(fn () => $gate->decide('c', $order, $now)) === '503 FINANCE_GATE_MISCONFIGURED' && $code(fn () => $gate->recheck('c', $order, $now)) === '503 FINANCE_GATE_MISCONFIGURED', "mode '{$bad}' is refused");
+        $release = new $G('off', $profile(), $bad);
+        expect(!$release->configured() && $release->decide('c', $order, $now)['outcome'] === 'NOT_EVALUATED' && $code(fn () => $release->recheck('c', $order, $now)) === '503 FINANCE_GATE_MISCONFIGURED', "release mode '{$bad}' is refused at submission only");
+    }
+    expect($code(fn () => (new $G('enforce'))->decide('c', $order, $now)) === '503 FINANCE_GATE_MISCONFIGURED' && $code(fn () => (new $G('off', null, 'shadow'))->recheck('c', $order, $now)) === '503 FINANCE_GATE_MISCONFIGURED', 'an active mode without a Finance reader is refused');
+    // The release mode inherits the gate mode unless it is set.
+    expect((new $G('enforce', $profile()))->releaseMode() === 'enforce' && (new $G('enforce', $profile(), 'shadow'))->releaseMode() === 'shadow' && (new $G('off', $profile(), 'enforce'))->mode() === 'off');
+    // Finalization: the order must fit the available credit, in the account currency, with no blocker.
+    $allowed = (new $G('enforce', $profile()))->decide('c', $order, $now);
+    expect($allowed['outcome'] === 'ALLOWED' && $allowed['reasons'] === [] && $allowed['phase'] === 'finalization' && $allowed['profile']['availableCredit'] === '100.00' && !array_key_exists('companyId', $allowed['profile']));
+    expect((new $G('enforce', $profile(['availableCredit' => '77.35'])))->decide('c', $order, $now)['outcome'] === 'ALLOWED', 'an exactly sufficient credit is enough');
+    $over = (new $G('enforce', $profile(['availableCredit' => '77.34'])))->decide('c', $order, $now);
+    expect($over['outcome'] === 'BLOCKED' && $over['reasons'] === ['CREDIT_LIMIT_EXCEEDED'] && (new $G('shadow', $profile(['availableCredit' => '77.34'])))->decide('c', $order, $now)['outcome'] === 'WOULD_BLOCK');
+    expect((new $G('enforce', $profile(['accountCurrency' => 'EUR'])))->decide('c', $order, $now)['reasons'] === ['ORDER_CURRENCY_MISMATCH'], 'no currency conversion');
+    // UNVERIFIED is not GREEN; a missing limit is not a limit of zero; missing data never becomes an allowance.
+    $unknown = (new $G('enforce', $profile(['riskColor' => 'UNVERIFIED', 'availableCredit' => null, 'approvedCreditLimit' => null, 'creditLimitStatus' => 'NO_APPROVED_LIMIT', 'eligibilityBlockers' => ['RISK_NOT_ASSIGNED', 'NO_APPROVED_LIMIT']])))->decide('c', $order, $now);
+    expect($unknown['outcome'] === 'BLOCKED' && $unknown['reasons'] === ['RISK_NOT_ASSIGNED', 'NO_APPROVED_LIMIT'] && !in_array('LIMIT_ZERO', $unknown['reasons'], true));
+    expect((new $G('enforce', $profile(['availableCredit' => '0.00', 'approvedCreditLimit' => '0.00', 'eligibilityBlockers' => ['LIMIT_ZERO']])))->decide('c', $order, $now)['reasons'] === ['LIMIT_ZERO', 'CREDIT_LIMIT_EXCEEDED']);
+    // Release check: the exposure already holds this order, so a full limit passes and an exceeded one does not.
+    $finalized = $order + [];
+    $finalized['finance_decision'] = json_encode($allowed);
+    $exact = (new $G('enforce', $profile(['currentExposure' => '100.00', 'availableCredit' => '0.00', 'eligibilityBlockers' => ['NO_AVAILABLE_CREDIT']])))->recheck('c', $finalized, $now);
+    expect($exact['outcome'] === 'ALLOWED' && $exact['phase'] === 'production_submission' && $exact['grandfathered'] === false && $exact['changedSinceFinalization'] === [] && $exact['finalization']['outcome'] === 'ALLOWED');
+    $exceeded = (new $G('enforce', $profile(['approvedCreditLimit' => '50.00', 'availableCredit' => '-27.35'])))->recheck('c', $finalized, $now);
+    expect($exceeded['outcome'] === 'BLOCKED' && $exceeded['reasons'] === ['CREDIT_LIMIT_EXCEEDED'] && $exceeded['changedSinceFinalization'] === ['approvedCreditLimit']);
+    $red = (new $G('enforce', $profile(['riskColor' => 'RED', 'eligibilityBlockers' => ['RISK_RED']])))->recheck('c', $finalized, $now);
+    expect($red['outcome'] === 'BLOCKED' && $red['reasons'] === ['RISK_RED'] && $red['changedSinceFinalization'] === ['riskColor']);
+    expect((new $G('enforce', $profile(), 'shadow'))->recheck('c', $finalized, $now)['mode'] === 'shadow' && (new $G('enforce', $profile(['eligibilityBlockers' => ['RISK_RED']]), 'shadow'))->recheck('c', $finalized, $now)['outcome'] === 'WOULD_BLOCK');
+    foreach ([null, 'not json', json_encode(['mode' => 'off', 'outcome' => 'NOT_EVALUATED'])] as $earlier) {
+        $old = (new $G('enforce', $profile()))->recheck('c', ['finance_decision' => $earlier] + $order, $now);
+        expect($old['grandfathered'] === true && $old['changedSinceFinalization'] === [] && $old['outcome'] === 'ALLOWED', 'an order without an evaluated decision is evaluated at release');
+    }
+    // CEO exception: bound to the order and the company, unexpired, large enough, same currency, RED now, credit reasons only.
+    $row = ['exception_uuid' => '00000000-0000-4000-8000-00000000e001', 'company_uuid' => 'c', 'order_uuid' => $order['order_uuid'], 'currency_code' => 'RON', 'amount' => '77.35', 'status' => 'APPROVED', 'expires_at' => '2026-11-10 10:00:00.000001'];
+    $with = static fn (array $over = [], array $reasons = ['RISK_RED', 'NO_APPROVED_LIMIT']): array => (new $G('enforce', $profile(['riskColor' => 'RED', 'availableCredit' => null, 'eligibilityBlockers' => $reasons]), null,
+        static fn (string $id): ?array => $id === $order['order_uuid'] ? array_replace($row, $over) : null))->decide('c', $order, $now);
+    $covered = $with();
+    expect($covered['outcome'] === 'ALLOWED_BY_CEO_EXCEPTION' && $covered['exception'] === ['id' => $row['exception_uuid'], 'amount' => '77.35', 'currency' => 'RON', 'expiresAt' => $row['expires_at']] && $covered['reasons'] === ['RISK_RED', 'NO_APPROVED_LIMIT']);
+    foreach ([['amount' => '77.34'], ['currency_code' => 'EUR'], ['expires_at' => $now], ['expires_at' => '2026-11-09 23:59:59.000000'], ['company_uuid' => 'other'], ['status' => 'REQUESTED'], ['status' => 'REJECTED']] as $overRow) {
+        expect($with($overRow)['outcome'] === 'BLOCKED', 'exception not applicable: ' . json_encode($overRow));
+    }
+    expect($with([], ['RISK_RED', 'IDENTITY_NOT_VERIFIED'])['outcome'] === 'BLOCKED' && $with([], ['RISK_RED', 'ACCOUNT_NOT_RECONCILED'])['outcome'] === 'BLOCKED' && $with([], ['RISK_RED', 'CURRENCY_ISSUE_OPEN'])['outcome'] === 'BLOCKED', 'identity, account and currency reasons are never covered');
+    expect($with([], ['NO_APPROVED_LIMIT'])['outcome'] === 'BLOCKED', 'an exception serves a RED company only');
+    expect((new $G('enforce', $profile(['eligibilityBlockers' => ['RISK_RED']])))->decide('c', $order, $now)['outcome'] === 'BLOCKED', 'no exception reader, no exception');
+    // The refusals carry reason codes and the phase, never an amount.
+    $refusal = $G::refusal($over);
+    expect($refusal->status === 409 && $refusal->errorCode === 'FINANCE_NOT_ELIGIBLE' && $refusal->details === ['reasons' => ['CREDIT_LIMIT_EXCEEDED'], 'phase' => 'finalization']);
+    expect($G::refusal($red)->errorCode === 'FINANCE_RELEASE_BLOCKED' && $G::refusal($red)->details === ['reasons' => ['RISK_RED'], 'phase' => 'production_submission']);
+    // Source rules: the journal is insert-only; the gate reads no browser input and writes no ledger, stage, shipment or delivery row.
+    $source = dirname(__DIR__) . '/src';
+    foreach (new RecursiveIteratorIterator(new RecursiveDirectoryIterator($source, FilesystemIterator::SKIP_DOTS)) as $file) {
+        if ($file->getExtension() === 'php') {
+            expect(preg_match('/\b(UPDATE|DELETE\s+FROM)\s+b2b_finance_gate_decisions\b/i', (string) file_get_contents($file->getPathname())) !== 1, $file->getFilename() . ' never rewrites the finance gate journal');
+        }
+    }
+    $gateSource = (string) file_get_contents($source . '/B2B/FinanceGate.php');
+    expect(preg_match('/\bPDO\b|INSERT|UPDATE|DELETE|Request|\$_(GET|POST|COOKIE)/', $gateSource) !== 1, 'FinanceGate is a pure decision: no SQL, no request data');
+    expect(preg_match('/b2b_account_movements|operational_orders|order_activity_events|trendyol|awb/i', (string) file_get_contents($source . '/B2B/FinanceGateJournal.php')) !== 1, 'the journal touches its own table only');
+    $submit = (string) file_get_contents($source . '/B2B/ProductionCommands.php');
+    expect(strpos($submit, '$this->finance->recheck(') < strpos($submit, '$this->writer->createInternal(') && strpos($submit, "if(\$existing!==false) \$result=['status'=>200") < strpos($submit, '$this->finance->recheck('), 'the release check runs before any production row and never for an existing handoff');
+});
+
 test('the Finance configuration guard refuses unreviewed Finance values and never reports a value', function (): void {
     $a = '00000000-0000-4000-8000-0000000000a1';
     $b = '00000000-0000-4000-8000-0000000000a2';
@@ -972,6 +1048,22 @@ test('the Finance configuration guard refuses unreviewed Finance values and neve
     $gate = FinanceConfigGuard::inspect(['ARASYA_B2B_FINANCE_GATE' => 'shadow'])['fingerprint'];
     expect(FinanceConfigGuard::inspect(['ARASYA_B2B_FINANCE_GATE' => 'shadow', 'ARASYA_FINANCE_CONFIG_ACK' => $gate])['ok']);
     expect($fails(FinanceConfigGuard::inspect(['ARASYA_B2B_FINANCE_GATE' => 'enforce', 'ARASYA_FINANCE_CONFIG_ACK' => $gate])) === ['finance_config_acknowledgement_stale'], 'shadow -> enforce needs a new review');
+    // The release check at production submission inherits the gate when absent; a set value is reviewed on its own.
+    $states = static fn (array $values): array => array_column(FinanceConfigGuard::inspect($values)['checks'], 'check');
+    expect(in_array('b2b_finance_release_gate_off_inherited', $states([]), true) && in_array('b2b_finance_release_gate_enforce_inherited', $states(['ARASYA_B2B_FINANCE_GATE' => 'enforce']), true));
+    expect(FinanceConfigGuard::inspect(['ARASYA_B2B_FINANCE_RELEASE_GATE' => 'off'])['defaults'] && in_array('b2b_finance_release_gate_off', $states(['ARASYA_B2B_FINANCE_RELEASE_GATE' => 'off']), true));
+    expect($fails(FinanceConfigGuard::inspect(['ARASYA_B2B_FINANCE_RELEASE_GATE' => 'enforce'])) === ['finance_config_not_acknowledged'], 'a release check alone is an activation');
+    expect($fails(FinanceConfigGuard::inspect(['ARASYA_B2B_FINANCE_RELEASE_GATE' => 'Shadow'])) === ['b2b_finance_release_gate_unrecognized']);
+    expect($fails(FinanceConfigGuard::inspect(['ARASYA_B2B_FINANCE_GATE' => 'enforced', 'ARASYA_B2B_FINANCE_RELEASE_GATE' => ''])) === ['b2b_finance_gate_unrecognized', 'b2b_finance_release_gate_unrecognized']);
+    expect($fails(FinanceConfigGuard::inspect(['ARASYA_B2B_FINANCE_GATE' => 'enforced', 'ARASYA_FINANCE_CONFIG_ACK' => FinanceConfigGuard::inspect(['ARASYA_B2B_FINANCE_GATE' => 'enforced'])['fingerprint']])) === ['b2b_finance_gate_unrecognized'], 'an acknowledgement never excuses a malformed value');
+    $both = FinanceConfigGuard::inspect(['ARASYA_B2B_FINANCE_GATE' => 'enforce'])['fingerprint'];
+    expect($fails(FinanceConfigGuard::inspect(['ARASYA_B2B_FINANCE_GATE' => 'enforce', 'ARASYA_B2B_FINANCE_RELEASE_GATE' => 'off', 'ARASYA_FINANCE_CONFIG_ACK' => $both])) === ['finance_config_acknowledgement_stale'], 'switching the release check off needs a new review');
+    // The running API keeps the configured value exactly: it is validated where it is used, never rewritten to off.
+    $configSource = (string) file_get_contents(dirname(__DIR__) . '/src/Config/Config.php');
+    expect(!str_contains($configSource, "? \$this->b2bFinanceGate : 'off'") && str_contains($configSource, 'return $this->b2bFinanceGate;'), 'Config does not normalize the gate mode');
+    foreach (['ARASYA_B2B_FINANCE_GATE', 'ARASYA_B2B_FINANCE_RELEASE_GATE'] as $gateKey) {
+        expect(((new ConfigLoader(['HOME' => sys_get_temp_dir(), $gateKey => 'enforced']))->load()[$gateKey] ?? null) === 'enforced', "{$gateKey} reaches the API unchanged");
+    }
     $text = json_encode(FinanceConfigGuard::inspect([...$reviewed, 'ARASYA_FINANCE_CEO_EMPLOYEE_UUID' => $b, 'ARASYA_FINANCE_OPENING_BALANCE_POSTING' => 'enabled'])['checks'], JSON_THROW_ON_ERROR);
     expect(!str_contains($text, $a) && !str_contains($text, $b), 'checks never contain a configured value');
     // The acknowledgement key reaches the guard, and the running API never reads it.

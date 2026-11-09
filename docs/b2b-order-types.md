@@ -24,7 +24,8 @@ Nothing infers one from the other. A product title, category, price or fabric de
    - A converted project draft has no type.
 2. **Finalization.** Finalization refuses a draft without a type with 422 `VALIDATION_FAILED` (`fields.orderType = required`). On success the type is frozen with the rest of the commercial data.
 3. **Explicit production submission.** The frozen type is copied in the same transaction to three places:
-   - `b2b_production_handoffs.order_type`;
+   - `b2b_production_handoffs.order_type` and `b2b_production_handoffs.finance_decision` (the release decision);
+- `b2b_finance_gate_decisions`, the insert-only journal of evaluated finance decisions;
    - `operational_orders.service_route`;
    - the canonical production context (`productionContext.orderType`, which Staff shows).
 4. **Submission request.** The request accepts only `expectedVersion`. A client cannot send a type, a stage or a route.
@@ -105,38 +106,24 @@ The existing stage 14 completion is the internal handover by Livrare. It is not 
 
 An explicit courier handover record (carrier, parcel count, AWB) would be a separate delivery domain and a separate decision.
 
-## 7. Finance at finalization (`ARASYA_B2B_FINANCE_GATE`)
+## 7. Finance at finalization and at release (`ARASYA_B2B_FINANCE_GATE`)
 
-`B2B/FinanceGate` runs inside the finalization transaction, under the company row lock that Finance owner decisions also take.
+The full design is in [b2b-finance-gate.md](b2b-finance-gate.md). Summary:
 
-| Mode | Behaviour |
-|---|---|
-| `off` (default) | Nothing is evaluated. The snapshot records `mode: off`, `outcome: NOT_EVALUATED`. |
-| `shadow` | Evaluated and stored. A refusal is only recorded (`WOULD_BLOCK`). |
-| `enforce` | A refusal returns 409 `FINANCE_NOT_ELIGIBLE` with its reasons. The order stays a draft: no receivable, no snapshot, no production submission and no QR. |
-
-A finalization is allowed when all of these hold:
-
-- the Finance credit profile is `ELIGIBLE` (all blockers of V0.4.0 §6);
-- the order currency equals the verified account currency;
-- the gross total does not exceed the available credit. Available credit is the approved limit minus the current ledger exposure, before this order's receivable.
-
-The decision and its basis are stored in `b2b_orders.finance_decision`. Order type changes the manufacturing route only: every type gets the same finance decision. The receivable is still posted exactly once, in the finalization transaction, under its unique key.
-
-Not modelled yet:
-
-- prepaid orders;
-- order-bound CEO exceptions;
-- a per-source switch beyond the one B2B source.
-
-Changing the mode in production is a live activation. `bin/finance-config-check.php` blocks a deployment with an unreviewed `shadow` or `enforce` value until `ARASYA_FINANCE_CONFIG_ACK` matches. Anything other than `off`, `shadow` or `enforce` always blocks.
+- `B2B/FinanceGate` decides at finalization and again at production submission (release check), both under the company row lock that Finance owner decisions also take.
+- Modes `off` (default), `shadow` and `enforce`. An unknown value is refused with 503 `FINANCE_GATE_MISCONFIGURED` on those two actions only. It is never read as `off`.
+- `enforce` refuses with 409 `FINANCE_NOT_ELIGIBLE` (the order stays a draft, no receivable) or 409 `FINANCE_RELEASE_BLOCKED` (the order stays finalized, no handoff, no QR).
+- Order type changes the manufacturing route only: every type gets the same finance decision. The receivable is still posted exactly once.
+- Every evaluated decision is in the insert-only journal `b2b_finance_gate_decisions`, refusals included.
+- An order already in production is never evaluated again.
 
 ## 8. Migration 050
 
 Additive and re-runnable (information_schema guards):
 
 - `b2b_orders.order_type` and `b2b_orders.finance_decision`;
-- `b2b_production_handoffs.order_type`;
+- `b2b_production_handoffs.order_type` and `b2b_production_handoffs.finance_decision` (the release decision);
+- `b2b_finance_gate_decisions`, the insert-only journal of evaluated finance decisions;
 - `operational_orders.service_route` with its source CHECK;
 - `production_route_decisions` reason CHECK replaced to add `order_service_route`. The 029 values are unchanged.
 
@@ -146,9 +133,17 @@ Tested on MySQL 8.4 and MariaDB 10.11:
 
 - a fresh install;
 - re-running 050;
-- a real 049 → 050 upgrade over finalized, submitted and completed orders, with every row of the seven tables preserved.
+- a real 049 → 050 upgrade over finalized, submitted and completed orders, with every row of the seven tables preserved;
+- the live order: 051 (Trendyol AWB station) is already applied and 050 is pending. `MigrationRunner` applies every file that has no row in `schema_migrations`, by name, so 050 is applied after 051. The 051 record, the AWB table and the AWB permissions are identical before and after.
 
-Rollback: an API before 2.67.0 ignores the columns. A short-route order already at Livrare stays there.
+050 and 051 touch different tables and do not depend on each other. No migration is renumbered and no applied migration file changes.
+
+Rollback: an API before 2.67.0 ignores the columns, so it would send an open short-route order through every stage. `bin/check-rollback.php` therefore reports the floor 2.67.0 while such work is open:
+
+- a `CUT_ONLY` or `FULL_ROLL_BAG` order in production that has not reached Livrare;
+- a finalized `CUT_ONLY` or `FULL_ROLL_BAG` order not yet submitted to production.
+
+A short-route order at Livrare, a completed order, a `FULL_TAILORING` order and an untyped order add no floor. The finance journal adds no floor.
 
 ## 9. Not changed
 

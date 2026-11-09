@@ -276,17 +276,23 @@ final class Container
         );
     }
 
-    /** Finance decision at B2B finalization (FinanceGate), switched by ARASYA_B2B_FINANCE_GATE (default off). */
+    /**
+     * Finance decision at B2B finalization and production submission (FinanceGate), switched by ARASYA_B2B_FINANCE_GATE
+     * and ARASYA_B2B_FINANCE_RELEASE_GATE (default off). The configured values are passed unchanged: an unknown value
+     * makes the gated B2B actions answer 503, it never becomes off.
+     */
     private function b2bFinanceGate(AuthorizationService $authorization): \Arasya\Operations\B2B\FinanceGate
     {
         $mode = $this->config->b2bFinanceGateMode();
-        if ($mode === \Arasya\Operations\B2B\FinanceGate::OFF) {
+        $release = $this->config->b2bFinanceReleaseGateMode();
+        if ($mode === \Arasya\Operations\B2B\FinanceGate::OFF && ($release === null || $release === \Arasya\Operations\B2B\FinanceGate::OFF)) {
             return new \Arasya\Operations\B2B\FinanceGate();
         }
         $store = new \Arasya\Operations\Finance\FinanceStore($this->pdo, $authorization, $this->clock);
         $authority = new \Arasya\Operations\Finance\Risk\DecisionAuthority($this->config->financeRiskLimitAuthorityList(), $this->employees);
         $credit = new \Arasya\Operations\Finance\Credit\CreditService($store, new \Arasya\Operations\Finance\Risk\RiskService($store, $authority), $this->config->financeCeoEmployeeUuid, $authority);
-        return new \Arasya\Operations\B2B\FinanceGate($mode, static fn (string $companyId): array => $credit->profileData($companyId));
+        return new \Arasya\Operations\B2B\FinanceGate($mode, static fn (string $companyId): array => $credit->profileData($companyId), $release,
+            static fn (string $orderId): ?array => $credit->approvedExceptionForOrder($orderId));
     }
 
     private function financeController(AuthorizationService $authorization, RequestContext $context, CsrfGuard $csrf, \Arasya\Operations\Security\ApiRateLimiter $rateLimiter): \Arasya\Operations\Finance\FinanceController
@@ -389,9 +395,9 @@ final class Container
                 $this->config,
                 $context,
             ),
-            new OrderController(new OrderQueries($this->pdo,$authorization),new OrderCommands($this->pdo,$authorization,$this->clock,$this->b2bFinanceGate($authorization)),
+            new OrderController(new OrderQueries($this->pdo,$authorization,$financeGate=$this->b2bFinanceGate($authorization)),new OrderCommands($this->pdo,$authorization,$this->clock,$financeGate),
                 $this->authentication,$authorization,$csrf,$this->config,$context,
-                new ProductionCommands($this->pdo,$authorization,$this->clock,$workflows,$this->projectionWriter(),$documents),
+                new ProductionCommands($this->pdo,$authorization,$this->clock,$workflows,$this->projectionWriter(),$documents,$financeGate),
                 new ProductionQueries($this->pdo,$authorization,$workflows),$documents,$this->pdo),
             new AccountController($this->authentication, $authorization, $csrf, $this->config, $context,
                 new AccountQueries($this->pdo, $authorization, $this->clock), new AccountCommands($this->pdo, $authorization, $this->clock)),
