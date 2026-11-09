@@ -24,13 +24,21 @@ The page lists `FANCOURIER` for region `RO` among the Trendyol-paid carriers. Au
 
 Not documented by Trendyol:
 
-- whether the label URL expires (the station never stores or reuses a URL);
+- whether the label URL expires (the observed presigned link does; the station never stores or reuses a URL);
 - whether the call has side effects (it is a GET; the station treats it as a read);
 - a rate limit for this service (`Get Shipment Package` is limited to 30 to 100 requests per minute by listing tier);
-- the label page size;
+- the label page size (observed: A6);
 - what happens for carriers or storefronts outside the table.
 
-**Not verified on the real Romanian account.** No request was sent to Trendyol during development. All tests use a fixture transport shaped like the documented answer. See section 10.
+**Observed on the real account (2026-11-09 13:52 to 13:53 UTC, owner approved, GET only, after the owner updated the API permissions).** For one active `FANEX/RO` package the label query answered 200 without `storeFrontCode`, with one label of format `PDF`. The answer differs from the documented example:
+
+```
+label URL      https://apigw.trendyol.com/<opaque path>            (not cdn.dsmcdn.com)
+GET (no auth)  302  Location: https://s3.trendyol.com/<bucket>-prod/.../label/<id>/label-data.pdf?X-Amz-...   (presigned, expiring)
+GET (no auth)  200  application/pdf, PDF 1.4, 30,960 bytes, 1 page, 298 x 420 pt = 105 x 148 mm (A6), not rotated
+```
+
+Before the permission update the same key got 401 on the label service. Only `FANEX/RO` was tested; `FANCOURIER/GR` and `FANCOURIER/BG` are not verified. The tests use fixtures shaped like this real answer and like the documented one.
 
 The v2.0 `createCommonLabel` service (a label creation request) is deliberately not used.
 
@@ -47,15 +55,18 @@ For every print request the server:
 
 The download is restricted:
 
-- HTTPS only, host exactly `cdn.dsmcdn.com`, default port, no user info, no fragment, no path traversal;
-- no redirect is followed;
-- no credential is sent to the CDN;
-- 15 second timeout, 5 MiB limit;
-- the PDF is validated by content (`%PDF-` header and `%%EOF`), never by file name.
+- the label URL: HTTPS only, host exactly `cdn.dsmcdn.com` or `apigw.trendyol.com` (`TrendyolLabelClient::LABEL_HOSTS`), default port, no user info, no fragment, no path traversal;
+- the transport never follows a redirect. `TrendyolLabelClient` accepts exactly one `302` and validates its `Location` before a second GET: HTTPS, host exactly `s3.trendyol.com` (`LABEL_REDIRECT_HOSTS`), the same URL rules, at most 4,096 characters. Any other 3xx, a second redirect, a missing or relative `Location`, another host, HTTP, user info or another port is refused with `TRENDYOL_LABEL_REDIRECT_REFUSED` (API `AWB_LABEL_INVALID`, stored category `redirect_refused`), without a second request;
+- an S3 URL is only a redirect target: Trendyol cannot return it as a label URL;
+- no credential is sent to any document host: the fetcher has fixed headers (`Accept`, `User-Agent: Arasya-AWB-Station`) and no access to the credentials;
+- 15 second timeout, 5 MiB limit on each response;
+- the PDF is validated by content (`%PDF-` header and `%%EOF`), never by file name; an S3 error page is refused;
+- an expired link (403, 404, 410) answers `AWB_LABEL_EXPIRED`; the next try asks Trendyol for a new link;
+- no label or presigned URL is stored, logged or sent to the browser. The browser receives only the PDF bytes, unchanged.
 
 `tests/inbound-only-guard.php` records this as the third reviewed exception and fails the build if it widens.
 
-Each print uses three outbound calls: package read, label read, PDF download. The queue uses none.
+Each print uses three or four outbound calls: package read, label read, PDF download (plus the one redirect). The queue uses none.
 
 ## 4. Queue
 
@@ -123,7 +134,8 @@ A named employee receives the same template and opens the station from Staff hom
 - Open `https://staff.arasyahome.ro/awb` and sign in. Add a desktop shortcut.
 - A USB QR scanner in keyboard mode needs no setup. It should end each scan with Enter.
 - Press `Imprimă AWB`. The print dialog opens by itself.
-- In the dialog choose the label printer, scale `100%` or `Actual size`, margins none, headers and footers off. Chrome remembers the printer.
+- The real label is one A6 page (105 x 148 mm). In the dialog choose the label printer, paper A6 or 105 x 148 mm portrait, scale `100%` or `Actual size` (never `Fit to page`), margins none, headers and footers off, best quality without toner saving. Chrome remembers the printer. The preview shows the same settings in RO and TR.
+- Arasya streams the PDF bytes unchanged; the barcode stays vector. Whether the printer driver scales is a print dialog setting that a web page cannot force, so the first physical print must be checked.
 - Silent printing is not implemented: a browser cannot do it without a kiosk flag or local software.
 - Sign out with `Ieșire` if the computer is used for anything else.
 
@@ -133,6 +145,7 @@ A named employee receives the same template and opens the station from Staff hom
 - `RO | TR` is stored in this browser only (`arasya.awb.locale`) and never changes an account language.
 - Texts are in `i18n/messages/awbStation.ts`.
 - The preview needs `frame-src 'self' blob:` in the Staff CSP (added).
+- The preview lists the printer settings for the A6 label (`printPaper`, `printScale`, `printMargins`, `printQuality`).
 
 ## 10. Before production
 
@@ -140,8 +153,8 @@ A named employee receives the same template and opens the station from Staff hom
 2. Deploy the API first, run migration 051 with a backup, then deploy Staff.
 3. With owner approval, run the read-only check in section 11 and apply its test table.
 4. Decide what happens to any carrier or country the check reports as not supported.
-5. Confirm the CDN host of a real label equals `cdn.dsmcdn.com`. If not, the label is refused until the list is reviewed.
-6. Print one real label on the station printer: check size, barcode and scale. No automated test can prove this.
+5. Done 2026-11-09 for `FANEX/RO`: the real label comes from `apigw.trendyol.com` with one 302 to `s3.trendyol.com`, both now on the reviewed lists. Any other host is refused until the lists are reviewed. `FANCOURIER/GR` and `FANCOURIER/BG` still need one approved check.
+6. Print one real label on the station printer: check A6 size, barcode scan and 100% scale. No automated test can prove this.
 7. Create the station account (section 8).
 
 Rollback: an API before 2.65.0 ignores the table. Removing the role assignment turns the station off.
@@ -189,7 +202,7 @@ Read together with each row:
 | Field | What it decides | Required |
 |---|---|---|
 | `worksWithoutStoreFront`, `worksWithStoreFront` | Whether `ARASYA_TRENDYOL_STORE_FRONT_CODE` must be set. It is absent on the live server today. A GR or BG label may need its own code, while the setting holds one | At least one is true. If only one code works per country, the client needs a per-country header before GO |
-| `hosts` | The CDN allow list | Exactly `cdn.dsmcdn.com` |
+| `hosts` | The label host allow list | `cdn.dsmcdn.com` or `apigw.trendyol.com` (the latter redirects once to `s3.trendyol.com`) |
 | `formats` | Browser printing | `PDF` |
 | `labels` | Parcels per shipment | 1 or more, screen handles both |
 | `documents[].pageSizes` | Printer label size | One known size |
@@ -223,3 +236,7 @@ Verdicts:
 ### Result on 2026-11-09 (owner approved, before these report fixes)
 
 The package list answered 200. Every label query answered 401, with and without `storeFrontCode`, for active `FANEX/RO`, `FANCOURIER/GR` and `FANCOURIER/BG` packages. No label or PDF was obtained, so all groups are `INCONCLUSIVE / AUTHORIZATION_UNVERIFIED`. Label access for this seller and API key must be clarified with Trendyol before the check is repeated.
+
+### Single-package retest on 2026-11-09 13:48 to 13:53 UTC (owner approved, GET only)
+
+At 13:48 the label query and a control GET of the seller addresses still answered 401 with the same headers that gave 200 on Order V2. After the owner updated the API permissions, the label query for one `FANEX/RO` package answered 200 and the PDF was obtained as shown in section 2 (A6, valid PDF 1.4, through one 302 to `s3.trendyol.com`). These calls used a temporary script that was not committed.

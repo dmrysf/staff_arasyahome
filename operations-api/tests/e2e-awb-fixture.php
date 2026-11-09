@@ -41,7 +41,7 @@ unset($fixture['fail'], $fixture['status'], $fixture['body'], $fixture['labelSta
 $now = new DateTimeImmutable('now', new DateTimeZone('UTC'));
 $writer = $container->projectionWriter();
 $documents = $container->documentService();
-$pdfFor = static fn (string $tag): string => "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 283 425]/Contents 4 0 R/Resources<</Font<</F1<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>>>>>>>endobj\n"
+$pdfFor = static fn (string $tag): string => "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 298 420]/Contents 4 0 R/Resources<</Font<</F1<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>>>>>>>endobj\n"
     . ($stream = "BT /F1 18 Tf 40 300 Td (TEST LABEL {$tag}) Tj ET") . "\n"
     . '4 0 obj<</Length ' . strlen($stream) . ">>stream\n{$stream}\nendstream endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n";
 
@@ -72,9 +72,12 @@ $make = static function (string $stage, string $status, array $labels) use (&$fi
     } else {
         $data = [];
         foreach ($labels as $index => $tag) {
-            $url = "https://cdn.dsmcdn.com/public-delivery-partner/product-label/e2e_{$packageId}_{$index}.pdf";
+            // The shape of the real account (2026-11-09): a gateway label URL, one 302 to a presigned S3 URL, an A6 PDF.
+            $url = "https://apigw.trendyol.com/e2elabel/{$packageId}/{$index}/0e1d2c3b-ecbe-4a5f-b9f9-0123456789ab";
+            $signed = "https://s3.trendyol.com/label-bucket-prod/e2e/label/{$packageId}-{$index}/label-data.pdf?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Expires=300&X-Amz-Signature=" . str_repeat('ab', 32);
             $data[] = ['format' => 'PDF', 'label' => $url];
-            $fixture['documents'][$url] = ['status' => 200, 'contentType' => 'application/pdf', 'base64' => base64_encode($pdfFor($tag . ' ' . $number))];
+            $fixture['documents'][$url] = ['status' => 302, 'location' => $signed];
+            $fixture['documents'][$signed] = ['status' => 200, 'contentType' => 'application/pdf', 'base64' => base64_encode($pdfFor($tag . ' ' . $number))];
         }
         $fixture['labels'][$tracking] = ['status' => 200, 'data' => $data];
     }

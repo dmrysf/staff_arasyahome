@@ -12,13 +12,16 @@ declare(strict_types=1);
  *   1. GETs the shipment packages of the last 13 days, newest first (Order V2, at most 3 pages);
  *   2. groups them by carrier and destination country;
  *   3. for at most 2 packages per group (24 label calls in total) GETs common-label/query, without and with storeFrontCode;
- *   4. for the first label of each group, GETs the PDF from the Trendyol CDN into memory and reads only its structure.
+ *   4. for the first label of each group, GETs the PDF into memory and reads only its structure. A label on
+ *      apigw.trendyol.com answers one 302 to a presigned s3.trendyol.com URL (seen on the real account on 2026-11-09);
+ *      exactly that one redirect is followed, after its target is checked, and never with credentials.
  *
  * Two authorization refusals (401 or 403) in a row end the label calls: repeating them proves nothing. A 401 or 403 never
  * means a carrier is unsupported; such a group is INCONCLUSIVE / AUTHORIZATION_UNVERIFIED.
  *
- * It can never change anything: GET is the only verb in this file, only https://apigw.trendyol.com and
- * https://cdn.dsmcdn.com are reachable, no redirect is followed, the label creation service is not called, no database
+ * It can never change anything: GET is the only verb in this file, only https://apigw.trendyol.com, https://cdn.dsmcdn.com
+ * and (as the one redirect target) https://s3.trendyol.com are reachable, PHP never follows a redirect by itself, the
+ * label creation service is not called, no database
  * connection is opened and no file is written. The PDF stays in memory and its text is never read.
  *
  * The report holds aggregates only: never a credential, order number, package id, tracking number, URL, name, address
@@ -30,7 +33,9 @@ declare(strict_types=1);
  */
 
 const CHECK_API_HOST = 'apigw.trendyol.com';
-const CHECK_LABEL_HOSTS = ['cdn.dsmcdn.com'];
+const CHECK_LABEL_HOSTS = ['cdn.dsmcdn.com', 'apigw.trendyol.com'];
+/** The only host one 302 from a label host may lead to (a presigned Trendyol S3 link). */
+const CHECK_REDIRECT_HOSTS = ['s3.trendyol.com'];
 const CHECK_WINDOW_DAYS = 13;
 const CHECK_PAGE_SIZE = 200;
 const CHECK_MAX_PAGES = 3;
@@ -71,12 +76,12 @@ function check_newest_first(array $packages): array
     return $rows;
 }
 
-/** The only network call of this file: GET, HTTPS, two hosts, no redirect, bounded. */
+/** The only network call of this file: GET, HTTPS, three hosts, no automatic redirect, bounded. */
 function check_http_get(string $url, array $headers, int $maxBytes): array
 {
     $parts = parse_url($url);
     $host = is_array($parts) ? strtolower((string) ($parts['host'] ?? '')) : '';
-    if (!is_array($parts) || ($parts['scheme'] ?? '') !== 'https' || isset($parts['user']) || isset($parts['pass']) || isset($parts['port']) || !in_array($host, [CHECK_API_HOST, ...CHECK_LABEL_HOSTS], true)) {
+    if (!is_array($parts) || ($parts['scheme'] ?? '') !== 'https' || isset($parts['user']) || isset($parts['pass']) || isset($parts['port']) || !in_array($host, [CHECK_API_HOST, ...CHECK_LABEL_HOSTS, ...CHECK_REDIRECT_HOSTS], true)) {
         throw new RuntimeException('HOST_REFUSED');
     }
     $lines = [];
@@ -94,14 +99,18 @@ function check_http_get(string $url, array $headers, int $maxBytes): array
     }
     $status = 0;
     $response = [];
+    $location = null;
     foreach ($http_response_header ?? [] as $line) {
         if (preg_match('#^HTTP/\S+\s+(\d{3})#', $line, $match) === 1) {
             $status = (int) $match[1];
+        } elseif (preg_match('#^Location:\s*(\S+)\s*$#i', $line, $match) === 1) {
+            $location = $match[1];
         } elseif (preg_match('/^(Content-Type|Cache-Control|Expires):\s*(.*)$/i', $line, $match) === 1) {
             $response[strtolower($match[1])] = trim($match[2]);
         }
     }
-    return ['status' => $status, 'body' => $body, 'headers' => $response];
+    // The Location is used once, in memory, and never reported.
+    return ['status' => $status, 'body' => $body, 'headers' => $response, 'location' => $location];
 }
 
 function check_safe_word(mixed $value, int $max = 40): ?string
@@ -124,10 +133,16 @@ function check_hint(string $body): ?string
     return null;
 }
 
-function check_allowed_label(string $url): bool
+function check_allowed_label(string $url, array $hosts = CHECK_LABEL_HOSTS): bool
 {
     $parts = parse_url($url);
-    return is_array($parts) && ($parts['scheme'] ?? '') === 'https' && !isset($parts['user']) && !isset($parts['pass']) && !isset($parts['port']) && !isset($parts['fragment']) && in_array(strtolower((string) ($parts['host'] ?? '')), CHECK_LABEL_HOSTS, true);
+    return is_array($parts) && ($parts['scheme'] ?? '') === 'https' && !isset($parts['user']) && !isset($parts['pass']) && !isset($parts['port']) && !isset($parts['fragment']) && in_array(strtolower((string) ($parts['host'] ?? '')), $hosts, true);
+}
+
+/** The one redirect target a label host may answer with: HTTPS on CHECK_REDIRECT_HOSTS, nothing else. */
+function check_allowed_redirect(mixed $url): bool
+{
+    return is_string($url) && strlen($url) <= 4096 && preg_match('/[\x00-\x20\x7f\\\\]/', $url) !== 1 && check_allowed_label($url, CHECK_REDIRECT_HOSTS);
 }
 
 /** Structure only: version, pages, page boxes. Compressed object streams are inflated in memory to find the boxes. */
@@ -310,6 +325,12 @@ function check_run(callable $http, string $base, string $sellerId, array $auth, 
                     $pause(1);
                     try {
                         $pdf = $http($urls[0], ['Accept' => 'application/pdf', 'User-Agent' => 'Arasya-AWB-Check'], CHECK_MAX_PDF_BYTES);
+                        // One 302 to a checked presigned link, no credentials; any further redirect is only reported.
+                        if ($pdf['status'] === 302 && check_allowed_redirect($pdf['location'] ?? null)) {
+                            $documents[$key]['redirectHost'] = strtolower((string) parse_url((string) $pdf['location'], PHP_URL_HOST));
+                            $pause(1);
+                            $pdf = $http((string) $pdf['location'], ['Accept' => 'application/pdf', 'User-Agent' => 'Arasya-AWB-Check'], CHECK_MAX_PDF_BYTES);
+                        }
                         $documents[$key] += ['outcome' => $pdf['status'] === 200 ? 'DOWNLOADED' : 'DOWNLOAD_HTTP_' . $pdf['status'], 'contentType' => check_safe_word(str_replace('/', '-', (string) ($pdf['headers']['content-type'] ?? '')), 60), 'cacheControl' => check_safe_word(str_replace(['=', ','], ' ', (string) ($pdf['headers']['cache-control'] ?? '')), 80), 'expiresHeader' => isset($pdf['headers']['expires'])];
                         if ($pdf['status'] === 200) {
                             $documents[$key] += check_pdf_shape($pdf['body']);

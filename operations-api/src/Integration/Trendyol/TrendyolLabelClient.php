@@ -20,16 +20,26 @@ use RuntimeException;
  *
  * The service is a GET: it reads a label Trendyol already produced for the package's existing tracking number. Nothing is
  * created, no shipment, status, tracking number or package is changed, and no other courier is ever called. The
- * label document is then downloaded from the URL Trendyol returned, only from LABEL_HOSTS, without credentials and
- * without redirects, bounded in size, and checked to be a PDF by its content (never by its file name).
+ * label document is then downloaded from the URL Trendyol returned, only from LABEL_HOSTS, without credentials, bounded
+ * in size, and checked to be a PDF by its content (never by its file name).
  *
- * Trendyol does not document whether the label URL expires, so a URL is never stored or reused: every print asks
- * Trendyol again. Credentials never leave the server and never appear in an error.
+ * Observed on the real seller account (2026-11-09, FANEX/RO): the label URL is on apigw.trendyol.com and answers one
+ * HTTP 302 to a presigned (X-Amz-*) URL on s3.trendyol.com, which serves a one-page 105 x 148 mm (A6) PDF 1.4. So the
+ * download allows exactly one 302, only to an HTTPS URL on LABEL_REDIRECT_HOSTS, validated here before it is requested
+ * (never followed automatically by the transport). A second redirect, any other 3xx, an unexpected host or scheme is
+ * refused. No request to a label or redirect host ever carries credentials: the fetcher has no way to send them.
+ *
+ * Label and presigned URLs expire, so a URL is never stored, logged or returned to a browser: every print asks Trendyol
+ * again. Credentials never leave the server and never appear in an error.
  */
 final readonly class TrendyolLabelClient
 {
-    /** Hosts that may serve a label document (the documented Trendyol CDN). Anything else is refused. */
-    public const LABEL_HOSTS = ['cdn.dsmcdn.com'];
+    /** Hosts a label URL from Trendyol may point at: the documented CDN and the gateway seen on the real account. */
+    public const LABEL_HOSTS = ['cdn.dsmcdn.com', 'apigw.trendyol.com'];
+    /** The only host one 302 from a label host may lead to (presigned Trendyol S3). Never a label URL by itself. */
+    public const LABEL_REDIRECT_HOSTS = ['s3.trendyol.com'];
+    /** Redirects followed for one label document. */
+    public const MAX_LABEL_REDIRECTS = 1;
     public const MAX_LABEL_BYTES = 5 * 1024 * 1024;
     /** More labels than this for one tracking number is treated as a malformed answer. */
     public const MAX_LABELS = 20;
@@ -108,10 +118,16 @@ final readonly class TrendyolLabelClient
             throw new RuntimeException('TRENDYOL_LABEL_URL_REFUSED');
         }
         $response = $this->documents->fetch($url, self::MAX_LABEL_BYTES);
-        $status = $response['status'];
-        if ($status >= 300 && $status < 400) {
-            throw new RuntimeException('TRENDYOL_LABEL_URL_REFUSED');
+        $redirects = 0;
+        while ($response['status'] >= 300 && $response['status'] < 400) {
+            // Exactly one 302, to a validated presigned URL; nothing else is ever requested.
+            $location = $response['location'] ?? null;
+            if ($response['status'] !== 302 || ++$redirects > self::MAX_LABEL_REDIRECTS || !is_string($location) || !self::isAllowedRedirectUrl($location)) {
+                throw new RuntimeException('TRENDYOL_LABEL_REDIRECT_REFUSED');
+            }
+            $response = $this->documents->fetch($location, self::MAX_LABEL_BYTES);
         }
+        $status = $response['status'];
         if (in_array($status, [403, 404, 410], true)) {
             throw new RuntimeException('TRENDYOL_LABEL_EXPIRED');
         }
@@ -140,10 +156,22 @@ final readonly class TrendyolLabelClient
         return str_contains(substr($bytes, -2048), '%%EOF');
     }
 
-    /** The exact rule for a label URL: HTTPS, an allowed host, default port, no credentials, no path traversal. */
+    /** The exact rule for a label URL: HTTPS, a LABEL_HOSTS host, default port, no credentials, no path traversal. */
     public static function isAllowedLabelUrl(string $url): bool
     {
-        if ($url === '' || strlen($url) > 2048 || preg_match('/[\x00-\x20\x7f\\\\]/', $url) === 1) {
+        return self::isSafeUrl($url, self::LABEL_HOSTS, 2048);
+    }
+
+    /** The exact rule for the one redirect target: the same, with a LABEL_REDIRECT_HOSTS host (a presigned URL is long). */
+    public static function isAllowedRedirectUrl(string $url): bool
+    {
+        return self::isSafeUrl($url, self::LABEL_REDIRECT_HOSTS, 4096);
+    }
+
+    /** @param list<string> $hosts */
+    private static function isSafeUrl(string $url, array $hosts, int $maxLength): bool
+    {
+        if ($url === '' || strlen($url) > $maxLength || preg_match('/[\x00-\x20\x7f\\\\]/', $url) === 1) {
             return false;
         }
         $parts = parse_url($url);
@@ -155,7 +183,7 @@ final readonly class TrendyolLabelClient
         }
         $host = strtolower($parts['host'] ?? '');
         $path = $parts['path'] ?? '';
-        if (!in_array($host, self::LABEL_HOSTS, true) || !str_starts_with($path, '/') || str_contains($path, '/../') || str_contains($path, '/./') || str_ends_with($path, '/..')) {
+        if (!in_array($host, $hosts, true) || !str_starts_with($path, '/') || str_contains($path, '/../') || str_contains($path, '/./') || str_ends_with($path, '/..')) {
             return false;
         }
         return !str_contains(strtolower(rawurldecode($path)), '..');

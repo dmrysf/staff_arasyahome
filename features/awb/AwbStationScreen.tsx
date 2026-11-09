@@ -16,6 +16,8 @@ import { awbErrorText, awbText, readAwbLocale, saveAwbLocale, type AwbLocale, ty
  */
 const REFRESH_MS = 15_000;
 const PAGE = 50;
+/** The real Trendyol label is a one-page 105 x 148 mm (A6) PDF: printed at its own size, never scaled to the paper. */
+const PRINT_SETTINGS = ["printPaper", "printScale", "printMargins", "printQuality"] as const satisfies readonly AwbMessageKey[];
 
 type Props = {
   service: AwbApi;
@@ -402,6 +404,12 @@ export function AwbStationScreen({ service, displayName, canPrint, onLogout, onB
               <button type="button" className="awb-icon-button" aria-label={text("close")} onClick={closePreview}><AppIcon name="close" size={22} /></button>
             </div>
             <p className="awb-muted">{text("previewHint")}</p>
+            <section className="awb-print-settings" aria-label={text("printSettingsTitle")}>
+              <h3>{text("printSettingsTitle")}</h3>
+              <ul>
+                {PRINT_SETTINGS.map((key) => <li key={key}>{text(key)}</li>)}
+              </ul>
+            </section>
             <iframe
               ref={frameRef}
               className="awb-frame"

@@ -319,7 +319,7 @@ $labels($tracking(30), ['status' => 200, 'data' => [['format' => 'PDF', 'label' 
 $docs($labelUrl(30), ['status' => 404]);
 err($get($station, "/trendyol/awb/orders/{$c}/label"), 409, 'AWB_LABEL_EXPIRED', 'an expired label URL');
 $docs($labelUrl(30), ['status' => 302]);
-err($get($station, "/trendyol/awb/orders/{$c}/label"), 502, 'AWB_LABEL_INVALID', 'a redirect is never followed');
+err($get($station, "/trendyol/awb/orders/{$c}/label"), 502, 'AWB_LABEL_INVALID', 'a redirect without a Location is refused');
 $docs($labelUrl(30), ['status' => 200, 'contentType' => 'text/html', 'text' => '<html>login</html>']);
 err($get($station, "/trendyol/awb/orders/{$c}/label"), 502, 'AWB_LABEL_INVALID', 'an HTML page instead of the label');
 $docs($labelUrl(30), ['status' => 200, 'contentType' => 'application/pdf', 'text' => str_repeat('A', 200)]);
@@ -331,10 +331,50 @@ err($get($station, "/trendyol/awb/orders/{$c}/label"), 502, 'AWB_LABEL_INVALID',
 $docs($labelUrl(30), ['fail' => true]);
 err($get($station, "/trendyol/awb/orders/{$c}/label"), 503, 'AWB_TRENDYOL_UNAVAILABLE', 'a failed download');
 check($failures($c) === ['not_available', 'auth_failed', 'auth_failed', 'rate_limited', 'unavailable', 'not_available', 'unavailable', 'malformed', 'malformed', 'not_available', 'format_unsupported',
-    'url_refused', 'url_refused', 'url_refused', 'url_refused', 'url_refused', 'url_refused', 'url_refused', 'url_refused', 'url_refused', 'url_refused', 'expired', 'url_refused', 'invalid_document', 'invalid_document', 'invalid_document', 'invalid_document', 'download_failed'],
+    'url_refused', 'url_refused', 'url_refused', 'url_refused', 'url_refused', 'url_refused', 'url_refused', 'url_refused', 'url_refused', 'url_refused', 'expired', 'redirect_refused', 'invalid_document', 'invalid_document', 'invalid_document', 'invalid_document', 'download_failed'],
     'every failure is recorded with its safe category only: ' . json_encode($failures($c)));
 $docs($labelUrl(30), ['status' => 200, 'contentType' => 'application/pdf', 'base64' => base64_encode($pdf('30'))]);
 check($get($station, "/trendyol/awb/orders/{$c}/label")['raw'] === $pdf('30'), 'after a failure the next try retrieves the label (Tekrar Dene)');
+
+// The real account's shape (2026-11-09, FANEX/RO): the label URL is on apigw.trendyol.com and answers one 302 to a
+// presigned s3.trendyol.com URL serving a one-page 105 x 148 mm (A6) PDF. Exactly one validated redirect, no credentials.
+$gateway = 'https://apigw.trendyol.com/aaaaaaaa/bbbbbbbb/cccccccc/0e1d2c3b-ecbe-4a5f-b9f9-0123456789ab';
+$signed = static fn (string $tag): string => "https://s3.trendyol.com/label-bucket-prod/123/label/{$tag}/label-data.pdf?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-SignedHeaders=host&X-Amz-Expires=300&X-Amz-Signature=" . str_repeat('ab', 32);
+$a6 = "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Count 1/Kids[3 0 R]>>endobj\n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 298 420]>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n";
+$documentsSince = static fn (int $from): array => array_slice($fixtureNow()['documentCalls'] ?? [], $from);
+$labels($tracking(30), ['status' => 200, 'data' => [['format' => 'PDF', 'label' => $gateway]]]);
+$docs($gateway, ['status' => 302, 'location' => $signed('a6')]);
+$docs($signed('a6'), ['status' => 200, 'contentType' => 'application/pdf', 'base64' => base64_encode($a6)]);
+$labelsBefore = $labelCount();
+$docsBefore = $documentCount();
+$viaS3 = $get($station, "/trendyol/awb/orders/{$c}/label");
+check($viaS3['status'] === 200 && $viaS3['raw'] === $a6 && ($viaS3['headers']['Content-Type'] ?? '') === 'application/pdf', 'the A6 label arrives byte for byte after one 302 to s3.trendyol.com');
+check($documentsSince($docsBefore) === [$gateway, $signed('a6')], 'exactly two downloads: the gateway URL, then the validated presigned URL');
+check(!str_contains(json_encode($viaS3['headers']), 's3.trendyol') && !str_contains(json_encode($viaS3['headers']), 'X-Amz') && !str_contains(json_encode($viaS3['headers']), 'apigw'), 'no label or presigned URL reaches the browser');
+$again = $get($station, "/trendyol/awb/orders/{$c}/label");
+check($again['raw'] === $a6 && $labelCount() === $labelsBefore + 2 && count($documentsSince($docsBefore)) === 4, 'every print asks Trendyol again: label re-queried and re-downloaded, nothing reused');
+foreach (['https://evil.example/x.pdf', 'http://s3.trendyol.com/x.pdf', 'https://s3.trendyol.com.evil.example/x.pdf', 'https://cdn.dsmcdn.com/x.pdf', '/relative/label-data.pdf', 'https://169.254.169.254/latest/meta-data'] as $target) {
+    $docs($gateway, ['status' => 302, 'location' => $target]);
+    $n = $documentCount();
+    $body = err($get($station, "/trendyol/awb/orders/{$c}/label"), 502, 'AWB_LABEL_INVALID', "a redirect to {$target} is refused");
+    check(($body['error']['details']['reason'] ?? null) === 'redirect_refused' && $documentCount() === $n + 1 && !str_contains(json_encode($body), $target), "no request to {$target}, and the target is not echoed");
+}
+$docs($gateway, ['status' => 302, 'location' => $signed('two')]);
+$docs($signed('two'), ['status' => 302, 'location' => $signed('a6')]);
+$n = $documentCount();
+err($get($station, "/trendyol/awb/orders/{$c}/label"), 502, 'AWB_LABEL_INVALID', 'a second redirect is refused');
+check($documentCount() === $n + 2, 'the second redirect is never requested');
+$docs($gateway, ['status' => 302, 'location' => $signed('bad')]);
+$docs($signed('bad'), ['status' => 200, 'contentType' => 'application/xml', 'text' => '<Error><Code>AccessDenied</Code></Error>']);
+err($get($station, "/trendyol/awb/orders/{$c}/label"), 502, 'AWB_LABEL_INVALID', 'an S3 error page instead of the PDF');
+$docs($signed('bad'), ['status' => 200, 'contentType' => 'application/pdf', 'text' => str_repeat('A', 300)]);
+err($get($station, "/trendyol/awb/orders/{$c}/label"), 502, 'AWB_LABEL_INVALID', 'S3 content that is not a PDF');
+$docs($signed('bad'), ['status' => 200, 'contentType' => 'application/pdf', 'base64' => base64_encode("%PDF-1.4\n" . str_repeat('0', 5 * 1024 * 1024) . "\n%%EOF\n")]);
+err($get($station, "/trendyol/awb/orders/{$c}/label"), 502, 'AWB_LABEL_INVALID', 'an S3 PDF larger than 5 MiB');
+$docs($signed('bad'), ['status' => 403, 'contentType' => 'application/xml']);
+err($get($station, "/trendyol/awb/orders/{$c}/label"), 409, 'AWB_LABEL_EXPIRED', 'an expired presigned URL asks for a new try');
+check(array_slice($failures($c), -11) === [...array_fill(0, 7, 'redirect_refused'), 'invalid_document', 'invalid_document', 'invalid_document', 'expired'], 'redirect failures are recorded by safe category: ' . json_encode(array_slice($failures($c), -11)));
+$labels($tracking(30), ['status' => 200, 'data' => [['format' => 'PDF', 'label' => $labelUrl(30)]]]);
 
 // Package conditions are checked on a fresh read of the exact package, before any label call.
 $calls = $labelCount();
@@ -379,7 +419,7 @@ check($types === ['print_requested' => 5, 'label_retrieved' => 5] && $history['o
 check(array_values(array_filter(array_column($history['events'], 'kind'))) === ['reprint', 'reprint', 'reprint', 'reprint', 'initial'], 'history kinds, newest first');
 check(in_array('ARASYA AWB STATION', array_column($history['events'], 'by'), true) && in_array('Synthetic packer', array_column($history['events'], 'by'), true), 'history names the station identity and the named employee');
 $everything = json_encode([$rows('SELECT * FROM trendyol_awb_print_events'), $history, ok($get($station, '/trendyol/awb/queue'), 200, 'queue')], JSON_UNESCAPED_UNICODE);
-foreach (['0744999888', 'NEVER STORED', 'Secretă', 'never@example.invalid', $tracking(10), 'dsmcdn', 'fixture'] as $secret) check(!str_contains($everything, $secret), "no {$secret} in the history, the queue or the table");
+foreach (['0744999888', 'NEVER STORED', 'Secretă', 'never@example.invalid', $tracking(10), 'dsmcdn', 'fixture', 's3.trendyol', 'X-Amz', 'apigw'] as $secret) check(!str_contains($everything, $secret), "no {$secret} in the history, the queue or the table");
 check(array_keys($rows('SELECT * FROM trendyol_awb_print_events LIMIT 1')[0]) === ['event_id', 'order_uuid', 'package_id', 'employee_uuid', 'event_type', 'print_kind', 'outcome', 'parcel_number', 'parcel_count',
     'retrieval_event_id', 'client_attempt_id', 'cargo_provider', 'tracking_suffix', 'request_id', 'created_at'], 'the table has no address, name, telephone, label or URL column');
 check(refused($pdo, "INSERT INTO trendyol_awb_print_events (event_id, order_uuid, package_id, employee_uuid, event_type, print_kind, outcome, request_id, created_at) VALUES (UUID(), ?, 1, ?, 'print_requested', NULL, 'ok', 'x', UTC_TIMESTAMP(6))", [$o['a'], $station['id']]), 'a print record without kind or attempt is refused by the database');

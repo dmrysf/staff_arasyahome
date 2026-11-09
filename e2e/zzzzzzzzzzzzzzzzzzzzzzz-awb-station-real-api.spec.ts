@@ -112,6 +112,13 @@ test("print: official label, print dialog, print request recorded; then a small 
     expect(held.type).toBe("application/pdf");
     expect(held.head).toBe("%PDF-");
     expect(held.size).toBeGreaterThan(100);
+    // The real Trendyol label is A6 (105 x 148 mm): the browser holds the exact page box, nothing re-rendered or scaled.
+    const pageBox = await page.evaluate(async (src) => (await (await fetch(src as string)).text()).match(/\/MediaBox\[([^\]]+)\]/)?.[1] ?? null, await dialog.locator("iframe").getAttribute("src"));
+    expect(pageBox).toBe("0 0 298 420");
+    const settings = dialog.getByRole("region", { name: "Setări de imprimare pentru eticheta Trendyol" });
+    await expect(settings).toContainText("Hârtie: A6 · 105 × 148 mm, portret");
+    await expect(settings).toContainText("Scală: 100% / Dimensiune reală");
+    await expect(settings).toContainText("Margini: niciuna");
     await ensurePrintRequested(page);
     const recorded = await attempt;
     expect(recorded.status()).toBe(201);
@@ -125,11 +132,19 @@ test("print: official label, print dialog, print request recorded; then a small 
     await expect(first.getByRole("button", { name: "Reimprimă" })).toBeVisible();
     await expect(first).toBeVisible(); // Still at stage 13: printing moves nothing.
     await shot(page, "04-ro-printed-before-1440");
+    // Reprint in Turkish: the label is asked from Trendyol again and the same printer settings are shown in Turkish.
+    await page.getByRole("button", { name: "TR", exact: true }).click();
     const again = page.waitForResponse((response) => response.url().endsWith("/print-attempts") && response.request().method() === "POST");
-    await first.getByRole("button", { name: "Reimprimă" }).click();
+    const relabel = page.waitForResponse((response) => response.url().includes(`/trendyol/awb/orders/${F.orders.single.id}/label`));
+    await first.getByRole("button", { name: "Tekrar Yazdır" }).click();
+    expect((await relabel).status()).toBe(200);
+    const trSettings = page.getByRole("dialog").getByRole("region", { name: "Trendyol etiketi için yazdırma ayarları" });
+    await expect(trSettings).toContainText("Kağıt: A6 · 105 × 148 mm, dikey");
+    await expect(trSettings).toContainText("Ölçek: %100 / Gerçek boyut");
     await ensurePrintRequested(page);
     expect((await (await again).json()).print.kind).toBe("reprint");
-    await page.getByRole("dialog").getByRole("button", { name: "Închide" }).last().click();
+    await page.getByRole("dialog").getByRole("button", { name: "Kapat" }).last().click();
+    await page.getByRole("button", { name: "RO", exact: true }).click();
     await first.getByRole("button", { name: "Istoric" }).click();
     const history = page.getByRole("dialog");
     await expect(history.getByText("Reimprimare cerută")).toBeVisible();

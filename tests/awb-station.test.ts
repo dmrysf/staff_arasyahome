@@ -111,6 +111,18 @@ test("label request: session cookie, exposed headers, typed refusals; print reco
   assert.equal(calls[calls.length - 1].url, "https://api.example.test/trendyol/awb/resolve?code=ARASYA%3AQ1%3AABC");
 });
 
+test("print settings: the real A6 label is printed at its own size, in RO and TR", () => {
+  for (const locale of ["ro", "tr"] as const) {
+    assert.match(awbText(locale, "printPaper"), /A6 · 105 × 148 mm/);
+    assert.match(awbText(locale, "printScale"), /100/);
+    assert.ok(awbText(locale, "printSettingsTitle").includes("Trendyol"));
+  }
+  assert.match(awbText("ro", "printScale"), /Dimensiune reală/);
+  assert.match(awbText("tr", "printScale"), /Gerçek boyut/);
+  assert.match(awbText("ro", "printMargins"), /niciuna/);
+  assert.match(awbText("tr", "printMargins"), /yok/);
+});
+
 test("the preview frame is allowed by CSP only for same-origin and blob documents", () => {
   const template = readFileSync("scripts/staff-htaccess.template", "utf8");
   assert.match(template, /frame-src 'self' blob:;/);

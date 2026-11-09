@@ -27,8 +27,10 @@ declare(strict_types=1);
 // Third reviewed exception (API 2.65.0, Trendyol AWB station): reading the official shipping label, never writing.
 //   GET /integration/sellers/{sellerId}/common-label/query?id={cargoTrackingNumber}   (Trendyol common label service)
 // built only by TrendyolLabelClient and sent only through TrendyolTransport::get(); then one GET of the returned PDF by
-// StreamTrendyolLabelDocumentFetcher: GET only, no redirect, verified TLS, no credentials, only the hosts in
-// TrendyolLabelClient::LABEL_HOSTS (checked by TrendyolLabelClient::isAllowedLabelUrl before any request). No shipment,
+// StreamTrendyolLabelDocumentFetcher: GET only, verified TLS, no credentials, only the hosts in
+// TrendyolLabelClient::LABEL_HOSTS (checked by TrendyolLabelClient::isAllowedLabelUrl before any request). The fetcher
+// never follows a redirect; TrendyolLabelClient alone may make one more GET after a single 302, only to an HTTPS URL on
+// TrendyolLabelClient::LABEL_REDIRECT_HOSTS (presigned Trendyol S3, checked by isAllowedRedirectUrl). No shipment,
 // status, tracking number or package is ever created or changed, and no courier other than Trendyol's label is called.
 
 $root = dirname(__DIR__, 2);
@@ -145,7 +147,8 @@ $checks++;
 if (preg_match_all("/'method'\s*=>\s*'([A-Z]+)'/", $fetcherSource, $fetcherMethods) < 1 || array_unique($fetcherMethods[1]) !== ['GET']) {
     $fail('StreamTrendyolLabelDocumentFetcher must only issue GET requests.');
 }
-foreach (["'follow_location' => 0", "'max_redirects' => 0", "'verify_peer' => true", "'verify_peer_name' => true", 'TrendyolLabelClient::isAllowedLabelUrl($url)'] as $required) {
+foreach (["'follow_location' => 0", "'max_redirects' => 0", "'verify_peer' => true", "'verify_peer_name' => true", 'TrendyolLabelClient::isAllowedLabelUrl($url)', 'TrendyolLabelClient::isAllowedRedirectUrl($url)',
+    "'header' => \"Accept: application/pdf\\r\\nUser-Agent: Arasya-AWB-Station\","] as $required) {
     $checks++;
     if (!str_contains($fetcherSource, $required)) {
         $fail("StreamTrendyolLabelDocumentFetcher lost its safety setting {$required}.");
@@ -157,8 +160,13 @@ if (preg_match('/Authorization|apiKey|apiSecret|Credentials/', $fetcherSource) =
 }
 $labelSource = (string) file_get_contents($labelClient);
 $checks++;
-if (!str_contains($labelSource, "public const LABEL_HOSTS = ['cdn.dsmcdn.com'];") || preg_match('/->transport->(?!get\()\w+\s*\(/', $labelSource) === 1) {
+if (!str_contains($labelSource, "public const LABEL_HOSTS = ['cdn.dsmcdn.com', 'apigw.trendyol.com'];") || preg_match('/->transport->(?!get\()\w+\s*\(/', $labelSource) === 1) {
     $fail('TrendyolLabelClient must use only TrendyolTransport::get() and the reviewed label host list.');
+}
+$checks++;
+if (!str_contains($labelSource, "public const LABEL_REDIRECT_HOSTS = ['s3.trendyol.com'];") || !str_contains($labelSource, 'public const MAX_LABEL_REDIRECTS = 1;')
+    || !str_contains($labelSource, "\$response['status'] !== 302 || ++\$redirects > self::MAX_LABEL_REDIRECTS || !is_string(\$location) || !self::isAllowedRedirectUrl(\$location)")) {
+    $fail('TrendyolLabelClient may follow only one validated 302 to the reviewed redirect host list.');
 }
 $interface = (string) file_get_contents($root . '/operations-api/src/Integration/Trendyol/TrendyolTransport.php');
 $checks++;

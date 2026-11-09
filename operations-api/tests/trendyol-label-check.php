@@ -29,7 +29,7 @@ foreach (['createCommonLabel', 'common-label/create', 'shipment-packages', 'upda
     if ($forbidden === 'exec(' || $forbidden === 'system(') { ok(preg_match('/\b' . preg_quote($forbidden, '/') . '/', $code) === 0, "no {$forbidden}"); continue; }
     ok(!str_contains($code, $forbidden), "no {$forbidden}");
 }
-ok(CHECK_API_HOST === 'apigw.trendyol.com' && CHECK_LABEL_HOSTS === ['cdn.dsmcdn.com'] && CHECK_MAX_LABEL_CALLS === 24 && CHECK_MAX_PAGES === 3 && CHECK_SAMPLES_PER_GROUP === 2, 'hosts and limits are fixed');
+ok(CHECK_API_HOST === 'apigw.trendyol.com' && CHECK_LABEL_HOSTS === ['cdn.dsmcdn.com', 'apigw.trendyol.com'] && CHECK_REDIRECT_HOSTS === ['s3.trendyol.com'] && CHECK_MAX_LABEL_CALLS === 24 && CHECK_MAX_PAGES === 3 && CHECK_SAMPLES_PER_GROUP === 2, 'hosts and limits are fixed');
 
 // ---- The wire: what the real HTTP function hands to PHP ------------------------------------------------------------------
 final class RecordingHttps
@@ -47,6 +47,7 @@ stream_wrapper_unregister('https');
 stream_wrapper_register('https', RecordingHttps::class);
 check_http_get('https://apigw.trendyol.com/integration/sellers/1/common-label/query?id=7330000000001', ['Authorization' => 'Basic x'], 1000);
 check_http_get('https://cdn.dsmcdn.com/a/b.pdf', ['Accept' => 'application/pdf'], 1000);
+check_http_get('https://s3.trendyol.com/b-prod/1/label/x/label-data.pdf?X-Amz-Signature=ab', ['Accept' => 'application/pdf'], 1000);
 foreach (RecordingHttps::$opened as $open) {
     ok($open['options']['http']['method'] === 'GET', 'the wire method is GET');
     ok(!array_key_exists('content', $open['options']['http']), 'the wire request has no body');
@@ -54,9 +55,9 @@ foreach (RecordingHttps::$opened as $open) {
     ok($open['options']['ssl']['verify_peer'] === true && $open['options']['ssl']['verify_peer_name'] === true, 'certificates are verified');
     ok($open['mode'] === 'rb' || $open['mode'] === 'r', 'read mode');
 }
-ok(count(RecordingHttps::$opened) === 2, 'two requests were opened');
+ok(count(RecordingHttps::$opened) === 3, 'three requests were opened');
 $before = count(RecordingHttps::$opened);
-foreach (['http://apigw.trendyol.com/x', 'http://cdn.dsmcdn.com/x', 'https://evil.example/x', 'https://apigw.trendyol.com.evil.example/x', 'https://cdn.dsmcdn.com:8443/x', 'https://u@cdn.dsmcdn.com/x', 'https://u:p@apigw.trendyol.com/x', 'https://127.0.0.1/x', 'https://169.254.169.254/latest', 'https://api.fancourier.ro/x', 'file:///etc/passwd', ''] as $refused) {
+foreach (['http://s3.trendyol.com/x', 'https://s3.trendyol.com.evil.example/x', 'https://xs3.trendyol.com/x', 'https://s3.amazonaws.com/x', 'http://apigw.trendyol.com/x', 'http://cdn.dsmcdn.com/x', 'https://evil.example/x', 'https://apigw.trendyol.com.evil.example/x', 'https://cdn.dsmcdn.com:8443/x', 'https://u@cdn.dsmcdn.com/x', 'https://u:p@apigw.trendyol.com/x', 'https://127.0.0.1/x', 'https://169.254.169.254/latest', 'https://api.fancourier.ro/x', 'file:///etc/passwd', ''] as $refused) {
     try { check_http_get($refused, [], 10); ok(false, "allowed {$refused}"); } catch (RuntimeException $error) { ok($error->getMessage() === 'HOST_REFUSED', "refused {$refused}"); }
 }
 ok(count(RecordingHttps::$opened) === $before, 'a refused host never reaches the network layer');
@@ -67,12 +68,19 @@ $pdf = "%PDF-1.4\n1 0 obj<</Type/Page/MediaBox[0 0 283.46 425.2]>>endobj\n" . st
 $package = static fn (int $id, string $provider, string $country, string $status, int|string|null $tracking): array => ['shipmentPackageId' => $id, 'orderNumber' => 'ORD-SECRET-' . $id, 'cargoProviderName' => $provider, 'status' => $status, 'shipmentPackageStatus' => $status,
     'cargoTrackingNumber' => $tracking, 'shipmentAddress' => ['countryCode' => $country, 'fullName' => 'SECRET NAME', 'address1' => 'SECRET STREET', 'phone' => '0744SECRET'], 'customerEmail' => 'secret@example.invalid', 'packageTotalPrice' => 777.5];
 $list = [$package(9001, 'FANCOURIER', 'RO', 'Picking', 7330000000000001), $package(9002, 'FANCOURIER', 'RO', 'Shipped', 7330000000000002), $package(9003, 'FANEX', 'RO', 'Picking', 7330000000000003), $package(9004, 'FANCOURIER', 'GR', 'Picking', 7330000000000004),
-    $package(9005, 'FANCOURIER', 'BG', 'Delivered', 7330000000000005), $package(9006, 'FANCOURIER', 'RO', 'Cancelled', 7330000000000006), $package(9007, 'SAMEDAY', 'BG', 'Picking', null), $package(9008, 'FANEX', 'GR', 'Picking', 7330000000000008), $package(9009, 'FANCOURIER', 'CZ', 'Picking', '7330000000000009')];
+    $package(9005, 'FANCOURIER', 'BG', 'Delivered', 7330000000000005), $package(9006, 'FANCOURIER', 'RO', 'Cancelled', 7330000000000006), $package(9007, 'SAMEDAY', 'BG', 'Picking', null), $package(9008, 'FANEX', 'GR', 'Picking', 7330000000000008), $package(9009, 'FANCOURIER', 'CZ', 'Picking', '7330000000000009'),
+    $package(9010, 'FANEX', 'BG', 'Picking', 7330000000000010), $package(9011, 'SAMEDAY', 'RO', 'Picking', 7330000000000011)];
+// The real account's shape: a gateway label URL that answers one 302 to a presigned S3 link serving an A6 PDF.
+$a6 = "%PDF-1.4\n1 0 obj<</Type/Page/MediaBox[0 0 298 420]>>endobj\n" . str_repeat('x', 80) . "\n%%EOF\n";
+$signed = 'https://s3.trendyol.com/label-bucket-prod/1/label/SECRETPATH/label-data.pdf?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Expires=300&X-Amz-Signature=' . str_repeat('ab', 32);
 $calls = [];
 $pauses = 0;
-$http = static function (string $url, array $headers, int $max) use (&$calls, $list, $pdf): array {
+$http = static function (string $url, array $headers, int $max) use (&$calls, $list, $pdf, $a6, $signed): array {
     $calls[] = [$url, $headers];
     if (str_contains($url, '/v2/orders')) return ['status' => 200, 'body' => json_encode(['content' => $list, 'totalPages' => 1]), 'headers' => []];
+    if ($url === 'https://apigw.trendyol.com/labeldl/SECRETPATH-ok') return ['status' => 302, 'body' => '', 'headers' => [], 'location' => $signed];
+    if ($url === 'https://apigw.trendyol.com/labeldl/SECRETPATH-evil') return ['status' => 302, 'body' => '', 'headers' => [], 'location' => 'https://evil.example/SECRETPATH.pdf'];
+    if ($url === $signed) return ['status' => 200, 'body' => $a6, 'headers' => ['content-type' => 'application/pdf']];
     if (str_contains($url, 'cdn.dsmcdn.com/redirect')) return ['status' => 302, 'body' => '', 'headers' => []];
     if (str_contains($url, 'cdn.dsmcdn.com')) return ['status' => 200, 'body' => $pdf, 'headers' => ['content-type' => 'application/pdf', 'cache-control' => 'max-age=3600']];
     parse_str((string) parse_url($url, PHP_URL_QUERY), $query);
@@ -82,38 +90,45 @@ $http = static function (string $url, array $headers, int $max) use (&$calls, $l
         '7330000000000003' => ['status' => 400, 'body' => json_encode(['errors' => [['key' => 'cargo.tracking.notfound', 'message' => 'cargo 7330000000000003 not found for SECRET']]]), 'headers' => []],
         '7330000000000004' => $label('https://evil.example/SECRETPATH.pdf'),
         '7330000000000008' => $label('https://cdn.dsmcdn.com/redirect/SECRETPATH.pdf'),
+        '7330000000000010' => $label('https://apigw.trendyol.com/labeldl/SECRETPATH-ok'),
+        '7330000000000011' => $label('https://apigw.trendyol.com/labeldl/SECRETPATH-evil'),
         '7330000000000009' => ['status' => 200, 'body' => json_encode(['data' => [['format' => 'ZPL', 'label' => 'https://cdn.dsmcdn.com/x/SECRETPATH.zpl']]]), 'headers' => []],
         default => ['status' => 404, 'body' => '{}', 'headers' => []],
     };
 };
 $auth = ['Authorization' => 'Basic SECRETAUTH', 'User-Agent' => '123456 - SelfIntegration'];
 $report = check_run($http, 'https://apigw.trendyol.com', '123456', $auth, null, 1_790_000_000_000, static function (int $seconds) use (&$pauses): void { $pauses += $seconds; });
-ok($report['outcome'] === 'COMPLETED' && $report['packages'] === 9 && $report['listPages'] === 1 && $pauses > 0, 'the run completes and paces its calls');
+ok($report['outcome'] === 'COMPLETED' && $report['packages'] === 11 && $report['listPages'] === 1 && $pauses > 0, 'the run completes and paces its calls');
 foreach ($calls as [$url, $headers]) {
     $allowed = preg_match('#^https://apigw\.trendyol\.com/integration/order/sellers/123456/v2/orders\?startDate=\d+&endDate=\d+&page=\d&size=200&orderByField=PackageLastModifiedDate&orderByDirection=DESC$#D', $url) === 1
         || preg_match('#^https://apigw\.trendyol\.com/integration/sellers/123456/common-label/query\?id=\d+$#D', $url) === 1
-        || str_starts_with($url, 'https://cdn.dsmcdn.com/');
+        || str_starts_with($url, 'https://cdn.dsmcdn.com/') || str_starts_with($url, 'https://apigw.trendyol.com/labeldl/') || $url === $signed;
     ok($allowed, "only documented reads: {$url}");
-    if (str_starts_with($url, 'https://cdn.dsmcdn.com/')) ok(!isset($headers['Authorization']) && !str_contains(json_encode($headers), '123456'), 'no credential or seller id reaches the CDN');
+    if (!str_contains($url, '/integration/')) ok(!isset($headers['Authorization']) && !str_contains(json_encode($headers), '123456'), 'no credential or seller id reaches the CDN');
 }
 $asked = array_map(static fn (array $call): ?string => preg_match('/query\?id=(\d+)$/', $call[0], $m) === 1 ? $m[1] : null, $calls);
 ok(!in_array('7330000000000006', $asked, true), 'a cancelled package is never asked for a label');
 ok(count(array_filter($calls, static fn (array $call): bool => str_contains($call[0], 'evil.example'))) === 0, 'a label URL outside the list is not downloaded');
 ok(count(array_filter($calls, static fn (array $call): bool => isset($call[1]['storeFrontCode']))) > 0 && count(array_filter($calls, static fn (array $call): bool => str_contains($call[0], 'common-label') && !isset($call[1]['storeFrontCode']))) > 0, 'the label query is tried with and without storeFrontCode');
 $text = json_encode($report, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
-foreach (['SECRET', '7330000000', 'ORD-', '9001', '0744', 'Basic', '123456', 'evil.example/', '777.5', 'dsmcdn.com/x', '.pdf'] as $forbidden) ok(!str_contains($text, $forbidden), "the report has no {$forbidden}");
+ok(count(array_filter($calls, static fn (array $call): bool => $call[0] === $signed)) === 1, 'the one checked redirect is followed once');
+foreach (['SECRET', '7330000000', 'ORD-', '9001', '0744', 'Basic', '123456', 'evil.example/', '777.5', 'dsmcdn.com/x', '.pdf', 'X-Amz', 'labeldl', 's3.trendyol.com/'] as $forbidden) ok(!str_contains($text, $forbidden), "the report has no {$forbidden}");
 $verdicts = [];
 foreach ($report['verdicts'] as $row) $verdicts[$row['provider'] . '|' . $row['country']] = $row['verdict'];
 $reasons = [];
 foreach ($report['verdicts'] as $row) $reasons[$row['provider'] . '|' . $row['country']] = $row['reason'];
 ksort($verdicts); ksort($reasons);
-$expected = ['FANCOURIER|BG' => ['INCONCLUSIVE', 'ONLY_FINISHED_PACKAGES_TESTED'], 'FANCOURIER|CZ' => ['UNSUPPORTED', 'FORMAT_NOT_PDF'], 'FANCOURIER|GR' => ['INCONCLUSIVE', 'HOST_NOT_ALLOWLISTED'], 'FANCOURIER|RO' => ['SUPPORTED_PDF', null], 'FANEX|GR' => ['INCONCLUSIVE', 'PDF_NOT_CONFIRMED'], 'FANEX|RO' => ['UNSUPPORTED', 'NO_LABEL_FOR_ACTIVE_PACKAGE'], 'SAMEDAY|BG' => ['INCONCLUSIVE', 'NO_ELIGIBLE_PACKAGE']];
+$expected = ['FANCOURIER|BG' => ['INCONCLUSIVE', 'ONLY_FINISHED_PACKAGES_TESTED'], 'FANCOURIER|CZ' => ['UNSUPPORTED', 'FORMAT_NOT_PDF'], 'FANCOURIER|GR' => ['INCONCLUSIVE', 'HOST_NOT_ALLOWLISTED'], 'FANCOURIER|RO' => ['SUPPORTED_PDF', null], 'FANEX|BG' => ['SUPPORTED_PDF', null], 'FANEX|GR' => ['INCONCLUSIVE', 'PDF_NOT_CONFIRMED'], 'FANEX|RO' => ['UNSUPPORTED', 'NO_LABEL_FOR_ACTIVE_PACKAGE'], 'SAMEDAY|BG' => ['INCONCLUSIVE', 'NO_ELIGIBLE_PACKAGE'], 'SAMEDAY|RO' => ['INCONCLUSIVE', 'PDF_NOT_CONFIRMED']];
 ok($verdicts === array_map(static fn (array $pair): string => $pair[0], $expected) && $reasons === array_map(static fn (array $pair): ?string => $pair[1], $expected), 'verdicts ' . json_encode([$verdicts, $reasons]));
 $documents = [];
 foreach ($report['documents'] as $row) $documents[$row['provider'] . '|' . $row['country']] = $row;
 ok($documents['FANCOURIER|RO']['pageSizes'] === ['283.5 x 425.2 pt (100 x 150 mm)'] && $documents['FANCOURIER|RO']['pages'] === 1 && $documents['FANCOURIER|RO']['validPdf'] === true, 'the PDF structure is reported');
 ok($documents['FANCOURIER|GR']['outcome'] === 'HOST_NOT_ALLOWLISTED_NOT_DOWNLOADED' && $documents['FANEX|GR']['outcome'] === 'DOWNLOAD_HTTP_302', 'a foreign host and a redirect are reported, never followed');
 ok(!isset($documents['FANCOURIER|CZ']), 'a ZPL answer is not downloaded as a PDF');
+ok($documents['FANEX|BG']['outcome'] === 'DOWNLOADED' && $documents['FANEX|BG']['redirectHost'] === 's3.trendyol.com' && $documents['FANEX|BG']['pageSizes'] === ['298.0 x 420.0 pt (105 x 148 mm)'], 'the gateway label is read through one 302 to S3: A6 reported');
+ok($documents['SAMEDAY|RO']['outcome'] === 'DOWNLOAD_HTTP_302' && !isset($documents['SAMEDAY|RO']['redirectHost']) && count(array_filter($calls, static fn (array $call): bool => str_contains($call[0], 'evil.example'))) === 0, 'a redirect to another host is reported and never followed');
+ok(check_allowed_redirect($signed) && !check_allowed_redirect('https://apigw.trendyol.com/x') && !check_allowed_redirect('https://cdn.dsmcdn.com/x.pdf') && !check_allowed_redirect('/relative.pdf') && !check_allowed_redirect(null)
+    && !check_allowed_redirect('https://s3.trendyol.com:8443/x') && !check_allowed_redirect('https://s3.trendyol.com/' . str_repeat('a', 4100)), 'only an HTTPS s3.trendyol.com link is a redirect target');
 $rejected = array_values(array_filter($report['attempts'], static fn (array $row): bool => $row['provider'] === 'FANEX' && $row['country'] === 'RO'));
 ok($rejected[0]['http'] === 400 && $rejected[0]['outcome'] === 'NO_LABEL' && $rejected[0]['hint'] === 'cargo.tracking.notfound', 'only the error key is kept, never the free-text message');
 ok(check_hint(json_encode(['errors' => [['key' => 'Ion Popescu 0744']]])) === null && check_hint(json_encode(['exception' => 'ClientApiAuthenticationException'])) === 'ClientApiAuthenticationException', 'a value that is not a code is dropped');

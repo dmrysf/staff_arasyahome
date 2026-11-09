@@ -64,6 +64,7 @@ final readonly class AwbStation
         'TRENDYOL_LABEL_DOWNLOAD_FAILED' => [503, 'AWB_TRENDYOL_UNAVAILABLE', 'download_failed'],
         'TRENDYOL_MALFORMED_RESPONSE' => [502, 'AWB_TRENDYOL_INVALID', 'malformed'],
         'TRENDYOL_LABEL_URL_REFUSED' => [502, 'AWB_LABEL_INVALID', 'url_refused'],
+        'TRENDYOL_LABEL_REDIRECT_REFUSED' => [502, 'AWB_LABEL_INVALID', 'redirect_refused'],
         'TRENDYOL_LABEL_FORMAT_UNSUPPORTED' => [502, 'AWB_LABEL_FORMAT', 'format_unsupported'],
         'TRENDYOL_LABEL_TOO_LARGE' => [502, 'AWB_LABEL_INVALID', 'invalid_document'],
         'TRENDYOL_LABEL_INVALID' => [502, 'AWB_LABEL_INVALID', 'invalid_document'],
