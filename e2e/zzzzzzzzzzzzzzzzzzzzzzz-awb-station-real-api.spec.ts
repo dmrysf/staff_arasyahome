@@ -39,7 +39,8 @@ async function signIn(browser: Browser, username: string, viewport = { width: 14
 const row = (page: Page, order: Order) => page.getByTestId(`awb-row-${order.number}`);
 /** The dialog opens the browser's print flow by itself when the PDF frame loads; a browser without a PDF viewer (the headless shell) never fires that load, and the visible button does the same. */
 const ensurePrintRequested = async (page: Page) => {
-  const button = page.getByRole("dialog").getByRole("button", { name: "Imprimă", exact: true });
+  // RO "Imprimă" or TR "Yazdır": the headless shell has no PDF viewer, so the frame's load event may never fire.
+  const button = page.getByRole("dialog").getByRole("button", { name: /^(Imprimă|Yazdır)$/ });
   await page.waitForTimeout(800);
   if (await button.isVisible()) await button.click();
 };
