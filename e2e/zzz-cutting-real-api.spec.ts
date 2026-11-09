@@ -12,11 +12,25 @@ async function apiUser(username:string,password=fixture.password){
 }
 async function employee(browser:Browser,username:string){const context=await browser.newContext({viewport:{width:390,height:844},reducedMotion:"reduce"});const page=await context.newPage();await page.goto("/login");await page.getByLabel("Nume utilizator").fill(username);await page.getByLabel("Parolă").fill(fixture.password);await page.getByRole("button",{name:/Autentificare/}).click();await expect(page.getByRole("heading",{name:/^Bună,/})).toBeVisible();return {context,page};}
 const overflow=(page:Page)=>page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth);
+/**
+ * The closing minute is excluded (BusinessTime::isOpen), so 00:00-23:59 leaves the board closed from 23:59:00 to
+ * 00:00:00 Bucharest, and "today" counters reset at midnight. The test reads the API server's own clock and, when it
+ * would run inside that window or across midnight, waits until just after midnight, so the outcome never depends on
+ * when CI happens to run. Production hours and closing logic are unchanged.
+ */
+const SAFE_MARGIN_SECONDS=240;
+async function waitOutsideClosingMinute(api:{get:(url:string)=>Promise<{headers:()=>Record<string,string>}>}){
+  const serverNow=new Date((await api.get("/health")).headers()["date"]??Date.now());
+  const local=new Intl.DateTimeFormat("en-GB",{timeZone:"Europe/Bucharest",hour:"2-digit",minute:"2-digit",second:"2-digit",hourCycle:"h23"}).format(serverNow).split(":").map(Number);
+  const toMidnight=86400-((local[0]??0)*3600+(local[1]??0)*60+(local[2]??0));
+  if(toMidnight<=SAFE_MARGIN_SECONDS)await new Promise(resolve=>setTimeout(resolve,(toMidnight+5)*1000));
+}
 
 test("whole-order transfer: approval leaves owner, target accepts then same QR, Staff and TV converge without reload",async({browser})=>{
-  test.setTimeout(150000);
+  test.setTimeout(150000+(SAFE_MARGIN_SECONDS+5)*1000);
   const root=await apiUser(fixture.cutting.root.username,fixture.cutting.root.password);
   const days=Array.from({length:7},(_,i)=>({weekday:i+1,isOpen:true,opensAt:"00:00",closesAt:"23:59"}));
+  await waitOutsideClosingMinute(root.api);
   await root.mutate("put","/management/organization/working-hours",{days});
   const tvContext=await browser.newContext({viewport:{width:1920,height:1080},reducedMotion:"reduce"});const tv=await tvContext.newPage();const errors:string[]=[];tv.on("pageerror",e=>errors.push(e.message));
   await tv.goto("/cutting-board");await expect(tv.getByLabel("Cod de asociere")).toBeVisible();await expect(tv.getByRole("heading",{name:/Bine ai revenit/})).toHaveCount(0);
