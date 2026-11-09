@@ -139,6 +139,11 @@
 .awb-dialog-actions .awb-print { min-width: 180px; }
 .awb-success, .awb-warning { display: flex; align-items: center; gap: 8px; margin: 0; padding: 12px 14px; border-radius: var(--radius-md); font-size: var(--text-md); }
 .awb-success { background: var(--color-success-soft); border-left: 4px solid var(--color-success); }
+.awb-filter { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; }
+.awb-filter-button { display: inline-flex; align-items: center; gap: 8px; min-height: 48px; padding: 0 16px; border: 1px solid var(--color-border-strong); border-radius: var(--radius-pill); background: var(--color-surface); color: var(--color-text); font: inherit; font-weight: 600; cursor: pointer; }
+.awb-filter-button[aria-pressed="true"] { background: var(--color-accent); border-color: var(--color-accent); color: var(--color-accent-contrast); }
+.awb-filter-count { display: inline-grid; place-items: center; min-width: 28px; height: 24px; padding: 0 8px; border-radius: var(--radius-pill); background: var(--color-fill); color: var(--color-text); font-size: var(--text-sm); }
+.awb-filter-button[aria-pressed="true"] .awb-filter-count { background: var(--color-surface); color: var(--color-text); }
 .awb-print-settings { margin: 0; padding: 12px 14px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-fill); }
 .awb-print-settings h3 { margin: 0 0 6px; font-size: var(--text-md); font-weight: 700; }
 .awb-print-settings ul { margin: 0; padding-left: 18px; display: grid; gap: 2px; color: var(--color-text-subtle); font-size: var(--text-sm); line-height: 1.45; }

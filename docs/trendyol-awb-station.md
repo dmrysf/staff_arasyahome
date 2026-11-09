@@ -1,10 +1,12 @@
-# Trendyol AWB print station (API 2.65.0, Staff 2.47.0, migration 051)
+# Trendyol AWB print station (API 2.65.0, Staff 2.47.0, migration 051; stage 14 in API 2.66.0, Staff 2.48.0)
 
-Status: DRAFT. Not merged, not deployed. Migration 051 has not run in production. Nobody holds the permissions.
+Status: API 2.65.0 and Staff 2.47.0 live since 2026-11-09 (migration 051 applied). The stage 14 addition (API 2.66.0, Staff 2.48.0, no migration) is a separate change.
 
 ## 1. Business rule
 
 A Trendyol order at canonical stage 13 (`packing`, Împachetare) appears in the station automatically. The employee prints the original Trendyol shipping label. A label printed before shows a small notice and can be printed again at any time.
+
+Owner addition (2026-11-09, API 2.66.0 / Staff 2.48.0): an open Trendyol order at stage 14 (`delivery`, Livrare) is listed too, until stage 14 is completed. The screen shows both stages by default, with a filter `Toate | Etapa 13 · Împachetare | Etapa 14 · Livrare` and a count per stage; the choice is remembered in that browser only.
 
 - There is no approval, no reason field, no reprint limit and no extra stage.
 - Stage 14 never checks the print history. Nothing in this module can stop production.
@@ -73,21 +75,23 @@ Each print uses three or four outbound calls: package read, label read, PDF down
 The queue is derived on every request:
 
 ```
-source_key = 'trendyol' AND production_stage_id = 'packing' AND production_completed_at IS NULL
+source_key = 'trendyol' AND production_stage_id IN (<filter>) AND production_completed_at IS NULL
 AND operational_status = 'in_progress' AND production_stopped_at IS NULL
 ```
 
-- Nothing enqueues an order, so a restart, a refresh or a second browser cannot lose one. Orders already at stage 13 are included.
-- Newest arrival first. The arrival is the latest activity event into `packing`, or the last production change for older data.
-- Keyset pagination, 50 per page, 100 at most.
+- `stage=all` lists `packing` and `delivery`, `stage=13` only `packing`, `stage=14` only `delivery`. Without `stage` the API lists `packing` only, exactly as 2.65.0 did, so Staff 2.47.0 keeps working while the API is deployed first. Any other value is `400 INVALID_REQUEST`.
+- The answer carries `filter` and `stages: [{id, ordinal, total}]` (open, not stopped orders per stage, independent of the search) besides `total` for the chosen filter.
+- Nothing enqueues an order, so a restart, a refresh or a second browser cannot lose one. Orders already at stage 13 or 14 are included.
+- Newest arrival at the current stage first. The arrival is the latest activity event into that stage, or the last production change for older data.
+- Keyset pagination, 50 per page, 100 at most, across both stages.
 - The screen refreshes every 15 seconds while visible.
-- An order that left stage 13 is reachable through exact search only.
+- An order whose production is complete, or that is stopped, is reachable through exact search only.
 
 ## 5. API
 
 | Route | Permission | Purpose |
 |---|---|---|
-| `GET /trendyol/awb/queue?q=&cursor=&limit=` | view | Stage 13 queue |
+| `GET /trendyol/awb/queue?q=&cursor=&limit=&stage=all\|13\|14` | view | Stage 13 and 14 queue (default 13 for Staff 2.47.0) |
 | `GET /trendyol/awb/resolve?code=` | view | Exact search: active Arasya QR, order number, package id, `trendyol:<id>` |
 | `GET /trendyol/awb/orders/{id}/label?parcel=N` | print | The PDF. Records the retrieval only |
 | `POST /trendyol/awb/orders/{id}/print-attempts` | print | The browser opened its print flow. CSRF, strict body, idempotent per `attemptId` |

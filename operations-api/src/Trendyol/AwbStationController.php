@@ -42,7 +42,7 @@ final readonly class AwbStationController
         $path = substr($request->path, strlen('/trendyol/awb'));
         if ($path === '/queue') {
             $this->method($request, 'GET');
-            return $this->json($this->station->queue($this->session($request)->employee, $request->query('q'), $request->query('cursor'), $request->query('limit')));
+            return $this->json($this->station->queue($this->session($request)->employee, $request->query('q'), $request->query('cursor'), $request->query('limit'), $request->query('stage')));
         }
         if ($path === '/resolve') {
             $this->method($request, 'GET');

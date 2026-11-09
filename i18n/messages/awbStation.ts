@@ -9,7 +9,7 @@ export const AWB_LOCALE_KEY = "arasya.awb.locale";
 
 const ro = {
   title: "AWB Trendyol",
-  subtitle: "Etichete de transport pentru comenzile din împachetare",
+  subtitle: "Etichete de transport pentru comenzile din împachetare și livrare",
   languageLabel: "Limba interfeței",
   online: "Conectat",
   offline: "Fără conexiune",
@@ -18,10 +18,15 @@ const ro = {
   searchButton: "Caută",
   clearSearch: "Șterge căutarea",
   queueTitle: "Comenzi pregătite pentru etichetare",
-  queueCount: "{count} comenzi în împachetare",
-  queueCountOne: "1 comandă în împachetare",
+  queueCount: "{count} comenzi Trendyol",
+  queueCountOne: "1 comandă Trendyol",
+  filterLabel: "Filtrează după etapă",
+  filterAll: "Toate",
+  filter13: "Etapa 13 · Împachetare",
+  filter14: "Etapa 14 · Livrare",
   order: "Comanda #{number}",
   stage: "Împachetare · Etapa 13",
+  stageDelivery: "Livrare · Etapa 14",
   stageOther: "Etapa {ordinal}",
   stageDone: "Producție finalizată",
   print: "Imprimă AWB",
@@ -31,15 +36,15 @@ const ro = {
   printedTimes: "Cerută de {count} ori",
   preparing: "Se pregătește eticheta…",
   loading: "Se încarcă comenzile…",
-  empty: "Nu există comenzi în etapa de împachetare",
-  emptyHint: "Comenzile Trendyol apar aici automat când ajung la etapa 13.",
+  empty: "Nu există comenzi Trendyol la etapele 13 și 14",
+  emptyHint: "Comenzile Trendyol apar aici automat la etapa 13 (Împachetare) și rămân până la finalizarea etapei 14 (Livrare).",
   more: "Arată mai multe comenzi",
   refreshing: "Se actualizează…",
   updatedAt: "Actualizat la {time}",
   retry: "Încearcă din nou",
   searchResults: "Rezultatul căutării",
   closeResults: "Închide rezultatul",
-  notInQueue: "Nu mai este în împachetare",
+  notInQueue: "Nu mai este în etapele 13–14",
   stopped: "Producție oprită",
   packages: "{count} pachete Trendyol pentru această comandă",
   packageLabel: "Pachet {id}",
@@ -81,7 +86,7 @@ export type AwbMessageKey = keyof typeof ro;
 
 const tr: Record<AwbMessageKey, string> = {
   title: "AWB Trendyol",
-  subtitle: "Paketleme aşamasındaki siparişlerin kargo etiketleri",
+  subtitle: "Paketleme ve teslimat aşamasındaki siparişlerin kargo etiketleri",
   languageLabel: "Arayüz dili",
   online: "Bağlı",
   offline: "Bağlantı yok",
@@ -90,10 +95,15 @@ const tr: Record<AwbMessageKey, string> = {
   searchButton: "Ara",
   clearSearch: "Aramayı temizle",
   queueTitle: "Etiket bekleyen siparişler",
-  queueCount: "Paketlemede {count} sipariş",
-  queueCountOne: "Paketlemede 1 sipariş",
+  queueCount: "{count} Trendyol siparişi",
+  queueCountOne: "1 Trendyol siparişi",
+  filterLabel: "Aşamaya göre filtrele",
+  filterAll: "Tümü",
+  filter13: "13. Aşama · Paketleme",
+  filter14: "14. Aşama · Teslimat",
   order: "Sipariş #{number}",
   stage: "Paketleme · 13. Aşama",
+  stageDelivery: "Teslimat · 14. Aşama",
   stageOther: "{ordinal}. Aşama",
   stageDone: "Üretim tamamlandı",
   print: "AWB Yazdır",
@@ -103,15 +113,15 @@ const tr: Record<AwbMessageKey, string> = {
   printedTimes: "{count} kez istendi",
   preparing: "Etiket hazırlanıyor…",
   loading: "Siparişler yükleniyor…",
-  empty: "Paketleme aşamasında sipariş bulunmuyor",
-  emptyHint: "Trendyol siparişleri 13. aşamaya geldiğinde burada otomatik görünür.",
+  empty: "13. ve 14. aşamada Trendyol siparişi yok",
+  emptyHint: "Trendyol siparişleri 13. aşamada (Paketleme) burada otomatik görünür ve 14. aşama (Teslimat) tamamlanana kadar kalır.",
   more: "Daha fazla sipariş göster",
   refreshing: "Güncelleniyor…",
   updatedAt: "Son güncelleme {time}",
   retry: "Tekrar Dene",
   searchResults: "Arama sonucu",
   closeResults: "Sonucu kapat",
-  notInQueue: "Artık paketlemede değil",
+  notInQueue: "Artık 13–14. aşamada değil",
   stopped: "Üretim durduruldu",
   packages: "Bu sipariş için {count} Trendyol paketi var",
   packageLabel: "Paket {id}",
@@ -209,6 +219,20 @@ export function awbErrorText(locale: AwbLocale, code: AwbErrorCode): string {
 export function readAwbLocale(): AwbLocale {
   try { return globalThis.localStorage?.getItem(AWB_LOCALE_KEY) === "tr" ? "tr" : "ro"; }
   catch { return "ro"; }
+}
+
+export type AwbStageFilterChoice = "all" | "13" | "14";
+export const AWB_STAGE_FILTER_KEY = "arasya.awb.stage";
+
+/** The stage filter of this browser (a per-station convenience); every stage is shown by default. */
+export function readAwbStageFilter(): AwbStageFilterChoice {
+  try { const value = globalThis.localStorage?.getItem(AWB_STAGE_FILTER_KEY); return value === "13" || value === "14" ? value : "all"; }
+  catch { return "all"; }
+}
+
+export function saveAwbStageFilter(filter: AwbStageFilterChoice): void {
+  try { globalThis.localStorage?.setItem(AWB_STAGE_FILTER_KEY, filter); }
+  catch { /* Without browser storage the next visit shows every stage. */ }
 }
 
 export function saveAwbLocale(locale: AwbLocale): void {
