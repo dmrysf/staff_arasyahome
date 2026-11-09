@@ -1,10 +1,11 @@
 import type { Employee } from "./models";
 
 /**
- * Trendyol AWB print station (Staff 2.47.0, API 2.65.0).
+ * Trendyol AWB print station (Staff 2.47.0, API 2.65.0; stage 14 since Staff 2.48.0, API 2.66.0).
  *
- * A Trendyol order at canonical stage 13 (Împachetare) appears automatically; the employee prints the original Trendyol
- * shipping label and may print it again at any time. The station never moves a stage and never changes an order.
+ * A Trendyol order at canonical stage 13 (Împachetare) appears automatically and stays listed while it is open at stage
+ * 14 (Livrare); the employee prints the original Trendyol shipping label and may print it again at any time. The
+ * station never moves a stage and never changes an order.
  *
  * "Printed before" means a print was requested before from a station browser: a browser cannot prove that a printer
  * produced the label, so the interface never claims a physical print.
@@ -19,7 +20,7 @@ export type AwbOrder = {
   orderNumber: string;
   packageId: string;
   stage: { id: string; ordinal: number | null };
-  /** At stage 13, open, not stopped: part of the active queue. */
+  /** At stage 13 or 14, open, not stopped: part of the station list. */
   inQueue: boolean;
   productionCompleted: boolean;
   productionStopped: boolean;
@@ -27,7 +28,10 @@ export type AwbOrder = {
   printed: { count: number; lastAt: string | null };
 };
 
-export type AwbQueue = { generatedAt: string; total: number; items: AwbOrder[]; nextCursor: string | null; canPrint: boolean };
+/** Which stages the queue lists: both (default on the station), only 13 (Împachetare) or only 14 (Livrare). */
+export type AwbStageFilter = "all" | "13" | "14";
+export type AwbStageTotal = { id: string; ordinal: number; total: number };
+export type AwbQueue = { generatedAt: string; total: number; items: AwbOrder[]; nextCursor: string | null; canPrint: boolean; stages: AwbStageTotal[] };
 
 export type AwbLabel = { blob: Blob; retrievalId: string; parcel: number; parcelCount: number };
 
@@ -36,7 +40,7 @@ export type AwbPrintRecord = { print: { id: string; kind: "initial" | "reprint";
 export type AwbHistoryEvent = { id: string; type: "label_retrieved" | "label_failed" | "print_requested"; kind: "initial" | "reprint" | null; outcome: string; parcel: { number: number; count: number } | null; at: string; by: string };
 
 export interface AwbApi {
-  queue(input: { search?: string; cursor?: string | null; limit?: number }, signal?: AbortSignal): Promise<AwbQueue>;
+  queue(input: { search?: string; cursor?: string | null; limit?: number; stage?: AwbStageFilter }, signal?: AbortSignal): Promise<AwbQueue>;
   resolve(code: string, signal?: AbortSignal): Promise<{ items: AwbOrder[]; canPrint: boolean }>;
   label(orderId: string, parcel: number, signal?: AbortSignal): Promise<AwbLabel>;
   recordPrint(orderId: string, input: { attemptId: string; retrievalId: string }): Promise<AwbPrintRecord>;

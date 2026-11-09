@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { AWB_ERROR_CODES, awbErrorCode, canPrintAwb, canUseAwbStation, findLocal, isArasyaQr, isAwbStationOnly, newAttemptId, normalizeScan } from "../domain/awb";
-import { awbCatalogs, awbErrorCatalogs, awbErrorText, awbText } from "../i18n/messages/awbStation";
+import { AWB_STAGE_FILTER_KEY, awbCatalogs, awbErrorCatalogs, awbErrorText, awbText, readAwbStageFilter, saveAwbStageFilter } from "../i18n/messages/awbStation";
 import { canAccessRoute } from "../domain/permissions";
 import { parseStaffRoute } from "../domain/staffRoute";
 import { resolveWorkspaces } from "../domain/workspaces";
@@ -57,10 +57,11 @@ test("RO and TR: every station text exists, with correct diacritics and the owne
     for (const code of AWB_ERROR_CODES) { assert.ok(awbErrorCatalogs[locale][code].length > 0, `${locale}.${code}`); assert.ok(!/AWB_|TRENDYOL_/.test(awbErrorCatalogs[locale][code]), "no backend code as the main message"); }
   }
   const exact: [Parameters<typeof awbText>[1], string, string][] = [
-    ["title", "AWB Trendyol", "AWB Trendyol"], ["subtitle", "Etichete de transport pentru comenzile din împachetare", "Paketleme aşamasındaki siparişlerin kargo etiketleri"],
+    ["title", "AWB Trendyol", "AWB Trendyol"], ["subtitle", "Etichete de transport pentru comenzile din împachetare și livrare", "Paketleme ve teslimat aşamasındaki siparişlerin kargo etiketleri"],
     ["searchPlaceholder", "Caută comanda sau scanează codul QR", "Sipariş ara veya QR kodunu okut"], ["print", "Imprimă AWB", "AWB Yazdır"], ["reprint", "Reimprimă", "Tekrar Yazdır"],
     ["printedBefore", "Imprimată anterior", "Daha önce yazdırıldı"], ["printedBeforeTitle", "Etichetă imprimată anterior", "Bu etiket daha önce yazdırıldı"], ["queueTitle", "Comenzi pregătite pentru etichetare", "Etiket bekleyen siparişler"],
-    ["empty", "Nu există comenzi în etapa de împachetare", "Paketleme aşamasında sipariş bulunmuyor"], ["retry", "Încearcă din nou", "Tekrar Dene"], ["stage", "Împachetare · Etapa 13", "Paketleme · 13. Aşama"],
+    ["empty", "Nu există comenzi Trendyol la etapele 13 și 14", "13. ve 14. aşamada Trendyol siparişi yok"], ["retry", "Încearcă din nou", "Tekrar Dene"], ["stage", "Împachetare · Etapa 13", "Paketleme · 13. Aşama"],
+    ["stageDelivery", "Livrare · Etapa 14", "Teslimat · 14. Aşama"], ["filterAll", "Toate", "Tümü"], ["filter13", "Etapa 13 · Împachetare", "13. Aşama · Paketleme"], ["filter14", "Etapa 14 · Livrare", "14. Aşama · Teslimat"],
   ];
   for (const [key, ro, tr] of exact) { assert.equal(awbText("ro", key), ro); assert.equal(awbText("tr", key), tr); }
   assert.equal(awbText("ro", "order", { number: "123" }), "Comanda #123");
@@ -80,6 +81,12 @@ test("station mapping fails closed and carries no customer field", () => {
   const queue = mapAwbStationQueue({ generatedAt: "2026-11-09T08:00:00.000Z", total: 1, items: [{ ...rawOrder, shipmentAddress: "never" }], nextCursor: null, capabilities: { print: true } });
   assert.equal(queue.canPrint, true);
   assert.ok(!JSON.stringify(queue).includes("never"), "unknown fields are dropped");
+  assert.deepEqual(queue.stages, [], "an API before 2.66.0 sends no per-stage counts");
+  const both = mapAwbStationQueue({ generatedAt: "2026-11-09T08:00:00.000Z", total: 2, items: [rawOrder, { ...rawOrder, orderId: "33333333-3333-4333-8333-333333333333", stage: { id: "delivery", ordinal: 14 } }], nextCursor: null, capabilities: { print: true },
+    filter: "all", stages: [{ id: "packing", ordinal: 13, total: 4 }, { id: "delivery", ordinal: 14, total: 6 }] });
+  assert.deepEqual(both.stages, [{ id: "packing", ordinal: 13, total: 4 }, { id: "delivery", ordinal: 14, total: 6 }]);
+  assert.deepEqual(both.items[1].stage, { id: "delivery", ordinal: 14 });
+  assert.throws(() => mapAwbStationQueue({ items: [], stages: [{ id: "packing", ordinal: 13, total: -1 }] }), StaffServiceError, "a negative count fails closed");
 });
 
 test("label request: session cookie, exposed headers, typed refusals; print record carries CSRF", async () => {
@@ -105,6 +112,14 @@ test("label request: session cookie, exposed headers, typed refusals; print reco
   assert.equal(post.init.method, "POST");
   assert.equal(post.url, `https://api.example.test/trendyol/awb/orders/${order.orderId}/print-attempts`);
   assert.deepEqual(JSON.parse(String(post.init.body)), { attemptId: "a", retrievalId: "r" });
+  for (const stage of ["all", "13", "14"] as const) {
+    answers.push(json(200, { generatedAt: "2026-11-09T08:00:00.000Z", total: 0, items: [], nextCursor: null, capabilities: { print: true }, stages: [] }));
+    await services.awb!.queue({ limit: 50, stage });
+    assert.equal(calls[calls.length - 1].url, `https://api.example.test/trendyol/awb/queue?limit=50&stage=${stage}`, `the stage filter ${stage} reaches the API`);
+  }
+  answers.push(json(200, { generatedAt: "2026-11-09T08:00:00.000Z", total: 0, items: [], nextCursor: null, capabilities: { print: true } }));
+  await services.awb!.queue({ limit: 50 });
+  assert.equal(calls[calls.length - 1].url, "https://api.example.test/trendyol/awb/queue?limit=50", "no filter: the API 2.65.0 request");
   answers.push(json(200, { items: [rawOrder], capabilities: { print: false } }));
   const found = await services.awb!.resolve("ARASYA:Q1:ABC");
   assert.equal(found.canPrint, false);
@@ -128,4 +143,23 @@ test("the preview frame is allowed by CSP only for same-origin and blob document
   assert.match(template, /frame-src 'self' blob:;/);
   assert.match(template, /frame-ancestors 'none'/);
   assert.match(template, /object-src 'none'/);
+});
+
+test("stage filter: every stage by default, remembered on this browser only, never fatal without storage", () => {
+  const store = new Map<string, string>();
+  const original = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  Object.defineProperty(globalThis, "localStorage", { configurable: true, value: { getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => { store.set(key, value); } } });
+  try {
+    assert.equal(readAwbStageFilter(), "all");
+    saveAwbStageFilter("14");
+    assert.equal(store.get(AWB_STAGE_FILTER_KEY), "14");
+    assert.equal(readAwbStageFilter(), "14");
+    store.set(AWB_STAGE_FILTER_KEY, "packing");
+    assert.equal(readAwbStageFilter(), "all", "an unknown stored value falls back to every stage");
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, get: () => { throw new Error("blocked"); } });
+    assert.equal(readAwbStageFilter(), "all");
+    assert.doesNotThrow(() => saveAwbStageFilter("13"));
+  } finally {
+    if (original) Object.defineProperty(globalThis, "localStorage", original); else delete (globalThis as { localStorage?: unknown }).localStorage;
+  }
 });

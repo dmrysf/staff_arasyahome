@@ -1118,6 +1118,7 @@ export function createProductionServices(apiBaseUrl: string, options: Production
       if (input.search) query.set("q", input.search);
       if (input.cursor) query.set("cursor", input.cursor);
       if (input.limit) query.set("limit", String(input.limit));
+      if (input.stage) query.set("stage", input.stage);
       const suffix = query.toString();
       return http.request(`/trendyol/awb/queue${suffix ? `?${suffix}` : ""}`, { signal }, mapAwbStationQueue);
     },
@@ -2091,7 +2092,9 @@ export function mapAwbStationOrder(value: unknown): AwbOrder {
 }
 export function mapAwbStationQueue(value: unknown): AwbQueue {
   const raw = objectValue(value);
-  return { generatedAt: stringValue(raw.generatedAt), total: nonNegativeInteger(raw.total), items: itemsOf(raw).map(mapAwbStationOrder), nextCursor: typeof raw.nextCursor === "string" ? raw.nextCursor : null, canPrint: objectValue(raw.capabilities).print === true };
+  // Per-stage counts (API 2.66.0); an older API sends none, and the filter then shows no number.
+  const stages = Array.isArray(raw.stages) ? raw.stages.map((value) => { const stage = objectValue(value); return { id: stringValue(stage.id), ordinal: nonNegativeInteger(stage.ordinal), total: nonNegativeInteger(stage.total) }; }) : [];
+  return { generatedAt: stringValue(raw.generatedAt), total: nonNegativeInteger(raw.total), items: itemsOf(raw).map(mapAwbStationOrder), nextCursor: typeof raw.nextCursor === "string" ? raw.nextCursor : null, canPrint: objectValue(raw.capabilities).print === true, stages };
 }
 function itemsOf(value: unknown): unknown[] {
   const raw = objectValue(value);

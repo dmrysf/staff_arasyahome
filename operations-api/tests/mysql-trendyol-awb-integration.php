@@ -182,8 +182,8 @@ check($stationIdentity !== null && $stationIdentity->allowedStageIds === [] && !
 $queue = ok($get($station, '/trendyol/awb/queue'), 200, 'station queue');
 $ids = array_column($queue['items'], 'orderId');
 check($ids === [$o['b'], $o['c'], $o['a'], $o['twinB'], $o['twinA'], $o['old']], 'queue: open Trendyol orders at packing, newest arrival first: ' . json_encode(array_column($queue['items'], 'orderNumber')));
-check($queue['total'] === 6 && $queue['stage'] === ['id' => 'packing', 'ordinal' => 13] && $queue['capabilities'] === ['print' => true] && $queue['nextCursor'] === null, 'queue total, stage and capabilities');
-check(!in_array($o['qc'], $ids, true) && !in_array($o['done'], $ids, true) && !in_array($o['stopped'], $ids, true) && !in_array($homeUuid, $ids, true), 'stage 12, stage 14, a stopped order and another source never appear');
+check($queue['total'] === 6 && $queue['stage'] === ['id' => 'packing', 'ordinal' => 13] && $queue['filter'] === '13' && $queue['capabilities'] === ['print' => true] && $queue['nextCursor'] === null, 'queue total, stage and capabilities');
+check(!in_array($o['qc'], $ids, true) && !in_array($o['done'], $ids, true) && !in_array($o['stopped'], $ids, true) && !in_array($homeUuid, $ids, true), 'without a filter (the API 2.65.0 contract): stage 12, stage 14, a stopped order and another source never appear');
 $itemA = $queue['items'][2];
 check($itemA['orderNumber'] === (string) ($base + 17) && $itemA['packageId'] === (string) ($base + 10) && $itemA['globalOrderId'] === 'trendyol:' . ($base + 10) && $itemA['stage'] === ['id' => 'packing', 'ordinal' => 13]
     && $itemA['inQueue'] === true && $itemA['printed'] === ['count' => 0, 'lastAt' => null] && $itemA['enteredStageAt'] === '2026-11-09T08:10:00.000Z', 'queue row: number, package, stage 13, arrival, not printed: ' . json_encode($itemA));
@@ -199,6 +199,27 @@ check(count(ok($get($station, '/trendyol/awb/queue', ['limit' => '500']), 200, '
 check(array_column(ok($get($station, '/trendyol/awb/queue', ['q' => (string) intdiv($base + 27, 10)]), 200, 'search prefix')['items'], 'orderId') === [$o['b']], 'the search narrows by order number prefix');
 check(array_column(ok($get($station, '/trendyol/awb/queue', ['q' => '%']), 200, 'wildcard')['items'], 'orderId') === [], 'LIKE wildcards are literal');
 check(ok($get($packer, '/trendyol/awb/queue'), 200, 'named employee queue')['items'] === $queue['items'], 'a named employee with the same permission sees the same queue');
+// Owner addition (API 2.66.0): open stage 14 (Livrare) orders are listed too, with a stage filter and per-stage counts.
+$all = ok($get($station, '/trendyol/awb/queue', ['stage' => 'all']), 200, 'queue stage=all');
+check(array_column($all['items'], 'orderId') === [$o['b'], $o['c'], $o['a'], $o['twinB'], $o['twinA'], $o['done'], $o['old']], 'stage=all: stage 13 and 14 together, newest arrival at the current stage first: ' . json_encode(array_column($all['items'], 'orderNumber')));
+check($all['filter'] === 'all' && $all['total'] === 7 && $all['stages'] === [['id' => 'packing', 'ordinal' => 13, 'total' => 6], ['id' => 'delivery', 'ordinal' => 14, 'total' => 1]], 'stage=all: total and per-stage counts: ' . json_encode([$all['total'], $all['stages']]));
+$doneRow = $all['items'][5];
+check($doneRow['stage'] === ['id' => 'delivery', 'ordinal' => 14] && $doneRow['inQueue'] === true && $doneRow['enteredStageAt'] === '2026-11-09T08:01:00.000Z' && array_keys($doneRow) === array_keys($itemA), 'a stage 14 row: Livrare, in the station, arrival at stage 14, same fields');
+check(!in_array($o['qc'], array_column($all['items'], 'orderId'), true) && !in_array($o['stopped'], array_column($all['items'], 'orderId'), true) && !in_array($homeUuid, array_column($all['items'], 'orderId'), true), 'stage=all still never lists stage 12, a stopped order or another source');
+$fourteen = ok($get($station, '/trendyol/awb/queue', ['stage' => '14']), 200, 'queue stage=14');
+check(array_column($fourteen['items'], 'orderId') === [$o['done']] && $fourteen['total'] === 1 && $fourteen['filter'] === '14' && $fourteen['stages'] === $all['stages'], 'stage=14 lists only Livrare, counts unchanged');
+check(ok($get($station, '/trendyol/awb/queue', ['stage' => '13']), 200, 'queue stage=13')['items'] === $queue['items'], 'stage=13 equals the default queue');
+foreach (['x', '12', '15', 'ALL', 'packing', '13,14', ' 13'] as $bad) err($get($station, '/trendyol/awb/queue', ['stage' => $bad]), 400, 'INVALID_REQUEST', "stage filter {$bad} is refused");
+$seen = [];
+$next = null;
+for ($i = 0; $i < 5; $i++) {
+    $page = ok($get($station, '/trendyol/awb/queue', ['stage' => 'all', 'limit' => '3'] + ($next === null ? [] : ['cursor' => $next])), 200, "stage=all page {$i}");
+    array_push($seen, ...array_column($page['items'], 'orderId'));
+    $next = $page['nextCursor'];
+    if ($next === null) break;
+}
+check($seen === array_column($all['items'], 'orderId'), 'stage=all pages through both stages without a gap or a duplicate');
+check(array_column(ok($get($station, '/trendyol/awb/queue', ['stage' => 'all', 'q' => (string) ($base + 57)]), 200, 'search stage 14')['items'], 'orderId') === [$o['done']], 'the search narrows stage 14 too');
 
 // A real stage 12 -> 13 transition makes the order appear, with no write by the station.
 $qcGlobal = 'trendyol:' . ($base + 40);
@@ -222,7 +243,7 @@ check(array_column(ok($get($station, '/trendyol/awb/resolve', ['code' => 'trendy
 $twins = ok($get($station, '/trendyol/awb/resolve', ['code' => 'TWIN' . $suffix]), 200, 'two packages of one marketplace order');
 check(count($twins['items']) === 2 && array_unique(array_column($twins['items'], 'orderNumber')) === ['TWIN' . $suffix] && count(array_unique(array_column($twins['items'], 'packageId'))) === 2, 'every package of a marketplace order is listed, each with its own package id');
 $done = ok($get($station, '/trendyol/awb/resolve', ['code' => $qrOf($o['done'])]), 200, 'stage 14 order by QR');
-check($done['items'][0]['inQueue'] === false && $done['items'][0]['stage']['ordinal'] === 14, 'a stage 14 order is found by exact search, outside the queue');
+check($done['items'][0]['inQueue'] === true && $done['items'][0]['stage'] === ['id' => 'delivery', 'ordinal' => 14], 'an open stage 14 order is found by exact search and belongs to the station (API 2.66.0)');
 err($get($station, '/trendyol/awb/resolve', ['code' => $qrOf($homeUuid)]), 404, 'AWB_ORDER_NOT_FOUND', 'another source reads as not found (no leak)');
 err($get($station, '/trendyol/awb/resolve', ['code' => $homeNumber]), 404, 'AWB_ORDER_NOT_FOUND', 'another source by number reads as not found');
 err($get($station, '/trendyol/awb/resolve', ['code' => 'ARASYA:Q1:AAAAAAAAAAAAAAAAAAAAAAAAAA']), 404, 'AWB_ORDER_NOT_FOUND', 'an unknown QR');
@@ -436,12 +457,15 @@ ok(T::call($kernel, 'POST', '/orders/' . rawurlencode($cGlobal) . '/claim', ['ex
 $v = (int) $scalar('SELECT production_version FROM operational_orders WHERE order_uuid = ?', [$c]);
 ok(T::call($kernel, 'POST', '/orders/' . rawurlencode($cGlobal) . '/transition', ['expectedVersion' => $v], ['x-csrf-token' => $packer['csrf'], 'idempotency-key' => 'awb-pk-done-' . $suffix], $packer['cookie']), 200, 'stage 13 completes without any AWB print');
 check($scalar('SELECT production_stage_id FROM operational_orders WHERE order_uuid = ?', [$c]) === 'delivery', 'the order is at stage 14');
-check(!in_array($c, array_column(ok($get($station, '/trendyol/awb/queue'), 200, 'queue after packing')['items'], 'orderId'), true), 'it leaves the active queue automatically');
+check(!in_array($c, array_column(ok($get($station, '/trendyol/awb/queue'), 200, 'queue after packing')['items'], 'orderId'), true), 'it leaves the stage 13 queue automatically');
+$cRow = array_values(array_filter(ok($get($station, '/trendyol/awb/queue', ['stage' => 'all']), 200, 'all after packing')['items'], static fn (array $item): bool => $item['orderId'] === $c));
+check(count($cRow) === 1 && $cRow[0]['stage'] === ['id' => 'delivery', 'ordinal' => 14] && $cRow[0]['inQueue'] === true, 'and appears under stage 14 at once, without any print (API 2.66.0)');
 $v = (int) $scalar('SELECT production_version FROM operational_orders WHERE order_uuid = ?', [$c]);
 ok(T::call($kernel, 'POST', '/orders/' . rawurlencode($cGlobal) . '/claim', ['expectedVersion' => $v], ['x-csrf-token' => $delivery['csrf'], 'idempotency-key' => 'awb-dl-claim-' . $suffix], $delivery['cookie']), 200, 'Livrare claims stage 14');
 $v = (int) $scalar('SELECT production_version FROM operational_orders WHERE order_uuid = ?', [$c]);
 ok(T::call($kernel, 'POST', '/orders/' . rawurlencode($cGlobal) . '/transition', ['expectedVersion' => $v], ['x-csrf-token' => $delivery['csrf'], 'idempotency-key' => 'awb-dl-done-' . $suffix], $delivery['cookie']), 200, 'stage 14 completes without any AWB check');
 check($scalar('SELECT production_completed_at FROM operational_orders WHERE order_uuid = ?', [$c]) !== null, 'production completes; no AWB gate anywhere');
+check(!in_array($c, array_column(ok($get($station, '/trendyol/awb/queue', ['stage' => 'all']), 200, 'all after delivery')['items'], 'orderId'), true), 'completing stage 14 removes the order from the station');
 check(!isset($fixtureNow()['putCalls']), 'no request ever wrote to Trendyol');
 
 $server->exec("DROP DATABASE IF EXISTS `{$db}`");

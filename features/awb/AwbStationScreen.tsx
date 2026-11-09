@@ -1,21 +1,23 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { AppIcon } from "../../components/icons/AppIcon";
-import { awbErrorCode, findLocal, newAttemptId, normalizeScan, type AwbApi, type AwbHistoryEvent, type AwbLabel, type AwbOrder, type AwbQueue } from "../../domain/awb";
+import { awbErrorCode, findLocal, newAttemptId, normalizeScan, type AwbApi, type AwbHistoryEvent, type AwbLabel, type AwbOrder, type AwbQueue, type AwbStageFilter } from "../../domain/awb";
 import { StaffServiceError } from "../../domain/models";
 import { toServiceError } from "../../services/errors";
-import { awbErrorText, awbText, readAwbLocale, saveAwbLocale, type AwbLocale, type AwbMessageKey } from "../../i18n/messages/awbStation";
+import { awbErrorText, awbText, readAwbLocale, readAwbStageFilter, saveAwbLocale, saveAwbStageFilter, type AwbLocale, type AwbMessageKey } from "../../i18n/messages/awbStation";
 
 /**
- * Trendyol AWB print station (Staff 2.47.0, API 2.65.0): one purpose, one screen.
+ * Trendyol AWB print station (Staff 2.47.0, API 2.65.0; stage 14 and the stage filter since Staff 2.48.0): one purpose,
+ * one screen.
  *
- * Trendyol orders at stage 13 appear on their own (the server derives the queue; this screen refreshes every 15 s while
- * visible). The employee scans or searches, presses "Imprimă AWB", the official Trendyol label opens in the browser's
+ * Trendyol orders at stage 13 appear on their own and stay while open at stage 14 (the server derives the queue; this
+ * screen refreshes every 15 s while visible). A filter shows both stages (default), only 13 or only 14. The employee scans or searches, presses "Imprimă AWB", the official Trendyol label opens in the browser's
  * print dialog, and a printed-before notice never blocks a reprint. Nothing here moves a stage or changes an order.
  *
  * The station keeps its own language (Romanian by default, Turkish on demand) in this browser only.
  */
 const REFRESH_MS = 15_000;
 const PAGE = 50;
+const STAGE_FILTERS = [["all", "filterAll"], ["13", "filter13"], ["14", "filter14"]] as const satisfies readonly (readonly [AwbStageFilter, AwbMessageKey])[];
 /** The real Trendyol label is a one-page 105 x 148 mm (A6) PDF: printed at its own size, never scaled to the paper. */
 const PRINT_SETTINGS = ["printPaper", "printScale", "printMargins", "printQuality"] as const satisfies readonly AwbMessageKey[];
 
@@ -37,6 +39,8 @@ export function AwbStationScreen({ service, displayName, canPrint, onLogout, onB
   const [items, setItems] = useState<AwbOrder[]>([]);
   const [total, setTotal] = useState(0);
   const [cursor, setCursor] = useState<string | null>(null);
+  const [stageFilter, setStageFilter] = useState<AwbStageFilter>(readAwbStageFilter);
+  const [stageTotals, setStageTotals] = useState<Record<string, number> | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [queueFailure, setQueueFailure] = useState<Failure | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -74,6 +78,7 @@ export function AwbStationScreen({ service, displayName, canPrint, onLogout, onB
   const applyQueue = useCallback((queue: AwbQueue) => {
     setItems(queue.items);
     setTotal(queue.total);
+    setStageTotals(queue.stages.length > 0 ? Object.fromEntries(queue.stages.map((stage) => [stage.id, stage.total])) : null);
     setCursor(queue.nextCursor);
     setStatus("ready");
     setQueueFailure(null);
@@ -87,21 +92,35 @@ export function AwbStationScreen({ service, displayName, canPrint, onLogout, onB
   const refresh = useCallback(async (signal?: AbortSignal) => {
     setRefreshing(true);
     try {
-      applyQueue(await service.queue({ limit: Math.min(100, Math.max(PAGE, loaded.current)) }, signal));
+      applyQueue(await service.queue({ limit: Math.min(100, Math.max(PAGE, loaded.current)), stage: stageFilter }, signal));
     } catch (caught) {
       if (!signal?.aborted) queueFailed(caught);
     } finally {
       if (!signal?.aborted) setRefreshing(false);
     }
-  }, [applyQueue, queueFailed, service]);
+  }, [applyQueue, queueFailed, service, stageFilter]);
 
   useEffect(() => {
     const controller = new AbortController();
-    service.queue({ limit: PAGE }, controller.signal)
+    service.queue({ limit: PAGE, stage: stageFilter }, controller.signal)
       .then((queue) => { if (!controller.signal.aborted) applyQueue(queue); })
       .catch((caught: unknown) => { if (!controller.signal.aborted) queueFailed(caught); });
     return () => controller.abort();
-  }, [applyQueue, queueFailed, service]);
+  }, [applyQueue, queueFailed, service, stageFilter]);
+
+  const chooseStage = (next: AwbStageFilter) => {
+    if (next === stageFilter) return;
+    loaded.current = PAGE;
+    setCursor(null);
+    setStageFilter(next);
+    saveAwbStageFilter(next);
+  };
+  const stageCount = (filter: AwbStageFilter): number | null => {
+    if (!stageTotals) return null;
+    if (filter === "13") return stageTotals.packing ?? 0;
+    if (filter === "14") return stageTotals.delivery ?? 0;
+    return (stageTotals.packing ?? 0) + (stageTotals.delivery ?? 0);
+  };
 
   // The search field is ready for the scanner as soon as the station opens.
   useEffect(() => { searchRef.current?.focus(); }, []);
@@ -149,7 +168,7 @@ export function AwbStationScreen({ service, displayName, canPrint, onLogout, onB
   async function loadMore() {
     if (!cursor) return;
     try {
-      const next = await service.queue({ cursor, limit: PAGE });
+      const next = await service.queue({ cursor, limit: PAGE, stage: stageFilter });
       setItems((current) => [...current, ...next.items.filter((item) => !current.some((known) => known.orderId === item.orderId))]);
       setCursor(next.nextCursor);
       loaded.current += next.items.length;
@@ -281,7 +300,7 @@ export function AwbStationScreen({ service, displayName, canPrint, onLogout, onB
     const printed = order.printed.count > 0;
     const working = busy === order.orderId;
     const failure = rowFailure?.orderId === order.orderId ? rowFailure.failure : null;
-    const stageText = order.inQueue ? text("stage") : order.productionCompleted ? text("stageDone") : order.productionStopped ? text("stopped") : text("stageOther", { ordinal: order.stage.ordinal ?? "—" });
+    const stageText = order.inQueue ? (order.stage.id === "delivery" ? text("stageDelivery") : text("stage")) : order.productionCompleted ? text("stageDone") : order.productionStopped ? text("stopped") : text("stageOther", { ordinal: order.stage.ordinal ?? "—" });
     return (
       <li key={`${place}-${order.orderId}`} className="awb-row" data-printed={printed || undefined} data-highlight={highlight === order.orderId || undefined} data-testid={`awb-row-${order.orderNumber}`}>
         <div className="awb-row-main">
@@ -362,6 +381,16 @@ export function AwbStationScreen({ service, displayName, canPrint, onLogout, onB
           <div className="awb-section-head">
             <h2 id="awb-queue-title">{text("queueTitle")}</h2>
             <p className="awb-queue-meta">{status === "ready" && <span>{countText}</span>}{updatedAt && <span className="awb-updated">{refreshing ? text("refreshing") : text("updatedAt", { time })}</span>}</p>
+          </div>
+          <div className="awb-filter" role="group" aria-label={text("filterLabel")}>
+            {STAGE_FILTERS.map(([filter, key]) => {
+              const count = stageCount(filter);
+              return (
+                <button key={filter} type="button" className="awb-filter-button" aria-pressed={stageFilter === filter} onClick={() => chooseStage(filter)}>
+                  <span>{text(key)}</span>{count !== null && <span className="awb-filter-count">{count}</span>}
+                </button>
+              );
+            })}
           </div>
           {queueFailure && (
             <div className="awb-banner" role="alert">

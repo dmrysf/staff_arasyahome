@@ -50,19 +50,35 @@ const noCustomer = async (page: Page) => {
   for (const secret of ["TEST NEVER SHOWN", "0744000111", "Str. Test 1", "FANCOURIER", "trendyol.awb"]) expect(body).not.toContain(secret);
 };
 
-test("the station account sees only the station: stage 13 orders, Romanian by default, no Staff navigation", async ({ browser }) => {
+test("the station account sees only the station: stage 13 and 14 orders, Romanian by default, no Staff navigation", async ({ browser }) => {
   const { context, page, errors } = await signIn(browser, F.people.station);
   try {
     await expect(page).toHaveURL(/\/awb$/);
     await expect(page.getByRole("heading", { level: 1, name: "AWB Trendyol" })).toBeVisible();
-    await expect(page.getByText("Etichete de transport pentru comenzile din împachetare")).toBeVisible();
+    await expect(page.getByText("Etichete de transport pentru comenzile din împachetare și livrare")).toBeVisible();
     await expect(page.getByPlaceholder("Caută comanda sau scanează codul QR")).toBeFocused();
     const first = row(page, F.orders.single);
     await expect(first.getByRole("heading", { name: `Comanda #${F.orders.single.number}` })).toBeVisible();
     await expect(first.getByText("Împachetare · Etapa 13")).toBeVisible();
     await expect(first.getByRole("button", { name: "Imprimă AWB" })).toBeVisible();
     await expect(first.getByText("Imprimată anterior")).toHaveCount(0);
+    // Stage 14 (Livrare) is listed too, with its own stage label; the filter narrows to one stage and is remembered.
+    const delivery = row(page, F.orders.delivery);
+    await expect(delivery.getByText("Livrare · Etapa 14")).toBeVisible();
+    await expect(delivery.getByText("Nu mai este în etapele 13–14")).toHaveCount(0);
+    const filters = page.getByRole("group", { name: "Filtrează după etapă" });
+    await expect(filters.getByRole("button", { name: /^Toate/ })).toHaveAttribute("aria-pressed", "true");
+    await filters.getByRole("button", { name: /^Etapa 14 · Livrare/ }).click();
+    await expect(filters.getByRole("button", { name: /^Etapa 14 · Livrare/ })).toHaveAttribute("aria-pressed", "true");
+    await expect(row(page, F.orders.delivery)).toBeVisible();
+    await expect(row(page, F.orders.single)).toHaveCount(0);
+    await filters.getByRole("button", { name: /^Etapa 13 · Împachetare/ }).click();
+    await expect(row(page, F.orders.single)).toBeVisible();
     await expect(row(page, F.orders.delivery)).toHaveCount(0);
+    await page.reload();
+    await expect(page.getByRole("group", { name: "Filtrează după etapă" }).getByRole("button", { name: /^Etapa 13 · Împachetare/ })).toHaveAttribute("aria-pressed", "true");
+    await page.getByRole("group", { name: "Filtrează după etapă" }).getByRole("button", { name: /^Toate/ }).click();
+    await expect(row(page, F.orders.delivery)).toBeVisible();
     await expect(page.locator(".app-shell, nav")).toHaveCount(0);
     await noCustomer(page);
     await shot(page, "01-ro-queue-1440");
@@ -80,7 +96,7 @@ test("Turkish at one touch, remembered on this browser only", async ({ browser }
   const { context, page } = await signIn(browser, F.people.station);
   try {
     await page.getByRole("button", { name: "TR", exact: true }).click();
-    await expect(page.getByText("Paketleme aşamasındaki siparişlerin kargo etiketleri")).toBeVisible();
+    await expect(page.getByText("Paketleme ve teslimat aşamasındaki siparişlerin kargo etiketleri")).toBeVisible();
     const first = row(page, F.orders.single);
     await expect(first.getByRole("button", { name: "AWB Yazdır" })).toBeVisible();
     await expect(first.getByText("Paketleme · 13. Aşama")).toBeVisible();
@@ -88,9 +104,9 @@ test("Turkish at one touch, remembered on this browser only", async ({ browser }
     await expect(page.getByRole("heading", { name: "Etiket bekleyen siparişler" })).toBeVisible();
     await shot(page, "02-tr-queue-1440");
     await page.reload();
-    await expect(page.getByText("Paketleme aşamasındaki siparişlerin kargo etiketleri")).toBeVisible();
+    await expect(page.getByText("Paketleme ve teslimat aşamasındaki siparişlerin kargo etiketleri")).toBeVisible();
     await page.getByRole("button", { name: "RO", exact: true }).click();
-    await expect(page.getByText("Etichete de transport pentru comenzile din împachetare")).toBeVisible();
+    await expect(page.getByText("Etichete de transport pentru comenzile din împachetare și livrare")).toBeVisible();
   } finally { await context.close(); }
 });
 
@@ -204,11 +220,21 @@ test("scanner: the Arasya QR finds the order, an old order by exact search, an i
     await page.keyboard.type(F.orders.delivery.qr);
     await expect(search).toBeFocused();
     await page.keyboard.press("Enter");
+    // A stage 14 order is in the station list (API 2.66.0): the scan highlights its row.
+    await expect(row(page, F.orders.delivery)).toHaveAttribute("data-highlight", "true");
+    await expect(row(page, F.orders.delivery).getByText("Livrare · Etapa 14")).toBeVisible();
+    // With only stage 13 shown, the same scan opens it as a search result, still printable.
+    await page.getByRole("group", { name: "Filtrează după etapă" }).getByRole("button", { name: /^Etapa 13 · Împachetare/ }).click();
+    await expect(row(page, F.orders.delivery)).toHaveCount(0);
+    await search.fill(F.orders.delivery.qr);
+    await search.press("Enter");
     const result = page.locator(".awb-results");
     await expect(result.getByRole("heading", { name: `Comanda #${F.orders.delivery.number}` })).toBeVisible();
-    await expect(result.getByText("Nu mai este în împachetare")).toBeVisible();
+    await expect(result.getByText("Livrare · Etapa 14")).toBeVisible();
+    await expect(result.getByText("Nu mai este în etapele 13–14")).toHaveCount(0);
     await expect(result.getByRole("button", { name: "Imprimă AWB" })).toBeEnabled();
     await shot(page, "06-ro-search-result-1440");
+    await page.getByRole("group", { name: "Filtrează după etapă" }).getByRole("button", { name: /^Toate/ }).click();
     await search.fill("ARASYA:Q1:AAAAAAAAAAAAAAAAAAAAAAAAAA");
     await search.press("Enter");
     await expect(page.getByRole("alert").filter({ hasText: "Nu există nicio comandă Trendyol cu acest cod." })).toBeVisible();
@@ -235,10 +261,10 @@ test("empty queue, connection failure and session expiry explain themselves", as
       await route.fulfill({ response, json: { ...(await response.json()), total: 0, items: [], nextCursor: null } });
     });
     await page.reload();
-    await expect(page.getByText("Nu există comenzi în etapa de împachetare")).toBeVisible();
+    await expect(page.getByText("Nu există comenzi Trendyol la etapele 13 și 14")).toBeVisible();
     await shot(page, "07-ro-empty-1440");
     await page.getByRole("button", { name: "TR", exact: true }).click();
-    await expect(page.getByText("Paketleme aşamasında sipariş bulunmuyor")).toBeVisible();
+    await expect(page.getByText("13. ve 14. aşamada Trendyol siparişi yok")).toBeVisible();
     await page.getByRole("button", { name: "RO", exact: true }).click();
     await page.unroute("**/trendyol/awb/queue*");
     await page.route("**/trendyol/awb/queue*", (route) => route.abort());
