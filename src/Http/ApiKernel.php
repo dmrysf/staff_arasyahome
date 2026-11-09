@@ -48,6 +48,7 @@ final readonly class ApiKernel
         private ?\Arasya\Operations\Confirmare\ConfirmareController $confirmare = null,
         private ?\Arasya\Operations\Management\RootInterventionController $interventions = null,
         private ?\Arasya\Operations\Finance\FinanceController $finance = null,
+        private ?\Arasya\Operations\Trendyol\AwbStationController $awb = null,
     ) {
     }
 
@@ -121,6 +122,9 @@ final readonly class ApiKernel
         }
         if ($request->path === '/b2b/companies' || str_starts_with($request->path, '/b2b/companies/')) {
             return ($this->b2bCompanies ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'B2B companies API is not ready.'))->handle($request);
+        }
+        if (str_starts_with($request->path, '/trendyol/awb/')) {
+            return ($this->awb ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'The AWB station is not ready.'))->handle($request);
         }
         if (str_starts_with($request->path, '/trendyol/')) {
             return ($this->trendyol ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Trendyol workspace is not ready.'))->handle($request);
