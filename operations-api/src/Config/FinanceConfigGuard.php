@@ -13,7 +13,8 @@ namespace Arasya\Operations\Config;
  *
  * - ARASYA_FINANCE_OPENING_BALANCE_POSTING absent or exactly `disabled`;
  * - ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS absent or empty (nobody makes an effective colour or limit decision);
- * - ARASYA_FINANCE_CEO_EMPLOYEE_UUID absent or empty (nobody decides a CEO exception).
+ * - ARASYA_FINANCE_CEO_EMPLOYEE_UUID absent or empty (nobody decides a CEO exception);
+ * - ARASYA_B2B_FINANCE_GATE absent or `off` (no finance decision at B2B finalization; API 2.64.0).
  *
  * Any other well-formed value blocks the deployment until an authorized person records ARASYA_FINANCE_CONFIG_ACK, the
  * SHA-256 fingerprint of the exact reviewed values. Changing any value later makes that acknowledgement stale, and the
@@ -27,6 +28,7 @@ final class FinanceConfigGuard
     public const CEO = 'ARASYA_FINANCE_CEO_EMPLOYEE_UUID';
     public const AUTHORITY = 'ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS';
     public const ACK = 'ARASYA_FINANCE_CONFIG_ACK';
+    public const B2B_GATE = 'ARASYA_B2B_FINANCE_GATE';
     private const UUID = '/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/D';
 
     /**
@@ -73,10 +75,20 @@ final class FinanceConfigGuard
             $add($ceo === '' ? 'OK' : 'WARN', 'finance_ceo_employee_' . ($ceo === '' ? 'unset' : 'set'));
         }
 
-        $defaults = $posting !== 'enabled' && $authority === [] && $ceo === '';
+        $gateSet = array_key_exists(self::B2B_GATE, $values);
+        $gate = trim($values[self::B2B_GATE] ?? '');
+        if ($gateSet && !in_array($gate, ['off', 'shadow', 'enforce'], true)) {
+            // Config would treat it as off; write `off`, `shadow` or `enforce`, or remove it.
+            $add('FAIL', 'b2b_finance_gate_unrecognized');
+            $malformed = true;
+        } else {
+            $add(in_array($gate, ['shadow', 'enforce'], true) ? 'WARN' : 'OK', 'b2b_finance_gate_' . (in_array($gate, ['shadow', 'enforce'], true) ? $gate : 'off'));
+        }
+
+        $defaults = $posting !== 'enabled' && $authority === [] && $ceo === '' && !in_array($gate, ['shadow', 'enforce'], true);
         $sorted = $authority;
         sort($sorted);
-        $fingerprint = hash('sha256', implode("\n", ['arasya-finance-config-v1', $postingSet ? $posting : '', implode(',', $sorted), $ceo]));
+        $fingerprint = hash('sha256', implode("\n", ['arasya-finance-config-v2', $postingSet ? $posting : '', implode(',', $sorted), $ceo, $gateSet ? $gate : '']));
         $ack = strtolower(trim($values[self::ACK] ?? ''));
 
         if (!$malformed && !$defaults) {

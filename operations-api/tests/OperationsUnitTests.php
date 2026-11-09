@@ -702,6 +702,36 @@ test('B2B company input is normalized on the server and failures name fields, ne
     expect($creation['contact'] === null && $creation['address'] === null);
 });
 
+test('the order-level service route sends CUT_ONLY and FULL_ROLL_BAG 1 -> 2 -> 14 and keeps every other order on its product route', function (): void {
+    $workflow = canonicalWorkflowFixture();
+    $policy = \Arasya\Operations\Production\ProductRoutePolicy::class;
+    $middle = ['workshop-receiving', 'labeling', 'material-straightening', 'bottom-hem', 'side-hem', 'ironing', 'height', 'header-tape', 'sewing-finishing', 'quality-control', 'packing'];
+    foreach (['CUT_ONLY', 'FULL_ROLL_BAG'] as $service) {
+        foreach ($policy::TYPES as $type) {
+            expect($policy::route($workflow, $type, false, $service) === ['waiting', 'material-preparation', 'delivery'], "{$service} {$type} route");
+            expect($policy::route($workflow, $type, true, $service) === ['waiting', 'material-preparation', 'delivery'], "{$service} {$type} route under policy 2");
+        }
+        $step = $policy::next($workflow, 'material-preparation', $policy::PERDEA, false, $service);
+        expect($step['next']?->id === 'delivery' && $step['skipped'] === $middle, "{$service}: stage 2 -> delivery, 3-13 not applicable");
+        expect($policy::next($workflow, 'waiting', $policy::DRAPERII, false, $service)['next']?->id === 'material-preparation', "{$service}: stage 1 never skips stage 2");
+        expect($policy::next($workflow, 'delivery', $policy::DRAPERII, false, $service)['next'] === null, "{$service}: delivery completes production");
+        expect($policy::requirement($workflow, $policy::DRAPERII, 'quality-control', false, $service) === $policy::NOT_APPLICABLE, "{$service}: quality control not applicable");
+    }
+    foreach ([null, 'FULL_TAILORING', 'EXPRESS', ''] as $service) {
+        expect(count($policy::route($workflow, $policy::DRAPERII, false, $service)) === 14, 'full route for ' . var_export($service, true));
+        expect($policy::next($workflow, 'material-preparation', $policy::DRAPERII, false, $service)['next']?->id === 'workshop-receiving', 'no shortcut for ' . var_export($service, true));
+    }
+    expect($policy::route($workflow, $policy::PERDEA, false, 'FULL_TAILORING') === $policy::route($workflow, $policy::PERDEA), 'FULL_TAILORING keeps the PERDEA product route');
+    expect(!$policy::shortService(null) && !$policy::shortService('FULL_TAILORING') && $policy::shortService('CUT_ONLY') && $policy::shortService('FULL_ROLL_BAG'));
+    // The service route never comes from a client: only the explicit B2B submission writes it, from the frozen type.
+    $root = dirname(__DIR__) . '/src';
+    $writers = [];
+    foreach (new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS)) as $file) {
+        if ($file->isFile() && preg_match('/SET\s+service_route\s*=/i', (string) file_get_contents($file->getPathname())) === 1) $writers[] = substr($file->getPathname(), strlen($root) + 1);
+    }
+    expect($writers === ['B2B/ProductionCommands.php'], 'only the B2B handoff writes service_route: ' . implode(',', $writers));
+});
+
 test('B2B commercial orders are isolated from production and their audit is insert-only', function (): void {
     $root = dirname(__DIR__) . '/src';
     foreach (glob($root . '/B2B/Order*.php') as $file) {

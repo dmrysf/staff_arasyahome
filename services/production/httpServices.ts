@@ -464,6 +464,13 @@ export function mapProductionOrder(value: unknown): import("../../domain/models"
     order.productionContext = { company: { legalName: stringValue(company.legalName), companyCode: stringValue(company.companyCode),
       countryCode: stringValue(company.countryCode), taxIdentifier: stringValue(company.taxIdentifier) } };
   }
+  if (raw.serviceRoute != null) {
+    // Only a typed B2B order carries a service route; anything else is a contract error.
+    if (source !== 'b2b') throw new StaffServiceError('SERVER_ERROR');
+    const route = objectValue(raw.serviceRoute), orderType = oneOf(route.orderType, ['FULL_TAILORING', 'CUT_ONLY', 'FULL_ROLL_BAG'] as const);
+    if (typeof route.shortRoute !== 'boolean' || route.shortRoute !== (orderType !== 'FULL_TAILORING')) throw new StaffServiceError('SERVER_ERROR');
+    order.serviceRoute = { orderType, shortRoute: route.shortRoute };
+  }
   if (raw.acceptedAt != null) order.acceptedAt = timestampValue(raw.acceptedAt);
   if (raw.productionQuality != null) order.productionQuality = mapOrderQuality(raw.productionQuality);
   if (raw.documentStatus != null) order.documentStatus = oneOf(raw.documentStatus, ["none", "active", "stale", "revoked"] as const);

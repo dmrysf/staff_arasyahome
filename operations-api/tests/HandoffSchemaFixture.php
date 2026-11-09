@@ -1,9 +1,25 @@
 <?php
 declare(strict_types=1);
+/** Restore a pre-050 disposable test fixture (no B2B order types or service route). This is NOT a deployment/rollback mechanism. */
+function restorePreB2BOrderTypesTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='050_b2b_order_types.sql'")->fetchColumn()) return;
+    // Disposable rows written under the 050 reason cannot satisfy the restored 029 CHECK.
+    $pdo->exec("DELETE l FROM production_unit_stage_log l JOIN production_route_decisions d ON d.decision_uuid=l.route_decision_uuid WHERE d.reason='order_service_route'");
+    $pdo->exec("DELETE FROM production_route_decisions WHERE reason='order_service_route'");
+    $pdo->exec("ALTER TABLE production_route_decisions DROP CONSTRAINT chk_production_route_decisions_reason_050, ADD CONSTRAINT chk_production_route_decisions_reason CHECK (reason IN ('product_route_policy', 'classification_unverified', 'plan_unverified'))");
+    $pdo->exec('ALTER TABLE operational_orders DROP CONSTRAINT chk_operational_orders_service_route, DROP COLUMN service_route');
+    $pdo->exec('ALTER TABLE b2b_production_handoffs DROP CONSTRAINT chk_b2b_production_handoffs_order_type, DROP COLUMN order_type');
+    $pdo->exec('ALTER TABLE b2b_orders DROP CONSTRAINT chk_b2b_orders_order_type, DROP CONSTRAINT chk_b2b_orders_finance_decision, DROP COLUMN order_type, DROP COLUMN finance_decision');
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='050_b2b_order_types.sql'");
+}
+
 /** Restore a pre-047 disposable test fixture (no Finance V0.3 company onboarding). This is NOT a deployment/rollback mechanism. */
 function restorePreFinanceOnboardingTestSchema(PDO $pdo): void
 {
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    restorePreB2BOrderTypesTestSchema($pdo);
     if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='047_finance_company_onboarding.sql'")->fetchColumn()) return;
     $pdo->exec('SET FOREIGN_KEY_CHECKS=0');
     foreach(['finance_owner_decisions','finance_opening_reconciliation_lines','finance_opening_reconciliations','finance_case_comments','finance_case_recusals','finance_case_field_changes','finance_case_flags'] as $table) $pdo->exec('DROP TABLE IF EXISTS '.$table);

@@ -28,7 +28,7 @@ final readonly class BoardSnapshot
             $local = $now->setTimezone(new DateTimeZone('Europe/Bucharest'));
             $start = $local->setTime(0,0)->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s.u');
             $end = $local->setTime(0,0)->modify('+1 day')->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s.u');
-            $daily = $this->pdo->prepare("SELECT COUNT(*) AS orders, COALESCE(SUM(meters_snapshot),0) AS meters FROM order_activity_events WHERE action = 'stage_completed' AND from_stage_id = 'material-preparation' AND to_stage_id = 'workshop-receiving' AND occurred_at >= ? AND occurred_at < ?");
+            $daily = $this->pdo->prepare("SELECT COUNT(*) AS orders, COALESCE(SUM(meters_snapshot),0) AS meters FROM order_activity_events WHERE action = 'stage_completed' AND from_stage_id = 'material-preparation' AND (to_stage_id = 'workshop-receiving' OR (to_stage_id = 'delivery' AND order_uuid IN (SELECT order_uuid FROM operational_orders WHERE service_route = 'CUT_ONLY'))) AND occurred_at >= ? AND occurred_at < ?");
             $daily->execute([$start, $end]); $today = $daily->fetch(PDO::FETCH_ASSOC);
             $waitingWhere = "o.production_stage_id = 'material-preparation' AND o.production_completed_at IS NULL AND o.operational_status <> 'unavailable' AND o.source_reported_unavailable_at IS NULL AND o.production_stopped_at IS NULL AND o.production_owner_employee_uuid IS NULL AND o.open_exception_uuid IS NULL AND o.document_status IN ('none', 'active') AND s.status = 'active'";
             $waitingCount = (int) $this->pdo->query("SELECT COUNT(*) FROM operational_orders o JOIN order_sources s ON s.source_key = o.source_key WHERE {$waitingWhere}")->fetchColumn();

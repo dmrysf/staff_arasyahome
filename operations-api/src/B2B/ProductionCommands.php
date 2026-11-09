@@ -61,13 +61,18 @@ final readonly class ProductionCommands
                     $now=$this->clock->now();$sql=$now->format('Y-m-d H:i:s.u');$waiting=$workflow->stages[0];
                     $snapshot=new SourceOrderSnapshot('b2b',$id,'handoff-'.$id,1,$now,$order['order_code'],'waiting','finalized','Finalizată',
                         $order['production_notes'],'in_progress',$now,$items);
-                    $operational=$this->writer->createInternal($snapshot,['company'=>$companyContext]);
+                    // The frozen order type (migration 050) travels with the canonical order: it selects the service route
+                    // (ProductRoutePolicy) and Staff shows it. A historical order without a type keeps the full route.
+                    $orderType=$order['order_type']??null;
+                    if($orderType!==null && !in_array($orderType,OrderType::ALL,true)) throw new ApiException(422,'PRODUCTION_SNAPSHOT_INVALID','The frozen order type is invalid.');
+                    $operational=$this->writer->createInternal($snapshot,['company'=>$companyContext]+($orderType===null?[]:['orderType'=>$orderType]));
+                    if($orderType!==null) $this->pdo->prepare("UPDATE operational_orders SET service_route=? WHERE order_uuid=? AND source_key='b2b'")->execute([$orderType,$operational]);
                     // Freeze the printable delivery identity (masked phone, no email) for the production ticket.
                     $identity=ProductionDocumentIdentity::fromCommercialOrder($order);
                     if($identity!==null) $this->pdo->prepare('UPDATE operational_orders SET document_context=? WHERE order_uuid=?')
                         ->execute([json_encode($identity,JSON_THROW_ON_ERROR|JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES),$operational]);
-                    $this->pdo->prepare('INSERT INTO b2b_production_handoffs(b2b_order_uuid,operational_order_uuid,submitted_by_employee_uuid,submitted_by_name,submitted_at,request_id,idempotency_key)
-                        VALUES(?,?,?,?,?,?,?)')->execute([$id,$operational,$actor->employeeUuid,$actor->displayName,$sql,mb_substr($request,0,100),$key]);
+                    $this->pdo->prepare('INSERT INTO b2b_production_handoffs(b2b_order_uuid,operational_order_uuid,submitted_by_employee_uuid,submitted_by_name,submitted_at,request_id,idempotency_key,order_type)
+                        VALUES(?,?,?,?,?,?,?,?)')->execute([$id,$operational,$actor->employeeUuid,$actor->displayName,$sql,mb_substr($request,0,100),$key,$orderType]);
                     $this->pdo->prepare("INSERT INTO order_activity_events(event_id,employee_uuid,order_uuid,global_order_id,source_key,order_number_snapshot,action,
                         workflow_key,workflow_version,from_stage_id,from_stage_label_snapshot,production_version_before,production_version_after,request_id,idempotency_key,occurred_at)
                         VALUES(?,?,?,?,?,?,'production_submitted',?,?,?,?,0,1,?,?,?)")->execute([

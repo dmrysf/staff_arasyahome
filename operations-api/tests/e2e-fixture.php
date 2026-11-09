@@ -82,7 +82,7 @@ $commercial=static function(string $path,array $body)use($kernel,$root,$origin):
     return $r['body'];
 };
 $b2bCompany=$commercial('/b2b/companies',['legalName'=>'Companie înghețată E2E','countryCode'=>'RO','taxIdentifier'=>'STAFFHANDOFF1'])['companyId'];
-$b2bOrder=$commercial('/b2b/orders',['companyId'=>$b2bCompany,'currencyCode'=>'RON','productionNotes'=>'Notă atelier înghețată',
+$b2bOrder=$commercial('/b2b/orders',['companyId'=>$b2bCompany,'currencyCode'=>'RON','orderType'=>'FULL_TAILORING','productionNotes'=>'Notă atelier înghețată',
     'lines'=>[['productCode'=>'B2B-CURTAIN','kind'=>'curtain','quantity'=>4,'meters'=>'13.5','pricingUnit'=>'meter','unitPriceNet'=>'10.00','vatPercent'=>'19',
         'width'=>'200','height'=>'260','notes'=>'Notă linie înghețată','productionNotes'=>'Instrucțiune producție înghețată']]])['detail']['order'];
 $b2bOrder=$commercial('/b2b/orders/'.$b2bOrder['id'].'/finalize',['expectedVersion'=>$b2bOrder['version']])['detail']['order'];

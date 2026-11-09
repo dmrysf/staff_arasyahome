@@ -514,7 +514,8 @@ final readonly class PieceOperationsService
             unset($piece);
         }
         unset($itemPieces);
-        $route = static fn (string $type): array => ProductRoutePolicy::route($workflow, $type, $assisted);
+        $service = ServiceRoute::of($this->pdo, (string) $order['order_uuid']);
+        $route = static fn (string $type): array => ProductRoutePolicy::route($workflow, $type, $assisted, $service);
         return [
             'orderId' => (string) $order['global_order_id'],
             'orderNumber' => (string) $order['order_number'],

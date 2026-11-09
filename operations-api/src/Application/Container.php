@@ -276,6 +276,19 @@ final class Container
         );
     }
 
+    /** Finance decision at B2B finalization (FinanceGate), switched by ARASYA_B2B_FINANCE_GATE (default off). */
+    private function b2bFinanceGate(AuthorizationService $authorization): \Arasya\Operations\B2B\FinanceGate
+    {
+        $mode = $this->config->b2bFinanceGateMode();
+        if ($mode === \Arasya\Operations\B2B\FinanceGate::OFF) {
+            return new \Arasya\Operations\B2B\FinanceGate();
+        }
+        $store = new \Arasya\Operations\Finance\FinanceStore($this->pdo, $authorization, $this->clock);
+        $authority = new \Arasya\Operations\Finance\Risk\DecisionAuthority($this->config->financeRiskLimitAuthorityList(), $this->employees);
+        $credit = new \Arasya\Operations\Finance\Credit\CreditService($store, new \Arasya\Operations\Finance\Risk\RiskService($store, $authority), $this->config->financeCeoEmployeeUuid, $authority);
+        return new \Arasya\Operations\B2B\FinanceGate($mode, static fn (string $companyId): array => $credit->profileData($companyId));
+    }
+
     private function financeController(AuthorizationService $authorization, RequestContext $context, CsrfGuard $csrf, \Arasya\Operations\Security\ApiRateLimiter $rateLimiter): \Arasya\Operations\Finance\FinanceController
     {
         $store = new \Arasya\Operations\Finance\FinanceStore($this->pdo, $authorization, $this->clock);
@@ -376,7 +389,7 @@ final class Container
                 $this->config,
                 $context,
             ),
-            new OrderController(new OrderQueries($this->pdo,$authorization),new OrderCommands($this->pdo,$authorization,$this->clock),
+            new OrderController(new OrderQueries($this->pdo,$authorization),new OrderCommands($this->pdo,$authorization,$this->clock,$this->b2bFinanceGate($authorization)),
                 $this->authentication,$authorization,$csrf,$this->config,$context,
                 new ProductionCommands($this->pdo,$authorization,$this->clock,$workflows,$this->projectionWriter(),$documents),
                 new ProductionQueries($this->pdo,$authorization,$workflows),$documents,$this->pdo),

@@ -121,7 +121,7 @@ foreach (['SW1' => ['trendhome', 'waiting'], 'SW2' => ['trendhome', 'waiting'], 
     $orders[$tag] = "{$source}:{$number}";
 }
 $company = $status($asRoot('POST', '/b2b/companies', ['legalName' => "Firma Scope {$suffix}", 'countryCode' => 'RO', 'taxIdentifier' => 'SCOPE' . strtoupper($suffix)]), 201, 'b2b company')['companyId'];
-$b2b = $status($asRoot('POST', '/b2b/orders', ['companyId' => $company, 'currencyCode' => 'RON', 'lines' => [['productCode' => 'B2B-SCOPE', 'kind' => 'curtain', 'quantity' => 1, 'meters' => '5.0', 'pricingUnit' => 'meter', 'unitPriceNet' => '10.00', 'vatPercent' => '19', 'width' => '200', 'height' => '250']]]), 201, 'b2b order')['detail']['order'];
+$b2b = $status($asRoot('POST', '/b2b/orders', ['companyId' => $company, 'currencyCode' => 'RON', 'orderType' => 'FULL_TAILORING', 'lines' => [['productCode' => 'B2B-SCOPE', 'kind' => 'curtain', 'quantity' => 1, 'meters' => '5.0', 'pricingUnit' => 'meter', 'unitPriceNet' => '10.00', 'vatPercent' => '19', 'width' => '200', 'height' => '250']]]), 201, 'b2b order')['detail']['order'];
 $b2b = $status($asRoot('POST', '/b2b/orders/' . $b2b['id'] . '/finalize', ['expectedVersion' => $b2b['version']]), 200, 'b2b finalize')['detail']['order'];
 $status($asRoot('POST', '/b2b/orders/' . $b2b['id'] . '/production', ['expectedVersion' => $b2b['version']]), 201, 'b2b production handoff');
 $orders['BW1'] = 'b2b:' . $b2b['id'];

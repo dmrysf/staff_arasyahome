@@ -30,7 +30,7 @@ final readonly class ReportData
         $orders=[]; $intervals=[]; $transfers=[]; $exceptions=[]; $decisions=[]; $quality=[]; $cancellations=[]; $transferDecisionTypes=[]; $captured=[]; $pools=[];
         foreach (array_chunk(array_keys($ids),400) as $chunk) {
             $marks=implode(',',array_fill(0,count($chunk),'?'));
-            $s=$this->pdo->prepare("SELECT p.*,o.global_order_id,o.order_number,o.production_stage_id,o.operational_status,o.production_context,o.source_reported_unavailable_at FROM analytics_order_projection p JOIN operational_orders o ON o.order_uuid=p.order_uuid WHERE p.order_uuid IN ({$marks})");
+            $s=$this->pdo->prepare("SELECT p.*,o.global_order_id,o.order_number,o.production_stage_id,o.operational_status,o.production_context,o.source_reported_unavailable_at,o.service_route FROM analytics_order_projection p JOIN operational_orders o ON o.order_uuid=p.order_uuid WHERE p.order_uuid IN ({$marks})");
             $s->execute($chunk); foreach ($s->fetchAll(PDO::FETCH_ASSOC) as $row) $orders[$row['order_uuid']]=$row;
             $s=$this->pdo->prepare("SELECT order_uuid,COUNT(*) order_lines,SUM(meters) order_meters,SUM(meters IS NULL) missing_line_meters FROM operational_order_items WHERE order_uuid IN ({$marks}) GROUP BY order_uuid");
             $s->execute($chunk); foreach ($s->fetchAll(PDO::FETCH_ASSOC) as $row) if (isset($orders[$row['order_uuid']])) $orders[$row['order_uuid']]+=array_diff_key($row,['order_uuid'=>true]);

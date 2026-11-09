@@ -63,6 +63,8 @@ final readonly class OperationalOrder
         public ?string $confirmationStatus = null,
         /** API 2.38.0: order_confirmations.production_cleared (ConfirmationClearance), or null without a Confirmare row. */
         public ?bool $confirmationCleared = null,
+        /** API 2.64.0 (migration 050): the frozen B2B order type that selects the service route, or null (full route). */
+        public ?string $serviceRoute = null,
     ) {
     }
 

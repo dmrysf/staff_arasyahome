@@ -89,6 +89,11 @@ final readonly class Config
          * Provisioned only on the owner's explicit instruction; never inferred from a name, username or role.
          */
         public string $financeRiskLimitAuthorityUuids = '',
+        /**
+         * Finance decision at B2B finalization (ARASYA_B2B_FINANCE_GATE, API 2.64.0): off (default), shadow or enforce.
+         * Any other value is off. Activation is an explicit live decision (FinanceConfigGuard blocks an unreviewed one).
+         */
+        public string $b2bFinanceGate = 'off',
     ) {
         foreach ($this->financeRiskLimitAuthorityList() as $uuid) {
             if (preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/D', $uuid) !== 1) {
@@ -179,6 +184,7 @@ final readonly class Config
             financeOpeningBalancePosting: self::value($values, 'ARASYA_FINANCE_OPENING_BALANCE_POSTING', 'disabled'),
             financeCeoEmployeeUuid: strtolower(self::value($values, 'ARASYA_FINANCE_CEO_EMPLOYEE_UUID', '')),
             financeRiskLimitAuthorityUuids: strtolower(self::value($values, 'ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS', '')),
+            b2bFinanceGate: self::value($values, 'ARASYA_B2B_FINANCE_GATE', 'off'),
         );
     }
 
@@ -193,6 +199,11 @@ final readonly class Config
     public function financeRiskLimitAuthorityList(): array
     {
         return array_values(array_filter(array_map('trim', explode(',', $this->financeRiskLimitAuthorityUuids)), static fn (string $uuid): bool => $uuid !== ''));
+    }
+
+    public function b2bFinanceGateMode(): string
+    {
+        return in_array($this->b2bFinanceGate, ['off', 'shadow', 'enforce'], true) ? $this->b2bFinanceGate : 'off';
     }
 
     public function financeOpeningBalancePostingEnabled(): bool

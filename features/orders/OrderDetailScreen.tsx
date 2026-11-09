@@ -88,6 +88,12 @@ export function OrderDetailScreen({ orderId, service, exceptions, cutting, docum
         <h2>{order.productionContext.company.legalName}</h2><p>{order.productionContext.company.companyCode} · {order.productionContext.company.countryCode} · {order.productionContext.company.taxIdentifier}</p>
         {projectsOf(order).map(project => <p className="project-reference" key={project}>{t("detail.project", { name: project })}</p>)}
       </section>}
+      {order.serviceRoute && <section className="detail-section service-route" data-testid="service-route"><p className="eyebrow">{t("orderType.eyebrow")}</p>
+        <h2>{t(`orderType.${order.serviceRoute.orderType}`)}</h2>
+        <p>{t(order.serviceRoute.shortRoute ? "orderType.route.short" : "orderType.route.full")}</p>
+        {order.serviceRoute.shortRoute && order.serviceRoute.orderType !== 'FULL_TAILORING' && order.productionStageId === "material-preparation" && <p className="service-route-instruction">{t(`orderType.stage2.${order.serviceRoute.orderType}`)}</p>}
+        {order.serviceRoute.shortRoute && order.productionStageId === "delivery" && <p className="service-route-instruction">{t("orderType.delivery")}</p>}
+      </section>}
       <OrderActionPanel order={order} workflow={workflow} service={service} cutting={cutting} onUpdated={(updated) => setOrder(current => latestProductionView(current, requireProductionProducts(updated)))} onReload={() => { setOrder(null); setReloadKey((value) => value + 1); }} onSessionExpired={onSessionExpired} />
       {cutting && order.productionStageId === "material-preparation" && order.employeeAllowedAction?.id === "complete_stage" && <CuttingTransferRequest order={order} service={cutting} onChanged={() => { setOrder(null); setReloadKey(v => v + 1); }} />}
       {physical && <AssistedCheckpointsPanel order={order} service={physical} supervisor={quality?.tailoringSupervisor === true} onChanged={() => setReloadKey(v => v + 1)} />}

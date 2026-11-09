@@ -61,7 +61,7 @@ final readonly class OrderQueries
             'items'=>array_map(fn($r)=>[
                 'id'=>$r['order_uuid'],'code'=>$r['order_code'],'companyId'=>$r['company_uuid'],
                 'companyName'=>OrderStore::decode($r['company_snapshot'])['legalName'],
-                'currencyCode'=>$r['currency_code'],'status'=>$r['status'],'version'=>(int)$r['version'],
+                'currencyCode'=>$r['currency_code'],'orderType'=>$r['order_type'],'status'=>$r['status'],'version'=>(int)$r['version'],
                 'customerReference'=>$r['customer_reference'],'createdAt'=>self::iso($r['created_at']),'updatedAt'=>self::iso($r['updated_at']),
                 'createdBy'=>['id'=>$r['created_by_employee_uuid'],'displayName'=>$r['created_by_name']],
                 'totals'=>OrderStore::decode($r['calculation'])['totals'],
@@ -89,6 +89,7 @@ final readonly class OrderQueries
                 'finalizedBy'=>$r['finalized_by_employee_uuid']===null?null:['id'=>$r['finalized_by_employee_uuid'],'displayName'=>$r['finalized_by_name']],
                 'calculation'=>OrderStore::decode($r['calculation']),
                 'productionSubmitted'=>(bool)$r['production_submitted'],
+                'financeDecision'=>OrderStore::decode($r['finance_decision']),
             ];
             foreach(OrderStore::SNAPSHOT_COLUMNS as $field=>$column) $order[$field]=OrderStore::decode($r[$column]);
             $order['origin']=$this->origin($id);

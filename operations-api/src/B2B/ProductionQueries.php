@@ -18,13 +18,13 @@ final readonly class ProductionQueries
     public function status(string $id): array
     {
         CompanyQueries::uuidOrNotFound($id,'ORDER_NOT_FOUND','Order was not found.');
-        $s=$this->pdo->prepare('SELECT c.order_code,h.submitted_at,o.global_order_id,o.production_stage_id,
-            o.production_changed_at,o.production_completed_at
+        $s=$this->pdo->prepare('SELECT c.order_code,c.order_type,h.submitted_at,h.order_type AS frozen_type,o.global_order_id,o.production_stage_id,
+            o.production_changed_at,o.production_completed_at,o.production_owner_employee_uuid,o.service_route
             FROM b2b_orders c LEFT JOIN b2b_production_handoffs h ON h.b2b_order_uuid=c.order_uuid
             LEFT JOIN operational_orders o ON o.order_uuid=h.operational_order_uuid WHERE c.order_uuid=?');
         $s->execute([$id]);$row=$s->fetch(PDO::FETCH_ASSOC);
         if(!$row) throw new ApiException(404,'ORDER_NOT_FOUND','Order was not found.');
-        if($row['submitted_at']===null) return ['submitted'=>false,'orderCode'=>$row['order_code']];
+        if($row['submitted_at']===null) return ['submitted'=>false,'orderCode'=>$row['order_code'],'orderType'=>$row['order_type']];
         try { $workflow=$this->workflows->current(); }
         catch(\RuntimeException $e) { throw new ApiException(503,'WORKFLOW_UNAVAILABLE','Canonical production workflow is unavailable.'); }
         foreach($workflow->stages as $stage) if($stage->id===$row['production_stage_id']) return [
@@ -34,9 +34,32 @@ final readonly class ProductionQueries
             'workflow'=>$workflow->id.'@'.$workflow->version,'totalStages'=>count($workflow->stages),
             'stage'=>['id'=>$stage->id,'label'=>$stage->label,'ordinal'=>$stage->ordinal],
             'document'=>$this->documentSummary((string)$row['global_order_id']),
-        ];
+        ]+$this->route($workflow,$row,$stage);
         throw new ApiException(503,'WORKFLOW_UNAVAILABLE','Canonical stage is unavailable.');
     }
+    /**
+     * Route of the submitted order (migration 050), decided by ProductRoutePolicy from the frozen service route: the
+     * applicable stages, the next one, whether stage 2 is done, and the Livrare state. Stage 14 completion is the existing
+     * production completion (internal handover by Livrare); no courier, AWB or customer delivery is recorded.
+     * @return array<string, mixed>
+     */
+    private function route(\Arasya\Operations\Production\ProductionWorkflow $workflow,array $row,\Arasya\Operations\Production\ProductionStage $stage): array
+    {
+        $service=$row['service_route']===null?null:(string)$row['service_route'];
+        $route=\Arasya\Operations\Production\ProductRoutePolicy::route($workflow,\Arasya\Operations\Production\ProductRoutePolicy::DRAPERII,false,$service);
+        $completed=$row['production_completed_at']!==null;
+        $next=$completed?null:\Arasya\Operations\Production\ProductRoutePolicy::next($workflow,$stage->id,\Arasya\Operations\Production\ProductRoutePolicy::DRAPERII,false,$service)['next'];
+        $atDelivery=$stage->id==='delivery';
+        return [
+            'orderType'=>$row['frozen_type'],
+            'route'=>['stages'=>$route,'shortRoute'=>\Arasya\Operations\Production\ProductRoutePolicy::shortService($service),
+                'notApplicable'=>array_values(array_diff(array_map(static fn($s)=>$s->id,$workflow->stages),$route))],
+            'nextStage'=>$next===null?null:['id'=>$next->id,'label'=>$next->label,'ordinal'=>$next->ordinal],
+            'stage2Completed'=>$completed || $stage->ordinal>2,
+            'delivery'=>$completed?'HANDED_OVER':($atDelivery?($row['production_owner_employee_uuid']===null?'READY_FOR_LIVRARE':'RECEIVED_BY_LIVRARE'):'IN_PRODUCTION'),
+        ];
+    }
+
     /** Canonical operational order id of a submitted B2B order, or null before the handoff. */
     public function operationalId(string $id): ?string
     {

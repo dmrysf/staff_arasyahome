@@ -42,14 +42,26 @@ final class ProductRoutePolicy
     public const MANUFACTURING = 'manufacturing';
     public const ASSISTED_CHECKPOINT = 'assisted_checkpoint';
     public const NOT_APPLICABLE = 'not_applicable';
+    /**
+     * Order-level service routes (migration 050, owner decision 2026-11-09): a B2B order of type CUT_ONLY or FULL_ROLL_BAG
+     * goes waiting -> material-preparation -> delivery. Every other canonical stage is not applicable to all of its
+     * pieces, whatever their product type. FULL_TAILORING and no service route (every historical order, every other
+     * source) keep the product routes above. The service route comes only from operational_orders.service_route, which
+     * only the explicit B2B production submission writes from the frozen order type.
+     */
+    public const SHORT_SERVICE_ROUTES = ['CUT_ONLY', 'FULL_ROLL_BAG'];
+    public const SHORT_SERVICE_STAGES = ['waiting', 'material-preparation', 'delivery'];
 
     private function __construct()
     {
     }
 
     /** What the stage requires of a piece of this type: manufacturing, assisted_checkpoint or not_applicable. */
-    public static function requirement(ProductionWorkflow $workflow, string $type, string $stageId, bool $assisted = false): string
+    public static function requirement(ProductionWorkflow $workflow, string $type, string $stageId, bool $assisted = false, ?string $service = null): string
     {
+        if (self::shortService($service) && self::canonical($workflow) && !in_array($stageId, self::SHORT_SERVICE_STAGES, true)) {
+            return self::NOT_APPLICABLE;
+        }
         if ($type !== self::PERDEA || !self::canonical($workflow) || !in_array($stageId, self::PERDEA_NOT_APPLICABLE, true)) {
             return self::MANUFACTURING;
         }
@@ -57,9 +69,15 @@ final class ProductRoutePolicy
     }
 
     /** Whether the stage applies to the product type in this workflow (manufacturing or an assisted checkpoint). */
-    public static function applies(ProductionWorkflow $workflow, string $type, string $stageId, bool $assisted = false): bool
+    public static function applies(ProductionWorkflow $workflow, string $type, string $stageId, bool $assisted = false, ?string $service = null): bool
     {
-        return self::requirement($workflow, $type, $stageId, $assisted) !== self::NOT_APPLICABLE;
+        return self::requirement($workflow, $type, $stageId, $assisted, $service) !== self::NOT_APPLICABLE;
+    }
+
+    /** Whether the order-level service route is one of the two short routes (CUT_ONLY, FULL_ROLL_BAG). */
+    public static function shortService(?string $service): bool
+    {
+        return in_array($service, self::SHORT_SERVICE_ROUTES, true);
     }
 
     /** Whether $stageId is a stage where policy version 2 can require an assisted checkpoint in this workflow. */
@@ -74,11 +92,11 @@ final class ProductRoutePolicy
     }
 
     /** Applicable stage ids of a product type, in canonical order. @return list<string> */
-    public static function route(ProductionWorkflow $workflow, string $type, bool $assisted = false): array
+    public static function route(ProductionWorkflow $workflow, string $type, bool $assisted = false, ?string $service = null): array
     {
         $route = [];
         foreach ($workflow->stages as $stage) {
-            if (self::applies($workflow, $type, $stage->id, $assisted)) {
+            if (self::applies($workflow, $type, $stage->id, $assisted, $service)) {
                 $route[] = $stage->id;
             }
         }
@@ -91,7 +109,7 @@ final class ProductRoutePolicy
      *
      * @return array{next: ?ProductionStage, skipped: list<string>}
      */
-    public static function next(ProductionWorkflow $workflow, string $current, string $type, bool $assisted = false): array
+    public static function next(ProductionWorkflow $workflow, string $current, string $type, bool $assisted = false, ?string $service = null): array
     {
         $found = false;
         $skipped = [];
@@ -100,7 +118,7 @@ final class ProductRoutePolicy
                 $found = $stage->id === $current;
                 continue;
             }
-            if (self::applies($workflow, $type, $stage->id, $assisted)) {
+            if (self::applies($workflow, $type, $stage->id, $assisted, $service)) {
                 return ['next' => $stage, 'skipped' => $skipped];
             }
             $skipped[] = $stage->id;

@@ -18,7 +18,7 @@ final readonly class OrderCommands
 {
     private OrderStore $store;
     private AccountLedger $ledger;
-    public function __construct(private PDO $pdo,private AuthorizationService $authorization,private Clock $clock)
+    public function __construct(private PDO $pdo,private AuthorizationService $authorization,private Clock $clock,private FinanceGate $finance=new FinanceGate())
     {
         $this->store=new OrderStore($pdo);
         $this->ledger=new AccountLedger($pdo);
@@ -42,10 +42,13 @@ final readonly class OrderCommands
         $this->authorize($actor,'update');
         $version=OrderInput::version($expectedVersion);
         $data=OrderInput::fields($input);
+        $typeGiven=array_key_exists('orderType',$input);
         return $this->transaction($actor,'update',$id,null,$input+['expectedVersion'=>$version],$key,
-            function($company,$order,$now) use($actor,$data,$version,$id,$key,$request) {
+            function($company,$order,$now) use($actor,$data,$typeGiven,$version,$id,$key,$request) {
                 $this->editable($order,$version);
                 $before=$this->store->fields($order);
+                // A client that does not send orderType (older screens) keeps the draft's type.
+                if(!$typeGiven) $data['orderType']=$before['orderType'];
                 if($data['companyId']!==$before['companyId']) throw new ApiException(422,'VALIDATION_FAILED','Company is immutable.',['fields'=>['companyId'=>'immutable']]);
                 if($data['currencyCode']!==$before['currencyCode']) {
                     foreach([...$before['lines'],...$data['lines']] as $line) {
@@ -82,12 +85,19 @@ final readonly class OrderCommands
                 if($action==='finalize') {
                     $this->editable($order,$version);
                     $data=$this->store->fields($order);
+                    // The order type selects the production route, so it is frozen here and never inferred.
+                    if($data['orderType']===null) throw new ApiException(422,'VALIDATION_FAILED','Choose the order type before finalizing.',['fields'=>['orderType'=>'required']]);
                     OrderCalculator::requireComplete($data['lines']);
                     $snap=$this->store->snapshots($company,$data);
                     // Refresh identity snapshots at freeze time, then permanently stop commercial writes.
                     $this->store->save($id,$data,$snap,$actor,$now);
-                    $this->pdo->prepare("UPDATE b2b_orders SET status='finalized',finalized_at=?,finalized_by_employee_uuid=?,finalized_by_name=? WHERE order_uuid=?")
-                        ->execute([$now,$actor->employeeUuid,$actor->displayName,$id]);
+                    // Finance decision on the saved totals, under the company lock (FinanceGate). In enforce mode a
+                    // refusal throws here: the transaction rolls back with no status change and no receivable.
+                    $s=$this->pdo->prepare('SELECT * FROM b2b_orders WHERE order_uuid=?');
+                    $s->execute([$id]);
+                    $decision=$this->finance->decide((string)$company['company_uuid'],$s->fetch(PDO::FETCH_ASSOC),$now);
+                    $this->pdo->prepare("UPDATE b2b_orders SET status='finalized',finalized_at=?,finalized_by_employee_uuid=?,finalized_by_name=?,finance_decision=? WHERE order_uuid=?")
+                        ->execute([$now,$actor->employeeUuid,$actor->displayName,OrderStore::json($decision),$id]);
                     // The finalized commercial obligation posts its receivable in the same transaction, under the same
                     // company and order locks and the same idempotency record: it commits or rolls back with the
                     // finalization, and a unique key allows one receivable per order. Commercial domain only.
