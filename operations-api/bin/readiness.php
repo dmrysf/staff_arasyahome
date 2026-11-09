@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Arasya\Operations\Config\Config;
 use Arasya\Operations\Config\ConfigLoader;
+use Arasya\Operations\Config\FinanceConfigGuard;
 use Arasya\Operations\Database\Connection;
 use Arasya\Operations\Database\MigrationStatus;
 use Arasya\Operations\Http\HealthController;
@@ -43,6 +44,10 @@ try {
 } catch (Throwable) {
     $report('FAIL', 'private_config');
     exit(1);
+}
+// Finance configuration (2.63.0): the same check the deployment runs before activation. Key names and states only.
+foreach (FinanceConfigGuard::inspect($loader->load())['checks'] as $line) {
+    $report($line['state'], $line['check']);
 }
 
 try {

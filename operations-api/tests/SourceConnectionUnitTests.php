@@ -6,6 +6,7 @@ declare(strict_types=1);
 
 use Arasya\Operations\Config\Config;
 use Arasya\Operations\Config\ConfigLoader;
+use Arasya\Operations\Config\FinanceConfigGuard;
 use Arasya\Operations\Http\ApiException;
 use Arasya\Operations\Http\Request;
 use Arasya\Operations\Http\Response;
@@ -554,8 +555,8 @@ test('migrations stay ordered through 047 (040 reserved) and the canonical workf
     // 032-034 are reserved by open pull requests (line readiness, cancellation control and sync); 035 follows them.
     // 040 is reserved for unrelated work; 041 is the SmartBill invoicing schema (owner closure 2026-10-25); 042 stores
     // each shop's Confirmare readiness report (security integration 2026-10-25). 044: finance verification requests (2.50.0).
-    // 045: the shop employee deletes the order's invoice (2.54.0). 046: ungranted Finance read-only app. 047: Finance V0.3 company onboarding (ungranted). 048: Finance V0.3.1 verification centre (ungranted).
-    expect(count($migrations) === 46 && $migrations[45] === '048_finance_verification_center.sql' && $migrations[44] === '047_finance_company_onboarding.sql' && $migrations[43] === '046_finance_application.sql' && $migrations[42] === '045_invoice_delete.sql' && $migrations[41] === '044_finance_verification_requests.sql' && $migrations[40] === '043_confirmare_dual_store.sql' && $migrations[39] === '042_confirmare_connector_readiness.sql' && $migrations[38] === '041_smartbill_invoicing.sql' && !in_array('040', array_map(static fn (string $name): string => substr($name, 0, 3), $migrations), true) && $migrations[37] === '039_confirmare_finance.sql' && $migrations[36] === '038_confirmare_source_access.sql' && $migrations[35] === '037_confirmare_contacts.sql' && $migrations[34] === '036_confirmare_operations.sql' && $migrations[33] === '035_workflow_cohort.sql' && $migrations[32] === '034_order_cancellation_sync.sql' && $migrations[31] === '033_order_cancellation_control.sql' && $migrations[30] === '031_production_assisted_checkpoints.sql' && $migrations[29] === '030_production_route_reconciliation.sql' && $migrations[28] === '029_production_manifest_routing.sql' && $migrations[27] === '028_production_work_units.sql' && $migrations[23] === '024_tailoring_quality_supervision.sql' && $migrations[24] === '025_source_payment_gate.sql' && $migrations[25] === '026_trendyol_product_identity.sql' && $migrations[26] === '027_employee_staff_locale.sql' && str_starts_with($migrations[0], '001_') && str_starts_with($migrations[16], '017_') && $migrations[17] === '018_production_authority.sql' && $migrations[18] === '019_production_qr_authority.sql' && $migrations[19] === '020_production_document_authority.sql' && $migrations[20] === '021_document_scopes.sql' && $migrations[21] === '022_trendyol_intake.sql' && $migrations[22] === '023_source_scoped_stage_authorization.sql');
+    // 045: the shop employee deletes the order's invoice (2.54.0). 046: ungranted Finance read-only app. 047: Finance V0.3 company onboarding (ungranted). 048: Finance V0.3.1 verification centre (ungranted). 049: Finance V0.4.0 owner-direct colour and limit decisions (ungranted).
+    expect(count($migrations) === 47 && $migrations[46] === '049_finance_owner_risk_limit_decisions.sql' && $migrations[45] === '048_finance_verification_center.sql' && $migrations[44] === '047_finance_company_onboarding.sql' && $migrations[43] === '046_finance_application.sql' && $migrations[42] === '045_invoice_delete.sql' && $migrations[41] === '044_finance_verification_requests.sql' && $migrations[40] === '043_confirmare_dual_store.sql' && $migrations[39] === '042_confirmare_connector_readiness.sql' && $migrations[38] === '041_smartbill_invoicing.sql' && !in_array('040', array_map(static fn (string $name): string => substr($name, 0, 3), $migrations), true) && $migrations[37] === '039_confirmare_finance.sql' && $migrations[36] === '038_confirmare_source_access.sql' && $migrations[35] === '037_confirmare_contacts.sql' && $migrations[34] === '036_confirmare_operations.sql' && $migrations[33] === '035_workflow_cohort.sql' && $migrations[32] === '034_order_cancellation_sync.sql' && $migrations[31] === '033_order_cancellation_control.sql' && $migrations[30] === '031_production_assisted_checkpoints.sql' && $migrations[29] === '030_production_route_reconciliation.sql' && $migrations[28] === '029_production_manifest_routing.sql' && $migrations[27] === '028_production_work_units.sql' && $migrations[23] === '024_tailoring_quality_supervision.sql' && $migrations[24] === '025_source_payment_gate.sql' && $migrations[25] === '026_trendyol_product_identity.sql' && $migrations[26] === '027_employee_staff_locale.sql' && str_starts_with($migrations[0], '001_') && str_starts_with($migrations[16], '017_') && $migrations[17] === '018_production_authority.sql' && $migrations[18] === '019_production_qr_authority.sql' && $migrations[19] === '020_production_document_authority.sql' && $migrations[20] === '021_document_scopes.sql' && $migrations[21] === '022_trendyol_intake.sql' && $migrations[22] === '023_source_scoped_stage_authorization.sql');
     expect(count(CanonicalProductionWorkflowContract::STAGES) === 14);
     expect(array_keys(CanonicalProductionWorkflowContract::STAGES) === ['waiting', 'material-preparation', 'workshop-receiving', 'labeling', 'material-straightening', 'bottom-hem', 'side-hem', 'ironing', 'height', 'header-tape', 'sewing-finishing', 'quality-control', 'packing', 'delivery']);
     // 018 is additive: it never converts the authority of existing orders.
@@ -923,6 +924,51 @@ test('every per-source key Config reads survives ConfigLoader (regression: the p
     foreach ($prefixes as $prefix) {
         expect(array_key_exists($prefix . '_TRENDHOME', $values), "ConfigLoader drops {$prefix}_<SOURCE>.");
     }
+});
+
+test('every global key Config reads survives ConfigLoader (regression: the Finance switches were silently dropped)', function (): void {
+    preg_match_all("/'(ARASYA_[A-Z0-9_]+)'/", (string) file_get_contents(dirname(__DIR__) . '/src/Config/Config.php'), $matches);
+    $keys = array_values(array_filter(array_unique($matches[1]), static fn (string $key): bool => !str_starts_with($key, 'ARASYA_SOURCE_')));
+    expect(in_array('ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS', $keys, true) && in_array('ARASYA_FINANCE_OPENING_BALANCE_POSTING', $keys, true), 'Config key scan found: ' . implode(',', $keys));
+    $env = ['HOME' => sys_get_temp_dir()];
+    foreach ($keys as $key) {
+        $env[$key] = 'x';
+    }
+    $values = (new ConfigLoader($env))->load();
+    foreach ($keys as $key) {
+        expect(array_key_exists($key, $values), "ConfigLoader drops {$key}.");
+    }
+    $owners = '00000000-0000-4000-8000-0000000000a1,00000000-0000-4000-8000-0000000000a2';
+    $loaded = (new ConfigLoader(['HOME' => sys_get_temp_dir(), 'ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS' => $owners]))->load();
+    expect(($loaded['ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS'] ?? null) === $owners, 'the owner allowlist reaches Config unchanged');
+});
+
+test('the Finance configuration guard refuses unreviewed Finance values and never reports a value', function (): void {
+    $a = '00000000-0000-4000-8000-0000000000a1';
+    $b = '00000000-0000-4000-8000-0000000000a2';
+    $fails = static fn (array $result): array => array_values(array_map(static fn (array $c): string => $c['check'], array_filter($result['checks'], static fn (array $c): bool => $c['state'] === 'FAIL')));
+    foreach ([[], ['ARASYA_FINANCE_OPENING_BALANCE_POSTING' => 'disabled'], ['ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS' => ' , ', 'ARASYA_FINANCE_CEO_EMPLOYEE_UUID' => '']] as $values) {
+        $result = FinanceConfigGuard::inspect($values);
+        expect($result['ok'] && $result['defaults'], 'the defaults pass without an acknowledgement');
+    }
+    expect($fails(FinanceConfigGuard::inspect(['ARASYA_FINANCE_OPENING_BALANCE_POSTING' => 'enabled'])) === ['finance_config_not_acknowledged']);
+    expect($fails(FinanceConfigGuard::inspect(['ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS' => $a])) === ['finance_config_not_acknowledged']);
+    expect($fails(FinanceConfigGuard::inspect(['ARASYA_FINANCE_CEO_EMPLOYEE_UUID' => $a])) === ['finance_config_not_acknowledged']);
+    expect($fails(FinanceConfigGuard::inspect(['ARASYA_FINANCE_OPENING_BALANCE_POSTING' => 'Enabled'])) === ['finance_opening_balance_posting_unrecognized']);
+    expect($fails(FinanceConfigGuard::inspect(['ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS' => 'Mesut Yeman,Zelal Yeman'])) === ['finance_risk_limit_authority_invalid_entries_2']);
+    expect($fails(FinanceConfigGuard::inspect(['ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS' => "{$a},{$a}"])) === ['finance_risk_limit_authority_duplicate_entries']);
+    expect($fails(FinanceConfigGuard::inspect(['ARASYA_FINANCE_CEO_EMPLOYEE_UUID' => 'mesut'])) === ['finance_ceo_employee_invalid']);
+    // The acknowledgement is the fingerprint of the exact reviewed values. Order and case of the list do not matter.
+    $reviewed = ['ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS' => "{$a},{$b}"];
+    $fingerprint = FinanceConfigGuard::inspect($reviewed)['fingerprint'];
+    expect(FinanceConfigGuard::inspect(['ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS' => strtoupper("{$b} , {$a}"), 'ARASYA_FINANCE_CONFIG_ACK' => $fingerprint])['ok']);
+    expect($fails(FinanceConfigGuard::inspect([...$reviewed, 'ARASYA_FINANCE_OPENING_BALANCE_POSTING' => 'enabled', 'ARASYA_FINANCE_CONFIG_ACK' => $fingerprint])) === ['finance_config_acknowledgement_stale']);
+    expect($fails(FinanceConfigGuard::inspect(['ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS' => $a, 'ARASYA_FINANCE_CONFIG_ACK' => $fingerprint])) === ['finance_config_acknowledgement_stale']);
+    $text = json_encode(FinanceConfigGuard::inspect([...$reviewed, 'ARASYA_FINANCE_CEO_EMPLOYEE_UUID' => $b, 'ARASYA_FINANCE_OPENING_BALANCE_POSTING' => 'enabled'])['checks'], JSON_THROW_ON_ERROR);
+    expect(!str_contains($text, $a) && !str_contains($text, $b), 'checks never contain a configured value');
+    // The acknowledgement key reaches the guard, and the running API never reads it.
+    expect(((new ConfigLoader(['HOME' => sys_get_temp_dir(), 'ARASYA_FINANCE_CONFIG_ACK' => $fingerprint]))->load()['ARASYA_FINANCE_CONFIG_ACK'] ?? null) === $fingerprint);
+    expect(!str_contains((string) file_get_contents(dirname(__DIR__) . '/src/Config/Config.php'), 'ARASYA_FINANCE_CONFIG_ACK'));
 });
 
 test('ARASYA_SOURCE_PAYMENT_GATE_<SOURCE> is loaded, and a mode other than off needs its confirmation key', function (): void {

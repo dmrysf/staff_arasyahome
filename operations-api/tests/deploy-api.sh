@@ -24,7 +24,7 @@ mkdir -p "$api_root" "$public_root/.well-known" "$public_root/cgi-bin" "$test_ho
 cp -R "$release_c" "$api_root/current"
 printf 'legacy-current-sentinel\n' > "$api_root/current/legacy-sentinel.txt"
 /bin/bash "$api_root/current/scripts/generate-sha256s.sh" "$api_root/current"
-printf 'private-secret-sentinel\n' > "$test_home/arasya-config/secrets.json"
+printf '{"ARASYA_TEST_SENTINEL":"private-secret-sentinel"}\n' > "$test_home/arasya-config/secrets.json"
 printf 'staff-sentinel\n' > "$test_home/staff.arasyahome.ro/staff.txt"
 printf 'acme-sentinel\n' > "$public_root/.well-known/acme.txt"
 printf 'cgi-sentinel\n' > "$public_root/cgi-bin/keep.txt"
@@ -89,5 +89,33 @@ for forbidden in bootstrap.php src database bin config release.json; do [[ ! -e 
 
 if HOME="$test_home" ARASYA_API_PUBLIC_PATH="$test_home/staff.arasyahome.ro" /bin/bash "$release_a/scripts/cpanel-deploy-api.sh" >/dev/null 2>&1; then fail 'Unsafe Staff target was accepted.'; fi
 if HOME="$test_home" ARASYA_API_ROOT_PATH="$test_home/arasya-config/runtime" /bin/bash "$release_a/scripts/cpanel-deploy-api.sh" >/dev/null 2>&1; then fail 'Unsafe config-contained runtime was accepted.'; fi
+
+# Finance configuration gate (2.63.0): ARASYA_FINANCE_* keys take effect from this release, so a value nobody reviewed
+# must never be activated by a deployment. The gate prints key names and states, never a value.
+owner_uuid='00000000-0000-4000-8000-0000000000a1'
+finance_config() { printf '%s\n' "$1" > "$test_home/arasya-config/secrets.json"; chmod 0600 "$test_home/arasya-config/secrets.json"; }
+expect_refused() {
+  local label="$1" output
+  if output="$(HOME="$test_home" /bin/bash "$release_d/scripts/cpanel-deploy-api.sh" 2>&1)"; then fail "Finance gate accepted: $label"; fi
+  [[ "$output" == *"Finance configuration check failed"* ]] || fail "Finance gate refused for another reason: $label"
+  [[ "$output" != *"$owner_uuid"* && "$output" != *'"enabled"'* ]] || fail "Finance gate printed a configured value: $label"
+  [[ "$(tr -d '[:space:]' < "$api_root/active-release")" == "$sha_a" ]] || fail "Refused Finance config changed active release: $label"
+}
+finance_config '{"ARASYA_FINANCE_OPENING_BALANCE_POSTING":"enabled"}'; expect_refused 'opening-balance posting enabled'
+finance_config '{"ARASYA_FINANCE_OPENING_BALANCE_POSTING":"yes"}'; expect_refused 'unrecognized posting value'
+finance_config "{\"ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS\":\"$owner_uuid\"}"; expect_refused 'owner allowlist not empty'
+finance_config '{"ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS":"Mesut Yeman"}'; expect_refused 'allowlist with a name'
+finance_config "{\"ARASYA_FINANCE_CEO_EMPLOYEE_UUID\":\"$owner_uuid\"}"; expect_refused 'CEO employee set'
+finance_config '{"ARASYA_FINANCE_CONFIG_ACK":"0000"}{'; expect_refused 'unreadable private configuration'
+finance_config '{"ARASYA_FINANCE_OPENING_BALANCE_POSTING":"disabled","ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS":" , "}'
+HOME="$test_home" DRY_RUN=1 /bin/bash "$release_d/scripts/cpanel-deploy-api.sh" >/dev/null || fail 'Finance gate refused the default configuration.'
+# An authorized review records the fingerprint of the exact values; any later change makes it stale.
+finance_config "{\"ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS\":\"$owner_uuid\"}"
+fingerprint="$(HOME="$test_home" php "$release_d/bin/finance-config-check.php" | sed -n 's/^INFO finance_config_fingerprint \([0-9a-f]\{64\}\)$/\1/p' || true)"
+[[ "$fingerprint" =~ ^[0-9a-f]{64}$ ]] || fail 'Finance check printed no fingerprint for a non-default configuration.'
+finance_config "{\"ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS\":\"$owner_uuid\",\"ARASYA_FINANCE_CONFIG_ACK\":\"$fingerprint\"}"
+HOME="$test_home" DRY_RUN=1 /bin/bash "$release_d/scripts/cpanel-deploy-api.sh" >/dev/null || fail 'Finance gate refused an acknowledged configuration.'
+finance_config "{\"ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS\":\"$owner_uuid\",\"ARASYA_FINANCE_OPENING_BALANCE_POSTING\":\"enabled\",\"ARASYA_FINANCE_CONFIG_ACK\":\"$fingerprint\"}"
+expect_refused 'stale acknowledgement after posting was enabled'
 
 printf 'PASS API staged releases activate atomically, preserve legacy/current/public boundaries, reject corruption, and rollback by checksum.\n'
