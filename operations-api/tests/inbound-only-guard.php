@@ -23,6 +23,15 @@ declare(strict_types=1);
 // built only by TrendyolCancellationApi, sent only through TrendyolTransport::put(), and refused by
 // StreamTrendyolTransport for every other path. A shop's own connector (YD SOFT) pulls a cancellation request
 // through a signed source route; Operations never calls a shop for it.
+//
+// Third reviewed exception (API 2.65.0, Trendyol AWB station): reading the official shipping label, never writing.
+//   GET /integration/sellers/{sellerId}/common-label/query?id={cargoTrackingNumber}   (Trendyol common label service)
+// built only by TrendyolLabelClient and sent only through TrendyolTransport::get(); then one GET of the returned PDF by
+// StreamTrendyolLabelDocumentFetcher: GET only, verified TLS, no credentials, only the hosts in
+// TrendyolLabelClient::LABEL_HOSTS (checked by TrendyolLabelClient::isAllowedLabelUrl before any request). The fetcher
+// never follows a redirect; TrendyolLabelClient alone may make one more GET after a single 302, only to an HTTPS URL on
+// TrendyolLabelClient::LABEL_REDIRECT_HOSTS (presigned Trendyol S3, checked by isAllowedRedirectUrl). No shipment,
+// status, tracking number or package is ever created or changed, and no courier other than Trendyol's label is called.
 
 $root = dirname(__DIR__, 2);
 $failures = [];
@@ -43,6 +52,8 @@ $phpFiles = static function (string $directory): array {
 
 // ---- Operations API: no outbound HTTP except the read-only Trendyol GET transport ---------------
 $transport = $root . '/operations-api/src/Integration/Trendyol/StreamTrendyolTransport.php';
+$labelFetcher = $root . '/operations-api/src/Integration/Trendyol/StreamTrendyolLabelDocumentFetcher.php';
+$labelClient = $root . '/operations-api/src/Integration/Trendyol/TrendyolLabelClient.php';
 $accessTransport = $root . '/operations-api/src/Integration/SourceAccess/StreamSourceAccessTransport.php';
 $accessClient = $root . '/operations-api/src/Integration/SourceAccess/SourceAccessClient.php';
 /** The source access routes Operations may call (WordPress routes without /wp-json). Nothing else. */
@@ -83,8 +94,8 @@ foreach ($phpFiles($root . '/operations-api/src') as $file) {
         }
     }
     $checks++;
-    if ($file !== $transport && $file !== $accessTransport && preg_match('/\bstream_context_create\s*\(|file_get_contents\s*\(\s*["\']https?:/', $source) === 1) {
-        $fail("{$relative} opens an outbound HTTP stream; only StreamTrendyolTransport (GET) and StreamSourceAccessTransport (source access POST) may.");
+    if ($file !== $transport && $file !== $accessTransport && $file !== $labelFetcher && preg_match('/\bstream_context_create\s*\(|file_get_contents\s*\(\s*["\']https?:/', $source) === 1) {
+        $fail("{$relative} opens an outbound HTTP stream; only StreamTrendyolTransport (GET), StreamSourceAccessTransport (source access POST) and StreamTrendyolLabelDocumentFetcher (label GET) may.");
     }
     // Source access routes and the transport's post() exist only in the client (and the transport itself).
     $checks++;
@@ -130,6 +141,33 @@ if (!str_contains($transportSource, "preg_match('#/integration/order/sellers/[0-
     || preg_match('/public function put\(.*?\{(.*?)return \$this->send\(\'PUT\'/s', $transportSource, $put) !== 1 || !str_contains($put[1], 'throw new RuntimeException')) {
     $fail('StreamTrendyolTransport::put() must refuse every path except the Trendyol unsupplied notice before sending.');
 }
+// ---- The label document fetcher: GET only, no redirect, verified TLS, no credentials, allowlisted hosts only --------------
+$fetcherSource = (string) file_get_contents($labelFetcher);
+$checks++;
+if (preg_match_all("/'method'\s*=>\s*'([A-Z]+)'/", $fetcherSource, $fetcherMethods) < 1 || array_unique($fetcherMethods[1]) !== ['GET']) {
+    $fail('StreamTrendyolLabelDocumentFetcher must only issue GET requests.');
+}
+foreach (["'follow_location' => 0", "'max_redirects' => 0", "'verify_peer' => true", "'verify_peer_name' => true", 'TrendyolLabelClient::isAllowedLabelUrl($url)', 'TrendyolLabelClient::isAllowedRedirectUrl($url)',
+    "'header' => \"Accept: application/pdf\\r\\nUser-Agent: Arasya-AWB-Station\","] as $required) {
+    $checks++;
+    if (!str_contains($fetcherSource, $required)) {
+        $fail("StreamTrendyolLabelDocumentFetcher lost its safety setting {$required}.");
+    }
+}
+$checks++;
+if (preg_match('/Authorization|apiKey|apiSecret|Credentials/', $fetcherSource) === 1) {
+    $fail('StreamTrendyolLabelDocumentFetcher must never send Trendyol credentials to the document host.');
+}
+$labelSource = (string) file_get_contents($labelClient);
+$checks++;
+if (!str_contains($labelSource, "public const LABEL_HOSTS = ['cdn.dsmcdn.com', 'apigw.trendyol.com'];") || preg_match('/->transport->(?!get\()\w+\s*\(/', $labelSource) === 1) {
+    $fail('TrendyolLabelClient must use only TrendyolTransport::get() and the reviewed label host list.');
+}
+$checks++;
+if (!str_contains($labelSource, "public const LABEL_REDIRECT_HOSTS = ['s3.trendyol.com'];") || !str_contains($labelSource, 'public const MAX_LABEL_REDIRECTS = 1;')
+    || !str_contains($labelSource, "\$response['status'] !== 302 || ++\$redirects > self::MAX_LABEL_REDIRECTS || !is_string(\$location) || !self::isAllowedRedirectUrl(\$location)")) {
+    $fail('TrendyolLabelClient may follow only one validated 302 to the reviewed redirect host list.');
+}
 $interface = (string) file_get_contents($root . '/operations-api/src/Integration/Trendyol/TrendyolTransport.php');
 $checks++;
 if (preg_match_all('/public function (\w+)\s*\(/', $interface, $functions) !== 2 || $functions[1] !== ['get', 'put']) {
@@ -151,7 +189,9 @@ if ($putCallers !== ['operations-api/src/Integration/Trendyol/TrendyolCancellati
 $unsupplied = [
     'operations-api/src/Integration/Trendyol/TrendyolCancellationApi.php' => ['/integration/order/sellers/{sellerId}/shipment-packages/{packageId}/items/unsupplied', '/integration/order/sellers/%s/shipment-packages/%d/items/unsupplied'],
     'operations-api/src/Integration/Trendyol/StreamTrendyolTransport.php' => ['/integration/order/sellers/'],
-    'operations-api/src/Integration/Trendyol/FixtureTrendyolTransport.php' => [],
+    'operations-api/src/Integration/Trendyol/FixtureTrendyolTransport.php' => ['/integration/sellers/'],
+    // API 2.65.0: the read-only common label service (GET), reviewed with the AWB station.
+    'operations-api/src/Integration/Trendyol/TrendyolLabelClient.php' => ['/integration/sellers/{sellerId}/common-label/query', '/integration/sellers/%s/common-label/query'],
     'operations-api/src/Cancellation/Sync/TrendyolCancellationProvider.php' => ['/integration/order/sellers/{sellerId}/shipment-packages/{packageId}/items/unsupplied'],
 ];
 foreach (new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root . '/operations-api/src', FilesystemIterator::SKIP_DOTS)) as $file) {

@@ -1,4 +1,4 @@
--- B2B order types and the order-level service route (API 2.64.0). DRAFT ONLY; NOT RUN IN PRODUCTION.
+-- B2B order types and the order-level service route (API 2.67.0). DRAFT ONLY; NOT RUN IN PRODUCTION.
 -- Requires 049_finance_owner_risk_limit_decisions.sql.
 --
 -- Owner decision (2026-11-09): a B2B commercial order has exactly one of three types.
@@ -18,7 +18,7 @@
 -- No existing row is rewritten. A historical order without a type never gains a short route. No permission, role,
 -- grant, employee, ledger, QR or stage history changes.
 -- Re-runnable: every structural change is guarded by information_schema.
--- Rollback: an API without 2.64.0 ignores the columns; a short-route order already at delivery stays there.
+-- Rollback: an API without 2.67.0 ignores the columns; a short-route order already at delivery stays there.
 
 -- ---- b2b_orders.order_type ----------------------------------------------------------------------------------------
 SET @arasya_050_missing = (SELECT COUNT(*) = 0 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'b2b_orders' AND column_name = 'order_type');

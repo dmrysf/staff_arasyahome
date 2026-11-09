@@ -10,6 +10,7 @@ import { confirmareEditEN } from "./confirmareEdit";
 import { confirmareWorkflowEN } from "./confirmareWorkflow";
 import { operatorDeskEN } from "./operatorDesk";
 import { officeHistoryEN } from "./officeHistory";
+import { awbEntryEN } from "./awbEntry";
 import { physicalEN } from "./physical";
 import type { Catalog } from "../types";
 import { enErrors } from "./en.errors";
@@ -33,6 +34,7 @@ export const en: Catalog = {
   ...confirmareWorkflowEN,
   ...operatorDeskEN,
   ...officeHistoryEN,
+  ...awbEntryEN,
 
   // ---- common
   "common.back": "Back",

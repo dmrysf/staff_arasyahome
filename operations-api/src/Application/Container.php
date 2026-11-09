@@ -444,7 +444,27 @@ final class Container
             ),
             new \Arasya\Operations\Management\RootInterventionController($this->rootIntervention($authorization), $this->authentication, $csrf, $this->config, $context),
             $this->financeController($authorization, $context, $csrf, $rateLimiter),
+            new \Arasya\Operations\Trendyol\AwbStationController($this->awbStation($authorization), $this->authentication, $csrf, $this->config, $context),
         );
+    }
+
+    /**
+     * The Trendyol AWB print station (API 2.65.0). Labels need the Trendyol credentials (outside production a test fixture
+     * stands in); without them the queue still works and every label request is refused (AWB_LABELS_UNAVAILABLE).
+     */
+    public function awbStation(?AuthorizationService $authorization = null): \Arasya\Operations\Trendyol\AwbStation
+    {
+        $labels = null;
+        if ($this->config->trendyolFixtureFile !== null) {
+            $credentials = \Arasya\Operations\Config\TrendyolCredentials::fromValues('1000001', 'fixture', 'fixture', '') ?? throw new \LogicException('fixture credentials');
+            $labels = new \Arasya\Operations\Integration\Trendyol\TrendyolLabelClient($credentials,
+                new \Arasya\Operations\Integration\Trendyol\FixtureTrendyolTransport($this->config->trendyolFixtureFile),
+                new \Arasya\Operations\Integration\Trendyol\FixtureTrendyolLabelDocumentFetcher($this->config->trendyolFixtureFile), $this->config->trendyolStoreFrontCode ?? 'RO');
+        } elseif ($this->config->trendyol !== null) {
+            $labels = new \Arasya\Operations\Integration\Trendyol\TrendyolLabelClient($this->config->trendyol, new StreamTrendyolTransport(),
+                new \Arasya\Operations\Integration\Trendyol\StreamTrendyolLabelDocumentFetcher(), $this->config->trendyolStoreFrontCode);
+        }
+        return new \Arasya\Operations\Trendyol\AwbStation($this->pdo, $authorization ?? new AuthorizationService(), $this->clock, $this->trendyolClient(), $labels);
     }
 
     /** Production QR authority: manager view and rotation, signed source answer, operator reconciliation. */

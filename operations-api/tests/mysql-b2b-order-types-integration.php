@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-// B2B order types (migration 050, API 2.64.0): FULL_TAILORING keeps the canonical route; CUT_ONLY and FULL_ROLL_BAG are
+// B2B order types (migration 050, API 2.67.0): FULL_TAILORING keeps the canonical route; CUT_ONLY and FULL_ROLL_BAG are
 // completed at stage 2 by an authorized stage 2 employee and the server then moves them to stage 14 (Livrare), where a
 // Livrare employee receives them and completes the handover. Stages 3-13 are recorded as not applicable, never completed.
 // Real API (HTTP kernel) on a disposable database with synthetic people, companies and orders only.

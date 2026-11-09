@@ -6,6 +6,7 @@ import type { ActivityService, AuthService, EmployeeService, ExceptionService, L
 import { startLiveClient } from "./liveClient";
 import { financeRequestsHttp } from "../../domain/financeRequests";
 import type { DocumentApi, DocumentAttention, DocumentRevision, OrderDocument, OrderDocumentSummary } from "../../domain/documents";
+import type { AwbApi, AwbOrder, AwbQueue } from "../../domain/awb";
 import type { TrendyolActivity, TrendyolApi, TrendyolCapabilities, TrendyolIgnoredPackage, TrendyolIntakeStatus, TrendyolLine, TrendyolLineKind, TrendyolOverview, TrendyolPackageDetail, TrendyolPackageSummary } from "../../domain/trendyol";
 import { marketplaceClassOf, marketplaceStatusLabels } from "../../domain/trendyol";
 import type { ManagementApi, ProductionOverview, StageQueue, StageSummary, WorkspaceApi } from "../../domain/workspaces";
@@ -889,7 +890,7 @@ function createRequest(apiBaseUrl: string, options: ProductionServicesOptions, o
               : "SERVER_ERROR";
     // Confirmare refusals keep their code, the current version and the missing conditions, never anything else.
     if (path.startsWith("/confirmare/")) details = { ...details, ...confirmareErrorDetails(errorDetails) };
-    const error = new StaffServiceError(backendErrorCodes[backendCode] ?? fallback, undefined, /^(PLAN_|SOURCE_PLAN_|PIECE_OUTCOME|UNIT_RETIRED|ORDER_PIECES_|ORDER_ROUTE_|CUSTODY_|MATERIAL_|EXACT_PIECES_|CUTTING_NOT_|RECONCILIATION_|ASSISTED_|CONFIRMARE_)/.test(backendCode) || /\/manufacturing-plan|^\/production-units|^\/confirmare\//.test(path) ? { ...details, backendCode, httpStatus: response.status } : details);
+    const error = new StaffServiceError(backendErrorCodes[backendCode] ?? fallback, undefined, /^(PLAN_|SOURCE_PLAN_|PIECE_OUTCOME|UNIT_RETIRED|ORDER_PIECES_|ORDER_ROUTE_|CUSTODY_|MATERIAL_|EXACT_PIECES_|CUTTING_NOT_|RECONCILIATION_|ASSISTED_|CONFIRMARE_)/.test(backendCode) || /\/manufacturing-plan|^\/production-units|^\/confirmare\/|^\/trendyol\/awb\//.test(path) ? { ...details, backendCode, httpStatus: response.status } : details);
     // Access changed centrally (temporary password, application access removed): the app re-reads the session.
     if (["PASSWORD_CHANGE_REQUIRED", "APPLICATION_ACCESS_DENIED"].includes(error.code) && path !== "/auth/session" && path !== "/auth/password") onSessionExpired(error);
     if (["SESSION_EXPIRED", "NO_SESSION", "ACCOUNT_INACTIVE"].includes(error.code) && path !== "/auth/login" && path !== "/auth/session") {
@@ -1115,6 +1116,54 @@ export function createProductionServices(apiBaseUrl: string, options: Production
     inspect: (globalOrderId, signal) => http.request(`/orders/${encodeURIComponent(globalOrderId)}/production-qr`, { signal }, mapProductionQrView),
     rotate: (globalOrderId, input, key) => http.request(`/orders/${encodeURIComponent(globalOrderId)}/production-qr/rotate`, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, mapProductionQrView),
   };
+  // Staff 2.47.0 (API 2.65.0): the Trendyol AWB print station. The label is a PDF fetched with the session cookie; the
+  // retrieval id and parcel count come in exposed headers. The print record is the only mutation (CSRF, idempotent).
+  const awbOrder = (orderId: string) => `/trendyol/awb/orders/${encodeURIComponent(orderId)}`;
+  const awb: AwbApi = {
+    queue: (input, signal) => {
+      const query = new URLSearchParams();
+      if (input.search) query.set("q", input.search);
+      if (input.cursor) query.set("cursor", input.cursor);
+      if (input.limit) query.set("limit", String(input.limit));
+      if (input.stage) query.set("stage", input.stage);
+      const suffix = query.toString();
+      return http.request(`/trendyol/awb/queue${suffix ? `?${suffix}` : ""}`, { signal }, mapAwbStationQueue);
+    },
+    resolve: (code, signal) => http.request(`/trendyol/awb/resolve?${new URLSearchParams({ code }).toString()}`, { signal }, (value) => {
+      const raw = objectValue(value);
+      return { items: itemsOf(raw).map(mapAwbStationOrder), canPrint: objectValue(raw.capabilities).print === true };
+    }),
+    async label(orderId, parcel, signal) {
+      const path = `${awbOrder(orderId)}/label${parcel > 1 ? `?parcel=${parcel}` : ""}`;
+      const response = await http.send(path, { signal });
+      if (!response.ok) throw await http.errorFromResponse(response, path);
+      const retrievalId = response.headers.get("X-Arasya-Label-Retrieval") ?? "";
+      const parcelNumber = Number(response.headers.get("X-Arasya-Label-Parcel") ?? "1");
+      const parcelCount = Number(response.headers.get("X-Arasya-Label-Parcels") ?? "1");
+      if (!/^[0-9a-f-]{36}$/.test(retrievalId) || !Number.isInteger(parcelNumber) || !Number.isInteger(parcelCount) || parcelNumber < 1 || parcelCount < parcelNumber) throw new StaffServiceError("SERVER_ERROR");
+      const blob = await response.blob();
+      return { blob: blob.type === "application/pdf" ? blob : new Blob([blob], { type: "application/pdf" }), retrievalId, parcel: parcelNumber, parcelCount };
+    },
+    recordPrint: (orderId, input) => http.request(`${awbOrder(orderId)}/print-attempts`, { method: "POST", body: JSON.stringify(input) }, (value) => {
+      const raw = objectValue(value);
+      const print = objectValue(raw.print);
+      const kind = stringValue(print.kind);
+      if (kind !== "initial" && kind !== "reprint") throw new StaffServiceError("SERVER_ERROR");
+      return { print: { id: stringValue(print.id), kind, requestedAt: stringValue(print.requestedAt) }, printed: mapAwbPrinted(raw.printed) };
+    }),
+    history: (orderId, signal) => http.request(`${awbOrder(orderId)}/history`, { signal }, (value) => {
+      const raw = objectValue(value);
+      if (!Array.isArray(raw.events)) throw new StaffServiceError("SERVER_ERROR");
+      return { order: mapAwbStationOrder(raw.order), events: raw.events.map((item) => {
+        const event = objectValue(item);
+        const type = stringValue(event.type);
+        if (type !== "label_retrieved" && type !== "label_failed" && type !== "print_requested") throw new StaffServiceError("SERVER_ERROR");
+        const kind = event.kind === "initial" || event.kind === "reprint" ? event.kind : null;
+        const parcel = event.parcel === null || event.parcel === undefined ? null : { number: nonNegativeInteger(objectValue(event.parcel).number), count: nonNegativeInteger(objectValue(event.parcel).count) };
+        return { id: stringValue(event.id), type, kind, outcome: stringValue(event.outcome), parcel, at: stringValue(event.at), by: stringValue(event.by) };
+      }) };
+    }),
+  };
   const trendyolPackage = (packageId: string) => `/trendyol/packages/${encodeURIComponent(packageId)}`;
   const trendyol: TrendyolApi = {
     overview: (signal) => http.request("/trendyol/overview", { signal }, mapTrendyolOverview),
@@ -1219,7 +1268,7 @@ export function createProductionServices(apiBaseUrl: string, options: Production
     recordEfactura: (taskId, input) => http.request(`/confirmare/efactura/${encodeURIComponent(taskId)}`, { method: "POST", cache: "no-store", body: JSON.stringify(input) }, (value) => mapEfacturaTask(objectValue(value).task)),
     health: (source, signal) => http.request(`/confirmare/health${sourceQuery(source)}`, { signal, cache: "no-store" }, mapHealth),
   };
-  return { physical, auth, employee, orders, activity, workflow, exceptions, live, cutting, documents, authority, productionQr, trendyol, workspace, management, pieces, confirmare, mode: "production" };
+  return { physical, auth, employee, orders, activity, workflow, exceptions, live, cutting, documents, authority, productionQr, trendyol, awb, workspace, management, pieces, confirmare, mode: "production" };
 }
 
 // ---------------------------------------------------------------- Confirmare workspace (strict; unexpected shapes fail closed)
@@ -2027,6 +2076,32 @@ const lineKinds: readonly TrendyolLineKind[] = ["curtain", "drapery", "other"];
 function nonNegativeInteger(value: unknown): number {
   if (typeof value !== "number" || !Number.isInteger(value) || value < 0) throw new StaffServiceError("SERVER_ERROR");
   return value;
+}
+function mapAwbPrinted(value: unknown): AwbOrder["printed"] {
+  const raw = objectValue(value);
+  return { count: nonNegativeInteger(raw.count), lastAt: typeof raw.lastAt === "string" ? raw.lastAt : null };
+}
+export function mapAwbStationOrder(value: unknown): AwbOrder {
+  const raw = objectValue(value);
+  const stage = objectValue(raw.stage);
+  return {
+    orderId: stringValue(raw.orderId),
+    globalOrderId: stringValue(raw.globalOrderId),
+    orderNumber: stringValue(raw.orderNumber),
+    packageId: stringValue(raw.packageId),
+    stage: { id: stringValue(stage.id), ordinal: typeof stage.ordinal === "number" ? stage.ordinal : null },
+    inQueue: booleanValue(raw.inQueue),
+    productionCompleted: booleanValue(raw.productionCompleted),
+    productionStopped: booleanValue(raw.productionStopped),
+    enteredStageAt: typeof raw.enteredStageAt === "string" ? raw.enteredStageAt : null,
+    printed: mapAwbPrinted(raw.printed),
+  };
+}
+export function mapAwbStationQueue(value: unknown): AwbQueue {
+  const raw = objectValue(value);
+  // Per-stage counts (API 2.66.0); an older API sends none, and the filter then shows no number.
+  const stages = Array.isArray(raw.stages) ? raw.stages.map((value) => { const stage = objectValue(value); return { id: stringValue(stage.id), ordinal: nonNegativeInteger(stage.ordinal), total: nonNegativeInteger(stage.total) }; }) : [];
+  return { generatedAt: stringValue(raw.generatedAt), total: nonNegativeInteger(raw.total), items: itemsOf(raw).map(mapAwbStationOrder), nextCursor: typeof raw.nextCursor === "string" ? raw.nextCursor : null, canPrint: objectValue(raw.capabilities).print === true, stages };
 }
 function itemsOf(value: unknown): unknown[] {
   const raw = objectValue(value);

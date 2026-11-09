@@ -6,7 +6,7 @@ use Arasya\Operations\Http\ApiException;
 use Closure;
 
 /**
- * Finance decision at B2B commercial finalization (API 2.64.0; design in docs/finance-v0.4.0.md section 10). It runs inside
+ * Finance decision at B2B commercial finalization (API 2.67.0; design in docs/finance-v0.4.0.md section 10). It runs inside
  * the finalization transaction, under the company row lock that Finance owner decisions also take, so a colour or
  * limit change and a finalization serialise. Order type selects the manufacturing route only: every type is checked the
  * same way.

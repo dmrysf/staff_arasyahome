@@ -1,6 +1,6 @@
-# B2B order types and the stage 2 → Livrare route (API 2.64.0)
+# B2B order types and the stage 2 → Livrare route (API 2.67.0)
 
-Status: DRAFT. Not merged, not deployed. Migration 050 has not run in production. Releases: API 2.64.0, Staff 2.46.0 and B2B 0.9.0.
+Status: DRAFT. Not merged, not deployed. Migration 050 has not run in production. Releases: API 2.67.0, Staff 2.49.0 and B2B 0.9.0.
 
 ## 1. The three types
 
@@ -148,7 +148,7 @@ Tested on MySQL 8.4 and MariaDB 10.11:
 - re-running 050;
 - a real 049 → 050 upgrade over finalized, submitted and completed orders, with every row of the seven tables preserved.
 
-Rollback: an API before 2.64.0 ignores the columns. A short-route order already at Livrare stays there.
+Rollback: an API before 2.67.0 ignores the columns. A short-route order already at Livrare stays there.
 
 ## 9. Not changed
 

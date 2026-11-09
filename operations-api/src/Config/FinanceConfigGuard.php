@@ -14,7 +14,7 @@ namespace Arasya\Operations\Config;
  * - ARASYA_FINANCE_OPENING_BALANCE_POSTING absent or exactly `disabled`;
  * - ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS absent or empty (nobody makes an effective colour or limit decision);
  * - ARASYA_FINANCE_CEO_EMPLOYEE_UUID absent or empty (nobody decides a CEO exception);
- * - ARASYA_B2B_FINANCE_GATE absent or `off` (no finance decision at B2B finalization; API 2.64.0).
+ * - ARASYA_B2B_FINANCE_GATE absent or `off` (no finance decision at B2B finalization; API 2.67.0).
  *
  * Any other well-formed value blocks the deployment until an authorized person records ARASYA_FINANCE_CONFIG_ACK, the
  * SHA-256 fingerprint of the exact reviewed values. Changing any value later makes that acknowledgement stale, and the

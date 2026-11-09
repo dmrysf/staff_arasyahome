@@ -51,7 +51,7 @@ final readonly class OrderSerializer
             $data['paymentGate'] = $gate;
         }
         if ($order->productionContext !== null) $data['productionContext'] = $order->productionContext;
-        // API 2.64.0: the route the server applies to a typed B2B order (ProductRoutePolicy). For CUT_ONLY and FULL_ROLL_BAG
+        // API 2.67.0: the route the server applies to a typed B2B order (ProductRoutePolicy). For CUT_ONLY and FULL_ROLL_BAG
         // stages 3-13 are not applicable; Staff only shows it, it never chooses a stage.
         if ($order->serviceRoute !== null) {
             $short = \Arasya\Operations\Production\ProductRoutePolicy::shortService($order->serviceRoute);

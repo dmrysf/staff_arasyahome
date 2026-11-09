@@ -49,7 +49,7 @@ final readonly class ConfigLoader
         'ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS',
         // Read only by FinanceConfigGuard (bin/finance-config-check.php), never by the running API.
         'ARASYA_FINANCE_CONFIG_ACK',
-        // B2B finalization finance decision (API 2.64.0): off, shadow or enforce.
+        // B2B finalization finance decision (API 2.67.0): off, shadow or enforce.
         'ARASYA_B2B_FINANCE_GATE',
     ];
 

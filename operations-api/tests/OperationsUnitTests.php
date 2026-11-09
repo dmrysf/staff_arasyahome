@@ -1075,3 +1075,182 @@ test('Owner decision authority re-reads Central IAM and the journal is insert-on
     expect(substr_count($owner, '$this->authority->verify($actor);') === 3, 'both owner commands (and the informational status) verify authority');
     expect(preg_match('/b2b_account_movements|finance_account_onboardings\s+SET|UPDATE\s+finance_company_cases|INSERT\s+INTO\s+b2b/i', $owner) !== 1, 'owner decisions never touch the ledger, reconciliation or verification');
 });
+
+test('Trendyol AWB label client: read-only GET, exact label host, PDF by content (API 2.65.0)', function (): void {
+    $credentials = TrendyolCredentials::fromValues('123456', 'unit-key', 'unit-secret', '') ?? throw new LogicException('credentials');
+    $transport = new class implements TrendyolTransport {
+        public array $calls = [];
+        public array $next = [];
+        public function get(string $url, array $headers): array { $this->calls[] = [$url, $headers]; return array_shift($this->next) ?? ['status' => 400, 'body' => '{}']; }
+        public function put(string $url, array $headers, string $body): array { throw new LogicException('The label client must never write to Trendyol.'); }
+    };
+    $documents = new class implements \Arasya\Operations\Integration\Trendyol\TrendyolLabelDocumentFetcher {
+        public array $calls = [];
+        public array $next = [];
+        public function fetch(string $url, int $maxBytes): array { $this->calls[] = [$url, $maxBytes]; return array_shift($this->next) ?? ['status' => 404, 'body' => '', 'contentType' => null]; }
+    };
+    $client = new \Arasya\Operations\Integration\Trendyol\TrendyolLabelClient($credentials, $transport, $documents, 'RO');
+    $pdf = "%PDF-1.4\n" . str_repeat('x', 80) . "\n%%EOF\n";
+    $transport->next[] = ['status' => 200, 'body' => '{"data":[{"format":"PDF","label":"https://cdn.dsmcdn.com/public-delivery-partner/product-label/35_2738_8681711801785.pdf"}]}'];
+    $labels = $client->labels('7330000000000010');
+    expect($labels === [['format' => 'PDF', 'url' => 'https://cdn.dsmcdn.com/public-delivery-partner/product-label/35_2738_8681711801785.pdf']]);
+    [$url, $headers] = $transport->calls[0];
+    expect($url === 'https://apigw.trendyol.com/integration/sellers/123456/common-label/query?id=7330000000000010', 'the documented common label endpoint: ' . $url);
+    expect($headers['storeFrontCode'] === 'RO' && str_starts_with($headers['Authorization'], 'Basic ') && $headers['User-Agent'] === '123456 - SelfIntegration');
+    $documents->next[] = ['status' => 200, 'body' => $pdf, 'contentType' => 'application/pdf'];
+    expect($client->document($labels[0]['url']) === $pdf);
+    $code = static function (callable $call): string { try { $call(); return 'none'; } catch (RuntimeException $e) { return $e->getMessage(); } };
+    // Tracking numbers: digits/letters only, never sent otherwise.
+    expect($code(fn () => $client->labels('12')) === 'TRENDYOL_LABEL_NOT_READY' && $code(fn () => $client->labels('7330&id=1')) === 'TRENDYOL_LABEL_NOT_READY' && count($transport->calls) === 1);
+    foreach ([[400, 'TRENDYOL_LABEL_NOT_AVAILABLE'], [404, 'TRENDYOL_LABEL_NOT_AVAILABLE'], [401, 'TRENDYOL_AUTH_FAILED'], [403, 'TRENDYOL_AUTH_FAILED'], [429, 'TRENDYOL_RATE_LIMITED'], [500, 'TRENDYOL_UNAVAILABLE'], [503, 'TRENDYOL_UNAVAILABLE']] as [$status, $expected]) {
+        $transport->next[] = ['status' => $status, 'body' => '{}'];
+        expect($code(fn () => $client->labels('7330000000000010')) === $expected, "HTTP {$status}");
+    }
+    foreach (['not json' => 'TRENDYOL_MALFORMED_RESPONSE', '{"data":"x"}' => 'TRENDYOL_MALFORMED_RESPONSE', '{"data":[{"format":"PDF"}]}' => 'TRENDYOL_MALFORMED_RESPONSE', '{"data":[{"format":1}]}' => 'TRENDYOL_MALFORMED_RESPONSE', '{"data":[]}' => 'TRENDYOL_LABEL_NOT_AVAILABLE',
+        '{"data":[{"format":"ZPL","label":"https://cdn.dsmcdn.com/a.zpl"}]}' => 'TRENDYOL_LABEL_FORMAT_UNSUPPORTED', '{"data":[{"format":"PDF","label":"https://evil.example/a.pdf"}]}' => 'TRENDYOL_LABEL_URL_REFUSED'] as $body => $expected) {
+        $transport->next[] = ['status' => 200, 'body' => $body];
+        expect($code(fn () => $client->labels('7330000000000010')) === $expected, $body);
+    }
+    // Only the documented CDN over HTTPS, default port, no credentials, no traversal, no fragment.
+    $allowed = \Arasya\Operations\Integration\Trendyol\TrendyolLabelClient::isAllowedLabelUrl(...);
+    expect($allowed('https://cdn.dsmcdn.com/x/label.pdf') && $allowed('https://CDN.DSMCDN.COM/x/label.pdf?sig=abc') && $allowed('https://cdn.dsmcdn.com:443/x.pdf'));
+    foreach (['http://cdn.dsmcdn.com/x.pdf', 'https://cdn.dsmcdn.com.evil.example/x.pdf', 'https://evilcdn.dsmcdn.com/x.pdf', 'https://u:p@cdn.dsmcdn.com/x.pdf', 'https://cdn.dsmcdn.com:8443/x.pdf', 'https://cdn.dsmcdn.com/a/../b.pdf',
+        'https://cdn.dsmcdn.com/a/%2E%2E/b.pdf', 'https://cdn.dsmcdn.com/x.pdf#f', 'https://cdn.dsmcdn.com\\@evil.example/x.pdf', "https://cdn.dsmcdn.com/x\n.pdf", 'ftp://cdn.dsmcdn.com/x.pdf', '//cdn.dsmcdn.com/x.pdf', 'https://127.0.0.1/x.pdf', ''] as $url) {
+        expect(!$allowed($url), "refused: {$url}");
+    }
+    $before = count($documents->calls);
+    expect($code(fn () => $client->document('https://evil.example/x.pdf')) === 'TRENDYOL_LABEL_URL_REFUSED' && count($documents->calls) === $before, 'a refused URL is never fetched');
+    expect($code(fn () => (new \Arasya\Operations\Integration\Trendyol\StreamTrendyolLabelDocumentFetcher())->fetch('https://169.254.169.254/latest/meta-data', 100)) === 'TRENDYOL_LABEL_URL_REFUSED', 'the stream fetcher re-checks the host before any network request');
+    foreach ([[['status' => 302, 'body' => '', 'contentType' => null], 'TRENDYOL_LABEL_REDIRECT_REFUSED'], [['status' => 404, 'body' => '', 'contentType' => null], 'TRENDYOL_LABEL_EXPIRED'], [['status' => 410, 'body' => '', 'contentType' => null], 'TRENDYOL_LABEL_EXPIRED'],
+        [['status' => 500, 'body' => '', 'contentType' => null], 'TRENDYOL_LABEL_DOWNLOAD_FAILED'], [['status' => 200, 'body' => '<html></html>' . str_repeat(' ', 80), 'contentType' => 'text/html'], 'TRENDYOL_LABEL_INVALID'],
+        [['status' => 200, 'body' => str_repeat('A', 100), 'contentType' => 'application/pdf'], 'TRENDYOL_LABEL_INVALID'], [['status' => 200, 'body' => "%PDF-1.4\n" . str_repeat('x', 80), 'contentType' => 'application/pdf'], 'TRENDYOL_LABEL_INVALID'],
+        [['status' => 200, 'body' => $pdf . str_repeat('y', 5 * 1024 * 1024), 'contentType' => 'application/pdf'], 'TRENDYOL_LABEL_TOO_LARGE']] as [$answer, $expected]) {
+        $documents->next[] = $answer;
+        expect($code(fn () => $client->document('https://cdn.dsmcdn.com/x.pdf')) === $expected, $expected);
+    }
+    $documents->next[] = ['status' => 200, 'body' => $pdf, 'contentType' => null];
+    expect($client->document('https://cdn.dsmcdn.com/x.pdf') === $pdf, 'a missing content type is accepted when the content is a PDF');
+    // The station reads only identity fields of a package; never the address or the customer.
+    $identity = \Arasya\Operations\Trendyol\AwbStation::shipmentIdentity(['shipmentPackageId' => 42, 'orderNumber' => 10900000123, 'status' => 'Picking', 'cargoTrackingNumber' => 7330000000000010, 'cargoProviderName' => 'FANCOURIER',
+        'shipmentAddress' => ['phone' => '0744000000'], 'customerEmail' => 'x@example.invalid']);
+    expect($identity === ['packageId' => 42, 'orderNumber' => '10900000123', 'status' => 'Picking', 'tracking' => '7330000000000010', 'provider' => 'FANCOURIER']);
+    expect(\Arasya\Operations\Trendyol\AwbStation::shipmentIdentity(['shipmentPackageId' => 42, 'cargoTrackingNumber' => '12'])['tracking'] === null && \Arasya\Operations\Trendyol\AwbStation::shipmentIdentity(['id' => 43])['tracking'] === null);
+    // AWB permissions are Staff-only.
+    expect(\Arasya\Operations\Iam\ApplicationAccess::PERMISSION_APPLICATION['trendyol.awb.view'] === 'staff' && \Arasya\Operations\Iam\ApplicationAccess::PERMISSION_APPLICATION['trendyol.awb.print'] === 'staff');
+    expect(!in_array('trendyol.awb.view', \Arasya\Operations\Iam\ApplicationAccess::BASELINE_PERMISSIONS['staff'], true) && !in_array('trendyol.awb.print', \Arasya\Operations\Iam\ApplicationAccess::BASELINE_PERMISSIONS['staff'], true), 'no Staff account receives AWB access by default');
+});
+
+/** Records what StreamTrendyolLabelDocumentFetcher hands to PHP's https wrapper; no network. */
+final class AwbRecordingHttps
+{
+    /** @var list<array{url: string, options: array}> */
+    public static array $opened = [];
+    public mixed $context;
+    private bool $done = false;
+    public function stream_open(string $path, string $mode, int $options, ?string &$opened): bool { self::$opened[] = ['url' => $path, 'options' => stream_context_get_options($this->context)]; return true; }
+    public function stream_read(int $count): string|false { if ($this->done) { return ''; } $this->done = true; return "%PDF-1.4\n%%EOF\n"; }
+    public function stream_eof(): bool { return $this->done; }
+    public function stream_stat(): array|false { return []; }
+    public function stream_set_option(int $option, int $arg1, ?int $arg2): bool { return false; }
+}
+
+test('Trendyol AWB label download: apigw label URL, one validated 302 to s3.trendyol.com, never credentials (API 2.65.0)', function (): void {
+    $credentials = TrendyolCredentials::fromValues('123456', 'unit-key', 'unit-secret', '') ?? throw new LogicException('credentials');
+    $transport = new class implements TrendyolTransport {
+        public array $next = [];
+        public function get(string $url, array $headers): array { return array_shift($this->next) ?? ['status' => 400, 'body' => '{}']; }
+        public function put(string $url, array $headers, string $body): array { throw new LogicException('The label client must never write to Trendyol.'); }
+    };
+    $documents = new class implements \Arasya\Operations\Integration\Trendyol\TrendyolLabelDocumentFetcher {
+        public array $calls = [];
+        public array $next = [];
+        public function fetch(string $url, int $maxBytes): array { $this->calls[] = [$url, $maxBytes]; return array_shift($this->next) ?? ['status' => 404, 'body' => '', 'contentType' => null, 'location' => null]; }
+    };
+    $client = new \Arasya\Operations\Integration\Trendyol\TrendyolLabelClient($credentials, $transport, $documents);
+    $code = static function (callable $call): string { try { $call(); return 'none'; } catch (RuntimeException $e) { return $e->getMessage(); } };
+    // An A6 label shaped like the real one (one page, 298 x 420 pt).
+    $pdf = "%PDF-1.4\n1 0 obj << /Type /Page /MediaBox [0 0 298 420] >> endobj\n" . str_repeat('x', 64) . "\n%%EOF\n";
+    $label = 'https://apigw.trendyol.com/aaaaaaaa/bbbbbbbb/cccccccc/0e1d2c3b-ecbe-4a5f-b9f9-0123456789ab';
+    $signed = 'https://s3.trendyol.com/label-bucket-prod/123/label/abcdef/label-data.pdf?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Date=20261109T135300Z&X-Amz-SignedHeaders=host&X-Amz-Credential=AKIAEXAMPLE%2F20261109%2Feu%2Fs3%2Faws4_request&X-Amz-Expires=300&X-Amz-Signature=' . str_repeat('ab', 32);
+    $redirect = static fn (string $location, int $status = 302): array => ['status' => $status, 'body' => '', 'contentType' => null, 'location' => $location];
+    $ok = ['status' => 200, 'body' => $pdf, 'contentType' => 'application/pdf', 'location' => null];
+
+    // Trendyol may return the gateway URL as the label; the presigned S3 URL is never accepted as a label by itself.
+    $transport->next[] = ['status' => 200, 'body' => json_encode(['data' => [['format' => 'PDF', 'label' => $label]]])];
+    expect($client->labels('7330000000000010') === [['format' => 'PDF', 'url' => $label]], 'the apigw label URL is accepted');
+    $transport->next[] = ['status' => 200, 'body' => json_encode(['data' => [['format' => 'PDF', 'label' => $signed]]])];
+    expect($code(fn () => $client->labels('7330000000000010')) === 'TRENDYOL_LABEL_URL_REFUSED', 'an S3 URL is only a redirect target, never a label URL');
+
+    // 200: direct download (the documented CDN still works).
+    $documents->next = [$ok];
+    $documents->calls = [];
+    expect($client->document('https://cdn.dsmcdn.com/public-delivery-partner/product-label/x.pdf') === $pdf && count($documents->calls) === 1, 'direct 200 PDF');
+    // 302 to the allowed S3 host: exactly two requests, the second to the exact validated Location, bytes unchanged.
+    $documents->next = [$redirect($signed), $ok];
+    $documents->calls = [];
+    expect($client->document($label) === $pdf, 'one 302 to s3.trendyol.com gives the PDF byte for byte (no re-rendering, no scaling)');
+    expect(array_column($documents->calls, 0) === [$label, $signed] && $documents->calls[1][1] === \Arasya\Operations\Integration\Trendyol\TrendyolLabelClient::MAX_LABEL_BYTES, 'the second request is the validated Location, same size limit');
+
+    // Unexpected redirect targets: refused before any second request.
+    foreach (['http://s3.trendyol.com/b/label-data.pdf', 'https://s3.trendyol.com.evil.example/b.pdf', 'https://evil.example/b.pdf', 'https://xs3.trendyol.com/b.pdf', 'https://s3.amazonaws.com/b.pdf',
+        'https://cdn.dsmcdn.com/x.pdf', 'https://apigw.trendyol.com/integration/sellers/123456/addresses', 'https://user:pw@s3.trendyol.com/b.pdf', 'https://s3.trendyol.com:8443/b.pdf', '/relative/label.pdf',
+        '//s3.trendyol.com/b.pdf', 'https://s3.trendyol.com/a/../b.pdf', 'https://s3.trendyol.com/a/%2e%2e/b.pdf', 'https://s3.trendyol.com/b.pdf#f', 'https://169.254.169.254/latest/meta-data', 'file:///etc/passwd',
+        'https://s3.trendyol.com/' . str_repeat('a', 4100), ''] as $target) {
+        $documents->next = [$redirect($target), $ok];
+        $documents->calls = [];
+        expect($code(fn () => $client->document($label)) === 'TRENDYOL_LABEL_REDIRECT_REFUSED' && count($documents->calls) === 1, "redirect refused without a second request: {$target}");
+    }
+    // A 302 without Location, and every other 3xx, are refused.
+    $documents->next = [['status' => 302, 'body' => '', 'contentType' => null, 'location' => null]];
+    expect($code(fn () => $client->document($label)) === 'TRENDYOL_LABEL_REDIRECT_REFUSED', 'a 302 without Location');
+    foreach ([301, 303, 307, 308, 300, 304] as $status) {
+        $documents->next = [$redirect($signed, $status), $ok];
+        $documents->calls = [];
+        expect($code(fn () => $client->document($label)) === 'TRENDYOL_LABEL_REDIRECT_REFUSED' && count($documents->calls) === 1, "HTTP {$status} is not followed");
+    }
+    // A second redirect is refused (the S3 answer is never followed further).
+    $documents->next = [$redirect($signed), $redirect($signed), $ok];
+    $documents->calls = [];
+    expect($code(fn () => $client->document($label)) === 'TRENDYOL_LABEL_REDIRECT_REFUSED' && count($documents->calls) === 2, 'a second redirect is refused');
+    // The S3 answer is checked like any document: not a PDF, too large, expired signature.
+    foreach ([[['status' => 200, 'body' => '<Error><Code>AccessDenied</Code></Error>' . str_repeat(' ', 80), 'contentType' => 'application/xml', 'location' => null], 'TRENDYOL_LABEL_INVALID'],
+        [['status' => 200, 'body' => str_repeat('A', 200), 'contentType' => 'application/pdf', 'location' => null], 'TRENDYOL_LABEL_INVALID'],
+        [['status' => 200, 'body' => '<html>' . str_repeat(' ', 80) . '</html>', 'contentType' => null, 'location' => null], 'TRENDYOL_LABEL_INVALID'],
+        [['status' => 200, 'body' => $pdf . str_repeat('y', 5 * 1024 * 1024), 'contentType' => 'application/pdf', 'location' => null], 'TRENDYOL_LABEL_TOO_LARGE'],
+        [['status' => 403, 'body' => '', 'contentType' => 'application/xml', 'location' => null], 'TRENDYOL_LABEL_EXPIRED'],
+        [['status' => 500, 'body' => '', 'contentType' => null, 'location' => null], 'TRENDYOL_LABEL_DOWNLOAD_FAILED']] as [$answer, $expected]) {
+        $documents->next = [$redirect($signed), $answer];
+        expect($code(fn () => $client->document($label)) === $expected, "S3 answer => {$expected}");
+    }
+    // Redirect URL rule.
+    $redirectAllowed = \Arasya\Operations\Integration\Trendyol\TrendyolLabelClient::isAllowedRedirectUrl(...);
+    expect($redirectAllowed($signed) && $redirectAllowed('https://S3.TRENDYOL.COM/b/label-data.pdf') && !$redirectAllowed($label) && !$redirectAllowed('https://cdn.dsmcdn.com/x.pdf'), 'only s3.trendyol.com is a redirect host');
+    expect(\Arasya\Operations\Integration\Trendyol\TrendyolLabelClient::MAX_LABEL_REDIRECTS === 1 && \Arasya\Operations\Integration\Trendyol\TrendyolLabelClient::LABEL_REDIRECT_HOSTS === ['s3.trendyol.com']);
+
+    // The real stream fetcher: the parser keeps the Location of the last response only.
+    $parse = \Arasya\Operations\Integration\Trendyol\StreamTrendyolLabelDocumentFetcher::response(...);
+    expect($parse(['HTTP/1.1 302 Found', 'content-length: 0', "location: {$signed}"], '') === ['status' => 302, 'body' => '', 'contentType' => null, 'location' => $signed], 'Location is read case-insensitively');
+    expect($parse(['HTTP/1.1 200 OK', 'Content-Type: application/pdf; charset=binary'], $pdf) === ['status' => 200, 'body' => $pdf, 'contentType' => 'application/pdf', 'location' => null]);
+    expect($parse(['HTTP/1.1 302 Found', "Location: {$signed}", 'HTTP/1.1 200 OK', 'Content-Type: application/pdf'], $pdf)['location'] === null, 'a later response resets the Location');
+    // The real stream fetcher on the wire (recording wrapper, no network): GET, fixed headers, no Authorization or secret,
+    // no automatic redirect, the presigned URL passed verbatim, and the S3 host accepted only as a redirect host.
+    stream_wrapper_unregister('https');
+    stream_wrapper_register('https', AwbRecordingHttps::class);
+    try {
+        AwbRecordingHttps::$opened = [];
+        $fetcher = new \Arasya\Operations\Integration\Trendyol\StreamTrendyolLabelDocumentFetcher();
+        $fetcher->fetch($label, 1000);
+        $fetcher->fetch($signed, 1000);
+        $refused = $code(fn () => $fetcher->fetch('https://evil.example/x.pdf', 1000));
+    } finally {
+        stream_wrapper_restore('https');
+    }
+    expect(array_column(AwbRecordingHttps::$opened, 'url') === [$label, $signed] && $refused === 'TRENDYOL_LABEL_URL_REFUSED', 'the fetcher opened exactly the two URLs and refused an unknown host');
+    foreach (AwbRecordingHttps::$opened as $request) {
+        $http = $request['options']['http'] ?? [];
+        $wire = json_encode($request['options']);
+        expect(($http['method'] ?? '') === 'GET' && ($http['header'] ?? '') === "Accept: application/pdf\r\nUser-Agent: Arasya-AWB-Station" && ($http['follow_location'] ?? null) === 0 && ($http['max_redirects'] ?? null) === 0, 'GET with fixed headers, no automatic redirect');
+        expect(!str_contains(strtolower($wire), 'authorization') && !str_contains($wire, 'unit-key') && !str_contains($wire, 'unit-secret') && !str_contains($wire, base64_encode('unit-key:unit-secret')) && !str_contains($wire, 'SelfIntegration'), 'no credential reaches ' . parse_url($request['url'], PHP_URL_HOST));
+        expect(($request['options']['ssl']['verify_peer'] ?? false) === true && ($request['options']['ssl']['verify_peer_name'] ?? false) === true, 'TLS verified');
+    }
+});

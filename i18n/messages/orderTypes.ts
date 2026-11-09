@@ -1,5 +1,5 @@
 /**
- * B2B order types in Staff (Staff 2.46.0, API 2.64.0). The server decides the route from the frozen order type; Staff
+ * B2B order types in Staff (Staff 2.49.0, API 2.67.0). The server decides the route from the frozen order type; Staff
  * only explains it to the stage 2 and Livrare employees. Romanian and Turkish are the working languages of the owner and
  * the factory; English and Sinhala still need a native review.
  */

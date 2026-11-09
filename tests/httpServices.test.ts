@@ -24,7 +24,7 @@ test('B2B manufacturing snapshots preserve line meters, kind and notes without i
   assertServerError(() => mapProductionOrder({ ...raw, products: [{ ...item, productionContext: { ...item.productionContext, kind: 'unknown' } }] }));
 });
 
-test('Staff 2.46.0: a typed B2B order maps the route the server applies; any other source or shape is a contract error', () => {
+test('Staff 2.49.0: a typed B2B order maps the route the server applies; any other source or shape is a contract error', () => {
   const raw = { id: 'b2b:1', source: 'b2b', orderNumber: 'B2B-ORD-000002', productionStageId: 'material-preparation', status: 'in_progress', version: 1, productionVersion: 3,
     products: [], updatedAt: '2026-11-09T00:00:00Z' };
   assert.deepEqual(mapProductionOrder({ ...raw, serviceRoute: { orderType: 'CUT_ONLY', shortRoute: true, stages: ['waiting', 'material-preparation', 'delivery'] } }).serviceRoute, { orderType: 'CUT_ONLY', shortRoute: true });

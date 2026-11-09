@@ -90,7 +90,7 @@ final readonly class Config
          */
         public string $financeRiskLimitAuthorityUuids = '',
         /**
-         * Finance decision at B2B finalization (ARASYA_B2B_FINANCE_GATE, API 2.64.0): off (default), shadow or enforce.
+         * Finance decision at B2B finalization (ARASYA_B2B_FINANCE_GATE, API 2.67.0): off (default), shadow or enforce.
          * Any other value is off. Activation is an explicit live decision (FinanceConfigGuard blocks an unreviewed one).
          */
         public string $b2bFinanceGate = 'off',
