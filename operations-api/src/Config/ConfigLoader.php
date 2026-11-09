@@ -43,6 +43,10 @@ final readonly class ConfigLoader
         'ARASYA_TRENDYOL_FIXTURE_FILE',
         'ARASYA_CANCELLATION_SYNC',
         'ARASYA_TRENDYOL_STORE_FRONT_CODE',
+        // Finance (V0.3 to V0.4.0). Missing until 2.63.0, so these switches could only ever take their defaults.
+        'ARASYA_FINANCE_OPENING_BALANCE_POSTING',
+        'ARASYA_FINANCE_CEO_EMPLOYEE_UUID',
+        'ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS',
     ];
 
     /**

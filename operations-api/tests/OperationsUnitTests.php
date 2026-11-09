@@ -752,7 +752,7 @@ test('B2B company data remains isolated except an explicitly gated Finance read-
     }
     sort($readers);
     expect($readers === ['B2B/AccountCommands.php', 'B2B/AccountQueries.php', 'B2B/CompanyCommands.php', 'B2B/CompanyQueries.php', 'B2B/OrderCommands.php', 'B2B/OrderStore.php', 'B2B/ProductionAnalyticsIdentity.php', 'B2B/ProductionCommands.php', 'B2B/ProjectCommands.php', 'B2B/ProjectQueries.php', 'Database/AuthMaintenance.php',
-        'Finance/Account/OnboardingQueries.php', 'Finance/Account/OnboardingService.php', 'Finance/Company/CaseQueries.php', 'Finance/Company/CaseService.php', 'Finance/Company/DuplicateFinder.php', 'Finance/Credit/CreditService.php', 'Finance/FinanceController.php', 'Finance/Risk/RiskService.php']);
+        'Finance/Account/OnboardingQueries.php', 'Finance/Account/OnboardingService.php', 'Finance/Company/CaseQueries.php', 'Finance/Company/CaseService.php', 'Finance/Company/DuplicateFinder.php', 'Finance/Credit/CreditService.php', 'Finance/FinanceController.php', 'Finance/Risk/OwnerDecisionService.php', 'Finance/Risk/RiskService.php']);
     $canonical = (string) file_get_contents($root . '/Finance/Company/CaseService.php');
     expect(str_contains($canonical, "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'inactive'"), 'A Finance-created canonical company starts inactive');
     $analyticsIdentity=(string)file_get_contents($root.'/B2B/ProductionAnalyticsIdentity.php');
@@ -1006,4 +1006,42 @@ test('Risk and limit decision authority ignores root, roles and permissions', fu
     }
     $other = new \Arasya\Operations\Finance\Risk\DecisionAuthority(['00000000-0000-4000-8000-0000000000bb']);
     expect(!$other->allows($root), 'an allowlist naming someone else still denies root');
+});
+
+test('Owner decision authority re-reads Central IAM and the journal is insert-only', function (): void {
+    $uuid = '00000000-0000-4000-8000-0000000000c1';
+    $make = static fn (string $status = 'active', array $apps = ['finance'], int $version = 3): EmployeeIdentity => new EmployeeIdentity(
+        $uuid, null, 'owner.synthetic', 'owner.synthetic', 'hash', 'Synthetic Owner', 'management', 'Management', 'active',
+        'employee', 'active', $status, ['finance.access', 'finance.risk.view', 'finance.risk.approve'], [], $apps, false, $version,
+    );
+    $registry = new \Arasya\Operations\Tests\MemoryEmployeeRepository();
+    $authority = new \Arasya\Operations\Finance\Risk\DecisionAuthority([$uuid], $registry);
+    $refused = static function (callable $call): bool {
+        try { $call(); return false; } catch (\Arasya\Operations\Http\ApiException $e) { return $e->status === 403 && $e->errorCode === 'RISK_LIMIT_AUTHORITY_REQUIRED'; }
+    };
+    expect($refused(fn () => $authority->verify($make())), 'an identity missing from the registry is refused');
+    $registry->employees[$uuid] = $make();
+    $authority->verify($make());
+    $registry->employees[$uuid] = $make(version: 4);
+    expect($refused(fn () => $authority->verify($make())), 'a registry change after the session loaded is refused');
+    $registry->employees[$uuid] = $make('inactive');
+    expect($refused(fn () => $authority->verify($make())), 'a deactivated registry row is refused');
+    $registry->employees[$uuid] = $make(apps: []);
+    expect($refused(fn () => $authority->verify($make())), 'a revoked Finance application is refused');
+    expect($refused(fn () => (new \Arasya\Operations\Finance\Risk\DecisionAuthority([$uuid]))->verify($make())), 'no registry means no decision');
+    expect((new \Arasya\Operations\Finance\Risk\DecisionAuthority(['b', 'a']))->fingerprint() === (new \Arasya\Operations\Finance\Risk\DecisionAuthority(['a', 'b']))->fingerprint(), 'the fingerprint ignores order');
+
+    $root = dirname(__DIR__) . '/src';
+    $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS));
+    foreach ($files as $file) {
+        if (!$file->isFile() || $file->getExtension() !== 'php') continue;
+        $source = (string) file_get_contents($file->getPathname());
+        expect(preg_match('/\b(UPDATE|DELETE\s+FROM)\s+finance_owner_decisions\b/i', $source) !== 1, $file->getFilename() . ' never rewrites the owner decision journal');
+        if (preg_match('/OWNER_DIRECT/', $source) === 1) {
+            expect(str_starts_with(substr($file->getPathname(), strlen($root) + 1), 'Finance/'), $file->getFilename() . ' outside Finance must not write owner decisions');
+        }
+    }
+    $owner = (string) file_get_contents($root . '/Finance/Risk/OwnerDecisionService.php');
+    expect(substr_count($owner, '$this->authority->verify($actor);') === 3, 'both owner commands (and the informational status) verify authority');
+    expect(preg_match('/b2b_account_movements|finance_account_onboardings\s+SET|UPDATE\s+finance_company_cases|INSERT\s+INTO\s+b2b/i', $owner) !== 1, 'owner decisions never touch the ledger, reconciliation or verification');
 });
