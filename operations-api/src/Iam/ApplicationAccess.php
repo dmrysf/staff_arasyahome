@@ -63,6 +63,8 @@ final class ApplicationAccess
         'trendyol.orders.view' => self::STAFF,
         'trendyol.orders.prepare' => self::STAFF,
         'trendyol.orders.release' => self::STAFF,
+        'trendyol.awb.view' => self::STAFF,
+        'trendyol.awb.print' => self::STAFF,
         'production.exceptions.approve' => self::DASHBOARD,
         'production.manage_authority' => self::DASHBOARD,
         'production.cancellation.manage' => self::DASHBOARD,

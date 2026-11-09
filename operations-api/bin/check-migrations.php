@@ -243,4 +243,19 @@ if (preg_match('/CREATE TABLE|DROP TABLE|DELETE FROM|TRUNCATE|\bUPDATE |\bINSERT
     || !str_contains($deleteSchema, "action IN (''reissue'', ''delete'') AND reason_code IN (''order_changed'', ''customer_data'', ''wrong_document'', ''other'')")) {
     throw new RuntimeException('Migration 045 must only widen the invoice action and reason CHECKs, grant nothing and write no row.');
 }
+// Trendyol AWB station (051, API 2.65.0): one new table, two Staff permissions and one role template; no other table
+// altered, no row of an existing table changed, no employee assigned, no stage or workflow touched.
+$awbSchema = (string) file_get_contents($root . '/database/migrations/051_trendyol_awb_station.sql');
+$awbStatements = preg_replace('/^--.*$/m', '', $awbSchema) ?? '';
+preg_match_all('/CREATE TABLE IF NOT EXISTS (\w+)/', $awbStatements, $awbTables);
+preg_match_all('/INSERT (?:IGNORE )?INTO (\w+)/', $awbStatements, $awbInserts);
+preg_match_all("/'(trendyol\.awb\.[a-z_]+)'/", $awbStatements, $awbPermissions);
+if ($awbTables[1] !== ['trendyol_awb_print_events']
+    || array_values(array_unique($awbInserts[1])) !== ['permissions', 'roles', 'role_permissions']
+    || array_values(array_unique($awbPermissions[1])) !== ['trendyol.awb.view', 'trendyol.awb.print']
+    || preg_match('/ALTER TABLE|DROP TABLE|DELETE FROM|TRUNCATE|\bUPDATE\s+\w+\s+SET|employee_role_assignments|employee_stage_access|production_stages|production_workflows|operational_orders\s+SET/i', $awbStatements) === 1
+    || preg_match("/WHERE r\.role_key = 'trendyol-awb-station'/", $awbStatements) !== 1 || substr_count($awbStatements, 'INSERT IGNORE INTO role_permissions') !== 1
+    || preg_match('/ON DELETE CASCADE|ON UPDATE CASCADE|SET NULL/i', $awbStatements) === 1) {
+    throw new RuntimeException('Migration 051 must only add the AWB print history table, the two trendyol.awb permissions and the station template, and assign nothing.');
+}
 fwrite(STDOUT, 'Migration sanity checks passed for ' . count($files) . " file(s).\n");

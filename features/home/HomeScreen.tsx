@@ -9,6 +9,7 @@ import { DocumentsCard } from "../documents/DocumentsCard";
 import { DocumentLookup } from "../documents/DocumentScreen";
 import { opensOperatorDesk, usesProductionScanner } from "../../domain/operatorDesk";
 import { canManageAuthority } from "../../domain/authority";
+import { canUseAwbStation } from "../../domain/awb";
 import { firstName, readWorkspacePreference, resolveWorkspaces, saveWorkspacePreference, selectPrimaryWorkspace, type Workspace, type WorkspaceAvailability } from "../../domain/workspaces";
 import { AppIcon } from "../../components/icons/AppIcon";
 import { WorkspaceSwitcher } from "../workspaces/DashboardParts";
@@ -101,6 +102,9 @@ export function HomeScreen({ employee, services, workflow, dashboardUrl, navigat
       <WorkspaceSwitcher workspaces={workspaces} current={current} onSelect={select} />
       <GuideBoundary><GuideHomeCard /></GuideBoundary>
       <SupervisorCard service={services.exceptions} navigate={navigate} />
+      {services.awb && canUseAwbStation(employee) && (
+        <button type="button" className="exception-row" onClick={() => navigate("/awb")} data-testid="home-open-awb"><span><strong>{t("awb.entryTitle")}</strong><small>{t("awb.entryBody")}</small></span><span aria-hidden="true">→</span></button>
+      )}
 
       {current.kind === "confirmare" && services.confirmare && <ConfirmareWorkspace employee={employee} navigate={navigate} />}
 

@@ -1,9 +1,23 @@
 <?php
 declare(strict_types=1);
+/** Restore a pre-051 disposable test fixture (no Trendyol AWB station). This is NOT a deployment/rollback mechanism. */
+function restorePreTrendyolAwbTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='051_trendyol_awb_station.sql'")->fetchColumn()) return;
+    $pdo->exec('DROP TABLE IF EXISTS trendyol_awb_print_events');
+    $pdo->exec("DELETE era FROM employee_role_assignments era JOIN roles r ON r.role_id=era.role_id WHERE r.role_key='trendyol-awb-station'");
+    $pdo->exec("DELETE rp FROM role_permissions rp JOIN permissions p ON p.permission_id=rp.permission_id WHERE p.permission_key IN ('trendyol.awb.view','trendyol.awb.print')");
+    $pdo->exec("DELETE FROM roles WHERE role_key='trendyol-awb-station'");
+    $pdo->exec("DELETE FROM permissions WHERE permission_key IN ('trendyol.awb.view','trendyol.awb.print')");
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='051_trendyol_awb_station.sql'");
+}
+
 /** Restore a pre-047 disposable test fixture (no Finance V0.3 company onboarding). This is NOT a deployment/rollback mechanism. */
 function restorePreFinanceOnboardingTestSchema(PDO $pdo): void
 {
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    restorePreTrendyolAwbTestSchema($pdo);
     if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='047_finance_company_onboarding.sql'")->fetchColumn()) return;
     $pdo->exec('SET FOREIGN_KEY_CHECKS=0');
     foreach(['finance_owner_decisions','finance_opening_reconciliation_lines','finance_opening_reconciliations','finance_case_comments','finance_case_recusals','finance_case_field_changes','finance_case_flags'] as $table) $pdo->exec('DROP TABLE IF EXISTS '.$table);

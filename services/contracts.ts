@@ -101,6 +101,8 @@ export type ServiceBundle = {
   productionQr?: import("../domain/productionQr").ProductionQrApi;
   /** Trendyol workspace for explicitly authorized Trendyol personnel; absent in preview and demo. */
   trendyol?: import("../domain/trendyol").TrendyolApi;
+  /** Trendyol AWB print station (API 2.65.0) for AWB permission holders; absent in preview and demo. */
+  awb?: import("../domain/awb").AwbApi;
   /** Work on pieces in rework (API 2.31.0); absent in preview and demo. */
   physical?: import("../domain/physical").StaffPhysicalApi;
   pieces?: import("../domain/pieces").PieceApi;
