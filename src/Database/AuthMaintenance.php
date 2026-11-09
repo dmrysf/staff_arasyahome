@@ -50,6 +50,7 @@ final readonly class AuthMaintenance
                 // Replay references only: account movements, allocations and activity are never pruned.
                 'b2b_account_idempotency_keys' => $this->pruneComposite('b2b_account_idempotency', ['employee_uuid','idempotency_key'], 'created_at', $this->cutoff($now,$this->idempotencyRetentionDays),$dryRun,false),
                 'b2b_project_idempotency_keys' => $this->pruneComposite('b2b_project_idempotency', ['employee_uuid','idempotency_key'], 'created_at', $this->cutoff($now,$this->idempotencyRetentionDays),$dryRun,false),
+                'finance_idempotency_keys' => !$this->hasTable('finance_idempotency') ? 0 : $this->pruneComposite('finance_idempotency', ['employee_uuid','idempotency_key'], 'created_at', $this->cutoff($now,$this->idempotencyRetentionDays),$dryRun,false),
                 // Replay references only: exceptions, decisions, timelines and quality facts are never pruned.
                 'exception_idempotency_keys' => $this->pruneComposite('production_exception_idempotency', ['employee_uuid', 'idempotency_key'], 'created_at', $this->cutoff($now, $this->idempotencyRetentionDays), $dryRun, false),
                 // Live notifications are a delivery outbox, not history; the business record lives elsewhere.
@@ -135,6 +136,17 @@ final readonly class AuthMaintenance
     private function pruneApiRateLimits(string $cutoff, bool $dryRun): int
     {
         return $this->pruneComposite('api_rate_limit_buckets', ['bucket_scope', 'subject_hash'], 'updated_at', $cutoff, $dryRun, true);
+    }
+
+    /** Finance V0.3 tables may not exist yet on an API deployed ahead of migration 047. */
+    private function hasTable(string $table): bool
+    {
+        try {
+            $this->pdo->query('SELECT 1 FROM ' . $table . ' LIMIT 0');
+            return true;
+        } catch (\PDOException) {
+            return false;
+        }
     }
 
     /** @param list<string> $keys */

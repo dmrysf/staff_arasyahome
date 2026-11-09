@@ -276,6 +276,20 @@ final class Container
         );
     }
 
+    private function financeController(AuthorizationService $authorization, RequestContext $context, CsrfGuard $csrf, \Arasya\Operations\Security\ApiRateLimiter $rateLimiter): \Arasya\Operations\Finance\FinanceController
+    {
+        $store = new \Arasya\Operations\Finance\FinanceStore($this->pdo, $authorization, $this->clock);
+        $cases = new \Arasya\Operations\Finance\Company\CaseService($store);
+        $onboarding = new \Arasya\Operations\Finance\Account\OnboardingService($store, $this->config->financeOpeningBalancePostingEnabled());
+        $risk = new \Arasya\Operations\Finance\Risk\RiskService($store);
+        return new \Arasya\Operations\Finance\FinanceController(
+            $this->authentication, $authorization, $this->config, $context, $this->pdo, $csrf, $rateLimiter,
+            new \Arasya\Operations\Finance\Import\ImportService($store, $cases), $cases, new \Arasya\Operations\Finance\Company\CaseQueries($store),
+            $onboarding, new \Arasya\Operations\Finance\Account\OnboardingQueries($store, $onboarding), $risk,
+            new \Arasya\Operations\Finance\Credit\CreditService($store, $risk, $this->config->financeCeoEmployeeUuid),
+        );
+    }
+
     public function kernel(): ApiKernel
     {
         $context = new RequestContext();
@@ -414,7 +428,7 @@ final class Container
                 $context,
             ),
             new \Arasya\Operations\Management\RootInterventionController($this->rootIntervention($authorization), $this->authentication, $csrf, $this->config, $context),
-            new \Arasya\Operations\Finance\FinanceController($this->authentication, $authorization, $this->config, $context, $this->pdo),
+            $this->financeController($authorization, $context, $csrf, $rateLimiter),
         );
     }
 

@@ -91,6 +91,23 @@ final class ApplicationAccess
         'b2b.projects.convert' => self::B2B,
         'finance.accounts.view' => self::FINANCE,
         'finance.companies.view' => self::FINANCE,
+        'finance.companies.import' => self::FINANCE,
+        'finance.companies.review' => self::FINANCE,
+        'finance.companies.verify' => self::FINANCE,
+        'finance.companies.resolve_duplicates' => self::FINANCE,
+        'finance.accounts.reconcile' => self::FINANCE,
+        'finance.accounts.propose_opening_balance' => self::FINANCE,
+        'finance.accounts.verify_opening_balance' => self::FINANCE,
+        'finance.accounts.post_approved_opening_balance' => self::FINANCE,
+        'finance.risk.view' => self::FINANCE,
+        'finance.risk.propose' => self::FINANCE,
+        'finance.risk.approve' => self::FINANCE,
+        'finance.credit.view' => self::FINANCE,
+        'finance.credit.propose' => self::FINANCE,
+        'finance.credit.verify' => self::FINANCE,
+        'finance.credit.approve' => self::FINANCE,
+        'finance.credit.revoke' => self::FINANCE,
+        'finance.audit.view' => self::FINANCE,
     ];
 
     /** @param list<string> $applications @return list<string> */

@@ -42,15 +42,20 @@ final readonly class RequestFactory
             $path = '/';
         }
 
+        $method = strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET'));
+        $path = rtrim($path, '/') ?: '/';
+        // Finance company file uploads are the one larger body (bounded by ImportFileReader::MAX_BYTES).
+        $cap = $method === 'POST' && $path === '/finance/imports' ? \Arasya\Operations\Finance\Import\ImportFileReader::MAX_BYTES + 1 : 262_145;
+
         return new Request(
-            method: strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET')),
-            path: rtrim($path, '/') ?: '/',
+            method: $method,
+            path: $path,
             headers: $headers,
             cookies: array_filter($_COOKIE, 'is_string'),
             // Reading one byte beyond the largest accepted body cap (signed source
             // ingestion) prevents large chunked requests from being buffered in
             // application memory. Each route enforces its own smaller limit.
-            body: (string) file_get_contents('php://input', false, null, 0, 262_145),
+            body: (string) file_get_contents('php://input', false, null, 0, $cap),
             ipAddress: $this->resolveIp($headers),
             userAgent: substr($headers['user-agent'] ?? 'unknown', 0, 512),
             requestId: $requestId,
