@@ -157,7 +157,7 @@ final readonly class RiskService
         $reason = In::reason($input, 'reason', $decision !== 'approve');
         return $this->store->mutate($actor, 'risk_' . $decision . ':' . $id, $input, $key, [A::RISK_APPROVE], function (string $now) use ($actor, $id, $decision, $version, $reason, $key, $request): array {
             if ($decision !== 'reject') {
-                $this->authority->require($actor);
+                $this->authority->verify($actor);
             }
             $a = $this->store->lock('finance_risk_assessments', 'assessment_uuid', $id, 'ASSESSMENT_NOT_FOUND', 'Risk assessment was not found.');
             FinanceStore::expectVersion($a, $version);
@@ -327,7 +327,7 @@ final readonly class RiskService
     /** @return array<string, mixed> */
     private static function presentAssessment(array $a): array
     {
-        return ['id' => $a['assessment_uuid'], 'companyId' => $a['company_uuid'], 'classification' => $a['classification'], 'status' => $a['status'],
+        return ['id' => $a['assessment_uuid'], 'companyId' => $a['company_uuid'], 'classification' => $a['classification'], 'status' => $a['status'], 'decisionMode' => $a['decision_mode'] ?? 'REVIEWED',
             'indicators' => json_decode((string) $a['indicators_json'], true), 'reason' => $a['reason'], 'policyNumber' => $a['policy_number'] === null ? null : (int) $a['policy_number'],
             'proposedBy' => $a['proposer'], 'proposedAt' => FinanceStore::iso($a['proposed_at']), 'decidedBy' => $a['decider'], 'decidedAt' => FinanceStore::iso($a['decided_at']),
             'decisionReason' => $a['decision_reason'], 'version' => (int) $a['version']];

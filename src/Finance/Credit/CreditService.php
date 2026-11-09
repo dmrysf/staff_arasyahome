@@ -23,6 +23,8 @@ use PDO;
  * LIMIT (not zero). RED or UNVERIFIED companies get no limit. Exposure is the ledger balance in the limit currency only;
  * other currencies are shown separately and never converted.
  *
+ * Owner-direct decisions (Finance V0.4.0) live in Risk\\OwnerDecisionService and write OWNER_DIRECT rows to the same table.
+ *
  * CEO exceptions are recorded here for a future B2B integration only; nothing in B2B reads them yet.
  */
 final readonly class CreditService
@@ -78,7 +80,7 @@ final readonly class CreditService
         };
         return $this->store->mutate($actor, 'credit_' . $decision . ':' . $id, $input, $key, $permission === null ? [] : [$permission], function (string $now) use ($actor, $id, $decision, $version, $reason, $key, $request): array {
             if (in_array($decision, ['approve', 'suspend', 'reinstate', 'revoke'], true)) {
-                $this->authority->require($actor);
+                $this->authority->verify($actor);
             }
             $l = $this->store->lock('finance_credit_limits', 'limit_uuid', $id, 'LIMIT_NOT_FOUND', 'Credit limit was not found.');
             FinanceStore::expectVersion($l, $version);
@@ -245,7 +247,7 @@ final readonly class CreditService
         $s = $pdo->prepare('SELECT l.*, p.display_name AS proposer, v.display_name AS verifier, a.display_name AS approver, en.display_name AS ender, pol.policy_number, r.classification
             FROM finance_credit_limits l JOIN employees p ON p.employee_uuid = l.proposed_by_employee_uuid LEFT JOIN employees v ON v.employee_uuid = l.verified_by_employee_uuid
             LEFT JOIN employees a ON a.employee_uuid = l.approved_by_employee_uuid LEFT JOIN employees en ON en.employee_uuid = l.ended_by_employee_uuid
-            LEFT JOIN finance_risk_policies pol ON pol.policy_uuid = l.policy_uuid JOIN finance_risk_assessments r ON r.assessment_uuid = l.risk_assessment_uuid
+            LEFT JOIN finance_risk_policies pol ON pol.policy_uuid = l.policy_uuid LEFT JOIN finance_risk_assessments r ON r.assessment_uuid = l.risk_assessment_uuid
             WHERE l.company_uuid = ? ORDER BY l.proposed_at DESC LIMIT 50');
         $s->execute([$companyId]);
         $limits = array_map(fn (array $l): array => $this->presentLimit($l) + ['evidence' => $this->store->evidenceOf('credit', (string) $l['limit_uuid']), 'history' => $this->store->history('credit', (string) $l['limit_uuid'], 50)], $s->fetchAll(PDO::FETCH_ASSOC));
@@ -272,7 +274,7 @@ final readonly class CreditService
         $s = $this->store->pdo()->prepare('SELECT l.*, p.display_name AS proposer, v.display_name AS verifier, a.display_name AS approver, en.display_name AS ender, pol.policy_number, r.classification,
                 b.company_code, b.legal_name FROM finance_credit_limits l JOIN employees p ON p.employee_uuid = l.proposed_by_employee_uuid LEFT JOIN employees v ON v.employee_uuid = l.verified_by_employee_uuid
             LEFT JOIN employees a ON a.employee_uuid = l.approved_by_employee_uuid LEFT JOIN employees en ON en.employee_uuid = l.ended_by_employee_uuid
-            LEFT JOIN finance_risk_policies pol ON pol.policy_uuid = l.policy_uuid JOIN finance_risk_assessments r ON r.assessment_uuid = l.risk_assessment_uuid JOIN b2b_companies b ON b.company_uuid = l.company_uuid
+            LEFT JOIN finance_risk_policies pol ON pol.policy_uuid = l.policy_uuid LEFT JOIN finance_risk_assessments r ON r.assessment_uuid = l.risk_assessment_uuid JOIN b2b_companies b ON b.company_uuid = l.company_uuid
             WHERE l.status IN (' . implode(',', array_fill(0, count($statuses), '?')) . ') ORDER BY l.proposed_at DESC LIMIT 200');
         $s->execute($statuses);
         $items = array_map(fn (array $l): array => $this->presentLimit($l) + ['companyCode' => $l['company_code'], 'legalName' => $l['legal_name']], $s->fetchAll(PDO::FETCH_ASSOC));
@@ -298,7 +300,7 @@ final readonly class CreditService
         $s->execute([$companyId]);
         $case = $s->fetch(PDO::FETCH_ASSOC) ?: null;
         $verification = $case === null ? 'NOT_STARTED' : ($case['status'] === 'APPROVED' ? 'VERIFIED' : ($case['status'] === 'REJECTED' ? 'REJECTED' : 'IN_PROGRESS'));
-        $s = $pdo->prepare('SELECT status, account_currency, version FROM finance_account_onboardings WHERE company_uuid = ?');
+        $s = $pdo->prepare('SELECT status, account_currency, currency_issue, version FROM finance_account_onboardings WHERE company_uuid = ?');
         $s->execute([$companyId]);
         $o = $s->fetch(PDO::FETCH_ASSOC) ?: null;
         $s = $pdo->prepare("SELECT a.assessment_uuid, a.classification, a.version, p.policy_number FROM finance_risk_assessments a LEFT JOIN finance_risk_policies p ON p.policy_uuid = a.policy_uuid WHERE a.active_company_uuid = ?");
@@ -326,6 +328,41 @@ final readonly class CreditService
                 $available = AccountMoney::format(AccountMoney::fromDecimal((string) $limit['amount']) - max(0, $exposure));
             }
         }
+        // A REVIEWED limit was based on one classification; an OWNER_DIRECT limit on the company and its account only.
+        $review = $limit !== null && ($o === null || (int) $limit['onboarding_version'] !== (int) $o['version']
+            || (($limit['decision_mode'] ?? 'REVIEWED') === 'REVIEWED' && ($risk === null || $limit['risk_assessment_uuid'] !== $risk['assessment_uuid'])));
+        // Future B2B contract: whether credit purchasing would be allowed, with every reason it is not. A stored limit
+        // alone never makes a company eligible. Not enforced anywhere in this release.
+        $blockers = [];
+        if ($verification !== 'VERIFIED') {
+            $blockers[] = 'IDENTITY_NOT_VERIFIED';
+        }
+        if (($o['status'] ?? null) !== 'RECONCILED') {
+            $blockers[] = 'ACCOUNT_NOT_RECONCILED';
+        } elseif ($o['currency_issue'] === 'open') {
+            $blockers[] = 'CURRENCY_ISSUE_OPEN';
+        }
+        if ($risk === null) {
+            $blockers[] = 'RISK_NOT_ASSIGNED';
+        } elseif ($risk['classification'] === 'RED') {
+            $blockers[] = 'RISK_RED';
+        }
+        if ($limit === null) {
+            $blockers[] = 'NO_APPROVED_LIMIT';
+        } elseif ($limitStatus !== 'APPROVED') {
+            $blockers[] = 'LIMIT_' . $limitStatus;
+        } elseif (AccountMoney::fromDecimal((string) $limit['amount']) === 0) {
+            $blockers[] = 'LIMIT_ZERO';
+        }
+        if ($limit !== null && $currency !== null && $limit['currency_code'] !== $currency) {
+            $blockers[] = 'LIMIT_CURRENCY_MISMATCH';
+        }
+        if ($review) {
+            $blockers[] = 'CREDIT_REVIEW_REQUIRED';
+        }
+        if ($available !== null && AccountMoney::fromDecimal($available) <= 0 && !in_array('LIMIT_ZERO', $blockers, true)) {
+            $blockers[] = 'NO_AVAILABLE_CREDIT';
+        }
         return [
             'companyId' => $companyId,
             'verificationStatus' => $verification,
@@ -340,8 +377,11 @@ final readonly class CreditService
             'availableCredit' => $available,
             'exposureBasis' => 'ledger_balance_only',
             'creditPolicyVersion' => isset($limit['policy_number']) ? (int) $limit['policy_number'] : null,
-            'creditReviewRequired' => $limit !== null && ($risk === null || $limit['risk_assessment_uuid'] !== $risk['assessment_uuid'] || $o === null || (int) $limit['onboarding_version'] !== (int) $o['version']),
+            'creditReviewRequired' => $review,
             'lastVerifiedAt' => $case !== null && $case['status'] === 'APPROVED' ? FinanceStore::iso($case['approved_at']) : null,
+            'creditPurchaseEligibility' => $blockers === [] ? 'ELIGIBLE' : 'BLOCKED',
+            'eligibilityBlockers' => $blockers,
+            'eligibilityEnforced' => false,
         ];
     }
 
@@ -413,6 +453,7 @@ final readonly class CreditService
         $today = $this->store->today();
         $effective = $l['status'] === 'APPROVED' && $l['expires_on'] !== null && $l['expires_on'] < $today ? 'EXPIRED' : $l['status'];
         return ['id' => $l['limit_uuid'], 'companyId' => $l['company_uuid'], 'currency' => $l['currency_code'], 'amount' => $l['amount'], 'status' => $l['status'], 'effectiveStatus' => $effective,
+            'decisionMode' => $l['decision_mode'] ?? 'REVIEWED',
             'effectiveFrom' => $l['effective_from'], 'reviewDate' => $l['review_date'], 'expiresOn' => $l['expires_on'], 'riskClassification' => $l['classification'],
             'policyNumber' => $l['policy_number'] === null ? null : (int) $l['policy_number'], 'reason' => $l['reason'],
             'proposedBy' => $l['proposer'], 'proposedAt' => FinanceStore::iso($l['proposed_at']), 'verifiedBy' => $l['verifier'], 'verifiedAt' => FinanceStore::iso($l['verified_at']),

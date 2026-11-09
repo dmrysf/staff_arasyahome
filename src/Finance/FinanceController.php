@@ -13,6 +13,7 @@ use Arasya\Operations\Finance\Company\CaseQueries;
 use Arasya\Operations\Finance\Company\CaseService;
 use Arasya\Operations\Finance\Credit\CreditService;
 use Arasya\Operations\Finance\Import\ImportService;
+use Arasya\Operations\Finance\Risk\OwnerDecisionService;
 use Arasya\Operations\Finance\Risk\RiskService;
 use Arasya\Operations\Http\ApiException;
 use Arasya\Operations\Http\Request;
@@ -47,6 +48,7 @@ final readonly class FinanceController
         private OnboardingQueries $onboardingQueries,
         private RiskService $risk,
         private CreditService $credit,
+        private OwnerDecisionService $owner,
     ) {
     }
 
@@ -85,6 +87,8 @@ final readonly class FinanceController
                 (bool) preg_match('#^/finance/credit/companies/(' . self::UUID . ')$#D', $path, $m) => $this->credit->detail($actor, $m[1]),
                 (bool) preg_match('#^/finance/companies/(' . self::UUID . ')/credit-profile$#D', $path, $m) => $this->credit->profile($actor, $m[1]),
                 $path === '/finance/audit' => $this->audit($actor, $q),
+                $path === '/finance/owner/companies' => $this->owner->list($actor, $q),
+                (bool) preg_match('#^/finance/owner/companies/(' . self::UUID . ')$#D', $path, $m) => $this->owner->detail($actor, $m[1]),
                 default => throw new ApiException(404, 'NOT_FOUND', 'Finance route not found.'),
             });
         }
@@ -148,6 +152,8 @@ final readonly class FinanceController
             $path === '/finance/credit' => $this->credit->propose($actor, $body, $key, $id),
             (bool) preg_match('#^/finance/credit/(' . self::UUID . ')/(verify|approve|reject|suspend|reinstate|revoke)$#D', $path, $m) => $this->credit->decide($actor, $m[1], $m[2], $body, $key, $id),
             $path === '/finance/credit/exceptions' => $this->credit->requestException($actor, $body, $key, $id),
+            (bool) preg_match('#^/finance/owner/companies/(' . self::UUID . ')/risk$#D', $path, $m) => $this->owner->decideColor($actor, $m[1], $body, $key, $id),
+            (bool) preg_match('#^/finance/owner/companies/(' . self::UUID . ')/credit$#D', $path, $m) => $this->owner->decideLimit($actor, $m[1], $body, $key, $id),
             (bool) preg_match('#^/finance/credit/exceptions/(' . self::UUID . ')/(approve|reject|withdraw)$#D', $path, $m) => $this->credit->decideException($actor, $m[1], $m[2], $body, $key, $id),
             default => throw new ApiException(404, 'NOT_FOUND', 'Finance route not found.'),
         };
@@ -202,6 +208,7 @@ final readonly class FinanceController
             'capabilities' => FinanceAccess::capabilities($this->authorization, $actor),
             'openingBalancePostingEnabled' => $this->config->financeOpeningBalancePostingEnabled(),
             'riskLimitAuthority' => in_array($actor->employeeUuid, $this->config->financeRiskLimitAuthorityList(), true),
+            'owner' => $this->owner->ownerStatus($actor),
         ];
     }
 
