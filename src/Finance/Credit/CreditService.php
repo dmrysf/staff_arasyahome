@@ -9,6 +9,7 @@ use Arasya\Operations\Employee\EmployeeIdentity;
 use Arasya\Operations\Finance\FinanceAccess as A;
 use Arasya\Operations\Finance\FinanceInput as In;
 use Arasya\Operations\Finance\FinanceStore;
+use Arasya\Operations\Finance\Risk\DecisionAuthority;
 use Arasya\Operations\Finance\Risk\RiskService;
 use Arasya\Operations\Http\ApiException;
 use Arasya\Operations\Iam\ApplicationAccess;
@@ -26,7 +27,7 @@ use PDO;
  */
 final readonly class CreditService
 {
-    public function __construct(private FinanceStore $store, private RiskService $risk, private string $ceoEmployeeUuid)
+    public function __construct(private FinanceStore $store, private RiskService $risk, private string $ceoEmployeeUuid, private DecisionAuthority $authority)
     {
     }
 
@@ -76,6 +77,9 @@ final readonly class CreditService
             'verify' => A::CREDIT_VERIFY, 'approve' => A::CREDIT_APPROVE, 'suspend', 'reinstate', 'revoke' => A::CREDIT_REVOKE, 'reject' => null,
         };
         return $this->store->mutate($actor, 'credit_' . $decision . ':' . $id, $input, $key, $permission === null ? [] : [$permission], function (string $now) use ($actor, $id, $decision, $version, $reason, $key, $request): array {
+            if (in_array($decision, ['approve', 'suspend', 'reinstate', 'revoke'], true)) {
+                $this->authority->require($actor);
+            }
             $l = $this->store->lock('finance_credit_limits', 'limit_uuid', $id, 'LIMIT_NOT_FOUND', 'Credit limit was not found.');
             FinanceStore::expectVersion($l, $version);
             $pdo = $this->store->pdo();

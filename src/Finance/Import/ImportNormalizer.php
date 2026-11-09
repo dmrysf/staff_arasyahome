@@ -61,6 +61,10 @@ final class ImportNormalizer
         'ucraina' => 'UA', 'ukraine' => 'UA', 'ukrayna' => 'UA', 'elvetia' => 'CH', 'switzerland' => 'CH', 'isvicre' => 'CH', 'cehia' => 'CZ', 'czechia' => 'CZ', 'cekya' => 'CZ',
     ];
 
+    /** Generic labels that do not name a customer (normalized like headers). */
+    private const PLACEHOLDER_NAMES = ['client', 'clienti', 'clientdivers', 'clientidiversi', 'diversi', 'divers', 'persoanafizica', 'persoanefizice', 'pf', 'retail', 'perakende', 'musteri', 'musteriler', 'nakit', 'cash',
+        'test', 'soldinitial', 'soldinitiale', 'openingbalance', 'acilis', 'acilisbakiyesi', 'necunoscut', 'anonim', 'bilinmiyor'];
+
     private const LEGAL_FORMS = ['SC', 'SRL', 'SA', 'SRLD', 'PFA', 'II', 'IF', 'SNC', 'SCS', 'LTD', 'LIMITED', 'LLC', 'INC', 'CORP', 'CO', 'PLC', 'GMBH', 'AG', 'KG', 'OHG', 'UG',
         'SAS', 'SARL', 'EURL', 'SPA', 'SRLS', 'BV', 'NV', 'AS', 'AB', 'OY', 'EOOD', 'OOD', 'AD', 'KFT', 'ZRT', 'SPZOO', 'SRO', 'STI', 'TIC', 'SAN', 'VE', 'LTDSTI', 'AS'];
 
@@ -85,9 +89,12 @@ final class ImportNormalizer
     /**
      * @param array<int, string> $mapping column index => field
      * @param list<string> $cells
-     * @return array{values: array<string, mixed>, issues: array<string, string>, outcome: string, fingerprint: string}
+     * @return array{values: array<string, mixed>, issues: array<string, string>, outcome: string, fingerprint: string, flags: list<string>}
+     *
+     * With $legacy (LEGACY_CUSTOMER_LIST) every row with any mapped value stays: the customer label is kept exactly as
+     * read and is NOT treated as a legal name, so nothing is derived from it (no prefix removal, no inferred country).
      */
-    public static function normalize(array $mapping, array $cells, string $sourceSystem): array
+    public static function normalize(array $mapping, array $cells, string $sourceSystem, bool $legacy = false): array
     {
         $raw = [];
         foreach ($mapping as $index => $field) {
@@ -102,6 +109,12 @@ final class ImportNormalizer
         $v['commercialName'] = self::clip($raw['commercialName'] ?? null, 255);
         if ($v['legalName'] === null && $v['commercialName'] !== null) {
             $issues['legalName'] = 'missing_used_commercial_name';
+        }
+        $sourceName = $raw['legalName'] ?? $raw['commercialName'] ?? null;
+        $sourceCode = isset($raw['legacyCustomerCode']) ? mb_substr($raw['legacyCustomerCode'], 0, 255) : null;
+        if ($legacy) {
+            $v['legalName'] = null;
+            $issues['legalName'] = 'source_label_not_verified';
         }
         $country = null;
         if (isset($raw['countryCode'])) {
@@ -180,7 +193,7 @@ final class ImportNormalizer
             }
         }
         $v['notes'] = self::clip($raw['notes'] ?? null, 2000);
-        $name = $v['legalName'] ?? $v['commercialName'];
+        $name = $v['legalName'] ?? $v['commercialName'] ?? ($legacy ? $sourceName : null);
         $v['nameKey'] = $name === null ? null : self::nameKey($name);
         foreach (self::KEY_FIELDS as $field) {
             $present = $field === 'taxIdentifier' ? $v['taxNormalized'] !== null : $v[$field] !== null;
@@ -188,7 +201,9 @@ final class ImportNormalizer
                 $issues[$field] = 'missing';
             }
         }
-        if ($name === null || $v['nameKey'] === null) {
+        if ($legacy) {
+            $outcome = $raw === [] ? 'rejected' : 'incomplete';
+        } elseif ($name === null || $v['nameKey'] === null) {
             $outcome = 'rejected';
         } else {
             $complete = $v['legalName'] !== null && $v['countryCode'] !== null && $v['taxNormalized'] !== null && !isset($issues['taxIdentifier']);
@@ -197,8 +212,55 @@ final class ImportNormalizer
         $identity = $v;
         unset($identity['notes']);
         ksort($identity);
-        $fingerprint = hash('sha256', $sourceSystem . '|' . json_encode($identity, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE), true);
-        return ['values' => $v, 'issues' => $issues, 'outcome' => $outcome, 'fingerprint' => $fingerprint];
+        $material = $legacy ? 'legacy|' . json_encode([$sourceName, $sourceCode, $identity], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE)
+            : $sourceSystem . '|' . json_encode($identity, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
+        $v['sourceCustomerName'] = $sourceName;
+        $v['sourceCustomerCode'] = $sourceCode;
+        return ['values' => $v, 'issues' => $issues, 'outcome' => $outcome, 'fingerprint' => hash('sha256', $material, true), 'flags' => self::reviewFlags($v)];
+    }
+
+    /** Review metadata for one row. Indicators for a human reviewer only; nothing here decides anything. @return list<string> */
+    public static function reviewFlags(array $v): array
+    {
+        $flags = [];
+        $name = $v['sourceCustomerName'] ?? $v['legalName'] ?? $v['commercialName'] ?? null;
+        if ($name !== null && self::hasLegacyPassivePrefix($name)) {
+            $flags[] = 'EMPLOYEE_REPORTED_PASSIVE_UNVERIFIED';
+        }
+        if ($name !== null && self::looksCancelled($name)) {
+            $flags[] = 'CANCELLED_LOOKING_NAME';
+        }
+        if ($name === null || self::isPlaceholderName($name)) {
+            $flags[] = 'PLACEHOLDER_NAME';
+        }
+        if (($v['phone'] ?? null) !== null && ($v['phoneKey'] ?? null) === null) {
+            $flags[] = 'PLACEHOLDER_PHONE';
+        }
+        if (($v['taxNormalized'] ?? null) === null) {
+            $flags[] = 'MISSING_TAX_IDENTIFIER';
+        }
+        if (($v['countryCode'] ?? null) === null) {
+            $flags[] = 'MISSING_COUNTRY';
+        }
+        return $flags;
+    }
+
+    /** Repeated Z or X at the start of the original label. Employees call these "passive"; that claim is unverified. */
+    public static function hasLegacyPassivePrefix(string $name): bool
+    {
+        return preg_match('/^[\s.\-_*#]*(?:z{2,}|x{2,})/iu', $name) === 1;
+    }
+
+    public static function looksCancelled(string $name): bool
+    {
+        $ascii = strtoupper(self::ascii($name));
+        return str_contains($ascii, 'ANULAT') || str_contains($ascii, 'IPTAL');
+    }
+
+    public static function isPlaceholderName(string $name): bool
+    {
+        $key = self::key($name);
+        return $key === '' || in_array($key, self::PLACEHOLDER_NAMES, true) || preg_match('/^(.)\1*$/D', $key) === 1 || self::nameKey($name) === null;
     }
 
     /** Upper-case ASCII name without punctuation and legal-form words: "S.C. Ana Textil S.R.L." -> "ANA TEXTIL". */
@@ -218,6 +280,9 @@ final class ImportNormalizer
             return null;
         }
         $digits = (string) preg_replace('/\D+/', '', $phone);
+        if (preg_match('/^(\d)\1*$/D', $digits) === 1) {
+            return null;
+        }
         return strlen($digits) >= 7 && strlen($digits) <= 18 ? substr($digits, -9) : null;
     }
 

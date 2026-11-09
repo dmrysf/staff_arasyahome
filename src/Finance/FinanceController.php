@@ -74,6 +74,7 @@ final readonly class FinanceController
                 (bool) preg_match('#^/finance/imports/(' . self::UUID . ')$#D', $path, $m) => $this->imports->detail($actor, $m[1]),
                 (bool) preg_match('#^/finance/imports/(' . self::UUID . ')/rows$#D', $path, $m) => $this->imports->rows($actor, $m[1], $q),
                 $path === '/finance/cases' => $this->caseQueries->list($actor, $q),
+                $path === '/finance/cases/facets' => $this->caseQueries->facets($actor),
                 (bool) preg_match('#^/finance/cases/(' . self::UUID . ')$#D', $path, $m) => $this->caseQueries->detail($actor, $m[1]),
                 $path === '/finance/accounts' => $this->onboardingQueries->list($actor, $q),
                 (bool) preg_match('#^/finance/accounts/(' . self::UUID . ')$#D', $path, $m) => $this->onboardingQueries->detail($actor, $m[1]),
@@ -111,6 +112,9 @@ final readonly class FinanceController
             $path === '/finance/cases' => $this->cases->createManual($actor, $body, $key, $id),
             $path === '/finance/cases/from-b2b' => $this->cases->sweepB2b($actor, $body, $key, $id),
             (bool) preg_match('#^/finance/cases/(' . self::UUID . ')/duplicates/(' . self::UUID . ')/resolve$#D', $path, $m) => $this->cases->resolveDuplicate($actor, $m[1], $m[2], $body, $key, $id),
+            (bool) preg_match('#^/finance/cases/(' . self::UUID . ')/flags/(' . self::UUID . ')/resolve$#D', $path, $m) => $this->cases->resolveFlag($actor, $m[1], $m[2], $body, $key, $id),
+            (bool) preg_match('#^/finance/cases/(' . self::UUID . ')/supervision$#D', $path, $m) => $this->cases->supervision($actor, $m[1], $body, $key, $id),
+            (bool) preg_match('#^/finance/cases/(' . self::UUID . ')/comments$#D', $path, $m) => $this->cases->comment($actor, $m[1], $body, $key, $id),
             (bool) preg_match('#^/finance/cases/(' . self::UUID . ')/(claim|release|update|checklist|request-information|mark-duplicate|return|submit|approve|reject|reopen|link)$#D', $path, $m) => match ($m[2]) {
                 'claim' => $this->cases->claim($actor, $m[1], $body, $key, $id),
                 'release' => $this->cases->release($actor, $m[1], $body, $key, $id),
@@ -125,8 +129,9 @@ final readonly class FinanceController
                 'link' => $this->cases->linkCompany($actor, $m[1], $body, $key, $id),
             },
             $path === '/finance/accounts' => $this->onboarding->open($actor, $body, $key, $id),
-            (bool) preg_match('#^/finance/accounts/(' . self::UUID . ')/(draft|submit|verify|return|post|dispute|reopen|currency-issue|correct-currency)$#D', $path, $m) => match ($m[2]) {
+            (bool) preg_match('#^/finance/accounts/(' . self::UUID . ')/(draft|overlap|submit|verify|return|post|dispute|reopen|currency-issue|correct-currency)$#D', $path, $m) => match ($m[2]) {
                 'draft' => $this->onboarding->draft($actor, $m[1], $body, $key, $id),
+                'overlap' => $this->onboarding->reconcileOverlap($actor, $m[1], $body, $key, $id),
                 'submit' => $this->onboarding->submit($actor, $m[1], $body, $key, $id),
                 'verify' => $this->onboarding->verify($actor, $m[1], $body, $key, $id),
                 'return' => $this->onboarding->returnProposal($actor, $m[1], $body, $key, $id),
@@ -160,10 +165,10 @@ final readonly class FinanceController
             'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' => 'xlsx',
             default => throw new ApiException(415, 'UNSUPPORTED_MEDIA_TYPE', 'Upload a CSV or XLSX file.'),
         };
-        FinanceInput::only($q, ['source', 'encoding', 'name']);
+        FinanceInput::only($q, ['source', 'encoding', 'name', 'profile']);
         $result = $this->imports->upload($actor, [
             'body' => $request->body, 'format' => $format, 'fileName' => (string) ($q['name'] ?? 'import.' . $format),
-            'source' => (string) ($q['source'] ?? ($format === 'xlsx' ? 'XLSX' : 'CSV')), 'encoding' => (string) ($q['encoding'] ?? 'utf-8'),
+            'source' => (string) ($q['source'] ?? ($format === 'xlsx' ? 'XLSX' : 'CSV')), 'encoding' => (string) ($q['encoding'] ?? 'utf-8'), 'profile' => (string) ($q['profile'] ?? 'STANDARD'),
         ], $key, $id);
         unset($result['status']);
         return $result;
@@ -196,6 +201,7 @@ final readonly class FinanceController
             'authorizationVersion' => $actor->authorizationVersion,
             'capabilities' => FinanceAccess::capabilities($this->authorization, $actor),
             'openingBalancePostingEnabled' => $this->config->financeOpeningBalancePostingEnabled(),
+            'riskLimitAuthority' => in_array($actor->employeeUuid, $this->config->financeRiskLimitAuthorityList(), true),
         ];
     }
 
