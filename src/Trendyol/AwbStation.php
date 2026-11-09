@@ -24,10 +24,12 @@ use Throwable;
  *
  * Owner rule (2026-11-09): a Trendyol order that reaches canonical stage 13 (`packing`, Împachetare) appears in the
  * station automatically; the employee prints the original Trendyol shipping label and may print it again at any time.
- * There is no approval, no extra stage, no stage 14 check and no forced print.
+ * There is no approval, no extra stage, no stage 14 check and no forced print. Owner addition (API 2.66.0): open orders
+ * at stage 14 (`delivery`, Livrare) are listed too, until stage 14 is completed.
  *
- * - The queue is derived on every request from operational_orders (source `trendyol`, stage `packing`, still open).
- *   Nothing enqueues an order, nothing moves a stage, and orders that were already at stage 13 are included.
+ * - The queue is derived on every request from operational_orders (source `trendyol`, stage `packing` or `delivery`,
+ *   still open, not stopped). Nothing enqueues an order and nothing moves a stage. `stage=all|13|14` filters; without
+ *   it the queue lists stage 13 only, exactly as API 2.65.0 did, so Staff 2.47.0 keeps working during the deployment.
  * - A label is fetched only when an employee asks for it: one fresh read of the exact linked Trendyol shipment package
  *   (the order's source identity `trendyol:<packageId>` and trendyol_packages.released_order_uuid must agree), then
  *   Trendyol's common label service for that package's current cargo tracking number, then the PDF from Trendyol's
@@ -46,6 +48,10 @@ final readonly class AwbStation
     public const PRINT = 'trendyol.awb.print';
     public const STAGE_ID = 'packing';
     public const STAGE_ORDINAL = 13;
+    /** Stages whose open Trendyol orders the queue lists, with their canonical ordinal (13 Împachetare, 14 Livrare). */
+    public const QUEUE_STAGES = ['packing' => 13, 'delivery' => 14];
+    /** Queue filter => stages. No filter means stage 13 only (the API 2.65.0 contract). */
+    private const STAGE_FILTERS = ['all' => ['packing', 'delivery'], '13' => ['packing'], '14' => ['delivery']];
     public const DEFAULT_LIMIT = 50;
     public const MAX_LIMIT = 100;
     /** Marketplace statuses whose forward label must never be printed (cancelled or coming back). */
@@ -89,14 +95,16 @@ final readonly class AwbStation
     // ---------------------------------------------------------------- queries
 
     /**
-     * Trendyol orders at stage 13, newest arrival at the stage first. `q` narrows by order number prefix; `cursor` is the
-     * opaque value of the previous page.
+     * Open Trendyol orders at stage 13 and/or 14 (`stage` = all, 13 or 14; default 13), newest arrival at their current
+     * stage first. `q` narrows by order number prefix; `cursor` is the opaque value of the previous page.
      *
      * @return array<string, mixed>
      */
-    public function queue(EmployeeIdentity $actor, ?string $search, ?string $cursor, ?string $limit): array
+    public function queue(EmployeeIdentity $actor, ?string $search, ?string $cursor, ?string $limit, ?string $stage = null): array
     {
         $this->authorization->require($actor, self::VIEW);
+        $filter = $stage === null || $stage === '' ? '13' : $stage;
+        $stages = self::STAGE_FILTERS[$filter] ?? throw new ApiException(400, 'INVALID_REQUEST', 'Request fields are invalid.');
         $size = $limit === null || $limit === '' ? self::DEFAULT_LIMIT : (preg_match('/^[1-9][0-9]{0,2}$/D', $limit) === 1 ? min(self::MAX_LIMIT, (int) $limit) : throw new ApiException(400, 'INVALID_REQUEST', 'Request fields are invalid.'));
         $search = $search === null ? '' : trim($search);
         if (strlen($search) > 64 || preg_match('/[[:cntrl:]]/', $search) === 1) {
@@ -104,21 +112,22 @@ final readonly class AwbStation
         }
         $after = $cursor === null || $cursor === '' ? null : $this->decodeCursor($cursor);
 
-        $where = "o.source_key = 'trendyol' AND o.production_stage_id = ? AND o.production_completed_at IS NULL AND o.operational_status = 'in_progress' AND o.production_stopped_at IS NULL";
-        $params = [self::STAGE_ID];
+        $open = "o.source_key = 'trendyol' AND o.production_completed_at IS NULL AND o.operational_status = 'in_progress' AND o.production_stopped_at IS NULL";
+        $where = $open . ' AND o.production_stage_id IN (' . implode(', ', array_fill(0, count($stages), '?')) . ')';
+        $params = $stages;
         $searchSql = '';
         $searchParams = [];
         if ($search !== '') {
             $searchSql = " AND (o.order_number LIKE ? ESCAPE '!' OR o.source_order_id = ?)";
             $searchParams = [strtr(ltrim($search, '#'), ['!' => '!!', '%' => '!%', '_' => '!_']) . '%', ltrim($search, '#')];
         }
-        // The arrival at stage 13 is the latest activity that moved the order into `packing` (index order_uuid, occurred_at);
-        // an order without such an event (older data) falls back to its last production change.
+        // The arrival at the current stage is the latest activity that moved the order into it (index order_uuid,
+        // occurred_at); an order without such an event (older data) falls back to its last production change.
         $inner = 'SELECT ' . self::ORDER_COLUMNS . ",
-                COALESCE((SELECT MAX(e.occurred_at) FROM order_activity_events e WHERE e.order_uuid = o.order_uuid AND e.to_stage_id = ?), o.production_changed_at, o.updated_at) AS entered_at
+                COALESCE((SELECT MAX(e.occurred_at) FROM order_activity_events e WHERE e.order_uuid = o.order_uuid AND e.to_stage_id = o.production_stage_id), o.production_changed_at, o.updated_at) AS entered_at
             FROM operational_orders o WHERE {$where}{$searchSql}";
         $sql = "SELECT * FROM ({$inner}) q";
-        $outer = [self::STAGE_ID, ...$params, ...$searchParams];
+        $outer = [...$params, ...$searchParams];
         if ($after !== null) {
             $sql .= ' WHERE q.entered_at < ? OR (q.entered_at = ? AND q.order_uuid < ?)';
             array_push($outer, $after[0], $after[0], $after[1]);
@@ -131,12 +140,19 @@ final readonly class AwbStation
         $rows = array_slice($rows, 0, $size);
         $last = $rows === [] ? null : $rows[count($rows) - 1];
 
-        $count = $this->pdo->prepare("SELECT COUNT(*) FROM operational_orders o WHERE {$where}");
-        $count->execute($params);
+        $count = $this->pdo->prepare("SELECT o.production_stage_id, COUNT(*) FROM operational_orders o WHERE {$open} AND o.production_stage_id IN ('packing', 'delivery') GROUP BY o.production_stage_id");
+        $count->execute();
+        $totals = array_map('intval', $count->fetchAll(PDO::FETCH_KEY_PAIR));
+        $perStage = [];
+        foreach (self::QUEUE_STAGES as $id => $ordinal) {
+            $perStage[] = ['id' => $id, 'ordinal' => $ordinal, 'total' => $totals[$id] ?? 0];
+        }
         return [
             'generatedAt' => $this->iso($this->nowSql()),
             'stage' => ['id' => self::STAGE_ID, 'ordinal' => self::STAGE_ORDINAL],
-            'total' => (int) $count->fetchColumn(),
+            'filter' => $filter,
+            'stages' => $perStage,
+            'total' => array_sum(array_map(static fn (string $id): int => $totals[$id] ?? 0, $stages)),
             'items' => $this->items($rows),
             'nextCursor' => $more && $last !== null ? $this->encodeCursor((string) $last['entered_at'], (string) $last['order_uuid']) : null,
             'capabilities' => ['print' => $this->authorization->can($actor, self::PRINT)],
@@ -375,8 +391,8 @@ final readonly class AwbStation
     private function ordersWhere(string $condition, array $params): array
     {
         $statement = $this->pdo->prepare('SELECT ' . self::ORDER_COLUMNS . ",
-                CASE WHEN o.production_stage_id = 'packing'
-                    THEN COALESCE((SELECT MAX(e.occurred_at) FROM order_activity_events e WHERE e.order_uuid = o.order_uuid AND e.to_stage_id = 'packing'), o.production_changed_at, o.updated_at)
+                CASE WHEN o.production_stage_id IN ('packing', 'delivery')
+                    THEN COALESCE((SELECT MAX(e.occurred_at) FROM order_activity_events e WHERE e.order_uuid = o.order_uuid AND e.to_stage_id = o.production_stage_id), o.production_changed_at, o.updated_at)
                     ELSE (SELECT MAX(e.occurred_at) FROM order_activity_events e WHERE e.order_uuid = o.order_uuid AND e.to_stage_id = 'packing') END AS entered_at
             FROM operational_orders o WHERE {$condition} ORDER BY o.created_at DESC, o.order_uuid DESC LIMIT 10");
         $statement->execute($params);
@@ -401,7 +417,7 @@ final readonly class AwbStation
             $prints[(string) $row['order_uuid']] = ['count' => (int) $row['prints'], 'lastAt' => $this->iso((string) $row['last_at'])];
         }
         return array_map(function (array $row) use ($prints): array {
-            $atStation = $row['production_stage_id'] === self::STAGE_ID && $row['production_completed_at'] === null && $row['operational_status'] === 'in_progress' && $row['production_stopped_at'] === null;
+            $atStation = isset(self::QUEUE_STAGES[(string) $row['production_stage_id']]) && $row['production_completed_at'] === null && $row['operational_status'] === 'in_progress' && $row['production_stopped_at'] === null;
             return [
                 'orderId' => (string) $row['order_uuid'],
                 'globalOrderId' => (string) $row['global_order_id'],
