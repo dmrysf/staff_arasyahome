@@ -989,3 +989,21 @@ test('Document scope conditions are default deny and never interpolate source ke
     $condition = \Arasya\Operations\Document\DocumentScopePolicy::condition(["trendhome", "x' OR '1'='1"], 'o.source_key', $parameters);
     expect($condition === 'o.source_key IN (?, ?)' && $parameters === ['x', 'trendhome', "x' OR '1'='1"], 'sources are bound parameters');
 });
+
+test('Risk and limit decision authority ignores root, roles and permissions', function (): void {
+    $root = new EmployeeIdentity(
+        '00000000-0000-4000-8000-0000000000aa', null, 'root', 'root', 'hash', 'Root', 'management', 'Management', 'active',
+        'root', 'active', 'active', ['finance.risk.approve', 'finance.credit.approve', 'finance.credit.revoke'], [],
+        ['staff', 'finance', 'dashboard', 'b2b'], false, 1, true,
+    );
+    $empty = new \Arasya\Operations\Finance\Risk\DecisionAuthority([]);
+    expect($root->isRoot && !$empty->allows($root), 'empty allowlist denies root');
+    try {
+        $empty->require($root);
+        expect(false, 'root passed an empty allowlist');
+    } catch (\Arasya\Operations\Http\ApiException $e) {
+        expect($e->status === 403 && $e->errorCode === 'RISK_LIMIT_AUTHORITY_REQUIRED', 'root is refused with 403');
+    }
+    $other = new \Arasya\Operations\Finance\Risk\DecisionAuthority(['00000000-0000-4000-8000-0000000000bb']);
+    expect(!$other->allows($root), 'an allowlist naming someone else still denies root');
+});
