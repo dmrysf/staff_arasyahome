@@ -87,7 +87,7 @@ jobs:
         run: php operations-api/tests/run.php && php operations-api/tests/order-calculator.php && php operations-api/tests/production-ticket-quantity.php && php operations-api/tests/web-shop-ticket.php
 
       - name: Guard inbound-only source integrations
-        run: php operations-api/tests/inbound-only-guard.php
+        run: php operations-api/tests/inbound-only-guard.php && php operations-api/tests/trendyol-label-check.php
 
       - name: Confirmare source access (protocol, SSRF guard, client trust, strict detail)
         run: php operations-api/tests/source-access.php

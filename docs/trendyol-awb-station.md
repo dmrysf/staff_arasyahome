@@ -138,10 +138,66 @@ A named employee receives the same template and opens the station from Staff hom
 
 1. Merge order and versions: 050 belongs to draft #123 (API 2.64.0, Staff 2.46.0). This branch uses 051, API 2.65.0 and Staff 2.47.0, so whichever merges second resolves the migration lists and the Staff release list.
 2. Deploy the API first, run migration 051 with a backup, then deploy Staff.
-3. With owner approval, make one read-only check against one real order that is ready for shipping: does `common-label/query` answer for this seller, with or without `storeFrontCode`?
-4. Check real packages that are not plain `FANCOURIER` or not Romanian. Live data has shown `FANEX` and shipments to GR and BG. The documentation lists only `FANCOURIER` for RO.
+3. With owner approval, run the read-only check in section 11 and apply its test table.
+4. Decide what happens to any carrier or country the check reports as not supported.
 5. Confirm the CDN host of a real label equals `cdn.dsmcdn.com`. If not, the label is refused until the list is reviewed.
 6. Print one real label on the station printer: check size, barcode and scale. No automated test can prove this.
 7. Create the station account (section 8).
 
 Rollback: an API before 2.65.0 ignores the table. Removing the role assignment turns the station off.
+
+## 11. Read-only label check on the real account
+
+`operations-api/bin/trendyol-label-check.php` answers whether this seller gets an official label per carrier and destination. It needs explicit owner approval, because it uses the live credentials and reads real packages.
+
+Run it from a checkout. The script travels over stdin, works on the release already live and leaves nothing on the server:
+
+```
+ssh <host> '/usr/local/bin/php -d display_errors=0 --' < operations-api/bin/trendyol-label-check.php
+```
+
+Calls: at most 3 package list pages, at most 24 label queries (2 packages per group, without and with `storeFrontCode`) and one PDF per group, with pauses. Allow about two minutes. It is safe to repeat.
+
+`tests/trendyol-label-check.php` proves without a network that:
+
+- GET is the only verb and no request body exists, in the source and in the options handed to PHP's stream layer;
+- only the package list, `common-label/query` and the CDN are requested; the label creation service, status, tracking and courier APIs do not exist in the file;
+- a cancelled package is never queried; a foreign host, a redirect or a ZPL answer is never downloaded;
+- no credential reaches the CDN; no database connection and no file write exist;
+- the report contains no credential, order number, package id, tracking number, URL or customer value.
+
+The PDF of a real label is held in server memory for the time of the structure check. It is never printed, stored or read as text.
+
+### Test table
+
+Every `verdict` comes from the `verdicts` list of the report. `FANEX` and the GR and BG rows are not in the official carrier table, so their result is unknown until this runs.
+
+| # | Carrier | Destination | Package tested | GO condition | If it fails |
+|---|---|---|---|---|---|
+| 1 | FANCOURIER | RO | Active (`Picking` and similar) | `SUPPORTED_PDF` | NO-GO for the station |
+| 2 | FANCOURIER | RO | `Shipped` | A label, for reprints after shipping | Reprint limited to before shipping; document it |
+| 3 | FANEX | RO | Active | `SUPPORTED_PDF` | These packages stay in Seller Panel; the station shows a short refusal |
+| 4 | FANCOURIER or other | GR | Active | `SUPPORTED_PDF` | As row 3 |
+| 5 | FANCOURIER or other | BG | Active | `SUPPORTED_PDF` | As row 3 |
+| 6 | Any other carrier found | Any | Active | `SUPPORTED_PDF` | As row 3 |
+
+Read together with each row:
+
+| Field | What it decides | Required |
+|---|---|---|
+| `worksWithoutStoreFront`, `worksWithStoreFront` | Whether `ARASYA_TRENDYOL_STORE_FRONT_CODE` must be set. It is absent on the live server today. A GR or BG label may need its own code, while the setting holds one | At least one is true. If only one code works per country, the client needs a per-country header before GO |
+| `hosts` | The CDN allow list | Exactly `cdn.dsmcdn.com` |
+| `formats` | Browser printing | `PDF` |
+| `labels` | Parcels per shipment | 1 or more, screen handles both |
+| `documents[].pageSizes` | Printer label size | One known size |
+| `documents[].validPdf` | Station validation accepts it | `true` |
+| `documents[].bytes` | The 5 MiB limit | Under 5 MiB |
+| `urlHasQuery`, `cacheControl` | Whether the link looks temporary | Informational; the station never stores a link |
+
+Verdict meaning:
+
+- `SUPPORTED_PDF`: a label was returned, downloaded and valid.
+- `LABEL_ANSWERED_PDF_NOT_CONFIRMED`: a label was returned but not a valid downloadable PDF. See `formats`, `hosts` and `documents[].outcome`.
+- `NOT_SUPPORTED_NO_LABEL`: an active package got no label.
+- `NO_LABEL_ONLY_FINISHED_PACKAGES_TESTED`: only shipped or delivered packages were available. Not conclusive.
+- `UNTESTED_NO_ELIGIBLE_PACKAGE`: no package with a tracking number in 13 days. Not conclusive.
