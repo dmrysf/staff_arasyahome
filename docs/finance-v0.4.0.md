@@ -147,12 +147,41 @@ The following are not changed:
 
 Opening-balance posting stays `disabled` by default.
 
-## 9. Provisioning (a separate, explicitly approved step)
+## 9. Finance configuration gate and provisioning
+
+### 9.1 Why a gate
+
+Releases before 2.63.0 dropped every `ARASYA_FINANCE_*` key in `ConfigLoader`. A value already written in the private configuration had no effect. From 2.63.0 it takes effect at once. The first 2.63.0 deployment must therefore not turn on a value that nobody reviewed.
+
+Expected state until the separate provisioning step:
+
+| Key | Expected |
+|---|---|
+| `ARASYA_FINANCE_OPENING_BALANCE_POSTING` | absent or exactly `disabled` |
+| `ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS` | absent or empty (nobody decides a colour or limit) |
+| `ARASYA_FINANCE_CEO_EMPLOYEE_UUID` | absent or empty (nobody decides a CEO exception) |
+
+### 9.2 The check
+
+`php bin/finance-config-check.php` needs no database. It prints key names and states only, never a value.
+
+- `scripts/cpanel-deploy-api.sh` runs it before activation, also with `DRY_RUN=1`. When it fails, nothing is activated and the active release stays as it was.
+- `bin/readiness.php` prints the same lines.
+- A well-formed non-default value fails with `finance_config_not_acknowledged` and prints `finance_config_fingerprint`, a SHA-256 of the exact values.
+- An authorized person who reviewed the values records that hash as `ARASYA_FINANCE_CONFIG_ACK` in the private configuration. Any later change of a value makes it stale (`finance_config_acknowledgement_stale`), and the next deployment fails again.
+- A malformed value always fails: an unrecognized posting value, a name or other non-UUID entry in the allowlist, a duplicate entry, or an invalid CEO UUID. The API would refuse to start with the last three.
+- The running API never reads `ARASYA_FINANCE_CONFIG_ACK`. The gate guards deployments only. A configuration change between deployments takes effect without it, so provisioning stays a deliberate, approved step.
+- The check reads the private configuration file and the deployment shell's environment. A variable set only in the web server environment is not visible to it. Production uses `~/arasya-config/secrets.json`.
+
+Before the first 2.63.0 deployment, run `DRY_RUN=1 /bin/bash ./scripts/cpanel-deploy-api.sh` from the new release. Expect `OK finance_config_defaults`. Any `FAIL` line means stop and review the private configuration first. Do not record an acknowledgement to make the deployment pass.
+
+### 9.3 Provisioning (a separate, explicitly approved step)
 
 1. The owner confirms the two Central IAM employee records. Read the UUIDs from the registry, never from names.
 2. Grant each one the Finance application and a role with exactly the permissions in §2, guard 2.
 3. Set `ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS=<uuid-mesut>,<uuid-zelal>` in the private configuration.
-4. Each owner signs in again, then checks that `/finance/access` returns `owner.decisionMaker: true`.
+4. Run `php bin/finance-config-check.php`. Confirm `WARN finance_risk_limit_authority_count_2` and no other change, then record the printed fingerprint as `ARASYA_FINANCE_CONFIG_ACK`.
+5. Each owner signs in again, then checks that `/finance/access` returns `owner.decisionMaker: true`.
 
 None of this is done in this release.
 

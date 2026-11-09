@@ -35,6 +35,11 @@ done
 case "$api_root/" in "$public_path/"*) api_fail "Private runtime cannot be inside public root." ;; esac
 case "$public_path/" in "$api_root/"*) api_fail "Public root cannot be inside private runtime." ;; esac
 
+# From 2.63.0 the ARASYA_FINANCE_* keys take effect (earlier releases dropped them). Refuse to activate a release that
+# would turn on an unreviewed Finance value. Runs in dry-run too. Prints key names and states only, never a value.
+php "$release_root/bin/finance-config-check.php" \
+  || api_fail "Finance configuration check failed; nothing was activated. See docs/finance-v0.4.0.md section 9."
+
 if [[ "${DRY_RUN:-0}" == "1" ]]; then api_log "Dry-run passed for source commit $source_commit."; exit 0; fi
 
 releases_root="$api_root/releases"

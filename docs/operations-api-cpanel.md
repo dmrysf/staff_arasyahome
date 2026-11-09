@@ -18,7 +18,7 @@ The deploy validates commands, package checksums, structure, and `release.json.s
 
 On the first atomic release it attempts to snapshot a valid legacy `current/` release but never renames or deletes `current/`. If `active-release` is absent, runtime resolution may use `current/`; if the pointer exists but is malformed or its target is invalid, startup fails closed. HOME-less LiteSpeed derives only the expected account layout from the trusted `api.arasyahome.ro` public root. Private config derivation recognizes only `current/` or `releases/<40-char-sha>`, and rejects all paths inside API/Staff runtimes and public roots.
 
-Use `DRY_RUN=1 /bin/bash ./scripts/cpanel-deploy-api.sh` before activation when needed. Roll back code with a retained release script:
+Use `DRY_RUN=1 /bin/bash ./scripts/cpanel-deploy-api.sh` before activation when needed. From API 2.63.0 both the dry run and the deployment first run `bin/finance-config-check.php` and refuse to activate an unreviewed Finance configuration ([finance-v0.4.0.md](finance-v0.4.0.md) section 9). Roll back code with a retained release script:
 
 ```bash
 /bin/bash "$HOME/arasya-operations-api/releases/<sha>/scripts/cpanel-rollback-api.sh" <sha>

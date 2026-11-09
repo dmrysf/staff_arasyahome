@@ -23,6 +23,8 @@ for file in \
   bin/maintenance.php \
   bin/migration-status.php \
   bin/readiness.php \
+  bin/finance-config-check.php \
+  src/Config/FinanceConfigGuard.php \
   bin/order-qr.php \
   bin/sync-trendyol.php \
   bin/trendyol-intake.php \

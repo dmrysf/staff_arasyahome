@@ -47,6 +47,8 @@ final readonly class ConfigLoader
         'ARASYA_FINANCE_OPENING_BALANCE_POSTING',
         'ARASYA_FINANCE_CEO_EMPLOYEE_UUID',
         'ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS',
+        // Read only by FinanceConfigGuard (bin/finance-config-check.php), never by the running API.
+        'ARASYA_FINANCE_CONFIG_ACK',
     ];
 
     /**

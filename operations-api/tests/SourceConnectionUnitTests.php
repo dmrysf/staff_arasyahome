@@ -6,6 +6,7 @@ declare(strict_types=1);
 
 use Arasya\Operations\Config\Config;
 use Arasya\Operations\Config\ConfigLoader;
+use Arasya\Operations\Config\FinanceConfigGuard;
 use Arasya\Operations\Http\ApiException;
 use Arasya\Operations\Http\Request;
 use Arasya\Operations\Http\Response;
@@ -940,6 +941,34 @@ test('every global key Config reads survives ConfigLoader (regression: the Finan
     $owners = '00000000-0000-4000-8000-0000000000a1,00000000-0000-4000-8000-0000000000a2';
     $loaded = (new ConfigLoader(['HOME' => sys_get_temp_dir(), 'ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS' => $owners]))->load();
     expect(($loaded['ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS'] ?? null) === $owners, 'the owner allowlist reaches Config unchanged');
+});
+
+test('the Finance configuration guard refuses unreviewed Finance values and never reports a value', function (): void {
+    $a = '00000000-0000-4000-8000-0000000000a1';
+    $b = '00000000-0000-4000-8000-0000000000a2';
+    $fails = static fn (array $result): array => array_values(array_map(static fn (array $c): string => $c['check'], array_filter($result['checks'], static fn (array $c): bool => $c['state'] === 'FAIL')));
+    foreach ([[], ['ARASYA_FINANCE_OPENING_BALANCE_POSTING' => 'disabled'], ['ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS' => ' , ', 'ARASYA_FINANCE_CEO_EMPLOYEE_UUID' => '']] as $values) {
+        $result = FinanceConfigGuard::inspect($values);
+        expect($result['ok'] && $result['defaults'], 'the defaults pass without an acknowledgement');
+    }
+    expect($fails(FinanceConfigGuard::inspect(['ARASYA_FINANCE_OPENING_BALANCE_POSTING' => 'enabled'])) === ['finance_config_not_acknowledged']);
+    expect($fails(FinanceConfigGuard::inspect(['ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS' => $a])) === ['finance_config_not_acknowledged']);
+    expect($fails(FinanceConfigGuard::inspect(['ARASYA_FINANCE_CEO_EMPLOYEE_UUID' => $a])) === ['finance_config_not_acknowledged']);
+    expect($fails(FinanceConfigGuard::inspect(['ARASYA_FINANCE_OPENING_BALANCE_POSTING' => 'Enabled'])) === ['finance_opening_balance_posting_unrecognized']);
+    expect($fails(FinanceConfigGuard::inspect(['ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS' => 'Mesut Yeman,Zelal Yeman'])) === ['finance_risk_limit_authority_invalid_entries_2']);
+    expect($fails(FinanceConfigGuard::inspect(['ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS' => "{$a},{$a}"])) === ['finance_risk_limit_authority_duplicate_entries']);
+    expect($fails(FinanceConfigGuard::inspect(['ARASYA_FINANCE_CEO_EMPLOYEE_UUID' => 'mesut'])) === ['finance_ceo_employee_invalid']);
+    // The acknowledgement is the fingerprint of the exact reviewed values. Order and case of the list do not matter.
+    $reviewed = ['ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS' => "{$a},{$b}"];
+    $fingerprint = FinanceConfigGuard::inspect($reviewed)['fingerprint'];
+    expect(FinanceConfigGuard::inspect(['ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS' => strtoupper("{$b} , {$a}"), 'ARASYA_FINANCE_CONFIG_ACK' => $fingerprint])['ok']);
+    expect($fails(FinanceConfigGuard::inspect([...$reviewed, 'ARASYA_FINANCE_OPENING_BALANCE_POSTING' => 'enabled', 'ARASYA_FINANCE_CONFIG_ACK' => $fingerprint])) === ['finance_config_acknowledgement_stale']);
+    expect($fails(FinanceConfigGuard::inspect(['ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS' => $a, 'ARASYA_FINANCE_CONFIG_ACK' => $fingerprint])) === ['finance_config_acknowledgement_stale']);
+    $text = json_encode(FinanceConfigGuard::inspect([...$reviewed, 'ARASYA_FINANCE_CEO_EMPLOYEE_UUID' => $b, 'ARASYA_FINANCE_OPENING_BALANCE_POSTING' => 'enabled'])['checks'], JSON_THROW_ON_ERROR);
+    expect(!str_contains($text, $a) && !str_contains($text, $b), 'checks never contain a configured value');
+    // The acknowledgement key reaches the guard, and the running API never reads it.
+    expect(((new ConfigLoader(['HOME' => sys_get_temp_dir(), 'ARASYA_FINANCE_CONFIG_ACK' => $fingerprint]))->load()['ARASYA_FINANCE_CONFIG_ACK'] ?? null) === $fingerprint);
+    expect(!str_contains((string) file_get_contents(dirname(__DIR__) . '/src/Config/Config.php'), 'ARASYA_FINANCE_CONFIG_ACK'));
 });
 
 test('ARASYA_SOURCE_PAYMENT_GATE_<SOURCE> is loaded, and a mode other than off needs its confirmation key', function (): void {
