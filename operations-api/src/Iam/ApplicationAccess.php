@@ -110,6 +110,15 @@ final class ApplicationAccess
         'finance.credit.approve' => self::FINANCE,
         'finance.credit.revoke' => self::FINANCE,
         'finance.audit.view' => self::FINANCE,
+        // API 2.68.0 Finance collections (migration 052).
+        'finance.collections.record' => self::FINANCE,
+        'finance.collections.approve' => self::FINANCE,
+        'finance.ledger.request' => self::FINANCE,
+        'finance.ledger.approve' => self::FINANCE,
+        'finance.refunds.request' => self::FINANCE,
+        'finance.refunds.approve' => self::FINANCE,
+        'finance.refunds.payout' => self::FINANCE,
+        'finance.reconciliation.manage' => self::FINANCE,
         'finance.companies.supervise' => self::FINANCE,
         'finance.audit.sensitive' => self::FINANCE,
     ];

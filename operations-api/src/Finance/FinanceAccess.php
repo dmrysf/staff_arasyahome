@@ -40,6 +40,16 @@ final class FinanceAccess
     public const CREDIT_APPROVE = 'finance.credit.approve';
     public const CREDIT_REVOKE = 'finance.credit.revoke';
 
+    /** API 2.68.0: requests reach the ledger only after a second person approves (four eyes, also enforced in SQL). */
+    public const COLLECTIONS_RECORD = 'finance.collections.record';
+    public const COLLECTIONS_APPROVE = 'finance.collections.approve';
+    public const LEDGER_REQUEST = 'finance.ledger.request';
+    public const LEDGER_APPROVE = 'finance.ledger.approve';
+    public const REFUNDS_REQUEST = 'finance.refunds.request';
+    public const REFUNDS_APPROVE = 'finance.refunds.approve';
+    public const REFUNDS_PAYOUT = 'finance.refunds.payout';
+    public const RECONCILIATION_MANAGE = 'finance.reconciliation.manage';
+
     public const AUDIT_VIEW = 'finance.audit.view';
     public const AUDIT_SENSITIVE = 'finance.audit.sensitive';
 
@@ -64,6 +74,14 @@ final class FinanceAccess
         'canVerifyCredit' => self::CREDIT_VERIFY,
         'canApproveCredit' => self::CREDIT_APPROVE,
         'canRevokeCredit' => self::CREDIT_REVOKE,
+        'canRecordCollections' => self::COLLECTIONS_RECORD,
+        'canApproveCollections' => self::COLLECTIONS_APPROVE,
+        'canRequestLedgerCorrections' => self::LEDGER_REQUEST,
+        'canApproveLedgerCorrections' => self::LEDGER_APPROVE,
+        'canRequestRefunds' => self::REFUNDS_REQUEST,
+        'canApproveRefunds' => self::REFUNDS_APPROVE,
+        'canRecordRefundPayouts' => self::REFUNDS_PAYOUT,
+        'canManageReconciliation' => self::RECONCILIATION_MANAGE,
         'canViewAudit' => self::AUDIT_VIEW,
         'canViewSensitiveAudit' => self::AUDIT_SENSITIVE,
     ];

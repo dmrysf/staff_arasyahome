@@ -746,7 +746,9 @@ test('B2B commercial orders are isolated from production and their audit is inse
         $relative = substr($file->getPathname(), strlen($root) + 1);
         $source = (string) file_get_contents($file->getPathname());
         // Finance V0.3 reads one order only to bind a CEO exception record to it, and the review desk counts a linked company's orders; it never writes commercial data.
-        if (!str_starts_with($relative, 'B2B/') && $relative !== 'Database/AuthMaintenance.php' && $relative !== 'Finance/Credit/CreditService.php' && $relative !== 'Finance/Company/CaseQueries.php')
+        // Config/FinanceConfigGuard.php only names the ARASYA_B2B_ORDER_TYPES check (b2b_order_types_*); it runs no query.
+        if (!str_starts_with($relative, 'B2B/') && $relative !== 'Database/AuthMaintenance.php' && $relative !== 'Finance/Credit/CreditService.php' && $relative !== 'Finance/Company/CaseQueries.php'
+            && $relative !== 'Config/FinanceConfigGuard.php')
             expect(preg_match('/\bb2b_order/', $source) !== 1, $relative . ' must not read commercial data');
         if (str_starts_with($relative, 'Finance/'))
             expect(preg_match('/\b(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+b2b_order/i', $source) !== 1, $relative . ' must not write commercial data');
@@ -782,7 +784,7 @@ test('B2B company data remains isolated except an explicitly gated Finance read-
     }
     sort($readers);
     expect($readers === ['B2B/AccountCommands.php', 'B2B/AccountQueries.php', 'B2B/CompanyCommands.php', 'B2B/CompanyQueries.php', 'B2B/FinanceGateJournal.php', 'B2B/FinanceGateReadiness.php', 'B2B/OrderCommands.php', 'B2B/OrderStore.php', 'B2B/ProductionAnalyticsIdentity.php', 'B2B/ProductionCommands.php', 'B2B/ProjectCommands.php', 'B2B/ProjectQueries.php', 'Database/AuthMaintenance.php',
-        'Finance/Account/OnboardingQueries.php', 'Finance/Account/OnboardingService.php', 'Finance/Company/CaseQueries.php', 'Finance/Company/CaseService.php', 'Finance/Company/DuplicateFinder.php', 'Finance/Credit/CreditService.php', 'Finance/FinanceController.php', 'Finance/Risk/OwnerDecisionService.php', 'Finance/Risk/RiskService.php']);
+        'Finance/Account/OnboardingQueries.php', 'Finance/Account/OnboardingService.php', 'Finance/Company/CaseQueries.php', 'Finance/Company/CaseService.php', 'Finance/Company/DuplicateFinder.php', 'Finance/Credit/CreditService.php', 'Finance/FinanceController.php', 'Finance/Ledger/LedgerRequestQueries.php', 'Finance/Ledger/LedgerRequestService.php', 'Finance/Ledger/ReconciliationService.php', 'Finance/Risk/OwnerDecisionService.php', 'Finance/Risk/RiskService.php']);
     $canonical = (string) file_get_contents($root . '/Finance/Company/CaseService.php');
     expect(str_contains($canonical, "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'inactive'"), 'A Finance-created canonical company starts inactive');
     $analyticsIdentity=(string)file_get_contents($root.'/B2B/ProductionAnalyticsIdentity.php');
@@ -799,8 +801,11 @@ test('B2B current account ledger is insert-only, isolated from production and jo
         $relative = substr($file->getPathname(), strlen($root) + 1);
         $source = (string) file_get_contents($file->getPathname());
         expect(preg_match('/\b(UPDATE|DELETE\s+FROM)\s+b2b_account_(movements|allocations|allocation_releases|activity_events|movement_sequence)\b/i', $source) !== 1, "{$relative} must not change ledger rows");
-        $financeLedgerReaders = ['Finance/FinanceController.php', 'Finance/Account/OnboardingService.php', 'Finance/Account/OnboardingQueries.php', 'Finance/Risk/RiskService.php', 'Finance/Credit/CreditService.php', 'Finance/Company/CaseQueries.php'];
-        if (!str_starts_with($relative, 'B2B/') && $relative !== 'Database/AuthMaintenance.php' && !in_array($relative, $financeLedgerReaders, true))
+        // API 2.68.0: Finance ledger requests read the ledger to check and present them; they post through AccountLedger only.
+        $financeLedgerReaders = ['Finance/FinanceController.php', 'Finance/Account/OnboardingService.php', 'Finance/Account/OnboardingQueries.php', 'Finance/Risk/RiskService.php', 'Finance/Credit/CreditService.php', 'Finance/Company/CaseQueries.php',
+            'Finance/Ledger/LedgerRequestQueries.php', 'Finance/Ledger/LedgerRequestService.php'];
+        // Config/FinanceConfigGuard.php only names the ARASYA_B2B_ACCOUNT_WRITES check (b2b_account_writes_*); it runs no query.
+        if (!str_starts_with($relative, 'B2B/') && $relative !== 'Database/AuthMaintenance.php' && $relative !== 'Config/FinanceConfigGuard.php' && !in_array($relative, $financeLedgerReaders, true))
             expect(preg_match('/\bb2b_account_/', $source) !== 1, "{$relative} must not read current account data");
         // Finance writes the ledger only through the insert-only AccountLedger primitives, never with its own SQL.
         if (str_starts_with($relative, 'Finance/'))

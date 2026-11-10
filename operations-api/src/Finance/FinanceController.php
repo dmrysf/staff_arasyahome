@@ -49,6 +49,10 @@ final readonly class FinanceController
         private RiskService $risk,
         private CreditService $credit,
         private OwnerDecisionService $owner,
+        private \Arasya\Operations\Finance\Ledger\LedgerRequestService $ledgerRequests,
+        private \Arasya\Operations\Finance\Ledger\LedgerRequestQueries $ledgerQueries,
+        private \Arasya\Operations\Finance\Ledger\ReconciliationService $reconciliation,
+        private \Arasya\Operations\B2B\AccountQueries $ledgerView,
     ) {
     }
 
@@ -88,8 +92,17 @@ final readonly class FinanceController
                 (bool) preg_match('#^/finance/credit/companies/(' . self::UUID . ')$#D', $path, $m) => $this->credit->detail($actor, $m[1]),
                 (bool) preg_match('#^/finance/companies/(' . self::UUID . ')/credit-profile$#D', $path, $m) => $this->credit->profile($actor, $m[1]),
                 $path === '/finance/audit' => $this->audit($actor, $q),
+                $path === '/finance/refused-attempts' => $this->refusedAttempts($actor, $q),
                 $path === '/finance/owner/companies' => $this->owner->list($actor, $q),
                 (bool) preg_match('#^/finance/owner/companies/(' . self::UUID . ')$#D', $path, $m) => $this->owner->detail($actor, $m[1]),
+                // API 2.68.0: ledger requests, the company ledger (same read model as B2B) and the bank reconciliation view.
+                $path === '/finance/ledger-requests' => $this->ledgerQueries->list($actor, $q),
+                (bool) preg_match('#^/finance/ledger-requests/(' . self::UUID . ')$#D', $path, $m) => $this->ledgerQueries->detail($actor, $m[1]),
+                $path === '/finance/reconciliation' => $this->ledgerQueries->reconciliation($actor, $q),
+                (bool) preg_match('#^/finance/ledger/companies/(' . self::UUID . ')$#D', $path, $m) => $this->ledgerView->summary($actor, $m[1]),
+                (bool) preg_match('#^/finance/ledger/companies/(' . self::UUID . ')/movements$#D', $path, $m) => $this->ledgerView->movements($actor, $m[1], $q),
+                (bool) preg_match('#^/finance/ledger/companies/(' . self::UUID . ')/movements/(' . self::UUID . ')$#D', $path, $m) => $this->ledgerView->movementDetail($actor, $m[1], $m[2]),
+                (bool) preg_match('#^/finance/ledger/companies/(' . self::UUID . ')/open-items$#D', $path, $m) => $this->ledgerView->openItems($actor, $m[1], $q),
                 default => throw new ApiException(404, 'NOT_FOUND', 'Finance route not found.'),
             });
         }
@@ -156,6 +169,18 @@ final readonly class FinanceController
             (bool) preg_match('#^/finance/owner/companies/(' . self::UUID . ')/risk$#D', $path, $m) => $this->owner->decideColor($actor, $m[1], $body, $key, $id),
             (bool) preg_match('#^/finance/owner/companies/(' . self::UUID . ')/credit$#D', $path, $m) => $this->owner->decideLimit($actor, $m[1], $body, $key, $id),
             (bool) preg_match('#^/finance/credit/exceptions/(' . self::UUID . ')/(approve|reject|withdraw)$#D', $path, $m) => $this->credit->decideException($actor, $m[1], $m[2], $body, $key, $id),
+            $path === '/finance/ledger-requests' => $this->ledgerRequests->create($actor, $body, $key, $id),
+            (bool) preg_match('#^/finance/ledger-requests/(' . self::UUID . ')/(update|submit|withdraw|approve|reject|payout|cancel-payout)$#D', $path, $m) => match ($m[2]) {
+                'update' => $this->ledgerRequests->update($actor, $m[1], $body, $key, $id),
+                'submit' => $this->ledgerRequests->submit($actor, $m[1], $body, $key, $id),
+                'withdraw' => $this->ledgerRequests->withdraw($actor, $m[1], $body, $key, $id),
+                'approve' => $this->ledgerRequests->approve($actor, $m[1], $body, $key, $id),
+                'reject' => $this->ledgerRequests->reject($actor, $m[1], $body, $key, $id),
+                'payout' => $this->ledgerRequests->payout($actor, $m[1], $body, $key, $id),
+                'cancel-payout' => $this->ledgerRequests->cancelPayout($actor, $m[1], $body, $key, $id),
+            },
+            (bool) preg_match('#^/finance/ledger/companies/(' . self::UUID . ')/allocations$#D', $path, $m) => $this->reconciliation->allocate($actor, $m[1], $body, $key, $id),
+            (bool) preg_match('#^/finance/ledger/companies/(' . self::UUID . ')/allocations/(' . self::UUID . ')/release$#D', $path, $m) => $this->reconciliation->release($actor, $m[1], $m[2], $body, $key, $id),
             default => throw new ApiException(404, 'NOT_FOUND', 'Finance route not found.'),
         };
         $status = (int) ($result['status'] ?? 200);
@@ -208,6 +233,7 @@ final readonly class FinanceController
             'authorizationVersion' => $actor->authorizationVersion,
             'capabilities' => FinanceAccess::capabilities($this->authorization, $actor),
             'openingBalancePostingEnabled' => $this->config->financeOpeningBalancePostingEnabled(),
+            'collectionsEnabled' => $this->config->financeCollectionsEnabled(),
             'riskLimitAuthority' => in_array($actor->employeeUuid, $this->config->financeRiskLimitAuthorityList(), true),
             'owner' => $this->owner->ownerStatus($actor),
         ];
@@ -289,6 +315,40 @@ final readonly class FinanceController
         ];
     }
 
+    /** Refused money commands (RefusedAttemptRecorder), newest first, 100 per page; `code` filters, `before` pages by id. */
+    private function refusedAttempts(\Arasya\Operations\Employee\EmployeeIdentity $actor, array $q): array
+    {
+        FinanceAccess::require($this->authorization, $actor, FinanceAccess::AUDIT_VIEW);
+        FinanceInput::only($q, ['code', 'before']);
+        $where = [];
+        $params = [];
+        if (isset($q['code'])) {
+            if (!in_array($q['code'], RefusedAttemptRecorder::CODES, true)) {
+                FinanceInput::fail('code', 'invalid');
+            }
+            $where[] = 'r.error_code = ?';
+            $params[] = $q['code'];
+        }
+        if (isset($q['before'])) {
+            if (!is_string($q['before']) || preg_match('/^[1-9]\d{0,18}$/D', $q['before']) !== 1) {
+                throw new ApiException(400, 'INVALID_CURSOR', 'Invalid cursor.');
+            }
+            $where[] = 'r.attempt_id < ?';
+            $params[] = (int) $q['before'];
+        }
+        $statement = $this->pdo->prepare('SELECT r.attempt_id, r.employee_uuid, e.display_name, r.http_method, r.route, r.http_status, r.error_code, r.request_id, r.occurred_at
+            FROM finance_refused_attempts r LEFT JOIN employees e ON e.employee_uuid = r.employee_uuid'
+            . ($where === [] ? '' : ' WHERE ' . implode(' AND ', $where)) . ' ORDER BY r.attempt_id DESC LIMIT 101');
+        $statement->execute($params);
+        $rows = $statement->fetchAll(PDO::FETCH_ASSOC);
+        $more = count($rows) > 100;
+        $rows = array_slice($rows, 0, 100);
+        return ['items' => array_map(static fn (array $r): array => [
+            'id' => (int) $r['attempt_id'], 'employeeId' => $r['employee_uuid'], 'employee' => $r['display_name'], 'method' => $r['http_method'],
+            'route' => $r['route'], 'status' => (int) $r['http_status'], 'code' => $r['error_code'], 'requestId' => $r['request_id'], 'at' => $r['occurred_at'],
+        ], $rows), 'nextBefore' => $more ? (string) $rows[99]['attempt_id'] : null];
+    }
+
     private function audit(\Arasya\Operations\Employee\EmployeeIdentity $actor, array $q): array
     {
         FinanceAccess::require($this->authorization, $actor, FinanceAccess::AUDIT_VIEW);
@@ -296,7 +356,7 @@ final readonly class FinanceController
         $where = [];
         $params = [];
         if (isset($q['entity'])) {
-            if (!in_array($q['entity'], ['import', 'case', 'onboarding', 'risk', 'policy', 'credit', 'exception'], true)) {
+            if (!in_array($q['entity'], ['import', 'case', 'onboarding', 'risk', 'policy', 'credit', 'exception', 'ledger_request', 'allocation'], true)) {
                 FinanceInput::fail('entity', 'invalid');
             }
             $where[] = 'a.entity_type = ?';

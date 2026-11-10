@@ -40,6 +40,21 @@ case "$public_path/" in "$api_root/"*) api_fail "Public root cannot be inside pr
 php "$release_root/bin/finance-config-check.php" \
   || api_fail "Finance configuration check failed; nothing was activated. See docs/finance-v0.4.0.md section 9."
 
+# Every migration shipped with this release must already be applied before it is activated (release plan: migrations
+# first, then the API). An API activated on an older schema fails on its first read of a new table or column. The check
+# prints migration names only. A dry run reports what is pending without failing, so it can run before the migrations.
+schema_report=""
+if schema_report="$(php "$release_root/bin/migration-status.php" 2>/dev/null)"; then
+  pending_migrations="$(printf '%s\n' "$schema_report" | grep '^PENDING ' | cut -d' ' -f2 | tr '\n' ' ' || true)"
+  if [[ -n "${pending_migrations// /}" ]]; then
+    [[ "${DRY_RUN:-0}" == "1" ]] || api_fail "Pending migrations, apply them first; nothing was activated: $pending_migrations"
+    api_log "Pending migrations (apply before activation): $pending_migrations"
+  fi
+else
+  [[ "${DRY_RUN:-0}" == "1" ]] || api_fail "Migration status could not be read; nothing was activated."
+  api_log "Migration status could not be read in this dry run; activation will require it."
+fi
+
 if [[ "${DRY_RUN:-0}" == "1" ]]; then api_log "Dry-run passed for source commit $source_commit."; exit 0; fi
 
 releases_root="$api_root/releases"

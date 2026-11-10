@@ -25,7 +25,8 @@ final readonly class AccountCommands
 {
     private AccountLedger $ledger;
 
-    public function __construct(private PDO $pdo, private AuthorizationService $authorization, private Clock $clock)
+    /** @param bool $writesEnabled false while ARASYA_B2B_ACCOUNT_WRITES is `finance_only` (API 2.68.0): every command refuses. */
+    public function __construct(private PDO $pdo, private AuthorizationService $authorization, private Clock $clock, private bool $writesEnabled = true)
     {
         $this->ledger = new AccountLedger($pdo);
     }
@@ -76,12 +77,7 @@ final readonly class AccountCommands
         $reason = AccountInput::releaseReason($input);
         return $this->transaction($actor, 'release:' . $allocationId, $companyId, $input, $key, AccountAccess::RECORD_PAYMENT,
             function (array $company, string $now) use ($actor, $allocationId, $reason, $key, $request): array {
-                $s = $this->pdo->prepare('SELECT a.*, r.allocation_uuid AS released FROM b2b_account_allocations a
-                    LEFT JOIN b2b_account_allocation_releases r ON r.allocation_uuid=a.allocation_uuid WHERE a.allocation_uuid=? FOR UPDATE');
-                $s->execute([$allocationId]);
-                $allocation = $s->fetch(PDO::FETCH_ASSOC);
-                if (!$allocation || $allocation['company_uuid'] !== $company['company_uuid']) throw new ApiException(404, 'ALLOCATION_NOT_FOUND', 'Allocation was not found.');
-                if ($allocation['released'] !== null) throw new ApiException(409, 'ALLOCATION_ALREADY_RELEASED', 'The allocation was already released.');
+                $allocation = $this->ledger->releasableAllocation((string) $company['company_uuid'], $allocationId);
                 $this->ledger->release($company['company_uuid'], $allocationId, 'manual', $reason, (string) $allocation['currency_code'], $actor, $now, $request, $key);
                 return ['status' => 200, 'companyId' => $company['company_uuid'], 'movementId' => (string) $allocation['payment_movement_uuid'], 'allocationIds' => [$allocationId]];
             });
@@ -131,6 +127,9 @@ final readonly class AccountCommands
                 if ($original['movement_type'] === 'reversal') throw new ApiException(409, 'REVERSAL_NOT_REVERSIBLE', 'A reversal cannot be reversed. Post a new movement instead.');
                 // An order receivable follows its order: cancelling the order reverses it, so the two can never disagree.
                 if ($original['movement_type'] === 'order_receivable') throw new ApiException(409, 'ORDER_RECEIVABLE_FOLLOWS_ORDER', 'Cancel the commercial order to reverse its receivable.');
+                // API 2.68.0: a movement posted by an approved Finance request (and every refund) is corrected in Finance, by
+                // a second person; reversing it here would bypass that approval and leave the Finance request out of date.
+                if ($original['movement_type'] === 'refund' || AccountLedger::postedByFinance($original)) throw new ApiException(409, 'MOVEMENT_FOLLOWS_FINANCE', 'This movement was approved in Finance; request its reversal in Finance.');
                 if ($this->ledger->reversalOf($movementId) !== null) throw new ApiException(409, 'MOVEMENT_ALREADY_REVERSED', 'The movement was already reversed.');
                 if ($data['valueDate'] < (string) $original['value_date']) {
                     throw new ApiException(422, 'VALIDATION_FAILED', 'Some fields are invalid.', ['fields' => ['valueDate' => 'before_original']]);
@@ -148,6 +147,7 @@ final readonly class AccountCommands
 
     private function transaction(EmployeeIdentity $actor, string $operation, string $companyId, array $body, string $key, string $permission, callable $work): array
     {
+        if (!$this->writesEnabled) throw new ApiException(409, 'ACCOUNT_WRITES_MOVED_TO_FINANCE', 'Payments, allocations and corrections are recorded in Finance, with a second approver.');
         if (!OrderOperationsService::isValidIdempotencyKey($key)) throw new ApiException(400, 'INVALID_IDEMPOTENCY_KEY', 'A valid Idempotency-Key is required.');
         CompanyQueries::uuidOrNotFound($companyId, 'COMPANY_NOT_FOUND', 'Company was not found.');
         $hash = hash('sha256', $operation . '|' . $companyId . '|' . OrderStore::json(self::canonical($body)), true);

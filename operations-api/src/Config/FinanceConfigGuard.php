@@ -16,7 +16,10 @@ namespace Arasya\Operations\Config;
  * - ARASYA_FINANCE_CEO_EMPLOYEE_UUID absent or empty (nobody decides a CEO exception);
  * - ARASYA_B2B_FINANCE_GATE absent or `off` (no finance decision at B2B finalization; API 2.67.0);
  * - ARASYA_B2B_FINANCE_RELEASE_GATE absent or `off` (no finance release check at B2B production submission; absent
- *   inherits ARASYA_B2B_FINANCE_GATE).
+ *   inherits ARASYA_B2B_FINANCE_GATE);
+ * - ARASYA_B2B_ORDER_TYPES absent or `off` (no explicit B2B order type; API 2.68.0, independent of the finance gate);
+ * - ARASYA_FINANCE_COLLECTIONS absent or `disabled` (Finance posts no payment, correction or refund; API 2.68.0);
+ * - ARASYA_B2B_ACCOUNT_WRITES absent or `enabled` (B2B account write routes as today; `finance_only` closes them).
  *
  * Any other well-formed value blocks the deployment until an authorized person records ARASYA_FINANCE_CONFIG_ACK, the
  * SHA-256 fingerprint of the exact reviewed values. Changing any value later makes that acknowledgement stale, and the
@@ -32,6 +35,9 @@ final class FinanceConfigGuard
     public const ACK = 'ARASYA_FINANCE_CONFIG_ACK';
     public const B2B_GATE = 'ARASYA_B2B_FINANCE_GATE';
     public const B2B_RELEASE_GATE = 'ARASYA_B2B_FINANCE_RELEASE_GATE';
+    public const B2B_ORDER_TYPES = 'ARASYA_B2B_ORDER_TYPES';
+    public const COLLECTIONS = 'ARASYA_FINANCE_COLLECTIONS';
+    public const B2B_ACCOUNT_WRITES = 'ARASYA_B2B_ACCOUNT_WRITES';
     public const FINANCE_ORIGIN = 'https://finance.arasyahome.ro';
     private const UUID = '/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/D';
 
@@ -102,10 +108,29 @@ final class FinanceConfigGuard
             $add(in_array($effectiveRelease, ['shadow', 'enforce'], true) ? 'WARN' : 'OK', 'b2b_finance_release_gate_' . (in_array($effectiveRelease, ['shadow', 'enforce'], true) ? $effectiveRelease : 'off') . ($releaseSet ? '' : '_inherited'));
         }
 
-        $defaults = $posting !== 'enabled' && $authority === [] && $ceo === '' && !in_array($gate, ['shadow', 'enforce'], true) && !in_array($effectiveRelease, ['shadow', 'enforce'], true);
+        // API 2.68.0 switches. Each value must be exact; an activation (or the B2B write closure) needs the acknowledgement.
+        $switch = static function (string $key, array $allowed, string $default, string $check) use ($values, $add, &$malformed): array {
+            $set = array_key_exists($key, $values);
+            $value = trim($values[$key] ?? '');
+            if ($set && !in_array($value, $allowed, true)) {
+                $add('FAIL', $check . '_unrecognized');
+                $malformed = true;
+                return [$set, $value, false];
+            }
+            $effective = $set ? $value : $default;
+            $add($effective === $default ? 'OK' : 'WARN', $check . '_' . $effective);
+            return [$set, $value, $effective !== $default];
+        };
+        [$orderTypesSet, $orderTypes, $orderTypesActive] = $switch(self::B2B_ORDER_TYPES, ['off', 'enabled'], 'off', 'b2b_order_types');
+        [$collectionsSet, $collections, $collectionsActive] = $switch(self::COLLECTIONS, ['disabled', 'enabled'], 'disabled', 'finance_collections');
+        [$writesSet, $writes, $writesChanged] = $switch(self::B2B_ACCOUNT_WRITES, ['enabled', 'finance_only'], 'enabled', 'b2b_account_writes');
+
+        $defaults = $posting !== 'enabled' && $authority === [] && $ceo === '' && !in_array($gate, ['shadow', 'enforce'], true) && !in_array($effectiveRelease, ['shadow', 'enforce'], true)
+            && !$orderTypesActive && !$collectionsActive && !$writesChanged;
         $sorted = $authority;
         sort($sorted);
-        $fingerprint = hash('sha256', implode("\n", ['arasya-finance-config-v3', $postingSet ? $posting : '', implode(',', $sorted), $ceo, $gateSet ? $gate : '', $releaseSet ? $release : '']));
+        $fingerprint = hash('sha256', implode("\n", ['arasya-finance-config-v4', $postingSet ? $posting : '', implode(',', $sorted), $ceo, $gateSet ? $gate : '', $releaseSet ? $release : '',
+            $orderTypesSet ? $orderTypes : '', $collectionsSet ? $collections : '', $writesSet ? $writes : '']));
         $ack = strtolower(trim($values[self::ACK] ?? ''));
 
         if (!$malformed && !$defaults) {

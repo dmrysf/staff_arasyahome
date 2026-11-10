@@ -23,8 +23,22 @@ use Arasya\Operations\Security\CsrfGuard;
 
 final readonly class AuthController
 {
-    /** orderTypes: explicit order type on B2B drafts, required at finalization. financeGate: finance fields on the order detail. */
-    public const B2B_FEATURES = ['orderTypes', 'financeGate'];
+    /**
+     * B2B contract features, each announced only while its own server switch is on (API 2.68.0): orderTypes
+     * (ARASYA_B2B_ORDER_TYPES=enabled: explicit order type on drafts, required at finalization), financeGate (the finance
+     * gate evaluates in shadow or enforce: finance fields on the order detail) and accountsReadOnly
+     * (ARASYA_B2B_ACCOUNT_WRITES=finance_only: payments and corrections are recorded in Finance). They are independent:
+     * turning one on never turns on another.
+     * @return list<string>
+     */
+    public static function b2bFeatures(Config $config): array
+    {
+        return array_values(array_filter([
+            $config->b2bOrderTypesEnabled() ? 'orderTypes' : null,
+            $config->b2bFinanceGateActive() ? 'financeGate' : null,
+            $config->b2bAccountWritesEnabled() ? null : 'accountsReadOnly',
+        ]));
+    }
 
     public function __construct(
         private AuthenticationService $auth,
@@ -141,11 +155,11 @@ final readonly class AuthController
             ],
             'authorizationVersion' => $employee->authorizationVersion,
             // B2B module permissions the identity can use right now; the server still checks every request.
-            'permissions' => [...CompanyAccess::granted($this->authorization, $employee), ...OrderAccess::granted($this->authorization, $employee), ...AccountAccess::granted($this->authorization, $employee), ...ProductionAccess::granted($this->authorization, $employee), ...ProjectAccess::granted($this->authorization, $employee)],
-            // API contract features the B2B frontend may use (API 2.67.0). An older API sends no list, so B2B 0.9.0 can be
-            // deployed before this API and keeps working on 2.66.0 without the order type, and keeps working after an
-            // API rollback. Never a permission: every request is still authorized on its own.
-            'features' => self::B2B_FEATURES,
+            'permissions' => [...CompanyAccess::granted($this->authorization, $employee), ...OrderAccess::granted($this->authorization, $employee), ...AccountAccess::granted($this->authorization, $employee, $this->config->b2bAccountWritesEnabled()), ...ProductionAccess::granted($this->authorization, $employee), ...ProjectAccess::granted($this->authorization, $employee)],
+            // API contract features the B2B frontend may use (API 2.67.0; per switch since 2.68.0). An older API sends no list,
+            // so B2B 0.9.0 keeps working on 2.66.0 and after an API rollback. Never a permission: every request is still
+            // authorized on its own.
+            'features' => self::b2bFeatures($this->config),
         ]);
     }
 

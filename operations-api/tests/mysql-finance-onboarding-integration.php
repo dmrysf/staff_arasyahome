@@ -53,7 +53,7 @@ $appGrants = $pdo->query('SELECT * FROM employee_application_access ORDER BY emp
 check($pdo->query('SELECT * FROM role_permissions ORDER BY role_id, permission_id')->fetchAll() === $grants, '047 re-run grants no role anything');
 check($pdo->query('SELECT * FROM employee_application_access ORDER BY employee_uuid, application_key')->fetchAll() === $appGrants, '047 grants no application access');
 check((int) $pdo->query("SELECT COUNT(*) FROM schema_migrations WHERE migration_name = '047_finance_company_onboarding.sql'")->fetchColumn() === 1, '047 recorded once');
-check((int) $pdo->query("SELECT COUNT(*) FROM permissions WHERE permission_key LIKE 'finance.%' AND role_grantable = 1")->fetchColumn() === 21, '21 role-grantable Finance permissions (2 from 046, 17 from 047, 2 from 048)');
+check((int) $pdo->query("SELECT COUNT(*) FROM permissions WHERE permission_key LIKE 'finance.%' AND role_grantable = 1")->fetchColumn() === 29, '29 role-grantable Finance permissions (2 from 046, 17 from 047, 2 from 048, 8 from 052)');
 check((int) $pdo->query("SELECT role_grantable FROM permissions WHERE permission_key = 'finance.access'")->fetchColumn() === 0, 'finance.access stays an application grant');
 check((int) $pdo->query("SELECT COUNT(*) FROM finance_risk_policies")->fetchColumn() === 0, 'no risk threshold is seeded');
 check((int) $pdo->query("SELECT COUNT(*) FROM information_schema.REFERENTIAL_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME LIKE 'finance\\_%' AND TABLE_NAME NOT IN ('finance_verification_requests', 'finance_verification_request_events') AND (DELETE_RULE NOT IN ('RESTRICT', 'NO ACTION') OR UPDATE_RULE NOT IN ('RESTRICT', 'NO ACTION'))")->fetchColumn() === 0, 'no cascading Finance foreign keys');
