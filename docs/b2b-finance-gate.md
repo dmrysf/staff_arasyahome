@@ -149,6 +149,16 @@ Errors:
 | 409 | `FINANCE_RELEASE_BLOCKED` | `{reasons: [...], phase: "production_submission"}` |
 | 503 | `FINANCE_GATE_MISCONFIGURED` | none |
 
+Journal read for the shadow analysis (`GET /finance/b2b/gate-decisions`, Finance application, `finance.credit.view`):
+
+| Parameter | Values |
+|---|---|
+| `outcome` | `ALLOWED`, `ALLOWED_BY_CEO_EXCEPTION`, `WOULD_BLOCK`, `BLOCKED` |
+| `phase` | `finalization`, `production_submission` |
+| `cursor` | the `nextCursor` of the previous page (100 rows per page, newest first) |
+
+Each item has the order and company codes, phase, mode, outcome, reason codes, order type, `changedSinceFinalization`, `grandfathered`, the CEO exception id, the actor and the request id. `summary` counts the rows per phase and outcome under the same filters. Limit, exposure and order amounts of the stored snapshot are not returned (owner decision D6). Before switching to `enforce` (D2), Finance reads the `WOULD_BLOCK` rows of the shadow period here.
+
 ## 11. What a decision never does
 
 A finance decision never creates a shipment, an AWB or a delivery record, never marks an order delivered, never writes a ledger movement, never writes a stage event and never changes a QR. The receivable is still posted exactly once, by the finalization, under its unique key.
@@ -163,3 +173,13 @@ A finance decision never creates a shipment, an AWB or a delivery record, never 
 | D4 | CEO exception: which reasons it covers and how long it lives. | Credit reasons only, at most 30 days, RED companies only; inactive because no CEO approver is configured. |
 | D5 | Prepaid orders. | Not modelled; refused under `enforce` like any order without credit. |
 | D6 | Whether B2B sees the limit and exposure amounts of the finalization snapshot. | The stored snapshot holds them, as designed in Finance V0.4.0 §10; the preview and the refusals hold codes only. |
+
+## 13. Tests
+
+| Test | What it proves |
+|---|---|
+| `mysql-b2b-order-types-integration.php` M1-M6 | Journal, invalid configuration (never off), release check, CEO exception, real concurrent finalizations and releases, lock waits, Finance journal read. |
+| `mysql-b2b-finance-journey-integration.php` J1-J18 | One synthetic legacy customer end to end: Finance import, duplicate link, two-person identity verification, opening balance posted once, account currency, owner colour and limit, typed order, preview, one finalization and one receivable, release decision on the handoff, QR and ticket revision 1, 1 → 2 → 14, Livrare handover, exposure = opening balance + receivable, B2B and factory history, Finance audit, and an unchanged TrendHome order and AWB station state. |
+| same file, P1-P2 | Blocked path under `enforce` (refusal journaled, no receivable) and shadow path (`WOULD_BLOCK` recorded, the action goes on; `enforce` then stops the release with no handoff, no canonical order and no QR). |
+
+Both run on MySQL 8.4 and MariaDB 10.11 in CI.

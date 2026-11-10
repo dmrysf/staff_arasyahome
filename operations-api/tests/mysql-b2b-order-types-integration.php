@@ -561,6 +561,29 @@ $c6Release = $whileCompanyLocked($third, "/b2b/orders/{$c6['id']}/production", [
 });
 check($c6Release['status'] === 201 && count($handoffs($c6['id'])) === 1 && array_slice($kinds($c6['id']), -1) === ['production_submission/enforce/ALLOWED'], 'M5. the release is decided once the lock is released');
 
+// M6. Finance reads the journal for the shadow analysis (D2): credit viewers only, reason codes only, newest first.
+err($call($reviewer, 'GET', '/finance/b2b/gate-decisions'), 403, 'UNAUTHORIZED_ACTION', 'M6. the journal needs finance.credit.view');
+$all = (int) $pdo->query('SELECT COUNT(*) FROM b2b_finance_gate_decisions')->fetchColumn();
+$journalRead = ok($call($owner, 'GET', '/finance/b2b/gate-decisions'), 200, 'M6. journal read');
+check(count($journalRead['items']) === min($all, 100) && array_sum(array_column($journalRead['summary'], 'count')) === $all, 'M6. items and summary cover the journal');
+$times = array_column($journalRead['items'], 'at');
+$sorted = $times;
+rsort($sorted);
+check($times === $sorted, 'M6. newest first');
+$leak = false;
+array_walk_recursive($journalRead['items'], static function ($value, $key) use (&$leak): void {
+    $leak = $leak || in_array($key, ['approvedCreditLimit', 'currentExposure', 'availableCredit', 'orderGross', 'amount', 'profile'], true);
+});
+check(!$leak && !array_key_exists('profile', $journalRead['items'][0]), 'M6. no limit, exposure or amount in the journal read');
+$blockedRead = ok($call($owner, 'GET', '/finance/b2b/gate-decisions', null, ['outcome' => 'BLOCKED', 'phase' => 'finalization']), 200, 'M6. filtered read');
+check($blockedRead['items'] !== [] && array_unique(array_map(static fn (array $i): string => $i['phase'] . '/' . $i['outcome'], $blockedRead['items'])) === ['finalization/BLOCKED'], 'M6. outcome and phase filters');
+check(array_column($blockedRead['summary'], 'count') === [(int) $pdo->query("SELECT COUNT(*) FROM b2b_finance_gate_decisions WHERE outcome = 'BLOCKED' AND phase = 'finalization'")->fetchColumn()], 'M6. the summary follows the filters');
+$kRow = array_values(array_filter($blockedRead['items'], static fn (array $i): bool => $i['orderId'] === $k['id']))[0] ?? null;
+check($kRow !== null && in_array('IDENTITY_NOT_VERIFIED', $kRow['reasons'], true) && $kRow['mode'] === 'enforce' && is_string($kRow['orderCode']), 'M6. a refusal reads with its reason codes');
+err($call($owner, 'GET', '/finance/b2b/gate-decisions', null, ['outcome' => 'NOT_EVALUATED']), 422, 'VALIDATION_FAILED', 'M6. an unknown outcome filter is refused');
+err($call($owner, 'GET', '/finance/b2b/gate-decisions', null, ['cursor' => 'bad']), 400, 'INVALID_CURSOR', 'M6. a malformed cursor is refused');
+err($call($owner, 'GET', '/finance/b2b/gate-decisions', null, ['companyId' => $eligible]), 400, 'INVALID_REQUEST', 'M6. an unknown filter is refused');
+
 // ---- N. Rollback preflight: an older API ignores the order type, so open short-route work needs 2.67.0 -----------------
 $cliEnvironment = ['HOME' => (string) getenv('HOME'), 'ARASYA_APP_ENV' => 'test', 'ARASYA_APP_SECRET' => str_repeat('t', 32), 'ARASYA_ALLOWED_ORIGINS' => T::ORIGIN,
     'ARASYA_DB_HOST' => (string) (getenv('ARASYA_TEST_DB_HOST') ?: '127.0.0.1'), 'ARASYA_DB_PORT' => (string) (getenv('ARASYA_TEST_DB_PORT') ?: '3306'),
@@ -616,4 +639,4 @@ check(!in_array('chk_production_route_decisions_reason', $constraints, true), '1
 check((int) $scalar('SELECT @@foreign_key_checks') === 1, '11. foreign keys stay enforced');
 
 $server->exec("DROP DATABASE IF EXISTS `{$db}`");
-echo "PASS MySQL B2B order types: {$checks} checks (three types, frozen type, 1 -> 2 -> 14 for CUT_ONLY and FULL_ROLL_BAG by an authorized stage 2 employee, Livrare receive and handover, stages 3-13 not applicable, cutting credit only for cutting, replay and double click, stop hold, historical full route, source isolation, finance off/shadow/enforce, unknown mode refused, decision journal, release check at production submission, CEO exception, concurrent finalizations and releases, 050 applied after 051).\n";
+echo "PASS MySQL B2B order types: {$checks} checks (three types, frozen type, 1 -> 2 -> 14 for CUT_ONLY and FULL_ROLL_BAG by an authorized stage 2 employee, Livrare receive and handover, stages 3-13 not applicable, cutting credit only for cutting, replay and double click, stop hold, historical full route, source isolation, finance off/shadow/enforce, unknown mode refused, decision journal and its Finance read, release check at production submission, CEO exception, concurrent finalizations and releases, 050 applied after 051).\n";
