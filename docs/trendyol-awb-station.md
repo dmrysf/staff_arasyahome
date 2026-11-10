@@ -153,7 +153,7 @@ A named employee receives the same template and opens the station from Staff hom
 
 ## 10. Before production
 
-1. Merge order and versions: 050 belongs to draft #123 (API 2.64.0, Staff 2.46.0). This branch uses 051, API 2.65.0 and Staff 2.47.0, so whichever merges second resolves the migration lists and the Staff release list.
+1. Merge order and versions: 051 shipped first (API 2.65.0, Staff 2.47.0). Migration 050 belongs to the B2B order types (API 2.67.0, Staff 2.49.0) and is applied after 051 on the live schema; the two migrations touch different tables.
 2. Deploy the API first, run migration 051 with a backup, then deploy Staff.
 3. With owner approval, run the read-only check in section 11 and apply its test table.
 4. Decide what happens to any carrier or country the check reports as not supported.

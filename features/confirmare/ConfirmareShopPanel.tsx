@@ -78,9 +78,13 @@ export function useShopRead(detail: ConfirmareDetail, service: ConfirmareApi, au
     void load();
   }, [auto, canRead, context, load]);
 
+  // Hiding also cancels a read still in flight: a late answer must never put the customer's data back on screen after
+  // the employee hid it (it could, when the automatic read and a requested read overlapped).
   const hide = useCallback(() => {
+    request.current?.abort();
+    request.current = null;
     if (timer.current) clearTimeout(timer.current);
-    setRead(null); setReadFor(null); setExpired(false);
+    setRead(null); setReadFor(null); setExpired(false); setBusy(false);
   }, []);
 
   return { read: read !== null && readFor === context ? read : null, busy, error, expired, load: () => { void load(); }, hide };

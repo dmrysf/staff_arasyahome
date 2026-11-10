@@ -3,6 +3,7 @@ import { confirmareShopRO } from "./confirmareShop";
 import { confirmareFinanceRO } from "./confirmareFinance";
 import { financeRequestsRO } from "./financeRequests";
 import { confirmareInvoiceRO } from "./confirmareInvoice";
+import { orderTypesRO } from "./orderTypes";
 import { confirmareHandoffRO } from "./confirmareHandoff";
 import { confirmareOpsRO } from "./confirmareOps";
 import { confirmareEditRO } from "./confirmareEdit";
@@ -27,6 +28,7 @@ export const ro = {
   ...confirmareFinanceRO,
   ...financeRequestsRO,
   ...confirmareInvoiceRO,
+  ...orderTypesRO,
   ...confirmareHandoffRO,
   ...confirmareOpsRO,
   ...confirmareEditRO,

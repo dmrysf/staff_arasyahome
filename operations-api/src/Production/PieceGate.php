@@ -114,6 +114,8 @@ final readonly class PieceGate
             $byItem[(string) $unit['item_uuid']][] = $unit;
         }
         $reconciled = (new RouteReconciliation($this->pdo))->reconciled($orderUuid);
+        // A CUT_ONLY or FULL_ROLL_BAG order (migration 050) needs only its own stages; stages 3-13 never apply to it.
+        $service = ServiceRoute::of($this->pdo, $orderUuid);
         $log = $this->pdo->prepare('SELECT unit_uuid, rework_cycle, stage_id, outcome FROM production_unit_stage_log WHERE order_uuid = ?');
         $log->execute([$orderUuid]);
         $outcomes = [];
@@ -138,7 +140,7 @@ final readonly class PieceGate
             if ($workflow === null) {
                 return 'route_incomplete';
             }
-            $route = ProductRoutePolicy::route($workflow, (string) $line['plan']['productType']);
+            $route = ProductRoutePolicy::route($workflow, (string) $line['plan']['productType'], false, $service);
             foreach ($pieces as $piece) {
                 if ((int) $piece['review_required'] === 1) {
                     return 'pieces_incomplete';

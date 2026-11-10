@@ -25,7 +25,8 @@ use PDO;
  *
  * Owner-direct decisions (Finance V0.4.0) live in Risk\\OwnerDecisionService and write OWNER_DIRECT rows to the same table.
  *
- * CEO exceptions are recorded here for a future B2B integration only; nothing in B2B reads them yet.
+ * CEO exceptions are recorded here. The B2B FinanceGate reads an APPROVED one through approvedExceptionForOrder (API 2.67.0);
+ * it has an effect only while the gate is in shadow or enforce mode.
  */
 final readonly class CreditService
 {
@@ -284,6 +285,17 @@ final readonly class CreditService
             'currency' => $r['currency_code'], 'expiresAt' => FinanceStore::iso($r['expires_at']), 'requestedAt' => FinanceStore::iso($r['requested_at']), 'version' => (int) $r['version'],
             'snapshotSha256' => bin2hex((string) $r['snapshot_sha256'])], $x->fetchAll(PDO::FETCH_ASSOC));
         return ['items' => $items, 'exceptions' => $exceptions];
+    }
+
+    /**
+     * The APPROVED CEO exception bound to one B2B order, or null. Read by the B2B FinanceGate under the company lock.
+     * @return array<string, mixed>|null
+     */
+    public function approvedExceptionForOrder(string $orderId): ?array
+    {
+        $s = $this->store->pdo()->prepare("SELECT exception_uuid, company_uuid, order_uuid, currency_code, amount, status, expires_at FROM finance_credit_exceptions WHERE active_order_uuid = ? AND status = 'APPROVED'");
+        $s->execute([$orderId]);
+        return $s->fetch(PDO::FETCH_ASSOC) ?: null;
     }
 
     /** @return array<string, mixed> */

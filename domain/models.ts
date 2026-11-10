@@ -200,6 +200,8 @@ export type PaymentGateView = { state: PaymentGateState; label: string; mode: "o
 
 export type StaffOrder = {
   productionContext?: { company: { legalName: string; companyCode: string; countryCode: string; taxIdentifier: string } };
+  /** API 2.67.0: the route the server applies to a typed B2B order. Informational: Staff never chooses a stage. */
+  serviceRoute?: { orderType: 'FULL_TAILORING' | 'CUT_ONLY' | 'FULL_ROLL_BAG'; shortRoute: boolean };
   id: string;
   source: OrderSource;
   orderNumber: string;

@@ -34,7 +34,7 @@ foreach($accountTables as $table)$pdo->exec('DROP TABLE IF EXISTS '.$table);
 $pdo->exec("DELETE rp FROM role_permissions rp JOIN permissions p ON p.permission_id=rp.permission_id WHERE p.permission_key LIKE 'b2b.accounts.%'");$pdo->exec("DELETE FROM permissions WHERE permission_key LIKE 'b2b.accounts.%'");$pdo->exec("DELETE FROM schema_migrations WHERE migration_name='011_b2b_current_account.sql'");
 $grants=$pdo->query("SELECT rp.* FROM role_permissions rp JOIN permissions p ON p.permission_id=rp.permission_id WHERE p.permission_key NOT LIKE 'trendyol.awb.%' ORDER BY rp.role_id,rp.permission_id")->fetchAll();
 $ordersBefore=$pdo->query('SELECT COUNT(*) FROM b2b_orders')->fetchColumn();
-check((new MigrationRunner($pdo))->migrate($dir)===['011_b2b_current_account.sql','047_finance_company_onboarding.sql','048_finance_verification_center.sql','049_finance_owner_risk_limit_decisions.sql','051_trendyol_awb_station.sql'],'010→011 upgrade');
+check((new MigrationRunner($pdo))->migrate($dir)===['011_b2b_current_account.sql','047_finance_company_onboarding.sql','048_finance_verification_center.sql','049_finance_owner_risk_limit_decisions.sql','050_b2b_order_types.sql','051_trendyol_awb_station.sql'],'010→011 upgrade');
 check((new MigrationRunner($pdo))->migrate($dir)===[],'011 recorded once');
 (new SqlFileRunner($pdo))->run($dir.'/011_b2b_current_account.sql');
 check($pdo->query("SELECT rp.* FROM role_permissions rp JOIN permissions p ON p.permission_id=rp.permission_id WHERE p.permission_key NOT LIKE 'trendyol.awb.%' ORDER BY rp.role_id,rp.permission_id")->fetchAll()===$grants,'011 grants nothing automatically');
@@ -60,7 +60,7 @@ $productionBefore=$productionSnapshot();
 $company=status($send('POST','/b2b/companies',['legalName'=>'Account company '.$suffix,'displayName'=>'Display','countryCode'=>'RO','taxIdentifier'=>'ACC'.$suffix]),201,'create company')['companyId'];
 $line=['productCode'=>'CURTAIN','productName'=>null,'variant'=>null,'color'=>null,'kind'=>'curtain','width'=>'200','height'=>'260','quantity'=>4,'meters'=>'13.5','pricingUnit'=>'meter','unitPriceNet'=>'10.00','discountPercent'=>'0','vatPercent'=>'19','notes'=>null];
 $draft=function(string $currency,?array $lines=null) use($send,$company,$line): array {
-    return status($send('POST','/b2b/orders',['companyId'=>$company,'currencyCode'=>$currency,'contactId'=>null,'billingAddressId'=>null,'deliveryAddressId'=>null,'notes'=>null,'lines'=>$lines??[$line]]),201,'draft '.$currency)['detail']['order'];
+    return status($send('POST','/b2b/orders',['companyId'=>$company,'currencyCode'=>$currency,'orderType'=>'FULL_TAILORING','contactId'=>null,'billingAddressId'=>null,'deliveryAddressId'=>null,'notes'=>null,'lines'=>$lines??[$line]]),201,'draft '.$currency)['detail']['order'];
 };
 $rows=function(string $sql,array $params=[]) use($pdo): array {$s=$pdo->prepare($sql);$s->execute($params);return $s->fetchAll(PDO::FETCH_ASSOC);};
 $receivables=fn(string $orderId)=>$rows("SELECT * FROM b2b_account_movements WHERE order_uuid=? AND movement_type='order_receivable'",[$orderId]);
@@ -187,7 +187,7 @@ else check($z['status']===422,'zero price refused by order validation');
 // ======== Payments, allocations, opening balances, adjustments and reversals (separate, clean company) ========
 $co=status($send('POST','/b2b/companies',['legalName'=>'Ledger company '.$suffix,'displayName'=>'Ledger','countryCode'=>'RO','taxIdentifier'=>'LED'.$suffix]),201,'ledger company')['companyId'];
 $finalized=function(string $currency) use($send,$co,$line,$receivables): array {
-    $o=status($send('POST','/b2b/orders',['companyId'=>$co,'currencyCode'=>$currency,'contactId'=>null,'billingAddressId'=>null,'deliveryAddressId'=>null,'notes'=>null,'lines'=>[$line]]),201,'ledger draft')['detail']['order'];
+    $o=status($send('POST','/b2b/orders',['companyId'=>$co,'currencyCode'=>$currency,'orderType'=>'CUT_ONLY','contactId'=>null,'billingAddressId'=>null,'deliveryAddressId'=>null,'notes'=>null,'lines'=>[$line]]),201,'ledger draft')['detail']['order'];
     status($send('POST',"/b2b/orders/{$o['id']}/finalize",['expectedVersion'=>1]),200,'ledger finalize');
     return ['order'=>$o['id'],'receivable'=>$receivables($o['id'])[0]['movement_uuid']];
 };

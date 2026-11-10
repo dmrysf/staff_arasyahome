@@ -24,6 +24,19 @@ test('B2B manufacturing snapshots preserve line meters, kind and notes without i
   assertServerError(() => mapProductionOrder({ ...raw, products: [{ ...item, productionContext: { ...item.productionContext, kind: 'unknown' } }] }));
 });
 
+test('Staff 2.49.0: a typed B2B order maps the route the server applies; any other source or shape is a contract error', () => {
+  const raw = { id: 'b2b:1', source: 'b2b', orderNumber: 'B2B-ORD-000002', productionStageId: 'material-preparation', status: 'in_progress', version: 1, productionVersion: 3,
+    products: [], updatedAt: '2026-11-09T00:00:00Z' };
+  assert.deepEqual(mapProductionOrder({ ...raw, serviceRoute: { orderType: 'CUT_ONLY', shortRoute: true, stages: ['waiting', 'material-preparation', 'delivery'] } }).serviceRoute, { orderType: 'CUT_ONLY', shortRoute: true });
+  assert.deepEqual(mapProductionOrder({ ...raw, serviceRoute: { orderType: 'FULL_ROLL_BAG', shortRoute: true, stages: ['waiting', 'material-preparation', 'delivery'] } }).serviceRoute, { orderType: 'FULL_ROLL_BAG', shortRoute: true });
+  assert.deepEqual(mapProductionOrder({ ...raw, serviceRoute: { orderType: 'FULL_TAILORING', shortRoute: false, stages: null } }).serviceRoute, { orderType: 'FULL_TAILORING', shortRoute: false });
+  assert.equal(mapProductionOrder(raw).serviceRoute, undefined, 'a historical order has no route of its own');
+  assertServerError(() => mapProductionOrder({ ...raw, id: 'trendhome:1', source: 'trendhome', serviceRoute: { orderType: 'CUT_ONLY', shortRoute: true } }));
+  assertServerError(() => mapProductionOrder({ ...raw, serviceRoute: { orderType: 'EXPRESS', shortRoute: true } }));
+  assertServerError(() => mapProductionOrder({ ...raw, serviceRoute: { orderType: 'CUT_ONLY', shortRoute: false } }));
+  assertServerError(() => mapProductionOrder({ ...raw, serviceRoute: { orderType: 'FULL_TAILORING', shortRoute: true } }));
+});
+
 test('B2B project-origin items carry the frozen project location and fail closed on malformed context', () => {
   const project = { project: { id: 'p', code: 'B2B-PRJ-000001', name: 'Hotel', propertyType: 'hotel' }, zone: { id: 'z', name: 'Etaj 1', zoneType: 'floor', level: 1, building: null },
     room: { id: 'r', name: 'Camera 101' }, opening: { id: 'o', name: 'Fereastra 1', openingType: 'window', wallIndex: 1, width: '160.000', height: '240.000', sillHeight: null, mounting: 'ceiling', railType: null },

@@ -476,6 +476,16 @@ test("shop order: audited reads, never stored or logged in the browser, honest w
   expect(consoleText.join("\n"), "nor the console").not.toContain("0700000123");
   await page.getByTestId("cf-shop-hide").click();
   await expect(page.locator("body")).not.toContainText("0700000123");
+  // Staff 2.46.0: hiding while another read is still in flight cancels it, so a late answer never shows the number again
+  // (an automatic read and a requested read could overlap). A slow TEST shop makes the overlap deterministic.
+  await page.route("**/confirmare/orders/*/source", async (route) => { await new Promise((resolve) => setTimeout(resolve, 1500)); await route.continue(); });
+  await page.getByTestId("cf-shop-load").click();
+  await expect(page.getByTestId("cf-shop-call-billing")).toHaveAttribute("href", "tel:0700000123");
+  await page.getByTestId("cf-shop-load").click();
+  await page.getByTestId("cf-shop-hide").click();
+  await page.waitForTimeout(2500);
+  await expect(page.locator("body")).not.toContainText("0700000123");
+  await page.unroute("**/confirmare/orders/*/source");
   // The shop no longer knows the order: stated as such, nothing invented.
   const shopFile = process.env.ARASYA_E2E_SHOP_FILE ?? "";
   const shop = JSON.parse(readFileSync(shopFile, "utf8")) as { orders: Record<string, unknown> };

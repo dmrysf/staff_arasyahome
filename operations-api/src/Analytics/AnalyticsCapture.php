@@ -14,9 +14,10 @@ final readonly class AnalyticsCapture
         $s=$this->pdo->prepare('SELECT order_uuid,production_version,created_at,source_key FROM operational_orders WHERE order_uuid=? FOR UPDATE');
         $s->execute([$id]); $order=$s->fetch(PDO::FETCH_ASSOC);
         if (!$order) throw new LogicException('Canonical order missing');
+        $service=$order['source_key']==='b2b'?\Arasya\Operations\Production\ServiceRoute::of($this->pdo,$id):null;
         $company=$order['source_key']==='b2b'?(new \Arasya\Operations\B2B\ProductionAnalyticsIdentity($this->pdo))->companyForOperationalOrder($id):null;
         $s=$this->pdo->prepare('SELECT event_id,employee_uuid,action,from_stage_id,to_stage_id,new_owner_employee_uuid,production_version_after,occurred_at,meters_snapshot FROM order_activity_events WHERE order_uuid=? ORDER BY production_version_after,event_id');
-        $s->execute([$id]); $lifecycle=Lifecycle::derive($s->fetchAll(PDO::FETCH_ASSOC));
+        $s->execute([$id]); $lifecycle=Lifecycle::derive($s->fetchAll(PDO::FETCH_ASSOC),$service);
         $s=$this->pdo->prepare('SELECT MIN(created_at) FROM order_qr_references WHERE order_uuid=?'); $s->execute([$id]); $qr=$s->fetchColumn()?:null;
         $cut=$lifecycle['cuttingCompletion']; $lines=null;
         if ($cut!==null) {

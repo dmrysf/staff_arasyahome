@@ -414,6 +414,12 @@ final readonly class OrderOperationsService
         (new \Arasya\Operations\Production\WorkUnits($this->pdo))->ensure($order->orderUuid, $now, 'on_demand');
         $route = $routing->plan($workflow, $order->orderUuid, null, $current->id, $now);
         $next = $route['next'];
+        $serviceRoute = ($route['reason'] ?? null) === 'order_service_route' && $route['skipped'] !== [];
+        if ($serviceRoute && $order->hasActiveTracks()) {
+            // A CUT_ONLY or FULL_ROLL_BAG order never reaches packing, where pieces apart rejoin the order: it waits at
+            // stage 2 until every piece is back with it (the same reason the packing and delivery gate uses).
+            throw $this->blocked(\Arasya\Operations\Order\OrderAccessPolicy::BLOCKED_PIECES_IN_REWORK, self::OPERATION_TRANSITION, $order);
+        }
         if ($next === null) {
             $update = $this->pdo->prepare(
                 'UPDATE operational_orders
@@ -442,6 +448,9 @@ final readonly class OrderOperationsService
         $this->recordActivity($employee, $order, $workflow, $action, $current, $next, $expectedVersion, $idempotencyKey, $context, $now);
         // Per-piece ledger, stage_not_applicable decisions and route tracks of the pieces that follow another route.
         $routing->apply($workflow, $route, $order->orderUuid, null, $current->id, $employee->employeeUuid, $expectedVersion, $idempotencyKey, $context->requestId, $now);
+        if ($serviceRoute) {
+            $this->recordServiceRoute($employee, $order, (string) $route['service'], $current, $next, $route['skipped'], $expectedVersion, $idempotencyKey, $context, $now);
+        }
         $tracks = new \Arasya\Operations\Production\ProductionTracks($this->pdo);
         if ($next?->id === \Arasya\Operations\Production\ProductionTracks::GATE_STAGE) {
             // Reworked pieces already waiting at packing travel with the order again from here.
@@ -454,6 +463,38 @@ final readonly class OrderOperationsService
         $total = $meters->fetchColumn();
         (new CuttingLifecycle($this->pdo))->changed($order->orderUuid, $expectedVersion + 1, $current->id, $next?->id, $employee->employeeUuid, $now, $total === null || $total === false ? null : (string) $total);
         (new \Arasya\Operations\Analytics\AnalyticsCapture($this->pdo))->refreshOrder($order->orderUuid);
+    }
+
+    /**
+     * Stage 2 accountability for a CUT_ONLY or FULL_ROLL_BAG order (migration 050): who claimed and completed stage 2, what
+     * the work was (cutting, or full bag/roll preparation), and the route decision that sent the order to Livrare. One
+     * entry per committed transition (a replayed request returns the stored response and writes nothing).
+     * @param list<string> $skipped
+     */
+    private function recordServiceRoute(EmployeeIdentity $employee, OperationalOrder $order, string $service, ProductionStage $from, ?ProductionStage $to, array $skipped, int $versionBefore, string $idempotencyKey, OperationContext $context, string $now): void
+    {
+        $s = $this->pdo->prepare("SELECT (SELECT d.decision_uuid FROM production_route_decisions d WHERE d.order_uuid = o.order_uuid AND d.reason = 'order_service_route' AND d.from_stage_id = ? AND d.request_id = ? ORDER BY d.occurred_at DESC LIMIT 1) AS decision_uuid,
+            (SELECT e.occurred_at FROM order_activity_events e WHERE e.order_uuid = o.order_uuid AND e.action = 'claimed' AND e.from_stage_id = ? AND e.employee_uuid = ? ORDER BY e.production_version_after DESC LIMIT 1) AS claimed_at
+            FROM operational_orders o WHERE o.order_uuid = ?");
+        $s->execute([$from->id, mb_substr($context->requestId, 0, 100), $from->id, $employee->employeeUuid, $order->orderUuid]);
+        $trace = $s->fetch(PDO::FETCH_ASSOC) ?: [];
+        (new IamAuditLogger($this->pdo))->record($employee, 'production.service_route_applied', 'order', $order->globalId->toString(), '#' . $order->orderNumber, [
+            'operationalOrderId' => $order->orderUuid,
+            // The canonical identity of a B2B order is b2b:<commercial order uuid> (explicit production submission).
+            'b2bOrderId' => $order->globalId->sourceKey === 'b2b' ? $order->globalId->sourceOrderId : null,
+            'orderType' => $service,
+            'workType' => $service === 'CUT_ONLY' ? 'cutting' : 'full_roll_bag_preparation',
+            'stage2EmployeeId' => $employee->employeeUuid,
+            'claimedAt' => $trace['claimed_at'] ?? null,
+            'completedAt' => $now,
+            'fromStage' => $from->id,
+            'toStage' => $to?->id,
+            'notApplicableStages' => $skipped,
+            'routeDecisionId' => $trace['decision_uuid'] ?? null,
+            'productionVersionBefore' => $versionBefore,
+            'productionVersionAfter' => $versionBefore + 1,
+            'idempotencyReference' => hash('sha256', $employee->employeeUuid . '|' . $idempotencyKey),
+        ], $context->requestId, $now);
     }
 
     private function stage(ProductionWorkflow $workflow, string $stageId): ProductionStage

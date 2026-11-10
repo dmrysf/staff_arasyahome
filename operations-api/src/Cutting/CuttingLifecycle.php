@@ -68,7 +68,10 @@ final readonly class CuttingLifecycle
     {
         if ($fromStage === self::STAGE) {
             $this->fact($order, $version, 'interval_ended', $employee, $now);
-            if ($toStage === 'workshop-receiving') {
+            // Cutting is complete when the order leaves cutting for the workshop, or for Livrare when the order is a
+            // CUT_ONLY B2B order (migration 050). A FULL_ROLL_BAG order is prepared at stage 2, never cut: no cutting
+            // completion, meters or cutting time is recorded for it.
+            if ($toStage === 'workshop-receiving' || ($toStage === 'delivery' && \Arasya\Operations\Production\ServiceRoute::of($this->pdo, $order) === 'CUT_ONLY')) {
                 $s = $this->pdo->prepare('SELECT COUNT(*) FROM operational_order_items WHERE order_uuid = ?'); $s->execute([$order]);
                 $itemCount = (int) $s->fetchColumn();
                 $s = $this->pdo->prepare("SELECT occurred_at FROM cutting_facts WHERE order_uuid = ? AND employee_uuid = ? AND fact_type = 'interval_started' ORDER BY production_version DESC LIMIT 1"); $s->execute([$order, $employee]);

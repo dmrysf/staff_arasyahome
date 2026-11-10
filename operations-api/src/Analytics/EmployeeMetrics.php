@@ -45,7 +45,8 @@ final class EmployeeMetrics
                 foreach ($active as $clock=>$seconds) $rows[$employee]['activeHandling'][$clock]+=$seconds;
                 foreach ($active as $clock=>$seconds) {
                     $rows[$employee]['stageHandling'][$interval['stage_id']][$clock]=($rows[$employee]['stageHandling'][$interval['stage_id']][$clock]??0)+$seconds;
-                    if ($interval['stage_id']==='material-preparation') $rows[$employee]['cuttingActiveHandling'][$clock]+=$seconds;
+                    // Stage 2 of a FULL_ROLL_BAG order (migration 050) is bag/roll preparation, never cutting time.
+                    if ($interval['stage_id']==='material-preparation' && ($order['service_route']??null)!=='FULL_ROLL_BAG') $rows[$employee]['cuttingActiveHandling'][$clock]+=$seconds;
                 }
                 // Daily intersections use local calendar midnights, not fixed 24-hour UTC buckets.
                 $local=(new DateTimeImmutable($a,new DateTimeZone('UTC')))->setTimezone(new DateTimeZone('Europe/Bucharest'))->setTime(0,0);

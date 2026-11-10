@@ -38,7 +38,7 @@ final readonly class PieceRouting
     /**
      * Decides the route step of a carrier completing $current. Nothing is written.
      *
-     * @return array{next: ?ProductionStage, skipped: list<string>, types: list<string>, units: list<array<string, mixed>>, splits: list<array{units: list<array<string, mixed>>, next: ?ProductionStage, skipped: list<string>, types: list<string>}>, unverified: ?string, routing: bool, assisted: bool, assistedUnits: list<string>}
+     * @return array{next: ?ProductionStage, skipped: list<string>, types: list<string>, units: list<array<string, mixed>>, splits: list<array{units: list<array<string, mixed>>, next: ?ProductionStage, skipped: list<string>, types: list<string>}>, unverified: ?string, routing: bool, assisted: bool, assistedUnits: list<string>, reason?: string, service?: string}
      */
     public function plan(ProductionWorkflow $workflow, string $orderUuid, ?string $trackUuid, string $current, string $now): array
     {
@@ -63,6 +63,16 @@ final readonly class PieceRouting
             $unit['product_type'] = $lines[(string) $unit['item_uuid']]['plan']['productType'] ?? ProductRoutePolicy::UNKNOWN;
         }
         unset($unit);
+        // Order-level service route (migration 050): a CUT_ONLY or FULL_ROLL_BAG B2B order goes 1 -> 2 -> 14 as a whole.
+        // It applies with or without the piece_routing feature, never splits, and records stages 3-13 as not applicable
+        // to every piece (no completion, no owner, no credit). The product types are recorded, not used.
+        $service = ServiceRoute::of($this->pdo, $orderUuid);
+        if (ProductRoutePolicy::shortService($service) && ProductRoutePolicy::canonical($workflow)) {
+            $step = ProductRoutePolicy::next($workflow, $current, ProductRoutePolicy::DRAPERII, false, $service);
+            return ['next' => $step['next'], 'skipped' => $step['skipped'], 'types' => array_values(array_unique(array_map(static fn (array $unit): string => (string) $unit['product_type'], $units))),
+                'units' => $units, 'splits' => [], 'unverified' => null, 'routing' => true, 'typeItems' => [], 'assisted' => false, 'assistedUnits' => [],
+                'reason' => 'order_service_route', 'service' => $service];
+        }
         // The lines whose production type a decision uses (locked in their plan when the decision is written).
         $typeItems = $piecewise ? array_values(array_unique(array_map(static fn (array $unit): string => (string) $unit['item_uuid'], $units))) : array_keys($lines);
         $result = ['next' => $full['next'], 'skipped' => [], 'types' => [], 'units' => $units, 'splits' => [], 'unverified' => null, 'routing' => $routing, 'typeItems' => $typeItems,
@@ -119,7 +129,7 @@ final readonly class PieceRouting
         $this->logCompleted(array_values(array_filter($allUnits, static fn (array $unit): bool => !in_array((string) $unit['unit_uuid'], $assistedUnits, true))), $orderUuid, $current, $trackUuid, $actorUuid, $plan['next']?->id, $versionBefore, $now);
         $usedItems = [];
         if ($plan['skipped'] !== []) {
-            $decision = $this->decision($orderUuid, $trackUuid, null, 'stage_not_applicable', $current, $plan['next']?->id, $plan['skipped'], $plan['types'], $plan['units'], 'product_route_policy', $actorUuid, $parentTrack, $requestId, $now, $plan['assisted'] ?? false);
+            $decision = $this->decision($orderUuid, $trackUuid, null, 'stage_not_applicable', $current, $plan['next']?->id, $plan['skipped'], $plan['types'], $plan['units'], $plan['reason'] ?? 'product_route_policy', $actorUuid, $parentTrack, $requestId, $now, $plan['assisted'] ?? false);
             $this->logNotApplicable($plan['units'], $orderUuid, $plan['skipped'], $trackUuid, $decision, $now);
             $usedItems = [...$usedItems, ...$plan['typeItems']];
         }

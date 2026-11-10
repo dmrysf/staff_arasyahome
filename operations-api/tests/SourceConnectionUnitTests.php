@@ -550,13 +550,13 @@ test('expected API errors and validation are unchanged by the PDO diagnostics', 
     expect(!array_key_exists('exception', $warning) && !array_key_exists('sqlstate', $warning) && !array_key_exists('driver_code', $warning));
 });
 
-test('migrations stay ordered through 051 (040 and 050 reserved) and the canonical workflow keeps its 14 stages', function (): void {
+test('migrations stay ordered through 051 (040 reserved) and the canonical workflow keeps its 14 stages', function (): void {
     $migrations = array_map('basename', glob(dirname(__DIR__) . '/database/migrations/*.sql') ?: []);
     // 032-034 are reserved by open pull requests (line readiness, cancellation control and sync); 035 follows them.
     // 040 is reserved for unrelated work; 041 is the SmartBill invoicing schema (owner closure 2026-10-25); 042 stores
     // each shop's Confirmare readiness report (security integration 2026-10-25). 044: finance verification requests (2.50.0).
-    // 045: the shop employee deletes the order's invoice (2.54.0). 046: ungranted Finance read-only app. 047: Finance V0.3 company onboarding (ungranted). 048: Finance V0.3.1 verification centre (ungranted). 049: Finance V0.4.0 owner-direct colour and limit decisions (ungranted). 050 is reserved by the B2B order types (draft #123). 051: Trendyol AWB station (one table, ungranted template).
-    expect(count($migrations) === 48 && $migrations[47] === '051_trendyol_awb_station.sql' && $migrations[46] === '049_finance_owner_risk_limit_decisions.sql' && $migrations[45] === '048_finance_verification_center.sql' && $migrations[44] === '047_finance_company_onboarding.sql' && $migrations[43] === '046_finance_application.sql' && $migrations[42] === '045_invoice_delete.sql' && $migrations[41] === '044_finance_verification_requests.sql' && $migrations[40] === '043_confirmare_dual_store.sql' && $migrations[39] === '042_confirmare_connector_readiness.sql' && $migrations[38] === '041_smartbill_invoicing.sql' && !in_array('040', array_map(static fn (string $name): string => substr($name, 0, 3), $migrations), true) && $migrations[37] === '039_confirmare_finance.sql' && $migrations[36] === '038_confirmare_source_access.sql' && $migrations[35] === '037_confirmare_contacts.sql' && $migrations[34] === '036_confirmare_operations.sql' && $migrations[33] === '035_workflow_cohort.sql' && $migrations[32] === '034_order_cancellation_sync.sql' && $migrations[31] === '033_order_cancellation_control.sql' && $migrations[30] === '031_production_assisted_checkpoints.sql' && $migrations[29] === '030_production_route_reconciliation.sql' && $migrations[28] === '029_production_manifest_routing.sql' && $migrations[27] === '028_production_work_units.sql' && $migrations[23] === '024_tailoring_quality_supervision.sql' && $migrations[24] === '025_source_payment_gate.sql' && $migrations[25] === '026_trendyol_product_identity.sql' && $migrations[26] === '027_employee_staff_locale.sql' && str_starts_with($migrations[0], '001_') && str_starts_with($migrations[16], '017_') && $migrations[17] === '018_production_authority.sql' && $migrations[18] === '019_production_qr_authority.sql' && $migrations[19] === '020_production_document_authority.sql' && $migrations[20] === '021_document_scopes.sql' && $migrations[21] === '022_trendyol_intake.sql' && $migrations[22] === '023_source_scoped_stage_authorization.sql');
+    // 045: the shop employee deletes the order's invoice (2.54.0). 046: ungranted Finance read-only app. 047: Finance V0.3 company onboarding (ungranted). 048: Finance V0.3.1 verification centre (ungranted). 049: Finance V0.4.0 owner-direct colour and limit decisions (ungranted). 050: B2B order types and service route (applied after 051 on the live schema; the two are independent). 051: Trendyol AWB station (one table, ungranted template).
+    expect(count($migrations) === 49 && $migrations[48] === '051_trendyol_awb_station.sql' && $migrations[47] === '050_b2b_order_types.sql' && $migrations[46] === '049_finance_owner_risk_limit_decisions.sql' && $migrations[45] === '048_finance_verification_center.sql' && $migrations[44] === '047_finance_company_onboarding.sql' && $migrations[43] === '046_finance_application.sql' && $migrations[42] === '045_invoice_delete.sql' && $migrations[41] === '044_finance_verification_requests.sql' && $migrations[40] === '043_confirmare_dual_store.sql' && $migrations[39] === '042_confirmare_connector_readiness.sql' && $migrations[38] === '041_smartbill_invoicing.sql' && !in_array('040', array_map(static fn (string $name): string => substr($name, 0, 3), $migrations), true) && $migrations[37] === '039_confirmare_finance.sql' && $migrations[36] === '038_confirmare_source_access.sql' && $migrations[35] === '037_confirmare_contacts.sql' && $migrations[34] === '036_confirmare_operations.sql' && $migrations[33] === '035_workflow_cohort.sql' && $migrations[32] === '034_order_cancellation_sync.sql' && $migrations[31] === '033_order_cancellation_control.sql' && $migrations[30] === '031_production_assisted_checkpoints.sql' && $migrations[29] === '030_production_route_reconciliation.sql' && $migrations[28] === '029_production_manifest_routing.sql' && $migrations[27] === '028_production_work_units.sql' && $migrations[23] === '024_tailoring_quality_supervision.sql' && $migrations[24] === '025_source_payment_gate.sql' && $migrations[25] === '026_trendyol_product_identity.sql' && $migrations[26] === '027_employee_staff_locale.sql' && str_starts_with($migrations[0], '001_') && str_starts_with($migrations[16], '017_') && $migrations[17] === '018_production_authority.sql' && $migrations[18] === '019_production_qr_authority.sql' && $migrations[19] === '020_production_document_authority.sql' && $migrations[20] === '021_document_scopes.sql' && $migrations[21] === '022_trendyol_intake.sql' && $migrations[22] === '023_source_scoped_stage_authorization.sql');
     expect(count(CanonicalProductionWorkflowContract::STAGES) === 14);
     expect(array_keys(CanonicalProductionWorkflowContract::STAGES) === ['waiting', 'material-preparation', 'workshop-receiving', 'labeling', 'material-straightening', 'bottom-hem', 'side-hem', 'ironing', 'height', 'header-tape', 'sewing-finishing', 'quality-control', 'packing', 'delivery']);
     // 018 is additive: it never converts the authority of existing orders.
@@ -943,6 +943,84 @@ test('every global key Config reads survives ConfigLoader (regression: the Finan
     expect(($loaded['ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS'] ?? null) === $owners, 'the owner allowlist reaches Config unchanged');
 });
 
+test('the B2B finance gate refuses an unknown mode, decides on server data only and never rewrites its journal', function (): void {
+    $G = \Arasya\Operations\B2B\FinanceGate::class;
+    $profile = static fn (array $over = []): \Closure => static fn (string $company): array => array_replace(['verificationStatus' => 'VERIFIED', 'registeredCountry' => 'RO', 'accountCurrency' => 'RON',
+        'reconciliationStatus' => 'RECONCILED', 'riskColor' => 'GREEN', 'creditLimitStatus' => 'APPROVED', 'approvedCreditLimit' => '100.00', 'creditLimitCurrency' => 'RON', 'currentExposure' => '0.00',
+        'availableCredit' => '100.00', 'exposureBasis' => 'ledger_balance_only', 'creditPolicyVersion' => null, 'creditReviewRequired' => false, 'creditPurchaseEligibility' => 'ELIGIBLE', 'eligibilityBlockers' => []], $over);
+    $order = ['order_uuid' => '00000000-0000-4000-8000-00000000b001', 'order_type' => 'CUT_ONLY', 'currency_code' => 'RON', 'gross_total' => '77.35', 'finance_decision' => null];
+    $now = '2026-11-10 10:00:00.000000';
+    $code = static function (callable $work): ?string { try { $work(); return null; } catch (\Arasya\Operations\Http\ApiException $e) { return $e->status . ' ' . $e->errorCode; } };
+    // Off evaluates nothing and needs no Finance reader.
+    $off = new $G();
+    expect($off->mode() === 'off' && $off->releaseMode() === 'off' && $off->configured() && $off->decide('c', $order, $now)['outcome'] === 'NOT_EVALUATED' && $off->recheck('c', $order, $now)['outcome'] === 'NOT_EVALUATED');
+    // Every unknown value is a refusal on both phases, never off. An active mode without a Finance reader too.
+    foreach (['enforced', 'OFF', 'Enforce', 'on', 'true', '1', '', ' shadow', "enforce\n"] as $bad) {
+        $gate = new $G($bad, $profile());
+        expect(!$gate->configured() && $code(fn () => $gate->decide('c', $order, $now)) === '503 FINANCE_GATE_MISCONFIGURED' && $code(fn () => $gate->recheck('c', $order, $now)) === '503 FINANCE_GATE_MISCONFIGURED', "mode '{$bad}' is refused");
+        $release = new $G('off', $profile(), $bad);
+        expect(!$release->configured() && $release->decide('c', $order, $now)['outcome'] === 'NOT_EVALUATED' && $code(fn () => $release->recheck('c', $order, $now)) === '503 FINANCE_GATE_MISCONFIGURED', "release mode '{$bad}' is refused at submission only");
+    }
+    expect($code(fn () => (new $G('enforce'))->decide('c', $order, $now)) === '503 FINANCE_GATE_MISCONFIGURED' && $code(fn () => (new $G('off', null, 'shadow'))->recheck('c', $order, $now)) === '503 FINANCE_GATE_MISCONFIGURED', 'an active mode without a Finance reader is refused');
+    // The release mode inherits the gate mode unless it is set.
+    expect((new $G('enforce', $profile()))->releaseMode() === 'enforce' && (new $G('enforce', $profile(), 'shadow'))->releaseMode() === 'shadow' && (new $G('off', $profile(), 'enforce'))->mode() === 'off');
+    // Finalization: the order must fit the available credit, in the account currency, with no blocker.
+    $allowed = (new $G('enforce', $profile()))->decide('c', $order, $now);
+    expect($allowed['outcome'] === 'ALLOWED' && $allowed['reasons'] === [] && $allowed['phase'] === 'finalization' && $allowed['profile']['availableCredit'] === '100.00' && !array_key_exists('companyId', $allowed['profile']));
+    expect((new $G('enforce', $profile(['availableCredit' => '77.35'])))->decide('c', $order, $now)['outcome'] === 'ALLOWED', 'an exactly sufficient credit is enough');
+    $over = (new $G('enforce', $profile(['availableCredit' => '77.34'])))->decide('c', $order, $now);
+    expect($over['outcome'] === 'BLOCKED' && $over['reasons'] === ['CREDIT_LIMIT_EXCEEDED'] && (new $G('shadow', $profile(['availableCredit' => '77.34'])))->decide('c', $order, $now)['outcome'] === 'WOULD_BLOCK');
+    expect((new $G('enforce', $profile(['accountCurrency' => 'EUR'])))->decide('c', $order, $now)['reasons'] === ['ORDER_CURRENCY_MISMATCH'], 'no currency conversion');
+    // UNVERIFIED is not GREEN; a missing limit is not a limit of zero; missing data never becomes an allowance.
+    $unknown = (new $G('enforce', $profile(['riskColor' => 'UNVERIFIED', 'availableCredit' => null, 'approvedCreditLimit' => null, 'creditLimitStatus' => 'NO_APPROVED_LIMIT', 'eligibilityBlockers' => ['RISK_NOT_ASSIGNED', 'NO_APPROVED_LIMIT']])))->decide('c', $order, $now);
+    expect($unknown['outcome'] === 'BLOCKED' && $unknown['reasons'] === ['RISK_NOT_ASSIGNED', 'NO_APPROVED_LIMIT'] && !in_array('LIMIT_ZERO', $unknown['reasons'], true));
+    expect((new $G('enforce', $profile(['availableCredit' => '0.00', 'approvedCreditLimit' => '0.00', 'eligibilityBlockers' => ['LIMIT_ZERO']])))->decide('c', $order, $now)['reasons'] === ['LIMIT_ZERO', 'CREDIT_LIMIT_EXCEEDED']);
+    // Release check: the exposure already holds this order, so a full limit passes and an exceeded one does not.
+    $finalized = $order + [];
+    $finalized['finance_decision'] = json_encode($allowed);
+    $exact = (new $G('enforce', $profile(['currentExposure' => '100.00', 'availableCredit' => '0.00', 'eligibilityBlockers' => ['NO_AVAILABLE_CREDIT']])))->recheck('c', $finalized, $now);
+    expect($exact['outcome'] === 'ALLOWED' && $exact['phase'] === 'production_submission' && $exact['grandfathered'] === false && $exact['changedSinceFinalization'] === [] && $exact['finalization']['outcome'] === 'ALLOWED');
+    $exceeded = (new $G('enforce', $profile(['approvedCreditLimit' => '50.00', 'availableCredit' => '-27.35'])))->recheck('c', $finalized, $now);
+    expect($exceeded['outcome'] === 'BLOCKED' && $exceeded['reasons'] === ['CREDIT_LIMIT_EXCEEDED'] && $exceeded['changedSinceFinalization'] === ['approvedCreditLimit']);
+    $red = (new $G('enforce', $profile(['riskColor' => 'RED', 'eligibilityBlockers' => ['RISK_RED']])))->recheck('c', $finalized, $now);
+    expect($red['outcome'] === 'BLOCKED' && $red['reasons'] === ['RISK_RED'] && $red['changedSinceFinalization'] === ['riskColor']);
+    expect((new $G('enforce', $profile(), 'shadow'))->recheck('c', $finalized, $now)['mode'] === 'shadow' && (new $G('enforce', $profile(['eligibilityBlockers' => ['RISK_RED']]), 'shadow'))->recheck('c', $finalized, $now)['outcome'] === 'WOULD_BLOCK');
+    foreach ([null, 'not json', json_encode(['mode' => 'off', 'outcome' => 'NOT_EVALUATED'])] as $earlier) {
+        $old = (new $G('enforce', $profile()))->recheck('c', ['finance_decision' => $earlier] + $order, $now);
+        expect($old['grandfathered'] === true && $old['changedSinceFinalization'] === [] && $old['outcome'] === 'ALLOWED', 'an order without an evaluated decision is evaluated at release');
+    }
+    // CEO exception: bound to the order and the company, unexpired, large enough, same currency, RED now, credit reasons only.
+    $row = ['exception_uuid' => '00000000-0000-4000-8000-00000000e001', 'company_uuid' => 'c', 'order_uuid' => $order['order_uuid'], 'currency_code' => 'RON', 'amount' => '77.35', 'status' => 'APPROVED', 'expires_at' => '2026-11-10 10:00:00.000001'];
+    $with = static fn (array $over = [], array $reasons = ['RISK_RED', 'NO_APPROVED_LIMIT']): array => (new $G('enforce', $profile(['riskColor' => 'RED', 'availableCredit' => null, 'eligibilityBlockers' => $reasons]), null,
+        static fn (string $id): ?array => $id === $order['order_uuid'] ? array_replace($row, $over) : null))->decide('c', $order, $now);
+    $covered = $with();
+    expect($covered['outcome'] === 'ALLOWED_BY_CEO_EXCEPTION' && $covered['exception'] === ['id' => $row['exception_uuid'], 'amount' => '77.35', 'currency' => 'RON', 'expiresAt' => $row['expires_at']] && $covered['reasons'] === ['RISK_RED', 'NO_APPROVED_LIMIT']);
+    foreach ([['amount' => '77.34'], ['currency_code' => 'EUR'], ['expires_at' => $now], ['expires_at' => '2026-11-09 23:59:59.000000'], ['company_uuid' => 'other'], ['status' => 'REQUESTED'], ['status' => 'REJECTED']] as $overRow) {
+        expect($with($overRow)['outcome'] === 'BLOCKED', 'exception not applicable: ' . json_encode($overRow));
+    }
+    expect($with([], ['RISK_RED', 'IDENTITY_NOT_VERIFIED'])['outcome'] === 'BLOCKED' && $with([], ['RISK_RED', 'ACCOUNT_NOT_RECONCILED'])['outcome'] === 'BLOCKED' && $with([], ['RISK_RED', 'CURRENCY_ISSUE_OPEN'])['outcome'] === 'BLOCKED', 'identity, account and currency reasons are never covered');
+    expect($with([], ['NO_APPROVED_LIMIT'])['outcome'] === 'BLOCKED', 'an exception serves a RED company only');
+    expect((new $G('enforce', $profile(['eligibilityBlockers' => ['RISK_RED']])))->decide('c', $order, $now)['outcome'] === 'BLOCKED', 'no exception reader, no exception');
+    // The refusals carry reason codes and the phase, never an amount.
+    $refusal = $G::refusal($over);
+    expect($refusal->status === 409 && $refusal->errorCode === 'FINANCE_NOT_ELIGIBLE' && $refusal->details === ['reasons' => ['CREDIT_LIMIT_EXCEEDED'], 'phase' => 'finalization']);
+    expect($G::refusal($red)->errorCode === 'FINANCE_RELEASE_BLOCKED' && $G::refusal($red)->details === ['reasons' => ['RISK_RED'], 'phase' => 'production_submission']);
+    // Source rules: the journal is insert-only; the gate reads no browser input and writes no ledger, stage, shipment or delivery row.
+    $source = dirname(__DIR__) . '/src';
+    foreach (new RecursiveIteratorIterator(new RecursiveDirectoryIterator($source, FilesystemIterator::SKIP_DOTS)) as $file) {
+        if ($file->getExtension() === 'php') {
+            expect(preg_match('/\b(UPDATE|DELETE\s+FROM)\s+b2b_finance_gate_decisions\b/i', (string) file_get_contents($file->getPathname())) !== 1, $file->getFilename() . ' never rewrites the finance gate journal');
+        }
+    }
+    $gateSource = (string) file_get_contents($source . '/B2B/FinanceGate.php');
+    expect(preg_match('/\bPDO\b|INSERT|UPDATE|DELETE|Request|\$_(GET|POST|COOKIE)/', $gateSource) !== 1, 'FinanceGate is a pure decision: no SQL, no request data');
+    expect(preg_match('/b2b_account_movements|operational_orders|order_activity_events|trendyol|awb/i', (string) file_get_contents($source . '/B2B/FinanceGateJournal.php')) !== 1, 'the journal touches its own table only');
+    $readiness = (string) file_get_contents($source . '/B2B/FinanceGateReadiness.php') . (string) file_get_contents(dirname($source) . '/bin/b2b-finance-gate-readiness.php');
+    expect(preg_match('/\b(INSERT|UPDATE|DELETE|REPLACE|ALTER|DROP)\b/', $readiness) !== 1 && str_contains($readiness, 'START TRANSACTION READ ONLY') && !str_contains($readiness, 'FinanceGateJournal'), 'the readiness report is read-only and journals nothing');
+    $submit = (string) file_get_contents($source . '/B2B/ProductionCommands.php');
+    expect(strpos($submit, '$this->finance->recheck(') < strpos($submit, '$this->writer->createInternal(') && strpos($submit, "if(\$existing!==false) \$result=['status'=>200") < strpos($submit, '$this->finance->recheck('), 'the release check runs before any production row and never for an existing handoff');
+});
+
 test('the Finance configuration guard refuses unreviewed Finance values and never reports a value', function (): void {
     $a = '00000000-0000-4000-8000-0000000000a1';
     $b = '00000000-0000-4000-8000-0000000000a2';
@@ -964,6 +1042,47 @@ test('the Finance configuration guard refuses unreviewed Finance values and neve
     expect(FinanceConfigGuard::inspect(['ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS' => strtoupper("{$b} , {$a}"), 'ARASYA_FINANCE_CONFIG_ACK' => $fingerprint])['ok']);
     expect($fails(FinanceConfigGuard::inspect([...$reviewed, 'ARASYA_FINANCE_OPENING_BALANCE_POSTING' => 'enabled', 'ARASYA_FINANCE_CONFIG_ACK' => $fingerprint])) === ['finance_config_acknowledgement_stale']);
     expect($fails(FinanceConfigGuard::inspect(['ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS' => $a, 'ARASYA_FINANCE_CONFIG_ACK' => $fingerprint])) === ['finance_config_acknowledgement_stale']);
+    // API 2.67.0: the B2B finalization finance gate is off by default; shadow or enforce is an activation needing review.
+    expect(FinanceConfigGuard::inspect(['ARASYA_B2B_FINANCE_GATE' => 'off'])['ok'] && FinanceConfigGuard::inspect(['ARASYA_B2B_FINANCE_GATE' => 'off'])['defaults']);
+    expect($fails(FinanceConfigGuard::inspect(['ARASYA_B2B_FINANCE_GATE' => 'enforce'])) === ['finance_config_not_acknowledged']);
+    expect($fails(FinanceConfigGuard::inspect(['ARASYA_B2B_FINANCE_GATE' => 'shadow'])) === ['finance_config_not_acknowledged']);
+    expect($fails(FinanceConfigGuard::inspect(['ARASYA_B2B_FINANCE_GATE' => 'on'])) === ['b2b_finance_gate_unrecognized']);
+    $gate = FinanceConfigGuard::inspect(['ARASYA_B2B_FINANCE_GATE' => 'shadow'])['fingerprint'];
+    expect(FinanceConfigGuard::inspect(['ARASYA_B2B_FINANCE_GATE' => 'shadow', 'ARASYA_FINANCE_CONFIG_ACK' => $gate])['ok']);
+    expect($fails(FinanceConfigGuard::inspect(['ARASYA_B2B_FINANCE_GATE' => 'enforce', 'ARASYA_FINANCE_CONFIG_ACK' => $gate])) === ['finance_config_acknowledgement_stale'], 'shadow -> enforce needs a new review');
+    // The release check at production submission inherits the gate when absent; a set value is reviewed on its own.
+    $states = static fn (array $values): array => array_column(FinanceConfigGuard::inspect($values)['checks'], 'check');
+    expect(in_array('b2b_finance_release_gate_off_inherited', $states([]), true) && in_array('b2b_finance_release_gate_enforce_inherited', $states(['ARASYA_B2B_FINANCE_GATE' => 'enforce']), true));
+    expect(FinanceConfigGuard::inspect(['ARASYA_B2B_FINANCE_RELEASE_GATE' => 'off'])['defaults'] && in_array('b2b_finance_release_gate_off', $states(['ARASYA_B2B_FINANCE_RELEASE_GATE' => 'off']), true));
+    expect($fails(FinanceConfigGuard::inspect(['ARASYA_B2B_FINANCE_RELEASE_GATE' => 'enforce'])) === ['finance_config_not_acknowledged'], 'a release check alone is an activation');
+    expect($fails(FinanceConfigGuard::inspect(['ARASYA_B2B_FINANCE_RELEASE_GATE' => 'Shadow'])) === ['b2b_finance_release_gate_unrecognized']);
+    expect($fails(FinanceConfigGuard::inspect(['ARASYA_B2B_FINANCE_GATE' => 'enforced', 'ARASYA_B2B_FINANCE_RELEASE_GATE' => ''])) === ['b2b_finance_gate_unrecognized', 'b2b_finance_release_gate_unrecognized']);
+    expect($fails(FinanceConfigGuard::inspect(['ARASYA_B2B_FINANCE_GATE' => 'enforced', 'ARASYA_FINANCE_CONFIG_ACK' => FinanceConfigGuard::inspect(['ARASYA_B2B_FINANCE_GATE' => 'enforced'])['fingerprint']])) === ['b2b_finance_gate_unrecognized'], 'an acknowledgement never excuses a malformed value');
+    // The browser origin list as the Finance frontend needs it: exact entries, the Finance origin listed or absent,
+    // never a near miss. Not part of the fingerprint, never printed.
+    $live = 'https://staff.arasyahome.ro,https://dashboard.arasyahome.ro,https://b2b.arasyahome.ro';
+    expect(in_array('finance_origin_absent', $states(['ARASYA_ALLOWED_ORIGINS' => $live]), true) && FinanceConfigGuard::inspect(['ARASYA_ALLOWED_ORIGINS' => $live])['ok']);
+    $listed = FinanceConfigGuard::inspect(['ARASYA_ALLOWED_ORIGINS' => $live . ', https://finance.arasyahome.ro']);
+    expect($listed['ok'] && $listed['defaults'] && in_array('finance_origin_listed', array_column($listed['checks'], 'check'), true));
+    expect($listed['fingerprint'] === FinanceConfigGuard::inspect([])['fingerprint'], 'the origin list is not part of the Finance fingerprint');
+    foreach (['https://finance.arasyahome.ro/', 'https://Finance.arasyahome.ro', 'https://finance.arasyahome.ro:443', 'https://*.arasyahome.ro', 'http://staff.arasyahome.ro', 'https://user@staff.arasyahome.ro'] as $wrong) {
+        expect(in_array('allowed_origins_malformed_entries_1', $fails(FinanceConfigGuard::inspect(['ARASYA_ALLOWED_ORIGINS' => $live . ',' . $wrong])), true), 'malformed origin refused: ' . $wrong);
+    }
+    foreach (['https://www.finance.arasyahome.ro', 'https://finance.arasyahome.com', 'http://finance.arasyahome.ro'] as $near) {
+        expect(in_array('finance_origin_unexpected', $fails(FinanceConfigGuard::inspect(['ARASYA_ALLOWED_ORIGINS' => $live . ',' . $near])), true), 'near miss refused: ' . $near);
+    }
+    expect(FinanceConfigGuard::inspect(['ARASYA_APP_ENV' => 'test', 'ARASYA_ALLOWED_ORIGINS' => 'http://127.0.0.1:4173,http://localhost:5175'])['ok'], 'loopback origins pass outside production');
+    expect(!FinanceConfigGuard::inspect(['ARASYA_ALLOWED_ORIGINS' => 'http://127.0.0.1:4173'])['ok'], 'loopback origins fail in production');
+    $printed = json_encode(FinanceConfigGuard::inspect(['ARASYA_ALLOWED_ORIGINS' => $live . ',https://finance.arasyahome.ro/'])['checks']);
+    expect(!str_contains((string) $printed, 'arasyahome'), 'no origin is printed');
+    $both = FinanceConfigGuard::inspect(['ARASYA_B2B_FINANCE_GATE' => 'enforce'])['fingerprint'];
+    expect($fails(FinanceConfigGuard::inspect(['ARASYA_B2B_FINANCE_GATE' => 'enforce', 'ARASYA_B2B_FINANCE_RELEASE_GATE' => 'off', 'ARASYA_FINANCE_CONFIG_ACK' => $both])) === ['finance_config_acknowledgement_stale'], 'switching the release check off needs a new review');
+    // The running API keeps the configured value exactly: it is validated where it is used, never rewritten to off.
+    $configSource = (string) file_get_contents(dirname(__DIR__) . '/src/Config/Config.php');
+    expect(!str_contains($configSource, "? \$this->b2bFinanceGate : 'off'") && str_contains($configSource, 'return $this->b2bFinanceGate;'), 'Config does not normalize the gate mode');
+    foreach (['ARASYA_B2B_FINANCE_GATE', 'ARASYA_B2B_FINANCE_RELEASE_GATE'] as $gateKey) {
+        expect(((new ConfigLoader(['HOME' => sys_get_temp_dir(), $gateKey => 'enforced']))->load()[$gateKey] ?? null) === 'enforced', "{$gateKey} reaches the API unchanged");
+    }
     $text = json_encode(FinanceConfigGuard::inspect([...$reviewed, 'ARASYA_FINANCE_CEO_EMPLOYEE_UUID' => $b, 'ARASYA_FINANCE_OPENING_BALANCE_POSTING' => 'enabled'])['checks'], JSON_THROW_ON_ERROR);
     expect(!str_contains($text, $a) && !str_contains($text, $b), 'checks never contain a configured value');
     // The acknowledgement key reaches the guard, and the running API never reads it.
