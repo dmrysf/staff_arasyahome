@@ -37,6 +37,15 @@ Not touched: staff #115 and yd-soft #31 (ING), the AWB station code, Trendyol PD
 | Real-data pilot | `docs/finance-real-data-pilot.md` | nothing imported |
 | D1–D6 against the code | `docs/b2b-finance-gate.md` §12 | D6 now codes only in the B2B order detail (`FinanceGate::forOrderView`); read-only `bin/b2b-finance-gate-readiness.php` (§14) |
 
+### Verification of the second pass (2026-11-10, staff `18668b1`, b2b `c6f4229`, finance `8ac5d02`)
+
+- Full API suite (24 commands of the CI MariaDB job), run one after the other: `fails=0` on MySQL 8.4 and on MariaDB 10.11. Quality job steps (lint, migration checks, 106 unit tests, release validator, package, deploy and maintenance tests) pass.
+- API 2.66.0 (`41fddcd`) on a schema with migration 050 (only the migration file and the test harness added, no product code): 14/14 integration tests on MySQL 8.4 and 14/14 on MariaDB 10.11.
+- B2B: 85 unit tests, 39/39 browser smoke (including B2B 0.9.0 against an API 2.66.0 double), real-API E2E 18/18 on both databases.
+- Finance: 38 unit tests, build verification, deploy script test.
+- CI green on all three heads.
+- Local lesson: the migration advisory lock is server-wide; never run two suites against the same database server at once.
+
 ## Owner decisions still open
 
 1. Merge each PR (#123, #6, #23).
