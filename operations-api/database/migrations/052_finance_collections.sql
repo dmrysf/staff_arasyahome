@@ -13,6 +13,7 @@
 --                          branches are unchanged. No ledger row is rewritten.
 --   b2b_account_activity_events: one more action, 'refund_posted' (CHECK replaced, values kept)
 --   finance_activity_events / finance_evidence_refs: entity type 'ledger_request' (CHECKs replaced, values kept)
+--   finance_refused_attempts                                    refused Finance and B2B account commands (insert-only)
 --   eight finance.* catalogue permissions, granted to nobody
 -- Database guarantees, independent of the application:
 --   * the decider of a request is never its creator, submitter or last editor (CHECK chk_finance_ledger_four_eyes);
@@ -144,6 +145,26 @@ CREATE TABLE IF NOT EXISTS finance_ledger_requests (
     CONSTRAINT chk_finance_ledger_payout_parts CHECK (
         (payout_bank_transaction_key IS NULL AND payout_bank_provider IS NULL AND payout_bank_account_key IS NULL AND payout_bank_transaction_id IS NULL)
         OR (payout_bank_transaction_key IS NOT NULL AND payout_bank_provider IS NOT NULL AND payout_bank_account_key IS NOT NULL AND payout_bank_transaction_id IS NOT NULL))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ---- Refused commands --------------------------------------------------------------------------------------------
+-- A refused write on a Finance route or a B2B account route (four eyes, missing permission, duplicate bank transaction,
+-- closed B2B write path...) is kept here, insert-only, because the web server error log is rotated within days. Only the
+-- actor, the route, the status, the error code and the request id: never a request body, an amount or a bank identity.
+-- No foreign key: recording a refusal must never fail because of it.
+CREATE TABLE IF NOT EXISTS finance_refused_attempts (
+    attempt_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    employee_uuid CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    http_method VARCHAR(8) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    route VARCHAR(255) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    http_status SMALLINT UNSIGNED NOT NULL,
+    error_code VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    request_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    occurred_at DATETIME(6) NOT NULL,
+    PRIMARY KEY (attempt_id),
+    KEY idx_finance_refused_time (occurred_at),
+    KEY idx_finance_refused_employee (employee_uuid, occurred_at),
+    KEY idx_finance_refused_code (error_code, occurred_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ---- b2b_account_movements: movement type 'refund' -------------------------------------------------------------

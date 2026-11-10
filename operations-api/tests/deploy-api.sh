@@ -19,6 +19,16 @@ release_a="$workspace/release-a"; release_b="$workspace/release-b"; release_c="$
 /bin/bash operations-api/tests/create-release-fixture.sh "$release_c" "$sha_c"
 /bin/bash operations-api/tests/create-release-fixture.sh "$release_d" "$sha_d"
 
+# Activation requires every shipped migration to be applied: a disposable database, migrated once by the release's own
+# runner, stands in for production. The configuration comes from the environment, so secrets.json stays a test file.
+[[ -n "${ARASYA_TEST_DB_HOST:-}" && -n "${ARASYA_TEST_DB_USER:-}" ]] || fail 'ARASYA_TEST_DB_HOST/PORT/USER/PASSWORD are required (a disposable server).'
+deploy_db="arasya_deploy_gate_test"
+php -r '$p=new PDO(sprintf("mysql:host=%s;port=%d",$argv[1],(int)$argv[2]),$argv[3],$argv[4]); $p->exec("DROP DATABASE IF EXISTS `$argv[5]`"); $p->exec("CREATE DATABASE `$argv[5]` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");' \
+  "$ARASYA_TEST_DB_HOST" "${ARASYA_TEST_DB_PORT:-3306}" "$ARASYA_TEST_DB_USER" "${ARASYA_TEST_DB_PASSWORD:-}" "$deploy_db"
+export ARASYA_APP_ENV=test ARASYA_APP_SECRET="$(printf 't%.0s' {1..32})" ARASYA_ALLOWED_ORIGINS=https://staff.arasyahome.ro \
+  ARASYA_DB_HOST="$ARASYA_TEST_DB_HOST" ARASYA_DB_PORT="${ARASYA_TEST_DB_PORT:-3306}" ARASYA_DB_NAME="$deploy_db" ARASYA_DB_USER="$ARASYA_TEST_DB_USER" ARASYA_DB_PASSWORD="${ARASYA_TEST_DB_PASSWORD:-}"
+schema_sql() { php -r '$p=new PDO(sprintf("mysql:host=%s;port=%d;dbname=%s",getenv("ARASYA_DB_HOST"),(int)getenv("ARASYA_DB_PORT"),getenv("ARASYA_DB_NAME")),getenv("ARASYA_DB_USER"),getenv("ARASYA_DB_PASSWORD")); $p->exec($argv[1]);' "$1"; }
+
 test_home="$workspace/home"; api_root="$test_home/arasya-operations-api"; public_root="$test_home/api.arasyahome.ro"
 mkdir -p "$api_root" "$public_root/.well-known" "$public_root/cgi-bin" "$test_home/arasya-config" "$test_home/staff.arasyahome.ro"
 cp -R "$release_c" "$api_root/current"
@@ -30,8 +40,13 @@ printf 'acme-sentinel\n' > "$public_root/.well-known/acme.txt"
 printf 'cgi-sentinel\n' > "$public_root/cgi-bin/keep.txt"
 secret_checksum="$(cksum "$test_home/arasya-config/secrets.json")"
 
-HOME="$test_home" DRY_RUN=1 /bin/bash "$release_a/scripts/cpanel-deploy-api.sh" >/dev/null
+dry_output="$(HOME="$test_home" DRY_RUN=1 /bin/bash "$release_a/scripts/cpanel-deploy-api.sh" 2>&1)" || fail 'Dry-run refused an empty schema instead of reporting it.'
+[[ "$dry_output" == *"Pending migrations (apply before activation): 001_"* ]] || fail 'Dry-run did not report the pending migrations.'
 [[ ! -e "$api_root/active-release" ]] || fail 'Dry-run changed active pointer.'
+if output="$(HOME="$test_home" /bin/bash "$release_a/scripts/cpanel-deploy-api.sh" 2>&1)"; then fail 'Activation accepted while migrations are pending.'; fi
+[[ "$output" == *"Pending migrations, apply them first; nothing was activated"* ]] || fail 'Pending migrations were refused for another reason.'
+[[ ! -e "$api_root/active-release" && ! -e "$public_root/index.php" ]] || fail 'A refused activation wrote a pointer or the public root.'
+HOME="$test_home" php "$release_a/bin/migrate.php" >/dev/null
 
 HOME="$test_home" /bin/bash "$release_a/scripts/cpanel-deploy-api.sh" >/dev/null
 [[ "$(tr -d '[:space:]' < "$api_root/active-release")" == "$sha_a" ]] || fail 'Release A was not activated.'
@@ -57,7 +72,7 @@ HOME="$test_home" /bin/bash "$release_b/scripts/cpanel-rollback-api.sh" --previo
 [[ "$(tr -d '[:space:]' < "$api_root/active-release")" == "$sha_a" ]] || fail 'API --previous did not return to A.'
 
 # An older retained release (here 2.33.0) is a downgrade: the CURRENT release's per-piece guard must run and, when it
-# cannot verify the database (no reachable DB in this harness), refuse before either pointer is written. Earlier
+# cannot verify the database (here: a database name that does not exist), refuse before either pointer is written. Earlier
 # scripts skipped the guard for any target >= 2.32.0, which let 2.32.x/2.33.x re-route open policy-v2 orders.
 sha_e="$(printf 'e%.0s' {1..40})"; release_e="$workspace/release-e"
 /bin/bash operations-api/tests/create-release-fixture.sh "$release_e" "$sha_e"
@@ -67,7 +82,7 @@ php -r 'foreach (array_slice($argv, 3) as $f) file_put_contents($f, str_replace(
 /bin/bash "$release_e/scripts/generate-sha256s.sh" "$release_e"
 /bin/bash "$release_e/scripts/validate-release.sh" "$release_e" >/dev/null || fail 'Older 2.33.0 fixture is invalid.'
 cp -R "$release_e" "$api_root/releases/$sha_e"
-if HOME="$test_home" /bin/bash "$release_a/scripts/cpanel-rollback-api.sh" "$sha_e" >/dev/null 2>&1; then fail 'Downgrade to 2.33.0 skipped the current release rollback guard.'; fi
+if HOME="$test_home" ARASYA_DB_NAME=arasya_missing_deploy_gate_test /bin/bash "$release_a/scripts/cpanel-rollback-api.sh" "$sha_e" >/dev/null 2>&1; then fail 'Downgrade to 2.33.0 skipped the current release rollback guard.'; fi
 [[ "$(tr -d '[:space:]' < "$api_root/active-release")" == "$sha_a" ]] || fail 'Refused downgrade changed active release.'
 [[ "$(tr -d '[:space:]' < "$api_root/previous-release")" == "$sha_b" ]] || fail 'Refused downgrade changed previous release.'
 
@@ -125,4 +140,17 @@ HOME="$test_home" DRY_RUN=1 /bin/bash "$release_d/scripts/cpanel-deploy-api.sh" 
 finance_config "{\"ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS\":\"$owner_uuid\",\"ARASYA_FINANCE_OPENING_BALANCE_POSTING\":\"enabled\",\"ARASYA_FINANCE_CONFIG_ACK\":\"$fingerprint\"}"
 expect_refused 'stale acknowledgement after posting was enabled'
 
-printf 'PASS API staged releases activate atomically, preserve legacy/current/public boundaries, reject corruption, and rollback by checksum.\n'
+# The schema gate: one shipped migration not applied (here 052) refuses activation and names it; an unreadable schema
+# refuses as well. Neither writes a pointer.
+finance_config '{"ARASYA_B2B_FINANCE_GATE":"off"}'
+schema_sql "UPDATE schema_migrations SET migration_name = 'hidden-052' WHERE migration_name = '052_finance_collections.sql'"
+if output="$(HOME="$test_home" /bin/bash "$release_d/scripts/cpanel-deploy-api.sh" 2>&1)"; then fail 'Activation accepted with 052 pending.'; fi
+[[ "$output" == *"nothing was activated: 052_finance_collections.sql"* ]] || fail "The pending 052 was not named: $output"
+[[ "$(tr -d '[:space:]' < "$api_root/active-release")" == "$sha_a" ]] || fail 'A refused activation changed the active release.'
+schema_sql "UPDATE schema_migrations SET migration_name = '052_finance_collections.sql' WHERE migration_name = 'hidden-052'"
+if output="$(HOME="$test_home" ARASYA_DB_NAME=arasya_missing_deploy_gate_test /bin/bash "$release_d/scripts/cpanel-deploy-api.sh" 2>&1)"; then fail 'Activation accepted without a readable schema.'; fi
+[[ "$output" == *"Migration status could not be read; nothing was activated."* ]] || fail 'An unreadable schema was refused for another reason.'
+HOME="$test_home" /bin/bash "$release_d/scripts/cpanel-deploy-api.sh" >/dev/null || fail 'Activation refused although every migration is applied.'
+[[ "$(tr -d '[:space:]' < "$api_root/active-release")" == "$sha_d" ]] || fail 'Release D was not activated once the schema was complete.'
+
+printf 'PASS API staged releases activate atomically, only on a fully migrated schema, preserve legacy/current/public boundaries, reject corruption, and rollback by checksum.\n'

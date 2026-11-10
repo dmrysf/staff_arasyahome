@@ -478,6 +478,7 @@ final class Container
             new \Arasya\Operations\Management\RootInterventionController($this->rootIntervention($authorization), $this->authentication, $csrf, $this->config, $context),
             $this->financeController($authorization, $context, $csrf, $rateLimiter),
             new \Arasya\Operations\Trendyol\AwbStationController($this->awbStation($authorization), $this->authentication, $csrf, $this->config, $context),
+            new \Arasya\Operations\Finance\RefusedAttemptRecorder($this->pdo, new StructuredLogger()),
         );
     }
 

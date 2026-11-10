@@ -123,3 +123,16 @@ Both integration suites run on MySQL 8.4 and MariaDB 10.11 in CI.
 
 See `docs/release-plan-b2b-finance.md` (section 9). Rollback floor: 2.68.0 while a refund movement or an open request
 exists (`bin/check-rollback.php`). Migration 052 is additive; an older API ignores the request table.
+
+## 11. Refused commands
+
+A write on a Finance route or a B2B account route that a signed-in person is refused (`FOUR_EYES_REQUIRED`,
+`UNAUTHORIZED_ACTION`, `APPLICATION_ACCESS_DENIED`, `NOT_REQUEST_OWNER`, `CSRF_INVALID`, `ORIGIN_DENIED`,
+`BANK_TRANSACTION_ALREADY_RECORDED`, `POSSIBLE_DUPLICATE_UNACKNOWLEDGED`, `ACCOUNT_WRITES_MOVED_TO_FINANCE`,
+`MOVEMENT_FOLLOWS_FINANCE`, `REFUND_ALLOCATION_FIXED`, `FINANCE_COLLECTIONS_DISABLED`) is stored in
+`finance_refused_attempts`, insert-only: actor, method, route, status, error code, request id and time. Never the request
+body, an amount or a bank identity. Reads and anonymous requests are not stored. Recording never changes the answer; a
+recording failure is logged as `refused_attempt_not_recorded`. `GET /finance/refused-attempts?code=&before=`
+(`finance.audit.view`, 100 per page, newest first) lists them with the employee's name.
+
+The web server error log is rotated within days and is not an audit record.
