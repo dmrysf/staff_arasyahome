@@ -73,3 +73,6 @@ out of scope: bank and SmartBill data enter only as files a person uploads and r
   `IDENTITY_NOT_VERIFIED` or `RISK_NOT_ASSIGNED`; that is the expected baseline.
 - `enforce` (D2) only after every company that buys on credit has passed this plan; otherwise B2B sales to non-onboarded
   customers stop (`docs/b2b-finance-gate.md` section 12).
+- Prepaid customers: the pilot gives no credit limit to a company that does not buy on credit. No artificial or symbolic
+  limit is set to let prepaid orders pass the gate; a prepaid order counts as paid only after a payment checked against the
+  bank statement by one person, confirmed by a second and recorded in the ledger (`docs/b2b-finance-gate.md` section 7, D5).

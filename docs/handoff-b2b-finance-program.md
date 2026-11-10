@@ -46,12 +46,19 @@ Not touched: staff #115 and yd-soft #31 (ING), the AWB station code, Trendyol PD
 - CI green on all three heads.
 - Local lesson: the migration advisory lock is server-wide; never run two suites against the same database server at once.
 
+### Final release checks (third pass, 2026-11-10)
+
+- D5 corrected: no artificial or symbolic credit limit for prepaid customers. A prepaid order counts as paid only after a payment verified against the bank statement by two people and recorded in the ledger; until a prepaid rule exists, their orders wait under `enforce` (`docs/b2b-finance-gate.md` section 7 and D5).
+- R6 replaced: the full short-route flow is proven only on disposable databases (R6a, CI); the first production short-route order is a real order under a separate, explicit owner authorization (R6b). No synthetic company or test order in production (`docs/release-plan-b2b-finance.md` section 8).
+- Migration 050 on the live MariaDB: every ALTER that adds a CHECK rebuilds its table (`ALGORITHM=COPY`, measured on MariaDB 10.11.18), writes wait during the copy, and an ALTER waiting for its metadata lock holds back all later queries of the table (server default wait 86400 s). New `bin/migrate.php --lock-wait-timeout=SECONDS` (1-600, default behaviour unchanged) makes such a wait fail within seconds; the partial state is harmless for API 2.66.0 and a re-run completes 050 once (`tests/mysql-migration-lock-timeout-integration.php`). Rehearsal on a restored copy, window, pre-checks and failure table: release plan section 7.
+- Finance UI: axe-core WCAG 2.2 A/AA and keyboard checks (finance repo `e2e/`), with the fixes they required.
+
 ## Owner decisions still open
 
 1. Merge each PR (#123, #6, #23).
-2. Release in the order of `docs/release-plan-b2b-finance.md`: backup, B2B 0.9.0, Staff 2.49.0, migration 050 under API 2.66.0, API 2.67.0, Finance origin, Finance 0.5.0.
+2. Release in the order of `docs/release-plan-b2b-finance.md`: backup and rehearsal, B2B 0.9.0, Staff 2.49.0, migration 050 under API 2.66.0 with `--lock-wait-timeout=5`, API 2.67.0, Finance origin, Finance 0.5.0. The first real short-route order (R6b) needs its own authorization.
 3. D1: switch the gate to `shadow`. D2: switch to `enforce` after reading the shadow journal in Finance (`#/b2bGate`).
-4. D3-D6 as listed in `docs/b2b-finance-gate.md` §12.
+4. D3-D6 as listed in `docs/b2b-finance-gate.md` §12. D5: no symbolic limit; prepaid needs a verified, recorded payment rule.
 5. Finance roles and people per `docs/finance-iam-matrix.md` (who gets `finance.credit.view` to read the journal, the authority list, the pilot operators).
 6. The real-data pilot per `docs/finance-real-data-pilot.md` (cut-off date, primary source, evidence, pilot list).
 7. Nobody receives Finance access automatically. Cristina, Zelal and the Staff accounting operators keep their current tasks.
