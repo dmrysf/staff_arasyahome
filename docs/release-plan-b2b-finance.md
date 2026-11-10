@@ -167,3 +167,26 @@ Therefore:
    deviation (wrong route, missing receivable, a Trendyol or web-shop order affected), leave the order where it is, report.
 3. The authorization is per order. It does not cover later orders or a gate change.
 
+
+## 9. Update 2026-11-10: API 2.68.0, Finance 0.6.0, B2B 0.10.0 (prepared, not performed)
+
+Live today: API 2.66.0, Staff 2.49.1, B2B 0.9.1; migrations 050 and 052 pending; Finance not deployed. API 2.67.0 is never
+deployed on its own any more: 2.68.0 contains it and makes order types, the finance gate and B2B account writes independent
+server switches (`docs/finance-collections.md`, section 7). With the production defaults API 2.68.0 behaves like 2.66.0 for
+B2B orders (no order type, no finance panel) and like 2.66.0 for the B2B account (B2B still writes).
+
+| Step | Action | GO when | Rollback |
+|---|---|---|---|
+| S1 | Deploy **B2B 0.10.0** (runs on 2.66.0; nothing visible changes) | release.json names the B2B main SHA; account screen and order list open | `cpanel-rollback-b2b.sh --previous` (0.9.1), only while no refund movement exists |
+| S2 | Server: update the API checkout to the 2.68.0 `api-deploy` head; `DRY_RUN=1 cpanel-deploy-api.sh` | `OK finance_config_defaults`, `OK b2b_order_types_off`, `OK finance_collections_disabled`, `OK b2b_account_writes_enabled`, no FAIL | nothing changed |
+| S3 | Fresh backup; migrations **050 then 052** with API 2.66.0 active, `bin/migrate.php --lock-wait-timeout=5`, quiet window (section 7) | both `APPLIED`; `/health` 200; Staff order and B2B lists open on 2.66.0 | additive; leave in place. 052 rebuilds the small ledger and Finance tables (ALGORITHM=COPY), rehearse it like 050 |
+| S4 | Deploy **API 2.68.0**, every switch at its default | `/health` 2.68.0; `GET /b2b/access` features `[]`; B2B finalizes without a type; smoke tests; AWB station and Trendyol unchanged | `cpanel-rollback-api.sh --previous` while `check-rollback.php 2.66.0` is safe |
+| S5 | Finance origin and **Finance 0.6.0** (R7/R8). Collections still `disabled` | `live-check.mjs` PASS; default deny with the application alone; collection screens show "not enabled" | remove origin, `cpanel-rollback-finance.sh --previous` |
+| S6 | Owner decisions: second verifier named; roles created and assigned (`docs/finance-iam-matrix.md`) | two different people hold record and approve | remove roles |
+| S7 | `ARASYA_FINANCE_COLLECTIONS=enabled` (ack). B2B writes stay `enabled` for a parallel week | each pilot payment approved by a second person; B2B balance equals Finance view; no `BANK_TRANSACTION_ALREADY_RECORDED` surprises | write `disabled` (no ack needed for the default) |
+| S8 | `ARASYA_B2B_ACCOUNT_WRITES=finance_only` (ack). Contabilitate/director-financiar keep their B2B view roles; write permissions may then be removed by a separate decision | B2B screen read-only; payments only via Finance requests | write `enabled` |
+| S9 | Finance gate D1 `shadow` for at least 14 days, then pilot, then D2 `enforce` (sections 4 and 12 of `docs/b2b-finance-gate.md`) | weekly journal review; every company that buys on credit `ready_for_credit` | `off` |
+| S10 | `ARASYA_B2B_ORDER_TYPES=enabled` only when the owner decides to use order types | features `["orderTypes", …]`; first typed order as a controlled real order | write `off` |
+
+Never approve a Finance refund before B2B 0.10.0 is live: B2B 0.9.x refuses an unknown movement type, so the account
+screen of that company would fail.

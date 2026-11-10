@@ -38,6 +38,10 @@ the Staff accounting work that runs today. Built on the existing Central IAM rul
 | `finance.credit.view` | Limits, exposure, exceptions, **B2B gate journal** (`#/b2bGate`) | — |
 | `finance.credit.propose` / `.verify` / `.approve` / `.revoke` | Credit-limit chain and CEO exception request; approve/revoke effective only for the owner-decision list | three different people |
 | `finance.audit.view` / `.sensitive` | Finance activity trail; old and new values | — |
+| `finance.collections.record` / `.approve` | Enter a payment request / verify, approve or reject it (API 2.68.0) | record ≠ approve on the same request (API and SQL) |
+| `finance.ledger.request` / `.approve` | Request an adjustment or reversal / approve or reject it | request ≠ approve |
+| `finance.refunds.request` / `.approve` / `.payout` | Request a refund / approve or cancel it / record the bank payout | requester ≠ approver ≠ (payout recorder ≠ requester) |
+| `finance.reconciliation.manage` | Allocate payments to orders and release allocations (no balance change) | — |
 
 ## 3. Proposed Finance roles (created once by root in the Dashboard, assigned to nobody)
 
@@ -49,6 +53,10 @@ the Staff accounting work that runs today. Built on the existing Central IAM rul
 | `finance-supervisor` — Supervizor Finance | companies.view, companies.supervise, accounts.view, risk.view, credit.view, audit.view | Oversight, supervisory reviews, gate journal reading |
 | `finance-owner-decision` — Decizie risc și limită | companies.view, accounts.view, risk.view, risk.approve, credit.view, credit.approve, credit.revoke | Colour and purchase limit; effective only with the UUID list |
 | `finance-auditor` — Auditor Finance | companies.view, accounts.view, risk.view, credit.view, audit.view, audit.sensitive | Read-only audit |
+| `finance-cashier` — Încasări (2.68.0) | accounts.view, collections.record, refunds.request, reconciliation.manage | Enters payments and refund requests, allocates |
+| `finance-controller` — Verificare încasări (2.68.0) | accounts.view, collections.approve, ledger.approve, refunds.approve | Second person for payments, corrections and refunds |
+| `finance-payout` — Plăți rambursări (2.68.0) | accounts.view, refunds.payout | Records that the bank paid an approved refund |
+| `finance-corrections` — Cereri corecții (2.68.0) | accounts.view, ledger.request | Requests adjustments and reversals |
 
 Not proposed for now: `risk.propose`, `credit.propose`, `credit.verify` (the V0.3 chain is replaced by owner-direct decisions,
 Finance V0.4.0) and the CEO exception (owner decision D4).

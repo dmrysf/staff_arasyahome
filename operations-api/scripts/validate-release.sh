@@ -50,6 +50,11 @@ for file in \
   src/B2B/FinanceGateJournal.php \
   src/Production/ServiceRoute.php \
   database/migrations/051_trendyol_awb_station.sql \
+  database/migrations/052_finance_collections.sql \
+  src/Finance/Ledger/BankTransaction.php \
+  src/Finance/Ledger/LedgerRequestService.php \
+  src/Finance/Ledger/LedgerRequestQueries.php \
+  src/Finance/Ledger/ReconciliationService.php \
   src/Integration/Trendyol/TrendyolLabelClient.php \
   src/Integration/Trendyol/TrendyolLabelDocumentFetcher.php \
   src/Integration/Trendyol/StreamTrendyolLabelDocumentFetcher.php \
@@ -122,7 +127,7 @@ for file in \
 done
 
 (cd -- "$release_root" && sha256sum -c SHA256SUMS >/dev/null) || fail "SHA256SUMS verification failed."
-php -r '$r=json_decode(file_get_contents($argv[1]), true, flags: JSON_THROW_ON_ERROR); require $argv[2]."/bootstrap.php"; if (!is_array($r) || preg_match("/^[0-9a-f]{40}$/", $r["sourceCommit"] ?? "") !== 1 || ($r["version"] ?? null) !== "2.67.0" || $r["version"] !== Arasya\Operations\Http\HealthController::VERSION) exit(2);' "$release_root/release.json" "$release_root" \
+php -r '$r=json_decode(file_get_contents($argv[1]), true, flags: JSON_THROW_ON_ERROR); require $argv[2]."/bootstrap.php"; if (!is_array($r) || preg_match("/^[0-9a-f]{40}$/", $r["sourceCommit"] ?? "") !== 1 || ($r["version"] ?? null) !== "2.68.0" || $r["version"] !== Arasya\Operations\Http\HealthController::VERSION) exit(2);' "$release_root/release.json" "$release_root" \
   || fail "release.json provenance/version is invalid."
 
 for directory in src database/migrations bin config; do

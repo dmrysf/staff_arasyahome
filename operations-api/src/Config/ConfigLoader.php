@@ -52,6 +52,10 @@ final readonly class ConfigLoader
         // B2B finalization finance decision (API 2.67.0): off, shadow or enforce.
         'ARASYA_B2B_FINANCE_GATE',
         'ARASYA_B2B_FINANCE_RELEASE_GATE',
+        // API 2.68.0: order types, B2B account writes and Finance collections are separate, reviewed switches.
+        'ARASYA_B2B_ORDER_TYPES',
+        'ARASYA_B2B_ACCOUNT_WRITES',
+        'ARASYA_FINANCE_COLLECTIONS',
     ];
 
     /**

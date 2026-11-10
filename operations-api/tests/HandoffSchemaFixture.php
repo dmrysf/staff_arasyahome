@@ -29,10 +29,27 @@ function restorePreTrendyolAwbTestSchema(PDO $pdo): void
     $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='051_trendyol_awb_station.sql'");
 }
 
+/**
+ * Restore a pre-052 disposable test fixture (no Finance collections). The guarded 052 CHECK swaps stay (a re-run skips
+ * them); only the request tables, the eight permissions and the migration record go. NOT a deployment/rollback mechanism.
+ */
+function restorePreFinanceCollectionsTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='052_finance_collections.sql'")->fetchColumn()) return;
+    $pdo->exec('DROP TABLE IF EXISTS finance_ledger_requests');
+    $pdo->exec('DROP TABLE IF EXISTS finance_ledger_request_sequence');
+    $keys="'finance.collections.record','finance.collections.approve','finance.ledger.request','finance.ledger.approve','finance.refunds.request','finance.refunds.approve','finance.refunds.payout','finance.reconciliation.manage'";
+    $pdo->exec("DELETE rp FROM role_permissions rp JOIN permissions p ON p.permission_id=rp.permission_id WHERE p.permission_key IN ({$keys})");
+    $pdo->exec("DELETE FROM permissions WHERE permission_key IN ({$keys})");
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='052_finance_collections.sql'");
+}
+
 /** Restore a pre-047 disposable test fixture (no Finance V0.3 company onboarding). This is NOT a deployment/rollback mechanism. */
 function restorePreFinanceOnboardingTestSchema(PDO $pdo): void
 {
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    restorePreFinanceCollectionsTestSchema($pdo);
     restorePreTrendyolAwbTestSchema($pdo);
     restorePreB2BOrderTypesTestSchema($pdo);
     if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='047_finance_company_onboarding.sql'")->fetchColumn()) return;

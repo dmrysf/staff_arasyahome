@@ -110,7 +110,8 @@ $withoutType = array_diff_key(array_intersect_key($edited, array_flip(Arasya\Ope
 $kept = ok($call($root, 'PUT', "/b2b/orders/{$edited['id']}", $withoutType + ['expectedVersion' => $edited['version'], 'notes' => 'older screen']), 200, 'save without orderType')['detail']['order'];
 check($kept['orderType'] === 'CUT_ONLY', 'a save that omits orderType keeps the type');
 // B2B 0.9.0 reads the feature list: present on 2.67.0, absent on 2.66.0, so the frontend may ship before the API.
-check((ok($call($root, 'GET', '/b2b/access'), 200, 'B2B access')['features'] ?? null) === ['orderTypes', 'financeGate'], 'the B2B gate announces the order type and finance gate features');
+// API 2.68.0: each feature follows its own switch. The test kernel enables order types and leaves the finance gate off.
+check((ok($call($root, 'GET', '/b2b/access'), 200, 'B2B access')['features'] ?? null) === ['orderTypes'], 'the B2B gate announces order types only while the finance gate is off');
 $activity = ok($call($root, 'GET', "/b2b/orders/{$edited['id']}/activity"), 200, 'activity')['items'];
 check(in_array('orderType', array_merge(...array_map(static fn (array $e): array => $e['changedFields'] ?? [], $activity)), true), 'the type change is in the commercial history');
 $cutOnly = ok($finalize($kept), 200, 'finalize CUT_ONLY')['detail']['order'];

@@ -23,14 +23,54 @@ final readonly class AccountQueries
     private const ACTIVE_ALLOCATIONS = 'SELECT a.%1$s AS id, SUM(a.amount) AS allocated FROM b2b_account_allocations a
         LEFT JOIN b2b_account_allocation_releases r ON r.allocation_uuid=a.allocation_uuid WHERE r.allocation_uuid IS NULL AND a.company_uuid=? GROUP BY a.%1$s';
 
-    public function __construct(private PDO $pdo, private AuthorizationService $authorization, private Clock $clock)
+    /**
+     * @param bool $financeView API 2.68.0: the same read model for the Finance application (finance.accounts.view instead of
+     *   the B2B permissions; capabilities describe Finance requests, never direct writes).
+     * @param bool $writesEnabled false while ARASYA_B2B_ACCOUNT_WRITES is `finance_only`: the write capabilities are false.
+     */
+    public function __construct(private PDO $pdo, private AuthorizationService $authorization, private Clock $clock, private bool $writesEnabled = true, private bool $financeView = false)
     {
+    }
+
+    private function requireView(EmployeeIdentity $actor): void
+    {
+        if ($this->financeView) {
+            \Arasya\Operations\Finance\FinanceAccess::require($this->authorization, $actor, \Arasya\Operations\Finance\FinanceAccess::ACCOUNTS_VIEW);
+            return;
+        }
+        AccountAccess::require($this->authorization, $actor, AccountAccess::VIEW);
+    }
+
+    /** @return array<string, bool> */
+    private function caps(EmployeeIdentity $actor): array
+    {
+        if ($this->financeView) {
+            return array_intersect_key(\Arasya\Operations\Finance\FinanceAccess::capabilities($this->authorization, $actor), array_flip([
+                'canViewAccounts', 'canRecordCollections', 'canRequestLedgerCorrections', 'canRequestRefunds', 'canManageReconciliation']));
+        }
+        return AccountAccess::capabilities($this->authorization, $actor, $this->writesEnabled) + ['writesMovedToFinance' => !$this->writesEnabled];
+    }
+
+    /**
+     * Finance requests of one company that the B2B screen shows read-only (API 2.68.0): open ones and the last decided.
+     * Codes, kinds, statuses, amounts and dates only; no bank identity, no notes, no people.
+     */
+    public function financeRequests(EmployeeIdentity $actor, string $companyId): array
+    {
+        $this->requireView($actor);
+        $this->company($companyId);
+        $s = $this->pdo->prepare("SELECT request_code, kind, status, currency_code, amount, value_date, submitted_at, decided_at FROM finance_ledger_requests
+            WHERE company_uuid=? AND status<>'DRAFT' ORDER BY status='PENDING_APPROVAL' DESC, request_number DESC LIMIT 50");
+        $s->execute([$companyId]);
+        return ['items' => array_map(static fn (array $r): array => ['code' => $r['request_code'], 'kind' => $r['kind'], 'status' => $r['status'],
+            'currencyCode' => $r['currency_code'], 'amount' => self::money($r['amount']), 'valueDate' => $r['value_date'],
+            'submittedAt' => self::iso($r['submitted_at']), 'decidedAt' => self::iso($r['decided_at'])], $s->fetchAll(PDO::FETCH_ASSOC))];
     }
 
     /** Cross-company overview: every company with its RON and EUR balance. */
     public function overview(EmployeeIdentity $actor, array $filters): array
     {
-        AccountAccess::require($this->authorization, $actor, AccountAccess::VIEW);
+        $this->requireView($actor);
         $limit = self::limit($filters['limit'] ?? null);
         $where = ['1=1']; $params = [];
         $status = $filters['status'] ?? 'all';
@@ -75,14 +115,14 @@ final readonly class AccountQueries
                 'movementCount' => (int) $r['movements'], 'lastValueDate' => $r['last_value_date'],
             ], $rows),
             'nextCursor' => $next,
-            'capabilities' => AccountAccess::capabilities($this->authorization, $actor),
+            'capabilities' => $this->caps($actor),
         ];
     }
 
     /** One company's account: identity and, per currency, balance, totals, outstanding receivables and unallocated payments. */
     public function summary(EmployeeIdentity $actor, string $companyId): array
     {
-        AccountAccess::require($this->authorization, $actor, AccountAccess::VIEW);
+        $this->requireView($actor);
         $company = $this->company($companyId);
         $signed = self::SIGNED;
         $s = $this->pdo->prepare("SELECT m.currency_code, COALESCE(SUM({$signed}),0) AS balance,
@@ -104,13 +144,13 @@ final readonly class AccountQueries
             ];
         }
         return ['company' => self::companyIdentity($company), 'currencies' => $currencies,
-            'capabilities' => AccountAccess::capabilities($this->authorization, $actor) + ['companyActive' => $company['status'] === 'active']];
+            'capabilities' => $this->caps($actor) + ['companyActive' => $company['status'] === 'active']];
     }
 
     /** Movements newest first (business date, then posting order), with reversal links and allocation figures. */
     public function movements(EmployeeIdentity $actor, string $companyId, array $filters): array
     {
-        AccountAccess::require($this->authorization, $actor, AccountAccess::VIEW);
+        $this->requireView($actor);
         $this->company($companyId);
         $limit = self::limit($filters['limit'] ?? null);
         $where = ['m.company_uuid=?']; $params = [$companyId];
@@ -119,7 +159,7 @@ final readonly class AccountQueries
             $where[] = 'm.currency_code=?'; $params[] = $filters['currency'];
         }
         if (($filters['type'] ?? 'all') !== 'all') {
-            if (!in_array($filters['type'], ['order_receivable', 'payment', 'opening_balance', 'adjustment', 'reversal'], true)) throw self::invalid('type');
+            if (!in_array($filters['type'], ['order_receivable', 'payment', 'opening_balance', 'adjustment', 'reversal', 'refund'], true)) throw self::invalid('type');
             $where[] = 'm.movement_type=?'; $params[] = $filters['type'];
         }
         if (($from = AccountInput::optionalDate($filters['from'] ?? null, 'from')) !== null) { $where[] = 'm.value_date>=?'; $params[] = $from; }
@@ -136,13 +176,13 @@ final readonly class AccountQueries
             $last = $rows[count($rows) - 1];
             $next = self::encodeCursor(['date' => $last['value_date'], 'number' => (int) $last['movement_number']]);
         }
-        return ['items' => array_map(self::movement(...), $rows), 'nextCursor' => $next, 'capabilities' => AccountAccess::capabilities($this->authorization, $actor)];
+        return ['items' => array_map(self::movement(...), $rows), 'nextCursor' => $next, 'capabilities' => $this->caps($actor)];
     }
 
     /** One movement with its allocations (active and released). */
     public function movementDetail(EmployeeIdentity $actor, string $companyId, string $movementId): array
     {
-        AccountAccess::require($this->authorization, $actor, AccountAccess::VIEW);
+        $this->requireView($actor);
         $this->company($companyId);
         if (!AccountInput::isUuid($movementId)) throw new ApiException(404, 'MOVEMENT_NOT_FOUND', 'Movement was not found.');
         $rows = $this->movementRows('m.company_uuid=? AND m.movement_uuid=?', [$companyId, $movementId], 'm.movement_number', 1);
@@ -161,13 +201,13 @@ final readonly class AccountQueries
             'orderCode' => (OrderStore::decode($a['receivable_snapshot']) ?? [])['orderCode'] ?? null,
             'amount' => self::money($a['amount']), 'currencyCode' => $a['currency_code'], 'createdAt' => self::iso($a['created_at']), 'createdBy' => $a['created_by_name'],
             'released' => $a['release_kind'] === null ? null : ['kind' => $a['release_kind'], 'reason' => $a['release_reason'], 'at' => self::iso($a['released_at']), 'by' => $a['released_by_name']],
-        ], $s->fetchAll(PDO::FETCH_ASSOC)), 'capabilities' => AccountAccess::capabilities($this->authorization, $actor)];
+        ], $s->fetchAll(PDO::FETCH_ASSOC)), 'capabilities' => $this->caps($actor)];
     }
 
     /** Unreversed receivables with an outstanding amount and payments with an unallocated amount, for allocation. */
     public function openItems(EmployeeIdentity $actor, string $companyId, array $filters): array
     {
-        AccountAccess::require($this->authorization, $actor, AccountAccess::VIEW);
+        $this->requireView($actor);
         $this->company($companyId);
         $currency = $filters['currency'] ?? '';
         if (!in_array($currency, AccountInput::CURRENCIES, true)) throw self::invalid('currency');
@@ -198,7 +238,7 @@ final readonly class AccountQueries
     {
         $export
             ? AccountAccess::require($this->authorization, $actor, AccountAccess::VIEW, AccountAccess::EXPORT)
-            : AccountAccess::require($this->authorization, $actor, AccountAccess::VIEW);
+            : $this->requireView($actor);
         $company = $this->company($companyId);
         $range = AccountInput::statement($filters, $this->clock->now());
         $signed = self::SIGNED;
@@ -246,7 +286,7 @@ final readonly class AccountQueries
 
     public function activity(EmployeeIdentity $actor, string $companyId, array $filters): array
     {
-        AccountAccess::require($this->authorization, $actor, AccountAccess::VIEW);
+        $this->requireView($actor);
         $this->company($companyId);
         $limit = self::limit($filters['limit'] ?? null);
         $where = ['e.company_uuid=?']; $params = [$companyId];
@@ -304,6 +344,8 @@ final readonly class AccountQueries
             'allocated' => in_array($r['movement_type'], ['payment', 'order_receivable'], true) ? AccountMoney::format($allocated) : null,
             'open' => in_array($r['movement_type'], ['payment', 'order_receivable'], true) ? AccountMoney::format($reversed ? 0 : $amount - $allocated) : null,
             'createdAt' => self::iso($r['created_at']), 'createdBy' => ['id' => $r['created_by_employee_uuid'], 'displayName' => $r['created_by_name']],
+            // API 2.68.0: approved in Finance (or a refund): corrected only through a Finance request, never from B2B.
+            'postedByFinance' => ($snapshot['sourceType'] ?? null) === 'finance_request' || $r['movement_type'] === 'refund',
         ];
     }
 
