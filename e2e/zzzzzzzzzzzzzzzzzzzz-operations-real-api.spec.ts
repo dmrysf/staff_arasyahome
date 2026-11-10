@@ -80,6 +80,18 @@ test("the shop's invoice manager makes the AWB of an invoiced order at stage 12:
     // The order leaves the queue once its AWB exists (it stayed open on screen for the label).
     await page.reload();
     await expect(page.getByTestId(`cf-awb-row-${F.number}`)).toHaveCount(0);
+    // Staff 2.49.1: it stays findable under the employee's AWBs of the last 7 days, and its label downloads again.
+    const recent = page.getByTestId(`cf-awb-recent-${F.number}`);
+    await expect(recent).toBeVisible();
+    await expect(recent).toContainText("AWB făcut");
+    const [again] = await Promise.all([page.waitForEvent("download"), page.getByTestId(`cf-awb-recent-download-${F.number}`).click()]);
+    expect(again.suggestedFilename()).toBe(`awb-trendhome-${F.number}.pdf`);
+    for (const width of PHONES) {
+      await page.setViewportSize({ width, height: 740 });
+      expect(await overflow(page), `${width} px: recent AWBs overflow`).toBeLessThanOrEqual(0);
+    }
+    await page.setViewportSize({ width: 320, height: 740 });
+    await accessible(page, "cf-awb-recent", "recent AWBs 320");
     expect(errors).toEqual([]);
   } finally {
     await context.close();

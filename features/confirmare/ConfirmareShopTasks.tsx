@@ -1,14 +1,14 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useI18n, type MessageKey } from "../../i18n";
 import { sourceLabel, type ConfirmareApi, type ConfirmareSource } from "../../domain/confirmare";
-import { opsErrorKey, type AwbQueueItem, type EfacturaState, type EfacturaTask, type HealthMetrics } from "../../domain/confirmareOps";
+import { opsErrorKey, type AwbQueueItem, type RecentAwb, type EfacturaState, type EfacturaTask, type HealthMetrics } from "../../domain/confirmareOps";
 import { getErrorPresentation, toServiceError } from "../../services/errors";
 import { AppIcon } from "../../components/icons/AppIcon";
 import { EmptyPanel, PageHeader } from "../../components/ui/States";
 import { Notice, StatusPill } from "../../components/ui/StatusPill";
 import { AutoRefreshBar, Metric, MetricGrid, QueueSkeleton } from "../workspaces/DashboardParts";
 import { useAutoRefresh } from "../workspaces/useAutoRefresh";
-import { ConfirmareOperationsPanel } from "./ConfirmareOperationsPanel";
+import { ConfirmareOperationsPanel, saveBlob } from "./ConfirmareOperationsPanel";
 import { SourceFilter, when } from "./ConfirmareParts";
 
 const SOURCES: readonly ConfirmareSource[] = ["trendhome", "outletperdele"];
@@ -41,7 +41,56 @@ export function ConfirmareAwbScreen({ service, navigate }: { service: Confirmare
       {items && (items.length === 0
         ? <EmptyPanel icon="orders" title={t("cf.awbq.empty")}>{t("cf.awbq.emptyHint")}</EmptyPanel>
         : <ul className="queue-list" aria-label={t("cf.awbq.title")}>{items.map((item) => <AwbRow key={item.globalOrderId} item={item} open={open?.globalOrderId === item.globalOrderId} onToggle={() => setOpen(open?.globalOrderId === item.globalOrderId ? null : item)} service={service} onChanged={queue.refresh} />)}</ul>)}
+      <RecentAwbs service={service} reload={queue.updatedAt} />
     </article>
+  );
+}
+
+/**
+ * Staff 2.49.1: the AWBs this employee made in the last 7 days (never before 1 November 2026), read from their own history,
+ * so an order that left the queue with its AWB is still found; each label is downloaded again from FAN Courier through the
+ * shop (the same label call as the AWB panel; the server still checks the employee's role on the order).
+ */
+function RecentAwbs({ service, reload }: { service: ConfirmareApi; reload: unknown }) {
+  const { t } = useI18n();
+  const [items, setItems] = useState<RecentAwb[] | null>(null);
+  const [error, setError] = useState<unknown>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [failed, setFailed] = useState<{ id: string; message: string } | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    service.recentAwbs(controller.signal).then((value) => { setItems(value); setError(null); }, (cause: unknown) => { if (!controller.signal.aborted) setError(cause); });
+    return () => controller.abort();
+  }, [service, reload]);
+  async function download(item: RecentAwb) {
+    setBusy(item.globalOrderId); setFailed(null);
+    try {
+      saveBlob(await service.awbLabel(item.globalOrderId), `awb-${item.source}-${item.orderNumber}.pdf`);
+    } catch (cause) {
+      setFailed({ id: item.globalOrderId, message: failure(cause, t) });
+    } finally {
+      setBusy(null);
+    }
+  }
+  return (
+    <section className="detail-section" aria-labelledby="cf-awb-recent-title" data-testid="cf-awb-recent">
+      <h2 id="cf-awb-recent-title">{t("cf.awbq.recent.title")}</h2>
+      <p className="muted">{t("cf.awbq.recent.description")}</p>
+      {error !== null && items === null && <p className="order-notice order-notice-muted" role="alert">{getErrorPresentation(error).message}</p>}
+      {items === null && error === null && <QueueSkeleton />}
+      {items !== null && (items.length === 0
+        ? <p className="muted" data-testid="cf-awb-recent-empty">{t("cf.awbq.recent.empty")}</p>
+        : <ul className="queue-list" aria-label={t("cf.awbq.recent.title")}>{items.map((item) => <li key={item.globalOrderId} className="queue-row cf-row tone-success" data-testid={`cf-awb-recent-${item.orderNumber}`}>
+          <span className="queue-row-main">
+            <span className="queue-row-top"><strong className="order-id">#{item.orderNumber}</strong><span className="cf-source">{sourceLabel(item.source)}</span></span>
+            <small>{t("cf.awbq.recent.made", { date: when(item.createdAt) })}</small>
+            {failed?.id === item.globalOrderId && <small role="alert">{failed.message}</small>}
+          </span>
+          <button type="button" className="button button-secondary" disabled={busy !== null} onClick={() => { void download(item); }} data-testid={`cf-awb-recent-download-${item.orderNumber}`}>
+            <AppIcon name="document" size={18} />{busy === item.globalOrderId ? t("common.loading") : t("cf.awbq.recent.download")}
+          </button>
+        </li>)}</ul>)}
+    </section>
   );
 }
 
