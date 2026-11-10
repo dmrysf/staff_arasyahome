@@ -92,6 +92,7 @@ final readonly class FinanceController
                 (bool) preg_match('#^/finance/credit/companies/(' . self::UUID . ')$#D', $path, $m) => $this->credit->detail($actor, $m[1]),
                 (bool) preg_match('#^/finance/companies/(' . self::UUID . ')/credit-profile$#D', $path, $m) => $this->credit->profile($actor, $m[1]),
                 $path === '/finance/audit' => $this->audit($actor, $q),
+                $path === '/finance/refused-attempts' => $this->refusedAttempts($actor, $q),
                 $path === '/finance/owner/companies' => $this->owner->list($actor, $q),
                 (bool) preg_match('#^/finance/owner/companies/(' . self::UUID . ')$#D', $path, $m) => $this->owner->detail($actor, $m[1]),
                 // API 2.68.0: ledger requests, the company ledger (same read model as B2B) and the bank reconciliation view.
@@ -312,6 +313,40 @@ final readonly class FinanceController
             ], $rows),
             'nextCursor' => $hasNext && $rows !== [] ? (string) $rows[count($rows) - 1]['company_code'] : null,
         ];
+    }
+
+    /** Refused money commands (RefusedAttemptRecorder), newest first, 100 per page; `code` filters, `before` pages by id. */
+    private function refusedAttempts(\Arasya\Operations\Employee\EmployeeIdentity $actor, array $q): array
+    {
+        FinanceAccess::require($this->authorization, $actor, FinanceAccess::AUDIT_VIEW);
+        FinanceInput::only($q, ['code', 'before']);
+        $where = [];
+        $params = [];
+        if (isset($q['code'])) {
+            if (!in_array($q['code'], RefusedAttemptRecorder::CODES, true)) {
+                FinanceInput::fail('code', 'invalid');
+            }
+            $where[] = 'r.error_code = ?';
+            $params[] = $q['code'];
+        }
+        if (isset($q['before'])) {
+            if (!is_string($q['before']) || preg_match('/^[1-9]\d{0,18}$/D', $q['before']) !== 1) {
+                throw new ApiException(400, 'INVALID_CURSOR', 'Invalid cursor.');
+            }
+            $where[] = 'r.attempt_id < ?';
+            $params[] = (int) $q['before'];
+        }
+        $statement = $this->pdo->prepare('SELECT r.attempt_id, r.employee_uuid, e.display_name, r.http_method, r.route, r.http_status, r.error_code, r.request_id, r.occurred_at
+            FROM finance_refused_attempts r LEFT JOIN employees e ON e.employee_uuid = r.employee_uuid'
+            . ($where === [] ? '' : ' WHERE ' . implode(' AND ', $where)) . ' ORDER BY r.attempt_id DESC LIMIT 101');
+        $statement->execute($params);
+        $rows = $statement->fetchAll(PDO::FETCH_ASSOC);
+        $more = count($rows) > 100;
+        $rows = array_slice($rows, 0, 100);
+        return ['items' => array_map(static fn (array $r): array => [
+            'id' => (int) $r['attempt_id'], 'employeeId' => $r['employee_uuid'], 'employee' => $r['display_name'], 'method' => $r['http_method'],
+            'route' => $r['route'], 'status' => (int) $r['http_status'], 'code' => $r['error_code'], 'requestId' => $r['request_id'], 'at' => $r['occurred_at'],
+        ], $rows), 'nextBefore' => $more ? (string) $rows[99]['attempt_id'] : null];
     }
 
     private function audit(\Arasya\Operations\Employee\EmployeeIdentity $actor, array $q): array

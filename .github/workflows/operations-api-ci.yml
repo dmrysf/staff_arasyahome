@@ -98,7 +98,12 @@ jobs:
       - name: Build real API publish package and validate deploy dry-run
         run: /bin/bash operations-api/tests/release-package.sh
 
-      - name: Test two-target cPanel deployment
+      - name: Test two-target cPanel deployment (activation only on a fully migrated schema)
+        env:
+          ARASYA_TEST_DB_HOST: 127.0.0.1
+          ARASYA_TEST_DB_PORT: "3306"
+          ARASYA_TEST_DB_USER: root
+          ARASYA_TEST_DB_PASSWORD: root-test-password
         run: /bin/bash operations-api/tests/deploy-api.sh
 
       - name: Test the nightly maintenance launcher (absolute PHP CLI)

@@ -39,6 +39,7 @@ function restorePreFinanceCollectionsTestSchema(PDO $pdo): void
     if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='052_finance_collections.sql'")->fetchColumn()) return;
     $pdo->exec('DROP TABLE IF EXISTS finance_ledger_requests');
     $pdo->exec('DROP TABLE IF EXISTS finance_ledger_request_sequence');
+    $pdo->exec('DROP TABLE IF EXISTS finance_refused_attempts');
     $keys="'finance.collections.record','finance.collections.approve','finance.ledger.request','finance.ledger.approve','finance.refunds.request','finance.refunds.approve','finance.refunds.payout','finance.reconciliation.manage'";
     $pdo->exec("DELETE rp FROM role_permissions rp JOIN permissions p ON p.permission_id=rp.permission_id WHERE p.permission_key IN ({$keys})");
     $pdo->exec("DELETE FROM permissions WHERE permission_key IN ({$keys})");

@@ -55,6 +55,7 @@ for file in \
   src/Finance/Ledger/LedgerRequestService.php \
   src/Finance/Ledger/LedgerRequestQueries.php \
   src/Finance/Ledger/ReconciliationService.php \
+  src/Finance/RefusedAttemptRecorder.php \
   src/Integration/Trendyol/TrendyolLabelClient.php \
   src/Integration/Trendyol/TrendyolLabelDocumentFetcher.php \
   src/Integration/Trendyol/StreamTrendyolLabelDocumentFetcher.php \

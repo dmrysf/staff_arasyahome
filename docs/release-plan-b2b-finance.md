@@ -178,13 +178,13 @@ B2B orders (no order type, no finance panel) and like 2.66.0 for the B2B account
 | Step | Action | GO when | Rollback |
 |---|---|---|---|
 | S1 | Deploy **B2B 0.10.0** (runs on 2.66.0; nothing visible changes) | release.json names the B2B main SHA; account screen and order list open | `cpanel-rollback-b2b.sh --previous` (0.9.1), only while no refund movement exists |
-| S2 | Server: update the API checkout to the 2.68.0 `api-deploy` head; `DRY_RUN=1 cpanel-deploy-api.sh` | `OK finance_config_defaults`, `OK b2b_order_types_off`, `OK finance_collections_disabled`, `OK b2b_account_writes_enabled`, no FAIL | nothing changed |
+| S2 | Server: update the API checkout to the 2.68.0 `api-deploy` head; `DRY_RUN=1 cpanel-deploy-api.sh` | `OK finance_config_defaults`, `OK b2b_order_types_off`, `OK finance_collections_disabled`, `OK b2b_account_writes_enabled`, no FAIL; the dry run lists 050 and 052 as pending migrations (expected before S3) | nothing changed |
 | S3 | Fresh backup; migrations **050 then 052** with API 2.66.0 active, `bin/migrate.php --lock-wait-timeout=5`, quiet window (section 7) | both `APPLIED`; `/health` 200; Staff order and B2B lists open on 2.66.0 | additive; leave in place. 052 rebuilds the small ledger and Finance tables (ALGORITHM=COPY), rehearse it like 050 |
-| S4 | Deploy **API 2.68.0**, every switch at its default | `/health` 2.68.0; `GET /b2b/access` features `[]`; B2B finalizes without a type; smoke tests; AWB station and Trendyol unchanged | `cpanel-rollback-api.sh --previous` while `check-rollback.php 2.66.0` is safe |
+| S4 | Deploy **API 2.68.0**, every switch at its default (the deploy script refuses while any shipped migration is pending) | `/health` 2.68.0; `GET /b2b/access` features `[]`; B2B finalizes without a type; smoke tests; AWB station and Trendyol unchanged | `cpanel-rollback-api.sh --previous` while `check-rollback.php 2.66.0` is safe |
 | S5 | Finance origin and **Finance 0.6.0** (R7/R8). Collections still `disabled` | `live-check.mjs` PASS; default deny with the application alone; collection screens show "not enabled" | remove origin, `cpanel-rollback-finance.sh --previous` |
 | S6 | Owner decisions: second verifier named; roles created and assigned (`docs/finance-iam-matrix.md`) | two different people hold record and approve | remove roles |
-| S7 | `ARASYA_FINANCE_COLLECTIONS=enabled` (ack). B2B writes stay `enabled` for a parallel week | each pilot payment approved by a second person; B2B balance equals Finance view; no `BANK_TRANSACTION_ALREADY_RECORDED` surprises | write `disabled` (no ack needed for the default) |
-| S8 | `ARASYA_B2B_ACCOUNT_WRITES=finance_only` (ack). Contabilitate/director-financiar keep their B2B view roles; write permissions may then be removed by a separate decision | B2B screen read-only; payments only via Finance requests | write `enabled` |
+| S7 | **In one configuration change:** `ARASYA_FINANCE_COLLECTIONS=enabled` and `ARASYA_B2B_ACCOUNT_WRITES=finance_only` (one ack). There is no parallel period in which B2B and Finance both post payments | each pilot payment approved by a second person; B2B screen read-only; B2B balance equals Finance view; refused attempts reviewed (`GET /finance/refused-attempts`) | write both back to the defaults (`disabled`, `enabled`) |
+| S8 | Separate owner decision after the pilot: remove the B2B account write permissions (`b2b.accounts.record_payment`, `.adjust`, `.reverse`) from the roles; Contabilitate/director-financiar keep `b2b.accounts.view` | B2B write permissions held by nobody | give the permissions back |
 | S9 | Finance gate D1 `shadow` for at least 14 days, then pilot, then D2 `enforce` (sections 4 and 12 of `docs/b2b-finance-gate.md`) | weekly journal review; every company that buys on credit `ready_for_credit` | `off` |
 | S10 | `ARASYA_B2B_ORDER_TYPES=enabled` only when the owner decides to use order types | features `["orderTypes", …]`; first typed order as a controlled real order | write `off` |
 
@@ -194,19 +194,19 @@ screen of that company would fail.
 ### 9.1 Per step: prerequisites, switches, rollback floor, data risk, approval
 
 Every step needs its own written owner approval; none is implied by an earlier one. "Floor" is the output of
-`bin/check-rollback.php <target>`; `cpanel-rollback-api.sh` runs it itself and refuses an unsafe target. The B2B and
-Finance rollback scripts have no such guard, so the check in the B2B column is manual.
+`bin/check-rollback.php <target>`; `cpanel-rollback-api.sh` runs it itself and refuses an unsafe target. `cpanel-rollback-b2b.sh` refuses a release before
+0.10.0 while a refund movement exists (it asks the active API release, fail closed). The Finance rollback has no floor.
 
 | Step | Needs before | Migration | Switches after the step | Rollback and floor | Data-integrity risk |
 |---|---|---|---|---|---|
-| S1 B2B 0.10.0 | API 2.66.0 live (works on 2.66, 2.67 and 2.68) | none | none (client only) | `cpanel-rollback-b2b.sh --previous`. Allowed only while `SELECT COUNT(*) FROM b2b_account_movements WHERE movement_type='refund'` is 0 | none: reads only what the API sends |
+| S1 B2B 0.10.0 | API 2.66.0 live (works on 2.66, 2.67 and 2.68) | none | none (client only) | `cpanel-rollback-b2b.sh --previous`; the script refuses 0.9.x while a refund movement exists | none: reads only what the API sends |
 | S2 API dry run | S1 GO | none | none | nothing to roll back | none |
 | S3 Migrations 050, 052 | S2 GO; fresh, verified backup; API 2.66.0 active; quiet window | 050 then 052 (order fixed; 052 needs 050) | none (2.66.0 ignores the new tables and types) | additive, stays in place; API 2.66.0 keeps running on it | 052 rebuilds the ledger tables with `ALGORITHM=COPY` to swap CHECKs: a lock-wait timeout aborts cleanly (section 7); existing rows are kept unchanged (proven by test M) |
-| S4 API 2.68.0 | S3 `APPLIED` on both | 050 + 052 required. The deploy script does not check this itself: confirm both are recorded in `schema_migrations` before S4 (without 052 every Finance request route fails) | all defaults: `ARASYA_B2B_FINANCE_GATE=off`, `ARASYA_B2B_ORDER_TYPES=off`, `ARASYA_FINANCE_COLLECTIONS=disabled`, `ARASYA_B2B_ACCOUNT_WRITES=enabled` | `cpanel-rollback-api.sh --previous` to 2.66.0; floor is empty while no Finance request, no refund movement and no typed short-route order exists | none: behaves like 2.66.0 for B2B orders and accounts |
+| S4 API 2.68.0 | S3 `APPLIED` on both | 050 + 052 required; `cpanel-deploy-api.sh` refuses activation while any shipped migration is pending or the schema cannot be read | all defaults: `ARASYA_B2B_FINANCE_GATE=off`, `ARASYA_B2B_ORDER_TYPES=off`, `ARASYA_FINANCE_COLLECTIONS=disabled`, `ARASYA_B2B_ACCOUNT_WRITES=enabled` | `cpanel-rollback-api.sh --previous` to 2.66.0; floor is empty while no Finance request, no refund movement and no typed short-route order exists | none: behaves like 2.66.0 for B2B orders and accounts |
 | S5 Finance 0.6.0 + origin | S4 GO | none | collections `disabled` (screens show "not enabled") | `cpanel-rollback-finance.sh --previous`, remove the origin; no floor (client only) | none: Finance cannot write while collections are disabled |
 | S6 Roles | S5 GO; owner names the recorder(s) and the second verifier | none | none | remove the roles | none; four eyes needs two different people, the API refuses one person deciding their own entry |
-| S7 Collections on | S6 GO; **B2B 0.10.0 live (S1) confirmed in `release.json` before the first refund request**; opening-balance cut-off and pilot companies decided | none | `ARASYA_FINANCE_COLLECTIONS=enabled` (ack) | write `disabled`: open requests stay, nothing is posted; API floor becomes 2.68.0 as soon as a draft, pending request, unpaid approved refund or refund movement exists | parallel week: B2B and Finance can both post payments; the same bank transfer entered in B2B is not caught by the Finance bank identity (B2B has none), so the reconciliation view lists B2B payments "without bank identity" for daily review |
-| S8 B2B read-only | S7 parallel week clean | none | `ARASYA_B2B_ACCOUNT_WRITES=finance_only` (ack) | write `enabled` | none; order receivables still follow the order lifecycle |
+| S7 Collections on | S6 GO; **B2B 0.10.0 live (S1) confirmed in `release.json` before the first refund request**; opening-balance cut-off and pilot companies decided | none | `ARASYA_FINANCE_COLLECTIONS=enabled` together with `ARASYA_B2B_ACCOUNT_WRITES=finance_only` (one ack) | write both back to the defaults: open requests stay, nothing is posted; API floor becomes 2.68.0 as soon as a draft, pending request, unpaid approved refund or refund movement exists | none from parallel writing: the B2B write routes are closed on the server in the same change. Payments entered in B2B before S7 have no bank identity; Finance flags a new request with the same amount near the same date against them (acknowledgement required), and the reconciliation view lists them "without bank identity" |
+| S8 B2B write permissions removed | pilot clean; owner decision | none | none (roles only) | give the permissions back | none; order receivables still follow the order lifecycle |
 | S9 Finance gate | S8; every credit customer reviewed | none (050) | `ARASYA_B2B_FINANCE_GATE=shadow`, later `enforce` | write `off` | shadow writes journal rows only; enforce blocks finalization, never posts money |
 | S10 Order types | owner decision | none (050) | `ARASYA_B2B_ORDER_TYPES=enabled` | write `off`; API floor 2.67.0 while a typed short-route order is open | none for money |
 
@@ -226,7 +226,26 @@ Recovery without going below 2.68.0, in this order:
    2.68.x releases stays allowed (same floor).
 4. **Correct a wrong posting** only through an approved reversal request (Finance) — never by SQL. A wrong refund that was
    not paid out is cancelled (`cancel-payout`, second person); a paid-out refund is corrected with an adjustment request.
-5. **B2B front-end defect:** fix forward as 0.10.x; rolling back to 0.9.x would break the account screen of every
-   company with a refund.
+5. **B2B front-end defect:** fix forward as 0.10.x; `cpanel-rollback-b2b.sh` refuses 0.9.x while a refund movement
+   exists, because 0.9.x would break the account screen of every company with a refund.
 6. **Database restore is the last resort**, owner decision only: it discards every ledger row written after the backup
    (real payments included), so those must be re-entered and approved again from the bank statement.
+
+### 9.3 Merge is not deployment
+
+Verified 2026-11-10 (workflows and, read-only, the cPanel account):
+
+- A merge to `main` runs CI and publishes a verified package to a GitHub branch only: `api-deploy` (Operations API,
+  `publish-api-release`), `deploy` (Staff, B2B, Finance). No workflow connects to the server, and none runs a migration.
+- The cPanel repositories (`staff_arasyahome_api` on `api-deploy`, `staff_arasyahome` and `b2b_arasyahome` on `deploy`;
+  Finance has none yet) change only when someone runs "Update from Remote" and then "Deploy HEAD Commit"
+  (`uapi VersionControl update` / `VersionControlDeployment create`). Their `post-receive` hook fires only for a push into
+  the server repository, which nobody does. The account's cron jobs run the API maintenance, Trendyol and Confirmare
+  launchers of the active release; none pulls code.
+- Migrations run only by hand (`bin/migrate.php`). From this release `cpanel-deploy-api.sh` refuses to activate an API
+  whose shipped migrations are not all applied, so an accidental "Deploy HEAD Commit" of 2.68.0 before S3 changes nothing.
+- After the merges production stays on API 2.66.0, Staff 2.49.1 and B2B 0.9.1 until S1.
+
+Refused money commands (four eyes, permission, duplicate bank transaction, closed B2B write path) are kept in
+`finance_refused_attempts` (migration 052) and listed by `GET /finance/refused-attempts` (`finance.audit.view`); the web
+server error log is rotated within days and is not an audit record.

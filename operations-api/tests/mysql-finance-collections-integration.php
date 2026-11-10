@@ -381,6 +381,20 @@ $audit = ok($call($root, 'GET', '/finance/audit', null, ['entity' => 'ledger_req
 check(in_array('ledger_request_approved', array_column($audit, 'action'), true) && in_array('ledger_request_rejected', array_column($audit, 'action'), true) && in_array('refund_paid_out', array_column($audit, 'action'), true), 'R5 the Finance trail records every decision');
 foreach ($audit as $event) check(!str_contains(json_encode($event['details']), 'OP-') && !str_contains(json_encode($event['details']), 'ING-RON'), 'R6 audit details hold no bank identity');
 error($call($viewer, 'POST', '/finance/ledger-requests', $payment($a, '1.00', $bank('OP-V-1'))), 403, 'UNAUTHORIZED_ACTION', 'R7 a viewer cannot enter');
+// R8. Refused money commands are kept in the database (the web server log is rotated within days): four eyes, missing
+// permission, duplicate bank transaction, closed B2B write path. Actor, route, status, code and request id only.
+$refused = static fn (string $code): int => (int) $rows('SELECT COUNT(*) n FROM finance_refused_attempts WHERE error_code = ?', [$code])[0]['n'];
+check($refused('FOUR_EYES_REQUIRED') >= 6 && $refused('UNAUTHORIZED_ACTION') >= 4 && $refused('BANK_TRANSACTION_ALREADY_RECORDED') >= 2 && $refused('POSSIBLE_DUPLICATE_UNACKNOWLEDGED') >= 1
+    && $refused('ACCOUNT_WRITES_MOVED_TO_FINANCE') >= 1 && $refused('MOVEMENT_FOLLOWS_FINANCE') >= 1 && $refused('REFUND_ALLOCATION_FIXED') >= 1 && $refused('NOT_REQUEST_OWNER') >= 1
+    && $refused('FINANCE_COLLECTIONS_DISABLED') >= 1, 'R8 every kind of refused command was recorded: ' . json_encode($rows('SELECT error_code, COUNT(*) n FROM finance_refused_attempts GROUP BY error_code')));
+check(count($rows("SELECT 1 FROM finance_refused_attempts WHERE employee_uuid = ? AND error_code = 'FOUR_EYES_REQUIRED' AND http_method = 'POST' AND route = ?", [$both['id'], "/finance/ledger-requests/{$own['id']}/approve"])) === 1,
+    'R8 the two-role person\'s own approval attempt is recorded with its actor and route');
+check(count($rows("SELECT 1 FROM finance_refused_attempts WHERE route = '/finance/ledger-requests' AND employee_uuid = ? AND error_code = 'UNAUTHORIZED_ACTION'", [$viewer['id']])) === 1, 'R8 the viewer\'s refused entry is recorded');
+check((int) $rows("SELECT COUNT(*) n FROM finance_refused_attempts WHERE http_method = 'GET' OR route LIKE '%OP-%' OR route LIKE '%ING-RON%' OR employee_uuid = ''")[0]['n'] === 0, 'R8 no read, no bank identity, no anonymous row');
+$refusedList = ok($call($root, 'GET', '/finance/refused-attempts', null, ['code' => 'FOUR_EYES_REQUIRED']), 200, 'R8 refused attempts');
+check($refusedList['items'] !== [] && array_unique(array_column($refusedList['items'], 'code')) === ['FOUR_EYES_REQUIRED'] && in_array('Test bothroles', array_column($refusedList['items'], 'employee'), true), 'R8 an auditor reads them with names');
+error($call($recorder, 'GET', '/finance/refused-attempts'), 403, 'UNAUTHORIZED_ACTION', 'R8 a recorder cannot read the refusals');
+error($call($root, 'GET', '/finance/refused-attempts', null, ['code' => 'SOMETHING']), 422, 'VALIDATION_FAILED', 'R8 unknown code refused');
 
 // ---- Ledger integrity: balance recomputed from immutable rows equals the summary for every test company ----------------
 foreach ([$a, $b, $c, $d, $e, $f, $g, $c2] as $co) {
@@ -428,6 +442,8 @@ foreach ($categories as $label => [$where, $withRefunds, $pins]) {
     if ($withRefunds) check($pdo->exec('INSERT INTO b2b_account_movements SELECT * FROM zz_floor_refunds') > 0, "refund movements restored for {$label}");
     $result = $cli('2.67.0');
     $open = $result['json']['state']['openFinanceCollections'] ?? -1;
+    $refundsNow = (int) $pdo->query("SELECT COUNT(*) FROM b2b_account_movements WHERE movement_type = 'refund'")->fetchColumn();
+    check(($result['json']['state']['refundMovements'] ?? -1) === $refundsNow && ($withRefunds ? $refundsNow > 0 : $refundsNow === 0), "refund movements reported on their own for {$label} ({$refundsNow})");
     check($pins ? ($result['code'] === 3 && ($result['json']['requiredFloor'] ?? null) === '2.68.0' && $open > 0) : $open === 0,
         ($pins ? 'floor 2.68.0 held by ' : 'no 2.68.0 floor from ') . $label . ': ' . trim($result['out']));
 }
