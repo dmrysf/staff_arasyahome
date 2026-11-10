@@ -18,7 +18,8 @@ $checks = 0;
 function check(bool $v, string $m): void { global $checks; $checks++; if (!$v) throw new RuntimeException('FAIL ' . $m); }
 function ok(array $r, int $s, string $m): array { check($r['status'] === $s, $m . ' got ' . $r['status'] . ' ' . json_encode($r['body'])); return $r['body'] ?? []; }
 function error(array $r, int $s, string $code, string $m = ''): array { ok($r, $s, $code . ' ' . $m); check(($r['body']['error']['code'] ?? null) === $code, "{$code} {$m} got " . json_encode($r['body'])); return $r['body']['error']; }
-function refused(PDO $pdo, string $sql, array $params = []): int { try { $pdo->prepare($sql)->execute($params); } catch (PDOException $e) { return (int) ($e->errorInfo[1] ?? 0); } throw new RuntimeException('FAIL schema accepted: ' . $sql); }
+function duplicateOn(PDO $pdo, string $key, string $sql, array $params = []): bool { try { $pdo->prepare($sql)->execute($params); } catch (PDOException $e) { return (int) ($e->errorInfo[1] ?? 0) === 1062 && str_contains($e->getMessage(), $key); } throw new RuntimeException('FAIL schema accepted: ' . $sql); }
+function refusedBy(PDO $pdo, string $constraint, string $sql, array $params = []): bool { try { $pdo->prepare($sql)->execute($params); } catch (PDOException $e) { return in_array((int) ($e->errorInfo[1] ?? 0), [3819, 4025], true) && str_contains($e->getMessage(), $constraint); } throw new RuntimeException('FAIL schema accepted: ' . $sql); }
 
 $config = T::config($db);
 $pdo = Connection::create($config);
@@ -172,8 +173,27 @@ error($call($both, 'POST', "/finance/ledger-requests/{$own['id']}/reject", ['exp
 $rootOwn = ok($call($root, 'POST', '/finance/ledger-requests', $payment($f, '30.00', $bank('OP-F-0003'))), 201, '6 root enters')['request'];
 error($call($root, 'POST', "/finance/ledger-requests/{$rootOwn['id']}/approve", ['expectedVersion' => 1]), 403, 'FOUR_EYES_REQUIRED', '6 root never approves its own entry');
 check($summary($f)['balance'] === '1000.00', '6 nothing was posted');
-check(in_array(refused($pdo, 'UPDATE finance_ledger_requests SET status = \'REJECTED\', decided_by_employee_uuid = created_by_employee_uuid, decided_at = UTC_TIMESTAMP(6), decision_reason = \'x\' WHERE request_uuid = ?', [$own['id']]), [3819, 4025], true), '6 the database refuses a decision by the creator');
+check(refusedBy($pdo, 'chk_finance_ledger_four_eyes', 'UPDATE finance_ledger_requests SET status = \'REJECTED\', active_bank_transaction_key = NULL, decided_by_employee_uuid = created_by_employee_uuid, decided_at = UTC_TIMESTAMP(6), decision_reason = \'x\' WHERE request_uuid = ?', [$own['id']]), '6 the database refuses a decision by the creator');
 ok($call($approver, 'POST', "/finance/ledger-requests/{$own['id']}/approve", ['expectedVersion' => 1]), 200, '6 a second person approves the two-role entry');
+// The last editor and the submitter are refused like the creator, in the API and in SQL, also when they are not the
+// creator (the stored actors are set directly here; the API lets only the creator edit or submit).
+$touched = ok($call($recorder, 'POST', '/finance/ledger-requests', $payment($f, '25.00', $bank('OP-F-0004'))), 201, '6 request for the editor and submitter checks')['request'];
+$pdo->prepare('UPDATE finance_ledger_requests SET last_edited_by_employee_uuid = ? WHERE request_uuid = ?')->execute([$approver['id'], $touched['id']]);
+error($call($approver, 'POST', "/finance/ledger-requests/{$touched['id']}/approve", ['expectedVersion' => 1]), 403, 'FOUR_EYES_REQUIRED', '6 the last editor never approves');
+error($call($approver, 'POST', "/finance/ledger-requests/{$touched['id']}/reject", ['expectedVersion' => 1, 'reason' => 'Editor rejection attempt']), 403, 'FOUR_EYES_REQUIRED', '6 nor rejects');
+check(refusedBy($pdo, 'chk_finance_ledger_four_eyes', 'UPDATE finance_ledger_requests SET status = \'REJECTED\', active_bank_transaction_key = NULL, decided_by_employee_uuid = last_edited_by_employee_uuid, decided_at = UTC_TIMESTAMP(6), decision_reason = \'x\' WHERE request_uuid = ?', [$touched['id']]), '6 the database refuses a decision by the last editor');
+$pdo->prepare('UPDATE finance_ledger_requests SET last_edited_by_employee_uuid = created_by_employee_uuid, submitted_by_employee_uuid = ? WHERE request_uuid = ?')->execute([$approver['id'], $touched['id']]);
+error($call($approver, 'POST', "/finance/ledger-requests/{$touched['id']}/approve", ['expectedVersion' => 1]), 403, 'FOUR_EYES_REQUIRED', '6 the submitter never approves');
+check(refusedBy($pdo, 'chk_finance_ledger_four_eyes', 'UPDATE finance_ledger_requests SET status = \'REJECTED\', active_bank_transaction_key = NULL, decided_by_employee_uuid = submitted_by_employee_uuid, decided_at = UTC_TIMESTAMP(6), decision_reason = \'x\' WHERE request_uuid = ?', [$touched['id']]), '6 the database refuses a decision by the submitter');
+$pdo->prepare('UPDATE finance_ledger_requests SET submitted_by_employee_uuid = created_by_employee_uuid WHERE request_uuid = ?')->execute([$touched['id']]);
+// Control: the same statement by a third person passes the schema, so the refusals above come from the four-eyes rule.
+$pdo->beginTransaction();
+$control = $pdo->prepare('UPDATE finance_ledger_requests SET status = \'REJECTED\', active_bank_transaction_key = NULL, decided_by_employee_uuid = ?, decided_at = UTC_TIMESTAMP(6), decision_reason = \'x\' WHERE request_uuid = ?');
+$control->execute([$approver['id'], $touched['id']]);
+check($control->rowCount() === 1, '6 control: a third person\'s decision is accepted by the schema');
+$pdo->rollBack();
+ok($call($recorder, 'POST', "/finance/ledger-requests/{$touched['id']}/withdraw", ['expectedVersion' => 1, 'reason' => 'Four-eyes check request']), 200, '6 the check request is withdrawn');
+check($summary($f)['balance'] === '980.00', '6 only the approved two-role entry was posted');
 
 // ---- 8. Two approvers at the same moment: one posts, the other is told it is decided ------------------------------------
 $race = static function (array $jobs) use ($db): array {
@@ -228,9 +248,9 @@ $pg = ok($call($approver, 'POST', "/finance/ledger-requests/{$rg['id']}/approve"
 error($call($recorder, 'POST', '/finance/ledger-requests', $payment($g, '400.00', $bank('OP2026110001'))), 409, 'BANK_TRANSACTION_ALREADY_RECORDED', '7 still refused once posted');
 $pdo->exec('INSERT INTO finance_ledger_request_sequence (created_at) VALUES (UTC_TIMESTAMP(6))'); $n = (int) $pdo->lastInsertId();
 $dupKey = $rows('SELECT bank_transaction_key FROM finance_ledger_requests WHERE request_uuid = ?', [$rg['id']])[0]['bank_transaction_key'];
-check(refused($pdo, "INSERT INTO finance_ledger_requests (request_uuid, request_number, request_code, kind, status, company_uuid, currency_code, amount, direction, value_date, payment_method, bank_provider, bank_account_key, bank_transaction_id, bank_transaction_key, active_bank_transaction_key,
+check(duplicateOn($pdo, 'uq_finance_ledger_active_bank', "INSERT INTO finance_ledger_requests (request_uuid, request_number, request_code, kind, status, company_uuid, currency_code, amount, direction, value_date, payment_method, bank_provider, bank_account_key, bank_transaction_id, bank_transaction_key, active_bank_transaction_key,
     created_by_employee_uuid, created_at, last_edited_by_employee_uuid, updated_at, submitted_by_employee_uuid, submitted_at) VALUES (UUID(), ?, ?, 'PAYMENT', 'PENDING_APPROVAL', ?, 'RON', '400.00', 'credit', CURRENT_DATE, 'bank_transfer', 'ING', 'ING-RON-01', 'x', ?, ?, ?, UTC_TIMESTAMP(6), ?, UTC_TIMESTAMP(6), ?, UTC_TIMESTAMP(6))",
-    [$n, 'FIN-TX-T' . $n, $g, $dupKey, $dupKey, $recorder['id'], $recorder['id'], $recorder['id']]) === 1062, '7 the database refuses a second active row for the same bank transaction');
+    [$n, 'FIN-TX-T' . $n, $g, $dupKey, $dupKey, $recorder['id'], $recorder['id'], $recorder['id']]), '7 the database refuses a second active row for the same bank transaction');
 // Similar text is only flagged: the approver must acknowledge it; an exact identity can never be acknowledged.
 $similar = ok($call($recorder, 'POST', '/finance/ledger-requests', $payment($g, '400.00', $bank('OP-2026-11-0099'), [], ['externalReference' => 'OP 2026/11-0001'])), 201, '7 similar reference, other identity');
 check(count($similar['possibleDuplicates']) >= 1 && in_array('same_reference', $similar['possibleDuplicates'][0]['reasons'], true), '7 the similar entry is flagged for review');
