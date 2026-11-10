@@ -781,7 +781,7 @@ test('B2B company data remains isolated except an explicitly gated Finance read-
         }
     }
     sort($readers);
-    expect($readers === ['B2B/AccountCommands.php', 'B2B/AccountQueries.php', 'B2B/CompanyCommands.php', 'B2B/CompanyQueries.php', 'B2B/OrderCommands.php', 'B2B/OrderStore.php', 'B2B/ProductionAnalyticsIdentity.php', 'B2B/ProductionCommands.php', 'B2B/ProjectCommands.php', 'B2B/ProjectQueries.php', 'Database/AuthMaintenance.php',
+    expect($readers === ['B2B/AccountCommands.php', 'B2B/AccountQueries.php', 'B2B/CompanyCommands.php', 'B2B/CompanyQueries.php', 'B2B/FinanceGateJournal.php', 'B2B/OrderCommands.php', 'B2B/OrderStore.php', 'B2B/ProductionAnalyticsIdentity.php', 'B2B/ProductionCommands.php', 'B2B/ProjectCommands.php', 'B2B/ProjectQueries.php', 'Database/AuthMaintenance.php',
         'Finance/Account/OnboardingQueries.php', 'Finance/Account/OnboardingService.php', 'Finance/Company/CaseQueries.php', 'Finance/Company/CaseService.php', 'Finance/Company/DuplicateFinder.php', 'Finance/Credit/CreditService.php', 'Finance/FinanceController.php', 'Finance/Risk/OwnerDecisionService.php', 'Finance/Risk/RiskService.php']);
     $canonical = (string) file_get_contents($root . '/Finance/Company/CaseService.php');
     expect(str_contains($canonical, "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'inactive'"), 'A Finance-created canonical company starts inactive');

@@ -327,68 +327,38 @@ final readonly class FinanceController
     }
 
     /**
-     * The B2B finance gate journal (b2b_finance_gate_decisions, migration 050), newest first, for the shadow analysis
-     * that owner decision D2 needs. Read-only. Reason codes, outcome and what changed since finalization only: the
-     * limit and exposure amounts of the stored snapshot are not returned here.
+     * The B2B finance gate journal, newest first, for the shadow analysis that owner decision D2 needs. Read-only.
+     * The B2B module owns the query (FinanceGateJournal::page); Finance only checks the permission and the filters.
+     * Reason codes, outcome and what changed since finalization only, never limit, exposure or order amounts.
      * @return array<string, mixed>
      */
     private function gateDecisions(\Arasya\Operations\Employee\EmployeeIdentity $actor, array $q): array
     {
         FinanceAccess::require($this->authorization, $actor, FinanceAccess::CREDIT_VIEW);
         FinanceInput::only($q, ['outcome', 'phase', 'cursor']);
-        $where = [];
-        $params = [];
-        if (isset($q['outcome'])) {
-            if (!in_array($q['outcome'], \Arasya\Operations\B2B\FinanceGateJournal::RECORDED, true)) {
-                FinanceInput::fail('outcome', 'invalid');
-            }
-            $where[] = 'd.outcome = ?';
-            $params[] = $q['outcome'];
+        if (isset($q['outcome']) && !in_array($q['outcome'], \Arasya\Operations\B2B\FinanceGateJournal::RECORDED, true)) {
+            FinanceInput::fail('outcome', 'invalid');
         }
-        if (isset($q['phase'])) {
-            if (!in_array($q['phase'], ['finalization', 'production_submission'], true)) {
-                FinanceInput::fail('phase', 'invalid');
-            }
-            $where[] = 'd.phase = ?';
-            $params[] = $q['phase'];
+        if (isset($q['phase']) && !in_array($q['phase'], ['finalization', 'production_submission'], true)) {
+            FinanceInput::fail('phase', 'invalid');
         }
-        $filtered = $where;
-        $filterParams = $params;
+        $after = null;
         if (isset($q['cursor'])) {
             $decoded = base64_decode(strtr($q['cursor'], '-_', '+/'), true);
             if (!is_string($decoded) || preg_match('/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{6})\|(' . self::UUID . ')$/D', $decoded, $m) !== 1) {
                 throw new ApiException(400, 'INVALID_CURSOR', 'Invalid cursor.');
             }
-            $where[] = '(d.decided_at < ? OR (d.decided_at = ? AND d.decision_uuid < ?))';
-            array_push($params, $m[1], $m[1], $m[2]);
+            $after = [$m[1], $m[2]];
         }
-        $s = $this->pdo->prepare('SELECT d.decision_uuid, d.phase, d.mode, d.outcome, d.reasons_json, d.snapshot_json, d.actor_name, d.request_id, d.decided_at,
-                o.order_uuid, o.order_code, c.company_uuid, c.company_code, c.legal_name
-            FROM b2b_finance_gate_decisions d JOIN b2b_orders o ON o.order_uuid = d.order_uuid JOIN b2b_companies c ON c.company_uuid = d.company_uuid'
-            . ($where === [] ? '' : ' WHERE ' . implode(' AND ', $where)) . ' ORDER BY d.decided_at DESC, d.decision_uuid DESC LIMIT 101');
-        $s->execute($params);
-        $rows = $s->fetchAll(PDO::FETCH_ASSOC);
-        $next = null;
-        if (count($rows) > 100) {
-            $next = rtrim(strtr(base64_encode($rows[99]['decided_at'] . '|' . $rows[99]['decision_uuid']), '+/', '-_'), '=');
-            $rows = array_slice($rows, 0, 100);
-        }
-        $summary = $this->pdo->prepare('SELECT d.phase, d.outcome, COUNT(*) AS n FROM b2b_finance_gate_decisions d'
-            . ($filtered === [] ? '' : ' WHERE ' . implode(' AND ', $filtered)) . ' GROUP BY d.phase, d.outcome ORDER BY d.phase, d.outcome');
-        $summary->execute($filterParams);
+        $page = \Arasya\Operations\B2B\FinanceGateJournal::page($this->pdo, $q['outcome'] ?? null, $q['phase'] ?? null, $after);
         return [
-            'items' => array_map(static function (array $r): array {
-                $snapshot = json_decode((string) $r['snapshot_json'], true);
-                $snapshot = is_array($snapshot) ? $snapshot : [];
-                return ['id' => $r['decision_uuid'], 'orderId' => $r['order_uuid'], 'orderCode' => $r['order_code'], 'companyId' => $r['company_uuid'],
-                    'companyCode' => $r['company_code'], 'companyName' => $r['legal_name'], 'phase' => $r['phase'], 'mode' => $r['mode'], 'outcome' => $r['outcome'],
-                    'reasons' => array_values((array) json_decode((string) $r['reasons_json'], true)), 'orderType' => $snapshot['orderType'] ?? null,
-                    'changedSinceFinalization' => array_values((array) ($snapshot['changedSinceFinalization'] ?? [])),
-                    'grandfathered' => isset($snapshot['grandfathered']) ? (bool) $snapshot['grandfathered'] : null,
-                    'exceptionId' => $snapshot['exception']['id'] ?? null, 'actor' => $r['actor_name'], 'requestId' => $r['request_id'], 'at' => FinanceStore::iso($r['decided_at'])];
-            }, $rows),
-            'summary' => array_map(static fn (array $r): array => ['phase' => $r['phase'], 'outcome' => $r['outcome'], 'count' => (int) $r['n']], $summary->fetchAll(PDO::FETCH_ASSOC)),
-            'nextCursor' => $next,
+            'items' => array_map(static function (array $item): array {
+                $item['at'] = FinanceStore::iso($item['decidedAt']);
+                unset($item['decidedAt']);
+                return $item;
+            }, $page['items']),
+            'summary' => $page['summary'],
+            'nextCursor' => $page['next'] === null ? null : rtrim(strtr(base64_encode($page['next'][0] . '|' . $page['next'][1]), '+/', '-_'), '='),
         ];
     }
 
