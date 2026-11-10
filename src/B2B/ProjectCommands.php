@@ -187,7 +187,8 @@ final readonly class ProjectCommands
                 }
                 // The Classic validator and calculator own the commercial meaning of every converted line.
                 $data=OrderInput::calculation(['currencyCode'=>$project['currency_code'],'lines'=>$lines]);
-                $data+=['companyId'=>$project['company_uuid'],'contactId'=>null,'billingAddressId'=>null,'deliveryAddressId'=>null,
+                // The order type is chosen explicitly on the draft before finalization; conversion never infers it.
+                $data+=['companyId'=>$project['company_uuid'],'orderType'=>null,'contactId'=>null,'billingAddressId'=>null,'deliveryAddressId'=>null,
                     'customerReference'=>$project['customer_reference'],'notes'=>null,'productionNotes'=>null];
                 $orderId=$this->orders->insert($actor,$data,$this->orders->snapshots($company,$data),null,$now);
                 $this->orders->event($orderId,$actor,'order_created',OrderInput::FIELDS,$request,$key,$now);

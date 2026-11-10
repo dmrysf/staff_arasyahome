@@ -153,10 +153,20 @@ try {
     // settles (an older API would leave it without an inbox, and a lost decision unreconciled). Closed requests,
     // supervision rows and `verify` scope rows do not: older releases never read them (a `verify` row grants nothing there).
     $requestsOpen = isset($tables['finance_verification_requests']) ? (int) $pdo->query('SELECT COUNT(*) FROM finance_verification_requests WHERE open_order_uuid IS NOT NULL')->fetchColumn() : 0;
-    $floor = $deleteUnsettled > 0 ? '2.54.0' : ($schemaThreeOpen > 0 ? '2.53.0' : ($requestsOpen > 0 ? '2.50.0' : ($dualOpen > 0 ? '2.46.0' : (($invoiceUnsettled > 0 || $invoiceRouted > 0 || $invoiceOpenWork > 0) ? '2.45.0' : (($cohortOpen > 0 || $activations > 0 || $financeUnsettled > 0) ? '2.42.0' : ($syncOpen > 0 ? '2.36.0' : ($stoppedOpen > 0 ? '2.35.0' : ($schemaTwoOpen > 0 ? '2.34.2' : ($assistedOpen > 0 ? '2.34.0' : (array_sum($state) > 0 ? '2.32.0' : null))))))))));
+    // B2B order types (API 2.67.0, migration 050): an older API ignores the order type. It would send an open CUT_ONLY or
+    // FULL_ROLL_BAG order through every stage after stage 2, and it would submit a finalized short-route order as a
+    // full-route one. A short-route order at Livrare or completed needs nothing: Livrare is the last stage of every
+    // route. FULL_TAILORING and untyped orders need nothing either. The table b2b_finance_gate_decisions adds no floor
+    // (an older API never reads it).
+    $shortRouteOpen = 0;
+    if ((int) $pdo->query("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'operational_orders' AND column_name = 'service_route'")->fetchColumn() === 1) {
+        $shortRouteOpen = (int) $pdo->query("SELECT (SELECT COUNT(*) FROM operational_orders WHERE service_route IN ('CUT_ONLY', 'FULL_ROLL_BAG') AND production_completed_at IS NULL AND production_stage_id <> 'delivery')
+            + (SELECT COUNT(*) FROM b2b_orders c WHERE c.status = 'finalized' AND c.order_type IN ('CUT_ONLY', 'FULL_ROLL_BAG') AND NOT EXISTS (SELECT 1 FROM b2b_production_handoffs h WHERE h.b2b_order_uuid = c.order_uuid))")->fetchColumn();
+    }
+    $floor = $shortRouteOpen > 0 ? '2.67.0' : ($deleteUnsettled > 0 ? '2.54.0' : ($schemaThreeOpen > 0 ? '2.53.0' : ($requestsOpen > 0 ? '2.50.0' : ($dualOpen > 0 ? '2.46.0' : (($invoiceUnsettled > 0 || $invoiceRouted > 0 || $invoiceOpenWork > 0) ? '2.45.0' : (($cohortOpen > 0 || $activations > 0 || $financeUnsettled > 0) ? '2.42.0' : ($syncOpen > 0 ? '2.36.0' : ($stoppedOpen > 0 ? '2.35.0' : ($schemaTwoOpen > 0 ? '2.34.2' : ($assistedOpen > 0 ? '2.34.0' : (array_sum($state) > 0 ? '2.32.0' : null)))))))))));
     $safe = $floor === null || version_compare($argv[1], $floor, '>=');
     fwrite(STDOUT, json_encode(['safe' => $safe, 'targetVersion' => $argv[1], 'requiredFloor' => $floor, 'state' => $state + ['openOrdersWithAssistedCheckpoints' => $assistedOpen, 'openOrdersWithTicketSchema2' => $schemaTwoOpen, 'openOrdersWithTicketSchema3' => $schemaThreeOpen, 'ordersAwaitingConfirmare' => $cohortClosed, 'openConfirmareOrders' => $cohortOpen, 'confirmareActivations' => $activations, 'openStoppedOrders' => $stoppedOpen, 'openCancellationSyncOperations' => $syncOpen,
-        'unsettledInvoiceActions' => $invoiceUnsettled, 'ordersRoutedForInvoice' => $invoiceRouted, 'ordersWithOpenProformaWork' => $invoiceOpenWork, 'unsettledFinanceActions' => $financeUnsettled, 'openDualStoreWork' => $dualOpen, 'openFinanceRequests' => $requestsOpen, 'unsettledInvoiceDeletions' => $deleteUnsettled]], JSON_THROW_ON_ERROR) . "\n");
+        'unsettledInvoiceActions' => $invoiceUnsettled, 'ordersRoutedForInvoice' => $invoiceRouted, 'ordersWithOpenProformaWork' => $invoiceOpenWork, 'unsettledFinanceActions' => $financeUnsettled, 'openDualStoreWork' => $dualOpen, 'openFinanceRequests' => $requestsOpen, 'unsettledInvoiceDeletions' => $deleteUnsettled, 'openShortRouteB2bOrders' => $shortRouteOpen]], JSON_THROW_ON_ERROR) . "\n");
     exit($safe ? 0 : 3);
 } catch (Throwable) {
     fwrite(STDERR, "Rollback refused: current database state could not be verified.\n");

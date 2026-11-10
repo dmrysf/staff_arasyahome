@@ -4,7 +4,8 @@ namespace Arasya\Operations\Analytics;
 final class Lifecycle
 {
     /** Projection only: canonical events are never updated or deleted. */
-    public static function derive(array $events): array
+    /** @param ?string $serviceRoute operational_orders.service_route (migration 050): CUT_ONLY completes cutting at 2 -> 14 */
+    public static function derive(array $events, ?string $serviceRoute = null): array
     {
         usort($events,static fn(array $a,array $b):int => ((int)$a['production_version_after']<=>(int)$b['production_version_after']) ?: strcmp($a['event_id']??'',$b['event_id']??''));
         $intervals=[]; $open=null; $first=null; $completed=null; $cutting=null;
@@ -22,7 +23,9 @@ final class Lifecycle
                     'start'=>$at,'end'=>null,'startVersion'=>(int)$event['production_version_after']];
             }
             if ($action==='fault_returned') $cutting=null;
-            if ($action==='stage_completed' && $event['from_stage_id']==='material-preparation' && $event['to_stage_id']==='workshop-receiving') $cutting=$event;
+            // Cutting completes when the order leaves cutting for the workshop, or for Livrare on a CUT_ONLY order. A
+            // FULL_ROLL_BAG order is prepared at stage 2, never cut.
+            if ($action==='stage_completed' && $event['from_stage_id']==='material-preparation' && ($event['to_stage_id']==='workshop-receiving' || ($event['to_stage_id']==='delivery' && $serviceRoute==='CUT_ONLY'))) $cutting=$event;
             if ($action==='production_completed' && $event['from_stage_id']==='delivery') $completed=$at;
         }
         if ($open!==null) $intervals[]=$open;

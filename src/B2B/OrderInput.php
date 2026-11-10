@@ -7,7 +7,7 @@ use Arasya\Operations\Http\ApiException;
 /** Strict, bounded decimal strings. No financial input passes through a binary float. */
 final class OrderInput
 {
-    public const FIELDS=['companyId','currencyCode','contactId','billingAddressId','deliveryAddressId','customerReference','notes','productionNotes','lines'];
+    public const FIELDS=['companyId','currencyCode','orderType','contactId','billingAddressId','deliveryAddressId','customerReference','notes','productionNotes','lines'];
     public const LINE_FIELDS=['id','productCode','productName','variant','color','kind','width','height','quantity','meters','pricingUnit','unitPriceNet','discountPercent','vatPercent','notes','productionNotes'];
     private array $errors=[];
 
@@ -18,6 +18,9 @@ final class OrderInput
         $data=['companyId'=>$v->uuid($input['companyId']??null,'companyId',true)]+$v->commercial($input);
         foreach(['contactId','billingAddressId','deliveryAddressId'] as $field) $data[$field]=$v->uuid($input[$field]??null,$field);
         $data['customerReference']=$v->text($input['customerReference']??null,'customerReference',160);
+        // One explicit order type per order (OrderType). Optional on a draft, required at finalization; never inferred.
+        $data['orderType']=$input['orderType']??null;
+        if($data['orderType']!==null && !in_array($data['orderType'],OrderType::ALL,true)) $v->errors['orderType']='invalid';
         foreach(['notes','productionNotes'] as $field) $data[$field]=$v->text($input[$field]??null,$field,2000,true);
         $v->finish();
         return $data;

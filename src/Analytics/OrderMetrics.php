@@ -42,7 +42,8 @@ final class OrderMetrics
             $finish=min($interval['ended_at']??$end,$end);
             $duration=$time->active($interval['started_at'],$finish,$blocks);
             foreach ($active as $key=>$value) $active[$key]+=$duration[$key];
-            if ($interval['stage_id']==='material-preparation') {
+            // Stage 2 of a FULL_ROLL_BAG order (migration 050) is bag/roll preparation, never cutting.
+            if ($interval['stage_id']==='material-preparation' && ($order['service_route']??null)!=='FULL_ROLL_BAG') {
                 $cuttingIntervals[]=$interval;
                 foreach ($duration as $clock=>$seconds) $cuttingActive[$clock]+=$seconds;
             }

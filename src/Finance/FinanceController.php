@@ -72,6 +72,7 @@ final readonly class FinanceController
                 $path === '/finance/companies' => $this->companies($actor, $q),
                 $path === '/finance/company-search' => $this->companySearch($actor, $q),
                 $path === '/finance/b2b/accounts' => $this->accounts($actor, $q),
+                $path === '/finance/b2b/gate-decisions' => $this->gateDecisions($actor, $q),
                 $path === '/finance/imports' => $this->imports->list($actor, $q),
                 (bool) preg_match('#^/finance/imports/(' . self::UUID . ')$#D', $path, $m) => $this->imports->detail($actor, $m[1]),
                 (bool) preg_match('#^/finance/imports/(' . self::UUID . ')/rows$#D', $path, $m) => $this->imports->rows($actor, $m[1], $q),
@@ -323,6 +324,42 @@ final readonly class FinanceController
             'versionAfter' => $r['version_after'] === null ? null : (int) $r['version_after'], 'reason' => $r['reason'],
             'details' => $r['details_json'] === null ? null : json_decode((string) $r['details_json'], true), 'requestId' => $r['request_id'], 'at' => FinanceStore::iso($r['occurred_at'])], $rows),
             'nextCursor' => $next];
+    }
+
+    /**
+     * The B2B finance gate journal, newest first, for the shadow analysis that owner decision D2 needs. Read-only.
+     * The B2B module owns the query (FinanceGateJournal::page); Finance only checks the permission and the filters.
+     * Reason codes, outcome and what changed since finalization only, never limit, exposure or order amounts.
+     * @return array<string, mixed>
+     */
+    private function gateDecisions(\Arasya\Operations\Employee\EmployeeIdentity $actor, array $q): array
+    {
+        FinanceAccess::require($this->authorization, $actor, FinanceAccess::CREDIT_VIEW);
+        FinanceInput::only($q, ['outcome', 'phase', 'cursor']);
+        if (isset($q['outcome']) && !in_array($q['outcome'], \Arasya\Operations\B2B\FinanceGateJournal::RECORDED, true)) {
+            FinanceInput::fail('outcome', 'invalid');
+        }
+        if (isset($q['phase']) && !in_array($q['phase'], ['finalization', 'production_submission'], true)) {
+            FinanceInput::fail('phase', 'invalid');
+        }
+        $after = null;
+        if (isset($q['cursor'])) {
+            $decoded = base64_decode(strtr($q['cursor'], '-_', '+/'), true);
+            if (!is_string($decoded) || preg_match('/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{6})\|(' . self::UUID . ')$/D', $decoded, $m) !== 1) {
+                throw new ApiException(400, 'INVALID_CURSOR', 'Invalid cursor.');
+            }
+            $after = [$m[1], $m[2]];
+        }
+        $page = \Arasya\Operations\B2B\FinanceGateJournal::page($this->pdo, $q['outcome'] ?? null, $q['phase'] ?? null, $after);
+        return [
+            'items' => array_map(static function (array $item): array {
+                $item['at'] = FinanceStore::iso($item['decidedAt']);
+                unset($item['decidedAt']);
+                return $item;
+            }, $page['items']),
+            'summary' => $page['summary'],
+            'nextCursor' => $page['next'] === null ? null : rtrim(strtr(base64_encode($page['next'][0] . '|' . $page['next'][1]), '+/', '-_'), '='),
+        ];
     }
 
     /** @return array{0: int, 1: string} */

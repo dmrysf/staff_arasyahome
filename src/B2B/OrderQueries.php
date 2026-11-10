@@ -13,7 +13,27 @@ use Throwable;
 final readonly class OrderQueries
 {
     private OrderStore $store;
-    public function __construct(private PDO $pdo,private AuthorizationService $authorization) { $this->store=new OrderStore($pdo); }
+    public function __construct(private PDO $pdo,private AuthorizationService $authorization,private FinanceGate $finance=new FinanceGate()) { $this->store=new OrderStore($pdo); }
+
+    /**
+     * The gate state and an advisory preview of the next finance decision of this order: finalization for a draft, the
+     * release check for a finalized order not yet in production. Read without a lock and never stored: the binding
+     * decision is taken again, under the company lock, when the action runs. Codes only, no amounts.
+     * @param array<string, mixed> $row @return array<string, mixed>
+     */
+    private function financeGate(array $row): array
+    {
+        if(!$this->finance->configured()) return ['configured'=>false,'finalizationMode'=>null,'releaseMode'=>null,'preview'=>['phase'=>null,'mode'=>null,'outcome'=>'CONFIGURATION_INVALID','reasons'=>[]]];
+        $gate=['configured'=>true,'finalizationMode'=>$this->finance->mode(),'releaseMode'=>$this->finance->releaseMode(),'preview'=>null];
+        $now=(new DateTimeImmutable('now',new DateTimeZone('UTC')))->format('Y-m-d H:i:s.u');
+        $decision=match(true) {
+            $row['status']==='draft' => $this->finance->decide((string)$row['company_uuid'],$row,$now),
+            $row['status']==='finalized' && !(bool)$row['production_submitted'] => $this->finance->recheck((string)$row['company_uuid'],$row,$now),
+            default => null,
+        };
+        if($decision!==null) $gate['preview']=['phase'=>$decision['phase'],'mode'=>$decision['mode'],'outcome'=>$decision['outcome'],'reasons'=>$decision['reasons']??[]];
+        return $gate;
+    }
 
     public function list(EmployeeIdentity $actor,array $filters): array
     {
@@ -61,7 +81,7 @@ final readonly class OrderQueries
             'items'=>array_map(fn($r)=>[
                 'id'=>$r['order_uuid'],'code'=>$r['order_code'],'companyId'=>$r['company_uuid'],
                 'companyName'=>OrderStore::decode($r['company_snapshot'])['legalName'],
-                'currencyCode'=>$r['currency_code'],'status'=>$r['status'],'version'=>(int)$r['version'],
+                'currencyCode'=>$r['currency_code'],'orderType'=>$r['order_type'],'status'=>$r['status'],'version'=>(int)$r['version'],
                 'customerReference'=>$r['customer_reference'],'createdAt'=>self::iso($r['created_at']),'updatedAt'=>self::iso($r['updated_at']),
                 'createdBy'=>['id'=>$r['created_by_employee_uuid'],'displayName'=>$r['created_by_name']],
                 'totals'=>OrderStore::decode($r['calculation'])['totals'],
@@ -77,7 +97,8 @@ final readonly class OrderQueries
         // The header, lines and calculation must belong to one committed aggregate version.
         $this->pdo->beginTransaction();
         try {
-            $s=$this->pdo->prepare('SELECT o.*,EXISTS(SELECT 1 FROM b2b_production_handoffs h WHERE h.b2b_order_uuid=o.order_uuid) AS production_submitted FROM b2b_orders o WHERE o.order_uuid=?');
+            $s=$this->pdo->prepare('SELECT o.*,EXISTS(SELECT 1 FROM b2b_production_handoffs h WHERE h.b2b_order_uuid=o.order_uuid) AS production_submitted,
+                (SELECT h.finance_decision FROM b2b_production_handoffs h WHERE h.b2b_order_uuid=o.order_uuid) AS release_decision FROM b2b_orders o WHERE o.order_uuid=?');
             $s->execute([$id]); $r=$s->fetch(PDO::FETCH_ASSOC);
             if(!$r) throw new ApiException(404,'ORDER_NOT_FOUND','Order was not found.');
             $order=$this->store->fields($r)+[
@@ -89,6 +110,10 @@ final readonly class OrderQueries
                 'finalizedBy'=>$r['finalized_by_employee_uuid']===null?null:['id'=>$r['finalized_by_employee_uuid'],'displayName'=>$r['finalized_by_name']],
                 'calculation'=>OrderStore::decode($r['calculation']),
                 'productionSubmitted'=>(bool)$r['production_submitted'],
+                // Codes only (owner decision D6): no limit, exposure or exception amount reaches a B2B order viewer.
+                'financeDecision'=>FinanceGate::forOrderView(OrderStore::decode($r['finance_decision'])),
+                'financeReleaseDecision'=>FinanceGate::forOrderView(OrderStore::decode($r['release_decision'])),
+                'financeGate'=>$this->financeGate($r),
             ];
             foreach(OrderStore::SNAPSHOT_COLUMNS as $field=>$column) $order[$field]=OrderStore::decode($r[$column]);
             $order['origin']=$this->origin($id);

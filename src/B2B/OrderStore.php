@@ -41,7 +41,7 @@ final readonly class OrderStore
     public function fields(array $o): array
     {
         return [
-            'companyId'=>$o['company_uuid'], 'currencyCode'=>$o['currency_code'],
+            'companyId'=>$o['company_uuid'], 'currencyCode'=>$o['currency_code'], 'orderType'=>$o['order_type']??null,
             'contactId'=>$o['contact_uuid'], 'billingAddressId'=>$o['billing_address_uuid'],
             'deliveryAddressId'=>$o['delivery_address_uuid'], 'customerReference'=>$o['customer_reference'],
             'notes'=>$o['notes'], 'productionNotes'=>$o['production_notes'],
@@ -100,11 +100,11 @@ final readonly class OrderStore
     {
         $calculation=OrderCalculator::calculate($data['currencyCode'],$data['lines']);
         $totals=$calculation['totals'];
-        $this->pdo->prepare('UPDATE b2b_orders SET currency_code=?,contact_uuid=?,billing_address_uuid=?,delivery_address_uuid=?,
+        $this->pdo->prepare('UPDATE b2b_orders SET currency_code=?,order_type=?,contact_uuid=?,billing_address_uuid=?,delivery_address_uuid=?,
             customer_reference=?,notes=?,production_notes=?,company_snapshot=?,contact_snapshot=?,billing_address_snapshot=?,
             delivery_address_snapshot=?,calculation=?,net_total=?,vat_total=?,gross_total=?,
             version=version+?,updated_at=?,updated_by_employee_uuid=?,updated_by_name=? WHERE order_uuid=?')->execute([
-            $data['currencyCode'],$data['contactId'],$data['billingAddressId'],$data['deliveryAddressId'],
+            $data['currencyCode'],$data['orderType']??null,$data['contactId'],$data['billingAddressId'],$data['deliveryAddressId'],
             $data['customerReference'],$data['notes'],$data['productionNotes'],
             ...array_map(self::json(...),array_values($snap)),self::json($calculation),
             $totals['net']??null,$totals['vat']??null,$totals['gross']??null,
