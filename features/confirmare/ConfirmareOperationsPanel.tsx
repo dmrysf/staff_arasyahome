@@ -15,7 +15,7 @@ type Unknown = { path: OperationPath; key: string } | null;
 const today = (): string => new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Bucharest" });
 
 /** Saves the PDF the server relayed from FAN Courier; nothing is generated in the browser. */
-function saveBlob(blob: Blob, filename: string) {
+export function saveBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;

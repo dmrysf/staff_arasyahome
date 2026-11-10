@@ -1,4 +1,4 @@
-import type { Employee } from "./models";
+import type { ActivityEntry, Employee } from "./models";
 import type { MessageKey } from "../i18n";
 import { StaffServiceError } from "./models";
 import { financeScopesOf } from "./confirmareFinance";
@@ -50,6 +50,8 @@ export interface OperationsState {
 }
 export interface OperationOutcome { state: "applied" | "unknown" | "pending"; idempotencyKey: string; result: string | null; shop: ShopOperations | null; entryId: string | null }
 export interface AwbQueueItem { globalOrderId: string; orderNumber: string; source: string; stage: string; lastAttempt: string | null }
+/** Staff 2.49.1: an AWB the employee made from Staff (read from their own history), whose label they may download again. */
+export interface RecentAwb { globalOrderId: string; orderNumber: string; source: string; createdAt: string }
 export interface EfacturaTask { id: string; globalOrderId: string; orderNumber: string; source: string; issuer: string; issuedAt: string; dueAt: string; state: EfacturaState; version: number; recordedAt: string | null; overdue: boolean; next: EfacturaState[] }
 export interface EfacturaQueue { items: EfacturaTask[]; overdue: number; managed: string[] }
 export type HealthSource = Record<string, unknown>;
@@ -72,6 +74,8 @@ export interface ConfirmareOpsApi {
   operationsReconcile(globalOrderId: string, idempotencyKey: string): Promise<OperationOutcome>;
   awbLabel(globalOrderId: string): Promise<Blob>;
   awbQueue(source: string | null, signal?: AbortSignal): Promise<AwbQueueItem[]>;
+  /** Staff 2.49.1: the AWBs the employee made in the last 7 days (never before 1 November 2026), newest first. */
+  recentAwbs(signal?: AbortSignal): Promise<RecentAwb[]>;
   efactura(source: string | null, state: string | null, signal?: AbortSignal): Promise<EfacturaQueue>;
   recordEfactura(taskId: string, input: { outcome: EfacturaState; expectedVersion: number }): Promise<EfacturaTask>;
   health(source: string | null, signal?: AbortSignal): Promise<HealthMetrics>;
@@ -201,6 +205,25 @@ export function mapOperationOutcome(value: unknown): OperationOutcome {
   const raw = obj(value);
   return { state: oneOf(raw.state, ["applied", "unknown", "pending"] as const), idempotencyKey: str(raw.idempotencyKey, 100), result: code(raw.result), // A reconciliation still waiting names the shop's journal state as a string: no shop state to show.
     shop: raw.shop !== null && typeof raw.shop === "object" ? mapShopOperations(raw.shop) : null, entryId: optStr(raw.entryId, 40) };
+}
+
+/** The recent AWB list never reaches before 1 November 2026 00:00 Europe/Bucharest (the shops' Staff start). */
+export const RECENT_AWB_FLOOR = "2026-10-31T22:00:00.000Z";
+
+/**
+ * Staff 2.49.1: the shop AWBs among the employee's own history entries (`shop.awb_create`, applied only), one per order
+ * (the latest), newest first, none before {@link RECENT_AWB_FLOOR}. The history range `7days` gives the 7-day window.
+ */
+export function recentAwbsOf(entries: readonly ActivityEntry[]): RecentAwb[] {
+  const floor = Date.parse(RECENT_AWB_FLOOR), seen = new Set<string>(), result: RecentAwb[] = [];
+  const awbs = entries.filter((entry) => entry.kind === "office" && entry.action === "shop.awb_create" && (entry.source === "trendhome" || entry.source === "outletperdele")
+    && Number.isFinite(Date.parse(entry.occurredAt)) && Date.parse(entry.occurredAt) >= floor);
+  for (const entry of [...awbs].sort((a, b) => Date.parse(b.occurredAt) - Date.parse(a.occurredAt))) {
+    if (seen.has(entry.orderId)) continue;
+    seen.add(entry.orderId);
+    result.push({ globalOrderId: entry.orderId, orderNumber: entry.orderNumber, source: entry.source, createdAt: entry.occurredAt });
+  }
+  return result;
 }
 
 export function mapAwbQueue(value: unknown): AwbQueueItem[] {

@@ -18,7 +18,7 @@ import type { ShopLine, ShopLineImage, ShopOrderDetail, ShopPerson, ShopRead } f
 import { CASH_RECEIPTS, EXCEPTION_REASONS, EXCEPTION_RESOLUTIONS, FINANCE_ACTIONS, PAYMENT_METHODS, FINANCE_NEXT, FINANCE_TASKS, type ExceptionOutcome, type FinanceEntry, type FinanceOutcome, type FinanceQueue, type FinanceQueueItem, type FinanceRead, type FinanceSummary, type FinanceTask, type FinanceTimelineItem, type TransferException, type TransferExceptionList } from "../../domain/confirmareFinance";
 import { CANCEL_REASONS, INVOICE_ACTIONS, INVOICE_ROLES, PAYMENT_STATES, PROFORMA_ACTIONS, PROFORMA_KEYS, PROFORMA_ROUTE, type CodCheck, type ShippingCheck, type InvoiceDeadline, type MoneyPosition, type TotalAcceptance, type InvoiceActionKey, type InvoiceOutcome, type InvoicePaymentRead, type InvoiceRead, type InvoiceSummary, type InvoiceView, type ProformaActionKey, type ProformaSummary, type ShopAssignment, type ShopQueueItem } from "../../domain/confirmareInvoice";
 import { EDIT_IMPACTS, type EditBlocker, type EditCatalog, type EditCouponCatalog, type EditCouponLine, type EditField, type EditLineSnapshot, type EditOutcome, type EditProduct, type EditResult, type EditTotals, type EditVariation, type OpenEdit } from "../../domain/confirmareEdit";
-import { mapAwbQueue, mapBankCheck, mapBankChecks, mapContactCycle, mapCycleAttention, mapEfacturaQueue, mapEfacturaTask, mapHealth, mapOperationOutcome, mapOperationsState, mapOrderCycle, mapProformaCycle } from "../../domain/confirmareOps";
+import { mapAwbQueue, recentAwbsOf, mapBankCheck, mapBankChecks, mapContactCycle, mapCycleAttention, mapEfacturaQueue, mapEfacturaTask, mapHealth, mapOperationOutcome, mapOperationsState, mapOrderCycle, mapProformaCycle } from "../../domain/confirmareOps";
 import { CLEARANCE_CONDITIONS, CONTACT_OUTCOMES, DOCUMENT_STATES, FINANCIAL_ATTENTION, HANDOFF_BLOCKERS, HANDOFF_STATES, type ConfirmareAlert, type ConfirmareApi, type ConfirmareAvailability, type ConfirmareContact, type ConfirmareCustomer, type ConfirmareDetail, type ConfirmareEvent, type ConfirmareHandoff, type ConfirmareItem, type HandoffItem, type ConfirmareLine, type ConfirmareOperator, type ConfirmarePool, type ConfirmareTeam, type FinancialState } from "../../domain/confirmare";
 
 type FetchLike = typeof fetch;
@@ -1264,6 +1264,18 @@ export function createProductionServices(apiBaseUrl: string, options: Production
       return response.blob();
     },
     awbQueue: (source, signal) => http.request(`/confirmare/awb-queue${sourceQuery(source)}`, { signal, cache: "no-store" }, mapAwbQueue),
+    // Staff 2.49.1: the employee's own AWBs come from their history (API 2.52.0 office work, applied only); no new API.
+    async recentAwbs(signal) {
+      const entries: ActivityEntry[] = [];
+      let cursor: string | undefined;
+      for (let page = 0; page < 10; page += 1) {
+        const result = await activity.listMine({ range: "7days", ...(cursor ? { cursor } : {}) }, { signal });
+        entries.push(...result.items);
+        cursor = result.nextCursor;
+        if (!cursor) break;
+      }
+      return recentAwbsOf(entries);
+    },
     efactura: (source, state, signal) => http.request(`/confirmare/efactura${source || state ? `?${new URLSearchParams({ ...(source ? { source } : {}), ...(state ? { state } : {}) }).toString()}` : ""}`, { signal, cache: "no-store" }, mapEfacturaQueue),
     recordEfactura: (taskId, input) => http.request(`/confirmare/efactura/${encodeURIComponent(taskId)}`, { method: "POST", cache: "no-store", body: JSON.stringify(input) }, (value) => mapEfacturaTask(objectValue(value).task)),
     health: (source, signal) => http.request(`/confirmare/health${sourceQuery(source)}`, { signal, cache: "no-store" }, mapHealth),

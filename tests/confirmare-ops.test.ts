@@ -7,7 +7,7 @@ import { confirmareErrorKey } from "../domain/confirmare";
 import { cardRefundEntries, verifiableEntries, type FinanceView } from "../domain/confirmareFinance";
 import {
   CYCLE_STATES, EFACTURA_STATES, OPS_BLOCKERS, REACTIVATION_REASONS, blockerKey, canRecordBankCheck, canUseShopTasks, canWatchHealth, hoursUntil, mapBankChecks, mapContactCycle,
-  mapEfacturaQueue, mapHealth, mapOperationOutcome, mapOperationsState, mapOrderCycle, opsErrorKey,
+  mapEfacturaQueue, mapHealth, mapOperationOutcome, mapOperationsState, mapOrderCycle, opsErrorKey, recentAwbsOf, RECENT_AWB_FLOOR,
 } from "../domain/confirmareOps";
 import { canAccessRoute } from "../domain/permissions";
 import { parseStaffRoute } from "../domain/staffRoute";
@@ -226,4 +226,26 @@ test("owner 2026-10-29: the AWB collecting another amount stops the label until 
     }
   }
   assert.ok(CATALOGS.ro["cf.ops.cod.check"].includes("{amount}") && CATALOGS.ro["cf.ops.awb.corrected"].includes("nu confirmarea FAN Courier"));
+});
+
+test("Staff 2.49.1: the employee's AWBs of the last 7 days come from their own history, never before 1 November, one per order", async () => {
+  const office = (id: string, action: string, orderId: string, occurredAt: string, source = "trendhome") =>
+    ({ id, occurredAt, action, kind: "office", orderId, orderNumber: orderId.split(":")[1], source });
+  const calls: string[] = [];
+  const answers = [
+    { items: [office("a", "shop.awb_create", "trendhome:65038", "2026-11-10T13:09:06Z"), office("b", "invoice.issue", "trendhome:64795", "2026-11-10T12:00:00Z"),
+      office("c", "shop.awb_create", "outletperdele:60551", "2026-11-10T13:23:24Z", "outletperdele")], nextCursor: "page-2", summary: { processed: 0, meters: 0, handedOver: 0, inProgress: 0 } },
+    { items: [office("d", "shop.awb_create", "trendhome:65038", "2026-11-09T10:00:00Z"), office("e", "shop.awb_create", "trendhome:64001", "2026-10-31T21:59:59Z"),
+      office("f", "shop.awb_address_task", "trendhome:64002", "2026-11-08T10:00:00Z")], summary: { processed: 0, meters: 0, handedOver: 0, inProgress: 0 } },
+  ];
+  const fetchImpl = (async (url: string) => { calls.push(new URL(url).pathname + new URL(url).search); return new Response(JSON.stringify(answers.shift()), { status: 200, headers: { "Content-Type": "application/json" } }); }) as typeof fetch;
+  const api = createProductionServices("https://api.arasyahome.ro", { fetchImpl, isOnline: () => true }).confirmare!;
+  const recent = await api.recentAwbs();
+  assert.deepEqual(calls, ["/activity/mine?range=7days&include=office", "/activity/mine?range=7days&include=office&cursor=page-2"]);
+  assert.deepEqual(recent.map((item) => [item.globalOrderId, item.orderNumber, item.source]), [
+    ["outletperdele:60551", "60551", "outletperdele"], ["trendhome:65038", "65038", "trendhome"],
+  ], "newest first, one row per order, only applied AWB creations, nothing before 1 November 2026 Europe/Bucharest");
+  assert.equal(recent[1]!.createdAt, "2026-11-10T13:09:06Z");
+  assert.equal(RECENT_AWB_FLOOR, "2026-10-31T22:00:00.000Z");
+  assert.deepEqual(recentAwbsOf([]), []);
 });
