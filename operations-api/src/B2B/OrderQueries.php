@@ -110,8 +110,9 @@ final readonly class OrderQueries
                 'finalizedBy'=>$r['finalized_by_employee_uuid']===null?null:['id'=>$r['finalized_by_employee_uuid'],'displayName'=>$r['finalized_by_name']],
                 'calculation'=>OrderStore::decode($r['calculation']),
                 'productionSubmitted'=>(bool)$r['production_submitted'],
-                'financeDecision'=>OrderStore::decode($r['finance_decision']),
-                'financeReleaseDecision'=>OrderStore::decode($r['release_decision']),
+                // Codes only (owner decision D6): no limit, exposure or exception amount reaches a B2B order viewer.
+                'financeDecision'=>FinanceGate::forOrderView(OrderStore::decode($r['finance_decision'])),
+                'financeReleaseDecision'=>FinanceGate::forOrderView(OrderStore::decode($r['release_decision'])),
                 'financeGate'=>$this->financeGate($r),
             ];
             foreach(OrderStore::SNAPSHOT_COLUMNS as $field=>$column) $order[$field]=OrderStore::decode($r[$column]);

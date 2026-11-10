@@ -266,5 +266,42 @@ ok($call($root, 'POST', "/b2b/orders/{$blocked['id']}/production", ['expectedVer
 check(array_column($rows('SELECT phase, outcome FROM b2b_finance_gate_decisions WHERE order_uuid = ? ORDER BY decided_at', [$blocked['id']]), 'outcome') === ['BLOCKED', 'WOULD_BLOCK', 'BLOCKED', 'WOULD_BLOCK'], 'P2. every decision of the order is journaled in order');
 check($nonB2b() === $before, 'P2. non-B2B work still unchanged');
 
+// ---- F. Finance origin, central session and default-deny IAM (finance.arasyahome.ro readiness) --------------------------
+// The Finance frontend has no login: it uses the central session cookie of api.arasyahome.ro and calls the API from its
+// exact origin. Here the origin list holds the Finance origin (the test loopback stands in for https://finance.arasyahome.ro).
+$financeOrigin = 'http://127.0.0.1:5175';
+$financeKernel = (new Container(T::config($db, [T::ORIGIN, $financeOrigin]), $pdo))->kernel();
+$fromFinance = static fn (string $method, string $path, ?array $who = null, array $headers = []): array
+    => T::call($financeKernel, $method, $path, $method === 'GET' ? null : [], ['origin' => $financeOrigin] + $headers, $who['cookie'] ?? null);
+$preflight = T::call($financeKernel, 'OPTIONS', '/finance/cases', null, ['origin' => $financeOrigin, 'access-control-request-method' => 'POST', 'access-control-request-headers' => 'content-type,x-csrf-token,idempotency-key']);
+check($preflight['status'] === 204 && ($preflight['headers']['Access-Control-Allow-Origin'] ?? '') === $financeOrigin && ($preflight['headers']['Access-Control-Allow-Credentials'] ?? '') === 'true', 'F1. the exact Finance origin passes the credentialed preflight');
+check(T::call($kernel, 'OPTIONS', '/finance/cases', null, ['origin' => $financeOrigin, 'access-control-request-method' => 'POST'])['status'] === 403, 'F1. without the Finance origin in the list the preflight is refused');
+err(T::call($financeKernel, 'OPTIONS', '/finance/cases', null, ['origin' => $financeOrigin . '.evil.example', 'access-control-request-method' => 'POST']), 403, 'ORIGIN_DENIED', 'F1. a look-alike origin is refused');
+$gate = $fromFinance('GET', '/finance/access', $importer);
+check($gate['status'] === 200 && ($gate['headers']['Access-Control-Allow-Origin'] ?? '') === $financeOrigin, 'F2. the central session opens Finance from the Finance origin');
+check($gate['body']['capabilities']['canImportCompanies'] === true && $gate['body']['capabilities']['canVerifyCompanies'] === false && $gate['body']['capabilities']['canViewCredit'] === false, 'F2. capabilities follow the role exactly');
+$guest = $fromFinance('GET', '/finance/access');
+check($guest['status'] === 401 && ($guest['headers']['Access-Control-Allow-Origin'] ?? '') === $financeOrigin, 'F3. without a session the gate answers 401, readable by the Finance origin');
+err($fromFinance('POST', '/finance/cases', $importer, ['x-csrf-token' => 'not-the-token', 'idempotency-key' => 'journey-f-csrf-' . $suffix]), 403, 'CSRF_INVALID', 'F4. a Finance command without the in-memory CSRF token is refused');
+err(T::call($financeKernel, 'POST', '/finance/cases', [], ['origin' => 'https://evil.example', 'x-csrf-token' => $importer['csrf'], 'idempotency-key' => 'journey-f-origin-' . $suffix], $importer['cookie']), 403, 'ORIGIN_DENIED', 'F4. a Finance command from another origin is refused');
+err($fromFinance('GET', '/finance/access', $intake), 403, 'APPLICATION_ACCESS_DENIED', 'F5. a Staff employee without the Finance application is refused');
+check($fromFinance('GET', '/finance/access', ['cookie' => 'forged-session-token'])['status'] === 401, 'F5. a forged cookie is no session');
+// Finance application alone: the gate opens, every capability is false, every read is refused (default deny).
+$bare = $admin->create('Synthetic bare finance', "barefinance.{$suffix}", null, 'pregatire-material', 'employee', $password, [], 'journey-test');
+ok($call($root, 'PUT', "/management/employees/{$bare->employeeUuid}/applications", ['applications' => ['finance']]), 200, 'F6. Finance application only');
+$bareSession = T::login($kernel, "barefinance.{$suffix}", $password);
+$bareGate = ok($fromFinance('GET', '/finance/access', $bareSession), 200, 'F6. gate with the application only');
+check(array_filter($bareGate['capabilities']) === [], 'F6. the application grant alone gives no Finance capability');
+err($fromFinance('GET', '/finance/companies', $bareSession), 403, 'UNAUTHORIZED_ACTION', 'F6. no company read without finance.companies.view');
+// Revocation applies on the next request, without a new login, and leaves the central session for other applications.
+ok($call($root, 'PUT', "/management/employees/{$bare->employeeUuid}/applications", ['applications' => ['staff']]), 200, 'F7. Finance application removed');
+err($fromFinance('GET', '/finance/access', $bareSession), 403, 'APPLICATION_ACCESS_DENIED', 'F7. the removed grant stops the next Finance request');
+// Session cookie: host-only on the API (no Domain), HttpOnly, SameSite=Lax. finance.arasyahome.ro and api.arasyahome.ro are
+// the same site, so the browser sends it on credentialed fetches; Secure is added in production (CookiePolicy).
+$login = T::call($financeKernel, 'POST', '/auth/login', ['username' => "barefinance.{$suffix}", 'password' => $password], ['origin' => $financeOrigin]);
+$cookieHeader = (string) ($login['headers']['Set-Cookie'] ?? '');
+check($login['status'] === 200 && str_contains($cookieHeader, 'HttpOnly') && str_contains($cookieHeader, 'SameSite=Lax') && str_contains($cookieHeader, 'Path=/') && stripos($cookieHeader, 'Domain=') === false, 'F8. the session cookie is HttpOnly, SameSite=Lax and host-only');
+check(!str_contains((string) json_encode($login['body']), 'arasya_session') && is_string($login['body']['csrfToken'] ?? null), 'F8. the token stays in the cookie; the CSRF token is returned for memory only');
+
 $server->exec("DROP DATABASE IF EXISTS `{$db}`");
-echo "PASS MySQL B2B finance journey: {$checks} checks (legacy import, duplicate link, two-person identity verification, opening balance posted once, account currency, owner colour and limit, typed order, eligibility preview, one finalization and one receivable, production submission with release decision, QR and ticket, 1 -> 2 -> 14, Livrare handover, exposure and history, audit evidence, non-B2B and AWB unchanged, blocked and shadow paths).\n";
+echo "PASS MySQL B2B finance journey: {$checks} checks (legacy import, duplicate link, two-person identity verification, opening balance posted once, account currency, owner colour and limit, typed order, eligibility preview, one finalization and one receivable, production submission with release decision, QR and ticket, 1 -> 2 -> 14, Livrare handover, exposure and history, audit evidence, non-B2B and AWB unchanged, blocked and shadow paths, Finance origin, session and default-deny IAM).\n";

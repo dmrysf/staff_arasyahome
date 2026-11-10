@@ -135,9 +135,13 @@ Order detail (`GET /b2b/orders/{id}`), new fields:
 
 | Field | Content |
 |---|---|
-| `financeDecision` | The finalization snapshot, or `null` on a draft and on every order finalized before migration 050. |
-| `financeReleaseDecision` | The release snapshot from the handoff, or `null`. |
+| `financeDecision` | The finalization decision, codes only: `phase`, `mode`, `outcome`, `reasons`, `decidedAt`, `orderType`, `exceptionId` when an exception applied. `null` on a draft and on every order finalized before migration 050. |
+| `financeReleaseDecision` | The release decision from the handoff, codes only, plus `changedSinceFinalization`, `grandfathered` and `finalization` (outcome, mode, time). `null` before the handoff. |
 | `financeGate` | `{configured, finalizationMode, releaseMode, preview}`. `preview` is `{phase, mode, outcome, reasons}` for the next decision of this order (finalization for a draft, release for a finalized order not in production), or `null`. |
+
+The stored snapshots keep the full Finance basis (limit, exposure, available credit, order gross, exception amount) in the database and the journal. The B2B order detail never returns it (owner decision D6, default; `FinanceGate::forOrderView`): a B2B order viewer is not a Finance or account viewer.
+
+`GET /b2b/access` lists `features: ["orderTypes", "financeGate"]` (API 2.67.0). B2B 0.9.0 shows and sends the order type only when the list says so, so it also runs on API 2.66.0 (see `docs/release-plan-b2b-finance.md`).
 
 `preview` is advisory. It is read without a lock and never stored. The binding decision is taken again under the company lock when the action runs. It carries codes only, no amount.
 
@@ -165,14 +169,22 @@ A finance decision never creates a shipment, an AWB or a delivery record, never 
 
 ## 12. Owner decisions (none is taken here)
 
-| Id | Decision | Behaviour until decided |
-|---|---|---|
-| D1 | Switch production to `shadow`. | `off`. |
-| D2 | Switch production to `enforce`, after the shadow analysis. | `off`. |
-| D3 | Orders finalized before activation: evaluate at release (default) or release without a check. | Evaluated at release when the release check is `enforce`. |
-| D4 | CEO exception: which reasons it covers and how long it lives. | Credit reasons only, at most 30 days, RED companies only; inactive because no CEO approver is configured. |
-| D5 | Prepaid orders. | Not modelled; refused under `enforce` like any order without credit. |
-| D6 | Whether B2B sees the limit and exposure amounts of the finalization snapshot. | The stored snapshot holds them, as designed in Finance V0.4.0 §10; the preview and the refusals hold codes only. |
+Each row compares the decision with what the code does today, the risk, and a recommendation. Nothing here is decided or
+activated. Read-only evidence for D2 and D3: `php bin/b2b-finance-gate-readiness.php [--detail]` (section 14).
+
+| Id | Decision | What the code does until decided | Risk | Recommendation |
+|---|---|---|---|---|
+| D1 | Switch production to `shadow`. | `off`: nothing is evaluated, nothing journaled. `shadow` needs `ARASYA_FINANCE_CONFIG_ACK` with the printed fingerprint, or the next API deployment is refused. | Low. Orders continue; each finalization and release adds a profile read under the company lock (a few queries) and one journal row. While few companies are onboarded, almost every row is `WOULD_BLOCK` with `IDENTITY_NOT_VERIFIED` or `RISK_NOT_ASSIGNED`: expected noise, not an incident. | After API 2.67.0 runs without incident for 2–3 working days. Write both keys explicitly (`ARASYA_B2B_FINANCE_GATE=shadow`, `ARASYA_B2B_FINANCE_RELEASE_GATE=shadow`), record the fingerprint as the acknowledgement, run `php bin/finance-config-check.php`. Review `#/b2bGate` weekly. |
+| D2 | Switch production to `enforce`, after the shadow analysis. | Not possible without a new acknowledgement. Under `enforce` every company without a verified identity, a reconciled account, a colour and an approved limit is refused at finalization. | **High.** Enforce on a partly onboarded customer base stops B2B sales for every company not yet through Finance. A finalized order of such a company is also stopped at release (D3). | Only when `bin/b2b-finance-gate-readiness.php` shows every company that orders on credit as `ready_for_credit`, and every `WOULD_BLOCK` row of at least two weeks of shadow has an explanation. Stage it: `ARASYA_B2B_FINANCE_GATE=enforce` with `ARASYA_B2B_FINANCE_RELEASE_GATE=shadow` for one week, then the release check to `enforce`. Rollback: write `off` (the default needs no acknowledgement) or `shadow`. |
+| D3 | Orders finalized before activation: evaluate at release (default) or release without a check. | Evaluated at release when the release check is `enforce`, marked `grandfathered: true`. Under `shadow` they are released and journaled. | Medium at the D2 switch: a finalized, unsubmitted order of a company that is not ready is stopped at release although it was accepted earlier. | Keep the default. Before the release check goes to `enforce`, list such orders with `bin/b2b-finance-gate-readiness.php --detail` (`production_submission/BLOCKED/grandfathered`) and either submit them during shadow or complete the company's Finance onboarding. No code change needed. |
+| D4 | CEO exception: which reasons it covers and how long it lives. | Credit reasons only, RED companies only, at most 30 days, re-checked at release. Inactive: `ARASYA_FINANCE_CEO_EMPLOYEE_UUID` is empty, so no exception can be approved. | Low while inactive. Once configured, one person can override a credit refusal for one order; requester and approver are always different people and every exception is journaled. | Keep inactive until after D2. When needed: configure Mesut Yeman's employee UUID (with the acknowledgement), keep the reason list and 30 days. Review the exceptions monthly in Finance. |
+| D5 | Prepaid orders. | Not modelled. Under `enforce` an order of a company without an approved limit is refused even if the customer paid in advance. | Medium under `enforce` for cash or advance-payment customers. | Before D2, decide one of: (a) give such companies a small approved limit with a colour (works today, no code), or (b) a later change adding an explicit payment term on the B2B order with a separate rule. Recommend (a) for the start. |
+| D6 | Whether B2B sees the limit and exposure amounts of the finalization snapshot. | **Changed in this PR: codes only.** The B2B order detail returns outcome, mode, phase, reason codes and what changed; limit, exposure, available credit, order gross and exception amount stay in the database and the journal (`FinanceGate::forOrderView`). Finance's journal read also returns codes only. | Low. Before this change every holder of `b2b.orders.view` could read a customer's approved limit and ledger exposure from the order detail, including people without `b2b.accounts.view`. | Keep codes only. If sales needs amounts later, add them behind `b2b.accounts.view` in a separate change. |
+
+Further operating risks:
+
+- **Configuration takes effect without a deployment.** The API reads `ARASYA_B2B_FINANCE_GATE` from the private configuration on each request; the acknowledgement is checked only by the deployment and by `bin/readiness.php`. Procedure: after every edit of the private configuration run `php bin/finance-config-check.php` and keep the timestamped backup. The file stays mode 600 under the owner's control.
+- **Mode `off` is the emergency stop.** Writing `off` (or removing both keys) needs no acknowledgement and applies on the next request. Journal rows stay as audit.
 
 ## 13. Tests
 
@@ -182,4 +194,20 @@ A finance decision never creates a shipment, an AWB or a delivery record, never 
 | `mysql-b2b-finance-journey-integration.php` J1-J18 | One synthetic legacy customer end to end: Finance import, duplicate link, two-person identity verification, opening balance posted once, account currency, owner colour and limit, typed order, preview, one finalization and one receivable, release decision on the handoff, QR and ticket revision 1, 1 → 2 → 14, Livrare handover, exposure = opening balance + receivable, B2B and factory history, Finance audit, and an unchanged TrendHome order and AWB station state. |
 | same file, P1-P2 | Blocked path under `enforce` (refusal journaled, no receivable) and shadow path (`WOULD_BLOCK` recorded, the action goes on; `enforce` then stops the release with no handoff, no canonical order and no QR). |
 
+| `mysql-b2b-order-types-integration.php` D2, D6 | The readiness CLI evaluates every open order as `enforce`, prints codes only and writes no journal row; the B2B order detail holds no Finance amount while the database keeps the basis; `GET /b2b/access` lists the features. |
+| `mysql-b2b-finance-journey-integration.php` F1-F8 | Finance origin and session: credentialed preflight, gate from the exact origin, 401 readable by the origin, CSRF and origin refusal, default deny with the application grant alone, revocation on the next request, cookie flags. |
+
 Both run on MySQL 8.4 and MariaDB 10.11 in CI.
+
+## 14. Readiness report (read-only)
+
+```bash
+php bin/b2b-finance-gate-readiness.php            # counts and reason codes
+php bin/b2b-finance-gate-readiness.php --detail   # plus internal order and company codes with reason codes
+```
+
+It evaluates every draft and every finalized, unsubmitted B2B order as `enforce` would now, and every active company's Finance
+eligibility. It runs in a `READ ONLY` transaction, writes no journal row, never changes a mode, and prints no amount, name or
+contact. Lines: `ORDERS <phase>/<outcome>[/grandfathered] <n>`, `REASON <phase>/<code> <n>`, `COMPANIES active|ready_for_credit <n>`,
+`BLOCKER <code> <n>`, and with `--detail` `DETAIL <order code> <company code> <phase> <outcome> <codes>` or
+`DETAIL <company code> company <codes>`.

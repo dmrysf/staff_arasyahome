@@ -1015,6 +1015,8 @@ test('the B2B finance gate refuses an unknown mode, decides on server data only 
     $gateSource = (string) file_get_contents($source . '/B2B/FinanceGate.php');
     expect(preg_match('/\bPDO\b|INSERT|UPDATE|DELETE|Request|\$_(GET|POST|COOKIE)/', $gateSource) !== 1, 'FinanceGate is a pure decision: no SQL, no request data');
     expect(preg_match('/b2b_account_movements|operational_orders|order_activity_events|trendyol|awb/i', (string) file_get_contents($source . '/B2B/FinanceGateJournal.php')) !== 1, 'the journal touches its own table only');
+    $readiness = (string) file_get_contents($source . '/B2B/FinanceGateReadiness.php') . (string) file_get_contents(dirname($source) . '/bin/b2b-finance-gate-readiness.php');
+    expect(preg_match('/\b(INSERT|UPDATE|DELETE|REPLACE|ALTER|DROP)\b/', $readiness) !== 1 && str_contains($readiness, 'START TRANSACTION READ ONLY') && !str_contains($readiness, 'FinanceGateJournal'), 'the readiness report is read-only and journals nothing');
     $submit = (string) file_get_contents($source . '/B2B/ProductionCommands.php');
     expect(strpos($submit, '$this->finance->recheck(') < strpos($submit, '$this->writer->createInternal(') && strpos($submit, "if(\$existing!==false) \$result=['status'=>200") < strpos($submit, '$this->finance->recheck('), 'the release check runs before any production row and never for an existing handoff');
 });
@@ -1056,6 +1058,23 @@ test('the Finance configuration guard refuses unreviewed Finance values and neve
     expect($fails(FinanceConfigGuard::inspect(['ARASYA_B2B_FINANCE_RELEASE_GATE' => 'Shadow'])) === ['b2b_finance_release_gate_unrecognized']);
     expect($fails(FinanceConfigGuard::inspect(['ARASYA_B2B_FINANCE_GATE' => 'enforced', 'ARASYA_B2B_FINANCE_RELEASE_GATE' => ''])) === ['b2b_finance_gate_unrecognized', 'b2b_finance_release_gate_unrecognized']);
     expect($fails(FinanceConfigGuard::inspect(['ARASYA_B2B_FINANCE_GATE' => 'enforced', 'ARASYA_FINANCE_CONFIG_ACK' => FinanceConfigGuard::inspect(['ARASYA_B2B_FINANCE_GATE' => 'enforced'])['fingerprint']])) === ['b2b_finance_gate_unrecognized'], 'an acknowledgement never excuses a malformed value');
+    // The browser origin list as the Finance frontend needs it: exact entries, the Finance origin listed or absent,
+    // never a near miss. Not part of the fingerprint, never printed.
+    $live = 'https://staff.arasyahome.ro,https://dashboard.arasyahome.ro,https://b2b.arasyahome.ro';
+    expect(in_array('finance_origin_absent', $states(['ARASYA_ALLOWED_ORIGINS' => $live]), true) && FinanceConfigGuard::inspect(['ARASYA_ALLOWED_ORIGINS' => $live])['ok']);
+    $listed = FinanceConfigGuard::inspect(['ARASYA_ALLOWED_ORIGINS' => $live . ', https://finance.arasyahome.ro']);
+    expect($listed['ok'] && $listed['defaults'] && in_array('finance_origin_listed', array_column($listed['checks'], 'check'), true));
+    expect($listed['fingerprint'] === FinanceConfigGuard::inspect([])['fingerprint'], 'the origin list is not part of the Finance fingerprint');
+    foreach (['https://finance.arasyahome.ro/', 'https://Finance.arasyahome.ro', 'https://finance.arasyahome.ro:443', 'https://*.arasyahome.ro', 'http://staff.arasyahome.ro', 'https://user@staff.arasyahome.ro'] as $wrong) {
+        expect(in_array('allowed_origins_malformed_entries_1', $fails(FinanceConfigGuard::inspect(['ARASYA_ALLOWED_ORIGINS' => $live . ',' . $wrong])), true), 'malformed origin refused: ' . $wrong);
+    }
+    foreach (['https://www.finance.arasyahome.ro', 'https://finance.arasyahome.com', 'http://finance.arasyahome.ro'] as $near) {
+        expect(in_array('finance_origin_unexpected', $fails(FinanceConfigGuard::inspect(['ARASYA_ALLOWED_ORIGINS' => $live . ',' . $near])), true), 'near miss refused: ' . $near);
+    }
+    expect(FinanceConfigGuard::inspect(['ARASYA_APP_ENV' => 'test', 'ARASYA_ALLOWED_ORIGINS' => 'http://127.0.0.1:4173,http://localhost:5175'])['ok'], 'loopback origins pass outside production');
+    expect(!FinanceConfigGuard::inspect(['ARASYA_ALLOWED_ORIGINS' => 'http://127.0.0.1:4173'])['ok'], 'loopback origins fail in production');
+    $printed = json_encode(FinanceConfigGuard::inspect(['ARASYA_ALLOWED_ORIGINS' => $live . ',https://finance.arasyahome.ro/'])['checks']);
+    expect(!str_contains((string) $printed, 'arasyahome'), 'no origin is printed');
     $both = FinanceConfigGuard::inspect(['ARASYA_B2B_FINANCE_GATE' => 'enforce'])['fingerprint'];
     expect($fails(FinanceConfigGuard::inspect(['ARASYA_B2B_FINANCE_GATE' => 'enforce', 'ARASYA_B2B_FINANCE_RELEASE_GATE' => 'off', 'ARASYA_FINANCE_CONFIG_ACK' => $both])) === ['finance_config_acknowledgement_stale'], 'switching the release check off needs a new review');
     // The running API keeps the configured value exactly: it is validated where it is used, never rewritten to off.

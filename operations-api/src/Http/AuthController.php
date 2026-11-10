@@ -23,6 +23,9 @@ use Arasya\Operations\Security\CsrfGuard;
 
 final readonly class AuthController
 {
+    /** orderTypes: explicit order type on B2B drafts, required at finalization. financeGate: finance fields on the order detail. */
+    public const B2B_FEATURES = ['orderTypes', 'financeGate'];
+
     public function __construct(
         private AuthenticationService $auth,
         private CsrfGuard $csrf,
@@ -139,6 +142,10 @@ final readonly class AuthController
             'authorizationVersion' => $employee->authorizationVersion,
             // B2B module permissions the identity can use right now; the server still checks every request.
             'permissions' => [...CompanyAccess::granted($this->authorization, $employee), ...OrderAccess::granted($this->authorization, $employee), ...AccountAccess::granted($this->authorization, $employee), ...ProductionAccess::granted($this->authorization, $employee), ...ProjectAccess::granted($this->authorization, $employee)],
+            // API contract features the B2B frontend may use (API 2.67.0). An older API sends no list, so B2B 0.9.0 can be
+            // deployed before this API and keeps working on 2.66.0 without the order type, and keeps working after an
+            // API rollback. Never a permission: every request is still authorized on its own.
+            'features' => self::B2B_FEATURES,
         ]);
     }
 

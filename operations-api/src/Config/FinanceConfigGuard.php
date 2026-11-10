@@ -32,6 +32,7 @@ final class FinanceConfigGuard
     public const ACK = 'ARASYA_FINANCE_CONFIG_ACK';
     public const B2B_GATE = 'ARASYA_B2B_FINANCE_GATE';
     public const B2B_RELEASE_GATE = 'ARASYA_B2B_FINANCE_RELEASE_GATE';
+    public const FINANCE_ORIGIN = 'https://finance.arasyahome.ro';
     private const UUID = '/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/D';
 
     /**
@@ -119,7 +120,46 @@ final class FinanceConfigGuard
             $add('OK', 'finance_config_defaults');
         }
 
+        foreach (self::origins($values) as $line) {
+            $add($line['state'], $line['check']);
+        }
+
         $ok = !in_array('FAIL', array_column($checks, 'state'), true);
         return ['ok' => $ok, 'defaults' => $defaults, 'fingerprint' => $fingerprint, 'checks' => $checks];
+    }
+
+    /**
+     * The exact browser origin list (ARASYA_ALLOWED_ORIGINS) as the Finance frontend needs it. The API compares the
+     * Origin header byte for byte, so an entry with a path, a trailing slash, a port, credentials, upper case or a
+     * wildcard never matches any browser: the application behind it silently fails every write. Config only checks
+     * the scheme at boot; this check runs before activation, so a wrong entry blocks the deployment instead of the
+     * application. It is not part of the fingerprint: listing the Finance origin is not a Finance activation (it
+     * opens no data; access still needs the Finance application grant and finance.access).
+     * Reports `finance_origin_listed` or `finance_origin_absent`; never prints an origin.
+     * @param array<string, string> $values
+     * @return list<array{state: string, check: string}>
+     */
+    private static function origins(array $values): array
+    {
+        if (!array_key_exists('ARASYA_ALLOWED_ORIGINS', $values)) {
+            return [];
+        }
+        $production = strtolower(trim($values['ARASYA_APP_ENV'] ?? 'production')) === 'production';
+        $entries = array_values(array_filter(array_map('trim', explode(',', $values['ARASYA_ALLOWED_ORIGINS'])), static fn (string $item): bool => $item !== ''));
+        $pattern = $production ? '/^https:\/\/[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/D'
+            : '/^https?:\/\/(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*|\[::1\])(?::[0-9]{1,5})?$/D';
+        $lines = [];
+        $malformed = array_filter($entries, static fn (string $origin): bool => preg_match($pattern, $origin) !== 1);
+        if ($malformed !== []) {
+            $lines[] = ['state' => 'FAIL', 'check' => 'allowed_origins_malformed_entries_' . count($malformed)];
+        }
+        // A near miss of the Finance origin (another scheme, a www. prefix, another domain) is refused by name.
+        $finance = array_filter($entries, static fn (string $origin): bool => preg_match('/^[a-z]+:\/\/(?:[^\/]*\.)?finance\./i', $origin) === 1);
+        if (array_diff($finance, [self::FINANCE_ORIGIN]) !== []) {
+            $lines[] = ['state' => 'FAIL', 'check' => 'finance_origin_unexpected'];
+        } else {
+            $lines[] = ['state' => 'OK', 'check' => in_array(self::FINANCE_ORIGIN, $entries, true) ? 'finance_origin_listed' : 'finance_origin_absent'];
+        }
+        return $lines;
     }
 }

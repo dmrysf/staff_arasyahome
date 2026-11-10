@@ -109,6 +109,8 @@ check($edited['orderType'] === 'CUT_ONLY', 'draft type editable under the versio
 $withoutType = array_diff_key(array_intersect_key($edited, array_flip(Arasya\Operations\B2B\OrderInput::FIELDS)), ['orderType' => true]);
 $kept = ok($call($root, 'PUT', "/b2b/orders/{$edited['id']}", $withoutType + ['expectedVersion' => $edited['version'], 'notes' => 'older screen']), 200, 'save without orderType')['detail']['order'];
 check($kept['orderType'] === 'CUT_ONLY', 'a save that omits orderType keeps the type');
+// B2B 0.9.0 reads the feature list: present on 2.67.0, absent on 2.66.0, so the frontend may ship before the API.
+check((ok($call($root, 'GET', '/b2b/access'), 200, 'B2B access')['features'] ?? null) === ['orderTypes', 'financeGate'], 'the B2B gate announces the order type and finance gate features');
 $activity = ok($call($root, 'GET', "/b2b/orders/{$edited['id']}/activity"), 200, 'activity')['items'];
 check(in_array('orderType', array_merge(...array_map(static fn (array $e): array => $e['changedFields'] ?? [], $activity)), true), 'the type change is in the commercial history');
 $cutOnly = ok($finalize($kept), 200, 'finalize CUT_ONLY')['detail']['order'];
@@ -300,6 +302,20 @@ ok($call($owner, 'POST', "/finance/owner/companies/{$eligible}/credit", ['expect
 $blockedCompany = $companyId;   // never verified, no colour, no limit
 
 $receivables = static fn (string $order): int => count($rows("SELECT 1 FROM b2b_account_movements WHERE order_uuid = ? AND movement_type = 'order_receivable'", [$order]));
+// The full stored snapshot (with its Finance basis) as the database holds it; the B2B detail shows codes only (D6).
+$stored = static function (string $order, string $phase = 'finalization') use ($rows): ?array {
+    $sql = $phase === 'finalization' ? 'SELECT finance_decision AS d FROM b2b_orders WHERE order_uuid = ?' : 'SELECT finance_decision AS d FROM b2b_production_handoffs WHERE b2b_order_uuid = ?';
+    $raw = $rows($sql, [$order])[0]['d'] ?? null;
+    return $raw === null ? null : json_decode((string) $raw, true);
+};
+$amountKeys = static function (array $value): array {
+    $found = [];
+    array_walk_recursive($value, static function ($v, $key) use (&$found): void {
+        if (in_array($key, ['approvedCreditLimit', 'currentExposure', 'availableCredit', 'orderGross', 'amount', 'profile', 'exception'], true)) $found[] = $key;
+    });
+    foreach (['profile', 'exception'] as $key) if (array_key_exists($key, $value)) $found[] = $key;
+    return $found;
+};
 foreach (['CUT_ONLY', 'FULL_ROLL_BAG'] as $type) {
     $k = $draft($type, $blockedCompany, null, $enforce);
     $refusal = err($finalize($k, $enforce), 409, 'FINANCE_NOT_ELIGIBLE', "K. {$type} for a blocked customer");
@@ -314,8 +330,8 @@ $s = ok($finalize($draft('CUT_ONLY', $blockedCompany, null, $shadow), $shadow), 
 check($s['financeDecision']['mode'] === 'shadow' && $s['financeDecision']['outcome'] === 'WOULD_BLOCK' && in_array('RISK_NOT_ASSIGNED', $s['financeDecision']['reasons'], true) && $receivables($s['id']) === 1, 'shadow records WOULD_BLOCK and finalizes');
 // Over the limit: 100.00 RON limit, a 77.35 RON order fits once, a second does not (exposure counts the first).
 $l1 = ok($finalize($draft('FULL_ROLL_BAG', $eligible, null, $enforce), $enforce), 200, 'L. eligible finalize')['detail']['order'];
-check($l1['financeDecision']['outcome'] === 'ALLOWED' && $l1['financeDecision']['reasons'] === [] && $l1['financeDecision']['profile']['riskColor'] === 'GREEN'
-    && $l1['financeDecision']['profile']['availableCredit'] === '100.00' && $l1['financeDecision']['orderType'] === 'FULL_ROLL_BAG' && $receivables($l1['id']) === 1, 'L. ALLOWED with its basis, one receivable');
+check($l1['financeDecision']['outcome'] === 'ALLOWED' && $l1['financeDecision']['reasons'] === [] && $stored($l1['id'])['profile']['riskColor'] === 'GREEN'
+    && $stored($l1['id'])['profile']['availableCredit'] === '100.00' && $l1['financeDecision']['orderType'] === 'FULL_ROLL_BAG' && $receivables($l1['id']) === 1, 'L. ALLOWED with its basis, one receivable');
 $over = err($finalize($draft('CUT_ONLY', $eligible, null, $enforce), $enforce), 409, 'FINANCE_NOT_ELIGIBLE', 'K. exposure plus order over the limit');
 check(in_array('CREDIT_LIMIT_EXCEEDED', $over['error']['details']['reasons'], true), 'K. CREDIT_LIMIT_EXCEEDED');
 // L: the full chain for the allowed order: production, stage 2, Livrare.
@@ -376,7 +392,7 @@ $ownerColor($second, 'GREEN');
 $ownerLimit($second, ['action' => 'SET', 'amount' => '200.00', 'currency' => 'RON']);
 $r1 = ok($finalize($draft('CUT_ONLY', $second, null, $enforce), $enforce), 200, 'M3. first order finalized')['detail']['order'];
 $r2 = ok($finalize($draft('FULL_TAILORING', $second, null, $enforce), $enforce), 200, 'M3. second order finalized')['detail']['order'];
-check($r1['financeDecision']['outcome'] === 'ALLOWED' && $r1['financeDecision']['phase'] === 'finalization' && $r2['financeDecision']['profile']['availableCredit'] === '122.65', 'M3. both within the 200.00 limit');
+check($r1['financeDecision']['outcome'] === 'ALLOWED' && $r1['financeDecision']['phase'] === 'finalization' && $stored($r2['id'])['profile']['availableCredit'] === '122.65', 'M3. both within the 200.00 limit');
 check($read($r1['id'], $enforce)['financeGate']['preview'] === ['phase' => 'production_submission', 'mode' => 'enforce', 'outcome' => 'ALLOWED', 'reasons' => []], 'M3. a finalized order previews its release check');
 $ownerColor($second, 'RED');
 $stopKey = 'types-release-' . bin2hex(random_bytes(8));
@@ -400,7 +416,7 @@ check($low['error']['details']['reasons'] === ['CREDIT_LIMIT_EXCEEDED'], 'M3. CR
 $ownerLimit($second, ['action' => 'SET', 'amount' => '154.70', 'currency' => 'RON']);
 ok($submitWith($r2, $enforce), 201, 'M3. an exactly filled limit still releases the order');
 $exact = $read($r2['id'], $enforce)['financeReleaseDecision'];
-check($exact['outcome'] === 'ALLOWED' && $exact['changedSinceFinalization'] === ['approvedCreditLimit'] && $exact['profile']['availableCredit'] === '0.00', 'M3. the changed limit is reported with the decision');
+check($exact['outcome'] === 'ALLOWED' && $exact['changedSinceFinalization'] === ['approvedCreditLimit'] && $stored($r2['id'], 'production_submission')['profile']['availableCredit'] === '0.00', 'M3. the changed limit is reported with the decision');
 $full = err($finalize($draft('CUT_ONLY', $second, null, $enforce), $enforce), 409, 'FINANCE_NOT_ELIGIBLE', 'M3. no credit left for a further order');
 check(in_array('CREDIT_LIMIT_EXCEEDED', $full['error']['details']['reasons'], true) && $full['error']['details']['phase'] === 'finalization', 'M3. the next order is refused at finalization');
 // A revoked limit; the release mode may be reviewed separately from the finalization mode.
@@ -454,10 +470,15 @@ $x3 = $draft('CUT_ONLY', $second, null, $withCeo);
 $x3Exception = $exception($x3, '77.35');
 err($finalize($x1, $withCeo), 409, 'FINANCE_NOT_ELIGIBLE', 'M4. an exception of another order is never used');
 $x3Done = ok($finalize($x3, $withCeo), 200, 'M4. finalized under the approved exception')['detail']['order'];
-check($x3Done['financeDecision']['outcome'] === 'ALLOWED_BY_CEO_EXCEPTION' && $x3Done['financeDecision']['exception']['id'] === $x3Exception && $x3Done['financeDecision']['exception']['amount'] === '77.35'
+check($x3Done['financeDecision']['outcome'] === 'ALLOWED_BY_CEO_EXCEPTION' && $x3Done['financeDecision']['exceptionId'] === $x3Exception && $stored($x3['id'])['exception']['amount'] === '77.35'
     && in_array('RISK_RED', $x3Done['financeDecision']['reasons'], true) && $receivables($x3['id']) === 1 && array_slice($kinds($x3['id']), -1) === ['finalization/enforce/ALLOWED_BY_CEO_EXCEPTION'], 'M4. the exception and the covered reasons are stored; one receivable');
 ok($submitWith($x3Done, $withCeo), 201, 'M4. released under the same exception');
 check($read($x3['id'], $withCeo)['financeReleaseDecision']['outcome'] === 'ALLOWED_BY_CEO_EXCEPTION', 'M4. release decision names the exception');
+// D6 (default): the B2B order detail shows codes only. Limit, exposure, order gross and the exception amount stay in the
+// stored snapshot for Finance and audit, and never reach a B2B order viewer.
+$x3Read = $read($x3['id'], $withCeo);
+check($amountKeys($x3Read['financeDecision']) === [] && $amountKeys($x3Read['financeReleaseDecision']) === [] && $x3Read['financeReleaseDecision']['exceptionId'] === $x3Exception
+    && $amountKeys($read($r2['id'], $enforce)['financeReleaseDecision']) === [] && isset($stored($x3['id'], 'production_submission')['profile']['currentExposure']), 'D6. the B2B detail holds no Finance amount; the database keeps the basis');
 check((int) $scalar("SELECT COUNT(*) FROM b2b_account_movements WHERE company_uuid = ? AND movement_type <> 'order_receivable'", [$second]) === 0
     && $rows("SELECT 1 FROM order_activity_events e JOIN operational_orders o ON o.order_uuid = e.order_uuid WHERE o.global_order_id = ? AND e.action NOT IN ('production_submitted')", ['b2b:' . $x3['id']]) === [], 'M4. a finance decision posts no other movement and no stage event');
 
@@ -508,7 +529,7 @@ $gateRace([[$root, 'POST', "/b2b/orders/{$c4['id']}/finalize", ['expectedVersion
     [$owner, 'POST', "/finance/owner/companies/{$third}/credit", ['expectedState' => $state($third), 'action' => 'SET', 'amount' => '160.00', 'currency' => 'RON', 'effect' => 'EFFECTIVE', 'reason' => 'Synthetic racing limit'], 'types-limit-race-' . $suffix]]);
 $c4After = $read($c4['id'], $enforce);
 check($c4After['status'] === 'finalized'
-    ? ($c4After['financeDecision']['outcome'] === 'ALLOWED' && $c4After['financeDecision']['profile']['approvedCreditLimit'] === '300.00' && $c4After['financeDecision']['profile']['availableCredit'] === '145.30' && $receivables($c4['id']) === 1)
+    ? ($c4After['financeDecision']['outcome'] === 'ALLOWED' && $stored($c4['id'])['profile']['approvedCreditLimit'] === '300.00' && $stored($c4['id'])['profile']['availableCredit'] === '145.30' && $receivables($c4['id']) === 1)
     : ($c4After['status'] === 'draft' && $receivables($c4['id']) === 0 && $kinds($c4['id']) === ['finalization/enforce/BLOCKED']), 'M5. finalized on the old limit or refused on the new one, never a mix');
 // Two simultaneous releases of one order: one handoff, one canonical order.
 $ownerLimit($third, ['action' => 'SET', 'amount' => '900.00', 'currency' => 'RON']);
@@ -597,6 +618,22 @@ $rollback = static function (string $target) use ($cliEnvironment): array {
     fclose($pipes[2]);
     return ['code' => proc_close($process), 'json' => json_decode($out, true)];
 };
+// D2/D3 readiness report (read-only CLI): what enforce would decide now, no amount, no name, nothing written.
+$journalBefore = (int) $scalar('SELECT COUNT(*) FROM b2b_finance_gate_decisions');
+$readinessProcess = proc_open([PHP_BINARY, dirname(__DIR__) . '/bin/b2b-finance-gate-readiness.php', '--detail'], [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $readinessPipes, null, $cliEnvironment);
+fclose($readinessPipes[0]);
+$readinessOut = (string) stream_get_contents($readinessPipes[1]);
+fclose($readinessPipes[1]);
+fclose($readinessPipes[2]);
+$readinessCode = proc_close($readinessProcess);
+$readinessLines = array_values(array_filter(explode("\n", $readinessOut)));
+$openOrders = (int) $scalar("SELECT COUNT(*) FROM b2b_orders o WHERE o.status = 'draft' OR (o.status = 'finalized' AND NOT EXISTS (SELECT 1 FROM b2b_production_handoffs h WHERE h.b2b_order_uuid = o.order_uuid))");
+$counted = array_sum(array_map(static fn (string $l): int => (int) substr($l, strrpos($l, ' ') + 1), array_filter($readinessLines, static fn (string $l): bool => str_starts_with($l, 'ORDERS '))));
+check($readinessCode === 0 && $readinessLines[0] === 'INFO configured finalization=off release=inherited' && $counted === $openOrders, 'D2. the readiness report evaluates every open order ' . $readinessOut);
+check(in_array('ORDERS finalization/BLOCKED ' . count(array_filter($readinessLines, static fn (string $l): bool => str_starts_with($l, 'DETAIL ') && str_contains($l, ' finalization BLOCKED '))), $readinessLines, true)
+    && (bool) array_filter($readinessLines, static fn (string $l): bool => str_starts_with($l, 'REASON finalization/IDENTITY_NOT_VERIFIED ')), 'D2. blocked drafts are counted with their reason codes');
+check((bool) array_filter($readinessLines, static fn (string $l): bool => str_starts_with($l, 'COMPANIES ready_for_credit ')) && (bool) array_filter($readinessLines, static fn (string $l): bool => str_starts_with($l, 'BLOCKER RISK_NOT_ASSIGNED ')), 'D2. company readiness and blockers are reported');
+check(preg_match('/\d+\.\d{2}\b|SRL|@/', $readinessOut) !== 1 && (int) $scalar('SELECT COUNT(*) FROM b2b_finance_gate_decisions') === $journalBefore, 'D2. no amount or name is printed and nothing is journaled');
 $shortOpen = (int) $scalar("SELECT (SELECT COUNT(*) FROM operational_orders WHERE service_route IN ('CUT_ONLY', 'FULL_ROLL_BAG') AND production_completed_at IS NULL AND production_stage_id <> 'delivery')
     + (SELECT COUNT(*) FROM b2b_orders c WHERE c.status = 'finalized' AND c.order_type IN ('CUT_ONLY', 'FULL_ROLL_BAG') AND NOT EXISTS (SELECT 1 FROM b2b_production_handoffs h WHERE h.b2b_order_uuid = c.order_uuid))");
 $previous = $rollback('2.66.0');
@@ -639,4 +676,4 @@ check(!in_array('chk_production_route_decisions_reason', $constraints, true), '1
 check((int) $scalar('SELECT @@foreign_key_checks') === 1, '11. foreign keys stay enforced');
 
 $server->exec("DROP DATABASE IF EXISTS `{$db}`");
-echo "PASS MySQL B2B order types: {$checks} checks (three types, frozen type, 1 -> 2 -> 14 for CUT_ONLY and FULL_ROLL_BAG by an authorized stage 2 employee, Livrare receive and handover, stages 3-13 not applicable, cutting credit only for cutting, replay and double click, stop hold, historical full route, source isolation, finance off/shadow/enforce, unknown mode refused, decision journal and its Finance read, release check at production submission, CEO exception, concurrent finalizations and releases, 050 applied after 051).\n";
+echo "PASS MySQL B2B order types: {$checks} checks (three types, frozen type, 1 -> 2 -> 14 for CUT_ONLY and FULL_ROLL_BAG by an authorized stage 2 employee, Livrare receive and handover, stages 3-13 not applicable, cutting credit only for cutting, replay and double click, stop hold, historical full route, source isolation, finance off/shadow/enforce, unknown mode refused, decision journal and its Finance read, release check at production submission, CEO exception, concurrent finalizations and releases, codes-only B2B detail (D6), read-only enforce readiness report, B2B feature list, 050 applied after 051).\n";

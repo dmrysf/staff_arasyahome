@@ -147,6 +147,29 @@ final readonly class FinanceGate
         return $this->conclude($base + ['changedSinceFinalization' => $changes], $mode, $profile, array_values(array_unique($reasons)), $companyId, $order, $now);
     }
 
+    /**
+     * The part of a stored snapshot the B2B order detail shows (owner decision D6, default): outcome, mode, phase, reason
+     * codes and what changed, never the Finance basis. The approved limit, the exposure, the available credit, the order
+     * gross and the CEO exception amount stay in the database and the journal for Finance and audit. A B2B order viewer
+     * is not a Finance or account viewer, so the detail must not reveal them.
+     * @param array<string, mixed>|null $snapshot
+     * @return array<string, mixed>|null
+     */
+    public static function forOrderView(?array $snapshot): ?array
+    {
+        if ($snapshot === null) {
+            return null;
+        }
+        $view = array_intersect_key($snapshot, array_flip(['phase', 'mode', 'outcome', 'reasons', 'decidedAt', 'orderType', 'changedSinceFinalization', 'grandfathered']));
+        if (is_array($snapshot['finalization'] ?? null)) {
+            $view['finalization'] = array_intersect_key($snapshot['finalization'], array_flip(['outcome', 'mode', 'decidedAt']));
+        }
+        if (is_array($snapshot['exception'] ?? null) && isset($snapshot['exception']['id'])) {
+            $view['exceptionId'] = $snapshot['exception']['id'];
+        }
+        return $view;
+    }
+
     /** The refusal a caller throws for a BLOCKED snapshot, after it rolled back. Reason codes only, no amounts. */
     public static function refusal(array $snapshot): ApiException
     {

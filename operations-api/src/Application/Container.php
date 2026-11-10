@@ -288,11 +288,33 @@ final class Container
         if ($mode === \Arasya\Operations\B2B\FinanceGate::OFF && ($release === null || $release === \Arasya\Operations\B2B\FinanceGate::OFF)) {
             return new \Arasya\Operations\B2B\FinanceGate();
         }
-        $store = new \Arasya\Operations\Finance\FinanceStore($this->pdo, $authorization, $this->clock);
-        $authority = new \Arasya\Operations\Finance\Risk\DecisionAuthority($this->config->financeRiskLimitAuthorityList(), $this->employees);
-        $credit = new \Arasya\Operations\Finance\Credit\CreditService($store, new \Arasya\Operations\Finance\Risk\RiskService($store, $authority), $this->config->financeCeoEmployeeUuid, $authority);
+        return $this->b2bFinanceGateWithModes($authorization, $mode, $release);
+    }
+
+    /**
+     * A gate with explicit modes on the real Finance profile. Used by the configured gate above and by the read-only
+     * readiness report (bin/b2b-finance-gate-readiness.php), which asks what `enforce` would decide without changing the
+     * configuration. Building a gate writes nothing; only the B2B commands journal a decision.
+     */
+    public function b2bFinanceGateWithModes(AuthorizationService $authorization, string $mode, ?string $release): \Arasya\Operations\B2B\FinanceGate
+    {
+        $credit = $this->creditService($authorization);
         return new \Arasya\Operations\B2B\FinanceGate($mode, static fn (string $companyId): array => $credit->profileData($companyId), $release,
             static fn (string $orderId): ?array => $credit->approvedExceptionForOrder($orderId));
+    }
+
+    /** company id => Finance credit profile (CreditService::profileData), the basis of every gate decision. Read-only. */
+    public function b2bFinanceProfileReader(AuthorizationService $authorization): \Closure
+    {
+        $credit = $this->creditService($authorization);
+        return static fn (string $companyId): array => $credit->profileData($companyId);
+    }
+
+    private function creditService(AuthorizationService $authorization): \Arasya\Operations\Finance\Credit\CreditService
+    {
+        $store = new \Arasya\Operations\Finance\FinanceStore($this->pdo, $authorization, $this->clock);
+        $authority = new \Arasya\Operations\Finance\Risk\DecisionAuthority($this->config->financeRiskLimitAuthorityList(), $this->employees);
+        return new \Arasya\Operations\Finance\Credit\CreditService($store, new \Arasya\Operations\Finance\Risk\RiskService($store, $authority), $this->config->financeCeoEmployeeUuid, $authority);
     }
 
     private function financeController(AuthorizationService $authorization, RequestContext $context, CsrfGuard $csrf, \Arasya\Operations\Security\ApiRateLimiter $rateLimiter): \Arasya\Operations\Finance\FinanceController
