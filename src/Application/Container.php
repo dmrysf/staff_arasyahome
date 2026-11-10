@@ -330,6 +330,10 @@ final class Container
             new \Arasya\Operations\Finance\Import\ImportService($store, $cases), $cases, new \Arasya\Operations\Finance\Company\CaseQueries($store, $cases),
             $onboarding, new \Arasya\Operations\Finance\Account\OnboardingQueries($store, $onboarding), $risk, $credit,
             new \Arasya\Operations\Finance\Risk\OwnerDecisionService($store, $risk, $credit, $authority),
+            $ledgerRequests = new \Arasya\Operations\Finance\Ledger\LedgerRequestService($store, $this->config->financeCollectionsEnabled()),
+            new \Arasya\Operations\Finance\Ledger\LedgerRequestQueries($store, $ledgerRequests, $this->config->financeCollectionsEnabled()),
+            new \Arasya\Operations\Finance\Ledger\ReconciliationService($store, $this->config->financeCollectionsEnabled()),
+            new AccountQueries($this->pdo, $authorization, $this->clock, true, true),
         );
     }
 
@@ -417,12 +421,13 @@ final class Container
                 $this->config,
                 $context,
             ),
-            new OrderController(new OrderQueries($this->pdo,$authorization,$financeGate=$this->b2bFinanceGate($authorization)),new OrderCommands($this->pdo,$authorization,$this->clock,$financeGate),
+            new OrderController(new OrderQueries($this->pdo,$authorization,$financeGate=$this->b2bFinanceGate($authorization)),new OrderCommands($this->pdo,$authorization,$this->clock,$financeGate,$this->config->b2bOrderTypesEnabled()),
                 $this->authentication,$authorization,$csrf,$this->config,$context,
                 new ProductionCommands($this->pdo,$authorization,$this->clock,$workflows,$this->projectionWriter(),$documents,$financeGate),
                 new ProductionQueries($this->pdo,$authorization,$workflows),$documents,$this->pdo),
             new AccountController($this->authentication, $authorization, $csrf, $this->config, $context,
-                new AccountQueries($this->pdo, $authorization, $this->clock), new AccountCommands($this->pdo, $authorization, $this->clock)),
+                new AccountQueries($this->pdo, $authorization, $this->clock, $this->config->b2bAccountWritesEnabled()),
+                new AccountCommands($this->pdo, $authorization, $this->clock, $this->config->b2bAccountWritesEnabled())),
             new ProjectController(new ProjectQueries($this->pdo, $authorization, $this->clock), new ProjectCommands($this->pdo, $authorization, $this->clock),
                 $this->authentication, $authorization, $csrf, $this->config, $context),
             new QualityController($faults, $exceptions, $approvers, $live, $this->authentication, $authorization, $csrf, $this->config, $context, $this->pdo, $this->clock, new DocumentAudiences($authorization, $revisionApprovers, $documentScopes), $rateLimiter),
@@ -473,6 +478,7 @@ final class Container
             new \Arasya\Operations\Management\RootInterventionController($this->rootIntervention($authorization), $this->authentication, $csrf, $this->config, $context),
             $this->financeController($authorization, $context, $csrf, $rateLimiter),
             new \Arasya\Operations\Trendyol\AwbStationController($this->awbStation($authorization), $this->authentication, $csrf, $this->config, $context),
+            new \Arasya\Operations\Finance\RefusedAttemptRecorder($this->pdo, new StructuredLogger()),
         );
     }
 

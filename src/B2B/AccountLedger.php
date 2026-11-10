@@ -150,6 +150,35 @@ final readonly class AccountLedger
         return $amount - $this->allocated('receivable_movement_uuid', $receivableId);
     }
 
+    /**
+     * An active allocation of this company, locked, that a person may release. The allocation that settles a refund
+     * against its payment is fixed (API 2.68.0): releasing it would show the refunded money as unallocated again.
+     */
+    public function releasableAllocation(string $companyId, string $allocationId): array
+    {
+        $s = $this->pdo->prepare('SELECT a.*, r.allocation_uuid AS released, rv.movement_type AS target_type FROM b2b_account_allocations a
+            JOIN b2b_account_movements rv ON rv.movement_uuid=a.receivable_movement_uuid
+            LEFT JOIN b2b_account_allocation_releases r ON r.allocation_uuid=a.allocation_uuid WHERE a.allocation_uuid=? FOR UPDATE');
+        $s->execute([$allocationId]);
+        $allocation = $s->fetch(PDO::FETCH_ASSOC);
+        if (!$allocation || $allocation['company_uuid'] !== $companyId) {
+            throw new ApiException(404, 'ALLOCATION_NOT_FOUND', 'Allocation was not found.');
+        }
+        if ($allocation['released'] !== null) {
+            throw new ApiException(409, 'ALLOCATION_ALREADY_RELEASED', 'The allocation was already released.');
+        }
+        if ($allocation['target_type'] === 'refund') {
+            throw new ApiException(409, 'REFUND_ALLOCATION_FIXED', 'The allocation of a refund to its payment cannot be released; cancel the refund instead.');
+        }
+        return $allocation;
+    }
+
+    /** Whether an approved Finance request posted this movement (its snapshot names the request). */
+    public static function postedByFinance(array $movement): bool
+    {
+        return ((OrderStore::decode((string) $movement['source_snapshot']) ?? [])['sourceType'] ?? null) === 'finance_request';
+    }
+
     public function movement(string $id, bool $lock = false): ?array
     {
         $s = $this->pdo->prepare('SELECT * FROM b2b_account_movements WHERE movement_uuid=?' . ($lock ? ' FOR UPDATE' : ''));

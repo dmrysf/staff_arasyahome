@@ -18,7 +18,11 @@ final readonly class OrderCommands
 {
     private OrderStore $store;
     private AccountLedger $ledger;
-    public function __construct(private PDO $pdo,private AuthorizationService $authorization,private Clock $clock,private FinanceGate $finance=new FinanceGate())
+    /**
+     * @param bool $orderTypes ARASYA_B2B_ORDER_TYPES=enabled (API 2.68.0). Off (the production default): a draft carries no
+     *   order type, a sent type is refused, a duplicate drops it, and finalization needs none (full route, as on 2.66.0).
+     */
+    public function __construct(private PDO $pdo,private AuthorizationService $authorization,private Clock $clock,private FinanceGate $finance=new FinanceGate(),private bool $orderTypes=true)
     {
         $this->store=new OrderStore($pdo);
         $this->ledger=new AccountLedger($pdo);
@@ -28,6 +32,7 @@ final readonly class OrderCommands
     {
         $this->authorize($actor,'create');
         $data=OrderInput::fields($input);
+        $this->typeAllowed($data['orderType']);
         return $this->transaction($actor,'create',null,$data['companyId'],$input,$key,
             function($company,$order,$now) use($actor,$data,$key,$request) {
                 $data=$this->identities($data,[]);
@@ -42,6 +47,7 @@ final readonly class OrderCommands
         $this->authorize($actor,'update');
         $version=OrderInput::version($expectedVersion);
         $data=OrderInput::fields($input);
+        $this->typeAllowed($data['orderType']);
         $typeGiven=array_key_exists('orderType',$input);
         return $this->transaction($actor,'update',$id,null,$input+['expectedVersion'=>$version],$key,
             function($company,$order,$now) use($actor,$data,$typeGiven,$version,$id,$key,$request) {
@@ -100,7 +106,7 @@ final readonly class OrderCommands
                     $this->editable($order,$version);
                     $data=$this->store->fields($order);
                     // The order type selects the production route, so it is frozen here and never inferred.
-                    if($data['orderType']===null) throw new ApiException(422,'VALIDATION_FAILED','Choose the order type before finalizing.',['fields'=>['orderType'=>'required']]);
+                    if($this->orderTypes && $data['orderType']===null) throw new ApiException(422,'VALIDATION_FAILED','Choose the order type before finalizing.',['fields'=>['orderType'=>'required']]);
                     OrderCalculator::requireComplete($data['lines']);
                     $snap=$this->store->snapshots($company,$data);
                     // Refresh identity snapshots at freeze time, then permanently stop commercial writes.
@@ -136,6 +142,12 @@ final readonly class OrderCommands
             });
     }
 
+    /** Order types are refused while ARASYA_B2B_ORDER_TYPES is off; null (no type) is always accepted. */
+    private function typeAllowed(?string $type): void
+    {
+        if(!$this->orderTypes && $type!==null) throw new ApiException(422,'VALIDATION_FAILED','Order types are not enabled.',['fields'=>['orderType'=>'disabled']]);
+    }
+
     public function duplicate(EmployeeIdentity $actor,string $id,mixed $expectedVersion,string $key,string $request): array
     {
         $this->authorize($actor,'duplicate');
@@ -144,6 +156,8 @@ final readonly class OrderCommands
             function($company,$order,$now) use($actor,$version,$id,$key,$request) {
                 $this->version($order,$version);
                 $data=$this->store->fields($order);
+                // With order types off a copy never carries a type (full route), even from an order typed earlier.
+                if(!$this->orderTypes) $data['orderType']=null;
                 foreach($data['lines'] as &$line) $line['id']=Uuid::v4();
                 unset($line);
                 $snap=$this->store->snapshots($company,$data,true);

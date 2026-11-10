@@ -101,6 +101,26 @@ final readonly class Config
          * Empty (the default, key absent) inherits ARASYA_B2B_FINANCE_GATE. Any other value is refused like the gate.
          */
         public string $b2bFinanceReleaseGate = '',
+        /**
+         * Explicit B2B order types (ARASYA_B2B_ORDER_TYPES, API 2.68.0): only the exact value `enabled` announces the
+         * `orderTypes` feature, accepts an order type on drafts and requires it at finalization. Anything else, and the
+         * default (absent), keeps B2B on the full route without a type, exactly as API 2.66.0. Independent of the finance
+         * gate: enabling one never enables the other.
+         */
+        public string $b2bOrderTypes = 'off',
+        /**
+         * Who writes B2B current-account movements by hand (ARASYA_B2B_ACCOUNT_WRITES, API 2.68.0). Absent or `enabled`:
+         * the B2B payment, allocation, opening-balance, adjustment and reversal routes work as before. `finance_only`:
+         * those routes refuse every request on the server and B2B shows the account read-only; payments, corrections and
+         * refunds go through Finance requests with a second approver. Any other value is treated as `finance_only` (it
+         * never widens what B2B may write). Order receivables and their cancellation reversals are unaffected.
+         */
+        public string $b2bAccountWrites = 'enabled',
+        /**
+         * Finance collections switch (ARASYA_FINANCE_COLLECTIONS, API 2.68.0). Only the exact value `enabled` lets Finance
+         * create, approve or post payment, adjustment, reversal and refund requests or allocations. Reads always work.
+         */
+        public string $financeCollections = 'disabled',
     ) {
         foreach ($this->financeRiskLimitAuthorityList() as $uuid) {
             if (preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/D', $uuid) !== 1) {
@@ -193,6 +213,9 @@ final readonly class Config
             financeRiskLimitAuthorityUuids: strtolower(self::value($values, 'ARASYA_FINANCE_RISK_LIMIT_AUTHORITY_UUIDS', '')),
             b2bFinanceGate: self::value($values, 'ARASYA_B2B_FINANCE_GATE', 'off'),
             b2bFinanceReleaseGate: self::value($values, 'ARASYA_B2B_FINANCE_RELEASE_GATE', ''),
+            b2bOrderTypes: self::value($values, 'ARASYA_B2B_ORDER_TYPES', 'off'),
+            b2bAccountWrites: self::value($values, 'ARASYA_B2B_ACCOUNT_WRITES', 'enabled'),
+            financeCollections: self::value($values, 'ARASYA_FINANCE_COLLECTIONS', 'disabled'),
         );
     }
 
@@ -219,6 +242,31 @@ final readonly class Config
     public function b2bFinanceReleaseGateMode(): ?string
     {
         return $this->b2bFinanceReleaseGate === '' ? null : $this->b2bFinanceReleaseGate;
+    }
+
+    /** Whether B2B drafts carry an explicit order type (and finalization requires one). Default off. */
+    public function b2bOrderTypesEnabled(): bool
+    {
+        return $this->b2bOrderTypes === 'enabled';
+    }
+
+    /** Whether the B2B current-account write routes are open. Only absent or exactly `enabled` keeps them open. */
+    public function b2bAccountWritesEnabled(): bool
+    {
+        return $this->b2bAccountWrites === 'enabled';
+    }
+
+    /** Whether Finance may create and post ledger requests (payments, corrections, refunds) and allocations. */
+    public function financeCollectionsEnabled(): bool
+    {
+        return $this->financeCollections === 'enabled';
+    }
+
+    /** Whether the finance gate evaluates anything (either check in shadow or enforce, or a value FinanceGate refuses). */
+    public function b2bFinanceGateActive(): bool
+    {
+        $release = $this->b2bFinanceReleaseGateMode();
+        return $this->b2bFinanceGate !== 'off' || ($release !== null && $release !== 'off');
     }
 
     public function financeOpeningBalancePostingEnabled(): bool

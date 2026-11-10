@@ -258,4 +258,23 @@ if ($awbTables[1] !== ['trendyol_awb_print_events']
     || preg_match('/ON DELETE CASCADE|ON UPDATE CASCADE|SET NULL/i', $awbStatements) === 1) {
     throw new RuntimeException('Migration 051 must only add the AWB print history table, the two trendyol.awb permissions and the station template, and assign nothing.');
 }
+// Finance collections (052, API 2.68.0): three new tables (requests, their sequence, refused commands), the guarded CHECK swaps that add the refund movement type and the
+// ledger_request audit entity, and eight finance.* catalogue permissions. No row of an existing table is written, nothing is
+// granted, no foreign key cascades, and the four-eyes and bank identity guarantees are in the schema.
+$collectionsSchema = (string) file_get_contents($root . '/database/migrations/052_finance_collections.sql');
+$collectionsStatements = preg_replace('/^--.*$/m', '', $collectionsSchema) ?? '';
+preg_match_all('/CREATE TABLE IF NOT EXISTS (\w+)/', $collectionsStatements, $collectionsTables);
+preg_match_all('/INSERT (?:IGNORE )?INTO (\w+)/', $collectionsStatements, $collectionsInserts);
+preg_match_all("/\('(finance\.[a-z_.]+)', 'finance'/", $collectionsStatements, $collectionsPermissions);
+$collectionsOther = preg_replace("/ALTER TABLE (b2b_account_movements (DROP CONSTRAINT chk_b2b_account_(type|shape)|ADD CONSTRAINT chk_b2b_account_(type|shape)_052 CHECK)|b2b_account_activity_events (DROP CONSTRAINT chk_b2b_account_activity_action|ADD CONSTRAINT chk_b2b_account_activity_action_052 CHECK)|finance_activity_events (DROP CONSTRAINT chk_finance_activity_entity|ADD CONSTRAINT chk_finance_activity_entity_052 CHECK)|finance_evidence_refs (DROP CONSTRAINT chk_finance_evidence_entity|ADD CONSTRAINT chk_finance_evidence_entity_052 CHECK))/", '', $collectionsStatements) ?? '';
+if ($collectionsTables[1] !== ['finance_ledger_request_sequence', 'finance_ledger_requests', 'finance_refused_attempts']
+    || array_values(array_unique($collectionsInserts[1])) !== ['permissions']
+    || count($collectionsPermissions[1]) !== 8
+    || preg_match('/ALTER TABLE|DROP TABLE|DELETE FROM|TRUNCATE|\bUPDATE\s+\w+\s+SET|role_permissions|employee_role_assignments|employee_application_access/i', $collectionsOther) === 1
+    || preg_match('/ON DELETE CASCADE|ON UPDATE CASCADE|SET NULL/i', $collectionsStatements) === 1
+    || !str_contains($collectionsSchema, 'CONSTRAINT chk_finance_ledger_four_eyes CHECK')
+    || !str_contains($collectionsSchema, 'UNIQUE KEY uq_finance_ledger_active_bank (active_bank_transaction_key)')
+    || !str_contains($collectionsSchema, 'UNIQUE KEY uq_finance_ledger_posted (posted_movement_uuid)')) {
+    throw new RuntimeException('Migration 052 must only add the Finance request tables, the guarded refund and audit CHECK swaps and eight finance permissions, and grant nothing.');
+}
 fwrite(STDOUT, 'Migration sanity checks passed for ' . count($files) . " file(s).\n");

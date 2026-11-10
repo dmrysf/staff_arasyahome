@@ -163,10 +163,22 @@ try {
         $shortRouteOpen = (int) $pdo->query("SELECT (SELECT COUNT(*) FROM operational_orders WHERE service_route IN ('CUT_ONLY', 'FULL_ROLL_BAG') AND production_completed_at IS NULL AND production_stage_id <> 'delivery')
             + (SELECT COUNT(*) FROM b2b_orders c WHERE c.status = 'finalized' AND c.order_type IN ('CUT_ONLY', 'FULL_ROLL_BAG') AND NOT EXISTS (SELECT 1 FROM b2b_production_handoffs h WHERE h.b2b_order_uuid = c.order_uuid))")->fetchColumn();
     }
-    $floor = $shortRouteOpen > 0 ? '2.67.0' : ($deleteUnsettled > 0 ? '2.54.0' : ($schemaThreeOpen > 0 ? '2.53.0' : ($requestsOpen > 0 ? '2.50.0' : ($dualOpen > 0 ? '2.46.0' : (($invoiceUnsettled > 0 || $invoiceRouted > 0 || $invoiceOpenWork > 0) ? '2.45.0' : (($cohortOpen > 0 || $activations > 0 || $financeUnsettled > 0) ? '2.42.0' : ($syncOpen > 0 ? '2.36.0' : ($stoppedOpen > 0 ? '2.35.0' : ($schemaTwoOpen > 0 ? '2.34.2' : ($assistedOpen > 0 ? '2.34.0' : (array_sum($state) > 0 ? '2.32.0' : null)))))))))));
+    // Finance collections (API 2.68.0, migration 052): an older API does not know the refund movement type (B2B 0.9.x and the
+    // older statements cannot show it), and it would leave open Finance work without a screen: drafts and requests waiting for
+    // a second person, and approved refunds whose payout is not recorded. Decided payments and corrections need nothing: they
+    // are ordinary ledger rows an older API reads like any other.
+    $collectionsOpen = 0;
+    $refundMovements = 0;
+    if (isset($tables['finance_ledger_requests'])) {
+        // Refund movements are reported on their own as well: B2B releases before 0.10.0 cannot show them, so the B2B
+        // rollback script refuses an older B2B while this count is not zero.
+        $refundMovements = (int) $pdo->query("SELECT COUNT(*) FROM b2b_account_movements WHERE movement_type = 'refund'")->fetchColumn();
+        $collectionsOpen = $refundMovements + (int) $pdo->query("SELECT COUNT(*) FROM finance_ledger_requests WHERE status IN ('DRAFT', 'PENDING_APPROVAL') OR (kind = 'REFUND' AND status = 'APPROVED')")->fetchColumn();
+    }
+    $floor = $collectionsOpen > 0 ? '2.68.0' : ($shortRouteOpen > 0 ? '2.67.0' : ($deleteUnsettled > 0 ? '2.54.0' : ($schemaThreeOpen > 0 ? '2.53.0' : ($requestsOpen > 0 ? '2.50.0' : ($dualOpen > 0 ? '2.46.0' : (($invoiceUnsettled > 0 || $invoiceRouted > 0 || $invoiceOpenWork > 0) ? '2.45.0' : (($cohortOpen > 0 || $activations > 0 || $financeUnsettled > 0) ? '2.42.0' : ($syncOpen > 0 ? '2.36.0' : ($stoppedOpen > 0 ? '2.35.0' : ($schemaTwoOpen > 0 ? '2.34.2' : ($assistedOpen > 0 ? '2.34.0' : (array_sum($state) > 0 ? '2.32.0' : null))))))))))));
     $safe = $floor === null || version_compare($argv[1], $floor, '>=');
     fwrite(STDOUT, json_encode(['safe' => $safe, 'targetVersion' => $argv[1], 'requiredFloor' => $floor, 'state' => $state + ['openOrdersWithAssistedCheckpoints' => $assistedOpen, 'openOrdersWithTicketSchema2' => $schemaTwoOpen, 'openOrdersWithTicketSchema3' => $schemaThreeOpen, 'ordersAwaitingConfirmare' => $cohortClosed, 'openConfirmareOrders' => $cohortOpen, 'confirmareActivations' => $activations, 'openStoppedOrders' => $stoppedOpen, 'openCancellationSyncOperations' => $syncOpen,
-        'unsettledInvoiceActions' => $invoiceUnsettled, 'ordersRoutedForInvoice' => $invoiceRouted, 'ordersWithOpenProformaWork' => $invoiceOpenWork, 'unsettledFinanceActions' => $financeUnsettled, 'openDualStoreWork' => $dualOpen, 'openFinanceRequests' => $requestsOpen, 'unsettledInvoiceDeletions' => $deleteUnsettled, 'openShortRouteB2bOrders' => $shortRouteOpen]], JSON_THROW_ON_ERROR) . "\n");
+        'unsettledInvoiceActions' => $invoiceUnsettled, 'ordersRoutedForInvoice' => $invoiceRouted, 'ordersWithOpenProformaWork' => $invoiceOpenWork, 'unsettledFinanceActions' => $financeUnsettled, 'openDualStoreWork' => $dualOpen, 'openFinanceRequests' => $requestsOpen, 'unsettledInvoiceDeletions' => $deleteUnsettled, 'openShortRouteB2bOrders' => $shortRouteOpen, 'openFinanceCollections' => $collectionsOpen, 'refundMovements' => $refundMovements]], JSON_THROW_ON_ERROR) . "\n");
     exit($safe ? 0 : 3);
 } catch (Throwable) {
     fwrite(STDERR, "Rollback refused: current database state could not be verified.\n");

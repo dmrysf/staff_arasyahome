@@ -49,6 +49,7 @@ final readonly class ApiKernel
         private ?\Arasya\Operations\Management\RootInterventionController $interventions = null,
         private ?\Arasya\Operations\Finance\FinanceController $finance = null,
         private ?\Arasya\Operations\Trendyol\AwbStationController $awb = null,
+        private ?\Arasya\Operations\Finance\RefusedAttemptRecorder $refusals = null,
     ) {
     }
 
@@ -89,6 +90,7 @@ final readonly class ApiKernel
             return $this->secure($response, $request);
         } catch (ApiException $error) {
             $this->logger->log('warning', 'api_error', $request->requestId, ['route' => $request->path, 'method' => $request->method, 'status' => $error->status, 'code' => $error->errorCode, ...$this->context->logContext()]);
+            $this->refusals?->record($request, $error, $this->context->logContext()['employee_uuid'] ?? null);
             $body = ['code' => $error->errorCode, 'message' => $error->getMessage(), 'requestId' => $request->requestId];
             if ($error->details !== []) {
                 $body['details'] = $error->details;

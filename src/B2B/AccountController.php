@@ -33,7 +33,7 @@ final readonly class AccountController
     public function handle(Request $request): Response
     {
         $path = substr($request->path, strlen('/b2b/accounts'));
-        if (preg_match('#^(?:/([^/]{1,64})(?:/(movements|allocations|open-items|statement|statement\.csv|statement\.pdf|activity|payments|opening-balances|adjustments)(?:/([^/]{1,64})(?:/(reverse|release))?)?)?)?$#D', $path, $m) !== 1) {
+        if (preg_match('#^(?:/([^/]{1,64})(?:/(movements|allocations|open-items|statement|statement\.csv|statement\.pdf|activity|payments|opening-balances|adjustments|finance-requests)(?:/([^/]{1,64})(?:/(reverse|release))?)?)?)?$#D', $path, $m) !== 1) {
             throw new ApiException(404, 'NOT_FOUND', 'Route was not found.');
         }
         [$companyId, $section, $childId, $action] = [$m[1] ?? '', $m[2] ?? '', $m[3] ?? '', $m[4] ?? ''];
@@ -50,6 +50,8 @@ final readonly class AccountController
                 $section === 'movements' && $childId === '' => Response::json($this->queries->movements($actor, $companyId, $this->filters($q, ['currency', 'type', 'from', 'to', 'cursor', 'limit']))),
                 $section === 'movements' && $action === '' => Response::json($this->queries->movementDetail($actor, $companyId, $childId)),
                 $section === 'open-items' && $childId === '' => Response::json($this->queries->openItems($actor, $companyId, $this->filters($q, ['currency']))),
+                // API 2.68.0: Finance requests of this company, read-only (codes, statuses, amounts, dates).
+                $section === 'finance-requests' && $childId === '' => Response::json($this->queries->financeRequests($actor, $companyId)),
                 $section === 'statement' && $childId === '' => Response::json($this->queries->statement($actor, $companyId, $this->filters($q, ['currency', 'from', 'to']))),
                 ($section === 'statement.csv' || $section === 'statement.pdf') && $childId === '' => $this->export($actor, $companyId, $section, $this->filters($q, ['currency', 'from', 'to', 'lang'])),
                 $section === 'activity' && $childId === '' => Response::json($this->queries->activity($actor, $companyId, $this->filters($q, ['cursor', 'limit']))),
