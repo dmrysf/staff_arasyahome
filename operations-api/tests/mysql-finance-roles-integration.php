@@ -220,4 +220,26 @@ err($call($p['finance-operator'], 'GET', '/finance/companies'), 403, 'UNAUTHORIZ
 ok($call($root, 'PUT', "/management/employees/{$p['finance-verifier']['id']}/applications", ['applications' => []]), 200, 'X2 root removes the Finance application');
 err($call($p['finance-verifier'], 'GET', '/finance/access'), 403, 'APPLICATION_ACCESS_DENIED', 'X2 next request refused');
 
+// ---- Z. Disposable cleanup so later suites on the same CI database see their own rollback floors ----------------------
+// (same steps as mysql-finance-collections-integration.php; never done in production, where the ledger is insert-only).
+$cli = static function (string ...$arguments) use ($config): array {
+    $env = ['HOME' => (string) getenv('HOME'), 'ARASYA_APP_ENV' => 'test', 'ARASYA_APP_SECRET' => str_repeat('t', 32), 'ARASYA_ALLOWED_ORIGINS' => T::ORIGIN,
+        'ARASYA_DB_HOST' => $config->dbHost, 'ARASYA_DB_PORT' => (string) $config->dbPort, 'ARASYA_DB_NAME' => $config->dbName, 'ARASYA_DB_USER' => $config->dbUser, 'ARASYA_DB_PASSWORD' => $config->dbPassword];
+    $process = proc_open([PHP_BINARY, dirname(__DIR__) . '/bin/check-rollback.php', ...$arguments], [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, null, $env);
+    fclose($pipes[0]); $out = (string) stream_get_contents($pipes[1]); fclose($pipes[1]); fclose($pipes[2]);
+    return ['code' => proc_close($process), 'json' => json_decode($out, true)];
+};
+check(($cli('2.67.0')['json']['requiredFloor'] ?? null) === '2.68.0', 'Z1 the open requests and refunds of this test hold the 2.68.0 rollback floor');
+$pdo->exec('SET FOREIGN_KEY_CHECKS=0');
+$refunds = "SELECT movement_uuid FROM b2b_account_movements WHERE movement_type = 'refund'";
+$pdo->exec("DELETE FROM b2b_account_activity_events WHERE movement_uuid IN (SELECT * FROM ({$refunds}) r) OR movement_uuid IN (SELECT * FROM (SELECT movement_uuid FROM b2b_account_movements WHERE reversed_movement_uuid IN ({$refunds})) v)
+    OR allocation_uuid IN (SELECT * FROM (SELECT allocation_uuid FROM b2b_account_allocations WHERE receivable_movement_uuid IN ({$refunds})) a)");
+$pdo->exec("DELETE FROM b2b_account_allocation_releases WHERE allocation_uuid IN (SELECT * FROM (SELECT allocation_uuid FROM b2b_account_allocations WHERE receivable_movement_uuid IN ({$refunds})) a)");
+$pdo->exec("DELETE FROM b2b_account_allocations WHERE receivable_movement_uuid IN (SELECT * FROM ({$refunds}) r)");
+$pdo->exec('DELETE FROM finance_ledger_requests');
+$pdo->exec("DELETE FROM b2b_account_movements WHERE reversed_movement_uuid IN (SELECT * FROM ({$refunds}) r)");
+$pdo->exec("DELETE FROM b2b_account_movements WHERE movement_type = 'refund'");
+$pdo->exec('SET FOREIGN_KEY_CHECKS=1');
+check(($cli('2.67.0')['json']['state']['openFinanceCollections'] ?? -1) === 0, 'Z2 after the disposable cleanup no Finance floor remains');
+
 echo "PASS MySQL Finance roles: {$checks} checks (ten matrix roles with exact permissions, application gate, default deny, four eyes for operator/verifier, cashier/controller, corrections, refunds and root, read-only roles, owner decisions without the authority list, production switches, negative drift controls, revocation on the next request).\n";
