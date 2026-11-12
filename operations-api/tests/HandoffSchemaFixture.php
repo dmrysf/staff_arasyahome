@@ -5,7 +5,7 @@ function restorePreProductionIntelligenceTestSchema(PDO $pdo): void
 {
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
     if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='053_production_intelligence.sql'")->fetchColumn()) return;
-    foreach(['production_meter_ledger','production_meter_exclusions','order_item_meter_facts'] as $table) $pdo->exec('DROP TABLE IF EXISTS '.$table);
+    foreach(['production_meter_ledger_cursor','production_meter_ledger','production_meter_exclusions','order_item_meter_facts'] as $table) $pdo->exec('DROP TABLE IF EXISTS '.$table);
     $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='053_production_intelligence.sql'");
 }
 

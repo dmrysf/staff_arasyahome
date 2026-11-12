@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS order_item_meter_facts (
     first_observed_at DATETIME(6) NOT NULL,
     updated_at DATETIME(6) NOT NULL,
     PRIMARY KEY (order_uuid, source_item_id),
+    KEY idx_meter_facts_updated (updated_at),
     CONSTRAINT fk_meter_facts_order FOREIGN KEY (order_uuid) REFERENCES operational_orders (order_uuid) ON UPDATE RESTRICT ON DELETE RESTRICT,
     CONSTRAINT chk_meter_facts_kind CHECK (basis_kind IN ('fabric_linear', 'rail_linear', 'unit', 'unknown')),
     CONSTRAINT chk_meter_facts_length CHECK (priced_length IS NULL OR (priced_length > 0 AND basis_kind IN ('fabric_linear', 'rail_linear')))
@@ -56,4 +57,17 @@ CREATE TABLE IF NOT EXISTS production_meter_exclusions (
     PRIMARY KEY (order_uuid),
     CONSTRAINT fk_meter_exclusions_order FOREIGN KEY (order_uuid) REFERENCES operational_orders (order_uuid) ON UPDATE RESTRICT ON DELETE RESTRICT,
     CONSTRAINT chk_meter_exclusions_reason CHECK (reason IN ('test_order', 'duplicate_order', 'not_a_sale'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- production_meter_ledger_cursor: where the automatic, incremental ledger run (bin/meter-ledger.php --changed) continues.
+-- One row per cursor. The first automatic run only records "now" and processes nothing: history is a separate, approved
+-- backfill. Order processing never reads or writes it.
+CREATE TABLE IF NOT EXISTS production_meter_ledger_cursor (
+    cursor_key VARCHAR(40) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    watermark_at DATETIME(6) NOT NULL,
+    last_run_at DATETIME(6) NOT NULL,
+    last_orders INT UNSIGNED NOT NULL,
+    last_entries INT UNSIGNED NOT NULL,
+    PRIMARY KEY (cursor_key),
+    CONSTRAINT chk_meter_ledger_cursor_key CHECK (cursor_key IN ('sold_meters'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

@@ -7,7 +7,9 @@ declare(strict_types=1);
 // B. the sold-meter ledger is idempotent (re-sync, repeated runs, corrections, cancellation, reactivation, removed lines,
 //    exclusion, concurrent run) and only reads canonical tables;
 // C. production metrics (cut / recut / processed / completed) follow K1, K2, K8 and never count unknown as zero;
-// D. security: only Root and the canonical CEO read management intelligence (K4); an employee reads only their own work.
+// D. security: only Root and the canonical CEO read management intelligence (K4); an employee reads only their own work;
+// E. the automatic incremental run: no implicit backfill, new orders, cancellations, late facts, exclusions and late
+//    commits are booked once, intake never writes the ledger and the run never waits on a canonical row lock.
 
 use Arasya\Operations\Application\Container;
 use Arasya\Operations\Database\Connection;
@@ -240,7 +242,94 @@ $check($audits >= 5, 'D15 every management read is audited');
 $check((int) $pdo->query("SELECT COUNT(*) FROM iam_audit_events WHERE action = 'production_intelligence.read' AND actor_employee_uuid = " . $pdo->quote($reader['employeeUuid']))->fetchColumn() === 0, 'D16 a denied read writes no report audit');
 $check((int) $pdo->query("SELECT COUNT(*) FROM role_permissions rp JOIN permissions p ON p.permission_id = rp.permission_id WHERE p.permission_key LIKE 'production_intelligence%'")->fetchColumn() === 0, 'D17 no permission or role grants it');
 
-// Disposable database hygiene: the rollback suites read recent meter facts, so this suite removes its own rows.
+// ---- E. the automatic incremental ledger run (cron: bin/meter-ledger.php --changed --apply) -----------------------
+$eStart = $clock->now()->format('Y-m-d H:i:s.u');
+$pdo->exec('DELETE FROM production_meter_ledger_cursor');
+$sumsOf = static fn (string $order): array => array_column($pdo->query('SELECT metric, SUM(delta_meters) total FROM production_meter_ledger WHERE order_uuid = ' . $pdo->quote($order) . ' GROUP BY metric ORDER BY metric')->fetchAll(PDO::FETCH_ASSOC), 'total', 'metric');
+$ledgerRows = static fn (): int => (int) $pdo->query('SELECT COUNT(*) FROM production_meter_ledger')->fetchColumn();
+$cursorRow = static fn () => $pdo->query("SELECT watermark_at, last_orders, last_entries FROM production_meter_ledger_cursor WHERE cursor_key = 'sold_meters'")->fetch(PDO::FETCH_ASSOC);
+$sendAs = static function (string $id, string $event, string $changedAt, array $lineItems, string $availability = 'active') use ($kernel): array {
+    return T::ingest($kernel, 'trendhome', T::sourceOrder($id, "pi-{$event}-{$id}", $changedAt, null, 'processing', $availability, $lineItems));
+};
+$rowsBefore = $ledgerRows();
+$dryFirst = $ledger->syncChanged(true);
+$check($dryFirst['initialised'] && $dryFirst['orders'] === 0 && $cursorRow() === false, 'E1 a dry first run stores nothing');
+$first = $ledger->syncChanged(false);
+$check($first['initialised'] && $first['orders'] === 0 && $first['entries'] === 0 && $ledgerRows() === $rowsBefore && $cursorRow() !== false, 'E2 the first automatic run only stores the watermark: no implicit backfill');
+// A new web-shop order: intake writes the fact, never the ledger.
+$newId = "PIE{$suffix}";
+$check($sendAs($newId, 'e1', $at(30), $items($basis))['body']['outcome'] === 'applied', 'E3 new order applied');
+$newUuid = $orderUuid("trendhome:{$newId}");
+$check($ledgerRows() === $rowsBefore, 'E4 order intake writes no ledger entry (the ledger never runs inside order processing)');
+$auto = $ledger->syncChanged(false);
+$check(!$auto['initialised'] && $sumsOf($newUuid) === ['sold_fabric' => '5.000', 'sold_rail' => '3.000'] && $auto['orders'] >= 1, 'E5 the next automatic run books the new order: ' . json_encode($auto));
+$check($cursorRow()['watermark_at'] === substr($auto['watermark'], 0, 26) || $cursorRow()['watermark_at'] === $auto['watermark'], 'E6 the watermark moved to the start of the run');
+$again = $ledger->syncChanged(false);
+$check($again['entries'] === 0 && $sumsOf($newUuid) === ['sold_fabric' => '5.000', 'sold_rail' => '3.000'], 'E7 an automatic run without changes writes nothing (overlap re-visits are free)');
+// Cancellation at the source: one dated reversal by the next run.
+$check($sendAs($newId, 'e2-cancel', $at(20), $items($basis), 'cancelled')['body']['outcome'] === 'applied', 'E8 cancellation applied');
+$cancelRun = $ledger->syncChanged(false);
+$check(($cancelRun['byReason']['cancellation'] ?? 0) === 2 && $sumsOf($newUuid) === ['sold_fabric' => '0.000', 'sold_rail' => '0.000'], 'E9 the cancellation is reversed automatically');
+$check($ledger->syncChanged(false)['entries'] === 0, 'E10 and only once');
+// A fact-only change (no order version) is still seen: the fact table is part of the change set.
+$factId = "PIF{$suffix}";
+$check($sendAs($factId, 'f1', $at(15), $items())['body']['outcome'] === 'applied', 'E11 order without facts applied');
+$factUuid = $orderUuid("trendhome:{$factId}");
+$ledger->syncChanged(false);
+$check($sumsOf($factUuid) === [], 'E12 unknown basis books nothing');
+$versionBefore = (int) $pdo->query('SELECT version FROM operational_orders WHERE order_uuid = ' . $pdo->quote($factUuid))->fetchColumn();
+$check($sendAs($factId, 'f2', $at(14), $items($basis))['body']['outcome'] === 'duplicate', 'E13 the fact arrives later as a duplicate');
+$ledger->syncChanged(false);
+$check($sumsOf($factUuid) === ['sold_fabric' => '5.000', 'sold_rail' => '3.000'] && (int) $pdo->query('SELECT version FROM operational_orders WHERE order_uuid = ' . $pdo->quote($factUuid))->fetchColumn() === $versionBefore,
+    'E14 the later fact is booked without touching the order version');
+// An exclusion (K7) is seen through its decision time.
+$pdo->prepare("INSERT INTO production_meter_exclusions (order_uuid, reason, note, decided_by_label, decided_at) VALUES (?, 'test_order', NULL, 'integration', ?)")->execute([$factUuid, $clock->now()->format('Y-m-d H:i:s.u')]);
+$excluded = $ledger->syncChanged(false);
+$check(($excluded['byReason']['exclusion'] ?? 0) === 2 && $sumsOf($factUuid) === ['sold_fabric' => '0.000', 'sold_rail' => '0.000'], 'E15 a new exclusion is reversed automatically');
+// A transaction that started before a run and committed after it is inside the overlap window and is not skipped.
+$lateId = "PIL{$suffix}";
+$check($sendAs($lateId, 'l1', $at(10), $items($basis))['body']['outcome'] === 'applied', 'E16 late order applied');
+$lateUuid = $orderUuid("trendhome:{$lateId}");
+$watermark = (string) $cursorRow()['watermark_at'];
+$backdated = (new DateTimeImmutable($watermark, new DateTimeZone('UTC')))->modify('-' . (SoldMeterLedger::OVERLAP_SECONDS - 60) . ' seconds')->format('Y-m-d H:i:s.u');
+$pdo->prepare('UPDATE operational_orders SET updated_at = ? WHERE order_uuid = ?')->execute([$backdated, $lateUuid]);
+$pdo->prepare('UPDATE order_item_meter_facts SET updated_at = ? WHERE order_uuid = ?')->execute([$backdated, $lateUuid]);
+$ledger->syncChanged(false);
+$check($sumsOf($lateUuid) === ['sold_fabric' => '5.000', 'sold_rail' => '3.000'], 'E17 a change committed after the watermark but stamped before it is still booked');
+// Never a lock on a canonical row: an order transaction holding the row does not delay the run, and the run takes no row lock.
+$writer = Connection::create($config);
+$writer->beginTransaction();
+$writer->query('SELECT order_uuid FROM operational_orders WHERE order_uuid = ' . $writer->quote($lateUuid) . ' FOR UPDATE')->fetchAll();
+$pdo->exec('SET SESSION innodb_lock_wait_timeout = 1');
+$t0 = microtime(true);
+try {
+    $busyRun = $ledger->syncChanged(false);
+    $check(microtime(true) - $t0 < 1.0, 'E18 the run never waits for an order transaction (' . round(microtime(true) - $t0, 3) . ' s)');
+} catch (PDOException $wait) {
+    $check(false, 'E18 the run waited on a canonical row lock: ' . $wait->getMessage());
+}
+$writer->rollBack();
+$pdo->exec('SET SESSION innodb_lock_wait_timeout = DEFAULT');
+// One run at a time, the incremental and the full run share the lock.
+$other->query("SELECT GET_LOCK('arasya_sold_meter_ledger', 0)")->fetchColumn();
+try { $ledger->syncChanged(false); $check(false, 'E19 concurrent automatic run refused'); } catch (RuntimeException $busy) { $check(str_contains($busy->getMessage(), 'in progress'), 'E19 concurrent automatic run refused'); }
+$other->query("SELECT RELEASE_LOCK('arasya_sold_meter_ledger')");
+$synced = $ok($get($root, '/management/production-intelligence/summary', $range), 'E20a summary')['sold']['syncedThrough'] ?? null;
+$check(is_string($synced) && preg_match('/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/D', $synced) === 1, 'E20a the report states how fresh the sold meters are: ' . json_encode($synced));
+$cursorBefore = $cursorRow();
+$ledger->syncChanged(true);
+$check($cursorRow() === $cursorBefore, 'E20 a dry automatic run does not move the watermark');
+$before = $fingerprint();
+$ledger->syncChanged(false);
+$check($fingerprint() === $before, 'E21 the automatic run leaves orders, versions, items, activity, cutting facts and meter facts unchanged');
+
+// Disposable database hygiene: the rollback suites read recent meter facts, and other suites delete their own orders
+// (the ledger's foreign key would block them), so this suite removes every ledger row and fact it caused.
+$pdo->prepare('DELETE FROM production_meter_ledger WHERE recorded_at >= ?')->execute([$eStart]);
+$pdo->exec('DELETE FROM production_meter_ledger_cursor');
+foreach ([$newUuid, $factUuid, $lateUuid] as $own) {
+    foreach (['production_meter_ledger', 'order_item_meter_facts', 'production_meter_exclusions'] as $table) $pdo->prepare("DELETE FROM {$table} WHERE order_uuid = ?")->execute([$own]);
+}
 foreach ([$uuid, $legacy] as $own) {
     foreach (['production_meter_ledger', 'order_item_meter_facts', 'production_meter_exclusions'] as $table) $pdo->prepare("DELETE FROM {$table} WHERE order_uuid = ?")->execute([$own]);
 }

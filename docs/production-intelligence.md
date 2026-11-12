@@ -48,9 +48,28 @@ matched it.
   `reactivation`, `line_removed`, `exclusion`.
 - Each run writes only the difference between the contract value and the ledger sum, so re-syncs and repeated runs write
   nothing twice. `UNIQUE (metric, item_uuid, cause_key)` and a named lock stop concurrent duplicates.
-- The ledger only reads canonical tables (integration test B0 compares them around every run).
-- `php bin/meter-ledger.php` is a dry run. `--apply` writes. No deployment schedules it. The backfill is a separate,
-  approved step.
+- The ledger only reads canonical tables (integration test B0 compares them around every run) and never locks a
+  canonical row: it reads a consistent snapshot, and a change committed meanwhile is picked up by the next run.
+- `php bin/meter-ledger.php` is a dry run. `--apply` writes. No deployment schedules it. The backfill (every order) is a
+  separate, approved step.
+
+### Automatic booking of new orders (`--changed`)
+
+New orders reach the ledger through an incremental run, never through order processing:
+
+- Order intake (`/orders`) writes only the meter fact, as before. It never writes, reads or locks the ledger, so intake is
+  exactly as fast as before (integration test E4).
+- `php bin/meter-ledger.php --changed --apply` visits only the orders whose canonical row (`operational_orders.updated_at`,
+  indexed), meter facts (`order_item_meter_facts.updated_at`, indexed) or exclusion (`decided_at`) changed since the stored
+  watermark (`production_meter_ledger_cursor`), minus a 600-second overlap so a transaction that committed late is not
+  missed (test E17). Re-visiting an order writes nothing.
+- Its first `--apply` run only stores the watermark and visits nothing (test E2): scheduling it is not a backfill.
+- Same deduplication as the full run: one run at a time (the same named lock, test E19), a difference entry only, and the
+  unique cause key. An order transaction holding its row never delays the run (test E18, 1-second lock timeout).
+- The reports return the watermark as `sold.syncedThrough`, so a reader sees how fresh the sold meters are.
+- Proposed schedule after approval: every 5 minutes, `*/5 * * * * /usr/local/bin/php <api>/bin/meter-ledger.php --changed --apply`.
+  Adding the cron line is a hosting change and needs its own approval.
+- An exclusion is only ever added. Lifting one needs a full run for that order (`--order=<uuid> --apply`).
 
 ## Production metrics (read time, from canonical events)
 
@@ -79,6 +98,17 @@ Unknown lines are counted as unknown (`ordersWithUnknownLines`, `unknownLines`, 
 
 ## Rollback
 
-`bin/check-rollback.php` refuses an API below 2.70.0 while shops sent `meterBasis` in the last 24 hours, because an
-older API rejects the field. Pause the shops first: `wp option update yd_soft_arasya_meter_basis disabled`. Migration 053
-is additive; older code ignores its tables.
+An API below 2.70.0 rejects a payload that carries `meterBasis` (422 `SOURCE_PAYLOAD_INVALID`), and events already
+queued in a shop keep the fact they were queued with. YD SOFT 2.30.0, the only release that sends the fact, handles this
+itself, so `bin/check-rollback.php` sets no floor for it (it reports `recentMeterFacts` for the record):
+
+- a queued event is sent without `meterBasis` when the shop's last heartbeat no longer announces it, or when the shop
+  paused it (`wp option update yd_soft_arasya_meter_basis disabled`); the stored event and its hash stay unchanged;
+- if a rolled-back API answers 422 before the next heartbeat, the same event is sent once more without the fact
+  (audit `arasya_ingest_meter_basis_dropped`). Arasya keeps the fact outside its receipt hash, so the two forms are one
+  event: no `SOURCE_EVENT_CONFLICT`, no lost order.
+
+The WordPress smoke `tests/wp-smoke/run-meter-basis.sh` (yd-soft) proves this on a real site: events queued against
+2.70.0 are delivered by the released 2.68.0 API on the same database, then the fact returns after the roll-forward.
+Migration 053 is additive; older code ignores its tables. Facts that arrive while the older API runs are lost for those
+events only (the lines show `unknown_basis` until the order changes again or is resent).

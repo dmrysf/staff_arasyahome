@@ -226,7 +226,8 @@ final readonly class ProductionIntelligenceService
         $out = static fn (array $m): array => ['orders' => $m['orders'], 'fabricMeters' => MeterContract::meters($m['fabricUnits']),
             'ordersWithUnknownLines' => $m['ordersWithUnknownLines'], 'unknownLines' => $m['unknownLines']];
         return [
-            'sold' => ['fabricMeters' => MeterContract::meters($totals['sold_fabric']), 'railMeters' => MeterContract::meters($totals['sold_rail']), 'entriesByReason' => $reasons],
+            'sold' => ['fabricMeters' => MeterContract::meters($totals['sold_fabric']), 'railMeters' => MeterContract::meters($totals['sold_rail']), 'entriesByReason' => $reasons,
+                'syncedThrough' => $this->ledgerWatermark()],
             'cut' => $out($by['cut']) + ['evidence' => 'source_line', 'measuredCutMeters' => null],
             'recut' => $out($by['recut']) + ['evidence' => 'source_line'],
             'processed' => ['stageCompletions' => $stageCompletions],
@@ -235,6 +236,13 @@ final readonly class ProductionIntelligenceService
             'delivered' => ['available' => false],
             'coverage' => $this->coverage($range, $source),
         ];
+    }
+
+    /** The watermark of the automatic ledger run (UTC, ISO-8601), or null while it has never run. */
+    private function ledgerWatermark(): ?string
+    {
+        $at = $this->pdo->query("SELECT watermark_at FROM production_meter_ledger_cursor WHERE cursor_key = 'sold_meters'")->fetchColumn();
+        return $at === false || $at === null ? null : (new \DateTimeImmutable((string) $at, new \DateTimeZone('UTC')))->format('Y-m-d\TH:i:s\Z');
     }
 
     /** Lines of the orders created in the range by contract status: how much of the sold meterage is known at all. */
