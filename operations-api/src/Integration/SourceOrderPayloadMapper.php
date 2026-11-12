@@ -27,8 +27,9 @@ final class SourceOrderPayloadMapper
      * telephone number exists) and `financialAttention` (order.financial.attention after a change of the total). API
      * 2.41.0: `financeTasks` (the Phase 5 attentions of the shop's finance record).
      */
+    /** API 2.70.0: `meterBasis` (order.items[].meterBasis: the line's pricing basis and priced length, Production Intelligence V2). */
     /** API 2.46.0: `paymentFinancing` (order.payment.financing: a TBI credit order keeps the established flow, owner K-12). */
-    public const ORDER_FACTS = ['pricing', 'dueDate', 'financial', 'contact', 'financialAttention', 'financeTasks', 'paymentFinancing'];
+    public const ORDER_FACTS = ['pricing', 'dueDate', 'financial', 'contact', 'financialAttention', 'financeTasks', 'paymentFinancing', 'meterBasis'];
     /**
      * Why a Confirmare order needs a financial decision (order.financial.attention, never an amount). With a closed state
      * (waiting, partial, unknown): additional_payment_due and refund_due (API 2.40.0), transfer_pending (a recorded bank
@@ -45,7 +46,7 @@ final class SourceOrderPayloadMapper
     private const SUBMISSION_KEYS = ['submittedAt', 'evidence'];
     private const PAYMENT_KEYS = ['method', 'advanceStatus', 'advanceRevision', 'advanceConfirmedAt', 'financing'];
     private const MAX_ADVANCE_REVISION = 1000000;
-    private const ITEM_KEYS = ['id', 'line', 'name', 'sku', 'variant', 'color', 'width', 'height', 'unit', 'meters', 'quantity', 'options'];
+    private const ITEM_KEYS = ['id', 'line', 'name', 'sku', 'variant', 'color', 'width', 'height', 'unit', 'meters', 'quantity', 'options', 'meterBasis'];
     private const MAX_OPTIONS = 20;
     private const MAX_ITEMS = 200;
 
@@ -87,9 +88,13 @@ final class SourceOrderPayloadMapper
             throw self::invalid('order.items');
         }
         $items = [];
+        $meterBasis = [];
         foreach ($rawItems as $index => $rawItem) {
             $item = self::object($rawItem, "order.items[{$index}]");
             self::allowKeys($item, self::ITEM_KEYS, ['id', 'line', 'name', 'quantity']);
+            if (array_key_exists('meterBasis', $item)) {
+                $meterBasis[self::identifier($item['id'], "order.items[{$index}].id")] = self::meterBasis($item['meterBasis'], "order.items[{$index}].meterBasis");
+            }
             try {
                 $items[] = new OperationalOrderItem(
                     Uuid::v4(),
@@ -133,6 +138,7 @@ final class SourceOrderPayloadMapper
                 self::dueDate($order['dueDate'] ?? null),
                 self::financial($order['financial'] ?? null),
                 self::contact($order['contact'] ?? null),
+                $meterBasis === [] ? null : $meterBasis,
             );
         } catch (InvalidArgumentException) {
             throw self::invalid('order');
@@ -411,6 +417,28 @@ final class SourceOrderPayloadMapper
         } catch (\Exception) {
             throw self::invalid($field);
         }
+    }
+
+    /**
+     * order.items[].meterBasis (API 2.70.0): {kind, length}. `length` is the priced length in metres the shop's price rule
+     * used, only for a linear kind; anything else is rejected rather than guessed.
+     * @return array{kind: string, length: float|null}
+     */
+    private static function meterBasis(mixed $value, string $field): array
+    {
+        if (!is_array($value) || array_is_list($value)) {
+            throw self::invalid($field);
+        }
+        self::allowKeys($value, ['kind', 'length'], ['kind']);
+        $kind = $value['kind'];
+        if (!is_string($kind) || !in_array($kind, \Arasya\Operations\Intelligence\MeterContract::BASIS_KINDS, true)) {
+            throw self::invalid($field . '.kind');
+        }
+        $length = self::optionalNumber($value['length'] ?? null, $field . '.length');
+        if ($length !== null && ($length <= 0 || !in_array($kind, ['fabric_linear', 'rail_linear'], true))) {
+            throw self::invalid($field . '.length');
+        }
+        return ['kind' => $kind, 'length' => $length];
     }
 
     private static function invalid(string $field): ApiException

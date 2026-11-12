@@ -277,4 +277,16 @@ if ($collectionsTables[1] !== ['finance_ledger_request_sequence', 'finance_ledge
     || !str_contains($collectionsSchema, 'UNIQUE KEY uq_finance_ledger_posted (posted_movement_uuid)')) {
     throw new RuntimeException('Migration 052 must only add the Finance request tables, the guarded refund and audit CHECK swaps and eight finance permissions, and grant nothing.');
 }
+// Production Intelligence V2 (053, API 2.70.0): exactly three new tables (source meter facts, the insert-only sold-meter
+// ledger, audited exclusions). No existing table is altered or written, nothing is granted, nothing cascades or nulls out,
+// and the ledger's idempotency key is in the schema.
+$intelligenceSchema = (string) file_get_contents($root . '/database/migrations/053_production_intelligence.sql');
+$intelligenceStatements = preg_replace('/^--.*$/m', '', $intelligenceSchema) ?? '';
+preg_match_all('/CREATE TABLE IF NOT EXISTS (\w+)/', $intelligenceStatements, $intelligenceTables);
+if ($intelligenceTables[1] !== ['order_item_meter_facts', 'production_meter_ledger', 'production_meter_exclusions']
+    || preg_match('/ALTER TABLE|DROP |DELETE FROM|TRUNCATE|INSERT |\bUPDATE\s+\w+\s+SET|permissions|role_|employee_|ON (DELETE|UPDATE) (CASCADE|SET NULL)/i', $intelligenceStatements) === 1
+    || !str_contains($intelligenceSchema, 'UNIQUE KEY uq_meter_ledger_cause (metric, item_uuid, cause_key)')
+    || !str_contains($intelligenceSchema, 'CONSTRAINT chk_meter_ledger_delta CHECK (delta_meters <> 0)')) {
+    throw new RuntimeException('Migration 053 must only add the meter facts, the sold-meter ledger and the exclusions, and grant nothing.');
+}
 fwrite(STDOUT, 'Migration sanity checks passed for ' . count($files) . " file(s).\n");
