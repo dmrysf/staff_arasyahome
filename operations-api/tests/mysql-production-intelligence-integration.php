@@ -301,10 +301,11 @@ $writer = Connection::create($config);
 $writer->beginTransaction();
 $writer->query('SELECT order_uuid FROM operational_orders WHERE order_uuid = ' . $writer->quote($lateUuid) . ' FOR UPDATE')->fetchAll();
 $pdo->exec('SET SESSION innodb_lock_wait_timeout = 1');
-$t0 = microtime(true);
+// With a 1-second lock wait timeout, any row lock the run took on the held order would end in error 1205 (the check
+// fails when FOR UPDATE is put back). Wall time is not measured: the run's length depends on how many orders changed.
 try {
     $busyRun = $ledger->syncChanged(false);
-    $check(microtime(true) - $t0 < 1.0, 'E18 the run never waits for an order transaction (' . round(microtime(true) - $t0, 3) . ' s)');
+    $check($busyRun['orders'] >= 1, 'E18 the run completes while an order transaction holds a canonical row');
 } catch (PDOException $wait) {
     $check(false, 'E18 the run waited on a canonical row lock: ' . $wait->getMessage());
 }
