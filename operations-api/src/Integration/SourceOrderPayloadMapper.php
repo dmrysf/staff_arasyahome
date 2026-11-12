@@ -424,7 +424,7 @@ final class SourceOrderPayloadMapper
      * used, only for a linear kind; anything else is rejected rather than guessed.
      * @return array{kind: string, length: float|null}
      */
-    private static function meterBasis(mixed $value, string $field): array
+    public static function meterBasis(mixed $value, string $field): array
     {
         if (!is_array($value) || array_is_list($value)) {
             throw self::invalid($field);

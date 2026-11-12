@@ -9,13 +9,16 @@ declare(strict_types=1);
 // C. production metrics (cut / recut / processed / completed) follow K1, K2, K8 and never count unknown as zero;
 // D. security: only Root and the canonical CEO read management intelligence (K4); an employee reads only their own work;
 // E. the automatic incremental run: no implicit backfill, new orders, cancellations, late facts, exclusions and late
-//    commits are booked once, intake never writes the ledger and the run never waits on a canonical row lock.
+//    commits are booked once, intake never writes the ledger and the run never waits on a canonical row lock;
+// F. history: the backfill alone books nothing without shop facts; the facts import changes no order, never overwrites a
+//    live fact and is idempotent; import, backfill and automatic run in any order book each line once at its sale date.
 
 use Arasya\Operations\Application\Container;
 use Arasya\Operations\Database\Connection;
 use Arasya\Operations\Database\MigrationRunner;
 use Arasya\Operations\Database\SqlFileRunner;
 use Arasya\Operations\Iam\RootBootstrapService;
+use Arasya\Operations\Intelligence\MeterFactImport;
 use Arasya\Operations\Intelligence\SoldMeterLedger;
 use Arasya\Operations\Support\Uuid;
 use Arasya\Operations\Tests\OperationsTestSupport as T;
@@ -324,11 +327,104 @@ $before = $fingerprint();
 $ledger->syncChanged(false);
 $check($fingerprint() === $before, 'E21 the automatic run leaves orders, versions, items, activity, cutting facts and meter facts unchanged');
 
+// ---- F. history: the shop's facts import, the backfill and the automatic run together ---------------------------
+// Historical orders reached Arasya before the shop stated meterBasis. The backfill alone reads only Arasya, so it books
+// nothing for them; the facts come from the shop export (bin/meter-facts-import.php) and never through an order event.
+$import = new MeterFactImport($pdo, $clock);
+$historic = static function (string $id, string $availability = 'active') use ($sendAs, $orderUuid, $items, $at, $pdo): string {
+    $sendAs($id, 'h1', $at(40), $items(), $availability);
+    $uuid = $orderUuid("trendhome:{$id}");
+    // An order sold on 5 October and untouched since (outside every automatic window).
+    $pdo->prepare("UPDATE operational_orders SET created_at = '2026-10-05 08:00:00.000000', source_submitted_at = NULL, updated_at = '2026-10-05 08:00:00.000000' WHERE order_uuid = ?")->execute([$uuid]);
+    return $uuid;
+};
+$histA = "PIHA{$suffix}"; $histB = "PIHB{$suffix}"; $histC = "PIHC{$suffix}"; $histE = "PIHE{$suffix}";
+// histD is numeric like every web-shop order id (a JSON export turns it into an integer array key).
+$histD = (string) T::freeOrderBase($pdo, 590000, 599999, 10);
+$uA = $historic($histA); $uB = $historic($histB); $uC = $historic($histC, 'cancelled'); $uD = $historic($histD); $uE = $historic($histE);
+$factsOf = static fn (string $order): array => $pdo->query('SELECT source_item_id, basis_kind, priced_length, source_event_id FROM order_item_meter_facts WHERE order_uuid = ' . $pdo->quote($order) . ' ORDER BY source_item_id')->fetchAll(PDO::FETCH_ASSOC);
+$statuses = static fn (string $order): array => array_map(static fn (array $l): string => $l['contract']['status'], \Arasya\Operations\Intelligence\MeterLines::forOrders($pdo, [$order])[$order] ?? []);
+$check($statuses($uA) === ['unknown_basis', 'unknown_basis', 'unknown_basis'], 'F1 a historical web-shop line without a stated basis is unknown, never zero');
+$check($ledger->sync(false, 50, $uA)['entries'] === 0 && $sumsOf($uA) === [], 'F2 the backfill reads only Arasya: without the shop facts it books nothing for history');
+// histB already received a fact for line 11 through a real order event (a duplicate): that fact must win over the export.
+$check($sendAs($histB, 'h2', $at(35), $items([11 => $basis[11]]))['body']['outcome'] === 'duplicate', 'F3 a live event stated line 11 of histB');
+$pdo->prepare("UPDATE order_item_meter_facts SET updated_at = '2026-10-05 08:00:00.000000' WHERE order_uuid = ?")->execute([$uB]);
+$line = static fn (int $id, string $kind, ?float $length = null): array => ['id' => (string) $id, 'meterBasis' => ['kind' => $kind] + ($length === null ? [] : ['length' => $length])];
+$exportOf = static fn (array $orders, string $source = 'trendhome'): string => json_encode(['format' => MeterFactImport::FORMAT, 'version' => 1, 'sourceKey' => $source,
+    'since' => '2026-10-04', 'generatedAt' => $at(0), 'orders' => $orders], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_PRESERVE_ZERO_FRACTION);
+$full = [$line(11, 'fabric_linear', 2.5), $line(12, 'rail_linear', 3.0), $line(13, 'unit')];
+$export = $exportOf([
+    ['id' => $histA, 'items' => [...$full, $line(99, 'unit')]],
+    ['id' => $histB, 'items' => [$line(11, 'fabric_linear', 2.0), $full[1], $full[2]]],
+    ['id' => $histC, 'items' => $full],
+    ['id' => "PIHX{$suffix}", 'items' => [$full[0]]],
+]);
+$factRows = static fn (): int => (int) $pdo->query('SELECT COUNT(*) FROM order_item_meter_facts')->fetchColumn();
+$snapshotOf = static fn (): array => array_map($canonical, [$uA, $uB, $uC]);
+$factsBefore = $factRows(); $canonicalBefore = $snapshotOf();
+foreach ([
+    'another source' => [$exportOf([['id' => $histA, 'items' => $full]], 'outletperdele'), 'trendhome'],
+    'trendyol' => [$exportOf([['id' => $histA, 'items' => $full]], 'trendyol'), 'trendyol'],
+    'invalid kind' => [$exportOf([['id' => $histA, 'items' => [$line(11, 'pleated', 2.0)]]]), 'trendhome'],
+    'length on a unit line' => [$exportOf([['id' => $histA, 'items' => [$line(13, 'unit', 1.0)]]]), 'trendhome'],
+    'repeated line' => [$exportOf([['id' => $histA, 'items' => [$full[0], $full[0]]]]), 'trendhome'],
+    'a valid order before an invalid one' => [$exportOf([['id' => $histA, 'items' => $full], ['id' => $histB, 'items' => [['id' => '11', 'meterBasis' => ['kind' => 'fabric_linear', 'factor' => 2]]]]]), 'trendhome'],
+    'not JSON' => ['{"format":', 'trendhome'],
+    'unknown format' => [str_replace(MeterFactImport::FORMAT, 'other', $export), 'trendhome'],
+] as $label => [$document, $source]) {
+    try { $import->run($source, $document, false); $check(false, "F4 refused: {$label}"); } catch (InvalidArgumentException) { $check($factRows() === $factsBefore, "F4 refused before any write: {$label}"); }
+}
+$dryImport = $import->run('trendhome', $export, true);
+$check([$dryImport['orders'], $dryImport['ordersMissing'], $dryImport['items'], $dryImport['itemsMissing'], $dryImport['recorded'], $dryImport['alreadyStated']] === [3, 1, 11, 1, 8, 1]
+    && $factRows() === $factsBefore, 'F5 a dry import counts and writes nothing: ' . json_encode($dryImport));
+$applied = $import->run('trendhome', $export, false);
+$check([$applied['recorded'], $applied['alreadyStated'], $applied['itemsMissing'], $applied['ordersMissing']] === [8, 1, 1, 1] && $factRows() === $factsBefore + 8, 'F6 the import adds only the missing facts');
+$check($snapshotOf() === $canonicalBefore, 'F7 orders, versions, hashes, items, QR, documents, Confirmare and activity are byte-identical after the import');
+$check($factsOf($uB)[0]['priced_length'] === '2.500' && !str_starts_with($factsOf($uB)[0]['source_event_id'], 'import:'), 'F8 a fact stated by a real order event is never overwritten by the export');
+$check($factsOf($uA)[0]['source_event_id'] === $applied['origin'] && $applied['origin'] === 'import:' . hash('sha256', $export), 'F9 imported facts name the export they came from');
+$again = $import->run('trendhome', $export, false);
+$check($again['recorded'] === 0 && $again['alreadyStated'] === 9 && $factRows() === $factsBefore + 8, 'F10 repeating the import writes nothing');
+// The automatic run books the imported history once, at the order's own sale date; the backfill afterwards adds nothing.
+$booked = $ledger->syncChanged(false);
+$check($sumsOf($uA) === ['sold_fabric' => '5.000', 'sold_rail' => '3.000'] && $sumsOf($uB) === ['sold_fabric' => '5.000', 'sold_rail' => '3.000'], 'F11 the next automatic run books the imported history: ' . json_encode($booked));
+$check($sumsOf($uC) === [], 'F12 a cancelled historical order books nothing');
+$saleDates = $pdo->query("SELECT DISTINCT occurred_at FROM production_meter_ledger WHERE order_uuid IN (" . $pdo->quote($uA) . ',' . $pdo->quote($uB) . ')')->fetchAll(PDO::FETCH_COLUMN);
+$check($saleDates === ['2026-10-05 08:00:00.000000'], 'F13 imported history is dated at its sale, not at the import: ' . json_encode($saleDates));
+$rowsAB = static fn (): int => (int) $pdo->query('SELECT COUNT(*) FROM production_meter_ledger WHERE order_uuid IN (' . $pdo->quote($uA) . ',' . $pdo->quote($uB) . ',' . $pdo->quote($uC) . ')')->fetchColumn();
+$heldAB = $rowsAB();
+$backfill = $ledger->sync(false, 50);
+$check($rowsAB() === $heldAB && $sumsOf($uA) === ['sold_fabric' => '5.000', 'sold_rail' => '3.000'], 'F14 the full backfill after the automatic run writes nothing twice: ' . json_encode($backfill['byReason']));
+$check($ledger->syncChanged(false)['entries'] === 0 && $ledger->sync(false, 50)['entries'] === 0, 'F15 automatic run and backfill in any order write nothing more');
+// The other order: import, then the backfill first, then the automatic run.
+$check($import->run('trendhome', $exportOf([['id' => $histD, 'items' => $full]]), false)['recorded'] === 3, 'F16 histD facts imported');
+$ledger->sync(false, 50, $uD);
+$dRows = (int) $pdo->query('SELECT COUNT(*) FROM production_meter_ledger WHERE order_uuid = ' . $pdo->quote($uD))->fetchColumn();
+$check($sumsOf($uD) === ['sold_fabric' => '5.000', 'sold_rail' => '3.000'] && $ledger->syncChanged(false)['entries'] === 0
+    && (int) $pdo->query('SELECT COUNT(*) FROM production_meter_ledger WHERE order_uuid = ' . $pdo->quote($uD))->fetchColumn() === $dRows, 'F17 backfill first, automatic run second: booked once');
+// An automatic run refused while the backfill holds the lock does not move the watermark, so nothing in between is lost.
+$cursorHeld = $cursorRow();
+$other->query("SELECT GET_LOCK('arasya_sold_meter_ledger', 0)")->fetchColumn();
+$check($import->run('trendhome', $exportOf([['id' => $histE, 'items' => $full]]), false)['recorded'] === 3, 'F18 histE facts imported while a backfill runs');
+try { $ledger->syncChanged(false); $check(false, 'F19 automatic run refused during the backfill'); } catch (RuntimeException) { $check($cursorRow() === $cursorHeld, 'F19 a refused automatic run leaves the watermark'); }
+$other->query("SELECT RELEASE_LOCK('arasya_sold_meter_ledger')");
+$ledger->syncChanged(false);
+$check($sumsOf($uE) === ['sold_fabric' => '5.000', 'sold_rail' => '3.000'], 'F20 the next automatic run books what changed while it was refused');
+// The overlap bound: a change stamped more than OVERLAP_SECONDS before the watermark is outside the automatic window, and
+// the full run (scheduled nightly as the safety net) books it. Nothing is lost and nothing is counted twice.
+$beyond = (new DateTimeImmutable((string) $cursorRow()['watermark_at'], new DateTimeZone('UTC')))->modify('-' . (SoldMeterLedger::OVERLAP_SECONDS + 60) . ' seconds')->format('Y-m-d H:i:s.u');
+$pdo->prepare("UPDATE order_item_meter_facts SET priced_length = IF(source_item_id = '11', 3.000, priced_length), updated_at = ? WHERE order_uuid = ?")->execute([$beyond, $uE]);
+$pdo->prepare("UPDATE operational_order_items SET width_value = 3.000 WHERE order_uuid = ? AND source_item_id = '11'")->execute([$uE]);
+$ledger->syncChanged(false);
+$check($sumsOf($uE)['sold_fabric'] === '5.000', 'F21 a change stamped beyond the overlap is not seen by the automatic run');
+$nightly = $ledger->sync(false, 50);
+$check($sumsOf($uE)['sold_fabric'] === '6.000' && ($nightly['byReason']['correction'] ?? 0) === 1, 'F22 the nightly full run books it once: ' . json_encode($nightly['byReason']));
+$check($ledger->sync(false, 50)['entries'] === 0 && $ledger->syncChanged(false)['entries'] === 0, 'F23 and nothing more on the next runs');
+
 // Disposable database hygiene: the rollback suites read recent meter facts, and other suites delete their own orders
 // (the ledger's foreign key would block them), so this suite removes every ledger row and fact it caused.
 $pdo->prepare('DELETE FROM production_meter_ledger WHERE recorded_at >= ?')->execute([$eStart]);
 $pdo->exec('DELETE FROM production_meter_ledger_cursor');
-foreach ([$newUuid, $factUuid, $lateUuid] as $own) {
+foreach ([$newUuid, $factUuid, $lateUuid, $uA, $uB, $uC, $uD, $uE] as $own) {
     foreach (['production_meter_ledger', 'order_item_meter_facts', 'production_meter_exclusions'] as $table) $pdo->prepare("DELETE FROM {$table} WHERE order_uuid = ?")->execute([$own]);
 }
 foreach ([$uuid, $legacy] as $own) {
