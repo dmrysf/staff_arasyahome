@@ -978,7 +978,7 @@ export const confirmareOpsTR = {
   "cf.hold.orderNumber": "Sipariş numarası",
   "cf.hold.reasonLabel": "Neden",
   "cf.hold.note": "Ne gördün (zorunlu)",
-  "cf.hold.submit": "Süreyi beklet",
+  "cf.hold.submit": "Süre dolumunu durdur",
   "cf.hold.placed": "#{number} siparişi bekletmede.",
   "cf.hold.open": "Bekletmeler",
   "cf.hold.none": "Bekletme yok.",

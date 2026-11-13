@@ -514,12 +514,21 @@ $check($detail($who['cop'], $g(22))['production']['cleared'] === false, 'S12: th
 foreach ([21, 22, 23] as $n) $age($g($n), 121);
 $error($preview($who['cop']), 403, 'CONFIRMARE_FINANCE_DENIED', 'S12: an operator does not preview the bank check');
 $error($preview($who['cfinout']), 403, 'CONFIRMARE_FINANCE_DENIED', 'S12: Outlet Perdele finance does not preview a Trend Home bank check');
+// Only finance `record` / `approve` of the shop sees the order numbers of the preview (owner 2026-11-13).
+$error($preview($who['cfinview']), 403, 'CONFIRMARE_FINANCE_DENIED', 'S12: a finance viewer (no record or approve) does not preview the bank check');
+$error($preview($who['csup']), 403, 'CONFIRMARE_FINANCE_DENIED', 'S12: a Confirmare supervisor without finance scopes does not preview the bank check');
+$error($preview($who['cout']), 403, 'CONFIRMARE_FINANCE_DENIED', 'S12: another shop\'s operator does not preview the bank check');
+$error($preview($root), 403, 'CONFIRMARE_FINANCE_DENIED', 'S12: root does not preview the bank check');
 $pv = $ok($preview($who['cfin']), 'S12: finance previews the bank check');
+$check($pv['items'] !== [] && array_filter($pv['items'], static fn (array $i): bool => array_keys($i) !== ['orderNumber', 'globalOrderId', 'expiresAt', 'state', 'outcome', 'waitsFor']) === [],
+    'S12: a preview item names the order, its expiry and outcome only (no customer, amount or product): ' . json_encode($pv['items'][0] ?? null));
 $outcome = static function (array $pv, int $n) use ($id): ?array { foreach ($pv['items'] as $i) { if ($i['orderNumber'] === $id($n)) return [$i['outcome'], $i['waitsFor']]; } return null; };
 $check($outcome($pv, 21) === ['waits', 'finance_task_open'] && $outcome($pv, 22) === ['waits', 'finance_hold'] && $outcome($pv, 23) === ['may_cancel', null],
     'S12: the preview shows which orders may be cancelled and which wait (task, hold): ' . json_encode($pv['items']));
 $checksBefore = (int) $one("SELECT COUNT(*) FROM confirmare_bank_checks WHERE source_key = 'trendhome'");
-$error($call($who['cfin'], 'POST', '/confirmare/finance/bank-check', ['source' => 'trendhome', 'coversUntil' => $pv['coversUntil']]), 409, 'CONFIRMARE_BANK_CHECK_PREVIEW_REQUIRED', 'S12: no bank check without the preview');
+$refused = $error($call($who['cfin'], 'POST', '/confirmare/finance/bank-check', ['source' => 'trendhome', 'coversUntil' => $pv['coversUntil']]), 409, 'CONFIRMARE_BANK_CHECK_PREVIEW_REQUIRED', 'S12: no bank check without the preview');
+$check(array_keys($refused['error']['details'] ?? []) === ['mayCancel', 'waiting'] && !str_contains(json_encode($refused['error']['details']), $id(23)),
+    'S12: the refusal carries counts only, never an order number: ' . json_encode($refused['error']['details'] ?? null));
 $error($call($who['cfin'], 'POST', '/confirmare/finance/bank-check', ['source' => 'trendhome', 'coversUntil' => $pv['coversUntil'], 'previewFingerprint' => str_repeat('0', 64)]), 409, 'CONFIRMARE_BANK_CHECK_PREVIEW_STALE', 'S12: no bank check with another preview');
 $check((int) $one("SELECT COUNT(*) FROM confirmare_bank_checks WHERE source_key = 'trendhome'") === $checksBefore, 'S12: a refused bank check records nothing');
 $ok($call($who['cfin'], 'POST', '/confirmare/finance/bank-check', ['source' => 'trendhome', 'coversUntil' => $pv['coversUntil'], 'previewFingerprint' => $pv['fingerprint']]), 'S12: the bank check with the preview it was shown');
