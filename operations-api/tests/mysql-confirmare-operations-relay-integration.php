@@ -288,6 +288,10 @@ $stage($g(2), 'quality-control');
 $queue = $ok($get($who['cdoc'], '/confirmare/awb-queue'), 'queue at stage 12')['items'];
 $check(count($queue) === 1 && $queue[0]['globalOrderId'] === $g(2) && $queue[0]['stage'] === 'quality-control', 'stage 12: the routed shop employee sees it in "AWB oluşturulması gereken siparişler"');
 $check($ok($get($who['cdoc2'], '/confirmare/awb-queue'), 'another employee')['items'] === [] && count($ok($get($who['cmgr'], '/confirmare/awb-queue'), 'manager')['items']) === 1, 'another shop employee does not see it; the invoice manager does');
+// API 2.68.2 (owner 2026-11-13): stage 14 completed without an AWB never hides the order; the AWB is still made from the queue.
+$pdo->prepare("UPDATE operational_orders SET production_stage_id = 'delivery', production_completed_at = UTC_TIMESTAMP(6) WHERE global_order_id = ?")->execute([$g(2)]);
+$done = $ok($get($who['cdoc'], '/confirmare/awb-queue'), 'queue after stage 14 was completed')['items'];
+$check(count($done) === 1 && $done[0]['globalOrderId'] === $g(2) && $done[0]['stage'] === 'delivery', 'a completed order without an AWB stays in the AWB queue');
 $error($operate($who['cdoc2'], $g(2), 'awb', ['parcels' => 1, 'expectedCod' => '503.30']), 403, 'CONFIRMARE_OPERATION_DENIED', 'a shop employee the order was not routed to cannot make its AWB');
 $error($operate($who['cop'], $g(2), 'awb', ['parcels' => 1, 'expectedCod' => '503.30']), 403, 'CONFIRMARE_OPERATION_DENIED', 'the operator never makes the AWB');
 $s2 = $state($who['cdoc'], $g(2));
