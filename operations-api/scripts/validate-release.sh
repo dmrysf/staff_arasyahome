@@ -91,6 +91,16 @@ for file in \
   src/Integration/SourceDefinition.php \
   src/Integration/SourceMode.php \
   bin/rebuild-analytics.php \
+  bin/meter-ledger.php \
+  bin/meter-exclusion.php \
+  bin/meter-facts-import.php \
+  database/migrations/053_production_intelligence.sql \
+  src/Intelligence/MeterContract.php \
+  src/Intelligence/SoldMeterLedger.php \
+  src/Intelligence/MeterFactImport.php \
+  src/Intelligence/ShopSourcedSales.php \
+  src/Intelligence/ProductionIntelligencePolicy.php \
+  src/Intelligence/ProductionIntelligenceController.php \
   src/Analytics/AnalyticsController.php \
   src/Analytics/AnalyticsService.php \
   src/Analytics/AnalyticsCapture.php \

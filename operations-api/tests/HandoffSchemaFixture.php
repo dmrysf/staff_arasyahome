@@ -1,5 +1,14 @@
 <?php
 declare(strict_types=1);
+/** Restore a pre-053 disposable test fixture (no Production Intelligence tables). This is NOT a deployment/rollback mechanism. */
+function restorePreProductionIntelligenceTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='053_production_intelligence.sql'")->fetchColumn()) return;
+    foreach(['shop_sourced_meter_lines','production_meter_ledger_cursor','production_meter_ledger','production_meter_exclusions','order_item_meter_facts'] as $table) $pdo->exec('DROP TABLE IF EXISTS '.$table);
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='053_production_intelligence.sql'");
+}
+
 /** Restore a pre-050 disposable test fixture (no B2B order types or service route). This is NOT a deployment/rollback mechanism. */
 function restorePreB2BOrderTypesTestSchema(PDO $pdo): void
 {
@@ -60,6 +69,7 @@ function restorePreFinanceOnboardingTestSchema(PDO $pdo): void
 {
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
     restorePreFinanceHoldsTestSchema($pdo);
+    restorePreProductionIntelligenceTestSchema($pdo);
     restorePreFinanceCollectionsTestSchema($pdo);
     restorePreTrendyolAwbTestSchema($pdo);
     restorePreB2BOrderTypesTestSchema($pdo);

@@ -79,7 +79,7 @@ require __DIR__ . '/HandoffSchemaFixture.php';
 restorePreDocumentsTestSchema($pdo);
 $grantsBefore = $pdo->query('SELECT * FROM role_permissions ORDER BY role_id, permission_id')->fetchAll(PDO::FETCH_ASSOC);
 $qrBefore = $pdo->query('SELECT qr_reference, order_uuid, status, created_at, expires_at, revoked_at FROM order_qr_references ORDER BY qr_reference')->fetchAll(PDO::FETCH_ASSOC);
-check((new MigrationRunner($pdo))->migrate($migrations) === ['017_production_documents.sql', '018_production_authority.sql','019_production_qr_authority.sql', '020_production_document_authority.sql', '021_document_scopes.sql', '022_trendyol_intake.sql', '024_tailoring_quality_supervision.sql','025_source_payment_gate.sql','026_trendyol_product_identity.sql','028_production_work_units.sql','029_production_manifest_routing.sql', '030_production_route_reconciliation.sql', '031_production_assisted_checkpoints.sql', '033_order_cancellation_control.sql', '034_order_cancellation_sync.sql', '035_workflow_cohort.sql', '036_confirmare_operations.sql', '037_confirmare_contacts.sql','038_confirmare_source_access.sql','039_confirmare_finance.sql', '041_smartbill_invoicing.sql', '047_finance_company_onboarding.sql','048_finance_verification_center.sql','049_finance_owner_risk_limit_decisions.sql','050_b2b_order_types.sql','051_trendyol_awb_station.sql','052_finance_collections.sql', '054_confirmare_finance_holds.sql'], '016 -> 017 official additive upgrade');
+check((new MigrationRunner($pdo))->migrate($migrations) === ['017_production_documents.sql', '018_production_authority.sql','019_production_qr_authority.sql', '020_production_document_authority.sql', '021_document_scopes.sql', '022_trendyol_intake.sql', '024_tailoring_quality_supervision.sql','025_source_payment_gate.sql','026_trendyol_product_identity.sql','028_production_work_units.sql','029_production_manifest_routing.sql', '030_production_route_reconciliation.sql', '031_production_assisted_checkpoints.sql', '033_order_cancellation_control.sql', '034_order_cancellation_sync.sql', '035_workflow_cohort.sql', '036_confirmare_operations.sql', '037_confirmare_contacts.sql','038_confirmare_source_access.sql','039_confirmare_finance.sql', '041_smartbill_invoicing.sql', '047_finance_company_onboarding.sql','048_finance_verification_center.sql','049_finance_owner_risk_limit_decisions.sql','050_b2b_order_types.sql','051_trendyol_awb_station.sql','052_finance_collections.sql', '053_production_intelligence.sql', '054_confirmare_finance_holds.sql'], '016 -> 017 official additive upgrade');
 check((new MigrationRunner($pdo))->migrate($migrations) === [], '017 recorded exactly once');
 check($pdo->query("SELECT rp.* FROM role_permissions rp JOIN roles r ON r.role_id = rp.role_id WHERE rp.permission_id NOT IN (SELECT permission_id FROM permissions WHERE permission_key = 'production.manage_authority' OR permission_key LIKE 'trendyol.%') AND r.role_key NOT IN ('production-documents-operator','document-revision-approver') ORDER BY rp.role_id, rp.permission_id")->fetchAll(PDO::FETCH_ASSOC) === $grantsBefore, '017 changes no existing role grant');
 check($pdo->query('SELECT qr_reference, order_uuid, status, created_at, expires_at, revoked_at FROM order_qr_references ORDER BY qr_reference')->fetchAll(PDO::FETCH_ASSOC) === $qrBefore, '017 and 019 rewrite no QR reference');
@@ -629,6 +629,87 @@ $rollbackGuard = static function (string $target) use ($dbName): array {
 $refused = $rollbackGuard('2.52.0');
 check($refused['code'] === 3 && $refused['json']['requiredFloor'] === '2.53.0' && $refused['json']['state']['openOrdersWithTicketSchema3'] > 0 && $rollbackGuard('2.53.0')['code'] === 0, 'rollback below 2.53.0 is refused while an open order has a schema 3 document (an older API cannot render or compare it)');
 check($refused['json']['state']['openOrdersWithTicketSchema2'] > 0, 'the schema 2 Trendyol documents are still counted for the 2.34.2 floor');
+
+// ---- Delivery identity only: the document stays usable (web shops); Trendyol still blocks -------------
+// A courier or invoice correction of the recipient, address or masked phone is not manufacturing data. It never
+// blocks production of a web shop order; it is recorded once per new identity. A printed manufacturing change
+// still blocks, and its revision then carries the new address as well.
+$deliveryEvents = static function (string $orderUuid) use ($pdo): array {
+    $statement = $pdo->prepare("SELECT metadata_json FROM production_document_events WHERE order_uuid = ? AND event_type = 'content_changed' ORDER BY event_seq");
+    $statement->execute([$orderUuid]);
+    return array_map(static fn (string $json): array => json_decode($json, true), $statement->fetchAll(PDO::FETCH_COLUMN));
+};
+check(($ingest('84561', 1, $curtain(5.0), $delivery)['body']['outcome'] ?? null) === 'applied', 'order 84561 ingested');
+$oD = 'trendhome:84561';
+$uuidD = (string) $order($oD)['order_uuid'];
+checkOk($post($online, $docPath($oD, 'generate'), ['expectedDocumentVersion' => 0], $key('gen-d'), T::ORIGIN), 'order 84561 R1', 201);
+$dR1 = $revisionRow($uuidD, 1);
+$dQr = $activeQr($uuidD);
+$deliveryMoved = array_replace($delivery, ['street' => 'Strada Exemplu 12A', 'city' => 'Florești']);
+$outcome = $ingest('84561', 2, $curtain(5.0), $deliveryMoved)['body']['outcome'] ?? null;
+check(in_array($outcome, ['applied', 'duplicate'], true), 'an address-only correction is ingested');
+check(str_contains((string) $order($oD)['document_context'], 'Florești'), 'the corrected delivery identity is stored');
+check($order($oD)['document_status'] === 'active', 'an address-only change keeps the web shop document active');
+check($revisionRow($uuidD, 1)['stale_at'] === null && $revisionRow($uuidD, 1)['status'] === 'active', 'the revision is not marked stale');
+check((int) $pdo->query('SELECT COUNT(*) FROM production_document_blocks WHERE order_uuid = ' . $pdo->quote($uuidD))->fetchColumn() === 0, 'no revision block is opened for an address-only change');
+$recorded = $deliveryEvents($uuidD);
+check(count($recorded) === 1 && $recorded[0]['blocking'] === false && $recorded[0]['scope'] === 'delivery' && $recorded[0]['fields'] === ['customer.address'], 'the address change is recorded once as non-blocking ' . json_encode($recorded));
+check(($ingest('84561', 3, $curtain(5.0), $deliveryMoved, 'on-hold')['body']['outcome'] ?? null) === 'applied' && $order($oD)['document_status'] === 'active', 'a later commerce change with the same address keeps the document active');
+check(count($deliveryEvents($uuidD)) === 1, 'the same corrected address is not recorded twice');
+checkOk($claim($murat, $oD, $dQr), 'production starts with the R1 QR after the address correction');
+check($activeQr($uuidD) === $dQr && $revisionRow($uuidD, 1)['qr_reference'] === $dR1['qr_reference'], 'the printed QR stays valid: no new revision, no QR churn');
+$staffD = checkOk($get($murat, '/orders/' . rawurlencode($oD)), 'Staff order 84561');
+check($staffD['documentStatus'] === 'active' && ($staffD['employeeActionBlockedReason'] ?? null) !== 'document_revision_pending', 'Staff sees no document block');
+check(in_array($ingest('84561', 4, $curtain(5.0), array_replace($deliveryMoved, ['name' => 'TEST Ioana Pop', 'phone' => '+40 733 000 111']), 'on-hold')['body']['outcome'] ?? null, ['applied', 'duplicate'], true), 'recipient and phone corrected');
+check($order($oD)['document_status'] === 'active' && count($deliveryEvents($uuidD)) === 2, 'a recipient or phone change is also non-blocking and recorded');
+check(($ingest('84561', 5, $curtain(6.0), array_replace($deliveryMoved, ['name' => 'TEST Ioana Pop', 'phone' => '+40 733 000 111']), 'on-hold')['body']['outcome'] ?? null) === 'applied', 'customer changes 5 m to 6 m');
+check($order($oD)['document_status'] === 'stale', 'a manufacturing change still makes the document stale');
+$dEvents = $deliveryEvents($uuidD);
+check(count($dEvents) === 3 && !isset($dEvents[2]['blocking']), 'the blocking change keeps the original event shape');
+$dRequest = checkOk($post($online, $docPath($oD, 'revision-requests'), ['expectedDocumentVersion' => (int) $order($oD)['document_version']], $key('req-d'), T::ORIGIN), 'revision requested for 84561', 201)['request'];
+$dFields = array_column($dRequest['changes'], 'field');
+check(in_array('line.meters', $dFields, true) && in_array('customer.address', $dFields, true) && in_array('customer.name', $dFields, true), 'the revision reviews the manufacturing change and the corrected address together ' . json_encode($dFields));
+
+// Trendyol keeps its rule: any printed change, the delivery identity included, blocks until a revision.
+$bigBefore = $order('trendyol:' . $bigPackage);
+check($bigBefore['document_status'] === 'active', 'the 40-position Trendyol order is active');
+$pdo->beginTransaction();
+$bigContext = json_decode((string) ($bigBefore['document_context'] ?? 'null'), true) ?: ['name' => 'TEST Ana', 'company' => null, 'contact' => null, 'addressLines' => ['Str. Veche 1'], 'phoneMasked' => null];
+$bigContext['addressLines'] = ['Str. Nouă 2, Iași'];
+$pdo->prepare('UPDATE operational_orders SET document_context = ? WHERE order_uuid = ?')->execute([json_encode($bigContext, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE), $bigUuid]);
+$staleness->onContentChanged($bigUuid, 'test-ty-address');
+$pdo->commit();
+check($order('trendyol:' . $bigPackage)['document_status'] === 'stale', 'a Trendyol address change still makes the document stale');
+
+// One-time repair of orders blocked by an address-only change before this release: the same revision becomes
+// usable again (same QR) and the block ends; every other blocked order is left exactly as it is.
+check(($ingest('84562', 1, $curtain(4.0), $delivery)['body']['outcome'] ?? null) === 'applied', 'order 84562 ingested');
+$oL = 'trendhome:84562';
+$uuidL = (string) $order($oL)['order_uuid'];
+checkOk($post($online, $docPath($oL, 'generate'), ['expectedDocumentVersion' => 0], $key('gen-l'), T::ORIGIN), 'order 84562 R1', 201);
+$lQr = $activeQr($uuidL);
+$lR1 = $revisionRow($uuidL, 1);
+// The state the previous release left: the corrected address made R1 stale and opened a block.
+$movedContext = json_decode((string) $order($oL)['document_context'], true);
+$movedContext['addressLines'][0] = 'Strada Exemplu 12';
+$pdo->prepare("UPDATE operational_orders SET document_context = ?, document_status = 'stale', document_version = document_version + 1 WHERE order_uuid = ?")->execute([json_encode($movedContext, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE), $uuidL]);
+$pdo->prepare('UPDATE production_document_revisions SET stale_at = UTC_TIMESTAMP(6) WHERE revision_uuid = ?')->execute([$lR1['revision_uuid']]);
+(new Arasya\Operations\Document\DocumentStore($pdo))->openBlock($order($oL) + ['global_order_id' => $oL], (string) $lR1['revision_uuid'], 'content_changed', null, gmdate('Y-m-d H:i:s.000000'));
+$release = static function (string $orderUuid) use ($pdo, $staleness): string {
+    $pdo->beginTransaction();
+    $outcome = $staleness->releaseDeliveryOnly($orderUuid, 'test-release');
+    $pdo->commit();
+    return $outcome;
+};
+check($release($uuidL) === 'released', 'an address-only block is released');
+$released = $order($oL);
+check($released['document_status'] === 'active' && $released['active_document_revision_uuid'] === $lR1['revision_uuid'] && $revisionRow($uuidL, 1)['stale_at'] === null && $activeQr($uuidL) === $lQr, 'the same R1 and QR are usable again');
+check($pdo->query('SELECT ended_at IS NOT NULL AND open_order_uuid IS NULL AND ended_by_revision_uuid = ' . $pdo->quote($lR1['revision_uuid']) . ' FROM production_document_blocks WHERE order_uuid = ' . $pdo->quote($uuidL))->fetchColumn() == 1, 'the open block ends');
+$lEvents = $deliveryEvents($uuidL);
+check(count($lEvents) === 1 && $lEvents[0]['released'] === true && $lEvents[0]['fields'] === ['customer.address'], 'the release is in the document history');
+check($release($uuidL) === 'not_stale', 'a second run changes nothing');
+check($release($uuidD) === 'request_open' && $order($oD)['document_status'] === 'stale', 'a manufacturing change with an open request stays blocked');
+check($release($bigUuid) === 'blocking_change' && $order('trendyol:' . $bigPackage)['document_status'] === 'stale', 'Trendyol stays blocked');
 
 // ---- History, analytics, audit ----------------------------------------------------------------------
 $history = $documentView($sinem, $o1);

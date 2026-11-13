@@ -492,6 +492,9 @@ final class Container
             $this->financeController($authorization, $context, $csrf, $rateLimiter),
             new \Arasya\Operations\Trendyol\AwbStationController($this->awbStation($authorization), $this->authentication, $csrf, $this->config, $context),
             new \Arasya\Operations\Finance\RefusedAttemptRecorder($this->pdo, new StructuredLogger()),
+            new \Arasya\Operations\Intelligence\ProductionIntelligenceController(
+                new \Arasya\Operations\Intelligence\ProductionIntelligenceService($this->pdo, new \Arasya\Operations\Intelligence\ProductionIntelligencePolicy($this->pdo), $this->clock),
+                $this->authentication, $authorization, $this->config, $context),
         );
     }
 
