@@ -92,6 +92,12 @@ A revision or request keeps the schema it was generated with (`snapshot_schema` 
 
 So a new schema alone never makes a document stale, never supersedes an open request and never changes a stored snapshot.
 
+**Delivery identity corrections (API 2.68.1).** The delivery identity (recipient, company, contact, address, masked phone) is printed and stays in the fingerprint, but a change of **only** these fields never makes a web shop document stale (Trendhome, OutletPerdele, B2B). Couriers and invoices correct addresses after the ticket was printed (a county, a street prefix, diacritics); nothing to manufacture differs, so production continues with the same revision and QR. The correction is recorded once per new identity as a non-blocking `content_changed` event (`metadata.blocking = false`, `scope = "delivery"`, `fields`). The revision keeps its original snapshot: a later manufacturing change still compares with it, blocks, and its revision request then reviews the manufacturing change and the corrected identity together. A diff that names no field but changes the fingerprint still blocks.
+
+Trendyol keeps the previous rule: any printed change, the delivery identity included, blocks until a new revision.
+
+Orders blocked by an address-only change before 2.68.1 are released once with `php bin/document-release-delivery-only.php` (dry run; `--apply` to release). It reactivates the same revision (same QR, nothing reprinted), ends the open block and records a `content_changed` event with `released = true`. Trendyol orders, manufacturing changes and orders with an open revision request are left as they are. Rolling back to 2.68.0 needs no floor: that release would mark such a document stale again on the order's next source event (production blocked until a revision), as it did before.
+
 ## Quantity, dimensions and splitting
 
 The schema is also the document's layout contract:
@@ -183,7 +189,7 @@ Staleness is decided by `DocumentStaleness` inside the source projection transac
 |---|---|
 | `none` | No central document yet; production is not blocked. This is the case for every order existing before 2.16. |
 | `active` | The active revision matches the printed content. |
-| `stale` | Printed content changed after generation; production is blocked. |
+| `stale` | Printed manufacturing content changed after generation (for Trendyol, any printed content); production is blocked. |
 | `revoked` | Root revoked the active document; production is blocked. |
 
 **Revision** (`production_document_revisions.status`): `active`, `superseded` or `revoked`. A unique key on `active_order_uuid` makes two active revisions impossible.
