@@ -145,6 +145,8 @@ final class ConfirmareOperations
     /**
      * The orders of the actor's shops waiting for their AWB (stage 12 or later, approved, not closed), for the shop
      * employee the order was routed to and the invoice managers. The shop's AWB state is read per order on its screen.
+     * API 2.68.2 (owner 2026-11-13): an order whose stage 14 (Livrare) was completed without an AWB stays in the queue
+     * until its AWB is made; completing production never hides a parcel that still has to leave.
      *
      * @return array<string, mixed>
      */
@@ -162,7 +164,7 @@ final class ConfirmareOperations
             FROM operational_orders o
             INNER JOIN order_confirmations c ON c.order_uuid = o.order_uuid AND c.status = 'approved'
             LEFT JOIN order_shop_assignments a ON a.active_order_uuid = o.order_uuid
-            WHERE o.source_key IN ({$marks}) AND o.production_stage_id IN ({$stages}) AND o.production_completed_at IS NULL AND o.operational_status <> 'unavailable' AND o.cancellation_state IS NULL
+            WHERE o.source_key IN ({$marks}) AND o.production_stage_id IN ({$stages}) AND o.operational_status <> 'unavailable' AND o.cancellation_state IS NULL
             ORDER BY o.production_changed_at, o.order_uuid LIMIT 300");
         $statement->execute([...$sources, ...self::AWB_STAGES]);
         $items = [];
