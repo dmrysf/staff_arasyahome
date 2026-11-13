@@ -607,6 +607,98 @@ $check(array_intersect($columns, ['amount', 'iban', 'email', 'phone', 'customer_
 $pdo->exec('DELETE FROM confirmare_finance_holds');
 $pdo->exec("DELETE FROM finance_verification_requests WHERE request_uuid = '00000000-0000-4000-8000-0000000c2101'");
 
+// ---- 13. API 2.71.1 worker queue: every open cycle is visited, none twice in one pass (owner 2026-11-13) --------------------
+// Production had 166 open cycles; a pass of 100 ordered by updated_at re-took the same oldest cycles forever, because a visit
+// with nothing to do does not change the row. 170 running cycles with nothing to do (TEST rows on TEST shop orders) come
+// first in updated_at order; behind them 4 expired cycles with an open finance task and 1 expired cycle without one.
+$pdo->exec('DELETE FROM confirmare_cycle_steps');
+$pdo->exec('DELETE FROM confirmare_proforma_cycles');
+// No bank check is recorded in this section (S12's checks would cover the expired TEST cycles).
+$pdo->exec('DELETE FROM confirmare_bank_checks');
+$qBase = T::freeOrderBase($pdo, 930000, 959999, 200);
+$qId = static fn (int $k): string => (string) ($qBase + $k);
+$qGid = static fn (int $k): string => 'trendhome:' . $qId($k);
+foreach (range(1, 175) as $k) {
+    $ok(T::ingest($kernel, 'trendhome', $payload($qId($k), 600 + $k)), "S13 queue order {$k}");
+    $th->orders[$qId($k)] = ['id' => $qId($k), 'number' => $qId($k), 'eligible' => true, 'phone' => CYC_PHONE, 'pricing' => 'sha256:' . hash('sha256', 'cyc-price-' . $qId($k)),
+        'invoice' => ['cleared' => false, 'cod' => true, 'totalAccepted' => true, 'pf' => ['document' => ['series' => 'PRF', 'number' => sprintf('Q%04d', $k), 'at' => time() - 3600, 'by' => $uuids['cop']],
+            'op' => 'none', 'opKey' => null, 'mail' => 'sent', 'mailCount' => 1, 'invoiced' => null, 'history' => [], 'cancel' => null, 'cancelled' => [], 'reminders' => []]]];
+}
+$qCycle = [];
+foreach (range(1, 175) as $k) {
+    $expired = $k > 170;
+    $qCycle[$k] = sprintf('00000000-0000-4000-8000-%012d', 13000 + $k);
+    $u = $orderUuid($qGid($k));
+    // Running ones: sent one hour ago (no reminder due), expiring in 119 h, and the OLDEST rows (as in production).
+    // Expired ones: sent 121 h ago, expired 1 h ago, the NEWEST rows.
+    $times = $expired
+        ? ['DATE_SUB(UTC_TIMESTAMP(6), INTERVAL 121 HOUR)', 'DATE_SUB(UTC_TIMESTAMP(6), INTERVAL 1 HOUR)', 'DATE_SUB(UTC_TIMESTAMP(6), INTERVAL 5 MINUTE)']
+        : ['DATE_SUB(UTC_TIMESTAMP(6), INTERVAL 1 HOUR)', 'DATE_ADD(UTC_TIMESTAMP(6), INTERVAL 119 HOUR)', 'DATE_SUB(UTC_TIMESTAMP(6), INTERVAL ' . (1000 - $k) . ' MINUTE)'];
+    $pdo->prepare("INSERT INTO confirmare_proforma_cycles (cycle_uuid, order_uuid, active_order_uuid, global_order_id, source_key, cycle_number, origin, owner_employee_uuid, document_hash, state,
+            sent_at, expires_at, created_at, updated_at, last_error, attempts, version)
+        VALUES (?, ?, ?, ?, 'trendhome', 1, 'operator', ?, ?, ?, {$times[0]}, {$times[1]}, DATE_SUB(UTC_TIMESTAMP(6), INTERVAL 6 DAY), {$times[2]}, ?, 0, 1)")
+        ->execute([$qCycle[$k], $u, $u, $qGid($k), $uuids['cop'], hash('sha256', 'PRF|' . sprintf('Q%04d', $k)), $expired ? 'waiting_bank_check' : 'running', $expired ? 'shop_unreachable' : null]);
+}
+foreach (range(171, 174) as $k) {
+    $pdo->prepare("INSERT INTO finance_verification_requests (request_uuid, order_uuid, global_order_id, source_key, purpose, state, version, open_order_uuid, assigned_employee_uuid, assigned_at,
+            requested_by_employee_uuid, requested_at, request_idempotency_key, ledger, proforma_series, proforma_number, updated_at)
+        VALUES (?, ?, ?, 'trendhome', 'advance', 'assigned', 1, ?, ?, UTC_TIMESTAMP(6), ?, UTC_TIMESTAMP(6), ?, 'shop', 'PRF', ?, UTC_TIMESTAMP(6))")
+        ->execute([sprintf('00000000-0000-4000-8000-%012d', 13500 + $k), $orderUuid($qGid($k)), $qGid($k), $orderUuid($qGid($k)), $uuids['cfin'], $uuids['cop'], 'cyc-q-task-' . $k . '-' . $suffix, sprintf('Q%04d', $k)]);
+}
+$qOpen = (int) $one('SELECT COUNT(*) FROM confirmare_proforma_cycles WHERE active_order_uuid IS NOT NULL');
+$check($qOpen === 175, "S13: 175 open cycles (more than the 166 of production): {$qOpen}");
+$qState = static fn (int $k): array => $all('SELECT state, last_error, claim_token, claimed_at, version, updated_at FROM confirmare_proforma_cycles WHERE cycle_uuid = ?', [$qCycle[$k]])[0];
+$qVisited = static fn (): int => (int) $one('SELECT COUNT(*) FROM confirmare_proforma_cycles WHERE active_order_uuid IS NOT NULL AND claimed_at IS NOT NULL');
+$qCancels = static fn (): int => (int) array_sum(array_map(static fn (int $k): int => $th->smartbillCancels['pf:' . $qId($k)] ?? 0, range(1, 175)));
+$qReminders = static fn (): int => (int) array_sum(array_map(static fn (int $k): int => $th->smartbillReminders['pf:' . $qId($k)] ?? 0, range(1, 175)));
+$qRequests = static function () use ($th, $qId): array { $n = []; foreach ($th->requests as $r) { $o = (string) ($r['body']['orderId'] ?? ''); if ($o !== '' && (int) $o >= (int) $qId(1) && (int) $o <= (int) $qId(175)) $n[$o] = ($n[$o] ?? 0) + 1; } return $n; };
+$before = $qRequests();
+$u170 = $qState(170);
+$p1 = $cycles->run(100, 'test-queue-1');
+$after1 = $qRequests();
+$check($p1['seen'] === 100 && $p1['skipped'] === 0 && $qVisited() === 100, 'S13: the first pass visits 100 cycles: ' . json_encode($p1));
+$check(array_filter(array_keys($after1), static fn (string $o): bool => ($after1[$o] - ($before[$o] ?? 0)) > 1) === [], 'S13: one pass reads each cycle\'s shop state once (no double processing)');
+$check((int) $one('SELECT COUNT(*) FROM confirmare_proforma_cycles WHERE claim_token IS NOT NULL') === 0, 'S13: every claim is released after the pass');
+$check($qState(171)['state'] === 'waiting_bank_check', 'S13: after one pass the newest rows (the expired ones) were not visited yet, as before');
+$p2 = $cycles->run(100, 'test-queue-2');
+$check($p2['seen'] === 100 && $qVisited() === 175, 'S13: the second pass takes the 75 never-visited cycles first: every open cycle is visited within two passes: ' . json_encode($p2) . ' visited=' . $qVisited());
+foreach (range(171, 174) as $k) {
+    $st = $qState($k);
+    $check($st['state'] === 'waiting_finance' && $st['last_error'] === 'finance_task_open', "S13: expired cycle {$k} with an open finance task waits for finance: " . json_encode([$st['state'], $st['last_error']]));
+}
+$check($qState(175)['state'] === 'waiting_bank_check', 'S13: the expired cycle without a finance task waits for a bank check (none recorded): nothing is cancelled');
+$check($qCancels() === 0 && $qReminders() === 0 && (int) $one("SELECT COUNT(*) FROM confirmare_proforma_cycles WHERE state IN ('cancel_pending', 'cancel_unknown', 'order_cancel_pending')") === 0
+    && (int) $one('SELECT COUNT(*) FROM operational_orders o INNER JOIN confirmare_proforma_cycles c ON c.order_uuid = o.order_uuid WHERE o.cancellation_state IS NOT NULL') === 0,
+    'S13: no SmartBill cancellation, no reminder, no cancellation request');
+$v170 = $qState(170);
+$check($v170['state'] === 'running' && $v170['updated_at'] === $u170['updated_at'] && $v170['version'] === $u170['version'] && $v170['claimed_at'] !== null && $u170['claimed_at'] === null,
+    'S13: a visit with nothing to do changes no row data (only the visit instant): ' . json_encode([$u170, $v170]));
+// Rotation: the next pass takes the least recently visited, so the first pass's cycles come again before the second's.
+$firstVisited = array_column($all('SELECT cycle_uuid FROM confirmare_proforma_cycles WHERE active_order_uuid IS NOT NULL ORDER BY claimed_at, cycle_uuid LIMIT 25'), 'cycle_uuid');
+$p3 = $cycles->run(25, 'test-queue-3');
+$check($p3['seen'] === 25 && count(array_intersect($firstVisited, array_column($all('SELECT cycle_uuid FROM confirmare_proforma_cycles WHERE active_order_uuid IS NOT NULL ORDER BY claimed_at DESC, cycle_uuid LIMIT 25'), 'cycle_uuid'))) === 25,
+    'S13: the third pass re-visits the 25 least recently visited cycles: ' . json_encode($p3));
+// Two overlapping passes: a pass that started before another worker visited a cycle does not take it again.
+$overlapStart = (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format('Y-m-d H:i:s.u');
+usleep(2000);
+$check($cycles->advance($qCycle[10], 'test-queue-worker-a') !== null, 'S13: worker A visits cycle 10');
+$check($cycles->advance($qCycle[10], 'test-queue-worker-b', $overlapStart) === null, 'S13: worker B, whose pass started before that visit, does not process cycle 10 again');
+$check($cycles->advance($qCycle[10], 'test-queue-person') !== null, 'S13: a person\'s own advance is unchanged (no pass instant)');
+// A claim held by a live worker is still respected by a pass; a dead worker's claim is still taken over.
+$pdo->prepare('UPDATE confirmare_proforma_cycles SET claim_token = ?, claimed_at = UTC_TIMESTAMP(6) - INTERVAL 1 SECOND WHERE cycle_uuid = ?')->execute(['00000000-0000-4000-8000-00000000c1b1', $qCycle[11]]);
+$check($cycles->advance($qCycle[11], 'test-queue-worker-c', (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format('Y-m-d H:i:s.u')) === null, 'S13: a live claim of another worker is respected by a pass');
+$pdo->prepare('UPDATE confirmare_proforma_cycles SET claimed_at = DATE_SUB(claimed_at, INTERVAL 10 MINUTE) WHERE cycle_uuid = ?')->execute([$qCycle[11]]);
+$check($cycles->advance($qCycle[11], 'test-queue-worker-c', (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format('Y-m-d H:i:s.u')) !== null, 'S13: a dead worker\'s claim (older than five minutes) is taken over by a pass');
+// A pass never takes a cycle another worker visited after the pass started (TEST: the visit instant is set after now).
+$pdo->prepare('UPDATE confirmare_proforma_cycles SET claimed_at = DATE_ADD(UTC_TIMESTAMP(6), INTERVAL 1 MINUTE) WHERE cycle_uuid IN (?, ?)')->execute([$qCycle[20], $qCycle[21]]);
+$wide = $cycles->run(500, 'test-queue-wide');
+$check($wide['seen'] === 173 && (string) $qState(20)['claimed_at'] > gmdate('Y-m-d H:i:s'), 'S13: a pass skips cycles visited after it started (173 of 175 seen): ' . json_encode($wide));
+// Re-running passes changes nothing more: the four stay waiting for finance, nothing is cancelled.
+foreach (range(1, 4) as $i) $cycles->run(100, 'test-queue-rerun-' . $i);
+$check(count(array_filter(range(171, 174), static fn (int $k): bool => $qState($k)['state'] === 'waiting_finance')) === 4 && $qState(175)['state'] === 'waiting_bank_check' && $qCancels() === 0,
+    'S13: repeated passes keep the protected cycles waiting for finance and cancel nothing');
+$pdo->prepare('DELETE FROM finance_verification_requests WHERE request_uuid IN (?, ?, ?, ?)')->execute(array_map(static fn (int $k): string => sprintf('00000000-0000-4000-8000-%012d', 13500 + $k), range(171, 174)));
+
 // ---- Cleanup (later suites share the database in CI) ------------------------------------------------------------------------
 $clear();
 fwrite(STDOUT, "MySQL Confirmare cycle integration: {$checks} checks passed.\n");

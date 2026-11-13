@@ -398,18 +398,31 @@ final class ConfirmareCycles
 
     // ---- Worker ---------------------------------------------------------------------------------------------------------
 
-    /** @return array{seen: int, advanced: int, skipped: int} one pass over the open cycles (bin/confirmare-cycles.php) */
+    /**
+     * One pass over the open cycles (bin/confirmare-cycles.php).
+     *
+     * API 2.71.1 (owner 2026-11-13): the pass takes the open cycles the worker visited least recently. A visit keeps its
+     * instant in `claimed_at` (the claim token alone is released), so a cycle with nothing to do goes to the back of the
+     * queue even though its row did not change. Before, the pass ordered by `updated_at`, which a visit without a change
+     * never moves: the same oldest cycles filled every pass and the others were never visited. Now every open cycle is
+     * visited within ceil(open / limit) passes. A cycle another worker visited after this pass started is not taken
+     * again (no double processing when two passes overlap); its own claim stays the guard against two workers at once.
+     *
+     * @return array{seen: int, advanced: int, skipped: int}
+     */
     public function run(int $limit = 100, string $requestId = 'confirmare-cycles'): array
     {
         if (!$this->installed()) {
             return ['seen' => 0, 'advanced' => 0, 'skipped' => 0];
         }
-        $statement = $this->pdo->prepare('SELECT cycle_uuid FROM confirmare_proforma_cycles WHERE active_order_uuid IS NOT NULL ORDER BY updated_at, cycle_uuid LIMIT ' . max(1, min(500, $limit)));
-        $statement->execute();
+        $startedAt = $this->now();
+        $statement = $this->pdo->prepare('SELECT cycle_uuid FROM confirmare_proforma_cycles WHERE active_order_uuid IS NOT NULL AND (claimed_at IS NULL OR claimed_at < ?)
+            ORDER BY claimed_at IS NOT NULL, claimed_at, updated_at, cycle_uuid LIMIT ' . max(1, min(500, $limit)));
+        $statement->execute([$startedAt]);
         $seen = $advanced = $skipped = 0;
         foreach ($statement->fetchAll(PDO::FETCH_COLUMN) as $uuid) {
             $seen++;
-            $result = $this->advance((string) $uuid, $requestId);
+            $result = $this->advance((string) $uuid, $requestId, $startedAt);
             $result === null ? $skipped++ : $advanced++;
         }
         return ['seen' => $seen, 'advanced' => $advanced, 'skipped' => $skipped];
@@ -418,14 +431,18 @@ final class ConfirmareCycles
     /**
      * Claims the cycle (one worker wins) and moves it as far as the shop's answers allow now.
      *
-     * @return array<string, mixed>|null the cycle after the pass, null when another worker holds it
+     * `$notVisitedSince` (the worker pass, API 2.71.1): the cycle is taken only when no worker visited it since that instant,
+     * so two overlapping passes never process the same cycle twice. A person's own advance passes null and is unchanged.
+     *
+     * @return array<string, mixed>|null the cycle after the pass, null when another worker holds it (or visited it already)
      */
-    public function advance(string $cycleUuid, string $requestId): ?array
+    public function advance(string $cycleUuid, string $requestId, ?string $notVisitedSince = null): ?array
     {
         $token = Uuid::v4();
         $now = $this->clock->now()->setTimezone(new DateTimeZone('UTC'));
-        $claim = $this->pdo->prepare('UPDATE confirmare_proforma_cycles SET claim_token = ?, claimed_at = ? WHERE cycle_uuid = ? AND active_order_uuid IS NOT NULL AND (claim_token IS NULL OR claimed_at < ?)');
-        $claim->execute([$token, $now->format('Y-m-d H:i:s.u'), $cycleUuid, $now->modify('-' . self::CLAIM_SECONDS . ' seconds')->format('Y-m-d H:i:s.u')]);
+        $claim = $this->pdo->prepare('UPDATE confirmare_proforma_cycles SET claim_token = ?, claimed_at = ? WHERE cycle_uuid = ? AND active_order_uuid IS NOT NULL AND (claim_token IS NULL OR claimed_at < ?)'
+            . ($notVisitedSince === null ? '' : ' AND (claimed_at IS NULL OR claimed_at < ?)'));
+        $claim->execute([$token, $now->format('Y-m-d H:i:s.u'), $cycleUuid, $now->modify('-' . self::CLAIM_SECONDS . ' seconds')->format('Y-m-d H:i:s.u'), ...($notVisitedSince === null ? [] : [$notVisitedSince])]);
         if ($claim->rowCount() !== 1) {
             return null;
         }
@@ -446,7 +463,8 @@ final class ConfirmareCycles
             }
             error_log('Arasya Confirmare cycle ' . $cycleUuid . ': ' . get_class($error));
         } finally {
-            $this->pdo->prepare('UPDATE confirmare_proforma_cycles SET claim_token = NULL, claimed_at = NULL WHERE cycle_uuid = ? AND claim_token = ?')->execute([$cycleUuid, $token]);
+            // The claim ends; `claimed_at` stays as the instant of this visit (the worker's queue order, API 2.71.1).
+            $this->pdo->prepare('UPDATE confirmare_proforma_cycles SET claim_token = NULL WHERE cycle_uuid = ? AND claim_token = ?')->execute([$cycleUuid, $token]);
         }
         return $this->cycle($cycleUuid);
     }
