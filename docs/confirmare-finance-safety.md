@@ -91,6 +91,40 @@ Before 2.71.0 the cycle list was Confirmare-only.
 Staff 2.51.0 shows it in the finance screen, together with the place and release forms. The cycle list also says what each expired
 proforma waits for.
 
+## Worker queue (API 2.71.1)
+
+Found live on 2026-11-13, right after the 2.71.0 deploy. Production had 166 open cycles. Each pass of
+`bin/confirmare-cycles.php` (cron every 5 minutes, `--limit` 100) took the open cycles ordered by `updated_at`. A visit
+with nothing to do does not change the row, for example a running proforma whose reminders are already sent. So the same
+100 oldest cycles filled every pass, and 66 cycles were never visited. Four expired Trendhome cycles with an open finance
+task therefore stayed `waiting_bank_check` instead of moving to `waiting_finance`. They could not be cancelled meanwhile,
+because Trendhome has no bank check.
+
+The fix changes no rule, no migration and no SmartBill, finance or production behaviour:
+
+- The claim is released by clearing `claim_token` only. `claimed_at` stays as the instant of the last visit.
+- A pass takes the least recently visited open cycles first: never visited, then the oldest visit, then `updated_at`.
+  Every open cycle is therefore visited within ceil(open / limit) passes.
+- A pass never takes a cycle that another worker visited after the pass started. The claim of a pass also refuses such a
+  cycle, so two overlapping passes never process the same cycle twice. A person's own advance
+  (`POST /confirmare/orders/{id}/cycle/advance`) is unchanged.
+- The live claim (5 minutes) and the takeover of a dead worker's claim are unchanged.
+
+Test S13 in `mysql-confirmare-cycle-integration.php` uses 175 open cycles:
+
+- 170 running cycles with nothing to do are the oldest rows. 4 expired cycles with an open finance task and 1 expired
+  cycle without one are the newest.
+- Every cycle is visited within two passes. A pass reads each shop state once.
+- The 4 cycles move to `waiting_finance` (`finance_task_open`). The 5th stays `waiting_bank_check`.
+- Nothing is cancelled and no reminder is sent.
+- A visit with nothing to do changes no row data.
+- Later passes rotate. Overlapping passes do not double-process. Live and dead claims behave as before.
+
+Four mutations are caught: the old order, a release that clears `claimed_at`, no overlap guard, and a pass that re-takes
+what it visited.
+
+Rollback to 2.71.0 needs no floor. The older code treats a released claim the same way, because `claim_token` is null.
+
 ## Rollback
 
 `bin/check-rollback.php` requires 2.71.0 while a hold is open, because an older API ignores holds. Migration 054 only adds the
