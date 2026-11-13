@@ -83,23 +83,51 @@ them: their lines stay `unknown_basis` (test F2). The facts come from the shop, 
 order could change its version, its production documents or its Confirmare state):
 
 1. In each shop, after YD SOFT 2.30.0 is installed: `wp yd-arasya meter-basis export > meter-basis-<shop>.json`
-   (read only; default `--since=2026-10-04`, owner decision K3). The file holds order ids, line ids and the fact, the
-   same `MeterBasis::of` rule an order event uses; no name, customer, amount or status.
+   (read only; default `--since=2026-10-04`, owner decision K3). Format 2 holds, per order, its id, status slug and
+   creation and payment instants (UTC); per line, its id, the fact (the same `MeterBasis::of` rule an order event uses),
+   product code and variant (as an order event states them), quantity and refunded quantity. No name, customer, address,
+   telephone, note or amount leaves the shop.
 2. In the API checkout: `php bin/meter-facts-import.php --source=<shop> --file=meter-basis-<shop>.json` (dry run), then
    with `--apply`. The whole file is validated first (the exact `meterBasis` rule of `/orders`), and a file of another
    source is refused. It adds a fact only where none is stored: a fact a real order event stated is newer and is never
-   overwritten (test F8). Orders Arasya does not hold and lines that are not on the canonical order are counted and
-   skipped. No order, item, version, hash, QR, document, Confirmare state or activity is written (test F7). Each `--apply`
-   that records something writes the IAM audit event `production_intelligence.meter_facts_imported` (counts only).
+   overwritten (test F8). Lines that are not on the canonical order are counted and skipped. Orders Arasya does not hold
+   are stored apart (next section). No order, item, version, hash, QR, document, Confirmare state or activity is written
+   (test F7). Each `--apply` that records something writes the IAM audit event
+   `production_intelligence.meter_facts_imported` (counts only). One import runs at a time (a named lock).
    Imported rows carry `source_event_id = import:<sha256 of the file>`. Repeating the import writes nothing (test F10).
 3. The backfill or the next automatic run books the imported lines **at the order's own sale date**
    (`source_submitted_at`, else the order's creation), not at the import date (test F13). Import, backfill and automatic
    run may follow each other in any order: each line is booked once (tests F11 to F20, WordPress smoke phase 4).
 
-What the history cannot contain: a shop order that never reached Arasya has no canonical order, so it is not in the
-ledger. Read-only count on 2026-11-13 (orders created since 2026-10-04): Trendhome 3 such sold orders, Outletperdele 33
-(mostly 59631 to 59680, before its real ingestion), together about 331 m of fabric. Bringing them in would create
-canonical orders and QR codes and is not part of this release.
+### "Arasya Dışı / Mağaza Kaynaklı": shop orders that never reached Arasya
+
+Owner decision 2026-11-13: these orders are not lost from the analysis, are classified apart, and are never re-created.
+Read-only count on 2026-11-13 (orders created since 2026-10-04, status not cancelled or failed): Trendhome 3 orders,
+Outletperdele 33 (mostly 59631 to 59680, before its real ingestion), together about 331 m of fabric.
+
+- **Storage.** The same import stores their lines in `shop_sourced_meter_lines` (migration 053): source, shop order and
+  line ids, shop status, creation, payment, basis, length, quantity, refunded quantity, product code, variant. No
+  canonical order, item, QR, document, Confirmare state, activity or ledger entry is created (test G4). Each import
+  replaces an order's lines with the shop's latest statement; an identical statement writes nothing (tests G13, G14).
+- **Verified sale.** Only an order the shop records as `completed` **with a recorded payment** counts as sold meters
+  (`ShopSourcedSales::verified`, enforced again by a CHECK constraint). Shipped (`expediat`), `processing`,
+  `fiind-verificat`, `on-hold`, a completed order without a payment, `cancelled`, `refunded` and `failed` are counted by
+  status and never as meters (tests G5 to G7). Read-only check of the 36 on 2026-11-13: Trendhome 3 completed and paid;
+  Outletperdele 26 completed and paid, 3 `expediat` (unpaid on delivery), 3 `fiind-verificat`, 1 `processing`. So 29
+  orders count today (Trendhome 20.500 m fabric; Outletperdele 262.110 m fabric and 3.400 m rail); the 7 others count
+  when the shop records them as completed and paid and the export is imported again. The same read-only check ran the
+  real production lines of both shops (4,408) through the format 2 import rule: all are accepted.
+- **Meters.** Contract v1 for a web-shop line: `fabric_linear` / `rail_linear` length x (quantity - refunded quantity),
+  fabric and rail apart; `unit` carries none; `unknown` is counted as unknown, never zero. Dated at the shop order's
+  creation (test G11).
+- **No production.** They never enter cut, recut, processed, completed or employee work: Arasya holds no production
+  evidence for them (tests G9, G10; `productionEvidence: false`).
+- **No double count.** A line whose order exists in Arasya (same global order id) is never read from this table: Arasya's
+  ledger counts that order. An order that reaches Arasya later is therefore counted once (tests G15 to G18).
+- **Reports.** `summary.sold` totals include them, and `summary.sold.byOrigin` splits `arasya` (the ledger) from
+  `outside_arasya` (fabric and rail meters, verified orders, metered and unknown lines, orders that are not verified, orders
+  by shop status, the sale rule). `products` and `series` carry `soldOutsideArasyaFabricMeters` /
+  `soldOutsideArasyaRailMeters` next to the totals. Trendyol and B2B never have this origin (test G12).
 
 ## Production metrics (read time, from canonical events)
 
@@ -145,19 +173,19 @@ events only (the lines show `unknown_basis` until the order changes again or the
 
 ### Migration 053 on the production schema
 
-Checked on 2026-11-13 against a copy of the **production schema** (structure and `schema_migrations` only, no row of any
+Checked on 2026-11-13 (again after `shop_sourced_meter_lines` was added) against a copy of the **production schema** (structure and `schema_migrations` only, no row of any
 other table) on MariaDB 10.11 with the production settings (`lock_wait_timeout` 86400, `sql_mode` NO_ENGINE_SUBSTITUTION,
 server charset latin1):
 
 - `migration-status`: 001 to 052 `APPLIED` with the production checksums, only 053 `PENDING`.
 - `php bin/migrate.php --lock-wait-timeout=5` applies 053 in under 0.2 s, also while another session keeps a transaction
-  open on `operational_orders` (a read, or `SELECT … FOR UPDATE`). Creating the four tables and their foreign keys did
-  not wait for that transaction, and reads and writes of `operational_orders` did not wait for the migration.
+  open on `operational_orders` (a read, or `SELECT … FOR UPDATE`). Creating the tables and their foreign keys did not
+  wait for that transaction, and reads and writes of `operational_orders` did not wait for the migration.
 - Code rollback: API 2.68.0 runs on the migrated schema (`migration-status` all `APPLIED`, its `migrate.php` says the
   schema is current); `bin/check-rollback.php 2.68.0` reports `safe`.
-- Schema rollback is not needed and not recommended: the four tables are inert for older code. Only on an explicit
+- Schema rollback is not needed and not recommended: the five tables are inert for older code. Only on an explicit
   owner decision, after the API runs a release below 2.70.0 again:
-  `DROP TABLE production_meter_ledger, production_meter_exclusions, order_item_meter_facts, production_meter_ledger_cursor;`
+  `DROP TABLE production_meter_ledger, production_meter_exclusions, order_item_meter_facts, production_meter_ledger_cursor, shop_sourced_meter_lines;`
   and the removal of the `053_production_intelligence.sql` row. This loses the stated facts and the ledger. Tested on the
   copy: the drop needs no other change, and 053 then applies again in under 0.2 s.
 

@@ -11,13 +11,16 @@ declare(strict_types=1);
 // E. the automatic incremental run: no implicit backfill, new orders, cancellations, late facts, exclusions and late
 //    commits are booked once, intake never writes the ledger and the run never waits on a canonical row lock;
 // F. history: the backfill alone books nothing without shop facts; the facts import changes no order, never overwrites a
-//    live fact and is idempotent; import, backfill and automatic run in any order book each line once at its sale date.
+//    live fact and is idempotent; import, backfill and automatic run in any order book each line once at its sale date;
+// G. "Arasya Dışı / Mağaza Kaynaklı": shop orders that never reached Arasya are stored apart, never as orders; only verified
+//    sales count as sold meters, never as production, and an order that later reaches Arasya is counted once.
 
 use Arasya\Operations\Application\Container;
 use Arasya\Operations\Database\Connection;
 use Arasya\Operations\Database\MigrationRunner;
 use Arasya\Operations\Database\SqlFileRunner;
 use Arasya\Operations\Iam\RootBootstrapService;
+use Arasya\Operations\Intelligence\MeterContract;
 use Arasya\Operations\Intelligence\MeterFactImport;
 use Arasya\Operations\Intelligence\SoldMeterLedger;
 use Arasya\Operations\Support\Uuid;
@@ -349,9 +352,12 @@ $check($ledger->sync(false, 50, $uA)['entries'] === 0 && $sumsOf($uA) === [], 'F
 // histB already received a fact for line 11 through a real order event (a duplicate): that fact must win over the export.
 $check($sendAs($histB, 'h2', $at(35), $items([11 => $basis[11]]))['body']['outcome'] === 'duplicate', 'F3 a live event stated line 11 of histB');
 $pdo->prepare("UPDATE order_item_meter_facts SET updated_at = '2026-10-05 08:00:00.000000' WHERE order_uuid = ?")->execute([$uB]);
-$line = static fn (int $id, string $kind, ?float $length = null): array => ['id' => (string) $id, 'meterBasis' => ['kind' => $kind] + ($length === null ? [] : ['length' => $length])];
-$exportOf = static fn (array $orders, string $source = 'trendhome'): string => json_encode(['format' => MeterFactImport::FORMAT, 'version' => 1, 'sourceKey' => $source,
+$line = static fn (int $id, string $kind, ?float $length = null, int $quantity = 1, int $refunded = 0): array => ['id' => (string) $id,
+    'meterBasis' => ['kind' => $kind] + ($length === null ? [] : ['length' => $length]), 'quantity' => $quantity, 'refundedQuantity' => $refunded];
+// Format 2: every order also states its shop status, creation and payment (used only for orders outside Arasya, section G).
+$exportRaw = static fn (array $orders, string $source = 'trendhome'): string => json_encode(['format' => MeterFactImport::FORMAT, 'version' => MeterFactImport::FORMAT_VERSION, 'sourceKey' => $source,
     'since' => '2026-10-04', 'generatedAt' => $at(0), 'orders' => $orders], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_PRESERVE_ZERO_FRACTION);
+$exportOf = static fn (array $orders, string $source = 'trendhome'): string => $exportRaw(array_map(static fn (array $o): array => $o + ['status' => 'completed', 'createdAt' => '2026-10-05T08:00:00Z', 'paidAt' => '2026-10-05T09:00:00Z'], $orders), $source);
 $full = [$line(11, 'fabric_linear', 2.5), $line(12, 'rail_linear', 3.0), $line(13, 'unit')];
 $export = $exportOf([
     ['id' => $histA, 'items' => [...$full, $line(99, 'unit')]],
@@ -368,15 +374,17 @@ foreach ([
     'invalid kind' => [$exportOf([['id' => $histA, 'items' => [$line(11, 'pleated', 2.0)]]]), 'trendhome'],
     'length on a unit line' => [$exportOf([['id' => $histA, 'items' => [$line(13, 'unit', 1.0)]]]), 'trendhome'],
     'repeated line' => [$exportOf([['id' => $histA, 'items' => [$full[0], $full[0]]]]), 'trendhome'],
-    'a valid order before an invalid one' => [$exportOf([['id' => $histA, 'items' => $full], ['id' => $histB, 'items' => [['id' => '11', 'meterBasis' => ['kind' => 'fabric_linear', 'factor' => 2]]]]]), 'trendhome'],
+    'a valid order before an invalid one' => [$exportOf([['id' => $histA, 'items' => $full], ['id' => $histB, 'items' => [['id' => '11', 'meterBasis' => ['kind' => 'fabric_linear', 'factor' => 2], 'quantity' => 1, 'refundedQuantity' => 0]]]]), 'trendhome'],
     'not JSON' => ['{"format":', 'trendhome'],
     'unknown format' => [str_replace(MeterFactImport::FORMAT, 'other', $export), 'trendhome'],
 ] as $label => [$document, $source]) {
     try { $import->run($source, $document, false); $check(false, "F4 refused: {$label}"); } catch (InvalidArgumentException) { $check($factRows() === $factsBefore, "F4 refused before any write: {$label}"); }
 }
 $dryImport = $import->run('trendhome', $export, true);
+$outsideRows = static fn (): int => (int) $pdo->query('SELECT COUNT(*) FROM shop_sourced_meter_lines')->fetchColumn();
+$outsideBefore = $outsideRows();
 $check([$dryImport['orders'], $dryImport['ordersMissing'], $dryImport['items'], $dryImport['itemsMissing'], $dryImport['recorded'], $dryImport['alreadyStated']] === [3, 1, 11, 1, 8, 1]
-    && $factRows() === $factsBefore, 'F5 a dry import counts and writes nothing: ' . json_encode($dryImport));
+    && $dryImport['outside']['orders'] === 1 && $dryImport['outside']['recorded'] === 1 && $factRows() === $factsBefore && $outsideRows() === $outsideBefore, 'F5 a dry import counts and writes nothing: ' . json_encode($dryImport));
 $applied = $import->run('trendhome', $export, false);
 $check([$applied['recorded'], $applied['alreadyStated'], $applied['itemsMissing'], $applied['ordersMissing']] === [8, 1, 1, 1] && $factRows() === $factsBefore + 8, 'F6 the import adds only the missing facts');
 $check($snapshotOf() === $canonicalBefore, 'F7 orders, versions, hashes, items, QR, documents, Confirmare and activity are byte-identical after the import');
@@ -420,11 +428,117 @@ $nightly = $ledger->sync(false, 50);
 $check($sumsOf($uE)['sold_fabric'] === '6.000' && ($nightly['byReason']['correction'] ?? 0) === 1, 'F22 the nightly full run books it once: ' . json_encode($nightly['byReason']));
 $check($ledger->sync(false, 50)['entries'] === 0 && $ledger->syncChanged(false)['entries'] === 0, 'F23 and nothing more on the next runs');
 
+// ---- G. "Arasya Dışı / Mağaza Kaynaklı" (owner decision 2026-11-13) ----------------------------------------------
+// Shop orders that never reached Arasya. The same export stores them apart (shop_sourced_meter_lines), never as orders.
+// Every expectation is a difference against the report before, so rows other suites hold never matter.
+$units = static fn (string $meters): int => (str_starts_with($meters, '-') ? -1 : 1) * (int) MeterContract::units(ltrim($meters, '-'));
+$report = static fn (string $section, array $query = []) => $ok($get($root, "/management/production-intelligence/{$section}", $range + $query), "G report {$section}");
+$outsideOf = static fn (array $summary): array => $summary['sold']['byOrigin']['outside_arasya'];
+$production = static fn (array $summary): array => [$summary['cut'], $summary['recut'], $summary['processed'], $summary['completed']];
+$freeId = static function () use ($pdo): string {
+    $s = $pdo->prepare('SELECT (SELECT COUNT(*) FROM operational_orders WHERE source_order_id = ?) + (SELECT COUNT(*) FROM shop_sourced_meter_lines WHERE source_order_id = ?)');
+    do { $id = (string) random_int(700000000, 799999999); $s->execute([$id, $id]); } while ((int) $s->fetchColumn() !== 0);
+    return $id;
+};
+// Numeric ids, like every web-shop order (a JSON export turns them into integer keys).
+[$oV, $oR, $oS, $oP, $oC, $oX] = [$freeId(), $freeId(), $freeId(), $freeId(), $freeId(), $freeId()];
+$outSku = 'OUT-PI-' . $suffix;
+$outside = static fn (string $id, string $status, ?string $paidAt, array $items, string $createdAt = '2026-10-06T10:00:00Z'): array => ['id' => $id, 'status' => $status, 'createdAt' => $createdAt, 'paidAt' => $paidAt, 'items' => $items];
+$withSku = static fn (array $line): array => $line + ['sku' => $outSku, 'variant' => 'Culoare: Gri'];
+// array_replace, not array_merge: the numeric ids are integer keys, which array_merge would renumber.
+$outsideOrders = static fn (array $over = []): array => array_values(array_replace([
+    // Verified sale: 2.5 m x 2 fabric, 3.0 m rail, a unit line and an unknown line (counted as unknown, never zero).
+    $oV => $outside($oV, 'completed', '2026-10-06T11:00:00Z', [$withSku($line(11, 'fabric_linear', 2.5, 2)), $line(12, 'rail_linear', 3.0), $line(13, 'unit', null, 10), $line(14, 'unknown')]),
+    // Verified sale with one of two pieces refunded: 3.0 m x (2 - 1).
+    $oR => $outside($oR, 'completed', '2026-10-06T12:00:00Z', [$withSku($line(21, 'fabric_linear', 3.0, 2, 1))]),
+    // Not verified: shipped, processing, completed without a recorded payment, cancelled.
+    $oS => $outside($oS, 'expediat', null, [$withSku($line(31, 'fabric_linear', 4.0))]),
+    $oP => $outside($oP, 'processing', null, [$withSku($line(41, 'fabric_linear', 1.5))]),
+    $oC => $outside($oC, 'completed', null, [$withSku($line(51, 'fabric_linear', 2.0))]),
+    $oX => $outside($oX, 'cancelled', null, [$withSku($line(61, 'fabric_linear', 6.0))]),
+], $over));
+$outsideExport = static fn (array $over = []): string => $exportOf($outsideOrders($over));
+$ordersRows = static fn (): int => (int) $pdo->query('SELECT COUNT(*) FROM operational_orders')->fetchColumn();
+$heldLines = static fn (): array => $pdo->query('SELECT source_order_id, source_item_id, shop_status, sale_verified, first_imported_at, updated_at FROM shop_sourced_meter_lines WHERE source_key = \'trendhome\' AND source_order_id IN ('
+    . implode(',', array_map([$pdo, 'quote'], [$oV, $oR, $oS, $oP, $oC, $oX])) . ') ORDER BY source_order_id, source_item_id')->fetchAll(PDO::FETCH_ASSOC);
+$before = $report('summary', ['source' => 'trendhome']);
+$productsBefore = $report('products', ['source' => 'trendhome']);
+$employeesBefore = $report('employees');
+$ordersBefore = $ordersRows(); $factsBefore = $factRows(); $ledgerBefore = $ledgerRows();
+$dry = $import->run('trendhome', $outsideExport(), true);
+$check($dry['outside'] === ['orders' => 6, 'verifiedSaleOrders' => 2, 'lines' => 9, 'recorded' => 6, 'updated' => 0, 'unchanged' => 0, 'superseded' => 0]
+    && $heldLines() === [] && $ordersRows() === $ordersBefore, 'G1 a dry import classifies six orders outside Arasya and writes nothing: ' . json_encode($dry['outside']));
+foreach ([
+    'version 1' => str_replace('"version":2', '"version":1', $outsideExport()),
+    'missing status' => $exportRaw([array_diff_key($outsideOrders()[0], ['status' => 1])]),
+    'missing payment field' => $exportRaw([array_diff_key($outsideOrders()[0], ['paidAt' => 1])]),
+    'missing refunded quantity' => $exportRaw([['items' => [array_diff_key($line(11, 'fabric_linear', 2.5), ['refundedQuantity' => 1])]] + $outsideOrders()[0]]),
+    'invalid creation' => $exportOf([['createdAt' => '2026-10-06 10:00'] + $outsideOrders()[0]]),
+    'impossible date' => $exportOf([['createdAt' => '2026-02-30T10:00:00Z'] + $outsideOrders()[0]]),
+    'refunded above quantity' => $exportOf([$outside($oV, 'completed', '2026-10-06T11:00:00Z', [$line(11, 'fabric_linear', 2.5, 1, 2)])]),
+    'fractional quantity' => str_replace('"quantity":2,', '"quantity":2.5,', $outsideExport()),
+    'a customer field' => $exportOf([['billing' => ['name' => 'TEST Client']] + $outsideOrders()[0]]),
+] as $label => $document) {
+    try { $import->run('trendhome', $document, false); $check(false, "G2 refused: {$label}"); } catch (InvalidArgumentException) { $check($heldLines() === [] && $factRows() === $factsBefore, "G2 refused before any write: {$label}"); }
+}
+$applied = $import->run('trendhome', $outsideExport(), false);
+$held = $heldLines();
+$check($applied['outside']['recorded'] === 6 && count($held) === 9 && array_sum(array_column($held, 'sale_verified')) === 5, 'G3 nine lines stored, five of them on the two verified sales');
+$check($ordersRows() === $ordersBefore && $factRows() === $factsBefore && $ledgerRows() === $ledgerBefore
+    && (int) $pdo->query('SELECT COUNT(*) FROM operational_orders WHERE global_order_id IN (' . implode(',', array_map(static fn ($id) => $pdo->quote("trendhome:{$id}"), [$oV, $oR, $oS])) . ')')->fetchColumn() === 0,
+    'G4 no order, item, fact or ledger entry is created for them');
+$after = $report('summary', ['source' => 'trendhome']);
+$delta = static fn (array $a, array $b, string $metric): int => $units($b['sold'][$metric]) - $units($a['sold'][$metric]);
+$oBefore = $outsideOf($before); $oAfter = $outsideOf($after);
+$check($units($oAfter['fabricMeters']) - $units($oBefore['fabricMeters']) === 8000 && $units($oAfter['railMeters']) - $units($oBefore['railMeters']) === 3000,
+    'G5 only the verified sales count: 2.5 x 2 + 3.0 x (2 - 1) = 8.000 m fabric, 3.000 m rail: ' . json_encode($oAfter));
+$check($oAfter['verifiedSaleOrders'] - $oBefore['verifiedSaleOrders'] === 2 && $oAfter['notVerifiedOrders'] - $oBefore['notVerifiedOrders'] === 4
+    && $oAfter['unknownLines'] - $oBefore['unknownLines'] === 1 && $oAfter['productionEvidence'] === false, 'G6 not verified orders and unknown lines are counted, never as meters');
+foreach (['completed' => 3, 'expediat' => 1, 'processing' => 1, 'cancelled' => 1] as $status => $count) {
+    $check(($oAfter['ordersByShopStatus'][$status] ?? 0) - ($oBefore['ordersByShopStatus'][$status] ?? 0) === $count, "G7 shop status {$status} counted apart");
+}
+$check($delta($before, $after, 'fabricMeters') === 8000 && $delta($before, $after, 'railMeters') === 3000
+    && $after['sold']['byOrigin']['arasya'] === $before['sold']['byOrigin']['arasya'], 'G8 sold totals grow by the outside origin only; Arasya\'s own sold meters are unchanged');
+$check($production($after) === $production($before) && $report('employees') === $employeesBefore, 'G9 no production evidence: cut, recut, processed, completed and employee work are unchanged');
+$outRow = array_values(array_filter($report('products', ['source' => 'trendhome'])['items'], static fn ($r) => $r['productCode'] === $outSku))[0] ?? null;
+$check($outRow !== null && $outRow['soldFabricMeters'] === '8.000' && $outRow['soldOutsideArasyaFabricMeters'] === '8.000' && $outRow['cutFabricMeters'] === '0.000'
+    && $outRow['completedFabricMeters'] === '0.000', 'G10 the product row shows the outside sale apart and no production: ' . json_encode($outRow));
+$day = array_values(array_filter($report('series', ['source' => 'trendhome', 'bucket' => 'day'])['items'], static fn ($p) => $p['period'] === '2026-10-06'))[0] ?? null;
+$check($day !== null && $units($day['soldOutsideArasyaFabricMeters']) >= 8000 && $day['soldOutsideArasyaRailMeters'] !== null, 'G11 dated at the shop order\'s creation (2026-10-06)');
+foreach (['trendyol', 'b2b'] as $foreign) {
+    $check($outsideOf($report('summary', ['source' => $foreign]))['verifiedSaleOrders'] === 0, "G12 the outside origin never appears under {$foreign}");
+}
+$again = $import->run('trendhome', $outsideExport(), false);
+$check($again['outside']['unchanged'] === 6 && $again['outside']['recorded'] === 0 && $again['outside']['updated'] === 0 && $heldLines() === $held, 'G13 repeating the import writes nothing');
+// The shop later records the shipped order as completed and paid, and cancels the refunded one.
+$changed = $import->run('trendhome', $outsideExport([
+    $oS => $outside($oS, 'completed', '2026-10-20T09:00:00Z', [$withSku($line(31, 'fabric_linear', 4.0))]),
+    $oR => $outside($oR, 'cancelled', null, [$withSku($line(21, 'fabric_linear', 3.0, 2, 1))]),
+]), false);
+$oChanged = $outsideOf($report('summary', ['source' => 'trendhome']));
+$keptFirst = array_column(array_filter($heldLines(), static fn ($r) => $r['source_order_id'] === $oS), 'first_imported_at');
+$check($changed['outside']['updated'] === 2 && $changed['outside']['unchanged'] === 4 && $units($oChanged['fabricMeters']) - $units($oBefore['fabricMeters']) === 9000
+    && $keptFirst === array_column(array_filter($held, static fn ($r) => $r['source_order_id'] === $oS), 'first_imported_at'),
+    'G14 the shop\'s latest statement replaces the order: +4.000 m shipped then paid, -3.000 m cancelled, first import kept: ' . json_encode($oChanged));
+// The verified order later reaches Arasya with the same lines: Arasya's ledger counts it, the outside origin no longer does.
+$totalBefore = $report('summary', ['source' => 'trendhome']);
+$check($sendAs($oV, 'out-arrives', $at(5), $items($basis))['body']['outcome'] === 'applied', 'G15 the outside order reaches Arasya');
+$uV = $orderUuid("trendhome:{$oV}");
+$ledger->sync(false, 50, $uV);
+$totalAfter = $report('summary', ['source' => 'trendhome']);
+$check($sumsOf($uV) === ['sold_fabric' => '5.000', 'sold_rail' => '3.000'] && $units($outsideOf($totalAfter)['fabricMeters']) === $units($outsideOf($totalBefore)['fabricMeters']) - 5000
+    && $units($outsideOf($totalAfter)['railMeters']) === $units($outsideOf($totalBefore)['railMeters']) - 3000, 'G16 the outside lines of an order now in Arasya are no longer counted');
+$check($totalAfter['sold']['fabricMeters'] === $totalBefore['sold']['fabricMeters'] && $totalAfter['sold']['railMeters'] === $totalBefore['sold']['railMeters'],
+    'G17 the order is counted once: the ledger takes over exactly what the outside origin gave up');
+$check($import->run('trendhome', $outsideExport(), true)['outside']['superseded'] === 1, 'G18 a later import reports the order as now in Arasya and stores nothing outside for it');
+
 // Disposable database hygiene: the rollback suites read recent meter facts, and other suites delete their own orders
 // (the ledger's foreign key would block them), so this suite removes every ledger row and fact it caused.
 $pdo->prepare('DELETE FROM production_meter_ledger WHERE recorded_at >= ?')->execute([$eStart]);
 $pdo->exec('DELETE FROM production_meter_ledger_cursor');
-foreach ([$newUuid, $factUuid, $lateUuid, $uA, $uB, $uC, $uD, $uE] as $own) {
+$dropOutside = $pdo->prepare("DELETE FROM shop_sourced_meter_lines WHERE source_key = 'trendhome' AND source_order_id = ?");
+foreach (["PIHX{$suffix}", $oV, $oR, $oS, $oP, $oC, $oX] as $own) $dropOutside->execute([$own]);
+foreach ([$newUuid, $factUuid, $lateUuid, $uA, $uB, $uC, $uD, $uE, $uV] as $own) {
     foreach (['production_meter_ledger', 'order_item_meter_facts', 'production_meter_exclusions'] as $table) $pdo->prepare("DELETE FROM {$table} WHERE order_uuid = ?")->execute([$own]);
 }
 foreach ([$uuid, $legacy] as $own) {

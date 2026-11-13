@@ -20,6 +20,9 @@ use Throwable;
  *
  * Meter definitions (owner decisions K1-K8, 2026-11-12):
  * - sold: the insert-only sold-meter ledger, by entry date (sale, cancellation, correction), fabric and rail apart (K5);
+ *   plus, apart under the origin `outside_arasya` ("Arasya Dışı / Mağaza Kaynaklı", owner decision 2026-11-13), the
+ *   verified sales of shop orders that never reached Arasya (ShopSourcedSales). Those never enter cut, processed or
+ *   completed, and an order that exists in Arasya is counted only by the ledger;
  * - cut: the order's measured line fabric at its first cutting completion. The evidence is always `source_line`: these
  *   are the sold meters of the lines, never a meterage measured at the cutting table (K1). A later cutting completion of
  *   the same order is a recut, reported apart and never added to sold or completed meters;
@@ -53,10 +56,11 @@ final readonly class ProductionIntelligenceService
             throw new ApiException(400, 'INVALID_REQUEST', 'Unsupported query parameter.');
         }
         $body = $this->snapshot(function () use ($section, $range, $source, $bucket): array {
-            $sold = $this->sold($range, $source);
+            $outside = ShopSourcedSales::report(ShopSourcedSales::lines($this->pdo, $range->fromUtc->format('Y-m-d H:i:s'), $range->toUtc->format('Y-m-d H:i:s'), $source));
+            $sold = [...$this->sold($range, $source), ...$outside['entries']];
             $events = $this->events($range, $source, null);
             return match ($section) {
-                'summary' => $this->summary($sold, $events, $range, $source),
+                'summary' => $this->summary($sold, $events, $range, $source, $outside['summary']),
                 'products' => $this->products($sold, $events),
                 'employees' => $this->employees($events),
                 'series' => $this->series($sold, $events, $bucket),
@@ -138,7 +142,7 @@ final readonly class ProductionIntelligenceService
         }
         $s = $this->pdo->prepare($sql . ' ORDER BY l.occurred_at, l.entry_uuid');
         $s->execute($params);
-        return $s->fetchAll(PDO::FETCH_ASSOC);
+        return array_map(static fn (array $row): array => $row + ['origin' => 'arasya'], $s->fetchAll(PDO::FETCH_ASSOC));
     }
 
     /**
@@ -199,13 +203,17 @@ final readonly class ProductionIntelligenceService
         return $events;
     }
 
-    private function summary(array $sold, array $events, DateRange $range, ?string $source): array
+    private function summary(array $sold, array $events, DateRange $range, ?string $source, array $outside): array
     {
         $totals = ['sold_fabric' => 0, 'sold_rail' => 0];
+        $arasya = ['sold_fabric' => 0, 'sold_rail' => 0];
         $reasons = [];
         foreach ($sold as $entry) {
             $units = self::signed((string) $entry['delta_meters']);
             $totals[$entry['metric']] += $units;
+            if ($entry['origin'] === 'arasya') {
+                $arasya[$entry['metric']] += $units;
+            }
             $reasons[$entry['reason']] = ($reasons[$entry['reason']] ?? 0) + 1;
         }
         $metric = static fn (): array => ['orders' => 0, 'fabricUnits' => 0, 'ordersWithUnknownLines' => 0, 'unknownLines' => 0];
@@ -227,7 +235,9 @@ final readonly class ProductionIntelligenceService
             'ordersWithUnknownLines' => $m['ordersWithUnknownLines'], 'unknownLines' => $m['unknownLines']];
         return [
             'sold' => ['fabricMeters' => MeterContract::meters($totals['sold_fabric']), 'railMeters' => MeterContract::meters($totals['sold_rail']), 'entriesByReason' => $reasons,
-                'syncedThrough' => $this->ledgerWatermark()],
+                'syncedThrough' => $this->ledgerWatermark(),
+                'byOrigin' => ['arasya' => ['fabricMeters' => MeterContract::meters($arasya['sold_fabric']), 'railMeters' => MeterContract::meters($arasya['sold_rail'])],
+                    ShopSourcedSales::ORIGIN => $outside]],
             'cut' => $out($by['cut']) + ['evidence' => 'source_line', 'measuredCutMeters' => null],
             'recut' => $out($by['recut']) + ['evidence' => 'source_line'],
             'processed' => ['stageCompletions' => $stageCompletions],
@@ -271,11 +281,15 @@ final readonly class ProductionIntelligenceService
         $rows = [];
         $key = static fn (string $source, ?string $code, ?string $variant): string => $source . "\x1f" . ($code ?? '') . "\x1f" . ($variant ?? '');
         $row = static fn (string $source, ?string $code, ?string $variant): array => ['source' => $source, 'productCode' => $code, 'variant' => $variant,
-            'soldFabricUnits' => 0, 'soldRailUnits' => 0, 'cutFabricUnits' => 0, 'completedFabricUnits' => 0, 'unknownLines' => 0];
+            'soldFabricUnits' => 0, 'soldRailUnits' => 0, 'outsideFabricUnits' => 0, 'outsideRailUnits' => 0, 'cutFabricUnits' => 0, 'completedFabricUnits' => 0, 'unknownLines' => 0];
         foreach ($sold as $entry) {
             $k = $key($entry['source_key'], $entry['product_code_snapshot'], $entry['variant_snapshot']);
             $rows[$k] ??= $row($entry['source_key'], $entry['product_code_snapshot'], $entry['variant_snapshot']);
-            $rows[$k][$entry['metric'] === 'sold_fabric' ? 'soldFabricUnits' : 'soldRailUnits'] += self::signed((string) $entry['delta_meters']);
+            $units = self::signed((string) $entry['delta_meters']);
+            $rows[$k][$entry['metric'] === 'sold_fabric' ? 'soldFabricUnits' : 'soldRailUnits'] += $units;
+            if ($entry['origin'] === ShopSourcedSales::ORIGIN) {
+                $rows[$k][$entry['metric'] === 'sold_fabric' ? 'outsideFabricUnits' : 'outsideRailUnits'] += $units;
+            }
         }
         $lines = MeterLines::forOrders($this->pdo, array_values(array_unique(array_column(array_filter($events, static fn ($e) => $e['kind'] === 'cut' || $e['kind'] === 'completed'), 'order_uuid'))));
         foreach ($events as $event) {
@@ -297,6 +311,7 @@ final readonly class ProductionIntelligenceService
         $total = count($rows);
         $items = array_map(static fn (array $r): array => ['source' => $r['source'], 'productCode' => $r['productCode'], 'variant' => $r['variant'],
             'soldFabricMeters' => MeterContract::meters($r['soldFabricUnits']), 'soldRailMeters' => MeterContract::meters($r['soldRailUnits']),
+            'soldOutsideArasyaFabricMeters' => MeterContract::meters($r['outsideFabricUnits']), 'soldOutsideArasyaRailMeters' => MeterContract::meters($r['outsideRailUnits']),
             'cutFabricMeters' => MeterContract::meters($r['cutFabricUnits']), 'completedFabricMeters' => MeterContract::meters($r['completedFabricUnits']),
             'unknownLines' => $r['unknownLines']], array_slice($rows, 0, self::MAX_ROWS));
         return ['items' => $items, 'total' => $total, 'truncated' => $total > self::MAX_ROWS];
@@ -335,11 +350,15 @@ final readonly class ProductionIntelligenceService
             return match ($bucket) { 'day' => $local->format('Y-m-d'), 'week' => $local->format('o-\WW'), 'month' => $local->format('Y-m'), 'year' => $local->format('Y') };
         };
         $points = [];
-        $point = ['soldFabricUnits' => 0, 'soldRailUnits' => 0, 'cutFabricUnits' => 0, 'completedFabricUnits' => 0, 'cutOrders' => 0, 'completedOrders' => 0];
+        $point = ['soldFabricUnits' => 0, 'soldRailUnits' => 0, 'outsideFabricUnits' => 0, 'outsideRailUnits' => 0, 'cutFabricUnits' => 0, 'completedFabricUnits' => 0, 'cutOrders' => 0, 'completedOrders' => 0];
         foreach ($sold as $entry) {
             $p = $label((string) $entry['occurred_at']);
             $points[$p] ??= $point;
-            $points[$p][$entry['metric'] === 'sold_fabric' ? 'soldFabricUnits' : 'soldRailUnits'] += self::signed((string) $entry['delta_meters']);
+            $units = self::signed((string) $entry['delta_meters']);
+            $points[$p][$entry['metric'] === 'sold_fabric' ? 'soldFabricUnits' : 'soldRailUnits'] += $units;
+            if ($entry['origin'] === ShopSourcedSales::ORIGIN) {
+                $points[$p][$entry['metric'] === 'sold_fabric' ? 'outsideFabricUnits' : 'outsideRailUnits'] += $units;
+            }
         }
         foreach ($events as $event) {
             if ($event['kind'] !== 'cut' && $event['kind'] !== 'completed') {
@@ -354,6 +373,7 @@ final readonly class ProductionIntelligenceService
         $items = [];
         foreach ($points as $period => $p) {
             $items[] = ['period' => $period, 'soldFabricMeters' => MeterContract::meters($p['soldFabricUnits']), 'soldRailMeters' => MeterContract::meters($p['soldRailUnits']),
+                'soldOutsideArasyaFabricMeters' => MeterContract::meters($p['outsideFabricUnits']), 'soldOutsideArasyaRailMeters' => MeterContract::meters($p['outsideRailUnits']),
                 'cutFabricMeters' => MeterContract::meters($p['cutFabricUnits']), 'completedFabricMeters' => MeterContract::meters($p['completedFabricUnits']),
                 'cutOrders' => $p['cutOrders'], 'completedOrders' => $p['completedOrders']];
         }

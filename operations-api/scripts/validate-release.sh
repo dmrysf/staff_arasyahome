@@ -96,6 +96,7 @@ for file in \
   src/Intelligence/MeterContract.php \
   src/Intelligence/SoldMeterLedger.php \
   src/Intelligence/MeterFactImport.php \
+  src/Intelligence/ShopSourcedSales.php \
   src/Intelligence/ProductionIntelligencePolicy.php \
   src/Intelligence/ProductionIntelligenceController.php \
   src/Analytics/AnalyticsController.php \

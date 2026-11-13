@@ -8,7 +8,9 @@ declare(strict_types=1);
  *   php bin/meter-facts-import.php --source=trendhome|outletperdele --file=<export.json> [--apply]
  *
  * After `--apply`, the automatic run (`meter-ledger.php --changed --apply`) or the backfill (`meter-ledger.php --apply`)
- * books the imported lines at their order's own sale date. Prints counts only, never an order.
+ * books the imported lines at their order's own sale date. Orders the shop holds but Arasya does not are stored as
+ * "Arasya Dışı / Mağaza Kaynaklı" lines (`shop_sourced_meter_lines`), never as orders; reports count only their verified
+ * sales (shop status completed with a recorded payment) and never as production. Prints counts only, never an order.
  */
 $container = require __DIR__ . '/cli-bootstrap.php';
 try {
@@ -27,15 +29,18 @@ try {
     }
     $import = new Arasya\Operations\Intelligence\MeterFactImport($container->pdo(), $container->clock());
     $report = $import->run($source, (string) file_get_contents($file), !$apply);
-    if ($apply && $report['recorded'] > 0) {
+    $outside = $report['outside'];
+    if ($apply && ($report['recorded'] > 0 || $outside['recorded'] > 0 || $outside['updated'] > 0)) {
         (new Arasya\Operations\Iam\IamAuditLogger($container->pdo()))->record(null, 'production_intelligence.meter_facts_imported', 'order_source', $source, $source,
             ['origin' => $report['origin'], 'orders' => $report['orders'], 'recorded' => $report['recorded'], 'alreadyStated' => $report['alreadyStated'],
-             'ordersMissing' => $report['ordersMissing'], 'itemsMissing' => $report['itemsMissing'], 'byKind' => $report['byKind']],
+             'ordersMissing' => $report['ordersMissing'], 'itemsMissing' => $report['itemsMissing'], 'byKind' => $report['byKind'], 'outside' => $outside],
             'cli-' . bin2hex(random_bytes(8)), $container->clock()->now()->format('Y-m-d H:i:s.u'));
     }
     fwrite(STDOUT, ($apply ? 'APPLIED' : 'DRY RUN (nothing written)') . " {$source}: orders={$report['orders']} ordersNotInArasya={$report['ordersMissing']} lines={$report['items']}"
         . " recorded={$report['recorded']} alreadyStated={$report['alreadyStated']} linesNotOnOrder={$report['itemsMissing']} byKind=" . json_encode($report['byKind'])
-        . " origin={$report['origin']}. Orders, items, QR, documents and Confirmare unchanged.\n");
+        . " outsideArasya: orders={$outside['orders']} verifiedSaleOrders={$outside['verifiedSaleOrders']} lines={$outside['lines']} recorded={$outside['recorded']}"
+        . " updated={$outside['updated']} unchanged={$outside['unchanged']} nowInArasya={$outside['superseded']}"
+        . " origin={$report['origin']}. Orders, items, QR, documents and Confirmare unchanged; no order was created.\n");
 } catch (Throwable $error) {
     fwrite(STDERR, 'Meter fact import failed (' . get_class($error) . '): ' . ($error instanceof InvalidArgumentException || $error instanceof RuntimeException ? rtrim($error->getMessage(), '.') : 'see logs') . ". Nothing was written by the failing order; no secrets are printed.\n");
     exit(1);
