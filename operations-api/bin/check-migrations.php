@@ -277,4 +277,17 @@ if ($collectionsTables[1] !== ['finance_ledger_request_sequence', 'finance_ledge
     || !str_contains($collectionsSchema, 'UNIQUE KEY uq_finance_ledger_posted (posted_movement_uuid)')) {
     throw new RuntimeException('Migration 052 must only add the Finance request tables, the guarded refund and audit CHECK swaps and eight finance permissions, and grant nothing.');
 }
+// Confirmare finance holds (054, API 2.71.0): one new table and nothing else. No existing table is altered or written, no
+// permission or grant, no cascade; one open hold per order, the release shape and the four eyes are in the schema.
+$holdsSchema = (string) file_get_contents($root . '/database/migrations/054_confirmare_finance_holds.sql');
+$holdsStatements = preg_replace('/^--.*$/m', '', $holdsSchema) ?? '';
+preg_match_all('/CREATE TABLE IF NOT EXISTS (\w+)/', $holdsStatements, $holdsTables);
+if ($holdsTables[1] !== ['confirmare_finance_holds']
+    || preg_match('/ALTER TABLE|DROP TABLE|DELETE FROM|TRUNCATE|INSERT |\bUPDATE\s+\w+\s+SET|\bpermissions\b|role_permissions|employee_role_assignments|employee_application_access/i', $holdsStatements) === 1
+    || preg_match('/ON DELETE CASCADE|ON UPDATE CASCADE|SET NULL/i', $holdsStatements) === 1
+    || !str_contains($holdsSchema, 'UNIQUE KEY uq_confirmare_finance_holds_open (open_order_uuid)')
+    || !str_contains($holdsSchema, 'CONSTRAINT chk_confirmare_finance_holds_four_eyes CHECK (released_by_employee_uuid IS NULL OR released_by_employee_uuid <> placed_by_employee_uuid)')
+    || !str_contains($holdsSchema, 'CONSTRAINT chk_confirmare_finance_holds_release CHECK (')) {
+    throw new RuntimeException('Migration 054 must only add the Confirmare finance holds table (one open hold per order, four eyes), and grant nothing.');
+}
 fwrite(STDOUT, 'Migration sanity checks passed for ' . count($files) . " file(s).\n");

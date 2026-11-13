@@ -13,6 +13,7 @@ import { SourceFilter, confirmareOrderPath, dueDay, when } from "./ConfirmarePar
 import { financeOrderPath } from "../../domain/financeRequests";
 import { TransferExceptionsSection } from "./ConfirmareTransferExceptions";
 import { BankCheckSection } from "./ConfirmareBankCheck";
+import { FinanceHoldsSection } from "./ConfirmareFinanceHolds";
 
 /** Tasks that need a person now; the others are informative. */
 /** The advance groups (owner workflow): waiting, partial, paid, routed to the shop. */
@@ -60,6 +61,8 @@ export function ConfirmareFinanceScreen({ employee, service, navigate }: { emplo
       {data && data.orders.length >= 500 && <p className="dashboard-footnote">{t("cf.fin.queueLimit")}</p>}
       {/* API 2.46.0: the bank check before an expired advance proforma is cancelled, and the open proforma cycles. */}
       {(financeRole || operator.supervise.length > 0) && <BankCheckSection service={service} navigate={navigate} />}
+      {/* API 2.71.0: finance holds, open finance tasks older than a day and expired proformas (supervisors, finance record/approve). */}
+      {(scopes.record.length + scopes.approve.length > 0 || operator.supervise.length > 0) && <FinanceHoldsSection service={service} />}
       {financeRole && <TransferExceptionsSection employee={employee} service={service} />}
     </article>
   );

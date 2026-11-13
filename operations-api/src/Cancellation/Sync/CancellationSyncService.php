@@ -221,6 +221,12 @@ final readonly class CancellationSyncService
             if ($this->financeOpen($order)) {
                 return ['state' => 'finance_open'];
             }
+            // API 2.71.0 (owner decision 2026-11-13): an open finance task or a finance hold means a person is still looking
+            // for the customer's money: the order is never stopped and nothing is asked from the shop.
+            $blocker = \Arasya\Operations\Confirmare\ConfirmareFinanceHolds::expiryBlocker($this->pdo, $orderUuid);
+            if ($blocker !== null) {
+                return ['state' => $blocker];
+            }
             (new CancellationControl($this->pdo, $this->clock))->stopLocally($orderUuid, $actorUuid, 'Proforma de avans a expirat fără plată (120 de ore, verificare bancară înregistrată).', true, $requestId, $key);
             $control = $this->control($orderUuid);
             if ($control === null || $control['hold_status'] !== CancellationControl::HELD) {

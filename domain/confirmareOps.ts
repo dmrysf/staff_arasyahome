@@ -33,7 +33,25 @@ export interface ProformaCycle {
   bankCheck: boolean; closedReason: string | null; lastError: string | null; closedAt: string | null;
 }
 export interface OrderCycle { calls: CallCycle | null; proforma: ProformaCycle | null; history: ProformaCycle[] }
-export interface CycleAttentionItem extends ProformaCycle { orderNumber: string; globalOrderId: string }
+/** API 2.71.0: why an expired proforma waits for a person instead of being cancelled. */
+export const EXPIRY_BLOCKERS = ["finance_hold", "finance_task_open", "finance_hold_unknown"] as const;
+export type ExpiryBlocker = (typeof EXPIRY_BLOCKERS)[number];
+export interface CycleAttentionItem extends ProformaCycle { orderNumber: string; globalOrderId: string; waitsFor: ExpiryBlocker | null }
+/** API 2.71.0: what a bank check would let the worker do, shown before it is recorded. */
+export interface BankCheckPreviewItem { orderNumber: string; globalOrderId: string; expiresAt: string; state: CycleState; outcome: "may_cancel" | "waits"; waitsFor: ExpiryBlocker | null }
+export interface BankCheckPreview { source: string; coversUntil: string; items: BankCheckPreviewItem[]; mayCancel: number; waiting: number; fingerprint: string }
+/** API 2.71.0 finance holds: an authorized, reasoned, audited stop of the proforma expiry (records no money). */
+export const HOLD_REASONS = ["early_transfer", "transfer_exception", "customer_reports_payment", "finance_check_pending", "other"] as const;
+export type HoldReason = (typeof HOLD_REASONS)[number];
+export const HOLD_RELEASE_REASONS = ["payment_recorded", "not_customer_payment", "returned_to_payer", "no_payment_found", "other"] as const;
+export type HoldReleaseReason = (typeof HOLD_RELEASE_REASONS)[number];
+export interface FinanceHold {
+  id: string; source: string; orderNumber: string; globalOrderId: string; open: boolean; reasonCode: HoldReason; note: string; placedBy: string | null; placedRole: string; placedAt: string | null;
+  releasedBy: string | null; releasedRole: string | null; releasedAt: string | null; releaseReasonCode: HoldReleaseReason | null; releaseNote: string | null;
+}
+export interface StaleFinanceTask { id: string; source: string; orderNumber: string; globalOrderId: string; purpose: string; state: string; assignee: string | null; requestedAt: string; ageHours: number }
+export interface ExpiredProforma { source: string; orderNumber: string; globalOrderId: string; state: CycleState; expiresAt: string; overdueHours: number; waitsFor: ExpiryBlocker | null }
+export interface FinanceReview { sources: string[]; reviewTaskHours: number; holds: FinanceHold[]; staleTasks: StaleFinanceTask[]; expiredProformas: ExpiredProforma[]; canPlace: string[]; canRelease: string[] }
 export interface BankCheck { source: string; coversUntil: string; recordedAt: string; by: string | null }
 export interface BankChecks { items: BankCheck[]; waiting: Record<string, number>; sources: string[]; canRecord: string[] }
 export interface ShopAwb {
@@ -65,7 +83,13 @@ export type OperationPath = "reactivate" | "awb" | "awb/address" | "awb/cod-corr
 export interface ConfirmareOpsApi {
   cycleAttention(source: string | null, signal?: AbortSignal): Promise<CycleAttentionItem[]>;
   bankChecks(source: string | null, signal?: AbortSignal): Promise<BankChecks>;
-  recordBankCheck(source: string, idempotencyKey: string): Promise<BankCheck>;
+  /** API 2.71.0: the orders a bank check may let the worker cancel; the instant is chosen by the server. */
+  previewBankCheck(source: string, signal?: AbortSignal): Promise<BankCheckPreview>;
+  /** The bank check names the preview it was shown (its instant and fingerprint), never an instant of the browser. */
+  recordBankCheck(source: string, idempotencyKey: string, preview: Pick<BankCheckPreview, "coversUntil" | "fingerprint">): Promise<BankCheck>;
+  financeReview(source: string | null, signal?: AbortSignal): Promise<FinanceReview>;
+  placeHold(input: { source: string; orderNumber: string; reasonCode: HoldReason; note: string }, idempotencyKey: string): Promise<FinanceHold>;
+  releaseHold(holdId: string, input: { reasonCode: HoldReleaseReason; note: string }, idempotencyKey: string): Promise<FinanceHold>;
   advanceCycle(globalOrderId: string): Promise<ProformaCycle>;
   /** R1/R2 (2026-10-26): start the advance proforma again after a definite refusal; the server reads the shop's proforma first. */
   retryCycle(globalOrderId: string): Promise<ProformaCycle>;
@@ -146,8 +170,52 @@ export function mapOrderCycle(value: unknown): OrderCycle | null {
   };
 }
 
+const blocker = (value: unknown): ExpiryBlocker | null => (value == null ? null : oneOf(value, EXPIRY_BLOCKERS));
+const shop = (value: unknown): string => oneOf(value, ["trendhome", "outletperdele"] as const);
+
 export function mapCycleAttention(value: unknown): CycleAttentionItem[] {
-  return list(obj(value).items, 300, (entry) => { const raw = obj(entry); return { ...mapProformaCycle(raw), orderNumber: str(raw.orderNumber, 64), globalOrderId: str(raw.globalOrderId, 200) }; });
+  return list(obj(value).items, 300, (entry) => { const raw = obj(entry); return { ...mapProformaCycle(raw), orderNumber: str(raw.orderNumber, 64), globalOrderId: str(raw.globalOrderId, 200), waitsFor: blocker(raw.waitsFor) }; });
+}
+
+export function mapBankCheckPreview(value: unknown): BankCheckPreview {
+  const raw = obj(value);
+  const fingerprint = str(raw.fingerprint, 64);
+  if (!/^[0-9a-f]{64}$/.test(fingerprint)) fail();
+  return {
+    source: shop(raw.source), coversUntil: instant(raw.coversUntil) ?? fail(), mayCancel: int(raw.mayCancel), waiting: int(raw.waiting), fingerprint,
+    items: list(raw.items, 500, (entry) => {
+      const item = obj(entry);
+      return { orderNumber: str(item.orderNumber, 64), globalOrderId: str(item.globalOrderId, 200), expiresAt: instant(item.expiresAt) ?? fail(), state: oneOf(item.state, CYCLE_STATES),
+        outcome: oneOf(item.outcome, ["may_cancel", "waits"] as const), waitsFor: blocker(item.waitsFor) };
+    }),
+  };
+}
+
+export function mapFinanceHold(value: unknown): FinanceHold {
+  const raw = obj(value);
+  return {
+    id: str(raw.id, 36), source: shop(raw.source), orderNumber: str(raw.orderNumber, 64), globalOrderId: str(raw.globalOrderId, 200), open: bool(raw.open), reasonCode: oneOf(raw.reasonCode, HOLD_REASONS),
+    note: str(raw.note, 600), placedBy: optStr(raw.placedBy), placedRole: str(raw.placedRole, 20), placedAt: instant(raw.placedAt), releasedBy: optStr(raw.releasedBy), releasedRole: optStr(raw.releasedRole, 20),
+    releasedAt: instant(raw.releasedAt), releaseReasonCode: raw.releaseReasonCode == null ? null : oneOf(raw.releaseReasonCode, HOLD_RELEASE_REASONS), releaseNote: optStr(raw.releaseNote, 600),
+  };
+}
+
+export function mapFinanceReview(value: unknown): FinanceReview {
+  const raw = obj(value);
+  return {
+    sources: list(raw.sources, 2, shop), reviewTaskHours: int(raw.reviewTaskHours), holds: list(raw.holds, 200, mapFinanceHold),
+    staleTasks: list(raw.staleTasks, 300, (entry) => {
+      const task = obj(entry);
+      return { id: str(task.id, 36), source: shop(task.source), orderNumber: str(task.orderNumber, 64), globalOrderId: str(task.globalOrderId, 200), purpose: str(task.purpose, 20), state: str(task.state, 30),
+        assignee: optStr(task.assignee), requestedAt: instant(task.requestedAt) ?? fail(), ageHours: int(task.ageHours) };
+    }),
+    expiredProformas: list(raw.expiredProformas, 300, (entry) => {
+      const item = obj(entry);
+      return { source: shop(item.source), orderNumber: str(item.orderNumber, 64), globalOrderId: str(item.globalOrderId, 200), state: oneOf(item.state, CYCLE_STATES), expiresAt: instant(item.expiresAt) ?? fail(),
+        overdueHours: int(item.overdueHours), waitsFor: blocker(item.waitsFor) };
+    }),
+    canPlace: list(raw.canPlace, 2, shop), canRelease: list(raw.canRelease, 2, shop),
+  };
 }
 
 export function mapBankCheck(value: unknown): BankCheck {
@@ -275,6 +343,8 @@ const OPS_ERRORS = [
   "CONFIRMARE_OPERATION_DENIED", "CONFIRMARE_OPERATION_DISABLED", "CONFIRMARE_OPERATION_NOT_FOUND", "CONFIRMARE_AWB_LABEL_UNAVAILABLE", "CONFIRMARE_AWB_COD_MISMATCH", "CONFIRMARE_CYCLE_NONE", "CONFIRMARE_CYCLE_BUSY", "CONFIRMARE_CYCLE_RETRY_REFUSED",
   "CONFIRMARE_CYCLE_SCHEMA_MISSING", "CONFIRMARE_DENIED", "CONFIRMARE_FINANCE_DENIED", "CONFIRMARE_HEALTH_DENIED", "EFACTURA_TASK_CHANGED", "EFACTURA_TRANSITION_REFUSED", "EFACTURA_TASK_NOT_FOUND",
   "CONFIRMARE_SOURCE_UNAVAILABLE", "CONFIRMARE_AUDIT_UNAVAILABLE", "IDEMPOTENCY_CONFLICT", "CONFIRMARE_NOT_FOUND", "VALIDATION_FAILED",
+  "CONFIRMARE_BANK_CHECK_PREVIEW_REQUIRED", "CONFIRMARE_BANK_CHECK_PREVIEW_STALE", "CONFIRMARE_HOLD_DENIED", "CONFIRMARE_HOLD_SAME_EMPLOYEE", "CONFIRMARE_HOLD_NOT_ALLOWED",
+  "CONFIRMARE_HOLD_NOT_FOUND", "CONFIRMARE_HOLD_RELEASED", "CONFIRMARE_HOLD_SCHEMA_MISSING",
 ] as const;
 
 /**

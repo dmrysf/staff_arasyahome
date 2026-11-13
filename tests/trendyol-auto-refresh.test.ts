@@ -328,8 +328,9 @@ test("automatic refresh is limited to the Trendyol and Confirmare screens; the p
   // every decision is an explicit click with a confirmation.
   // Staff 2.42.0: the operator desk replaces the queue screen; it reads the same two pools every minute (never claims).
   // Staff 2.42.1: the desk is also the operator's home, so the old Confirmare home (and its own queue read) is gone.
+  // Staff 2.51.0: the finance holds review list only reads (financeReview); placing and releasing a hold are explicit clicks.
   assert.deepEqual(users.map((file) => path.relative(root, file)).sort(), [
-    "features/confirmare/ConfirmareBankCheck.tsx", "features/confirmare/ConfirmareFinanceScreen.tsx", "features/confirmare/ConfirmareHandoffScreen.tsx", "features/confirmare/ConfirmareOrderScreen.tsx", "features/confirmare/ConfirmareShopTasks.tsx", "features/confirmare/ConfirmareTeamScreen.tsx", "features/confirmare/FinanceRequestScreens.tsx", "features/confirmare/OperatorDesk.tsx",
+    "features/confirmare/ConfirmareBankCheck.tsx", "features/confirmare/ConfirmareFinanceHolds.tsx", "features/confirmare/ConfirmareFinanceScreen.tsx", "features/confirmare/ConfirmareHandoffScreen.tsx", "features/confirmare/ConfirmareOrderScreen.tsx", "features/confirmare/ConfirmareShopTasks.tsx", "features/confirmare/ConfirmareTeamScreen.tsx", "features/confirmare/FinanceRequestScreens.tsx", "features/confirmare/OperatorDesk.tsx",
     "features/trendyol/TrendyolInboxScreen.tsx", "features/workspaces/TrendyolDashboard.tsx",
     "features/workspaces/refreshScheduler.ts", "features/workspaces/useAutoRefresh.ts",
   ]);

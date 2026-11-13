@@ -46,10 +46,20 @@ function restorePreFinanceCollectionsTestSchema(PDO $pdo): void
     $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='052_finance_collections.sql'");
 }
 
+/** Restore a pre-054 disposable test fixture (no Confirmare finance holds). This is NOT a deployment/rollback mechanism. */
+function restorePreFinanceHoldsTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='054_confirmare_finance_holds.sql'")->fetchColumn()) return;
+    $pdo->exec('DROP TABLE IF EXISTS confirmare_finance_holds');
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='054_confirmare_finance_holds.sql'");
+}
+
 /** Restore a pre-047 disposable test fixture (no Finance V0.3 company onboarding). This is NOT a deployment/rollback mechanism. */
 function restorePreFinanceOnboardingTestSchema(PDO $pdo): void
 {
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    restorePreFinanceHoldsTestSchema($pdo);
     restorePreFinanceCollectionsTestSchema($pdo);
     restorePreTrendyolAwbTestSchema($pdo);
     restorePreB2BOrderTypesTestSchema($pdo);
