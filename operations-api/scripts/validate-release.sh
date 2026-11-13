@@ -89,6 +89,16 @@ for file in \
   src/Integration/SourceDefinition.php \
   src/Integration/SourceMode.php \
   bin/rebuild-analytics.php \
+  bin/meter-ledger.php \
+  bin/meter-exclusion.php \
+  bin/meter-facts-import.php \
+  database/migrations/053_production_intelligence.sql \
+  src/Intelligence/MeterContract.php \
+  src/Intelligence/SoldMeterLedger.php \
+  src/Intelligence/MeterFactImport.php \
+  src/Intelligence/ShopSourcedSales.php \
+  src/Intelligence/ProductionIntelligencePolicy.php \
+  src/Intelligence/ProductionIntelligenceController.php \
   src/Analytics/AnalyticsController.php \
   src/Analytics/AnalyticsService.php \
   src/Analytics/AnalyticsCapture.php \
@@ -128,7 +138,7 @@ for file in \
 done
 
 (cd -- "$release_root" && sha256sum -c SHA256SUMS >/dev/null) || fail "SHA256SUMS verification failed."
-php -r '$r=json_decode(file_get_contents($argv[1]), true, flags: JSON_THROW_ON_ERROR); require $argv[2]."/bootstrap.php"; if (!is_array($r) || preg_match("/^[0-9a-f]{40}$/", $r["sourceCommit"] ?? "") !== 1 || ($r["version"] ?? null) !== "2.68.2" || $r["version"] !== Arasya\Operations\Http\HealthController::VERSION) exit(2);' "$release_root/release.json" "$release_root" \
+php -r '$r=json_decode(file_get_contents($argv[1]), true, flags: JSON_THROW_ON_ERROR); require $argv[2]."/bootstrap.php"; if (!is_array($r) || preg_match("/^[0-9a-f]{40}$/", $r["sourceCommit"] ?? "") !== 1 || ($r["version"] ?? null) !== "2.70.0" || $r["version"] !== Arasya\Operations\Http\HealthController::VERSION) exit(2);' "$release_root/release.json" "$release_root" \
   || fail "release.json provenance/version is invalid."
 
 for directory in src database/migrations bin config; do
