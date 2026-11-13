@@ -80,6 +80,8 @@ $clear = static function () use ($pdo, $cycleTables): void {
         $pdo->exec("DELETE FROM {$table}");
     }
     $pdo->exec('DELETE FROM api_rate_limit_buckets');
+    $pdo->exec('DELETE FROM confirmare_finance_holds');
+    $pdo->exec("DELETE FROM finance_verification_requests WHERE request_uuid = '00000000-0000-4000-8000-0000000c2101'");
     $pdo->exec("UPDATE operational_orders SET cancellation_state = NULL, production_stopped_at = NULL WHERE cancellation_state IS NOT NULL");
     $pdo->exec('UPDATE operational_orders SET workflow_cohort = NULL, workflow_cohort_reason = NULL, workflow_cohort_at = NULL WHERE workflow_cohort IS NOT NULL');
 };
@@ -244,9 +246,22 @@ $error($call($who['cfin'], 'POST', '/confirmare/finance/bank-check', ['source' =
 $early = $ok($call($who['cfin'], 'POST', '/confirmare/finance/bank-check', ['source' => 'trendhome', 'coversUntil' => gmdate('Y-m-d\TH:i:s\Z', time() - 6 * 86400)]), 'a bank check covering only the past');
 $run();
 $check($cycleOf($g(1))['state'] === 'waiting_bank_check' && $cancels(1) === 0, 'a bank check that ends before the expiry instant does not count');
+// API 2.71.0: a bank check that covers an expired proforma is recorded only with the preview the employee was shown.
+$preview = static function (array $w, string $src = 'trendhome', ?string $covers = null) use ($kernel, $pdo): array {
+    $pdo->exec('DELETE FROM api_rate_limit_buckets');
+    return T::call($kernel, 'GET', '/confirmare/finance/bank-check/preview', null, ['origin' => T::ORIGIN], $w['cookie'], ['source' => $src] + ($covers === null ? [] : ['coversUntil' => $covers]));
+};
+$checksBefore = (int) $one("SELECT COUNT(*) FROM confirmare_bank_checks WHERE source_key = 'trendhome'");
+$error($call($who['cfin'], 'POST', '/confirmare/finance/bank-check', ['source' => 'trendhome']), 409, 'CONFIRMARE_BANK_CHECK_PREVIEW_REQUIRED', 'a bank check covering an expired proforma without its preview is refused');
+$check((int) $one("SELECT COUNT(*) FROM confirmare_bank_checks WHERE source_key = 'trendhome'") === $checksBefore, 'nothing is recorded without the preview');
+$pv = $ok($preview($who['cfin']), 'finance previews the bank check');
+$pvOne = array_values(array_filter($pv['items'], static fn (array $i): bool => $i['orderNumber'] === $id(1)));
+$check(count($pvOne) === 1 && $pvOne[0]['outcome'] === 'may_cancel' && $pvOne[0]['waitsFor'] === null && $pv['mayCancel'] >= 1 && is_string($pv['fingerprint']) && strlen($pv['fingerprint']) === 64,
+    'the preview names the expired order it may cancel: ' . json_encode($pv));
 $bankKey = 'cyc-bank-' . bin2hex(random_bytes(8));
-$bank = $ok($call($who['cfin'], 'POST', '/confirmare/finance/bank-check', ['source' => 'trendhome'], $bankKey), 'bank check up to now');
-$again = $ok($call($who['cfin'], 'POST', '/confirmare/finance/bank-check', ['source' => 'trendhome'], $bankKey), 'the same bank check again (retry)');
+$bankBody = ['source' => 'trendhome', 'coversUntil' => $pv['coversUntil'], 'previewFingerprint' => $pv['fingerprint']];
+$bank = $ok($call($who['cfin'], 'POST', '/confirmare/finance/bank-check', $bankBody, $bankKey), 'bank check up to now, with the preview it was shown');
+$again = $ok($call($who['cfin'], 'POST', '/confirmare/finance/bank-check', $bankBody, $bankKey), 'the same bank check again (retry)');
 $check($again['check'] === $bank['check'] && (int) $one("SELECT COUNT(*) FROM confirmare_bank_checks WHERE source_key = 'trendhome'") === 2, 'a retried bank check is recorded once');
 $run();
 $c1 = $cycleOf($g(1));
@@ -449,6 +464,148 @@ $three(16);
 $c = $cycleOf($g(16));
 $check($c['state'] === 'closed' && $c['closed_reason'] === 'smartbill_rate_limited' && $proformas(16) === 0, 'R3: Retry-After 900 s (longer than the 300 s wait): no automatic retry, closed as rate-limited');
 $th->rateLimitRetryAfter = 45;
+
+
+// ---- 12. API 2.71.0 finance safety (owner decision 2026-11-13): open finance task, finance hold, bank check preview ------
+foreach ([21, 22, 23, 24] as $n) {
+    $ok(T::ingest($kernel, 'trendhome', $payload($id($n), 300 + $n)), "trendhome order {$n}");
+    $th->orders[$id($n)] = ['id' => $id($n), 'number' => $id($n), 'eligible' => true, 'phone' => CYC_PHONE, 'pricing' => 'sha256:' . hash('sha256', 'cyc-price-' . $id($n)),
+        'invoice' => ['cleared' => false, 'cod' => true, 'totalAccepted' => false]];
+}
+$service->distribute();
+foreach (['cfinapp', 'csup2'] as $name) $identity($name);
+$ok($asRoot('PUT', "/management/employees/{$uuids['cfinapp']}/finance-scopes", ['view' => ['trendhome'], 'record' => [], 'approve' => ['trendhome']]), 'finance approver cfinapp');
+$ok($asRoot('PUT', "/management/employees/{$uuids['csup2']}/confirmare-scopes", ['operate' => [], 'supervise' => ['trendhome']]), 'confirmare csup2');
+foreach (['cfinapp', 'csup2'] as $name) $who[$name] = T::login($kernel, "{$name}.{$suffix}", $password);
+foreach ([21, 22, 23] as $n) { $three($n); $check($cycleOf($g($n))['state'] === 'running', "S12 order {$n}: proforma running"); }
+// Order 21: finance is still looking for the money (an open, assigned finance task). TEST fixture: the task row as the
+// operator's /finance-request writes it; the real request is driven end to end by the yd-soft proforma smoke.
+$pdo->prepare("INSERT INTO finance_verification_requests (request_uuid, order_uuid, global_order_id, source_key, purpose, state, version, open_order_uuid, assigned_employee_uuid, assigned_at,
+        requested_by_employee_uuid, requested_at, request_idempotency_key, ledger, proforma_series, proforma_number, updated_at)
+    VALUES (?, ?, ?, 'trendhome', 'advance', 'assigned', 1, ?, ?, UTC_TIMESTAMP(6), ?, UTC_TIMESTAMP(6), ?, 'shop', 'ARS', ?, UTC_TIMESTAMP(6))")
+    ->execute(['00000000-0000-4000-8000-0000000c2101', $orderUuid($g(21)), $g(21), $orderUuid($g(21)), $uuids['cfin'], $uuids['cop'], 'cyc-task-' . $suffix, 'pf-' . $id(21)]);
+// Order 22: the customer paid by bank transfer before any approval; finance cannot record it on the order (no task), so it
+// places a finance hold.
+$holds = static fn (array $w, array $body, ?string $key = null): array => $call($w, 'POST', '/confirmare/finance/holds', $body, $key);
+$holdBody = static fn (int $n, string $reason = 'early_transfer'): array => ['source' => 'trendhome', 'orderNumber' => $id($n), 'reasonCode' => $reason, 'note' => 'Transfer vazut in extras, comanda neaprobata (TEST).'];
+$error($holds($who['cfinview'], $holdBody(22)), 404, 'CONFIRMARE_NOT_FOUND', 'S12: a finance viewer cannot place a hold (nothing disclosed)');
+$error($holds($who['cout'], $holdBody(22)), 404, 'CONFIRMARE_NOT_FOUND', 'S12: another shop\'s operator cannot place a hold');
+$error($holds($who['cfinout'], $holdBody(22)), 404, 'CONFIRMARE_NOT_FOUND', 'S12: Outlet Perdele finance cannot place a Trend Home hold');
+$error($holds($who['cfin'], ['note' => 'x'] + $holdBody(22)), 422, 'VALIDATION_FAILED', 'S12: a hold needs a reason note');
+$error($holds($who['cfin'], ['reasonCode' => 'because'] + $holdBody(22)), 422, 'VALIDATION_FAILED', 'S12: a hold needs a known reason code');
+$error($holds($who['cfin'], $holdBody(22) + ['amount' => '300.00']), 400, 'INVALID_REQUEST', 'S12: a hold carries no amount (it records no money)');
+$error($holds($who['cfin'], ['orderNumber' => '99999999'] + $holdBody(22)), 404, 'CONFIRMARE_NOT_FOUND', 'S12: an unknown order number');
+$error($call($who['cfin'], 'POST', '/confirmare/finance/holds', $holdBody(22), 'short'), 400, 'INVALID_IDEMPOTENCY_KEY', 'S12: a hold needs an idempotency key');
+$audits = static fn (string $event): int => (int) $one('SELECT COUNT(*) FROM auth_audit_events WHERE event_type = ?', [$event]);
+$placedAudits = $audits('confirmare.finance_hold.placed');
+$releasedAudits = $audits('confirmare.finance_hold.released');
+$holdKey = 'cyc-hold-' . bin2hex(random_bytes(8));
+$placed = $ok($holds($who['cfin'], $holdBody(22), $holdKey), 'S12: finance places a hold on order 22');
+$check(($placed['created'] ?? null) === true && $placed['hold']['open'] === true && $placed['hold']['placedRole'] === 'finance' && $placed['hold']['reasonCode'] === 'early_transfer' && $placed['hold']['orderNumber'] === $id(22),
+    'S12: the hold names who, why and the order: ' . json_encode($placed['hold']));
+$replayHold = $ok($holds($who['cfin'], $holdBody(22), $holdKey), 'S12: the same hold request again');
+$second = $ok($holds($who['csup'], $holdBody(22, 'customer_reports_payment')), 'S12: a supervisor asks to hold the same order');
+$check($replayHold['created'] === false && $replayHold['hold']['id'] === $placed['hold']['id'] && $second['created'] === false && $second['hold']['id'] === $placed['hold']['id']
+    && (int) $one('SELECT COUNT(*) FROM confirmare_finance_holds WHERE order_uuid = ?', [$orderUuid($g(22))]) === 1, 'S12: one open hold per order (retries and a second person get the same hold)');
+$check($audits('confirmare.finance_hold.placed') === $placedAudits + 1, 'S12: the hold is audited once');
+$check((int) $one('SELECT COUNT(*) FROM order_finance_actions WHERE order_uuid = ?', [$orderUuid($g(22))]) === 0, 'S12: the hold records no money on the order');
+$check($detail($who['cop'], $g(22))['production']['cleared'] === false, 'S12: the held order stays closed for production');
+// All three proformas expire.
+foreach ([21, 22, 23] as $n) $age($g($n), 121);
+$error($preview($who['cop']), 403, 'CONFIRMARE_FINANCE_DENIED', 'S12: an operator does not preview the bank check');
+$error($preview($who['cfinout']), 403, 'CONFIRMARE_FINANCE_DENIED', 'S12: Outlet Perdele finance does not preview a Trend Home bank check');
+// Only finance `record` / `approve` of the shop sees the order numbers of the preview (owner 2026-11-13).
+$error($preview($who['cfinview']), 403, 'CONFIRMARE_FINANCE_DENIED', 'S12: a finance viewer (no record or approve) does not preview the bank check');
+$error($preview($who['csup']), 403, 'CONFIRMARE_FINANCE_DENIED', 'S12: a Confirmare supervisor without finance scopes does not preview the bank check');
+$error($preview($who['cout']), 403, 'CONFIRMARE_FINANCE_DENIED', 'S12: another shop\'s operator does not preview the bank check');
+$error($preview($root), 403, 'CONFIRMARE_FINANCE_DENIED', 'S12: root does not preview the bank check');
+$pv = $ok($preview($who['cfin']), 'S12: finance previews the bank check');
+$check($pv['items'] !== [] && array_filter($pv['items'], static fn (array $i): bool => array_keys($i) !== ['orderNumber', 'globalOrderId', 'expiresAt', 'state', 'outcome', 'waitsFor']) === [],
+    'S12: a preview item names the order, its expiry and outcome only (no customer, amount or product): ' . json_encode($pv['items'][0] ?? null));
+$outcome = static function (array $pv, int $n) use ($id): ?array { foreach ($pv['items'] as $i) { if ($i['orderNumber'] === $id($n)) return [$i['outcome'], $i['waitsFor']]; } return null; };
+$check($outcome($pv, 21) === ['waits', 'finance_task_open'] && $outcome($pv, 22) === ['waits', 'finance_hold'] && $outcome($pv, 23) === ['may_cancel', null],
+    'S12: the preview shows which orders may be cancelled and which wait (task, hold): ' . json_encode($pv['items']));
+$checksBefore = (int) $one("SELECT COUNT(*) FROM confirmare_bank_checks WHERE source_key = 'trendhome'");
+$refused = $error($call($who['cfin'], 'POST', '/confirmare/finance/bank-check', ['source' => 'trendhome', 'coversUntil' => $pv['coversUntil']]), 409, 'CONFIRMARE_BANK_CHECK_PREVIEW_REQUIRED', 'S12: no bank check without the preview');
+$check(array_keys($refused['error']['details'] ?? []) === ['mayCancel', 'waiting'] && !str_contains(json_encode($refused['error']['details']), $id(23)),
+    'S12: the refusal carries counts only, never an order number: ' . json_encode($refused['error']['details'] ?? null));
+$error($call($who['cfin'], 'POST', '/confirmare/finance/bank-check', ['source' => 'trendhome', 'coversUntil' => $pv['coversUntil'], 'previewFingerprint' => str_repeat('0', 64)]), 409, 'CONFIRMARE_BANK_CHECK_PREVIEW_STALE', 'S12: no bank check with another preview');
+$check((int) $one("SELECT COUNT(*) FROM confirmare_bank_checks WHERE source_key = 'trendhome'") === $checksBefore, 'S12: a refused bank check records nothing');
+$ok($call($who['cfin'], 'POST', '/confirmare/finance/bank-check', ['source' => 'trendhome', 'coversUntil' => $pv['coversUntil'], 'previewFingerprint' => $pv['fingerprint']]), 'S12: the bank check with the preview it was shown');
+$run();
+$controls = static fn (int $n): int => (int) $one('SELECT COUNT(*) FROM order_cancellation_controls WHERE order_uuid = ?', [$orderUuid($g($n))]);
+$c21 = $cycleOf($g(21)); $c22 = $cycleOf($g(22)); $c23 = $cycleOf($g(23));
+$check($c21['state'] === 'waiting_finance' && $c21['last_error'] === 'finance_task_open' && $cancels(21) === 0 && $controls(21) === 0,
+    'S12: an open finance task: the expired proforma waits, nothing is cancelled, the order is not stopped: ' . json_encode([$c21['state'], $c21['last_error']]));
+$check($c22['state'] === 'waiting_finance' && $c22['last_error'] === 'finance_hold' && $cancels(22) === 0 && $controls(22) === 0,
+    'S12: a finance hold: the expired proforma waits, nothing is cancelled, the order is not stopped: ' . json_encode([$c22['state'], $c22['last_error']]));
+$check($c23['state'] === 'cancelled' && $c23['closed_reason'] === 'proforma_expired' && $cancels(23) === 1 && $controls(23) === 1, 'S12: control: without a task or a hold the expiry still cancels as before (K-05)');
+$v21 = (int) $cycleOf($g(21))['version'];
+$run(); $run();
+$check($cycleOf($g(21))['state'] === 'waiting_finance' && (int) $cycleOf($g(21))['version'] === $v21 && $cancels(21) === 0 && $cancels(22) === 0, 'S12: further worker runs change nothing (no churn, still nothing cancelled)');
+$att = array_column($ok($get($who['csup'], '/confirmare/cycles'), 'S12 supervisor cycles')['items'], 'waitsFor', 'orderNumber');
+$check(($att[$id(21)] ?? null) === 'finance_task_open' && ($att[$id(22)] ?? null) === 'finance_hold', 'S12: the supervisor\'s cycle list says what each waits for');
+// Review list: nothing open is forgotten.
+$review = static function (array $w) use ($kernel, $pdo): array { $pdo->exec('DELETE FROM api_rate_limit_buckets'); return T::call($kernel, 'GET', '/confirmare/finance/holds', null, ['origin' => T::ORIGIN], $w['cookie'], ['source' => 'trendhome']); };
+$error($review($who['cop']), 403, 'CONFIRMARE_HOLD_DENIED', 'S12: an operator has no review list');
+$error($review($who['cfinview']), 403, 'CONFIRMARE_HOLD_DENIED', 'S12: a finance viewer has no review list');
+$r = $ok($review($who['csup']), 'S12: the supervisor\'s review list');
+$expired = array_column($r['expiredProformas'], 'waitsFor', 'orderNumber');
+$check(count(array_filter($r['holds'], static fn (array $h): bool => $h['open'] && $h['orderNumber'] === $id(22))) === 1 && ($expired[$id(21)] ?? null) === 'finance_task_open' && ($expired[$id(22)] ?? null) === 'finance_hold'
+    && array_filter($r['staleTasks'], static fn (array $t): bool => $t['orderNumber'] === $id(21)) === [] && $r['canRelease'] === ['trendhome'], 'S12: the review list shows the hold and the waiting proformas; a fresh task is not stale yet');
+$pdo->prepare('UPDATE finance_verification_requests SET requested_at = DATE_SUB(requested_at, INTERVAL 25 HOUR) WHERE request_uuid = ?')->execute(['00000000-0000-4000-8000-0000000c2101']);
+$r = $ok($review($who['cfin']), 'S12: the finance recorder\'s review list');
+$stale = array_values(array_filter($r['staleTasks'], static fn (array $t): bool => $t['orderNumber'] === $id(21)));
+$check(count($stale) === 1 && $stale[0]['state'] === 'assigned' && $stale[0]['ageHours'] >= 25 && $r['canRelease'] === [] && $r['canPlace'] === ['trendhome'], 'S12: a finance task open for more than 24 h is listed for review: ' . json_encode($stale));
+// Release: authorized, reasoned, audited, never by who placed it.
+$release = static fn (array $w, string $hold, array $body, ?string $key = null): array => $call($w, 'POST', '/confirmare/finance/holds/' . $hold . '/release', $body, $key);
+$relBody = ['reasonCode' => 'no_payment_found', 'note' => 'Verificat extrasul: nicio plata (TEST).'];
+$hid = $placed['hold']['id'];
+$error($release($who['cop'], $hid, $relBody), 404, 'CONFIRMARE_HOLD_NOT_FOUND', 'S12: an operator cannot release a hold');
+$error($release($who['cfin'], $hid, $relBody), 403, 'CONFIRMARE_HOLD_DENIED', 'S12: a finance recorder (not approver) cannot release a hold');
+$error($release($who['cfinapp'], $hid, ['reasonCode' => 'whatever'] + $relBody), 422, 'VALIDATION_FAILED', 'S12: a release needs a known reason');
+$error($release($who['cfinapp'], $hid, ['note' => ''] + $relBody), 422, 'VALIDATION_FAILED', 'S12: a release needs a note');
+$error($release($who['cfinapp'], '00000000-0000-4000-8000-0000000c2199', $relBody), 404, 'CONFIRMARE_HOLD_NOT_FOUND', 'S12: an unknown hold');
+// Order 24: a supervisor places a hold and cannot release it themselves.
+$three(24);
+$h24 = $ok($holds($who['csup'], $holdBody(24, 'customer_reports_payment')), 'S12: a supervisor places a hold on order 24')['hold'];
+$error($release($who['csup'], $h24['id'], $relBody), 403, 'CONFIRMARE_HOLD_SAME_EMPLOYEE', 'S12: who placed a hold never releases it');
+$fourEyes = false;
+try { $pdo->prepare("UPDATE confirmare_finance_holds SET open_order_uuid = NULL, released_by_employee_uuid = placed_by_employee_uuid, released_role = 'supervisor', released_at = UTC_TIMESTAMP(6), release_reason_code = 'other', release_note = 'x', release_idempotency_key = 'k', release_request_id = 'r' WHERE hold_uuid = ?")->execute([$h24['id']]); } catch (PDOException) { $fourEyes = true; }
+$check($fourEyes && (int) $one('SELECT COUNT(*) FROM confirmare_finance_holds WHERE hold_uuid = ? AND released_at IS NULL', [$h24['id']]) === 1, 'S12: the database refuses a release by the employee who placed the hold');
+// A cancellation request already on its way is stopped by the hold: the order is never stopped.
+$pdo->prepare("UPDATE confirmare_proforma_cycles SET state = 'order_cancel_pending' WHERE global_order_id = ? AND active_order_uuid IS NOT NULL")->execute([$g(24)]);
+$run();
+$check($controls(24) === 0 && $cycleOf($g(24))['last_error'] === 'finance_hold' && $cycleOf($g(24))['state'] === 'order_cancel_pending', 'S12: a hold stops an order cancellation already requested by the worker: the order is not stopped');
+$relKey = 'cyc-release-' . bin2hex(random_bytes(8));
+$released = $ok($release($who['cfinapp'], $hid, $relBody, $relKey), 'S12: a finance approver releases the hold of order 22');
+$check($released['released'] === true && $released['hold']['open'] === false && $released['hold']['releasedRole'] === 'finance' && $released['hold']['releaseReasonCode'] === 'no_payment_found'
+    && $released['hold']['releasedBy'] === "Test cfinapp", 'S12: the release names who and why: ' . json_encode($released['hold']));
+$check($ok($release($who['cfinapp'], $hid, $relBody, $relKey), 'S12: the same release again')['released'] === false, 'S12: a retried release changes nothing');
+$error($release($who['csup2'], $hid, $relBody), 409, 'CONFIRMARE_HOLD_RELEASED', 'S12: a released hold cannot be released again');
+$check($audits('confirmare.finance_hold.released') === $releasedAudits + 1, 'S12: the release is audited once');
+$run();
+$check($cycleOf($g(22))['state'] === 'cancelled' && $cancels(22) === 1 && $controls(22) === 1, 'S12: after the release (no payment found) the covered expiry cancels as before');
+$ok($release($who['csup2'], $h24['id'], ['reasonCode' => 'not_customer_payment', 'note' => 'Plata nu apartine clientului (TEST).']), 'S12: another supervisor releases the hold of order 24');
+// Production clearance: an open hold keeps an otherwise cleared order closed (order 7: approved, call and lines confirmed).
+$pdo->prepare("UPDATE operational_orders SET source_financial_state = 'cleared', source_financial_basis = 'advance_collected', source_financial_pricing = source_pricing_fingerprint WHERE global_order_id = ?")->execute([$g(7)]);
+$before = \Arasya\Operations\Confirmare\ConfirmationClearance::missing($pdo, $orderUuid($g(7)));
+$h7 = $ok($holds($who['cop'], $holdBody(7, 'customer_reports_payment')), 'S12: the order\'s own operator places a hold on order 7')['hold'];
+$during = \Arasya\Operations\Confirmare\ConfirmationClearance::missing($pdo, $orderUuid($g(7)));
+$check(!in_array('payment', $before, true) && in_array('payment', $during, true) && (int) $one('SELECT production_cleared FROM order_confirmations WHERE order_uuid = ?', [$orderUuid($g(7))]) === 0 && $h7['placedRole'] === 'operator',
+    'S12: a hold closes the payment condition: no automatic production clearance while it is open: ' . json_encode([$before, $during]));
+$ok($release($who['csup'], $h7['id'], ['reasonCode' => 'payment_recorded', 'note' => 'Plata inregistrata dupa regulile finance (TEST).']), 'S12: a supervisor releases the hold of order 7');
+$after = \Arasya\Operations\Confirmare\ConfirmationClearance::missing($pdo, $orderUuid($g(7)));
+$check($after === $before, 'S12: after the release the clearance is what the other conditions say (the hold adds nothing more): ' . json_encode($after));
+// A hold is refused once production started or the order is closed.
+$pdo->prepare("UPDATE operational_orders SET production_stage_id = 'material-preparation' WHERE global_order_id = ?")->execute([$g(5)]);
+$started = $error($holds($who['csup'], $holdBody(5)), 409, 'CONFIRMARE_HOLD_NOT_ALLOWED', 'S12: no hold once production started');
+$check(($started['error']['details']['reason'] ?? null) === 'production_started', 'S12: the refusal says production_started');
+$pdo->prepare("UPDATE operational_orders SET production_stage_id = 'waiting' WHERE global_order_id = ?")->execute([$g(5)]);
+$columns = array_column($all("SELECT column_name AS c FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'confirmare_finance_holds'"), 'c');
+$check(array_intersect($columns, ['amount', 'iban', 'email', 'phone', 'customer_name', 'reference']) === [], 'S12: a hold stores no amount, bank account or customer field');
+$pdo->exec('DELETE FROM confirmare_finance_holds');
+$pdo->exec("DELETE FROM finance_verification_requests WHERE request_uuid = '00000000-0000-4000-8000-0000000c2101'");
 
 // ---- Cleanup (later suites share the database in CI) ------------------------------------------------------------------------
 $clear();

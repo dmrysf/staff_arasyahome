@@ -160,6 +160,7 @@ try {
     $expected[] = '051_trendyol_awb_station.sql';
     $expected[] = '052_finance_collections.sql';
     $expected[] = '053_production_intelligence.sql';
+    $expected[] = '054_confirmare_finance_holds.sql';
     if ($applied !== $expected) {
         throw new RuntimeException('An existing 001 schema did not apply exactly the pending migrations in order: ' . implode(', ', $applied));
     }

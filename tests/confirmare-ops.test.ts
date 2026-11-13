@@ -6,7 +6,7 @@ import type { ConfirmareApi, ConfirmareDetail } from "../domain/confirmare";
 import { confirmareErrorKey } from "../domain/confirmare";
 import { cardRefundEntries, verifiableEntries, type FinanceView } from "../domain/confirmareFinance";
 import {
-  CYCLE_STATES, EFACTURA_STATES, OPS_BLOCKERS, REACTIVATION_REASONS, blockerKey, canRecordBankCheck, canUseShopTasks, canWatchHealth, hoursUntil, mapBankChecks, mapContactCycle,
+  CYCLE_STATES, EFACTURA_STATES, EXPIRY_BLOCKERS, HOLD_REASONS, HOLD_RELEASE_REASONS, OPS_BLOCKERS, mapBankCheckPreview, mapCycleAttention, mapFinanceHold, mapFinanceReview, REACTIVATION_REASONS, blockerKey, canRecordBankCheck, canUseShopTasks, canWatchHealth, hoursUntil, mapBankChecks, mapContactCycle,
   mapEfacturaQueue, mapHealth, mapOperationOutcome, mapOperationsState, mapOrderCycle, opsErrorKey, recentAwbsOf, RECENT_AWB_FLOOR,
 } from "../domain/confirmareOps";
 import { canAccessRoute } from "../domain/permissions";
@@ -15,6 +15,7 @@ import type { Employee } from "../domain/models";
 import { createProductionServices, mapConfirmareDetail, mapFinanceRead } from "../services/production/httpServices";
 import { StaffServiceError } from "../domain/models";
 import { ConfirmareCyclePanel } from "../features/confirmare/ConfirmareCyclePanel";
+import { FinanceHoldsSection } from "../features/confirmare/ConfirmareFinanceHolds";
 import { CATALOGS } from "../i18n";
 
 // The dual-store operations in Staff (Staff 2.36.0, API 2.46.0). TEST data only.
@@ -136,7 +137,9 @@ test("every refusal and every dynamic text exists in all four languages", () => 
     ...OPS_BLOCKERS.map((code) => blockerKey(code)), "cf.ops.blocker.other",
     ...["CONFIRMARE_OPERATION_DENIED", "CONFIRMARE_OPERATION_DISABLED", "CONFIRMARE_OPERATION_NOT_FOUND", "CONFIRMARE_AWB_LABEL_UNAVAILABLE", "CONFIRMARE_CYCLE_NONE", "CONFIRMARE_CYCLE_BUSY", "CONFIRMARE_CYCLE_SCHEMA_MISSING",
       "CONFIRMARE_DENIED", "CONFIRMARE_FINANCE_DENIED", "CONFIRMARE_HEALTH_DENIED", "EFACTURA_TASK_CHANGED", "EFACTURA_TRANSITION_REFUSED", "EFACTURA_TASK_NOT_FOUND", "CONFIRMARE_SOURCE_UNAVAILABLE",
-      "CONFIRMARE_AUDIT_UNAVAILABLE", "IDEMPOTENCY_CONFLICT", "CONFIRMARE_NOT_FOUND", "VALIDATION_FAILED"].map((code) => opsErrorKey(code, undefined)),
+      "CONFIRMARE_AUDIT_UNAVAILABLE", "IDEMPOTENCY_CONFLICT", "CONFIRMARE_NOT_FOUND", "VALIDATION_FAILED", "CONFIRMARE_BANK_CHECK_PREVIEW_REQUIRED", "CONFIRMARE_BANK_CHECK_PREVIEW_STALE",
+      "CONFIRMARE_HOLD_DENIED", "CONFIRMARE_HOLD_SAME_EMPLOYEE", "CONFIRMARE_HOLD_NOT_ALLOWED", "CONFIRMARE_HOLD_NOT_FOUND", "CONFIRMARE_HOLD_RELEASED", "CONFIRMARE_HOLD_SCHEMA_MISSING"].map((code) => opsErrorKey(code, undefined)),
+    ...EXPIRY_BLOCKERS.map((code) => `cf.waits.${code}`), ...HOLD_REASONS.map((code) => `cf.hold.reason.${code}`), ...HOLD_RELEASE_REASONS.map((code) => `cf.hold.releaseReason.${code}`),
     ...CYCLE_STATES.map((state) => `cf.cycle.state.${state}`), ...EFACTURA_STATES.map((state) => `cf.efactura.state.${state}`), ...["sent", "accepted", "rejected", "resolved"].map((state) => `cf.efactura.mark.${state}`),
     ...REACTIVATION_REASONS.map((reason) => `cf.ops.reactivate.reason.${reason}`), ...["applied", "completed", "other"].map((state) => `cf.ops.reactivate.state.${state}`),
     ...["manual_required", "completed", "unknown"].map((state) => `cf.ops.refund.state.${state}`), "cf.ops.awb.state.none", "cf.ops.awb.state.unknown", "cf.ops.address.taskEntry", "cf.ops.address.doneEntry",
@@ -186,9 +189,14 @@ test("HTTP: the operations routes, one Idempotency-Key per command, the shop ref
   const label = await api.awbLabel("trendhome:1001");
   assert.equal(await label.text(), "%PDF-1.4 TEST");
   assert.equal(calls.at(-1)!.path, "/confirmare/orders/trendhome%3A1001/awb/label");
+  // API 2.71.0: the bank check names the preview it was shown; the instant is the server's, never the browser's.
+  const fingerprint = "a".repeat(64);
+  answers.push(json(200, { source: "outletperdele", coversUntil: "2026-10-25T10:00:00Z", items: [], mayCancel: 0, waiting: 0, fingerprint }));
+  const shown = await api.previewBankCheck("outletperdele");
+  assert.equal(calls.at(-1)!.path, "/confirmare/finance/bank-check/preview?source=outletperdele");
   answers.push(json(200, { check: { source: "outletperdele", coversUntil: "2026-10-25T10:00:00Z", recordedAt: "2026-10-25T10:00:00Z", by: "TEST" } }));
-  await api.recordBankCheck("outletperdele", "bank-key-0123456789");
-  assert.deepEqual(JSON.parse(String(calls.at(-1)!.init.body)), { source: "outletperdele" }, "the check covers now: the browser never chooses the instant");
+  await api.recordBankCheck("outletperdele", "bank-key-0123456789", shown);
+  assert.deepEqual(JSON.parse(String(calls.at(-1)!.init.body)), { source: "outletperdele", coversUntil: "2026-10-25T10:00:00Z", previewFingerprint: fingerprint }, "the check names the server's preview: instant and fingerprint");
   answers.push(json(200, { items: [], overdue: 0, managed: [] }));
   await api.efactura("trendhome", "attention");
   assert.equal(calls.at(-1)!.path, "/confirmare/efactura?source=trendhome&state=attention");
@@ -248,4 +256,49 @@ test("Staff 2.49.1: the employee's AWBs of the last 7 days come from their own h
   assert.equal(recent[1]!.createdAt, "2026-11-10T13:09:06Z");
   assert.equal(RECENT_AWB_FLOOR, "2026-10-31T22:00:00.000Z");
   assert.deepEqual(recentAwbsOf([]), []);
+});
+
+test("API 2.71.0 finance safety: preview, holds and the review list are read strictly; the screens show what waits", async () => {
+  const fingerprint = "b".repeat(64);
+  const preview = mapBankCheckPreview({ source: "trendhome", coversUntil: "2026-11-13T10:00:00Z", mayCancel: 1, waiting: 2, fingerprint, items: [
+    { orderNumber: "64779", globalOrderId: "trendhome:64779", expiresAt: "2026-11-10T12:08:00Z", state: "waiting_bank_check", outcome: "waits", waitsFor: "finance_task_open" },
+    { orderNumber: "64798", globalOrderId: "trendhome:64798", expiresAt: "2026-11-10T12:51:00Z", state: "waiting_bank_check", outcome: "may_cancel", waitsFor: null },
+    { orderNumber: "64900", globalOrderId: "trendhome:64900", expiresAt: "2026-11-10T13:00:00Z", state: "waiting_finance", outcome: "waits", waitsFor: "finance_hold" },
+  ] });
+  assert.equal(preview.items.filter((item) => item.outcome === "may_cancel").length, 1);
+  assert.throws(() => mapBankCheckPreview({ ...preview, fingerprint: "not-hex" }), "the fingerprint is a sha256");
+  assert.throws(() => mapBankCheckPreview({ ...preview, items: [{ ...preview.items[0], waitsFor: "because" }] }), "only known blockers");
+  assert.throws(() => mapBankCheckPreview({ ...preview, source: "b2b" }), "only the two shops");
+  const cycles = mapCycleAttention({ items: [{ ...cycleRaw.proforma, orderNumber: "64779", globalOrderId: "trendhome:64779", waitsFor: "finance_task_open" }] });
+  assert.equal(cycles[0]?.waitsFor, "finance_task_open");
+  const hold = { id: "00000000-0000-4000-8000-0000000000a1", source: "trendhome", orderNumber: "64900", globalOrderId: "trendhome:64900", open: true, reasonCode: "early_transfer", note: "Transfer vazut (TEST).",
+    placedBy: "TEST Finance", placedRole: "finance", placedAt: "2026-11-13T09:00:00Z", releasedBy: null, releasedRole: null, releasedAt: null, releaseReasonCode: null, releaseNote: null };
+  assert.equal(mapFinanceHold(hold).open, true);
+  assert.throws(() => mapFinanceHold({ ...hold, reasonCode: "because" }), "only known reasons");
+  assert.throws(() => mapFinanceHold({ ...hold, releaseReasonCode: "whatever" }), "only known release reasons");
+  const review = mapFinanceReview({ sources: ["trendhome"], reviewTaskHours: 24, holds: [hold], canPlace: ["trendhome"], canRelease: [],
+    staleTasks: [{ id: "00000000-0000-4000-8000-0000000000b1", source: "trendhome", orderNumber: "64779", globalOrderId: "trendhome:64779", purpose: "advance", state: "assigned", assignee: "TEST", requestedAt: "2026-11-05T12:08:00Z", ageHours: 187 }],
+    expiredProformas: [{ source: "trendhome", orderNumber: "64798", globalOrderId: "trendhome:64798", state: "waiting_bank_check", expiresAt: "2026-11-10T12:51:00Z", overdueHours: 66, waitsFor: null }] });
+  assert.equal(review.staleTasks[0]?.ageHours, 187);
+  // HTTP: the routes and one Idempotency-Key per command.
+  const calls: { path: string; init: RequestInit }[] = [];
+  const answers: Response[] = [];
+  const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+  const fetchImpl = (async (url: string, init: RequestInit) => { calls.push({ path: new URL(url).pathname + new URL(url).search, init }); return answers.shift()!; }) as typeof fetch;
+  const api = createProductionServices("https://api.arasyahome.ro", { fetchImpl, isOnline: () => true }).confirmare!;
+  answers.push(json(200, { sources: ["trendhome"], reviewTaskHours: 24, holds: [], staleTasks: [], expiredProformas: [], canPlace: [], canRelease: [] }));
+  await api.financeReview("trendhome");
+  assert.equal(calls.at(-1)!.path, "/confirmare/finance/holds?source=trendhome");
+  answers.push(json(200, { hold, created: true }));
+  await api.placeHold({ source: "trendhome", orderNumber: "64900", reasonCode: "early_transfer", note: "Transfer vazut (TEST)." }, "hold-key-0123456789");
+  assert.equal(calls.at(-1)!.path, "/confirmare/finance/holds");
+  assert.equal(new Headers(calls.at(-1)!.init.headers).get("Idempotency-Key"), "hold-key-0123456789");
+  assert.equal("amount" in JSON.parse(String(calls.at(-1)!.init.body)), false, "a hold carries no amount");
+  answers.push(json(200, { hold: { ...hold, open: false, releasedBy: "TEST Sup", releasedRole: "supervisor", releasedAt: "2026-11-13T10:00:00Z", releaseReasonCode: "no_payment_found", releaseNote: "Nicio plata (TEST)." }, released: true }));
+  const released = await api.releaseHold(hold.id, { reasonCode: "no_payment_found", note: "Nicio plata (TEST)." }, "release-key-0123456789");
+  assert.equal(calls.at(-1)!.path, `/confirmare/finance/holds/${hold.id}/release`);
+  assert.equal(released.open, false);
+  // The holds section renders nothing until loaded and never offers money fields.
+  const html = renderToStaticMarkup(createElement(FinanceHoldsSection, { service: api as unknown as ConfirmareApi }));
+  assert.doesNotMatch(html, /amount|IBAN/i);
 });
