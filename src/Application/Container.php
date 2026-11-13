@@ -204,6 +204,18 @@ final class Container
         );
     }
 
+    /** Finance safety of the proforma expiry (API 2.71.0, migration 054): holds, the review list. */
+    public function confirmareFinanceHolds(): \Arasya\Operations\Confirmare\ConfirmareFinanceHolds
+    {
+        return new \Arasya\Operations\Confirmare\ConfirmareFinanceHolds(
+            $this->pdo,
+            $this->clock,
+            new \Arasya\Operations\Confirmare\ConfirmareScopePolicy($this->pdo),
+            new \Arasya\Operations\Confirmare\FinanceScopePolicy($this->pdo),
+            $this->audit,
+        );
+    }
+
     /** The shop's bank transfers that match no order (API 2.44.0, YD SOFT 2.18.0). */
     public function financeTransferExceptions(?AuthorizationService $authorization = null): \Arasya\Operations\Confirmare\FinanceTransferExceptions
     {
@@ -465,6 +477,7 @@ final class Container
                 $this->confirmareInvoice($authorization),
                 $this->financeTransferExceptions($authorization),
                 $this->confirmareCycles(),
+                $this->confirmareFinanceHolds(),
                 $this->confirmareOperations($authorization),
                 $this->financeVerificationRequests($authorization),
                 new \Arasya\Operations\Confirmare\InvoiceEfactura($this->pdo, $this->clock, new \Arasya\Operations\Confirmare\InvoiceScopePolicy($this->pdo)),
@@ -479,6 +492,9 @@ final class Container
             $this->financeController($authorization, $context, $csrf, $rateLimiter),
             new \Arasya\Operations\Trendyol\AwbStationController($this->awbStation($authorization), $this->authentication, $csrf, $this->config, $context),
             new \Arasya\Operations\Finance\RefusedAttemptRecorder($this->pdo, new StructuredLogger()),
+            new \Arasya\Operations\Intelligence\ProductionIntelligenceController(
+                new \Arasya\Operations\Intelligence\ProductionIntelligenceService($this->pdo, new \Arasya\Operations\Intelligence\ProductionIntelligencePolicy($this->pdo), $this->clock),
+                $this->authentication, $authorization, $this->config, $context),
         );
     }
 

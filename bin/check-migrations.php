@@ -277,4 +277,30 @@ if ($collectionsTables[1] !== ['finance_ledger_request_sequence', 'finance_ledge
     || !str_contains($collectionsSchema, 'UNIQUE KEY uq_finance_ledger_posted (posted_movement_uuid)')) {
     throw new RuntimeException('Migration 052 must only add the Finance request tables, the guarded refund and audit CHECK swaps and eight finance permissions, and grant nothing.');
 }
+// Production Intelligence V2 (053, API 2.70.0): exactly five new tables (source meter facts, the insert-only sold-meter
+// ledger, audited exclusions, the cursor of the automatic incremental run, the shop-sourced lines outside Arasya). No existing table is altered or written, nothing is granted, nothing cascades or nulls out,
+// and the ledger's idempotency key is in the schema.
+$intelligenceSchema = (string) file_get_contents($root . '/database/migrations/053_production_intelligence.sql');
+$intelligenceStatements = preg_replace('/^--.*$/m', '', $intelligenceSchema) ?? '';
+preg_match_all('/CREATE TABLE IF NOT EXISTS (\w+)/', $intelligenceStatements, $intelligenceTables);
+if ($intelligenceTables[1] !== ['order_item_meter_facts', 'production_meter_ledger', 'production_meter_exclusions', 'production_meter_ledger_cursor', 'shop_sourced_meter_lines']
+    || preg_match('/ALTER TABLE|DROP |DELETE FROM|TRUNCATE|INSERT |\bUPDATE\s+\w+\s+SET|permissions|role_|employee_|ON (DELETE|UPDATE) (CASCADE|SET NULL)/i', $intelligenceStatements) === 1
+    || !str_contains($intelligenceSchema, 'UNIQUE KEY uq_meter_ledger_cause (metric, item_uuid, cause_key)')
+    || !str_contains($intelligenceSchema, 'CONSTRAINT chk_meter_ledger_delta CHECK (delta_meters <> 0)')
+    || !str_contains($intelligenceSchema, "(sale_verified = 0 OR (shop_status = 'completed' AND paid_at IS NOT NULL))")) {
+    throw new RuntimeException('Migration 053 must only add the meter facts, the sold-meter ledger, the exclusions, the ledger cursor and the shop-sourced lines, and grant nothing.');
+}
+// Confirmare finance holds (054, API 2.71.0): one new table and nothing else. No existing table is altered or written, no
+// permission or grant, no cascade; one open hold per order, the release shape and the four eyes are in the schema.
+$holdsSchema = (string) file_get_contents($root . '/database/migrations/054_confirmare_finance_holds.sql');
+$holdsStatements = preg_replace('/^--.*$/m', '', $holdsSchema) ?? '';
+preg_match_all('/CREATE TABLE IF NOT EXISTS (\w+)/', $holdsStatements, $holdsTables);
+if ($holdsTables[1] !== ['confirmare_finance_holds']
+    || preg_match('/ALTER TABLE|DROP TABLE|DELETE FROM|TRUNCATE|INSERT |\bUPDATE\s+\w+\s+SET|\bpermissions\b|role_permissions|employee_role_assignments|employee_application_access/i', $holdsStatements) === 1
+    || preg_match('/ON DELETE CASCADE|ON UPDATE CASCADE|SET NULL/i', $holdsStatements) === 1
+    || !str_contains($holdsSchema, 'UNIQUE KEY uq_confirmare_finance_holds_open (open_order_uuid)')
+    || !str_contains($holdsSchema, 'CONSTRAINT chk_confirmare_finance_holds_four_eyes CHECK (released_by_employee_uuid IS NULL OR released_by_employee_uuid <> placed_by_employee_uuid)')
+    || !str_contains($holdsSchema, 'CONSTRAINT chk_confirmare_finance_holds_release CHECK (')) {
+    throw new RuntimeException('Migration 054 must only add the Confirmare finance holds table (one open hold per order, four eyes), and grant nothing.');
+}
 fwrite(STDOUT, 'Migration sanity checks passed for ' . count($files) . " file(s).\n");

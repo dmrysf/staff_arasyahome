@@ -60,6 +60,15 @@ use Arasya\Operations\Security\CsrfGuard;
  *   POST /confirmare/finance/bank-check                    {source, coversUntil?} + Idempotency-Key (finance record/approve)
  *   POST /confirmare/orders/{globalOrderId}/cycle/advance  the order's proforma cycle now (its operator or a supervisor)
  *   POST /confirmare/orders/{globalOrderId}/cycle/retry    start the advance proforma again after a definite refusal (R1, 2026-10-26)
+ * API 2.71.0 (owner decision 2026-11-13, migration 054; ConfirmareFinanceHolds):
+ *   GET  /confirmare/finance/bank-check/preview?source=&coversUntil=  the expired proformas a bank check may let the worker
+ *                                                          cancel, and those that wait (finance record/approve)
+ *   POST /confirmare/finance/bank-check                    now also {previewFingerprint}: required when the check covers an
+ *                                                          expired proforma (CONFIRMARE_BANK_CHECK_PREVIEW_REQUIRED / _STALE)
+ *   GET  /confirmare/finance/holds[?source=]               the review list: holds, open finance tasks older than 24 h,
+ *                                                          expired proformas (Confirmare supervise, finance record/approve)
+ *   POST /confirmare/finance/holds                         {source, orderNumber, reasonCode, note} + Idempotency-Key
+ *   POST /confirmare/finance/holds/{holdId}/release        {reasonCode, note} + Idempotency-Key (never who placed it)
  *   The third `no_answer` of a cycle answers `proformaCycle` (ConfirmareCycles::afterNoAnswer).
  *   GET  /confirmare/orders/{globalOrderId}/operations     reactivation, AWB and card refund state (ConfirmareOperations)
  *   POST /confirmare/orders/{globalOrderId}/reactivate     {reason, exceptionEntryId?} + Idempotency-Key
@@ -111,6 +120,7 @@ final readonly class ConfirmareController
         private ConfirmareInvoice $invoice,
         private FinanceTransferExceptions $exceptions,
         private ConfirmareCycles $cycles,
+        private ConfirmareFinanceHolds $holds,
         private ConfirmareOperations $operations,
         private FinanceVerificationRequests $requests,
         private InvoiceEfactura $efactura,
@@ -199,6 +209,26 @@ final readonly class ConfirmareController
         }
         if ($path === '/confirmare/finance/bank-checks' && $request->method === 'GET') {
             return $this->json($this->cycles->bankChecks($actor, $request->query('source')));
+        }
+        if ($path === '/confirmare/finance/bank-check/preview' && $request->method === 'GET') {
+            return $this->json($this->cycles->previewBankCheck($actor, $request->query('source'), $request->query('coversUntil')));
+        }
+        if ($path === '/confirmare/finance/holds') {
+            if ($request->method === 'GET') {
+                return $this->json($this->holds->review($actor, $request->query('source')));
+            }
+            if ($request->method !== 'POST') {
+                throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
+            }
+            $this->csrf->requireValid($session->rawToken, $request->header('x-csrf-token'));
+            return $this->json($this->holds->place($actor, $request->json(2048), $request->header('idempotency-key') ?? '', $request->ipAddress, $request->userAgent, $request->requestId));
+        }
+        if (preg_match('#^/confirmare/finance/holds/([^/]{1,64})/release$#D', $path, $m) === 1) {
+            if ($request->method !== 'POST') {
+                throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
+            }
+            $this->csrf->requireValid($session->rawToken, $request->header('x-csrf-token'));
+            return $this->json($this->holds->release($actor, rawurldecode($m[1]), $request->json(2048), $request->header('idempotency-key') ?? '', $request->ipAddress, $request->userAgent, $request->requestId));
         }
         if ($path === '/confirmare/finance/bank-check') {
             if ($request->method !== 'POST') {

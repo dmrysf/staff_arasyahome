@@ -290,8 +290,8 @@ final class ConfirmareCycles
         if (!is_string($source) || !in_array($source, ['trendhome', 'outletperdele'], true)) {
             throw new ApiException(400, 'UNKNOWN_SOURCE', 'source must be trendhome or outletperdele.');
         }
-        if (array_diff(array_keys($input), ['source', 'coversUntil']) !== []) {
-            throw new ApiException(400, 'INVALID_REQUEST', 'Only source and coversUntil are accepted.');
+        if (array_diff(array_keys($input), ['source', 'coversUntil', 'previewFingerprint']) !== []) {
+            throw new ApiException(400, 'INVALID_REQUEST', 'Only source, coversUntil and previewFingerprint are accepted.');
         }
         if (!$this->financeRecorder($actor, $source)) {
             throw new ApiException(403, 'CONFIRMARE_FINANCE_DENIED', 'Only a finance employee of this shop records the bank check.');
@@ -302,6 +302,64 @@ final class ConfirmareCycles
             throw new ApiException(409, 'CONFIRMARE_FINANCE_DISABLED', 'Finance actions are not enabled for this shop.');
         }
         $now = $this->clock->now()->setTimezone(new DateTimeZone('UTC'));
+        $covers = $this->covers($input, $now);
+        $replay = $this->pdo->prepare('SELECT * FROM confirmare_bank_checks WHERE employee_uuid = ? AND idempotency_key = ?');
+        $replay->execute([$actor->employeeUuid, $key]);
+        $previous = $replay->fetch(PDO::FETCH_ASSOC);
+        if (is_array($previous)) {
+            if ($previous['source_key'] !== $source) {
+                throw new ApiException(409, 'IDEMPOTENCY_CONFLICT', 'This idempotency key was already used for a different request.');
+            }
+            return ['check' => $this->presentCheck($previous)];
+        }
+        // API 2.71.0 (owner decision 2026-11-13): the bank check lets the worker cancel every expired proforma it covers. It
+        // is recorded only with the preview the employee was shown (GET /confirmare/finance/bank-check/preview): when the
+        // proformas it would let the worker cancel are not exactly those, it is refused and nothing is recorded.
+        $preview = ConfirmareFinanceHolds::preview($this->pdo, $source, $covers->format('Y-m-d H:i:s.u'), self::iso($covers->format('Y-m-d H:i:s.u')));
+        $shown = $input['previewFingerprint'] ?? null;
+        if ($preview['items'] !== [] && $shown === null) {
+            throw new ApiException(409, 'CONFIRMARE_BANK_CHECK_PREVIEW_REQUIRED', 'Review the orders this bank check may cancel first.', ['mayCancel' => $preview['mayCancel'], 'waiting' => $preview['waiting']]);
+        }
+        if ($shown !== null && (!is_string($shown) || !hash_equals($preview['fingerprint'], $shown))) {
+            throw new ApiException(409, 'CONFIRMARE_BANK_CHECK_PREVIEW_STALE', 'The orders this bank check may cancel changed. Review them again.', ['mayCancel' => $preview['mayCancel'], 'waiting' => $preview['waiting']]);
+        }
+        $uuid = Uuid::v4();
+        $this->pdo->prepare('INSERT INTO confirmare_bank_checks (check_uuid, source_key, employee_uuid, covers_until, recorded_at, idempotency_key, request_id) VALUES (?, ?, ?, ?, ?, ?, ?)')
+            ->execute([$uuid, $source, $actor->employeeUuid, $covers->format('Y-m-d H:i:s.u'), $now->format('Y-m-d H:i:s.u'), $key, self::requestId($requestId)]);
+        $row = $this->pdo->prepare('SELECT * FROM confirmare_bank_checks WHERE check_uuid = ?');
+        $row->execute([$uuid]);
+        return ['check' => $this->presentCheck($row->fetch(PDO::FETCH_ASSOC) ?: [])];
+    }
+
+    /**
+     * API 2.71.0: what a bank check of the shop covering `coversUntil` (default: now) would let the worker do, shown before it
+     * is recorded. Only to whoever may record it (finance `record` / `approve` of the shop). The order numbers and expiry
+     * instants are what finance compares with the bank statement; no customer, amount or product is shown.
+     *
+     * @return array<string, mixed>
+     */
+    public function previewBankCheck(EmployeeIdentity $actor, mixed $source, ?string $coversUntil): array
+    {
+        $this->requireInstalled();
+        if (!is_string($source) || !in_array($source, ['trendhome', 'outletperdele'], true)) {
+            throw new ApiException(400, 'UNKNOWN_SOURCE', 'source must be trendhome or outletperdele.');
+        }
+        if (!$this->financeRecorder($actor, $source)) {
+            throw new ApiException(403, 'CONFIRMARE_FINANCE_DENIED', 'Only a finance employee of this shop records the bank check.');
+        }
+        if (!$this->financeRecordEnabled($source)) {
+            throw new ApiException(409, 'CONFIRMARE_FINANCE_DISABLED', 'Finance actions are not enabled for this shop.');
+        }
+        $now = $this->clock->now()->setTimezone(new DateTimeZone('UTC'));
+        // Whole seconds: the bank check then names exactly this instant (coversUntil) and the same proformas.
+        $covers = new DateTimeImmutable($this->covers($coversUntil === null ? [] : ['coversUntil' => $coversUntil], $now)->format('Y-m-d H:i:s'), new DateTimeZone('UTC'));
+        $sql = $covers->format('Y-m-d H:i:s.u');
+        return ['source' => $source, 'coversUntil' => self::iso($sql)] + ConfirmareFinanceHolds::preview($this->pdo, $source, $sql, self::iso($sql));
+    }
+
+    /** @param array<string, mixed> $input */
+    private function covers(array $input, DateTimeImmutable $now): DateTimeImmutable
+    {
         $covers = $now;
         if (isset($input['coversUntil'])) {
             try {
@@ -314,21 +372,7 @@ final class ConfirmareCycles
                 throw new ApiException(422, 'VALIDATION_FAILED', 'coversUntil must be in the last 7 days and not in the future.', ['field' => 'coversUntil']);
             }
         }
-        $replay = $this->pdo->prepare('SELECT * FROM confirmare_bank_checks WHERE employee_uuid = ? AND idempotency_key = ?');
-        $replay->execute([$actor->employeeUuid, $key]);
-        $previous = $replay->fetch(PDO::FETCH_ASSOC);
-        if (is_array($previous)) {
-            if ($previous['source_key'] !== $source) {
-                throw new ApiException(409, 'IDEMPOTENCY_CONFLICT', 'This idempotency key was already used for a different request.');
-            }
-            return ['check' => $this->presentCheck($previous)];
-        }
-        $uuid = Uuid::v4();
-        $this->pdo->prepare('INSERT INTO confirmare_bank_checks (check_uuid, source_key, employee_uuid, covers_until, recorded_at, idempotency_key, request_id) VALUES (?, ?, ?, ?, ?, ?, ?)')
-            ->execute([$uuid, $source, $actor->employeeUuid, $covers->format('Y-m-d H:i:s.u'), $now->format('Y-m-d H:i:s.u'), $key, self::requestId($requestId)]);
-        $row = $this->pdo->prepare('SELECT * FROM confirmare_bank_checks WHERE check_uuid = ?');
-        $row->execute([$uuid]);
-        return ['check' => $this->presentCheck($row->fetch(PDO::FETCH_ASSOC) ?: [])];
+        return $covers;
     }
 
     /** @return array<string, mixed> the latest bank checks and the proformas waiting for one, of the actor's shops */
@@ -505,6 +549,18 @@ final class ConfirmareCycles
         }
         $now = $this->clock->now()->setTimezone(new DateTimeZone('UTC'));
         $sent = new DateTimeImmutable((string) $cycle['sent_at'], new DateTimeZone('UTC'));
+        // API 2.71.0 (owner decision 2026-11-13): an expired proforma whose order has an open finance task or a finance hold
+        // is never cancelled: a person is still looking for the money. It waits for finance (no SmartBill cancellation, no
+        // production stop, no cancellation request) until the task closes or the hold is released.
+        if ($cycle['expires_at'] !== null && $now >= new DateTimeImmutable((string) $cycle['expires_at'], new DateTimeZone('UTC'))) {
+            $blocker = ConfirmareFinanceHolds::expiryBlocker($this->pdo, (string) $cycle['order_uuid']);
+            if ($blocker !== null) {
+                if ($state !== 'waiting_finance' || $cycle['last_error'] !== $blocker) {
+                    $this->update($cycle, ['state' => 'waiting_finance', 'last_error' => $blocker]);
+                }
+                return false;
+            }
+        }
         if ($state === 'cancel_pending') {
             return $this->sendStep($cycle, $row, $target, 'expire_cancel', ['reasonCode' => 'expired_unpaid', 'reasonNote' => '', 'confirmNoPayment' => true], (string) $summary['revision'], $requestId);
         }
@@ -865,7 +921,9 @@ final class ConfirmareCycles
         $statement = $this->pdo->prepare("SELECT c.*, o.order_number FROM confirmare_proforma_cycles c INNER JOIN operational_orders o ON o.order_uuid = c.order_uuid
             WHERE c.active_order_uuid IS NOT NULL AND c.source_key IN ({$marks}) ORDER BY c.expires_at IS NULL, c.expires_at, c.created_at LIMIT 300");
         $statement->execute($sources);
-        return ['items' => array_map(fn (array $row): array => ['orderNumber' => (string) $row['order_number'], 'globalOrderId' => (string) $row['global_order_id']] + $this->present($row), $statement->fetchAll(PDO::FETCH_ASSOC)), 'sources' => $sources];
+        return ['items' => array_map(fn (array $row): array => ['orderNumber' => (string) $row['order_number'], 'globalOrderId' => (string) $row['global_order_id']] + $this->present($row)
+            // API 2.71.0: an open finance task or a finance hold keeps an expired proforma waiting.
+            + ['waitsFor' => ConfirmareFinanceHolds::expiryBlocker($this->pdo, (string) $row['order_uuid'])], $statement->fetchAll(PDO::FETCH_ASSOC)), 'sources' => $sources];
     }
 
     /** @param array<string, mixed> $row @return array<string, mixed> */

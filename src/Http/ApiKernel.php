@@ -50,6 +50,7 @@ final readonly class ApiKernel
         private ?\Arasya\Operations\Finance\FinanceController $finance = null,
         private ?\Arasya\Operations\Trendyol\AwbStationController $awb = null,
         private ?\Arasya\Operations\Finance\RefusedAttemptRecorder $refusals = null,
+        private ?\Arasya\Operations\Intelligence\ProductionIntelligenceController $intelligence = null,
     ) {
     }
 
@@ -111,6 +112,7 @@ final readonly class ApiKernel
         if (str_starts_with($request->path, '/finance/')) {
             return ($this->finance ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'Finance API is not ready.'))->handle($request);
         }
+        if (\Arasya\Operations\Intelligence\ProductionIntelligenceController::handles($request->path)) return ($this->intelligence ?? throw new ApiException(503,'SERVICE_UNAVAILABLE','Production intelligence unavailable.'))->handle($request);
         if (str_starts_with($request->path,'/management/analytics/')) return ($this->analytics ?? throw new ApiException(503,'SERVICE_UNAVAILABLE','Analytics unavailable.'))->handle($request);
         if (str_starts_with($request->path, '/cutting/') || str_starts_with($request->path, '/display/cutting/') || str_starts_with($request->path, '/management/cutting/')) return $this->cuttingController()->handle($request);
         if ($request->path === '/b2b/accounts' || str_starts_with($request->path, '/b2b/accounts/')) {
