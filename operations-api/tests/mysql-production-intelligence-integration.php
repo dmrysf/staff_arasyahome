@@ -237,6 +237,12 @@ foreach (['summary', 'products', 'employees', 'series'] as $section) {
     }
 }
 $ok($get($reader, '/management/analytics/sources', ['period' => 'month']), 'D4 the analytics reader keeps the existing analytics only');
+// API 2.72.0: the Dashboard shows the section from the server-computed capability; the routes still authorize.
+$capability = static fn (array $who): mixed => $ok($get($who, '/management/me'), 'D4b management me')['capabilities']['viewProductionIntelligence'] ?? null;
+$check($capability($root) === true && $capability($ceo) === true, 'D4b Root and the canonical CEO see the Production Intelligence section');
+foreach (['CEO role without the canonical principal' => $ceoRoleOnly, 'analytics-reader' => $reader, 'operations manager' => $manager, 'dashboard employee' => $dashboardEmployee] as $label => $denied) {
+    $check($capability($denied) === false, "D4c {$label} is not offered the section");
+}
 $error(T::call($kernel, 'GET', '/management/production-intelligence/summary', null, [], null, $range), 401, 'SESSION_EXPIRED', 'D5 no session');
 $error(T::call($kernel, 'GET', '/production-intelligence/mine', null, [], null, $range), 401, 'SESSION_EXPIRED', 'D6 no session for own work');
 $error(T::call($kernel, 'POST', '/management/production-intelligence/summary', [], ['x-csrf-token' => $root['csrf']], $root['cookie']), 404, 'NOT_FOUND', 'D7 read only');

@@ -207,6 +207,8 @@ Unknown lines are counted as unknown (`ordersWithUnknownLines`, `unknownLines`, 
 | `/management/production-intelligence/series` | Root, canonical CEO | same + `bucket` = `day`, `week`, `month`, `year` |
 | `/production-intelligence/mine` | the signed-in employee (`history.view_mine`) | `period` or `from`/`to` |
 
+- `GET /management/me` carries `capabilities.viewProductionIntelligence` (API 2.72.0): true only for Root and the
+  canonical CEO. The Dashboard shows the section from it; every route still authorizes on its own (tests D4b, D4c).
 - Unknown query parameters are `400`. The employee of `/mine` comes from the session only.
 - Every management read writes an IAM audit event `production_intelligence.read` (filters only, no data).
 - Responses carry order numbers, product codes, variants and employee names only, never customer data.
