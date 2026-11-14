@@ -423,6 +423,7 @@ final class Container
                 new \Arasya\Operations\Cancellation\CancellationService($this->pdo, $authorization, $idempotency, $this->clock, $this->cancellationSyncService($authorization, $idempotency)),
                 $this->cancellationSyncService($authorization, $idempotency),
                 new \Arasya\Operations\Cancellation\Sync\CancellationReconciler($this->pdo, $this->clock, $this->cancellationProviders()),
+                new \Arasya\Operations\Intelligence\ProductionIntelligencePolicy($this->pdo),
             ),
             new CompanyController(
                 new CompanyQueries($this->pdo, $authorization),

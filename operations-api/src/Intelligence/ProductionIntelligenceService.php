@@ -16,20 +16,27 @@ use PDO;
 use Throwable;
 
 /**
- * Production Intelligence V2 reads (API 2.70.0). Read only: nothing here writes a canonical table.
+ * Production Intelligence V2 reads (API 2.70.0, meter concepts apart since API 2.72.0). Read only: nothing here writes a
+ * canonical table.
  *
- * Meter definitions (owner decisions K1-K8, 2026-11-12):
- * - sold: the insert-only sold-meter ledger, by entry date (sale, cancellation, correction), fabric and rail apart (K5);
- *   plus, apart under the origin `outside_arasya` ("Arasya Dışı / Mağaza Kaynaklı", owner decision 2026-11-13), the
- *   verified sales of shop orders that never reached Arasya (ShopSourcedSales). Those never enter cut, processed or
- *   completed, and an order that exists in Arasya is counted only by the ledger;
+ * Meter definitions (owner decisions K1-K8, 2026-11-12, and 2026-11-14 for the five concepts the CEO reports keep apart):
+ * - ordered: the insert-only meter ledger (its metrics are still named `sold_*`), by entry date (sale, cancellation,
+ *   correction), fabric and rail apart (K5): every valid order that is not cancelled or excluded, cash on delivery
+ *   included. Plus, apart under the origin `outside_arasya` ("Arasya Dışı / Mağaza Kaynaklı", owner decision
+ *   2026-11-13), the shop orders that never reached Arasya (ShopSourcedSales): verified sales and orders still open at
+ *   the shop. Those never enter cut, processed or completed, and an order that exists in Arasya is counted only by the
+ *   ledger. Each ordered meter carries its payment class (PaymentEvidence, `byPayment`);
+ * - verifiedSale: the ordered meters whose payment is proven in full (class `paid`; for the outside origin a completed
+ *   shop order with a recorded payment). Ordered meters are never shown as collected money: cash on delivery with only
+ *   its advance proven, partial, unverified, reversed and unknown payments are reported apart, never as zero;
  * - cut: the order's measured line fabric at its first cutting completion. The evidence is always `source_line`: these
  *   are the sold meters of the lines, never a meterage measured at the cutting table (K1). A later cutting completion of
  *   the same order is a recut, reported apart and never added to sold or completed meters;
  * - processed: per employee and stage, one stage completion credits the order's measured fabric once; stages are never
  *   added together;
  * - completed: only an Arasya production completion (K8: a legacy order without one is not completed);
- * - shipped / delivered: not reported in this release (K6: only where the source holds evidence, added later).
+ * - shipped / delivered: no meters in this release (K6: only where the source holds evidence). Trendyol states shipping
+ *   and delivery per order, so its order counts are reported; its meters stay unknown (K2).
  * Trendyol fabric is unknown (K2) and every unknown line is counted as unknown, never as zero.
  */
 final readonly class ProductionIntelligenceService
@@ -133,8 +140,8 @@ final readonly class ProductionIntelligenceService
     /** @return list<array<string, mixed>> sold ledger entries in the range (excluded orders carry no entry after their exclusion entry) */
     private function sold(DateRange $range, ?string $source): array
     {
-        $sql = 'SELECT l.metric, l.source_key, l.product_code_snapshot, l.variant_snapshot, l.delta_meters, l.reason, l.occurred_at, l.order_uuid, l.item_uuid
-            FROM production_meter_ledger l WHERE l.occurred_at >= ? AND l.occurred_at < ?';
+        $sql = 'SELECT l.metric, l.source_key, l.product_code_snapshot, l.variant_snapshot, l.delta_meters, l.reason, l.occurred_at, l.order_uuid, l.item_uuid, ' . PaymentEvidence::COLUMNS . '
+            FROM production_meter_ledger l LEFT JOIN operational_orders o ON o.order_uuid = l.order_uuid WHERE l.occurred_at >= ? AND l.occurred_at < ?';
         $params = [$range->fromUtc->format('Y-m-d H:i:s'), $range->toUtc->format('Y-m-d H:i:s')];
         if ($source !== null) {
             $sql .= ' AND l.source_key = ?';
@@ -142,7 +149,8 @@ final readonly class ProductionIntelligenceService
         }
         $s = $this->pdo->prepare($sql . ' ORDER BY l.occurred_at, l.entry_uuid');
         $s->execute($params);
-        return array_map(static fn (array $row): array => $row + ['origin' => 'arasya'], $s->fetchAll(PDO::FETCH_ASSOC));
+        return array_map(static fn (array $row): array => $row + ['origin' => 'arasya', 'order_key' => $row['order_uuid'], 'payment' => PaymentEvidence::classify($row)],
+            $s->fetchAll(PDO::FETCH_ASSOC));
     }
 
     /**
@@ -205,8 +213,9 @@ final readonly class ProductionIntelligenceService
 
     private function summary(array $sold, array $events, DateRange $range, ?string $source, array $outside): array
     {
-        $totals = ['sold_fabric' => 0, 'sold_rail' => 0];
-        $arasya = ['sold_fabric' => 0, 'sold_rail' => 0];
+        $zero = static fn (): array => ['sold_fabric' => 0, 'sold_rail' => 0];
+        $totals = $zero(); $arasya = $zero(); $verified = $zero(); $verifiedArasya = $zero();
+        $payment = []; $paymentOrders = [];
         $reasons = [];
         foreach ($sold as $entry) {
             $units = self::signed((string) $entry['delta_meters']);
@@ -214,7 +223,22 @@ final readonly class ProductionIntelligenceService
             if ($entry['origin'] === 'arasya') {
                 $arasya[$entry['metric']] += $units;
             }
+            $class = $entry['payment'];
+            $payment[$class] ??= $zero();
+            $payment[$class][$entry['metric']] += $units;
+            $paymentOrders[$class][$entry['order_key']] = true;
+            if (PaymentEvidence::verifiedSale($class)) {
+                $verified[$entry['metric']] += $units;
+                if ($entry['origin'] === 'arasya') {
+                    $verifiedArasya[$entry['metric']] += $units;
+                }
+            }
             $reasons[$entry['reason']] = ($reasons[$entry['reason']] ?? 0) + 1;
+        }
+        $byPayment = [];
+        foreach (PaymentEvidence::CLASSES as $class) {
+            $byPayment[$class] = ['fabricMeters' => MeterContract::meters(($payment[$class] ?? $zero())['sold_fabric']), 'railMeters' => MeterContract::meters(($payment[$class] ?? $zero())['sold_rail']),
+                'orders' => count($paymentOrders[$class] ?? [])];
         }
         $metric = static fn (): array => ['orders' => 0, 'fabricUnits' => 0, 'ordersWithUnknownLines' => 0, 'unknownLines' => 0];
         $by = ['cut' => $metric(), 'recut' => $metric(), 'completed' => $metric()];
@@ -233,19 +257,46 @@ final readonly class ProductionIntelligenceService
         }
         $out = static fn (array $m): array => ['orders' => $m['orders'], 'fabricMeters' => MeterContract::meters($m['fabricUnits']),
             'ordersWithUnknownLines' => $m['ordersWithUnknownLines'], 'unknownLines' => $m['unknownLines']];
+        $marketplace = $this->marketplaceLogistics($range, $source);
         return [
-            'sold' => ['fabricMeters' => MeterContract::meters($totals['sold_fabric']), 'railMeters' => MeterContract::meters($totals['sold_rail']), 'entriesByReason' => $reasons,
+            'ordered' => ['fabricMeters' => MeterContract::meters($totals['sold_fabric']), 'railMeters' => MeterContract::meters($totals['sold_rail']), 'entriesByReason' => $reasons,
                 'syncedThrough' => $this->ledgerWatermark(),
                 'byOrigin' => ['arasya' => ['fabricMeters' => MeterContract::meters($arasya['sold_fabric']), 'railMeters' => MeterContract::meters($arasya['sold_rail'])],
-                    ShopSourcedSales::ORIGIN => $outside]],
+                    ShopSourcedSales::ORIGIN => $outside],
+                'byPayment' => $byPayment],
+            'verifiedSale' => ['fabricMeters' => MeterContract::meters($verified['sold_fabric']), 'railMeters' => MeterContract::meters($verified['sold_rail']),
+                'byOrigin' => ['arasya' => ['fabricMeters' => MeterContract::meters($verifiedArasya['sold_fabric']), 'railMeters' => MeterContract::meters($verifiedArasya['sold_rail'])],
+                    ShopSourcedSales::ORIGIN => ['fabricMeters' => $outside['fabricMeters'], 'railMeters' => $outside['railMeters']]],
+                'notVerified' => ['fabricMeters' => MeterContract::meters($totals['sold_fabric'] - $verified['sold_fabric']), 'railMeters' => MeterContract::meters($totals['sold_rail'] - $verified['sold_rail'])],
+                'rule' => 'payment proven in full by the source (verified online payment; outside Arasya: completed with a recorded payment)'],
             'cut' => $out($by['cut']) + ['evidence' => 'source_line', 'measuredCutMeters' => null],
             'recut' => $out($by['recut']) + ['evidence' => 'source_line'],
             'processed' => ['stageCompletions' => $stageCompletions],
             'completed' => $out($by['completed']),
-            'shipped' => ['available' => false],
-            'delivered' => ['available' => false],
+            'shipped' => ['available' => false, 'fabricMeters' => null, 'reason' => 'no_meter_evidence', 'marketplaceOrders' => $marketplace['shipped']],
+            'delivered' => ['available' => false, 'fabricMeters' => null, 'reason' => 'no_meter_evidence', 'marketplaceOrders' => $marketplace['delivered']],
             'coverage' => $this->coverage($range, $source),
         ];
+    }
+
+    /**
+     * Trendyol orders created in the range that the marketplace reports as shipped (handed to the carrier at any later
+     * state) and as delivered. Order counts only: Trendyol meters are unknown (K2). Web shops and B2B hold no such evidence.
+     * @return array{shipped: int, delivered: int}
+     */
+    private function marketplaceLogistics(DateRange $range, ?string $source): array
+    {
+        if ($source !== null && $source !== 'trendyol') {
+            return ['shipped' => 0, 'delivered' => 0];
+        }
+        $s = $this->pdo->prepare("SELECT
+                COALESCE(SUM(source_commerce_status_code IN ('Shipped', 'AtCollectionPoint', 'Delivered', 'UnDelivered', 'UnDeliveredAndReturned')), 0),
+                COALESCE(SUM(source_commerce_status_code = 'Delivered'), 0)
+            FROM operational_orders WHERE source_key = 'trendyol' AND operational_status <> 'unavailable'
+              AND COALESCE(source_submitted_at, created_at) >= ? AND COALESCE(source_submitted_at, created_at) < ?");
+        $s->execute([$range->fromUtc->format('Y-m-d H:i:s'), $range->toUtc->format('Y-m-d H:i:s')]);
+        [$shipped, $delivered] = $s->fetch(PDO::FETCH_NUM);
+        return ['shipped' => (int) $shipped, 'delivered' => (int) $delivered];
     }
 
     /** The watermark of the automatic ledger run (UTC, ISO-8601), or null while it has never run. */
@@ -281,12 +332,16 @@ final readonly class ProductionIntelligenceService
         $rows = [];
         $key = static fn (string $source, ?string $code, ?string $variant): string => $source . "\x1f" . ($code ?? '') . "\x1f" . ($variant ?? '');
         $row = static fn (string $source, ?string $code, ?string $variant): array => ['source' => $source, 'productCode' => $code, 'variant' => $variant,
-            'soldFabricUnits' => 0, 'soldRailUnits' => 0, 'outsideFabricUnits' => 0, 'outsideRailUnits' => 0, 'cutFabricUnits' => 0, 'completedFabricUnits' => 0, 'unknownLines' => 0];
+            'soldFabricUnits' => 0, 'soldRailUnits' => 0, 'verifiedFabricUnits' => 0, 'verifiedRailUnits' => 0, 'outsideFabricUnits' => 0, 'outsideRailUnits' => 0,
+            'cutFabricUnits' => 0, 'completedFabricUnits' => 0, 'unknownLines' => 0];
         foreach ($sold as $entry) {
             $k = $key($entry['source_key'], $entry['product_code_snapshot'], $entry['variant_snapshot']);
             $rows[$k] ??= $row($entry['source_key'], $entry['product_code_snapshot'], $entry['variant_snapshot']);
             $units = self::signed((string) $entry['delta_meters']);
             $rows[$k][$entry['metric'] === 'sold_fabric' ? 'soldFabricUnits' : 'soldRailUnits'] += $units;
+            if (PaymentEvidence::verifiedSale($entry['payment'])) {
+                $rows[$k][$entry['metric'] === 'sold_fabric' ? 'verifiedFabricUnits' : 'verifiedRailUnits'] += $units;
+            }
             if ($entry['origin'] === ShopSourcedSales::ORIGIN) {
                 $rows[$k][$entry['metric'] === 'sold_fabric' ? 'outsideFabricUnits' : 'outsideRailUnits'] += $units;
             }
@@ -310,8 +365,9 @@ final readonly class ProductionIntelligenceService
             <=> [$a['soldFabricUnits'], $a['cutFabricUnits'], $b['source'], (string) $b['productCode'], (string) $b['variant']]);
         $total = count($rows);
         $items = array_map(static fn (array $r): array => ['source' => $r['source'], 'productCode' => $r['productCode'], 'variant' => $r['variant'],
-            'soldFabricMeters' => MeterContract::meters($r['soldFabricUnits']), 'soldRailMeters' => MeterContract::meters($r['soldRailUnits']),
-            'soldOutsideArasyaFabricMeters' => MeterContract::meters($r['outsideFabricUnits']), 'soldOutsideArasyaRailMeters' => MeterContract::meters($r['outsideRailUnits']),
+            'orderedFabricMeters' => MeterContract::meters($r['soldFabricUnits']), 'orderedRailMeters' => MeterContract::meters($r['soldRailUnits']),
+            'verifiedSaleFabricMeters' => MeterContract::meters($r['verifiedFabricUnits']), 'verifiedSaleRailMeters' => MeterContract::meters($r['verifiedRailUnits']),
+            'orderedOutsideArasyaFabricMeters' => MeterContract::meters($r['outsideFabricUnits']), 'orderedOutsideArasyaRailMeters' => MeterContract::meters($r['outsideRailUnits']),
             'cutFabricMeters' => MeterContract::meters($r['cutFabricUnits']), 'completedFabricMeters' => MeterContract::meters($r['completedFabricUnits']),
             'unknownLines' => $r['unknownLines']], array_slice($rows, 0, self::MAX_ROWS));
         return ['items' => $items, 'total' => $total, 'truncated' => $total > self::MAX_ROWS];
@@ -350,12 +406,15 @@ final readonly class ProductionIntelligenceService
             return match ($bucket) { 'day' => $local->format('Y-m-d'), 'week' => $local->format('o-\WW'), 'month' => $local->format('Y-m'), 'year' => $local->format('Y') };
         };
         $points = [];
-        $point = ['soldFabricUnits' => 0, 'soldRailUnits' => 0, 'outsideFabricUnits' => 0, 'outsideRailUnits' => 0, 'cutFabricUnits' => 0, 'completedFabricUnits' => 0, 'cutOrders' => 0, 'completedOrders' => 0];
+        $point = ['soldFabricUnits' => 0, 'soldRailUnits' => 0, 'verifiedFabricUnits' => 0, 'verifiedRailUnits' => 0, 'outsideFabricUnits' => 0, 'outsideRailUnits' => 0, 'cutFabricUnits' => 0, 'completedFabricUnits' => 0, 'cutOrders' => 0, 'completedOrders' => 0];
         foreach ($sold as $entry) {
             $p = $label((string) $entry['occurred_at']);
             $points[$p] ??= $point;
             $units = self::signed((string) $entry['delta_meters']);
             $points[$p][$entry['metric'] === 'sold_fabric' ? 'soldFabricUnits' : 'soldRailUnits'] += $units;
+            if (PaymentEvidence::verifiedSale($entry['payment'])) {
+                $points[$p][$entry['metric'] === 'sold_fabric' ? 'verifiedFabricUnits' : 'verifiedRailUnits'] += $units;
+            }
             if ($entry['origin'] === ShopSourcedSales::ORIGIN) {
                 $points[$p][$entry['metric'] === 'sold_fabric' ? 'outsideFabricUnits' : 'outsideRailUnits'] += $units;
             }
@@ -372,8 +431,9 @@ final readonly class ProductionIntelligenceService
         ksort($points);
         $items = [];
         foreach ($points as $period => $p) {
-            $items[] = ['period' => $period, 'soldFabricMeters' => MeterContract::meters($p['soldFabricUnits']), 'soldRailMeters' => MeterContract::meters($p['soldRailUnits']),
-                'soldOutsideArasyaFabricMeters' => MeterContract::meters($p['outsideFabricUnits']), 'soldOutsideArasyaRailMeters' => MeterContract::meters($p['outsideRailUnits']),
+            $items[] = ['period' => $period, 'orderedFabricMeters' => MeterContract::meters($p['soldFabricUnits']), 'orderedRailMeters' => MeterContract::meters($p['soldRailUnits']),
+                'verifiedSaleFabricMeters' => MeterContract::meters($p['verifiedFabricUnits']), 'verifiedSaleRailMeters' => MeterContract::meters($p['verifiedRailUnits']),
+                'orderedOutsideArasyaFabricMeters' => MeterContract::meters($p['outsideFabricUnits']), 'orderedOutsideArasyaRailMeters' => MeterContract::meters($p['outsideRailUnits']),
                 'cutFabricMeters' => MeterContract::meters($p['cutFabricUnits']), 'completedFabricMeters' => MeterContract::meters($p['completedFabricUnits']),
                 'cutOrders' => $p['cutOrders'], 'completedOrders' => $p['completedOrders']];
         }

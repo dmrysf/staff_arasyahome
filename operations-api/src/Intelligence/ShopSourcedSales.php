@@ -12,8 +12,10 @@ use PDO;
  *
  * - They are never canonical orders: no order, item, QR, document, Confirmare state or activity exists for them.
  * - They never enter production metrics (cut, recut, processed, completed): Arasya holds no production evidence for them.
- * - Only a verified sale counts as sold meters: the shop order is `completed` and the shop recorded its payment. Any other
- *   status (processing, shipped, being verified, cancelled, refunded, failed) is counted by status and never as meters.
+ * - Only a verified sale counts as sold meters: the shop order is `completed` and the shop recorded its payment.
+ * - API 2.72.0 (owner decision 2026-11-14): an order that is still open at the shop (processing, shipped, being verified,
+ *   completed without a recorded payment, ...) is reported as ordered meters whose payment is not verified, never as zero
+ *   and never as a sale. A cancelled, failed, refunded, trashed or unpaid checkout order never carries meters.
  * - Sold meters follow contract v1 for a web-shop line: `fabric_linear` / `rail_linear` length x (quantity - refunded
  *   quantity), apart by metric (K5); `unit` carries no meter; `unknown` is counted as unknown, never zero.
  * - A line whose order exists in Arasya (matched by its global order id) is never counted here: Arasya's own ledger counts
@@ -25,6 +27,9 @@ final class ShopSourcedSales
     public const ORIGIN = 'outside_arasya';
     public const VERIFIED_STATUS = 'completed';
     public const REASON = 'outside_arasya_sale';
+    public const REASON_OPEN = 'outside_arasya_order';
+    /** Shop statuses that are no sale at all: they never carry ordered meters. */
+    public const NO_SALE_STATUSES = ['cancelled', 'failed', 'refunded', 'trash', 'pending', 'checkout-draft', 'draft'];
 
     public static function verified(string $status, ?string $paidAt): bool
     {
@@ -82,39 +87,51 @@ final class ShopSourcedSales
     }
 
     /**
-     * Sold entries of the verified sales among the given lines, shaped like ledger entries so every report sums them the
-     * same way, plus the classification of every order and line.
+     * Ordered entries of the given lines, shaped like ledger entries so every report sums them the same way: a verified sale
+     * carries the payment class `paid`, an order still open at the shop `unverified`; plus the classification of every
+     * order and line.
      * @param list<array<string, mixed>> $lines
      * @return array{entries: list<array<string, mixed>>, summary: array<string, mixed>}
      */
     public static function report(array $lines): array
     {
         $entries = [];
-        $verifiedOrders = []; $otherOrders = []; $statusOrders = [];
+        $verifiedOrders = []; $otherOrders = []; $statusOrders = []; $openOrders = [];
         $units = ['sold_fabric' => 0, 'sold_rail' => 0];
-        $counted = 0; $unknown = 0;
+        $open = ['sold_fabric' => 0, 'sold_rail' => 0];
+        $counted = 0; $unknown = 0; $openUnknown = 0;
         foreach ($lines as $row) {
             $order = $row['source_key'] . ':' . $row['source_order_id'];
             $statusOrders[$row['shop_status']][$order] = true;
-            if ((int) $row['sale_verified'] !== 1) {
+            $verified = (int) $row['sale_verified'] === 1;
+            if (!$verified) {
                 $otherOrders[$order] = true;
-                continue;
+                if (in_array($row['shop_status'], self::NO_SALE_STATUSES, true)) {
+                    continue;
+                }
+                $openOrders[$order] = true;
+            } else {
+                $verifiedOrders[$order] = true;
             }
-            $verifiedOrders[$order] = true;
             $contract = self::line($row);
             if ($contract['status'] === MeterContract::UNKNOWN) {
-                $unknown++;
+                $verified ? $unknown++ : $openUnknown++;
                 continue;
             }
             foreach (['sold_fabric' => $contract['fabricUnits'], 'sold_rail' => $contract['railUnits']] as $metric => $value) {
                 if ($value === null || $value === 0) {
                     continue;
                 }
-                $counted++;
-                $units[$metric] += $value;
+                if ($verified) {
+                    $counted++;
+                    $units[$metric] += $value;
+                } else {
+                    $open[$metric] += $value;
+                }
                 $entries[] = ['metric' => $metric, 'source_key' => $row['source_key'], 'product_code_snapshot' => $row['product_code_snapshot'],
-                    'variant_snapshot' => $row['variant_snapshot'], 'delta_meters' => MeterContract::meters($value), 'reason' => self::REASON,
-                    'occurred_at' => $row['ordered_at'], 'origin' => self::ORIGIN];
+                    'variant_snapshot' => $row['variant_snapshot'], 'delta_meters' => MeterContract::meters($value), 'reason' => $verified ? self::REASON : self::REASON_OPEN,
+                    'occurred_at' => $row['ordered_at'], 'origin' => self::ORIGIN, 'order_key' => $order,
+                    'payment' => $verified ? PaymentEvidence::PAID : PaymentEvidence::UNVERIFIED];
             }
         }
         $byStatus = array_map('count', $statusOrders);
@@ -126,8 +143,13 @@ final class ShopSourcedSales
             'meteredLines' => $counted,
             'unknownLines' => $unknown,
             'notVerifiedOrders' => count($otherOrders),
+            'openOrders' => count($openOrders),
+            'openFabricMeters' => MeterContract::meters($open['sold_fabric']),
+            'openRailMeters' => MeterContract::meters($open['sold_rail']),
+            'openUnknownLines' => $openUnknown,
             'ordersByShopStatus' => $byStatus,
             'saleRule' => 'shop status completed with a recorded payment',
+            'openRule' => 'open at the shop, payment not verified; cancelled, failed, refunded, trashed and unpaid checkouts carry no meters',
             'productionEvidence' => false,
         ]];
     }

@@ -52,6 +52,7 @@ final readonly class ManagementController
         private ?\Arasya\Operations\Cancellation\CancellationService $cancellations = null,
         private ?\Arasya\Operations\Cancellation\Sync\CancellationSyncService $cancellationSync = null,
         private ?\Arasya\Operations\Cancellation\Sync\CancellationReconciler $cancellationReconciler = null,
+        private ?\Arasya\Operations\Intelligence\ProductionIntelligencePolicy $intelligence = null,
     ) {
     }
 
@@ -243,6 +244,8 @@ final readonly class ManagementController
             'cancelExceptions' => $actor->isRoot,
             'viewAnalytics' => $this->analytics?->canView($actor) ?? false,
             'manageAnalyticsPolicy' => $actor->isRoot,
+            // API 2.72.0: Production Intelligence (Root and the canonical CEO only, K4); the routes authorize again.
+            'viewProductionIntelligence' => $this->intelligence?->canView($actor) ?? false,
             // A business approver without an approval scope decides nothing, so the queue is not offered.
             'approveDocumentRevisions' => $documentVia !== null && $documentVia !== \Arasya\Operations\Document\RevisionApproverPolicy::VIA_ROOT
                 && ($this->documentScopes?->sources($actor, \Arasya\Operations\Document\DocumentScopePolicy::APPROVE) ?? []) !== [],
