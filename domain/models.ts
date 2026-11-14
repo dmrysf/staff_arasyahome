@@ -380,6 +380,14 @@ export type ActivityEntry = {
   meters?: number;
 };
 
+/**
+ * The signed-in employee's own stage work with the order line meters (API 2.70.0 `/production-intelligence/mine`,
+ * Staff 2.52.0). Only this employee's work, from the session; meters are the order lines' source meters (never measured
+ * at the cutting table), and a completion without known meters is counted, never as zero.
+ */
+export type MyStageMeters = { stageId: string; completions: number; cuts: number; recuts: number; fabricMeters: string; completionsWithUnknownLines: number; completionsWithoutMeters: number };
+export type MyMeters = { stages: MyStageMeters[] };
+
 export type ActivityPage = {
   items: ActivityEntry[];
   nextCursor?: string;

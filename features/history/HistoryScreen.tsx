@@ -10,7 +10,7 @@ import { EmptyPanel, LoadingState, PageHeader } from "../../components/ui/States
 import { toServiceError } from "../../services/errors";
 import { AppIcon } from "../../components/icons/AppIcon";
 import { historyDate, HISTORY_TIME_ZONE } from "./historyDate";
-import { formatMeters } from "../../domain/productFormat";
+import { metersQuery, metersTile, MyMetersCard, useMyMeters } from "./MyMetersCard";
 import { canOpenConfirmareOrder } from "../../domain/confirmare";
 import { confirmareOrderPath } from "../confirmare/ConfirmareParts";
 
@@ -57,6 +57,9 @@ export function HistoryScreen({ service, employee, navigate }: { service: Activi
   const [reloadKey, setReloadKey] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
   const customError = range === "custom" ? validateCustomRange(customFrom, customTo) : null;
+  // Staff 2.52.0: the line meters come from Production Intelligence (API 2.70.0), per stage and never added together.
+  // The old summary `meters` (whole-order snapshots per event, unknown counted as 0) is no longer shown.
+  const meters = useMyMeters(service, customError ? null : metersQuery(range, { from: customFrom, to: customTo }), production && !customError);
 
   useEffect(() => {
     if (customError) return;
@@ -85,8 +88,9 @@ export function HistoryScreen({ service, employee, navigate }: { service: Activi
       {range === "custom" && <div className="date-range"><label>{t("history.from")}<input type="date" value={customFrom} max={customTo} onChange={(event) => { setPage(null); setCustomFrom(event.target.value); }} /></label><span>→</span><label>{t("history.to")}<input type="date" value={customTo} min={customFrom} max={historyDate()} onChange={(event) => { setPage(null); setCustomTo(event.target.value); }} /></label></div>}
       {customError ? <p className="order-notice" role="alert">{customError}</p> : error ? <ErrorState error={error} onAction={() => { setError(null); setPage(null); setReloadKey((value) => value + 1); }} /> : page ? <>
         {production
-          ? <section className="metrics-grid"><div><span>{t("history.metric.orders")}</span><strong>{page.summary.processed}</strong></div><div><span>{t("history.metric.meters")}</span><strong>{formatMeters(page.summary.meters).replace(" m", "")}<small>m</small></strong></div><div><span>{t("history.metric.handedOver")}</span><strong>{page.summary.handedOver}</strong></div><div><span>{t("history.metric.inProgress")}</span><strong>{page.summary.inProgress}</strong></div></section>
+          ? <section className="metrics-grid"><div><span>{t("history.metric.orders")}</span><strong>{page.summary.processed}</strong></div><div><span>{t("history.metric.lineMeters")}</span><strong>{metersTile(meters)}{metersTile(meters) !== "—" && <small>m</small>}</strong></div><div><span>{t("history.metric.handedOver")}</span><strong>{page.summary.handedOver}</strong></div><div><span>{t("history.metric.inProgress")}</span><strong>{page.summary.inProgress}</strong></div></section>
           : <section className="metrics-grid metrics-grid-two"><div><span>{t("history.metric.orders")}</span><strong>{page.summary.processed}</strong></div><div><span>{t("history.metric.actions")}</span><strong>{page.summary.actions ?? 0}</strong></div></section>}
+        {production && <MyMetersCard state={meters} />}
         <section className="history-list"><h2>{t("history.timeline")}</h2>
           {page.items.length === 0 && <EmptyPanel icon="history" title={t("history.empty")}>{t("history.emptyHint")}</EmptyPanel>}
           {page.items.map((entry) => {

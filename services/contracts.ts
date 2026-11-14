@@ -1,4 +1,4 @@
-import type { ActivityPage, Employee, FaultException, FaultReason, LiveEvent, OrderPage, ProductionWorkflow, QualityCapabilities, StaffOrder, SupervisorView } from "../domain/models";
+import type { MyMeters, ActivityPage, Employee, FaultException, FaultReason, LiveEvent, OrderPage, ProductionWorkflow, QualityCapabilities, StaffOrder, SupervisorView } from "../domain/models";
 import type { StaffRuntimeMode } from "../src/runtimeConfig";
 
 export type Session = { employee: Employee; expiresAt: string };
@@ -45,6 +45,8 @@ export interface OrderService {
 
 export interface ActivityService {
   listMine(input: { range: "today" | "7days" | "month" | "custom"; cursor?: string; from?: string; to?: string }, options?: { signal?: AbortSignal }): Promise<ActivityPage>;
+  /** Staff 2.52.0: the employee's own line meters per stage (API 2.70.0). null: the API does not offer it. Absent in demo/preview. */
+  myMeters?(input: { period: "today" | "month" } | { from: string; to: string }, options?: { signal?: AbortSignal }): Promise<MyMeters | null>;
 }
 
 /** Cutting fault return requests. Every mutation needs server confirmation; nothing is queued offline. */
