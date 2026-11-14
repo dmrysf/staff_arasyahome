@@ -10,6 +10,7 @@ import { confirmareEditSI } from "./confirmareEdit";
 import { confirmareWorkflowSI } from "./confirmareWorkflow";
 import { operatorDeskSI } from "./operatorDesk";
 import { officeHistorySI } from "./officeHistory";
+import { myMetersSI } from "./myMeters";
 import { awbEntrySI } from "./awbEntry";
 import { physicalSI } from "./physical";
 import type { Catalog } from "../types";
@@ -35,6 +36,7 @@ export const si: Catalog = {
   ...confirmareWorkflowSI,
   ...operatorDeskSI,
   ...officeHistorySI,
+  ...myMetersSI,
   ...awbEntrySI,
 
   // ---- common

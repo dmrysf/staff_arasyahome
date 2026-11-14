@@ -1,5 +1,5 @@
 import { mapAssistedCheckpoint, mapManufacturingPlan, mapPhysicalHistory } from "../../domain/physical";
-import { StaffServiceError, type ActivityAction, type ActivityEntry, type OfficeActivityAction, type ActivityPage, type Employee, type FaultDecision, type FaultException, type FaultReason, type OrderQuality, type QualityCapabilities, type ServiceErrorCode } from "../../domain/models";
+import { StaffServiceError, type ActivityAction, type ActivityEntry, type MyMeters, type OfficeActivityAction, type ActivityPage, type Employee, type FaultDecision, type FaultException, type FaultReason, type OrderQuality, type QualityCapabilities, type ServiceErrorCode } from "../../domain/models";
 import { normalizeLocale } from "../../i18n/locales";
 import { isOrderActionBlockedReason, isOrderActionId, orderActionLabels } from "../../domain/orderActions";
 import type { ActivityService, AuthService, EmployeeService, ExceptionService, LiveService, OrderService, ServiceBundle, Session } from "../contracts";
@@ -823,6 +823,27 @@ export function mapActivityEntry(value: unknown): ActivityEntry {
   return entry;
 }
 
+const METERS_TEXT = /^\d{1,9}\.\d{3}$/;
+
+/** Strict mapping of `/production-intelligence/mine`: stage rows only (the per-order items are not shown). */
+export function mapMyMeters(value: unknown): MyMeters {
+  const raw = objectValue(value);
+  if (!Array.isArray(raw.stages)) throw new StaffServiceError("SERVER_ERROR");
+  const count = (item: unknown) => {
+    if (typeof item !== "number" || !Number.isInteger(item) || item < 0) throw new StaffServiceError("SERVER_ERROR");
+    return item;
+  };
+  return {
+    stages: raw.stages.map((entry) => {
+      const row = objectValue(entry);
+      const meters = stringValue(row.fabricMeters);
+      if (!METERS_TEXT.test(meters)) throw new StaffServiceError("SERVER_ERROR");
+      return { stageId: stringValue(row.stageId), completions: count(row.completions), cuts: count(row.cuts), recuts: count(row.recuts), fabricMeters: meters,
+        completionsWithUnknownLines: count(row.completionsWithUnknownLines), completionsWithoutMeters: count(row.completionsWithoutMeters) };
+    }),
+  };
+}
+
 export function mapActivityPage(value: unknown): ActivityPage {
   const raw = objectValue(value);
   if (!Array.isArray(raw.items)) throw new StaffServiceError("SERVER_ERROR");
@@ -1019,6 +1040,17 @@ export function createProductionServices(apiBaseUrl: string, options: Production
       }
       if (input.cursor) query.set("cursor", input.cursor);
       return http.request(`/activity/mine?${query}`, { signal: requestOptions?.signal }, mapActivityPage);
+    },
+    // Staff 2.52.0: own line meters per stage. The employee comes from the session only; an API older than 2.70.0 answers 404.
+    myMeters: async (input, requestOptions) => {
+      const query = new URLSearchParams("period" in input ? { period: input.period } : { from: input.from, to: input.to });
+      const path = `/production-intelligence/mine?${query}`;
+      const response = await http.send(path, { signal: requestOptions?.signal });
+      if (response.status === 404) return null;
+      if (!response.ok) throw await http.errorFromResponse(response, path);
+      let payload: unknown;
+      try { payload = await response.json(); } catch { throw new StaffServiceError("SERVER_ERROR"); }
+      return mapMyMeters(payload);
     },
   };
   const workflow = createProductionWorkflowService({
