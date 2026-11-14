@@ -13,7 +13,10 @@ declare(strict_types=1);
 // F. history: the backfill alone books nothing without shop facts; the facts import changes no order, never overwrites a
 //    live fact and is idempotent; import, backfill and automatic run in any order book each line once at its sale date;
 // G. "Arasya Dışı / Mağaza Kaynaklı": shop orders that never reached Arasya are stored apart, never as orders; only verified
-//    sales count as sold meters, never as production, and an order that later reaches Arasya is counted once.
+//    sales count as sold meters, never as production, and an order that later reaches Arasya is counted once; orders still
+//    open at the shop are ordered meters whose payment is not verified (API 2.72.0);
+// H. the five concepts apart (API 2.72.0, owner 2026-11-14): ordered meters carry the order's payment class; only a payment
+//    proven in full is a verified sale; advance-only, partial, unverified, reversed and unknown are reported apart.
 
 use Arasya\Operations\Application\Container;
 use Arasya\Operations\Database\Connection;
@@ -199,7 +202,8 @@ $range = ['from' => '2026-10-04', 'to' => (new DateTimeImmutable('now', new Date
 $summary = $ok($get($root, '/management/production-intelligence/summary', $range), 'C1 Root summary');
 $check($summary['cut']['evidence'] === 'source_line' && $summary['cut']['measuredCutMeters'] === null, 'C2 cut meters are labelled as source line meters, never measured (K1)');
 $check($summary['cut']['orders'] >= 2 && $summary['recut']['orders'] >= 1 && $summary['completed']['orders'] >= 1, 'C3 cut, recut and completion are separate');
-$check($summary['shipped'] === ['available' => false] && $summary['delivered'] === ['available' => false], 'C4 shipping and delivery are not invented (K6)');
+$check($summary['shipped']['available'] === false && $summary['shipped']['fabricMeters'] === null && $summary['delivered']['available'] === false && $summary['delivered']['fabricMeters'] === null
+    && is_int($summary['delivered']['marketplaceOrders']), 'C4 shipping and delivery meters are not invented (K6); only marketplace order counts are reported');
 $check(($summary['coverage']['linesByStatus']['unknown_basis'] ?? 0) >= 1, 'C5 a line without a stated basis is counted as unknown, never zero');
 $mine = $ok($get($cutter, '/production-intelligence/mine', $range), 'C6 cutter reads own work');
 $stage = array_values(array_filter($mine['stages'], static fn ($r) => $r['stageId'] === 'material-preparation'))[0] ?? null;
@@ -213,7 +217,7 @@ $check($completedRow !== null && $completedRow['stageId'] === 'delivery' && $com
 $check(count(array_filter($employees['items'], static fn ($r) => $r['employeeId'] === $cutter['employeeUuid'] && $r['stageId'] !== 'material-preparation')) === 0, 'C12 stages are never added together');
 $products = $ok($get($root, '/management/production-intelligence/products', $range + ['source' => 'trendhome']), 'C13 products');
 $product = array_values(array_filter($products['items'], static fn ($r) => $r['productCode'] === $sku))[0] ?? null;
-$check($product !== null && $product['soldFabricMeters'] === '6.000' && $product['cutFabricMeters'] === '6.000' && $product['completedFabricMeters'] === '6.000', 'C14 product sold/cut/completed: ' . json_encode($product));
+$check($product !== null && $product['orderedFabricMeters'] === '6.000' && $product['cutFabricMeters'] === '6.000' && $product['completedFabricMeters'] === '6.000', 'C14 product sold/cut/completed: ' . json_encode($product));
 $legacyCompleted = (int) $pdo->query("SELECT COUNT(*) FROM order_activity_events WHERE order_uuid = " . $pdo->quote($legacy) . " AND action = 'production_completed'")->fetchColumn();
 $opSummary = $ok($get($root, '/management/production-intelligence/summary', $range + ['source' => 'outletperdele']), 'C15 outlet summary');
 $s = $pdo->prepare("SELECT COUNT(*) FROM order_activity_events e JOIN operational_orders o ON o.order_uuid = e.order_uuid WHERE o.source_key = 'outletperdele' AND e.action = 'production_completed'
@@ -321,7 +325,7 @@ $pdo->exec('SET SESSION innodb_lock_wait_timeout = DEFAULT');
 $other->query("SELECT GET_LOCK('arasya_sold_meter_ledger', 0)")->fetchColumn();
 try { $ledger->syncChanged(false); $check(false, 'E19 concurrent automatic run refused'); } catch (RuntimeException $busy) { $check(str_contains($busy->getMessage(), 'in progress'), 'E19 concurrent automatic run refused'); }
 $other->query("SELECT RELEASE_LOCK('arasya_sold_meter_ledger')");
-$synced = $ok($get($root, '/management/production-intelligence/summary', $range), 'E20a summary')['sold']['syncedThrough'] ?? null;
+$synced = $ok($get($root, '/management/production-intelligence/summary', $range), 'E20a summary')['ordered']['syncedThrough'] ?? null;
 $check(is_string($synced) && preg_match('/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/D', $synced) === 1, 'E20a the report states how fresh the sold meters are: ' . json_encode($synced));
 $cursorBefore = $cursorRow();
 $ledger->syncChanged(true);
@@ -433,7 +437,7 @@ $check($ledger->sync(false, 50)['entries'] === 0 && $ledger->syncChanged(false)[
 // Every expectation is a difference against the report before, so rows other suites hold never matter.
 $units = static fn (string $meters): int => (str_starts_with($meters, '-') ? -1 : 1) * (int) MeterContract::units(ltrim($meters, '-'));
 $report = static fn (string $section, array $query = []) => $ok($get($root, "/management/production-intelligence/{$section}", $range + $query), "G report {$section}");
-$outsideOf = static fn (array $summary): array => $summary['sold']['byOrigin']['outside_arasya'];
+$outsideOf = static fn (array $summary): array => $summary['ordered']['byOrigin']['outside_arasya'];
 $production = static fn (array $summary): array => [$summary['cut'], $summary['recut'], $summary['processed'], $summary['completed']];
 $freeId = static function () use ($pdo): string {
     $s = $pdo->prepare('SELECT (SELECT COUNT(*) FROM operational_orders WHERE source_order_id = ?) + (SELECT COUNT(*) FROM shop_sourced_meter_lines WHERE source_order_id = ?)');
@@ -488,23 +492,29 @@ $check($ordersRows() === $ordersBefore && $factRows() === $factsBefore && $ledge
     && (int) $pdo->query('SELECT COUNT(*) FROM operational_orders WHERE global_order_id IN (' . implode(',', array_map(static fn ($id) => $pdo->quote("trendhome:{$id}"), [$oV, $oR, $oS])) . ')')->fetchColumn() === 0,
     'G4 no order, item, fact or ledger entry is created for them');
 $after = $report('summary', ['source' => 'trendhome']);
-$delta = static fn (array $a, array $b, string $metric): int => $units($b['sold'][$metric]) - $units($a['sold'][$metric]);
+$delta = static fn (array $a, array $b, string $metric, string $concept = 'ordered'): int => $units($b[$concept][$metric]) - $units($a[$concept][$metric]);
 $oBefore = $outsideOf($before); $oAfter = $outsideOf($after);
 $check($units($oAfter['fabricMeters']) - $units($oBefore['fabricMeters']) === 8000 && $units($oAfter['railMeters']) - $units($oBefore['railMeters']) === 3000,
     'G5 only the verified sales count: 2.5 x 2 + 3.0 x (2 - 1) = 8.000 m fabric, 3.000 m rail: ' . json_encode($oAfter));
 $check($oAfter['verifiedSaleOrders'] - $oBefore['verifiedSaleOrders'] === 2 && $oAfter['notVerifiedOrders'] - $oBefore['notVerifiedOrders'] === 4
-    && $oAfter['unknownLines'] - $oBefore['unknownLines'] === 1 && $oAfter['productionEvidence'] === false, 'G6 not verified orders and unknown lines are counted, never as meters');
+    && $oAfter['unknownLines'] - $oBefore['unknownLines'] === 1 && $oAfter['productionEvidence'] === false, 'G6 not verified orders and unknown lines are counted, never as sale meters');
+$check($oAfter['openOrders'] - $oBefore['openOrders'] === 3 && $units($oAfter['openFabricMeters']) - $units($oBefore['openFabricMeters']) === 7500
+    && $units($oAfter['openRailMeters']) === $units($oBefore['openRailMeters']), 'G6b the shipped, processing and unpaid completed orders are 4.0 + 1.5 + 2.0 = 7.500 m ordered, payment not verified; the cancelled one carries nothing: ' . json_encode($oAfter));
 foreach (['completed' => 3, 'expediat' => 1, 'processing' => 1, 'cancelled' => 1] as $status => $count) {
     $check(($oAfter['ordersByShopStatus'][$status] ?? 0) - ($oBefore['ordersByShopStatus'][$status] ?? 0) === $count, "G7 shop status {$status} counted apart");
 }
-$check($delta($before, $after, 'fabricMeters') === 8000 && $delta($before, $after, 'railMeters') === 3000
-    && $after['sold']['byOrigin']['arasya'] === $before['sold']['byOrigin']['arasya'], 'G8 sold totals grow by the outside origin only; Arasya\'s own sold meters are unchanged');
+$check($delta($before, $after, 'fabricMeters') === 15500 && $delta($before, $after, 'railMeters') === 3000
+    && $delta($before, $after, 'fabricMeters', 'verifiedSale') === 8000 && $delta($before, $after, 'railMeters', 'verifiedSale') === 3000
+    && $after['ordered']['byOrigin']['arasya'] === $before['ordered']['byOrigin']['arasya'] && $after['verifiedSale']['byOrigin']['arasya'] === $before['verifiedSale']['byOrigin']['arasya'],
+    'G8 ordered meters grow by the outside origin only (8.000 verified + 7.500 open); verified sales by 8.000 m; Arasya\'s own meters are unchanged');
+$classDelta = static fn (string $class, string $metric): int => $units($after['ordered']['byPayment'][$class][$metric]) - $units($before['ordered']['byPayment'][$class][$metric]);
+$check($classDelta('paid', 'fabricMeters') === 8000 && $classDelta('unverified', 'fabricMeters') === 7500 && $classDelta('paid', 'railMeters') === 3000, 'G8b outside meters carry payment classes paid and unverified');
 $check($production($after) === $production($before) && $report('employees') === $employeesBefore, 'G9 no production evidence: cut, recut, processed, completed and employee work are unchanged');
 $outRow = array_values(array_filter($report('products', ['source' => 'trendhome'])['items'], static fn ($r) => $r['productCode'] === $outSku))[0] ?? null;
-$check($outRow !== null && $outRow['soldFabricMeters'] === '8.000' && $outRow['soldOutsideArasyaFabricMeters'] === '8.000' && $outRow['cutFabricMeters'] === '0.000'
+$check($outRow !== null && $outRow['orderedFabricMeters'] === '15.500' && $outRow['verifiedSaleFabricMeters'] === '8.000' && $outRow['orderedOutsideArasyaFabricMeters'] === '15.500' && $outRow['cutFabricMeters'] === '0.000'
     && $outRow['completedFabricMeters'] === '0.000', 'G10 the product row shows the outside sale apart and no production: ' . json_encode($outRow));
 $day = array_values(array_filter($report('series', ['source' => 'trendhome', 'bucket' => 'day'])['items'], static fn ($p) => $p['period'] === '2026-10-06'))[0] ?? null;
-$check($day !== null && $units($day['soldOutsideArasyaFabricMeters']) >= 8000 && $day['soldOutsideArasyaRailMeters'] !== null, 'G11 dated at the shop order\'s creation (2026-10-06)');
+$check($day !== null && $units($day['orderedOutsideArasyaFabricMeters']) >= 15500 && $units($day['verifiedSaleFabricMeters']) >= 8000 && $day['orderedOutsideArasyaRailMeters'] !== null, 'G11 dated at the shop order\'s creation (2026-10-06)');
 foreach (['trendyol', 'b2b'] as $foreign) {
     $check($outsideOf($report('summary', ['source' => $foreign]))['verifiedSaleOrders'] === 0, "G12 the outside origin never appears under {$foreign}");
 }
@@ -528,9 +538,54 @@ $ledger->sync(false, 50, $uV);
 $totalAfter = $report('summary', ['source' => 'trendhome']);
 $check($sumsOf($uV) === ['sold_fabric' => '5.000', 'sold_rail' => '3.000'] && $units($outsideOf($totalAfter)['fabricMeters']) === $units($outsideOf($totalBefore)['fabricMeters']) - 5000
     && $units($outsideOf($totalAfter)['railMeters']) === $units($outsideOf($totalBefore)['railMeters']) - 3000, 'G16 the outside lines of an order now in Arasya are no longer counted');
-$check($totalAfter['sold']['fabricMeters'] === $totalBefore['sold']['fabricMeters'] && $totalAfter['sold']['railMeters'] === $totalBefore['sold']['railMeters'],
+$check($totalAfter['ordered']['fabricMeters'] === $totalBefore['ordered']['fabricMeters'] && $totalAfter['ordered']['railMeters'] === $totalBefore['ordered']['railMeters'],
     'G17 the order is counted once: the ledger takes over exactly what the outside origin gave up');
 $check($import->run('trendhome', $outsideExport(), true)['outside']['superseded'] === 1, 'G18 a later import reports the order as now in Arasya and stores nothing outside for it');
+
+// ---- H. the five concepts apart (API 2.72.0, owner decision 2026-11-14) ---------------------------------------------
+// The payment evidence is the state the source sent with the order. These fixture updates set it on disposable orders.
+$pay = static function (string $order, ?string $state, ?string $basis, bool $reversed = false) use ($pdo): void {
+    $pdo->prepare('UPDATE operational_orders SET source_financial_state = ?, source_financial_basis = ?, source_financial_pricing = ?, payment_reversed_at = ' . ($reversed ? 'UTC_TIMESTAMP(6)' : 'NULL') . ' WHERE order_uuid = ?')
+        ->execute([$state, $basis, $state === null ? null : 'sha256:' . hash('sha256', 'pi-fixture-pricing'), $order]);
+};
+foreach ([$uA, $uB, $uD, $uE] as $own) $pay($own, null, null);
+$hBefore = $report('summary', ['source' => 'trendhome']);
+$hProducts = $report('products', ['source' => 'trendhome']);
+$fab = static fn (string $order): int => $units($sumsOf($order)['sold_fabric'] ?? '0.000');
+$rail = static fn (string $order): int => $units($sumsOf($order)['sold_rail'] ?? '0.000');
+$pay($uA, 'cleared', 'online_payment');
+$pay($uB, 'cleared', 'advance_collected');
+$pay($uD, 'waiting', null);
+$pay($uE, 'cleared', 'online_payment', true);
+$hAfter = $report('summary', ['source' => 'trendhome']);
+$cls = static fn (string $class, string $metric): int => $units($hAfter['ordered']['byPayment'][$class][$metric]) - $units($hBefore['ordered']['byPayment'][$class][$metric]);
+$check($hAfter['ordered']['fabricMeters'] === $hBefore['ordered']['fabricMeters'] && $hAfter['ordered']['railMeters'] === $hBefore['ordered']['railMeters'],
+    'H1 the payment evidence never changes the ordered meters');
+$check($cls('paid', 'fabricMeters') === $fab($uA) && $cls('paid', 'railMeters') === $rail($uA) && $fab($uA) === 5000, 'H2 a payment proven in full is class paid');
+$check($cls('advance_verified', 'fabricMeters') === $fab($uB) && $cls('unverified', 'fabricMeters') === $fab($uD) && $cls('reversed', 'fabricMeters') === $fab($uE),
+    'H3 advance only, unverified and reversed payments are classes of their own: ' . json_encode($hAfter['ordered']['byPayment']));
+$check($cls('unknown', 'fabricMeters') === -($fab($uA) + $fab($uB) + $fab($uD) + $fab($uE)), 'H4 the orders left the unknown class; unknown is reported, never zero');
+$check($units($hAfter['verifiedSale']['fabricMeters']) - $units($hBefore['verifiedSale']['fabricMeters']) === $fab($uA)
+    && $units($hAfter['verifiedSale']['railMeters']) - $units($hBefore['verifiedSale']['railMeters']) === $rail($uA),
+    'H5 only the paid order becomes a verified sale; cash on delivery with its advance, a waiting and a reversed payment do not');
+$sumClasses = static function (array $summary, string $metric) use ($units): int { $t = 0; foreach ($summary['ordered']['byPayment'] as $c) $t += $units($c[$metric]); return $t; };
+$check($sumClasses($hAfter, 'fabricMeters') === $units($hAfter['ordered']['fabricMeters']) && $sumClasses($hAfter, 'railMeters') === $units($hAfter['ordered']['railMeters'])
+    && $units($hAfter['verifiedSale']['fabricMeters']) + $units($hAfter['verifiedSale']['notVerified']['fabricMeters']) === $units($hAfter['ordered']['fabricMeters']),
+    'H6 the payment classes add up to the ordered meters; verified + not verified = ordered');
+$check(array_keys($hAfter['ordered']['byPayment']) === ['paid', 'advance_verified', 'partial', 'no_charge', 'unverified', 'reversed', 'unknown'], 'H7 every class is always reported');
+$pay($uB, 'partial', null); $pay($uD, 'cleared', 'zero_total');
+$hPartial = $report('summary', ['source' => 'trendhome']);
+$check($units($hPartial['ordered']['byPayment']['partial']['fabricMeters']) - $units($hBefore['ordered']['byPayment']['partial']['fabricMeters']) === $fab($uB)
+    && $units($hPartial['ordered']['byPayment']['no_charge']['fabricMeters']) - $units($hBefore['ordered']['byPayment']['no_charge']['fabricMeters']) === $fab($uD)
+    && $hPartial['verifiedSale'] == $hAfter['verifiedSale'], 'H8 partial and zero-total orders are never verified sales');
+$hProductsAfter = $report('products', ['source' => 'trendhome']);
+$verifiedProducts = static function (array $p) use ($units): int { $t = 0; foreach ($p['items'] as $r) $t += $units($r['verifiedSaleFabricMeters']); return $t; };
+$check($verifiedProducts($hProductsAfter) - $verifiedProducts($hProducts) === $fab($uA), 'H9 the product rows carry the verified sale apart');
+$series = $report('series', ['source' => 'trendhome', 'bucket' => 'year']);
+$verifiedSeries = 0; foreach ($series['items'] as $p) $verifiedSeries += $units($p['verifiedSaleFabricMeters']);
+$check($verifiedSeries === $units($hPartial['verifiedSale']['fabricMeters']), 'H10 the series carries the verified sale apart');
+$check(str_contains(json_encode($hAfter) ?: '', 'TEST Client') === false, 'H11 no customer identity');
+foreach ([$uA, $uB, $uD, $uE] as $own) $pay($own, null, null);
 
 // Disposable database hygiene: the rollback suites read recent meter facts, and other suites delete their own orders
 // (the ledger's foreign key would block them), so this suite removes every ledger row and fact it caused.

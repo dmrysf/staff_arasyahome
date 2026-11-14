@@ -1,6 +1,56 @@
-# Production Intelligence V2: sold-meter contract and reads (API 2.70.0, migration 053)
+# Production Intelligence V2: meter contract and reads (API 2.70.0, migration 053; five concepts apart since API 2.72.0)
 
-Status: draft. Not merged, migration 053 not applied, no facts import or backfill run, nothing deployed.
+## Status (2026-11-14)
+
+| Part | State |
+| --- | --- |
+| Migration 053 (+ 054) | Applied in production 2026-11-13 20:49Z |
+| API | 2.71.1 live (deploy 215). 2.72.0 (this document's payment classes) is a draft PR, not deployed |
+| YD SOFT 2.30.0 (`meterBasis`) | Live on Trendhome (2026-11-13 22:53Z) and Outletperdele (2026-11-14 02:12Z) |
+| Staff | 2.51.0 live; the own-work meter screen is a draft PR, not deployed |
+| Dashboard | 0.18.0 live; the management screens (0.19.0) are a draft PR, not deployed |
+| History facts import | Owner-approved; scheduled 2026-11-15 01:36Z after the pre-checks (TH first, then OP) |
+| Ledger backfill (`meter-ledger.php --apply`) | Not run, not approved |
+| Automatic ledger cron | Not scheduled, not approved |
+| Exclusions | Only the two Trendhome rollout test orders (owner-approved with the import); the five B2B test orders are not excluded yet |
+
+## The five meter concepts (owner decision 2026-11-14)
+
+The management reports keep these apart and never present one as another:
+
+| Concept | Report key | Definition |
+| --- | --- | --- |
+| Ordered meters | `summary.ordered` | The ledger: every valid order that is not cancelled or excluded, cash on delivery included; plus the outside-Arasya orders that are verified sales or still open at the shop |
+| Payment-verified sale meters | `summary.verifiedSale` | The ordered meters whose payment the source proved in full (`PaymentEvidence::PAID`; outside Arasya: completed with a recorded payment) |
+| Production meters | `summary.cut`, `recut`, `processed`, `completed` | From canonical production events, evidence `source_line` (K1) |
+| Shipped meters | `summary.shipped` | Not available: no source holds shipping evidence per meter. Trendyol shipped order counts only |
+| Delivered meters | `summary.delivered` | Not available (K6). Trendyol delivered order counts only; Trendyol meters are unknown (K2) |
+
+### Payment classes (`PaymentEvidence`, API 2.72.0)
+
+Each ordered meter carries the payment class of its order, read from the evidence the source already sends with the order
+(`source_financial_state`, `source_financial_basis`, `payment_reversed_at`; YD SOFT `ConfirmareFinancial`). Nothing about
+orders, payments, Confirmare or production changes; no migration.
+
+| Class | Source evidence | Verified sale |
+| --- | --- | --- |
+| `paid` | `cleared` by `online_payment` (verified online payment of the whole total) | yes |
+| `advance_verified` | `cleared` by `advance_collected`: cash on delivery, the advance is proven, the rest is collected at delivery without evidence in Arasya | no |
+| `partial` | `partial`: some money proven, less than the advance | no |
+| `no_charge` | `cleared` by `zero_total` | no |
+| `unverified` | `waiting`: no proven money yet | no |
+| `reversed` | a recorded payment was reversed (`payment_reversed_at`) | no |
+| `unknown` | no payment state (orders before the payment snapshot of 2026-10-26, Trendyol, B2B) or `unknown` | no, and never counted as zero |
+
+- `summary.ordered.byPayment` gives fabric meters, rail meters and orders per class; the classes add up to the ordered
+  meters (test H6). `summary.verifiedSale.notVerified` is ordered minus verified.
+- The class is the order's state at the time of the report, applied to the meters at their ledger (sale) date.
+- Read-only distribution on 2026-11-14 (orders, not meters): Trendhome 356 `paid`, 142 `advance_verified`, 795
+  `unverified`, 454 `unknown`; Outletperdele 121, 43, 265, 194. Most `unknown` orders are October orders created before
+  the payment snapshot: their history will be reported as ordered with payment unknown.
+- Outside Arasya (ShopSourcedSales): a completed order with a recorded payment is `paid`; an order still open at the shop
+  (processing, shipped, being verified, completed without a recorded payment) is `unverified`; cancelled, failed,
+  refunded, trashed and unpaid checkouts (`pending`) carry no meters.
 
 ## Owner decisions (2026-11-12)
 
@@ -42,7 +92,10 @@ matched it.
   Confirmare state and activity stay byte-identical (integration test A4). A later event without the fact never erases it.
 - `meters` is still never sent by the shops: it is printed on the production sheet.
 
-## Sold-meter ledger (`production_meter_ledger`, `bin/meter-ledger.php`)
+## Meter ledger (`production_meter_ledger`, `bin/meter-ledger.php`)
+
+The ledger holds ordered meters. Its metrics keep their names `sold_fabric` / `sold_rail`; since API 2.72.0 the reports
+call them ordered meters and derive the verified sale from the payment class at read time.
 
 - Insert-only signed entries per line and metric: `sale`, `correction`, `cancellation` (dated when the source reported it),
   `reactivation`, `line_removed`, `exclusion`.
@@ -66,7 +119,8 @@ New orders reach the ledger through an incremental run, never through order proc
 - Its first `--apply` run only stores the watermark and visits nothing (test E2): scheduling it is not a backfill.
 - Same deduplication as the full run: one run at a time (the same named lock, test E19), a difference entry only, and the
   unique cause key. An order transaction holding its row never delays the run (test E18, 1-second lock timeout).
-- The reports return the watermark as `sold.syncedThrough`, so a reader sees how fresh the sold meters are.
+- The reports return the watermark as `ordered.syncedThrough` (`sold.syncedThrough` before API 2.72.0), so a reader sees
+  how fresh the ledger is.
 - Proposed schedule after approval: every 5 minutes, `*/5 * * * * /usr/local/bin/php <api>/bin/meter-ledger.php --changed --apply`.
   Adding the cron line is a hosting change and needs its own approval.
 - An exclusion is only ever added. Lifting one needs a full run for that order (`--order=<uuid> --apply`).
@@ -109,10 +163,11 @@ Outletperdele 33 (mostly 59631 to 59680, before its real ingestion), together ab
   line ids, shop status, creation, payment, basis, length, quantity, refunded quantity, product code, variant. No
   canonical order, item, QR, document, Confirmare state, activity or ledger entry is created (test G4). Each import
   replaces an order's lines with the shop's latest statement; an identical statement writes nothing (tests G13, G14).
-- **Verified sale.** Only an order the shop records as `completed` **with a recorded payment** counts as sold meters
+- **Verified sale.** Only an order the shop records as `completed` **with a recorded payment** counts as verified sale meters
   (`ShopSourcedSales::verified`, enforced again by a CHECK constraint). Shipped (`expediat`), `processing`,
-  `fiind-verificat`, `on-hold`, a completed order without a payment, `cancelled`, `refunded` and `failed` are counted by
-  status and never as meters (tests G5 to G7). Read-only check of the 36 on 2026-11-13: Trendhome 3 completed and paid;
+  `fiind-verificat`, `on-hold` and a completed order without a payment are ordered meters with payment `unverified`
+  since API 2.72.0 (test G6b); `cancelled`, `refunded`, `failed`, `trash` and `pending` are counted by status and never
+  as meters (tests G5 to G7). Read-only check of the 36 on 2026-11-13: Trendhome 3 completed and paid;
   Outletperdele 26 completed and paid, 3 `expediat` (unpaid on delivery), 3 `fiind-verificat`, 1 `processing`. So 29
   orders count today (Trendhome 20.500 m fabric; Outletperdele 262.110 m fabric and 3.400 m rail); the 7 others count
   when the shop records them as completed and paid and the export is imported again. The same read-only check ran the
@@ -124,10 +179,12 @@ Outletperdele 33 (mostly 59631 to 59680, before its real ingestion), together ab
   evidence for them (tests G9, G10; `productionEvidence: false`).
 - **No double count.** A line whose order exists in Arasya (same global order id) is never read from this table: Arasya's
   ledger counts that order. An order that reaches Arasya later is therefore counted once (tests G15 to G18).
-- **Reports.** `summary.sold` totals include them, and `summary.sold.byOrigin` splits `arasya` (the ledger) from
-  `outside_arasya` (fabric and rail meters, verified orders, metered and unknown lines, orders that are not verified, orders
-  by shop status, the sale rule). `products` and `series` carry `soldOutsideArasyaFabricMeters` /
-  `soldOutsideArasyaRailMeters` next to the totals. Trendyol and B2B never have this origin (test G12).
+- **Reports.** `summary.ordered` totals include them, and `summary.ordered.byOrigin` splits `arasya` (the ledger) from
+  `outside_arasya` (verified fabric and rail meters, verified orders, metered and unknown lines, open orders and their
+  meters, orders that are not verified, orders by shop status, the rules). `summary.verifiedSale.byOrigin` shows the same
+  split for verified sales. `products` and `series` carry `orderedOutsideArasyaFabricMeters` /
+  `orderedOutsideArasyaRailMeters` next to `orderedFabricMeters`, `orderedRailMeters`, `verifiedSaleFabricMeters` and
+  `verifiedSaleRailMeters` (API 2.72.0; before: `sold*`). Trendyol and B2B never have this origin (test G12).
 
 ## Production metrics (read time, from canonical events)
 
@@ -155,6 +212,9 @@ Unknown lines are counted as unknown (`ordersWithUnknownLines`, `unknownLines`, 
 - Responses carry order numbers, product codes, variants and employee names only, never customer data.
 
 ## Rollback
+
+API 2.72.0 changes only report shapes (no migration, no write path): a rollback to 2.71.1 is safe; the Dashboard 0.19.0
+management screens then show the reports as unavailable until the API returns to 2.72.0.
 
 An API below 2.70.0 rejects a payload that carries `meterBasis` (422 `SOURCE_PAYLOAD_INVALID`), and events already
 queued in a shop keep the fact they were queued with. YD SOFT 2.30.0, the only release that sends the fact, handles this
