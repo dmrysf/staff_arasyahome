@@ -101,6 +101,7 @@ for file in \
   src/Intelligence/CeoLines.php \
   src/Intelligence/TrendyolPanelWidth.php \
   src/Intelligence/ProductCatalog.php \
+  src/Intelligence/ProductCategoryFacts.php \
   src/Intelligence/ProductCategoryImport.php \
   src/Intelligence/MeterContract.php \
   src/Intelligence/SoldMeterLedger.php \
@@ -147,7 +148,7 @@ for file in \
 done
 
 (cd -- "$release_root" && sha256sum -c SHA256SUMS >/dev/null) || fail "SHA256SUMS verification failed."
-php -r '$r=json_decode(file_get_contents($argv[1]), true, flags: JSON_THROW_ON_ERROR); require $argv[2]."/bootstrap.php"; if (!is_array($r) || preg_match("/^[0-9a-f]{40}$/", $r["sourceCommit"] ?? "") !== 1 || ($r["version"] ?? null) !== "2.73.0" || $r["version"] !== Arasya\Operations\Http\HealthController::VERSION) exit(2);' "$release_root/release.json" "$release_root" \
+php -r '$r=json_decode(file_get_contents($argv[1]), true, flags: JSON_THROW_ON_ERROR); require $argv[2]."/bootstrap.php"; if (!is_array($r) || preg_match("/^[0-9a-f]{40}$/", $r["sourceCommit"] ?? "") !== 1 || ($r["version"] ?? null) !== "2.74.0" || $r["version"] !== Arasya\Operations\Http\HealthController::VERSION) exit(2);' "$release_root/release.json" "$release_root" \
   || fail "release.json provenance/version is invalid."
 
 for directory in src database/migrations bin config; do

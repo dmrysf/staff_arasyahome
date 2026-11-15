@@ -29,7 +29,10 @@ final class SourceOrderPayloadMapper
      */
     /** API 2.70.0: `meterBasis` (order.items[].meterBasis: the line's pricing basis and priced length, Production Intelligence V2). */
     /** API 2.46.0: `paymentFinancing` (order.payment.financing: a TBI credit order keeps the established flow, owner K-12). */
-    public const ORDER_FACTS = ['pricing', 'dueDate', 'financial', 'contact', 'financialAttention', 'financeTasks', 'paymentFinancing', 'meterBasis'];
+    /** API 2.74.0: `productCategory` (order.items[].category: the shop catalog category of the line's product, CEO reports). */
+    public const ORDER_FACTS = ['pricing', 'dueDate', 'financial', 'contact', 'financialAttention', 'financeTasks', 'paymentFinancing', 'meterBasis', 'productCategory'];
+    /** The category rules a shop states (the same as the catalog export, ProductCategoryImport). */
+    public const CATEGORY_RULES = ['single_main_category', 'primary_category'];
     /**
      * Why a Confirmare order needs a financial decision (order.financial.attention, never an amount). With a closed state
      * (waiting, partial, unknown): additional_payment_due and refund_due (API 2.40.0), transfer_pending (a recorded bank
@@ -46,7 +49,7 @@ final class SourceOrderPayloadMapper
     private const SUBMISSION_KEYS = ['submittedAt', 'evidence'];
     private const PAYMENT_KEYS = ['method', 'advanceStatus', 'advanceRevision', 'advanceConfirmedAt', 'financing'];
     private const MAX_ADVANCE_REVISION = 1000000;
-    private const ITEM_KEYS = ['id', 'line', 'name', 'sku', 'variant', 'color', 'width', 'height', 'unit', 'meters', 'quantity', 'options', 'meterBasis'];
+    private const ITEM_KEYS = ['id', 'line', 'name', 'sku', 'variant', 'color', 'width', 'height', 'unit', 'meters', 'quantity', 'options', 'meterBasis', 'category'];
     private const MAX_OPTIONS = 20;
     private const MAX_ITEMS = 200;
 
@@ -89,12 +92,38 @@ final class SourceOrderPayloadMapper
         }
         $items = [];
         $meterBasis = [];
+        $categories = [];
+        $ambiguousCodes = [];
         foreach ($rawItems as $index => $rawItem) {
             $item = self::object($rawItem, "order.items[{$index}]");
             self::allowKeys($item, self::ITEM_KEYS, ['id', 'line', 'name', 'quantity']);
             if (array_key_exists('meterBasis', $item)) {
                 $meterBasis[self::identifier($item['id'], "order.items[{$index}].id")] = self::meterBasis($item['meterBasis'], "order.items[{$index}].meterBasis");
             }
+            // API 2.74.0: the catalog category is keyed by the line's product code; a line without a code has nothing to
+            // key it by, and one code stated with two different categories in the same order is ambiguous and dropped.
+            // Report evidence only: an invalid category is dropped, never a reason to refuse or delay the order itself.
+            if (array_key_exists('category', $item) && $item['category'] !== null) {
+                try {
+                    $category = self::category($item['category'], "order.items[{$index}].category");
+                } catch (ApiException) {
+                    $category = null;
+                }
+            }
+            if (isset($category)) {
+                $code = self::optionalString($item['sku'] ?? null, "order.items[{$index}].sku");
+                $code = $code === null ? '' : trim($code);
+                $key = mb_strtolower($code);
+                if ($code !== '' && mb_strlen($code) <= 120 && !isset($ambiguousCodes[$key])) {
+                    if (isset($categories[$key]) && [$categories[$key]['label'], $categories[$key]['subcategory'], $categories[$key]['rule']] !== [$category['label'], $category['subcategory'], $category['rule']]) {
+                        unset($categories[$key]);
+                        $ambiguousCodes[$key] = true;
+                    } else {
+                        $categories[$key] ??= $category + ['code' => $code, 'name' => self::string($item['name'], "order.items[{$index}].name")];
+                    }
+                }
+            }
+            unset($category);
             try {
                 $items[] = new OperationalOrderItem(
                     Uuid::v4(),
@@ -139,6 +168,7 @@ final class SourceOrderPayloadMapper
                 self::financial($order['financial'] ?? null),
                 self::contact($order['contact'] ?? null),
                 $meterBasis === [] ? null : $meterBasis,
+                $categories === [] ? null : array_values($categories),
             );
         } catch (InvalidArgumentException) {
             throw self::invalid('order');
@@ -439,6 +469,35 @@ final class SourceOrderPayloadMapper
             throw self::invalid($field . '.length');
         }
         return ['kind' => $kind, 'length' => $length];
+    }
+
+    /**
+     * order.items[].category (API 2.74.0): {label, subcategory, rule}, the shop catalog category of the line's product by
+     * the catalog export's rule (main category = the single non-marketing top-level category, the Yoast primary category
+     * between several). A product without a category is sent without the key, never with a guess.
+     * Throws on an invalid shape; the order mapper then drops the category and keeps the order (API 2.74.0).
+     * @return array{label: string, subcategory: string|null, rule: string}
+     */
+    public static function category(mixed $value, string $field): array
+    {
+        if (!is_array($value) || array_is_list($value)) {
+            throw self::invalid($field);
+        }
+        self::allowKeys($value, ['label', 'subcategory', 'rule'], ['label', 'rule']);
+        $text = static function (mixed $raw, int $max, bool $required, string $name) use ($field): ?string {
+            if (!$required && ($raw === null || (is_string($raw) && trim($raw) === ''))) {
+                return null;
+            }
+            $clean = is_string($raw) ? trim(preg_replace('/\s+/u', ' ', $raw) ?? '') : '';
+            if ($clean === '' || mb_strlen($clean) > $max || preg_match('/[\x00-\x1F\x7F]/', $clean) === 1) {
+                throw self::invalid($field . '.' . $name);
+            }
+            return $clean;
+        };
+        if (!is_string($value['rule']) || !in_array($value['rule'], self::CATEGORY_RULES, true)) {
+            throw self::invalid($field . '.rule');
+        }
+        return ['label' => (string) $text($value['label'], 120, true, 'label'), 'subcategory' => $text($value['subcategory'] ?? null, 255, false, 'subcategory'), 'rule' => $value['rule']];
     }
 
     private static function invalid(string $field): ApiException

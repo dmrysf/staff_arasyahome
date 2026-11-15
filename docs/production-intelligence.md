@@ -1,15 +1,16 @@
-# Production Intelligence V2: meter contract and reads (API 2.70.0, migration 053; five concepts apart since API 2.72.0; CEO reports since API 2.73.0)
+# Production Intelligence V2: meter contract and reads (API 2.70.0, migration 053; five concepts apart since API 2.72.0; CEO reports since API 2.73.0; category facts since API 2.74.0)
 
 ## Status (2026-11-15)
 
 | Part | State |
 | --- | --- |
 | Migration 053 (+ 054) | Applied in production 2026-11-13 20:49Z |
-| Migration 055 (product catalog categories) | In the API 2.73.0 draft PR; not applied. API 2.73.0 works without it (categories of web shop lines then read `unknown`) |
-| API | 2.71.1 live (deploy 215). 2.72.0 merged, not deployed. 2.73.0 (CEO reports) is a draft PR, not deployed |
+| Migration 055 (product catalog categories) | Merged with API 2.73.0 (2026-11-15); not applied. The code reads `unknown` categories without it, but `cpanel-deploy-api.sh` refuses to activate a release while a migration is pending, so 055 is applied **before** API 2.73.0 is activated |
+| API | 2.71.1 live (deploy 215). 2.72.0 and 2.73.0 (CEO reports) merged, not deployed. 2.74.0 (category facts) is a draft PR |
+| YD SOFT 2.31.0 (`productCategory`, catalog export) | Draft PR, not deployed |
 | YD SOFT 2.30.0 (`meterBasis`) | Live on Trendhome (2026-11-13 22:53Z) and Outletperdele (2026-11-14 02:12Z) |
 | Staff | 2.51.0 live; 2.52.0 (own-work meters) merged, not deployed |
-| Dashboard | 0.18.0 live; 0.19.0 merged, not deployed; 0.20.0 (CEO screens) is a draft PR, not deployed |
+| Dashboard | 0.18.0 live; 0.19.0 and 0.20.0 (CEO screens) merged, not deployed |
 | History facts import | Done 2026-11-15 08:34Z (TH 2908 + OP 947 facts); 24 h observation until 2026-11-16 08:34Z |
 | Ledger backfill (`meter-ledger.php --apply`) | Not run, not approved |
 | Automatic ledger cron | Not scheduled, not approved |
@@ -241,6 +242,44 @@ take the catalog category when the seller code matches exactly one category, oth
 Perdele, drapery → Draperii, other → Alte). B2B lines take the production kind. Anything else is `unknown`, never a guess
 from a title. A code listed twice with different categories is ambiguous and left out of the import.
 
+### Keeping categories current (API 2.74.0 + YD SOFT 2.31.0)
+
+No cron and no extra request: the existing order events carry the category.
+
+- The heartbeat announces `orderFacts: productCategory`. YD SOFT 2.31.0 then adds `order.items[].category`
+  (`{label, subcategory, rule}`) to each line whose product has a category by the catalog rule above (the same code as
+  `wp yd-arasya product-categories export`). A product without one is sent without the key, never with a guess.
+- `ProductCategoryFacts` stores it in `product_catalog_categories` inside the projection transaction: a new code is
+  added, an unchanged one is not written, the catalog product name is kept. A changed category is applied only by a
+  **newer source change**: `imported_at` holds the instant the stored category is valid from (the event's `changedAt`, or
+  the import time). A delayed older event of another order, a replayed event, a queue drained out of order or an equal
+  instant never turns a category back; an event older than a catalog import does not undo it. The guard is inside the
+  upsert, so concurrent orders cannot race. (An older event of the same order is already `out_of_order` and never
+  reaches the fact.)
+  The fact is outside the projection hash, the lines, the documents and Confirmare: a resend that only adds it is a
+  `duplicate`, so no order version moves and no document becomes stale.
+- A line without a product code, or one code stated with two categories in one order, is left out. An invalid category
+  is dropped, never a reason to refuse or delay the order (unlike `meterBasis`); the order and its other facts are
+  applied. Before migration 055 the fact is ignored.
+- So a new SKU gets its category with its first order; a category moved in WooCommerce follows with the next order of
+  that product. Products never ordered do not matter to the reports. The one-time catalog import fills the history.
+- A full import (`bin/product-category-import.php --apply`) replaces a shop's rows with that export: only from a fresh
+  export, never from an older file, or newer order-learned categories are replaced.
+
+### Initial category transfer (separate owner approval)
+
+1. On each shop, read only: `wp yd-arasya product-categories export > ~/yd-backups/product-categories-<shop>-<UTC>.json`
+   (umask 077; no customer data: codes, product names and category names only). Record the sha256.
+2. Copy the file to the API host (`~/arasya-backups/`, mode 600).
+3. Dry run: `php bin/product-category-import.php --source=<shop> --file=<file>`. Review `products`, `ambiguous` and
+   `byCategory`; nothing is written.
+4. With approval: the same command with `--apply` (one transaction, GET_LOCK, audited
+   `production_intelligence.product_categories_imported`). Running the same file again writes nothing.
+5. Check: the CEO SKU analysis shows `unknown` only for codes the export does not hold.
+
+Undo: the table is report-only. `DELETE FROM product_catalog_categories WHERE source_key = '<shop>'` returns that shop's
+web lines to `unknown`; nothing else changes.
+
 Reference check of the panel rule: on the read-only snapshot of 2026-11-14 22:58Z the rule gives exactly the one-off
 report's 4,406.4 m for its population (valid orders, real completion), with 0 differing lines out of 2,474. The
 `completions` population also counts completed orders that were returned (50 orders, 167.0 m) or cancelled (1 order,
@@ -251,6 +290,10 @@ PHP. The Dashboard refreshes the overview at most every 5 minutes while the page
 server.
 
 ## Rollback
+
+API 2.74.0 adds one write path, the category fact, outside every production path. A rollback to 2.73.0 is safe for
+orders: the heartbeat no longer announces `productCategory`, so YD SOFT 2.31.0 stops sending it and strips it from
+queued events before sending (an API below 2.74.0 refuses the unknown item key with 422). Categories already stored stay.
 
 API 2.73.0 changes only reads (no write path besides the opt-in category import CLI): a rollback to 2.72.0 is safe;
 migration 055 is additive and older code ignores its table. The Dashboard 0.20.0 CEO screens then show the new reports
