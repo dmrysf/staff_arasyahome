@@ -181,6 +181,8 @@ final readonly class OrderProjectionWriter
                     $this->recordSubmission($orderUuid, $snapshot);
                     // API 2.70.0: the line pricing basis is kept outside the hash, so a resend that only adds it stays a duplicate.
                     (new \Arasya\Operations\Intelligence\MeterFacts($this->pdo))->record($orderUuid, $snapshot, $nowSql);
+                    // API 2.74.0: the catalog category of the order's products, also outside the hash.
+                    (new \Arasya\Operations\Intelligence\ProductCategoryFacts($this->pdo))->record($snapshot, $nowSql);
                     $this->insertReceipt($snapshot, $globalId, $payloadHash, 'duplicate', $nowSql);
                     $this->touchSource($snapshot->sourceKey, $nowSql);
                     $this->pdo->commit();
@@ -384,6 +386,7 @@ final readonly class OrderProjectionWriter
 
             $this->ensureQrReference($orderUuid, $globalId, $snapshot->sourceKey, $nowSql, $snapshot->sourceEventId);
             (new \Arasya\Operations\Intelligence\MeterFacts($this->pdo))->record($orderUuid, $snapshot, $nowSql);
+            (new \Arasya\Operations\Intelligence\ProductCategoryFacts($this->pdo))->record($snapshot, $nowSql);
             $life = new \Arasya\Operations\Cutting\CuttingLifecycle($this->pdo);
             $currentStage = $currentOrder ? $stageId : $initialStage;
             if ($currentStage === $life::STAGE && (!$currentOrder || $currentOrder['production_stage_id'] !== $currentStage)) $life->fact($orderUuid, $currentOrder ? $productionVersion : 1, 'pool_entered', null, $nowSql);
