@@ -23,6 +23,9 @@ final readonly class SourceOrderSnapshot
      *        API 2.40.0); null when not stated
      * @param array<string, array{kind: string, length: float|null}>|null $meterBasis the pricing basis of each line by source
      *        item id (order.items[].meterBasis, API 2.70.0); null when the source stated none. Never part of the projection hash.
+     * @param list<array{code: string, name: string, label: string, subcategory: string|null, rule: string}>|null $productCategories
+     *        the shop catalog category of each product code on the order (order.items[].category, API 2.74.0); null when the
+     *        source stated none. Never part of the projection hash, never part of a line or a document.
      */
     public function __construct(
         public string $sourceKey,
@@ -46,6 +49,7 @@ final readonly class SourceOrderSnapshot
         public ?array $financial = null,
         public ?bool $contactPhone = null,
         public ?array $meterBasis = null,
+        public ?array $productCategories = null,
     ) {
         // Centralize identity validation
         new GlobalOrderId($this->sourceKey, $this->sourceOrderId);
