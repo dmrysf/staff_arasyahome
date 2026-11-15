@@ -1,5 +1,14 @@
 <?php
 declare(strict_types=1);
+/** Restore a pre-055 disposable test fixture (no product catalog categories). This is NOT a deployment/rollback mechanism. */
+function restorePreProductCatalogTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='055_product_catalog_categories.sql'")->fetchColumn()) return;
+    $pdo->exec('DROP TABLE IF EXISTS product_catalog_categories');
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='055_product_catalog_categories.sql'");
+}
+
 /** Restore a pre-053 disposable test fixture (no Production Intelligence tables). This is NOT a deployment/rollback mechanism. */
 function restorePreProductionIntelligenceTestSchema(PDO $pdo): void
 {
@@ -68,6 +77,7 @@ function restorePreFinanceHoldsTestSchema(PDO $pdo): void
 function restorePreFinanceOnboardingTestSchema(PDO $pdo): void
 {
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    restorePreProductCatalogTestSchema($pdo);
     restorePreFinanceHoldsTestSchema($pdo);
     restorePreProductionIntelligenceTestSchema($pdo);
     restorePreFinanceCollectionsTestSchema($pdo);

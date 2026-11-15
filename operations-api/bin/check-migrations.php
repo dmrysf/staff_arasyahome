@@ -303,4 +303,15 @@ if ($holdsTables[1] !== ['confirmare_finance_holds']
     || !str_contains($holdsSchema, 'CONSTRAINT chk_confirmare_finance_holds_release CHECK (')) {
     throw new RuntimeException('Migration 054 must only add the Confirmare finance holds table (one open hold per order, four eyes), and grant nothing.');
 }
+// Product catalog categories (055, API 2.73.0): one new table and nothing else. No existing table is altered or written,
+// no permission or grant, no foreign key or cascade; only the two web shops and the two category rules are allowed.
+$catalogSchema = (string) file_get_contents($root . '/database/migrations/055_product_catalog_categories.sql');
+$catalogStatements = preg_replace('/^--.*$/m', '', $catalogSchema) ?? '';
+preg_match_all('/CREATE TABLE IF NOT EXISTS (\w+)/', $catalogStatements, $catalogTables);
+if ($catalogTables[1] !== ['product_catalog_categories']
+    || preg_match('/ALTER TABLE|DROP |DELETE FROM|TRUNCATE|INSERT |\bUPDATE\s+\w+\s+SET|permissions|role_|employee_|FOREIGN KEY|CASCADE|SET NULL/i', $catalogStatements) === 1
+    || !str_contains($catalogSchema, "CONSTRAINT chk_product_catalog_source CHECK (source_key IN ('trendhome', 'outletperdele'))")
+    || !str_contains($catalogSchema, 'PRIMARY KEY (source_key, product_code)')) {
+    throw new RuntimeException('Migration 055 must only add the product catalog categories table, and grant nothing.');
+}
 fwrite(STDOUT, 'Migration sanity checks passed for ' . count($files) . " file(s).\n");

@@ -1,15 +1,16 @@
-# Production Intelligence V2: meter contract and reads (API 2.70.0, migration 053; five concepts apart since API 2.72.0)
+# Production Intelligence V2: meter contract and reads (API 2.70.0, migration 053; five concepts apart since API 2.72.0; CEO reports since API 2.73.0)
 
-## Status (2026-11-14)
+## Status (2026-11-15)
 
 | Part | State |
 | --- | --- |
 | Migration 053 (+ 054) | Applied in production 2026-11-13 20:49Z |
-| API | 2.71.1 live (deploy 215). 2.72.0 (this document's payment classes) is a draft PR, not deployed |
+| Migration 055 (product catalog categories) | In the API 2.73.0 draft PR; not applied. API 2.73.0 works without it (categories of web shop lines then read `unknown`) |
+| API | 2.71.1 live (deploy 215). 2.72.0 merged, not deployed. 2.73.0 (CEO reports) is a draft PR, not deployed |
 | YD SOFT 2.30.0 (`meterBasis`) | Live on Trendhome (2026-11-13 22:53Z) and Outletperdele (2026-11-14 02:12Z) |
-| Staff | 2.51.0 live; the own-work meter screen is a draft PR, not deployed |
-| Dashboard | 0.18.0 live; the management screens (0.19.0) are a draft PR, not deployed |
-| History facts import | Owner-approved; scheduled 2026-11-15 01:36Z after the pre-checks (TH first, then OP) |
+| Staff | 2.51.0 live; 2.52.0 (own-work meters) merged, not deployed |
+| Dashboard | 0.18.0 live; 0.19.0 merged, not deployed; 0.20.0 (CEO screens) is a draft PR, not deployed |
+| History facts import | Done 2026-11-15 08:34Z (TH 2908 + OP 947 facts); 24 h observation until 2026-11-16 08:34Z |
 | Ledger backfill (`meter-ledger.php --apply`) | Not run, not approved |
 | Automatic ledger cron | Not scheduled, not approved |
 | Exclusions | Only the two Trendhome rollout test orders (owner-approved with the import); the five B2B test orders are not excluded yet |
@@ -193,7 +194,7 @@ Outletperdele 33 (mostly 59631 to 59680, before its real ingestion), together ab
 | cut | first cutting completion of an order (stage 2 to workshop, or to Livrare on CUT_ONLY): the order's measured line fabric, evidence `source_line` |
 | recut | a later cutting completion of the same order; reported apart, never added to sold or completed |
 | processed | per employee and stage, one stage completion credits the order's measured fabric once; stages are never added together |
-| completed | `production_completed` events only (K8) |
+| completed | `production_completed` events only (K8), and only an order's first one (API 2.73.0); a later completion after the order went back to production is `recompleted`, reported apart and never counted again |
 
 Unknown lines are counted as unknown (`ordersWithUnknownLines`, `unknownLines`, `completionsWithoutMeters`), never as zero.
 
@@ -205,6 +206,9 @@ Unknown lines are counted as unknown (`ordersWithUnknownLines`, `unknownLines`, 
 | `/management/production-intelligence/products` | Root, canonical CEO | same; at most 500 rows |
 | `/management/production-intelligence/employees` | Root, canonical CEO | same |
 | `/management/production-intelligence/series` | Root, canonical CEO | same + `bucket` = `day`, `week`, `month`, `year` |
+| `/management/production-intelligence/overview` | Root, canonical CEO | `period` or `from`/`to`, `source` (API 2.73.0) |
+| `/management/production-intelligence/completions` | Root, canonical CEO | same + `bucket` = `day`, `week`, `month` (API 2.73.0) |
+| `/management/production-intelligence/skus` | Root, canonical CEO | same + `category`, `code` (contains), `variant` (contains), `status` = `all`, `in_progress`, `completed`, `cancelled`, `sku` (exact; adds day and month detail) (API 2.73.0) |
 | `/production-intelligence/mine` | the signed-in employee (`history.view_mine`) | `period` or `from`/`to` |
 
 - `GET /management/me` carries `capabilities.viewProductionIntelligence` (API 2.72.0): true only for Root and the
@@ -213,7 +217,44 @@ Unknown lines are counted as unknown (`ordersWithUnknownLines`, `unknownLines`, 
 - Every management read writes an IAM audit event `production_intelligence.read` (filters only, no data).
 - Responses carry order numbers, product codes, variants and employee names only, never customer data.
 
+## CEO reports (API 2.73.0, owner request 2026-11-15)
+
+`CeoProductionReport` answers `overview`, `completions` and `skus`. Read only; one REPEATABLE READ snapshot per report;
+every read is audited. Every date is Europe/Bucharest; every breakdown sums to its totals (tests B10, B11, B5d).
+
+| Term | Definition |
+| --- | --- |
+| received | orders whose source submission (or Arasya creation) falls in the range; excluded orders (K7) never count |
+| worked | orders with at least one action of a real employee in the range: production, Confirmare, finance, invoice, shop operation, cancellation control, QR, Trendyol release or preparation. System actions never count |
+| completed | an order's first production completion in the range (see above). A completion stays counted when the order is cancelled or returned later; `afterCompletion` reports those apart and `net` leaves them out |
+| processed (SKU) | an order's first production stage completion in the range: it entered production work |
+| stage work | intermediate stage completions per employee and stage; never added to completions |
+| TH / OP / B2B meters | the sold-meter contract of the line (`source_line`: priced L x quantity, rail apart, K5). Never a cut measurement and never physical fabric consumption (K1) |
+| Trendyol panel width | `TrendyolPanelWidth`: panel width (cm) / 100 x quantity, only when the production line, the variant, the Trendyol size and the prepared size agree exactly and the marketplace line quantity equals the line quantity. Otherwise `no_measure`, `conflict`, `invalid_measure`, `unlinked` or `quantity_mismatch` (unknown). Never fabric, never added to TH / OP meters |
+| current | in production, waiting, delayed, stopped: the state at `generatedAt` for the Arasya flow; the established WordPress shop flow is `legacyActive`. Delayed = active and its current stage entered more than 48 h ago (the data holds no promised date) |
+| ledger figures | `ledger.available = false` and `ordered = null` while the ledger has no entry: never shown as 0 |
+
+Categories (`ProductCatalog`): web shop lines take the shop catalog category of their product code
+(`product_catalog_categories`, migration 055, loaded by `bin/product-category-import.php` from a read-only shop export:
+main category = the single non-marketing top-level category, the Yoast primary category between several). Trendyol lines
+take the catalog category when the seller code matches exactly one category, otherwise the prepared kind (curtain →
+Perdele, drapery → Draperii, other → Alte). B2B lines take the production kind. Anything else is `unknown`, never a guess
+from a title. A code listed twice with different categories is ambiguous and left out of the import.
+
+Reference check of the panel rule: on the read-only snapshot of 2026-11-14 22:58Z the rule gives exactly the one-off
+report's 4,406.4 m for its population (valid orders, real completion), with 0 differing lines out of 2,474. The
+`completions` population also counts completed orders that were returned (50 orders, 167.0 m) or cancelled (1 order,
+2.0 m) afterwards: 4,575.4 m completed, 4,406.4 m net.
+
+Load: the reports read only the orders of the range (chunks of 500) and their lines; no full table is materialized in
+PHP. The Dashboard refreshes the overview at most every 5 minutes while the page is visible; nothing is scheduled on the
+server.
+
 ## Rollback
+
+API 2.73.0 changes only reads (no write path besides the opt-in category import CLI): a rollback to 2.72.0 is safe;
+migration 055 is additive and older code ignores its table. The Dashboard 0.20.0 CEO screens then show the new reports
+as unavailable.
 
 API 2.72.0 changes only report shapes (no migration, no write path): a rollback to 2.71.1 is safe; the Dashboard 0.19.0
 management screens then show the reports as unavailable until the API returns to 2.72.0.
