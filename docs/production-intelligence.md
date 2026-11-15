@@ -250,11 +250,17 @@ No cron and no extra request: the existing order events carry the category.
   (`{label, subcategory, rule}`) to each line whose product has a category by the catalog rule above (the same code as
   `wp yd-arasya product-categories export`). A product without one is sent without the key, never with a guess.
 - `ProductCategoryFacts` stores it in `product_catalog_categories` inside the projection transaction: a new code is
-  added, a changed category follows the newest event, an unchanged one is not written, the catalog product name is kept.
+  added, an unchanged one is not written, the catalog product name is kept. A changed category is applied only by a
+  **newer source change**: `imported_at` holds the instant the stored category is valid from (the event's `changedAt`, or
+  the import time). A delayed older event of another order, a replayed event, a queue drained out of order or an equal
+  instant never turns a category back; an event older than a catalog import does not undo it. The guard is inside the
+  upsert, so concurrent orders cannot race. (An older event of the same order is already `out_of_order` and never
+  reaches the fact.)
   The fact is outside the projection hash, the lines, the documents and Confirmare: a resend that only adds it is a
   `duplicate`, so no order version moves and no document becomes stale.
-- A line without a product code, or one code stated with two categories in one order, is left out. An invalid shape is
-  refused (422 `SOURCE_PAYLOAD_INVALID`), like `meterBasis`. Before migration 055 the fact is ignored.
+- A line without a product code, or one code stated with two categories in one order, is left out. An invalid category
+  is dropped, never a reason to refuse or delay the order (unlike `meterBasis`); the order and its other facts are
+  applied. Before migration 055 the fact is ignored.
 - So a new SKU gets its category with its first order; a category moved in WooCommerce follows with the next order of
   that product. Products never ordered do not matter to the reports. The one-time catalog import fills the history.
 - A full import (`bin/product-category-import.php --apply`) replaces a shop's rows with that export: only from a fresh

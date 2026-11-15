@@ -102,8 +102,15 @@ final class SourceOrderPayloadMapper
             }
             // API 2.74.0: the catalog category is keyed by the line's product code; a line without a code has nothing to
             // key it by, and one code stated with two different categories in the same order is ambiguous and dropped.
+            // Report evidence only: an invalid category is dropped, never a reason to refuse or delay the order itself.
             if (array_key_exists('category', $item) && $item['category'] !== null) {
-                $category = self::category($item['category'], "order.items[{$index}].category");
+                try {
+                    $category = self::category($item['category'], "order.items[{$index}].category");
+                } catch (ApiException) {
+                    $category = null;
+                }
+            }
+            if (isset($category)) {
                 $code = self::optionalString($item['sku'] ?? null, "order.items[{$index}].sku");
                 $code = $code === null ? '' : trim($code);
                 $key = mb_strtolower($code);
@@ -116,6 +123,7 @@ final class SourceOrderPayloadMapper
                     }
                 }
             }
+            unset($category);
             try {
                 $items[] = new OperationalOrderItem(
                     Uuid::v4(),
@@ -467,6 +475,7 @@ final class SourceOrderPayloadMapper
      * order.items[].category (API 2.74.0): {label, subcategory, rule}, the shop catalog category of the line's product by
      * the catalog export's rule (main category = the single non-marketing top-level category, the Yoast primary category
      * between several). A product without a category is sent without the key, never with a guess.
+     * Throws on an invalid shape; the order mapper then drops the category and keeps the order (API 2.74.0).
      * @return array{label: string, subcategory: string|null, rule: string}
      */
     public static function category(mixed $value, string $field): array
