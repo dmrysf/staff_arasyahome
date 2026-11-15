@@ -76,4 +76,33 @@ foreach ([
     }
 }
 
+// Trendyol panel width (API 2.73.0): panel width (cm) / 100 x quantity, only for proven measurements; never fabric.
+$panel = static fn (array $over): array => Arasya\Operations\Intelligence\TrendyolPanelWidth::line($over + ['width_value' => '140.000', 'height_value' => '260.000', 'measurement_unit' => 'cm',
+    'quantity' => 2, 'variant' => '140x260', 'ty_linked' => true, 'ty_quantity' => 2, 'ty_size' => '140 x 260', 'ty_prepared_width' => '140.000', 'ty_prepared_height' => '260.000']);
+$check($panel([]) === ['status' => 'verified', 'widthUnits' => 2800, 'panelCm' => [140000, 260000]], 'panel 1.40 m x 2 = 2.800 m when every source agrees');
+$check($panel(['variant' => null, 'ty_size' => null, 'ty_prepared_width' => null, 'ty_prepared_height' => null])['widthUnits'] === 2800, 'sources that state no size do not block');
+$check($panel(['width_value' => '140.5', 'variant' => '140,5×260', 'ty_size' => null, 'ty_prepared_width' => '140.500'])['widthUnits'] === 2810, 'decimal comma and the multiplication sign');
+$check($panel(['ty_prepared_height' => '240.000'])['status'] === 'conflict', 'a prepared height that disagrees is a conflict');
+$check($panel(['variant' => '150x260'])['status'] === 'conflict', 'a variant that disagrees is a conflict');
+$check($panel(['ty_size' => '140x250'])['status'] === 'conflict', 'a Trendyol size that disagrees is a conflict');
+$check($panel(['measurement_unit' => 'm'])['status'] === 'no_measure', 'only centimetre panels are measured');
+$check($panel(['width_value' => null])['status'] === 'no_measure', 'a missing width is no measure');
+$check($panel(['width_value' => '0.000', 'variant' => null, 'ty_size' => null, 'ty_prepared_width' => null, 'ty_prepared_height' => null])['status'] === 'invalid_measure', 'a zero width is invalid');
+$check($panel(['ty_linked' => false])['status'] === 'unlinked', 'a line without its marketplace line is unknown');
+$check($panel(['ty_quantity' => 3])['status'] === 'quantity_mismatch' && $panel(['ty_quantity' => null])['status'] === 'quantity_mismatch', 'the marketplace quantity must equal the line quantity');
+$check($panel(['quantity' => 2, 'ty_quantity' => 2])['widthUnits'] === 2 * 1400, 'the quantity multiplies once');
+$check(Arasya\Operations\Intelligence\TrendyolPanelWidth::dims('Bej') === null && Arasya\Operations\Intelligence\TrendyolPanelWidth::dims('140x260 cm') === null, 'free text is no size');
+
+// Product category import format (API 2.73.0): strict, the whole file validated, ambiguous codes left out.
+$json = static fn (array $products, string $source = 'trendhome'): string => json_encode(['format' => 'arasya-product-categories', 'formatVersion' => 1, 'source' => $source, 'generatedAt' => 'x', 'products' => $products]);
+[$rows, $ambiguous] = Arasya\Operations\Intelligence\ProductCategoryImport::parse('trendhome', $json([
+    ['code' => ' DV-1 ', 'category' => 'Draperii', 'rule' => 'single_main_category'], ['code' => 'dv-1', 'category' => 'Draperii', 'rule' => 'primary_category'],
+    ['code' => 'X-2', 'category' => 'Perdele', 'rule' => 'single_main_category'], ['code' => 'x-2', 'category' => 'Draperii', 'rule' => 'single_main_category'], ['code' => 'X-2', 'category' => 'Perdele', 'rule' => 'single_main_category'],
+]));
+$check(array_keys($rows) === ['dv-1'] && $rows['dv-1']['code'] === 'DV-1' && $ambiguous === 1, 'codes trimmed, case-insensitive, conflicting categories left out');
+foreach (['other source' => ['trendyol', $json([])], 'source mismatch' => ['trendhome', $json([], 'outletperdele')], 'control character' => ['trendhome', $json([['code' => "A\x01", 'category' => 'B', 'rule' => 'primary_category']])],
+    'long category' => ['trendhome', $json([['code' => 'A', 'category' => str_repeat('c', 121), 'rule' => 'primary_category']])], 'not a list' => ['trendhome', json_encode(['format' => 'arasya-product-categories', 'formatVersion' => 1, 'source' => 'trendhome', 'products' => ['a' => []]])]] as $label => [$source, $body]) {
+    try { Arasya\Operations\Intelligence\ProductCategoryImport::parse($source, $body); $check(false, "category import rejects {$label}"); } catch (InvalidArgumentException) { $check(true, "category import rejects {$label}"); }
+}
+
 echo "PASS {$checks} production intelligence contract assertions\n";

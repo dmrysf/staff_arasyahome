@@ -34,7 +34,9 @@ use Throwable;
  *   the same order is a recut, reported apart and never added to sold or completed meters;
  * - processed: per employee and stage, one stage completion credits the order's measured fabric once; stages are never
  *   added together;
- * - completed: only an Arasya production completion (K8: a legacy order without one is not completed);
+ * - completed: only an Arasya production completion (K8: a legacy order without one is not completed), and only the
+ *   order's first one (API 2.73.0): a later completion after the order went back to production is `recompleted`, counted
+ *   apart and never added to the meters again;
  * - shipped / delivered: no meters in this release (K6: only where the source holds evidence). Trendyol states shipping
  *   and delivery per order, so its order counts are reported; its meters stay unknown (K2).
  * Trendyol fabric is unknown (K2) and every unknown line is counted as unknown, never as zero.
@@ -56,13 +58,26 @@ final readonly class ProductionIntelligenceService
         $this->policy->require($actor);
         [$range, $source] = $this->filters($query);
         $bucket = $query['bucket'] ?? 'day';
-        if ($section === 'series' && !in_array($bucket, ['day', 'week', 'month', 'year'], true)) {
+        $buckets = match ($section) { 'series' => ['day', 'week', 'month', 'year'], 'completions' => ['day', 'week', 'month'], default => [] };
+        if ($buckets !== [] && !in_array($bucket, $buckets, true)) {
             throw new ApiException(400, 'INVALID_REQUEST', 'Invalid series bucket.');
         }
-        if ($section !== 'series' && isset($query['bucket'])) {
+        if ($buckets === [] && isset($query['bucket'])) {
             throw new ApiException(400, 'INVALID_REQUEST', 'Unsupported query parameter.');
         }
-        $body = $this->snapshot(function () use ($section, $range, $source, $bucket): array {
+        $skuFilters = $this->skuFilters($section, $query);
+        $now = $this->clock->now();
+        $body = $this->snapshot(function () use ($section, $range, $source, $bucket, $skuFilters, $now): array {
+            $ceo = new CeoProductionReport($this->pdo, $now);
+            if ($section === 'overview') {
+                return $ceo->overview($range, $source);
+            }
+            if ($section === 'completions') {
+                return $ceo->completionsReport($range, $source, $bucket);
+            }
+            if ($section === 'skus') {
+                return $ceo->skus($range, $source, $skuFilters);
+            }
             $outside = ShopSourcedSales::report(ShopSourcedSales::lines($this->pdo, $range->fromUtc->format('Y-m-d H:i:s'), $range->toUtc->format('Y-m-d H:i:s'), $source));
             $sold = [...$this->sold($range, $source), ...$outside['entries']];
             $events = $this->events($range, $source, null);
@@ -75,7 +90,8 @@ final readonly class ProductionIntelligenceService
             };
         });
         (new IamAuditLogger($this->pdo))->record($actor, 'production_intelligence.read', 'production_intelligence', $section, 'Production Intelligence',
-            ['from' => $query['from'] ?? null, 'to' => $query['to'] ?? null, 'period' => $query['period'] ?? null, 'source' => $source, 'bucket' => $section === 'series' ? $bucket : null],
+            ['from' => $query['from'] ?? null, 'to' => $query['to'] ?? null, 'period' => $query['period'] ?? null, 'source' => $source,
+                'bucket' => in_array($section, ['series', 'completions'], true) ? $bucket : null] + ($section === 'skus' ? ['filters' => $skuFilters] : []),
             $requestId, $this->clock->now()->format('Y-m-d H:i:s.u'));
         return ['range' => $range->metadata() + ['analysisStart' => self::ANALYSIS_START], 'source' => $source, 'contractVersion' => MeterContract::VERSION] + $body;
     }
@@ -115,6 +131,40 @@ final readonly class ProductionIntelligenceService
             throw new ApiException(400, 'INVALID_REQUEST', 'Unknown source.');
         }
         return [$range, $source];
+    }
+
+    /**
+     * The SKU analysis filters (API 2.73.0); every other section refuses them.
+     * @return array{category: ?string, code: ?string, variant: ?string, status: string, sku: ?string}
+     */
+    private function skuFilters(string $section, array $query): array
+    {
+        $keys = ['category', 'code', 'variant', 'status', 'sku'];
+        if ($section !== 'skus') {
+            if (array_intersect_key($query, array_flip($keys)) !== []) {
+                throw new ApiException(400, 'INVALID_REQUEST', 'Unsupported query parameter.');
+            }
+            return ['category' => null, 'code' => null, 'variant' => null, 'status' => 'all', 'sku' => null];
+        }
+        $text = static function (?string $value, int $max): ?string {
+            if ($value === null) {
+                return null;
+            }
+            $value = trim($value);
+            if ($value === '') {
+                return null;
+            }
+            if (mb_strlen($value) > $max || preg_match('/[\x00-\x1F\x7F]/', $value) === 1) {
+                throw new ApiException(400, 'INVALID_REQUEST', 'Invalid filter.');
+            }
+            return $value;
+        };
+        $status = $query['status'] ?? 'all';
+        if (!in_array($status, CeoProductionReport::STATUSES, true)) {
+            throw new ApiException(400, 'INVALID_REQUEST', 'Invalid status filter.');
+        }
+        return ['category' => $text($query['category'] ?? null, 120), 'code' => $text($query['code'] ?? null, 120), 'variant' => $text($query['variant'] ?? null, 160),
+            'status' => $status, 'sku' => $text($query['sku'] ?? null, 120)];
     }
 
     /** One consistent read snapshot for the whole report. */
@@ -192,6 +242,17 @@ final readonly class ProductionIntelligenceService
                 $firstCut[$order] = (int) $version;
             }
         }
+        // The first production completion of an order (over all time) is its completion; a later one (the order went back to
+        // production) is a recompletion, never counted again (API 2.73.0).
+        $firstCompletion = [];
+        foreach (array_chunk($orders, 500) as $chunk) {
+            $marks = implode(',', array_fill(0, count($chunk), '?'));
+            $c = $this->pdo->prepare("SELECT order_uuid, event_id FROM order_activity_events WHERE order_uuid IN ({$marks}) AND action = 'production_completed' ORDER BY order_uuid, occurred_at, event_id");
+            $c->execute($chunk);
+            foreach ($c->fetchAll(PDO::FETCH_NUM) as [$order, $eventId]) {
+                $firstCompletion[$order] ??= $eventId;
+            }
+        }
         $events = [];
         foreach ($rows as $row) {
             $fabric = MeterLines::orderFabric($lines[$row['order_uuid']] ?? []);
@@ -201,7 +262,8 @@ final readonly class ProductionIntelligenceService
             $isCut = $row['action'] === 'stage_completed' && $row['from_stage_id'] === 'material-preparation'
                 && ($row['to_stage_id'] === 'workshop-receiving' || ($row['to_stage_id'] === 'delivery' && $row['service_route'] === 'CUT_ONLY'));
             $kind = match (true) {
-                $row['action'] === 'production_completed' => 'completed',
+                $row['action'] === 'production_completed' && ($firstCompletion[$row['order_uuid']] ?? null) === $row['event_id'] => 'completed',
+                $row['action'] === 'production_completed' => 'recompleted',
                 $isCut && ($firstCut[$row['order_uuid']] ?? null) === (int) $row['production_version_after'] => 'cut',
                 $isCut => 'recut',
                 default => 'stage',
@@ -241,7 +303,7 @@ final readonly class ProductionIntelligenceService
                 'orders' => count($paymentOrders[$class] ?? [])];
         }
         $metric = static fn (): array => ['orders' => 0, 'fabricUnits' => 0, 'ordersWithUnknownLines' => 0, 'unknownLines' => 0];
-        $by = ['cut' => $metric(), 'recut' => $metric(), 'completed' => $metric()];
+        $by = ['cut' => $metric(), 'recut' => $metric(), 'completed' => $metric(), 'recompleted' => $metric()];
         $stageCompletions = 0;
         foreach ($events as $event) {
             if ($event['kind'] === 'stage' || $event['kind'] === 'cut' || $event['kind'] === 'recut') {
@@ -273,6 +335,7 @@ final readonly class ProductionIntelligenceService
             'recut' => $out($by['recut']) + ['evidence' => 'source_line'],
             'processed' => ['stageCompletions' => $stageCompletions],
             'completed' => $out($by['completed']),
+            'recompleted' => ['orders' => $by['recompleted']['orders'], 'rule' => 'a later production completion of an already completed order; its meters are never counted again'],
             'shipped' => ['available' => false, 'fabricMeters' => null, 'reason' => 'no_meter_evidence', 'marketplaceOrders' => $marketplace['shipped']],
             'delivered' => ['available' => false, 'fabricMeters' => null, 'reason' => 'no_meter_evidence', 'marketplaceOrders' => $marketplace['delivered']],
             'coverage' => $this->coverage($range, $source),
