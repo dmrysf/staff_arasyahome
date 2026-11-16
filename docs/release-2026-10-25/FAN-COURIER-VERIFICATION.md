@@ -57,6 +57,12 @@ validation and reported to Staff as `awb_refused` (nothing made).
    parcels is 900, never 2,700).
 6. A lost answer: the operation journal and the shop's stored answer settle it by the same key; FAN's slip is
    reconciled by costCenter; a second AWB is never made.
+7. API 2.74.1 / Staff 2.52.1 (2026-11-16): the key of a lost answer used to live only in the page that sent it, so after
+   a reload the open operation refused every new AWB (`operation_open`) with nothing the employee could do. The order's
+   operations read now names its open (`pending`/`unknown`) operations; the key goes to the sender and to a colleague
+   holding the same role (the invoice manager for an AWB), and either of them may settle it with
+   `POST /confirmare/orders/{id}/operations/reconcile`. Staff offers „Verifică rezultatul” again on every load. An
+   employee without the role sees that it is open, never the key.
 
 ## 5. Address change (K-14)
 

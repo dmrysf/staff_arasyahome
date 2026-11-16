@@ -303,10 +303,23 @@ $th->awbOutcome = 'lost';
 $lost = $ok($operate($who['cdoc'], $g(2), 'awb', ['parcels' => 3, 'expectedCod' => '503.30'], $awbKey), 'AWB: FAN Courier made it, the answer was lost');
 $check($lost['state'] === 'unknown' && ($th->fanAwbs[$id(2)] ?? 0) === 1, 'the outcome is unknown: nothing is sent again');
 $refusedOp($operate($who['cdoc'], $g(2), 'awb', ['parcels' => 3, 'expectedCod' => '503.30']), 'operation_open', 'a second click while the first is unknown is refused');
+// API 2.74.1: the open operation is named on every read (a reload loses the page's key), with its key for the sender and for
+// a colleague holding the AWB role, never for someone who may not settle it.
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$openMine = $state($who['cdoc'], $g(2))['open'] ?? null;
+$openMgr = $state($who['cmgr'], $g(2))['open'] ?? null;
+$openOp = $state($who['cop'], $g(2))['open'] ?? null;
+$check(is_array($openMine) && count($openMine) === 1 && $openMine[0]['kind'] === 'awb_create' && $openMine[0]['state'] === 'unknown' && $openMine[0]['mine'] === true && $openMine[0]['idempotencyKey'] === $awbKey,
+    'after a reload the sender sees the open AWB operation with its key: ' . json_encode($openMine));
+$check(is_array($openMgr) && count($openMgr) === 1 && $openMgr[0]['mine'] === false && $openMgr[0]['idempotencyKey'] === $awbKey, 'the invoice manager (AWB role) gets the key too: ' . json_encode($openMgr));
+$check(is_array($openOp) && count($openOp) === 1 && $openOp[0]['idempotencyKey'] === null, 'the operator (no AWB role) sees it is open, without the key: ' . json_encode($openOp));
+$error($operate($who['cop'], $g(2), 'operations/reconcile', ['idempotencyKey' => $awbKey]), 404, 'CONFIRMARE_OPERATION_NOT_FOUND', 'the operator cannot settle a colleague\'s AWB operation');
 $settledAwb = $ok($operate($who['cdoc'], $g(2), 'operations/reconcile', ['idempotencyKey' => $awbKey]), 'reconcile the lost answer');
 $check($settledAwb['state'] === 'applied' && $settledAwb['result'] === 'created' && ($th->fanAwbs[$id(2)] ?? 0) === 1 && $th->orders[$id(2)]['ops']['awb']['parcels'] === 3 && $th->orders[$id(2)]['ops']['awb']['cod'] === '503.30',
     'settled from the shop\'s stored answer: ONE AWB, 3 parcels, the collection once (503.30 for all parcels)');
 $check($ok($get($who['cdoc'], '/confirmare/awb-queue'), 'queue after the AWB')['items'] === [], 'the order leaves the AWB queue');
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$check(($state($who['cdoc'], $g(2))['open'] ?? null) === [], 'nothing is open once the operation is settled');
 $again = $operate($who['cdoc'], $g(2), 'awb', ['parcels' => 1, 'expectedCod' => '503.30']);
 $check($again['status'] === 409 && ($again['body']['error']['details']['reason'] ?? '') === 'awb_exists' && ($th->fanAwbs[$id(2)] ?? 0) === 1, 'a second AWB for the order is refused by the shop');
 $pdo->exec('DELETE FROM api_rate_limit_buckets');
@@ -346,9 +359,9 @@ $th->during = null;
 $soon = $ok($operate($who['cdoc'], $g(2), 'operations/reconcile', ['idempotencyKey' => $lostKey]), 'reconcile at once');
 $check($never['state'] === 'unknown' && $soon['state'] === 'unknown' && ($soon['reachable'] ?? null) === true, 'the shop has no answer yet: still unknown, never declared lost at once: ' . json_encode([$never, $soon]));
 $pdo->prepare('UPDATE order_source_operations SET requested_at = DATE_SUB(requested_at, INTERVAL 5 MINUTE) WHERE idempotency_key = ?')->execute([$lostKey]);
-$late = $operate($who['cdoc'], $g(2), 'operations/reconcile', ['idempotencyKey' => $lostKey]);
+$late = $operate($who['cmgr'], $g(2), 'operations/reconcile', ['idempotencyKey' => $lostKey]);
 $check($late['status'] === 409 && ($late['body']['error']['details']['reason'] ?? '') === 'not_received' && (string) $one('SELECT state FROM order_source_operations WHERE idempotency_key = ?', [$lostKey]) === 'rejected',
-    'after 4 minutes: closed as not received, nothing was done in the shop');
+    'after 4 minutes: closed as not received by a colleague holding the AWB role (API 2.74.1), nothing was done in the shop');
 $check(!str_contains(json_encode($all('SELECT kind, state, outcome, result, request_id FROM order_source_operations')), 'Str. Nou'), 'no address text is stored in Arasya');
 
 // ---- 4. NETOPIA full refund: one click, finance records, another employee verifies --------------------------------------------

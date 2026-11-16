@@ -61,10 +61,16 @@ export interface ShopAwb {
 export interface ShopCardRefund { available: boolean; transactions: number; requests: { state: "manual_required" | "completed" | "unknown"; at: string | null; amount: string | null; transactions: number; verified: number; completedAt: string | null; mailed: boolean }[] }
 export interface ShopOperations { features: { reactivation?: string; awb?: string; cardRefunds?: string }; orderStatus: string | null; awb: ShopAwb; cardRefund: ShopCardRefund }
 export interface Reactivation { sequence: number; kind: "ordinary" | "paid_exception"; reason: ReactivationReason; state: string; by: string; at: string; completedAt: string | null }
+/**
+ * Staff 2.52.1 (API 2.74.1): an operation of the order still waiting for the shop's answer. It blocks the next one of its
+ * kind; the key comes only to the employee who sent it or a colleague holding the same role, who may check it with the shop.
+ */
+export interface OpenOperation { path: OperationPath; state: "pending" | "unknown"; at: string; mine: boolean; idempotencyKey: string | null }
 export interface OperationsState {
   available: boolean; shop: ShopOperations | null; stage: string; awbStage: boolean;
   allowed: { reactivate: boolean; awb: boolean; cardRefund: boolean; cardRefundRecord: boolean; cardRefundVerify: boolean };
   reactivations: Reactivation[];
+  open: OpenOperation[];
 }
 export interface OperationOutcome { state: "applied" | "unknown" | "pending"; idempotencyKey: string; result: string | null; shop: ShopOperations | null; entryId: string | null }
 export interface AwbQueueItem { globalOrderId: string; orderNumber: string; source: string; stage: string; lastAttempt: string | null }
@@ -266,8 +272,22 @@ export function mapOperationsState(value: unknown): OperationsState {
       const r = obj(entry);
       return { sequence: int(r.sequence), kind: oneOf(r.kind, ["ordinary", "paid_exception"] as const), reason: oneOf(r.reason, REACTIVATION_REASONS), state: str(r.state, 20), by: str(r.by), at: instant(r.at) ?? fail(), completedAt: instant(r.completedAt) };
     }),
+    // An API older than 2.74.1 names no open operation.
+    open: raw.open === undefined ? [] : list(raw.open, 10, (entry) => {
+      const o = obj(entry);
+      const key = o.idempotencyKey === null ? null : str(o.idempotencyKey, 100);
+      if (key !== null && !/^[A-Za-z0-9][A-Za-z0-9_-]{15,99}$/.test(key)) fail();
+      return { path: OPERATION_KIND_PATHS[oneOf(o.kind, OPERATION_KINDS)], state: oneOf(o.state, ["pending", "unknown"] as const), at: instant(o.at) ?? fail(), mine: bool(o.mine), idempotencyKey: key };
+    }),
   };
 }
+
+/** The API's operation kinds (ConfirmareOperations::FIELDS) and the Staff action each belongs to. */
+export const OPERATION_KINDS = ["order_reactivate", "awb_create", "awb_address_task", "awb_address_done", "awb_cod_corrected", "card_refund_full", "card_refund_record", "card_refund_verify"] as const;
+const OPERATION_KIND_PATHS: Record<(typeof OPERATION_KINDS)[number], OperationPath> = {
+  order_reactivate: "reactivate", awb_create: "awb", awb_address_task: "awb/address", awb_address_done: "awb/address", awb_cod_corrected: "awb/cod-corrected",
+  card_refund_full: "card-refund", card_refund_record: "card-refund/record", card_refund_verify: "card-refund/verify",
+};
 
 export function mapOperationOutcome(value: unknown): OperationOutcome {
   const raw = obj(value);
