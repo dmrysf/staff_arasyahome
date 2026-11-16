@@ -111,6 +111,7 @@ final class ConfirmareOperations
             'awbStage' => in_array((string) $row['production_stage_id'], self::AWB_STAGES, true),
             'allowed' => $this->allowed($actor, $row, $roles),
             'reactivations' => $this->reactivations((string) $row['order_uuid']),
+            'open' => $this->openOperations($actor, $row, $roles),
         ];
     }
 
@@ -206,13 +207,7 @@ final class ConfirmareOperations
             throw new ApiException(404, 'CONFIRMARE_NOT_FOUND', 'No Confirmare order was found.');
         }
         $roles = $this->roles($actor, $row);
-        $role = match ($kind) {
-            'order_reactivate' => $roles['reactivate'] ?? null,
-            'card_refund_full' => $roles['refund'] ?? null,
-            'card_refund_record' => $roles['financeRecord'] ?? null,
-            'card_refund_verify' => $roles['financeApprove'] ?? null,
-            default => $roles['awb'] ?? null,
-        };
+        $role = self::roleFor($kind, $roles);
         if ($role === null) {
             throw new ApiException(403, 'CONFIRMARE_OPERATION_DENIED', 'You have no permission for this operation on this order.');
         }
@@ -276,6 +271,14 @@ final class ConfirmareOperations
         }
         $row = $this->row($this->globalId($globalOrderId));
         $found = $this->operation($actor->employeeUuid, $key);
+        if ($found === null && $row !== null && $this->sees($actor, $row)) {
+            // API 2.74.1: a colleague's lost answer is settled by anyone holding the same role on the order (the open
+            // operation blocks the next one for everybody, and its key is lost when the page that sent it is closed).
+            $other = $this->operationOfOrder((string) $row['order_uuid'], $key);
+            if ($other !== null && self::roleFor((string) $other['kind'], $this->roles($actor, $row)) !== null) {
+                $found = $other;
+            }
+        }
         if ($row === null || $found === null || $found['order_uuid'] !== $row['order_uuid']) {
             throw new ApiException(404, 'CONFIRMARE_OPERATION_NOT_FOUND', 'No such operation of yours on this order.');
         }
@@ -559,6 +562,60 @@ final class ConfirmareOperations
             Uuid::v4(), $row['order_uuid'], $row['global_order_id'], $row['source_key'], $sequence, isset($input['exceptionEntryId']) ? 'paid_exception' : 'ordinary',
             is_string($previousCycle) ? $previousCycle : null, $input['exceptionEntryId'] ?? null, $input['reason'], $actor->employeeUuid, (int) $row['version'], 'pending', $key, self::requestId($requestId), $this->now(),
         ]);
+    }
+
+    /** @param array<string, string> $roles */
+    private static function roleFor(string $kind, array $roles): ?string
+    {
+        return match ($kind) {
+            'order_reactivate' => $roles['reactivate'] ?? null,
+            'card_refund_full' => $roles['refund'] ?? null,
+            'card_refund_record' => $roles['financeRecord'] ?? null,
+            'card_refund_verify' => $roles['financeApprove'] ?? null,
+            default => $roles['awb'] ?? null,
+        };
+    }
+
+    /**
+     * API 2.74.1: the operations of the order still waiting for the shop's answer (pending or unknown). Each one blocks the
+     * next operation of its kind, so Staff shows it after a reload and offers the check with the shop. The key is given
+     * only to the employee who sent it or to someone holding the same role on the order (who may settle it).
+     *
+     * @param array<string, mixed> $row @param array<string, string> $roles
+     * @return list<array<string, mixed>>
+     */
+    private function openOperations(EmployeeIdentity $actor, array $row, array $roles): array
+    {
+        if (!$this->installed()) {
+            return [];
+        }
+        $statement = $this->pdo->prepare("SELECT kind, state, idempotency_key, employee_uuid, requested_at FROM order_source_operations
+            WHERE order_uuid = ? AND state IN ('pending', 'unknown') ORDER BY requested_at LIMIT 10");
+        $statement->execute([(string) $row['order_uuid']]);
+        $open = [];
+        foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $op) {
+            $kind = (string) $op['kind'];
+            if (!isset(self::FIELDS[$kind])) {
+                continue;
+            }
+            $mine = $op['employee_uuid'] === $actor->employeeUuid;
+            $open[] = ['kind' => $kind, 'state' => (string) $op['state'], 'at' => self::iso((string) $op['requested_at']), 'mine' => $mine,
+                'idempotencyKey' => $mine || self::roleFor($kind, $roles) !== null ? (string) $op['idempotency_key'] : null];
+        }
+        return $open;
+    }
+
+    /** @return array<string, mixed>|null */
+    private function operationOfOrder(string $orderUuid, string $key): ?array
+    {
+        try {
+            $statement = $this->pdo->prepare('SELECT * FROM order_source_operations WHERE order_uuid = ? AND idempotency_key = ?');
+            $statement->execute([$orderUuid, $key]);
+            $rows = $statement->fetchAll(PDO::FETCH_ASSOC);
+            return count($rows) === 1 ? $rows[0] : null; // keys are unique per employee only: never guess between two
+        } catch (PDOException) {
+            return null;
+        }
     }
 
     /** @return list<array<string, mixed>> */

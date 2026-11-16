@@ -38,6 +38,18 @@ const cycleRaw = {
   history: [],
 };
 
+test("Staff 2.52.1: an operation still open after a reload is read strictly and mapped to its action", () => {
+  assert.deepEqual(mapOperationsState(operations).open, [], "an API older than 2.74.1 names none");
+  const open = { kind: "awb_create", state: "unknown", at: "2026-11-16T13:32:13Z", mine: false, idempotencyKey: "ops-awb-0123456789abcdef" };
+  const state = mapOperationsState({ ...operations, open: [open, { ...open, kind: "awb_address_done", idempotencyKey: null }] });
+  assert.deepEqual(state.open[0], { path: "awb", state: "unknown", at: "2026-11-16T13:32:13Z", mine: false, idempotencyKey: "ops-awb-0123456789abcdef" });
+  assert.equal(state.open[1]?.path, "awb/address");
+  assert.equal(state.open[1]?.idempotencyKey, null, "no key for an employee who may not settle it");
+  assert.throws(() => mapOperationsState({ ...operations, open: [{ ...open, kind: "awb_delete" }] }), "an unknown kind");
+  assert.throws(() => mapOperationsState({ ...operations, open: [{ ...open, state: "applied" }] }), "only pending or unknown");
+  assert.throws(() => mapOperationsState({ ...operations, open: [{ ...open, idempotencyKey: "short" }] }), "a malformed key");
+});
+
 test("operations answers are read strictly, PHP's empty maps included", () => {
   const state = mapOperationsState(operations);
   assert.deepEqual(state.shop?.features, {}, "an empty PHP map arrives as [] and reads as no switch");

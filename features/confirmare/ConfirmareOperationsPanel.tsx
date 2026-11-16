@@ -65,6 +65,14 @@ export function ConfirmareOperationsPanel({ globalOrderId, service, mode = "orde
       if (controller.signal.aborted) return;
       setLoadError(null);
       setState(value);
+      // Staff 2.52.1: an answer lost earlier (another page, a reload, a colleague) still blocks the next operation; the server
+      // names it, so the check with the shop is offered again instead of a refusal the employee cannot resolve.
+      const lost = value.open.find((entry) => entry.idempotencyKey !== null);
+      if (lost?.idempotencyKey) {
+        const key = lost.idempotencyKey;
+        setUnknown((current) => current ?? { path: lost.path, key });
+        setResult((current) => current ?? { tone: "warning", text: t("cf.ops.unknown") });
+      }
       // A NETOPIA refund recorded by a colleague is verified here; its entry comes from the finance read of the order.
       if (value.allowed.cardRefundVerify && (value.shop?.cardRefund.requests.some((entry) => entry.state === "manual_required") ?? false)) {
         const finance = await service.financeRead(globalOrderId, controller.signal).catch(() => null);
@@ -74,7 +82,7 @@ export function ConfirmareOperationsPanel({ globalOrderId, service, mode = "orde
       if (!controller.signal.aborted) setLoadError(getErrorPresentation(toServiceError(caught)).message);
     });
     return () => controller.abort();
-  }, [service, globalOrderId, tick]);
+  }, [service, globalOrderId, tick, t]);
 
   const failure = (caught: unknown): string => {
     const failed = toServiceError(caught);

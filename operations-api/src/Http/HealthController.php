@@ -10,7 +10,7 @@ use Throwable;
 
 final readonly class HealthController
 {
-    public const VERSION = '2.74.0';
+    public const VERSION = '2.74.1';
 
     public function __construct(private PDO $pdo, private Clock $clock)
     {
