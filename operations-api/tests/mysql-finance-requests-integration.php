@@ -744,6 +744,43 @@ $check($row8['policy'] === 'single' && $row8['decided_by_employee_uuid'] === $uu
     'audited: decided by the recorder under the single policy (event verified_single)');
 $error($cmd($who['fsup'], $rid(8), 'second-check', ['expectedVersion' => (int) $row8['version'], 'expectedRevision' => $t8['live']['revision'], 'decision' => 'verify'], null, $kernelSingle), 404, 'FINANCE_REQUEST_NOT_FOUND', 'nobody else confirms it afterwards');
 
+// ---- 14. API 2.74.2: 30 days of closed tasks never push an open task out of the inbox ----------------------------------
+// Production 2026-11-17: 207 closed tasks of the last 30 days filled the start of one shared 300-row list ordered oldest
+// first, so every task opened after them was cut off; finance never saw those paid advances and the proforma reminders
+// went to customers who had paid. Here 350 closed tasks older than every open one, decided recently, are added.
+$openMine = array_map('strval', array_column($all("SELECT request_uuid FROM finance_verification_requests WHERE open_order_uuid IS NOT NULL AND (assigned_employee_uuid = ? OR checker_employee_uuid = ?)", [$uuids['fin'], $uuids['fin']]), 'request_uuid'));
+$check($openMine !== [], 'the employee has open tasks before the closed ones are added');
+$template = $requestRow($r1);
+$check($template['state'] === 'verified' && $template['open_order_uuid'] === null, 'a closed task to copy');
+$columns = array_keys($template);
+$insert = $pdo->prepare('INSERT INTO finance_verification_requests (' . implode(', ', $columns) . ') VALUES (' . implode(', ', array_fill(0, count($columns), '?')) . ')');
+$bulk = [];
+for ($n = 0; $n < 350; $n++) {
+    $copy = $template;
+    $copy['request_uuid'] = sprintf('00000000-0000-4000-8000-%012d', 740000 + $n);
+    $copy['request_idempotency_key'] = "fvr-bulk-closed-{$n}-{$suffix}";
+    $copy['finance_idempotency_key'] = $copy['finance_idempotency_key'] === null ? null : "fvr-bulk-fin-{$n}-{$suffix}";
+    $copy['requested_at'] = '2020-01-01 00:00:00.000000';
+    $copy['updated_at'] = $pdo->query('SELECT NOW(6)')->fetchColumn();
+    $insert->execute(array_values($copy));
+    $bulk[] = $copy['request_uuid'];
+}
+$closedMine = (int) $one("SELECT COUNT(*) FROM finance_verification_requests WHERE open_order_uuid IS NULL AND updated_at >= NOW(6) - INTERVAL 30 DAY AND (assigned_employee_uuid = ? OR decided_by_employee_uuid = ? OR checker_employee_uuid = ?)", [$uuids['fin'], $uuids['fin'], $uuids['fin']]);
+$big = $ok($inbox($f), 'inbox with 350 more closed tasks');
+$listed = array_column($big['items'], 'id');
+$categories = array_count_values(array_column($big['items'], 'category'));
+$check(array_diff($openMine, $listed) === [], 'every open task is still listed (' . count(array_diff($openMine, $listed)) . ' missing)');
+$check(array_slice($listed, 0, count($openMine)) === array_values(array_intersect($listed, $openMine)), 'the open tasks come first');
+$check(($categories['done'] ?? 0) === 100 && $big['counts']['done'] === $closedMine && $closedMine > 350, 'the closed tasks are cut at their own limit, the count still names all of them');
+$check($big['truncated'] === true && count($big['items']) >= $big['limit'], 'the list says it was cut (the Staff footnote shows)');
+$doneAt = array_column(array_values(array_filter($big['items'], static fn (array $i): bool => $i['category'] === 'done')), 'updatedAt');
+$sortedAt = $doneAt;
+rsort($sortedAt);
+$check($doneAt === $sortedAt, 'the most recently closed tasks are listed first');
+$pdo->prepare('DELETE FROM finance_verification_requests WHERE request_uuid IN (' . implode(', ', array_fill(0, count($bulk), '?')) . ')')->execute($bulk);
+$small = $ok($inbox($f), 'inbox without the added closed tasks');
+$check($small['truncated'] === false && count($small['items']) < $small['limit'], 'a list that is not cut shows no footnote');
+
 // Leave the shared disposable database as the next suites expect it: no Confirmare, finance, request or invoice state.
 foreach (['finance_verification_request_events', 'finance_verification_requests', 'employee_finance_supervision', 'confirmare_cycle_steps', 'confirmare_proforma_cycles', 'confirmare_bank_checks', 'confirmare_reactivations',
     'invoice_efactura_tasks', 'order_source_operations', 'order_invoice_qr_checks', 'order_shop_assignments', 'order_invoice_actions', 'order_invoice_reads', 'employee_invoice_scopes',
