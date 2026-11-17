@@ -88,7 +88,16 @@ final readonly class FinanceVerificationRequests
     private const AMOUNT_PATTERN = '/^(0|[1-9][0-9]{0,8})(\.[0-9]{1,2})?$/D';
     private const REFERENCE_PATTERN = '/^[A-Za-z0-9][A-Za-z0-9 .\/-]{2,63}$/D';
     private const DONE_DAYS = 30;
+    /**
+     * API 2.74.2: the inbox lists the open tasks first, under their own limit, and the closed ones (the last DONE_DAYS)
+     * after them under a separate limit, the most recent first. One shared limit over both, oldest first, let 30 days
+     * of closed tasks push every task opened after them out of the list: a paid advance never reached finance and the
+     * proforma reminders went to customers who had paid.
+     */
+    private const OPEN_LIMIT = 1000;
+    /** The supervisor's oversight list (unchanged). */
     private const LIMIT = 300;
+    private const DONE_LIMIT = 100;
 
     public function __construct(
         private PDO $pdo,
@@ -277,23 +286,36 @@ final readonly class FinanceVerificationRequests
         $this->rebalance($scopes);
         $since = $this->sql($this->clock->now()->modify('-' . self::DONE_DAYS . ' days'));
         // Only what is assigned to this employee by name: their tasks, what they decided, the second checks they are the
-        // named checker of. A scope alone lists nothing of the source.
-        $statement = $this->pdo->prepare("SELECT r.*, o.order_number FROM finance_verification_requests r INNER JOIN operational_orders o ON o.order_uuid = r.order_uuid
-            WHERE (r.assigned_employee_uuid = ? AND (r.open_order_uuid IS NOT NULL OR r.updated_at >= ?)) OR (r.decided_by_employee_uuid = ? AND r.updated_at >= ?)
-               OR (r.checker_employee_uuid = ? AND (r.open_order_uuid IS NOT NULL OR r.updated_at >= ?))
-            ORDER BY r.requested_at, r.request_uuid LIMIT " . self::LIMIT);
-        $statement->execute([$actor->employeeUuid, $since, $actor->employeeUuid, $since, $actor->employeeUuid, $since]);
+        // named checker of, in the employee's sources. A scope alone lists nothing of the source. The same rows as
+        // before 2.74.2, split in two: an open request has open_order_uuid set and a closed one has none
+        // (CHECK chk_finance_verification_requests_open).
+        $e = $actor->employeeUuid;
+        $in = 'r.source_key IN (' . implode(', ', array_fill(0, count($sources), '?')) . ')';
+        $openWhere = "{$in} AND r.open_order_uuid IS NOT NULL AND (r.assigned_employee_uuid = ? OR r.checker_employee_uuid = ? OR (r.decided_by_employee_uuid = ? AND r.updated_at >= ?))";
+        $openArgs = [...$sources, $e, $e, $e, $since];
+        $doneWhere = "{$in} AND r.open_order_uuid IS NULL AND r.updated_at >= ? AND (r.assigned_employee_uuid = ? OR r.decided_by_employee_uuid = ? OR r.checker_employee_uuid = ?)";
+        $doneArgs = [...$sources, $since, $e, $e, $e];
+        $from = 'FROM finance_verification_requests r INNER JOIN operational_orders o ON o.order_uuid = r.order_uuid';
+        $open = $this->pdo->prepare("SELECT r.*, o.order_number {$from} WHERE {$openWhere} ORDER BY r.requested_at, r.request_uuid LIMIT " . (self::OPEN_LIMIT + 1));
+        $open->execute($openArgs);
+        $openRows = $open->fetchAll(PDO::FETCH_ASSOC);
+        $done = $this->pdo->prepare("SELECT r.*, o.order_number {$from} WHERE {$doneWhere} ORDER BY r.updated_at DESC, r.request_uuid LIMIT " . (self::DONE_LIMIT + 1));
+        $done->execute($doneArgs);
+        $doneRows = $done->fetchAll(PDO::FETCH_ASSOC);
+        $truncated = count($openRows) > self::OPEN_LIMIT || count($doneRows) > self::DONE_LIMIT;
         $items = [];
-        $counts = ['todo' => 0, 'clarification' => 0, 'done' => 0];
-        foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
-            if (!in_array((string) $row['source_key'], $sources, true)) {
-                continue;
-            }
-            $item = $this->item($row, $actor);
-            $counts[$item['category']]++;
-            $items[] = $item;
+        foreach ([...array_slice($openRows, 0, self::OPEN_LIMIT), ...array_slice($doneRows, 0, self::DONE_LIMIT)] as $row) {
+            $items[] = $this->item($row, $actor);
         }
-        return ['items' => $items, 'counts' => $counts, 'sources' => $sources, 'limit' => self::LIMIT];
+        // The counts are of every request of the inbox, also when the list itself is cut at a limit.
+        $counts = ['todo' => 0, 'clarification' => 0, 'done' => 0];
+        $count = $this->pdo->prepare("SELECT r.state, COUNT(*) AS n {$from} WHERE ({$openWhere}) OR ({$doneWhere}) GROUP BY r.state");
+        $count->execute([...$openArgs, ...$doneArgs]);
+        foreach ($count->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $counts[self::category((string) $row['state'])] += (int) $row['n'];
+        }
+        // `limit` keeps the Staff footnote (items.length >= limit) true exactly when something was left out.
+        return ['items' => $items, 'counts' => $counts, 'sources' => $sources, 'limit' => $truncated ? count($items) : count($items) + 1, 'truncated' => $truncated];
     }
 
     /**
@@ -889,11 +911,7 @@ final readonly class FinanceVerificationRequests
             $row['purpose'] === 'exception' => 'exception',
             default => 'verify',
         };
-        $category = match (true) {
-            in_array($row['state'], self::CLOSED_STATES, true) => 'done',
-            $row['state'] === 'needs_clarification' => 'clarification',
-            default => 'todo',
-        };
+        $category = self::category((string) $row['state']);
         return [
             'id' => (string) $row['request_uuid'],
             'source' => (string) $row['source_key'],
@@ -914,6 +932,16 @@ final readonly class FinanceVerificationRequests
             'updatedAt' => self::iso((string) $row['updated_at']),
             'decidedAt' => $row['decided_at'] === null ? null : self::iso((string) $row['decided_at']),
         ];
+    }
+
+    /** The inbox tab of a request state. */
+    private static function category(string $state): string
+    {
+        return match (true) {
+            in_array($state, self::CLOSED_STATES, true) => 'done',
+            $state === 'needs_clarification' => 'clarification',
+            default => 'todo',
+        };
     }
 
     /** @param array<string, mixed> $row a request with order_number @return array<string, mixed> */
