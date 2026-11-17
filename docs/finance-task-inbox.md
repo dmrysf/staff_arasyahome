@@ -56,6 +56,15 @@ no order to a finance scope any more (operators keep their advance tasks). The o
 (`GET /confirmare/orders/{id}`) is not open to a finance scope; an exception task is worked in Staff's finance-only money
 panel (`/confirmare/finance/orders/{globalOrderId}`), which reads `GET /confirmare/orders/{id}/finance` only.
 
+## Inbox order and limits (API 2.74.2)
+
+`GET /confirmare/finance/requests` lists the open tasks first, the oldest request first, up to 1000. The tasks closed in
+the last 30 days follow, the most recently closed first, up to 100. `counts` names every task of the inbox, also when
+the list is cut, and `truncated` says that it was cut (Staff shows its footnote then). Before 2.74.2 one limit of 300
+covered both, oldest request first: once 30 days of closed tasks filled it, every task opened after them was left out of
+the list (production, 2026-11-13 to 2026-11-17), finance never saw those advances and the proforma reminders went to
+customers who had paid.
+
 ## Task inventory (`bin/finance-task-inventory.php`, dry run first)
 
 Existing open finance work becomes tasks of named employees, from real records only:
