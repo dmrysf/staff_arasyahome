@@ -118,7 +118,7 @@ e3d5bd553859a3f0ade7ef0d41a29c8dab1eaaf486fb632bdb714b79e4c719aa  ./database/see
 a80d76fbdb4a0c8ac3533c3db5eb123a73ff6eb2c259927976d39dfeeb2f248b  ./public/.htaccess
 8302b6ec98573706b31b957a8f9ad9be8bf92a8b8bff02963c601650e7e8c420  ./public/RuntimeLocator.php
 edb234c39482536f0540e881da98cbdad6241af787f230295a79a4ae534e26be  ./public/index.php
-46c40a2d06c7a33c72dd952ea6ddb0c12fa41f85b8f99641088ec29197bc0211  ./release.json
+44c049a532cd06487b18773e74d596072db7e10cac1a3656f8e6025cdd4fe874  ./release.json
 3b42b0a0d462aa0ac0f368966a5703f6ecbbff9eea2bbbe47f269e9cd6ba03ea  ./scripts/api-release-common.sh
 b7f4bad56c6c8f39a9e72af6c8ea82d578beb50bf0e4f38d17c78a2e9f0f1637  ./scripts/cancellation-sync-active.sh
 03e82de95461d85d534edc5e62013dea047881f28ba12a61ac55b6827108a5e0  ./scripts/cpanel-deploy-api.sh
