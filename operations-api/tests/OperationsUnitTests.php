@@ -747,8 +747,13 @@ test('B2B commercial orders are isolated from production and their audit is inse
         $source = (string) file_get_contents($file->getPathname());
         // Finance V0.3 reads one order only to bind a CEO exception record to it, and the review desk counts a linked company's orders; it never writes commercial data.
         // Config/FinanceConfigGuard.php only names the ARASYA_B2B_ORDER_TYPES check (b2b_order_types_*); it runs no query.
+        // API 2.76.0: Production Intelligence reads B2B commercial lines (entered meters, status, finalization) to count B2B sold
+        // meters at finalization; it writes only its own tables (b2b_sold_meter_ledger, b2b_meter_test_cohort, exclusions).
+        $intelligenceReaders = ['Intelligence/B2bSoldMeters.php', 'Intelligence/SalesMeters.php', 'Intelligence/MeterCoverage.php', 'Intelligence/CeoProductionReport.php', 'Intelligence/ProductionIntelligenceService.php'];
+        if (in_array($relative, $intelligenceReaders, true))
+            expect(preg_match('/\b(INSERT\s+(IGNORE\s+)?INTO|UPDATE|DELETE\s+FROM)\s+b2b_(order|orders|account|production|compan)/i', $source) !== 1, $relative . ' must never write commercial or current account data');
         if (!str_starts_with($relative, 'B2B/') && $relative !== 'Database/AuthMaintenance.php' && $relative !== 'Finance/Credit/CreditService.php' && $relative !== 'Finance/Company/CaseQueries.php'
-            && $relative !== 'Config/FinanceConfigGuard.php')
+            && $relative !== 'Config/FinanceConfigGuard.php' && !in_array($relative, $intelligenceReaders, true))
             expect(preg_match('/\bb2b_order/', $source) !== 1, $relative . ' must not read commercial data');
         if (str_starts_with($relative, 'Finance/'))
             expect(preg_match('/\b(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+b2b_order/i', $source) !== 1, $relative . ' must not write commercial data');
@@ -805,7 +810,12 @@ test('B2B current account ledger is insert-only, isolated from production and jo
         $financeLedgerReaders = ['Finance/FinanceController.php', 'Finance/Account/OnboardingService.php', 'Finance/Account/OnboardingQueries.php', 'Finance/Risk/RiskService.php', 'Finance/Credit/CreditService.php', 'Finance/Company/CaseQueries.php',
             'Finance/Ledger/LedgerRequestQueries.php', 'Finance/Ledger/LedgerRequestService.php'];
         // Config/FinanceConfigGuard.php only names the ARASYA_B2B_ACCOUNT_WRITES check (b2b_account_writes_*); it runs no query.
-        if (!str_starts_with($relative, 'B2B/') && $relative !== 'Database/AuthMaintenance.php' && $relative !== 'Config/FinanceConfigGuard.php' && !in_array($relative, $financeLedgerReaders, true))
+        // API 2.76.0: Intelligence/B2bPaymentEvidence.php reads the receivable and its active allocations to classify B2B sold
+        // meters as paid / partial / unverified; it never writes (checked above: no UPDATE/DELETE, and below: no INSERT).
+        if ($relative === 'Intelligence/B2bPaymentEvidence.php')
+            expect(preg_match('/\bINSERT\s+INTO\s+b2b_account_/i', $source) !== 1, "{$relative} must never post to the current account");
+        if (!str_starts_with($relative, 'B2B/') && $relative !== 'Database/AuthMaintenance.php' && $relative !== 'Config/FinanceConfigGuard.php' && !in_array($relative, $financeLedgerReaders, true)
+            && $relative !== 'Intelligence/B2bPaymentEvidence.php')
             expect(preg_match('/\bb2b_account_/', $source) !== 1, "{$relative} must not read current account data");
         // Finance writes the ledger only through the insert-only AccountLedger primitives, never with its own SQL.
         if (str_starts_with($relative, 'Finance/'))

@@ -78,6 +78,7 @@ final readonly class CeoProductionReport
             }
         }
         $worked = $this->worked($range, $source);
+        $sales = $this->sales($range, $source, $received['orders'], $lines);
         return [
             'generatedAt' => self::iso($this->now->format('Y-m-d H:i:s.u')),
             'lastActivityAt' => $this->lastActivity(),
@@ -90,7 +91,8 @@ final readonly class CeoProductionReport
                 'bySource' => array_map(fn (array $b): array => $this->bagOut($b), self::orderSources($completedBy))],
             'current' => $this->current($source),
             'quality' => $this->qualityOut($quality),
-            'ledger' => $this->ledger($range, $source),
+            'ledger' => $this->ledger($sales),
+            'sales' => $sales,
             'definitions' => ['completed' => 'first production completion in the range', 'delayHours' => self::DELAY_HOURS,
                 'panelRule' => TrendyolPanelWidth::RULE, 'meterEvidence' => 'source_line', 'categoryCatalog' => $catalog->available()],
         ];
@@ -444,6 +446,26 @@ final readonly class CeoProductionReport
             uksort($out[$k], static fn (string $a, string $b): int => ($order[$a] ?? 99) <=> ($order[$b] ?? 99) ?: strcmp($a, $b));
         }
         $out['bySource'] = self::orderSources($out['bySource']);
+        // API 2.76.0: the meters of the active Arasya-flow orders (in production and waiting): TH / OP / B2B fabric and rail,
+        // Trendyol panel width apart, unknown lines counted, never zero.
+        $s = $this->pdo->prepare("SELECT o.order_uuid, (o.production_stage_id = 'waiting') AS is_waiting {$base} AND NOT ({$legacy}) AND o.production_stopped_at IS NULL");
+        $s->execute($params);
+        $groups = ['inProduction' => [], 'waiting' => []];
+        foreach ($s->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $groups[(int) $row['is_waiting'] === 1 ? 'waiting' : 'inProduction'][] = (string) $row['order_uuid'];
+        }
+        $catalog = new ProductCatalog($this->pdo);
+        $meters = [];
+        foreach ($groups as $group => $orders) {
+            $bag = $this->bag();
+            foreach (CeoLines::forOrders($this->pdo, $catalog, $orders) as $order => $orderLines) {
+                foreach ($orderLines as $line) {
+                    $this->add($bag, $order, $line);
+                }
+            }
+            $meters[$group] = $this->bagOut($bag);
+        }
+        $out['meters'] = $meters;
         return $out + ['asOf' => self::iso($this->now->format('Y-m-d H:i:s.u')), 'delayHours' => self::DELAY_HOURS];
     }
 
@@ -460,30 +482,80 @@ final readonly class CeoProductionReport
             'completions' => (int) $r['completions'], 'orders' => (int) $r['orders']], $s->fetchAll(PDO::FETCH_ASSOC));
     }
 
-    /** Ledger-dependent figures: unavailable (never zero) while the ledger holds no entry. */
-    private function ledger(DateRange $range, ?string $source): array
+    /**
+     * The sales block (API 2.76.0): ordered, cancelled, net and verified meters per source (SalesMeters: one sale identity
+     * per order, B2B at finalization, outside-Arasya shop orders apart), the Trendyol panel width of the orders received in
+     * the range (apart, never fabric), the unknown lines and the state of the automatic ledger run.
+     * @param array<string, array<string, mixed>> $receivedOrders @param array<string, list<array<string, mixed>>> $lines
+     */
+    private function sales(DateRange $range, ?string $source, array $receivedOrders, array $lines): array
     {
-        $entries = (int) $this->pdo->query('SELECT COUNT(*) FROM production_meter_ledger')->fetchColumn();
-        $at = $this->pdo->query("SELECT watermark_at FROM production_meter_ledger_cursor WHERE cursor_key = 'sold_meters'")->fetchColumn();
-        $syncedThrough = $at === false || $at === null ? null : self::iso((string) $at);
-        $state = $syncedThrough !== null ? 'automatic' : ($entries > 0 ? 'manual' : 'empty');
-        if ($state === 'empty') {
-            return ['state' => 'empty', 'available' => false, 'syncedThrough' => null, 'ordered' => null, 'verifiedSale' => null];
-        }
-        $s = $this->pdo->prepare('SELECT l.metric, l.delta_meters, ' . PaymentEvidence::COLUMNS . ' FROM production_meter_ledger l LEFT JOIN operational_orders o ON o.order_uuid = l.order_uuid
-            WHERE l.occurred_at >= ? AND l.occurred_at < ?' . ($source !== null ? ' AND l.source_key = ?' : ''));
-        $s->execute([...$this->bounds($range), ...($source !== null ? [$source] : [])]);
-        $ordered = ['sold_fabric' => 0, 'sold_rail' => 0]; $verified = $ordered;
-        foreach ($s->fetchAll(PDO::FETCH_ASSOC) as $row) {
-            $v = (string) $row['delta_meters'];
-            $units = str_starts_with($v, '-') ? -(MeterContract::units(substr($v, 1)) ?? 0) : (MeterContract::units($v) ?? 0);
-            $ordered[$row['metric']] += $units;
-            if (PaymentEvidence::verifiedSale(PaymentEvidence::classify($row))) {
-                $verified[$row['metric']] += $units;
+        [$from, $to] = $this->bounds($range);
+        $outside = ShopSourcedSales::report(ShopSourcedSales::lines($this->pdo, $from, $to, $source));
+        $entries = [...SalesMeters::arasyaEntries($this->pdo, $from, $to, $source), ...$outside['entries']];
+        $canonicalEntries = (int) $this->pdo->query('SELECT COUNT(*) FROM production_meter_ledger')->fetchColumn();
+        $b2bEntries = B2bSoldMeters::available($this->pdo) ? (int) $this->pdo->query('SELECT COUNT(*) FROM b2b_sold_meter_ledger')->fetchColumn() : 0;
+        $cursor = $this->pdo->query("SELECT watermark_at, last_run_at, last_orders, last_entries FROM production_meter_ledger_cursor WHERE cursor_key = 'sold_meters'")->fetch(PDO::FETCH_ASSOC) ?: null;
+        $state = $cursor !== null ? 'automatic' : ($canonicalEntries + $b2bEntries > 0 ? 'manual' : 'empty');
+        // Trendyol panel width and unknown lines of the orders received in the range (excluded orders carry none).
+        $panel = ['units' => 0, 'lines' => 0, 'unknownLines' => 0, 'orders' => []];
+        $unknown = ['trendhome' => 0, 'outletperdele' => 0, 'b2b' => 0];
+        $unknownOrders = [];
+        foreach ($receivedOrders as $order => $row) {
+            foreach ($lines[$order] ?? [] as $line) {
+                if ($line['excluded']) {
+                    continue;
+                }
+                if ($line['source_key'] === 'trendyol') {
+                    if ($line['panel'] !== null && $line['panel']['status'] === TrendyolPanelWidth::VERIFIED) {
+                        $panel['units'] += $line['panel']['widthUnits'];
+                        $panel['lines']++;
+                        $panel['orders'][$order] = true;
+                    } else {
+                        $panel['unknownLines']++;
+                    }
+                } elseif ($line['source_key'] !== 'b2b' && in_array($line['contract']['status'], CeoLines::UNKNOWN_FABRIC, true)) {
+                    $unknown[$line['source_key']] = ($unknown[$line['source_key']] ?? 0) + 1;
+                    $unknownOrders[$order] = true;
+                }
             }
         }
-        $m = static fn (array $u): array => ['fabricMeters' => MeterContract::meters($u['sold_fabric']), 'railMeters' => MeterContract::meters($u['sold_rail'])];
-        return ['state' => $state, 'available' => true, 'syncedThrough' => $syncedThrough, 'ordered' => $m($ordered), 'verifiedSale' => $m($verified)];
+        if (($source === null || $source === 'b2b') && B2bSoldMeters::available($this->pdo)) {
+            $s = $this->pdo->prepare("SELECT l.order_uuid, l.item_type, l.meters FROM b2b_order_lines l JOIN b2b_orders b ON b.order_uuid = l.order_uuid
+                LEFT JOIN b2b_meter_test_cohort c ON c.b2b_order_uuid = b.order_uuid
+                WHERE b.status = 'finalized' AND c.b2b_order_uuid IS NULL AND b.finalized_at >= ? AND b.finalized_at < ?");
+            $s->execute([$from, $to]);
+            foreach ($s->fetchAll(PDO::FETCH_ASSOC) as $line) {
+                if (B2bSoldMeters::line((string) $line['item_type'], $line['meters'])['status'] === MeterContract::UNKNOWN) {
+                    $unknown['b2b']++;
+                    $unknownOrders['b2b:' . $line['order_uuid']] = true;
+                }
+            }
+        }
+        $unknown = $source === null ? $unknown : array_intersect_key($unknown, [$source => 1]);
+        return SalesMeters::aggregate($entries, $source) + [
+            'state' => $state,
+            'syncedThrough' => $cursor !== null ? self::iso((string) $cursor['watermark_at']) : null,
+            'lastRun' => $cursor !== null ? ['at' => self::iso((string) $cursor['last_run_at']), 'orders' => (int) $cursor['last_orders'], 'entries' => (int) $cursor['last_entries']] : null,
+            'trendyolPanel' => $source === null || $source === 'trendyol'
+                ? ['widthMeters' => MeterContract::meters($panel['units']), 'verifiedLines' => $panel['lines'], 'unknownLines' => $panel['unknownLines'], 'orders' => count($panel['orders']), 'rule' => TrendyolPanelWidth::RULE]
+                : null,
+            'unknown' => ['linesBySource' => $unknown, 'lines' => array_sum($unknown) + $outside['summary']['unknownLines'] + $outside['summary']['openUnknownLines'],
+                'orders' => count($unknownOrders), 'outsideArasyaLines' => $outside['summary']['unknownLines'] + $outside['summary']['openUnknownLines'],
+                'rule' => 'lines whose meter is unknown, in conflict or without a stated basis; never counted as zero'],
+            'outsideArasya' => $outside['summary'],
+        ];
+    }
+
+    /** Ledger figures of the 2.73 shape, from the sales block: unavailable (never zero) while no ledger holds an entry. */
+    private function ledger(array $sales): array
+    {
+        if ($sales['state'] === 'empty') {
+            return ['state' => 'empty', 'available' => false, 'syncedThrough' => null, 'ordered' => null, 'verifiedSale' => null];
+        }
+        return ['state' => $sales['state'], 'available' => true, 'syncedThrough' => $sales['syncedThrough'],
+            'ordered' => ['fabricMeters' => $sales['total']['fabric']['net'], 'railMeters' => $sales['total']['rail']['net']],
+            'verifiedSale' => ['fabricMeters' => $sales['total']['fabric']['verified'], 'railMeters' => $sales['total']['rail']['verified']]];
     }
 
     private function lastActivity(): ?string

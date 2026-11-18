@@ -320,7 +320,7 @@ $error($get($ceo, 'summary', $range + ['category' => 'Draperii']), 400, 'INVALID
 $error($get($ceo, 'overview', $range + ['bucket' => 'day']), 400, 'INVALID_REQUEST', 'E13 no bucket on overview');
 $error($get($ceo, 'completions', $range + ['bucket' => 'year']), 400, 'INVALID_REQUEST', 'E14 completions buckets day/week/month');
 $error($get($ceo, 'skus', $range + ['code' => str_repeat('x', 121)]), 400, 'INVALID_REQUEST', 'E15 long filter');
-$error($get($ceo, 'completions', ['from' => '2026-10-01', 'to' => '2026-10-02']), 400, 'BEFORE_ANALYSIS_START', 'E16 analysis start');
+$error($get($ceo, 'completions', ['from' => '2023-12-30', 'to' => '2024-01-02']), 400, 'BEFORE_ANALYSIS_START', 'E16 no range before the history floor (API 2.76.0)');
 
 // ---- F. security -------------------------------------------------------------------------------------------
 foreach (['overview', 'completions', 'skus'] as $section) {

@@ -25,6 +25,11 @@ use Throwable;
  * row, meter facts or exclusion changed since the stored watermark, with an overlap so a transaction that committed late
  * is not missed (re-visiting an order writes nothing). Its first run only stores the watermark: history is the separate
  * backfill. Order intake never waits for it and never writes the ledger itself.
+ *
+ * B2B (API 2.76.0, migration 057): a B2B sale is the commercial order's finalization (B2bSoldMeters, its own insert-only
+ * ledger keyed by the commercial order), so a B2B canonical production order always targets zero here and a handed-off
+ * order is never counted twice. Both runs also visit the commercial B2B orders (all of them in `sync`, the changed ones in
+ * `syncChanged`) under the same lock and watermark, and add the missing production exclusions of B2B test-cohort orders.
  */
 final readonly class SoldMeterLedger
 {
@@ -60,9 +65,73 @@ final readonly class SoldMeterLedger
                     $cursor = (string) $id;
                 }
             } while ($onlyOrderUuid === null && count($ids) === $batch);
+            if ($onlyOrderUuid === null && B2bSoldMeters::available($this->pdo)) {
+                $this->b2bPass($dryRun, $report, null, $batch);
+            }
             ksort($report['byReason']);
             return $report;
         });
+    }
+
+    /** One commercial B2B order (bin/meter-ledger.php --b2b-order). */
+    public function syncB2bOrder(bool $dryRun, string $b2bOrderUuid): array
+    {
+        if ($this->pdo->inTransaction() || !B2bSoldMeters::available($this->pdo)) {
+            throw new LogicException('Invalid sold-meter ledger context');
+        }
+        return $this->locked(function () use ($dryRun, $b2bOrderUuid): array {
+            $report = self::emptyReport($dryRun);
+            $this->b2bPass($dryRun, $report, [$b2bOrderUuid], 50);
+            ksort($report['byReason']);
+            return $report;
+        });
+    }
+
+    /** @param list<string>|null $ids null = every commercial order that can hold entries */
+    private function b2bPass(bool $dryRun, array &$report, ?array $ids, int $batch): void
+    {
+        $now = $this->clock->now()->format('Y-m-d H:i:s.u');
+        $this->pdo->beginTransaction();
+        try {
+            $report['cohortExclusions'] = count(B2bSoldMeters::excludeCohortCanonicals($this->pdo, $now, $dryRun));
+            $dryRun ? $this->pdo->rollBack() : $this->pdo->commit();
+        } catch (Throwable $error) {
+            if ($this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            throw $error;
+        }
+        $visit = function (string $id) use ($dryRun, &$report): void {
+            $this->pdo->beginTransaction();
+            try {
+                foreach (B2bSoldMeters::order($this->pdo, $id, $this->clock->now()->format('Y-m-d H:i:s.u'), $dryRun) as $entry) {
+                    $report['b2bEntries']++;
+                    $report['byReason']['b2b_' . $entry['reason']] = ($report['byReason']['b2b_' . $entry['reason']] ?? 0) + 1;
+                    $report['b2bNetUnits'] += $entry['units'];
+                }
+                $dryRun ? $this->pdo->rollBack() : $this->pdo->commit();
+            } catch (Throwable $error) {
+                if ($this->pdo->inTransaction()) {
+                    $this->pdo->rollBack();
+                }
+                throw $error;
+            }
+            $report['b2bOrders']++;
+        };
+        if ($ids !== null) {
+            foreach ($ids as $id) {
+                $visit($id);
+            }
+            return;
+        }
+        $cursor = '';
+        do {
+            $page = B2bSoldMeters::orderIds($this->pdo, $cursor, $batch);
+            foreach ($page as $id) {
+                $visit($id);
+                $cursor = $id;
+            }
+        } while (count($page) === $batch);
     }
 
     /**
@@ -93,11 +162,14 @@ final readonly class SoldMeterLedger
                 foreach ($s->fetchAll(PDO::FETCH_COLUMN) as $id) {
                     $this->visit((string) $id, $dryRun, $report);
                 }
+                if (B2bSoldMeters::available($this->pdo)) {
+                    $this->b2bPass($dryRun, $report, B2bSoldMeters::changedSince($this->pdo, $since), 50);
+                }
             }
             if (!$dryRun) {
                 $this->pdo->prepare('INSERT INTO production_meter_ledger_cursor (cursor_key, watermark_at, last_run_at, last_orders, last_entries) VALUES (?, ?, ?, ?, ?)
                     ON DUPLICATE KEY UPDATE watermark_at = VALUES(watermark_at), last_run_at = VALUES(last_run_at), last_orders = VALUES(last_orders), last_entries = VALUES(last_entries)')
-                    ->execute([self::CURSOR, $start, $this->clock->now()->format('Y-m-d H:i:s.u'), $report['orders'], $report['entries']]);
+                    ->execute([self::CURSOR, $start, $this->clock->now()->format('Y-m-d H:i:s.u'), $report['orders'] + $report['b2bOrders'], $report['entries'] + $report['b2bEntries']]);
             }
             ksort($report['byReason']);
             return $report;
@@ -121,7 +193,8 @@ final readonly class SoldMeterLedger
 
     private static function emptyReport(bool $dryRun): array
     {
-        return ['orders' => 0, 'entries' => 0, 'byReason' => [], 'netUnits' => ['sold_fabric' => 0, 'sold_rail' => 0], 'dryRun' => $dryRun];
+        return ['orders' => 0, 'entries' => 0, 'byReason' => [], 'netUnits' => ['sold_fabric' => 0, 'sold_rail' => 0], 'dryRun' => $dryRun,
+            'b2bOrders' => 0, 'b2bEntries' => 0, 'b2bNetUnits' => 0, 'cohortExclusions' => 0];
     }
 
     private function visit(string $orderUuid, bool $dryRun, array &$report): void
@@ -159,6 +232,8 @@ final readonly class SoldMeterLedger
         $lines = MeterLines::forOrders($this->pdo, [$orderUuid])[$orderUuid] ?? [];
         $cancelled = $order['operational_status'] === 'unavailable';
         $excluded = $order['excluded'] !== null;
+        // A B2B canonical order is production, not a second sale: its commercial order sells (B2bSoldMeters).
+        $commercialElsewhere = $order['source_key'] === 'b2b';
         $s = $this->pdo->prepare('SELECT metric, item_uuid, SUM(delta_meters) AS total, COUNT(*) AS entries FROM production_meter_ledger WHERE order_uuid = ? GROUP BY metric, item_uuid');
         $s->execute([$orderUuid]);
         $held = [];
@@ -172,7 +247,7 @@ final readonly class SoldMeterLedger
         foreach ($lines as $line) {
             foreach (self::METRICS as $metric => $field) {
                 $value = $line['contract'][$field];
-                $targets[$metric][$line['item_uuid']] = ['units' => ($cancelled || $excluded || $value === null) ? 0 : $value, 'line' => $line];
+                $targets[$metric][$line['item_uuid']] = ['units' => ($cancelled || $excluded || $commercialElsewhere || $value === null) ? 0 : $value, 'line' => $line];
             }
         }
         // Lines that left the order keep their ledger history and are brought to zero.
@@ -194,6 +269,7 @@ final readonly class SoldMeterLedger
                 [$reason, $at] = match (true) {
                     $line === null => ['line_removed', $now],
                     $excluded => ['exclusion', $now],
+                    $commercialElsewhere => ['correction', $now],
                     $cancelled => ['cancellation', (string) ($order['source_reported_unavailable_at'] ?? $now)],
                     $current['entries'] === 0 => ['sale', $saleAt],
                     $current['units'] === 0 => ['reactivation', $now],

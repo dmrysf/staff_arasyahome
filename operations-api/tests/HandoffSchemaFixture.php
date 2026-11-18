@@ -1,8 +1,19 @@
 <?php
 declare(strict_types=1);
+/** Restore a pre-057 disposable test fixture (no B2B test cohort or B2B sold-meter ledger). This is NOT a deployment/rollback mechanism. */
+function restorePreB2bSoldMetersTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='057_b2b_sold_meters.sql'")->fetchColumn()) return;
+    $pdo->exec('DROP TABLE IF EXISTS b2b_sold_meter_ledger');
+    $pdo->exec('DROP TABLE IF EXISTS b2b_meter_test_cohort');
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='057_b2b_sold_meters.sql'");
+}
+
 /** Restore a pre-056 disposable test fixture (no order resolver permission or role). This is NOT a deployment/rollback mechanism. */
 function restorePreOrderResolverTestSchema(PDO $pdo): void
 {
+    restorePreB2bSoldMetersTestSchema($pdo);
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
     if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='056_order_resolver.sql'")->fetchColumn()) return;
     $pdo->exec("DELETE era FROM employee_role_assignments era JOIN roles r ON r.role_id=era.role_id WHERE r.role_key='order-resolver'");

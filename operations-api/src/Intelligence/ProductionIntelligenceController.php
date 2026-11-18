@@ -13,13 +13,13 @@ use Arasya\Operations\Http\RequestContext;
 use Arasya\Operations\Http\Response;
 
 /**
- * GET /management/production-intelligence/{summary|products|employees|series|overview|completions|skus} (Root and canonical CEO only) and
+ * GET /management/production-intelligence/{summary|products|employees|series|overview|completions|skus|coverage} (Root and canonical CEO only) and
  * GET /production-intelligence/mine (the signed-in employee's own work). Read only; every other method is 404.
  */
 final readonly class ProductionIntelligenceController
 {
     private const MANAGEMENT = '/management/production-intelligence/';
-    private const SECTIONS = ['summary', 'products', 'employees', 'series', 'overview', 'completions', 'skus'];
+    private const SECTIONS = ['summary', 'products', 'employees', 'series', 'overview', 'completions', 'skus', 'coverage'];
     private const MANAGEMENT_QUERY = ['period', 'from', 'to', 'source', 'bucket', 'category', 'code', 'variant', 'status', 'sku'];
     private const MINE_QUERY = ['period', 'from', 'to'];
 

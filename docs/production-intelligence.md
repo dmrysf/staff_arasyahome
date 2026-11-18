@@ -1,20 +1,53 @@
-# Production Intelligence V2: meter contract and reads (API 2.70.0, migration 053; five concepts apart since API 2.72.0; CEO reports since API 2.73.0; category facts since API 2.74.0)
+# Production Intelligence V2: meter contract and reads (API 2.70.0, migration 053; five concepts apart since API 2.72.0; CEO reports since API 2.73.0; category facts since API 2.74.0; B2B sold meters, test cohort, all-time history and coverage since API 2.76.0, migration 057)
 
-## Status (2026-11-15)
+## Status (2026-11-19)
 
 | Part | State |
 | --- | --- |
-| Migration 053 (+ 054) | Applied in production 2026-11-13 20:49Z |
-| Migration 055 (product catalog categories) | Merged with API 2.73.0 (2026-11-15); not applied. The code reads `unknown` categories without it, but `cpanel-deploy-api.sh` refuses to activate a release while a migration is pending, so 055 is applied **before** API 2.73.0 is activated |
-| API | 2.71.1 live (deploy 215). 2.72.0 and 2.73.0 (CEO reports) merged, not deployed. 2.74.0 (category facts) is a draft PR |
-| YD SOFT 2.31.0 (`productCategory`, catalog export) | Draft PR, not deployed |
-| YD SOFT 2.30.0 (`meterBasis`) | Live on Trendhome (2026-11-13 22:53Z) and Outletperdele (2026-11-14 02:12Z) |
-| Staff | 2.51.0 live; 2.52.0 (own-work meters) merged, not deployed |
-| Dashboard | 0.18.0 live; 0.19.0 and 0.20.0 (CEO screens) merged, not deployed |
-| History facts import | Done 2026-11-15 08:34Z (TH 2908 + OP 947 facts); 24 h observation until 2026-11-16 08:34Z |
-| Ledger backfill (`meter-ledger.php --apply`) | Not run, not approved |
-| Automatic ledger cron | Not scheduled, not approved |
-| Exclusions | Only the two Trendhome rollout test orders (owner-approved with the import); the five B2B test orders are not excluded yet |
+| Migrations 053-056 | Applied in production |
+| Migration 057 (B2B test cohort, B2B sold-meter ledger) | API 2.76.0; additive (two new tables). Applied before API 2.76.0 is activated |
+| API | 2.75.0 live; 2.76.0 adds B2B sold meters at finalization, the B2B test cohort, `period=all` and multi-year ranges, the `sales` block of the CEO overview, active-order meters and the `coverage` section |
+| Dashboard | 0.21.0 live; 0.22.0 shows the twelve sales figures, the all-time period and the data coverage page (`/metraj/acoperire`) |
+| History facts import | 2026-11-15: TH 2908 + OP 947 facts (since 2026-10-04). 2026-11-19: full shop history export since 2024-01-01 (TH 16,496 orders, OP 9,343) |
+| Ledger backfill and automatic run | See the go-live runbook (owner decision 2026-11-19) |
+
+## B2B sold meters and the B2B test cohort (API 2.76.0, owner decision 2026-11-19)
+
+- **Sale identity.** A B2B sale is the commercial order (`b2b_orders`). It counts its lines' entered `meters` when it is
+  `finalized`, dated at `finalized_at`, without waiting for the production handoff. A draft never counts. A commercial
+  cancellation is a dated negative entry (`cancelled_at`). Entries live in the insert-only `b2b_sold_meter_ledger`, one
+  difference entry per transition, unique by `(metric, line_uuid, cause_key)`, written by the same run and lock as the
+  web-shop ledger (`bin/meter-ledger.php`, also `--b2b-order=<uuid>`).
+- **Line contract.** `b2b_order_lines.meters` is the whole line's meters; it is never multiplied by `quantity` (12.500 m
+  with quantity 3 is 12.500 m). `item_type = other` is not metered. A piece-priced line without meters (or 0) is
+  unknown and counted as unknown, never zero.
+- **Never twice.** The canonical production order of a handed-off B2B order targets zero in `production_meter_ledger`;
+  production figures (cut, completed, in production) still read its lines as production, never as a sale.
+- **Payment.** `B2bPaymentEvidence` reads the B2B current account read-only: `paid` only when the order's receivable is
+  covered in full by active allocations; `partial`, `unverified` (no allocation), `reversed`, `unknown` (no receivable).
+  The current account is never written by any meter code.
+- **Test cohort.** `b2b_meter_test_cohort` keeps an owner's test decision per commercial order (`bin/b2b-meter-cohort.php`):
+  `--snapshot` records every B2B order that exists at that moment (dry run first; `--apply` requires `--expect=<sha256>`
+  of the reviewed inventory), `--order=<code>` records one later decision, `--list` is the audit report. Each row is
+  audited (`production_intelligence.b2b_test_order_recorded`). A cohort order never books sold meters. Its canonical
+  production order gets a `production_meter_exclusions` row (`test_order`), at the decision, at a later handoff
+  (`ProductionCommands`) and by every ledger run as a safety net. Orders created after a snapshot are real sales.
+- **Earlier totals of the five test orders.** "About 69 m" multiplied the entered line meters by the quantity; the line
+  meters are totals, so the five handed-off test orders hold 48.625 m.
+
+## Sales block, all time and coverage (API 2.76.0)
+
+- `overview.sales`: per source (Trendhome, Outlet Perdele, B2B) and in total, fabric and rail apart: `ordered`,
+  `cancelled` (meters a cancellation took back), `adjusted`, `net`, `verified`, net by payment class, outside-Arasya part,
+  the Trendyol panel width of the orders received in the range (never fabric), unknown lines and the automatic run state
+  (`syncedThrough`, `lastRun`). `overview.current.meters`: meters of the active orders. `overview.ledger` keeps its 2.73 shape.
+- `period=all`: from the oldest day any source holds an order (never before `HISTORY_FLOOR` 2024-01-01) to today. Custom
+  ranges may span up to 4,000 days. Production figures start at 2026-10-04 (`ANALYSIS_START`); before it they are absent.
+- `coverage` (Root and CEO): per source the first and last order, orders, metered / unknown lines, coverage percent,
+  cancellations, exclusions, production entry, Europe/Bucharest months without any order (`gapMonths`, never shown as
+  zero sales), the outside-Arasya export freshness, the B2B test cohort audit, the ledger state and the category catalog.
+- Category import (`bin/product-category-import.php`): the export's `generatedAt` is the instant its categories are valid
+  from. A stored category learned from an order event after the export was taken is kept (`newerKept`) and never removed.
 
 ## The five meter concepts (owner decision 2026-11-14)
 

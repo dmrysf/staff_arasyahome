@@ -324,4 +324,16 @@ if (preg_match('/CREATE TABLE|ALTER TABLE|DROP |DELETE FROM|TRUNCATE|\bUPDATE\s+
     || !str_contains($resolverSchema, "p.permission_key IN ('orders.intervene', 'orders.lookup_exact')")) {
     throw new RuntimeException('Migration 056 must only add the orders.intervene permission and the order-resolver role template, and assign nobody.');
 }
+// B2B sold meters (057, API 2.76.0): exactly two new tables, no ALTER, no write, no grant, no cascade. The B2B current
+// account and orders are only referenced.
+$b2bMeterSchema = (string) file_get_contents($root . '/database/migrations/057_b2b_sold_meters.sql');
+$b2bMeterStatements = preg_replace('/^--.*$/m', '', $b2bMeterSchema) ?? '';
+preg_match_all('/CREATE TABLE IF NOT EXISTS (\w+)/', $b2bMeterStatements, $b2bMeterTables);
+if ($b2bMeterTables[1] !== ['b2b_meter_test_cohort', 'b2b_sold_meter_ledger']
+    || preg_match('/ALTER TABLE|DROP |DELETE FROM|TRUNCATE|INSERT |\bUPDATE\s+\w+\s+SET|permissions|role_|employee_|CASCADE|SET NULL|b2b_account_/i', $b2bMeterStatements) === 1
+    || !str_contains($b2bMeterSchema, "CONSTRAINT chk_b2b_sold_meter_metric CHECK (metric IN ('sold_fabric'))")
+    || !str_contains($b2bMeterSchema, 'UNIQUE KEY uq_b2b_sold_meter_cause (metric, line_uuid, cause_key)')
+    || !str_contains($b2bMeterSchema, "CONSTRAINT chk_b2b_meter_cohort_reason CHECK (reason IN ('test_order'))")) {
+    throw new RuntimeException('Migration 057 must only add the B2B test cohort and the B2B sold-meter ledger, and grant nothing.');
+}
 fwrite(STDOUT, 'Migration sanity checks passed for ' . count($files) . " file(s).\n");
