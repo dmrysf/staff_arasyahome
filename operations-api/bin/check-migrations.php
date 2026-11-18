@@ -314,4 +314,14 @@ if ($catalogTables[1] !== ['product_catalog_categories']
     || !str_contains($catalogSchema, 'PRIMARY KEY (source_key, product_code)')) {
     throw new RuntimeException('Migration 055 must only add the product catalog categories table, and grant nothing.');
 }
+// Order resolver (056, API 2.75.0): one permission and one role template with orders.intervene and orders.lookup_exact,
+// assigned to nobody. No table is created or altered and no employee is written.
+$resolverSchema = (string) file_get_contents($root . '/database/migrations/056_order_resolver.sql');
+$resolverStatements = preg_replace('/^--.*$/m', '', $resolverSchema) ?? '';
+if (preg_match('/CREATE TABLE|ALTER TABLE|DROP |DELETE FROM|TRUNCATE|\bUPDATE\s+\w+\s+SET|employee_role_assignments|employees\b|employee_uuid/i', $resolverStatements) === 1
+    || !str_contains($resolverSchema, "('orders.intervene', 'orders',")
+    || !str_contains($resolverSchema, "('order-resolver', 'Rezolvare comenzi blocate',")
+    || !str_contains($resolverSchema, "p.permission_key IN ('orders.intervene', 'orders.lookup_exact')")) {
+    throw new RuntimeException('Migration 056 must only add the orders.intervene permission and the order-resolver role template, and assign nobody.');
+}
 fwrite(STDOUT, 'Migration sanity checks passed for ' . count($files) . " file(s).\n");

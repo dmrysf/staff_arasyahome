@@ -1,9 +1,23 @@
 <?php
 declare(strict_types=1);
+/** Restore a pre-056 disposable test fixture (no order resolver permission or role). This is NOT a deployment/rollback mechanism. */
+function restorePreOrderResolverTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='056_order_resolver.sql'")->fetchColumn()) return;
+    $pdo->exec("DELETE era FROM employee_role_assignments era JOIN roles r ON r.role_id=era.role_id WHERE r.role_key='order-resolver'");
+    $pdo->exec("DELETE rp FROM role_permissions rp JOIN roles r ON r.role_id=rp.role_id WHERE r.role_key='order-resolver'");
+    $pdo->exec("DELETE rp FROM role_permissions rp JOIN permissions p ON p.permission_id=rp.permission_id WHERE p.permission_key='orders.intervene'");
+    $pdo->exec("DELETE FROM roles WHERE role_key='order-resolver'");
+    $pdo->exec("DELETE FROM permissions WHERE permission_key='orders.intervene'");
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='056_order_resolver.sql'");
+}
+
 /** Restore a pre-055 disposable test fixture (no product catalog categories). This is NOT a deployment/rollback mechanism. */
 function restorePreProductCatalogTestSchema(PDO $pdo): void
 {
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    restorePreOrderResolverTestSchema($pdo);
     if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='055_product_catalog_categories.sql'")->fetchColumn()) return;
     $pdo->exec('DROP TABLE IF EXISTS product_catalog_categories');
     $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='055_product_catalog_categories.sql'");

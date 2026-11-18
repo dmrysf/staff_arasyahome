@@ -151,6 +151,14 @@ try {
     $report('FAIL', 'production_cancellation_schema');
 }
 
+// Order resolver (056, API 2.75.0): the permission exists (WARN until the migration ran) and who holds it.
+try {
+    $resolverPermission = (int) $pdo->query("SELECT COUNT(*) FROM permissions WHERE permission_key = 'orders.intervene' AND role_grantable = 1")->fetchColumn();
+    $report($resolverPermission === 1 ? 'OK' : 'WARN', 'order_resolver_permission');
+} catch (Throwable) {
+    $report('WARN', 'order_resolver_permission');
+}
+
 // Cancellation synchronization (034, API 2.36.0): schema, permission, every provider flag present, the server switch, and
 // the operations needing a person. Nothing is sent or changed here.
 try {

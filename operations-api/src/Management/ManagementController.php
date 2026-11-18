@@ -246,6 +246,9 @@ final readonly class ManagementController
             'manageAnalyticsPolicy' => $actor->isRoot,
             // API 2.72.0: Production Intelligence (Root and the canonical CEO only, K4); the routes authorize again.
             'viewProductionIntelligence' => $this->intelligence?->canView($actor) ?? false,
+            // API 2.75.0: the order resolver (root, or the `orders.intervene` permission with the Dashboard); its routes check again.
+            'resolveOrders' => $actor->hasApplication('dashboard') && $actor->isOperationallyActive() && !$actor->mustChangePassword
+                && ($actor->isRoot || in_array(\Arasya\Operations\Management\OrderResolver::PERMISSION, $actor->permissions, true)),
             // A business approver without an approval scope decides nothing, so the queue is not offered.
             'approveDocumentRevisions' => $documentVia !== null && $documentVia !== \Arasya\Operations\Document\RevisionApproverPolicy::VIA_ROOT
                 && ($this->documentScopes?->sources($actor, \Arasya\Operations\Document\DocumentScopePolicy::APPROVE) ?? []) !== [],

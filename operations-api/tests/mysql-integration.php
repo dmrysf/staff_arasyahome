@@ -162,6 +162,7 @@ try {
     $expected[] = '053_production_intelligence.sql';
     $expected[] = '054_confirmare_finance_holds.sql';
     $expected[] = '055_product_catalog_categories.sql';
+    $expected[] = '056_order_resolver.sql';
     if ($applied !== $expected) {
         throw new RuntimeException('An existing 001 schema did not apply exactly the pending migrations in order: ' . implode(', ', $applied));
     }
