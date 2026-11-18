@@ -489,7 +489,7 @@ final class Container
                 $this->config,
                 $context,
             ),
-            new \Arasya\Operations\Management\RootInterventionController($this->rootIntervention($authorization), $this->authentication, $csrf, $this->config, $context),
+            new \Arasya\Operations\Management\RootInterventionController($desk = $this->rootIntervention($authorization), $this->authentication, $csrf, $this->config, $context, $this->orderResolver($desk, $authorization)),
             $this->financeController($authorization, $context, $csrf, $rateLimiter),
             new \Arasya\Operations\Trendyol\AwbStationController($this->awbStation($authorization), $this->authentication, $csrf, $this->config, $context),
             new \Arasya\Operations\Finance\RefusedAttemptRecorder($this->pdo, new StructuredLogger()),
@@ -707,6 +707,22 @@ final class Container
             $this->confirmareOperations($authorization, true),
             $this->confirmareSourceEdits($authorization),
             new \Arasya\Operations\Confirmare\InvoiceEfactura($this->pdo, $this->clock, new \Arasya\Operations\Confirmare\InvoiceScopePolicy($this->pdo, true)),
+        );
+    }
+
+    /**
+     * The order resolver (API 2.75.0): one order number, its blockage and the one step that unblocks it, through the root
+     * intervention desk. Root and the employees holding `orders.intervene` use it from the Dashboard.
+     */
+    public function orderResolver(?\Arasya\Operations\Management\RootInterventionService $desk = null, ?AuthorizationService $authorization = null): \Arasya\Operations\Management\OrderResolver
+    {
+        return new \Arasya\Operations\Management\OrderResolver(
+            $this->pdo,
+            $authorization ?? new AuthorizationService(),
+            $desk ?? $this->rootIntervention($authorization),
+            $this->financeVerificationRequests($authorization, true),
+            new IamAuditLogger($this->pdo),
+            $this->clock,
         );
     }
 
