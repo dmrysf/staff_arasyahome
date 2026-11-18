@@ -256,7 +256,9 @@ $check($over['received']['units'] === 2 + 2 + 1 + 7, 'D2 received units');
 $check($over['worked']['orders'] === 4 && $over['worked']['byArea']['production'] === 4 && $over['worked']['byArea']['trendyol'] === 1, 'D3 orders with a real employee action on the 21st: ' . json_encode($over['worked']));
 $check($over['completed']['orders'] === 4 && $over['completed']['fabricMeters'] === '12.000' && $over['completed']['bySource']['trendyol']['panelWidthMeters'] === '2.800'
     && $over['completed']['bySource']['trendhome']['fabricMeters'] === '5.000' && $over['completed']['bySource']['outletperdele']['fabricMeters'] === '7.000', 'D4 completed meters per channel, panel apart');
-if ((int) $pdo->query('SELECT COUNT(*) FROM production_meter_ledger')->fetchColumn() === 0) {
+// API 2.76.0: the ledger is empty only when neither the shop ledger nor the B2B ledger holds an entry and no automatic run exists.
+if ((int) $pdo->query('SELECT COUNT(*) FROM production_meter_ledger')->fetchColumn() === 0 && (int) $pdo->query('SELECT COUNT(*) FROM b2b_sold_meter_ledger')->fetchColumn() === 0
+    && (int) $pdo->query('SELECT COUNT(*) FROM production_meter_ledger_cursor')->fetchColumn() === 0) {
     $check($over['ledger'] === ['state' => 'empty', 'available' => false, 'syncedThrough' => null, 'ordered' => null, 'verifiedSale' => null], 'D5 empty ledger: unavailable, never zero');
 } else {
     $check($over['ledger']['available'] === true && $over['ledger']['ordered']['fabricMeters'] === '0.000', 'D5 a ledger with entries (shared database) is available; nothing booked in this range yet');
