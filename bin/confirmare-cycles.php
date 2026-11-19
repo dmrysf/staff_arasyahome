@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 /**
  * The Confirmare cycle worker (API 2.46.0): advance proforma reminders after 24 h and 72 h, the 120 h expiry with the
- * bank check, the cancellation in SmartBill and the order's cancellation request (ConfirmareCycles). Cron, every 5
- * minutes. One run at a time (server-wide advisory lock); each cycle is also claimed on its own row.
+ * bank check, the cancellation in SmartBill and the order's cancellation request (ConfirmareCycles), and since API 2.77.0
+ * the AWB readiness of orders at stage 12-14 (ConfirmareAwbReadiness). Cron, every 5 minutes. One run at a time (server-wide advisory lock); each cycle is also claimed on its own row.
  *
  *   php bin/confirmare-cycles.php [--limit=100]
  *
@@ -29,7 +29,21 @@ try {
     $result = $cycles->run($limit, 'cli-confirmare-cycles-' . bin2hex(random_bytes(6)));
     // Reactivated orders whose shop event arrived: their cancellation hold is released (ConfirmareOperations).
     $released = $container->confirmareOperations()->settleReactivations($limit);
-    fwrite(STDOUT, sprintf("confirmare-cycles: seen %d, advanced %d, skipped %d, reactivations released %d\n", $result['seen'], $result['advanced'], $result['skipped'], $released));
+    // API 2.77.0: orders at stage 12-14 without their AWB are routed and invoiced (ConfirmareAwbReadiness); an order read
+    // within the last hour with nothing to do is not asked again.
+    $prepared = ['routed' => 0, 'invoiced' => 0, 'ready' => 0, 'blocked' => 0];
+    try {
+        foreach ($container->confirmareAwbReadiness()->run(true, null, $limit, true) as $report) {
+            $prepared['routed'] += in_array('routed', $report['steps'], true) ? 1 : 0;
+            $prepared['invoiced'] += in_array('invoice_issued', $report['steps'], true) ? 1 : 0;
+            $prepared['ready'] += $report['state'] === 'ready' ? 1 : 0;
+            $prepared['blocked'] += in_array($report['state'], ['blocked', 'error'], true) ? 1 : 0;
+        }
+    } catch (Throwable $e) {
+        fwrite(STDOUT, "confirmare-cycles: AWB readiness failed\n");
+    }
+    fwrite(STDOUT, sprintf("confirmare-cycles: seen %d, advanced %d, skipped %d, reactivations released %d, awb readiness routed %d, invoiced %d, ready %d, blocked %d\n",
+        $result['seen'], $result['advanced'], $result['skipped'], $released, $prepared['routed'], $prepared['invoiced'], $prepared['ready'], $prepared['blocked']));
 } finally {
     $pdo->query("SELECT RELEASE_LOCK('arasya_confirmare_cycles')");
 }

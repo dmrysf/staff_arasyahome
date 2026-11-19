@@ -409,8 +409,7 @@ final readonly class ConfirmareInvoice
         if ($order['status'] !== 'approved') {
             $blockers[] = 'confirmare_not_approved';
         }
-        $handoff = (new ConfirmareHandoff($this->pdo, $this->modes))->view($orderUuid, false, false);
-        if (!in_array($handoff['state'], self::ISSUABLE, true)) {
+        if (!$this->issuableHandoff($orderUuid)) {
             $blockers[] = 'handoff_not_ready';
         }
         if (ConfirmareFinance::actionOpen($this->pdo, $orderUuid)) {
@@ -1012,14 +1011,110 @@ final readonly class ConfirmareInvoice
         if ($order['operational_status'] === 'unavailable' || $order['source_reported_unavailable_at'] !== null) {
             $blockers[] = 'order_unavailable';
         }
-        $handoff = (new ConfirmareHandoff($this->pdo, $this->modes))->view($orderUuid, false, false);
-        if (!in_array($handoff['state'], self::ISSUABLE, true)) {
+        if (!$this->issuableHandoff($orderUuid)) {
             $blockers[] = 'handoff_not_ready';
         }
         if (ConfirmareFinance::actionOpen($this->pdo, $orderUuid)) {
             $blockers[] = 'finance_action_open';
         }
         return array_values(array_unique($blockers));
+    }
+
+    /**
+     * Whether the order's handoff allows routing and the final invoice: an issuable state, or (API 2.77.0, owner
+     * 2026-11-19) production completed at an AWB stage (12-14) while the order is still active. A parcel whose last
+     * stage was completed before anyone routed or invoiced it still has to leave: the AWB needs both.
+     */
+    private function issuableHandoff(string $orderUuid): bool
+    {
+        $handoff = (new ConfirmareHandoff($this->pdo, $this->modes))->view($orderUuid, false, false);
+        if (in_array($handoff['state'], self::ISSUABLE, true)) {
+            return true;
+        }
+        if ($handoff['state'] !== 'closed') {
+            return false;
+        }
+        $statement = $this->pdo->prepare('SELECT production_stage_id, production_completed_at, operational_status FROM operational_orders WHERE order_uuid = ?');
+        $statement->execute([$orderUuid]);
+        $order = $statement->fetch(PDO::FETCH_ASSOC);
+        return is_array($order) && $order['production_completed_at'] !== null && $order['operational_status'] !== 'unavailable'
+            && in_array((string) $order['production_stage_id'], ConfirmareOperations::AWB_STAGES, true);
+    }
+
+    /**
+     * API 2.77.0 (owner 2026-11-19): the system routes an order at an AWB stage (12-14) that nobody routed to the shop
+     * employee who may invoice it and make its AWB. The same rules as an operator's routing (routeBlockers, shopEligible,
+     * one active assignment); the routing is recorded in the name of the Confirmare operator who decided the order (the
+     * one who routes it by hand), with the key `auto-awb-ready-<order>` so it stays recognisable. Among several eligible
+     * employees the one with the fewest active orders of the shop is chosen.
+     *
+     * @return array{state: string, employeeId?: string, reason?: string}
+     */
+    public function autoRoute(string $globalOrderId): array
+    {
+        $globalId = $this->globalId($globalOrderId);
+        $row = $this->row($globalId);
+        if ($row === null || $row['workflow_cohort'] !== \Arasya\Operations\Production\WorkflowCohort::CONFIRMARE) {
+            return ['state' => 'skipped', 'reason' => 'not_confirmare'];
+        }
+        $orderUuid = (string) $row['order_uuid'];
+        $source = (string) $row['source_key'];
+        if (self::assignee($this->pdo, $orderUuid) !== null) {
+            return ['state' => 'already'];
+        }
+        $router = (string) ($row['decided_by_employee_uuid'] ?? $row['assigned_employee_uuid'] ?? '');
+        if ($router === '') {
+            return ['state' => 'skipped', 'reason' => 'no_router'];
+        }
+        $statement = $this->pdo->prepare("SELECT e.employee_uuid, (SELECT COUNT(*) FROM order_shop_assignments a WHERE a.employee_uuid = e.employee_uuid AND a.source_key = ? AND a.state = 'active') AS load_count
+            FROM employees e INNER JOIN employee_invoice_scopes i ON i.employee_uuid = e.employee_uuid AND i.capability = 'issue' AND i.source_key = ?
+            WHERE e.employee_uuid <> ? GROUP BY e.employee_uuid ORDER BY load_count, e.employee_uuid LIMIT 50");
+        $statement->execute([$source, $source, $router]);
+        $chosen = null;
+        foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $candidate) {
+            if ($this->shopEligible((string) $candidate['employee_uuid'], $source, $orderUuid)) {
+                $chosen = (string) $candidate['employee_uuid'];
+                break;
+            }
+        }
+        if ($chosen === null) {
+            return ['state' => 'skipped', 'reason' => 'no_shop_employee'];
+        }
+        $key = 'auto-awb-ready-' . $orderUuid;
+        $hmac = hash_hmac('sha256', json_encode([$globalId, 'assign', $chosen, null], JSON_THROW_ON_ERROR), $this->hmacKey, true);
+        $this->pdo->beginTransaction();
+        try {
+            $lock = $this->pdo->prepare('SELECT order_uuid FROM operational_orders WHERE order_uuid = ? FOR UPDATE');
+            $lock->execute([$orderUuid]);
+            if ($lock->fetchColumn() === false) {
+                $this->pdo->rollBack();
+                return ['state' => 'skipped', 'reason' => 'order_unavailable'];
+            }
+            $blockers = $this->routeBlockers($orderUuid);
+            if ($blockers !== []) {
+                $this->pdo->rollBack();
+                return ['state' => 'skipped', 'reason' => $blockers[0]];
+            }
+            $current = $this->pdo->prepare('SELECT assignment_uuid FROM order_shop_assignments WHERE active_order_uuid = ? FOR UPDATE');
+            $current->execute([$orderUuid]);
+            if ($current->fetchColumn() !== false) {
+                $this->pdo->rollBack();
+                return ['state' => 'already'];
+            }
+            if (!$this->shopEligible($chosen, $source, $orderUuid, true)) {
+                $this->pdo->rollBack();
+                return ['state' => 'skipped', 'reason' => 'no_shop_employee'];
+            }
+            $this->pdo->prepare("INSERT INTO order_shop_assignments (assignment_uuid, order_uuid, global_order_id, source_key, employee_uuid, assigned_by_employee_uuid, assigned_role, idempotency_key, request_hmac, state, assigned_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'operator', ?, ?, 'active', ?)")->execute([Uuid::v4(), $orderUuid, $globalId, $source, $chosen, $router, $key, $hmac, $this->now()]);
+            $this->pdo->commit();
+        } catch (Throwable $e) {
+            if ($this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            return ['state' => 'skipped', 'reason' => $e instanceof PDOException ? 'assignment_changed' : 'routing_failed'];
+        }
+        return ['state' => 'routed', 'employeeId' => $chosen];
     }
 
     /** @return array<string, mixed>|null the order's active shop assignment */
