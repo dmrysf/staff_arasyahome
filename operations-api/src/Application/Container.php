@@ -188,6 +188,12 @@ final class Container
         );
     }
 
+    /** AWB readiness of Confirmare orders at stages 12-14 (API 2.77.0): routing, final invoice, lost answers. */
+    public function confirmareAwbReadiness(): \Arasya\Operations\Confirmare\ConfirmareAwbReadiness
+    {
+        return new \Arasya\Operations\Confirmare\ConfirmareAwbReadiness($this->pdo, $this->clock, $this->confirmareInvoice(), $this->confirmareOperations(), $this->employees);
+    }
+
     /** The Confirmare operating cycle (API 2.46.0): calls, the proforma timer, bank checks; also bin/confirmare-cycles.php. */
     public function confirmareCycles(): \Arasya\Operations\Confirmare\ConfirmareCycles
     {

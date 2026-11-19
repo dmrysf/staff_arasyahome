@@ -569,6 +569,60 @@ $pendingOf = static fn (string $s): int => (int) $one("SELECT COUNT(*) FROM orde
 $check($rootHealth['sources']['trendhome']['confirmare']['pending'] === $pendingOf('trendhome') && $rootHealth['sources']['outletperdele']['confirmare']['pending'] === $pendingOf('outletperdele') && $pendingOf('outletperdele') !== $pendingOf('trendhome'),
     'each shop counts only its own orders: ' . json_encode([$pendingOf('trendhome'), $pendingOf('outletperdele')]));
 
+// ---- 9. API 2.77.0 AWB readiness (owner 2026-11-19): stages 12-14 routed and invoiced by the system -------------------------
+$readiness = $container->confirmareAwbReadiness();
+// TEST ONLY: the money proven, the ticket active and the stage set directly (the shop's events and production are tested elsewhere).
+$ready = static function (string $gid, string $stage, bool $completed) use ($pdo): void {
+    $pdo->prepare("UPDATE operational_orders SET source_financial_state = 'cleared', source_financial_basis = 'advance_collected', document_status = 'active', production_stage_id = ?,
+        production_changed_at = UTC_TIMESTAMP(6), production_completed_at = IF(?, UTC_TIMESTAMP(6), NULL) WHERE global_order_id = ?")->execute([$stage, $completed ? 1 : 0, $gid]);
+};
+$reportOf = static fn (array $reports, int $n): ?array => array_values(array_filter($reports, static fn (array $r): bool => $r['orderNumber'] === $id($n)))[0] ?? null;
+foreach ([5, 6, 7, 8] as $n) {
+    $approve($who['cop'], $g($n));
+    $th->orders[$id($n)]['invoice']['cleared'] = true;
+}
+$ready($g(5), 'delivery', true);         // stage 14 completed, never routed, no invoice
+$ready($g(6), 'quality-control', false); // stage 12, never routed, invoice already issued in SmartBill directly
+$ready($g(7), 'sewing-finishing', false); // stage 11: not ready for the courier
+$ready($g(8), 'packing', false);         // stage 13, but the cancellation hold stops everything
+$pdo->prepare("UPDATE operational_orders SET cancellation_state = 'held', production_stopped_at = UTC_TIMESTAMP(6) WHERE global_order_id = ?")->execute([$g(8)]);
+$th->orders[$id(6)]['invoice']['document'] = ['series' => 'TST', 'number' => '9006', 'at' => time(), 'by' => null];
+$pdo->exec("UPDATE order_shop_assignments SET state = 'released', released_at = UTC_TIMESTAMP(6), released_by_employee_uuid = assigned_by_employee_uuid, release_reason = 'reassigned' WHERE state = 'active' AND global_order_id <> '{$g(2)}'");
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$documentsBefore = $th->smartbillDocuments[$id(5)] ?? 0;
+$dry = $readiness->run(false, 'trendhome');
+$check(($reportOf($dry, 5)['state'] ?? null) === 'would_prepare' && $reportOf($dry, 5)['steps'] === ['route'] && ($reportOf($dry, 6)['steps'] ?? null) === ['route'], 'dry run: both waiting orders would be routed: ' . json_encode($dry));
+$check($reportOf($dry, 7) === null && $reportOf($dry, 8) === null && $reportOf($dry, 2) === null, 'stage 11, a held order and an order with its AWB are not candidates');
+$check((int) $one("SELECT COUNT(*) FROM order_shop_assignments WHERE state = 'active' AND global_order_id IN (?, ?)", [$g(5), $g(6)]) === 0 && ($th->smartbillDocuments[$id(5)] ?? 0) === $documentsBefore, 'the dry run writes nothing');
+$applied = $readiness->run(true, 'trendhome');
+$r5 = $reportOf($applied, 5);
+$r6 = $reportOf($applied, 6);
+$check(($r5['state'] ?? null) === 'ready' && $r5['steps'] === ['routed', 'invoice_issued'] && $r5['completed'] === true, 'stage 14 completed: routed and invoiced, ready for the AWB: ' . json_encode($r5));
+$check(($r6['state'] ?? null) === 'ready' && $r6['steps'] === ['routed'], 'stage 12 with an invoice made in SmartBill: routed only, never a second invoice: ' . json_encode($r6));
+$assignedTo = static fn (int $n): ?string => ($v = $one("SELECT employee_uuid FROM order_shop_assignments WHERE global_order_id = ? AND state = 'active'", [$g($n)])) === false ? null : (string) $v;
+$check($assignedTo(5) === $uuids['cdoc2'] && in_array($assignedTo(6), [$uuids['cdoc'], $uuids['cdoc2']], true),
+    'each order goes to an eligible shop employee, the one with fewer active orders first (cdoc already has order 2)');
+$check($all("SELECT assigned_role, assigned_by_employee_uuid, idempotency_key FROM order_shop_assignments WHERE global_order_id = ? AND state = 'active'", [$g(5)]) === [['assigned_role' => 'operator', 'assigned_by_employee_uuid' => $uuids['cop'], 'idempotency_key' => 'auto-awb-ready-' . $orderUuid($g(5))]],
+    'the routing is recorded for the operator who decided the order, with the system key');
+$check(($th->smartbillDocuments[$id(5)] ?? 0) === $documentsBefore + 1 && ($th->smartbillDocuments[$id(6)] ?? 0) === 0
+    && (string) $one("SELECT employee_uuid FROM order_invoice_actions WHERE global_order_id = ? AND action = 'issue' AND state = 'applied' AND result = 'issued'", [$g(5)]) === $assignedTo(5),
+    'one final invoice, issued in the name of the routed employee');
+$queued = array_column($ok($get($who['cmgr'], '/confirmare/awb-queue'), 'manager queue after readiness')['items'], 'globalOrderId');
+$check(in_array($g(5), $queued, true) && in_array($g(6), $queued, true), 'both orders are in the AWB queue');
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$s5 = $state($who[array_search($assignedTo(5), $uuids, true)], $g(5));
+$check($s5['allowed']['awb'] === true && !in_array('invoice_missing', $s5['shop']['awb']['blockers'] ?? [], true), 'the routed employee may make the AWB of the completed order now: ' . json_encode($s5['shop']['awb'] ?? null));
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$again = $readiness->run(true, 'trendhome');
+$check(($reportOf($again, 5)['steps'] ?? null) === [] && ($reportOf($again, 5)['state'] ?? null) === 'ready' && ($th->smartbillDocuments[$id(5)] ?? 0) === $documentsBefore + 1, 'running again changes nothing (idempotent)');
+$check(($reportOf($readiness->run(true, 'trendhome', 300, true), 5)['state'] ?? null) === 'unchanged', 'the cycle worker does not read an order again within the hour');
+$check($reportOf($readiness->run(true, 'outletperdele'), 5) === null, 'another shop\'s run never touches Trend Home');
+$pdo->prepare("UPDATE operational_orders SET cancellation_state = NULL, production_stopped_at = NULL WHERE global_order_id = ?")->execute([$g(8)]);
+$pdo->prepare("UPDATE operational_orders SET source_financial_state = 'waiting', source_financial_basis = NULL WHERE global_order_id = ?")->execute([$g(8)]);
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$r8 = $reportOf($readiness->run(true, 'trendhome'), 8);
+$check(($r8['state'] ?? null) === 'blocked' && $r8['blockers'] === ['advance_not_verified'] && $assignedTo(8) === null, 'money not proven: never routed, the reason is reported: ' . json_encode($r8));
+
 // ---- Cleanup (later suites share the database in CI) ------------------------------------------------------------------------
 $clear();
 fwrite(STDOUT, "MySQL Confirmare operations relay integration: {$checks} checks passed.\n");
