@@ -159,6 +159,22 @@ try {
     $report('WARN', 'order_resolver_permission');
 }
 
+// B2B sold meters (057, API 2.76.0): both tables (WARN until the migration ran) and the freshness of the automatic meter
+// ledger run once it is scheduled (WARN when its watermark is older than 30 minutes). Counts only, nothing is written.
+try {
+    $b2bMeterTables = (int) $pdo->query("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN ('b2b_meter_test_cohort', 'b2b_sold_meter_ledger')")->fetchColumn();
+    $report($b2bMeterTables === 2 ? 'OK' : 'WARN', 'b2b_sold_meter_schema');
+    $watermark = $pdo->query("SELECT watermark_at FROM production_meter_ledger_cursor WHERE cursor_key = 'sold_meters'")->fetchColumn();
+    if ($watermark === false) {
+        $report('OK', 'meter_ledger_automatic_not_scheduled');
+    } else {
+        $age = time() - (new DateTimeImmutable((string) $watermark, new DateTimeZone('UTC')))->getTimestamp();
+        $report($age <= 1800 ? 'OK' : 'WARN', 'meter_ledger_automatic_fresh');
+    }
+} catch (Throwable) {
+    $report('WARN', 'b2b_sold_meter_schema');
+}
+
 // Cancellation synchronization (034, API 2.36.0): schema, permission, every provider flag present, the server switch, and
 // the operations needing a person. Nothing is sent or changed here.
 try {

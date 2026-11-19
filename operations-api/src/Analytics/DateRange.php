@@ -7,7 +7,8 @@ use InvalidArgumentException;
 final readonly class DateRange
 {
     private function __construct(public DateTimeImmutable $fromUtc, public DateTimeImmutable $toUtc) {}
-    public static function from(array $query, DateTimeImmutable $now): self
+    /** `$maxDays`: Analytics keeps 366; Production Intelligence (API 2.76.0) allows multi-year history ranges. */
+    public static function from(array $query, DateTimeImmutable $now, int $maxDays = 366): self
     {
         $zone=new DateTimeZone('Europe/Bucharest'); $today=$now->setTimezone($zone)->setTime(0,0);
         if (isset($query['from']) || isset($query['to'])) {
@@ -28,7 +29,14 @@ final readonly class DateRange
                 default=>throw new InvalidArgumentException('Invalid date period')
             };
         }
-        if ($to <= $from || $from->diff($to)->days>366) throw new InvalidArgumentException('Date range must be between 1 and 366 days');
+        if ($to <= $from || $from->diff($to)->days>$maxDays) throw new InvalidArgumentException('Date range must be between 1 and '.$maxDays.' days');
+        $utc=new DateTimeZone('UTC'); return new self($from->setTimezone($utc),$to->setTimezone($utc));
+    }
+    /** From a Bucharest day to the end of today (inclusive), any length: the "all time" range of Production Intelligence. */
+    public static function since(DateTimeImmutable $fromDay, DateTimeImmutable $now): self
+    {
+        $zone=new DateTimeZone('Europe/Bucharest'); $from=$fromDay->setTimezone($zone)->setTime(0,0); $to=$now->setTimezone($zone)->setTime(0,0)->modify('+1 day');
+        if ($to <= $from) throw new InvalidArgumentException('Invalid date range');
         $utc=new DateTimeZone('UTC'); return new self($from->setTimezone($utc),$to->setTimezone($utc));
     }
     public function metadata(): array { return ['fromUtc'=>$this->fromUtc->format('Y-m-d H:i:s'),'toUtcExclusive'=>$this->toUtc->format('Y-m-d H:i:s'),'timezone'=>'Europe/Bucharest']; }

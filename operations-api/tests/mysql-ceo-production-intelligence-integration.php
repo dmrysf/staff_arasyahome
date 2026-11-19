@@ -256,7 +256,9 @@ $check($over['received']['units'] === 2 + 2 + 1 + 7, 'D2 received units');
 $check($over['worked']['orders'] === 4 && $over['worked']['byArea']['production'] === 4 && $over['worked']['byArea']['trendyol'] === 1, 'D3 orders with a real employee action on the 21st: ' . json_encode($over['worked']));
 $check($over['completed']['orders'] === 4 && $over['completed']['fabricMeters'] === '12.000' && $over['completed']['bySource']['trendyol']['panelWidthMeters'] === '2.800'
     && $over['completed']['bySource']['trendhome']['fabricMeters'] === '5.000' && $over['completed']['bySource']['outletperdele']['fabricMeters'] === '7.000', 'D4 completed meters per channel, panel apart');
-if ((int) $pdo->query('SELECT COUNT(*) FROM production_meter_ledger')->fetchColumn() === 0) {
+// API 2.76.0: the ledger is empty only when neither the shop ledger nor the B2B ledger holds an entry and no automatic run exists.
+if ((int) $pdo->query('SELECT COUNT(*) FROM production_meter_ledger')->fetchColumn() === 0 && (int) $pdo->query('SELECT COUNT(*) FROM b2b_sold_meter_ledger')->fetchColumn() === 0
+    && (int) $pdo->query('SELECT COUNT(*) FROM production_meter_ledger_cursor')->fetchColumn() === 0) {
     $check($over['ledger'] === ['state' => 'empty', 'available' => false, 'syncedThrough' => null, 'ordered' => null, 'verifiedSale' => null], 'D5 empty ledger: unavailable, never zero');
 } else {
     $check($over['ledger']['available'] === true && $over['ledger']['ordered']['fabricMeters'] === '0.000', 'D5 a ledger with entries (shared database) is available; nothing booked in this range yet');
@@ -320,7 +322,7 @@ $error($get($ceo, 'summary', $range + ['category' => 'Draperii']), 400, 'INVALID
 $error($get($ceo, 'overview', $range + ['bucket' => 'day']), 400, 'INVALID_REQUEST', 'E13 no bucket on overview');
 $error($get($ceo, 'completions', $range + ['bucket' => 'year']), 400, 'INVALID_REQUEST', 'E14 completions buckets day/week/month');
 $error($get($ceo, 'skus', $range + ['code' => str_repeat('x', 121)]), 400, 'INVALID_REQUEST', 'E15 long filter');
-$error($get($ceo, 'completions', ['from' => '2026-10-01', 'to' => '2026-10-02']), 400, 'BEFORE_ANALYSIS_START', 'E16 analysis start');
+$error($get($ceo, 'completions', ['from' => '2023-12-30', 'to' => '2024-01-02']), 400, 'BEFORE_ANALYSIS_START', 'E16 no range before the history floor (API 2.76.0)');
 
 // ---- F. security -------------------------------------------------------------------------------------------
 foreach (['overview', 'completions', 'skus'] as $section) {

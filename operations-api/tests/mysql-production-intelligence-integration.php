@@ -249,8 +249,11 @@ $error(T::call($kernel, 'POST', '/management/production-intelligence/summary', [
 $error($get($root, '/management/production-intelligence/summary', $range + ['employeeId' => $cutter['employeeUuid']]), 400, 'INVALID_REQUEST', 'D8 unknown query parameter');
 $error($get($cutter, '/production-intelligence/mine', $range + ['employeeId' => $labeler['employeeUuid']]), 400, 'INVALID_REQUEST', 'D9 an employee cannot ask for another employee');
 $error($get($root, '/management/production-intelligence/summary', $range + ['source' => "trendhome' OR '1'='1"]), 400, 'INVALID_REQUEST', 'D10 source is an allow-list');
-$error($get($root, '/management/production-intelligence/summary', ['from' => '2026-10-01', 'to' => '2026-10-10']), 400, 'BEFORE_ANALYSIS_START', 'D11 main analysis starts 2026-10-04 (K3)');
-$error($get($root, '/management/production-intelligence/summary', ['from' => '2026-10-04', 'to' => '2027-12-01']), 400, 'INVALID_DATE_RANGE', 'D12 bounded range');
+// API 2.76.0: sold meters reach back to the oldest verifiable shop order; ranges may start on the history floor (2024-01-01),
+// production figures before 2026-10-04 (K3) are simply absent. A range before the floor is refused.
+$error($get($root, '/management/production-intelligence/summary', ['from' => '2023-12-01', 'to' => '2024-01-10']), 400, 'BEFORE_ANALYSIS_START', 'D11 no range before the history floor 2024-01-01');
+$check($get($root, '/management/production-intelligence/summary', ['from' => '2026-10-01', 'to' => '2026-10-10'])['status'] === 200, 'D11b a range before the production start (K3) is accepted since API 2.76.0');
+$error($get($root, '/management/production-intelligence/summary', ['from' => '2026-10-04', 'to' => '2038-01-01']), 400, 'INVALID_DATE_RANGE', 'D12 bounded range (at most 4000 days since API 2.76.0)');
 $error($get($root, '/management/production-intelligence/series', $range + ['bucket' => 'hour']), 400, 'INVALID_REQUEST', 'D13 bucket allow-list');
 $error($get($root, '/management/production-intelligence/orders', $range), 404, 'NOT_FOUND', 'D14 unknown section');
 $audits = (int) $pdo->query("SELECT COUNT(*) FROM iam_audit_events WHERE action = 'production_intelligence.read' AND actor_employee_uuid IN (" . $pdo->quote($ceo['employeeUuid']) . ')')->fetchColumn();
