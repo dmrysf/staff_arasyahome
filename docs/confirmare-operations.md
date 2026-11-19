@@ -262,3 +262,33 @@ There is no customer data and no free text in the events or in the stored idempo
 - Cleanup of old `order_confirmation_idempotency` rows (small, one row per command).
 - Sending the alerts by notification. They are listed for supervisors (`GET /confirmare/alerts`) and counted by the
   distribution run.
+
+## AWB readiness (API 2.77.0, owner request 2026-11-19)
+
+Problem: orders of Trend Home and Outlet Perdele reached stage 12-14, or completed stage 14, without an AWB. The AWB
+needs the order to be routed to a shop employee and needs the final invoice. Nobody had routed these orders. When stage
+14 was completed, the handoff state became `closed`, so the system refused both the routing and the final invoice
+(`handoff_not_ready`).
+
+Changes:
+
+- `ConfirmareInvoice::issuableHandoff`: an order whose production is completed at an AWB stage (12-14) and that is
+  still active counts as issuable. Routing and the final invoice are allowed for it.
+- `ConfirmareAwbReadiness` (`bin/confirmare-awb-readiness.php`, and the Confirmare cycle worker every 5 minutes). It
+  handles every approved Confirmare order at stage 12-14 that has no applied `awb_create`. The order must not be
+  cancelled, held or unavailable.
+  1. Not routed: the system routes the order (`autoRoute`). The routing rules are the same as for an operator. The
+     system chooses the eligible shop employee with the fewest active orders. The row is recorded for the operator who
+     decided the order (`assigned_role` = `operator`), with the key `auto-awb-ready-<order_uuid>`.
+  2. The shop has no final invoice: the system issues it through the normal invoice action, in the name of the routed
+     employee (key `auto-awb-issue-<order_uuid>`). An invoice issued directly in SmartBill counts, and the system never
+     issues a second one.
+  3. An invoice action or an AWB request has a lost answer (pending or unknown for more than 240 s): the system settles
+     it with the shop's stored answer.
+- The system never makes the AWB itself. The parcel count, the weight and the collection stay with the employee.
+- A SmartBill outcome that the shop itself does not know (`operation_unknown`) is never retried. A manager checks it in
+  SmartBill.
+- Reads use the request id prefix `system-awb-readiness`. The cycle worker reads an order again only after one hour.
+
+Run by hand: `php bin/confirmare-awb-readiness.php [--apply] [--source=trendhome|outletperdele]`. Without `--apply`
+it is a dry run: it writes only the shop read audit. The command prints order numbers and codes only.
