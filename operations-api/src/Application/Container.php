@@ -512,8 +512,8 @@ final class Container
                 new \Arasya\Operations\Integration\Trendyol\FixtureTrendyolTransport($this->config->trendyolFixtureFile),
                 new \Arasya\Operations\Integration\Trendyol\FixtureTrendyolLabelDocumentFetcher($this->config->trendyolFixtureFile), $this->config->trendyolStoreFrontCode ?? 'RO');
         } elseif ($this->config->trendyol !== null) {
-            $labels = new \Arasya\Operations\Integration\Trendyol\TrendyolLabelClient($this->config->trendyol, new StreamTrendyolTransport(),
-                new \Arasya\Operations\Integration\Trendyol\StreamTrendyolLabelDocumentFetcher(), $this->config->trendyolStoreFrontCode);
+            $labels = new \Arasya\Operations\Integration\Trendyol\TrendyolLabelClient($this->config->trendyol, new StreamTrendyolTransport(20, \Arasya\Operations\Integration\Trendyol\TrendyolHostResolver::live()),
+                new \Arasya\Operations\Integration\Trendyol\StreamTrendyolLabelDocumentFetcher(15, \Arasya\Operations\Integration\Trendyol\TrendyolHostResolver::live()), $this->config->trendyolStoreFrontCode);
         }
         return new \Arasya\Operations\Trendyol\AwbStation($this->pdo, $authorization ?? new AuthorizationService(), $this->clock, $this->trendyolClient(), $labels);
     }
@@ -625,7 +625,7 @@ final class Container
                 new \Arasya\Operations\Integration\Trendyol\FixtureTrendyolTransport($this->config->trendyolFixtureFile),
             );
         }
-        return $this->config->trendyol === null ? null : new TrendyolClient($this->config->trendyol, new StreamTrendyolTransport());
+        return $this->config->trendyol === null ? null : new TrendyolClient($this->config->trendyol, new StreamTrendyolTransport(20, \Arasya\Operations\Integration\Trendyol\TrendyolHostResolver::live()));
     }
 
     /**
@@ -642,7 +642,7 @@ final class Container
             $trendyol = new \Arasya\Operations\Cancellation\Sync\TrendyolCancellationProvider(new TrendyolClient($credentials, $transport),
                 new \Arasya\Operations\Integration\Trendyol\TrendyolCancellationApi($credentials, $transport, $this->config->trendyolStoreFrontCode ?? 'RO'));
         } elseif ($this->config->trendyol !== null && $this->config->trendyolStoreFrontCode !== null) {
-            $transport = new StreamTrendyolTransport();
+            $transport = new StreamTrendyolTransport(20, \Arasya\Operations\Integration\Trendyol\TrendyolHostResolver::live());
             $trendyol = new \Arasya\Operations\Cancellation\Sync\TrendyolCancellationProvider(new TrendyolClient($this->config->trendyol, $transport),
                 new \Arasya\Operations\Integration\Trendyol\TrendyolCancellationApi($this->config->trendyol, $transport, $this->config->trendyolStoreFrontCode));
         }
