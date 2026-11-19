@@ -83,6 +83,8 @@ final readonly class ProductionCommands
                         ->execute([json_encode($identity,JSON_THROW_ON_ERROR|JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES),$operational]);
                     $this->pdo->prepare('INSERT INTO b2b_production_handoffs(b2b_order_uuid,operational_order_uuid,submitted_by_employee_uuid,submitted_by_name,submitted_at,request_id,idempotency_key,order_type,finance_decision)
                         VALUES(?,?,?,?,?,?,?,?,?)')->execute([$id,$operational,$actor->employeeUuid,$actor->displayName,$sql,mb_substr($request,0,100),$key,$orderType,OrderStore::json($release)]);
+                    // A B2B test-cohort order (migration 057) handed off later: its canonical order stays out of every production metric.
+                    if(\Arasya\Operations\Intelligence\B2bSoldMeters::available($this->pdo)) \Arasya\Operations\Intelligence\B2bSoldMeters::excludeCohortCanonicals($this->pdo,$sql,false);
                     $this->pdo->prepare("INSERT INTO order_activity_events(event_id,employee_uuid,order_uuid,global_order_id,source_key,order_number_snapshot,action,
                         workflow_key,workflow_version,from_stage_id,from_stage_label_snapshot,production_version_before,production_version_after,request_id,idempotency_key,occurred_at)
                         VALUES(?,?,?,?,?,?,'production_submitted',?,?,?,?,0,1,?,?,?)")->execute([

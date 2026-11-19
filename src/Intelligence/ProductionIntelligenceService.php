@@ -43,8 +43,15 @@ use Throwable;
  */
 final readonly class ProductionIntelligenceService
 {
-    /** K3: the main analysis starts on 2026-10-04 (Europe/Bucharest), the first Arasya production event. */
+    /** K3: Arasya production data starts on 2026-10-04 (Europe/Bucharest), the first Arasya production event. */
     public const ANALYSIS_START = '2026-10-04';
+    /**
+     * API 2.76.0 (owner decision 2026-11-19): sold meters reach back to the oldest verifiable shop order (Trendhome
+     * 2024-05, Outlet Perdele 2025-01, from the shops' own exports). A range may start on this floor and span many years;
+     * production figures before ANALYSIS_START are simply absent, never zero.
+     */
+    public const HISTORY_FLOOR = '2024-01-01';
+    public const MAX_RANGE_DAYS = 4000;
     public const SOURCES = ['trendhome', 'outletperdele', 'trendyol', 'b2b'];
     private const MAX_ROWS = 500;
 
@@ -78,6 +85,9 @@ final readonly class ProductionIntelligenceService
             if ($section === 'skus') {
                 return $ceo->skus($range, $source, $skuFilters);
             }
+            if ($section === 'coverage') {
+                return (new MeterCoverage($this->pdo, $now))->report();
+            }
             $outside = ShopSourcedSales::report(ShopSourcedSales::lines($this->pdo, $range->fromUtc->format('Y-m-d H:i:s'), $range->toUtc->format('Y-m-d H:i:s'), $source));
             $sold = [...$this->sold($range, $source), ...$outside['entries']];
             $events = $this->events($range, $source, null);
@@ -93,7 +103,8 @@ final readonly class ProductionIntelligenceService
             ['from' => $query['from'] ?? null, 'to' => $query['to'] ?? null, 'period' => $query['period'] ?? null, 'source' => $source,
                 'bucket' => in_array($section, ['series', 'completions'], true) ? $bucket : null] + ($section === 'skus' ? ['filters' => $skuFilters] : []),
             $requestId, $this->clock->now()->format('Y-m-d H:i:s.u'));
-        return ['range' => $range->metadata() + ['analysisStart' => self::ANALYSIS_START], 'source' => $source, 'contractVersion' => MeterContract::VERSION] + $body;
+        return ['range' => $range->metadata() + ['analysisStart' => self::ANALYSIS_START, 'historyFloor' => self::HISTORY_FLOOR, 'period' => $query['period'] ?? null],
+            'source' => $source, 'contractVersion' => MeterContract::VERSION] + $body;
     }
 
     /** The signed-in employee's own stage work. The employee comes from the session only, never from the request. */
@@ -118,13 +129,16 @@ final readonly class ProductionIntelligenceService
     private function filters(array $query): array
     {
         try {
-            $range = DateRange::from($query, $this->clock->now());
+            // `period=all`: from the oldest day any source holds data (never before the floor) to today, any length.
+            $range = ($query['period'] ?? null) === 'all' && !isset($query['from']) && !isset($query['to'])
+                ? DateRange::since($this->historyStart(), $this->clock->now())
+                : DateRange::from($query, $this->clock->now(), self::MAX_RANGE_DAYS);
         } catch (InvalidArgumentException) {
             throw new ApiException(400, 'INVALID_DATE_RANGE', 'Invalid date range.');
         }
-        $start = (new DateTimeImmutable(self::ANALYSIS_START, new DateTimeZone('Europe/Bucharest')))->setTimezone(new DateTimeZone('UTC'));
+        $start = (new DateTimeImmutable(self::HISTORY_FLOOR, new DateTimeZone('Europe/Bucharest')))->setTimezone(new DateTimeZone('UTC'));
         if ($range->fromUtc < $start) {
-            throw new ApiException(400, 'BEFORE_ANALYSIS_START', 'The analysis starts on ' . self::ANALYSIS_START . '.');
+            throw new ApiException(400, 'BEFORE_ANALYSIS_START', 'The data starts on ' . self::HISTORY_FLOOR . '.');
         }
         $source = $query['source'] ?? null;
         if ($source !== null && !in_array($source, self::SOURCES, true)) {
@@ -187,20 +201,25 @@ final readonly class ProductionIntelligenceService
         }
     }
 
-    /** @return list<array<string, mixed>> sold ledger entries in the range (excluded orders carry no entry after their exclusion entry) */
+    /** The first Bucharest day any source holds an order (shop history, Arasya, B2B), never before the floor. */
+    private function historyStart(): DateTimeImmutable
+    {
+        $zone = new DateTimeZone('Europe/Bucharest');
+        $at = $this->pdo->query('SELECT LEAST(COALESCE((SELECT MIN(ordered_at) FROM shop_sourced_meter_lines), \'9999-12-31\'),
+            COALESCE((SELECT MIN(COALESCE(source_submitted_at, created_at)) FROM operational_orders), \'9999-12-31\'),
+            COALESCE((SELECT MIN(created_at) FROM b2b_orders), \'9999-12-31\'))')->fetchColumn();
+        $floor = new DateTimeImmutable(self::HISTORY_FLOOR, $zone);
+        if ($at === false || str_starts_with((string) $at, '9999')) {
+            return $floor;
+        }
+        $day = (new DateTimeImmutable((string) $at, new DateTimeZone('UTC')))->setTimezone($zone)->setTime(0, 0);
+        return $day < $floor ? $floor : $day;
+    }
+
+    /** @return list<array<string, mixed>> sold ledger entries in the range: canonical ledger and B2B commercial ledger (API 2.76.0) */
     private function sold(DateRange $range, ?string $source): array
     {
-        $sql = 'SELECT l.metric, l.source_key, l.product_code_snapshot, l.variant_snapshot, l.delta_meters, l.reason, l.occurred_at, l.order_uuid, l.item_uuid, ' . PaymentEvidence::COLUMNS . '
-            FROM production_meter_ledger l LEFT JOIN operational_orders o ON o.order_uuid = l.order_uuid WHERE l.occurred_at >= ? AND l.occurred_at < ?';
-        $params = [$range->fromUtc->format('Y-m-d H:i:s'), $range->toUtc->format('Y-m-d H:i:s')];
-        if ($source !== null) {
-            $sql .= ' AND l.source_key = ?';
-            $params[] = $source;
-        }
-        $s = $this->pdo->prepare($sql . ' ORDER BY l.occurred_at, l.entry_uuid');
-        $s->execute($params);
-        return array_map(static fn (array $row): array => $row + ['origin' => 'arasya', 'order_key' => $row['order_uuid'], 'payment' => PaymentEvidence::classify($row)],
-            $s->fetchAll(PDO::FETCH_ASSOC));
+        return SalesMeters::arasyaEntries($this->pdo, $range->fromUtc->format('Y-m-d H:i:s'), $range->toUtc->format('Y-m-d H:i:s'), $source);
     }
 
     /**
