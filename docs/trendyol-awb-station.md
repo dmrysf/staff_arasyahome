@@ -245,7 +245,7 @@ The package list answered 200. Every label query answered 401, with and without 
 
 At 13:48 the label query and a control GET of the seller addresses still answered 401 with the same headers that gave 200 on Order V2. After the owner updated the API permissions, the label query for one `FANEX/RO` package answered 200 and the PDF was obtained as shown in section 2 (A6, valid PDF 1.4, through one 302 to `s3.trendyol.com`). These calls used a temporary script that was not committed.
 
-## 12. DNS fallback for the Trendyol hosts (API 2.76.1, incident 2026-11-19)
+## 12. DNS fallback for the Trendyol hosts (API 2.76.1, API 2.76.2, incident 2026-11-19)
 
 **Symptom.** Labels failed with `503 AWB_TRENDYOL_UNAVAILABLE` (reason `unavailable` or `download_failed` in
 `trendyol_awb_print_events`), and the intake cron logged `TRENDYOL_REQUEST_FAILED`. Failure windows (UTC): 2026-11-17
@@ -258,13 +258,19 @@ Cloudflare name servers answered correctly. PHP then failed before any connectio
 `getaddrinfo for apigw.trendyol.com failed`. When a cached answer still existed, a request passed, so the failure came and
 went.
 
-**Change.** `TrendyolHostResolver` changes nothing while the system resolver answers. If the system resolver cannot
-resolve `apigw.trendyol.com`, `s3.trendyol.com` or `cdn.dsmcdn.com`, it asks DNS over HTTPS (Cloudflare `1.1.1.1`, then
-Google `8.8.8.8`, by IP address, TLS verified against `cloudflare-dns.com` / `dns.google`) for the public IPv4 address.
-`StreamTrendyolTransport` and `StreamTrendyolLabelDocumentFetcher` then connect to that address and send the original
-host as `Host`. They verify Trendyol's certificate against the original host name (`ssl.peer_name`), so a wrong address
-fails the TLS check. Only the host name reaches the DNS service: no path, query or credential. No other host, path or
-method is added; `tests/inbound-only-guard.php` reviews this as its fourth exception.
+**Change.** `StreamTrendyolTransport` and `StreamTrendyolLabelDocumentFetcher` first connect normally. Only when that
+attempt fails because the host name could not be resolved do they ask `TrendyolHostResolver::fallback()`. Nothing was sent
+in that case, so one more attempt cannot repeat a request. The fallback works only for `apigw.trendyol.com`,
+`s3.trendyol.com` and `cdn.dsmcdn.com`. It asks DNS over HTTPS (Cloudflare `1.1.1.1`, then Google `8.8.8.8`, by IP
+address, TLS verified against `cloudflare-dns.com` / `dns.google`) for the public IPv4 address. The transport connects to
+that address once more and sends the original host as `Host`. It verifies Trendyol's certificate against the original
+host name (`ssl.peer_name`), so a wrong address fails the TLS check. The address is reused for the rest of the process.
+Only the host name reaches the DNS service: no path, query or credential. No other host, path or method is added;
+`tests/inbound-only-guard.php` reviews this as its fourth exception.
+
+API 2.76.1 checked the system resolver before the request instead. That was not enough: the provider's resolvers are used
+in rotation (`options rotate`) and answer differently from one query to the next, so the check passed and the request
+then failed (`route=system kind=dns` in the log). API 2.76.2 decides on the failure of the request itself.
 
 **Logs.** A failed request now logs `TRENDYOL_REQUEST_FAILED host=… route=system|fallback kind=dns|timeout|tls|connect|other`
 or `TRENDYOL_LABEL_DOWNLOAD_FAILED …` (PHP `error_log`, the intake log for the cron). Each use of the fallback logs

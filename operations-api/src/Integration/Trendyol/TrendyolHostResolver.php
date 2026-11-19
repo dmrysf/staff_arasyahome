@@ -14,12 +14,17 @@ use Closure;
  * Trendyol itself answered normally. PHP then failed with "getaddrinfo ... failed", and the AWB station and the intake
  * stopped.
  *
- * route() changes nothing while the system resolver answers. Only when the system resolver cannot resolve one of HOSTS
- * does it ask a DNS-over-HTTPS service (DOH_ENDPOINTS, by IP address, TLS verified against the service's own name) for
- * the host's public IPv4 address. The caller then connects to that address and still verifies Trendyol's certificate
- * against the original host name (ssl peer_name and the Host header). A wrong or hijacked address therefore fails the
- * TLS check; it can never receive a request. No other host is ever resolved this way, nothing is written, and no
- * credential, path or query ever reaches a DNS service: only the host name.
+ * The Trendyol stream transports first connect normally. Only when that attempt fails because the host name could not
+ * be resolved (the request never left the server, so trying again cannot repeat it) do they ask fallback() for one of
+ * HOSTS. fallback() asks a DNS-over-HTTPS service (DOH_ENDPOINTS, by IP address, TLS verified against the service's own
+ * name) for the host's public IPv4 address. The transport then connects to that address once more and still verifies
+ * Trendyol's certificate against the original host name (ssl peer_name and the Host header). A wrong or hijacked address
+ * therefore fails the TLS check; it can never receive a request. Once found, the address is reused for the rest of the
+ * process (cached()), so a long intake run does not fail on every request first. No other host is ever resolved this
+ * way, nothing is written, and no credential, path or query ever reaches a DNS service: only the host name.
+ *
+ * A check of the system resolver before the request is not enough (API 2.76.1): the provider's two resolvers are used in
+ * rotation and answer differently from one query to the next, so the check could pass and the request still fail.
  */
 final class TrendyolHostResolver
 {
@@ -32,38 +37,43 @@ final class TrendyolHostResolver
     /** @var array<string, string> host => IPv4 address found through the fallback in this process */
     private array $resolved = [];
 
-    /**
-     * @param Closure(string): bool $systemResolves whether the system resolver answers for the host
-     * @param Closure(string): list<string> $lookup public IPv4 addresses of the host through DNS-over-HTTPS
-     */
-    public function __construct(private readonly Closure $systemResolves, private readonly Closure $lookup)
+    /** @param Closure(string): list<string> $lookup public IPv4 addresses of the host through DNS-over-HTTPS */
+    public function __construct(private readonly Closure $lookup)
     {
     }
 
-    /** The production resolver: the system resolver first, then DOH_ENDPOINTS. */
+    /** The production resolver: DOH_ENDPOINTS. */
     public static function live(): self
     {
-        return new self(static fn (string $host): bool => gethostbynamel($host) !== false, self::dohLookup(...));
+        return new self(self::dohLookup(...));
     }
 
     /**
-     * How to reach $url: null to connect normally (the system resolver answers, or the host is not one of HOSTS, or the
-     * fallback found nothing), otherwise the same URL with the host replaced by an IPv4 address and the original host,
-     * which the caller must send as the Host header and verify the certificate against.
+     * The route for $url when the fallback already found its host's address in this process, otherwise null (connect
+     * normally).
      *
      * @return array{url: string, host: string}|null
      */
-    public function route(string $url): ?array
+    public function cached(string $url): ?array
     {
-        $parts = parse_url($url);
-        $host = is_array($parts) ? strtolower($parts['host'] ?? '') : '';
-        if (!is_array($parts) || strtolower($parts['scheme'] ?? '') !== 'https' || !in_array($host, self::HOSTS, true)) {
+        $host = self::fallbackHost($url);
+        return $host !== null && isset($this->resolved[$host]) ? self::pin($url, $host, $this->resolved[$host]) : null;
+    }
+
+    /**
+     * After a normal attempt failed to resolve the host: the same URL with the host replaced by a public IPv4 address,
+     * and the original host, which the caller must send as the Host header and verify the certificate against. Null when
+     * the host is not one of HOSTS or no address was found (the request then fails as before).
+     *
+     * @return array{url: string, host: string}|null
+     */
+    public function fallback(string $url): ?array
+    {
+        $host = self::fallbackHost($url);
+        if ($host === null) {
             return null;
         }
         if (!isset($this->resolved[$host])) {
-            if (($this->systemResolves)($host)) {
-                return null;
-            }
             $address = (($this->lookup)($host))[0] ?? null;
             if (!is_string($address) || !self::isPublicIpv4($address)) {
                 error_log("TRENDYOL_DNS_FALLBACK host={$host} result=unresolved");
@@ -72,8 +82,7 @@ final class TrendyolHostResolver
             error_log("TRENDYOL_DNS_FALLBACK host={$host} result=resolved");
             $this->resolved[$host] = $address;
         }
-        $pinned = preg_replace('#^https://[^/?:]+#i', 'https://' . $this->resolved[$host], $url, 1);
-        return is_string($pinned) ? ['url' => $pinned, 'host' => $host] : null;
+        return self::pin($url, $host, $this->resolved[$host]);
     }
 
     /**
@@ -138,12 +147,27 @@ final class TrendyolHostResolver
     {
         $message = strtolower((string) ($lastError['message'] ?? ''));
         return match (true) {
-            str_contains($message, 'getaddrinfo') || str_contains($message, 'name or service not known') => 'dns',
+            str_contains($message, 'getaddrinfo') || str_contains($message, 'name or service not known') || str_contains($message, 'name resolution') => 'dns',
             str_contains($message, 'timed out') => 'timeout',
             str_contains($message, 'ssl') || str_contains($message, 'certificate') || str_contains($message, 'crypto') => 'tls',
             str_contains($message, 'refused') || str_contains($message, 'unreachable') => 'connect',
             default => 'other',
         };
+    }
+
+    /** The host of an HTTPS URL when it is one of HOSTS, otherwise null. */
+    private static function fallbackHost(string $url): ?string
+    {
+        $parts = parse_url($url);
+        $host = is_array($parts) ? strtolower($parts['host'] ?? '') : '';
+        return is_array($parts) && strtolower($parts['scheme'] ?? '') === 'https' && in_array($host, self::HOSTS, true) ? $host : null;
+    }
+
+    /** @return array{url: string, host: string}|null */
+    private static function pin(string $url, string $host, string $address): ?array
+    {
+        $pinned = preg_replace('#^https://[^/?:]+#i', 'https://' . $address, $url, 1);
+        return is_string($pinned) ? ['url' => $pinned, 'host' => $host] : null;
     }
 
     private static function isPublicIpv4(string $address): bool

@@ -1270,40 +1270,58 @@ test('Trendyol AWB label download: apigw label URL, one validated 302 to s3.tren
     }
 });
 
-test('Trendyol DNS fallback: only when the system resolver fails, only the Trendyol hosts, certificate still checked against the host (API 2.76.1)', function (): void {
+/**
+ * Like AwbRecordingHttps, but a host name (not an IP address) cannot be resolved. PHP reports a refused wrapper open as
+ * '"<class>::stream_open" call failed', so the class name carries "Getaddrinfo" for TrendyolHostResolver::failureKind().
+ */
+final class AwbGetaddrinfoFailingHttps
+{
+    /** @var list<array{url: string, options: array}> */
+    public static array $opened = [];
+    public mixed $context;
+    private bool $done = false;
+    public function stream_open(string $path, string $mode, int $options, ?string &$opened): bool
+    {
+        self::$opened[] = ['url' => $path, 'options' => stream_context_get_options($this->context)];
+        return filter_var((string) parse_url($path, PHP_URL_HOST), FILTER_VALIDATE_IP) !== false;
+    }
+    public function stream_read(int $count): string|false { if ($this->done) { return ''; } $this->done = true; return "%PDF-1.4\n%%EOF\n"; }
+    public function stream_eof(): bool { return $this->done; }
+    public function stream_stat(): array|false { return []; }
+    public function stream_set_option(int $option, int $arg1, ?int $arg2): bool { return false; }
+}
+
+test('Trendyol DNS fallback: one more attempt only after a failed name resolution, only the Trendyol hosts, certificate still checked against the host (API 2.76.2)', function (): void {
     $resolverClass = \Arasya\Operations\Integration\Trendyol\TrendyolHostResolver::class;
     $previousLog = ini_set('error_log', PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null');
     try {
-        $calls = ['system' => [], 'lookup' => []];
-        $resolver = static function (bool $systemAnswers, array $addresses) use (&$calls, $resolverClass) {
-            return new $resolverClass(
-                static function (string $host) use (&$calls, $systemAnswers): bool { $calls['system'][] = $host; return $systemAnswers; },
-                static function (string $host) use (&$calls, $addresses): array { $calls['lookup'][] = $host; return $addresses; },
-            );
+        $lookups = [];
+        $resolver = static function (array $addresses) use (&$lookups, $resolverClass) {
+            return new $resolverClass(static function (string $host) use (&$lookups, $addresses): array { $lookups[] = $host; return $addresses; });
         };
         $label = 'https://apigw.trendyol.com/aaaaaaaa/bbbbbbbb/0e1d2c3b-ecbe-4a5f-b9f9-0123456789ab';
         $orders = 'https://apigw.trendyol.com/integration/order/sellers/123456/v2/orders?page=0&size=1';
 
-        // The system resolver answers: nothing changes and no DNS-over-HTTPS request is made.
-        $calls = ['system' => [], 'lookup' => []];
-        expect($resolver(true, ['104.16.150.136'])->route($orders) === null && $calls['system'] === ['apigw.trendyol.com'] && $calls['lookup'] === [], 'no fallback while the system resolver answers');
-        // Any other host, or plain HTTP, never uses the fallback (not even the system check).
-        $calls = ['system' => [], 'lookup' => []];
+        // Before any fallback nothing is cached; other hosts and plain HTTP never use the fallback.
+        $lookups = [];
+        $fresh = $resolver(['104.16.150.136']);
+        expect($fresh->cached($orders) === null, 'nothing cached before a fallback');
         foreach (['https://evil.example/x', 'https://apigw.trendyol.com.evil.example/x', 'http://apigw.trendyol.com/x', 'https://1.1.1.1/dns-query', 'https://trendhome.ro/wp-json/x', 'not a url'] as $url) {
-            expect($resolver(false, ['104.16.150.136'])->route($url) === null, "no fallback for {$url}");
+            expect($fresh->fallback($url) === null && $fresh->cached($url) === null, "no fallback for {$url}");
         }
-        expect($calls === ['system' => [], 'lookup' => []], 'other hosts are never resolved by the fallback');
+        expect($lookups === [], 'other hosts are never looked up');
 
-        // The system resolver fails: the address is used, path and query unchanged, the host kept for Host and TLS.
-        $calls = ['system' => [], 'lookup' => []];
-        $failing = $resolver(false, ['104.16.150.136', '104.16.151.136']);
-        expect($failing->route($orders) === ['url' => 'https://104.16.150.136/integration/order/sellers/123456/v2/orders?page=0&size=1', 'host' => 'apigw.trendyol.com'], 'pinned URL keeps path and query');
-        expect($failing->route('https://APIGW.trendyol.com:443' . substr($label, strlen('https://apigw.trendyol.com'))) === ['url' => 'https://104.16.150.136:443/aaaaaaaa/bbbbbbbb/0e1d2c3b-ecbe-4a5f-b9f9-0123456789ab', 'host' => 'apigw.trendyol.com'], 'port and case');
-        expect($calls['lookup'] === ['apigw.trendyol.com'] && $calls['system'] === ['apigw.trendyol.com'], 'the address is looked up once per process');
-        expect($resolver(false, ['185.87.174.51'])->route('https://s3.trendyol.com/b/label-data.pdf?X-Amz-Signature=ab')['url'] === 'https://185.87.174.51/b/label-data.pdf?X-Amz-Signature=ab', 's3.trendyol.com is a fallback host');
-        // Nothing usable found: the request goes out normally (and fails as before).
+        // The fallback: the address, path and query unchanged, the host kept for Host and TLS; looked up once, then cached.
+        $lookups = [];
+        $failing = $resolver(['104.16.150.136', '104.16.151.136']);
+        expect($failing->fallback($orders) === ['url' => 'https://104.16.150.136/integration/order/sellers/123456/v2/orders?page=0&size=1', 'host' => 'apigw.trendyol.com'], 'pinned URL keeps path and query');
+        expect($failing->cached('https://APIGW.trendyol.com:443' . substr($label, strlen('https://apigw.trendyol.com'))) === ['url' => 'https://104.16.150.136:443/aaaaaaaa/bbbbbbbb/0e1d2c3b-ecbe-4a5f-b9f9-0123456789ab', 'host' => 'apigw.trendyol.com'], 'cached: port and case');
+        expect($failing->fallback($label)['host'] === 'apigw.trendyol.com' && $lookups === ['apigw.trendyol.com'], 'the address is looked up once per process');
+        expect($failing->cached('https://s3.trendyol.com/b.pdf') === null, 'the cache is per host');
+        expect($resolver(['185.87.174.51'])->fallback('https://s3.trendyol.com/b/label-data.pdf?X-Amz-Signature=ab')['url'] === 'https://185.87.174.51/b/label-data.pdf?X-Amz-Signature=ab', 's3.trendyol.com is a fallback host');
         foreach ([[], ['10.0.0.1'], ['127.0.0.1'], ['169.254.169.254'], ['2606:4700::6810:9688'], ['not-an-ip']] as $addresses) {
-            expect($resolver(false, $addresses)->route($orders) === null, 'refused address: ' . json_encode($addresses));
+            $refusing = $resolver($addresses);
+            expect($refusing->fallback($orders) === null && $refusing->cached($orders) === null, 'refused address: ' . json_encode($addresses));
         }
 
         // DNS JSON answers (both services): NOERROR, the asked name, A records, public IPv4 only.
@@ -1321,29 +1339,39 @@ test('Trendyol DNS fallback: only when the system resolver fails, only the Trend
         // The failure kind for the log never carries the URL.
         $kind = $resolverClass::failureKind(...);
         expect($kind(['message' => 'file_get_contents(https://apigw.trendyol.com/x): Failed to open stream: php_network_getaddresses: getaddrinfo for apigw.trendyol.com failed: Name or service not known']) === 'dns');
+        expect($kind(['message' => 'php_network_getaddresses: getaddrinfo failed: Temporary failure in name resolution']) === 'dns');
         expect($kind(['message' => 'Failed to open stream: HTTP request failed! Connection timed out']) === 'timeout' && $kind(['message' => 'SSL operation failed with code 1']) === 'tls' && $kind(null) === 'other');
 
-        // On the wire (recording wrapper, no network): both Trendyol transports connect to the address, send the original
-        // host as Host, and verify the certificate against it. Without a fallback nothing changes.
+        // On the wire (no network): the first attempt goes to the host name; when its resolution fails, one more attempt
+        // goes to the address with the original Host header and the certificate verified against it. Later requests of
+        // the same process go to the address directly.
         stream_wrapper_unregister('https');
-        stream_wrapper_register('https', AwbRecordingHttps::class);
+        stream_wrapper_register('https', AwbGetaddrinfoFailingHttps::class);
         try {
-            AwbRecordingHttps::$opened = [];
-            (new \Arasya\Operations\Integration\Trendyol\StreamTrendyolLabelDocumentFetcher(15, $resolver(false, ['104.16.150.136'])))->fetch($label, 1000);
-            (new \Arasya\Operations\Integration\Trendyol\StreamTrendyolTransport(20, $resolver(false, ['104.16.151.136'])))->get($orders, ['Accept' => 'application/json']);
-            (new \Arasya\Operations\Integration\Trendyol\StreamTrendyolLabelDocumentFetcher(15, $resolver(true, ['104.16.150.136'])))->fetch($label, 1000);
-            (new \Arasya\Operations\Integration\Trendyol\StreamTrendyolTransport(20, $resolver(true, ['104.16.151.136'])))->get($orders, ['Accept' => 'application/json']);
+            AwbGetaddrinfoFailingHttps::$opened = [];
+            $lookups = [];
+            $shared = $resolver(['104.16.150.136']);
+            $fetched = (new \Arasya\Operations\Integration\Trendyol\StreamTrendyolLabelDocumentFetcher(15, $shared))->fetch($label, 1000);
+            $listed = (new \Arasya\Operations\Integration\Trendyol\StreamTrendyolTransport(20, $shared))->get($orders, ['Accept' => 'application/json']);
+            $opened = AwbGetaddrinfoFailingHttps::$opened;
+            $sharedLookups = $lookups;
+            // Without a resolver, or when the fallback finds nothing, the request fails as before.
+            $code = static function (callable $call): string { try { $call(); return 'none'; } catch (RuntimeException $e) { return $e->getMessage(); } };
+            $plain = $code(fn () => (new \Arasya\Operations\Integration\Trendyol\StreamTrendyolTransport(20))->get($orders, []));
+            $unresolved = $code(fn () => (new \Arasya\Operations\Integration\Trendyol\StreamTrendyolLabelDocumentFetcher(15, $resolver([])))->fetch($label, 1000));
         } finally {
             stream_wrapper_restore('https');
         }
-        [$pinnedLabel, $pinnedOrders, $plainLabel, $plainOrders] = AwbRecordingHttps::$opened;
-        expect($pinnedLabel['url'] === 'https://104.16.150.136/aaaaaaaa/bbbbbbbb/0e1d2c3b-ecbe-4a5f-b9f9-0123456789ab' && $pinnedLabel['options']['http']['header'] === "Accept: application/pdf\r\nUser-Agent: Arasya-AWB-Station\r\nHost: apigw.trendyol.com", 'label: address, Host header');
-        expect($pinnedOrders['url'] === 'https://104.16.151.136/integration/order/sellers/123456/v2/orders?page=0&size=1' && $pinnedOrders['options']['http']['header'] === "Accept: application/json\r\nHost: apigw.trendyol.com", 'orders: address, Host header');
-        foreach ([$pinnedLabel, $pinnedOrders] as $request) {
+        expect(str_starts_with($fetched['body'], '%PDF-') && $listed['body'] !== '' && $sharedLookups === ['apigw.trendyol.com'], 'both requests succeed with one lookup');
+        expect(array_column($opened, 'url') === [$label, 'https://104.16.150.136/aaaaaaaa/bbbbbbbb/0e1d2c3b-ecbe-4a5f-b9f9-0123456789ab', 'https://104.16.150.136/integration/order/sellers/123456/v2/orders?page=0&size=1'],
+            'host name first, then the address; the next request uses the cached address directly');
+        expect($opened[0]['options']['http']['header'] === "Accept: application/pdf\r\nUser-Agent: Arasya-AWB-Station" && !isset($opened[0]['options']['ssl']['peer_name']), 'the first attempt is unchanged');
+        expect($opened[1]['options']['http']['header'] === "Accept: application/pdf\r\nUser-Agent: Arasya-AWB-Station\r\nHost: apigw.trendyol.com", 'label retry: Host header');
+        expect($opened[2]['options']['http']['header'] === "Accept: application/json\r\nHost: apigw.trendyol.com", 'orders: Host header');
+        foreach ([$opened[1], $opened[2]] as $request) {
             expect($request['options']['ssl'] === ['verify_peer' => true, 'verify_peer_name' => true, 'peer_name' => 'apigw.trendyol.com'], 'certificate verified against apigw.trendyol.com');
         }
-        expect($plainLabel['url'] === $label && $plainOrders['url'] === $orders && !isset($plainLabel['options']['ssl']['peer_name']) && !isset($plainOrders['options']['ssl']['peer_name'])
-            && $plainLabel['options']['http']['header'] === "Accept: application/pdf\r\nUser-Agent: Arasya-AWB-Station", 'no change while the system resolver answers');
+        expect($plain === 'TRENDYOL_REQUEST_FAILED' && $unresolved === 'TRENDYOL_LABEL_DOWNLOAD_FAILED', 'no resolver or no address: the request fails as before');
     } finally {
         ini_set('error_log', $previousLog === false ? '' : $previousLog);
     }
