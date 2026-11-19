@@ -32,6 +32,13 @@ declare(strict_types=1);
 // never follows a redirect; TrendyolLabelClient alone may make one more GET after a single 302, only to an HTTPS URL on
 // TrendyolLabelClient::LABEL_REDIRECT_HOSTS (presigned Trendyol S3, checked by isAllowedRedirectUrl). No shipment,
 // status, tracking number or package is ever created or changed, and no courier other than Trendyol's label is called.
+//
+// Fourth reviewed exception (API 2.76.1, DNS incident 2026-11-19): the DNS fallback for the Trendyol hosts.
+// TrendyolHostResolver may open a stream, only GET, only to the two DNS-over-HTTPS services in
+// TrendyolHostResolver::DOH_ENDPOINTS, TLS verified against the service name, no redirect, and only to ask for the A
+// record of a host in TrendyolHostResolver::HOSTS (the Trendyol gateway and the two label document hosts). It sends
+// nothing but the host name. The two Trendyol stream transports then connect to that address with the certificate still
+// verified against the original host name; no new Trendyol path, method or host is added.
 
 $root = dirname(__DIR__, 2);
 $failures = [];
@@ -56,6 +63,7 @@ $labelFetcher = $root . '/operations-api/src/Integration/Trendyol/StreamTrendyol
 $labelClient = $root . '/operations-api/src/Integration/Trendyol/TrendyolLabelClient.php';
 $accessTransport = $root . '/operations-api/src/Integration/SourceAccess/StreamSourceAccessTransport.php';
 $accessClient = $root . '/operations-api/src/Integration/SourceAccess/SourceAccessClient.php';
+$hostResolver = $root . '/operations-api/src/Integration/Trendyol/TrendyolHostResolver.php';
 /** The source access routes Operations may call (WordPress routes without /wp-json). Nothing else. */
 // Phase 4A: the order detail. Phase 4B: the edit catalog, one product by SKU, the edit preview, the edit and its stored
 // answer (reconciliation). Phase 5: the financial summary, a finance action and its stored answer. No WooCommerce REST
@@ -94,8 +102,8 @@ foreach ($phpFiles($root . '/operations-api/src') as $file) {
         }
     }
     $checks++;
-    if ($file !== $transport && $file !== $accessTransport && $file !== $labelFetcher && preg_match('/\bstream_context_create\s*\(|file_get_contents\s*\(\s*["\']https?:/', $source) === 1) {
-        $fail("{$relative} opens an outbound HTTP stream; only StreamTrendyolTransport (GET), StreamSourceAccessTransport (source access POST) and StreamTrendyolLabelDocumentFetcher (label GET) may.");
+    if ($file !== $transport && $file !== $accessTransport && $file !== $labelFetcher && $file !== $hostResolver && preg_match('/\bstream_context_create\s*\(|file_get_contents\s*\(\s*["\']https?:/', $source) === 1) {
+        $fail("{$relative} opens an outbound HTTP stream; only StreamTrendyolTransport (GET), StreamSourceAccessTransport (source access POST), StreamTrendyolLabelDocumentFetcher (label GET) and TrendyolHostResolver (DNS-over-HTTPS GET) may.");
     }
     // Source access routes and the transport's post() exist only in the client (and the transport itself).
     $checks++;
@@ -157,6 +165,34 @@ foreach (["'follow_location' => 0", "'max_redirects' => 0", "'verify_peer' => tr
 $checks++;
 if (preg_match('/Authorization|apiKey|apiSecret|Credentials/', $fetcherSource) === 1) {
     $fail('StreamTrendyolLabelDocumentFetcher must never send Trendyol credentials to the document host.');
+}
+// ---- The DNS fallback: GET only, the two reviewed DNS-over-HTTPS services, the three Trendyol hosts, no credentials ---------
+$resolverSource = (string) file_get_contents($hostResolver);
+$checks++;
+if (preg_match_all("/'method'\s*=>\s*'([A-Z]+)'/", $resolverSource, $resolverMethods) !== 1 || $resolverMethods[1] !== ['GET'] || preg_match_all('/\bstream_context_create\s*\(/', $resolverSource) !== 1) {
+    $fail('TrendyolHostResolver must open exactly one GET stream context.');
+}
+foreach (["public const HOSTS = ['apigw.trendyol.com', 's3.trendyol.com', 'cdn.dsmcdn.com'];",
+    "public const DOH_ENDPOINTS = [['https://1.1.1.1/dns-query', 'cloudflare-dns.com'], ['https://8.8.8.8/resolve', 'dns.google']];",
+    "'follow_location' => 0", "'max_redirects' => 0", "'ssl' => ['verify_peer' => true, 'verify_peer_name' => true, 'peer_name' => \$serviceName]",
+    "http_build_query(['name' => \$host, 'type' => 'A'])", "if (!in_array(\$host, self::HOSTS, true)) {"] as $required) {
+    $checks++;
+    if (!str_contains($resolverSource, $required)) {
+        $fail("TrendyolHostResolver lost its safety setting {$required}.");
+    }
+}
+$checks++;
+if (preg_match('/Authorization|apiKey|apiSecret|Credentials|->put\s*\(|\/integration\//', $resolverSource) === 1) {
+    $fail('TrendyolHostResolver must never carry a Trendyol credential, path or write.');
+}
+// Both Trendyol transports keep verifying the certificate, against the original host when the address is pinned.
+foreach ([$transport => 'StreamTrendyolTransport', $labelFetcher => 'StreamTrendyolLabelDocumentFetcher'] as $file => $name) {
+    $source = (string) file_get_contents($file);
+    $checks++;
+    if (!str_contains($source, "\$ssl = ['verify_peer' => true, 'verify_peer_name' => true];") || !str_contains($source, "\$ssl['peer_name'] = \$route['host'];") || str_contains($source, "'verify_peer' => false")
+        || str_contains($source, "'verify_peer_name' => false") || str_contains($source, 'allow_self_signed')) {
+        $fail("{$name} must verify the certificate against the original Trendyol host, also on the DNS fallback.");
+    }
 }
 $labelSource = (string) file_get_contents($labelClient);
 $checks++;
