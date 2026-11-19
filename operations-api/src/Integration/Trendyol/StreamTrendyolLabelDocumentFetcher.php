@@ -28,6 +28,31 @@ final readonly class StreamTrendyolLabelDocumentFetcher implements TrendyolLabel
         if (!TrendyolLabelClient::isAllowedLabelUrl($url) && !TrendyolLabelClient::isAllowedRedirectUrl($url)) {
             throw new RuntimeException('TRENDYOL_LABEL_URL_REFUSED');
         }
+        // After a failed name resolution (nothing was sent) one more attempt to the address the DNS fallback found.
+        $route = $this->resolver?->cached($url);
+        $response = $this->open($url, $maxBytes, $route);
+        $kind = $response === null ? TrendyolHostResolver::failureKind(error_get_last()) : null;
+        if ($response === null && $route === null && $kind === 'dns' && $this->resolver !== null) {
+            $route = $this->resolver->fallback($url);
+            if ($route !== null) {
+                $response = $this->open($url, $maxBytes, $route);
+                $kind = $response === null ? TrendyolHostResolver::failureKind(error_get_last()) : null;
+            }
+        }
+        if ($response === null) {
+            // The label URL is never logged (it expires and is signed): only the host and the kind of failure.
+            error_log(sprintf('TRENDYOL_LABEL_DOWNLOAD_FAILED host=%s route=%s kind=%s', (string) parse_url($url, PHP_URL_HOST), $route === null ? 'system' : 'fallback', $kind));
+            throw new RuntimeException('TRENDYOL_LABEL_DOWNLOAD_FAILED');
+        }
+        return $response;
+    }
+
+    /**
+     * @param array{url: string, host: string}|null $route
+     * @return array{status: int, body: string, contentType: string|null, location: string|null}|null null when the stream could not be opened
+     */
+    private function open(string $url, int $maxBytes, ?array $route): ?array
+    {
         $http = [
             'method' => 'GET',
             'header' => "Accept: application/pdf\r\nUser-Agent: Arasya-AWB-Station",
@@ -37,7 +62,6 @@ final readonly class StreamTrendyolLabelDocumentFetcher implements TrendyolLabel
             'max_redirects' => 0,
         ];
         $ssl = ['verify_peer' => true, 'verify_peer_name' => true];
-        $route = $this->resolver?->route($url);
         if ($route !== null) {
             $http['header'] .= "\r\nHost: " . $route['host'];
             $ssl['peer_name'] = $route['host'];
@@ -46,10 +70,7 @@ final readonly class StreamTrendyolLabelDocumentFetcher implements TrendyolLabel
         error_clear_last();
         $body = @file_get_contents($route['url'] ?? $url, false, $context, 0, $maxBytes + 1);
         if ($body === false) {
-            // The label URL is never logged (it expires and is signed): only the host and the kind of failure.
-            error_log(sprintf('TRENDYOL_LABEL_DOWNLOAD_FAILED host=%s route=%s kind=%s', (string) parse_url($url, PHP_URL_HOST), $route === null ? 'system' : 'fallback',
-                TrendyolHostResolver::failureKind(error_get_last())));
-            throw new RuntimeException('TRENDYOL_LABEL_DOWNLOAD_FAILED');
+            return null;
         }
         return self::response($http_response_header ?? [], $body);
     }
