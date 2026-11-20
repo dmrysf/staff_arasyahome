@@ -536,7 +536,45 @@ final class ConfirmareOperations
         if (!is_int($answer['body']['status'] ?? null) || !is_array($answer['body']['result'] ?? null)) {
             return ['state' => (string) $found['state'], 'idempotencyKey' => $key, 'reachable' => true, 'shop' => $state];
         }
+        if ($state === 'unknown' && (string) $found['kind'] === 'awb_create') {
+            // API 2.77.1 (TH 65121): the shop keeps the 202 it answered while FAN Courier's outcome was unknown, and replays it
+            // for ever. Once the shop's own AWB journal is settled (an AWB found, or the attempt closed without one after the
+            // FAN Courier check), its current AWB state is the answer: never a guess, never a second AWB.
+            $settled = $this->settledAwb($found, $row, $target, $role, $key, $requestId);
+            if ($settled !== null) {
+                return $settled;
+            }
+        }
         return $this->conclude((string) $found['operation_uuid'], ['status' => (int) $answer['body']['status'], 'body' => $answer['body']['result']], (string) $found['kind'], $row, $key, $requestId);
+    }
+
+    /**
+     * The shop's current AWB state for an AWB operation whose stored answer is unknown: `created` settles it as applied,
+     * `none` (no AWB and no attempt left open) as rejected `not_created`; still unknown or unreadable: null (ask again later).
+     *
+     * @param array<string, mixed> $found @param array<string, mixed> $row
+     * @return array<string, mixed>|null
+     */
+    private function settledAwb(array $found, array $row, SourceAccessTarget $target, string $role, string $key, string $requestId): ?array
+    {
+        try {
+            $answer = $this->client->exchange($target, SourceAccessClient::ROUTE_OPERATION, $this->payload($row, (string) $found['employee_uuid'], $role, $requestId) + ['action' => 'operations_state']);
+        } catch (SourceAccessException) {
+            return null;
+        }
+        if ($answer['status'] !== 200 || !is_array($answer['body']['awb'] ?? null)) {
+            return null;
+        }
+        $shop = self::shopState($answer['body']);
+        if ($shop['awb']['state'] === 'created' && $shop['awb']['number'] !== null) {
+            $this->complete((string) $found['operation_uuid'], 'applied', 'applied', 'created', 'awb_create', $row, $key);
+            return ['state' => 'applied', 'idempotencyKey' => $key, 'result' => 'created', 'shop' => $shop];
+        }
+        if ($shop['awb']['state'] === 'none') {
+            $this->complete((string) $found['operation_uuid'], 'rejected', 'not_created', null, 'awb_create', $row, $key);
+            throw new ApiException(409, 'CONFIRMARE_OPERATION_REFUSED', 'The shop settled the AWB attempt without an AWB; nothing was created.', ['reason' => 'not_created', 'blockers' => [], 'shop' => $shop]);
+        }
+        return null;
     }
 
     /** @param array<string, mixed> $row */
