@@ -633,8 +633,15 @@ $check($rec['state'] === 'applied' && $rec['result'] === 'issued' && $docsMade(5
 $th->afterInvoice = 'crash';
 $crash = $ok($act($who['idoc'], $g(6), 'issue', [], 'inv-crash-0001-' . $suffix), '5xx');
 $check($crash['state'] === 'unknown', 'a 5xx after the shop ran the action: unknown');
+// API 2.77.1: settled three days later, the e-Factura follow-up still belongs to the employee who issued the invoice and runs
+// from the moment it was issued (never from the manager's reconciliation).
+$pdo->prepare('UPDATE order_invoice_actions SET requested_at = DATE_SUB(requested_at, INTERVAL 3 DAY) WHERE idempotency_key = ?')->execute(['inv-crash-0001-' . $suffix]);
 $mrec = $ok($call($who['imgr'], 'POST', '/confirmare/orders/' . rawurlencode($g(6)) . '/invoice/reconcile', ['idempotencyKey' => 'inv-crash-0001-' . $suffix]), 'manager reconciles another employee\'s action');
 $check($mrec['state'] === 'applied' && $docsMade(6) === 1, 'a manager settles it: one document');
+$task6 = $all('SELECT t.issuer_employee_uuid, t.issued_at, t.due_at, a.requested_at FROM invoice_efactura_tasks t JOIN order_invoice_actions a ON a.action_uuid = t.invoice_action_uuid WHERE a.idempotency_key = ?', ['inv-crash-0001-' . $suffix]);
+$check(count($task6) === 1 && $task6[0]['issuer_employee_uuid'] === $uuids['idoc'] && substr((string) $task6[0]['issued_at'], 0, 19) === substr((string) $task6[0]['requested_at'], 0, 19)
+    && (string) $task6[0]['due_at'] === \Arasya\Operations\Confirmare\InvoiceEfactura::due(new DateTimeImmutable((string) $task6[0]['requested_at'], new DateTimeZone('UTC')))->format('Y-m-d H:i:s.u'),
+    'the e-Factura task names the employee who issued the invoice, at the moment it was issued: ' . json_encode($task6));
 $rev9 = $read($who['idoc'], $g(9))['summary']['revision'];
 $th->fail = 'SOURCE_UNREACHABLE';
 $never = $ok($act($who['idoc'], $g(9), 'issue', [], 'inv-never-0001-' . $suffix, $rev9), 'never received');
