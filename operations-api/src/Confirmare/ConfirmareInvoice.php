@@ -1348,7 +1348,10 @@ final readonly class ConfirmareInvoice
             // The shop's journal says the operation is still running or its outcome is unknown: ask again later.
             return ['state' => (string) $found['state'], 'idempotencyKey' => $key, 'reachable' => true, 'shop' => $status['state']];
         }
-        return $this->conclude((string) $found['action_uuid'], ['status' => (int) $status['status'], 'body' => $status['result']], (string) $found['action'], $row, $target, $actor, $role, $key);
+        // API 2.77.1: what follows a settled action belongs to the employee who sent it and to the moment it ran, never to
+        // the manager who settles it later (the e-Factura follow-up of an invoice, the proforma's 120 h timer).
+        $origin = ['employee' => (string) $found['employee_uuid'], 'at' => new \DateTimeImmutable((string) $found['requested_at'], new \DateTimeZone('UTC'))];
+        return $this->conclude((string) $found['action_uuid'], ['status' => (int) $status['status'], 'body' => $status['result']], (string) $found['action'], $row, $target, $actor, $role, $key, $origin);
     }
 
     /**
@@ -1356,8 +1359,9 @@ final readonly class ConfirmareInvoice
      * @param array<string, mixed> $row
      * @return array<string, mixed>
      */
-    private function conclude(string $actionUuid, array $answer, string $action, array $row, SourceAccessTarget $target, EmployeeIdentity $actor, string $role, string $key): array
+    private function conclude(string $actionUuid, array $answer, string $action, array $row, SourceAccessTarget $target, EmployeeIdentity $actor, string $role, string $key, ?array $origin = null): array
     {
+        $doer = $origin['employee'] ?? $actor->employeeUuid;
         if ($answer['status'] === 200 || $answer['status'] === 202) {
             try {
                 $answered = SourceInvoice::answered($answer['body'], $action, (string) $row['source_order_id'], (string) $row['order_number']);
@@ -1370,7 +1374,7 @@ final readonly class ConfirmareInvoice
             $this->complete($actionUuid, 'applied', $answer['status'] === 200 ? 'applied' : 'shop_unknown', $answered['result']);
             if (in_array($action, ['issue', 'reissue'], true) && $answer['status'] === 200 && $answered['result'] === 'issued') {
                 // API 2.46.0 (owner K-04): the issuer follows the invoice's e-Factura (5 working days).
-                $this->efactura?->onInvoiceIssued($actionUuid, (string) $row['order_uuid'], (string) $row['global_order_id'], (string) $row['source_key'], $actor->employeeUuid);
+                $this->efactura?->onInvoiceIssued($actionUuid, (string) $row['order_uuid'], (string) $row['global_order_id'], (string) $row['source_key'], $doer, $origin['at'] ?? null);
             }
             if ($action === 'delete' && $answer['status'] === 200 && $answered['result'] === 'deleted') {
                 // API 2.54.0: a deleted invoice has no e-Factura to follow any more.
@@ -1383,7 +1387,9 @@ final readonly class ConfirmareInvoice
             }
             if ($action === 'proforma_send_mail' && $answer['status'] === 200 && $answered['result'] === 'sent') {
                 // API 2.46.0: the proforma reached the customer, so its timer starts (reminders, 120 h expiry).
-                $this->cycles?->proformaSent((string) $row['order_uuid'], $actor->employeeUuid, $answered['summary']);
+                $mailedAt = $answered['summary']['proforma']['mail']['at'] ?? null;
+                $mailedAt = $origin !== null && is_string($mailedAt) && preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/D', $mailedAt) === 1 && strtotime($mailedAt) <= $this->clock->now()->getTimestamp() ? $mailedAt : null;
+                $this->cycles?->proformaSent((string) $row['order_uuid'], $doer, $answered['summary'], $mailedAt);
             }
             $after = $this->row((string) $row['global_order_id']) ?? $row;
             return ['state' => 'applied', 'idempotencyKey' => $key, 'result' => $answered['result']] + $this->present($actor, $after, $target, $role, $answered['summary']);

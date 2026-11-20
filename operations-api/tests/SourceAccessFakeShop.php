@@ -1075,6 +1075,7 @@ final class SourceAccessFakeShop implements SourceAccessTransport
                 return $keep(409, ['error' => ['code' => 'mail_refused'], 'revision' => $this->invoiceRevision($orderId)]);
             }
             $p['mail'] = 'sent';
+            $p['mailAt'] = $now;
             $p['mailCount']++;
             $this->smartbillMails['pf:' . $orderId] = ($this->smartbillMails['pf:' . $orderId] ?? 0) + 1;
             $p['history'][] = ['kind' => 'proforma_mail', 'at' => $now, 'by' => $employee, 'outcome' => 'sent'];
@@ -1313,7 +1314,7 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             'document' => $doc === null ? null : ['series' => $doc['series'], 'number' => $doc['number'], 'amount' => $amounts ? '215.70' : null, 'currency' => 'RON', 'reference' => 'TH' . $orderId,
                 'issuedAt' => gmdate('Y-m-d\TH:i:s\Z', $doc['at']), 'issuedBy' => $doc['by'], 'outdated' => false, 'unconfirmed' => (bool) ($doc['unconfirmed'] ?? false),
                 'link' => in_array($role, ['operator', 'documents', 'manager'], true) ? 'https://cloud.smartbill.ro/core/proforma/vizualizare/?serie=PRF&numar=' . $doc['number'] : null],
-            'mail' => ['state' => $p['mail'], 'at' => null, 'by' => null, 'count' => $p['mailCount']],
+            'mail' => ['state' => $p['mail'], 'at' => isset($p['mailAt']) ? gmdate('Y-m-d\TH:i:s\Z', (int) $p['mailAt']) : null, 'by' => null, 'count' => $p['mailCount']],
             'invoiced' => $p['invoiced'] === null ? null : ['invoiced' => $p['invoiced'], 'at' => gmdate('Y-m-d\TH:i:s\Z', $now)],
             'error' => null,
             'history' => array_map(static fn (array $h): array => ['kind' => $h['kind'], 'at' => gmdate('Y-m-d\TH:i:s\Z', $h['at']), 'by' => $h['by'], 'outcome' => $h['outcome'], 'series' => null, 'number' => null], array_reverse($p['history'])),

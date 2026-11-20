@@ -364,6 +364,40 @@ $check($late['status'] === 409 && ($late['body']['error']['details']['reason'] ?
     'after 4 minutes: closed as not received by a colleague holding the AWB role (API 2.74.1), nothing was done in the shop');
 $check(!str_contains(json_encode($all('SELECT kind, state, outcome, result, request_id FROM order_source_operations')), 'Str. Nou'), 'no address text is stored in Arasya');
 
+// API 2.77.1 (TH 65121): FAN Courier's outcome was unknown, so the shop answered 202 and keeps replaying it. Once the shop's own
+// AWB journal is settled, its current AWB state settles the operation: closed without an AWB (not_created, a new AWB may be
+// made), or the AWB found (applied once). Never a second AWB while it is open.
+$approve($who['cop'], $g(9));
+$route($g(9), 'cdoc');
+$stage($g(9), 'quality-control');
+$th->orders[$id(9)]['ops'] = ['owed' => '503.30'];
+$unknownKey = 'ops-awb-unk-' . bin2hex(random_bytes(8));
+$th->awbOutcome = 'unknown';
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$unk = $ok($operate($who['cdoc'], $g(9), 'awb', ['parcels' => 2, 'expectedCod' => '503.30'], $unknownKey), 'AWB: FAN Courier did not answer the shop');
+$check($unk['state'] === 'unknown' && ($th->fanAwbs[$id(9)] ?? 0) === 1, 'the shop answers 202: unknown');
+$still = $ok($operate($who['cmgr'], $g(9), 'operations/reconcile', ['idempotencyKey' => $unknownKey]), 'reconcile while the shop\'s attempt is open');
+$check($still['state'] === 'unknown' && (string) $one('SELECT state FROM order_source_operations WHERE idempotency_key = ?', [$unknownKey]) === 'unknown', 'the shop\'s attempt is still open: still unknown, nothing guessed');
+$refusedOp($operate($who['cdoc'], $g(9), 'awb', ['parcels' => 2, 'expectedCod' => '503.30']), 'operation_open', 'no second AWB while it is open');
+$th->orders[$id(9)]['ops']['awbUnknown'] = false; // TEST ONLY: the shop checked FAN Courier and closed the attempt without an AWB
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$closed = $operate($who['cmgr'], $g(9), 'operations/reconcile', ['idempotencyKey' => $unknownKey]);
+$check($closed['status'] === 409 && ($closed['body']['error']['details']['reason'] ?? '') === 'not_created' && (string) $one('SELECT state FROM order_source_operations WHERE idempotency_key = ?', [$unknownKey]) === 'rejected'
+    && (string) $one('SELECT outcome FROM order_source_operations WHERE idempotency_key = ?', [$unknownKey]) === 'not_created', 'the attempt closed without an AWB: settled as not created: ' . json_encode($closed['body']));
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$check(($state($who['cdoc'], $g(9))['open'] ?? null) === [], 'nothing is open any more');
+$foundKey = 'ops-awb-fnd-' . bin2hex(random_bytes(8));
+$th->awbOutcome = 'unknown';
+$ok($operate($who['cdoc'], $g(9), 'awb', ['parcels' => 2, 'expectedCod' => '503.30'], $foundKey), 'a new AWB attempt, again without FAN Courier\'s answer');
+$th->orders[$id(9)]['ops']['awbUnknown'] = false; // TEST ONLY: the shop found the AWB at FAN Courier and recorded it
+$th->orders[$id(9)]['ops']['awb'] = ['number' => '2150900009999', 'parcels' => 2, 'cod' => '503.30', 'at' => time()];
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$found = $ok($operate($who['cdoc'], $g(9), 'operations/reconcile', ['idempotencyKey' => $foundKey]), 'reconcile after the shop found the AWB');
+$check($found['state'] === 'applied' && $found['result'] === 'created' && ($found['shop']['awb']['number'] ?? null) === '2150900009999' && (string) $one('SELECT state FROM order_source_operations WHERE idempotency_key = ?', [$foundKey]) === 'applied'
+    && ($th->fanAwbs[$id(9)] ?? 0) === 2, 'the AWB found by the shop settles it as applied, never made again');
+$again9 = $operate($who['cdoc'], $g(9), 'awb', ['parcels' => 1, 'expectedCod' => '503.30']);
+$check($again9['status'] === 409 && ($again9['body']['error']['details']['reason'] ?? '') === 'awb_exists', 'a further AWB is refused by the shop');
+
 // ---- 4. NETOPIA full refund: one click, finance records, another employee verifies --------------------------------------------
 $event(3, 'cancelled', 'cancelled');
 $th->orders[$id(3)]['ops'] = ['status' => 'cancelled', 'netopia' => 2, 'net' => '719.00'];

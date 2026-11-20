@@ -358,6 +358,34 @@ $rev = $ok($get($who['cop'], '/confirmare/orders/' . rawurlencode($g(7)) . '/inv
 $ok($call($who['cop'], 'POST', '/confirmare/orders/' . rawurlencode($g(7)) . '/proforma/send-mail', ['expectedRevision' => $rev, 'confirmResend' => false]), 'operator e-mails the proforma');
 $c7 = $cycleOf($g(7));
 $check($c7 !== null && $c7['origin'] === 'operator' && $c7['state'] === 'running' && $c7['sent_at'] !== null, 'the operator\'s e-mailed proforma runs the same timer');
+// API 2.77.1 (TH 65716, OP 60882): the e-mail reached the customer, its answer was lost; a manager settles it later. The timer
+// runs from the moment the shop sent it (its own record) and belongs to the operator who sent it, never to the manager.
+$th->orders[$id(9)]['invoice']['totalAccepted'] = true;
+$review9 = $detail($who['cop'], $g(9))['review'];
+$ok($call($who['cop'], 'POST', '/confirmare/orders/' . rawurlencode($g(9)) . '/contact', ['expectedVersion' => $version($g(9)), 'outcome' => 'confirmed', 'reviewFingerprint' => $review9['fingerprint']]), 'confirmed call 9');
+$ok($get($who['cop'], '/confirmare/orders/' . rawurlencode($g(9)) . '/source'), 'shop order 9');
+$ok($call($who['cop'], 'POST', '/confirmare/orders/' . rawurlencode($g(9)) . '/approve', ['expectedVersion' => $version($g(9)), 'customerCall' => 'confirmed', 'confirmedLineIds' => $review9['lineIds'], 'priceVerified' => true, 'reviewFingerprint' => $review9['fingerprint']]), 'approve 9');
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$rev = $ok($get($who['cop'], '/confirmare/orders/' . rawurlencode($g(9)) . '/invoice'), 'operator reads 9')['summary']['revision'];
+$ok($call($who['cop'], 'POST', '/confirmare/orders/' . rawurlencode($g(9)) . '/proforma/issue', ['expectedRevision' => $rev, 'replaceOutdated' => false]), 'operator issues proforma 9');
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$rev = $ok($get($who['cop'], '/confirmare/orders/' . rawurlencode($g(9)) . '/invoice'), 'operator reads 9 again')['summary']['revision'];
+$mailKey = 'cyc-mail-lost-' . bin2hex(random_bytes(8));
+$th->afterInvoice = 'answer_lost';
+$lostMail = $ok($call($who['cop'], 'POST', '/confirmare/orders/' . rawurlencode($g(9)) . '/proforma/send-mail', ['expectedRevision' => $rev, 'confirmResend' => false], $mailKey), 'the e-mail is sent, its answer is lost');
+$check($lostMail['state'] === 'unknown' && $cycleOf($g(9)) === null && ($th->smartbillMails['pf:' . $id(9)] ?? 0) === 1, 'unknown in Arasya, no timer yet, one e-mail');
+// TEST ONLY: the e-mail went out two days ago (the shop's stored answer and its record carry that moment).
+$mailedAt = time() - 2 * 86400;
+$th->orders[$id(9)]['invoice']['pf']['mailAt'] = $mailedAt;
+$th->invoiceAnswers[$uuids['cop'] . '|' . $mailKey]['body']['summary']['proforma']['mail']['at'] = gmdate('Y-m-d\TH:i:s\Z', $mailedAt);
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$settledMail = $ok($call($who['cmgr'], 'POST', '/confirmare/orders/' . rawurlencode($g(9)) . '/invoice/reconcile', ['idempotencyKey' => $mailKey]), 'a manager settles the lost e-mail two days later');
+$c9 = $cycleOf($g(9));
+$check($settledMail['state'] === 'applied' && $settledMail['result'] === 'sent' && $c9 !== null && $c9['state'] === 'running' && ($th->smartbillMails['pf:' . $id(9)] ?? 0) === 1
+    && abs((new DateTimeImmutable((string) $c9['sent_at'], new DateTimeZone('UTC')))->getTimestamp() - $mailedAt) <= 1
+    && (new DateTimeImmutable((string) $c9['expires_at'], new DateTimeZone('UTC')))->getTimestamp() - $mailedAt === 120 * 3600
+    && $c9['owner_employee_uuid'] === $uuids['cop'],
+    'settled once, never e-mailed again; the 120 h run from the shop\'s e-mail, owned by the operator who sent it: ' . json_encode([$settledMail['state'], $c9['sent_at'] ?? null, $c9['owner_employee_uuid'] ?? null]));
 // A proforma that existed in the shop before Arasya sent anything (22 October backfill): no cycle, never cancelled.
 $th->orders[$id(8)]['invoice']['pf']['document'] = ['series' => 'PRF', 'number' => '0999', 'at' => time() - 9 * 86400, 'by' => $uuids['cop']];
 $th->orders[$id(8)]['invoice']['pf']['mail'] = 'sent';

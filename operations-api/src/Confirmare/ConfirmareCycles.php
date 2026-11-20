@@ -231,7 +231,7 @@ final class ConfirmareCycles
      *
      * @param array<string, mixed> $summary the shop's invoice summary after the action
      */
-    public function proformaSent(string $orderUuid, string $employeeUuid, array $summary): void
+    public function proformaSent(string $orderUuid, string $employeeUuid, array $summary, ?string $sentAt = null): void
     {
         if (!$this->installed()) {
             return;
@@ -249,7 +249,8 @@ final class ConfirmareCycles
                 return;
             }
             $active = $this->activeCycle($orderUuid, true);
-            $now = $this->now();
+            // API 2.77.1: a lost answer settled later starts the timer when the shop really sent the proforma.
+            $now = $sentAt !== null ? (new \DateTimeImmutable($sentAt))->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s.u') : $this->now();
             if ($active !== null && $active['document_hash'] === $hash) {
                 if ($active['sent_at'] === null) {
                     $this->update($active, ['state' => 'running', 'last_error' => null] + $this->timer($now));

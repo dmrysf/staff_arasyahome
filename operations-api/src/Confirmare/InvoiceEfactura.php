@@ -67,13 +67,14 @@ final class InvoiceEfactura
     }
 
     /** Called when Operations records an applied final invoice (issue or re-issue). Never throws. */
-    public function onInvoiceIssued(string $actionUuid, string $orderUuid, string $globalOrderId, string $sourceKey, string $issuerUuid): void
+    public function onInvoiceIssued(string $actionUuid, string $orderUuid, string $globalOrderId, string $sourceKey, string $issuerUuid, ?\DateTimeImmutable $issuedAt = null): void
     {
         if (!$this->installed()) {
             return;
         }
         try {
-            $now = $this->clock->now()->setTimezone(new DateTimeZone('UTC'));
+            // API 2.77.1: a lost answer settled later keeps the invoice's own moment (the 5 working days run from it).
+            $now = ($issuedAt ?? $this->clock->now())->setTimezone(new DateTimeZone('UTC'));
             $this->pdo->prepare('INSERT INTO invoice_efactura_tasks (task_uuid, order_uuid, global_order_id, source_key, invoice_action_uuid, issuer_employee_uuid, issued_at, due_at, state, version, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)')->execute([Uuid::v4(), $orderUuid, $globalOrderId, $sourceKey, $actionUuid, $issuerUuid, $now->format('Y-m-d H:i:s.u'),
                 self::due($now)->format('Y-m-d H:i:s.u'), 'open', $now->format('Y-m-d H:i:s.u')]);
