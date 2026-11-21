@@ -123,6 +123,8 @@ final class SourceAccessFakeShop implements SourceAccessTransport
     public int $proformaRateLimits = 0;
     public int $mailRateLimits = 0;
     public int $rateLimitRetryAfter = 45;
+    /** YD SOFT 2.31.2: proforma issues answered "SmartBill unreachable" (DNS, no connection: nothing left the shop). */
+    public int $proformaUnreachable = 0;
     /** API 2.48.0: 'answer_lost' after the shop recorded an adoption. */
     public ?string $afterAdopt = null;
     /** @var array<string, int> adoptions recorded by this TEST shop: orderId => count */
@@ -1080,6 +1082,11 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             $this->smartbillMails['pf:' . $orderId] = ($this->smartbillMails['pf:' . $orderId] ?? 0) + 1;
             $p['history'][] = ['kind' => 'proforma_mail', 'at' => $now, 'by' => $employee, 'outcome' => 'sent'];
             return $done(200, 'sent');
+        }
+        if ($this->proformaUnreachable > 0) {
+            $this->proformaUnreachable--;
+            $p['history'][] = ['kind' => 'proforma_issue', 'at' => $now, 'by' => $employee, 'outcome' => 'refused'];
+            return $keep(409, ['error' => ['code' => 'smartbill_unreachable'], 'revision' => $this->invoiceRevision($orderId), 'retryAfter' => 120]);
         }
         if ($this->proformaRateLimits > 0) {
             $this->proformaRateLimits--;

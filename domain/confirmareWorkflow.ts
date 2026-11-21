@@ -220,7 +220,9 @@ export function resolveWorkflow(input: WorkflowInput): ConfirmareWorkflow {
     const attention = detail.financial.attention;
     if (detail.financial.state === "unknown" || attention === "reconciliation_required") return payment("financeAttention", "finance", detail.finance.record || detail.finance.approve, "attention");
     if (attention === "transfer_pending") return payment("financeWaiting", "finance", detail.finance.approve, "waiting");
-    if (detail.payment.state === "online") return payment("onlineWaiting", "shop", false, "waiting");
+    // Staff 2.52.2 (owner crisis 7, 2026-11-21): an online (card) payment without the gateway's confirmation is `unverified`
+    // in Operations: the order waits for that confirmation; it is not an advance to ask for, nor an accounting problem.
+    if (detail.payment.state === "online" || detail.payment.state === "unverified") return payment("onlineWaiting", "shop", false, "waiting");
     if (detail.payment.state !== "waiting" && detail.payment.state !== "partial" && detail.payment.state !== "confirmed") return payment("financeAttention", "finance", detail.finance.record || detail.finance.approve, "attention");
     if (invoice.kind === "read") {
       if (invoice.proforma === "unknown" || invoice.proforma === "in_flight") return payment("proformaUnknown", "you", detail.invoice.proforma, "attention");

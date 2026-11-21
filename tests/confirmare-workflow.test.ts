@@ -242,6 +242,10 @@ test("scenario 07/08: a partial advance and a bank transfer being verified are d
   assert.equal(w.canAct, true, "a finance approver has the action");
   w = resolve(approved({ payment: { state: "online" } }));
   assert.equal(w.task, "onlineWaiting", "choosing online payment is not a payment");
+  w = resolve(approved({ payment: { state: "unverified" } }));
+  assert.equal(w.task, "onlineWaiting", "Staff 2.52.2: a card payment without NETOPIA's confirmation waits for it; no advance, no accounting task");
+  assert.equal(w.owner, "shop");
+  assert.equal(w.canAct, false, "the operator is offered nothing to do (no proforma, no advance)");
   w = resolve(approved({ financial: { state: "unknown", basis: null, open: false, attention: null } }));
   assert.equal(w.task, "financeAttention");
   assert.equal(states(w).payment, "attention");

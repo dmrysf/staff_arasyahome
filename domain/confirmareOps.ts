@@ -14,7 +14,7 @@ import { financeScopesOf } from "./confirmareFinance";
  * R1/R2 (2026-10-26): why a closed proforma cycle may be started again (API ConfirmareCycles::RETRYABLE_CLOSED). Each is a
  * definite refusal; the `mail_*` ones mean the proforma exists and only its e-mail is sent again.
  */
-export const RETRYABLE_CLOSED = ["smartbill_refused", "smartbill_precheck", "smartbill_rate_limited", "mail_refused", "mail_rate_limited",
+export const RETRYABLE_CLOSED = ["smartbill_refused", "smartbill_precheck", "smartbill_rate_limited", "smartbill_unreachable", "mail_refused", "mail_rate_limited",
   "proforma_bank_missing", "proforma_series_missing", "proforma_series_not_approved", "smartbill_company_not_approved", "billing_email_invalid"] as const;
 
 export const CYCLE_STATES = ["issue_pending", "mail_pending", "running", "waiting_bank_check", "waiting_finance", "cancel_pending", "cancel_unknown", "order_cancel_pending", "paid", "cancelled", "closed"] as const;
