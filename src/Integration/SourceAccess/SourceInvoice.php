@@ -43,6 +43,9 @@ final class SourceInvoice
         'smartbill_refused', 'smartbill_precheck', 'mail_refused',
         // R3 (2026-10-26): SmartBill answered 429 to one call: nothing was made or sent; the shop names the wait (retryAfter).
         'smartbill_rate_limited', 'mail_rate_limited',
+        // YD SOFT 2.31.2 (owner crisis 7, 2026-11-21): SmartBill could not be reached at all (DNS, no connection): the request
+        // never left the shop, nothing was made or sent; asked again after retryAfter, never `unknown`.
+        'smartbill_unreachable',
         // 2.18.0: the final document must be an invoice; the advance proforma.
         'final_document_not_invoice', 'proforma_operation_unknown', 'proforma_invoiced', 'proforma_status_unknown', 'proforma_series_missing',
         'advance_not_required', 'advance_already_collected', 'proforma_exists', 'proforma_missing', 'proforma_outdated', 'replace_confirmation_required',
@@ -559,7 +562,8 @@ final class SourceInvoice
             'code' => $code,
             'blockers' => array_map(static fn (mixed $blocker): string => self::choice($blocker, self::CODES), $blockers),
             'revision' => isset($data['revision']) ? self::pattern($data['revision'], self::FINGERPRINT) : null,
-            // R3 (2026-10-26): seconds SmartBill asked to wait (Retry-After), only with a rate-limit refusal.
+            // R3 (2026-10-26): seconds SmartBill asked to wait (Retry-After), with a rate-limit refusal; 2.77.2: also the shop's
+            // own wait after SmartBill could not be reached (`smartbill_unreachable`).
             'retryAfter' => is_int($data['retryAfter'] ?? null) && $data['retryAfter'] >= 1 && $data['retryAfter'] <= 3600 ? $data['retryAfter'] : null,
         ];
     }
