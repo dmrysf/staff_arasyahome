@@ -492,6 +492,33 @@ $three(16);
 $c = $cycleOf($g(16));
 $check($c['state'] === 'closed' && $c['closed_reason'] === 'smartbill_rate_limited' && $proformas(16) === 0, 'R3: Retry-After 900 s (longer than the 300 s wait): no automatic retry, closed as rate-limited');
 $th->rateLimitRetryAfter = 45;
+// API 2.77.2 (owner crisis 7, 2026-11-21): SmartBill unreachable (DNS outage; the request never left the shop) is a definite
+// answer: nothing made, the cycle waits and asks again under a new key, never an unknown outcome for a manager.
+$ok(T::ingest($kernel, 'trendhome', $payload($id(17), 217)), 'trendhome order 17');
+$th->orders[$id(17)] = ['id' => $id(17), 'number' => $id(17), 'eligible' => true, 'phone' => CYC_PHONE, 'pricing' => 'sha256:' . hash('sha256', 'cyc-price-' . $id(17)), 'invoice' => ['cleared' => false, 'cod' => true, 'totalAccepted' => false]];
+$service->distribute();
+$th->proformaUnreachable = 1;
+$three(17);
+$c = $cycleOf($g(17));
+$check($c['state'] === 'issue_pending' && $c['last_error'] === 'smartbill_unreachable' && $proformas(17) === 0, 'crisis 7: SmartBill unreachable on the issue: nothing made, not unknown, the cycle waits: ' . json_encode([$c['state'], $c['last_error']]));
+$check(($detail($who['cop'], $g(17))['cycle']['proforma']['lastError'] ?? null) === 'smartbill_unreachable', 'crisis 7: Staff is shown smartbill_unreachable');
+$run();
+$check($cycleOf($g(17))['state'] === 'issue_pending' && $proformas(17) === 0, 'crisis 7: before the wait nothing is asked again');
+$waited(17);
+$run();
+$c = $cycleOf($g(17));
+$check($c['state'] === 'running' && $proformas(17) === 1 && ($th->smartbillMails['pf:' . $id(17)] ?? 0) === 1 && $c['last_error'] === null, 'crisis 7: after the wait the issue is asked again: ONE proforma, ONE e-mail, the timer runs');
+$th->proformaUnreachable = 4;
+$ok(T::ingest($kernel, 'trendhome', $payload($id(18), 218)), 'trendhome order 18');
+$th->orders[$id(18)] = ['id' => $id(18), 'number' => $id(18), 'eligible' => true, 'phone' => CYC_PHONE, 'pricing' => 'sha256:' . hash('sha256', 'cyc-price-' . $id(18)), 'invoice' => ['cleared' => false, 'cod' => true, 'totalAccepted' => false]];
+$service->distribute();
+$three(18);
+foreach ([1, 2, 3] as $_) { $waited(18); $run(); }
+$c = $cycleOf($g(18));
+$check($c['state'] === 'closed' && $c['closed_reason'] === 'smartbill_unreachable' && $proformas(18) === 0, 'crisis 7: still unreachable after three retries: closed as smartbill_unreachable (retryable), nothing made: ' . json_encode([$c['state'], $c['closed_reason']]));
+$th->proformaUnreachable = 0;
+$again = $ok($retry($who['cop'], 18), 'crisis 7: the operator starts it again once SmartBill answers');
+$check($cycleOf($g(18))['state'] === 'running' && $proformas(18) === 1, 'crisis 7: the retry makes ONE proforma');
 
 
 // ---- 12. API 2.71.0 finance safety (owner decision 2026-11-13): open finance task, finance hold, bank check preview ------

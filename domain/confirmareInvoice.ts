@@ -202,7 +202,7 @@ const BLOCKERS = [
   "finance_action_open", "smartbill_missing", "smartbill_version_unsupported", "smartbill_not_connected", "smartbill_series_missing", "currency_mismatch", "operation_in_progress",
   "operation_unknown", "document_conflict", "order_closed", "document_missing", "document_exists", "mail_in_progress", "php_incompatible", "billing_email_invalid", "finance_unavailable",
   "payment_not_cleared", "zero_total_unsupported", "finance_attention", "finance_pending", "cashing_mismatch", "nothing_to_resolve", "resend_confirmation_required", "reason_required",
-  "reissue_attestation_required", "smartbill_refused", "smartbill_precheck", "mail_refused", "revision_changed", "order_busy", "not_received", "invoice_disabled",
+  "reissue_attestation_required", "smartbill_refused", "smartbill_precheck", "smartbill_unreachable", "mail_refused", "revision_changed", "order_busy", "not_received", "invoice_disabled",
   // API 2.44.0 / YD SOFT 2.18.0
   "not_assigned", "assigned_to_other", "qr_not_verified", "ticket_missing", "advance_not_verified", "final_document_not_invoice", "proforma_operation_unknown", "proforma_invoiced",
   "proforma_status_unknown", "proforma_series_missing", "advance_not_required", "advance_already_collected", "proforma_exists", "proforma_missing", "proforma_outdated",

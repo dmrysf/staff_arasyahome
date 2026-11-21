@@ -9,7 +9,7 @@ import { when } from "./ConfirmareParts";
 /** The cycle states a person may run now (the worker runs them too); closed cycles only show. */
 const RUNNABLE: readonly ProformaCycle["state"][] = ["issue_pending", "mail_pending", "running", "waiting_bank_check", "cancel_pending", "cancel_unknown", "order_cancel_pending"];
 const CLOSED_REASONS = ["advance_received", "proforma_expired", "proforma_replaced", "proforma_cancelled", "proforma_missing", "order_closed", "cancel_not_confirmed", "proforma_unsupported", ...RETRYABLE_CLOSED] as const;
-const ERRORS = ["internal_error", "invoice_disabled", "shop_unreachable", "issue_unknown", "mail_unknown", "rate_limited"] as const;
+const ERRORS = ["internal_error", "invoice_disabled", "shop_unreachable", "issue_unknown", "mail_unknown", "rate_limited", "smartbill_unreachable"] as const;
 
 const stateTone = (state: ProformaCycle["state"]): Tone =>
   state === "paid" ? "success" : state === "cancelled" || state === "cancel_unknown" ? "danger" : state === "closed" ? "neutral" : state === "waiting_bank_check" || state === "waiting_finance" ? "warning" : "info";

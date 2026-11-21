@@ -76,7 +76,7 @@ final class ConfirmareCycles
      * reads the shop's proforma first, re-sends an existing proforma instead of issuing another, and stops on any unknown
      * outcome. Paid, cancelled, expired, replaced, missing or unknown cycles are never retried.
      */
-    public const RETRYABLE_CLOSED = ['smartbill_refused', 'smartbill_precheck', 'smartbill_rate_limited', 'mail_refused', 'mail_rate_limited',
+    public const RETRYABLE_CLOSED = ['smartbill_refused', 'smartbill_precheck', 'smartbill_rate_limited', 'smartbill_unreachable', 'mail_refused', 'mail_rate_limited',
         'proforma_bank_missing', 'proforma_series_missing', 'proforma_series_not_approved', 'smartbill_company_not_approved', 'billing_email_invalid'];
     public const TABLES = ['confirmare_proforma_cycles', 'confirmare_cycle_steps', 'confirmare_bank_checks', 'confirmare_reactivations', 'invoice_efactura_tasks', 'order_source_operations'];
     public const OPEN_STATES = ['issue_pending', 'mail_pending', 'running', 'waiting_bank_check', 'waiting_finance', 'cancel_pending', 'cancel_unknown', 'order_cancel_pending'];
@@ -479,8 +479,9 @@ final class ConfirmareCycles
             $this->update($cycle, ['last_error' => 'invoice_disabled', 'attempts' => (int) $cycle['attempts'] + 1]);
             return false;
         }
-        // R3 (2026-10-26): SmartBill asked to wait (429): nothing is sent to it before the wait is over.
-        if ($cycle['last_error'] === 'rate_limited'
+        // R3 (2026-10-26): SmartBill asked to wait (429): nothing is sent to it before the wait is over. API 2.77.2: the same
+        // wait after SmartBill could not be reached at all.
+        if (in_array($cycle['last_error'], ['rate_limited', 'smartbill_unreachable'], true)
             && (new DateTimeImmutable((string) $cycle['updated_at'], new DateTimeZone('UTC')))->modify('+' . self::RATE_LIMIT_WAIT_SECONDS . ' seconds') > $this->clock->now()) {
             return false;
         }
@@ -719,14 +720,16 @@ final class ConfirmareCycles
                 $refusal = null;
             }
             if ($refusal !== null) {
-                if (in_array($refusal['code'], ['smartbill_rate_limited', 'mail_rate_limited'], true) && (int) $cycle['attempts'] < self::RATE_LIMIT_RETRIES
+                if (in_array($refusal['code'], ['smartbill_rate_limited', 'mail_rate_limited', 'smartbill_unreachable'], true) && (int) $cycle['attempts'] < self::RATE_LIMIT_RETRIES
                     && (int) ($refusal['retryAfter'] ?? 60) <= self::RATE_LIMIT_WAIT_SECONDS) {
                     // R3 (2026-10-26): SmartBill answered 429 to exactly one call (the shop counts the calls; more than one or no
                     // answer is `unknown`, never this code): nothing was made or sent. The same step is asked again under a
                     // new key after the wait, at most RATE_LIMIT_RETRIES times; then the cycle closes as rate-limited and
                     // its operator may start it again (retryForActor).
+                    // API 2.77.2 (owner crisis 7): SmartBill unreachable (DNS, no connection; the request never left the shop) is
+                    // waited for and asked again the same way.
                     $this->forgetStep($cycleUuid, $step);
-                    $this->update($cycle, ['last_error' => 'rate_limited', 'attempts' => (int) $cycle['attempts'] + 1]);
+                    $this->update($cycle, ['last_error' => $refusal['code'] === 'smartbill_unreachable' ? 'smartbill_unreachable' : 'rate_limited', 'attempts' => (int) $cycle['attempts'] + 1]);
                     return false;
                 }
                 if (in_array($refusal['code'], ['revision_changed', 'order_busy', 'operation_in_progress'], true)) {
