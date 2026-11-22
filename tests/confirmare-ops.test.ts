@@ -7,7 +7,7 @@ import { confirmareErrorKey } from "../domain/confirmare";
 import { cardRefundEntries, verifiableEntries, type FinanceView } from "../domain/confirmareFinance";
 import {
   CYCLE_STATES, EFACTURA_STATES, EXPIRY_BLOCKERS, HOLD_REASONS, HOLD_RELEASE_REASONS, OPS_BLOCKERS, mapBankCheckPreview, mapCycleAttention, mapFinanceHold, mapFinanceReview, REACTIVATION_REASONS, blockerKey, canRecordBankCheck, canUseShopTasks, canWatchHealth, hoursUntil, mapBankChecks, mapContactCycle,
-  mapEfacturaQueue, mapHealth, mapOperationOutcome, mapOperationsState, mapOrderCycle, opsErrorKey, recentAwbsOf, RECENT_AWB_FLOOR, codConflictsOf,
+  mapEfacturaQueue, mapHealth, mapOperationOutcome, mapOperationsState, mapOrderCycle, opsErrorKey, recentAwbsOf, RECENT_AWB_FLOOR, codConflictsOf, exposureOf, exposureTone, mapShopOperations,
 } from "../domain/confirmareOps";
 import { canAccessRoute } from "../domain/permissions";
 import { parseStaffRoute } from "../domain/staffRoute";
@@ -334,8 +334,32 @@ test("Staff 2.52.3: AWB_DUPLICATE_COD_RISK names the FAN Courier AWBs already co
   ] });
   assert.equal(details.editReason, "awb_duplicate_cod_risk");
   assert.deepEqual(codConflictsOf(details.codConflicts), [
-    { awb: "2150900000101", date: "2026-11-12 09:51", cod: "301.25", parcels: 1 },
-    { awb: "2150900000102", date: "2026-11-16 16:08", cod: "1210.40", parcels: 2 },
+    { awb: "2150900000101", date: "2026-11-12 09:51", cod: "301.25", parcels: 1, kind: "duplicate", status: null, reprint: "fan_panel" },
+    { awb: "2150900000102", date: "2026-11-16 16:08", cod: "1210.40", parcels: 2, kind: "duplicate", status: null, reprint: "fan_panel" },
   ]);
   assert.deepEqual(codConflictsOf("x"), []);
+});
+
+test("Staff 2.53.0: the AWB safety state is green, yellow, red or blue, read strictly; older APIs show a check is needed", () => {
+  assert.equal(exposureTone("verified"), "success");
+  assert.equal(exposureTone("review"), "warning");
+  assert.equal(exposureTone("unknown"), "warning");
+  assert.equal(exposureTone("duplicate"), "danger");
+  assert.equal(exposureTone("existing"), "info");
+  assert.deepEqual(exposureOf(undefined), { state: "unknown", checkedAt: null, conflicts: [] });
+  assert.deepEqual(exposureOf({ state: "bogus" }).state, "unknown");
+  const e = exposureOf({ state: "duplicate", checkedAt: "2026-11-22T12:00:00Z", conflicts: [{ awb: "2150900000101", date: "2026-11-12 09:51", cod: "301.25", parcels: 2, kind: "duplicate", status: "delivered", reprint: "fan_panel" },
+    { awb: "2150900000102", date: "2026-11-12 10:00", cod: "12.34", parcels: 1, kind: "review", status: "teleported", reprint: "staff" }] });
+  assert.equal(e.state, "duplicate");
+  assert.deepEqual(e.conflicts.map((c) => [c.kind, c.status, c.reprint]), [["duplicate", "delivered", "fan_panel"], ["review", null, "staff"]]);
+  const shop = mapShopOperations({ features: { awb: "enforce" }, orderStatus: "processing", awb: { state: "none", number: null, createdAt: null, delivered: false, cod: "301.25", codCheck: null, blockers: [], address: [], pickup: "not_tracked" }, cardRefund: { available: false, transactions: 0, requests: [] } });
+  assert.equal(shop.awb.exposure.state, "unknown", "an API without the exposure field: check needed, never green");
+  for (const [locale, catalog] of Object.entries(CATALOGS)) {
+    for (const key of ["cf.ops.exposure.verified", "cf.ops.exposure.review", "cf.ops.exposure.duplicate", "cf.ops.exposure.existing", "cf.ops.exposure.unknown", "cf.ops.blocker.awb_cod_review_required",
+      "cf.ops.exposure.status.delivered", "cf.ops.exposure.status.in_transit", "cf.ops.exposure.status.returned", "cf.ops.exposure.status.registered", "cf.ops.exposure.status.unknown", "cf.ops.exposure.reprintStaff", "cf.ops.exposure.reprintPanel", "cf.ops.exposure.kindDuplicate", "cf.ops.exposure.kindReview"]) {
+      assert.ok(typeof (catalog as unknown as Record<string, string>)[key] === "string", `${locale} ${key}`);
+    }
+  }
+  const ro = (CATALOGS as unknown as Record<string, Record<string, string>>).ro;
+  assert.deepEqual([ro["cf.ops.exposure.verified"], ro["cf.ops.exposure.review"], ro["cf.ops.exposure.duplicate"], ro["cf.ops.exposure.existing"]], ["Expediere verificată", "Necesită verificare", "Risc de încasare duplicată", "AWB deja existent"]);
 });

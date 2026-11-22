@@ -1446,7 +1446,11 @@ final class SourceAccessFakeShop implements SourceAccessTransport
                 // YD SOFT 2.32.0: a SelfAWB panel AWB already collects for this customer; FAN Courier is not asked. One
                 // malformed entry checks that Arasya drops what it cannot validate.
                 return $keep(409, ['error' => ['code' => 'awb_duplicate_cod_risk'], 'blockers' => ['awb_duplicate_cod_risk'], 'message' => 'Generarea AWB-ului a fost blocată.',
-                    'conflicts' => [['awb' => '2150900000101', 'date' => '2026-11-12 09:51', 'cod' => $o['owed'], 'parcels' => 2], ['awb' => 'x<script>', 'date' => 'now', 'cod' => '1', 'parcels' => 1, 'name' => 'Client']], 'state' => $state()]);
+                    'conflicts' => [['awb' => '2150900000101', 'date' => '2026-11-12 09:51', 'cod' => $o['owed'], 'parcels' => 2, 'kind' => 'duplicate', 'status' => 'delivered', 'reprint' => 'fan_panel'], ['awb' => 'x<script>', 'date' => 'now', 'cod' => '1', 'parcels' => 1, 'name' => 'Client']], 'state' => $state()]);
+            }
+            if ($outcome === 'review_cod') {
+                return $keep(409, ['error' => ['code' => 'awb_cod_review_required'], 'blockers' => ['awb_cod_review_required'], 'message' => 'Verificare necesară.',
+                    'conflicts' => [['awb' => '2150900000102', 'date' => '2026-11-12 10:00', 'cod' => '12.34', 'parcels' => 1, 'kind' => 'review', 'status' => 'bogus', 'reprint' => 'staff']], 'state' => $state()]);
             }
             $this->fanAwbs[$orderId] = ($this->fanAwbs[$orderId] ?? 0) + 1;
             if ($outcome === 'unknown') {
@@ -1546,7 +1550,9 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             'awb' => ['state' => $o['awb'] !== null ? 'created' : (($o['awbUnknown'] ?? false) ? 'unknown' : 'none'), 'number' => $o['awb']['number'] ?? null, 'createdAt' => isset($o['awb']) ? $iso($o['awb']['at']) : null,
                 'status' => null, 'delivered' => false, 'cod' => $o['owed'], 'codCheck' => ['state' => $o['awb'] !== null ? ($o['awb']['cod'] === $o['owed'] ? 'match' : 'mismatch') : 'none', 'awb' => $o['awb']['number'] ?? null, 'awbCod' => $o['awb']['cod'] ?? null, 'expected' => $o['owed'], 'status' => null,
                     'corrected' => (bool) ($o['awb']['corrected'] ?? false)],
-                'blockers' => $o['awb'] !== null ? ($o['awb']['cod'] === $o['owed'] ? ['awb_exists'] : ['awb_exists', 'cod_mismatch']) : [], 'address' => array_map(static fn (array $a): array => ['kind' => $a['kind'], 'at' => $iso($a['at']), 'by' => $a['by']], $o['address']), 'pickup' => 'not_tracked'],
+                'blockers' => $o['awb'] !== null ? ($o['awb']['cod'] === $o['owed'] ? ['awb_exists'] : ['awb_exists', 'cod_mismatch']) : [], 'address' => array_map(static fn (array $a): array => ['kind' => $a['kind'], 'at' => $iso($a['at']), 'by' => $a['by']], $o['address']), 'pickup' => 'not_tracked',
+                // YD SOFT 2.33.0: the exposure seen before an AWB (TEST: verified, or what a test set in `exposure`).
+                'exposure' => $o['awb'] !== null ? ['state' => 'existing', 'checkedAt' => null, 'conflicts' => []] : ($o['exposure'] ?? ['state' => 'verified', 'checkedAt' => $iso($now), 'conflicts' => []])],
             'cardRefund' => ['available' => $o['netopia'] > 0, 'transactions' => $o['netopia'], 'requests' => array_map(static fn (array $r): array => ['state' => $r['state'], 'at' => $iso($r['at']), 'by' => $r['by'], 'amount' => $r['amount'], 'currency' => 'RON',
                 'transactions' => $r['transactions'], 'reason' => 'no_refund_api', 'completedAt' => $r['completedAt'] === null ? null : $iso($r['completedAt']), 'mailed' => $r['mailed']], $o['refunds'])],
             'reactivations' => array_map(static fn (array $r): array => ['at' => $iso($r['at']), 'by' => $r['by'], 'reason' => $r['reason'], 'payment' => $r['exception'] !== null], $o['reactivations'])];

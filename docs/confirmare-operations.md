@@ -317,3 +317,23 @@ The employee cannot override the refusal. Technical support checks the AWB in th
 belongs to another order, support records that with `wp yd-arasya awb external-reviewed` on the shop; the record is
 audited. When the AWB is a real duplicate, it is deleted in FAN Courier, which is possible only before pickup and only
 with the owner's approval.
+
+### Match classes, review and screen state (API 2.78.0, Staff 2.53.0, YD SOFT 2.33.0)
+
+The shop classifies each candidate FAN Courier AWB against the order and the customer's other orders in the same shop:
+
+- **Exact (this order's).** One of these is true:
+  - the AWB carries YD SOFT's marker of the order;
+  - the order number is written on the AWB;
+  - the amount is one of the order's amounts (owed, total, total less the advance) and the name or street matches, or
+    the customer has no other order.
+  The shop refuses with `awb_duplicate_cod_risk`. This can never be reviewed away.
+- **Attributed (another order's).** Another order's number is written on the AWB, or the amount is only another order's.
+  The AWB is not counted, so the customer's other orders ship normally.
+- **Uncertain.** Anything else. The shop refuses with `awb_cod_review_required` until an authorized person reviews that
+  one AWB for that one order on the shop (WP-CLI, with the reviewer named and a written reason). The review stops counting
+  when the AWB's amount or day changes, and it can be revoked.
+
+The AWB screen shows the exposure before any click. The shop computes it from its registry: finished days are cached, and
+today's snapshot is refreshed every 15 minutes by the shop's system cron. A snapshot older than 20 minutes shows "check
+needed". The check made when the employee asks for an AWB always reads today's list live from FAN Courier.
