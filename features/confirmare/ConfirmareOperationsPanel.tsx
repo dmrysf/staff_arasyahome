@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useI18n, type MessageKey } from "../../i18n";
 import type { ConfirmareApi } from "../../domain/confirmare";
 import { cardRefundEntries, formatFinanceMoney, normalizeAmount, validReference, type FinanceEntry } from "../../domain/confirmareFinance";
-import { REACTIVATION_REASONS, blockerKey, opsErrorKey, type OperationOutcome, type OperationPath, type OperationsState, type ReactivationReason } from "../../domain/confirmareOps";
+import { REACTIVATION_REASONS, blockerKey, codConflictsOf, opsErrorKey, type OperationOutcome, type OperationPath, type OperationsState, type ReactivationReason } from "../../domain/confirmareOps";
 import { createIdempotencyKey } from "../../services/idempotency";
 import { getErrorPresentation, toServiceError } from "../../services/errors";
 import { AppIcon } from "../../components/icons/AppIcon";
@@ -88,7 +88,10 @@ export function ConfirmareOperationsPanel({ globalOrderId, service, mode = "orde
     const failed = toServiceError(caught);
     const code = typeof failed.details?.backendCode === "string" ? failed.details.backendCode : undefined;
     const key = opsErrorKey(code, failed.details?.editReason);
-    return key ? t(key) : getErrorPresentation(failed).message;
+    // API 2.77.3: the FAN Courier AWBs already collecting for the customer are named (never a second AWB on top).
+    const conflicts = codConflictsOf(failed.details?.codConflicts);
+    const named = conflicts.length > 0 ? " " + t("cf.ops.awb.conflicts", { list: conflicts.map((c) => t("cf.ops.awb.conflictItem", { awb: c.awb, amount: formatFinanceMoney(c.cod, "RON"), date: c.date, parcels: String(c.parcels) })).join("; ") }) : "";
+    return (key ? t(key) : getErrorPresentation(failed).message) + named;
   };
 
   /** One idempotency key per intent: a retried click replays the same operation, never a second one. */
@@ -202,6 +205,7 @@ export function ConfirmareOperationsPanel({ globalOrderId, service, mode = "orde
         </div>
         {!state.awbStage && awb.state === "none" && <Notice tone="info" role="note" testId="cf-ops-awb-stage">{t("cf.ops.awb.stage")}</Notice>}
         {awb.cod !== null && <p className="cf-line-facts" data-testid="cf-ops-awb-cod">{t("cf.ops.awb.cod", { amount: formatFinanceMoney(awb.cod, currency) })}</p>}
+        {awb.cod !== null && <p className="dashboard-footnote" data-testid="cf-ops-awb-cod-whole">{t("cf.ops.awb.codWhole")}</p>}
         {awb.codCheck && awb.codCheck.state === "mismatch" && <Notice tone="danger" role="alert" testId="cf-ops-awb-mismatch">{t("cf.ops.awb.mismatch", { awb: formatFinanceMoney(awb.codCheck.awbCod, currency), expected: formatFinanceMoney(awb.codCheck.expected, currency) })}</Notice>}
         {awb.codCheck && awb.codCheck.state === "match" && awb.codCheck.corrected && <p className="dashboard-footnote" data-testid="cf-ops-awb-corrected">{t("cf.ops.awb.corrected")}</p>}
         {/* API 2.50.0: the label stops while the AWB collects another amount; the employee states the FAN Courier correction. */}

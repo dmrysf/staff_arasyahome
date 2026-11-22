@@ -292,3 +292,28 @@ Changes:
 
 Run by hand: `php bin/confirmare-awb-readiness.php [--apply] [--source=trendhome|outletperdele]`. Without `--apply`
 it is a dry run: it writes only the shop read audit. The command prints order numbers and codes only.
+
+## Duplicate cash-on-delivery guard (API 2.77.3, Staff 2.52.3, YD SOFT 2.32.0, 2026-11-22)
+
+One order is one FAN Courier shipment: one AWB, any number of parcels (`packages.parcel`) and one cash on delivery for
+the whole AWB. FAN Courier prints that total on every parcel's label of the AWB. The label repeats the amount; it is
+still one collection.
+
+The shops share one FAN Courier client with the FAN Courier SelfAWB panel, and an AWB made there never reaches YD SOFT.
+Since YD SOFT 2.32.0 the shop checks FAN Courier's own AWB list before every AWB, whatever path asks for it. It looks
+for another AWB with cash on delivery, to one of the order's telephone numbers, made since the order was placed.
+Returned AWBs (FAN Courier's "Retur", S43) do not count, and neither do other orders' YD SOFT AWBs or this order's
+cancelled AWBs.
+
+If such an AWB exists, the shop refuses with `awb_duplicate_cod_risk` and names those AWBs. Arasya passes on only their
+number, day, amount and parcels in `details.conflicts`. Staff then shows:
+
+> Generarea AWB-ului a fost blocată. Există riscul unei încasări ramburs duplicate pentru această comandă.
+
+If FAN Courier's list cannot be read, the shop refuses with `awb_cod_check_unavailable`; the employee tries again later.
+Nothing is guessed.
+
+The employee cannot override the refusal. Technical support checks the AWB in the FAN Courier panel. When the AWB
+belongs to another order, support records that with `wp yd-arasya awb external-reviewed` on the shop; the record is
+audited. When the AWB is a real duplicate, it is deleted in FAN Courier, which is possible only before pickup and only
+with the owner's approval.

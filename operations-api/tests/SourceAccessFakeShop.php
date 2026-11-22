@@ -1442,6 +1442,12 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             if ($outcome === 'refused') {
                 return $keep(409, ['error' => ['code' => 'awb_refused'], 'blockers' => ['awb_refused'], 'state' => $state()]);
             }
+            if ($outcome === 'duplicate_cod') {
+                // YD SOFT 2.32.0: a SelfAWB panel AWB already collects for this customer; FAN Courier is not asked. One
+                // malformed entry checks that Arasya drops what it cannot validate.
+                return $keep(409, ['error' => ['code' => 'awb_duplicate_cod_risk'], 'blockers' => ['awb_duplicate_cod_risk'], 'message' => 'Generarea AWB-ului a fost blocată.',
+                    'conflicts' => [['awb' => '2150900000101', 'date' => '2026-11-12 09:51', 'cod' => $o['owed'], 'parcels' => 2], ['awb' => 'x<script>', 'date' => 'now', 'cod' => '1', 'parcels' => 1, 'name' => 'Client']], 'state' => $state()]);
+            }
             $this->fanAwbs[$orderId] = ($this->fanAwbs[$orderId] ?? 0) + 1;
             if ($outcome === 'unknown') {
                 $o['awbUnknown'] = true;

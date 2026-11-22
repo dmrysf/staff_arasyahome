@@ -355,7 +355,20 @@ export const OPS_BLOCKERS = [
   "finance_attention", "address_incomplete", "phone_missing", "shipping_mismatch", "awb_exists", "awb_unavailable", "cod_changed", "cod_mismatch", "cod_not_mismatched", "awb_refused", "awb_missing", "label_unavailable",
   "address_task_missing", "address_task_open", "not_card_payment", "card_payment_unverified", "nothing_to_refund", "refund_request_missing", "refund_pending", "finance_open",
   "amount_exceeds_received", "duplicate_reference", "entry_not_found", "entry_not_pending", "same_employee", "refund_record_failed", "not_received", "order_busy", "finance_unavailable",
+  "awb_duplicate_cod_risk", "awb_cod_check_unavailable",
 ] as const;
+
+/** API 2.77.3: a FAN Courier AWB already collecting for the customer, named when the shop refused a new one. */
+export interface CodConflict { awb: string; date: string; cod: string; parcels: number }
+
+export function codConflictsOf(value: unknown): CodConflict[] {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 10).filter((c): c is CodConflict => c !== null && typeof c === "object"
+    && typeof (c as CodConflict).awb === "string" && /^\d{6,20}$/.test((c as CodConflict).awb)
+    && typeof (c as CodConflict).cod === "string" && /^\d{1,9}\.\d{2}$/.test((c as CodConflict).cod)
+    && typeof (c as CodConflict).date === "string" && /^\d{4}-\d{2}-\d{2}( \d{2}:\d{2})?$/.test((c as CodConflict).date)
+    && Number.isInteger((c as CodConflict).parcels)).map(({ awb, date, cod, parcels }) => ({ awb, date, cod, parcels }));
+}
 
 export const blockerKey = (code: string): MessageKey => ((OPS_BLOCKERS as readonly string[]).includes(code) ? `cf.ops.blocker.${code}` : "cf.ops.blocker.other") as MessageKey;
 

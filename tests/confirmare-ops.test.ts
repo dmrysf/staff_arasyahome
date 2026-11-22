@@ -7,12 +7,12 @@ import { confirmareErrorKey } from "../domain/confirmare";
 import { cardRefundEntries, verifiableEntries, type FinanceView } from "../domain/confirmareFinance";
 import {
   CYCLE_STATES, EFACTURA_STATES, EXPIRY_BLOCKERS, HOLD_REASONS, HOLD_RELEASE_REASONS, OPS_BLOCKERS, mapBankCheckPreview, mapCycleAttention, mapFinanceHold, mapFinanceReview, REACTIVATION_REASONS, blockerKey, canRecordBankCheck, canUseShopTasks, canWatchHealth, hoursUntil, mapBankChecks, mapContactCycle,
-  mapEfacturaQueue, mapHealth, mapOperationOutcome, mapOperationsState, mapOrderCycle, opsErrorKey, recentAwbsOf, RECENT_AWB_FLOOR,
+  mapEfacturaQueue, mapHealth, mapOperationOutcome, mapOperationsState, mapOrderCycle, opsErrorKey, recentAwbsOf, RECENT_AWB_FLOOR, codConflictsOf,
 } from "../domain/confirmareOps";
 import { canAccessRoute } from "../domain/permissions";
 import { parseStaffRoute } from "../domain/staffRoute";
 import type { Employee } from "../domain/models";
-import { createProductionServices, mapConfirmareDetail, mapFinanceRead } from "../services/production/httpServices";
+import { confirmareErrorDetails, createProductionServices, mapConfirmareDetail, mapFinanceRead } from "../services/production/httpServices";
 import { StaffServiceError } from "../domain/models";
 import { ConfirmareCyclePanel } from "../features/confirmare/ConfirmareCyclePanel";
 import { FinanceHoldsSection } from "../features/confirmare/ConfirmareFinanceHolds";
@@ -313,4 +313,29 @@ test("API 2.71.0 finance safety: preview, holds and the review list are read str
   // The holds section renders nothing until loaded and never offers money fields.
   const html = renderToStaticMarkup(createElement(FinanceHoldsSection, { service: api as unknown as ConfirmareApi }));
   assert.doesNotMatch(html, /amount|IBAN/i);
+});
+
+test("Staff 2.52.3: AWB_DUPLICATE_COD_RISK names the FAN Courier AWBs already collecting, in every language", () => {
+  for (const code of ["awb_duplicate_cod_risk", "awb_cod_check_unavailable"]) {
+    assert.ok((OPS_BLOCKERS as readonly string[]).includes(code));
+    assert.equal(opsErrorKey("CONFIRMARE_OPERATION_REFUSED", code), `cf.ops.blocker.${code}`);
+  }
+  for (const [locale, catalog] of Object.entries(CATALOGS)) {
+    for (const key of ["cf.ops.blocker.awb_duplicate_cod_risk", "cf.ops.blocker.awb_cod_check_unavailable", "cf.ops.awb.conflicts", "cf.ops.awb.conflictItem", "cf.ops.awb.codWhole"]) {
+      assert.ok(typeof (catalog as unknown as Record<string, string>)[key] === "string" && (catalog as unknown as Record<string, string>)[key].length > 0, `${locale} ${key}`);
+    }
+  }
+  assert.match((CATALOGS as unknown as Record<string, Record<string, string>>).ro["cf.ops.blocker.awb_duplicate_cod_risk"], /Există riscul unei încasări ramburs duplicate pentru această comandă\./);
+  assert.match((CATALOGS as unknown as Record<string, Record<string, string>>).ro["cf.ops.awb.codWhole"], /întregii expedieri, indiferent de numărul de colete/);
+  const details = confirmareErrorDetails({ reason: "awb_duplicate_cod_risk", blockers: [], conflicts: [
+    { awb: "2150900000101", date: "2026-11-12 09:51", cod: "301.25", parcels: 1 },
+    { awb: "<b>", date: "x", cod: "1", parcels: 1 },
+    { awb: "2150900000102", date: "2026-11-16 16:08", cod: "1210.40", parcels: 2, name: "Client" },
+  ] });
+  assert.equal(details.editReason, "awb_duplicate_cod_risk");
+  assert.deepEqual(codConflictsOf(details.codConflicts), [
+    { awb: "2150900000101", date: "2026-11-12 09:51", cod: "301.25", parcels: 1 },
+    { awb: "2150900000102", date: "2026-11-16 16:08", cod: "1210.40", parcels: 2 },
+  ]);
+  assert.deepEqual(codConflictsOf("x"), []);
 });
