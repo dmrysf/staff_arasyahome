@@ -18,7 +18,7 @@ import type { ShopLine, ShopLineImage, ShopOrderDetail, ShopPerson, ShopRead } f
 import { CASH_RECEIPTS, EXCEPTION_REASONS, EXCEPTION_RESOLUTIONS, FINANCE_ACTIONS, PAYMENT_METHODS, FINANCE_NEXT, FINANCE_TASKS, type ExceptionOutcome, type FinanceEntry, type FinanceOutcome, type FinanceQueue, type FinanceQueueItem, type FinanceRead, type FinanceSummary, type FinanceTask, type FinanceTimelineItem, type TransferException, type TransferExceptionList } from "../../domain/confirmareFinance";
 import { CANCEL_REASONS, INVOICE_ACTIONS, INVOICE_ROLES, PAYMENT_STATES, PROFORMA_ACTIONS, PROFORMA_KEYS, PROFORMA_ROUTE, type CodCheck, type ShippingCheck, type InvoiceDeadline, type MoneyPosition, type TotalAcceptance, type InvoiceActionKey, type InvoiceOutcome, type InvoicePaymentRead, type InvoiceRead, type InvoiceSummary, type InvoiceView, type ProformaActionKey, type ProformaSummary, type ShopAssignment, type ShopQueueItem } from "../../domain/confirmareInvoice";
 import { EDIT_IMPACTS, type EditBlocker, type EditCatalog, type EditCouponCatalog, type EditCouponLine, type EditField, type EditLineSnapshot, type EditOutcome, type EditProduct, type EditResult, type EditTotals, type EditVariation, type OpenEdit } from "../../domain/confirmareEdit";
-import { mapAwbQueue, recentAwbsOf, mapBankCheck, mapBankCheckPreview, mapBankChecks, mapFinanceHold, mapFinanceReview, mapContactCycle, mapCycleAttention, mapEfacturaQueue, mapEfacturaTask, mapHealth, mapOperationOutcome, mapOperationsState, mapOrderCycle, mapProformaCycle } from "../../domain/confirmareOps";
+import { codConflictsOf, mapAwbQueue, recentAwbsOf, mapBankCheck, mapBankCheckPreview, mapBankChecks, mapFinanceHold, mapFinanceReview, mapContactCycle, mapCycleAttention, mapEfacturaQueue, mapEfacturaTask, mapHealth, mapOperationOutcome, mapOperationsState, mapOrderCycle, mapProformaCycle } from "../../domain/confirmareOps";
 import { CLEARANCE_CONDITIONS, CONTACT_OUTCOMES, DOCUMENT_STATES, FINANCIAL_ATTENTION, HANDOFF_BLOCKERS, HANDOFF_STATES, type ConfirmareAlert, type ConfirmareApi, type ConfirmareAvailability, type ConfirmareContact, type ConfirmareCustomer, type ConfirmareDetail, type ConfirmareEvent, type ConfirmareHandoff, type ConfirmareItem, type HandoffItem, type ConfirmareLine, type ConfirmareOperator, type ConfirmarePool, type ConfirmareTeam, type FinancialState } from "../../domain/confirmare";
 
 type FetchLike = typeof fetch;
@@ -1347,6 +1347,8 @@ export function confirmareErrorDetails(value: unknown): Record<string, unknown> 
   if (Array.isArray(raw.blockers) && raw.blockers.length <= 40 && raw.blockers.every((item) => typeof item === "string" && /^[a-z_]{2,60}$/.test(item))) out.invoiceBlockers = raw.blockers;
   // Phase 5: the shop's current finance revision after a refused finance action (`reason` is editReason above).
   if (typeof raw.revision === "string" && /^sha256:[0-9a-f]{64}$/.test(raw.revision)) out.financeRevision = raw.revision;
+  // API 2.77.3: the FAN Courier AWBs behind AWB_DUPLICATE_COD_RISK (number, day, amount, parcels only).
+  if (Array.isArray(raw.conflicts)) out.codConflicts = codConflictsOf(raw.conflicts);
   return out;
 }
 

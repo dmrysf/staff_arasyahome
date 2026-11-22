@@ -57,7 +57,10 @@ export interface BankChecks { items: BankCheck[]; waiting: Record<string, number
 export interface ShopAwb {
   state: "none" | "created" | "unknown"; number: string | null; createdAt: string | null; delivered: boolean; cod: string | null;
   codCheck: { state: string; awbCod: string | null; expected: string | null; corrected: boolean } | null; blockers: string[]; address: { kind: "task" | "done"; at: string | null }[]; pickup: "not_tracked";
+  /** Staff 2.53.0: the cash-on-delivery exposure the shop saw before an AWB (older APIs: unknown). */
+  exposure: AwbExposure;
 }
+export interface AwbExposure { state: "existing" | "verified" | "review" | "duplicate" | "unknown"; checkedAt: string | null; conflicts: CodConflict[] }
 export interface ShopCardRefund { available: boolean; transactions: number; requests: { state: "manual_required" | "completed" | "unknown"; at: string | null; amount: string | null; transactions: number; verified: number; completedAt: string | null; mailed: boolean }[] }
 export interface ShopOperations { features: { reactivation?: string; awb?: string; cardRefunds?: string }; orderStatus: string | null; awb: ShopAwb; cardRefund: ShopCardRefund }
 export interface Reactivation { sequence: number; kind: "ordinary" | "paid_exception"; reason: ReactivationReason; state: string; by: string; at: string; completedAt: string | null }
@@ -254,6 +257,7 @@ export function mapShopOperations(value: unknown): ShopOperations {
       codCheck: check === null ? null : { state: str(check.state, 20), awbCod: money(check.awbCod), expected: money(check.expected), corrected: check.corrected == null ? false : bool(check.corrected) },
       blockers: list(awb.blockers, 30, (entry) => code(entry) ?? fail()), address: list(awb.address, 10, (entry) => { const a = obj(entry); return { kind: oneOf(a.kind, ["task", "done"] as const), at: instant(a.at) }; }),
       pickup: "not_tracked",
+      exposure: exposureOf(awb.exposure),
     },
     cardRefund: {
       available: bool(refund.available), transactions: int(refund.transactions),
@@ -355,7 +359,44 @@ export const OPS_BLOCKERS = [
   "finance_attention", "address_incomplete", "phone_missing", "shipping_mismatch", "awb_exists", "awb_unavailable", "cod_changed", "cod_mismatch", "cod_not_mismatched", "awb_refused", "awb_missing", "label_unavailable",
   "address_task_missing", "address_task_open", "not_card_payment", "card_payment_unverified", "nothing_to_refund", "refund_request_missing", "refund_pending", "finance_open",
   "amount_exceeds_received", "duplicate_reference", "entry_not_found", "entry_not_pending", "same_employee", "refund_record_failed", "not_received", "order_busy", "finance_unavailable",
+  "awb_duplicate_cod_risk", "awb_cod_check_unavailable", "awb_cod_review_required",
 ] as const;
+
+/**
+ * API 2.77.3/2.78.0: a FAN Courier AWB already collecting for the customer, named by the shop: this order's (`duplicate`) or
+ * waiting for an authorized review (`review`), FAN Courier's last state, and where its label can be printed again.
+ */
+export interface CodConflict { awb: string; date: string; cod: string; parcels: number; kind: "duplicate" | "review"; status: "delivered" | "in_transit" | "returned" | "registered" | null; reprint: "staff" | "fan_panel" }
+
+const CONFLICT_STATUSES = ["delivered", "in_transit", "returned", "registered"] as const;
+
+export function codConflictsOf(value: unknown): CodConflict[] {
+  if (!Array.isArray(value)) return [];
+  const out: CodConflict[] = [];
+  for (const entry of value.slice(0, 10)) {
+    if (entry === null || typeof entry !== "object") continue;
+    const c = entry as Record<string, unknown>;
+    if (typeof c.awb !== "string" || !/^\d{6,20}$/.test(c.awb) || typeof c.cod !== "string" || !/^\d{1,9}\.\d{2}$/.test(c.cod)
+      || typeof c.date !== "string" || !/^\d{4}-\d{2}-\d{2}( \d{2}:\d{2})?$/.test(c.date) || !Number.isInteger(c.parcels)) continue;
+    out.push({ awb: c.awb, date: c.date, cod: c.cod, parcels: c.parcels as number, kind: c.kind === "review" ? "review" : "duplicate",
+      status: (CONFLICT_STATUSES as readonly unknown[]).includes(c.status) ? c.status as CodConflict["status"] : null, reprint: c.reprint === "staff" ? "staff" : "fan_panel" });
+  }
+  return out;
+}
+
+const EXPOSURE_STATES = ["existing", "verified", "review", "duplicate", "unknown"] as const;
+
+export function exposureOf(value: unknown): AwbExposure {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return { state: "unknown", checkedAt: null, conflicts: [] };
+  const raw = value as Record<string, unknown>;
+  const state = (EXPOSURE_STATES as readonly unknown[]).includes(raw.state) ? raw.state as AwbExposure["state"] : "unknown";
+  return { state, checkedAt: typeof raw.checkedAt === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(raw.checkedAt) ? raw.checkedAt : null, conflicts: codConflictsOf(raw.conflicts) };
+}
+
+/** Staff 2.53.0: the colour of the AWB safety state (green verified, yellow check needed, red duplicate risk, blue existing AWB). */
+export function exposureTone(state: AwbExposure["state"]): "success" | "warning" | "danger" | "info" {
+  return state === "verified" ? "success" : state === "duplicate" ? "danger" : state === "existing" ? "info" : "warning";
+}
 
 export const blockerKey = (code: string): MessageKey => ((OPS_BLOCKERS as readonly string[]).includes(code) ? `cf.ops.blocker.${code}` : "cf.ops.blocker.other") as MessageKey;
 

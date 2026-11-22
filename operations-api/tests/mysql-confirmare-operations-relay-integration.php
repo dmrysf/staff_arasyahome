@@ -298,6 +298,28 @@ $s2 = $state($who['cdoc'], $g(2));
 $check($s2['available'] && $s2['awbStage'] && $s2['allowed']['awb'] && $s2['shop']['awb']['state'] === 'none' && $s2['shop']['awb']['cod'] === '503.30', 'the employee reads the collection the shop computed (what is still owed): ' . json_encode($s2['shop']['awb'] ?? null));
 $changed = $operate($who['cdoc'], $g(2), 'awb', ['parcels' => 3, 'expectedCod' => '500.00']);
 $check($changed['status'] === 409 && ($changed['body']['error']['details']['reason'] ?? '') === 'cod_changed' && ($th->fanAwbs[$id(2)] ?? 0) === 0, 'an amount the employee did not see is refused; FAN Courier is not asked');
+// API 2.77.3 (YD SOFT 2.32.0): another live cash-on-delivery AWB for the customer (FAN Courier's SelfAWB panel): refused before
+// FAN Courier, the AWB named for the employee, nothing about the customer relayed.
+$th->awbOutcome = 'duplicate_cod';
+$dup = $operate($who['cdoc'], $g(2), 'awb', ['parcels' => 2, 'expectedCod' => '503.30']);
+$check($dup['status'] === 409 && ($dup['body']['error']['code'] ?? '') === 'CONFIRMARE_OPERATION_REFUSED' && ($dup['body']['error']['details']['reason'] ?? '') === 'awb_duplicate_cod_risk'
+    && ($dup['body']['error']['details']['conflicts'] ?? null) === [['awb' => '2150900000101', 'date' => '2026-11-12 09:51', 'cod' => '503.30', 'parcels' => 2, 'kind' => 'duplicate', 'status' => 'delivered', 'reprint' => 'fan_panel']] && ($th->fanAwbs[$id(2)] ?? 0) === 0,
+    'a second cash-on-delivery AWB for the customer is refused (AWB_DUPLICATE_COD_RISK): the panel AWB named, malformed entries dropped, FAN Courier not asked: ' . json_encode($dup['body']['error']['details'] ?? null));
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+// API 2.78.0: an AWB that cannot be attributed safely waits for an authorized review; unknown values are normalised.
+$th->awbOutcome = 'review_cod';
+$rev = $operate($who['cdoc'], $g(2), 'awb', ['parcels' => 1, 'expectedCod' => '503.30']);
+$check($rev['status'] === 409 && ($rev['body']['error']['details']['reason'] ?? '') === 'awb_cod_review_required'
+    && ($rev['body']['error']['details']['conflicts'] ?? null) === [['awb' => '2150900000102', 'date' => '2026-11-12 10:00', 'cod' => '12.34', 'parcels' => 1, 'kind' => 'review', 'status' => null, 'reprint' => 'staff']] && ($th->fanAwbs[$id(2)] ?? 0) === 0,
+    'an AWB needing an authorized review is refused (AWB_COD_REVIEW_REQUIRED), FAN Courier not asked: ' . json_encode($rev['body']['error']['details'] ?? null));
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$th->orders[$id(2)]['ops']['exposure'] = ['state' => 'duplicate', 'checkedAt' => '2026-11-22T12:00:00Z', 'conflicts' => [['awb' => '2150900000101', 'date' => '2026-11-12 09:51', 'cod' => '503.30', 'parcels' => 2, 'kind' => 'duplicate', 'status' => 'delivered', 'reprint' => 'fan_panel']]];
+$exp = $state($who['cdoc'], $g(2))['shop']['awb']['exposure'] ?? null;
+$check(is_array($exp) && $exp['state'] === 'duplicate' && $exp['checkedAt'] === '2026-11-22T12:00:00Z' && ($exp['conflicts'][0]['awb'] ?? '') === '2150900000101', 'the AWB screen state carries the shop\'s exposure (red before any click): ' . json_encode($exp));
+$th->orders[$id(2)]['ops']['exposure'] = ['state' => 'nonsense'];
+$check(($state($who['cdoc'], $g(2))['shop']['awb']['exposure']['state'] ?? '') === 'unknown', 'an exposure state Arasya does not know is shown as unknown (check needed)');
+unset($th->orders[$id(2)]['ops']['exposure']);
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
 $awbKey = 'ops-awb-' . bin2hex(random_bytes(10));
 $th->awbOutcome = 'lost';
 $lost = $ok($operate($who['cdoc'], $g(2), 'awb', ['parcels' => 3, 'expectedCod' => '503.30'], $awbKey), 'AWB: FAN Courier made it, the answer was lost');

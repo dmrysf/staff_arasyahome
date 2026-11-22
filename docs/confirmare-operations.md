@@ -292,3 +292,48 @@ Changes:
 
 Run by hand: `php bin/confirmare-awb-readiness.php [--apply] [--source=trendhome|outletperdele]`. Without `--apply`
 it is a dry run: it writes only the shop read audit. The command prints order numbers and codes only.
+
+## Duplicate cash-on-delivery guard (API 2.77.3, Staff 2.52.3, YD SOFT 2.32.0, 2026-11-22)
+
+One order is one FAN Courier shipment: one AWB, any number of parcels (`packages.parcel`) and one cash on delivery for
+the whole AWB. FAN Courier prints that total on every parcel's label of the AWB. The label repeats the amount; it is
+still one collection.
+
+The shops share one FAN Courier client with the FAN Courier SelfAWB panel, and an AWB made there never reaches YD SOFT.
+Since YD SOFT 2.32.0 the shop checks FAN Courier's own AWB list before every AWB, whatever path asks for it. It looks
+for another AWB with cash on delivery, to one of the order's telephone numbers, made since the order was placed.
+Returned AWBs (FAN Courier's "Retur", S43) do not count, and neither do other orders' YD SOFT AWBs or this order's
+cancelled AWBs.
+
+If such an AWB exists, the shop refuses with `awb_duplicate_cod_risk` and names those AWBs. Arasya passes on only their
+number, day, amount and parcels in `details.conflicts`. Staff then shows:
+
+> Generarea AWB-ului a fost blocată. Există riscul unei încasări ramburs duplicate pentru această comandă.
+
+If FAN Courier's list cannot be read, the shop refuses with `awb_cod_check_unavailable`; the employee tries again later.
+Nothing is guessed.
+
+The employee cannot override the refusal. Technical support checks the AWB in the FAN Courier panel. When the AWB
+belongs to another order, support records that with `wp yd-arasya awb external-reviewed` on the shop; the record is
+audited. When the AWB is a real duplicate, it is deleted in FAN Courier, which is possible only before pickup and only
+with the owner's approval.
+
+### Match classes, review and screen state (API 2.78.0, Staff 2.53.0, YD SOFT 2.33.0)
+
+The shop classifies each candidate FAN Courier AWB against the order and the customer's other orders in the same shop:
+
+- **Exact (this order's).** One of these is true:
+  - the AWB carries YD SOFT's marker of the order;
+  - the order number is written on the AWB;
+  - the amount is one of the order's amounts (owed, total, total less the advance) and the name or street matches, or
+    the customer has no other order.
+  The shop refuses with `awb_duplicate_cod_risk`. This can never be reviewed away.
+- **Attributed (another order's).** Another order's number is written on the AWB, or the amount is only another order's.
+  The AWB is not counted, so the customer's other orders ship normally.
+- **Uncertain.** Anything else. The shop refuses with `awb_cod_review_required` until an authorized person reviews that
+  one AWB for that one order on the shop (WP-CLI, with the reviewer named and a written reason). The review stops counting
+  when the AWB's amount or day changes, and it can be revoked.
+
+The AWB screen shows the exposure before any click. The shop computes it from its registry: finished days are cached, and
+today's snapshot is refreshed every 15 minutes by the shop's system cron. A snapshot older than 20 minutes shows "check
+needed". The check made when the employee asks for an AWB always reads today's list live from FAN Courier.

@@ -64,7 +64,11 @@ final class ConfirmareOperations
         'payment_not_found', 'order_closed', 'invoice_missing', 'finance_unavailable', 'payment_verifying', 'finance_attention', 'address_incomplete', 'phone_missing',
         'shipping_mismatch', 'awb_exists', 'awb_unavailable', 'cod_changed', 'cod_mismatch', 'cod_not_mismatched', 'awb_refused', 'awb_missing', 'label_unavailable', 'address_task_missing', 'address_task_open',
         'not_card_payment', 'card_payment_unverified', 'nothing_to_refund', 'refund_request_missing', 'refund_pending', 'finance_open', 'amount_exceeds_received',
-        'duplicate_reference', 'entry_not_found', 'entry_not_pending', 'same_employee', 'refund_record_failed', 'idempotency_conflict'];
+        'duplicate_reference', 'entry_not_found', 'entry_not_pending', 'same_employee', 'refund_record_failed', 'idempotency_conflict',
+        // API 2.77.3 (YD SOFT 2.32.0): another live cash-on-delivery FAN Courier AWB to the customer, or FAN Courier's AWB list unreadable.
+        'awb_duplicate_cod_risk', 'awb_cod_check_unavailable',
+        // API 2.78.0 (YD SOFT 2.33.0): an AWB of the customer that cannot be attributed safely waits for an authorized review.
+        'awb_cod_review_required'];
     public const RESULTS = ['reactivated', 'created', 'unknown', 'panel_required', 'panel_declared', 'manual_required', 'already_requested', 'refund_recorded', 'refund_verified', 'refund_rejected'];
 
     private ?bool $installed = null;
@@ -499,11 +503,37 @@ final class ConfirmareOperations
                 $this->complete($uuid, 'rejected', $code, null, $kind, $row, $key);
                 throw new ApiException(409, 'CONFIRMARE_OPERATION_REFUSED', 'The shop refused the operation; nothing was done.', ['reason' => $code,
                     'blockers' => array_values(array_filter((array) ($body['blockers'] ?? []), static fn (mixed $b): bool => is_string($b) && in_array($b, self::CODES, true))),
-                    'shop' => is_array($body['state'] ?? null) ? self::shopState($body['state']) : null]);
+                    'shop' => is_array($body['state'] ?? null) ? self::shopState($body['state']) : null]
+                    + (in_array($code, ['awb_duplicate_cod_risk', 'awb_cod_review_required'], true) ? ['conflicts' => self::codConflicts($body['conflicts'] ?? null)] : []));
             }
         }
         $this->complete($uuid, 'unknown', null, null, $kind, $row, $key);
         return ['state' => 'unknown', 'idempotencyKey' => $key];
+    }
+
+    /**
+     * API 2.77.3: the FAN Courier AWBs the shop named when it refused an AWB for a duplicate cash on delivery (numbers,
+     * day, amount, parcels; nothing about the customer). Anything else is dropped.
+     *
+     * @return list<array{awb: string, date: string, cod: string, parcels: int, kind: string, status: ?string, reprint: string}>
+     */
+    public static function codConflicts(mixed $raw): array
+    {
+        $out = [];
+        foreach (is_array($raw) ? array_slice(array_values($raw), 0, 10) : [] as $c) {
+            if (!is_array($c) || !is_string($c['awb'] ?? null) || preg_match('/^\d{6,20}$/D', $c['awb']) !== 1
+                || !is_string($c['cod'] ?? null) || preg_match('/^(0|[1-9]\d{0,8})\.\d{2}$/D', $c['cod']) !== 1
+                || !is_string($c['date'] ?? null) || preg_match('/^\d{4}-\d{2}-\d{2}( \d{2}:\d{2})?$/D', $c['date']) !== 1
+                || !is_int($c['parcels'] ?? null) || $c['parcels'] < 0 || $c['parcels'] > 999) {
+                continue;
+            }
+            // API 2.78.0: whether it is this order's (duplicate) or needs a review, FAN Courier's last state, where to reprint.
+            $out[] = ['awb' => $c['awb'], 'date' => $c['date'], 'cod' => $c['cod'], 'parcels' => $c['parcels'],
+                'kind' => in_array($c['kind'] ?? null, ['duplicate', 'review'], true) ? $c['kind'] : 'duplicate',
+                'status' => in_array($c['status'] ?? null, ['delivered', 'in_transit', 'returned', 'registered'], true) ? $c['status'] : null,
+                'reprint' => ($c['reprint'] ?? null) === 'staff' ? 'staff' : 'fan_panel'];
+        }
+        return $out;
     }
 
     /** @param array<string, mixed> $found @param array<string, mixed> $row @return array<string, mixed> */
@@ -697,6 +727,8 @@ final class ConfirmareOperations
                 'address' => array_values(array_map(static fn (mixed $a): array => ['kind' => is_array($a) && ($a['kind'] ?? '') === 'done' ? 'done' : 'task', 'at' => is_array($a) ? $instant($a['at'] ?? null) : null],
                     array_slice((array) ($awb['address'] ?? []), -10))),
                 'pickup' => 'not_tracked',
+                // API 2.78.0 (YD SOFT 2.33.0): the cash-on-delivery exposure the shop saw before an AWB (no FAN call on a read).
+                'exposure' => self::exposure($awb['exposure'] ?? null, $instant),
             ],
             'cardRefund' => [
                 'available' => ($refund['available'] ?? false) === true,
@@ -710,6 +742,19 @@ final class ConfirmareOperations
                     'completedAt' => is_array($r) ? $instant($r['completedAt'] ?? null) : null, 'mailed' => is_array($r) && ($r['mailed'] ?? false) === true,
                 ], array_slice((array) ($refund['requests'] ?? []), -10))),
             ],
+        ];
+    }
+
+    /** @return array{state: string, checkedAt: ?string, conflicts: list<array>} */
+    private static function exposure(mixed $raw, \Closure $instant): array
+    {
+        if (!is_array($raw)) {
+            return ['state' => 'unknown', 'checkedAt' => null, 'conflicts' => []];
+        }
+        return [
+            'state' => in_array($raw['state'] ?? null, ['existing', 'verified', 'review', 'duplicate', 'unknown'], true) ? $raw['state'] : 'unknown',
+            'checkedAt' => $instant($raw['checkedAt'] ?? null),
+            'conflicts' => self::codConflicts($raw['conflicts'] ?? null),
         ];
     }
 
