@@ -6,12 +6,12 @@ namespace Arasya\Operations\Finance;
 
 use Arasya\Operations\Auth\AuthenticationService;
 use Arasya\Operations\Authorization\AuthorizationService;
+use Arasya\Operations\B2B\FinanceOrderReadModel;
 use Arasya\Operations\Config\Config;
 use Arasya\Operations\Finance\Account\OnboardingQueries;
 use Arasya\Operations\Finance\Account\OnboardingService;
 use Arasya\Operations\Finance\Company\CaseQueries;
 use Arasya\Operations\Finance\Company\CaseService;
-use Arasya\Operations\Finance\Company\CompanyOrdersQueries;
 use Arasya\Operations\Finance\Company\CompanyProfileQueries;
 use Arasya\Operations\Finance\Credit\CreditService;
 use Arasya\Operations\Finance\Import\ImportService;
@@ -79,7 +79,7 @@ final readonly class FinanceController
                 (bool) preg_match('#^/finance/companies/(' . self::UUID . ')/profile$#D', $path, $m) =>
                     (new CompanyProfileQueries($this->pdo, $this->authorization, $this->ledgerView, $this->credit))->read($actor, $m[1], $q),
                 (bool) preg_match('#^/finance/companies/(' . self::UUID . ')/orders$#D', $path, $m) =>
-                    (new CompanyOrdersQueries($this->pdo, $this->authorization))->read($actor, $m[1], $q),
+                    (new FinanceOrderReadModel($this->pdo, $this->authorization))->read($actor, $m[1], $q),
                 $path === '/finance/company-search' => $this->companySearch($actor, $q),
                 $path === '/finance/b2b/accounts' => $this->accounts($actor, $q),
                 $path === '/finance/b2b/gate-decisions' => $this->gateDecisions($actor, $q),

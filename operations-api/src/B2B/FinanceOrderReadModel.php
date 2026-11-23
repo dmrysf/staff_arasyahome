@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Arasya\Operations\Finance\Company;
+namespace Arasya\Operations\B2B;
 
 use Arasya\Operations\Authorization\AuthorizationService;
 use Arasya\Operations\Employee\EmployeeIdentity;
@@ -12,7 +12,7 @@ use Arasya\Operations\Finance\FinanceStore;
 use Arasya\Operations\Http\ApiException;
 use PDO;
 
-final readonly class CompanyOrdersQueries
+final readonly class FinanceOrderReadModel
 {
     private const PAGE_SIZE = 6;
     private const PLACED = "o.finalized_at IS NOT NULL AND o.status IN ('finalized', 'cancelled')";
@@ -35,14 +35,7 @@ final readonly class CompanyOrdersQueries
     {
         Access::require($this->authorization, $actor, Access::COMPANIES_VIEW, Access::ACCOUNTS_VIEW);
         FinanceInput::only($filters, ['cursor']);
-        if (!FinanceInput::isUuid($companyId)) {
-            throw new ApiException(404, 'COMPANY_NOT_FOUND', 'Company was not found.');
-        }
-        $company = $this->pdo->prepare('SELECT 1 FROM b2b_companies WHERE company_uuid = ?');
-        $company->execute([$companyId]);
-        if ($company->fetchColumn() === false) {
-            throw new ApiException(404, 'COMPANY_NOT_FOUND', 'Company was not found.');
-        }
+        $this->requireCompany($companyId);
 
         $rows = $this->page($companyId, $filters['cursor'] ?? null);
         $nextCursor = count($rows) > self::PAGE_SIZE ? $rows[self::PAGE_SIZE - 1]['order_uuid'] : null;
@@ -57,11 +50,7 @@ final readonly class CompanyOrdersQueries
                 'placedAt' => FinanceStore::iso($row['finalized_at']),
                 'status' => $row['workflow_state'],
                 'currency' => $row['currency_code'],
-                'production' => $row['submitted_at'] === null ? null : [
-                    'stageId' => $row['production_stage_id'],
-                    'stageLabel' => $row['stage_label'],
-                    'completedAt' => FinanceStore::iso($row['production_completed_at']),
-                ],
+                'production' => self::production($row),
                 'items' => $items[$row['order_uuid']] ?? [],
             ];
         }
@@ -70,6 +59,75 @@ final readonly class CompanyOrdersQueries
             'orders' => $orders,
             'topProducts' => $this->topProducts($companyId),
             'nextCursor' => $nextCursor,
+        ];
+    }
+
+    /** @return array<string, mixed>|null */
+    public function latest(EmployeeIdentity $actor, string $companyId): ?array
+    {
+        Access::require($this->authorization, $actor, Access::COMPANIES_VIEW, Access::ACCOUNTS_VIEW);
+        $this->requireCompany($companyId);
+
+        $query = $this->pdo->prepare('SELECT o.order_code, o.status, o.currency_code, o.finalized_at,
+                    h.submitted_at, p.production_stage_id, s.display_name AS stage_label, p.production_completed_at,
+                    l.product_code, l.product_name_snapshot, l.quantity
+             FROM (
+                 SELECT o.order_uuid, o.order_code, o.status, o.currency_code, o.finalized_at
+                 FROM b2b_orders o
+                 WHERE o.company_uuid = ? AND ' . self::PLACED . '
+                 ORDER BY o.finalized_at DESC, o.order_uuid DESC
+                 LIMIT 1
+             ) o
+             ' . self::PRODUCTION . '
+             LEFT JOIN production_stages s ON s.stage_id = p.production_stage_id
+             LEFT JOIN b2b_order_lines l ON l.order_uuid = o.order_uuid
+             ORDER BY l.line_number');
+        $query->execute([$companyId]);
+        $rows = $query->fetchAll(PDO::FETCH_ASSOC);
+        if ($rows === []) {
+            return null;
+        }
+        $order = $rows[0];
+        $items = [];
+        foreach ($rows as $row) {
+            if ($row['product_code'] !== null) {
+                $items[] = [
+                    'productCode' => $row['product_code'],
+                    'productName' => $row['product_name_snapshot'],
+                    'quantity' => (int) $row['quantity'],
+                ];
+            }
+        }
+        $production = self::production($order);
+        return [
+            'code' => $order['order_code'],
+            'placedAt' => FinanceStore::iso($order['finalized_at']),
+            'status' => $order['status'],
+            'currency' => $order['currency_code'],
+            'production' => $production === null ? null : ['submittedAt' => FinanceStore::iso($order['submitted_at'])] + $production,
+            'items' => $items,
+        ];
+    }
+
+    private function requireCompany(string $companyId): void
+    {
+        if (!FinanceInput::isUuid($companyId)) {
+            throw new ApiException(404, 'COMPANY_NOT_FOUND', 'Company was not found.');
+        }
+        $company = $this->pdo->prepare('SELECT 1 FROM b2b_companies WHERE company_uuid = ?');
+        $company->execute([$companyId]);
+        if ($company->fetchColumn() === false) {
+            throw new ApiException(404, 'COMPANY_NOT_FOUND', 'Company was not found.');
+        }
+    }
+
+    /** @return array{stageId: ?string, stageLabel: ?string, completedAt: ?string}|null */
+    private static function production(array $row): ?array
+    {
+        return $row['submitted_at'] === null ? null : [
+            'stageId' => $row['production_stage_id'],
+            'stageLabel' => $row['stage_label'],
+            'completedAt' => FinanceStore::iso($row['production_completed_at']),
         ];
     }
 
@@ -94,7 +152,8 @@ final readonly class CompanyOrdersQueries
         }
 
         // Count before the page limit, in the same query that reads it, to preserve the company-relative ordinals.
-        $query = $this->pdo->prepare('SELECT o.*, h.submitted_at, p.production_stage_id,
+        $query = $this->pdo->prepare('SELECT o.order_uuid, o.order_code, o.currency_code, o.finalized_at, o.orders_remaining,
+                h.submitted_at, p.production_stage_id,
                 p.production_completed_at, s.display_name AS stage_label, ' . self::STATE . ' AS workflow_state
              FROM (
                  SELECT o.order_uuid, o.order_code, o.status, o.currency_code, o.finalized_at,

@@ -3,8 +3,8 @@
 declare(strict_types=1);
 
 use Arasya\Operations\Authorization\AuthorizationService;
+use Arasya\Operations\B2B\FinanceOrderReadModel;
 use Arasya\Operations\Employee\EmployeeIdentity;
-use Arasya\Operations\Finance\Company\CompanyOrdersQueries;
 use Arasya\Operations\Finance\FinanceAccess as A;
 use Arasya\Operations\Http\ApiException;
 
@@ -77,11 +77,14 @@ foreach ([1, 3, 5, 6, 8] as $n) {
 }
 $pdo->exec("INSERT INTO production_stages VALUES ('delivery', 'Livrare'), ('material-preparation', 'Pregătire materiale')");
 
-$orders = new CompanyOrdersQueries($pdo, new AuthorizationService());
+$orders = new FinanceOrderReadModel($pdo, new AuthorizationService());
 $finance = user([A::COMPANIES_VIEW, A::ACCOUNTS_VIEW]);
 error(403, 'APPLICATION_ACCESS_DENIED', fn () => $orders->read(user([A::COMPANIES_VIEW, A::ACCOUNTS_VIEW], ['b2b']), $alpha));
 error(403, 'UNAUTHORIZED_ACTION', fn () => $orders->read(user([A::COMPANIES_VIEW]), $alpha));
 error(403, 'UNAUTHORIZED_ACTION', fn () => $orders->read(user([A::ACCOUNTS_VIEW]), $alpha));
+error(403, 'UNAUTHORIZED_ACTION', fn () => $orders->latest(user([A::COMPANIES_VIEW]), $alpha));
+error(403, 'UNAUTHORIZED_ACTION', fn () => $orders->latest(user([A::ACCOUNTS_VIEW]), $alpha));
+error(403, 'APPLICATION_ACCESS_DENIED', fn () => $orders->latest(user([A::COMPANIES_VIEW, A::ACCOUNTS_VIEW], ['b2b']), $alpha));
 error(404, 'COMPANY_NOT_FOUND', fn () => $orders->read($finance, uuid(999)));
 foreach ([uuid(10), uuid(9), uuid(11), uuid(999), 'bad'] as $cursor) {
     error(400, 'INVALID_CURSOR', fn () => $orders->read($finance, $alpha, ['cursor' => $cursor]));
