@@ -121,7 +121,7 @@ e3d5bd553859a3f0ade7ef0d41a29c8dab1eaaf486fb632bdb714b79e4c719aa  ./database/see
 a80d76fbdb4a0c8ac3533c3db5eb123a73ff6eb2c259927976d39dfeeb2f248b  ./public/.htaccess
 8302b6ec98573706b31b957a8f9ad9be8bf92a8b8bff02963c601650e7e8c420  ./public/RuntimeLocator.php
 edb234c39482536f0540e881da98cbdad6241af787f230295a79a4ae534e26be  ./public/index.php
-d117a4a3b085999ac5172e390b6804ed215731c2e570e439b21ba310de4507ab  ./release.json
+ac14ab5c37334336e01aeffd09145fc6596171a39dd414f2c2d5f81540a96c88  ./release.json
 3b42b0a0d462aa0ac0f368966a5703f6ecbbff9eea2bbbe47f269e9cd6ba03ea  ./scripts/api-release-common.sh
 b7f4bad56c6c8f39a9e72af6c8ea82d578beb50bf0e4f38d17c78a2e9f0f1637  ./scripts/cancellation-sync-active.sh
 03e82de95461d85d534edc5e62013dea047881f28ba12a61ac55b6827108a5e0  ./scripts/cpanel-deploy-api.sh
@@ -176,6 +176,7 @@ cdfe3eefa2400cc718fef7a1ed509ebd6c3ad53a4111fa13a4a9a69add25de09  ./src/B2B/Comp
 4c6da9a59c69645f2ed84b10e801988b431cf62c03f903883d0ff6a89eb747c0  ./src/B2B/FinanceGate.php
 c0e88f3679219564e0e0eefb290af0eccd7921aaebfa61537817b82b1e44a815  ./src/B2B/FinanceGateJournal.php
 482731940c0c2e6ad3dc11d8591b2724deb0223210f126a0fdf801bf114e992f  ./src/B2B/FinanceGateReadiness.php
+4043112f5c18226c29e49f5e73fd97a6f2afa191ee69b72f8c71bbc09d9d5d41  ./src/B2B/FinanceOrderReadModel.php
 06dad99cfb4e2995cc0aff0b4fbc46445843e63d16bf63dc79b9fbf530acb7c9  ./src/B2B/OrderAccess.php
 af92831334f22744372049a0c3a4e0680dd9354176aafd3bd485cd40b39c6fdf  ./src/B2B/OrderCalculator.php
 8312474f1b099407d471a9710a932c26c590c615a918c3b40add4ac864df6428  ./src/B2B/OrderCommands.php
@@ -296,10 +297,11 @@ c32e3ac759114e6d4205eba2dee08c27dfe2e3eeb1a241a7aa9d0aef742e1b60  ./src/Finance/
 ebca6e1edfaefc74649be901ca1e9cf45d104f5be43babff079597077929bef9  ./src/Finance/Company/CaseQueries.php
 0fd289f666b89b094492578eda31548349c2a09d2ae2255cd3ed0bf762dab659  ./src/Finance/Company/CaseService.php
 f972c9d8b92204d294df97e6bb8e2a0c73cd3d1521169b7160a91e72f3781e96  ./src/Finance/Company/CaseWorkflow.php
+54cc5c3309509887f1890d65ead7eae1cbe2e3cf47b5a03753c7d377181a002a  ./src/Finance/Company/CompanyProfileQueries.php
 415cee81cdeb5052d584ef47aff2916c0a3406eef4f34fcc0c932dd9d7fc7f2f  ./src/Finance/Company/DuplicateFinder.php
 f35720c2ff6c526dc4d007bb994bcea28c439d74393511ee642a077e75df4423  ./src/Finance/Credit/CreditService.php
 7321593581f30bbf58c32eb64f1d9f12ecb89d74bb077d4179f4bdb99ab9444d  ./src/Finance/FinanceAccess.php
-51be3fb15c495afbccd2d11cfc7c3cd31e72ddf9ae3cc75563e15b496cc7b60b  ./src/Finance/FinanceController.php
+a54d9e9cb695341bc39e22a38461adf44035e833728dda41967972ef50834a49  ./src/Finance/FinanceController.php
 fdd7259fe139d5a6e946bb4f963acf02e698fba9881364eef871a1f76af6e19a  ./src/Finance/FinanceInput.php
 3bce020bcb3424471a35f8f2cf9dba007e7f70d6cc47d9a03588e0671352a3e0  ./src/Finance/FinanceStore.php
 e5bf44d39879b360ec5163a83f1630bb2bb5f46f6783f227ab241706f1ea8b51  ./src/Finance/Import/ImportFileReader.php
