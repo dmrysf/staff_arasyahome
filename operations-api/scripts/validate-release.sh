@@ -100,6 +100,9 @@ for file in \
   database/migrations/056_order_resolver.sql \
   src/Management/OrderResolver.php \
   database/migrations/057_b2b_sold_meters.sql \
+  database/migrations/058_invoice_link.sql \
+  src/Confirmare/InvoiceLink.php \
+  bin/link-invoice.php \
   src/Intelligence/B2bSoldMeters.php \
   src/Intelligence/B2bPaymentEvidence.php \
   src/Intelligence/SalesMeters.php \
@@ -157,7 +160,7 @@ for file in \
 done
 
 (cd -- "$release_root" && sha256sum -c SHA256SUMS >/dev/null) || fail "SHA256SUMS verification failed."
-php -r '$r=json_decode(file_get_contents($argv[1]), true, flags: JSON_THROW_ON_ERROR); require $argv[2]."/bootstrap.php"; if (!is_array($r) || preg_match("/^[0-9a-f]{40}$/", $r["sourceCommit"] ?? "") !== 1 || ($r["version"] ?? null) !== "2.77.2" || $r["version"] !== Arasya\Operations\Http\HealthController::VERSION) exit(2);' "$release_root/release.json" "$release_root" \
+php -r '$r=json_decode(file_get_contents($argv[1]), true, flags: JSON_THROW_ON_ERROR); require $argv[2]."/bootstrap.php"; if (!is_array($r) || preg_match("/^[0-9a-f]{40}$/", $r["sourceCommit"] ?? "") !== 1 || ($r["version"] ?? null) !== "2.79.0" || $r["version"] !== Arasya\Operations\Http\HealthController::VERSION) exit(2);' "$release_root/release.json" "$release_root" \
   || fail "release.json provenance/version is invalid."
 
 for directory in src database/migrations bin config; do

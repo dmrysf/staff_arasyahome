@@ -134,7 +134,7 @@ export type InvoiceSummary = {
   eFactura: { state: "not_tracked" } | null;
 };
 export type InvoiceTimelineItem = {
-  employeeId: string; role: string; action: InvoiceAction | ProformaAction; reasonCode: string | null; idempotencyKey: string; state: "pending" | "applied" | "rejected" | "unknown";
+  employeeId: string; role: string; action: InvoiceAction | ProformaAction | "link"; reasonCode: string | null; idempotencyKey: string; state: "pending" | "applied" | "rejected" | "unknown";
   outcome: string | null; result: string | null; requestedAt: string; completedAt: string | null;
 };
 export type InvoiceView = {
@@ -216,6 +216,8 @@ const BLOCKERS = [
   "advance_decision_required", "advance_decision_not_applicable", "shipping_mismatch",
   // API 2.54.0 / YD SOFT 2.25.0: deleting the invoice
   "delete_confirmation_required", "not_last_invoice", "series_check_failed", "document_unidentified", "efactura_recorded",
+  // API 2.79.0 / YD SOFT 2.34.0: an invoice made outside Arasya, the SmartBill invoice check, the invoice request's total
+  "smartbill_invoice_found", "smartbill_check_unavailable", "invoice_amount_mismatch",
 ] as const;
 /** A blocker or refusal code in the employee's words (an unknown code reads as a generic refusal, never as the code). */
 export function invoiceBlockerLabel(code: string | undefined): string {
@@ -227,7 +229,7 @@ export const mailStateLabel = (state: InvoiceSummary["mail"]["state"]): string =
 export const operationStateLabel = (state: InvoiceSummary["operation"]["state"]): string => t(`inv.operation.${state}` as MessageKey);
 export const reasonLabel = (reason: string): string => ((INVOICE_REASONS as readonly string[]).includes(reason) ? t(`inv.reason.${reason}` as MessageKey) : reason);
 export function historyLabel(kind: string): string {
-  return ["issue", "reissue", "delete", "superseded", "send_mail", "auto_mail", "resolve_document", "resolve_mail", "proforma_issue", "proforma_mail", "check", "proforma_resolve_document", "proforma_resolve_mail",
+  return ["issue", "reissue", "delete", "link", "superseded", "send_mail", "auto_mail", "resolve_document", "resolve_mail", "proforma_issue", "proforma_mail", "check", "proforma_resolve_document", "proforma_resolve_mail",
     "proforma_cancel", "proforma_resolve_cancel"].includes(kind) ? t(`inv.history.${kind}` as MessageKey) : kind;
 }
 export const cancelReasonLabel = (reason: string | null | undefined): string => (reason && (CANCEL_REASONS as readonly string[]).includes(reason) ? t(`inv.pf.cancelReason.${reason}` as MessageKey) : t("inv.pf.cancelReason.other"));

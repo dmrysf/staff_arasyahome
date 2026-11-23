@@ -336,4 +336,13 @@ if ($b2bMeterTables[1] !== ['b2b_meter_test_cohort', 'b2b_sold_meter_ledger']
     || !str_contains($b2bMeterSchema, "CONSTRAINT chk_b2b_meter_cohort_reason CHECK (reason IN ('test_order'))")) {
     throw new RuntimeException('Migration 057 must only add the B2B test cohort and the B2B sold-meter ledger, and grant nothing.');
 }
+// Invoice link (058, API 2.79.0): only the action CHECK of order_invoice_actions is replaced to accept `link`; no table, no
+// row, no grant.
+$linkSchema = (string) file_get_contents($root . '/database/migrations/058_invoice_link.sql');
+$linkStatements = preg_replace('/^--.*$/m', '', $linkSchema) ?? '';
+if (preg_match('/CREATE TABLE|DROP TABLE|DELETE FROM|TRUNCATE|INSERT |\bUPDATE\s+\w+\s+SET|GRANT|permissions|employee_/i', $linkStatements) === 1
+    || !str_contains($linkSchema, "''delete'', ''link''))")
+    || substr_count($linkStatements, 'ALTER TABLE order_invoice_actions') !== 2) {
+    throw new RuntimeException('Migration 058 must only widen the invoice action CHECK with link, and grant nothing.');
+}
 fwrite(STDOUT, 'Migration sanity checks passed for ' . count($files) . " file(s).\n");

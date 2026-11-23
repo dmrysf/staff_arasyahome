@@ -1,8 +1,22 @@
 <?php
 declare(strict_types=1);
+/** Restore a pre-058 disposable test fixture (invoice action CHECK without `link`). This is NOT a deployment/rollback mechanism. */
+function restorePreInvoiceLinkTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='058_invoice_link.sql'")->fetchColumn()) return;
+    if($pdo->query("SELECT COUNT(*) FROM information_schema.table_constraints WHERE constraint_schema=DATABASE() AND table_name='order_invoice_actions' AND constraint_name='chk_order_invoice_actions_action_058'")->fetchColumn()) {
+        $pdo->exec("DELETE t FROM invoice_efactura_tasks t JOIN order_invoice_actions a ON a.action_uuid=t.invoice_action_uuid WHERE a.action='link'");
+        $pdo->exec("DELETE FROM order_invoice_actions WHERE action='link'");
+        $pdo->exec("ALTER TABLE order_invoice_actions DROP CONSTRAINT chk_order_invoice_actions_action_058, ADD CONSTRAINT chk_order_invoice_actions_action_045 CHECK (action IN ('issue', 'send_mail', 'reissue', 'resolve', 'proforma_issue', 'proforma_send_mail', 'proforma_check', 'proforma_resolve', 'proforma_cancel', 'total_accept', 'advance_accept', 'advance_difference', 'delete'))");
+    }
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='058_invoice_link.sql'");
+}
+
 /** Restore a pre-057 disposable test fixture (no B2B test cohort or B2B sold-meter ledger). This is NOT a deployment/rollback mechanism. */
 function restorePreB2bSoldMetersTestSchema(PDO $pdo): void
 {
+    restorePreInvoiceLinkTestSchema($pdo);
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
     if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='057_b2b_sold_meters.sql'")->fetchColumn()) return;
     $pdo->exec('DROP TABLE IF EXISTS b2b_sold_meter_ledger');

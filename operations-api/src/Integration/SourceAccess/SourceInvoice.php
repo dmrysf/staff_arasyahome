@@ -65,6 +65,10 @@ final class SourceInvoice
         'difference_already_requested',
         // YD SOFT 2.25.0 (owner 2026-11-02): the shop employee deletes the invoice (only the last number of its series).
         'delete_confirmation_required', 'not_last_invoice', 'series_check_failed', 'document_unidentified',
+        // YD SOFT 2.34.0 (owner 2026-11-23, recovery orders): an invoice made outside Arasya names this order in SmartBill; the
+        // shop's SmartBill invoice register is not complete or too old (enforce); the invoice request the SmartBill plugin
+        // built does not add up to the order total (never sent).
+        'smartbill_invoice_found', 'smartbill_check_unavailable', 'invoice_amount_mismatch',
         // An action a shop of an older version does not know (never offered).
         'not_supported',
     ];
