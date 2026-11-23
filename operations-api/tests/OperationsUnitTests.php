@@ -788,14 +788,29 @@ test('B2B company data remains isolated except an explicitly gated Finance read-
         }
     }
     sort($readers);
-    expect($readers === ['B2B/AccountCommands.php', 'B2B/AccountQueries.php', 'B2B/CompanyCommands.php', 'B2B/CompanyQueries.php', 'B2B/FinanceGateJournal.php', 'B2B/FinanceGateReadiness.php', 'B2B/OrderCommands.php', 'B2B/OrderStore.php', 'B2B/ProductionAnalyticsIdentity.php', 'B2B/ProductionCommands.php', 'B2B/ProjectCommands.php', 'B2B/ProjectQueries.php', 'Database/AuthMaintenance.php',
-        'Finance/Account/OnboardingQueries.php', 'Finance/Account/OnboardingService.php', 'Finance/Company/CaseQueries.php', 'Finance/Company/CaseService.php', 'Finance/Company/DuplicateFinder.php', 'Finance/Credit/CreditService.php', 'Finance/FinanceController.php', 'Finance/Ledger/LedgerRequestQueries.php', 'Finance/Ledger/LedgerRequestService.php', 'Finance/Ledger/ReconciliationService.php', 'Finance/Risk/OwnerDecisionService.php', 'Finance/Risk/RiskService.php']);
+    expect($readers === ['B2B/AccountCommands.php', 'B2B/AccountQueries.php', 'B2B/CompanyCommands.php', 'B2B/CompanyQueries.php', 'B2B/FinanceGateJournal.php', 'B2B/FinanceGateReadiness.php', 'B2B/FinanceOrderReadModel.php', 'B2B/OrderCommands.php', 'B2B/OrderStore.php', 'B2B/ProductionAnalyticsIdentity.php', 'B2B/ProductionCommands.php', 'B2B/ProjectCommands.php', 'B2B/ProjectQueries.php', 'Database/AuthMaintenance.php',
+        'Finance/Account/OnboardingQueries.php', 'Finance/Account/OnboardingService.php', 'Finance/Company/CaseQueries.php', 'Finance/Company/CaseService.php', 'Finance/Company/CompanyProfileQueries.php', 'Finance/Company/DuplicateFinder.php', 'Finance/Credit/CreditService.php', 'Finance/FinanceController.php', 'Finance/Ledger/LedgerRequestQueries.php', 'Finance/Ledger/LedgerRequestService.php', 'Finance/Ledger/ReconciliationService.php', 'Finance/Risk/OwnerDecisionService.php', 'Finance/Risk/RiskService.php']);
     $canonical = (string) file_get_contents($root . '/Finance/Company/CaseService.php');
     expect(str_contains($canonical, "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'inactive'"), 'A Finance-created canonical company starts inactive');
     $analyticsIdentity=(string)file_get_contents($root.'/B2B/ProductionAnalyticsIdentity.php');
     expect(preg_match('/\b(INSERT|UPDATE|DELETE|balance|currency|grand_total|email|phone|tax_identifier|b2b_account)\b/i',$analyticsIdentity)!==1,'Analytics identity adapter is read-only and contains no financial/contact query');
     $maintenance = (string) file_get_contents($root . '/Database/AuthMaintenance.php');
     expect(preg_match_all('/b2b_compan\w+/', $maintenance, $tables) >= 1 && array_unique($tables[0]) === ['b2b_company_idempotency']);
+});
+
+test('Finance order summaries use a bounded read-only B2B projection', function (): void {
+    $root = dirname(__DIR__) . '/src';
+    $model = (string) file_get_contents($root . '/B2B/FinanceOrderReadModel.php');
+    preg_match_all('/\b(?:FROM|JOIN)\s+([a-z][a-z0-9_]+)\b/i', $model, $matches);
+    $tables = array_values(array_unique($matches[1]));
+    sort($tables);
+    expect($tables === ['b2b_companies', 'b2b_order_lines', 'b2b_orders', 'b2b_production_handoffs', 'operational_orders', 'production_stages'],
+        'Only company lookup, order lines, and the linked production stage are read');
+    expect(preg_match('/\b(?:INSERT|UPDATE|DELETE|REPLACE|TRUNCATE|ALTER|DROP|CREATE|GRANT|REVOKE|CALL|OUTFILE|DUMPFILE)\b|\bLOCK\s+IN\s+SHARE\s+MODE\b/i', $model) !== 1,
+        'The projection does not write or lock data');
+    expect(preg_match('/\bSELECT\s+(?:[a-z_][a-z0-9_]*\.)?\*/i', $model) !== 1, 'Each returned column is explicitly selected');
+    expect(substr_count($model, 'Access::require($this->authorization, $actor, Access::COMPANIES_VIEW, Access::ACCOUNTS_VIEW);') === 2,
+        'Both history and latest order enforce Finance company and account permissions');
 });
 
 test('B2B current account ledger is insert-only, isolated from production and joins the order transaction', function (): void {

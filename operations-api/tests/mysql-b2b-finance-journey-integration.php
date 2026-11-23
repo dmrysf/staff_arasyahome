@@ -172,6 +172,20 @@ $line = ['productCode' => 'JRN-1', 'productName' => 'Synthetic fabric', 'variant
     'meters' => '6.5', 'pricingUnit' => 'meter', 'unitPriceNet' => '10.00', 'discountPercent' => '0', 'vatPercent' => '19', 'notes' => null, 'productionNotes' => null];
 $order = ok($call($root, 'POST', '/b2b/orders', ['companyId' => $existing, 'currencyCode' => 'RON', 'orderType' => 'CUT_ONLY', 'lines' => [$line]], [], null, $enforce), 201, 'J7. draft')['detail']['order'];
 check($order['status'] === 'draft' && $order['orderType'] === 'CUT_ONLY', 'J8. CUT_ONLY chosen on the draft');
+$companyProfilePath = "/finance/companies/{$existing}/profile";
+$draftProfile = ok($call($root, 'GET', $companyProfilePath, null, [], null, $enforce), 200, 'PFP. the company profile is readable');
+check($draftProfile['company']['id'] === $existing && $draftProfile['verificationStatus'] === 'VERIFIED'
+    && array_key_exists('lastOrder', $draftProfile) && $draftProfile['lastOrder'] === null, 'PFP. a draft is not a placed order');
+$restrictedProfile = ok($call($auditor, 'GET', $companyProfilePath, null, [], null, $enforce), 200, 'PFP. company view only can read identity');
+check($restrictedProfile['account'] === null && $restrictedProfile['riskColor'] === null && $restrictedProfile['credit'] === null
+    && !array_key_exists('lastOrder', $restrictedProfile), 'PFP. restricted profile does not return sensitive sections');
+err($call($acc1, 'GET', $companyProfilePath, null, [], null, $enforce), 403, 'UNAUTHORIZED_ACTION', 'PFP. account view alone cannot read company profiles');
+$companyOrdersPath = "/finance/companies/{$existing}/orders";
+err($call($auditor, 'GET', $companyOrdersPath, null, [], null, $enforce), 403, 'UNAUTHORIZED_ACTION', 'PFP. company view alone cannot see order history');
+err($call($acc1, 'GET', $companyOrdersPath, null, [], null, $enforce), 403, 'UNAUTHORIZED_ACTION', 'PFP. account view alone cannot see company order history');
+$draftHistory = ok($call($root, 'GET', $companyOrdersPath, null, [], null, $enforce), 200, 'PFP. company history before finalization');
+check($draftHistory === ['summary' => ['total' => 0, 'completed' => 0, 'inProduction' => 0, 'notSubmitted' => 0, 'cancelled' => 0],
+    'orders' => [], 'topProducts' => [], 'nextCursor' => null], 'PFP. a draft contributes neither an order nor products');
 
 // ---- J9. Finance eligibility (advisory preview; the binding decision is taken at the action) ------------------------
 $read = static fn (string $id, \Arasya\Operations\Http\ApiKernel $k): array => ok($call($root, 'GET', "/b2b/orders/{$id}", null, [], null, $k), 200, 'order read')['order'];
@@ -224,6 +238,27 @@ ok($claim($livrare), 200, 'J15. Livrare receives');
 check(isset(ok($complete($livrare), 200, 'J15. Livrare hands over')['productionCompletedAt']), 'J15. handed over');
 $production = ok($call($root, 'GET', "/b2b/orders/{$order['id']}/production"), 200, 'J15. B2B production')['production'];
 check($production['delivery'] === 'HANDED_OVER', 'J15. B2B shows the handover');
+$companyProfile = ok($call($root, 'GET', $companyProfilePath, null, [], null, $enforce), 200, 'PFP. company profile after handover');
+check($companyProfile['riskColor'] === 'GREEN' && $companyProfile['credit'] === ['status' => 'APPROVED', 'amount' => '500.00', 'currency' => 'RON']
+    && $companyProfile['account']['currency'] === 'RON' && cents($companyProfile['account']['balance']) === 15000 + cents($gross)
+    && cents($companyProfile['account']['outstandingReceivables']) === cents($gross), 'PFP. canonical risk, credit and RON ledger');
+$lastOrder = $companyProfile['lastOrder'];
+check($lastOrder['code'] === $final['code'] && $lastOrder['status'] === 'finalized' && $lastOrder['currency'] === 'RON'
+    && $lastOrder['placedAt'] === \Arasya\Operations\Finance\FinanceStore::iso($final['finalizedAt']), 'PFP. latest placed order uses finalization date');
+check($lastOrder['items'] === [['productCode' => 'JRN-1', 'productName' => 'Synthetic fabric', 'quantity' => 1]],
+    'PFP. the product projection only includes the frozen code, name and quantity');
+check($lastOrder['production']['stageId'] === 'delivery'
+    && $lastOrder['production']['completedAt'] === \Arasya\Operations\Finance\FinanceStore::iso($production['completedAt'])
+    && $lastOrder['production']['completedAt'] !== null, 'PFP. the current production stage and completion are exposed');
+$orderHistory = ok($call($root, 'GET', $companyOrdersPath, null, [], null, $enforce), 200, 'PFP. company order history after handover');
+check($orderHistory['summary'] === ['total' => 1, 'completed' => 1, 'inProduction' => 0, 'notSubmitted' => 0, 'cancelled' => 0]
+    && $orderHistory['nextCursor'] === null, 'PFP. order history classifies canonical completion');
+$historical = $orderHistory['orders'][0];
+check($historical['id'] === $order['id'] && $historical['ordinal'] === 1 && $historical['status'] === 'completed'
+    && $historical['production']['stageId'] === 'delivery', 'PFP. history connects the specific order to its current stage');
+check($historical['items'] === [['productCode' => 'JRN-1', 'productName' => 'Synthetic fabric', 'variant' => null, 'color' => 'Alb', 'quantity' => 1]]
+    && $orderHistory['topProducts'] === [['productCode' => 'JRN-1', 'productName' => 'Synthetic fabric', 'orderCount' => 1]],
+    'PFP. order details and product ranking use the frozen order line');
 
 // ---- J16. Finance exposure and B2B history ----------------------------------------------------------------------------
 $profile = ok($call($owner, 'GET', "/finance/companies/{$existing}/credit-profile", null, [], null, $enforce), 200, 'J16. credit profile');
