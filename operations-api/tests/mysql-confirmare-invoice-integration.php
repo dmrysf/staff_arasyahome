@@ -777,7 +777,7 @@ $check($rootIdentity !== null && $linkGid !== '', '8d: a Confirmare order withou
 $linkId = substr($linkGid, strlen('trendhome:'));
 $linkService = new \Arasya\Operations\Confirmare\InvoiceLink($pdo, new \Arasya\Operations\Confirmare\InvoiceEfactura($pdo, $container->clock(), new \Arasya\Operations\Confirmare\InvoiceScopePolicy($pdo)), new \Arasya\Operations\Iam\IamAuditLogger($pdo), $container->clock());
 $why8d = 'Factura emisă manual în SmartBill, verificată de contabilitate (TEST).';
-$summaryOf = static function () use ($container, $rootIdentity, $linkGid): array { $r = $container->confirmareInvoice(null, true)->read($rootIdentity, $linkGid, 'inv-link-read-' . bin2hex(random_bytes(4))); return is_array($r['summary'] ?? null) ? $r['summary'] : []; };
+$summaryOf = static function () use ($container, $rootIdentity, $linkGid): array { $r = $container->confirmareInvoice(null, true)->read($rootIdentity, $linkGid, 'inv-lnk-read-' . bin2hex(random_bytes(4))); return is_array($r['summary'] ?? null) ? $r['summary'] : []; };
 $s8d = $summaryOf();
 $check(($s8d['document']['exists'] ?? null) === false, '8d: the shop has no invoice for the order yet: ' . json_encode($s8d['document'] ?? null));
 $check($linkService->plan($linkGid, 'TST', '0777', $s8d, '2026-11-20', $why8d) === ['ok' => false, 'error' => 'shop_document_differs'], '8d: nothing to record while the shop names no such invoice');
@@ -796,7 +796,7 @@ $check($dry['ok'] === true && (int) $one("SELECT COUNT(*) FROM order_invoice_act
 $applied = $linkService->apply($rootIdentity, $linkGid, 'TST', '0777', $s8d, '2026-11-20', $why8d, 'inv-link-test');
 $row8d = $all("SELECT action, state, outcome, result, access_role, employee_uuid FROM order_invoice_actions WHERE global_order_id = ?", [$linkGid]);
 $task8d = $all('SELECT t.state, t.issued_at, t.due_at FROM invoice_efactura_tasks t WHERE t.global_order_id = ?', [$linkGid]);
-$audit8d = $all("SELECT action, metadata_json FROM iam_audit_events WHERE action = 'intervention.invoice-link' AND target_id = ?", [$linkGid]);
+$audit8d = $all("SELECT action, metadata_json FROM iam_audit_events WHERE action = 'intervention.link-invoice' AND target_id = ?", [$linkGid]);
 $check($applied['ok'] === true && count($row8d) === 1 && $row8d[0]['action'] === 'link' && $row8d[0]['state'] === 'applied' && $row8d[0]['result'] === 'issued' && $row8d[0]['employee_uuid'] === $rootIdentity->employeeUuid,
     '8d: root records one applied link (migration 058 accepts the action): ' . json_encode($row8d));
 $check(count($task8d) === 1 && $task8d[0]['state'] === 'open' && str_starts_with((string) $task8d[0]['issued_at'], '2026-11-20') && str_starts_with((string) $task8d[0]['due_at'], '2026-11-27'),
@@ -805,7 +805,7 @@ $check(count($audit8d) === 1 && str_contains((string) $audit8d[0]['metadata_json
 $issued8d = (int) $one('SELECT COUNT(*) FROM order_invoice_actions i WHERE i.global_order_id = ? AND ' . \Arasya\Operations\Confirmare\ConfirmareInvoice::ISSUED_SQL, [$linkGid]);
 $check($issued8d === 1, '8d: the order now counts as invoiced (ISSUED_SQL includes link)');
 $check($linkService->apply($rootIdentity, $linkGid, 'TST', '0777', $s8d, '2026-11-20', $why8d, 'inv-link-test-2') === ['ok' => false, 'error' => 'already_invoiced'], '8d: recording it again changes nothing (already_invoiced)');
-$rootRead = $container->confirmareInvoice(null, true)->read($rootIdentity, $linkGid, 'inv-link-read-after');
+$rootRead = $container->confirmareInvoice(null, true)->read($rootIdentity, $linkGid, 'inv-lnk-read-after');
 $check(in_array('link', array_column($rootRead['timeline'] ?? [], 'action'), true), '8d: the invoice timeline shows the link: ' . json_encode(array_column($rootRead['timeline'] ?? [], 'action')));
 
 // ---- 9. No link, number, amount or customer data in the audit or the log ----------------------------------------------------

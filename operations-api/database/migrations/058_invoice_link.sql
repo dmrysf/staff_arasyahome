@@ -1,6 +1,6 @@
 -- Migration 058 (API 2.79.0): Operations records a SmartBill final invoice that already exists (made outside Arasya) once
 -- the shop linked it to its order (owner brief 2026-11-23, recovery orders' final invoices; YD SOFT 2.34.0
--- `wp yd-arasya invoice link`, then root's bin/invoice-link.php).
+-- `wp yd-arasya invoice link`, then root's bin/link-invoice.php).
 --
 -- No table, no row, no grant. The action CHECK of order_invoice_actions is replaced once to accept one more value: `link`
 -- (an applied row with result `issued`, recorded by root, counted by ConfirmareInvoice::ISSUED_SQL). The table holds few

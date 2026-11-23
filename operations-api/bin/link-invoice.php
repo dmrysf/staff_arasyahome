@@ -5,13 +5,13 @@ declare(strict_types=1);
 // Records a SmartBill final invoice that already exists (made outside Arasya) for its order (API 2.79.0, migration 058,
 // owner brief 2026-11-23). Root only. Dry run by default.
 //
-//   php bin/invoice-link.php --order=<global order id> --series=<SMART> --number=<10012> --issued-on=<YYYY-MM-DD> \
+//   php bin/link-invoice.php --order=<global order id> --series=<SMART> --number=<10012> --issued-on=<YYYY-MM-DD> \
 //       --reason="<at least 20 characters>" [--apply --yes]
 //
 // The shop links the invoice first (YD SOFT 2.34.0: `wp yd-arasya invoice link <order> <series> <number> --reviewer=
 // --note= --yes`, which checks the evidence and SmartBill's total). This script then reads the shop's invoice summary
 // once (read-only) and, with --apply --yes, records an applied `link` action by root (the order counts as invoiced), the
-// e-Factura follow-up from the invoice's own date and an `intervention.invoice-link` IAM audit entry. It never makes,
+// e-Factura follow-up from the invoice's own date and an `intervention.link-invoice` IAM audit entry. It never makes,
 // sends, cancels or changes a document, a payment, an order or a production state, and never writes the shop. Prints
 // order numbers and codes only.
 
@@ -24,7 +24,7 @@ $container = require __DIR__ . '/cli-bootstrap.php';
 $options = getopt('', ['order:', 'series:', 'number:', 'issued-on:', 'reason:', 'apply', 'yes']);
 foreach (['order', 'series', 'number', 'issued-on', 'reason'] as $required) {
     if (!is_string($options[$required] ?? null) || trim($options[$required]) === '') {
-        fwrite(STDERR, "Usage: php bin/invoice-link.php --order=<gid> --series=<series> --number=<number> --issued-on=<YYYY-MM-DD> --reason=\"...\" [--apply --yes]\n");
+        fwrite(STDERR, "Usage: php bin/link-invoice.php --order=<gid> --series=<series> --number=<number> --issued-on=<YYYY-MM-DD> --reason=\"...\" [--apply --yes]\n");
         exit(2);
     }
 }
@@ -40,7 +40,7 @@ if ($root === null) {
     exit(1);
 }
 $gid = trim($options['order']);
-$requestId = 'invoice-link-' . bin2hex(random_bytes(6));
+$requestId = 'link-invoice-' . bin2hex(random_bytes(6));
 $read = $container->confirmareInvoice(null, true)->read($root, $gid, $requestId);
 if (($read['available'] ?? false) !== true || !is_array($read['summary'] ?? null)) {
     fwrite(STDOUT, json_encode(['ok' => false, 'error' => 'shop_unreadable', 'reason' => $read['reason'] ?? null], JSON_UNESCAPED_SLASHES) . "\n");

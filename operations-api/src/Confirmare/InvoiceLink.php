@@ -17,7 +17,7 @@ use Throwable;
  * API 2.79.0 (owner 2026-11-23, recovery orders' final invoices): Operations records a SmartBill final invoice that
  * already exists and that the shop has linked to the order (YD SOFT 2.34.0 `wp yd-arasya invoice link`), so the order
  * counts as invoiced (ISSUED_SQL), its e-Factura follow-up exists and the IAM audit names who linked it. Root only, from
- * bin/invoice-link.php (dry run by default). It never calls the shop for a write and never makes, sends, cancels or
+ * bin/link-invoice.php (dry run by default). It never calls the shop for a write and never makes, sends, cancels or
  * changes a document, a payment, an order or a production state.
  *
  * Refused unless all of these hold: the order exists in Confirmare; Operations has no applied issue, re-issue or link of
@@ -102,7 +102,7 @@ final class InvoiceLink
                 $actionUuid, $order['order_uuid'], $globalOrderId, $order['source_key'], $root->employeeUuid, 'manager', 'link', $key,
                 hash('sha256', json_encode([$globalOrderId, $series, $number, $issuedAt], JSON_THROW_ON_ERROR), true), $revision, 'applied', 'applied', 'issued', mb_substr($requestId, 0, 100), $now, $now,
             ]);
-            $this->audit->record($root, 'intervention.invoice-link', 'order', $globalOrderId, $globalOrderId, ['reason' => trim($reason), 'series' => $series, 'number' => $number, 'issuedOn' => $issuedAt, 'outcome' => 'applied'], $requestId, $now);
+            $this->audit->record($root, 'intervention.link-invoice', 'order', $globalOrderId, $globalOrderId, ['reason' => trim($reason), 'series' => $series, 'number' => $number, 'issuedOn' => $issuedAt, 'outcome' => 'applied'], $requestId, $now);
             $this->pdo->commit();
         } catch (Throwable $e) {
             if ($this->pdo->inTransaction()) {

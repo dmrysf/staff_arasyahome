@@ -102,7 +102,7 @@ for file in \
   database/migrations/057_b2b_sold_meters.sql \
   database/migrations/058_invoice_link.sql \
   src/Confirmare/InvoiceLink.php \
-  bin/invoice-link.php \
+  bin/link-invoice.php \
   src/Intelligence/B2bSoldMeters.php \
   src/Intelligence/B2bPaymentEvidence.php \
   src/Intelligence/SalesMeters.php \
