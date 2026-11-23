@@ -657,6 +657,40 @@ $pdo->exec('DELETE FROM api_rate_limit_buckets');
 $r8 = $reportOf($readiness->run(true, 'trendhome'), 8);
 $check(($r8['state'] ?? null) === 'blocked' && $r8['blockers'] === ['advance_not_verified'] && $assignedTo(8) === null, 'money not proven: never routed, the reason is reported: ' . json_encode($r8));
 
+// ---- API 2.77.3 (owner 2026-11-23): orders with their AWB made never push waiting orders out of the 300-row queue ------------
+// TEST ONLY: 305 copies of order 2 (stage 14, AWB applied) older than every waiting order, as on the live day 420 such orders
+// filled the limit and 26 waiting orders were never listed.
+$pdo->exec('DROP TEMPORARY TABLE IF EXISTS t_awbq_orders, t_awbq_confirm, t_awbq_ops');
+$pdo->prepare('CREATE TEMPORARY TABLE t_awbq_orders AS SELECT * FROM operational_orders WHERE global_order_id = ?')->execute([$g(2)]);
+$pdo->prepare('CREATE TEMPORARY TABLE t_awbq_confirm AS SELECT * FROM order_confirmations WHERE global_order_id = ?')->execute([$g(2)]);
+$pdo->prepare("CREATE TEMPORARY TABLE t_awbq_ops AS SELECT * FROM order_source_operations WHERE order_uuid = ? AND kind = 'awb_create' AND state = 'applied' LIMIT 1")->execute([$orderUuid($g(2))]);
+$check((int) $one('SELECT COUNT(*) FROM t_awbq_ops') === 1, 'order 2 has its applied AWB operation to copy');
+$clones = [];
+for ($i = 1; $i <= 305; $i++) {
+    $cu = \Arasya\Operations\Support\Uuid::v4();
+    $cn = 'awbq' . $i;
+    $clones[] = $cu;
+    $pdo->prepare("UPDATE t_awbq_orders SET order_uuid = ?, global_order_id = ?, source_order_id = ?, order_number = ?, production_stage_id = 'delivery', production_changed_at = UTC_TIMESTAMP(6) - INTERVAL 30 DAY + INTERVAL ? SECOND")
+        ->execute([$cu, 'trendhome:' . $cn, $cn, $cn, $i]);
+    $pdo->exec('INSERT INTO operational_orders SELECT * FROM t_awbq_orders');
+    $pdo->prepare('UPDATE t_awbq_confirm SET order_uuid = ?, global_order_id = ?')->execute([$cu, 'trendhome:' . $cn]);
+    $pdo->exec('INSERT INTO order_confirmations SELECT * FROM t_awbq_confirm');
+    $pdo->prepare('UPDATE t_awbq_ops SET operation_uuid = ?, order_uuid = ?, idempotency_key = ?')->execute([\Arasya\Operations\Support\Uuid::v4(), $cu, 'awbq-' . $i . '-' . bin2hex(random_bytes(6))]);
+    $pdo->exec('INSERT INTO order_source_operations SELECT * FROM t_awbq_ops');
+}
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$crowded = array_column($ok($get($who['cmgr'], '/confirmare/awb-queue'), 'manager queue behind 305 orders with their AWB')['items'], 'globalOrderId');
+$check(in_array($g(5), $crowded, true) && in_array($g(6), $crowded, true) && array_filter($crowded, static fn (string $x): bool => str_starts_with($x, 'trendhome:awbq')) === [],
+    'waiting orders stay listed behind 305 older orders whose AWB is made; those never appear: ' . json_encode($crowded));
+$routedTo5 = array_search($assignedTo(5), $uuids, true);
+$mineQueue = array_column($ok($get($who[$routedTo5], '/confirmare/awb-queue'), 'routed employee queue behind 305 orders')['items'], 'globalOrderId');
+$check(in_array($g(5), $mineQueue, true), 'the routed employee still sees the order routed to them');
+$in = implode(', ', array_fill(0, count($clones), '?'));
+$pdo->prepare("DELETE FROM order_source_operations WHERE order_uuid IN ({$in})")->execute($clones);
+$pdo->prepare("DELETE FROM order_confirmations WHERE order_uuid IN ({$in})")->execute($clones);
+$pdo->prepare("DELETE FROM operational_orders WHERE order_uuid IN ({$in})")->execute($clones);
+$pdo->exec('DROP TEMPORARY TABLE IF EXISTS t_awbq_orders, t_awbq_confirm, t_awbq_ops');
+
 // ---- Cleanup (later suites share the database in CI) ------------------------------------------------------------------------
 $clear();
 fwrite(STDOUT, "MySQL Confirmare operations relay integration: {$checks} checks passed.\n");
