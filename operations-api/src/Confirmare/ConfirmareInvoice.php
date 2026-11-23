@@ -1152,7 +1152,8 @@ final readonly class ConfirmareInvoice
      * Whether Arasya recorded an applied final invoice of the order (the shop stays the authority). API 2.54.0: one deleted
      * after it no longer counts.
      */
-    public const ISSUED_SQL = "i.action IN ('issue', 'reissue') AND i.state = 'applied' AND i.result = 'issued' AND NOT EXISTS (SELECT 1 FROM order_invoice_actions d
+    // API 2.79.0: `link`, an invoice made outside Arasya that root recorded after the shop linked it (InvoiceLink).
+    public const ISSUED_SQL = "i.action IN ('issue', 'reissue', 'link') AND i.state = 'applied' AND i.result = 'issued' AND NOT EXISTS (SELECT 1 FROM order_invoice_actions d
         WHERE d.order_uuid = i.order_uuid AND d.action = 'delete' AND d.state = 'applied' AND d.result = 'deleted' AND d.completed_at > i.completed_at)";
 
     private function invoiceIssued(string $orderUuid): bool

@@ -2024,7 +2024,7 @@ function mapInvoiceView(raw: Record<string, unknown>): InvoiceView {
     actionOpen: booleanValue(raw.actionOpen),
     timeline: listOf(raw.timeline, 200, (entry) => {
       const item = objectValue(entry);
-      return { employeeId: uuidValue(item.employeeId), role: textValue(item.role, 12), action: oneOf(item.action, [...INVOICE_ACTIONS, ...PROFORMA_ACTIONS] as const), reasonCode: invoiceText(item.reasonCode, 30), idempotencyKey: textValue(item.idempotencyKey, 100),
+      return { employeeId: uuidValue(item.employeeId), role: textValue(item.role, 12), action: oneOf(item.action, [...INVOICE_ACTIONS, ...PROFORMA_ACTIONS, "link"] as const), reasonCode: invoiceText(item.reasonCode, 30), idempotencyKey: textValue(item.idempotencyKey, 100),
         state: oneOf(item.state, ["pending", "applied", "rejected", "unknown"] as const), outcome: invoiceText(item.outcome, 40), result: invoiceText(item.result, 20), requestedAt: timestampValue(item.requestedAt), completedAt: invoiceInstant(item.completedAt) };
     }),
     employees: Object.fromEntries(Object.entries(objectValue(raw.employees)).map(([id, name]) => [id, textValue(name, 200)])),

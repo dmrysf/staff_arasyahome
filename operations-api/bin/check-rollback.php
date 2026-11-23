@@ -75,12 +75,16 @@ try {
     $invoiceRouted = 0;
     $invoiceOpenWork = 0;
     $deleteUnsettled = 0;
+    $linked = 0;
     if (isset($tables['order_invoice_actions'], $tables['order_shop_assignments'])) {
         $invoiceUnsettled = (int) $pdo->query("SELECT COUNT(*) FROM order_invoice_actions WHERE state IN ('pending', 'unknown')")->fetchColumn();
         $notInvoiced = "NOT EXISTS (SELECT 1 FROM order_invoice_actions i WHERE i.order_uuid = %s AND i.action IN ('issue', 'reissue') AND i.state = 'applied' AND i.result = 'issued')";
         // Invoice deletion (API 2.54.0, migration 045): only 2.54.0 sends and reconciles a deletion, so one not settled yet
         // (pending or unknown) needs it; a settled deletion is history older releases can live with.
         $deleteUnsettled = (int) $pdo->query("SELECT COUNT(*) FROM order_invoice_actions WHERE action = 'delete' AND state IN ('pending', 'unknown')")->fetchColumn();
+        // Invoice link (API 2.79.0, migration 058): an older API does not count a linked invoice as issued, and Staff before
+        // 2.54.0 cannot read a `link` row in the invoice timeline: any recorded link keeps the floor at 2.79.0.
+        $linked = (int) $pdo->query("SELECT COUNT(*) FROM order_invoice_actions WHERE action = 'link'")->fetchColumn();
         $invoiceRouted = (int) $pdo->query("SELECT COUNT(*) FROM order_shop_assignments a WHERE a.state = 'active' AND " . sprintf($notInvoiced, 'a.order_uuid'))->fetchColumn();
         $invoiceOpenWork = (int) $pdo->query("SELECT COUNT(DISTINCT p.order_uuid) FROM order_invoice_actions p WHERE p.action IN ('proforma_issue', 'proforma_cancel', 'proforma_resolve', 'total_accept', 'advance_accept') AND p.state = 'applied' AND "
             . sprintf($notInvoiced, 'p.order_uuid'))->fetchColumn();
@@ -184,10 +188,10 @@ try {
     // Confirmare finance holds (API 2.71.0, migration 054): an older API ignores a hold and would cancel the held order at
     // the proforma expiry, so a rollback below 2.71.0 is refused while a hold is open.
     $holdsOpen = isset($tables['confirmare_finance_holds']) ? (int) $pdo->query('SELECT COUNT(*) FROM confirmare_finance_holds WHERE released_at IS NULL')->fetchColumn() : 0;
-    $floor = $holdsOpen > 0 ? '2.71.0' : ($collectionsOpen > 0 ? '2.68.0' : ($shortRouteOpen > 0 ? '2.67.0' : ($deleteUnsettled > 0 ? '2.54.0' : ($schemaThreeOpen > 0 ? '2.53.0' : ($requestsOpen > 0 ? '2.50.0' : ($dualOpen > 0 ? '2.46.0' : (($invoiceUnsettled > 0 || $invoiceRouted > 0 || $invoiceOpenWork > 0) ? '2.45.0' : (($cohortOpen > 0 || $activations > 0 || $financeUnsettled > 0) ? '2.42.0' : ($syncOpen > 0 ? '2.36.0' : ($stoppedOpen > 0 ? '2.35.0' : ($schemaTwoOpen > 0 ? '2.34.2' : ($assistedOpen > 0 ? '2.34.0' : (array_sum($state) > 0 ? '2.32.0' : null)))))))))))));
+    $floor = $linked > 0 ? '2.79.0' : ($holdsOpen > 0 ? '2.71.0' : ($collectionsOpen > 0 ? '2.68.0' : ($shortRouteOpen > 0 ? '2.67.0' : ($deleteUnsettled > 0 ? '2.54.0' : ($schemaThreeOpen > 0 ? '2.53.0' : ($requestsOpen > 0 ? '2.50.0' : ($dualOpen > 0 ? '2.46.0' : (($invoiceUnsettled > 0 || $invoiceRouted > 0 || $invoiceOpenWork > 0) ? '2.45.0' : (($cohortOpen > 0 || $activations > 0 || $financeUnsettled > 0) ? '2.42.0' : ($syncOpen > 0 ? '2.36.0' : ($stoppedOpen > 0 ? '2.35.0' : ($schemaTwoOpen > 0 ? '2.34.2' : ($assistedOpen > 0 ? '2.34.0' : (array_sum($state) > 0 ? '2.32.0' : null))))))))))))));
     $safe = $floor === null || version_compare($argv[1], $floor, '>=');
     fwrite(STDOUT, json_encode(['safe' => $safe, 'targetVersion' => $argv[1], 'requiredFloor' => $floor, 'state' => $state + ['openOrdersWithAssistedCheckpoints' => $assistedOpen, 'openOrdersWithTicketSchema2' => $schemaTwoOpen, 'openOrdersWithTicketSchema3' => $schemaThreeOpen, 'ordersAwaitingConfirmare' => $cohortClosed, 'openConfirmareOrders' => $cohortOpen, 'confirmareActivations' => $activations, 'openStoppedOrders' => $stoppedOpen, 'openCancellationSyncOperations' => $syncOpen,
-        'unsettledInvoiceActions' => $invoiceUnsettled, 'ordersRoutedForInvoice' => $invoiceRouted, 'ordersWithOpenProformaWork' => $invoiceOpenWork, 'unsettledFinanceActions' => $financeUnsettled, 'openDualStoreWork' => $dualOpen, 'openFinanceRequests' => $requestsOpen, 'unsettledInvoiceDeletions' => $deleteUnsettled, 'openShortRouteB2bOrders' => $shortRouteOpen, 'openFinanceCollections' => $collectionsOpen, 'refundMovements' => $refundMovements, 'recentMeterFacts' => $meterFactsRecent, 'openFinanceHolds' => $holdsOpen]], JSON_THROW_ON_ERROR) . "\n");
+        'unsettledInvoiceActions' => $invoiceUnsettled, 'ordersRoutedForInvoice' => $invoiceRouted, 'ordersWithOpenProformaWork' => $invoiceOpenWork, 'unsettledFinanceActions' => $financeUnsettled, 'openDualStoreWork' => $dualOpen, 'openFinanceRequests' => $requestsOpen, 'unsettledInvoiceDeletions' => $deleteUnsettled, 'openShortRouteB2bOrders' => $shortRouteOpen, 'openFinanceCollections' => $collectionsOpen, 'refundMovements' => $refundMovements, 'recentMeterFacts' => $meterFactsRecent, 'openFinanceHolds' => $holdsOpen, 'invoiceLinks' => $linked]], JSON_THROW_ON_ERROR) . "\n");
     exit($safe ? 0 : 3);
 } catch (Throwable) {
     fwrite(STDERR, "Rollback refused: current database state could not be verified.\n");

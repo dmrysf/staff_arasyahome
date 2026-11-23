@@ -153,6 +153,11 @@ $check((int) $one("SELECT COUNT(*) FROM information_schema.table_constraints WHE
 $check((int) $one("SELECT COUNT(*) FROM information_schema.table_constraints WHERE constraint_schema = DATABASE() AND table_name = 'order_invoice_actions' AND constraint_name IN ('chk_order_invoice_actions_action_045', 'chk_order_invoice_actions_reason_045')") === 2
     && (int) $one("SELECT COUNT(*) FROM information_schema.table_constraints WHERE constraint_schema = DATABASE() AND table_name = 'order_invoice_actions' AND constraint_name IN ('chk_order_invoice_actions_action', 'chk_order_invoice_actions_action_044', 'chk_order_invoice_actions_reason')") === 0,
     'migration 045 replaces the action and reason CHECKs once (delete); running it twice changes nothing');
+(new SqlFileRunner($pdo))->run(dirname(__DIR__) . '/database/migrations/058_invoice_link.sql');
+(new SqlFileRunner($pdo))->run(dirname(__DIR__) . '/database/migrations/058_invoice_link.sql');
+$check((int) $one("SELECT COUNT(*) FROM information_schema.table_constraints WHERE constraint_schema = DATABASE() AND table_name = 'order_invoice_actions' AND constraint_name = 'chk_order_invoice_actions_action_058'") === 1
+    && (int) $one("SELECT COUNT(*) FROM information_schema.table_constraints WHERE constraint_schema = DATABASE() AND table_name = 'order_invoice_actions' AND constraint_name = 'chk_order_invoice_actions_action_045'") === 0,
+    'migration 058 replaces the action CHECK once (link); running it twice changes nothing');
 $check(!is_file(dirname(__DIR__) . '/database/migrations/040_smartbill_invoicing.sql') && !is_dir(dirname(__DIR__) . '/database/drafts'), 'the schema is 041, never 040; the draft is gone (one source)');
 
 // ---- 2. Invoice scopes: root-only, separate from documents, finance and Confirmare --------------------------------------
@@ -763,6 +768,45 @@ $th->invoiceDelete = false;
 $old9 = $read($who['idoc'], $g(9));
 $th->invoiceDelete = true;
 $check($old9['summary']['blockers']['delete'] === ['not_supported'] && !in_array('delete', $old9['allowedActions'], true), 'a shop before YD SOFT 2.25.0: the deletion is not offered (not_supported)');
+
+// ---- 8d. API 2.79.0 (owner 2026-11-23): an invoice made outside Arasya, linked by the shop, recorded by root ---------------
+$rootIdentity = $container->employeeRepository()->findByUuid((string) $one('SELECT employee_uuid FROM system_root_identity LIMIT 1'));
+$linkGid = (string) $one("SELECT o.global_order_id FROM operational_orders o JOIN order_confirmations c ON c.order_uuid = o.order_uuid WHERE o.source_key = 'trendhome'
+    AND NOT EXISTS (SELECT 1 FROM order_invoice_actions i WHERE i.order_uuid = o.order_uuid) ORDER BY o.global_order_id LIMIT 1");
+$check($rootIdentity !== null && $linkGid !== '', '8d: a Confirmare order without any invoice action, and the root identity');
+$linkId = substr($linkGid, strlen('trendhome:'));
+$linkService = new \Arasya\Operations\Confirmare\InvoiceLink($pdo, new \Arasya\Operations\Confirmare\InvoiceEfactura($pdo, $container->clock(), new \Arasya\Operations\Confirmare\InvoiceScopePolicy($pdo)), new \Arasya\Operations\Iam\IamAuditLogger($pdo), $container->clock());
+$why8d = 'Factura emisă manual în SmartBill, verificată de contabilitate (TEST).';
+$summaryOf = static function () use ($container, $rootIdentity, $linkGid): array { $r = $container->confirmareInvoice(null, true)->read($rootIdentity, $linkGid, 'inv-link-read-' . bin2hex(random_bytes(4))); return is_array($r['summary'] ?? null) ? $r['summary'] : []; };
+$s8d = $summaryOf();
+$check(($s8d['document']['exists'] ?? null) === false, '8d: the shop has no invoice for the order yet: ' . json_encode($s8d['document'] ?? null));
+$check($linkService->plan($linkGid, 'TST', '0777', $s8d, '2026-11-20', $why8d) === ['ok' => false, 'error' => 'shop_document_differs'], '8d: nothing to record while the shop names no such invoice');
+if (isset($th->orders[$linkId])) {
+    $th->orders[$linkId]['invoice']['document'] = ['series' => 'TST', 'number' => '0777', 'at' => time() - 3600, 'by' => null];
+}
+$s8d = $summaryOf();
+$check(($s8d['document']['number'] ?? null) === '0777' && ($s8d['document']['through'] ?? null) === 'arasya', '8d: the shop linked the existing invoice (TST 0777) in its own journal');
+$check($linkService->plan($linkGid, 'TST', '0777', $s8d, '2026-11-20', 'scurt') === ['ok' => false, 'error' => 'reason_missing'], '8d: a reason of 20 characters or more is required');
+$check($linkService->plan($linkGid, 'TST', '0778', $s8d, '2026-11-20', $why8d)['error'] === 'shop_document_differs', '8d: another number than the shop names is refused');
+$check($linkService->plan($linkGid, 'TST', '0777', $s8d, '2999-01-01', $why8d)['error'] === 'issued_at_invalid' && $linkService->plan($linkGid, 'TST', '0777', $s8d, '20.11.2026', $why8d)['error'] === 'issued_at_invalid', '8d: the invoice date is a real day, never in the future');
+$plugin8d = $s8d; $plugin8d['document']['through'] = 'shop';
+$check($linkService->plan($linkGid, 'TST', '0777', $plugin8d, '2026-11-20', $why8d)['error'] === 'shop_not_linked', '8d: a document only the SmartBill plugin records is linked in the shop first (wp yd-arasya invoice link)');
+$dry = $linkService->plan($linkGid, 'TST', '0777', $s8d, '2026-11-20', $why8d);
+$check($dry['ok'] === true && (int) $one("SELECT COUNT(*) FROM order_invoice_actions WHERE global_order_id = ?", [$linkGid]) === 0, '8d: the dry run writes nothing');
+$applied = $linkService->apply($rootIdentity, $linkGid, 'TST', '0777', $s8d, '2026-11-20', $why8d, 'inv-link-test');
+$row8d = $all("SELECT action, state, outcome, result, access_role, employee_uuid FROM order_invoice_actions WHERE global_order_id = ?", [$linkGid]);
+$task8d = $all('SELECT t.state, t.issued_at, t.due_at FROM invoice_efactura_tasks t WHERE t.global_order_id = ?', [$linkGid]);
+$audit8d = $all("SELECT action, metadata_json FROM iam_audit_events WHERE action = 'intervention.invoice-link' AND target_id = ?", [$linkGid]);
+$check($applied['ok'] === true && count($row8d) === 1 && $row8d[0]['action'] === 'link' && $row8d[0]['state'] === 'applied' && $row8d[0]['result'] === 'issued' && $row8d[0]['employee_uuid'] === $rootIdentity->employeeUuid,
+    '8d: root records one applied link (migration 058 accepts the action): ' . json_encode($row8d));
+$check(count($task8d) === 1 && $task8d[0]['state'] === 'open' && str_starts_with((string) $task8d[0]['issued_at'], '2026-11-20') && str_starts_with((string) $task8d[0]['due_at'], '2026-11-27'),
+    '8d: the e-Factura follow-up runs from the invoice\'s own date (5 working days): ' . json_encode($task8d));
+$check(count($audit8d) === 1 && str_contains((string) $audit8d[0]['metadata_json'], 'reason'), '8d: the IAM audit names the link with its reason');
+$issued8d = (int) $one('SELECT COUNT(*) FROM order_invoice_actions i WHERE i.global_order_id = ? AND ' . \Arasya\Operations\Confirmare\ConfirmareInvoice::ISSUED_SQL, [$linkGid]);
+$check($issued8d === 1, '8d: the order now counts as invoiced (ISSUED_SQL includes link)');
+$check($linkService->apply($rootIdentity, $linkGid, 'TST', '0777', $s8d, '2026-11-20', $why8d, 'inv-link-test-2') === ['ok' => false, 'error' => 'already_invoiced'], '8d: recording it again changes nothing (already_invoiced)');
+$rootRead = $container->confirmareInvoice(null, true)->read($rootIdentity, $linkGid, 'inv-link-read-after');
+$check(in_array('link', array_column($rootRead['timeline'] ?? [], 'action'), true), '8d: the invoice timeline shows the link: ' . json_encode(array_column($rootRead['timeline'] ?? [], 'action')));
 
 // ---- 9. No link, number, amount or customer data in the audit or the log ----------------------------------------------------
 $dump = json_encode([$all('SELECT * FROM order_invoice_actions'), $all('SELECT * FROM order_invoice_reads'), $all("SELECT action, metadata_json FROM iam_audit_events WHERE action = 'employee.invoice_scopes_changed'")], JSON_INVALID_UTF8_SUBSTITUTE | JSON_UNESCAPED_UNICODE);
