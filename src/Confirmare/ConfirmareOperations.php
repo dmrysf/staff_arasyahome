@@ -148,6 +148,9 @@ final class ConfirmareOperations
      * employee the order was routed to and the invoice managers. The shop's AWB state is read per order on its screen.
      * API 2.68.2 (owner 2026-11-13): an order whose stage 14 (Livrare) was completed without an AWB stays in the queue
      * until its AWB is made; completing production never hides a parcel that still has to leave.
+     * API 2.77.3 (owner 2026-11-23): the orders whose AWB is made and the orders routed to another employee are left out in
+     * SQL, before the 300-row limit. The limit used to be taken first: 420 orders with their AWB made, still at stage 14,
+     * filled it and every newer order waiting for its AWB (26 that day) was never listed.
      *
      * @return array<string, mixed>
      */
@@ -160,23 +163,21 @@ final class ConfirmareOperations
         }
         $marks = implode(', ', array_fill(0, count($sources), '?'));
         $stages = implode(', ', array_fill(0, count(self::AWB_STAGES), '?'));
-        $statement = $this->pdo->prepare("SELECT o.global_order_id, o.order_number, o.source_key, o.production_stage_id, a.employee_uuid AS assignee,
+        // The invoice manager of a shop sees all its waiting orders; any other employee only the orders routed to them.
+        $managed = array_values(array_filter($sources, fn (string $s): bool => $this->invoices->allows($actor, InvoiceScopePolicy::MANAGE, $s)));
+        $mine = $managed === [] ? 'a.employee_uuid = ?' : '(o.source_key IN (' . implode(', ', array_fill(0, count($managed), '?')) . ') OR a.employee_uuid = ?)';
+        $statement = $this->pdo->prepare("SELECT o.global_order_id, o.order_number, o.source_key, o.production_stage_id,
                 (SELECT op.state FROM order_source_operations op WHERE op.order_uuid = o.order_uuid AND op.kind = 'awb_create' ORDER BY op.requested_at DESC LIMIT 1) AS last_awb
             FROM operational_orders o
             INNER JOIN order_confirmations c ON c.order_uuid = o.order_uuid AND c.status = 'approved'
             LEFT JOIN order_shop_assignments a ON a.active_order_uuid = o.order_uuid
             WHERE o.source_key IN ({$marks}) AND o.production_stage_id IN ({$stages}) AND o.operational_status <> 'unavailable' AND o.cancellation_state IS NULL
+              AND {$mine}
+              AND NOT EXISTS (SELECT 1 FROM order_source_operations done WHERE done.order_uuid = o.order_uuid AND done.kind = 'awb_create' AND done.state = 'applied')
             ORDER BY o.production_changed_at, o.order_uuid LIMIT 300");
-        $statement->execute([...$sources, ...self::AWB_STAGES]);
+        $statement->execute([...$sources, ...self::AWB_STAGES, ...$managed, $actor->employeeUuid]);
         $items = [];
         foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
-            $manager = $this->invoices->allows($actor, InvoiceScopePolicy::MANAGE, (string) $row['source_key']);
-            if (!$manager && $row['assignee'] !== $actor->employeeUuid) {
-                continue;
-            }
-            if ($row['last_awb'] === 'applied') {
-                continue;
-            }
             $items[] = ['globalOrderId' => (string) $row['global_order_id'], 'orderNumber' => (string) $row['order_number'], 'source' => (string) $row['source_key'],
                 'stage' => (string) $row['production_stage_id'], 'lastAttempt' => $row['last_awb'] === null ? null : (string) $row['last_awb']];
         }
