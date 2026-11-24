@@ -893,6 +893,8 @@ final readonly class ConfirmareInvoice
                 'assignedBy' => (string) ($item['assigned_by_name'] ?? ''),
                 'handoff' => $handoff['state'],
                 'invoiced' => $this->invoiceIssued((string) $item['order_uuid']),
+                // API 2.77.6: a manager-routed order waits for this employee's customer check before production.
+                'customerCheck' => ConfirmareService::awaitingCustomerCheck($this->pdo, (string) $item['order_uuid']) ? 'required' : null,
             ];
         }
         return ['items' => $items];
@@ -1021,7 +1023,9 @@ final readonly class ConfirmareInvoice
         if ($order['operational_status'] === 'unavailable' || $order['source_reported_unavailable_at'] !== null) {
             $blockers[] = 'order_unavailable';
         }
-        if (!$this->issuableHandoff($orderUuid)) {
+        // API 2.77.6: a manager-routed order is routed BEFORE its handoff is ready: its production waits for the customer
+        // check of the shop employee it is routed to (ConfirmareService::customerCheck).
+        if (!$this->issuableHandoff($orderUuid) && !ConfirmareService::awaitingCustomerCheck($this->pdo, $orderUuid)) {
             $blockers[] = 'handoff_not_ready';
         }
         if (ConfirmareFinance::actionOpen($this->pdo, $orderUuid)) {

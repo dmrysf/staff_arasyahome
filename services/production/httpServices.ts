@@ -16,7 +16,7 @@ import { createBrowserWorkflowCache, createUnavailableWorkflowCache, normalizePr
 import { createProductionWorkflowService } from "./workflowService";
 import type { ShopLine, ShopLineImage, ShopOrderDetail, ShopPerson, ShopRead } from "../../domain/confirmareShop";
 import { CASH_RECEIPTS, EXCEPTION_REASONS, EXCEPTION_RESOLUTIONS, FINANCE_ACTIONS, PAYMENT_METHODS, FINANCE_NEXT, FINANCE_TASKS, type ExceptionOutcome, type FinanceEntry, type FinanceOutcome, type FinanceQueue, type FinanceQueueItem, type FinanceRead, type FinanceSummary, type FinanceTask, type FinanceTimelineItem, type TransferException, type TransferExceptionList } from "../../domain/confirmareFinance";
-import { CANCEL_REASONS, INVOICE_ACTIONS, INVOICE_ROLES, PAYMENT_STATES, PROFORMA_ACTIONS, PROFORMA_KEYS, PROFORMA_ROUTE, type CodCheck, type ShippingCheck, type InvoiceDeadline, type MoneyPosition, type TotalAcceptance, type InvoiceActionKey, type InvoiceOutcome, type InvoicePaymentRead, type InvoiceRead, type InvoiceSummary, type InvoiceView, type ProformaActionKey, type ProformaSummary, type ShopAssignment, type ShopQueueItem } from "../../domain/confirmareInvoice";
+import { CANCEL_REASONS, CUSTOMER_CHECK_OUTCOMES, type CustomerCheckResult, INVOICE_ACTIONS, INVOICE_ROLES, PAYMENT_STATES, PROFORMA_ACTIONS, PROFORMA_KEYS, PROFORMA_ROUTE, type CodCheck, type ShippingCheck, type InvoiceDeadline, type MoneyPosition, type TotalAcceptance, type InvoiceActionKey, type InvoiceOutcome, type InvoicePaymentRead, type InvoiceRead, type InvoiceSummary, type InvoiceView, type ProformaActionKey, type ProformaSummary, type ShopAssignment, type ShopQueueItem } from "../../domain/confirmareInvoice";
 import { EDIT_IMPACTS, type EditBlocker, type EditCatalog, type EditCouponCatalog, type EditCouponLine, type EditField, type EditLineSnapshot, type EditOutcome, type EditProduct, type EditResult, type EditTotals, type EditVariation, type OpenEdit } from "../../domain/confirmareEdit";
 import { mapAwbQueue, recentAwbsOf, mapBankCheck, mapBankCheckPreview, mapBankChecks, mapFinanceHold, mapFinanceReview, mapContactCycle, mapCycleAttention, mapEfacturaQueue, mapEfacturaTask, mapHealth, mapOperationOutcome, mapOperationsState, mapOrderCycle, mapProformaCycle } from "../../domain/confirmareOps";
 import { CLEARANCE_CONDITIONS, CONTACT_OUTCOMES, DOCUMENT_STATES, FINANCIAL_ATTENTION, HANDOFF_BLOCKERS, HANDOFF_STATES, type ConfirmareAlert, type ConfirmareApi, type ConfirmareAvailability, type ConfirmareContact, type ConfirmareCustomer, type ConfirmareDetail, type ConfirmareEvent, type ConfirmareHandoff, type ConfirmareItem, type HandoffItem, type ConfirmareLine, type ConfirmareOperator, type ConfirmarePool, type ConfirmareTeam, type FinancialState } from "../../domain/confirmare";
@@ -1281,6 +1281,7 @@ export function createProductionServices(apiBaseUrl: string, options: Production
     assignShop: (globalOrderId, input, key) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/shop-assignment`, { method: "POST", cache: "no-store", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, (value) => mapShopAssignment(objectValue(value).assignment)),
     verifyInvoiceQr: (globalOrderId, qrToken) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/invoice/qr`, { method: "POST", cache: "no-store", body: JSON.stringify({ qrToken }) }, (value) => { const raw = objectValue(value); if (raw.verified !== true) throw new StaffServiceError("SERVER_ERROR"); return { verified: true as const, validSeconds: nonNegativeInteger(raw.validSeconds) }; }),
     shopQueue: (signal) => http.request("/confirmare/shop-queue", { signal, cache: "no-store" }, mapShopQueue),
+    customerCheck: (globalOrderId, outcome, key) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/customer-check`, { method: "POST", cache: "no-store", headers: { "Idempotency-Key": key }, body: JSON.stringify({ outcome }) }, mapCustomerCheck),
     // API 2.46.0: the proforma cycles, the bank checks, the shop operations (reactivation, AWB, card refund), e-Factura, health.
     cycleAttention: (source, signal) => http.request(`/confirmare/cycles${sourceQuery(source)}`, { signal, cache: "no-store" }, mapCycleAttention),
     bankChecks: (source, signal) => http.request(`/confirmare/finance/bank-checks${sourceQuery(source)}`, { signal, cache: "no-store" }, mapBankChecks),
@@ -2016,7 +2017,13 @@ export function mapShopQueue(value: unknown): ShopQueueItem[] {
 function mapShopQueueItem(value: unknown): ShopQueueItem {
   const raw = objectValue(value);
   return { globalOrderId: textValue(raw.globalOrderId, 200), source: textValue(raw.source, 40), orderNumber: textValue(raw.orderNumber, 64), assignedAt: timestampValue(raw.assignedAt),
-    assignedBy: raw.assignedBy === "" ? "" : textValue(raw.assignedBy, 200), handoff: textValue(raw.handoff, 30), invoiced: booleanValue(raw.invoiced) };
+    assignedBy: raw.assignedBy === "" ? "" : textValue(raw.assignedBy, 200), handoff: textValue(raw.handoff, 30), invoiced: booleanValue(raw.invoiced),
+    customerCheck: raw.customerCheck === "required" ? "required" : null };
+}
+/** Staff 2.52.4: the answer of a customer check (API 2.77.6). */
+export function mapCustomerCheck(value: unknown): CustomerCheckResult {
+  const raw = objectValue(value);
+  return { outcome: oneOf(raw.outcome, CUSTOMER_CHECK_OUTCOMES), productionCleared: booleanValue(raw.productionCleared), status: textValue(raw.status, 20) };
 }
 function mapInvoiceView(raw: Record<string, unknown>): InvoiceView {
   const handoff = objectValue(raw.handoff);

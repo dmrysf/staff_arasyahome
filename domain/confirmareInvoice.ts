@@ -111,7 +111,11 @@ export type ProformaSummary = {
 };
 export type ShopAssignment = { employeeId: string; assignedBy: string; role: "operator" | "manager"; assignedAt: string };
 export type ShopCandidate = { id: string; name: string };
-export type ShopQueueItem = { globalOrderId: string; source: string; orderNumber: string; assignedAt: string; assignedBy: string; handoff: string; invoiced: boolean };
+/** API 2.77.6: `required` when the order was routed by a manager approval and waits for this employee's customer check. */
+export type ShopQueueItem = { globalOrderId: string; source: string; orderNumber: string; assignedAt: string; assignedBy: string; handoff: string; invoiced: boolean; customerCheck: "required" | null };
+export const CUSTOMER_CHECK_OUTCOMES = ["confirmed", "no_answer", "needs_correction"] as const;
+export type CustomerCheckOutcome = (typeof CUSTOMER_CHECK_OUTCOMES)[number];
+export type CustomerCheckResult = { outcome: CustomerCheckOutcome; productionCleared: boolean; status: string };
 
 export type InvoiceDocument = {
   exists: boolean; type: "invoice" | "proforma" | null; series: string | null; number: string | null; status: "final" | "draft" | null; conflict: boolean;
@@ -179,6 +183,8 @@ export interface ConfirmareInvoiceApi {
   assignShop(globalOrderId: string, input: { employeeId: string; expectedAssigneeId: string | null }, idempotencyKey: string): Promise<ShopAssignment | null>;
   verifyInvoiceQr(globalOrderId: string, qrToken: string): Promise<{ verified: true; validSeconds: number }>;
   shopQueue(signal?: AbortSignal): Promise<ShopQueueItem[]>;
+  /** API 2.77.6: the routed shop employee's customer check of a manager-routed order (absent in an older or simulated service). */
+  customerCheck?(globalOrderId: string, outcome: CustomerCheckOutcome, idempotencyKey: string): Promise<CustomerCheckResult>;
   /** API 2.47.0: the read-only SmartBill payment reconciliation (absent in an older or simulated service). */
   invoicePayment?(globalOrderId: string, signal?: AbortSignal): Promise<InvoicePaymentRead>;
 }

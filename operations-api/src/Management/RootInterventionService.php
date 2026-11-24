@@ -56,6 +56,9 @@ final readonly class RootInterventionService
         // operations (reactivation, AWB, card refund), controlled line edits of a pending order, and reconciliation of
         // any action whose answer was lost.
         'shop-assign' => ['employeeId', 'expectedAssigneeId'],
+        // API 2.77.6 (owner 2026-11-24): a paid pending order approved by root WITHOUT a call and routed to a shop employee, who
+        // then checks it with the customer before production (ConfirmareService::managerApprove / customerCheck).
+        'manager-route' => ['expectedVersion', 'employeeId'],
         'invoice' => ['invoiceAction', 'fields'],
         'efactura' => ['taskId', 'expectedVersion', 'outcome'],
         'operation' => ['kind', 'fields'],
@@ -284,6 +287,7 @@ final readonly class RootInterventionService
             'finance-reconcile' => $this->finance->reconcile($actor, $globalId, $input['idempotencyKey'] ?? null, $requestId),
             'request-cancel' => $this->requests->cancel($actor, $globalId, ['expectedVersion' => $version, 'reasonCode' => $input['reasonCode'] ?? null], $key, $requestId),
             'request-resubmit' => $this->requests->resubmit($actor, $globalId, ['expectedVersion' => $version], $key, $requestId),
+            'manager-route' => $this->managerRoute($actor, $globalId, $version, $input['employeeId'] ?? null, $key, $requestId),
             'shop-assign' => $this->invoice->assignShop($actor, $globalId, ['employeeId' => $input['employeeId'] ?? null, 'expectedAssigneeId' => $input['expectedAssigneeId'] ?? null], $key),
             'invoice' => $this->invoice->act($actor, $globalId, $this->string($input['invoiceAction'] ?? null, 'invoiceAction'), $this->fields($input['fields'] ?? []), $key, $requestId),
             'efactura' => $this->efacturaRecord($actor, $globalId, $input),
@@ -339,6 +343,29 @@ final readonly class RootInterventionService
         return $this->confirmare->approve($actor, $globalId, $this->currentVersion($globalId), [
             'customerCall' => 'confirmed', 'priceVerified' => true, 'confirmedLineIds' => $review['lineIds'], 'reviewFingerprint' => $review['fingerprint'],
         ], $key, $requestId);
+    }
+
+    /**
+     * API 2.77.6: manager approval without a call (no contact is recorded), then the routing to the shop employee. The order's
+     * production stays closed until that employee's customer check. A second run with the same key replays both steps.
+     *
+     * @return array<string, mixed>
+     */
+    private function managerRoute(EmployeeIdentity $actor, string $globalId, mixed $version, mixed $employeeId, string $key, string $requestId): array
+    {
+        if (!is_int($version) || $version < 1) {
+            throw new ApiException(400, 'INVALID_REQUEST', 'expectedVersion must be a positive integer.');
+        }
+        if (!is_string($employeeId) || preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/D', $employeeId) !== 1) {
+            throw new ApiException(422, 'INTERVENTION_INVALID', 'employeeId is not valid.', ['field' => 'employeeId']);
+        }
+        if (strlen($key) > 90) {
+            throw new ApiException(400, 'INVALID_IDEMPOTENCY_KEY', 'The Idempotency-Key is too long for a manager route.');
+        }
+        $this->sourceAccess->read($actor, $globalId, $requestId);
+        $approved = $this->confirmare->managerApprove($actor, $globalId, $version, $key, $requestId);
+        $routed = $this->invoice->assignShop($actor, $globalId, ['employeeId' => $employeeId, 'expectedAssigneeId' => null], $key . '-route');
+        return ['state' => 'applied', 'confirmation' => $approved, 'assignment' => $routed['assignment'] ?? null, 'replayed' => $routed['replayed'] ?? false];
     }
 
     /** @param array<string, mixed> $input @return array<string, mixed> */
