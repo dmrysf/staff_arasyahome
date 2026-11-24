@@ -51,6 +51,7 @@ use Arasya\Operations\Security\CsrfGuard;
  *   POST /confirmare/orders/{globalOrderId}/proforma/{issue|send-mail|check|resolve|reconcile}  the advance proforma (2.44.0)
  *   GET  /confirmare/orders/{globalOrderId}/shop-employees  who the order can be routed to (2.44.0)
  *   POST /confirmare/orders/{globalOrderId}/shop-assignment {employeeId, expectedAssigneeId} + Idempotency-Key (2.44.0)
+ *   POST /confirmare/orders/{globalOrderId}/customer-check {outcome} + Idempotency-Key (2.77.6, routed shop employee, manager route)
  *   GET  /confirmare/shop-queue                            the orders routed to me (2.44.0)
  *   GET  /confirmare/finance/transfer-exceptions?source=   the shop's bank transfers that match no order (2.44.0, finance)
  *   POST /confirmare/finance/transfer-exceptions/{record|resolve}?source=  + Idempotency-Key (finance record / approve)
@@ -325,6 +326,18 @@ final readonly class ConfirmareController
                 throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
             }
             return $this->json($this->invoice->shopCandidates($actor, rawurldecode($m[1])));
+        }
+        if (preg_match('#^/confirmare/orders/([^/]{1,600})/customer-check$#D', $path, $m) === 1) {
+            // API 2.77.6: the routed shop employee's customer check of a manager-routed order.
+            if ($request->method !== 'POST') {
+                throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
+            }
+            $this->csrf->requireValid($session->rawToken, $request->header('x-csrf-token'));
+            $input = $request->json(512);
+            if (array_diff(array_keys($input), ['outcome']) !== []) {
+                throw new ApiException(400, 'INVALID_REQUEST', 'Only outcome is accepted.');
+            }
+            return $this->json($this->service->customerCheck($actor, rawurldecode($m[1]), $input['outcome'] ?? null, $request->header('idempotency-key') ?? '', $request->requestId));
         }
         if ($path === '/confirmare/shop-queue' && $request->method === 'GET') {
             return $this->json($this->invoice->shopQueue($actor));
