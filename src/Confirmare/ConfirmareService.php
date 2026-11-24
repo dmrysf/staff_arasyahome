@@ -607,6 +607,75 @@ final class ConfirmareService
         });
     }
 
+    /** API 2.77.7: the audit reason of a manager check (root opens production of a manager-routed order without a customer call). */
+    public const MANAGER_CHECK_REASON = 'manager_check_no_call';
+
+    /**
+     * API 2.77.7 (owner decision 2026-11-24): root, as the manager, takes the customer check of a manager-routed order on itself
+     * and opens production WITHOUT a customer call. No contact is recorded and no call is attributed to the shop employee:
+     * `call_confirmed_*` is set to root (the manager who takes the responsibility), and the audit `confirmare.manager_check`
+     * says plainly that the customer was not called. Same guards as the shop employee's "confirmed": only an order that still
+     * waits for its customer check, unchanged since the manager approval (fingerprint, no pending shop change). A second call
+     * on an order root already checked returns the recorded state.
+     *
+     * @return array{outcome: string, productionCleared: bool, status: string, missing: list<string>, replayed: bool}
+     */
+    public function managerCheck(EmployeeIdentity $actor, string $globalOrderId, string $key, string $requestId): array
+    {
+        if (!$actor->isRoot) {
+            throw new ApiException(403, 'CONFIRMARE_MANAGER_CHECK_ROOT_ONLY', 'Only the root intervention desk checks an order by manager approval.');
+        }
+        $this->requireKey($key);
+        $globalId = $this->globalId($globalOrderId);
+        return $this->retrying(function () use ($actor, $globalId, $requestId): array {
+            $this->pdo->beginTransaction();
+            try {
+                $order = $this->lockOrder($globalId);
+                $confirmation = $order === null ? null : $this->lockConfirmation((string) $order['order_uuid']);
+                if ($order === null || $confirmation === null) {
+                    throw new ApiException(404, 'CONFIRMARE_NOT_FOUND', 'No Confirmare order was found.');
+                }
+                $orderUuid = (string) $order['order_uuid'];
+                $now = $this->now();
+                $state = function () use ($orderUuid): array {
+                    $statement = $this->pdo->prepare('SELECT status, production_cleared FROM order_confirmations WHERE order_uuid = ?');
+                    $statement->execute([$orderUuid]);
+                    return $statement->fetch(PDO::FETCH_ASSOC) ?: [];
+                };
+                if (!self::awaitingCustomerCheck($this->pdo, $orderUuid)) {
+                    $row = $state();
+                    // Only an order this desk already manager-checked (its audit row) replays; any other approval is not expected here.
+                    $done = $this->pdo->prepare("SELECT 1 FROM iam_audit_events WHERE action = 'confirmare.manager_check' AND target_type = 'order' AND target_id = ? LIMIT 1");
+                    $done->execute([$orderUuid]);
+                    if (($row['status'] ?? null) === self::STATUS_APPROVED && $this->checkedBy($orderUuid, $actor->employeeUuid) && $done->fetchColumn() !== false) {
+                        $this->pdo->commit();
+                        return ['outcome' => 'manager_checked', 'productionCleared' => (int) ($row['production_cleared'] ?? 0) === 1, 'status' => (string) $row['status'],
+                            'missing' => ConfirmationClearance::missing($this->pdo, $orderUuid), 'replayed' => true];
+                    }
+                    throw new ApiException(409, 'CONFIRMARE_CHECK_NOT_EXPECTED', 'This order does not wait for a customer check.');
+                }
+                $fingerprint = $this->pdo->prepare('SELECT approved_review_fingerprint FROM order_confirmations WHERE order_uuid = ?');
+                $fingerprint->execute([$orderUuid]);
+                $approved = (string) $fingerprint->fetchColumn();
+                if (ConfirmareSourceEdits::changePending($this->pdo, $orderUuid) || !hash_equals($approved, ConfirmationClearance::fingerprint($this->pdo, $orderUuid))) {
+                    throw new ApiException(409, 'CONFIRMARE_REVIEW_STALE', 'The order changed in the shop since the manager approval; an operator must review it again.');
+                }
+                $update = $this->pdo->prepare('UPDATE order_confirmations SET call_confirmed_at = ?, call_confirmed_by_employee_uuid = ?, version = version + 1, updated_at = ? WHERE order_uuid = ? AND call_confirmed_at IS NULL');
+                $update->execute([$now, $actor->employeeUuid, $now, $orderUuid]);
+                ConfirmationClearance::refresh($this->pdo, $orderUuid, $now);
+                (new \Arasya\Operations\Iam\IamAuditLogger($this->pdo))->record($actor, 'confirmare.manager_check', 'order', $orderUuid, (string) $order['global_order_id'],
+                    ['outcome' => 'manager_checked', 'reason' => self::MANAGER_CHECK_REASON, 'customerCalled' => false, 'route' => self::MANAGER_ROUTE_REASON], $requestId, $now);
+                $row = $state();
+                $missing = ConfirmationClearance::missing($this->pdo, $orderUuid);
+                $this->pdo->commit();
+                return ['outcome' => 'manager_checked', 'productionCleared' => (int) ($row['production_cleared'] ?? 0) === 1, 'status' => (string) ($row['status'] ?? ''), 'missing' => $missing, 'replayed' => false];
+            } catch (\Throwable $error) {
+                $this->rollBack();
+                throw $error;
+            }
+        });
+    }
+
     private function checkedBy(string $orderUuid, string $employeeUuid): bool
     {
         $statement = $this->pdo->prepare('SELECT 1 FROM order_confirmations WHERE order_uuid = ? AND call_confirmed_by_employee_uuid = ?');
