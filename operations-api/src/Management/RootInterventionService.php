@@ -59,6 +59,9 @@ final readonly class RootInterventionService
         // API 2.77.6 (owner 2026-11-24): a paid pending order approved by root WITHOUT a call and routed to a shop employee, who
         // then checks it with the customer before production (ConfirmareService::managerApprove / customerCheck).
         'manager-route' => ['expectedVersion', 'employeeId'],
+        // API 2.77.7 (owner 2026-11-24): root, as the manager, opens production of a manager-routed order without a customer
+        // call (ConfirmareService::managerCheck). The written reason and `customerCalled: false` stay in the audit.
+        'manager-check' => [],
         'invoice' => ['invoiceAction', 'fields'],
         'efactura' => ['taskId', 'expectedVersion', 'outcome'],
         'operation' => ['kind', 'fields'],
@@ -288,6 +291,7 @@ final readonly class RootInterventionService
             'request-cancel' => $this->requests->cancel($actor, $globalId, ['expectedVersion' => $version, 'reasonCode' => $input['reasonCode'] ?? null], $key, $requestId),
             'request-resubmit' => $this->requests->resubmit($actor, $globalId, ['expectedVersion' => $version], $key, $requestId),
             'manager-route' => $this->managerRoute($actor, $globalId, $version, $input['employeeId'] ?? null, $key, $requestId),
+            'manager-check' => $this->confirmare->managerCheck($actor, $globalId, $key, $requestId) + ['state' => 'applied'],
             'shop-assign' => $this->invoice->assignShop($actor, $globalId, ['employeeId' => $input['employeeId'] ?? null, 'expectedAssigneeId' => $input['expectedAssigneeId'] ?? null], $key),
             'invoice' => $this->invoice->act($actor, $globalId, $this->string($input['invoiceAction'] ?? null, 'invoiceAction'), $this->fields($input['fields'] ?? []), $key, $requestId),
             'efactura' => $this->efacturaRecord($actor, $globalId, $input),
