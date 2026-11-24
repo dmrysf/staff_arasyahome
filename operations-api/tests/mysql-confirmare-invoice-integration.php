@@ -628,6 +628,19 @@ $th->afterInvoice = 'answer_lost';
 $lost = $ok($act($who['idoc'], $g(5), 'issue', [], 'inv-lost-0001-' . $suffix), 'lost answer');
 $check($lost['state'] === 'unknown' && $docsMade(5) === 1, 'the shop issued, the answer was lost: unknown in Arasya');
 $refused($act($who['imgr'], $g(5), 'issue'), 'invoice_action_open', 'while an action is unsettled no other invoice action starts', 'CONFIRMARE_INVOICE_NOT_ALLOWED');
+// API 2.77.4 (owner 2026-11-24, proforma crisis): the cycle worker settles a lost answer by itself once the 4-minute window
+// passed; never earlier, never by sending anything to SmartBill again.
+$lostAnswers = $container->confirmareLostAnswers();
+$docsBefore5 = $docsMade(5);
+$early5 = $lostAnswers->run(20);
+$check((string) $one('SELECT state FROM order_invoice_actions WHERE idempotency_key = ?', ['inv-lost-0001-' . $suffix]) === 'unknown' && $early5['applied'] === 0, 'inside the 4-minute window the worker leaves the action alone: ' . json_encode($early5));
+$pdo->prepare('UPDATE order_invoice_actions SET requested_at = DATE_SUB(requested_at, INTERVAL 10 MINUTE) WHERE idempotency_key = ?')->execute(['inv-lost-0001-' . $suffix]);
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$auto5 = $lostAnswers->run(20);
+$check($auto5['applied'] >= 1 && (string) $one('SELECT state FROM order_invoice_actions WHERE idempotency_key = ?', ['inv-lost-0001-' . $suffix]) === 'applied' && $docsMade(5) === $docsBefore5,
+    'after the window the worker settles it with the shop\'s stored answer; no second document: ' . json_encode($auto5));
+$check($lostAnswers->due(20) === [] || !in_array('inv-lost-0001-' . $suffix, array_column($lostAnswers->due(20), 'idempotency_key'), true), 'a settled action is never asked again');
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
 $rec = $ok($call($who['idoc'], 'POST', '/confirmare/orders/' . rawurlencode($g(5)) . '/invoice/reconcile', ['idempotencyKey' => 'inv-lost-0001-' . $suffix]), 'reconcile lost');
 $check($rec['state'] === 'applied' && $rec['result'] === 'issued' && $docsMade(5) === 1 && (string) $one("SELECT state FROM order_invoice_actions WHERE idempotency_key = ?", ['inv-lost-0001-' . $suffix]) === 'applied', 'reconciled with the shop\'s stored answer: applied once');
 $th->afterInvoice = 'crash';

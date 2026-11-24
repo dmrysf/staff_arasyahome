@@ -194,6 +194,12 @@ final class Container
         return new \Arasya\Operations\Confirmare\ConfirmareAwbReadiness($this->pdo, $this->clock, $this->confirmareInvoice(), $this->confirmareOperations(), $this->employees);
     }
 
+    /** Lost answers of shop invoice actions settled by the cycle worker (API 2.77.4): the shop's stored answer, never SmartBill again. */
+    public function confirmareLostAnswers(): \Arasya\Operations\Confirmare\ConfirmareLostAnswers
+    {
+        return new \Arasya\Operations\Confirmare\ConfirmareLostAnswers($this->pdo, $this->clock, $this->confirmareInvoice(null, true), $this->employees);
+    }
+
     /** The Confirmare operating cycle (API 2.46.0): calls, the proforma timer, bank checks; also bin/confirmare-cycles.php. */
     public function confirmareCycles(): \Arasya\Operations\Confirmare\ConfirmareCycles
     {
