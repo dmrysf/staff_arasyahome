@@ -194,6 +194,12 @@ final class Container
         return new \Arasya\Operations\Confirmare\ConfirmareAwbReadiness($this->pdo, $this->clock, $this->confirmareInvoice(), $this->confirmareOperations(), $this->employees);
     }
 
+    /** Stale production clearance recomputed by the cycle worker (API 2.77.4): opens production only when every condition holds. */
+    public function confirmareClearanceSweep(): \Arasya\Operations\Confirmare\ConfirmareClearanceSweep
+    {
+        return new \Arasya\Operations\Confirmare\ConfirmareClearanceSweep($this->pdo, $this->clock);
+    }
+
     /** Lost answers of shop invoice actions settled by the cycle worker (API 2.77.4): the shop's stored answer, never SmartBill again. */
     public function confirmareLostAnswers(): \Arasya\Operations\Confirmare\ConfirmareLostAnswers
     {

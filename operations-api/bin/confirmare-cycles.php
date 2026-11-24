@@ -6,7 +6,7 @@ declare(strict_types=1);
  * The Confirmare cycle worker (API 2.46.0): advance proforma reminders after 24 h and 72 h, the 120 h expiry with the
  * bank check, the cancellation in SmartBill and the order's cancellation request (ConfirmareCycles), and since API 2.77.0
  * the AWB readiness of orders at stage 12-14 (ConfirmareAwbReadiness), since API 2.77.4 the lost answers of shop invoice
- * actions (ConfirmareLostAnswers). Cron, every 5 minutes. One run at a time (server-wide advisory lock); each cycle is also claimed on its own row.
+ * actions (ConfirmareLostAnswers) and stale production clearance (ConfirmareClearanceSweep). Cron, every 5 minutes. One run at a time (server-wide advisory lock); each cycle is also claimed on its own row.
  *
  *   php bin/confirmare-cycles.php [--limit=100]
  *
@@ -51,8 +51,16 @@ try {
     } catch (Throwable $e) {
         fwrite(STDOUT, "confirmare-cycles: lost answers failed\n");
     }
-    fwrite(STDOUT, sprintf("confirmare-cycles: seen %d, advanced %d, skipped %d, reactivations released %d, awb readiness routed %d, invoiced %d, ready %d, blocked %d, lost answers settled %d, refused %d, still open %d\n",
-        $result['seen'], $result['advanced'], $result['skipped'], $released, $prepared['routed'], $prepared['invoiced'], $prepared['ready'], $prepared['blocked'], $lost['applied'], $lost['rejected'], $lost['open']));
+    // API 2.77.4: an approved order whose money is cleared but whose clearance flag was computed while a finance action was
+    // still unsettled is recomputed (every condition again; it only opens production when all hold).
+    $sweep = ['cleared' => 0];
+    try {
+        $sweep = $container->confirmareClearanceSweep()->run();
+    } catch (Throwable $e) {
+        fwrite(STDOUT, "confirmare-cycles: clearance sweep failed\n");
+    }
+    fwrite(STDOUT, sprintf("confirmare-cycles: seen %d, advanced %d, skipped %d, reactivations released %d, awb readiness routed %d, invoiced %d, ready %d, blocked %d, lost answers settled %d, refused %d, still open %d, clearance opened %d\n",
+        $result['seen'], $result['advanced'], $result['skipped'], $released, $prepared['routed'], $prepared['invoiced'], $prepared['ready'], $prepared['blocked'], $lost['applied'], $lost['rejected'], $lost['open'], $sweep['cleared']));
 } finally {
     $pdo->query("SELECT RELEASE_LOCK('arasya_confirmare_cycles')");
 }
