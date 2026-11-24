@@ -373,6 +373,49 @@ $error($call($shopWho, 'POST', $checkPath($gid4), ['outcome' => 'confirmed']), 4
 // a normal approval (with the operator's call) is never a manager route
 $check(\Arasya\Operations\Confirmare\ConfirmareService::awaitingCustomerCheck($pdo, $uuidOf($gid)) === false, 'an order approved with a call is not a manager route');
 
+// ---- 9e. API 2.77.7: root, as the manager, opens production of a manager-routed order WITHOUT a customer call --------------
+$gid5 = $newOrder(4, true);
+$service->distribute();
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$ok($act3($gid5, 'manager-route', ['reason' => 'Operator yetismiyor, yonetici onayi', 'expectedVersion' => $ver($gid5), 'employeeId' => $uuids['shopemp']]), 'third manager route');
+$u5 = $uuidOf($gid5);
+$error($act3($gid5, 'manager-check', ['reason' => 'ok']), 422, 'INTERVENTION_REASON_REQUIRED', 'a manager check needs a written reason');
+$error($act3($gid5, 'manager-check', ['reason' => 'Yonetici onayi', 'expectedVersion' => 1]), 400, 'INVALID_REQUEST', 'a manager check takes only the reason');
+$error($call($shopWho, 'POST', '/management/interventions/orders/' . rawurlencode($gid5) . '/manager-check', ['reason' => 'Yonetici onayi']), 403, 'APPLICATION_ACCESS_DENIED', 'a shop employee never reaches the root desk');
+$error($call($who['boss'], 'POST', '/management/interventions/orders/' . rawurlencode($gid5) . '/manager-check', ['reason' => 'Yonetici onayi']), 403, 'ROOT_ONLY', 'nor another Dashboard user');
+$check(\Arasya\Operations\Confirmare\ConfirmationClearance::missing($pdo, $u5) === ['call'] && $one('SELECT call_confirmed_at FROM order_confirmations WHERE order_uuid = ?', [$u5]) === null, 'refused attempts change nothing');
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$mc = $ok($act3($gid5, 'manager-check', ['reason' => 'Yonetici onayi: musteriyle gorusulmeden uretime acildi']), 'root checks the order as the manager');
+$c5 = $all('SELECT status, decided_by_employee_uuid, call_confirmed_by_employee_uuid, production_cleared FROM order_confirmations WHERE order_uuid = ?', [$u5])[0];
+$check($mc['state'] === 'applied' && $mc['outcome'] === 'manager_checked' && $mc['productionCleared'] === true && $mc['missing'] === [] && $mc['replayed'] === false, 'production opens ' . json_encode($mc));
+$check($c5['status'] === 'approved' && $c5['decided_by_employee_uuid'] === $rootUuid && $c5['call_confirmed_by_employee_uuid'] === $rootUuid && (int) $c5['production_cleared'] === 1, 'the check is root\'s, never the shop employee\'s ' . json_encode($c5));
+$check((int) $one('SELECT COUNT(*) FROM order_confirmation_contacts WHERE order_uuid = ?', [$u5]) === 0, 'NO customer contact is recorded (the customer was not called)');
+$mcAudit = $all("SELECT JSON_UNQUOTE(JSON_EXTRACT(metadata_json, '$.reason')) reason, JSON_EXTRACT(metadata_json, '$.customerCalled') called FROM iam_audit_events WHERE action = 'confirmare.manager_check' AND target_id = ?", [$u5]);
+$check(count($mcAudit) === 1 && $mcAudit[0]['reason'] === 'manager_check_no_call' && $mcAudit[0]['called'] === 'false', 'the audit says plainly: manager check, customer not called ' . json_encode($mcAudit));
+$check((int) $one("SELECT COUNT(*) FROM iam_audit_events WHERE action = 'intervention.manager-check' AND target_id = ? AND JSON_UNQUOTE(JSON_EXTRACT(metadata_json, '$.outcome')) = 'applied' AND JSON_UNQUOTE(JSON_EXTRACT(metadata_json, '$.reason')) LIKE 'Yonetici onayi%'", [$gid5]) === 1, 'the desk keeps the written reason');
+$check((int) $one("SELECT COUNT(*) FROM iam_audit_events WHERE action = 'confirmare.customer_check' AND target_id = ?", [$u5]) === 0, 'no shop employee check is invented');
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$mc2 = $ok($act3($gid5, 'manager-check', ['reason' => 'Yonetici onayi tekrar']), 'a second manager check');
+$check($mc2['replayed'] === true && $mc2['productionCleared'] === true && (int) $one("SELECT COUNT(*) FROM iam_audit_events WHERE action = 'confirmare.manager_check' AND target_id = ?", [$u5]) === 1, 'returns the recorded state, nothing written twice');
+$error($call($shopWho, 'POST', $checkPath($gid5), ['outcome' => 'confirmed']), 409, 'CONFIRMARE_CHECK_NOT_EXPECTED', 'after the manager check the shop employee has nothing to check');
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$queue5 = array_values(array_filter($ok($get($shopWho, '/confirmare/shop-queue'), 'shop queue after the manager check')['items'], static fn (array $i): bool => $i['globalOrderId'] === $gid5))[0] ?? null;
+$check($queue5 !== null && $queue5['customerCheck'] === null, 'the task leaves the shop employee\'s queue, the order stays routed ' . json_encode($queue5));
+$inv5 = $ok($get($shopWho, '/confirmare/orders/' . rawurlencode($gid5) . '/invoice'), 'the shop employee reads the invoice of the manager-checked order');
+$check(!in_array('same_employee', $inv5['blockers']['issue'] ?? [], true), 'the shop employee may invoice it (root approved and checked it) ' . json_encode($inv5['blockers']['issue'] ?? null));
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$error($act3($gid, 'manager-check', ['reason' => 'Yonetici onayi']), 409, 'CONFIRMARE_CHECK_NOT_EXPECTED', 'an order approved with the operator\'s call is never manager-checked');
+$error($act3($gid4, 'manager-check', ['reason' => 'Yonetici onayi']), 409, 'CONFIRMARE_CHECK_NOT_EXPECTED', 'a reopened (pending) order is never manager-checked');
+// changed in the shop after the manager approval: refused, an operator reviews it again
+$gid6 = $newOrder(5, true);
+$service->distribute();
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$ok($act3($gid6, 'manager-route', ['reason' => 'Operator yetismiyor, yonetici onayi', 'expectedVersion' => $ver($gid6), 'employeeId' => $uuids['shopemp']]), 'fourth manager route');
+$pdo->prepare("UPDATE operational_orders SET production_notes = 'Clientul a schimbat culoarea' WHERE order_uuid = ?")->execute([$uuidOf($gid6)]);
+$error($act3($gid6, 'manager-check', ['reason' => 'Yonetici onayi']), 409, 'CONFIRMARE_REVIEW_STALE', 'an order changed since the manager approval is never opened by the manager check');
+$check($one('SELECT call_confirmed_at FROM order_confirmations WHERE order_uuid = ?', [$uuidOf($gid6)]) === null, 'it stays closed for production');
+$check((int) $one("SELECT COUNT(*) FROM iam_audit_events WHERE action = 'intervention.manager-check' AND target_id = ? AND JSON_UNQUOTE(JSON_EXTRACT(metadata_json, '$.outcome')) = 'refused'", [$gid6]) === 1, 'the refusal is audited');
+
 // ---- 10. The audit ----------------------------------------------------------------------------------------------------
 $audit = $all("SELECT action, JSON_UNQUOTE(JSON_EXTRACT(metadata_json, '$.reason')) reason, JSON_UNQUOTE(JSON_EXTRACT(metadata_json, '$.outcome')) outcome FROM iam_audit_events WHERE target_id = ? AND action LIKE 'intervention.%' ORDER BY created_at", [$gid]);
 $check((int) $one("SELECT COUNT(*) FROM iam_audit_events WHERE target_id = ? AND action LIKE 'intervention.edit-%'", [$gid2]) === 2 && (int) $one("SELECT COUNT(*) FROM iam_audit_events WHERE target_id = ? AND action IN ('intervention.edit-product', 'intervention.edit-preview')", [$gid2]) === 0, 'edits are audited (apply, reconcile); reads are not');
@@ -381,4 +424,4 @@ $history = $ok($asRoot('GET', '/management/interventions/orders/' . rawurlencode
 $check(count($history) === count($audit) && $history[0]['reason'] !== null, 'the order shows the desk history');
 $check((int) $one("SELECT COUNT(*) FROM iam_audit_events WHERE action LIKE 'intervention.%' AND metadata_json LIKE '%" . RIN_PHONE . "%'") === 0, 'no customer data in the audit');
 
-fwrite(STDOUT, "PASS MySQL root intervention integration: {$checks} checks (root only, stuck list and reasons, unstaffed source, order detail as root, written reason for every change, refusals audited, stale approval reopened, approval on the owner's declaration, replacement proforma moves the request, advance recorded and verified alone with the over-payment, Staff routes still refuse root, handoff to the shop employee, final invoice and e-Factura through their services, root line edits and a lost answer reconciled, other flows counted).\n");
+fwrite(STDOUT, "PASS MySQL root intervention integration: {$checks} checks (root only, stuck list and reasons, unstaffed source, order detail as root, written reason for every change, refusals audited, stale approval reopened, approval on the owner's declaration, replacement proforma moves the request, advance recorded and verified alone with the over-payment, Staff routes still refuse root, handoff to the shop employee, manager route and manager check, final invoice and e-Factura through their services, root line edits and a lost answer reconciled, other flows counted).\n");
