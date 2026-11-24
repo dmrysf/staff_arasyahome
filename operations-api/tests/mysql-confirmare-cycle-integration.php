@@ -652,6 +652,17 @@ $check(!in_array('payment', $before, true) && in_array('payment', $during, true)
 $ok($release($who['csup'], $h7['id'], ['reasonCode' => 'payment_recorded', 'note' => 'Plata inregistrata dupa regulile finance (TEST).']), 'S12: a supervisor releases the hold of order 7');
 $after = \Arasya\Operations\Confirmare\ConfirmationClearance::missing($pdo, $orderUuid($g(7)));
 $check($after === $before, 'S12: after the release the clearance is what the other conditions say (the hold adds nothing more): ' . json_encode($after));
+// API 2.77.4 (owner 2026-11-24, TH 65485/65773): a clearance flag computed while a finance action was unsettled stays 0 after
+// the money is cleared; the worker's sweep recomputes it under the row lock and opens production only when every condition holds.
+$cleared7 = static fn (): int => (int) $one('SELECT production_cleared FROM order_confirmations WHERE order_uuid = ?', [$orderUuid($g(7))]);
+$pdo->prepare('UPDATE order_confirmations SET production_cleared = 0, cleared_at = NULL WHERE order_uuid = ?')->execute([$orderUuid($g(7))]); // TEST ONLY: the stale flag
+$pdo->prepare("UPDATE order_confirmations SET call_confirmed_at = NULL WHERE order_uuid = ?")->execute([$orderUuid($g(7))]); // TEST ONLY: one condition missing
+$sweepMissing = $container->confirmareClearanceSweep()->run();
+$check($cleared7() === 0 && in_array('call', \Arasya\Operations\Confirmare\ConfirmationClearance::missing($pdo, $orderUuid($g(7))), true), 'S12: the sweep never opens production while a condition is missing: ' . json_encode($sweepMissing));
+$pdo->prepare("UPDATE order_confirmations SET call_confirmed_at = UTC_TIMESTAMP(6) WHERE order_uuid = ?")->execute([$orderUuid($g(7))]);
+$missing7 = \Arasya\Operations\Confirmare\ConfirmationClearance::missing($pdo, $orderUuid($g(7)));
+$sweep7 = $container->confirmareClearanceSweep()->run();
+$check($missing7 === [] && $cleared7() === 1 && $sweep7['cleared'] >= 1, 'S12: every condition holds, so the sweep opens the stale flag (and only then): ' . json_encode([$missing7, $sweep7]));
 // A hold is refused once production started or the order is closed.
 $pdo->prepare("UPDATE operational_orders SET production_stage_id = 'material-preparation' WHERE global_order_id = ?")->execute([$g(5)]);
 $started = $error($holds($who['csup'], $holdBody(5)), 409, 'CONFIRMARE_HOLD_NOT_ALLOWED', 'S12: no hold once production started');
