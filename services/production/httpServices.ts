@@ -1280,7 +1280,7 @@ export function createProductionServices(apiBaseUrl: string, options: Production
     shopCandidates: (globalOrderId, signal) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/shop-employees`, { signal, cache: "no-store" }, (value) => listOf(objectValue(value).items, 200, (entry) => { const item = objectValue(entry); return { id: uuidValue(item.id), name: textValue(item.name, 200) }; })),
     assignShop: (globalOrderId, input, key) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/shop-assignment`, { method: "POST", cache: "no-store", headers: { "Idempotency-Key": key }, body: JSON.stringify(input) }, (value) => mapShopAssignment(objectValue(value).assignment)),
     verifyInvoiceQr: (globalOrderId, qrToken) => http.request(`/confirmare/orders/${encodeURIComponent(globalOrderId)}/invoice/qr`, { method: "POST", cache: "no-store", body: JSON.stringify({ qrToken }) }, (value) => { const raw = objectValue(value); if (raw.verified !== true) throw new StaffServiceError("SERVER_ERROR"); return { verified: true as const, validSeconds: nonNegativeInteger(raw.validSeconds) }; }),
-    shopQueue: (signal) => http.request("/confirmare/shop-queue", { signal, cache: "no-store" }, (value) => listOf(objectValue(value).items, 200, mapShopQueueItem)),
+    shopQueue: (signal) => http.request("/confirmare/shop-queue", { signal, cache: "no-store" }, mapShopQueue),
     // API 2.46.0: the proforma cycles, the bank checks, the shop operations (reactivation, AWB, card refund), e-Factura, health.
     cycleAttention: (source, signal) => http.request(`/confirmare/cycles${sourceQuery(source)}`, { signal, cache: "no-store" }, mapCycleAttention),
     bankChecks: (source, signal) => http.request(`/confirmare/finance/bank-checks${sourceQuery(source)}`, { signal, cache: "no-store" }, mapBankChecks),
@@ -2003,6 +2003,15 @@ function mapShopAssignment(value: unknown): ShopAssignment | null {
   if (value == null) return null;
   const raw = objectValue(value);
   return { employeeId: uuidValue(raw.employeeId), assignedBy: uuidValue(raw.assignedBy), role: oneOf(raw.role, ["operator", "manager"] as const), assignedAt: timestampValue(raw.assignedAt) };
+}
+/**
+ * Staff 2.52.3 (owner 2026-11-24, second recovery): the orders routed to me are never cut at 200. API 2.77.5 lists every
+ * active one (finished orders left out, the ones waiting for the final invoice first); its ceiling is QUEUE_LIMIT (2000).
+ * A longer answer than 200 used to fail the whole list.
+ */
+export const SHOP_QUEUE_LIMIT = 2000;
+export function mapShopQueue(value: unknown): ShopQueueItem[] {
+  return listOf(objectValue(value).items, SHOP_QUEUE_LIMIT, mapShopQueueItem);
 }
 function mapShopQueueItem(value: unknown): ShopQueueItem {
   const raw = objectValue(value);

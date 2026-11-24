@@ -777,6 +777,64 @@ $old9 = $read($who['idoc'], $g(9));
 $th->invoiceDelete = true;
 $check($old9['summary']['blockers']['delete'] === ['not_supported'] && !in_array('delete', $old9['allowedActions'], true), 'a shop before YD SOFT 2.25.0: the deletion is not offered (not_supported)');
 
+// ---- API 2.77.5 (owner 2026-11-24): the shop queue never hides work behind finished or newer orders ------------------------
+// TEST ONLY: copies of order 9 routed to idoc, as on the live day one shop employee held 617 active assignments and the 200
+// newest hid every order routed before 20 November. 230 finished (production completed, invoiced, AWB made) and 210 invoiced
+// still in production, all routed AFTER one copy that still waits for its final invoice.
+$pdo->exec('DROP TEMPORARY TABLE IF EXISTS t_sq_orders, t_sq_confirm, t_sq_assign, t_sq_issue');
+$pdo->prepare('CREATE TEMPORARY TABLE t_sq_orders AS SELECT * FROM operational_orders WHERE global_order_id = ?')->execute([$g(9)]);
+$pdo->prepare('CREATE TEMPORARY TABLE t_sq_confirm AS SELECT * FROM order_confirmations WHERE global_order_id = ?')->execute([$g(9)]);
+$sqAssignCols = 'assignment_uuid, order_uuid, global_order_id, source_key, employee_uuid, assigned_by_employee_uuid, assigned_role, idempotency_key, request_hmac, state, assigned_at, released_at, released_by_employee_uuid, release_reason';
+$pdo->prepare("CREATE TEMPORARY TABLE t_sq_assign AS SELECT {$sqAssignCols} FROM order_shop_assignments WHERE global_order_id = ? AND state = 'active'")->execute([$g(9)]);
+$pdo->prepare("CREATE TEMPORARY TABLE t_sq_issue AS SELECT * FROM order_invoice_actions WHERE global_order_id = ? AND action = 'issue' AND state = 'applied' AND result = 'issued' ORDER BY completed_at DESC LIMIT 1")->execute([$g(9)]);
+$check((int) $one('SELECT COUNT(*) FROM t_sq_assign') === 1 && (int) $one('SELECT COUNT(*) FROM t_sq_issue') === 1 && $one('SELECT employee_uuid FROM t_sq_assign') === $uuids['idoc'], 'order 9 is routed to idoc and invoiced (copied below)');
+$sqClones = [];
+$sqClone = static function (string $kind, int $i, int $ageSeconds) use ($pdo, $uuids, &$sqClones, $sqAssignCols): string {
+    $cu = \Arasya\Operations\Support\Uuid::v4();
+    $cn = 'sq' . $kind . $i;
+    $sqClones[] = $cu;
+    $pdo->prepare('UPDATE t_sq_orders SET order_uuid = ?, global_order_id = ?, source_order_id = ?, order_number = ?, production_completed_at = ?')
+        ->execute([$cu, 'trendhome:' . $cn, $cn, $cn, $kind === 'done' ? gmdate('Y-m-d H:i:s') : null]);
+    $pdo->exec('INSERT INTO operational_orders SELECT * FROM t_sq_orders');
+    $pdo->prepare('UPDATE t_sq_confirm SET order_uuid = ?, global_order_id = ?')->execute([$cu, 'trendhome:' . $cn]);
+    $pdo->exec('INSERT INTO order_confirmations SELECT * FROM t_sq_confirm');
+    $pdo->prepare('UPDATE t_sq_assign SET assignment_uuid = ?, order_uuid = ?, global_order_id = ?, idempotency_key = ?, assigned_at = UTC_TIMESTAMP(6) - INTERVAL ? SECOND')
+        ->execute([\Arasya\Operations\Support\Uuid::v4(), $cu, 'trendhome:' . $cn, 'sq-a-' . $cn . '-' . bin2hex(random_bytes(4)), $ageSeconds]);
+    $pdo->exec("INSERT INTO order_shop_assignments ({$sqAssignCols}) SELECT {$sqAssignCols} FROM t_sq_assign");
+    if ($kind !== 'wait') {
+        $pdo->prepare('UPDATE t_sq_issue SET action_uuid = ?, order_uuid = ?, global_order_id = ?, idempotency_key = ?')->execute([\Arasya\Operations\Support\Uuid::v4(), $cu, 'trendhome:' . $cn, 'sq-i-' . $cn . '-' . bin2hex(random_bytes(4))]);
+        $pdo->exec('INSERT INTO order_invoice_actions SELECT * FROM t_sq_issue');
+    }
+    if ($kind === 'done') {
+        $pdo->prepare("INSERT INTO order_source_operations (operation_uuid, order_uuid, global_order_id, source_key, kind, employee_uuid, access_role, idempotency_key, request_hmac, state, outcome, result, request_id, requested_at, completed_at)
+            VALUES (?, ?, ?, 'trendhome', 'awb_create', ?, 'documents', ?, ?, 'applied', 'applied', 'created', 'sq-test', UTC_TIMESTAMP(6), UTC_TIMESTAMP(6))")
+            ->execute([\Arasya\Operations\Support\Uuid::v4(), $cu, 'trendhome:' . $cn, $uuids['idoc'], 'sq-w-' . $cn . '-' . bin2hex(random_bytes(4)), random_bytes(32)]);
+    }
+    return 'trendhome:' . $cn;
+};
+$sqWaiting = $sqClone('wait', 1, 30 * 86400);
+for ($i = 1; $i <= 230; $i++) {
+    $sqClone('done', $i, 3600 - $i);
+}
+$sqInvoiced = [];
+for ($i = 1; $i <= 210; $i++) {
+    $sqInvoiced[] = $sqClone('inv', $i, 7200 - $i);
+}
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$sqItems = $ok($get($who['idoc'], '/confirmare/shop-queue'), 'shop queue behind 440 newer assignments')['items'];
+$sqIds = array_column($sqItems, 'globalOrderId');
+$sqFlags = array_column($sqItems, 'invoiced');
+$sqFirstInvoiced = array_search(true, $sqFlags, true);
+$check(in_array($sqWaiting, $sqIds, true) && $sqFirstInvoiced !== false && !in_array(false, array_slice($sqFlags, (int) $sqFirstInvoiced), true),
+    'the order still waiting for its final invoice is listed although 440 orders were routed after it; every order waiting for its invoice comes before the invoiced ones: ' . json_encode(array_slice($sqIds, 0, 3)));
+$check(array_filter($sqIds, static fn (string $x): bool => str_starts_with($x, 'trendhome:sqdone')) === [], 'finished orders (completed, invoiced, AWB made) are not listed');
+$check(array_diff($sqInvoiced, $sqIds) === [] && in_array($g(9), $sqIds, true), 'every invoiced order still in production stays listed (no 200-row cut)');
+$sqIn = implode(', ', array_fill(0, count($sqClones), '?'));
+foreach (['order_source_operations', 'order_invoice_actions', 'order_shop_assignments', 'order_confirmations', 'operational_orders'] as $sqTable) {
+    $pdo->prepare("DELETE FROM {$sqTable} WHERE order_uuid IN ({$sqIn})")->execute($sqClones);
+}
+$pdo->exec('DROP TEMPORARY TABLE IF EXISTS t_sq_orders, t_sq_confirm, t_sq_assign, t_sq_issue');
+
 // ---- 9. No link, number, amount or customer data in the audit or the log ----------------------------------------------------
 $dump = json_encode([$all('SELECT * FROM order_invoice_actions'), $all('SELECT * FROM order_invoice_reads'), $all("SELECT action, metadata_json FROM iam_audit_events WHERE action = 'employee.invoice_scopes_changed'")], JSON_INVALID_UTF8_SUBSTITUTE | JSON_UNESCAPED_UNICODE);
 $check(!str_contains((string) $dump, 'smartbill.ro') && !str_contains((string) $dump, 'Factur') && !str_contains((string) $dump, '719.00') && preg_match('/0744\s?666\s?777|744666777/', (string) $dump) !== 1, 'the invoice audit holds codes and hashes only');
