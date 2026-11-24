@@ -13,7 +13,7 @@ c53137393d879c7548188f87745e52d6b31938c9c8a7c57caee1eea05667a396  ./bin/change-p
 4832c075fc2ec99bea7c1005e8a34740b26f699ee77ff82e07caa1c854c3b023  ./bin/confirmare-awb-readiness.php
 ec5815c87fb4c633da4c34d600b5ba73b2bebf38e153025a1c4a4d8e5c073aa6  ./bin/confirmare-backfill.php
 0cfcc270cedfb33e85db2cd040529d70793294298df376818e3a9c650c3b3dda  ./bin/confirmare-cutoff.php
-15c163e78b48640eefb8969ce7ddc9aad8c02ae54ca269299a4fc2e677e62725  ./bin/confirmare-cycles.php
+a0d77d4b5108022d18585104c3c3536b7e9f87fac64d6b680a3837b91a97e139  ./bin/confirmare-cycles.php
 e8c427a65a15152d97b44e4f75744b6172ef9d597ba7d9130cda72dc157fc057  ./bin/confirmare-distribute.php
 6c66e6da695fa3cc80e72f25503ae77a04ff4b04637bd75cb0933ed1e2104eb9  ./bin/confirmare-operators.php
 950151a8ab6ea65076549f1a80a2461cc79f5c5064b09666c856f7d9adda59f7  ./bin/create-employee.php
@@ -121,7 +121,7 @@ e3d5bd553859a3f0ade7ef0d41a29c8dab1eaaf486fb632bdb714b79e4c719aa  ./database/see
 a80d76fbdb4a0c8ac3533c3db5eb123a73ff6eb2c259927976d39dfeeb2f248b  ./public/.htaccess
 8302b6ec98573706b31b957a8f9ad9be8bf92a8b8bff02963c601650e7e8c420  ./public/RuntimeLocator.php
 edb234c39482536f0540e881da98cbdad6241af787f230295a79a4ae534e26be  ./public/index.php
-ea06339a38aeb446f054929a9d294404f262d9d85c7b48001abb43c40a306cd9  ./release.json
+9b79e3670a2f44adf89f64e51849cfdbac69a1d0a494deac9104551f35ae6e58  ./release.json
 3b42b0a0d462aa0ac0f368966a5703f6ecbbff9eea2bbbe47f269e9cd6ba03ea  ./scripts/api-release-common.sh
 b7f4bad56c6c8f39a9e72af6c8ea82d578beb50bf0e4f38d17c78a2e9f0f1637  ./scripts/cancellation-sync-active.sh
 03e82de95461d85d534edc5e62013dea047881f28ba12a61ac55b6827108a5e0  ./scripts/cpanel-deploy-api.sh
@@ -129,7 +129,7 @@ bdbe9cb23b6d581c64eba4dc2b41fe93e503e327afb0c36dce38759631c2fabb  ./scripts/cpan
 ad963b363acfdc488f4b9638e31052d173e9b31437735990435acfd5c9e876ca  ./scripts/generate-sha256s.sh
 668b254a048e20b209aa886a91bb14682e1f60255fa8e329ec6b9a8e896c355c  ./scripts/maintenance-active.sh
 19135ebb1f6829810e78b5a2f4a8647b52e7f1cc73b8fce2f42b481bb700135a  ./scripts/trendyol-intake-active.sh
-288f5cc80bf60a19b10ce9d50bdf8cba27f438d94957f918fd4d13211d486691  ./scripts/validate-release.sh
+8e90f421c47a721da6505873a037487a20c7f8471deea6acc054770bc296de6b  ./scripts/validate-release.sh
 7f8042e24e1e6e02ee1a99ac82acaac281fdc759e419e18a6f89adbd2d891281  ./src/Activity/ActivityController.php
 fffaf9848b4f34b5f257895192f34d7a6ef959791a2e944ba3a981bd6bbb874e  ./src/Activity/ActivityRange.php
 8f4294de2d4e2e71697dfede970e5c2c11047d6af47bb6b7d83c5acae6172a0c  ./src/Activity/PdoActivityRepository.php
@@ -147,7 +147,7 @@ edde2a8d917cded661533a2435523880178012a85a9683ebe20596e1339f59fc  ./src/Analytic
 9c8cc45867eedd51ff88719bb5d64efdab0ce814c1dbfcf4a56f9a18ab466dea  ./src/Analytics/OrderMetrics.php
 6a48c9a3ef978edb5689c1691b705df3ae58a3730f6f45363a0085334f4899bd  ./src/Analytics/ReportData.php
 f02055e90fecdcb26c7d0e0aef5628b336e77cc13bbb457ee5d1f300ca020d9e  ./src/Analytics/UtcPresentation.php
-e150150a287e159872c715e3e95d78f4e1deb4c9f62f7ea3eaa2d47bad95d452  ./src/Application/Container.php
+033850439223a72f2e270e1c176ef454057e53b0ab5f12100339fa5b10afbe2b  ./src/Application/Container.php
 9bbe3efd2b70bf7c7a685d2657bfe82261a0ba69ed2c53b5f8da5928bb29de33  ./src/Audit/AuditLogger.php
 8b699528a74587691c3bd8fcf75a57bd4ad1af835329fc6d8f5ecc32a5585aea  ./src/Audit/PdoAuditLogger.php
 d98b7ead62e4237f70fdf173f0a5708cb97afe193afb42e73e25cc797652bf95  ./src/Auth/AuthResult.php
@@ -229,6 +229,7 @@ bea671713bf03c53e7b4809a529191b51fa2802ead962056ac57249173fe39ec  ./src/Config/C
 00eb3ce0c68ea60f81f7b9fc60390018e5d2cde3ad04e4f84267bc04704aca28  ./src/Config/TrendyolCredentials.php
 5a952a78c90417e1b019412e88fab179f4e9519f362cd5a138df3c0af8e9b0e4  ./src/Confirmare/ConfirmareAwbReadiness.php
 32e6822192d8ab5a91c05c79aadabe43a409d12eef1cd9c34cf4ef2afe5ca2f7  ./src/Confirmare/ConfirmareBackfill.php
+b908a3c507884014ee1f0acfd9708d4d700e4f340f22a844ac279b929d893d5d  ./src/Confirmare/ConfirmareClearanceSweep.php
 ad6018d7b667ed17b01d35d96c248e74bceb730ce1388dd44b3bbd659be0799f  ./src/Confirmare/ConfirmareController.php
 6969ac2272e911c5a525e78f08b8cc2cb906e3978720d55b7057efd8407eafe7  ./src/Confirmare/ConfirmareCutoff.php
 884455c03c7ac9e5d7fab011ac79305a1885c3ab3409fbcaa8e01e1ec64c176e  ./src/Confirmare/ConfirmareCycles.php
@@ -237,6 +238,7 @@ a9aadd1debc2a2c8228da3f445454319d51d717b7429be782e3014d86a861f5f  ./src/Confirma
 8f7ee352784853a82332b420a8a62a805587b70d17a8a7cfffcc6046c8f41a7a  ./src/Confirmare/ConfirmareHandoff.php
 a6437e2a0cc35697338baad47d1b3c2a20e22bc3323cb1ac9901cf01e3fa30d3  ./src/Confirmare/ConfirmareHealth.php
 1fd6ccd4a0aefbe6efb90379a6c069a096551c53635dd5f81430f5d706667c94  ./src/Confirmare/ConfirmareInvoice.php
+01f2d1546d95afbbf0fe2975b81085d60692b25d137aec91d34ef95fc7811134  ./src/Confirmare/ConfirmareLostAnswers.php
 5ca93ebe181f45248176380a0c5998865ab068f32c51169d5356bd325c435546  ./src/Confirmare/ConfirmareOperations.php
 6e398b9468458e0c17a458666675dab4e7ae0777f26f0395207a0eb0c90da274  ./src/Confirmare/ConfirmareScopePolicy.php
 f62d14c4a0320b2faa6ba24d6a754a58152c20a27eb94dda36c402018eaa35f9  ./src/Confirmare/ConfirmareService.php
@@ -319,7 +321,7 @@ dab18c727f8af10b46a7b3ff81361a782ccccdd482ccc46cb40dbba649513e55  ./src/Http/Api
 4ddec563ed6370dfb3f6b7912ff203551d93f7098fc19d516173d3c9459ab27a  ./src/Http/ApiKernel.php
 a34ac5ff03bdaea8405bf09a2cc1d8bf9db9aac7f11ba3e34b5b4630f0df3698  ./src/Http/AuthController.php
 6052839df56a2372833ac9fc3981fd2202f3ef754aa6a17010459933295010ca  ./src/Http/CorsPolicy.php
-ce39b26996d454c1327078818be1070491aeb8223de7202f0bdd09b3aecf5a1c  ./src/Http/HealthController.php
+296917e0e93d1a16cce944576cc6d3d62ccc60ad1b0539025a9f90e9c6552ace  ./src/Http/HealthController.php
 5135823a988e7ae06254297c5272a5ccb724e819a52c33217223c4299f286cb2  ./src/Http/ProductionWorkflowController.php
 57c77118c9f87c3b4475737e98d97bd7fcfaf456961cf637c7927d4eaad9ef32  ./src/Http/Request.php
 b49c2a94e90b750aeb5202e8ea263a42fd77fcc6442b3c2f46205cd5ab324688  ./src/Http/RequestContext.php
