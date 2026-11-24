@@ -852,17 +852,27 @@ final readonly class ConfirmareInvoice
     }
 
     /**
-     * The orders routed to the actor (API 2.44.0), newest first: what the shop employee works on. Database only.
+     * The orders routed to the actor (API 2.44.0): what the shop employee works on. Database only.
+     *
+     * API 2.77.5 (owner 2026-11-24, second recovery): an assignment stays active after the work is done, and this list
+     * returned the 200 newest assignments only. One shop employee held 617 active assignments, so every order routed to
+     * her before 20 November (paid orders still waiting for their production ticket among them) left the list. A finished
+     * order (production completed, final invoice issued and AWB made) is no longer listed; the orders still waiting for
+     * the final invoice come first, then the invoiced ones, newest first in each group; the ceiling only protects the server.
      *
      * @return array{items: list<array<string, mixed>>}
      */
     public function shopQueue(EmployeeIdentity $actor): array
     {
         $this->authorization->requireApplication($actor, 'staff');
+        $issued = 'EXISTS (SELECT 1 FROM order_invoice_actions i WHERE i.order_uuid = o.order_uuid AND ' . self::ISSUED_SQL . ')';
         try {
             $statement = $this->pdo->prepare("SELECT a.global_order_id, a.source_key, a.assigned_at, a.assigned_by_employee_uuid, o.order_number, o.order_uuid, b.display_name AS assigned_by_name
                 FROM order_shop_assignments a INNER JOIN operational_orders o ON o.order_uuid = a.order_uuid LEFT JOIN employees b ON b.employee_uuid = a.assigned_by_employee_uuid
-                WHERE a.employee_uuid = ? AND a.state = 'active' ORDER BY a.assigned_at DESC LIMIT 200");
+                WHERE a.employee_uuid = ? AND a.state = 'active'
+                  AND NOT (o.production_completed_at IS NOT NULL AND {$issued}
+                    AND EXISTS (SELECT 1 FROM order_source_operations w WHERE w.order_uuid = o.order_uuid AND w.kind = 'awb_create' AND w.state = 'applied'))
+                ORDER BY {$issued}, a.assigned_at DESC LIMIT " . ConfirmareService::QUEUE_LIMIT);
             $statement->execute([$actor->employeeUuid]);
             $rows = $statement->fetchAll(PDO::FETCH_ASSOC);
         } catch (PDOException) {

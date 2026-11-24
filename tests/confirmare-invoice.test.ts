@@ -5,7 +5,7 @@ import path from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { INVOICE_ACTIONS, PROFORMA_ROUTE, advanceStatusKey, blockersOf, invoiceBlockerLabel, invoiceErrorKey, proformaStatusKey, type InvoiceView } from "../domain/confirmareInvoice";
-import { mapInvoiceDeadline, mapInvoiceOutcome, mapInvoiceRead, mapMoneyPosition } from "../services/production/httpServices";
+import { SHOP_QUEUE_LIMIT, mapInvoiceDeadline, mapInvoiceOutcome, mapInvoiceRead, mapMoneyPosition, mapShopQueue } from "../services/production/httpServices";
 import { ConfirmareInvoicePanel, InvoiceBody } from "../features/confirmare/ConfirmareInvoicePanel";
 import { ProformaSection } from "../features/confirmare/ConfirmareProformaSections";
 import { CATALOGS, type MessageKey } from "../i18n";
@@ -373,4 +373,13 @@ test("API 2.50.1 / Staff 2.41.1 (owner 2026-10-29): no QR scan before the invoic
   assert.equal(invoiceBlockerLabel("ticket_missing"), CATALOGS.ro["inv.blocker.ticket_missing"]);
   for (const locale of ["ro", "tr", "en", "si"] as const) assert.ok(String(CATALOGS[locale]["inv.blocker.ticket_missing"] ?? "").length > 10, `${locale} ticket_missing`);
   assert.ok(!/QR/i.test(CATALOGS.ro["inv.blocker.ticket_missing"]), "the new refusal never asks for a scan");
+});
+
+test("Staff 2.52.3: the orders routed to me are never cut at 200 (owner 2026-11-24, 617 active assignments)", () => {
+  const item = (i: number) => ({ globalOrderId: `trendhome:${60000 + i}`, source: "trendhome", orderNumber: String(60000 + i), assignedAt: "2026-11-20T10:00:00Z", assignedBy: "", handoff: "awaiting_cutting", invoiced: i > 40 });
+  const many = mapShopQueue({ items: Array.from({ length: 450 }, (_, i) => item(i)) });
+  assert.equal(many.length, 450, "450 routed orders are all listed (2.52.2 failed the whole list above 200)");
+  assert.equal(many[0].invoiced, false);
+  assert.equal(SHOP_QUEUE_LIMIT, 2000, "the same ceiling as the API QUEUE_LIMIT");
+  assert.throws(() => mapShopQueue({ items: Array.from({ length: SHOP_QUEUE_LIMIT + 1 }, (_, i) => item(i)) }), "an answer above the API ceiling is still refused");
 });

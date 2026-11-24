@@ -1201,6 +1201,9 @@ final class ConfirmareService
      * the order's identity and its next step only (`ready`, `print`, `awaiting_cutting`): no customer, assignee, call or
      * money data.
      *
+     * API 2.77.5 (owner 2026-11-24): the list held the first 200 by due date while 204 paid orders waited for their
+     * ticket, so the newest ones without a due date never showed; it returns the whole list (QUEUE_LIMIT protects the server).
+     *
      * @return array{items: list<array<string, mixed>>, limit: int}
      */
     public function handoffList(EmployeeIdentity $actor, ?string $source): array
@@ -1223,7 +1226,7 @@ final class ConfirmareService
         $statement = $this->pdo->prepare("SELECT o.global_order_id, o.order_number, o.source_key, o.source_due_date, o.source_submitted_at, c.opened_at, c.decided_at, o.document_status,
                 (SELECT COUNT(*) FROM production_document_prints p WHERE p.revision_uuid = o.active_document_revision_uuid) AS prints
             FROM order_confirmations c INNER JOIN operational_orders o ON o.order_uuid = c.order_uuid
-            WHERE {$where} ORDER BY " . self::PRIORITY_ORDER . ' LIMIT ' . self::POOL_LIMIT);
+            WHERE {$where} ORDER BY " . self::PRIORITY_ORDER . ' LIMIT ' . self::QUEUE_LIMIT);
         $statement->execute($parameters);
         return ['items' => array_map(static fn (array $row): array => [
             'globalOrderId' => (string) $row['global_order_id'],
@@ -1233,7 +1236,7 @@ final class ConfirmareService
             'submittedAt' => $row['source_submitted_at'] === null ? null : self::iso((string) $row['source_submitted_at']),
             'approvedAt' => $row['decided_at'] === null ? null : self::iso((string) $row['decided_at']),
             'step' => $row['document_status'] === 'none' ? 'ready' : ((int) $row['prints'] === 0 ? 'print' : 'awaiting_cutting'),
-        ], $statement->fetchAll(PDO::FETCH_ASSOC)), 'limit' => self::POOL_LIMIT];
+        ], $statement->fetchAll(PDO::FETCH_ASSOC)), 'limit' => self::QUEUE_LIMIT];
     }
 
     private function requireActor(EmployeeIdentity $actor): void
