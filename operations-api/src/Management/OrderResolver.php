@@ -245,7 +245,10 @@ final readonly class OrderResolver
                 $fix = $offer('approve', ['desk' => 'approve', 'input' => ['expectedVersion' => (int) $row['version']]], ['confirm' => 'customer_confirmed']);
             }
         } elseif ($row['confirmation'] === 'approved' && (int) $row['production_cleared'] === 0) {
-            if (array_intersect($missing, ['sync', 'lines', 'price']) !== []) {
+            if ($missing === ['call'] && \Arasya\Operations\Confirmare\ConfirmareService::awaitingCustomerCheck($this->pdo, (string) $row['order_uuid'])) {
+                // API 2.77.6: manager-routed; the shop employee it is routed to checks it with the customer (no desk fix).
+                $problem = ['code' => 'customer_check_waiting', 'system' => 'shop', 'owner' => $detail['shop']['employee'] ?? null, 'since' => $this->iso($row['confirmation_at'])];
+            } elseif (array_intersect($missing, ['sync', 'lines', 'price']) !== []) {
                 $problem = ['code' => 'stale_approval', 'system' => 'confirmare', 'owner' => $row['assignee'], 'since' => $this->iso($row['confirmation_at'])];
                 $fix = $offer('reopen', ['desk' => 'reopen', 'input' => ['expectedVersion' => (int) $row['version']]]);
             } elseif ($row['payment_method'] !== 'cod') {

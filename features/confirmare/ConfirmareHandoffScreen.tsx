@@ -1,7 +1,8 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useI18n } from "../../i18n";
 import { handoffStateLabel, sourceLabel, type ConfirmareApi, type HandoffItem } from "../../domain/confirmare";
-import type { ShopQueueItem } from "../../domain/confirmareInvoice";
+import type { CustomerCheckOutcome, ShopQueueItem } from "../../domain/confirmareInvoice";
+import { createIdempotencyKey } from "../../services/idempotency";
 import { getErrorPresentation } from "../../services/errors";
 import { AppIcon } from "../../components/icons/AppIcon";
 import { EmptyPanel, PageHeader } from "../../components/ui/States";
@@ -32,6 +33,9 @@ export function ConfirmareHandoffScreen({ service, navigate }: { service: Confir
       <button className="back-link" type="button" onClick={() => navigate("/")}><AppIcon name="back" size={20} /> {t("common.home")}</button>
       <PageHeader title={t("cf.handoff.list.title")} description={t("cf.handoff.list.description")} />
       <AutoRefreshBar onRefresh={queue.refresh} busy={queue.busy} refreshing={queue.refreshing} updatedAt={queue.updatedAt} stale={items !== null && queue.error !== null} stopped={queue.stopped} testId="cf-handoff-refresh" />
+      {service.customerCheck && mine.data && mine.data.some((item) => item.customerCheck === "required") && (
+        <CustomerChecks items={mine.data.filter((item) => item.customerCheck === "required")} service={service} onDone={mine.refresh} navigate={navigate} />
+      )}
       <section className="detail-section" aria-labelledby="cf-shop-mine" data-testid="cf-shop-queue">
         <div className="section-title"><h2 id="cf-shop-mine">{t("cf.handoff.mine.title")}</h2></div>
         {mine.data === null
@@ -49,6 +53,55 @@ export function ConfirmareHandoffScreen({ service, navigate }: { service: Confir
   );
 }
 
+/**
+ * Staff 2.52.4 (API 2.77.6): orders routed to me by a manager approval, without the operator's call. I call the customer,
+ * check the products, measurements and price in the shop order, then record the answer. Production opens only after
+ * "confirmed"; "needs correction" sends the order back to the operators.
+ */
+export function CustomerChecks({ items, service, onDone, navigate }: { items: ShopQueueItem[]; service: ConfirmareApi; onDone: () => void; navigate: (path: string) => void }) {
+  const { t } = useI18n();
+  const [busy, setBusy] = useState<string | null>(null);
+  const [message, setMessage] = useState<{ order: string; text: string; tone: "positive" | "warning" } | null>(null);
+  const answer = async (item: ShopQueueItem, outcome: CustomerCheckOutcome) => {
+    if (!service.customerCheck || busy) return;
+    setBusy(item.globalOrderId);
+    try {
+      const result = await service.customerCheck(item.globalOrderId, outcome, createIdempotencyKey());
+      setMessage({ order: item.orderNumber, tone: result.productionCleared ? "positive" : "warning", text: t(`cf.check.result.${outcome}`) });
+      onDone();
+    } catch (error) {
+      setMessage({ order: item.orderNumber, tone: "warning", text: getErrorPresentation(error).message });
+    } finally {
+      setBusy(null);
+    }
+  };
+  return (
+    <section className="detail-section" aria-labelledby="cf-check-title" data-testid="cf-customer-checks">
+      <div className="section-title"><h2 id="cf-check-title">{t("cf.check.title")}</h2></div>
+      <p className="dashboard-footnote">{t("cf.check.lead")}</p>
+      {message && <p className={`order-notice order-notice-${message.tone === "positive" ? "success" : "muted"}`} role="status">#{message.order}: {message.text}</p>}
+      <ul className="queue-list" aria-label={t("cf.check.title")}>
+        {items.map((item) => (
+          <li key={item.globalOrderId} className="queue-row cf-row tone-warning" data-testid={`cf-check-row-${item.orderNumber}`}>
+            <span className="queue-row-main">
+              <span className="queue-row-top">
+                <button type="button" className="link-button" onClick={() => navigate(`/documents/${encodeURIComponent(item.globalOrderId)}`)}><strong className="order-id">#{item.orderNumber}</strong></button>
+                <span className="cf-source">{sourceLabel(item.source)}</span>
+              </span>
+              <small>{t("cf.check.by", { name: item.assignedBy || "—", time: when(item.assignedAt) })}</small>
+            </span>
+            <span className="cf-check-actions">
+              <button type="button" className="button button-primary" disabled={busy !== null} onClick={() => void answer(item, "confirmed")} data-testid={`cf-check-confirmed-${item.orderNumber}`}>{t("cf.check.confirmed")}</button>
+              <button type="button" className="button" disabled={busy !== null} onClick={() => void answer(item, "no_answer")} data-testid={`cf-check-no-answer-${item.orderNumber}`}>{t("cf.check.no_answer")}</button>
+              <button type="button" className="button" disabled={busy !== null} onClick={() => void answer(item, "needs_correction")} data-testid={`cf-check-correction-${item.orderNumber}`}>{t("cf.check.needs_correction")}</button>
+            </span>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 function MineRow({ item, navigate }: { item: ShopQueueItem; navigate: (path: string) => void }) {
   const { t } = useI18n();
   return (
@@ -61,7 +114,7 @@ function MineRow({ item, navigate }: { item: ShopQueueItem; navigate: (path: str
           </span>
           <small>{t("cf.handoff.mine.by", { name: item.assignedBy || "—", time: when(item.assignedAt) })}</small>
         </span>
-        <span className="queue-chip">{item.invoiced ? t("cf.handoff.mine.invoiced") : t("cf.handoff.mine.pending")}</span>
+        <span className="queue-chip">{item.customerCheck === "required" ? t("cf.check.chip") : item.invoiced ? t("cf.handoff.mine.invoiced") : t("cf.handoff.mine.pending")}</span>
         <AppIcon name="chevron" size={18} />
       </button>
     </li>

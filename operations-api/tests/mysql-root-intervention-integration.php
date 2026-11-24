@@ -304,6 +304,75 @@ $settled = $ok($act2('edit-reconcile', ['reason' => 'Yanitsiz islem kapatiliyor'
 $check(($settled['state'] ?? null) === 'applied', 'reconciled with the shop\'s stored answer: applied ' . json_encode($settled));
 $check($one("SELECT employee_uuid FROM order_confirmation_source_edits WHERE global_order_id = ?", [$gid2]) === $one('SELECT employee_uuid FROM system_root_identity'), 'the edit names root');
 
+// ---- 9d. API 2.77.6: manager route of a paid pending order, without a call; the shop employee checks it ---------------------
+$rootUuid = (string) $one('SELECT employee_uuid FROM system_root_identity');
+$newOrder = static function (int $offset, bool $paid) use ($kernel, $payload, $priceA, $line, $orderId, $th, $ok): string {
+    $n = (string) ((int) $orderId + $offset);
+    $ok(T::ingest($kernel, 'trendhome', $payload($priceA, [$line(9601, 'Draperie Bella', 'bella-4516')], $paid ? ['state' => 'cleared', 'basis' => 'advance_collected', 'pricingFingerprint' => $priceA] : null, $n)), "order {$n}");
+    $th->orders[$n] = ['id' => $n, 'number' => $n, 'eligible' => true, 'phone' => RIN_PHONE, 'pricing' => $priceA,
+        'finance' => ['cod' => true, 'total' => '421.02', 'collected' => $paid ? '126.31' : '0.00', 'pricing' => $priceA], 'invoice' => ['cod' => true, 'cleared' => $paid]];
+    return 'trendhome:' . $n;
+};
+$gid3 = $newOrder(2, false);
+$service->distribute();
+$act3 = static fn (string $g, string $action, array $body): array => $asRoot('POST', '/management/interventions/orders/' . rawurlencode($g) . '/' . $action, $body);
+$ver = static fn (string $g): int => (int) $one('SELECT version FROM order_confirmations WHERE global_order_id = ?', [$g]);
+$uuidOf = static fn (string $g): string => (string) $one('SELECT order_uuid FROM operational_orders WHERE global_order_id = ?', [$g]);
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$error($act3($gid3, 'manager-route', ['reason' => 'Operator yetismiyor, yonetici onayi', 'expectedVersion' => $ver($gid3), 'employeeId' => $uuids['shopemp']]), 409, 'CONFIRMARE_MANAGER_ROUTE_UNPAID', 'an order without verified money is never routed by manager approval');
+$check($one('SELECT status FROM order_confirmations WHERE global_order_id = ?', [$gid3]) === 'pending', 'it stays pending for the operator');
+$ok(T::ingest($kernel, 'trendhome', $payload($priceA, [$line(9601, 'Draperie Bella', 'bella-4516')], ['state' => 'cleared', 'basis' => 'advance_collected', 'pricingFingerprint' => $priceA], (string) ((int) $orderId + 2))), 'the advance is verified in the shop');
+$th->orders[(string) ((int) $orderId + 2)]['invoice']['cleared'] = true;
+$error($act3($gid3, 'manager-route', ['expectedVersion' => $ver($gid3), 'employeeId' => $uuids['shopemp']]), 422, 'INTERVENTION_REASON_REQUIRED', 'a manager route needs a written reason');
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$routed = $ok($act3($gid3, 'manager-route', ['reason' => 'Operator yetismiyor, yonetici onayi', 'expectedVersion' => $ver($gid3), 'employeeId' => $uuids['shopemp']]), 'root routes the paid order by manager approval');
+$u3 = $uuidOf($gid3);
+$c3 = $all('SELECT status, decided_by_employee_uuid, call_confirmed_at, production_cleared FROM order_confirmations WHERE order_uuid = ?', [$u3])[0];
+$check($routed['state'] === 'applied' && $c3['status'] === 'approved' && $c3['decided_by_employee_uuid'] === $rootUuid && $c3['call_confirmed_at'] === null && (int) $c3['production_cleared'] === 0,
+    'approved by root, no call, production closed ' . json_encode($c3));
+$check((int) $one('SELECT COUNT(*) FROM order_confirmation_contacts WHERE order_uuid = ?', [$u3]) === 0, 'NO customer contact is recorded (never a call that did not happen)');
+$ev = $all("SELECT action, reason_code, actor_employee_uuid FROM order_confirmation_events WHERE order_uuid = ? ORDER BY version_after DESC LIMIT 1", [$u3])[0];
+$check($ev['action'] === 'approved' && $ev['reason_code'] === 'manager_route' && $ev['actor_employee_uuid'] === $rootUuid, 'the history says: approved by root as a manager route ' . json_encode($ev));
+$check(\Arasya\Operations\Confirmare\ConfirmationClearance::missing($pdo, $u3) === ['call'], 'only the customer check is missing for production');
+$asg = $all("SELECT employee_uuid, assigned_by_employee_uuid FROM order_shop_assignments WHERE active_order_uuid = ?", [$u3])[0] ?? [];
+$check(($asg['employee_uuid'] ?? null) === $uuids['shopemp'] && $asg['assigned_by_employee_uuid'] === $rootUuid, 'routed to the shop employee by root');
+$check((int) $one("SELECT COUNT(*) FROM iam_audit_events WHERE action = 'intervention.manager-route' AND target_id = ? AND JSON_UNQUOTE(JSON_EXTRACT(metadata_json, '$.outcome')) = 'applied'", [$gid3]) === 1, 'the desk audits the manager route with its reason');
+$shopWho = $login('shopemp');
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$queue3 = array_values(array_filter($ok($get($shopWho, '/confirmare/shop-queue'), 'shop queue')['items'], static fn (array $i): bool => $i['globalOrderId'] === $gid3))[0] ?? null;
+$check(($queue3['customerCheck'] ?? null) === 'required' && $queue3['invoiced'] === false, 'the shop employee sees the order with its customer check task ' . json_encode($queue3));
+$checkPath = static fn (string $g): string => '/confirmare/orders/' . rawurlencode($g) . '/customer-check';
+$error($call($who['rop'], 'POST', $checkPath($gid3), ['outcome' => 'confirmed']), 404, 'CONFIRMARE_NOT_FOUND', 'only the employee it is routed to records the check');
+$error($call($shopWho, 'POST', $checkPath($gid3), ['outcome' => 'maybe']), 422, 'CONFIRMARE_CHECK_INVALID', 'an unknown outcome');
+$error($call($shopWho, 'POST', $checkPath($gid3), ['outcome' => 'confirmed', 'note' => 'x']), 400, 'INVALID_REQUEST', 'only the outcome');
+$na = $ok($call($shopWho, 'POST', $checkPath($gid3), ['outcome' => 'no_answer']), 'no answer');
+$check($na['productionCleared'] === false && $one('SELECT call_confirmed_at FROM order_confirmations WHERE order_uuid = ?', [$u3]) === null, 'no answer changes nothing: production stays closed');
+$yes = $ok($call($shopWho, 'POST', $checkPath($gid3), ['outcome' => 'confirmed']), 'the customer confirmed');
+$check($yes['productionCleared'] === true && $one('SELECT call_confirmed_by_employee_uuid FROM order_confirmations WHERE order_uuid = ?', [$u3]) === $uuids['shopemp'], 'confirmed by the shop employee: production opens');
+$check((int) $one('SELECT COUNT(*) FROM order_confirmation_contacts WHERE order_uuid = ?', [$u3]) === 0, 'still no Confirmare contact row (the check is the shop employee\'s, audited)');
+$check((int) $one("SELECT COUNT(*) FROM iam_audit_events WHERE action = 'confirmare.customer_check' AND target_id = ?", [$u3]) === 2, 'both answers are audited');
+$again = $ok($call($shopWho, 'POST', $checkPath($gid3), ['outcome' => 'confirmed']), 'a second click');
+$check($again['productionCleared'] === true, 'a repeated confirmation returns the recorded state');
+$error($call($shopWho, 'POST', $checkPath($gid3), ['outcome' => 'no_answer']), 409, 'CONFIRMARE_CHECK_NOT_EXPECTED', 'after the check nothing else is expected');
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$queue3 = array_values(array_filter($ok($get($shopWho, '/confirmare/shop-queue'), 'shop queue after the check')['items'], static fn (array $i): bool => $i['globalOrderId'] === $gid3))[0] ?? null;
+$check($queue3 !== null && array_key_exists('customerCheck', $queue3) && $queue3['customerCheck'] === null, 'the task leaves the queue row ' . json_encode($queue3));
+$inv3 = $ok($get($shopWho, '/confirmare/orders/' . rawurlencode($gid3) . '/invoice'), 'the shop employee reads the invoice');
+$check(!in_array('same_employee', $inv3['blockers']['issue'] ?? [], true), 'the shop employee who checked it may invoice it (root approved it) ' . json_encode($inv3['blockers']['issue'] ?? null));
+// needs_correction: back to the operators, routing kept
+$gid4 = $newOrder(3, true);
+$service->distribute();
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$ok($act3($gid4, 'manager-route', ['reason' => 'Operator yetismiyor, yonetici onayi', 'expectedVersion' => $ver($gid4), 'employeeId' => $uuids['shopemp']]), 'second manager route');
+$fix = $ok($call($shopWho, 'POST', $checkPath($gid4), ['outcome' => 'needs_correction']), 'the customer wants a change');
+$u4 = $uuidOf($gid4);
+$ev4 = $all("SELECT action, reason_code, actor_employee_uuid FROM order_confirmation_events WHERE order_uuid = ? ORDER BY version_after DESC LIMIT 1", [$u4])[0];
+$check($fix['status'] === 'pending' && $ev4['action'] === 'reopened' && $ev4['reason_code'] === 'customer_correction' && $ev4['actor_employee_uuid'] === $uuids['shopemp'], 'back to the operators\' pool, by the shop employee ' . json_encode($ev4));
+$check((int) $one('SELECT production_cleared FROM order_confirmations WHERE order_uuid = ?', [$u4]) === 0 && $one('SELECT employee_uuid FROM order_shop_assignments WHERE active_order_uuid = ?', [$u4]) === $uuids['shopemp'], 'production closed, the routing stays');
+$error($call($shopWho, 'POST', $checkPath($gid4), ['outcome' => 'confirmed']), 409, 'CONFIRMARE_CHECK_NOT_EXPECTED', 'a reopened order waits for an operator, not for the shop employee');
+// a normal approval (with the operator's call) is never a manager route
+$check(\Arasya\Operations\Confirmare\ConfirmareService::awaitingCustomerCheck($pdo, $uuidOf($gid)) === false, 'an order approved with a call is not a manager route');
+
 // ---- 10. The audit ----------------------------------------------------------------------------------------------------
 $audit = $all("SELECT action, JSON_UNQUOTE(JSON_EXTRACT(metadata_json, '$.reason')) reason, JSON_UNQUOTE(JSON_EXTRACT(metadata_json, '$.outcome')) outcome FROM iam_audit_events WHERE target_id = ? AND action LIKE 'intervention.%' ORDER BY created_at", [$gid]);
 $check((int) $one("SELECT COUNT(*) FROM iam_audit_events WHERE target_id = ? AND action LIKE 'intervention.edit-%'", [$gid2]) === 2 && (int) $one("SELECT COUNT(*) FROM iam_audit_events WHERE target_id = ? AND action IN ('intervention.edit-product', 'intervention.edit-preview')", [$gid2]) === 0, 'edits are audited (apply, reconcile); reads are not');

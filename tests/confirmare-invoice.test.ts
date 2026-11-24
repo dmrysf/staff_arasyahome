@@ -5,7 +5,7 @@ import path from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { INVOICE_ACTIONS, PROFORMA_ROUTE, advanceStatusKey, blockersOf, invoiceBlockerLabel, invoiceErrorKey, proformaStatusKey, type InvoiceView } from "../domain/confirmareInvoice";
-import { SHOP_QUEUE_LIMIT, mapInvoiceDeadline, mapInvoiceOutcome, mapInvoiceRead, mapMoneyPosition, mapShopQueue } from "../services/production/httpServices";
+import { SHOP_QUEUE_LIMIT, mapCustomerCheck, mapInvoiceDeadline, mapInvoiceOutcome, mapInvoiceRead, mapMoneyPosition, mapShopQueue } from "../services/production/httpServices";
 import { ConfirmareInvoicePanel, InvoiceBody } from "../features/confirmare/ConfirmareInvoicePanel";
 import { ProformaSection } from "../features/confirmare/ConfirmareProformaSections";
 import { CATALOGS, type MessageKey } from "../i18n";
@@ -382,4 +382,14 @@ test("Staff 2.52.3: the orders routed to me are never cut at 200 (owner 2026-11-
   assert.equal(many[0].invoiced, false);
   assert.equal(SHOP_QUEUE_LIMIT, 2000, "the same ceiling as the API QUEUE_LIMIT");
   assert.throws(() => mapShopQueue({ items: Array.from({ length: SHOP_QUEUE_LIMIT + 1 }, (_, i) => item(i)) }), "an answer above the API ceiling is still refused");
+});
+
+test("Staff 2.52.4: a manager-routed order carries its customer check task (API 2.77.6)", () => {
+  const base = { globalOrderId: "trendhome:66001", source: "trendhome", orderNumber: "66001", assignedAt: "2026-11-24T10:00:00Z", assignedBy: "Root", handoff: "blocked", invoiced: false };
+  const [task, plain, odd] = mapShopQueue({ items: [{ ...base, customerCheck: "required" }, { ...base, globalOrderId: "trendhome:66002", orderNumber: "66002", customerCheck: null }, { ...base, globalOrderId: "trendhome:66003", orderNumber: "66003", customerCheck: "whatever" }] });
+  assert.equal(task.customerCheck, "required");
+  assert.equal(plain.customerCheck, null);
+  assert.equal(odd.customerCheck, null, "anything else is no task");
+  assert.deepEqual(mapCustomerCheck({ outcome: "confirmed", productionCleared: true, status: "approved" }), { outcome: "confirmed", productionCleared: true, status: "approved" });
+  assert.throws(() => mapCustomerCheck({ outcome: "maybe", productionCleared: false, status: "approved" }), "an unknown outcome is refused");
 });

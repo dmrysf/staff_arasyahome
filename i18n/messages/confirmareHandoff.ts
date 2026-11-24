@@ -36,6 +36,16 @@ export const confirmareHandoffRO = {
   "cf.handoff.mine.by": "Direcționată de {name}, {time}",
   "cf.handoff.mine.invoiced": "Factură emisă",
   "cf.handoff.mine.pending": "De facturat",
+  "cf.check.title": "De verificat cu clientul (aprobare manager)",
+  "cf.check.lead": "Aceste comenzi sunt plătite și au fost direcționate către dumneavoastră de manager, fără apelul operatorului. Sunați clientul, verificați produsele, măsurile și prețul în comanda din magazin, apoi alegeți rezultatul. Producția pornește doar după „Client confirmat”.",
+  "cf.check.by": "Aprobare manager: {name}, {time}",
+  "cf.check.confirmed": "Client confirmat",
+  "cf.check.no_answer": "Nu răspunde",
+  "cf.check.needs_correction": "Necesită corecții",
+  "cf.check.chip": "Verificare client",
+  "cf.check.result.confirmed": "clientul a confirmat; producția poate porni.",
+  "cf.check.result.no_answer": "apel fără răspuns, înregistrat. Încercați din nou mai târziu.",
+  "cf.check.result.needs_correction": "comanda a revenit la operatori pentru corecție.",
 } as const;
 
 export const confirmareHandoffEN = {
@@ -72,6 +82,16 @@ export const confirmareHandoffEN = {
   "cf.handoff.mine.by": "Routed by {name}, {time}",
   "cf.handoff.mine.invoiced": "Invoice issued",
   "cf.handoff.mine.pending": "To invoice",
+  "cf.check.title": "To check with the customer (manager approval)",
+  "cf.check.lead": "These orders are paid and were routed to you by a manager, without the operator's call. Call the customer, check the products, measurements and price in the shop order, then choose the result. Production starts only after \"Customer confirmed\".",
+  "cf.check.by": "Manager approval: {name}, {time}",
+  "cf.check.confirmed": "Customer confirmed",
+  "cf.check.no_answer": "No answer",
+  "cf.check.needs_correction": "Needs corrections",
+  "cf.check.chip": "Customer check",
+  "cf.check.result.confirmed": "the customer confirmed; production can start.",
+  "cf.check.result.no_answer": "call without answer recorded. Try again later.",
+  "cf.check.result.needs_correction": "the order went back to the operators for a correction.",
 } as const;
 
 export const confirmareHandoffTR = {
@@ -108,6 +128,16 @@ export const confirmareHandoffTR = {
   "cf.handoff.mine.by": "{name} yönlendirdi, {time}",
   "cf.handoff.mine.invoiced": "Fatura kesildi",
   "cf.handoff.mine.pending": "Faturalanacak",
+  "cf.check.title": "Müşteriyle kontrol edilecek (yönetici onayı)",
+  "cf.check.lead": "Bu siparişlerin ödemesi doğrulandı ve operatör araması olmadan yönetici tarafından size yönlendirildi. Müşteriyi arayın, mağaza siparişinde ürünleri, ölçüleri ve fiyatı kontrol edin, sonra sonucu seçin. Üretim yalnız \"Müşteri onayladı\" sonrasında başlar.",
+  "cf.check.by": "Yönetici onayı: {name}, {time}",
+  "cf.check.confirmed": "Müşteri onayladı",
+  "cf.check.no_answer": "Cevap vermiyor",
+  "cf.check.needs_correction": "Düzeltme gerekli",
+  "cf.check.chip": "Müşteri kontrolü",
+  "cf.check.result.confirmed": "müşteri onayladı; üretim başlayabilir.",
+  "cf.check.result.no_answer": "cevapsız arama kaydedildi. Daha sonra tekrar deneyin.",
+  "cf.check.result.needs_correction": "sipariş düzeltme için operatörlere döndü.",
 } as const;
 
 export const confirmareHandoffSI = {
@@ -144,4 +174,14 @@ export const confirmareHandoffSI = {
   "cf.handoff.mine.by": "{name} යොමු කළා, {time}",
   "cf.handoff.mine.invoiced": "ඉන්වොයිසිය නිකුත් විය",
   "cf.handoff.mine.pending": "ඉන්වොයිස් කළ යුතුය",
+  "cf.check.title": "ගනුදෙනුකරු සමඟ පරීක්ෂා කළ යුතුය (කළමනාකරු අනුමැතිය)",
+  "cf.check.lead": "මෙම ඇණවුම් ගෙවා ඇති අතර ක්‍රියාකරුගේ ඇමතුමකින් තොරව කළමනාකරු විසින් ඔබ වෙත යොමු කරන ලදී. ගනුදෙනුකරුට අමතා, නිෂ්පාදන, මිනුම් සහ මිල පරීක්ෂා කර ප්‍රතිඵලය තෝරන්න.",
+  "cf.check.by": "කළමනාකරු අනුමැතිය: {name}, {time}",
+  "cf.check.confirmed": "ගනුදෙනුකරු තහවුරු කළා",
+  "cf.check.no_answer": "පිළිතුරක් නැත",
+  "cf.check.needs_correction": "නිවැරදි කිරීම් අවශ්‍යයි",
+  "cf.check.chip": "ගනුදෙනුකරු පරීක්ෂාව",
+  "cf.check.result.confirmed": "ගනුදෙනුකරු තහවුරු කළා; නිෂ්පාදනය ආරම්භ කළ හැක.",
+  "cf.check.result.no_answer": "පිළිතුරු නැති ඇමතුම සටහන් විය.",
+  "cf.check.result.needs_correction": "ඇණවුම නිවැරදි කිරීම සඳහා ක්‍රියාකරුවන් වෙත ආපසු ගියේය.",
 } as const;

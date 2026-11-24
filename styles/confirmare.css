@@ -457,3 +457,6 @@ body:has(.cf-desk), .app-shell:has(.cf-desk) { background: var(--color-bg); }
 .cf-desk-legacy summary:focus-visible { outline: 3px solid var(--color-focus-ring); outline-offset: 2px; border-radius: var(--radius-sm); }
 .cf-desk-legacy .fr-legacy-lookup { margin-top: var(--space-3); }
 .cf-desk-note { margin: 0; color: var(--color-text-subtle); font-size: var(--text-xs); line-height: var(--leading-normal, 1.5); }
+
+/* Staff 2.52.4: customer check of a manager-routed order (three answers, wrap on phones). */
+.cf-check-actions { display: flex; flex-wrap: wrap; gap: var(--space-2, 8px); align-items: center; }
