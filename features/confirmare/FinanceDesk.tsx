@@ -333,7 +333,7 @@ export function FinanceCheckScreen({ requestId, service, navigate }: { requestId
         <div><dt>{t("fd.fact.proforma")}</dt><dd className="mono">{live?.proforma ? proformaLabel({ series: live.proforma.series || null, number: live.proforma.number }) : proformaLabel(request.proforma)}</dd></div>
         <div><dt>{t("fd.fact.reference")}</dt><dd className="mono" data-testid="fr-payment-reference"><strong>{reference ?? "—"}</strong></dd></div>
         <div className="fd-wide"><dt>{t("fd.fact.bank")}</dt><dd>{live?.bank ? <>{live.bank.bank} · <span className="mono">{maskIban(live.bank.ibanMasked)}</span></> : "—"}</dd></div>
-        <div><dt>{t("fd.fact.total")}</dt><dd data-testid="fd-total">{formatFinanceMoney(money.total, currency)}</dd></div>
+        <div className="fd-full"><dt>{t("fd.fact.total")}</dt><dd data-testid="fd-total">{formatFinanceMoney(money.total, currency)}</dd></div>
         <div className="fd-amount"><dt>{t("fd.fact.advance")}</dt><dd data-testid="fr-remaining">{formatFinanceMoney(remaining ?? live?.advance?.required ?? null, currency)}</dd></div>
       </dl>
       {live?.advance && bani(live.advance.verified ?? "0") > 0 && <p className="fd-already" data-testid="fd-already">{t("fd.fact.already", { amount: formatFinanceMoney(live.advance.verified, currency), remaining: formatFinanceMoney(remaining, currency) })}</p>}

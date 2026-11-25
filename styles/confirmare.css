@@ -536,6 +536,7 @@ button.fd-kpi { cursor: pointer; }
 .fd-facts dd, .fd-summary dd { margin: 0; font-size: var(--text-md); overflow-wrap: anywhere; }
 .fd-facts .fd-amount { grid-column: 1 / -1; }
 .fd-facts .fd-wide { grid-column: span 2; }
+.fd-facts .fd-full { grid-column: 1 / -1; }
 .fd-amount dd { font-size: clamp(1.9rem, 5vw, 2.6rem); font-weight: var(--weight-bold); line-height: 1.1; font-variant-numeric: tabular-nums; }
 .fd-already { margin: -6px 0 0; font-size: var(--text-sm); color: var(--color-text-subtle); }
 .fd-panel { display: grid; gap: var(--space-4); padding: clamp(16px, 2.4vw, 24px); border: 1px solid var(--color-border-strong); border-radius: var(--radius-lg); background: var(--color-surface); }
