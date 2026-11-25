@@ -60,9 +60,9 @@ test("the operator sends the advance to finance from step 4; the card says who h
 test("the finance employee sees only the task: no customer, no order screen; records the transfer with an explicit confirmation", async ({ browser }) => {
   const { context, page, errors } = await signIn(browser, F.people.rec.username);
   try {
-    await expect(page.getByTestId("fr-open-inbox")).toBeVisible();
-    await page.getByTestId("fr-open-inbox").click();
+    // Staff 2.52.5: the finance-only employee's home is the finance task list, with no production order list.
     await expect(page.getByTestId("fr-inbox")).toBeVisible();
+    await expect(page.locator(".nav-orders")).toHaveCount(0);
     await expect(page.getByTestId(`fr-card-${F.number}`)).toBeVisible();
     await noCustomer(page);
     await page.getByTestId(`fr-open-${F.number}`).click();

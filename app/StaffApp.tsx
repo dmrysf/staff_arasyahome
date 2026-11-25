@@ -16,7 +16,7 @@ import type { StaffRuntimeMode } from "../src/runtimeConfig";
 import { StaffServiceError } from "../domain/models";
 import { toServiceError } from "../services/errors";
 import { canAccessRoute } from "../domain/permissions";
-import { opensOperatorDesk, usesProductionScanner } from "../domain/operatorDesk";
+import { opensFinanceInbox, opensOperatorDesk, usesProductionScanner } from "../domain/operatorDesk";
 import { canUseConfirmare, type ConfirmareApi } from "../domain/confirmare";
 import { shouldEndLocalSessionAfterLogout } from "../features/auth/logoutPolicy";
 import { useProductionWorkflow } from "./useProductionWorkflow";
@@ -120,8 +120,10 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
   // Staff 2.42.1: a Confirmare operator's home is the operator desk (read on every render: the saved workspace choice
   // may have changed).
   const deskHome = Boolean(session && services.confirmare && opensOperatorDesk(session.employee, homeWorkspace(session.employee, services)));
+  // Staff 2.52.5: a finance employee without a desk or a production stage opens on their finance tasks.
+  const financeHome = Boolean(session && services.confirmare && !deskHome && opensFinanceInbox(session.employee, homeWorkspace(session.employee, services)));
   // The guide explains the screen actually shown (a refused route shows the home screen).
-  const guideRoute = useMemo(() => parseStaffRoute(guardedRoute === "/" && deskHome ? "/confirmare" : guardedRoute), [guardedRoute, deskHome]);
+  const guideRoute = useMemo(() => parseStaffRoute(guardedRoute === "/" && deskHome ? "/confirmare" : guardedRoute === "/" && financeHome ? "/confirmare/finance/requests" : guardedRoute), [guardedRoute, deskHome, financeHome]);
   const staffReady = Boolean(session && !session.employee.mustChangePassword && session.employee.applications.includes("staff"));
   const workflowLifecycle = useProductionWorkflow({ authenticated: staffReady, route: guardedRoute, service: services.workflow });
 
@@ -182,6 +184,7 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
   const desk = (service: ConfirmareApi, deskOrderId: string | null) => <OperatorDesk employee={session.employee} service={service} documents={services.documents} orderId={deskOrderId} navigate={navigate} workspaces={workspaces} onWorkspace={chooseWorkspace} />;
   let screen = <HomeScreen employee={session.employee} services={services} workflow={workflow} dashboardUrl={dashboardUrl} navigate={navigate} />;
   if (guardedRoute === "/" && deskHome && services.confirmare) screen = desk(services.confirmare, null);
+  else if (guardedRoute === "/" && financeHome && services.confirmare) screen = <FinanceInboxScreen employee={session.employee} service={services.confirmare} navigate={navigate} />;
   else if (guardedRoute === "/scan") {
     // A request's "open the scanner" passes only the request id; the scanned code itself never enters a URL.
     const scanContext = new URLSearchParams(window.location.search).get("exception");
@@ -214,7 +217,7 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
 
   return <LiveProvider service={services.live} enabled={staffReady}>
     <GuideProvider key={session.employee.employeeUuid} employee={session.employee} route={guideRoute} dashboardLink={Boolean(dashboardUrl)}>
-      <AppShell employee={session.employee} route={guardedRoute} deskHome={deskHome} mode={mode} navigate={navigate} immersive={immersive}>{screen}</AppShell>
+      <AppShell employee={session.employee} route={guardedRoute} deskHome={deskHome || financeHome} mode={mode} navigate={navigate} immersive={immersive}>{screen}</AppShell>
     </GuideProvider>
     <LiveNotice navigate={navigate} />
   </LiveProvider>;

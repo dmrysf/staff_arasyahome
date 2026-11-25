@@ -51,8 +51,9 @@ async function signIn(browser: Browser, username: string, width = 390, height = 
   await page.getByLabel("Nume utilizator").fill(username);
   await page.getByLabel("Parolă").fill(F?.password ?? base.password);
   await page.getByRole("button", { name: /Autentificare/ }).click();
-  // Staff 2.42.1: a Confirmare operator or supervisor lands on the operator desk; everyone else on the greeting home.
-  await expect(page.getByRole("heading", { name: /^Bună,/ }).or(page.getByTestId("cf-queue"))).toBeVisible();
+  // Staff 2.42.1: a Confirmare operator or supervisor lands on the operator desk; Staff 2.52.5: a finance-only employee
+  // lands on the finance tasks; everyone else on the greeting home.
+  await expect(page.getByRole("heading", { name: /^Bună,/ }).or(page.getByTestId("cf-queue")).or(page.getByTestId("fr-inbox"))).toBeVisible();
   return { context, page, errors };
 }
 
@@ -607,11 +608,10 @@ test("finance (Phase 5): the shop's money read on request, a transfer recorded b
   test.setTimeout(120_000);
   const recorder = await signIn(browser, F.people.finrec.username);
   let page = recorder.page;
-  await expect(page.getByTestId("workspace-confirmare-finance"), "a finance-only employee works from the finance tasks").toBeVisible();
   // API 2.50.0: the finance employee works the tasks assigned to them by name (no shop-wide list); the additional
-  // payment of the order is an exception task whose card opens the money panel only.
-  await page.getByTestId("fr-open-inbox").click();
-  await expect(page.getByTestId("fr-inbox")).toBeVisible();
+  // payment of the order is an exception task whose card opens the money panel only. Staff 2.52.5: the finance-only
+  // employee's home is that list.
+  await expect(page.getByTestId("fr-inbox"), "a finance-only employee opens on the finance tasks").toBeVisible();
   await expect(page.getByTestId(`fr-card-${number(F.orders.finance)}`)).toContainText("Plată suplimentară datorată");
   await page.getByTestId(`fr-open-${number(F.orders.finance)}`).click();
   await expect(page).toHaveURL(new RegExp(`/confirmare/finance/orders/`));

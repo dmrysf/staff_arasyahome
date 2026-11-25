@@ -258,10 +258,17 @@ export function mapInboxItem(value: unknown): InboxItem {
   };
 }
 
+/**
+ * Staff 2.52.5 (owner 2026-11-25): the most items one inbox answer may carry. API FinanceVerificationRequests::inbox lists
+ * up to 1000 open tasks (OPEN_LIMIT) and the 100 latest done ones (DONE_LIMIT); a stricter cap here rejected the whole
+ * answer, so an employee with more than 300 tasks saw none.
+ */
+export const INBOX_MAX_ITEMS = 1100;
+
 export function mapInbox(value: unknown): Inbox {
   const raw = obj(value);
   return {
-    items: list(raw.items, 300, mapInboxItem),
+    items: list(raw.items, INBOX_MAX_ITEMS, mapInboxItem),
     counts: counts(raw.counts, INBOX_CATEGORIES), sources: list(raw.sources, 10, (entry) => str(entry, 40)), limit: int(raw.limit),
   };
 }

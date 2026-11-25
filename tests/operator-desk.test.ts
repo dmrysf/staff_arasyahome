@@ -8,7 +8,7 @@ import type { Employee } from "../domain/models";
 import type { ConfirmareDetail, ConfirmareItem, ConfirmareLine } from "../domain/confirmare";
 import type { InvoiceRead, ProformaSummary } from "../domain/confirmareInvoice";
 import type { ShopLine, ShopRead } from "../domain/confirmareShop";
-import { deskCounts, extraShopDetails, isDeskRoute, moneyGlance, opensOperatorDesk, pairShopLines, searchQueue, sortQueue, usesProductionScanner } from "../domain/operatorDesk";
+import { deskCounts, extraShopDetails, isDeskRoute, moneyGlance, opensFinanceInbox, opensOperatorDesk, pairShopLines, searchQueue, sortQueue, usesProductionScanner } from "../domain/operatorDesk";
 import { resolveWorkspaces, selectPrimaryWorkspace } from "../domain/workspaces";
 import { OperatorDesk } from "../features/confirmare/OperatorDesk";
 import { canAccessRoute } from "../domain/permissions";
@@ -261,4 +261,24 @@ test("the desk carries the old home's links (each for its own employee), the leg
   assert.doesNotMatch(workspace, /OperatorWorkspace|useAutoRefresh|cf-next-action/);
   const app = readFileSync(path.join(root, "app/StaffApp.tsx"), "utf8");
   assert.match(app, /if \(guardedRoute === "\/" && deskHome && services\.confirmare\) screen = desk\(services\.confirmare, null\);/);
+});
+
+test("Staff 2.52.5: a finance employee without a desk or a stage opens on the finance tasks; the production list is hidden", () => {
+  const cristina = person({ displayName: "NITA CRISTINA", departmentKey: "financiar-contabilitate", confirmareScopes: { operate: [], supervise: [] },
+    financeScopes: { view: ["trendhome", "outletperdele"], record: [], approve: [], verify: ["trendhome", "outletperdele"] },
+    permissions: ["staff.access", "profile.view_self", "history.view_mine", "orders.view_mine", "orders.scan", "orders.claim", "orders.advance_stage"], allowedStageIds: [] } as Partial<Employee>);
+  assert.equal(home(cristina)?.kind, "confirmare");
+  assert.equal(opensOperatorDesk(cristina, home(cristina)), false);
+  assert.equal(opensFinanceInbox(cristina, home(cristina)), true, "NITA CRISTINA's live shape opens on Verificări de plată");
+  assert.equal(opensFinanceInbox(person(), home(person())), false, "an operator keeps the desk");
+  const staged = person({ confirmareScopes: { operate: [], supervise: [] }, financeScopes: { view: ["trendhome"], record: ["trendhome"], approve: [] }, allowedStageIds: ["packing"] } as Partial<Employee>);
+  assert.equal(opensFinanceInbox(staged, home(staged)), false, "a finance employee with a production stage keeps the workspace home");
+  const viewer = person({ confirmareScopes: { operate: [], supervise: [] }, financeScopes: { view: ["trendhome"], record: [], approve: [] } } as Partial<Employee>);
+  assert.equal(opensFinanceInbox(viewer, home(viewer)), false, "a view-only finance scope has no tasks");
+  const nav = render(createElement(BottomNavigation, { employee: cristina, route: "/confirmare/finance/requests", navigate: () => undefined, deskHome: true }));
+  assert.doesNotMatch(nav, /nav-orders/, "no Siparişlerim for an account without a production stage");
+  assert.match(nav, /class="nav-item nav-home active"/);
+  const app = readFileSync(path.join(root, "app/StaffApp.tsx"), "utf8");
+  assert.match(app, /guardedRoute === "\/" && financeHome && services\.confirmare\) screen = <FinanceInboxScreen/);
+  assert.match(app, /deskHome=\{deskHome \|\| financeHome\}/);
 });

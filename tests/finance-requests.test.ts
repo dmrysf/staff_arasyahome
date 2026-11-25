@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
-  POLL_LIMIT_MS, canOverseeFinance, canUseFinanceInbox, financeOrderPath, mapDecisionAnswer, mapFinanceTask, mapInbox, mapOrderFinanceRequest, mapOversight, mapOversightDetail,
+  INBOX_MAX_ITEMS, POLL_LIMIT_MS, canOverseeFinance, canUseFinanceInbox, financeOrderPath, mapDecisionAnswer, mapFinanceTask, mapInbox, mapOrderFinanceRequest, mapOversight, mapOversightDetail,
   maskIban, mapInboxItem, nextPollMs, proformaLabel, requestErrorKey, requestPhase, taskCodeLabel, taskOrderId, type OrderFinanceRequest,
 } from "../domain/financeRequests";
 import { canAccessRoute } from "../domain/permissions";
@@ -230,4 +230,16 @@ test("owner 2026-10-29 (final): under the single policy the employee who recorde
     for (const key of ["fr.action.verifyRecorded", "fr.confirm.verifyRecorded", "fr.event.verified_single"] as const) assert.ok(String(CATALOGS[locale][key] ?? "").length > 5, `${locale} ${key}`);
   }
   assert.ok(CATALOGS.ro["fr.confirm.verifyRecorded"].includes("fără al doilea control"));
+});
+
+test("Staff 2.52.5: the inbox takes every item the API may send (1000 open + 100 done), so 431 tasks are all shown", () => {
+  assert.equal(INBOX_MAX_ITEMS, 1100);
+  const many = (n: number) => Array.from({ length: n }, (_, i) => item({ id: `00000000-0000-4000-8000-${String(i + 1).padStart(12, "0")}` }));
+  const counts = { todo: 329, clarification: 2, done: 465 };
+  assert.equal(mapInbox({ items: many(431), counts, sources: ["outletperdele", "trendhome"], limit: 431 }).items.length, 431, "NITA CRISTINA's live shape (2026-11-25)");
+  assert.equal(mapInbox({ items: many(1100), counts, sources: [], limit: 1100 }).items.length, 1100);
+  assert.throws(() => mapInbox({ items: many(1101), counts, sources: [], limit: 1101 }), "more than the API can send is still refused");
+  const api = readFileSync(path.join(root, "operations-api/src/Confirmare/FinanceVerificationRequests.php"), "utf8");
+  const open = Number(/OPEN_LIMIT = (\d+);/.exec(api)?.[1]), done = Number(/DONE_LIMIT = (\d+);/.exec(api)?.[1]);
+  assert.equal(open + done, INBOX_MAX_ITEMS, "the Staff cap equals the API's two limits");
 });
