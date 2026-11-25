@@ -81,7 +81,10 @@ final readonly class ConfirmareFinance
         'submit_refund' => ['amount', 'reference', 'valueDate'],
         'decide_refund' => ['entryId', 'decision', 'reasonCode'],
         // API 2.50.0: only through a finance verification request (FinanceVerificationRequests), never a route of its own.
-        'verify_transfer' => ['purpose', 'amount', 'reference', 'valueDate', 'paymentReference', 'currency', 'bankStatementConfirmed'],
+        'verify_transfer' => ['purpose', 'amount', 'reference', 'valueDate', 'paymentReference', 'currency', 'bankStatementConfirmed', 'matchBasis', 'payerName', 'matchNote'],
+        // API 2.80.0 (YD SOFT 2.32.0, owner 2026-11-25): the finance employee corrects the advance transfer they verified, only
+        // through a finance verification request (FinanceVerificationRequests::correctPayment), never a route of its own.
+        'correct_transfer' => ['entryId', 'amount', 'reference', 'valueDate', 'currency', 'bankStatementConfirmed', 'reasonNote', 'matchBasis', 'payerName', 'matchNote'],
     ];
 
     public function __construct(
@@ -175,7 +178,7 @@ final readonly class ConfirmareFinance
         $single = ($fields['singleVerification'] ?? false) === true;
         $capability = match (true) {
             str_starts_with($action, 'submit_') => FinanceScopePolicy::RECORD,
-            $action === 'verify_transfer' || $single => FinanceScopePolicy::VERIFY,
+            $action === 'verify_transfer' || $action === 'correct_transfer' || $single => FinanceScopePolicy::VERIFY,
             default => FinanceScopePolicy::APPROVE,
         };
         ['row' => $row, 'role' => $role, 'globalId' => $globalId] = $this->context($actor, $globalOrderId, $capability);
@@ -186,7 +189,7 @@ final readonly class ConfirmareFinance
         if ($target === null || !$target->allowsFinanceRecord()) {
             throw new ApiException(409, 'CONFIRMARE_FINANCE_DISABLED', 'Finance actions are not enabled for this shop.');
         }
-        if (($action === 'verify_transfer' || $single) && !$target->allowsSingleVerification()) {
+        if (($action === 'verify_transfer' || $action === 'correct_transfer' || $single) && !$target->allowsSingleVerification()) {
             // The financial policy of the source is four eyes (the default): nobody verifies alone.
             throw new ApiException(409, 'CONFIRMARE_FINANCE_POLICY_FOUR_EYES', 'This shop needs a second employee to verify a bank transfer.');
         }
@@ -216,6 +219,11 @@ final readonly class ConfirmareFinance
             }
             if ($refund && !self::refundEligible((string) $order['production_stage_id'], (string) $order['operational_status'], $order['source_reported_unavailable_at'] !== null)) {
                 throw new ApiException(409, 'CONFIRMARE_FINANCE_REFUND_NOT_ELIGIBLE', 'A refund is possible only after the final manufacturing stage is complete.');
+            }
+            if ($action === 'correct_transfer' && $order['production_stage_id'] !== null && (string) $order['production_stage_id'] !== \Arasya\Operations\Order\OrderProjectionWriter::INITIAL_STAGE_ID) {
+                // API 2.80.0 (owner 2026-11-25): a payment is corrected here only before production starts; after that the
+                // document and accounting corrections apply (a finance exception).
+                throw new ApiException(409, 'CONFIRMARE_FINANCE_CORRECTION_LOCKED', 'Production has started: the payment is corrected through the finance exception process.');
             }
             if (self::actionOpen($this->pdo, (string) $row['order_uuid'])) {
                 throw self::openError();
@@ -528,6 +536,67 @@ final readonly class ConfirmareFinance
      * @param array<string, mixed> $input
      * @return array<string, mixed>
      */
+    /**
+     * API 2.80.0 (owner 2026-11-25): the match of a transfer to the order. `proforma_reference` (or no basis, from an older
+     * Staff on verify_transfer) needs the statement's payment reference; the other bases name the payer and, for another
+     * payer or the customer's proof, the evidence. Free text is checked for encoding and length only; it stays in the shop.
+     *
+     * @param callable(string): ApiException $invalid
+     * @return array<string, string>
+     */
+    public static function match(array $input, callable $invalid, bool $legacy): array
+    {
+        $basis = $input['matchBasis'] ?? null;
+        if ($basis !== null && !in_array($basis, SourceFinance::MATCH_BASES, true)) {
+            throw $invalid('matchBasis');
+        }
+        $text = static function (string $field, int $max) use ($input, $invalid): ?string {
+            if (!array_key_exists($field, $input) || $input[$field] === null) {
+                return null;
+            }
+            $value = is_string($input[$field]) ? trim((string) preg_replace('/\s+/u', ' ', $input[$field])) : null;
+            if ($value === null || !mb_check_encoding($value, 'UTF-8') || mb_strlen($value) > $max || preg_match('/[\x00-\x1F\x7F]/', $value) === 1) {
+                throw $invalid($field);
+            }
+            return $value === '' ? null : $value;
+        };
+        $payer = $text('payerName', 128);
+        if ($payer !== null && preg_match(SourceFinance::PAYER_PATTERN, $payer) !== 1) {
+            throw $invalid('payerName');
+        }
+        $note = $text('matchNote', 255);
+        $statement = $text('paymentReference', 64);
+        $fields = [];
+        if ($basis === null || $basis === 'proforma_reference') {
+            if ($legacy && ($statement === null || preg_match(SourceInvoice::PAYMENT_REFERENCE_PATTERN, $statement) !== 1)) {
+                throw $invalid('paymentReference');
+            }
+            if ($statement !== null) {
+                $fields['paymentReference'] = $statement;
+            }
+        } else {
+            if ($payer === null) {
+                throw $invalid('payerName');
+            }
+            if ($basis !== 'customer_name' && ($note === null || mb_strlen($note) < 3)) {
+                throw $invalid('matchNote');
+            }
+            if ($statement !== null) {
+                $fields['paymentReference'] = $statement;
+            }
+        }
+        if ($basis !== null) {
+            $fields['matchBasis'] = $basis;
+        }
+        if ($payer !== null) {
+            $fields['payerName'] = $payer;
+        }
+        if ($note !== null) {
+            $fields['matchNote'] = $note;
+        }
+        return $fields;
+    }
+
     private function fields(string $action, array $input): array
     {
         $allowed = [...self::FIELDS[$action], 'expectedRevision'];
@@ -554,16 +623,32 @@ final readonly class ConfirmareFinance
             if (($input['bankStatementConfirmed'] ?? null) !== true) {
                 throw $invalid('bankStatementConfirmed');
             }
-            $paymentReference = is_string($input['paymentReference'] ?? null) ? trim($input['paymentReference']) : null;
-            if ($paymentReference === null || preg_match(SourceInvoice::PAYMENT_REFERENCE_PATTERN, $paymentReference) !== 1) {
-                throw $invalid('paymentReference');
+            if (!is_string($input['currency'] ?? null) || preg_match('/^[A-Z]{3}$/D', $input['currency']) !== 1) {
+                throw $invalid('currency');
+            }
+            $fields += ['purpose' => 'advance', 'currency' => $input['currency'], 'bankStatementConfirmed' => true];
+            // API 2.80.0: how the transfer is tied to the order. Without matchBasis (an older Staff) the statement's payment
+            // reference is required, exactly as before; with another basis the payer is named and the reference is optional.
+            $fields += self::match($input, $invalid, true);
+        }
+        if ($action === 'correct_transfer') {
+            if (($input['bankStatementConfirmed'] ?? null) !== true) {
+                throw $invalid('bankStatementConfirmed');
             }
             if (!is_string($input['currency'] ?? null) || preg_match('/^[A-Z]{3}$/D', $input['currency']) !== 1) {
                 throw $invalid('currency');
             }
-            $fields += ['purpose' => 'advance', 'paymentReference' => $paymentReference, 'currency' => $input['currency'], 'bankStatementConfirmed' => true];
+            $entry = $input['entryId'] ?? null;
+            if (!is_string($entry) || preg_match(self::UUID_PATTERN, $entry) !== 1) {
+                throw $invalid('entryId');
+            }
+            $reason = is_string($input['reasonNote'] ?? null) ? trim((string) preg_replace('/\s+/u', ' ', $input['reasonNote'])) : '';
+            if (!mb_check_encoding($reason, 'UTF-8') || mb_strlen($reason) < 3 || mb_strlen($reason) > 255 || preg_match('/[\x00-\x1F\x7F]/', $reason) === 1) {
+                throw $invalid('reasonNote');
+            }
+            $fields += ['entryId' => $entry, 'currency' => $input['currency'], 'bankStatementConfirmed' => true, 'reasonNote' => $reason] + self::match($input, $invalid, false);
         }
-        if (in_array($action, ['submit_transfer', 'submit_refund', 'verify_transfer'], true)) {
+        if (in_array($action, ['submit_transfer', 'submit_refund', 'verify_transfer', 'correct_transfer'], true)) {
             if ($action === 'submit_transfer') {
                 if (!in_array($input['purpose'] ?? null, SourceFinance::PURPOSES, true)) {
                     throw $invalid('purpose');

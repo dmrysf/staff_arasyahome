@@ -1,8 +1,22 @@
 <?php
 declare(strict_types=1);
+/** Restore a pre-061 disposable test fixture (the 044 finance action CHECK, no decider index). NOT a deployment/rollback mechanism. */
+function restorePreFinancePaymentCorrectionsTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='061_finance_payment_corrections.sql'")->fetchColumn()) return;
+    $pdo->exec("DELETE FROM order_finance_actions WHERE action='correct_transfer'");
+    $has = static fn (string $name): bool => (bool) $pdo->query("SELECT COUNT(*) FROM information_schema.table_constraints WHERE constraint_schema = DATABASE() AND table_name = 'order_finance_actions' AND constraint_name = '{$name}'")->fetchColumn();
+    if ($has('chk_order_finance_actions_action_061')) $pdo->exec('ALTER TABLE order_finance_actions DROP CONSTRAINT chk_order_finance_actions_action_061');
+    if (!$has('chk_order_finance_actions_action_044')) $pdo->exec("ALTER TABLE order_finance_actions ADD CONSTRAINT chk_order_finance_actions_action_044 CHECK (action IN ('submit_transfer', 'decide_transfer', 'acknowledge_liability', 'submit_refund', 'decide_refund', 'verify_transfer'))");
+    // The decider index stays: MySQL lets it replace the implicit index of the decider foreign key (061 re-run adds nothing).
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='061_finance_payment_corrections.sql'");
+}
+
 /** Restore a pre-060 disposable test fixture (no finance_task_amounts). This is NOT a deployment/rollback mechanism. */
 function restorePreFinanceTaskAmountsTestSchema(PDO $pdo): void
 {
+    restorePreFinancePaymentCorrectionsTestSchema($pdo);
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
     if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='060_finance_task_amounts.sql'")->fetchColumn()) return;
     $pdo->exec('DROP TABLE IF EXISTS finance_task_amounts');

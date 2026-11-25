@@ -81,10 +81,13 @@ test("the finance employee sees only the task: no customer, no order screen; rec
     // Owner 2026-10-29: a smaller amount on the statement is recorded as it is (never "not received"); the rest is named.
     await expect(page.getByTestId("fr-remaining")).toContainText("215,70");
     await expect(page.getByTestId("fr-amount")).toHaveValue("");
+    // Staff 2.55.0 (owner 2026-11-25): the advance difference and the new cash on delivery follow as the amount is typed;
+    // a smaller advance is accepted as it is (no red, no operator approval).
     await page.getByTestId("fr-amount").fill("190,00");
-    await expect(page.getByTestId("fr-partial-notice")).toContainText("25,70");
+    await expect(page.getByTestId("fd-money-gap")).toContainText("25,70");
+    await expect(page.getByTestId("fd-accept-note")).toBeVisible();
     await page.getByTestId("fr-amount").fill("215,70");
-    await expect(page.getByTestId("fr-partial-notice")).toHaveCount(0);
+    await expect(page.getByTestId("fd-money-gap")).toContainText("0,00");
     // A different payment reference is never recorded: the desk offers a clarification instead.
     await page.getByTestId("fr-bank-reference").fill("BT E2E 0001");
     await page.getByTestId("fr-value-date").fill(new Date().toISOString().slice(0, 10));

@@ -5,15 +5,17 @@ import path from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
-  answerLost, checkEntry, checkPayment, deskRows, deskView, matchesSearch, nextDeskTask, noteDeskDone, takeDeskDone, validValueDate, waitParts,
+  answerLost, checkEntry, checkMoney, checkPayment, decidedToday, deskRows, deskView, matchesSearch, nextDeskTask, noteDeskDone, paymentEffect, takeDeskDone, validValueDate, waitParts,
+  type CheckMoney, type PaymentForm,
 } from "../domain/financeDesk";
+import { normalizeAmount } from "../domain/confirmareFinance";
 import { canUseFinanceInbox, mapFinanceTask, mapInbox, type Inbox } from "../domain/financeRequests";
 import { canAccessRoute } from "../domain/permissions";
 import { parseStaffRoute } from "../domain/staffRoute";
 import { opensFinanceInbox } from "../domain/operatorDesk";
 import type { Employee } from "../domain/models";
 import { CATALOGS, type MessageKey } from "../i18n";
-import { FinanceDeskScreen } from "../features/confirmare/FinanceDesk";
+import { FinanceDeskScreen, milestones } from "../features/confirmare/FinanceDesk";
 
 // The Contabilitate desk (Staff 2.53.0, owner 2026-11-25). TEST amounts and invented references only.
 const root = path.resolve(import.meta.dirname, "..");
@@ -36,46 +38,69 @@ const live = (patch: Record<string, unknown> = {}) => ({
 const task = (request: Record<string, unknown>, allowed: Record<string, boolean> = {}, liveData: Record<string, unknown> = live()) => mapFinanceTask({
   request, live: liveData, allowed: { start: false, verify: true, notReceived: true, clarify: true, secondCheck: false, reconcile: false, ...allowed }, me: id(900), singleVerification: true,
 });
-const form = (patch: Record<string, string> = {}) => ({ amount: "300,00", bankReference: "ING 2026 0001", valueDate: "2026-11-24", statementReference: "TH65001", ...patch });
+const form = (patch: Record<string, string> = {}) => ({ amount: "300,00", bankReference: "ING 2026 0001", valueDate: "2026-11-24", statementReference: "TH65001", matchBasis: "", payerName: "", matchNote: "", ...patch }) as PaymentForm;
+// Owner example 2026-11-25: order 500 RON, advance asked 100 RON.
+const money = (patch: Partial<CheckMoney> = {}): CheckMoney => ({ remaining: "500.00", advanceRemaining: "100.00", total: "500.00", received: "0.00", ...patch });
 
-test("full advance: recorded as typed, no gap, the proforma's reference", () => {
-  const check = checkPayment(form(), "TH65001", "300.00", NOW);
-  assert.deepEqual(check, { kind: "ok", input: { amount: "300.00", reference: "ING 2026 0001", valueDate: "2026-11-24", paymentReference: "TH65001" }, gap: null });
+test("the owner's table: every positive real payment is accepted and the cash on delivery follows (500 RON order, 100 RON asked)", () => {
+  const rows: [string, string][] = [["100", "400.00"], ["99", "401.00"], ["70", "430.00"], ["30", "470.00"], ["10", "490.00"], ["1", "499.00"], ["150", "350.00"], ["500", "0.00"]];
+  for (const [paid, ramburs] of rows) {
+    const check = checkPayment(form({ amount: paid }), "TH65001", money(), NOW);
+    assert.equal(check.kind, "ok", `${paid} RON is accepted`);
+    assert.equal(check.kind === "ok" && check.effect.ramburs, ramburs, `${paid} RON: cash on delivery ${ramburs}`);
+    assert.equal(check.kind === "ok" && check.input.amount, normalizeAmount(paid), "the real amount, never the asked one");
+  }
+  assert.deepEqual(checkPayment(form({ amount: "0" }), "TH65001", money(), NOW), { kind: "invalid", field: "amount" }, "0 RON is never a payment");
+  const short = checkPayment(form({ amount: "70" }), "TH65001", money(), NOW);
+  assert.equal(short.kind === "ok" && short.effect.advanceGap, "30.00", "the advance difference is shown, not a problem");
+  const extra = checkPayment(form({ amount: "300" }), "TH65001", money({ advanceRemaining: "150.00" }), NOW);
+  assert.equal(extra.kind === "ok" && extra.effect.overAdvance, "150.00", "more than the advance, less than the total: accepted (cash on delivery 200)");
+  assert.equal(extra.kind === "ok" && extra.effect.ramburs, "200.00");
 });
 
-test("partial advance: the real amount is recorded and the difference is named (the acceptance rules apply after)", () => {
-  const check = checkPayment(form({ amount: "299.80" }), "TH65001", "300.00", NOW);
-  assert.equal(check.kind, "ok");
-  assert.equal(check.kind === "ok" && check.input.amount, "299.80", "the expected amount is never taken as the payment");
-  assert.equal(check.kind === "ok" && check.gap, "0.20");
-});
-
-test("overpayment and a reference mismatch go to clarification, never recorded", () => {
-  const over = checkPayment(form({ amount: "350" }), "TH65001", "300.00", NOW);
+test("more than the order costs is the only amount sent to clarification (never a negative cash on delivery)", () => {
+  const over = checkPayment(form({ amount: "600" }), "TH65001", money(), NOW);
   assert.equal(over.kind, "over");
+  assert.equal(over.kind === "over" && over.excess, "100.00");
   assert.equal(over.kind === "over" && over.clarify, "amount_unclear");
-  const mismatch = checkPayment(form({ statementReference: "TH99999" }), "TH65001", "300.00", NOW);
-  assert.equal(mismatch.kind, "mismatch");
-  assert.equal(mismatch.kind === "mismatch" && mismatch.clarify, "reference_missing");
-  assert.equal(checkPayment(form({ statementReference: "th65001" }), "TH65001", "300.00", NOW).kind, "ok", "case is ignored");
+  assert.equal(paymentEffect("600.00", money()).ramburs, "0.00", "never below zero");
+});
+
+test("the statement need not show the proforma reference: the payer is named, and the evidence for another payer", () => {
+  assert.equal(checkPayment(form(), "TH65001", money(), NOW).kind === "ok" && (checkPayment(form(), "TH65001", money(), NOW) as { input: { matchBasis: string } }).input.matchBasis, "proforma_reference");
+  assert.equal((checkPayment(form({ statementReference: "th65001" }), "TH65001", money(), NOW) as { kind: string }).kind, "ok", "case is ignored");
+  for (const text of ["AVANS PERDELE", "Comandă perdele", "Transfer", ""]) {
+    assert.deepEqual(checkPayment(form({ statementReference: text }), "TH65001", money(), NOW), { kind: "invalid", field: "matchBasis" }, `"${text}" needs the match`);
+    const named = checkPayment(form({ statementReference: text, matchBasis: "customer_name", payerName: "Ion Popescu" }), "TH65001", money(), NOW);
+    assert.equal(named.kind, "ok", `"${text}" with the customer's name is accepted`);
+    assert.equal(named.kind === "ok" && named.input.paymentReference, undefined, "a description that is not the proforma reference is not sent as one");
+  }
+  assert.deepEqual(checkPayment(form({ statementReference: "", matchBasis: "customer_name", payerName: "" }), "TH65001", money(), NOW), { kind: "invalid", field: "payerName" });
+  assert.deepEqual(checkPayment(form({ statementReference: "", matchBasis: "other_payer", payerName: "Maria Ionescu" }), "TH65001", money(), NOW), { kind: "invalid", field: "matchNote" });
+  const other = checkPayment(form({ statementReference: "", matchBasis: "other_payer", payerName: "Maria Ionescu", matchNote: "soția clientului" }), "TH65001", money(), NOW);
+  assert.deepEqual(other.kind === "ok" && other.input, { amount: "300.00", reference: "ING 2026 0001", valueDate: "2026-11-24", matchBasis: "other_payer", payerName: "Maria Ionescu", matchNote: "soția clientului" });
+  const older = checkPayment(form({ statementReference: "TH99999" }), "TH65001", money(), NOW, false);
+  assert.equal(older.kind, "mismatch", "a shop before YD SOFT 2.32.0 keeps the reference rule (clarification)");
 });
 
 test("every field is required and checked; the expected amount is never prefilled", () => {
-  assert.deepEqual(checkPayment(form({ amount: "" }), "TH65001", "300.00", NOW), { kind: "invalid", field: "amount" });
-  assert.deepEqual(checkPayment(form({ amount: "0" }), "TH65001", "300.00", NOW), { kind: "invalid", field: "amount" });
-  assert.deepEqual(checkPayment(form({ bankReference: "x" }), "TH65001", "300.00", NOW), { kind: "invalid", field: "bankReference" });
-  assert.deepEqual(checkPayment(form({ valueDate: "" }), "TH65001", "300.00", NOW), { kind: "invalid", field: "valueDate" });
-  assert.deepEqual(checkPayment(form({ statementReference: " " }), "TH65001", "300.00", NOW), { kind: "invalid", field: "statementReference" });
+  assert.deepEqual(checkPayment(form({ amount: "" }), "TH65001", money(), NOW), { kind: "invalid", field: "amount" });
+  assert.deepEqual(checkPayment(form({ bankReference: "x" }), "TH65001", money(), NOW), { kind: "invalid", field: "bankReference" });
+  assert.deepEqual(checkPayment(form({ valueDate: "" }), "TH65001", money(), NOW), { kind: "invalid", field: "valueDate" });
   assert.equal(validValueDate("2026-02-30", NOW), false, "not a calendar day");
   assert.equal(validValueDate("2026-12-31", NOW), false, "a payment date in the future");
   const source = readFileSync(path.join(root, "features/confirmare/FinanceDesk.tsx"), "utf8");
-  assert.match(source, /const EMPTY_FORM: PaymentForm = \{ amount: "", bankReference: "", valueDate: "", statementReference: "" \};/);
+  assert.match(source, /const EMPTY_FORM: PaymentForm = \{ amount: "", bankReference: "", valueDate: "", statementReference: "", matchBasis: "", payerName: "", matchNote: "" \};/);
 });
 
-test("several transfers: the second one is checked against the advance still due", () => {
-  const second = checkPayment(form({ amount: "100" }), "TH65001", "100.00", NOW);
-  assert.equal(second.kind === "ok" && second.gap, null);
-  assert.equal(checkPayment(form({ amount: "150" }), "TH65001", "100.00", NOW).kind, "over");
+test("several transfers: each is recorded on its own and the cash on delivery is the total less everything received (600 / 180 asked: 50 + 70 + 30)", () => {
+  let received = 0;
+  for (const paid of ["50", "70", "30"]) {
+    const check = checkPayment(form({ amount: paid, bankReference: `ING 2026 00${paid}` }), "TH65001", money({ total: "600.00", remaining: (600 - received).toFixed(2), received: received.toFixed(2), advanceRemaining: Math.max(0, 180 - received).toFixed(2) }), NOW);
+    assert.equal(check.kind, "ok");
+    received += Number(paid);
+  }
+  assert.equal(paymentEffect(null, money({ total: "600.00", remaining: (600 - received).toFixed(2) })).ramburs, "450.00");
   const opened = task(item(1, { state: "checking" }), {}, live({ advance: { percentage: 30, required: "300.00", verified: "200.00", remaining: "100.00", accepted: false } }));
   assert.equal(opened.live.available && opened.live.advance?.remaining, "100.00");
 });
@@ -160,10 +185,12 @@ test("permissions stay as they were: Cristina's scopes open the desk; view-only,
   assert.ok(!canAccessRoute(viewer, `/confirmare/finance/requests/${id(1)}`));
   assert.deepEqual(parseStaffRoute(`/confirmare/finance/requests/${id(1)}`), { kind: "finance-task", pathname: `/confirmare/finance/requests/${id(1)}`, requestId: id(1) });
   assert.deepEqual(parseStaffRoute(`/confirmare/finance/requests/${id(1)}/detail`), { kind: "finance-task-detail", pathname: `/confirmare/finance/requests/${id(1)}/detail`, requestId: id(1) });
-  // No new command: the desk uses the Staff 2.41.0 finance task calls only (no second approval, no refund).
+  // Staff 2.55.0: the finance task calls, plus the history and the two follow-up payments (no second approval, no refund).
   const source = readFileSync(path.join(root, "features/confirmare/FinanceDesk.tsx"), "utf8");
   const calls = [...new Set([...source.matchAll(/service\.([a-zA-Z]+)\(/g)].map((match) => match[1]))].sort();
-  assert.deepEqual(calls, ["decideTask", "financeInbox", "financeTask", "reconcileTask", "startTask"]);
+  assert.deepEqual(calls, ["addPayment", "correctPayment", "decideTask", "financeHistory", "financeInbox", "financeTask", "reconcileTask", "startTask"]);
+  assert.ok(canAccessRoute(cristina, `/confirmare/finance/requests/${id(1)}/done`));
+  assert.deepEqual(parseStaffRoute(`/confirmare/finance/requests/${id(1)}/done`), { kind: "finance-task-done", pathname: `/confirmare/finance/requests/${id(1)}/done`, requestId: id(1) });
 });
 
 test("waiting time reads in minutes, hours or days", () => {
@@ -191,4 +218,57 @@ test("the desk renders its four counters and the table header without a shop cal
   const source = readFileSync(path.join(root, "features/confirmare/FinanceDesk.tsx"), "utf8");
   const desk = source.slice(source.indexOf("export function FinanceDeskScreen"), source.indexOf("// ---- The three-step check"));
   assert.doesNotMatch(desk, /financeTask\(|orderFinance|financeSummary/, "the list never reads a task or the shop per row");
+});
+
+test("Finalizate azi opens: the tasks this employee decided today (Bucharest), every closed task opens read-only", () => {
+  const today = new Date(NOW - 3600_000).toISOString();
+  const box = inbox([
+    item(1, { state: "verified", category: "done", outcome: "verified_full", decidedAt: today, decidedByMe: true }),
+    item(2, { state: "not_received", category: "done", outcome: "not_received", awaitingPayment: true, decidedAt: today, decidedByMe: true, recheckAt: "2026-11-26T06:00:00Z" }),
+    item(3, { state: "verified", category: "done", outcome: "verified_full", decidedAt: "2026-11-24T21:30:00Z", decidedByMe: true }),
+    item(4, { state: "verified", category: "done", outcome: "verified_full", decidedAt: today, decidedByMe: false }),
+    item(5),
+  ], { today: 2 });
+  assert.deepEqual(deskRows(box, "today", null, "", NOW).map((row) => row.orderNumber).sort(), ["65001", "65002"]);
+  assert.ok(decidedToday(box.items[0], NOW));
+  assert.ok(!decidedToday(box.items[2], NOW), "23:30 Bucharest yesterday (21:30 UTC) is not today");
+  assert.ok(decidedToday(mapInbox({ items: [item(6, { state: "verified", category: "done", decidedAt: "2026-11-24T22:30:00Z", decidedByMe: true })], counts: { todo: 0, clarification: 0, done: 1 }, sources: [], limit: 2 }).items[0], NOW), "00:30 Bucharest today (22:30 UTC) is today");
+  assert.equal(box.items[1].recheckAt, "2026-11-26T06:00:00Z");
+  const source = readFileSync(path.join(root, "features/confirmare/FinanceDesk.tsx"), "utf8");
+  assert.match(source, /if \(item\.category === "done" && item\.purpose === "advance"\) return financeTaskDonePath\(item\.id\);/, "a closed advance task opens its read-only detail");
+  assert.doesNotMatch(source, /const selectable = kpi\.id !== "today"/, "the today counter is a button like the others");
+  assert.match(source, /onClick=\{\(event\) => \{ if \(!\(event\.target as HTMLElement\)\.closest\("button"\)\) navigate\(rowTarget\(item\)\); \}\}/, "the whole row opens the task");
+  const html = renderToStaticMarkup(createElement(FinanceDeskScreen, { employee: {} as Employee, service: { financeInbox: () => new Promise(() => undefined) } as never, navigate: () => undefined }));
+  assert.match(html, /<button[^>]*data-testid="fr-category-today"/);
+});
+
+test("a closed task: its money, its transfers (a correction keeps the old one), where the order stands", () => {
+  const done = mapFinanceTask({
+    request: item(1, { state: "verified", category: "done", outcome: "verified_partial", decidedAt: "2026-11-25T10:00:00Z", decidedByMe: true }),
+    live: live({
+      advance: { percentage: 30, required: "150.00", verified: "70.00", remaining: "80.00", accepted: true }, financial: { state: "cleared", attention: null },
+      transfers: [
+        { id: id(51), purpose: "advance", amount: "100.00", reference: "ING 4001", valueDate: "2026-11-24", method: "bank_transfer", state: "corrected", decisionCode: "verified", flags: ["single_verification"], submittedBy: { id: id(900), displayName: "Test Fin" }, submittedAt: "2026-11-25T09:00:00Z", decidedBy: { id: id(900), displayName: "Test Fin" }, decidedAt: "2026-11-25T09:00:00Z", payer: "Ion Popescu", matchBasis: "customer_name", matchNote: null, corrects: null },
+        { id: id(52), purpose: "advance", amount: "70.00", reference: "ING 4001", valueDate: "2026-11-24", method: "bank_transfer", state: "verified", decisionCode: "corrected", flags: ["single_verification"], submittedBy: { id: id(900), displayName: "Test Fin" }, submittedAt: "2026-11-25T10:00:00Z", decidedBy: { id: id(900), displayName: "Test Fin" }, decidedAt: "2026-11-25T10:00:00Z", payer: "Ion Popescu", matchBasis: "customer_name", matchNote: null, corrects: id(51) },
+      ],
+      money: { known: true, total: "500.00", advanceRequired: "150.00", received: "70.00", remaining: "430.00", excess: "0.00" }, capabilities: { match: true, correction: true }, cod: { state: "none", awb: false },
+    }),
+    allowed: { start: false, verify: false, notReceived: false, clarify: false, secondCheck: false, reconcile: false, addPayment: true, correctPayment: true }, me: id(900), singleVerification: true,
+    progress: { known: true, approval: "approved", callConfirmed: true, paymentCleared: true, productionCleared: true, missing: [], operator: { displayName: "Test Op" }, routedTo: { displayName: "Test Shop" }, routedAt: "2026-11-25T10:05:00Z", stage: "waiting", cancelled: false },
+  });
+  assert.equal(done.live.available && done.live.transfers[0].state, "corrected");
+  assert.equal(done.live.available && done.live.transfers[1].corrects, id(51));
+  assert.deepEqual(checkMoney(done), { remaining: "430.00", advanceRemaining: "80.00", total: "500.00", received: "70.00" }, "70 of a 500 order: cash on delivery 430");
+  assert.ok(done.allowed.addPayment && done.allowed.correctPayment);
+  const t = (key: MessageKey, values?: Record<string, string | number>) => `${key}${values ? JSON.stringify(values) : ""}`;
+  const plan = milestones(done, t);
+  assert.deepEqual(plan.items.map((step) => step.state), ["done", "done", "done", "done"], "approved, paid, cleared, routed: all green");
+  assert.match(plan.now, /fd\.now\.shop.*Test Shop/, "now with the shop employee");
+  const waiting = milestones({ ...done, progress: { ...done.progress!, approval: "pending", productionCleared: false, missing: ["approval", "call"], routedTo: null } }, t);
+  assert.deepEqual(waiting.items.map((step) => step.state), ["waiting", "done", "waiting", "waiting"]);
+  assert.match(waiting.now, /fd\.now\.operator.*Test Op/, "the order waits for the operator, not for finance (parallel work)");
+  const older = mapFinanceTask({ request: item(2), live: live(), allowed: { start: true, verify: true, notReceived: true, clarify: true, secondCheck: false, reconcile: false }, me: id(900), singleVerification: true });
+  assert.equal(older.progress, null, "an older API: no progress, no follow-up payments");
+  assert.ok(!older.allowed.addPayment && !older.allowed.correctPayment);
+  assert.deepEqual(older.live.available && older.live.capabilities, { match: false, correction: false });
 });

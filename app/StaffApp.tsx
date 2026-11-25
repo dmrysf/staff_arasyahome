@@ -38,7 +38,7 @@ import { localizeWorkflow } from "../domain/stageNames";
 import { OperatorDesk } from "../features/confirmare/OperatorDesk";
 import { ConfirmareTeamScreen } from "../features/confirmare/ConfirmareTeamScreen";
 import { ConfirmareFinanceScreen } from "../features/confirmare/ConfirmareFinanceScreen";
-import { FinanceCheckScreen, FinanceDeskScreen } from "../features/confirmare/FinanceDesk";
+import { FinanceCheckScreen, FinanceDeskScreen, FinanceDoneScreen } from "../features/confirmare/FinanceDesk";
 import { FinanceLegacyScreen, FinanceOrderScreen, FinanceOversightDetailScreen, FinanceOversightScreen, FinanceTaskScreen } from "../features/confirmare/FinanceRequestScreens";
 import { ConfirmareHandoffScreen } from "../features/confirmare/ConfirmareHandoffScreen";
 import { ConfirmareAwbScreen, ConfirmareEfacturaScreen, ConfirmareHealthScreen } from "../features/confirmare/ConfirmareShopTasks";
@@ -170,7 +170,7 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
   const documentOrderId = parsedRoute.kind === "document-detail" && guardedRoute === parsedRoute.pathname ? parsedRoute.orderId : "";
   const trendyolPackageId = parsedRoute.kind === "trendyol-package" && guardedRoute === parsedRoute.pathname ? parsedRoute.packageId : "";
   const confirmareOrderId = parsedRoute.kind === "confirmare-order" && guardedRoute === parsedRoute.pathname ? parsedRoute.orderId : "";
-  const financeRequestId = (parsedRoute.kind === "finance-task" || parsedRoute.kind === "finance-task-detail" || parsedRoute.kind === "finance-oversight-detail") && guardedRoute === parsedRoute.pathname ? parsedRoute.requestId : "";
+  const financeRequestId = (parsedRoute.kind === "finance-task" || parsedRoute.kind === "finance-task-detail" || parsedRoute.kind === "finance-task-done" || parsedRoute.kind === "finance-oversight-detail") && guardedRoute === parsedRoute.pathname ? parsedRoute.requestId : "";
   const financeOrderId = parsedRoute.kind === "finance-order" && guardedRoute === parsedRoute.pathname ? parsedRoute.orderId : "";
   const financeLegacyId = parsedRoute.kind === "finance-legacy" && guardedRoute === parsedRoute.pathname ? parsedRoute.orderId : "";
   const workspaces = resolveWorkspaces(session.employee, workspaceAvailability(services));
@@ -206,6 +206,7 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
   else if (guardedRoute === "/confirmare/finance/oversight" && services.confirmare) screen = <FinanceOversightScreen service={services.confirmare} navigate={navigate} />;
   else if (financeRequestId && parsedRoute.kind === "finance-task" && services.confirmare) screen = <FinanceCheckScreen key={financeRequestId} requestId={financeRequestId} service={services.confirmare} navigate={navigate} />;
   else if (financeRequestId && parsedRoute.kind === "finance-task-detail" && services.confirmare) screen = <FinanceTaskScreen key={`${financeRequestId}-detail`} requestId={financeRequestId} service={services.confirmare} navigate={navigate} />;
+  else if (financeRequestId && parsedRoute.kind === "finance-task-done" && services.confirmare) screen = <FinanceDoneScreen key={`${financeRequestId}-done`} requestId={financeRequestId} service={services.confirmare} navigate={navigate} />;
   else if (financeRequestId && parsedRoute.kind === "finance-oversight-detail" && services.confirmare) screen = <FinanceOversightDetailScreen key={financeRequestId} requestId={financeRequestId} service={services.confirmare} navigate={navigate} />;
   else if (financeLegacyId && services.confirmare) screen = <FinanceLegacyScreen key={financeLegacyId} globalOrderId={financeLegacyId} service={services.confirmare} navigate={navigate} />;
   else if (financeOrderId && services.confirmare) screen = <FinanceOrderScreen key={financeOrderId} globalOrderId={financeOrderId} employee={session.employee} service={services.confirmare} navigate={navigate} />;

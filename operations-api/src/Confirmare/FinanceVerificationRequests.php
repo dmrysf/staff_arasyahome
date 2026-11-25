@@ -105,6 +105,13 @@ final readonly class FinanceVerificationRequests
     private const WAITING_LIMIT = 300;
     /** A stored advance amount older than this is read again from the shop by bin/finance-task-amounts.php. */
     private const AMOUNT_FRESH_MINUTES = 30;
+    /**
+     * API 2.80.0 (owner 2026-11-25): a payment not found today is looked for again the next morning at this hour
+     * (Europe/Bucharest), never several times a day (bin/finance-payment-tracking.php).
+     */
+    public const RECHECK_HOUR = 8;
+    /** API 2.80.0: one page of the finance employee's closed tasks (history with search). */
+    private const HISTORY_PAGE = 50;
 
     public function __construct(
         private PDO $pdo,
@@ -176,7 +183,24 @@ final readonly class FinanceVerificationRequests
         $this->rateLimit($actor);
         // The proforma and the advance as the shop holds them now (the operator's own read role).
         $role = $this->scopes->allows($actor, ConfirmareScopePolicy::SUPERVISE, (string) $row['source_key']) ? ConfirmareSourceAccess::ROLE_SUPERVISOR : ConfirmareSourceAccess::ROLE_ASSIGNEE;
-        $summary = $this->summary($target, $row, $actor->employeeUuid, $role, $requestId);
+        $created = $this->create($actor->employeeUuid, $row, $target, $ledger, $role, $key, $requestId, null);
+        return $this->operatorView($actor, $this->order((string) $row['global_order_id']) ?? $row) + ['created' => $created === 'created'];
+    }
+
+    /**
+     * Opens the advance task of an order (the operator's request, or API 2.80.0 the system's payment tracking): reads the
+     * shop's proforma and advance, refuses what has nothing to verify, and inserts the request with its `requested` event
+     * under the order lock (one open request per order, uq_finance_verification_requests_open).
+     *
+     * @return string `created` or `exists` (an open request of the order, or the same key, already exists)
+     */
+    private function create(string $requesterUuid, array $row, SourceAccessTarget $target, string $ledger, string $role, string $key, string $requestId, ?string $reasonCode): string
+    {
+        $summary = $this->summary($target, $row, $requesterUuid, $role, $requestId, $failure);
+        if ($reasonCode !== null) {
+            // API 2.80.0: the system's payment tracking reads as root; every such read is audited like a finance read.
+            $this->auditAs($row, $requesterUuid, $summary === null ? ($failure ?? 'source_unavailable') : 'ok', $requestId, $summary['revision'] ?? null);
+        }
         if ($summary === null) {
             throw new ApiException(503, 'CONFIRMARE_SOURCE_UNAVAILABLE', 'The shop could not be asked. Nothing was sent to finance.');
         }
@@ -206,7 +230,7 @@ final readonly class FinanceVerificationRequests
             $lock->execute([(string) $row['order_uuid']]);
             if ($this->openFor((string) $row['order_uuid'], true) !== null) {
                 $this->pdo->rollBack();
-                return $this->operatorView($actor, $row) + ['created' => false];
+                return 'exists';
             }
             $policy = $ledger === self::LEDGER_SHOP && $target->allowsSingleVerification() && ($summary['capabilities']['verification'] ?? 'four_eyes') === 'single' ? 'single' : 'four_eyes';
             $assignee = $this->leastLoaded((string) $row['source_key'], $policy);
@@ -215,22 +239,22 @@ final readonly class FinanceVerificationRequests
                     requested_by_employee_uuid, requested_at, request_idempotency_key, ledger, proforma_series, proforma_number, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')->execute([
                 $uuid, (string) $row['order_uuid'], (string) $row['global_order_id'], (string) $row['source_key'], 'advance', $state, (string) $row['order_uuid'], $assignee, $assignee === null ? null : $now,
-                $actor->employeeUuid, $now, $key, $ledger, $proforma['series'] === '' ? null : $proforma['series'], $proforma['number'], $now,
+                $requesterUuid, $now, $key, $ledger, $proforma['series'] === '' ? null : $proforma['series'], $proforma['number'], $now,
             ]);
-            $this->event($uuid, 1, 'requested', $actor->employeeUuid, null, $state, $assignee, null, null, null, $key, $requestId, $now);
+            $this->event($uuid, 1, 'requested', $requesterUuid, null, $state, $assignee, null, $reasonCode, null, $key, $requestId, $now);
             $this->pdo->commit();
         } catch (Throwable $e) {
             $this->rollBack();
             if ($e instanceof ApiException) {
                 throw $e;
             }
-            if ($e instanceof PDOException && ($this->openFor((string) $row['order_uuid']) !== null || $this->byRequesterKey($actor->employeeUuid, $key) !== null)) {
+            if ($e instanceof PDOException && ($this->openFor((string) $row['order_uuid']) !== null || $this->byRequesterKey($requesterUuid, $key) !== null)) {
                 // A concurrent request of the same order (or the same key) won: answer with it.
-                return $this->operatorView($actor, $row) + ['created' => false];
+                return 'exists';
             }
             throw new ApiException(503, 'FINANCE_REQUEST_UNAVAILABLE', 'The request could not be recorded. Try again.');
         }
-        return $this->operatorView($actor, $row) + ['created' => true];
+        return 'created';
     }
 
     /**
@@ -367,7 +391,43 @@ final readonly class FinanceVerificationRequests
             $this->rateLimit($actor);
             $live = $this->live($target, $row, $request, $actor, $requestId);
         }
-        return ['request' => $this->item($request + ['order_number' => $row['order_number'] ?? ''], $actor), 'live' => $live] + $this->allowed($actor, $request, $live, $target);
+        return ['request' => $this->item($request + ['order_number' => $row['order_number'] ?? ''], $actor), 'live' => $live, 'progress' => $this->progress((string) $request['order_uuid'])]
+            + $this->allowed($actor, $request, $live, $target);
+    }
+
+    /**
+     * API 2.80.0 (owner 2026-11-25, "where is the order"): where the order stands for the finance employee, from Arasya's
+     * records only (no shop call): the operator's approval and call, the money, production clearance and what is missing,
+     * the shop employee it is routed to, the production stage. No customer data, no amount.
+     *
+     * @return array<string, mixed>
+     */
+    private function progress(string $orderUuid): array
+    {
+        $statement = $this->pdo->prepare("SELECT o.production_stage_id, o.source_financial_state, o.cancellation_state, o.operational_status, o.source_reported_unavailable_at, o.source_commerce_status_code,
+                c.status, c.call_confirmed_at, c.production_cleared, c.assigned_employee_uuid, c.decided_by_employee_uuid, a.employee_uuid AS routed_to, a.assigned_at AS routed_at
+            FROM operational_orders o LEFT JOIN order_confirmations c ON c.order_uuid = o.order_uuid LEFT JOIN order_shop_assignments a ON a.active_order_uuid = o.order_uuid WHERE o.order_uuid = ?");
+        $statement->execute([$orderUuid]);
+        $row = $statement->fetch(PDO::FETCH_ASSOC);
+        if (!is_array($row)) {
+            return ['known' => false];
+        }
+        $names = $this->names(array_values(array_filter([$row['routed_to'], $row['assigned_employee_uuid'], $row['decided_by_employee_uuid']], 'is_string')));
+        $person = static fn (?string $id): ?array => $id === null ? null : ['displayName' => $names[$id] ?? ''];
+        return [
+            'known' => true,
+            'approval' => $row['status'],
+            'callConfirmed' => $row['call_confirmed_at'] !== null,
+            'paymentCleared' => $row['source_financial_state'] === 'cleared',
+            'productionCleared' => (bool) $row['production_cleared'],
+            'missing' => $row['status'] === null ? [] : ConfirmationClearance::missing($this->pdo, $orderUuid),
+            'operator' => $person($row['decided_by_employee_uuid'] ?? $row['assigned_employee_uuid']),
+            'routedTo' => $person($row['routed_to']),
+            'routedAt' => $row['routed_at'] === null ? null : self::iso((string) $row['routed_at']),
+            'stage' => $row['production_stage_id'],
+            'cancelled' => $row['cancellation_state'] !== null || $row['operational_status'] === 'unavailable' || $row['source_reported_unavailable_at'] !== null
+                || in_array($row['source_commerce_status_code'], ['cancelled', 'refunded', 'failed', 'trash'], true),
+        ];
     }
 
     /**
@@ -418,7 +478,7 @@ final readonly class FinanceVerificationRequests
         if ($outcome !== 'verified') {
             throw new ApiException(422, 'FINANCE_REQUEST_INVALID', 'outcome must be verified, not_received or needs_clarification.', ['field' => 'outcome']);
         }
-        $allowed = ['expectedVersion', 'outcome', 'expectedRevision', 'amount', 'reference', 'valueDate', 'paymentReference', 'currency'];
+        $allowed = ['expectedVersion', 'outcome', 'expectedRevision', 'amount', 'reference', 'valueDate', 'paymentReference', 'currency', 'matchBasis', 'payerName', 'matchNote'];
         if (array_diff(array_keys($input), $allowed) !== []) {
             throw new ApiException(400, 'INVALID_REQUEST', 'Only ' . implode(', ', $allowed) . ' are accepted.');
         }
@@ -463,8 +523,13 @@ final readonly class FinanceVerificationRequests
             throw new ApiException(422, 'FINANCE_REQUEST_CURRENCY', 'The payment is in another currency than the order.', ['field' => 'currency']);
         }
         $expectedReference = $proforma['reference'] ?? $summary['advance']['paymentReference'] ?? null;
-        if ($expectedReference === null || !hash_equals((string) $expectedReference, $evidence['paymentReference'])) {
-            throw new ApiException(422, 'FINANCE_REQUEST_PAYMENT_REFERENCE', 'The payment reference on the statement is not the one of this proforma. Ask for a clarification.', ['field' => 'paymentReference']);
+        $byReference = $evidence['matchBasis'] === null || $evidence['matchBasis'] === 'proforma_reference';
+        if ($byReference && ($expectedReference === null || !hash_equals((string) $expectedReference, (string) $evidence['paymentReference']))) {
+            throw new ApiException(422, 'FINANCE_REQUEST_PAYMENT_REFERENCE', 'The payment reference on the statement is not the one of this proforma. Name the payer instead.', ['field' => 'paymentReference']);
+        }
+        if (!$byReference && !$manual && !($summary['capabilities']['match'] ?? false)) {
+            // A shop before YD SOFT 2.32.0 only knows the proforma reference: nothing is sent.
+            throw new ApiException(409, 'FINANCE_REQUEST_MATCH_UNSUPPORTED', 'The shop does not accept a payment matched by the payer yet. Nothing was recorded.');
         }
         if ($manual) {
             // An order outside Confirmare: the shop's finance record is not written and the order is not moved. The
@@ -472,7 +537,7 @@ final readonly class FinanceVerificationRequests
             if (!$this->finance->allows($actor, FinanceScopePolicy::RECORD, (string) $row['source_key'])) {
                 throw new ApiException(403, 'CONFIRMARE_FINANCE_DENIED', 'You have no finance permission for this action on this order.');
             }
-            $hmac = hash_hmac('sha256', json_encode([$request['request_uuid'], $evidence['amount'], $evidence['reference'], $evidence['valueDate'], $evidence['paymentReference'], $evidence['currency']], JSON_THROW_ON_ERROR), $this->hmacKey);
+            $hmac = hash_hmac('sha256', json_encode([$request['request_uuid'], $evidence['amount'], $evidence['reference'], $evidence['valueDate'], $evidence['paymentReference'], $evidence['currency'], $evidence['matchBasis'], $evidence['payerName'], $evidence['matchNote']], JSON_THROW_ON_ERROR), $this->hmacKey);
             $this->command($actor, $request, ['expectedVersion' => $input['expectedVersion']], $key, function (array $locked, string $now) use ($actor, $hmac, $key, $requestId): void {
                 if ($locked['state'] !== 'assigned' && $locked['state'] !== 'checking') {
                     throw self::stateError($locked);
@@ -487,10 +552,14 @@ final readonly class FinanceVerificationRequests
         if (!$single && !$this->finance->allows($actor, FinanceScopePolicy::RECORD, (string) $row['source_key'])) {
             throw new ApiException(403, 'CONFIRMARE_FINANCE_DENIED', 'You have no finance permission for this action on this order.');
         }
+        if (!$single && !$byReference) {
+            // The four-eyes record carries no payer: a payer match is a single verification only.
+            throw new ApiException(409, 'FINANCE_REQUEST_MATCH_UNSUPPORTED', 'A payment matched by the payer is verified under the single policy only. Nothing was recorded.');
+        }
         $action = $single ? 'verify_transfer' : 'submit_transfer';
         $policy = $single ? 'single' : 'four_eyes';
         $financeKey = 'fvr-' . str_replace('-', '', (string) $request['request_uuid']) . '-v' . ((int) $request['version'] + 1);
-        $hmac = hash_hmac('sha256', json_encode([$request['request_uuid'], $evidence['amount'], $evidence['reference'], $evidence['valueDate'], $evidence['paymentReference'], $evidence['currency']], JSON_THROW_ON_ERROR), $this->hmacKey);
+        $hmac = hash_hmac('sha256', json_encode([$request['request_uuid'], $evidence['amount'], $evidence['reference'], $evidence['valueDate'], $evidence['paymentReference'], $evidence['currency'], $evidence['matchBasis'], $evidence['payerName'], $evidence['matchNote']], JSON_THROW_ON_ERROR), $this->hmacKey);
         // 1. The request records what is being sent (a lost answer is then reconciled with this key).
         $now = $this->now();
         $this->locked((string) $request['request_uuid'], function (array $locked) use ($request, $actor, $policy, $financeKey, $hmac, $key, $requestId, $now): void {
@@ -502,7 +571,8 @@ final readonly class FinanceVerificationRequests
         });
         // 2. The shop applies it (ConfirmareFinance: order lock, revision, idempotency, one action per order).
         $fields = ['expectedRevision' => $evidence['expectedRevision'], 'purpose' => 'advance', 'amount' => $evidence['amount'], 'reference' => $evidence['reference'], 'valueDate' => $evidence['valueDate']]
-            + ($single ? ['paymentReference' => $evidence['paymentReference'], 'currency' => $evidence['currency'], 'bankStatementConfirmed' => true] : []);
+            + ($single ? array_filter(['paymentReference' => $evidence['paymentReference'], 'currency' => $evidence['currency'], 'bankStatementConfirmed' => true,
+                'matchBasis' => $evidence['matchBasis'], 'payerName' => $evidence['payerName'], 'matchNote' => $evidence['matchNote']], static fn (mixed $v): bool => $v !== null) : []);
         try {
             $answer = $this->money->act($actor, (string) $row['global_order_id'], $action, $fields, $financeKey, $requestId);
         } catch (ApiException $e) {
@@ -520,6 +590,141 @@ final readonly class FinanceVerificationRequests
             $this->markUnknown((string) $request['request_uuid'], $actor->employeeUuid, $requestId);
         }
         return $this->afterDecision($actor, $this->requestRow((string) $request['request_uuid']) ?? $request, $requestId);
+    }
+
+    /**
+     * API 2.80.0 (owner 2026-11-25, "Adaugă o plată"): a later bank transfer of the same order, recorded and verified by the
+     * finance employee who verified the task's advance, without sending anything back to the operator. Relayed to the shop
+     * as `verify_transfer` (ConfirmareFinance: order lock, revision, idempotency per key, lost answers reconciled); the shop
+     * refuses more than the order still costs and a bank reference already used.
+     *
+     * @param array<string, mixed> $input {expectedRevision, amount, reference, valueDate, currency, bankStatementConfirmed: true,
+     *                                    matchBasis, payerName?, matchNote?, paymentReference?}
+     * @return array<string, mixed>
+     */
+    public function addPayment(EmployeeIdentity $actor, string $requestUuid, array $input, string $key, string $requestId): array
+    {
+        return $this->followUp($actor, $requestUuid, $input, $key, $requestId, 'verify_transfer');
+    }
+
+    /**
+     * API 2.80.0 (owner 2026-11-25, "Corectează plata"): the finance employee corrects the advance transfer they verified
+     * (amount, bank reference or date) with a reason, before production starts and before a final invoice or an AWB exists
+     * (both checked again: Arasya the stage, the shop the documents). The old entry is kept as corrected.
+     *
+     * @param array<string, mixed> $input {expectedRevision, entryId, amount, reference, valueDate, currency, reasonNote,
+     *                                    bankStatementConfirmed: true, matchBasis?, payerName?, matchNote?}
+     * @return array<string, mixed>
+     */
+    public function correctPayment(EmployeeIdentity $actor, string $requestUuid, array $input, string $key, string $requestId): array
+    {
+        return $this->followUp($actor, $requestUuid, $input, $key, $requestId, 'correct_transfer');
+    }
+
+    /** @param array<string, mixed> $input @return array<string, mixed> */
+    private function followUp(EmployeeIdentity $actor, string $requestUuid, array $input, string $key, string $requestId, string $action): array
+    {
+        $this->requireKey($key);
+        $this->requireStaff($actor);
+        $request = $this->reachable($actor, $requestUuid);
+        if (!$this->paymentFollowUp($actor, $request)) {
+            throw self::stateError($request);
+        }
+        $fields = ['expectedRevision', 'amount', 'reference', 'valueDate', 'currency', 'bankStatementConfirmed', 'matchBasis', 'payerName', 'matchNote']
+            + ($action === 'verify_transfer' ? [9 => 'paymentReference'] : [9 => 'entryId', 10 => 'reasonNote']);
+        if (array_diff(array_keys($input), $fields) !== []) {
+            throw new ApiException(400, 'INVALID_REQUEST', 'Only ' . implode(', ', $fields) . ' are accepted.');
+        }
+        if ($action === 'verify_transfer' && ($input['matchBasis'] ?? null) === null) {
+            throw new ApiException(422, 'FINANCE_REQUEST_INVALID', 'State how the payment was matched to the order.', ['field' => 'matchBasis']);
+        }
+        $row = $this->orderByUuid((string) $request['order_uuid']);
+        $target = $row === null ? null : $this->registry->find((string) $row['source_key']);
+        if ($row === null || $target === null || !$target->allowsFinanceRecord()) {
+            throw new ApiException(409, 'CONFIRMARE_FINANCE_DISABLED', 'Finance actions are not enabled for this shop.');
+        }
+        if ($row['closed']) {
+            throw new ApiException(409, 'FINANCE_REQUEST_ORDER_CLOSED', 'The order was cancelled or closed in the shop.');
+        }
+        $answer = $this->money->act($actor, (string) $row['global_order_id'], $action, $action === 'verify_transfer' ? $input + ['purpose' => 'advance'] : $input, $key, $requestId);
+        if (($answer['state'] ?? null) === 'applied') {
+            $this->noteFollowUp($request, $actor, $action === 'verify_transfer' ? 'payment_added' : 'payment_corrected', $key, $requestId);
+        }
+        $fresh = $this->requestRow((string) $request['request_uuid']) ?? $request;
+        return ['state' => (string) ($answer['state'] ?? 'unknown'), 'idempotencyKey' => $key, 'request' => $this->item($fresh + ['order_number' => $row['order_number']], $actor)];
+    }
+
+    /** The task's own trace of a follow-up payment (once per idempotency key; the money action itself is audited). */
+    private function noteFollowUp(array $request, EmployeeIdentity $actor, string $what, string $key, string $requestId): void
+    {
+        $eventKey = 'fu-' . substr(hash('sha256', $what . '|' . $key), 0, 40);
+        if ($this->eventByKey($actor->employeeUuid, $eventKey) !== null) {
+            return;
+        }
+        try {
+            $this->locked((string) $request['request_uuid'], function (array $locked) use ($actor, $what, $eventKey, $requestId): void {
+                $now = $this->now();
+                $version = (int) $locked['version'] + 1;
+                $this->pdo->prepare('UPDATE finance_verification_requests SET version = ?, updated_at = ? WHERE request_uuid = ?')->execute([$version, $now, (string) $locked['request_uuid']]);
+                $this->event((string) $locked['request_uuid'], $version, $what, $actor->employeeUuid, (string) $locked['state'], (string) $locked['state'], $locked['assigned_employee_uuid'], null, null, $locked['policy'], $eventKey, $requestId, $now);
+            });
+        } catch (ApiException) {
+            // The money action is recorded and audited in order_finance_actions; a lost task trace never undoes it.
+        }
+    }
+
+    /**
+     * API 2.80.0 (owner 2026-11-25): the finance employee's closed tasks beyond the inbox's latest 100, newest first, with a
+     * search by order or proforma number and a cursor (`before`: updatedAt|id of the last row shown). Only what this
+     * employee decided or was assigned, in their sources. A database read only.
+     *
+     * @param array<string, mixed> $query {q?, before?, source?}
+     * @return array{items: list<array<string, mixed>>, next: string|null}
+     */
+    public function history(EmployeeIdentity $actor, array $query): array
+    {
+        $this->requireStaff($actor);
+        $scopes = $this->financeScopes($actor);
+        $sources = array_values(array_unique(array_merge(...array_values($scopes))));
+        $source = is_string($query['source'] ?? null) && $query['source'] !== '' ? (string) $query['source'] : null;
+        if ($source !== null) {
+            $sources = array_values(array_intersect($sources, [$source]));
+        }
+        if ($sources === []) {
+            throw new ApiException(403, 'CONFIRMARE_FINANCE_DENIED', 'You have no finance scope.');
+        }
+        $e = $actor->employeeUuid;
+        $where = 'r.source_key IN (' . implode(', ', array_fill(0, count($sources), '?')) . ') AND r.open_order_uuid IS NULL AND (r.decided_by_employee_uuid = ? OR r.assigned_employee_uuid = ?)';
+        $args = [...$sources, $e, $e];
+        $q = is_string($query['q'] ?? null) ? strtoupper((string) preg_replace('/[^A-Za-z0-9]/', '', (string) $query['q'])) : '';
+        if (strlen($q) > 40) {
+            throw new ApiException(422, 'FINANCE_REQUEST_INVALID', 'The search is too long.', ['field' => 'q']);
+        }
+        if ($q !== '') {
+            $where .= " AND (o.order_number LIKE ? OR UPPER(REPLACE(CONCAT(COALESCE(r.proforma_series, ''), r.proforma_number), ' ', '')) LIKE ? OR r.proforma_number LIKE ?)";
+            array_push($args, '%' . $q . '%', '%' . $q . '%', '%' . $q . '%');
+        }
+        $before = is_string($query['before'] ?? null) ? (string) $query['before'] : '';
+        if ($before !== '') {
+            if (preg_match('/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z)\|([0-9a-f-]{36})$/D', $before, $m) !== 1) {
+                throw new ApiException(422, 'FINANCE_REQUEST_INVALID', 'The page cursor is not valid.', ['field' => 'before']);
+            }
+            $at = $this->sql(new DateTimeImmutable($m[1]));
+            $where .= ' AND (r.updated_at < ? OR (r.updated_at = ? AND r.request_uuid > ?))';
+            array_push($args, $at, $at, $m[2]);
+        }
+        $statement = $this->pdo->prepare('SELECT r.*, o.order_number, COALESCE(o.source_submitted_at, o.created_at) AS ordered_at, a.currency AS amount_currency, a.required_amount, a.remaining_amount, a.read_at AS amount_read_at
+            FROM finance_verification_requests r INNER JOIN operational_orders o ON o.order_uuid = r.order_uuid LEFT JOIN finance_task_amounts a ON a.request_uuid = r.request_uuid
+            WHERE ' . $where . ' ORDER BY r.updated_at DESC, r.request_uuid LIMIT ' . (self::HISTORY_PAGE + 1));
+        $statement->execute($args);
+        $rows = $statement->fetchAll(PDO::FETCH_ASSOC);
+        $more = count($rows) > self::HISTORY_PAGE;
+        $rows = array_slice($rows, 0, self::HISTORY_PAGE);
+        $items = array_map(fn (array $row): array => $this->item($row, $actor), $rows);
+        $last = $rows === [] ? null : end($rows);
+        // The cursor keeps the microseconds of updated_at, so rows of the same second are never skipped.
+        $cursor = is_array($last) ? (new DateTimeImmutable((string) $last['updated_at'], new DateTimeZone('UTC')))->format('Y-m-d\\TH:i:s.u\\Z') . '|' . $last['request_uuid'] : null;
+        return ['items' => $items, 'next' => $more ? $cursor : null];
     }
 
     /**
@@ -964,6 +1169,9 @@ final readonly class FinanceVerificationRequests
             'requestedAt' => self::iso((string) $row['requested_at']),
             'updatedAt' => self::iso((string) $row['updated_at']),
             'decidedAt' => $row['decided_at'] === null ? null : self::iso((string) $row['decided_at']),
+            // API 2.80.0: the employee's own decision (Finalizate azi), and for a payment not found the next check.
+            'decidedByMe' => $row['decided_by_employee_uuid'] === $actor->employeeUuid,
+            'recheckAt' => $row['state'] === 'not_received' && $row['decided_at'] !== null ? self::iso($this->sql(self::recheckAfter((string) $row['decided_at']))) : null,
         ] + (array_key_exists('amount_read_at', $row) ? [
             // API 2.77.9: the advance the shop last showed (null: never read yet). The task screen reads it again live.
             'advance' => $row['amount_read_at'] === null ? null : [
@@ -976,6 +1184,13 @@ final readonly class FinanceVerificationRequests
             // When the customer placed the order (the shop's submission time), for the list's order date.
             'orderedAt' => ($row['ordered_at'] ?? null) === null ? null : self::iso((string) $row['ordered_at']),
         ] : []);
+    }
+
+    /** API 2.80.0: when a payment not found at $decidedSql (UTC) is looked for again: the next day, RECHECK_HOUR Bucharest. */
+    public static function recheckAfter(string $decidedSql): DateTimeImmutable
+    {
+        $local = (new DateTimeImmutable($decidedSql, new DateTimeZone('UTC')))->setTimezone(new DateTimeZone('Europe/Bucharest'));
+        return $local->modify('+1 day')->setTime(self::RECHECK_HOUR, 0)->setTimezone(new DateTimeZone('UTC'));
     }
 
     /** The inbox tab of a request state. */
@@ -1074,6 +1289,18 @@ final readonly class FinanceVerificationRequests
             'policy' => $target->allowsSingleVerification() && ($summary['capabilities']['verification'] ?? 'four_eyes') === 'single' ? 'single' : 'four_eyes',
             'recordEnabled' => $target->allowsFinanceRecord() && $summary['capabilities']['record'],
             'transfers' => $this->transfers($summary),
+            // API 2.80.0 (owner 2026-11-25): the one money calculation of the shop (total, received, cash on delivery,
+            // excess), so the employee sees the new cash on delivery as they type; and what the shop accepts.
+            'money' => ($summary['position'] ?? null) === null ? null : [
+                'known' => $summary['position']['known'],
+                'total' => $summary['position']['total'],
+                'advanceRequired' => $summary['position']['advanceRequired'],
+                'received' => $summary['position']['net'],
+                'remaining' => $summary['position']['remaining'],
+                'excess' => $summary['position']['excess'],
+            ],
+            'capabilities' => ['match' => $summary['capabilities']['match'] ?? false, 'correction' => $summary['capabilities']['correction'] ?? false],
+            'cod' => ($summary['cod'] ?? null) === null ? null : ['state' => $summary['cod']['state'], 'awb' => $summary['cod']['awb'] !== null],
             'settledElsewhere' => $settled && in_array($request['state'], ['requested', 'assigned', 'checking'], true) && $request['source_entry_id'] === null,
         ];
     }
@@ -1100,6 +1327,11 @@ final readonly class FinanceVerificationRequests
             'state' => $entry['state'],
             'decisionCode' => $entry['decisionCode'],
             'flags' => $entry['flags'],
+            // API 2.80.0 (YD SOFT 2.32.0): who paid, how the transfer was matched, the entry a correction replaced.
+            'payer' => $entry['payer'] ?? null,
+            'matchBasis' => $entry['matchBasis'] ?? null,
+            'matchNote' => $entry['matchNote'] ?? null,
+            'corrects' => $entry['corrects'] ?? null,
             'submittedBy' => ['id' => $entry['submittedBy'], 'displayName' => $names[$entry['submittedBy']] ?? null],
             'submittedAt' => $entry['submittedAt'],
             'decidedBy' => $entry['decidedBy'] === null ? null : ['id' => $entry['decidedBy'], 'displayName' => $names[$entry['decidedBy']] ?? null],
@@ -1135,7 +1367,21 @@ final readonly class FinanceVerificationRequests
                 && $request['recorded_by_employee_uuid'] !== $actor->employeeUuid && $this->finance->allows($actor, FinanceScopePolicy::APPROVE, $source))
                 || ($this->concludesAlone($actor, $request) && ($live['policy'] ?? 'four_eyes') === 'single')) && ($live['available'] ?? false) === true,
             'reconcile' => $request['state'] === 'exception' && $request['finance_idempotency_key'] !== null,
+            // API 2.80.0 (owner 2026-11-25): on a verified advance the employee decided, a later transfer of the same order
+            // (Adaugă o plată) and the correction of their own transfer (Corectează plata). The shop checks both again.
+            'addPayment' => $this->paymentFollowUp($actor, $request) && $available && $single && ($live['capabilities']['match'] ?? false)
+                && ($live['financial']['attention'] ?? null) === null && (float) ($live['money']['remaining'] ?? 0) > 0,
+            'correctPayment' => $this->paymentFollowUp($actor, $request) && $available && $single && ($live['capabilities']['correction'] ?? false)
+                && ($live['cod']['awb'] ?? true) === false && array_filter($live['transfers'] ?? [], static fn (array $t): bool => $t['state'] === 'verified' && $t['purpose'] === 'advance'
+                    && $t['method'] === 'bank_transfer' && ($t['submittedBy']['id'] ?? null) === $actor->employeeUuid && in_array('single_verification', $t['flags'], true)) !== [],
         ], 'me' => $actor->employeeUuid, 'singleVerification' => $single && $target !== null];
+    }
+
+    /** API 2.80.0: a verified shop-ledger advance task this employee decided (or was assigned), whose order is still open. */
+    private function paymentFollowUp(EmployeeIdentity $actor, array $request): bool
+    {
+        return $request['purpose'] === 'advance' && $request['ledger'] === self::LEDGER_SHOP && $request['state'] === 'verified'
+            && in_array($actor->employeeUuid, [$request['decided_by_employee_uuid'], $request['assigned_employee_uuid']], true);
     }
 
     /** @param array<string, mixed> $request @return array<string, mixed> the answer of a decision: the task closes, a receipt shows */
@@ -1460,8 +1706,11 @@ final readonly class FinanceVerificationRequests
             throw new ApiException(409, 'FINANCE_REQUEST_FINANCING', 'A consumer credit order keeps its financing flow.');
         }
         if ($row['workflow_cohort'] === 'confirmare') {
-            if ($row['status'] !== 'approved') {
-                throw new ApiException(409, 'FINANCE_REQUEST_NOT_APPROVED', 'Finance verifies the advance of an approved order.');
+            // API 2.80.0 (owner 2026-11-25): the operator and finance work in parallel. Finance verifies the money of any
+            // order the operator has not rejected; production still needs both the approval and the money
+            // (ConfirmationClearance), so nothing reaches production on the money alone.
+            if (!in_array($row['status'], ['pending', 'approved'], true)) {
+                throw new ApiException(409, 'FINANCE_REQUEST_NOT_APPROVED', 'Finance verifies the advance of an order that was not rejected.');
             }
             if ($row['payment_method'] !== 'cod') {
                 throw new ApiException(409, 'FINANCE_REQUEST_NOT_COD', 'Only a cash-on-delivery order pays an advance by bank transfer.');
@@ -1538,15 +1787,20 @@ final readonly class FinanceVerificationRequests
             || new DateTimeImmutable($date . ' 00:00:00', new DateTimeZone('UTC')) > $this->clock->now()->modify('+1 day')) {
             throw $invalid('valueDate');
         }
-        $paymentReference = is_string($input['paymentReference'] ?? null) ? strtoupper(trim($input['paymentReference'])) : null;
-        if ($paymentReference === null || preg_match(SourceInvoice::PAYMENT_REFERENCE_PATTERN, $paymentReference) !== 1) {
-            throw $invalid('paymentReference');
-        }
         $currency = $input['currency'] ?? null;
         if (!is_string($currency) || preg_match('/^[A-Z]{3}$/D', $currency) !== 1) {
             throw $invalid('currency');
         }
-        return ['expectedRevision' => $revision, 'amount' => $amount, 'reference' => $reference, 'valueDate' => $date, 'paymentReference' => $paymentReference, 'currency' => $currency];
+        // API 2.80.0 (owner 2026-11-25): the statement need not show the proforma's payment reference. Without matchBasis
+        // (an older Staff) it must, exactly as before; with another basis the payer (and the evidence) is named.
+        $match = ConfirmareFinance::match($input, $invalid, true);
+        $paymentReference = isset($match['paymentReference']) ? strtoupper((string) $match['paymentReference']) : null;
+        $basis = $match['matchBasis'] ?? null;
+        if (($basis === null || $basis === 'proforma_reference') && ($paymentReference === null || preg_match(SourceInvoice::PAYMENT_REFERENCE_PATTERN, $paymentReference) !== 1)) {
+            throw $invalid('paymentReference');
+        }
+        return ['expectedRevision' => $revision, 'amount' => $amount, 'reference' => $reference, 'valueDate' => $date, 'paymentReference' => $paymentReference, 'currency' => $currency,
+            'matchBasis' => $basis, 'payerName' => $match['payerName'] ?? null, 'matchNote' => $match['matchNote'] ?? null];
     }
 
     private function requireVersion(array $request, mixed $expected): void
@@ -1671,6 +1925,86 @@ final readonly class FinanceVerificationRequests
         $left = $this->pdo->prepare("SELECT COUNT(*) FROM finance_verification_requests r LEFT JOIN finance_task_amounts a ON a.request_uuid = r.request_uuid WHERE {$where}");
         $left->execute([$stale]);
         $result['left'] = (int) $left->fetchColumn();
+        return $result;
+    }
+
+    /**
+     * API 2.80.0 (owner 2026-11-25): the system's payment tracking, run by bin/finance-payment-tracking.php under the root
+     * identity (every shop read audited in order_finance_reads as root). Two kinds of Trend Home and Outlet Perdele
+     * cash-on-delivery Confirmare orders whose money is still waiting:
+     * - recheck: the latest advance task closed as not received, and its next check (the next morning, RECHECK_HOUR
+     *   Bucharest) has come: a new task, so the payment is looked for again once a day, never several times;
+     * - tracking: a proforma was really sent (the operator's send or the proforma cycle) and no finance task ever existed:
+     *   finance follows the payment without the operator sending the order to it.
+     * Only through the same creation as the operator's request (one open task per order, the shop's proforma and advance
+     * read first; a covered, cancelled or unknown order is refused). `$apply` false: counts only, no shop call, no write.
+     *
+     * @return array{recheck: int, tracking: int, created: int, exists: int, skipped: array<string, int>, left: int}
+     */
+    public function track(string $rootUuid, int $max, int $pauseMs, string $requestId, bool $apply): array
+    {
+        $open = "o.workflow_cohort = 'confirmare' AND o.source_key IN ('trendhome', 'outletperdele') AND o.source_financial_state IN ('waiting', 'partial')
+            AND o.cancellation_state IS NULL AND o.operational_status <> 'unavailable' AND o.source_reported_unavailable_at IS NULL
+            AND (o.source_commerce_status_code IS NULL OR o.source_commerce_status_code NOT IN ('cancelled', 'refunded', 'failed', 'completed', 'trash'))
+            AND c.status IN ('pending', 'approved')";
+        $recheck = $this->pdo->prepare("SELECT r.request_uuid, r.order_uuid, r.decided_at FROM finance_verification_requests r
+                INNER JOIN operational_orders o ON o.order_uuid = r.order_uuid INNER JOIN order_confirmations c ON c.order_uuid = o.order_uuid
+            WHERE r.purpose = 'advance' AND r.state = 'not_received' AND r.ledger = 'shop' AND r.decided_at < ? AND {$open}
+              AND NOT EXISTS (SELECT 1 FROM finance_verification_requests n WHERE n.order_uuid = r.order_uuid AND n.requested_at > r.requested_at)
+            ORDER BY r.decided_at, r.request_uuid LIMIT 500");
+        $recheck->execute([$this->sql($this->clock->now()->modify('-6 hours'))]);
+        $now = $this->clock->now();
+        $candidates = [];
+        foreach ($recheck->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            if (self::recheckAfter((string) $row['decided_at']) <= $now) {
+                $candidates[] = ['order' => (string) $row['order_uuid'], 'key' => 'auto-recheck-' . str_replace('-', '', (string) $row['request_uuid']), 'reason' => 'auto_recheck'];
+            }
+        }
+        $rechecks = count($candidates);
+        $tracking = $this->pdo->prepare("SELECT o.order_uuid FROM operational_orders o INNER JOIN order_confirmations c ON c.order_uuid = o.order_uuid
+            WHERE {$open} AND o.payment_method = 'cod'
+              AND NOT EXISTS (SELECT 1 FROM finance_verification_requests r WHERE r.order_uuid = o.order_uuid)
+              AND (EXISTS (SELECT 1 FROM order_invoice_actions i WHERE i.order_uuid = o.order_uuid AND i.action = 'proforma_send_mail' AND i.state = 'applied')
+                OR EXISTS (SELECT 1 FROM confirmare_proforma_cycles p WHERE p.order_uuid = o.order_uuid AND p.sent_at IS NOT NULL))
+            ORDER BY o.created_at, o.order_uuid LIMIT 500");
+        $tracking->execute();
+        foreach ($tracking->fetchAll(PDO::FETCH_COLUMN) as $orderUuid) {
+            $candidates[] = ['order' => (string) $orderUuid, 'key' => 'auto-track-' . str_replace('-', '', (string) $orderUuid), 'reason' => 'auto_tracking'];
+        }
+        $result = ['recheck' => $rechecks, 'tracking' => count($candidates) - $rechecks, 'created' => 0, 'exists' => 0, 'skipped' => [], 'left' => max(0, count($candidates) - $max)];
+        $skip = static function (array &$result, string $code): void { $result['skipped'][$code] = ($result['skipped'][$code] ?? 0) + 1; };
+        $first = true;
+        foreach (array_slice($candidates, 0, max(1, $max)) as $candidate) {
+            $row = $this->orderByUuid($candidate['order']);
+            $target = $row === null ? null : $this->registry->find((string) $row['source_key']);
+            if ($row === null || $target === null || !$target->allowsFinanceRecord()) {
+                $skip($result, 'finance_disabled');
+                continue;
+            }
+            if ($this->openFor((string) $row['order_uuid']) !== null || $this->byRequesterKey($rootUuid, $candidate['key']) !== null) {
+                $result['exists']++;
+                continue;
+            }
+            try {
+                $this->requireRequestable($row);
+            } catch (ApiException $e) {
+                $skip($result, strtolower($e->errorCode));
+                continue;
+            }
+            if (!$apply) {
+                continue;
+            }
+            if (!$first && $pauseMs > 0) {
+                usleep($pauseMs * 1000);
+            }
+            $first = false;
+            try {
+                $created = $this->create($rootUuid, $row, $target, self::LEDGER_SHOP, ConfirmareFinance::ROLE_FINANCE, $candidate['key'], $requestId, $candidate['reason']);
+                $result[$created === 'created' ? 'created' : 'exists']++;
+            } catch (ApiException $e) {
+                $skip($result, strtolower($e->errorCode));
+            }
+        }
         return $result;
     }
 
