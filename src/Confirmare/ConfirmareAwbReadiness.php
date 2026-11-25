@@ -64,7 +64,7 @@ final class ConfirmareAwbReadiness
             FROM operational_orders o INNER JOIN order_confirmations c ON c.order_uuid = o.order_uuid AND c.status = 'approved'
             WHERE o.workflow_cohort = ? AND o.source_key IN ({$marks}) AND o.production_stage_id IN ({$stages})
               AND o.operational_status <> 'unavailable' AND o.cancellation_state IS NULL AND o.source_reported_unavailable_at IS NULL
-              AND NOT EXISTS (SELECT 1 FROM order_source_operations op WHERE op.order_uuid = o.order_uuid AND op.kind = 'awb_create' AND op.state = 'applied')
+              AND NOT " . ConfirmareOperations::awbDoneSql('o') . "
             ORDER BY o.production_changed_at, o.order_uuid LIMIT " . max(1, min(1000, $limit)));
         $statement->execute([WorkflowCohort::CONFIRMARE, ...$sources, ...ConfirmareOperations::AWB_STAGES]);
         return $statement->fetchAll(PDO::FETCH_ASSOC);

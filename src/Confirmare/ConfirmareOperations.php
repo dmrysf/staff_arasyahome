@@ -45,6 +45,17 @@ final class ConfirmareOperations
     public const KINDS = ['order_reactivate', 'awb_create', 'awb_address_task', 'awb_address_done', 'awb_cod_corrected', 'card_refund_full', 'card_refund_record', 'card_refund_verify'];
     /** Production stages from which the AWB may be made (stage 12 Control calitate, 13 Împachetare, 14 Livrare). */
     public const AWB_STAGES = ['quality-control', 'packing', 'delivery'];
+
+    /**
+     * API 2.77.8 (owner 2026-11-25, Trend Home 64790): SQL condition "the order's AWB is made" for the order alias given:
+     * an applied AWB request that no later root reopening (`awb_reopened`, see reopenAwb) replaced. An AWB cancelled in
+     * the shop after it was made used to hide the order from every AWB queue for good.
+     */
+    public static function awbDoneSql(string $alias): string
+    {
+        return "EXISTS (SELECT 1 FROM order_source_operations awb_done WHERE awb_done.order_uuid = {$alias}.order_uuid AND awb_done.kind = 'awb_create' AND awb_done.state = 'applied'
+            AND NOT EXISTS (SELECT 1 FROM order_source_operations awb_re WHERE awb_re.order_uuid = awb_done.order_uuid AND awb_re.kind = 'awb_reopened' AND awb_re.state = 'applied' AND awb_re.requested_at > awb_done.requested_at))";
+    }
     public const REACTIVATION_REASONS = ['customer_returned', 'customer_paid_late'];
     private const FIELDS = [
         'order_reactivate' => ['reason', 'exceptionEntryId'],
@@ -173,7 +184,7 @@ final class ConfirmareOperations
             LEFT JOIN order_shop_assignments a ON a.active_order_uuid = o.order_uuid
             WHERE o.source_key IN ({$marks}) AND o.production_stage_id IN ({$stages}) AND o.operational_status <> 'unavailable' AND o.cancellation_state IS NULL
               AND {$mine}
-              AND NOT EXISTS (SELECT 1 FROM order_source_operations done WHERE done.order_uuid = o.order_uuid AND done.kind = 'awb_create' AND done.state = 'applied')
+              AND NOT " . self::awbDoneSql('o') . "
             ORDER BY o.production_changed_at, o.order_uuid LIMIT 300");
         $statement->execute([...$sources, ...self::AWB_STAGES, ...$managed, $actor->employeeUuid]);
         $items = [];
@@ -327,6 +338,89 @@ final class ConfirmareOperations
             }
         }
         return $settled;
+    }
+
+    /**
+     * API 2.77.8 (owner 2026-11-25, Trend Home 64790): root reopens the AWB step of an order whose AWB was made through Staff
+     * and later cancelled in the shop (WP admin, FAN Courier panel). Staff counted the applied request as "AWB made" for
+     * ever, so the order left every AWB queue while the shop had no AWB at all.
+     *
+     * The shop is asked first and must answer that it has no AWB and no AWB attempt open (`awb.state` none), the order must
+     * be at an AWB stage, approved, active and not completed in the shop. Nothing is sent to the shop and no AWB is made:
+     * an `awb_reopened` row is recorded, so the order is back in its shop employee's AWB queue, who makes the AWB. Root only
+     * (the desk writes the reason to the IAM audit). Idempotent per key.
+     *
+     * @return array<string, mixed>
+     */
+    public function reopenAwb(EmployeeIdentity $actor, string $globalOrderId, string $key, string $requestId): array
+    {
+        $this->requireInstalled();
+        if (!$this->finance->rootActs($actor)) {
+            throw new ApiException(403, 'CONFIRMARE_OPERATION_DENIED', 'Only the root intervention desk reopens an AWB.');
+        }
+        if (preg_match(self::KEY_PATTERN, $key) !== 1) {
+            throw new ApiException(400, 'INVALID_IDEMPOTENCY_KEY', 'A valid Idempotency-Key header is required.');
+        }
+        $globalId = $this->globalId($globalOrderId);
+        $row = $this->row($globalId);
+        if ($row === null) {
+            throw new ApiException(404, 'CONFIRMARE_NOT_FOUND', 'No Confirmare order was found.');
+        }
+        $hmac = hash_hmac('sha256', json_encode([$globalId, 'awb_reopened', []], JSON_THROW_ON_ERROR), $this->hmacKey, true);
+        $existing = $this->operation($actor->employeeUuid, $key);
+        if ($existing !== null) {
+            if ($existing['order_uuid'] !== $row['order_uuid'] || !hash_equals((string) $existing['request_hmac'], $hmac)) {
+                throw new ApiException(409, 'IDEMPOTENCY_CONFLICT', 'This idempotency key was already used for a different request.');
+            }
+            return ['state' => (string) $existing['state'], 'idempotencyKey' => $key, 'result' => $existing['result']];
+        }
+        $refuse = static fn (string $reason, array $extra = []): ApiException => new ApiException(409, 'CONFIRMARE_OPERATION_NOT_ALLOWED', 'The AWB cannot be reopened now.', ['reason' => $reason, 'blockers' => [$reason]] + $extra);
+        $target = $this->registry->find((string) $row['source_key']);
+        if ($target === null) {
+            throw new ApiException(409, 'CONFIRMARE_OPERATION_DISABLED', 'Source access is not configured for this shop.');
+        }
+        try {
+            $answer = $this->client->exchange($target, SourceAccessClient::ROUTE_OPERATION, $this->payload($row, $actor->employeeUuid, 'manager', $requestId) + ['action' => 'operations_state']);
+        } catch (SourceAccessException $e) {
+            throw new ApiException(503, 'CONFIRMARE_SOURCE_UNAVAILABLE', 'The shop could not be asked. Nothing was done.', ['reason' => strtolower($e->codeName)]);
+        }
+        if ($answer['status'] !== 200 || !is_array($answer['body']['awb'] ?? null)) {
+            throw new ApiException(503, 'CONFIRMARE_SOURCE_UNAVAILABLE', 'The shop gave no AWB state. Nothing was done.', ['reason' => 'source_error']);
+        }
+        $shop = self::shopState($answer['body']);
+        $this->pdo->beginTransaction();
+        try {
+            $locked = $this->lockRow((string) $row['order_uuid']);
+            $reason = match (true) {
+                $locked === null => 'order_unavailable',
+                $locked['workflow_cohort'] !== WorkflowCohort::CONFIRMARE => 'not_confirmare',
+                !in_array((string) $locked['production_stage_id'], self::AWB_STAGES, true) => 'stage_not_ready',
+                $locked['status'] !== 'approved' => 'confirmare_not_approved',
+                $locked['cancellation_state'] === 'held' || $locked['operational_status'] === 'unavailable' => 'order_cancellation',
+                (int) $this->scalar('SELECT COUNT(*) FROM operational_orders oo WHERE oo.order_uuid = ? AND ' . self::awbDoneSql('oo'), [$row['order_uuid']]) === 0 => 'awb_not_made',
+                $this->operationOpen((string) $row['order_uuid'], 'awb_create') => 'operation_open',
+                $shop['awb']['state'] !== 'none' => $shop['awb']['state'] === 'created' ? 'awb_exists' : 'awb_unknown',
+                in_array($shop['orderStatus'], ['completed', 'cancelled', 'refunded', 'failed'], true) => 'order_closed',
+                default => null,
+            };
+            if ($reason !== null) {
+                throw $refuse($reason, ['shop' => $shop]);
+            }
+            $now = $this->now();
+            $this->pdo->prepare('INSERT INTO order_source_operations (operation_uuid, order_uuid, global_order_id, source_key, kind, employee_uuid, access_role, idempotency_key, request_hmac, state, outcome, result, request_id, requested_at, completed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')->execute([Uuid::v4(), $row['order_uuid'], $globalId, $row['source_key'], 'awb_reopened', $actor->employeeUuid, 'manager', $key, $hmac,
+                'applied', 'applied', 'reopened', self::requestId($requestId), $now, $now]);
+            $this->pdo->commit();
+        } catch (Throwable $e) {
+            if ($this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            if ($e instanceof ApiException) {
+                throw $e;
+            }
+            throw new ApiException(503, 'CONFIRMARE_AUDIT_UNAVAILABLE', 'The reopening could not be recorded. Nothing was done.');
+        }
+        return ['state' => 'applied', 'idempotencyKey' => $key, 'result' => 'reopened', 'shop' => $shop];
     }
 
     // ---- Rules ------------------------------------------------------------------------------------------------------------
