@@ -727,7 +727,7 @@ $check(array_filter(array_keys($after1), static fn (string $o): bool => ($after1
 $check((int) $one('SELECT COUNT(*) FROM confirmare_proforma_cycles WHERE claim_token IS NOT NULL') === 0, 'S13: every claim is released after the pass');
 $check($qState(171)['state'] === 'waiting_bank_check', 'S13: after one pass the newest rows (the expired ones) were not visited yet, as before');
 $p2 = $cycles->run(100, 'test-queue-2');
-$check($p2['seen'] === 100 && $qVisited() === 175, 'S13: the second pass takes the 75 never-visited cycles first: every open cycle is visited within two passes: ' . json_encode($p2) . ' visited=' . $qVisited());
+$check($p2['seen'] === 75 && $qVisited() === 175, 'S13: the second pass takes the 75 never-visited cycles (API 2.81.0: an idle cycle visited in the last hour is not asked again): every open cycle is visited within two passes: ' . json_encode($p2) . ' visited=' . $qVisited());
 foreach (range(171, 174) as $k) {
     $st = $qState($k);
     $check($st['state'] === 'waiting_finance' && $st['last_error'] === 'finance_task_open', "S13: expired cycle {$k} with an open finance task waits for finance: " . json_encode([$st['state'], $st['last_error']]));
@@ -740,6 +740,14 @@ $v170 = $qState(170);
 $check($v170['state'] === 'running' && $v170['updated_at'] === $u170['updated_at'] && $v170['version'] === $u170['version'] && $v170['claimed_at'] !== null && $u170['claimed_at'] === null,
     'S13: a visit with nothing to do changes no row data (only the visit instant): ' . json_encode([$u170, $v170]));
 // Rotation: the next pass takes the least recently visited, so the first pass's cycles come again before the second's.
+// API 2.81.0 (P0 2026-11-25): right after two passes an idle cycle is not asked again within the hour; only a cycle with
+// something due (an expiry to act on, a reminder, a shop change since the visit) is visited.
+$idle = $cycles->run(25, 'test-queue-idle');
+$check($idle['seen'] < 25 && $idle['skipped'] === 0, 'S13: a pass right after two others visits only the cycles with something due: ' . json_encode($idle));
+$hourLater = static function () use ($pdo): void {
+    $pdo->exec('UPDATE confirmare_proforma_cycles SET claimed_at = DATE_SUB(claimed_at, INTERVAL 61 MINUTE) WHERE active_order_uuid IS NOT NULL AND claimed_at IS NOT NULL AND claim_token IS NULL');
+};
+$hourLater();
 $firstVisited = array_column($all('SELECT cycle_uuid FROM confirmare_proforma_cycles WHERE active_order_uuid IS NOT NULL ORDER BY claimed_at, cycle_uuid LIMIT 25'), 'cycle_uuid');
 $p3 = $cycles->run(25, 'test-queue-3');
 $check($p3['seen'] === 25 && count(array_intersect($firstVisited, array_column($all('SELECT cycle_uuid FROM confirmare_proforma_cycles WHERE active_order_uuid IS NOT NULL ORDER BY claimed_at DESC, cycle_uuid LIMIT 25'), 'cycle_uuid'))) === 25,
@@ -756,6 +764,7 @@ $check($cycles->advance($qCycle[11], 'test-queue-worker-c', (new DateTimeImmutab
 $pdo->prepare('UPDATE confirmare_proforma_cycles SET claimed_at = DATE_SUB(claimed_at, INTERVAL 10 MINUTE) WHERE cycle_uuid = ?')->execute([$qCycle[11]]);
 $check($cycles->advance($qCycle[11], 'test-queue-worker-c', (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format('Y-m-d H:i:s.u')) !== null, 'S13: a dead worker\'s claim (older than five minutes) is taken over by a pass');
 // A pass never takes a cycle another worker visited after the pass started (TEST: the visit instant is set after now).
+$hourLater();
 $pdo->prepare('UPDATE confirmare_proforma_cycles SET claimed_at = DATE_ADD(UTC_TIMESTAMP(6), INTERVAL 1 MINUTE) WHERE cycle_uuid IN (?, ?)')->execute([$qCycle[20], $qCycle[21]]);
 $wide = $cycles->run(500, 'test-queue-wide');
 $check($wide['seen'] === 173 && (string) $qState(20)['claimed_at'] > gmdate('Y-m-d H:i:s'), 'S13: a pass skips cycles visited after it started (173 of 175 seen): ' . json_encode($wide));

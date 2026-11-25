@@ -17,6 +17,7 @@ declare(strict_types=1);
 
 use Arasya\Operations\Application\Container;
 use Arasya\Operations\Config\Config;
+use Arasya\Operations\Confirmare\FinanceVerificationRequests;
 use Arasya\Operations\Database\Connection;
 use Arasya\Operations\Database\MigrationRunner;
 use Arasya\Operations\Database\SqlFileRunner;
@@ -321,10 +322,43 @@ $listedAdvance = array_column($boxAmount['items'], null, 'id')[$r1]['advance'];
 $check(count($th->requests) === $shopCalls && is_array($listedAdvance) && $listedAdvance['required'] === '300.00' && $listedAdvance['remaining'] === '300.00' && $listedAdvance['currency'] === 'RON'
     && (int) $one('SELECT COUNT(*) FROM finance_task_amounts WHERE request_uuid = ?', [$r1]) === 1, 'the inbox lists the advance the task read stored (one join, no shop call)');
 $check(!str_contains((string) json_encode($t1, JSON_UNESCAPED_UNICODE), 'RO49AAAA1B31007593840000'), 'the full IBAN never leaves the API');
-$check(array_keys($t1['live']) === ['available', 'revision', 'readAt', 'currency', 'proforma', 'proformaChanged', 'ledger', 'advance', 'paymentReference', 'bank', 'financial', 'policy', 'recordEnabled', 'transfers', 'money', 'capabilities', 'cod', 'settledElsewhere'], 'the task carries finance fields only');
+$check(array_keys($t1['live']) === ['available', 'revision', 'readAt', 'currency', 'proforma', 'proformaChanged', 'ledger', 'advance', 'paymentReference', 'bank', 'financial', 'policy', 'recordEnabled', 'transfers', 'money', 'capabilities', 'cod', 'settledElsewhere', 'source', 'stale'], 'the task carries finance fields only (API 2.81.0: and where they come from)');
+$check($t1['live']['source'] === 'live' && $t1['live']['stale'] === false, '2.81.0: a first task read asks the shop');
 $check($t1['allowed'] === ['start' => true, 'verify' => true, 'notReceived' => true, 'clarify' => true, 'secondCheck' => false, 'reconcile' => false, 'addPayment' => false, 'correctPayment' => false], 'the employee\'s actions: start, verify, not received, clarification');
 $check((int) $one("SELECT COUNT(*) FROM order_finance_reads WHERE employee_uuid = ? AND access_role = 'finance' AND outcome = 'ok'", [$uuids['fin']]) === 1, 'the task read is audited');
 $check($ok($get($f, $orderPath($g(1), '/finance')), 'the order finance summary of a task')['role'] === 'finance', 'a task\'s order: its finance summary is readable (finance fields only)');
+
+// ---- API 2.81.0 (P0 2026-11-25): the display copy opens an unchanged task without a shop call ---------------------------
+$orderR1 = (string) $one('SELECT order_uuid FROM finance_verification_requests WHERE request_uuid = ?', [$r1]);
+$copyR1 = $all('SELECT display_json, display_read_at, order_total, proforma_number FROM finance_task_amounts WHERE request_uuid = ?', [$r1])[0];
+$check(is_string($copyR1['display_json']) && !str_contains($copyR1['display_json'], 'RO49AAAA1B31007593840000') && !str_contains($copyR1['display_json'], FVR_PHONE) && !str_contains($copyR1['display_json'], FVR_NAME)
+    && json_decode($copyR1['display_json'], true)['transfers'] === [] && $copyR1['proforma_number'] === '0001' && $copyR1['display_read_at'] !== null,
+    '2.81.0: the task read keeps a display copy (masked IBAN, no transfer, no customer data) and the proforma in columns');
+$shopCalls = count($th->requests);
+$t1c = $ok($task($f, $r1), '2.81.0 task from the copy');
+$strip = static fn (array $live): array => array_diff_key($live, ['source' => true, 'stale' => true]);
+$check(count($th->requests) === $shopCalls && $t1c['live']['source'] === 'cache' && $t1c['live']['stale'] === false && $strip($t1c['live']) == $strip($t1['live']) && $t1c['allowed'] === $t1['allowed']
+    && (int) $one("SELECT COUNT(*) FROM order_finance_reads WHERE order_uuid = ? AND outcome = 'cache_ok'", [$orderR1]) === 1,
+    '2.81.0: the second opening shows the same task from the copy, asks the shop nothing, allows the same and is audited (cache_ok)');
+$changedR1 = $one('SELECT source_changed_at FROM operational_orders WHERE order_uuid = ?', [$orderR1]);
+$pdo->prepare('UPDATE operational_orders SET source_changed_at = UTC_TIMESTAMP(6) + INTERVAL 5 SECOND WHERE order_uuid = ?')->execute([$orderR1]);
+$t1l = $ok($task($f, $r1), '2.81.0 task after a shop change');
+$routes = array_column(array_slice($th->requests, $shopCalls), 'route');
+$check($t1l['live']['source'] === 'live' && count($routes) === 1 && str_ends_with((string) $routes[0], '/confirmare/finance') && $t1l['live']['bank'] === $t1['live']['bank'],
+    '2.81.0: a shop change of the order since the copy reads the shop again, once (the bank account of the same proforma comes from the copy): ' . json_encode($routes));
+$pdo->prepare('UPDATE operational_orders SET source_changed_at = ? WHERE order_uuid = ?')->execute([$changedR1, $orderR1]);
+$pdo->prepare('UPDATE finance_task_amounts SET display_read_at = UTC_TIMESTAMP(6) - INTERVAL ' . (FinanceVerificationRequests::DISPLAY_FRESH_MINUTES + 60) . ' MINUTE WHERE request_uuid = ?')->execute([$r1]);
+$th->fail = 'SOURCE_UNREACHABLE';
+$t1s = $ok($task($f, $r1), '2.81.0 task while the shop does not answer');
+$check($t1s['live']['available'] === true && $t1s['live']['source'] === 'cache' && $t1s['live']['stale'] === true && is_string($t1s['live']['staleReason']) && $t1s['live']['staleReason'] !== ''
+    && $t1s['live']['revision'] === $t1['live']['revision'] && $t1s['allowed']['verify'] === false && $t1s['allowed']['start'] === true,
+    '2.81.0: an old copy is shown, marked stale, while the shop does not answer; it enables no money decision: ' . json_encode([$t1s['live']['staleReason'] ?? null, $t1s['allowed']]));
+$pdo->prepare('UPDATE finance_task_amounts SET display_read_at = UTC_TIMESTAMP(6) - INTERVAL ' . (FinanceVerificationRequests::DISPLAY_STALE_HOURS + 1) . ' HOUR WHERE request_uuid = ?')->execute([$r1]);
+$t1n = $ok($task($f, $r1), '2.81.0 task with a too old copy');
+$check($t1n['live']['available'] === false && !array_key_exists('source', $t1n['live']) && $t1n['allowed']['verify'] === false, '2.81.0: a copy older than a day is never shown');
+$th->fail = null;
+$t1r = $ok($task($f, $r1), '2.81.0 task when the shop answers again');
+$check($t1r['live']['source'] === 'live' && $t1r['allowed'] === $t1['allowed'], '2.81.0: the shop answers again: read live, the copy renewed');
 
 // ---- 4. Four eyes (default policy): recorded by the employee, verified by another --------------------------------------
 $requests = count($th->requests);
@@ -346,6 +380,7 @@ $d1 = $ok($cmd($f, $r1, 'decide', $evidence($t1, '300.00', 'BT FVR 0001'), $keyD
 $check($d1['request']['state'] === 'checking' && $d1['request']['kind'] === 'awaiting_second_check' && $d1['receipt']['awaitingSecondCheck'] === true && $d1['receipt']['policy'] === 'four_eyes', 'four eyes: recorded, waiting for a second employee (not money yet)');
 $entries = $th->orders[$id(1)]['finance']['entries'];
 $check(count($entries) === 1 && $entries[0]['state'] === 'submitted' && $entries[0]['submittedBy'] === $uuids['fin'], 'the shop holds one submitted transfer recorded by this employee');
+$check($one('SELECT display_json FROM finance_task_amounts WHERE request_uuid = ?', [$r1]) === null, '2.81.0: the display copy of the order is forgotten before a finance action is sent');
 $check($ok($cmd($f, $r1, 'decide', $evidence($t1, '300.00', 'BT FVR 0001'), $keyDecide), 'retry with the same key')['request']['state'] === 'checking' && count($th->orders[$id(1)]['finance']['entries']) === 1, 'a retried decision records nothing twice');
 $opView = $ok($view($who['rop'], $g(1)), 'operator view in verification');
 $check($opView['request']['state'] === 'checking' && $opView['request']['awaitingSecondCheck'] === true && $opView['pollSeconds'] === 5 && $opView['financial']['open'] === false, 'the operator sees it in verification (asks every 5 s), never paid');
@@ -426,6 +461,9 @@ $check($t7['live']['advance']['required'] === '240.00', 'the new total gives the
 $t8 = $ok($task($f, $rid(8), $kernelSingle), 'task 8, Operations single, shop four eyes');
 $check($t8['live']['policy'] === 'four_eyes', 'Operations alone cannot switch the policy: the shop says four eyes');
 $th->financeVerification = 'single';
+$dropCopies = static function () use ($pdo): void { $pdo->exec('UPDATE finance_task_amounts SET display_json = NULL, display_read_at = NULL'); };
+// API 2.81.0: a change of the shop's configuration is not an order change: the copies are dropped as at a plugin update.
+$dropCopies();
 $t8 = $ok($task($f, $rid(8), $kernel), 'task 8, shop single, Operations four eyes');
 $check($t8['live']['policy'] === 'four_eyes', 'the shop alone cannot switch it either');
 $t8 = $ok($task($f, $rid(8), $kernelSingle), 'task 8, both single');
@@ -830,7 +868,8 @@ if ($rootUuid !== '') {
     $check((int) $one('SELECT COUNT(*) FROM order_finance_reads WHERE employee_uuid = ?', [$rootUuid]) === $readsBefore + $refresh['read'] + $refresh['failed'] && (int) $one('SELECT COUNT(*) FROM order_finance_actions') === $actionsBefore,
         'each refresh read is audited under the root identity; nothing is recorded in any shop');
     $again = $container->financeVerificationRequests()->refreshAmounts($rootUuid, 500, 0, 'test-finance-amounts-2');
-    $check($again['read'] === 0 && $again['left'] === $refresh['failed'], 'a fresh amount is not read again within 30 minutes');
+    $check($again['read'] === 0 && $again['left'] === $refresh['failed'], 'a fresh amount is not read again within 120 minutes (API 2.81.0)');
+    $check((int) $one('SELECT COUNT(*) FROM finance_task_amounts WHERE display_json IS NOT NULL') > 0, '2.81.0: the amounts run also keeps the display copies (the next opening needs no shop call)');
 }
 
 // ---- API 2.80.0 (owner 2026-11-25): finance accepts the real money -------------------------------------------------------
@@ -838,6 +877,8 @@ if ($rootUuid !== '') {
 // of closed tasks with search, and the system's next-morning recheck. The fake shop answers like YD SOFT 2.32.0.
 $th->financeVerification = 'single';
 $th->acceptsRealPayment = true;
+// The shop's configuration changed (a plugin update), not an order: the display copies are dropped as at a deploy.
+$pdo->exec('UPDATE finance_task_amounts SET display_json = NULL, display_read_at = NULL');
 $f = $who['fin'];
 $openIds = array_column($all("SELECT r.request_uuid FROM finance_verification_requests r WHERE r.open_order_uuid IS NOT NULL AND r.purpose = 'advance' AND r.ledger = 'shop' AND r.source_key = 'trendhome'
     AND r.assigned_employee_uuid = ? AND r.state IN ('assigned', 'checking') AND r.finance_idempotency_key IS NULL AND r.source_entry_id IS NULL ORDER BY r.requested_at, r.request_uuid", [$uuids['fin']]), 'request_uuid');

@@ -1,8 +1,21 @@
 <?php
 declare(strict_types=1);
+/** Restore a pre-062 disposable test fixture (no display copy columns, no source_access_timings). NOT a deployment/rollback mechanism. */
+function restorePreFinanceDisplayTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='062_finance_display_and_source_timings.sql'")->fetchColumn()) return;
+    $pdo->exec('DROP TABLE IF EXISTS source_access_timings');
+    if ((bool) $pdo->query("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'finance_task_amounts' AND column_name = 'display_json'")->fetchColumn()) {
+        $pdo->exec('ALTER TABLE finance_task_amounts DROP COLUMN display_json, DROP COLUMN display_read_at, DROP COLUMN order_total, DROP COLUMN received_amount, DROP COLUMN cod_remaining, DROP COLUMN financial_state, DROP COLUMN proforma_series, DROP COLUMN proforma_number');
+    }
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='062_finance_display_and_source_timings.sql'");
+}
+
 /** Restore a pre-061 disposable test fixture (the 044 finance action CHECK, no decider index). NOT a deployment/rollback mechanism. */
 function restorePreFinancePaymentCorrectionsTestSchema(PDO $pdo): void
 {
+    restorePreFinanceDisplayTestSchema($pdo);
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
     if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='061_finance_payment_corrections.sql'")->fetchColumn()) return;
     $pdo->exec("DELETE FROM order_finance_actions WHERE action='correct_transfer'");

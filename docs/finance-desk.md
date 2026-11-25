@@ -1,4 +1,4 @@
-# Contabilitate desk (Staff 2.55.0, API 2.80.0, YD SOFT 2.32.0)
+# Contabilitate desk (Staff 2.56.0, API 2.81.0, YD SOFT 2.32.0)
 
 Owner decisions 2026-11-25:
 - The finance employee's payment checks follow one path, **Kontrol et → Karar ver → Onayla → Sıradaki sipariş**.
@@ -117,3 +117,39 @@ No payment is created, no amount is changed, and nothing is invoiced.
 ## Amount cache (API 2.77.9)
 
 `finance_task_amounts` is display data only, written by task reads and by `bin/finance-task-amounts.php` (cron `*/10`).
+
+## Connection and performance (P0 2026-11-25: API 2.81.0, Staff 2.56.0, migration 062)
+
+Cause measured on 2026-11-25: Trend Home runs on one CPU core (CloudLinux LVE 100 %) shared by shoppers, crawlers
+(Baiduspider-render alone 24 % of PHP time in one hour) and Arasya's own reads. A task opening asked the shop two to
+four times in a row (finance summary, then the proforma's bank account; Staff's start asked both again), each up to
+8 s, so the screen often passed Staff's 12 s limit and showed "Sunucudan onay gelmedi".
+
+- **Display copy.** Every live read of a task (the employee's, the amounts cron's) keeps a copy of what the shop showed
+  (`finance_task_amounts.display_json`, `display_read_at`, plus the order money in columns). An open advance check opens
+  from it without a shop call when the copy is younger than 3 hours, the shop reported no change of the order since
+  (`operational_orders.source_changed_at`), and the copy shows an ordinary task (no changed or cancelled proforma, no
+  money settled elsewhere, no shop attention). Audited as `cache_ok` in `order_finance_reads`.
+- **Never decides.** The copy is display data. `decide` and every other command read the shop again and check the
+  revision as before. A refused decision (stale revision, changed proforma) drops the copy. Every shop write
+  (finance action, invoice or proforma action, cycle proforma step, source edit apply, transfer exception put on an
+  order) drops the order's copies first.
+- **No customer or bank data.** A task whose order has a bank transfer is never copied (always read live). The bank
+  account in the copy is the shop's own, IBAN masked.
+- **Shop down.** When the shop does not answer, a copy up to 24 hours old is shown with the warning `fd.stale`
+  ("read at hh:mm"); it enables no money decision (`allowed.verify` false) until the shop answers.
+- **One shop call per opening.** The proforma's bank account is taken from the copy while the proforma number is the
+  same, so a live opening asks only the finance summary.
+- **Shop configuration change.** A YD SOFT update or a change of the verification policy is not an order change. Run
+  `php bin/finance-task-amounts.php --forget-display` after one, or the copies show the older configuration for up to
+  3 hours.
+- **Measured calls and breaker.** `MeasuredSourceAccessTransport` writes one `source_access_timings` row per shop call
+  (host, route, ms, HTTP status, outcome, request id; never a body; kept 14 days). After 4 failures and no answer from
+  one shop within 60 s, a read to that shop fails at once (`SOURCE_UNREACHABLE`) instead of waiting 8 s; actions are
+  always sent. Per host: the other shop is not affected.
+- **Staff.** Finance commands wait up to 30 s (`FINANCE_COMMAND_TIMEOUT_MS`) so a slow shop's success is not shown as a
+  lost answer; other calls keep 12 s.
+- **Crons.** Amounts: 120 min freshness (was 30), one run at a time (`GET_LOCK`), 240 s budget, a shop skipped after 3
+  failures in a run. Cycles: an idle cycle (running, waiting_finance, waiting_bank_check) is visited at most hourly
+  unless a reminder or expiry is due or the shop changed the order; 240 s budget, a shop skipped after 3 unreachable
+  results. Paid routing: every minute from `confirmare-distribute.php`, one run at a time.

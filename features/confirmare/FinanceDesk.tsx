@@ -8,7 +8,7 @@ import {
   type ClarificationReason, type DecisionAnswer, type FinanceTask, type Inbox, type InboxItem, type Transfer,
 } from "../../domain/financeRequests";
 import {
-  answerLost, bani, checkEntry, checkMoney, checkPayment, deskRows, deskSourceFilter, deskable, fromBani, nextDeskTask, noteDeskDone, paymentEffect, setDeskSourceFilter, takeDeskDone, validValueDate, waitParts,
+  answerLost, bani, bucharestClock, checkEntry, checkMoney, checkPayment, deskRows, deskSourceFilter, deskable, fromBani, nextDeskTask, noteDeskDone, paymentEffect, setDeskSourceFilter, takeDeskDone, validValueDate, waitParts,
   type CheckMoney, type DeskView, type PaymentEffect, type PaymentForm, type PaymentInput,
 } from "../../domain/financeDesk";
 import { createIdempotencyKey } from "../../services/idempotency";
@@ -338,6 +338,7 @@ export function FinanceCheckScreen({ requestId, service, navigate }: { requestId
       </dl>
       {live?.advance && bani(live.advance.verified ?? "0") > 0 && <p className="fd-already" data-testid="fd-already">{t("fd.fact.already", { amount: formatFinanceMoney(live.advance.verified, currency), remaining: formatFinanceMoney(remaining, currency) })}</p>}
       {!live && <Notice tone="warning" role="note" testId="fr-live-unavailable">{t("fd.unavailable")}</Notice>}
+      {live?.stale && <Notice tone="warning" role="note" testId="fr-live-stale">{t("fd.stale", { at: bucharestClock(live.readAt) })}</Notice>}
       {blocked && <Notice tone="danger" role="alert" testId="fr-proforma-changed">{t("fr.task.proformaChanged")}</Notice>}
       {request.ledger === "manual" && <Notice tone="info" role="note" testId="fr-task-manual">{t("fr.task.manualLedger")}</Notice>}
       {live?.settledElsewhere && <Notice tone="info" role="note" testId="fr-settled">{t("fr.task.settledElsewhere")}</Notice>}
@@ -597,6 +598,7 @@ export function FinanceDoneScreen({ requestId, service, navigate }: { requestId:
       </header>
       {saved && <Notice tone="success" role="status" testId="fd-done-saved">{saved}</Notice>}
       {!live && <Notice tone="warning" role="note" testId="fr-live-unavailable">{t("fd.unavailable")}</Notice>}
+      {live?.stale && <Notice tone="warning" role="note" testId="fr-live-stale">{t("fd.stale", { at: bucharestClock(live.readAt) })}</Notice>}
       <dl className="fd-money fd-money-done" data-testid="fd-done-money">
         <MoneyLine label={t("fd.money.total")} value={formatFinanceMoney(money.total, currency)} testId="fd-done-total" />
         <MoneyLine label={t("fd.money.asked")} value={formatFinanceMoney(live?.advance?.required ?? null, currency)} testId="fd-done-asked" />

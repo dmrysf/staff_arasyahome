@@ -921,10 +921,13 @@ function createRequest(apiBaseUrl: string, options: ProductionServicesOptions, o
     return error;
   }
 
-  async function send(path: string, init: RequestInit = {}): Promise<Response> {
+  async function send(path: string, requestInit: RequestInit & { timeoutMs?: number } = {}): Promise<Response> {
     if (!apiBaseUrl) throw new StaffServiceError("CONFIGURATION_ERROR");
     if (!isOnline()) throw new StaffServiceError("NETWORK_UNAVAILABLE");
-    const timeoutSignal = AbortSignal.timeout(12_000);
+    // Staff 2.56.0 (P0 2026-11-25): a command that reaches a shop (a finance decision) waits as long as the server's own
+    // bound for it (two shop calls of at most 8 s each), so a slow but successful answer is never shown as lost.
+    const { timeoutMs, ...init } = requestInit;
+    const timeoutSignal = AbortSignal.timeout(timeoutMs ?? 12_000);
     const signal = init.signal ? AbortSignal.any([init.signal, timeoutSignal]) : timeoutSignal;
     const method = (init.method ?? "GET").toUpperCase();
     const mutating = !["GET", "HEAD", "OPTIONS"].includes(method);
@@ -943,7 +946,7 @@ function createRequest(apiBaseUrl: string, options: ProductionServicesOptions, o
     }
   }
 
-  async function request<T>(path: string, init: RequestInit = {}, map?: (value: unknown) => T): Promise<T> {
+  async function request<T>(path: string, init: RequestInit & { timeoutMs?: number } = {}, map?: (value: unknown) => T): Promise<T> {
     const response = await send(path, init);
     if (!response.ok) {
       throw await errorFromResponse(response, path);
