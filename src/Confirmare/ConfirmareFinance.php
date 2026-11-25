@@ -245,6 +245,8 @@ final readonly class ConfirmareFinance
             throw new ApiException(503, 'CONFIRMARE_AUDIT_UNAVAILABLE', 'The action could not be recorded, so it was not sent. Try again.');
         }
         $body = $this->payload($row, $actor, $role, $requestId) + ['action' => $action, 'idempotencyKey' => $key] + $fields + ($refund ? ['productionComplete' => true] : []);
+        // API 2.81.0: the money of the order may change now: its finance tasks are read live from here on.
+        FinanceVerificationRequests::forgetDisplay($this->pdo, (string) $row['order_uuid']);
         try {
             $answer = $this->client->exchange($target, SourceAccessClient::ROUTE_FINANCE_ACTION, $body);
         } catch (SourceAccessException $e) {

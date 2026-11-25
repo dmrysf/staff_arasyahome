@@ -104,7 +104,18 @@ final readonly class FinanceVerificationRequests
      */
     private const WAITING_LIMIT = 300;
     /** A stored advance amount older than this is read again from the shop by bin/finance-task-amounts.php. */
-    private const AMOUNT_FRESH_MINUTES = 30;
+    /** API 2.81.0: 120 (was 30): the list amount and the display copy are kept by task reads and shop changes too. */
+    private const AMOUNT_FRESH_MINUTES = 120;
+    /** API 2.81.0: one amounts run stops after this many seconds (the next run continues; runs never overlap). */
+    public const AMOUNT_RUN_SECONDS = 240;
+    /**
+     * API 2.81.0 (P0 2026-11-25): a task's display copy (finance_task_amounts.display_json) opens the task without a shop
+     * call while it is younger than this and the shop reported no change of the order since it was read
+     * (operational_orders.source_changed_at). Every decision still reads the shop and checks its revision.
+     */
+    public const DISPLAY_FRESH_MINUTES = 180;
+    /** API 2.81.0: when the shop does not answer, a copy up to this old is shown with a warning (nothing can be decided on it). */
+    public const DISPLAY_STALE_HOURS = 24;
     /**
      * API 2.80.0 (owner 2026-11-25): a payment not found today is looked for again the next morning at this hour
      * (Europe/Bucharest), never several times a day (bin/finance-payment-tracking.php).
@@ -388,8 +399,22 @@ final readonly class FinanceVerificationRequests
         $target = $row === null ? null : $this->registry->find((string) $row['source_key']);
         $live = ['available' => false, 'reason' => 'not_configured'];
         if ($row !== null && $target !== null && $target->allowsFinanceRead()) {
-            $this->rateLimit($actor);
-            $live = $this->live($target, $row, $request, $actor, $requestId);
+            // API 2.81.0 (P0 2026-11-25): an open advance check opens from the display copy when the shop reported no
+            // change since it was read (no shop call: the shop's slowness no longer holds the screen). Audited as
+            // `cache_ok`. Everything else, and a task without a valid copy, is read live as before.
+            $cached = $this->cachedLive($target, $row, $request, false);
+            if ($cached !== null) {
+                $this->audit($row, $actor, 'cache_ok', $requestId);
+                $live = $cached;
+            } else {
+                $this->rateLimit($actor);
+                $live = $this->live($target, $row, $request, $actor->employeeUuid, $requestId);
+                if (!$live['available']) {
+                    // The shop did not answer: the last copy is shown with its age, marked stale. A stale copy enables no
+                    // command by itself: every decision reads the shop again (and is refused while it does not answer).
+                    $live = $this->cachedLive($target, $row, $request, true, (string) ($live['reason'] ?? 'source_unavailable')) ?? $live;
+                }
+            }
         }
         return ['request' => $this->item($request + ['order_number' => $row['order_number'] ?? ''], $actor), 'live' => $live, 'progress' => $this->progress((string) $request['order_uuid'])]
             + $this->allowed($actor, $request, $live, $target);
@@ -513,10 +538,13 @@ final readonly class FinanceVerificationRequests
             throw new ApiException(503, 'CONFIRMARE_SOURCE_UNAVAILABLE', 'The shop could not be asked. Nothing was recorded.');
         }
         if (!hash_equals($summary['revision'], $evidence['expectedRevision'])) {
+            // API 2.81.0: the task was shown from older figures: its display copy is dropped, so it opens live again.
+            self::forgetDisplay($this->pdo, (string) $request['order_uuid']);
             throw new ApiException(409, 'FINANCE_REQUEST_STALE', 'The money of the order changed. Open the task again.', ['revision' => $summary['revision']]);
         }
         $proforma = $summary['advance']['proforma'] ?? null;
         if ($proforma === null || $proforma['number'] !== $request['proforma_number'] || ($proforma['series'] === '' ? null : $proforma['series']) !== $request['proforma_series'] || ($summary['advance']['proformaCancelled'] ?? false)) {
+            self::forgetDisplay($this->pdo, (string) $request['order_uuid']);
             throw new ApiException(409, 'FINANCE_REQUEST_PROFORMA_CHANGED', 'The advance proforma of this request changed or was cancelled. Ask the operator.');
         }
         if ($evidence['currency'] !== $summary['currency']) {
@@ -1237,21 +1265,28 @@ final readonly class FinanceVerificationRequests
      * @param array<string, mixed> $request
      * @return array<string, mixed>
      */
-    private function live(SourceAccessTarget $target, array $row, array $request, EmployeeIdentity $actor, string $requestId): array
+    private function live(SourceAccessTarget $target, array $row, array $request, string $employeeUuid, string $requestId): array
     {
-        $summary = $this->summary($target, $row, $actor->employeeUuid, ConfirmareFinance::ROLE_FINANCE, $requestId, $failure);
+        $summary = $this->summary($target, $row, $employeeUuid, ConfirmareFinance::ROLE_FINANCE, $requestId, $failure);
         if ($summary === null) {
-            $this->audit($row, $actor, $failure ?? 'source_unavailable', $requestId);
+            $this->auditAs($row, $employeeUuid, $failure ?? 'source_unavailable', $requestId);
             return ['available' => false, 'reason' => $failure ?? 'source_unavailable'];
         }
-        if (!$this->audit($row, $actor, 'ok', $requestId, $summary['revision'])) {
+        if (!$this->auditAs($row, $employeeUuid, 'ok', $requestId, $summary['revision'])) {
             throw new ApiException(503, 'CONFIRMARE_AUDIT_UNAVAILABLE', 'The read could not be recorded, so nothing is shown. Try again.');
         }
         $this->rememberAmount((string) $request['request_uuid'], $summary);
         $bank = null;
-        if ($target->allowsInvoiceRead()) {
+        // API 2.81.0: the bank account of the proforma is the shop's own and does not change with the money: it is taken
+        // from the display copy of the same proforma, so opening a task asks the shop once instead of twice.
+        $known = $this->displayRow((string) $request['request_uuid']);
+        $knownLive = $known === null ? null : self::decodeDisplay($known['display_json'] ?? null);
+        $sameProforma = $knownLive !== null && is_array($knownLive['bank'] ?? null) && ($knownLive['proforma']['number'] ?? null) === ($summary['advance']['proforma']['number'] ?? false);
+        if ($sameProforma) {
+            $bank = $knownLive['bank'];
+        } elseif ($target->allowsInvoiceRead()) {
             try {
-                $invoice = SourceInvoice::summary($this->client->call($target, SourceAccessClient::ROUTE_INVOICE, $this->payload($row, $actor->employeeUuid, ConfirmareFinance::ROLE_FINANCE, $requestId)), (string) $row['source_order_id'], (string) $row['order_number']);
+                $invoice = SourceInvoice::summary($this->client->call($target, SourceAccessClient::ROUTE_INVOICE, $this->payload($row, $employeeUuid, ConfirmareFinance::ROLE_FINANCE, $requestId)), (string) $row['source_order_id'], (string) $row['order_number']);
                 $transfer = $invoice['proforma']['transfer'] ?? null;
                 // The account is shown to recognise it, never to copy it: the IBAN leaves the API masked.
                 $bank = $transfer === null ? null : ['beneficiary' => $transfer['beneficiary'], 'bank' => $transfer['bank'], 'ibanMasked' => self::maskIban((string) $transfer['iban']), 'bic' => $transfer['bic']];
@@ -1268,7 +1303,7 @@ final readonly class FinanceVerificationRequests
             $row['source_pricing_fingerprint'] === null ? null : (string) $row['source_pricing_fingerprint'],
             $row['payment_method'] === null ? null : (string) $row['payment_method'],
         );
-        return [
+        $live = [
             'available' => true,
             'revision' => $summary['revision'],
             'readAt' => $summary['readAt'],
@@ -1303,6 +1338,155 @@ final readonly class FinanceVerificationRequests
             'cod' => ($summary['cod'] ?? null) === null ? null : ['state' => $summary['cod']['state'], 'awb' => $summary['cod']['awb'] !== null],
             'settledElsewhere' => $settled && in_array($request['state'], ['requested', 'assigned', 'checking'], true) && $request['source_entry_id'] === null,
         ];
+        $this->rememberDisplay((string) $request['request_uuid'], $live, $summary);
+        return $live + ['source' => 'live', 'stale' => false];
+    }
+
+    /**
+     * API 2.81.0: the display copy of a task as the shop last showed it, or null. `$stale` false: only a copy younger
+     * than DISPLAY_FRESH_MINUTES with no shop change of the order since (an open advance check only). `$stale` true (the
+     * shop did not answer): any copy up to DISPLAY_STALE_HOURS, marked stale with the reason. What depends on Arasya's
+     * own records (the proforma of the request, money settled elsewhere, the shop's configuration) is computed now.
+     *
+     * @param array<string, mixed> $row
+     * @param array<string, mixed> $request
+     * @return array<string, mixed>|null
+     */
+    private function cachedLive(SourceAccessTarget $target, array $row, array $request, bool $stale, ?string $reason = null): ?array
+    {
+        if (!$stale && !($request['purpose'] === 'advance' && in_array($request['state'], ['assigned', 'checking'], true) && $request['source_entry_id'] === null && $request['finance_idempotency_key'] === null)) {
+            return null;
+        }
+        $copy = $this->displayRow((string) $request['request_uuid']);
+        $live = $copy === null ? null : self::decodeDisplay($copy['display_json'] ?? null);
+        if ($copy === null || $live === null || $copy['display_read_at'] === null) {
+            return null;
+        }
+        $readAt = new DateTimeImmutable((string) $copy['display_read_at'], new DateTimeZone('UTC'));
+        $now = $this->clock->now()->setTimezone(new DateTimeZone('UTC'));
+        if ($stale) {
+            if ($readAt < $now->modify('-' . self::DISPLAY_STALE_HOURS . ' hours')) {
+                return null;
+            }
+        } else {
+            $changed = $row['source_changed_at'] ?? null;
+            if ($readAt < $now->modify('-' . self::DISPLAY_FRESH_MINUTES . ' minutes') || ($changed !== null && new DateTimeImmutable((string) $changed, new DateTimeZone('UTC')) > $readAt)) {
+                return null;
+            }
+        }
+        $proforma = $live['proforma'] ?? null;
+        $settled = ConfirmationClearance::financialOpen(
+            $row['source_financial_state'] === null ? null : (string) $row['source_financial_state'],
+            $row['source_financial_basis'] === null ? null : (string) $row['source_financial_basis'],
+            $row['source_financial_pricing'] === null ? null : (string) $row['source_financial_pricing'],
+            $row['source_pricing_fingerprint'] === null ? null : (string) $row['source_pricing_fingerprint'],
+            $row['payment_method'] === null ? null : (string) $row['payment_method'],
+        );
+        $live['proformaChanged'] = $request['proforma_number'] !== null && (!is_array($proforma) || $proforma['number'] !== $request['proforma_number']
+            || (($proforma['series'] ?? '') === '' ? null : $proforma['series']) !== $request['proforma_series'] || ($live['proformaCancelled'] ?? false));
+        $live['settledElsewhere'] = $settled && in_array($request['state'], ['requested', 'assigned', 'checking'], true) && $request['source_entry_id'] === null;
+        $live['policy'] = ($live['shopPolicy'] ?? 'four_eyes') === 'single' && $target->allowsSingleVerification() ? 'single' : 'four_eyes';
+        $live['recordEnabled'] = ($live['shopRecord'] ?? false) === true && $target->allowsFinanceRecord();
+        unset($live['proformaCancelled'], $live['shopPolicy'], $live['shopRecord']);
+        // Only an ordinary task opens from the copy: a changed or cancelled proforma, money settled elsewhere or a shop
+        // attention is always read live (it is shown from the copy only while the shop does not answer).
+        if (!$stale && ($live['proformaChanged'] || $live['settledElsewhere'] || ($live['financial']['attention'] ?? null) !== null)) {
+            return null;
+        }
+        return $live + ['source' => 'cache', 'stale' => $stale] + ($stale ? ['staleReason' => $reason ?? 'source_unavailable'] : []);
+    }
+
+    /**
+     * API 2.81.0: keeps the task's live view as the display copy. Never a task whose order has a bank transfer (the copy
+     * would hold the transfer's reference and payer): such a task is always read live, and an older copy is removed.
+     *
+     * @param array<string, mixed> $live
+     * @param array<string, mixed> $summary
+     */
+    private function rememberDisplay(string $requestUuid, array $live, array $summary): void
+    {
+        $copy = null;
+        if (($live['transfers'] ?? []) === []) {
+            $keep = $live;
+            unset($keep['source'], $keep['stale']);
+            $keep['proformaCancelled'] = (bool) ($summary['advance']['proformaCancelled'] ?? false);
+            // The shop's own answers, so what depends on Operations' configuration is computed again when shown.
+            $keep['shopPolicy'] = ($summary['capabilities']['verification'] ?? 'four_eyes') === 'single' ? 'single' : 'four_eyes';
+            $keep['shopRecord'] = ($summary['capabilities']['record'] ?? false) === true;
+            try {
+                $copy = json_encode($keep, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+            } catch (\JsonException) {
+                $copy = null;
+            }
+        }
+        $amount = static fn (mixed $value): ?string => is_string($value) && preg_match('/^-?(0|[1-9][0-9]{0,9})(\.[0-9]{1,2})?$/', $value) === 1 ? $value : null;
+        $money = $live['money'] ?? null;
+        $proforma = $live['proforma'] ?? null;
+        try {
+            $this->pdo->prepare('UPDATE finance_task_amounts SET display_json = ?, display_read_at = ?, order_total = ?, received_amount = ?, cod_remaining = ?, financial_state = ?, proforma_series = ?, proforma_number = ?
+                WHERE request_uuid = ?')->execute([
+                $copy, $copy === null ? null : $this->now(),
+                $amount($money['total'] ?? null), $amount($money['received'] ?? null), $amount($money['remaining'] ?? null),
+                is_string($live['financial']['state'] ?? null) ? substr((string) $live['financial']['state'], 0, 40) : null,
+                is_array($proforma) && is_string($proforma['series'] ?? null) ? substr((string) $proforma['series'], 0, 20) : null,
+                is_array($proforma) && is_string($proforma['number'] ?? null) ? substr((string) $proforma['number'], 0, 40) : null,
+                $requestUuid,
+            ]);
+        } catch (PDOException) {
+            // An older schema (before 062) or a lost connection: the task is read live next time.
+        }
+    }
+
+    /** @return array<string, mixed>|null the display copy row of a task (null before migration 062 or when none) */
+    private function displayRow(string $requestUuid): ?array
+    {
+        try {
+            $statement = $this->pdo->prepare('SELECT display_json, display_read_at FROM finance_task_amounts WHERE request_uuid = ?');
+            $statement->execute([$requestUuid]);
+            $row = $statement->fetch(PDO::FETCH_ASSOC);
+            return is_array($row) ? $row : null;
+        } catch (PDOException) {
+            return null;
+        }
+    }
+
+    /** @return array<string, mixed>|null */
+    private static function decodeDisplay(mixed $json): ?array
+    {
+        if (!is_string($json) || $json === '') {
+            return null;
+        }
+        try {
+            $value = json_decode($json, true, 16, JSON_THROW_ON_ERROR);
+        } catch (\JsonException) {
+            return null;
+        }
+        return is_array($value) && ($value['available'] ?? false) === true ? $value : null;
+    }
+
+    /**
+     * API 2.81.0: forgets the display copies of an order's tasks: called before any finance action is sent to the shop
+     * (ConfirmareFinance::act), so a task is read live after its money may have changed. Never fails the caller.
+     */
+    public static function forgetDisplay(PDO $pdo, string $orderUuid): void
+    {
+        try {
+            $pdo->prepare('UPDATE finance_task_amounts a INNER JOIN finance_verification_requests r ON r.request_uuid = a.request_uuid SET a.display_json = NULL, a.display_read_at = NULL WHERE r.order_uuid = ?')
+                ->execute([$orderUuid]);
+        } catch (PDOException) {
+            // Before migration 062 there is no copy to forget.
+        }
+    }
+
+    /** API 2.81.0: forgetDisplay() by the shop's own order id (a bank transfer exception resolved onto an order). */
+    public static function forgetDisplayBySource(PDO $pdo, string $sourceKey, string $sourceOrderId): void
+    {
+        try {
+            $pdo->prepare('UPDATE finance_task_amounts a INNER JOIN finance_verification_requests r ON r.request_uuid = a.request_uuid INNER JOIN operational_orders o ON o.order_uuid = r.order_uuid
+                SET a.display_json = NULL, a.display_read_at = NULL WHERE o.source_key = ? AND o.source_order_id = ?')->execute([$sourceKey, $sourceOrderId]);
+        } catch (PDOException) {
+            // Before migration 062 there is no copy to forget.
+        }
     }
 
     /** @param array<string, mixed> $summary @return list<array<string, mixed>> the bank transfers of the order (no other entry) */
@@ -1354,7 +1538,8 @@ final readonly class FinanceVerificationRequests
         $manual = $request['ledger'] === self::LEDGER_MANUAL;
         $advance = $request['purpose'] === 'advance';
         // A manual-ledger task only reads the shop; a shop-ledger task needs the shop's finance record open for it.
-        $available = ($live['available'] ?? false) === true && ($manual || ($live['recordEnabled'] ?? false) === true) && !($live['proformaChanged'] ?? true);
+        // API 2.81.0: a stale copy (shown while the shop does not answer) enables no command.
+        $available = ($live['available'] ?? false) === true && ($live['stale'] ?? false) !== true && ($manual || ($live['recordEnabled'] ?? false) === true) && !($live['proformaChanged'] ?? true);
         $single = !$manual && ($live['policy'] ?? 'four_eyes') === 'single' && $this->finance->allows($actor, FinanceScopePolicy::VERIFY, $source);
         $canMoney = $single || $this->finance->allows($actor, FinanceScopePolicy::RECORD, $source);
         $decidable = $advance && $mine && $clean && in_array($request['state'], ['assigned', 'checking'], true);
@@ -1365,7 +1550,7 @@ final readonly class FinanceVerificationRequests
             'clarify' => $advance && $mine && $clean && in_array($request['state'], ['assigned', 'checking', 'exception'], true),
             'secondCheck' => (($request['state'] === 'checking' && $request['policy'] === 'four_eyes' && $request['source_entry_id'] !== null && $request['checker_employee_uuid'] === $actor->employeeUuid
                 && $request['recorded_by_employee_uuid'] !== $actor->employeeUuid && $this->finance->allows($actor, FinanceScopePolicy::APPROVE, $source))
-                || ($this->concludesAlone($actor, $request) && ($live['policy'] ?? 'four_eyes') === 'single')) && ($live['available'] ?? false) === true,
+                || ($this->concludesAlone($actor, $request) && ($live['policy'] ?? 'four_eyes') === 'single')) && ($live['available'] ?? false) === true && ($live['stale'] ?? false) !== true,
             'reconcile' => $request['state'] === 'exception' && $request['finance_idempotency_key'] !== null,
             // API 2.80.0 (owner 2026-11-25): on a verified advance the employee decided, a later transfer of the same order
             // (Adaugă o plată) and the correction of their own transfer (Corectează plata). The shop checks both again.
@@ -1902,10 +2087,20 @@ final readonly class FinanceVerificationRequests
         $list->execute([$stale]);
         $result = ['read' => 0, 'failed' => 0, 'skipped' => 0, 'left' => 0];
         $first = true;
+        $started = microtime(true);
+        $failedHosts = [];
         foreach ($list->fetchAll(PDO::FETCH_ASSOC) as $request) {
+            if (microtime(true) - $started > self::AMOUNT_RUN_SECONDS) {
+                break;
+            }
             $row = $this->orderByUuid((string) $request['order_uuid']);
             $target = $row === null ? null : $this->registry->find((string) $row['source_key']);
             if ($row === null || $target === null || !$target->allowsFinanceRead()) {
+                $result['skipped']++;
+                continue;
+            }
+            // API 2.81.0: a shop that failed three reads in this run is not asked again in it (the other shop goes on).
+            if (($failedHosts[(string) $row['source_key']] ?? 0) >= 3) {
                 $result['skipped']++;
                 continue;
             }
@@ -1913,13 +2108,15 @@ final readonly class FinanceVerificationRequests
                 usleep($pauseMs * 1000);
             }
             $first = false;
-            $summary = $this->summary($target, $row, $employeeUuid, ConfirmareFinance::ROLE_FINANCE, $requestId, $failure);
-            $this->auditAs($row, $employeeUuid, $summary === null ? ($failure ?? 'source_unavailable') : 'ok', $requestId, $summary['revision'] ?? null);
-            if ($summary === null) {
+            // API 2.81.0: the same read as opening the task (audited, amount and display copy kept), so the next opening
+            // of an unchanged task needs no shop call.
+            $live = $this->live($target, $row, $request, $employeeUuid, $requestId);
+            if (!$live['available']) {
+                $failedHosts[(string) $row['source_key']] = ($failedHosts[(string) $row['source_key']] ?? 0) + 1;
                 $result['failed']++;
                 continue;
             }
-            $this->rememberAmount((string) $request['request_uuid'], $summary);
+            $failedHosts[(string) $row['source_key']] = 0;
             $result['read']++;
         }
         $left = $this->pdo->prepare("SELECT COUNT(*) FROM finance_verification_requests r LEFT JOIN finance_task_amounts a ON a.request_uuid = r.request_uuid WHERE {$where}");
@@ -2047,7 +2244,7 @@ final readonly class FinanceVerificationRequests
         // Any order of a source (API 2.50.0): an order outside Confirmare has no confirmation row and keeps its workflow.
         $statement = $this->pdo->prepare("SELECT o.order_uuid, o.global_order_id, o.source_key, o.source_order_id, o.order_number, o.workflow_cohort, o.payment_method, o.operational_status, o.source_reported_unavailable_at,
                 o.source_financial_state, o.source_financial_basis, o.source_financial_attention, o.source_financial_pricing, o.source_pricing_fingerprint, o.source_submitted_at, o.created_at, o.source_commerce_status_code,
-                o.cancellation_state, o.workflow_cohort_reason, c.status, c.assigned_employee_uuid, c.decided_by_employee_uuid
+                o.cancellation_state, o.workflow_cohort_reason, o.source_changed_at, c.status, c.assigned_employee_uuid, c.decided_by_employee_uuid
             FROM operational_orders o LEFT JOIN order_confirmations c ON c.order_uuid = o.order_uuid WHERE {$where}");
         $statement->execute([$value]);
         $row = $statement->fetch(PDO::FETCH_ASSOC);

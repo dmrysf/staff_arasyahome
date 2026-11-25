@@ -132,10 +132,24 @@ final class Container
         return new \Arasya\Operations\Confirmare\ConfirmareService($this->pdo, $authorization ?? new AuthorizationService(), new \Arasya\Operations\Confirmare\ConfirmareScopePolicy($this->pdo), $this->clock, \Arasya\Operations\Integration\SourceAccess\SourceAccessRegistry::fromConfig($this->config), $this->authorityModes());
     }
 
+    /**
+     * API 2.81.0 (P0 2026-11-25): the one transport to the shops, measured per call (source_access_timings) with a per-shop
+     * breaker for reads (MeasuredSourceAccessTransport). Tests pass their own transport: measured the same way, without the breaker (a test decides each answer).
+     */
+    private function shopTransport(): \Arasya\Operations\Integration\SourceAccess\SourceAccessTransport
+    {
+        return new \Arasya\Operations\Integration\SourceAccess\MeasuredSourceAccessTransport(
+            $this->sourceAccessTransport ?? new \Arasya\Operations\Integration\SourceAccess\StreamSourceAccessTransport(allowLoopback: !$this->config->isProduction()),
+            $this->pdo,
+            $this->clock,
+            $this->sourceAccessTransport === null,
+        );
+    }
+
     /** Confirmare source access (API 2.40.0): the shop's own view of one order for its operator, signed, audited. */
     public function confirmareSourceAccess(?AuthorizationService $authorization = null): \Arasya\Operations\Confirmare\ConfirmareSourceAccess
     {
-        $transport = $this->sourceAccessTransport ?? new \Arasya\Operations\Integration\SourceAccess\StreamSourceAccessTransport(allowLoopback: !$this->config->isProduction());
+        $transport = $this->shopTransport();
         return new \Arasya\Operations\Confirmare\ConfirmareSourceAccess(
             $this->pdo,
             $authorization ?? new AuthorizationService(),
@@ -151,7 +165,7 @@ final class Container
     /** SmartBill invoicing of Confirmare orders (API 2.43.0). */
     public function confirmareInvoice(?AuthorizationService $authorization = null, bool $rootIntervention = false): \Arasya\Operations\Confirmare\ConfirmareInvoice
     {
-        $transport = $this->sourceAccessTransport ?? new \Arasya\Operations\Integration\SourceAccess\StreamSourceAccessTransport(allowLoopback: !$this->config->isProduction());
+        $transport = $this->shopTransport();
         return new \Arasya\Operations\Confirmare\ConfirmareInvoice(
             $this->pdo,
             $authorization ?? new AuthorizationService(),
@@ -173,7 +187,7 @@ final class Container
     /** Reactivation, FAN Courier AWB and NETOPIA card refund relayed to the shop (API 2.46.0). */
     public function confirmareOperations(?AuthorizationService $authorization = null, bool $rootIntervention = false): \Arasya\Operations\Confirmare\ConfirmareOperations
     {
-        $transport = $this->sourceAccessTransport ?? new \Arasya\Operations\Integration\SourceAccess\StreamSourceAccessTransport(allowLoopback: !$this->config->isProduction());
+        $transport = $this->shopTransport();
         return new \Arasya\Operations\Confirmare\ConfirmareOperations(
             $this->pdo,
             $this->clock,
@@ -209,7 +223,7 @@ final class Container
     /** The Confirmare operating cycle (API 2.46.0): calls, the proforma timer, bank checks; also bin/confirmare-cycles.php. */
     public function confirmareCycles(): \Arasya\Operations\Confirmare\ConfirmareCycles
     {
-        $transport = $this->sourceAccessTransport ?? new \Arasya\Operations\Integration\SourceAccess\StreamSourceAccessTransport(allowLoopback: !$this->config->isProduction());
+        $transport = $this->shopTransport();
         return new \Arasya\Operations\Confirmare\ConfirmareCycles(
             $this->pdo,
             $this->clock,
@@ -237,7 +251,7 @@ final class Container
     /** The shop's bank transfers that match no order (API 2.44.0, YD SOFT 2.18.0). */
     public function financeTransferExceptions(?AuthorizationService $authorization = null): \Arasya\Operations\Confirmare\FinanceTransferExceptions
     {
-        $transport = $this->sourceAccessTransport ?? new \Arasya\Operations\Integration\SourceAccess\StreamSourceAccessTransport(allowLoopback: !$this->config->isProduction());
+        $transport = $this->shopTransport();
         return new \Arasya\Operations\Confirmare\FinanceTransferExceptions(
             $this->pdo,
             $authorization ?? new AuthorizationService(),
@@ -252,7 +266,7 @@ final class Container
 
     public function confirmareFinance(?AuthorizationService $authorization = null, bool $rootIntervention = false): \Arasya\Operations\Confirmare\ConfirmareFinance
     {
-        $transport = $this->sourceAccessTransport ?? new \Arasya\Operations\Integration\SourceAccess\StreamSourceAccessTransport(allowLoopback: !$this->config->isProduction());
+        $transport = $this->shopTransport();
         return new \Arasya\Operations\Confirmare\ConfirmareFinance(
             $this->pdo,
             $authorization ?? new AuthorizationService(),
@@ -270,7 +284,7 @@ final class Container
     /** Finance verification requests (API 2.50.0, migration 044): the explicit finance task of an advance payment. */
     public function financeVerificationRequests(?AuthorizationService $authorization = null, bool $rootIntervention = false): \Arasya\Operations\Confirmare\FinanceVerificationRequests
     {
-        $transport = $this->sourceAccessTransport ?? new \Arasya\Operations\Integration\SourceAccess\StreamSourceAccessTransport(allowLoopback: !$this->config->isProduction());
+        $transport = $this->shopTransport();
         return new \Arasya\Operations\Confirmare\FinanceVerificationRequests(
             $this->pdo,
             $authorization ?? new AuthorizationService(),
@@ -295,7 +309,7 @@ final class Container
     /** Confirmare controlled shop edits (API 2.40.0, Phase 4B): preview and apply through the shop's own pricing. */
     public function confirmareSourceEdits(?AuthorizationService $authorization = null): \Arasya\Operations\Confirmare\ConfirmareSourceEdits
     {
-        $transport = $this->sourceAccessTransport ?? new \Arasya\Operations\Integration\SourceAccess\StreamSourceAccessTransport(allowLoopback: !$this->config->isProduction());
+        $transport = $this->shopTransport();
         return new \Arasya\Operations\Confirmare\ConfirmareSourceEdits(
             $this->pdo,
             $this->confirmareSourceAccess($authorization),

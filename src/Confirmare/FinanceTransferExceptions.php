@@ -98,6 +98,10 @@ final readonly class FinanceTransferExceptions
             $fields = ['resolvedOrderId' => $this->sourceOrderId($fields['orderNumber'], $source)] + array_diff_key($fields, ['orderNumber' => true]);
         }
         $this->rateLimit($actor);
+        if (isset($fields['resolvedOrderId'])) {
+            // API 2.81.0: the order's task display copies are forgotten before the transfer may be put on it.
+            FinanceVerificationRequests::forgetDisplayBySource($this->pdo, $source, (string) $fields['resolvedOrderId']);
+        }
         $body = $this->payload($actor, $requestId) + ['action' => $action, 'idempotencyKey' => $key] + $fields;
         $event = 'CONFIRMARE_TRANSFER_EXCEPTION_' . strtoupper(str_replace('_exception', '', $action));
         try {

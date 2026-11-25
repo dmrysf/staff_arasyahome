@@ -204,6 +204,8 @@ final readonly class ConfirmareSourceEdits
             throw new ApiException(503, 'CONFIRMARE_AUDIT_UNAVAILABLE', 'The change could not be recorded, so it was not sent. Try again.');
         }
         try {
+            // API 2.81.0: the task display copies of the order are forgotten before the shop may change its money or proforma.
+            FinanceVerificationRequests::forgetDisplay($this->pdo, (string) $row['order_uuid']);
             $answer = $this->client->exchange($context['target'], SourceAccessClient::ROUTE_APPLY, $this->payload($row, $actor, $context['role'], $requestId) + [
                 'expectedVersion' => $version, 'operations' => $ops, 'previewToken' => $previewToken, 'idempotencyKey' => $key,
             ]);
