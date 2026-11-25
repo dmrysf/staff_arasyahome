@@ -67,8 +67,17 @@ export type InboxItem = {
   id: string; source: string; orderNumber: string; purpose: TaskPurpose; taskCode: string | null; ledger: Ledger; proforma: TaskProforma;
   state: RequestState; version: number; category: InboxCategory; kind: TaskKind; assignedToMe: boolean; outcome: RequestOutcome | null; reasonCode: string | null;
   policy: VerificationPolicy | null; requestedAt: string; updatedAt: string; decidedAt: string | null;
+  /** API 2.77.9: the advance the shop last showed for the task (null: not read yet); display only, never a decision input. */
+  advance: ListedAdvance | null;
+  /** API 2.77.9: a not received advance no newer request replaced (Așteaptă plata). */
+  awaitingPayment: boolean;
+  /** API 2.77.9: when the customer placed the order. */
+  orderedAt: string | null;
 };
-export type Inbox = { items: InboxItem[]; counts: Record<InboxCategory, number>; sources: string[]; limit: number };
+export type ListedAdvance = { currency: string; required: string | null; remaining: string | null; readAt: string };
+/** `waiting` and `today` (API 2.77.9): the not received advances still open for a payment, the tasks decided today. */
+export type InboxCounts = Record<InboxCategory, number> & { waiting: number; today: number };
+export type Inbox = { items: InboxItem[]; counts: InboxCounts; sources: string[]; limit: number };
 
 export type Transfer = {
   id: string; purpose: string; amount: string; reference: string; valueDate: string | null; method: string; state: "submitted" | "verified" | "rejected";
@@ -255,22 +264,35 @@ export function mapInboxItem(value: unknown): InboxItem {
     state: oneOf(raw.state, REQUEST_STATES), version: int(raw.version), category: oneOf(raw.category, INBOX_CATEGORIES),
     kind: oneOf(raw.kind, TASK_KINDS), assignedToMe: bool(raw.assignedToMe), outcome: optOneOf(raw.outcome, OUTCOMES), reasonCode: code(raw.reasonCode), policy: optOneOf(raw.policy, POLICIES),
     requestedAt: instant(raw.requestedAt), updatedAt: instant(raw.updatedAt), decidedAt: optInstant(raw.decidedAt),
+    advance: listedAdvance(raw.advance), awaitingPayment: raw.awaitingPayment === undefined ? false : bool(raw.awaitingPayment), orderedAt: optInstant(raw.orderedAt),
   };
+}
+
+function listedAdvance(value: unknown): ListedAdvance | null {
+  if (value == null) return null;
+  const raw = obj(value);
+  return { currency: str(raw.currency, 3), required: money(raw.required), remaining: money(raw.remaining), readAt: instant(raw.readAt) };
 }
 
 /**
  * Staff 2.52.5 (owner 2026-11-25): the most items one inbox answer may carry. API FinanceVerificationRequests::inbox lists
  * up to 1000 open tasks (OPEN_LIMIT) and the 100 latest done ones (DONE_LIMIT); a stricter cap here rejected the whole
- * answer, so an employee with more than 300 tasks saw none.
+ * answer, so an employee with more than 300 tasks saw none. Staff 2.53.0 (API 2.77.9): plus up to 300 not received
+ * advances still waiting for a payment (WAITING_LIMIT): 1000 + 100 + 300.
  */
-export const INBOX_MAX_ITEMS = 1100;
+export const INBOX_MAX_ITEMS = 1400;
 
 export function mapInbox(value: unknown): Inbox {
   const raw = obj(value);
   return {
     items: list(raw.items, INBOX_MAX_ITEMS, mapInboxItem),
-    counts: counts(raw.counts, INBOX_CATEGORIES), sources: list(raw.sources, 10, (entry) => str(entry, 40)), limit: int(raw.limit),
+    counts: inboxCounts(raw.counts), sources: list(raw.sources, 10, (entry) => str(entry, 40)), limit: int(raw.limit),
   };
+}
+
+function inboxCounts(value: unknown): InboxCounts {
+  const raw = obj(value);
+  return { ...counts(raw, INBOX_CATEGORIES), waiting: raw.waiting === undefined ? 0 : int(raw.waiting), today: raw.today === undefined ? 0 : int(raw.today) };
 }
 
 function mapTransfer(value: unknown): Transfer {

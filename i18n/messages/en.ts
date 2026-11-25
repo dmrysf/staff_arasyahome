@@ -2,6 +2,7 @@ import { confirmareEN } from "./confirmare";
 import { confirmareShopEN } from "./confirmareShop";
 import { confirmareFinanceEN } from "./confirmareFinance";
 import { financeRequestsEN } from "./financeRequests";
+import { financeDeskEN } from "./financeDesk";
 import { confirmareInvoiceEN } from "./confirmareInvoice";
 import { orderTypesEN } from "./orderTypes";
 import { confirmareHandoffEN } from "./confirmareHandoff";
@@ -27,6 +28,7 @@ export const en: Catalog = {
   ...confirmareShopEN,
   ...confirmareFinanceEN,
   ...financeRequestsEN,
+  ...financeDeskEN,
   ...confirmareInvoiceEN,
   ...orderTypesEN,
   ...confirmareHandoffEN,

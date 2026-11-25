@@ -279,6 +279,6 @@ test("Staff 2.52.5: a finance employee without a desk or a stage opens on the fi
   assert.doesNotMatch(nav, /nav-orders/, "no Siparişlerim for an account without a production stage");
   assert.match(nav, /class="nav-item nav-home active"/);
   const app = readFileSync(path.join(root, "app/StaffApp.tsx"), "utf8");
-  assert.match(app, /guardedRoute === "\/" && financeHome && services\.confirmare\) screen = <FinanceInboxScreen/);
+  assert.match(app, /guardedRoute === "\/" && financeHome && services\.confirmare\) screen = <FinanceDeskScreen/);
   assert.match(app, /deskHome=\{deskHome \|\| financeHome\}/);
 });

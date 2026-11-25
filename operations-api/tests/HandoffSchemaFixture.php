@@ -1,8 +1,18 @@
 <?php
 declare(strict_types=1);
+/** Restore a pre-060 disposable test fixture (no finance_task_amounts). This is NOT a deployment/rollback mechanism. */
+function restorePreFinanceTaskAmountsTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='060_finance_task_amounts.sql'")->fetchColumn()) return;
+    $pdo->exec('DROP TABLE IF EXISTS finance_task_amounts');
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='060_finance_task_amounts.sql'");
+}
+
 /** Restore a pre-059 disposable test fixture (the 044 operation kind CHECK, without awb_reopened). This is NOT a deployment/rollback mechanism. */
 function restorePreAwbReopenedTestSchema(PDO $pdo): void
 {
+    restorePreFinanceTaskAmountsTestSchema($pdo);
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
     if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='059_awb_reopened.sql'")->fetchColumn()) return;
     $pdo->exec("DELETE FROM order_source_operations WHERE kind='awb_reopened'");

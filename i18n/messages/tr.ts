@@ -2,6 +2,7 @@ import { confirmareTR } from "./confirmare";
 import { confirmareShopTR } from "./confirmareShop";
 import { confirmareFinanceTR } from "./confirmareFinance";
 import { financeRequestsTR } from "./financeRequests";
+import { financeDeskTR } from "./financeDesk";
 import { confirmareInvoiceTR } from "./confirmareInvoice";
 import { orderTypesTR } from "./orderTypes";
 import { confirmareHandoffTR } from "./confirmareHandoff";
@@ -27,6 +28,7 @@ export const tr: Catalog = {
   ...confirmareShopTR,
   ...confirmareFinanceTR,
   ...financeRequestsTR,
+  ...financeDeskTR,
   ...confirmareInvoiceTR,
   ...orderTypesTR,
   ...confirmareHandoffTR,

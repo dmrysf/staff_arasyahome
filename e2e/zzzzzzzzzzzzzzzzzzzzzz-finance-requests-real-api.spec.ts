@@ -65,35 +65,45 @@ test("the finance employee sees only the task: no customer, no order screen; rec
     await expect(page.locator(".nav-orders")).toHaveCount(0);
     await expect(page.getByTestId(`fr-card-${F.number}`)).toBeVisible();
     await noCustomer(page);
+    // Staff 2.53.0 Contabilitate desk: four counters and a compact table, oldest first.
+    await expect(page.getByTestId("fd-kpis")).toBeVisible();
+    await expect(page.getByTestId("fd-kpi-todo")).not.toHaveText("–");
     await page.getByTestId(`fr-open-${F.number}`).click();
     await expect(page.getByTestId("fr-task")).toBeVisible();
     await expect(page.getByTestId("fr-payment-reference")).toHaveText(F.reference);
     await noCustomer(page);
-    await page.getByTestId("fr-start").click();
+    // "Kontrole başla" happens by itself (audited, no payment decision); step 1 asks one question.
     await expect(page.getByTestId("fr-task")).toHaveAttribute("data-state", "checking");
+    await expect(page.getByTestId("fd-step")).toHaveAttribute("data-step", "1");
     await expect(page.getByTestId("fr-start")).toHaveCount(0);
     await page.getByTestId("fr-mode-verified").click();
+    await expect(page.getByTestId("fd-step")).toHaveAttribute("data-step", "2");
     // Owner 2026-10-29: a smaller amount on the statement is recorded as it is (never "not received"); the rest is named.
     await expect(page.getByTestId("fr-remaining")).toContainText("215,70");
+    await expect(page.getByTestId("fr-amount")).toHaveValue("");
     await page.getByTestId("fr-amount").fill("190,00");
     await expect(page.getByTestId("fr-partial-notice")).toContainText("25,70");
-    await expect(page.getByTestId("fr-partial-notice")).toContainText("Plata nu a fost primită");
     await page.getByTestId("fr-amount").fill("215,70");
     await expect(page.getByTestId("fr-partial-notice")).toHaveCount(0);
-    // A different payment reference is refused in the browser (a clarification, never a guess).
-    await page.getByTestId("fr-amount").fill("215,70");
+    // A different payment reference is never recorded: the desk offers a clarification instead.
     await page.getByTestId("fr-bank-reference").fill("BT E2E 0001");
     await page.getByTestId("fr-value-date").fill(new Date().toISOString().slice(0, 10));
     await page.getByTestId("fr-statement-reference").fill("TH0000");
-    await page.getByTestId("fr-statement").check();
     await page.getByTestId("fr-verify-next").click();
     await expect(page.getByTestId("fr-form-problem")).toBeVisible();
+    await expect(page.getByTestId("fd-to-clarification")).toBeVisible();
     await page.getByTestId("fr-statement-reference").fill(F.reference);
     await page.getByTestId("fr-verify-next").click();
+    await expect(page.getByTestId("fd-step")).toHaveAttribute("data-step", "3");
     await expect(page.getByTestId("fr-confirm-text")).toContainText("BT E2E 0001");
+    await expect(page.getByTestId("fd-gap")).toContainText("0,00");
+    // The bank statement confirmation stays mandatory.
     await page.getByTestId("fr-confirm-send").click();
-    await expect(page.getByTestId("fr-receipt")).toHaveAttribute("data-state", "checking");
-    await expect(page.getByTestId("fr-receipt")).toContainText("al doilea control");
+    await expect(page.getByTestId("fr-form-problem")).toBeVisible();
+    await page.getByTestId("fr-statement").check();
+    await page.getByTestId("fr-confirm-send").click();
+    // Done: the next oldest task (or the list when none is left) opens by itself.
+    await expect(page.getByTestId("fd-done")).toContainText(F.number);
     // The Confirmare order itself stays closed to a finance scope (the route falls back to Home).
     await page.goto(orderPath());
     await expect(page.getByTestId("cf-order")).toHaveCount(0);
@@ -202,7 +212,7 @@ test("not received, in a real browser: the operator's card follows finance by po
     await expect(fin.page.getByTestId("fr-task")).toBeVisible();
     await noCustomer(fin.page);
     const startedAt = Date.now();
-    await fin.page.getByTestId("fr-start").click();
+    // Staff 2.53.0: opening the task starts the check by itself (audited checking_started).
     await expect(fin.page.getByTestId("fr-task")).toHaveAttribute("data-state", "checking");
     await expect(card).toHaveAttribute("data-phase", "checking", { timeout: 12_000 });
     expect(Date.now() - startedAt).toBeLessThanOrEqual(12_000);
@@ -216,11 +226,11 @@ test("not received, in a real browser: the operator's card follows finance by po
 
     // "Plata nu a fost primită", with an explicit confirmation and a receipt.
     await fin.page.getByTestId("fr-mode-not-received").click();
-    await fin.page.getByTestId("fr-reason-not_found").check();
-    await fin.page.getByTestId("fr-reason-next").click();
+    await fin.page.getByTestId("fd-not-received").click();
     await expect(fin.page.getByTestId("fr-confirm")).toBeVisible();
+    await expect(fin.page.getByTestId("fr-confirm-text")).toContainText("nu se anulează");
     await fin.page.getByTestId("fr-confirm-send").click();
-    await expect(fin.page.getByTestId("fr-receipt")).toHaveAttribute("data-state", "not_received");
+    await expect(fin.page.getByTestId("fd-done")).toContainText(order.number);
     await expect(card).toHaveAttribute("data-phase", "notReceived", { timeout: 8_000 });
     await expect(op.page.getByTestId("fr-step-request")).toBeVisible();
 
@@ -247,12 +257,12 @@ test("clarification, in a real browser: finance asks, the operator answers, the 
     await fin.page.goto("/confirmare/finance/requests");
     await fin.page.getByTestId(`fr-open-${order.number}`).click();
     await expect(fin.page.getByTestId("fr-payment-reference")).toHaveText(order.reference);
+    await fin.page.getByTestId("fr-mode-not-received").click();
     await fin.page.getByTestId("fr-mode-clarify").click();
-    await fin.page.getByTestId("fr-reason-reference_missing").check();
-    await fin.page.getByTestId("fr-reason-next").click();
+    await fin.page.getByTestId("fr-reason-reference_missing").click();
     await expect(fin.page.getByTestId("fr-confirm")).toBeVisible();
     await fin.page.getByTestId("fr-confirm-send").click();
-    await expect(fin.page.getByTestId("fr-receipt")).toHaveAttribute("data-state", "needs_clarification");
+    await expect(fin.page.getByTestId("fd-done")).toContainText(order.number);
     await fin.page.goto("/confirmare/finance/requests");
     await fin.page.getByTestId("fr-category-clarification").click();
     await expect(fin.page.getByTestId(`fr-card-${order.number}`)).toBeVisible();
@@ -326,11 +336,11 @@ test("an order of 23.10.2026 outside Confirmare (old date): the operator sends i
     await fin.page.getByTestId("fr-bank-reference").fill("BT E2E 0043");
     await fin.page.getByTestId("fr-value-date").fill(new Date().toISOString().slice(0, 10));
     await fin.page.getByTestId("fr-statement-reference").fill(order.reference);
-    await fin.page.getByTestId("fr-statement").check();
     await fin.page.getByTestId("fr-verify-next").click();
-    await expect(fin.page.getByTestId("fr-confirm-text")).toContainText("fluxul vechi");
+    await expect(fin.page.getByTestId("fr-task-manual")).toBeVisible();
+    await fin.page.getByTestId("fr-statement").check();
     await fin.page.getByTestId("fr-confirm-send").click();
-    await expect(fin.page.getByTestId("fr-receipt")).toHaveAttribute("data-state", "requires_manual_review");
+    await expect(fin.page.getByTestId("fd-done")).toContainText(order.number);
     // The order of 21.10 (no task) never appears to finance; the API refuses it (covered by the API integration suite).
     await fin.page.goto("/confirmare/finance/requests");
     await fin.page.getByTestId("fr-category-done").click();

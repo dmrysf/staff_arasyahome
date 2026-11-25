@@ -81,7 +81,7 @@ $clear = static function () use ($pdo, $cycleTables): void {
     }
     $pdo->exec('DELETE FROM api_rate_limit_buckets');
     $pdo->exec('DELETE FROM confirmare_finance_holds');
-    $pdo->exec("DELETE FROM finance_verification_requests WHERE request_uuid = '00000000-0000-4000-8000-0000000c2101'");
+    $pdo->exec("DELETE FROM finance_task_amounts WHERE request_uuid = '00000000-0000-4000-8000-0000000c2101'"); $pdo->exec("DELETE FROM finance_verification_requests WHERE request_uuid = '00000000-0000-4000-8000-0000000c2101'");
     $pdo->exec("UPDATE operational_orders SET cancellation_state = NULL, production_stopped_at = NULL WHERE cancellation_state IS NOT NULL");
     $pdo->exec('UPDATE operational_orders SET workflow_cohort = NULL, workflow_cohort_reason = NULL, workflow_cohort_at = NULL WHERE workflow_cohort IS NOT NULL');
 };
@@ -671,7 +671,7 @@ $pdo->prepare("UPDATE operational_orders SET production_stage_id = 'waiting' WHE
 $columns = array_column($all("SELECT column_name AS c FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'confirmare_finance_holds'"), 'c');
 $check(array_intersect($columns, ['amount', 'iban', 'email', 'phone', 'customer_name', 'reference']) === [], 'S12: a hold stores no amount, bank account or customer field');
 $pdo->exec('DELETE FROM confirmare_finance_holds');
-$pdo->exec("DELETE FROM finance_verification_requests WHERE request_uuid = '00000000-0000-4000-8000-0000000c2101'");
+$pdo->exec("DELETE FROM finance_task_amounts WHERE request_uuid = '00000000-0000-4000-8000-0000000c2101'"); $pdo->exec("DELETE FROM finance_verification_requests WHERE request_uuid = '00000000-0000-4000-8000-0000000c2101'");
 
 // ---- 13. API 2.71.1 worker queue: every open cycle is visited, none twice in one pass (owner 2026-11-13) --------------------
 // Production had 166 open cycles; a pass of 100 ordered by updated_at re-took the same oldest cycles forever, because a visit
@@ -763,6 +763,7 @@ $check($wide['seen'] === 173 && (string) $qState(20)['claimed_at'] > gmdate('Y-m
 foreach (range(1, 4) as $i) $cycles->run(100, 'test-queue-rerun-' . $i);
 $check(count(array_filter(range(171, 174), static fn (int $k): bool => $qState($k)['state'] === 'waiting_finance')) === 4 && $qState(175)['state'] === 'waiting_bank_check' && $qCancels() === 0,
     'S13: repeated passes keep the protected cycles waiting for finance and cancel nothing');
+$pdo->prepare('DELETE FROM finance_task_amounts WHERE request_uuid IN (?, ?, ?, ?)')->execute(array_map(static fn (int $k): string => sprintf('00000000-0000-4000-8000-%012d', 13500 + $k), range(171, 174)));
 $pdo->prepare('DELETE FROM finance_verification_requests WHERE request_uuid IN (?, ?, ?, ?)')->execute(array_map(static fn (int $k): string => sprintf('00000000-0000-4000-8000-%012d', 13500 + $k), range(171, 174)));
 
 // ---- Cleanup (later suites share the database in CI) ------------------------------------------------------------------------

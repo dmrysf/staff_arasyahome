@@ -77,7 +77,7 @@ $pdo = Connection::create($config);
 foreach (glob(dirname(__DIR__) . '/database/seeds/*.sql') ?: [] as $seed) (new SqlFileRunner($pdo))->run($seed);
 $one = static function (string $sql, array $params = []) use ($pdo): mixed { $s = $pdo->prepare($sql); $s->execute($params); return $s->fetchColumn(); };
 $all = static function (string $sql, array $params = []) use ($pdo): array { $s = $pdo->prepare($sql); $s->execute($params); return $s->fetchAll(PDO::FETCH_ASSOC); };
-foreach (['finance_verification_request_events', 'finance_verification_requests', 'employee_finance_supervision', 'confirmare_cycle_steps', 'confirmare_proforma_cycles', 'confirmare_bank_checks', 'confirmare_reactivations',
+foreach (['finance_task_amounts', 'finance_verification_request_events', 'finance_verification_requests', 'employee_finance_supervision', 'confirmare_cycle_steps', 'confirmare_proforma_cycles', 'confirmare_bank_checks', 'confirmare_reactivations',
     'invoice_efactura_tasks', 'order_source_operations', 'order_invoice_qr_checks', 'order_shop_assignments', 'order_invoice_actions', 'order_invoice_reads', 'employee_invoice_scopes',
     'order_finance_actions', 'order_finance_reads', 'employee_finance_scopes', 'order_confirmation_source_edits', 'order_confirmation_source_reads', 'order_confirmation_contacts',
     'order_confirmation_idempotency', 'confirmare_alerts', 'order_confirmation_events', 'order_confirmations', 'workflow_cohort_activations', 'employee_confirmare_scopes', 'confirmare_operator_state'] as $table) {
@@ -286,8 +286,10 @@ $check(in_array($r1, $ids, true) && count($ids) === $mine && $box['counts']['tod
     'the inbox: exactly the requests assigned to this employee');
 $noOrderData($box, 'inbox');
 $item = array_column($box['items'], null, 'id')[$r1];
-$check(array_keys($item) === ['id', 'source', 'orderNumber', 'purpose', 'taskCode', 'ledger', 'proforma', 'state', 'version', 'category', 'kind', 'assignedToMe', 'outcome', 'reasonCode', 'policy', 'requestedAt', 'updatedAt', 'decidedAt']
-    && $item['kind'] === 'verify' && $item['purpose'] === 'advance' && $item['ledger'] === 'shop', 'an inbox card: source, order number, proforma, state, one action (no amount, no payment reference)');
+$check(array_keys($item) === ['id', 'source', 'orderNumber', 'purpose', 'taskCode', 'ledger', 'proforma', 'state', 'version', 'category', 'kind', 'assignedToMe', 'outcome', 'reasonCode', 'policy', 'requestedAt', 'updatedAt', 'decidedAt', 'advance', 'awaitingPayment', 'orderedAt']
+    && $item['kind'] === 'verify' && $item['purpose'] === 'advance' && $item['ledger'] === 'shop' && $item['advance'] === null && $item['awaitingPayment'] === false && is_string($item['orderedAt']),
+    'an inbox card: source, order number, proforma, state, one action; no advance amount before the shop was read (no payment reference)');
+$check($box['counts']['waiting'] === 0 && $box['counts']['today'] === 0, 'API 2.77.9: the waiting and today counts start at zero');
 $fake = '00000000-0000-4000-8000-00000000beef';
 $error($task($f, $fake), 404, 'FINANCE_REQUEST_NOT_FOUND', 'a guessed request id reveals nothing');
 $error($task($who['fout'], $r1), 404, 'FINANCE_REQUEST_NOT_FOUND', 'another source\'s finance employee cannot open it');
@@ -300,6 +302,12 @@ $noOrderData($t1, 'task');
 $check($t1['live']['available'] === true && $t1['live']['proforma']['number'] === '0001' && $t1['live']['advance'] === ['percentage' => 30, 'required' => '300.00', 'verified' => '0.00', 'remaining' => '300.00', 'accepted' => false]
     && $t1['live']['bank'] === ['beneficiary' => 'TEST Trend Home SRL', 'bank' => 'Banca TEST', 'ibanMasked' => 'RO49 •••• •••• 0000', 'bic' => null] && $t1['live']['policy'] === 'four_eyes' && $t1['live']['transfers'] === [] && $t1['live']['proformaChanged'] === false,
     'the task: proforma, advance (required, verified, remaining), the bank account the proforma names (IBAN masked), the policy, the bank transfers, read from the shop now');
+// API 2.77.9: the task read keeps the advance for the list; the next inbox shows it without asking the shop.
+$shopCalls = count($th->requests);
+$boxAmount = $ok($inbox($f), 'inbox after the task read');
+$listedAdvance = array_column($boxAmount['items'], null, 'id')[$r1]['advance'];
+$check(count($th->requests) === $shopCalls && is_array($listedAdvance) && $listedAdvance['required'] === '300.00' && $listedAdvance['remaining'] === '300.00' && $listedAdvance['currency'] === 'RON'
+    && (int) $one('SELECT COUNT(*) FROM finance_task_amounts WHERE request_uuid = ?', [$r1]) === 1, 'the inbox lists the advance the task read stored (one join, no shop call)');
 $check(!str_contains((string) json_encode($t1, JSON_UNESCAPED_UNICODE), 'RO49AAAA1B31007593840000'), 'the full IBAN never leaves the API');
 $check(array_keys($t1['live']) === ['available', 'revision', 'readAt', 'currency', 'proforma', 'proformaChanged', 'ledger', 'advance', 'paymentReference', 'bank', 'financial', 'policy', 'recordEnabled', 'transfers', 'settledElsewhere'], 'the task carries finance fields only');
 $check($t1['allowed'] === ['start' => true, 'verify' => true, 'notReceived' => true, 'clarify' => true, 'secondCheck' => false, 'reconcile' => false], 'the employee\'s actions: start, verify, not received, clarification');
@@ -670,6 +678,7 @@ $t73 = $ok($task($f, $a73['request']['id']), 'task 73');
 $ok($cmd($f, $a73['request']['id'], 'decide', $evidence($t73, '300.00', 'BT FVR 0073')), 'transfer 73 recorded');
 $r73 = $requestRow($a73['request']['id']);
 $check($r73['state'] === 'checking' && $r73['checker_employee_uuid'] === $uuids['fsup'] && $r73['recorded_by_employee_uuid'] === $uuids['fin'], 'a recorded transfer names its second employee (never the recorder)');
+$pdo->prepare('DELETE FROM finance_task_amounts WHERE request_uuid = ?')->execute([$r73['request_uuid']]);
 $pdo->prepare('DELETE FROM finance_verification_request_events WHERE request_uuid = ?')->execute([$r73['request_uuid']]);
 $pdo->prepare('DELETE FROM finance_verification_requests WHERE request_uuid = ?')->execute([$r73['request_uuid']]);
 $ok(T::ingest($kernel, 'trendhome', $payload($id(73), 200, true, ['state' => 'waiting', 'attention' => 'transfer_pending'])), 'the shop reports the transfer pending');
@@ -771,9 +780,13 @@ $listed = array_column($big['items'], 'id');
 $categories = array_count_values(array_column($big['items'], 'category'));
 $check(array_diff($openMine, $listed) === [], 'every open task is still listed (' . count(array_diff($openMine, $listed)) . ' missing)');
 $check(array_slice($listed, 0, count($openMine)) === array_values(array_intersect($listed, $openMine)), 'the open tasks come first');
-$check(($categories['done'] ?? 0) === 100 && $big['counts']['done'] === $closedMine && $closedMine > 350, 'the closed tasks are cut at their own limit, the count still names all of them');
+$doneItems = array_values(array_filter($big['items'], static fn (array $i): bool => $i['category'] === 'done'));
+$extraWaiting = count($doneItems) - 100;
+// API 2.77.9: the not received advances (Așteaptă plata) beyond the 100 latest closed tasks follow them, flagged.
+$check(count($doneItems) >= 100 && count(array_filter(array_slice($doneItems, 100), static fn (array $i): bool => $i['awaitingPayment'])) === $extraWaiting && $big['counts']['done'] === $closedMine && $closedMine > 350,
+    'the closed tasks are cut at their own limit, the count still names all of them');
 $check($big['truncated'] === true && count($big['items']) >= $big['limit'], 'the list says it was cut (the Staff footnote shows)');
-$doneAt = array_column(array_values(array_filter($big['items'], static fn (array $i): bool => $i['category'] === 'done')), 'updatedAt');
+$doneAt = array_column(array_slice($doneItems, 0, 100), 'updatedAt');
 $sortedAt = $doneAt;
 rsort($sortedAt);
 $check($doneAt === $sortedAt, 'the most recently closed tasks are listed first');
@@ -781,8 +794,35 @@ $pdo->prepare('DELETE FROM finance_verification_requests WHERE request_uuid IN (
 $small = $ok($inbox($f), 'inbox without the added closed tasks');
 $check($small['truncated'] === false && count($small['items']) < $small['limit'], 'a list that is not cut shows no footnote');
 
+// ---- API 2.77.9: Așteaptă plata, Bugün tamamlanan and the amount refresh (bin/finance-task-amounts.php) --------------------
+$waitingRows = $all("SELECT r.request_uuid FROM finance_verification_requests r WHERE r.state = 'not_received' AND r.purpose = 'advance' AND r.open_order_uuid IS NULL AND r.updated_at >= NOW(6) - INTERVAL 30 DAY
+    AND (r.assigned_employee_uuid = ? OR r.decided_by_employee_uuid = ? OR r.checker_employee_uuid = ?) AND NOT EXISTS (SELECT 1 FROM finance_verification_requests n WHERE n.order_uuid = r.order_uuid AND n.requested_at > r.requested_at)", [$uuids['fin'], $uuids['fin'], $uuids['fin']]);
+$flagged = array_column(array_values(array_filter($small['items'], static fn (array $i): bool => $i['awaitingPayment'])), 'id');
+sort($flagged);
+$expectedWaiting = array_column($waitingRows, 'request_uuid');
+sort($expectedWaiting);
+$check($small['counts']['waiting'] === count($waitingRows) && $flagged === $expectedWaiting, 'Așteaptă plata: every not received advance no newer request replaced, flagged once (' . count($waitingRows) . ')');
+$check(count(array_unique(array_column($small['items'], 'id'))) === count($small['items']), 'no task is listed twice');
+$decidedToday = (int) $one("SELECT COUNT(DISTINCT e.request_uuid) FROM finance_verification_request_events e WHERE e.actor_employee_uuid = ? AND e.occurred_at >= ? AND e.new_state IN ('verified', 'not_received', 'needs_clarification', 'requires_manual_review')",
+    [$uuids['fin'], (new DateTimeImmutable('now', new DateTimeZone('Europe/Bucharest')))->setTime(0, 0)->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s.u')]);
+$check($small['counts']['today'] === $decidedToday, 'Bugün tamamlanan: the tasks this employee decided today (' . $decidedToday . ')');
+$rootUuid = (string) $one('SELECT employee_uuid FROM system_root_identity LIMIT 1');
+if ($rootUuid !== '') {
+    $openAdvance = (int) $one("SELECT COUNT(*) FROM finance_verification_requests WHERE open_order_uuid IS NOT NULL AND purpose = 'advance'");
+    $pdo->exec('DELETE FROM finance_task_amounts');
+    $readsBefore = (int) $one('SELECT COUNT(*) FROM order_finance_reads WHERE employee_uuid = ?', [$rootUuid]);
+    $actionsBefore = (int) $one('SELECT COUNT(*) FROM order_finance_actions');
+    $refresh = $container->financeVerificationRequests()->refreshAmounts($rootUuid, 500, 0, 'test-finance-amounts');
+    $check($refresh['read'] + $refresh['failed'] + $refresh['skipped'] === $openAdvance && $refresh['read'] > 0 && (int) $one('SELECT COUNT(*) FROM finance_task_amounts') === $refresh['read'],
+        'the refresh reads every open advance task once and stores its amount (' . json_encode($refresh) . ')');
+    $check((int) $one('SELECT COUNT(*) FROM order_finance_reads WHERE employee_uuid = ?', [$rootUuid]) === $readsBefore + $refresh['read'] + $refresh['failed'] && (int) $one('SELECT COUNT(*) FROM order_finance_actions') === $actionsBefore,
+        'each refresh read is audited under the root identity; nothing is recorded in any shop');
+    $again = $container->financeVerificationRequests()->refreshAmounts($rootUuid, 500, 0, 'test-finance-amounts-2');
+    $check($again['read'] === 0 && $again['left'] === $refresh['failed'], 'a fresh amount is not read again within 30 minutes');
+}
+
 // Leave the shared disposable database as the next suites expect it: no Confirmare, finance, request or invoice state.
-foreach (['finance_verification_request_events', 'finance_verification_requests', 'employee_finance_supervision', 'confirmare_cycle_steps', 'confirmare_proforma_cycles', 'confirmare_bank_checks', 'confirmare_reactivations',
+foreach (['finance_task_amounts', 'finance_verification_request_events', 'finance_verification_requests', 'employee_finance_supervision', 'confirmare_cycle_steps', 'confirmare_proforma_cycles', 'confirmare_bank_checks', 'confirmare_reactivations',
     'invoice_efactura_tasks', 'order_source_operations', 'order_invoice_qr_checks', 'order_shop_assignments', 'order_invoice_actions', 'order_invoice_reads', 'employee_invoice_scopes',
     'order_finance_actions', 'order_finance_reads', 'employee_finance_scopes', 'order_confirmation_source_edits', 'order_confirmation_source_reads', 'order_confirmation_contacts',
     'order_confirmation_idempotency', 'confirmare_alerts', 'order_confirmation_events', 'order_confirmations', 'workflow_cohort_activations', 'employee_confirmare_scopes', 'confirmare_operator_state'] as $table) {
