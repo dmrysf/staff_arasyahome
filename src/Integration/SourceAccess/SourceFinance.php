@@ -21,7 +21,15 @@ final class SourceFinance
     use ValidatesSourceAnswer;
 
     /** verify_transfer (YD SOFT 2.23.0, API 2.50.0): one employee records and verifies a bank transfer, policy `single` only. */
-    public const ACTIONS = ['submit_transfer', 'decide_transfer', 'acknowledge_liability', 'submit_refund', 'decide_refund', 'verify_transfer'];
+    public const ACTIONS = ['submit_transfer', 'decide_transfer', 'acknowledge_liability', 'submit_refund', 'decide_refund', 'verify_transfer', 'correct_transfer'];
+    /**
+     * YD SOFT 2.32.0 (API 2.80.0, owner 2026-11-25): how the finance employee tied a bank transfer to the order. The proforma
+     * reference, or the payer's name with the customer, another payer (relative, friend, company) or the customer's proof.
+     */
+    public const MATCH_BASES = ['proforma_reference', 'customer_name', 'other_payer', 'customer_proof'];
+    public const PAYER_PATTERN = '/^[\p{L}\p{M}0-9][\p{L}\p{M}0-9 .,&\'()-]{1,127}$/uD';
+    /** A ledger entry's state; `corrected` (YD SOFT 2.32.0): a verified transfer replaced by its correction (kept). */
+    public const ENTRY_STATES = ['submitted', 'verified', 'rejected', 'corrected'];
     /** Who completes a bank verification in the shop (YD SOFT 2.23.0; absent from older shops: four_eyes). */
     public const VERIFICATION_POLICIES = ['four_eyes', 'single'];
     public const PURPOSES = ['advance', 'additional_payment'];
@@ -47,6 +55,10 @@ final class SourceFinance
         // YD SOFT 2.23.0 (verify_transfer): the shop's policy is four eyes; the statement's payment reference is not the
         // order's; another currency than the order's; no statement confirmation; no advance proforma to verify against.
         'single_verification_disabled', 'payment_reference_mismatch', 'currency_mismatch', 'bank_statement_required', 'proforma_missing',
+        // YD SOFT 2.32.0: the payer or the evidence of a transfer matched without the proforma reference is missing or not
+        // valid; the correction of a verified advance transfer is refused (another kind of entry, another employee, or a
+        // binding document already exists).
+        'match_evidence_required', 'match_evidence_invalid', 'correction_not_allowed', 'same_employee_required', 'invoice_exists', 'awb_exists',
     ];
     /**
      * Refusals of the YD SOFT safety rules (owner rule 2 and K-1), valid only as a 409 answer to the actions that can
@@ -60,7 +72,7 @@ final class SourceFinance
      */
     public const ACTION_REFUSALS = [
         'finance_open' => ['submit_refund', 'decide_refund'],
-        'order_cancelled' => ['submit_transfer', 'decide_transfer', 'verify_transfer'],
+        'order_cancelled' => ['submit_transfer', 'decide_transfer', 'verify_transfer', 'correct_transfer'],
     ];
     /** YD SOFT 2.18.0: the shop's record of bank transfers that match no order (TransferExceptions). */
     public const EXCEPTION_ACTIONS = ['record_exception', 'resolve_exception'];
@@ -150,7 +162,7 @@ final class SourceFinance
                     'amount' => self::money($entry['amount'] ?? null),
                     'reference' => self::text($entry['reference'] ?? null, 64, $kind === 'liability_ack'),
                     'valueDate' => ($entry['valueDate'] ?? null) === null ? null : self::pattern($entry['valueDate'], '/^\d{4}-\d{2}-\d{2}$/D'),
-                    'state' => self::choice($entry['state'] ?? null, ['submitted', 'verified', 'rejected']),
+                    'state' => self::choice($entry['state'] ?? null, self::ENTRY_STATES),
                     'submittedBy' => self::pattern($entry['submittedBy'] ?? null, self::UUID),
                     'submittedAt' => self::instant($entry['submittedAt'] ?? null),
                     'decidedBy' => ($entry['decidedBy'] ?? null) === null ? null : self::pattern($entry['decidedBy'], self::UUID),
@@ -161,6 +173,11 @@ final class SourceFinance
                     'receipt' => ($entry['receipt'] ?? null) === null ? null : self::choice($entry['receipt'], self::RECEIPTS),
                     'collector' => ($entry['collector'] ?? null) === null ? null : self::pattern($entry['collector'], self::COLLECTOR_PATTERN),
                     'flags' => array_map(static fn (mixed $flag): string => self::choice($flag, self::FLAGS), self::flags($entry['flags'] ?? [])),
+                    // YD SOFT 2.32.0 (absent from an older shop: matched by the proforma reference, never corrected).
+                    'payer' => ($entry['payer'] ?? null) === null ? null : self::pattern($entry['payer'], self::PAYER_PATTERN),
+                    'matchBasis' => ($entry['matchBasis'] ?? null) === null ? null : self::choice($entry['matchBasis'], self::MATCH_BASES),
+                    'matchNote' => ($entry['matchNote'] ?? null) === null ? null : self::text($entry['matchNote'], 255),
+                    'corrects' => ($entry['corrects'] ?? null) === null ? null : self::pattern($entry['corrects'], self::UUID),
                 ];
             }),
             // 2.19.0 (absent from a 2.18.0 shop).
@@ -175,6 +192,9 @@ final class SourceFinance
                 'verification' => ($capabilities['verification'] ?? null) === null ? 'four_eyes' : self::choice($capabilities['verification'], self::VERIFICATION_POLICIES),
                 // YD SOFT 2.23.0: where the order's payments are recorded (absent from an older shop: its finance record).
                 'ledger' => ($capabilities['ledger'] ?? null) === null ? 'shop' : self::choice($capabilities['ledger'], ['shop', 'manual']),
+                // YD SOFT 2.32.0 (absent from an older shop: false): the payer match and the correction of a transfer.
+                'match' => ($capabilities['match'] ?? null) === true,
+                'correction' => ($capabilities['correction'] ?? null) === true,
             ],
         ];
         if ($summary['capabilities']['electronicRefund'] !== false || ($cod && $advance === null)) {

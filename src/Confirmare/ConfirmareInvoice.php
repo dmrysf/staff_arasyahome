@@ -1064,7 +1064,7 @@ final readonly class ConfirmareInvoice
      *
      * @return array{state: string, employeeId?: string, reason?: string}
      */
-    public function autoRoute(string $globalOrderId): array
+    public function autoRoute(string $globalOrderId, string $keyPrefix = 'auto-awb-ready-'): array
     {
         $globalId = $this->globalId($globalOrderId);
         $row = $this->row($globalId);
@@ -1094,7 +1094,7 @@ final readonly class ConfirmareInvoice
         if ($chosen === null) {
             return ['state' => 'skipped', 'reason' => 'no_shop_employee'];
         }
-        $key = 'auto-awb-ready-' . $orderUuid;
+        $key = $keyPrefix . $orderUuid;
         $hmac = hash_hmac('sha256', json_encode([$globalId, 'assign', $chosen, null], JSON_THROW_ON_ERROR), $this->hmacKey, true);
         $this->pdo->beginTransaction();
         try {
@@ -1129,6 +1129,42 @@ final readonly class ConfirmareInvoice
             return ['state' => 'skipped', 'reason' => $e instanceof PDOException ? 'assignment_changed' : 'routing_failed'];
         }
         return ['state' => 'routed', 'employeeId' => $chosen];
+    }
+
+    /**
+     * API 2.80.0 (owner 2026-11-25): an approved Trend Home or Outlet Perdele order whose money finance accepted and whose
+     * production is cleared (every ConfirmationClearance condition) goes to its shop employee by itself: nobody routes it
+     * by hand any more. The same rules as autoRoute (routeBlockers, shopEligible, the shop employee with the `issue`
+     * invoice scope and the fewest active orders, from the central configuration), key `auto-paid-<order>`. Database only:
+     * no shop call. An order already routed, held, cancelled or not cleared is not touched.
+     *
+     * @return array{seen: int, routed: int, skipped: array<string, int>}
+     */
+    public function routePaid(int $limit = 100): array
+    {
+        $statement = $this->pdo->prepare("SELECT o.global_order_id FROM operational_orders o
+            INNER JOIN order_confirmations c ON c.order_uuid = o.order_uuid AND c.status = 'approved' AND c.production_cleared = 1
+            WHERE o.workflow_cohort = ? AND o.source_key IN ('trendhome', 'outletperdele') AND o.source_financial_state = 'cleared'
+              AND o.operational_status <> 'unavailable' AND o.cancellation_state IS NULL AND o.source_reported_unavailable_at IS NULL
+              AND NOT EXISTS (SELECT 1 FROM order_shop_assignments a WHERE a.active_order_uuid = o.order_uuid)
+            ORDER BY c.cleared_at, o.order_uuid LIMIT " . max(1, min(500, $limit)));
+        $statement->execute([\Arasya\Operations\Production\WorkflowCohort::CONFIRMARE]);
+        $result = ['seen' => 0, 'routed' => 0, 'skipped' => []];
+        foreach ($statement->fetchAll(PDO::FETCH_COLUMN) as $globalId) {
+            $result['seen']++;
+            try {
+                $answer = $this->autoRoute((string) $globalId, 'auto-paid-');
+            } catch (Throwable) {
+                $answer = ['state' => 'skipped', 'reason' => 'routing_failed'];
+            }
+            if ($answer['state'] === 'routed') {
+                $result['routed']++;
+            } elseif ($answer['state'] === 'skipped') {
+                $reason = (string) ($answer['reason'] ?? 'skipped');
+                $result['skipped'][$reason] = ($result['skipped'][$reason] ?? 0) + 1;
+            }
+        }
+        return $result;
     }
 
     /** @return array<string, mixed>|null the order's active shop assignment */
