@@ -1,8 +1,20 @@
 <?php
 declare(strict_types=1);
+/** Restore a pre-059 disposable test fixture (the 044 operation kind CHECK, without awb_reopened). This is NOT a deployment/rollback mechanism. */
+function restorePreAwbReopenedTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='059_awb_reopened.sql'")->fetchColumn()) return;
+    $pdo->exec("DELETE FROM order_source_operations WHERE kind='awb_reopened'");
+    $pdo->exec('ALTER TABLE order_source_operations DROP CONSTRAINT chk_order_source_operations_kind_044');
+    $pdo->exec("ALTER TABLE order_source_operations ADD CONSTRAINT chk_order_source_operations_kind_044 CHECK (kind IN ('order_reactivate', 'awb_create', 'awb_address_task', 'awb_address_done', 'awb_cod_corrected', 'card_refund_full', 'card_refund_record', 'card_refund_verify'))");
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='059_awb_reopened.sql'");
+}
+
 /** Restore a pre-057 disposable test fixture (no B2B test cohort or B2B sold-meter ledger). This is NOT a deployment/rollback mechanism. */
 function restorePreB2bSoldMetersTestSchema(PDO $pdo): void
 {
+    restorePreAwbReopenedTestSchema($pdo);
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
     if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='057_b2b_sold_meters.sql'")->fetchColumn()) return;
     $pdo->exec('DROP TABLE IF EXISTS b2b_sold_meter_ledger');

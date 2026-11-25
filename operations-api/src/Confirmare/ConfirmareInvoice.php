@@ -871,7 +871,7 @@ final readonly class ConfirmareInvoice
                 FROM order_shop_assignments a INNER JOIN operational_orders o ON o.order_uuid = a.order_uuid LEFT JOIN employees b ON b.employee_uuid = a.assigned_by_employee_uuid
                 WHERE a.employee_uuid = ? AND a.state = 'active'
                   AND NOT (o.production_completed_at IS NOT NULL AND {$issued}
-                    AND EXISTS (SELECT 1 FROM order_source_operations w WHERE w.order_uuid = o.order_uuid AND w.kind = 'awb_create' AND w.state = 'applied'))
+                    AND " . ConfirmareOperations::awbDoneSql('o') . ")
                 ORDER BY {$issued}, a.assigned_at DESC LIMIT " . ConfirmareService::QUEUE_LIMIT);
             $statement->execute([$actor->employeeUuid]);
             $rows = $statement->fetchAll(PDO::FETCH_ASSOC);

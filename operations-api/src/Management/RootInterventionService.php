@@ -66,6 +66,9 @@ final readonly class RootInterventionService
         'efactura' => ['taskId', 'expectedVersion', 'outcome'],
         'operation' => ['kind', 'fields'],
         'operation-reconcile' => ['idempotencyKey'],
+        // API 2.77.8 (owner 2026-11-25): the AWB step of an order whose AWB was cancelled in the shop after Staff made it is
+        // opened again, only when the shop answers it has no AWB (ConfirmareOperations::reopenAwb). No AWB is made.
+        'awb-reopen' => [],
         'edit-catalog' => [],
         'edit-product' => ['sku'],
         'edit-preview' => ['expectedVersion', 'operations'],
@@ -297,6 +300,7 @@ final readonly class RootInterventionService
             'efactura' => $this->efacturaRecord($actor, $globalId, $input),
             'operation' => $this->operations->act($actor, $globalId, $this->string($input['kind'] ?? null, 'kind'), $this->fields($input['fields'] ?? []), $key, $requestId),
             'operation-reconcile' => $this->operations->reconcile($actor, $globalId, $input['idempotencyKey'] ?? null, $requestId),
+            'awb-reopen' => $this->operations->reopenAwb($actor, $globalId, $key, $requestId),
             'edit-catalog' => $this->edits->catalog($actor, $globalId, $requestId),
             'edit-product' => $this->edits->product($actor, $globalId, $input['sku'] ?? null, $requestId),
             'edit-preview' => $this->edits->preview($actor, $globalId, $input['expectedVersion'] ?? null, $input['operations'] ?? null, $requestId),

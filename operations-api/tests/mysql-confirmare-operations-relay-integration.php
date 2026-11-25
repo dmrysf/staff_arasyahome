@@ -691,6 +691,44 @@ $pdo->prepare("DELETE FROM order_confirmations WHERE order_uuid IN ({$in})")->ex
 $pdo->prepare("DELETE FROM operational_orders WHERE order_uuid IN ({$in})")->execute($clones);
 $pdo->exec('DROP TEMPORARY TABLE IF EXISTS t_awbq_orders, t_awbq_confirm, t_awbq_ops');
 
+// ---- API 2.77.8 (owner 2026-11-25, Trend Home 64790): an AWB cancelled in the shop after Staff made it -----------------------
+// The applied request counted as "AWB made" for ever: the order left every AWB queue while the shop had no AWB. Root reopens the
+// AWB step only after the shop answers it has none; root makes no AWB, the routed employee makes it again.
+$rootIdentity = $container->employeeRepository()->findByUuid((string) $one('SELECT employee_uuid FROM system_root_identity LIMIT 1'));
+$desk = $container->rootIntervention();
+$reopen = static fn (string $key, string $gid): array => $desk->act($rootIdentity, $gid, 'awb-reopen', ['reason' => 'AWB anulat in magazin dupa creare; se reface din Staff'], $key, 'test-awb-reopen');
+$refusedReopen = static function (string $key, string $gid, string $reason) use ($reopen): bool {
+    try { $reopen($key, $gid); return false; } catch (\Arasya\Operations\Http\ApiException $e) { return ($e->details['reason'] ?? null) === $reason; }
+};
+$queueOf = static fn (array $w): array => array_column($ok($get($w, '/confirmare/awb-queue'), 'AWB queue')['items'], 'globalOrderId');
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$check($th->orders[$id(2)]['ops']['awb'] !== null && !in_array($g(2), $queueOf($who['cmgr']), true), 'order 2 has its AWB: not in the AWB queue');
+$check($refusedReopen('awb-reopen-test-key-0001', $g(2), 'awb_exists'), 'refused while the shop still has the AWB');
+$check($refusedReopen('awb-reopen-test-key-0002', $g(5), 'awb_not_made'), 'refused for an order whose AWB was never made');
+$fanBefore = $th->fanAwbs[$id(2)] ?? 0;
+$th->orders[$id(2)]['ops']['awb'] = null; // TEST ONLY: the AWB was cancelled in WP admin
+$reopened = $reopen('awb-reopen-test-key-0003', $g(2));
+$check($reopened['state'] === 'applied' && $reopened['result'] === 'reopened' && $reopened['shop']['awb']['state'] === 'none', 'root reopens the AWB step: ' . json_encode($reopened));
+$check((int) $one("SELECT COUNT(*) FROM order_source_operations WHERE order_uuid = ? AND kind = 'awb_reopened' AND state = 'applied'", [$orderUuid($g(2))]) === 1
+    && (int) $one("SELECT COUNT(*) FROM iam_audit_events WHERE action = 'intervention.awb-reopen' AND target_id = ? AND JSON_UNQUOTE(JSON_EXTRACT(metadata_json, '$.outcome')) = 'applied'", [$g(2)]) === 1
+    && ($th->fanAwbs[$id(2)] ?? 0) === $fanBefore, 'one reopening row, audited with the reason; FAN Courier is not asked');
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$check(in_array($g(2), $queueOf($who['cmgr']), true) && in_array($g(2), $queueOf($who['cdoc']), true), 'the order is back in the AWB queue of the manager and of the routed employee');
+$check($reopen('awb-reopen-test-key-0003', $g(2))['state'] === 'applied'
+    && (int) $one("SELECT COUNT(*) FROM order_source_operations WHERE order_uuid = ? AND kind = 'awb_reopened'", [$orderUuid($g(2))]) === 1, 'the same key replays, nothing written twice');
+$check($refusedReopen('awb-reopen-test-key-0004', $g(2), 'awb_not_made'), 'a second reopening is refused while the AWB step is open');
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$owed = $state($who['cdoc'], $g(2))['shop']['awb']['cod'];
+$again = $ok($operate($who['cdoc'], $g(2), 'awb', ['parcels' => 1, 'expectedCod' => $owed]), 'the routed employee makes the AWB again');
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$check($again['state'] === 'applied' && ($th->fanAwbs[$id(2)] ?? 0) === $fanBefore + 1 && !in_array($g(2), $queueOf($who['cmgr']), true), 'with the new AWB the order leaves the queue again');
+$check($refusedReopen('awb-reopen-test-key-0005', $g(2), 'awb_exists'), 'and cannot be reopened while the new AWB is active');
+$managerOutsideDesk = static function () use ($operations, $container, $uuids, $g): bool {
+    try { $operations->reopenAwb($container->employeeRepository()->findByUuid($uuids['cmgr']), $g(2), 'awb-reopen-test-key-0006', 'test-awb-reopen'); return false; }
+    catch (\Arasya\Operations\Http\ApiException $e) { return $e->errorCode === 'CONFIRMARE_OPERATION_DENIED'; }
+};
+$check($managerOutsideDesk(), 'only the root desk reopens (an invoice manager is refused)');
+
 // ---- Cleanup (later suites share the database in CI) ------------------------------------------------------------------------
 $clear();
 fwrite(STDOUT, "MySQL Confirmare operations relay integration: {$checks} checks passed.\n");
