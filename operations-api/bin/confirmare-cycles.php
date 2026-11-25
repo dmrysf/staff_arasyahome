@@ -59,8 +59,16 @@ try {
     } catch (Throwable $e) {
         fwrite(STDOUT, "confirmare-cycles: clearance sweep failed\n");
     }
-    fwrite(STDOUT, sprintf("confirmare-cycles: seen %d, advanced %d, skipped %d, reactivations released %d, awb readiness routed %d, invoiced %d, ready %d, blocked %d, lost answers settled %d, refused %d, still open %d, clearance opened %d\n",
-        $result['seen'], $result['advanced'], $result['skipped'], $released, $prepared['routed'], $prepared['invoiced'], $prepared['ready'], $prepared['blocked'], $lost['applied'], $lost['rejected'], $lost['open'], $sweep['cleared']));
+    // API 2.80.0 (owner 2026-11-25): an approved order whose money finance accepted and whose production is cleared goes to
+    // its shop employee by itself (ConfirmareInvoice::routePaid, database only, no shop call).
+    $paid = ['seen' => 0, 'routed' => 0];
+    try {
+        $paid = $container->confirmareInvoice()->routePaid($limit) + $paid;
+    } catch (Throwable $e) {
+        fwrite(STDOUT, "confirmare-cycles: paid routing failed\n");
+    }
+    fwrite(STDOUT, sprintf("confirmare-cycles: seen %d, advanced %d, skipped %d, reactivations released %d, awb readiness routed %d, invoiced %d, ready %d, blocked %d, lost answers settled %d, refused %d, still open %d, clearance opened %d, paid routed %d of %d\n",
+        $result['seen'], $result['advanced'], $result['skipped'], $released, $prepared['routed'], $prepared['invoiced'], $prepared['ready'], $prepared['blocked'], $lost['applied'], $lost['rejected'], $lost['open'], $sweep['cleared'], $paid['routed'], $paid['seen']));
 } finally {
     $pdo->query("SELECT RELEASE_LOCK('arasya_confirmare_cycles')");
 }

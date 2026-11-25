@@ -256,11 +256,27 @@ final readonly class ConfirmareController
         if ($path === '/confirmare/finance/requests' && $request->method === 'GET') {
             return $this->json($this->requests->inbox($actor));
         }
+        // API 2.80.0: the finance employee's closed tasks beyond the inbox, with search and a cursor.
+        if ($path === '/confirmare/finance/requests/history' && $request->method === 'GET') {
+            return $this->json($this->requests->history($actor, ['q' => $request->query('q'), 'before' => $request->query('before'), 'source' => $request->query('source')]));
+        }
         if (preg_match('#^/confirmare/finance/requests/([0-9a-f-]{36})$#D', $path, $m) === 1) {
             if ($request->method !== 'GET') {
                 throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
             }
             return $this->json($this->requests->task($actor, $m[1], $request->requestId));
+        }
+        if (preg_match('#^/confirmare/finance/requests/([0-9a-f-]{36})/(add-payment|correct-payment)$#D', $path, $m) === 1) {
+            // API 2.80.0 (owner 2026-11-25): a later transfer of the order, or the correction of one's own transfer.
+            if ($request->method !== 'POST') {
+                throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
+            }
+            $this->csrf->requireValid($session->rawToken, $request->header('x-csrf-token'));
+            $key = $request->header('idempotency-key') ?? '';
+            $input = $request->json(4096);
+            return $this->json($m[2] === 'add-payment'
+                ? $this->requests->addPayment($actor, $m[1], $input, $key, $request->requestId)
+                : $this->requests->correctPayment($actor, $m[1], $input, $key, $request->requestId));
         }
         if (preg_match('#^/confirmare/finance/requests/([0-9a-f-]{36})/(start|decide|second-check|reconcile)$#D', $path, $m) === 1) {
             if ($request->method !== 'POST') {

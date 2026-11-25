@@ -77,6 +77,13 @@ final class SourceAccessFakeShop implements SourceAccessTransport
     public string $financeRefunds = 'manual';
     /** YD SOFT 2.23.0: who completes a bank verification (four_eyes | single); null answers like an older shop (absent). */
     public ?string $financeVerification = null;
+    /**
+     * YD SOFT 2.32.0 (API 2.80.0): any verified positive advance clears, a transfer may be matched by the payer
+     * (matchBasis, payerName, matchNote), and correct_transfer exists; the summary announces match and correction.
+     */
+    public bool $acceptsRealPayment = false;
+    /** YD SOFT 2.32.0: a binding document of the order (stops correct_transfer): null, invoice or awb. */
+    public ?string $bindingDocument = null;
     /** @var array<string, array{order: string, hash: string, status: int, body: array<string, mixed>}> employee|key => stored answer */
     public array $financeAnswers = [];
     /** SmartBill knobs: the outcome of the next SmartBill call; 'answer_lost' / 'crash' after the shop ran an action. */
@@ -507,8 +514,13 @@ final class SourceAccessFakeShop implements SourceAccessTransport
                 return $refuse('currency_mismatch', 422);
             }
             $expected = 'TH' . preg_replace('/[^A-Z0-9]/', '', strtoupper((string) ($this->orders[$orderId]['number'] ?? $this->orders[$orderId]['id'])));
-            if (($input['paymentReference'] ?? null) !== $expected) {
-                return $refuse('payment_reference_mismatch', 422);
+            $basis = $input['matchBasis'] ?? null;
+            if (!$this->acceptsRealPayment || $basis === null || $basis === 'proforma_reference') {
+                if (($input['paymentReference'] ?? null) !== $expected) {
+                    return $refuse('payment_reference_mismatch', 422);
+                }
+            } elseif (trim((string) ($input['payerName'] ?? '')) === '' || ($basis !== 'customer_name' && mb_strlen(trim((string) ($input['matchNote'] ?? ''))) < 3)) {
+                return $refuse('match_evidence_required', 422);
             }
             foreach ($f['entries'] as $entry) {
                 if ($entry['kind'] === 'transfer_in' && $entry['state'] === 'submitted') {
@@ -531,7 +543,57 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             $at = gmdate('Y-m-d\TH:i:s\Z', $now);
             $f['entries'][] = ['id' => $entryId, 'kind' => 'transfer_in', 'purpose' => 'advance', 'amount' => number_format($amount, 2, '.', ''), 'reference' => (string) $input['reference'], 'valueDate' => (string) $input['valueDate'],
                 'state' => 'verified', 'submittedBy' => $employee, 'submittedAt' => $at, 'decidedBy' => $employee, 'decidedAt' => $at, 'decisionCode' => 'verified',
-                'method' => 'bank_transfer', 'receipt' => null, 'collector' => null, 'flags' => ['single_verification']];
+                'method' => 'bank_transfer', 'receipt' => null, 'collector' => null, 'flags' => ['single_verification']]
+                + ($this->acceptsRealPayment ? ['payer' => $input['payerName'] ?? null, 'matchBasis' => $basis ?? 'proforma_reference', 'matchNote' => $input['matchNote'] ?? null, 'corrects' => null] : []);
+        } elseif ($action === 'correct_transfer' && $this->acceptsRealPayment) {
+            // YD SOFT 2.32.0: the employee who verified an advance bank transfer corrects it before any binding document.
+            if ($this->financeVerification !== 'single') {
+                return $refuse('single_verification_disabled');
+            }
+            if (($input['bankStatementConfirmed'] ?? null) !== true || mb_strlen(trim((string) ($input['reasonNote'] ?? ''))) < 3) {
+                return $refuse('invalid_request', 422);
+            }
+            if ($this->safetyRules && $cancelled) {
+                return $refuse('order_cancelled');
+            }
+            $index = null;
+            foreach ($f['entries'] as $i => $entry) {
+                if ($entry['id'] === ($input['entryId'] ?? null)) {
+                    $index = $i;
+                }
+            }
+            if ($index === null) {
+                return $refuse('entry_not_found');
+            }
+            $old = $f['entries'][$index];
+            if ($old['kind'] !== 'transfer_in' || $old['purpose'] !== 'advance' || $old['state'] !== 'verified' || !in_array('single_verification', $old['flags'] ?? [], true)) {
+                return $refuse('correction_not_allowed');
+            }
+            if ($old['submittedBy'] !== $employee) {
+                return $refuse('same_employee_required');
+            }
+            if ($this->bindingDocument !== null) {
+                return $refuse($this->bindingDocument === 'awb' ? 'awb_exists' : 'invoice_exists');
+            }
+            $amount = (float) ($input['amount'] ?? 0);
+            if ($amount > max(0, $numbers['total'] - ($numbers['received'] - (float) $old['amount'])) + 0.001) {
+                return $refuse('amount_exceeds_balance');
+            }
+            $normalized = preg_replace('/[^A-Z0-9]/', '', strtoupper((string) ($input['reference'] ?? '')));
+            foreach ($this->orders as $other) {
+                foreach ($other['finance']['entries'] ?? [] as $entry) {
+                    if ($entry['kind'] === 'transfer_in' && !in_array($entry['state'], ['rejected', 'corrected'], true) && $entry['id'] !== $old['id'] && preg_replace('/[^A-Z0-9]/', '', strtoupper($entry['reference'])) === $normalized) {
+                        return $refuse('duplicate_reference');
+                    }
+                }
+            }
+            $f['entries'][$index]['state'] = 'corrected';
+            $entryId = $this->nextEntryId();
+            $at = gmdate('Y-m-d\TH:i:s\Z', $now);
+            $f['entries'][] = ['id' => $entryId, 'kind' => 'transfer_in', 'purpose' => 'advance', 'amount' => number_format($amount, 2, '.', ''), 'reference' => (string) $input['reference'], 'valueDate' => (string) $input['valueDate'],
+                'state' => 'verified', 'submittedBy' => $employee, 'submittedAt' => $at, 'decidedBy' => $employee, 'decidedAt' => $at, 'decisionCode' => 'corrected',
+                'method' => 'bank_transfer', 'receipt' => null, 'collector' => null, 'flags' => ['single_verification'],
+                'payer' => $input['payerName'] ?? ($old['payer'] ?? null), 'matchBasis' => $input['matchBasis'] ?? ($old['matchBasis'] ?? 'proforma_reference'), 'matchNote' => $input['matchNote'] ?? ($old['matchNote'] ?? null), 'corrects' => $old['id']];
         } elseif ($action === 'decide_transfer' || $action === 'decide_refund') {
             if ($action === 'decide_refund' && ($input['productionComplete'] ?? null) !== true) {
                 return $refuse('production_not_complete');
@@ -629,6 +691,8 @@ final class SourceAccessFakeShop implements SourceAccessTransport
         $state = match (true) {
             $liability > 0 => $acknowledged ? ['cleared', $cod ? 'advance_collected' : 'online_payment', $pendingRefund ? 'refund_pending' : 'refund_liability'] : ['waiting', null, 'refund_due'],
             !$cod && $total > $received + 0.001 => ['waiting', null, $pendingTransfer ? 'transfer_pending' : 'additional_payment_due'],
+            // YD SOFT 2.32.0: any verified positive advance clears (no minimum); 0 or a transfer in verification never does.
+            $cod && $this->acceptsRealPayment && $received > 0 && !$pendingTransfer => ['cleared', 'advance_collected', null],
             $cod && $received + 0.005 < $required => [$received > 0 ? 'partial' : 'waiting', null, $pendingTransfer ? 'transfer_pending' : null],
             default => ['cleared', $cod ? 'advance_collected' : 'online_payment', null],
         };
@@ -673,14 +737,15 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             'financial' => ['state' => $n['state'], 'basis' => $n['basis'], 'attention' => $n['attention']],
             'entries' => array_map(static fn (array $e): array => array_diff_key($e, ['pricing' => true]), $f['entries'] ?? []),
             'capabilities' => ['record' => $this->financeRecord && ($o['eligible'] ?? true) === true, 'refunds' => $this->financeRefunds, 'electronicRefund' => false] + ($this->financeVerification === null ? [] : ['verification' => $this->financeVerification])
-                + ($this->financeVerification === null ? [] : ['ledger' => ($o['eligible'] ?? true) === true ? 'shop' : 'manual']),
+                + ($this->financeVerification === null ? [] : ['ledger' => ($o['eligible'] ?? true) === true ? 'shop' : 'manual'])
+                + ($this->acceptsRealPayment ? ['match' => true, 'correction' => true] : []),
         ] + ($this->legacyProforma ? [] : [
             // YD SOFT 2.19.0: the one money calculation (TEST numbers of this fake), no deadline, no AWB.
             'position' => ['currency' => 'RON', 'percentage' => $n['cod'] ? 30 : null, 'total' => $money($n['total']), 'advanceRequired' => $n['cod'] ? $money($n['required']) : null,
                 'received' => $money($n['received'] + $n['refunded']), 'refunded' => $money($n['refunded']), 'net' => $money($n['received']), 'remaining' => $money(max(0, $n['total'] - $n['received'])),
                 'excess' => $money(max(0, $n['received'] - $n['total'])), 'advanceGap' => $n['cod'] ? $money(max(0, $n['required'] - $n['received'])) : null, 'known' => true],
             'deadline' => ['state' => 'none', 'firstCollection' => null, 'deadline' => null, 'daysLeft' => null, 'level' => null],
-            'cod' => ['state' => 'none', 'awb' => null, 'awbCod' => null, 'expected' => null, 'status' => null],
+            'cod' => ['state' => 'none', 'awb' => $this->bindingDocument === 'awb' ? 'TEST-AWB-1' : null, 'awbCod' => null, 'expected' => null, 'status' => null],
         ]);
     }
 

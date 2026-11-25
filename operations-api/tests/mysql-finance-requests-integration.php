@@ -89,8 +89,14 @@ $pdo->exec('UPDATE operational_orders SET workflow_cohort = NULL, workflow_cohor
 // ---- 0. Migration 044: three tables, the verify capability, a re-run changes nothing -----------------------------------
 $check((int) $one("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name IN ('employee_finance_supervision', 'finance_verification_requests', 'finance_verification_request_events')") === 3, 'migration 044 creates its three tables');
 (new SqlFileRunner($pdo))->run(dirname(__DIR__) . '/database/migrations/044_finance_verification_requests.sql');
+// API 2.80.0: 061 replaces the 044 action CHECK (correct_transfer); a manual re-run of 044 is followed by 061 again.
+(new SqlFileRunner($pdo))->run(dirname(__DIR__) . '/database/migrations/061_finance_payment_corrections.sql');
+(new SqlFileRunner($pdo))->run(dirname(__DIR__) . '/database/migrations/061_finance_payment_corrections.sql');
 $check((int) $one("SELECT COUNT(*) FROM information_schema.table_constraints WHERE constraint_schema = DATABASE() AND table_name = 'employee_finance_scopes' AND constraint_name LIKE 'chk_employee_finance_scopes_capability%'") === 1
-    && (int) $one("SELECT COUNT(*) FROM information_schema.table_constraints WHERE constraint_schema = DATABASE() AND table_name = 'order_finance_actions' AND constraint_name LIKE 'chk_order_finance_actions_action%'") === 1, 'running 044 again keeps exactly one capability CHECK and one action CHECK');
+    && (int) $one("SELECT COUNT(*) FROM information_schema.table_constraints WHERE constraint_schema = DATABASE() AND table_name = 'order_finance_actions' AND constraint_name LIKE 'chk_order_finance_actions_action%'") === 1
+    && (int) $one("SELECT COUNT(*) FROM information_schema.table_constraints WHERE constraint_schema = DATABASE() AND table_name = 'order_finance_actions' AND constraint_name = 'chk_order_finance_actions_action_061'") === 1
+    && (int) $one("SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = 'finance_verification_requests' AND index_name = 'idx_finance_verification_requests_decider'") >= 1,
+    'running 044 and then 061 again keeps exactly one capability CHECK and one action CHECK (061, with correct_transfer), and the decider index');
 
 $th = new SourceAccessFakeShop('trendhome', 'th-test', FVR_KEY);
 $op = new SourceAccessFakeShop('outletperdele', 'op-test', FVR_KEY . '-outlet');
@@ -254,7 +260,13 @@ $check(array_values(array_filter($columns, static fn (string $c): bool => preg_m
     'the task tables hold no amount, currency, payment reference, IBAN, bank transaction or customer data (finance data comes from the shop at read time)');
 $error($ask($who['rop'], $g(13)), 409, 'FINANCE_REQUEST_NO_PROFORMA', 'no advance proforma: nothing to verify against');
 $error($ask($who['rop'], $g(20)), 409, 'FINANCE_REQUEST_NOT_COD', 'an order already paid online needs no advance verification');
-$error($ask($who['rop'], $g(30)), 409, 'FINANCE_REQUEST_NOT_APPROVED', 'an order not approved yet');
+// API 2.80.0 (owner 2026-11-25): operator and finance work in parallel: a pending (not yet approved) order with its proforma
+// is checked by finance too; production still needs the approval (ConfirmationClearance). Withdrawn again for what follows.
+$a30 = $ok($ask($who['rop'], $g(30)), 'a pending order with its proforma goes to finance (parallel work)');
+$check($a30['created'] === true && $a30['request']['state'] === 'assigned', 'the pending order\'s task is assigned to finance');
+$ok($call($who['rop'], 'POST', $orderPath($g(30), '/finance-request/cancel'), ['expectedVersion' => $a30['request']['version'], 'reasonCode' => 'requested_by_mistake']), 'the pending order\'s task withdrawn');
+$pdo->prepare("DELETE e FROM finance_verification_request_events e JOIN finance_verification_requests r ON r.request_uuid = e.request_uuid JOIN operational_orders o ON o.order_uuid = r.order_uuid WHERE o.global_order_id = ?")->execute([$g(30)]);
+$pdo->prepare("DELETE r FROM finance_verification_requests r JOIN operational_orders o ON o.order_uuid = r.order_uuid WHERE o.global_order_id = ?")->execute([$g(30)]);
 $error($ask($who['fin'], $g(2)), 404, 'CONFIRMARE_NOT_FOUND', 'a finance employee cannot create a request');
 $error($ask($who['rop2'], $g(2)), 404, 'CONFIRMARE_NOT_FOUND', 'another shop\'s operator cannot either');
 $error($call($who['rop'], 'POST', $orderPath($g(2), '/finance-request'), ['purpose' => 'refund']), 422, 'FINANCE_REQUEST_INVALID', 'only an advance');
@@ -286,7 +298,7 @@ $check(in_array($r1, $ids, true) && count($ids) === $mine && $box['counts']['tod
     'the inbox: exactly the requests assigned to this employee');
 $noOrderData($box, 'inbox');
 $item = array_column($box['items'], null, 'id')[$r1];
-$check(array_keys($item) === ['id', 'source', 'orderNumber', 'purpose', 'taskCode', 'ledger', 'proforma', 'state', 'version', 'category', 'kind', 'assignedToMe', 'outcome', 'reasonCode', 'policy', 'requestedAt', 'updatedAt', 'decidedAt', 'advance', 'awaitingPayment', 'orderedAt']
+$check(array_keys($item) === ['id', 'source', 'orderNumber', 'purpose', 'taskCode', 'ledger', 'proforma', 'state', 'version', 'category', 'kind', 'assignedToMe', 'outcome', 'reasonCode', 'policy', 'requestedAt', 'updatedAt', 'decidedAt', 'decidedByMe', 'recheckAt', 'advance', 'awaitingPayment', 'orderedAt']
     && $item['kind'] === 'verify' && $item['purpose'] === 'advance' && $item['ledger'] === 'shop' && $item['advance'] === null && $item['awaitingPayment'] === false && is_string($item['orderedAt']),
     'an inbox card: source, order number, proforma, state, one action; no advance amount before the shop was read (no payment reference)');
 $check($box['counts']['waiting'] === 0 && $box['counts']['today'] === 0, 'API 2.77.9: the waiting and today counts start at zero');
@@ -309,8 +321,8 @@ $listedAdvance = array_column($boxAmount['items'], null, 'id')[$r1]['advance'];
 $check(count($th->requests) === $shopCalls && is_array($listedAdvance) && $listedAdvance['required'] === '300.00' && $listedAdvance['remaining'] === '300.00' && $listedAdvance['currency'] === 'RON'
     && (int) $one('SELECT COUNT(*) FROM finance_task_amounts WHERE request_uuid = ?', [$r1]) === 1, 'the inbox lists the advance the task read stored (one join, no shop call)');
 $check(!str_contains((string) json_encode($t1, JSON_UNESCAPED_UNICODE), 'RO49AAAA1B31007593840000'), 'the full IBAN never leaves the API');
-$check(array_keys($t1['live']) === ['available', 'revision', 'readAt', 'currency', 'proforma', 'proformaChanged', 'ledger', 'advance', 'paymentReference', 'bank', 'financial', 'policy', 'recordEnabled', 'transfers', 'settledElsewhere'], 'the task carries finance fields only');
-$check($t1['allowed'] === ['start' => true, 'verify' => true, 'notReceived' => true, 'clarify' => true, 'secondCheck' => false, 'reconcile' => false], 'the employee\'s actions: start, verify, not received, clarification');
+$check(array_keys($t1['live']) === ['available', 'revision', 'readAt', 'currency', 'proforma', 'proformaChanged', 'ledger', 'advance', 'paymentReference', 'bank', 'financial', 'policy', 'recordEnabled', 'transfers', 'money', 'capabilities', 'cod', 'settledElsewhere'], 'the task carries finance fields only');
+$check($t1['allowed'] === ['start' => true, 'verify' => true, 'notReceived' => true, 'clarify' => true, 'secondCheck' => false, 'reconcile' => false, 'addPayment' => false, 'correctPayment' => false], 'the employee\'s actions: start, verify, not received, clarification');
 $check((int) $one("SELECT COUNT(*) FROM order_finance_reads WHERE employee_uuid = ? AND access_role = 'finance' AND outcome = 'ok'", [$uuids['fin']]) === 1, 'the task read is audited');
 $check($ok($get($f, $orderPath($g(1), '/finance')), 'the order finance summary of a task')['role'] === 'finance', 'a task\'s order: its finance summary is readable (finance fields only)');
 
@@ -819,6 +831,98 @@ if ($rootUuid !== '') {
         'each refresh read is audited under the root identity; nothing is recorded in any shop');
     $again = $container->financeVerificationRequests()->refreshAmounts($rootUuid, 500, 0, 'test-finance-amounts-2');
     $check($again['read'] === 0 && $again['left'] === $refresh['failed'], 'a fresh amount is not read again within 30 minutes');
+}
+
+// ---- API 2.80.0 (owner 2026-11-25): finance accepts the real money -------------------------------------------------------
+// Any positive verified advance, a payer match without the proforma reference, a later transfer, a correction, the history
+// of closed tasks with search, and the system's next-morning recheck. The fake shop answers like YD SOFT 2.32.0.
+$th->financeVerification = 'single';
+$th->acceptsRealPayment = true;
+$f = $who['fin'];
+$openIds = array_column($all("SELECT r.request_uuid FROM finance_verification_requests r WHERE r.open_order_uuid IS NOT NULL AND r.purpose = 'advance' AND r.ledger = 'shop' AND r.source_key = 'trendhome'
+    AND r.assigned_employee_uuid = ? AND r.state IN ('assigned', 'checking') AND r.finance_idempotency_key IS NULL AND r.source_entry_id IS NULL ORDER BY r.requested_at, r.request_uuid", [$uuids['fin']]), 'request_uuid');
+$check(count($openIds) >= 2, '2.80.0: two open Trend Home advance tasks remain for the new rules (' . count($openIds) . ')');
+[$pa, $pb] = $openIds;
+$ta = $ok($task($f, $pa, $kernelSingle), '2.80.0 task');
+$check($ta['live']['capabilities'] === ['match' => true, 'correction' => true] && is_array($ta['live']['money']) && $ta['live']['money']['remaining'] === $ta['live']['money']['total']
+    && $ta['progress']['known'] === true && is_array($ta['progress']['missing']), '2.80.0: the task shows the order money (total, cash on delivery), what the shop accepts and where the order stands');
+$noRef = static fn (array $body): array => array_diff_key($body, ['paymentReference' => true]);
+$error($cmd($f, $pa, 'decide', $noRef($evidence($ta, '1.00', 'BT FVR PAY01')), null, $kernelSingle), 422, 'FINANCE_REQUEST_INVALID', '2.80.0: without matchBasis the proforma reference is still needed');
+$error($cmd($f, $pa, 'decide', $noRef($evidence($ta, '1.00', 'BT FVR PAY01', ['matchBasis' => 'other_payer', 'payerName' => 'Maria Ionescu'])), null, $kernelSingle), 422, 'FINANCE_REQUEST_INVALID', '2.80.0: another payer needs the evidence');
+$error($cmd($f, $pa, 'decide', $noRef($evidence($ta, '0.00', 'BT FVR PAY01', ['matchBasis' => 'customer_name', 'payerName' => 'Ion Popescu'])), null, $kernelSingle), 422, 'FINANCE_REQUEST_INVALID', '2.80.0: 0 is never a payment');
+$da = $ok($cmd($f, $pa, 'decide', $noRef($evidence($ta, '1.00', 'BT FVR PAY01', ['matchBasis' => 'other_payer', 'payerName' => 'Maria Ionescu', 'matchNote' => 'sotia clientului'])), "fvr-real-{$suffix}-0001", $kernelSingle), '2.80.0: 1.00 paid by the customer\'s wife');
+$sent = end($th->requests)['body'];
+$oa = (string) $one('SELECT o.source_order_id FROM finance_verification_requests r JOIN operational_orders o ON o.order_uuid = r.order_uuid WHERE r.request_uuid = ?', [$pa]);
+$ea = $th->orders[$oa]['finance']['entries'];
+$check($da['request']['state'] === 'verified' && ($sent['action'] ?? null) === 'verify_transfer' && $sent['matchBasis'] === 'other_payer' && $sent['payerName'] === 'Maria Ionescu' && !array_key_exists('paymentReference', $sent)
+    && end($ea)['payer'] === 'Maria Ionescu' && $th->financeNumbers($oa)['state'] === 'cleared',
+    '2.80.0: the payment matched by the payer is verified in one step; 1 RON clears the order (no minimum, no operator acceptance)');
+$tv = $ok($task($f, $pa, $kernelSingle), '2.80.0 the verified task (Finalizate)');
+$check($tv['allowed']['addPayment'] === true && $tv['allowed']['correctPayment'] === true && $tv['allowed']['verify'] === false && $tv['live']['transfers'][count($tv['live']['transfers']) - 1]['payer'] === 'Maria Ionescu',
+    '2.80.0: a verified task opens read-only with its transfers, and offers "Adaugă o plată" and "Corectează plata"');
+$add = static fn (array $t, string $amount, string $ref, array $over = []): array => $over + ['expectedRevision' => $t['live']['revision'], 'amount' => $amount, 'reference' => $ref, 'valueDate' => gmdate('Y-m-d'),
+    'currency' => 'RON', 'bankStatementConfirmed' => true, 'matchBasis' => 'customer_name', 'payerName' => 'Ion Popescu'];
+$error($cmd($f, $pa, 'add-payment', array_diff_key($add($tv, '2.00', 'BT FVR PAY02'), ['matchBasis' => true]), "fvr-real-{$suffix}-0002", $kernelSingle), 422, 'FINANCE_REQUEST_INVALID', '2.80.0: a later payment states its match');
+$p2 = $ok($cmd($f, $pa, 'add-payment', $add($tv, '2.00', 'BT FVR PAY02'), "fvr-real-{$suffix}-0003", $kernelSingle), '2.80.0: a second transfer of the same order');
+$p2again = $ok($cmd($f, $pa, 'add-payment', $add($tv, '2.00', 'BT FVR PAY02'), "fvr-real-{$suffix}-0003", $kernelSingle), '2.80.0: the same request again (a lost answer, a double click)');
+$ea = $th->orders[$oa]['finance']['entries'];
+$check($p2['state'] === 'applied' && $p2again['state'] === 'applied' && count(array_filter($ea, static fn (array $e): bool => $e['kind'] === 'transfer_in' && $e['state'] === 'verified')) === 2
+    && (int) $one("SELECT COUNT(*) FROM finance_verification_request_events WHERE request_uuid = ? AND action = 'payment_added'", [$pa]) === 1 && $th->financeNumbers($oa)['received'] === 3.0,
+    '2.80.0: the later payment is recorded once (3.00 received), and the task keeps one trace of it');
+$tv = $ok($task($f, $pa, $kernelSingle), '2.80.0 after the second payment');
+$dup = $cmd($f, $pa, 'add-payment', $add($tv, '2.00', 'BT FVR PAY02'), "fvr-real-{$suffix}-0004", $kernelSingle);
+$check($dup['status'] === 409 && str_contains((string) json_encode($dup['body']), 'duplicate_reference'), '2.80.0: the same bank transfer is never recorded twice: ' . json_encode($dup['body']));
+$over = $cmd($f, $pa, 'add-payment', $add($tv, '9999.00', 'BT FVR PAY05'), "fvr-real-{$suffix}-0005", $kernelSingle);
+$check($over['status'] === 409 && str_contains((string) json_encode($over['body']), 'amount_exceeds_balance'), '2.80.0: more than the order still costs is a finance exception, never recorded: ' . json_encode($over['body']));
+// Correction of the first transfer (1.00 recorded, the statement shows 1.50).
+$first = array_values(array_filter($tv['live']['transfers'], static fn (array $t): bool => $t['reference'] === 'BT FVR PAY01'))[0];
+$fix = static fn (array $t, string $entry, string $amount, string $ref, array $over = []): array => $over + ['expectedRevision' => $t['live']['revision'], 'entryId' => $entry, 'amount' => $amount, 'reference' => $ref,
+    'valueDate' => gmdate('Y-m-d'), 'currency' => 'RON', 'bankStatementConfirmed' => true, 'reasonNote' => 'suma greșită'];
+$error($cmd($f, $pa, 'correct-payment', $fix($tv, $first['id'], '1.50', 'BT FVR PAY01', ['reasonNote' => '']), "fvr-real-{$suffix}-0006", $kernelSingle), 422, 'CONFIRMARE_FINANCE_INVALID', '2.80.0: a correction has its reason');
+$error($cmd($who['fsup'], $pa, 'correct-payment', $fix($tv, $first['id'], '1.50', 'BT FVR PAY01'), "fvr-real-{$suffix}-0007", $kernelSingle), 404, 'FINANCE_REQUEST_NOT_FOUND', '2.80.0: another employee cannot correct it');
+$orderUuidA = (string) $one('SELECT order_uuid FROM finance_verification_requests WHERE request_uuid = ?', [$pa]);
+$stageA = $one('SELECT production_stage_id FROM operational_orders WHERE order_uuid = ?', [$orderUuidA]);
+$pdo->prepare("UPDATE operational_orders SET production_stage_id = 'material-preparation' WHERE order_uuid = ?")->execute([$orderUuidA]);
+$error($cmd($f, $pa, 'correct-payment', $fix($tv, $first['id'], '1.50', 'BT FVR PAY01'), "fvr-real-{$suffix}-0008", $kernelSingle), 409, 'CONFIRMARE_FINANCE_CORRECTION_LOCKED', '2.80.0: after production started, no direct correction');
+$pdo->prepare('UPDATE operational_orders SET production_stage_id = ? WHERE order_uuid = ?')->execute([$stageA, $orderUuidA]);
+$th->bindingDocument = 'invoice';
+$inv = $cmd($f, $pa, 'correct-payment', $fix($tv, $first['id'], '1.50', 'BT FVR PAY01'), "fvr-real-{$suffix}-0009", $kernelSingle);
+$check($inv['status'] === 409 && str_contains((string) json_encode($inv['body']), 'invoice_exists'), '2.80.0: after the final invoice the shop refuses a direct correction: ' . json_encode($inv['body']));
+$th->bindingDocument = null;
+$c1 = $ok($cmd($f, $pa, 'correct-payment', $fix($tv, $first['id'], '1.50', 'BT FVR PAY01'), "fvr-real-{$suffix}-0010", $kernelSingle), '2.80.0: the correction');
+$ea = $th->orders[$oa]['finance']['entries'];
+$old = array_values(array_filter($ea, static fn (array $e): bool => $e['id'] === $first['id']))[0];
+$new = end($ea);
+$check($c1['state'] === 'applied' && $old['state'] === 'corrected' && $new['corrects'] === $first['id'] && $new['amount'] === '1.50' && $th->financeNumbers($oa)['received'] === 3.5
+    && (int) $one("SELECT COUNT(*) FROM finance_verification_request_events WHERE request_uuid = ? AND action = 'payment_corrected'", [$pa]) === 1
+    && (int) $one("SELECT COUNT(*) FROM order_finance_actions WHERE action = 'correct_transfer' AND state = 'applied'") === 1,
+    '2.80.0: the old entry stays (corrected), the new one names it, 3.50 received; audited on the task and as a finance action');
+// History of closed tasks with search and a cursor; the counts of Finalizate azi stay the employee's own decisions.
+$number = (string) $one('SELECT o.order_number FROM finance_verification_requests r JOIN operational_orders o ON o.order_uuid = r.order_uuid WHERE r.request_uuid = ?', [$pa]);
+$h = $ok($get($f, '/confirmare/finance/requests/history?q=' . rawurlencode($number)), '2.80.0 history search');
+$check(in_array($pa, array_column($h['items'], 'id'), true) && array_column($h['items'], null, 'id')[$pa]['decidedByMe'] === true && $h['next'] === null, '2.80.0: the closed task is found by its order number, decided by this employee');
+$hAll = $ok($get($f, '/confirmare/finance/requests/history'), '2.80.0 history page');
+$check(count($hAll['items']) >= 1 && count($hAll['items']) <= 50 && array_filter($hAll['items'], static fn (array $i): bool => $i['category'] !== 'done') === [], '2.80.0: the history lists closed tasks only, one page at most');
+$error($get($f, '/confirmare/finance/requests/history?before=yesterday'), 422, 'FINANCE_REQUEST_INVALID', '2.80.0: a malformed cursor is refused');
+$error($get($who['rop'], '/confirmare/finance/requests/history'), 403, 'CONFIRMARE_FINANCE_DENIED', '2.80.0: an operator has no finance history');
+// Not received: waiting with its next check, then the system's recheck the next morning (one new task, never two).
+$tb = $ok($task($f, $pb, $kernelSingle), '2.80.0 task b');
+$ok($cmd($f, $pb, 'decide', ['expectedVersion' => $tb['request']['version'], 'outcome' => 'not_received', 'reasonCode' => 'not_found'], "fvr-real-{$suffix}-0011", $kernelSingle), '2.80.0: not received');
+$box = $ok($inbox($f, $kernelSingle), '2.80.0 inbox after not received');
+$wb = array_column($box['items'], null, 'id')[$pb] ?? null;
+$check(is_array($wb) && $wb['awaitingPayment'] === true && is_string($wb['recheckAt']) && $wb['recheckAt'] > gmdate('Y-m-d\TH:i:s\Z'), '2.80.0: the payment not found waits with its next check (tomorrow morning)');
+$tracker = $container->financeVerificationRequests();
+$rootUuid = (string) $one('SELECT employee_uuid FROM system_root_identity LIMIT 1');
+if ($rootUuid !== '') {
+    $before = $tracker->track($rootUuid, 40, 0, 'test-tracking-dry', false);
+    $check($before['created'] === 0, '2.80.0: the tracking dry run writes nothing (' . json_encode($before) . ')');
+    $pdo->prepare('UPDATE finance_verification_requests SET decided_at = DATE_SUB(decided_at, INTERVAL 2 DAY) WHERE request_uuid = ?')->execute([$pb]);
+    $orderB = (string) $one('SELECT order_uuid FROM finance_verification_requests WHERE request_uuid = ?', [$pb]);
+    $run1 = $tracker->track($rootUuid, 40, 0, 'test-tracking-1', true);
+    $run2 = $tracker->track($rootUuid, 40, 0, 'test-tracking-2', true);
+    $newB = $all("SELECT r.*, e.reason_code FROM finance_verification_requests r JOIN finance_verification_request_events e ON e.request_uuid = r.request_uuid AND e.version_after = 1 WHERE r.order_uuid = ? AND r.requested_at > (SELECT requested_at FROM finance_verification_requests WHERE request_uuid = ?)", [$orderB, $pb]);
+    $check($run1['recheck'] >= 1 && count($newB) === 1 && $newB[0]['state'] === 'assigned' && $newB[0]['requested_by_employee_uuid'] === $rootUuid && $newB[0]['reason_code'] === 'auto_recheck'
+        && $run2['created'] === 0, '2.80.0: the next morning the system opens one new task for the payment (auto_recheck), never a second one (' . json_encode([$run1, $run2]) . ')');
 }
 
 // Leave the shared disposable database as the next suites expect it: no Confirmare, finance, request or invoice state.
