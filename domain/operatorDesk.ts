@@ -1,7 +1,7 @@
 import type { Employee } from "./models";
 import { canUseConfirmare, inTab, sourceLabel, type ConfirmareItem, type ConfirmareLine, type QueueTab } from "./confirmare";
 import { canUseFinance } from "./confirmareFinance";
-import { canOverseeFinance } from "./financeRequests";
+import { canOverseeFinance, canUseFinanceInbox } from "./financeRequests";
 import { advanceStatusKey, proformaStatusKey, type InvoiceRead, type MoneyPosition } from "./confirmareInvoice";
 import type { ShopLine, ShopRead } from "./confirmareShop";
 import type { Workspace } from "./workspaces";
@@ -154,6 +154,14 @@ export function usesProductionScanner(employee: Employee): boolean {
  */
 export function opensOperatorDesk(employee: Employee, workspace: Workspace | null): boolean {
   return workspace?.kind === "confirmare" && canUseConfirmare(employee);
+}
+
+/**
+ * Staff 2.52.5 (owner 2026-11-25): a finance employee whose home is the Confirmare workspace but who has no operator desk
+ * and no production stage opens on their own finance tasks (Verificări de plată), not on a workspace overview.
+ */
+export function opensFinanceInbox(employee: Employee, workspace: Workspace | null): boolean {
+  return workspace?.kind === "confirmare" && !canUseConfirmare(employee) && canUseFinanceInbox(employee) && employee.allowedStageIds.length === 0;
 }
 
 /** Routes that belong to the desk's home: the desk, an order on it and the Confirmare screens opened from it. */
