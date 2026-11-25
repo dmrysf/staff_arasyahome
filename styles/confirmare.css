@@ -485,6 +485,7 @@ button.fd-kpi { cursor: pointer; }
   flex: 1 1 260px; display: flex; align-items: center; gap: 8px; min-height: 46px; padding: 0 14px;
   border: 1px solid var(--color-border-strong); border-radius: var(--radius-md); background: var(--color-surface);
 }
+.fd-tools .cf-source-filter { flex: 0 1 420px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .fd-search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; font: inherit; font-size: var(--text-md); color: var(--color-text); }
 .fd-search:focus-within { box-shadow: 0 0 0 3px var(--color-focus-ring); border-color: var(--color-focus); }
 .fd-empty { margin: 0; padding: 28px 16px; text-align: center; border: 1px dashed var(--color-border-strong); border-radius: var(--radius-md); color: var(--color-text-subtle); }
@@ -534,6 +535,7 @@ button.fd-kpi { cursor: pointer; }
 .fd-facts dt, .fd-summary dt { font-size: var(--text-xs); text-transform: uppercase; letter-spacing: .04em; color: var(--color-text-subtle); font-weight: var(--weight-semibold); }
 .fd-facts dd, .fd-summary dd { margin: 0; font-size: var(--text-md); overflow-wrap: anywhere; }
 .fd-facts .fd-amount { grid-column: 1 / -1; }
+.fd-facts .fd-wide { grid-column: span 2; }
 .fd-amount dd { font-size: clamp(1.9rem, 5vw, 2.6rem); font-weight: var(--weight-bold); line-height: 1.1; font-variant-numeric: tabular-nums; }
 .fd-already { margin: -6px 0 0; font-size: var(--text-sm); color: var(--color-text-subtle); }
 .fd-panel { display: grid; gap: var(--space-4); padding: clamp(16px, 2.4vw, 24px); border: 1px solid var(--color-border-strong); border-radius: var(--radius-lg); background: var(--color-surface); }
@@ -579,6 +581,8 @@ button.fd-kpi { cursor: pointer; }
 .fd-option:disabled { opacity: .5; cursor: not-allowed; }
 @media (max-width: 719px) {
   .fd-facts { grid-template-columns: 1fr 1fr; }
+  .fd-facts .fd-wide { grid-column: 1 / -1; }
+  .fd-tools .cf-source-filter { flex: 1 1 100%; }
   .fd-choice, .fd-grid, .fd-options, .fd-reasons { grid-template-columns: 1fr; }
   .fd-summary { grid-template-columns: 1fr; }
   .fd-step-bar i { width: 28px; }
