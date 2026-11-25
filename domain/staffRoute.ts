@@ -1,7 +1,7 @@
 export type StaffRoute =
   | { kind: "home" | "login" | "scan" | "orders" | "history" | "profile" | "authority" | "trendyol" | "problems" | "confirmare" | "confirmare-team" | "confirmare-finance" | "confirmare-handoff" | "confirmare-awb" | "confirmare-efactura" | "confirmare-health" | "finance-inbox" | "finance-oversight" | "awb"; pathname: string }
   | { kind: "confirmare-order"; pathname: string; orderId: string }
-  | { kind: "finance-task" | "finance-oversight-detail"; pathname: string; requestId: string }
+  | { kind: "finance-task" | "finance-task-detail" | "finance-oversight-detail"; pathname: string; requestId: string }
   | { kind: "finance-order"; pathname: string; orderId: string }
   | { kind: "finance-legacy"; pathname: string; orderId: string }
   | { kind: "trendyol-package"; pathname: string; packageId: string }
@@ -63,6 +63,9 @@ export function parseStaffRoute(pathname: string): StaffRoute {
   // Staff 2.41.0: a finance task or an oversight entry by its request id; an exceptional finance task by its order's global id.
   const financeRequest = /^\/confirmare\/finance\/(requests|oversight)\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/.exec(pathname);
   if (financeRequest) return { kind: financeRequest[1] === "requests" ? "finance-task" : "finance-oversight-detail", pathname, requestId: financeRequest[2] };
+  // Staff 2.53.0: the full task screen of a task the Contabilitate desk's three steps do not handle.
+  const financeDetail = /^\/confirmare\/finance\/requests\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/detail$/.exec(pathname);
+  if (financeDetail) return { kind: "finance-task-detail", pathname, requestId: financeDetail[1] };
   if (pathname.startsWith(FINANCE_ORDER_PREFIX)) {
     const id = decodeOrderId(pathname.slice(FINANCE_ORDER_PREFIX.length));
     return id !== null && /^(trendhome|outletperdele):[A-Za-z0-9._-]{1,128}$/.test(id) ? { kind: "finance-order", pathname, orderId: id } : { kind: "invalid", pathname: "/" };

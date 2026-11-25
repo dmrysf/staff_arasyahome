@@ -98,6 +98,13 @@ final readonly class FinanceVerificationRequests
     /** The supervisor's oversight list (unchanged). */
     private const LIMIT = 300;
     private const DONE_LIMIT = 100;
+    /**
+     * API 2.77.9 (owner 2026-11-25, Contabilitate desk): the advances the employee found not received and that no newer
+     * request replaced (Așteaptă plata), listed apart from the 100 latest closed tasks so none drops out of sight.
+     */
+    private const WAITING_LIMIT = 300;
+    /** A stored advance amount older than this is read again from the shop by bin/finance-task-amounts.php. */
+    private const AMOUNT_FRESH_MINUTES = 30;
 
     public function __construct(
         private PDO $pdo,
@@ -296,16 +303,33 @@ final readonly class FinanceVerificationRequests
         $doneWhere = "{$in} AND r.open_order_uuid IS NULL AND r.updated_at >= ? AND (r.assigned_employee_uuid = ? OR r.decided_by_employee_uuid = ? OR r.checker_employee_uuid = ?)";
         $doneArgs = [...$sources, $since, $e, $e, $e];
         $from = 'FROM finance_verification_requests r INNER JOIN operational_orders o ON o.order_uuid = r.order_uuid';
-        $open = $this->pdo->prepare("SELECT r.*, o.order_number {$from} WHERE {$openWhere} ORDER BY r.requested_at, r.request_uuid LIMIT " . (self::OPEN_LIMIT + 1));
+        // API 2.77.9: the advance amount the shop last showed for the task (finance_task_amounts, written by this
+        // employee's own task reads and by bin/finance-task-amounts.php). One join, never a shop call per row.
+        $select = 'SELECT r.*, o.order_number, COALESCE(o.source_submitted_at, o.created_at) AS ordered_at, a.currency AS amount_currency, a.required_amount, a.remaining_amount, a.read_at AS amount_read_at';
+        $fromAmounts = "{$from} LEFT JOIN finance_task_amounts a ON a.request_uuid = r.request_uuid";
+        $open = $this->pdo->prepare("{$select} {$fromAmounts} WHERE {$openWhere} ORDER BY r.requested_at, r.request_uuid LIMIT " . (self::OPEN_LIMIT + 1));
         $open->execute($openArgs);
         $openRows = $open->fetchAll(PDO::FETCH_ASSOC);
-        $done = $this->pdo->prepare("SELECT r.*, o.order_number {$from} WHERE {$doneWhere} ORDER BY r.updated_at DESC, r.request_uuid LIMIT " . (self::DONE_LIMIT + 1));
+        $done = $this->pdo->prepare("{$select} {$fromAmounts} WHERE {$doneWhere} ORDER BY r.updated_at DESC, r.request_uuid LIMIT " . (self::DONE_LIMIT + 1));
         $done->execute($doneArgs);
         $doneRows = $done->fetchAll(PDO::FETCH_ASSOC);
-        $truncated = count($openRows) > self::OPEN_LIMIT || count($doneRows) > self::DONE_LIMIT;
+        // Așteaptă plata: a closed `not_received` advance of this employee that no later request of the order replaced.
+        $waitingWhere = "{$doneWhere} AND r.state = 'not_received' AND r.purpose = 'advance'
+            AND NOT EXISTS (SELECT 1 FROM finance_verification_requests n WHERE n.order_uuid = r.order_uuid AND n.requested_at > r.requested_at)";
+        $waiting = $this->pdo->prepare("{$select} {$fromAmounts} WHERE {$waitingWhere} ORDER BY r.requested_at, r.request_uuid LIMIT " . (self::WAITING_LIMIT + 1));
+        $waiting->execute($doneArgs);
+        $waitingRows = $waiting->fetchAll(PDO::FETCH_ASSOC);
+        $truncated = count($openRows) > self::OPEN_LIMIT || count($doneRows) > self::DONE_LIMIT || count($waitingRows) > self::WAITING_LIMIT;
+        $waitingIds = array_fill_keys(array_map(static fn (array $row): string => (string) $row['request_uuid'], array_slice($waitingRows, 0, self::WAITING_LIMIT)), true);
         $items = [];
-        foreach ([...array_slice($openRows, 0, self::OPEN_LIMIT), ...array_slice($doneRows, 0, self::DONE_LIMIT)] as $row) {
-            $items[] = $this->item($row, $actor);
+        $seen = [];
+        foreach ([...array_slice($openRows, 0, self::OPEN_LIMIT), ...array_slice($doneRows, 0, self::DONE_LIMIT), ...array_slice($waitingRows, 0, self::WAITING_LIMIT)] as $row) {
+            $id = (string) $row['request_uuid'];
+            if (isset($seen[$id])) {
+                continue;
+            }
+            $seen[$id] = true;
+            $items[] = $this->item($row + ['awaiting_payment' => isset($waitingIds[$id])], $actor);
         }
         // The counts are of every request of the inbox, also when the list itself is cut at a limit.
         $counts = ['todo' => 0, 'clarification' => 0, 'done' => 0];
@@ -314,6 +338,15 @@ final readonly class FinanceVerificationRequests
         foreach ($count->fetchAll(PDO::FETCH_ASSOC) as $row) {
             $counts[self::category((string) $row['state'])] += (int) $row['n'];
         }
+        $waitingCount = $this->pdo->prepare("SELECT COUNT(*) {$from} WHERE {$waitingWhere}");
+        $waitingCount->execute($doneArgs);
+        $counts['waiting'] = (int) $waitingCount->fetchColumn();
+        // Bugün tamamlanan: the tasks this employee decided since 00:00 Bucharest (verified, not received, a clarification).
+        $today = $this->sql($this->clock->now()->setTimezone(new DateTimeZone('Europe/Bucharest'))->setTime(0, 0));
+        $todayCount = $this->pdo->prepare("SELECT COUNT(DISTINCT e.request_uuid) FROM finance_verification_request_events e INNER JOIN finance_verification_requests r ON r.request_uuid = e.request_uuid
+            WHERE {$in} AND e.actor_employee_uuid = ? AND e.occurred_at >= ? AND e.new_state IN ('verified', 'not_received', 'needs_clarification', 'requires_manual_review')");
+        $todayCount->execute([...$sources, $e, $today]);
+        $counts['today'] = (int) $todayCount->fetchColumn();
         // `limit` keeps the Staff footnote (items.length >= limit) true exactly when something was left out.
         return ['items' => $items, 'counts' => $counts, 'sources' => $sources, 'limit' => $truncated ? count($items) : count($items) + 1, 'truncated' => $truncated];
     }
@@ -931,7 +964,18 @@ final readonly class FinanceVerificationRequests
             'requestedAt' => self::iso((string) $row['requested_at']),
             'updatedAt' => self::iso((string) $row['updated_at']),
             'decidedAt' => $row['decided_at'] === null ? null : self::iso((string) $row['decided_at']),
-        ];
+        ] + (array_key_exists('amount_read_at', $row) ? [
+            // API 2.77.9: the advance the shop last showed (null: never read yet). The task screen reads it again live.
+            'advance' => $row['amount_read_at'] === null ? null : [
+                'currency' => (string) $row['amount_currency'],
+                'required' => $row['required_amount'] === null ? null : number_format((float) $row['required_amount'], 2, '.', ''),
+                'remaining' => $row['remaining_amount'] === null ? null : number_format((float) $row['remaining_amount'], 2, '.', ''),
+                'readAt' => self::iso((string) $row['amount_read_at']),
+            ],
+            'awaitingPayment' => (bool) ($row['awaiting_payment'] ?? false),
+            // When the customer placed the order (the shop's submission time), for the list's order date.
+            'orderedAt' => ($row['ordered_at'] ?? null) === null ? null : self::iso((string) $row['ordered_at']),
+        ] : []);
     }
 
     /** The inbox tab of a request state. */
@@ -988,6 +1032,7 @@ final readonly class FinanceVerificationRequests
         if (!$this->audit($row, $actor, 'ok', $requestId, $summary['revision'])) {
             throw new ApiException(503, 'CONFIRMARE_AUDIT_UNAVAILABLE', 'The read could not be recorded, so nothing is shown. Try again.');
         }
+        $this->rememberAmount((string) $request['request_uuid'], $summary);
         $bank = null;
         if ($target->allowsInvoiceRead()) {
             try {
@@ -1558,13 +1603,90 @@ final readonly class FinanceVerificationRequests
         return strlen($compact) < 10 ? '••••' : substr($compact, 0, 4) . ' •••• •••• ' . substr($compact, -4);
     }
 
+    /**
+     * API 2.77.9: keeps the advance amount of one task as the shop showed it, for the inbox list (never a decision input:
+     * every decision reads the shop again and checks its revision). A failed write changes nothing else.
+     *
+     * @param array<string, mixed> $summary SourceFinance::summary
+     */
+    private function rememberAmount(string $requestUuid, array $summary): void
+    {
+        $advance = $summary['advance'] ?? null;
+        $amount = static fn (mixed $value): ?string => is_string($value) && preg_match('/^-?(0|[1-9][0-9]{0,9})(\.[0-9]{1,2})?$/', $value) === 1 ? $value : null;
+        $currency = is_string($summary['currency'] ?? null) && preg_match('/^[A-Z]{3}$/', (string) $summary['currency']) === 1 ? (string) $summary['currency'] : null;
+        if ($currency === null) {
+            return;
+        }
+        $now = $this->now();
+        try {
+            $this->pdo->prepare('INSERT INTO finance_task_amounts (request_uuid, currency, required_amount, remaining_amount, verified_amount, percentage, finance_revision, read_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE currency = VALUES(currency), required_amount = VALUES(required_amount), remaining_amount = VALUES(remaining_amount), verified_amount = VALUES(verified_amount),
+                    percentage = VALUES(percentage), finance_revision = VALUES(finance_revision), read_at = VALUES(read_at), updated_at = VALUES(updated_at)')->execute([
+                $requestUuid, $currency, $amount($advance['required'] ?? null), $amount($advance['outstanding'] ?? null), $amount($advance['collected'] ?? null),
+                is_int($advance['percentage'] ?? null) ? $advance['percentage'] : null, is_string($summary['revision'] ?? null) && strlen((string) $summary['revision']) <= 71 ? $summary['revision'] : null, $now, $now,
+            ]);
+        } catch (PDOException) {
+            // The list then shows the amount as not read yet; the task screen still reads it live.
+        }
+    }
+
+    /**
+     * API 2.77.9 (bin/finance-task-amounts.php, cron): reads from the shop the advance of the open advance tasks whose
+     * stored amount is missing or older than AMOUNT_FRESH_MINUTES, oldest task first, one shop call at a time with a
+     * pause, at most $max per run. A read only (never a decision); each read is audited in order_finance_reads under
+     * the given employee (the root identity), so the list never asks the shop per row.
+     *
+     * @return array{read: int, failed: int, skipped: int, left: int}
+     */
+    public function refreshAmounts(string $employeeUuid, int $max, int $pauseMs, string $requestId): array
+    {
+        $stale = $this->sql($this->clock->now()->modify('-' . self::AMOUNT_FRESH_MINUTES . ' minutes'));
+        $where = "r.open_order_uuid IS NOT NULL AND r.purpose = 'advance' AND (a.request_uuid IS NULL OR a.read_at < ?)";
+        $list = $this->pdo->prepare("SELECT r.* FROM finance_verification_requests r LEFT JOIN finance_task_amounts a ON a.request_uuid = r.request_uuid WHERE {$where}
+            ORDER BY a.read_at IS NOT NULL, r.requested_at, r.request_uuid LIMIT " . max(1, $max));
+        $list->execute([$stale]);
+        $result = ['read' => 0, 'failed' => 0, 'skipped' => 0, 'left' => 0];
+        $first = true;
+        foreach ($list->fetchAll(PDO::FETCH_ASSOC) as $request) {
+            $row = $this->orderByUuid((string) $request['order_uuid']);
+            $target = $row === null ? null : $this->registry->find((string) $row['source_key']);
+            if ($row === null || $target === null || !$target->allowsFinanceRead()) {
+                $result['skipped']++;
+                continue;
+            }
+            if (!$first && $pauseMs > 0) {
+                usleep($pauseMs * 1000);
+            }
+            $first = false;
+            $summary = $this->summary($target, $row, $employeeUuid, ConfirmareFinance::ROLE_FINANCE, $requestId, $failure);
+            $this->auditAs($row, $employeeUuid, $summary === null ? ($failure ?? 'source_unavailable') : 'ok', $requestId, $summary['revision'] ?? null);
+            if ($summary === null) {
+                $result['failed']++;
+                continue;
+            }
+            $this->rememberAmount((string) $request['request_uuid'], $summary);
+            $result['read']++;
+        }
+        $left = $this->pdo->prepare("SELECT COUNT(*) FROM finance_verification_requests r LEFT JOIN finance_task_amounts a ON a.request_uuid = r.request_uuid WHERE {$where}");
+        $left->execute([$stale]);
+        $result['left'] = (int) $left->fetchColumn();
+        return $result;
+    }
+
     /** @param array<string, mixed> $row */
     private function audit(array $row, EmployeeIdentity $actor, string $outcome, string $requestId, ?string $revision = null): bool
+    {
+        return $this->auditAs($row, $actor->employeeUuid, $outcome, $requestId, $revision);
+    }
+
+    /** @param array<string, mixed> $row */
+    private function auditAs(array $row, string $employeeUuid, string $outcome, string $requestId, ?string $revision = null): bool
     {
         try {
             $this->pdo->prepare('INSERT INTO order_finance_reads (read_uuid, order_uuid, global_order_id, source_key, employee_uuid, access_role, outcome, finance_revision, request_id, read_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')->execute([
-                Uuid::v4(), (string) $row['order_uuid'], (string) $row['global_order_id'], (string) $row['source_key'], $actor->employeeUuid, ConfirmareFinance::ROLE_FINANCE,
+                Uuid::v4(), (string) $row['order_uuid'], (string) $row['global_order_id'], (string) $row['source_key'], $employeeUuid, ConfirmareFinance::ROLE_FINANCE,
                 substr(preg_replace('/[^a-z_]/', '', $outcome) ?? 'unknown', 0, 40), $outcome === 'ok' ? $revision : null, self::cleanRequestId($requestId), $this->now(),
             ]);
             return true;

@@ -232,14 +232,22 @@ test("owner 2026-10-29 (final): under the single policy the employee who recorde
   assert.ok(CATALOGS.ro["fr.confirm.verifyRecorded"].includes("fără al doilea control"));
 });
 
-test("Staff 2.52.5: the inbox takes every item the API may send (1000 open + 100 done), so 431 tasks are all shown", () => {
-  assert.equal(INBOX_MAX_ITEMS, 1100);
+test("Staff 2.53.0: the inbox takes every item the API may send (1000 open + 100 done + 300 waiting), so no open task is left out", () => {
+  assert.equal(INBOX_MAX_ITEMS, 1400);
   const many = (n: number) => Array.from({ length: n }, (_, i) => item({ id: `00000000-0000-4000-8000-${String(i + 1).padStart(12, "0")}` }));
   const counts = { todo: 329, clarification: 2, done: 465 };
   assert.equal(mapInbox({ items: many(431), counts, sources: ["outletperdele", "trendhome"], limit: 431 }).items.length, 431, "NITA CRISTINA's live shape (2026-11-25)");
-  assert.equal(mapInbox({ items: many(1100), counts, sources: [], limit: 1100 }).items.length, 1100);
-  assert.throws(() => mapInbox({ items: many(1101), counts, sources: [], limit: 1101 }), "more than the API can send is still refused");
+  assert.equal(mapInbox({ items: many(1400), counts, sources: [], limit: 1400 }).items.length, 1400);
+  assert.throws(() => mapInbox({ items: many(1401), counts, sources: [], limit: 1401 }), "more than the API can send is still refused");
   const api = readFileSync(path.join(root, "operations-api/src/Confirmare/FinanceVerificationRequests.php"), "utf8");
-  const open = Number(/OPEN_LIMIT = (\d+);/.exec(api)?.[1]), done = Number(/DONE_LIMIT = (\d+);/.exec(api)?.[1]);
-  assert.equal(open + done, INBOX_MAX_ITEMS, "the Staff cap equals the API's two limits");
+  const open = Number(/OPEN_LIMIT = (\d+);/.exec(api)?.[1]), done = Number(/DONE_LIMIT = (\d+);/.exec(api)?.[1]), waiting = Number(/WAITING_LIMIT = (\d+);/.exec(api)?.[1]);
+  assert.equal(open + done + waiting, INBOX_MAX_ITEMS, "the Staff cap equals the API's three limits");
+  const old = mapInbox({ items: many(1), counts, sources: [], limit: 2 });
+  assert.equal(old.counts.waiting, 0, "an API before 2.77.9 (no waiting, today, advance): zero, never refused");
+  assert.equal(old.items[0].advance, null);
+  const listed = mapInbox({ items: [item({ advance: { currency: "RON", required: "300.00", remaining: "120.50", readAt: "2026-11-25T10:00:00Z" }, awaitingPayment: true, orderedAt: "2026-11-20T08:00:00Z" })], counts: { ...counts, waiting: 4, today: 7 }, sources: [], limit: 2 });
+  assert.deepEqual(listed.items[0].advance, { currency: "RON", required: "300.00", remaining: "120.50", readAt: "2026-11-25T10:00:00Z" });
+  assert.equal(listed.items[0].awaitingPayment, true);
+  assert.equal(listed.counts.today, 7);
+  assert.throws(() => mapInbox({ items: [item({ advance: { currency: "RON", required: "abc", remaining: null, readAt: "2026-11-25T10:00:00Z" } })], counts, sources: [], limit: 2 }), "a malformed amount is refused");
 });
