@@ -33,5 +33,15 @@ if ($auto !== [] && !isset($options['dry-run'])) {
     $tasks = $container->financeTaskInventory()->apply($auto, 'distribute-' . gmdate('YmdHis'));
     $result['financeTasks'] = ['sources' => $auto, 'created' => $tasks['created'], 'resolved' => $tasks['resolved'], 'skipped' => count($tasks['skipped'])];
 }
+// API 2.81.0 (P0 2026-11-25): an approved order whose money finance accepted goes to its shop employee within a minute
+// instead of the next 5-minute cycle pass (ConfirmareInvoice::routePaid: database only, no shop call, one run at a time).
+if (!isset($options['dry-run']) && $source === null) {
+    try {
+        $paid = $container->confirmareInvoice()->routePaid(50);
+        $result['paidRouting'] = ['seen' => $paid['seen'], 'routed' => $paid['routed']];
+    } catch (Throwable) {
+        $result['paidRouting'] = ['failed' => true];
+    }
+}
 fwrite(STDOUT, json_encode($result + ['dryRun' => isset($options['dry-run'])], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . "\n");
 exit(0);

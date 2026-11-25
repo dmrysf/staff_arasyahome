@@ -60,6 +60,10 @@ final class ConfirmareCycles
     public const REMINDER_2_HOURS = 72;
     public const EXPIRY_HOURS = 120;
     public const CLAIM_SECONDS = 300;
+    /** API 2.81.0: a waiting cycle with nothing due is visited at most this often (minutes). */
+    public const IDLE_VISIT_MINUTES = 60;
+    /** API 2.81.0: one worker pass stops after this many seconds (the cron runs every 300). */
+    public const RUN_SECONDS = 240;
     /**
      * R3 (2026-10-26): a step SmartBill rate-limited (429) is tried again at most this many times, each after a fixed wait
      * that is never shorter than SmartBill's Retry-After: a Retry-After longer than the wait is not retried automatically
@@ -417,14 +421,37 @@ final class ConfirmareCycles
             return ['seen' => 0, 'advanced' => 0, 'skipped' => 0];
         }
         $startedAt = $this->now();
-        $statement = $this->pdo->prepare('SELECT cycle_uuid FROM confirmare_proforma_cycles WHERE active_order_uuid IS NOT NULL AND (claimed_at IS NULL OR claimed_at < ?)
-            ORDER BY claimed_at IS NOT NULL, claimed_at, updated_at, cycle_uuid LIMIT ' . max(1, min(500, $limit)));
-        $statement->execute([$startedAt]);
+        $now = $this->clock->now()->setTimezone(new DateTimeZone('UTC'));
+        $sql = static fn (DateTimeImmutable $instant): string => $instant->format('Y-m-d H:i:s.u');
+        // API 2.81.0 (P0 2026-11-25): a waiting cycle (running, waiting for finance or for a bank check) with nothing due is
+        // asked from the shop at most every IDLE_VISIT_MINUTES instead of every pass; it is visited at once when a step falls
+        // due (a reminder, the expiry of a cycle not held by an open finance task) or the shop reported a change of the order since the last visit. Every other cycle
+        // is visited every pass as before. Each visit still reads the shop before any step (nothing is sent on old data).
+        $statement = $this->pdo->prepare("SELECT c.cycle_uuid, c.source_key FROM confirmare_proforma_cycles c LEFT JOIN operational_orders o ON o.order_uuid = c.order_uuid
+            WHERE c.active_order_uuid IS NOT NULL AND (c.claimed_at IS NULL OR c.claimed_at < ?)
+              AND (c.claimed_at IS NULL OR c.state NOT IN ('running', 'waiting_finance', 'waiting_bank_check') OR c.claimed_at < ?
+                   OR (c.sent_at IS NOT NULL AND c.reminder1_at IS NULL AND c.sent_at <= ?) OR (c.sent_at IS NOT NULL AND c.reminder2_at IS NULL AND c.sent_at <= ?)
+                   OR (c.expires_at IS NOT NULL AND c.expires_at <= ? AND c.state <> 'waiting_finance') OR (o.source_changed_at IS NOT NULL AND o.source_changed_at > c.claimed_at))
+            ORDER BY c.claimed_at IS NOT NULL, c.claimed_at, c.updated_at, c.cycle_uuid LIMIT " . max(1, min(500, $limit)));
+        $statement->execute([$startedAt, $sql($now->modify('-' . self::IDLE_VISIT_MINUTES . ' minutes')), $sql($now->modify('-' . self::REMINDER_1_HOURS . ' hours')),
+            $sql($now->modify('-' . self::REMINDER_2_HOURS . ' hours')), $sql($now)]);
         $seen = $advanced = $skipped = 0;
-        foreach ($statement->fetchAll(PDO::FETCH_COLUMN) as $uuid) {
+        $started = microtime(true);
+        $failures = [];
+        foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $candidate) {
+            // API 2.81.0: one pass stops after RUN_SECONDS (the next pass continues, oldest visit first), and a shop that
+            // did not answer three cycles in a row is not asked again in this pass: the other shop goes on.
+            if (microtime(true) - $started > self::RUN_SECONDS) {
+                break;
+            }
+            $source = (string) $candidate['source_key'];
+            if (($failures[$source] ?? 0) >= 3) {
+                continue;
+            }
             $seen++;
-            $result = $this->advance((string) $uuid, $requestId, $startedAt);
+            $result = $this->advance((string) $candidate['cycle_uuid'], $requestId, $startedAt);
             $result === null ? $skipped++ : $advanced++;
+            $failures[$source] = $result !== null && ($result['last_error'] ?? null) === 'shop_unreachable' ? ($failures[$source] ?? 0) + 1 : 0;
         }
         return ['seen' => $seen, 'advanced' => $advanced, 'skipped' => $skipped];
     }
@@ -662,6 +689,8 @@ final class ConfirmareCycles
         $this->pdo->prepare('UPDATE confirmare_cycle_steps SET attempts = attempts + 1 WHERE cycle_uuid = ? AND step = ?')->execute([$cycle['cycle_uuid'], $step]);
         $body = $this->payload($row, (string) $cycle['owner_employee_uuid'], $requestId) + ['action' => $action, 'expectedRevision' => $revision, 'idempotencyKey' => $key] + $fields;
         try {
+            // API 2.81.0: the task display copies of the order are forgotten before the shop may change its money or proforma.
+            FinanceVerificationRequests::forgetDisplay($this->pdo, (string) $cycle['order_uuid']);
             $answer = $this->client->exchange($target, SourceAccessClient::ROUTE_PROFORMA_ACTION, $body);
         } catch (SourceAccessException $e) {
             if (in_array($e->codeName, ['SOURCE_ACCESS_NOT_CONFIGURED', 'SOURCE_ADDRESS_REFUSED', 'SOURCE_ACCESS_DENIED'], true)) {

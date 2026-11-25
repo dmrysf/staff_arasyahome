@@ -289,6 +289,8 @@ final readonly class ConfirmareInvoice
         }
         $body = $this->payload($row, $actor, $role, $requestId) + ['action' => $action, 'idempotencyKey' => $key] + $fields;
         try {
+            // API 2.81.0: the task display copies of the order are forgotten before the shop may change its money or proforma.
+            FinanceVerificationRequests::forgetDisplay($this->pdo, (string) $row['order_uuid']);
             $answer = $this->client->exchange($target, SourceAccessClient::ROUTE_INVOICE_ACTION, $body);
         } catch (SourceAccessException $e) {
             if (in_array($e->codeName, self::NOT_SENT, true)) {
@@ -723,6 +725,8 @@ final readonly class ConfirmareInvoice
         }
         $body = $this->payload($row, $actor, $role, $requestId) + ['action' => $action, 'idempotencyKey' => $key] + $fields;
         try {
+            // API 2.81.0: the task display copies of the order are forgotten before the shop may change its money or proforma.
+            FinanceVerificationRequests::forgetDisplay($this->pdo, (string) $row['order_uuid']);
             $answer = $this->client->exchange($target, SourceAccessClient::ROUTE_PROFORMA_ACTION, $body);
         } catch (SourceAccessException $e) {
             if (in_array($e->codeName, self::NOT_SENT, true)) {
@@ -1141,6 +1145,20 @@ final readonly class ConfirmareInvoice
      * @return array{seen: int, routed: int, skipped: array<string, int>}
      */
     public function routePaid(int $limit = 100): array
+    {
+        // API 2.81.0: runs every minute (bin/confirmare-distribute.php) and every cycle pass; one run at a time.
+        if ((int) $this->pdo->query("SELECT GET_LOCK('arasya_confirmare_paid_routing', 0)")->fetchColumn() !== 1) {
+            return ['seen' => 0, 'routed' => 0, 'skipped' => ['another_run' => 1]];
+        }
+        try {
+            return $this->routePaidLocked($limit);
+        } finally {
+            $this->pdo->query("SELECT RELEASE_LOCK('arasya_confirmare_paid_routing')");
+        }
+    }
+
+    /** @return array{seen: int, routed: int, skipped: array<string, int>} */
+    private function routePaidLocked(int $limit): array
     {
         $statement = $this->pdo->prepare("SELECT o.global_order_id FROM operational_orders o
             INNER JOIN order_confirmations c ON c.order_uuid = o.order_uuid AND c.status = 'approved' AND c.production_cleared = 1

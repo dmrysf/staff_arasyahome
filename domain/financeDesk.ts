@@ -13,6 +13,9 @@ export const DESK_VIEWS = ["todo", "waiting", "clarification", "done", "today"] 
 export type DeskView = (typeof DESK_VIEWS)[number];
 
 const BUCHAREST_DAY = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Bucharest", year: "numeric", month: "2-digit", day: "2-digit" });
+const BUCHAREST_CLOCK = new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Bucharest", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
+/** Staff 2.56.0: "25/11, 19:40" in Europe/Bucharest (when the shop's copy shown was read). */
+export const bucharestClock = (iso: string): string => { const ms = Date.parse(iso); return Number.isFinite(ms) ? BUCHAREST_CLOCK.format(new Date(ms)) : "—"; };
 /** The calendar day (YYYY-MM-DD) of an instant in Europe/Bucharest. */
 export const bucharestDay = (ms: number): string => BUCHAREST_DAY.format(new Date(ms));
 

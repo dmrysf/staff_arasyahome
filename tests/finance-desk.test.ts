@@ -272,3 +272,31 @@ test("a closed task: its money, its transfers (a correction keeps the old one), 
   assert.ok(!older.allowed.addPayment && !older.allowed.correctPayment);
   assert.deepEqual(older.live.available && older.live.capabilities, { match: false, correction: false });
 });
+
+test("API 2.81.0 / Staff 2.56.0: a task opened from Arasya's copy says so; a stale copy shows its age and enables no money decision", () => {
+  const fresh = task(item(1), {}, live()).live;
+  assert.ok(fresh.available);
+  assert.equal(fresh.fromCopy, false);
+  assert.equal(fresh.stale, false);
+  assert.equal(fresh.staleReason, null);
+  const copy = task(item(1), {}, live({ source: "cache", stale: false })).live;
+  assert.ok(copy.available);
+  assert.equal(copy.fromCopy, true);
+  assert.equal(copy.stale, false);
+  const stale = task(item(1), { verify: false }, live({ source: "cache", stale: true, staleReason: "source_unreachable" }));
+  assert.ok(stale.live.available);
+  assert.equal(stale.live.stale, true);
+  assert.equal(stale.live.staleReason, "source_unreachable");
+  assert.equal(stale.allowed.verify, false);
+  const screen = readFileSync(path.join(root, "features/confirmare/FinanceDesk.tsx"), "utf8");
+  assert.match(screen, /live\?\.stale && <Notice tone="warning" role="note" testId="fr-live-stale">\{t\("fd\.stale", \{ at: bucharestClock\(live\.readAt\) \}\)\}/);
+  for (const catalog of Object.values(CATALOGS)) assert.match(String((catalog as Record<string, string>)["fd.stale"]), /\{at\}/);
+});
+
+test("Staff 2.56.0: a finance command waits up to 30 s for the API (the shop may be slow); other calls keep 12 s", () => {
+  const requests = readFileSync(path.join(root, "domain/financeRequests.ts"), "utf8");
+  const http = readFileSync(path.join(root, "services/production/httpServices.ts"), "utf8");
+  assert.match(requests, /export const FINANCE_COMMAND_TIMEOUT_MS = 30_000;/);
+  assert.match(requests, /timeoutMs: FINANCE_COMMAND_TIMEOUT_MS/);
+  assert.match(http, /AbortSignal\.timeout\(timeoutMs \?\? 12_000\)/);
+});

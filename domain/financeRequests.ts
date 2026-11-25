@@ -109,6 +109,11 @@ export type TaskLive =
     financial: { state: string; attention: string | null }; policy: VerificationPolicy; recordEnabled: boolean; transfers: Transfer[]; settledElsewhere: boolean;
     /** API 2.80.0 (absent from an older API: null / false). */
     money: TaskMoney | null; capabilities: { match: boolean; correction: boolean }; cod: { state: string; awb: boolean } | null;
+    /**
+     * API 2.81.0: `fromCopy` the task opened from Arasya's copy of the shop's last answer (no shop call); `stale` the shop
+     * did not answer now and this copy (read at `readAt`) is shown instead. Every decision still reads the shop.
+     */
+    fromCopy: boolean; stale: boolean; staleReason: string | null;
   }
   | { available: false; reason: string };
 export type TaskAllowed = { start: boolean; verify: boolean; notReceived: boolean; clarify: boolean; secondCheck: boolean; reconcile: boolean; addPayment: boolean; correctPayment: boolean };
@@ -355,6 +360,7 @@ function mapLive(value: unknown): TaskLive {
     money: raw.money == null ? null : taskMoney(raw.money),
     capabilities: raw.capabilities == null ? { match: false, correction: false } : { match: bool(obj(raw.capabilities).match), correction: bool(obj(raw.capabilities).correction) },
     cod: raw.cod == null ? null : { state: str(obj(raw.cod).state, 20), awb: bool(obj(raw.cod).awb) },
+    fromCopy: raw.source === "cache", stale: raw.stale === true, staleReason: raw.staleReason == null ? null : code(raw.staleReason),
   };
 }
 
@@ -445,13 +451,19 @@ const oversightQuery = (filters: OversightFilters): string => {
   return entries.length > 0 ? `?${new URLSearchParams(entries).toString()}` : "";
 };
 
-type Http = { request<T>(path: string, init: RequestInit, map: (value: unknown) => T): Promise<T> };
+type Http = { request<T>(path: string, init: RequestInit & { timeoutMs?: number }, map: (value: unknown) => T): Promise<T> };
+
+/**
+ * Staff 2.56.0 (P0 2026-11-25): how long a finance command may take before its answer counts as lost. The server reads
+ * the shop and then sends the action (each call bounded at 8 s), so 12 s could cut off a payment the shop recorded.
+ */
+export const FINANCE_COMMAND_TIMEOUT_MS = 30_000;
 
 /** The HTTP side of the requests (no-store: money and task data are never kept in the browser's cache). */
 export function financeRequestsHttp(http: Http): FinanceRequestsApi {
   const order = (globalOrderId: string, tail = "") => `/confirmare/orders/${encodeURIComponent(globalOrderId)}/finance-request${tail}`;
   const task = (requestId: string, tail = "") => `/confirmare/finance/requests/${encodeURIComponent(requestId)}${tail}`;
-  const post = (key: string, body: unknown): RequestInit => ({ method: "POST", cache: "no-store", headers: { "Idempotency-Key": key }, body: JSON.stringify(body) });
+  const post = (key: string, body: unknown): RequestInit & { timeoutMs: number } => ({ method: "POST", cache: "no-store", headers: { "Idempotency-Key": key }, body: JSON.stringify(body), timeoutMs: FINANCE_COMMAND_TIMEOUT_MS });
   return {
     orderFinanceRequest: (globalOrderId, signal) => http.request(order(globalOrderId), { signal, cache: "no-store" }, mapOrderFinanceRequest),
     requestFinance: (globalOrderId, key) => http.request(order(globalOrderId), post(key, { purpose: "advance" }), mapOrderFinanceRequest),
@@ -462,7 +474,7 @@ export function financeRequestsHttp(http: Http): FinanceRequestsApi {
     startTask: (requestId, input, key) => http.request(task(requestId, "/start"), post(key, input), mapDecisionAnswer),
     decideTask: (requestId, input, key) => http.request(task(requestId, "/decide"), post(key, input), mapDecisionAnswer),
     secondCheck: (requestId, input, key) => http.request(task(requestId, "/second-check"), post(key, input), mapDecisionAnswer),
-    reconcileTask: (requestId) => http.request(task(requestId, "/reconcile"), { method: "POST", cache: "no-store", body: "{}" }, mapDecisionAnswer),
+    reconcileTask: (requestId) => http.request(task(requestId, "/reconcile"), { method: "POST", cache: "no-store", body: "{}", timeoutMs: FINANCE_COMMAND_TIMEOUT_MS }, mapDecisionAnswer),
     addPayment: (requestId, input, key) => http.request(task(requestId, "/add-payment"), post(key, input), mapFollowUp),
     correctPayment: (requestId, input, key) => http.request(task(requestId, "/correct-payment"), post(key, input), mapFollowUp),
     financeHistory: (query, signal) => http.request(`/confirmare/finance/requests/history${historyQuery(query)}`, { signal, cache: "no-store" }, mapHistory),
