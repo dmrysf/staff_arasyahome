@@ -290,7 +290,7 @@ test("API 2.81.0 / Staff 2.56.0: a task opened from Arasya's copy says so; a sta
   assert.equal(stale.allowed.verify, false);
   const screen = readFileSync(path.join(root, "features/confirmare/FinanceDesk.tsx"), "utf8");
   assert.match(screen, /live\?\.stale && <Notice tone="warning" role="note" testId="fr-live-stale">\{t\("fd\.stale", \{ at: bucharestClock\(live\.readAt\) \}\)\}/);
-  for (const catalog of Object.values(CATALOGS)) assert.match(String((catalog as Record<string, string>)["fd.stale"]), /\{at\}/);
+  for (const catalog of Object.values(CATALOGS)) assert.match(String((catalog as unknown as Record<string, unknown>)["fd.stale"]), /\{at\}/);
 });
 
 test("Staff 2.56.0: a finance command waits up to 30 s for the API (the shop may be slow); other calls keep 12 s", () => {
