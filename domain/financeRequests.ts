@@ -73,16 +73,31 @@ export type InboxItem = {
   awaitingPayment: boolean;
   /** API 2.77.9: when the customer placed the order. */
   orderedAt: string | null;
+  /** API 2.80.0: this employee decided the task (Finalizate azi); a payment not found is looked for again at `recheckAt`. */
+  decidedByMe: boolean;
+  recheckAt: string | null;
 };
 export type ListedAdvance = { currency: string; required: string | null; remaining: string | null; readAt: string };
 /** `waiting` and `today` (API 2.77.9): the not received advances still open for a payment, the tasks decided today. */
 export type InboxCounts = Record<InboxCategory, number> & { waiting: number; today: number };
 export type Inbox = { items: InboxItem[]; counts: InboxCounts; sources: string[]; limit: number };
 
+/** API 2.80.0 (YD SOFT 2.32.0): how a transfer was tied to the order. */
+export const MATCH_BASES = ["proforma_reference", "customer_name", "other_payer", "customer_proof"] as const;
+export type MatchBasis = (typeof MATCH_BASES)[number];
 export type Transfer = {
-  id: string; purpose: string; amount: string; reference: string; valueDate: string | null; method: string; state: "submitted" | "verified" | "rejected";
+  id: string; purpose: string; amount: string; reference: string; valueDate: string | null; method: string; state: "submitted" | "verified" | "rejected" | "corrected";
   decisionCode: string | null; flags: string[]; submittedBy: { id: string; displayName: string | null }; submittedAt: string;
   decidedBy: { id: string; displayName: string | null } | null; decidedAt: string | null;
+  /** API 2.80.0: who paid (typed from the bank statement), how it was matched, and the entry a correction replaced. */
+  payer: string | null; matchBasis: MatchBasis | null; matchNote: string | null; corrects: string | null;
+};
+/** API 2.80.0: the shop's one money calculation (total, received, cash on delivery, excess). */
+export type TaskMoney = { known: boolean; total: string | null; advanceRequired: string | null; received: string | null; remaining: string | null; excess: string | null };
+/** API 2.80.0: where the order stands, from Arasya's records (no amount, no customer data). */
+export type TaskProgress = {
+  known: boolean; approval: string | null; callConfirmed: boolean; paymentCleared: boolean; productionCleared: boolean; missing: string[];
+  operator: { displayName: string } | null; routedTo: { displayName: string } | null; routedAt: string | null; stage: string | null; cancelled: boolean;
 };
 export type TaskLive =
   | {
@@ -92,15 +107,23 @@ export type TaskLive =
     paymentReference: string | null;
     bank: { beneficiary: string; bank: string; ibanMasked: string; bic: string | null } | null;
     financial: { state: string; attention: string | null }; policy: VerificationPolicy; recordEnabled: boolean; transfers: Transfer[]; settledElsewhere: boolean;
+    /** API 2.80.0 (absent from an older API: null / false). */
+    money: TaskMoney | null; capabilities: { match: boolean; correction: boolean }; cod: { state: string; awb: boolean } | null;
   }
   | { available: false; reason: string };
-export type TaskAllowed = { start: boolean; verify: boolean; notReceived: boolean; clarify: boolean; secondCheck: boolean; reconcile: boolean };
-export type FinanceTask = { request: InboxItem; live: TaskLive; allowed: TaskAllowed; me: string; singleVerification: boolean };
+export type TaskAllowed = { start: boolean; verify: boolean; notReceived: boolean; clarify: boolean; secondCheck: boolean; reconcile: boolean; addPayment: boolean; correctPayment: boolean };
+export type FinanceTask = { request: InboxItem; live: TaskLive; allowed: TaskAllowed; me: string; singleVerification: boolean; progress: TaskProgress | null };
 
 export type Receipt = { state: RequestState; outcome: RequestOutcome | null; reasonCode: string | null; policy: VerificationPolicy | null; awaitingSecondCheck: boolean; unknown: boolean; at: string };
 export type DecisionAnswer = { request: InboxItem; receipt: Receipt };
 
-export type VerifiedInput = { expectedVersion: number; outcome: "verified"; expectedRevision: string; amount: string; reference: string; valueDate: string; paymentReference: string; currency: string };
+/** API 2.80.0: without the proforma reference the payer is named (and the evidence for another payer or a customer's proof). */
+export type MatchInput = { matchBasis?: MatchBasis; payerName?: string; matchNote?: string; paymentReference?: string };
+export type VerifiedInput = { expectedVersion: number; outcome: "verified"; expectedRevision: string; amount: string; reference: string; valueDate: string; currency: string } & MatchInput;
+export type PaymentInput = { expectedRevision: string; amount: string; reference: string; valueDate: string; currency: string; bankStatementConfirmed: true } & MatchInput & { matchBasis: MatchBasis };
+export type CorrectionInput = Omit<PaymentInput, "paymentReference" | "matchBasis"> & { entryId: string; reasonNote: string; matchBasis?: MatchBasis; payerName?: string; matchNote?: string };
+export type FollowUpAnswer = { state: string; idempotencyKey: string; request: InboxItem };
+export type FinanceHistory = { items: InboxItem[]; next: string | null };
 export type DecisionInput =
   | VerifiedInput
   | { expectedVersion: number; outcome: "not_received"; reasonCode: NotReceivedReason }
@@ -128,6 +151,11 @@ export interface FinanceRequestsApi {
   decideTask(requestId: string, input: DecisionInput, idempotencyKey: string): Promise<DecisionAnswer>;
   secondCheck(requestId: string, input: SecondCheckInput, idempotencyKey: string): Promise<DecisionAnswer>;
   reconcileTask(requestId: string): Promise<DecisionAnswer>;
+  /** API 2.80.0: a later transfer of a verified task's order, and the correction of one's own transfer. */
+  addPayment(requestId: string, input: PaymentInput, idempotencyKey: string): Promise<FollowUpAnswer>;
+  correctPayment(requestId: string, input: CorrectionInput, idempotencyKey: string): Promise<FollowUpAnswer>;
+  /** API 2.80.0: closed tasks beyond the inbox's latest ones, with search and a cursor. */
+  financeHistory(query: { q?: string; before?: string | null; source?: string | null }, signal?: AbortSignal): Promise<FinanceHistory>;
   financeOversight(filters: OversightFilters, signal?: AbortSignal): Promise<Oversight>;
   financeOversightDetail(requestId: string, signal?: AbortSignal): Promise<OversightDetail>;
 }
@@ -265,6 +293,7 @@ export function mapInboxItem(value: unknown): InboxItem {
     kind: oneOf(raw.kind, TASK_KINDS), assignedToMe: bool(raw.assignedToMe), outcome: optOneOf(raw.outcome, OUTCOMES), reasonCode: code(raw.reasonCode), policy: optOneOf(raw.policy, POLICIES),
     requestedAt: instant(raw.requestedAt), updatedAt: instant(raw.updatedAt), decidedAt: optInstant(raw.decidedAt),
     advance: listedAdvance(raw.advance), awaitingPayment: raw.awaitingPayment === undefined ? false : bool(raw.awaitingPayment), orderedAt: optInstant(raw.orderedAt),
+    decidedByMe: raw.decidedByMe === undefined ? false : bool(raw.decidedByMe), recheckAt: optInstant(raw.recheckAt),
   };
 }
 
@@ -300,8 +329,9 @@ function mapTransfer(value: unknown): Transfer {
   const who = (entry: unknown) => { const item = obj(entry); return { id: str(item.id, 64), displayName: optStr(item.displayName, 200) }; };
   return {
     id: str(raw.id, 64), purpose: str(raw.purpose, 30), amount: money(raw.amount) ?? fail(), reference: str(raw.reference, 64), valueDate: optStr(raw.valueDate, 10), method: str(raw.method, 30),
-    state: oneOf(raw.state, ["submitted", "verified", "rejected"] as const), decisionCode: code(raw.decisionCode), flags: list(raw.flags, 10, (entry) => str(entry, 40)),
+    state: oneOf(raw.state, ["submitted", "verified", "rejected", "corrected"] as const), decisionCode: code(raw.decisionCode), flags: list(raw.flags, 10, (entry) => str(entry, 40)),
     submittedBy: who(raw.submittedBy), submittedAt: instant(raw.submittedAt), decidedBy: raw.decidedBy == null ? null : who(raw.decidedBy), decidedAt: optInstant(raw.decidedAt),
+    payer: optStr(raw.payer, 128), matchBasis: optOneOf(raw.matchBasis, MATCH_BASES), matchNote: optStr(raw.matchNote, 255), corrects: optStr(raw.corrects, 64),
   };
 }
 
@@ -322,6 +352,25 @@ function mapLive(value: unknown): TaskLive {
     bank: bank === null ? null : { beneficiary: str(bank.beneficiary, 200), bank: str(bank.bank, 200), ibanMasked: str(bank.ibanMasked, 40), bic: optStr(bank.bic, 20) },
     financial: { state: str(financial.state, 20), attention: code(financial.attention) }, policy: oneOf(raw.policy, POLICIES), recordEnabled: bool(raw.recordEnabled),
     transfers: list(raw.transfers, 50, mapTransfer), settledElsewhere: bool(raw.settledElsewhere),
+    money: raw.money == null ? null : taskMoney(raw.money),
+    capabilities: raw.capabilities == null ? { match: false, correction: false } : { match: bool(obj(raw.capabilities).match), correction: bool(obj(raw.capabilities).correction) },
+    cod: raw.cod == null ? null : { state: str(obj(raw.cod).state, 20), awb: bool(obj(raw.cod).awb) },
+  };
+}
+
+function taskMoney(value: unknown): TaskMoney {
+  const raw = obj(value);
+  return { known: bool(raw.known), total: money(raw.total), advanceRequired: money(raw.advanceRequired), received: money(raw.received), remaining: money(raw.remaining), excess: money(raw.excess) };
+}
+
+function taskProgress(value: unknown): TaskProgress | null {
+  if (value == null) return null;
+  const raw = obj(value);
+  if (raw.known === false) return null;
+  const name = (entry: unknown) => entry == null ? null : { displayName: str(obj(entry).displayName, 200) };
+  return {
+    known: true, approval: optStr(raw.approval, 20), callConfirmed: bool(raw.callConfirmed), paymentCleared: bool(raw.paymentCleared), productionCleared: bool(raw.productionCleared),
+    missing: list(raw.missing, 10, (entry) => str(entry, 20)), operator: name(raw.operator), routedTo: name(raw.routedTo), routedAt: optInstant(raw.routedAt), stage: optStr(raw.stage, 40), cancelled: bool(raw.cancelled),
   };
 }
 
@@ -330,8 +379,9 @@ export function mapFinanceTask(value: unknown): FinanceTask {
   const allowed = obj(raw.allowed);
   return {
     request: mapInboxItem(raw.request), live: mapLive(raw.live),
-    allowed: { start: bool(allowed.start), verify: bool(allowed.verify), notReceived: bool(allowed.notReceived), clarify: bool(allowed.clarify), secondCheck: bool(allowed.secondCheck), reconcile: bool(allowed.reconcile) },
-    me: uuid(raw.me), singleVerification: bool(raw.singleVerification),
+    allowed: { start: bool(allowed.start), verify: bool(allowed.verify), notReceived: bool(allowed.notReceived), clarify: bool(allowed.clarify), secondCheck: bool(allowed.secondCheck), reconcile: bool(allowed.reconcile),
+      addPayment: allowed.addPayment === undefined ? false : bool(allowed.addPayment), correctPayment: allowed.correctPayment === undefined ? false : bool(allowed.correctPayment) },
+    me: uuid(raw.me), singleVerification: bool(raw.singleVerification), progress: taskProgress(raw.progress),
   };
 }
 
@@ -374,6 +424,22 @@ export function mapOversightDetail(value: unknown): OversightDetail {
   };
 }
 
+export function mapFollowUp(value: unknown): FollowUpAnswer {
+  const raw = obj(value);
+  return { state: str(raw.state, 20), idempotencyKey: str(raw.idempotencyKey, 120), request: mapInboxItem(raw.request) };
+}
+
+/** API 2.80.0: one page of closed tasks (at most 50) and the cursor of the next one. */
+export function mapHistory(value: unknown): FinanceHistory {
+  const raw = obj(value);
+  return { items: list(raw.items, 60, mapInboxItem), next: raw.next == null ? null : str(raw.next, 100) };
+}
+
+const historyQuery = (query: { q?: string; before?: string | null; source?: string | null }): string => {
+  const entries = Object.entries(query).filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1] !== "");
+  return entries.length > 0 ? `?${new URLSearchParams(entries).toString()}` : "";
+};
+
 const oversightQuery = (filters: OversightFilters): string => {
   const entries = Object.entries(filters).filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1] !== "");
   return entries.length > 0 ? `?${new URLSearchParams(entries).toString()}` : "";
@@ -397,6 +463,9 @@ export function financeRequestsHttp(http: Http): FinanceRequestsApi {
     decideTask: (requestId, input, key) => http.request(task(requestId, "/decide"), post(key, input), mapDecisionAnswer),
     secondCheck: (requestId, input, key) => http.request(task(requestId, "/second-check"), post(key, input), mapDecisionAnswer),
     reconcileTask: (requestId) => http.request(task(requestId, "/reconcile"), { method: "POST", cache: "no-store", body: "{}" }, mapDecisionAnswer),
+    addPayment: (requestId, input, key) => http.request(task(requestId, "/add-payment"), post(key, input), mapFollowUp),
+    correctPayment: (requestId, input, key) => http.request(task(requestId, "/correct-payment"), post(key, input), mapFollowUp),
+    financeHistory: (query, signal) => http.request(`/confirmare/finance/requests/history${historyQuery(query)}`, { signal, cache: "no-store" }, mapHistory),
     financeOversight: (filters, signal) => http.request(`/confirmare/finance/oversight${oversightQuery(filters)}`, { signal, cache: "no-store" }, mapOversight),
     financeOversightDetail: (requestId, signal) => http.request(`/confirmare/finance/oversight/${encodeURIComponent(requestId)}`, { signal, cache: "no-store" }, mapOversightDetail),
   };

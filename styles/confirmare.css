@@ -589,3 +589,48 @@ button.fd-kpi { cursor: pointer; }
   .fd-confirm { max-width: none; }
   .fd-actions .button { flex: 1 1 auto; }
 }
+
+/* Staff 2.55.0 (owner 2026-11-25): finance accepts the real money; clickable rows, the money block, closed tasks. */
+.fd-row.is-clickable { cursor: pointer; }
+.fd-money { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; margin: 0; border: 1px solid var(--color-border-strong); border-radius: var(--radius-md); overflow: hidden; background: var(--color-border); }
+.fd-money-line { display: grid; gap: 2px; padding: 10px 14px; background: var(--color-surface); min-width: 0; }
+.fd-money-line dt { font-size: var(--text-xs); text-transform: uppercase; letter-spacing: .04em; color: var(--color-text-subtle); font-weight: var(--weight-semibold); }
+.fd-money-line dd { margin: 0; font-size: var(--text-lg); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.fd-money-line.is-strong dd { font-size: var(--text-xl); font-weight: var(--weight-bold); }
+.fd-money-line.tone-accent { background: var(--color-accent-soft); }
+.fd-money-line.tone-accent dd { color: var(--color-text); }
+.fd-accept-note { padding: 10px 14px; border-radius: var(--radius-md); border-left: 4px solid var(--color-success); background: var(--color-success-soft); color: var(--color-success-text); font-size: var(--text-sm); }
+.fd-match { display: grid; gap: var(--space-3); margin: 0; padding: 14px; border: 1px solid var(--color-border-strong); border-radius: var(--radius-md); }
+.fd-match legend { padding: 0 6px; font-weight: var(--weight-semibold); }
+.fd-match-options { display: grid; gap: 8px; }
+.fd-match-option { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 8px 12px; border: 1px solid var(--color-border-strong); border-radius: var(--radius-md); cursor: pointer; }
+.fd-match-option.is-on { border-color: var(--color-accent); background: var(--color-accent-soft); }
+.fd-match-option input { width: 18px; height: 18px; flex: none; }
+.fd-match-hint { font-size: var(--text-sm); color: var(--color-text-subtle); }
+.fd-match-ok { display: flex; align-items: center; gap: 6px; color: var(--color-success-text); font-weight: var(--weight-semibold); }
+.fd-summary .tone-accent dd { color: var(--color-text); }
+.fd-history { display: grid; gap: var(--space-3); justify-items: start; }
+.fd-history .fd-table { width: 100%; }
+.fd-done-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; }
+.fd-done-head h1 { margin: 2px 0 0; font-size: var(--text-2xl); }
+.fd-done-head .eyebrow { margin: 0; }
+.fd-recheck { margin: 0; font-size: var(--text-sm); color: var(--color-text-subtle); }
+.fd-transfers { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.fd-transfer { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 12px; align-items: baseline; padding: 10px 12px; border: 1px solid var(--color-border-strong); border-left: 4px solid var(--color-success); border-radius: var(--radius-md); }
+.fd-transfer strong { font-size: var(--text-lg); font-variant-numeric: tabular-nums; }
+.fd-transfer small { grid-column: 1 / -1; color: var(--color-text-subtle); }
+.fd-transfer.is-corrected { border-left-color: var(--color-fill-strong); opacity: .7; }
+.fd-transfer.is-corrected strong { text-decoration: line-through; }
+.fd-transfer.is-submitted { border-left-color: var(--color-warning); }
+.fd-transfer.is-rejected { border-left-color: var(--color-danger); }
+.fd-now { padding: 10px 14px; border-radius: var(--radius-md); background: var(--color-surface-soft); }
+.fd-milestones { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.fd-ms { display: flex; align-items: center; gap: 10px; }
+.fd-ms-dot { width: 14px; height: 14px; border-radius: 50%; flex: none; background: var(--color-warning); }
+.fd-ms.is-done .fd-ms-dot { background: var(--color-success); }
+.fd-ms.is-problem .fd-ms-dot { background: var(--color-danger); }
+.fd-done-actions { justify-content: flex-start; }
+@media (max-width: 720px) {
+  .fd-money { grid-template-columns: 1fr 1fr; }
+  .fd-transfer { grid-template-columns: 1fr auto; }
+}
