@@ -129,7 +129,8 @@ function DeskRow({ item, now, navigate }: { item: InboxItem; now: number; naviga
       <span role="cell" className={`fd-c-age${wait.unit === "days" && wait.d >= 2 && item.category !== "done" ? " is-late" : ""}`}>{age}</span>
       <span role="cell" className="fd-c-proforma mono">{proformaLabel(item.proforma)}</span>
       <span role="cell" className="fd-c-advance" data-testid={`fd-advance-${item.orderNumber}`}>{advance ? <><strong>{formatFinanceMoney(advance.required, advance.currency)}</strong>{rest && <small>{t("fd.advance.rest", { amount: formatFinanceMoney(rest, advance.currency) })}</small>}</> : "—"}</span>
-      <span role="cell" className="fd-c-state"><StatusPill tone={tone} testId={`fr-card-state-${item.orderNumber}`}>{state}</StatusPill></span>
+      <span role="cell" className="fd-c-state"><StatusPill tone={tone} testId={`fr-card-state-${item.orderNumber}`}>{state}</StatusPill>
+        {item.ledger === "manual" && <small className="fd-tag" data-testid={`fr-card-manual-${item.orderNumber}`}>{t("fr.ledger.manual")}</small>}</span>
       <span role="cell" className="fd-c-action">
         <button type="button" className={`button ${check ? "button-primary" : "button-secondary"} fd-row-check`} onClick={() => navigate(rowTarget(item))} data-testid={`fr-open-${item.orderNumber}`}>{t(check ? "fd.row.check" : "fd.row.open")}<AppIcon name="arrow" size={16} /></button>
       </span>

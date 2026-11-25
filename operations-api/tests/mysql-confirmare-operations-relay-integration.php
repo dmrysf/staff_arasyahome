@@ -73,7 +73,7 @@ $all = static function (string $sql, array $params = []) use ($pdo): array { $s 
 $cycleTables = ['confirmare_cycle_steps', 'confirmare_proforma_cycles', 'confirmare_bank_checks', 'confirmare_reactivations', 'invoice_efactura_tasks', 'order_source_operations'];
 $clear = static function () use ($pdo, $cycleTables): void {
     // API 2.50.0: finance tasks point at orders (the card refund task of section 4).
-    foreach (['finance_verification_request_events', 'finance_verification_requests', 'employee_finance_supervision'] as $table) {
+    foreach (['finance_task_amounts', 'finance_verification_request_events', 'finance_verification_requests', 'employee_finance_supervision'] as $table) {
         try {
             $pdo->exec("DELETE FROM {$table}");
         } catch (PDOException) {

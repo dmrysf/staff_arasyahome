@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS finance_task_amounts (
     updated_at DATETIME(6) NOT NULL,
     PRIMARY KEY (request_uuid),
     KEY idx_finance_task_amounts_read (read_at),
-    CONSTRAINT fk_finance_task_amounts_request FOREIGN KEY (request_uuid) REFERENCES finance_verification_requests (request_uuid) ON UPDATE RESTRICT ON DELETE CASCADE,
+    CONSTRAINT fk_finance_task_amounts_request FOREIGN KEY (request_uuid) REFERENCES finance_verification_requests (request_uuid) ON UPDATE RESTRICT ON DELETE RESTRICT,
     CONSTRAINT chk_finance_task_amounts_currency CHECK (currency REGEXP '^[A-Z]{3}$'),
     CONSTRAINT chk_finance_task_amounts_revision CHECK (finance_revision IS NULL OR finance_revision REGEXP '^sha256:[0-9a-f]{64}$')
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

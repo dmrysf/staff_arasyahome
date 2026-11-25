@@ -77,7 +77,7 @@ $pdo = Connection::create($config);
 foreach (glob(dirname(__DIR__) . '/database/seeds/*.sql') ?: [] as $seed) (new SqlFileRunner($pdo))->run($seed);
 $one = static function (string $sql, array $params = []) use ($pdo): mixed { $s = $pdo->prepare($sql); $s->execute($params); return $s->fetchColumn(); };
 $all = static function (string $sql, array $params = []) use ($pdo): array { $s = $pdo->prepare($sql); $s->execute($params); return $s->fetchAll(PDO::FETCH_ASSOC); };
-foreach (['finance_verification_request_events', 'finance_verification_requests', 'employee_finance_supervision', 'confirmare_cycle_steps', 'confirmare_proforma_cycles', 'confirmare_bank_checks', 'confirmare_reactivations',
+foreach (['finance_task_amounts', 'finance_verification_request_events', 'finance_verification_requests', 'employee_finance_supervision', 'confirmare_cycle_steps', 'confirmare_proforma_cycles', 'confirmare_bank_checks', 'confirmare_reactivations',
     'invoice_efactura_tasks', 'order_source_operations', 'order_invoice_qr_checks', 'order_shop_assignments', 'order_invoice_actions', 'order_invoice_reads', 'employee_invoice_scopes',
     'order_finance_actions', 'order_finance_reads', 'employee_finance_scopes', 'order_confirmation_source_edits', 'order_confirmation_source_reads', 'order_confirmation_contacts',
     'order_confirmation_idempotency', 'confirmare_alerts', 'order_confirmation_events', 'order_confirmations', 'workflow_cohort_activations', 'employee_confirmare_scopes', 'confirmare_operator_state'] as $table) {
@@ -678,6 +678,7 @@ $t73 = $ok($task($f, $a73['request']['id']), 'task 73');
 $ok($cmd($f, $a73['request']['id'], 'decide', $evidence($t73, '300.00', 'BT FVR 0073')), 'transfer 73 recorded');
 $r73 = $requestRow($a73['request']['id']);
 $check($r73['state'] === 'checking' && $r73['checker_employee_uuid'] === $uuids['fsup'] && $r73['recorded_by_employee_uuid'] === $uuids['fin'], 'a recorded transfer names its second employee (never the recorder)');
+$pdo->prepare('DELETE FROM finance_task_amounts WHERE request_uuid = ?')->execute([$r73['request_uuid']]);
 $pdo->prepare('DELETE FROM finance_verification_request_events WHERE request_uuid = ?')->execute([$r73['request_uuid']]);
 $pdo->prepare('DELETE FROM finance_verification_requests WHERE request_uuid = ?')->execute([$r73['request_uuid']]);
 $ok(T::ingest($kernel, 'trendhome', $payload($id(73), 200, true, ['state' => 'waiting', 'attention' => 'transfer_pending'])), 'the shop reports the transfer pending');
@@ -821,7 +822,7 @@ if ($rootUuid !== '') {
 }
 
 // Leave the shared disposable database as the next suites expect it: no Confirmare, finance, request or invoice state.
-foreach (['finance_verification_request_events', 'finance_verification_requests', 'employee_finance_supervision', 'confirmare_cycle_steps', 'confirmare_proforma_cycles', 'confirmare_bank_checks', 'confirmare_reactivations',
+foreach (['finance_task_amounts', 'finance_verification_request_events', 'finance_verification_requests', 'employee_finance_supervision', 'confirmare_cycle_steps', 'confirmare_proforma_cycles', 'confirmare_bank_checks', 'confirmare_reactivations',
     'invoice_efactura_tasks', 'order_source_operations', 'order_invoice_qr_checks', 'order_shop_assignments', 'order_invoice_actions', 'order_invoice_reads', 'employee_invoice_scopes',
     'order_finance_actions', 'order_finance_reads', 'employee_finance_scopes', 'order_confirmation_source_edits', 'order_confirmation_source_reads', 'order_confirmation_contacts',
     'order_confirmation_idempotency', 'confirmare_alerts', 'order_confirmation_events', 'order_confirmations', 'workflow_cohort_activations', 'employee_confirmare_scopes', 'confirmare_operator_state'] as $table) {
