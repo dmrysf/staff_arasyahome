@@ -79,7 +79,7 @@ final readonly class ConfirmareHealth
                 ],
                 'awbWaiting' => $this->count("SELECT COUNT(*) FROM operational_orders o INNER JOIN order_confirmations c ON c.order_uuid = o.order_uuid AND c.status = 'approved'
                     WHERE o.source_key = ? AND o.production_stage_id IN ('quality-control', 'packing', 'delivery') AND o.production_completed_at IS NULL AND o.cancellation_state IS NULL
-                    AND NOT EXISTS (SELECT 1 FROM order_source_operations op WHERE op.order_uuid = o.order_uuid AND op.kind = 'awb_create' AND op.state = 'applied')", [$s]),
+                    AND NOT " . ConfirmareOperations::awbDoneSql('o'), [$s]),
                 'cardRefundsOpen' => $this->count("SELECT COUNT(*) FROM order_source_operations f WHERE f.source_key = ? AND f.kind = 'card_refund_full' AND f.state = 'applied' AND f.result = 'manual_required'
                     AND NOT EXISTS (SELECT 1 FROM order_source_operations v WHERE v.order_uuid = f.order_uuid AND v.kind = 'card_refund_verify' AND v.state = 'applied' AND v.result = 'refund_verified' AND v.requested_at > f.requested_at)", [$s]),
                 'operationsUnknown' => $this->count("SELECT COUNT(*) FROM order_source_operations WHERE source_key = ? AND state = 'unknown'", [$s]),
