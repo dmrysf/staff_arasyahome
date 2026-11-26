@@ -36,6 +36,26 @@ $origin = (string) (getenv('ARASYA_E2E_ORIGIN') ?: 'http://127.0.0.1:4174');
 $full = ['mode' => 'active', 'authority' => 'enforce', 'qrAuthority' => 'enforce', 'documentAuthority' => 'enforce', 'confirmare' => 'on'];
 $config = T::config($dbName, array_values(array_unique([$origin, T::ORIGIN])), ['trendhome' => $full + ['paymentGate' => 'enforce'], 'outletperdele' => $full + ['paymentGate' => 'off']]);
 $pdo = Connection::create($config);
+// `--locks`: a read-only look at the TEST database's open transactions, running statements and lock waits, printed by
+// the workspace spec when a shop read stalls on CI (MySQL 8.4 and MariaDB 10.11 name the tables differently).
+if (in_array('--locks', $argv, true)) {
+    $look = static function (string $sql) use ($pdo): mixed {
+        try {
+            return $pdo->query($sql)->fetchAll(PDO::FETCH_ASSOC);
+        } catch (Throwable $e) {
+            return 'n/a: ' . substr($e->getMessage(), 0, 80);
+        }
+    };
+    fwrite(STDOUT, json_encode([
+        'trx' => $look('SELECT trx_id, trx_state, trx_started, trx_mysql_thread_id AS thread, trx_rows_locked, trx_tables_locked, trx_lock_structs, LEFT(trx_query, 160) AS query FROM information_schema.innodb_trx'),
+        'running' => $look("SELECT ID AS id, COMMAND AS command, TIME AS seconds, STATE AS state, LEFT(INFO, 160) AS info FROM information_schema.PROCESSLIST WHERE COMMAND <> 'Sleep' AND ID <> CONNECTION_ID()"),
+        'sleepingWithTrx' => $look("SELECT p.ID AS id, p.TIME AS seconds FROM information_schema.PROCESSLIST p INNER JOIN information_schema.innodb_trx t ON t.trx_mysql_thread_id = p.ID WHERE p.COMMAND = 'Sleep'"),
+        'waitsMysql' => $look('SELECT waiting_pid, LEFT(waiting_query, 160) AS waiting_query, blocking_pid, LEFT(blocking_query, 160) AS blocking_query, locked_table, locked_type FROM sys.innodb_lock_waits'),
+        'waitsMariadb' => $look('SELECT requesting_trx_id, blocking_trx_id FROM information_schema.INNODB_LOCK_WAITS'),
+        'metadata' => $look("SELECT ID AS id, TIME AS seconds, STATE AS state, LEFT(INFO, 160) AS info FROM information_schema.PROCESSLIST WHERE STATE LIKE '%metadata lock%'"),
+    ], JSON_UNESCAPED_SLASHES) . "\n");
+    exit(0);
+}
 $container = new Container($config, $pdo);
 $kernel = $container->kernel();
 $password = 'e2e passphrase 2026';

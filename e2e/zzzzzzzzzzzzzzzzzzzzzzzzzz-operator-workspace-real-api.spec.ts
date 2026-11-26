@@ -111,9 +111,16 @@ async function openOrder(page: Page, globalId: string) {
   try {
     await expect(page.getByTestId("dd-total")).toContainText(/\d/, { timeout: 20_000 });
   } catch {
+    // What the TEST database is doing while the read stalls (open transactions, lock waits): printed for the CI log.
+    console.log(`stalled read ${globalId}: ${php(["--locks"]).trim()}`);
     await page.reload();
     await expect(page.getByTestId("dd-work")).toBeVisible();
-    await expect(page.getByTestId("dd-total")).toContainText(/\d/, { timeout: 30_000 });
+    try {
+      await expect(page.getByTestId("dd-total")).toContainText(/\d/, { timeout: 30_000 });
+    } catch (error) {
+      console.log(`stalled again ${globalId}: ${php(["--locks"]).trim()}`);
+      throw error;
+    }
   }
 }
 
