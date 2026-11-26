@@ -1,12 +1,12 @@
 import { useState, type FormEvent } from "react";
 import { useI18n, type MessageKey } from "../../i18n";
 import { stageName } from "../../domain/stageNames";
-import { telHref, type StoreApi, type StoreOrder } from "../../domain/storeWorkspace";
+import { autoInvoiceNote, telHref, type StoreApi, type StoreOrder } from "../../domain/storeWorkspace";
 import { AppIcon } from "../../components/icons/AppIcon";
 import type { DocumentApi } from "../../domain/documents";
 import type { ConfirmareApi } from "../../domain/confirmare";
 import { ErrorMessage, Pager, SourceTag, StoreTopbar, ToneMessage, addressText, fmtDateTime, money, reasonText, useStoreRead } from "./StoreParts";
-import { useStorePrepare } from "./StorePrepare";
+import { autoInvoiceRow, useStorePrepare } from "./StorePrepare";
 import { CustomerCheckCard } from "./StoreChecks";
 
 /** "Caută o comandă" (Staff 2.59.0): order number, AWB number, or a name/telephone the shop searches; the employee's shop only. */
@@ -59,6 +59,7 @@ export function StoreOrderScreen({ store, documents, ops, permissions, orderId, 
   const queue = useStoreRead((signal) => ops ? ops.shopQueue(signal) : Promise.resolve(null), [ops, orderId]);
   const check = (queue.data ?? []).find((item) => item.globalOrderId === orderId && item.customerCheck === "required") ?? null;
   const o: StoreOrder | null = read.data;
+  const autoLine = o?.autoInvoice ? autoInvoiceRow(autoInvoiceNote(o.autoInvoice), t) : null;
   const back = () => { if (window.history.length > 1) window.history.back(); else navigate("/"); };
   return <div className="sw-page sw-order" data-testid="sw-order">
     <StoreTopbar eyebrow={t("sw.eyebrow")} title={o ? t("sw.order.title", { number: o.orderNumber }) : "…"} onBack={back} />
@@ -104,6 +105,7 @@ export function StoreOrderScreen({ store, documents, ops, permissions, orderId, 
           <p>{o.document.status === "none" ? t("sw.order.docNone") : o.document.status === "active" && o.document.revision !== null ? t("sw.order.docActive", { revision: o.document.revision, count: o.document.prints }) : <span className="sw-pill sw-pill-yellow">{t("sw.order.docStale")}</span>}</p>
           {o.canDocuments && documents && !o.cancelled && !o.stage.completed && <OrderPrepare orderId={o.globalOrderId} documents={documents} ops={ops} permissions={permissions} onDone={read.reload} />}
           <p className="sw-small" data-testid="sw-order-invoice">{t("sw.order.invoice")}: <strong>{o.invoiceIssued ? t("sw.order.invoiceYes") : t("sw.order.invoiceNo")}</strong></p>
+          {!o.invoiceIssued && autoLine && <p className="sw-small" data-testid="sw-order-auto-invoice"><ToneMessage tone={autoLine.tone}>{autoLine.text}</ToneMessage></p>}
         </section>
         <section className="sw-card" aria-labelledby="sw-o-awb">
           <h2 id="sw-o-awb">{t("sw.order.awb")}</h2>

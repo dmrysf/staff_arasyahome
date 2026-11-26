@@ -45,7 +45,7 @@ $config = new \Arasya\Operations\Config\Config(...[...get_object_vars($base), 's
     'trendhome' => ['mode' => 'edit', 'url' => $shopUrl, 'key' => 'th-e2e:e2e-shop-access-key-0123456789abcdef-test', 'finance' => 'record', 'invoice' => 'enforce'],
 ]]);
 $pdo = Connection::create($config);
-foreach (['043_confirmare_dual_store.sql', '059_awb_reopened.sql', '064_store_workspace.sql'] as $migration) {
+foreach (['043_confirmare_dual_store.sql', '059_awb_reopened.sql', '064_store_workspace.sql', '065_store_auto_invoice.sql'] as $migration) {
     (new SqlFileRunner($pdo))->run(dirname(__DIR__) . '/database/migrations/' . $migration); // idempotent
 }
 $container = new Container($config, $pdo);

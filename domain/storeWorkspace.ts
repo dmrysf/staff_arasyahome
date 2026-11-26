@@ -3,7 +3,7 @@ import { StaffServiceError } from "./models";
 import { translate } from "../i18n/translator";
 import { CANONICAL_CURTAIN_WORKFLOW_V1_STRUCTURE } from "./canonicalProductionWorkflow";
 import { mapDeliveryView, type DeliveryView } from "./confirmareOps";
-import { blockersOf, type InvoiceRead } from "./confirmareInvoice";
+import type { AutoInvoiceResult } from "./confirmareInvoice";
 
 /**
  * Store Workspace V1 (Staff 2.59.0, API 2.83.0, YD SOFT 2.36.0; owner brief 2026-11-26): the shop employee's one place for
@@ -128,7 +128,7 @@ export interface StoreOrder {
   globalOrderId: string; orderNumber: string; source: string; submittedAt: string | null; dueDate: string | null;
   stage: { id: string; number: number | null; total: number; completed: boolean }; cancelled: boolean;
   document: { status: string; version: number; revision: number | null; prints: number; lastPrint: string | null };
-  invoiceIssued: boolean; products: StoreProduct[]; awbOperations: StoreAwbOperation[];
+  invoiceIssued: boolean; autoInvoice: AutoInvoiceResult | null; products: StoreProduct[]; awbOperations: StoreAwbOperation[];
   shop: { status: string | null; lines: { name: string; sku: string; quantity: number; image: string | null }[]; money: { currency: string; known: boolean; total: string | null; received: string | null; remaining: string | null }; payment: string | null; delivery: DeliveryView | null } | null;
   canAwb: boolean; canDocuments: boolean;
 }
@@ -256,6 +256,7 @@ export function mapStoreOrder(value: unknown): StoreOrder {
     stage: { id: str(stage.id, 60), number: optInt(stage.number), total: int(stage.total), completed: bool(stage.completed) }, cancelled: bool(r.cancelled),
     document: { status: str(doc.status, 20), version: int(doc.version), revision: optInt(doc.revision), prints: int(doc.prints), lastPrint: instant(doc.lastPrint) },
     invoiceIssued: bool(r.invoiceIssued),
+    autoInvoice: r.autoInvoice == null ? null : mapAutoInvoice(r.autoInvoice),
     products: list(r.products, 100, (entry) => {
       const p = obj(entry);
       return { line: int(p.line), name: str(p.name, 255), code: optStr(p.code, 120), variant: optStr(p.variant, 160), color: optStr(p.color, 160), width: optStr(p.width, 20), height: optStr(p.height, 20),
@@ -460,39 +461,44 @@ export function telHref(phone: string): string | null {
   return /^\+?\d{9,15}$/.test(clean) ? `tel:${clean}` : null;
 }
 
-// ---- The final invoice after the production document (Staff 2.60.0) ----------------------------------------------------
+// ---- The automatic final invoice after the production document (Staff 2.61.0, API 2.84.0) -------------------------------
 
 /**
- * Store Workspace V1.1 (owner 2026-11-26): the shop employee never sees the SmartBill panel. The final invoice that the
- * employee used to issue there by hand is issued by the same server route right after "Pregătește și tipărește" printed the
- * production document (never before it). Every rule stays the server's and the shop's: who may issue (the routed employee of
- * the shop), when (an approved order whose production ticket is active, the money verified, no open finance or invoice
- * action), the existing document and the SmartBill settings. This only reads the server's answer and says what to do:
- * - `exists`: the final invoice is there (nothing is sent);
- * - `open`: an invoice action has no answer yet (never sent again);
- * - `quiet`: not this employee's invoice (another role, not routed to them, observe mode, a proforma shop): nothing is shown;
- * - `blocked`: the server or the shop refuses now (the first reason is shown in words);
- * - `issue`: send `issue` once, with the document revision the server read.
+ * Store Workspace V1.1 (owner approval 2026-11-26 "FINAL AUTOMATION APPROVAL"): the shop employee never issues the final
+ * invoice by hand any more (the server refuses it). Their print of the production document asks the system for it, in the
+ * same server transaction; the system issues it on their behalf (StoreAutoInvoice) right after the print, and every minute
+ * until it is done, also when the browser was closed. "Pregătește și tipărește" only asks the server where it stands
+ * (POST .../invoice/auto) and shows one line:
+ * - `issued` / `exists`: the final invoice is there (the system issued it, or one already existed: never a second one);
+ * - `open`: an invoice action has no answer yet (the system settles it; never sent again);
+ * - `waiting`: a rule is not met yet (the code says which); the system tries again by itself;
+ * - `attention`: SmartBill did not confirm, or the shop refused too often: the person in charge checks;
+ * - `stopped`: the system no longer issues it for this employee (the code says why);
+ * - `quiet`: nothing asked (not this employee's shop invoice, or an older server).
  */
-export type FinalInvoiceStep =
-  | { kind: "exists"; document: string }
-  | { kind: "open" }
-  | { kind: "quiet" }
-  | { kind: "blocked"; code: string }
-  | { kind: "issue"; revision: string };
+export type AutoInvoiceNote =
+  | { kind: "issued" | "exists"; document: string }
+  | { kind: "open" | "attention" | "quiet" | "queued" }
+  | { kind: "waiting" | "stopped"; code: string };
 
-const QUIET_INVOICE = ["not_allowed_for_role", "not_assigned", "assigned_to_other", "invoice_observe", "invoice_disabled"];
+const OPEN_OUTCOMES = ["answer_open", "invoice_action_open", "answer_lost"];
 
-export function finalInvoiceStep(read: InvoiceRead): FinalInvoiceStep {
-  if (!read.available) return read.reason === "not_configured" ? { kind: "quiet" } : { kind: "blocked", code: "smartbill_unreachable" };
-  const { summary } = read;
-  const document = summary.document;
-  if (document.exists && document.type !== "proforma") return { kind: "exists", document: `${document.series ?? ""} ${document.number ?? ""}`.trim() };
-  if (summary.operation.state === "unknown" || summary.operation.state === "in_flight" || read.actionOpen) return { kind: "open" };
-  if (read.role !== "documents" && read.role !== "manager") return { kind: "quiet" };
-  if (summary.smartbill.documentType !== "invoice" || summary.mode !== "enforce") return { kind: "quiet" };
-  if (read.allowedActions.includes("issue")) return { kind: "issue", revision: summary.revision };
-  const blockers = blockersOf(read, "issue");
-  if (blockers.length === 0 || blockers.some((code) => QUIET_INVOICE.includes(code))) return { kind: "quiet" };
-  return { kind: "blocked", code: blockers[0] };
+/** The server's answer about the automatic final invoice (API 2.84.0): codes only. */
+export function mapAutoInvoice(value: unknown): AutoInvoiceResult {
+  const r = obj(value);
+  const code = (v: unknown) => (typeof v === "string" && /^[a-z_]{2,40}$/.test(v) ? v : null);
+  return { state: code(r.state) ?? "none", outcome: code(r.outcome), document: typeof r.document === "string" && r.document.trim() !== "" ? r.document.trim().slice(0, 80) : null };
+}
+
+export function autoInvoiceNote(result: AutoInvoiceResult | null): AutoInvoiceNote {
+  if (result === null) return { kind: "quiet" };
+  const code = result.outcome ?? "";
+  switch (result.state) {
+    case "done": return { kind: code === "exists" ? "exists" : "issued", document: result.document ?? "" };
+    case "attention": return { kind: "attention" };
+    case "stopped": return { kind: "stopped", code };
+    case "busy": return { kind: "queued" };
+    case "waiting": return OPEN_OUTCOMES.includes(code) ? { kind: "open" } : code === "" ? { kind: "queued" } : { kind: "waiting", code };
+    default: return { kind: "quiet" };
+  }
 }

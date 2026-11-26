@@ -6,6 +6,7 @@ namespace Arasya\Operations\Document;
 
 use Arasya\Operations\Authorization\AuthorizationService;
 use Arasya\Operations\Cancellation\ProductionStop;
+use Arasya\Operations\Confirmare\StoreAutoInvoice;
 use Arasya\Operations\Employee\EmployeeIdentity;
 use Arasya\Operations\Employee\EmployeeRepository;
 use Arasya\Operations\Http\ApiException;
@@ -482,8 +483,14 @@ final readonly class DocumentService
                 throw self::reprintReasonRequired();
             }
             $now = $this->now();
+            $printUuid = Uuid::v4();
             $this->pdo->prepare('INSERT INTO production_document_prints (print_uuid, revision_uuid, order_uuid, print_number, print_kind, reason, printed_by_employee_uuid, printed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-                ->execute([Uuid::v4(), $active['revision_uuid'], $order['order_uuid'], $number, $kind, $reason, $fresh->employeeUuid, $now]);
+                ->execute([$printUuid, $active['revision_uuid'], $order['order_uuid'], $number, $kind, $reason, $fresh->employeeUuid, $now]);
+            // API 2.84.0 (Store Workspace V1.1): the shop employee's print asks the system for the final invoice, in this same
+            // transaction (no print, no request; the request survives a closed browser). See StoreAutoInvoice.
+            if (!$b2bViewerAuthority) {
+                StoreAutoInvoice::onPrinted($this->pdo, $order, $fresh->employeeUuid, $printUuid, $now);
+            }
             $this->store->event((string) $order['order_uuid'], $kind === 'print' ? 'printed' : 'reprinted', $revisionNumber, (string) $active['revision_uuid'], null, $fresh->employeeUuid, ['printNumber' => $number, 'reason' => $reason], $requestId, $now);
             if ($kind === 'reprint') {
                 $this->audit->record($fresh, 'production_document.reprinted', 'production_document', (string) $active['revision_uuid'], "{$order['order_number']} · R{$revisionNumber}",

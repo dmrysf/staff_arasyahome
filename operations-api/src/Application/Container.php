@@ -224,7 +224,14 @@ final class Container
     /** AWB readiness of Confirmare orders at stages 12-14 (API 2.77.0): routing, final invoice, lost answers. */
     public function confirmareAwbReadiness(): \Arasya\Operations\Confirmare\ConfirmareAwbReadiness
     {
-        return new \Arasya\Operations\Confirmare\ConfirmareAwbReadiness($this->pdo, $this->clock, $this->confirmareInvoice(), $this->confirmareOperations(), $this->employees);
+        // API 2.84.0: the invoice is the system's (root through the intervention desk instance), on behalf of the routed employee.
+        return new \Arasya\Operations\Confirmare\ConfirmareAwbReadiness($this->pdo, $this->clock, $this->confirmareInvoice(null, true), $this->confirmareOperations(), $this->employees);
+    }
+
+    /** The shop employee's automatic final invoice after the print (API 2.84.0, migration 065); also bin/confirmare-distribute.php. */
+    public function storeAutoInvoice(): \Arasya\Operations\Confirmare\StoreAutoInvoice
+    {
+        return new \Arasya\Operations\Confirmare\StoreAutoInvoice($this->pdo, $this->clock, $this->confirmareInvoice(null, true), $this->employees);
     }
 
     /** Stale production clearance recomputed by the cycle worker (API 2.77.4): opens production only when every condition holds. */
@@ -549,6 +556,7 @@ final class Container
                 $context,
                 $this->confirmareDecisionFollowUps(),
                 $this->storeWorkspace($authorization),
+                $this->storeAutoInvoice(),
             ),
             new \Arasya\Operations\Management\RootInterventionController($desk = $this->rootIntervention($authorization), $this->authentication, $csrf, $this->config, $context, $this->orderResolver($desk, $authorization)),
             $this->financeController($authorization, $context, $csrf, $rateLimiter),

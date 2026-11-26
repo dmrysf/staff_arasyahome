@@ -1,9 +1,18 @@
 <?php
 declare(strict_types=1);
+/** Restore a pre-065 disposable test fixture (no automatic invoice requests). NOT a deployment/rollback mechanism. */
+function restorePreStoreAutoInvoiceTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    $pdo->exec('DROP TABLE IF EXISTS order_invoice_auto_requests');
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='065_store_auto_invoice.sql'");
+}
+
 /** Restore a pre-064 disposable test fixture (no AWB facts, the 059 kind CHECK). NOT a deployment/rollback mechanism. */
 function restorePreStoreWorkspaceTestSchema(PDO $pdo): void
 {
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    restorePreStoreAutoInvoiceTestSchema($pdo);
     if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='064_store_workspace.sql'")->fetchColumn()) return;
     $pdo->exec("DELETE FROM order_source_operations WHERE kind IN ('awb_cancel', 'address_update')");
     if ((bool) $pdo->query("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'order_source_operations' AND column_name = 'awb_number'")->fetchColumn()) {

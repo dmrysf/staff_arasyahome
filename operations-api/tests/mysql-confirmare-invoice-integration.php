@@ -17,6 +17,7 @@ use Arasya\Operations\Config\Config;
 use Arasya\Operations\Database\Connection;
 use Arasya\Operations\Database\MigrationRunner;
 use Arasya\Operations\Database\SqlFileRunner;
+use Arasya\Operations\Http\ApiException;
 use Arasya\Operations\Iam\RootBootstrapService;
 use Arasya\Operations\Integration\SourceAccess\SourceAccessTransport;
 use Arasya\Operations\Integration\SourceRegistry;
@@ -80,7 +81,7 @@ foreach (glob(dirname(__DIR__) . '/database/seeds/*.sql') ?: [] as $seed) (new S
 $one = static function (string $sql, array $params = []) use ($pdo): mixed { $s = $pdo->prepare($sql); $s->execute($params); return $s->fetchColumn(); };
 $all = static function (string $sql, array $params = []) use ($pdo): array { $s = $pdo->prepare($sql); $s->execute($params); return $s->fetchAll(PDO::FETCH_ASSOC); };
 // Migration 041's tables stay (schema_migrations records them); between suites only their rows are removed.
-$clearInvoice = static function () use ($pdo): void { foreach (['confirmare_cycle_steps', 'confirmare_proforma_cycles', 'confirmare_bank_checks', 'confirmare_reactivations', 'invoice_efactura_tasks', 'order_source_operations', 'order_invoice_qr_checks', 'order_shop_assignments', 'order_invoice_actions', 'order_invoice_reads', 'employee_invoice_scopes'] as $table) $pdo->exec("DELETE FROM {$table}"); };
+$clearInvoice = static function () use ($pdo): void { foreach (['order_invoice_auto_requests', 'confirmare_cycle_steps', 'confirmare_proforma_cycles', 'confirmare_bank_checks', 'confirmare_reactivations', 'invoice_efactura_tasks', 'order_source_operations', 'order_invoice_qr_checks', 'order_shop_assignments', 'order_invoice_actions', 'order_invoice_reads', 'employee_invoice_scopes'] as $table) $pdo->exec("DELETE FROM {$table}"); };
 $clearInvoice();
 foreach (['finance_task_amounts', 'finance_verification_request_events', 'finance_verification_requests', 'employee_finance_supervision', 'order_finance_actions', 'order_finance_reads', 'employee_finance_scopes', 'order_confirmation_source_edits', 'order_confirmation_source_reads', 'order_confirmation_contacts', 'order_confirmation_idempotency', 'confirmare_alerts', 'order_confirmation_events', 'order_confirmations', 'workflow_cohort_activations', 'employee_confirmare_scopes', 'confirmare_operator_state'] as $table) {
     $pdo->exec("DELETE FROM {$table}");
@@ -233,11 +234,39 @@ $approve = static function (array $w, string $gid) use ($detail, $call, $get, $v
 // The per-employee shop call limit (30 a minute) is a production guard; this suite makes many calls on purpose.
 $invoice = static function (array $w, string $gid) use ($get, $pdo): array { $pdo->exec('DELETE FROM api_rate_limit_buckets'); return $get($w, '/confirmare/orders/' . rawurlencode($gid) . '/invoice'); };
 $read = static fn (array $w, string $gid): array => $ok($invoice($w, $gid), "invoice {$gid}");
-$act = static function (array $w, string $gid, string $action, array $fields = [], ?string $key = null, ?string $revision = null) use ($call, $read, $pdo): array {
+// API 2.84.0 (Store Workspace V1.1, owner approval 2026-11-26): the shop employee (documents role) no longer issues by hand,
+// also not through the API; their final invoice is the system's, on their behalf (root through the intervention desk
+// instance, ConfirmareInvoice::act with $onBehalfOf), exactly as StoreAutoInvoice and ConfirmareAwbReadiness send it. $sysAct
+// is that path, shaped like an HTTP answer; $act sends an `issue` of a documents-role reader through it, every other
+// action and every other role through the HTTP route (where the documents role is now refused).
+$systemInvoice = $container->confirmareInvoice(null, true);
+$sysAct = static function (string $name, string $gid, array $fields = [], ?string $key = null, ?string $revision = null) use ($systemInvoice, $container, $one, $read, $pdo, &$who, &$uuids): array {
+    $revision ??= $read($who[$name], $gid)['summary']['revision'];
+    $pdo->exec('DELETE FROM api_rate_limit_buckets');
+    $system = $container->employeeRepository()->findByUuid((string) $one('SELECT employee_uuid FROM system_root_identity LIMIT 1'));
+    try {
+        return ['status' => 200, 'body' => $systemInvoice->act($system, $gid, 'issue', ['expectedRevision' => $revision] + $fields, $key ?? 'inv-sys-' . bin2hex(random_bytes(8)), 'test-sys', $container->employeeRepository()->findByUuid($uuids[$name]))];
+    } catch (ApiException $e) {
+        return ['status' => $e->status, 'body' => ['error' => ['code' => $e->errorCode, 'details' => $e->details]]];
+    }
+};
+$http = static function (array $w, string $gid, string $action, array $fields = [], ?string $key = null, ?string $revision = null) use ($call, $read, $pdo): array {
     $revision ??= $read($w, $gid)['summary']['revision'];
     $pdo->exec('DELETE FROM api_rate_limit_buckets');
     return $call($w, 'POST', '/confirmare/orders/' . rawurlencode($gid) . '/invoice/' . $action, ['expectedRevision' => $revision] + $fields, $key);
 };
+$act = static function (array $w, string $gid, string $action, array $fields = [], ?string $key = null, ?string $revision = null) use ($http, $sysAct, $invoice, &$who): array {
+    $name = array_search($w, $who, true);
+    // The reader's role; while the TEST shop is unreachable (no role in the answer), the shop employees of this suite.
+    $role = is_string($name) ? ($invoice($w, $gid)['body']['role'] ?? (in_array($name, ['idoc', 'idoc2', 'iop'], true) ? 'documents' : null)) : null;
+    if ($action === 'issue' && $role === 'documents') {
+        return $sysAct($name, $gid, $fields, $key, $revision);
+    }
+    return $http($w, $gid, $action, $fields, $key, $revision);
+};
+// Whether the system may issue now for this documents-role reader: Arasya's rules for that employee and the shop's (the
+// reader's own `not_allowed_for_role` only says that the employee never issues by hand).
+$canIssue = static fn (array $r): bool => array_values(array_diff($r['blockers']['issue'], ['not_allowed_for_role'])) === [] && $r['summary']['blockers']['issue'] === [];
 $docsMade = static fn (int $n): int => $th->smartbillDocuments[$id($n)] ?? 0;
 foreach ([1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14] as $n) $approve($who['iop'], $g($n));
 // API 2.44.0: the final invoice needs the production ticket and its QR, the operator's routing to the shop employee, and
@@ -272,10 +301,10 @@ $prepare = static function (string $gid, string $to = 'idoc') use ($ticket, $rou
 // ---- 3. Who reads the state --------------------------------------------------------------------------------------------
 $r = $read($who['idoc'], $g(1));
 $check($r['available'] === true && $r['role'] === 'documents' && $r['summary']['document']['exists'] === false && $r['handoff']['state'] === 'ready' && !in_array('issue', $r['allowedActions'], true)
-    && array_slice($r['blockers']['issue'], -2) === ['not_assigned', 'ticket_missing'] && !in_array('qr_not_verified', $r['blockers']['issue'], true), 'the production ticket employee with the issue scope: documents role, the order is ready; no invoice before the routing and the production ticket (no QR scan asked): ' . json_encode($r['blockers']['issue']));
+    && array_slice($r['blockers']['issue'], -3) === ['not_assigned', 'ticket_missing', 'not_allowed_for_role'] && !in_array('qr_not_verified', $r['blockers']['issue'], true), 'the production ticket employee with the issue scope: documents role, the order is ready; no invoice before the routing and the production ticket (no QR scan asked): ' . json_encode($r['blockers']['issue']));
 $prepare($g(1));
 $r = $read($who['idoc'], $g(1));
-$check($r['handoff']['state'] === 'awaiting_cutting' && in_array('issue', $r['allowedActions'], true) && $r['assignment']['employeeId'] === $uuids['idoc'] && $r['qr']['verified'] === false, 'ticket printed, routed to this employee, no QR scanned: issuing allowed: ' . json_encode($r['allowedActions']));
+$check($r['handoff']['state'] === 'awaiting_cutting' && $canIssue($r) && $r['allowedActions'] === [] && $r['assignment']['employeeId'] === $uuids['idoc'] && $r['qr']['verified'] === false, 'ticket printed, routed to this employee, no QR scanned: the system may issue for them; API 2.84.0: the employee never by hand: ' . json_encode($r['blockers']['issue']));
 $v = $read($who['iview'], $g(1));
 // API 2.50.0: a finance scope reads an order's SmartBill state only through a finance task of the order.
 $error($invoice($who['ifin'], $g(1)), 404, 'CONFIRMARE_NOT_FOUND', 'a finance scope without a task of the order: not found');
@@ -290,7 +319,7 @@ foreach ([1, 8, 13, 14] as $n) {
 $f = $read($who['ifin'], $g(1));
 $m = $read($who['imgr'], $g(1));
 $check($v['role'] === 'viewer' && $v['allowedActions'] === [] && in_array('not_allowed_for_role', $v['blockers']['issue'], true) && $f['role'] === 'finance' && $f['allowedActions'] === [] && $m['role'] === 'manager', 'a ticket employee without the scope reads as viewer, finance as finance (both read only), the manager as manager');
-$check(($detail($who['iop'], $g(1))['invoice'] ?? null) === ['configured' => true, 'read' => true, 'issue' => true, 'manage' => false, 'proforma' => true, 'route' => true, 'payment' => true], 'the detail shows the invoice capabilities (presentation only): ' . json_encode($detail($who['iop'], $g(1))['invoice'] ?? null));
+$check(($detail($who['iop'], $g(1))['invoice'] ?? null) === ['configured' => true, 'read' => true, 'issue' => false, 'manage' => false, 'proforma' => true, 'route' => true, 'payment' => true], 'the detail shows the invoice capabilities (presentation only; API 2.84.0: no manual issue without the manage scope): ' . json_encode($detail($who['iop'], $g(1))['invoice'] ?? null));
 $error($invoice($who['inodocs'], $g(1)), 404, 'CONFIRMARE_NOT_FOUND', 'the issue scope without the production document permission reaches nothing');
 $sup = $read($who['isup'], $g(1));
 $check($sup['role'] === 'operator' && $sup['allowedActions'] === [] && $sup['summary']['document']['link'] === null && in_array('not_allowed_for_role', $sup['blockers']['issue'], true), 'API 2.44.0: a Confirmare supervisor reads the state as operator (for the proforma and the routing), never issues the final invoice, no invoice link');
@@ -332,7 +361,7 @@ $differs = array_keys(array_filter($a, static fn ($value, $key): bool => json_en
 $check(array_values(array_diff($differs, ['employeeUuid', 'username', 'displayName', 'authorizationVersion', 'invoiceScopes'])) === [], 'the invoice scope adds nothing else to the session (same permissions, stages and scopes as the same role without it): ' . json_encode($differs));
 $production = static fn (string $gid): array => $all('SELECT production_stage_id, production_owner_employee_uuid, production_version, document_status, document_version FROM operational_orders WHERE global_order_id = ?', [$gid])[0];
 $tickets = static fn (string $gid): array => [(int) $one('SELECT COUNT(*) FROM production_document_revisions r JOIN operational_orders o ON o.order_uuid = r.order_uuid WHERE o.global_order_id = ?', [$gid]), (int) $one('SELECT COUNT(*) FROM production_document_prints p JOIN operational_orders o ON o.order_uuid = p.order_uuid WHERE o.global_order_id = ?', [$gid])];
-$issuable = static fn (string $gid): array => [$read($who['idoc'], $gid)['handoff']['state'], in_array('issue', $read($who['idoc'], $gid)['allowedActions'], true)];
+$issuable = static fn (string $gid): array => [$read($who['idoc'], $gid)['handoff']['state'], $canIssue($read($who['idoc'], $gid))];
 $check($issuable($g(11)) === ['ready', false], 'ready (no production ticket, so no QR to scan): no invoice yet');
 $generated = $ok($call($who['idoc'], 'POST', $docPath($g(11), 'generate'), ['expectedDocumentVersion' => $docVersion($g(11))]), 'ticket generated', 201);
 $ok($route($g(11)), 'routed to the shop employee');
@@ -601,8 +630,15 @@ $error($act($who['idoc'], $g(1), 'issue', [], $k1, $i1['summary']['revision']), 
 $refused($act($who['idoc2'], $g(1), 'issue'), 'assigned_to_other', 'another shop employee: the order is routed to someone else', 'CONFIRMARE_INVOICE_NOT_ALLOWED');
 $refused($act($who['idoc'], $g(1), 'issue'), 'document_exists', 'the assignee again with a new key: document_exists');
 $check($docsMade(1) === 1, 'still one document');
-$refused($act($who['idoc'], $g(1), 'send-mail'), 'resend_confirmation_required', 'a second e-mail needs the confirmation');
-$s1 = $ok($act($who['idoc'], $g(1), 'send-mail', ['confirmResend' => true]), 'resend');
+// API 2.84.0: the shop employee no longer sends, re-issues, deletes or settles anything by hand, also not through the API.
+foreach (['send-mail' => ['confirmResend' => true], 'reissue' => ['reasonCode' => 'order_changed', 'previousCancelled' => true], 'delete' => ['reasonCode' => 'wrong_document', 'confirmDelete' => true],
+    'resolve' => ['target' => 'document', 'resolution' => 'issued'], 'issue' => []] as $manual => $manualFields) {
+    $error($http($who['idoc'], $g(1), $manual, $manualFields), 403, 'CONFIRMARE_INVOICE_DENIED', "the shop employee's direct API {$manual} is refused");
+}
+$error($call($who['idoc'], 'POST', '/confirmare/orders/' . rawurlencode($g(1)) . '/invoice/reconcile', ['idempotencyKey' => $k1]), 403, 'CONFIRMARE_INVOICE_DENIED', 'the shop employee does not settle SmartBill actions');
+$error($proforma('idoc2', $g(13), 'check'), 403, 'CONFIRMARE_INVOICE_DENIED', 'the shop employee no longer runs the SmartBill proforma check');
+$refused($act($who['imgr'], $g(1), 'send-mail'), 'resend_confirmation_required', 'a second e-mail needs the confirmation');
+$s1 = $ok($act($who['imgr'], $g(1), 'send-mail', ['confirmResend' => true]), 'resend');
 $check($s1['result'] === 'sent' && ($th->smartbillMails[$id(1)] ?? 0) === 2, 'confirmed: sent once more');
 $refused($act($who['imgr'], $g(1), 'reissue', ['reasonCode' => 'order_changed']), 'reissue_attestation_required', 'a re-issue of an invoice needs the manager\'s statement that the previous one was cancelled');
 $re = $ok($act($who['imgr'], $g(1), 'reissue', ['reasonCode' => 'order_changed', 'previousCancelled' => true, 'reasonNote' => 'Factura anterioară stornată în SmartBill.']), 're-issue');
@@ -610,7 +646,7 @@ $check($re['result'] === 'issued' && $docsMade(1) === 2, 'the manager re-issues:
 $timeline = $read($who['imgr'], $g(1))['timeline'];
 $applied = array_values(array_filter($timeline, static fn (array $row): bool => $row['state'] === 'applied'));
 $rejected = array_values(array_filter($timeline, static fn (array $row): bool => $row['state'] === 'rejected'));
-$check(array_column($applied, 'action') === ['issue', 'send_mail', 'reissue'] && $applied[2]['reasonCode'] === 'order_changed' && $applied[2]['role'] === 'manager'
+$check(array_column($applied, 'action') === ['issue', 'send_mail', 'reissue'] && $applied[2]['reasonCode'] === 'order_changed' && $applied[2]['role'] === 'manager' && $applied[0]['role'] === 'manager'
     && array_column($rejected, 'outcome') === ['revision_changed', 'document_exists', 'resend_confirmation_required', 'reissue_attestation_required'], 'the Arasya timeline: issue, e-mail, re-issue applied once each (role, reason code); every refusal recorded with its code: ' . json_encode(array_map(static fn (array $r): array => [$r['action'], $r['state'], $r['outcome']], $timeline)));
 
 // ---- 6. SmartBill's outcome unknown; lost answers; 5xx; never received -----------------------------------------------------
@@ -641,7 +677,7 @@ $check($auto5['applied'] >= 1 && (string) $one('SELECT state FROM order_invoice_
     'after the window the worker settles it with the shop\'s stored answer; no second document: ' . json_encode($auto5));
 $check($lostAnswers->due(20) === [] || !in_array('inv-lost-0001-' . $suffix, array_column($lostAnswers->due(20), 'idempotency_key'), true), 'a settled action is never asked again');
 $pdo->exec('DELETE FROM api_rate_limit_buckets');
-$rec = $ok($call($who['idoc'], 'POST', '/confirmare/orders/' . rawurlencode($g(5)) . '/invoice/reconcile', ['idempotencyKey' => 'inv-lost-0001-' . $suffix]), 'reconcile lost');
+$rec = $ok($call($who['imgr'], 'POST', '/confirmare/orders/' . rawurlencode($g(5)) . '/invoice/reconcile', ['idempotencyKey' => 'inv-lost-0001-' . $suffix]), 'reconcile lost');
 $check($rec['state'] === 'applied' && $rec['result'] === 'issued' && $docsMade(5) === 1 && (string) $one("SELECT state FROM order_invoice_actions WHERE idempotency_key = ?", ['inv-lost-0001-' . $suffix]) === 'applied', 'reconciled with the shop\'s stored answer: applied once');
 $th->afterInvoice = 'crash';
 $crash = $ok($act($who['idoc'], $g(6), 'issue', [], 'inv-crash-0001-' . $suffix), '5xx');
@@ -652,18 +688,18 @@ $pdo->prepare('UPDATE order_invoice_actions SET requested_at = DATE_SUB(requeste
 $mrec = $ok($call($who['imgr'], 'POST', '/confirmare/orders/' . rawurlencode($g(6)) . '/invoice/reconcile', ['idempotencyKey' => 'inv-crash-0001-' . $suffix]), 'manager reconciles another employee\'s action');
 $check($mrec['state'] === 'applied' && $docsMade(6) === 1, 'a manager settles it: one document');
 $task6 = $all('SELECT t.issuer_employee_uuid, t.issued_at, t.due_at, a.requested_at FROM invoice_efactura_tasks t JOIN order_invoice_actions a ON a.action_uuid = t.invoice_action_uuid WHERE a.idempotency_key = ?', ['inv-crash-0001-' . $suffix]);
-$check(count($task6) === 1 && $task6[0]['issuer_employee_uuid'] === $uuids['idoc'] && substr((string) $task6[0]['issued_at'], 0, 19) === substr((string) $task6[0]['requested_at'], 0, 19)
+$check(count($task6) === 1 && $task6[0]['issuer_employee_uuid'] === (string) $one('SELECT employee_uuid FROM system_root_identity LIMIT 1') && substr((string) $task6[0]['issued_at'], 0, 19) === substr((string) $task6[0]['requested_at'], 0, 19)
     && (string) $task6[0]['due_at'] === \Arasya\Operations\Confirmare\InvoiceEfactura::due(new DateTimeImmutable((string) $task6[0]['requested_at'], new DateTimeZone('UTC')))->format('Y-m-d H:i:s.u'),
-    'the e-Factura task names the employee who issued the invoice, at the moment it was issued: ' . json_encode($task6));
+    'the e-Factura task names who issued the invoice (API 2.84.0: the system, for the shop employee), at the moment it was issued: ' . json_encode($task6));
 $rev9 = $read($who['idoc'], $g(9))['summary']['revision'];
 $th->fail = 'SOURCE_UNREACHABLE';
 $never = $ok($act($who['idoc'], $g(9), 'issue', [], 'inv-never-0001-' . $suffix, $rev9), 'never received');
 $th->fail = null;
 $check($never['state'] === 'unknown' && $docsMade(9) === 0, 'the request never reached the shop: unknown in Arasya, nothing made');
-$early = $ok($call($who['idoc'], 'POST', '/confirmare/orders/' . rawurlencode($g(9)) . '/invoice/reconcile', ['idempotencyKey' => 'inv-never-0001-' . $suffix]), 'early reconcile');
+$early = $ok($call($who['imgr'], 'POST', '/confirmare/orders/' . rawurlencode($g(9)) . '/invoice/reconcile', ['idempotencyKey' => 'inv-never-0001-' . $suffix]), 'early reconcile');
 $check($early['state'] === 'unknown' && ($early['reachable'] ?? null) === true, 'the shop has no record yet: still unknown (no guess)');
 $pdo->prepare('UPDATE order_invoice_actions SET requested_at = DATE_SUB(requested_at, INTERVAL 10 MINUTE) WHERE idempotency_key = ?')->execute(['inv-never-0001-' . $suffix]);
-$refused($call($who['idoc'], 'POST', '/confirmare/orders/' . rawurlencode($g(9)) . '/invoice/reconcile', ['idempotencyKey' => 'inv-never-0001-' . $suffix]), 'not_received', 'past the reconciliation window the action was never received');
+$refused($call($who['imgr'], 'POST', '/confirmare/orders/' . rawurlencode($g(9)) . '/invoice/reconcile', ['idempotencyKey' => 'inv-never-0001-' . $suffix]), 'not_received', 'past the reconciliation window the action was never received');
 $i9 = $ok($act($who['idoc'], $g(9), 'issue'), 'issue after not received');
 $check($i9['result'] === 'issued' && $docsMade(9) === 1, 'then the order is issued once');
 
@@ -679,8 +715,20 @@ if (function_exists('pcntl_fork')) {
         if ($pid === 0) {
             $childContainer = new Container($config, null, $transport);
             usleep(20000);
-            $response = T::call($childContainer->kernel(), 'POST', '/confirmare/orders/' . rawurlencode($g(10)) . '/invoice/issue', ['expectedRevision' => $revision],
-                ['origin' => T::ORIGIN, 'x-csrf-token' => $who[$name]['csrf'], 'idempotency-key' => "inv-race-{$index}-{$suffix}"], $who[$name]['cookie']);
+            if ($name === 'idoc') {
+                // API 2.84.0: the shop employee's invoice is the system's (on their behalf), racing the manager's manual one.
+                $childRepo = $childContainer->employeeRepository();
+                try {
+                    $childContainer->confirmareInvoice(null, true)->act($childRepo->findByUuid((string) $childContainer->pdo()->query('SELECT employee_uuid FROM system_root_identity LIMIT 1')->fetchColumn()), $g(10), 'issue',
+                        ['expectedRevision' => $revision], "inv-race-{$index}-{$suffix}", 'test-race', $childRepo->findByUuid($uuids['idoc']));
+                    $response = ['status' => 200, 'body' => null];
+                } catch (ApiException $e) {
+                    $response = ['status' => $e->status, 'body' => ['error' => ['code' => $e->errorCode]]];
+                }
+            } else {
+                $response = T::call($childContainer->kernel(), 'POST', '/confirmare/orders/' . rawurlencode($g(10)) . '/invoice/issue', ['expectedRevision' => $revision],
+                    ['origin' => T::ORIGIN, 'x-csrf-token' => $who[$name]['csrf'], 'idempotency-key' => "inv-race-{$index}-{$suffix}"], $who[$name]['cookie']);
+            }
             file_put_contents($files[$index], json_encode(['status' => $response['status'], 'body' => $response['body']]));
             posix_kill(posix_getpid(), SIGKILL);
         }
@@ -691,7 +739,7 @@ if (function_exists('pcntl_fork')) {
     array_map('unlink', $files);
     $statuses = array_column($results, 'status');
     sort($statuses);
-    $check($statuses === [200, 409] && (int) $one("SELECT COUNT(*) FROM order_invoice_actions WHERE global_order_id = ? AND action = 'issue'", [$g(10)]) === 1, 'two employees issue at the same moment: one action reaches the shop, the other is refused: ' . json_encode($results));
+    $check($statuses === [200, 409] && (int) $one("SELECT COUNT(*) FROM order_invoice_actions WHERE global_order_id = ? AND action = 'issue'", [$g(10)]) === 1, 'the system (for the shop employee) and the manager issue at the same moment: one action reaches the shop, the other is refused: ' . json_encode($results));
 }
 
 // ---- 8. Observe mode (Outlet Perdele) and the shop scopes -------------------------------------------------------------------
@@ -745,30 +793,32 @@ $check((int) $one("SELECT COUNT(*) FROM order_invoice_reads WHERE outcome = 'pay
     && (int) $one("SELECT COUNT(*) FROM order_invoice_reads WHERE outcome = 'payment_paid_not_verified'") === 1, 'every payment read is audited with its state only');
 $error(T::call($kernel, 'POST', '/confirmare/orders/' . rawurlencode($g(1)) . '/invoice/payment', [], ['origin' => T::ORIGIN, 'x-csrf-token' => $who['ifin']['csrf'], 'idempotency-key' => 'inv-pay-post-0001'], $who['ifin']['cookie']), 405, 'METHOD_NOT_ALLOWED', 'the payment state is read-only (GET only)');
 
-// ---- 8c. API 2.54.0 (YD SOFT 2.25.0, owner 2026-11-02): the routed shop employee deletes the order's invoice --------------
+// ---- 8c. API 2.54.0 (YD SOFT 2.25.0, owner 2026-11-02): deleting the order's invoice; API 2.84.0: an invoice manager only --------------
 $pdo->exec('DELETE FROM api_rate_limit_buckets');
 $why = ['reasonCode' => 'wrong_document', 'confirmDelete' => true];
-$v9 = $read($who['idoc'], $g(9));
-$check(in_array('delete', $v9['allowedActions'], true) && $v9['summary']['blockers']['delete'] === [], 'the routed employee may delete the issued invoice: ' . json_encode($v9['blockers']['delete'] ?? null));
+$v9 = $read($who['imgr'], $g(9));
+$check(in_array('delete', $v9['allowedActions'], true) && $v9['summary']['blockers']['delete'] === [], 'the invoice manager may delete the issued invoice: ' . json_encode($v9['blockers']['delete'] ?? null));
+$check(!in_array('delete', $read($who['idoc'], $g(9))['allowedActions'], true), 'API 2.84.0: the routed shop employee no longer deletes an invoice');
 $error($act($who['iview'], $g(9), 'delete', $why), 403, 'CONFIRMARE_INVOICE_DENIED', 'a document viewer without an invoice scope never deletes an invoice');
-$refused($act($who['iop'], $g(9), 'delete', $why), 'assigned_to_other', 'an employee with an invoice scope but not routed this order cannot delete it', 'CONFIRMARE_INVOICE_NOT_ALLOWED');
-$refused($act($who['idoc2'], $g(9), 'delete', $why), 'assigned_to_other', 'another shop employee: the order is routed to someone else', 'CONFIRMARE_INVOICE_NOT_ALLOWED');
-$error($act($who['idoc'], $g(9), 'delete', ['confirmDelete' => true]), 422, 'CONFIRMARE_INVOICE_INVALID', 'a deletion needs a reason code');
-$refused($act($who['idoc'], $g(9), 'delete', ['reasonCode' => 'wrong_document']), 'delete_confirmation_required', 'the shop refuses a deletion without the explicit confirmation');
+foreach (['idoc', 'idoc2', 'iop'] as $shopEmployee) {
+    $error($act($who[$shopEmployee], $g(9), 'delete', $why), 403, 'CONFIRMARE_INVOICE_DENIED', "API 2.84.0: an invoice `issue` scope never deletes ({$shopEmployee}), routed or not");
+}
+$error($act($who['imgr'], $g(9), 'delete', ['confirmDelete' => true]), 422, 'CONFIRMARE_INVOICE_INVALID', 'a deletion needs a reason code');
+$refused($act($who['imgr'], $g(9), 'delete', ['reasonCode' => 'wrong_document']), 'delete_confirmation_required', 'the shop refuses a deletion without the explicit confirmation');
 $task9 = static fn (): array => $all('SELECT t.state, t.outcome_code FROM invoice_efactura_tasks t JOIN operational_orders o ON o.order_uuid = t.order_uuid WHERE o.global_order_id = ? ORDER BY t.created_at', [$g(9)]);
 $check(array_column($task9(), 'state') === ['open'], 'the issued invoice has its open e-Factura follow-up: ' . json_encode($task9()));
 $pdo->prepare("UPDATE invoice_efactura_tasks t JOIN operational_orders o ON o.order_uuid = t.order_uuid SET t.state = 'sent', t.outcome_code = 'checked_sent', t.recorded_at = UTC_TIMESTAMP(6), t.recorded_by_employee_uuid = ? WHERE o.global_order_id = ?")->execute([$uuids['idoc'], $g(9)]);
-$refused($act($who['idoc'], $g(9), 'delete', $why), 'efactura_recorded', 'an invoice recorded as sent to e-Factura is never deleted', 'CONFIRMARE_INVOICE_NOT_ALLOWED');
+$refused($act($who['imgr'], $g(9), 'delete', $why), 'efactura_recorded', 'an invoice recorded as sent to e-Factura is never deleted', 'CONFIRMARE_INVOICE_NOT_ALLOWED');
 $pdo->prepare("UPDATE invoice_efactura_tasks t JOIN operational_orders o ON o.order_uuid = t.order_uuid SET t.state = 'open', t.outcome_code = NULL, t.recorded_at = NULL, t.recorded_by_employee_uuid = NULL WHERE o.global_order_id = ?")->execute([$g(9)]);
 $th->deleteOutcome = 'not_last';
-$refused($act($who['idoc'], $g(9), 'delete', $why), 'not_last_invoice', 'SmartBill deletes only the last invoice of its series');
+$refused($act($who['imgr'], $g(9), 'delete', $why), 'not_last_invoice', 'SmartBill deletes only the last invoice of its series');
 $check(($th->smartbillDeletes[$id(9)] ?? 0) === 0 && $read($who['idoc'], $g(9))['summary']['document']['exists'], 'nothing was deleted; the invoice stays');
-$d9 = $ok($act($who['idoc'], $g(9), 'delete', $why + ['reasonNote' => 'Factura emisă pe alt client (TEST).']), 'delete');
+$d9 = $ok($act($who['imgr'], $g(9), 'delete', $why + ['reasonNote' => 'Factura emisă pe alt client (TEST).']), 'delete');
 $check($d9['state'] === 'applied' && $d9['result'] === 'deleted' && $d9['summary']['document']['exists'] === false && ($th->smartbillDeletes[$id(9)] ?? 0) === 1 && $d9['summary']['blockers']['issue'] === [] && $d9['blockers']['issue'] === [],
     'deleted once in SmartBill; the order may be invoiced again');
 $check(array_column($task9(), 'outcome_code') === ['invoice_deleted'] && array_column($task9(), 'state') === ['resolved'], 'the e-Factura follow-up of the deleted invoice is closed (invoice_deleted)');
 $row9 = $all("SELECT action, state, reason_code, result, access_role FROM order_invoice_actions WHERE global_order_id = ? AND action = 'delete' AND state = 'applied'", [$g(9)]);
-$check(count($row9) === 1 && $row9[0]['reason_code'] === 'wrong_document' && $row9[0]['result'] === 'deleted' && $row9[0]['access_role'] === 'documents', 'the Arasya timeline records the deletion with its reason (migration 045)');
+$check(count($row9) === 1 && $row9[0]['reason_code'] === 'wrong_document' && $row9[0]['result'] === 'deleted' && $row9[0]['access_role'] === 'manager', 'the Arasya timeline records the deletion with its reason (migration 045)');
 $check(array_values(array_filter($ok($get($who['idoc'], '/confirmare/shop-queue'), 'queue')['items'] ?? [], static fn (array $i): bool => $i['globalOrderId'] === $g(9)))[0]['invoiced'] === false, 'the shop queue shows the order as not invoiced again');
 $i9b = $ok($act($who['idoc'], $g(9), 'issue'), 'issue after delete');
 $check($i9b['result'] === 'issued' && $docsMade(9) === 2 && array_column($task9(), 'state') === ['resolved', 'open'], 'a new invoice, with a new e-Factura follow-up');
@@ -835,6 +885,127 @@ foreach (['order_source_operations', 'order_invoice_actions', 'order_shop_assign
 }
 $pdo->exec('DROP TEMPORARY TABLE IF EXISTS t_sq_orders, t_sq_confirm, t_sq_assign, t_sq_issue');
 
+// ---- 8d. API 2.84.0 (Store Workspace V1.1, owner approval 2026-11-26): the automatic final invoice after the print ----------
+// The shop employee's print asks the system for the final invoice in the same transaction (order_invoice_auto_requests); the
+// system issues it on their behalf (root, role manager, key auto-invoice-…) through the employee's own call right after the
+// print or the worker (bin/confirmare-distribute.php). Never before the print, never twice, never for someone else's order.
+$autoInvoice = $container->storeAutoInvoice();
+$systemUuid = (string) $one('SELECT employee_uuid FROM system_root_identity LIMIT 1');
+$autoNow = static function (string $name, string $gid) use ($call, $ok, $pdo, &$who): array {
+    $pdo->exec('DELETE FROM api_rate_limit_buckets');
+    return $ok($call($who[$name], 'POST', '/confirmare/orders/' . rawurlencode($gid) . '/invoice/auto'), "auto invoice {$gid} as {$name}");
+};
+$request = static fn (string $gid): ?array => $all('SELECT * FROM order_invoice_auto_requests WHERE global_order_id = ?', [$gid])[0] ?? null;
+$due = static fn (string $gid) => $pdo->prepare('UPDATE order_invoice_auto_requests SET next_check_at = UTC_TIMESTAMP(6) - INTERVAL 1 SECOND WHERE global_order_id = ?')->execute([$gid]);
+$sysActions = static fn (string $gid): array => $all("SELECT employee_uuid, access_role, action, state, result, idempotency_key, request_id FROM order_invoice_actions WHERE global_order_id = ? AND action = 'issue' ORDER BY requested_at", [$gid]);
+foreach (range(30, 37) as $n) {
+    $ok(T::ingest($kernel, 'trendhome', $payload($id($n), 300 + $n)), "trendhome order {$n} (automatic invoice)");
+    $th->orders[$id($n)] = ['id' => $id($n), 'number' => $id($n), 'eligible' => true, 'phone' => INV_PHONE, 'pricing' => 'sha256:' . hash('sha256', 'inv-price-' . $id($n)), 'invoice' => ['cleared' => true, 'cod' => false]];
+}
+$service->distribute();
+foreach (range(30, 37) as $n) {
+    $approve($who['iop'], $g($n));
+    $ok($route($g($n)), "route {$n} to the shop employee");
+}
+$check($request($g(30)) === null, 'routed, no production document printed yet: no automatic invoice request (never before the print)');
+
+// A. The print asks; the employee's own call right after it issues the invoice, as the system, on the employee's behalf.
+$ticket($g(30));
+$q30 = $request($g(30));
+$print30 = (string) $one('SELECT p.print_uuid FROM production_document_prints p JOIN operational_orders o ON o.order_uuid = p.order_uuid WHERE o.global_order_id = ? ORDER BY p.printed_at DESC LIMIT 1', [$g(30)]);
+$check($q30 !== null && $q30['state'] === 'waiting' && $q30['trigger_employee_uuid'] === $uuids['idoc'] && $q30['trigger_print_uuid'] === $print30 && (int) $q30['sent_attempts'] === 0 && $docsMade(30) === 0,
+    'the print recorded the request in its own transaction: who asked (the shop employee) and which print');
+$a30 = $autoNow('idoc', $g(30));
+$rows30 = $sysActions($g(30));
+$check($a30['state'] === 'done' && $a30['outcome'] === 'issued' && $docsMade(30) === 1 && count($rows30) === 1 && $rows30[0]['employee_uuid'] === $systemUuid && $rows30[0]['access_role'] === 'manager'
+    && str_starts_with((string) $rows30[0]['idempotency_key'], 'auto-invoice-') && str_starts_with((string) $rows30[0]['request_id'], 'system-auto-invoice-') && $rows30[0]['result'] === 'issued',
+    'one final invoice, issued by the system (root, role manager, system key) for the shop employee: ' . json_encode([$a30, $rows30]));
+$q30 = $request($g(30));
+$check($q30['state'] === 'done' && $q30['outcome'] === 'issued' && $q30['trigger_employee_uuid'] === $uuids['idoc'] && (int) $q30['sent_attempts'] === 1 && $q30['completed_at'] !== null
+    && (string) $one('SELECT employee_uuid FROM order_invoice_actions WHERE action_uuid = ?', [$q30['last_action_uuid']]) === $systemUuid,
+    'the audit keeps both: the real person who asked (trigger) and the system action (last_action_uuid)');
+$check($autoNow('idoc', $g(30))['state'] === 'done' && $docsMade(30) === 1, 'asking again answers the recorded result (never a second invoice)');
+$check($autoNow('idoc2', $g(30)) === ['state' => 'none'], 'another employee sees nothing of this request');
+$reprint30 = $ok($call($who['idoc'], 'POST', $docPath($g(30), 'print'), ['revisionNumber' => 1, 'reason' => 'Imprimanta a blocat hârtia (TEST).']), 'a reprint after the invoice');
+$check($request($g(30))['state'] === 'done' && $docsMade(30) === 1 && count($sysActions($g(30))) === 1, 'a reprint never asks for a second invoice');
+$error($http($who['idoc'], $g(30), 'send-mail', ['confirmResend' => true]), 403, 'CONFIRMARE_INVOICE_DENIED', 'the employee whose invoice the system issued still sends nothing by hand');
+
+// B. The browser closed after the print: the worker issues it.
+$ticket($g(31));
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$w31 = $autoInvoice->run(10);
+$check($request($g(31))['state'] === 'done' && $request($g(31))['outcome'] === 'issued' && $docsMade(31) === 1 && $w31['done'] >= 1, 'nobody called after the print (browser closed): the worker issued it: ' . json_encode($w31));
+$check($autoInvoice->run(10)['seen'] === 0 && $docsMade(31) === 1, 'the worker never takes a finished request again');
+
+// C. SmartBill timeout / lost answer: never a second request; settled with the same key; then done.
+$ticket($g(32));
+$th->afterInvoice = 'answer_lost';
+$c32 = $autoNow('idoc', $g(32));
+$check($c32['state'] === 'waiting' && in_array($c32['outcome'], ['answer_open', 'answer_lost'], true) && $docsMade(32) === 1 && (int) $request($g(32))['sent_attempts'] === 1, 'the answer was lost: waiting, one document in the shop: ' . json_encode($c32));
+$check($autoNow('idoc', $g(32))['state'] === 'waiting' && $docsMade(32) === 1 && count($sysActions($g(32))) === 1, 'asking again never sends a second request while the first is unsettled');
+$due($g(32));
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$autoInvoice->run(10);
+$check(count($sysActions($g(32))) === 1 && $docsMade(32) === 1, 'the worker does not send it again either');
+$pdo->prepare("UPDATE order_invoice_actions SET requested_at = DATE_SUB(requested_at, INTERVAL 10 MINUTE) WHERE global_order_id = ? AND action = 'issue'")->execute([$g(32)]);
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$container->confirmareLostAnswers()->run(20);
+$due($g(32));
+$autoInvoice->run(10);
+$check($request($g(32))['state'] === 'done' && $request($g(32))['outcome'] === 'issued' && $docsMade(32) === 1 && count($sysActions($g(32))) === 1, 'the lost answer was settled with the shop\'s stored answer: done, one invoice');
+// The shop unreachable (timeout) when the system reads it first: nothing is sent; the worker tries again later.
+$ticket($g(33));
+$th->fail = 'SOURCE_UNREACHABLE';
+$c33 = $autoNow('idoc', $g(33));
+$th->fail = null;
+$check($c33['state'] === 'waiting' && $docsMade(33) === 0, 'the shop was unreachable: waiting, nothing made: ' . json_encode($c33));
+$pdo->prepare("UPDATE order_invoice_actions SET requested_at = DATE_SUB(requested_at, INTERVAL 10 MINUTE) WHERE global_order_id = ? AND action = 'issue'")->execute([$g(33)]);
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$container->confirmareLostAnswers()->run(20);
+$due($g(33));
+$autoInvoice->run(10);
+$check($request($g(33))['state'] === 'done' && $docsMade(33) === 1 && array_column($sysActions($g(33)), 'state') === ['applied'] && (int) $request($g(33))['sent_attempts'] === 1,
+    'unreachable at the read: nothing was sent; the worker issued it once later: ' . json_encode($sysActions($g(33))));
+// SmartBill's own outcome unknown (the shop answered 202): a manager checks; never sent again.
+$ticket($g(34));
+$th->invoiceOutcome = 'unknown';
+$c34 = $autoNow('idoc', $g(34));
+$due($g(34));
+$autoInvoice->run(10);
+$check($c34['state'] === 'attention' && $request($g(34))['state'] === 'attention' && $request($g(34))['outcome'] === 'smartbill_unknown' && $docsMade(34) === 1 && count($sysActions($g(34))) === 1,
+    'SmartBill did not confirm: attention for a manager, never a second request: ' . json_encode($c34));
+
+// D. A final invoice that already exists (made in SmartBill or WordPress directly): done `exists`, nothing sent.
+$th->orders[$id(35)]['invoice']['document'] = ['series' => 'TST', 'number' => '9035', 'at' => time(), 'by' => null];
+$ticket($g(35));
+$d35 = $autoNow('idoc', $g(35));
+$check($d35['state'] === 'done' && $d35['outcome'] === 'exists' && ($d35['document'] ?? null) === 'TST 9035' && $docsMade(35) === 0 && $sysActions($g(35)) === [], 'an existing final invoice: no second document, no action: ' . json_encode($d35));
+
+// E. A rule not met at the print (a manager's production stop): waiting; issued by the worker once it clears.
+$ticket($g(36));
+$pdo->prepare("UPDATE operational_orders SET cancellation_state = 'held', production_stopped_at = UTC_TIMESTAMP(6) WHERE global_order_id = ?")->execute([$g(36)]);
+$e36 = $autoNow('idoc', $g(36));
+$check($e36['state'] === 'waiting' && $e36['outcome'] === 'order_cancellation' && $docsMade(36) === 0 && $sysActions($g(36)) === [], 'held for a cancellation: no invoice, the reason is kept: ' . json_encode($e36));
+$pdo->prepare('UPDATE operational_orders SET cancellation_state = NULL, production_stopped_at = NULL WHERE global_order_id = ?')->execute([$g(36)]);
+$due($g(36));
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$autoInvoice->run(10);
+$check($request($g(36))['state'] === 'done' && $docsMade(36) === 1, 'released: the worker issues it without anybody printing again');
+
+// F. Not the routed employee's print: nothing is asked.
+$ticket($g(37), 'idoc2');
+$check($request($g(37)) === null && $autoNow('idoc2', $g(37)) === ['state' => 'none'] && $docsMade(37) === 0, 'a print by another employee than the routed one never asks for the invoice');
+
+// G. The other roles keep what they had: the operator's proforma and routing, finance reads, the manager's manual invoice.
+$check(($detail($who['iop'], $g(1))['invoice'] ?? [])['proforma'] === true && ($detail($who['iop'], $g(1))['invoice'] ?? [])['route'] === true, 'the operator keeps the proforma and the routing');
+$m37 = $read($who['imgr'], $g(37));
+$check($m37['role'] === 'manager' && in_array('issue', $m37['allowedActions'], true), 'the invoice manager still issues by hand (manage scope)');
+$check($read($who['ifin'], $g(1))['role'] === 'finance', 'finance still reads (through its task)');
+$autoIds = array_map($g, range(30, 37));
+$check((int) $one('SELECT COUNT(*) FROM order_invoice_auto_requests WHERE global_order_id IN (' . implode(', ', array_fill(0, 8, '?')) . ') AND trigger_employee_uuid = ?', [...$autoIds, $uuids['idoc']]) === 7
+    && (int) $one('SELECT COUNT(*) FROM order_invoice_auto_requests WHERE global_order_id IN (' . implode(', ', array_fill(0, 8, '?')) . ')', $autoIds) === 7,
+    'one request per printed order of the routed employee, never more');
+
 // ---- 9. No link, number, amount or customer data in the audit or the log ----------------------------------------------------
 $dump = json_encode([$all('SELECT * FROM order_invoice_actions'), $all('SELECT * FROM order_invoice_reads'), $all("SELECT action, metadata_json FROM iam_audit_events WHERE action = 'employee.invoice_scopes_changed'")], JSON_INVALID_UTF8_SUBSTITUTE | JSON_UNESCAPED_UNICODE);
 $check(!str_contains((string) $dump, 'smartbill.ro') && !str_contains((string) $dump, 'Factur') && !str_contains((string) $dump, '719.00') && preg_match('/0744\s?666\s?777|744666777/', (string) $dump) !== 1, 'the invoice audit holds codes and hashes only');
@@ -848,4 +1019,4 @@ foreach (['finance_task_amounts', 'finance_verification_request_events', 'financ
 }
 $pdo->exec('UPDATE operational_orders SET workflow_cohort = NULL, workflow_cohort_reason = NULL, workflow_cohort_at = NULL, cancellation_state = NULL, production_stopped_at = NULL WHERE workflow_cohort IS NOT NULL OR cancellation_state IS NOT NULL');
 
-fwrite(STDOUT, "PASS MySQL Confirmare invoice integration: {$checks} checks (fail closed without migration 041, root-only scopes, roles, the confirming operator never invoices, handoff gate in every issuable state, routing, QR scan, advance proforma, paid-advance queue, no production power, cancellation hold, finance action, revision, idempotency, one document, resend confirmation, re-issue statement, unknown outcome, lost answer, 5xx, never received, two employees at once, observe, no leak)\n");
+fwrite(STDOUT, "PASS MySQL Confirmare invoice integration: {$checks} checks (fail closed without migration 041, root-only scopes, roles, the confirming operator never invoices, handoff gate in every issuable state, routing, QR scan, advance proforma, paid-advance queue, no production power, cancellation hold, finance action, revision, idempotency, one document, resend confirmation, re-issue statement, unknown outcome, lost answer, 5xx, never received, two employees at once, observe, no leak; API 2.84.0: no manual SmartBill write by the shop employee, the automatic final invoice after the print)\n");

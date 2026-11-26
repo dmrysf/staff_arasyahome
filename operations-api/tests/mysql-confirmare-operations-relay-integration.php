@@ -639,8 +639,9 @@ $check($assignedTo(5) === $uuids['cdoc2'] && in_array($assignedTo(6), [$uuids['c
 $check($all("SELECT assigned_role, assigned_by_employee_uuid, idempotency_key FROM order_shop_assignments WHERE global_order_id = ? AND state = 'active'", [$g(5)]) === [['assigned_role' => 'operator', 'assigned_by_employee_uuid' => $uuids['cop'], 'idempotency_key' => 'auto-awb-ready-' . $orderUuid($g(5))]],
     'the routing is recorded for the operator who decided the order, with the system key');
 $check(($th->smartbillDocuments[$id(5)] ?? 0) === $documentsBefore + 1 && ($th->smartbillDocuments[$id(6)] ?? 0) === 0
-    && (string) $one("SELECT employee_uuid FROM order_invoice_actions WHERE global_order_id = ? AND action = 'issue' AND state = 'applied' AND result = 'issued'", [$g(5)]) === $assignedTo(5),
-    'one final invoice, issued in the name of the routed employee');
+    && $all("SELECT employee_uuid, access_role, idempotency_key FROM order_invoice_actions WHERE global_order_id = ? AND action = 'issue' AND state = 'applied' AND result = 'issued'", [$g(5)])
+        === [['employee_uuid' => (string) $one('SELECT employee_uuid FROM system_root_identity LIMIT 1'), 'access_role' => 'manager', 'idempotency_key' => 'auto-awb-issue-' . $orderUuid($g(5))]],
+    'one final invoice; API 2.84.0: issued by the system (root, manager role, system key) for the routed employee, who no longer issues by hand');
 $queued = array_column($ok($get($who['cmgr'], '/confirmare/awb-queue'), 'manager queue after readiness')['items'], 'globalOrderId');
 $check(in_array($g(5), $queued, true) && in_array($g(6), $queued, true), 'both orders are in the AWB queue');
 $pdo->exec('DELETE FROM api_rate_limit_buckets');

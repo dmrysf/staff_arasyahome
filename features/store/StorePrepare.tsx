@@ -3,7 +3,7 @@ import { useI18n } from "../../i18n";
 import { documentStep, type DocumentApi } from "../../domain/documents";
 import type { ConfirmareApi } from "../../domain/confirmare";
 import { invoiceBlockerLabel } from "../../domain/confirmareInvoice";
-import { finalInvoiceStep, REPRINT_REASONS, reprintReasonText, type ReprintReason, type Tone } from "../../domain/storeWorkspace";
+import { autoInvoiceNote, REPRINT_REASONS, reprintReasonText, type AutoInvoiceNote, type ReprintReason, type Tone } from "../../domain/storeWorkspace";
 import { createIdempotencyKey } from "../../services/idempotency";
 import { toServiceError } from "../../services/errors";
 import { AppIcon } from "../../components/icons/AppIcon";
@@ -17,9 +17,11 @@ export type RowNote = { tone: Tone; text: string };
  * 1. the production document: read it; make revision 1 when there is none; when the order changed, ask for the revision
  *    (or make it once a supervisor approved it) — the employee never handles revisions by hand;
  * 2. print the active revision (same PDF, same QR); a reprint always names a short reason;
- * 3. then, never before the document, the final invoice the employee used to issue in the SmartBill panel: issued once by
- *    the same server route when the server says it may be issued now (see `finalInvoiceStep`), otherwise one short line.
- * Every step has its own idempotency key; a lost answer is checked once and never sent again.
+ * 3. then, never before the document, the final invoice (Staff 2.61.0, API 2.84.0): the employee no longer issues it. The
+ *    print itself asked the system for it on the server; this only asks the server where it stands (`invoiceAuto`, which
+ *    also processes it right away) and shows one line (`autoInvoiceNote`). A closed browser or a lost answer loses nothing:
+ *    the server's worker issues it every minute, never twice.
+ * Every document step has its own idempotency key.
  */
 export function useStorePrepare({ documents, ops, permissions, onDone }: { documents: DocumentApi; ops?: ConfirmareApi; permissions: readonly string[]; onDone: () => void }) {
   const { t } = useI18n();
@@ -33,26 +35,12 @@ export function useStorePrepare({ documents, ops, permissions, onDone }: { docum
   const note = (orderId: string, value: RowNote | null) => setNotes((current) => { const next = { ...current }; if (value) next[orderId] = value; else delete next[orderId]; return next; });
 
   async function invoice(orderId: string): Promise<RowNote | null> {
-    if (!ops) return null;
+    if (!ops?.invoiceAuto) return null;
     try {
-      const step = finalInvoiceStep(await ops.invoiceRead(orderId));
-      if (step.kind === "quiet") return null;
-      if (step.kind === "exists") return { tone: "green", text: t("sw.inv.exists", { document: step.document }) };
-      if (step.kind === "open") return { tone: "yellow", text: t("sw.inv.open") };
-      if (step.kind === "blocked") return { tone: "yellow", text: t("sw.inv.notNow", { reason: invoiceBlockerLabel(step.code) }) };
-      const key = keyFor(`${orderId}:invoice:${step.revision}`);
-      let outcome = await ops.invoiceAct(orderId, "issue", { expectedRevision: step.revision }, key);
-      // A lost answer: the shop may have issued it. Ask once with the same key; never issue again.
-      if (outcome.state !== "applied") outcome = await ops.invoiceReconcile(orderId, key);
-      if (outcome.state !== "applied" || outcome.result === "unknown" || outcome.result === "in_progress") return { tone: "yellow", text: t("sw.inv.unknown") };
-      const document = outcome.summary?.document;
-      const name = document?.exists ? `${document.series ?? ""} ${document.number ?? ""}`.trim() : "";
-      return { tone: "green", text: name ? t("sw.inv.issued", { document: name }) : t("sw.inv.issuedPlain") };
-    } catch (caught) {
-      const details = toServiceError(caught).details ?? {};
-      const blockers = Array.isArray(details.invoiceBlockers) ? details.invoiceBlockers as string[] : [];
-      const code = typeof details.editReason === "string" ? details.editReason : blockers[0];
-      return { tone: "yellow", text: t("sw.inv.notNow", { reason: code ? invoiceBlockerLabel(code) : reasonText(explain(caught).reason) }) };
+      return autoInvoiceRow(autoInvoiceNote(await ops.invoiceAuto(orderId)), t);
+    } catch {
+      // The print is recorded and the request with it: the system issues the invoice by itself (every minute).
+      return { tone: "yellow", text: t("sw.inv.queued") };
     }
   }
 
@@ -118,4 +106,18 @@ function ReprintDialog({ orderNumber, onCancel, onConfirm }: { orderNumber: stri
       </div>
     </div>
   </div>;
+}
+
+/** One line about the automatic final invoice, for the print result and the store's order screen. */
+export function autoInvoiceRow(note: AutoInvoiceNote, t: ReturnType<typeof useI18n>["t"]): RowNote | null {
+  switch (note.kind) {
+    case "issued": return { tone: "green", text: note.document ? t("sw.inv.issued", { document: note.document }) : t("sw.inv.issuedPlain") };
+    case "exists": return { tone: "green", text: note.document ? t("sw.inv.exists", { document: note.document }) : t("sw.inv.issuedPlain") };
+    case "open": return { tone: "yellow", text: t("sw.inv.open") };
+    case "queued": return { tone: "yellow", text: t("sw.inv.queued") };
+    case "waiting": return { tone: "yellow", text: t("sw.inv.waiting", { reason: invoiceBlockerLabel(note.code) }) };
+    case "attention": return { tone: "yellow", text: t("sw.inv.unknown") };
+    case "stopped": return { tone: "yellow", text: t("sw.inv.notNow", { reason: invoiceBlockerLabel(note.code) }) };
+    default: return null;
+  }
 }

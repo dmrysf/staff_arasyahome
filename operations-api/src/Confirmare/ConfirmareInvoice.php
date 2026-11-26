@@ -145,7 +145,8 @@ final readonly class ConfirmareInvoice
             return [
                 'configured' => true,
                 'read' => $role !== null || $operator !== null,
-                'issue' => $actions && in_array($role, [self::ROLE_DOCUMENTS, self::ROLE_MANAGER], true),
+                // API 2.84.0: manual SmartBill writes are an invoice manager's only (the shop employee's invoice is automatic).
+                'issue' => $actions && $role === self::ROLE_MANAGER,
                 'manage' => $actions && $role === self::ROLE_MANAGER,
                 'proforma' => $actions && $operator !== null,
                 'route' => $operator !== null,
@@ -224,10 +225,19 @@ final readonly class ConfirmareInvoice
      * Sends one invoice action to the shop (Idempotency-Key header). A retried request with the same key returns the
      * recorded outcome; with another request it is refused.
      *
+     * API 2.84.0 (Store Workspace V1.1, owner approval 2026-11-26): every action sent by a person needs the invoice
+     * `manage` scope of the source (an invoice manager, or root on the intervention desk). The shop employee who prepares
+     * the production document (`documents` role) no longer issues, e-mails, deletes or re-issues by hand, also not through
+     * the API directly: the final invoice is issued by the system after their print (StoreAutoInvoice). That path is the
+     * only use of `$onBehalfOf`: the actor is then the system identity (root through the intervention desk instance) and
+     * `$onBehalfOf` the shop employee whose print asked for it; only `issue`, and every rule of a manual issue applies to
+     * that employee under the order lock (still the routed employee, still the `documents` role, never the employee who
+     * confirmed the order). The action row is the system's (role `manager`); StoreAutoInvoice keeps who asked.
+     *
      * @param array<string, mixed> $input
      * @return array<string, mixed>
      */
-    public function act(EmployeeIdentity $actor, string $globalOrderId, string $action, array $input, string $key, string $requestId): array
+    public function act(EmployeeIdentity $actor, string $globalOrderId, string $action, array $input, string $key, string $requestId, ?EmployeeIdentity $onBehalfOf = null): array
     {
         if (preg_match(self::KEY_PATTERN, $key) !== 1) {
             throw new ApiException(400, 'INVALID_IDEMPOTENCY_KEY', 'A valid Idempotency-Key header is required.');
@@ -237,8 +247,7 @@ final readonly class ConfirmareInvoice
         }
         $fields = $this->fields($action, $input);
         ['row' => $row, 'role' => $role, 'globalId' => $globalId] = $this->context($actor, $globalOrderId);
-        $manager = in_array($action, ['reissue', 'resolve'], true);
-        if ($manager ? $role !== self::ROLE_MANAGER : !in_array($role, [self::ROLE_DOCUMENTS, self::ROLE_MANAGER], true)) {
+        if ($role !== self::ROLE_MANAGER || ($onBehalfOf !== null && ($action !== 'issue' || !$this->invoices->rootActs($actor)))) {
             throw self::denied();
         }
         $target = $this->registry->find((string) $row['source_key']);
@@ -254,7 +263,7 @@ final readonly class ConfirmareInvoice
             }
             return $this->settled($existing, $row, $target, $actor, $role, $requestId);
         }
-        if (in_array($action, ['issue', 'reissue', 'send_mail'], true) && $this->confirmedBy($actor->employeeUuid, (string) $row['order_uuid'])) {
+        if (in_array($action, ['issue', 'reissue', 'send_mail'], true) && $this->confirmedBy(($onBehalfOf ?? $actor)->employeeUuid, (string) $row['order_uuid'])) {
             // Owner rule: the Confirmare operator who approved the order or confirmed it by telephone never invoices it.
             throw new ApiException(403, 'CONFIRMARE_INVOICE_SAME_EMPLOYEE', 'The employee who confirmed the order with the customer does not issue its invoice.');
         }
@@ -267,7 +276,12 @@ final readonly class ConfirmareInvoice
             if ($lock->fetchColumn() === false || $this->role($actor, $row, true) !== $role) {
                 throw self::denied();
             }
-            $blockers = $this->blockers((string) $row['order_uuid'], $action, $actor, $role);
+            // The system issues for the shop employee only while that employee may still prepare the order's documents.
+            if ($onBehalfOf !== null && $this->role($onBehalfOf, $row, true) !== self::ROLE_DOCUMENTS) {
+                throw self::denied();
+            }
+            $blockers = $onBehalfOf === null ? $this->blockers((string) $row['order_uuid'], $action, $actor, $role)
+                : $this->blockers((string) $row['order_uuid'], $action, $onBehalfOf, self::ROLE_DOCUMENTS);
             if ($blockers !== []) {
                 throw new ApiException(409, 'CONFIRMARE_INVOICE_NOT_ALLOWED', 'The order cannot be invoiced now.', ['reason' => $blockers[0], 'blockers' => $blockers]);
             }
@@ -315,7 +329,9 @@ final readonly class ConfirmareInvoice
             throw new ApiException(422, 'CONFIRMARE_INVOICE_INVALID', 'idempotencyKey is required.', ['field' => 'idempotencyKey']);
         }
         ['row' => $row, 'role' => $role] = $this->context($actor, $globalOrderId);
-        if (!in_array($role, [self::ROLE_DOCUMENTS, self::ROLE_MANAGER], true) && $this->operatorRole($actor, $row) === null) {
+        // API 2.84.0: settling SmartBill actions is an invoice manager's (or the operator's own proforma); the shop employee's
+        // lost answers are settled by the system (ConfirmareLostAnswers).
+        if ($role !== self::ROLE_MANAGER && $this->operatorRole($actor, $row) === null) {
             throw self::denied();
         }
         $statement = $this->pdo->prepare('SELECT * FROM order_invoice_actions WHERE order_uuid = ? AND idempotency_key = ? AND (employee_uuid = ? OR ?) ORDER BY requested_at LIMIT 1');
@@ -330,6 +346,69 @@ final readonly class ConfirmareInvoice
         }
         $this->rateLimit($actor);
         return $this->settled($found, $row, $target, $actor, $role, $requestId);
+    }
+
+    /**
+     * API 2.84.0 (Store Workspace V1.1): the final invoice the system issues for the shop employee who printed the order's
+     * production document (StoreAutoInvoice) or whose order reached an AWB stage (ConfirmareAwbReadiness). `$system` is the
+     * root identity through the intervention desk instance; `$employee` the routed shop employee. Reads the shop first (the
+     * shop is the authority: a final invoice issued anywhere counts), then sends one `issue` with `$key` through act(), where
+     * every rule runs again under the order lock. Never throws for an expected outcome.
+     *
+     * @return array{state: string, outcome: string, document?: string}
+     *   done (issued | exists), waiting (a rule that may clear by itself), open (an action of the order is not settled yet,
+     *   or its answer was lost: never sent again), attention (SmartBill did not confirm: a manager checks), refused (the
+     *   shop refused this attempt), stopped (no longer this employee's order)
+     */
+    public function issueOnBehalf(EmployeeIdentity $system, EmployeeIdentity $employee, string $globalOrderId, string $key, string $requestId): array
+    {
+        try {
+            $state = $this->read($system, $globalOrderId, $requestId);
+        } catch (ApiException $e) {
+            $gone = in_array($e->errorCode, ['CONFIRMARE_NOT_FOUND', 'CONFIRMARE_SOURCE_NOT_ELIGIBLE'], true);
+            return ['state' => $gone ? 'stopped' : 'waiting', 'outcome' => self::code($e->errorCode)];
+        }
+        if (($state['available'] ?? false) !== true) {
+            return ['state' => 'waiting', 'outcome' => self::code('shop_' . (string) ($state['reason'] ?? 'unavailable'))];
+        }
+        $document = $state['summary']['document'] ?? [];
+        if (($document['exists'] ?? false) === true && ($document['type'] ?? null) !== 'proforma') {
+            return ['state' => 'done', 'outcome' => 'exists', 'document' => trim(($document['series'] ?? '') . ' ' . ($document['number'] ?? ''))];
+        }
+        if (in_array($state['summary']['operation']['state'] ?? null, ['unknown', 'in_flight'], true) || ($state['actionOpen'] ?? false) === true) {
+            return ['state' => 'open', 'outcome' => 'invoice_action_open'];
+        }
+        if (!in_array('issue', (array) ($state['allowedActions'] ?? []), true)) {
+            $blockers = array_values(array_unique([...(array) ($state['blockers']['issue'] ?? []), ...(array) ($state['summary']['blockers']['issue'] ?? [])]));
+            return ['state' => 'waiting', 'outcome' => self::code($blockers[0] ?? 'invoice_not_allowed')];
+        }
+        try {
+            $issued = $this->act($system, $globalOrderId, 'issue', ['expectedRevision' => (string) $state['summary']['revision']], $key, $requestId, $employee);
+        } catch (ApiException $e) {
+            $reason = $e->details['reason'] ?? null;
+            return match ($e->errorCode) {
+                'CONFIRMARE_INVOICE_REFUSED' => ['state' => 'refused', 'outcome' => self::code(is_string($reason) ? $reason : 'shop_refused')],
+                'CONFIRMARE_INVOICE_DENIED' => ['state' => 'stopped', 'outcome' => 'employee_not_allowed'],
+                'CONFIRMARE_INVOICE_SAME_EMPLOYEE' => ['state' => 'stopped', 'outcome' => 'same_employee'],
+                'CONFIRMARE_INVOICE_NOT_ALLOWED' => ['state' => 'waiting', 'outcome' => self::code(is_string($reason) ? $reason : 'invoice_not_allowed')],
+                default => ['state' => 'waiting', 'outcome' => self::code($e->errorCode)],
+            };
+        }
+        if (($issued['state'] ?? null) === 'applied' && ($issued['result'] ?? null) === 'issued') {
+            $after = $issued['summary']['document'] ?? [];
+            return ['state' => 'done', 'outcome' => 'issued', 'document' => trim(($after['series'] ?? '') . ' ' . ($after['number'] ?? ''))];
+        }
+        if (($issued['state'] ?? null) === 'applied') {
+            // The shop ran the action but SmartBill's own outcome is unknown: a manager checks SmartBill (never sent again).
+            return ['state' => 'attention', 'outcome' => 'smartbill_unknown'];
+        }
+        return ['state' => 'open', 'outcome' => 'answer_lost'];
+    }
+
+    private static function code(string $value): string
+    {
+        $code = substr(preg_replace('/[^a-z_]/', '', strtolower($value)) ?? '', 0, 40);
+        return strlen($code) >= 2 ? $code : 'unknown';
     }
 
     /** Whether an invoice action of the order is not settled yet. */
@@ -474,14 +553,15 @@ final readonly class ConfirmareInvoice
         $orderUuid = (string) $row['order_uuid'];
         $handoff = (new ConfirmareHandoff($this->pdo, $this->modes))->view($orderUuid, false, false);
         $actions = $target->allowsInvoiceActions();
-        $writer = $actions && in_array($role, [self::ROLE_DOCUMENTS, self::ROLE_MANAGER], true);
+        // API 2.84.0: only an invoice manager acts by hand; the documents role reads (its invoice is issued by the system).
+        $writer = $actions && $role === self::ROLE_MANAGER;
         $confirmed = $this->confirmedBy($actor->employeeUuid, $orderUuid);
         $arasya = [];
         foreach (['issue' => 'issue', 'sendMail' => 'send_mail', 'reissue' => 'reissue', 'resolve' => 'resolve', 'delete' => 'delete'] as $name => $action) {
             $codes = $this->blockers($orderUuid, $action, $actor, $role);
             if (!$actions) {
                 $codes[] = 'invoice_observe';
-            } elseif (!$writer || (in_array($action, ['reissue', 'resolve'], true) && $role !== self::ROLE_MANAGER)) {
+            } elseif (!$writer) {
                 $codes[] = 'not_allowed_for_role';
             } elseif ($confirmed && !in_array($action, ['resolve', 'delete'], true)) {
                 $codes[] = 'same_employee';
@@ -673,10 +753,8 @@ final readonly class ConfirmareInvoice
         $fields = $this->proformaFields($action, $input);
         ['row' => $row, 'globalId' => $globalId] = $this->context($actor, $globalOrderId);
         $role = $this->operatorRole($actor, $row);
-        if ($role === null && $action === 'proforma_check' && $this->role($actor, $row) === self::ROLE_DOCUMENTS) {
-            // The shop employee may ask SmartBill whether the proforma was invoiced (before the final invoice).
-            $role = self::ROLE_DOCUMENTS;
-        }
+        // API 2.84.0 (owner approval 2026-11-26): the shop employee no longer runs SmartBill technical operations, the
+        // proforma check included (API 2.44.0 allowed it); the system's own read before its invoice sees the same state.
         if ($role === null || ($action === 'proforma_resolve' && $role !== self::ROLE_MANAGER)) {
             throw self::denied();
         }
@@ -1267,6 +1345,18 @@ final readonly class ConfirmareInvoice
      */
     public const ISSUED_SQL = "i.action IN ('issue', 'reissue') AND i.state = 'applied' AND i.result = 'issued' AND NOT EXISTS (SELECT 1 FROM order_invoice_actions d
         WHERE d.order_uuid = i.order_uuid AND d.action = 'delete' AND d.state = 'applied' AND d.result = 'deleted' AND d.completed_at > i.completed_at)";
+
+    /** Whether Arasya recorded an issued, not deleted final invoice of the order (API 2.84.0: public for StoreAutoInvoice). */
+    public static function issued(PDO $pdo, string $orderUuid): bool
+    {
+        try {
+            $statement = $pdo->prepare('SELECT 1 FROM order_invoice_actions i WHERE i.order_uuid = ? AND ' . self::ISSUED_SQL . ' LIMIT 1');
+            $statement->execute([$orderUuid]);
+            return $statement->fetchColumn() !== false;
+        } catch (PDOException) {
+            return false;
+        }
+    }
 
     private function invoiceIssued(string $orderUuid): bool
     {

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   MAX_PARCELS, ShopQueue, addressFormIssues, awbReadiness, canUseStoreWorkspace, clampParcels, mapAddressCheck, mapAwbHistoryPage, mapOpen, mapAwbPage, mapShopRow, mapStoreOrder, mapStoreSummary,
-  finalInvoiceStep, opensStoreWorkspace, parcelKey, storeLegacyRedirect, parseWeight, reprintReasonText, retryable, sectorOf, stageNumber, telHref, toneOf, validRange, type StoreAwbItem,
+  autoInvoiceNote, mapAutoInvoice, opensStoreWorkspace, parcelKey, storeLegacyRedirect, parseWeight, reprintReasonText, retryable, sectorOf, stageNumber, telHref, toneOf, validRange, type StoreAwbItem,
 } from "../domain/storeWorkspace";
 import { mapOperationsState, mapShopOperations } from "../domain/confirmareOps";
 import { parseStaffRoute } from "../domain/staffRoute";
@@ -184,6 +184,8 @@ test("store answers are read strictly; the COD is never invented", () => {
   const order = mapStoreOrder({ globalOrderId: "trendhome:1", orderNumber: "1", source: "trendhome", submittedAt: null, dueDate: null, stage: { id: "quality-control", number: 12, total: 14, completed: false }, cancelled: false,
     document: { status: "active", version: 3, revision: 1, prints: 2, lastPrint: null }, invoiceIssued: true, products: [], awbOperations: [], shop: null, canAwb: true, canDocuments: true });
   assert.equal(order.stage.number, 12);
+  assert.equal(order.autoInvoice, null, "an API 2.83.x order has no automatic invoice state");
+  assert.deepEqual(mapStoreOrder({ ...order, autoInvoice: { state: "waiting", outcome: "handoff_not_ready" } }).autoInvoice, { state: "waiting", outcome: "handoff_not_ready", document: null });
 });
 
 test("an operations state of API 2.83.0 (correction, delivery, new kinds) is read; an older one still is", () => {
@@ -279,38 +281,31 @@ test("the Store Workspace screens never open the earlier document screen, the Sm
   assert.doesNotMatch(app, /clasic/, "no way back to the earlier home");
 });
 
-const invoiceRead = (patch: { document?: Record<string, unknown>; operation?: string; allowed?: string[]; blockers?: string[]; shopBlockers?: string[]; role?: string; documentType?: string; mode?: string; actionOpen?: boolean } = {}) => ({
-  available: true, role: patch.role ?? "documents", allowedActions: patch.allowed ?? ["issue"], actionOpen: patch.actionOpen ?? false,
-  blockers: { issue: patch.blockers ?? [], sendMail: [], reissue: [], resolve: [], delete: [] },
-  summary: {
-    revision: "rev-1", mode: patch.mode ?? "enforce", smartbill: { documentType: patch.documentType ?? "invoice" },
-    document: { exists: false, type: null, series: null, number: null, ...patch.document },
-    operation: { state: patch.operation ?? "none" },
-    blockers: { issue: patch.shopBlockers ?? [], sendMail: [], reissue: [], resolve: [], delete: [] },
-  },
-}) as unknown as Parameters<typeof finalInvoiceStep>[0];
+test("the automatic final invoice after the print: the server's answer in one line, never a second invoice", () => {
+  assert.deepEqual(autoInvoiceNote(mapAutoInvoice({ state: "done", outcome: "issued", document: "TST 0500" })), { kind: "issued", document: "TST 0500" });
+  assert.deepEqual(autoInvoiceNote(mapAutoInvoice({ state: "done", outcome: "exists", document: "TST 0400" })), { kind: "exists", document: "TST 0400" }, "an existing invoice is never issued again");
+  assert.deepEqual(autoInvoiceNote(mapAutoInvoice({ state: "waiting", outcome: "answer_open" })), { kind: "open" }, "a lost answer is settled, never sent again");
+  assert.deepEqual(autoInvoiceNote(mapAutoInvoice({ state: "waiting", outcome: "invoice_action_open" })), { kind: "open" });
+  assert.deepEqual(autoInvoiceNote(mapAutoInvoice({ state: "waiting", outcome: "payment_not_cleared" })), { kind: "waiting", code: "payment_not_cleared" });
+  assert.deepEqual(autoInvoiceNote(mapAutoInvoice({ state: "waiting", outcome: null })), { kind: "queued" });
+  assert.deepEqual(autoInvoiceNote(mapAutoInvoice({ state: "busy" })), { kind: "queued" }, "the worker holds it right now");
+  assert.deepEqual(autoInvoiceNote(mapAutoInvoice({ state: "attention", outcome: "smartbill_unknown" })), { kind: "attention" });
+  assert.deepEqual(autoInvoiceNote(mapAutoInvoice({ state: "stopped", outcome: "same_employee" })), { kind: "stopped", code: "same_employee" });
+  assert.deepEqual(autoInvoiceNote(mapAutoInvoice({ state: "none" })), { kind: "quiet" }, "no request: not this employee's shop invoice");
+  assert.deepEqual(autoInvoiceNote(null), { kind: "quiet" });
+  assert.deepEqual(mapAutoInvoice({ state: "<b>", outcome: "DROP TABLE", document: 5 }), { state: "none", outcome: null, document: null }, "codes only");
+});
 
-test("the final invoice after the print: issued once when the server allows it, never twice, quiet when it is not this employee's", () => {
-  assert.deepEqual(finalInvoiceStep(invoiceRead()), { kind: "issue", revision: "rev-1" });
-  assert.deepEqual(finalInvoiceStep(invoiceRead({ document: { exists: true, type: "invoice", series: "SMART", number: "10500" } })), { kind: "exists", document: "SMART 10500" });
-  assert.deepEqual(finalInvoiceStep(invoiceRead({ document: { exists: true, type: "proforma", series: "ARS", number: "0900" } })), { kind: "issue", revision: "rev-1" }, "a paid proforma is not the final invoice");
-  assert.deepEqual(finalInvoiceStep(invoiceRead({ operation: "unknown" })), { kind: "open" }, "an unknown outcome is never sent again");
-  assert.deepEqual(finalInvoiceStep(invoiceRead({ operation: "in_flight" })), { kind: "open" });
-  assert.deepEqual(finalInvoiceStep(invoiceRead({ actionOpen: true })), { kind: "open" });
-  assert.deepEqual(finalInvoiceStep(invoiceRead({ allowed: [], shopBlockers: ["payment_not_cleared"] })), { kind: "blocked", code: "payment_not_cleared" });
-  assert.deepEqual(finalInvoiceStep(invoiceRead({ allowed: [], blockers: ["handoff_not_ready"], shopBlockers: ["smartbill_refused"] })), { kind: "blocked", code: "handoff_not_ready" }, "Arasya's reason first");
-  for (const quiet of ["not_allowed_for_role", "not_assigned", "assigned_to_other", "invoice_observe", "invoice_disabled"]) {
-    assert.deepEqual(finalInvoiceStep(invoiceRead({ allowed: [], blockers: [quiet] })), { kind: "quiet" }, quiet);
+test("the store never issues, e-mails, deletes or settles an invoice by hand: it only asks the server where the automatic one stands", () => {
+  for (const file of ["StoreDocuments", "StoreOrders", "StoreAwb", "StoreHome", "StoreParts", "StorePrepare", "StoreChecks", "StoreAddress"]) {
+    const source = readFileSync(new URL(`../features/store/${file}.tsx`, import.meta.url), "utf8");
+    assert.doesNotMatch(source, /invoiceAct|invoiceReconcile|proformaAct/, `${file}: no manual SmartBill action`);
   }
-  assert.deepEqual(finalInvoiceStep(invoiceRead({ role: "viewer" })), { kind: "quiet" }, "a reader never issues");
-  assert.deepEqual(finalInvoiceStep(invoiceRead({ documentType: "proforma" })), { kind: "quiet" }, "a proforma shop: not the shop employee's work");
-  assert.deepEqual(finalInvoiceStep(invoiceRead({ mode: "observe" })), { kind: "quiet" });
-  assert.deepEqual(finalInvoiceStep({ available: false, reason: "not_configured" }), { kind: "quiet" });
-  assert.deepEqual(finalInvoiceStep({ available: false, reason: "unreachable" }), { kind: "blocked", code: "smartbill_unreachable" });
+  assert.match(readFileSync(new URL("../features/store/StorePrepare.tsx", import.meta.url), "utf8"), /ops\.invoiceAuto\(orderId\)/);
 });
 
 test("V1.1 words exist in every Staff language", () => {
-  const keys = ["sw.inv.issued", "sw.inv.issuedPlain", "sw.inv.exists", "sw.inv.open", "sw.inv.unknown", "sw.inv.notNow", "sw.docs.completed", "sw.docs.revisionWaiting", "sw.docs.revisionRequested",
+  const keys = ["sw.inv.issued", "sw.inv.issuedPlain", "sw.inv.exists", "sw.inv.open", "sw.inv.unknown", "sw.inv.notNow", "sw.inv.queued", "sw.inv.waiting", "sw.docs.completed", "sw.docs.revisionWaiting", "sw.docs.revisionRequested",
     "sw.docs.changedRetry", "sw.docs.tab.checks", "sw.check.title", "sw.check.lead", "sw.check.hint", "sw.check.empty", "sw.check.why", "sw.check.reason", "sw.check.answer"];
   for (const locale of SUPPORTED_LOCALES) for (const key of keys) assert.ok((CATALOGS[locale] as unknown as Record<string, unknown>)[key], `${locale} ${key}`);
 });

@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 
-// Store Workspace V1 / V1.1 (API 2.83.1, Staff 2.60.0) against the real Operations API, after the Confirmare, invoice and
+// Store Workspace V1 / V1.1 (API 2.84.0, Staff 2.61.0) against the real Operations API, after the Confirmare, invoice and
 // operations specs. TEST ONLY: invented customers; the TEST shop simulates FAN Courier (no AWB is made or cancelled
 // anywhere real). The shop employee works on a laptop: 1280×720 to 1920×1080 at 100/110/125 % zoom (the CSS viewport of a
 // 1280 px screen at 125 % is 1024 px), never a horizontal page scroll. Screenshots go to e2e/.runtime/store.
@@ -79,7 +79,7 @@ test("home: three sections with the day's real counters; documents: prepare and 
     await row.getByTestId("sw-doc-prepare").click();
     await expect(page.getByTestId("sw-docs-flash")).toContainText(`#${F.docs[0]}`, { timeout: 20_000 });
     await expect(page.getByTestId("sw-docs-todo")).not.toContainText(F.docs[0]);
-    // V1.1: the final invoice follows the document by itself (the order is routed to this employee); no SmartBill panel.
+    // V1.1 / API 2.84.0: the print asks the system for the final invoice (issued on the employee's behalf, on the server); no SmartBill panel.
     await expect(page.getByTestId("sw-docs-flash")).toContainText(/Factura finală .*emisă/, { timeout: 20_000 });
     await expect(page.getByTestId("cf-invoice")).toHaveCount(0);
     await shot(page, "03-document-prepared-and-printed");
