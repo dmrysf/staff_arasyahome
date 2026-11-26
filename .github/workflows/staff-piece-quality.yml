@@ -110,4 +110,17 @@ jobs:
         timeout-minutes: 30
         run: bash scripts/ci-install-playwright.sh
       - run: node operations-api/tests/qr-decode.mjs
-      - run: pnpm test:e2e:real
+      # A crashed PHP server worker leaves a core file next to the run; the step after a failure prints where it crashed.
+      - name: Keep PHP crash dumps
+        run: sudo sysctl -w kernel.core_pattern=/tmp/core.%e.%p
+      - run: ulimit -c unlimited && pnpm test:e2e:real
+      - name: PHP crash backtrace
+        if: failure()
+        run: |
+          ls -la /tmp/core.* 2>/dev/null || { echo "no PHP core file"; exit 0; }
+          sudo apt-get install -y -q gdb >/dev/null 2>&1 || true
+          php -v; php -i | grep -i -E '^pcre|jit' || true
+          for c in /tmp/core.*; do
+            echo "=== $c"
+            sudo gdb -q -batch -ex 'bt 60' -ex 'info sharedlibrary' "$(command -v php)" "$c" 2>&1 | head -160
+          done
