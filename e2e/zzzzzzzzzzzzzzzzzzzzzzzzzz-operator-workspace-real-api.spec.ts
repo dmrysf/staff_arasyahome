@@ -111,7 +111,14 @@ async function openOrder(page: Page, globalId: string) {
 test("TH 65794's shape: money header, big decisions, customer, the curtain card and how 355,32 is made up", async ({ browser }) => {
   const { context, page, errors } = await signIn(browser, "cf.operator.e2e");
   try {
+    // Performance: the requests one order opening makes (Arasya API and pictures), counted and printed for the report.
+    const calls: string[] = [];
+    page.on("request", (request) => { const url = new URL(request.url()); if (url.port === "8789" || url.pathname.includes("/wp-content/uploads/")) calls.push(`${request.method()} ${url.pathname.replace(/trendhome%3A\d+/, "{order}")}`); });
     await openOrder(page, W.orders.one);
+    await expect(page.locator('[data-testid^="dd-line-"]').first()).toBeVisible();
+    await page.waitForTimeout(1500);
+    console.log(`perf open-order: ${calls.length} requests: ${JSON.stringify(calls.reduce<Record<string, number>>((all, call) => ({ ...all, [call]: (all[call] ?? 0) + 1 }), {}))}`);
+    expect(calls.filter((call) => call.includes("/source/preview")), "opening an order never asks for a preview").toEqual([]);
     // The two figures read out on every call, big and apart; the real money and the estimate never mixed up.
     await expect(page.getByTestId("dd-total")).toContainText("355,32");
     await expect(page.getByTestId("dd-advance")).toContainText("106,60");
