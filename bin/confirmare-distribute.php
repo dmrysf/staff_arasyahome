@@ -73,5 +73,23 @@ if (!isset($options['dry-run']) && $source === null && $decisionsOn) {
         $result['decisionFollowUps'] = ['failed' => true];
     }
 }
+// API 2.82.1: requests for refused orders (and expired proformas) recorded while the shop's cancellation gates were
+// closed are handed to the shop once both gates are open; every guard runs again first. With a gate closed: nothing.
+if (!isset($options['dry-run']) && $source === null) {
+    try {
+        if ((int) $container->pdo()->query("SELECT GET_LOCK('arasya_cancellation_rearm', 0)")->fetchColumn() === 1) {
+            try {
+                $rearm = $container->cancellationSyncService()->rearmInactive('cli-rearm-' . bin2hex(random_bytes(6)));
+                if ($rearm['active'] !== [] || $rearm['seen'] > 0) {
+                    $result['cancellationRearm'] = $rearm;
+                }
+            } finally {
+                $container->pdo()->query("SELECT RELEASE_LOCK('arasya_cancellation_rearm')");
+            }
+        }
+    } catch (Throwable) {
+        $result['cancellationRearm'] = ['failed' => true];
+    }
+}
 fwrite(STDOUT, json_encode($result + ['dryRun' => isset($options['dry-run'])], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . "\n");
 exit(0);

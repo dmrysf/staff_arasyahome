@@ -16,7 +16,7 @@ ec5815c87fb4c633da4c34d600b5ba73b2bebf38e153025a1c4a4d8e5c073aa6  ./bin/confirma
 4cb81627c259da0b923b80981655aa53efa867535b11096bdc70e2ce90c1b2c6  ./bin/confirmare-cycles.php
 d53dbe173f050a0df5bb1724311bfbe39c59f33a16987483266c236a6c342731  ./bin/confirmare-decision-backfill.php
 7d929f9cb821e2da3c9bc6303742d1abb5aa30c91f052d4beb1c2e4bc84b44f3  ./bin/confirmare-display.php
-7fe7b0e9d08517853611f65ae17069140293d26ff1dbeb252e59dac668eb6738  ./bin/confirmare-distribute.php
+959ac3eda51d09a8103c9a0bfae230827f2e37aeb345a477213f441dffa15c69  ./bin/confirmare-distribute.php
 6c66e6da695fa3cc80e72f25503ae77a04ff4b04637bd75cb0933ed1e2104eb9  ./bin/confirmare-operators.php
 950151a8ab6ea65076549f1a80a2461cc79f5c5064b09666c856f7d9adda59f7  ./bin/create-employee.php
 a708aaa5d7ede287000f44f05bfcbeccd2811f8dd8d1f270d9463f4faa8c535f  ./bin/disable-employee.php
@@ -130,7 +130,7 @@ e3d5bd553859a3f0ade7ef0d41a29c8dab1eaaf486fb632bdb714b79e4c719aa  ./database/see
 a80d76fbdb4a0c8ac3533c3db5eb123a73ff6eb2c259927976d39dfeeb2f248b  ./public/.htaccess
 8302b6ec98573706b31b957a8f9ad9be8bf92a8b8bff02963c601650e7e8c420  ./public/RuntimeLocator.php
 edb234c39482536f0540e881da98cbdad6241af787f230295a79a4ae534e26be  ./public/index.php
-fe190bc5c3fe2fba9a8729990fc92f39c37ce1f55cff046c5d7742b2a1b4b8f9  ./release.json
+64ee04ead21b8b440886da42c2d0a1d2368c930351be775dd4ebeee4f6041347  ./release.json
 3b42b0a0d462aa0ac0f368966a5703f6ecbbff9eea2bbbe47f269e9cd6ba03ea  ./scripts/api-release-common.sh
 b7f4bad56c6c8f39a9e72af6c8ea82d578beb50bf0e4f38d17c78a2e9f0f1637  ./scripts/cancellation-sync-active.sh
 03e82de95461d85d534edc5e62013dea047881f28ba12a61ac55b6827108a5e0  ./scripts/cpanel-deploy-api.sh
@@ -138,7 +138,7 @@ bdbe9cb23b6d581c64eba4dc2b41fe93e503e327afb0c36dce38759631c2fabb  ./scripts/cpan
 ad963b363acfdc488f4b9638e31052d173e9b31437735990435acfd5c9e876ca  ./scripts/generate-sha256s.sh
 668b254a048e20b209aa886a91bb14682e1f60255fa8e329ec6b9a8e896c355c  ./scripts/maintenance-active.sh
 19135ebb1f6829810e78b5a2f4a8647b52e7f1cc73b8fce2f42b481bb700135a  ./scripts/trendyol-intake-active.sh
-e40cbb457b466f160f27a96699f8a516d4a7d9a000b7738f07de86b85f7d2557  ./scripts/validate-release.sh
+c848c5648767bb90e5344945bc211053970d3604e01b10fb7d0399648f2467b7  ./scripts/validate-release.sh
 7f8042e24e1e6e02ee1a99ac82acaac281fdc759e419e18a6f89adbd2d891281  ./src/Activity/ActivityController.php
 fffaf9848b4f34b5f257895192f34d7a6ef959791a2e944ba3a981bd6bbb874e  ./src/Activity/ActivityRange.php
 8f4294de2d4e2e71697dfede970e5c2c11047d6af47bb6b7d83c5acae6172a0c  ./src/Activity/PdoActivityRepository.php
@@ -222,7 +222,7 @@ eefb6593bcfcc8edf1b1e25e29928e8d4d2e458e6cefca23a4a53cb9a231acf0  ./src/Cancella
 e5d60bca3b971de9221ff8324c4d1d5c2b2dae7215024f08a3ecc139f5bc6b37  ./src/Cancellation/ProductionStop.php
 f5f2ff33c26ea697d9c72bd9f7ed645016c6d31aa81c99dab97d824700c5762e  ./src/Cancellation/Sync/CancellationProvider.php
 66552c6500c52048339d4f71679423cdc525b5204cade2ef8b5649c000fddc94  ./src/Cancellation/Sync/CancellationReconciler.php
-701ecd3d78f33ab2bf2aa9a5eaf949aa2ff8da8ad824ccb0fd7e50466531ce7c  ./src/Cancellation/Sync/CancellationSyncService.php
+07621f5b5d311e0e941dce6620a425ecceea35ccc0ee5943b5166f116e34cb83  ./src/Cancellation/Sync/CancellationSyncService.php
 8f9127d5b81220be4566320b415ff5ff665881b0eb7ff4987ffe9b1d2cdc22a2  ./src/Cancellation/Sync/CancellationSyncWorker.php
 a8c5fadc96be0ec944b466118f01e56c4f4a598072822729d0512813a1ccad92  ./src/Cancellation/Sync/ManualProvider.php
 9449aee42d743fffda7fdbf467e6e2ce70147a3a535800f4682b7bbd0289ce86  ./src/Cancellation/Sync/ProviderRegistry.php
@@ -331,7 +331,7 @@ dab18c727f8af10b46a7b3ff81361a782ccccdd482ccc46cb40dbba649513e55  ./src/Http/Api
 4ddec563ed6370dfb3f6b7912ff203551d93f7098fc19d516173d3c9459ab27a  ./src/Http/ApiKernel.php
 a34ac5ff03bdaea8405bf09a2cc1d8bf9db9aac7f11ba3e34b5b4630f0df3698  ./src/Http/AuthController.php
 6052839df56a2372833ac9fc3981fd2202f3ef754aa6a17010459933295010ca  ./src/Http/CorsPolicy.php
-60dded995ebb17ac9de10128f8cd1e3ab58c45eccbe176f86c3103f172955122  ./src/Http/HealthController.php
+cf5a60d9ec85a1aadccee70dac1fdfda37dabb2fb8fc09c1f364a6f39bab8e1e  ./src/Http/HealthController.php
 5135823a988e7ae06254297c5272a5ccb724e819a52c33217223c4299f286cb2  ./src/Http/ProductionWorkflowController.php
 57c77118c9f87c3b4475737e98d97bd7fcfaf456961cf637c7927d4eaad9ef32  ./src/Http/Request.php
 b49c2a94e90b750aeb5202e8ea263a42fd77fcc6442b3c2f46205cd5ab324688  ./src/Http/RequestContext.php
