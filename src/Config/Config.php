@@ -121,6 +121,14 @@ final readonly class Config
          * create, approve or post payment, adjustment, reversal and refund requests or allocations. Reads always work.
          */
         public string $financeCollections = 'disabled',
+        /**
+         * Operation Simplification V1 switch (ARASYA_CONFIRMARE_DECISIONS, API 2.82.0). Only the exact value `enabled`
+         * turns on the operator's three decisions and everything the system does after them: the decision endpoint, the
+         * decision follow-ups (shop total acceptance, advance proforma, refusal cancellation), the system approval and
+         * routing of verified online payments and the retirement of the three-unanswered-calls rule. Anything else (the
+         * default) keeps API 2.81.0's behaviour: deploying 2.82.0 starts nothing by itself. Activation is a live decision.
+         */
+        public string $confirmareDecisions = 'disabled',
     ) {
         foreach ($this->financeRiskLimitAuthorityList() as $uuid) {
             if (preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/D', $uuid) !== 1) {
@@ -216,7 +224,14 @@ final readonly class Config
             b2bOrderTypes: self::value($values, 'ARASYA_B2B_ORDER_TYPES', 'off'),
             b2bAccountWrites: self::value($values, 'ARASYA_B2B_ACCOUNT_WRITES', 'enabled'),
             financeCollections: self::value($values, 'ARASYA_FINANCE_COLLECTIONS', 'disabled'),
+            confirmareDecisions: self::value($values, 'ARASYA_CONFIRMARE_DECISIONS', 'disabled'),
         );
+    }
+
+    /** Whether Operation Simplification V1 (the operator's three decisions and their automatic follow-ups) is switched on. */
+    public function confirmareDecisionsEnabled(): bool
+    {
+        return $this->confirmareDecisions === 'enabled';
     }
 
     /** Whether the server switch allows outbound cancellation synchronization at all (provider flags still apply). */

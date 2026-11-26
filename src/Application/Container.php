@@ -105,6 +105,8 @@ final class Container
     {
         $this->config = $config ?? Config::fromEnvironment();
         $this->pdo = $pdo ?? Connection::create($this->config);
+        // API 2.82.0: the three-unanswered-calls rule is retired only once Operation Simplification V1 is switched on.
+        \Arasya\Operations\Confirmare\ConfirmareCycles::$noAnswerRuleRetired = $this->config->confirmareDecisionsEnabled();
         $this->employees = new PdoEmployeeRepository($this->pdo);
         $this->sessions = new PdoSessionRepository($this->pdo);
         $this->audit = new PdoAuditLogger($this->pdo, $this->config->appSecret);
@@ -129,7 +131,7 @@ final class Container
     /** Confirmare operations (API 2.38.0): pool, distribution, decisions. Also used by bin/confirmare-distribute.php. */
     public function confirmareService(?AuthorizationService $authorization = null): \Arasya\Operations\Confirmare\ConfirmareService
     {
-        return new \Arasya\Operations\Confirmare\ConfirmareService($this->pdo, $authorization ?? new AuthorizationService(), new \Arasya\Operations\Confirmare\ConfirmareScopePolicy($this->pdo), $this->clock, \Arasya\Operations\Integration\SourceAccess\SourceAccessRegistry::fromConfig($this->config), $this->authorityModes());
+        return new \Arasya\Operations\Confirmare\ConfirmareService($this->pdo, $authorization ?? new AuthorizationService(), new \Arasya\Operations\Confirmare\ConfirmareScopePolicy($this->pdo), $this->clock, \Arasya\Operations\Integration\SourceAccess\SourceAccessRegistry::fromConfig($this->config), $this->authorityModes(), $this->config->confirmareDecisionsEnabled());
     }
 
     /**
@@ -236,6 +238,12 @@ final class Container
         );
     }
 
+    /** API 2.82.0: what the system does after an operator's decision (total acceptance, proforma, refusal cancellation). */
+    public function confirmareDecisionFollowUps(): \Arasya\Operations\Confirmare\ConfirmareDecisionFollowUps
+    {
+        return new \Arasya\Operations\Confirmare\ConfirmareDecisionFollowUps($this->pdo, $this->clock, $this->confirmareInvoice(), $this->confirmareCycles(), $this->cancellationSyncService(), $this->confirmareService());
+    }
+
     /** Finance safety of the proforma expiry (API 2.71.0, migration 054): holds, the review list. */
     public function confirmareFinanceHolds(): \Arasya\Operations\Confirmare\ConfirmareFinanceHolds
     {
@@ -297,6 +305,8 @@ final class Container
             $this->clock,
             // The HMAC of the bank evidence of a decision (amounts and references are low-entropy).
             hash_hmac('sha256', 'finance-verification-evidence', $this->config->appSecret),
+            // The next-morning recheck stays while Operation Simplification V1 is switched off (2.81.0 behaviour).
+            !$this->config->confirmareDecisionsEnabled(),
         );
     }
 
@@ -520,6 +530,7 @@ final class Container
                 $csrf,
                 $this->config,
                 $context,
+                $this->confirmareDecisionFollowUps(),
             ),
             new \Arasya\Operations\Management\RootInterventionController($desk = $this->rootIntervention($authorization), $this->authentication, $csrf, $this->config, $context, $this->orderResolver($desk, $authorization)),
             $this->financeController($authorization, $context, $csrf, $rateLimiter),

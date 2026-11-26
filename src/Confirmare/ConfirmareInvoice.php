@@ -1081,6 +1081,11 @@ final readonly class ConfirmareInvoice
             return ['state' => 'already'];
         }
         $router = (string) ($row['decided_by_employee_uuid'] ?? $row['assigned_employee_uuid'] ?? '');
+        if ($router === '' && ConfirmareService::awaitingCustomerCheck($this->pdo, $orderUuid)) {
+            // API 2.82.0: an order the system approved on its verified online payment has no deciding employee; the system
+            // identity (root) is recorded as the router, never an operator who did nothing.
+            $router = (string) ($this->pdo->query('SELECT employee_uuid FROM system_root_identity LIMIT 1')->fetchColumn() ?: '');
+        }
         if ($router === '') {
             return ['state' => 'skipped', 'reason' => 'no_router'];
         }
@@ -1160,11 +1165,16 @@ final readonly class ConfirmareInvoice
     /** @return array{seen: int, routed: int, skipped: array<string, int>} */
     private function routePaidLocked(int $limit): array
     {
+        // API 2.82.0 (owner correction 2026-11-26): an operator's green decision is not routed while it can still be undone or
+        // before the shop recorded the customer's acceptance of the total (ConfirmareDecisionFollowUps step accept_total):
+        // nothing that is hard to take back follows a click within its undo period.
+        $grace = ConfirmareDecisionFollowUps::installed($this->pdo)
+            ? " AND NOT EXISTS (SELECT 1 FROM confirmare_decision_followups f WHERE f.active_order_uuid = o.order_uuid AND f.kind = 'confirmed' AND f.step = 'accept_total')" : '';
         $statement = $this->pdo->prepare("SELECT o.global_order_id FROM operational_orders o
             INNER JOIN order_confirmations c ON c.order_uuid = o.order_uuid AND c.status = 'approved' AND c.production_cleared = 1
             WHERE o.workflow_cohort = ? AND o.source_key IN ('trendhome', 'outletperdele') AND o.source_financial_state = 'cleared'
               AND o.operational_status <> 'unavailable' AND o.cancellation_state IS NULL AND o.source_reported_unavailable_at IS NULL
-              AND NOT EXISTS (SELECT 1 FROM order_shop_assignments a WHERE a.active_order_uuid = o.order_uuid)
+              AND NOT EXISTS (SELECT 1 FROM order_shop_assignments a WHERE a.active_order_uuid = o.order_uuid)" . $grace . "
             ORDER BY c.cleared_at, o.order_uuid LIMIT " . max(1, min(500, $limit)));
         $statement->execute([\Arasya\Operations\Production\WorkflowCohort::CONFIRMARE]);
         $result = ['seen' => 0, 'routed' => 0, 'skipped' => []];
@@ -1172,6 +1182,41 @@ final readonly class ConfirmareInvoice
             $result['seen']++;
             try {
                 $answer = $this->autoRoute((string) $globalId, 'auto-paid-');
+            } catch (Throwable) {
+                $answer = ['state' => 'skipped', 'reason' => 'routing_failed'];
+            }
+            if ($answer['state'] === 'routed') {
+                $result['routed']++;
+            } elseif ($answer['state'] === 'skipped') {
+                $reason = (string) ($answer['reason'] ?? 'skipped');
+                $result['skipped'][$reason] = ($result['skipped'][$reason] ?? 0) + 1;
+            }
+        }
+        return $result;
+    }
+
+    /**
+     * API 2.82.0 (Operation Simplification V1): an order the system approved on its verified online payment goes to its shop
+     * employee at once (the operator is never involved): the same choice and guards as autoRoute, key `auto-online-<order>`.
+     * Database only. The shop employee checks it with the customer when needed; production waits for that check.
+     *
+     * @return array{seen: int, routed: int, skipped: array<string, int>}
+     */
+    public function routeOnline(int $limit = 50): array
+    {
+        $statement = $this->pdo->prepare("SELECT o.global_order_id FROM operational_orders o
+            INNER JOIN order_confirmations c ON c.order_uuid = o.order_uuid AND c.status = 'approved' AND c.call_confirmed_at IS NULL
+            WHERE o.workflow_cohort = ? AND o.source_key IN ('trendhome', 'outletperdele') AND o.source_financial_state = 'cleared'
+              AND o.cancellation_state IS NULL AND o.operational_status <> 'unavailable' AND o.source_reported_unavailable_at IS NULL
+              AND NOT EXISTS (SELECT 1 FROM order_shop_assignments a WHERE a.active_order_uuid = o.order_uuid)
+              AND (SELECT e.reason_code FROM order_confirmation_events e WHERE e.order_uuid = c.order_uuid AND e.action = 'approved' ORDER BY e.version_after DESC LIMIT 1) = ?
+            ORDER BY c.decided_at, o.order_uuid LIMIT " . max(1, min(500, $limit)));
+        $statement->execute([\Arasya\Operations\Production\WorkflowCohort::CONFIRMARE, ConfirmareService::ONLINE_APPROVAL_REASON]);
+        $result = ['seen' => 0, 'routed' => 0, 'skipped' => []];
+        foreach ($statement->fetchAll(PDO::FETCH_COLUMN) as $globalId) {
+            $result['seen']++;
+            try {
+                $answer = $this->autoRoute((string) $globalId, 'auto-online-');
             } catch (Throwable) {
                 $answer = ['state' => 'skipped', 'reason' => 'routing_failed'];
             }

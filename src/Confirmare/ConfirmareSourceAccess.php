@@ -127,6 +127,8 @@ final readonly class ConfirmareSourceAccess
         if (!$this->audit($row, $actor, $role, 'ok', $requestId, $detail['pricingFingerprint'])) {
             throw new ApiException(503, 'CONFIRMARE_AUDIT_UNAVAILABLE', 'The read could not be recorded, so nothing is shown. Try again.');
         }
+        // API 2.82.0: the operator list's display copy (total, lines, warnings) follows every successful read.
+        self::rememberDisplay($this->pdo, (string) $row['order_uuid'], $detail, $this->clock->now()->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s.u'));
         $stored = $after['source_pricing_fingerprint'] === null ? null : (string) $after['source_pricing_fingerprint'];
         $arasyaChanged = $after['source_changed_at'] === null ? null : self::iso((string) $after['source_changed_at']);
         $pricingMatches = $stored === null || $detail['pricingFingerprint'] === null ? null : hash_equals($stored, $detail['pricingFingerprint']);
@@ -145,6 +147,100 @@ final readonly class ConfirmareSourceAccess
                 'inSync' => $pricingMatches !== false && ($detail['order']['modifiedAt'] === null || ($arasyaChanged !== null && $detail['order']['modifiedAt'] <= $arasyaChanged)),
             ],
         ];
+    }
+
+    /**
+     * API 2.82.0: fills the operator list's display copy of pending Confirmare orders that have none, or whose copy was read
+     * on other prices than Arasya holds now, or is older than STALE_HOURS (bin/confirmare-display.php, cron). One shop call at
+     * a time with a pause, oldest order first, audited under the root identity like the finance amounts cron. A shop that
+     * does not answer is skipped for the rest of the run. Nothing is decided or sent.
+     *
+     * @return array{read: int, failed: int, skipped: int}
+     */
+    public function refreshDisplay(string $rootUuid, int $max, int $pauseMs, string $requestId): array
+    {
+        $statement = $this->pdo->prepare("SELECT o.order_uuid, o.global_order_id, o.source_key, o.source_order_id, o.order_number FROM order_confirmations c
+            INNER JOIN operational_orders o ON o.order_uuid = c.order_uuid LEFT JOIN confirmare_order_display d ON d.order_uuid = c.order_uuid
+            WHERE c.status = 'pending' AND o.workflow_cohort = 'confirmare' AND (d.order_uuid IS NULL OR d.read_at < ? OR NOT (d.pricing_fingerprint <=> o.source_pricing_fingerprint))
+            ORDER BY d.read_at IS NOT NULL, c.opened_at, c.order_uuid LIMIT " . max(1, min(500, $max)));
+        $statement->execute([$this->clock->now()->setTimezone(new \DateTimeZone('UTC'))->modify('-' . self::DISPLAY_STALE_HOURS . ' hours')->format('Y-m-d H:i:s.u')]);
+        $result = ['read' => 0, 'failed' => 0, 'skipped' => 0];
+        $down = [];
+        foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $index => $row) {
+            $target = $this->registry->find((string) $row['source_key']);
+            if ($target === null || isset($down[$row['source_key']])) {
+                $result['skipped']++;
+                continue;
+            }
+            if ($index > 0 && $pauseMs > 0) {
+                usleep($pauseMs * 1000);
+            }
+            try {
+                $raw = $this->client->call($target, SourceAccessClient::ROUTE_DETAIL, [
+                    'orderId' => (string) $row['source_order_id'], 'orderNumber' => (string) $row['order_number'],
+                    'actor' => ['employeeId' => $rootUuid, 'role' => self::ROLE_SUPERVISOR], 'requestId' => $this->requestId($requestId),
+                ]);
+                $detail = SourceOrderDetail::from($raw, (string) $row['source_order_id'], (string) $row['order_number'], parse_url($target->baseUrl, PHP_URL_HOST) ?: null);
+            } catch (SourceAccessException) {
+                $result['failed']++;
+                $down[$row['source_key']] = true;
+                continue;
+            }
+            $now = $this->clock->now()->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s.u');
+            try {
+                $this->pdo->prepare('INSERT INTO order_confirmation_source_reads (read_uuid, order_uuid, global_order_id, source_key, employee_uuid, access_role, outcome, shop_pricing_fingerprint, request_id, read_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')->execute([Uuid::v4(), (string) $row['order_uuid'], (string) $row['global_order_id'], (string) $row['source_key'], $rootUuid, self::ROLE_SUPERVISOR,
+                    'ok', $detail['pricingFingerprint'], $this->requestId($requestId), $now]);
+            } catch (PDOException) {
+                $result['skipped']++;
+                continue;
+            }
+            self::rememberDisplay($this->pdo, (string) $row['order_uuid'], $detail, $now);
+            $result['read']++;
+        }
+        return $result;
+    }
+
+    public const DISPLAY_STALE_HOURS = 6;
+
+    /**
+     * API 2.82.0 (Operation Simplification V1): the operator list's display copy of an order, from what the shop just showed:
+     * its total and currency, the number of lines and warnings by code (`out_of_stock`: a product the shop reports out of
+     * stock; `address_incomplete`: the delivery address lacks a street, city or county; `phone_missing`). Display only (the
+     * decision always reads the shop again). A failed write never fails the read.
+     *
+     * @param array<string, mixed> $detail SourceOrderDetail::from()
+     */
+    public static function rememberDisplay(PDO $pdo, string $orderUuid, array $detail, string $nowSql): void
+    {
+        $warnings = [];
+        foreach ($detail['lines'] ?? [] as $line) {
+            if (($line['stock']['status'] ?? null) === 'outofstock') {
+                $warnings['out_of_stock'] = true;
+            }
+        }
+        $fields = $detail['contact']['shipping']['fields'] ?? null;
+        if (is_array($fields) && (trim($fields['address1']) === '' || trim($fields['city']) === '' || (($fields['country'] ?? '') === 'RO' && trim($fields['state']) === ''))) {
+            $warnings['address_incomplete'] = true;
+        }
+        if (($detail['contact']['phoneAvailable'] ?? true) === false) {
+            $warnings['phone_missing'] = true;
+        }
+        // YD SOFT 2.35.0: another open order of the same customer in this shop within a week (information only).
+        if (($detail['customer']['possibleDuplicates'] ?? []) !== []) {
+            $warnings['possible_duplicate'] = true;
+        }
+        $total = $detail['totals']['total'] ?? null;
+        try {
+            $pdo->prepare('INSERT INTO confirmare_order_display (order_uuid, order_total, currency, line_count, warnings, pricing_fingerprint, read_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE order_total = VALUES(order_total), currency = VALUES(currency), line_count = VALUES(line_count), warnings = VALUES(warnings),
+                pricing_fingerprint = VALUES(pricing_fingerprint), read_at = VALUES(read_at)')->execute([
+                $orderUuid, is_string($total) && is_numeric($total) ? $total : null, $detail['order']['currency'] ?? null, count($detail['lines'] ?? []),
+                $warnings === [] ? null : implode(',', array_keys($warnings)), $detail['pricingFingerprint'] ?? null, $nowSql,
+            ]);
+        } catch (PDOException) {
+            // Display only.
+        }
     }
 
     /**

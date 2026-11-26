@@ -40,7 +40,11 @@ final class SourceOrderEdit
         'access_disabled', 'rate_limited', 'order_not_found', 'order_not_eligible',
         // API 2.60.0 / YD SOFT 2.28.0: coupons in an edit.
         'coupon_not_found', 'coupon_already_applied', 'coupon_not_applied', 'coupon_not_removable',
+        // API 2.82.0 / YD SOFT 2.35.0: the operator's address correction.
+        'invalid_address',
     ];
+    /** API 2.82.0 (YD SOFT 2.35.0): the address fields an operator corrects (WooCommerce's fields and the FAN address details). */
+    public const ADDRESS_FIELDS = ['firstName', 'lastName', 'company', 'address1', 'address2', 'city', 'state', 'postcode', 'country', 'streetNo', 'building', 'entrance', 'floor', 'apartment'];
     public const MAX_COUPON_CODE = 100;
     private const MAX_COUPONS = 100;
 
@@ -67,6 +71,8 @@ final class SourceOrderEdit
             // API 2.60.0: an active WooCommerce coupon of the shop, or one an earlier Arasya edit applied (the shop decides).
             'apply_coupon' => ['op', 'code'],
             'remove_coupon' => ['op', 'code'],
+            // API 2.82.0: the delivery or billing address, only the changed fields (the shop checks them again).
+            'set_address' => ['op', 'target', 'fields'],
         ];
         $seen = [];
         $out = [];
@@ -75,6 +81,25 @@ final class SourceOrderEdit
                 throw new \InvalidArgumentException('operations');
             }
             $kind = $op['op'];
+            if ($kind === 'set_address') {
+                $fields = $op['fields'] ?? null;
+                if (!in_array($op['target'] ?? null, ['shipping', 'billing'], true) || !is_array($fields) || $fields === [] || array_is_list($fields) || count($fields) > count(self::ADDRESS_FIELDS)
+                    || isset($seen['address:' . $op['target']])) {
+                    throw new \InvalidArgumentException('address');
+                }
+                foreach ($fields as $name => $value) {
+                    if (!in_array($name, self::ADDRESS_FIELDS, true) || !is_string($value) || strlen($value) > 200 || preg_match('/[\x00-\x1F\x7F<>]/', $value) === 1) {
+                        throw new \InvalidArgumentException('address');
+                    }
+                }
+                if ((isset($fields['country']) && preg_match('/^[A-Z]{2}$/D', $fields['country']) !== 1) || (isset($fields['state']) && $fields['state'] !== '' && preg_match('/^[A-Z0-9-]{1,10}$/D', $fields['state']) !== 1)
+                    || (isset($fields['postcode']) && preg_match('/^[A-Za-z0-9 -]{0,12}$/D', $fields['postcode']) !== 1)) {
+                    throw new \InvalidArgumentException('address');
+                }
+                $seen['address:' . $op['target']] = true;
+                $out[] = $op;
+                continue;
+            }
             $id = static fn (mixed $value, bool $required): bool => ($value === null && !$required) || (is_string($value) && preg_match(self::ID, $value) === 1);
             if (!$id($op['lineId'] ?? null, in_array($kind, ['update_line', 'remove_line'], true)) || !$id($op['productId'] ?? null, $kind === 'add_line')
                 || !$id($op['variationId'] ?? null, false) || !$id($op['shippingLineId'] ?? null, $kind === 'set_shipping')) {
@@ -124,7 +149,7 @@ final class SourceOrderEdit
     public static function auditCodes(array $operations): array
     {
         return array_map(static function (array $op): array {
-            $code = array_intersect_key($op, ['op' => true, 'lineId' => true, 'productId' => true, 'variationId' => true, 'quantity' => true, 'shippingLineId' => true, 'method' => true, 'code' => true]);
+            $code = array_intersect_key($op, ['op' => true, 'lineId' => true, 'productId' => true, 'variationId' => true, 'quantity' => true, 'shippingLineId' => true, 'method' => true, 'code' => true, 'target' => true]);
             if (isset($op['fields'])) {
                 $code['fields'] = array_keys($op['fields']);
             }
@@ -270,6 +295,15 @@ final class SourceOrderEdit
                 'impact' => self::choice($financial['impact'] ?? null, self::IMPACTS),
                 'cod' => self::bool($financial['cod'] ?? null),
             ],
+            // YD SOFT 2.35.0: the shipping method the shop's rules chose by itself, and the address correction (field names and
+            // the FAN locality reading only). An older shop sends neither.
+            'shippingAuto' => self::list($data['shippingAuto'] ?? [], self::MAX_SMALL, static fn (array $auto): array => [
+                'id' => self::pattern($auto['id'] ?? null, self::ID),
+                'from' => self::pattern($auto['from'] ?? null, '/^[a-z0-9_:-]{1,60}$/D'),
+                'to' => self::pattern($auto['to'] ?? null, self::METHOD),
+                'reason' => self::choice($auto['reason'] ?? null, ['free_shipping_threshold_reached', 'free_shipping_threshold_lost', 'shipping_zone_changed']),
+            ]),
+            'address' => self::addressResult($data['address'] ?? null),
         ];
         if ($out['applicable'] !== ($out['blockers'] === [])) {
             throw self::invalid();
@@ -287,6 +321,30 @@ final class SourceOrderEdit
             ];
         } else {
             $out['previewToken'] = self::pattern($data['previewToken'] ?? null, '/^[0-9a-f]{64}$/D');
+        }
+        return $out;
+    }
+
+    /** @return array<string, array{changed: list<string>, locality: array{rule: string, suggestion: ?string}|null}> */
+    private static function addressResult(mixed $value): array
+    {
+        if ($value === null || $value === []) {
+            return [];
+        }
+        $out = [];
+        foreach (self::map($value) as $target => $address) {
+            if (!in_array($target, ['shipping', 'billing'], true) || !is_array($address)) {
+                throw self::invalid();
+            }
+            $changed = $address['changed'] ?? [];
+            if (!is_array($changed) || !array_is_list($changed) || array_diff($changed, self::ADDRESS_FIELDS) !== []) {
+                throw self::invalid();
+            }
+            $locality = $address['locality'] ?? null;
+            $out[$target] = ['changed' => array_values($changed), 'locality' => !is_array($locality) ? null : [
+                'rule' => (string) preg_replace('/[^a-z_-]/', '', strtolower((string) ($locality['rule'] ?? 'unknown'))),
+                'suggestion' => ($locality['suggestion'] ?? null) === null ? null : self::text($locality['suggestion'], 120),
+            ]];
         }
         return $out;
     }

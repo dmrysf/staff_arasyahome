@@ -103,7 +103,15 @@ final class ConfirmareService
         private readonly ?SourceAccessRegistry $sourceAccess = null,
         /** API 2.42.0: the sources' enforced advance payment gates, for the handoff state. */
         private readonly ?ProductionAuthorityModes $modes = null,
+        /** API 2.82.0: Operation Simplification V1 switched on (Config::confirmareDecisionsEnabled). */
+        private readonly bool $decisions = true,
     ) {
+    }
+
+    /** Whether the operator's three decisions are switched on (the desk shows them; otherwise the detailed screen). */
+    public function decisionsEnabled(): bool
+    {
+        return $this->decisions;
     }
 
     // ---- Reads ---------------------------------------------------------------------------------------------------
@@ -121,8 +129,8 @@ final class ConfirmareService
     public function pool(EmployeeIdentity $actor, ?string $source, string $view): array
     {
         $this->requireActor($actor);
-        if (!in_array($view, ['mine', 'open', 'all', 'followup'], true)) {
-            throw new ApiException(400, 'INVALID_REQUEST', 'view must be mine, open, all or followup.');
+        if (!in_array($view, ['mine', 'open', 'all', 'followup', ...self::DESK_VIEWS], true)) {
+            throw new ApiException(400, 'INVALID_REQUEST', 'view must be mine, open, all, followup, new, waiting, confirmed or refused.');
         }
         if ($source !== null && preg_match('/^[a-z0-9_-]{1,40}$/D', $source) !== 1) {
             throw new ApiException(400, 'INVALID_REQUEST', 'source is invalid.');
@@ -134,6 +142,9 @@ final class ConfirmareService
         }
         if ($view === 'all' && $supervise === []) {
             throw new ApiException(403, 'CONFIRMARE_SCOPE_DENIED', 'Only a Confirmare supervisor sees every order.');
+        }
+        if (in_array($view, self::DESK_VIEWS, true)) {
+            return $this->desk($actor, $source, $view, $operate, $supervise);
         }
         $parameters = [];
         $where = match ($view) {
@@ -181,6 +192,92 @@ final class ConfirmareService
             'rejectReasons' => self::REJECT_REASONS,
             'targetOpenPerOperator' => self::TARGET_OPEN_PER_OPERATOR,
         ];
+    }
+
+    /** API 2.82.0: the operator desk's four lists. */
+    public const DESK_VIEWS = ['new', 'waiting', 'confirmed', 'refused'];
+    /** How far back the desk lists the actor's own green and red decisions (days). */
+    public const DESK_DECIDED_DAYS = 7;
+
+    /**
+     * The operator desk (API 2.82.0, owner decision 2026-11-26): one call answers the chosen list and the counts of all four.
+     * - new:       pending orders without the yellow mark the actor may take or holds (supervisors: every one of their shops);
+     * - waiting:   pending orders with the yellow mark the actor holds (supervisors: every one), callback time first;
+     * - confirmed: the actor's own green decisions of the last DESK_DECIDED_DAYS days, newest first;
+     * - refused:   the actor's own red decisions of the same period.
+     * Pending lists keep the priority order (nearest due date, then the longest waiting); the operator still opens any row.
+     * The rows carry the list's display copy (total, lines, warnings) and the customer's name from Arasya's own order data:
+     * the list never asks a shop row by row.
+     *
+     * @param list<string>|null $operate @param list<string>|null $supervise
+     * @return array<string, mixed>
+     */
+    private function desk(EmployeeIdentity $actor, ?string $source, string $view, ?array $operate, ?array $supervise): array
+    {
+        $now = $this->clock->now()->setTimezone(new \DateTimeZone('UTC'));
+        $since = $now->modify('-' . self::DESK_DECIDED_DAYS . ' days')->format('Y-m-d H:i:s.u');
+        $today = $now->setTimezone(new \DateTimeZone('Europe/Bucharest'))->setTime(0, 0)->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s.u');
+        $build = function (string $list) use ($actor, $source, $operate, $supervise, $since): array {
+            $parameters = [];
+            if ($list === 'new' || $list === 'waiting') {
+                $where = "c.status = 'pending' AND ((" . ConfirmareScopePolicy::condition($operate, 'c.source_key', $parameters)
+                    . " AND o.workflow_cohort = 'confirmare' AND (c.assigned_employee_uuid IS NULL OR c.assigned_employee_uuid = ?)) OR "
+                    . ConfirmareScopePolicy::condition($supervise, 'c.source_key', $parameters) . ')';
+                $operateCount = $operate === null ? 0 : count($operate);
+                array_splice($parameters, $operateCount, 0, [$actor->employeeUuid]);
+                $where .= $list === 'new' ? ' AND c.hold_at IS NULL' : ' AND c.hold_at IS NOT NULL';
+            } else {
+                $where = "c.status = ? AND c.decided_by_employee_uuid = ? AND c.decided_at >= ?";
+                $parameters = [$list === 'confirmed' ? self::STATUS_APPROVED : self::STATUS_REJECTED, $actor->employeeUuid, $since];
+            }
+            $visible = [];
+            $where .= ' AND (' . ConfirmareScopePolicy::condition($this->union($operate, $supervise), 'c.source_key', $visible) . ')';
+            array_push($parameters, ...$visible);
+            if ($source !== null) {
+                $where .= ' AND c.source_key = ?';
+                $parameters[] = $source;
+            }
+            return [$where, $parameters];
+        };
+        $counts = [];
+        foreach (self::DESK_VIEWS as $list) {
+            [$where, $parameters] = $build($list);
+            $count = $this->pdo->prepare("SELECT COUNT(*) FROM order_confirmations c INNER JOIN operational_orders o ON o.order_uuid = c.order_uuid WHERE {$where}");
+            $count->execute($parameters);
+            $counts[$list] = (int) $count->fetchColumn();
+        }
+        $done = $this->pdo->prepare("SELECT COUNT(*) FROM order_confirmations c WHERE c.decided_by_employee_uuid = ? AND c.decided_at >= ? AND c.status IN ('approved', 'rejected')");
+        $done->execute([$actor->employeeUuid, $today]);
+        $counts['doneToday'] = (int) $done->fetchColumn();
+        [$where, $parameters] = $build($view);
+        $order = match ($view) {
+            'waiting' => 'c.callback_at IS NULL, c.callback_at, c.hold_at, c.order_uuid',
+            'confirmed', 'refused' => 'c.decided_at DESC, c.order_uuid',
+            default => self::PRIORITY_ORDER,
+        };
+        $statement = $this->pdo->prepare($this->selectSql() . " WHERE {$where} ORDER BY {$order} LIMIT " . self::QUEUE_LIMIT);
+        $statement->execute($parameters);
+        $items = array_map(fn (array $row): array => $this->present($row) + ['customerName' => self::contextName($row)], $statement->fetchAll(PDO::FETCH_ASSOC));
+        return [
+            'view' => $view,
+            'items' => $items,
+            'limit' => self::QUEUE_LIMIT,
+            'total' => $counts[$view],
+            'counts' => $counts,
+            'sources' => $this->union($operate, $supervise),
+            'capabilities' => ['operate' => $operate, 'supervise' => $supervise],
+            'rejectReasons' => self::REJECT_REASONS,
+            'targetOpenPerOperator' => self::TARGET_OPEN_PER_OPERATOR,
+            // API 2.82.0: false until ARASYA_CONFIRMARE_DECISIONS=enabled; the Staff desk then opens the detailed screen.
+            'decisions' => $this->decisions,
+        ];
+    }
+
+    /** The customer's name from Arasya's own order data (document context), or null. @param array<string, mixed> $row */
+    private static function contextName(array $row): ?string
+    {
+        $context = ($row['document_context'] ?? null) === null ? null : json_decode((string) $row['document_context'], true);
+        return is_array($context) && is_string($context['name'] ?? null) && $context['name'] !== '' ? mb_substr($context['name'], 0, 120) : null;
     }
 
     /** One order's Confirmare state and its audit trail (actor names, no customer data). @return array<string, mixed> */
@@ -469,7 +566,8 @@ final class ConfirmareService
             ORDER BY e.version_after DESC LIMIT 1) AS approval_reason FROM order_confirmations c WHERE c.order_uuid = ?");
         $statement->execute([$orderUuid]);
         $row = $statement->fetch(PDO::FETCH_ASSOC);
-        return is_array($row) && $row['status'] === self::STATUS_APPROVED && $row['call_confirmed_at'] === null && $row['approval_reason'] === self::MANAGER_ROUTE_REASON;
+        // API 2.82.0: an order approved by the system on its verified online payment waits for the same check.
+        return is_array($row) && $row['status'] === self::STATUS_APPROVED && $row['call_confirmed_at'] === null && in_array($row['approval_reason'], [self::MANAGER_ROUTE_REASON, self::ONLINE_APPROVAL_REASON], true);
     }
 
     /**
@@ -697,6 +795,454 @@ final class ConfirmareService
             ], $actor->employeeUuid, 'rejected', $reasonCode, $now, $requestId, $key);
             return [];
         });
+    }
+
+    // ---- Operation Simplification V1 (API 2.82.0, owner decision 2026-11-26) -----------------------------------------
+
+    /** The three operator decisions: green (the customer confirmed), yellow (waiting), red (the customer refused). */
+    public const DECISIONS = ['confirmed', 'waiting', 'refused'];
+    /** The event reason of a green decision: the customer confirmed the order as shown (by telephone or in writing). */
+    public const CUSTOMER_CONFIRMED_REASON = 'customer_confirmed';
+    /** The rejection reason a red decision records when the operator names none. */
+    public const DEFAULT_REFUSAL_REASON = 'customer_cancelled';
+    /** How long the operator may undo their own decision before the system acts on it (seconds). */
+    public const UNDO_SECONDS = ['confirmed' => 60, 'refused' => 600];
+    public const NOTE_MAX = 300;
+
+    /**
+     * The operator's one decision on an order (API 2.82.0). Replaces the separate call record, the line ticks, the price box
+     * and the final confirmation:
+     *
+     * - `confirmed` (green): the customer confirmed the order exactly as the operator saw it. The request carries the
+     *   review fingerprint the screen showed (lines, measurements, options, notes and the shop's pricing fingerprint), so a
+     *   total that changed in between is refused (CONFIRMARE_REVIEW_STALE with the new fingerprint) and the screen shows
+     *   the new total. The approval records the customer's confirmation as this operator's (`call_confirmed_*`, reason
+     *   `customer_confirmed`): no telephone attempt is invented, the decision itself is the record. Every current line is
+     *   confirmed by it. The guards of the old approval stay: production stop, closed order, unknown pricing, unsettled
+     *   shop change, the shop read with the current prices (where source access exists). What follows runs in the system
+     *   (ConfirmareDecisionFollowUps): the customer's acceptance of the total in the shop and, for an unpaid
+     *   cash-on-delivery order, the advance proforma through the existing proforma cycle (exactly once).
+     * - `waiting` (yellow): the order stays pending and stays with the operator; an optional note and callback time are kept.
+     *   Nothing is required, nothing is locked, no proforma is made.
+     * - `refused` (red): the order is rejected (an optional reason, `customer_cancelled` by default). The system closes the
+     *   order's open proforma cycle (no reminder to a customer who refused) and, after UNDO_SECONDS, asks for the order's
+     *   cancellation through the existing cancellation path, which never touches money, invoices or production records.
+     *
+     * The operator decides an unassigned order directly (it is taken in the same transaction); an order another colleague
+     * holds is refused (CONFIRMARE_NOT_ASSIGNED_TO_YOU), so two people never overwrite each other.
+     *
+     * @param array<string, mixed> $input {decision, reviewFingerprint?, reasonCode?, note?, callbackAt?}
+     * @return array<string, mixed>
+     */
+    public function decide(EmployeeIdentity $actor, string $globalOrderId, mixed $expectedVersion, array $input, string $key, string $requestId): array
+    {
+        if (!$this->decisions) {
+            throw new ApiException(409, 'CONFIRMARE_DECISIONS_OFF', 'The operator decisions are not switched on yet; use the detailed order screen.');
+        }
+        $decision = $input['decision'] ?? null;
+        if (!is_string($decision) || !in_array($decision, self::DECISIONS, true)) {
+            throw new ApiException(422, 'CONFIRMARE_DECISION_INVALID', 'decision must be one of: ' . implode(', ', self::DECISIONS) . '.');
+        }
+        $note = $this->optionalNote($input['note'] ?? null);
+        if ($decision === 'confirmed') {
+            $fingerprint = $input['reviewFingerprint'] ?? null;
+            if (!is_string($fingerprint) || preg_match('/^[0-9a-f]{64}$/D', $fingerprint) !== 1) {
+                throw new ApiException(422, 'CONFIRMARE_REVIEW_REQUIRED', 'reviewFingerprint (the order the customer confirmed) is required.');
+            }
+            // API 2.82.0 (owner correction 2026-11-26): the total the operator showed the customer, exactly as the screen
+            // displayed it. It must be the shop's total at the current prices (its last read); the shop's acceptance is
+            // later sent only for this total (ConfirmareDecisionFollowUps).
+            $shownTotal = $input['shownTotal'] ?? null;
+            if ($shownTotal !== null && (!is_string($shownTotal) || preg_match('/^\d{1,10}(\.\d{1,2})?$/D', $shownTotal) !== 1)) {
+                throw new ApiException(422, 'CONFIRMARE_TOTAL_REQUIRED', 'shownTotal must be the decimal total the screen showed.');
+            }
+            $answer = $this->command($actor, 'approve', $globalOrderId, $expectedVersion, ['decision', $fingerprint, $shownTotal], $key, $requestId, false, function (array $order, array $confirmation, string $now) use ($actor, $fingerprint, $shownTotal, $key, $requestId): array {
+                $confirmation = $this->takeForDecision($actor, $order, $confirmation, $now, $requestId, $key);
+                $orderUuid = $this->assertConfirmable($actor, $order, $fingerprint);
+                $approvedTotal = $this->assertShownTotal($order, $orderUuid, $shownTotal);
+                $lines = ConfirmationClearance::lineIds($this->pdo, $orderUuid);
+                sort($lines, SORT_STRING);
+                $this->change($order, $confirmation, [
+                    'status' => self::STATUS_APPROVED, 'decided_at' => $now, 'decided_by_employee_uuid' => $actor->employeeUuid, 'decision_reason_code' => null,
+                    'assigned_employee_uuid' => null, 'assigned_at' => null, 'assignment_kind' => null,
+                    'call_confirmed_at' => $now, 'call_confirmed_by_employee_uuid' => $actor->employeeUuid,
+                    'confirmed_line_ids' => json_encode($lines, JSON_THROW_ON_ERROR), 'approved_review_fingerprint' => $fingerprint,
+                    'hold_at' => null, 'hold_by_employee_uuid' => null, 'hold_note' => null, 'callback_at' => null,
+                ], $actor->employeeUuid, 'approved', self::CUSTOMER_CONFIRMED_REASON, $now, $requestId, $key);
+                ConfirmationClearance::refresh($this->pdo, $orderUuid, $now);
+                ConfirmareDecisionFollowUps::open($this->pdo, $order, 'confirmed', $actor->employeeUuid, (int) $confirmation['version'] + 1, $now, self::UNDO_SECONDS['confirmed'], $approvedTotal);
+                return [];
+            });
+            return $answer + ['operatorDecision' => 'confirmed', 'undoUntil' => $this->undoUntil('confirmed')];
+        }
+        if ($decision === 'waiting') {
+            $callback = $this->optionalInstant($input['callbackAt'] ?? null);
+            $answer = $this->command($actor, 'hold', $globalOrderId, $expectedVersion, [$note, $callback], $key, $requestId, false, function (array $order, array $confirmation, string $now) use ($actor, $note, $callback, $key, $requestId): array {
+                $confirmation = $this->takeForDecision($actor, $order, $confirmation, $now, $requestId, $key);
+                $this->change($order, $confirmation, [
+                    'hold_at' => $now, 'hold_by_employee_uuid' => $actor->employeeUuid, 'hold_note' => $note, 'callback_at' => $callback,
+                ], $actor->employeeUuid, 'held', null, $now, $requestId, $key);
+                return [];
+            });
+            return $answer + ['operatorDecision' => 'waiting'];
+        }
+        $reason = $input['reasonCode'] ?? self::DEFAULT_REFUSAL_REASON;
+        if (!is_string($reason) || !array_key_exists($reason, self::REJECT_REASONS)) {
+            throw new ApiException(422, 'INVALID_REASON', 'reasonCode must be one of: ' . implode(', ', array_keys(self::REJECT_REASONS)) . '.');
+        }
+        $answer = $this->command($actor, 'reject', $globalOrderId, $expectedVersion, ['decision', $reason], $key, $requestId, false, function (array $order, array $confirmation, string $now) use ($actor, $reason, $key, $requestId): array {
+            $confirmation = $this->takeForDecision($actor, $order, $confirmation, $now, $requestId, $key);
+            $this->change($order, $confirmation, [
+                'status' => self::STATUS_REJECTED, 'decided_at' => $now, 'decided_by_employee_uuid' => $actor->employeeUuid, 'decision_reason_code' => $reason,
+                'assigned_employee_uuid' => null, 'assigned_at' => null, 'assignment_kind' => null,
+                'hold_at' => null, 'hold_by_employee_uuid' => null, 'hold_note' => null, 'callback_at' => null,
+            ], $actor->employeeUuid, 'rejected', $reason, $now, $requestId, $key);
+            ConfirmareDecisionFollowUps::open($this->pdo, $order, 'refused', $actor->employeeUuid, (int) $confirmation['version'] + 1, $now, self::UNDO_SECONDS['refused']);
+            return [];
+        });
+        return $answer + ['operatorDecision' => 'refused', 'undoUntil' => $this->undoUntil('refused')];
+    }
+
+    /** API 2.82.0: the approval reason of an order the system approved on its verified online payment. */
+    public const ONLINE_APPROVAL_REASON = 'online_payment_verified';
+
+    /**
+     * API 2.82.0 (Operation Simplification V1, owner decision 2026-11-26): a Trend Home or Outlet Perdele order whose online
+     * payment the shop verified with its payment provider does not wait for an operator. The system approves it (event
+     * reason `online_payment_verified`, no employee, no call recorded) so it can be routed to the shop employee, who checks it
+     * with the customer when needed (customerCheck). Production stays closed until that check (`call`), exactly like a
+     * manager route: routing is not production.
+     *
+     * Only an order that is pending without the operator's yellow mark, in the Confirmare cohort, paid online with the
+     * financial state `cleared` on basis `online_payment` evaluated on the current prices and without any attention (so a
+     * WooCommerce "processing" status alone, a pending, failed, refunded or partial payment, or a total changed after the
+     * payment never qualifies), not a consumer credit (TBI) order, not stopped, closed or unavailable, with no unsettled shop
+     * change and no open finance action, and with at least one line.
+     *
+     * @return array{seen: int, approved: int, skipped: array<string, int>}
+     */
+    public function approveVerifiedOnline(int $limit = 50, string $requestId = 'confirmare-online'): array
+    {
+        $candidates = $this->pdo->prepare("SELECT o.global_order_id FROM order_confirmations c INNER JOIN operational_orders o ON o.order_uuid = c.order_uuid
+            WHERE c.status = 'pending' AND c.hold_at IS NULL AND o.workflow_cohort = ? AND o.source_key IN ('trendhome', 'outletperdele') AND o.payment_method = 'online'
+              AND o.source_financial_state = 'cleared' AND o.source_financial_basis = 'online_payment' AND o.source_financial_attention IS NULL
+              AND COALESCE(o.workflow_cohort_reason, '') <> 'financing_legacy'
+              AND o.cancellation_state IS NULL AND o.operational_status <> 'unavailable' AND o.source_reported_unavailable_at IS NULL
+            ORDER BY c.opened_at, c.order_uuid LIMIT " . max(1, min(500, $limit)));
+        $candidates->execute([WorkflowCohort::CONFIRMARE]);
+        $result = ['seen' => 0, 'approved' => 0, 'skipped' => []];
+        foreach ($candidates->fetchAll(PDO::FETCH_COLUMN) as $globalId) {
+            $result['seen']++;
+            try {
+                $reason = $this->approveOnlineOne((string) $globalId, $requestId);
+            } catch (\Throwable) {
+                $reason = 'approval_failed';
+            }
+            if ($reason === null) {
+                $result['approved']++;
+            } else {
+                $result['skipped'][$reason] = ($result['skipped'][$reason] ?? 0) + 1;
+            }
+        }
+        return $result;
+    }
+
+    /** @return string|null why the order was not approved (null: approved) */
+    private function approveOnlineOne(string $globalId, string $requestId): ?string
+    {
+        return $this->retrying(function () use ($globalId, $requestId): ?string {
+            $this->pdo->beginTransaction();
+            try {
+                $order = $this->lockOrder($globalId);
+                $confirmation = $order === null ? null : $this->lockConfirmation((string) $order['order_uuid']);
+                if ($order === null || $confirmation === null || $confirmation['status'] !== self::STATUS_PENDING) {
+                    $this->pdo->rollBack();
+                    return 'not_pending';
+                }
+                $orderUuid = (string) $order['order_uuid'];
+                $facts = $this->pdo->prepare('SELECT o.payment_method, o.source_financial_state, o.source_financial_basis, o.source_financial_pricing, o.source_pricing_fingerprint, o.source_financial_attention,
+                        o.cancellation_state, o.workflow_cohort_reason, o.source_reported_unavailable_at, c.hold_at FROM operational_orders o INNER JOIN order_confirmations c ON c.order_uuid = o.order_uuid WHERE o.order_uuid = ?');
+                $facts->execute([$orderUuid]);
+                $fact = $facts->fetch(PDO::FETCH_ASSOC) ?: [];
+                $reason = match (true) {
+                    $order['workflow_cohort'] !== WorkflowCohort::CONFIRMARE => 'not_confirmare',
+                    ($fact['hold_at'] ?? null) !== null => 'operator_waiting',
+                    ($fact['workflow_cohort_reason'] ?? null) === 'financing_legacy' => 'financing',
+                    in_array((string) $order['source_commerce_status_code'], self::CLOSED_COMMERCE, true) || $order['operational_status'] === 'unavailable'
+                        || ($fact['cancellation_state'] ?? null) !== null || ($fact['source_reported_unavailable_at'] ?? null) !== null => 'order_closed',
+                    ($fact['source_financial_attention'] ?? null) !== null || ($fact['source_financial_basis'] ?? null) !== 'online_payment'
+                        || !ConfirmationClearance::financialOpen(self::nullableText($fact['source_financial_state'] ?? null), self::nullableText($fact['source_financial_basis'] ?? null),
+                            self::nullableText($fact['source_financial_pricing'] ?? null), self::nullableText($fact['source_pricing_fingerprint'] ?? null), self::nullableText($fact['payment_method'] ?? null)) => 'payment_not_verified',
+                    ConfirmareSourceEdits::changePending($this->pdo, $orderUuid) => 'shop_change_pending',
+                    ConfirmareFinance::actionOpen($this->pdo, $orderUuid) => 'finance_action_open',
+                    default => null,
+                };
+                if ($reason === null) {
+                    try {
+                        ProductionStop::assertOpen($this->pdo, $orderUuid);
+                    } catch (ApiException) {
+                        $reason = 'production_stopped';
+                    }
+                }
+                $lines = ConfirmationClearance::lineIds($this->pdo, $orderUuid);
+                if ($reason === null && $lines === []) {
+                    $reason = 'no_lines';
+                }
+                if ($reason !== null) {
+                    $this->pdo->rollBack();
+                    return $reason;
+                }
+                sort($lines, SORT_STRING);
+                $now = $this->now();
+                $this->change($order, $confirmation, [
+                    'status' => self::STATUS_APPROVED, 'decided_at' => $now, 'decided_by_employee_uuid' => null, 'decision_reason_code' => null,
+                    'assigned_employee_uuid' => null, 'assigned_at' => null, 'assignment_kind' => null,
+                    'call_confirmed_at' => null, 'call_confirmed_by_employee_uuid' => null,
+                    'confirmed_line_ids' => json_encode($lines, JSON_THROW_ON_ERROR), 'approved_review_fingerprint' => ConfirmationClearance::fingerprint($this->pdo, $orderUuid),
+                ], null, 'approved', self::ONLINE_APPROVAL_REASON, $now, $requestId, null);
+                ConfirmationClearance::refresh($this->pdo, $orderUuid, $now);
+                $this->pdo->commit();
+                return null;
+            } catch (\Throwable $error) {
+                $this->rollBack();
+                throw $error;
+            }
+        });
+    }
+
+    private static function nullableText(mixed $value): ?string
+    {
+        return $value === null ? null : (string) $value;
+    }
+
+    /**
+     * The operator undoes their own green or red decision while the system has not acted on it yet (the follow-up is still
+     * waiting for its grace period and nothing was sent to the shop). The order returns to pending and to the operator.
+     *
+     * @return array<string, mixed>
+     */
+    public function undoDecision(EmployeeIdentity $actor, string $globalOrderId, mixed $expectedVersion, string $key, string $requestId): array
+    {
+        return $this->command($actor, 'undo', $globalOrderId, $expectedVersion, ['undo'], $key, $requestId, false, function (array $order, array $confirmation, string $now) use ($actor, $key, $requestId): array {
+            $orderUuid = (string) $order['order_uuid'];
+            $state = $this->pdo->prepare('SELECT decided_by_employee_uuid, status FROM order_confirmations WHERE order_uuid = ?');
+            $state->execute([$orderUuid]);
+            $row = $state->fetch(PDO::FETCH_ASSOC) ?: [];
+            if (!in_array($row['status'] ?? null, [self::STATUS_APPROVED, self::STATUS_REJECTED], true) || ($row['decided_by_employee_uuid'] ?? null) !== $actor->employeeUuid) {
+                throw new ApiException(409, 'CONFIRMARE_UNDO_NOT_ALLOWED', 'Only your own decision can be undone.');
+            }
+            if (!ConfirmareDecisionFollowUps::cancelUntouched($this->pdo, $orderUuid, (int) $confirmation['version'], $now)) {
+                throw new ApiException(409, 'CONFIRMARE_UNDO_TOO_LATE', 'The system already acted on this decision; it can no longer be undone here.');
+            }
+            if (!$this->scopes->allows($actor, ConfirmareScopePolicy::OPERATE, (string) $order['source_key'], true) && !$this->scopes->allows($actor, ConfirmareScopePolicy::SUPERVISE, (string) $order['source_key'], true)) {
+                throw new ApiException(403, 'CONFIRMARE_SCOPE_DENIED', 'You do not confirm orders of this source.');
+            }
+            $this->change($order, $confirmation, [
+                'status' => self::STATUS_PENDING, 'decided_at' => null, 'decided_by_employee_uuid' => null, 'decision_reason_code' => null,
+                'call_confirmed_at' => null, 'call_confirmed_by_employee_uuid' => null, 'confirmed_line_ids' => null, 'approved_review_fingerprint' => null,
+                'production_cleared' => 0, 'cleared_at' => null,
+                'assigned_employee_uuid' => $actor->employeeUuid, 'assigned_at' => $now, 'assignment_kind' => 'claim',
+            ], $actor->employeeUuid, 'reopened', 'operator_undo', $now, $requestId, $key);
+            return [];
+        });
+    }
+
+    /**
+     * Takes an unassigned pending order for the deciding operator in the decision's own transaction (no separate claim
+     * step); an order another colleague holds is refused. Supervisors decide any pending order of their sources.
+     *
+     * @param array<string, mixed> $order @param array<string, mixed> $confirmation
+     * @return array<string, mixed> the confirmation row after the take
+     */
+    private function takeForDecision(EmployeeIdentity $actor, array $order, array $confirmation, string $now, string $requestId, string $key): array
+    {
+        $this->requirePending($confirmation);
+        $source = (string) $order['source_key'];
+        if ($confirmation['assigned_employee_uuid'] === null && !$this->scopes->allows($actor, ConfirmareScopePolicy::SUPERVISE, $source, true)) {
+            if (!$this->scopes->allows($actor, ConfirmareScopePolicy::OPERATE, $source, true) || $order['workflow_cohort'] !== WorkflowCohort::CONFIRMARE) {
+                throw new ApiException(403, 'CONFIRMARE_SCOPE_DENIED', 'You do not confirm orders of this source.');
+            }
+            if ($this->held($source)) {
+                throw new ApiException(409, 'CONFIRMARE_SOURCE_SUSPENDED', 'The source is suspended: its orders are held.');
+            }
+            $this->change($order, $confirmation, ['assigned_employee_uuid' => $actor->employeeUuid, 'assigned_at' => $now, 'assignment_kind' => 'claim'], $actor->employeeUuid, 'claimed', null, $now, $requestId, $key);
+            $confirmation = $this->lockConfirmation((string) $order['order_uuid']) ?? throw new RuntimeException('Confirmare row disappeared.');
+        }
+        $this->requireDecider($actor, $order, $confirmation);
+        return $confirmation;
+    }
+
+    /** The guards of a green decision (those of the old approval except the call record and the ticks). @param array<string, mixed> $order */
+    private function assertConfirmable(EmployeeIdentity $actor, array $order, string $fingerprint): string
+    {
+        if ($order['workflow_cohort'] !== WorkflowCohort::CONFIRMARE) {
+            throw new ApiException(409, 'CONFIRMARE_UNDETERMINED', 'The submission instant of this order is not known; it cannot be approved for production here.');
+        }
+        if (in_array((string) $order['source_commerce_status_code'], self::CLOSED_COMMERCE, true) || $order['operational_status'] === 'unavailable') {
+            throw new ApiException(409, 'CONFIRMARE_ORDER_CLOSED', 'The order is cancelled or no longer available in the shop; it cannot be approved.');
+        }
+        $orderUuid = (string) $order['order_uuid'];
+        ProductionStop::assertOpen($this->pdo, $orderUuid);
+        $pricing = $this->pdo->prepare('SELECT source_pricing_fingerprint FROM operational_orders WHERE order_uuid = ?');
+        $pricing->execute([$orderUuid]);
+        if ($pricing->fetchColumn() === null) {
+            throw new ApiException(409, 'CONFIRMARE_PRICE_UNAVAILABLE', 'The shop has not sent its pricing fingerprint for this order yet; the price cannot be verified.');
+        }
+        if (ConfirmareSourceEdits::changePending($this->pdo, $orderUuid)) {
+            throw new ApiException(409, 'CONFIRMARE_SHOP_CHANGE_PENDING', 'A change of this order in the shop is not settled yet. Check it first.');
+        }
+        if (ConfirmationClearance::lineIds($this->pdo, $orderUuid) === []) {
+            throw new ApiException(409, 'CONFIRMARE_ORDER_EMPTY', 'The order has no products left; add a product or refuse the order.');
+        }
+        $current = ConfirmationClearance::fingerprint($this->pdo, $orderUuid);
+        if (!hash_equals($current, $fingerprint)) {
+            throw new ApiException(409, 'CONFIRMARE_REVIEW_STALE', 'The order changed since it was shown. Tell the customer the new total and confirm again.', ['reviewFingerprint' => $current]);
+        }
+        // Where the shop's order can be read in Staff, the decision is on the prices the operator saw (the screen reads the
+        // shop when the order opens, so this costs the operator nothing).
+        if ($this->sourceAccess?->find((string) $order['source_key']) !== null && !ConfirmareSourceAccess::reviewedShop($this->pdo, $orderUuid, $actor->employeeUuid)) {
+            throw new ApiException(409, 'CONFIRMARE_SHOP_NOT_REVIEWED', 'The current prices were not shown yet. Reload the order.');
+        }
+        return $orderUuid;
+    }
+
+    /**
+     * The total of a green decision (API 2.82.0). Where the shop's order can be read in Staff, the screen must send the
+     * total it showed, and it must equal the shop's total at the current prices (the last shop read, confirmare_order_display,
+     * whose pricing fingerprint is the order's current one): otherwise CONFIRMARE_REVIEW_STALE with the shop's total, so the
+     * operator tells the customer the new total. Without source access there is no shop total to compare (null).
+     *
+     * @param array<string, mixed> $order
+     * @return string|null the approved total (decimal) or null
+     */
+    private function assertShownTotal(array $order, string $orderUuid, ?string $shownTotal): ?string
+    {
+        if ($this->sourceAccess?->find((string) $order['source_key']) === null) {
+            return $shownTotal;
+        }
+        if ($shownTotal === null) {
+            throw new ApiException(422, 'CONFIRMARE_TOTAL_REQUIRED', 'shownTotal (the total the customer confirmed) is required.');
+        }
+        try {
+            $display = $this->pdo->prepare('SELECT d.order_total, d.pricing_fingerprint, o.source_pricing_fingerprint FROM confirmare_order_display d INNER JOIN operational_orders o ON o.order_uuid = d.order_uuid WHERE d.order_uuid = ?');
+            $display->execute([$orderUuid]);
+            $row = $display->fetch(PDO::FETCH_ASSOC);
+        } catch (\PDOException) {
+            $row = false;
+        }
+        if (!is_array($row) || $row['order_total'] === null || $row['pricing_fingerprint'] === null || $row['pricing_fingerprint'] !== $row['source_pricing_fingerprint']) {
+            throw new ApiException(409, 'CONFIRMARE_SHOP_NOT_REVIEWED', 'The current prices were not shown yet. Reload the order.');
+        }
+        if (self::bani((string) $row['order_total']) !== self::bani($shownTotal)) {
+            throw new ApiException(409, 'CONFIRMARE_REVIEW_STALE', 'The total changed since it was shown. Tell the customer the new total and confirm again.', ['total' => (string) $row['order_total']]);
+        }
+        return (string) $row['order_total'];
+    }
+
+    private ?bool $holdColumns = null;
+
+    /** Whether migration 063's waiting mark exists (an upgrade test may run this code on an older schema). */
+    private function holdInstalled(): bool
+    {
+        if ($this->holdColumns === null) {
+            try {
+                $this->pdo->query('SELECT hold_at FROM order_confirmations LIMIT 0');
+                $this->holdColumns = true;
+            } catch (\PDOException) {
+                $this->holdColumns = false;
+            }
+        }
+        return $this->holdColumns;
+    }
+
+    /** A decimal amount in bani (integers only, no float). */
+    public static function bani(string $amount): int
+    {
+        if (preg_match('/^(-)?(\d+)(?:\.(\d{1,2}))?$/D', trim($amount), $m) !== 1) {
+            throw new \InvalidArgumentException('Not a decimal amount.');
+        }
+        $value = (int) $m[2] * 100 + (int) str_pad($m[3] ?? '', 2, '0');
+        return $m[1] === '-' ? -$value : $value;
+    }
+
+    /**
+     * API 2.82.0 (owner correction 2026-11-26): the order changed in the shop after the customer's confirmation and before
+     * the shop recorded the acceptance (another total, other lines). The confirmation no longer describes the order, so the
+     * system gives it back to the operator who decided (pending, theirs, event `reopened` / `changed_after_confirmation`,
+     * no employee): the customer must hear the new order. Only while nothing followed the approval (not handed to the shop
+     * employee, production not started). False when it cannot be given back; a person then looks at it.
+     */
+    public function reopenChangedAfterConfirmation(string $orderUuid, string $requestId): bool
+    {
+        return $this->retrying(function () use ($orderUuid, $requestId): bool {
+            $this->pdo->beginTransaction();
+            try {
+                $globalId = $this->pdo->prepare('SELECT global_order_id FROM operational_orders WHERE order_uuid = ?');
+                $globalId->execute([$orderUuid]);
+                $id = $globalId->fetchColumn();
+                $order = is_string($id) ? $this->lockOrder($id) : null;
+                $confirmation = $order === null ? null : $this->lockConfirmation($orderUuid);
+                $decider = $this->pdo->prepare('SELECT decided_by_employee_uuid FROM order_confirmations WHERE order_uuid = ?');
+                $decider->execute([$orderUuid]);
+                $operator = $confirmation === null ? false : $decider->fetchColumn();
+                if ($order === null || $confirmation === null || $confirmation['status'] !== self::STATUS_APPROVED || !is_string($operator)) {
+                    $this->pdo->rollBack();
+                    return false;
+                }
+                $routed = $this->pdo->prepare('SELECT (SELECT COUNT(*) FROM order_shop_assignments a WHERE a.order_uuid = ?) + (SELECT COUNT(*) FROM operational_orders o WHERE o.order_uuid = ? AND o.production_stage_id <> ?)');
+                $routed->execute([$orderUuid, $orderUuid, \Arasya\Operations\Order\OrderProjectionWriter::INITIAL_STAGE_ID]);
+                if ((int) $routed->fetchColumn() > 0) {
+                    $this->pdo->rollBack();
+                    return false;
+                }
+                $now = $this->now();
+                $this->change($order, $confirmation, [
+                    'status' => self::STATUS_PENDING, 'decided_at' => null, 'decided_by_employee_uuid' => null, 'decision_reason_code' => null,
+                    'call_confirmed_at' => null, 'call_confirmed_by_employee_uuid' => null, 'confirmed_line_ids' => null, 'approved_review_fingerprint' => null,
+                    'production_cleared' => 0, 'cleared_at' => null,
+                    'assigned_employee_uuid' => $operator, 'assigned_at' => $now, 'assignment_kind' => 'claim',
+                ], null, 'reopened', 'changed_after_confirmation', $now, $requestId, null);
+                ConfirmationClearance::refresh($this->pdo, $orderUuid, $now);
+                $this->pdo->commit();
+                return true;
+            } catch (\Throwable $error) {
+                $this->rollBack();
+                throw $error;
+            }
+        });
+    }
+
+    private function optionalNote(mixed $value): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+        if (!is_string($value)) {
+            throw new ApiException(422, 'VALIDATION_FAILED', 'note must be text.', ['field' => 'note']);
+        }
+        $text = trim((string) preg_replace('/\s+/u', ' ', $value));
+        return $text === '' ? null : mb_substr($text, 0, self::NOTE_MAX);
+    }
+
+    private function optionalInstant(mixed $value): ?string
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+        if (!is_string($value) || strlen($value) > 40) {
+            throw new ApiException(422, 'VALIDATION_FAILED', 'callbackAt must be an ISO 8601 instant.', ['field' => 'callbackAt']);
+        }
+        try {
+            $instant = new \DateTimeImmutable($value);
+        } catch (\Exception) {
+            throw new ApiException(422, 'VALIDATION_FAILED', 'callbackAt must be an ISO 8601 instant.', ['field' => 'callbackAt']);
+        }
+        return $instant->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s.u');
+    }
+
+    private function undoUntil(string $decision): string
+    {
+        return $this->clock->now()->setTimezone(new \DateTimeZone('UTC'))->modify('+' . self::UNDO_SECONDS[$decision] . ' seconds')->format('Y-m-d\TH:i:s\Z');
     }
 
     /** Supervisor: a rejected order, or a stale approval (changed in the shop before production), returns to the pool. @return array<string, mixed> */
@@ -1140,6 +1686,10 @@ final class ConfirmareService
      */
     private function change(array $order, array $confirmation, array $set, ?string $actorUuid, string $action, ?string $reasonCode, string $now, string $requestId, ?string $key): void
     {
+        // API 2.82.0: a decided order is never left "waiting" (yellow), whichever screen decided it (desk or detailed).
+        if (isset($set['status']) && $set['status'] !== self::STATUS_PENDING && !array_key_exists('hold_at', $set) && $this->holdInstalled()) {
+            $set += ['hold_at' => null, 'hold_by_employee_uuid' => null, 'hold_note' => null, 'callback_at' => null];
+        }
         $version = (int) $confirmation['version'] + 1;
         $columns = [];
         $values = [];
@@ -1523,9 +2073,14 @@ final class ConfirmareService
                        c.status, c.version, c.opened_at, c.decided_at, c.decision_reason_code, c.assigned_employee_uuid, c.assigned_at, c.assignment_kind,
                        ae.display_name AS assignee_name, de.display_name AS decider_name, c.decided_by_employee_uuid, c.call_confirmed_at,
                        k.outcome AS contact_outcome, k.recorded_at AS contact_at, k.review_fingerprint AS contact_review, k.confirmation_version AS contact_version, k.attempt_number AS contact_attempts,
-                       (SELECT MAX(r.version_after) FROM order_confirmation_events r WHERE r.order_uuid = c.order_uuid AND r.action = \'reopened\') AS reopened_version
+                       (SELECT MAX(r.version_after) FROM order_confirmation_events r WHERE r.order_uuid = c.order_uuid AND r.action = \'reopened\') AS reopened_version,
+                       c.hold_at, c.hold_note, c.callback_at, c.decision_reason_code AS refusal_code,
+                       (SELECT COUNT(*) FROM operational_order_items li WHERE li.order_uuid = c.order_uuid) AS line_count,
+                       dsp.order_total AS display_total, dsp.currency AS display_currency, dsp.warnings AS display_warnings, dsp.read_at AS display_read_at,
+                       (dsp.pricing_fingerprint IS NOT NULL AND dsp.pricing_fingerprint = o.source_pricing_fingerprint) AS display_current
                 FROM order_confirmations c
                 INNER JOIN operational_orders o ON o.order_uuid = c.order_uuid
+                LEFT JOIN confirmare_order_display dsp ON dsp.order_uuid = c.order_uuid
                 LEFT JOIN employees ae ON ae.employee_uuid = c.assigned_employee_uuid
                 LEFT JOIN employees de ON de.employee_uuid = c.decided_by_employee_uuid
                 LEFT JOIN order_confirmation_contacts k ON k.order_uuid = c.order_uuid
@@ -1721,6 +2276,21 @@ final class ConfirmareService
                 'displayName' => (string) $row['assignee_name'],
                 'at' => self::iso((string) $row['assigned_at']),
                 'kind' => (string) $row['assignment_kind'],
+            ],
+            // API 2.82.0: the yellow mark (optional note and callback time), the list's display copy (the total the shop showed
+            // at its last read, `current` when it was read on the prices Arasya holds now) and the number of lines.
+            'waiting' => ($row['hold_at'] ?? null) === null ? null : [
+                'at' => self::iso((string) $row['hold_at']),
+                'note' => $row['hold_note'] === null ? null : (string) $row['hold_note'],
+                'callbackAt' => $row['callback_at'] === null ? null : self::iso((string) $row['callback_at']),
+            ],
+            'lineCount' => (int) ($row['line_count'] ?? 0),
+            'display' => ($row['display_read_at'] ?? null) === null ? null : [
+                'total' => $row['display_total'] === null ? null : number_format((float) $row['display_total'], 2, '.', ''),
+                'currency' => $row['display_currency'] === null ? null : (string) $row['display_currency'],
+                'warnings' => $row['display_warnings'] === null || $row['display_warnings'] === '' ? [] : explode(',', (string) $row['display_warnings']),
+                'readAt' => self::iso((string) $row['display_read_at']),
+                'current' => (int) $row['display_current'] === 1,
             ],
             'decision' => $row['decided_at'] === null ? null : [
                 'at' => self::iso((string) $row['decided_at']),
