@@ -386,7 +386,7 @@ a.ow-phone > svg { color: var(--ow-ok); }
 .ow-product-body:empty { display: none; }
 .ow-product-body .ow-field.is-wide { grid-column: span 2; }
 .ow-product-row2 { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 14px; min-width: 0; }
-.ow-product-row2 .ow-field.is-wide { flex: 1 1 300px; max-width: 560px; }
+.ow-product-row2 .ow-field.is-wide { flex: 1 1 360px; max-width: 640px; }
 .ow-product-row2:empty { display: none; }
 .ow-product-body .ow-field.is-qty { min-width: 142px; }
 .ow-product-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-left: auto; }

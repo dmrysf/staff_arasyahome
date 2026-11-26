@@ -81,8 +81,8 @@ export function OrderProductCard({ line, editLine, change, removed, replaced, af
         {options.length === 0 && editable && (
           // No option to choose (a rail, an accessory): the two actions sit on the same row as the quantity.
           <div className="ow-product-actions is-inline">
-            <button type="button" className="ow-action" aria-expanded={replacing} onClick={() => setReplacing(!replacing)} data-testid={`dd-replace-${line.id}`}><AppIcon name="swap" size={18} />{t("dd.replace")}</button>
-            <button type="button" className="ow-action is-danger" onClick={onRemove} data-testid={`dd-remove-${line.id}`}><AppIcon name="trash" size={18} />{t("dd.remove")}</button>
+            <button type="button" className="ow-action" aria-expanded={replacing} aria-label={t("dd.replace")} title={t("dd.replace")} onClick={() => setReplacing(!replacing)} data-testid={`dd-replace-${line.id}`}><AppIcon name="swap" size={18} />{t("dd.replaceShort")}</button>
+            <button type="button" className="ow-action is-danger" aria-label={t("dd.remove")} title={t("dd.remove")} onClick={onRemove} data-testid={`dd-remove-${line.id}`}><AppIcon name="trash" size={18} />{t("dd.removeShort")}</button>
           </div>
         )}
         {options.length > 0 && (
@@ -91,8 +91,8 @@ export function OrderProductCard({ line, editLine, change, removed, replaced, af
             {options.map((field) => <FieldInput key={field.name} field={field} line={line} value={change?.fields?.[field.name] ?? field.value ?? ""} onChange={(value) => onChange({ fields: { ...(change?.fields ?? {}), [field.name]: normalizeFieldValue(field, value) } })} testId={`dd-field-${line.id}-${field.name}`} />)}
             {editable && (
               <div className="ow-product-actions">
-                <button type="button" className="ow-action" aria-expanded={replacing} onClick={() => setReplacing(!replacing)} data-testid={`dd-replace-${line.id}`}><AppIcon name="swap" size={18} />{t("dd.replace")}</button>
-                <button type="button" className="ow-action is-danger" onClick={onRemove} data-testid={`dd-remove-${line.id}`}><AppIcon name="trash" size={18} />{t("dd.remove")}</button>
+                <button type="button" className="ow-action" aria-expanded={replacing} aria-label={t("dd.replace")} title={t("dd.replace")} onClick={() => setReplacing(!replacing)} data-testid={`dd-replace-${line.id}`}><AppIcon name="swap" size={18} />{t("dd.replaceShort")}</button>
+                <button type="button" className="ow-action is-danger" aria-label={t("dd.remove")} title={t("dd.remove")} onClick={onRemove} data-testid={`dd-remove-${line.id}`}><AppIcon name="trash" size={18} />{t("dd.removeShort")}</button>
               </div>
             )}
           </div>
@@ -146,7 +146,7 @@ export function AddedProductCard({ added, replaces, after, pending, pricesInclud
         <div className="ow-product-row2">
           {sorted.filter((field) => fieldKind(field) === "sewing" || fieldKind(field) === "option").map((field) => <FieldInput key={field.name} field={field} line={null} value={added.fields[field.name] ?? ""} onChange={(value) => onChange({ fields: { ...added.fields, [field.name]: normalizeFieldValue(field, value) } })} testId={`dd-added-field-${field.name}`} />)}
           <div className="ow-product-actions">
-            <button type="button" className="ow-action is-danger" onClick={onRemove}><AppIcon name="trash" size={18} />{t("dd.remove")}</button>
+            <button type="button" className="ow-action is-danger" aria-label={t("dd.remove")} title={t("dd.remove")} onClick={onRemove}><AppIcon name="trash" size={18} />{t("dd.removeShort")}</button>
           </div>
         </div>
       </div>
@@ -199,7 +199,8 @@ function FieldInput({ field, line, value, onChange, testId }: { field: EditField
   const unit = kind === "measure" ? measureUnit(line, field.value ?? value) : null;
   return (
     <label className={`ow-field ${kind === "measure" ? "is-measure" : "is-m"}`}>
-      <span>{label}{unit ? ` (${unit})` : ""}</span>
+      {/* The unit shows once, inside the field; the label still names it for a screen reader. */}
+      <span>{label}{unit && <span className="visually-hidden"> ({unit})</span>}</span>
       <span className="ow-input-unit">
         <input type="text" inputMode={field.type === "number" ? "decimal" : "text"} value={value} onChange={(event) => onChange(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") event.preventDefault(); }} data-testid={testId} />
         {unit && <span aria-hidden="true">{unit}</span>}

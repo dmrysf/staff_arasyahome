@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../../../i18n";
 import type { ConfirmareApi } from "../../../domain/confirmare";
-import { editReasonLabel, productAddable, type EditProduct } from "../../../domain/confirmareEdit";
+import { editReasonLabel, editRefusalOf, productAddable, type EditProduct } from "../../../domain/confirmareEdit";
 import { getErrorPresentation, toServiceError } from "../../../services/errors";
 import { AppIcon } from "../../../components/icons/AppIcon";
 
@@ -34,7 +34,11 @@ export function SkuProductSearch({ service, orderId, onAdd, label, action, focus
       if (!addable.ok) setError(editReasonLabel(addable.reason));
       setProduct(found);
     } catch (caught) {
-      setError(getErrorPresentation(toServiceError(caught)).message);
+      // The shop's own refusal (an unknown SKU, a product that cannot be sold) says why; never a generic conflict.
+      const error = toServiceError(caught);
+      const refusal = editRefusalOf(error.details);
+      const reason = refusal ? editReasonLabel(refusal.reason) : null;
+      setError(reason ? reason.charAt(0).toLocaleUpperCase() + reason.slice(1) : getErrorPresentation(error).message);
     } finally { setBusy(false); }
   };
   const canAdd = product !== null && productAddable(product).ok && (product.type !== "variable" || variation !== "");

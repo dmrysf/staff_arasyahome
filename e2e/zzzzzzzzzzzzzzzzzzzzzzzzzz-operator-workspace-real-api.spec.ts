@@ -251,9 +251,27 @@ test("four products: out of stock, a possible duplicate, no postcode, the addres
     // SKU: Enter searches once; an unknown SKU is explained in words.
     await page.getByTestId("dd-sku").fill("NU-EXISTA-404");
     await page.getByTestId("dd-sku").press("Enter");
-    await expect(page.locator(".ow-sku-search [role=alert]")).toBeVisible();
+    await expect(page.locator(".ow-sku-search [role=alert]")).toContainText("Nu există un produs publicat cu acest cod");
     await page.getByTestId("dd-sku").scrollIntoViewIfNeeded();
     await shot(page, "order-sku-search-1366x768");
+    // A known SKU is found with one Enter and shown before it is added.
+    await page.getByTestId("dd-sku").fill("TST-INELE-40");
+    await page.getByTestId("dd-sku").press("Enter");
+    await expect(page.locator(".ow-sku-found")).toContainText("Inele perdea crom");
+    await expect(page.getByTestId("dd-sku-add")).toBeEnabled();
+    await page.getByTestId("dd-sku").scrollIntoViewIfNeeded();
+    await shot(page, "order-sku-found-1366x768");
+    // One click adds it as an editable card (an unsaved change the shop prices); removing it again leaves the order as it was.
+    await page.getByTestId("dd-sku-add").click();
+    const added = page.getByTestId("dd-added-TST-INELE-40");
+    await expect(added).toBeVisible();
+    // The shop prices the new product (one preview after 450 ms); the header shows the new total, never the old one.
+    await expect(page.getByTestId("dd-total")).toContainText(/\d/, { timeout: 15_000 });
+    await expect(added).not.toContainText("Se recalculează");
+    await added.scrollIntoViewIfNeeded();
+    await shot(page, "order-sku-added-1366x768");
+    await added.locator(".ow-action.is-danger").click();
+    await expect(added).toHaveCount(0);
     // Replace opens the SKU search right on the card; remove keeps an undo.
     const replace = page.locator('[data-testid^="dd-replace-"]').first();
     await replace.click();

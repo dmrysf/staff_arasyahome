@@ -73,6 +73,14 @@ $order = static function (string $number, ?DateTimeImmutable $submitted, array $
         'id' => (int) $number * 10 + 2, 'line' => 2, 'name' => 'Perdea Voal Alb', 'sku' => 'PV-ALB', 'color' => 'Alb', 'width' => 400, 'height' => 250, 'unit' => 'cm', 'quantity' => 2,
     ]]);
     unset($p['order']['notes']);
+    // Staff 2.58.0: a workspace order arrives with the same products as its TEST shop view, so the desk's product count
+    // and the order screen agree.
+    if (isset($extra['shop']['lines']) && is_array($extra['shop']['lines'])) {
+        $p['order']['items'] = array_map(static fn (array $line): array => [
+            'id' => (int) $line['id'], 'line' => (int) $line['line'], 'name' => (string) $line['name'], 'sku' => (string) $line['sku'], 'quantity' => (int) $line['quantity'],
+            'width' => $line['width'] !== null ? (int) round((float) $line['width'] * 100) : 100, 'height' => $line['height'] !== null ? (int) round((float) $line['height'] * 100) : 100, 'unit' => 'cm',
+        ], array_values($extra['shop']['lines']));
+    }
     $priced = ($extra['pricing'] ?? true) === true;
     $fingerprint = 'sha256:' . hash('sha256', "cf-e2e-price-{$number}-" . ($extra['option'] ?? 'Inele'));
     if ($priced) {
@@ -123,7 +131,10 @@ $writeShop = static function () use (&$shopOrders): void {
             $orders[(string) $number] = $shopOrder;
         }
     }
-    file_put_contents($file, json_encode(['orders' => $orders], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+    // Staff 2.58.0: one TEST product the SKU search finds (any other code stays unknown: product_not_found).
+    $products = ['TST-INELE-40' => ['id' => '601', 'name' => 'Inele perdea crom (set 40 buc.)', 'sku' => 'TST-INELE-40', 'type' => 'simple', 'purchasable' => true,
+        'inStock' => true, 'stock' => 40, 'variations' => [], 'calculator' => null]];
+    file_put_contents($file, json_encode(['orders' => $orders, 'products' => $products], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 };
 $change = null;
 foreach ($argv as $argument) {

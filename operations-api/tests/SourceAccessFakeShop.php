@@ -327,7 +327,7 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             if (($input['expectedVersion'] ?? null) !== $version) {
                 return [409, ['error' => ['code' => 'version_changed'], 'version' => $version]];
             }
-            $result = $this->editResult($order, $version);
+            $result = $this->editResult($order, $version, $input['operations'] ?? null);
             return [200, $result + ['previewToken' => $this->token($version, $input['operations'] ?? null, $result)]];
         }
         // apply
@@ -340,7 +340,7 @@ final class SourceAccessFakeShop implements SourceAccessTransport
         if (($input['expectedVersion'] ?? null) !== $version) {
             return $this->store($key, $orderId, $hash, 409, ['error' => ['code' => 'version_changed'], 'version' => $version]);
         }
-        $result = $this->editResult($order, $version);
+        $result = $this->editResult($order, $version, $input['operations'] ?? null);
         if (!hash_equals($this->token($version, $input['operations'] ?? null, $result), (string) ($input['previewToken'] ?? ''))) {
             return $this->store($key, $orderId, $hash, 409, ['error' => ['code' => 'preview_stale']]);
         }
@@ -1624,10 +1624,10 @@ final class SourceAccessFakeShop implements SourceAccessTransport
     }
 
     /** @param array<string, mixed> $order @return array<string, mixed> */
-    private function editResult(array $order, string $version): array
+    private function editResult(array $order, string $version, mixed $operations = null): array
     {
         if (isset($order['catalogLines'])) {
-            return $this->workspaceEditResult($order, $version);
+            return $this->workspaceEditResult($order, $version, $operations);
         }
         $total = (string) (($order['totals']['total'] ?? null) ?? '719.00');
         $after = number_format((float) $total + (float) $this->editDelta, 2, '.', '');
@@ -1648,11 +1648,13 @@ final class SourceAccessFakeShop implements SourceAccessTransport
      *
      * @param array<string, mixed> $order @return array<string, mixed>
      */
-    private function workspaceEditResult(array $order, string $version): array
+    private function workspaceEditResult(array $order, string $version, mixed $operations = null): array
     {
         $cents = static fn (string $amount): int => (int) round((float) $amount * 100);
         $money = static fn (int $cents): string => number_format($cents / 100, 2, '.', '');
-        $gross = $cents($this->editDelta);
+        // A product added by SKU costs 49,00 RON with VAT per piece (TEST figure); the first line changes otherwise.
+        $adds = array_values(array_filter(is_array($operations) ? $operations : [], static fn (mixed $op): bool => is_array($op) && ($op['op'] ?? null) === 'add_line'));
+        $gross = $adds === [] ? $cents($this->editDelta) : array_sum(array_map(static fn (array $op): int => 4900 * max(1, (int) ($op['quantity'] ?? 1)), $adds));
         $net = (int) round($gross / 1.21);
         $vat = $gross - $net;
         $t = $order['totals'];
@@ -1669,7 +1671,14 @@ final class SourceAccessFakeShop implements SourceAccessTransport
         $snapshot = static fn (string $total, string $tax): array => ['name' => $first['name'], 'productId' => $first['productId'], 'variationId' => $first['variationId'], 'quantity' => $first['quantity'], 'fields' => null, 'subtotal' => $total, 'total' => $total, 'tax' => $tax];
         return [
             'protocol' => 1, 'version' => $version, 'applicable' => $this->editBlockers === [], 'blockers' => $this->editBlockers, 'before' => $before, 'after' => $after,
-            'lines' => [['lineId' => $first['id'], 'state' => 'changed', 'before' => $snapshot($first['total'], $first['tax']), 'after' => $snapshot($money($cents($first['total']) + $net), $money($cents($first['tax']) + $vat))]],
+            'lines' => $adds === []
+                ? [['lineId' => $first['id'], 'state' => 'changed', 'before' => $snapshot($first['total'], $first['tax']), 'after' => $snapshot($money($cents($first['total']) + $net), $money($cents($first['tax']) + $vat))]]
+                : array_map(static function (array $op, int $i) use ($money): array {
+                    $lineGross = 4900 * max(1, (int) ($op['quantity'] ?? 1));
+                    $lineNet = (int) round($lineGross / 1.21);
+                    return ['lineId' => 'new:' . ($i + 1), 'state' => 'added', 'before' => null, 'after' => ['name' => 'TEST product', 'productId' => (string) ($op['productId'] ?? '0'), 'variationId' => (string) ($op['variationId'] ?? '0'),
+                        'quantity' => max(1, (int) ($op['quantity'] ?? 1)), 'fields' => null, 'subtotal' => $money($lineNet), 'total' => $money($lineNet), 'tax' => $money($lineGross - $lineNet)]];
+                }, $adds, array_keys($adds)),
             'shipping' => [], 'financial' => ['delta' => $money($gross), 'impact' => 'none', 'cod' => true],
         ];
     }
