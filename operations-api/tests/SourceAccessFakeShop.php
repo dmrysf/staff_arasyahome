@@ -1437,6 +1437,8 @@ final class SourceAccessFakeShop implements SourceAccessTransport
     public array $operationFeatures = ['reactivation' => 'enforce', 'awb' => 'enforce', 'cardRefunds' => 'manual', 'awbCorrection' => 'enforce', 'addressEdit' => 'enforce'];
     /** YD SOFT 2.36.0: the next AWB cancellation outcome: cancelled | picked_up | pickup_unknown | refused | unknown (FAN did not answer) | lost (cancelled, answer lost). */
     public string $cancelOutcome = 'cancelled';
+    /** How many read-only address checks the shop answered (API 2.83.0 delivery-address/check). */
+    public int $addressChecks = 0;
     /** YD SOFT 2.36.0: the store board route cannot be reached (TEST). */
     public bool $storeDown = false;
     /** @var list<string> AWBs FAN Courier cancelled (TEST) */
@@ -1522,7 +1524,7 @@ final class SourceAccessFakeShop implements SourceAccessTransport
         }
         $action = (string) ($input['action'] ?? '');
         $roles = ['order_reactivate' => ['operator', 'manager'], 'awb_create' => ['documents', 'manager'], 'awb_label' => ['documents', 'manager'], 'awb_address_task' => ['documents', 'manager'],
-            'awb_address_done' => ['documents', 'manager'], 'awb_cod_corrected' => ['documents', 'manager'], 'awb_cancel' => ['documents', 'manager'], 'address_update' => ['documents', 'manager'], 'card_refund_full' => ['operator', 'manager'], 'card_refund_record' => ['finance'], 'card_refund_verify' => ['finance'], 'operations_state' => ['operator', 'documents', 'manager', 'finance']];
+            'awb_address_done' => ['documents', 'manager'], 'awb_cod_corrected' => ['documents', 'manager'], 'awb_cancel' => ['documents', 'manager'], 'address_update' => ['documents', 'manager'], 'address_check' => ['documents', 'manager'], 'card_refund_full' => ['operator', 'manager'], 'card_refund_record' => ['finance'], 'card_refund_verify' => ['finance'], 'operations_state' => ['operator', 'documents', 'manager', 'finance']];
         if (!isset($roles[$action]) || !in_array($role, $roles[$action], true)) {
             return [400, ['error' => ['code' => 'invalid_request']]];
         }
@@ -1536,6 +1538,15 @@ final class SourceAccessFakeShop implements SourceAccessTransport
                 return [409, ['error' => ['code' => 'cod_mismatch']]];
             }
             return $o['awb'] === null ? [409, ['error' => ['code' => 'awb_missing']]] : [200, ['protocol' => 1, 'awb' => $o['awb']['number'], 'pdf' => base64_encode('%PDF-1.4 TEST AWB LABEL ' . $o['awb']['number'])]];
+        }
+        if ($action === 'address_check') {
+            // YD SOFT 2.36.0: read only; nothing stored, no key.
+            if (($this->operationFeatures['addressEdit'] ?? 'off') === 'off') {
+                return [409, ['error' => ['code' => 'address_edit_disabled']]];
+            }
+            $address = (array) ($input['address'] ?? []);
+            $this->addressChecks++;
+            return [200, ['protocol' => 1, 'checked' => true, 'issues' => trim((string) ($address['city'] ?? '')) === '' ? ['locality_missing'] : [], 'warnings' => [], 'awbActive' => $o['awb'] !== null]];
         }
         $request = $input;
         unset($request['requestId'], $request['actor']);
@@ -1563,6 +1574,9 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             }
             $outcome = $this->cancelOutcome;
             $this->cancelOutcome = 'cancelled';
+            if ($outcome === 'not_listed') {
+                return $keep(409, ['error' => ['code' => 'awb_not_listed'], 'blockers' => ['awb_not_listed'], 'state' => $state()]);
+            }
             if (in_array($outcome, ['picked_up', 'pickup_unknown'], true)) {
                 return $keep(409, ['error' => ['code' => $outcome === 'picked_up' ? 'awb_picked_up' : 'pickup_unknown'], 'blockers' => [$outcome === 'picked_up' ? 'awb_picked_up' : 'pickup_unknown'],
                     'message' => $outcome === 'picked_up' ? 'Expeditie ridicata de curier (TEST), telefon 0744000000' : null, 'state' => $state()]);

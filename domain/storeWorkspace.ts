@@ -86,11 +86,19 @@ export interface StoreDocumentTodo {
 export interface StorePrint {
   globalOrderId: string; orderNumber: string; source: string; kind: "print" | "reprint"; printNumber: number; revision: number; reason: string | null; at: string; by: string; documentStatus: string; stage: string;
 }
-export interface StoreAwbItem { globalOrderId: string; orderNumber: string; source: string; stage: string; lastAttempt: string | null; shop: StoreShopRow | null }
+/** An AWB operation still waiting for the shop's answer (API 2.83.0): shown again after a reload, settled, never resent. */
+export interface StoreOpenOperation { kind: "awb_create" | "awb_cancel" | "address_update"; state: "pending" | "unknown"; at: string; idempotencyKey: string }
+export interface StoreAwbItem { globalOrderId: string; orderNumber: string; source: string; stage: string; lastAttempt: string | null; shop: StoreShopRow | null; open: StoreOpenOperation | null }
 export interface StoreAwbHistoryItem {
-  globalOrderId: string; orderNumber: string; source: string; awb: string | null; parcels: number | null; at: string; by: string; state: "active" | "cancelled";
+  globalOrderId: string; orderNumber: string; source: string; awb: string | null; awbFromShop: boolean; parcels: number | null; at: string; by: string; state: "active" | "cancelled";
+  /** The order's current AWB (no later AWB, not cancelled): the one "Corectează AWB" acts on. */
+  current: boolean; open: StoreOpenOperation | null;
   cancelledAt: string | null; cancelReason: string | null; replacedBy: string | null; replaces: string | null;
 }
+/** The AWB figures of a period. Parcels of AWBs made before API 2.83.0 are unknown (`parcelsUnknown`), never 0. */
+export interface StoreAwbStats { orders: number; awbs: number; parcels: number; parcelsUnknown: number; cancelled: number; renewed: number }
+export type StoreAwbHistoryPage = StorePage<StoreAwbHistoryItem> & { tracked: boolean; stats: StoreAwbStats | null };
+export interface StoreAddressCheck { issues: string[]; warnings: string[]; awbActive: boolean }
 export interface StoreOrderRow { globalOrderId: string; orderNumber: string; source: string; stage: string; stageNumber: number | null; documentStatus: string; awbDone: boolean; submittedAt: string | null }
 export interface StoreProduct { line: number; name: string; code: string | null; variant: string | null; color: string | null; width: string | null; height: string | null; unit: string | null; meters: string | null; quantity: number }
 export interface StoreAwbOperation { kind: string; state: string; outcome: string | null; at: string; awb: string | null; parcels: number | null; reason: string | null; by: string }
@@ -109,7 +117,9 @@ export interface StoreApi {
   documents(tab: "todo", page: number, signal?: AbortSignal): Promise<StorePage<StoreDocumentTodo>>;
   printed(tab: "today" | "history", page: number, range: { from: string; to: string } | null, signal?: AbortSignal): Promise<StorePage<StorePrint>>;
   awb(page: number, filter: "all" | "problem", signal?: AbortSignal): Promise<StorePage<StoreAwbItem>>;
-  awbHistory(range: HistoryRange, page: number, custom: { from: string; to: string } | null, signal?: AbortSignal): Promise<StorePage<StoreAwbHistoryItem> & { tracked: boolean }>;
+  awbHistory(range: HistoryRange, page: number, custom: { from: string; to: string } | null, signal?: AbortSignal): Promise<StoreAwbHistoryPage>;
+  /** READ ONLY: the shop checks a delivery address the employee prepares (also while the AWB still exists). Nothing is saved. */
+  addressCheck(globalOrderId: string, address: AddressForm): Promise<StoreAddressCheck>;
   search(query: string, signal?: AbortSignal): Promise<{ items: StoreOrderRow[]; shopAsked: boolean }>;
   order(globalOrderId: string, signal?: AbortSignal): Promise<StoreOrder>;
   mine(page: number, signal?: AbortSignal): Promise<StorePage<StoreMineItem>>;
@@ -177,17 +187,34 @@ export function mapPrintPage(value: unknown): StorePage<StorePrint> {
 export function mapAwbPage(value: unknown): StorePage<StoreAwbItem> {
   return page(obj(value), (entry) => {
     const r = obj(entry);
-    return { globalOrderId: str(r.globalOrderId), orderNumber: str(r.orderNumber, 64), source: str(r.source, 40), stage: str(r.stage, 60), lastAttempt: code(r.lastAttempt), shop: mapShopRow(r.shop) };
+    return { globalOrderId: str(r.globalOrderId), orderNumber: str(r.orderNumber, 64), source: str(r.source, 40), stage: str(r.stage, 60), lastAttempt: code(r.lastAttempt), shop: mapShopRow(r.shop), open: mapOpen(r.open) };
   });
 }
 
-export function mapAwbHistoryPage(value: unknown): StorePage<StoreAwbHistoryItem> & { tracked: boolean } {
+export function mapOpen(value: unknown): StoreOpenOperation | null {
+  if (value == null) return null;
+  const r = obj(value);
+  const key = str(r.idempotencyKey, 100);
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{15,99}$/.test(key)) fail();
+  return { kind: oneOf(r.kind, ["awb_create", "awb_cancel", "address_update"] as const), state: oneOf(r.state, ["pending", "unknown"] as const), at: instant(r.at) ?? fail(), idempotencyKey: key };
+}
+
+export function mapAddressCheck(value: unknown): StoreAddressCheck {
+  const r = obj(value);
+  const codes = (list: unknown): string[] => (Array.isArray(list) ? list.map((c) => code(c) ?? fail()) : fail());
+  return { issues: codes(r.issues), warnings: codes(r.warnings), awbActive: bool(r.awbActive) };
+}
+
+export function mapAwbHistoryPage(value: unknown): StoreAwbHistoryPage {
   const raw = obj(value);
+  const stats = raw.stats == null ? null : obj(raw.stats);
   return { ...page(raw, (entry) => {
     const r = obj(entry);
-    return { globalOrderId: str(r.globalOrderId), orderNumber: str(r.orderNumber, 64), source: str(r.source, 40), awb: optStr(r.awb, 20), parcels: optInt(r.parcels), at: instant(r.at) ?? fail(),
-      by: str(r.by), state: oneOf(r.state, ["active", "cancelled"] as const), cancelledAt: instant(r.cancelledAt), cancelReason: code(r.cancelReason), replacedBy: optStr(r.replacedBy, 20), replaces: optStr(r.replaces, 20) };
-  }), tracked: bool(raw.tracked) };
+    return { globalOrderId: str(r.globalOrderId), orderNumber: str(r.orderNumber, 64), source: str(r.source, 40), awb: optStr(r.awb, 20), awbFromShop: r.awbFromShop === true, parcels: optInt(r.parcels), at: instant(r.at) ?? fail(),
+      by: str(r.by), state: oneOf(r.state, ["active", "cancelled"] as const), current: r.current === true, open: mapOpen(r.open),
+      cancelledAt: instant(r.cancelledAt), cancelReason: code(r.cancelReason), replacedBy: optStr(r.replacedBy, 20), replaces: optStr(r.replaces, 20) };
+  }), tracked: bool(raw.tracked),
+  stats: stats === null ? null : { orders: int(stats.orders), awbs: int(stats.awbs), parcels: int(stats.parcels), parcelsUnknown: int(stats.parcelsUnknown), cancelled: int(stats.cancelled), renewed: int(stats.renewed) } };
 }
 
 export function mapOrderRow(value: unknown): StoreOrderRow {

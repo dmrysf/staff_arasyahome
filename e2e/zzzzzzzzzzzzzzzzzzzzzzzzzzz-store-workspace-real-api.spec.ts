@@ -134,6 +134,9 @@ test("AWB: real blockers, parcels stepper, one-click AWB, correction at FAN, add
     await ready.getByTestId("sw-awb-create").click();
     await expect(ready.locator(".sw-pill-green")).toContainText("AWB", { timeout: 20_000 });
     await expect(ready.getByTestId("sw-awb-label")).toBeVisible();
+    // The label opens by itself for printing (or the screen says to press the print button); never "printed".
+    await expect(ready.getByTestId("sw-awb-note")).toContainText(/Eticheta s-a deschis pentru tipărire|Eticheta nu s-a deschis automat/, { timeout: 20_000 });
+    await expect(ready.getByTestId("sw-awb-note")).not.toContainText("tipărită");
     await shot(page, "09-awb-created");
 
     await ready.getByTestId("sw-awb-correct").click();
@@ -171,6 +174,44 @@ test("AWB: real blockers, parcels stepper, one-click AWB, correction at FAN, add
     await expect(history).toContainText("Înlocuit de");
     await noOverflow(page, "awb history");
     await shot(page, "15-awb-history-cancelled-linked");
+
+    // The period's figures (orders, AWBs, parcels, cancelled, renewed), in the history only.
+    const stats = page.getByTestId("sw-hist-stats");
+    await expect(stats).toBeVisible();
+    await expect(page.getByTestId("sw-stat-awbs").locator(".sw-counter-value")).not.toHaveText("0");
+    await expect(page.getByTestId("sw-stat-cancelled").locator(".sw-counter-value")).not.toHaveText("0");
+    await expect(page.getByTestId("sw-stat-renewed").locator(".sw-counter-value")).not.toHaveText("0");
+    await accessible(page, "sw-awb-history", "awb history");
+    await shot(page, "19-awb-history-figures");
+
+    // A wrong address on an existing AWB, corrected from the history: the new address is checked first (nothing changes),
+    // only then the AWB is cancelled at FAN Courier and the address saved; the order goes back to "De emis".
+    const current = history.getByTestId("sw-hist-row").filter({ hasText: F.history }).filter({ has: page.getByTestId("sw-hist-correct") }).first();
+    await current.getByTestId("sw-hist-correct").click();
+    await page.getByTestId("sw-correct-dialog").getByLabel("Adresă incorectă").check();
+    await expect(page.getByTestId("sw-correct-confirm")).toHaveCount(0);
+    await page.getByTestId("sw-correct-address").click();
+    const prep = page.getByTestId("sw-address-dialog");
+    await expect(prep.getByTestId("sw-addr-awb-lead")).toBeVisible();
+    await expect(prep.getByTestId("sw-addr-cancel-save")).toBeDisabled();
+    await prep.getByTestId("sw-addr-city").fill("");
+    await expect(prep).toContainText("Localitatea lipsește.");
+    await expect(prep.getByTestId("sw-addr-check")).toBeDisabled();
+    await expect(prep.getByTestId("sw-addr-cancel-save")).toBeDisabled();
+    await prep.getByTestId("sw-addr-city").fill("Brașov");
+    await prep.getByTestId("sw-addr-check").click();
+    await expect(prep.getByTestId("sw-addr-result")).toContainText("Adresa nouă este corectă", { timeout: 20_000 });
+    await expect(prep.getByTestId("sw-addr-cancel-save")).toBeEnabled();
+    await accessible(page, "sw-address-dialog", "address with AWB");
+    await shot(page, "20-history-address-checked-before-cancel");
+    await prep.getByTestId("sw-addr-cancel-save").click();
+    await expect(prep.getByTestId("sw-addr-result")).toContainText("anulat la FAN Courier și adresa salvată", { timeout: 20_000 });
+    await shot(page, "21-history-awb-cancelled-address-saved");
+    await expect(prep).toBeHidden({ timeout: 5_000 });
+    await expect(page.getByTestId("sw-hist-note")).toContainText("din nou în „De emis”", { timeout: 20_000 });
+    await page.getByTestId("sw-hist-go-todo").click();
+    await expect(page.locator(`[data-testid=sw-awb-row][data-order="${F.history}"]`).getByTestId("sw-awb-create")).toBeVisible({ timeout: 20_000 });
+    await shot(page, "22-awb-back-to-create-after-history-correction");
     expect(errors).toEqual([]);
   } finally { await context.close(); }
 });

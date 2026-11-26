@@ -7,7 +7,7 @@
   --sw-blue: #1f5fbf;
   --sw-blue-soft: rgba(31, 95, 191, .07);
   --sw-blue-line: rgba(31, 95, 191, .35);
-  --sw-green: #12823b;
+  --sw-green: #0e7434;
   --sw-green-soft: rgba(18, 130, 59, .07);
   --sw-green-line: rgba(18, 130, 59, .35);
   --sw-yellow: #8a5300;
@@ -124,7 +124,7 @@ select.sw-input { padding-right: 28px; }
 .sw-table tr.is-cancelled td { color: var(--color-text-subtle); }
 .sw-table tr.is-cancelled .sw-mono { text-decoration: line-through; }
 .sw-cell-action { width: 1%; }
-.sw-cell-action > .sw-message { margin-top: 8px; white-space: normal; max-width: 420px; }
+.sw-cell-action > .sw-message { margin-top: 8px; white-space: normal; min-width: 15rem; max-width: 420px; }
 .sw-row-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: flex-end; }
 .sw-row-actions .sw-pill { min-width: 9rem; }
 .sw-row-sub { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 4px; font-weight: 400; }
@@ -211,3 +211,11 @@ select.sw-input { padding-right: 28px; }
 .sw-qty { font-weight: 700; font-variant-numeric: tabular-nums; }
 .sw-customer { display: grid; gap: 4px; }
 .sw-timeline { margin: 0; padding-left: 18px; display: grid; gap: 8px; }
+
+/* Owner acceptance 2026-11-26: history figures, the prepared-address notice, an operation not confirmed after 8 checks. */
+.sw-counters-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+@media (max-width: 1100px) { .sw-counters-5 { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.sw-hist-stats { display: grid; gap: 6px; margin: 12px 0; }
+.sw-hist-stats .sw-counter-value { font-size: clamp(22px, 1.8vw, 26px); }
+.sw-info { margin: 0; padding: 10px 12px; border-radius: 10px; background: var(--sw-blue-soft); color: var(--sw-blue); border: 1px solid var(--sw-blue-line); font-size: var(--text-sm); }
+.sw-pending-stalled { display: grid; gap: 6px; margin-top: 8px; max-width: 420px; justify-items: start; }

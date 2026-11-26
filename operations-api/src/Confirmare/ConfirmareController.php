@@ -88,6 +88,8 @@ use Arasya\Operations\Security\CsrfGuard;
  *                                                          AWB step reopens for a corrected AWB)
  *   POST /confirmare/orders/{globalOrderId}/delivery-address  {address: {...}} + Idempotency-Key (API 2.83.0: the delivery
  *                                                          address/telephone of an order without an active AWB)
+ *   POST /confirmare/orders/{globalOrderId}/delivery-address/check  {address: {...}} (API 2.83.0, READ ONLY: the shop checks a
+ *                                                          prepared delivery address, also before an AWB is corrected)
  *   POST /confirmare/orders/{globalOrderId}/card-refund[/record|/verify]  + Idempotency-Key (NETOPIA full refund)
  *   POST /confirmare/orders/{globalOrderId}/operations/reconcile  {idempotencyKey}
  *   GET  /confirmare/store/{summary|documents|awb|awb/history|search|mine|orders/{id}}  API 2.83.0 Store Workspace (StoreWorkspace)
@@ -182,7 +184,7 @@ final readonly class ConfirmareController
             if (!in_array($range, ['today', 'yesterday', '7d', '30d', 'custom'], true)) {
                 throw new ApiException(400, 'INVALID_REQUEST', 'range is today, yesterday, 7d, 30d or custom.');
             }
-            return $store->awbHistory($actor, $range, $request->query('from'), $request->query('to'), $page);
+            return $store->awbHistory($actor, $range, $request->query('from'), $request->query('to'), $page, $request->requestId);
         }
         if ($path === '/search') {
             return $store->search($actor, $request->query('q') ?? '', $request->requestId);
@@ -248,6 +250,13 @@ final readonly class ConfirmareController
         if (preg_match('#^/confirmare/orders/([^/]{1,600})/awb/label$#D', $path, $m) === 1 && $request->method === 'GET') {
             $pdf = $this->operations->label($actor, rawurldecode($m[1]), $request->requestId);
             return Response::file($pdf, ['Content-Type' => 'application/pdf', 'Content-Disposition' => 'inline; filename="awb.pdf"', 'Cache-Control' => 'private, no-store', 'X-Content-Type-Options' => 'nosniff']);
+        }
+        if (preg_match('#^/confirmare/orders/([^/]{1,600})/delivery-address/check$#D', $path, $m) === 1) {
+            if ($request->method !== 'POST') {
+                throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
+            }
+            $this->csrf->requireValid($session->rawToken, $request->header('x-csrf-token'));
+            return $this->json($this->operations->addressCheck($actor, rawurldecode($m[1]), $request->json(2048), $request->requestId));
         }
         if (preg_match('#^/confirmare/orders/([^/]{1,600})/(reactivate|awb|awb/address|awb/cod-corrected|awb/cancel|delivery-address|card-refund|card-refund/record|card-refund/verify|operations/reconcile)$#D', $path, $m) === 1) {
             if ($request->method !== 'POST') {

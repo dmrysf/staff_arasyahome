@@ -221,11 +221,13 @@ final class StoreWorkspace
         }
         $total = count($items);
         $slice = array_slice($items, ($page - 1) * self::PAGE_SIZE, self::PAGE_SIZE);
+        $open = $this->openAwbOperations(array_map(static fn (array $i): string => (string) $i['globalOrderId'], $slice));
+        $slice = array_map(static fn (array $i): array => $i + ['open' => $open[(string) $i['globalOrderId']] ?? null], $slice);
         return ['items' => $this->withShopRows($slice, 'globalOrderId', $requestId, $actor), 'page' => $page, 'pageSize' => self::PAGE_SIZE, 'total' => $total, 'filter' => $filter];
     }
 
     /** @return array<string, mixed> */
-    public function awbHistory(EmployeeIdentity $actor, string $range, ?string $from, ?string $to, int $page): array
+    public function awbHistory(EmployeeIdentity $actor, string $range, ?string $from, ?string $to, int $page, string $requestId = 'none'): array
     {
         $scope = $this->scope($actor);
         if ($scope['awb'] === []) {
@@ -264,8 +266,9 @@ final class StoreWorkspace
         if ($orderUuids !== []) {
             $p = [];
             $marks = $this->in($orderUuids, $p);
+            // awb_reopened: an AWB cancelled in the shop (before Store Workspace) whose AWB step root reopened (API 2.77.8).
             $ops = $this->pdo->prepare("SELECT operation_uuid, order_uuid, kind, awb_number, reason_code, replaces_operation_uuid, requested_at, completed_at FROM order_source_operations
-                WHERE order_uuid IN ({$marks}) AND kind IN ('awb_create', 'awb_cancel') AND state = 'applied' ORDER BY requested_at");
+                WHERE order_uuid IN ({$marks}) AND kind IN ('awb_create', 'awb_cancel', 'awb_reopened') AND state = 'applied' ORDER BY requested_at");
             $ops->execute($p);
             foreach ($ops->fetchAll(PDO::FETCH_ASSOC) as $op) {
                 $related[(string) $op['order_uuid']][] = $op;
@@ -280,19 +283,22 @@ final class StoreWorkspace
                 if ($op['kind'] === 'awb_create' && $op['requested_at'] > $r['requested_at']) {
                     break; // the next AWB of the order: a cancellation after it is not this AWB's
                 }
-                if ($op['kind'] === 'awb_cancel' && $op['requested_at'] > $r['requested_at']) {
+                if (in_array($op['kind'], ['awb_cancel', 'awb_reopened'], true) && $op['requested_at'] > $r['requested_at']) {
                     $cancel = $op;
                     break;
                 }
             }
             if ($cancel !== null) {
                 foreach ($list as $op) {
-                    if ($op['kind'] === 'awb_create' && $op['replaces_operation_uuid'] === $cancel['operation_uuid']) {
+                    if ($op['kind'] === 'awb_create' && ($op['replaces_operation_uuid'] === $cancel['operation_uuid'] || ($cancel['kind'] === 'awb_reopened' && $op['requested_at'] > $cancel['requested_at']))) {
                         $replacement = $op;
                         break;
                     }
                 }
             }
+            // The order's current AWB: no later AWB and no cancellation after it (the one "Corectează AWB" acts on).
+            $later = array_filter($list, static fn (array $op): bool => $op['kind'] === 'awb_create' && $op['requested_at'] > $r['requested_at']);
+            $current = $cancel === null && $later === [];
             $replaced = null;
             if ($r['replaces_operation_uuid'] !== null) {
                 foreach ($list as $op) {
@@ -306,13 +312,80 @@ final class StoreWorkspace
                 'awb' => $r['awb_number'] === null ? null : (string) $r['awb_number'], 'parcels' => $r['parcels'] === null ? null : (int) $r['parcels'],
                 'at' => self::iso((string) $r['completed_at']), 'by' => (string) ($r['display_name'] ?? ''),
                 'state' => $cancel === null ? 'active' : 'cancelled',
+                'current' => $current,
                 'cancelledAt' => $cancel === null ? null : self::iso((string) $cancel['completed_at']),
-                'cancelReason' => $cancel === null ? null : ($cancel['reason_code'] === null ? null : (string) $cancel['reason_code']),
+                'cancelReason' => $cancel === null ? null : ($cancel['kind'] === 'awb_reopened' ? 'cancelled_in_shop' : ($cancel['reason_code'] === null ? null : (string) $cancel['reason_code'])),
                 'replacedBy' => $replacement === null || $replacement['awb_number'] === null ? null : (string) $replacement['awb_number'],
                 'replaces' => $replaced,
             ];
         }
-        return ['items' => $items, 'page' => $page, 'pageSize' => self::PAGE_SIZE, 'total' => (int) $count->fetchColumn(), 'range' => $range, 'from' => self::iso($start), 'to' => self::iso($end), 'tracked' => true];
+        // An AWB made before migration 064 has no number in Arasya: the current one is read from the shop (one read per shop
+        // for the page, the same as the AWB list); an older, replaced one stays unknown ("—"), never guessed.
+        $unknown = array_values(array_filter($items, static fn (array $i): bool => $i['awb'] === null && $i['current']));
+        if ($unknown !== []) {
+            $numbers = [];
+            foreach ($this->withShopRows(array_map(static fn (array $i): array => ['globalOrderId' => $i['globalOrderId']], $unknown), 'globalOrderId', $requestId, $actor) as $r) {
+                $number = $r['shop']['awb']['number'] ?? null;
+                if (is_string($number) && ($r['shop']['awb']['state'] ?? null) === 'created') {
+                    $numbers[(string) $r['globalOrderId']] = $number;
+                }
+            }
+            $items = array_map(static fn (array $i): array => $i['awb'] === null && $i['current'] && isset($numbers[$i['globalOrderId']]) ? ['awb' => $numbers[$i['globalOrderId']], 'awbFromShop' => true] + $i : $i, $items);
+        }
+        // The open correction of each current AWB (an unconfirmed cancellation stays visible after a reload, with its key).
+        $open = $this->openAwbOperations(array_values(array_unique(array_map(static fn (array $i): string => $i['globalOrderId'], array_filter($items, static fn (array $i): bool => $i['current'])))));
+        $items = array_map(static fn (array $i): array => $i + ['open' => $i['current'] ? ($open[$i['globalOrderId']] ?? null) : null], $items);
+        return ['items' => $items, 'page' => $page, 'pageSize' => self::PAGE_SIZE, 'total' => (int) $count->fetchColumn(), 'range' => $range, 'from' => self::iso($start), 'to' => self::iso($end), 'tracked' => true,
+            'stats' => $this->awbStats($start, $end, $in, $who, $scope['awb'], $managed, $actor)];
+    }
+
+    /**
+     * The AWB figures of a period (owner acceptance 2026-11-26), same orders as the list: orders with an AWB, real AWBs (each
+     * applied awb_create is one FAN Courier AWB), parcels, cancelled AWBs, renewed AWBs (an AWB made for an order that had one
+     * before). Parcels are known only from API 2.83.0 (migration 064): older AWBs are counted in `parcelsUnknown`, never
+     * guessed. AWBs made outside Arasya (the shop's own panel) are not in these figures.
+     *
+     * @param list<string> $sources @param list<string> $managed
+     * @return array<string, int>
+     */
+    private function awbStats(string $start, string $end, string $in, string $who, array $sources, array $managed, EmployeeIdentity $actor): array
+    {
+        $scope = "INNER JOIN operational_orders o ON o.order_uuid = op.order_uuid LEFT JOIN order_shop_assignments a ON a.active_order_uuid = op.order_uuid
+            WHERE op.state = 'applied' AND op.completed_at >= ? AND op.completed_at < ? AND op.source_key IN ({$in}) AND {$who}";
+        $params = [$start, $end, ...$sources, ...$managed, $actor->employeeUuid, $actor->employeeUuid];
+        $made = $this->pdo->prepare("SELECT COUNT(*) AS awbs, COUNT(DISTINCT op.order_uuid) AS orders, COALESCE(SUM(op.parcels), 0) AS parcels, SUM(op.parcels IS NULL) AS unknown_parcels,
+                SUM(EXISTS (SELECT 1 FROM order_source_operations p WHERE p.order_uuid = op.order_uuid AND p.kind = 'awb_create' AND p.state = 'applied' AND p.requested_at < op.requested_at)) AS renewed
+            FROM order_source_operations op {$scope} AND op.kind = 'awb_create'");
+        $made->execute($params);
+        $m = $made->fetch(PDO::FETCH_ASSOC) ?: [];
+        $cancelled = $this->pdo->prepare("SELECT COUNT(*) FROM order_source_operations op {$scope} AND op.kind IN ('awb_cancel', 'awb_reopened')");
+        $cancelled->execute($params);
+        return ['orders' => (int) ($m['orders'] ?? 0), 'awbs' => (int) ($m['awbs'] ?? 0), 'parcels' => (int) ($m['parcels'] ?? 0), 'parcelsUnknown' => (int) ($m['unknown_parcels'] ?? 0),
+            'cancelled' => (int) $cancelled->fetchColumn(), 'renewed' => (int) ($m['renewed'] ?? 0)];
+    }
+
+    /**
+     * The AWB operations still waiting for the shop's answer (pending or unknown) of these orders, with their key: Staff keeps
+     * showing them after a reload and settles them with the shop (never sends them again).
+     *
+     * @param list<string> $globalIds
+     * @return array<string, array{kind: string, state: string, at: string, idempotencyKey: string}>
+     */
+    private function openAwbOperations(array $globalIds): array
+    {
+        if ($globalIds === [] || !$this->operations->installed()) {
+            return [];
+        }
+        $p = [];
+        $marks = $this->in($globalIds, $p);
+        $statement = $this->pdo->prepare("SELECT global_order_id, kind, state, idempotency_key, requested_at FROM order_source_operations
+            WHERE global_order_id IN ({$marks}) AND kind IN ('awb_create', 'awb_cancel', 'address_update') AND state IN ('pending', 'unknown') ORDER BY requested_at");
+        $statement->execute($p);
+        $open = [];
+        foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $r) {
+            $open[(string) $r['global_order_id']] = ['kind' => (string) $r['kind'], 'state' => (string) $r['state'], 'at' => self::iso((string) $r['requested_at']), 'idempotencyKey' => (string) $r['idempotency_key']];
+        }
+        return $open;
     }
 
     // ---- Search and order ---------------------------------------------------------------------------------------------------

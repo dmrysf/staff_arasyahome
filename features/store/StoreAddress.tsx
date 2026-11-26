@@ -3,7 +3,7 @@ import { useI18n } from "../../i18n";
 import { RO_COUNTIES } from "../../i18n/roCounties";
 import type { ConfirmareApi } from "../../domain/confirmare";
 import type { DeliveryView } from "../../domain/confirmareOps";
-import { ADDRESS_FIELDS, BUCHAREST_CITY, addressFormIssues, sectorOf, telHref, type AddressField, type AddressForm } from "../../domain/storeWorkspace";
+import { ADDRESS_FIELDS, BUCHAREST_CITY, addressFormIssues, sectorOf, telHref, type AddressField, type AddressForm, type StoreApi } from "../../domain/storeWorkspace";
 import { createIdempotencyKey } from "../../services/idempotency";
 import { AppIcon } from "../../components/icons/AppIcon";
 import { ErrorMessage, ToneMessage, addressText, explain, reasonText } from "./StoreParts";
@@ -11,10 +11,17 @@ import { ErrorMessage, ToneMessage, addressText, explain, reasonText } from "./S
 /**
  * "Corectează adresa" (Staff 2.59.0): the DELIVERY address and telephone the AWB uses, read from the shop and written back
  * to WooCommerce through Arasya (YD SOFT address_update: shipping block and delivery telephone only; billing address,
- * total, shipping and VAT never change; the shop checks the locality against FAN Courier's catalog again). Only before an
- * AWB exists: an AWB's address is corrected by cancelling that AWB first.
+ * total, shipping and VAT never change; the shop checks the locality against FAN Courier's catalog again).
+ *
+ * Without an AWB: "Salvează și verifică adresa". With an AWB (`awb`, owner acceptance 2026-11-26): the employee prepares the
+ * new address and the shop checks it first (read only, nothing saved); only a correct address enables "Anulează AWB-ul și
+ * salvează adresa", which cancels the AWB at FAN Courier (the real cancellation, positive evidence that the courier has not
+ * taken it) and then saves the address. A valid AWB is never cancelled for an address the shop would refuse. An
+ * unconfirmed cancellation is handed to the row (`onPending`), settled there and never sent again; the address waits.
  */
-export function AddressDialog({ orderId, orderNumber, ops, onClose, onSaved }: { orderId: string; orderNumber: string; ops: ConfirmareApi; onClose: () => void; onSaved: () => void }) {
+export function AddressDialog({ orderId, orderNumber, ops, store, awb, onClose, onSaved, onPending }: {
+  orderId: string; orderNumber: string; ops: ConfirmareApi; store: StoreApi; awb?: string; onClose: () => void; onSaved: () => void; onPending?: (cancelKey: string) => void;
+}) {
   const { t } = useI18n();
   const [view, setView] = useState<DeliveryView | null>(null);
   const [loadError, setLoadError] = useState<unknown>(null);
@@ -24,6 +31,10 @@ export function AddressDialog({ orderId, orderNumber, ops, onClose, onSaved }: {
   const [serverIssues, setServerIssues] = useState<string[]>([]);
   const [copied, setCopied] = useState(false);
   const key = useRef<{ fingerprint: string; key: string } | null>(null);
+  const cancelKey = useRef<string | null>(null);
+  const [checked, setChecked] = useState<{ fingerprint: string; ok: boolean } | null>(null);
+  const [checking, setChecking] = useState(false);
+  const withAwb = awb !== undefined;
   useEffect(() => {
     const controller = new AbortController();
     ops.operations(orderId, controller.signal).then((state) => {
@@ -34,7 +45,53 @@ export function AddressDialog({ orderId, orderNumber, ops, onClose, onSaved }: {
     return () => controller.abort();
   }, [ops, orderId]);
   const local = form ? addressFormIssues(form) : [];
-  const set = (field: AddressField, value: string) => { setForm((current) => current ? { ...current, [field]: value } : current); setResult(null); setServerIssues([]); };
+  const set = (field: AddressField, value: string) => { setForm((current) => current ? { ...current, [field]: value } : current); setResult(null); setServerIssues([]); setChecked(null); };
+  const fingerprintOf = (value: AddressForm) => JSON.stringify(value);
+  const checkedOk = form !== null && checked !== null && checked.ok && checked.fingerprint === fingerprintOf(form);
+
+  /** READ ONLY: the shop checks the prepared address (nothing is saved, the AWB is untouched). */
+  async function check() {
+    if (!form || local.length > 0) return;
+    const fingerprint = fingerprintOf(form);
+    setChecking(true);
+    setResult(null);
+    try {
+      const answer = await store.addressCheck(orderId, form);
+      setServerIssues(answer.issues);
+      setChecked({ fingerprint, ok: answer.issues.length === 0 });
+      setResult(answer.issues.length === 0
+        ? { tone: "green", text: [t("sw.addr.checkedOk"), ...answer.warnings.map(addressText)].join(" ") }
+        : { tone: "yellow", text: t("sw.addr.checkedIssues") });
+    } catch (caught) {
+      const e = explain(caught);
+      setResult({ tone: e.tone, text: reasonText(e.reason) });
+    } finally { setChecking(false); }
+  }
+
+  /** The AWB is cancelled at FAN Courier first, then the checked address is saved (never the other way round). */
+  async function cancelAndSave() {
+    if (!form || !checkedOk) return;
+    setSaving(true);
+    setResult({ tone: "yellow", text: t("sw.addr.cancelAndSaveWorking") });
+    cancelKey.current ??= createIdempotencyKey();
+    let cancelled = false;
+    try {
+      const outcome = await ops.operate(orderId, "awb/cancel", { reason: "wrong_address" }, cancelKey.current);
+      if (outcome.state !== "applied") { onPending?.(cancelKey.current); return; }
+      cancelled = true;
+      const fingerprint = fingerprintOf(form);
+      if (key.current?.fingerprint !== fingerprint) key.current = { fingerprint, key: createIdempotencyKey() };
+      const saved = await ops.operate(orderId, "delivery-address", { address: form }, key.current.key);
+      if (saved.state === "applied") {
+        setResult({ tone: "green", text: t("sw.addr.cancelAndSaveDone", { number: awb ?? "—" }) });
+        window.setTimeout(onSaved, 1500);
+      } else setResult({ tone: "yellow", text: t("sw.awb.unknown") });
+    } catch (caught) {
+      const e = explain(caught);
+      if (cancelled) { setServerIssues(e.issues); setResult({ tone: "yellow", text: t("sw.addr.cancelledNotSaved", { reason: reasonText(e.reason) }) }); }
+      else setResult({ tone: e.tone, text: [reasonText(e.reason), e.message ? t("sw.reason.fanSays", { message: e.message }) : ""].filter(Boolean).join(" ") });
+    } finally { setSaving(false); }
+  }
   const isBucharest = form?.county.toUpperCase() === "B";
   const sector = form ? sectorOf(form.city) : null;
 
@@ -79,8 +136,9 @@ export function AddressDialog({ orderId, orderNumber, ops, onClose, onSaved }: {
         <button type="button" className="sw-icon-button" onClick={onClose} aria-label={t("sw.docs.cancel")}><AppIcon name="close" size={18} /></button>
       </div>
       <p className="sw-muted">{t("sw.addr.lead")}</p>
+      {withAwb && <p className="sw-info" data-testid="sw-addr-awb-lead">{t("sw.addr.awbLead", { number: awb ?? "—" })}</p>}
       {loadError !== null && <ErrorMessage error={loadError} />}
-      {view && !view.editable && <ToneMessage tone="yellow">{t("sw.addr.locked")}</ToneMessage>}
+      {view && !view.editable && !withAwb && <ToneMessage tone="yellow">{t("sw.addr.locked")}</ToneMessage>}
       {form && view && <>
         <div className="sw-phone-block">
           <span className="sw-phone-number" data-testid="sw-addr-phone-big">{form.phone || "—"}</span>
@@ -122,9 +180,16 @@ export function AddressDialog({ orderId, orderNumber, ops, onClose, onSaved }: {
       {result && <ToneMessage tone={result.tone} testId="sw-addr-result">{result.text}</ToneMessage>}
       <div className="sw-dialog-actions">
         <button type="button" className="sw-button sw-button-ghost" onClick={onClose}>{t("sw.docs.cancel")}</button>
-        <button type="button" className="sw-button sw-button-green" disabled={!form || !view?.editable || saving || local.length > 0} onClick={() => void save()} data-testid="sw-addr-save">
+        {withAwb ? <>
+          <button type="button" className="sw-button sw-button-ghost" disabled={!form || checking || saving || local.length > 0} onClick={() => void check()} data-testid="sw-addr-check">
+            <AppIcon name="check" size={16} />{checking ? t("sw.addr.checking") : t("sw.addr.check")}
+          </button>
+          <button type="button" className="sw-button sw-button-yellow" disabled={!checkedOk || saving} onClick={() => void cancelAndSave()} data-testid="sw-addr-cancel-save">
+            {saving ? t("sw.addr.cancelAndSaveWorking") : t("sw.addr.cancelAndSave")}
+          </button>
+        </> : <button type="button" className="sw-button sw-button-green" disabled={!form || !view?.editable || saving || local.length > 0} onClick={() => void save()} data-testid="sw-addr-save">
           <AppIcon name="check" size={16} />{saving ? t("sw.addr.saving") : t("sw.addr.save")}
-        </button>
+        </button>}
       </div>
     </div>
   </div>;

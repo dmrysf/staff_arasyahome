@@ -168,7 +168,12 @@ export function saveBlob(blob: Blob, filename: string) {
  * Opens the browser's print dialog for a PDF the server rendered (a hidden frame on the same page, so nothing navigates
  * away). Where the browser cannot print a PDF frame, the PDF is saved instead. The paper itself is never confirmed here.
  */
-export function printPdf(blob: Blob, filename: string) {
+/**
+ * Opens the browser's print dialog for a PDF (same-origin blob, hidden frame). Nothing is recorded as printed: only the
+ * employee sees whether the printer printed. `auto` (the label right after an AWB is made): when the browser refuses to
+ * print, `onFail` is called instead of a download, so the screen offers its own print button.
+ */
+export function printPdf(blob: Blob, filename: string, options: { auto?: boolean; onFail?: () => void } = {}) {
   const url = URL.createObjectURL(blob);
   const frame = document.createElement("iframe");
   frame.className = "sw-print-frame";
@@ -176,8 +181,14 @@ export function printPdf(blob: Blob, filename: string) {
   frame.title = filename;
   frame.src = url;
   frame.onload = () => {
-    try { frame.contentWindow?.focus(); frame.contentWindow?.print(); }
-    catch { saveBlob(blob, filename); }
+    try {
+      if (!frame.contentWindow) throw new Error("no frame");
+      frame.contentWindow.focus();
+      frame.contentWindow.print();
+    } catch {
+      if (options.auto) options.onFail?.();
+      else saveBlob(blob, filename);
+    }
   };
   document.body.append(frame);
   setTimeout(() => { frame.remove(); URL.revokeObjectURL(url); }, 120_000);

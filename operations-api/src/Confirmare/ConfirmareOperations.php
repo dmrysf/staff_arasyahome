@@ -86,7 +86,7 @@ final class ConfirmareOperations
         'shipping_mismatch', 'awb_exists', 'awb_unavailable', 'cod_changed', 'cod_mismatch', 'cod_not_mismatched', 'awb_refused', 'awb_missing', 'label_unavailable', 'address_task_missing', 'address_task_open',
         'not_card_payment', 'card_payment_unverified', 'nothing_to_refund', 'refund_request_missing', 'refund_pending', 'finance_open', 'amount_exceeds_received',
         'duplicate_reference', 'entry_not_found', 'entry_not_pending', 'same_employee', 'refund_record_failed', 'idempotency_conflict',
-        'awb_correction_disabled', 'address_edit_disabled', 'awb_picked_up', 'pickup_unknown', 'cancel_uncertain', 'cancel_refused', 'address_invalid'];
+        'awb_correction_disabled', 'address_edit_disabled', 'awb_picked_up', 'pickup_unknown', 'cancel_uncertain', 'cancel_refused', 'address_invalid', 'awb_not_listed'];
     public const RESULTS = ['reactivated', 'created', 'unknown', 'panel_required', 'panel_declared', 'manual_required', 'already_requested', 'refund_recorded', 'refund_verified', 'refund_rejected',
         'cancelled', 'address_saved', 'unchanged'];
 
@@ -165,6 +165,46 @@ final class ConfirmareOperations
             throw new ApiException(409, 'CONFIRMARE_AWB_LABEL_UNAVAILABLE', 'FAN Courier gave no label for this AWB now.');
         }
         return $pdf;
+    }
+
+    /**
+     * API 2.83.0 (owner acceptance 2026-11-26): READ ONLY check of a delivery address the employee prepares, also while the
+     * order still has its AWB (the employee checks the new address BEFORE the AWB is cancelled, so a valid AWB is never
+     * cancelled for an address the shop would refuse). The shop runs the same check as the address change (YD SOFT
+     * `address_check`, switch `addressEdit`); nothing is written anywhere and nothing is recorded.
+     *
+     * @param array<string, mixed> $input {address}
+     * @return array{issues: list<string>, warnings: list<string>, awbActive: bool}
+     */
+    public function addressCheck(EmployeeIdentity $actor, string $globalOrderId, array $input, string $requestId): array
+    {
+        $row = $this->row($this->globalId($globalOrderId));
+        if ($row === null || !$this->sees($actor, $row)) {
+            throw new ApiException(404, 'CONFIRMARE_NOT_FOUND', 'No Confirmare order was found.');
+        }
+        $role = $this->roles($actor, $row)['awb'] ?? null;
+        $target = $this->registry->find((string) $row['source_key']);
+        if ($role === null || $target === null) {
+            throw new ApiException(403, 'CONFIRMARE_OPERATION_DENIED', 'Only the shop employee of this order corrects its delivery address.');
+        }
+        if (array_diff(array_keys($input), ['address']) !== []) {
+            throw new ApiException(422, 'VALIDATION_FAILED', 'Only address is accepted.', ['field' => 'address']);
+        }
+        self::validateAddress($input['address'] ?? null);
+        try {
+            $answer = $this->client->exchange($target, SourceAccessClient::ROUTE_OPERATION, $this->payload($row, $actor->employeeUuid, $role, $requestId) + ['action' => 'address_check', 'address' => $input['address']]);
+        } catch (SourceAccessException $e) {
+            throw new ApiException(503, 'CONFIRMARE_SOURCE_UNAVAILABLE', 'The shop could not be asked.', ['reason' => strtolower($e->codeName)]);
+        }
+        $code = $answer['body']['error']['code'] ?? null;
+        if ($answer['status'] === 409 && $code === 'address_edit_disabled') {
+            throw new ApiException(409, 'CONFIRMARE_OPERATION_REFUSED', 'The delivery address correction is not switched on in this shop.', ['reason' => 'address_edit_disabled', 'blockers' => ['address_edit_disabled']]);
+        }
+        if ($answer['status'] !== 200 || ($answer['body']['checked'] ?? null) !== true) {
+            throw new ApiException(503, 'CONFIRMARE_SOURCE_UNAVAILABLE', 'The shop gave no address check.', ['reason' => 'source_error']);
+        }
+        $codes = static fn (mixed $list): array => is_array($list) ? array_values(array_filter($list, static fn (mixed $c): bool => is_string($c) && in_array($c, self::ADDRESS_CODES, true))) : [];
+        return ['issues' => $codes($answer['body']['issues'] ?? null), 'warnings' => $codes($answer['body']['warnings'] ?? null), 'awbActive' => ($answer['body']['awbActive'] ?? null) === true];
     }
 
     /**

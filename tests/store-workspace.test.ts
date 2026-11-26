@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
-  MAX_PARCELS, ShopQueue, addressFormIssues, awbReadiness, canUseStoreWorkspace, clampParcels, mapAwbHistoryPage, mapAwbPage, mapShopRow, mapStoreOrder, mapStoreSummary,
+  MAX_PARCELS, ShopQueue, addressFormIssues, awbReadiness, canUseStoreWorkspace, clampParcels, mapAddressCheck, mapAwbHistoryPage, mapOpen, mapAwbPage, mapShopRow, mapStoreOrder, mapStoreSummary,
   opensStoreWorkspace, parcelKey, parseWeight, reprintReasonText, retryable, sectorOf, stageNumber, telHref, toneOf, validRange, type StoreAwbItem,
 } from "../domain/storeWorkspace";
 import { mapOperationsState, mapShopOperations } from "../domain/confirmareOps";
@@ -19,7 +19,7 @@ const employee = (overrides: Partial<Employee> = {}): Employee => ({
 } as Employee);
 const row = (patch: Record<string, unknown> = {}) => ({ available: true, name: "TEST Client", city: "Brașov", county: "BV", cod: "350.00", awb: { state: "none", number: null, status: "" }, blockers: [],
   address: { state: "ok", issues: [], warnings: [] }, ...patch });
-const item = (shop: Record<string, unknown> | null, lastAttempt: string | null = null): StoreAwbItem => ({ globalOrderId: "trendhome:1", orderNumber: "1", source: "trendhome", stage: "quality-control", lastAttempt, shop: shop === null ? null : mapShopRow(shop) });
+const item = (shop: Record<string, unknown> | null, lastAttempt: string | null = null): StoreAwbItem => ({ globalOrderId: "trendhome:1", orderNumber: "1", source: "trendhome", stage: "quality-control", lastAttempt, shop: shop === null ? null : mapShopRow(shop), open: null });
 
 // 41.x Access and home ----------------------------------------------------------------------------------------------------------
 test("the Store Workspace is the home of a shop employee, never of a Confirmare operator or root", () => {
@@ -223,4 +223,33 @@ test("every Store Workspace text exists in every language (no raw key on screen)
     .map((file) => readFileSync(new URL(`../${file}`, import.meta.url), "utf8")).join("\n");
   for (const match of source.matchAll(/t\("(sw\.[a-zA-Z0-9_.]+)"/g)) assert.ok(keys.includes(match[1]), `missing ${match[1]}`);
   for (const code of ["invoice_missing", "payment_verifying", "address_invalid", "awb_picked_up", "pickup_unknown", "cancel_uncertain", "cancel_refused", "not_cancelled"]) assert.ok(keys.includes(`sw.reason.${code}`), code);
+});
+
+// Owner acceptance 2026-11-26 -------------------------------------------------------------------------------------------------
+test("an open AWB operation comes back after a reload with its key; a malformed one is refused", () => {
+  const open = { kind: "awb_cancel", state: "unknown", at: "2026-11-26T10:00:00Z", idempotencyKey: "sw-cancel-0123456789abcdef" };
+  const page = mapAwbPage({ items: [{ globalOrderId: "trendhome:1", orderNumber: "1", source: "trendhome", stage: "packing", lastAttempt: "unknown", shop: null, open: { ...open, kind: "awb_create" } }], page: 1, pageSize: 25, total: 1 });
+  assert.deepEqual(page.items[0].open, { ...open, kind: "awb_create" });
+  assert.equal(mapOpen(null), null);
+  assert.throws(() => mapOpen({ ...open, idempotencyKey: "short" }), "a key outside the pattern is refused");
+  assert.throws(() => mapOpen({ ...open, kind: "awb_label" }), "only the AWB operations");
+});
+
+test("history figures: parcels of older AWBs are unknown, never 0; the current AWB and its open correction are read", () => {
+  const history = mapAwbHistoryPage({ items: [{ globalOrderId: "trendhome:1", orderNumber: "1", source: "trendhome", awb: "2150900000002", awbFromShop: true, parcels: null, at: "2026-11-26T10:00:00Z", by: "Shop Test",
+    state: "active", current: true, open: { kind: "awb_cancel", state: "unknown", at: "2026-11-26T10:05:00Z", idempotencyKey: "sw-cancel-0123456789abcdef" }, cancelledAt: null, cancelReason: null, replacedBy: null, replaces: null }],
+    page: 1, pageSize: 25, total: 1, tracked: true, stats: { orders: 4, awbs: 5, parcels: 7, parcelsUnknown: 1, cancelled: 1, renewed: 1 } });
+  assert.deepEqual(history.stats, { orders: 4, awbs: 5, parcels: 7, parcelsUnknown: 1, cancelled: 1, renewed: 1 });
+  assert.equal(history.items[0].parcels, null);
+  assert.equal(history.items[0].current, true);
+  assert.equal(history.items[0].awbFromShop, true);
+  assert.equal(history.items[0].open?.kind, "awb_cancel");
+  assert.throws(() => mapAwbHistoryPage({ items: [], page: 1, pageSize: 25, total: 0, tracked: true, stats: { orders: 1, awbs: 1, parcels: -1, parcelsUnknown: 0, cancelled: 0, renewed: 0 } }), "a negative figure is refused");
+  assert.equal(mapAwbHistoryPage({ items: [], page: 1, pageSize: 25, total: 0, tracked: false }).stats, null);
+});
+
+test("a prepared address check is read strictly (the shop's codes only)", () => {
+  assert.deepEqual(mapAddressCheck({ issues: ["locality_missing"], warnings: [], awbActive: true }), { issues: ["locality_missing"], warnings: [], awbActive: true });
+  assert.throws(() => mapAddressCheck({ issues: ["<b>"], warnings: [], awbActive: true }));
+  assert.throws(() => mapAddressCheck({ issues: [], warnings: [] }));
 });

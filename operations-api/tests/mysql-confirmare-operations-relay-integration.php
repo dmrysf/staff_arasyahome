@@ -758,6 +758,20 @@ $refusedCancel = $operate($who['cdoc'], $g(2), 'awb/cancel', ['reason' => 'wrong
 $check(($refusedCancel['body']['error']['details']['reason'] ?? '') === 'cancel_refused' && ($refusedCancel['body']['error']['details']['message'] ?? '') === 'AWB-ul nu mai poate fi șters (TEST)' && $th->orders[$id(2)]['ops']['awb']['number'] === $oldAwb,
     'FAN Courier refuses the cancellation: the AWB stays, the real reason is shown');
 $error($operate($who['cdoc'], $g(2), 'delivery-address', ['address' => ['city' => 'Brașov']]), 409, 'CONFIRMARE_OPERATION_REFUSED', 'the delivery address is not changed under an active AWB');
+// Owner acceptance 2026-11-26: the new address is prepared and checked BEFORE the AWB is cancelled (read only).
+$opsBefore = (int) $one('SELECT COUNT(*) FROM order_source_operations');
+$checksBefore = $th->addressChecks;
+$prepared = $ok($operate($who['cdoc'], $g(2), 'delivery-address/check', ['address' => ['firstName' => 'TEST', 'lastName' => 'Client', 'phone' => '0722111222', 'county' => 'BV', 'city' => 'Brașov', 'street' => 'Str. Livrării', 'streetNo' => '12']]), 'a prepared address is checked under the active AWB');
+$preparedBad = $ok($operate($who['cdoc'], $g(2), 'delivery-address/check', ['address' => ['firstName' => 'TEST', 'city' => '']]), 'a prepared incomplete address is checked');
+$check($prepared === ['issues' => [], 'warnings' => [], 'awbActive' => true] && $preparedBad['issues'] === ['locality_missing'] && $th->addressChecks === $checksBefore + 2
+    && (int) $one('SELECT COUNT(*) FROM order_source_operations') === $opsBefore && $th->orders[$id(2)]['ops']['awb']['number'] === $oldAwb,
+    'address check: the shop\'s field reasons, nothing recorded, the AWB untouched: ' . json_encode([$prepared, $preparedBad]));
+$error($operate($who['cop'], $g(2), 'delivery-address/check', ['address' => ['city' => 'Brașov']]), 403, 'CONFIRMARE_OPERATION_DENIED', 'the operator never checks a delivery address');
+$error($operate($who['cdoc'], $g(2), 'delivery-address/check', ['address' => ['iban' => 'x']]), 422, 'VALIDATION_FAILED', 'the check takes only delivery fields');
+$th->cancelOutcome = 'not_listed';
+$notListed = $operate($who['cdoc'], $g(2), 'awb/cancel', ['reason' => 'wrong_address']);
+$check(($notListed['body']['error']['details']['reason'] ?? '') === 'awb_not_listed' && $th->orders[$id(2)]['ops']['awb']['number'] === $oldAwb && !in_array($oldAwb, $th->fanCancelled, true),
+    'FAN Courier\'s day report no longer lists the AWB: refused awb_not_listed, nothing sent, the AWB stays');
 $cancelKey = 'sw-cancel-' . bin2hex(random_bytes(10));
 $cancelled = $ok($operate($who['cdoc'], $g(2), 'awb/cancel', ['reason' => 'wrong_parcels'], $cancelKey), 'the AWB is cancelled at FAN Courier');
 $cancelRow = $all("SELECT operation_uuid, awb_number, reason_code, state FROM order_source_operations WHERE order_uuid = ? AND kind = 'awb_cancel' AND state = 'applied'", [$orderUuid($g(2))]);
@@ -784,6 +798,18 @@ $check(($byAwb[$newAwb]['state'] ?? '') === 'active' && ($byAwb[$newAwb]['replac
     && ($byAwb[$oldAwb]['state'] ?? '') === 'cancelled' && ($byAwb[$oldAwb]['replacedBy'] ?? '') === $newAwb && ($byAwb[$oldAwb]['cancelReason'] ?? '') === 'wrong_parcels',
     'AWB history: the old AWB is marked cancelled and linked to the new one: ' . json_encode(array_values($byAwb)));
 $check($sw($who['cdoc2'], '/awb/history?range=today')['items'] === [], 'another employee of the shop does not see AWBs of orders not routed to them');
+$stats = $history['stats'];
+$check($stats['awbs'] === $history['total'] && $stats['cancelled'] >= 1 && $stats['renewed'] >= 1 && $stats['orders'] <= $stats['awbs'] && $stats['parcels'] >= 3 && $stats['parcelsUnknown'] === 0
+    && ($byAwb[$newAwb]['current'] ?? null) === true && ($byAwb[$oldAwb]['current'] ?? null) === false,
+    'history figures: AWBs, orders, parcels, cancelled and renewed; the current AWB is marked: ' . json_encode($stats));
+// An AWB made before migration 064 (no number, no parcels in Arasya): never counted as 0 parcels, its number read from the shop.
+$older = $all("SELECT operation_uuid, awb_number, parcels FROM order_source_operations WHERE order_uuid = ? AND kind = 'awb_create' AND state = 'applied' ORDER BY requested_at DESC LIMIT 1", [$orderUuid($g(2))])[0];
+$pdo->prepare('UPDATE order_source_operations SET awb_number = NULL, parcels = NULL WHERE operation_uuid = ?')->execute([$older['operation_uuid']]); // TEST ONLY: a pre-064 row
+$legacy = $sw($who['cdoc'], '/awb/history?range=today');
+$pdo->prepare('UPDATE order_source_operations SET awb_number = ?, parcels = ? WHERE operation_uuid = ?')->execute([$older['awb_number'], $older['parcels'], $older['operation_uuid']]);
+$legacyRow = array_values(array_filter($legacy['items'], static fn (array $i): bool => $i['globalOrderId'] === $g(2) && $i['current']))[0] ?? [];
+$check($legacy['stats']['parcelsUnknown'] === 1 && $legacy['stats']['parcels'] === $stats['parcels'] - 2 && $legacy['stats']['awbs'] === $stats['awbs'] && ($legacyRow['awb'] ?? null) === $newAwb && ($legacyRow['awbFromShop'] ?? false) === true && $legacyRow['parcels'] === null,
+    'a pre-064 AWB: parcels unknown (not 0, not guessed), the current number read from the shop: ' . json_encode([$legacy['stats'], $legacyRow]));
 $error($getq($who['cdoc'], '/confirmare/store/awb/history?range=custom&from=2026-01-01&to=2026-12-31'), 422, 'VALIDATION_FAILED', 'a custom range is bounded');
 $sum1 = $sw($who['cdoc'], '/summary');
 $check($sum1['awb']['cancelledToday'] === $sum0['awb']['cancelledToday'] + 1 && $sum1['awb']['recreatedToday'] === $sum0['awb']['recreatedToday'] + 1 && $sum1['awb']['createdToday'] === $sum0['awb']['createdToday'] + 1
@@ -796,6 +822,9 @@ $check($unknownCancel['state'] === 'unknown' && !in_array($newAwb, $th->fanCance
 $refusedOp($operate($who['cdoc'], $g(2), 'awb', ['parcels' => 1, 'expectedCod' => $owed2]), 'operation_open', 'no new AWB while the cancellation is open');
 $still = $ok($operate($who['cdoc'], $g(2), 'operations/reconcile', ['idempotencyKey' => $unknownKey]), 'reconcile while the shop has not settled it');
 $check($still['state'] === 'unknown', 'still unknown: the shop has not settled it');
+$openHist = array_values(array_filter($sw($who['cdoc'], '/awb/history?range=today')['items'], static fn (array $i): bool => $i['awb'] === $newAwb))[0] ?? [];
+$check(($openHist['current'] ?? null) === true && ($openHist['open']['kind'] ?? '') === 'awb_cancel' && ($openHist['open']['idempotencyKey'] ?? '') === $unknownKey,
+    'after a reload the unconfirmed cancellation is still shown on its AWB with its key (settled, never resent): ' . json_encode($openHist['open'] ?? null));
 $th->orders[$id(2)]['ops']['cancelUncertain'] = false; // TEST ONLY: the shop settled it (FAN Courier had cancelled the AWB)
 $th->orders[$id(2)]['ops']['awb'] = null;
 $settledCancel = $ok($operate($who['cdoc'], $g(2), 'operations/reconcile', ['idempotencyKey' => $unknownKey]), 'reconcile after the shop settled it');

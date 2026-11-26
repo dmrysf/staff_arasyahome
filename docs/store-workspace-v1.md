@@ -50,8 +50,17 @@ invoice scope `issue`/`manage` and document scope `operate`.
 1. Arasya: the routed shop employee or the invoice manager, stage 12–14, approved, not in cancellation, no open AWB
    operation of any kind on the order. Recorded as pending before anything is sent.
 2. Shop: an active YD SOFT shipment, not delivered, no open cancellation guard.
-3. Shop: FAN Courier tracking read now. Only "no event at all" passes. Any event refuses with FAN's own status text. An
-   unreadable tracking answer refuses (`pickup_unknown`).
+3. Shop: FAN Courier read now, POSITIVE evidence only (live read-only check on both shops, 2026-11-26: a registered AWB,
+   an AWB cancelled earlier and an unknown number all answer the tracking without events, so an empty event list alone is
+   never enough):
+   - the tracking answers for exactly this AWB, with no event and FAN's message "AWB-ul a fost inregistrat de catre
+     clientul expeditor" (an unknown number answers "AWB-ul nu a fost gasit.");
+   - AND FAN's AWB report (`/reports/awb`) of the day the AWB was made (or the day before or after) still lists it (FAN
+     drops a cancelled AWB from that report: 2026-11-25 TH 59 + 80 listed, the cancelled one absent; OP 9 + 12, the
+     cancelled one absent).
+
+   Any event refuses `awb_picked_up` with FAN's own status text. A report that no longer lists the AWB refuses
+   `awb_not_listed` (cancelled in SelfAWB?). Any other message or an unreadable page refuses `pickup_unknown`.
 4. Shop: the real FAN DELETE, once, under the cancellation guard.
 5. Confirmed: the shipment row is closed (`is_active 0`, `cancelled_at`), never deleted. Arasya records the cancellation
    with the old AWB number. The order returns to "De emis".
@@ -70,7 +79,12 @@ The invoice is never touched. Local records are never deleted.
 ## Delivery address permission model
 
 - Who: the shop employee of the order (routed) or the invoice manager. The switch `addressEdit` must be on in the shop.
-- When: before an AWB exists. With an AWB, the employee first corrects the AWB (cancel), then the address.
+- When: before an AWB exists, "Salvează și verifică adresa". With an AWB ("Corectează AWB" → "Adresă incorectă", in the AWB
+  list or the history): the employee prepares the new address and "Verifică adresa" asks the shop to check it
+  (`POST /confirmare/orders/{id}/delivery-address/check`, YD `address_check`: READ ONLY, nothing saved, nothing recorded).
+  Only a correct address enables "Anulează AWB-ul și salvează adresa": the AWB is cancelled at FAN Courier (the model
+  above), then the address is saved. A valid AWB is never cancelled for an address the shop would refuse. If FAN does not
+  confirm the cancellation, the address waits and the row settles the cancellation (never resent).
 - What: the shipping block, the address meta and the delivery telephone (`_yd_arasya_delivery_phone`). Never the billing
   address or billing telephone, the totals, the shipping or the VAT. A change of the money restores the previous
   address and refuses.
@@ -78,6 +92,39 @@ The invoice is never touched. Local records are never deleted.
   - missing name, telephone, county, locality or street;
   - a FAN-unknown locality, but only when FAN's catalog was read;
   - warnings: street number, postcode, unverified or corrected locality, Bucharest without a sector.
+
+## AWB history and figures (owner acceptance 2026-11-26)
+
+- Ranges: today, yesterday, 7 days, 30 days, a custom interval (≤ 92 days).
+- Figures of the range, in the history only (the home keeps its small counters):
+  - orders with an AWB;
+  - AWBs made (each applied `awb_create` is one FAN AWB);
+  - parcels;
+  - cancelled AWBs (`awb_cancel` and the earlier `awb_reopened`);
+  - AWBs made again (an AWB for an order that had one before).
+- Older AWBs (before migration 064) have no parcels and no number in Arasya:
+  - their parcels are counted as "unknown" (`parcelsUnknown`), never 0 and never estimated;
+  - the current AWB's number is read from the shop ("număr citit din magazin");
+  - a replaced one shows "nedisponibil".
+- AWBs made outside Arasya (the shop's own panel) are not in these figures.
+- The order's current AWB can be printed again and corrected from the history ("Corectează AWB"), today or any earlier
+  day, with the same safety model. The cancelled AWB stays in the history, linked to its replacement.
+
+## Label printing
+
+After "Emite AWB" succeeds, the label is fetched and opened in the browser's print dialog automatically.
+- If the browser refuses, the screen says so and "Tipărește eticheta" stays highlighted.
+- Nothing records a label as printed, because only the employee sees the printer.
+- A printer problem never makes a new AWB: the same label is printed again.
+
+## Unknown outcomes
+
+- An AWB, a cancellation or an address change whose answer was lost stays open on the server, with its key.
+- The AWB list and the history return it (`open`), so a reload or another screen keeps showing it.
+- Staff asks the shop's stored answer every 15 s, at most 8 times, and never sends the operation again.
+- After 8 checks the row says plainly that the result is not confirmed and offers "Verifică din nou". The order stays
+  blocked for safety; the employee keeps working on other orders.
+- The resolver settles it (root `operation-reconcile`). `bin/check-rollback.php` counts it.
 
 ## Performance (requests)
 
@@ -96,7 +143,7 @@ The invoice is never touched. Local records are never deleted.
 | 2 | API 2.83.0. |
 | 3 | YD SOFT 2.36.0 on both shops (switches stay off). |
 | 4 | Staff 2.59.0. The store home appears; corrections stay refused (`awb_correction_disabled`, `address_edit_disabled`) until the switches are on. |
-| 5 | Before step 6: read-only check on each shop that FAN tracking of a fresh, not picked up AWB returns no event (`awb.statusId` empty after a sync). |
+| 5 | Before step 6 (`awbCorrection`): read-only check on each shop of FAN's answers for a registered, a picked-up, a delivered, a cancelled and an unknown AWB. Done 2026-11-26, see "AWB cancel/renew safety model" step 3. |
 | 6 | `wp yd-arasya operations set awbCorrection enforce` and `... addressEdit enforce`, shop by shop. |
 
 ## Rollback
