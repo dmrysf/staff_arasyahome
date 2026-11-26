@@ -50,6 +50,10 @@ use Arasya\Operations\Security\CsrfGuard;
  *   POST /confirmare/orders/{globalOrderId}/invoice/{issue|send-mail|reissue|resolve|delete}
  *                                                          {expectedRevision, ...} + Idempotency-Key (invoice scopes)
  *   POST /confirmare/orders/{globalOrderId}/invoice/reconcile    {idempotencyKey}: settles an action whose answer was lost
+ *                                                          (API 2.84.0: these manual actions need the invoice `manage` scope)
+ *   POST /confirmare/orders/{globalOrderId}/invoice/auto   no body: the shop employee's automatic final invoice after their
+ *                                                          print (API 2.84.0, StoreAutoInvoice): processes the request the
+ *                                                          print recorded and returns {state, outcome, document}
  *   GET  /confirmare/orders/{globalOrderId}/invoice/payment      SmartBill's paid/unpaid amounts of the final invoice next to
  *                                                          Arasya's verified money (API 2.47.0, read-only, audited)
  *   POST /confirmare/orders/{globalOrderId}/invoice/qr    {qrToken}: the shop employee scanned the production QR (API 2.44.0)
@@ -150,6 +154,8 @@ final readonly class ConfirmareController
         private ?ConfirmareDecisionFollowUps $followUps = null,
         /** API 2.83.0: the shop employee's Store Workspace (read only). */
         private ?StoreWorkspace $store = null,
+        /** API 2.84.0: the automatic final invoice after the shop employee's print. */
+        private ?StoreAutoInvoice $autoInvoice = null,
     ) {
     }
 
@@ -515,6 +521,16 @@ final readonly class ConfirmareController
             $this->csrf->requireValid($session->rawToken, $request->header('x-csrf-token'));
             $input = $this->body($request, ['qrToken']);
             return $this->json($this->invoice->verifyQr($actor, rawurldecode($m[1]), $input['qrToken'] ?? null, $request->requestId));
+        }
+        if (preg_match('#^/confirmare/orders/([^/]{1,600})/invoice/auto$#D', $path, $m) === 1) {
+            if ($request->method !== 'POST') {
+                throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
+            }
+            $this->csrf->requireValid($session->rawToken, $request->header('x-csrf-token'));
+            if ($this->autoInvoice === null) {
+                throw new ApiException(404, 'NOT_FOUND', 'API route was not found.');
+            }
+            return $this->json($this->autoInvoice->now($actor, rawurldecode($m[1])));
         }
         if (preg_match('#^/confirmare/orders/([^/]{1,600})/invoice/(issue|send-mail|reissue|resolve|delete|reconcile)$#D', $path, $m) === 1) {
             if ($request->method !== 'POST') {

@@ -1,4 +1,4 @@
-# Store Workspace V1 (Staff 2.59.0, API 2.83.0, migration 064, YD SOFT 2.36.0)
+# Store Workspace V1 / V1.1 (Staff 2.61.0, API 2.84.0, migrations 064 and 065, YD SOFT 2.36.0)
 
 Owner brief "ARASYA — STORE WORKSPACE V1" (2026-11-26). One workspace for the shop employees of Trend Home and
 Outlet Perdele. Their data is scoped per shop and checked on the server with the existing IAM:
@@ -9,15 +9,88 @@ invoice scope `issue`/`manage` and document scope `operate`.
 | Route | What |
 | --- | --- |
 | `/` (store home) and `/magazin` | Three sections: 01 Production documents, 02 AWB and labels, 03 Find an order. Counters of the Bucharest day. |
-| `/magazin/documente` | Tabs: De tipărit / Tipărite astăzi / Istoric. One button "Pregătește și tipărește". Reprint with a short reason. |
+| `/magazin/documente` | Tabs: De tipărit / Confirmare client (only while an order waits) / Tipărite astăzi / Istoric. One button "Pregătește și tipărește" (document, revision, print, then the final invoice). Reprint with a short reason. |
 | `/magazin/awb` | Tabs: De emis / Istoric AWB, and a "Necesită corectare" filter. Parcels stepper, weight, "Emite AWB · N colete", label, "Corectează AWB", "Corectează adresa". |
 | `/magazin/cauta` | Search by order number, AWB number, name or telephone (the shop searches names and telephones). |
 | `/magazin/comenzi/{id}` | Customer, products with pictures, money (read only), stage "n / 14", document, invoice, AWB operations. |
 | `/magazin/istoric` | "Comenzile mele": the employee's own prints, AWBs, cancellations and address corrections. |
 
 - The store home opens for an active shop employee who holds no Confirmare scope. An operator keeps the operator desk.
-- `?clasic=1` keeps the earlier home reachable during the transition.
-- The earlier screens (`/confirmare/handoff`, `/confirmare/awb`, `/documents/{id}`) are unchanged.
+- V1.1: a Store Workspace employee never lands on an earlier screen (see "V1.1" below). Every other employee keeps them.
+
+## V1.1 — earlier screens and the SmartBill panel removed (owner brief 2026-11-26, Staff 2.60.0, API 2.83.1)
+
+Live check of the shop employee's account: the Store Workspace still linked to the earlier document screen
+(`/documents/{id}`), which carries the SmartBill panel, and the documents page showed the earlier customer-check list on top.
+
+- **Earlier addresses.** For a Store Workspace employee (`opensStoreWorkspace`), `storeLegacyRedirect` maps, before the
+  route is parsed, `/documents/{id}` and `/orders/{id}` to `/magazin/comenzi/{id}`, `/orders` to `/magazin/istoric`,
+  `/confirmare/handoff` to `/magazin/documente` and `/confirmare/awb` to `/magazin/awb`. The address bar is replaced, so
+  the back button never returns to an earlier screen. This covers direct URLs, old links, live notices and the scanner's
+  "open order". `?clasic=1` is gone.
+- **No SmartBill panel for the shop employee.** No Store Workspace screen imports `ConfirmareInvoicePanel`,
+  `DocumentPanel`, `DocumentScreen` or `CustomerChecks`; a unit test reads the sources to keep it so. The order screen shows
+  one short line (final invoice issued or not).
+- **The final invoice** (superseded by "V1.1 — automatic final invoice" below) used to be issued by hand by the routed shop employee in that panel; there is no automatic
+  issuing anywhere (the shops' SmartBill plugin auto-issue must stay off). V1.1 issues it with the same route
+  (`POST /confirmare/orders/{id}/invoice/issue`) right after "Pregătește și tipărește" printed the document, never before.
+  `finalInvoiceStep` reads the server's answer: an existing final invoice or an open/unknown action is never sent again;
+  another employee's order, observe mode or a proforma shop stay quiet; a refusal is one short line. All server and shop
+  rules are unchanged (routed employee, active ticket, verified money, no open finance or invoice action, InvoicePolicy).
+  A lost answer is checked once with the same key and never resent. Re-issue, delete, mail and manual resolution stay
+  with the manager's screens.
+- **Revisions.** The same button handles a changed order: it requests the revision (no comment), says it waits for
+  approval, and once approved generates it and prints it.
+- **Customer check.** An order the system approved on its verified online payment (or a manager routed) has had no call
+  with the customer, so production stays closed until the routed shop employee answers. This is now a small tab
+  "Confirmare client" (and a card on the order screen) with the same three answers. API 2.83.1: when an operator had
+  already recorded a confirmed call on the same review before the system approval, that call is kept and no second
+  check is asked.
+- **Backend.** No permission is removed in V1.1 itself (API 2.84.0 below removes the manual SmartBill writes): the shop
+  employee still needs `issue` for the automatic step, and every route checks scopes, routing and state on the server,
+  whatever the screen shows.
+
+## V1.1 — automatic final invoice and separate manual permissions (owner approval 2026-11-26, API 2.84.0, Staff 2.61.0, migration 065)
+
+Owner brief "STORE WORKSPACE V1.1 — FINAL AUTOMATION APPROVAL".
+
+- **Durable request.** `DocumentService::recordPrint` writes one row in `order_invoice_auto_requests` (migration 065) in the
+  SAME transaction as the print, only when: the order is a Trend Home / Outlet Perdele Confirmare order, the printer is the
+  employee the order is routed to, that employee holds the shop's invoice `issue` scope, and Arasya has no issued final
+  invoice. No print, no request. One request per order (unique); a later print of the routed employee re-arms a waiting or
+  stopped request; `done` and `attention` never change by a print.
+- **Processing on the server** (`StoreAutoInvoice`):
+  - right after the print, by the employee's own call `POST /confirmare/orders/{id}/invoice/auto` (no body, CSRF);
+    `ignore_user_abort` keeps PHP running when the browser closes;
+  - every minute by `bin/confirmare-distribute.php` (5 requests a run, `GET_LOCK`, a claim token per request, backoff
+    1 → 30 minutes). A closed browser, a lost connection or a SmartBill timeout only delays it.
+- **The system issues it.** `ConfirmareInvoice::issueOnBehalf` reads the shop as the system identity (root through the
+  intervention desk instance), then `act($system, …, 'issue', …, $onBehalfOf = employee)`:
+  - only `issue`, only for root through the desk instance;
+  - every rule of a manual issue runs again under the order lock **for the employee**: still routed to them, still the
+    `documents` role, never the employee who confirmed the order, approved, handoff ready (money, customer check),
+    no cancellation hold, no open finance or invoice action, active production document;
+  - the shop is the authority: a final invoice made anywhere (WordPress, SmartBill) ends the request as `done/exists`;
+  - an action whose answer was lost is never sent again (the lost-answers worker settles it with the same key); SmartBill's
+    unknown outcome (shop 202) ends as `attention` for a manager; at most 3 real sends, each with its own key
+    `auto-invoice-<request>-<n>`.
+- **Audit.** The request keeps the real person (`trigger_employee_uuid`, `trigger_print_uuid`); the action row is the
+  system's (`order_invoice_actions.employee_uuid` = root, role `manager`, key `auto-invoice-…`, request id
+  `system-auto-invoice-…`). Its e-Factura follow-up belongs to the system issuer (the managers' e-Factura list).
+- **AWB readiness** (stages 12–14) issues the same way, as the system for the routed employee (key `auto-awb-issue-<order>`),
+  and settles lost invoice answers as the system.
+- **Manual permissions.** A person needs the invoice `manage` scope for every manual SmartBill action: issue, e-mail,
+  re-issue, delete, resolve and reconcile (an operator keeps reconciling their own proforma); the proforma check is the
+  operator's or manager's. The `documents` role (shop employee with the `issue` scope) only reads (and may still record a
+  QR scan, an Arasya-only record); the server refuses its direct API calls (`CONFIRMARE_INVOICE_DENIED`).
+  Unchanged: Confirmare operators and supervisors (proforma, routing, customer acceptance), finance scopes, invoice
+  managers, root on the intervention desk.
+- **Staff.** "Pregătește și tipărește" prints, then asks `invoiceAuto` and shows one line (issued / exists / in progress /
+  waiting for a rule / a manager checks / not issued for this order). The store order screen shows the same line while
+  the invoice is not issued (`autoInvoice` in `GET /confirmare/store/orders/{id}`).
+- **Older prints.** Orders printed before 065 have no request; they are issued when the routed employee prints again
+  (reprint with a reason) or by AWB readiness at stages 12–14. Nothing is re-issued for an order with a final invoice.
+- **Rollback.** API 2.83.x never reads the table; drop it only after rolling back.
 
 ## API (read routes; actions keep their existing routes)
 

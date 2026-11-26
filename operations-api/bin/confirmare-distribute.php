@@ -43,6 +43,16 @@ if (!isset($options['dry-run']) && $source === null) {
         $result['paidRouting'] = ['failed' => true];
     }
 }
+// API 2.84.0 (Store Workspace V1.1, migration 065): the final invoice the shop employee's print asked for, issued by the
+// system on that employee's behalf (StoreAutoInvoice: one run at a time, every rule of a manual issue again, never a
+// second invoice, a lost answer is never sent again). Without migration 065 it does nothing.
+if (!isset($options['dry-run']) && $source === null) {
+    try {
+        $result['storeAutoInvoice'] = $container->storeAutoInvoice()->run(5);
+    } catch (Throwable) {
+        $result['storeAutoInvoice'] = ['failed' => true];
+    }
+}
 // API 2.82.0 (Operation Simplification V1): a verified online payment goes to the shop employee without the operator (the
 // system approval, then the routing); production still waits for the shop employee's customer check.
 // Only once the operator decisions are switched on (ARASYA_CONFIRMARE_DECISIONS=enabled): deploying 2.82.0 starts nothing.

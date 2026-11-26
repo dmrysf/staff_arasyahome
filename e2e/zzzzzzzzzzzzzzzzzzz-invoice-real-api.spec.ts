@@ -4,7 +4,9 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 
-// SmartBill invoicing (API 2.43.0, Staff 2.33.0) against the real Operations API, after the Confirmare spec. The TEST shop
+// SmartBill invoicing (API 2.43.0, Staff 2.33.0) against the real Operations API, after the Confirmare spec. API 2.84.0 /
+// Staff 2.61.0 (Store Workspace V1.1): the shop employee works in the Store Workspace (no SmartBill panel) and no longer
+// issues, e-mails, deletes or settles anything by hand; their print asks the system for the final invoice. The TEST shop
 // simulates the shop's SmartBill: nothing is ever issued or sent anywhere. Covers the production ticket employee issuing
 // the document of a paid, approved Confirmare order from the production ticket screen (confirmed once, never twice), the
 // resend confirmation, one state in two open tabs, the finance flow (read only), the Turkish texts, layouts from 320 to
@@ -45,68 +47,55 @@ async function signIn(browser: Browser, username: string, width = 390, height = 
   return { context, page, errors };
 }
 
-async function panelOf(page: Page) {
-  await page.goto(ticket());
-  const panel = page.getByTestId("cf-invoice");
-  await expect(panel).toBeVisible();
-  await expect(page.getByTestId("cf-invoice-facts")).toBeVisible();
-  return panel;
-}
-
-async function accessible(page: Page, screen: string) {
-  const results = await new AxeBuilder({ page }).include("[data-testid=cf-invoice]").withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"]).analyze();
+// `minimum`: 44 px on the earlier screens; the Store Workspace keeps WCAG 2.2 AA's 24 px (2.5.8) with its 40 px buttons.
+async function accessible(page: Page, screen: string, testId = "cf-invoice", minimum = 44) {
+  const results = await new AxeBuilder({ page }).include(`[data-testid=${testId}]`).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"]).analyze();
   expect(results.violations.map((violation) => `${screen}: ${violation.id} ${violation.nodes.map((node) => node.target.join(" ")).join(", ")}`)).toEqual([]);
-  const small = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>("[data-testid=cf-invoice] button, [data-testid=cf-invoice] a[href], [data-testid=cf-invoice] input, [data-testid=cf-invoice] select, [data-testid=cf-invoice] textarea")]
+  const small = await page.evaluate(({ id, min }) => [...document.querySelectorAll<HTMLElement>(["button", "a[href]", "input", "select", "textarea"].map((tag) => `[data-testid=${id}] ${tag}`).join(", "))]
     .filter((element) => { const box = element.getBoundingClientRect(); return box.width > 0 && box.height > 0; })
     .map((element) => { const target = (element.closest("label") ?? element).getBoundingClientRect(); return { name: (element.getAttribute("aria-label") ?? element.textContent ?? element.tagName).trim().slice(0, 40), width: target.width, height: target.height }; })
-    .filter((item) => item.width < 44 || item.height < 44)
-    .map((item) => `${item.name} ${Math.round(item.width)}×${Math.round(item.height)}`));
-  expect(small, `${screen}: touch targets under 44 px`).toEqual([]);
+    .filter((item) => item.width < min || item.height < min)
+    .map((item) => `${item.name} ${Math.round(item.width)}×${Math.round(item.height)}`), { id: testId, min: minimum });
+  expect(small, `${screen}: touch targets under ${minimum} px`).toEqual([]);
 }
 
-test("the production ticket employee issues the SmartBill invoice once, confirmed, from the ticket screen", async ({ browser }) => {
+test("API 2.84.0: the shop employee's print asks the system for the final invoice; the employee never issues, e-mails, deletes or settles by hand", async ({ browser }) => {
   const { context, page, errors } = await signIn(browser, F.people.ro.username);
-  const panel = await panelOf(page);
-  await expect(panel.getByRole("heading", { name: "Facturare SmartBill" })).toBeVisible();
-  await expect(page.getByTestId("cf-invoice-document")).toContainText("Nu există încă un document SmartBill");
-  await expect(page.getByTestId("cf-invoice-amount")).toContainText(/\d/);
-  // API 2.50.1 / Staff 2.41.1 (owner decision 2026-10-29): no QR scan before the invoice; the screen has no QR field.
-  await expect(page.getByTestId("cf-invoice-qr")).toHaveCount(0);
-  await expect(page.getByTestId("cf-invoice-qr-input")).toHaveCount(0);
-  await expect(panel.getByText("QR", { exact: false })).toHaveCount(0);
-  const issue = page.getByTestId("cf-invoice-issue");
-  await expect(issue).toHaveText("Emite factura SmartBill");
-  await issue.click();
-  await expect(page.getByTestId("cf-invoice-confirm-text")).toContainText(`#${F.number}`);
-  await expect(page.getByTestId("cf-invoice-send")).toBeDisabled();
-  await accessible(page, "confirm");
-  await page.getByTestId("cf-invoice-reviewed").check();
-  await page.getByTestId("cf-invoice-send").click();
-  await expect(page.getByTestId("cf-invoice-result")).toContainText("Documentul a fost emis în SmartBill.");
-  await expect(page.getByTestId("cf-invoice-document")).toContainText("TST");
-  await expect(page.getByTestId("cf-invoice-issue")).toHaveCount(0);
-  await expect(page.getByTestId("cf-invoice-view-link")).toHaveAttribute("href", /^https:\/\/cloud\.smartbill\.ro\//);
-  await expect(page.getByTestId("cf-invoice-view-link")).toHaveAttribute("rel", "noopener noreferrer");
-  await expect(page.getByTestId("cf-invoice-mail")).toContainText("trimis");
-  await page.getByTestId("cf-invoice-refresh").click();
-  await expect(page.getByTestId("cf-invoice-history").locator("li")).toHaveCount(1);
+  // Store Workspace V1.1: the earlier ticket screen opens the store's own order screen; no SmartBill panel anywhere.
+  await page.goto(ticket());
+  await expect(page.getByTestId("sw-order")).toBeVisible();
+  await expect(page.getByTestId("cf-invoice")).toHaveCount(0);
+  await expect(page.getByTestId("sw-order-invoice")).toContainText("Neemisă");
+  // The fixture printed the ticket before the operator routed the order: no request yet. The routed employee's reprint asks for it.
+  await page.goto("/");
+  await page.getByTestId("sw-go-documents").click();
+  await page.getByTestId("sw-docs-tabs-today").click();
+  await page.getByTestId("sw-docs-today").locator("tr", { hasText: F.number }).first().getByTestId("sw-doc-reprint").click();
+  await page.getByTestId("sw-reprint-dialog").getByLabel("Eroare imprimantă").check();
+  await page.getByTestId("sw-reprint-confirm").click();
+  await expect(page.getByTestId("sw-docs-flash")).toContainText(`#${F.number}`, { timeout: 20_000 });
+  await expect(page.getByTestId("sw-docs-flash")).toContainText(/Factura finală .*emisă/, { timeout: 20_000 });
+  await page.goto(`/magazin/comenzi/${encodeURIComponent(F.order)}`);
+  await expect(page.getByTestId("sw-order-invoice")).toContainText("Emisă");
   expect(errors).toEqual([]);
   await context.close();
-});
-
-test("a second e-mail is confirmed first; two open tabs show the same state", async ({ browser }) => {
-  const { context, page } = await signIn(browser, F.people.ro.username);
-  await panelOf(page);
-  const other = await context.newPage();
-  await other.goto(ticket());
-  await expect(other.getByTestId("cf-invoice-mail")).toContainText("1 trimiteri");
-  await page.getByTestId("cf-invoice-send-mail").click();
-  await expect(page.getByTestId("cf-invoice-confirm-text")).toContainText("a fost deja trimis (1)");
-  await page.getByTestId("cf-invoice-send").click();
-  await expect(page.getByTestId("cf-invoice-result")).toContainText("Documentul a fost trimis clientului.");
-  // The other tab reads the shop again by itself (only the order id travels between the tabs).
-  await expect(other.getByTestId("cf-invoice-mail")).toContainText("2 trimiteri");
-  await context.close();
+  // The server refuses every manual SmartBill action of the shop employee, also through the API directly.
+  const api = await request.newContext({ baseURL: apiOrigin, extraHTTPHeaders: { Origin: webOrigin } });
+  const csrf = (await (await api.post("/auth/login", { data: { username: F.people.ro.username, password: F.password } })).json()).csrfToken as string;
+  const read = (await (await api.get(`/confirmare/orders/${encodeURIComponent(F.order)}/invoice`)).json()) as { role?: string; allowedActions?: string[]; summary: { revision: string; document: { exists: boolean } } };
+  expect(read.role).toBe("documents");
+  expect(read.allowedActions).toEqual([]);
+  expect(read.summary.document.exists).toBe(true);
+  const bodies: Record<string, Record<string, unknown>> = { issue: {}, "send-mail": { confirmResend: true }, reissue: { reasonCode: "order_changed", previousCancelled: true },
+    resolve: { target: "mail", resolution: "sent" }, delete: { reasonCode: "wrong_document", confirmDelete: true } };
+  for (const [action, fields] of Object.entries(bodies)) {
+    const refused = await api.post(`/confirmare/orders/${encodeURIComponent(F.order)}/invoice/${action}`, { headers: { "X-CSRF-Token": csrf, "Idempotency-Key": `inv-e2e-shop-${action}-${Date.now()}` }, data: { expectedRevision: read.summary.revision, ...fields } });
+    expect(refused.status(), `shop employee ${action}`).toBe(403);
+    expect(((await refused.json()) as { error?: { code?: string } }).error?.code, `shop employee ${action}`).toBe("CONFIRMARE_INVOICE_DENIED");
+  }
+  const settle = await api.post(`/confirmare/orders/${encodeURIComponent(F.order)}/invoice/reconcile`, { headers: { "X-CSRF-Token": csrf }, data: { idempotencyKey: `inv-e2e-shop-reconcile-${Date.now()}` } });
+  expect(settle.status(), "shop employee reconcile").toBe(403);
+  await api.dispose();
 });
 
 test("API 2.50.0: a finance scope without a finance task of the order reads no SmartBill state and never issues or sends", async ({ browser }) => {
@@ -286,10 +275,10 @@ test("the paid advance appears in the advance groups and the operator routes it 
   await expect(page.getByTestId("cf-finance-row-91022")).toBeVisible();
   expect(errors).toEqual([]);
   await context.close();
+  // Store Workspace V1.1: the routed order waits in the shop employee's "Documente de producție".
   const shop = await signIn(browser, F.people.ro.username);
-  await shop.page.goto("/confirmare/handoff");
-  await expect(shop.page.getByTestId("cf-shop-row-91022")).toBeVisible();
-  await expect(shop.page.getByTestId("cf-shop-row-91020")).toContainText("Factură emisă");
+  await shop.page.getByTestId("sw-go-documents").click();
+  await expect(shop.page.getByTestId("sw-docs-todo")).toContainText("91022");
   await shop.context.close();
 });
 
@@ -339,12 +328,12 @@ test("a transfer that matches no order: one finance employee records it, another
   await second.context.close();
 });
 
-test("the Turkish Staff language shows the SmartBill section in Turkish", async ({ browser }) => {
+test("the Turkish Staff language shows the store's final invoice line in Turkish (no SmartBill panel)", async ({ browser }) => {
   const { context, page } = await signIn(browser, F.people.tr.username);
-  const panel = await panelOf(page);
-  await expect(panel.getByRole("heading", { name: "SmartBill Faturalandırma" })).toBeVisible();
-  await expect(page.getByTestId("cf-invoice-view-link")).toContainText("SmartBill'de Görüntüle");
-  await expect(page.getByTestId("cf-invoice-send-mail")).toHaveText("Faturayı Müşteriye Gönder");
+  await page.goto(`/magazin/comenzi/${encodeURIComponent(F.order)}`);
+  await expect(page.getByTestId("sw-order-invoice")).toContainText("Kesin fatura");
+  await expect(page.getByTestId("sw-order-invoice")).toContainText("Kesildi");
+  await expect(page.getByTestId("cf-invoice")).toHaveCount(0);
   await context.close();
 });
 
@@ -352,14 +341,11 @@ test("layouts from 320 to 1920 px: no horizontal scroll, 44 px targets, WCAG 2.2
   mkdirSync(SHOTS, { recursive: true });
   for (const width of WIDTHS) {
     const { context, page } = await signIn(browser, F.people.ro.username, width, 900);
-    await panelOf(page);
+    await page.goto(`/magazin/comenzi/${encodeURIComponent(F.order)}`);
+    await expect(page.getByTestId("sw-order-invoice")).toBeVisible();
     expect(await overflow(page), `${width} px: horizontal overflow`).toBeLessThanOrEqual(0);
-    await accessible(page, `${width} px`);
-    await page.getByTestId("cf-invoice-send-mail").click();
-    await expect(page.getByTestId("cf-invoice-confirm")).toBeVisible();
-    expect(await overflow(page), `${width} px: overflow with the confirmation open`).toBeLessThanOrEqual(0);
-    await page.screenshot({ path: path.join(SHOTS, `invoice-${width}.png`), fullPage: true });
-    await page.getByTestId("cf-invoice-cancel").click();
+    await accessible(page, `store order ${width} px`, "sw-order", 24);
+    await page.screenshot({ path: path.join(SHOTS, `store-order-invoice-${width}.png`), fullPage: true });
     await context.close();
   }
   // The operator's view (proforma and routing) on the narrowest and a wide screen.

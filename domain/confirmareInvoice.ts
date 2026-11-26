@@ -187,7 +187,15 @@ export interface ConfirmareInvoiceApi {
   customerCheck?(globalOrderId: string, outcome: CustomerCheckOutcome, idempotencyKey: string): Promise<CustomerCheckResult>;
   /** API 2.47.0: the read-only SmartBill payment reconciliation (absent in an older or simulated service). */
   invoicePayment?(globalOrderId: string, signal?: AbortSignal): Promise<InvoicePaymentRead>;
+  /**
+   * API 2.84.0: where the automatic final invoice the shop employee's print asked for stands; the server processes it now
+   * when it is due (the system issues it on the employee's behalf). No body, no key: it never sends a second invoice.
+   */
+  invoiceAuto?(globalOrderId: string): Promise<AutoInvoiceResult>;
 }
+
+/** The automatic final invoice (API 2.84.0): `none` | `waiting` | `done` | `attention` | `stopped` | `busy`, codes only. */
+export interface AutoInvoiceResult { state: string; outcome: string | null; document: string | null }
 
 /** Every refusal of a proforma action: Arasya's first, then the shop's (codes). */
 export function proformaBlockersOf(view: InvoiceView, key: ProformaActionKey): string[] {

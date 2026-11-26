@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   MAX_PARCELS, ShopQueue, addressFormIssues, awbReadiness, canUseStoreWorkspace, clampParcels, mapAddressCheck, mapAwbHistoryPage, mapOpen, mapAwbPage, mapShopRow, mapStoreOrder, mapStoreSummary,
-  opensStoreWorkspace, parcelKey, parseWeight, reprintReasonText, retryable, sectorOf, stageNumber, telHref, toneOf, validRange, type StoreAwbItem,
+  autoInvoiceNote, mapAutoInvoice, opensStoreWorkspace, parcelKey, storeLegacyRedirect, parseWeight, reprintReasonText, retryable, sectorOf, stageNumber, telHref, toneOf, validRange, type StoreAwbItem,
 } from "../domain/storeWorkspace";
 import { mapOperationsState, mapShopOperations } from "../domain/confirmareOps";
 import { parseStaffRoute } from "../domain/staffRoute";
@@ -27,7 +27,6 @@ test("the Store Workspace is the home of a shop employee, never of a Confirmare 
   assert.equal(opensStoreWorkspace(employee(), false), true);
   assert.equal(opensStoreWorkspace(employee(), true), false, "an operator keeps the operator desk");
   assert.equal(opensStoreWorkspace(employee({ confirmareScopes: { operate: ["trendhome"], supervise: [] } }), false), false);
-  assert.equal(opensStoreWorkspace(employee(), false, "?clasic=1"), false, "the earlier home stays reachable");
   assert.equal(canUseStoreWorkspace(employee({ invoiceScopes: { issue: [], manage: [] } })), false);
   assert.equal(canUseStoreWorkspace(employee({ isRoot: true })), false);
   assert.equal(canUseStoreWorkspace(employee({ mustChangePassword: true })), false);
@@ -185,6 +184,8 @@ test("store answers are read strictly; the COD is never invented", () => {
   const order = mapStoreOrder({ globalOrderId: "trendhome:1", orderNumber: "1", source: "trendhome", submittedAt: null, dueDate: null, stage: { id: "quality-control", number: 12, total: 14, completed: false }, cancelled: false,
     document: { status: "active", version: 3, revision: 1, prints: 2, lastPrint: null }, invoiceIssued: true, products: [], awbOperations: [], shop: null, canAwb: true, canDocuments: true });
   assert.equal(order.stage.number, 12);
+  assert.equal(order.autoInvoice, null, "an API 2.83.x order has no automatic invoice state");
+  assert.deepEqual(mapStoreOrder({ ...order, autoInvoice: { state: "waiting", outcome: "handoff_not_ready" } }).autoInvoice, { state: "waiting", outcome: "handoff_not_ready", document: null });
 });
 
 test("an operations state of API 2.83.0 (correction, delivery, new kinds) is read; an older one still is", () => {
@@ -252,4 +253,59 @@ test("a prepared address check is read strictly (the shop's codes only)", () => 
   assert.deepEqual(mapAddressCheck({ issues: ["locality_missing"], warnings: [], awbActive: true }), { issues: ["locality_missing"], warnings: [], awbActive: true });
   assert.throws(() => mapAddressCheck({ issues: ["<b>"], warnings: [], awbActive: true }));
   assert.throws(() => mapAddressCheck({ issues: [], warnings: [] }));
+});
+
+// V1.1 (Staff 2.60.0): no earlier screen for the shop employee, the final invoice after the document --------------------------
+test("an earlier screen's address opens its Store Workspace screen (direct URL, old link, back button, notice, scanner)", () => {
+  assert.equal(storeLegacyRedirect("/documents/trendhome%3A66489"), "/magazin/comenzi/trendhome%3A66489");
+  assert.equal(storeLegacyRedirect("/orders/trendhome%3A66489"), "/magazin/comenzi/trendhome%3A66489");
+  assert.equal(storeLegacyRedirect("/orders/trendhome:66489/"), "/magazin/comenzi/trendhome%3A66489");
+  assert.equal(storeLegacyRedirect("/documents/trendhome%3A1?tab=x#y"), "/magazin/comenzi/trendhome%3A1");
+  assert.equal(storeLegacyRedirect("/documents/%E0%A4%A"), "/magazin", "a broken address opens the store home, never an error");
+  assert.equal(storeLegacyRedirect("/orders"), "/magazin/istoric");
+  assert.equal(storeLegacyRedirect("/confirmare/handoff"), "/magazin/documente");
+  assert.equal(storeLegacyRedirect("/confirmare/awb"), "/magazin/awb");
+  for (const kept of ["/", "/magazin", "/magazin/comenzi/trendhome%3A1", "/magazin/awb", "/profile", "/history", "/scan", "/login", "/documents/a/b"]) {
+    assert.equal(storeLegacyRedirect(kept), null, kept);
+  }
+});
+
+test("the Store Workspace screens never open the earlier document screen, the SmartBill panel or the old customer list", () => {
+  for (const file of ["StoreDocuments", "StoreOrders", "StoreAwb", "StoreHome", "StoreParts", "StorePrepare", "StoreChecks", "StoreAddress"]) {
+    const source = readFileSync(new URL(`../features/store/${file}.tsx`, import.meta.url), "utf8");
+    assert.doesNotMatch(source, /["'`]\/documents\//, `${file}: no link to /documents/`);
+    assert.doesNotMatch(source, /ConfirmareInvoicePanel|CustomerChecks|DocumentPanel|DocumentScreen|ConfirmareHandoff/, `${file}: no earlier component`);
+  }
+  const app = readFileSync(new URL("../app/StaffApp.tsx", import.meta.url), "utf8");
+  assert.match(app, /storeLegacyRedirect\(route\)/, "the redirect runs before the route is parsed");
+  assert.doesNotMatch(app, /clasic/, "no way back to the earlier home");
+});
+
+test("the automatic final invoice after the print: the server's answer in one line, never a second invoice", () => {
+  assert.deepEqual(autoInvoiceNote(mapAutoInvoice({ state: "done", outcome: "issued", document: "TST 0500" })), { kind: "issued", document: "TST 0500" });
+  assert.deepEqual(autoInvoiceNote(mapAutoInvoice({ state: "done", outcome: "exists", document: "TST 0400" })), { kind: "exists", document: "TST 0400" }, "an existing invoice is never issued again");
+  assert.deepEqual(autoInvoiceNote(mapAutoInvoice({ state: "waiting", outcome: "answer_open" })), { kind: "open" }, "a lost answer is settled, never sent again");
+  assert.deepEqual(autoInvoiceNote(mapAutoInvoice({ state: "waiting", outcome: "invoice_action_open" })), { kind: "open" });
+  assert.deepEqual(autoInvoiceNote(mapAutoInvoice({ state: "waiting", outcome: "payment_not_cleared" })), { kind: "waiting", code: "payment_not_cleared" });
+  assert.deepEqual(autoInvoiceNote(mapAutoInvoice({ state: "waiting", outcome: null })), { kind: "queued" });
+  assert.deepEqual(autoInvoiceNote(mapAutoInvoice({ state: "busy" })), { kind: "queued" }, "the worker holds it right now");
+  assert.deepEqual(autoInvoiceNote(mapAutoInvoice({ state: "attention", outcome: "smartbill_unknown" })), { kind: "attention" });
+  assert.deepEqual(autoInvoiceNote(mapAutoInvoice({ state: "stopped", outcome: "same_employee" })), { kind: "stopped", code: "same_employee" });
+  assert.deepEqual(autoInvoiceNote(mapAutoInvoice({ state: "none" })), { kind: "quiet" }, "no request: not this employee's shop invoice");
+  assert.deepEqual(autoInvoiceNote(null), { kind: "quiet" });
+  assert.deepEqual(mapAutoInvoice({ state: "<b>", outcome: "DROP TABLE", document: 5 }), { state: "none", outcome: null, document: null }, "codes only");
+});
+
+test("the store never issues, e-mails, deletes or settles an invoice by hand: it only asks the server where the automatic one stands", () => {
+  for (const file of ["StoreDocuments", "StoreOrders", "StoreAwb", "StoreHome", "StoreParts", "StorePrepare", "StoreChecks", "StoreAddress"]) {
+    const source = readFileSync(new URL(`../features/store/${file}.tsx`, import.meta.url), "utf8");
+    assert.doesNotMatch(source, /invoiceAct|invoiceReconcile|proformaAct/, `${file}: no manual SmartBill action`);
+  }
+  assert.match(readFileSync(new URL("../features/store/StorePrepare.tsx", import.meta.url), "utf8"), /ops\.invoiceAuto\(orderId\)/);
+});
+
+test("V1.1 words exist in every Staff language", () => {
+  const keys = ["sw.inv.issued", "sw.inv.issuedPlain", "sw.inv.exists", "sw.inv.open", "sw.inv.unknown", "sw.inv.notNow", "sw.inv.queued", "sw.inv.waiting", "sw.docs.completed", "sw.docs.revisionWaiting", "sw.docs.revisionRequested",
+    "sw.docs.changedRetry", "sw.docs.tab.checks", "sw.check.title", "sw.check.lead", "sw.check.hint", "sw.check.empty", "sw.check.why", "sw.check.reason", "sw.check.answer"];
+  for (const locale of SUPPORTED_LOCALES) for (const key of keys) assert.ok((CATALOGS[locale] as unknown as Record<string, unknown>)[key], `${locale} ${key}`);
 });

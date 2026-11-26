@@ -1,9 +1,13 @@
 import { useState, type FormEvent } from "react";
 import { useI18n, type MessageKey } from "../../i18n";
 import { stageName } from "../../domain/stageNames";
-import { telHref, type StoreApi, type StoreOrder } from "../../domain/storeWorkspace";
+import { autoInvoiceNote, telHref, type StoreApi, type StoreOrder } from "../../domain/storeWorkspace";
 import { AppIcon } from "../../components/icons/AppIcon";
-import { ErrorMessage, Pager, SourceTag, StoreTopbar, addressText, fmtDateTime, money, reasonText, useStoreRead } from "./StoreParts";
+import type { DocumentApi } from "../../domain/documents";
+import type { ConfirmareApi } from "../../domain/confirmare";
+import { ErrorMessage, Pager, SourceTag, StoreTopbar, ToneMessage, addressText, fmtDateTime, money, reasonText, useStoreRead } from "./StoreParts";
+import { autoInvoiceRow, useStorePrepare } from "./StorePrepare";
+import { CustomerCheckCard } from "./StoreChecks";
 
 /** "Caută o comandă" (Staff 2.59.0): order number, AWB number, or a name/telephone the shop searches; the employee's shop only. */
 export function StoreSearch({ store, navigate }: { store: StoreApi; navigate: (path: string) => void }) {
@@ -43,11 +47,19 @@ export function StoreSearch({ store, navigate }: { store: StoreApi; navigate: (p
   </div>;
 }
 
-/** One order for the shop employee: customer, products, read-only money, production stage n / 14, document and AWB. */
-export function StoreOrderScreen({ store, orderId, navigate }: { store: StoreApi; orderId: string; navigate: (path: string) => void }) {
+/**
+ * One order for the shop employee: customer, products, read-only money, production stage n / 14, document and AWB. Staff
+ * 2.60.0: the document is prepared and printed here with the same one button as in "Documente de producție" (never the
+ * earlier document screen or the SmartBill panel); the final invoice is one short line; an order that waits for this
+ * employee's customer check shows its three answers.
+ */
+export function StoreOrderScreen({ store, documents, ops, permissions, orderId, navigate }: { store: StoreApi; documents?: DocumentApi; ops?: ConfirmareApi; permissions: readonly string[]; orderId: string; navigate: (path: string) => void }) {
   const { t } = useI18n();
   const read = useStoreRead((signal) => store.order(orderId, signal), [store, orderId]);
+  const queue = useStoreRead((signal) => ops ? ops.shopQueue(signal) : Promise.resolve(null), [ops, orderId]);
+  const check = (queue.data ?? []).find((item) => item.globalOrderId === orderId && item.customerCheck === "required") ?? null;
   const o: StoreOrder | null = read.data;
+  const autoLine = o?.autoInvoice ? autoInvoiceRow(autoInvoiceNote(o.autoInvoice), t) : null;
   const back = () => { if (window.history.length > 1) window.history.back(); else navigate("/"); };
   return <div className="sw-page sw-order" data-testid="sw-order">
     <StoreTopbar eyebrow={t("sw.eyebrow")} title={o ? t("sw.order.title", { number: o.orderNumber }) : "…"} onBack={back} />
@@ -59,6 +71,7 @@ export function StoreOrderScreen({ store, orderId, navigate }: { store: StoreApi
         {o.submittedAt && <span className="sw-muted">{fmtDateTime(o.submittedAt)}</span>}
       </div>
       <StageBar order={o} />
+      {check && ops && <CustomerCheckCard item={check} ops={ops} onDone={() => { queue.reload(); read.reload(); }} />}
       <div className="sw-order-grid">
         <section className="sw-card" aria-labelledby="sw-o-customer">
           <h2 id="sw-o-customer">{t("sw.order.customer")}</h2>
@@ -90,8 +103,9 @@ export function StoreOrderScreen({ store, orderId, navigate }: { store: StoreApi
         <section className="sw-card" aria-labelledby="sw-o-doc">
           <h2 id="sw-o-doc">{t("sw.order.document")}</h2>
           <p>{o.document.status === "none" ? t("sw.order.docNone") : o.document.status === "active" && o.document.revision !== null ? t("sw.order.docActive", { revision: o.document.revision, count: o.document.prints }) : <span className="sw-pill sw-pill-yellow">{t("sw.order.docStale")}</span>}</p>
-          {o.canDocuments && <button type="button" className="sw-button sw-button-ghost" onClick={() => navigate(`/documents/${encodeURIComponent(o.globalOrderId)}`)}><AppIcon name="document" size={16} />{t("sw.docs.openOrder")}</button>}
-          <p className="sw-small">{t("sw.order.invoice")}: <strong>{o.invoiceIssued ? t("sw.order.invoiceYes") : t("sw.order.invoiceNo")}</strong></p>
+          {o.canDocuments && documents && !o.cancelled && !o.stage.completed && <OrderPrepare orderId={o.globalOrderId} documents={documents} ops={ops} permissions={permissions} onDone={read.reload} />}
+          <p className="sw-small" data-testid="sw-order-invoice">{t("sw.order.invoice")}: <strong>{o.invoiceIssued ? t("sw.order.invoiceYes") : t("sw.order.invoiceNo")}</strong></p>
+          {!o.invoiceIssued && autoLine && <p className="sw-small" data-testid="sw-order-auto-invoice"><ToneMessage tone={autoLine.tone}>{autoLine.text}</ToneMessage></p>}
         </section>
         <section className="sw-card" aria-labelledby="sw-o-awb">
           <h2 id="sw-o-awb">{t("sw.order.awb")}</h2>
@@ -105,6 +119,19 @@ export function StoreOrderScreen({ store, orderId, navigate }: { store: StoreApi
         </section>
       </div>
     </>}
+  </div>;
+}
+
+/** "Pregătește și tipărește" on the order screen (the same job as in "Documente de producție"). */
+function OrderPrepare({ orderId, documents, ops, permissions, onDone }: { orderId: string; documents: DocumentApi; ops?: ConfirmareApi; permissions: readonly string[]; onDone: () => void }) {
+  const { t } = useI18n();
+  const work = useStorePrepare({ documents, ops, permissions, onDone });
+  return <div className="sw-order-prepare">
+    <button type="button" className="sw-button sw-button-blue" disabled={work.busy !== null} aria-busy={work.busy === orderId} onClick={() => void work.prepare(orderId, null)} data-testid="sw-order-prepare">
+      <AppIcon name="printer" size={16} />{work.busy === orderId ? t("sw.docs.preparing") : t("sw.docs.prepare")}</button>
+    {work.notes[orderId] && <ToneMessage tone={work.notes[orderId].tone}>{work.notes[orderId].text}</ToneMessage>}
+    {work.flash?.map((item, index) => <ToneMessage key={index} tone={item.tone}>{item.text}</ToneMessage>)}
+    {work.dialog}
   </div>;
 }
 

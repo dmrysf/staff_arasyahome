@@ -994,11 +994,16 @@ final class ConfirmareService
                 }
                 sort($lines, SORT_STRING);
                 $now = $this->now();
+                $fingerprint = ConfirmationClearance::fingerprint($this->pdo, $orderUuid);
+                // API 2.83.1 (owner 2026-11-26, Store Workspace V1.1): a confirmed call an operator already recorded on this exact
+                // review (same fingerprint, not before a reopening) is the real customer confirmation; it is kept, so the shop
+                // employee is never asked to confirm the same order again. Without such a call the customer check stays required.
+                $call = $this->recordedCall($orderUuid, $fingerprint);
                 $this->change($order, $confirmation, [
                     'status' => self::STATUS_APPROVED, 'decided_at' => $now, 'decided_by_employee_uuid' => null, 'decision_reason_code' => null,
                     'assigned_employee_uuid' => null, 'assigned_at' => null, 'assignment_kind' => null,
-                    'call_confirmed_at' => null, 'call_confirmed_by_employee_uuid' => null,
-                    'confirmed_line_ids' => json_encode($lines, JSON_THROW_ON_ERROR), 'approved_review_fingerprint' => ConfirmationClearance::fingerprint($this->pdo, $orderUuid),
+                    'call_confirmed_at' => $call['recorded_at'] ?? null, 'call_confirmed_by_employee_uuid' => $call['employee_uuid'] ?? null,
+                    'confirmed_line_ids' => json_encode($lines, JSON_THROW_ON_ERROR), 'approved_review_fingerprint' => $fingerprint,
                 ], null, 'approved', self::ONLINE_APPROVAL_REASON, $now, $requestId, null);
                 ConfirmationClearance::refresh($this->pdo, $orderUuid, $now);
                 $this->pdo->commit();

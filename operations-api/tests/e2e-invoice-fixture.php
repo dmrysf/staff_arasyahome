@@ -53,7 +53,8 @@ foreach ($call($root, 'GET', '/management/roles')['items'] as $role) {
 }
 $people = [];
 foreach (['ro' => ['Facturare Fisa', 'inv.docs.e2e', 'ro'], 'tr' => ['Fatura Fisi', 'inv.docs.tr.e2e', 'tr']] as $key => [$name, $username, $locale]) {
-    // Generic TEST people: the production document role and scope of Trend Home, and the invoice issue scope.
+    // Generic TEST people: the production document role and scope of Trend Home, and the invoice issue scope (the shop
+    // employees of the Store Workspace; API 2.84.0: their final invoice is issued by the system after their print).
     $employee = $container->employeeAdmin()->create($name, $username, null, 'pregatire-material', 'employee', $password, [], 'e2e');
     $call($root, 'PUT', "/management/employees/{$employee->employeeUuid}/applications", ['applications' => ['staff']]);
     $call($root, 'PUT', "/management/employees/{$employee->employeeUuid}/roles", ['roleIds' => [$documentRole ?? throw new RuntimeException('E2E: no document operator role')]]);

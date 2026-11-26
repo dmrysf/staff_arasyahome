@@ -20,9 +20,11 @@ use Throwable;
  *
  * 1. routing: nobody routed the order to a shop employee -> the system routes it (ConfirmareInvoice::autoRoute, the same
  *    rules as an operator's routing);
- * 2. final invoice: the shop has no final invoice -> it is issued in the name of the routed employee through the normal
- *    invoice action (every Arasya and shop check applies; one document; idempotent key `auto-awb-issue-<order>`);
- *    an invoice action whose answer was lost is settled with the shop's stored answer;
+ * 2. final invoice: the shop has no final invoice -> the system issues it on behalf of the routed employee through the
+ *    normal invoice action (API 2.84.0: the actor is the system identity, root through the intervention desk instance of
+ *    ConfirmareInvoice, `$onBehalfOf` the routed employee; every Arasya and shop check of that employee applies; one
+ *    document; idempotent key `auto-awb-issue-<order>`); an invoice action whose answer was lost is settled by the system
+ *    with the shop's stored answer;
  * 3. AWB: an AWB request whose answer was lost is settled with the shop's stored answer.
  *
  * The AWB itself is never made here: the parcel count, the weight and the collection the employee sees stay theirs.
@@ -121,14 +123,18 @@ final class ConfirmareAwbReadiness
             return self::report($order, $steps, 'blocked', ['assignee_missing']);
         }
 
-        // 2. Lost answers: the invoice action and the AWB request are settled with the shop's stored answer.
+        // 2. Lost answers: the invoice action and the AWB request are settled with the shop's stored answer. API 2.84.0: an
+        // invoice action is settled by the system identity (the shop employee no longer settles SmartBill actions).
+        $system = StoreAutoInvoice::systemIdentity($this->pdo, $this->employees);
         foreach ($this->openActions('order_invoice_actions', $orderUuid) as $open) {
             if (!$apply) {
                 return self::report($order, ['reconcile_invoice'], 'would_prepare', []);
             }
-            $actor = $this->employees->findByUuid((string) $open['employee_uuid']) ?? $employee;
+            if ($system === null) {
+                return self::report($order, $steps, 'blocked', ['system_unavailable']);
+            }
             try {
-                $this->invoice->reconcile($actor, $globalId, (string) $open['idempotency_key'], $requestId);
+                $this->invoice->reconcile($system, $globalId, (string) $open['idempotency_key'], $requestId);
                 $steps[] = 'invoice_reconciled';
             } catch (ApiException $e) {
                 return self::report($order, $steps, 'blocked', ['invoice_' . strtolower($e->errorCode)]);
@@ -165,15 +171,20 @@ final class ConfirmareAwbReadiness
         if (($document['exists'] ?? false) === true && ($document['status'] ?? null) === 'final') {
             return self::report($order, $steps, 'ready', []);
         }
-        if (!in_array('issue', (array) ($state['allowedActions'] ?? []), true)) {
-            $blockers = array_values(array_unique([...(array) ($state['blockers']['issue'] ?? []), ...(array) ($state['summary']['blockers']['issue'] ?? [])]));
-            return self::report($order, $steps, 'blocked', $blockers === [] ? ['invoice_not_allowed'] : $blockers);
+        // API 2.84.0: the employee never issues by hand (`not_allowed_for_role` in their own read); every other rule of the
+        // employee and of the shop still decides whether the system may issue for them now.
+        $blockers = array_values(array_diff(array_unique([...(array) ($state['blockers']['issue'] ?? []), ...(array) ($state['summary']['blockers']['issue'] ?? [])]), ['not_allowed_for_role']));
+        if ($blockers !== []) {
+            return self::report($order, $steps, 'blocked', $blockers);
         }
         if (!$apply) {
             return self::report($order, [...$steps, 'issue_invoice'], 'would_prepare', []);
         }
+        if ($system === null) {
+            return self::report($order, $steps, 'blocked', ['system_unavailable']);
+        }
         try {
-            $issued = $this->invoice->act($employee, $globalId, 'issue', ['expectedRevision' => (string) $state['summary']['revision']], 'auto-awb-issue-' . $orderUuid, $requestId);
+            $issued = $this->invoice->act($system, $globalId, 'issue', ['expectedRevision' => (string) $state['summary']['revision']], 'auto-awb-issue-' . $orderUuid, $requestId, $employee);
         } catch (ApiException $e) {
             $reason = $e->details['reason'] ?? null;
             return self::report($order, $steps, 'blocked', [is_string($reason) ? $reason : strtolower($e->errorCode)]);

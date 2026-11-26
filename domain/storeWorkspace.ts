@@ -3,6 +3,7 @@ import { StaffServiceError } from "./models";
 import { translate } from "../i18n/translator";
 import { CANONICAL_CURTAIN_WORKFLOW_V1_STRUCTURE } from "./canonicalProductionWorkflow";
 import { mapDeliveryView, type DeliveryView } from "./confirmareOps";
+import type { AutoInvoiceResult } from "./confirmareInvoice";
 
 /**
  * Store Workspace V1 (Staff 2.59.0, API 2.83.0, YD SOFT 2.36.0; owner brief 2026-11-26): the shop employee's one place for
@@ -58,12 +59,33 @@ export function canUseStoreWorkspace(employee: Employee): boolean {
 
 /**
  * The Store Workspace is the home of a shop employee who is not a Confirmare operator (an operator keeps the operator desk).
- * `?clasic=1` keeps the earlier home reachable during the transition.
+ * Staff 2.60.0 (Store Workspace V1.1): the earlier `?clasic=1` home is gone; the shop employee always works here.
  */
-export function opensStoreWorkspace(employee: Employee, operatorDesk: boolean, search = ""): boolean {
-  if (operatorDesk || new URLSearchParams(search).get("clasic") === "1") return false;
+export function opensStoreWorkspace(employee: Employee, operatorDesk: boolean): boolean {
+  if (operatorDesk) return false;
   const confirmare = (employee.confirmareScopes?.operate.length ?? 0) + (employee.confirmareScopes?.supervise.length ?? 0) > 0;
   return canUseStoreWorkspace(employee) && !confirmare;
+}
+
+/**
+ * Staff 2.60.0: where an earlier screen's address takes a Store Workspace employee instead (a direct URL, an old link, the
+ * browser's back button, a live notice or a QR scan that opens an order). The order always opens in the store's own order
+ * screen, the production handoff list in "Documente de producție", the old AWB list in "AWB și etichete". Null: the address
+ * is not an earlier screen (it stays as it is). Only for the Store Workspace employee: every other employee keeps the
+ * earlier screens.
+ */
+export function storeLegacyRedirect(path: string): string | null {
+  const pathname = path.split(/[?#]/, 1)[0];
+  const order = /^\/(?:documents|orders)\/([^/]+)\/?$/.exec(pathname);
+  if (order) {
+    let id: string;
+    try { id = decodeURIComponent(order[1]); } catch { return "/magazin"; }
+    return id.trim() === "" ? "/magazin" : `/magazin/comenzi/${encodeURIComponent(id)}`;
+  }
+  if (pathname === "/orders" || pathname === "/orders/") return "/magazin/istoric";
+  if (pathname === "/confirmare/handoff") return "/magazin/documente";
+  if (pathname === "/confirmare/awb") return "/magazin/awb";
+  return null;
 }
 
 // ---- Server shapes ------------------------------------------------------------------------------------------------------
@@ -106,7 +128,7 @@ export interface StoreOrder {
   globalOrderId: string; orderNumber: string; source: string; submittedAt: string | null; dueDate: string | null;
   stage: { id: string; number: number | null; total: number; completed: boolean }; cancelled: boolean;
   document: { status: string; version: number; revision: number | null; prints: number; lastPrint: string | null };
-  invoiceIssued: boolean; products: StoreProduct[]; awbOperations: StoreAwbOperation[];
+  invoiceIssued: boolean; autoInvoice: AutoInvoiceResult | null; products: StoreProduct[]; awbOperations: StoreAwbOperation[];
   shop: { status: string | null; lines: { name: string; sku: string; quantity: number; image: string | null }[]; money: { currency: string; known: boolean; total: string | null; received: string | null; remaining: string | null }; payment: string | null; delivery: DeliveryView | null } | null;
   canAwb: boolean; canDocuments: boolean;
 }
@@ -234,6 +256,7 @@ export function mapStoreOrder(value: unknown): StoreOrder {
     stage: { id: str(stage.id, 60), number: optInt(stage.number), total: int(stage.total), completed: bool(stage.completed) }, cancelled: bool(r.cancelled),
     document: { status: str(doc.status, 20), version: int(doc.version), revision: optInt(doc.revision), prints: int(doc.prints), lastPrint: instant(doc.lastPrint) },
     invoiceIssued: bool(r.invoiceIssued),
+    autoInvoice: r.autoInvoice == null ? null : mapAutoInvoice(r.autoInvoice),
     products: list(r.products, 100, (entry) => {
       const p = obj(entry);
       return { line: int(p.line), name: str(p.name, 255), code: optStr(p.code, 120), variant: optStr(p.variant, 160), color: optStr(p.color, 160), width: optStr(p.width, 20), height: optStr(p.height, 20),
@@ -436,4 +459,46 @@ export function sectorOf(city: string): number | null {
 export function telHref(phone: string): string | null {
   const clean = phone.replace(/[^\d+]/g, "");
   return /^\+?\d{9,15}$/.test(clean) ? `tel:${clean}` : null;
+}
+
+// ---- The automatic final invoice after the production document (Staff 2.61.0, API 2.84.0) -------------------------------
+
+/**
+ * Store Workspace V1.1 (owner approval 2026-11-26 "FINAL AUTOMATION APPROVAL"): the shop employee never issues the final
+ * invoice by hand any more (the server refuses it). Their print of the production document asks the system for it, in the
+ * same server transaction; the system issues it on their behalf (StoreAutoInvoice) right after the print, and every minute
+ * until it is done, also when the browser was closed. "Pregătește și tipărește" only asks the server where it stands
+ * (POST .../invoice/auto) and shows one line:
+ * - `issued` / `exists`: the final invoice is there (the system issued it, or one already existed: never a second one);
+ * - `open`: an invoice action has no answer yet (the system settles it; never sent again);
+ * - `waiting`: a rule is not met yet (the code says which); the system tries again by itself;
+ * - `attention`: SmartBill did not confirm, or the shop refused too often: the person in charge checks;
+ * - `stopped`: the system no longer issues it for this employee (the code says why);
+ * - `quiet`: nothing asked (not this employee's shop invoice, or an older server).
+ */
+export type AutoInvoiceNote =
+  | { kind: "issued" | "exists"; document: string }
+  | { kind: "open" | "attention" | "quiet" | "queued" }
+  | { kind: "waiting" | "stopped"; code: string };
+
+const OPEN_OUTCOMES = ["answer_open", "invoice_action_open", "answer_lost"];
+
+/** The server's answer about the automatic final invoice (API 2.84.0): codes only. */
+export function mapAutoInvoice(value: unknown): AutoInvoiceResult {
+  const r = obj(value);
+  const code = (v: unknown) => (typeof v === "string" && /^[a-z_]{2,40}$/.test(v) ? v : null);
+  return { state: code(r.state) ?? "none", outcome: code(r.outcome), document: typeof r.document === "string" && r.document.trim() !== "" ? r.document.trim().slice(0, 80) : null };
+}
+
+export function autoInvoiceNote(result: AutoInvoiceResult | null): AutoInvoiceNote {
+  if (result === null) return { kind: "quiet" };
+  const code = result.outcome ?? "";
+  switch (result.state) {
+    case "done": return { kind: code === "exists" ? "exists" : "issued", document: result.document ?? "" };
+    case "attention": return { kind: "attention" };
+    case "stopped": return { kind: "stopped", code };
+    case "busy": return { kind: "queued" };
+    case "waiting": return OPEN_OUTCOMES.includes(code) ? { kind: "open" } : code === "" ? { kind: "queued" } : { kind: "waiting", code };
+    default: return { kind: "quiet" };
+  }
 }
