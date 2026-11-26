@@ -490,6 +490,8 @@ final class StoreWorkspace
             'document' => ['status' => (string) $row['document_status'], 'version' => (int) $row['document_version'], 'revision' => $row['revision_number'] === null ? null : (int) $row['revision_number'],
                 'prints' => (int) $row['prints'], 'lastPrint' => $row['last_print'] === null ? null : self::iso((string) $row['last_print'])],
             'invoiceIssued' => (int) $issued->fetchColumn() > 0,
+            // API 2.84.0: the automatic final invoice after the print (null before the first print or before migration 065).
+            'autoInvoice' => StoreAutoInvoice::stateOf($this->pdo, (string) $row['order_uuid']),
             'products' => array_map(static fn (array $i): array => ['line' => (int) $i['line_number'], 'name' => (string) $i['name'], 'code' => $i['product_code'] === null ? null : (string) $i['product_code'],
                 'variant' => $i['variant'] === null ? null : (string) $i['variant'], 'color' => $i['color'] === null ? null : (string) $i['color'],
                 'width' => $i['width_value'] === null ? null : (string) $i['width_value'], 'height' => $i['height_value'] === null ? null : (string) $i['height_value'],
