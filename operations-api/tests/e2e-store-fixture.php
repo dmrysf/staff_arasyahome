@@ -95,7 +95,7 @@ $as($root, 'PUT', "/management/employees/{$uuid}/invoice-scopes", ['issue' => ['
 // TEST orders through the real ingestion (same products as the TEST shop view).
 $names = ['91401' => ['TEST Maria', 'Ionescu', 'Brașov'], '91402' => ['TEST Andrei', 'Pop', 'Cluj-Napoca'], '91403' => ['TEST Elena', 'Dumitru', 'Sector 3'], '91404' => ['TEST Ioana', 'Marin', 'Iași'],
     '91410' => ['TEST Mihai', 'Stan', 'Brașov'], '91411' => ['TEST Ana', 'Radu', 'Necunoscut'], '91412' => ['TEST Vlad', 'Georgescu', 'Constanța'], '91413' => ['TEST Irina', 'Toma', 'Sibiu'],
-    '91414' => ['TEST Dan', 'Matei', 'Timișoara']];
+    '91414' => ['TEST Dan', 'Matei', 'Timișoara'], '91405' => ['TEST Sorin', 'Neagu', 'Ploiești']];
 $file = (string) getenv('ARASYA_E2E_SHOP_FILE');
 $shop = is_file($file) ? (json_decode((string) file_get_contents($file), true) ?: []) : [];
 $now = new DateTimeImmutable('now', new DateTimeZone('UTC'));
@@ -131,19 +131,29 @@ file_put_contents($file, json_encode($shop, JSON_PRETTY_PRINT | JSON_UNESCAPED_S
 $global = static fn (string|int $n): string => "trendhome:{$n}";
 $approve = $pdo->prepare("UPDATE order_confirmations SET status = 'approved', decided_at = UTC_TIMESTAMP(6), approved_review_fingerprint = REPEAT('e', 64), call_confirmed_at = UTC_TIMESTAMP(6), cleared_at = UTC_TIMESTAMP(6), production_cleared = 1, version = version + 1, updated_at = UTC_TIMESTAMP(6) WHERE global_order_id = ? AND status = 'pending'");
 foreach (array_keys($names) as $number) {
-    $approve->execute([$global((string) $number)]);
+    if (!in_array((string) $number, ['91401', '91405'], true)) $approve->execute([$global((string) $number)]);
 }
+// 91401 and 91405 (Staff 2.60.0): verified online payments the system approved without a call (API 2.82.0), routed to the
+// employee, as on the live shops. The real system approval is used (no direct UPDATE of the decision). 91401's customer
+// check is recorded below by the employee (so its production, document and final invoice follow the real chain); 91405
+// still waits for it.
+$container->confirmareService()->approveVerifiedOnline(500, 'store-e2e-online');
 // The routing is recorded by another person (an assignment is never to oneself): the TEST root.
 $assigner = (string) $pdo->query('SELECT employee_uuid FROM system_root_identity LIMIT 1')->fetchColumn();
 $stage = $pdo->prepare('UPDATE operational_orders SET production_stage_id = ?, production_changed_at = UTC_TIMESTAMP(6) WHERE global_order_id = ?');
-foreach (['91410' => 'quality-control', '91411' => 'quality-control', '91412' => 'quality-control', '91413' => 'packing', '91414' => 'delivery'] as $number => $id) {
-    $stage->execute([$id, $global($number)]);
+// 91401 (Staff 2.60.0) and 91405 are routed to the employee at the first stage: the first gets its final invoice right after
+// "Pregătește și tipărește", the second waits for the customer check.
+foreach (['91401' => null, '91405' => null, '91410' => 'quality-control', '91411' => 'quality-control', '91412' => 'quality-control', '91413' => 'packing', '91414' => 'delivery'] as $number => $id) {
+    if ($id !== null) $stage->execute([$id, $global($number)]);
     $pdo->prepare("INSERT INTO order_shop_assignments (assignment_uuid, order_uuid, global_order_id, source_key, employee_uuid, assigned_by_employee_uuid, assigned_role, idempotency_key, request_hmac, state, assigned_at)
         SELECT ?, o.order_uuid, o.global_order_id, 'trendhome', ?, ?, 'manager', ?, ?, 'active', UTC_TIMESTAMP(6) FROM operational_orders o WHERE o.global_order_id = ?
           AND NOT EXISTS (SELECT 1 FROM order_shop_assignments a WHERE a.active_order_uuid = o.order_uuid)")
         ->execute([\Arasya\Operations\Support\Uuid::v4(), $uuid, $assigner, 'store-e2e-route-' . bin2hex(random_bytes(8)), random_bytes(32), $global($number)]);
 }
 $alina = T::login($kernel, $username, $password);
+if (\Arasya\Operations\Confirmare\ConfirmareService::awaitingCustomerCheck($pdo, (string) $pdo->query("SELECT order_uuid FROM operational_orders WHERE global_order_id = 'trendhome:91401'")->fetchColumn())) {
+    $as($alina, 'POST', '/confirmare/orders/' . rawurlencode($global('91401')) . '/customer-check', ['outcome' => 'confirmed']);
+}
 // 91404: revision 1 generated and printed once today by the employee (the reprint scenario).
 $doc = $as($alina, 'GET', '/production-documents/orders/' . rawurlencode($global('91404')));
 if (($doc['status'] ?? '') === 'none') {
@@ -163,5 +173,5 @@ if (($state['shop']['awb']['state'] ?? 'none') === 'none' && (int) $pdo->query("
     $ops('awb/cancel', ['reason' => 'wrong_parcels']);
     $ops('awb', ['parcels' => 2, 'expectedCod' => '350.00']);
 }
-echo json_encode(['password' => $password, 'username' => $username, 'docs' => ['91401', '91402', '91403'], 'printed' => '91404',
+echo json_encode(['password' => $password, 'username' => $username, 'docs' => ['91401', '91402', '91403'], 'printed' => '91404', 'check' => '91405',
     'ready' => '91410', 'address' => '91411', 'blocked' => '91412', 'card' => '91413', 'history' => '91414'], JSON_UNESCAPED_UNICODE), "\n";

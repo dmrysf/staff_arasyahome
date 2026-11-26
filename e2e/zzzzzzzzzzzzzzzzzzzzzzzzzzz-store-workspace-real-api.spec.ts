@@ -4,11 +4,11 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 
-// Store Workspace V1 (API 2.83.0, Staff 2.59.0) against the real Operations API, after the Confirmare, invoice and
+// Store Workspace V1 / V1.1 (API 2.83.1, Staff 2.60.0) against the real Operations API, after the Confirmare, invoice and
 // operations specs. TEST ONLY: invented customers; the TEST shop simulates FAN Courier (no AWB is made or cancelled
 // anywhere real). The shop employee works on a laptop: 1280×720 to 1920×1080 at 100/110/125 % zoom (the CSS viewport of a
 // 1280 px screen at 125 % is 1024 px), never a horizontal page scroll. Screenshots go to e2e/.runtime/store.
-type Fixture = { password: string; username: string; docs: string[]; printed: string; ready: string; address: string; blocked: string; card: string; history: string };
+type Fixture = { password: string; username: string; docs: string[]; printed: string; check: string; ready: string; address: string; blocked: string; card: string; history: string };
 const root = path.resolve(import.meta.dirname, "..");
 const SHOTS = path.join(root, "e2e", ".runtime", "store");
 const LAPTOPS = [[1280, 720], [1366, 768], [1920, 1080], [1164, 655], [1024, 576]] as const; // 100 %, 100 %, 100 %, 110 %, 125 %
@@ -79,6 +79,9 @@ test("home: three sections with the day's real counters; documents: prepare and 
     await row.getByTestId("sw-doc-prepare").click();
     await expect(page.getByTestId("sw-docs-flash")).toContainText(`#${F.docs[0]}`, { timeout: 20_000 });
     await expect(page.getByTestId("sw-docs-todo")).not.toContainText(F.docs[0]);
+    // V1.1: the final invoice follows the document by itself (the order is routed to this employee); no SmartBill panel.
+    await expect(page.getByTestId("sw-docs-flash")).toContainText(/Factura finală .*emisă/, { timeout: 20_000 });
+    await expect(page.getByTestId("cf-invoice")).toHaveCount(0);
     await shot(page, "03-document-prepared-and-printed");
 
     await page.getByTestId("sw-docs-tabs-today").click();
@@ -212,6 +215,50 @@ test("AWB: real blockers, parcels stepper, one-click AWB, correction at FAN, add
     await page.getByTestId("sw-hist-go-todo").click();
     await expect(page.locator(`[data-testid=sw-awb-row][data-order="${F.history}"]`).getByTestId("sw-awb-create")).toBeVisible({ timeout: 20_000 });
     await shot(page, "22-awb-back-to-create-after-history-correction");
+    expect(errors).toEqual([]);
+  } finally { await context.close(); }
+});
+
+test("V1.1: earlier addresses open the Store Workspace; the customer check is a small tab; no SmartBill panel", async ({ browser }) => {
+  const { context, page, errors } = await signIn(browser);
+  try {
+    const order = encodeURIComponent(`trendhome:${F.printed}`);
+    for (const earlier of [`/documents/${order}`, `/orders/${order}`]) {
+      await page.goto(earlier);
+      await page.waitForURL((url) => url.pathname === `/magazin/comenzi/${order}`);
+      await expect(page.getByTestId("sw-order")).toBeVisible();
+      await expect(page.locator(".document-screen, [data-testid=cf-invoice], [data-testid=cf-customer-checks]")).toHaveCount(0);
+    }
+    await expect(page.getByTestId("sw-order-prepare")).toBeVisible();
+    await expect(page.getByTestId("sw-order-invoice")).toBeVisible();
+    await shot(page, "23-old-document-link-opens-store-order");
+    await page.goto("/confirmare/handoff");
+    await page.waitForURL((url) => url.pathname === "/magazin/documente");
+    await expect(page.getByTestId("sw-documents")).toBeVisible();
+    // The back button never shows an earlier screen: the earlier address was replaced.
+    await page.goto("/magazin");
+    await page.goto(`/documents/${order}`);
+    await page.waitForURL((url) => url.pathname === `/magazin/comenzi/${order}`);
+    await page.goBack();
+    await page.waitForURL((url) => url.pathname === "/magazin");
+    await expect(page.getByTestId("sw-home")).toBeVisible();
+
+    await page.goto("/magazin/documente");
+    await expect(page.getByTestId("sw-docs-checks-hint")).toBeVisible();
+    await expect(page.getByTestId("cf-customer-checks")).toHaveCount(0);
+    await shot(page, "24-documents-with-check-hint");
+    await page.getByTestId("sw-docs-tabs-checks").click();
+    const row = page.getByTestId(`sw-check-row-${F.check}`);
+    await expect(row).toBeVisible();
+    await accessible(page, "sw-documents", "customer checks");
+    await noOverflow(page, "customer checks");
+    await shot(page, "25-customer-check-tab");
+    await row.getByTestId("sw-check-confirmed").click();
+    await expect(page.getByTestId("sw-checks-result")).toContainText(`#${F.check}`, { timeout: 20_000 });
+    await expect(row).toHaveCount(0);
+    await page.getByTestId("sw-docs-tabs-todo").click();
+    await expect(page.getByTestId("sw-docs-todo")).toContainText(F.check, { timeout: 20_000 });
+    await shot(page, "26-checked-order-ready-to-print");
     expect(errors).toEqual([]);
   } finally { await context.close(); }
 });

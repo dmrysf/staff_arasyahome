@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   MAX_PARCELS, ShopQueue, addressFormIssues, awbReadiness, canUseStoreWorkspace, clampParcels, mapAddressCheck, mapAwbHistoryPage, mapOpen, mapAwbPage, mapShopRow, mapStoreOrder, mapStoreSummary,
-  opensStoreWorkspace, parcelKey, parseWeight, reprintReasonText, retryable, sectorOf, stageNumber, telHref, toneOf, validRange, type StoreAwbItem,
+  finalInvoiceStep, opensStoreWorkspace, parcelKey, storeLegacyRedirect, parseWeight, reprintReasonText, retryable, sectorOf, stageNumber, telHref, toneOf, validRange, type StoreAwbItem,
 } from "../domain/storeWorkspace";
 import { mapOperationsState, mapShopOperations } from "../domain/confirmareOps";
 import { parseStaffRoute } from "../domain/staffRoute";
@@ -27,7 +27,6 @@ test("the Store Workspace is the home of a shop employee, never of a Confirmare 
   assert.equal(opensStoreWorkspace(employee(), false), true);
   assert.equal(opensStoreWorkspace(employee(), true), false, "an operator keeps the operator desk");
   assert.equal(opensStoreWorkspace(employee({ confirmareScopes: { operate: ["trendhome"], supervise: [] } }), false), false);
-  assert.equal(opensStoreWorkspace(employee(), false, "?clasic=1"), false, "the earlier home stays reachable");
   assert.equal(canUseStoreWorkspace(employee({ invoiceScopes: { issue: [], manage: [] } })), false);
   assert.equal(canUseStoreWorkspace(employee({ isRoot: true })), false);
   assert.equal(canUseStoreWorkspace(employee({ mustChangePassword: true })), false);
@@ -252,4 +251,66 @@ test("a prepared address check is read strictly (the shop's codes only)", () => 
   assert.deepEqual(mapAddressCheck({ issues: ["locality_missing"], warnings: [], awbActive: true }), { issues: ["locality_missing"], warnings: [], awbActive: true });
   assert.throws(() => mapAddressCheck({ issues: ["<b>"], warnings: [], awbActive: true }));
   assert.throws(() => mapAddressCheck({ issues: [], warnings: [] }));
+});
+
+// V1.1 (Staff 2.60.0): no earlier screen for the shop employee, the final invoice after the document --------------------------
+test("an earlier screen's address opens its Store Workspace screen (direct URL, old link, back button, notice, scanner)", () => {
+  assert.equal(storeLegacyRedirect("/documents/trendhome%3A66489"), "/magazin/comenzi/trendhome%3A66489");
+  assert.equal(storeLegacyRedirect("/orders/trendhome%3A66489"), "/magazin/comenzi/trendhome%3A66489");
+  assert.equal(storeLegacyRedirect("/orders/trendhome:66489/"), "/magazin/comenzi/trendhome%3A66489");
+  assert.equal(storeLegacyRedirect("/documents/trendhome%3A1?tab=x#y"), "/magazin/comenzi/trendhome%3A1");
+  assert.equal(storeLegacyRedirect("/documents/%E0%A4%A"), "/magazin", "a broken address opens the store home, never an error");
+  assert.equal(storeLegacyRedirect("/orders"), "/magazin/istoric");
+  assert.equal(storeLegacyRedirect("/confirmare/handoff"), "/magazin/documente");
+  assert.equal(storeLegacyRedirect("/confirmare/awb"), "/magazin/awb");
+  for (const kept of ["/", "/magazin", "/magazin/comenzi/trendhome%3A1", "/magazin/awb", "/profile", "/history", "/scan", "/login", "/documents/a/b"]) {
+    assert.equal(storeLegacyRedirect(kept), null, kept);
+  }
+});
+
+test("the Store Workspace screens never open the earlier document screen, the SmartBill panel or the old customer list", () => {
+  for (const file of ["StoreDocuments", "StoreOrders", "StoreAwb", "StoreHome", "StoreParts", "StorePrepare", "StoreChecks", "StoreAddress"]) {
+    const source = readFileSync(new URL(`../features/store/${file}.tsx`, import.meta.url), "utf8");
+    assert.doesNotMatch(source, /["'`]\/documents\//, `${file}: no link to /documents/`);
+    assert.doesNotMatch(source, /ConfirmareInvoicePanel|CustomerChecks|DocumentPanel|DocumentScreen|ConfirmareHandoff/, `${file}: no earlier component`);
+  }
+  const app = readFileSync(new URL("../app/StaffApp.tsx", import.meta.url), "utf8");
+  assert.match(app, /storeLegacyRedirect\(route\)/, "the redirect runs before the route is parsed");
+  assert.doesNotMatch(app, /clasic/, "no way back to the earlier home");
+});
+
+const invoiceRead = (patch: { document?: Record<string, unknown>; operation?: string; allowed?: string[]; blockers?: string[]; shopBlockers?: string[]; role?: string; documentType?: string; mode?: string; actionOpen?: boolean } = {}) => ({
+  available: true, role: patch.role ?? "documents", allowedActions: patch.allowed ?? ["issue"], actionOpen: patch.actionOpen ?? false,
+  blockers: { issue: patch.blockers ?? [], sendMail: [], reissue: [], resolve: [], delete: [] },
+  summary: {
+    revision: "rev-1", mode: patch.mode ?? "enforce", smartbill: { documentType: patch.documentType ?? "invoice" },
+    document: { exists: false, type: null, series: null, number: null, ...patch.document },
+    operation: { state: patch.operation ?? "none" },
+    blockers: { issue: patch.shopBlockers ?? [], sendMail: [], reissue: [], resolve: [], delete: [] },
+  },
+}) as unknown as Parameters<typeof finalInvoiceStep>[0];
+
+test("the final invoice after the print: issued once when the server allows it, never twice, quiet when it is not this employee's", () => {
+  assert.deepEqual(finalInvoiceStep(invoiceRead()), { kind: "issue", revision: "rev-1" });
+  assert.deepEqual(finalInvoiceStep(invoiceRead({ document: { exists: true, type: "invoice", series: "SMART", number: "10500" } })), { kind: "exists", document: "SMART 10500" });
+  assert.deepEqual(finalInvoiceStep(invoiceRead({ document: { exists: true, type: "proforma", series: "ARS", number: "0900" } })), { kind: "issue", revision: "rev-1" }, "a paid proforma is not the final invoice");
+  assert.deepEqual(finalInvoiceStep(invoiceRead({ operation: "unknown" })), { kind: "open" }, "an unknown outcome is never sent again");
+  assert.deepEqual(finalInvoiceStep(invoiceRead({ operation: "in_flight" })), { kind: "open" });
+  assert.deepEqual(finalInvoiceStep(invoiceRead({ actionOpen: true })), { kind: "open" });
+  assert.deepEqual(finalInvoiceStep(invoiceRead({ allowed: [], shopBlockers: ["payment_not_cleared"] })), { kind: "blocked", code: "payment_not_cleared" });
+  assert.deepEqual(finalInvoiceStep(invoiceRead({ allowed: [], blockers: ["handoff_not_ready"], shopBlockers: ["smartbill_refused"] })), { kind: "blocked", code: "handoff_not_ready" }, "Arasya's reason first");
+  for (const quiet of ["not_allowed_for_role", "not_assigned", "assigned_to_other", "invoice_observe", "invoice_disabled"]) {
+    assert.deepEqual(finalInvoiceStep(invoiceRead({ allowed: [], blockers: [quiet] })), { kind: "quiet" }, quiet);
+  }
+  assert.deepEqual(finalInvoiceStep(invoiceRead({ role: "viewer" })), { kind: "quiet" }, "a reader never issues");
+  assert.deepEqual(finalInvoiceStep(invoiceRead({ documentType: "proforma" })), { kind: "quiet" }, "a proforma shop: not the shop employee's work");
+  assert.deepEqual(finalInvoiceStep(invoiceRead({ mode: "observe" })), { kind: "quiet" });
+  assert.deepEqual(finalInvoiceStep({ available: false, reason: "not_configured" }), { kind: "quiet" });
+  assert.deepEqual(finalInvoiceStep({ available: false, reason: "unreachable" }), { kind: "blocked", code: "smartbill_unreachable" });
+});
+
+test("V1.1 words exist in every Staff language", () => {
+  const keys = ["sw.inv.issued", "sw.inv.issuedPlain", "sw.inv.exists", "sw.inv.open", "sw.inv.unknown", "sw.inv.notNow", "sw.docs.completed", "sw.docs.revisionWaiting", "sw.docs.revisionRequested",
+    "sw.docs.changedRetry", "sw.docs.tab.checks", "sw.check.title", "sw.check.lead", "sw.check.hint", "sw.check.empty", "sw.check.why", "sw.check.reason", "sw.check.answer"];
+  for (const locale of SUPPORTED_LOCALES) for (const key of keys) assert.ok((CATALOGS[locale] as unknown as Record<string, unknown>)[key], `${locale} ${key}`);
 });

@@ -316,7 +316,10 @@ $second = $act($opB, $g7, 'decision', ['expectedVersion' => $v7, 'decision' => '
 $check($first['status'] === 200 && $second['status'] === 409 && $state($g7)['status'] === 'approved', 'the second decision on the same version is refused (CONFIRMARE_CHANGED), nothing is overwritten');
 
 // ---- 11. A verified online payment goes to the shop employee without the operator ---------------------------------------
-foreach ([20, 21, 22, 23, 24] as $n) $ok($send('trendhome', $payload($id($n), $submitted($n), ['payment' => 'online'])), "online order {$n}");
+foreach ([20, 21, 22, 23, 24, 25] as $n) $ok($send('trendhome', $payload($id($n), $submitted($n), ['payment' => 'online'])), "online order {$n}");
+// API 2.83.1: order 25 was already confirmed by telephone by an operator (no decision yet) before the system approval.
+$ok($act($opA, $th(25), 'claim', ['expectedVersion' => $version($th(25))]), 'A takes online order 25');
+$ok($act($opA, $th(25), 'contact', ['expectedVersion' => $version($th(25)), 'outcome' => 'confirmed', 'reviewFingerprint' => $fp($opA, $th(25))]), 'A records the confirmed call of order 25');
 $ok($decide($opA, $th(21), ['decision' => 'waiting']), 'an operator already marked order 21 as waiting');
 $pdo->prepare("UPDATE operational_orders SET workflow_cohort_reason = 'financing_legacy' WHERE global_order_id = ?")->execute([$th(22)]);
 $pdo->prepare("UPDATE operational_orders SET source_financial_attention = 'refund_liability' WHERE global_order_id = ?")->execute([$th(23)]);
@@ -329,6 +332,11 @@ $check($s20['status'] === 'approved' && $s20['decided_by_employee_uuid'] === nul
     'a verified online payment is approved by the system (no employee, no call); production stays closed: ' . json_encode([$online, $s20]));
 $check(\Arasya\Operations\Confirmare\ConfirmareService::awaitingCustomerCheck($pdo, (string) $one('SELECT order_uuid FROM operational_orders WHERE global_order_id = ?', [$th(20)])), 'it waits for the shop employee\'s customer check');
 $check(in_array('call', $detail($sup, $th(20))['production']['missing'], true), 'production needs the customer check (routing is not production)');
+$s25 = $state($th(25));
+$check($s25['status'] === 'approved' && $s25['call_confirmed_at'] !== null && $s25['call_confirmed_by_employee_uuid'] === $uuids['csopa']
+    && !\Arasya\Operations\Confirmare\ConfirmareService::awaitingCustomerCheck($pdo, (string) $one('SELECT order_uuid FROM operational_orders WHERE global_order_id = ?', [$th(25)]))
+    && !in_array('call', $detail($sup, $th(25))['production']['missing'], true),
+    'API 2.83.1: the operator\'s confirmed call on the same review is kept; no second customer check is asked: ' . json_encode($s25));
 foreach ([21 => 'waiting', 22 => 'financing', 23 => 'attention', 24 => 'unpaid'] as $n => $label) {
     $check($state($th($n))['status'] === 'pending', "online order {$n} ({$label}) is not approved by the system");
 }

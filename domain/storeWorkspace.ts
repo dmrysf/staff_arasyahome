@@ -3,6 +3,7 @@ import { StaffServiceError } from "./models";
 import { translate } from "../i18n/translator";
 import { CANONICAL_CURTAIN_WORKFLOW_V1_STRUCTURE } from "./canonicalProductionWorkflow";
 import { mapDeliveryView, type DeliveryView } from "./confirmareOps";
+import { blockersOf, type InvoiceRead } from "./confirmareInvoice";
 
 /**
  * Store Workspace V1 (Staff 2.59.0, API 2.83.0, YD SOFT 2.36.0; owner brief 2026-11-26): the shop employee's one place for
@@ -58,12 +59,33 @@ export function canUseStoreWorkspace(employee: Employee): boolean {
 
 /**
  * The Store Workspace is the home of a shop employee who is not a Confirmare operator (an operator keeps the operator desk).
- * `?clasic=1` keeps the earlier home reachable during the transition.
+ * Staff 2.60.0 (Store Workspace V1.1): the earlier `?clasic=1` home is gone; the shop employee always works here.
  */
-export function opensStoreWorkspace(employee: Employee, operatorDesk: boolean, search = ""): boolean {
-  if (operatorDesk || new URLSearchParams(search).get("clasic") === "1") return false;
+export function opensStoreWorkspace(employee: Employee, operatorDesk: boolean): boolean {
+  if (operatorDesk) return false;
   const confirmare = (employee.confirmareScopes?.operate.length ?? 0) + (employee.confirmareScopes?.supervise.length ?? 0) > 0;
   return canUseStoreWorkspace(employee) && !confirmare;
+}
+
+/**
+ * Staff 2.60.0: where an earlier screen's address takes a Store Workspace employee instead (a direct URL, an old link, the
+ * browser's back button, a live notice or a QR scan that opens an order). The order always opens in the store's own order
+ * screen, the production handoff list in "Documente de producție", the old AWB list in "AWB și etichete". Null: the address
+ * is not an earlier screen (it stays as it is). Only for the Store Workspace employee: every other employee keeps the
+ * earlier screens.
+ */
+export function storeLegacyRedirect(path: string): string | null {
+  const pathname = path.split(/[?#]/, 1)[0];
+  const order = /^\/(?:documents|orders)\/([^/]+)\/?$/.exec(pathname);
+  if (order) {
+    let id: string;
+    try { id = decodeURIComponent(order[1]); } catch { return "/magazin"; }
+    return id.trim() === "" ? "/magazin" : `/magazin/comenzi/${encodeURIComponent(id)}`;
+  }
+  if (pathname === "/orders" || pathname === "/orders/") return "/magazin/istoric";
+  if (pathname === "/confirmare/handoff") return "/magazin/documente";
+  if (pathname === "/confirmare/awb") return "/magazin/awb";
+  return null;
 }
 
 // ---- Server shapes ------------------------------------------------------------------------------------------------------
@@ -436,4 +458,41 @@ export function sectorOf(city: string): number | null {
 export function telHref(phone: string): string | null {
   const clean = phone.replace(/[^\d+]/g, "");
   return /^\+?\d{9,15}$/.test(clean) ? `tel:${clean}` : null;
+}
+
+// ---- The final invoice after the production document (Staff 2.60.0) ----------------------------------------------------
+
+/**
+ * Store Workspace V1.1 (owner 2026-11-26): the shop employee never sees the SmartBill panel. The final invoice that the
+ * employee used to issue there by hand is issued by the same server route right after "Pregătește și tipărește" printed the
+ * production document (never before it). Every rule stays the server's and the shop's: who may issue (the routed employee of
+ * the shop), when (an approved order whose production ticket is active, the money verified, no open finance or invoice
+ * action), the existing document and the SmartBill settings. This only reads the server's answer and says what to do:
+ * - `exists`: the final invoice is there (nothing is sent);
+ * - `open`: an invoice action has no answer yet (never sent again);
+ * - `quiet`: not this employee's invoice (another role, not routed to them, observe mode, a proforma shop): nothing is shown;
+ * - `blocked`: the server or the shop refuses now (the first reason is shown in words);
+ * - `issue`: send `issue` once, with the document revision the server read.
+ */
+export type FinalInvoiceStep =
+  | { kind: "exists"; document: string }
+  | { kind: "open" }
+  | { kind: "quiet" }
+  | { kind: "blocked"; code: string }
+  | { kind: "issue"; revision: string };
+
+const QUIET_INVOICE = ["not_allowed_for_role", "not_assigned", "assigned_to_other", "invoice_observe", "invoice_disabled"];
+
+export function finalInvoiceStep(read: InvoiceRead): FinalInvoiceStep {
+  if (!read.available) return read.reason === "not_configured" ? { kind: "quiet" } : { kind: "blocked", code: "smartbill_unreachable" };
+  const { summary } = read;
+  const document = summary.document;
+  if (document.exists && document.type !== "proforma") return { kind: "exists", document: `${document.series ?? ""} ${document.number ?? ""}`.trim() };
+  if (summary.operation.state === "unknown" || summary.operation.state === "in_flight" || read.actionOpen) return { kind: "open" };
+  if (read.role !== "documents" && read.role !== "manager") return { kind: "quiet" };
+  if (summary.smartbill.documentType !== "invoice" || summary.mode !== "enforce") return { kind: "quiet" };
+  if (read.allowedActions.includes("issue")) return { kind: "issue", revision: summary.revision };
+  const blockers = blockersOf(read, "issue");
+  if (blockers.length === 0 || blockers.some((code) => QUIET_INVOICE.includes(code))) return { kind: "quiet" };
+  return { kind: "blocked", code: blockers[0] };
 }

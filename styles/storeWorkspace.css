@@ -219,3 +219,13 @@ select.sw-input { padding-right: 28px; }
 .sw-hist-stats .sw-counter-value { font-size: clamp(22px, 1.8vw, 26px); }
 .sw-info { margin: 0; padding: 10px 12px; border-radius: 10px; background: var(--sw-blue-soft); color: var(--sw-blue); border: 1px solid var(--sw-blue-line); font-size: var(--text-sm); }
 .sw-pending-stalled { display: grid; gap: 6px; margin-top: 8px; max-width: 420px; justify-items: start; }
+
+/* Store Workspace V1.1 (Staff 2.60.0): print + invoice result lines, the customer check answers, the order's print button. */
+.sw-flash { display: grid; gap: 6px; }
+.sw-check-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: flex-end; }
+.sw-check-actions > .sw-message { flex-basis: 100%; margin: 4px 0 0; white-space: normal; max-width: 420px; }
+.sw-check-card .sw-check-actions { justify-content: flex-start; }
+.sw-order-prepare { display: grid; gap: 8px; justify-items: start; margin: 8px 0; }
+.sw-order-prepare > .sw-message { margin: 0; max-width: 520px; }
+@media (max-width: 720px) { .sw-check-actions { justify-content: flex-start; } }
+.sw-checks-table .sw-cell-action { width: auto; }

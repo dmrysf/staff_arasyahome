@@ -47,7 +47,7 @@ import { ConfirmareAwbScreen, ConfirmareEfacturaScreen, ConfirmareHealthScreen }
 import { GuideProvider } from "../features/guide/ContextualHelp";
 import { AwbStationScreen } from "../features/awb/AwbStationScreen";
 import { canPrintAwb, isAwbStationOnly } from "../domain/awb";
-import { opensStoreWorkspace } from "../domain/storeWorkspace";
+import { opensStoreWorkspace, storeLegacyRedirect } from "../domain/storeWorkspace";
 import { StoreHome } from "../features/store/StoreHome";
 import { StoreDocuments } from "../features/store/StoreDocuments";
 import { StoreAwb } from "../features/store/StoreAwb";
@@ -122,17 +122,22 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
 
-  const parsedRoute = parseStaffRoute(route.split(/[?#]/, 1)[0]);
-  const sessionRoute = routeForSession(parsedRoute.pathname, Boolean(session));
-  const guardedRoute = session && !canAccessRoute(session.employee, sessionRoute) ? "/" : sessionRoute;
   // Staff 2.42.1: a Confirmare operator's home is the operator desk (read on every render: the saved workspace choice
   // may have changed).
   const deskHome = Boolean(session && services.confirmare && opensOperatorDesk(session.employee, homeWorkspace(session.employee, services)));
   // Staff 2.52.5: a finance employee without a desk or a production stage opens on their finance tasks.
   const financeHome = Boolean(session && services.confirmare && !deskHome && opensFinanceInbox(session.employee, homeWorkspace(session.employee, services)));
-  // Staff 2.59.0 (Store Workspace V1): a shop employee who is not a Confirmare operator opens on the Store Workspace
-  // (`?clasic=1` keeps the earlier home during the transition).
-  const storeHome = Boolean(session && services.store && services.confirmare && !deskHome && !financeHome && opensStoreWorkspace(session.employee, deskHome, window.location.search));
+  // Staff 2.59.0 (Store Workspace V1): a shop employee who is not a Confirmare operator opens on the Store Workspace.
+  const storeHome = Boolean(session && services.store && services.confirmare && !deskHome && !financeHome && opensStoreWorkspace(session.employee, deskHome));
+  // Staff 2.60.0 (V1.1): that employee never lands on an earlier screen (direct URL, old link, back button, live notice,
+  // scanner): the earlier address is replaced by its Store Workspace screen before anything renders.
+  const storeTarget = storeHome ? storeLegacyRedirect(route) : null;
+  // The address bar shows the Store Workspace address too (the route state keeps the earlier one until the next navigation;
+  // every render maps it again, so nothing earlier ever renders).
+  useEffect(() => { if (storeTarget !== null && window.location.pathname !== storeTarget) window.history.replaceState({}, "", storeTarget); }, [storeTarget]);
+  const parsedRoute = parseStaffRoute((storeTarget ?? route).split(/[?#]/, 1)[0]);
+  const sessionRoute = routeForSession(parsedRoute.pathname, Boolean(session));
+  const guardedRoute = session && !canAccessRoute(session.employee, sessionRoute) ? "/" : sessionRoute;
   // The guide explains the screen actually shown (a refused route shows the home screen).
   const guideRoute = useMemo(() => parseStaffRoute(guardedRoute === "/" && deskHome ? "/confirmare" : guardedRoute === "/" && financeHome ? "/confirmare/finance/requests" : guardedRoute), [guardedRoute, deskHome, financeHome]);
   const staffReady = Boolean(session && !session.employee.mustChangePassword && session.employee.applications.includes("staff"));
@@ -202,11 +207,11 @@ function StaffScreens({ initialRoute, mode, apiBaseUrl, onSignedIn }: StaffAppPr
   if (guardedRoute === "/" && deskHome && services.confirmare) screen = desk(services.confirmare, null);
   else if (guardedRoute === "/" && financeHome && services.confirmare) screen = <FinanceDeskScreen employee={session.employee} service={services.confirmare} navigate={navigate} />;
   else if ((guardedRoute === "/" && storeHome || guardedRoute === "/magazin") && services.store) screen = <StoreHome employee={session.employee} store={services.store} navigate={navigate} />;
-  else if (guardedRoute === "/magazin/documente" && services.store && services.documents) screen = <StoreDocuments store={services.store} documents={services.documents} ops={services.confirmare} navigate={navigate} />;
+  else if (guardedRoute === "/magazin/documente" && services.store && services.documents) screen = <StoreDocuments store={services.store} documents={services.documents} ops={services.confirmare} permissions={session.employee.permissions} navigate={navigate} />;
   else if (guardedRoute === "/magazin/awb" && services.store && services.confirmare) screen = <StoreAwb store={services.store} ops={services.confirmare} navigate={navigate} />;
   else if (guardedRoute === "/magazin/cauta" && services.store) screen = <StoreSearch store={services.store} navigate={navigate} />;
   else if (guardedRoute === "/magazin/istoric" && services.store) screen = <StoreMine store={services.store} navigate={navigate} />;
-  else if (storeOrderId && services.store) screen = <StoreOrderScreen key={storeOrderId} store={services.store} orderId={storeOrderId} navigate={navigate} />;
+  else if (storeOrderId && services.store) screen = <StoreOrderScreen key={storeOrderId} store={services.store} documents={services.documents} ops={services.confirmare} permissions={session.employee.permissions} orderId={storeOrderId} navigate={navigate} />;
   else if (guardedRoute === "/scan") {
     // A request's "open the scanner" passes only the request id; the scanned code itself never enters a URL.
     const scanContext = new URLSearchParams(window.location.search).get("exception");
