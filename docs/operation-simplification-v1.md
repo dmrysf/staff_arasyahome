@@ -52,6 +52,67 @@ The operators' and Cristina's queues grew faster than they could be worked.
 2.82.0 is refused while a decision follow-up is active (`bin/check-rollback.php`). The earlier detailed order screen stays
 reachable for supervisors (`?detailed=1`) during the transition.
 
+## Owner correction 2026-11-26 (same PRs)
+
+7. **Switch.** `ARASYA_CONFIRMARE_DECISIONS=enabled` turns everything above on: the decision endpoint (otherwise
+   `CONFIRMARE_DECISIONS_OFF`), the follow-ups and the online approval in `bin/confirmare-distribute.php`, and the
+   retirement of the three-unanswered-calls rule. Absent (the default) API 2.82.0 behaves like 2.81.0 and Staff 2.57.0 opens
+   the detailed desk (`/confirmare/pool` answers `decisions: false`). Deploying starts nothing; activation is one config line.
+8. **One click each.** Yellow and red decide at once; the waiting note and callback time can be added afterwards. Red has no
+   reason form. The undo stays (green 60 s, red 10 min).
+9. **Green is bound to what the operator showed.** Staff sends the version, the review fingerprint and the total it
+   displayed (`shownTotal`), never a re-read. The server compares the total with the shop's total at the current prices (the
+   last shop read): another total is `CONFIRMARE_REVIEW_STALE` with the shop's total. With unsaved edits, green goes on only
+   when the shop saved exactly the previewed total; otherwise the screen shows the saved total and nothing is decided. The
+   follow-up stores `approved_total` and reads the shop again before `total_accept`: a total changed in WooCommerce in
+   between (not yet in Arasya) is never accepted; the order goes back to the deciding operator (`reopened`,
+   `changed_after_confirmation`, system). Nothing hard to undo happens within the undo period: the paid routing waits until
+   the shop recorded the acceptance.
+10. **Red cancels the proforma safely.** The red follow-up hands an issued proforma to the existing proforma cycle with the
+    refusal as its expiry instant (`confirmare_proforma_cycles.refused_at`): no e-mail or reminder any more, the shop checks
+    the money again under its finance lock, an open finance task or hold waits, and a bank check recorded by finance must
+    cover the refusal instant (an earlier "NU" is not proof). SmartBill cancels once (reason `customer_request`); an unknown
+    outcome is never sent again (`cancel_unknown`, a manager resolves it). A proforma Arasya never tracked gets a cycle opened
+    already refused (it only cancels what it finds). Only then is the order's cancellation requested. Money, an invoice,
+    production or SmartBill not confirming make the follow-up `failed`: a person decides.
+11. **Follow-ups never fake success.** `done` only when the shop accepted the total and the proforma was e-mailed (or none
+    was needed), or the cancellation was really requested. Writes are bound to the worker's claim (an expired claim never
+    overwrites a newer worker). An inactive operator, exhausted attempts and every business refusal are `failed`, listed for
+    Confirmare supervisors in the team screen (`GET /confirmare/followups`), with a safe retry
+    (`POST /confirmare/followups/{id}/retry`: same step, every check again, as the supervisor). Operators never see this list.
+12. **Customer context (YD SOFT 2.35.0).** The shop's order view carries the billing e-mail and the customer's other orders
+    in the same shop (by e-mail or telephone, Romanian number forms, at most five: number, date, status, total) and the open
+    ones within seven days as possible duplicates. Information only; the list shows `possible_duplicate`.
+13. **Notes.** The review fingerprint covers lines, measurements, options, the shop's pricing fingerprint and the
+    production instruction (production content). The yellow note, WooCommerce order notes and the customer note are not in it.
+
+## Measured (2026-11-26)
+
+- Delay the undo adds before the system acts: green 60 s + at most one cron minute (acceptance and proforma e-mail 1–2 min
+  after the click); red 10 min + at most one minute before the refusal follow-up starts (the proforma cancellation then
+  waits for the bank check, as every expiry does).
+- Preview: eight quantity clicks 100 ms apart send at most one preview (e2e `rapid edits ask the shop once`).
+- Shop load (production copy, `source_access_timings` since API 2.81.0, 9 h): Trend Home answers about 6.7 calls per minute
+  (invoice 4.5, finance 2.2), 0.85 s average, no failure. The display cron at `--max=40 --pause-ms=1500` adds at most 4 detail
+  reads per minute while it fills the list once (TH 196 pending: about 50 min), then about 0.5 per minute (every order every
+  6 h). Start with `--max=20 --pause-ms=2000` the first day.
+- Live shop configuration (read only, both shops identical): HPOS on (indexed `email`, `phone`), one zone "Romania" for every
+  county, flat rate `15,97` (decimal comma), free shipping from 600 after discounts with prices shown incl. VAT, one 21 % VAT
+  rate everywhere. So an address change never changes zone or VAT; automatic shipping is the 600 RON threshold only. The FAN
+  detail fields (street no., block, entrance, floor, apartment) are empty on every order of the last 60 days; the FAN
+  resolver reads them when set. Bucharest orders use county `B` and the city as "Sector N" (also "Bucuresti", lower-case).
+  The same configuration is mirrored in the YD smoke `source-edit.php` (section 10b).
+
+## Migration 063 rehearsal (production copy, 2026-11-26)
+
+Consistent dump of the live database (`--single-transaction`, 50 MB, SHA-256 `13ec00de…d4ca`) restored on a disposable
+local MariaDB 10.11.18: 191 tables, 59 migrations. `bin/migrate.php --lock-wait-timeout=10`: 063 applied in 0.64 s.
+Before/after: every existing table keeps its row count and `CHECKSUM TABLE … EXTENDED` (only `schema_migrations` 59 → 60);
+two new tables, five new columns, the three replaced CHECKs. Running 063 again changes nothing. On the copy with the switch
+on: the first cron minute approves and routes 20 verified online orders (TH 15, OP 5); open finance tasks (381) and
+proforma cycles (373) are unchanged; the backfill finds 12 approved unpaid COD orders without a proforma (TH 8, OP 4).
+With those 12 follow-ups open, `check-rollback.php 2.81.0` is refused (`activeDecisionFollowUps: 12`).
+
 ## Operator desk (Staff 2.57.0)
 
 - Four lists: Comenzi noi, În așteptare, Confirmate, Refuzate (last 7 days), with counts and "Finalizate azi". One API call
@@ -82,9 +143,16 @@ whose one button "Confirmă plata și continuă" carries the bank statement decl
 | `bin/confirmare-display.php` | 10 min (new) | `--max=40 --pause-ms=1500`, lock `arasya_confirmare_display` |
 | `bin/confirmare-decision-backfill.php` | once | dry run by default; `--apply` only with PRODUCTION GO |
 
-## Deployment order
+## Deployment order (each step needs PRODUCTION GO)
 
-1. Backup the database. 2. Migration 063. 3. API 2.82.0 (deploy branch). 4. YD SOFT 2.35.0 on both shops (optional for
-the API; needed for address correction, automatic shipping and stock). 5. Staff 2.57.0. 6. Add the display cron.
-7. Backfill dry run, then `--apply` with approval. Rollback: Staff 2.56.0, API 2.81.0 (refused while follow-ups are active:
-let them finish or close them), YD 2.32.0. Migration 063 is additive and can stay.
+1. Backup the database. 2. Migration 063 (`--lock-wait-timeout=10`). 3. API 2.82.0 with the switch absent: nothing changes
+for anybody. 4. YD SOFT 2.35.0 on both shops (address correction, automatic shipping, stock, customer context). 5. Staff
+2.57.0 (shows the detailed desk while the switch is off). 6. Display cron (`--max=20 --pause-ms=2000`, then 40/1500).
+7. **Activation**: `ARASYA_CONFIRMARE_DECISIONS=enabled` in the API's private configuration; the next cron minute approves
+and routes the verified online orders (rehearsal: 20) and the desk shows the three decisions. 8. Backfill dry run, then
+`--apply` with its own approval (rehearsal: 12).
+
+Rollback: switch off first (stops the decisions and the automation at once, nothing is lost). If the code must go back:
+let the active follow-ups finish or a supervisor resolve them (`check-rollback.php 2.81.0` refuses while any is active;
+they are never closed or deleted just to roll back), then API 2.81.0 and Staff 2.56.0 together, YD 2.32.0. Migration 063 is
+additive and stays (its waiting mark never blocks an older API's approval).

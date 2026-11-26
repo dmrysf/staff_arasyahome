@@ -103,7 +103,15 @@ final class ConfirmareService
         private readonly ?SourceAccessRegistry $sourceAccess = null,
         /** API 2.42.0: the sources' enforced advance payment gates, for the handoff state. */
         private readonly ?ProductionAuthorityModes $modes = null,
+        /** API 2.82.0: Operation Simplification V1 switched on (Config::confirmareDecisionsEnabled). */
+        private readonly bool $decisions = true,
     ) {
+    }
+
+    /** Whether the operator's three decisions are switched on (the desk shows them; otherwise the detailed screen). */
+    public function decisionsEnabled(): bool
+    {
+        return $this->decisions;
     }
 
     // ---- Reads ---------------------------------------------------------------------------------------------------
@@ -260,6 +268,8 @@ final class ConfirmareService
             'capabilities' => ['operate' => $operate, 'supervise' => $supervise],
             'rejectReasons' => self::REJECT_REASONS,
             'targetOpenPerOperator' => self::TARGET_OPEN_PER_OPERATOR,
+            // API 2.82.0: false until ARASYA_CONFIRMARE_DECISIONS=enabled; the Staff desk then opens the detailed screen.
+            'decisions' => $this->decisions,
         ];
     }
 
@@ -826,6 +836,9 @@ final class ConfirmareService
      */
     public function decide(EmployeeIdentity $actor, string $globalOrderId, mixed $expectedVersion, array $input, string $key, string $requestId): array
     {
+        if (!$this->decisions) {
+            throw new ApiException(409, 'CONFIRMARE_DECISIONS_OFF', 'The operator decisions are not switched on yet; use the detailed order screen.');
+        }
         $decision = $input['decision'] ?? null;
         if (!is_string($decision) || !in_array($decision, self::DECISIONS, true)) {
             throw new ApiException(422, 'CONFIRMARE_DECISION_INVALID', 'decision must be one of: ' . implode(', ', self::DECISIONS) . '.');
@@ -836,9 +849,17 @@ final class ConfirmareService
             if (!is_string($fingerprint) || preg_match('/^[0-9a-f]{64}$/D', $fingerprint) !== 1) {
                 throw new ApiException(422, 'CONFIRMARE_REVIEW_REQUIRED', 'reviewFingerprint (the order the customer confirmed) is required.');
             }
-            $answer = $this->command($actor, 'approve', $globalOrderId, $expectedVersion, ['decision', $fingerprint], $key, $requestId, false, function (array $order, array $confirmation, string $now) use ($actor, $fingerprint, $key, $requestId): array {
+            // API 2.82.0 (owner correction 2026-11-26): the total the operator showed the customer, exactly as the screen
+            // displayed it. It must be the shop's total at the current prices (its last read); the shop's acceptance is
+            // later sent only for this total (ConfirmareDecisionFollowUps).
+            $shownTotal = $input['shownTotal'] ?? null;
+            if ($shownTotal !== null && (!is_string($shownTotal) || preg_match('/^\d{1,10}(\.\d{1,2})?$/D', $shownTotal) !== 1)) {
+                throw new ApiException(422, 'CONFIRMARE_TOTAL_REQUIRED', 'shownTotal must be the decimal total the screen showed.');
+            }
+            $answer = $this->command($actor, 'approve', $globalOrderId, $expectedVersion, ['decision', $fingerprint, $shownTotal], $key, $requestId, false, function (array $order, array $confirmation, string $now) use ($actor, $fingerprint, $shownTotal, $key, $requestId): array {
                 $confirmation = $this->takeForDecision($actor, $order, $confirmation, $now, $requestId, $key);
                 $orderUuid = $this->assertConfirmable($actor, $order, $fingerprint);
+                $approvedTotal = $this->assertShownTotal($order, $orderUuid, $shownTotal);
                 $lines = ConfirmationClearance::lineIds($this->pdo, $orderUuid);
                 sort($lines, SORT_STRING);
                 $this->change($order, $confirmation, [
@@ -849,7 +870,7 @@ final class ConfirmareService
                     'hold_at' => null, 'hold_by_employee_uuid' => null, 'hold_note' => null, 'callback_at' => null,
                 ], $actor->employeeUuid, 'approved', self::CUSTOMER_CONFIRMED_REASON, $now, $requestId, $key);
                 ConfirmationClearance::refresh($this->pdo, $orderUuid, $now);
-                ConfirmareDecisionFollowUps::open($this->pdo, $order, 'confirmed', $actor->employeeUuid, (int) $confirmation['version'] + 1, $now, self::UNDO_SECONDS['confirmed']);
+                ConfirmareDecisionFollowUps::open($this->pdo, $order, 'confirmed', $actor->employeeUuid, (int) $confirmation['version'] + 1, $now, self::UNDO_SECONDS['confirmed'], $approvedTotal);
                 return [];
             });
             return $answer + ['operatorDecision' => 'confirmed', 'undoUntil' => $this->undoUntil('confirmed')];
@@ -1083,6 +1104,112 @@ final class ConfirmareService
             throw new ApiException(409, 'CONFIRMARE_SHOP_NOT_REVIEWED', 'The current prices were not shown yet. Reload the order.');
         }
         return $orderUuid;
+    }
+
+    /**
+     * The total of a green decision (API 2.82.0). Where the shop's order can be read in Staff, the screen must send the
+     * total it showed, and it must equal the shop's total at the current prices (the last shop read, confirmare_order_display,
+     * whose pricing fingerprint is the order's current one): otherwise CONFIRMARE_REVIEW_STALE with the shop's total, so the
+     * operator tells the customer the new total. Without source access there is no shop total to compare (null).
+     *
+     * @param array<string, mixed> $order
+     * @return string|null the approved total (decimal) or null
+     */
+    private function assertShownTotal(array $order, string $orderUuid, ?string $shownTotal): ?string
+    {
+        if ($this->sourceAccess?->find((string) $order['source_key']) === null) {
+            return $shownTotal;
+        }
+        if ($shownTotal === null) {
+            throw new ApiException(422, 'CONFIRMARE_TOTAL_REQUIRED', 'shownTotal (the total the customer confirmed) is required.');
+        }
+        try {
+            $display = $this->pdo->prepare('SELECT d.order_total, d.pricing_fingerprint, o.source_pricing_fingerprint FROM confirmare_order_display d INNER JOIN operational_orders o ON o.order_uuid = d.order_uuid WHERE d.order_uuid = ?');
+            $display->execute([$orderUuid]);
+            $row = $display->fetch(PDO::FETCH_ASSOC);
+        } catch (\PDOException) {
+            $row = false;
+        }
+        if (!is_array($row) || $row['order_total'] === null || $row['pricing_fingerprint'] === null || $row['pricing_fingerprint'] !== $row['source_pricing_fingerprint']) {
+            throw new ApiException(409, 'CONFIRMARE_SHOP_NOT_REVIEWED', 'The current prices were not shown yet. Reload the order.');
+        }
+        if (self::bani((string) $row['order_total']) !== self::bani($shownTotal)) {
+            throw new ApiException(409, 'CONFIRMARE_REVIEW_STALE', 'The total changed since it was shown. Tell the customer the new total and confirm again.', ['total' => (string) $row['order_total']]);
+        }
+        return (string) $row['order_total'];
+    }
+
+    private ?bool $holdColumns = null;
+
+    /** Whether migration 063's waiting mark exists (an upgrade test may run this code on an older schema). */
+    private function holdInstalled(): bool
+    {
+        if ($this->holdColumns === null) {
+            try {
+                $this->pdo->query('SELECT hold_at FROM order_confirmations LIMIT 0');
+                $this->holdColumns = true;
+            } catch (\PDOException) {
+                $this->holdColumns = false;
+            }
+        }
+        return $this->holdColumns;
+    }
+
+    /** A decimal amount in bani (integers only, no float). */
+    public static function bani(string $amount): int
+    {
+        if (preg_match('/^(-)?(\d+)(?:\.(\d{1,2}))?$/D', trim($amount), $m) !== 1) {
+            throw new \InvalidArgumentException('Not a decimal amount.');
+        }
+        $value = (int) $m[2] * 100 + (int) str_pad($m[3] ?? '', 2, '0');
+        return $m[1] === '-' ? -$value : $value;
+    }
+
+    /**
+     * API 2.82.0 (owner correction 2026-11-26): the order changed in the shop after the customer's confirmation and before
+     * the shop recorded the acceptance (another total, other lines). The confirmation no longer describes the order, so the
+     * system gives it back to the operator who decided (pending, theirs, event `reopened` / `changed_after_confirmation`,
+     * no employee): the customer must hear the new order. Only while nothing followed the approval (not handed to the shop
+     * employee, production not started). False when it cannot be given back; a person then looks at it.
+     */
+    public function reopenChangedAfterConfirmation(string $orderUuid, string $requestId): bool
+    {
+        return $this->retrying(function () use ($orderUuid, $requestId): bool {
+            $this->pdo->beginTransaction();
+            try {
+                $globalId = $this->pdo->prepare('SELECT global_order_id FROM operational_orders WHERE order_uuid = ?');
+                $globalId->execute([$orderUuid]);
+                $id = $globalId->fetchColumn();
+                $order = is_string($id) ? $this->lockOrder($id) : null;
+                $confirmation = $order === null ? null : $this->lockConfirmation($orderUuid);
+                $decider = $this->pdo->prepare('SELECT decided_by_employee_uuid FROM order_confirmations WHERE order_uuid = ?');
+                $decider->execute([$orderUuid]);
+                $operator = $confirmation === null ? false : $decider->fetchColumn();
+                if ($order === null || $confirmation === null || $confirmation['status'] !== self::STATUS_APPROVED || !is_string($operator)) {
+                    $this->pdo->rollBack();
+                    return false;
+                }
+                $routed = $this->pdo->prepare('SELECT (SELECT COUNT(*) FROM order_shop_assignments a WHERE a.order_uuid = ?) + (SELECT COUNT(*) FROM operational_orders o WHERE o.order_uuid = ? AND o.production_stage_id <> ?)');
+                $routed->execute([$orderUuid, $orderUuid, \Arasya\Operations\Order\OrderProjectionWriter::INITIAL_STAGE_ID]);
+                if ((int) $routed->fetchColumn() > 0) {
+                    $this->pdo->rollBack();
+                    return false;
+                }
+                $now = $this->now();
+                $this->change($order, $confirmation, [
+                    'status' => self::STATUS_PENDING, 'decided_at' => null, 'decided_by_employee_uuid' => null, 'decision_reason_code' => null,
+                    'call_confirmed_at' => null, 'call_confirmed_by_employee_uuid' => null, 'confirmed_line_ids' => null, 'approved_review_fingerprint' => null,
+                    'production_cleared' => 0, 'cleared_at' => null,
+                    'assigned_employee_uuid' => $operator, 'assigned_at' => $now, 'assignment_kind' => 'claim',
+                ], null, 'reopened', 'changed_after_confirmation', $now, $requestId, null);
+                ConfirmationClearance::refresh($this->pdo, $orderUuid, $now);
+                $this->pdo->commit();
+                return true;
+            } catch (\Throwable $error) {
+                $this->rollBack();
+                throw $error;
+            }
+        });
     }
 
     private function optionalNote(mixed $value): ?string
@@ -1559,6 +1686,10 @@ final class ConfirmareService
      */
     private function change(array $order, array $confirmation, array $set, ?string $actorUuid, string $action, ?string $reasonCode, string $now, string $requestId, ?string $key): void
     {
+        // API 2.82.0: a decided order is never left "waiting" (yellow), whichever screen decided it (desk or detailed).
+        if (isset($set['status']) && $set['status'] !== self::STATUS_PENDING && !array_key_exists('hold_at', $set) && $this->holdInstalled()) {
+            $set += ['hold_at' => null, 'hold_by_employee_uuid' => null, 'hold_note' => null, 'callback_at' => null];
+        }
         $version = (int) $confirmation['version'] + 1;
         $columns = [];
         $values = [];

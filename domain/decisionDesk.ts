@@ -20,6 +20,13 @@ export function toBani(amount: string | null | undefined): number | null {
   return match[1] ? -bani : bani;
 }
 
+/** Whether two decimal amounts of the shop are the same amount ("719" and "719.00"); false when either is not one. */
+export function sameAmount(left: string | null | undefined, right: string | null | undefined): boolean {
+  const a = toBani(left);
+  const b = toBani(right);
+  return a !== null && b !== null && a === b;
+}
+
 /** Bani as the shop's decimal string ("1160.26"). */
 export function fromBani(bani: number): string {
   const sign = bani < 0 ? "-" : "";

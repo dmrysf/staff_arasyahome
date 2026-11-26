@@ -137,6 +137,8 @@ final readonly class ConfirmareController
         private CsrfGuard $csrf,
         private Config $config,
         private RequestContext $context,
+        /** API 2.82.0: the decision follow-ups a supervisor looks at and retries. */
+        private ?ConfirmareDecisionFollowUps $followUps = null,
     ) {
     }
 
@@ -493,6 +495,18 @@ final readonly class ConfirmareController
             }
             return $this->json($this->service->setAvailability($actor, $employeeId, $input['available'] ?? null, $key, $request->requestId));
         }
+        // API 2.82.0 (owner correction 2026-11-26): the decision follow-ups that need a person, for Confirmare supervisors
+        // (never the operator's list), and their safe retry.
+        if ($path === '/confirmare/followups' && $request->method === 'GET' && $this->followUps !== null) {
+            return $this->json(['items' => $this->followUps->attentionFor($actor)]);
+        }
+        if (preg_match('#^/confirmare/followups/([0-9a-f-]{36})/retry$#D', $path, $m) === 1 && $this->followUps !== null) {
+            if ($request->method !== 'POST') {
+                throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
+            }
+            $this->csrf->requireValid($session->rawToken, $request->header('x-csrf-token'));
+            return $this->json($this->followUps->retry($actor, $m[1]));
+        }
         if (preg_match('#^/confirmare/orders/([^/]{1,600})/(decision|decision/undo)$#D', $path, $m) === 1) {
             // API 2.82.0 (Operation Simplification V1): the operator's one decision (green, yellow, red) and its undo.
             if ($request->method !== 'POST') {
@@ -504,7 +518,7 @@ final readonly class ConfirmareController
                 $input = $this->body($request, ['expectedVersion']);
                 return $this->json($this->service->undoDecision($actor, $globalId, $input['expectedVersion'] ?? null, $key, $request->requestId));
             }
-            $input = $this->body($request, ['expectedVersion', 'decision', 'reviewFingerprint', 'reasonCode', 'note', 'callbackAt'], 2048);
+            $input = $this->body($request, ['expectedVersion', 'decision', 'reviewFingerprint', 'shownTotal', 'reasonCode', 'note', 'callbackAt'], 2048);
             return $this->json($this->service->decide($actor, $globalId, $input['expectedVersion'] ?? null, array_diff_key($input, ['expectedVersion' => true]), $key, $request->requestId));
         }
         if (preg_match('#^/confirmare/orders/([^/]{1,600})/(claim|release|reassign|approve|reject|reopen|contact)$#D', $path, $m) === 1) {

@@ -977,6 +977,21 @@ $check($again['created'] === true && $newTask !== $pb && (string) $one('SELECT a
 $same = $ok($cmd2($f, '/confirmare/finance/check', ['globalOrderId' => $globalB], "fvr-real-{$suffix}-0013", $kernelSingle), '2.82.0 check twice');
 $check($same['requestId'] === $newTask && $same['created'] === false, '2.82.0: checking again opens the same open task (never two)');
 $error($cmd2($who['rop'], '/confirmare/finance/check', ['globalOrderId' => $globalB], "fvr-real-{$suffix}-0014", $kernelSingle), 404, 'FINANCE_REQUEST_NOT_FOUND', '2.82.0: an operator cannot open a finance check (the order is not found for her)');
+// Owner correction 2026-11-26 (real API): ten minutes after her "NU" the customer pays. She finds the order again by its number,
+// without any operator, checks the bank statement and verifies the payment herself: any positive verified amount is the advance,
+// the bank reference and date come from the statement, the earlier "NU" stays in the history.
+$pdo->prepare('UPDATE finance_verification_requests SET decided_at = DATE_SUB(UTC_TIMESTAMP(6), INTERVAL 10 MINUTE) WHERE request_uuid = ?')->execute([$pb]);
+$operatorEventsBefore = (int) $one('SELECT COUNT(*) FROM finance_verification_request_events e JOIN finance_verification_requests r ON r.request_uuid = e.request_uuid WHERE r.order_uuid = ? AND e.actor_employee_uuid = ?', [$orderB, $uuids['rop']]);
+$pdo->exec('DELETE FROM api_rate_limit_buckets');
+$refound = $ok($get($f, '/confirmare/finance/lookup?q=' . rawurlencode($numberB), $kernelSingle), '2.82.0 lookup after the payment');
+$check(($refound['items'][0]['task']['id'] ?? null) === $newTask, '2.82.0: the search shows her open check of the order');
+$tn = $ok($task($f, $newTask, $kernelSingle), '2.82.0 the new check');
+$paid = $ok($cmd($f, $newTask, 'decide', $noRef($evidence($tn, '1.00', 'BT FVR PAY10MIN', ['matchBasis' => 'customer_name', 'payerName' => 'Ion Popescu'])), "fvr-real-{$suffix}-0015", $kernelSingle), '2.82.0: the payment found ten minutes after the NU');
+$oB = (string) $one('SELECT source_order_id FROM operational_orders WHERE order_uuid = ?', [$orderB]);
+$check($paid['request']['state'] === 'verified' && $th->financeNumbers($oB)['state'] === 'cleared' && (string) $one('SELECT state FROM finance_verification_requests WHERE request_uuid = ?', [$pb]) === 'not_received',
+    '2.82.0: she verifies the payment alone after her own NU; the order is cleared; the NU stays recorded');
+$check((int) $one('SELECT COUNT(*) FROM finance_verification_request_events e JOIN finance_verification_requests r ON r.request_uuid = e.request_uuid WHERE r.order_uuid = ? AND e.actor_employee_uuid = ?', [$orderB, $uuids['rop']]) === $operatorEventsBefore,
+    '2.82.0: no operator request or second financial approval was needed');
 
 // Leave the shared disposable database as the next suites expect it: no Confirmare, finance, request or invoice state.
 foreach (['finance_task_amounts', 'finance_verification_request_events', 'finance_verification_requests', 'employee_finance_supervision', 'confirmare_cycle_steps', 'confirmare_proforma_cycles', 'confirmare_bank_checks', 'confirmare_reactivations',

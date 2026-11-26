@@ -4,6 +4,8 @@
 --
 -- 1. order_confirmations gains the optional "waiting" mark of a pending order (`hold_at`, `hold_by_employee_uuid`, an
 --    optional short `hold_note` and an optional `callback_at`). Nothing is required and nothing locks the order.
+--    The CHECK only keeps the mark whole (time and employee together); it does not tie it to `pending`, so an older API
+--    after a rollback can still approve or refuse a waiting order (API 2.82.0 clears the mark with every decision).
 -- 2. order_confirmation_events accepts the action `held` (the yellow decision); the system may record `approved` only with
 --    the reason `online_payment_verified` (the shop verified the online payment with its payment provider; production stays
 --    closed until the shop employee's customer check). The old CHECKs are replaced once, every other value unchanged.
@@ -15,6 +17,8 @@
 -- 5. confirmare_order_display: what the operator's list shows next to an order (the order total and currency the shop showed
 --    at its last read, the number of lines, warnings by code), written by every shop read of the order and by the display
 --    cron, never by hand. Display only: every decision reads the shop again; the list never asks the shop row by row.
+-- 6. confirmare_proforma_cycles gains `refused_at` (the red decision): the cycle stops its e-mails and cancels its proforma
+--    through the existing safe expiry path, with a bank check covering the refusal.
 --
 -- Additive: nullable columns, one new table, wider CHECKs. No existing row changes. Idempotent (each step checks
 -- information_schema first). Rollback: an older API never writes `held`, `hold`, `undo` or the system approval and never
@@ -29,7 +33,7 @@ SET @arasya_063_hold_add = IF(@arasya_063_hold,
         ADD COLUMN callback_at DATETIME(6) NULL,
         ADD KEY idx_order_confirmations_hold (status, hold_at),
         ADD CONSTRAINT fk_order_confirmations_hold_by FOREIGN KEY (hold_by_employee_uuid) REFERENCES employees (employee_uuid) ON UPDATE RESTRICT ON DELETE RESTRICT,
-        ADD CONSTRAINT chk_order_confirmations_hold CHECK ((hold_at IS NULL AND hold_by_employee_uuid IS NULL AND hold_note IS NULL AND callback_at IS NULL) OR (hold_at IS NOT NULL AND hold_by_employee_uuid IS NOT NULL AND status = ''pending''))',
+        ADD CONSTRAINT chk_order_confirmations_hold CHECK ((hold_at IS NULL AND hold_by_employee_uuid IS NULL AND hold_note IS NULL AND callback_at IS NULL) OR (hold_at IS NOT NULL AND hold_by_employee_uuid IS NOT NULL))',
     'DO 0');
 PREPARE arasya_063_hold_statement FROM @arasya_063_hold_add;
 EXECUTE arasya_063_hold_statement;
@@ -58,7 +62,7 @@ DEALLOCATE PREPARE arasya_063_system_drop_statement;
 
 SET @arasya_063_system_new = (SELECT COUNT(*) = 0 FROM information_schema.table_constraints WHERE constraint_schema = DATABASE() AND table_name = 'order_confirmation_events' AND constraint_name = 'chk_order_confirmation_events_system_063');
 SET @arasya_063_system_add = IF(@arasya_063_system_new,
-    'ALTER TABLE order_confirmation_events ADD CONSTRAINT chk_order_confirmation_events_system_063 CHECK (actor_kind = ''employee'' OR action IN (''opened'', ''assigned'', ''released'') OR (action = ''approved'' AND COALESCE(reason_code, '''') = ''online_payment_verified''))',
+    'ALTER TABLE order_confirmation_events ADD CONSTRAINT chk_order_confirmation_events_system_063 CHECK (actor_kind = ''employee'' OR action IN (''opened'', ''assigned'', ''released'') OR (action = ''approved'' AND COALESCE(reason_code, '''') = ''online_payment_verified'') OR (action = ''reopened'' AND COALESCE(reason_code, '''') = ''changed_after_confirmation''))',
     'DO 0');
 PREPARE arasya_063_system_add_statement FROM @arasya_063_system_add;
 EXECUTE arasya_063_system_add_statement;
@@ -101,15 +105,21 @@ CREATE TABLE IF NOT EXISTS confirmare_decision_followups (
     updated_at DATETIME(6) NOT NULL,
     closed_at DATETIME(6) NULL,
     closed_reason VARCHAR(40) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    -- The shop total the operator saw when the customer confirmed (green): the shop's acceptance is sent only for it.
+    approved_total DECIMAL(12,2) NULL,
+    -- A supervisor's safe retry of a follow-up that needed a person (who and when; the steps then run as that person).
+    retried_by_employee_uuid CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    retried_at DATETIME(6) NULL,
     PRIMARY KEY (followup_uuid),
     UNIQUE KEY uq_confirmare_decision_followups_active (active_order_uuid),
     KEY idx_confirmare_decision_followups_due (state, due_at),
     KEY idx_confirmare_decision_followups_order (order_uuid, created_at),
     CONSTRAINT fk_confirmare_decision_followups_order FOREIGN KEY (order_uuid) REFERENCES operational_orders (order_uuid) ON UPDATE RESTRICT ON DELETE RESTRICT,
     CONSTRAINT fk_confirmare_decision_followups_employee FOREIGN KEY (employee_uuid) REFERENCES employees (employee_uuid) ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT fk_confirmare_decision_followups_retried FOREIGN KEY (retried_by_employee_uuid) REFERENCES employees (employee_uuid) ON UPDATE RESTRICT ON DELETE RESTRICT,
     CONSTRAINT chk_confirmare_decision_followups_kind CHECK (kind IN ('confirmed', 'refused')),
     CONSTRAINT chk_confirmare_decision_followups_state CHECK (state IN ('pending', 'waiting', 'done', 'cancelled', 'failed')),
-    CONSTRAINT chk_confirmare_decision_followups_step CHECK (step IN ('accept_total', 'start_proforma', 'request_cancel', 'finished')),
+    CONSTRAINT chk_confirmare_decision_followups_step CHECK (step IN ('accept_total', 'start_proforma', 'request_cancel', 'proforma_cancel', 'finished')),
     CONSTRAINT chk_confirmare_decision_followups_active CHECK ((state IN ('done', 'cancelled', 'failed') AND active_order_uuid IS NULL AND closed_at IS NOT NULL)
         OR (state IN ('pending', 'waiting') AND active_order_uuid = order_uuid AND closed_at IS NULL)),
     CONSTRAINT chk_confirmare_decision_followups_codes CHECK ((last_error IS NULL OR last_error REGEXP '^[a-z_]{2,40}$') AND (closed_reason IS NULL OR closed_reason REGEXP '^[a-z_]{2,40}$'))
@@ -129,3 +139,14 @@ CREATE TABLE IF NOT EXISTS confirmare_order_display (
     CONSTRAINT fk_confirmare_order_display_order FOREIGN KEY (order_uuid) REFERENCES operational_orders (order_uuid) ON UPDATE RESTRICT ON DELETE RESTRICT,
     CONSTRAINT chk_confirmare_order_display_warnings CHECK (warnings IS NULL OR warnings REGEXP '^[a-z_]{2,40}(,[a-z_]{2,40})*$')
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 6. A refused order's open proforma cycle: `refused_at` is the customer's refusal (the red decision). From then on the
+--    cycle sends no e-mail and no reminder, and its proforma is cancelled in SmartBill by the existing expiry path with the
+--    refusal as the instant: only when no money was received or is being verified (checked again by the shop under its
+--    finance lock), no finance task or hold is open, and a bank check recorded by finance covers the refusal instant (an
+--    earlier "not received" is never taken as proof). An unknown SmartBill outcome is never sent again.
+SET @arasya_063_refused = (SELECT COUNT(*) = 0 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'confirmare_proforma_cycles' AND column_name = 'refused_at');
+SET @arasya_063_refused_add = IF(@arasya_063_refused, 'ALTER TABLE confirmare_proforma_cycles ADD COLUMN refused_at DATETIME(6) NULL', 'DO 0');
+PREPARE arasya_063_refused_statement FROM @arasya_063_refused_add;
+EXECUTE arasya_063_refused_statement;
+DEALLOCATE PREPARE arasya_063_refused_statement;

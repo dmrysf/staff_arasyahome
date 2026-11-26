@@ -14,12 +14,12 @@ import { isProductionAuthority, type AuthorityApi, type AuthorityChange, type Or
 import type { ActiveQr, ProductionQrApi, ProductionQrView, QrAuthority, QrAuthorityMode, QrRevision, QrRevisionState, QrRotationReason } from "../../domain/productionQr";
 import { createBrowserWorkflowCache, createUnavailableWorkflowCache, normalizeProductionApiBaseUrl, type WorkflowCache } from "./workflowCache";
 import { createProductionWorkflowService } from "./workflowService";
-import { ADDRESS_FIELDS, type AddressFields, type ShopLine, type ShopLineImage, type ShopOrderDetail, type ShopPerson, type ShopRead, type ShopStock } from "../../domain/confirmareShop";
+import { ADDRESS_FIELDS, type AddressFields, type ShopLine, type ShopLineImage, type ShopOrderDetail, type ShopPerson, type ShopRead, type ShopStock, type ShopCustomer } from "../../domain/confirmareShop";
 import { CASH_RECEIPTS, EXCEPTION_REASONS, EXCEPTION_RESOLUTIONS, FINANCE_ACTIONS, PAYMENT_METHODS, FINANCE_NEXT, FINANCE_TASKS, type ExceptionOutcome, type FinanceEntry, type FinanceOutcome, type FinanceQueue, type FinanceQueueItem, type FinanceRead, type FinanceSummary, type FinanceTask, type FinanceTimelineItem, type TransferException, type TransferExceptionList } from "../../domain/confirmareFinance";
 import { CANCEL_REASONS, CUSTOMER_CHECK_OUTCOMES, type CustomerCheckResult, INVOICE_ACTIONS, INVOICE_ROLES, PAYMENT_STATES, PROFORMA_ACTIONS, PROFORMA_KEYS, PROFORMA_ROUTE, type CodCheck, type ShippingCheck, type InvoiceDeadline, type MoneyPosition, type TotalAcceptance, type InvoiceActionKey, type InvoiceOutcome, type InvoicePaymentRead, type InvoiceRead, type InvoiceSummary, type InvoiceView, type ProformaActionKey, type ProformaSummary, type ShopAssignment, type ShopQueueItem } from "../../domain/confirmareInvoice";
 import { EDIT_IMPACTS, type EditBlocker, type EditCatalog, type EditCouponCatalog, type EditCouponLine, type EditField, type EditLineSnapshot, type EditOutcome, type EditProduct, type EditResult, type EditTotals, type EditVariation, type OpenEdit } from "../../domain/confirmareEdit";
 import { mapAwbQueue, recentAwbsOf, mapBankCheck, mapBankCheckPreview, mapBankChecks, mapFinanceHold, mapFinanceReview, mapContactCycle, mapCycleAttention, mapEfacturaQueue, mapEfacturaTask, mapHealth, mapOperationOutcome, mapOperationsState, mapOrderCycle, mapProformaCycle } from "../../domain/confirmareOps";
-import { CLEARANCE_CONDITIONS, CONTACT_OUTCOMES, DESK_VIEWS, DOCUMENT_STATES, FINANCIAL_ATTENTION, OPERATOR_DECISIONS, type DecisionAnswer, type DeskPool, HANDOFF_BLOCKERS, HANDOFF_STATES, type ConfirmareAlert, type ConfirmareApi, type ConfirmareAvailability, type ConfirmareContact, type ConfirmareCustomer, type ConfirmareDetail, type ConfirmareEvent, type ConfirmareHandoff, type ConfirmareItem, type HandoffItem, type ConfirmareLine, type ConfirmareOperator, type ConfirmarePool, type ConfirmareTeam, type FinancialState } from "../../domain/confirmare";
+import { CLEARANCE_CONDITIONS, CONTACT_OUTCOMES, DESK_VIEWS, DOCUMENT_STATES, FINANCIAL_ATTENTION, OPERATOR_DECISIONS, type DecisionAnswer, type DeskPool, type FollowUpItem, HANDOFF_BLOCKERS, HANDOFF_STATES, type ConfirmareAlert, type ConfirmareApi, type ConfirmareAvailability, type ConfirmareContact, type ConfirmareCustomer, type ConfirmareDetail, type ConfirmareEvent, type ConfirmareHandoff, type ConfirmareItem, type HandoffItem, type ConfirmareLine, type ConfirmareOperator, type ConfirmarePool, type ConfirmareTeam, type FinancialState } from "../../domain/confirmare";
 
 type FetchLike = typeof fetch;
 export type ProductionServicesOptions = {
@@ -1254,6 +1254,8 @@ export function createProductionServices(apiBaseUrl: string, options: Production
     desk: (view, source, signal) => http.request(`/confirmare/pool?view=${view}${source ? `&source=${encodeURIComponent(source)}` : ""}`, { signal, cache: "no-store" }, mapDeskPool),
     decide: (globalOrderId, input, key) => command(confirmareOrder(globalOrderId, "decision"), input, key, mapDecisionAnswer),
     undoDecision: (globalOrderId, input, key) => command(confirmareOrder(globalOrderId, "decision/undo"), input, key, mapConfirmareItem),
+    followUps: (signal) => http.request("/confirmare/followups", { signal, cache: "no-store" }, (value) => itemsOf(objectValue(value)).map(mapFollowUp)),
+    retryFollowUp: (id, key) => http.request(`/confirmare/followups/${encodeURIComponent(id)}/retry`, { method: "POST", headers: { "Idempotency-Key": key }, body: "{}" }, () => undefined),
     reject: (globalOrderId, input, key) => command(confirmareOrder(globalOrderId, "reject"), input, key, mapConfirmareItem),
     contact: (globalOrderId, input, key) => command(confirmareOrder(globalOrderId, "contact"), input, key, (value) => { const raw = objectValue(value); return { contact: mapConfirmareContact(raw.contact), item: mapConfirmareItem(raw.item), proformaCycle: mapContactCycle(raw.proformaCycle) }; }),
     availability: (signal) => http.request("/confirmare/availability", { signal }, mapConfirmareAvailability),
@@ -1355,6 +1357,8 @@ export function confirmareErrorDetails(value: unknown): Record<string, unknown> 
   if (Array.isArray(raw.blockers) && raw.blockers.length <= 40 && raw.blockers.every((item) => typeof item === "string" && /^[a-z_]{2,60}$/.test(item))) out.invoiceBlockers = raw.blockers;
   // Phase 5: the shop's current finance revision after a refused finance action (`reason` is editReason above).
   if (typeof raw.revision === "string" && /^sha256:[0-9a-f]{64}$/.test(raw.revision)) out.financeRevision = raw.revision;
+  // API 2.82.0: the shop's current total behind a stale green decision (the operator tells the customer the new total).
+  if (typeof raw.total === "string" && /^\d{1,10}(\.\d{1,2})?$/.test(raw.total)) out.shopTotal = raw.total;
   return out;
 }
 
@@ -1401,6 +1405,17 @@ export function mapDeskPool(value: unknown): DeskPool {
     view: oneOf(raw.view, DESK_VIEWS), items: itemsOf(raw).map(mapConfirmareItem), total: nonNegativeInteger(raw.total), limit: positiveInteger(raw.limit),
     counts: { new: nonNegativeInteger(counts.new), waiting: nonNegativeInteger(counts.waiting), confirmed: nonNegativeInteger(counts.confirmed), refused: nonNegativeInteger(counts.refused), doneToday: nonNegativeInteger(counts.doneToday) },
     sources: raw.sources == null ? null : stringList(raw.sources),
+    decisions: raw.decisions === true,
+  };
+}
+export function mapFollowUp(value: unknown): FollowUpItem {
+  const raw = objectValue(value);
+  const code = (field: unknown): string | null => (typeof field === "string" && /^[a-z_]{2,40}$/.test(field) ? field : null);
+  return {
+    id: stringValue(raw.id), globalOrderId: stringValue(raw.globalOrderId), orderNumber: stringValue(raw.orderNumber), sourceKey: stringValue(raw.sourceKey),
+    kind: oneOf(raw.kind, ["confirmed", "refused"] as const), state: oneOf(raw.state, ["failed", "waiting"] as const), step: code(raw.step) ?? "unknown",
+    attempts: nonNegativeInteger(raw.attempts), reason: code(raw.reason), decidedBy: stringValue(raw.decidedBy), retriedBy: raw.retriedBy == null ? null : stringValue(raw.retriedBy),
+    updatedAt: timestampValue(raw.updatedAt),
   };
 }
 export function mapDecisionAnswer(value: unknown): DecisionAnswer {
@@ -1566,7 +1581,9 @@ export function mapShopOrderDetail(value: unknown): ShopOrderDetail {
     },
     version: textValue(raw.version, 71),
     pricingFingerprint: raw.pricingFingerprint == null ? null : textValue(raw.pricingFingerprint, 71),
-    contact: { phoneAvailable: booleanValue(contact.phoneAvailable), billing: shopPerson(contact.billing), shipping: shopPerson(contact.shipping) },
+    contact: { phoneAvailable: booleanValue(contact.phoneAvailable), billing: shopPerson(contact.billing), shipping: shopPerson(contact.shipping),
+      email: typeof contact.email === "string" && /^[^\s@]{1,64}@[^\s@]{1,190}$/.test(contact.email) ? contact.email : null },
+    customer: shopCustomer(raw.customer),
     lines: listOf(raw.lines, 200, shopLine),
     fees: listOf(raw.fees, 20, (entry) => { const fee = objectValue(entry); return { name: textValue(fee.name, 200), total: moneyValue(fee.total), tax: moneyValue(fee.tax) }; }),
     coupons: listOf(raw.coupons, 20, (entry) => { const coupon = objectValue(entry); return { code: textValue(coupon.code, 100), discount: moneyValue(coupon.discount), discountTax: moneyValue(coupon.discountTax) }; }),
@@ -1578,6 +1595,20 @@ export function mapShopOrderDetail(value: unknown): ShopOrderDetail {
       advance: advance === null ? null : { percentage: nonNegativeNumber(advance.percentage), required: advance.required == null ? null : moneyValue(advance.required), collected: advance.collected == null ? null : moneyValue(advance.collected) },
     },
   };
+}
+/** YD SOFT 2.35.0: the customer's other orders of the shop (at most five) and which of them may be duplicates. */
+function shopCustomer(value: unknown): ShopCustomer {
+  if (value == null) return { orders: [], possibleDuplicates: [] };
+  const raw = objectValue(value);
+  const orders = listOf(raw.orders, 5, (entry) => {
+    const order = objectValue(entry);
+    const status = objectValue(order.status);
+    return { number: textValue(order.number, 40), createdAt: order.createdAt == null ? null : timestampValue(order.createdAt), status: { code: textValue(status.code, 40), label: textValue(status.label, 100) },
+      total: moneyValue(order.total), currency: textValue(order.currency, 3) };
+  });
+  const numbers = new Set(orders.map((order) => order.number));
+  const duplicates = Array.isArray(raw.possibleDuplicates) ? raw.possibleDuplicates.filter((number): number is string => typeof number === "string" && numbers.has(number)) : [];
+  return { orders, possibleDuplicates: duplicates };
 }
 // ---- Phase 4B: controlled shop edits (strict; anything unexpected is refused, never half shown)
 const EDIT_ID = /^[0-9]{1,20}$/;

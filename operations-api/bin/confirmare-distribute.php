@@ -45,7 +45,10 @@ if (!isset($options['dry-run']) && $source === null) {
 }
 // API 2.82.0 (Operation Simplification V1): a verified online payment goes to the shop employee without the operator (the
 // system approval, then the routing); production still waits for the shop employee's customer check.
-if (!isset($options['dry-run']) && $source === null) {
+// Only once the operator decisions are switched on (ARASYA_CONFIRMARE_DECISIONS=enabled): deploying 2.82.0 starts nothing.
+$decisionsOn = $container->config()->confirmareDecisionsEnabled();
+$result['decisions'] = $decisionsOn ? 'enabled' : 'disabled';
+if (!isset($options['dry-run']) && $source === null && $decisionsOn) {
     try {
         $online = $container->confirmareService()->approveVerifiedOnline(50, 'cli-online-' . bin2hex(random_bytes(6)));
         $routed = $container->confirmareInvoice()->routeOnline(50);
@@ -56,7 +59,7 @@ if (!isset($options['dry-run']) && $source === null) {
 }
 // API 2.82.0 (Operation Simplification V1): what follows an operator's decision runs within a minute (the customer's
 // acceptance of the total, the advance proforma, the cancellation of a refused order after its undo period).
-if (!isset($options['dry-run']) && $source === null) {
+if (!isset($options['dry-run']) && $source === null && $decisionsOn) {
     try {
         if ((int) $container->pdo()->query("SELECT GET_LOCK('arasya_confirmare_followups', 0)")->fetchColumn() === 1) {
             try {

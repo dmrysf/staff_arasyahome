@@ -60,6 +60,8 @@ export default defineConfig({
         // operations-api/tests/e2e-fixture.php (refused in production).
         ARASYA_TRENDYOL_FIXTURE_FILE: path.join(root, "e2e", ".runtime", "trendyol-fixture.json"),
         // Trend Home reads (and, Phase 4B, edits) its orders through the TEST shop; Outlet Perdele stays off.
+        // API 2.82.0: the operator decisions are switched on in the real-API e2e (production default: off).
+        ARASYA_CONFIRMARE_DECISIONS: "enabled",
         ARASYA_SOURCE_SECRET_TRENDHOME: "trendhome-integration-secret-0123456789abcdef",
         ARASYA_SOURCE_ACCESS_TRENDHOME: "edit",
         ARASYA_SOURCE_ACCESS_URL_TRENDHOME: `http://127.0.0.1:${shopPort}`,

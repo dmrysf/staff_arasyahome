@@ -226,6 +226,10 @@ final readonly class ConfirmareSourceAccess
         if (($detail['contact']['phoneAvailable'] ?? true) === false) {
             $warnings['phone_missing'] = true;
         }
+        // YD SOFT 2.35.0: another open order of the same customer in this shop within a week (information only).
+        if (($detail['customer']['possibleDuplicates'] ?? []) !== []) {
+            $warnings['possible_duplicate'] = true;
+        }
         $total = $detail['totals']['total'] ?? null;
         try {
             $pdo->prepare('INSERT INTO confirmare_order_display (order_uuid, order_total, currency, line_count, warnings, pricing_fingerprint, read_at) VALUES (?, ?, ?, ?, ?, ?, ?)

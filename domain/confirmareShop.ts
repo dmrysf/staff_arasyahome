@@ -31,12 +31,17 @@ export type ShopLine = {
   stock?: ShopStock | null;
 };
 export type ShopTotals = { subtotal: string; discount: string; discountTax: string; shipping: string; shippingTax: string; fees: string; tax: string; total: string; refunded: string };
+export type ShopCustomerOrder = { number: string; createdAt: string | null; status: { code: string; label: string }; total: string; currency: string };
+export type ShopCustomer = { orders: ShopCustomerOrder[]; possibleDuplicates: string[] };
 export type ShopOrderDetail = {
   readAt: string;
   order: { id: string; number: string; status: { code: string; label: string }; createdAt: string | null; modifiedAt: string | null; storage: "hpos" | "posts"; currency: string; pricesIncludeTax: boolean };
   version: string;
   pricingFingerprint: string | null;
-  contact: { phoneAvailable: boolean; billing: ShopPerson; shipping: ShopPerson };
+  /** `email` (YD SOFT 2.35.0): the billing e-mail the proforma and invoice go to; null when none or an older shop. */
+  contact: { phoneAvailable: boolean; billing: ShopPerson; shipping: ShopPerson; email?: string | null };
+  /** YD SOFT 2.35.0: the customer's other orders of this shop and the possible duplicates (information only). */
+  customer?: ShopCustomer;
   lines: ShopLine[];
   fees: { name: string; total: string; tax: string }[];
   coupons: { code: string; discount: string; discountTax: string }[];

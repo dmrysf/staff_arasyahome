@@ -7,6 +7,9 @@ function restorePreOperationSimplificationTestSchema(PDO $pdo): void
     if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='063_operation_simplification.sql'")->fetchColumn()) return;
     $pdo->exec('DROP TABLE IF EXISTS confirmare_decision_followups');
     $pdo->exec('DROP TABLE IF EXISTS confirmare_order_display');
+    if ((bool) $pdo->query("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'confirmare_proforma_cycles' AND column_name = 'refused_at'")->fetchColumn()) {
+        $pdo->exec('ALTER TABLE confirmare_proforma_cycles DROP COLUMN refused_at');
+    }
     $constraint = static fn (string $table, string $name): bool => (bool) $pdo->query("SELECT COUNT(*) FROM information_schema.table_constraints WHERE constraint_schema = DATABASE() AND table_name = '{$table}' AND constraint_name = '{$name}'")->fetchColumn();
     if ((bool) $pdo->query("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'order_confirmations' AND column_name = 'hold_at'")->fetchColumn()) {
         $pdo->exec('ALTER TABLE order_confirmations DROP FOREIGN KEY fk_order_confirmations_hold_by');

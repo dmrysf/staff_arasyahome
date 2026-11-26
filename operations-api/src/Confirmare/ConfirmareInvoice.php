@@ -1165,11 +1165,16 @@ final readonly class ConfirmareInvoice
     /** @return array{seen: int, routed: int, skipped: array<string, int>} */
     private function routePaidLocked(int $limit): array
     {
+        // API 2.82.0 (owner correction 2026-11-26): an operator's green decision is not routed while it can still be undone or
+        // before the shop recorded the customer's acceptance of the total (ConfirmareDecisionFollowUps step accept_total):
+        // nothing that is hard to take back follows a click within its undo period.
+        $grace = ConfirmareDecisionFollowUps::installed($this->pdo)
+            ? " AND NOT EXISTS (SELECT 1 FROM confirmare_decision_followups f WHERE f.active_order_uuid = o.order_uuid AND f.kind = 'confirmed' AND f.step = 'accept_total')" : '';
         $statement = $this->pdo->prepare("SELECT o.global_order_id FROM operational_orders o
             INNER JOIN order_confirmations c ON c.order_uuid = o.order_uuid AND c.status = 'approved' AND c.production_cleared = 1
             WHERE o.workflow_cohort = ? AND o.source_key IN ('trendhome', 'outletperdele') AND o.source_financial_state = 'cleared'
               AND o.operational_status <> 'unavailable' AND o.cancellation_state IS NULL AND o.source_reported_unavailable_at IS NULL
-              AND NOT EXISTS (SELECT 1 FROM order_shop_assignments a WHERE a.active_order_uuid = o.order_uuid)
+              AND NOT EXISTS (SELECT 1 FROM order_shop_assignments a WHERE a.active_order_uuid = o.order_uuid)" . $grace . "
             ORDER BY c.cleared_at, o.order_uuid LIMIT " . max(1, min(500, $limit)));
         $statement->execute([\Arasya\Operations\Production\WorkflowCohort::CONFIRMARE]);
         $result = ['seen' => 0, 'routed' => 0, 'skipped' => []];

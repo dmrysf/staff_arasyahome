@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { addressChanges, addressWarnings, advanceFor, draftKey, fromBani, loadDraft, moneyHeader, nextAfter, replacementFields, replacementOperations, saveDraft, toBani, waitingLabel } from "../domain/decisionDesk";
+import { addressChanges, addressWarnings, advanceFor, draftKey, fromBani, loadDraft, moneyHeader, nextAfter, replacementFields, replacementOperations, sameAmount, saveDraft, toBani, waitingLabel } from "../domain/decisionDesk";
 import { mapDecisionAnswer, mapDeskPool, mapEditResult, mapShopRead } from "../services/production/httpServices";
 import type { ConfirmareItem } from "../domain/confirmare";
 import type { EditProduct } from "../domain/confirmareEdit";
@@ -119,8 +119,10 @@ test("API 2.82.0 mappers: desk pool, decision answer, edit result with automatic
     productionStageId: "waiting", commerceStatus: "processing", commerceClosed: false, payment: { state: "waiting" }, financial: { state: "waiting", basis: null, open: false, attention: null }, pricingAvailable: true,
     dueDate: null, productionCleared: false, contact: null, assignment: null, decision: null, waiting: { at: "2026-11-25T11:00:00Z", note: "Revine", callbackAt: null }, lineCount: 2,
     display: { total: "1160.26", currency: "RON", warnings: ["out_of_stock"], readAt: "2026-11-25T11:00:00Z", current: true }, customerName: "Popescu Ana" };
-  const pool = mapDeskPool({ view: "waiting", items: [item], total: 1, limit: 2000, counts: { new: 4, waiting: 1, confirmed: 2, refused: 0, doneToday: 3 }, sources: ["outletperdele", "trendhome"] });
+  const pool = mapDeskPool({ view: "waiting", items: [item], total: 1, limit: 2000, counts: { new: 4, waiting: 1, confirmed: 2, refused: 0, doneToday: 3 }, sources: ["outletperdele", "trendhome"], decisions: true });
   assert.equal(pool.counts.doneToday, 3);
+  assert.equal(pool.decisions, true);
+  assert.equal(mapDeskPool({ view: "new", items: [], total: 0, limit: 1, counts: { new: 0, waiting: 0, confirmed: 0, refused: 0, doneToday: 0 }, sources: null }).decisions, false, "without the switch the desk opens the detailed screen");
   assert.equal(pool.items[0].waiting?.note, "Revine");
   assert.equal(pool.items[0].display?.total, "1160.26");
   assert.equal(pool.items[0].customerName, "Popescu Ana");
@@ -146,11 +148,26 @@ test("API 2.82.0 mappers: desk pool, decision answer, edit result with automatic
 
 test("the operator desk keeps the safety rules out of the operator's way but in the code", () => {
   const workbench = readFileSync(new URL("../features/confirmare/OrderWorkbench.tsx", import.meta.url), "utf8");
-  assert.ok(workbench.includes("reviewFingerprint: current.review.fingerprint"), "green sends the review the screen showed (a changed total is refused by the server)");
+  assert.ok(workbench.includes("reviewFingerprint: shown.review.fingerprint") && workbench.includes("expectedVersion: shown.version") && workbench.includes("shownTotal"),
+    "green sends the version, review and total the screen showed (a changed total is refused by the server)");
+  const decide = workbench.slice(workbench.indexOf("async function decide("), workbench.indexOf("async function undo("));
+  assert.ok(!decide.includes("service.detail("), "the decision never reads the order again before sending (that would approve an order nobody showed)");
+  assert.ok(decide.includes("sameAmount(heard, savedTotal)"), "after saving, green goes on only when the shop saved the total of the last preview");
+  assert.ok(!workbench.includes("RefusePanel") && !workbench.includes("dd-refuse"), "red is one click: no reason form");
+  assert.ok(workbench.includes("onClick={() => { void decide(\"waiting\"); }}") && workbench.includes("onClick={() => { void decide(\"refused\"); }}"), "yellow and red decide with one click");
   assert.ok(workbench.includes("CONFIRMARE_REVIEW_STALE"), "a changed total shows the new total and asks again");
   assert.ok(!workbench.includes("customerCall"), "no call record field is sent");
   assert.ok(!workbench.includes("priceVerified"), "no separate price box");
   assert.ok(!/localStorage\.setItem\([^)]*phone/i.test(workbench), "no customer data in browser storage");
   const desk = readFileSync(new URL("../features/confirmare/DecisionDesk.tsx", import.meta.url), "utf8");
   assert.ok(!desk.includes("\"trendhome\"") && !desk.includes("\"outletperdele\""), "no shop name is written into the desk: the shops come from the server and the scopes");
+});
+
+test("the shop's saved total is compared with the previewed one in bani, never as text or a float", () => {
+  assert.equal(sameAmount("719", "719.00"), true);
+  assert.equal(sameAmount("719.10", "719.1"), true);
+  assert.equal(sameAmount("719.00", "719.01"), false);
+  assert.equal(sameAmount("0.1", "0.10"), true);
+  assert.equal(sameAmount(null, "1.00"), false, "an unknown total is never the same total");
+  assert.equal(sameAmount("1,00", "1.00"), false, "a value that is not the shop's decimal is never the same total");
 });

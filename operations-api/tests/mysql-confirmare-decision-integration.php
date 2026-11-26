@@ -188,7 +188,7 @@ $ok($decide($opA, $g1, ['decision' => 'confirmed', 'reviewFingerprint' => $fp($o
 $pdo->exec("UPDATE confirmare_decision_followups SET due_at = '2000-01-01 00:00:00' WHERE active_order_uuid IS NOT NULL");
 $run = $container->confirmareDecisionFollowUps()->run(50, 'cd-test');
 $f1 = $followup($g1)[0];
-$check($run['seen'] >= 1 && $f1['state'] === 'done' && $f1['closed_reason'] === 'invoice_disabled', 'without invoicing for the shop the follow-up ends after the decision (nothing to send): ' . json_encode($f1));
+$check($run['seen'] >= 1 && $f1['state'] === 'failed' && $f1['closed_reason'] === 'invoice_disabled', 'without invoicing for the shop no proforma can go out: the follow-up needs a person, it is never counted as done: ' . json_encode($f1));
 $error($act($opA, $g1, 'decision/undo', ['expectedVersion' => $version($g1)]), 409, 'CONFIRMARE_UNDO_TOO_LATE', 'after the system acted the decision is not undone here');
 
 // ---- 6. A colleague's order is never overwritten; supervisors decide any pending order ---------------------------------
@@ -199,6 +199,7 @@ $error($decide($opO, $g2, ['decision' => 'waiting']), 404, 'CONFIRMARE_NOT_FOUND
 
 // ---- 7. Yellow: waiting, optional note and callback, no limit, reopened at once ----------------------------------------
 $g3 = $th(3);
+$fpBefore = $fp($opA, $g3);
 $ok($decide($opA, $g3, ['decision' => 'waiting']), 'yellow without anything');
 $s3 = $state($g3);
 $check($s3['status'] === 'pending' && $s3['hold_at'] !== null && $s3['hold_note'] === null && $s3['assigned_employee_uuid'] === $uuids['csopa'], 'yellow keeps the order pending with the operator; nothing is required');
@@ -207,6 +208,12 @@ $callback = gmdate('Y-m-d\TH:i:s\Z', time() + 3600);
 $ok($decide($opA, $g3, ['decision' => 'waiting', 'note' => "  Revine   după-amiază  ", 'callbackAt' => $callback]), 'yellow again with a note and a callback');
 $s3 = $state($g3);
 $check($s3['hold_note'] === 'Revine după-amiază' && substr((string) $s3['callback_at'], 0, 16) === str_replace('T', ' ', substr($callback, 0, 16)), 'the optional note (one line) and callback are kept');
+// Owner correction 2026-11-26: a note that changes nothing commercial or for production never resets the review the customer
+// confirms (the yellow note, the shop's order notes); only the lines, measurements, options, prices and the production
+// instruction do.
+$check($fp($opA, $g3) === $fpBefore, 'a waiting note or callback does not change the review fingerprint');
+$pdo->prepare("UPDATE operational_orders SET source_changed_at = UTC_TIMESTAMP(6) WHERE global_order_id = ?")->execute([$g3]);
+$check($fp($opA, $g3) === $fpBefore, 'a shop change without a commercial or production difference keeps the fingerprint');
 for ($i = 0; $i < 5; $i++) $ok($decide($opA, $g3, ['decision' => 'waiting']), "yellow {$i}");
 $check(true, 'no daily or call limit on waiting decisions');
 $error($decide($opA, $g3, ['decision' => 'waiting', 'callbackAt' => 'tomorrow-ish']), 422, 'VALIDATION_FAILED', 'a callback that is not an instant is refused');
@@ -238,7 +245,7 @@ $f4 = $followup($g4)[0];
 $f5 = $followup($g5)[0];
 $hold4 = $all('SELECT hold_status FROM order_cancellation_controls WHERE order_uuid = (SELECT order_uuid FROM operational_orders WHERE global_order_id = ?)', [$g4]);
 $check($f4['state'] === 'done' && in_array($f4['closed_reason'], ['requested', 'source_cancelled'], true) && ($hold4[0]['hold_status'] ?? null) === 'held', 'a refused unpaid order is stopped and its cancellation requested: ' . json_encode([$f4, $hold4]));
-$check($f5['state'] === 'done' && $f5['closed_reason'] === 'money_received'
+$check($f5['state'] === 'failed' && $f5['closed_reason'] === 'money_received'
     && (int) $one('SELECT COUNT(*) FROM order_cancellation_controls WHERE order_uuid = (SELECT order_uuid FROM operational_orders WHERE global_order_id = ?)', [$g5]) === 0, 'a refused order with money is never stopped automatically (a person decides)');
 $refused = $ok($get($opA, '/confirmare/pool', ['view' => 'refused']), 'desk refused');
 $confirmed = $ok($get($opA, '/confirmare/pool', ['view' => 'confirmed']), 'desk confirmed');
@@ -284,6 +291,24 @@ $routed = $container->confirmareInvoice()->routeOnline(50);
 $check($routed['seen'] >= 1 && $routed['routed'] === 0 && isset($routed['skipped']['no_shop_employee']), 'without a shop employee of the shop nothing is routed (no guess): ' . json_encode($routed));
 $again = $service->approveVerifiedOnline(50, 'cd-online-2');
 $check($again['approved'] === 0, 'a second run approves nothing twice');
+
+// ---- 13. The switch (ARASYA_CONFIRMARE_DECISIONS, production default off): deploying 2.82.0 starts nothing by itself ------
+$offConfig = new \Arasya\Operations\Config\Config(...[...get_object_vars($config), 'confirmareDecisions' => 'disabled']);
+$check($offConfig->confirmareDecisionsEnabled() === false && $config->confirmareDecisionsEnabled() === true, "the switch has its own setting");
+$offContainer = new Container($offConfig, $pdo);
+$offKernel = $offContainer->kernel();
+$check(\Arasya\Operations\Confirmare\ConfirmareCycles::$noAnswerRuleRetired === false, 'switch off: the three-unanswered-calls rule of API 2.81.0 still applies');
+$pending = (string) $one("SELECT global_order_id FROM order_confirmations WHERE status = 'pending' ORDER BY global_order_id LIMIT 1");
+$offCall = T::call($offKernel, 'POST', '/confirmare/orders/' . rawurlencode($pending) . '/decision', ['expectedVersion' => $version($pending), 'decision' => 'waiting'],
+    ['origin' => STAFF_ORIGIN, 'x-csrf-token' => $sup['csrf'], 'idempotency-key' => 'cs-off-' . bin2hex(random_bytes(8))], $sup['cookie']);
+$check($offCall['status'] === 409 && ($offCall['body']['error']['code'] ?? null) === 'CONFIRMARE_DECISIONS_OFF', 'switch off: no decision is taken: ' . json_encode($offCall['body']));
+$offDesk = T::call($offKernel, 'GET', '/confirmare/pool', null, ['origin' => STAFF_ORIGIN], $sup['cookie'], ['view' => 'new']);
+$check($offDesk['status'] === 200 && ($offDesk['body']['decisions'] ?? null) === false, 'switch off: the desk tells Staff to open the detailed screen');
+$onDesk = $get($sup, '/confirmare/pool', ['view' => 'new']);
+$check(($onDesk['body']['decisions'] ?? null) === true, 'switch on: the desk shows the three decisions');
+$distribute = (string) file_get_contents(dirname(__DIR__) . '/bin/confirmare-distribute.php');
+$check(substr_count($distribute, '&& $decisionsOn') === 2 && str_contains($distribute, 'confirmareDecisionsEnabled()'), 'switch off: the worker runs neither the online approval and routing nor the decision follow-ups');
+new Container($config, $pdo); // back to the suite's setting (switch on) for the suites that follow
 
 // Leave the shared disposable database as the next suites expect it: no decision, cancellation, Confirmare or finance state.
 foreach (['confirmare_decision_followups', 'confirmare_order_display', 'finance_task_amounts', 'finance_verification_request_events', 'finance_verification_requests', 'confirmare_cycle_steps', 'confirmare_proforma_cycles',

@@ -206,6 +206,10 @@ test('source configuration loads one secret and mode per site from the environme
         $default = Config::fromEnvironment(new ConfigLoader($base));
         expect($default->sourceKeys === ['trendhome', 'outletperdele'] && $default->sourceSecrets === [], 'Both first-party sources stay declared by default.');
         expect(array_column(SourceRegistry::fromConfig($default)->issues(), 'code') === ['missing_secret', 'missing_secret']);
+        // API 2.82.0: the operator decisions (and their automation) are off unless the reviewed switch says exactly `enabled`.
+        expect($default->confirmareDecisionsEnabled() === false, 'API 2.82.0: Operation Simplification V1 is off by default.');
+        expect(Config::fromEnvironment(new ConfigLoader([...$base, 'ARASYA_CONFIRMARE_DECISIONS' => 'enabled']))->confirmareDecisionsEnabled() === true, 'API 2.82.0: the switch is read from the configuration.');
+        expect(Config::fromEnvironment(new ConfigLoader([...$base, 'ARASYA_CONFIRMARE_DECISIONS' => 'Enabled']))->confirmareDecisionsEnabled() === false, 'API 2.82.0: any other value keeps it off.');
 
         $config = Config::fromEnvironment(new ConfigLoader([
             ...$base,

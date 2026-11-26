@@ -1262,7 +1262,7 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             'revision' => $this->invoiceRevision($orderId),
             'mode' => $this->invoiceActions ? 'enforce' : 'observe',
             'smartbill' => ['available' => true, 'reason' => null, 'documentType' => $i['documentType'], 'autoEmail' => $i['autoEmail'], 'cashing' => false, 'draft' => false, 'mailSupported' => true, 'autoIssue' => false],
-            'order' => ['id' => (string) $o['id'], 'number' => (string) ($o['number'] ?? $o['id']), 'status' => (string) ($o['shopStatus'] ?? 'processing'), 'total' => '719.00', 'currency' => 'RON', 'billingEmail' => true],
+            'order' => ['id' => (string) $o['id'], 'number' => (string) ($o['number'] ?? $o['id']), 'status' => (string) ($o['shopStatus'] ?? 'processing'), 'total' => (string) ($o['totals']['total'] ?? '719.00'), 'currency' => 'RON', 'billingEmail' => true],
             'financial' => ['state' => $i['cleared'] ? 'cleared' : 'waiting', 'basis' => $i['cleared'] ? 'online_payment' : null, 'attention' => null, 'pending' => false],
             'document' => [
                 'exists' => $doc !== null, 'type' => $doc === null ? null : $i['documentType'], 'series' => $doc['series'] ?? null, 'number' => $doc['number'] ?? null, 'status' => $doc === null ? null : 'final',

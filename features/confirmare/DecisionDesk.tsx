@@ -15,6 +15,7 @@ import { AutoRefreshBar, QueueSkeleton, WorkspaceSwitcher } from "../workspaces/
 import { useAutoRefresh } from "../workspaces/useAutoRefresh";
 import { confirmareOrderPath } from "./ConfirmareParts";
 import { OrderWorkbench } from "./OrderWorkbench";
+import { OperatorDesk } from "./OperatorDesk";
 import { ShopTaskButtons } from "./ConfirmareWorkspace";
 
 export const DESK_REFRESH_MS = 15_000;
@@ -70,6 +71,10 @@ export function DecisionDesk({ employee, service, documents, orderId, navigate, 
     return () => clearTimeout(timer);
   }, [typed, filters.query]);
 
+  // API 2.82.0: until the operator decisions are switched on (ARASYA_CONFIRMARE_DECISIONS), the earlier detailed desk works.
+  if (pool.data?.decisions === false) {
+    return <OperatorDesk employee={employee} service={service} documents={documents} orderId={orderId} navigate={navigate} workspaces={workspaces} onWorkspace={onWorkspace} />;
+  }
   if (orderId) {
     return <OrderWorkbench key={orderId} orderId={orderId} employee={employee} service={service} documents={documents} navigate={navigate}
       backPath={`/confirmare${deskQuery(filters)}`} listView={filters.view} listSource={filters.source} onChanged={pool.refresh} />;

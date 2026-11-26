@@ -7,8 +7,8 @@ import path from "node:path";
 // Operation Simplification V1 (API 2.82.0, Staff 2.57.0) against the real Operations API and the loopback TEST shop, after
 // every earlier suite: the operator desk (four lists with counts, shops from the server, customer, total, products, waiting
 // time), the full-page order editor with the sticky money header on laptop screens (1280x800, 1366x768, 1440x900,
-// 1920x1080, no horizontal scroll), the three decisions (yellow without anything required, green without a call record,
-// red without a reason) with the undo before the system acts, and the finance employee's search of any order. Generic TEST
+// 1920x1080, no horizontal scroll), the three decisions, each one click (yellow and red without any form, green without a
+// call record, on the total shown) with the undo before the system acts, and the finance employee's search of any order. Generic TEST
 // people and orders only (tests/e2e-confirmare-fixture.php --desk).
 type Desk = { orders: { first: string; second: string; third: string } };
 const root = path.resolve(import.meta.dirname, "..");
@@ -90,8 +90,12 @@ test("the full-page editor: the money stays on screen while scrolling; yellow ne
     await page.waitForTimeout(200);
     const box = await page.getByTestId("dd-money").boundingBox();
     expect(box && box.y >= 0 && box.y < 140, "the money header stays at the top while scrolling").toBe(true);
+    // Yellow: one click, nothing to fill in; a note or a callback time can be added afterwards (optional).
     await page.getByTestId("dd-yellow").click();
-    await expect(page.getByTestId("dd-waiting-panel")).toBeVisible();
+    await expect(page.getByTestId("dd-notice")).toContainText(number(D.orders.first));
+    await expect(page.getByTestId("dd-waiting-panel")).toHaveCount(0);
+    await page.getByTestId("dd-waiting-note").click();
+    await page.getByTestId("dd-waiting-panel").getByRole("textbox", { name: /Notă/ }).fill("Revine după ora 17");
     await page.getByTestId("dd-waiting-save").click();
     await expect(page.getByTestId("dd-notice")).toContainText(number(D.orders.first));
     await page.getByTestId("dd-autonext").uncheck();
@@ -117,15 +121,33 @@ test("green confirms on the order the screen showed, then it can be undone befor
     await page.getByTestId("dd-green").click();
     await expect(page.getByTestId("dd-after")).toBeVisible();
     await page.goto(`/confirmare/orders/${encodeURIComponent(D.orders.second)}`);
+    // Red: one click, no reason, no form; the undo stays for a wrong click.
     await page.getByTestId("dd-red").click();
-    await expect(page.getByTestId("dd-refuse-panel")).toBeVisible();
-    await page.getByTestId("dd-refuse-save").click();
     await expect(page.getByTestId("dd-after")).toBeVisible();
+    await expect(page.getByTestId("dd-undo")).toBeVisible();
     await page.goto("/confirmare?view=refused");
     await expect(page.getByTestId(`dd-row-${number(D.orders.second)}`)).toBeVisible();
     await page.getByTestId("dd-view-confirmed").click();
     await expect(page.getByTestId(`dd-row-${number(D.orders.first)}`)).toBeVisible();
     await expect(page.getByTestId("dd-done-today")).toContainText(/[1-9]/);
+    expect(errors).toEqual([]);
+  } finally { await context.close(); }
+});
+
+test("rapid edits ask the shop once: the 450 ms preview never sends one shop call per click", async ({ browser }) => {
+  const { context, page, errors } = await signIn(browser, "cf.operator.e2e");
+  try {
+    const previews: string[] = [];
+    page.on("request", (request) => { if (request.url().includes("/source/preview")) previews.push(request.url()); });
+    await page.goto(`/confirmare/orders/${encodeURIComponent(D.orders.third)}`);
+    const plus = page.locator('[data-testid^="dd-qty-"][data-testid$="-plus"]').first();
+    await expect(plus).toBeEnabled();
+    for (let click = 0; click < 8; click++) { await plus.click(); await page.waitForTimeout(100); }
+    await expect(page.getByTestId("dd-savebar")).toBeVisible();
+    await page.waitForTimeout(1500);
+    // Eight clicks within about a second: one preview for the final quantity (the debounce restarts on every click).
+    expect(previews.length, `previews sent for 8 rapid clicks: ${previews.length}`).toBeLessThanOrEqual(1);
+    await page.getByRole("button", { name: /Renunță|Discard/ }).click();
     expect(errors).toEqual([]);
   } finally { await context.close(); }
 });

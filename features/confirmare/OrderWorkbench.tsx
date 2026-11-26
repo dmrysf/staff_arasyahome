@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { formatDate, useI18n, type MessageKey } from "../../i18n";
 import type { Employee } from "../../domain/models";
-import { REJECT_REASONS, canSuperviseConfirmare, confirmareScopesOf, sourceLabel, type ConfirmareApi, type ConfirmareDetail, type DeskView, type OperatorDecision, type RejectReason } from "../../domain/confirmare";
+import { canSuperviseConfirmare, confirmareScopesOf, sourceLabel, type ConfirmareApi, type ConfirmareDetail, type DeskView, type OperatorDecision } from "../../domain/confirmare";
 import { addDraftCoupon, blockerLabel, draftProblems, editOperations, editReasonLabel, emptyEditDraft, normalizeFieldValue, productAddable, type EditCatalog, type EditCatalogLine, type EditDraft, type EditField, type EditOperation, type EditPreview, type EditProduct } from "../../domain/confirmareEdit";
 import { formatShopMoney, shopPhones, type AddressField, type AddressFields, type ShopLine, type ShopOrderDetail, type ShopRead } from "../../domain/confirmareShop";
-import { BUCHAREST_SECTORS, RO_COUNTIES, addressChanges, addressWarnings, browserStorage, draftKey, loadDraft, moneyHeader, nextAfter, replacementFields, saveDraft } from "../../domain/decisionDesk";
+import { BUCHAREST_SECTORS, RO_COUNTIES, addressChanges, addressWarnings, browserStorage, draftKey, loadDraft, moneyHeader, nextAfter, replacementFields, saveDraft, sameAmount } from "../../domain/decisionDesk";
 import type { DocumentApi } from "../../domain/documents";
 import { createIdempotencyKey } from "../../services/idempotency";
 import { getErrorPresentation, toServiceError } from "../../services/errors";
@@ -26,6 +26,13 @@ const backendCode = (caught: unknown): string | undefined => {
   const code = toServiceError(caught).details?.backendCode;
   return typeof code === "string" ? code : undefined;
 };
+const shopTotalOf = (caught: unknown): string | null => {
+  const total = toServiceError(caught).details?.shopTotal;
+  return typeof total === "string" ? total : null;
+};
+type Saved = { detail: ConfirmareDetail; shop: ShopRead | null };
+/** Milliseconds until an instant (the undo deadline), read when a decision answers (never while rendering). */
+const msUntil = (iso: string | null): number => (iso ? Date.parse(iso) - Date.now() : 0);
 const messageOf = (caught: unknown): string => getErrorPresentation(toServiceError(caught)).message;
 const readAutoNext = (): boolean => { try { return browserStorage()?.getItem(AUTO_NEXT_KEY) !== "0"; } catch { return true; } };
 
@@ -50,7 +57,8 @@ export function OrderWorkbench({ orderId, employee, service, navigate, backPath,
   const [busy, setBusy] = useState<null | "save" | "sync" | OperatorDecision | "undo">(null);
   const [notice, setNotice] = useState<{ tone: "success" | "info" | "warning" | "danger"; text: string } | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
-  const [panel, setPanel] = useState<null | "waiting" | "refused">(null);
+  // Yellow and red decide with one click; the waiting note and callback time are optional, afterwards.
+  const [notePanel, setNotePanel] = useState(false);
   const [last, setLast] = useState<LastDecision | null>(null);
   const [autoNext, setAutoNext] = useState(readAutoNext);
   const [countdown, setCountdown] = useState<number | null>(null);
@@ -65,14 +73,15 @@ export function OrderWorkbench({ orderId, employee, service, navigate, backPath,
   const dropKey = (name: string) => { delete keys.current[name]; };
 
   // ---- Loading ------------------------------------------------------------------------------------------------------
-  const loadShop = useCallback(async (current: ConfirmareDetail) => {
-    if (!current.sourceAccess.read) { setShop(null); return; }
+  const loadShop = useCallback(async (current: ConfirmareDetail): Promise<ShopRead | null> => {
+    if (!current.sourceAccess.read) { setShop(null); return null; }
     const [read, edit] = await Promise.all([
       service.sourceOrder(orderId).catch((caught) => ({ available: false as const, reason: messageOf(caught) })),
       current.sourceAccess.edit && current.status === "pending" ? service.sourceCatalog(orderId).catch(() => null) : Promise.resolve(null),
     ]);
     setShop(read);
     setCatalog(edit);
+    return read;
   }, [orderId, service]);
 
   const loadAll = useCallback(async (): Promise<ConfirmareDetail | null> => {
@@ -159,71 +168,97 @@ export function OrderWorkbench({ orderId, employee, service, navigate, backPath,
     return null;
   }
 
-  async function applyOperations(ops: EditOperation[], name: string): Promise<boolean> {
-    if (!catalog) return false;
+  async function applyOperations(ops: EditOperation[], name: string): Promise<Saved | null> {
+    if (!catalog) return null;
     const fresh = await service.sourcePreview(orderId, { expectedVersion: catalog.version, operations: ops });
     if (!fresh.applicable) {
       setNotice({ tone: "warning", text: fresh.blockers.map(blockerLabel).join(" ") });
-      return false;
+      return null;
     }
     const outcome = await service.sourceApply(orderId, { expectedVersion: catalog.version, operations: ops, previewToken: fresh.previewToken }, keyFor(name));
     dropKey(name);
     if (outcome.state !== "applied") {
       setNotice({ tone: "warning", text: t("cf.edit.reason.order_busy" as MessageKey) });
-      return false;
+      return null;
     }
     setBusy("sync");
     const settled = await waitSettled();
-    if (settled) { setDetail(settled); await loadShop(settled); }
-    return settled !== null;
+    if (!settled) return null;
+    setDetail(settled);
+    return { detail: settled, shop: await loadShop(settled) };
   }
 
-  async function saveEdits(): Promise<boolean> {
-    if (!catalog || operations.length === 0) return true;
+  async function saveEdits(): Promise<Saved | null> {
+    if (!catalog || operations.length === 0) return null;
     setBusy("save");
     try {
-      const done = await applyOperations(operations, `edit-${catalog.version}`);
-      if (done) {
+      const saved = await applyOperations(operations, `edit-${catalog.version}`);
+      if (saved) {
         setDraftState(emptyDraft());
         saveDraft(storage, draftStore, "", null);
         clearPreview();
         setNotice({ tone: "success", text: t("dd.saved") });
         onChanged();
       }
-      return done;
+      return saved;
     } catch (caught) {
       setNotice({ tone: "danger", text: messageOf(caught) });
-      return false;
+      return null;
     } finally { setBusy(null); }
   }
 
   // ---- Decisions ----------------------------------------------------------------------------------------------------
-  async function decide(decision: OperatorDecision, extra: { reasonCode?: RejectReason; note?: string; callbackAt?: string } = {}) {
+  /**
+   * One decision, on exactly the order the screen shows (API 2.82.0, owner correction 2026-11-26): the version, the review
+   * fingerprint and the total sent are the ones displayed, never read again before sending, so a change in between is
+   * refused by the server and shown. Unsaved changes are saved first; the green decision then goes on only when the shop's
+   * saved total is the total of the last preview the customer heard. Otherwise the new total is shown and nothing is
+   * decided: the operator tells the customer and presses green again.
+   */
+  async function decide(decision: OperatorDecision, extra: { note?: string; callbackAt?: string } = {}) {
     if (!detail) return;
-    setPanel(null);
-    if (decision === "confirmed" && pendingEdit && !(await saveEdits())) return;
+    let shown: ConfirmareDetail = detail;
+    let shownTotal: string | null = money?.total ?? null;
+    let currency = shopDetail?.order.currency ?? "RON";
+    if (decision === "confirmed" && pendingEdit) {
+      const heard = preview && !previewing ? preview.after.total : null;
+      const saved = await saveEdits();
+      if (!saved) return;
+      const savedDetail = saved.shop?.available ? saved.shop.detail : null;
+      const savedTotal = savedDetail ? moneyHeader(savedDetail)?.total ?? null : null;
+      if (heard === null || savedTotal === null || !sameAmount(heard, savedTotal)) {
+        setNotice({ tone: "warning", text: t("dd.savedDiffers", { total: savedTotal && savedDetail ? formatShopMoney(savedTotal, savedDetail.order.currency) : "—" }) });
+        return;
+      }
+      shown = saved.detail;
+      shownTotal = savedTotal;
+      currency = savedDetail?.order.currency ?? currency;
+    }
     setBusy(decision);
+    const name = `decide-${decision}-${shown.version}`;
     try {
-      const current = await service.detail(orderId);
       const answer = await service.decide(orderId, {
-        expectedVersion: current.version, decision, ...(decision === "confirmed" ? { reviewFingerprint: current.review.fingerprint } : {}), ...extra,
-      }, keyFor(`decide-${decision}-${current.version}`));
-      dropKey(`decide-${decision}-${current.version}`);
+        expectedVersion: shown.version, decision,
+        ...(decision === "confirmed" ? { reviewFingerprint: shown.review.fingerprint, ...(shownTotal !== null ? { shownTotal } : {}) } : {}), ...extra,
+      }, keyFor(name));
+      dropKey(name);
       if (decision === "waiting" && pendingEdit) saveDraft(storage, draftStore, catalog?.version ?? "", draft);
-      setDetail({ ...current, ...answer });
-      setLast({ orderId, number: current.orderNumber, decision, undoUntil: answer.undoUntil });
-      const left = answer.undoUntil ? Date.parse(answer.undoUntil) - Date.now() : 0;
+      setDetail({ ...shown, ...answer });
+      setLast({ orderId, number: shown.orderNumber, decision, undoUntil: answer.undoUntil });
+      const left = msUntil(answer.undoUntil);
       setUndoOpen(left > 0);
       if (left > 0) setTimeout(() => setUndoOpen(false), left);
-      setNotice({ tone: decision === "refused" ? "info" : "success", text: t(`dd.done.${decision}` as MessageKey, { number: current.orderNumber }) });
+      setNotePanel(false);
+      setNotice({ tone: decision === "refused" ? "info" : "success", text: t(`dd.done.${decision}` as MessageKey, { number: shown.orderNumber }) });
       onChanged();
-      if (autoNext) setCountdown(AUTO_NEXT_MS / 1000);
+      if (autoNext && decision !== "waiting") setCountdown(AUTO_NEXT_MS / 1000);
     } catch (caught) {
+      dropKey(name);
       const code = backendCode(caught);
-      if (code === "CONFIRMARE_REVIEW_STALE" || code === "CONFIRMARE_SHOP_NOT_REVIEWED") {
-        const reloaded = await loadAll();
-        const total = reloaded && shop?.available ? formatShopMoney(shop.detail.totals.total, shop.detail.order.currency) : "";
-        setNotice({ tone: "warning", text: t("dd.newTotal", { total }) });
+      if (code === "CONFIRMARE_REVIEW_STALE" || code === "CONFIRMARE_SHOP_NOT_REVIEWED" || code === "CONFIRMARE_VERSION_CONFLICT") {
+        await loadAll();
+        const total = shopTotalOf(caught);
+        setNotice({ tone: "warning", text: total ? t("dd.newTotal", { total: formatShopMoney(total, currency) }) : t("dd.reloaded") });
       } else {
         setNotice({ tone: "danger", text: messageOf(caught) });
       }
@@ -298,18 +333,18 @@ export function OrderWorkbench({ orderId, employee, service, navigate, backPath,
             <button type="button" className="dd-btn dd-btn-green" disabled={decisionBusy} onClick={() => { void decide("confirmed"); }} data-testid="dd-green">
               <AppIcon name="check" size={20} />{busy === "save" ? t("dd.btn.saveFirst") : busy === "sync" ? t("dd.btn.syncing") : t("dd.btn.confirmed")}
             </button>
-            <button type="button" className="dd-btn dd-btn-yellow" disabled={busy !== null} aria-expanded={panel === "waiting"} onClick={() => setPanel(panel === "waiting" ? null : "waiting")} data-testid="dd-yellow"><AppIcon name="clock" size={20} />{t("dd.btn.waiting")}</button>
-            <button type="button" className="dd-btn dd-btn-red" disabled={busy !== null} aria-expanded={panel === "refused"} onClick={() => setPanel(panel === "refused" ? null : "refused")} data-testid="dd-red"><AppIcon name="close" size={20} />{t("dd.btn.refused")}</button>
+            <button type="button" className="dd-btn dd-btn-yellow" disabled={busy !== null} onClick={() => { void decide("waiting"); }} data-testid="dd-yellow"><AppIcon name="clock" size={20} />{t("dd.btn.waiting")}</button>
+            <button type="button" className="dd-btn dd-btn-red" disabled={busy !== null} onClick={() => { void decide("refused"); }} data-testid="dd-red"><AppIcon name="close" size={20} />{t("dd.btn.refused")}</button>
           </div>
         )}
-        {panel === "waiting" && <WaitingPanel busy={busy !== null} onSave={(note, callbackAt) => { void decide("waiting", { ...(note ? { note } : {}), ...(callbackAt ? { callbackAt } : {}) }); }} />}
-        {panel === "refused" && <RefusePanel busy={busy !== null} onSave={(reasonCode) => { void decide("refused", { reasonCode }); }} />}
+        {notePanel && <WaitingPanel busy={busy !== null} onSave={(note, callbackAt) => { void decide("waiting", { ...(note ? { note } : {}), ...(callbackAt ? { callbackAt } : {}) }); }} />}
       </header>
 
       {notice && <Notice tone={notice.tone} role="status" testId="dd-notice">{notice.text}</Notice>}
       {last && (
         <div className="dd-after" data-testid="dd-after">
           {undoOpen && <button type="button" className="button button-secondary" disabled={busy !== null} onClick={() => { void undo(); }} data-testid="dd-undo">{t("dd.undo")}</button>}
+          {last.decision === "waiting" && detail.status === "pending" && !notePanel && <button type="button" className="button button-ghost" onClick={() => setNotePanel(true)} data-testid="dd-waiting-note">{t("dd.waiting.addNote")}</button>}
           {last.undoUntil && <small>{t("dd.undoUntil", { time: formatDate(last.undoUntil, { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "Europe/Bucharest" }) })}</small>}
           <button type="button" className="button button-primary" onClick={() => { void openNext(); }} data-testid="dd-next">{t("cf.next.take")}{countdown !== null ? ` (${countdown})` : ""}<AppIcon name="arrow" size={18} /></button>
           {countdown !== null && <button type="button" className="button button-ghost" onClick={() => setCountdown(null)}>{t("common.cancel")}</button>}
@@ -324,7 +359,7 @@ export function OrderWorkbench({ orderId, employee, service, navigate, backPath,
           {shopDetail ? <CustomerBlock detail={shopDetail} canEdit={canDecide && Boolean(catalog?.editable)} onSaveAddress={async (target, changes) => {
             setBusy("save");
             try {
-              const done = await applyOperations([{ op: "set_address", target, fields: changes }], `address-${target}-${catalog?.version ?? ""}`);
+              const done = (await applyOperations([{ op: "set_address", target, fields: changes }], `address-${target}-${catalog?.version ?? ""}`)) !== null;
               if (done) setNotice({ tone: "success", text: t("dd.addr.saved") });
               return done;
             } catch (caught) { setNotice({ tone: "danger", text: messageOf(caught) }); return false; } finally { setBusy(null); }
@@ -383,19 +418,7 @@ function WaitingPanel({ busy, onSave }: { busy: boolean; onSave: (note: string, 
     <form className="dd-panel" onSubmit={(event) => { event.preventDefault(); onSave(note.trim(), when ? new Date(when).toISOString() : null); }} data-testid="dd-waiting-panel">
       <label>{t("dd.wait.note")}<input type="text" maxLength={300} value={note} onChange={(event) => setNote(event.target.value)} /></label>
       <label>{t("dd.wait.callback")}<input type="datetime-local" value={when} onChange={(event) => setWhen(event.target.value)} /></label>
-      <button type="submit" className="dd-btn dd-btn-yellow" disabled={busy} data-testid="dd-waiting-save">{t("dd.wait.save")}</button>
-    </form>
-  );
-}
-
-function RefusePanel({ busy, onSave }: { busy: boolean; onSave: (reason: RejectReason) => void }) {
-  const { t } = useI18n();
-  const [reason, setReason] = useState<RejectReason>("customer_cancelled");
-  return (
-    <form className="dd-panel" onSubmit={(event) => { event.preventDefault(); onSave(reason); }} data-testid="dd-refuse-panel">
-      <strong>{t("dd.refuse.ask")}</strong>
-      <label>{t("dd.refuse.reason")}<select value={reason} onChange={(event) => setReason(event.target.value as RejectReason)}>{REJECT_REASONS.map((code) => <option key={code} value={code}>{t(`cf.reject.${code}` as MessageKey)}</option>)}</select></label>
-      <button type="submit" className="dd-btn dd-btn-red" disabled={busy} data-testid="dd-refuse-save">{t("dd.refuse.confirm")}</button>
+      <button type="submit" className="dd-btn dd-btn-yellow" disabled={busy} data-testid="dd-waiting-save">{t("dd.wait.saveNote")}</button>
     </form>
   );
 }
@@ -416,9 +439,34 @@ function CustomerBlock({ detail, canEdit, onSaveAddress }: { detail: ShopOrderDe
           <button type="button" className="button button-ghost dd-copy" onClick={() => copy(phone.phone)} data-testid="dd-copy-phone">{copied === phone.phone ? t("dd.copied") : t("dd.copy")}</button>
         </li>
       ))}</ul>
+      {detail.contact.email && (
+        <p className="dd-email" data-testid="dd-email"><span>{t("dd.email")}</span> <strong>{detail.contact.email}</strong>
+          <button type="button" className="button button-ghost dd-copy" onClick={() => copy(detail.contact.email ?? "")}>{copied === detail.contact.email ? t("dd.copied") : t("dd.copy")}</button></p>
+      )}
+      <CustomerHistory customer={detail.customer} />
       <AddressBlock title={t("dd.delivery")} target="shipping" lines={detail.contact.shipping.addressLines} fields={detail.contact.shipping.fields ?? null} canEdit={canEdit} onSave={onSaveAddress} />
       <details className="dd-billing"><summary>{t("dd.billing")}</summary>
         <AddressBlock title={t("dd.billing")} target="billing" lines={detail.contact.billing.addressLines} fields={detail.contact.billing.fields ?? null} canEdit={canEdit} onSave={onSaveAddress} />
+      </details>
+    </div>
+  );
+}
+
+/**
+ * YD SOFT 2.35.0 (owner correction 2026-11-26): the customer's other orders of this shop (at most five) and a possible
+ * duplicate (another open order within a week). Information for the call only: nothing is refused or merged because of it.
+ */
+function CustomerHistory({ customer }: { customer: ShopOrderDetail["customer"] }) {
+  const { t } = useI18n();
+  if (!customer || customer.orders.length === 0) return null;
+  return (
+    <div className="dd-history-box" data-testid="dd-customer-history">
+      {customer.possibleDuplicates.length > 0 && <Notice tone="warning" role="note" testId="dd-duplicate">{t("dd.duplicate", { numbers: customer.possibleDuplicates.map((number) => `#${number}`).join(", ") })}</Notice>}
+      <details>
+        <summary>{t("dd.previous", { count: customer.orders.length })}</summary>
+        <ul>{customer.orders.map((order) => (
+          <li key={order.number}><strong>#{order.number}</strong> · {order.createdAt ? formatDate(order.createdAt, { day: "numeric", month: "short", year: "numeric", timeZone: "Europe/Bucharest" }) : "—"} · {order.status.label} · {formatShopMoney(order.total, order.currency)}</li>
+        ))}</ul>
       </details>
     </div>
   );
