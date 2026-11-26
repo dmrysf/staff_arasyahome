@@ -106,7 +106,15 @@ async function axe(page: Page) {
 async function openOrder(page: Page, globalId: string) {
   await page.goto(`/confirmare/orders/${encodeURIComponent(globalId)}`);
   await expect(page.getByTestId("dd-work")).toBeVisible();
-  await expect(page.getByTestId("dd-total")).toContainText(/\d/, { timeout: 30_000 });
+  // The loopback TEST shop is one PHP process answering from one JSON file: on a busy CI runner a read can stall.
+  // One reload asks again (the real screen does the same on its next refresh); the figures must then appear.
+  try {
+    await expect(page.getByTestId("dd-total")).toContainText(/\d/, { timeout: 20_000 });
+  } catch {
+    await page.reload();
+    await expect(page.getByTestId("dd-work")).toBeVisible();
+    await expect(page.getByTestId("dd-total")).toContainText(/\d/, { timeout: 30_000 });
+  }
 }
 
 test("TH 65794's shape: money header, big decisions, customer, the curtain card and how 355,32 is made up", async ({ browser }) => {
