@@ -963,6 +963,16 @@ if ($rootUuid !== '') {
     $run1 = $tracker->track($rootUuid, 40, 0, 'test-tracking-1', true);
     $newB = (int) $one('SELECT COUNT(*) FROM finance_verification_requests WHERE order_uuid = ? AND request_uuid <> ?', [$orderB, $pb]);
     $check($run1['recheck'] === 0 && $newB === 0, '2.82.0: the system opens no recheck task by itself (' . json_encode($run1) . ')');
+    // Switched off (ARASYA_CONFIRMARE_DECISIONS absent: the deployed default before activation) the 2.81.0 next-morning
+    // recheck stays: the waiting payment is offered again by itself and the inbox shows the next check.
+    $offContainer = new Container(new Config(...[...get_object_vars($config), 'confirmareDecisions' => 'disabled']), $pdo, $transport);
+    $dryOff = $offContainer->financeVerificationRequests()->track($rootUuid, 40, 0, 'test-tracking-off', false);
+    $check($dryOff['recheck'] >= 1 && (int) $one('SELECT COUNT(*) FROM finance_verification_requests WHERE order_uuid = ? AND request_uuid <> ?', [$orderB, $pb]) === 0,
+        'switch off: the next-morning recheck of the payment not found is kept (dry run counts it, writes nothing): ' . json_encode($dryOff));
+    $kernelOff = (new Container(new Config(...[...get_object_vars($base), 'sourceAccess' => $access('single'), 'confirmareDecisions' => 'disabled']), $pdo, $transport))->kernel();
+    $pdo->exec('DELETE FROM api_rate_limit_buckets');
+    $boxOff = $ok($inbox($f, $kernelOff), 'switch off inbox');
+    $check(is_string((array_column($boxOff['items'], null, 'id')[$pb] ?? [])['recheckAt'] ?? null), 'switch off: the inbox shows the next-morning check (2.81.0)');
 }
 $cmd2 = static function (array $w, string $path, array $body, ?string $key = null, mixed $k = null) use ($call, $pdo): array { $pdo->exec('DELETE FROM api_rate_limit_buckets'); return $call($w, 'POST', $path, $body, $key, $k); };
 // She finds the order by its number and checks it again at once (minutes after her "NU"): a new task, assigned to her.

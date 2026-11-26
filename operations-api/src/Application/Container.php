@@ -305,6 +305,8 @@ final class Container
             $this->clock,
             // The HMAC of the bank evidence of a decision (amounts and references are low-entropy).
             hash_hmac('sha256', 'finance-verification-evidence', $this->config->appSecret),
+            // The next-morning recheck stays while Operation Simplification V1 is switched off (2.81.0 behaviour).
+            !$this->config->confirmareDecisionsEnabled(),
         );
     }
 

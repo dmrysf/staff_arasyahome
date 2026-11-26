@@ -37,7 +37,8 @@ The operators' and Cristina's queues grew faster than they could be worked.
    not TBI) is approved by the system (event reason `online_payment_verified`, no employee, no call) and routed to the shop
    employee (`routeOnline`). Production waits for the shop employee's customer check, exactly like a manager route. A
    WooCommerce "processing" status alone never qualifies.
-5. Finance: "NU" needs no reason; the next-morning recheck is retired (`AUTO_RECHECK = false`). The finance employee finds
+5. Finance: "NU" needs no reason; with the switch on (item 7) the next-morning recheck is retired. Switched off, the
+   2.81.0 next-morning recheck stays (`FinanceVerificationRequests` `autoRecheck`). The finance employee finds
    any order of her shops by order or proforma number (`GET /confirmare/finance/lookup`) and starts or continues its check
    herself (`POST /confirmare/finance/check`): her open task, a free one moved to her, or a new one assigned to her. A
    colleague's check in progress is never taken. Her decision stays the only payment verification: amount, bank

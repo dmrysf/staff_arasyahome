@@ -121,8 +121,6 @@ final readonly class FinanceVerificationRequests
      * (Europe/Bucharest), never several times a day (bin/finance-payment-tracking.php).
      */
     public const RECHECK_HOUR = 8;
-    /** API 2.82.0 (owner decision 2026-11-26): the automatic next-morning recheck is retired; a recheck is the employee's choice. */
-    public const AUTO_RECHECK = false;
     /** API 2.80.0: one page of the finance employee's closed tasks (history with search). */
     private const HISTORY_PAGE = 50;
 
@@ -137,6 +135,10 @@ final readonly class FinanceVerificationRequests
         private ApiRateLimiter $rateLimiter,
         private Clock $clock,
         #[\SensitiveParameter] private string $hmacKey,
+        // API 2.82.0: the automatic next-morning recheck of a payment not found. Retired only with Operation Simplification V1
+        // switched on (ARASYA_CONFIRMARE_DECISIONS=enabled: the finance employee opens the order again herself, checkOrder);
+        // switched off, the API keeps the 2.81.0 behaviour.
+        private bool $autoRecheck = true,
     ) {
     }
 
@@ -1315,7 +1317,7 @@ final readonly class FinanceVerificationRequests
             'decidedAt' => $row['decided_at'] === null ? null : self::iso((string) $row['decided_at']),
             // API 2.80.0: the employee's own decision (Finalizate azi), and for a payment not found the next check.
             'decidedByMe' => $row['decided_by_employee_uuid'] === $actor->employeeUuid,
-            'recheckAt' => self::AUTO_RECHECK && $row['state'] === 'not_received' && $row['decided_at'] !== null ? self::iso($this->sql(self::recheckAfter((string) $row['decided_at']))) : null,
+            'recheckAt' => $this->autoRecheck && $row['state'] === 'not_received' && $row['decided_at'] !== null ? self::iso($this->sql(self::recheckAfter((string) $row['decided_at']))) : null,
         ] + (array_key_exists('amount_read_at', $row) ? [
             // API 2.77.9: the advance the shop last showed (null: never read yet). The task screen reads it again live.
             'advance' => $row['amount_read_at'] === null ? null : [
@@ -2297,9 +2299,9 @@ final readonly class FinanceVerificationRequests
         $now = $this->clock->now();
         $candidates = [];
         foreach ($recheck->fetchAll(PDO::FETCH_ASSOC) as $row) {
-            // API 2.82.0 (owner decision 2026-11-26): no automatic next-morning recheck; the finance employee opens the order
-            // again whenever she wants (checkOrder). The old rule stays readable here, switched off.
-            if (self::AUTO_RECHECK && self::recheckAfter((string) $row['decided_at']) <= $now) {
+            // API 2.82.0 (owner decision 2026-11-26): with Operation Simplification V1 switched on there is no automatic
+            // next-morning recheck; the finance employee opens the order again whenever she wants (checkOrder).
+            if ($this->autoRecheck && self::recheckAfter((string) $row['decided_at']) <= $now) {
                 $candidates[] = ['order' => (string) $row['order_uuid'], 'key' => 'auto-recheck-' . str_replace('-', '', (string) $row['request_uuid']), 'reason' => 'auto_recheck'];
             }
         }
