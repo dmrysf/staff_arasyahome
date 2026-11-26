@@ -1,9 +1,27 @@
 <?php
 declare(strict_types=1);
+/** Restore a pre-064 disposable test fixture (no AWB facts, the 059 kind CHECK). NOT a deployment/rollback mechanism. */
+function restorePreStoreWorkspaceTestSchema(PDO $pdo): void
+{
+    if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='064_store_workspace.sql'")->fetchColumn()) return;
+    $pdo->exec("DELETE FROM order_source_operations WHERE kind IN ('awb_cancel', 'address_update')");
+    if ((bool) $pdo->query("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'order_source_operations' AND column_name = 'awb_number'")->fetchColumn()) {
+        $pdo->exec('ALTER TABLE order_source_operations DROP CONSTRAINT chk_order_source_operations_store_064');
+        $pdo->exec('ALTER TABLE order_source_operations DROP KEY idx_order_source_operations_shop_day, DROP KEY idx_order_source_operations_awb, DROP COLUMN awb_number, DROP COLUMN parcels, DROP COLUMN reason_code, DROP COLUMN replaces_operation_uuid');
+    }
+    if ((bool) $pdo->query("SELECT COUNT(*) FROM information_schema.check_constraints WHERE constraint_schema = DATABASE() AND constraint_name = 'chk_order_source_operations_kind_044' AND check_clause LIKE '%address_update%'")->fetchColumn()) {
+        $pdo->exec('ALTER TABLE order_source_operations DROP CONSTRAINT chk_order_source_operations_kind_044');
+        $pdo->exec("ALTER TABLE order_source_operations ADD CONSTRAINT chk_order_source_operations_kind_044 CHECK (kind IN ('order_reactivate', 'awb_create', 'awb_address_task', 'awb_address_done', 'awb_cod_corrected', 'awb_reopened', 'card_refund_full', 'card_refund_record', 'card_refund_verify'))");
+    }
+    $pdo->exec("DELETE FROM schema_migrations WHERE migration_name='064_store_workspace.sql'");
+}
+
 /** Restore a pre-063 disposable test fixture (no yellow mark, decision follow-ups or desk display copy; the 036 CHECKs). NOT a deployment/rollback mechanism. */
 function restorePreOperationSimplificationTestSchema(PDO $pdo): void
 {
     if(!str_contains(strtolower((string)$pdo->query('SELECT DATABASE()')->fetchColumn()),'test')) throw new RuntimeException('Test database required.');
+    restorePreStoreWorkspaceTestSchema($pdo);
     if(!$pdo->query("SELECT 1 FROM schema_migrations WHERE migration_name='063_operation_simplification.sql'")->fetchColumn()) return;
     $pdo->exec('DROP TABLE IF EXISTS confirmare_decision_followups');
     $pdo->exec('DROP TABLE IF EXISTS confirmare_order_display');

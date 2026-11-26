@@ -204,6 +204,23 @@ final class Container
         );
     }
 
+    /** The shop employee's Store Workspace (API 2.83.0): counters, documents, AWB queue/history, search, order detail. */
+    public function storeWorkspace(?AuthorizationService $authorization = null): \Arasya\Operations\Confirmare\StoreWorkspace
+    {
+        $authorization ??= new AuthorizationService();
+        return new \Arasya\Operations\Confirmare\StoreWorkspace(
+            $this->pdo,
+            $this->clock,
+            $authorization,
+            \Arasya\Operations\Integration\SourceAccess\SourceAccessRegistry::fromConfig($this->config),
+            new \Arasya\Operations\Integration\SourceAccess\SourceAccessClient($this->shopTransport(), $this->clock),
+            new \Arasya\Operations\Confirmare\InvoiceScopePolicy($this->pdo),
+            new \Arasya\Operations\Document\DocumentScopePolicy($this->pdo),
+            $this->confirmareService($authorization),
+            $this->confirmareOperations($authorization),
+        );
+    }
+
     /** AWB readiness of Confirmare orders at stages 12-14 (API 2.77.0): routing, final invoice, lost answers. */
     public function confirmareAwbReadiness(): \Arasya\Operations\Confirmare\ConfirmareAwbReadiness
     {
@@ -531,6 +548,7 @@ final class Container
                 $this->config,
                 $context,
                 $this->confirmareDecisionFollowUps(),
+                $this->storeWorkspace($authorization),
             ),
             new \Arasya\Operations\Management\RootInterventionController($desk = $this->rootIntervention($authorization), $this->authentication, $csrf, $this->config, $context, $this->orderResolver($desk, $authorization)),
             $this->financeController($authorization, $context, $csrf, $rateLimiter),

@@ -42,7 +42,14 @@ use Throwable;
  */
 final class ConfirmareOperations
 {
-    public const KINDS = ['order_reactivate', 'awb_create', 'awb_address_task', 'awb_address_done', 'awb_cod_corrected', 'card_refund_full', 'card_refund_record', 'card_refund_verify'];
+    public const KINDS = ['order_reactivate', 'awb_create', 'awb_address_task', 'awb_address_done', 'awb_cod_corrected', 'awb_cancel', 'address_update', 'card_refund_full', 'card_refund_record', 'card_refund_verify'];
+    /** API 2.83.0 (YD SOFT 2.36.0): why the employee corrects an AWB. */
+    public const CANCEL_REASONS = ['wrong_parcels', 'wrong_weight', 'wrong_address', 'wrong_contact', 'other'];
+    /** API 2.83.0: the delivery fields the employee may correct (YD SOFT Operations::ADDRESS_INPUT). */
+    public const ADDRESS_FIELDS = ['firstName', 'lastName', 'phone', 'county', 'city', 'street', 'streetNo', 'building', 'entrance', 'floor', 'apartment', 'postcode', 'note'];
+    /** API 2.83.0: the shop's address check codes (YD SOFT AddressCheck). */
+    public const ADDRESS_CODES = ['name_missing', 'phone_missing', 'phone_invalid', 'county_missing', 'county_unknown', 'locality_missing', 'locality_unknown', 'street_missing',
+        'number_missing', 'postcode_invalid', 'locality_unverified', 'locality_corrected', 'sector_missing'];
     /** Production stages from which the AWB may be made (stage 12 Control calitate, 13 Împachetare, 14 Livrare). */
     public const AWB_STAGES = ['quality-control', 'packing', 'delivery'];
 
@@ -54,7 +61,7 @@ final class ConfirmareOperations
     public static function awbDoneSql(string $alias): string
     {
         return "EXISTS (SELECT 1 FROM order_source_operations awb_done WHERE awb_done.order_uuid = {$alias}.order_uuid AND awb_done.kind = 'awb_create' AND awb_done.state = 'applied'
-            AND NOT EXISTS (SELECT 1 FROM order_source_operations awb_re WHERE awb_re.order_uuid = awb_done.order_uuid AND awb_re.kind = 'awb_reopened' AND awb_re.state = 'applied' AND awb_re.requested_at > awb_done.requested_at))";
+            AND NOT EXISTS (SELECT 1 FROM order_source_operations awb_re WHERE awb_re.order_uuid = awb_done.order_uuid AND awb_re.kind IN ('awb_reopened', 'awb_cancel') AND awb_re.state = 'applied' AND awb_re.requested_at > awb_done.requested_at))";
     }
     public const REACTIVATION_REASONS = ['customer_returned', 'customer_paid_late'];
     private const FIELDS = [
@@ -64,6 +71,9 @@ final class ConfirmareOperations
         'awb_address_done' => ['reasonNote'],
         // API 2.50.0 (YD SOFT 2.23.0): the employee states the cash on delivery corrected in the FAN Courier panel.
         'awb_cod_corrected' => ['amount', 'reasonNote'],
+        // API 2.83.0 (YD SOFT 2.36.0, Store Workspace V1).
+        'awb_cancel' => ['reason'],
+        'address_update' => ['address'],
         'card_refund_full' => [],
         'card_refund_record' => ['amount', 'reference', 'valueDate'],
         'card_refund_verify' => ['entryId', 'decision'],
@@ -75,10 +85,13 @@ final class ConfirmareOperations
         'payment_not_found', 'order_closed', 'invoice_missing', 'finance_unavailable', 'payment_verifying', 'finance_attention', 'address_incomplete', 'phone_missing',
         'shipping_mismatch', 'awb_exists', 'awb_unavailable', 'cod_changed', 'cod_mismatch', 'cod_not_mismatched', 'awb_refused', 'awb_missing', 'label_unavailable', 'address_task_missing', 'address_task_open',
         'not_card_payment', 'card_payment_unverified', 'nothing_to_refund', 'refund_request_missing', 'refund_pending', 'finance_open', 'amount_exceeds_received',
-        'duplicate_reference', 'entry_not_found', 'entry_not_pending', 'same_employee', 'refund_record_failed', 'idempotency_conflict'];
-    public const RESULTS = ['reactivated', 'created', 'unknown', 'panel_required', 'panel_declared', 'manual_required', 'already_requested', 'refund_recorded', 'refund_verified', 'refund_rejected'];
+        'duplicate_reference', 'entry_not_found', 'entry_not_pending', 'same_employee', 'refund_record_failed', 'idempotency_conflict',
+        'awb_correction_disabled', 'address_edit_disabled', 'awb_picked_up', 'pickup_unknown', 'cancel_uncertain', 'cancel_refused', 'address_invalid'];
+    public const RESULTS = ['reactivated', 'created', 'unknown', 'panel_required', 'panel_declared', 'manual_required', 'already_requested', 'refund_recorded', 'refund_verified', 'refund_rejected',
+        'cancelled', 'address_saved', 'unchanged'];
 
     private ?bool $installed = null;
+    private ?bool $storeColumns = null;
 
     public function __construct(
         private readonly PDO $pdo,
@@ -248,6 +261,7 @@ final class ConfirmareOperations
             }
             $this->pdo->prepare('INSERT INTO order_source_operations (operation_uuid, order_uuid, global_order_id, source_key, kind, employee_uuid, access_role, idempotency_key, request_hmac, state, request_id, requested_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')->execute([$uuid, $row['order_uuid'], $globalId, $row['source_key'], $kind, $actor->employeeUuid, $role, $key, $hmac, 'pending', self::requestId($requestId), $this->now()]);
+            $this->recordRequestFacts($uuid, $kind, (string) $row['order_uuid'], $input);
             $this->pdo->commit();
         } catch (Throwable $e) {
             if ($this->pdo->inTransaction()) {
@@ -436,7 +450,7 @@ final class ConfirmareOperations
         if ($row['workflow_cohort'] !== WorkflowCohort::CONFIRMARE) {
             $codes[] = 'not_confirmare';
         }
-        if (in_array($kind, ['awb_create', 'awb_address_task', 'awb_address_done', 'awb_cod_corrected'], true)) {
+        if (in_array($kind, ['awb_create', 'awb_address_task', 'awb_address_done', 'awb_cod_corrected', 'awb_cancel', 'address_update'], true)) {
             if (!in_array((string) $row['production_stage_id'], self::AWB_STAGES, true)) {
                 // Stage 11 or earlier: the order is not ready for the courier.
                 $codes[] = 'stage_not_ready';
@@ -447,8 +461,16 @@ final class ConfirmareOperations
             if ($row['cancellation_state'] === 'held' || $row['operational_status'] === 'unavailable') {
                 $codes[] = 'order_cancellation';
             }
-            if ($kind === 'awb_create' && $this->operationOpen((string) $row['order_uuid'], 'awb_create')) {
+            // API 2.83.0: an AWB, its cancellation and a delivery address change never run side by side on one order.
+            if (in_array($kind, ['awb_create', 'awb_cancel', 'address_update'], true)
+                && ($this->operationOpen((string) $row['order_uuid'], 'awb_create') || $this->operationOpen((string) $row['order_uuid'], 'awb_cancel') || $this->operationOpen((string) $row['order_uuid'], 'address_update'))) {
                 $codes[] = 'operation_open';
+            }
+            if ($kind === 'awb_cancel' && !in_array($input['reason'] ?? null, self::CANCEL_REASONS, true)) {
+                throw new ApiException(422, 'VALIDATION_FAILED', 'reason must be one of ' . implode(', ', self::CANCEL_REASONS) . '.', ['field' => 'reason']);
+            }
+            if ($kind === 'address_update') {
+                self::validateAddress($input['address'] ?? null);
             }
         }
         if ($kind === 'order_reactivate') {
@@ -538,6 +560,9 @@ final class ConfirmareOperations
         return [
             'reactivate' => isset($roles['reactivate']),
             'awb' => isset($roles['awb']) && in_array((string) $row['production_stage_id'], self::AWB_STAGES, true),
+            // API 2.83.0: the AWB correction and the delivery address correction (the shop's own switches still decide).
+            'awbCorrect' => isset($roles['awb']) && in_array((string) $row['production_stage_id'], self::AWB_STAGES, true),
+            'addressEdit' => isset($roles['awb']) && in_array((string) $row['production_stage_id'], self::AWB_STAGES, true),
             'cardRefund' => isset($roles['refund']),
             'cardRefundRecord' => isset($roles['financeRecord']),
             'cardRefundVerify' => isset($roles['financeApprove']),
@@ -580,7 +605,7 @@ final class ConfirmareOperations
         $body = $answer['body'];
         if (($answer['status'] === 200 || $answer['status'] === 202) && ($body['action'] ?? null) === $kind && in_array($body['result'] ?? null, self::RESULTS, true)) {
             $state = $answer['status'] === 200 ? 'applied' : 'unknown';
-            $this->complete($uuid, $state, $state === 'applied' ? 'applied' : null, (string) $body['result'], $kind, $row, $key);
+            $this->complete($uuid, $state, $state === 'applied' ? 'applied' : null, (string) $body['result'], $kind, $row, $key, is_array($body['state'] ?? null) ? self::shopState($body['state']) : null);
             if ($kind === 'order_reactivate' && $state === 'applied') {
                 // The shop put the order back on hold: an approved Confirmare is decided again with the customer.
                 $this->service->reopenAfterReactivation((string) $row['global_order_id'], (string) $this->scalar('SELECT employee_uuid FROM order_source_operations WHERE operation_uuid = ?', [$uuid]), self::requestId($requestId), $key . '-reopen');
@@ -594,6 +619,11 @@ final class ConfirmareOperations
                 $this->complete($uuid, 'rejected', $code, null, $kind, $row, $key);
                 throw new ApiException(409, 'CONFIRMARE_OPERATION_REFUSED', 'The shop refused the operation; nothing was done.', ['reason' => $code,
                     'blockers' => array_values(array_filter((array) ($body['blockers'] ?? []), static fn (mixed $b): bool => is_string($b) && in_array($b, self::CODES, true))),
+                    // API 2.83.0: FAN Courier's own refusal text (already stripped of telephone numbers and e-mails by the shop)
+                    // and the address check codes, so the employee sees the real reason.
+                    'message' => self::safeMessage($body['message'] ?? null),
+                    'issues' => self::addressCodes($body['issues'] ?? null),
+                    'warnings' => self::addressCodes($body['warnings'] ?? null),
                     'shop' => is_array($body['state'] ?? null) ? self::shopState($body['state']) : null]);
             }
         }
@@ -631,6 +661,14 @@ final class ConfirmareOperations
         if (!is_int($answer['body']['status'] ?? null) || !is_array($answer['body']['result'] ?? null)) {
             return ['state' => (string) $found['state'], 'idempotencyKey' => $key, 'reachable' => true, 'shop' => $state];
         }
+        if ($state === 'unknown' && (string) $found['kind'] === 'awb_cancel') {
+            // API 2.83.0: a cancellation FAN Courier did not confirm is settled by the shop (its cancellation guard and its
+            // AWB record), never by sending it again.
+            $settled = $this->settledCancel($found, $row, $target, $role, $key, $requestId);
+            if ($settled !== null) {
+                return $settled;
+            }
+        }
         if ($state === 'unknown' && (string) $found['kind'] === 'awb_create') {
             // API 2.77.1 (TH 65121): the shop keeps the 202 it answered while FAN Courier's outcome was unknown, and replays it
             // for ever. Once the shop's own AWB journal is settled (an AWB found, or the attempt closed without one after the
@@ -662,7 +700,7 @@ final class ConfirmareOperations
         }
         $shop = self::shopState($answer['body']);
         if ($shop['awb']['state'] === 'created' && $shop['awb']['number'] !== null) {
-            $this->complete((string) $found['operation_uuid'], 'applied', 'applied', 'created', 'awb_create', $row, $key);
+            $this->complete((string) $found['operation_uuid'], 'applied', 'applied', 'created', 'awb_create', $row, $key, $shop);
             return ['state' => 'applied', 'idempotencyKey' => $key, 'result' => 'created', 'shop' => $shop];
         }
         if ($shop['awb']['state'] === 'none') {
@@ -672,13 +710,91 @@ final class ConfirmareOperations
         return null;
     }
 
-    /** @param array<string, mixed> $row */
-    private function complete(string $uuid, string $state, ?string $outcome, ?string $result, string $kind, array $row, string $key): void
+    /**
+     * The shop's current state for an AWB cancellation whose stored answer is unknown (API 2.83.0): the shop's latest
+     * correction names this cancellation as `cancelled` (FAN Courier confirmed it, the AWB is closed) or `not_cancelled`
+     * (settled in the shop without a cancellation); `uncertain` or unreadable: null (ask again later; never sent again).
+     *
+     * @param array<string, mixed> $found @param array<string, mixed> $row
+     * @return array<string, mixed>|null
+     */
+    private function settledCancel(array $found, array $row, SourceAccessTarget $target, string $role, string $key, string $requestId): ?array
+    {
+        try {
+            $answer = $this->client->exchange($target, SourceAccessClient::ROUTE_OPERATION, $this->payload($row, (string) $found['employee_uuid'], $role, $requestId) + ['action' => 'operations_state']);
+        } catch (SourceAccessException) {
+            return null;
+        }
+        if ($answer['status'] !== 200 || !is_array($answer['body']['awb'] ?? null)) {
+            return null;
+        }
+        $shop = self::shopState($answer['body']);
+        $correction = $shop['awb']['correction'];
+        if ($correction['state'] === 'cancelled') {
+            $this->complete((string) $found['operation_uuid'], 'applied', 'applied', 'cancelled', 'awb_cancel', $row, $key, $shop);
+            return ['state' => 'applied', 'idempotencyKey' => $key, 'result' => 'cancelled', 'shop' => $shop];
+        }
+        if ($correction['state'] === 'not_cancelled') {
+            $this->complete((string) $found['operation_uuid'], 'rejected', 'not_cancelled', null, 'awb_cancel', $row, $key);
+            throw new ApiException(409, 'CONFIRMARE_OPERATION_REFUSED', 'The shop settled the cancellation: the AWB was not cancelled and stays active.', ['reason' => 'not_cancelled', 'blockers' => [], 'shop' => $shop]);
+        }
+        return null;
+    }
+
+    /**
+     * API 2.83.0: the request facts of an AWB operation (columns of migration 064), inside the insert transaction: the
+     * parcels of an AWB, the reason of a cancellation, and on a new AWB the cancellation it follows (old AWB -> new AWB).
+     *
+     * @param array<string, mixed> $input
+     */
+    private function recordRequestFacts(string $uuid, string $kind, string $orderUuid, array $input): void
+    {
+        if (!in_array($kind, ['awb_create', 'awb_cancel'], true) || !$this->storeColumns()) {
+            return;
+        }
+        $parcels = $kind === 'awb_create' && is_int($input['parcels'] ?? null) && $input['parcels'] >= 1 && $input['parcels'] <= 20 ? $input['parcels'] : null;
+        $reason = $kind === 'awb_cancel' && in_array($input['reason'] ?? null, self::CANCEL_REASONS, true) ? (string) $input['reason'] : null;
+        $replaces = null;
+        $awb = null;
+        if ($kind === 'awb_create') {
+            $replaces = $this->scalar("SELECT c.operation_uuid FROM order_source_operations c WHERE c.order_uuid = ? AND c.kind = 'awb_cancel' AND c.state = 'applied'
+                AND c.requested_at > COALESCE((SELECT MAX(a.requested_at) FROM order_source_operations a WHERE a.order_uuid = c.order_uuid AND a.kind = 'awb_create' AND a.state = 'applied'), '1970-01-01')
+                ORDER BY c.requested_at DESC LIMIT 1", [$orderUuid]);
+        } else {
+            // The AWB this cancellation is about: the latest AWB made through Staff (the shop names it again on success).
+            $awb = $this->scalar("SELECT awb_number FROM order_source_operations WHERE order_uuid = ? AND kind = 'awb_create' AND state = 'applied' AND awb_number IS NOT NULL ORDER BY requested_at DESC LIMIT 1", [$orderUuid]);
+        }
+        $this->pdo->prepare('UPDATE order_source_operations SET parcels = ?, reason_code = ?, replaces_operation_uuid = ?, awb_number = ? WHERE operation_uuid = ?')
+            ->execute([$parcels, $reason, is_string($replaces) ? $replaces : null, is_string($awb) ? $awb : null, $uuid]);
+    }
+
+    public function storeColumns(): bool
+    {
+        if ($this->storeColumns === null) {
+            try {
+                $statement = $this->pdo->query("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'order_source_operations' AND column_name IN ('awb_number', 'parcels', 'reason_code', 'replaces_operation_uuid')");
+                $this->storeColumns = $statement !== false && (int) $statement->fetchColumn() === 4;
+            } catch (PDOException) {
+                $this->storeColumns = false;
+            }
+        }
+        return $this->storeColumns;
+    }
+
+    /** @param array<string, mixed> $row @param array<string, mixed>|null $shop the shop's state after an applied operation */
+    private function complete(string $uuid, string $state, ?string $outcome, ?string $result, string $kind, array $row, string $key, ?array $shop = null): void
     {
         $done = in_array($state, ['applied', 'rejected'], true);
         $now = $this->now();
         $this->pdo->prepare("UPDATE order_source_operations SET state = ?, outcome = ?, result = ?, completed_at = ? WHERE operation_uuid = ? AND state IN ('pending', 'unknown')")
             ->execute([$state, $outcome === null ? ($done ? 'applied' : null) : substr(preg_replace('/[^a-z_]/', '', $outcome) ?: 'unknown', 0, 40), $result, $done ? $now : null, $uuid]);
+        if ($state === 'applied' && $shop !== null && in_array($kind, ['awb_create', 'awb_cancel'], true) && $this->storeColumns()) {
+            // API 2.83.0: the AWB number the shop names (the new AWB, or the AWB it cancelled), for the history and the counters.
+            $number = $kind === 'awb_create' ? $shop['awb']['number'] : $shop['awb']['correction']['awb'];
+            if (is_string($number)) {
+                $this->pdo->prepare('UPDATE order_source_operations SET awb_number = ? WHERE operation_uuid = ?')->execute([$number, $uuid]);
+            }
+        }
         if ($kind === 'order_reactivate') {
             $this->pdo->prepare("UPDATE confirmare_reactivations SET state = ?, shop_outcome = ?, completed_at = ? WHERE idempotency_key = ? AND order_uuid = ? AND state IN ('pending', 'unknown')")
                 ->execute([$state, $result ?? $outcome, $done ? $now : null, $key, $row['order_uuid']]);
@@ -778,7 +894,7 @@ final class ConfirmareOperations
         $refund = is_array($state['cardRefund'] ?? null) ? $state['cardRefund'] : [];
         $codeCheck = is_array($awb['codCheck'] ?? null) ? $awb['codCheck'] : null;
         return [
-            'features' => array_map(static fn (mixed $v): string => in_array($v, ['off', 'enforce', 'manual'], true) ? $v : 'off', is_array($state['features'] ?? null) ? array_intersect_key($state['features'], ['reactivation' => 1, 'awb' => 1, 'cardRefunds' => 1]) : []),
+            'features' => array_map(static fn (mixed $v): string => in_array($v, ['off', 'enforce', 'manual'], true) ? $v : 'off', is_array($state['features'] ?? null) ? array_intersect_key($state['features'], ['reactivation' => 1, 'awb' => 1, 'cardRefunds' => 1, 'awbCorrection' => 1, 'addressEdit' => 1]) : []),
             'orderStatus' => is_string($state['order']['status'] ?? null) && preg_match('/^[a-z-]{2,30}$/D', $state['order']['status']) === 1 ? $state['order']['status'] : null,
             'awb' => [
                 'state' => in_array($awb['state'] ?? null, ['none', 'created', 'unknown'], true) ? $awb['state'] : 'none',
@@ -792,7 +908,12 @@ final class ConfirmareOperations
                 'address' => array_values(array_map(static fn (mixed $a): array => ['kind' => is_array($a) && ($a['kind'] ?? '') === 'done' ? 'done' : 'task', 'at' => is_array($a) ? $instant($a['at'] ?? null) : null],
                     array_slice((array) ($awb['address'] ?? []), -10))),
                 'pickup' => 'not_tracked',
+                'statusId' => is_string($awb['statusId'] ?? null) && preg_match('/^[A-Za-z0-9]{1,10}$/D', $awb['statusId']) === 1 ? $awb['statusId'] : null,
+                'status' => is_string($awb['status'] ?? null) ? mb_substr(strip_tags($awb['status']), 0, 120) : null,
+                'correction' => self::correction(is_array($awb['correction'] ?? null) ? $awb['correction'] : [], $instant),
             ],
+            // API 2.83.0 (YD SOFT 2.36.0): the delivery block, for the shop employee's address panel (never stored here).
+            'delivery' => self::delivery(is_array($state['delivery'] ?? null) ? $state['delivery'] : null, $instant),
             'cardRefund' => [
                 'available' => ($refund['available'] ?? false) === true,
                 'transactions' => is_int($refund['transactions'] ?? null) ? max(0, $refund['transactions']) : 0,
@@ -806,6 +927,70 @@ final class ConfirmareOperations
                 ], array_slice((array) ($refund['requests'] ?? []), -10))),
             ],
         ];
+    }
+
+    /** @param array<string, mixed> $c @return array{state: string, awb: string|null, at: string|null, reason: string|null} */
+    private static function correction(array $c, callable $instant): array
+    {
+        return [
+            'state' => in_array($c['state'] ?? null, ['none', 'cancelled', 'uncertain', 'not_cancelled'], true) ? $c['state'] : 'none',
+            'awb' => is_string($c['awb'] ?? null) && preg_match('/^[0-9]{6,20}$/D', $c['awb']) === 1 ? $c['awb'] : null,
+            'at' => $instant($c['at'] ?? null),
+            'reason' => in_array($c['reason'] ?? null, self::CANCEL_REASONS, true) ? $c['reason'] : null,
+        ];
+    }
+
+    /** @param array<string, mixed>|null $d @return array<string, mixed>|null */
+    private static function delivery(?array $d, callable $instant): ?array
+    {
+        if ($d === null || !is_array($d['address'] ?? null)) {
+            return null;
+        }
+        $address = ['target' => ($d['address']['target'] ?? '') === 'billing' ? 'billing' : 'shipping'];
+        foreach (array_merge(self::ADDRESS_FIELDS, ['company']) as $field) {
+            $value = $d['address'][$field] ?? '';
+            $address[$field] = is_string($value) ? mb_substr(strip_tags($value), 0, 200) : '';
+        }
+        $check = is_array($d['check'] ?? null) ? $d['check'] : [];
+        $fan = is_array($check['fan'] ?? null) ? ['county' => mb_substr((string) ($check['fan']['county'] ?? ''), 0, 60), 'locality' => mb_substr(strip_tags((string) ($check['fan']['locality'] ?? '')), 0, 120)] : null;
+        return [
+            'address' => $address,
+            'check' => ['state' => in_array($check['state'] ?? null, ['ok', 'warning', 'attention'], true) ? $check['state'] : 'attention',
+                'issues' => self::addressCodes($check['issues'] ?? null), 'warnings' => self::addressCodes($check['warnings'] ?? null), 'fan' => $fan],
+            'editable' => ($d['editable'] ?? false) === true,
+            'lastEdit' => is_array($d['lastEdit'] ?? null) ? ['at' => $instant($d['lastEdit']['at'] ?? null)] : null,
+        ];
+    }
+
+    /** @return list<string> */
+    private static function addressCodes(mixed $codes): array
+    {
+        return is_array($codes) ? array_values(array_unique(array_filter($codes, static fn (mixed $c): bool => is_string($c) && in_array($c, self::ADDRESS_CODES, true)))) : [];
+    }
+
+    /** FAN Courier's refusal text as the shop relayed it, checked again: no long digit run, no e-mail, no markup, 200 characters. */
+    public static function safeMessage(mixed $message): ?string
+    {
+        if (!is_string($message) || trim($message) === '') {
+            return null;
+        }
+        $message = preg_replace('/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i', '[e-mail]', strip_tags($message)) ?? '';
+        $message = preg_replace('/\+?\d[\d .\-]{6,}\d/', '[număr]', $message) ?? '';
+        $message = trim(preg_replace('/\s+/u', ' ', $message) ?? '');
+        return $message === '' ? null : mb_substr($message, 0, 200);
+    }
+
+    /** API 2.83.0: the employee's delivery address, checked before anything is recorded (the shop checks it again). */
+    private static function validateAddress(mixed $address): void
+    {
+        if (!is_array($address) || $address === [] || array_is_list($address) || array_diff(array_keys($address), self::ADDRESS_FIELDS) !== []) {
+            throw new ApiException(422, 'VALIDATION_FAILED', 'address takes only ' . implode(', ', self::ADDRESS_FIELDS) . '.', ['field' => 'address']);
+        }
+        foreach ($address as $field => $value) {
+            if (!is_string($value) || mb_strlen($value) > 200 || preg_match('/[\x00-\x08\x0B\x0C\x0E-\x1F<>]/', $value) === 1) {
+                throw new ApiException(422, 'VALIDATION_FAILED', 'address.' . $field . ' is not valid.', ['field' => 'address.' . $field]);
+            }
+        }
     }
 
     // ---- Storage -------------------------------------------------------------------------------------------------------

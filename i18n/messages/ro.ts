@@ -10,6 +10,7 @@ import { confirmareOpsRO } from "./confirmareOps";
 import { confirmareEditRO } from "./confirmareEdit";
 import { confirmareWorkflowRO } from "./confirmareWorkflow";
 import { operatorDeskRO } from "./operatorDesk";
+import { storeWorkspaceRO } from "./storeWorkspace";
 import { decisionDeskRO } from "./decisionDesk";
 import { officeHistoryRO } from "./officeHistory";
 import { myMetersRO } from "./myMeters";
@@ -38,6 +39,7 @@ export const ro = {
   ...confirmareEditRO,
   ...confirmareWorkflowRO,
   ...operatorDeskRO,
+  ...storeWorkspaceRO,
   ...decisionDeskRO,
   ...officeHistoryRO,
   ...myMetersRO,

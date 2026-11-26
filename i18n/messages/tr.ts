@@ -10,6 +10,7 @@ import { confirmareOpsTR } from "./confirmareOps";
 import { confirmareEditTR } from "./confirmareEdit";
 import { confirmareWorkflowTR } from "./confirmareWorkflow";
 import { operatorDeskTR } from "./operatorDesk";
+import { storeWorkspaceTR } from "./storeWorkspace";
 import { decisionDeskTR } from "./decisionDesk";
 import { officeHistoryTR } from "./officeHistory";
 import { myMetersTR } from "./myMeters";
@@ -37,6 +38,7 @@ export const tr: Catalog = {
   ...confirmareEditTR,
   ...confirmareWorkflowTR,
   ...operatorDeskTR,
+  ...storeWorkspaceTR,
   ...decisionDeskTR,
   ...officeHistoryTR,
   ...myMetersTR,

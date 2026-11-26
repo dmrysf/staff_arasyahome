@@ -18,6 +18,7 @@ import { ADDRESS_FIELDS, type AddressFields, type ShopLine, type ShopLineImage, 
 import { CASH_RECEIPTS, EXCEPTION_REASONS, EXCEPTION_RESOLUTIONS, FINANCE_ACTIONS, PAYMENT_METHODS, FINANCE_NEXT, FINANCE_TASKS, type ExceptionOutcome, type FinanceEntry, type FinanceOutcome, type FinanceQueue, type FinanceQueueItem, type FinanceRead, type FinanceSummary, type FinanceTask, type FinanceTimelineItem, type TransferException, type TransferExceptionList } from "../../domain/confirmareFinance";
 import { CANCEL_REASONS, CUSTOMER_CHECK_OUTCOMES, type CustomerCheckResult, INVOICE_ACTIONS, INVOICE_ROLES, PAYMENT_STATES, PROFORMA_ACTIONS, PROFORMA_KEYS, PROFORMA_ROUTE, type CodCheck, type ShippingCheck, type InvoiceDeadline, type MoneyPosition, type TotalAcceptance, type InvoiceActionKey, type InvoiceOutcome, type InvoicePaymentRead, type InvoiceRead, type InvoiceSummary, type InvoiceView, type ProformaActionKey, type ProformaSummary, type ShopAssignment, type ShopQueueItem } from "../../domain/confirmareInvoice";
 import { EDIT_IMPACTS, type EditBlocker, type EditCatalog, type EditCouponCatalog, type EditCouponLine, type EditField, type EditLineSnapshot, type EditOutcome, type EditProduct, type EditResult, type EditTotals, type EditVariation, type OpenEdit } from "../../domain/confirmareEdit";
+import { mapAwbHistoryPage, mapAwbPage, mapDocumentTodoPage, mapMinePage, mapOrderRow, mapPrintPage, mapStoreOrder, mapStoreSummary, type StoreApi } from "../../domain/storeWorkspace";
 import { mapAwbQueue, recentAwbsOf, mapBankCheck, mapBankCheckPreview, mapBankChecks, mapFinanceHold, mapFinanceReview, mapContactCycle, mapCycleAttention, mapEfacturaQueue, mapEfacturaTask, mapHealth, mapOperationOutcome, mapOperationsState, mapOrderCycle, mapProformaCycle } from "../../domain/confirmareOps";
 import { CLEARANCE_CONDITIONS, CONTACT_OUTCOMES, DESK_VIEWS, DOCUMENT_STATES, FINANCIAL_ATTENTION, OPERATOR_DECISIONS, type DecisionAnswer, type DeskPool, type FollowUpItem, HANDOFF_BLOCKERS, HANDOFF_STATES, type ConfirmareAlert, type ConfirmareApi, type ConfirmareAvailability, type ConfirmareContact, type ConfirmareCustomer, type ConfirmareDetail, type ConfirmareEvent, type ConfirmareHandoff, type ConfirmareItem, type HandoffItem, type ConfirmareLine, type ConfirmareOperator, type ConfirmarePool, type ConfirmareTeam, type FinancialState } from "../../domain/confirmare";
 
@@ -1328,7 +1329,22 @@ export function createProductionServices(apiBaseUrl: string, options: Production
     recordEfactura: (taskId, input) => http.request(`/confirmare/efactura/${encodeURIComponent(taskId)}`, { method: "POST", cache: "no-store", body: JSON.stringify(input) }, (value) => mapEfacturaTask(objectValue(value).task)),
     health: (source, signal) => http.request(`/confirmare/health${sourceQuery(source)}`, { signal, cache: "no-store" }, mapHealth),
   };
-  return { physical, auth, employee, orders, activity, workflow, exceptions, live, cutting, documents, authority, productionQr, trendyol, awb, workspace, management, pieces, confirmare, mode: "production" };
+  // Staff 2.59.0 (API 2.83.0): the shop employee's Store Workspace reads (actions keep their own Confirmare and document routes).
+  const storeQuery = (path: string, params: Record<string, string | number | null | undefined>) => {
+    const query = new URLSearchParams(Object.entries(params).filter(([, value]) => value !== null && value !== undefined && value !== "").map(([key, value]) => [key, String(value)])).toString();
+    return `/confirmare/store${path}${query ? `?${query}` : ""}`;
+  };
+  const store: StoreApi = {
+    summary: (signal) => http.request(storeQuery("/summary", {}), { signal, cache: "no-store" }, mapStoreSummary),
+    documents: (tab, page, signal) => http.request(storeQuery("/documents", { tab, page }), { signal, cache: "no-store" }, mapDocumentTodoPage),
+    printed: (tab, page, range, signal) => http.request(storeQuery("/documents", { tab, page, from: range?.from, to: range?.to }), { signal, cache: "no-store" }, mapPrintPage),
+    awb: (page, filter, signal) => http.request(storeQuery("/awb", { page, filter }), { signal, cache: "no-store" }, mapAwbPage),
+    awbHistory: (range, page, custom, signal) => http.request(storeQuery("/awb/history", { range, page, from: custom?.from, to: custom?.to }), { signal, cache: "no-store" }, mapAwbHistoryPage),
+    search: (query, signal) => http.request(storeQuery("/search", { q: query }), { signal, cache: "no-store" }, (value) => { const raw = objectValue(value); return { items: listOf(raw.items, 40, mapOrderRow), shopAsked: raw.shopAsked === true }; }),
+    order: (globalOrderId, signal) => http.request(`/confirmare/store/orders/${encodeURIComponent(globalOrderId)}`, { signal, cache: "no-store" }, mapStoreOrder),
+    mine: (page, signal) => http.request(storeQuery("/mine", { page }), { signal, cache: "no-store" }, mapMinePage),
+  };
+  return { physical, auth, employee, orders, activity, workflow, exceptions, live, cutting, documents, authority, productionQr, trendyol, awb, workspace, management, pieces, confirmare, store, mode: "production" };
 }
 
 // ---------------------------------------------------------------- Confirmare workspace (strict; unexpected shapes fail closed)
@@ -1359,6 +1375,11 @@ export function confirmareErrorDetails(value: unknown): Record<string, unknown> 
   if (typeof raw.revision === "string" && /^sha256:[0-9a-f]{64}$/.test(raw.revision)) out.financeRevision = raw.revision;
   // API 2.82.0: the shop's current total behind a stale green decision (the operator tells the customer the new total).
   if (typeof raw.total === "string" && /^\d{1,10}(\.\d{1,2})?$/.test(raw.total)) out.shopTotal = raw.total;
+  // API 2.83.0 (Store Workspace V1): FAN Courier's own refusal text (cleaned by the shop and the API) and the address check codes.
+  if (typeof raw.message === "string" && raw.message.length <= 200) out.shopMessage = raw.message;
+  for (const key of ["issues", "warnings"] as const) {
+    if (Array.isArray(raw[key]) && (raw[key] as unknown[]).length <= 20 && (raw[key] as unknown[]).every((item) => typeof item === "string" && /^[a-z_]{2,40}$/.test(item))) out[key === "issues" ? "addressIssues" : "addressWarnings"] = raw[key];
+  }
   return out;
 }
 

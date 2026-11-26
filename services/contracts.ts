@@ -114,6 +114,8 @@ export type ServiceBundle = {
   management?: import("../domain/workspaces").ManagementApi;
   /** Confirmare workspace (API 2.39.0) for people holding a Confirmare scope; absent in preview and demo. */
   confirmare?: import("../domain/confirmare").ConfirmareApi;
+  /** Store Workspace V1 (API 2.83.0) for the shop employees; absent in preview and demo. */
+  store?: import("../domain/storeWorkspace").StoreApi;
   auth: AuthService;
   employee: EmployeeService;
   orders: OrderService;

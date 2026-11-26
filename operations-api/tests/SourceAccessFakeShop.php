@@ -183,7 +183,7 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             ($this->during)($input);
         }
         $routes = ['detail', 'catalog', 'product', 'preview', 'apply', 'edit-status', 'finance', 'finance-action', 'finance-status', 'invoice', 'invoice-action', 'invoice-status', 'invoice-payment', 'proforma-action',
-            'transfer-exceptions', 'transfer-exception-action', 'operation', 'operation-status', 'adopt'];
+            'transfer-exceptions', 'transfer-exception-action', 'operation', 'operation-status', 'adopt', 'store'];
         $action = substr($route, strlen('/yd-arasya/v1/confirmare/'));
         if (!str_starts_with($route, '/yd-arasya/v1/confirmare/') || !in_array($action, $routes, true) || !is_array($input)) {
             return $this->answer(400, ['error' => ['code' => 'invalid_request']], $nonce);
@@ -198,6 +198,16 @@ final class SourceAccessFakeShop implements SourceAccessTransport
                 throw new \Arasya\Operations\Integration\SourceAccess\SourceAccessException('SOURCE_UNREACHABLE');
             }
             return $this->answer($status, $payload, $nonce);
+        }
+        if ($action === 'store') {
+            // YD SOFT 2.36.0 StoreBoard: several orders of the shop employee, no order fields, roles documents/manager.
+            if (isset($input['orderId']) || !in_array($input['actor']['role'] ?? null, ['documents', 'manager'], true)) {
+                return $this->answer(400, ['error' => ['code' => 'invalid_request']], $nonce);
+            }
+            if ($this->storeDown) {
+                throw new \Arasya\Operations\Integration\SourceAccess\SourceAccessException('SOURCE_UNREACHABLE');
+            }
+            return $this->answer(200, $this->storeBoard($input, $now), $nonce);
         }
         $order = $this->orders[(string) ($input['orderId'] ?? '')] ?? null;
         if ($order === null || ($order['number'] ?? $order['id']) !== ($input['orderNumber'] ?? null)) {
@@ -1424,7 +1434,65 @@ final class SourceAccessFakeShop implements SourceAccessTransport
     /** @var array<string, array<string, mixed>> operation answers by employee|key (YD SOFT 2.20.0 Operations) */
     public array $operationAnswers = [];
     /** Feature switches of the TEST shop's operations. */
-    public array $operationFeatures = ['reactivation' => 'enforce', 'awb' => 'enforce', 'cardRefunds' => 'manual'];
+    public array $operationFeatures = ['reactivation' => 'enforce', 'awb' => 'enforce', 'cardRefunds' => 'manual', 'awbCorrection' => 'enforce', 'addressEdit' => 'enforce'];
+    /** YD SOFT 2.36.0: the next AWB cancellation outcome: cancelled | picked_up | pickup_unknown | refused | unknown (FAN did not answer) | lost (cancelled, answer lost). */
+    public string $cancelOutcome = 'cancelled';
+    /** YD SOFT 2.36.0: the store board route cannot be reached (TEST). */
+    public bool $storeDown = false;
+    /** @var list<string> AWBs FAN Courier cancelled (TEST) */
+    public array $fanCancelled = [];
+
+    /** @param array<string, mixed> $input @return array<string, mixed> */
+    private function storeBoard(array $input, int $now): array
+    {
+        $mode = $input['mode'] ?? null;
+        if ($mode === 'search') {
+            $q = mb_strtolower((string) ($input['query'] ?? ''));
+            $found = [];
+            foreach ($this->orders as $o) {
+                if (($o['eligible'] ?? true) === true && str_contains(mb_strtolower((string) ($o['name'] ?? 'TEST Client Confirmare') . ' ' . (string) ($o['phone'] ?? '0700000123')), $q)) {
+                    $found[] = ['orderId' => (string) $o['id'], 'orderNumber' => (string) ($o['number'] ?? $o['id'])];
+                }
+            }
+            return ['protocol' => 1, 'orders' => array_slice($found, 0, 20)];
+        }
+        $rows = [];
+        foreach ((array) ($input['orders'] ?? []) as $ref) {
+            $o = $this->orders[(string) ($ref['orderId'] ?? '')] ?? null;
+            if ($o === null || ($o['eligible'] ?? true) !== true || (string) ($o['number'] ?? $o['id']) !== (string) ($ref['orderNumber'] ?? '')) {
+                $rows[] = ['orderId' => (string) ($ref['orderId'] ?? ''), 'available' => false];
+                continue;
+            }
+            $this->orders[(string) $o['id']]['ops'] ??= [];
+            $ops = $this->orders[(string) $o['id']]['ops'] + ['awb' => null, 'owed' => '503.30', 'invoice' => true];
+            $delivery = $this->deliveryOf((string) $o['id']);
+            if ($mode === 'detail') {
+                $rows[] = ['orderId' => (string) $o['id'], 'available' => true, 'status' => 'processing', 'lines' => [['name' => 'Draperie Velvet', 'sku' => 'DV-302', 'quantity' => 1, 'image' => 'https://127.0.0.1/wp-content/uploads/e2e/draperie-velvet.png']],
+                    'delivery' => $delivery, 'money' => ['currency' => 'RON', 'total' => '719.00', 'received' => '215.70', 'remaining' => $ops['owed'], 'known' => true], 'payment' => 'cod'];
+                continue;
+            }
+            $rows[] = ['orderId' => (string) $o['id'], 'available' => true, 'name' => trim($delivery['address']['firstName'] . ' ' . $delivery['address']['lastName']), 'city' => $delivery['address']['city'], 'county' => $delivery['address']['county'],
+                'cod' => $ops['owed'], 'awb' => ['state' => $ops['awb'] !== null ? 'created' : 'none', 'number' => $ops['awb']['number'] ?? null, 'status' => null],
+                'blockers' => $ops['awb'] !== null ? ['awb_exists'] : ($ops['invoice'] ? [] : ['invoice_missing']), 'address' => ['state' => $delivery['check']['state'], 'issues' => $delivery['check']['issues'], 'warnings' => $delivery['check']['warnings']]];
+        }
+        return ['protocol' => 1, 'readAt' => gmdate('Y-m-d\TH:i:s\Z', $now), 'rows' => $rows];
+    }
+
+    /** @return array<string, mixed> the TEST delivery block (YD SOFT Operations::delivery_view shape) */
+    private function deliveryOf(string $orderId): array
+    {
+        $o = $this->orders[$orderId];
+        $address = ($o['ops']['delivery'] ?? null) ?? ['target' => 'shipping', 'firstName' => 'TEST', 'lastName' => 'Client ' . $orderId, 'company' => '', 'phone' => $o['phone'] ?? '0700000123', 'county' => 'BV', 'city' => $o['city'] ?? 'Brașov',
+            'street' => 'Str. Exemplu', 'streetNo' => '7', 'building' => '', 'entrance' => '', 'floor' => '', 'apartment' => '', 'postcode' => '500000', 'note' => ''];
+        $issues = [];
+        if (trim((string) $address['city']) === '') {
+            $issues[] = 'locality_missing';
+        } elseif ((string) $address['city'] === 'Necunoscut') {
+            $issues[] = 'locality_unknown';
+        }
+        return ['address' => $address, 'check' => ['state' => $issues === [] ? 'ok' : 'attention', 'issues' => $issues, 'warnings' => [], 'fan' => ['county' => 'BV', 'locality' => (string) $address['city']]],
+            'editable' => ($o['ops']['awb'] ?? null) === null, 'lastEdit' => null];
+    }
     /** The next AWB outcome: created | refused | unknown (FAN Courier did not answer) | lost (created, answer lost). */
     public string $awbOutcome = 'created';
     /** @var array<string, int> AWBs FAN Courier made per order (TEST) */
@@ -1454,7 +1522,7 @@ final class SourceAccessFakeShop implements SourceAccessTransport
         }
         $action = (string) ($input['action'] ?? '');
         $roles = ['order_reactivate' => ['operator', 'manager'], 'awb_create' => ['documents', 'manager'], 'awb_label' => ['documents', 'manager'], 'awb_address_task' => ['documents', 'manager'],
-            'awb_address_done' => ['documents', 'manager'], 'awb_cod_corrected' => ['documents', 'manager'], 'card_refund_full' => ['operator', 'manager'], 'card_refund_record' => ['finance'], 'card_refund_verify' => ['finance'], 'operations_state' => ['operator', 'documents', 'manager', 'finance']];
+            'awb_address_done' => ['documents', 'manager'], 'awb_cod_corrected' => ['documents', 'manager'], 'awb_cancel' => ['documents', 'manager'], 'address_update' => ['documents', 'manager'], 'card_refund_full' => ['operator', 'manager'], 'card_refund_record' => ['finance'], 'card_refund_verify' => ['finance'], 'operations_state' => ['operator', 'documents', 'manager', 'finance']];
         if (!isset($roles[$action]) || !in_array($role, $roles[$action], true)) {
             return [400, ['error' => ['code' => 'invalid_request']]];
         }
@@ -1482,9 +1550,47 @@ final class SourceAccessFakeShop implements SourceAccessTransport
         };
         $refuse = fn (string $code): array => $keep(409, ['error' => ['code' => $code], 'blockers' => [$code], 'state' => $state()]);
         $done = fn (string $result, int $status = 200): array => $keep($status, ['protocol' => 1, 'applied' => $status === 200, 'action' => $action, 'result' => $result, 'state' => $state()]);
-        $feature = ['order_reactivate' => 'reactivation', 'card_refund_full' => 'cardRefunds', 'card_refund_record' => 'cardRefunds', 'card_refund_verify' => 'cardRefunds'][$action] ?? 'awb';
+        $feature = ['order_reactivate' => 'reactivation', 'card_refund_full' => 'cardRefunds', 'card_refund_record' => 'cardRefunds', 'card_refund_verify' => 'cardRefunds', 'awb_cancel' => 'awbCorrection', 'address_update' => 'addressEdit'][$action] ?? 'awb';
         if (($this->operationFeatures[$feature] ?? 'off') === 'off') {
-            return $keep(409, ['error' => ['code' => $feature === 'awb' ? 'awb_disabled' : ($feature === 'cardRefunds' ? 'card_refund_disabled' : 'reactivation_disabled')]]);
+            return $keep(409, ['error' => ['code' => ['awb' => 'awb_disabled', 'cardRefunds' => 'card_refund_disabled', 'reactivation' => 'reactivation_disabled', 'awbCorrection' => 'awb_correction_disabled', 'addressEdit' => 'address_edit_disabled'][$feature]]]);
+        }
+        if ($action === 'awb_cancel') {
+            if ($o['awb'] === null) {
+                return $refuse('awb_missing');
+            }
+            if (($o['cancelUncertain'] ?? false) === true) {
+                return $refuse('cancel_uncertain');
+            }
+            $outcome = $this->cancelOutcome;
+            $this->cancelOutcome = 'cancelled';
+            if (in_array($outcome, ['picked_up', 'pickup_unknown'], true)) {
+                return $keep(409, ['error' => ['code' => $outcome === 'picked_up' ? 'awb_picked_up' : 'pickup_unknown'], 'blockers' => [$outcome === 'picked_up' ? 'awb_picked_up' : 'pickup_unknown'],
+                    'message' => $outcome === 'picked_up' ? 'Expeditie ridicata de curier (TEST), telefon 0744000000' : null, 'state' => $state()]);
+            }
+            if ($outcome === 'refused') {
+                return $keep(409, ['error' => ['code' => 'cancel_refused'], 'blockers' => ['cancel_refused'], 'message' => 'AWB-ul nu mai poate fi șters (TEST)', 'state' => $state()]);
+            }
+            $old = $o['awb']['number'];
+            $o['corrections'][] = ['awb' => $old, 'at' => $now, 'reason' => (string) $input['reason'], 'state' => $outcome === 'unknown' ? 'uncertain' : 'cancelled'];
+            if ($outcome === 'unknown') {
+                $o['cancelUncertain'] = true;
+                return $done('unknown', 202);
+            }
+            $this->fanCancelled[] = $old;
+            $o['awb'] = null;
+            $answer = $done('cancelled');
+            return $outcome === 'lost' ? [0, []] : $answer;
+        }
+        if ($action === 'address_update') {
+            if ($o['awb'] !== null) {
+                return $refuse('awb_exists');
+            }
+            $address = (array) ($input['address'] ?? []);
+            if (trim((string) ($address['city'] ?? '')) === '') {
+                return $keep(409, ['error' => ['code' => 'address_invalid'], 'blockers' => ['address_invalid'], 'issues' => ['locality_missing'], 'warnings' => [], 'state' => $state()]);
+            }
+            $o['delivery'] = array_merge($this->deliveryOf($orderId)['address'], $address);
+            return $done('address_saved');
         }
         if ($action === 'order_reactivate') {
             if ($o['status'] !== 'cancelled') {
@@ -1610,10 +1716,23 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             'awb' => ['state' => $o['awb'] !== null ? 'created' : (($o['awbUnknown'] ?? false) ? 'unknown' : 'none'), 'number' => $o['awb']['number'] ?? null, 'createdAt' => isset($o['awb']) ? $iso($o['awb']['at']) : null,
                 'status' => null, 'delivered' => false, 'cod' => $o['owed'], 'codCheck' => ['state' => $o['awb'] !== null ? ($o['awb']['cod'] === $o['owed'] ? 'match' : 'mismatch') : 'none', 'awb' => $o['awb']['number'] ?? null, 'awbCod' => $o['awb']['cod'] ?? null, 'expected' => $o['owed'], 'status' => null,
                     'corrected' => (bool) ($o['awb']['corrected'] ?? false)],
-                'blockers' => $o['awb'] !== null ? ($o['awb']['cod'] === $o['owed'] ? ['awb_exists'] : ['awb_exists', 'cod_mismatch']) : [], 'address' => array_map(static fn (array $a): array => ['kind' => $a['kind'], 'at' => $iso($a['at']), 'by' => $a['by']], $o['address']), 'pickup' => 'not_tracked'],
+                'blockers' => $o['awb'] !== null ? ($o['awb']['cod'] === $o['owed'] ? ['awb_exists'] : ['awb_exists', 'cod_mismatch']) : [], 'address' => array_map(static fn (array $a): array => ['kind' => $a['kind'], 'at' => $iso($a['at']), 'by' => $a['by']], $o['address']), 'pickup' => 'not_tracked',
+                'statusId' => null, 'correction' => self::fakeCorrection($o, $iso)],
+            'delivery' => $this->deliveryOf($orderId),
             'cardRefund' => ['available' => $o['netopia'] > 0, 'transactions' => $o['netopia'], 'requests' => array_map(static fn (array $r): array => ['state' => $r['state'], 'at' => $iso($r['at']), 'by' => $r['by'], 'amount' => $r['amount'], 'currency' => 'RON',
                 'transactions' => $r['transactions'], 'reason' => 'no_refund_api', 'completedAt' => $r['completedAt'] === null ? null : $iso($r['completedAt']), 'mailed' => $r['mailed']], $o['refunds'])],
             'reactivations' => array_map(static fn (array $r): array => ['at' => $iso($r['at']), 'by' => $r['by'], 'reason' => $r['reason'], 'payment' => $r['exception'] !== null], $o['reactivations'])];
+    }
+
+    /** @param array<string, mixed> $o @return array<string, mixed> */
+    private static function fakeCorrection(array $o, callable $iso): array
+    {
+        $last = ($o['corrections'] ?? []) === [] ? null : end($o['corrections']);
+        if ($last === null) {
+            return ['state' => 'none', 'awb' => null, 'at' => null, 'reason' => null];
+        }
+        $state = $last['state'] === 'uncertain' ? (($o['cancelUncertain'] ?? false) ? 'uncertain' : (($o['awb']['number'] ?? null) === $last['awb'] ? 'not_cancelled' : 'cancelled')) : 'cancelled';
+        return ['state' => $state, 'awb' => $last['awb'], 'at' => $iso($last['at']), 'reason' => $last['reason']];
     }
 
     /** @param array<string, mixed> $body @return array{0: int, 1: array<string, mixed>} */

@@ -56,7 +56,7 @@ test("translations are real translations: no Romanian left in Turkish, English o
   // Turkish legitimately writes â and î (kâğıt); ă, ș and ț (comma below) exist only in Romanian.
   const romanianOnly = (locale: string) => locale === "tr" ? /[ășțĂȘȚ]/ : /[ăâîșțĂÂÎȘȚ]/;
   // Proper nouns and codes legitimately identical in every language.
-  const sameEverywhere = new Set<MessageKey>(["login.demoBadge", "common.quote", "orderAction.orderNote", "ty.package.arasyaStatus", "ty.package.trendyolStatus", "ty.package.blockedStatus", "ty.inbox.packageLine", "doc.line", "qr.codeLabel", "department.croitorie-dragon", "role.vanzari-b2b", "stageWs.stageOf", "product.productOf", "scanner.manualPlaceholder", "doc.lookup.placeholder", "authority.queryPlaceholder", "ydsoft.checking", "shell.homeLabel", "login.footnote"]);
+  const sameEverywhere = new Set<MessageKey>(["login.demoBadge", "common.quote", "orderAction.orderNote", "ty.package.arasyaStatus", "ty.package.trendyolStatus", "ty.package.blockedStatus", "ty.inbox.packageLine", "doc.line", "qr.codeLabel", "department.croitorie-dragon", "role.vanzari-b2b", "stageWs.stageOf", "product.productOf", "scanner.manualPlaceholder", "doc.lookup.placeholder", "authority.queryPlaceholder", "ydsoft.checking", "shell.homeLabel", "login.footnote", "sw.order.stage", "sw.order.measure"]);
   for (const locale of ["tr", "en", "si"] as const) {
     for (const key of keys) {
       for (const text of texts(CATALOGS[locale][key])) assert.doesNotMatch(text, romanianOnly(locale), `${locale}: ${key} still has Romanian: ${text}`);
@@ -70,7 +70,7 @@ test("translations are real translations: no Romanian left in Turkish, English o
 test("Sinhala is real Sinhala Unicode (NFC, no replacement characters, not transliterated Latin)", () => {
   const sinhala = /[඀-෿]/;
   // Strings made only of brand names, codes or placeholders carry no Sinhala word by design.
-  const noWords = new Set<MessageKey>(["login.demoBadge", "common.quote", "orderAction.orderNote", "ty.package.arasyaStatus", "ty.package.trendyolStatus", "ty.inbox.packageLine", "qr.codeLabel", "ydsoft.checking", "inv.qr.placeholder", "inv.pf.transfer.iban", "inv.pf.transfer.bic"]);
+  const noWords = new Set<MessageKey>(["login.demoBadge", "common.quote", "orderAction.orderNote", "ty.package.arasyaStatus", "ty.package.trendyolStatus", "ty.inbox.packageLine", "qr.codeLabel", "ydsoft.checking", "inv.qr.placeholder", "inv.pf.transfer.iban", "inv.pf.transfer.bic", "sw.col.awb", "sw.order.awb", "sw.awb.done", "sw.docs.revision", "sw.order.stage", "sw.order.measure"]);
   let sinhalaTexts = 0;
   for (const key of keys) {
     for (const text of texts(CATALOGS.si[key])) {

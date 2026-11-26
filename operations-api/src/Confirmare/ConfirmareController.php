@@ -7,6 +7,7 @@ namespace Arasya\Operations\Confirmare;
 use Arasya\Operations\Auth\AuthenticatedSession;
 use Arasya\Operations\Auth\AuthenticationService;
 use Arasya\Operations\Config\Config;
+use Arasya\Operations\Employee\EmployeeIdentity;
 use Arasya\Operations\Http\ApiException;
 use Arasya\Operations\Http\Request;
 use Arasya\Operations\Http\RequestContext;
@@ -82,8 +83,14 @@ use Arasya\Operations\Security\CsrfGuard;
  *   POST /confirmare/orders/{globalOrderId}/awb/address    {step: task|done, reasonNote} + Idempotency-Key
  *   POST /confirmare/orders/{globalOrderId}/awb/cod-corrected  {amount, reasonNote} + Idempotency-Key (API 2.50.0: the cash on
  *        delivery corrected in the FAN Courier panel, stated by the employee; the label is refused while it differs)
+ *   POST /confirmare/orders/{globalOrderId}/awb/cancel     {reason} + Idempotency-Key (API 2.83.0, Store Workspace V1: the AWB is
+ *                                                          cancelled at FAN Courier before the courier scanned it; the order's
+ *                                                          AWB step reopens for a corrected AWB)
+ *   POST /confirmare/orders/{globalOrderId}/delivery-address  {address: {...}} + Idempotency-Key (API 2.83.0: the delivery
+ *                                                          address/telephone of an order without an active AWB)
  *   POST /confirmare/orders/{globalOrderId}/card-refund[/record|/verify]  + Idempotency-Key (NETOPIA full refund)
  *   POST /confirmare/orders/{globalOrderId}/operations/reconcile  {idempotencyKey}
+ *   GET  /confirmare/store/{summary|documents|awb|awb/history|search|mine|orders/{id}}  API 2.83.0 Store Workspace (StoreWorkspace)
  *   GET  /confirmare/awb-queue[?source=]                   orders at stage 12+ waiting for their AWB (the routed employee)
  *   GET  /confirmare/efactura[?source=&state=]             e-Factura follow-up of the invoices (issuer, invoice managers)
  *   POST /confirmare/efactura/{taskId}                     {outcome, expectedVersion}
@@ -139,7 +146,54 @@ final readonly class ConfirmareController
         private RequestContext $context,
         /** API 2.82.0: the decision follow-ups a supervisor looks at and retries. */
         private ?ConfirmareDecisionFollowUps $followUps = null,
+        /** API 2.83.0: the shop employee's Store Workspace (read only). */
+        private ?StoreWorkspace $store = null,
     ) {
+    }
+
+    /** @return array<string, mixed> API 2.83.0 Store Workspace reads (GET only; actions keep their own routes). */
+    private function storeRoute(EmployeeIdentity $actor, string $path, Request $request): array
+    {
+        $store = $this->store ?? throw new ApiException(503, 'SERVICE_UNAVAILABLE', 'The Store Workspace is not ready.');
+        $page = $request->query('page') ?? '1';
+        if (!ctype_digit($page) || (int) $page < 1 || (int) $page > 1000) {
+            throw new ApiException(400, 'INVALID_REQUEST', 'page is invalid.');
+        }
+        $page = (int) $page;
+        if ($path === '/summary') {
+            return $store->summary($actor);
+        }
+        if ($path === '/documents') {
+            $tab = $request->query('tab') ?? 'todo';
+            if (!in_array($tab, ['todo', 'today', 'history'], true)) {
+                throw new ApiException(400, 'INVALID_REQUEST', 'tab is todo, today or history.');
+            }
+            return $store->documents($actor, $tab, $page, $request->query('from'), $request->query('to'));
+        }
+        if ($path === '/awb') {
+            $filter = $request->query('filter') ?? 'all';
+            if (!in_array($filter, ['all', 'problem'], true)) {
+                throw new ApiException(400, 'INVALID_REQUEST', 'filter is all or problem.');
+            }
+            return $store->awb($actor, $page, $filter, $request->requestId);
+        }
+        if ($path === '/awb/history') {
+            $range = $request->query('range') ?? 'today';
+            if (!in_array($range, ['today', 'yesterday', '7d', '30d', 'custom'], true)) {
+                throw new ApiException(400, 'INVALID_REQUEST', 'range is today, yesterday, 7d, 30d or custom.');
+            }
+            return $store->awbHistory($actor, $range, $request->query('from'), $request->query('to'), $page);
+        }
+        if ($path === '/search') {
+            return $store->search($actor, $request->query('q') ?? '', $request->requestId);
+        }
+        if ($path === '/mine') {
+            return $store->mine($actor, $page, $request->query('from'), $request->query('to'));
+        }
+        if (preg_match('#^/orders/([^/]{1,600})$#D', $path, $m) === 1) {
+            return $store->order($actor, rawurldecode($m[1]), $request->requestId);
+        }
+        throw new ApiException(404, 'NOT_FOUND', 'API route was not found.');
     }
 
     public function handle(Request $request): Response
@@ -172,6 +226,9 @@ final readonly class ConfirmareController
         if ($path === '/confirmare/health' && $request->method === 'GET') {
             return $this->json($this->health->metrics($actor, $request->query('source')));
         }
+        if (str_starts_with($path, '/confirmare/store/') && $request->method === 'GET') {
+            return $this->json($this->storeRoute($actor, substr($path, strlen('/confirmare/store')), $request));
+        }
         if ($path === '/confirmare/awb-queue' && $request->method === 'GET') {
             return $this->json($this->operations->awbQueue($actor, $request->query('source')));
         }
@@ -192,7 +249,7 @@ final readonly class ConfirmareController
             $pdf = $this->operations->label($actor, rawurldecode($m[1]), $request->requestId);
             return Response::file($pdf, ['Content-Type' => 'application/pdf', 'Content-Disposition' => 'inline; filename="awb.pdf"', 'Cache-Control' => 'private, no-store', 'X-Content-Type-Options' => 'nosniff']);
         }
-        if (preg_match('#^/confirmare/orders/([^/]{1,600})/(reactivate|awb|awb/address|awb/cod-corrected|card-refund|card-refund/record|card-refund/verify|operations/reconcile)$#D', $path, $m) === 1) {
+        if (preg_match('#^/confirmare/orders/([^/]{1,600})/(reactivate|awb|awb/address|awb/cod-corrected|awb/cancel|delivery-address|card-refund|card-refund/record|card-refund/verify|operations/reconcile)$#D', $path, $m) === 1) {
             if ($request->method !== 'POST') {
                 throw new ApiException(405, 'METHOD_NOT_ALLOWED', 'Method is not allowed for this route.');
             }
@@ -211,7 +268,7 @@ final readonly class ConfirmareController
                 unset($input['step']);
                 return $this->json($this->operations->act($actor, $globalId, 'awb_address_' . $step, $input, $request->header('idempotency-key') ?? '', $request->requestId));
             }
-            $kind = ['reactivate' => 'order_reactivate', 'awb' => 'awb_create', 'awb/cod-corrected' => 'awb_cod_corrected', 'card-refund' => 'card_refund_full', 'card-refund/record' => 'card_refund_record', 'card-refund/verify' => 'card_refund_verify'][$m[2]];
+            $kind = ['reactivate' => 'order_reactivate', 'awb' => 'awb_create', 'awb/cod-corrected' => 'awb_cod_corrected', 'awb/cancel' => 'awb_cancel', 'delivery-address' => 'address_update', 'card-refund' => 'card_refund_full', 'card-refund/record' => 'card_refund_record', 'card-refund/verify' => 'card_refund_verify'][$m[2]];
             return $this->json($this->operations->act($actor, $globalId, $kind, $input, $request->header('idempotency-key') ?? '', $request->requestId));
         }
         if ($path === '/confirmare/cycles' && $request->method === 'GET') {

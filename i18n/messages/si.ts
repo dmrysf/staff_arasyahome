@@ -10,6 +10,7 @@ import { confirmareOpsSI } from "./confirmareOps";
 import { confirmareEditSI } from "./confirmareEdit";
 import { confirmareWorkflowSI } from "./confirmareWorkflow";
 import { operatorDeskSI } from "./operatorDesk";
+import { storeWorkspaceSI } from "./storeWorkspace";
 import { decisionDeskSI } from "./decisionDesk";
 import { officeHistorySI } from "./officeHistory";
 import { myMetersSI } from "./myMeters";
@@ -38,6 +39,7 @@ export const si: Catalog = {
   ...confirmareEditSI,
   ...confirmareWorkflowSI,
   ...operatorDeskSI,
+  ...storeWorkspaceSI,
   ...decisionDeskSI,
   ...officeHistorySI,
   ...myMetersSI,
