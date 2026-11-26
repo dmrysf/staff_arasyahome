@@ -5,6 +5,8 @@ import { ArasyaLogo } from "../brand/BrandLogo";
 import type { Employee } from "../../domain/models";
 import { hasPermission, type StaffPermission } from "../../domain/permissions";
 import { isDeskRoute, usesProductionScanner } from "../../domain/operatorDesk";
+import { saveWideNav } from "../../domain/operatorWorkspace";
+import { setNavMode, useNavMode } from "./navMode";
 
 // Labels are read in the active language when the bar renders.
 export const bottomNavigationItems = [
@@ -23,13 +25,14 @@ export const bottomNavigationItems = [
  */
 export function BottomNavigation({ employee, route, navigate, deskHome = false }: { employee: Employee; route: string; navigate: (path: string) => void; deskHome?: boolean }) {
   useI18n();
+  const navMode = useNavMode();
   const [home, orders, history, profile] = bottomNavigationItems;
   const hidden = (item: (typeof bottomNavigationItems)[number]) => (item.permission !== null && !hasPermission(employee, item.permission)) || (deskHome && item === orders && employee.allowedStageIds.length === 0);
   const current = (item: (typeof bottomNavigationItems)[number]) => route === item.path || (deskHome && item === home && isDeskRoute(route));
   const renderItem = (item: (typeof bottomNavigationItems)[number]) => hidden(item)
     ? <span key={item.path} className="nav-permission-space" aria-hidden="true" />
     : (
-    <button key={item.path} className={`nav-item nav-${item.icon}${current(item) ? " active" : ""}`} type="button" onClick={() => navigate(item.path)} aria-current={current(item) ? "page" : undefined}>
+    <button key={item.path} className={`nav-item nav-${item.icon}${current(item) ? " active" : ""}`} type="button" onClick={() => navigate(item.path)} aria-current={current(item) ? "page" : undefined} data-tip={item.label}>
       <AppIcon name={item.icon} />
       <small>{item.label}</small>
     </button>
@@ -44,6 +47,14 @@ export function BottomNavigation({ employee, route, navigate, deskHome = false }
       {renderItem(history)}
       {renderItem(profile)}
       {usesProductionScanner(employee) && <PrimaryScanButton active={route === "/scan"} onSelect={() => navigate("/scan")} />}
+      {navMode !== "off" && (
+        // Staff 2.58.0: only on the operator's order workspace (desktop): icons only, or the full menu again.
+        <button type="button" className="nav-item nav-ow-toggle" aria-expanded={navMode === "wide"} data-tip={navMode === "wide" ? t("dd.nav.compact") : t("dd.nav.wide")}
+          onClick={() => { const next = navMode === "wide" ? "compact" : "wide"; saveWideNav(next === "wide"); setNavMode(next); }} data-testid="ow-nav-toggle">
+          <AppIcon name="sidebar" />
+          <small>{navMode === "wide" ? t("dd.nav.compact") : t("dd.nav.wide")}</small>
+        </button>
+      )}
     </nav>
   );
 }

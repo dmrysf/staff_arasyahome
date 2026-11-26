@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { formatDate, useI18n, type MessageKey } from "../../i18n";
 import type { Employee } from "../../domain/models";
 import { DESK_VIEWS, canSuperviseConfirmare, confirmareSources, sourceLabel, type ConfirmareApi, type ConfirmareItem, type DeskPool, type DeskView } from "../../domain/confirmare";
 import { callbackDue, waitingLabel, waitingMinutes } from "../../domain/decisionDesk";
+import { DESK_DECIDED_DAYS, deskMatches, deskWarningKey, waitTone } from "../../domain/operatorWorkspace";
 import { formatShopMoney } from "../../domain/confirmareShop";
 import type { DocumentApi } from "../../domain/documents";
 import type { Workspace } from "../../domain/workspaces";
@@ -41,7 +42,7 @@ export function deskQuery(filters: Filters): string {
 }
 
 /**
- * The operator desk (Staff 2.57.0, Operation Simplification V1): four lists (new, waiting, confirmed, refused) with their
+ * The operator desk (Staff 2.57.0, Operation Simplification V1; Staff 2.58.0 Operator Workspace V2 layout): four lists (new, waiting, confirmed, refused) with their
  * counts and today's completed decisions, a shop filter built from the shops the server returns (no shop name is written
  * into the screen), and one row per order with what the operator needs before calling: number, shop, customer, total,
  * products, how long it waits and a warning when the shop reported one. The list comes from Arasya's own data and the
@@ -60,6 +61,17 @@ export function DecisionDesk({ employee, service, documents, orderId, navigate, 
   const data = pool.data?.view === filters.view ? pool.data : null;
   const deskWorkspace = workspaces.find((workspace) => workspace.kind === "confirmare");
   const shops = useMemo(() => [...new Set([...(data?.sources ?? []), ...confirmareSources(employee)])].sort(), [data?.sources, employee]);
+  const deskRef = useRef<HTMLDivElement>(null);
+  const stickyRef = useRef<HTMLDivElement>(null);
+  // The table header sticks right under the sticky lists and filters, whatever height they wrap to (no overlap).
+  useEffect(() => {
+    const sticky = stickyRef.current;
+    const desk = deskRef.current;
+    if (!sticky || !desk || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => desk.style.setProperty("--ow-sticky-h", `${Math.ceil(sticky.getBoundingClientRect().height)}px`));
+    observer.observe(sticky);
+    return () => observer.disconnect();
+  }, [orderId, pool.data?.decisions]);
 
   useEffect(() => {
     const path = orderId ? confirmareOrderPath(orderId) : "/confirmare";
@@ -67,7 +79,8 @@ export function DecisionDesk({ employee, service, documents, orderId, navigate, 
   }, [filters, orderId]);
   useEffect(() => {
     if (typed === filters.query) return;
-    const timer = setTimeout(() => setFilters((current) => ({ ...current, query: typed })), 200);
+    // The list is already on screen: searching filters it locally, without any request.
+    const timer = setTimeout(() => setFilters((current) => ({ ...current, query: typed })), 150);
     return () => clearTimeout(timer);
   }, [typed, filters.query]);
 
@@ -80,49 +93,60 @@ export function DecisionDesk({ employee, service, documents, orderId, navigate, 
       backPath={`/confirmare${deskQuery(filters)}`} listView={filters.view} listSource={filters.source} onChanged={pool.refresh} />;
   }
 
-  const query = filters.query.trim().toLocaleLowerCase("ro");
-  const rows = data ? data.items.filter((item) => query === "" || item.orderNumber.includes(query) || (item.customerName ?? "").toLocaleLowerCase("ro").includes(query)) : null;
+  const query = filters.query.trim();
+  const rows = data ? data.items.filter((item) => deskMatches(item, query)) : null;
   const failure = pool.error && (!data || pool.stopped) ? getErrorPresentation(pool.error).message : "";
   const open = (item: ConfirmareItem) => navigate(`${confirmareOrderPath(item.globalOrderId)}${deskQuery(filters)}`);
 
   return (
-    <div className="dd-desk" data-testid="dd-desk">
+    <div className="ow-desk dd-desk" data-testid="dd-desk" ref={deskRef}>
       {deskWorkspace && onWorkspace && workspaces.length > 1 && <div className="cf-desk-switcher"><WorkspaceSwitcher workspaces={workspaces} current={deskWorkspace} onSelect={onWorkspace} /></div>}
-      <header className="dd-desk-top">
-        <div>
+      <header className="ow-desk-head">
+        <div className="ow-desk-title">
           <h1>{t("dd.title")}</h1>
-          <p className="dd-desk-date">{formatDate(new Date().toISOString(), { weekday: "long", day: "numeric", month: "long", timeZone: "Europe/Bucharest" })}</p>
+          <p className="ow-desk-date">{formatDate(new Date().toISOString(), { weekday: "long", day: "numeric", month: "long", timeZone: "Europe/Bucharest" })}</p>
         </div>
-        <strong className="dd-done" data-testid="dd-done-today">{t("dd.doneToday", { count: data?.counts.doneToday ?? 0 })}</strong>
+        <div className="ow-done" data-testid="dd-done-today" aria-label={t("dd.doneToday", { count: data?.counts.doneToday ?? 0 })}>
+          <strong>{data ? data.counts.doneToday : "—"}</strong>
+          <span>{t("dd.doneTodayLabel")}</span>
+        </div>
         <DeskTools employee={employee} navigate={navigate} />
       </header>
-      <nav className="dd-views" aria-label={t("cf.queue.tabs")}>
-        {DESK_VIEWS.map((view) => (
-          <button key={view} type="button" className={`dd-view dd-view-${view}`} aria-pressed={filters.view === view} onClick={() => setFilters((current) => ({ ...current, view }))} data-testid={`dd-view-${view}`}>
-            <span>{t(`dd.view.${view}` as MessageKey)}</span>
-            <strong>{data ? data.counts[view] : "—"}</strong>
-          </button>
-        ))}
-      </nav>
-      <div className="dd-filters">
-        <div className="dd-shops" role="group" aria-label={t("dd.col.shop")}>
-          <button type="button" className="dd-chip" aria-pressed={filters.source === null} onClick={() => setFilters((current) => ({ ...current, source: null }))} data-testid="dd-shop-all">{t("dd.shop.all")}</button>
-          {shops.map((shop) => <button key={shop} type="button" className="dd-chip" aria-pressed={filters.source === shop} onClick={() => setFilters((current) => ({ ...current, source: shop }))} data-testid={`dd-shop-${shop}`}>{sourceLabel(shop)}</button>)}
+      <div className="ow-desk-sticky" ref={stickyRef}>
+        <nav className="ow-views" aria-label={t("cf.queue.tabs")}>
+          {DESK_VIEWS.map((view) => (
+            <button key={view} type="button" className={`ow-view ow-view-${view}`} aria-pressed={filters.view === view} onClick={() => setFilters((current) => ({ ...current, view }))} data-testid={`dd-view-${view}`}>
+              <span className="ow-view-label">{t(`dd.view.${view}` as MessageKey)}</span>
+              <strong className="ow-view-count">{data ? data.counts[view] : "—"}</strong>
+              <small className="ow-view-period">{view === "confirmed" || view === "refused" ? t("dd.view.period", { days: DESK_DECIDED_DAYS }) : t("dd.view.now")}</small>
+            </button>
+          ))}
+        </nav>
+        <div className="ow-filters">
+          <div className="ow-shops" role="group" aria-label={t("dd.col.shop")}>
+            <button type="button" className="ow-chip" aria-pressed={filters.source === null} onClick={() => setFilters((current) => ({ ...current, source: null }))} data-testid="dd-shop-all">{t("dd.shop.all")}</button>
+            {shops.map((shop) => <button key={shop} type="button" className="ow-chip" aria-pressed={filters.source === shop} onClick={() => setFilters((current) => ({ ...current, source: shop }))} data-testid={`dd-shop-${shop}`}>{sourceLabel(shop)}</button>)}
+          </div>
+          <div className="ow-search" role="search">
+            <AppIcon name="search" size={20} />
+            <label className="visually-hidden" htmlFor="ow-desk-search">{t("dd.search")}</label>
+            <input id="ow-desk-search" type="search" value={typed} maxLength={60} placeholder={t("dd.search")} autoComplete="off" spellCheck={false}
+              onChange={(event) => setTyped(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") setTyped(""); }} data-testid="dd-search" />
+            {typed !== "" && <button type="button" className="ow-search-clear" onClick={() => setTyped("")} aria-label={t("dd.searchClear")} title={t("dd.searchClear")}><AppIcon name="close" size={16} /></button>}
+          </div>
         </div>
-        <label className="dd-search"><AppIcon name="search" size={18} /><span className="visually-hidden">{t("dd.search")}</span>
-          <input type="search" value={typed} maxLength={60} placeholder={t("dd.search")} onChange={(event) => setTyped(event.target.value)} data-testid="dd-search" />
-        </label>
+        {query !== "" && rows && <p className="ow-search-result" role="status" data-testid="dd-search-result">{rows.length > 0 ? t("dd.searchResults", { count: rows.length, query }) : t("dd.searchNone", { query })}</p>}
       </div>
       {failure && <p className="order-notice order-notice-muted" role="alert">{failure}</p>}
-      <div className="dd-table-wrap" aria-busy={!rows && !failure}>
+      <div className="ow-table-wrap" aria-busy={!rows && !failure}>
         {!rows && !failure && <QueueSkeleton rows={6} />}
-        {rows && rows.length === 0 && <EmptyPanel icon="orders" title={t(`dd.empty.${filters.view}` as MessageKey)}>{""}</EmptyPanel>}
+        {rows && rows.length === 0 && query === "" && <EmptyPanel icon="orders" title={t(`dd.empty.${filters.view}` as MessageKey)}>{""}</EmptyPanel>}
         {rows && rows.length > 0 && (
-          <table className="dd-table" data-testid="dd-table">
+          <table className="ow-table" data-testid="dd-table">
             <thead><tr>
-              <th scope="col">{t("dd.col.order")}</th><th scope="col">{t("dd.col.shop")}</th><th scope="col">{t("dd.col.customer")}</th>
-              <th scope="col" className="num">{t("dd.col.total")}</th><th scope="col" className="num">{t("dd.col.products")}</th>
-              <th scope="col">{t("dd.col.waiting")}</th><th scope="col">{t("dd.col.notes")}</th>
+              <th scope="col" className="c-order">{t("dd.col.order")}</th><th scope="col" className="c-shop">{t("dd.col.shop")}</th><th scope="col" className="c-customer">{t("dd.col.customer")}</th>
+              <th scope="col" className="c-total num">{t("dd.col.total")}</th><th scope="col" className="c-lines num">{t("dd.col.products")}</th>
+              <th scope="col" className="c-wait">{t("dd.col.waiting")}</th><th scope="col" className="c-notes">{t("dd.col.notes")}</th>
             </tr></thead>
             <tbody>{rows.map((item) => <DeskRow key={item.globalOrderId} item={item} employee={employee} onOpen={() => open(item)} />)}</tbody>
           </table>
@@ -134,24 +158,45 @@ export function DecisionDesk({ employee, service, documents, orderId, navigate, 
   );
 }
 
+/**
+ * One order of the list: the whole row opens it (the number is its keyboard target), the total right-aligned in tabular
+ * figures (a total not read yet says so, never 0), the waiting time weighted by how long it has waited (display only)
+ * and the shop's warnings in words (an unknown code reads as "check this order", never a raw key).
+ */
 function DeskRow({ item, employee, onOpen }: { item: ConfirmareItem; employee: Employee; onOpen: () => void }) {
   const { t } = useI18n();
-  const wait = waitingLabel(waitingMinutes(item));
+  const minutes = waitingMinutes(item);
+  const wait = waitingLabel(minutes);
+  const tone = waitTone(minutes);
   const due = callbackDue(item);
   const other = item.assignment && item.assignment.employeeId !== employee.employeeUuid ? item.assignment.displayName : null;
-  const total = item.display?.total ? formatShopMoney(item.display.total, item.display.currency ?? "RON") : "—";
+  const readAt = item.display?.readAt ? formatDate(item.display.readAt, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "Europe/Bucharest" }) : "";
   return (
-    <tr className={`dd-row${due ? " is-due" : ""}`} onClick={onOpen} data-testid={`dd-row-${item.orderNumber}`}>
-      <td><button type="button" className="dd-row-open" onClick={(event) => { event.stopPropagation(); onOpen(); }}>#{item.orderNumber}</button>{other && <small className="dd-row-owner">{other}</small>}</td>
-      <td><span className="cf-source" data-source={item.sourceKey}>{sourceLabel(item.sourceKey)}</span></td>
-      <td className="dd-row-customer">{item.customerName ?? "—"}</td>
-      <td className="num">{total}{item.display && !item.display.current && <small className="dd-row-stale" title={formatDate(item.display.readAt, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "Europe/Bucharest" })}> *</small>}</td>
-      <td className="num">{item.lineCount ?? "—"}</td>
-      <td>{t(`dd.wait.${wait.unit}` as MessageKey, { value: wait.value })}</td>
-      <td className="dd-row-notes">
-        {(item.display?.warnings ?? []).map((warning) => <span key={warning} className="dd-badge tone-warning">{t(`dd.warn.${warning}` as MessageKey)}</span>)}
-        {item.waiting?.callbackAt && <span className={`dd-badge ${due ? "tone-action" : ""}`}>{due ? t("dd.callbackDue") : t("dd.callback", { date: formatDate(item.waiting.callbackAt, { hour: "2-digit", minute: "2-digit", day: "numeric", month: "short", timeZone: "Europe/Bucharest" }) })}</span>}
-        {item.waiting?.note && <span className="dd-note">{item.waiting.note}</span>}
+    <tr className={`ow-row${due ? " is-due" : ""} wait-${tone}`} onClick={onOpen} data-testid={`dd-row-${item.orderNumber}`}>
+      <td className="c-order">
+        <button type="button" className="ow-row-open" onClick={(event) => { event.stopPropagation(); onOpen(); }} aria-label={t("dd.openOrder", { number: item.orderNumber })}>#{item.orderNumber}</button>
+        <small className="ow-row-shop" aria-hidden="true">{sourceLabel(item.sourceKey)}</small>
+        {other && <small className="ow-row-owner">{other}</small>}
+      </td>
+      <td className="c-shop"><span className="ow-shop-name" data-source={item.sourceKey}>{sourceLabel(item.sourceKey)}</span></td>
+      <td className="c-customer">{item.customerName ?? "—"}</td>
+      <td className="c-total num">
+        {item.display?.total
+          ? <>{formatShopMoney(item.display.total, item.display.currency ?? "RON")}{!item.display.current && <span className="ow-stale" title={t("dd.listTotalStale", { date: readAt })}><AppIcon name="clock" size={13} /><span className="visually-hidden">{t("dd.listTotalStale", { date: readAt })}</span></span>}</>
+          : <span className="ow-muted ow-pending">{t("dd.listTotalPending")}</span>}
+      </td>
+      <td className="c-lines num">{item.lineCount ?? "—"}</td>
+      <td className="c-wait">
+        <span className={`ow-wait is-${tone}`}>
+          {tone !== "normal" && <AppIcon name={tone === "critical" ? "alert" : "clock"} size={14} />}
+          {t(`dd.wait.${wait.unit}` as MessageKey, { value: wait.value })}
+          {tone !== "normal" && <span className="visually-hidden"> · {t(`dd.wait.tone.${tone}` as MessageKey)}</span>}
+        </span>
+      </td>
+      <td className="c-notes">
+        {(item.display?.warnings ?? []).map((warning) => <span key={warning} className={`ow-badge ${warning === "out_of_stock" ? "tone-danger" : "tone-warning"}`}><AppIcon name="alert" size={13} />{t(deskWarningKey(warning))}</span>)}
+        {item.waiting?.callbackAt && <span className={`ow-badge ${due ? "tone-action" : ""}`}><AppIcon name="clock" size={13} />{due ? t("dd.callbackDue") : t("dd.callback", { date: formatDate(item.waiting.callbackAt, { hour: "2-digit", minute: "2-digit", day: "numeric", month: "short", timeZone: "Europe/Bucharest" }) })}</span>}
+        {item.waiting?.note && <span className="ow-note">{item.waiting.note}</span>}
       </td>
     </tr>
   );

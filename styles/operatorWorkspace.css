@@ -1,0 +1,506 @@
+/* ---- Operator Workspace V2 (Staff 2.58.0, owner brief 2026-11-26) ---------------------------------------------------
+   The operator desk (.ow-desk) and the order workspace (.ow-work). Laptop first (1280x720 to 1920x1080, 100-125 % zoom):
+   the total and the 30 % advance always on screen, three big decisions, products as cards, no horizontal scroll, one
+   scroll area (the page). Everything is scoped to these two screens; the rest of Staff (and Cristina's finance desk) keeps
+   its own look. Colour never stands alone: every state also has a word and, where useful, an icon. */
+
+.app-shell:has(.ow-desk), .app-shell:has(.ow-work) {
+  --ow-bg: #f4f5f7;
+  --ow-card: #ffffff;
+  --ow-card-soft: #f8f9fb;
+  --ow-text: #17202a;
+  --ow-text-2: #3d4854;
+  --ow-text-3: #56616d;
+  --ow-border: #dde1e6;
+  --ow-border-strong: #b9c1ca;
+  --ow-hover: #f1f4f7;
+  --ow-focus: #17202a;
+  --ow-ok: #15803d;
+  --ow-ok-hover: #116a32;
+  --ow-ok-soft: #e9f5ee;
+  --ow-ok-text: #11632f;
+  /* Owner reference #a96b05 for waiting; the button uses a slightly deeper tone so its small white text keeps 4.5:1. */
+  --ow-wait: #a96b05;
+  --ow-wait-button: #9a6204;
+  --ow-wait-hover: #855403;
+  --ow-wait-soft: #fbf3e3;
+  --ow-wait-text: #7f5103;
+  --ow-no: #c51f30;
+  --ow-no-hover: #a91a29;
+  --ow-no-soft: #fcecee;
+  --ow-no-text: #a51a28;
+  --ow-info-soft: #edf2f8;
+  --ow-info-text: #2c4a6b;
+  --ow-advance-bg: #eef2f7;
+  --ow-advance-line: #c6d1de;
+  --ow-disabled: #d3d8de;
+  --ow-disabled-text: #4f5a66;
+  --ow-shadow: 0 1px 2px rgba(23, 32, 42, .05);
+  --ow-shadow-head: 0 1px 0 rgba(23, 32, 42, .06), 0 6px 16px rgba(23, 32, 42, .06);
+  --ow-gutter: 16px;
+  background: var(--ow-bg);
+}
+:root[data-theme="dark"] .app-shell:has(.ow-desk), :root[data-theme="dark"] .app-shell:has(.ow-work) {
+  --ow-bg: #0e0f11;
+  --ow-card: #17191c;
+  --ow-card-soft: #1c1f23;
+  --ow-text: #f3f0ea;
+  --ow-text-2: #c9c4bc;
+  --ow-text-3: #aba69e;
+  --ow-border: rgba(242, 238, 232, .1);
+  --ow-border-strong: rgba(242, 238, 232, .24);
+  --ow-hover: rgba(242, 238, 232, .05);
+  --ow-focus: #f3f0ea;
+  --ow-ok: #1f8f4a;
+  --ow-ok-hover: #24a254;
+  --ow-ok-soft: rgba(111, 207, 151, .12);
+  --ow-ok-text: #8fdcae;
+  --ow-wait: #e3b061;
+  --ow-wait-button: #9a6204;
+  --ow-wait-hover: #a86c06;
+  --ow-wait-soft: rgba(227, 176, 97, .12);
+  --ow-wait-text: #ebc27f;
+  --ow-no: #c51f30;
+  --ow-no-hover: #d6283a;
+  --ow-no-soft: rgba(255, 107, 107, .12);
+  --ow-no-text: #ff9a9a;
+  --ow-info-soft: rgba(120, 160, 210, .12);
+  --ow-info-text: #a9c4e6;
+  --ow-advance-bg: rgba(120, 160, 210, .1);
+  --ow-advance-line: rgba(120, 160, 210, .35);
+  --ow-disabled: #2a2e33;
+  --ow-disabled-text: #aba69e;
+}
+.app-content:has(.ow-desk), .app-content:has(.ow-work) { max-width: none; }
+body:has(.ow-desk), body:has(.ow-work) { background: #f4f5f7; }
+:root[data-theme="dark"] body:has(.ow-desk), :root[data-theme="dark"] body:has(.ow-work) { background: #0e0f11; }
+.ow-est { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 999px; background: var(--ow-card); color: var(--ow-text-2); font-size: 11px; letter-spacing: 0; text-transform: none; vertical-align: 1px; }
+.ow-desk, .ow-work { color: var(--ow-text); font-size: 15px; line-height: 1.45; }
+.ow-desk .visually-hidden, .ow-work .visually-hidden { clip-path: inset(50%); }
+.ow-num, .ow-desk .num, .ow-work dd { font-variant-numeric: tabular-nums; }
+.ow-muted { color: var(--ow-text-3); font-size: 14px; }
+.ow-warn-line, .ow-info-line { display: flex; align-items: flex-start; gap: 8px; margin: 0; font-size: 14px; }
+.ow-warn-line { color: var(--ow-wait-text); }
+.ow-warn-line > svg, .ow-info-line > svg { flex: none; margin-top: 2px; }
+.ow-info-line { color: var(--ow-info-text); }
+.ow-desk :focus-visible, .ow-work :focus-visible { outline: 3px solid var(--ow-focus); outline-offset: 2px; }
+
+/* Badges and pills: a word, an icon, a calm tint. */
+.ow-badge { display: inline-flex; align-items: center; gap: 5px; margin: 2px 6px 2px 0; padding: 3px 9px; border: 1px solid var(--ow-border-strong); border-radius: 999px; background: var(--ow-card); color: var(--ow-text-2); font-size: 13px; font-weight: 600; line-height: 1.3; white-space: nowrap; }
+.ow-badge.tone-warning { border-color: color-mix(in srgb, var(--ow-wait) 45%, transparent); background: var(--ow-wait-soft); color: var(--ow-wait-text); }
+.ow-badge.tone-danger { border-color: color-mix(in srgb, var(--ow-no) 40%, transparent); background: var(--ow-no-soft); color: var(--ow-no-text); }
+.ow-badge.tone-success { border-color: color-mix(in srgb, var(--ow-ok) 40%, transparent); background: var(--ow-ok-soft); color: var(--ow-ok-text); }
+.ow-badge.tone-action { border-color: var(--ow-text); color: var(--ow-text); }
+.ow-pill { display: inline-flex; align-items: center; padding: 2px 10px; border-radius: 999px; font-size: 13px; font-weight: 600; }
+.ow-pill.tone-info { background: var(--ow-info-soft); color: var(--ow-info-text); }
+.ow-spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: ow-spin .8s linear infinite; vertical-align: -2px; }
+@keyframes ow-spin { to { transform: rotate(360deg); } }
+.ow-computing { display: inline-flex; align-items: center; gap: 8px; margin: 0; color: var(--ow-text-3); font-size: 15px; font-weight: 600; }
+.ow-computing-inline { color: var(--ow-text-3); font-size: 14px; font-weight: 500; }
+
+/* ---- Compact menu on the order workspace (desktop only, html[data-ow-nav]) ---------------------------------------- */
+.nav-ow-toggle { display: none; }
+@media (min-width: 1024px) {
+  html[data-ow-nav] .nav-ow-toggle { display: flex; margin-top: 6px; }
+  html[data-ow-nav="compact"] .app-shell { grid-template-columns: 72px minmax(0, 1fr); }
+  html[data-ow-nav="compact"] .app-nav { align-items: center; padding: 18px 12px 16px; }
+  html[data-ow-nav="compact"] .app-nav-brand { display: none; }
+  html[data-ow-nav="compact"] .nav-item { position: relative; width: 48px; min-height: 48px; justify-content: center; gap: 0; padding: 0; }
+  html[data-ow-nav="compact"] .nav-item small { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
+  html[data-ow-nav="compact"] .nav-item::before { left: -12px; }
+  html[data-ow-nav="compact"] .primary-scan-nav { width: 48px; justify-content: center; padding: 0; }
+  html[data-ow-nav="compact"] .primary-scan-label { display: none; }
+  /* The tooltip: the item's name on hover and on keyboard focus. */
+  html[data-ow-nav="compact"] .nav-item[data-tip]:hover::after, html[data-ow-nav="compact"] .nav-item[data-tip]:focus-visible::after {
+    content: attr(data-tip); position: absolute; z-index: 80; left: calc(100% + 12px); top: 50%; transform: translateY(-50%);
+    padding: 6px 10px; border-radius: 6px; background: #17202a; color: #ffffff; font-size: 13px; font-weight: 600; white-space: nowrap; pointer-events: none;
+  }
+  .app-shell:has(.ow-work) .app-main { padding-inline: 24px; }
+  .app-shell:has(.ow-work) .app-header { min-height: 56px; margin-bottom: 0; }
+  .app-shell:has(.ow-work) { --ow-gutter: 24px; }
+  .app-shell:has(.ow-desk) { --ow-gutter: 40px; }
+}
+@media (min-width: 1440px) { .app-shell:has(.ow-desk) { --ow-gutter: 56px; } }
+
+/* ---- Desk -------------------------------------------------------------------------------------------------------- */
+.ow-desk { display: grid; gap: 14px; min-width: 0; padding-bottom: 32px; }
+.ow-desk-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 20px; align-items: center; }
+.ow-desk-title h1 { margin: 0; font-size: 26px; font-weight: 700; line-height: 1.2; letter-spacing: -.01em; }
+.ow-desk-date { margin: 2px 0 0; color: var(--ow-text-3); font-size: 14px; }
+.ow-desk-date::first-letter { text-transform: uppercase; }
+.ow-done { display: grid; grid-template-columns: auto auto; align-items: baseline; gap: 0 10px; padding: 8px 16px; border: 1px solid var(--ow-border); border-radius: 12px; background: var(--ow-card); }
+.ow-done strong { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.ow-done span { color: var(--ow-text-2); font-size: 14px; font-weight: 600; }
+.ow-desk .dd-tools { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* The lists and the filters stay on screen while the list scrolls (compact: about 130 px on a laptop). */
+/* Full-bleed background without widening the page: a spread shadow, clipped to the bar's own height (+1 px rule). */
+.ow-desk-sticky { position: sticky; top: 0; z-index: 20; display: grid; gap: 10px; padding: 10px 0; background: var(--ow-bg); box-shadow: 0 0 0 100vmax var(--ow-bg), 0 1px 0 100vmax var(--ow-border); clip-path: inset(0 -100vmax -1px); }
+.ow-views { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.ow-view {
+  position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "label count" "period count"; align-items: center; gap: 0 12px;
+  min-height: 64px; padding: 8px 16px 8px 18px; border: 1.5px solid var(--ow-border); border-radius: 12px; background: var(--ow-card); color: var(--ow-text);
+  font: inherit; text-align: left; cursor: pointer; overflow: hidden;
+}
+.ow-view::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--ow-view-tone, var(--ow-text)); opacity: 0; }
+.ow-view:hover { border-color: var(--ow-border-strong); }
+.ow-view[aria-pressed="true"] { border-color: var(--ow-text); box-shadow: 0 0 0 1px var(--ow-text); }
+.ow-view[aria-pressed="true"]::before { opacity: 1; }
+.ow-view-label { grid-area: label; font-size: 16px; font-weight: 700; line-height: 1.25; overflow-wrap: anywhere; }
+.ow-view-period { grid-area: period; color: var(--ow-text-3); font-size: 13px; }
+.ow-view-count { grid-area: count; font-size: 30px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; color: var(--ow-view-tone, var(--ow-text)); }
+.ow-view-new { --ow-view-tone: var(--ow-text); }
+.ow-view-waiting { --ow-view-tone: var(--ow-wait); }
+.ow-view-confirmed { --ow-view-tone: var(--ow-ok); }
+.ow-view-refused { --ow-view-tone: var(--ow-no); }
+.ow-filters { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; justify-content: space-between; }
+.ow-shops { display: flex; flex-wrap: wrap; gap: 8px; }
+.ow-chip { min-height: 40px; padding: 0 16px; border: 1.5px solid var(--ow-border-strong); border-radius: 999px; background: var(--ow-card); color: var(--ow-text); font: inherit; font-size: 15px; font-weight: 600; cursor: pointer; }
+.ow-chip:hover { background: var(--ow-hover); }
+.ow-chip[aria-pressed="true"] { border-color: var(--ow-text); background: var(--ow-text); color: var(--ow-card); }
+.ow-search { position: relative; display: flex; align-items: center; gap: 10px; flex: 1 1 320px; max-width: 480px; min-height: 46px; padding: 0 8px 0 14px; border: 1.5px solid var(--ow-border-strong); border-radius: 10px; background: var(--ow-card); color: var(--ow-text-3); }
+.ow-search:focus-within { border-color: var(--ow-text); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ow-text) 15%, transparent); }
+.ow-search input { flex: 1; min-width: 0; min-height: 42px; border: 0; outline: 0; background: transparent; color: var(--ow-text); font: inherit; font-size: 16px; }
+.ow-search input::-webkit-search-cancel-button { display: none; }
+.ow-search :focus-visible { outline: 0; }
+.ow-search-clear { display: inline-grid; place-items: center; width: 34px; height: 34px; border: 0; border-radius: 8px; background: transparent; color: var(--ow-text-2); cursor: pointer; }
+.ow-search-clear:hover { background: var(--ow-hover); }
+.ow-search-clear:focus-visible { outline: 3px solid var(--ow-focus); }
+.ow-search-result { margin: 0; color: var(--ow-text-2); font-size: 14px; font-weight: 600; }
+
+.ow-table-wrap { min-width: 0; container-type: inline-size; }
+.ow-row-shop { display: none; color: var(--ow-text-3); font-size: 13px; font-weight: 600; }
+/* A narrow list (zoom, small laptop): the shop moves under the order number, cells get tighter; nothing scrolls sideways. */
+@container (max-width: 900px) {
+  .ow-table .c-shop { display: none; }
+  .ow-row-shop { display: block; }
+  .ow-table td, .ow-table thead th { padding-inline: 10px; }
+  .ow-table .c-customer { min-width: 120px; }
+  .ow-table .c-notes { min-width: 120px; }
+}
+.ow-table { width: 100%; border-collapse: separate; border-spacing: 0; table-layout: auto; border: 1px solid var(--ow-border); border-radius: 12px; background: var(--ow-card); box-shadow: var(--ow-shadow); font-size: 15px; }
+.ow-table thead th {
+  position: sticky; top: var(--ow-sticky-h, 0px); z-index: 5; padding: 10px 14px; border-bottom: 1px solid var(--ow-border-strong); background: var(--ow-card-soft);
+  color: var(--ow-text-2); font-size: 13px; font-weight: 700; text-align: left; white-space: nowrap;
+}
+.ow-table thead th:first-child { border-top-left-radius: 12px; }
+.ow-table thead th:last-child { border-top-right-radius: 12px; }
+/* Numbers, shop and waiting time take what they need (never wrapped); the customer and the warnings share the rest. */
+.ow-table .c-order, .ow-table .c-shop, .ow-table .c-total, .ow-table .c-lines, .ow-table .c-wait { width: 1%; white-space: nowrap; }
+.ow-table .c-customer { min-width: 160px; }
+.ow-table .c-notes { min-width: 150px; }
+.ow-table .num { text-align: right; }
+.ow-table td { padding: 11px 14px; border-bottom: 1px solid var(--ow-border); vertical-align: middle; overflow-wrap: break-word; }
+.ow-table tbody tr:last-child td { border-bottom: 0; }
+.ow-row { cursor: pointer; }
+.ow-row:hover td { background: var(--ow-hover); }
+.ow-row:focus-within td { background: var(--ow-hover); }
+.ow-row td:first-child { box-shadow: inset 4px 0 0 transparent; }
+.ow-row.wait-critical td:first-child { box-shadow: inset 4px 0 0 var(--ow-no); }
+.ow-row.wait-long td:first-child { box-shadow: inset 4px 0 0 var(--ow-wait); }
+.ow-row.is-due td:first-child { box-shadow: inset 4px 0 0 var(--ow-text); }
+.ow-row-open { padding: 4px 0; border: 0; background: none; color: var(--ow-text); font: inherit; font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; cursor: pointer; }
+.ow-row-open:focus-visible { outline: 3px solid var(--ow-focus); outline-offset: 3px; border-radius: 4px; }
+.ow-row-owner { display: block; color: var(--ow-text-3); font-size: 13px; }
+.ow-shop-name { color: var(--ow-text-2); font-size: 14px; font-weight: 600; }
+.ow-table .c-customer { font-weight: 500; }
+.ow-table .c-total { font-weight: 600; white-space: nowrap; }
+.ow-stale { display: inline-flex; margin-left: 6px; color: var(--ow-text-3); vertical-align: -1px; }
+.ow-pending { font-size: 13px; font-weight: 500; font-style: italic; }
+.ow-wait { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 999px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ow-wait.is-long { background: var(--ow-wait-soft); color: var(--ow-wait-text); font-weight: 700; }
+.ow-wait.is-critical { background: var(--ow-no-soft); color: var(--ow-no-text); font-weight: 700; }
+.ow-note { display: block; color: var(--ow-text-3); font-size: 13px; }
+
+/* ---- Order workspace --------------------------------------------------------------------------------------------- */
+.ow-work { display: grid; gap: 14px; min-width: 0; padding-bottom: 32px; scroll-padding-top: 220px; }
+
+/* The sticky header: one constant height (nothing below it jumps). */
+.ow-head { position: sticky; top: 0; z-index: 30; display: grid; gap: 10px; margin: 0 calc(var(--ow-gutter) * -1); padding: 10px var(--ow-gutter) 12px; border-bottom: 1px solid var(--ow-border); background: var(--ow-card); box-shadow: var(--ow-shadow-head); }
+.ow-head-top { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 24px; min-width: 0; }
+.ow-head-id { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.ow-head-name { display: grid; gap: 2px; min-width: 0; }
+.ow-head-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.ow-back { display: inline-grid; place-items: center; flex: none; width: 44px; height: 44px; border: 1.5px solid var(--ow-border-strong); border-radius: 10px; background: var(--ow-card); color: var(--ow-text); cursor: pointer; }
+.ow-back:hover { background: var(--ow-hover); }
+.ow-number { margin: 0; font-size: 27px; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+.ow-shop { color: var(--ow-text-2); font-size: 14px; font-weight: 600; }
+.ow-status { padding: 2px 9px; border-radius: 999px; background: var(--ow-hover); color: var(--ow-text-2); font-size: 12.5px; font-weight: 700; }
+.ow-status-approved { background: var(--ow-ok-soft); color: var(--ow-ok-text); }
+.ow-status-rejected, .ow-status-cancelled { background: var(--ow-no-soft); color: var(--ow-no-text); }
+.ow-head-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: stretch; }
+.ow-head-actions > :only-child { grid-column: 1 / -1; justify-self: end; }
+.ow-autonext { display: flex; align-items: center; gap: 10px; max-width: 190px; padding: 6px 12px; border: 1px solid var(--ow-border); border-radius: 12px; color: var(--ow-text-2); font-size: 13px; font-weight: 600; line-height: 1.25; cursor: pointer; }
+.ow-autonext:hover { background: var(--ow-hover); }
+.ow-autonext input { flex: none; width: 20px; height: 20px; margin: 0; accent-color: var(--ow-text); }
+.ow-money { display: flex; flex-wrap: wrap; align-items: stretch; gap: 10px; flex: 1 1 auto; margin: 0; min-width: 0; }
+.ow-money-key { display: grid; align-content: center; gap: 2px; min-width: 0; margin: 0; padding: 6px 16px; border: 1px solid var(--ow-border); border-radius: 10px; background: var(--ow-card); }
+.ow-money-key.is-advance { border-color: var(--ow-advance-line); background: var(--ow-advance-bg); }
+.ow-money-key dt { color: var(--ow-text-2); font-size: 12.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; white-space: nowrap; }
+.ow-money-key dd { margin: 0; min-height: 38px; font-size: 32px; font-weight: 700; line-height: 1.15; white-space: nowrap; }
+.ow-money-key dd .ow-computing { min-height: 38px; font-size: 15px; }
+.ow-money-side { display: grid; align-content: center; gap: 2px; margin: 0; min-width: 250px; padding: 4px 4px 4px 14px; border-left: 1px solid var(--ow-border); }
+.ow-money-line { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; font-size: 14px; }
+.ow-money-line dt { color: var(--ow-text-2); }
+.ow-money-line dd { margin: 0; font-size: 15px; font-weight: 700; white-space: nowrap; }
+
+.ow-decisions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.ow-decision {
+  display: flex; align-items: center; gap: 12px; min-width: 0; min-height: 60px; padding: 8px 14px; border: 0; border-radius: 12px;
+  color: #ffffff; font: inherit; text-align: left; cursor: pointer; transition: background-color 120ms ease;
+}
+.ow-decision-icon { display: inline-grid; place-items: center; flex: none; width: 38px; height: 38px; border-radius: 50%; background: rgba(255, 255, 255, .18); }
+.ow-decision-text { display: grid; gap: 1px; min-width: 0; }
+.ow-decision strong { font-size: 19px; font-weight: 700; line-height: 1.15; letter-spacing: .01em; text-transform: uppercase; }
+.ow-decision small { font-size: 13px; font-weight: 500; line-height: 1.25; }
+.ow-decision-green { background: var(--ow-ok); }
+.ow-decision-green:hover:not(:disabled) { background: var(--ow-ok-hover); }
+.ow-decision-yellow { background: var(--ow-wait-button); }
+.ow-decision-yellow:hover:not(:disabled) { background: var(--ow-wait-hover); }
+.ow-decision-red { background: var(--ow-no); }
+.ow-decision-red:hover:not(:disabled) { background: var(--ow-no-hover); }
+.ow-decision:focus-visible { outline: 3px solid var(--ow-focus); outline-offset: 3px; }
+.ow-decision:disabled { background: var(--ow-disabled); color: var(--ow-disabled-text); cursor: not-allowed; }
+.ow-decision:disabled .ow-decision-icon { background: rgba(0, 0, 0, .06); }
+
+.ow-wait-panel { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: end; padding: 12px; border: 1.5px solid color-mix(in srgb, var(--ow-wait) 45%, transparent); border-radius: 12px; background: var(--ow-wait-soft); }
+.ow-wait-panel .ow-field.is-wide { flex: 1 1 320px; }
+.button.ow-wait-save { min-height: 46px; border-color: var(--ow-wait-button); background: var(--ow-wait-button); color: #ffffff; }
+
+.ow-feedback { display: grid; gap: 8px; }
+.ow-feedback:empty { display: none; }
+.ow-after { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; padding: 10px 12px; border: 1px solid var(--ow-border); border-radius: 12px; background: var(--ow-card); }
+.ow-after .button { min-height: 44px; }
+.ow-after-spacer { flex: 1 1 auto; }
+.button.ow-next { min-height: 48px; padding: 0 20px; font-size: 16px; }
+
+/* Body: customer and money on the left (about 28 %), products on the right. */
+.ow-grid { display: grid; grid-template-columns: minmax(300px, 28%) minmax(0, 1fr); gap: 16px; align-items: start; min-width: 0; }
+.ow-side { display: grid; gap: 16px; min-width: 0; }
+.ow-card { min-width: 0; padding: 16px 18px; border: 1px solid var(--ow-border); border-radius: 12px; background: var(--ow-card); box-shadow: var(--ow-shadow); }
+.ow-card-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.ow-card-title { margin: 0 0 10px; color: var(--ow-text-2); font-size: 13px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.ow-card-head .ow-card-title { margin: 0; }
+
+.ow-customer { display: grid; gap: 10px; }
+.ow-customer .ow-card-title { margin: 0; }
+.ow-customer-name { margin: 0; font-size: 22px; font-weight: 700; line-height: 1.25; overflow-wrap: anywhere; }
+.ow-customer-name small { color: var(--ow-text-2); font-size: 15px; font-weight: 600; }
+.ow-phones { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.ow-phone-kind { color: var(--ow-text-3); font-size: 13px; }
+.ow-phone-row { display: flex; align-items: center; gap: 8px; }
+.ow-phone { display: inline-flex; align-items: center; gap: 10px; min-height: 48px; padding: 0 14px 0 12px; border: 1.5px solid var(--ow-border-strong); border-radius: 10px; color: var(--ow-text); font-size: 23px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: .02em; text-decoration: none; }
+a.ow-phone:hover { border-color: var(--ow-ok); background: var(--ow-ok-soft); }
+a.ow-phone > svg { color: var(--ow-ok); }
+.ow-copy { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 10px; border: 1px solid var(--ow-border-strong); border-radius: 8px; background: var(--ow-card); color: var(--ow-text-2); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
+.ow-copy.is-compact { width: 36px; padding: 0; justify-content: center; }
+.ow-copy:hover { background: var(--ow-hover); color: var(--ow-text); }
+.ow-copy.is-done { border-color: var(--ow-ok); color: var(--ow-ok-text); background: var(--ow-ok-soft); }
+.ow-email { display: grid; gap: 2px; min-width: 0; }
+.ow-email small { color: var(--ow-text-3); font-size: 13px; }
+.ow-email-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ow-email-value { min-width: 0; font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+.ow-history { display: grid; gap: 8px; }
+.ow-history summary, .ow-billing summary, .ow-history-log summary { min-height: 40px; display: flex; align-items: center; gap: 8px; color: var(--ow-text); font-size: 14px; font-weight: 700; cursor: pointer; list-style: none; }
+.ow-history summary::-webkit-details-marker, .ow-billing summary::-webkit-details-marker, .ow-history-log summary::-webkit-details-marker { display: none; }
+.ow-history summary::before, .ow-billing summary::before, .ow-history-log summary::before { content: ""; width: 7px; height: 7px; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(-45deg); transition: transform 120ms ease; }
+.ow-history details[open] > summary::before, .ow-billing[open] > summary::before, .ow-history-log[open] > summary::before { transform: rotate(45deg); }
+.ow-history ul { display: grid; gap: 4px; margin: 4px 0 0; padding: 0; list-style: none; font-size: 14px; }
+.ow-history li { display: grid; grid-template-columns: auto 1fr auto; gap: 2px 10px; padding: 6px 8px; border-radius: 8px; background: var(--ow-card-soft); }
+.ow-history li > span:nth-child(3) { grid-column: 2; color: var(--ow-text-3); }
+.ow-history li .ow-num { grid-column: 3; grid-row: 1; text-align: right; font-weight: 600; }
+.ow-history li.is-duplicate { box-shadow: inset 3px 0 0 var(--ow-wait); }
+
+.ow-address { display: grid; gap: 6px; padding-top: 12px; border-top: 1px solid var(--ow-border); }
+.ow-billing .ow-address { border-top: 0; padding-top: 4px; }
+.ow-address-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.ow-address-head h3 { margin: 0; font-size: 15px; font-weight: 700; }
+.ow-link-btn { display: inline-flex; align-items: center; gap: 6px; min-height: 40px; padding: 0 12px; border: 1.5px solid var(--ow-border-strong); border-radius: 8px; background: var(--ow-card); color: var(--ow-text); font: inherit; font-size: 14px; font-weight: 700; cursor: pointer; }
+.ow-link-btn:hover { background: var(--ow-hover); }
+.ow-address-lines { display: grid; gap: 1px; font-size: 16px; font-style: normal; line-height: 1.45; overflow-wrap: anywhere; }
+.ow-missing { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.ow-missing li { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 999px; background: var(--ow-wait-soft); color: var(--ow-wait-text); font-size: 13px; font-weight: 700; }
+.ow-address-form { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; }
+.ow-address-form .ow-field.is-s { grid-column: span 2; }
+.ow-address-form .ow-field.is-m { grid-column: span 3; }
+.ow-address-form .ow-field.is-l, .ow-address-form .ow-span { grid-column: 1 / -1; }
+.ow-address-form .ow-muted { margin: 0; }
+.ow-form-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.ow-form-actions .button { min-height: 46px; }
+
+/* Fields: 46 px, big enough for numbers, label always visible. */
+.ow-field { display: grid; align-content: start; gap: 4px; min-width: 0; color: var(--ow-text-2); font-size: 13px; font-weight: 700; }
+.ow-field > span:first-child { overflow-wrap: anywhere; }
+.ow-field input, .ow-field select {
+  width: 100%; min-width: 0; min-height: 46px; padding: 0 12px; border: 1.5px solid var(--ow-border-strong); border-radius: 8px; background: var(--ow-card);
+  color: var(--ow-text); font: inherit; font-size: 16px; font-weight: 500;
+}
+.ow-field select { padding-right: 32px; text-overflow: ellipsis; }
+.ow-field input:focus, .ow-field select:focus { border-color: var(--ow-text); outline: 0; box-shadow: 0 0 0 3px color-mix(in srgb, var(--ow-text) 18%, transparent); }
+.ow-field.is-missing input, .ow-field.is-missing select { border-color: var(--ow-wait); background: var(--ow-wait-soft); }
+.ow-field.is-measure input { font-size: 19px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.ow-input-unit { position: relative; display: block; }
+.ow-input-unit > span { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); color: var(--ow-text-3); font-size: 15px; font-weight: 600; pointer-events: none; }
+.ow-input-unit input:not(:only-child) { padding-right: 34px; }
+
+.ow-stepper { display: inline-flex; align-items: stretch; height: 46px; border: 1.5px solid var(--ow-border-strong); border-radius: 8px; overflow: hidden; background: var(--ow-card); }
+.ow-stepper button { width: 44px; border: 0; background: var(--ow-card-soft); color: var(--ow-text); font: inherit; font-size: 22px; font-weight: 600; line-height: 1; cursor: pointer; }
+.ow-stepper button:hover:not(:disabled) { background: var(--ow-hover); }
+.ow-stepper button:disabled { color: var(--ow-text-3); cursor: not-allowed; }
+.ow-stepper input { width: 52px; border: 0; border-inline: 1px solid var(--ow-border); background: var(--ow-card); color: var(--ow-text); font: inherit; font-size: 19px; font-weight: 700; text-align: center; font-variant-numeric: tabular-nums; }
+.ow-stepper :focus-visible { outline-offset: -3px; }
+.ow-qty-read { display: flex; align-items: center; min-height: 46px; font-size: 19px; font-variant-numeric: tabular-nums; }
+
+/* Products: one card each; the card body lines up under the name on wide screens. */
+.ow-products { display: grid; gap: 12px; min-width: 0; }
+.ow-section-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ow-section-head .ow-card-title { margin: 0; }
+.ow-product-list { display: grid; gap: 12px; }
+.ow-product { container-type: inline-size; display: grid; gap: 12px; min-width: 0; padding: 16px 18px; border: 1px solid var(--ow-border); border-radius: 12px; background: var(--ow-card); box-shadow: var(--ow-shadow); }
+.ow-product.is-added { border-color: color-mix(in srgb, var(--ow-ok) 45%, transparent); box-shadow: inset 4px 0 0 var(--ow-ok), var(--ow-shadow); }
+.ow-product-head { display: grid; grid-template-columns: 96px minmax(0, 1fr) auto; gap: 4px 16px; align-items: start; }
+.ow-product-img { display: grid; place-items: center; width: 96px; height: 96px; overflow: hidden; border: 1px solid var(--ow-border); border-radius: 10px; background: var(--ow-card-soft); }
+.ow-product-img img { width: 100%; height: 100%; object-fit: cover; }
+.ow-product-img.is-small { width: 48px; height: 48px; border-radius: 8px; }
+.ow-product-img-empty { display: grid; place-items: center; width: 100%; height: 100%; color: var(--ow-text-3); }
+.ow-product-id { display: grid; gap: 6px; min-width: 0; }
+.ow-product-name { margin: 0; font-size: 18px; font-weight: 700; line-height: 1.3; overflow-wrap: anywhere; }
+.ow-product-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; color: var(--ow-text-2); font-size: 14px; }
+.ow-sku { display: inline-flex; align-items: center; gap: 6px; }
+.ow-sku-label { color: var(--ow-text-3); font-size: 12px; font-weight: 700; letter-spacing: .04em; }
+.ow-sku code { padding: 2px 6px; border-radius: 6px; background: var(--ow-card-soft); color: var(--ow-text); font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 14px; font-weight: 600; }
+.ow-sku .ow-copy.is-compact { width: 30px; min-height: 30px; }
+.ow-details { display: contents; }
+.ow-details > div { display: inline-flex; gap: 4px; padding: 3px 9px; border: 1px solid var(--ow-border); border-radius: 8px; background: var(--ow-card-soft); font-size: 14px; }
+.ow-details dt { color: var(--ow-text-3); }
+.ow-details dt::after { content: ":"; }
+.ow-details dd { margin: 0; color: var(--ow-text); font-weight: 600; overflow-wrap: anywhere; }
+.ow-product-price { display: grid; justify-items: end; gap: 2px; min-width: 150px; text-align: right; }
+.ow-product-price small { color: var(--ow-text-3); font-size: 13px; font-weight: 600; }
+.ow-product-price strong { font-size: 22px; font-weight: 700; line-height: 1.2; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ow-product-price .ow-computing { font-size: 14px; min-height: 26px; }
+.ow-price-note { color: var(--ow-text-3); font-size: 13px; font-variant-numeric: tabular-nums; }
+.ow-vat { font-weight: 600; }
+.ow-new-tag { justify-self: start; padding: 1px 8px; border-radius: 999px; background: var(--ow-ok-soft); color: var(--ow-ok-text); font-size: 12px; font-weight: 700; }
+.ow-product-body { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px 14px; align-items: end; }
+.ow-product-body:empty { display: none; }
+.ow-product-body .ow-field.is-wide { grid-column: span 2; }
+.ow-product-row2 { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 14px; min-width: 0; }
+.ow-product-row2 .ow-field.is-wide { flex: 1 1 300px; max-width: 560px; }
+.ow-product-row2:empty { display: none; }
+.ow-product-body .ow-field.is-qty { min-width: 142px; }
+.ow-product-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-left: auto; }
+.ow-product-actions.is-inline { grid-column: 2 / -1; align-self: end; }
+.ow-product-actions .ow-action { min-height: 46px; padding: 0 12px; white-space: nowrap; }
+.ow-action { display: inline-flex; align-items: center; gap: 6px; min-height: 40px; padding: 0 12px; border: 1.5px solid var(--ow-border-strong); border-radius: 8px; background: var(--ow-card); color: var(--ow-text); font: inherit; font-size: 14px; font-weight: 700; cursor: pointer; }
+.ow-action:hover { background: var(--ow-hover); }
+.ow-action.is-danger { color: var(--ow-no-text); border-color: color-mix(in srgb, var(--ow-no) 35%, var(--ow-border-strong)); }
+.ow-action.is-danger:hover { background: var(--ow-no-soft); }
+.ow-action[aria-expanded="true"] { border-color: var(--ow-text); }
+.ow-product.is-removed { grid-template-columns: 48px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 10px 14px; background: var(--ow-card-soft); box-shadow: none; }
+.ow-product-removed { display: grid; gap: 2px; min-width: 0; color: var(--ow-text-3); }
+.ow-product-removed strong { color: var(--ow-text-2); text-decoration: line-through; overflow-wrap: anywhere; }
+.ow-product.is-removed .button { min-height: 44px; }
+@container (min-width: 720px) {
+  .ow-product-body, .ow-product > .ow-sku-search { margin-left: 112px; }
+}
+@container (max-width: 520px) {
+  .ow-product-head { grid-template-columns: 72px minmax(0, 1fr); }
+  .ow-product-img { width: 72px; height: 72px; }
+  .ow-product-price { grid-column: 1 / -1; justify-items: start; text-align: left; }
+}
+
+/* SKU search: one wide field, Enter searches, the result is one row. */
+.ow-add { padding: 14px 18px; }
+.ow-sku-search { display: grid; gap: 10px; min-width: 0; }
+.ow-sku-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+.ow-field.is-sku { flex: 1 1 280px; max-width: 460px; }
+.ow-field.is-sku input { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 17px; letter-spacing: .02em; }
+.button.ow-sku-find { min-height: 46px; gap: 6px; }
+.ow-sku-found { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 10px 12px; border: 1px solid var(--ow-border); border-radius: 10px; background: var(--ow-card-soft); }
+.ow-sku-found-id { display: grid; gap: 4px; flex: 1 1 220px; min-width: 0; }
+.ow-sku-found-id strong { font-size: 16px; overflow-wrap: anywhere; }
+.ow-sku-found .ow-field.is-m { flex: 0 1 220px; }
+.ow-sku-found .button { min-height: 46px; gap: 6px; }
+
+/* How the total is made up. */
+.ow-summary { display: grid; gap: 10px; }
+.ow-summary .ow-card-head { margin: 0; }
+.ow-sum { display: grid; gap: 0; margin: 0; }
+.ow-sum > div { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 7px 0; border-bottom: 1px solid var(--ow-border); }
+.ow-sum dt { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 4px; min-width: 0; color: var(--ow-text-2); font-size: 15px; }
+.ow-sum dt > svg { align-self: center; color: var(--ow-text-3); }
+.ow-sum dt small { color: var(--ow-text-3); font-size: 13px; }
+.ow-sum dd { margin: 0; font-size: 16px; font-weight: 600; white-space: nowrap; }
+.ow-sum-row.is-discount dd { color: var(--ow-ok-text); }
+.ow-sum-row.is-rounding dt, .ow-sum-row.is-rounding dd { color: var(--ow-text-3); font-size: 13px; }
+.ow-sum .ow-sum-total { padding-top: 10px; border-bottom: 0; }
+.ow-sum-total dt { color: var(--ow-text); font-size: 16px; font-weight: 700; }
+.ow-sum-total dd { font-size: 22px; font-weight: 700; }
+.ow-sum .ow-sum-note { justify-content: flex-end; padding: 0; border: 0; }
+.ow-sum-note dd { color: var(--ow-text-3); font-size: 13px; font-weight: 500; }
+.ow-sum-basis { margin: 0; font-size: 13px; }
+.ow-sum-money { padding: 8px 12px; border-radius: 10px; background: var(--ow-card-soft); }
+.ow-sum-money > div:last-child { border-bottom: 0; }
+.ow-sum-money .is-strong dt { color: var(--ow-text); font-weight: 700; }
+.ow-sum-money .is-strong dd { font-size: 18px; font-weight: 700; }
+.ow-coupons { display: grid; gap: 6px; }
+.ow-coupon { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 14px; }
+.ow-coupon > svg { color: var(--ow-text-3); }
+.ow-coupon .ow-num { margin-left: auto; color: var(--ow-ok-text); font-weight: 600; }
+.ow-coupon.is-new small { margin-left: auto; color: var(--ow-text-3); }
+.ow-coupons .ow-link-btn { justify-self: start; min-height: 36px; border-style: dashed; font-size: 13px; color: var(--ow-text-2); }
+.ow-coupon-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
+.ow-coupon-form .ow-field { flex: 1 1 160px; }
+.ow-coupon-form .button { min-height: 46px; }
+.ow-history-log ol { margin: 6px 0 8px; padding-left: 18px; color: var(--ow-text-2); font-size: 14px; }
+.ow-history-log time { color: var(--ow-text-3); font-variant-numeric: tabular-nums; }
+
+/* Unsaved changes: always reachable at the bottom of the screen. */
+.ow-savebar { position: sticky; bottom: 0; z-index: 15; display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; justify-content: flex-end; padding: 10px 14px; border: 1px solid var(--ow-border-strong); border-radius: 12px; background: var(--ow-card); box-shadow: 0 -6px 18px rgba(23, 32, 42, .08); }
+.ow-savebar-text { display: inline-flex; align-items: center; gap: 8px; margin-right: auto; font-size: 15px; font-weight: 700; }
+.ow-savebar .button { min-height: 46px; }
+
+/* ---- Narrower screens ------------------------------------------------------------------------------------------- */
+/* Small laptops and 125 % zoom: the header keeps the two key figures and the three decisions on one compact band. */
+@media (max-width: 1180px) {
+  .ow-decision { min-height: 56px; }
+  .ow-decision small { display: none; }
+  .ow-money-key dd { font-size: 28px; min-height: 34px; }
+  .ow-money-side { min-width: 0; }
+  .ow-money-line { gap: 10px; font-size: 13px; }
+  .ow-head-top { gap: 8px 16px; }
+}
+@media (max-width: 1180px) {
+  .ow-grid { grid-template-columns: minmax(0, 1fr); }
+  /* One column: customer, products, then how the total is made up and the history. */
+  .ow-side { display: contents; }
+  .ow-customer { order: 1; }
+  .ow-products { order: 2; }
+  .ow-summary { order: 3; }
+  .ow-history-log { order: 4; }
+}
+@media (max-width: 900px) {
+  .ow-views { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ow-money-side { min-width: 0; flex: 1 1 100%; padding-left: 0; border-left: 0; }
+  .ow-head-actions { grid-template-columns: minmax(0, 1fr); }
+  .ow-autonext { max-width: none; }
+}
+@media (max-width: 760px) {
+  .ow-desk-sticky { position: static; }
+  .ow-table, .ow-table tbody, .ow-table tr, .ow-table td { display: block; width: 100%; }
+  .ow-table thead { display: none; }
+  .ow-table tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 10px; padding: 10px 12px; border-bottom: 1px solid var(--ow-border); }
+  .ow-table td { width: auto !important; padding: 0; border: 0; }
+  .ow-table .c-total, .ow-table .c-lines { text-align: right; }
+  .ow-table .c-notes { grid-column: 1 / -1; }
+  .ow-head { position: static; }
+  .ow-decisions { grid-template-columns: minmax(0, 1fr); }
+  .ow-address-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ow-address-form .ow-field.is-s, .ow-address-form .ow-field.is-m { grid-column: span 1; }
+  .ow-money-key dd { font-size: 26px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ow-spinner { animation: none; border-right-color: currentColor; opacity: .5; }
+  .ow-decision { transition: none; }
+}

@@ -63,6 +63,10 @@ $order = static function (string $number, ?DateTimeImmutable $submitted, array $
         'payment' => ($extra['payment'] ?? 'online') === 'online'
             ? ['method' => 'netopiapayments', 'methodTitle' => 'Card online', 'cod' => false, 'paidRecorded' => true, 'financial' => ['state' => 'cleared', 'basis' => 'online_payment']]
             : ['method' => 'cod', 'methodTitle' => 'Ramburs', 'cod' => true, 'paidRecorded' => false, 'financial' => ['state' => 'waiting', 'basis' => null], 'advance' => ['percentage' => 30, 'required' => '215.70', 'collected' => null]]];
+    // Staff 2.58.0: a workspace order brings its own TEST shop view (lines, totals, catalog, customer).
+    if (isset($extra['shop'])) {
+        $shopOrders[$number] = array_merge($shopOrders[$number], $extra['shop']);
+    }
     $online = ($extra['payment'] ?? 'online') === 'online';
     $p['order']['payment'] = $online ? ['method' => 'online', 'advanceStatus' => 'not_required', 'advanceRevision' => 0] : ['method' => 'cod', 'advanceStatus' => 'waiting', 'advanceRevision' => 0];
     $p['order']['financial'] = $online && $priced ? ['state' => 'cleared', 'basis' => 'online_payment', 'pricingFingerprint' => $fingerprint] : ['state' => $priced ? 'waiting' : 'unknown', 'basis' => null, 'pricingFingerprint' => $priced ? $fingerprint : null];
@@ -74,7 +78,7 @@ $order = static function (string $number, ?DateTimeImmutable $submitted, array $
         $p['order']['dueDate'] = $extra['due'];
     }
     // A TEST customer: a fixed fictitious name and an invented number; the full number never leaves the source.
-    $p['order']['delivery'] = ['name' => 'TEST Client Confirmare', 'street' => 'Str. Exemplu 7', 'city' => 'Brașov', 'postalCode' => '500000', 'country' => 'RO', 'phone' => '0700000123'];
+    $p['order']['delivery'] = ['name' => $extra['name'] ?? 'TEST Client Confirmare', 'street' => 'Str. Exemplu 7', 'city' => 'Brașov', 'postalCode' => '500000', 'country' => 'RO', 'phone' => '0700000123'];
     if ($submitted !== null) {
         $p['order']['submission'] = ['submittedAt' => $iso($submitted), 'evidence' => 'checkout'];
     }
@@ -138,6 +142,120 @@ if (in_array('--desk', $argv, true)) {
         }
     }
     echo json_encode(['orders' => ['first' => 'trendhome:91201', 'second' => 'trendhome:91202', 'third' => 'trendhome:91203']]), "\n";
+    exit(0);
+}
+
+// Staff 2.58.0 (Operator Workspace V2): `--workspace` adds the visual test orders after `--desk`: 91301 is TH 65794's
+// shape (one curtain, 6 x 2.50 m, 2 panels, rejansă on a pole, prices with 21 % VAT, flat shipping, total 355.32, advance
+// 106.60), 91302 has 4 products (one out of stock, a coupon, free shipping, a possible duplicate, no postcode), 91303 has 10
+// and 91304 has 20 products with long names. Invented TEST customers and products only; amounts are coherent TEST figures.
+if (in_array('--workspace', $argv, true)) {
+    $cents = static fn (string $amount): int => (int) round((float) $amount * 100);
+    $money = static fn (int $c): string => number_format($c / 100, 2, '.', '');
+    $sewing = [['value' => '8:Manopera Rejansa Bara (Țeavă)', 'title' => 'Manopera Rejansa Bara (Țeavă)'], ['value' => '13:Manopera Rejansa Normal 6cm', 'title' => 'Manopera Rejansa Normal 6cm'],
+        ['value' => '18:Manopera Rejansa Creion cu Inele Metalice Argintii 10 cm', 'title' => 'Manopera Rejansa Creion cu Inele Metalice Argintii 10 cm'], ['value' => '0:Fără manoperă', 'title' => 'Fără manoperă']];
+    $pieces = [['value' => '1:1 buc.', 'title' => '1 buc.'], ['value' => '2:2 buc.', 'title' => '2 buc.'], ['value' => '3:3 buc.', 'title' => '3 buc.'], ['value' => '4:4 buc.', 'title' => '4 buc.']];
+    // One TEST line: the gross price (with VAT) splits into net + 21 % VAT exactly like a shop stores it.
+    $line = static function (string $orderNo, int $n, array $spec) use ($cents, $money, $sewing, $pieces): array {
+        $gross = $cents($spec['gross']);
+        $net = (int) round($gross / 1.21);
+        $id = (string) ((int) $orderNo * 100 + $n);
+        $curtain = $spec['curtain'] ?? true;
+        $details = [['label' => 'Culoare', 'value' => $spec['color'] ?? 'Alb']];
+        if ($curtain) {
+            $details = array_merge($details, [['label' => 'Lungimea (L)', 'value' => $spec['w']], ['label' => 'Inaltime (H)', 'value' => $spec['h']],
+                ['label' => 'Manopera', 'value' => $spec['sewing'] ?? 'Manopera Rejansa Bara (Țeavă)'], ['label' => 'buc', 'value' => ($spec['buc'] ?? '2') . ' buc.'],
+                ['label' => 'trendhome-tools_monopera_cost', 'value' => '8']]);
+        }
+        $sewTitle = $spec['sewing'] ?? 'Manopera Rejansa Bara (Țeavă)';
+        $sewValue = array_values(array_filter($sewing, static fn (array $o): bool => $o['title'] === $sewTitle))[0]['value'] ?? $sewing[0]['value'];
+        $shop = [
+            'id' => $id, 'line' => $n, 'productId' => (string) (700 + $n), 'variationId' => (string) (7000 + $n), 'name' => $spec['name'], 'sku' => $spec['sku'],
+            'width' => $curtain ? (float) $spec['w'] : null, 'height' => $curtain ? (float) $spec['h'] : null, 'unit' => $curtain ? 'm' : null, 'details' => $details,
+            'quantity' => $spec['qty'] ?? 1, 'unitPrice' => $money(intdiv($net, $spec['qty'] ?? 1)), 'subtotal' => $money($net), 'discount' => '0.00', 'tax' => $money($gross - $net), 'total' => $money($net),
+            'calculator' => $curtain, 'image' => ['url' => 'https://127.0.0.1/wp-content/uploads/e2e/' . ($spec['image'] ?? 'draperie') . '.png', 'width' => 600, 'height' => 600, 'kind' => 'variation'],
+            'stock' => ($spec['stock'] ?? 'instock') === 'instock' ? ['status' => 'instock', 'managed' => true, 'quantity' => 24] : ['status' => $spec['stock'], 'managed' => false, 'quantity' => null],
+        ];
+        $catalog = ['id' => $id, 'productId' => $shop['productId'], 'variationId' => $shop['variationId'], 'name' => $spec['name'], 'quantity' => $shop['quantity'], 'variations' => [], 'editable' => true, 'reason' => null,
+            'calculator' => $curtain ? ['fields' => [
+                ['name' => 'lungimea', 'title' => 'Lungimea (L)', 'type' => 'number', 'editable' => true, 'required' => true, 'min' => 0.5, 'max' => 12.0, 'value' => $spec['w']],
+                ['name' => 'inaltime', 'title' => 'Inaltime (H)', 'type' => 'number', 'editable' => true, 'required' => true, 'min' => 0.5, 'max' => 3.2, 'value' => $spec['h']],
+                ['name' => 'buc', 'title' => 'buc', 'type' => 'select', 'editable' => true, 'required' => true, 'min' => null, 'max' => null, 'options' => $pieces, 'value' => ($spec['buc'] ?? '2') . ':' . ($spec['buc'] ?? '2') . ' buc.'],
+                ['name' => 'manopera', 'title' => 'Manopera', 'type' => 'select', 'editable' => true, 'required' => true, 'min' => null, 'max' => null, 'options' => $sewing, 'value' => $sewValue],
+            ]] : null];
+        return [$shop, $catalog];
+    };
+    $fields = static fn (array $over = []): array => array_merge(['firstName' => 'Test', 'lastName' => 'Client', 'company' => '', 'address1' => 'Strada Exemplu', 'streetNo' => '7', 'building' => 'A2', 'entrance' => '1',
+        'floor' => '3', 'apartment' => '12', 'address2' => '', 'city' => 'Brașov', 'state' => 'BV', 'postcode' => '500000', 'country' => 'RO'], $over);
+    $build = static function (string $no, array $specs, array $opts) use ($line, $cents, $money, $fields): array {
+        $lines = []; $catalog = []; $net = 0; $tax = 0;
+        foreach ($specs as $i => $spec) {
+            [$l, $c] = $line($no, $i + 1, $spec);
+            $lines[] = $l; $catalog[] = $c; $net += $cents($l['total']); $tax += $cents($l['tax']);
+        }
+        $subtotal = $net; $discount = 0; $discountTax = 0;
+        if (isset($opts['coupon'])) {
+            // A fixed TEST coupon with VAT, taken from the first line (as WooCommerce spreads it, here on one line).
+            $gross = $cents($opts['coupon']); $discount = (int) round($gross / 1.21); $discountTax = $gross - $discount;
+            $lines[0]['discount'] = $money($discount); $lines[0]['total'] = $money($cents($lines[0]['total']) - $discount); $lines[0]['tax'] = $money($cents($lines[0]['tax']) - $discountTax);
+            $net -= $discount; $tax -= $discountTax;
+        }
+        $free = $net + $tax >= 60000;
+        $shipNet = $free ? 0 : 1597; $shipTax = $free ? 0 : 335;
+        $total = $net + $tax + $shipNet + $shipTax;
+        $advance = intdiv($total * 30 + 50, 100);
+        $shop = [
+            'lines' => $lines, 'catalogLines' => $catalog, 'email' => 'client.test' . $no . '@example.test',
+            'coupons' => isset($opts['coupon']) ? [['code' => 'TEST50', 'discount' => $money($discount), 'discountTax' => $money($discountTax)]] : [],
+            'shipping' => [$free ? ['id' => (string) ((int) $no * 10 + 9), 'methodId' => 'free_shipping', 'instanceId' => '4', 'title' => 'Livrare gratuită', 'total' => '0.00', 'tax' => '0.00']
+                : ['id' => (string) ((int) $no * 10 + 9), 'methodId' => 'flat_rate', 'instanceId' => '3', 'title' => 'Cost de expediere', 'total' => '15.97', 'tax' => '3.35']],
+            'totals' => ['subtotal' => $money($subtotal), 'discount' => $money($discount), 'discountTax' => $money($discountTax), 'shipping' => $money($shipNet), 'shippingTax' => $money($shipTax),
+                'fees' => '0.00', 'tax' => $money($tax + $shipTax), 'total' => $money($total), 'refunded' => '0.00'],
+            'payment' => ['method' => 'cod', 'methodTitle' => 'Ramburs', 'cod' => true, 'paidRecorded' => false, 'financial' => ['state' => 'waiting', 'basis' => null],
+                'advance' => ['percentage' => 30, 'required' => $money($advance), 'collected' => null]],
+            'shippingFields' => $fields($opts['address'] ?? []), 'billingFields' => $fields(),
+            'shippingLines' => $opts['lines'] ?? ['Strada Exemplu 7, Bl. A2, Sc. 1, Et. 3, Ap. 12', '500000 Brașov', 'Brașov, RO'],
+            'customer' => $opts['customer'] ?? ['orders' => [], 'possibleDuplicates' => []],
+            'name' => $opts['name'],
+        ];
+        return $shop;
+    };
+    $long = ['Draperie Catifea Premium Blackout Dublu Strat cu Inele Metalice Argintii - Bej Nisip Deschis', 'Perdea Voal Alb Fin', 'Draperie Diamond Blackout 90% Gri Antracit', 'Perdea In Natural Texturat',
+        'Draperie Velvet Verde Smarald', 'Perdea Tul Brodat Floral Crem cu Margine Dantelă', 'Draperie Blackout Termoizolantă Albastru Marin', 'Perdea Organza Ivoire', 'Draperie Jacquard Auriu Clasic', 'Perdea Voal Gri Perlă'];
+    $colors = ['Bej', 'Alb', 'Gri', 'Natur', 'Verde', 'Crem', 'Bleumarin', 'Ivoire', 'Auriu', 'Gri perlă'];
+    $many = static function (int $count) use ($long, $colors): array {
+        $specs = [];
+        for ($i = 0; $i < $count; $i++) {
+            $specs[] = ['name' => $long[$i % 10] . ($i >= 10 ? ' (cameră ' . ($i - 9) . ')' : ''), 'sku' => sprintf('TST-%03d', $i + 1), 'color' => $colors[$i % 10], 'w' => (string) (2 + ($i % 5)), 'h' => '2.60',
+                'gross' => number_format(120 + 37.5 * ($i % 7), 2, '.', ''), 'buc' => (string) (1 + $i % 3), 'image' => ['draperie', 'voal', 'gri', 'in'][$i % 4],
+                'sewing' => ['Manopera Rejansa Bara (Țeavă)', 'Manopera Rejansa Normal 6cm', 'Manopera Rejansa Creion cu Inele Metalice Argintii 10 cm'][$i % 3], 'stock' => $i === 3 ? 'onbackorder' : 'instock'];
+        }
+        return $specs;
+    };
+    $orders = [
+        '91301' => $build('91301', [['name' => 'Draperie Diamond Blackout 90% Alb - Alb', 'sku' => 'DDB-ALB-90', 'color' => 'Alb', 'w' => '6', 'h' => '2.50', 'gross' => '336.00', 'buc' => '2']],
+            ['name' => 'TEST Ioana Exemplu', 'customer' => ['orders' => [['number' => '90877', 'createdAt' => '2026-10-02T09:00:00Z', 'status' => ['code' => 'completed', 'label' => 'Finalizată'], 'total' => '412.50', 'currency' => 'RON']], 'possibleDuplicates' => []]]),
+        '91302' => $build('91302', [
+            ['name' => 'Draperie Velvet Bej', 'sku' => 'DV-302', 'color' => 'Bej', 'w' => '3', 'h' => '2.60', 'gross' => '336.00', 'buc' => '1', 'sewing' => 'Manopera Rejansa Normal 6cm'],
+            ['name' => 'Perdea Voal Alb', 'sku' => 'PV-ALB', 'color' => 'Alb', 'w' => '4', 'h' => '2.50', 'gross' => '242.00', 'qty' => 2, 'buc' => '2', 'image' => 'voal'],
+            ['name' => 'Draperie Blackout Gri Antracit', 'sku' => 'DBG-210', 'color' => 'Gri', 'w' => '2', 'h' => '2.40', 'gross' => '181.50', 'stock' => 'outofstock', 'image' => 'gri'],
+            ['name' => 'Șină aluminiu dublă 3 m', 'sku' => 'SA-300', 'color' => 'Argintiu', 'gross' => '96.80', 'curtain' => false, 'image' => 'sina'],
+        ], ['name' => 'TEST Mihai Exemplu', 'coupon' => '50.00', 'address' => ['postcode' => ''], 'lines' => ['Strada Exemplu 7, Bl. A2, Sc. 1, Et. 3, Ap. 12', 'Brașov', 'Brașov, RO'],
+            'customer' => ['orders' => [['number' => '91299', 'createdAt' => '2026-11-24T10:00:00Z', 'status' => ['code' => 'processing', 'label' => 'În procesare'], 'total' => '336.00', 'currency' => 'RON'],
+                ['number' => '89012', 'createdAt' => '2026-08-12T10:00:00Z', 'status' => ['code' => 'completed', 'label' => 'Finalizată'], 'total' => '219.90', 'currency' => 'RON']], 'possibleDuplicates' => ['91299']]]),
+        '91303' => $build('91303', $many(10), ['name' => 'TEST Alexandra-Maria Popescu-Ionescu Exemplu']),
+        '91304' => $build('91304', $many(20), ['name' => 'TEST Hotel Exemplu SRL']),
+    ];
+    foreach ($orders as $wsNumber => $shop) {
+        $ingest('trendhome', $order((string) $wsNumber, $now->modify('-2 minutes'), ['payment' => 'cod', 'name' => $shop['name'], 'shop' => $shop]));
+        // The waiting times the desk weighs (display only): an order older than the TEST activation would be legacy, so
+        // the submission instant is moved back in this TEST database after the order entered Confirmare.
+        $minutes = [91301 => 95, 91302 => 26 * 60, 91303 => 4 * 24 * 60 + 30, 91304 => 15][(int) $wsNumber];
+        $pdo->prepare('UPDATE operational_orders SET source_submitted_at = ? WHERE global_order_id = ?')
+            ->execute([$now->modify("-{$minutes} minutes")->format('Y-m-d H:i:s.u'), "trendhome:{$wsNumber}"]);
+    }
+    $writeShop();
+    echo json_encode(['orders' => ['one' => 'trendhome:91301', 'four' => 'trendhome:91302', 'ten' => 'trendhome:91303', 'twenty' => 'trendhome:91304']]), "\n";
     exit(0);
 }
 

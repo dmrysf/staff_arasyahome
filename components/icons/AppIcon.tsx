@@ -4,11 +4,20 @@ import type { ReactNode } from "react";
 export type AppIconName =
   | "home" | "orders" | "scan" | "history" | "profile" | "back" | "torch" | "arrow" | "check" | "refresh"
   | "document" | "printer" | "eye" | "qr" | "ruler" | "width" | "height" | "package" | "alert" | "info"
-  | "lock" | "scissors" | "sync" | "spark" | "chevron" | "clock" | "layers" | "phone" | "team" | "search" | "close" | "image";
+  | "lock" | "scissors" | "sync" | "spark" | "chevron" | "clock" | "layers" | "phone" | "team" | "search" | "close" | "image"
+  | "pencil" | "trash" | "copy" | "swap" | "sidebar" | "plus" | "tag" | "truck";
 
 const paths: Record<AppIconName, ReactNode> = {
   search: <><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4.5 4.5" /></>,
   close: <><path d="M6 6l12 12M18 6 6 18" /></>,
+  pencil: <><path d="M4 20h4L19 9a2.1 2.1 0 0 0-4-4L4 16v4Z" /><path d="m13.5 6.5 4 4" /></>,
+  trash: <><path d="M4.5 7h15M9.5 7V4.5h5V7M6.5 7l1 13h9l1-13M10 11v5.5M14 11v5.5" /></>,
+  copy: <><rect x="8.5" y="8.5" width="11" height="11" rx="2" /><path d="M15.5 8.5V6a1.5 1.5 0 0 0-1.5-1.5H6A1.5 1.5 0 0 0 4.5 6v8A1.5 1.5 0 0 0 6 15.5h2.5" /></>,
+  swap: <><path d="M4.5 8h14M15 4.5 18.5 8 15 11.5M19.5 16h-14M9 12.5 5.5 16 9 19.5" /></>,
+  sidebar: <><rect x="3.5" y="4.5" width="17" height="15" rx="2" /><path d="M9.5 4.5v15" /></>,
+  plus: <><path d="M12 5v14M5 12h14" /></>,
+  tag: <><path d="M3.5 12V4.5H11l9.5 9.5-7.5 7.5L3.5 12Z" /><circle cx="7.5" cy="8.5" r="1.3" /></>,
+  truck: <><path d="M3.5 6.5h10v9h-10zM13.5 9.5h4l3 3.5v2.5h-7" /><circle cx="7" cy="17.5" r="1.8" /><circle cx="17" cy="17.5" r="1.8" /></>,
   image: <><rect x="3.5" y="4.5" width="17" height="15" rx="2" /><circle cx="9" cy="10" r="1.6" /><path d="m4.5 18 5-5 3.5 3.5 2.5-2.5 4 4" /></>,
   home: <><path d="M3.5 10.5 12 3l8.5 7.5" /><path d="M5.5 9.5V21h13V9.5M9.5 21v-6h5v6" /></>,
   orders: <><path d="M6 4.5h12a2 2 0 0 1 2 2v13H4v-13a2 2 0 0 1 2-2Z" /><path d="M8 9h8M8 13h8M8 17h5" /></>,

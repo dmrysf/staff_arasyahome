@@ -300,6 +300,11 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             }
             return [200, ['state' => $stored['status'] === 200 ? 'applied' : 'rejected', 'status' => $stored['status'], 'result' => $stored['body']]];
         }
+        if ($action === 'catalog' && isset($order['catalogLines'])) {
+            // Staff 2.58.0 workspace orders: every line with its own TEST calculator fields.
+            return [200, ['protocol' => 1, 'version' => $version, 'editable' => $this->editRefusal === null, 'reason' => $this->editRefusal, 'lines' => $order['catalogLines'],
+                'shipping' => [], 'shippingOptions' => [], 'coupons' => ['applied' => [], 'available' => [], 'more' => false]]];
+        }
         if ($action === 'catalog') {
             return [200, ['protocol' => 1, 'version' => $version, 'editable' => $this->editRefusal === null, 'reason' => $this->editRefusal, 'lines' => [[
                 'id' => (string) ((int) $orderId * 10 + 1), 'productId' => '501', 'variationId' => '0', 'name' => 'Draperie Velvet', 'quantity' => 1,
@@ -1621,6 +1626,9 @@ final class SourceAccessFakeShop implements SourceAccessTransport
     /** @param array<string, mixed> $order @return array<string, mixed> */
     private function editResult(array $order, string $version): array
     {
+        if (isset($order['catalogLines'])) {
+            return $this->workspaceEditResult($order, $version);
+        }
         $total = (string) (($order['totals']['total'] ?? null) ?? '719.00');
         $after = number_format((float) $total + (float) $this->editDelta, 2, '.', '');
         $totals = static fn (string $t): array => ['subtotal' => '720.00', 'subtotalTax' => '114.95', 'discount' => '30.00', 'discountTax' => '4.79', 'shipping' => '25.00', 'shippingTax' => '3.99', 'fees' => '0.00', 'tax' => '114.16', 'total' => $t];
@@ -1631,6 +1639,38 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             'lines' => [['lineId' => (string) ((int) $order['id'] * 10 + 1), 'state' => 'changed', 'before' => $line('420.00'), 'after' => $line(number_format(420 + (float) $this->editDelta, 2, '.', ''))]],
             'shipping' => [['id' => (string) ((int) $order['id'] * 10 + 9), 'method' => 'flat_rate:3', 'before' => '25.00', 'after' => '25.00']],
             'financial' => ['delta' => number_format((float) $this->editDelta, 2, '.', ''), 'impact' => 'additional_payment_due', 'cod' => false],
+        ];
+    }
+
+    /**
+     * Staff 2.58.0 workspace orders: a coherent TEST preview (prices with 21 % VAT): the first line costs `editDelta` more
+     * with VAT (net and VAT split), the order total moves by the same amount. Still never a shop's pricing.
+     *
+     * @param array<string, mixed> $order @return array<string, mixed>
+     */
+    private function workspaceEditResult(array $order, string $version): array
+    {
+        $cents = static fn (string $amount): int => (int) round((float) $amount * 100);
+        $money = static fn (int $cents): string => number_format($cents / 100, 2, '.', '');
+        $gross = $cents($this->editDelta);
+        $net = (int) round($gross / 1.21);
+        $vat = $gross - $net;
+        $t = $order['totals'];
+        $lineTax = 0;
+        foreach ($order['lines'] as $line) {
+            $lineTax += $cents($line['tax']);
+        }
+        $before = ['subtotal' => $t['subtotal'], 'subtotalTax' => $money($lineTax + $cents($t['discountTax'])), 'discount' => $t['discount'], 'discountTax' => $t['discountTax'],
+            'shipping' => $t['shipping'], 'shippingTax' => $t['shippingTax'], 'fees' => '0.00', 'tax' => $t['tax'], 'total' => $t['total']];
+        $after = ['subtotal' => $money($cents($t['subtotal']) + $net), 'subtotalTax' => $money($lineTax + $cents($t['discountTax']) + $vat)] + $before;
+        $after['tax'] = $money($cents($t['tax']) + $vat);
+        $after['total'] = $money($cents($t['total']) + $gross);
+        $first = $order['lines'][0];
+        $snapshot = static fn (string $total, string $tax): array => ['name' => $first['name'], 'productId' => $first['productId'], 'variationId' => $first['variationId'], 'quantity' => $first['quantity'], 'fields' => null, 'subtotal' => $total, 'total' => $total, 'tax' => $tax];
+        return [
+            'protocol' => 1, 'version' => $version, 'applicable' => $this->editBlockers === [], 'blockers' => $this->editBlockers, 'before' => $before, 'after' => $after,
+            'lines' => [['lineId' => $first['id'], 'state' => 'changed', 'before' => $snapshot($first['total'], $first['tax']), 'after' => $snapshot($money($cents($first['total']) + $net), $money($cents($first['tax']) + $vat))]],
+            'shipping' => [], 'financial' => ['delta' => $money($gross), 'impact' => 'none', 'cod' => true],
         ];
     }
 
@@ -1685,9 +1725,9 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             'pricingFingerprint' => $o['pricing'] ?? null,
             'contact' => [
                 'phoneAvailable' => strlen((string) preg_replace('/\D+/', '', $phone)) >= 9,
-                'billing' => ['name' => $o['name'] ?? 'TEST Client Confirmare', 'company' => '', 'phone' => $phone, 'addressLines' => ['Str. Exemplu 7', '500000 Brașov', 'Brașov, RO']],
-                'shipping' => ['name' => $o['name'] ?? 'TEST Client Confirmare', 'company' => '', 'phone' => '', 'addressLines' => ['Str. Exemplu 7', '500000 Brașov', 'Brașov, RO']],
-            ],
+                'billing' => ['name' => $o['name'] ?? 'TEST Client Confirmare', 'company' => '', 'phone' => $phone, 'addressLines' => $o['billingLines'] ?? ['Str. Exemplu 7', '500000 Brașov', 'Brașov, RO']] + (isset($o['billingFields']) ? ['fields' => $o['billingFields']] : []),
+                'shipping' => ['name' => $o['name'] ?? 'TEST Client Confirmare', 'company' => '', 'phone' => '', 'addressLines' => $o['shippingLines'] ?? ['Str. Exemplu 7', '500000 Brașov', 'Brașov, RO']] + (isset($o['shippingFields']) ? ['fields' => $o['shippingFields']] : []),
+            ] + (array_key_exists('email', $o) ? ['email' => $o['email']] : []),
             'lines' => $o['lines'] ?? [[
                 'id' => (string) ((int) $o['id'] * 10 + 1), 'line' => 1, 'productId' => '501', 'variationId' => '0', 'name' => 'Draperie Velvet', 'sku' => 'DV-302',
                 'width' => 3.0, 'height' => 2.6, 'unit' => 'm',
@@ -1704,9 +1744,9 @@ final class SourceAccessFakeShop implements SourceAccessTransport
             ]],
             'fees' => [],
             'coupons' => $o['coupons'] ?? [['code' => 'test10', 'discount' => '30.00', 'discountTax' => '4.79']],
-            'shipping' => [['id' => (string) ((int) $o['id'] * 10 + 9), 'methodId' => 'flat_rate', 'instanceId' => '3', 'title' => 'Livrare prin curier', 'total' => '25.00', 'tax' => '3.99']],
+            'shipping' => $o['shipping'] ?? [['id' => (string) ((int) $o['id'] * 10 + 9), 'methodId' => 'flat_rate', 'instanceId' => '3', 'title' => 'Livrare prin curier', 'total' => '25.00', 'tax' => '3.99']],
             'totals' => $o['totals'] ?? ['subtotal' => '720.00', 'discount' => '30.00', 'discountTax' => '4.79', 'shipping' => '25.00', 'shippingTax' => '3.99', 'fees' => '0.00', 'tax' => '114.16', 'total' => '719.00', 'refunded' => '0.00'],
             'payment' => $o['payment'] ?? ['method' => 'netopiapayments', 'methodTitle' => 'Card online', 'cod' => false, 'paidRecorded' => true, 'financial' => ['state' => 'cleared', 'basis' => 'online_payment']],
-        ];
+        ] + (isset($o['customer']) ? ['customer' => $o['customer']] : []);
     }
 }
