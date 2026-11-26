@@ -39,7 +39,9 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: `php -S 127.0.0.1:${apiPort} operations-api/public/index.php`,
+      // pcre.jit=0 as in production (PHP 8.2.36, pcre.jit Off). With the CI PHP build (PCRE 10.47, JIT on) a forked server
+      // worker crashed with SIGSEGV inside the JIT-compiled FILTER_VALIDATE_EMAIL pattern during a shop read.
+      command: `php -d pcre.jit=0 -S 127.0.0.1:${apiPort} operations-api/public/index.php`,
       url: `http://127.0.0.1:${apiPort}/health`,
       reuseExistingServer: false,
       timeout: 30_000,
